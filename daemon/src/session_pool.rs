@@ -1316,6 +1316,7 @@ impl SessionPool {
     /// `default_provider` automatically the next time routing is resolved
     /// (see `base::provider::resolve_task_models`'s soft-fallback) — no
     /// separate "downgrade" write is needed.
+    #[allow(clippy::too_many_arguments)]
     pub async fn set_provider(
         &self,
         project_root: Option<&Path>,
