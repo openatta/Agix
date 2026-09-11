@@ -112,6 +112,33 @@ serde 的 `Option<Option<T>>` 免费区分前两者,但 `null` 与字符串的�
 显式检查,**在到达 `SessionPool` 之前**。无项目会话的 `local_data_dir` 取
 `global_data_dir` 本身,而不是 `<project>/.atta`。
 
+`config.*` / `mcp.addServer` / `import.*` 这几个**作用在项目层**的方法用的是另一套
+两态:省略 = 这个 daemon 自己的项目,给路径 = 它服务的另一个项目,**`null` 拒绝** ——
+无项目会话没有项目层可写。
+
+### 3.2.1 一条不变量
+
+> **会话读到的任何按项目索引的东西,都来自它自己的 `project_root`。进程级的只剩
+> 不按项目索引的东西。**
+
+按项目索引、因而按 `(project, scene)` 绑定的(`SessionPool::bindings` 里的
+`ProjectBinding`):合并设置、skills、agent types、commands、provider 路由与主模型、
+MCP 连接、脚本绑定的 root、记忆目录、transcript 目录。
+
+进程级的,因为它们**不按项目索引**:
+
+| 进程级 | 为什么 |
+|---|---|
+| `DaemonPaths::config_root()` | 启动时按首个场景算定,见 §3.1 |
+| 工具注册表 | 内置工具是编译期事实 |
+| 场景注册表 | 同上;激活集合是运行期状态,但不按项目 |
+| plugin host / 插件集合 | 插件只有全局层与场景层,**没有项目层** |
+| WASM 插件的 `${workspace}` | 组件是池级加载的,跟着 daemon 的工作目录 |
+| `WatchHub` | 一个 `notify` 线程,按 tier 分键去重,watched 目录是 `1 + M + P` |
+
+**加一样按项目索引的东西,就把它放进 `ProjectBinding`**,不要在池上再挂一个
+`HashMap<ProjectSceneKey, _>` —— 那正是这条不变量曾经在四个地方同时不成立的原因。
+
 ### 3.3 Sidechain 会话
 
 子代理(`Agent` 工具、Skill `context: fork`、team 成员)的 transcript 独立成一个会话,

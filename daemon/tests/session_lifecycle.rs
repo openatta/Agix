@@ -2140,6 +2140,66 @@ async fn another_projects_settings_change_reaches_the_daemon_without_a_reload() 
     srv.stop().await;
 }
 
+#[tokio::test]
+async fn a_project_bound_session_sees_that_projects_own_agent_types() {
+    let (srv, seen) = start_scripted_server(
+        vec![text_round("a"), text_round("b")],
+        ask_settings(),
+        Duration::ZERO,
+    )
+    .await;
+
+    let other_project = srv._dir.path().join("other-project");
+    let agents_dir = other_project.join(".atta").join("agents");
+    std::fs::create_dir_all(&agents_dir).unwrap();
+    std::fs::write(
+        agents_dir.join("freeze-bot.md"),
+        "---\ndescription: Watches the merge freeze\n---\nbody",
+    )
+    .unwrap();
+
+    let created = rpc(
+        &srv.sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.create","params":{{"project_root":"{}"}},"id":1}}"#,
+            other_project.display()
+        ),
+    )
+    .await;
+    let sid = created["result"]["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    run_turn(&srv.sock, Some(&sid), "anything").await;
+
+    // The catalog is rendered into the `Agent` tool's own description.
+    let agent_tool_description = |seen: &SeenRequests| {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find_map(|req| {
+                req.tools
+                    .iter()
+                    .find(|t| t.name == "Agent")
+                    .map(|t| t.description.clone())
+            })
+            .expect("some request offered the Agent tool")
+    };
+    assert!(
+        agent_tool_description(&seen).contains("freeze-bot"),
+        "a session must see the agent types of the project it is bound to"
+    );
+
+    run_turn(&srv.sock, None, "anything").await;
+    assert!(
+        !agent_tool_description(&seen).contains("freeze-bot"),
+        "one project's agent types must not leak into another's sessions"
+    );
+
+    srv.stop().await;
+}
+
 // ── scripts ─────────────────────────────────────────────────────────────
 
 /// A project that binds a script gets it, through the daemon, on the prompt
