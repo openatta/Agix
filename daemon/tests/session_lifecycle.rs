@@ -2021,6 +2021,74 @@ async fn closing_a_project_bound_parent_still_cascades_to_its_sidechains() {
     srv.stop().await;
 }
 
+#[tokio::test]
+async fn a_project_bound_session_sees_that_projects_own_skills() {
+    let (srv, seen) = start_scripted_server(
+        vec![text_round("a"), text_round("b")],
+        ask_settings(),
+        Duration::ZERO,
+    )
+    .await;
+
+    let other_project = srv._dir.path().join("other-project");
+    let skill_dir = other_project
+        .join(".agents")
+        .join("skills")
+        .join("freeze-check");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: freeze-check\ndescription: Check the merge freeze window\n---\nbody",
+    )
+    .unwrap();
+
+    let created = rpc(
+        &srv.sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.create","params":{{"project_root":"{}"}},"id":1}}"#,
+            other_project.display()
+        ),
+    )
+    .await;
+    let sid = created["result"]["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    run_turn(&srv.sock, Some(&sid), "anything").await;
+
+    // The last request that carried a system prompt: the background memory
+    // extraction fires a request of its own after every turn, and it sends
+    // none, so `last()` alone would be reading the wrong one.
+    let system_of_last = |seen: &SeenRequests| {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|req| !req.system.is_empty())
+            .expect("some request carried a system prompt")
+            .system
+            .iter()
+            .map(|b| match b {
+                model::types::SystemBlock::Text { text, .. } => text.clone(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert!(
+        system_of_last(&seen).contains("freeze-check"),
+        "a session must see the skills of the project it is bound to"
+    );
+
+    // And the daemon's own project does not acquire them.
+    run_turn(&srv.sock, None, "anything").await;
+    assert!(
+        !system_of_last(&seen).contains("freeze-check"),
+        "one project's skills must not leak into another's sessions"
+    );
+
+    srv.stop().await;
+}
+
 // ── scripts ─────────────────────────────────────────────────────────────
 
 /// A project that binds a script gets it, through the daemon, on the prompt

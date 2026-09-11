@@ -90,6 +90,62 @@ pub enum SetModelError {
 /// resolutions, not one.
 type ProjectSceneKey = (Option<PathBuf>, String);
 
+/// Everything a session reads that the pair `(project, scene)` decides: the
+/// merged settings, and the skills, agent types and commands that live in the
+/// directories those settings name.
+///
+/// One per pair, shared by every session on it. Before this existed each of
+/// these was a single pool-wide value built once from the daemon's *own*
+/// project — so a session created with a `project_root` of its own read that
+/// project's settings while running the daemon project's skills and
+/// sub-agents. They are here together because they are the same fact stated
+/// four times: a binding is built from one `Settings`, and rebuilding it is
+/// how any of them changes.
+struct ProjectBinding {
+    settings: Arc<Settings>,
+    /// Live-reloaded: a skill file added or removed after this was built is
+    /// picked up without a rebuild, and every session on this pair sees it at
+    /// once because they share this instance.
+    skills: Arc<skills::manager::SkillManager>,
+    agent_types: runtime::agent_tool::SharedAgentTypeCatalog,
+    commands: Arc<runtime::commands::CommandRegistry>,
+}
+
+impl ProjectBinding {
+    fn build(
+        settings: Arc<Settings>,
+        plugin_agent_types: &[runtime::agent_tool::AgentTypeDefinition],
+    ) -> Self {
+        let skills = Arc::new(runtime::agent::build_default_skill_manager(&settings));
+        let commands = build_shared_commands(skills.clone());
+        let dirs = agent_type_dirs(&settings);
+        let dirs_ref: [&std::path::Path; 3] = [&dirs[0], &dirs[1], &dirs[2]];
+        let agent_types =
+            runtime::agent_tool::SharedAgentTypeCatalog::build(&dirs_ref, plugin_agent_types);
+        Self {
+            settings,
+            skills,
+            agent_types,
+            commands,
+        }
+    }
+
+    /// Re-merge what the plugin set now contributes.
+    ///
+    /// Skill directories are deliberately not re-scanned: `skills` is the
+    /// live-reloaded manager every session on this pair shares, and
+    /// rescanning would hand new sessions a different instance than the
+    /// running ones hold. `commands` needs nothing either — it is a view onto
+    /// that same manager (`CommandRegistry::from_skill_manager` keeps the
+    /// `Arc`, it does not copy a list out of it), so it already reflects
+    /// whatever the manager reloaded.
+    fn refresh_plugins(&self, plugin_agent_types: &[runtime::agent_tool::AgentTypeDefinition]) {
+        let dirs = agent_type_dirs(&self.settings);
+        let dirs_ref: [&std::path::Path; 3] = [&dirs[0], &dirs[1], &dirs[2]];
+        self.agent_types.refresh(&dirs_ref, plugin_agent_types);
+    }
+}
+
 pub enum ProjectSelector {
     /// `project_root` omitted — this pool's default project (`self.cwd`),
     /// unchanged pre-P3 behavior.
@@ -304,13 +360,6 @@ pub struct SessionPool {
     /// session's: a session's checks come and go with the session, and one
     /// shared registry would grow an entry per session forever.
     health: std::sync::RwLock<base::interface::health::HealthChecks>,
-    /// Command catalog shared by every session — skill-derived + built-in
-    /// local commands, rebuilt by
-    /// `refresh_plugins()` instead of re-scanning skill dirs per session
-    /// (see `build_shared_commands`). Backs the `commands.list` RPC
-    /// directly and is injected into each new session via
-    /// `Builder::commands_override`.
-    commands: AsyncRwLock<Arc<runtime::commands::CommandRegistry>>,
     /// Multi-provider per-task-type model routing (see
     /// `base::provider::TaskRouter` / `daemon::model_router`), built at
     /// startup from `settings.providers`/`task_models` when configured and
@@ -323,45 +372,25 @@ pub struct SessionPool {
     /// a swap observe it directly; already-running sessions catch up lazily
     /// via `config_generation` (see `LiveSession::config_generation`).
     task_router: AsyncRwLock<Option<Arc<base::provider::TaskRouter>>>,
-    /// One shared, live-reloaded agent-type catalog (+ its single file
-    /// watcher thread) for every session this pool creates — see
-    /// `runtime::agent_tool::SharedAgentTypeCatalog`'s doc comment. Before
-    /// this existed, `Builder::build()` had each session start its own
-    /// dedicated watcher on the exact same three directories: N sessions
-    /// meant N redundant `notify` background threads. Refreshed by
-    /// `refresh_plugins()` so a plugin-driven agent-type change reaches
-    /// already-running sessions too, not just new ones — an improvement
-    /// over the old per-session catalog, which never updated for plugin
-    /// changes at all once a session was built.
-    agent_type_catalog: runtime::agent_tool::SharedAgentTypeCatalog,
-    /// One shared, live-reloaded `SkillManager` for every session this pool
-    /// creates — built once at pool construction (`build_default_skill_
-    /// manager`) instead of each session re-scanning the same three skill
-    /// directories in `Builder::build()` (see `Builder::skill_catalog`).
-    /// Because every session shares this exact instance, a skill file
-    /// change reloads once and is immediately visible to every session,
-    /// including ones already running — stronger than the old per-session
-    /// `SkillManager` + shared-watcher setup, where each session's own copy
-    /// only caught up on its own next `check_for_changes()` poll.
-    skill_catalog: Arc<skills::manager::SkillManager>,
-    /// Merged settings for every `(project_root, scene)` pair this pool has
-    /// built a session for. `project_root` is understood exactly as
+    /// One [`ProjectBinding`] per `(project_root, scene)` pair this pool has
+    /// built a session for — the settings, skills, agent types and commands
+    /// that pair resolves to. `project_root` is understood exactly as
     /// `session.create`'s param is: `None` = the global no-project tier,
     /// `Some(root)` = that project's `settings.json` over the global/scene
     /// tiers.
     ///
-    /// Scene is part of the key because the scene tier is a real settings
-    /// layer (`~/.atta/scenes/<scene>/settings.json`, and the skills, agents
-    /// and plugins beside it). Keying by project alone meant every session
-    /// got whichever scene happened to be built first, so a `chat` session
-    /// on a daemon started as `--scene coding` silently read coding's tier.
+    /// Scene is part of the key because the scene tier is a real layer
+    /// (`~/.atta/scenes/<scene>/settings.json`, and the skills, agents and
+    /// plugins beside it). Keying by project alone meant every session got
+    /// whichever scene happened to be built first, so a `chat` session on a
+    /// daemon started as `--scene coding` silently read coding's tier.
     ///
-    /// The pool's default `(cwd, startup scene)` pair is deliberately **not**
-    /// cached here — it stays on the hot-swappable `self.settings` so
-    /// `config.setProvider`/`config.reload` keep working for it. Entries here
-    /// are built once and never invalidated (no `config.reload` targets a
-    /// non-default project yet).
-    projects: AsyncMutex<HashMap<ProjectSceneKey, Arc<Settings>>>,
+    /// Entries are built on demand and dropped wholesale by
+    /// `invalidate_bindings` — a reload, or a plugin set that changed. The
+    /// pool's own pair is in here like any other; `self.settings` remains the
+    /// separate, hot-swappable copy that `config.reload` writes and that
+    /// everything not tied to a session reads.
+    bindings: AsyncMutex<HashMap<ProjectSceneKey, Arc<ProjectBinding>>>,
     /// Bumped by `apply_reloaded_settings()` on every successful reload.
     /// Compared against each `LiveSession::config_generation` at dispatch
     /// time (`run_turn`) to decide whether an already-running session needs
@@ -534,22 +563,6 @@ impl SessionPool {
             cwd.clone(),
             settings.plugins.clone(),
         );
-        let plugin_agent_types = plugins.agent_types();
-        // Built once for every session this pool ever creates — see the
-        // `skill_catalog` field doc comment. `runtime::agent::Builder`'s own
-        // fallback (used by tests / library embedding without a daemon)
-        // does the equivalent scan per-session; a daemon shares one.
-        let skill_catalog = Arc::new(runtime::agent::build_default_skill_manager(&settings));
-        let commands = build_shared_commands(skill_catalog.clone());
-
-        let agent_dirs = agent_type_dirs(&settings);
-        let agent_dirs_ref: [&std::path::Path; 3] =
-            [&agent_dirs[0], &agent_dirs[1], &agent_dirs[2]];
-        let agent_type_catalog = runtime::agent_tool::SharedAgentTypeCatalog::build(
-            &agent_dirs_ref,
-            &plugin_agent_types,
-        );
-
         let tools = Arc::new(base::tool::InMemoryToolRegistry::new());
         tools::register_builtin_tools(&tools);
 
@@ -584,11 +597,8 @@ impl SessionPool {
                 None => base::interface::health::HealthChecks::new(),
             }),
             plugins,
-            commands: AsyncRwLock::new(commands),
             task_router: AsyncRwLock::new(task_router),
-            agent_type_catalog,
-            skill_catalog,
-            projects: AsyncMutex::new(HashMap::new()),
+            bindings: AsyncMutex::new(HashMap::new()),
             config_generation: std::sync::atomic::AtomicU64::new(0),
             model_overrides: std::sync::Mutex::new(HashMap::new()),
             permission_prompt_timeout: DEFAULT_PERMISSION_PROMPT_TIMEOUT,
@@ -632,7 +642,7 @@ impl SessionPool {
     /// `/name args` as the `message` of `session.run_turn`, which already
     /// intercepts and runs it (see `runtime::turn::process_turn`).
     pub async fn list_commands(&self) -> Vec<runtime::commands::CommandInfo> {
-        self.commands.read().await.list_detailed()
+        self.default_binding().await.commands.list_detailed()
     }
 
     /// MCP server configs declared by *active* installed plugins. Callers
@@ -786,13 +796,10 @@ impl SessionPool {
     /// persistent, live-reloaded manager every session shares.
     async fn refresh_after_plugin_change(&self) {
         self.adopt_plugin_scenes().await;
-        let settings = self.settings.read().await.clone();
-        let agent_dirs = agent_type_dirs(&settings);
-        let agent_dirs_ref: [&std::path::Path; 3] =
-            [&agent_dirs[0], &agent_dirs[1], &agent_dirs[2]];
-        self.agent_type_catalog
-            .refresh(&agent_dirs_ref, &self.plugins.agent_types());
-        *self.commands.write().await = build_shared_commands(self.skill_catalog.clone());
+        let plugin_agent_types = self.plugins.agent_types();
+        for binding in self.bindings.lock().await.values() {
+            binding.refresh_plugins(&plugin_agent_types);
+        }
     }
 
     /// Current MCP connection status for this pool's *default* project —
@@ -1427,6 +1434,10 @@ impl SessionPool {
 
         let reloaded = Arc::new(reloaded);
         *self.settings.write().await = reloaded.clone();
+        // The cached bindings hold the settings that were just replaced, and
+        // the skill/agent catalogs built from the directories those settings
+        // name. Dropping them is what makes a reload reach the next session.
+        self.invalidate_bindings().await;
         self.config_generation
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
@@ -1478,16 +1489,13 @@ impl SessionPool {
         }
 
         let session_scene_id = scene.id().to_string();
-        let (base_settings, project_root_for_meta) = match project_root {
+        let (binding, project_root_for_meta) = match project_root {
             ProjectSelector::Default => (
-                self.settings_for_project(Some(&self.cwd.clone()), &session_scene_id)
+                self.binding_for(Some(&self.cwd.clone()), &session_scene_id)
                     .await,
                 Some(self.cwd.clone()),
             ),
-            ProjectSelector::NoProject => (
-                self.settings_for_project(None, &session_scene_id).await,
-                None,
-            ),
+            ProjectSelector::NoProject => (self.binding_for(None, &session_scene_id).await, None),
             ProjectSelector::Path(p) => {
                 if !p.is_dir() {
                     return Err((
@@ -1498,10 +1506,7 @@ impl SessionPool {
                         ),
                     ));
                 }
-                (
-                    self.settings_for_project(Some(&p), &session_scene_id).await,
-                    Some(p),
-                )
+                (self.binding_for(Some(&p), &session_scene_id).await, Some(p))
             }
         };
 
@@ -1511,7 +1516,7 @@ impl SessionPool {
             .create(
                 sid,
                 scene,
-                base_settings,
+                binding,
                 project_root_for_meta.clone(),
                 options,
                 false,
@@ -1549,12 +1554,13 @@ impl SessionPool {
         &self,
         session_id: String,
         scene: Arc<dyn AgentScene>,
-        base_settings: Arc<Settings>,
+        binding: Arc<ProjectBinding>,
         project_root_for_meta: Option<PathBuf>,
         options: Option<&SessionOptions>,
         resume: bool,
     ) -> Result<String, String> {
         let scene_id = scene.id().to_string();
+        let base_settings = binding.settings.clone();
         let task_router = self.task_router.read().await.clone();
 
         // Wrap the model in a recorder if this session asked for one.
@@ -1628,9 +1634,9 @@ impl SessionPool {
             .settings(settings_snapshot.clone())
             .permission(permission)
             .session_id(session_id.clone())
-            .commands_override(self.commands.read().await.clone())
-            .shared_agent_types(self.agent_type_catalog.handle())
-            .skill_catalog(self.skill_catalog.clone());
+            .commands_override(binding.commands.clone())
+            .shared_agent_types(binding.agent_types.handle())
+            .skill_catalog(binding.skills.clone());
         if let Some(ref store) = self.history_store {
             builder = builder.history_store(store.clone());
         }
@@ -1792,7 +1798,7 @@ impl SessionPool {
                     auth_modes: Vec::new(),
                     mcp_server_count,
                     plugin_count: self.plugins.count(),
-                    skill_count: self.skill_catalog.list().len(),
+                    skill_count: binding.skills.list().len(),
                     output_format: "jsonrpc".to_string(),
                     started_at_ms: (time::OffsetDateTime::now_utc().unix_timestamp_nanos()
                         / 1_000_000) as i64,
@@ -2359,7 +2365,7 @@ impl SessionPool {
                     .create(
                         sid.clone(),
                         self.scene.clone(),
-                        self.settings.read().await.clone(),
+                        self.default_binding().await,
                         Some(self.cwd.clone()),
                         options.as_ref(),
                         false,
@@ -3164,7 +3170,7 @@ impl SessionPool {
     /// remembers projects it no longer serves.
     async fn served_projects(&self) -> Vec<Option<PathBuf>> {
         let mut out = vec![Some(self.cwd.clone())];
-        for (project, _scene) in self.projects.lock().await.keys() {
+        for (project, _scene) in self.bindings.lock().await.keys() {
             if !out.contains(project) {
                 out.push(project.clone());
             }
@@ -3813,32 +3819,76 @@ impl SessionPool {
         project_root: Option<&Path>,
         scene_id: &str,
     ) -> Arc<Settings> {
+        self.binding_for(project_root, scene_id)
+            .await
+            .settings
+            .clone()
+    }
+
+    /// The [`ProjectBinding`] for this pair, built on first use.
+    ///
+    /// The pool's own `(cwd, startup scene)` pair takes its settings from the
+    /// hot-swappable `self.settings` that `config.reload` writes, rather than
+    /// loading them again — but it is cached here like every other pair, and
+    /// `apply_reloaded_settings` drops it so the next session picks the new
+    /// ones up.
+    async fn binding_for(
+        &self,
+        project_root: Option<&Path>,
+        scene_id: &str,
+    ) -> Arc<ProjectBinding> {
         let startup_scene = self.settings.read().await.paths.scope.clone();
         let key = (project_root.map(Path::to_path_buf), scene_id.to_string());
-
-        // The pool's own `(cwd, startup scene)` pair, and only that pair,
-        // answers from the hot-swappable settings `config.reload` mutates.
-        if key.0.as_deref() == Some(self.cwd.as_path()) && scene_id == startup_scene {
-            return self.settings.read().await.clone();
-        }
-        if let Some(existing) = self.projects.lock().await.get(&key) {
+        if let Some(existing) = self.bindings.lock().await.get(&key) {
             return existing.clone();
         }
 
-        let default_model = self.settings.read().await.model.model_name.clone();
-        let local_dir = match &key.0 {
-            Some(root) => root.join(".atta"),
-            None => self.paths.global_root(),
+        let is_default_pair =
+            key.0.as_deref() == Some(self.cwd.as_path()) && scene_id == startup_scene;
+        let settings = if is_default_pair {
+            self.settings.read().await.clone()
+        } else {
+            let default_model = self.settings.read().await.model.model_name.clone();
+            let local_dir = match &key.0 {
+                Some(root) => root.join(".atta"),
+                None => self.paths.global_root(),
+            };
+            Arc::new(Settings::load(
+                self.paths.global_root(),
+                self.scene_root(scene_id, &startup_scene),
+                local_dir,
+                scene_id,
+                &default_model,
+            ))
         };
-        let built = Arc::new(Settings::load(
-            self.paths.global_root(),
-            self.scene_root(scene_id, &startup_scene),
-            local_dir,
-            scene_id,
-            &default_model,
-        ));
-        self.projects.lock().await.insert(key, built.clone());
-        built
+
+        let built = Arc::new(ProjectBinding::build(settings, &self.plugins.agent_types()));
+        // Built outside the lock — scanning skill and agent directories is
+        // disk work, and holding the map across it would serialize the first
+        // session of every project behind the first session of any of them.
+        // Whoever got there first wins; a duplicate build is wasted work, not
+        // a second live catalog.
+        let mut bindings = self.bindings.lock().await;
+        bindings.entry(key).or_insert(built).clone()
+    }
+
+    /// Drop every cached binding, so the next session on any pair is built
+    /// from what is on disk now.
+    ///
+    /// All of them, not just the pair that changed: the global and scene
+    /// tiers are layers under every project, so a reload of one project's
+    /// settings can move what another project resolves to.
+    async fn invalidate_bindings(&self) {
+        self.bindings.lock().await.clear();
+    }
+
+    /// The binding this daemon's own project and startup scene resolve to —
+    /// what a pool-level question with no session to ask about is answered
+    /// from (`commands.list`, `daemon.doctor`'s skill count).
+    async fn default_binding(&self) -> Arc<ProjectBinding> {
+        let scene = self.settings.read().await.paths.scope.clone();
+        let cwd = self.cwd.clone();
+        self.binding_for(Some(&cwd), &scene).await
     }
 
     /// The scene tier directory for `scene_id`.
@@ -4305,28 +4355,27 @@ impl SessionPool {
         // project Y's settings the moment it needed reattaching (idle
         // eviction, daemon restart, explicit `session.resume`).
         let startup_scene = self.settings.read().await.paths.scope.clone();
-        let (base_settings, project_root_for_meta, scene_id) =
-            match self.recorded_project(&sid).await {
-                Some((schema_version, project_root, scene)) if schema_version >= 2 => {
-                    let scene = scene.unwrap_or_else(|| startup_scene.clone());
-                    match project_root {
-                        Some(p) => {
-                            let path = PathBuf::from(p);
-                            (
-                                self.settings_for_project(Some(&path), &scene).await,
-                                Some(path),
-                                scene,
-                            )
-                        }
-                        None => (self.settings_for_project(None, &scene).await, None, scene),
+        let (binding, project_root_for_meta, scene_id) = match self.recorded_project(&sid).await {
+            Some((schema_version, project_root, scene)) if schema_version >= 2 => {
+                let scene = scene.unwrap_or_else(|| startup_scene.clone());
+                match project_root {
+                    Some(p) => {
+                        let path = PathBuf::from(p);
+                        (
+                            self.binding_for(Some(&path), &scene).await,
+                            Some(path),
+                            scene,
+                        )
                     }
+                    None => (self.binding_for(None, &scene).await, None, scene),
                 }
-                _ => (
-                    self.settings.read().await.clone(),
-                    Some(self.cwd.clone()),
-                    startup_scene.clone(),
-                ),
-            };
+            }
+            _ => (
+                self.default_binding().await,
+                Some(self.cwd.clone()),
+                startup_scene.clone(),
+            ),
+        };
 
         // The scene this session recorded, not this pool's default. Settings
         // were already resolved against the recorded scene above; handing the
@@ -4347,7 +4396,7 @@ impl SessionPool {
             .create(
                 sid.clone(),
                 scene,
-                base_settings,
+                binding,
                 project_root_for_meta,
                 options,
                 has_history,
@@ -4367,7 +4416,7 @@ impl SessionPool {
                 self.create(
                     new_sid.clone(),
                     self.scene.clone(),
-                    self.settings.read().await.clone(),
+                    self.default_binding().await,
                     Some(self.cwd.clone()),
                     options,
                     false,
