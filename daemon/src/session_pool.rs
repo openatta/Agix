@@ -10,7 +10,6 @@
 use crate::rpc::{codes, RpcResponse, SessionOptions, StreamFrame};
 use base::id::Id;
 use base::interface::event::AgentEvent;
-use base::interface::memory::MemoryStore;
 use base::interface::permission::Permission;
 use base::interface::scene::AgentScene;
 use base::interface::settings::Settings;
@@ -264,7 +263,6 @@ pub struct SessionPool {
     /// `Arc` is what a host that genuinely sandboxes the daemon itself
     /// opts back into.
     permission: Arc<dyn Permission>,
-    memory_store: Arc<MemoryStore>,
     /// Built-in tool registry (Bash/Read/Write/Edit/Grep/Glob/...), shared
     /// (cheap `Arc` clone) by every session `Builder`. Built once here via
     /// `tools::register_builtin_tools` — before this field existed,
@@ -510,7 +508,6 @@ impl SessionPool {
         settings: Arc<Settings>,
         scene: Arc<dyn AgentScene>,
         permission: Arc<dyn Permission>,
-        memory_store: Arc<MemoryStore>,
         cwd: PathBuf,
         history_store: Option<Arc<dyn history::store::HistoryStore>>,
         paths: Arc<dyn crate::config::DaemonPaths>,
@@ -576,7 +573,6 @@ impl SessionPool {
             active_scenes: AsyncRwLock::new(active_scenes),
             scene_registry,
             permission,
-            memory_store,
             tools,
             cwd,
             history_store,
@@ -1631,7 +1627,6 @@ impl SessionPool {
             .tools(self.tools.clone())
             .settings(settings_snapshot.clone())
             .permission(permission)
-            .memory_store(self.memory_store.clone())
             .session_id(session_id.clone())
             .commands_override(self.commands.read().await.clone())
             .shared_agent_types(self.agent_type_catalog.handle())
@@ -5250,10 +5245,6 @@ mod mcp_for_project_tests {
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path().join("work");
         std::fs::create_dir_all(&cwd).unwrap();
-        let memory_store = Arc::new(MemoryStore::new(
-            dir.path().join("user").join("memory"),
-            dir.path().join("local").join("memory"),
-        ));
         let scene: Arc<dyn AgentScene> = Arc::new(scene::scene::coding::CodingScene);
         let permission: Arc<dyn Permission> = Arc::new(AllowAllTestPermission);
         let paths: Arc<dyn crate::config::DaemonPaths> = Arc::new(
@@ -5268,7 +5259,6 @@ mod mcp_for_project_tests {
             Arc::new(Settings::defaults_for("claude-sonnet-4-6")),
             scene,
             permission,
-            memory_store,
             cwd,
             history_store,
             paths,
@@ -5524,10 +5514,6 @@ mod with_session_lock_tests {
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path().join("work");
         std::fs::create_dir_all(&cwd).unwrap();
-        let memory_store = Arc::new(MemoryStore::new(
-            dir.path().join("user").join("memory"),
-            dir.path().join("local").join("memory"),
-        ));
         let scene: Arc<dyn AgentScene> = Arc::new(scene::scene::coding::CodingScene);
         let permission: Arc<dyn Permission> = Arc::new(AllowAllTestPermission);
         let paths: Arc<dyn crate::config::DaemonPaths> = Arc::new(
@@ -5542,7 +5528,6 @@ mod with_session_lock_tests {
             Arc::new(Settings::defaults_for("claude-sonnet-4-6")),
             scene,
             permission,
-            memory_store,
             cwd,
             None,
             paths,

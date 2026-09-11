@@ -1831,6 +1831,62 @@ async fn the_turn_complete_frame_reports_the_whole_turn() {
     srv.stop().await;
 }
 
+#[tokio::test]
+async fn a_project_bound_sessions_memories_land_in_its_own_project() {
+    // The scripted client repeats its last round forever, so the background
+    // memory extraction that runs after the turn gets this same array back and
+    // has something to persist. `type: "project"` is what routes a memory to
+    // the project-local directory rather than the global one.
+    let extracted = r#"[{"name":"merge-freeze","description":"freeze window","content":"Thursday.","type":"project","confidence":0.9}]"#;
+    let (srv, _seen) =
+        start_scripted_server(vec![text_round(extracted)], ask_settings(), Duration::ZERO).await;
+
+    let other_project = srv._dir.path().join("other-project");
+    std::fs::create_dir_all(&other_project).unwrap();
+
+    let created = rpc(
+        &srv.sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.create","params":{{"project_root":"{}"}},"id":1}}"#,
+            other_project.display()
+        ),
+    )
+    .await;
+    let sid = created["result"]["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    run_turn(&srv.sock, Some(&sid), "remember the freeze window").await;
+
+    let own = other_project
+        .join(".atta")
+        .join("memory")
+        .join("merge-freeze.md");
+    let pools = srv
+        ._dir
+        .path()
+        .join("work")
+        .join(".atta")
+        .join("memory")
+        .join("merge-freeze.md");
+    for _ in 0..60 {
+        if own.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        own.exists(),
+        "a project memory belongs to the session's own project, not the daemon's"
+    );
+    assert!(
+        !pools.exists(),
+        "the daemon's own project must not collect other projects' memories"
+    );
+
+    srv.stop().await;
+}
+
 // ── scripts ─────────────────────────────────────────────────────────────
 
 /// A project that binds a script gets it, through the daemon, on the prompt

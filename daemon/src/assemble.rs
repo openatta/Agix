@@ -176,12 +176,6 @@ pub async fn pool(
     }
 
     let global_dir = config.settings.paths.global_data_dir.clone();
-    let local_dir = config.settings.paths.local_data_dir.clone();
-    // memory 不分 scene，只分全局/项目——见 base::paths 模块文档。
-    let memory_store = Arc::new(base::interface::memory::MemoryStore::new(
-        global_dir.join("memory"),
-        local_dir.join("memory"),
-    ));
 
     let cwd = assembly
         .cwd
@@ -201,7 +195,6 @@ pub async fn pool(
             settings,
             scene,
             permission,
-            memory_store,
             cwd,
             history_store,
             config.paths.clone(),
