@@ -201,9 +201,13 @@ Meta.scene
   └─ 相符                 → 恢复
 ```
 
-这条检查对 `session.resume` / `.fork` / `.close` / `.delete` / `.subscribe` /
-`.interrupt` 都生效,错误的 `data` 带 `recorded_scene` 与 `requested_scene`,
-客户端可以据此改用正确的 daemon(或者先 `scene.activate`)重试。
+这条检查对 `session.run_turn` / `.resume` / `.fork` / `.close` / `.delete` /
+`.subscribe` / `.interrupt` 都生效,错误的 `data` 带 `recorded_scene` 与
+`requested_scene`,客户端可以据此改用正确的 daemon(或者先 `scene.activate`)重试。
+`run_turn` 传的 `session_id` 在磁盘上没有历史时不受此约束——那是新建,不是恢复。
+
+**恢复出来的会话跑在它自己记录的场景上**,不是这个 daemon 的默认场景:系统提示词、
+工具白名单、deferred 策略都跟着 `Meta.scene` 走,与设置层的解析口径一致。
 
 `Meta.project_root` **不参与校验**:项目目录被移动过之后仍然能恢复。
 

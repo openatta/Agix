@@ -4277,27 +4277,48 @@ impl SessionPool {
         // project Y's settings the moment it needed reattaching (idle
         // eviction, daemon restart, explicit `session.resume`).
         let startup_scene = self.settings.read().await.paths.scope.clone();
-        let (base_settings, project_root_for_meta) = match self.recorded_project(&sid).await {
-            Some((schema_version, project_root, scene)) if schema_version >= 2 => {
-                let scene = scene.unwrap_or_else(|| startup_scene.clone());
-                match project_root {
-                    Some(p) => {
-                        let path = PathBuf::from(p);
-                        (
-                            self.settings_for_project(Some(&path), &scene).await,
-                            Some(path),
-                        )
+        let (base_settings, project_root_for_meta, scene_id) =
+            match self.recorded_project(&sid).await {
+                Some((schema_version, project_root, scene)) if schema_version >= 2 => {
+                    let scene = scene.unwrap_or_else(|| startup_scene.clone());
+                    match project_root {
+                        Some(p) => {
+                            let path = PathBuf::from(p);
+                            (
+                                self.settings_for_project(Some(&path), &scene).await,
+                                Some(path),
+                                scene,
+                            )
+                        }
+                        None => (self.settings_for_project(None, &scene).await, None, scene),
                     }
-                    None => (self.settings_for_project(None, &scene).await, None),
                 }
-            }
-            _ => (self.settings.read().await.clone(), Some(self.cwd.clone())),
+                _ => (
+                    self.settings.read().await.clone(),
+                    Some(self.cwd.clone()),
+                    startup_scene.clone(),
+                ),
+            };
+
+        // The scene this session recorded, not this pool's default. Settings
+        // were already resolved against the recorded scene above; handing the
+        // default scene to `create()` anyway gave the rebuilt session that
+        // scene's system prompt and tool surface while it read the other
+        // one's settings — two halves of one session disagreeing about which
+        // scene it is. Every caller is scene-guarded (`check_scene`) before
+        // reaching here, so an inactive scene at this point is a race, and
+        // refusing is the only answer that doesn't silently change what the
+        // session is.
+        let Some(scene) = self.resolve_scene(Some(&scene_id)).await else {
+            return Err(format!(
+                "session `{sid}` was recorded under scene `{scene_id}`, which is not active on this daemon"
+            ));
         };
 
         match self
             .create(
                 sid.clone(),
-                self.scene.clone(),
+                scene,
                 base_settings,
                 project_root_for_meta,
                 options,

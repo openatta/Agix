@@ -1036,6 +1036,18 @@ impl DaemonServer {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
+        // Every other method that reattaches to a recorded session refuses to
+        // cross a scene boundary; this one used to be the exception, and the
+        // gap was not visible as an error — the session simply came back
+        // under whichever scene this daemon defaults to. An unknown id still
+        // creates a session, because `check_scene` reads a transcript that
+        // isn't there as `Inferred`.
+        if let Some(ref sid) = session_id {
+            if let Some(err) = self.scene_mismatch_response(&id, sid).await {
+                return err;
+            }
+        }
+
         let user_msg = match params.get("message").and_then(|v| v.as_str()) {
             Some(s) => s.to_string(),
             None => return RpcResponse::err(id, codes::INVALID_PARAMS, "missing message"),

@@ -2580,6 +2580,112 @@ async fn scene_deactivate_is_blocked_by_active_sessions_then_succeeds_after_clos
     srv.stop().await;
 }
 
+#[tokio::test]
+async fn a_reattached_session_comes_back_under_its_own_scene() {
+    let (srv, seen) = start_scripted_server(
+        vec![text_round("a"), text_round("b")],
+        ask_settings(),
+        Duration::ZERO,
+    )
+    .await;
+
+    rpc(
+        &srv.sock,
+        r#"{"jsonrpc":"2.0","method":"scene.activate","params":{"scene":"chat"},"id":1}"#,
+    )
+    .await;
+    let created = rpc(
+        &srv.sock,
+        r#"{"jsonrpc":"2.0","method":"session.create","params":{"scene":"chat"},"id":2}"#,
+    )
+    .await;
+    let sid = created["result"]["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    run_turn(&srv.sock, Some(&sid), "first").await;
+    // The last request that carried a tool surface at all: `chat` renames a
+    // session after its first turn, and that naming call is a bare request
+    // with no tools on it, so `last()` alone would be asking the wrong one.
+    let offered_bash = |seen: &SeenRequests| {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|req| !req.tools.is_empty())
+            .expect("some request carried a tool surface")
+            .tools
+            .iter()
+            .any(|t| t.name == "Bash")
+    };
+    assert!(
+        !offered_bash(&seen),
+        "chat's tool whitelist has no Bash in it"
+    );
+
+    rpc(
+        &srv.sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.close","params":{{"session_id":"{sid}"}},"id":3}}"#
+        ),
+    )
+    .await;
+
+    run_turn(&srv.sock, Some(&sid), "second, after reattach").await;
+    assert!(
+        !offered_bash(&seen),
+        "reattaching must rebuild against the session's own recorded scene, not the pool default"
+    );
+
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn run_turn_refuses_a_session_recorded_under_a_scene_this_daemon_stopped_serving() {
+    let (srv, _seen) =
+        start_scripted_server(vec![text_round("x")], ask_settings(), Duration::ZERO).await;
+
+    rpc(
+        &srv.sock,
+        r#"{"jsonrpc":"2.0","method":"scene.activate","params":{"scene":"chat"},"id":1}"#,
+    )
+    .await;
+    let created = rpc(
+        &srv.sock,
+        r#"{"jsonrpc":"2.0","method":"session.create","params":{"scene":"chat"},"id":2}"#,
+    )
+    .await;
+    let sid = created["result"]["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    rpc(
+        &srv.sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.close","params":{{"session_id":"{sid}"}},"id":3}}"#
+        ),
+    )
+    .await;
+    rpc(
+        &srv.sock,
+        r#"{"jsonrpc":"2.0","method":"scene.deactivate","params":{"scene":"chat"},"id":4}"#,
+    )
+    .await;
+
+    let resp = rpc(
+        &srv.sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.run_turn","params":{{"session_id":"{sid}","message":"hi"}},"id":5}}"#
+        ),
+    )
+    .await;
+    assert_eq!(resp["error"]["code"], codes::SCENE_MISMATCH, "{resp}");
+    assert_eq!(resp["error"]["data"]["recorded_scene"], "chat", "{resp}");
+
+    srv.stop().await;
+}
+
 // ── permission default = ask, end to end ────────────────────────────────
 
 /// Drive a turn on one connection while answering prompts on another — the
