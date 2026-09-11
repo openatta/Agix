@@ -278,6 +278,55 @@ async fn set_provider_writes_project_settings_and_doctor_sees_it() {
 }
 
 #[tokio::test]
+async fn set_provider_can_target_another_project_this_daemon_serves() {
+    let (_server, sock, dir, handle) = start_server().await;
+
+    let other = dir.path().join("other-project");
+    std::fs::create_dir_all(&other).unwrap();
+
+    let resp = rpc_call(
+        &sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"config.setProvider","params":{{"project_root":"{}","provider_id":"deepseek","config":{{"api_type":"openai_compatible","base_url":"https://api.deepseek.com/v1","api_key":"k","default_model":"deepseek-pro"}},"default_provider":"deepseek"}},"id":1}}"#,
+            other.display()
+        ),
+    )
+    .await;
+    let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    assert!(v["result"].is_object(), "expected success, got: {v}");
+    assert_eq!(
+        v["result"]["written_to"],
+        other
+            .join(".atta")
+            .join("settings.json")
+            .display()
+            .to_string(),
+        "{v}"
+    );
+
+    let written = std::fs::read_to_string(other.join(".atta").join("settings.json")).unwrap();
+    let written: serde_json::Value = serde_json::from_str(&written).unwrap();
+    assert_eq!(written["providers"]["deepseek"]["api_key"], "k");
+    assert!(
+        !dir.path().join(".atta").join("settings.json").exists(),
+        "the daemon's own project must not be written when another one was named"
+    );
+
+    // `null` is refused rather than silently writing the global tier: these
+    // methods act on the project tier, and a no-project session has none.
+    let resp = rpc_call(
+        &sock,
+        r#"{"jsonrpc":"2.0","method":"config.setProvider","params":{"project_root":null,"provider_id":"x","config":{"api_type":"anthropic"}},"id":2}"#,
+    )
+    .await;
+    let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    assert_eq!(v["error"]["code"], -32602, "{v}");
+
+    _server.shutdown_token().cancel();
+    let _ = handle.await;
+}
+
+#[tokio::test]
 async fn set_provider_partial_patch_does_not_clobber_untouched_fields() {
     let (_server, sock, dir, handle) = start_server().await;
 

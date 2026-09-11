@@ -103,6 +103,17 @@ type ProjectSceneKey = (Option<PathBuf>, String);
 /// how any of them changes.
 struct ProjectBinding {
     settings: Arc<Settings>,
+    /// The conversation's model for a session on this pair, and the
+    /// per-task-type routing behind it. `providers` and `task_models` are
+    /// settings fields like any other, so they are decided by the pair —
+    /// before this, one router was built from the daemon's own project and
+    /// handed to every session, and a project that configured its own
+    /// provider was quietly served by another project's.
+    model: Arc<dyn base::interface::model::Model>,
+    task_router: Option<Arc<base::provider::TaskRouter>>,
+    /// What building `task_router` had to say — reported by `config.reload`
+    /// and `config.setProvider` for the pair they targeted.
+    routing: ReloadReport,
     /// Live-reloaded: a skill file added or removed after this was built is
     /// picked up without a rebuild, and every session on this pair sees it at
     /// once because they share this instance.
@@ -121,7 +132,17 @@ impl ProjectBinding {
         settings: Arc<Settings>,
         plugin_agent_types: &[runtime::agent_tool::AgentTypeDefinition],
         watch: Vec<crate::watch_hub::WatchToken>,
+        client: &Arc<dyn AnthropicClient>,
+        last_good_router: Option<Arc<base::provider::TaskRouter>>,
     ) -> Self {
+        let (task_router, routing) = resolve_router(&settings, last_good_router);
+        // `task_models.main` is what points the conversation itself at a
+        // configured provider; with none configured this is the plain
+        // Anthropic client the daemon was started with.
+        let model: Arc<dyn base::interface::model::Model> = match task_router.as_ref() {
+            Some(router) => router.model_for("main"),
+            None => Arc::new(AnthropicModel::new(client.clone())),
+        };
         let skills = Arc::new(runtime::agent::build_default_skill_manager(&settings));
         let commands = build_shared_commands(skills.clone());
         let dirs = agent_type_dirs(&settings);
@@ -130,6 +151,9 @@ impl ProjectBinding {
             runtime::agent_tool::SharedAgentTypeCatalog::build(&dirs_ref, plugin_agent_types);
         Self {
             settings,
+            model,
+            task_router,
+            routing,
             skills,
             agent_types,
             commands,
@@ -284,8 +308,7 @@ pub struct SessionPool {
     cap: usize,
     idle_timeout: Duration,
     /// 共享的 LLM client（用于 session 命名等）。
-    _client: Arc<dyn AnthropicClient>,
-    model: Arc<dyn base::interface::model::Model>,
+    client: Arc<dyn AnthropicClient>,
     /// Hot-swappable so `config.setProvider` can take effect for sessions
     /// created *after* the call without a daemon restart. Sessions already
     /// running keep whatever `Arc<Settings>` snapshot they were built with —
@@ -367,18 +390,11 @@ pub struct SessionPool {
     /// session's: a session's checks come and go with the session, and one
     /// shared registry would grow an entry per session forever.
     health: std::sync::RwLock<base::interface::health::HealthChecks>,
-    /// Multi-provider per-task-type model routing (see
-    /// `base::provider::TaskRouter` / `daemon::model_router`), built at
-    /// startup from `settings.providers`/`task_models` when configured and
-    /// rebuilt by `apply_reloaded_settings()` on every successful
-    /// `config.setProvider`/`config.reload`. `None` when the user hasn't
-    /// configured `providers` — every session created by this pool then
-    /// behaves exactly as before multi-provider routing existed (all
-    /// sub-agent spawns inherit `self.model`). Hot-swappable like
-    /// `settings`/`mcp`/`plugins`/`commands` — only sessions created *after*
-    /// a swap observe it directly; already-running sessions catch up lazily
-    /// via `config_generation` (see `LiveSession::config_generation`).
-    task_router: AsyncRwLock<Option<Arc<base::provider::TaskRouter>>>,
+    /// The last router each `(project, scene)` pair was successfully served
+    /// by, kept across binding invalidation so a provider config that stops
+    /// resolving — or stops producing a buildable client — leaves working
+    /// routing in place instead of tearing it down (see `resolve_router`).
+    last_good_routers: AsyncMutex<HashMap<ProjectSceneKey, Arc<base::provider::TaskRouter>>>,
     /// One [`ProjectBinding`] per `(project_root, scene)` pair this pool has
     /// built a session for — the settings, skills, agent types and commands
     /// that pair resolves to. `project_root` is understood exactly as
@@ -511,7 +527,7 @@ pub enum SessionStatus {
 /// breaking change to what `routing.ok` has always meant to callers (see
 /// `set_provider_writes_project_settings_and_doctor_sees_it`'s test, which
 /// deliberately uses `openai_compatible` and asserts `routing.ok == true`).
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct ReloadReport {
     warnings: Vec<String>,
     error: Option<String>,
@@ -541,6 +557,65 @@ impl ReloadReport {
     }
 }
 
+/// Build the router a settings tier's `providers`/`task_models` describe.
+///
+/// `last_good` is what this pair was already being served by. A config that
+/// no longer resolves, or that resolves but cannot produce a live client
+/// (`api_type: openai_compatible` is accepted by the schema and has no
+/// runtime implementation), keeps it rather than tearing working routing down
+/// over a bad edit — the failure is reported, not acted on.
+fn resolve_router(
+    settings: &Settings,
+    last_good: Option<Arc<base::provider::TaskRouter>>,
+) -> (Option<Arc<base::provider::TaskRouter>>, ReloadReport) {
+    let mut report = ReloadReport::default();
+    if settings.providers.is_empty() {
+        // No providers configured (or the last one was just deleted) —
+        // routing reverts to "no router", same as if multi-provider config
+        // was never touched.
+        return (None, report);
+    }
+    match base::provider::resolve_task_models(
+        &settings.providers,
+        settings.default_provider.as_deref(),
+        &settings.task_models,
+    ) {
+        Ok((resolved, warnings)) => {
+            report.warnings = warnings;
+            // `resolve_task_models` succeeding guarantees `default_provider`
+            // is `Some` and non-empty (one of its own hard-error checks).
+            let default_provider = settings
+                .default_provider
+                .as_deref()
+                .expect("resolve_task_models already validated default_provider is set");
+            match crate::model_router::build_task_router(
+                &settings.providers,
+                default_provider,
+                resolved,
+            ) {
+                Ok(router) => {
+                    report.router_rebuilt = true;
+                    (Some(Arc::new(router)), report)
+                }
+                Err(e) => {
+                    // Deliberately `router_error`, not `error` —
+                    // `resolve_task_models` itself succeeded (the warnings
+                    // above already reflect that), only the build step
+                    // failed; see `ReloadReport`'s doc comment.
+                    warn!(error = %e, "task router build failed; keeping the previous router");
+                    report.router_error = Some(e);
+                    (last_good, report)
+                }
+            }
+        }
+        Err(e) => {
+            warn!(error = %e, "provider config no longer resolves; keeping the previous router");
+            report.error = Some(e);
+            (last_good, report)
+        }
+    }
+}
+
 impl SessionPool {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -553,22 +628,7 @@ impl SessionPool {
         cwd: PathBuf,
         history_store: Option<Arc<dyn history::store::HistoryStore>>,
         paths: Arc<dyn crate::config::DaemonPaths>,
-        task_router: Option<Arc<base::provider::TaskRouter>>,
     ) -> Self {
-        // The main conversation's model.
-        //
-        // `task_models.main` had no production reader anywhere in the
-        // workspace: multi-provider routing reached sub-agents, compaction
-        // and memory extraction, while the conversation itself stayed pinned
-        // to the single `ANTHROPIC_API_KEY`/`ANTHROPIC_BASE_URL` client built
-        // in `main.rs`. So "configure a provider" worked for every task
-        // except the one users actually meant. Consult the router first; with
-        // no `providers` block configured (`task_router == None`) this is
-        // exactly the previous behavior.
-        let model: Arc<dyn base::interface::model::Model> = match task_router.as_ref() {
-            Some(router) => router.model_for("main"),
-            None => Arc::new(AnthropicModel::new(client.clone())),
-        };
         let (events_tx, _) = tokio::sync::broadcast::channel(256);
 
         let plugins = crate::plugins::PluginSubsystem::new(
@@ -592,8 +652,7 @@ impl SessionPool {
             session_locks: AsyncMutex::new(HashMap::new()),
             cap,
             idle_timeout: Duration::from_secs(idle_timeout_secs),
-            _client: client,
-            model,
+            client,
             settings: AsyncRwLock::new(settings),
             scene,
             active_scenes: AsyncRwLock::new(active_scenes),
@@ -610,7 +669,7 @@ impl SessionPool {
                 None => base::interface::health::HealthChecks::new(),
             }),
             plugins,
-            task_router: AsyncRwLock::new(task_router),
+            last_good_routers: AsyncMutex::new(HashMap::new()),
             bindings: AsyncMutex::new(HashMap::new()),
             watch: match crate::watch_hub::WatchHub::new() {
                 Ok(hub) => Some(hub),
@@ -1003,6 +1062,8 @@ impl SessionPool {
     /// so it's usable immediately without a daemon restart.
     pub async fn add_mcp_server(
         &self,
+        project_root: Option<&Path>,
+        scene_id: &str,
         name: &str,
         config: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
@@ -1015,7 +1076,7 @@ impl SessionPool {
         let cfg: mcp::config::McpServerConfig = serde_json::from_value(config.clone())
             .map_err(|e| format!("invalid mcp server config: {e}"))?;
 
-        let settings_path = self.project_settings_path();
+        let settings_path = self.settings_path_of(project_root);
         let mut project_json: serde_json::Value = if settings_path.exists() {
             let text = tokio::fs::read_to_string(&settings_path)
                 .await
@@ -1060,24 +1121,23 @@ impl SessionPool {
             .await
             .map_err(|e| format!("write {}: {e}", settings_path.display()))?;
 
-        // `add_mcp_server` only ever writes the default project's
-        // settings.json (`project_settings_path()`), so it only ever
-        // mutates that project's cache entry, under the daemon's own scene.
-        let default_project = (
-            Some(self.cwd.clone()),
-            self.settings.read().await.paths.scope.clone(),
+        // The written file and the cache entry are the same pair: a server
+        // added to one project's settings connects for that project.
+        let target = (
+            Some(project_root.unwrap_or(self.cwd.as_path()).to_path_buf()),
+            scene_id.to_string(),
         );
         let statuses = {
             let mut cache = self.mcp_by_project.lock().await;
             let current = cache
-                .get(&default_project)
+                .get(&target)
                 .cloned()
                 .unwrap_or_else(|| Arc::new(McpManager::empty()));
             let mut updated = McpManager::from_clients(current.clients().to_vec());
             updated.refresh_tools().await;
             updated.add_server(name, &cfg).await;
             let statuses = updated.server_statuses();
-            cache.insert(default_project, Arc::new(updated));
+            cache.insert(target, Arc::new(updated));
             statuses
         };
 
@@ -1114,8 +1174,17 @@ impl SessionPool {
     /// in `daemon/src/server.rs` — `include_secrets: true` is still gated
     /// by nothing more than "can reach this socket", same as every other
     /// method here.
-    pub async fn get_providers(&self, include_secrets: bool) -> serde_json::Value {
-        let settings = self.settings.read().await;
+    pub async fn get_providers(
+        &self,
+        project_root: Option<&Path>,
+        scene_id: &str,
+        include_secrets: bool,
+    ) -> serde_json::Value {
+        let settings = self
+            .binding_for(Some(project_root.unwrap_or(self.cwd.as_path())), scene_id)
+            .await
+            .settings
+            .clone();
         let providers: serde_json::Map<String, serde_json::Value> = settings
             .providers
             .iter()
@@ -1211,10 +1280,17 @@ impl SessionPool {
     /// (`{project_root}/.atta/settings.json`) — the tier `config.setProvider`
     /// writes to.
     pub fn project_settings_path(&self) -> PathBuf {
-        self.paths
-            .project_root()
+        self.settings_path_of(None)
+    }
+
+    /// The project-tier `settings.json` of `project_root`, or of this
+    /// daemon's own project when none is named.
+    fn settings_path_of(&self, project_root: Option<&Path>) -> PathBuf {
+        project_root
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| self.paths.project_root())
             .join(".atta")
-            .join("settings.json")
+            .join(base::interface::settings::SETTINGS_FILE)
     }
 
     /// Merge a provider config patch (and/or `default_provider` /
@@ -1236,6 +1312,8 @@ impl SessionPool {
     /// separate "downgrade" write is needed.
     pub async fn set_provider(
         &self,
+        project_root: Option<&Path>,
+        scene_id: &str,
         provider_id: &str,
         delete: bool,
         config_patch: Option<serde_json::Value>,
@@ -1261,7 +1339,7 @@ impl SessionPool {
             }
         }
 
-        let settings_path = self.project_settings_path();
+        let settings_path = self.settings_path_of(project_root);
         let mut project_json: serde_json::Value = if settings_path.exists() {
             let text = tokio::fs::read_to_string(&settings_path)
                 .await
@@ -1338,7 +1416,7 @@ impl SessionPool {
             .await
             .map_err(|e| format!("write {}: {e}", settings_path.display()))?;
 
-        let (reloaded, report) = self.apply_reloaded_settings().await;
+        let (reloaded, report) = self.apply_reloaded_settings(project_root, scene_id).await;
         let result = serde_json::json!({
             "written_to": settings_path.display().to_string(),
             "providers": reloaded.providers.keys().collect::<Vec<_>>(),
@@ -1358,8 +1436,12 @@ impl SessionPool {
     /// points converge on identical semantics (routing re-resolved,
     /// `task_router` rebuilt, `config_generation` bumped so already-running
     /// sessions recreate themselves lazily — see `run_turn`).
-    pub async fn reload_settings(&self) -> serde_json::Value {
-        let (reloaded, report) = self.apply_reloaded_settings().await;
+    pub async fn reload_settings(
+        &self,
+        project_root: Option<&Path>,
+        scene_id: &str,
+    ) -> serde_json::Value {
+        let (reloaded, report) = self.apply_reloaded_settings(project_root, scene_id).await;
         serde_json::json!({
             "providers": reloaded.providers.keys().collect::<Vec<_>>(),
             "default_provider": reloaded.default_provider,
@@ -1382,86 +1464,47 @@ impl SessionPool {
     /// philosophy this function's callers already had (`set_provider`
     /// used to write settings.json unconditionally even when the routing
     /// preview it computed was invalid).
-    async fn apply_reloaded_settings(&self) -> (Arc<Settings>, ReloadReport) {
-        let default_model = self.settings.read().await.model.model_name.clone();
-        let reloaded = Settings::load(
-            self.paths.global_root(),
-            self.paths.config_root(),
-            self.paths.project_root().join(".atta"),
-            self.scene.id(),
-            &default_model,
-        );
+    async fn apply_reloaded_settings(
+        &self,
+        project_root: Option<&Path>,
+        scene_id: &str,
+    ) -> (Arc<Settings>, ReloadReport) {
+        let startup_scene = self.settings.read().await.paths.scope.clone();
+        let project_root = project_root.unwrap_or(self.cwd.as_path());
+        let is_default = project_root == self.cwd.as_path() && scene_id == startup_scene;
 
-        let mut report = ReloadReport::default();
-
-        if reloaded.providers.is_empty() {
-            // No providers configured (or the last one was just deleted) —
-            // routing reverts to "no router", same as if multi-provider
-            // config was never touched.
-            *self.task_router.write().await = None;
-        } else {
-            match base::provider::resolve_task_models(
-                &reloaded.providers,
-                reloaded.default_provider.as_deref(),
-                &reloaded.task_models,
-            ) {
-                Ok((resolved, warnings)) => {
-                    report.warnings = warnings;
-                    // `resolve_task_models` succeeding guarantees
-                    // `default_provider` is `Some` and non-empty (it's one
-                    // of the function's own hard-error checks).
-                    let default_provider = reloaded
-                        .default_provider
-                        .as_deref()
-                        .expect("resolve_task_models already validated default_provider is set");
-                    match crate::model_router::build_task_router(
-                        &reloaded.providers,
-                        default_provider,
-                        resolved,
-                    ) {
-                        Ok(router) => {
-                            *self.task_router.write().await = Some(Arc::new(router));
-                            report.router_rebuilt = true;
-                        }
-                        Err(e) => {
-                            // Structural failure building a client (bad
-                            // api_key/base_url/unsupported api_type) — keep
-                            // serving on whatever `task_router` was already
-                            // live rather than tearing down working routing
-                            // over a bad edit. Deliberately `router_error`,
-                            // not `error` — `resolve_task_models` itself
-                            // succeeded (`report.warnings` above already
-                            // reflects that), only the build step failed;
-                            // see `ReloadReport`'s doc comment for why these
-                            // stay separate.
-                            warn!(error = %e, "task router rebuild failed; keeping previous router");
-                            report.router_error = Some(e);
-                        }
-                    }
-                }
-                Err(e) => {
-                    warn!(error = %e, "provider config no longer resolves; keeping previous router");
-                    report.error = Some(e);
-                }
-            }
+        // The daemon's own pair keeps its separate, hot-swappable copy in
+        // `self.settings` — everything with no session to ask about reads it.
+        // Every other pair lives only in its binding, which the invalidation
+        // below rebuilds from disk.
+        if is_default {
+            let default_model = self.settings.read().await.model.model_name.clone();
+            let reloaded = Arc::new(Settings::load(
+                self.paths.global_root(),
+                self.paths.config_root(),
+                self.paths.project_root().join(".atta"),
+                self.scene.id(),
+                &default_model,
+            ));
+            *self.settings.write().await = reloaded;
         }
 
-        let (mcp_connected, mcp_failed) = self
-            .reconcile_mcp_servers(Some(self.cwd.as_path()), &reloaded.mcp_servers)
-            .await;
-        report.mcp_connected = mcp_connected;
-        report.mcp_failed = mcp_failed;
-
-        let reloaded = Arc::new(reloaded);
-        *self.settings.write().await = reloaded.clone();
         // The cached bindings hold the settings that were just replaced, and
-        // the skill/agent catalogs built from the directories those settings
-        // name. Dropping them is what makes a reload reach the next session.
+        // the skill/agent catalogs and router built from them. Dropping them
+        // is what makes a reload reach the next session.
         self.invalidate_bindings().await;
         self.config_generation
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-        (reloaded, report)
+        let binding = self.binding_for(Some(project_root), scene_id).await;
+        let mut report = binding.routing.clone();
+        let (mcp_connected, mcp_failed) = self
+            .reconcile_mcp_servers(Some(project_root), &binding.settings.mcp_servers)
+            .await;
+        report.mcp_connected = mcp_connected;
+        report.mcp_failed = mcp_failed;
+
+        (binding.settings.clone(), report)
     }
 
     /// `session.create` — P3's explicit multi-project entry point, extended
@@ -1581,7 +1624,7 @@ impl SessionPool {
     ) -> Result<String, String> {
         let scene_id = scene.id().to_string();
         let base_settings = binding.settings.clone();
-        let task_router = self.task_router.read().await.clone();
+        let task_router = binding.task_router.clone();
 
         // Wrap the model in a recorder if this session asked for one.
         //
@@ -1611,7 +1654,7 @@ impl SessionPool {
                     },
                 });
         let (model, task_router) = match recorder_config {
-            None => (self.model.clone(), task_router),
+            None => (binding.model.clone(), task_router),
             Some(config) => {
                 let shared = telemetry::recorder::Recorder::new();
                 let wrap =
@@ -1628,7 +1671,7 @@ impl SessionPool {
                         Arc::new(m) as Arc<dyn base::interface::model::Model>
                     };
                 (
-                    wrap(None, self.model.clone()),
+                    wrap(None, binding.model.clone()),
                     task_router.map(|r| Arc::new(r.map_models(|id, inner| wrap(Some(id), inner)))),
                 )
             }
@@ -3883,11 +3926,20 @@ impl SessionPool {
         };
 
         let watch = self.watch_settings_of(&settings, &key);
+        let last_good = self.last_good_routers.lock().await.get(&key).cloned();
         let built = Arc::new(ProjectBinding::build(
             settings,
             &self.plugins.agent_types(),
             watch,
+            &self.client,
+            last_good,
         ));
+        if let Some(router) = built.task_router.clone() {
+            self.last_good_routers
+                .lock()
+                .await
+                .insert(key.clone(), router);
+        }
         // Built outside the lock — scanning skill and agent directories is
         // disk work, and holding the map across it would serialize the first
         // session of every project behind the first session of any of them.
@@ -4386,7 +4438,7 @@ impl SessionPool {
                     // Lagged: some notifications were dropped, which means
                     // something changed — reload rather than skip it.
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        pool.reload_settings().await;
+                        pool.reload_settings(None, pool.scene_id()).await;
                         continue;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -4402,7 +4454,11 @@ impl SessionPool {
                 };
                 if ours {
                     info!(tier = ?key.tier, "settings changed on disk; reloading");
-                    pool.reload_settings().await;
+                    let scene = match &key.tier {
+                        Tier::Scene(scene) => scene.clone(),
+                        _ => pool.scene_id().to_string(),
+                    };
+                    pool.reload_settings(None, &scene).await;
                 } else {
                     info!(tier = ?key.tier, "another project's settings changed on disk");
                     pool.invalidate_bindings().await;
@@ -4559,7 +4615,11 @@ impl SessionPool {
 
     /// LRU 驱逐：移除最久未活跃的 session。
     /// 调用 LLM 生成 session 名称。
+    /// Names a session with the daemon's own project's model. The naming
+    /// call is a fixed cheap model either way; what the binding decides is
+    /// which client (and so which provider) it goes through.
     async fn generate_session_name(&self, prompt: &str) -> Result<String, String> {
+        let model = self.default_binding().await.model.clone();
         use base::interface::model::{MessageRole, ModelContentBlock, ModelMessage, StreamParams};
         use base::interface::prompt::PromptBlock;
         use futures::StreamExt;
@@ -4574,8 +4634,7 @@ impl SessionPool {
             }],
         }];
 
-        let stream = self
-            .model
+        let stream = model
             .stream(
                 vec![system],
                 vec![],
@@ -5474,7 +5533,6 @@ mod mcp_for_project_tests {
             cwd,
             history_store,
             paths,
-            None,
         );
         (pool, dir)
     }
@@ -5743,7 +5801,6 @@ mod with_session_lock_tests {
             cwd,
             None,
             paths,
-            None,
         ));
         (pool, dir)
     }

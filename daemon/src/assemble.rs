@@ -157,7 +157,12 @@ pub async fn pool(
 ) -> anyhow::Result<Arc<SessionPool>> {
     let settings = Arc::new(config.settings.clone());
 
-    let task_router = build_task_router(config)?;
+    // Validation, not a value: every session's router is built by its own
+    // `(project, scene)` binding from that pair's settings. What this still
+    // does is fail startup loudly on a daemon whose own project names a
+    // provider config that cannot resolve, rather than letting every session
+    // quietly fall back to the plain client.
+    validate_task_router_config(config)?;
     let client = match assembly.model_client {
         Some(client) => client,
         None => anthropic_client_from_env()?,
@@ -198,7 +203,6 @@ pub async fn pool(
             cwd,
             history_store,
             config.paths.clone(),
-            task_router,
         )
         .with_permission_prompt_timeout(assembly.permission_prompt_timeout),
     );
@@ -238,11 +242,9 @@ pub async fn pool(
 /// did before routing existed — sub-agent spawns inherit the one client built
 /// above. An invalid configuration fails the assembly instead of starting a
 /// daemon that silently routes everything to the default.
-fn build_task_router(
-    config: &DaemonConfig,
-) -> anyhow::Result<Option<Arc<base::provider::TaskRouter>>> {
+fn validate_task_router_config(config: &DaemonConfig) -> anyhow::Result<()> {
     if config.settings.providers.is_empty() {
-        return Ok(None);
+        return Ok(());
     }
     let (resolved, warnings) = base::provider::resolve_task_models(
         &config.settings.providers,
@@ -261,13 +263,9 @@ fn build_task_router(
         .default_provider
         .as_deref()
         .expect("resolve_task_models already validated default_provider is set");
-    let router = crate::model_router::build_task_router(
-        &config.settings.providers,
-        default_provider,
-        resolved,
-    )
-    .map_err(|e| anyhow::anyhow!("failed to build multi-provider model router: {e}"))?;
-    Ok(Some(Arc::new(router)))
+    crate::model_router::build_task_router(&config.settings.providers, default_provider, resolved)
+        .map_err(|e| anyhow::anyhow!("failed to build multi-provider model router: {e}"))?;
+    Ok(())
 }
 
 /// Credentials through the contract rather than read inline, so this and the

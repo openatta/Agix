@@ -545,7 +545,7 @@ impl DaemonServer {
             // semantics (routing re-resolved, task_router rebuilt,
             // already-running sessions recreate themselves lazily on their
             // next turn — see `SessionPool::run_turn`).
-            "config.reload" => RpcResponse::ok(id, self.pool.reload_settings().await),
+            "config.reload" => self.method_config_reload(id, req.params).await,
             "config.get" => self.method_config_get(id, req.params).await,
             "mcp.status" => RpcResponse::ok(
                 id,
@@ -730,7 +730,62 @@ impl DaemonServer {
             .get("include_secrets")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        RpcResponse::ok(id, self.pool.get_providers(include_secrets).await)
+        let (project_root, scene) = match self.config_target(&params) {
+            Ok(target) => target,
+            Err(message) => return RpcResponse::err(id, codes::INVALID_PARAMS, message),
+        };
+        RpcResponse::ok(
+            id,
+            self.pool
+                .get_providers(project_root.as_deref(), &scene, include_secrets)
+                .await,
+        )
+    }
+
+    /// `config.reload` params: `{"scene": "...", "project_root": "..."}`,
+    /// both optional and both defaulting to this daemon's own — see
+    /// `config_target`.
+    async fn method_config_reload(
+        &self,
+        id: serde_json::Value,
+        params: serde_json::Value,
+    ) -> RpcResponse {
+        let (project_root, scene) = match self.config_target(&params) {
+            Ok(target) => target,
+            Err(message) => return RpcResponse::err(id, codes::INVALID_PARAMS, message),
+        };
+        RpcResponse::ok(
+            id,
+            self.pool
+                .reload_settings(project_root.as_deref(), &scene)
+                .await,
+        )
+    }
+
+    /// The `(project_root, scene)` pair a configuration method acts on.
+    ///
+    /// Omitted means this daemon's own — the behaviour every one of these
+    /// methods had when it could only ever act on that one pair. A named
+    /// `project_root` reaches another project this daemon serves; `null` is
+    /// refused, because these methods write (or reload) the *project* tier
+    /// and a session with no project has no project tier — the same answer
+    /// `config.get {tier: "project"}` already gives.
+    fn config_target(
+        &self,
+        params: &serde_json::Value,
+    ) -> Result<(Option<std::path::PathBuf>, String), &'static str> {
+        let scene = params
+            .get("scene")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| self.pool.scene_id().to_string());
+        match params.get("project_root") {
+            None => Ok((None, scene)),
+            Some(serde_json::Value::String(p)) => Ok((Some(std::path::PathBuf::from(p)), scene)),
+            Some(_) => {
+                Err("project_root must be a path: a session with no project has no project tier")
+            }
+        }
     }
 
     /// Shared by `scene.describe` and `config.get`: the `(scene,
@@ -951,7 +1006,15 @@ impl DaemonServer {
             Some(c) => c,
             None => return RpcResponse::err(id, codes::INVALID_PARAMS, "missing config"),
         };
-        match self.pool.add_mcp_server(&name, config).await {
+        let (project_root, scene) = match self.config_target(&params) {
+            Ok(target) => target,
+            Err(message) => return RpcResponse::err(id, codes::INVALID_PARAMS, message),
+        };
+        match self
+            .pool
+            .add_mcp_server(project_root.as_deref(), &scene, &name, config)
+            .await
+        {
             Ok(result) => RpcResponse::ok(id, result),
             Err(e) => RpcResponse::err(id, codes::INVALID_PARAMS, e),
         }
@@ -1008,9 +1071,15 @@ impl DaemonServer {
             .map(|s| s.to_string());
         let task_models_patch = params.get("task_models").cloned();
 
+        let (project_root, scene) = match self.config_target(&params) {
+            Ok(target) => target,
+            Err(message) => return RpcResponse::err(id, codes::INVALID_PARAMS, message),
+        };
         match self
             .pool
             .set_provider(
+                project_root.as_deref(),
+                &scene,
                 &provider_id,
                 delete,
                 config_patch,

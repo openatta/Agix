@@ -1121,9 +1121,18 @@ sidecar),不是某个宿主自己的一层覆盖 —— 各宿主各存一份的
 `ok` 与 `router_rebuilt` 是**两件事**:配置可以解析得通(`ok: true`)却建不出客户端
 (`router_rebuilt: false` + `router_error`),`api_type: openai_compatible` 就是这种。
 
-**没有按层失效的参数** —— 传 `tier` / `scene` / `project_root` 会被忽略,永远是
-"把当前磁盘上的东西整个重读一遍"(这个 daemon 服务过的每个项目都重读,不只它自己
-那个:全局层与场景层是每个项目共同的下层)。
+```jsonc
+// → params(都可选)
+{ "scene": "coding",            // 省略 = 这个 daemon 的默认场景
+  "project_root": "/Users/x/repo-b" }   // 省略 = 这个 daemon 自己的项目
+```
+
+**没有按层失效的参数**:`tier` 不存在,重读永远是"这一对 `(项目, 场景)` 当前磁盘上
+的三层整个重读一遍"。缓存则是整个丢掉重建——全局层与场景层是每个项目共同的下层,
+只失效一对是不够的。
+
+`project_root` **不接受 `null`**:这个方法作用在**项目层**,而无项目会话没有项目层
+(`config.get {tier: "project"}` 早就是这个答案)。传 `null` → `INVALID_PARAMS`。
 
 失效**惰性生效**:已有会话在下一次 `run_turn` 之前若空闲则原地重建,忙碌的跳过本轮
 下次再检查。**正在进行的 turn 不会被中断。**
@@ -1136,9 +1145,19 @@ sidecar),不是某个宿主自己的一层覆盖 —— 各宿主各存一份的
 
 #### `config.getProvider` / `config.setProvider`
 
+两者都接受 `scene` / `project_root` 定位参数,语义与 `config.reload` 一致:省略 = 这个
+daemon 自己那一对,给路径 = 它服务的另一个项目,`null` → `INVALID_PARAMS`。
+`setProvider` 写的是**被指定项目**的 `{project_root}/.atta/settings.json`,
+`written_to` 回的就是那个路径。`mcp.addServer` 同样接受这两个参数。
+
+**provider 路由是按 `(项目, 场景)` 解析的**:一个项目在自己的 settings 里配了
+`providers` / `task_models`,它的会话就走它自己的路由,不是 daemon 那个项目的。
+
 ```jsonc
 // → params (getProvider)
-{ "include_secrets": false }
+{ "scene": "coding",                      // 都可选,见上
+  "project_root": "/Users/x/repo-b",
+  "include_secrets": false }
 // ← result (getProvider)
 { "providers": { },           // { "<id>": {api_type, base_url, api_key, default_model, models} }
   "default_provider": null,
