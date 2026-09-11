@@ -406,7 +406,9 @@ mod imp {
         /// `None` when wasmtime could not be initialised at all, which
         /// leaves MCP payloads working and WASM ones absent rather than
         /// taking the daemon down.
-        engine: Option<wasm_host::WasmEngine>,
+        /// Built on first use, and only when there is a component to compile
+        /// — see [`PluginSubsystem::engine`].
+        engine: std::sync::OnceLock<Option<wasm_host::WasmEngine>>,
         /// Fault records, kept here so they outlive the component instances
         /// a refresh rebuilds — otherwise a plugin that disabled itself came
         /// back the moment the user touched a different one.
@@ -429,20 +431,36 @@ mod imp {
         ) -> Self {
             let packages = super::packages::Packages::new(paths, policy);
             let active = Arc::new(InstalledPlugins::new(packages.active().as_ref().clone()));
-            let engine = match wasm_host::WasmEngine::new() {
-                Ok(e) => Some(e),
-                Err(e) => {
-                    tracing::warn!(error = %e, "wasmtime unavailable; WASM plugins will not load");
-                    None
-                }
-            };
             Self {
                 packages,
                 workspace,
-                engine,
+                engine: std::sync::OnceLock::new(),
                 health: wasm_host::health::HealthRegistry::new(),
                 active: RwLock::new(active),
             }
+        }
+
+        /// The WASM engine, built the first time something actually needs to
+        /// compile a component.
+        ///
+        /// Not in `new`: an `Engine` is not free to exist. On macOS the first
+        /// one installs a process-wide mach exception handler thread, and
+        /// that thread aborts the process if its `mach_msg` ever returns
+        /// anything but a message — which `MACH_RCV_INTERRUPTED` is, and
+        /// which a `posix_spawn` on another thread produces. A daemon with no
+        /// components installed was paying that risk, and a thread, for
+        /// nothing; a test binary building one daemon per case was paying it
+        /// dozens of times.
+        fn engine(&self) -> Option<&wasm_host::WasmEngine> {
+            self.engine
+                .get_or_init(|| match wasm_host::WasmEngine::new() {
+                    Ok(e) => Some(e),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "wasmtime unavailable; WASM plugins will not load");
+                        None
+                    }
+                })
+                .as_ref()
         }
 
         /// Compile and interrogate every installed component.
@@ -452,14 +470,21 @@ mod imp {
         /// run, plugins contribute their manifests but no tools — so it is
         /// awaited before the daemon serves, not after.
         pub async fn load_components(&self) {
-            let (Some(engine), true) = (&self.engine, self.packages.is_enabled()) else {
+            if !self.packages.is_enabled() {
                 return;
-            };
+            }
             self.packages.rescan();
-            let mut refreshed = InstalledPlugins::new(self.packages.active().as_ref().clone());
-            refreshed
-                .load_components_with_health(engine, &self.workspace, &self.health)
-                .await;
+            let installed = self.packages.active();
+            let mut refreshed = InstalledPlugins::new(installed.as_ref().clone());
+            // Nothing installed means nothing to compile, and so no reason to
+            // build an engine — see `engine()`.
+            if !installed.is_empty() {
+                if let Some(engine) = self.engine() {
+                    refreshed
+                        .load_components_with_health(engine, &self.workspace, &self.health)
+                        .await;
+                }
+            }
             self.packages
                 .note_component_faults(refreshed.component_faults().to_vec());
             *self.active.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(refreshed);
