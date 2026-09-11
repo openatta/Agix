@@ -143,12 +143,17 @@ impl ProjectBinding {
             Some(router) => router.model_for("main"),
             None => Arc::new(AnthropicModel::new(client.clone())),
         };
-        let skills = Arc::new(runtime::agent::build_default_skill_manager(&settings));
+        // Neither of these starts a watcher of its own: this pool watches
+        // every tier through one `WatchHub` and rebuilds the binding, so a
+        // second mechanism would be both redundant and — at one `notify`
+        // stream per catalog per project — the thing that runs a process out
+        // of them.
+        let skills = Arc::new(runtime::agent::build_skill_manager_unwatched(&settings));
         let commands = build_shared_commands(skills.clone());
         let dirs = agent_type_dirs(&settings);
         let dirs_ref: [&std::path::Path; 3] = [&dirs[0], &dirs[1], &dirs[2]];
         let agent_types =
-            runtime::agent_tool::SharedAgentTypeCatalog::build(&dirs_ref, plugin_agent_types);
+            runtime::agent_tool::SharedAgentTypeCatalog::unwatched(&dirs_ref, plugin_agent_types);
         Self {
             settings,
             model,
@@ -3954,7 +3959,7 @@ impl SessionPool {
             ))
         };
 
-        let watch = self.watch_settings_of(&settings, &key);
+        let watch = self.watch_tiers_of(&settings, &key);
         let last_good = self.last_good_routers.lock().await.get(&key).cloned();
         let built = Arc::new(ProjectBinding::build(
             settings,
@@ -3978,17 +3983,23 @@ impl SessionPool {
         bindings.entry(key).or_insert(built).clone()
     }
 
-    /// Watch the settings files this binding was merged from, so a change to
-    /// any of them invalidates it (see `start_config_watcher`).
+    /// Watch everything this binding was built from — its settings files,
+    /// and the skill and agent-type directories of each of its three tiers —
+    /// so a change to any of them invalidates it (see
+    /// `start_config_watcher`).
     ///
-    /// Only files that exist are subscribed. `WatchHub::subscribe` falls back
+    /// One hub, so one `notify` stream for the whole process no matter how
+    /// many projects it serves, and paths several projects share are
+    /// registered once.
+    ///
+    /// Only paths that exist are subscribed. `WatchHub::subscribe` falls back
     /// to the nearest existing ancestor of a path that isn't there, and the
     /// ancestor of `~/.atta/settings.json` is `~/.atta` — which also holds
-    /// every transcript this daemon writes. Watching it would turn each
-    /// turn's own log writes into a settings-change notification. A settings
-    /// file created later is picked up the next time its binding is built, or
-    /// by an explicit `config.reload`.
-    fn watch_settings_of(
+    /// every transcript this daemon writes. Watching that would turn each
+    /// turn's own log writes into a settings-change notification. A file or
+    /// directory created later is picked up the next time this binding is
+    /// built, or by an explicit `config.reload`.
+    fn watch_tiers_of(
         &self,
         settings: &Settings,
         key: &ProjectSceneKey,
@@ -3997,35 +4008,49 @@ impl SessionPool {
         let Some(hub) = self.watch.as_ref() else {
             return Vec::new();
         };
-        let mut tiers = vec![
-            (Tier::Global, settings.paths.global_data_dir.clone()),
-            (
-                Tier::Scene(key.1.clone()),
-                settings.paths.user_data_dir.clone(),
-            ),
-        ];
-        if let Some(root) = key.0.clone() {
-            tiers.push((Tier::Project(root), settings.paths.local_data_dir.clone()));
+        // The project tier's skills sit beside the project (`.agents/skills`)
+        // rather than under `.atta`, which is why this is two paths and the
+        // others are one — see `runtime::agent::build_default_skill_manager`.
+        let project_root = key.0.clone();
+        let mut tiers = vec![(
+            Tier::Global,
+            settings.paths.global_data_dir.clone(),
+            settings.paths.global_data_dir.join("skills"),
+        )];
+        tiers.push((
+            Tier::Scene(key.1.clone()),
+            settings.paths.user_data_dir.clone(),
+            settings.paths.user_data_dir.join("skills"),
+        ));
+        if let Some(root) = project_root {
+            tiers.push((
+                Tier::Project(root.clone()),
+                settings.paths.local_data_dir.clone(),
+                root.join(".agents").join("skills"),
+            ));
         }
 
         let mut tokens = Vec::new();
-        for (tier, dir) in tiers {
-            for file in [
-                base::interface::settings::SETTINGS_FILE,
-                base::interface::settings::SETTINGS_LOCAL_FILE,
-            ] {
-                let path = dir.join(file);
-                if !path.exists() {
-                    continue;
-                }
+        let mut subscribe = |tier: &Tier, target: WatchTarget, path: PathBuf| {
+            if path.exists() {
                 tokens.push(hub.subscribe(
                     WatchKey {
                         tier: tier.clone(),
-                        target: WatchTarget::Settings,
+                        target,
                     },
                     &path,
                 ));
             }
+        };
+        for (tier, config_dir, skills_dir) in tiers {
+            for file in [
+                base::interface::settings::SETTINGS_FILE,
+                base::interface::settings::SETTINGS_LOCAL_FILE,
+            ] {
+                subscribe(&tier, WatchTarget::Settings, config_dir.join(file));
+            }
+            subscribe(&tier, WatchTarget::Skills, skills_dir);
+            subscribe(&tier, WatchTarget::Agents, config_dir.join("agents"));
         }
         tokens
     }
@@ -4472,7 +4497,13 @@ impl SessionPool {
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 };
-                if key.target != WatchTarget::Settings {
+                // Plugins are a global/scene concern with a refresh of their
+                // own (`plugin.reload`); everything else a binding is built
+                // from is here.
+                if !matches!(
+                    key.target,
+                    WatchTarget::Settings | WatchTarget::Skills | WatchTarget::Agents
+                ) {
                     continue;
                 }
                 let ours = match &key.tier {
@@ -4481,7 +4512,11 @@ impl SessionPool {
                     // this daemon's own included.
                     Tier::Global | Tier::Scene(_) => true,
                 };
-                if ours {
+                // A settings change to this daemon's own tier goes through
+                // the full reload — the merged settings, the task router and
+                // the MCP reconcile all hang off it. Everything else only has
+                // to drop what was built from the changed files.
+                if ours && key.target == WatchTarget::Settings {
                     info!(tier = ?key.tier, "settings changed on disk; reloading");
                     let scene = match &key.tier {
                         Tier::Scene(scene) => scene.clone(),
@@ -4489,7 +4524,7 @@ impl SessionPool {
                     };
                     pool.reload_settings(None, &scene).await;
                 } else {
-                    info!(tier = ?key.tier, "another project's settings changed on disk");
+                    info!(tier = ?key.tier, target = ?key.target, "a tier changed on disk");
                     pool.invalidate_bindings().await;
                     pool.config_generation
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -5565,6 +5600,49 @@ mod mcp_for_project_tests {
             paths,
         );
         (pool, dir)
+    }
+
+    /// The watcher budget `crate::watch_hub` states: watched paths are
+    /// `1 + M + P` — one global tier, one per scene, one per project — and
+    /// not a multiple of the number of bindings.
+    ///
+    /// What this pins is the sharing: the tiers several projects have in
+    /// common are registered once, so a binding only ever costs the paths
+    /// that are its own. That a binding no longer brings `notify` streams of
+    /// its own besides the hub's is not visible from here — the backend
+    /// offers no count — and is held by construction instead: the catalogs a
+    /// binding builds are the `unwatched` ones.
+    #[tokio::test]
+    async fn bindings_do_not_multiply_watchers() {
+        let (pool, dir) = test_pool().await;
+        let watched = |pool: &SessionPool| {
+            pool.watch
+                .as_ref()
+                .expect("a hub in a test process")
+                .watched_path_count()
+        };
+
+        // The tiers of the pool's own project: whatever of them exist on
+        // disk are registered once each.
+        pool.binding_for(Some(pool.cwd()), "coding").await;
+        let baseline = watched(&pool);
+
+        // Three more projects, each with a settings file, a skills directory
+        // and an agents directory of its own — nine more paths that exist,
+        // and the shared global and scene tiers again.
+        for name in ["one", "two", "three"] {
+            let root = dir.path().join(name);
+            std::fs::create_dir_all(root.join(".atta").join("agents")).unwrap();
+            std::fs::create_dir_all(root.join(".agents").join("skills")).unwrap();
+            std::fs::write(root.join(".atta").join("settings.json"), "{}").unwrap();
+            pool.binding_for(Some(&root), "coding").await;
+        }
+
+        let grown = watched(&pool) - baseline;
+        assert_eq!(
+            grown, 9,
+            "three projects should add their own three paths each and re-register no shared one"
+        );
     }
 
     #[tokio::test]

@@ -309,8 +309,27 @@ impl SharedAgentTypeCatalog {
     /// than threading a second live-shared `plugin_types` reference through
     /// the watcher for it.
     pub fn build(dirs: &[&Path], plugin_types: &[AgentTypeDefinition]) -> Self {
+        Self::build_with(dirs, plugin_types, true)
+    }
+
+    /// [`build`](Self::build) without the watcher — for a host that already
+    /// watches these directories and calls [`refresh`](Self::refresh)
+    /// itself. One `notify` stream per catalog is fine for one catalog; a
+    /// host building one per project reaches the backend's per-process
+    /// ceiling, and on macOS that is an abort rather than an error.
+    pub fn unwatched(dirs: &[&Path], plugin_types: &[AgentTypeDefinition]) -> Self {
+        Self::build_with(dirs, plugin_types, false)
+    }
+
+    fn build_with(dirs: &[&Path], plugin_types: &[AgentTypeDefinition], watch: bool) -> Self {
         let merged = merge_agent_types(dirs, plugin_types);
         let agent_types = Arc::new(std::sync::RwLock::new(Arc::new(merged)));
+        if !watch {
+            return Self {
+                agent_types,
+                _watcher: None,
+            };
+        }
         let owned_dirs: Vec<std::path::PathBuf> = dirs.iter().map(|p| p.to_path_buf()).collect();
         let _watcher = crate::agent_type_watcher::AgentTypeWatcher::watch(
             owned_dirs,

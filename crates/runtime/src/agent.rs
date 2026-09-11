@@ -1062,7 +1062,23 @@ pub struct Builder {
 /// Also starts this manager's own live-reload watcher (`notify` setup
 /// failing degrades to no live reload, logged, not a hard error — every
 /// other watcher in this codebase handles it the same way).
+///
+/// A host that already watches these directories wants
+/// [`build_skill_manager_unwatched`] instead: one watcher per manager is
+/// fine for one manager, and a `notify` backend has a per-process ceiling
+/// that a host building one of these per project will reach.
 pub fn build_default_skill_manager(settings: &Settings) -> skills::manager::SkillManager {
+    build_skill_manager(settings, true)
+}
+
+/// [`build_default_skill_manager`] without the watcher — the same catalog,
+/// reloaded by whoever is already watching rather than by a `notify` thread
+/// of its own.
+pub fn build_skill_manager_unwatched(settings: &Settings) -> skills::manager::SkillManager {
+    build_skill_manager(settings, false)
+}
+
+fn build_skill_manager(settings: &Settings, watch: bool) -> skills::manager::SkillManager {
     use skills::manager::SkillSource;
     use skills::sources::{BundledSkills, SkillDirectory};
 
@@ -1092,12 +1108,14 @@ pub fn build_default_skill_manager(settings: &Settings) -> skills::manager::Skil
     let total_skills = skill_mgr.list().len();
     tracing::info!(loaded_count, total_skills, "skills loaded (incl. bundled)");
 
-    if let Err(e) = skill_mgr.enable_watching(&[
-        settings.paths.global_data_dir.join("skills"),
-        settings.paths.user_data_dir.join("skills"),
-        project_skills_dir,
-    ]) {
-        tracing::warn!(error = %e, "failed to enable skill file watching; live skill reload disabled for this session");
+    if watch {
+        if let Err(e) = skill_mgr.enable_watching(&[
+            settings.paths.global_data_dir.join("skills"),
+            settings.paths.user_data_dir.join("skills"),
+            project_skills_dir,
+        ]) {
+            tracing::warn!(error = %e, "failed to enable skill file watching; live skill reload disabled for this session");
+        }
     }
     skill_mgr
 }
