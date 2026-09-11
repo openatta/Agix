@@ -105,6 +105,12 @@ impl Reply {
     }
 }
 
+/// A reply queue and the text a request must carry to draw on it.
+struct RoutedQueue {
+    needle: String,
+    replies: VecDeque<Reply>,
+}
+
 /// One request the stub was sent.
 #[derive(Clone, Debug)]
 pub struct SeenRequest {
@@ -181,6 +187,10 @@ fn collect_strings(v: &serde_json::Value, out: &mut String) {
 pub struct ProviderStub {
     base_url: url::Url,
     script: Arc<Mutex<VecDeque<Reply>>>,
+    /// Queues that only answer requests they recognize — see
+    /// [`ProviderStub::script_when`]. Ordered, and searched before the
+    /// unconditional queue.
+    routed: Arc<Mutex<Vec<RoutedQueue>>>,
     seen: Arc<Mutex<Vec<SeenRequest>>>,
 }
 
@@ -191,6 +201,7 @@ impl ProviderStub {
         let stub = Self {
             base_url: url::Url::parse(&format!("http://127.0.0.1:{port}/"))?,
             script: Arc::new(Mutex::new(VecDeque::new())),
+            routed: Arc::new(Mutex::new(Vec::new())),
             seen: Arc::new(Mutex::new(Vec::new())),
         };
 
@@ -218,6 +229,30 @@ impl ProviderStub {
         self.script.lock().unwrap().extend(replies);
     }
 
+    /// Queue answers for requests that carry `needle` anywhere in them.
+    ///
+    /// One queue per session is the only way to script two turns that run at
+    /// the same time: [`script`](Self::script) is a single FIFO, so with two
+    /// turns in flight the order replies come out in is the order the
+    /// requests happened to arrive, and a turn that takes two calls can be
+    /// handed the other turn's second reply. A `needle` that identifies the
+    /// session — a mark in its project's prompt, say — makes each turn's
+    /// script its own.
+    ///
+    /// Searched in the order queues were added, and only queues that still
+    /// have a reply left are considered; a request matching none falls
+    /// through to the unconditional queue.
+    pub fn script_when(&self, needle: &str, replies: impl IntoIterator<Item = Reply>) {
+        let mut routed = self.routed.lock().unwrap();
+        match routed.iter_mut().find(|q| q.needle == needle) {
+            Some(queue) => queue.replies.extend(replies),
+            None => routed.push(RoutedQueue {
+                needle: needle.to_string(),
+                replies: replies.into_iter().collect(),
+            }),
+        }
+    }
+
     pub fn seen(&self) -> Vec<SeenRequest> {
         self.seen.lock().unwrap().clone()
     }
@@ -235,6 +270,20 @@ impl ProviderStub {
         self.calls().len()
     }
 
+    /// The reply this request gets: from the first routed queue that
+    /// recognizes it and still has one, else from the unconditional queue.
+    fn next_reply_for(&self, body: &[u8]) -> Option<Reply> {
+        let text = String::from_utf8_lossy(body);
+        let mut routed = self.routed.lock().unwrap();
+        for queue in routed.iter_mut() {
+            if !queue.replies.is_empty() && text.contains(queue.needle.as_str()) {
+                return queue.replies.pop_front();
+            }
+        }
+        drop(routed);
+        self.script.lock().unwrap().pop_front()
+    }
+
     async fn serve_one(&self, mut sock: tokio::net::TcpStream) -> anyhow::Result<()> {
         let Some((path, body)) = read_request(&mut sock).await? else {
             return Ok(());
@@ -244,7 +293,7 @@ impl ProviderStub {
             body: serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null),
         });
 
-        let reply = self.script.lock().unwrap().pop_front();
+        let reply = self.next_reply_for(&body);
         let response = match reply {
             Some(Reply::Status {
                 code,

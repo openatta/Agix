@@ -91,6 +91,50 @@ impl World {
         Ok(path)
     }
 
+    /// A skill only this project has. The daemon merges three skill tiers;
+    /// this is the one that belongs to a project rather than to the machine.
+    pub fn write_project_skill(
+        &self,
+        project: &str,
+        name: &str,
+        description: &str,
+    ) -> anyhow::Result<PathBuf> {
+        self.write_project_file(
+            project,
+            &format!(".agents/skills/{name}/SKILL.md"),
+            &format!("---\nname: {name}\ndescription: {description}\n---\nbody\n"),
+        )
+    }
+
+    /// A sub-agent type only this project has — the `Agent` tool's catalog
+    /// is merged from the same three tiers as skills.
+    pub fn write_project_agent_type(
+        &self,
+        project: &str,
+        name: &str,
+        description: &str,
+    ) -> anyhow::Result<PathBuf> {
+        self.write_project_file(
+            project,
+            &format!(".atta/agents/{name}.md"),
+            &format!("---\ndescription: {description}\n---\nbody\n"),
+        )
+    }
+
+    /// Where this project's transcripts are, resolved the way the daemon
+    /// resolves them — through the canonical path, because a temp directory
+    /// is a symlink on macOS and the sanitized name is built from the
+    /// resolved one.
+    pub fn transcript_dir(&self, project: &Path) -> PathBuf {
+        let canonical = std::fs::canonicalize(project).unwrap_or_else(|_| project.to_path_buf());
+        history::path::project_dir(&self.global_root().join("projects"), &canonical)
+    }
+
+    /// Where a session that belongs to no project at all writes instead.
+    pub fn no_project_transcript_dir(&self) -> PathBuf {
+        history::path::project_dir_for(&self.global_root().join("projects"), None)
+    }
+
     /// Where a daemon leaves its discovery entry — one file per instance,
     /// under the global root so every instance's lands in one directory.
     pub fn instances_dir(&self) -> PathBuf {

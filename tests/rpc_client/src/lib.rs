@@ -156,6 +156,58 @@ pub struct TurnEvents {
     pub response: Option<RpcResponse>,
 }
 
+/// Which `(project, scene)` a project-tier method acts on.
+///
+/// `config.*`, `mcp.addServer` and `import.*` all read or write one project's
+/// tier, and all four spell the target the same way: omit it for the daemon's
+/// own project, name a path for another project the daemon serves. `null` is
+/// not a target — a session with no project has no project tier — which is
+/// why this cannot express one.
+#[derive(Clone, Debug, Default)]
+pub struct Target {
+    project_root: Option<std::path::PathBuf>,
+    scene: Option<String>,
+}
+
+impl Target {
+    /// The daemon's own project and scene — what every one of these methods
+    /// acted on back when it was the only thing they could act on.
+    pub fn own() -> Self {
+        Self::default()
+    }
+
+    pub fn project(root: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            project_root: Some(root.into()),
+            scene: None,
+        }
+    }
+
+    pub fn scene(mut self, scene: &str) -> Self {
+        self.scene = Some(scene.to_string());
+        self
+    }
+
+    /// `params` with this target's keys added. Absent keys, not null ones:
+    /// the daemon distinguishes "unspecified" from "explicitly none" and
+    /// refuses the latter for these methods.
+    fn with(&self, mut params: Value) -> Value {
+        let Some(obj) = params.as_object_mut() else {
+            return params;
+        };
+        if let Some(root) = &self.project_root {
+            obj.insert(
+                "project_root".into(),
+                Value::String(root.to_string_lossy().into_owned()),
+            );
+        }
+        if let Some(scene) = &self.scene {
+            obj.insert("scene".into(), Value::String(scene.clone()));
+        }
+        params
+    }
+}
+
 impl DaemonRpcClient {
     /// Connect over the Unix socket — no handshake, file permissions are the
     /// access control.
@@ -460,23 +512,40 @@ impl DaemonRpcClient {
 
     // ── config.* ──
 
-    pub async fn config_set_provider(&mut self, params: Value) -> anyhow::Result<RpcResponse> {
-        self.call("config.setProvider", params).await
-    }
-
-    pub async fn config_get_provider(
-        &mut self,
-        include_secrets: bool,
-    ) -> anyhow::Result<RpcResponse> {
+    /// `config.get` — one settings tier of `target` as the daemon sees it.
+    /// Unlike the methods below, the scene here is not optional on the wire,
+    /// so `target` must name one.
+    pub async fn config_get(&mut self, target: &Target, tier: &str) -> anyhow::Result<RpcResponse> {
         self.call(
-            "config.getProvider",
-            serde_json::json!({ "include_secrets": include_secrets }),
+            "config.get",
+            target.with(serde_json::json!({ "tier": tier })),
         )
         .await
     }
 
-    pub async fn config_reload(&mut self) -> anyhow::Result<RpcResponse> {
-        self.call("config.reload", Value::Null).await
+    pub async fn config_set_provider(
+        &mut self,
+        target: &Target,
+        params: Value,
+    ) -> anyhow::Result<RpcResponse> {
+        self.call("config.setProvider", target.with(params)).await
+    }
+
+    pub async fn config_get_provider(
+        &mut self,
+        target: &Target,
+        include_secrets: bool,
+    ) -> anyhow::Result<RpcResponse> {
+        self.call(
+            "config.getProvider",
+            target.with(serde_json::json!({ "include_secrets": include_secrets })),
+        )
+        .await
+    }
+
+    pub async fn config_reload(&mut self, target: &Target) -> anyhow::Result<RpcResponse> {
+        self.call("config.reload", target.with(serde_json::json!({})))
+            .await
     }
 
     // ── mcp.* ──
@@ -487,25 +556,34 @@ impl DaemonRpcClient {
 
     pub async fn mcp_add_server(
         &mut self,
+        target: &Target,
         name: &str,
         config: Value,
     ) -> anyhow::Result<RpcResponse> {
         self.call(
             "mcp.addServer",
-            serde_json::json!({ "name": name, "config": config }),
+            target.with(serde_json::json!({ "name": name, "config": config })),
         )
         .await
     }
 
     // ── import.* ──
 
-    pub async fn import_list(&mut self) -> anyhow::Result<RpcResponse> {
-        self.call("import.list", Value::Null).await
+    pub async fn import_list(&mut self, target: &Target) -> anyhow::Result<RpcResponse> {
+        self.call("import.list", target.with(serde_json::json!({})))
+            .await
     }
 
-    pub async fn import_run(&mut self, source: &str) -> anyhow::Result<RpcResponse> {
-        self.call("import.run", serde_json::json!({ "source": source }))
-            .await
+    pub async fn import_run(
+        &mut self,
+        target: &Target,
+        source: &str,
+    ) -> anyhow::Result<RpcResponse> {
+        self.call(
+            "import.run",
+            target.with(serde_json::json!({ "source": source })),
+        )
+        .await
     }
 
     // ── commands.* / plugin.* ──

@@ -1960,7 +1960,7 @@ async fn a_reload_reaches_a_session_that_is_already_open(mode: Mode) -> anyhow::
         "reloaded",
         &json!({ "prompt_append": "RELOADED-MARK-PLUGH" }),
     )?;
-    let reloaded = client.config_reload().await?;
+    let reloaded = client.config_reload(&rpc_client::Target::own()).await?;
     anyhow::ensure!(
         reloaded.error.is_none(),
         "config.reload failed: {reloaded:?}"
