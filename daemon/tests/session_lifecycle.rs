@@ -3055,6 +3055,58 @@ async fn run_turn_refuses_a_session_recorded_under_a_scene_this_daemon_stopped_s
     srv.stop().await;
 }
 
+#[tokio::test]
+async fn a_chat_session_names_itself_on_a_daemon_whose_own_scene_does_not() {
+    // Two rounds: the turn's own answer, then the naming call `chat` makes
+    // after a first turn. `coding` — this daemon's own scene — makes neither.
+    let (srv, _seen) = start_scripted_server(
+        vec![text_round("answered"), text_round("会话标题")],
+        ask_settings(),
+        Duration::ZERO,
+    )
+    .await;
+
+    rpc(
+        &srv.sock,
+        r#"{"jsonrpc":"2.0","method":"scene.activate","params":{"scene":"chat"},"id":1}"#,
+    )
+    .await;
+    let created = rpc(
+        &srv.sock,
+        r#"{"jsonrpc":"2.0","method":"session.create","params":{"scene":"chat"},"id":2}"#,
+    )
+    .await;
+    let chat_sid = created["result"]["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (_frames, resp) = rpc_streaming(
+        &srv.sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.run_turn","params":{{"session_id":"{chat_sid}","message":"hello"}},"id":3}}"#
+        ),
+    )
+    .await;
+    assert_eq!(
+        resp["result"]["name"], "会话标题",
+        "a chat session must name itself even when the daemon's own scene would not: {resp}"
+    );
+
+    // The control: the same daemon's own scene still does not.
+    let (_frames, resp) = rpc_streaming(
+        &srv.sock,
+        r#"{"jsonrpc":"2.0","method":"session.run_turn","params":{"message":"hello"},"id":4}"#,
+    )
+    .await;
+    assert!(
+        resp["result"]["name"].is_null(),
+        "coding does not auto-name, and reading the session's scene must not change that: {resp}"
+    );
+
+    srv.stop().await;
+}
+
 // ── permission default = ask, end to end ────────────────────────────────
 
 /// Drive a turn on one connection while answering prompts on another — the

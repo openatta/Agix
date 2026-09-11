@@ -244,6 +244,11 @@ struct LiveSession {
     input_tx: InputSender,
     event_rx: Arc<AsyncMutex<Option<EventReceiver>>>,
     cancel: CancellationToken,
+    /// The scene this session was created under — the one its `Meta` records,
+    /// not this pool's default. Auto-naming is the one behaviour decided per
+    /// turn rather than at build time, so it is the one that needs the scene
+    /// kept here to ask.
+    scene: Arc<dyn AgentScene>,
     /// Session name（CHAT 场景首轮后由 LLM 生成；CODING 为 None）。
     name: Option<String>,
     created_at: Instant,
@@ -1630,6 +1635,9 @@ impl SessionPool {
         resume: bool,
     ) -> Result<String, String> {
         let scene_id = scene.id().to_string();
+        // The `Builder` takes ownership of the scene; the session keeps a
+        // handle of its own because `run_turn` has to ask it things.
+        let scene_for_session = scene.clone();
         let base_settings = binding.settings.clone();
         let task_router = binding.task_router.clone();
 
@@ -1993,6 +2001,7 @@ impl SessionPool {
             input_tx,
             event_rx: Arc::new(AsyncMutex::new(Some(event_rx))),
             cancel,
+            scene: scene_for_session,
             name: None,
             created_at: Instant::now(),
             last_active: Instant::now(),
@@ -2727,29 +2736,42 @@ impl SessionPool {
         self.clear_pending_prompts(&sid).await;
 
         // ── 首轮自动命名 ──
+        //
+        // Whether a session names itself is its *own* scene's call, not this
+        // pool's default scene's: a `chat` session created on a `--scene
+        // coding` daemon is still a chat session, and the two scenes disagree
+        // about this exactly as they disagree about the system prompt.
+        //
+        // The decision is taken under the lock and the naming call made
+        // outside it — it is a model call, and the sessions map is the
+        // pool's hottest mutex.
         let mut session_name = None;
-        {
+        let name_prompt = {
             let mut sessions = self.sessions.lock().await;
-            if let Some(live) = sessions.get_mut(&sid) {
-                if live.is_first_turn {
+            match sessions.get_mut(&sid) {
+                Some(live) if live.is_first_turn => {
                     live.is_first_turn = false;
-                    // 尝试通过场景判断是否需要命名（现在是这个 daemon 实例唯一
-                    // 配置的那个 scene 说了算，不再写死查 chat 场景）
-                    if self.scene.auto_name_session() && !live.named_by_user {
-                        if let Some(prompt) = self.scene.session_name_prompt(&message) {
-                            match self.generate_session_name(&prompt).await {
-                                Ok(name) => {
-                                    live.name = Some(name.clone());
-                                    session_name = Some(name);
-                                }
-                                Err(e) => {
-                                    warn!(%sid, error=%e, "session name generation failed");
-                                }
-                            }
-                        }
-                    }
-                } else {
+                    (live.scene.auto_name_session() && !live.named_by_user)
+                        .then(|| live.scene.session_name_prompt(&message))
+                        .flatten()
+                }
+                Some(live) => {
                     session_name = live.name.clone();
+                    None
+                }
+                None => None,
+            }
+        };
+        if let Some(prompt) = name_prompt {
+            match self.generate_session_name(&prompt).await {
+                Ok(name) => {
+                    if let Some(live) = self.sessions.lock().await.get_mut(&sid) {
+                        live.name = Some(name.clone());
+                    }
+                    session_name = Some(name);
+                }
+                Err(e) => {
+                    warn!(%sid, error=%e, "session name generation failed");
                 }
             }
         }
@@ -5375,6 +5397,7 @@ mod eviction_tests {
             input_tx,
             event_rx: Arc::new(AsyncMutex::new(Some(event_rx))),
             cancel: CancellationToken::new(),
+            scene: Arc::new(scene::scene::coding::CodingScene),
             name: None,
             created_at: last_active,
             last_active,
