@@ -572,10 +572,7 @@ impl DaemonServer {
             "plugin.uninstall" => self.method_plugin_uninstall(id, req.params).await,
             "plugin.enable" => self.method_plugin_set_enabled(id, req.params, true).await,
             "plugin.disable" => self.method_plugin_set_enabled(id, req.params, false).await,
-            "import.list" => {
-                let sources = self.pool.list_import_sources().await;
-                RpcResponse::ok(id, serde_json::json!({"sources": sources}))
-            }
+            "import.list" => self.method_import_list(id, req.params).await,
             "import.run" => self.method_import_run(id, req.params).await,
             "daemon.shutdown" => {
                 self.pool.shutdown_all().await;
@@ -1020,8 +1017,24 @@ impl DaemonServer {
         }
     }
 
-    /// `import.run` params: `{"source": "claude_code" | "codex" | "cursor"}`
-    /// (one of the `source` values `import.list` returned).
+    /// `import.list` params: `{"project_root": "..."}` (optional — see
+    /// `config_target`; an import reads and writes one project's files).
+    async fn method_import_list(
+        &self,
+        id: serde_json::Value,
+        params: serde_json::Value,
+    ) -> RpcResponse {
+        let (project_root, _scene) = match self.config_target(&params) {
+            Ok(target) => target,
+            Err(message) => return RpcResponse::err(id, codes::INVALID_PARAMS, message),
+        };
+        let sources = self.pool.list_import_sources(project_root.as_deref()).await;
+        RpcResponse::ok(id, serde_json::json!({"sources": sources}))
+    }
+
+    /// `import.run` params: `{"source": "claude_code" | "codex" | "cursor",
+    /// "project_root": "..."}` (one of the `source` values `import.list`
+    /// returned; `project_root` optional, as for `import.list`).
     async fn method_import_run(
         &self,
         id: serde_json::Value,
@@ -1031,7 +1044,11 @@ impl DaemonServer {
             Some(s) => s.to_string(),
             None => return RpcResponse::err(id, codes::INVALID_PARAMS, "missing source"),
         };
-        match self.pool.run_import(&source).await {
+        let (project_root, _scene) = match self.config_target(&params) {
+            Ok(target) => target,
+            Err(message) => return RpcResponse::err(id, codes::INVALID_PARAMS, message),
+        };
+        match self.pool.run_import(project_root.as_deref(), &source).await {
             Ok(result) => RpcResponse::ok(id, result),
             Err(e) => RpcResponse::err(id, codes::INVALID_PARAMS, e),
         }

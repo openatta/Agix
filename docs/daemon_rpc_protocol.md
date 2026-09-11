@@ -1317,9 +1317,11 @@ disclosure 的 `wasm.runnable` 会如实报成 `false`。
 
 #### `import.list`
 
-无参。探测这台机器上可导入的外部配置来源。
+探测某个项目里可导入的外部配置来源。
 
 ```jsonc
+// → params(可选)
+{ "project_root": "/Users/x/repo-b" }   // 省略 = 这个 daemon 自己的项目
 // ← result
 { "sources": [ ] }   // 元素:{ "source": "claude_code|codex|cursor", "description": "…" }
 ```
@@ -1328,11 +1330,15 @@ disclosure 的 `wasm.runnable` 会如实报成 `false`。
 
 ```jsonc
 // → params
-{ "source": "claude_code" }
+{ "source": "claude_code",
+  "project_root": "/Users/x/repo-b" }   // 可选,同 import.list
 ```
 
-响应 `{ "source": "claude_code", "actions": [ … ] }`。`source` 必须是
+响应 `{ "source": "claude_code", "actions": [ … ] }`。`source` 必须是**同一个项目**
 `import.list` **当前**还探测得到的那些之一,否则 `INVALID_PARAMS`。没有 `dry_run`。
+
+导入读写的是那个项目自己的文件(`.claude/` / `.codex/` / `.cursor/`),所以
+`project_root` 与 `config.*` 一样不接受 `null`。
 
 导入完成后会记下这个决定,启动时的自动探测不再重复提示。
 

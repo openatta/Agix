@@ -1217,8 +1217,9 @@ impl SessionPool {
     /// Codex/Cursor) in this pool's project directory — pure filesystem
     /// detection, no LLM turn needed. The manual `/import` path (the bundled
     /// `import` skill) does its own detection with the file tools.
-    pub async fn list_import_sources(&self) -> Vec<serde_json::Value> {
-        base::frozen::detect_import_sources(&self.cwd)
+    pub async fn list_import_sources(&self, project_root: Option<&Path>) -> Vec<serde_json::Value> {
+        let project_root = project_root.unwrap_or(self.cwd.as_path());
+        base::frozen::detect_import_sources(project_root)
             .await
             .iter()
             .map(|s| serde_json::json!({"source": s.kind().as_str(), "description": s.describe()}))
@@ -1228,20 +1229,25 @@ impl SessionPool {
     /// Execute an import for a previously-detected `source` (one of the
     /// `source` values `list_import_sources` returns) and record the
     /// decision so the automatic startup detection doesn't ask again.
-    pub async fn run_import(&self, source: &str) -> Result<serde_json::Value, String> {
+    pub async fn run_import(
+        &self,
+        project_root: Option<&Path>,
+        source: &str,
+    ) -> Result<serde_json::Value, String> {
+        let project_root = project_root.unwrap_or(self.cwd.as_path());
         let kind = base::frozen::ImportSourceKind::try_parse(source).ok_or_else(|| {
             format!("unknown source `{source}` — expected claude_code, codex, or cursor")
         })?;
-        let sources = base::frozen::detect_import_sources(&self.cwd).await;
+        let sources = base::frozen::detect_import_sources(project_root).await;
         let Some(matched) = sources.iter().find(|s| s.kind() == kind) else {
             return Err(format!(
                 "source `{source}` not currently detected in this project"
             ));
         };
-        let summary = base::frozen::execute_import(&self.cwd, matched)
+        let summary = base::frozen::execute_import(project_root, matched)
             .await
             .map_err(|e| e.to_string())?;
-        base::frozen::mark_imported(&self.cwd, &sources, kind)
+        base::frozen::mark_imported(project_root, &sources, kind)
             .await
             .map_err(|e| e.to_string())?;
         Ok(serde_json::json!({
