@@ -1122,10 +1122,17 @@ sidecar),不是某个宿主自己的一层覆盖 —— 各宿主各存一份的
 (`router_rebuilt: false` + `router_error`),`api_type: openai_compatible` 就是这种。
 
 **没有按层失效的参数** —— 传 `tier` / `scene` / `project_root` 会被忽略,永远是
-"把当前磁盘上的东西整个重读一遍"。
+"把当前磁盘上的东西整个重读一遍"(这个 daemon 服务过的每个项目都重读,不只它自己
+那个:全局层与场景层是每个项目共同的下层)。
 
 失效**惰性生效**:已有会话在下一次 `run_turn` 之前若空闲则原地重建,忙碌的跳过本轮
 下次再检查。**正在进行的 turn 不会被中断。**
+
+**多数情况下不需要显式调用**:daemon 监视每个项目的 `settings.json` /
+`settings.local.json`,改动落盘后自己重读(去抖 300ms)。这个方法留给两种情况——
+监视起不来(权限、内核 inotify 上限;`daemon.doctor` 会报),以及**改动前那个文件
+还不存在**:不存在的文件监视不了,新建出来的那一份要等到下一次绑定重建或者这里
+被显式调用。
 
 #### `config.getProvider` / `config.setProvider`
 

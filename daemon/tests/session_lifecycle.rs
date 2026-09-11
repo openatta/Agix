@@ -2089,6 +2089,57 @@ async fn a_project_bound_session_sees_that_projects_own_skills() {
     srv.stop().await;
 }
 
+#[tokio::test]
+async fn another_projects_settings_change_reaches_the_daemon_without_a_reload() {
+    let (srv, _seen) =
+        start_scripted_server(vec![text_round("a")], ask_settings(), Duration::ZERO).await;
+
+    let other_project = srv._dir.path().join("other-project");
+    std::fs::create_dir_all(other_project.join(".atta")).unwrap();
+    let settings_file = other_project.join(".atta").join("settings.json");
+    std::fs::write(
+        &settings_file,
+        r#"{"model": {"model_name": "first-model"}}"#,
+    )
+    .unwrap();
+
+    // Reading the effective settings is what builds (and caches) this
+    // project's binding — the state the file change has to invalidate.
+    let effective = |root: &std::path::Path| {
+        format!(
+            r#"{{"jsonrpc":"2.0","method":"config.get","params":{{"scene":"coding","project_root":"{}","tier":"effective"}},"id":1}}"#,
+            root.display()
+        )
+    };
+    let first = rpc(&srv.sock, &effective(&other_project)).await;
+    assert_eq!(
+        first["result"]["settings"]["model"]["model_name"], "first-model",
+        "{first}"
+    );
+
+    std::fs::write(
+        &settings_file,
+        r#"{"model": {"model_name": "second-model"}}"#,
+    )
+    .unwrap();
+
+    let mut seen_second = false;
+    for _ in 0..60 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let now = rpc(&srv.sock, &effective(&other_project)).await;
+        if now["result"]["settings"]["model"]["model_name"] == "second-model" {
+            seen_second = true;
+            break;
+        }
+    }
+    assert!(
+        seen_second,
+        "a project this daemon serves must not need a restart to pick up its own settings"
+    );
+
+    srv.stop().await;
+}
+
 // ── scripts ─────────────────────────────────────────────────────────────
 
 /// A project that binds a script gets it, through the daemon, on the prompt

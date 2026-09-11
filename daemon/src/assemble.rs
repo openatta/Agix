@@ -227,6 +227,7 @@ pub async fn pool(
     pool.connect_mcp_servers_in_background(mcp_servers);
 
     pool.start_janitor();
+    pool.start_config_watcher();
 
     Ok(pool)
 }

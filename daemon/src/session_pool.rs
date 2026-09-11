@@ -109,12 +109,18 @@ struct ProjectBinding {
     skills: Arc<skills::manager::SkillManager>,
     agent_types: runtime::agent_tool::SharedAgentTypeCatalog,
     commands: Arc<runtime::commands::CommandRegistry>,
+    /// Subscriptions to the settings files this binding was merged from.
+    /// Held, not read: dropping them is how a binding that gets invalidated
+    /// releases its share of the watch (`WatchHub` refcounts, so the tiers
+    /// several projects have in common are watched once).
+    _watch: Vec<crate::watch_hub::WatchToken>,
 }
 
 impl ProjectBinding {
     fn build(
         settings: Arc<Settings>,
         plugin_agent_types: &[runtime::agent_tool::AgentTypeDefinition],
+        watch: Vec<crate::watch_hub::WatchToken>,
     ) -> Self {
         let skills = Arc::new(runtime::agent::build_default_skill_manager(&settings));
         let commands = build_shared_commands(skills.clone());
@@ -127,6 +133,7 @@ impl ProjectBinding {
             skills,
             agent_types,
             commands,
+            _watch: watch,
         }
     }
 
@@ -391,6 +398,12 @@ pub struct SessionPool {
     /// separate, hot-swappable copy that `config.reload` writes and that
     /// everything not tied to a session reads.
     bindings: AsyncMutex<HashMap<ProjectSceneKey, Arc<ProjectBinding>>>,
+    /// One `notify` watcher for every settings file every binding was merged
+    /// from — see [`crate::watch_hub`]. `None` when the watcher could not be
+    /// started (permissions, kernel limits): the documented degrade is that
+    /// configuration changes reach the daemon through an explicit
+    /// `config.reload` and not on their own.
+    watch: Option<crate::watch_hub::WatchHub>,
     /// Bumped by `apply_reloaded_settings()` on every successful reload.
     /// Compared against each `LiveSession::config_generation` at dispatch
     /// time (`run_turn`) to decide whether an already-running session needs
@@ -599,6 +612,13 @@ impl SessionPool {
             plugins,
             task_router: AsyncRwLock::new(task_router),
             bindings: AsyncMutex::new(HashMap::new()),
+            watch: match crate::watch_hub::WatchHub::new() {
+                Ok(hub) => Some(hub),
+                Err(e) => {
+                    warn!(error = %e, "config file watching unavailable; changes need config.reload");
+                    None
+                }
+            },
             config_generation: std::sync::atomic::AtomicU64::new(0),
             model_overrides: std::sync::Mutex::new(HashMap::new()),
             permission_prompt_timeout: DEFAULT_PERMISSION_PROMPT_TIMEOUT,
@@ -3862,7 +3882,12 @@ impl SessionPool {
             ))
         };
 
-        let built = Arc::new(ProjectBinding::build(settings, &self.plugins.agent_types()));
+        let watch = self.watch_settings_of(&settings, &key);
+        let built = Arc::new(ProjectBinding::build(
+            settings,
+            &self.plugins.agent_types(),
+            watch,
+        ));
         // Built outside the lock — scanning skill and agent directories is
         // disk work, and holding the map across it would serialize the first
         // session of every project behind the first session of any of them.
@@ -3870,6 +3895,58 @@ impl SessionPool {
         // a second live catalog.
         let mut bindings = self.bindings.lock().await;
         bindings.entry(key).or_insert(built).clone()
+    }
+
+    /// Watch the settings files this binding was merged from, so a change to
+    /// any of them invalidates it (see `start_config_watcher`).
+    ///
+    /// Only files that exist are subscribed. `WatchHub::subscribe` falls back
+    /// to the nearest existing ancestor of a path that isn't there, and the
+    /// ancestor of `~/.atta/settings.json` is `~/.atta` — which also holds
+    /// every transcript this daemon writes. Watching it would turn each
+    /// turn's own log writes into a settings-change notification. A settings
+    /// file created later is picked up the next time its binding is built, or
+    /// by an explicit `config.reload`.
+    fn watch_settings_of(
+        &self,
+        settings: &Settings,
+        key: &ProjectSceneKey,
+    ) -> Vec<crate::watch_hub::WatchToken> {
+        use crate::watch_hub::{Tier, WatchKey, WatchTarget};
+        let Some(hub) = self.watch.as_ref() else {
+            return Vec::new();
+        };
+        let mut tiers = vec![
+            (Tier::Global, settings.paths.global_data_dir.clone()),
+            (
+                Tier::Scene(key.1.clone()),
+                settings.paths.user_data_dir.clone(),
+            ),
+        ];
+        if let Some(root) = key.0.clone() {
+            tiers.push((Tier::Project(root), settings.paths.local_data_dir.clone()));
+        }
+
+        let mut tokens = Vec::new();
+        for (tier, dir) in tiers {
+            for file in [
+                base::interface::settings::SETTINGS_FILE,
+                base::interface::settings::SETTINGS_LOCAL_FILE,
+            ] {
+                let path = dir.join(file);
+                if !path.exists() {
+                    continue;
+                }
+                tokens.push(hub.subscribe(
+                    WatchKey {
+                        tier: tier.clone(),
+                        target: WatchTarget::Settings,
+                    },
+                    &path,
+                ));
+            }
+        }
+        tokens
     }
 
     /// Drop every cached binding, so the next session on any pair is built
@@ -4283,6 +4360,59 @@ impl SessionPool {
     }
 
     /// 后台回收任务：定期驱逐超时 idle session。
+    /// React to settings files changing on disk, for **every** project this
+    /// daemon serves rather than only its own.
+    ///
+    /// Before this, a `(project, scene)` binding built once was never
+    /// rebuilt: `config.reload` re-read the daemon's own project and nothing
+    /// re-read anyone else's, so editing another project's `settings.json`
+    /// did nothing until the daemon restarted.
+    ///
+    /// A change to a tier under the daemon's own project goes through the
+    /// full reload — the merged settings, the task router and the MCP
+    /// reconcile all hang off it. A change under any other project drops the
+    /// cached bindings and bumps the generation, which is what makes a
+    /// running session on it rebuild before its next turn.
+    pub fn start_config_watcher(self: &Arc<Self>) {
+        let Some(mut changes) = self.watch.as_ref().map(|hub| hub.changes()) else {
+            return;
+        };
+        let pool = self.clone();
+        tokio::spawn(async move {
+            use crate::watch_hub::{Tier, WatchTarget};
+            loop {
+                let key = match changes.recv().await {
+                    Ok(key) => key,
+                    // Lagged: some notifications were dropped, which means
+                    // something changed — reload rather than skip it.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        pool.reload_settings().await;
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                };
+                if key.target != WatchTarget::Settings {
+                    continue;
+                }
+                let ours = match &key.tier {
+                    Tier::Project(root) => root == &pool.cwd,
+                    // The global and scene tiers sit under every project,
+                    // this daemon's own included.
+                    Tier::Global | Tier::Scene(_) => true,
+                };
+                if ours {
+                    info!(tier = ?key.tier, "settings changed on disk; reloading");
+                    pool.reload_settings().await;
+                } else {
+                    info!(tier = ?key.tier, "another project's settings changed on disk");
+                    pool.invalidate_bindings().await;
+                    pool.config_generation
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        });
+    }
+
     pub fn start_janitor(self: &Arc<Self>) {
         let pool = self.clone();
         // Sweep interval scales with `idle_timeout` instead of a flat 300s:
