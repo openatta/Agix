@@ -2,16 +2,19 @@
 //! implementations that ship with the engine — one writing JSONL under a
 //! project directory, one holding everything in memory.
 //!
-//! A `JsonlHistoryStore` instance is bound to **one cwd**; append/load/list
-//! all address that cwd's project directory. Many sessions share one store,
-//! and writes within a session are serialized by a mutex so two appends
-//! cannot interleave into a partial line.
+//! A `JsonlHistoryStore` serves **many projects**: each session's transcript
+//! goes to the project it was created under (`Meta.project_root`), and the
+//! cwd the store was built with is only the default for a session that never
+//! said. Many sessions share one store, and writes within a session are
+//! serialized by a mutex so two appends cannot interleave into a partial
+//! line.
 
 use crate::blob::{BlobRef, BlobStore, PasteStore};
 use crate::entry::{EnvelopedEntry, LogEntry, SessionKind};
 use crate::error::HistoryError;
 use crate::path::{
-    canonicalize_cwd, project_dir, session_file, session_metadata_file, HistoryRoots,
+    canonicalize_cwd, project_dir, project_dir_for, session_file, session_metadata_file,
+    HistoryRoots,
 };
 use crate::project::SessionMetadata;
 use crate::query::{SessionQuery, SessionScope};
@@ -22,6 +25,7 @@ use crate::transcript::{
 use async_trait::async_trait;
 use base::message::{ContentBlock, ToolResultContent};
 use base::session::SessionId;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -314,13 +318,23 @@ pub trait HistoryStore: Send + Sync {
     }
 }
 
-/// Writes to `<projects_root>/<sanitize(cwd)>/<session>.jsonl`.
+/// Writes to `<projects_root>/<sanitize(project root)>/<session>.jsonl`.
 pub struct JsonlHistoryStore {
     projects_root: PathBuf,
     /// Sidecar root — see [`HistoryRoots`]; carried rather than re-derived so
     /// the two halves of a session's state cannot land in different trees.
     sessions_root: PathBuf,
+    /// The project a session with nothing recorded about it belongs to: the
+    /// cwd this store was built with. Sessions created since transcripts were
+    /// partitioned all record their own (see [`JsonlHistoryStore::home_of`]),
+    /// so this answers for the ones written before that — and for a caller
+    /// that asks about the "current" project without naming one.
     canonical_cwd: PathBuf,
+    /// Which project each session belongs to, for the life of the process —
+    /// `None` meaning a session with no project at all. The durable copy is
+    /// the session's own sidecar; this is the cache in front of it, and the
+    /// reason an append doesn't read a file to find out where to write.
+    homes: Mutex<HashMap<SessionId, Option<PathBuf>>>,
     /// 序列化 append 调用，避免并发 partial-line 写。
     /// 不是 RwLock —— append 是写操作，读不互让有意义。
     append_lock: Arc<Mutex<()>>,
@@ -342,6 +356,7 @@ impl JsonlHistoryStore {
             projects_root: roots.projects,
             sessions_root: roots.sessions,
             canonical_cwd: canonical,
+            homes: Mutex::new(HashMap::new()),
             append_lock: Arc::new(Mutex::new(())),
             blobs: None,
             projection: None,
@@ -389,8 +404,98 @@ impl JsonlHistoryStore {
         project_dir(&self.projects_root, &self.canonical_cwd)
     }
 
+    /// Where a session that never recorded a project of its own is written —
+    /// not where an arbitrary session is. Use [`Self::session_path_of`] for
+    /// that; this one cannot ask the disk, and so cannot answer.
     pub fn session_file_path(&self, session: &SessionId) -> PathBuf {
         session_file(&self.project_dir_path(), session)
+    }
+
+    /// The project this session belongs to: `Some(root)`, or `None` for a
+    /// session created with no project at all.
+    ///
+    /// Three answers, in order. The in-memory map, filled in when the session
+    /// wrote its `Meta` line and kept for as long as this process lives. The
+    /// session's own sidecar, which is indexed by session id alone and is
+    /// therefore reachable without already knowing the project — this is the
+    /// tier that survives a restart, and why `Meta` writes the sidecar before
+    /// it writes the log. And finally the cwd this store was built with,
+    /// which is where every session lived back when a store served one
+    /// project, and so is the right answer for transcripts written then.
+    async fn home_of(&self, session: SessionId) -> Option<PathBuf> {
+        if let Some(home) = self.homes.lock().await.get(&session) {
+            return home.clone();
+        }
+        let resolved = match load_session_metadata(&self.sessions_root, session).await {
+            // An empty `canonical_cwd` is how a no-project session records
+            // itself; `SessionMetadata::new` is given an empty path for it.
+            Some(meta) if meta.canonical_cwd.is_empty() => None,
+            Some(meta) => Some(PathBuf::from(meta.canonical_cwd)),
+            None => Some(self.canonical_cwd.clone()),
+        };
+        self.homes.lock().await.insert(session, resolved.clone());
+        resolved
+    }
+
+    /// The transcript directory of the project rooted at `home`, resolving
+    /// the root the same way a session's own `Meta` is resolved.
+    async fn project_dir_of_root(&self, home: Option<&Path>) -> PathBuf {
+        let canonical = match home {
+            Some(root) => Some(
+                canonicalize_cwd(root)
+                    .await
+                    .unwrap_or_else(|_| root.to_path_buf()),
+            ),
+            None => None,
+        };
+        project_dir_for(&self.projects_root, canonical.as_deref())
+    }
+
+    /// The directory holding this session's transcript.
+    async fn session_dir_of(&self, session: SessionId) -> PathBuf {
+        project_dir_for(&self.projects_root, self.home_of(session).await.as_deref())
+    }
+
+    /// The path of this session's transcript.
+    async fn session_path_of(&self, session: SessionId) -> PathBuf {
+        session_file(&self.session_dir_of(session).await, &session)
+    }
+
+    /// The project a session is about to be created under, read off the
+    /// `Meta` line that creates it.
+    ///
+    /// A sidechain inherits its parent's project rather than landing in the
+    /// no-project bucket: it carries no `project_root` of its own (the engine
+    /// spawning it has no concept of one), but its transcript is anchored to
+    /// the parent's — cascade delete and the parent-child walk both look for
+    /// it there.
+    async fn home_from_meta(&self, entry: &LogEntry) -> Option<Option<PathBuf>> {
+        let LogEntry::Meta {
+            project_root,
+            parent_session_id,
+            ..
+        } = entry
+        else {
+            return None;
+        };
+        if let Some(root) = project_root {
+            let root = Path::new(root);
+            return Some(Some(
+                canonicalize_cwd(root)
+                    .await
+                    .unwrap_or_else(|_| root.to_path_buf()),
+            ));
+        }
+        match parent_session_id.as_deref() {
+            Some(parent) => Some(match SessionId::parse(parent) {
+                Ok(parent) => self.home_of(parent).await,
+                // A parent id this store cannot resolve to a session: keep the
+                // child where a store that served one project would have put
+                // it, which is also where `child_sessions` looks for it.
+                Err(_) => Some(self.canonical_cwd.clone()),
+            }),
+            None => Some(None),
+        }
     }
 
     pub fn canonical_cwd(&self) -> &Path {
@@ -404,7 +509,7 @@ impl JsonlHistoryStore {
         max: usize,
     ) -> Result<Vec<(SessionId, String)>, HistoryError> {
         Ok(self
-            .session_files_by_mtime(max)
+            .session_files_by_mtime(&self.project_dir_path(), max)
             .await?
             .into_iter()
             .map(|(id, _, mtime)| (id, format_mtime(mtime)))
@@ -457,10 +562,11 @@ impl JsonlHistoryStore {
 
     async fn recent_summaries(
         &self,
+        dir: &Path,
         max: usize,
         detail: crate::query::SummaryDetail,
     ) -> Result<Vec<SessionSummary>, HistoryError> {
-        let files = self.session_files_by_mtime(max).await?;
+        let files = self.session_files_by_mtime(dir, max).await?;
         let mut out = Vec::new();
         for (session_id, _path, mtime) in files {
             match detail {
@@ -487,12 +593,13 @@ impl JsonlHistoryStore {
         Ok(out)
     }
 
-    async fn search_current_project(
+    async fn search_one_project(
         &self,
+        dir: &Path,
         needle: &str,
         max: usize,
     ) -> Result<Vec<SessionSummary>, HistoryError> {
-        let files = self.session_files_by_mtime(usize::MAX).await?;
+        let files = self.session_files_by_mtime(dir, usize::MAX).await?;
         let mut out = Vec::new();
         for (session_id, _path, mtime) in files {
             let entries = match self.load(session_id).await {
@@ -638,12 +745,12 @@ impl JsonlHistoryStore {
 
     async fn session_files_by_mtime(
         &self,
+        dir: &Path,
         max: usize,
     ) -> Result<Vec<(SessionId, PathBuf, std::time::SystemTime)>, HistoryError> {
         if max == 0 {
             return Ok(Vec::new());
         }
-        let dir = self.project_dir_path();
         let mut entries = match tokio::fs::read_dir(&dir).await {
             Ok(e) => e,
             Err(_) => return Ok(Vec::new()),
@@ -701,6 +808,29 @@ impl ProjectDirFilter {
                 .unwrap_or(false),
         }
     }
+}
+
+/// Every `<session>.jsonl` in one project directory, by id. A directory that
+/// isn't there holds no sessions — not an error, just a project nothing has
+/// been written for yet.
+async fn session_ids_in(dir: &Path) -> Result<Vec<SessionId>, HistoryError> {
+    let mut entries = match tokio::fs::read_dir(dir).await {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(HistoryError::Io(e)),
+    };
+    let mut out = Vec::new();
+    while let Some(ent) = entries.next_entry().await? {
+        let name = ent.file_name();
+        let Some(s) = name.to_str() else { continue };
+        let Some(stem) = s.strip_suffix(".jsonl") else {
+            continue;
+        };
+        if let Ok(id) = SessionId::parse(stem) {
+            out.push(id);
+        }
+    }
+    Ok(out)
 }
 
 async fn repo_root_or_cwd(cwd: &Path) -> PathBuf {
@@ -804,7 +934,33 @@ impl HistoryStore for JsonlHistoryStore {
 
     async fn append(&self, session: SessionId, entry: LogEntry) -> Result<(), HistoryError> {
         let _guard = self.append_lock.lock().await;
-        let path = self.session_file_path(&session);
+
+        // A `Meta` line is where a session says which project it belongs to,
+        // so it is also where that gets recorded — in the map for this
+        // process and in the sidecar for every later one. The sidecar is
+        // written *before* the log line, which is the opposite order from the
+        // counters below and for the opposite reason: the counters are a
+        // convenience computed from a log that already exists, while this is
+        // the index that says where the log is. A crash between the two
+        // leaves an empty index entry, which is recoverable; the other order
+        // leaves a transcript nothing can find.
+        let home = match self.home_from_meta(&entry).await {
+            Some(home) => {
+                let dir = project_dir_for(&self.projects_root, home.as_deref());
+                crate::project::ensure_session_sidecar_in(
+                    &self.sessions_root,
+                    home.as_deref().unwrap_or_else(|| Path::new("")),
+                    &dir,
+                    session,
+                )
+                .await?;
+                self.homes.lock().await.insert(session, home.clone());
+                home
+            }
+            None => self.home_of(session).await,
+        };
+        let project_history_dir = project_dir_for(&self.projects_root, home.as_deref());
+        let path = session_file(&project_history_dir, &session);
 
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -842,8 +998,8 @@ impl HistoryStore for JsonlHistoryStore {
         // same total and writing back the same sum.
         if let Err(e) = crate::project::add_counters_in(
             &self.sessions_root,
-            &self.canonical_cwd,
-            &self.project_dir_path(),
+            home.as_deref().unwrap_or_else(|| Path::new("")),
+            &project_history_dir,
             session,
             counters,
         )
@@ -855,7 +1011,7 @@ impl HistoryStore for JsonlHistoryStore {
     }
 
     async fn load(&self, session: SessionId) -> Result<Vec<EnvelopedEntry>, HistoryError> {
-        let path = self.session_file_path(&session);
+        let path = self.session_path_of(session).await;
         let content = match tokio::fs::read_to_string(&path).await {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -882,7 +1038,7 @@ impl HistoryStore for JsonlHistoryStore {
     }
 
     async fn delete(&self, session: SessionId) -> Result<(), HistoryError> {
-        let jsonl_path = self.session_file_path(&session);
+        let jsonl_path = self.session_path_of(session).await;
         match tokio::fs::remove_file(&jsonl_path).await {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -890,6 +1046,7 @@ impl HistoryStore for JsonlHistoryStore {
         }
         let meta_path = session_metadata_file(&self.sessions_root, &session);
         let _ = tokio::fs::remove_file(meta_path).await;
+        self.homes.lock().await.remove(&session);
         Ok(())
     }
 
@@ -898,10 +1055,11 @@ impl HistoryStore for JsonlHistoryStore {
         session: SessionId,
         title: Option<String>,
     ) -> Result<(), HistoryError> {
+        let home = self.home_of(session).await;
         crate::project::set_session_title_in(
             &self.sessions_root,
-            &self.canonical_cwd,
-            &self.project_dir_path(),
+            home.as_deref().unwrap_or_else(|| Path::new("")),
+            &project_dir_for(&self.projects_root, home.as_deref()),
             session,
             title,
         )
@@ -916,7 +1074,7 @@ impl HistoryStore for JsonlHistoryStore {
     /// The default would parse — and hydrate every paste of — an entire
     /// transcript to reach the fields on its first line.
     async fn session_facts(&self, session: SessionId) -> Result<SessionFacts, HistoryError> {
-        let path = self.session_file_path(&session);
+        let path = self.session_path_of(session).await;
         let content = match tokio::fs::read_to_string(&path).await {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -937,23 +1095,32 @@ impl HistoryStore for JsonlHistoryStore {
         Ok(SessionFacts::default())
     }
 
+    /// The sessions of the project this store was built for — not every
+    /// session it can reach, which is what `find_sessions` is for.
     async fn list_sessions(&self) -> Result<Vec<SessionId>, HistoryError> {
-        let dir = self.project_dir_path();
-        let mut entries = match tokio::fs::read_dir(&dir).await {
-            Ok(e) => e,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(HistoryError::Io(e)),
-        };
+        session_ids_in(&self.project_dir_path()).await
+    }
 
+    /// Looks in the parent's project rather than this store's own, which is
+    /// the same directory the child's transcript went to (`home_from_meta`
+    /// gives a sidechain its parent's project). The default walks
+    /// `list_sessions`, and would find nothing for a parent belonging to any
+    /// project but this store's — taking the cascade delete in
+    /// `session.close` down with it.
+    async fn child_sessions(
+        &self,
+        parent_session_id: &str,
+    ) -> Result<Vec<SessionId>, HistoryError> {
+        let dir = match SessionId::parse(parent_session_id) {
+            Ok(parent) => self.session_dir_of(parent).await,
+            Err(_) => self.project_dir_path(),
+        };
         let mut out = Vec::new();
-        while let Some(ent) = entries.next_entry().await? {
-            let name = ent.file_name();
-            let Some(s) = name.to_str() else { continue };
-            let Some(stem) = s.strip_suffix(".jsonl") else {
-                continue;
-            };
-            if let Ok(id) = SessionId::parse(stem) {
-                out.push(id);
+        for sid in session_ids_in(&dir).await? {
+            if self.session_facts(sid).await?.parent_session_id.as_deref()
+                == Some(parent_session_id)
+            {
+                out.push(sid);
             }
         }
         Ok(out)
@@ -974,10 +1141,23 @@ impl HistoryStore for JsonlHistoryStore {
     ) -> Result<Vec<SessionSummary>, HistoryError> {
         match (&query.scope, query.needle()) {
             (SessionScope::CurrentProject, None) => {
-                self.recent_summaries(query.limit, query.detail).await
+                self.recent_summaries(&self.project_dir_path(), query.limit, query.detail)
+                    .await
             }
             (SessionScope::CurrentProject, Some(needle)) => {
-                self.search_current_project(needle, query.limit).await
+                self.search_one_project(&self.project_dir_path(), needle, query.limit)
+                    .await
+            }
+            (SessionScope::Project(home), needle) => {
+                // Resolved the same way the project a session records is, or
+                // a caller naming the project it just created a session in
+                // would miss it over a symlink (`/tmp` against
+                // `/private/tmp`, every macOS temp directory).
+                let dir = self.project_dir_of_root(home.as_deref()).await;
+                match needle {
+                    None => self.recent_summaries(&dir, query.limit, query.detail).await,
+                    Some(needle) => self.search_one_project(&dir, needle, query.limit).await,
+                }
             }
             (SessionScope::AllProjects, _) => {
                 self.search_project_dirs(&query.text, query.limit, ProjectDirFilter::All)

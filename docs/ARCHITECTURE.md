@@ -246,14 +246,22 @@ daemon 实例锁与 team 目录锁共用 `base::process_identity::decide_stale_l
 | 目录 | 索引键 | 内容 |
 |---|---|---|
 | `projects/<sanitized-cwd>/` | 项目 | `<session-id>.jsonl` transcript |
+| `projects/_no-project/` | ——(保留) | 无项目会话的 transcript |
 | `sessions/<session-id>/` | 会话 | 会话记忆、metadata、输入历史 |
 | `memory/` | 全局 | 跨会话记忆(项目级的在 `<项目>/.atta/memory/`) |
 
+**会话进哪个项目目录由它自己的 `Meta.project_root` 决定**,不是由 daemon 的 cwd
+决定 —— 一个 daemon 同时服务多个项目时,后者会把所有项目的 transcript 堆进一个
+目录。侧链没有自己的 `project_root`,跟父会话进同一个目录(级联删除按那里找)。
+
 sidecar 不能塞进 `projects/<cwd>/`,因为按 session id 查找时没有项目信息可用。
-两者是并列的两个维度,不是两层嵌套。
+两者是并列的两个维度,不是两层嵌套。**反过来,"这个会话属于哪个项目"也只有
+sidecar 答得出**:`Meta` 在 transcript 里,而要读 transcript 先得知道它在哪个项目
+目录下。所以 `Meta` 落盘前先写 sidecar,顺序与计数器那类"从已有日志算出来的"
+附带信息相反。
 
 区分两类目录靠**目录名能否解析成 `SessionId`**:sanitize 后的 cwd 必然以 `-` 开头
-(绝对路径首字符是分隔符),解析不成 base58 id。
+(绝对路径首字符是分隔符),`_no-project` 以 `_` 开头,都解析不成 base58 id。
 
 ---
 

@@ -3100,8 +3100,16 @@ impl SessionPool {
 
         // 从 HistoryStore 查历史（inactive sessions）
         if let Some(ref store) = self.history_store {
-            let query = history::query::SessionQuery::recent(usize::MAX).ids_only();
-            if let Ok(summaries) = store.find_sessions(&query).await {
+            let mut summaries = Vec::new();
+            for home in self.served_projects().await {
+                let query = history::query::SessionQuery::recent(usize::MAX)
+                    .ids_only()
+                    .within(history::query::SessionScope::Project(home));
+                if let Ok(found) = store.find_sessions(&query).await {
+                    summaries.extend(found);
+                }
+            }
+            {
                 for summary in summaries {
                     let sid_str = summary.session_id.to_string();
                     if seen.contains(&sid_str) {
@@ -3136,6 +3144,31 @@ impl SessionPool {
             }
         }
 
+        out
+    }
+
+    /// Every project this daemon has served a session for, newest knowledge
+    /// first: its own, plus each one a `session.create {project_root}` built
+    /// a settings binding for. `None` is the no-project tier.
+    ///
+    /// This is what `session.list` enumerates cold sessions over. Not every
+    /// project on disk (`SessionScope::AllProjects`), which would report
+    /// sessions belonging to daemons and working directories this one has
+    /// nothing to do with; and not just the default project, which is what it
+    /// listed back when every session's transcript landed there regardless of
+    /// which project the session was actually bound to.
+    ///
+    /// A restart empties the binding cache, so a project no session has
+    /// touched since is not listed until one does. Bindings are built on
+    /// demand and nothing persists the set — the alternative is a daemon that
+    /// remembers projects it no longer serves.
+    async fn served_projects(&self) -> Vec<Option<PathBuf>> {
+        let mut out = vec![Some(self.cwd.clone())];
+        for (project, _scene) in self.projects.lock().await.keys() {
+            if !out.contains(project) {
+                out.push(project.clone());
+            }
+        }
         out
     }
 

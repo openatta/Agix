@@ -105,6 +105,23 @@ pub fn project_dir(projects_root: &Path, canonical_cwd: &Path) -> PathBuf {
     projects_root.join(name)
 }
 
+/// 无项目会话（`Meta.project_root` 为 `null`）的 transcript 目录名。
+///
+/// 不会与任何项目撞名：sanitize 之后的绝对路径必然以 `-` 开头（首字符是路径
+/// 分隔符），而这个名字以 `_` 开头。
+pub const NO_PROJECT_DIR: &str = "_no-project";
+
+/// 一个会话的 transcript 目录：有项目的按项目分，无项目的进保留桶。
+///
+/// 无项目会话不能落在"daemon 当时的 cwd"那个项目下——它按定义不属于任何项目，
+/// 而那个目录属于另一个真实项目，两者会混在一起。
+pub fn project_dir_for(projects_root: &Path, home: Option<&Path>) -> PathBuf {
+    match home {
+        Some(cwd) => project_dir(projects_root, cwd),
+        None => projects_root.join(NO_PROJECT_DIR),
+    }
+}
+
 /// 给定 project_dir + session_id，返回对应的 jsonl 文件路径。
 pub fn session_file(project_dir: &Path, session: &SessionId) -> PathBuf {
     project_dir.join(format!("{}.jsonl", session))

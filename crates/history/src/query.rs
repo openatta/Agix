@@ -17,6 +17,15 @@ use std::path::PathBuf;
 pub enum SessionScope {
     /// The project this store is bound to.
     CurrentProject,
+    /// One named project, whether or not it is the one the store was built
+    /// for. `None` is the no-project tier — sessions created with an explicit
+    /// `project_root: null`, which belong to no working directory at all.
+    ///
+    /// A host that serves several projects from one store asks with this,
+    /// once per project, instead of with `AllProjects`: `AllProjects` reaches
+    /// every project anything on this machine has ever opened, which is a
+    /// different (and much larger) question than "the ones I serve".
+    Project(Option<PathBuf>),
     /// Every project the store can reach.
     AllProjects,
     /// Projects whose working directory sits under this path.

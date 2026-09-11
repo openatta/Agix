@@ -1887,6 +1887,140 @@ async fn a_project_bound_sessions_memories_land_in_its_own_project() {
     srv.stop().await;
 }
 
+/// The transcript directory `project_root` names, resolved the way the store
+/// resolves it (macOS temp directories are symlinks, so the sanitized name is
+/// built from the canonical path or from nothing at all).
+fn transcript_dir(global_root: &std::path::Path, project: Option<&std::path::Path>) -> PathBuf {
+    let canonical = project.map(|p| std::fs::canonicalize(p).unwrap());
+    history::path::project_dir_for(&global_root.join("projects"), canonical.as_deref())
+}
+
+#[tokio::test]
+async fn a_project_bound_sessions_transcript_lands_in_that_projects_directory() {
+    let (srv, _seen) =
+        start_scripted_server(vec![text_round("a")], ask_settings(), Duration::ZERO).await;
+
+    let other_project = srv._dir.path().join("other-project");
+    std::fs::create_dir_all(&other_project).unwrap();
+
+    let created = rpc(
+        &srv.sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.create","params":{{"project_root":"{}"}},"id":1}}"#,
+            other_project.display()
+        ),
+    )
+    .await;
+    let sid = created["result"]["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    run_turn(&srv.sock, Some(&sid), "first").await;
+
+    let own = transcript_dir(srv._dir.path(), Some(&other_project)).join(format!("{sid}.jsonl"));
+    let pools = transcript_dir(srv._dir.path(), Some(&srv._dir.path().join("work")))
+        .join(format!("{sid}.jsonl"));
+    assert!(
+        own.exists(),
+        "a session's transcript belongs to its own project, not the daemon's"
+    );
+    assert!(!pools.exists(), "and not to both");
+
+    // Still listed: `session.list` enumerates every project this daemon has
+    // served, which is what keeps a cold session findable after the move.
+    rpc(
+        &srv.sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.close","params":{{"session_id":"{sid}"}},"id":2}}"#
+        ),
+    )
+    .await;
+    let listed = rpc(
+        &srv.sock,
+        r#"{"jsonrpc":"2.0","method":"session.list","id":3}"#,
+    )
+    .await;
+    let entry = listed["result"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["session_id"] == sid.as_str())
+        .cloned()
+        .unwrap_or_else(|| panic!("cold session missing from the list: {listed}"));
+    assert_eq!(entry["status"], "inactive", "{entry}");
+
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn a_no_project_sessions_transcript_lands_in_the_no_project_bucket() {
+    let (srv, _seen) =
+        start_scripted_server(vec![text_round("a")], ask_settings(), Duration::ZERO).await;
+
+    rpc(
+        &srv.sock,
+        r#"{"jsonrpc":"2.0","method":"scene.activate","params":{"scene":"chat"},"id":1}"#,
+    )
+    .await;
+    let created = rpc(
+        &srv.sock,
+        r#"{"jsonrpc":"2.0","method":"session.create","params":{"scene":"chat","project_root":null},"id":2}"#,
+    )
+    .await;
+    let sid = created["result"]["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    run_turn(&srv.sock, Some(&sid), "first").await;
+
+    assert!(
+        transcript_dir(srv._dir.path(), None)
+            .join(format!("{sid}.jsonl"))
+            .exists(),
+        "a session bound to no project must not be filed under one"
+    );
+
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn closing_a_project_bound_parent_still_cascades_to_its_sidechains() {
+    let (srv, _seen) =
+        start_scripted_server(vec![text_round("a")], ask_settings(), Duration::ZERO).await;
+
+    let other_project = srv._dir.path().join("other-project");
+    std::fs::create_dir_all(&other_project).unwrap();
+    let created = rpc(
+        &srv.sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.create","params":{{"project_root":"{}"}},"id":1}}"#,
+            other_project.display()
+        ),
+    )
+    .await;
+    let parent = created["result"]["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    run_turn(&srv.sock, Some(&parent), "root").await;
+    let child = inject_sidechain(&srv, &parent).await;
+
+    let closed = rpc(
+        &srv.sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.close","params":{{"session_id":"{parent}"}},"id":2}}"#
+        ),
+    )
+    .await;
+    assert_eq!(
+        closed["result"]["sidechains_deleted"], 1,
+        "a sidechain is found in its parent's project, not the daemon's: {closed}"
+    );
+    assert!(srv.store.load(child).await.is_err());
+
+    srv.stop().await;
+}
+
 // ── scripts ─────────────────────────────────────────────────────────────
 
 /// A project that binds a script gets it, through the daemon, on the prompt
