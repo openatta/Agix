@@ -14,6 +14,12 @@
 `scripts` 段怎么办」和「一个组件到底会不会被调起来」都只能由另一个构建回答。用例会
 说清楚怎么建、往哪个环境变量里塞：`ATTA_TEST_DAEMON_BIN_NO_CARRIER` 和
 `ATTA_TEST_DAEMON_BIN_PLUGINS`。CI 两个都建。
+
+> **手工建别的载体时务必带上自己的 `CARGO_TARGET_DIR`。** 每种载体建出来的都叫
+> `attacored`，而跨进程用例默认捡的就是 `target/debug/attacored` —— 往默认目录建一个
+> `--no-default-features` 的 daemon，等于把那批用例脚下的二进制换掉了。换掉之后它们
+> 不会说「你换了二进制」，只会说「脚本没进提示词」。上面两条命令里的
+> `CARGO_TARGET_DIR=...` 不是为了省空间，是为了这个。
 | `tests/scripts/*.sh` | 构建面的断言（无插件构建里没有插件依赖等） | `tests/scripts/locked_build.sh` |
 
 **全部不联网、不需要凭据**，`cargo test --workspace` 一条命令跑完，CI 每次 push 都跑。
