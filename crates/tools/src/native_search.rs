@@ -366,6 +366,7 @@ mod tests {
                 api_type: Some("anthropic".into()),
                 base_url: Some("https://example.invalid".into()),
                 api_key: Some("sk-from-provider".into()),
+                api_key_env: None,
                 default_model: Some("claude-provider".into()),
                 models: vec![],
             },

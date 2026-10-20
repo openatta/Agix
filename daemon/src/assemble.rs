@@ -26,6 +26,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use base::interface::credentials::CredentialSource;
 use base::interface::permission::{Permission, PermissionOutcome};
 use base::interface::scene::AgentScene;
 use model::client::{AnthropicClient, AuthMode, HttpAnthropicClient};
@@ -101,9 +102,15 @@ pub struct Assembly {
     pub extra_scenes: Vec<String>,
     /// How long an unanswered permission prompt may block a turn.
     pub permission_prompt_timeout: Duration,
-    /// Where model calls go. `None` builds an Anthropic client from the
-    /// credentials in the environment.
+    /// Where model calls go. `None` builds an Anthropic client keyed from
+    /// `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY`, else from `credentials`
+    /// asked for provider `"default"`.
     pub model_client: Option<Arc<dyn AnthropicClient>>,
+    /// Keys for whatever the configuration leaves unset: a provider entry
+    /// with neither `api_key` nor `api_key_env` is answered from here, as is
+    /// the default client when the environment has no key. For a host that
+    /// keeps credentials in a vault or keychain rather than on disk.
+    pub credentials: Option<Arc<dyn base::interface::credentials::CredentialSource>>,
     /// Where transcripts live.
     pub transcripts: Transcripts,
     /// What a `bypassPermissions` session runs under. `None` is
@@ -118,6 +125,7 @@ impl Default for Assembly {
             extra_scenes: Vec::new(),
             permission_prompt_timeout: DEFAULT_PERMISSION_PROMPT_TIMEOUT,
             model_client: None,
+            credentials: None,
             transcripts: Transcripts::default(),
             permission: None,
         }
@@ -162,10 +170,14 @@ pub async fn pool(
     // does is fail startup loudly on a daemon whose own project names a
     // provider config that cannot resolve, rather than letting every session
     // quietly fall back to the plain client.
-    validate_task_router_config(config)?;
+    let credentials: Arc<dyn CredentialSource> = match &assembly.credentials {
+        Some(host) => Arc::new(base::interface::credentials::ConfigThen(host.clone())),
+        None => Arc::new(base::interface::credentials::ConfigCredentials),
+    };
+    validate_task_router_config(config, &credentials)?;
     let client = match assembly.model_client {
         Some(client) => client,
-        None => anthropic_client_from_env()?,
+        None => default_anthropic_client(assembly.credentials.as_deref())?,
     };
     let permission = assembly
         .permission
@@ -204,7 +216,8 @@ pub async fn pool(
             history_store,
             config.paths.clone(),
         )
-        .with_permission_prompt_timeout(assembly.permission_prompt_timeout),
+        .with_permission_prompt_timeout(assembly.permission_prompt_timeout)
+        .with_credentials(credentials),
     );
 
     for extra in &assembly.extra_scenes {
@@ -242,7 +255,10 @@ pub async fn pool(
 /// did before routing existed — sub-agent spawns inherit the one client built
 /// above. An invalid configuration fails the assembly instead of starting a
 /// daemon that silently routes everything to the default.
-fn validate_task_router_config(config: &DaemonConfig) -> anyhow::Result<()> {
+fn validate_task_router_config(
+    config: &DaemonConfig,
+    credentials: &Arc<dyn CredentialSource>,
+) -> anyhow::Result<()> {
     if config.settings.providers.is_empty() {
         return Ok(());
     }
@@ -263,22 +279,33 @@ fn validate_task_router_config(config: &DaemonConfig) -> anyhow::Result<()> {
         .default_provider
         .as_deref()
         .expect("resolve_task_models already validated default_provider is set");
-    crate::model_router::build_task_router(&config.settings.providers, default_provider, resolved)
-        .map_err(|e| anyhow::anyhow!("failed to build multi-provider model router: {e}"))?;
+    crate::model_router::build_task_router(
+        &config.settings.providers,
+        default_provider,
+        resolved,
+        credentials,
+    )
+    .map_err(|e| anyhow::anyhow!("failed to build multi-provider model router: {e}"))?;
     Ok(())
 }
 
-/// Credentials through the contract rather than read inline, so this and the
-/// per-provider clients `model_router` builds get them the same way — a host
-/// that swaps the source swaps both.
-fn anthropic_client_from_env() -> anyhow::Result<Arc<dyn AnthropicClient>> {
-    let credentials = base::interface::credentials::EnvCredentials::anthropic();
-    let api_key = base::interface::credentials::CredentialSource::api_key(
-        &credentials,
-        "default",
-        &base::provider::ProviderConfig::default(),
-    )
-    .map_err(|_| anyhow::anyhow!("set ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY"))?;
+/// The client used when no provider routing applies: keyed from the
+/// environment, else from the host's source, asked for provider `"default"`.
+fn default_anthropic_client(
+    host: Option<&dyn CredentialSource>,
+) -> anyhow::Result<Arc<dyn AnthropicClient>> {
+    let none = base::provider::ProviderConfig::default();
+    let api_key = base::interface::credentials::EnvCredentials::anthropic()
+        .api_key("default", &none)
+        .or_else(|env| match host {
+            Some(host) => host.api_key("default", &none),
+            None => Err(env),
+        })
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "set ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY, or have the host supply credentials"
+            )
+        })?;
     let auth = AuthMode::ApiKey(api_key.expose().to_string());
     Ok(match std::env::var("ANTHROPIC_BASE_URL").ok() {
         Some(mut url) => {

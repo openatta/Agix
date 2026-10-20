@@ -325,7 +325,15 @@
       "properties": {
         "api_key": {
           "default": null,
-          "description": "Stored in plaintext, same as every other settings.json field — which\nis why [`Debug`](std::fmt::Debug) is hand-written below rather than\nderived. A host that must not keep a credential on disk supplies one\nthrough [`CredentialSource`](crate::interface::credentials::CredentialSource)\nand leaves this unset.",
+          "description": "Stored in plaintext, same as every other settings.json field — which\nis why [`Debug`](std::fmt::Debug) is hand-written below rather than\nderived. To keep the key off disk, name an environment variable in\n`api_key_env` instead, or have the host supply it through\n[`CredentialSource`](crate::interface::credentials::CredentialSource).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "api_key_env": {
+          "default": null,
+          "description": "Environment variable holding the key, read when `api_key` is unset.",
           "type": [
             "string",
             "null"

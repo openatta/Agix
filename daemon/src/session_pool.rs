@@ -134,8 +134,9 @@ impl ProjectBinding {
         watch: Vec<crate::watch_hub::WatchToken>,
         client: &Arc<dyn AnthropicClient>,
         last_good_router: Option<Arc<base::provider::TaskRouter>>,
+        credentials: &Arc<dyn base::interface::credentials::CredentialSource>,
     ) -> Self {
-        let (task_router, routing) = resolve_router(&settings, last_good_router);
+        let (task_router, routing) = resolve_router(&settings, last_good_router, credentials);
         // `task_models.main` is what points the conversation itself at a
         // configured provider; with none configured this is the plain
         // Anthropic client the daemon was started with.
@@ -474,6 +475,8 @@ pub struct SessionPool {
     /// `LiveSession.pending_prompts` for why this lives here rather than in
     /// the engine.
     permission_prompt_timeout: Duration,
+    /// Where provider keys come from when a binding builds its router.
+    credentials: Arc<dyn base::interface::credentials::CredentialSource>,
     /// Pool-level telemetry sink — for events that happen *before* any
     /// per-session `Agent`/handle exists (`session.resume` against a
     /// session that's already live, a terminal sidechain, or an unknown
@@ -584,6 +587,7 @@ impl ReloadReport {
 fn resolve_router(
     settings: &Settings,
     last_good: Option<Arc<base::provider::TaskRouter>>,
+    credentials: &Arc<dyn base::interface::credentials::CredentialSource>,
 ) -> (Option<Arc<base::provider::TaskRouter>>, ReloadReport) {
     let mut report = ReloadReport::default();
     if settings.providers.is_empty() {
@@ -609,6 +613,7 @@ fn resolve_router(
                 &settings.providers,
                 default_provider,
                 resolved,
+                credentials,
             ) {
                 Ok(router) => {
                     report.router_rebuilt = true;
@@ -698,8 +703,19 @@ impl SessionPool {
             config_generation: std::sync::atomic::AtomicU64::new(0),
             model_overrides: std::sync::Mutex::new(HashMap::new()),
             permission_prompt_timeout: DEFAULT_PERMISSION_PROMPT_TIMEOUT,
+            credentials: Arc::new(base::interface::credentials::ConfigCredentials),
             pool_telemetry,
         }
+    }
+
+    /// Resolve provider keys through `credentials` instead of only what each
+    /// provider entry says.
+    pub fn with_credentials(
+        mut self,
+        credentials: Arc<dyn base::interface::credentials::CredentialSource>,
+    ) -> Self {
+        self.credentials = credentials;
+        self
     }
 
     /// Override how long an unanswered permission prompt may block a turn
@@ -4053,6 +4069,7 @@ impl SessionPool {
             watch,
             &self.client,
             last_good,
+            &self.credentials,
         ));
         if let Some(router) = built.task_router.clone() {
             self.last_good_routers

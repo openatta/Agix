@@ -116,12 +116,19 @@ let router = daemon::model_router::build_task_router_with(
 注册一个已经存在的 `api_type` 就是替换它。宿主正是这么把自己的 client 塞到
 `anthropic` 背后的:不必另发明一个名字,再逼用户去记。
 
-凭据来自 `CredentialSource`,永远不直接读 `config.api_key`:
+凭据来自 `CredentialSource`,工厂从不直接读 `config.api_key`。缺省的
+`ConfigCredentials` 按厂商条目自己写的来:先 `api_key`,没有就读 `api_key_env`
+指名的环境变量。宿主要接自己的密钥库,用 `ConfigThen` 把它挂在后面——条目里写了的
+照用,没写的问宿主:
 
 ```rust
 let factories = model::factory::builtin_registry()
-    .with_credentials(Arc::new(MyVaultCredentials));
+    .with_credentials(Arc::new(ConfigThen(Arc::new(MyVaultCredentials))));
 ```
+
+daemon 的嵌入方不必自己拼:`Assembly { credentials: Some(..), .. }`,每个绑定建
+路由时都走这条链;没有任何厂商路由时的缺省 Anthropic 客户端先看
+`ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY`,再以厂商 id `"default"` 问它。
 
 拿回来的是 `Secret`:没有 `Display`,没有 `Serialize`,`Debug` 打出来是
 `<redacted>`。要读它得调 `.expose()`。

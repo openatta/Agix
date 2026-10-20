@@ -328,6 +328,7 @@ mod tests {
                 api_type: Some("anthropic".into()),
                 base_url: None,
                 api_key: None,
+                api_key_env: None,
                 default_model: Some("m".into()),
                 models: vec![],
             },

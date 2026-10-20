@@ -71,18 +71,35 @@ pub trait CredentialSource: Send + Sync {
     fn api_key(&self, provider_id: &str, config: &ProviderConfig) -> Result<Secret, String>;
 }
 
-/// Reads the key written in `settings.json`, which is what every existing
-/// deployment does and therefore the default.
+/// What the provider entry in `settings.json` says: its `api_key`, or else the
+/// environment variable its `api_key_env` names. The default source.
 pub struct ConfigCredentials;
 
 impl CredentialSource for ConfigCredentials {
-    fn api_key(&self, _provider_id: &str, config: &ProviderConfig) -> Result<Secret, String> {
-        config
-            .api_key
-            .clone()
-            .filter(|k| !k.is_empty())
-            .map(Secret::new)
-            .ok_or_else(|| "missing api_key".to_string())
+    fn api_key(&self, provider_id: &str, config: &ProviderConfig) -> Result<Secret, String> {
+        if let Some(key) = config.api_key.as_ref().filter(|k| !k.is_empty()) {
+            return Ok(Secret::new(key.clone()));
+        }
+        match config.api_key_env.as_deref().filter(|n| !n.is_empty()) {
+            Some(name) => EnvCredentials::new([name]).api_key(provider_id, config),
+            None => Err("missing api_key".to_string()),
+        }
+    }
+}
+
+/// The provider entry's own answer ([`ConfigCredentials`]) first, then a
+/// host-supplied source for whatever the entry leaves unset.
+pub struct ConfigThen(pub std::sync::Arc<dyn CredentialSource>);
+
+impl CredentialSource for ConfigThen {
+    fn api_key(&self, provider_id: &str, config: &ProviderConfig) -> Result<Secret, String> {
+        ConfigCredentials
+            .api_key(provider_id, config)
+            .or_else(|own| {
+                self.0
+                    .api_key(provider_id, config)
+                    .map_err(|host| format!("{own}; host: {host}"))
+            })
     }
 }
 
@@ -215,6 +232,67 @@ mod tests {
                 .unwrap_err(),
             "missing api_key"
         );
+    }
+
+    /// `PATH` stands in for a key variable: always set, so the test needs no
+    /// `set_var` racing other threads.
+    #[test]
+    fn a_provider_can_name_the_variable_its_key_is_in() {
+        let cfg = ProviderConfig {
+            api_key_env: Some("PATH".into()),
+            ..Default::default()
+        };
+        let got = ConfigCredentials.api_key("p", &cfg).unwrap();
+        assert_eq!(got.expose(), std::env::var("PATH").unwrap());
+
+        let written = ProviderConfig {
+            api_key: Some(CANARY.into()),
+            api_key_env: Some("PATH".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            ConfigCredentials.api_key("p", &written).unwrap().expose(),
+            CANARY,
+            "a key written in the entry wins over the variable"
+        );
+
+        let unset = ProviderConfig {
+            api_key_env: Some("ATTA_TEST_CREDENTIAL_THAT_IS_NOT_SET".into()),
+            ..Default::default()
+        };
+        let err = ConfigCredentials.api_key("p", &unset).unwrap_err();
+        assert!(
+            err.contains("ATTA_TEST_CREDENTIAL_THAT_IS_NOT_SET"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn the_host_answers_only_what_the_entry_leaves_unset() {
+        let host = std::sync::Arc::new(StaticCredentials::new([(
+            "vault-backed".to_string(),
+            Secret::new(CANARY),
+        )]));
+        let chain = ConfigThen(host);
+        assert_eq!(
+            chain
+                .api_key("vault-backed", &ProviderConfig::default())
+                .unwrap()
+                .expose(),
+            CANARY
+        );
+        let written = ProviderConfig {
+            api_key: Some("from-settings".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            chain.api_key("vault-backed", &written).unwrap().expose(),
+            "from-settings"
+        );
+        let err = chain
+            .api_key("unknown", &ProviderConfig::default())
+            .unwrap_err();
+        assert!(err.starts_with("missing api_key"), "{err}");
     }
 
     #[test]

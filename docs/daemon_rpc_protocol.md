@@ -1167,7 +1167,7 @@ daemon 自己那一对,给路径 = 它服务的另一个项目,`null` → `INVAL
   "project_root": "/Users/x/repo-b",
   "include_secrets": false }
 // ← result (getProvider)
-{ "providers": { },           // { "<id>": {api_type, base_url, api_key, default_model, models} }
+{ "providers": { },           // { "<id>": {api_type, base_url, api_key, api_key_env, default_model, models} }
   "default_provider": null,
   "task_models": { } }
 ```

@@ -43,10 +43,12 @@ pub struct ProviderConfig {
     pub base_url: Option<String>,
     /// Stored in plaintext, same as every other settings.json field — which
     /// is why [`Debug`](std::fmt::Debug) is hand-written below rather than
-    /// derived. A host that must not keep a credential on disk supplies one
-    /// through [`CredentialSource`](crate::interface::credentials::CredentialSource)
-    /// and leaves this unset.
+    /// derived. To keep the key off disk, name an environment variable in
+    /// `api_key_env` instead, or have the host supply it through
+    /// [`CredentialSource`](crate::interface::credentials::CredentialSource).
     pub api_key: Option<String>,
+    /// Environment variable holding the key, read when `api_key` is unset.
+    pub api_key_env: Option<String>,
     /// Model used when a task_models override doesn't name one explicitly,
     /// or when a named model fails the `models` allow-list check below.
     pub default_model: Option<String>,
@@ -105,6 +107,7 @@ impl std::fmt::Debug for ProviderConfig {
             .field("api_type", &self.api_type)
             .field("base_url", &self.base_url)
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("api_key_env", &self.api_key_env)
             .field("default_model", &self.default_model)
             .field("models", &self.models)
             .finish()
@@ -312,6 +315,7 @@ mod tests {
             api_type: Some("openai_compatible".into()),
             base_url: Some("https://example.invalid".into()),
             api_key: Some("key".into()),
+            api_key_env: None,
             default_model: Some(default_model.into()),
             models: models.iter().map(|s| s.to_string()).collect(),
         }

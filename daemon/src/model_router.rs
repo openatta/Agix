@@ -11,9 +11,11 @@
 //! `model::factory::builtin_registry()` is the default contents, and a host
 //! that wants a third protocol adds to it rather than editing this file.
 
+use base::interface::credentials::CredentialSource;
 use base::interface::model_factory::ModelFactoryRegistry;
 use base::provider::{ProviderConfig, ResolvedModel, TaskRouter};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Build a [`TaskRouter`] from parsed provider config + the result of
 /// `base::provider::resolve_task_models` (already validated — this is the
@@ -31,12 +33,13 @@ pub fn build_task_router(
     providers_cfg: &HashMap<String, ProviderConfig>,
     default_provider: &str,
     resolved: HashMap<String, ResolvedModel>,
+    credentials: &Arc<dyn CredentialSource>,
 ) -> Result<TaskRouter, String> {
     build_task_router_with(
         providers_cfg,
         default_provider,
         resolved,
-        &model::factory::builtin_registry(),
+        &model::factory::builtin_registry().with_credentials(credentials.clone()),
     )
 }
 
@@ -77,11 +80,16 @@ mod tests {
         model::factory::builtin_registry()
     }
 
+    fn settings_only() -> Arc<dyn CredentialSource> {
+        Arc::new(base::interface::credentials::ConfigCredentials)
+    }
+
     fn anthropic_provider(api_key: &str) -> ProviderConfig {
         ProviderConfig {
             api_type: Some("anthropic".into()),
             base_url: None,
             api_key: Some(api_key.into()),
+            api_key_env: None,
             default_model: Some("claude-sonnet-4-6".into()),
             models: vec![],
         }
@@ -160,7 +168,8 @@ mod tests {
             p
         });
 
-        let router = build_task_router(&providers, "anthropic", HashMap::new()).unwrap();
+        let router =
+            build_task_router(&providers, "anthropic", HashMap::new(), &settings_only()).unwrap();
         // model_for on an unresolved task falls back to the default
         // provider — just confirming this doesn't panic/error is the point
         // (identity checks live in `base::provider`'s own tests).
@@ -170,7 +179,12 @@ mod tests {
     #[test]
     fn build_task_router_fails_when_default_provider_missing() {
         let providers = HashMap::new();
-        let err = err_of(build_task_router(&providers, "anthropic", HashMap::new()));
+        let err = err_of(build_task_router(
+            &providers,
+            "anthropic",
+            HashMap::new(),
+            &settings_only(),
+        ));
         assert!(err.contains("anthropic"));
     }
 
@@ -183,7 +197,12 @@ mod tests {
             p.api_type = Some("bedrock".into());
             p
         });
-        let err = err_of(build_task_router(&providers, "anthropic", HashMap::new()));
+        let err = err_of(build_task_router(
+            &providers,
+            "anthropic",
+            HashMap::new(),
+            &settings_only(),
+        ));
         assert!(err.contains("broken"));
         assert!(err.contains("bedrock"));
     }
@@ -280,5 +299,29 @@ mod tests {
             factories.build("vaulted", &cfg).is_ok(),
             "the registry must ask the source, not the config field"
         );
+    }
+
+    /// What the daemon builds every binding's router with when the host hands
+    /// a source in: entries that carry a key keep using it, the rest ask the
+    /// host.
+    #[test]
+    fn the_router_asks_the_host_for_keys_the_settings_leave_out() {
+        use base::interface::credentials::{ConfigThen, Secret, StaticCredentials};
+
+        let mut providers = HashMap::new();
+        providers.insert("anthropic".to_string(), anthropic_provider("key1"));
+        providers.insert("vaulted".to_string(), {
+            let mut p = anthropic_provider("");
+            p.api_key = None;
+            p
+        });
+        assert!(
+            build_task_router(&providers, "anthropic", HashMap::new(), &settings_only()).is_err()
+        );
+
+        let host: Arc<dyn CredentialSource> = Arc::new(ConfigThen(Arc::new(
+            StaticCredentials::new([("vaulted".to_string(), Secret::new("sk-from-the-vault"))]),
+        )));
+        assert!(build_task_router(&providers, "anthropic", HashMap::new(), &host).is_ok());
     }
 }

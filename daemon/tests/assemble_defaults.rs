@@ -230,6 +230,61 @@ async fn an_unknown_extra_scene_fails_the_assembly() {
     );
 }
 
+/// A provider whose key the settings do not hold: the assembly fails without
+/// a source to ask, and with the host's source the daemon starts and every
+/// binding it builds afterwards routes to that provider.
+#[tokio::test]
+async fn a_host_credential_source_supplies_keys_the_settings_leave_out() {
+    use base::interface::credentials::{CredentialSource, Secret, StaticCredentials};
+
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().join("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::write(
+        dir.path().join("settings.json"),
+        r#"{"providers": {"vaulted": {"api_type": "anthropic", "default_model": "m"}},
+            "default_provider": "vaulted"}"#,
+    )
+    .unwrap();
+
+    let without = daemon::assemble::pool(
+        &config_in(dir.path()),
+        Arc::new(scene::scene::coding::CodingScene),
+        daemon::Assembly {
+            cwd: Some(cwd.clone()),
+            transcripts: daemon::Transcripts::Nowhere,
+            ..assembly()
+        },
+    )
+    .await;
+    let error = match without {
+        Ok(_) => panic!("a provider with no key anywhere must fail the assembly"),
+        Err(e) => format!("{e:#}"),
+    };
+    assert!(error.contains("missing api_key"), "{error}");
+
+    let host: Arc<dyn CredentialSource> = Arc::new(StaticCredentials::new([(
+        "vaulted".to_string(),
+        Secret::new("sk-from-the-vault"),
+    )]));
+    let pool = daemon::assemble::pool(
+        &config_in(dir.path()),
+        Arc::new(scene::scene::coding::CodingScene),
+        daemon::Assembly {
+            cwd: Some(cwd.clone()),
+            transcripts: daemon::Transcripts::Nowhere,
+            credentials: Some(host),
+            ..assembly()
+        },
+    )
+    .await
+    .expect("the host's source answers for the provider");
+
+    let reloaded = pool.reload_settings(Some(&cwd), "coding").await;
+    assert_eq!(reloaded["routing"]["router_rebuilt"], true, "{reloaded}");
+    assert!(reloaded["routing"]["router_error"].is_null(), "{reloaded}");
+}
+
 /// Session directories under a project root, however deep the sanitized-cwd
 /// naming puts them.
 fn transcripts_under(projects: &Path) -> usize {
