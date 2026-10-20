@@ -9,6 +9,7 @@ TurnComplete stop_reason=end_turn
 == session log ==
 User blocks=1
 Assistant
+User blocks=1
 Compact
 Assistant
 

@@ -243,12 +243,17 @@ fn find_meta(entries: &[history::entry::EnvelopedEntry]) -> Option<&history::ent
         .find(|entry| matches!(entry, history::entry::LogEntry::Meta { .. }))
 }
 
+/// How long a stopping Agent gets to finish its turn and persist it.
+const AGENT_EXIT_GRACE: Duration = Duration::from_secs(5);
+
 // ── LiveSession ─────────────────────────────────────────────────────────
 
 struct LiveSession {
     input_tx: InputSender,
     event_rx: Arc<AsyncMutex<Option<EventReceiver>>>,
     cancel: CancellationToken,
+    /// Cancelled once the Agent's task has returned and dropped the Agent.
+    exited: CancellationToken,
     /// The scene this session was created under — the one its `Meta` records,
     /// not this pool's default. Auto-naming is the one behaviour decided per
     /// turn rather than at build time, so it is the one that needs the scene
@@ -1938,6 +1943,7 @@ impl SessionPool {
         // degrades to the same "id reused, empty context" behavior as before
         // this was wired up, rather than failing session creation outright.
         if resume {
+            self.stop_live_agent(&session_id).await;
             let resume_start = std::time::Instant::now();
             let resume_result = agent.resume_session(&session_id).await;
             let outcome = match &resume_result {
@@ -1981,9 +1987,11 @@ impl SessionPool {
 
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
+        let exited = CancellationToken::new();
+        let exited_on_drop = exited.clone().drop_guard();
 
-        // 启动 Agent 后台事件循环
         tokio::spawn(async move {
+            let _exited_on_drop = exited_on_drop;
             let mut agent = agent;
             let _ = agent.run(cancel_clone).await;
         });
@@ -2006,6 +2014,7 @@ impl SessionPool {
             input_tx,
             event_rx: Arc::new(AsyncMutex::new(Some(event_rx))),
             cancel,
+            exited,
             scene: scene_for_session,
             name: None,
             created_at: Instant::now(),
@@ -4470,12 +4479,41 @@ impl SessionPool {
         })
     }
 
-    /// 关闭所有 session。
+    /// 关闭所有 session，等每个 Agent 把手上的一轮收尾落盘再返回。
     pub async fn shutdown_all(&self) {
-        let mut sessions = self.sessions.lock().await;
-        for (sid, live) in sessions.drain() {
+        let exits: Vec<CancellationToken> = {
+            let mut sessions = self.sessions.lock().await;
+            sessions
+                .drain()
+                .map(|(sid, live)| {
+                    live.cancel.cancel();
+                    info!(%sid, "session removed (shutdown)");
+                    live.exited
+                })
+                .collect()
+        };
+        let all = futures::future::join_all(exits.iter().map(|e| e.cancelled()));
+        if tokio::time::timeout(AGENT_EXIT_GRACE, all).await.is_err() {
+            warn!("some sessions did not stop within the grace period");
+        }
+    }
+
+    /// Stops the Agent running under `session_id`, if any, and waits for it
+    /// to finish — so whatever reads its transcript next reads all of it.
+    async fn stop_live_agent(&self, session_id: &str) {
+        let exited = {
+            let sessions = self.sessions.lock().await;
+            let Some(live) = sessions.get(session_id) else {
+                return;
+            };
             live.cancel.cancel();
-            info!(%sid, "session removed (shutdown)");
+            live.exited.clone()
+        };
+        if tokio::time::timeout(AGENT_EXIT_GRACE, exited.cancelled())
+            .await
+            .is_err()
+        {
+            warn!(%session_id, "previous agent did not stop within the grace period");
         }
     }
 
@@ -5446,6 +5484,7 @@ mod eviction_tests {
             input_tx,
             event_rx: Arc::new(AsyncMutex::new(Some(event_rx))),
             cancel: CancellationToken::new(),
+            exited: CancellationToken::new(),
             scene: Arc::new(scene::scene::coding::CodingScene),
             name: None,
             created_at: last_active,

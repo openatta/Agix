@@ -64,6 +64,9 @@ impl AnthropicClient for ScriptedClient {
             q.pop_front()
                 .unwrap_or_else(|| self.last.lock().unwrap().clone())
         };
+        if events.is_empty() {
+            return Box::pin(futures::stream::pending());
+        }
         Box::pin(futures::stream::iter(events.into_iter().map(Ok)))
     }
 
@@ -3993,6 +3996,66 @@ async fn a_stop_hook_that_discontinues_still_ends_the_turn_and_frees_the_session
 
     let (_, again) = turn_complete_of(&srv.sock, Some(&sid), "hello again").await;
     assert_eq!(again["stop_reason"], "stopped_by_hook");
+
+    srv.stop().await;
+}
+
+// ── what is on disk while a turn is still running ───────────────────────
+
+/// A step that finished is on disk before the next one starts, so a daemon
+/// killed while the model is answering loses only that answer.
+#[tokio::test]
+async fn a_finished_step_is_on_disk_while_the_next_one_is_still_running() {
+    let (srv, _seen) = start_scripted_server(
+        vec![
+            tool_round("Glob", "tool-1", serde_json::json!({"pattern": "*"})),
+            // An empty round never ends: the model is "still answering".
+            vec![],
+        ],
+        ask_settings_no_memory(),
+        Duration::ZERO,
+    )
+    .await;
+
+    let mut client = UnixStream::connect(&srv.sock).await.unwrap();
+    client
+        .write_all(
+            br#"{"jsonrpc":"2.0","method":"session.run_turn","params":{"message":"look around"},"id":1}"#,
+        )
+        .await
+        .unwrap();
+    client.write_all(b"\n").await.unwrap();
+    let (r, _w) = client.split();
+    let mut br = BufReader::new(r);
+    let sid = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let mut line = String::new();
+            assert!(
+                br.read_line(&mut line).await.unwrap() > 0,
+                "connection closed"
+            );
+            let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+            if v["params"]["event"]["kind"] == "tool_result" {
+                return v["params"]["session_id"].as_str().unwrap().to_string();
+            }
+        }
+    })
+    .await
+    .expect("the tool never ran");
+
+    let on_disk = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let h = history(&srv.sock, &sid).await;
+            let rendered = serde_json::to_string(&h["messages"]).unwrap();
+            if rendered.contains("tool-1") && rendered.contains("tool_result") {
+                return rendered;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the finished step never reached the transcript while the turn ran");
+    assert!(on_disk.contains("look around"), "{on_disk}");
 
     srv.stop().await;
 }

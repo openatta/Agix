@@ -818,6 +818,12 @@ impl Agent {
         let mut had_tool_uses_this_turn = false;
 
         loop {
+            // Every step starts from a transcript that is on disk, so a
+            // process that dies mid-turn loses at most the step in flight.
+            // Here every tool_use already has its tool_result next to it.
+            if let Err(e) = self.session.persist().await {
+                tracing::warn!(error = %e, "failed to persist session");
+            }
             if cancel.is_cancelled() {
                 self.last_had_tool_uses = had_tool_uses_this_turn;
                 self.record_turn_complete("cancelled", api_calls, tool_calls, start);
@@ -2607,7 +2613,7 @@ or project context that should survive across sessions.
         // so the next turn's compaction check can include it — see
         // `request_overhead_tokens` and `context_tokens`.
         self.request_overhead_tokens = estimate_request_overhead(&prompt_blocks, &tool_defs);
-        let messages = self.session.messages().to_vec();
+        let messages = pair_dangling_tool_uses(self.session.messages().to_vec());
         (prompt_blocks, tool_defs, messages)
     }
 
@@ -4220,6 +4226,73 @@ fn strip_token_budget_directive(input: &str) -> String {
 /// The same type interceptors see — one shape rather than a private struct
 /// and a public mirror of it that have to be kept agreeing.
 type ModelRequest = base::interface::model_interceptor::ModelRequestView;
+
+/// Gives every `tool_use` a `tool_result` in the message right after it.
+///
+/// The engine never writes an unpaired one, but a transcript written by a
+/// process that died mid-step can hold one, and the API rejects every
+/// request after it — a session that can never answer again. Applied to the
+/// outgoing request only; the transcript keeps what actually happened.
+fn pair_dangling_tool_uses(mut messages: Vec<ModelMessage>) -> Vec<ModelMessage> {
+    let mut i = 0;
+    while i < messages.len() {
+        if messages[i].role != MessageRole::Assistant {
+            i += 1;
+            continue;
+        }
+        let used: Vec<String> = messages[i]
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                ModelContentBlock::ToolUse { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
+        if used.is_empty() {
+            i += 1;
+            continue;
+        }
+        let next_is_user = messages
+            .get(i + 1)
+            .is_some_and(|m| m.role == MessageRole::User);
+        let answered: HashSet<&str> = if next_is_user {
+            messages[i + 1]
+                .content
+                .iter()
+                .filter_map(|b| match b {
+                    ModelContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
+                    _ => None,
+                })
+                .collect()
+        } else {
+            HashSet::new()
+        };
+        let missing: Vec<ModelContentBlock> = used
+            .iter()
+            .filter(|id| !answered.contains(id.as_str()))
+            .map(|id| ModelContentBlock::ToolResult {
+                tool_use_id: id.clone(),
+                content: "The tool call did not complete.".into(),
+                is_error: Some(true),
+            })
+            .collect();
+        if !missing.is_empty() {
+            if next_is_user {
+                messages[i + 1].content.splice(0..0, missing);
+            } else {
+                messages.insert(
+                    i + 1,
+                    ModelMessage {
+                        role: MessageRole::User,
+                        content: missing,
+                    },
+                );
+            }
+        }
+        i += 2;
+    }
+    messages
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct TurnOutcome {
@@ -7360,5 +7433,88 @@ mod prompt_assembly_tests {
             };
             assert!(user_text_fingerprint(&image_only).is_none());
         }
+    }
+}
+
+#[cfg(test)]
+mod dangling_tool_use_tests {
+    use super::*;
+
+    fn msg(role: MessageRole, content: Vec<ModelContentBlock>) -> ModelMessage {
+        ModelMessage { role, content }
+    }
+
+    fn tool_use(id: &str) -> ModelContentBlock {
+        ModelContentBlock::ToolUse {
+            id: id.into(),
+            name: "Bash".into(),
+            input: serde_json::json!({}),
+        }
+    }
+
+    fn tool_result(id: &str) -> ModelContentBlock {
+        ModelContentBlock::ToolResult {
+            tool_use_id: id.into(),
+            content: "ok".into(),
+            is_error: None,
+        }
+    }
+
+    fn result_ids(m: &ModelMessage) -> Vec<&str> {
+        m.content
+            .iter()
+            .filter_map(|b| match b {
+                ModelContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_transcript_that_ends_on_a_tool_use_gets_a_result_after_it() {
+        let out = pair_dangling_tool_uses(vec![
+            msg(
+                MessageRole::User,
+                vec![ModelContentBlock::Text { text: "go".into() }],
+            ),
+            msg(MessageRole::Assistant, vec![tool_use("a")]),
+        ]);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[2].role, MessageRole::User);
+        assert_eq!(result_ids(&out[2]), ["a"]);
+    }
+
+    #[test]
+    fn a_partly_answered_batch_gets_the_missing_results_first() {
+        let out = pair_dangling_tool_uses(vec![
+            msg(MessageRole::Assistant, vec![tool_use("a"), tool_use("b")]),
+            msg(
+                MessageRole::User,
+                vec![
+                    tool_result("b"),
+                    ModelContentBlock::Text {
+                        text: "next".into(),
+                    },
+                ],
+            ),
+        ]);
+        assert_eq!(out.len(), 2);
+        assert_eq!(result_ids(&out[1]), ["a", "b"]);
+    }
+
+    #[test]
+    fn a_paired_transcript_is_left_alone() {
+        let input = vec![
+            msg(MessageRole::Assistant, vec![tool_use("a")]),
+            msg(MessageRole::User, vec![tool_result("a")]),
+            msg(
+                MessageRole::Assistant,
+                vec![ModelContentBlock::Text {
+                    text: "done".into(),
+                }],
+            ),
+        ];
+        let out = pair_dangling_tool_uses(input.clone());
+        assert_eq!(format!("{out:?}"), format!("{input:?}"));
     }
 }
