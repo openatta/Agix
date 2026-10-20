@@ -95,7 +95,7 @@ impl Agent {
                                     "help" => self.handle_help_command(),
                                     "skills" => self.handle_skills_command(),
                                     "clear" => {
-                                        self.handle_clear_command();
+                                        self.handle_clear_command().await;
                                         "Session cleared. All messages removed.".into()
                                     }
                                     "compact" => {

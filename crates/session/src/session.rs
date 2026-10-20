@@ -306,10 +306,13 @@ impl SessionManager {
     }
 
     /// Clear all messages and reset turn counter (for `/clear` command).
-    pub fn clear(&mut self) {
-        self.messages.clear();
+    ///
+    /// Recorded as a compaction to nothing, so a resume after it starts empty
+    /// too and later messages keep landing on disk.
+    pub async fn clear(&mut self) -> Result<(), SessionError> {
         self.message_timestamps.clear();
         self.turn_count = 0;
+        self.replace_messages_after_compact(Vec::new(), 0, 0).await
     }
 
     // ── Parent session tracking ──

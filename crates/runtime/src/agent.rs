@@ -891,8 +891,10 @@ impl Agent {
     }
 
     /// `/clear` — clear session message history.
-    pub(crate) fn handle_clear_command(&mut self) {
-        self.session.clear();
+    pub(crate) async fn handle_clear_command(&mut self) {
+        if let Err(e) = self.session.clear().await {
+            tracing::warn!(error = %e, "failed to record /clear in the transcript");
+        }
         self.claude_md_injected = false; // re-inject CLAUDE.md on next turn
         self.invoked_skills.clear();
         self.permission_denial_count

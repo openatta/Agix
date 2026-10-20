@@ -4059,3 +4059,25 @@ async fn a_finished_step_is_on_disk_while_the_next_one_is_still_running() {
 
     srv.stop().await;
 }
+
+#[tokio::test]
+async fn clear_reaches_the_transcript_and_what_follows_it_does_too() {
+    let (srv, _seen) = start_scripted_server(
+        vec![text_round("first answer"), text_round("second answer")],
+        ask_settings_no_memory(),
+        Duration::ZERO,
+    )
+    .await;
+
+    let sid = run_turn(&srv.sock, None, "before the clear").await;
+    let (_, done) = turn_complete_of(&srv.sock, Some(&sid), "/clear").await;
+    assert_eq!(done["stop_reason"], "command_executed");
+    run_turn(&srv.sock, Some(&sid), "after the clear").await;
+
+    let rendered = serde_json::to_string(&history(&srv.sock, &sid).await["messages"]).unwrap();
+    assert!(!rendered.contains("before the clear"), "{rendered}");
+    assert!(rendered.contains("after the clear"), "{rendered}");
+    assert!(rendered.contains("second answer"), "{rendered}");
+
+    srv.stop().await;
+}
