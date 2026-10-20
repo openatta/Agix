@@ -84,19 +84,16 @@ pub struct Settings {
     pub permission_mode: PermissionMode,
 
     /// Allow/deny/ask rules for specific tools.
+    ///
+    /// Every tier's rules apply side by side: a project's rules are added to
+    /// the global and scene ones, never substituted for them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub permission_rules: Vec<PermissionRule>,
 
     /// Rules contributed by the `settings.local.json` overlays, kept apart
-    /// from `permission_rules` rather than merged into it.
-    ///
-    /// Two reasons they can't just go through the generic merge: it replaces
-    /// arrays wholesale, so a local overlay would *shadow* the project tier's
-    /// rules instead of adding to them; and `RuleSource::LocalSettings`'s
-    /// priority (40, above `ProjectSettings`'s 30) only decides anything if
-    /// both sets reach the rule engine carrying their own source. Populated
-    /// by `Settings::load`, never read from a settings file — hence
-    /// `serde(skip)`.
+    /// from `permission_rules` so they reach the rule engine as
+    /// `RuleSource::LocalSettings`. Populated by `Settings::load`, never read
+    /// from a settings file — hence `serde(skip)`.
     #[serde(skip)]
     pub local_permission_rules: Vec<PermissionRule>,
 
@@ -254,6 +251,10 @@ pub struct PermissionRule {
     pub tool: String,
     /// Action: "allow", "deny", or "ask".
     pub action: PermissionAction,
+    /// The tier whose settings file this rule came from. Set by
+    /// `Settings::load`; `None` for rules built in code.
+    #[serde(skip)]
+    pub tier: Option<crate::interface::config_source::Tier>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -758,6 +759,7 @@ impl Settings {
         let base = Self::defaults_for(default_model);
         let mut merged_json = serde_json::to_value(&base).unwrap_or_else(|_| serde_json::json!({}));
 
+        let mut permission_rules: Vec<PermissionRule> = Vec::new();
         let mut local_permission_rules: Vec<PermissionRule> = Vec::new();
 
         for layer in source.layers() {
@@ -766,13 +768,21 @@ impl Settings {
                 // `paths` is resolved from this function's own arguments,
                 // never from settings.json content.
                 obj.remove("paths");
-                if layer.machine_local {
-                    if let Some(rules) = obj.remove("permission_rules") {
-                        match serde_json::from_value::<Vec<PermissionRule>>(rules) {
-                            Ok(r) => local_permission_rules.extend(r),
-                            Err(e) => {
-                                tracing::warn!(layer = layer.tier.name(), origin = %layer.origin, error = %e, "failed to parse permission_rules, ignoring them");
+                if let Some(rules) = obj.remove("permission_rules") {
+                    match serde_json::from_value::<Vec<PermissionRule>>(rules) {
+                        Ok(rules) => {
+                            let tagged = rules.into_iter().map(|mut r| {
+                                r.tier = Some(layer.tier);
+                                r
+                            });
+                            if layer.machine_local {
+                                local_permission_rules.extend(tagged);
+                            } else {
+                                permission_rules.extend(tagged);
                             }
+                        }
+                        Err(e) => {
+                            tracing::warn!(layer = layer.tier.name(), origin = %layer.origin, error = %e, "failed to parse permission_rules, ignoring them");
                         }
                     }
                 }
@@ -788,6 +798,7 @@ impl Settings {
             }
         };
 
+        settings.permission_rules = permission_rules;
         settings.local_permission_rules = local_permission_rules;
 
         settings.paths = PathSettings {
@@ -1074,6 +1085,42 @@ mod tests {
                 .map(|r| r.tool.as_str())
                 .collect::<Vec<_>>(),
             vec!["Bash(id)", "Bash(ls)"]
+        );
+    }
+
+    #[test]
+    fn committed_tiers_contribute_rules_side_by_side_each_tagged_with_its_tier() {
+        use crate::interface::config_source::Tier;
+        let root = tempfile::tempdir().unwrap();
+        let global = root.path().join("global");
+        let scene = root.path().join("scene");
+        let project = root.path().join("project");
+        write_settings(
+            &global,
+            r#"{"permission_rules": [{"tool": "Bash(rm:*)", "action": "deny"}]}"#,
+        );
+        write_settings(
+            &scene,
+            r#"{"permission_rules": [{"tool": "Read(~/.ssh/**)", "action": "deny"}]}"#,
+        );
+        write_settings(
+            &project,
+            r#"{"permission_rules": [{"tool": "Bash(ls)", "action": "allow"}]}"#,
+        );
+
+        let settings = Settings::load(global, scene, project, "code", "m");
+        assert_eq!(
+            settings
+                .permission_rules
+                .iter()
+                .map(|r| (r.tool.as_str(), r.tier))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Bash(rm:*)", Some(Tier::Global)),
+                ("Read(~/.ssh/**)", Some(Tier::Scene)),
+                ("Bash(ls)", Some(Tier::Project)),
+            ],
+            "a project tier that writes any rule must not erase the user's"
         );
     }
 

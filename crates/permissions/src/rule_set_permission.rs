@@ -601,4 +601,57 @@ mod tests {
             "persistent allow must survive clear_temporary_allows, got {outcome:?}"
         );
     }
+
+    #[tokio::test]
+    async fn a_rule_in_the_project_tier_does_not_erase_the_users_global_denies() {
+        let root = tempfile::tempdir().unwrap();
+        let global = root.path().join("global");
+        let project = root.path().join("project");
+        for (dir, body) in [
+            (
+                &global,
+                r#"{"permission_rules": [{"tool": "Bash(rm:*)", "action": "deny"}]}"#,
+            ),
+            (
+                &project,
+                r#"{"permission_rules": [{"tool": "Bash(ls)", "action": "allow"}]}"#,
+            ),
+        ] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("settings.json"), body).unwrap();
+        }
+        let settings = base::interface::settings::Settings::load(
+            global,
+            root.path().join("scene"),
+            project,
+            "code",
+            "m",
+        );
+
+        let perm = RuleSetPermission::from_settings(
+            &settings,
+            PermissionMode::Default,
+            registry_with_content_tool(ContentAwareFakeTool {
+                name: "Bash",
+                content: Some("rm -rf build"),
+            }),
+            [],
+        );
+        assert_eq!(
+            perm.gate
+                .rules()
+                .iter()
+                .map(|r| r.source)
+                .collect::<Vec<_>>(),
+            vec![
+                base::permission::RuleSource::UserSettings,
+                base::permission::RuleSource::ProjectSettings
+            ]
+        );
+        let outcome = perm.check("Bash", &json!({}), root.path(), "s1").await;
+        assert!(
+            matches!(outcome, PermissionOutcome::Deny { .. }),
+            "{outcome:?}"
+        );
+    }
 }

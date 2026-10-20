@@ -695,7 +695,7 @@
       "description": "Permission mode for tool execution."
     },
     "permission_rules": {
-      "description": "Allow/deny/ask rules for specific tools.",
+      "description": "Allow/deny/ask rules for specific tools.\n\nEvery tier's rules apply side by side: a project's rules are added to\nthe global and scene ones, never substituted for them.",
       "items": {
         "$ref": "#/$defs/PermissionRule"
       },

@@ -101,14 +101,23 @@ pub fn rules_from_settings(
         .collect()
 }
 
-/// 一个 `Settings` 里全部两层权限规则，各自带上正确的 [`RuleSource`]。
-///
-/// `settings.local.json` 那层（`RuleSource::LocalSettings`，优先级 40）和
-/// `settings.json` 那层（`ProjectSettings`，30）是**并存**关系而不是覆盖
-/// 关系——两层都进 `RuleSet`，冲突由优先级排序解决。这也是
-/// `RuleSource::LocalSettings` 唯一的生产构造点。
+/// 一个 `Settings` 里全部权限规则，各自带上所在层对应的 [`RuleSource`]：
+/// 全局与 scene 层是用户自己的设置（`UserSettings`），项目层是仓库里提交的
+/// （`ProjectSettings`），`settings.local.json` 是 `LocalSettings`。代码里直接
+/// 构造、没有层信息的规则按 `ProjectSettings` 算。
 pub fn rules_from_all_tiers(settings: &base::interface::settings::Settings) -> Vec<PermissionRule> {
-    let mut rules = rules_from_settings(&settings.permission_rules, RuleSource::ProjectSettings);
+    use base::interface::config_source::Tier;
+    let mut rules: Vec<PermissionRule> = settings
+        .permission_rules
+        .iter()
+        .flat_map(|r| {
+            let source = match r.tier {
+                Some(Tier::Global | Tier::Scene) => RuleSource::UserSettings,
+                Some(Tier::Project) | None => RuleSource::ProjectSettings,
+            };
+            rules_from_settings(std::slice::from_ref(r), source)
+        })
+        .collect();
     rules.extend(rules_from_settings(
         &settings.local_permission_rules,
         RuleSource::LocalSettings,
@@ -211,6 +220,7 @@ mod tests {
         base::interface::settings::PermissionRule {
             tool: tool.to_string(),
             action,
+            tier: None,
         }
     }
 
