@@ -48,6 +48,9 @@ pub enum AgentEvent {
         message: String,
         paths: Vec<PathBuf>,
         turn_id: String,
+        /// The `tool_use` block this prompt is about, when known.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_use_id: Option<String>,
     },
 
     // ── Turn lifecycle ──

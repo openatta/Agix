@@ -3169,6 +3169,7 @@ impl Permission for ParentPermission {
                 message: format!("[sub-agent {session_id}] {message}"),
                 paths,
                 turn_id: String::new(),
+                tool_use_id: None,
             })
             .is_err()
         {

@@ -40,6 +40,8 @@ pub enum ElicitKind {
         tool_name: String,
         /// Paths the call would touch, for a host that wants to show them.
         paths: Vec<PathBuf>,
+        /// The `tool_use` block asking, when the asker knows it.
+        tool_use_id: Option<String>,
     },
     /// The model wants something clarified before it continues. The answer is
     /// either one of the request's option keys or free text, as a JSON string.
@@ -220,6 +222,7 @@ mod tests {
             ElicitKind::Authorization {
                 tool_name: "Bash".into(),
                 paths: vec![],
+                tool_use_id: None,
             },
             ElicitKind::Clarification { header: None },
             ElicitKind::Import { sources: vec![] },

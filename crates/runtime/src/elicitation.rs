@@ -85,8 +85,12 @@ impl Drop for Registration {
 #[async_trait]
 impl Elicitation for ChannelElicitation {
     async fn ask(&self, request: ElicitRequest) -> ElicitOutcome {
-        let (tool_name, paths) = match request.kind {
-            ElicitKind::Authorization { tool_name, paths } => (tool_name, paths),
+        let (tool_name, paths, tool_use_id) = match request.kind {
+            ElicitKind::Authorization {
+                tool_name,
+                paths,
+                tool_use_id,
+            } => (tool_name, paths, tool_use_id),
             other => {
                 let what = match other {
                     ElicitKind::Clarification { .. } => "a clarification",
@@ -119,6 +123,7 @@ impl Elicitation for ChannelElicitation {
             message: request.message,
             paths,
             turn_id: String::new(),
+            tool_use_id,
         });
 
         match rx.await {
@@ -151,6 +156,7 @@ mod tests {
             kind: ElicitKind::Authorization {
                 tool_name: "Bash".into(),
                 paths: vec![],
+                tool_use_id: None,
             },
             message: "run `rm -rf /`?".into(),
             options: ChannelElicitation::authorization_options(),

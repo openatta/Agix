@@ -74,7 +74,7 @@ pub async fn execute_stream<F, Fut, G>(
     interceptors: &[Arc<dyn base::interface::model_interceptor::ModelInterceptor>],
 ) -> Result<StreamResult, crate::turn::TurnError>
 where
-    F: Fn(String, serde_json::Value) -> Fut + Send + Sync + 'static,
+    F: Fn(String, String, serde_json::Value) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = base::interface::tool_middleware::ToolOutcome> + Send,
     G: Fn(&str, &serde_json::Value) -> bool + Send + Sync,
 {
@@ -233,7 +233,7 @@ where
 
                 if safe {
                     // Spawn immediately into the current concurrent batch
-                    let exec = execute_tool(name.clone(), input);
+                    let exec = execute_tool(id.clone(), name.clone(), input);
                     let abort = batch_abort.clone();
                     batch_futures.push(async move {
                         let result = tokio::select! {
@@ -275,7 +275,7 @@ where
                         }
                     }
                     // Execute the sequential tool
-                    let result = execute_tool(name.clone(), input).await;
+                    let result = execute_tool(id.clone(), name.clone(), input).await;
                     let (content, new_msgs, failed) = read_outcome(&result);
                     buffer_result(
                         event_tx,
@@ -579,7 +579,7 @@ mod tests {
             &mut session,
             &tx,
             "test-turn".into(),
-            |_name, _input| async move { Ok(ToolAnswer::text("ok")) },
+            |_id, _name, _input| async move { Ok(ToolAnswer::text("ok")) },
             |_name, _input| true,
             CancellationToken::new(),
             &[],
@@ -646,7 +646,7 @@ mod tests {
             &mut session,
             &tx,
             "test-turn".into(),
-            |_name, _input| async move { Ok(ToolAnswer::text("ok")) },
+            |_id, _name, _input| async move { Ok(ToolAnswer::text("ok")) },
             |_name, _input| true,
             CancellationToken::new(),
             &[],
@@ -705,7 +705,7 @@ mod tests {
             &mut session,
             &tx,
             "test-turn".into(),
-            |_name, _input| async move { Ok(ToolAnswer::text("ok")) },
+            |_id, _name, _input| async move { Ok(ToolAnswer::text("ok")) },
             |_name, _input| true,
             CancellationToken::new(),
             &[],
@@ -771,7 +771,7 @@ mod tests {
             &mut session,
             &tx,
             "test-turn".into(),
-            |_name, _input| async move { Ok(ToolAnswer::text("ok")) },
+            |_id, _name, _input| async move { Ok(ToolAnswer::text("ok")) },
             |name, _input| name == "Glob", // Glob concurrency-safe, Bash is not
             CancellationToken::new(),
             &[],
@@ -815,7 +815,7 @@ mod tests {
             &mut session,
             &tx,
             "test-turn".into(),
-            |_name, _input| async move { Ok(ToolAnswer::text("ok")) },
+            |_id, _name, _input| async move { Ok(ToolAnswer::text("ok")) },
             |_name, _input| true,
             CancellationToken::new(),
             &[],
@@ -875,7 +875,7 @@ mod tests {
             &mut session,
             &tx,
             "test-turn".into(),
-            |_name, input| async move {
+            |_id, _name, input| async move {
                 // Reverse completion order relative to submission: the tool
                 // matching "*.a" (submitted first) sleeps longest, "*.c"
                 // (submitted last) doesn't sleep at all — so real completion
@@ -954,9 +954,7 @@ mod tests {
             &mut session,
             &tx,
             "test-turn".into(),
-            // `execute_tool` receives `(name, input)`, not the ToolUse `id` —
-            // distinguish the two calls by their `command` input instead.
-            |_name, input| async move {
+            |_id, _name, input| async move {
                 if input["command"] == "false" {
                     Err("simulated PostToolUse denial".to_string())
                 } else {
@@ -1028,7 +1026,7 @@ mod tests {
             &mut session,
             &tx,
             "test-turn".into(),
-            |_name, _input| async move { Ok(ToolAnswer::text("ok")) },
+            |_id, _name, _input| async move { Ok(ToolAnswer::text("ok")) },
             |_name, _input| false,
             CancellationToken::new(),
             &[],

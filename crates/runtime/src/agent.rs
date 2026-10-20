@@ -4246,6 +4246,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_tool_hook_is_told_which_tool_use_it_is_about_and_the_live_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let seen = dir.path().join("pre_tool_use.json");
+        let mut settings = test_settings();
+        settings.hooks_config = Some(serde_json::json!({
+            "PreToolUse": [
+                { "type": "command", "command": format!("cat > '{}'", seen.display()) }
+            ]
+        }));
+        let model: Arc<dyn Model> = Arc::new(ToolThenStopModel {
+            calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            tool: "Probe",
+        });
+        let tools = Arc::new(InMemoryToolRegistry::new());
+        tools.register(Arc::new(ProbeTool));
+        let (mut agent, _event_rx, _input_tx) = Builder::new()
+            .scene(Arc::new(scene::scene::coding::CodingScene))
+            .model(model)
+            .settings(Arc::new(settings))
+            .tools(tools)
+            .skip_warmup(true)
+            .build()
+            .expect("build should succeed");
+        agent
+            .session_state
+            .set_permission_mode(base::permission::PermissionMode::Plan);
+
+        agent
+            .process_turn(
+                InputMessage::User {
+                    content: "go".into(),
+                    attachments: vec![],
+                    turn_id: "t1".into(),
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .expect("process_turn should succeed");
+
+        let payload: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&seen).expect("the hook ran")).unwrap();
+        assert_eq!(payload["tool_use_id"], "toolu_1");
+        assert_eq!(payload["permission_mode"], "plan");
+    }
+
+    #[tokio::test]
     async fn post_tool_use_hook_discontinue_ends_the_turn_early() {
         // End-to-end regression test for the PostToolUse -> discontinue
         // wiring: a PostToolUse hook returning `continue: false` must stop

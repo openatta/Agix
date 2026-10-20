@@ -243,7 +243,7 @@ impl Agent {
             format!("{event:?}"),
             self.session.session_id.clone(),
             self.settings.paths.project_root().display().to_string(),
-            format!("{:?}", self.settings.permission_mode).to_lowercase(),
+            hook_permission_mode(self.session_state.permission_mode()),
         ));
         let _ = self.hooks.run(event, &input).await;
     }
@@ -330,7 +330,7 @@ impl Agent {
                 hook_event_name: "UserPromptSubmit".into(),
                 session_id: self.session.session_id.clone(),
                 cwd: self.settings.paths.project_root().display().to_string(),
-                permission_mode: "default".into(),
+                permission_mode: hook_permission_mode(self.session_state.permission_mode()),
                 tool_name: None,
                 tool_input: None,
                 tool_use_id: None,
@@ -1045,8 +1045,9 @@ impl Agent {
                 &mut self.session,
                 &self.event_tx,
                 tid.clone(),
-                move |name, input| {
+                move |tool_use_id, name, input| {
                     let exec_ctx = ToolExecCtx {
+                        tool_use_id,
                         tools: Arc::clone(&tools),
                         cwd: cwd.clone(),
                         local_settings_path: local_settings_path.clone(),
@@ -1377,7 +1378,7 @@ impl Agent {
                     hook_event_name: "Stop".into(),
                     session_id: self.session.session_id.to_string(),
                     cwd: self.settings.paths.project_root().display().to_string(),
-                    permission_mode: "default".into(),
+                    permission_mode: hook_permission_mode(self.session_state.permission_mode()),
                     tool_name: None,
                     tool_input: None,
                     tool_use_id: None,
@@ -2019,7 +2020,9 @@ or project context that should survive across sessions.
                             hook_event_name: "PreCompact".into(),
                             session_id: self.session.session_id.clone(),
                             cwd: self.settings.paths.project_root().display().to_string(),
-                            permission_mode: "default".into(),
+                            permission_mode: hook_permission_mode(
+                                self.session_state.permission_mode(),
+                            ),
                             tool_input: Some(serde_json::json!({
                                 "messages_before": self.session.messages.len(),
                                 "token_count": self.context_tokens(),
@@ -2273,7 +2276,9 @@ or project context that should survive across sessions.
                                     hook_event_name: "PostCompact".into(),
                                     session_id: self.session.session_id.clone(),
                                     cwd: self.settings.paths.project_root().display().to_string(),
-                                    permission_mode: "default".into(),
+                                    permission_mode: hook_permission_mode(
+                                        self.session_state.permission_mode(),
+                                    ),
                                     tool_input: Some(serde_json::json!({
                                         "strategy": format!("{:?}", result.strategy),
                                         "messages_before": messages_before,
@@ -2896,6 +2901,7 @@ fn estimate_request_overhead(prompt_blocks: &[PromptBlock], tool_defs: &[ToolDef
 /// Context bundle for tool execution — owned to survive async closures.
 #[derive(Clone)]
 pub(crate) struct ToolExecCtx {
+    pub tool_use_id: String,
     pub tools: Arc<dyn base::tool::ToolRegistry>,
     pub cwd: std::path::PathBuf,
     /// Where a `PermitAlways { scope: Local }` answer persists its rule.
@@ -3209,10 +3215,10 @@ async fn execute_tool_inner(
             hook_event_name: "PreToolUse".into(),
             session_id: ctx.session_id.clone(),
             cwd: ctx.cwd.display().to_string(),
-            permission_mode: "default".into(),
+            permission_mode: hook_permission_mode(ctx.session_state.permission_mode()),
             tool_name: Some(name.to_string()),
             tool_input: Some(input.clone()),
-            tool_use_id: None,
+            tool_use_id: Some(ctx.tool_use_id.clone()),
             tool_result: None,
             is_error: None,
             user_prompt: None,
@@ -3289,6 +3295,7 @@ async fn execute_tool_inner(
                     kind: base::interface::elicitation::ElicitKind::Authorization {
                         tool_name: name.to_string(),
                         paths,
+                        tool_use_id: Some(ctx.tool_use_id.clone()),
                     },
                     message,
                     options: crate::elicitation::ChannelElicitation::authorization_options(),
@@ -3442,7 +3449,7 @@ async fn execute_tool_inner(
         permission_mode: ctx.session_state.permission_mode(),
         config: ctx.config.clone(),
         session: ctx.session_state.clone(),
-        tool_use_id: String::new(),
+        tool_use_id: ctx.tool_use_id.clone(),
         agent: None,
         parent_messages: None,
         agent_depth: ctx.agent_depth,
@@ -3462,7 +3469,7 @@ async fn execute_tool_inner(
             Some(ctx.turn_id.clone()),
             telemetry::ToolStartPayload {
                 tool_name: name.to_string(),
-                tool_use_id: String::new(),
+                tool_use_id: ctx.tool_use_id.clone(),
                 input_json_size,
                 destructive: tool.is_destructive(&input),
                 deferred: tool.is_deferred(),
@@ -3488,7 +3495,7 @@ async fn execute_tool_inner(
             Some(ctx.turn_id.clone()),
             telemetry::ToolExecutionPayload {
                 tool_name: name.to_string(),
-                tool_use_id: String::new(),
+                tool_use_id: ctx.tool_use_id.clone(),
                 outcome: if is_error {
                     telemetry::ToolOutcome::Failed
                 } else {
@@ -3567,10 +3574,10 @@ async fn execute_tool_inner(
             hook_event_name: "PostToolUse".into(),
             session_id: ctx.session_id.clone(),
             cwd: ctx.cwd.display().to_string(),
-            permission_mode: "default".into(),
+            permission_mode: hook_permission_mode(ctx.session_state.permission_mode()),
             tool_name: Some(name.to_string()),
             tool_input: Some(input_for_post_hook.clone()),
-            tool_use_id: None,
+            tool_use_id: Some(ctx.tool_use_id.clone()),
             tool_result: Some(result_json),
             is_error: Some(is_error_flag),
             user_prompt: None,
@@ -4194,6 +4201,14 @@ fn strip_token_budget_directive(input: &str) -> String {
 /// and a public mirror of it that have to be kept agreeing.
 type ModelRequest = base::interface::model_interceptor::ModelRequestView;
 
+/// A permission mode as hooks see it: the name settings files use.
+fn hook_permission_mode(mode: base::permission::PermissionMode) -> String {
+    serde_json::to_value(mode)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_else(|| "default".into())
+}
+
 /// Gives every `tool_use` a `tool_result` in the message right after it.
 ///
 /// The engine never writes an unpaired one, but a transcript written by a
@@ -4566,6 +4581,7 @@ mod tests {
         permission: Arc<dyn base::interface::permission::Permission>,
     ) -> ToolExecCtx {
         ToolExecCtx {
+            tool_use_id: "toolu_test".into(),
             tools,
             cwd: std::env::temp_dir(),
             local_settings_path: std::env::temp_dir()
@@ -5155,6 +5171,7 @@ mod tests {
         });
 
         let ctx = ToolExecCtx {
+            tool_use_id: "toolu_test".into(),
             tools,
             cwd: dir.path().to_path_buf(),
             local_settings_path: atta_dir.join(base::interface::settings::SETTINGS_LOCAL_FILE),
