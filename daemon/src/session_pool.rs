@@ -291,6 +291,41 @@ pub enum OnBusy {
     Steer,
 }
 
+/// What a rebuild of a session has to reproduce: the options it was created
+/// with and what has been changed on it since.
+///
+/// An `Agent` is rebuilt whenever its binding goes stale, the janitor evicts
+/// it, or the daemon restarts; every rebuild reproduces this, not whatever the
+/// triggering call happens to pass.
+#[derive(Clone, Default)]
+struct SessionSpec {
+    options: Option<SessionOptions>,
+    model: Option<String>,
+    provider: Option<String>,
+    /// Shared by every Agent this process builds for the session, so a
+    /// rebuild continues a replay where it stood instead of from the first
+    /// recorded call. Not persisted: a recording in progress does not outlive
+    /// the process that made it.
+    recorder: Option<Arc<telemetry::recorder::Recorder>>,
+}
+
+/// The persisted part of a [`SessionSpec`], written to the session's log as
+/// an extension entry each time it changes; the last one wins. An extension
+/// entry rather than a `Meta` field because the spec changes after `Meta` is
+/// written, and readers that do not know the namespace skip it.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct RecordedSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    options: Option<SessionOptions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
+}
+
+const SPEC_NS: &str = "attacore.session";
+const SPEC_EVENT: &str = "spec";
+
 // ── LiveSession ─────────────────────────────────────────────────────────
 
 struct LiveSession {
@@ -486,21 +521,10 @@ pub struct SessionPool {
     /// binding invalidated nothing would be left to notice the next change to
     /// the global tier or to the settings `self.settings` mirrors.
     pool_watch: std::sync::Mutex<Vec<crate::watch_hub::WatchToken>>,
-    /// Models chosen with `session.setModel`, by session id.
-    ///
-    /// The command itself reaches the engine through the session's input
-    /// channel and lives in that `Agent`'s settings — which is not where it
-    /// can stay. An `Agent` is rebuilt from settings whenever its binding goes
-    /// stale or the janitor evicts an idle session,
-    /// and a rebuild would put the model back to the configured one with
-    /// nothing said to the client that chose otherwise. `create()` replays
-    /// this map onto every session it builds, so the choice outlives the
-    /// `Agent` it was made on.
-    ///
-    /// Not persisted: it lasts as long as this daemon does. A restart is a
-    /// visible event; an eviction is not, and that is the difference that
-    /// decides which one is allowed to forget.
-    model_overrides: std::sync::Mutex<HashMap<String, String>>,
+    /// Each session's [`SessionSpec`], by id — what every rebuild of it
+    /// applies. Filled from the session's log the first time a session not
+    /// built in this process is resumed.
+    specs: std::sync::Mutex<HashMap<String, SessionSpec>>,
     /// How long a `kind:"prompt"` permission ask may sit unanswered before
     /// the daemon answers it with a `Deny` on the client's behalf.
     /// `Duration::ZERO` disables the timer entirely (wait forever — the
@@ -738,7 +762,7 @@ impl SessionPool {
                 }
             },
             pool_watch: std::sync::Mutex::new(Vec::new()),
-            model_overrides: std::sync::Mutex::new(HashMap::new()),
+            specs: std::sync::Mutex::new(HashMap::new()),
             permission_prompt_timeout: DEFAULT_PERMISSION_PROMPT_TIMEOUT,
             credentials: Arc::new(base::interface::credentials::ConfigCredentials),
             pool_telemetry,
@@ -1710,6 +1734,8 @@ impl SessionPool {
         options: Option<&SessionOptions>,
         resume: bool,
     ) -> Result<String, String> {
+        let spec = self.spec_for(&session_id, resume, options).await;
+        let options = spec.options.as_ref();
         let scene_id = scene.id().to_string();
         // The `Builder` takes ownership of the scene; the session keeps a
         // handle of its own because `run_turn` has to ask it things.
@@ -1747,7 +1773,10 @@ impl SessionPool {
         let (model, task_router) = match recorder_config {
             None => (binding.model.clone(), task_router),
             Some(config) => {
-                let shared = telemetry::recorder::Recorder::new();
+                let shared = spec
+                    .recorder
+                    .clone()
+                    .unwrap_or_else(telemetry::recorder::Recorder::new);
                 let wrap =
                     |provider_id: Option<&str>, inner: Arc<dyn base::interface::model::Model>| {
                         let mut m = RecorderModel::shared(
@@ -1772,14 +1801,25 @@ impl SessionPool {
         // lives in the engine, so it travels as a setting rather than as a
         // daemon-side wrapper around `Permission`. `Settings` is behind an
         // `Arc`, so override on a private clone rather than in place.
+        // The mode is decided once and written into the snapshot as well:
+        // the gate, the hook payloads and `Meta` all read it from there, and a
+        // snapshot still holding the settings-file mode made every one of them
+        // report a mode the session was not running in.
+        let permission_mode = effective_permission_mode(&base_settings, options);
         let settings_snapshot = {
             let mut snap = (*base_settings).clone();
             snap.execution.permission_prompt_timeout_secs =
                 self.permission_prompt_timeout.as_secs();
+            snap.permission_mode = permission_mode;
             Arc::new(snap)
         };
-        let permission =
-            resolve_session_permission(&self.permission, &self.tools, &settings_snapshot, options);
+        let permission = resolve_session_permission(
+            &self.permission,
+            &self.tools,
+            &settings_snapshot,
+            permission_mode,
+            options,
+        );
 
         let mut builder = Builder::new()
             .scene(scene)
@@ -2003,6 +2043,9 @@ impl SessionPool {
                     }
                 }
             }
+            if spec.options.is_some() {
+                self.persist_spec(&session_id, &spec).await;
+            }
         }
 
         // Load prior messages back into memory before the turn loop starts —
@@ -2110,7 +2153,7 @@ impl SessionPool {
         // Before this Agent serves anything: the command is queued ahead of
         // whatever turn follows, so a session rebuilt mid-conversation never
         // answers one turn on the model the caller replaced.
-        if let Some(model) = self.model_override(&session_id) {
+        if let Some(model) = spec.model.clone() {
             let _ = input_for_override.send(InputMessage::System {
                 kind: EngineCommand::UpdateModel,
                 content: model,
@@ -2120,12 +2163,101 @@ impl SessionPool {
         Ok(session_id)
     }
 
-    fn model_override(&self, session_id: &str) -> Option<String> {
-        self.model_overrides
+    /// This session's spec: the one this process already holds, else the one
+    /// its log recorded (for a resume), else a new one from `options`.
+    async fn spec_for(
+        &self,
+        session_id: &str,
+        resume: bool,
+        options: Option<&SessionOptions>,
+    ) -> SessionSpec {
+        if let Some(spec) = self.lock_specs().get(session_id) {
+            return spec.clone();
+        }
+        let mut spec = if resume {
+            self.recorded_spec(session_id).await
+        } else {
+            SessionSpec::default()
+        };
+        // A log written before specs were recorded has none; the options of
+        // the call that brought the session back are the best there is.
+        if spec.options.is_none() {
+            spec.options = options.cloned();
+        }
+        if spec.options.as_ref().is_some_and(|o| o.recorder.is_some()) {
+            spec.recorder = Some(telemetry::recorder::Recorder::new());
+        }
+        self.lock_specs()
+            .entry(session_id.to_string())
+            .or_insert(spec)
+            .clone()
+    }
+
+    fn lock_specs(&self) -> std::sync::MutexGuard<'_, HashMap<String, SessionSpec>> {
+        self.specs
             .lock()
-            .expect("model_overrides mutex is never held across a panic")
-            .get(session_id)
-            .cloned()
+            .expect("specs mutex is never held across a panic")
+    }
+
+    async fn recorded_spec(&self, session_id: &str) -> SessionSpec {
+        let entries = self.load_entries(session_id).await.unwrap_or_default();
+        let recorded = entries
+            .iter()
+            .rev()
+            .find_map(|env| match &env.entry {
+                history::entry::LogEntry::Extension { ns, event, payload }
+                    if ns == SPEC_NS && event == SPEC_EVENT =>
+                {
+                    serde_json::from_value::<RecordedSpec>(payload.clone()).ok()
+                }
+                _ => None,
+            })
+            .unwrap_or_default();
+        SessionSpec {
+            options: recorded.options,
+            model: recorded.model,
+            provider: recorded.provider,
+            recorder: None,
+        }
+    }
+
+    async fn persist_spec(&self, session_id: &str, spec: &SessionSpec) {
+        let Some(store) = self.history_store.as_ref() else {
+            return;
+        };
+        let Ok(sid) = base::session::SessionId::parse(session_id) else {
+            return;
+        };
+        let recorded = RecordedSpec {
+            options: spec.options.clone().map(|mut o| {
+                o.recorder = None;
+                o
+            }),
+            model: spec.model.clone(),
+            provider: spec.provider.clone(),
+        };
+        let Ok(payload) = serde_json::to_value(&recorded) else {
+            return;
+        };
+        let entry = history::entry::LogEntry::Extension {
+            ns: SPEC_NS.to_string(),
+            event: SPEC_EVENT.to_string(),
+            payload,
+        };
+        if let Err(e) = store.append(sid, entry).await {
+            warn!(%session_id, error = %e, "failed to record the session spec");
+        }
+    }
+
+    /// Change this session's spec and record the change in its log.
+    async fn update_spec(&self, session_id: &str, change: impl FnOnce(&mut SessionSpec)) {
+        let spec = {
+            let mut specs = self.lock_specs();
+            let spec = specs.entry(session_id.to_string()).or_default();
+            change(spec);
+            spec.clone()
+        };
+        self.persist_spec(session_id, &spec).await;
     }
 
     /// Longest name `session.rename` accepts.
@@ -2252,10 +2384,8 @@ impl SessionPool {
             live.input_tx.clone()
         };
 
-        self.model_overrides
-            .lock()
-            .expect("model_overrides mutex is never held across a panic")
-            .insert(session_id.to_string(), model.to_string());
+        self.update_spec(session_id, |spec| spec.model = Some(model.to_string()))
+            .await;
 
         if input_tx
             .send(InputMessage::System {
@@ -2279,11 +2409,8 @@ impl SessionPool {
 
     /// Forget a session's `session.setModel` choice — it is deleted or
     /// closed, and an id is never reused.
-    fn forget_model_override(&self, session_id: &str) {
-        self.model_overrides
-            .lock()
-            .expect("model_overrides mutex is never held across a panic")
-            .remove(session_id);
+    fn forget_spec(&self, session_id: &str) {
+        self.lock_specs().remove(session_id);
     }
 
     /// Record a raised permission ask so late subscribers can be handed it.
@@ -3653,10 +3780,9 @@ impl SessionPool {
                 info!(%session_id, "session removed");
             }
         }
-        // The runtime entity is gone, so the runtime choice goes with it —
-        // unlike eviction, which destroys the same `Agent` while the session
-        // is still something a client can come back to.
-        self.forget_model_override(session_id);
+        // The in-memory copy only: a session resumed later reads its spec back
+        // from its log.
+        self.forget_spec(session_id);
         self.delete_sidechain_list(session_id, children).await
     }
 
@@ -5386,9 +5512,9 @@ fn resolve_session_permission(
     bypass_instance: &Arc<dyn Permission>,
     tools: &Arc<base::tool::InMemoryToolRegistry>,
     settings: &Settings,
+    mode: base::interface::settings::PermissionMode,
     options: Option<&SessionOptions>,
 ) -> Arc<dyn Permission> {
-    let mode = effective_permission_mode(settings, options);
     if matches!(
         mode,
         base::interface::settings::PermissionMode::BypassPermissions
@@ -5599,7 +5725,8 @@ mod resolve_session_permission_tests {
     ) -> (Arc<dyn Permission>, Arc<dyn Permission>) {
         let bypass: Arc<dyn Permission> = Arc::new(AllowAllTestPermission);
         let tools = Arc::new(base::tool::InMemoryToolRegistry::new());
-        let resolved = resolve_session_permission(&bypass, &tools, settings, options);
+        let mode = effective_permission_mode(settings, options);
+        let resolved = resolve_session_permission(&bypass, &tools, settings, mode, options);
         (bypass, resolved)
     }
 
@@ -6280,7 +6407,10 @@ mod set_model_tests {
         }
 
         assert!(
-            pool.model_override(&session_id).is_none(),
+            pool.lock_specs()
+                .get(&session_id)
+                .and_then(|spec| spec.model.clone())
+                .is_none(),
             "a refused change must not be recorded — a later rebuild would apply it"
         );
     }

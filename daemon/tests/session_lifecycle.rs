@@ -3317,6 +3317,77 @@ async fn allow_client_permission_override_lets_a_client_opt_out() {
     srv.stop().await;
 }
 
+/// A session's options are part of what it is, not of the call that
+/// happened to build its engine: a reload rebuilds the engine, and the next
+/// turn — sent with no options at all — must run under the ones the session
+/// was created with. The options are also in the session's log, which is how
+/// a daemon restart gets them back.
+#[tokio::test]
+async fn a_rebuilt_session_keeps_the_options_it_was_created_with() {
+    let mut settings = ask_settings();
+    settings.allow_client_permission_override = true;
+    let mut rounds = asking_bash_rounds("first.txt");
+    rounds.extend(asking_bash_rounds("second.txt"));
+    let (srv, _seen) = start_scripted_server(rounds, settings, Duration::from_secs(5)).await;
+
+    let (frames, response) = rpc_streaming(
+        &srv.sock,
+        r#"{"jsonrpc":"2.0","method":"session.run_turn","params":{"message":"make a file","options":{"permission_mode":"bypassPermissions"}},"id":1}"#,
+    )
+    .await;
+    assert!(response["result"].is_object(), "turn failed: {response}");
+    assert!(events_of_kind(&frames, "prompt").is_empty());
+    let sid = response["result"]["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let reloaded = rpc(
+        &srv.sock,
+        r#"{"jsonrpc":"2.0","method":"config.reload","id":2}"#,
+    )
+    .await;
+    assert!(reloaded["result"].is_object(), "reload failed: {reloaded}");
+
+    let (frames, response) = rpc_streaming(
+        &srv.sock,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "session.run_turn",
+            "params": {"session_id": sid, "message": "make another"},
+            "id": 3,
+        })
+        .to_string(),
+    )
+    .await;
+    assert!(response["result"].is_object(), "turn failed: {response}");
+    assert!(
+        events_of_kind(&frames, "prompt").is_empty(),
+        "the rebuilt session prompted, so it lost the mode it was created with: {frames:?}"
+    );
+
+    let entries = srv
+        .store
+        .load(base::session::SessionId::parse(&sid).unwrap())
+        .await
+        .unwrap();
+    let recorded = entries.iter().find_map(|env| match &env.entry {
+        history::entry::LogEntry::Extension { ns, payload, .. } if ns == "attacore.session" => {
+            Some(payload.clone())
+        }
+        _ => None,
+    });
+    assert_eq!(
+        recorded
+            .as_ref()
+            .map(|p| p["options"]["permission_mode"].clone()),
+        Some(serde_json::json!("bypassPermissions")),
+        "the session's log does not carry its options: {recorded:?}"
+    );
+
+    srv.stop().await;
+}
+
 #[tokio::test]
 async fn settings_permission_rules_finally_reach_the_daemon() {
     // `settings.permission_rules` has been parsed by `Settings::load` for a

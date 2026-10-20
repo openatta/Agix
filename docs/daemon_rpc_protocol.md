@@ -735,8 +735,15 @@ HashMap),客户端要按 `scene` 找条目,不要按下标。
 为真而 `project_root` 是 `null` → `PROJECT_REQUIRED`;给了路径但目录不存在 →
 `PROJECT_NOT_FOUND`。
 
-`options` 只在真正新建时生效,之后改不了。**形状不认识的 `options` 会被整体当成
-"没传"**,不报错 —— 拼错字段名不会有任何提示。
+`options` 在新建时生效,并随会话保存:之后每次重建引擎(设置变化、空闲回收后再用、
+daemon 重启后恢复)都按同一份 `options` 重建,之后的调用里再传的 `options` 被忽略。
+会话日志里没有记录过 `options` 的旧会话例外:恢复时采用这次调用带的那份。
+`options` 记在会话日志里一条 `ns` 为 `attacore.session`、`event` 为 `spec` 的扩展条目上,
+`session.setModel` 选的模型也记在那里,所以同样跨重启保留。**形状不认识的 `options`
+会被整体当成"没传"**,不报错 —— 拼错字段名不会有任何提示。
+
+`recorder` 不落盘:同一进程里的重建接着原来的回放进度,不从头重放;daemon 重启之后
+这个会话不再录制或回放。
 
 `recorder.mode` 取 `record` / `replay` / `rerun`;`dir` 省略时用 daemon 自己的
 录制根目录。
@@ -756,7 +763,7 @@ HashMap),客户端要按 `scene` 找条目,不要按下标。
   "message": "把权限层重构一下",     // 必填
   "turn_id": "t-1",               // 可选,省略则服务端生成
   "attachments": [ ],             // 可选,见 §4.4
-  "options": { },                 // 可选,同 session.create,仅新建/重建时生效
+  "options": { },                 // 可选,同 session.create,仅新建时生效
   "on_busy": "reject" }           // 可选,reject | queue | steer,见 §5.3
 // ← result
 { "session_id": "…", "turn_id": "…",
@@ -897,8 +904,8 @@ turn 期间的引擎错误不是事件,是**这次调用的错误响应**:`ENGIN
 因为恢复要读一遍 transcript 并占掉会话池的一个名额 —— 一个画会话列表的宿主给每一行
 都订阅一次,默认恢复就等于替它把整页会话全恢复了,而它以为自己只是在看。
 
-`resume: true` 不接 `options`:要指定 `permission_mode` 之类的恢复,显式调
-`session.resume`。恢复失败的错误跟 `session.resume` 完全一致 —— 跨场景仍然
+`resume: true` 不接 `options`:要给一个没有记录过 `options` 的旧会话指定
+`permission_mode` 之类再恢复,显式调 `session.resume`。恢复失败的错误跟 `session.resume` 完全一致 —— 跨场景仍然
 `SCENE_MISMATCH`(§3.4),终态侧链仍然 `SIDECHAIN_TERMINAL`,池子满了仍然按恢复那边
 的规矩来。
 
@@ -1036,7 +1043,7 @@ sidecar),不是某个宿主自己的一层覆盖 —— 各宿主各存一份的
 // → params
 { "session_id": "…",
   "create_if_missing": false,   // 可选,默认 false
-  "options": { } }              // 可选,同 session.create
+  "options": { } }              // 可选,同 session.create;会话已记录 options 时忽略
 // ← result
 { "session_id": "…",
   "status": "already_active",   // already_active | resumed | created

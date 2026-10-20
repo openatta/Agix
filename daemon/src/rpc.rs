@@ -286,25 +286,30 @@ pub mod codes {
 
 // ── Session options (extensible, passed via session.run_turn params) ──
 
-/// Optional per-session configuration passed via `session.run_turn` params.
-/// Applied when the session is first created; ignored for existing sessions.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+/// Optional per-session configuration passed via `session.create` or
+/// `session.run_turn` params.
+///
+/// Taken when the session is created and kept with it: every rebuild of the
+/// session's engine — a settings change, an idle eviction, a daemon restart —
+/// applies the same options again. Options sent with a later call to an
+/// existing session are ignored.
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct SessionOptions {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub recorder: Option<RecorderOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub telemetry: Option<TelemetryOptions>,
-    /// Opt-in real permission checking for this session — `None` (the
-    /// default) keeps today's behavior (`AllowAllPermission`, every tool
-    /// call proceeds, no `session.event{kind:"prompt"}` ever fires). Only a
-    /// session that explicitly sets this switches to a real
-    /// `RuleSetPermission`. This is deliberate: existing daemon-based
-    /// applications that don't know about `session.respondToPrompt` must
-    /// see zero behavior change.
+    /// This session's permission mode. `None` takes the settings'
+    /// `permission_mode`. A session may always ask for a stricter mode than
+    /// the settings'; a looser one is clamped unless the settings set
+    /// `allow_client_permission_override`.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<base::interface::settings::PermissionMode>,
     /// Allow/deny/ask rules for the `RuleSetPermission` this session's
     /// `permission_mode` (if set) constructs. Ignored when `permission_mode`
     /// is `None`.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub permission_rules: Vec<base::permission::PermissionRule>,
     /// JSON Schema the session's structured output must satisfy — see
     /// `runtime::agent::Builder::output_schema`.
@@ -312,7 +317,7 @@ pub struct SessionOptions {
 }
 
 /// Record or replay this session's LLM calls.
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct RecorderOptions {
     pub mode: String, // "record" | "replay" | "rerun"
     /// Directory name for the recording under `dir`. Omitted, the session id
@@ -332,7 +337,7 @@ pub struct RecorderOptions {
     pub strict: bool,
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct TelemetryOptions {
     pub output: String, // absolute path to telemetry output file
 }
