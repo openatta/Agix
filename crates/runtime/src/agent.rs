@@ -853,20 +853,19 @@ impl Agent {
         self.running_task_summaries.clear();
     }
 
-    /// Trigger manual compaction.
-    pub async fn compact_now(&self) -> Result<(), EngineError> {
-        if let Err(e) = self
-            .compactor
-            .compact(
-                self.session.messages().to_vec(),
-                self.scene.token_budget().compact_threshold,
-                self.scene.token_budget().compact_keep_recent,
-            )
+    /// Compact the conversation now, whatever the budget says — the same
+    /// path automatic compaction takes, with an LLM summary whenever a
+    /// summarizer is configured. Without one, the compactor's cascade aims at
+    /// half of the history's current size. `None` when there was nothing to
+    /// compact or a `PreCompact` hook declined.
+    pub async fn compact_now(&mut self) -> Option<crate::turn::CompactSummary> {
+        let target = (compaction::grouping::estimate_tokens(self.session.messages()) / 2).max(1);
+        let keep = self
+            .budget_policy
+            .context_budget(&self.scene.token_budget())
+            .compact_keep_recent;
+        self.run_compaction(target, keep, crate::turn::CompactTrigger::Manual)
             .await
-        {
-            tracing::warn!(error = %e, "failed to compact messages");
-        }
-        Ok(())
     }
 
     /// Convenience: run a single turn from a user message string.
@@ -6261,6 +6260,77 @@ mod tests {
             })
             .unwrap();
         acked.await.expect("the demultiplexer always answers")
+    }
+
+    #[tokio::test]
+    async fn compacting_on_request_works_far_below_the_threshold() {
+        let model: Arc<dyn Model> = Arc::new(StepRecordingModel {
+            tool: None,
+            hold_first: None,
+            sent: Default::default(),
+        });
+        let (mut agent, mut event_rx, _input_tx) = Builder::new()
+            .scene(Arc::new(scene::scene::coding::CodingScene) as Arc<dyn AgentScene>)
+            .model(model)
+            .settings(Arc::new(test_settings()))
+            .skip_warmup(true)
+            .build()
+            .expect("build should succeed");
+        for i in 0..40 {
+            agent
+                .session
+                .push_message(base::interface::model::ModelMessage {
+                    role: base::interface::model::MessageRole::User,
+                    content: vec![base::interface::model::ModelContentBlock::Text {
+                        text: format!("question {i}: {}", "words ".repeat(50)),
+                    }],
+                });
+            agent
+                .session
+                .push_message(base::interface::model::ModelMessage {
+                    role: base::interface::model::MessageRole::Assistant,
+                    content: vec![base::interface::model::ModelContentBlock::Text {
+                        text: format!("answer {i}: {}", "words ".repeat(50)),
+                    }],
+                });
+        }
+        let before = agent.session.messages().len();
+        assert!(
+            agent.context_tokens() < agent.context_budget().compact_threshold,
+            "the point is that the budget would not have compacted this"
+        );
+
+        let done = agent.compact_now().await.expect("something was compacted");
+        assert_eq!(done.messages_before, before);
+        assert!(done.messages_after < before, "{done:?}");
+        assert!(done.tokens_after < done.tokens_before, "{done:?}");
+        assert_eq!(agent.session.messages().len(), done.messages_after);
+
+        let event = next_event(
+            &mut event_rx,
+            |e| matches!(e, AgentEvent::CompactAction { .. }),
+            "the compaction event",
+        )
+        .await;
+        assert!(matches!(
+            event,
+            AgentEvent::CompactAction { tokens_before, tokens_after, .. }
+                if tokens_before == done.tokens_before && tokens_after == done.tokens_after
+        ));
+
+        let mut empty = Builder::new()
+            .scene(Arc::new(scene::scene::coding::CodingScene) as Arc<dyn AgentScene>)
+            .model(Arc::new(StepRecordingModel {
+                tool: None,
+                hold_first: None,
+                sent: Default::default(),
+            }))
+            .settings(Arc::new(test_settings()))
+            .skip_warmup(true)
+            .build()
+            .expect("build should succeed")
+            .0;
+        assert_eq!(empty.compact_now().await, None, "nothing to compact");
     }
 
     #[tokio::test]

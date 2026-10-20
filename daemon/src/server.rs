@@ -644,6 +644,14 @@ impl DaemonServer {
                     .await
             }
             "session.interrupt" => self.method_session_interrupt(id, req.params).await,
+            "session.compact" => {
+                self.method_session_command(id, req.params, client, "/compact")
+                    .await
+            }
+            "session.clear" => {
+                self.method_session_command(id, req.params, client, "/clear")
+                    .await
+            }
             "session.history" => self.method_session_history(id, req.params).await,
             "session.fork" => self.method_session_fork(id, req.params).await,
             "session.resume" => self.method_session_resume(id, req.params).await,
@@ -1481,6 +1489,36 @@ impl DaemonServer {
             ),
             Err((code, message)) => RpcResponse::err(id, code, message),
         }
+    }
+
+    /// `session.compact` / `session.clear`: the slash command run as a turn
+    /// of its own, so it streams and finishes like one and is refused like
+    /// one while another turn holds the session.
+    async fn method_session_command(
+        &self,
+        id: serde_json::Value,
+        params: serde_json::Value,
+        client: Arc<Client>,
+        command: &str,
+    ) -> RpcResponse {
+        let Some(session_id) = params.get("session_id").and_then(|v| v.as_str()) else {
+            return RpcResponse::err(id, codes::INVALID_PARAMS, "missing session_id");
+        };
+        if let Some(err) = self.scene_mismatch_response(&id, session_id).await {
+            return err;
+        }
+        self.pool
+            .run_turn(
+                Some(session_id.to_string()),
+                command.to_string(),
+                vec![],
+                Id::new().to_string(),
+                client,
+                id,
+                None,
+                crate::session_pool::OnBusy::Reject,
+            )
+            .await
     }
 
     /// `session.fork` params:

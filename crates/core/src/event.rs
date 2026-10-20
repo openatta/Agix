@@ -132,6 +132,11 @@ pub enum AgentEvent {
         dropped_messages: Option<usize>,
         /// Estimated tokens saved by the compaction (if applicable).
         estimated_tokens_saved: Option<usize>,
+        /// The compactor's estimate of the history's size before and after.
+        #[serde(default)]
+        tokens_before: usize,
+        #[serde(default)]
+        tokens_after: usize,
     },
 
     /// Session was changed (via set_session_id).

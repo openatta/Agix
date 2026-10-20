@@ -4487,3 +4487,61 @@ async fn an_interrupted_turn_hands_back_a_steered_message_it_never_read() {
 
     srv.stop().await;
 }
+
+// ── session.compact / session.clear ─────────────────────────────────────
+
+#[tokio::test]
+async fn session_compact_compacts_a_short_conversation_on_request() {
+    let (srv, _seen) = start_scripted_server(
+        vec![text_round(&"a long answer ".repeat(40))],
+        ask_settings_no_memory(),
+        Duration::ZERO,
+    )
+    .await;
+    let sid = run_turn(&srv.sock, None, "first").await;
+    for i in 0..5 {
+        run_turn(&srv.sock, Some(&sid), &format!("more {i}")).await;
+    }
+
+    let (frames, response) = rpc_streaming(
+        &srv.sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.compact","params":{{"session_id":"{sid}"}},"id":7}}"#
+        ),
+    )
+    .await;
+    assert!(response["result"].is_object(), "{response}");
+    let compact = events_of_kind(&frames, "compact");
+    assert_eq!(compact.len(), 1, "{frames:?}");
+    let before = compact[0]["tokens_before"].as_u64().unwrap();
+    let after = compact[0]["tokens_after"].as_u64().unwrap();
+    assert!(after < before, "{compact:?}");
+    assert!(
+        compact[0]["messages_after"].as_u64() < compact[0]["messages_before"].as_u64(),
+        "{compact:?}"
+    );
+    let done = events_of_kind(&frames, "turn_complete");
+    assert_eq!(done[0]["stop_reason"], "command_executed", "{done:?}");
+
+    let (frames, response) = rpc_streaming(
+        &srv.sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.clear","params":{{"session_id":"{sid}"}},"id":8}}"#
+        ),
+    )
+    .await;
+    assert!(response["result"].is_object(), "{response}");
+    assert_eq!(
+        events_of_kind(&frames, "turn_complete")[0]["stop_reason"],
+        "command_executed"
+    );
+
+    let missing = rpc(
+        &srv.sock,
+        r#"{"jsonrpc":"2.0","method":"session.compact","params":{},"id":9}"#,
+    )
+    .await;
+    assert_eq!(missing["error"]["code"], codes::INVALID_PARAMS, "{missing}");
+
+    srv.stop().await;
+}

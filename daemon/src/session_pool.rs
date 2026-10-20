@@ -2779,10 +2779,13 @@ impl SessionPool {
                     dropped_rounds,
                     dropped_messages,
                     estimated_tokens_saved,
+                    tokens_before,
+                    tokens_after,
                 }) => {
                     let mut event = serde_json::json!({
                         "kind":"compact","strategy":strategy,
-                        "messages_before":messages_before,"messages_after":messages_after
+                        "messages_before":messages_before,"messages_after":messages_after,
+                        "tokens_before":tokens_before,"tokens_after":tokens_after
                     });
                     let map = event.as_object_mut().expect("json! built an object");
                     for (key, value) in [
@@ -2933,7 +2936,8 @@ impl SessionPool {
         let name_prompt = {
             let mut sessions = self.sessions.lock().await;
             match sessions.get_mut(&sid) {
-                Some(live) if live.is_first_turn => {
+                // A slash command is not what the conversation is about.
+                Some(live) if live.is_first_turn && !message.starts_with('/') => {
                     live.is_first_turn = false;
                     (live.scene.auto_name_session() && !live.named_by_user)
                         .then(|| live.scene.session_name_prompt(&message))

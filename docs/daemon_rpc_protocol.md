@@ -923,6 +923,34 @@ turn 期间的引擎错误不是事件,是**这次调用的错误响应**:`ENGIN
 取消当前 turn,**保留会话**。没有进行中的 turn 时 `interrupted` 是 `false`,不是
 错误 —— 调用方要的是会话空闲,而它确实空闲。
 
+#### `session.compact`
+
+**流式方法**,与 `session.run_turn` 发 `"/compact"` 相同。
+
+```jsonc
+// → params
+{ "session_id": "…" }
+// ← result:同 session.run_turn
+```
+
+**不看阈值,现在就压。** 配了摘要模型时由它写全文摘要(`FullCompact`),否则按引擎的
+级联压到历史当前大小的一半左右。压了会推一帧 `compact`(§7.1),没什么可压时没有这
+一帧;两种情况都以 `turn_complete`(`stop_reason: "command_executed"`)结束,正文
+里有一句结果说明。会话正在跑 turn 时返回 `SESSION_BUSY`。
+
+#### `session.clear`
+
+**流式方法**,与 `session.run_turn` 发 `"/clear"` 相同。
+
+```jsonc
+// → params
+{ "session_id": "…" }
+// ← result:同 session.run_turn
+```
+
+清空对话上下文。清空本身写进 transcript,之后从磁盘恢复的会话也是空的。会话正在跑
+turn 时返回 `SESSION_BUSY`。
+
 #### `session.rename`
 
 ```jsonc
@@ -1400,7 +1428,7 @@ RPC 出口。要看子 Agent 干了什么,走它的侧链会话:`session.list
 | `subagent_progress` | `{agent_label,agent_session_id,agent_type,parent_turn,parent_tool_use_id,event}` | 子 Agent 事件镜像,`event` 是嵌套的本表结构;`parent_tool_use_id` 是父会话里发起它的那次 `Agent` 调用,不知道时为 `null` |
 | `team_progress` | `{team,team_id,stage,stage_index,stage_count,status,members,failed}` | 团队阶段生命周期 |
 | `skills_changed` | `{added,removed}` | 会话下的 skill 文件变了,缓存了 `commands.list` 的客户端该重取 |
-| `compact` | `{strategy,messages_before,messages_after,dropped_rounds?,dropped_messages?,estimated_tokens_saved?}` | 上下文被压缩了(§7.1) |
+| `compact` | `{strategy,messages_before,messages_after,tokens_before,tokens_after,dropped_rounds?,dropped_messages?,estimated_tokens_saved?}` | 上下文被压缩了(§7.1) |
 | `user_message_delivered` | `{message_id,content}` | 运行中送来的消息(`on_busy:"steer"`)已加进对话,模型下一次调用会读到 |
 | `user_messages_returned` | `{messages:[{message_id,content}]}` | 运行中送来、但本轮结束前没读到的消息,不在 transcript 里,交还客户端 |
 | `turn_complete` | `{stop_reason,api_calls,tool_calls,usage,last_call_usage,context?,message?}` | 本轮结束,transcript 已落盘;最终响应随后到达 |
@@ -1422,6 +1450,7 @@ RPC 出口。要看子 Agent 干了什么,走它的侧链会话:`session.list
 ```jsonc
 { "kind":"compact", "strategy":"Snip",
   "messages_before":84, "messages_after":22,
+  "tokens_before":152000, "tokens_after":41000,   // 引擎对历史大小的估算
   "dropped_rounds":9, "dropped_messages":61,      // 可选,压缩策略给不出就不出现
   "estimated_tokens_saved":31200 }                // 同上
 ```
