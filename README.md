@@ -369,7 +369,11 @@ refused with `SCENE_MISMATCH` rather than executed across the boundary.
 ```
 
 Four task keys are wired — `main`, `subagent`, `compact`, `memory` — and anything
-unrouted falls back to the default provider. Both `api_type` values have a real
+unrouted falls back to the default provider. A session can also pick its own
+provider (`options.provider`, or `session.setModel` mid-session); its
+sub-agents and compaction keep the routing above. A key need not sit in the
+file: `api_key_env` names the variable to read it from, and an embedding host
+can hand over its own credential source instead. Both `api_type` values have a real
 protocol implementation; `openai_compatible` speaks
 `POST <base_url>/v1/chat/completions`, which is what reaches OpenAI, vLLM, Ollama
 and the gateways that only expose that shape. An unknown provider or a missing
@@ -398,18 +402,28 @@ paid for.
 ### Permissions
 
 ```
-RuleSet { allow: [Glob], ask: [Glob], deny: [Glob] }
+tool's own verdict (a deny stands; an allow waits)
+        ↓
+rules: deny > ask > allow, across every tier
         ↓
 path safety (Unicode NFC/NFD normalization, system-directory blocklist)
         ↓
-optional LLM classifier for ambiguous cases
-        ↓
-YOLO mode (CI / automation)
+mode: dontAsk · plan · default · acceptEdits · auto / yolo (classifier) · bypass
 ```
 
-Three decisions — **Permit** / **AskUser** / **Deny** — with directory-aware glob
-matching and eight rule priorities. A rule a plugin contributes carries the
-lowest of them, below user settings and organization policy, always.
+**A deny is a deny.** Any matching deny refuses the call, then any ask asks,
+and only then does an allow count. Which tier a rule came from and how specific
+it is decide nothing — so an allow committed to a repository's
+`.atta/settings.json`, contributed by a plugin or passed in over RPC cannot
+reopen what the user's own settings deny. Every tier's `permission_rules` apply
+side by side; none replaces another.
+
+Rules match what a call actually touches. Paths are made absolute against the
+session's directory, with `..` and `~` resolved on both sides; `*` stays inside
+one path segment and `**` crosses them; a `Read(...)` rule covers `Grep` and
+`Glob` too. A `Bash(...)` rule is matched against every simple command in the
+line — quoting understood, `&&`, `;`, pipes and `$(...)` split out — so
+`true; rm -rf build` does not slip past a deny on `rm:*`.
 
 ### Multi-agent
 
@@ -510,9 +524,12 @@ the two executor traits it delegates to are injectable.
 
 ## Configuration
 
-Four layers, lowest priority first: built-in defaults →
-`$HOME/.atta/scenes/<scene>/settings.json` → `<project>/.atta/settings.json` →
-CLI arguments. TOML works anywhere JSON does.
+Layers, lowest priority first: built-in defaults and CLI arguments (`--model`,
+`--max-tokens`, used only where no file sets them) → `$HOME/.atta/settings.json`
+→ `$HOME/.atta/scenes/<scene>/settings.json` → `<project>/.atta/settings.json`.
+Each tier may also carry an untracked `settings.local.json` on top of its own
+file. Later layers override earlier ones key by key — except
+`permission_rules`, which every layer adds to.
 
 `$HOME/.atta` is the global root, flat and shared by every scene; each scene
 gets its own subtree under `scenes/<scene>/` for the state that should not
@@ -524,7 +541,7 @@ Rust types by a test, so it cannot describe a shape the code does not have.
 
 | Variable | Purpose |
 |---|---|
-| `ANTHROPIC_AUTH_TOKEN` | **Required** unless `ANTHROPIC_API_KEY` is set — checked first, fails at boot if neither is present |
+| `ANTHROPIC_AUTH_TOKEN` | **Required** unless `ANTHROPIC_API_KEY` is set or the embedding host supplies credentials — checked first, fails at boot if none is present |
 | `ANTHROPIC_API_KEY` | Fallback for the above |
 | `ANTHROPIC_BASE_URL` | Custom endpoint (proxies, compatible providers) |
 | `ATTACORE_DAEMON_TOKEN` | TCP / WebSocket handshake token |
@@ -568,7 +585,7 @@ AnthropicClient>` cannot. That last one is why the same cases can run twice,
 in-process and against a real spawned daemon; a case that passes in one mode
 only has found a startup step being skipped rather than performed.
 
-The recorder is deliberately not on that list any more. It is a product
+The recorder is deliberately not on that list. It is a product
 capability — an operator records their own session to debug it — and this
 repository records nothing and commits no recordings.
 
@@ -648,7 +665,7 @@ is reclaimable and why.
 | [extending_quickjs.md](docs/extending_quickjs.md) | Script extensions — the nine points, the API, the budgets, the failure rules |
 | [extending_wasm.md](docs/extending_wasm.md) | WebAssembly plugins — manifest, capabilities, contribution points |
 | [testing_scripts.md](docs/testing_scripts.md) | How the script carrier is tested, and what a case must satisfy to count |
-| [tests/README.md](tests/README.md) | The four test layers, how to run each, why recordings are not committed |
+| [tests/README.md](tests/README.md) | The five test layers, how to run each, why recordings are not committed |
 | [schemas/settings.schema.json](docs/schemas/settings.schema.json) | Generated JSON Schema for `settings.json` |
 
 There is no prose API reference for library mode yet; the entry points are

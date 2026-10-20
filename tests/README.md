@@ -9,6 +9,7 @@
 | `daemon/tests/*.rs` | daemon 的 e2e：真的起一个 server，走真的 socket 收发 JSON-RPC | `cargo test -p daemon` |
 | `tests/runner/tests/*.rs` | 引擎行为网：真的驱动 Agent，模型那端是写死的脚本 | `cargo test -p test-runner` |
 | `tests/daemon_harness/tests/*.rs` | 装配面：从 JSON-RPC 进去，模型那端是一个 HTTP 桩；同一批用例跑「本进程」和「另起一个 attacored」两遍 | `cargo test -p daemon-harness`（跨进程那半在 `-- --ignored` 里） |
+| `tests/scripts/*.sh` | 构建面的断言（无插件构建里没有插件依赖等） | `tests/scripts/locked_build.sh` |
 
 其中三条要的不是同一个 daemon：一个构建只带一个载体，所以「没有脚本引擎的构建拿到
 `scripts` 段怎么办」和「一个组件到底会不会被调起来」都只能由另一个构建回答。用例会
@@ -18,9 +19,8 @@
 > **手工建别的载体时务必带上自己的 `CARGO_TARGET_DIR`。** 每种载体建出来的都叫
 > `attacored`，而跨进程用例默认捡的就是 `target/debug/attacored` —— 往默认目录建一个
 > `--no-default-features` 的 daemon，等于把那批用例脚下的二进制换掉了。换掉之后它们
-> 不会说「你换了二进制」，只会说「脚本没进提示词」。上面两条命令里的
-> `CARGO_TARGET_DIR=...` 不是为了省空间，是为了这个。
-| `tests/scripts/*.sh` | 构建面的断言（无插件构建里没有插件依赖等） | `tests/scripts/locked_build.sh` |
+> 不会说「你换了二进制」，只会说「脚本没进提示词」。用例里给出的两条建法都带着
+> `CARGO_TARGET_DIR=...`，不是为了省空间，是为了这个。
 
 **全部不联网、不需要凭据**，`cargo test --workspace` 一条命令跑完，CI 每次 push 都跑。
 

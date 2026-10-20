@@ -544,10 +544,10 @@ manifest 允许,而那样的插件在只走场景那条路的时候,工具哪儿
   `doc`。`description` 才是每轮都发出去的那一行。
 - `check_permissions` 永远答 **Ask**。插件自己断言这次调用没问题,不构成任何证据;组件
   给的 `read_only` / `concurrency_safe` 只用于调度。
-- `plugin__<name>__<tool>` 这个形状照着 `mcp__<server>__<tool>` 来,但权限规则必须写
-  **完整的工具名**——`plugin__github-tools__diff`。那种用一条规则覆盖整个 MCP server 的
-  前缀写法,在 `permissions::ruleset::matches_tool_name` 里是专门为 `mcp__` 开的特例,
-  所以今天单独写 `plugin__github-tools` 什么也匹配不到。
+- `plugin__<name>__<tool>` 这个形状照着 `mcp__<server>__<tool>` 来,权限规则也一样:
+  写完整的工具名(`plugin__github-tools__diff`)只管这一个工具,写到插件为止
+  (`plugin__github-tools`)覆盖它的全部工具——规则名后面紧跟着 `__` 才算前缀命中,
+  所以 `plugin__github` 碰不到 `plugin__github-tools__diff`。
 - 组件给的输入 schema 解析不了,照样注册;它对外宣称一个开放对象,因为拒绝等于让用户为
   作者的笔误买单。
 
