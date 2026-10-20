@@ -216,7 +216,9 @@ impl Agent {
                     }
                     EngineCommand::RefreshMcp => {
                         self.mcp.refresh_tools().await;
-                        register_new_mcp_adapters(self.tools.as_ref(), &self.mcp);
+                        register_new_mcp_adapters(self.tools.as_ref(), &self.mcp, |n| {
+                            self.scene.permits_tool(n)
+                        });
                         Ok(TurnOutcome::default())
                     }
                     // `CancelTurn` is handled by the input demultiplexer, not
@@ -1387,7 +1389,9 @@ impl Agent {
                 // refresh (e.g. after a reconnect) needs to actually be
                 // callable, not just advertised — see
                 // `register_new_mcp_adapters`'s doc comment.
-                register_new_mcp_adapters(self.tools.as_ref(), &self.mcp);
+                register_new_mcp_adapters(self.tools.as_ref(), &self.mcp, |n| {
+                    self.scene.permits_tool(n)
+                });
                 continue;
             }
 
@@ -1797,8 +1801,6 @@ or project context that should survive across sessions.
         /// guides are fetched. Named here because `build_tool_defs` must not
         /// advertise a guide when the scene has filtered the fetcher out.
         const TOOL_SEARCH_NAME: &str = "ToolSearch";
-        let allowed = self.scene.tools();
-        let disallowed = self.scene.disallowed_tools();
         // Combine built-in + MCP tools with dedup. Built-in tools take
         // priority on name conflicts.
         let mut pool: BTreeMap<String, Arc<dyn base::tool::Tool>> = BTreeMap::new();
@@ -1825,14 +1827,7 @@ or project context that should survive across sessions.
         }
         let selected: Vec<Arc<dyn base::tool::Tool>> = pool
             .into_values()
-            .filter(|t| {
-                let name = t.name();
-                if allowed.is_empty() {
-                    !disallowed.iter().any(|d| d == name)
-                } else {
-                    allowed.iter().any(|a| a == name)
-                }
-            })
+            .filter(|t| self.scene.permits_tool(t.name()))
             .collect();
 
         // A guide is only worth pointing at if the model has a way to fetch
@@ -3775,10 +3770,15 @@ fn apply_result_transformers(
 /// to the model via `build_tool_defs()` but stay uncallable — the same bug
 /// class as the `Builder::build()`-time registration gap this mirrors.
 /// Already-registered adapters are left alone (checked by name) so this is
-/// safe to call every refresh, not just the first time.
-fn register_new_mcp_adapters(tools: &dyn base::tool::ToolRegistry, mcp: &McpManager) {
+/// safe to call every refresh, not just the first time. Adapters the scene
+/// does not permit are never registered — see `AgentScene::permits_tool`.
+fn register_new_mcp_adapters(
+    tools: &dyn base::tool::ToolRegistry,
+    mcp: &McpManager,
+    permits: impl Fn(&str) -> bool,
+) {
     for adapter in mcp.tool_adapters() {
-        if tools.get(adapter.name()).is_none() {
+        if permits(adapter.name()) && tools.get(adapter.name()).is_none() {
             tools.register(adapter.clone());
         }
     }
@@ -5261,7 +5261,7 @@ mod tests {
             tools.get("mcp__test-server__new-tool").is_none(),
             "sanity: not registered yet"
         );
-        register_new_mcp_adapters(&tools, &mgr);
+        register_new_mcp_adapters(&tools, &mgr, |_| true);
         assert!(
             tools.get("mcp__test-server__new-tool").is_some(),
             "newly-discovered MCP adapter should now be registered"
@@ -5285,8 +5285,8 @@ mod tests {
         // Simulate this having already been registered once (e.g. at
         // Builder::build() time), then refresh_tools() running again later
         // with the exact same tool still present — must not duplicate.
-        register_new_mcp_adapters(&tools, &mgr);
-        register_new_mcp_adapters(&tools, &mgr);
+        register_new_mcp_adapters(&tools, &mgr, |_| true);
+        register_new_mcp_adapters(&tools, &mgr, |_| true);
 
         let count = tools
             .list()

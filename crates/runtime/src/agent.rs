@@ -2360,6 +2360,15 @@ impl Builder {
             }
         }
 
+        // The scene's tool policy, applied to the registry itself rather than
+        // only to what is advertised: `ToolSearch` and dispatch read this same
+        // registry, so a tool the scene excludes has to be absent from it.
+        for t in tools.list() {
+            if !scene.permits_tool(t.name()) {
+                tools.remove(t.name());
+            }
+        }
+
         let (input_tx, input_rx) = mpsc::unbounded_channel();
 
         // The scheduler half of the cron bridge: without this, `CronCreate`
@@ -2860,6 +2869,80 @@ mod tests {
             "MCP tool adapter should be registered in the executable tool registry, found: {:?}",
             agent.tools.names()
         );
+    }
+
+    /// A scene's whitelist decides what the session *has*, not only what it
+    /// advertises: dispatch and `ToolSearch` read the same registry.
+    #[tokio::test]
+    async fn build_leaves_out_of_the_registry_every_tool_the_scene_excludes() {
+        async fn mcp_with_one_tool() -> McpManager {
+            let client = Arc::new(mcp::client::MockMcpClient::new(
+                "srv",
+                vec![mcp::client::McpToolMeta {
+                    name: "do-thing".into(),
+                    description: None,
+                    input_schema: serde_json::json!({"type": "object"}),
+                }],
+            ));
+            let mut m = McpManager::from_clients(vec![client]);
+            m.refresh_tools().await;
+            m
+        }
+        let build = |scene: Arc<dyn AgentScene>, mcp: McpManager| {
+            let template = Arc::new(InMemoryToolRegistry::new());
+            tools::register_builtin_tools(&template);
+            Builder::new()
+                .scene(scene)
+                .model(Arc::new(DummyModel))
+                .settings(Arc::new(test_settings()))
+                .tools(template)
+                .mcp_manager(mcp)
+                .skip_warmup(true)
+                .build()
+                .expect("build should succeed")
+                .0
+        };
+
+        let chat = build(
+            Arc::new(scene::scene::chat::ChatScene),
+            mcp_with_one_tool().await,
+        );
+        for absent in ["Bash", "Write", "Edit", "Agent"] {
+            assert!(chat.tools.get(absent).is_none(), "{absent} in chat");
+        }
+        for present in ["Read", "ToolSearch", "mcp__srv__do-thing"] {
+            assert!(
+                chat.tools.get(present).is_some(),
+                "{present} missing in chat"
+            );
+        }
+
+        struct ReadOnly;
+        impl AgentScene for ReadOnly {
+            fn id(&self) -> &str {
+                "read-only"
+            }
+            fn name(&self) -> &str {
+                "read-only"
+            }
+            fn description(&self) -> &str {
+                ""
+            }
+            fn build_system_prompt(
+                &self,
+                ctx: &base::interface::scene::ScenePromptContext,
+            ) -> Vec<base::prompt::PromptBlock> {
+                scene::scene::chat::ChatScene.build_system_prompt(ctx)
+            }
+            fn tools(&self) -> Vec<String> {
+                vec!["Read".into()]
+            }
+            fn token_budget(&self) -> base::interface::scene::TokenBudget {
+                scene::scene::chat::ChatScene.token_budget()
+            }
+        }
+        let narrow = build(Arc::new(ReadOnly), mcp_with_one_tool().await);
+        assert_eq!(narrow.tools.names(), vec!["Read".to_string()]);
     }
 
     /// Regression: `PluginHost::tools()` had no production caller at all.

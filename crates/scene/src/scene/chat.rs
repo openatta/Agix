@@ -73,6 +73,9 @@ impl AgentScene for ChatScene {
             // 了：白名单是和注册表求交集的，ToolSearch 被过滤掉的话，模型只
             // 能看到 deferred 工具的名字却没有任何办法把 schema 取回来。
             "ToolSearch".into(),
+            // 宿主接进来的 MCP 服务——接哪些、各自能做什么由宿主决定，每次调用
+            // 照样过权限规则。
+            "mcp__*".into(),
         ]
     }
 
@@ -285,13 +288,14 @@ mod tests {
     #[test]
     fn chat_scene_allow_list_excludes_mutating_tools() {
         let scene = ChatScene;
-        let allowed = scene.tools();
-        for mutating in ["Bash", "Write", "Edit", "NotebookEdit"] {
+        for mutating in ["Bash", "Write", "Edit", "NotebookEdit", "Agent"] {
             assert!(
-                !allowed.contains(&mutating.to_string()),
+                !scene.permits_tool(mutating),
                 "{mutating} must not be in ChatScene's tool allow-list"
             );
         }
+        assert!(scene.permits_tool("mcp__ipdrun__xflow_state"));
+        assert!(scene.permits_tool("Read"));
     }
 
     #[test]

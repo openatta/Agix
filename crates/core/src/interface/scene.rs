@@ -186,6 +186,26 @@ pub trait AgentScene: Send + Sync + 'static {
         vec![]
     }
 
+    /// Whether a session in this scene may have `name` at all: listed in a
+    /// non-empty [`tools`](Self::tools) whitelist (an entry ending in `*`,
+    /// such as `mcp__*`, covers every name with that prefix), or, with an
+    /// empty whitelist, not in [`disallowed_tools`](Self::disallowed_tools).
+    ///
+    /// The session's tool registry is filtered by this, so advertising,
+    /// `ToolSearch` and dispatch all see the same set.
+    fn permits_tool(&self, name: &str) -> bool {
+        let entry_covers = |entry: &String| match entry.strip_suffix('*') {
+            Some(prefix) => name.starts_with(prefix),
+            None => entry == name,
+        };
+        let allowed = self.tools();
+        if allowed.is_empty() {
+            !self.disallowed_tools().iter().any(entry_covers)
+        } else {
+            allowed.iter().any(entry_covers)
+        }
+    }
+
     /// Tools this scene wants *deferred*: still allowed and still callable,
     /// but advertised to the model by name + one-line description only, with
     /// the full JSON schema fetched on demand via `ToolSearch`.

@@ -72,6 +72,8 @@ impl AgentScene for ResearchScene {
             // 会被整体抑制（`can_fetch_guides` 检查的就是它在不在），于是本场景
             // 的模型永远看不到任何工具的详细用法。ChatScene 早就为此显式列了它。
             "ToolSearch".into(),
+            // 宿主接进来的 MCP 服务，与 ChatScene 一致。
+            "mcp__*".into(),
         ]
     }
 
