@@ -22,7 +22,7 @@ AttaCore 是一个**库**,不是一个应用。它提供的是"跑一个 agent �
       │
    ┌──┴──────────────┬───────────┬──────────┬──────────┐
  tools            model      history    compaction   skills / hooks / mcp / team / task
- (39 个内建工具)   (协议适配)  (日志)     (上下文治理)
+ (40 个内建工具)   (协议适配)  (日志)     (上下文治理)
       └────────────────┴───────────┴──────────┴──────────┘
                       │
               core (包名 base) —— 所有契约、所有共享类型
@@ -58,6 +58,7 @@ AttaCore 是一个**库**,不是一个应用。它提供的是"跑一个 agent �
 收用户消息
   └─ UserPromptSubmit hook · 斜杠命令 · 记忆召回
 循环:
+  ├─ 0. 落盘        上一步写进内存的消息先落盘
   ├─ 1. 停止判断    TurnPolicy::before_model_call   ← 这一轮还该不该继续
   ├─ 2. 压缩        Compactor::should_compact       ← 该不该压、压什么
   ├─ 3. 硬顶        ContextBudget::hard_cap
@@ -67,8 +68,23 @@ AttaCore 是一个**库**,不是一个应用。它提供的是"跑一个 agent �
   ├─ 6. 复查        TurnPolicy::after_model_call
   ├─ 7. 记账        BudgetPolicy::on_usage          ← 继续 / 警告 / 耗尽
   ├─ 8. 执行工具    Permission → ToolMiddleware → Tool → ToolResultTransformer
+  │     └─ 这批结果写进对话之后:送达这一轮运行期间收到的用户消息
   └─ 9. 有工具调用则再来一轮;否则 BudgetPolicy::on_output_target 决定是否续写
+         (收尾时还有没送达的用户消息,再调一次模型回答它们)
+出口:finish_turn —— 先落盘,再发 TurnComplete
 ```
+
+**一轮只有一个出口。** 循环里有十几处提前结束(hook 截停、预算耗尽、取消、出错),
+落盘和宣布结束都只在 `finish_turn` 做一次,所以哪条路都跳不过。顺序本身是契约:宿主
+把 `TurnComplete` 读作"会话空闲、它的 transcript 已经在盘上"——daemon 收到它就把会话
+交给下一个调用方,并可能立刻从 transcript 重建它。每一步开始前也落一次盘,进程在
+一轮中途死掉最多丢正在进行的那一步;落盘点都在 `tool_use` 与它的 `tool_result` 已经
+配对的地方。
+
+**运行中的用户消息在步骤边界送达。** 一轮在跑时收到的用户消息先排队,在一批工具结果
+写进对话之后、下一次调模型之前加进去,所以永远不会落在一对 `tool_use` /
+`tool_result` 中间。这一轮在送达之前就结束了(取消、截停、出错)的,消息不进
+transcript,以 `UserMessagesReturned` 交还宿主。
 
 
 **骨架与决策的分界是这套设计的核心。** 步骤顺序写死,是因为顺序本身就是"一轮"的定义;
@@ -112,7 +128,7 @@ serde 的 `Option<Option<T>>` 免费区分前两者,但 `null` 与字符串的�
 显式检查,**在到达 `SessionPool` 之前**。无项目会话的 `local_data_dir` 取
 `global_data_dir` 本身,而不是 `<project>/.atta`。
 
-`config.*` / `mcp.addServer` / `import.*` 这几个**作用在项目层**的方法用的是另一套
+`config.*` / `mcp.addServer` / `mcp.updateServer` / `import.*` 这几个**作用在项目层**的方法用的是另一套
 两态:省略 = 这个 daemon 自己的项目,给路径 = 它服务的另一个项目,**`null` 拒绝** ——
 无项目会话没有项目层可写。
 
@@ -131,13 +147,34 @@ MCP 连接、脚本绑定的 root、记忆目录、transcript 目录。
 |---|---|
 | `DaemonPaths::config_root()` | 启动时按首个场景算定,见 §3.1 |
 | 工具注册表 | 内置工具是编译期事实 |
-| 场景注册表 | 同上;激活集合是运行期状态,但不按项目 |
+| 场景注册表 | 内建、宿主登记(`Assembly.scenes` / `SessionPool::register_scene`)、插件贡献三类;激活集合是运行期状态,但不按项目 |
 | plugin host / 插件集合 | 插件只有全局层与场景层,**没有项目层** |
 | WASM 插件的 `${workspace}` | 组件是池级加载的,跟着 daemon 的工作目录 |
 | `WatchHub` | 一个 `notify` 线程,按 tier 分键去重,watched 目录是 `1 + M + P` |
 
 **加一样按项目索引的东西,就把它放进 `ProjectBinding`**,不要在池上再挂一个
 `HashMap<ProjectSceneKey, _>` —— 那正是这条不变量曾经在四个地方同时不成立的原因。
+
+**绑定按层失效。** 每个绑定带一个失效标记,用它建出的会话持有同一个标记。设置文件变化
+只作废从那一层合出来的绑定:项目层作废同一项目根的,scene 层作废那个 scene 的,全局层
+作废全部;显式的 `config.reload` 不知道动的是哪一层,作废全部。缓存的 MCP 连接跟着同
+一层作废。skills、agents 目录的变化不作废任何东西,新内容就地读进绑定共享的目录对象,
+会话立刻看到。池常驻监视它自己那一对 `(项目, 场景)` 的各层。
+
+### 3.2.2 会话规格:重建时照什么重来
+
+一个会话的 `Agent` 会被重建:它的绑定失效、janitor 回收后再被用到、daemon 重启后恢复。
+重建照的是**会话规格**,不是触发重建的那次调用碰巧带了什么:创建时的 `options`、
+`session.setModel` 选过的模型与厂商。规格以 `ns = "attacore.session"`、`event = "spec"`
+的扩展条目写进会话日志,每次变化追加一条,最后一条为准,所以跨 daemon 重启也成立。
+recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着原来的进度。
+
+重建之前先停掉旧 `Agent` 并等它收尾(有时限),然后才从盘上读 transcript——否则新
+`Agent` 读到的是旧的那个还没写完的历史。关停时同样等所有 `Agent` 收尾。
+
+会话可以指定自己的厂商(`options.provider`):对话走那个厂商的 client,子 Agent、压缩
+等其余路由任务仍按绑定的路由走。宿主可以经 `Assembly.customize_session` 在每个会话的
+`Builder` 建成之前改它,新建、恢复、重建都经过这一处。
 
 ### 3.3 Sidechain 会话
 
@@ -192,7 +229,10 @@ MCP 连接、脚本绑定的 root、记忆目录、transcript 目录。
 - **投影可换**(`TranscriptProjection`),挂在 store 上——日志和读它的规则必须一起走,
   否则 resume / fork / 搜索会看见三个不同的过去
 - `LogEntry::Extension { ns, event, payload }` 让内核之外的东西(插件、脚本、宿主)
-  把状态放进同一条时间线。**未知 `ns` 必须可跳过**:卸载插件后旧日志仍能加载
+  把状态放进同一条时间线。**未知 `ns` 必须可跳过**:卸载插件后旧日志仍能加载。
+  daemon 自己也用这条通道:会话规格记在 `attacore.session` 下(§3.2.2)。
+  `ExtensionsAreVisible::all()` 不分 `ns` 地把扩展条目渲染给模型,这些也在其内——
+  要让模型读到某个扩展的条目,按 `ns` 列名单
 - **模型可见即可从日志重建**。一个靠询问活着的插件来渲染条目的投影,会产出一个
   重新打开就不一样的会话。`model_visible_content_is_reconstructible` 把这条变成可检查的
 - 大内容外置到 `BlobStore`,日志里只留引用;**引用解析不了时条目保持惰性,不是报错**
@@ -241,7 +281,38 @@ MCP 连接、脚本绑定的 root、记忆目录、transcript 目录。
 
 ---
 
-## 6. 写路径的管控
+## 6. 权限
+
+### 6.1 规则怎么裁决
+
+内建的 `PermissionGate` 按固定顺序走:工具自己的判定(拒绝即拒;放行只先记下,等后面
+都没否掉才兑现)→ 规则 → 免于 bypass 的路径 → 模式级硬拒绝 → 兑现 → 模式分派。完整
+顺序在 `crates/permissions/src/gate.rs` 的模块头。规则这一步有四条约束:
+
+1. **deny 永远优先。** 一次调用命中的规则里有一条 deny 就拒绝,否则有 ask 就问,否则
+   才 allow。哪一层写的、写得多具体,都不参与裁决——项目仓库里提交的一条 allow 推不翻
+   用户自己设置里的 deny,插件贡献的、客户端经 RPC 传进来的 allow 也一样。要"大范围
+   禁止、小范围例外",写法是 `dontAsk` 模式加只列允许范围的 allow,而不是一条宽 deny
+   加一条窄 allow。
+2. **各层的规则并存。** 全局、scene、项目三层(以及各自的 `settings.local.json`)的
+   `permission_rules` 拼在一起生效,不像普通设置项那样后层盖前层。每条规则记着自己来自
+   哪一层——全局与 scene 层是 `UserSettings`,项目层是 `ProjectSettings`,local 是
+   `LocalSettings`——只用来报出命中的是哪一条。
+3. **路径先规整再匹配。** 读写路径的工具,路径按会话 cwd 解析成绝对路径并去掉 `.` /
+   `..`,`~` 在规则与路径两边都展开;符号链接解析后的路径算作别名——别名上命中 deny /
+   ask 照样生效,allow 只认工具真正打开的那个路径。glob 按 gitignore 约定:`*` 不跨
+   `/`,`**` 跨。`Read(...)` 规则同样作用于 `Grep` / `Glob`,`Edit(...)` 规则同样作用
+   于 `Write` / `NotebookEdit`。
+4. **shell 命令逐段匹配。** `Bash(...)` 规则对命令行里的每一条简单命令分别匹配:认
+   引号,切 `&&` `||` `;` `|` `&` 与换行,`$(...)`、`<(...)`、反引号里的命令单独算一段。
+   任一段命中 deny 即拒;allow 要每一段都被放行,或者整行原样等于一条不带通配的 allow
+   ("永久允许"记下的就是那一整行)。只读命令的自动放行只限路径参数都落在 cwd 与附加
+   目录之内的;指向外面的,和 `Read` 读项目外的文件一样交给模式分派。
+
+场景的工具白名单不在这里:它在会话注册表上就把工具拿掉了(§3.5),被拿掉的工具根本
+到不了权限这一步。
+
+### 6.2 写路径的管控
 
 写文件走两道:
 

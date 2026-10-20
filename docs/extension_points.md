@@ -313,6 +313,13 @@ ctx.exec = ExecProviders::in_process();   // switching is this call
 provider——模型、OAuth、遥测和 registry 的 client 各造各的。所以换掉这个点管得住
 模型能够到哪,而*整体地*审计或者离线,今天它还给不了。
 
+`local()` 起的每个子进程自领一个进程组,停的时候整组停,所以命令里放到后台的进程
+也会被停掉;命令本身退出后,输出最多再等 `OUTPUT_GRACE_AFTER_EXIT`。子进程的环境由
+`ExecProviders::local_with` 收的那份 `SubprocessEnv` 决定——缺省是宿主环境去掉
+引擎自己的凭据,设置里对应 `sandbox.subprocess_env`。自己写 `Process` 的,这两条
+也该守住:"停掉一个命令"指的是它起的全部进程,模型 `printenv` 能读到什么也该是一个
+明确的决定。
+
 沙箱有一条不变量是引擎强制而不是请求的:**要求过约束的策略,绝不会悄悄变成一次不
 受约束的运行。** 后端报告 `Full`、`Partial` 或 `None`,并说清自己没能兑现什么;
 `sandbox.require_enforcement` 决定不到 `Full` 要不要拒。约束什么、要不要约束,始终
@@ -541,6 +548,9 @@ store.append(session, LogEntry::Extension {
 
 内核从不解析 payload。命名空间没人认领的条目会被一路带着走,除此之外不闻不问,所以
 卸掉一个插件之后,它留下的老会话照样加载、分叉、恢复,和以前一模一样。
+
+`attacore.` 开头的命名空间是引擎自己的:daemon 把会话规格(创建时的 `options`、选过
+的模型与厂商)记在 `attacore.session` 下。
 
 ### 东西是不是正常 — `health.check`
 
