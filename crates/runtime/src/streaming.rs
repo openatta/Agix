@@ -293,8 +293,6 @@ where
 
                     flush_tool_batch(
                         session,
-                        event_tx,
-                        &turn_id,
                         &mut pending_use_blocks,
                         &mut pending_result_blocks,
                         &mut pending_new_msgs,
@@ -368,8 +366,6 @@ where
     }
     flush_tool_batch(
         session,
-        event_tx,
-        &turn_id,
         &mut pending_use_blocks,
         &mut pending_result_blocks,
         &mut pending_new_msgs,
@@ -480,11 +476,8 @@ fn flush_assistant_prefix(
     session.push_message(message);
 }
 
-#[allow(clippy::too_many_arguments)]
 fn flush_tool_batch(
     session: &mut session::session::SessionManager,
-    event_tx: &EventSender,
-    turn_id: &str,
     pending_use_blocks: &mut Vec<ModelContentBlock>,
     pending_result_blocks: &mut Vec<(usize, ModelContentBlock)>,
     pending_new_msgs: &mut Vec<Vec<serde_json::Value>>,
@@ -506,7 +499,7 @@ fn flush_tool_batch(
         content: results.into_iter().map(|(_, block)| block).collect(),
     });
     for msgs in pending_new_msgs.drain(..) {
-        inject_new_messages(session, event_tx, turn_id, &msgs);
+        inject_new_messages(session, &msgs);
     }
 }
 
@@ -516,8 +509,6 @@ fn flush_tool_batch(
 /// instructions rather than as tool output.
 fn inject_new_messages(
     session: &mut session::session::SessionManager,
-    event_tx: &EventSender,
-    turn_id: &str,
     messages: &[serde_json::Value],
 ) {
     for msg in messages {
@@ -532,10 +523,6 @@ fn inject_new_messages(
             content: vec![ModelContentBlock::Text {
                 text: content_str.to_string(),
             }],
-        });
-        let _ = event_tx.send(AgentEvent::TextDelta {
-            text: format!("[injected: {content_str}]"),
-            turn_id: turn_id.to_string(),
         });
     }
 }

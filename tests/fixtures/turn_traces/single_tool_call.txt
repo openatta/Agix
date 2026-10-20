@@ -2,7 +2,6 @@
 SystemInit
 ToolUse GoldenEcho {"say":"note contents"}
 ToolResult GoldenEcho is_error=Some(false) content="echo: note contents"
-TextDelta "\n[Turn 0 used tools: GoldenEcho]\n"
 TextDelta "The note says: note contents"
 TurnComplete stop_reason=end_turn
 

@@ -4,7 +4,6 @@ ToolUse GoldenEcho {"say":"first"}
 ToolUse GoldenEcho {"say":"second"}
 ToolResult GoldenEcho is_error=Some(false) content="echo: first"
 ToolResult GoldenEcho is_error=Some(false) content="echo: second"
-TextDelta "\n[Turn 0 used tools: GoldenEcho]\n"
 TextDelta "both done"
 TurnComplete stop_reason=end_turn
 

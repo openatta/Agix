@@ -6,7 +6,6 @@ SubagentProgress
 SubagentProgress
 AgentCompleted
 ToolResult Agent is_error=Some(false) content="child answer"
-TextDelta "\n[Turn 0 used tools: Agent]\n"
 TextDelta "parent wrap-up"
 TurnComplete stop_reason=end_turn
 

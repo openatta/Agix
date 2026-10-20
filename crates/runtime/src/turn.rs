@@ -1348,41 +1348,6 @@ impl Agent {
                     }
                 }
 
-                // Emit tool usage summary for SDK display.
-                // Text-based: extract tool names from recent session messages.
-                let tool_names: Vec<String> = self
-                    .session
-                    .messages()
-                    .iter()
-                    .rev()
-                    .take(50)
-                    .filter_map(|m| {
-                        m.content.iter().find_map(|b| {
-                            if let ModelContentBlock::ToolUse { name, .. } = b {
-                                Some(name.clone())
-                            } else {
-                                None
-                            }
-                        })
-                    })
-                    .collect::<std::collections::BTreeSet<_>>()
-                    .into_iter()
-                    .collect();
-                let summary = if tool_names.is_empty() {
-                    String::new()
-                } else {
-                    format!(
-                        "Turn {} used tools: {}",
-                        self.session.turn_count,
-                        tool_names.join(", ")
-                    )
-                };
-                if !summary.is_empty() {
-                    let _ = self.event_tx.send(AgentEvent::TextDelta {
-                        text: format!("\n[{summary}]\n"),
-                        turn_id: self.current_turn_id.clone(),
-                    });
-                }
                 // Refresh MCP tools between turns.
                 self.mcp.refresh_tools().await;
                 // Any tool a server exposed for the first time in that

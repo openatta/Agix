@@ -3,7 +3,6 @@ SystemInit
 ToolUse GoldenAsk {}
 PermissionPrompt "Allow GoldenAsk?"
 ToolResult GoldenAsk is_error=Some(true) content="Denied by permission: denied by the behavior net"
-TextDelta "\n[Turn 0 used tools: GoldenAsk]\n"
 TextDelta "understood, skipping"
 TurnComplete stop_reason=end_turn
 

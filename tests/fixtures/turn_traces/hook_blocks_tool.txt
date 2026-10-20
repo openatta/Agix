@@ -2,7 +2,6 @@
 SystemInit
 ToolUse GoldenEcho {"say":"should not run"}
 ToolResult GoldenEcho is_error=Some(true) content="Blocked by PreToolUse hook: blocked by the behavior net"
-TextDelta "\n[Turn 0 used tools: GoldenEcho]\n"
 TextDelta "the hook stopped me"
 TurnComplete stop_reason=end_turn
 

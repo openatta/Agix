@@ -2,12 +2,10 @@
 SystemInit
 ToolUse GoldenFlood {}
 ToolResult GoldenFlood is_error=Some(false) content="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx… <60000 bytes total>"
-TextDelta "\n[Turn 0 used tools: GoldenFlood]\n"
 TextDelta "first"
 TurnComplete stop_reason=end_turn
 ToolUse GoldenFlood {}
 ToolResult GoldenFlood is_error=Some(false) content="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx… <60000 bytes total>"
-TextDelta "\n[Turn 1 used tools: GoldenFlood]\n"
 TextDelta "second"
 TurnComplete stop_reason=end_turn
 TextDelta "third"

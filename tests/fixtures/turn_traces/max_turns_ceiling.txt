@@ -2,10 +2,8 @@
 SystemInit
 ToolUse GoldenEcho {"say":"one"}
 ToolResult GoldenEcho is_error=Some(false) content="echo: one"
-TextDelta "\n[Turn 0 used tools: GoldenEcho]\n"
 ToolUse GoldenEcho {"say":"two"}
 ToolResult GoldenEcho is_error=Some(false) content="echo: two"
-TextDelta "\n[Turn 0 used tools: GoldenEcho]\n"
 TurnComplete stop_reason=max_turns
 
 == session log ==

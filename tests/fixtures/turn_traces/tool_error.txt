@@ -2,7 +2,6 @@
 SystemInit
 ToolUse GoldenBoom {}
 ToolResult GoldenBoom is_error=Some(true) content="execution: golden boom"
-TextDelta "\n[Turn 0 used tools: GoldenBoom]\n"
 TextDelta "that failed"
 TurnComplete stop_reason=end_turn
 

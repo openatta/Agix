@@ -3,7 +3,6 @@ SystemInit
 ToolUse GoldenAsk {}
 PermissionPrompt "Allow GoldenAsk?"
 ToolResult GoldenAsk is_error=Some(false) content="approved and ran"
-TextDelta "\n[Turn 0 used tools: GoldenAsk]\n"
 TextDelta "done"
 TurnComplete stop_reason=end_turn
 

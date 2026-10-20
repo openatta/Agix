@@ -2,7 +2,6 @@
 SystemInit
 ToolUse GoldenReports {}
 ToolResult GoldenReports is_error=Some(true) content="exit status 1"
-TextDelta "\n[Turn 0 used tools: GoldenReports]\n"
 TextDelta "it says that failed"
 TurnComplete stop_reason=end_turn
 

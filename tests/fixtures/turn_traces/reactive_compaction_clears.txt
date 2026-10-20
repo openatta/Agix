@@ -2,25 +2,18 @@
 SystemInit
 ToolUse Read {}
 ToolResult Read is_error=Some(false) content="rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr… <1000 bytes total>"
-TextDelta "\n[Turn 0 used tools: Read]\n"
 ToolUse Read {}
 ToolResult Read is_error=Some(false) content="rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr… <1000 bytes total>"
-TextDelta "\n[Turn 0 used tools: Read]\n"
 ToolUse Read {}
 ToolResult Read is_error=Some(false) content="rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr… <1000 bytes total>"
-TextDelta "\n[Turn 0 used tools: Read]\n"
 ToolUse Read {}
 ToolResult Read is_error=Some(false) content="rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr… <1000 bytes total>"
-TextDelta "\n[Turn 0 used tools: Read]\n"
 ToolUse Read {}
 ToolResult Read is_error=Some(false) content="rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr… <1000 bytes total>"
-TextDelta "\n[Turn 0 used tools: Read]\n"
 ToolUse Read {}
 ToolResult Read is_error=Some(false) content="rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr… <1000 bytes total>"
-TextDelta "\n[Turn 0 used tools: Read]\n"
 ToolUse Read {}
 ToolResult Read is_error=Some(false) content="rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr… <1000 bytes total>"
-TextDelta "\n[Turn 0 used tools: Read]\n"
 TextDelta "done"
 TurnComplete stop_reason=end_turn
 
