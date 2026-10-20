@@ -477,6 +477,44 @@ async fn mcp_add_server_writes_settings_and_reports_connect_failure() {
     let _ = handle.await;
 }
 
+/// `mcp.updateServer` changes a server that is there and refuses one that is
+/// not: a misspelt name must not quietly become a second server.
+#[tokio::test]
+async fn mcp_update_server_replaces_a_declared_server_and_refuses_an_unknown_one() {
+    let (_server, sock, dir, handle) = start_server().await;
+    let resp = rpc_call(
+        &sock,
+        r#"{"jsonrpc":"2.0","method":"mcp.updateServer","params":{"name":"bogus","config":{"type":"stdio","command":"x"}},"id":1}"#,
+    )
+    .await;
+    let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    assert_eq!(v["error"]["code"], -32602, "resp: {v}");
+
+    rpc_call(
+        &sock,
+        r#"{"jsonrpc":"2.0","method":"mcp.addServer","params":{"name":"bogus","config":{"type":"stdio","command":"first-missing-binary"}},"id":2}"#,
+    )
+    .await;
+    let resp = rpc_call(
+        &sock,
+        r#"{"jsonrpc":"2.0","method":"mcp.updateServer","params":{"name":"bogus","config":{"type":"stdio","command":"second-missing-binary"}},"id":3}"#,
+    )
+    .await;
+    let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    assert!(v["result"].is_object(), "resp: {v}");
+
+    let written = std::fs::read_to_string(dir.path().join(".atta").join("settings.json")).unwrap();
+    let written: serde_json::Value = serde_json::from_str(&written).unwrap();
+    assert_eq!(
+        written["mcp_servers"]["bogus"]["command"],
+        "second-missing-binary"
+    );
+    assert_eq!(written["mcp_servers"].as_object().unwrap().len(), 1);
+
+    _server.shutdown_token().cancel();
+    let _ = handle.await;
+}
+
 /// Where `cargo` put the toy MCP server, having built it.
 ///
 /// Asked rather than reconstructed: a path built from `CARGO_MANIFEST_DIR`

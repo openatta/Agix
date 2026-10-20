@@ -1264,6 +1264,33 @@ impl SessionPool {
         name: &str,
         config: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
+        self.put_mcp_server(project_root, scene_id, name, config, false)
+            .await
+    }
+
+    /// `mcp.updateServer` — replace the configuration of a server the
+    /// project's settings already declare (a rotated token, a new header) and
+    /// reconnect it. Sessions on the project pick the new connection up at
+    /// their next turn.
+    pub async fn update_mcp_server(
+        &self,
+        project_root: Option<&Path>,
+        scene_id: &str,
+        name: &str,
+        config: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        self.put_mcp_server(project_root, scene_id, name, config, true)
+            .await
+    }
+
+    async fn put_mcp_server(
+        &self,
+        project_root: Option<&Path>,
+        scene_id: &str,
+        name: &str,
+        config: serde_json::Value,
+        must_exist: bool,
+    ) -> Result<serde_json::Value, String> {
         if name.trim().is_empty() {
             return Err("name must not be empty".into());
         }
@@ -1303,6 +1330,12 @@ impl SessionPool {
         if !mcp_servers.is_object() {
             *mcp_servers = serde_json::json!({});
         }
+        if must_exist && mcp_servers.get(name).is_none() {
+            return Err(format!(
+                "no mcp server `{name}` in {}",
+                settings_path.display()
+            ));
+        }
         mcp_servers
             .as_object_mut()
             .expect("just normalized to object above")
@@ -1334,9 +1367,16 @@ impl SessionPool {
             updated.refresh_tools().await;
             updated.add_server(name, &cfg).await;
             let statuses = updated.server_statuses();
-            cache.insert(target, Arc::new(updated));
+            cache.insert(target.clone(), Arc::new(updated));
             statuses
         };
+        // A running session holds its own manager, cloned from the cache when
+        // its engine was built. Marking its binding stale rebuilds it on the
+        // new connection before its next turn; nothing in flight is touched.
+        if let Some(root) = target.0 {
+            self.invalidate_bindings(Some(&crate::watch_hub::Tier::Project(root)))
+                .await;
+        }
 
         // Same notification contract as the startup background connect —
         // see `connect_mcp_servers_in_background`.

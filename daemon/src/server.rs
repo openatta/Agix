@@ -551,7 +551,8 @@ impl DaemonServer {
                 id,
                 serde_json::json!({"servers": self.pool.mcp_status().await}),
             ),
-            "mcp.addServer" => self.method_mcp_add_server(id, req.params).await,
+            "mcp.addServer" => self.method_mcp_put_server(id, req.params, false).await,
+            "mcp.updateServer" => self.method_mcp_put_server(id, req.params, true).await,
             "commands.list" => RpcResponse::ok(
                 id,
                 serde_json::json!({"commands": self.pool.list_commands().await}),
@@ -998,10 +999,11 @@ impl DaemonServer {
         }
     }
 
-    async fn method_mcp_add_server(
+    async fn method_mcp_put_server(
         &self,
         id: serde_json::Value,
         params: serde_json::Value,
+        update: bool,
     ) -> RpcResponse {
         let name = match params.get("name").and_then(|v| v.as_str()) {
             Some(s) => s.to_string(),
@@ -1015,11 +1017,16 @@ impl DaemonServer {
             Ok(target) => target,
             Err(message) => return RpcResponse::err(id, codes::INVALID_PARAMS, message),
         };
-        match self
-            .pool
-            .add_mcp_server(project_root.as_deref(), &scene, &name, config)
-            .await
-        {
+        let put = if update {
+            self.pool
+                .update_mcp_server(project_root.as_deref(), &scene, &name, config)
+                .await
+        } else {
+            self.pool
+                .add_mcp_server(project_root.as_deref(), &scene, &name, config)
+                .await
+        };
+        match put {
             Ok(result) => RpcResponse::ok(id, result),
             Err(e) => RpcResponse::err(id, codes::INVALID_PARAMS, e),
         }

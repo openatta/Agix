@@ -1228,7 +1228,7 @@ client,会话在原地按新的规格重建(它是空闲的,不会腰斩什么),
 两者都接受 `scene` / `project_root` 定位参数,语义与 `config.reload` 一致:省略 = 这个
 daemon 自己那一对,给路径 = 它服务的另一个项目,`null` → `INVALID_PARAMS`。
 `setProvider` 写的是**被指定项目**的 `{project_root}/.atta/settings.json`,
-`written_to` 回的就是那个路径。`mcp.addServer` 同样接受这两个参数。
+`written_to` 回的就是那个路径。`mcp.addServer` 与 `mcp.updateServer` 同样接受这两个参数。
 
 **provider 路由是按 `(项目, 场景)` 解析的**:一个项目在自己的 settings 里配了
 `providers` / `task_models`,它的会话就走它自己的路由,不是 daemon 那个项目的。
@@ -1289,6 +1289,15 @@ daemon 自己那一对,给路径 = 它服务的另一个项目,`null` → `INVAL
 
 响应:`{ "written_to": "<路径>", "servers": [ <同 mcp.status 的元素> ] }`。
 配置解析不了、名字为空、已有的 settings.json 不是合法 JSON → `INVALID_PARAMS`。
+
+同名的服务已经存在时是替换,不是再加一份。这个项目上正在跑的会话在下一轮之前按新连接
+重建,进行中的调用不受影响。
+
+#### `mcp.updateServer`
+
+参数、响应与 `mcp.addServer` 相同。区别只在于服务必须已经在那份 settings.json 里声明过,
+否则 `INVALID_PARAMS` —— 用来换令牌、换请求头这类"改一个已有的",不会因为名字拼错而
+悄悄多出一个服务。连接立刻重建,这个项目上的会话下一轮拿到新连接。
 
 #### `plugin.list`
 
@@ -1530,7 +1539,7 @@ RPC 出口。要看子 Agent 干了什么,走它的侧链会话:`session.list
 
 | `kind` | 载荷 | 什么时候 |
 |---|---|---|
-| `mcp_connected` | `{server, transport, tool_count}` | 启动连接、`config.reload` 重连、`mcp.addServer` 成功 |
+| `mcp_connected` | `{server, transport, tool_count}` | 启动连接、`config.reload` 重连、`mcp.addServer` / `mcp.updateServer` 成功 |
 | `mcp_connect_failed` | `{server, error}` | 同上,失败时。具体原因在 daemon 日志里 |
 | `import_detected` | `{sources:[{source,description}]}` | 启动时探测到还没处理过的可导入配置 |
 
