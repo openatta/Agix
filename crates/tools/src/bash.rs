@@ -186,7 +186,7 @@ impl Tool for BashTool {
         //
         // 这个 `Allow` 只是"待生效的快速通道"：gate 会先跑 deny 规则、
         // bypass-immune 路径与模式级硬拒绝，都放行了才兑现（见
-        // `permissions::gate` 模块注释的 N-2 部分）。相应地，`is_read_only`
+        // `permissions::gate` 模块注释第 2 步）。相应地，`is_read_only`
         // 必须真的意味着"不写、不执行别的程序、不读凭据" —— 见
         // `classify::classify` 的 N-3 说明。只读也只在项目里只读：参数指向
         // cwd（及附加目录）之外的路径时，和 Read 读项目外的文件一样要确认。

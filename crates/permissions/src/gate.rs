@@ -26,14 +26,11 @@
 //!    - `Auto` / `Yolo` → classifier，Defer 则落到 ask
 //!    - 其余（含只读工具下的 `Plan`）→ ask / allow
 //!
-//! **为什么 2 的 Allow 要往后挪（2026-08-11 审计 N-2）**：老实现里
-//! `tool.check_permissions` 返回 `Allow` 就立即 return，而 `Write` / `Edit` /
-//! `Read` / `Grep` / `Glob` / 只读 `Bash` 全都会自判 Allow。后果是用户写在
-//! settings.json 里的 `deny` 规则对这批工具**根本不可达**，Plan 模式拦不住项目
-//! 内的 `Write` / `Edit`，`DontAsk` 形同虚设，第 4 步的 bypass-immune 名单也永远
-//! 不执行。改成"pending allow"后，UX 不变（Default 模式下项目内编辑、只读命令
-//! 依然不弹窗，因为 3–5 步都不会否掉它们），但 deny 规则 / Plan / DontAsk /
-//! bypass-immune 名单重新凌驾于工具自身的意见之上 —— 这是同类 agent 通用的优先级。
+//! **为什么 2 的 Allow 要等到第 6 步才兑现**：`Write` / `Edit` / `Read` /
+//! `Grep` / `Glob` / 只读 `Bash` 全都会自判 Allow。在第 2 步就返回的话，用户写在
+//! settings.json 里的 `deny` 规则、Plan 模式、`DontAsk` 和第 4 步的 bypass-immune
+//! 名单对这批工具都不可达。挪到 3–5 步之后，Default 模式下项目内编辑、只读命令
+//! 照样不弹窗（3–5 步不会否掉它们），而这些约束仍凌驾于工具自身的意见之上。
 //!
 //! 注意 `BypassPermissions` 依旧要被规则 `Deny` 与 bypass-immune 路径压制
 //! （见测试 `rule_engine_deny_short_circuits`）：这两项检查排在模式分派之前。
