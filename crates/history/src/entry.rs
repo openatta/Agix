@@ -41,8 +41,43 @@ pub struct EnvelopedEntry {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_sidechain: bool,
 
+    /// The turn this line was written in. Absent on lines written before
+    /// turns were recorded, and on lines written outside any turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+
+    /// Who a user-role line came from. Absent on older lines, where it is
+    /// not known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<MessageOrigin>,
+
     #[serde(flatten)]
     pub entry: LogEntry,
+}
+
+/// Where a user-role message in the conversation came from. The model sees
+/// them all as user turns; a person reading the transcript should not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageOrigin {
+    /// Typed by the person.
+    User,
+    /// Sent by the person while a turn was already running.
+    Steer,
+    /// The expansion of a slash command the person ran.
+    Command,
+    /// Put there by the engine or a tool: reminders, recalled memory, a
+    /// skill's instructions.
+    Injected,
+    /// Tool results answering the model's previous reply.
+    ToolResult,
+}
+
+/// What a writer knows about a line beyond its content.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EntryTags {
+    pub turn_id: Option<String>,
+    pub origin: Option<MessageOrigin>,
 }
 
 impl EnvelopedEntry {
@@ -74,8 +109,16 @@ impl EnvelopedEntry {
             session_id,
             parent_id: None,
             is_sidechain: false,
+            turn_id: None,
+            origin: None,
             entry,
         }
+    }
+
+    pub fn with_tags(mut self, tags: EntryTags) -> Self {
+        self.turn_id = tags.turn_id;
+        self.origin = tags.origin;
+        self
     }
 
     /// Link this entry to a parent entry, establishing a causal relationship

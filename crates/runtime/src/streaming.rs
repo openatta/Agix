@@ -271,6 +271,7 @@ where
     write_reply(
         session,
         reply,
+        usage,
         pending_result_blocks,
         pending_new_msgs,
         interceptors,
@@ -408,6 +409,7 @@ fn close_text(pending: &mut String, reply: &mut Vec<ModelContentBlock>) {
 fn write_reply(
     session: &mut session::session::SessionManager,
     reply: Vec<ModelContentBlock>,
+    usage: Usage,
     mut results: Vec<(usize, ModelContentBlock)>,
     new_msgs: Vec<Vec<serde_json::Value>>,
     interceptors: &[Arc<dyn base::interface::model_interceptor::ModelInterceptor>],
@@ -427,7 +429,7 @@ fn write_reply(
         content: reply,
     };
     base::interface::model_interceptor::intercept_message(interceptors, &mut message);
-    session.push_message(message);
+    session.push_reply(message, usage);
     if asked_for_tools {
         results.sort_by_key(|(idx, _)| *idx);
         session.push_message(ModelMessage {

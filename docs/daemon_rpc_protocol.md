@@ -544,8 +544,10 @@ Unix socket 靠文件系统权限,不握手,一样是"能连上就全权"。
 ```
 
 **先读历史再订阅会永久丢掉中间那段帧** —— `last_seq` 存在的唯一理由就是让这个接缝
-可闭合。`last_seq` 是 transcript 的条目数;日志 append-only,条目位置稳定,所以
-位置本身就是序号。
+可闭合。`last_seq` 是 transcript 里的**消息数**,和 `session.history` 的
+`offset` / `total`、每条消息的 `seq`、`step_end` / `turn_complete` 帧的 `seq` 是同
+一套坐标:读到 `offset + n == last_seq` 就追平了,之后的实时帧接着往下。压缩会让消息
+数变小(§7.1),所以它是水位,不是只增不减的计数。
 
 **没有"续接流"**:重连不会补发上一个 turn 已经推过的帧。已产生的内容都在 transcript
 里,用 `session.history` 取 —— 追赶靠历史,不靠重放。
@@ -1050,6 +1052,36 @@ client,会话在原地按新的规格重建(它是空闲的,不会腰斩什么),
 
 返回的是**投影后的消息视图**,不是原始 JSONL 行:压缩边界被合并、侧链条目被过滤。
 
+每条消息在 §4.1 的形状(`role`、`content` …)之外还带:
+
+```jsonc
+{ "role": "user", "content": [ ],
+  "seq": 0,                 // 在投影视图里的位置,即 offset 的单位
+  "id": "…",                // 写下它的那一行的 id;压缩后的替换消息是 "<压缩行 id>#<序号>"
+  "ts": "2026-10-20T08:00:00Z",
+  "turn_id": "…",           // 哪一轮写的;旧日志没有,为 null
+  "origin": "user",         // 见下
+  "usage": { } }            // 产生这条回复的那次调用的用量;只有 assistant 有,旧日志为 null
+```
+
+`origin` 区分模型眼里同样是 user 的几种消息:
+
+| 值 | 含义 |
+|---|---|
+| `user` | 人打的字 |
+| `steer` | 人在一轮运行中送来的(`on_busy:"steer"`) |
+| `command` | 人跑的斜杠命令展开后的内容 |
+| `injected` | 引擎或工具加的:提醒、召回的记忆、skill 的指令 |
+| `tool_result` | 对上一条回复里工具调用的应答 |
+| `assistant` | 模型的回复 |
+| `compact` | 压缩后替换进来的消息,没有自己的一行 |
+| `extension` | 插件写进 transcript、按项目配置对模型可见的条目 |
+| `null` | 旧日志,不知道 |
+
+界面只把 `user` / `steer` / `command` 画成人说的话。`turn_id` 与实时帧的 `turn_id`
+相同,`seq` 与 `step_end` / `turn_complete` 帧的 `seq`、`session.subscribe` 的
+`last_seq` 同一套坐标(§5.6),所以实时看到的一轮和事后读到的一轮可以逐条对上。
+
 `limit` 默认 100,上限 500,超了**夹紧不报错** —— 响应回显实际生效的 `limit`,配合
 `total` / `has_more` 就能知道自己被夹了。`offset` / `limit` 传成负数或非整数一律
 退回默认值,同样不报错。
@@ -1469,7 +1501,7 @@ RPC 出口。要看子 Agent 干了什么,走它的侧链会话:`session.list
 |---|---|---|
 | `turn_start` | `{}` | 本轮开始,是本轮的第一帧 |
 | `step_start` | `{step}` | 本轮要调一次模型;`step` 从 0 计 |
-| `step_end` | `{step,stop_reason,tool_calls,usage}` | 这次调用结束,它的回复和它要的工具结果都已在 transcript 里;`usage` 只是这一次调用的 |
+| `step_end` | `{step,stop_reason,tool_calls,usage,seq}` | 这次调用结束,它的回复和它要的工具结果都已落盘;`usage` 只是这一次调用的;`seq` 是此刻 transcript 的消息数(§5.6) |
 | `text_delta` | `{text}` | 模型输出增量 |
 | `thinking_delta` | `{text}` | 模型思考过程的增量,与正文分开,宿主可以折叠或不显示 |
 | `tool_use_start` | `{id,name}` | 模型开始写一次工具调用,参数还在流;同 `id` 的 `tool_use` 随后到达。界面可以先画出工具行 |
@@ -1483,7 +1515,7 @@ RPC 出口。要看子 Agent 干了什么,走它的侧链会话:`session.list
 | `compact` | `{strategy,messages_before,messages_after,tokens_before,tokens_after,dropped_rounds?,dropped_messages?,estimated_tokens_saved?}` | 上下文被压缩了(§7.1) |
 | `user_message_delivered` | `{message_id,content}` | 运行中送来的消息(`on_busy:"steer"`)已加进对话,模型下一次调用会读到 |
 | `user_messages_returned` | `{messages:[{message_id,content}]}` | 运行中送来、但本轮结束前没读到的消息,不在 transcript 里,交还客户端 |
-| `turn_complete` | `{stop_reason,api_calls,tool_calls,usage,last_call_usage,context?,structured_output?,message?}` | 本轮结束,transcript 已落盘;最终响应随后到达 |
+| `turn_complete` | `{stop_reason,api_calls,tool_calls,seq,usage,last_call_usage,context?,structured_output?,message?}` | 本轮结束,transcript 已落盘,`seq` 是此刻的消息数;最终响应随后到达 |
 | `error` | `{code,message}` | 本轮出错结束。只发给**发起这一轮之外**的订阅者 —— 发起者从 `run_turn` 的错误响应得知 |
 
 **这张表是白名单。** 引擎内部还有其它事件,但只有上面这些会被转成帧发出来。特别地:
@@ -1526,7 +1558,7 @@ RPC 出口。要看子 Agent 干了什么,走它的侧链会话:`session.list
 ### 7.2 `turn_complete`
 
 ```jsonc
-{ "kind":"turn_complete", "stop_reason":"end_turn", "api_calls":2, "tool_calls":1,
+{ "kind":"turn_complete", "stop_reason":"end_turn", "api_calls":2, "tool_calls":1, "seq":14,
   "usage":{…},                 // 本轮所有调用的合计
   "last_call_usage":{…},       // 本轮最后一次调用
   "context":{ "tokens":120000, "compact_threshold":150000, "window":200000 },

@@ -992,8 +992,24 @@ async fn session_fork_produces_an_independent_session() {
 
     let before_original = history(&srv.sock, &original).await;
     let before_fork = history(&srv.sock, &fork_id).await;
+    // The fork's lines are new lines — their own ids and times — carrying
+    // the same conversation.
+    let copied = |h: &serde_json::Value| -> Vec<serde_json::Value> {
+        h["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "role": m["role"], "content": m["content"], "origin": m["origin"],
+                    "turn_id": m["turn_id"], "usage": m["usage"], "seq": m["seq"]
+                })
+            })
+            .collect()
+    };
     assert_eq!(
-        before_original["messages"], before_fork["messages"],
+        copied(&before_original),
+        copied(&before_fork),
         "the fork must start as an exact copy"
     );
 
@@ -4808,6 +4824,102 @@ async fn a_tool_call_is_announced_before_its_arguments_are_complete() {
         serde_json::from_str::<serde_json::Value>(&args).unwrap(),
         used["input"]
     );
+
+    srv.stop().await;
+}
+
+// ── live frames and history tell the same story ─────────────────────────
+
+/// What a client needs from a turn, read off the live frames.
+fn reduce_frames(frames: &[serde_json::Value]) -> serde_json::Value {
+    let text: String = events_of_kind(frames, "text_delta")
+        .iter()
+        .map(|f| f["text"].as_str().unwrap())
+        .collect();
+    let calls: Vec<&serde_json::Value> = events_of_kind(frames, "tool_use")
+        .iter()
+        .map(|f| &f["id"])
+        .collect();
+    let results: Vec<&serde_json::Value> = events_of_kind(frames, "tool_result")
+        .iter()
+        .map(|f| &f["id"])
+        .collect();
+    serde_json::json!({"text": text, "calls": calls, "results": results})
+}
+
+/// The same, read off `session.history` for one turn.
+fn reduce_history(messages: &[serde_json::Value], turn_id: &str) -> serde_json::Value {
+    let mut text = String::new();
+    let mut calls = Vec::new();
+    let mut results = Vec::new();
+    for m in messages.iter().filter(|m| m["turn_id"] == turn_id) {
+        for block in m["content"].as_array().unwrap() {
+            match block["type"].as_str().unwrap() {
+                "text" if m["role"] == "assistant" => {
+                    text.push_str(block["text"].as_str().unwrap())
+                }
+                "tool_use" => calls.push(block["id"].clone()),
+                "tool_result" => results.push(block["tool_use_id"].clone()),
+                _ => {}
+            }
+        }
+    }
+    serde_json::json!({"text": text, "calls": calls, "results": results})
+}
+
+/// A tab that watched a turn live and a tab that opened it afterwards from
+/// `session.history` must end up showing the same thing — and the positions
+/// the live frames report are positions in that history.
+#[tokio::test]
+async fn the_live_frames_and_the_history_of_a_turn_agree() {
+    let (srv, _seen) = start_scripted_server(
+        vec![
+            tool_round_costing("Glob", "tool-1", serde_json::json!({"pattern": "*"}), 7, 3),
+            text_round_costing("all done", 11, 5),
+        ],
+        ask_settings_no_memory(),
+        Duration::ZERO,
+    )
+    .await;
+
+    let (frames, resp) = rpc_streaming(
+        &srv.sock,
+        r#"{"jsonrpc":"2.0","method":"session.run_turn","params":{"message":"look"},"id":1}"#,
+    )
+    .await;
+    assert!(resp["result"].is_object(), "turn failed: {resp}");
+    let sid = resp["result"]["session_id"].as_str().unwrap().to_string();
+    let turn_id = frames[0]["params"]["turn_id"].as_str().unwrap().to_string();
+
+    let h = history(&srv.sock, &sid).await;
+    let messages = h["messages"].as_array().unwrap();
+    assert_eq!(reduce_frames(&frames), reduce_history(messages, &turn_id));
+
+    let origins: Vec<&str> = messages
+        .iter()
+        .map(|m| m["origin"].as_str().unwrap())
+        .collect();
+    assert_eq!(origins, ["user", "assistant", "tool_result", "assistant"]);
+    assert_eq!(messages[1]["usage"]["input_tokens"], 7);
+    assert_eq!(messages[3]["usage"]["output_tokens"], 5);
+    for (i, m) in messages.iter().enumerate() {
+        assert_eq!(m["seq"], i);
+        assert!(m["id"].is_string() && m["ts"].is_string(), "{m}");
+    }
+
+    let ends = events_of_kind(&frames, "step_end");
+    assert_eq!(ends[0]["seq"], 3, "user, reply, results are on disk");
+    let done = events_of_kind(&frames, "turn_complete")[0];
+    assert_eq!(done["seq"], h["total"]);
+
+    let sub = rpc(
+        &srv.sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.subscribe","params":{{"session_id":"{sid}"}},"id":3}}"#
+        ),
+    )
+    .await;
+    assert_eq!(sub["result"]["last_seq"], h["total"], "{sub}");
 
     srv.stop().await;
 }

@@ -2728,14 +2728,21 @@ impl SessionPool {
         }
     }
 
-    /// How many entries this session's transcript holds — its watermark.
-    ///
-    /// The log is append-only, so an entry's position is stable and the
-    /// count is a usable sequence number without a stored `seq` field.
+    /// How many messages this session's transcript holds — its watermark, in
+    /// the same positions `session.history` pages by and `step_end` /
+    /// `turn_complete` report as `seq`.
     async fn transcript_len(&self, session_id: &str) -> usize {
+        let Ok(store) = self.require_history_store() else {
+            return 0;
+        };
         self.load_entries(session_id)
             .await
-            .map(|entries| entries.len())
+            .map(|entries| {
+                history::transcript::projected_lengths_with(&entries, store.projection())
+                    .last()
+                    .copied()
+                    .unwrap_or(0)
+            })
             .unwrap_or(0)
     }
 
@@ -3037,6 +3044,7 @@ impl SessionPool {
                     stop_reason,
                     usage,
                     tool_calls,
+                    seq,
                     ..
                 }) => {
                     let f = StreamFrame::event(
@@ -3044,7 +3052,7 @@ impl SessionPool {
                         &turn_id,
                         serde_json::json!({
                             "kind":"step_end","step":step,"stop_reason":stop_reason,
-                            "tool_calls":tool_calls,
+                            "tool_calls":tool_calls,"seq":seq,
                             "usage":serde_json::to_value(usage).unwrap_or_else(|_| serde_json::json!({}))
                         }),
                     );
@@ -3279,6 +3287,7 @@ impl SessionPool {
                     last_call_usage,
                     context,
                     structured_output,
+                    seq,
                     ..
                 }) => {
                     api_calls = ac;
@@ -3289,7 +3298,7 @@ impl SessionPool {
                     }
                     let mut event = serde_json::json!({
                         "kind":"turn_complete","stop_reason":stop_reason,"api_calls":api_calls,
-                        "tool_calls":tool_calls,
+                        "tool_calls":tool_calls,"seq":seq,
                         "last_call_usage":serde_json::to_value(last_call_usage).unwrap_or_else(|_| serde_json::json!({})),
                         // Serialized whole rather than field by field: a
                         // hand-written projection is invisible to the
@@ -4303,19 +4312,24 @@ impl SessionPool {
         limit: usize,
     ) -> Result<serde_json::Value, RpcError> {
         let entries = self.load_entries(session_id).await?;
-        let messages = history::transcript::project_messages_with(
+        let messages = history::transcript::project_messages_sourced(
             &entries,
             self.require_history_store()?.projection(),
         );
         let total = messages.len();
         let start = offset.min(total);
         let end = start.saturating_add(limit).min(total);
-        let page = serde_json::to_value(&messages[start..end]).map_err(|e| {
-            (
-                codes::INTERNAL_ERROR,
-                format!("failed to serialize transcript: {e}"),
-            )
-        })?;
+        let page = messages[start..end]
+            .iter()
+            .enumerate()
+            .map(|(i, m)| history_item(start + i, m))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| {
+                (
+                    codes::INTERNAL_ERROR,
+                    format!("failed to serialize transcript: {e}"),
+                )
+            })?;
         let active = self.sessions.lock().await.contains_key(session_id);
 
         Ok(serde_json::json!({
@@ -4454,7 +4468,11 @@ impl SessionPool {
             if env.is_sidechain || matches!(env.entry, history::entry::LogEntry::Meta { .. }) {
                 continue;
             }
-            if let Err(e) = store.append(new_sid, env.entry.clone()).await {
+            let tags = history::entry::EntryTags {
+                turn_id: env.turn_id.clone(),
+                origin: env.origin,
+            };
+            if let Err(e) = store.append_tagged(new_sid, env.entry.clone(), tags).await {
                 let _ = store.delete(new_sid).await;
                 return Err((
                     codes::INTERNAL_ERROR,
@@ -5947,6 +5965,48 @@ fn redact_secret(s: &str) -> String {
     }
     let tail: String = chars[chars.len() - 4..].iter().collect();
     format!("***{tail}")
+}
+
+/// One `session.history` item: the projected message as it always was
+/// (`role`, `content`, …) plus where it sits and where it came from.
+fn history_item(
+    seq: usize,
+    sourced: &history::transcript::SourcedMessage<'_>,
+) -> Result<serde_json::Value, serde_json::Error> {
+    use history::entry::LogEntry;
+    let env = sourced.entry;
+    let mut item = serde_json::to_value(&sourced.message)?;
+    let id = match sourced.part {
+        Some(part) => serde_json::json!(format!(
+            "{}#{part}",
+            serde_json::to_value(env.id)?.as_str().unwrap_or_default()
+        )),
+        None => serde_json::to_value(env.id)?,
+    };
+    let origin = match (&sourced.message, sourced.part, &env.entry) {
+        (base::message::Message::Assistant { .. }, _, _) => serde_json::json!("assistant"),
+        (_, Some(_), _) => serde_json::json!("compact"),
+        (_, None, LogEntry::ToolResult { .. }) => serde_json::json!("tool_result"),
+        (_, None, LogEntry::Extension { .. }) => serde_json::json!("extension"),
+        _ => serde_json::to_value(env.origin)?,
+    };
+    let usage = match (&env.entry, sourced.part) {
+        (LogEntry::Assistant { usage: Some(u), .. }, None) => serde_json::to_value(u)?,
+        _ => serde_json::Value::Null,
+    };
+    let ts = env
+        .ts
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default();
+    if let Some(map) = item.as_object_mut() {
+        map.insert("seq".into(), serde_json::json!(seq));
+        map.insert("id".into(), id);
+        map.insert("ts".into(), serde_json::json!(ts));
+        map.insert("turn_id".into(), serde_json::json!(env.turn_id));
+        map.insert("origin".into(), origin);
+        map.insert("usage".into(), usage);
+    }
+    Ok(item)
 }
 
 #[cfg(test)]

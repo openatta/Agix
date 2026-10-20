@@ -117,6 +117,20 @@ pub struct SessionStats {
 #[async_trait]
 pub trait HistoryStore: Send + Sync {
     async fn append(&self, session: SessionId, entry: LogEntry) -> Result<(), HistoryError>;
+
+    /// [`append`](Self::append), recording what the writer knows about the
+    /// line in its envelope. A backend that cannot keep the tags may drop
+    /// them; the line itself must still be written.
+    async fn append_tagged(
+        &self,
+        session: SessionId,
+        entry: LogEntry,
+        tags: crate::entry::EntryTags,
+    ) -> Result<(), HistoryError> {
+        let _ = tags;
+        self.append(session, entry).await
+    }
+
     async fn load(&self, session: SessionId) -> Result<Vec<EnvelopedEntry>, HistoryError>;
     async fn list_sessions(&self) -> Result<Vec<SessionId>, HistoryError>;
 
@@ -933,6 +947,16 @@ impl HistoryStore for JsonlHistoryStore {
     }
 
     async fn append(&self, session: SessionId, entry: LogEntry) -> Result<(), HistoryError> {
+        self.append_tagged(session, entry, crate::entry::EntryTags::default())
+            .await
+    }
+
+    async fn append_tagged(
+        &self,
+        session: SessionId,
+        entry: LogEntry,
+        tags: crate::entry::EntryTags,
+    ) -> Result<(), HistoryError> {
         let _guard = self.append_lock.lock().await;
 
         // A `Meta` line is where a session says which project it belongs to,
@@ -981,7 +1005,7 @@ impl HistoryStore for JsonlHistoryStore {
             .create(true)
             .open(&path)?;
 
-        let enveloped = EnvelopedEntry::new_in(self.environment(), session, entry);
+        let enveloped = EnvelopedEntry::new_in(self.environment(), session, entry).with_tags(tags);
         let line = serde_json::to_string(&enveloped)?;
 
         // 一次 write_all 把 line + '\n' 一起出，减少 partial line 风险。
@@ -1198,12 +1222,22 @@ impl InMemoryHistoryStore {
 #[async_trait]
 impl HistoryStore for InMemoryHistoryStore {
     async fn append(&self, session: SessionId, entry: LogEntry) -> Result<(), HistoryError> {
+        self.append_tagged(session, entry, crate::entry::EntryTags::default())
+            .await
+    }
+
+    async fn append_tagged(
+        &self,
+        session: SessionId,
+        entry: LogEntry,
+        tags: crate::entry::EntryTags,
+    ) -> Result<(), HistoryError> {
         self.sessions
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .entry(session)
             .or_default()
-            .push(EnvelopedEntry::new_in(self.environment(), session, entry));
+            .push(EnvelopedEntry::new_in(self.environment(), session, entry).with_tags(tags));
         Ok(())
     }
 
@@ -2482,6 +2516,21 @@ impl HistoryStore for ObservedHistoryStore {
         // Written first. An observer sees what is on the record, not what was
         // proposed — a failed append is not an event.
         self.inner.append(session, entry.clone()).await?;
+        for observer in &self.observers {
+            observer.observed(session, &entry);
+        }
+        Ok(())
+    }
+
+    async fn append_tagged(
+        &self,
+        session: SessionId,
+        entry: LogEntry,
+        tags: crate::entry::EntryTags,
+    ) -> Result<(), HistoryError> {
+        self.inner
+            .append_tagged(session, entry.clone(), tags)
+            .await?;
         for observer in &self.observers {
             observer.observed(session, &entry);
         }

@@ -39,6 +39,17 @@ pub struct SessionManager {
     /// [`SessionManager::set_token_counter`]. `None` means the engine's
     /// default estimator.
     token_counter: Option<Arc<dyn base::interface::token_counter::TokenCounter>>,
+    /// The turn new lines belong to; recorded on each line `persist()` writes.
+    turn_id: Option<String>,
+    /// What the pusher knew about a not-yet-persisted message, by its index
+    /// in `messages`.
+    notes: std::collections::HashMap<usize, MessageNote>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct MessageNote {
+    origin: Option<history::entry::MessageOrigin>,
+    usage: Option<base::interface::model::Usage>,
 }
 
 impl SessionManager {
@@ -64,6 +75,8 @@ impl SessionManager {
             parent_session_id,
             persisted_up_to: 0,
             token_counter: None,
+            turn_id: None,
+            notes: std::collections::HashMap::new(),
         }
     }
 
@@ -81,9 +94,41 @@ impl SessionManager {
 
     // ── In-memory state (Engine uses these directly) ──
 
+    /// A user-role message pushed this way is recorded as engine-injected
+    /// unless it only answers tool calls; see [`Self::push_message_from`].
     pub fn push_message(&mut self, msg: ModelMessage) {
         self.message_timestamps.push(Instant::now());
         self.messages.push(msg);
+    }
+
+    /// Push a user-role message and say who it came from.
+    pub fn push_message_from(&mut self, msg: ModelMessage, origin: history::entry::MessageOrigin) {
+        self.notes.insert(
+            self.messages.len(),
+            MessageNote {
+                origin: Some(origin),
+                usage: None,
+            },
+        );
+        self.push_message(msg);
+    }
+
+    /// Push the model's reply together with what the call that produced it
+    /// cost.
+    pub fn push_reply(&mut self, msg: ModelMessage, usage: base::interface::model::Usage) {
+        self.notes.insert(
+            self.messages.len(),
+            MessageNote {
+                origin: None,
+                usage: Some(usage),
+            },
+        );
+        self.push_message(msg);
+    }
+
+    /// The turn that lines written from now on belong to.
+    pub fn set_turn_id(&mut self, turn_id: Option<String>) {
+        self.turn_id = turn_id;
     }
 
     pub fn messages(&self) -> &[ModelMessage] {
@@ -166,12 +211,33 @@ impl SessionManager {
             SessionId::parse(&self.session_id).map_err(|e| SessionError::Id(e.to_string()))?;
         while self.persisted_up_to < self.messages.len() {
             let msg = &self.messages[self.persisted_up_to];
-            if let Some(entry) = model_message_to_log_entry(msg) {
+            let note = self
+                .notes
+                .get(&self.persisted_up_to)
+                .cloned()
+                .unwrap_or_default();
+            if let Some(mut entry) = model_message_to_log_entry(msg) {
+                if let (history::entry::LogEntry::Assistant { usage, .. }, Some(u)) =
+                    (&mut entry, note.usage)
+                {
+                    *usage = Some(usage_record(u));
+                }
+                let origin = match msg.role {
+                    base::interface::model::MessageRole::User => {
+                        Some(note.origin.unwrap_or_else(|| unmarked_user_origin(msg)))
+                    }
+                    _ => None,
+                };
+                let tags = history::entry::EntryTags {
+                    turn_id: self.turn_id.clone(),
+                    origin,
+                };
                 store
-                    .append(sid, entry)
+                    .append_tagged(sid, entry, tags)
                     .await
                     .map_err(|e| SessionError::Store(e.to_string()))?;
             }
+            self.notes.remove(&self.persisted_up_to);
             self.persisted_up_to += 1;
         }
         Ok(())
@@ -218,6 +284,7 @@ impl SessionManager {
             .collect();
 
         self.messages = new_messages;
+        self.notes.clear();
 
         let Some(store) = self.history_store.clone() else {
             self.persisted_up_to = self.messages.len();
@@ -235,8 +302,12 @@ impl SessionManager {
                 summary: None,
                 snip_removed_uuids: None,
             };
+            let tags = history::entry::EntryTags {
+                turn_id: self.turn_id.clone(),
+                origin: None,
+            };
             store
-                .append(sid, entry)
+                .append_tagged(sid, entry, tags)
                 .await
                 .map_err(|e| SessionError::Store(e.to_string()))
         }
@@ -291,6 +362,7 @@ impl SessionManager {
             .collect();
         self.message_timestamps = vec![Instant::now(); self.messages.len()];
         self.persisted_up_to = self.messages.len();
+        self.notes.clear();
 
         Ok(())
     }
@@ -450,6 +522,35 @@ fn model_content_block_to_content_block(
             content: base::message::ToolResultContent::Text(content.clone()),
             is_error: is_error.unwrap_or(false),
         },
+    }
+}
+
+/// A user-role message nobody said the origin of. Answers to tool calls are
+/// recognisable by shape; anything else the engine put there itself, so it
+/// is never mistaken for something the person said.
+fn unmarked_user_origin(msg: &ModelMessage) -> history::entry::MessageOrigin {
+    use base::interface::model::ModelContentBlock as M;
+    let answers_tools = msg
+        .content
+        .iter()
+        .any(|b| matches!(b, M::ToolResult { .. }))
+        && msg
+            .content
+            .iter()
+            .all(|b| matches!(b, M::ToolResult { .. } | M::Image { .. }));
+    if answers_tools {
+        history::entry::MessageOrigin::ToolResult
+    } else {
+        history::entry::MessageOrigin::Injected
+    }
+}
+
+fn usage_record(u: base::interface::model::Usage) -> history::entry::UsageRecord {
+    history::entry::UsageRecord {
+        input_tokens: u64::from(u.input_tokens),
+        output_tokens: u64::from(u.output_tokens),
+        cache_creation_input_tokens: Some(u64::from(u.cache_creation_input_tokens)),
+        cache_read_input_tokens: Some(u64::from(u.cache_read_input_tokens)),
     }
 }
 
@@ -1027,6 +1128,68 @@ mod tests {
         mgr.persist().await.unwrap();
         let entries = store.load(sid).await.unwrap();
         assert_eq!(entries.len(), 2);
+    }
+
+    /// Each line says which turn wrote it and, for user-role lines, who it
+    /// came from; a user-role message nobody vouched for is never recorded as
+    /// the person's.
+    #[tokio::test]
+    async fn persisted_lines_carry_turn_origin_and_reply_usage() {
+        use base::interface::model::{MessageRole, ModelContentBlock, Usage};
+        use history::entry::{LogEntry, MessageOrigin};
+        let tmp = tempfile::tempdir().unwrap();
+        let store = real_store(tmp.path()).await;
+        let sid = SessionId::new();
+        let mut mgr = SessionManager::new(Some(store.clone()), Some(sid.to_string()), None);
+        mgr.set_turn_id(Some("turn-1".into()));
+
+        mgr.push_message_from(make_text_msg("hello"), MessageOrigin::User);
+        mgr.push_reply(
+            ModelMessage {
+                role: MessageRole::Assistant,
+                content: vec![ModelContentBlock::ToolUse {
+                    id: "t1".into(),
+                    name: "Glob".into(),
+                    input: serde_json::json!({}),
+                }],
+            },
+            Usage {
+                input_tokens: 12,
+                output_tokens: 4,
+                ..Usage::default()
+            },
+        );
+        mgr.push_message(ModelMessage {
+            role: MessageRole::User,
+            content: vec![ModelContentBlock::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "a.rs".into(),
+                is_error: None,
+            }],
+        });
+        mgr.push_message(make_text_msg("<system-reminder>…</system-reminder>"));
+        mgr.persist().await.unwrap();
+
+        let entries = store.load(sid).await.unwrap();
+        let origins: Vec<Option<MessageOrigin>> = entries.iter().map(|e| e.origin).collect();
+        assert_eq!(
+            origins,
+            [
+                Some(MessageOrigin::User),
+                None,
+                Some(MessageOrigin::ToolResult),
+                Some(MessageOrigin::Injected)
+            ]
+        );
+        assert!(entries
+            .iter()
+            .all(|e| e.turn_id.as_deref() == Some("turn-1")));
+        match &entries[1].entry {
+            LogEntry::Assistant { usage: Some(u), .. } => {
+                assert_eq!((u.input_tokens, u.output_tokens), (12, 4))
+            }
+            other => panic!("expected an assistant line with usage, got {other:?}"),
+        }
     }
 
     #[tokio::test]

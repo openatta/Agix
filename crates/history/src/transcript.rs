@@ -180,6 +180,49 @@ pub fn project_messages_with(
     out
 }
 
+/// A projected message and the log line it came from.
+pub struct SourcedMessage<'a> {
+    pub message: Message,
+    pub entry: &'a EnvelopedEntry,
+    /// Set when the message is part of a compaction's replacement view: its
+    /// position in that view. Such a message has no line of its own.
+    pub part: Option<usize>,
+}
+
+/// [`project_messages_with`], keeping for every message the line that put it
+/// there. Tool results folded into an earlier user message keep that
+/// message's line.
+pub fn project_messages_sourced<'a>(
+    entries: &'a [EnvelopedEntry],
+    projection: &dyn TranscriptProjection,
+) -> Vec<SourcedMessage<'a>> {
+    let mut messages = Vec::new();
+    let mut sources: Vec<(&EnvelopedEntry, Option<usize>)> = Vec::new();
+    for env in entries {
+        if env.is_sidechain {
+            continue;
+        }
+        let before = messages.len();
+        projection.apply(&env.entry, &mut messages);
+        if matches!(env.entry, LogEntry::Compact { .. }) {
+            sources = (0..messages.len()).map(|i| (env, Some(i))).collect();
+        } else if messages.len() > before {
+            sources.extend((before..messages.len()).map(|_| (env, None)));
+        } else {
+            sources.truncate(messages.len());
+        }
+    }
+    messages
+        .into_iter()
+        .zip(sources)
+        .map(|(message, (entry, part))| SourcedMessage {
+            message,
+            entry,
+            part,
+        })
+        .collect()
+}
+
 /// Running projected-message count after each successive prefix of `entries`.
 ///
 /// `out[i]` is `project_messages(&entries[..=i]).len()` — computed in one

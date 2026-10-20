@@ -66,6 +66,7 @@ impl Agent {
                 turn_id,
             } => {
                 self.current_turn_id = turn_id;
+                self.session.set_turn_id(Some(self.current_turn_id.clone()));
                 let _ = self.event_tx.send(AgentEvent::TurnStart {
                     turn_id: self.current_turn_id.clone(),
                 });
@@ -107,7 +108,12 @@ impl Agent {
                             );
                         }
                         return self
-                            .run_user_turn(invocation.text, attachments, cancel)
+                            .run_user_turn(
+                                invocation.text,
+                                attachments,
+                                cancel,
+                                history::entry::MessageOrigin::Command,
+                            )
                             .await;
                     }
 
@@ -116,7 +122,14 @@ impl Agent {
                             crate::commands::Command::Prompt { entry } => {
                                 // Expand skill body → replace content → continue to LLM
                                 let expanded = crate::commands::handle_prompt_command(&entry, &sc);
-                                return self.run_user_turn(expanded, attachments, cancel).await;
+                                return self
+                                    .run_user_turn(
+                                        expanded,
+                                        attachments,
+                                        cancel,
+                                        history::entry::MessageOrigin::Command,
+                                    )
+                                    .await;
                             }
                             crate::commands::Command::McpPrompt { .. } => {
                                 unreachable!("MCP prompt commands are dispatched above")
@@ -177,8 +190,13 @@ impl Agent {
                 };
 
                 // Not a slash command → normal flow
-                self.run_user_turn(processed_content, attachments, cancel)
-                    .await
+                self.run_user_turn(
+                    processed_content,
+                    attachments,
+                    cancel,
+                    history::entry::MessageOrigin::User,
+                )
+                .await
             }
             InputMessage::ToolResult {
                 tool_use_id,
@@ -295,11 +313,14 @@ impl Agent {
         content: String,
         attachments: Vec<crate::agent::Attachment>,
         cancel: CancellationToken,
+        origin: history::entry::MessageOrigin,
     ) -> Result<TurnOutcome, TurnError> {
         self.last_call_usage = None;
         self.session_state.take_structured_output();
         crate::steering::lock(&self.steering).open();
-        let outcome = self.run_user_turn_inner(content, attachments, cancel).await;
+        let outcome = self
+            .run_user_turn_inner(content, attachments, cancel, origin)
+            .await;
         let undelivered = crate::steering::lock(&self.steering).close();
         if !undelivered.is_empty() {
             let _ = self.event_tx.send(AgentEvent::UserMessagesReturned {
@@ -329,12 +350,15 @@ impl Agent {
             return false;
         }
         for m in queued {
-            self.session.push_message(ModelMessage {
-                role: MessageRole::User,
-                content: vec![ModelContentBlock::Text {
-                    text: m.content.clone(),
-                }],
-            });
+            self.session.push_message_from(
+                ModelMessage {
+                    role: MessageRole::User,
+                    content: vec![ModelContentBlock::Text {
+                        text: m.content.clone(),
+                    }],
+                },
+                history::entry::MessageOrigin::Steer,
+            );
             let _ = self.event_tx.send(AgentEvent::UserMessageDelivered {
                 message_id: m.message_id,
                 content: m.content,
@@ -368,6 +392,7 @@ impl Agent {
                 last_call_usage: self.last_call_usage.unwrap_or_default(),
                 context: self.last_call_usage.map(|u| self.context_usage(u)),
                 structured_output: self.session_state.take_structured_output(),
+                seq: self.session.messages.len() as u64,
             });
         }
         outcome
@@ -390,6 +415,7 @@ impl Agent {
         mut content: String,
         attachments: Vec<crate::agent::Attachment>,
         cancel: CancellationToken,
+        origin: history::entry::MessageOrigin,
     ) -> Result<TurnOutcome, TurnError> {
         // A script's budget is per turn, and this is where a turn begins.
         // Without this the counter only ever climbs, so the quota is a
@@ -781,7 +807,7 @@ impl Agent {
             content: user_blocks,
         };
         self.pending_input = user_text_fingerprint(&message).map(|fp| (fp, spans));
-        self.session.push_message(message);
+        self.session.push_message_from(message, origin);
 
         // ── Memory recall: collect the prefetch and inject it into this turn ──
         //
@@ -1216,12 +1242,16 @@ impl Agent {
             let stop_reason = stream_result.stop_reason;
             let usage = stream_result.usage;
             self.last_call_usage = Some(usage);
+            if let Err(e) = self.session.persist().await {
+                tracing::warn!(error = %e, "failed to persist session");
+            }
             let _ = self.event_tx.send(AgentEvent::StepEnd {
                 step,
                 stop_reason: stop_reason.clone(),
                 usage,
                 tool_calls: stream_result.tool_calls,
                 turn_id: self.current_turn_id.clone(),
+                seq: self.session.messages.len() as u64,
             });
 
             // One call, accounted for. Every other number the engine reports is

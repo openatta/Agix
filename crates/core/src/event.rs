@@ -106,6 +106,11 @@ pub enum AgentEvent {
         usage: Usage,
         tool_calls: u32,
         turn_id: String,
+        /// How many messages the transcript holds now — the same position
+        /// `session.history` pages by. Everything this step produced is on
+        /// disk below it.
+        #[serde(default)]
+        seq: u64,
     },
 
     /// A turn has completed.
@@ -129,6 +134,9 @@ pub enum AgentEvent {
         /// validated against the host's schema when the session has one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         structured_output: Option<Value>,
+        /// The transcript position the turn ended at; see `StepEnd::seq`.
+        #[serde(default)]
+        seq: u64,
     },
 
     /// A message the user sent while this turn was running is now part of
