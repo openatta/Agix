@@ -185,6 +185,14 @@ impl StdioMcpClient {
                 name: t.name.to_string(),
                 description: t.description.map(|d| d.to_string()),
                 input_schema: serde_json::Value::Object((*t.input_schema).clone()),
+                hints: t
+                    .annotations
+                    .map(|a| crate::client::McpToolHints {
+                        read_only: a.read_only_hint,
+                        idempotent: a.idempotent_hint,
+                        destructive: a.destructive_hint,
+                    })
+                    .unwrap_or_default(),
             })
             .collect())
     }
@@ -561,17 +569,70 @@ async fn spawn_stdio_service(
         })
 }
 
-/// StreamableHttp transport：rmcp 1.6 的 reqwest-based client。
-///
-/// **headers 支持限制**: 仅识别 `Authorization` 头（进 transport
-/// config.auth_header）。其它 header 会 warn 后忽略 —— 自定义 header 需要
-/// `http` crate 类型，跨 crate 维护成本不值。
-///
-/// **v2-4  — OAuth token 注入**：当 config 给了 `oauth_provider` 名字
-/// 时，尝试从 `~/.atta/scenes/<scope>/tokens/<provider>.json` 读 stored token（必要时
-/// 刷新）作为 Authorization。`headers.Authorization` 在此场景下被覆盖。
-/// **caveat**：rmcp 1.6 transport 在创建时锁定 auth_header；token 中途过期
-/// 不会自动刷新。daemon 长连接场景下用户需重启 MCP 子系统（重连）。
+/// Headers the transport sets itself; rmcp rejects a request that also carries
+/// one of these as a custom header.
+const TRANSPORT_OWNED_HEADERS: &[&str] = &[
+    "accept",
+    "mcp-session-id",
+    "mcp-protocol-version",
+    "last-event-id",
+];
+
+/// Turn configured headers into what goes on the wire, every one of them,
+/// verbatim. The exception is an `Authorization` value with no scheme: rmcp's
+/// own auth slot always prefixed `Bearer `, so configs written for it hold a
+/// bare token, and that meaning is kept.
+fn wire_headers(
+    server_name: &str,
+    headers: &std::collections::HashMap<String, String>,
+) -> std::collections::HashMap<reqwest::header::HeaderName, reqwest::header::HeaderValue> {
+    use reqwest::header::{HeaderName, HeaderValue};
+    let mut out = std::collections::HashMap::new();
+    for (k, v) in headers {
+        if TRANSPORT_OWNED_HEADERS
+            .iter()
+            .any(|h| k.eq_ignore_ascii_case(h))
+        {
+            warn!(server = %server_name, header = %k, "header is set by the MCP transport itself; ignored");
+            continue;
+        }
+        let value = if k.eq_ignore_ascii_case("authorization") && !v.trim().contains(' ') {
+            format!("Bearer {}", v.trim())
+        } else {
+            v.clone()
+        };
+        match (
+            HeaderName::from_bytes(k.as_bytes()),
+            HeaderValue::from_str(&value),
+        ) {
+            (Ok(name), Ok(value)) => {
+                out.insert(name, value);
+            }
+            _ => warn!(server = %server_name, header = %k, "invalid HTTP header; ignored"),
+        }
+    }
+    out
+}
+
+fn http_transport_config(
+    server_name: &str,
+    url: &str,
+    headers: &std::collections::HashMap<String, String>,
+    oauth_authorization: Option<String>,
+) -> rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig {
+    let mut headers = headers.clone();
+    if let Some(a) = oauth_authorization {
+        headers.retain(|k, _| !k.eq_ignore_ascii_case("authorization"));
+        headers.insert("Authorization".into(), a);
+    }
+    rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig::with_uri(url)
+        .custom_headers(wire_headers(server_name, &headers))
+}
+
+/// StreamableHttp transport (rmcp's reqwest client). Configured headers go on
+/// every request; with `oauth_provider`, a stored (refreshed if needed) token
+/// replaces any configured `Authorization`. Headers are fixed when the
+/// transport is built, so a changed token takes a reconnect.
 async fn spawn_streamable_http_service(
     server_name: &str,
     url: &str,
@@ -582,12 +643,8 @@ async fn spawn_streamable_http_service(
     rmcp::service::RunningService<rmcp::RoleClient, crate::notify::NotifyingHandler>,
     McpError,
 > {
-    use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
     use rmcp::transport::StreamableHttpClientTransport;
 
-    let mut config = StreamableHttpClientTransportConfig::with_uri(url);
-
-    // **v2-4 **: prefer fresh OAuth token over headers.Authorization
     let resolved_auth: Option<String> = if let Some(provider) = oauth_provider {
         match resolve_oauth_bearer(provider).await {
             Ok(tok) => Some(format!("Bearer {tok}")),
@@ -604,29 +661,7 @@ async fn spawn_streamable_http_service(
     } else {
         None
     };
-    if let Some(a) = resolved_auth {
-        config = config.auth_header(a);
-    }
-
-    // 静态 header（仅 Authorization 进 config，其余 warn）
-    let mut warned_other = false;
-    for (k, v) in headers {
-        if k.eq_ignore_ascii_case("authorization") {
-            // 若已经被 OAuth 注入则跳过，避免覆盖
-            if oauth_provider.is_none() {
-                config = config.auth_header(v.clone());
-            }
-        } else if !warned_other {
-            warn!(
-                server = %server_name,
-                ignored_header = %k,
-                "StreamableHttp transport currently only honors `Authorization` header; \
-                 other headers ignored"
-            );
-            warned_other = true;
-        }
-    }
-
+    let config = http_transport_config(server_name, url, headers, resolved_auth);
     let transport = StreamableHttpClientTransport::from_config(config);
 
     crate::notify::NotifyingHandler::new(server_name, sink)
@@ -810,22 +845,24 @@ impl rmcp::transport::Transport<rmcp::RoleClient> for WebSocketTransport {
     }
 }
 
-/// Try to establish a raw WebSocket connection for MCP.
-///
-/// Custom headers from the MCP config are currently **not** forwarded to
-/// the WebSocket upgrade request — `tokio_tungstenite::connect_async` does
-/// not accept custom headers in its simplest form. If headers are needed,
-/// the StreamableHTTP fallback (which does support them) should be used.
+/// Try to establish a raw WebSocket connection for MCP, sending the configured
+/// headers on the upgrade request.
 async fn try_ws_connect(
+    server_name: &str,
     url: &str,
-    _headers: &std::collections::HashMap<String, String>,
+    headers: &std::collections::HashMap<String, String>,
 ) -> Result<WebSocketTransport, anyhow::Error> {
-    // Validate the URL first for a better error message
-    url::Url::parse(url).map_err(|e| anyhow::anyhow!("Invalid WebSocket URL '{url}': {e}"))?;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
-    // Pass &str directly — url::Url does not implement tokio_tungstenite's
-    // IntoClientRequest trait, but &str does.
-    let (ws_stream, _response) = tokio_tungstenite::connect_async(url)
+    url::Url::parse(url).map_err(|e| anyhow::anyhow!("Invalid WebSocket URL '{url}': {e}"))?;
+    let mut request = url
+        .into_client_request()
+        .map_err(|e| anyhow::anyhow!("Invalid WebSocket URL '{url}': {e}"))?;
+    request
+        .headers_mut()
+        .extend(wire_headers(server_name, headers));
+
+    let (ws_stream, _response) = tokio_tungstenite::connect_async(request)
         .await
         .map_err(|e| anyhow::anyhow!("WebSocket connection to '{url}' failed: {e}"))?;
 
@@ -857,9 +894,7 @@ fn ws_url_to_http(url: &str) -> String {
 ///    convert `ws://` → `http://` (or `wss://` → `https://`) and fall back
 ///    to the StreamableHTTP transport.
 ///
-/// Custom headers from the MCP config are forwarded to the StreamableHTTP
-/// fallback but *not* to the WebSocket upgrade attempt — `connect_async`
-/// takes a URL, not a full request.
+/// Configured headers go on the upgrade request and on the fallback alike.
 async fn spawn_websocket_service(
     server_name: &str,
     url: &str,
@@ -870,7 +905,7 @@ async fn spawn_websocket_service(
     McpError,
 > {
     // 1. Try WebSocket first
-    match try_ws_connect(url, headers).await {
+    match try_ws_connect(server_name, url, headers).await {
         Ok(transport) => {
             info!(
                 server = %server_name,
@@ -1335,6 +1370,102 @@ mod tests {
         assert_eq!(client.transport_kind(), "web_socket");
         assert_eq!(client.server_name(), "mock");
         assert_eq!(client.instructions(), Some("test"));
+    }
+
+    fn header<'a>(
+        headers: &'a HashMap<reqwest::header::HeaderName, reqwest::header::HeaderValue>,
+        name: &'static str,
+    ) -> &'a str {
+        headers[&reqwest::header::HeaderName::from_static(name)]
+            .to_str()
+            .unwrap()
+    }
+
+    #[test]
+    fn wire_headers_keep_every_header_and_only_complete_a_bare_token() {
+        let headers = HashMap::from([
+            ("Authorization".to_string(), "tok".to_string()),
+            ("X-Tenant".to_string(), "acme".to_string()),
+            ("Accept".to_string(), "text/plain".to_string()),
+        ]);
+        let wire = wire_headers("s", &headers);
+        assert_eq!(header(&wire, "authorization"), "Bearer tok");
+        assert_eq!(header(&wire, "x-tenant"), "acme");
+        assert!(
+            !wire.contains_key(&reqwest::header::HeaderName::from_static("accept")),
+            "the transport owns Accept"
+        );
+
+        let explicit = HashMap::from([("authorization".to_string(), "Basic dXNlcg==".to_string())]);
+        assert_eq!(
+            header(&wire_headers("s", &explicit), "authorization"),
+            "Basic dXNlcg=="
+        );
+    }
+
+    /// Accepts one connection, returns its request head, and answers 500 so the
+    /// client gives up.
+    async fn capture_one_request() -> (String, tokio::task::JoinHandle<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = sock.read(&mut chunk).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+            }
+            let _ = sock
+                .write_all(b"HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+                .await;
+            String::from_utf8_lossy(&buf).to_ascii_lowercase()
+        });
+        (addr.to_string(), handle)
+    }
+
+    /// Checked on the transport config rather than on the wire: reqwest honors
+    /// the system proxy, so a loopback listener is not reliably reached.
+    #[test]
+    fn streamable_http_config_carries_the_configured_headers() {
+        let headers = HashMap::from([
+            ("Authorization".to_string(), "Bearer static".to_string()),
+            ("X-Tenant".to_string(), "acme".to_string()),
+        ]);
+        let config = http_transport_config("s", "http://h/mcp", &headers, None);
+        assert_eq!(
+            header(&config.custom_headers, "authorization"),
+            "Bearer static"
+        );
+        assert_eq!(header(&config.custom_headers, "x-tenant"), "acme");
+        assert!(
+            config.auth_header.is_none(),
+            "rmcp would prefix it with Bearer again"
+        );
+
+        let oauth =
+            http_transport_config("s", "http://h/mcp", &headers, Some("Bearer fresh".into()));
+        assert_eq!(
+            header(&oauth.custom_headers, "authorization"),
+            "Bearer fresh"
+        );
+        assert_eq!(header(&oauth.custom_headers, "x-tenant"), "acme");
+    }
+
+    #[tokio::test]
+    async fn the_websocket_upgrade_carries_the_configured_headers() {
+        let (addr, server) = capture_one_request().await;
+        let headers = HashMap::from([("X-Tenant".to_string(), "acme".to_string())]);
+        assert!(try_ws_connect("s", &format!("ws://{addr}/mcp"), &headers)
+            .await
+            .is_err());
+        let head = server.await.unwrap();
+        assert!(head.contains("upgrade: websocket"), "{head}");
+        assert!(head.contains("x-tenant: acme\r\n"), "{head}");
     }
 }
 

@@ -2841,6 +2841,7 @@ mod tests {
                 name: "do-thing".into(),
                 description: Some("does a thing".into()),
                 input_schema: serde_json::json!({"type": "object"}),
+                hints: Default::default(),
             }],
         ));
         let mut mcp_manager = McpManager::from_clients(vec![mock_client]);
@@ -2878,6 +2879,7 @@ mod tests {
                     name: "do-thing".into(),
                     description: None,
                     input_schema: serde_json::json!({"type": "object"}),
+                    hints: Default::default(),
                 }],
             ));
             let mut m = McpManager::from_clients(vec![client]);
@@ -3064,6 +3066,7 @@ mod tests {
                 name: "authorize".into(),
                 description: Some("needs out-of-band authorization".into()),
                 input_schema: serde_json::json!({"type": "object"}),
+                hints: Default::default(),
             }],
         ));
         mock_client.push_response(

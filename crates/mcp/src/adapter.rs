@@ -3,7 +3,7 @@
 //! 工具名按 `mcp__<server>__<tool>` 命名，与权限规则匹配语义一致
 //! （见 attacode-permissions::ruleset）。
 
-use crate::client::{McpCallResult, McpClientHandle, McpContent, McpToolMeta};
+use crate::client::{McpCallResult, McpClientHandle, McpContent, McpToolHints, McpToolMeta};
 use crate::error::McpError;
 use crate::manager::ElicitationCallback;
 use crate::output_cache::McpOutputCache;
@@ -41,6 +41,7 @@ pub struct McpToolAdapter {
     full_description: String,
     description: String,
     input_schema: Value,
+    hints: McpToolHints,
     client: McpClientHandle,
     /// Shared output cache across all MCP adapters.
     cache: Arc<Mutex<McpOutputCache>>,
@@ -87,6 +88,7 @@ impl McpToolAdapter {
             full_description,
             description,
             input_schema: meta.input_schema,
+            hints: meta.hints,
             client,
             cache,
             elicitation_callback: Arc::new(Mutex::new(None)),
@@ -104,6 +106,12 @@ impl McpToolAdapter {
     /// Tool name (without server prefix).
     pub fn tool_name(&self) -> &str {
         &self.tool_name
+    }
+
+    /// A repeated identical call may be answered from the cache only when the
+    /// server declares the tool both read-only and idempotent.
+    fn is_cacheable(&self) -> bool {
+        self.hints.read_only == Some(true) && self.hints.idempotent == Some(true)
     }
 
     /// Alias this adapter's elicitation cell to the owning `McpManager`'s
@@ -143,15 +151,18 @@ impl Tool for McpToolAdapter {
         self.full_description.clone()
     }
 
-    /// MCP 工具的并发安全 / 只读性是不可知的（每个 server 自己的逻辑）。
-    /// 保守按"非并发安全 / 非只读 / 非破坏性"看；具体由用户用 permission rule
-    /// 控制（`mcp__<server>` 整段 allow / deny / ask）。
     fn is_concurrency_safe(&self, _: &Value) -> bool {
         false
     }
 
+    /// Taken from the server's `readOnlyHint`; a server that says nothing is
+    /// assumed to write.
     fn is_read_only(&self, _: &Value) -> bool {
-        false
+        self.hints.read_only == Some(true)
+    }
+
+    fn is_destructive(&self, _: &Value) -> bool {
+        self.hints.destructive == Some(true)
     }
 
     fn permission_match_content(&self, _: &Value) -> Option<String> {
@@ -188,9 +199,9 @@ impl Tool for McpToolAdapter {
         _progress: ProgressSender,
     ) -> Result<ToolResult, ToolError> {
         let args = input.as_object().cloned().unwrap_or_default();
+        let cacheable = self.is_cacheable();
 
-        // Check output cache first.
-        {
+        if cacheable {
             let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(cached) = cache.get(&self.server_name, &self.tool_name, &args) {
                 return Ok(into_tool_result(cached));
@@ -205,8 +216,7 @@ impl Tool for McpToolAdapter {
 
         let result = result.map_err(|e: McpError| ToolError::Execution(anyhow::Error::new(e)))?;
 
-        // P1: Store result in cache for future calls
-        {
+        if cacheable {
             let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
             cache.put(&self.server_name, &self.tool_name, &args, result.clone());
         }
@@ -323,6 +333,7 @@ mod tests {
             name: name.into(),
             description: Some(format!("desc for {name}")),
             input_schema: json!({"type": "object"}),
+            hints: Default::default(),
         }
     }
 
@@ -431,6 +442,74 @@ mod tests {
             .await
             .unwrap();
         assert!(r.is_error);
+    }
+
+    fn text(t: &str, is_error: bool) -> McpCallResult {
+        McpCallResult {
+            content: vec![McpContent::Text(t.into())],
+            is_error,
+            meta: None,
+        }
+    }
+
+    async fn call_twice(hints: McpToolHints, first: McpCallResult) -> (Vec<ToolResult>, usize) {
+        let mut m = meta("state");
+        m.hints = hints;
+        let client = Arc::new(MockMcpClient::new("s", vec![m.clone()]));
+        client.push_response("state", first);
+        client.push_response("state", text("second", false));
+        let adapter = McpToolAdapter::new(client.clone(), m);
+        let mut results = Vec::new();
+        for _ in 0..2 {
+            results.push(
+                adapter
+                    .call(json!({"id": 1}), ctx(), ProgressSender::noop("t"))
+                    .await
+                    .unwrap(),
+            );
+        }
+        let calls = client.calls.lock().unwrap().len();
+        (results, calls)
+    }
+
+    #[tokio::test]
+    async fn a_tool_without_hints_is_called_every_time() {
+        let (results, calls) = call_twice(McpToolHints::default(), text("first", false)).await;
+        assert_eq!(calls, 2, "a state-reading tool must not get a stale answer");
+        assert!(matches!(&results[1].content, ToolResultContent::Text(s) if s == "second"));
+    }
+
+    #[tokio::test]
+    async fn a_read_only_idempotent_tool_is_served_from_the_cache() {
+        let hints = McpToolHints {
+            read_only: Some(true),
+            idempotent: Some(true),
+            destructive: None,
+        };
+        let (results, calls) = call_twice(hints, text("first", false)).await;
+        assert_eq!(calls, 1);
+        assert!(matches!(&results[1].content, ToolResultContent::Text(s) if s == "first"));
+    }
+
+    #[tokio::test]
+    async fn an_error_result_is_not_replayed_from_the_cache() {
+        let hints = McpToolHints {
+            read_only: Some(true),
+            idempotent: Some(true),
+            destructive: None,
+        };
+        let (results, calls) = call_twice(hints, text("failed", true)).await;
+        assert_eq!(calls, 2);
+        assert!(!results[1].is_error);
+    }
+
+    #[tokio::test]
+    async fn read_only_comes_from_the_servers_hint() {
+        let client = Arc::new(MockMcpClient::new("s", vec![]));
+        assert!(!McpToolAdapter::new(client.clone(), meta("x")).is_read_only(&json!({})));
+        let mut m = meta("x");
+        m.hints.read_only = Some(true);
+        assert!(McpToolAdapter::new(client, m).is_read_only(&json!({})));
     }
 
     #[tokio::test]

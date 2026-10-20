@@ -1,16 +1,13 @@
-//! MCP tool output cache — avoids duplicate MCP calls within and across sessions.
+//! Short-lived cache of MCP tool results, keyed by (server, tool, arguments).
 //!
-//! Caches the last result of each MCP tool call keyed by (server, tool, args_hash).
-//! Cache entries have a TTL of 30 seconds — after that, results are re-fetched.
-//! Cache is persisted to a file the caller names — conventionally
-//! `<scene root>/mcp_cache.json` — for cross-session reuse.
-//! This prevents the model from making identical MCP calls back-to-back.
+//! Only consulted for tools whose server declares them both read-only and
+//! idempotent (see `McpToolAdapter`); a repeated call to anything else must
+//! reach the server, since it may change state or answer differently. One
+//! cache is shared by every adapter a manager builds, in memory only.
 
 use crate::client::McpCallResult;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 const CACHE_TTL: Duration = Duration::from_secs(30);
 const MAX_CACHE_ENTRIES: usize = 100;
@@ -21,24 +18,9 @@ struct CacheEntry {
     created_at: Instant,
 }
 
-/// Serializable form of a cache entry for on-disk persistence.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PersistentEntry {
-    key: String,
-    server: String,
-    tool: String,
-    args_json: String,
-    result_text: String,
-    is_error: bool,
-    created_at_secs: u64,
-}
-
-/// An in-memory cache for MCP tool call results with optional file persistence.
 #[derive(Debug, Default)]
 pub struct McpOutputCache {
     entries: HashMap<String, CacheEntry>,
-    /// Path to the persistence file. None disables persistence.
-    persist_path: Option<PathBuf>,
 }
 
 impl McpOutputCache {
@@ -46,140 +28,33 @@ impl McpOutputCache {
         Self::default()
     }
 
-    /// Create a cache that persists to `path`.
-    pub fn with_persistence(path: PathBuf) -> Self {
-        let mut cache = Self {
-            entries: HashMap::new(),
-            persist_path: Some(path),
-        };
-        cache.load_from_disk();
-        cache
-    }
-
-    /// Load cached entries from disk.
-    fn load_from_disk(&mut self) {
-        let Some(ref path) = self.persist_path else {
-            return;
-        };
-        let Ok(data) = std::fs::read_to_string(path) else {
-            return;
-        };
-        let Ok(entries): Result<Vec<PersistentEntry>, _> = serde_json::from_str(&data) else {
-            return;
-        };
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default();
-        for e in entries {
-            // Skip expired entries
-            let age_secs = now.as_secs().saturating_sub(e.created_at_secs);
-            if age_secs > CACHE_TTL.as_secs() {
-                continue;
-            }
-            let created_at = Instant::now()
-                .checked_sub(Duration::from_secs(age_secs))
-                .unwrap_or_else(Instant::now);
-            self.entries.insert(
-                e.key,
-                CacheEntry {
-                    result: McpCallResult {
-                        content: vec![crate::client::McpContent::Text(e.result_text)],
-                        is_error: e.is_error,
-                        meta: None,
-                    },
-                    created_at,
-                },
-            );
-        }
-    }
-
-    /// Persist current entries to disk.
-    fn save_to_disk(&self) {
-        let Some(ref path) = self.persist_path else {
-            return;
-        };
-        let mut entries: Vec<PersistentEntry> = Vec::with_capacity(self.entries.len());
-        for (key, entry) in &self.entries {
-            let text = entry
-                .result
-                .content
-                .iter()
-                .filter_map(|c| match c {
-                    crate::client::McpContent::Text(t) => Some(t.clone()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            // Extract server and tool from key format: mcp_cache_<hash>_<server>_<tool>
-            let parts: Vec<&str> = key.rsplitn(3, '_').collect();
-            let (server, tool) = if parts.len() >= 2 {
-                (
-                    parts.get(1).copied().unwrap_or(""),
-                    parts.first().copied().unwrap_or(""),
-                )
-            } else {
-                ("", "")
-            };
-            let created_at_secs = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
-                .saturating_sub(
-                    CACHE_TTL.as_secs().saturating_sub(
-                        entry
-                            .created_at
-                            .elapsed()
-                            .as_secs()
-                            .min(CACHE_TTL.as_secs()),
-                    ),
-                );
-            entries.push(PersistentEntry {
-                key: key.clone(),
-                server: server.to_string(),
-                tool: tool.to_string(),
-                args_json: String::new(),
-                result_text: text,
-                is_error: entry.result.is_error,
-                created_at_secs,
-            });
-        }
-        if let Ok(json) = serde_json::to_string(&entries) {
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            let _ = std::fs::write(path, json);
-        }
-    }
-
-    /// Build a cache key from server name, tool name, and args.
     fn key(server: &str, tool: &str, args: &serde_json::Map<String, serde_json::Value>) -> String {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         server.hash(&mut h);
         tool.hash(&mut h);
-        // Hash the sorted JSON representation for deterministic lookup
-        if let Ok(sorted) = serde_json::to_string(args) {
-            sorted.hash(&mut h);
+        if let Ok(serialized) = serde_json::to_string(args) {
+            serialized.hash(&mut h);
         }
         format!("mcp_cache_{}_{server}_{tool}", h.finish())
     }
 
-    /// Look up a cached result. Returns None if not found or expired.
+    /// The stored result, unless missing or older than the TTL.
     pub fn get(
         &self,
         server: &str,
         tool: &str,
         args: &serde_json::Map<String, serde_json::Value>,
     ) -> Option<McpCallResult> {
-        let key = Self::key(server, tool, args);
-        let entry = self.entries.get(&key)?;
+        let entry = self.entries.get(&Self::key(server, tool, args))?;
         if entry.created_at.elapsed() > CACHE_TTL {
             return None;
         }
         Some(entry.result.clone())
     }
 
-    /// Store a result in the cache, evicting oldest entries if over capacity.
+    /// Store a successful result, evicting the oldest entry when full. Error
+    /// results are not stored: a failure is no reason to skip the next call.
     pub fn put(
         &mut self,
         server: &str,
@@ -187,51 +62,41 @@ impl McpOutputCache {
         args: &serde_json::Map<String, serde_json::Value>,
         result: McpCallResult,
     ) {
-        let key = Self::key(server, tool, args);
-
-        // Evict oldest entries if at capacity
+        if result.is_error {
+            return;
+        }
         if self.entries.len() >= MAX_CACHE_ENTRIES {
-            let mut oldest_key: Option<String> = None;
-            let mut oldest_time = Instant::now();
-            for (k, v) in &self.entries {
-                if v.created_at < oldest_time {
-                    oldest_time = v.created_at;
-                    oldest_key = Some(k.clone());
-                }
-            }
-            if let Some(k) = oldest_key {
-                self.entries.remove(&k);
+            if let Some(oldest) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, v)| v.created_at)
+                .map(|(k, _)| k.clone())
+            {
+                self.entries.remove(&oldest);
             }
         }
-
         self.entries.insert(
-            key,
+            Self::key(server, tool, args),
             CacheEntry {
                 result,
                 created_at: Instant::now(),
             },
         );
-        // Persist to disk (fire-and-forget — small JSON, sync is fine).
-        self.save_to_disk();
     }
 
-    /// Clear all cached entries.
     pub fn clear(&mut self) {
         self.entries.clear();
-        self.save_to_disk();
     }
 
-    /// Return the number of cached entries.
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
-    /// Whether the cache is empty.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
-    /// Remove expired entries (call periodically).
+    /// Drop expired entries; returns how many went.
     pub fn evict_expired(&mut self) -> usize {
         let before = self.entries.len();
         self.entries
@@ -299,6 +164,15 @@ mod tests {
     }
 
     #[test]
+    fn error_results_are_never_stored() {
+        let mut cache = McpOutputCache::new();
+        let mut failed = make_result("boom");
+        failed.is_error = true;
+        cache.put("s", "t", &make_args("x"), failed);
+        assert!(cache.is_empty());
+    }
+
+    #[test]
     fn cache_clear_removes_all() {
         let mut cache = McpOutputCache::new();
         cache.put("s", "t", &make_args("x"), make_result("y"));
@@ -308,14 +182,21 @@ mod tests {
     }
 
     #[test]
-    fn evict_expired_removes_old_entries() {
+    fn evict_expired_keeps_fresh_entries() {
         let mut cache = McpOutputCache::new();
-        // Directly manipulate entry time to simulate expiry
         cache.put("s", "t", &make_args("x"), make_result("y"));
-        // Cannot easily simulate TTL expiry in unit tests without time mocking,
-        // so just verify eviction doesn't panic and returns 0 for fresh entries.
-        let evicted = cache.evict_expired();
-        assert_eq!(evicted, 0);
+        assert_eq!(cache.evict_expired(), 0);
         assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn a_full_cache_drops_its_oldest_entry() {
+        let mut cache = McpOutputCache::new();
+        for i in 0..MAX_CACHE_ENTRIES {
+            cache.put("s", "t", &make_args(&i.to_string()), make_result("v"));
+        }
+        cache.put("s", "t", &make_args("newest"), make_result("v"));
+        assert_eq!(cache.len(), MAX_CACHE_ENTRIES);
+        assert!(cache.get("s", "t", &make_args("newest")).is_some());
     }
 }

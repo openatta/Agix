@@ -781,8 +781,12 @@ impl McpManager {
             match client.list_tools().await {
                 Ok(tools) => {
                     for meta in tools {
-                        let adapter = McpToolAdapter::new(client.clone(), meta)
-                            .with_elicitation_callback(cell.clone());
+                        let adapter = McpToolAdapter::with_cache(
+                            client.clone(),
+                            meta,
+                            self.output_cache.clone(),
+                        )
+                        .with_elicitation_callback(cell.clone());
                         new_adapters.push(Arc::new(adapter) as Arc<dyn Tool>);
                     }
                 }
@@ -909,6 +913,7 @@ mod tests {
                 name: "fetch".into(),
                 description: Some("fetches a doc".into()),
                 input_schema: serde_json::json!({"type": "object"}),
+                hints: Default::default(),
             }],
         ));
         client.push_response(

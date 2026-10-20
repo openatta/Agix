@@ -7153,6 +7153,7 @@ mod prompt_assembly_tests {
             name: name.into(),
             description: Some(description.into()),
             input_schema: serde_json::json!({"type": "object"}),
+            hints: Default::default(),
         }
     }
 

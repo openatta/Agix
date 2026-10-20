@@ -19,6 +19,20 @@ pub struct McpToolMeta {
     pub description: Option<String>,
     /// JSON Schema —— 直接对接到 ToolDef::input_schema
     pub input_schema: Value,
+    #[serde(default)]
+    pub hints: McpToolHints,
+}
+
+/// The behavior hints a server attaches to a tool (MCP `ToolAnnotations`).
+/// `None` means the server said nothing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpToolHints {
+    #[serde(default)]
+    pub read_only: Option<bool>,
+    #[serde(default)]
+    pub idempotent: Option<bool>,
+    #[serde(default)]
+    pub destructive: Option<bool>,
 }
 
 /// MCP 资源（server 暴露的非工具型可读对象 —— 如文件、URL、数据库 schema）。
@@ -331,6 +345,7 @@ mod tests {
             name: name.into(),
             description: Some(format!("desc for {name}")),
             input_schema: json!({"type": "object"}),
+            hints: Default::default(),
         }
     }
 
