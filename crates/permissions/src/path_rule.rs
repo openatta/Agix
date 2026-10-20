@@ -75,10 +75,10 @@ pub fn matches(pattern: &str, path: &Path) -> bool {
     path.starts_with(Path::new(pattern))
 }
 
-/// Whether keeping `*` within one segment gives `pattern` a narrower meaning
-/// than reading it the old way, where `*` matched across `/`: true for any
-/// lone `*` in a pattern that has path segments (`/a/*` used to reach
-/// `/a/b/c`).
+/// Whether `pattern` reaches less under gitignore-style `*` than under a `*`
+/// that crosses `/`: true for any lone `*` in a pattern that has path segments
+/// (`/a/*` covers `/a/b` but not `/a/b/c`). Rule files written for the wider
+/// reading get a warning at load.
 pub fn star_meaning_changed(pattern: &str) -> bool {
     let bytes = pattern.as_bytes();
     pattern.contains('/')

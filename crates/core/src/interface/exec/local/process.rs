@@ -57,8 +57,8 @@ impl Process for LocalProcess {
         // would keep writing to a pipe nobody reads.
         cmd.kill_on_drop(true);
         // Its own group, so that stopping it reaches the background processes
-        // it started. The price is that a terminal's Ctrl-C no longer arrives
-        // here directly; a host turns Ctrl-C into cancellation, which does.
+        // it started. The price is that a terminal's Ctrl-C does not reach it
+        // directly; a host turns Ctrl-C into cancellation, which does.
         #[cfg(unix)]
         cmd.process_group(0);
 

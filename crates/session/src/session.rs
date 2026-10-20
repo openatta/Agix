@@ -1062,10 +1062,8 @@ mod tests {
         );
     }
 
-    /// The write side always stored these; the read side used to drop them,
-    /// so a resumed session lost its reasoning (and with it, on Anthropic, the
-    /// signed blocks the next tool-use request has to echo back) and its
-    /// images.
+    /// A resumed session keeps its reasoning (on Anthropic, the signed blocks
+    /// the next tool-use request has to echo back) and its images.
     #[tokio::test]
     async fn resume_keeps_thinking_redacted_thinking_and_images() {
         let tmp = tempfile::tempdir().unwrap();

@@ -491,7 +491,7 @@
           "default": {
             "mode": "inherit"
           },
-          "description": "The environment `Bash` / `Monitor` commands and command hooks start\nfrom, sandboxed or not. By default the host's environment minus the\nengine's own credentials (`ANTHROPIC_*`, `ATTACORE_DAEMON_TOKEN`);\n`\"mode\": \"allowlist\"` keeps only `PATH`, `HOME`, the locale and a few\nothers, plus whatever `allow` names. MCP stdio servers always start from\nthe default, with each server's own `env` added on top."
+          "description": "The environment `Bash` / `Monitor` commands, command hooks and MCP\nstdio servers start from, sandboxed or not. By default the host's\nenvironment minus the engine's own credentials (`ANTHROPIC_*`,\n`ATTACORE_DAEMON_TOKEN`); `\"mode\": \"allowlist\"` keeps only `PATH`,\n`HOME`, the locale and a few others, plus whatever `allow` names. An MCP\nserver takes the policy of the settings it is declared in, with its own\n`env` added on top."
         }
       },
       "required": [

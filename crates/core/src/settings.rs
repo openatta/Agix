@@ -567,12 +567,13 @@ pub struct SandboxConfig {
     /// installed, and every Windows host, on upgrade.
     #[serde(default)]
     pub require_enforcement: bool,
-    /// The environment `Bash` / `Monitor` commands and command hooks start
-    /// from, sandboxed or not. By default the host's environment minus the
-    /// engine's own credentials (`ANTHROPIC_*`, `ATTACORE_DAEMON_TOKEN`);
-    /// `"mode": "allowlist"` keeps only `PATH`, `HOME`, the locale and a few
-    /// others, plus whatever `allow` names. MCP stdio servers always start from
-    /// the default, with each server's own `env` added on top.
+    /// The environment `Bash` / `Monitor` commands, command hooks and MCP
+    /// stdio servers start from, sandboxed or not. By default the host's
+    /// environment minus the engine's own credentials (`ANTHROPIC_*`,
+    /// `ATTACORE_DAEMON_TOKEN`); `"mode": "allowlist"` keeps only `PATH`,
+    /// `HOME`, the locale and a few others, plus whatever `allow` names. An MCP
+    /// server takes the policy of the settings it is declared in, with its own
+    /// `env` added on top.
     #[serde(default)]
     pub subprocess_env: crate::interface::exec::local::SubprocessEnv,
 }
