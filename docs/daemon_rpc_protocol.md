@@ -494,7 +494,7 @@ Unix socket 靠文件系统权限,不握手,一样是"能连上就全权"。
 | 同一 turn 内 `text_delta` 严格有序 | 按到达顺序拼接即得完整文本 |
 | 每个 `tool_result` 必有先行的同 `id` `tool_use` | 反之不然:被取消的工具可能没有 result |
 | `turn_complete` 是本 turn 最后一个事件 | 其后只有 `run_turn` 的最终响应 |
-| 每个开始了的 turn 都有且只有一个 `turn_complete`(出错时是 `run_turn` 的错误响应) | 被 hook 拦下、被中断、被预算或策略截停的 turn 同样以它结束 |
+| 每个开始了的 turn 都有且只有一个 `turn_complete`(出错时发起者收到 `run_turn` 的错误响应,其他订阅者收到 `error` 帧) | 被 hook 拦下、被中断、被预算或策略截停的 turn 同样以它结束 |
 | 收到 `turn_complete` 时本轮已写进 transcript | 此刻读 `session.history` 能看到这一轮 |
 
 > **⚠️ 按 `id` 配对,不要按位置配对。** 并发安全的工具是并行执行的,谁先跑完谁先发
@@ -1371,14 +1371,16 @@ RPC 出口。要看子 Agent 干了什么,走它的侧链会话:`session.list
 | `kind` | 载荷 | 说明 |
 |---|---|---|
 | `text_delta` | `{text}` | 模型输出增量 |
+| `thinking_delta` | `{text}` | 模型思考过程的增量,与正文分开,宿主可以折叠或不显示 |
 | `tool_use` | `{id,name,input}` | 模型发起工具调用 |
 | `tool_result` | `{id,name,content,is_error}` | 工具返回 |
-| `prompt` | `{prompt_type,prompt_id,tool_name,message,paths[]}` | 需宿主决策,用 `session.respondToPrompt` 回答 |
-| `subagent_progress` | `{agent_label,agent_session_id,agent_type,parent_turn,event}` | 子 Agent 事件镜像,`event` 是嵌套的本表结构 |
+| `prompt` | `{prompt_type,prompt_id,tool_name,message,paths[],tool_use_id?}` | 需宿主决策,用 `session.respondToPrompt` 回答;`tool_use_id` 是被问的那次 `tool_use` |
+| `subagent_progress` | `{agent_label,agent_session_id,agent_type,parent_turn,parent_tool_use_id,event}` | 子 Agent 事件镜像,`event` 是嵌套的本表结构;`parent_tool_use_id` 是父会话里发起它的那次 `Agent` 调用,不知道时为 `null` |
 | `team_progress` | `{team,team_id,stage,stage_index,stage_count,status,members,failed}` | 团队阶段生命周期 |
 | `skills_changed` | `{added,removed}` | 会话下的 skill 文件变了,缓存了 `commands.list` 的客户端该重取 |
 | `compact` | `{strategy,messages_before,messages_after,dropped_rounds?,dropped_messages?,estimated_tokens_saved?}` | 上下文被压缩了(§7.1) |
-| `turn_complete` | `{stop_reason,api_calls,usage,message?}` | 本轮结束,transcript 已落盘;最终响应随后到达 |
+| `turn_complete` | `{stop_reason,api_calls,tool_calls,usage,message?}` | 本轮结束,transcript 已落盘;最终响应随后到达 |
+| `error` | `{code,message}` | 本轮出错结束。只发给**发起这一轮之外**的订阅者 —— 发起者从 `run_turn` 的错误响应得知 |
 
 **这张表是白名单。** 引擎内部还有其它事件,但只有上面这些会被转成帧发出来。特别地:
 没有 `turn_state` / `agent_state` 事件 —— 判断 turn 是不是在跑要问 `session.get` 的

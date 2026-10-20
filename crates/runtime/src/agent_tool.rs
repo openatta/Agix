@@ -1634,6 +1634,7 @@ struct SubagentTag {
     agent_type: Option<String>,
     parent_session_id: String,
     parent_turn: u32,
+    parent_tool_use_id: Option<String>,
 }
 
 impl SubagentTag {
@@ -1643,10 +1644,10 @@ impl SubagentTag {
         inner: &Inner,
         agent_session_id: &str,
         agent_type: Option<&str>,
-        parent: Option<(&str, u32)>,
+        parent: Option<(&str, u32, &str)>,
     ) -> Option<Self> {
         let parent_tx = inner.event_tx()?;
-        let (parent_session_id, parent_turn) = parent.unwrap_or(("", 0));
+        let (parent_session_id, parent_turn, parent_tool_use_id) = parent.unwrap_or(("", 0, ""));
         Some(Self {
             parent_tx,
             agent_label: subagent_label(agent_type, agent_session_id),
@@ -1654,6 +1655,8 @@ impl SubagentTag {
             agent_type: agent_type.map(str::to_string),
             parent_session_id: parent_session_id.to_string(),
             parent_turn,
+            parent_tool_use_id: (!parent_tool_use_id.is_empty())
+                .then(|| parent_tool_use_id.to_string()),
         })
     }
 
@@ -1664,6 +1667,7 @@ impl SubagentTag {
             agent_type: self.agent_type.clone(),
             parent_session_id: self.parent_session_id.clone(),
             parent_turn: self.parent_turn,
+            parent_tool_use_id: self.parent_tool_use_id.clone(),
             event: Box::new(event),
         });
     }
@@ -2300,7 +2304,7 @@ impl AgentTool {
         cancel: tokio_util::sync::CancellationToken,
         perm: Arc<dyn Permission>,
         subagent_type: Option<&str>,
-        parent: Option<(&str, u32)>,
+        parent: Option<(&str, u32, &str)>,
     ) -> Result<String, base::error::ToolError> {
         let child_depth = self
             .inner
@@ -2334,7 +2338,7 @@ impl AgentTool {
         // line — two answers to "who spawned this" that must not be able to
         // disagree.
         let parent_session_id = parent
-            .map(|(sid, _)| sid.to_string())
+            .map(|(sid, _, _)| sid.to_string())
             .or_else(|| self.inner.parent_session_id());
         let mut builder = Builder::new()
             .session_id(sid)
@@ -3399,7 +3403,11 @@ impl base::tool::Tool for AgentTool {
                 ctx.cancel.child_token(),
                 perm,
                 inp.subagent_type.as_deref(),
-                Some((ctx.session_id.as_str(), ctx.turn_no)),
+                Some((
+                    ctx.session_id.as_str(),
+                    ctx.turn_no,
+                    ctx.tool_use_id.as_str(),
+                )),
             )
             .await;
 
@@ -5452,7 +5460,7 @@ mod catalog_tests {
                 tokio_util::sync::CancellationToken::new(),
                 Arc::new(AlwaysPermit),
                 Some("explore"),
-                Some(("parent-session-1", 1)),
+                Some(("parent-session-1", 1, "")),
             )
             .await
             .expect("sub-agent turn should complete");
@@ -5519,7 +5527,7 @@ mod catalog_tests {
                 cancel,
                 Arc::new(AlwaysPermit),
                 Some("explore"),
-                Some(("parent-session-1", 1)),
+                Some(("parent-session-1", 1, "")),
             )
             .await
             .expect("a cancelled turn still resolves Ok — cancellation isn't an error");
@@ -5572,7 +5580,7 @@ mod catalog_tests {
                 tokio_util::sync::CancellationToken::new(),
                 Arc::new(AlwaysPermit),
                 Some("explore"),
-                Some(("parent-session-1", 1)),
+                Some(("parent-session-1", 1, "")),
             )
             .await
             .expect("sub-agent turn should complete");
@@ -5614,7 +5622,7 @@ mod catalog_tests {
                 tokio_util::sync::CancellationToken::new(),
                 Arc::new(AlwaysPermit),
                 Some("explore"),
-                Some(("parent-session-1", 1)),
+                Some(("parent-session-1", 1, "")),
             )
             .await
             .expect("sub-agent turn should complete");
@@ -5644,7 +5652,7 @@ mod catalog_tests {
                 tokio_util::sync::CancellationToken::new(),
                 Arc::new(AlwaysPermit),
                 Some("explore"),
-                Some(("parent-session", 7)),
+                Some(("parent-session", 7, "toolu_parent")),
             )
             .await
             .expect("sub-agent turn should complete");
@@ -5683,6 +5691,7 @@ mod catalog_tests {
                 agent_type,
                 parent_session_id,
                 parent_turn,
+                parent_tool_use_id,
                 event,
                 ..
             } = ev
@@ -5704,6 +5713,7 @@ mod catalog_tests {
             assert_eq!(agent_type.as_deref(), Some("explore"));
             assert_eq!(parent_session_id, "parent-session");
             assert_eq!(parent_turn, 7);
+            assert_eq!(parent_tool_use_id.as_deref(), Some("toolu_parent"));
             labels.insert(agent_label);
             if let AgentEvent::ToolUse { ref name, .. } = *event {
                 saw_probe_tool_use = name == "Probe";
@@ -6109,6 +6119,7 @@ mod catalog_tests {
             agent_type: Some("explore".into()),
             parent_session_id: "parent-1".into(),
             parent_turn: 3,
+            parent_tool_use_id: Some("toolu_0".into()),
             event: Box::new(AgentEvent::ToolUse {
                 id: "toolu_1".into(),
                 name: "Read".into(),
@@ -6182,7 +6193,7 @@ mod catalog_tests {
                 tokio_util::sync::CancellationToken::new(),
                 Arc::new(AlwaysPermit),
                 Some("explore"),
-                Some(("parent-session-1", 1)),
+                Some(("parent-session-1", 1, "")),
             )
             .await
             .expect("sub-agent turn should complete");
@@ -6260,7 +6271,7 @@ mod catalog_tests {
                 tokio_util::sync::CancellationToken::new(),
                 Arc::new(AlwaysPermit),
                 Some("explore"),
-                Some(("parent-session-1", 1)),
+                Some(("parent-session-1", 1, "")),
             )
             .await
             .expect("sub-agent turn should complete");

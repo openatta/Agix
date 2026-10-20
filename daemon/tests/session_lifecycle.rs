@@ -3186,7 +3186,10 @@ async fn ask_default_prompts_then_proceeds_once_permitted() {
     assert_eq!(prompts[0]["prompt_type"], "permission");
     assert_eq!(prompts[0]["tool_name"], "Bash");
     assert!(prompts[0]["prompt_id"].is_string());
+    assert_eq!(prompts[0]["tool_use_id"], "tool-1");
     assert!(response["result"].is_object(), "turn failed: {response}");
+    let done = events_of_kind(&frames, "turn_complete");
+    assert_eq!(done[0]["tool_calls"], 1, "{done:?}");
 
     let results = events_of_kind(&frames, "tool_result");
     assert!(
@@ -4078,6 +4081,136 @@ async fn clear_reaches_the_transcript_and_what_follows_it_does_too() {
     assert!(!rendered.contains("before the clear"), "{rendered}");
     assert!(rendered.contains("after the clear"), "{rendered}");
     assert!(rendered.contains("second answer"), "{rendered}");
+
+    srv.stop().await;
+}
+
+// ── frames a watching client needs ──────────────────────────────────────
+
+#[tokio::test]
+async fn thinking_reaches_the_client_as_its_own_frame() {
+    let mut round = vec![
+        StreamEvent::ContentBlockStart {
+            index: 0,
+            content_block: ContentBlockStart::Thinking {
+                thinking: String::new(),
+            },
+        },
+        StreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: BlockDelta::ThinkingDelta {
+                thinking: "let me see".into(),
+            },
+        },
+        StreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: BlockDelta::SignatureDelta {
+                signature: "sig".into(),
+            },
+        },
+        StreamEvent::ContentBlockStop { index: 0 },
+    ];
+    for event in text_round("answer") {
+        round.push(match event {
+            StreamEvent::ContentBlockStart { content_block, .. } => {
+                StreamEvent::ContentBlockStart {
+                    index: 1,
+                    content_block,
+                }
+            }
+            StreamEvent::ContentBlockDelta { delta, .. } => {
+                StreamEvent::ContentBlockDelta { index: 1, delta }
+            }
+            StreamEvent::ContentBlockStop { .. } => StreamEvent::ContentBlockStop { index: 1 },
+            other => other,
+        });
+    }
+    let (srv, _seen) =
+        start_scripted_server(vec![round], ask_settings_no_memory(), Duration::ZERO).await;
+
+    let (frames, resp) = rpc_streaming(
+        &srv.sock,
+        r#"{"jsonrpc":"2.0","method":"session.run_turn","params":{"message":"think"},"id":1}"#,
+    )
+    .await;
+    assert!(resp["result"].is_object(), "turn failed: {resp}");
+    let thinking = events_of_kind(&frames, "thinking_delta");
+    assert_eq!(thinking.len(), 1, "{frames:?}");
+    assert_eq!(thinking[0]["text"], "let me see");
+    let text: String = events_of_kind(&frames, "text_delta")
+        .iter()
+        .map(|f| f["text"].as_str().unwrap())
+        .collect();
+    assert_eq!(text, "answer");
+
+    srv.stop().await;
+}
+
+/// A tab watching a session must learn that a turn it did not start has
+/// failed; only the caller gets the error response.
+#[tokio::test]
+async fn a_failed_turn_tells_every_watcher_it_is_over() {
+    let failing = vec![StreamEvent::Error {
+        error: model::stream::ApiErrorPayload {
+            kind: "invalid_request_error".into(),
+            message: "boom".into(),
+        },
+    }];
+    let (srv, _seen) = start_scripted_server(
+        vec![text_round("first"), failing],
+        ask_settings_no_memory(),
+        Duration::ZERO,
+    )
+    .await;
+    let sid = run_turn(&srv.sock, None, "hello").await;
+
+    let mut watcher = UnixStream::connect(&srv.sock).await.unwrap();
+    watcher
+        .write_all(
+            format!(
+                r#"{{"jsonrpc":"2.0","method":"session.subscribe","id":7,"params":{{"session_id":"{sid}"}}}}"#
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    watcher.write_all(b"\n").await.unwrap();
+    let (r, _w) = watcher.split();
+    let mut watched = BufReader::new(r);
+    let mut line = String::new();
+    watched.read_line(&mut line).await.unwrap();
+    let subscribed: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert!(subscribed["result"].is_object(), "{subscribed}");
+
+    let (frames, resp) = rpc_streaming(
+        &srv.sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.run_turn","params":{{"session_id":"{sid}","message":"again"}},"id":1}}"#
+        ),
+    )
+    .await;
+    assert!(resp["error"].is_object(), "the turn should fail: {resp}");
+    assert!(
+        events_of_kind(&frames, "error").is_empty(),
+        "the caller is told by its response, not twice: {frames:?}"
+    );
+
+    let ended = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let mut line = String::new();
+            assert!(
+                watched.read_line(&mut line).await.unwrap() > 0,
+                "watcher closed"
+            );
+            let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+            if v["params"]["event"]["kind"] == "error" {
+                return v;
+            }
+        }
+    })
+    .await
+    .expect("the watcher never learned the turn had ended");
+    assert_eq!(ended["params"]["session_id"], sid.as_str());
 
     srv.stop().await;
 }

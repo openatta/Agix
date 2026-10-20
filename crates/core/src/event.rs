@@ -162,6 +162,9 @@ pub enum AgentEvent {
         parent_session_id: String,
         /// Parent turn number, `0` when unknown (same caveat as above).
         parent_turn: u32,
+        /// The parent's `Agent` tool call this sub-agent is running for.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_tool_use_id: Option<String>,
         /// The forwarded sub-agent event. Boxed so `AgentEvent` stays small.
         event: Box<AgentEvent>,
     },

@@ -2318,6 +2318,18 @@ impl SessionPool {
     /// watching it; a dropped subscriber can subscribe again and catch up
     /// through `last_seq`, which is what makes dropping an acceptable answer.
     async fn broadcast_to_session<T: serde::Serialize>(&self, session_id: &str, frame: &T) {
+        self.broadcast_to_session_except(session_id, frame, None)
+            .await;
+    }
+
+    /// [`Self::broadcast_to_session`], skipping one connection — the caller
+    /// that is about to be told the same thing in its own response.
+    async fn broadcast_to_session_except<T: serde::Serialize>(
+        &self,
+        session_id: &str,
+        frame: &T,
+        except: Option<crate::rpc::ConnectionId>,
+    ) {
         let json = match serde_json::to_string(frame) {
             Ok(json) => json,
             Err(e) => {
@@ -2330,7 +2342,7 @@ impl SessionPool {
             return;
         };
         live.subscribers
-            .retain(|_, client| client.try_send_json(json.clone()));
+            .retain(|id, client| Some(*id) == except || client.try_send_json(json.clone()));
     }
 
     /// The turn currently running on `session_id`, if any. `session.get`
@@ -2545,6 +2557,14 @@ impl SessionPool {
                     );
                     self.broadcast_to_session(&sid, &f).await;
                 }
+                Some(AgentEvent::ThinkingDelta { text, .. }) => {
+                    let f = StreamFrame::event(
+                        &sid,
+                        &turn_id,
+                        serde_json::json!({"kind":"thinking_delta","text":text}),
+                    );
+                    self.broadcast_to_session(&sid, &f).await;
+                }
                 Some(AgentEvent::ToolUse {
                     id: tid,
                     name,
@@ -2577,6 +2597,7 @@ impl SessionPool {
                     tool_name,
                     message,
                     paths,
+                    tool_use_id,
                     ..
                 }) => {
                     // NOT a terminal event — the turn is still in progress,
@@ -2586,15 +2607,15 @@ impl SessionPool {
                     // documented in `docs/daemon_rpc_protocol.md`, deliberately
                     // generic so a future non-permission "stop and ask" need
                     // can reuse it without a new RPC method.
-                    let f = StreamFrame::event(
-                        &sid,
-                        &turn_id,
-                        serde_json::json!({
-                            "kind":"prompt","prompt_type":"permission","prompt_id":prompt_id,
-                            "tool_name":tool_name,"message":message,
-                            "paths":paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>()
-                        }),
-                    );
+                    let mut event = serde_json::json!({
+                        "kind":"prompt","prompt_type":"permission","prompt_id":prompt_id,
+                        "tool_name":tool_name,"message":message,
+                        "paths":paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>()
+                    });
+                    if let Some(tool_use_id) = tool_use_id {
+                        event["tool_use_id"] = serde_json::json!(tool_use_id);
+                    }
+                    let f = StreamFrame::event(&sid, &turn_id, event);
                     // Registered before it is sent: a tab that subscribes
                     // between the two must still be handed the question.
                     self.remember_prompt(&sid, &prompt_id, &f).await;
@@ -2612,6 +2633,7 @@ impl SessionPool {
                     agent_session_id,
                     agent_type,
                     parent_turn,
+                    parent_tool_use_id,
                     event,
                     ..
                 }) => {
@@ -2621,7 +2643,7 @@ impl SessionPool {
                         serde_json::json!({
                             "kind":"subagent_progress","agent_label":agent_label,
                             "agent_session_id":agent_session_id,"agent_type":agent_type,
-                            "parent_turn":parent_turn,
+                            "parent_turn":parent_turn,"parent_tool_use_id":parent_tool_use_id,
                             "event":serde_json::to_value(&*event).unwrap_or(serde_json::Value::Null)
                         }),
                     );
@@ -2702,6 +2724,7 @@ impl SessionPool {
                 Some(AgentEvent::TurnComplete {
                     stop_reason,
                     api_calls: ac,
+                    tool_calls,
                     usage,
                     message,
                     ..
@@ -2709,6 +2732,7 @@ impl SessionPool {
                     api_calls = ac;
                     let mut event = serde_json::json!({
                         "kind":"turn_complete","stop_reason":stop_reason,"api_calls":api_calls,
+                        "tool_calls":tool_calls,
                         // Serialized whole rather than field by field: a
                         // hand-written projection is invisible to the
                         // compiler when `Usage` grows.
@@ -2722,6 +2746,15 @@ impl SessionPool {
                     break;
                 }
                 Some(AgentEvent::Error { code, message, .. }) => {
+                    // The caller learns this from its error response; every
+                    // other watcher would otherwise see a turn that never ends.
+                    let f = StreamFrame::event(
+                        &sid,
+                        &turn_id,
+                        serde_json::json!({"kind":"error","code":code,"message":message}),
+                    );
+                    self.broadcast_to_session_except(&sid, &f, Some(client.id()))
+                        .await;
                     // 归还 event_rx
                     *event_rx_mutex.lock().await = Some(event_rx);
                     self.clear_current_turn(&sid).await;
@@ -2731,6 +2764,16 @@ impl SessionPool {
                 // next call on this id resume it from its transcript instead
                 // of sending into a closed channel.
                 None => {
+                    let f = StreamFrame::event(
+                        &sid,
+                        &turn_id,
+                        serde_json::json!({
+                            "kind":"error","code":"engine_stopped",
+                            "message":"engine stopped before the turn completed"
+                        }),
+                    );
+                    self.broadcast_to_session_except(&sid, &f, Some(client.id()))
+                        .await;
                     self.clear_pending_prompts(&sid).await;
                     if let Some(dead) = self.sessions.lock().await.remove(&sid) {
                         dead.cancel.cancel();
