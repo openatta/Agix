@@ -550,7 +550,8 @@ store.append(session, LogEntry::Extension {
 卸掉一个插件之后,它留下的老会话照样加载、分叉、恢复,和以前一模一样。
 
 `attacore.` 开头的命名空间是引擎自己的:daemon 把会话规格(创建时的 `options`、选过
-的模型与厂商)记在 `attacore.session` 下。
+的模型与厂商)记在 `attacore.session` 下。这些条目是记账,不是对话内容,
+`ExtensionsAreVisible` 无论开了哪些命名空间都不会把它们交给模型。
 
 ### 东西是不是正常 — `health.check`
 

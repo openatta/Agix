@@ -96,9 +96,12 @@ impl TranscriptProjection for DefaultProjection {
 /// Rendered from the entry and nothing else, which is what keeps a session
 /// built this way reopenable after the plugin that wrote the entries is gone.
 pub struct ExtensionsAreVisible {
-    /// Which namespaces to surface. Empty means all of them.
+    /// Which namespaces to surface. Empty means all of them — except the
+    /// engine's own `attacore.*` bookkeeping, which is never model content.
     pub namespaces: Vec<String>,
 }
+
+const ENGINE_NAMESPACE_PREFIX: &str = "attacore.";
 
 impl ExtensionsAreVisible {
     pub fn all() -> Self {
@@ -108,6 +111,9 @@ impl ExtensionsAreVisible {
     }
 
     fn covers(&self, ns: &str) -> bool {
+        if ns.starts_with(ENGINE_NAMESPACE_PREFIX) {
+            return false;
+        }
         self.namespaces.is_empty() || self.namespaces.iter().any(|n| n == ns)
     }
 }
@@ -1086,6 +1092,25 @@ mod extension_entry_tests {
             namespaces: vec!["com.acme.deploy".into()],
         };
         assert_eq!(project_messages_with(&entries, &only_mine).len(), 1);
+    }
+
+    /// The engine's own entries — a session's recorded options, permission
+    /// rules and output schema among them — are bookkeeping, not conversation,
+    /// whatever namespaces a host opens.
+    #[test]
+    fn engine_namespaces_never_reach_the_model() {
+        let s = SessionId::new();
+        let entries: Vec<EnvelopedEntry> = [ext("attacore.session")]
+            .into_iter()
+            .map(|e| EnvelopedEntry::new(s, e))
+            .collect();
+        let named = ExtensionsAreVisible {
+            namespaces: vec!["attacore.session".into()],
+        };
+        for projection in [ExtensionsAreVisible::all(), named] {
+            assert!(project_messages_with(&entries, &projection).is_empty());
+            assert!(!projection.is_model_visible(&entries[0].entry));
+        }
     }
 
     /// The invariant P1-5 left open: model-visible content must be
