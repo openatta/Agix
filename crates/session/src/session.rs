@@ -402,11 +402,10 @@ impl SessionManager {
 // ── ModelMessage <-> history::LogEntry/Message conversion ──
 //
 // Two independent, block-level conversions (write direction and read
-// direction) rather than a single bidirectional mapping — `ModelContentBlock`
-// (runtime wire format) is a strict subset of `base::message::ContentBlock`
-// (storage format, which also covers Image/Thinking/RedactedThinking/CacheEdits
-// that never appear in a live `ModelMessage`), so the two directions aren't
-// symmetric and are clearer written separately.
+// direction) rather than a single bidirectional mapping — the storage format
+// `base::message::ContentBlock` covers shapes a live `ModelMessage` cannot
+// hold (URL images, `CacheEdits`), so the two directions aren't symmetric and
+// are clearer written separately.
 
 fn model_content_block_to_content_block(
     b: &base::interface::model::ModelContentBlock,
@@ -517,9 +516,24 @@ fn content_block_to_model_content_block(
                 is_error: Some(*is_error),
             })
         }
-        // Image/Thinking/RedactedThinking/CacheEdits have no `ModelContentBlock`
-        // equivalent (not part of the live model-facing wire format) — drop.
-        _ => None,
+        C::Image {
+            source: base::message::ImageSource::Base64 { media_type, data },
+        } => Some(M::Image {
+            media_type: media_type.clone(),
+            data: data.clone(),
+        }),
+        C::Thinking {
+            thinking,
+            signature,
+        } => Some(M::Thinking {
+            text: thinking.clone(),
+            signature: signature.clone(),
+        }),
+        C::RedactedThinking { data } => Some(M::RedactedThinking { data: data.clone() }),
+        C::Image {
+            source: base::message::ImageSource::Url { .. },
+        }
+        | C::CacheEdits { .. } => None,
     }
 }
 
@@ -1033,6 +1047,54 @@ mod tests {
             1,
             "resume()'d messages must not be re-persisted"
         );
+    }
+
+    /// The write side always stored these; the read side used to drop them,
+    /// so a resumed session lost its reasoning (and with it, on Anthropic, the
+    /// signed blocks the next tool-use request has to echo back) and its
+    /// images.
+    #[tokio::test]
+    async fn resume_keeps_thinking_redacted_thinking_and_images() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = real_store(tmp.path()).await;
+        let sid = SessionId::new();
+        let assistant = ModelMessage {
+            role: MessageRole::Assistant,
+            content: vec![
+                ModelContentBlock::Thinking {
+                    text: "signed".into(),
+                    signature: Some("sig".into()),
+                },
+                ModelContentBlock::Thinking {
+                    text: "unsigned".into(),
+                    signature: None,
+                },
+                ModelContentBlock::RedactedThinking {
+                    data: "opaque".into(),
+                },
+                ModelContentBlock::Text {
+                    text: "answer".into(),
+                },
+            ],
+        };
+        let user = ModelMessage {
+            role: MessageRole::User,
+            content: vec![ModelContentBlock::Image {
+                media_type: "image/png".into(),
+                data: "AAAA".into(),
+            }],
+        };
+        {
+            let mut writer = SessionManager::new(Some(store.clone()), Some(sid.to_string()), None);
+            writer.push_message(user.clone());
+            writer.push_message(assistant.clone());
+            writer.persist().await.unwrap();
+        }
+
+        let mut reader = SessionManager::new(Some(store.clone()), None, None);
+        reader.resume(&sid.to_string()).await.unwrap();
+        let contents: Vec<_> = reader.messages().iter().map(|m| &m.content).collect();
+        assert_eq!(contents, [&user.content, &assistant.content]);
     }
 
     #[tokio::test]
