@@ -293,7 +293,9 @@ enum Bind {
 }
 
 fn session(turns: &[&str], replies: Vec<Reply>) -> Session {
-    Session::new(fixtures(), turns, replies).tool(Arc::new(ScriptEcho) as Arc<dyn Tool>)
+    Session::new(fixtures(), turns, replies)
+        .scene(Arc::new(scene::scene::coding::CodingScene))
+        .tool(Arc::new(ScriptEcho) as Arc<dyn Tool>)
 }
 
 fn from_case(root: &std::path::Path, case: &ScriptCase, bind: Bind) -> Session {

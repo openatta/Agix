@@ -62,6 +62,12 @@ const ALLOWED: &[(&str, &str)] = &[
          `SandboxPolicy::state_root` first.",
     ),
     (
+        "crates/permissions/src/path_rule.rs",
+        "expands `~` in permission rules and in the paths tools are asked to \
+         touch — the home a shell expands `~` to when the command runs. A fact \
+         about the machine, never a place AttaCore writes.",
+    ),
+    (
         "crates/tools/src/bash.rs",
         "same deny-list, reused by the command classifier so `cat ~/.ssh/id_rsa` \
          is not waved through as a read-only command.",

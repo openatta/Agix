@@ -494,12 +494,14 @@ impl GoldenFile {
 
 // ── scene ───────────────────────────────────────────────────────────────
 
-/// `ChatScene` with a caller-chosen compaction threshold.
+/// `ChatScene` with a caller-chosen compaction threshold, offering whatever
+/// tools the case registers.
 ///
 /// The threshold lives on the scene, not in settings, so a case that wants to
 /// exercise compaction cannot get there by tweaking `Settings` — it needs a
-/// scene of its own. Everything else delegates, so a case differs from the
-/// plain-conversation baseline in exactly one respect.
+/// scene of its own. The tool surface is opened because the scene's
+/// whitelist decides what a session has at all, and the cases' fake tools
+/// are on no real scene's list. Everything else delegates.
 pub struct BudgetScene {
     inner: scene::scene::chat::ChatScene,
     pub compact_threshold: usize,
@@ -540,10 +542,7 @@ impl base::interface::scene::AgentScene for BudgetScene {
         self.inner.build_system_prompt(ctx)
     }
     fn tools(&self) -> Vec<String> {
-        self.inner.tools()
-    }
-    fn disallowed_tools(&self) -> Vec<String> {
-        self.inner.disallowed_tools()
+        Vec::new()
     }
     fn token_budget(&self) -> base::interface::scene::TokenBudget {
         base::interface::scene::TokenBudget {

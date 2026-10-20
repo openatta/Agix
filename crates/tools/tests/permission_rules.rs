@@ -138,10 +138,8 @@ async fn an_edit_rule_also_governs_write() {
 
 #[tokio::test]
 async fn a_tilde_in_a_rule_means_the_home_directory() {
-    let Some(home) = std::env::var_os("HOME") else {
-        return;
-    };
     let dir = tempfile::tempdir().unwrap();
+    let home = permissions::path_rule::resolve_pattern("~", dir.path());
     let perm = permission(
         vec![rule(RuleBehavior::Deny, "Read", "~/attacore-test-creds/**")],
         PermissionMode::BypassPermissions,
