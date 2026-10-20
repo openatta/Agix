@@ -3912,3 +3912,87 @@ async fn a_turn_can_be_interrupted_from_the_connection_running_it() {
 
     srv.stop().await;
 }
+
+// ── a hook that ends the turn ───────────────────────────────────────────
+
+fn hooked_settings(hooks: serde_json::Value) -> Settings {
+    let mut s = ask_settings_no_memory();
+    s.hooks_config = Some(hooks);
+    s
+}
+
+/// Runs a turn on `sid` (or a new session) and hands back the
+/// `turn_complete` frame, failing if the turn never produced one.
+async fn turn_complete_of(
+    sock: &std::path::Path,
+    session_id: Option<&str>,
+    message: &str,
+) -> (String, serde_json::Value) {
+    let params = match session_id {
+        Some(sid) => format!(r#"{{"session_id":"{sid}","message":"{message}"}}"#),
+        None => format!(r#"{{"message":"{message}"}}"#),
+    };
+    let (frames, resp) = tokio::time::timeout(
+        Duration::from_secs(20),
+        rpc_streaming(
+            sock,
+            &format!(r#"{{"jsonrpc":"2.0","method":"session.run_turn","params":{params},"id":1}}"#),
+        ),
+    )
+    .await
+    .expect("the turn never ended");
+    assert!(resp["result"].is_object(), "turn failed: {resp}");
+    let done = events_of_kind(&frames, "turn_complete");
+    assert_eq!(done.len(), 1, "exactly one turn_complete: {frames:?}");
+    (
+        resp["result"]["session_id"].as_str().unwrap().to_string(),
+        done[0].clone(),
+    )
+}
+
+#[tokio::test]
+async fn a_prompt_blocked_by_a_hook_still_ends_the_turn_and_frees_the_session() {
+    let (srv, seen) = start_scripted_server(
+        vec![text_round("answer")],
+        hooked_settings(serde_json::json!({
+            "UserPromptSubmit": [
+                { "type": "command", "command": "echo '{\"decision\":\"block\",\"message\":\"not now\"}'" }
+            ]
+        })),
+        Duration::ZERO,
+    )
+    .await;
+
+    let (sid, done) = turn_complete_of(&srv.sock, None, "hello").await;
+    assert_eq!(done["stop_reason"], "stopped_by_hook");
+    assert_eq!(done["message"], "not now");
+
+    let (_, again) = turn_complete_of(&srv.sock, Some(&sid), "hello again").await;
+    assert_eq!(again["stop_reason"], "stopped_by_hook");
+    assert!(seen.lock().unwrap().is_empty(), "the model was called");
+
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn a_stop_hook_that_discontinues_still_ends_the_turn_and_frees_the_session() {
+    let (srv, _seen) = start_scripted_server(
+        vec![text_round("answer")],
+        hooked_settings(serde_json::json!({
+            "Stop": [
+                { "type": "command", "command": "echo '{\"continue\":false,\"message\":\"enough\"}'" }
+            ]
+        })),
+        Duration::ZERO,
+    )
+    .await;
+
+    let (sid, done) = turn_complete_of(&srv.sock, None, "hello").await;
+    assert_eq!(done["stop_reason"], "stopped_by_hook");
+    assert_eq!(done["message"], "enough");
+
+    let (_, again) = turn_complete_of(&srv.sock, Some(&sid), "hello again").await;
+    assert_eq!(again["stop_reason"], "stopped_by_hook");
+
+    srv.stop().await;
+}

@@ -79,6 +79,15 @@ impl HookRunResult {
             .iter()
             .any(|o| matches!(o, HookOutcome::Ran { response, .. } if response.r#continue == Some(false)))
     }
+    /// 第一个要求中止的 hook 给出的 `message`
+    pub fn discontinue_message(&self) -> Option<&str> {
+        self.outcomes.iter().find_map(|o| match o {
+            HookOutcome::Ran { response, .. } if response.r#continue == Some(false) => {
+                response.message.as_deref()
+            }
+            _ => None,
+        })
+    }
     /// 第一个改写 input 的 hook 给出的新 input（按出现顺序）
     pub fn updated_input(&self) -> Option<&serde_json::Value> {
         self.outcomes.iter().find_map(|o| match o {

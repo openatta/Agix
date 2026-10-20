@@ -109,21 +109,13 @@ impl Agent {
                                     text: result_text,
                                     turn_id: self.current_turn_id.clone(),
                                 });
-                                let _ = self.event_tx.send(AgentEvent::TurnComplete {
-                                    stop_reason: "command_executed".into(),
-                                    api_calls: 0,
-                                    tool_calls: 0,
-                                    usage: Usage::default(),
-                                    turn_id: self.current_turn_id.clone(),
-                                });
                                 self.last_had_tool_uses = false;
-                                return Ok(TurnOutcome {
-                                    stop_reason: "command_executed".into(),
-                                    api_calls: 0,
-                                    tool_calls: 0,
-                                    total_usage: Usage::default(),
-                                    usage: Usage::default(),
-                                });
+                                return self
+                                    .finish_turn(Ok(TurnOutcome {
+                                        stop_reason: "command_executed".into(),
+                                        ..TurnOutcome::default()
+                                    }))
+                                    .await;
                             }
                         }
                     }
@@ -257,26 +249,11 @@ impl Agent {
     }
 
     /// Run a full turn from a user message.
-    /// Runs the turn, then persists whatever ended up in the session — on
-    /// every path, including the ones that didn't finish.
     ///
-    /// The turn body leaves through a dozen different `return`s (a hook
-    /// block, `cancel`, the max-turns guard, four flavors of model error),
-    /// and persistence used to sit inline just before the one at the
-    /// successful tail. So the single case session resume exists to serve —
-    /// "that broke, let me pick it back up" — was the one case that wrote
-    /// nothing. A session whose turns all failed left no file on disk at all
-    /// (`HistoryStore::append` creates it lazily), so `--continue` could not
-    /// see it; a session that failed on its last turn lost that turn's user
-    /// message, which is precisely the message worth retrying.
-    ///
-    /// A cancelled turn persists too. Ctrl+C means "stop working on this",
-    /// not "un-say that" — the user's message stays in the transcript.
-    ///
-    /// The wrapper exists because Rust has no `defer` and the body holds
-    /// `&mut self` across awaits, so the alternative is repeating the
-    /// persist call before every one of those returns and re-adding it to
-    /// each new one forever.
+    /// The body leaves through a dozen `return`s; persisting and announcing
+    /// the end live here so that none of them can skip either. A cancelled
+    /// or failed turn persists too — the user's message is the one worth
+    /// retrying.
     async fn run_user_turn(
         &mut self,
         content: String,
@@ -284,8 +261,31 @@ impl Agent {
         cancel: CancellationToken,
     ) -> Result<TurnOutcome, TurnError> {
         let outcome = self.run_user_turn_inner(content, attachments, cancel).await;
+        self.finish_turn(outcome).await
+    }
+
+    /// The one way a user turn ends: persist, then announce.
+    ///
+    /// The order is the contract a host builds on. A host treats
+    /// `TurnComplete` as "the session is idle and its transcript is on disk"
+    /// — the daemon hands the session to the next caller on it, and may
+    /// rebuild it from that transcript straight away.
+    async fn finish_turn(
+        &mut self,
+        outcome: Result<TurnOutcome, TurnError>,
+    ) -> Result<TurnOutcome, TurnError> {
         if let Err(e) = self.session.persist().await {
             tracing::warn!(error = %e, "failed to persist session");
+        }
+        if let Ok(o) = &outcome {
+            let _ = self.event_tx.send(AgentEvent::TurnComplete {
+                stop_reason: o.stop_reason.clone(),
+                api_calls: o.api_calls,
+                tool_calls: o.tool_calls,
+                usage: o.total_usage,
+                turn_id: self.current_turn_id.clone(),
+                message: o.message.clone(),
+            });
         }
         outcome
     }
@@ -348,12 +348,12 @@ impl Agent {
                     reason = response.message.as_deref().unwrap_or("no reason given"),
                     "UserPromptSubmit hook blocked this message"
                 );
+                let message = response.message.clone();
+                self.record_turn_complete("stopped_by_hook", 0, 0, std::time::Instant::now());
                 return Ok(TurnOutcome {
                     stop_reason: "stopped_by_hook".into(),
-                    api_calls: 0,
-                    tool_calls: 0,
-                    total_usage: Usage::default(),
-                    usage: Usage::default(),
+                    message,
+                    ..TurnOutcome::default()
                 });
             }
             if let Some(rewritten) = hook_result.updated_input().and_then(|v| v.as_str()) {
@@ -820,13 +820,14 @@ impl Agent {
         loop {
             if cancel.is_cancelled() {
                 self.last_had_tool_uses = had_tool_uses_this_turn;
-                self.emit_turn_complete("cancelled", api_calls, tool_calls, turn_usage, start);
+                self.record_turn_complete("cancelled", api_calls, tool_calls, start);
                 return Ok(TurnOutcome {
                     stop_reason: "cancelled".into(),
                     api_calls,
                     tool_calls,
                     total_usage: turn_usage,
                     usage: Usage::default(),
+                    message: None,
                 });
             }
             if let base::interface::turn_policy::TurnStep::Stop { reason } = self
@@ -839,13 +840,14 @@ impl Agent {
                 })
             {
                 self.last_had_tool_uses = had_tool_uses_this_turn;
-                self.emit_turn_complete(&reason, api_calls, tool_calls, turn_usage, start);
+                self.record_turn_complete(&reason, api_calls, tool_calls, start);
                 return Ok(TurnOutcome {
                     stop_reason: reason,
                     api_calls,
                     tool_calls,
                     total_usage: turn_usage,
                     usage: Usage::default(),
+                    message: None,
                 });
             }
 
@@ -860,19 +862,14 @@ impl Agent {
                 if carried > cap {
                     tracing::warn!(carried, cap, "context above the hard cap after compaction");
                     self.last_had_tool_uses = had_tool_uses_this_turn;
-                    self.emit_turn_complete(
-                        "context_exceeded",
-                        api_calls,
-                        tool_calls,
-                        turn_usage,
-                        start,
-                    );
+                    self.record_turn_complete("context_exceeded", api_calls, tool_calls, start);
                     return Ok(TurnOutcome {
                         stop_reason: "context_exceeded".into(),
                         api_calls,
                         tool_calls,
                         total_usage: turn_usage,
                         usage: Usage::default(),
+                        message: None,
                     });
                 }
             }
@@ -1190,6 +1187,7 @@ impl Agent {
                     tool_calls,
                     usage,
                     total_usage: turn_usage,
+                    message: None,
                 });
             }
 
@@ -1213,13 +1211,14 @@ impl Agent {
                     "turn policy ended the turn"
                 );
                 self.last_had_tool_uses = had_tool_uses_this_turn;
-                self.emit_turn_complete(&reason, api_calls, tool_calls, turn_usage, start);
+                self.record_turn_complete(&reason, api_calls, tool_calls, start);
                 return Ok(TurnOutcome {
                     stop_reason: reason,
                     api_calls,
                     tool_calls,
                     total_usage: turn_usage,
                     usage: Usage::default(),
+                    message: None,
                 });
             }
 
@@ -1273,19 +1272,14 @@ impl Agent {
                             ),
                         );
                         self.last_had_tool_uses = had_tool_uses_this_turn;
-                        self.emit_turn_complete(
-                            "budget_exceeded",
-                            api_calls,
-                            tool_calls,
-                            turn_usage,
-                            start,
-                        );
+                        self.record_turn_complete("budget_exceeded", api_calls, tool_calls, start);
                         return Ok(TurnOutcome {
                             stop_reason: "budget_exceeded".into(),
                             api_calls,
                             tool_calls,
                             total_usage: turn_usage,
                             usage: Usage::default(),
+                            message: None,
                         });
                     }
                 }
@@ -1462,6 +1456,7 @@ impl Agent {
                         tool_calls,
                         usage,
                         total_usage: turn_usage,
+                        message: hook_result.discontinue_message().map(str::to_string),
                     });
                 }
                 // Teammate lifecycle hooks (TaskCompleted + TeammateIdle).
@@ -1551,16 +1546,6 @@ impl Agent {
                         turn_duration_ms: latency_ms as u64,
                     },
                 ));
-            let _ = self.event_tx.send(AgentEvent::TurnComplete {
-                stop_reason: stop_reason.clone(),
-                api_calls,
-                tool_calls,
-                // The turn's total. This used to be the last call's, which for
-                // a turn of four round trips is a quarter of an answer wearing
-                // the name of a whole one.
-                usage: turn_usage,
-                turn_id: tid,
-            });
             // TurnComplete — the normal end of a turn. Distinct from the
             // `Stop` hook above, which fires whenever the model stops calling
             // tools and can *veto* the stop; this one is a notification that
@@ -1659,6 +1644,7 @@ or project context that should survive across sessions.
                 tool_calls,
                 usage,
                 total_usage: turn_usage,
+                message: None,
             });
         }
     }
@@ -1686,6 +1672,7 @@ or project context that should survive across sessions.
             tool_calls: 0,
             total_usage: Usage::default(),
             usage: Usage::default(),
+            message: None,
         })
     }
 
@@ -1920,46 +1907,16 @@ or project context that should survive across sessions.
         )
     }
 
-    /// Record `turn_complete` for an early-exit path that has no result
-    /// content worth reporting (`last_tool_name`/`last_tool_was_error` are
-    /// always unknown here — the paths that *do* know them build the event
-    /// inline instead of calling this).
-    /// End-of-turn notification for the four paths that finish a turn
-    /// without reaching the normal tail: cancelled, max_turns,
-    /// max_structured_output_retries, budget_exceeded.
-    ///
-    /// Emits the `AgentEvent` as well as the telemetry record. It used to do
-    /// telemetry only, which left every one of those paths ending a turn in
-    /// total silence as far as the host was concerned — a client streaming a
-    /// turn (daemon's `session.run`, a TUI spinner) waits for
-    /// `TurnComplete`, so an interrupted or budget-capped turn hung its UI
-    /// until something unrelated came along. There is no
-    /// `AgentEvent::TurnComplete` for these in the normal tail either: that
-    /// tail is exactly what these paths return early to skip.
-    /// `usage` is the turn's total, not its last call's.
-    ///
-    /// Every path through here used to report a hardcoded `Usage::default()`
-    /// — the ends that are not the ordinary one: cancelled, out of context,
-    /// over budget, stopped by policy. The daemon forwards this field verbatim
-    /// to every subscriber, so a client watching a turn get cancelled was told
-    /// it had cost nothing, and a turn stopped *for spending too much*
-    /// reported zero spent.
-    fn emit_turn_complete(
+    /// Telemetry `turn_complete` for the paths that end a turn early and
+    /// know nothing about its last tool. The `AgentEvent` is `finish_turn`'s.
+    fn record_turn_complete(
         &self,
         stop_reason: &str,
         api_calls: u32,
         tool_calls: u32,
-        usage: Usage,
         start: std::time::Instant,
     ) {
         let tid = self.current_turn_id.clone();
-        let _ = self.event_tx.send(AgentEvent::TurnComplete {
-            stop_reason: stop_reason.to_string(),
-            api_calls,
-            tool_calls,
-            usage,
-            turn_id: tid.clone(),
-        });
         let _ = self
             .telemetry_handle
             .record(telemetry::TelemetryEvent::turn_complete(
@@ -4283,6 +4240,8 @@ pub struct TurnOutcome {
     /// fraction of the answer. A host that capped spending on `usage` was
     /// capping on whatever the last round trip happened to cost.
     pub total_usage: Usage,
+    /// Why the turn was stopped, when whatever stopped it said so.
+    pub message: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -2694,22 +2694,21 @@ impl SessionPool {
                     stop_reason,
                     api_calls: ac,
                     usage,
+                    message,
                     ..
                 }) => {
                     api_calls = ac;
-                    let f = StreamFrame::event(
-                        &sid,
-                        &turn_id,
-                        serde_json::json!({
-                            "kind":"turn_complete","stop_reason":stop_reason,"api_calls":api_calls,
-                            // Serialized whole rather than field by field: a
-                            // hand-written projection is invisible to the
-                            // compiler when `Usage` grows, and the last two
-                            // fields it grew reached the recording and the
-                            // price table without ever reaching this frame.
-                            "usage":serde_json::to_value(usage).unwrap_or_else(|_| serde_json::json!({}))
-                        }),
-                    );
+                    let mut event = serde_json::json!({
+                        "kind":"turn_complete","stop_reason":stop_reason,"api_calls":api_calls,
+                        // Serialized whole rather than field by field: a
+                        // hand-written projection is invisible to the
+                        // compiler when `Usage` grows.
+                        "usage":serde_json::to_value(usage).unwrap_or_else(|_| serde_json::json!({}))
+                    });
+                    if let Some(message) = message {
+                        event["message"] = serde_json::json!(message);
+                    }
+                    let f = StreamFrame::event(&sid, &turn_id, event);
                     self.broadcast_to_session(&sid, &f).await;
                     break;
                 }
@@ -2718,6 +2717,21 @@ impl SessionPool {
                     *event_rx_mutex.lock().await = Some(event_rx);
                     self.clear_current_turn(&sid).await;
                     return RpcResponse::err(id, codes::ENGINE_ERROR, format!("{code}: {message}"));
+                }
+                // The engine is gone. Dropping the entry is what lets the
+                // next call on this id resume it from its transcript instead
+                // of sending into a closed channel.
+                None => {
+                    self.clear_pending_prompts(&sid).await;
+                    if let Some(dead) = self.sessions.lock().await.remove(&sid) {
+                        dead.cancel.cancel();
+                    }
+                    warn!(%sid, "engine stopped before the turn completed");
+                    return RpcResponse::err(
+                        id,
+                        codes::ENGINE_ERROR,
+                        "engine stopped before the turn completed",
+                    );
                 }
                 _ => continue,
             }

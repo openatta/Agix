@@ -58,6 +58,10 @@ pub enum AgentEvent {
         tool_calls: u32,
         usage: Usage,
         turn_id: String,
+        /// Why the turn was stopped, when whatever stopped it said so — a
+        /// hook's `message`, for instance.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
     },
 
     // ── System ──

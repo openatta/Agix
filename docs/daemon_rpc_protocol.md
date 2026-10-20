@@ -494,6 +494,8 @@ Unix socket 靠文件系统权限,不握手,一样是"能连上就全权"。
 | 同一 turn 内 `text_delta` 严格有序 | 按到达顺序拼接即得完整文本 |
 | 每个 `tool_result` 必有先行的同 `id` `tool_use` | 反之不然:被取消的工具可能没有 result |
 | `turn_complete` 是本 turn 最后一个事件 | 其后只有 `run_turn` 的最终响应 |
+| 每个开始了的 turn 都有且只有一个 `turn_complete`(出错时是 `run_turn` 的错误响应) | 被 hook 拦下、被中断、被预算或策略截停的 turn 同样以它结束 |
+| 收到 `turn_complete` 时本轮已写进 transcript | 此刻读 `session.history` 能看到这一轮 |
 
 > **⚠️ 按 `id` 配对,不要按位置配对。** 并发安全的工具是并行执行的,谁先跑完谁先发
 > `tool_result`,所以事件流里 `tool_result` 的顺序与 `tool_use` 的顺序**可以不同**。
@@ -1376,7 +1378,7 @@ RPC 出口。要看子 Agent 干了什么,走它的侧链会话:`session.list
 | `team_progress` | `{team,team_id,stage,stage_index,stage_count,status,members,failed}` | 团队阶段生命周期 |
 | `skills_changed` | `{added,removed}` | 会话下的 skill 文件变了,缓存了 `commands.list` 的客户端该重取 |
 | `compact` | `{strategy,messages_before,messages_after,dropped_rounds?,dropped_messages?,estimated_tokens_saved?}` | 上下文被压缩了(§7.1) |
-| `turn_complete` | `{stop_reason,api_calls,usage}` | 模型侧完成;最终响应随后到达 |
+| `turn_complete` | `{stop_reason,api_calls,usage,message?}` | 本轮结束,transcript 已落盘;最终响应随后到达 |
 
 **这张表是白名单。** 引擎内部还有其它事件,但只有上面这些会被转成帧发出来。特别地:
 没有 `turn_state` / `agent_state` 事件 —— 判断 turn 是不是在跑要问 `session.get` 的
@@ -1412,6 +1414,8 @@ RPC 出口。要看子 Agent 干了什么,走它的侧链会话:`session.list
 `turn_complete` 的 `usage` 是完整的四字段用量(§3.5),
 **是这一轮所有模型调用的合计**,不是最后一趟。一轮可能来回好几趟
 (`api_calls` 就是趟数),按最后一趟计费会少算——用它做预算的宿主尤其要看清这一点。
+
+`message` 只在截停这一轮的一方给了理由时出现 —— 比如 hook 返回的 `message`;`stop_reason` 此时是 `stopped_by_hook`。
 
 **`stop_reason` 和 `usage` 只在这里出现**,`run_turn` 的最终响应里没有。
 
