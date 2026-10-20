@@ -73,6 +73,25 @@ pub enum AgentEvent {
     },
 
     // ── Turn lifecycle ──
+    /// A turn has started. Every `TurnStart` is followed by exactly one
+    /// `TurnComplete` or `Error` with the same `turn_id`.
+    TurnStart { turn_id: String },
+
+    /// The turn is about to call the model. `step` counts the turn's model
+    /// calls from 0.
+    StepStart { step: u32, turn_id: String },
+
+    /// The model call `step` has finished and its reply — plus the results of
+    /// the tools it asked for — is in the transcript.
+    StepEnd {
+        step: u32,
+        stop_reason: String,
+        /// What this one call cost.
+        usage: Usage,
+        tool_calls: u32,
+        turn_id: String,
+    },
+
     /// A turn has completed.
     TurnComplete {
         stop_reason: String,

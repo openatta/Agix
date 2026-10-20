@@ -335,6 +335,14 @@ pub fn normalize_events(events: &[AgentEvent]) -> String {
             AgentEvent::PermissionPrompt { message, .. } => {
                 format!("PermissionPrompt {:?}", first_line(message))
             }
+            AgentEvent::TurnStart { .. } => "TurnStart".to_string(),
+            AgentEvent::StepStart { step, .. } => format!("StepStart step={step}"),
+            AgentEvent::StepEnd {
+                step,
+                stop_reason,
+                tool_calls,
+                ..
+            } => format!("StepEnd step={step} stop_reason={stop_reason} tool_calls={tool_calls}"),
             AgentEvent::TurnComplete { stop_reason, .. } => {
                 format!("TurnComplete stop_reason={stop_reason}")
             }

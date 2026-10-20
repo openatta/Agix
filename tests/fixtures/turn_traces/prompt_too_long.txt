@@ -1,7 +1,12 @@
 == events ==
 SystemInit
+TurnStart
+StepStart step=0
 TextDelta "a first answer long enough to be worth dropping later"
+StepEnd step=0 stop_reason=end_turn tool_calls=0
 TurnComplete stop_reason=end_turn
+TurnStart
+StepStart step=0
 Error code=turn_error
 
 == session log ==

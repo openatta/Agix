@@ -145,9 +145,16 @@ async fn rpc_call(sock: &std::path::Path, msg: &str) -> String {
     client.write_all(b"\n").await.unwrap();
     let (r, _) = client.split();
     let mut br = BufReader::new(r);
-    let mut buf = String::new();
-    br.read_line(&mut buf).await.unwrap();
-    buf
+    // A turn streams `session.event` frames ahead of its response.
+    loop {
+        let mut buf = String::new();
+        br.read_line(&mut buf).await.unwrap();
+        let is_frame = serde_json::from_str::<serde_json::Value>(&buf)
+            .is_ok_and(|v| v["method"] == "session.event");
+        if !is_frame {
+            return buf;
+        }
+    }
 }
 
 #[tokio::test]

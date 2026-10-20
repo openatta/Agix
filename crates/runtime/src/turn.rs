@@ -66,6 +66,9 @@ impl Agent {
                 turn_id,
             } => {
                 self.current_turn_id = turn_id;
+                let _ = self.event_tx.send(AgentEvent::TurnStart {
+                    turn_id: self.current_turn_id.clone(),
+                });
                 // ── Slash command interception ──
                 if let Some(sc) = crate::commands::parse_slash_command(&content) {
                     // `/mcp__<server>__<prompt>` → `prompts/get` on the owning
@@ -975,6 +978,10 @@ impl Agent {
             // 2. Assemble the request
             let step = api_calls;
             api_calls += 1;
+            let _ = self.event_tx.send(AgentEvent::StepStart {
+                step,
+                turn_id: self.current_turn_id.clone(),
+            });
             let origin = Some(
                 base::interface::model::CallOrigin::turn(
                     self.session.session_id.clone(),
@@ -1209,6 +1216,13 @@ impl Agent {
             let stop_reason = stream_result.stop_reason;
             let usage = stream_result.usage;
             self.last_call_usage = Some(usage);
+            let _ = self.event_tx.send(AgentEvent::StepEnd {
+                step,
+                stop_reason: stop_reason.clone(),
+                usage,
+                tool_calls: stream_result.tool_calls,
+                turn_id: self.current_turn_id.clone(),
+            });
 
             // One call, accounted for. Every other number the engine reports is
             // per turn, and a turn is several calls — so this is the event a

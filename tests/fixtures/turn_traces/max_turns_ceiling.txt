@@ -1,9 +1,14 @@
 == events ==
 SystemInit
+TurnStart
+StepStart step=0
 ToolUse GoldenEcho {"say":"one"}
 ToolResult GoldenEcho is_error=Some(false) content="echo: one"
+StepEnd step=0 stop_reason=tool_use tool_calls=1
+StepStart step=1
 ToolUse GoldenEcho {"say":"two"}
 ToolResult GoldenEcho is_error=Some(false) content="echo: two"
+StepEnd step=1 stop_reason=tool_use tool_calls=1
 TurnComplete stop_reason=max_turns
 
 == session log ==

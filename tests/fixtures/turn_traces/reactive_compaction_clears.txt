@@ -1,20 +1,37 @@
 == events ==
 SystemInit
+TurnStart
+StepStart step=0
 ToolUse Read {}
 ToolResult Read is_error=Some(false) content="rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr… <1000 bytes total>"
+StepEnd step=0 stop_reason=tool_use tool_calls=1
+StepStart step=1
 ToolUse Read {}
 ToolResult Read is_error=Some(false) content="rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr… <1000 bytes total>"
+StepEnd step=1 stop_reason=tool_use tool_calls=1
+StepStart step=2
 ToolUse Read {}
 ToolResult Read is_error=Some(false) content="rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr… <1000 bytes total>"
+StepEnd step=2 stop_reason=tool_use tool_calls=1
+StepStart step=3
 ToolUse Read {}
 ToolResult Read is_error=Some(false) content="rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr… <1000 bytes total>"
+StepEnd step=3 stop_reason=tool_use tool_calls=1
+StepStart step=4
 ToolUse Read {}
 ToolResult Read is_error=Some(false) content="rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr… <1000 bytes total>"
+StepEnd step=4 stop_reason=tool_use tool_calls=1
+StepStart step=5
 ToolUse Read {}
 ToolResult Read is_error=Some(false) content="rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr… <1000 bytes total>"
+StepEnd step=5 stop_reason=tool_use tool_calls=1
+StepStart step=6
 ToolUse Read {}
 ToolResult Read is_error=Some(false) content="rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr… <1000 bytes total>"
+StepEnd step=6 stop_reason=tool_use tool_calls=1
+StepStart step=7
 TextDelta "done"
+StepEnd step=7 stop_reason=end_turn tool_calls=0
 TurnComplete stop_reason=end_turn
 
 == session log ==

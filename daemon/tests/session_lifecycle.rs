@@ -4681,3 +4681,80 @@ async fn session_compact_compacts_a_short_conversation_on_request() {
 
     srv.stop().await;
 }
+
+// ── turn and step boundaries ────────────────────────────────────────────
+
+/// A client can draw a turn without guessing where it begins and where one
+/// model call ends: `turn_start` comes first, every call is bracketed by
+/// `step_start` / `step_end`, and the tool frames of a call fall inside it.
+#[tokio::test]
+async fn a_turn_and_each_of_its_model_calls_are_bracketed_by_frames() {
+    let (srv, _seen) = start_scripted_server(
+        vec![
+            tool_round_costing("Glob", "tool-1", serde_json::json!({"pattern": "*"}), 7, 3),
+            text_round_costing("done", 11, 5),
+        ],
+        ask_settings_no_memory(),
+        Duration::ZERO,
+    )
+    .await;
+
+    let (frames, resp) = rpc_streaming(
+        &srv.sock,
+        r#"{"jsonrpc":"2.0","method":"session.run_turn","params":{"message":"look"},"id":1}"#,
+    )
+    .await;
+    assert!(resp["result"].is_object(), "turn failed: {resp}");
+
+    let kinds: Vec<String> = frames
+        .iter()
+        .map(|f| {
+            f["params"]["event"]["kind"]
+                .as_str()
+                .unwrap_or("")
+                .to_string()
+        })
+        .filter(|k| {
+            matches!(
+                k.as_str(),
+                "turn_start"
+                    | "step_start"
+                    | "step_end"
+                    | "tool_use"
+                    | "tool_result"
+                    | "text_delta"
+                    | "turn_complete"
+            )
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "turn_start",
+            "step_start",
+            "tool_use",
+            "tool_result",
+            "step_end",
+            "step_start",
+            "text_delta",
+            "step_end",
+            "turn_complete"
+        ],
+        "{frames:#?}"
+    );
+
+    let ends = events_of_kind(&frames, "step_end");
+    assert_eq!(ends[0]["step"], 0);
+    assert_eq!(ends[0]["stop_reason"], "tool_use");
+    assert_eq!(ends[0]["tool_calls"], 1);
+    assert_eq!(ends[0]["usage"]["input_tokens"], 7);
+    assert_eq!(ends[1]["step"], 1);
+    assert_eq!(ends[1]["usage"]["output_tokens"], 5);
+    let turn_ids: std::collections::HashSet<&str> = frames
+        .iter()
+        .filter_map(|f| f["params"]["turn_id"].as_str())
+        .collect();
+    assert_eq!(turn_ids.len(), 1, "every frame belongs to the one turn");
+
+    srv.stop().await;
+}

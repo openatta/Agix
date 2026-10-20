@@ -1,9 +1,18 @@
 == events ==
 SystemInit
+TurnStart
+StepStart step=0
 TextDelta "first pass"
+StepEnd step=0 stop_reason=end_turn tool_calls=0
+StepStart step=1
 TextDelta "second pass"
+StepEnd step=1 stop_reason=end_turn tool_calls=0
+StepStart step=2
 TextDelta "third pass"
+StepEnd step=2 stop_reason=end_turn tool_calls=0
+StepStart step=3
 TextDelta "fourth pass"
+StepEnd step=3 stop_reason=end_turn tool_calls=0
 TurnComplete stop_reason=end_turn
 
 == session log ==

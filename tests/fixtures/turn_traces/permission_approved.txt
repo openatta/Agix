@@ -1,9 +1,14 @@
 == events ==
 SystemInit
+TurnStart
+StepStart step=0
 ToolUse GoldenAsk {}
 PermissionPrompt "Allow GoldenAsk?"
 ToolResult GoldenAsk is_error=Some(false) content="approved and ran"
+StepEnd step=0 stop_reason=tool_use tool_calls=1
+StepStart step=1
 TextDelta "done"
+StepEnd step=1 stop_reason=end_turn tool_calls=0
 TurnComplete stop_reason=end_turn
 
 == session log ==

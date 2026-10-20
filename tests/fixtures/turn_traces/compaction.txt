@@ -1,9 +1,15 @@
 == events ==
 SystemInit
+TurnStart
+StepStart step=0
 TextDelta "a fairly long first answer that fills the budget"
+StepEnd step=0 stop_reason=end_turn tool_calls=0
 TurnComplete stop_reason=end_turn
+TurnStart
 CompactAction Snip
+StepStart step=0
 TextDelta "second answer"
+StepEnd step=0 stop_reason=end_turn tool_calls=0
 TurnComplete stop_reason=end_turn
 
 == session log ==

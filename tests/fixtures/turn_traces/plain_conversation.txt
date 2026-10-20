@@ -1,8 +1,11 @@
 == events ==
 SystemInit
+TurnStart
+StepStart step=0
 TextDelta "Hel"
 TextDelta "lo"
 TextDelta " there"
+StepEnd step=0 stop_reason=end_turn tool_calls=0
 TurnComplete stop_reason=end_turn
 
 == session log ==

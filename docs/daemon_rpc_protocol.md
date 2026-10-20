@@ -1467,6 +1467,9 @@ RPC 出口。要看子 Agent 干了什么,走它的侧链会话:`session.list
 
 | `kind` | 载荷 | 说明 |
 |---|---|---|
+| `turn_start` | `{}` | 本轮开始,是本轮的第一帧 |
+| `step_start` | `{step}` | 本轮要调一次模型;`step` 从 0 计 |
+| `step_end` | `{step,stop_reason,tool_calls,usage}` | 这次调用结束,它的回复和它要的工具结果都已在 transcript 里;`usage` 只是这一次调用的 |
 | `text_delta` | `{text}` | 模型输出增量 |
 | `thinking_delta` | `{text}` | 模型思考过程的增量,与正文分开,宿主可以折叠或不显示 |
 | `tool_use` | `{id,name,input}` | 模型发起工具调用 |
@@ -1488,6 +1491,11 @@ RPC 出口。要看子 Agent 干了什么,走它的侧链会话:`session.list
 **但客户端必须忽略不认识的 `kind`。** 这张表只会往下长,而且加一种事件不该是一次
 破坏性变更:碰到没见过的 `kind` 就跳过它,不要报错、不要断开、更不要把整条连接当成
 协议错误。
+
+一轮帧的次序是:`turn_start`,然后每次模型调用一组 `step_start` … `step_end`,这次调用
+的 `text_delta` / `thinking_delta` / `tool_use` / `tool_result` / `prompt` 都落在这一组
+里,最后是 `turn_complete`(或 `error`)。本地命令(`/clear` 之类)不调用模型,只有
+`turn_start` 和 `turn_complete`。
 
 `prompt_type` 目前只有 `"permission"`,但字段刻意保持通用 —— 未来的"停下来问一句"
 可以复用同一帧与同一回答通道。

@@ -3016,6 +3016,40 @@ impl SessionPool {
         loop {
             match event_rx.recv().await {
                 Some(AgentEvent::SystemInit { .. }) => continue,
+                Some(AgentEvent::TurnStart { .. }) => {
+                    let f = StreamFrame::event(
+                        &sid,
+                        &turn_id,
+                        serde_json::json!({"kind":"turn_start"}),
+                    );
+                    self.broadcast_to_session(&sid, &f).await;
+                }
+                Some(AgentEvent::StepStart { step, .. }) => {
+                    let f = StreamFrame::event(
+                        &sid,
+                        &turn_id,
+                        serde_json::json!({"kind":"step_start","step":step}),
+                    );
+                    self.broadcast_to_session(&sid, &f).await;
+                }
+                Some(AgentEvent::StepEnd {
+                    step,
+                    stop_reason,
+                    usage,
+                    tool_calls,
+                    ..
+                }) => {
+                    let f = StreamFrame::event(
+                        &sid,
+                        &turn_id,
+                        serde_json::json!({
+                            "kind":"step_end","step":step,"stop_reason":stop_reason,
+                            "tool_calls":tool_calls,
+                            "usage":serde_json::to_value(usage).unwrap_or_else(|_| serde_json::json!({}))
+                        }),
+                    );
+                    self.broadcast_to_session(&sid, &f).await;
+                }
                 Some(AgentEvent::TextDelta { text, .. }) => {
                     let f = StreamFrame::event(
                         &sid,
