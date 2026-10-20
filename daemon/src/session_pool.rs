@@ -1015,16 +1015,14 @@ impl SessionPool {
     /// reasonably wants the RPC response to reflect the *actual* post-reload
     /// connection state rather than a "kicked off, check back later" status.
     ///
-    /// Only replaces `mcp_by_project`'s entry for `project_root` — both
-    /// current callers pass the pool's default project (the only project
-    /// `config.reload`/`config.setProvider` ever re-read settings for), so
-    /// every *other* project's cached connections are left untouched rather
-    /// than being torn down by an edit that has nothing to do with them.
+    /// Only replaces `mcp_by_project`'s entry for `(project_root, scene_id)`;
+    /// every other pair's cached connections are left untouched.
     ///
     /// Returns `(connected, failed)` server names for `ReloadReport`.
     async fn reconcile_mcp_servers(
         &self,
         project_root: Option<&Path>,
+        scene_id: &str,
         mcp_servers: &HashMap<String, serde_json::Value>,
     ) -> (Vec<String>, Vec<String>) {
         let mut parsed = HashMap::new();
@@ -1065,9 +1063,8 @@ impl SessionPool {
             }));
         }
 
-        let startup_scene = self.settings.read().await.paths.scope.clone();
         self.mcp_by_project.lock().await.insert(
-            (project_root.map(Path::to_path_buf), startup_scene),
+            (project_root.map(Path::to_path_buf), scene_id.to_string()),
             Arc::new(manager),
         );
         (connected, failed)
@@ -1523,7 +1520,7 @@ impl SessionPool {
         let binding = self.binding_for(Some(project_root), scene_id).await;
         let mut report = binding.routing.clone();
         let (mcp_connected, mcp_failed) = self
-            .reconcile_mcp_servers(Some(project_root), &binding.settings.mcp_servers)
+            .reconcile_mcp_servers(Some(project_root), scene_id, &binding.settings.mcp_servers)
             .await;
         report.mcp_connected = mcp_connected;
         report.mcp_failed = mcp_failed;
@@ -4196,6 +4193,27 @@ impl SessionPool {
     /// work; this only needed to stop the wrong thing from happening (a
     /// non-default project silently inheriting the default project's
     /// connections, or never connecting its own at all).
+    /// Drop the cached connections whose `mcp_servers` came from `tier`, so the
+    /// next session or rebuild on those keys connects with the changed config
+    /// (a new `Authorization`, say) instead of reusing the old connection.
+    /// `keep` is a key the caller reconnects itself.
+    async fn forget_mcp_built_from(
+        &self,
+        tier: &crate::watch_hub::Tier,
+        keep: Option<&ProjectSceneKey>,
+    ) {
+        use crate::watch_hub::Tier;
+        self.mcp_by_project.lock().await.retain(|key, _| {
+            let (project, scene) = key;
+            let built_from = match tier {
+                Tier::Global => true,
+                Tier::Scene(s) => scene == s,
+                Tier::Project(root) => project.as_deref() == Some(root.as_path()),
+            };
+            !built_from || keep == Some(key)
+        });
+    }
+
     async fn mcp_for_project(
         &self,
         project_root: Option<&Path>,
@@ -4640,9 +4658,15 @@ impl SessionPool {
                         Tier::Scene(scene) => scene.clone(),
                         _ => pool.scene_id().to_string(),
                     };
+                    let reconciled = (Some(pool.cwd.clone()), scene.clone());
+                    pool.forget_mcp_built_from(&key.tier, Some(&reconciled))
+                        .await;
                     pool.reload_settings(None, &scene).await;
                 } else {
                     info!(tier = ?key.tier, target = ?key.target, "a tier changed on disk");
+                    if key.target == WatchTarget::Settings {
+                        pool.forget_mcp_built_from(&key.tier, None).await;
+                    }
                     pool.invalidate_bindings().await;
                     pool.config_generation
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -5806,6 +5830,49 @@ mod mcp_for_project_tests {
             !Arc::ptr_eq(&none_manager, &default_manager),
             "the no-project tier (`None`) must not share a cache slot with the default project"
         );
+    }
+
+    /// A changed `Authorization` has to reach the next connection; reusing the
+    /// cached one would keep sending the old token until a daemon restart.
+    #[tokio::test]
+    async fn a_settings_change_drops_exactly_the_connections_built_from_it() {
+        use crate::watch_hub::Tier;
+        let (pool, dir) = test_pool().await;
+        let other = dir.path().join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        let default_coding = pool.mcp_for_project(Some(pool.cwd()), "coding").await;
+        let default_chat = pool.mcp_for_project(Some(pool.cwd()), "chat").await;
+        let other_coding = pool.mcp_for_project(Some(&other), "coding").await;
+
+        pool.forget_mcp_built_from(&Tier::Project(other.clone()), None)
+            .await;
+        assert!(!Arc::ptr_eq(
+            &other_coding,
+            &pool.mcp_for_project(Some(&other), "coding").await
+        ));
+        assert!(Arc::ptr_eq(
+            &default_coding,
+            &pool.mcp_for_project(Some(pool.cwd()), "coding").await
+        ));
+
+        pool.forget_mcp_built_from(&Tier::Scene("chat".into()), None)
+            .await;
+        assert!(!Arc::ptr_eq(
+            &default_chat,
+            &pool.mcp_for_project(Some(pool.cwd()), "chat").await
+        ));
+        assert!(Arc::ptr_eq(
+            &default_coding,
+            &pool.mcp_for_project(Some(pool.cwd()), "coding").await
+        ));
+
+        let kept = (Some(pool.cwd().to_path_buf()), "coding".to_string());
+        pool.forget_mcp_built_from(&Tier::Global, Some(&kept)).await;
+        assert!(Arc::ptr_eq(
+            &default_coding,
+            &pool.mcp_for_project(Some(pool.cwd()), "coding").await
+        ));
+        assert_eq!(pool.mcp_by_project.lock().await.len(), 1);
     }
 }
 

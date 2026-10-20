@@ -440,9 +440,22 @@ impl McpManager {
         Err(last_err.unwrap())
     }
 
-    /// Connect an additional MCP server after construction. Useful for
-    /// plugin-discovered MCP servers. On failure the server is skipped with
-    /// a warning.
+    fn install_server(
+        &mut self,
+        name: &str,
+        client: McpClientHandle,
+        server_adapters: Vec<Arc<dyn Tool>>,
+    ) {
+        let source = format!("mcp:{name}");
+        self.clients.retain(|c| c.server_name() != name);
+        self.adapters.retain(|a| a.source() != source);
+        self.clients.push(client);
+        self.adapters.extend(server_adapters);
+    }
+
+    /// Connect an MCP server after construction, replacing any server already
+    /// connected under `name` (its tools included). On failure the existing
+    /// connection, if any, stays and a warning is logged.
     pub async fn add_server(&mut self, name: &str, cfg: &McpServerConfig) {
         let cb = self.elicitation_callback.clone();
         match Self::connect_one(
@@ -460,8 +473,7 @@ impl McpManager {
                     n_tools = server_adapters.len(),
                     "plugin MCP server connected"
                 );
-                self.clients.push(client);
-                self.adapters.extend(server_adapters);
+                self.install_server(name, client, server_adapters);
             }
             Err(e) => {
                 warn!(server = %name, error = %e, "plugin MCP server connect failed; skipping");
@@ -895,6 +907,38 @@ mod tests {
         );
         let m = McpManager::connect_all(servers).await;
         assert_eq!(m.server_count(), 0); // 失败仍跳过
+    }
+
+    fn adapters_of(client: &Arc<crate::client::MockMcpClient>, tool: &str) -> Vec<Arc<dyn Tool>> {
+        let meta = crate::client::McpToolMeta {
+            name: tool.into(),
+            description: None,
+            input_schema: serde_json::json!({"type": "object"}),
+            hints: Default::default(),
+        };
+        vec![Arc::new(McpToolAdapter::new(client.clone(), meta)) as Arc<dyn Tool>]
+    }
+
+    #[tokio::test]
+    async fn installing_a_server_under_a_taken_name_replaces_it() {
+        let old = Arc::new(crate::client::MockMcpClient::new("api", vec![]));
+        let other = Arc::new(crate::client::MockMcpClient::new("docs", vec![]));
+        let new = Arc::new(crate::client::MockMcpClient::new("api", vec![]));
+        let mut m = McpManager::empty();
+        m.install_server("api", old.clone(), adapters_of(&old, "old_tool"));
+        m.install_server("docs", other.clone(), adapters_of(&other, "read"));
+
+        m.install_server("api", new.clone(), adapters_of(&new, "new_tool"));
+
+        assert_eq!(m.server_count(), 2);
+        let api: Vec<_> = m
+            .clients()
+            .iter()
+            .filter(|c| c.server_name() == "api")
+            .collect();
+        assert_eq!(api.len(), 1);
+        let names: Vec<&str> = m.tool_adapters().iter().map(|a| a.name()).collect();
+        assert_eq!(names, vec!["mcp__docs__read", "mcp__api__new_tool"]);
     }
 
     /// Regression: `elicitation_callback` used to be a plain
