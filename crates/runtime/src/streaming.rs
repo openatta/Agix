@@ -141,6 +141,20 @@ where
                     provider: provenance.map(str::to_owned),
                 });
             }
+            ModelEvent::ToolUseStart { id, name } => {
+                let _ = event_tx.send(AgentEvent::ToolUseStart {
+                    id,
+                    name,
+                    turn_id: turn_id.clone(),
+                });
+            }
+            ModelEvent::ToolArgsDelta { id, partial_json } => {
+                let _ = event_tx.send(AgentEvent::ToolArgsDelta {
+                    id,
+                    partial_json,
+                    turn_id: turn_id.clone(),
+                });
+            }
             ModelEvent::ToolUse { id, name, input } => {
                 close_thinking(&mut pending_thinking, &mut reply, None, provenance);
                 close_text(&mut pending_text, &mut reply);

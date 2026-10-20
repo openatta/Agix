@@ -335,9 +335,13 @@ fn map_stream_event(
                     serde_json::Value::Object(o) if o.is_empty() => String::new(),
                     _ => input.to_string(),
                 };
+                let start = ModelEvent::ToolUseStart {
+                    id: id.clone(),
+                    name: name.clone(),
+                };
                 acc.tool_uses
                     .insert(index, PendingToolUse { id, name, json });
-                vec![]
+                vec![Ok(start)]
             }
             // Thinking blocks were parsed by `stream.rs` but died here, in a
             // `_ => vec![]` arm — never reaching `ModelEvent`, so hosts could
@@ -974,7 +978,11 @@ mod map_stream_event_tests {
         ];
 
         let out = run(events);
-        match &out[0] {
+        assert!(
+            matches!(&out[0], ModelEvent::ToolUseStart { id, name } if id == "call_2" && name == "Read"),
+            "the call is announced as soon as its block opens: {out:?}"
+        );
+        match &out[1] {
             ModelEvent::ToolUse { input, .. } => assert_eq!(input["file_path"], "a.rs"),
             other => panic!("expected ToolUse, got {other:?}"),
         }

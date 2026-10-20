@@ -3066,6 +3066,26 @@ impl SessionPool {
                     );
                     self.broadcast_to_session(&sid, &f).await;
                 }
+                Some(AgentEvent::ToolUseStart { id: tid, name, .. }) => {
+                    let f = StreamFrame::event(
+                        &sid,
+                        &turn_id,
+                        serde_json::json!({"kind":"tool_use_start","id":tid,"name":name}),
+                    );
+                    self.broadcast_to_session(&sid, &f).await;
+                }
+                Some(AgentEvent::ToolArgsDelta {
+                    id: tid,
+                    partial_json,
+                    ..
+                }) => {
+                    let f = StreamFrame::event(
+                        &sid,
+                        &turn_id,
+                        serde_json::json!({"kind":"tool_args_delta","id":tid,"partial_json":partial_json}),
+                    );
+                    self.broadcast_to_session(&sid, &f).await;
+                }
                 Some(AgentEvent::ToolUse {
                     id: tid,
                     name,

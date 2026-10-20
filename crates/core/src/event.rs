@@ -42,6 +42,22 @@ pub enum AgentEvent {
     /// depends on it being consumed.
     ThinkingDelta { text: String, turn_id: String },
 
+    /// The model has started writing a tool call. `ToolUse` with the same
+    /// `id` follows once its arguments are complete.
+    ToolUseStart {
+        id: String,
+        name: String,
+        turn_id: String,
+    },
+
+    /// A raw fragment of a started tool call's arguments (high frequency).
+    /// The fragments concatenate to the JSON that `ToolUse` carries parsed.
+    ToolArgsDelta {
+        id: String,
+        partial_json: String,
+        turn_id: String,
+    },
+
     /// Model requested a tool call.
     ToolUse {
         id: String,

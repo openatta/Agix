@@ -317,6 +317,10 @@ pub fn normalize_events(events: &[AgentEvent]) -> String {
         let line = match ev {
             AgentEvent::TextDelta { text, .. } => format!("TextDelta {text:?}"),
             AgentEvent::ThinkingDelta { text, .. } => format!("ThinkingDelta {text:?}"),
+            AgentEvent::ToolUseStart { name, .. } => format!("ToolUseStart {name}"),
+            AgentEvent::ToolArgsDelta { partial_json, .. } => {
+                format!("ToolArgsDelta {partial_json:?}")
+            }
             AgentEvent::ToolUse { name, input, .. } => {
                 format!("ToolUse {name} {}", canonical_json(input))
             }

@@ -4758,3 +4758,56 @@ async fn a_turn_and_each_of_its_model_calls_are_bracketed_by_frames() {
 
     srv.stop().await;
 }
+
+/// A tool row can be drawn while the model is still writing the arguments:
+/// `tool_use_start` names the call first, the argument fragments follow, and
+/// they concatenate to exactly the input `tool_use` then carries.
+#[tokio::test]
+async fn a_tool_call_is_announced_before_its_arguments_are_complete() {
+    let (srv, _seen) = start_scripted_server(
+        vec![
+            tool_round("Glob", "tool-7", serde_json::json!({"pattern": "*.rs"})),
+            text_round("done"),
+        ],
+        ask_settings_no_memory(),
+        Duration::ZERO,
+    )
+    .await;
+
+    let (frames, resp) = rpc_streaming(
+        &srv.sock,
+        r#"{"jsonrpc":"2.0","method":"session.run_turn","params":{"message":"find"},"id":1}"#,
+    )
+    .await;
+    assert!(resp["result"].is_object(), "turn failed: {resp}");
+
+    let kinds: Vec<&str> = frames
+        .iter()
+        .filter_map(|f| f["params"]["event"]["kind"].as_str())
+        .filter(|k| k.starts_with("tool_"))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "tool_use_start",
+            "tool_args_delta",
+            "tool_use",
+            "tool_result"
+        ],
+        "{frames:#?}"
+    );
+    let start = events_of_kind(&frames, "tool_use_start")[0];
+    assert_eq!(start["id"], "tool-7");
+    assert_eq!(start["name"], "Glob");
+    let args: String = events_of_kind(&frames, "tool_args_delta")
+        .iter()
+        .map(|f| f["partial_json"].as_str().unwrap())
+        .collect();
+    let used = events_of_kind(&frames, "tool_use")[0];
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&args).unwrap(),
+        used["input"]
+    );
+
+    srv.stop().await;
+}

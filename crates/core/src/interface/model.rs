@@ -339,6 +339,12 @@ pub enum ModelEvent {
     RedactedThinking {
         data: String,
     },
+    /// The model has started a tool call; its arguments are still streaming.
+    /// The call itself is the [`ModelEvent::ToolUse`] that follows.
+    ToolUseStart {
+        id: String,
+        name: String,
+    },
     ToolUse {
         id: String,
         name: String,

@@ -118,6 +118,9 @@ struct PendingToolCall {
     id: String,
     name: String,
     arguments: String,
+    /// `ToolUseStart` has gone out — it waits for both `id` and `name`, which
+    /// a gateway may split across chunks.
+    announced: bool,
 }
 
 /// Turns a sequence of [`ChatCompletionChunk`]s into [`ModelEvent`]s.
@@ -176,12 +179,33 @@ impl ChunkAccumulator {
                 if let Some(id) = delta.id {
                     entry.id = id;
                 }
+                let mut args = None;
                 if let Some(f) = delta.function {
                     if let Some(name) = f.name {
                         entry.name = name;
                     }
-                    if let Some(args) = f.arguments {
-                        entry.arguments.push_str(&args);
+                    args = f.arguments;
+                }
+                if !entry.announced && !entry.id.is_empty() && !entry.name.is_empty() {
+                    entry.announced = true;
+                    out.push(ModelEvent::ToolUseStart {
+                        id: entry.id.clone(),
+                        name: entry.name.clone(),
+                    });
+                    if !entry.arguments.is_empty() {
+                        out.push(ModelEvent::ToolArgsDelta {
+                            id: entry.id.clone(),
+                            partial_json: entry.arguments.clone(),
+                        });
+                    }
+                }
+                if let Some(args) = args.filter(|a| !a.is_empty()) {
+                    entry.arguments.push_str(&args);
+                    if entry.announced {
+                        out.push(ModelEvent::ToolArgsDelta {
+                            id: entry.id.clone(),
+                            partial_json: args,
+                        });
                     }
                 }
             }
@@ -565,9 +589,11 @@ mod tests {
     /// must still flush buffered tool calls and terminate the turn.
     #[test]
     fn stream_ending_without_finish_reason_still_flushes_and_ends() {
-        let events = run(&[json!({"choices": [{"index": 0, "delta": {"tool_calls": [
-            {"index": 0, "id": "c1", "function": {"name": "Read", "arguments": "{\"file_path\":\"a\"}"}}
-        ]}}]})]);
+        let events = without_progress(run(&[
+            json!({"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "id": "c1", "function": {"name": "Read", "arguments": "{\"file_path\":\"a\"}"}}
+            ]}}]}),
+        ]));
 
         assert!(
             matches!(events[0], ModelEvent::ToolUse { .. }),
@@ -590,12 +616,67 @@ mod tests {
             ]}}]}),
             json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}),
         ]);
+        let events = without_progress(events);
         match &events[0] {
             ModelEvent::ToolUse { input, .. } => {
                 assert_eq!(input, &serde_json::Value::Object(Default::default()))
             }
             other => panic!("expected ToolUse, got {other:?}"),
         }
+    }
+
+    fn without_progress(events: Vec<ModelEvent>) -> Vec<ModelEvent> {
+        events
+            .into_iter()
+            .filter(|e| {
+                !matches!(
+                    e,
+                    ModelEvent::ToolUseStart { .. } | ModelEvent::ToolArgsDelta { .. }
+                )
+            })
+            .collect()
+    }
+
+    /// A gateway may send a call's id, its name and its arguments in separate
+    /// chunks. The call is announced once both id and name are known, with
+    /// whatever arguments were already buffered, and every later fragment
+    /// follows as it arrives.
+    #[test]
+    fn a_call_is_announced_once_its_id_and_name_are_both_known() {
+        let events = run(&[
+            json!({"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "id": "c9", "function": {"arguments": "{\"pa"}}
+            ]}}]}),
+            json!({"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "function": {"name": "Glob", "arguments": "ttern\":"}}
+            ]}}]}),
+            json!({"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": "\"*\"}"}}
+            ]}}]}),
+            json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}),
+        ]);
+        let progress: Vec<String> = events
+            .iter()
+            .filter_map(|e| match e {
+                ModelEvent::ToolUseStart { id, name } => Some(format!("start {id} {name}")),
+                ModelEvent::ToolArgsDelta { partial_json, .. } => {
+                    Some(format!("args {partial_json}"))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            progress,
+            [
+                "start c9 Glob",
+                "args {\"pa",
+                "args ttern\":",
+                "args \"*\"}"
+            ]
+        );
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, ModelEvent::ToolUse { input, .. } if input["pattern"] == "*")));
     }
 
     /// Unknown fields anywhere in the payload must not break deserialization —
