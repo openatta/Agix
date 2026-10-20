@@ -92,6 +92,7 @@ mod tests {
             api_key_env: None,
             default_model: Some("claude-sonnet-4-6".into()),
             models: vec![],
+            ..Default::default()
         }
     }
 

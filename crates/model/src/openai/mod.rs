@@ -36,7 +36,7 @@ use base::interface::exec::local::LocalNetwork;
 use base::interface::exec::{HttpRequest, HttpStream, Network, Origin};
 use base::interface::model::{Model, ModelError, ModelMessage, ModelStream, StreamParams, ToolDef};
 use base::interface::prompt::PromptBlock;
-use base::provider::ApiType;
+use base::provider::{ApiType, ThinkingToggle};
 use futures::stream::StreamExt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -75,6 +75,8 @@ struct Inner {
     /// this protocol rather than a thing a policy gets to decide.
     backoff: Arc<dyn BackoffPolicy>,
     provenance: Option<String>,
+    reasoning_passback: bool,
+    thinking_toggle: Option<ThinkingToggle>,
 }
 
 impl OpenAICompatibleModel {
@@ -100,6 +102,8 @@ impl OpenAICompatibleModel {
                 default_model: model_default.into(),
                 backoff: Arc::new(LadderBackoff::new()),
                 provenance: None,
+                reasoning_passback: false,
+                thinking_toggle: None,
             }),
         })
     }
@@ -130,6 +134,15 @@ impl OpenAICompatibleModel {
         self
     }
 
+    /// See `ProviderConfig::reasoning_passback` and
+    /// `ProviderConfig::thinking_toggle`.
+    pub fn with_reasoning(mut self, passback: bool, toggle: Option<ThinkingToggle>) -> Self {
+        let inner = Arc::make_mut(&mut self.inner);
+        inner.reasoning_passback = passback;
+        inner.thinking_toggle = toggle;
+        self
+    }
+
     /// The resolved endpoint this model will POST to. Exposed for startup
     /// logging and tests.
     pub fn endpoint(&self) -> &Url {
@@ -157,6 +170,8 @@ impl Clone for Inner {
             default_model: self.default_model.clone(),
             backoff: self.backoff.clone(),
             provenance: self.provenance.clone(),
+            reasoning_passback: self.reasoning_passback,
+            thinking_toggle: self.thinking_toggle,
         }
     }
 }
@@ -328,9 +343,8 @@ impl Model for OpenAICompatibleModel {
         _cancel: CancellationToken,
     ) -> Result<ModelStream, ModelError> {
         // Ignored, with reasons:
-        // - `thinking_mode`: Chat Completions has no thinking configuration.
-        //   Providers that reason (o-series, DeepSeek) decide for themselves,
-        //   and their output is picked up as `reasoning_content` in `stream`.
+        // - `thinking_mode`, unless the provider names a `thinking_toggle`:
+        //   Chat Completions has no standard thinking switch.
         // - `cache_edits`: server-side cache surgery is Anthropic-only; there
         //   is no equivalent, and the compaction that produced the ids has
         //   already removed the content locally.
@@ -344,13 +358,19 @@ impl Model for OpenAICompatibleModel {
             params.model
         };
 
-        let req = request::build_request(
+        let mut req = request::build_request(
             model,
             prompt_blocks,
             tools,
             messages,
             Some(params.max_tokens),
+            &request::Reasoning {
+                passback: self.inner.reasoning_passback,
+                provenance: self.inner.provenance.clone(),
+            },
         );
+        req.thinking_switch =
+            request::thinking_switch(self.inner.thinking_toggle, &params.thinking_mode);
 
         let inner = self.inner.clone();
         let s = async_stream::stream! {

@@ -331,6 +331,7 @@ mod tests {
                 api_key_env: None,
                 default_model: Some("m".into()),
                 models: vec![],
+                ..Default::default()
             },
         );
         let settings = Arc::new(settings);

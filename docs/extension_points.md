@@ -133,6 +133,18 @@ daemon 的嵌入方不必自己拼:`Assembly { credentials: Some(..), .. }`,每�
 拿回来的是 `Secret`:没有 `Display`,没有 `Serialize`,`Debug` 打出来是
 `<redacted>`。要读它得调 `.expose()`。
 
+工厂建出的客户端要实现 `Model::provenance`,返回建它的厂商 id。流消费者把它记在
+这个客户端产生的 `Thinking` / `RedactedThinking` 块上,随转录落盘;适配器拼请求时
+跳过来源是别家的块,来源字段本身不上线。返回 `None` 的客户端产生的块不带来源,
+发给谁都照发。
+
+OpenAI 兼容端点的推理没有标准字段,两项按厂商条目配置:
+
+| 键 | 作用 |
+|---|---|
+| `reasoning_passback` | 把当前工具循环里模型自己的 `reasoning_content` 回传(DeepSeek 思考模式要求;OpenAI 本家会拒) |
+| `thinking_toggle` | `thinking_mode` 不是 `auto` 时怎么开关思考:`deepseek`(`thinking.type`)、`enable_thinking`(Qwen)、`chat_template_kwargs`(vLLM / SGLang) |
+
 ### 配置从哪来 — `config.source`
 
 `Settings::load` 读六个文件:全局、scene、项目三个层级,每级一个 `settings.json`

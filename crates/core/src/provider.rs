@@ -57,6 +57,27 @@ pub struct ProviderConfig {
     /// filtering, any model name is accepted as-is.
     #[serde(default)]
     pub models: Vec<String>,
+    /// OpenAI-compatible only: echo the model's `reasoning_content` back on
+    /// the assistant messages of the current tool loop. DeepSeek's thinking
+    /// mode requires it; OpenAI itself and older reasoners reject it, hence
+    /// off by default.
+    pub reasoning_passback: bool,
+    /// OpenAI-compatible only: how this endpoint is told to turn thinking on
+    /// or off when `thinking_mode` is not `auto`. Unset sends nothing — Chat
+    /// Completions has no standard field for it.
+    pub thinking_toggle: Option<ThinkingToggle>,
+}
+
+/// The request fields OpenAI-compatible endpoints use to switch thinking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ThinkingToggle {
+    /// `"thinking": {"type": "enabled" | "disabled"}` (DeepSeek).
+    Deepseek,
+    /// `"enable_thinking": true | false` (Qwen / DashScope).
+    EnableThinking,
+    /// `"chat_template_kwargs": {"enable_thinking": true | false}` (vLLM, SGLang).
+    ChatTemplateKwargs,
 }
 
 /// A `task_models.<task>` entry. Accepts either the shorthand `"provider_id"`
@@ -110,6 +131,8 @@ impl std::fmt::Debug for ProviderConfig {
             .field("api_key_env", &self.api_key_env)
             .field("default_model", &self.default_model)
             .field("models", &self.models)
+            .field("reasoning_passback", &self.reasoning_passback)
+            .field("thinking_toggle", &self.thinking_toggle)
             .finish()
     }
 }
@@ -318,6 +341,7 @@ mod tests {
             api_key_env: None,
             default_model: Some(default_model.into()),
             models: models.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
         }
     }
 

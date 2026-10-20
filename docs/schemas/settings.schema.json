@@ -369,6 +369,23 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "reasoning_passback": {
+          "default": false,
+          "description": "OpenAI-compatible only: echo the model's `reasoning_content` back on\nthe assistant messages of the current tool loop. DeepSeek's thinking\nmode requires it; OpenAI itself and older reasoners reject it, hence\noff by default.",
+          "type": "boolean"
+        },
+        "thinking_toggle": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ThinkingToggle"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "OpenAI-compatible only: how this endpoint is told to turn thinking on\nor off when `thinking_mode` is not `auto`. Unset sends nothing — Chat\nCompletions has no standard field for it."
         }
       },
       "type": "object"
@@ -605,6 +622,26 @@
             "on_budget"
           ],
           "type": "object"
+        }
+      ]
+    },
+    "ThinkingToggle": {
+      "description": "The request fields OpenAI-compatible endpoints use to switch thinking.",
+      "oneOf": [
+        {
+          "const": "deepseek",
+          "description": "`\"thinking\": {\"type\": \"enabled\" | \"disabled\"}` (DeepSeek).",
+          "type": "string"
+        },
+        {
+          "const": "enable_thinking",
+          "description": "`\"enable_thinking\": true | false` (Qwen / DashScope).",
+          "type": "string"
+        },
+        {
+          "const": "chat_template_kwargs",
+          "description": "`\"chat_template_kwargs\": {\"enable_thinking\": true | false}` (vLLM, SGLang).",
+          "type": "string"
         }
       ]
     }

@@ -7,8 +7,10 @@
 
 use base::interface::model::{MessageRole, ModelContentBlock, ModelMessage, ToolDef};
 use base::interface::prompt::PromptBlock;
+use base::provider::ThinkingToggle;
+use base::settings::ThinkingMode;
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 /// `POST <base>/v1/chat/completions` body. `stream` is always true — the
 /// engine loop is streaming-only, same as the Anthropic path.
@@ -34,6 +36,9 @@ pub struct ChatCompletionsRequest {
     /// the safer failure of the two.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_completion_tokens: Option<u32>,
+    /// The endpoint's own thinking switch; see [`thinking_switch`].
+    #[serde(flatten)]
+    pub thinking_switch: Map<String, Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -62,6 +67,9 @@ pub struct ChatMessage {
     pub tool_calls: Vec<ToolCall>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Non-standard, sent only under [`Reasoning::passback`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
 }
 
 impl ChatMessage {
@@ -71,8 +79,46 @@ impl ChatMessage {
             content: None,
             tool_calls: Vec::new(),
             tool_call_id: None,
+            reasoning_content: None,
         }
     }
+}
+
+/// What this endpoint does with the model's own reasoning on the way back in.
+#[derive(Debug, Clone, Default)]
+pub struct Reasoning {
+    /// Echo `reasoning_content` on the assistant messages of the current tool
+    /// loop — the ones after the last user message that is not just tool
+    /// results. DeepSeek's thinking mode rejects a tool-loop request without
+    /// it; earlier turns' reasoning is not sent, it only costs input.
+    pub passback: bool,
+    /// [`Model::provenance`](base::interface::model::Model::provenance) of
+    /// this endpoint. Reasoning another provider produced is never echoed.
+    pub provenance: Option<String>,
+}
+
+/// The request fields that turn thinking on or off on an endpoint that has
+/// such a switch. `auto`, or no known switch, sends nothing and leaves the
+/// choice to the endpoint.
+pub fn thinking_switch(toggle: Option<ThinkingToggle>, mode: &ThinkingMode) -> Map<String, Value> {
+    let on = match mode {
+        ThinkingMode::Auto => return Map::new(),
+        ThinkingMode::Off => false,
+        ThinkingMode::On | ThinkingMode::OnBudget(_) => true,
+    };
+    let (key, value) = match toggle {
+        None => return Map::new(),
+        Some(ThinkingToggle::Deepseek) => (
+            "thinking",
+            serde_json::json!({ "type": if on { "enabled" } else { "disabled" } }),
+        ),
+        Some(ThinkingToggle::EnableThinking) => ("enable_thinking", Value::Bool(on)),
+        Some(ThinkingToggle::ChatTemplateKwargs) => (
+            "chat_template_kwargs",
+            serde_json::json!({ "enable_thinking": on }),
+        ),
+    };
+    Map::from_iter([(key.to_string(), value)])
 }
 
 /// OpenAI accepts either a bare string or an array of typed parts. We emit the
@@ -160,17 +206,20 @@ pub struct FunctionDef {
 ///    `user` message — and the tool messages are emitted *first*, even if the
 ///    incoming block order put text ahead of them.
 ///
-/// 3. **Thinking blocks are dropped.** There is no representation for
-///    `thinking` / `redacted_thinking` (nor for their signatures) in the Chat
-///    Completions request schema. Unlike the Anthropic path — where dropping
-///    them makes the *next* request malformed — dropping them here is safe:
-///    OpenAI-compatible endpoints do not require reasoning to be echoed back.
+/// 3. **Thinking blocks are not content.** The only place reasoning can go
+///    is the non-standard `reasoning_content` field, and only endpoints that
+///    ask for it get it ([`Reasoning::passback`]); signed Anthropic thinking
+///    and redacted thinking have no representation at all. With passback on,
+///    one model reply that the transcript split into several assistant
+///    messages (reasoning and text, then the tool calls) goes out as one, so
+///    the reasoning sits on the message that carries the tool calls.
 pub fn build_request(
     model: String,
     prompt_blocks: Vec<PromptBlock>,
     tools: Vec<ToolDef>,
     messages: Vec<ModelMessage>,
     max_completion_tokens: Option<u32>,
+    reasoning: &Reasoning,
 ) -> ChatCompletionsRequest {
     let mut chat_messages = Vec::with_capacity(messages.len() + 1);
 
@@ -187,8 +236,17 @@ pub fn build_request(
         });
     }
 
-    for m in messages {
-        push_translated(&mut chat_messages, m);
+    let loop_start = if reasoning.passback {
+        current_tool_loop_start(&messages)
+    } else {
+        messages.len()
+    };
+    for (i, m) in messages.into_iter().enumerate() {
+        let passback = (i >= loop_start).then_some(reasoning);
+        push_translated(&mut chat_messages, m, passback);
+    }
+    if reasoning.passback {
+        merge_consecutive_assistant_messages(&mut chat_messages);
     }
 
     ChatCompletionsRequest {
@@ -200,7 +258,52 @@ pub fn build_request(
             include_usage: true,
         }),
         max_completion_tokens,
+        thinking_switch: Map::new(),
     }
+}
+
+fn current_tool_loop_start(messages: &[ModelMessage]) -> usize {
+    messages
+        .iter()
+        .rposition(|m| {
+            matches!(m.role, MessageRole::User)
+                && m.content
+                    .iter()
+                    .any(|b| !matches!(b, ModelContentBlock::ToolResult { .. }))
+        })
+        .map_or(0, |i| i + 1)
+}
+
+/// Only text-only or empty contents are merged; a message with images keeps
+/// its own turn rather than having its parts reshuffled.
+fn merge_consecutive_assistant_messages(messages: &mut Vec<ChatMessage>) {
+    let mergeable = |c: &Option<ChatContent>| !matches!(c, Some(ChatContent::Parts(_)));
+    let mut merged: Vec<ChatMessage> = Vec::with_capacity(messages.len());
+    for m in messages.drain(..) {
+        if let Some(prev) = merged.last_mut() {
+            if prev.role == ChatRole::Assistant
+                && m.role == ChatRole::Assistant
+                && mergeable(&prev.content)
+                && mergeable(&m.content)
+            {
+                prev.content = match (prev.content.take(), m.content) {
+                    (Some(ChatContent::Text(a)), Some(ChatContent::Text(b))) => {
+                        Some(ChatContent::Text(format!("{a}\n{b}")))
+                    }
+                    (a, b) => a.or(b),
+                };
+                prev.tool_calls.extend(m.tool_calls);
+                prev.reasoning_content = match (prev.reasoning_content.take(), m.reasoning_content)
+                {
+                    (Some(a), Some(b)) => Some(format!("{a}\n{b}")),
+                    (a, b) => a.or(b),
+                };
+                continue;
+            }
+        }
+        merged.push(m);
+    }
+    *messages = merged;
 }
 
 fn to_chat_tool(t: ToolDef) -> ChatTool {
@@ -217,15 +320,19 @@ fn to_chat_tool(t: ToolDef) -> ChatTool {
 /// Append the OpenAI messages one `ModelMessage` translates into.
 ///
 /// Split out from `build_request` so the fan-out rules (tool results first,
-/// content-only-if-non-empty, thinking dropped) are directly unit-testable.
-fn push_translated(out: &mut Vec<ChatMessage>, m: ModelMessage) {
+/// content-only-if-non-empty, thinking dropped unless passed back) are
+/// directly unit-testable.
+fn push_translated(out: &mut Vec<ChatMessage>, m: ModelMessage, passback: Option<&Reasoning>) {
     let assistant = matches!(m.role, MessageRole::Assistant);
 
     let mut parts: Vec<ContentPart> = Vec::new();
     let mut tool_calls: Vec<ToolCall> = Vec::new();
     let mut tool_messages: Vec<ChatMessage> = Vec::new();
+    let mut reasoning: Vec<String> = Vec::new();
 
     for block in m.content {
+        let passed_back = assistant
+            && passback.is_some_and(|r| !block.is_foreign_reasoning(r.provenance.as_deref()));
         match block {
             ModelContentBlock::Text { text } => parts.push(ContentPart::Text { text }),
             ModelContentBlock::Image { media_type, data } => parts.push(ContentPart::ImageUrl {
@@ -264,10 +371,16 @@ fn push_translated(out: &mut Vec<ChatMessage>, m: ModelMessage) {
                     ..ChatMessage::new(ChatRole::Tool)
                 });
             }
+            ModelContentBlock::Thinking {
+                text,
+                signature: None,
+                ..
+            } if passed_back => reasoning.push(text),
             // Not representable; see `build_request`'s doc comment.
             ModelContentBlock::Thinking { .. } | ModelContentBlock::RedactedThinking { .. } => {}
         }
     }
+    let reasoning_content = (!reasoning.is_empty()).then(|| reasoning.join("\n"));
 
     // Tool results first: OpenAI requires every `tool` message to follow the
     // assistant turn carrying the matching `tool_calls`, with nothing in
@@ -275,7 +388,7 @@ fn push_translated(out: &mut Vec<ChatMessage>, m: ModelMessage) {
     out.append(&mut tool_messages);
 
     let content = collapse(parts);
-    if content.is_none() && tool_calls.is_empty() {
+    if content.is_none() && tool_calls.is_empty() && reasoning_content.is_none() {
         // A message that was nothing but thinking blocks (or empty to begin
         // with) has no OpenAI representation — emitting an empty message would
         // be rejected as malformed.
@@ -290,6 +403,7 @@ fn push_translated(out: &mut Vec<ChatMessage>, m: ModelMessage) {
         content,
         tool_calls,
         tool_call_id: None,
+        reasoning_content,
     });
 }
 
@@ -356,6 +470,7 @@ mod tests {
             }],
             vec![msg(MessageRole::User, vec![text("hi")])],
             Some(4096),
+            &Reasoning::default(),
         );
         let v = serde_json::to_value(&req).unwrap();
 
@@ -399,6 +514,7 @@ mod tests {
             vec![],
             vec![msg(MessageRole::User, vec![text("hi")])],
             None,
+            &Reasoning::default(),
         );
         let v = serde_json::to_value(&req).unwrap();
         assert_eq!(v["messages"].as_array().unwrap().len(), 1);
@@ -427,6 +543,7 @@ mod tests {
                 ],
             )],
             None,
+            &Reasoning::default(),
         );
         let v = serde_json::to_value(&req).unwrap();
         let m = &v["messages"][0];
@@ -463,6 +580,7 @@ mod tests {
                 }],
             )],
             None,
+            &Reasoning::default(),
         );
         let v = serde_json::to_value(&req).unwrap();
         assert!(v["messages"][0].get("content").is_none(), "got {v:#}");
@@ -495,6 +613,7 @@ mod tests {
                 ],
             )],
             None,
+            &Reasoning::default(),
         );
         let v = serde_json::to_value(&req).unwrap();
         let ms = v["messages"].as_array().unwrap();
@@ -530,6 +649,7 @@ mod tests {
                 ],
             )],
             None,
+            &Reasoning::default(),
         );
         let v = serde_json::to_value(&req).unwrap();
         let content = &v["messages"][0]["content"];
@@ -568,6 +688,7 @@ mod tests {
                 msg(MessageRole::User, vec![text("still here")]),
             ],
             None,
+            &Reasoning::default(),
         );
         let v = serde_json::to_value(&req).unwrap();
         let ms = v["messages"].as_array().unwrap();
@@ -588,8 +709,155 @@ mod tests {
             vec![],
             vec![msg(MessageRole::System, vec![text("<system-reminder>")])],
             None,
+            &Reasoning::default(),
         );
         let v = serde_json::to_value(&req).unwrap();
         assert_eq!(v["messages"][0]["role"], "user");
+    }
+
+    fn reasoning(text: &str, provider: &str) -> ModelContentBlock {
+        ModelContentBlock::Thinking {
+            text: text.into(),
+            signature: None,
+            provider: Some(provider.into()),
+        }
+    }
+
+    /// A conversation with one finished turn and a tool loop in progress.
+    /// The transcript stores the second reply as two assistant messages
+    /// (reasoning + text, then the tool call), the way the stream consumer
+    /// flushes them.
+    fn tool_loop_history() -> Vec<ModelMessage> {
+        vec![
+            msg(MessageRole::User, vec![text("first question")]),
+            msg(
+                MessageRole::Assistant,
+                vec![reasoning("old thoughts", "deepseek"), text("first answer")],
+            ),
+            msg(MessageRole::User, vec![text("second question")]),
+            msg(
+                MessageRole::Assistant,
+                vec![
+                    reasoning("need the file", "deepseek"),
+                    reasoning("someone else's", "claude"),
+                    text("Let me look."),
+                ],
+            ),
+            msg(
+                MessageRole::Assistant,
+                vec![ModelContentBlock::ToolUse {
+                    id: "c1".into(),
+                    name: "Read".into(),
+                    input: json!({"file_path": "a"}),
+                }],
+            ),
+            msg(
+                MessageRole::User,
+                vec![ModelContentBlock::ToolResult {
+                    tool_use_id: "c1".into(),
+                    content: "contents".into(),
+                    is_error: None,
+                }],
+            ),
+        ]
+    }
+
+    /// DeepSeek's thinking mode rejects a tool-loop request whose assistant
+    /// message lacks the reasoning that produced the tool call. Only the
+    /// current loop's own reasoning goes back, on the message carrying the
+    /// tool calls.
+    #[test]
+    fn passback_echoes_the_current_tool_loops_own_reasoning() {
+        let req = build_request(
+            "m".into(),
+            vec![],
+            vec![],
+            tool_loop_history(),
+            None,
+            &Reasoning {
+                passback: true,
+                provenance: Some("deepseek".into()),
+            },
+        );
+        let v = serde_json::to_value(&req).unwrap();
+        let ms = v["messages"].as_array().unwrap();
+
+        assert_eq!(ms.len(), 5, "{v:#}");
+        assert_eq!(ms[1]["role"], "assistant");
+        assert!(
+            ms[1].get("reasoning_content").is_none(),
+            "an earlier turn: {v:#}"
+        );
+        assert_eq!(ms[3]["role"], "assistant");
+        assert_eq!(ms[3]["content"], "Let me look.");
+        assert_eq!(ms[3]["tool_calls"][0]["id"], "c1");
+        assert_eq!(ms[3]["reasoning_content"], "need the file");
+        assert_eq!(ms[4]["role"], "tool");
+    }
+
+    /// Without passback nothing about the request changes: no reasoning, and
+    /// the transcript's message boundaries are kept as they were.
+    #[test]
+    fn without_passback_reasoning_stays_out() {
+        let req = build_request(
+            "m".into(),
+            vec![],
+            vec![],
+            tool_loop_history(),
+            None,
+            &Reasoning::default(),
+        );
+        let v = serde_json::to_value(&req).unwrap();
+        let ms = v["messages"].as_array().unwrap();
+
+        assert_eq!(ms.len(), 6, "{v:#}");
+        assert!(
+            ms.iter().all(|m| m.get("reasoning_content").is_none()),
+            "{v:#}"
+        );
+    }
+
+    #[test]
+    fn thinking_switch_speaks_each_endpoints_dialect() {
+        use base::provider::ThinkingToggle as T;
+
+        let switch = |t, mode| serde_json::Value::Object(thinking_switch(t, &mode));
+        assert_eq!(
+            switch(Some(T::Deepseek), ThinkingMode::Off),
+            json!({"thinking": {"type": "disabled"}})
+        );
+        assert_eq!(
+            switch(Some(T::Deepseek), ThinkingMode::OnBudget(1024)),
+            json!({"thinking": {"type": "enabled"}})
+        );
+        assert_eq!(
+            switch(Some(T::EnableThinking), ThinkingMode::Off),
+            json!({"enable_thinking": false})
+        );
+        assert_eq!(
+            switch(Some(T::ChatTemplateKwargs), ThinkingMode::On),
+            json!({"chat_template_kwargs": {"enable_thinking": true}})
+        );
+        assert_eq!(switch(Some(T::Deepseek), ThinkingMode::Auto), json!({}));
+        assert_eq!(switch(None, ThinkingMode::Off), json!({}));
+    }
+
+    #[test]
+    fn the_thinking_switch_sits_at_the_top_level_of_the_body() {
+        let mut req = build_request(
+            "m".into(),
+            vec![],
+            vec![],
+            vec![msg(MessageRole::User, vec![text("hi")])],
+            None,
+            &Reasoning::default(),
+        );
+        req.thinking_switch = thinking_switch(
+            Some(base::provider::ThinkingToggle::Deepseek),
+            &ThinkingMode::Off,
+        );
+        let v = serde_json::to_value(&req).unwrap();
+        assert_eq!(v["thinking"], json!({"type": "disabled"}));
+        assert_eq!(v["model"], "m");
     }
 }

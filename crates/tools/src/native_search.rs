@@ -369,6 +369,7 @@ mod tests {
                 api_key_env: None,
                 default_model: Some("claude-provider".into()),
                 models: vec![],
+                ..Default::default()
             },
         );
         s.default_provider = Some("main".into());

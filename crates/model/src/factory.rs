@@ -93,7 +93,8 @@ impl ModelFactory for OpenAICompatibleFactory {
         Ok(Arc::new(
             crate::OpenAICompatibleModel::new(&base_url, api_key.expose(), default_model)
                 .map_err(|e| format!("provider '{provider_id}': {e}"))?
-                .with_provenance(provider_id),
+                .with_provenance(provider_id)
+                .with_reasoning(cfg.reasoning_passback, cfg.thinking_toggle),
         ))
     }
 }
@@ -146,5 +147,25 @@ mod tests {
             panic!("a config with no api_key must not build");
         };
         assert_eq!(err, "provider 'main': missing api_key");
+    }
+
+    #[test]
+    fn built_clients_know_which_provider_they_are() {
+        let registry = builtin_registry();
+        for (id, api_type) in [("claude", "anthropic"), ("deepseek", "openai_compatible")] {
+            let model = registry
+                .build(
+                    id,
+                    &ProviderConfig {
+                        api_type: Some(api_type.into()),
+                        base_url: Some("https://example.invalid".into()),
+                        api_key: Some("k".into()),
+                        reasoning_passback: true,
+                        ..Default::default()
+                    },
+                )
+                .unwrap_or_else(|e| panic!("{api_type}: {e}"));
+            assert_eq!(model.provenance(), Some(id));
+        }
     }
 }
