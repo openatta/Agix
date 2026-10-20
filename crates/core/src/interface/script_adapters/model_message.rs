@@ -206,7 +206,7 @@ mod tests {
             content: vec![
                 ModelContentBlock::Thinking {
                     text: "let me think".into(),
-                    signature: "sig-abc".into(),
+                    signature: Some("sig-abc".into()),
                 },
                 ModelContentBlock::Text {
                     text: "the key is hunter2".into(),
@@ -265,7 +265,7 @@ mod tests {
         match &out.content[0] {
             ModelContentBlock::Thinking { text, signature } => {
                 assert_eq!(text, "let me think");
-                assert_eq!(signature, "sig-abc");
+                assert_eq!(signature.as_deref(), Some("sig-abc"));
             }
             other => panic!("the thinking block was replaced: {other:?}"),
         }

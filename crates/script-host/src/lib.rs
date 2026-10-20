@@ -1423,7 +1423,7 @@ mod binding_tests {
             content: vec![
                 ModelContentBlock::Thinking {
                     text: "the key is hunter2".into(),
-                    signature: "sig-abc".into(),
+                    signature: Some("sig-abc".into()),
                 },
                 ModelContentBlock::Text {
                     text: "the key is hunter2".into(),
@@ -1435,7 +1435,7 @@ mod binding_tests {
         match &message.content[0] {
             ModelContentBlock::Thinking { text, signature } => {
                 assert_eq!(text, "the key is hunter2", "thinking is not reachable");
-                assert_eq!(signature, "sig-abc");
+                assert_eq!(signature.as_deref(), Some("sig-abc"));
             }
             other => panic!("the thinking block was replaced: {other:?}"),
         }

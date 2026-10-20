@@ -556,7 +556,7 @@ mod tests {
                     vec![
                         ModelContentBlock::Thinking {
                             text: "hmm".into(),
-                            signature: "sig".into(),
+                            signature: Some("sig".into()),
                         },
                         ModelContentBlock::RedactedThinking {
                             data: "opaque".into(),

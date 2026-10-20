@@ -67,7 +67,8 @@ pub enum ContentBlock {
     },
     Thinking {
         thinking: String,
-        signature: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
     },
     RedactedThinking {
         data: String,
@@ -305,10 +306,25 @@ mod tests {
     fn thinking_block_roundtrip() {
         let block = ContentBlock::Thinking {
             thinking: "Let me think...".into(),
-            signature: "sig_abc123".into(),
+            signature: Some("sig_abc123".into()),
         };
         let json = serde_json::to_string(&block).unwrap();
         let back: ContentBlock = serde_json::from_str(&json).unwrap();
+        assert_eq!(block, back);
+    }
+
+    #[test]
+    fn unsigned_thinking_has_no_signature_key_and_reads_back() {
+        let block = ContentBlock::Thinking {
+            thinking: "reasoning".into(),
+            signature: None,
+        };
+        let json = serde_json::to_value(&block).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"type": "thinking", "thinking": "reasoning"})
+        );
+        let back: ContentBlock = serde_json::from_value(json).unwrap();
         assert_eq!(block, back);
     }
 

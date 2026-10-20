@@ -54,8 +54,11 @@ impl Model for AnthropicModel {
             })
             .collect();
 
-        let mut message_params: Vec<MessageParam> =
-            messages.into_iter().map(to_message_param).collect();
+        let mut message_params: Vec<MessageParam> = messages
+            .into_iter()
+            .map(to_message_param)
+            .filter(|m| !m.content.is_empty())
+            .collect();
 
         // P1-2: Wire cache_edits into the API request.
         // When the compaction system has cleared old tool results, we send their
@@ -232,12 +235,12 @@ fn to_message_param(m: ModelMessage) -> MessageParam {
             MessageRole::System | MessageRole::User => Role::User,
             MessageRole::Assistant => Role::Assistant,
         },
-        content: m.content.into_iter().map(to_content_block).collect(),
+        content: m.content.into_iter().filter_map(to_content_block).collect(),
     }
 }
 
-fn to_content_block(b: ModelContentBlock) -> ContentBlock {
-    match b {
+fn to_content_block(b: ModelContentBlock) -> Option<ContentBlock> {
+    Some(match b {
         ModelContentBlock::Text { text } => ContentBlock::Text {
             text,
             cache_control: None,
@@ -247,11 +250,19 @@ fn to_content_block(b: ModelContentBlock) -> ContentBlock {
         },
         // Echoed back verbatim, signature included. When thinking is enabled
         // and the turn used tools, the API rejects a request whose prior
-        // assistant turn is missing these.
-        ModelContentBlock::Thinking { text, signature } => ContentBlock::Thinking {
+        // assistant turn is missing these — and rejects one it cannot verify,
+        // so a block that arrived without a signature stays in the transcript
+        // only.
+        ModelContentBlock::Thinking {
+            text,
+            signature: Some(signature),
+        } => ContentBlock::Thinking {
             thinking: text,
-            signature,
+            signature: Some(signature),
         },
+        ModelContentBlock::Thinking {
+            signature: None, ..
+        } => return None,
         ModelContentBlock::RedactedThinking { data } => ContentBlock::RedactedThinking { data },
         ModelContentBlock::ToolUse { id, name, input } => ContentBlock::ToolUse { id, name, input },
         ModelContentBlock::ToolResult {
@@ -263,7 +274,7 @@ fn to_content_block(b: ModelContentBlock) -> ContentBlock {
             content: base::message::ToolResultContent::Text(content),
             is_error: is_error.unwrap_or(false),
         },
-    }
+    })
 }
 
 fn map_stream_event(
@@ -726,7 +737,8 @@ mod map_stream_event_tests {
     /// and Thinking variants; the protocol-agnostic layer did not, so the
     /// adapter had nothing to map. Now that both exist, check the mapping is
     /// the identity the API expects — in particular that the signature is
-    /// carried, since that is the field whose loss breaks the next request.
+    /// carried, since that is the field whose loss breaks the next request,
+    /// and that a block without one is not sent at all.
     #[test]
     fn image_and_thinking_blocks_map_to_wire_format() {
         use base::interface::model::{MessageRole, ModelMessage};
@@ -737,7 +749,11 @@ mod map_stream_event_tests {
             content: vec![
                 ModelContentBlock::Thinking {
                     text: "reasoning".into(),
-                    signature: "sig_1".into(),
+                    signature: Some("sig_1".into()),
+                },
+                ModelContentBlock::Thinking {
+                    text: "unsigned".into(),
+                    signature: None,
                 },
                 ModelContentBlock::RedactedThinking {
                     data: "opaque".into(),
@@ -754,8 +770,13 @@ mod map_stream_event_tests {
         assert!(matches!(
             &content[0],
             ContentBlock::Thinking { thinking, signature }
-                if thinking == "reasoning" && signature == "sig_1"
+                if thinking == "reasoning" && signature.as_deref() == Some("sig_1")
         ));
+        assert_eq!(
+            content.len(),
+            3,
+            "the unsigned block is not sent: {content:?}"
+        );
         assert!(matches!(
             &content[1],
             ContentBlock::RedactedThinking { data } if data == "opaque"

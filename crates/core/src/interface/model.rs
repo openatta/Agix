@@ -254,17 +254,19 @@ pub enum ModelContentBlock {
         /// Base64-encoded bytes, no data-URI prefix.
         data: String,
     },
-    /// An extended-thinking block with its cryptographic signature.
+    /// An extended-thinking block, with the signature that closed it if the
+    /// provider sent one.
     ///
-    /// The signature is **load-bearing, not decorative**: when thinking is
-    /// enabled and the assistant's turn contained tool use, the Anthropic API
-    /// requires the previous assistant turn's thinking blocks to be echoed
-    /// back *with their signatures* on the following request. Dropping these
-    /// blocks from the transcript (which is what this codebase did before this
-    /// variant existed) makes `thinking + tool_use` fail or silently degrade.
+    /// When thinking is enabled and the assistant's turn contained tool use,
+    /// the Anthropic API requires the previous assistant turn's thinking
+    /// blocks to be echoed back *with their signatures* on the following
+    /// request. Blocks without a signature (reasoning from an
+    /// OpenAI-compatible endpoint, or a relay that never sends one) are kept
+    /// for the transcript and are never sent to the Anthropic API.
     Thinking {
         text: String,
-        signature: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
     },
     /// Thinking the API chose to encrypt. Opaque to us; must still be echoed
     /// back verbatim for the same reason as [`ModelContentBlock::Thinking`].
