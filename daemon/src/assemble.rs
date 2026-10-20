@@ -100,6 +100,10 @@ pub struct Assembly {
     /// name fails the assembly rather than quietly starting with fewer
     /// scenes than asked for.
     pub extra_scenes: Vec<String>,
+    /// Scenes the host defines beyond the built-in ones. Registered before
+    /// `extra_scenes` is read, so they can be named there; otherwise they are
+    /// available to `scene.activate`.
+    pub scenes: Vec<Arc<dyn AgentScene>>,
     /// How long an unanswered permission prompt may block a turn.
     pub permission_prompt_timeout: Duration,
     /// Where model calls go. `None` builds an Anthropic client keyed from
@@ -123,6 +127,7 @@ impl Default for Assembly {
         Self {
             cwd: None,
             extra_scenes: Vec::new(),
+            scenes: Vec::new(),
             permission_prompt_timeout: DEFAULT_PERMISSION_PROMPT_TIMEOUT,
             model_client: None,
             credentials: None,
@@ -220,6 +225,9 @@ pub async fn pool(
         .with_credentials(credentials),
     );
 
+    for scene in assembly.scenes {
+        pool.register_scene(scene);
+    }
     for extra in &assembly.extra_scenes {
         if extra == pool.scene_id() {
             continue; // already active; not an error to repeat it

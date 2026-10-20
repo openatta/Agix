@@ -198,6 +198,11 @@ Builder::new().scene(Arc::new(MyScene));
 小骨架。自己给提示分节命名的 scene 保住那些名字,收在 `scene.` 前缀下——见下面的
 块名。
 
+daemon 的嵌入方把自己的 scene 交给 `Assembly { scenes: vec![Arc::new(MyScene)], .. }`
+(或运行中调 `SessionPool::register_scene`):登记之后 `scene.list` 看得到它,
+`extra_scenes` 和 `scene.activate` 能按 id 把它打开,停用之后也还能再打开。登记不等于
+激活;id 与内建 scene 相同的,替换内建的那个。
+
 ### 会话存储 — `history.store`
 
 `history::store::HistoryStore`。自带两个实现:`JsonlHistoryStore`(项目目录下的

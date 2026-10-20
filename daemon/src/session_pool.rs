@@ -494,14 +494,18 @@ pub struct SessionPool {
     /// are currently servable* are related but distinct (the default is
     /// always servable; not everything servable is the default).
     active_scenes: AsyncRwLock<HashMap<String, Arc<dyn AgentScene>>>,
-    /// Every scene this binary knows how to construct, active or not — what
-    /// `scene.list` enumerates and `scene.activate` resolves new entries
-    /// against. Immutable after construction (registering a scene is a
-    /// compile-time fact); only *activation* is runtime state.
-    /// Every scene this binary can serve. Swapped wholesale when the plugin
-    /// set changes, since a plugin may add or withdraw a scene; a session
-    /// already running holds its own `Arc<dyn AgentScene>` and is unaffected.
+    /// Every scene this pool can serve, active or not — what `scene.list`
+    /// enumerates and `scene.activate` resolves against: the built-in ones,
+    /// the host's and the plugins'. Swapped wholesale when the plugin set
+    /// changes or the host registers a scene; a session already running
+    /// holds its own `Arc<dyn AgentScene>` and is unaffected.
     scene_registry: std::sync::RwLock<Arc<scene::scene::SceneRegistry>>,
+    /// Scenes the host defined rather than the binary or a plugin: the one
+    /// the pool was started with, and every one passed to
+    /// [`register_scene`](Self::register_scene). Kept so each rebuild of the
+    /// registry has them; without that, a host scene once deactivated could
+    /// never be activated again.
+    host_scenes: std::sync::RwLock<Vec<Arc<dyn AgentScene>>>,
     /// The **opt-out** permission instance: an allow-everything
     /// `Permission` handed to a session only when its effective permission
     /// mode is `bypassPermissions` (see `resolve_session_permission`).
@@ -795,9 +799,8 @@ impl SessionPool {
         let tools = Arc::new(base::tool::InMemoryToolRegistry::new());
         tools::register_builtin_tools(&tools);
 
-        let mut scene_registry = scene::scene::SceneRegistry::new();
-        scene_registry.register_builtin();
-        let scene_registry = std::sync::RwLock::new(Arc::new(scene_registry));
+        let host_scenes = vec![scene.clone()];
+        let scene_registry = std::sync::RwLock::new(Arc::new(registry_of(&host_scenes, &[])));
         let mut active_scenes = HashMap::new();
         active_scenes.insert(scene.id().to_string(), scene.clone());
 
@@ -813,6 +816,7 @@ impl SessionPool {
             scene,
             active_scenes: AsyncRwLock::new(active_scenes),
             scene_registry,
+            host_scenes: std::sync::RwLock::new(host_scenes),
             permission,
             tools,
             cwd,
@@ -938,11 +942,10 @@ impl SessionPool {
     async fn adopt_plugin_scenes(&self) {
         let plugin_scenes = self.plugins.scenes();
 
-        let mut registry = scene::scene::SceneRegistry::new();
-        registry.register_builtin();
-        for s in &plugin_scenes {
-            registry.register(s.clone());
-        }
+        let registry = registry_of(
+            &self.host_scenes.read().unwrap_or_else(|e| e.into_inner()),
+            &plugin_scenes,
+        );
         let plugin_ids: std::collections::HashSet<String> =
             plugin_scenes.iter().map(|s| s.id().to_string()).collect();
         *self
@@ -4384,6 +4387,23 @@ impl SessionPool {
 
     /// `scene.activate {scene}` — idempotent. `Err` when `scene_id` isn't
     /// one this binary registers at all (`scene.list` would never show it).
+    /// Make a scene the host defines known to this pool, so `scene.list`
+    /// shows it and `scene.activate` (or [`Assembly::extra_scenes`]) can turn
+    /// it on. Registering does not activate. A scene with the id of a built-in
+    /// one replaces it.
+    ///
+    /// [`Assembly::extra_scenes`]: crate::assemble::Assembly::extra_scenes
+    pub fn register_scene(&self, scene: Arc<dyn AgentScene>) {
+        let plugin_scenes = self.plugins.scenes();
+        let mut host = self.host_scenes.write().unwrap_or_else(|e| e.into_inner());
+        host.retain(|s| s.id() != scene.id());
+        host.push(scene);
+        *self
+            .scene_registry
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = Arc::new(registry_of(&host, &plugin_scenes));
+    }
+
     pub async fn activate_scene(&self, scene_id: &str) -> Result<(), RpcError> {
         if self.active_scenes.read().await.contains_key(scene_id) {
             return Ok(());
@@ -5358,6 +5378,20 @@ impl SessionPool {
 /// LRU 驱逐：从 `sessions` 里移除最久未活跃的一个（若非空）。不依赖 `SessionPool`
 /// 的任何字段，拆成自由函数而非 `&self` 方法——一是本来就没用到 `self`，二是
 /// 让测试不用搭一整个 `SessionPool` 就能直接验证驱逐选中的是最旧的那个。
+/// The scenes a pool can serve: the built-in ones, then the host's, then the
+/// plugins'. Later ones replace earlier ones of the same id.
+fn registry_of(
+    host_scenes: &[Arc<dyn AgentScene>],
+    plugin_scenes: &[Arc<dyn AgentScene>],
+) -> scene::scene::SceneRegistry {
+    let mut registry = scene::scene::SceneRegistry::new();
+    registry.register_builtin();
+    for s in host_scenes.iter().chain(plugin_scenes) {
+        registry.register(s.clone());
+    }
+    registry
+}
+
 fn evict_lru(sessions: &mut HashMap<String, LiveSession>) {
     if let Some((sid, _)) = sessions
         .iter()
