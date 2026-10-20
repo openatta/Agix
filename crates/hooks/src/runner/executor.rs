@@ -6,7 +6,7 @@
 use super::ssrf::ssrf_check_url;
 use super::{HookOutcome, HookRunner};
 use crate::payload::{HookDecision, HookInput, HookResponse};
-use base::interface::exec::local::LocalProcess;
+
 use base::interface::exec::{
     ExecError, OutputChunk, OutputStream, Process, ProcessSpec, OUTPUT_GRACE_AFTER_EXIT,
 };
@@ -149,7 +149,7 @@ impl HookRunner {
             }
         }
 
-        let mut child = match LocalProcess.spawn(spec, CancellationToken::new()).await {
+        let mut child = match self.process.spawn(spec, CancellationToken::new()).await {
             Ok(c) => c,
             Err(e) => return HookOutcome::Error(format!("hook spawn failed: {e}")),
         };

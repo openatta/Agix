@@ -213,7 +213,7 @@ MCP 连接、脚本绑定的 root、记忆目录、transcript 目录。
 两个 provider:`ExecProviders::local()`(本机,默认)与 `in_process()`
 (内存文件树、预置的命令应答、离线网络、诚实地报告自己什么都不约束的沙箱)。
 
-三条容易搞错的:
+五条容易搞错的:
 
 1. **路径安全在契约之上,符号链接解析在契约之内。** 一个路径能不能写是策略,
    provider 不该能取消它;但远端的符号链接图是远端的。顺序是:
@@ -223,6 +223,14 @@ MCP 连接、脚本绑定的 root、记忆目录、transcript 目录。
    把它作用到模型 API 上会让 agent 连自己的大脑都够不着。
 3. **受约束的策略绝不静默降级为无约束执行。** 后端报告 `Full` / `Partial` / `None`
    并列出兑现不了的部分;`sandbox.require_enforcement` 决定不足 `Full` 时是否拒绝。
+4. **一个命令是它起的整个进程组。** 本机 provider 让每个子进程领一个进程组,停的时候
+   整组停;前台进程退出后输出最多再等 `OUTPUT_GRACE_AFTER_EXIT`,还被后台进程占着就
+   连它们一起停。Bash、Monitor、command hook、MCP stdio 都是这条规矩。
+5. **子进程的环境只在一处决定。** `base::interface::exec::local::SubprocessEnv`:缺省
+   继承宿主环境但去掉引擎自己的凭据(`ANTHROPIC_*`、`ATTACORE_DAEMON_TOKEN`),
+   `allowlist` 模式只留 `PATH` / `HOME` / 语言环境等几项加上 `allow` 列出的。Bash、
+   Monitor 与 command hook 按 `sandbox.subprocess_env` 取策略,MCP stdio 用缺省策略再叠
+   各服务自己的 `env`。这和沙箱无关——沙箱关着,模型一句 `printenv` 读到什么也由它决定。
 
 沙箱是**轻量写限制,不是安全隔离**。已知逃逸路径写在
 `crates/core/src/interface/exec/local/sandbox.rs` 的模块头里,四条,都还没收口。

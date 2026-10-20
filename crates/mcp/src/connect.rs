@@ -536,6 +536,7 @@ async fn spawn_stdio_service(
     for a in args {
         cmd.arg(a);
     }
+    base::interface::exec::local::SubprocessEnv::default().apply(&mut cmd);
     for (k, v) in env {
         cmd.env(k, v);
     }

@@ -3257,12 +3257,14 @@ fn sandbox_settings_from(config: &base::context::EngineConfig) -> base::tool::Sa
 fn exec_providers_from(
     config: &base::context::EngineConfig,
 ) -> base::interface::exec::ExecProviders {
-    base::interface::exec::ExecProviders::local().with_network(Arc::new(
-        base::interface::exec::local::LocalNetwork::for_agent_policy(
-            config.sandbox_policy.network_mode,
-            config.sandbox_policy.allowed_domains.clone(),
+    base::interface::exec::ExecProviders::local_with(config.subprocess_env.clone()).with_network(
+        Arc::new(
+            base::interface::exec::local::LocalNetwork::for_agent_policy(
+                config.sandbox_policy.network_mode,
+                config.sandbox_policy.allowed_domains.clone(),
+            ),
         ),
-    ))
+    )
 }
 
 async fn execute_tool_inner(

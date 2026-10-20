@@ -5,11 +5,13 @@
 //! defined here — a separate crate would have to be a dependency of the crate
 //! that defines the thing it fills in.
 
+pub mod env;
 pub mod filesystem;
 pub mod network;
 pub mod process;
 pub mod sandbox;
 
+pub use env::{SubprocessEnv, SubprocessEnvMode};
 pub use filesystem::LocalFileSystem;
 pub use network::LocalNetwork;
 pub use process::LocalProcess;

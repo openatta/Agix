@@ -11,11 +11,21 @@ use std::process::Stdio;
 use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 
+use super::env::SubprocessEnv;
 use crate::interface::exec::{
     ExecError, ExitStatus, OutputChunk, OutputStream, Process, ProcessHandle, ProcessSpec,
 };
 
-pub struct LocalProcess;
+#[derive(Debug, Clone, Default)]
+pub struct LocalProcess {
+    env: SubprocessEnv,
+}
+
+impl LocalProcess {
+    pub fn new(env: SubprocessEnv) -> Self {
+        Self { env }
+    }
+}
 
 /// How long a stopped group gets to exit on `SIGTERM` before `SIGKILL`.
 #[cfg(unix)]
@@ -38,6 +48,7 @@ impl Process for LocalProcess {
             } else {
                 Stdio::null()
             });
+        self.env.apply(&mut cmd);
         for (k, v) in &spec.env {
             cmd.env(k, v);
         }
@@ -184,10 +195,11 @@ mod tests {
     use super::*;
 
     async fn run(spec: ProcessSpec) -> (String, String, ExitStatus) {
-        let mut h = LocalProcess
-            .spawn(spec, CancellationToken::new())
-            .await
-            .unwrap();
+        run_with(LocalProcess::default(), spec).await
+    }
+
+    async fn run_with(process: LocalProcess, spec: ProcessSpec) -> (String, String, ExitStatus) {
+        let mut h = process.spawn(spec, CancellationToken::new()).await.unwrap();
         let mut out = h.output().expect("first call yields the stream");
         let (mut o, mut e) = (Vec::new(), Vec::new());
         while let Some(chunk) = out.next().await {
@@ -220,7 +232,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_stream_is_taken_once() {
-        let mut h = LocalProcess
+        let mut h = LocalProcess::default()
             .spawn(sh("true"), CancellationToken::new())
             .await
             .unwrap();
@@ -245,7 +257,7 @@ mod tests {
     /// property a whole-output provider would silently remove.
     #[tokio::test]
     async fn output_arrives_before_the_process_exits() {
-        let mut h = LocalProcess
+        let mut h = LocalProcess::default()
             .spawn(
                 sh("echo first; sleep 5; echo never"),
                 CancellationToken::new(),
@@ -260,6 +272,25 @@ mod tests {
             .unwrap();
         assert_eq!(String::from_utf8_lossy(&first.bytes).trim(), "first");
         h.kill().await;
+    }
+
+    #[tokio::test]
+    async fn the_environment_policy_reaches_the_child() {
+        // `cargo test` runs the test binary with this set; under anything
+        // else there is nothing to observe.
+        if std::env::var_os("CARGO_MANIFEST_DIR").is_none() {
+            return;
+        }
+        let probe = || sh("printenv CARGO_MANIFEST_DIR; printenv PATH >/dev/null && echo has-path");
+        let (inherited, _, _) = run(probe()).await;
+        assert!(inherited.contains(env!("CARGO_MANIFEST_DIR")));
+
+        let allowlist = super::super::env::SubprocessEnv {
+            mode: super::super::env::SubprocessEnvMode::Allowlist,
+            allow: vec![],
+        };
+        let (out, _, _) = run_with(LocalProcess::new(allowlist), probe()).await;
+        assert_eq!(out.trim(), "has-path");
     }
 
     #[cfg(unix)]
@@ -288,7 +319,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn kill_takes_the_background_children_with_it() {
-        let mut h = LocalProcess
+        let mut h = LocalProcess::default()
             .spawn(sh("sleep 300 & echo $!; wait"), CancellationToken::new())
             .await
             .unwrap();
@@ -304,7 +335,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn kill_after_exit_still_reaches_what_was_left_running() {
-        let mut h = LocalProcess
+        let mut h = LocalProcess::default()
             .spawn(sh("sleep 300 & echo $!"), CancellationToken::new())
             .await
             .unwrap();
@@ -321,7 +352,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn dropping_a_running_handle_stops_the_whole_group() {
-        let mut h = LocalProcess
+        let mut h = LocalProcess::default()
             .spawn(sh("sleep 300 & echo $!; wait"), CancellationToken::new())
             .await
             .unwrap();

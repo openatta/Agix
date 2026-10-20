@@ -488,7 +488,7 @@ mod tests {
             let mut argv = vec![spec.program.clone()];
             argv.extend(spec.args.iter().cloned());
             self.0.argv.lock().unwrap().push(argv);
-            LocalProcess.spawn(spec, cancel).await
+            LocalProcess::default().spawn(spec, cancel).await
         }
     }
 

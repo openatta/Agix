@@ -173,6 +173,7 @@ pub struct HookRunner {
     /// without inventing a second hook-script resolution scheme — `command`
     /// is still just a shell string, only the search path changes.
     hooks_search_dirs: Vec<std::path::PathBuf>,
+    process: base::interface::exec::local::LocalProcess,
 }
 
 impl HookRunner {
@@ -190,7 +191,14 @@ impl HookRunner {
             pending_rewakes: std::sync::Mutex::new(std::collections::HashSet::new()),
             wake_receiver: std::sync::Mutex::new(None),
             hooks_search_dirs: Vec::new(),
+            process: Default::default(),
         }
+    }
+
+    /// Builder: the environment a `Command` hook starts from.
+    pub fn with_subprocess_env(mut self, env: base::interface::exec::local::SubprocessEnv) -> Self {
+        self.process = base::interface::exec::local::LocalProcess::new(env);
+        self
     }
 
     /// Builder: set the directories searched (in order, highest priority
@@ -1040,6 +1048,33 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(5));
         assert!(result.outcomes[0].is_error(), "{:?}", result.outcomes);
         assert!(result.blocked().is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_command_hook_starts_from_the_configured_environment() {
+        if std::env::var_os("CARGO_MANIFEST_DIR").is_none() {
+            return;
+        }
+        let probe = "printenv CARGO_MANIFEST_DIR || echo absent";
+        let stdout_of = |r: HookRunResult| match &r.outcomes[0] {
+            HookOutcome::Ran { stdout, .. } => stdout.trim().to_string(),
+            other => panic!("{other:?}"),
+        };
+        let inherited = one_command_hook(probe, 10_000)
+            .run(HookEvent::PreToolUse, &input_for_bash("ls"))
+            .await;
+        assert_eq!(stdout_of(inherited), env!("CARGO_MANIFEST_DIR"));
+
+        let allowlist = base::interface::exec::local::SubprocessEnv {
+            mode: base::interface::exec::local::SubprocessEnvMode::Allowlist,
+            allow: vec![],
+        };
+        let narrowed = one_command_hook(probe, 10_000)
+            .with_subprocess_env(allowlist)
+            .run(HookEvent::PreToolUse, &input_for_bash("ls"))
+            .await;
+        assert_eq!(stdout_of(narrowed), "absent");
     }
 
     fn tempfile_dir() -> std::path::PathBuf {

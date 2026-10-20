@@ -84,6 +84,8 @@ pub struct EngineConfig {
     /// from real settings (`agent.rs`'s `agent_engine_config` block) — not
     /// left at its `defaults_for()` default everywhere.
     pub disable_skill_shell_execution: bool,
+    /// Mirrors `Settings.sandbox.subprocess_env`.
+    pub subprocess_env: crate::interface::exec::local::SubprocessEnv,
 
     // ---- file-op limits (grouped 2026-05-09; was 3 flat fields) ----
     /// File read/write byte/line limits. Sub-config keeps related field
@@ -291,6 +293,7 @@ impl EngineConfig {
             dangerously_disable_sandbox: false,
             sandbox_policy: SandboxPolicyConfig::default(),
             disable_skill_shell_execution: false,
+            subprocess_env: Default::default(),
 
             // grouped sub-configs
             file_limits: FileLimits::default(),
@@ -374,6 +377,7 @@ impl EngineConfig {
             require_enforcement: settings.sandbox.require_enforcement,
         };
         c.disable_skill_shell_execution = settings.disable_skill_shell_execution;
+        c.subprocess_env = settings.sandbox.subprocess_env.clone();
 
         c.compact = CompactSettings {
             threshold_tokens: settings.compaction.threshold_tokens,

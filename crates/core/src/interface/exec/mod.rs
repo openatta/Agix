@@ -53,8 +53,13 @@ pub struct ExecProviders {
 impl ExecProviders {
     /// This machine.
     pub fn local() -> Self {
+        Self::local_with(local::SubprocessEnv::default())
+    }
+
+    /// This machine, with child processes started from `env`.
+    pub fn local_with(env: local::SubprocessEnv) -> Self {
         Self {
-            process: std::sync::Arc::new(local::LocalProcess),
+            process: std::sync::Arc::new(local::LocalProcess::new(env)),
             filesystem: std::sync::Arc::new(local::LocalFileSystem),
             network: std::sync::Arc::new(local::LocalNetwork::default()),
             sandbox: std::sync::Arc::new(local::PlatformSandbox),

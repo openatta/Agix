@@ -1202,6 +1202,7 @@ fn build_hook_runner(
     ));
     let mut runner = HookRunner::new(parsed)
         .with_hooks_search_dirs(hooks_search_dirs)
+        .with_subprocess_env(settings.sandbox.subprocess_env.clone())
         .with_prompt_executor(prompt_executor)
         .with_agent_executor(agent_executor);
     if let Some(host) = plugin_host {
