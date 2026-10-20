@@ -4193,6 +4193,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn structured_output_calls_from_earlier_turns_do_not_cut_this_one_short() {
+        let model: Arc<dyn Model> = Arc::new(ToolThenStopModel {
+            calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            tool: "Probe",
+        });
+        let (mut agent, _event_rx, _input_tx) = Builder::new()
+            .scene(Arc::new(scene::scene::coding::CodingScene))
+            .model(model)
+            .settings(Arc::new(test_settings()))
+            .skip_warmup(true)
+            .build()
+            .expect("build should succeed");
+        for i in 0..5 {
+            let id = format!("so_{i}");
+            agent
+                .session
+                .push_message(base::interface::model::ModelMessage {
+                    role: base::interface::model::MessageRole::Assistant,
+                    content: vec![base::interface::model::ModelContentBlock::ToolUse {
+                        id: id.clone(),
+                        name: "StructuredOutput".into(),
+                        input: serde_json::json!({}),
+                    }],
+                });
+            agent
+                .session
+                .push_message(base::interface::model::ModelMessage {
+                    role: base::interface::model::MessageRole::User,
+                    content: vec![base::interface::model::ModelContentBlock::ToolResult {
+                        tool_use_id: id,
+                        content: "ok".into(),
+                        is_error: None,
+                    }],
+                });
+        }
+
+        let outcome = agent
+            .process_turn(
+                InputMessage::User {
+                    content: "go".into(),
+                    attachments: vec![],
+                    turn_id: "t1".into(),
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .expect("process_turn should succeed");
+
+        assert_eq!(outcome.stop_reason, "end_turn");
+        assert_eq!(outcome.api_calls, 2);
+    }
+
+    #[tokio::test]
     async fn post_tool_use_hook_discontinue_ends_the_turn_early() {
         // End-to-end regression test for the PostToolUse -> discontinue
         // wiring: a PostToolUse hook returning `continue: false` must stop

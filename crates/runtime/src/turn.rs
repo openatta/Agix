@@ -1039,6 +1039,7 @@ impl Agent {
             let tool_images: Arc<std::sync::Mutex<Vec<PendingToolImage>>> =
                 Arc::new(std::sync::Mutex::new(Vec::new()));
             let tool_images_for_exec = Arc::clone(&tool_images);
+            let messages_before_step = self.session.messages.len();
             let stream_result = crate::streaming::execute_stream(
                 stream,
                 &mut self.session,
@@ -1198,10 +1199,11 @@ impl Agent {
             }
 
             // Structured output retry limit.
-            let so_calls_this_turn = count_structured_output_calls(&self.session.messages);
-            if so_calls_this_turn > structured_output_calls {
-                structured_output_calls = so_calls_this_turn;
-            }
+            structured_output_calls += self
+                .session
+                .messages
+                .get(messages_before_step..)
+                .map_or(0, count_structured_output_calls);
             if let base::interface::turn_policy::TurnStep::Stop { reason } = self
                 .turn_policy
                 .after_model_call(&base::interface::turn_policy::TurnProgress {
