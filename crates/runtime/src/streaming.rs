@@ -1,10 +1,11 @@
 //! Streaming executor — consume model stream, execute tools concurrently.
 //!
-//! v2: Streaming tool execution.
 //! Concurrency-safe tools start executing during stream consumption — they run
 //! while the model continues streaming text and more tool_use blocks. Sequential
 //! (non-concurrency-safe) tools still wait until their batch completes.
 //! Sibling abort on error (any tool error cancels all siblings in the same batch).
+//! Each model reply reaches the session as one assistant message plus the one
+//! user message answering its tool calls.
 
 use crate::agent::EventSender;
 use base::interface::event::AgentEvent;
@@ -39,29 +40,17 @@ struct QueuedTool {
 
 /// Process a model stream with streaming tool execution.
 ///
-/// v2: Concurrency-safe tools are spawned into `FuturesUnordered` immediately
-/// when the `ToolUse` event arrives, while the stream is still being consumed.
-/// This is the TS `StreamingToolExecutor` pattern:
-///   - ToolUse arrives → spawn execution into background batch
-///   - Stream continues → more text/tool_use events arrive
-///   - Stream ends → await remaining tool futures, then execute sequential tools
+/// Concurrency-safe tools start as soon as their `ToolUse` arrives and run
+/// while the stream continues. A non-concurrency-safe tool is a barrier: the
+/// batch in flight drains first, then it runs alone.
 ///
-/// Non-concurrency-safe tools still wait: they execute after all prior
-/// concurrent-safe tools in their batch have completed.
-///
-/// **Session message grouping**: every `ToolUse` block emitted since the last
-/// flush is buffered (not pushed to the session immediately) until its whole
-/// batch resolves, then flushed as exactly one assistant message (all the
-/// `ToolUse` blocks) immediately followed by exactly one user message (all the
-/// matching `ToolResult` blocks). The Anthropic-compatible API rejects a
-/// request where an assistant `tool_use` isn't immediately followed by its
-/// `tool_result` — pushing one session message per tool call (the original
-/// approach) broke that invariant as soon as a single response mixed a
-/// concurrency-safe tool with a non-concurrency-safe one, since the
-/// non-concurrency-safe tool's `ToolUse` message landed *before* the
-/// concurrency-safe tool's `ToolResult` message in session order. Concurrent
-/// execution timing is unaffected — only when results get written to the
-/// session changed.
+/// **What lands in the session**: one model reply is one assistant message —
+/// thinking, text and `tool_use` blocks in the order the model produced them —
+/// followed by one user message holding every `tool_result`, in submission
+/// order. Tools run while the reply is still streaming, but nothing reaches
+/// the session until the reply is whole: writing a tool's result between two
+/// `tool_use` blocks of the same reply would record a history in which the
+/// model saw that result before asking for the next tool, which it did not.
 #[allow(clippy::too_many_arguments)]
 pub async fn execute_stream<F, Fut, G>(
     stream: ModelStream,
@@ -85,62 +74,43 @@ where
     let mut usage = Usage::default();
     let mut has_tool_uses = false;
     let mut tool_calls: u32 = 0;
+    let mut stream_error: Option<crate::turn::TurnError> = None;
+    // The reply's closed blocks, in arrival order.
+    let mut reply: Vec<ModelContentBlock> = Vec::new();
     let mut pending_text = String::new();
-    // Extended-thinking blocks completed during this stream, in arrival order.
-    // These must be replayed to the API on the next request of a tool-use turn
-    // (signature included) or it rejects the call — see
-    // `ModelContentBlock::Thinking`. They are therefore transcript state, not
-    // just display state.
-    let mut completed_thinking: Vec<ModelContentBlock> = Vec::new();
     // Text of the thinking block currently open. The Anthropic API closes a
     // block by sending its signature; providers that never sign close it by
     // moving on to anything else, so every other event closes it unsigned.
     let mut pending_thinking = String::new();
     let mut queued_tools: Vec<QueuedTool> = Vec::new();
     let mut tool_index: usize = 0;
-    // P1: Dedup consecutive identical tool calls within a turn.
     // Key = "(tool_name, serialized_input)".
     let mut seen_tool_calls: HashSet<String> = HashSet::new();
 
-    // Streaming execution: concurrent-safe tools run during stream consumption.
-    // Each batch of consecutive concurrency-safe tools gets its own FuturesUnordered.
-    // A non-concurrency-safe tool creates a barrier — all prior batches must drain first.
     let mut batch_abort = CancellationToken::new();
     let mut batch_futures = futures::stream::FuturesUnordered::new();
 
-    // Not-yet-flushed tool_use/tool_result blocks for the current batch — see
-    // the "Session message grouping" doc above.
-    let mut pending_use_blocks: Vec<ModelContentBlock> = Vec::new();
-    // `(original tool_index, block)` — concurrency-safe tools finish in
-    // completion order, not submission order (`FuturesUnordered::next()`),
-    // so the index is carried alongside each block and used to restore
-    // submission order at flush time (see `flush_tool_batch`). The API
-    // itself doesn't care about tool_result order within the message (only
-    // that the *set* of ids matches the preceding ToolUse blocks), but replay
-    // does: the message content is part of the request, so two runs of the
-    // same turn with the same tools completing in a different real-world
-    // order used to produce different requests and desync every replay after
-    // that point — found via a real multi-Glob turn diverging on strict
-    // replay for no code-level reason. Fixed the same way an unused sibling
-    // implementation (since removed) had already solved it: carry the
-    // original submission index alongside each result and restore order by
-    // index (`results[idx] = ...`) instead of relying on completion order.
+    // `(submission index, block)`: concurrency-safe tools finish in completion
+    // order, and the result message is part of the next request, so replay
+    // needs the canonical order restored before it is written.
     let mut pending_result_blocks: Vec<(usize, ModelContentBlock)> = Vec::new();
     let mut pending_new_msgs: Vec<Vec<serde_json::Value>> = Vec::new();
 
-    // Phase 1: Consume stream, spawn concurrent-safe tools immediately
     while let Some(event) = stream.next().await {
         if cancel.is_cancelled() {
             break;
         }
-        match event.map_err(|e| crate::turn::TurnError::Model(e.to_string()))? {
+        let event = match event {
+            Ok(e) => e,
+            Err(e) => {
+                stream_error = Some(crate::turn::TurnError::Model(e.to_string()));
+                batch_abort.cancel();
+                break;
+            }
+        };
+        match event {
             ModelEvent::TextDelta { text } => {
-                close_thinking(
-                    &mut pending_thinking,
-                    &mut completed_thinking,
-                    None,
-                    provenance,
-                );
+                close_thinking(&mut pending_thinking, &mut reply, None, provenance);
                 pending_text.push_str(&text);
                 let _ = event_tx.send(AgentEvent::TextDelta {
                     text,
@@ -148,6 +118,7 @@ where
                 });
             }
             ModelEvent::ThinkingDelta { text } => {
+                close_text(&mut pending_text, &mut reply);
                 pending_thinking.push_str(&text);
                 let _ = event_tx.send(AgentEvent::ThinkingDelta {
                     text,
@@ -157,47 +128,26 @@ where
             ModelEvent::ThinkingSignature { signature } => {
                 close_thinking(
                     &mut pending_thinking,
-                    &mut completed_thinking,
+                    &mut reply,
                     Some(signature),
                     provenance,
                 );
             }
             ModelEvent::RedactedThinking { data } => {
-                close_thinking(
-                    &mut pending_thinking,
-                    &mut completed_thinking,
-                    None,
-                    provenance,
-                );
-                completed_thinking.push(ModelContentBlock::RedactedThinking {
+                close_text(&mut pending_text, &mut reply);
+                close_thinking(&mut pending_thinking, &mut reply, None, provenance);
+                reply.push(ModelContentBlock::RedactedThinking {
                     data,
                     provider: provenance.map(str::to_owned),
                 });
             }
             ModelEvent::ToolUse { id, name, input } => {
-                close_thinking(
-                    &mut pending_thinking,
-                    &mut completed_thinking,
-                    None,
-                    provenance,
-                );
+                close_thinking(&mut pending_thinking, &mut reply, None, provenance);
+                close_text(&mut pending_text, &mut reply);
                 has_tool_uses = true;
-                // Flush thinking + pending text to session before tool block.
-                // This is the flush that matters for correctness: it is a
-                // tool-use turn, so the thinking blocks emitted before the
-                // tool call have to be in the transcript ahead of the
-                // `tool_use` block, or the *next* request in this turn is
-                // rejected for a missing/misordered thinking block.
-                flush_assistant_prefix(
-                    session,
-                    &mut completed_thinking,
-                    &mut pending_text,
-                    interceptors,
-                );
-                // Buffer every ToolUse the model actually emitted — duplicate or
-                // not — it gets flushed together with its ToolResult once the
-                // batch resolves (see module-level doc comment).
-                pending_use_blocks.push(ModelContentBlock::ToolUse {
+                // Every ToolUse the model emitted is recorded, duplicate or
+                // not, so each result written below has its `tool_use`.
+                reply.push(ModelContentBlock::ToolUse {
                     id: id.clone(),
                     name: name.clone(),
                     input: input.clone(),
@@ -209,12 +159,6 @@ where
                     turn_id: turn_id.clone(),
                 });
 
-                // This ToolUse's position among every ToolUse this turn has
-                // emitted so far (duplicate or not) — the one stable,
-                // deterministic ordering key available (unlike real-world
-                // completion time for concurrency-safe tools). `queued_tools`
-                // gets an entry here too, unconditionally, so `idx` always
-                // indexes it correctly at drain time below.
                 let idx = tool_index;
                 tool_index += 1;
                 let safe = is_concurrency_safe(&name, &input);
@@ -225,12 +169,8 @@ where
                     concurrency_safe: safe,
                 });
 
-                // P1: Dedup consecutive identical tool calls within a turn.
                 let dedup_key = format!("({name},{input})");
                 if !seen_tool_calls.insert(dedup_key.clone()) {
-                    // Duplicate tool call — skip execution, buffer a synthetic
-                    // tool result (paired with the ToolUse block just buffered
-                    // above) so the model doesn't get stuck waiting.
                     tracing::warn!(
                         tool = %name,
                         tool_use_id = %id,
@@ -250,7 +190,6 @@ where
                 }
 
                 if safe {
-                    // Spawn immediately into the current concurrent batch
                     let exec = execute_tool(id.clone(), name.clone(), input);
                     let abort = batch_abort.clone();
                     batch_futures.push(async move {
@@ -261,38 +200,16 @@ where
                         (idx, id, result)
                     });
                 } else {
-                    // Non-concurrency-safe: drain current batch first (results
-                    // buffered, not pushed to session yet), then execute alone,
-                    // then flush the whole batch as one paired message pair.
-                    if !batch_futures.is_empty() {
-                        while let Some((idx, tid, result)) = batch_futures.next().await {
-                            let (content, new_msgs, failed) = read_outcome(&result);
-                            // Only an `Err` takes the batch down with it. A
-                            // tool that ran and reports a failure has not
-                            // said anything about its siblings.
-                            if result.is_err() {
-                                batch_abort.cancel();
-                            }
-                            let tname = queued_tools
-                                .get(idx)
-                                .map(|t| t.name.clone())
-                                .unwrap_or_default();
-                            buffer_result(
-                                event_tx,
-                                &turn_id,
-                                &mut pending_result_blocks,
-                                idx,
-                                &tid,
-                                &tname,
-                                &content,
-                                failed,
-                            );
-                            if let Some(msgs) = new_msgs {
-                                pending_new_msgs.push(msgs);
-                            }
-                        }
-                    }
-                    // Execute the sequential tool
+                    drain_batch(
+                        &mut batch_futures,
+                        &batch_abort,
+                        &queued_tools,
+                        event_tx,
+                        &turn_id,
+                        &mut pending_result_blocks,
+                        &mut pending_new_msgs,
+                    )
+                    .await;
                     let result = execute_tool(id.clone(), name.clone(), input).await;
                     let (content, new_msgs, failed) = read_outcome(&result);
                     buffer_result(
@@ -308,16 +225,6 @@ where
                     if let Some(msgs) = new_msgs {
                         pending_new_msgs.push(msgs);
                     }
-
-                    flush_tool_batch(
-                        session,
-                        &mut pending_use_blocks,
-                        &mut pending_result_blocks,
-                        &mut pending_new_msgs,
-                        interceptors,
-                    );
-
-                    // Start a new batch for subsequent concurrent-safe tools
                     batch_abort = CancellationToken::new();
                     batch_futures = futures::stream::FuturesUnordered::new();
                 }
@@ -335,38 +242,56 @@ where
         }
     }
 
-    // Flush remaining thinking + pending text. On a no-tool turn this is the
-    // only flush, and it is what puts the reasoning into the transcript so a
-    // later turn (or a resume) still sees it.
-    close_thinking(
-        &mut pending_thinking,
-        &mut completed_thinking,
-        None,
-        provenance,
-    );
-    flush_assistant_prefix(
+    close_thinking(&mut pending_thinking, &mut reply, None, provenance);
+    close_text(&mut pending_text, &mut reply);
+    drain_batch(
+        &mut batch_futures,
+        &batch_abort,
+        &queued_tools,
+        event_tx,
+        &turn_id,
+        &mut pending_result_blocks,
+        &mut pending_new_msgs,
+    )
+    .await;
+    write_reply(
         session,
-        &mut completed_thinking,
-        &mut pending_text,
+        reply,
+        pending_result_blocks,
+        pending_new_msgs,
         interceptors,
     );
 
-    // Drain any remaining in-flight concurrent tools, then flush the final batch.
-    //
-    // ⚠️ Fixed: this loop used to drain without ever calling
-    // `batch_abort.cancel()` on an error — unlike the mid-stream
-    // non-concurrency-safe-barrier drain above, which does. Since most
-    // turns end with their last concurrent batch draining right here (the
-    // stream simply ends after the tool_use events), that meant this
-    // module's own doc comment ("any tool error cancels all siblings in the
-    // same batch") was true only for the less common mid-stream-barrier
-    // case, not for the typical end-of-stream one — an error (including a
-    // `PostToolUse` hook's deliberate denial, see `execute_tool_inner`)
-    // wouldn't actually cancel its still-running siblings here. Now it does,
-    // consistently with the other drain path.
+    if let Some(e) = stream_error {
+        return Err(e);
+    }
+    Ok(StreamResult {
+        stop_reason,
+        usage,
+        has_tool_uses,
+        tool_calls,
+    })
+}
+
+/// Wait for every tool in the current concurrent batch and buffer its
+/// result. An `Err` (as opposed to a tool reporting its own failure) cancels
+/// the siblings still running.
+#[allow(clippy::too_many_arguments)]
+async fn drain_batch<S>(
+    batch_futures: &mut S,
+    batch_abort: &CancellationToken,
+    queued_tools: &[QueuedTool],
+    event_tx: &EventSender,
+    turn_id: &str,
+    pending_result_blocks: &mut Vec<(usize, ModelContentBlock)>,
+    pending_new_msgs: &mut Vec<Vec<serde_json::Value>>,
+) where
+    S: futures::Stream<Item = (usize, String, base::interface::tool_middleware::ToolOutcome)>
+        + Unpin,
+{
+    use futures::StreamExt;
     while let Some((idx, tid, result)) = batch_futures.next().await {
-        let is_err = result.is_err();
-        if is_err {
+        if result.is_err() {
             batch_abort.cancel();
         }
         let (content, new_msgs, failed) = read_outcome(&result);
@@ -376,8 +301,8 @@ where
             .unwrap_or_default();
         buffer_result(
             event_tx,
-            &turn_id,
-            &mut pending_result_blocks,
+            turn_id,
+            pending_result_blocks,
             idx,
             &tid,
             &tname,
@@ -388,20 +313,6 @@ where
             pending_new_msgs.push(msgs);
         }
     }
-    flush_tool_batch(
-        session,
-        &mut pending_use_blocks,
-        &mut pending_result_blocks,
-        &mut pending_new_msgs,
-        interceptors,
-    );
-
-    Ok(StreamResult {
-        stop_reason,
-        usage,
-        has_tool_uses,
-        tool_calls,
-    })
 }
 
 /// One outcome, read the two ways the loop needs it: what the model is shown,
@@ -421,12 +332,10 @@ fn read_outcome(
     }
 }
 
-/// Buffer a tool result (not yet pushed to the session — see
-/// `flush_tool_batch`) and emit the live `AgentEvent::ToolResult` for UI
-/// feedback immediately (that's independent of session message structure).
-/// `idx` is the tool's original submission index (its position among this
-/// turn's `ToolUse` events) — used to restore a deterministic order at flush
-/// time regardless of real completion order.
+/// Buffer a tool result (not yet pushed to the session — see `write_reply`)
+/// and emit the live `AgentEvent::ToolResult` for UI feedback immediately.
+/// `idx` is the tool's submission index, used to restore a deterministic
+/// order at write time regardless of real completion order.
 #[allow(clippy::too_many_arguments)]
 fn buffer_result(
     event_tx: &EventSender,
@@ -455,35 +364,16 @@ fn buffer_result(
     });
 }
 
-/// Flush the current batch: one assistant message with every buffered
-/// `ToolUse` block, immediately followed by one user message with every
-/// buffered `ToolResult` block — sorted back into original submission order
-/// first (see `pending_result_blocks`'s doc comment: the API tolerates any
-/// order since it only checks the *set* of ids, but replay determinism
-/// doesn't, so this restores a canonical order even though it's not
-/// API-required), then any deferred `new_messages` in resolution order.
-/// No-op if nothing is pending.
-/// Push the assistant-turn prefix — completed thinking blocks followed by any
-/// buffered plain text — as one assistant message, draining both accumulators.
-///
-/// Thinking must lead: the Anthropic API requires an assistant turn's thinking
-/// blocks to precede its text and `tool_use` blocks, and rejects a request
-/// whose replayed turn violates that. Callers therefore invoke this *before*
-/// buffering tool_use blocks, not after.
-///
-/// No-op when both accumulators are empty, so it is safe to call at every
-/// flush point unconditionally.
-/// An empty accumulator means there is no open block — a signature arriving
-/// with no thinking before it must not produce an empty `Thinking` block,
-/// which the API rejects on the next request.
+/// A signature arriving with no thinking before it must not produce an empty
+/// `Thinking` block, which the API rejects on the next request.
 fn close_thinking(
     pending: &mut String,
-    completed: &mut Vec<ModelContentBlock>,
+    reply: &mut Vec<ModelContentBlock>,
     signature: Option<String>,
     provenance: Option<&str>,
 ) {
     if !pending.is_empty() {
-        completed.push(ModelContentBlock::Thinking {
+        reply.push(ModelContentBlock::Thinking {
             text: std::mem::take(pending),
             signature,
             provider: provenance.map(str::to_owned),
@@ -491,56 +381,47 @@ fn close_thinking(
     }
 }
 
-fn flush_assistant_prefix(
-    session: &mut session::session::SessionManager,
-    completed_thinking: &mut Vec<ModelContentBlock>,
-    pending_text: &mut String,
-    interceptors: &[Arc<dyn base::interface::model_interceptor::ModelInterceptor>],
-) {
-    if completed_thinking.is_empty() && pending_text.is_empty() {
-        return;
-    }
-    let mut content: Vec<ModelContentBlock> = std::mem::take(completed_thinking);
-    if !pending_text.is_empty() {
-        content.push(ModelContentBlock::Text {
-            text: std::mem::take(pending_text),
+fn close_text(pending: &mut String, reply: &mut Vec<ModelContentBlock>) {
+    if !pending.is_empty() {
+        reply.push(ModelContentBlock::Text {
+            text: std::mem::take(pending),
         });
     }
+}
+
+/// Write the finished reply and, if it asked for tools, the one message that
+/// answers all of them, then whatever messages the tools asked to inject.
+fn write_reply(
+    session: &mut session::session::SessionManager,
+    reply: Vec<ModelContentBlock>,
+    mut results: Vec<(usize, ModelContentBlock)>,
+    new_msgs: Vec<Vec<serde_json::Value>>,
+    interceptors: &[Arc<dyn base::interface::model_interceptor::ModelInterceptor>],
+) {
+    if reply.is_empty() {
+        return;
+    }
+    let asked_for_tools = reply
+        .iter()
+        .any(|b| matches!(b, ModelContentBlock::ToolUse { .. }));
     // The message is whole here, which is the only point at which it is worth
     // showing to anyone: a hook on the deltas that built it would run
     // thousands of times and could produce something that never existed as a
     // coherent message.
     let mut message = ModelMessage {
         role: MessageRole::Assistant,
-        content,
+        content: reply,
     };
     base::interface::model_interceptor::intercept_message(interceptors, &mut message);
     session.push_message(message);
-}
-
-fn flush_tool_batch(
-    session: &mut session::session::SessionManager,
-    pending_use_blocks: &mut Vec<ModelContentBlock>,
-    pending_result_blocks: &mut Vec<(usize, ModelContentBlock)>,
-    pending_new_msgs: &mut Vec<Vec<serde_json::Value>>,
-    interceptors: &[Arc<dyn base::interface::model_interceptor::ModelInterceptor>],
-) {
-    if pending_use_blocks.is_empty() {
-        return;
+    if asked_for_tools {
+        results.sort_by_key(|(idx, _)| *idx);
+        session.push_message(ModelMessage {
+            role: MessageRole::User,
+            content: results.into_iter().map(|(_, block)| block).collect(),
+        });
     }
-    let mut message = ModelMessage {
-        role: MessageRole::Assistant,
-        content: std::mem::take(pending_use_blocks),
-    };
-    base::interface::model_interceptor::intercept_message(interceptors, &mut message);
-    session.push_message(message);
-    let mut results = std::mem::take(pending_result_blocks);
-    results.sort_by_key(|(idx, _)| *idx);
-    session.push_message(ModelMessage {
-        role: MessageRole::User,
-        content: results.into_iter().map(|(_, block)| block).collect(),
-    });
-    for msgs in pending_new_msgs.drain(..) {
+    for msgs in new_msgs {
         inject_new_messages(session, &msgs);
     }
 }
@@ -656,8 +537,12 @@ mod tests {
             first_assistant.content[1]
         );
 
-        // And the tool_use block still lands in a later message, so the
-        // existing tool pairing invariant is untouched.
+        assert!(
+            matches!(&first_assistant.content[2], ModelContentBlock::ToolUse { id, .. } if id == "read_1"),
+            "the tool call belongs to the same reply, got {:?}",
+            first_assistant.content
+        );
+        assert_eq!(session.messages().len(), 2);
         assert_adjacent_tool_pairing(session.messages());
     }
 
@@ -1105,10 +990,11 @@ mod tests {
         );
     }
 
-    /// Two separate sequential tools back-to-back: two independent
-    /// assistant/user pairs, each internally consistent.
+    /// Two sequential tools in one reply run one after the other, but the
+    /// reply is still one assistant message answered by one user message:
+    /// the model asked for both before it saw either result.
     #[tokio::test]
-    async fn two_sequential_tool_calls_produce_two_paired_batches() {
+    async fn two_sequential_tool_calls_of_one_reply_share_one_message_pair() {
         let events: Vec<Result<ModelEvent, ModelError>> = vec![
             Ok(ModelEvent::ToolUse {
                 id: "bash_1".into(),
@@ -1146,7 +1032,143 @@ mod tests {
         .expect("execute_stream should succeed");
 
         assert_adjacent_tool_pairing(session.messages());
-        assert_eq!(session.messages().len(), 4);
+        assert_eq!(session.messages().len(), 2);
+    }
+
+    fn block_kinds(m: &ModelMessage) -> Vec<String> {
+        m.content
+            .iter()
+            .map(|b| match b {
+                ModelContentBlock::Thinking { text, .. } => format!("thinking:{text}"),
+                ModelContentBlock::Text { text } => format!("text:{text}"),
+                ModelContentBlock::ToolUse { id, .. } => format!("tool_use:{id}"),
+                ModelContentBlock::ToolResult { tool_use_id, .. } => {
+                    format!("tool_result:{tool_use_id}")
+                }
+                other => format!("{other:?}"),
+            })
+            .collect()
+    }
+
+    /// Interleaved thinking: a reply that thinks, calls a tool that has to
+    /// run alone, thinks again and calls a second one keeps exactly that
+    /// order in one assistant message. The first tool's result is not written
+    /// between the two calls even though it finished before the second was
+    /// streamed.
+    #[tokio::test]
+    async fn interleaved_reply_keeps_its_block_order_in_one_message() {
+        let events: Vec<Result<ModelEvent, ModelError>> = vec![
+            Ok(ModelEvent::ThinkingDelta {
+                text: "first".into(),
+            }),
+            Ok(ModelEvent::ThinkingSignature {
+                signature: "s1".into(),
+            }),
+            Ok(ModelEvent::TextDelta {
+                text: "Building.".into(),
+            }),
+            Ok(ModelEvent::ToolUse {
+                id: "a".into(),
+                name: "Bash".into(),
+                input: serde_json::json!({"command": "make"}),
+            }),
+            Ok(ModelEvent::ThinkingDelta {
+                text: "second".into(),
+            }),
+            Ok(ModelEvent::ThinkingSignature {
+                signature: "s2".into(),
+            }),
+            Ok(ModelEvent::ToolUse {
+                id: "b".into(),
+                name: "Glob".into(),
+                input: serde_json::json!({"pattern": "*"}),
+            }),
+            Ok(ModelEvent::EndTurn {
+                stop_reason: "tool_use".into(),
+                usage: Usage::default(),
+            }),
+        ];
+        let stream: base::interface::model::ModelStream = Box::new(futures::stream::iter(events));
+
+        let mut session = session::session::SessionManager::in_memory(None);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let tx = crate::event_bus::EventBus::new(tx);
+
+        execute_stream(
+            stream,
+            &mut session,
+            &tx,
+            "test-turn".into(),
+            |id, _name, _input| async move { Ok(ToolAnswer::text(format!("done {id}"))) },
+            |name, _input| name == "Glob",
+            CancellationToken::new(),
+            &[],
+            None,
+        )
+        .await
+        .expect("execute_stream should succeed");
+
+        let messages = session.messages();
+        assert_eq!(messages.len(), 2, "{messages:#?}");
+        assert_eq!(
+            block_kinds(&messages[0]),
+            vec![
+                "thinking:first",
+                "text:Building.",
+                "tool_use:a",
+                "thinking:second",
+                "tool_use:b"
+            ]
+        );
+        assert_eq!(
+            block_kinds(&messages[1]),
+            vec!["tool_result:a", "tool_result:b"]
+        );
+    }
+
+    /// A stream that fails after a tool already ran still leaves the reply
+    /// and that tool's result in the transcript, paired, and reports the
+    /// failure.
+    #[tokio::test]
+    async fn a_stream_error_still_writes_what_already_happened() {
+        let events: Vec<Result<ModelEvent, ModelError>> = vec![
+            Ok(ModelEvent::TextDelta {
+                text: "Running.".into(),
+            }),
+            Ok(ModelEvent::ToolUse {
+                id: "a".into(),
+                name: "Bash".into(),
+                input: serde_json::json!({"command": "make"}),
+            }),
+            Err(ModelError::Network("connection reset".into())),
+        ];
+        let stream: base::interface::model::ModelStream = Box::new(futures::stream::iter(events));
+
+        let mut session = session::session::SessionManager::in_memory(None);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let tx = crate::event_bus::EventBus::new(tx);
+
+        let result = execute_stream(
+            stream,
+            &mut session,
+            &tx,
+            "test-turn".into(),
+            |_id, _name, _input| async move { Ok(ToolAnswer::text("built")) },
+            |_name, _input| false,
+            CancellationToken::new(),
+            &[],
+            None,
+        )
+        .await;
+
+        assert!(result.is_err());
+        let messages = session.messages();
+        assert_eq!(messages.len(), 2, "{messages:#?}");
+        assert_eq!(
+            block_kinds(&messages[0]),
+            vec!["text:Running.", "tool_use:a"]
+        );
+        assert_adjacent_tool_pairing(messages);
     }
 
     /// Every assistant message with ToolUse block(s) must be immediately

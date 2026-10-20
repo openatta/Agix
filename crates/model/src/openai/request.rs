@@ -209,10 +209,9 @@ pub struct FunctionDef {
 /// 3. **Thinking blocks are not content.** The only place reasoning can go
 ///    is the non-standard `reasoning_content` field, and only endpoints that
 ///    ask for it get it ([`Reasoning::passback`]); signed Anthropic thinking
-///    and redacted thinking have no representation at all. With passback on,
-///    one model reply that the transcript split into several assistant
-///    messages (reasoning and text, then the tool calls) goes out as one, so
-///    the reasoning sits on the message that carries the tool calls.
+///    and redacted thinking have no representation at all. A reply is one
+///    transcript message, so its reasoning goes out on the same message as
+///    the tool calls it led to.
 pub fn build_request(
     model: String,
     prompt_blocks: Vec<PromptBlock>,
@@ -245,9 +244,6 @@ pub fn build_request(
         let passback = (i >= loop_start).then_some(reasoning);
         push_translated(&mut chat_messages, m, passback);
     }
-    if reasoning.passback {
-        merge_consecutive_assistant_messages(&mut chat_messages);
-    }
 
     ChatCompletionsRequest {
         model,
@@ -272,38 +268,6 @@ fn current_tool_loop_start(messages: &[ModelMessage]) -> usize {
                     .any(|b| !matches!(b, ModelContentBlock::ToolResult { .. }))
         })
         .map_or(0, |i| i + 1)
-}
-
-/// Only text-only or empty contents are merged; a message with images keeps
-/// its own turn rather than having its parts reshuffled.
-fn merge_consecutive_assistant_messages(messages: &mut Vec<ChatMessage>) {
-    let mergeable = |c: &Option<ChatContent>| !matches!(c, Some(ChatContent::Parts(_)));
-    let mut merged: Vec<ChatMessage> = Vec::with_capacity(messages.len());
-    for m in messages.drain(..) {
-        if let Some(prev) = merged.last_mut() {
-            if prev.role == ChatRole::Assistant
-                && m.role == ChatRole::Assistant
-                && mergeable(&prev.content)
-                && mergeable(&m.content)
-            {
-                prev.content = match (prev.content.take(), m.content) {
-                    (Some(ChatContent::Text(a)), Some(ChatContent::Text(b))) => {
-                        Some(ChatContent::Text(format!("{a}\n{b}")))
-                    }
-                    (a, b) => a.or(b),
-                };
-                prev.tool_calls.extend(m.tool_calls);
-                prev.reasoning_content = match (prev.reasoning_content.take(), m.reasoning_content)
-                {
-                    (Some(a), Some(b)) => Some(format!("{a}\n{b}")),
-                    (a, b) => a.or(b),
-                };
-                continue;
-            }
-        }
-        merged.push(m);
-    }
-    *messages = merged;
 }
 
 fn to_chat_tool(t: ToolDef) -> ChatTool {
@@ -724,9 +688,6 @@ mod tests {
     }
 
     /// A conversation with one finished turn and a tool loop in progress.
-    /// The transcript stores the second reply as two assistant messages
-    /// (reasoning + text, then the tool call), the way the stream consumer
-    /// flushes them.
     fn tool_loop_history() -> Vec<ModelMessage> {
         vec![
             msg(MessageRole::User, vec![text("first question")]),
@@ -741,15 +702,12 @@ mod tests {
                     reasoning("need the file", "deepseek"),
                     reasoning("someone else's", "claude"),
                     text("Let me look."),
+                    ModelContentBlock::ToolUse {
+                        id: "c1".into(),
+                        name: "Read".into(),
+                        input: json!({"file_path": "a"}),
+                    },
                 ],
-            ),
-            msg(
-                MessageRole::Assistant,
-                vec![ModelContentBlock::ToolUse {
-                    id: "c1".into(),
-                    name: "Read".into(),
-                    input: json!({"file_path": "a"}),
-                }],
             ),
             msg(
                 MessageRole::User,
@@ -795,8 +753,7 @@ mod tests {
         assert_eq!(ms[4]["role"], "tool");
     }
 
-    /// Without passback nothing about the request changes: no reasoning, and
-    /// the transcript's message boundaries are kept as they were.
+    /// Without passback nothing about the request changes: no reasoning.
     #[test]
     fn without_passback_reasoning_stays_out() {
         let req = build_request(
@@ -810,7 +767,7 @@ mod tests {
         let v = serde_json::to_value(&req).unwrap();
         let ms = v["messages"].as_array().unwrap();
 
-        assert_eq!(ms.len(), 6, "{v:#}");
+        assert_eq!(ms.len(), 5, "{v:#}");
         assert!(
             ms.iter().all(|m| m.get("reasoning_content").is_none()),
             "{v:#}"
