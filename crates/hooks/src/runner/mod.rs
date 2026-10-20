@@ -1077,6 +1077,39 @@ mod tests {
         assert_eq!(stdout_of(narrowed), "absent");
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_command_hook_runs_in_the_directory_its_payload_names() {
+        let dir = tempfile_dir();
+        let mut input = input_for_bash("ls");
+        input.cwd = dir.to_string_lossy().into_owned();
+        let result = one_command_hook("pwd -P", 10_000)
+            .run(HookEvent::PreToolUse, &input)
+            .await;
+        let expected = std::fs::canonicalize(&dir).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        match &result.outcomes[0] {
+            HookOutcome::Ran { stdout, .. } => {
+                assert_eq!(std::path::Path::new(stdout.trim()), expected)
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_payload_without_a_usable_cwd_still_runs_the_hook() {
+        let mut input = input_for_bash("ls");
+        input.cwd = "/definitely/not/a/dir".into();
+        let result = one_command_hook("echo ran", 10_000)
+            .run(HookEvent::PreToolUse, &input)
+            .await;
+        match &result.outcomes[0] {
+            HookOutcome::Ran { stdout, .. } => assert_eq!(stdout.trim(), "ran"),
+            other => panic!("{other:?}"),
+        }
+    }
+
     fn tempfile_dir() -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "atta-hooks-test-{}-{}",

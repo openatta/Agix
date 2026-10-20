@@ -122,7 +122,10 @@ impl HookRunner {
         input: &HookInput,
         timeout: Duration,
     ) -> HookOutcome {
-        let mut spec = ProcessSpec::new(shell, ".").args(["-c", command]);
+        let cwd = Some(std::path::Path::new(&input.cwd))
+            .filter(|dir| !input.cwd.is_empty() && dir.is_dir())
+            .unwrap_or(std::path::Path::new("."));
+        let mut spec = ProcessSpec::new(shell, cwd).args(["-c", command]);
 
         // Let `command` reference a bare script name (e.g. `check.sh`) that
         // lives in `.atta/hooks/` by prepending the configured search dirs
