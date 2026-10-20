@@ -191,3 +191,42 @@ async fn a_single_star_in_a_path_rule_stays_within_one_directory() {
     let o = check(&perm, "Read", json!({"file_path": "docs/sub/b.md"}), cwd).await;
     assert!(is_deny(&o), "{o:?}");
 }
+
+#[tokio::test]
+async fn an_ask_rule_is_not_waved_through_by_the_tools_own_allow() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path();
+    let rules = || {
+        vec![rule(
+            RuleBehavior::Ask,
+            "Read",
+            cwd.join("notes.md").to_string_lossy(),
+        )]
+    };
+    let input = || json!({"file_path": "notes.md"});
+
+    let o = check(
+        &permission(rules(), PermissionMode::Default),
+        "Read",
+        input(),
+        cwd,
+    )
+    .await;
+    assert!(matches!(o, PermissionOutcome::Prompt { .. }), "{o:?}");
+    let o = check(
+        &permission(rules(), PermissionMode::DontAsk),
+        "Read",
+        input(),
+        cwd,
+    )
+    .await;
+    assert!(is_deny(&o), "{o:?}");
+    let o = check(
+        &permission(rules(), PermissionMode::BypassPermissions),
+        "Read",
+        input(),
+        cwd,
+    )
+    .await;
+    assert!(matches!(o, PermissionOutcome::Permit), "{o:?}");
+}

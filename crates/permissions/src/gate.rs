@@ -10,11 +10,14 @@
 //!    - `Allow` **不再直接返回**，只记成一个"待生效的快速通道"（pending
 //!      fast-path），要等下面 3–5 步都没否掉才兑现
 //!    - `Ask` = 工具没意见
-//! 3. 通用规则引擎（`RuleSet::evaluate`）：`Deny` 直接返回
+//! 3. 通用规则引擎（`RuleSet`，deny > ask > allow；路径类工具先规整路径）：
+//!    `Deny` 直接返回
 //! 4. bypass-immune 路径检查（`is_path_bypass_immune`）→ deny
 //! 5. 模式级硬拒绝：
 //!    - `Plan` 且非只读工具 → deny
 //!    - `DontAsk` 且没有 allow 规则命中 → deny
+//!
+//!    之后第 3 步的 `Ask` 命中 → ask（`DontAsk` 下 deny，`BypassPermissions` 下略过）
 //! 6. 兑现第 2 步记下的工具自判 `Allow` → allow
 //! 7. 规则引擎的 `Allow` → allow
 //! 8. 其余 PermissionMode 分派：
@@ -310,22 +313,16 @@ impl PermissionGate {
                     .flat_map(|r| r.all().map(|p| p.to_string_lossy().into_owned())),
             )
             .collect();
-        let rule_allow = match rule_hit {
+        let (rule_allow, rule_ask) = match rule_hit {
             RuleHit::Deny(rule) => {
                 return Ok(PermissionDecision::Deny {
-                    message: format!(
-                        "denied by rule: {}{}",
-                        rule.tool_name,
-                        rule.rule_content
-                            .as_deref()
-                            .map(|c| format!("({c})"))
-                            .unwrap_or_default()
-                    ),
+                    message: format!("denied by rule: {}", format_rule_string(&rule)),
                     decision_reason: DecisionReason::Rule(rule),
                 });
             }
-            RuleHit::Allow(rule) => Some(rule),
-            RuleHit::Ask(_) | RuleHit::None => None,
+            RuleHit::Allow(rule) => (Some(rule), None),
+            RuleHit::Ask(rule) => (None, Some(rule)),
+            RuleHit::None => (None, None),
         };
 
         // 4. Bypass-immune safety: even in BypassPermissions mode — and even when
@@ -363,6 +360,33 @@ impl PermissionGate {
                 message: "dontAsk mode and no rule matched".into(),
                 decision_reason: DecisionReason::Mode(mode),
             });
+        }
+
+        // An ask rule outranks the tool's own allow: it prompts in every mode
+        // that prompts at all, denies under dontAsk, and is moot under bypass.
+        if let Some(rule) = rule_ask {
+            match mode {
+                PermissionMode::BypassPermissions => {}
+                PermissionMode::DontAsk => {
+                    return Ok(PermissionDecision::Deny {
+                        message: format!(
+                            "dontAsk mode and an ask rule matched: {}",
+                            format_rule_string(&rule)
+                        ),
+                        decision_reason: DecisionReason::Rule(rule),
+                    });
+                }
+                _ => {
+                    return Ok(PermissionDecision::Ask {
+                        message: format!(
+                            "{} matches {}, which requires confirmation",
+                            tool.name(),
+                            format_rule_string(&rule)
+                        ),
+                        decision_reason: Some(DecisionReason::Rule(rule)),
+                    });
+                }
+            }
         }
 
         // 6. 现在才兑现工具自判 Allow —— 没有 deny 规则、没踩 bypass-immune 路径、
