@@ -77,6 +77,10 @@ impl Tool for DeferredTool {
         })
     }
 
+    fn full_input_schema(&self) -> Value {
+        self.inner.full_input_schema()
+    }
+
     fn is_deferred(&self) -> bool {
         true
     }

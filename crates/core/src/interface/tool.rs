@@ -368,6 +368,13 @@ pub trait Tool: Send + Sync + 'static {
     }
     fn input_schema(&self) -> Value;
 
+    /// The schema to hand the model when it asks for this tool by name.
+    /// Differs from [`input_schema`](Self::input_schema) only for a wrapper
+    /// that withholds the real one from the per-request tool list.
+    fn full_input_schema(&self) -> Value {
+        self.input_schema()
+    }
+
     /// Where this tool came from, for [`crate::interface::model::ToolDef::source`].
     ///
     /// The name prefixes (`mcp__`, `plugin__`) already imply the answer, but a

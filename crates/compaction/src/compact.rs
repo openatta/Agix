@@ -794,7 +794,7 @@ pub fn build_post_compact_recovery(ctx: &PostCompactContext) -> Vec<ModelMessage
         recovery.push(ModelMessage {
             role: MessageRole::User,
             content: vec![ModelContentBlock::Text {
-                text: format!("<system-reminder>\nThe following tools were activated and are now available: {tools_text}\n</system-reminder>"),
+                text: format!("<system-reminder>\nThese deferred tools were loaded earlier with ToolSearch: {tools_text}. If a schema it returned is no longer in the conversation, load it again with ToolSearch (select:<name>) before calling that tool.\n</system-reminder>"),
             }],
         });
     }

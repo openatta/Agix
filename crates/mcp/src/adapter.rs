@@ -22,10 +22,23 @@ use base::{
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
 
+/// Per-request cap on a server-supplied description. Some servers put pages of
+/// documentation there; the full text stays reachable through `prompt()`, which
+/// `ToolSearch` serves as the tool's guide whenever the two differ.
+const MAX_ADVERTISED_DESCRIPTION_CHARS: usize = 2048;
+
+fn truncate_chars(s: &str, max: usize) -> String {
+    match s.char_indices().nth(max) {
+        Some((cut, _)) => format!("{}…", &s[..cut]),
+        None => s.to_string(),
+    }
+}
+
 pub struct McpToolAdapter {
     full_name: String,
     tool_name: String,
     server_name: String,
+    full_description: String,
     description: String,
     input_schema: Value,
     client: McpClientHandle,
@@ -50,22 +63,7 @@ pub struct McpToolAdapter {
 impl McpToolAdapter {
     /// Construct a new instance.
     pub fn new(client: McpClientHandle, meta: McpToolMeta) -> Self {
-        let server_name = client.server_name().to_string();
-        let tool_name = meta.name.clone();
-        let full_name = format!("mcp__{server_name}__{tool_name}");
-        let description = meta
-            .description
-            .unwrap_or_else(|| format!("MCP tool: {tool_name}"));
-        Self {
-            full_name,
-            tool_name,
-            server_name,
-            description,
-            input_schema: meta.input_schema,
-            client,
-            cache: Arc::new(Mutex::new(McpOutputCache::new())),
-            elicitation_callback: Arc::new(Mutex::new(None)),
-        }
+        Self::with_cache(client, meta, Arc::new(Mutex::new(McpOutputCache::new())))
     }
 
     /// Construct with a shared output cache (all adapters from the same manager
@@ -78,13 +76,15 @@ impl McpToolAdapter {
         let server_name = client.server_name().to_string();
         let tool_name = meta.name.clone();
         let full_name = format!("mcp__{server_name}__{tool_name}");
-        let description = meta
+        let full_description = meta
             .description
             .unwrap_or_else(|| format!("MCP tool: {tool_name}"));
+        let description = truncate_chars(&full_description, MAX_ADVERTISED_DESCRIPTION_CHARS);
         Self {
             full_name,
             tool_name,
             server_name,
+            full_description,
             description,
             input_schema: meta.input_schema,
             client,
@@ -127,6 +127,10 @@ impl Tool for McpToolAdapter {
         &self.full_name
     }
 
+    fn description(&self) -> &str {
+        &self.description
+    }
+
     fn input_schema(&self) -> Value {
         self.input_schema.clone()
     }
@@ -136,7 +140,7 @@ impl Tool for McpToolAdapter {
     }
 
     async fn prompt(&self, _: &PromptContext) -> String {
-        self.description.clone()
+        self.full_description.clone()
     }
 
     /// MCP 工具的并发安全 / 只读性是不可知的（每个 server 自己的逻辑）。
@@ -338,6 +342,34 @@ mod tests {
     /// The `mcp__` prefix already implies the answer, but a naming convention
     /// is not a declaration — it holds only until someone registers a builtin
     /// whose name starts that way. The adapter says which server it fronts.
+    #[tokio::test]
+    async fn the_server_description_is_what_the_model_is_shown() {
+        let client = Arc::new(MockMcpClient::new("github", vec![]));
+        let adapter = McpToolAdapter::new(client, meta("create_issue"));
+        assert_eq!(adapter.description(), "desc for create_issue");
+        assert!(adapter
+            .detailed_prompt(&PromptContext::default())
+            .await
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn an_oversized_description_is_cut_and_the_whole_text_becomes_the_guide() {
+        let client = Arc::new(MockMcpClient::new("docs", vec![]));
+        let mut m = meta("search");
+        let long = "x".repeat(MAX_ADVERTISED_DESCRIPTION_CHARS + 10);
+        m.description = Some(long.clone());
+        let adapter = McpToolAdapter::new(client, m);
+        assert_eq!(
+            adapter.description().chars().count(),
+            MAX_ADVERTISED_DESCRIPTION_CHARS + 1
+        );
+        assert_eq!(
+            adapter.detailed_prompt(&PromptContext::default()).await,
+            Some(long)
+        );
+    }
+
     #[tokio::test]
     async fn source_names_the_server_it_fronts() {
         let client = Arc::new(MockMcpClient::new("github", vec![]));

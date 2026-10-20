@@ -1,38 +1,20 @@
-//! `ToolSearchTool` — deferred tool activation for the LLM.
+//! `ToolSearchTool` (`"ToolSearch"`): on-demand disclosure of what the
+//! per-request tool list leaves out.
 //!
-//! When `ToolRegistry` contains tools with `is_deferred() == true`, the initial
-//! system prompt only exposes the name plus a one-line description (saving
-//! schema from consuming cache space). If the model sees a name it wants to use,
-//! it calls `ToolSearch{ query: "..." }` to fetch the full schema and activate
-//! the tool.
+//! Two things are fetchable:
 //!
-//! ## Naming note
+//! 1. **Deferred tools.** A scene's `deferred_tools()` replaces a tool's JSON
+//!    schema in the per-call `tools` array with a stub (see `crate::deferred`).
+//!    A match returns the real schema as a `<function>` line inside a
+//!    `<functions>` block of the result text and records the tool as activated
+//!    in the session. The tool list itself never changes mid-session, so the
+//!    prompt cache survives; the schema lives in the transcript instead.
+//! 2. **Usage guides.** `Tool::detailed_prompt()`; `build_tool_defs` points at
+//!    it with one line rather than paying for every guide on every request.
 //!
-//! The struct is `ToolSearchTool` despite the "Tool Tool" tautology, because
-//! every tool struct in this crate follows the `{Name}Tool` suffix convention.
-//! The external name exposed to the model is `"ToolSearch"` (no suffix).
-//!
-//! ## Two things are fetchable here, not one
-//!
-//! 1. **Deferred tools** — the original purpose. A scene's
-//!    `deferred_tools()` strips a tool's JSON schema out of the per-call
-//!    `tools` array (see `crate::deferred`); `select:<name>` brings it back.
-//! 2. **Tool usage guides** — `Tool::detailed_prompt()`. Roughly 35 tools
-//!    ship a multi-KB markdown guide via `Tool::prompt()`, and before this
-//!    those guides reached the model on exactly zero requests: `ToolDef` is
-//!    built from `description()` and nothing else ever called `prompt()`.
-//!    The `Agent` and `Team` tools were hit worst — the most complex
-//!    semantics in the tool set, with the documentation explaining them
-//!    unreachable.
-//!
-//! Both use the same progressive-disclosure shape rather than inlining:
-//! the guides total ~85 KB (~21k tokens) and would otherwise be paid on
-//! every single API call. `build_tool_defs` instead appends one short
-//! pointer line to the descriptions of documented tools, and the body
-//! arrives here only when the model asks for it.
-//!
-//! A tool is therefore findable here when it is deferred **or** documented,
-//! and a match returns whichever of the two applies (often both).
+//! Query forms: `select:A,B` names tools exactly (case-insensitive fallback,
+//! words after a name are ignored); anything else is keywords, where a `+term`
+//! must appear in the tool name and the rest rank the hits.
 
 use async_trait::async_trait;
 use base::error::ToolError;
@@ -43,33 +25,31 @@ use base::tool::{
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::sync::Arc;
 
 const DEFAULT_MAX_RESULTS: usize = 5;
 
-/// Ceiling on the combined size of the usage guides one `ToolSearch` call
-/// will inline into its result. Guides run up to ~10 KB each and `max_results`
-/// defaults to 5, so an unbounded result could dump 50 KB into the transcript
-/// in a single tool result — permanently, since tool results stay in
-/// `messages` until compaction. Matches past the budget still come back as
-/// name + description, with an explicit note telling the model how to get the
-/// rest, rather than being silently dropped.
+/// Ceiling on the combined size of the usage guides one call inlines. Tool
+/// results stay in the transcript until compaction, so an unbounded result
+/// could pin tens of KB at once; matches past the budget are still listed,
+/// with a note on how to fetch their guide alone.
 const MAX_GUIDE_BYTES: usize = 24_000;
 
-/// One search hit.
+const MAX_SUGGESTIONS: usize = 3;
+
 struct Match {
     name: String,
     description: String,
-    /// `Tool::detailed_prompt()` — the on-demand half of A-1.
     guide: Option<String>,
-    /// Whether the scene deferred this tool's schema.
-    deferred: bool,
+    /// The real schema, present when the tool list carries only a stub.
+    deferred_schema: Option<Value>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ToolSearchInput {
-    /// Search query. Use `select:<tool_name>` for direct selection of a known
-    /// deferred tool name; otherwise treated as a keyword to score against
-    /// each deferred tool's name + description.
+    /// `select:<name>[,<name>...]` to fetch known tools by name; otherwise
+    /// keywords to search tool names and descriptions, where `+term` must
+    /// appear in the name.
     pub query: String,
 
     /// Cap on returned matches (default 5).
@@ -78,25 +58,119 @@ pub struct ToolSearchInput {
 }
 
 pub struct ToolSearchTool {
-    /// 引用 ToolRegistry 里的全部工具列表（含 deferred 与非 deferred）。这里持
-    /// `Arc<dyn ToolRegistry>` 让 ToolSearch 在 call 时能即时扫工具池 —— 用户
-    /// 中途装/卸 MCP server 后立刻反映。
-    registry: std::sync::Arc<base::tool::InMemoryToolRegistry>,
+    registry: Arc<base::tool::InMemoryToolRegistry>,
 }
 
 impl ToolSearchTool {
     /// Construct a new instance.
-    pub fn new(registry: std::sync::Arc<base::tool::InMemoryToolRegistry>) -> Self {
+    pub fn new(registry: Arc<base::tool::InMemoryToolRegistry>) -> Self {
         Self { registry }
     }
+}
+
+enum Query {
+    Select(Vec<String>),
+    Keywords {
+        required: Vec<String>,
+        optional: Vec<String>,
+    },
+}
+
+fn parse_query(q: &str) -> Query {
+    let select = q
+        .get(..7)
+        .filter(|p| p.eq_ignore_ascii_case("select:"))
+        .map(|_| &q[7..]);
+    if let Some(rest) = select {
+        let mut names: Vec<String> = Vec::new();
+        for name in rest
+            .split(',')
+            .filter_map(|seg| seg.split_whitespace().next())
+        {
+            if !names.iter().any(|n| n == name) {
+                names.push(name.to_string());
+            }
+        }
+        return Query::Select(names);
+    }
+    let mut required = Vec::new();
+    let mut optional = Vec::new();
+    for term in q.split_whitespace() {
+        let lower = term.to_lowercase();
+        match lower.strip_prefix('+') {
+            Some("") => {}
+            Some(r) => required.push(r.to_string()),
+            None => optional.push(lower),
+        }
+    }
+    Query::Keywords { required, optional }
+}
+
+fn keyword_score(name: &str, description: &str, required: &[String], optional: &[String]) -> usize {
+    let name = name.to_lowercase();
+    let description = description.to_lowercase();
+    if !required.iter().all(|r| name.contains(r.as_str())) {
+        return 0;
+    }
+    let mut score = 0;
+    for term in required.iter().chain(optional) {
+        if name == *term {
+            score += 100;
+        } else if name.contains(term.as_str()) {
+            score += 50;
+        }
+        if description.contains(term.as_str()) {
+            score += 10;
+        }
+    }
+    if score == 0 && optional.is_empty() && !required.is_empty() {
+        score = 1;
+    }
+    score
+}
+
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut cur = vec![i + 1; b.len() + 1];
+        for (j, cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != *cb);
+            cur[j + 1] = (prev[j] + cost).min(prev[j + 1] + 1).min(cur[j] + 1);
+        }
+        prev = cur;
+    }
+    prev[b.len()]
+}
+
+fn closest_names<'a>(wanted: &str, names: impl Iterator<Item = &'a str>) -> Vec<String> {
+    let wanted = wanted.to_lowercase();
+    let threshold = (wanted.chars().count() / 3).max(2);
+    let mut scored: Vec<(usize, &str)> = names
+        .filter_map(|n| {
+            let lower = n.to_lowercase();
+            let d = if lower.contains(&wanted) || wanted.contains(&lower) {
+                0
+            } else {
+                edit_distance(&wanted, &lower)
+            };
+            (d <= threshold).then_some((d, n))
+        })
+        .collect();
+    scored.sort();
+    scored
+        .into_iter()
+        .take(MAX_SUGGESTIONS)
+        .map(|(_, n)| n.to_string())
+        .collect()
 }
 
 #[async_trait]
 impl Tool for ToolSearchTool {
     fn description(&self) -> &str {
-        "Fetch a tool's full JSON schema (for tools advertised without one) \
-         and/or its detailed usage guide. Use query \"select:<ToolName>\" for \
-         a known name, or plain keywords to search."
+        "Fetch the full JSON schema of a deferred tool (returned in a <functions> \
+         block) and/or a tool's detailed usage guide. Query \"select:A,B\" for \
+         known names, or keywords to search (\"+term\" must appear in the name)."
     }
     fn name(&self) -> &str {
         "ToolSearch"
@@ -112,12 +186,10 @@ impl Tool for ToolSearchTool {
     }
 
     fn is_concurrency_safe(&self, _: &Value) -> bool {
-        // 纯查询 + session state 写入；与文件 / 网络无关
         true
     }
 
     fn is_read_only(&self, _: &Value) -> bool {
-        // 改 SessionState.activated_tools 算副作用，但不动文件 / 不发请求
         true
     }
 
@@ -132,7 +204,6 @@ impl Tool for ToolSearchTool {
     }
 
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        // ToolSearch 不影响 fs / 网络；自动允许
         PermissionDecision::allow()
     }
 
@@ -155,121 +226,161 @@ impl Tool for ToolSearchTool {
             all_tool_names: all.iter().map(|t| t.name().to_string()).collect(),
             allowed_agent_types: vec![],
         };
+        let describe = |t: &Arc<dyn Tool>| {
+            t.short_description()
+                .unwrap_or_else(|| t.description().to_string())
+        };
+        let to_match = |t: &Arc<dyn Tool>, guide: Option<String>| Match {
+            name: t.name().to_string(),
+            description: describe(t),
+            guide,
+            deferred_schema: t.is_deferred().then(|| t.full_input_schema()),
+        };
 
-        // The searchable set: everything with something to disclose. A tool
-        // qualifies by being deferred (schema withheld) *or* documented
-        // (`detailed_prompt()` — a guide that never reaches `ToolDef`).
-        // Resolving the guide means materializing each `include_str!` body, a
-        // few hundred KB of pure memcpy across the whole registry; that is
-        // noise next to the model round trip that got us here, and it keeps
-        // the predicate honest instead of caching a staleness hazard.
-        let mut candidates: Vec<Match> = Vec::new();
-        for t in &all {
-            let guide = t.detailed_prompt(&prompt_ctx).await;
-            let deferred = t.is_deferred();
-            if !deferred && guide.is_none() {
-                continue;
-            }
-            candidates.push(Match {
-                name: t.name().to_string(),
-                description: t
-                    .short_description()
-                    .unwrap_or_else(|| t.description().to_string()),
-                guide,
-                deferred,
-            });
-        }
-        let total_deferred = candidates.iter().filter(|m| m.deferred).count();
-        let total_documented = candidates.iter().filter(|m| m.guide.is_some()).count();
+        let mut matches: Vec<Match> = Vec::new();
+        let mut already_loaded: Vec<String> = Vec::new();
+        let mut unmatched: Vec<(String, Vec<String>)> = Vec::new();
+        let mut total_deferred = 0;
+        let mut total_documented = 0;
 
-        // `select:<name>` 直接选；找到就只返回那个
-        let mut matches: Vec<Match> = if let Some(name) = q.strip_prefix("select:") {
-            let name = name.trim();
-            let mut hit: Vec<Match> = Vec::new();
-            for m in candidates {
-                if m.name == name {
-                    hit.push(m);
+        match parse_query(q) {
+            Query::Select(names) => {
+                for wanted in names {
+                    let found = all
+                        .iter()
+                        .find(|t| t.name() == wanted)
+                        .or_else(|| all.iter().find(|t| t.name().eq_ignore_ascii_case(&wanted)));
+                    let Some(t) = found else {
+                        let suggestions = closest_names(&wanted, all.iter().map(|t| t.name()));
+                        unmatched.push((wanted, suggestions));
+                        continue;
+                    };
+                    let guide = t.detailed_prompt(&prompt_ctx).await;
+                    if !t.is_deferred() && guide.is_none() {
+                        already_loaded.push(t.name().to_string());
+                    } else if !matches.iter().any(|m| m.name == t.name()) {
+                        matches.push(to_match(t, guide));
+                    }
                 }
             }
-            hit
-        } else {
-            // 关键字匹配：name 或 description 包含 query（大小写不敏感）
-            let q_lower = q.to_ascii_lowercase();
-            let mut scored: Vec<(usize, Match)> = candidates
-                .into_iter()
-                .filter_map(|m| {
-                    let n_lower = m.name.to_ascii_lowercase();
-                    let d_lower = m.description.to_ascii_lowercase();
-                    let mut score = 0usize;
-                    if n_lower == q_lower {
-                        score += 100; // 精确名字命中最高
-                    } else if n_lower.contains(&q_lower) {
-                        score += 50;
+            Query::Keywords { required, optional } => {
+                let mut scored: Vec<(usize, Match)> = Vec::new();
+                for t in &all {
+                    let guide = t.detailed_prompt(&prompt_ctx).await;
+                    if t.is_deferred() {
+                        total_deferred += 1;
                     }
-                    if d_lower.contains(&q_lower) {
-                        score += 10;
+                    if guide.is_some() {
+                        total_documented += 1;
                     }
+                    if !t.is_deferred() && guide.is_none() {
+                        continue;
+                    }
+                    let score = keyword_score(t.name(), &describe(t), &required, &optional);
                     if score > 0 {
-                        Some((score, m))
-                    } else {
-                        None
+                        scored.push((score, to_match(t, guide)));
                     }
-                })
-                .collect();
-            // Stable within a score band so equal-scoring hits come back in
-            // registry order rather than an arbitrary one.
-            scored.sort_by_key(|s| std::cmp::Reverse(s.0));
-            scored.into_iter().map(|(_, m)| m).collect()
-        };
+                }
+                // Stable, so equal scores keep registry order.
+                scored.sort_by_key(|s| std::cmp::Reverse(s.0));
+                matches = scored.into_iter().map(|(_, m)| m).collect();
+            }
+        }
         matches.truncate(max);
 
-        // NOTE: Tool activation is handled by the deferred-tool infrastructure
-        // (in-memory activation list maintained by ToolRegistry). No session
-        // mutation needed in the agent crate.
-        let body = render(q, &matches, total_deferred, total_documented);
+        let activated: Vec<String> = matches
+            .iter()
+            .filter(|m| m.deferred_schema.is_some())
+            .map(|m| m.name.clone())
+            .collect();
+        ctx.session.activate_tools(activated.iter().cloned());
+
+        let is_error = matches.is_empty() && already_loaded.is_empty();
+        let body = render(
+            q,
+            &matches,
+            &already_loaded,
+            &unmatched,
+            total_deferred,
+            total_documented,
+        );
 
         Ok(ToolResult {
             content: base::tool::ToolResultContent::Text(body),
-            is_error: false,
+            is_error,
             structured_content: Some(json!({
                 "matches": matches.iter().map(|m| m.name.clone()).collect::<Vec<String>>(),
+                "activated": activated,
+                "already_loaded": already_loaded,
+                "unmatched": unmatched.iter().map(|(n, _)| n.clone()).collect::<Vec<String>>(),
                 "guides_returned": matches.iter().filter(|m| m.guide.is_some())
                     .map(|m| m.name.clone()).collect::<Vec<String>>(),
-                "query": q,
-                "total_deferred_tools": total_deferred,
-                "total_documented_tools": total_documented})),
+                "query": q})),
             mcp_meta: None,
             new_messages: Some(vec![]),
         })
     }
 }
 
-/// Render the tool result: a summary line, one bullet per match, then each
-/// match's usage guide in full (budget permitting).
 fn render(
     query: &str,
     matches: &[Match],
+    already_loaded: &[String],
+    unmatched: &[(String, Vec<String>)],
     total_deferred: usize,
     total_documented: usize,
 ) -> String {
-    if matches.is_empty() {
-        return format!(
-            "No matches for query '{query}'. {total_deferred} tool(s) have a deferred \
-             schema, {total_documented} have a detailed usage guide.\n\
-             (If both are 0, there is nothing to fetch — every tool already \
-             carries its full schema and has no guide beyond its description.)"
+    let mut s = String::new();
+
+    let functions: Vec<String> = matches
+        .iter()
+        .filter_map(|m| {
+            let schema = m.deferred_schema.as_ref()?;
+            let def = json!({"description": m.description, "name": m.name, "parameters": schema});
+            Some(format!("<function>{def}</function>"))
+        })
+        .collect();
+    if !functions.is_empty() {
+        s.push_str("<functions>\n");
+        for f in &functions {
+            s.push_str(f);
+            s.push('\n');
+        }
+        s.push_str("</functions>\n\n");
+        s.push_str(
+            "The tools above are now callable with exactly these parameters; \
+             call them directly, there is no need to search for them again.\n\n",
         );
     }
 
-    let activated = matches.iter().filter(|m| m.deferred).count();
-    let mut s = format!("Found {} tool(s) for query '{query}'.\n", matches.len());
-    if activated > 0 {
+    if !already_loaded.is_empty() {
         s.push_str(&format!(
-            "{activated} of them had a deferred schema; their full schemas are \
-             available in the next request.\n"
+            "Already in your tool list with their full schema (call directly): {}\n",
+            already_loaded.join(", ")
         ));
     }
-    s.push('\n');
+    for (name, suggestions) in unmatched {
+        if suggestions.is_empty() {
+            s.push_str(&format!("No tool named '{name}'.\n"));
+        } else {
+            s.push_str(&format!(
+                "No tool named '{name}'. Did you mean: {}?\n",
+                suggestions.join(", ")
+            ));
+        }
+    }
+
+    if matches.is_empty() {
+        if already_loaded.is_empty() && unmatched.is_empty() {
+            s.push_str(&format!(
+                "No matches for query '{query}'. {total_deferred} tool(s) have a deferred \
+                 schema, {total_documented} have a detailed usage guide."
+            ));
+        }
+        return s;
+    }
+
+    s.push_str(&format!("Found {} tool(s):\n", matches.len()));
     for m in matches {
         s.push_str(&format!("  · {}", m.name));
         if !m.description.is_empty() {
@@ -278,28 +389,27 @@ fn render(
         s.push('\n');
     }
 
-    // Guides last: the bullet list stays scannable, and a truncated tail
-    // costs the model the least important part.
+    // Guides last, so a budget cut costs the least important part.
     let mut budget = MAX_GUIDE_BYTES;
-    let mut deferred_guides: Vec<&str> = Vec::new();
+    let mut over_budget: Vec<&str> = Vec::new();
     for m in matches {
         let Some(guide) = m.guide.as_deref() else {
             continue;
         };
         let guide = guide.trim();
         if guide.len() > budget {
-            deferred_guides.push(&m.name);
+            over_budget.push(&m.name);
             continue;
         }
         budget -= guide.len();
         s.push_str(&format!("\n## {} — usage guide\n\n{guide}\n", m.name));
     }
-    if !deferred_guides.is_empty() {
+    if !over_budget.is_empty() {
         s.push_str(&format!(
             "\n(Usage guides for {} were omitted to stay within this result's \
              size budget — request them one at a time with \
              ToolSearch{{\"query\": \"select:<name>\"}}.)\n",
-            deferred_guides.join(", ")
+            over_budget.join(", ")
         ));
     }
     s
@@ -435,41 +545,184 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn select_prefix_with_unknown_name_returns_no_matches() {
-        let reg = make_registry();
-        let tool = ToolSearchTool::new(reg);
-        let ctx = make_ctx();
-        let _ = tool
+    async fn select_prefix_with_unknown_name_is_an_error_with_suggestions() {
+        let tool = ToolSearchTool::new(make_registry());
+        let result = tool
             .call(
-                json!({"query": "select:GhostTool"}),
-                ctx.clone(),
+                json!({"query": "select:GitHubIssue"}),
+                make_ctx(),
                 ProgressSender::noop("tu_1"),
             )
             .await
             .unwrap();
+        assert!(result.is_error);
+        let text = text_of(&result);
         assert!(
-            Vec::<String>::new() /* activated_tools managed by ToolRegistry now */
-                .is_empty()
+            text.contains("Did you mean: GitHubIssues"),
+            "a near miss must point at the real name: {text}"
+        );
+        assert_eq!(
+            result.structured_content.unwrap()["unmatched"],
+            json!(["GitHubIssue"])
         );
     }
 
     #[tokio::test]
-    async fn never_matches_non_deferred_tools() {
-        let reg = make_registry();
-        let tool = ToolSearchTool::new(reg);
-        let ctx = make_ctx();
-        // ActiveTool 不是 deferred —— 关键字命中也不该返回
-        let _ = tool
+    async fn keywords_never_match_non_deferred_undocumented_tools() {
+        let reg = InMemoryToolRegistry::new();
+        reg.register(schema_tool("TicketLookup"));
+        let tool = ToolSearchTool::new(Arc::new(reg));
+        let result = tool
             .call(
-                json!({"query": "active"}),
+                json!({"query": "ticket"}),
+                make_ctx(),
+                ProgressSender::noop("tu_1"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.structured_content.unwrap()["matches"], json!([]));
+    }
+
+    fn text_of(result: &ToolResult) -> String {
+        match &result.content {
+            base::tool::ToolResultContent::Text(t) => t.clone(),
+            _ => panic!("expected text"),
+        }
+    }
+
+    fn schema_tool(name: &'static str) -> Arc<dyn Tool> {
+        struct WithSchema(&'static str);
+        #[async_trait]
+        impl Tool for WithSchema {
+            fn name(&self) -> &str {
+                self.0
+            }
+            fn description(&self) -> &str {
+                "Look up a ticket"
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object", "properties": {"ticket": {"type": "string"}},
+                       "required": ["ticket"]})
+            }
+            async fn call(
+                &self,
+                input: Value,
+                _: ToolContext,
+                _: ProgressSender,
+            ) -> Result<ToolResult, ToolError> {
+                Ok(ToolResult::text(format!("looked up {}", input["ticket"])))
+            }
+        }
+        Arc::new(WithSchema(name))
+    }
+
+    fn deferred_registry() -> Arc<InMemoryToolRegistry> {
+        let reg = InMemoryToolRegistry::new();
+        for t in crate::deferred::apply_deferred_policy(
+            vec![
+                schema_tool("mcp__desk__ticket_get"),
+                schema_tool("mcp__desk__ticket_list"),
+                Arc::new(ActiveTool),
+            ],
+            &[
+                "mcp__desk__ticket_get".into(),
+                "mcp__desk__ticket_list".into(),
+            ],
+        ) {
+            reg.register(t);
+        }
+        Arc::new(reg)
+    }
+
+    /// The contract the prompt promises: the real schema comes back in a
+    /// `<functions>` block, the tool is recorded as activated, and calling it
+    /// afterwards through the registry runs the wrapped tool.
+    #[tokio::test]
+    async fn select_returns_the_real_schema_and_activates_the_tool() {
+        let reg = deferred_registry();
+        let tool = ToolSearchTool::new(reg.clone());
+        let ctx = make_ctx();
+        let result = tool
+            .call(
+                json!({"query": "select:mcp__desk__ticket_get"}),
                 ctx.clone(),
                 ProgressSender::noop("tu_1"),
             )
             .await
             .unwrap();
-        assert!(
-            Vec::<String>::new() /* activated_tools managed by ToolRegistry now */
-                .is_empty()
+        assert!(!result.is_error);
+
+        let text = text_of(&result);
+        let start = text.find("<function>").expect("a <function> line") + "<function>".len();
+        let end = text.find("</function>").unwrap();
+        let def: Value = serde_json::from_str(&text[start..end]).unwrap();
+        assert_eq!(def["name"], "mcp__desk__ticket_get");
+        assert_eq!(def["parameters"]["required"], json!(["ticket"]));
+        assert!(text.starts_with("<functions>\n"));
+
+        assert!(ctx
+            .session
+            .activated_tools()
+            .contains("mcp__desk__ticket_get"));
+
+        let ran = reg
+            .get("mcp__desk__ticket_get")
+            .unwrap()
+            .call(json!({"ticket": "T-1"}), ctx, ProgressSender::noop("tu_2"))
+            .await
+            .unwrap();
+        assert_eq!(text_of(&ran), "looked up \"T-1\"");
+    }
+
+    #[tokio::test]
+    async fn select_takes_a_comma_list_ignores_trailing_words_and_case() {
+        let tool = ToolSearchTool::new(deferred_registry());
+        let result = tool
+            .call(
+                json!({"query": "select: MCP__desk__ticket_get please, mcp__desk__ticket_list"}),
+                make_ctx(),
+                ProgressSender::noop("tu_1"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            result.structured_content.as_ref().unwrap()["matches"],
+            json!(["mcp__desk__ticket_get", "mcp__desk__ticket_list"])
+        );
+        assert_eq!(text_of(&result).matches("<function>").count(), 2);
+    }
+
+    #[tokio::test]
+    async fn plus_term_must_appear_in_the_name() {
+        let tool = ToolSearchTool::new(make_registry());
+        let result = tool
+            .call(
+                json!({"query": "+prs github"}),
+                make_ctx(),
+                ProgressSender::noop("tu_1"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            result.structured_content.unwrap()["matches"],
+            json!(["GitHubPRs"])
+        );
+    }
+
+    #[tokio::test]
+    async fn keywords_are_matched_separately() {
+        let tool = ToolSearchTool::new(make_registry());
+        let result = tool
+            .call(
+                json!({"query": "datadog metrics"}),
+                make_ctx(),
+                ProgressSender::noop("tu_1"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            result.structured_content.unwrap()["matches"][0],
+            json!("Datadog")
         );
     }
 
@@ -592,10 +845,10 @@ mod tests {
     }
 
     /// A tool that is neither deferred nor documented has nothing to
-    /// disclose and must not appear — otherwise `ToolSearch` degrades into a
-    /// second, redundant copy of the tool list.
+    /// disclose: asking for it by name says to call it directly, and it never
+    /// shows up as a search hit.
     #[tokio::test]
-    async fn plain_tools_are_not_searchable() {
+    async fn plain_tools_are_reported_as_already_loaded() {
         struct Plain;
         #[async_trait]
         impl Tool for Plain {
@@ -629,7 +882,11 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(result.structured_content.unwrap()["matches"], json!([]));
+        assert!(!result.is_error);
+        assert!(!text_of(&result).contains("<functions>"));
+        let sc = result.structured_content.unwrap();
+        assert_eq!(sc["matches"], json!([]));
+        assert_eq!(sc["already_loaded"], json!(["Plain"]));
     }
 
     #[tokio::test]

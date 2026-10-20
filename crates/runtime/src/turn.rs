@@ -2149,11 +2149,17 @@ or project context that should survive across sessions.
                         invoked_skills: invoked_skill_records,
                         in_plan_mode: self.in_plan_mode,
                         plan_content: self.plan_content.clone(),
-                        activated_tools: Vec::new(),
+                        activated_tools: {
+                            let mut names: Vec<String> =
+                                self.session_state.activated_tools().into_iter().collect();
+                            names.sort();
+                            names
+                        },
                         running_tasks: self.running_task_summaries.clone(),
                     };
                     if recovery_ctx.recent_files.is_empty()
                         && recovery_ctx.invoked_skills.is_empty()
+                        && recovery_ctx.activated_tools.is_empty()
                         && !recovery_ctx.in_plan_mode
                     {
                         // Skip recovery if nothing to inject
