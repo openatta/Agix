@@ -10,8 +10,8 @@
 //!    - `Allow` **不再直接返回**，只记成一个"待生效的快速通道"（pending
 //!      fast-path），要等下面 3–5 步都没否掉才兑现
 //!    - `Ask` = 工具没意见
-//! 3. 通用规则引擎（`RuleSet`，deny > ask > allow；路径类工具先规整路径）：
-//!    `Deny` 直接返回
+//! 3. 通用规则引擎（`RuleSet`，deny > ask > allow；路径类工具先规整路径，
+//!    shell 命令按简单命令逐段匹配）：`Deny` 直接返回
 //! 4. bypass-immune 路径检查（`is_path_bypass_immune`）→ deny
 //! 5. 模式级硬拒绝：
 //!    - `Plan` 且非只读工具 → deny
@@ -48,8 +48,8 @@ use crate::ruleset::{path_rule_group, RuleHit, RuleSet};
 use async_trait::async_trait;
 use base::permission::PermissionRule;
 use base::permission::{DecisionReason, PermissionDecision, PermissionMode};
-use base::tool::Tool;
 use base::tool::ToolContext;
+use base::tool::{PermissionContentKind, Tool};
 use serde_json::Value;
 use std::sync::{Arc, RwLock};
 
@@ -291,15 +291,19 @@ impl PermissionGate {
         //    （Plan / DontAsk）判完再用：DontAsk 就是靠"有没有 allow 规则"决定
         //    放行还是拒绝的。
         let content = tool.permission_match_content(input);
-        let path_group = path_rule_group(tool.permission_content_kind());
+        let kind = tool.permission_content_kind();
+        let path_group = path_rule_group(kind);
         let resolved = path_group
             .zip(content.as_deref())
             .map(|(_, c)| ResolvedPath::new(c, &ctx.cwd));
         let rule_hit = {
             let rules = self.rules.read().unwrap();
-            match (path_group, &resolved) {
-                (Some(group), Some(path)) => {
+            match (path_group, &resolved, content.as_deref()) {
+                (Some(group), Some(path), _) => {
                     rules.evaluate_path(tool.name(), group, path, &ctx.cwd)
+                }
+                (_, _, Some(line)) if kind == PermissionContentKind::ShellCommand => {
+                    rules.evaluate_shell(tool.name(), line)
                 }
                 _ => rules.evaluate(tool.name(), content.as_deref()),
             }

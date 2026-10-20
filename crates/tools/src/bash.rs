@@ -179,7 +179,7 @@ impl Tool for BashTool {
         }
     }
 
-    async fn check_permissions(&self, input: &Value, _: &ToolContext) -> PermissionDecision {
+    async fn check_permissions(&self, input: &Value, ctx: &ToolContext) -> PermissionDecision {
         // 已知只读命令（ls、cat、git status、cargo build 等）自动允许，
         // 不弹权限窗。其余命令走 gate 模式分派（bypass → allow,
         // acceptEdits → allow if readonly, default → ask）。
@@ -188,8 +188,11 @@ impl Tool for BashTool {
         // bypass-immune 路径与模式级硬拒绝，都放行了才兑现（见
         // `permissions::gate` 模块注释的 N-2 部分）。相应地，`is_read_only`
         // 必须真的意味着"不写、不执行别的程序、不读凭据" —— 见
-        // `classify::classify` 的 N-3 说明。
-        if self.is_read_only(input) {
+        // `classify::classify` 的 N-3 说明。只读也只在项目里只读：参数指向
+        // cwd（及附加目录）之外的路径时，和 Read 读项目外的文件一样要确认。
+        let reads_inside_project = serde_json::from_value::<BashInput>(input.clone())
+            .is_ok_and(|p| path_args_stay_within(&p.command, ctx));
+        if reads_inside_project && self.is_read_only(input) {
             return PermissionDecision::Allow {
                 decision_reason: Some("read_only".into()),
             };
@@ -478,6 +481,41 @@ fn is_long_sleep(cmd: &str) -> bool {
 fn parse_classification(input: &Value) -> Option<CmdClassification> {
     let parsed = serde_json::from_value::<BashInput>(input.clone()).ok()?;
     Some(classify::classify(&parsed.command))
+}
+
+/// Whether every path-looking argument of every command in `line` resolves
+/// inside the session's cwd or one of its additional directories.
+fn path_args_stay_within(line: &str, ctx: &ToolContext) -> bool {
+    let roots: Vec<&std::path::Path> = std::iter::once(ctx.cwd.as_path())
+        .chain(ctx.additional_writable_dirs.iter().map(|d| d.as_path()))
+        .collect();
+    permissions::shell::simple_commands(line)
+        .iter()
+        .flat_map(|cmd| permissions::shell::words(cmd).into_iter().skip(1))
+        .filter_map(|arg| match arg.split_once('=') {
+            Some((flag, value)) if flag.starts_with('-') => Some(value.to_string()),
+            _ if arg.starts_with('-') => None,
+            _ => Some(arg),
+        })
+        .filter(|arg| looks_like_path(arg))
+        .all(|arg| {
+            // `~user/...` is another account's home, which `ResolvedPath`
+            // does not expand.
+            if arg.starts_with('~') && arg != "~" && !arg.starts_with("~/") {
+                return false;
+            }
+            permissions::path_rule::ResolvedPath::new(&arg, &ctx.cwd)
+                .all()
+                .all(|p| {
+                    roots.iter().any(|root| {
+                        p.starts_with(root) || crate::security::is_path_within_root(p, root)
+                    })
+                })
+        })
+}
+
+fn looks_like_path(arg: &str) -> bool {
+    arg.starts_with(['/', '~']) || arg.contains('/') || arg == ".."
 }
 
 pub mod classify {

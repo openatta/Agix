@@ -1,9 +1,11 @@
-//! Path rules from `settings.json`, asked through the real tools.
+//! Permission rules from `settings.json`, asked through the real tools.
 //!
-//! A rule names a path one way; a model can name the same file many others —
-//! relative to cwd, through `..`, through a symlink, through a different tool
-//! that reads the same bytes. Every case here goes in through
-//! `Permission::check` with the built-in tool the model would actually call.
+//! A rule names a path or a command one way; a model can name the same thing
+//! many others — a path relative to cwd, through `..`, through a symlink,
+//! through a different tool that reads the same bytes; a command chained
+//! after another, inside `$(...)`, behind a variable assignment. Every case
+//! here goes in through `Permission::check` with the built-in tool the model
+//! would actually call.
 
 use base::interface::permission::{Permission, PermissionOutcome};
 use base::permission::{PermissionMode, PermissionRule, RuleBehavior, RuleSource};
@@ -229,4 +231,94 @@ async fn an_ask_rule_is_not_waved_through_by_the_tools_own_allow() {
     )
     .await;
     assert!(matches!(o, PermissionOutcome::Permit), "{o:?}");
+}
+
+fn bash(command: &str) -> Value {
+    json!({ "command": command })
+}
+
+#[tokio::test]
+async fn an_allow_for_one_command_does_not_cover_what_is_chained_after_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let perm = permission(
+        vec![rule(RuleBehavior::Allow, "Bash", "cd:*")],
+        PermissionMode::DontAsk,
+    );
+    let o = check(&perm, "Bash", bash("cd sub"), dir.path()).await;
+    assert!(matches!(o, PermissionOutcome::Permit), "{o:?}");
+    for line in [
+        "cd . && xforge approve",
+        "cd .; xforge approve",
+        "cd $(xforge approve)",
+    ] {
+        let o = check(&perm, "Bash", bash(line), dir.path()).await;
+        assert!(is_deny(&o), "{line}: {o:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_deny_for_one_command_reaches_it_wherever_it_sits_in_the_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let perm = permission(
+        vec![rule(RuleBehavior::Deny, "Bash", "rm:*")],
+        PermissionMode::BypassPermissions,
+    );
+    for line in [
+        "true; rm -rf build",
+        "ls && rm -rf build",
+        "echo \"$(rm -rf build)\"",
+        "FOO=1 rm -rf build",
+        "if true; then rm -rf build; fi",
+        "echo 'a;b' | rm -rf build",
+    ] {
+        let o = check(&perm, "Bash", bash(line), dir.path()).await;
+        assert!(is_deny(&o), "{line}: {o:?}");
+    }
+    let o = check(&perm, "Bash", bash("echo 'rm -rf build'"), dir.path()).await;
+    assert!(matches!(o, PermissionOutcome::Permit), "{o:?}");
+}
+
+#[tokio::test]
+async fn an_exact_allow_for_a_whole_line_still_permits_that_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let perm = permission(
+        vec![rule(
+            RuleBehavior::Allow,
+            "Bash",
+            "npm run build && npm test",
+        )],
+        PermissionMode::DontAsk,
+    );
+    let o = check(&perm, "Bash", bash("npm run build && npm test"), dir.path()).await;
+    assert!(matches!(o, PermissionOutcome::Permit), "{o:?}");
+}
+
+#[tokio::test]
+async fn a_read_only_command_is_only_silent_inside_the_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path();
+    let perm = permission(vec![], PermissionMode::Default);
+    for line in [
+        "cat README.md",
+        "ls src/",
+        "git log origin/main",
+        "grep -r foo .",
+    ] {
+        let o = check(&perm, "Bash", bash(line), cwd).await;
+        assert!(matches!(o, PermissionOutcome::Permit), "{line}: {o:?}");
+    }
+    for line in [
+        "cat /etc/hosts",
+        "ls ../",
+        "cat ~/.bashrc",
+        "grep -r token --include=x /var/log",
+        "head --file=/etc/hosts",
+        "cat ~root/.profile",
+    ] {
+        let o = check(&perm, "Bash", bash(line), cwd).await;
+        assert!(
+            matches!(o, PermissionOutcome::Prompt { .. }),
+            "{line}: {o:?}"
+        );
+    }
 }

@@ -187,6 +187,47 @@ impl RuleSet {
             })
     }
 
+    /// shell 命令行的裁决：按 `shell::simple_commands` 切出的每条简单命令分别
+    /// 匹配。任何一段（或整行）命中 deny 就拒、命中 ask 就问；放行要求每一段都
+    /// 被 allow——或者整行原样等于一条不带通配的 allow（用户批准过的正是这一整行）。
+    pub fn evaluate_shell(&self, tool_name: &str, line: &str) -> RuleHit {
+        let whole = self.evaluate(tool_name, Some(line));
+        let segments = crate::shell::simple_commands(line);
+        if segments.is_empty() {
+            return whole;
+        }
+
+        let mut refusal = RuleHit::None;
+        let mut segment_allow = None;
+        let mut all_allowed = true;
+        for seg in &segments {
+            match self.evaluate(tool_name, Some(seg)) {
+                RuleHit::Allow(r) => {
+                    segment_allow.get_or_insert(r);
+                }
+                other => {
+                    all_allowed = false;
+                    refusal = refusal.restricted_by(other);
+                }
+            }
+        }
+        let exact_allow = match whole {
+            RuleHit::Allow(r) if r.rule_content.as_deref() == Some(line.trim()) => Some(r),
+            RuleHit::Allow(_) | RuleHit::None => None,
+            refused => {
+                refusal = refusal.restricted_by(refused);
+                None
+            }
+        };
+
+        match (refusal, exact_allow, segment_allow) {
+            (r @ (RuleHit::Deny(_) | RuleHit::Ask(_)), _, _) => r,
+            (_, Some(r), _) => RuleHit::Allow(r),
+            (_, None, Some(r)) if all_allowed => RuleHit::Allow(r),
+            _ => RuleHit::None,
+        }
+    }
+
     /// `matches` 对命中的规则返回其特异性，不命中返回 `None`。
     fn decide(&self, mut matches: impl FnMut(&PermissionRule) -> Option<i32>) -> RuleHit {
         let mut best: Option<(&PermissionRule, MatchScore)> = None;

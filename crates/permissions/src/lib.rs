@@ -11,4 +11,5 @@ pub mod rule_set_permission;
 pub mod ruleset;
 pub mod settings_patch;
 pub mod shadow;
+pub mod shell;
 pub mod yolo;
