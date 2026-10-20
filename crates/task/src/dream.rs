@@ -230,15 +230,21 @@ mod tests {
             DreamTask::start_dream("What is the meaning of life?".into(), tools, root.path());
         let file_path = dream.dream_file_path();
 
-        // Wait briefly for the background task to write initial content
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let content = loop {
+            let content = tokio::fs::read_to_string(&file_path)
+                .await
+                .unwrap_or_default();
+            if content.contains("Initial Prompt") || tokio::time::Instant::now() >= deadline {
+                break content;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        };
 
-        assert!(file_path.exists(), "dream file should exist");
-        assert!(dream.is_running() || !dream.is_running()); // may have completed
-
-        // Read the file
-        let content = tokio::fs::read_to_string(&file_path).await.unwrap();
-        assert!(content.contains("Initial Prompt"));
+        assert!(
+            content.contains("Initial Prompt"),
+            "dream file: {content:?}"
+        );
         assert!(content.contains("What is the meaning of life?"));
 
         dream.cancel();
