@@ -8,8 +8,24 @@
 //! 不做"默认拒"语义；规则不命中就返回 None，由 mode 分派定夺。
 
 use crate::dangerous::{detect_dangerous_rules, log_dangerous_warnings};
+use crate::path_rule::{self, ResolvedPath};
 use crate::shadow::{detect_shadowed_rules, log_shadow_warnings};
 use base::permission::{PermissionMode, PermissionRule, RuleBehavior};
+use base::tool::PermissionContentKind;
+use std::path::Path;
+
+/// Tools whose rule content is a path.
+const PATH_RULE_TOOLS: &[&str] = &["Read", "Grep", "Glob", "Edit", "Write", "NotebookEdit"];
+
+/// The rule tool name whose path rules also govern every tool of `kind`:
+/// `Read(...)` covers whatever reads a file, `Edit(...)` whatever writes one.
+pub fn path_rule_group(kind: PermissionContentKind) -> Option<&'static str> {
+    match kind {
+        PermissionContentKind::ReadPath => Some("Read"),
+        PermissionContentKind::WritePath => Some("Edit"),
+        PermissionContentKind::Opaque | PermissionContentKind::ShellCommand => None,
+    }
+}
 
 /// Tools that are considered safe (read-only, no side effects).
 ///
@@ -36,6 +52,21 @@ pub enum RuleHit {
     None,
 }
 
+impl RuleHit {
+    /// `self`, unless `other` is a stronger refusal: a deny overrides
+    /// anything that is not a deny, an ask overrides an allow or no hit.
+    /// `other`'s allow never widens `self`.
+    pub(crate) fn restricted_by(self, other: RuleHit) -> RuleHit {
+        match (&self, &other) {
+            (RuleHit::Deny(_), _) => self,
+            (_, RuleHit::Deny(_)) => other,
+            (RuleHit::Ask(_), _) => self,
+            (_, RuleHit::Ask(_)) => other,
+            _ => self,
+        }
+    }
+}
+
 #[derive(Default, Clone)]
 pub struct RuleSet {
     rules: Vec<PermissionRule>,
@@ -59,6 +90,19 @@ impl RuleSet {
         let dangers = detect_dangerous_rules(&rules);
         if !dangers.is_empty() {
             log_dangerous_warnings(&dangers);
+        }
+        for r in &rules {
+            let Some(content) = r.rule_content.as_deref() else {
+                continue;
+            };
+            if PATH_RULE_TOOLS.contains(&r.tool_name.as_str())
+                && path_rule::star_meaning_changed(content)
+            {
+                tracing::warn!(
+                    rule = %crate::rule::format_rule_string(r),
+                    "`*` in a path rule no longer matches across `/`; use `**` to reach subdirectories"
+                );
+            }
         }
         Self { rules }
     }
@@ -112,6 +156,35 @@ impl RuleSet {
                 (Some(_), None) => None,
             }
         })
+    }
+
+    /// 路径类工具调用的裁决：规则内容按路径解读（见 `path_rule`），工具自己名下的
+    /// 规则和 `group`（`Read` / `Edit`）名下的规则都适用。别名路径上命中的 deny /
+    /// ask 同样生效；allow 只认工具真正打开的那个路径。
+    pub fn evaluate_path(
+        &self,
+        tool_name: &str,
+        group: &str,
+        path: &ResolvedPath,
+        cwd: &Path,
+    ) -> RuleHit {
+        let decide_for = |p: &Path| {
+            self.decide(|r| {
+                if !(matches_tool_name(&r.tool_name, tool_name) || r.tool_name == group) {
+                    return None;
+                }
+                match &r.rule_content {
+                    None => Some(0),
+                    Some(rc) => path_rule::matches(&path_rule::resolve_pattern(rc, cwd), p)
+                        .then_some(rc.len() as i32),
+                }
+            })
+        };
+        path.aliases
+            .iter()
+            .fold(decide_for(&path.primary), |verdict, alias| {
+                verdict.restricted_by(decide_for(alias))
+            })
     }
 
     /// `matches` 对命中的规则返回其特异性，不命中返回 `None`。

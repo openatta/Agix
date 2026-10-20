@@ -78,10 +78,13 @@ impl Tool for GlobTool {
     }
 
     fn permission_match_content(&self, input: &Value) -> Option<String> {
-        // 用 path（如果给）做规则匹配；否则用 pattern
         serde_json::from_value::<GlobInput>(input.clone())
             .ok()
-            .map(|i| i.path.unwrap_or(i.pattern))
+            .map(|i| i.path.unwrap_or_else(|| ".".into()))
+    }
+
+    fn permission_content_kind(&self) -> base::tool::PermissionContentKind {
+        base::tool::PermissionContentKind::ReadPath
     }
 
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {

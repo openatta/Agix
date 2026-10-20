@@ -132,6 +132,10 @@ impl Tool for DeferredTool {
         self.inner.permission_match_content(input)
     }
 
+    fn permission_content_kind(&self) -> base::tool::PermissionContentKind {
+        self.inner.permission_content_kind()
+    }
+
     fn affected_paths(&self, input: &Value) -> Vec<PathBuf> {
         self.inner.affected_paths(input)
     }

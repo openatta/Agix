@@ -1,0 +1,193 @@
+//! Path rules from `settings.json`, asked through the real tools.
+//!
+//! A rule names a path one way; a model can name the same file many others —
+//! relative to cwd, through `..`, through a symlink, through a different tool
+//! that reads the same bytes. Every case here goes in through
+//! `Permission::check` with the built-in tool the model would actually call.
+
+use base::interface::permission::{Permission, PermissionOutcome};
+use base::permission::{PermissionMode, PermissionRule, RuleBehavior, RuleSource};
+use permissions::gate::PermissionGate;
+use permissions::rule_set_permission::RuleSetPermission;
+use permissions::ruleset::RuleSet;
+use serde_json::{json, Value};
+use std::path::Path;
+use std::sync::Arc;
+
+fn rule(behavior: RuleBehavior, tool: &str, content: impl Into<String>) -> PermissionRule {
+    PermissionRule {
+        source: RuleSource::UserSettings,
+        behavior,
+        tool_name: tool.into(),
+        rule_content: Some(content.into()),
+    }
+}
+
+fn permission(rules: Vec<PermissionRule>, mode: PermissionMode) -> RuleSetPermission {
+    let registry = Arc::new(base::tool::InMemoryToolRegistry::new());
+    tools::register_builtin_tools(&registry);
+    RuleSetPermission::new(
+        Arc::new(PermissionGate::new(RuleSet::new(rules))),
+        registry,
+        mode,
+    )
+}
+
+async fn check(
+    perm: &RuleSetPermission,
+    tool: &str,
+    input: Value,
+    cwd: &Path,
+) -> PermissionOutcome {
+    perm.check(tool, &input, cwd, "s").await
+}
+
+fn is_deny(o: &PermissionOutcome) -> bool {
+    matches!(o, PermissionOutcome::Deny { .. })
+}
+
+#[tokio::test]
+async fn a_denied_file_inside_cwd_cannot_be_read_by_a_relative_or_dotted_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path();
+    std::fs::create_dir(cwd.join("src")).unwrap();
+    std::fs::write(cwd.join("secret.txt"), "x").unwrap();
+    let perm = permission(
+        vec![rule(
+            RuleBehavior::Deny,
+            "Read",
+            cwd.join("secret.txt").to_string_lossy(),
+        )],
+        PermissionMode::Default,
+    );
+    for name in ["secret.txt", "./secret.txt", "src/../secret.txt"] {
+        let o = check(&perm, "Read", json!({"file_path": name}), cwd).await;
+        assert!(is_deny(&o), "{name}: {o:?}");
+    }
+    let o = check(&perm, "Read", json!({"file_path": "src/other.rs"}), cwd).await;
+    assert!(matches!(o, PermissionOutcome::Permit), "{o:?}");
+}
+
+#[tokio::test]
+async fn a_relative_rule_pattern_is_read_relative_to_cwd() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path();
+    let perm = permission(
+        vec![rule(RuleBehavior::Deny, "Read", "private/**")],
+        PermissionMode::Default,
+    );
+    let abs = cwd.join("private/notes.md");
+    let o = check(
+        &perm,
+        "Read",
+        json!({"file_path": abs.to_string_lossy()}),
+        cwd,
+    )
+    .await;
+    assert!(is_deny(&o), "{o:?}");
+}
+
+#[tokio::test]
+async fn a_read_rule_also_governs_grep_and_glob() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path();
+    std::fs::create_dir(cwd.join("vault")).unwrap();
+    let perm = permission(
+        vec![rule(
+            RuleBehavior::Deny,
+            "Read",
+            cwd.join("vault").to_string_lossy(),
+        )],
+        PermissionMode::Default,
+    );
+    let o = check(
+        &perm,
+        "Grep",
+        json!({"pattern": "password", "path": "vault"}),
+        cwd,
+    )
+    .await;
+    assert!(is_deny(&o), "grep: {o:?}");
+    let o = check(&perm, "Glob", json!({"pattern": "*", "path": "vault"}), cwd).await;
+    assert!(is_deny(&o), "glob: {o:?}");
+}
+
+#[tokio::test]
+async fn an_edit_rule_also_governs_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path();
+    let perm = permission(
+        vec![rule(
+            RuleBehavior::Deny,
+            "Edit",
+            format!("{}/locked/**", cwd.display()),
+        )],
+        PermissionMode::AcceptEdits,
+    );
+    let o = check(
+        &perm,
+        "Write",
+        json!({"file_path": "locked/a.txt", "content": "x"}),
+        cwd,
+    )
+    .await;
+    assert!(is_deny(&o), "{o:?}");
+}
+
+#[tokio::test]
+async fn a_tilde_in_a_rule_means_the_home_directory() {
+    let Some(home) = std::env::var_os("HOME") else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let perm = permission(
+        vec![rule(RuleBehavior::Deny, "Read", "~/attacore-test-creds/**")],
+        PermissionMode::BypassPermissions,
+    );
+    let target = Path::new(&home).join("attacore-test-creds/token");
+    let o = check(
+        &perm,
+        "Read",
+        json!({"file_path": target.to_string_lossy()}),
+        dir.path(),
+    )
+    .await;
+    assert!(is_deny(&o), "{o:?}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_symlink_to_a_denied_file_is_denied_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = std::fs::canonicalize(dir.path()).unwrap();
+    std::fs::write(cwd.join("secret.txt"), "x").unwrap();
+    std::os::unix::fs::symlink(cwd.join("secret.txt"), cwd.join("innocent.txt")).unwrap();
+    let perm = permission(
+        vec![rule(
+            RuleBehavior::Deny,
+            "Read",
+            cwd.join("secret.txt").to_string_lossy(),
+        )],
+        PermissionMode::Default,
+    );
+    let o = check(&perm, "Read", json!({"file_path": "innocent.txt"}), &cwd).await;
+    assert!(is_deny(&o), "{o:?}");
+}
+
+#[tokio::test]
+async fn a_single_star_in_a_path_rule_stays_within_one_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path();
+    let perm = permission(
+        vec![rule(
+            RuleBehavior::Allow,
+            "Read",
+            format!("{}/docs/*", cwd.display()),
+        )],
+        PermissionMode::DontAsk,
+    );
+    let o = check(&perm, "Read", json!({"file_path": "docs/a.md"}), cwd).await;
+    assert!(matches!(o, PermissionOutcome::Permit), "{o:?}");
+    let o = check(&perm, "Read", json!({"file_path": "docs/sub/b.md"}), cwd).await;
+    assert!(is_deny(&o), "{o:?}");
+}

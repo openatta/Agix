@@ -4,6 +4,7 @@ pub mod dangerous;
 pub mod error;
 pub mod gate;
 pub mod llm_classifier;
+pub mod path_rule;
 pub mod path_safety;
 pub mod rule;
 pub mod rule_set_permission;

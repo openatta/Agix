@@ -135,6 +135,10 @@ impl Tool for FileEditTool {
             .map(|i| i.file_path)
     }
 
+    fn permission_content_kind(&self) -> base::tool::PermissionContentKind {
+        base::tool::PermissionContentKind::WritePath
+    }
+
     async fn validate_input(&self, input: &Value, ctx: &ToolContext) -> ValidationResult {
         let parsed: Result<FileEditInput, _> = serde_json::from_value(input.clone());
         match parsed {

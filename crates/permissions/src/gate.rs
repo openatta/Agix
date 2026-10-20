@@ -39,8 +39,9 @@
 //! 由调用方（engine）决定怎么把它升级成 allow / deny。
 
 use crate::error::GateError;
+use crate::path_rule::ResolvedPath;
 use crate::rule::format_rule_string;
-use crate::ruleset::{RuleHit, RuleSet};
+use crate::ruleset::{path_rule_group, RuleHit, RuleSet};
 use async_trait::async_trait;
 use base::permission::PermissionRule;
 use base::permission::{DecisionReason, PermissionDecision, PermissionMode};
@@ -287,11 +288,28 @@ impl PermissionGate {
         //    （Plan / DontAsk）判完再用：DontAsk 就是靠"有没有 allow 规则"决定
         //    放行还是拒绝的。
         let content = tool.permission_match_content(input);
-        let rule_hit = self
-            .rules
-            .read()
-            .unwrap()
-            .evaluate(tool.name(), content.as_deref());
+        let path_group = path_rule_group(tool.permission_content_kind());
+        let resolved = path_group
+            .zip(content.as_deref())
+            .map(|(_, c)| ResolvedPath::new(c, &ctx.cwd));
+        let rule_hit = {
+            let rules = self.rules.read().unwrap();
+            match (path_group, &resolved) {
+                (Some(group), Some(path)) => {
+                    rules.evaluate_path(tool.name(), group, path, &ctx.cwd)
+                }
+                _ => rules.evaluate(tool.name(), content.as_deref()),
+            }
+        };
+        let checked_strings: Vec<String> = content
+            .iter()
+            .cloned()
+            .chain(
+                resolved
+                    .iter()
+                    .flat_map(|r| r.all().map(|p| p.to_string_lossy().into_owned())),
+            )
+            .collect();
         let rule_allow = match rule_hit {
             RuleHit::Deny(rule) => {
                 return Ok(PermissionDecision::Deny {
@@ -314,16 +332,14 @@ impl PermissionGate {
         //    the tool allowed itself in step 2 — block access to sensitive paths
         //    that should never be touched without explicit user confirmation.
         //    Equivalent to TS step 1g (safety checks).
-        if let Some(content) = content.as_deref() {
-            if is_path_bypass_immune(content) {
-                return Ok(PermissionDecision::Deny {
-                    message: format!(
-                        "access to protected path '{content}' is blocked regardless of \
-                         permission mode — this path is bypass-immune"
-                    ),
-                    decision_reason: DecisionReason::ToolBuiltin("bypass_immune".into()),
-                });
-            }
+        if let Some(content) = checked_strings.iter().find(|s| is_path_bypass_immune(s)) {
+            return Ok(PermissionDecision::Deny {
+                message: format!(
+                    "access to protected path '{content}' is blocked regardless of \
+                     permission mode — this path is bypass-immune"
+                ),
+                decision_reason: DecisionReason::ToolBuiltin("bypass_immune".into()),
+            });
         }
 
         // 5. 模式级硬拒绝 —— 读 session（运行时可变），不读 config 的初始值。
@@ -358,9 +374,9 @@ impl PermissionGate {
         //    改；但"工具自己说没问题"不足以让一次改写 agent 自身规则的调用静默
         //    通过。所以这里只是**跳过快速通道**，让它落到下面的模式分派去走正常
         //    确认流程 —— 该问就问，而不是一律拒绝。
-        let needs_confirmation = content
-            .as_deref()
-            .is_some_and(is_path_confirmation_required);
+        let needs_confirmation = checked_strings
+            .iter()
+            .any(|s| is_path_confirmation_required(s));
         if tool_self_allow && !needs_confirmation {
             return Ok(PermissionDecision::Allow {
                 updated_input: None,

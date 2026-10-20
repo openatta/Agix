@@ -149,6 +149,10 @@ impl Tool for BashTool {
             .map(|p| p.command)
     }
 
+    fn permission_content_kind(&self) -> base::tool::PermissionContentKind {
+        base::tool::PermissionContentKind::ShellCommand
+    }
+
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {
         if input.get("run_in_background").and_then(Value::as_bool) == Some(true) {
             return ValidationResult::err(

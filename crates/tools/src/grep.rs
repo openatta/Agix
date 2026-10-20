@@ -97,7 +97,11 @@ impl Tool for GrepTool {
     fn permission_match_content(&self, input: &Value) -> Option<String> {
         serde_json::from_value::<GrepInput>(input.clone())
             .ok()
-            .and_then(|i| i.path)
+            .map(|i| i.path.unwrap_or_else(|| ".".into()))
+    }
+
+    fn permission_content_kind(&self) -> base::tool::PermissionContentKind {
+        base::tool::PermissionContentKind::ReadPath
     }
 
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {

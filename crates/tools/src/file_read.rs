@@ -75,6 +75,10 @@ impl Tool for FileReadTool {
             .map(|i| i.file_path)
     }
 
+    fn permission_content_kind(&self) -> base::tool::PermissionContentKind {
+        base::tool::PermissionContentKind::ReadPath
+    }
+
     async fn validate_input(&self, input: &Value, _ctx: &ToolContext) -> ValidationResult {
         let parsed: Result<FileReadInput, _> = serde_json::from_value(input.clone());
         match parsed {

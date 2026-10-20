@@ -94,6 +94,10 @@ impl Tool for MonitorTool {
             .map(|p| p.command)
     }
 
+    fn permission_content_kind(&self) -> base::tool::PermissionContentKind {
+        base::tool::PermissionContentKind::ShellCommand
+    }
+
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {
         let parsed: Result<MonitorInput, _> = serde_json::from_value(input.clone());
         match parsed {

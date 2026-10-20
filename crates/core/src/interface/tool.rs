@@ -342,6 +342,22 @@ impl ToolContext {
     }
 }
 
+/// What a tool's permission match content is, which decides how rules are
+/// matched against it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionContentKind {
+    /// Compared to rule patterns verbatim.
+    Opaque,
+    /// A path the tool reads. Resolved against the session's cwd before
+    /// matching, and `Read(...)` rules apply to it as well as the tool's own.
+    ReadPath,
+    /// A path the tool writes. Resolved like `ReadPath`; `Edit(...)` rules
+    /// apply to it as well as the tool's own.
+    WritePath,
+    /// A shell command line, matched one simple command at a time.
+    ShellCommand,
+}
+
 // ── Unified Tool trait ──
 
 #[async_trait]
@@ -450,6 +466,10 @@ pub trait Tool: Send + Sync + 'static {
     }
     fn permission_match_content(&self, _: &Value) -> Option<String> {
         None
+    }
+    /// How the permission engine reads [`permission_match_content`](Self::permission_match_content).
+    fn permission_content_kind(&self) -> PermissionContentKind {
+        PermissionContentKind::Opaque
     }
     fn affected_paths(&self, _: &Value) -> Vec<PathBuf> {
         vec![]
