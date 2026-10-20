@@ -53,3 +53,24 @@
 不属于这两类的，按 §2 处理。
 
 文档被代码注释引用是常态，删除或重命名前先 `grep` 一遍引用点，别留悬空链接。（曾经有 9 处指向不存在文档的引用，其中 `docs/RUST_ARCHITECTURE.md` 被 `crates/permissions/src/gate.rs` 当作权威依据引用了 9 次——现已清干净，`.rs` 与 `docs/` 里现在没有悬空引用。）
+
+## 4. 版本与发布
+
+**每次推送到远程就是一次发布，必须带版本标签。**
+
+版本标识的形式是 `AttaCore-v<x.y.z>-<YYYYMMDD><NN>`，例如 `AttaCore-v0.2.6-2026102001`：
+
+- `x.y.z`：每次发布 `z` 加 1；`x`、`y` 的升级另行决定。
+- `YYYYMMDD`：发布当天的日期。
+- `NN`：当天第几次发布，从 `01` 起。用 `git tag -l 'AttaCore-v*-<YYYYMMDD>*'` 查当天已有的标签，取最大序号加 1。
+
+`Cargo.toml` 的 `[workspace.package] version` 写成 `x.y.z-YYYYMMDDNN`，不带程序名前缀——Cargo 不接受前缀，而 `CARGO_PKG_VERSION`（`daemon.status` 等处报出的版本）就取这一段。
+
+发布步骤：
+
+1. 改 `Cargo.toml` 的版本号，`cargo update -w` 同步 `Cargo.lock`。
+2. `cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace` 全部通过。
+3. 版本号改动单独一个提交。
+4. 推送 `main`，然后打附注标签（标签名就是完整的版本标识，标签消息写本次发布的要点），再推送标签。
+
+`v0.2.5` 及更早的标签保留原样，不改名。
