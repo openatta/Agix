@@ -323,6 +323,27 @@ fn find_meta(entries: &[history::entry::EnvelopedEntry]) -> Option<&history::ent
         .find(|entry| matches!(entry, history::entry::LogEntry::Meta { .. }))
 }
 
+/// What a [`SessionCustomizer`] is told about the session being built.
+pub struct SessionCtx<'a> {
+    pub session_id: &'a str,
+    pub scene: &'a str,
+    /// `None` for a no-project session.
+    pub project_root: Option<&'a Path>,
+    /// Whether the session already has a history this build continues —
+    /// a resume, or a rebuild after a settings change or an eviction.
+    pub resumed: bool,
+}
+
+/// A host's last word on every session engine the pool builds: it is handed
+/// the configured [`Builder`] and returns the one to build. Middleware, event
+/// sinks, an elicitation handler — whatever `runtime` exposes on `Builder`
+/// and the daemon does not.
+///
+/// Applied on every build of a session, not only the first: a rebuild after a
+/// settings change, an eviction or a restart goes through it again, so what
+/// it adds is never quietly missing from the rebuilt engine.
+pub type SessionCustomizer = Arc<dyn Fn(Builder, &SessionCtx<'_>) -> Builder + Send + Sync>;
+
 /// How long a stopping Agent gets to finish its turn and persist it.
 const AGENT_EXIT_GRACE: Duration = Duration::from_secs(5);
 
@@ -615,6 +636,7 @@ pub struct SessionPool {
     permission_prompt_timeout: Duration,
     /// Where provider keys come from when a binding builds its router.
     credentials: Arc<dyn base::interface::credentials::CredentialSource>,
+    customize: Option<SessionCustomizer>,
     /// Pool-level telemetry sink — for events that happen *before* any
     /// per-session `Agent`/handle exists (`session.resume` against a
     /// session that's already live, a terminal sidechain, or an unknown
@@ -843,6 +865,7 @@ impl SessionPool {
             served: std::sync::Mutex::new(Vec::new()),
             permission_prompt_timeout: DEFAULT_PERMISSION_PROMPT_TIMEOUT,
             credentials: Arc::new(base::interface::credentials::ConfigCredentials),
+            customize: None,
             pool_telemetry,
         }
     }
@@ -864,6 +887,12 @@ impl SessionPool {
     /// Builder-style rather than another `new()` parameter: `new()` already
     /// takes eleven arguments, and every existing caller (tests included)
     /// wants the default.
+    /// Hand every session engine this pool builds to `customize` last.
+    pub fn with_session_customizer(mut self, customize: SessionCustomizer) -> Self {
+        self.customize = Some(customize);
+        self
+    }
+
     pub fn with_permission_prompt_timeout(mut self, timeout: Duration) -> Self {
         self.permission_prompt_timeout = timeout;
         self
@@ -2070,6 +2099,17 @@ impl SessionPool {
 
         if let Some(schema) = options.and_then(|o| o.output_schema.clone()) {
             builder = builder.output_schema(schema);
+        }
+        if let Some(customize) = &self.customize {
+            builder = customize(
+                builder,
+                &SessionCtx {
+                    session_id: &session_id,
+                    scene: &scene_id,
+                    project_root: project_root_for_meta.as_deref(),
+                    resumed: resume,
+                },
+            );
         }
         let (mut agent, event_rx, input_tx) =
             builder.build().map_err(|e| format!("build agent: {e}"))?;

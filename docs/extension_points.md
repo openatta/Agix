@@ -625,6 +625,12 @@ Builder::new().tool_middleware(Arc::new(Deadline));
 
 包装按注册顺序嵌套,先注册的在最外面。
 
+daemon 的嵌入方碰不到 `Builder`——会话引擎是池子建的。`Assembly { customize_session:
+Some(..), .. }` 交给池子一个 `SessionCustomizer`:每建一次会话引擎,池子把配好的
+`Builder` 和一个 `SessionCtx`(会话 id、scene、项目、是不是续着已有历史)交给它,
+用它返回的那个 `Builder` 去建。重建也走这一步——设置变化、空闲回收、重启之后的
+引擎上,它加的中间件、事件 sink 都还在。
+
 ### 一个工具结果能长什么样 — `tool.result`
 
 ```rust

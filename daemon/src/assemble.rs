@@ -33,7 +33,7 @@ use model::client::{AnthropicClient, AuthMode, HttpAnthropicClient};
 use tracing::{info, warn};
 
 use crate::config::DaemonConfig;
-use crate::session_pool::{SessionPool, DEFAULT_PERMISSION_PROMPT_TIMEOUT};
+use crate::session_pool::{SessionCustomizer, SessionPool, DEFAULT_PERMISSION_PROMPT_TIMEOUT};
 
 /// Allow-everything permission — **the opt-out**, no longer the default.
 ///
@@ -120,6 +120,9 @@ pub struct Assembly {
     /// What a `bypassPermissions` session runs under. `None` is
     /// [`AllowAllPermission`].
     pub permission: Option<Arc<dyn Permission>>,
+    /// The host's last word on every session engine — see
+    /// [`SessionCustomizer`].
+    pub customize_session: Option<SessionCustomizer>,
 }
 
 impl Default for Assembly {
@@ -133,6 +136,7 @@ impl Default for Assembly {
             credentials: None,
             transcripts: Transcripts::default(),
             permission: None,
+            customize_session: None,
         }
     }
 }
@@ -209,21 +213,23 @@ pub async fn pool(
         Transcripts::Nowhere => None,
     };
 
-    let pool = Arc::new(
-        SessionPool::new(
-            config.session_cap,
-            config.session_idle_timeout_secs,
-            client,
-            settings,
-            scene,
-            permission,
-            cwd,
-            history_store,
-            config.paths.clone(),
-        )
-        .with_permission_prompt_timeout(assembly.permission_prompt_timeout)
-        .with_credentials(credentials),
-    );
+    let mut pool = SessionPool::new(
+        config.session_cap,
+        config.session_idle_timeout_secs,
+        client,
+        settings,
+        scene,
+        permission,
+        cwd,
+        history_store,
+        config.paths.clone(),
+    )
+    .with_permission_prompt_timeout(assembly.permission_prompt_timeout)
+    .with_credentials(credentials);
+    if let Some(customize) = assembly.customize_session {
+        pool = pool.with_session_customizer(customize);
+    }
+    let pool = Arc::new(pool);
 
     for scene in assembly.scenes {
         pool.register_scene(scene);
