@@ -247,6 +247,21 @@ fn find_meta(entries: &[history::entry::EnvelopedEntry]) -> Option<&history::ent
 /// How long a stopping Agent gets to finish its turn and persist it.
 const AGENT_EXIT_GRACE: Duration = Duration::from_secs(5);
 
+/// What `session.run_turn` does when the session is already running a turn.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnBusy {
+    /// Refuse with `SESSION_BUSY`; the message is not delivered.
+    #[default]
+    Reject,
+    /// Wait for the running turn to end, then run this one.
+    Queue,
+    /// Hand the message to the running turn, which adds it at its next step
+    /// boundary. Falls back to `Queue` when the turn is already past its
+    /// last step, or when the message has attachments.
+    Steer,
+}
+
 // ── LiveSession ─────────────────────────────────────────────────────────
 
 struct LiveSession {
@@ -288,6 +303,9 @@ struct LiveSession {
     /// (`SESSION_BUSY.data.current_turn_id`) and `session.get` can report
     /// `turn_state` instead of the caller having to infer it.
     current_turn: Option<String>,
+    /// Woken whenever the session stops running a turn — a `run_turn` with
+    /// `on_busy: queue` waits on it for its slot.
+    idle: Arc<tokio::sync::Notify>,
     /// What this session's bound scripts did, if it bound any.
     ///
     /// Kept because a script that quietly does nothing is the failure mode of
@@ -2041,6 +2059,7 @@ impl SessionPool {
                 .config_generation
                 .load(std::sync::atomic::Ordering::Relaxed),
             current_turn: None,
+            idle: Arc::new(tokio::sync::Notify::new()),
             scripts: script_ledger,
             subscribers: HashMap::new(),
             pending_prompts: HashMap::new(),
@@ -2413,6 +2432,7 @@ impl SessionPool {
         let mut sessions = self.sessions.lock().await;
         if let Some(live) = sessions.get_mut(sid) {
             live.current_turn = None;
+            live.idle.notify_waiters();
         }
     }
 
@@ -2428,6 +2448,7 @@ impl SessionPool {
         client: Arc<crate::rpc::Client>,
         id: serde_json::Value,
         options: Option<SessionOptions>,
+        on_busy: OnBusy,
     ) -> RpcResponse {
         // ── 解析或创建 session ──
         let sid = match session_id {
@@ -2501,45 +2522,84 @@ impl SessionPool {
             }
         };
 
-        // ── 获取 session 的 input_tx 和 event_rx ──
-        let (input_tx, event_rx_mutex, busy_with) = {
-            let mut sessions = self.sessions.lock().await;
-            let live = match sessions.get_mut(&sid) {
-                Some(s) => s,
-                None => {
+        // ── 拿到这个 session 的 turn 槽位 ──
+        //
+        // 取走 `event_rx` 就是"一个会话同一时刻只能有一个 turn"的实现，而且
+        // 必须**在发消息之前**取：消息一旦 send 进去就归正在跑的那个 Agent
+        // 消费了，先发后取的话，调用方看到忙，消息却已经被别的 turn 吃掉。
+        let mut steer_tried = false;
+        let (input_tx, event_rx_mutex, mut event_rx) = loop {
+            let (input_tx, event_rx_mutex, busy_with, idle) = {
+                let mut sessions = self.sessions.lock().await;
+                let Some(live) = sessions.get_mut(&sid) else {
                     return RpcResponse::err(
                         id,
                         codes::SESSION_NOT_FOUND,
                         format!("session not found: {sid}"),
                     );
-                }
+                };
+                live.last_active = Instant::now();
+                (
+                    live.input_tx.clone(),
+                    live.event_rx.clone(),
+                    live.current_turn.clone(),
+                    live.idle.clone(),
+                )
             };
-            live.last_active = Instant::now();
-            (
-                live.input_tx.clone(),
-                live.event_rx.clone(),
-                live.current_turn.clone(),
-            )
-        };
-
-        // 取出 event_rx（独占 drain）——**在发消息之前**。
-        //
-        // 顺序是关键：这个 take 就是"一个会话同一时刻只能有一个 turn"的实现，
-        // 而消息一旦 send 进去就归正在跑的那个 Agent 消费了。先发后取的话，
-        // 第二个 run_turn 会把用户这句话塞进第一个 turn 的输入队列，然后自己
-        // 报错返回——调用方看到失败，消息却已经被别的 turn 吃掉了。
-        let mut event_rx = match event_rx_mutex.lock().await.take() {
-            Some(rx) => rx,
-            None => {
-                return RpcResponse::err_with_data(
-                    id,
-                    codes::SESSION_BUSY,
-                    "session is busy",
-                    serde_json::json!({
-                        "session_id": sid,
-                        "current_turn_id": busy_with,
-                    }),
-                );
+            let became_idle = idle.notified();
+            tokio::pin!(became_idle);
+            became_idle.as_mut().enable();
+            let taken = event_rx_mutex.lock().await.take();
+            if let Some(rx) = taken {
+                break (input_tx, event_rx_mutex, rx);
+            }
+            match on_busy {
+                OnBusy::Reject => {
+                    return RpcResponse::err_with_data(
+                        id,
+                        codes::SESSION_BUSY,
+                        "session is busy",
+                        serde_json::json!({
+                            "session_id": sid,
+                            "current_turn_id": busy_with,
+                        }),
+                    );
+                }
+                OnBusy::Steer if !steer_tried && attachments.is_empty() => {
+                    steer_tried = true;
+                    let (ack, acked) = tokio::sync::oneshot::channel();
+                    let _ = input_tx.send(InputMessage::Steer {
+                        content: message.clone(),
+                        message_id: turn_id.clone(),
+                        ack: Some(ack),
+                    });
+                    if let Ok(Ok(runtime::steering::SteerAck::Accepted)) =
+                        tokio::time::timeout(Duration::from_secs(5), acked).await
+                    {
+                        if let Some(live) = self.sessions.lock().await.get_mut(&sid) {
+                            live.subscribers.insert(client.id(), client.clone());
+                        }
+                        return RpcResponse::ok(
+                            id,
+                            serde_json::json!({
+                                "session_id": sid,
+                                "turn_id": turn_id,
+                                "delivery": "steer",
+                                "into_turn_id": busy_with,
+                            }),
+                        );
+                    }
+                    // The running turn is already past its last step: this
+                    // message waits for the next turn instead.
+                    continue;
+                }
+                OnBusy::Steer | OnBusy::Queue => {}
+            }
+            // The timeout covers a session that was replaced or dropped while
+            // we waited: its `idle` is never notified again.
+            tokio::select! {
+                _ = became_idle => {}
+                _ = tokio::time::sleep(Duration::from_secs(1)) => {}
             }
         };
 
@@ -2737,6 +2797,31 @@ impl SessionPool {
                     let f = StreamFrame::event(&sid, &turn_id, event);
                     self.broadcast_to_session(&sid, &f).await;
                 }
+                Some(AgentEvent::UserMessageDelivered {
+                    message_id,
+                    content,
+                    ..
+                }) => {
+                    let f = StreamFrame::event(
+                        &sid,
+                        &turn_id,
+                        serde_json::json!({
+                            "kind":"user_message_delivered","message_id":message_id,
+                            "content":content
+                        }),
+                    );
+                    self.broadcast_to_session(&sid, &f).await;
+                }
+                Some(AgentEvent::UserMessagesReturned { messages, .. }) => {
+                    let f = StreamFrame::event(
+                        &sid,
+                        &turn_id,
+                        serde_json::json!({
+                            "kind":"user_messages_returned","messages":messages
+                        }),
+                    );
+                    self.broadcast_to_session(&sid, &f).await;
+                }
                 Some(AgentEvent::TurnComplete {
                     stop_reason,
                     api_calls: ac,
@@ -2804,6 +2889,7 @@ impl SessionPool {
                     self.clear_pending_prompts(&sid).await;
                     if let Some(dead) = self.sessions.lock().await.remove(&sid) {
                         dead.cancel.cancel();
+                        dead.idle.notify_waiters();
                     }
                     warn!(%sid, "engine stopped before the turn completed");
                     return RpcResponse::err(
@@ -2879,6 +2965,7 @@ impl SessionPool {
             serde_json::json!({
                 "session_id": sid,
                 "turn_id": turn_id,
+                "delivery": "turn",
                 "name": session_name,
                 "api_calls": api_calls,
             }),
@@ -5601,6 +5688,7 @@ mod eviction_tests {
             named_by_user: false,
             config_generation: 0,
             current_turn: None,
+            idle: Arc::new(tokio::sync::Notify::new()),
             scripts: None,
             subscribers: HashMap::new(),
             pending_prompts: HashMap::new(),

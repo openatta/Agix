@@ -454,17 +454,34 @@ Unix socket 靠文件系统权限,不握手,一样是"能连上就全权"。
 
 ### 5.3 同一会话的并发 `run_turn`
 
-**一个会话同一时刻只能有一个 turn。** 第二个 `run_turn` 立刻失败:
+**一个会话同一时刻只能有一个 turn。** 第二个 `run_turn` 怎么办由它的 `on_busy`
+决定:
+
+| `on_busy` | 行为 |
+|---|---|
+| `"reject"`(缺省) | 立刻失败,消息不投递 |
+| `"queue"` | 等正在跑的 turn 结束,再作为新的一轮执行;调用一直挂着,和普通 `run_turn` 一样流式返回 |
+| `"steer"` | 把消息交给正在跑的 turn,它在**下一个步骤边界**(一批工具结果之后、下一次调模型之前)加进对话;调用立刻返回 |
+
+`reject` 的错误:
 
 ```jsonc
 { "error": { "code": -32015, "message": "session is busy",
              "data": { "session_id": "S1", "current_turn_id": "t1" } } }
 ```
 
-**不排队、不抢占**。客户端要发新消息必须先 `session.interrupt`。UI 的"发送"按钮
-应该在 `session.get` 的 `turn_state != "idle"` 时置灰,让这个错误根本不出现。
+错误发生**在用户消息被投递之前** —— 消息不会被前一个 turn 吃掉。
 
-注意错误发生**在用户消息被投递之前** —— 消息不会被前一个 turn 吃掉。
+`steer` 被接下时立刻返回 `{"session_id","turn_id","delivery":"steer","into_turn_id"}`,
+`turn_id` 是这条消息自己的 id,`into_turn_id` 是接下它的那一轮。之后:
+
+- 消息真正加进对话时,那一轮推一帧 `user_message_delivered`(§7)。模型已经答完、只差
+  收尾时到达的消息也会被读到 —— 那一轮会再调一次模型,不会留到下一轮。
+- 那一轮在读到它之前就结束了(被 `session.interrupt`、预算、策略截停或出错),消息
+  **不进 transcript**,以一帧 `user_messages_returned` 交还,要不要重发由客户端决定。
+
+正在跑的 turn 已经过了最后一个步骤边界时,`steer` 退化成 `queue`。带 `attachments`
+的消息不走 `steer`,直接按 `queue` 处理。
 
 ### 5.4 事件帧推给谁
 
@@ -734,9 +751,11 @@ HashMap),客户端要按 `scene` 找条目,不要按下标。
   "message": "把权限层重构一下",     // 必填
   "turn_id": "t-1",               // 可选,省略则服务端生成
   "attachments": [ ],             // 可选,见 §4.4
-  "options": { } }                // 可选,同 session.create,仅新建/重建时生效
+  "options": { },                 // 可选,同 session.create,仅新建/重建时生效
+  "on_busy": "reject" }           // 可选,reject | queue | steer,见 §5.3
 // ← result
 { "session_id": "…", "turn_id": "…",
+  "delivery": "turn",             // turn = 这条消息跑了一整轮;steer 见 §5.3
   "name": null,                   // 首轮自动命名的结果,场景不开启时为 null
   "api_calls": "…" }              // 数字:本轮打了几次模型 API
 ```
@@ -1382,6 +1401,8 @@ RPC 出口。要看子 Agent 干了什么,走它的侧链会话:`session.list
 | `team_progress` | `{team,team_id,stage,stage_index,stage_count,status,members,failed}` | 团队阶段生命周期 |
 | `skills_changed` | `{added,removed}` | 会话下的 skill 文件变了,缓存了 `commands.list` 的客户端该重取 |
 | `compact` | `{strategy,messages_before,messages_after,dropped_rounds?,dropped_messages?,estimated_tokens_saved?}` | 上下文被压缩了(§7.1) |
+| `user_message_delivered` | `{message_id,content}` | 运行中送来的消息(`on_busy:"steer"`)已加进对话,模型下一次调用会读到 |
+| `user_messages_returned` | `{messages:[{message_id,content}]}` | 运行中送来、但本轮结束前没读到的消息,不在 transcript 里,交还客户端 |
 | `turn_complete` | `{stop_reason,api_calls,tool_calls,usage,last_call_usage,context?,message?}` | 本轮结束,transcript 已落盘;最终响应随后到达 |
 | `error` | `{code,message}` | 本轮出错结束。只发给**发起这一轮之外**的订阅者 —— 发起者从 `run_turn` 的错误响应得知 |
 
@@ -1476,7 +1497,7 @@ RPC 出口。要看子 Agent 干了什么,走它的侧链会话:`session.list
 | -32010 | PROJECT_NOT_FOUND | `project_root` 不存在或不是目录 |
 | -32012 | PROJECT_REQUIRED | 场景 `requires_project` 为真,但传了 `project_root: null` |
 | -32014 | SIDECHAIN_TERMINAL | 侧链会话已终态收尾,不可 resume |
-| -32015 | SESSION_BUSY | 该会话已有 turn 在跑(§5.3) |
+| -32015 | SESSION_BUSY | 该会话已有 turn 在跑,且 `on_busy` 是 `reject`(§5.3) |
 | -32016 | PLUGINS_DISABLED | 插件子系统不可用 —— 被编译裁掉或被策略关闭 |
 | -32017 | TOO_MANY_IN_FLIGHT | 这条连接同时在途的请求已达上限(§5.2) |
 

@@ -4245,3 +4245,245 @@ async fn a_turn_reports_how_full_the_context_is_after_its_last_call() {
 
     srv.stop().await;
 }
+
+// ── messages sent while a turn is running ───────────────────────────────
+
+/// Start a turn whose Bash call stops at a permission prompt, and return the
+/// connection it streams on together with the session and prompt ids. The
+/// prompt holds the turn mid-step for as long as the test needs.
+async fn turn_held_at_a_prompt(
+    sock: &std::path::Path,
+) -> (
+    BufReader<tokio::net::unix::OwnedReadHalf>,
+    tokio::net::unix::OwnedWriteHalf,
+    String,
+    String,
+) {
+    let conn = UnixStream::connect(sock).await.unwrap();
+    let (r, mut w) = conn.into_split();
+    w.write_all(
+        br#"{"jsonrpc":"2.0","method":"session.run_turn","params":{"message":"make a file","turn_id":"t1"},"id":1}"#,
+    )
+    .await
+    .unwrap();
+    w.write_all(b"\n").await.unwrap();
+    let mut br = BufReader::new(r);
+    let (sid, prompt_id) = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let mut line = String::new();
+            assert!(
+                br.read_line(&mut line).await.unwrap() > 0,
+                "connection closed"
+            );
+            let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+            if v["params"]["event"]["kind"] == "prompt" {
+                break (
+                    v["params"]["session_id"].as_str().unwrap().to_string(),
+                    v["params"]["event"]["prompt_id"]
+                        .as_str()
+                        .unwrap()
+                        .to_string(),
+                );
+            }
+        }
+    })
+    .await
+    .expect("the turn never asked");
+    (br, w, sid, prompt_id)
+}
+
+async fn drain_to_response(
+    br: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
+) -> (Vec<serde_json::Value>, serde_json::Value) {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let mut frames = Vec::new();
+        loop {
+            let mut line = String::new();
+            assert!(
+                br.read_line(&mut line).await.unwrap() > 0,
+                "connection closed"
+            );
+            let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+            if v.get("id").is_some() {
+                return (frames, v);
+            }
+            frames.push(v);
+        }
+    })
+    .await
+    .expect("the turn never finished")
+}
+
+async fn permit(sock: &std::path::Path, sid: &str, prompt_id: &str) {
+    let ack = rpc(
+        sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.respondToPrompt","params":{{"session_id":"{sid}","prompt_id":"{prompt_id}","decision":{{"type":"permit"}}}},"id":99}}"#
+        ),
+    )
+    .await;
+    assert_eq!(ack["result"]["prompt_id"], prompt_id, "{ack}");
+}
+
+#[tokio::test]
+async fn a_steered_message_reaches_the_running_turn_after_its_tool_step() {
+    let (srv, seen) = start_scripted_server(
+        asking_bash_rounds("steered.txt"),
+        ask_settings_no_memory(),
+        Duration::from_secs(30),
+    )
+    .await;
+    let (mut turn, _w, sid, prompt_id) = turn_held_at_a_prompt(&srv.sock).await;
+
+    let refused = rpc(
+        &srv.sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.run_turn","params":{{"session_id":"{sid}","message":"hello?"}},"id":2}}"#
+        ),
+    )
+    .await;
+    assert_eq!(
+        refused["error"]["code"],
+        codes::SESSION_BUSY,
+        "the default stays reject: {refused}"
+    );
+
+    let steered = rpc(
+        &srv.sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.run_turn","params":{{"session_id":"{sid}","message":"also add a README","turn_id":"m1","on_busy":"steer"}},"id":3}}"#
+        ),
+    )
+    .await;
+    assert_eq!(steered["result"]["delivery"], "steer", "{steered}");
+    assert_eq!(steered["result"]["into_turn_id"], "t1", "{steered}");
+
+    permit(&srv.sock, &sid, &prompt_id).await;
+    let (frames, response) = drain_to_response(&mut turn).await;
+    assert!(response["result"].is_object(), "turn failed: {response}");
+    assert_eq!(response["result"]["delivery"], "turn");
+
+    let delivered = events_of_kind(&frames, "user_message_delivered");
+    assert_eq!(delivered.len(), 1, "{frames:?}");
+    assert_eq!(delivered[0]["message_id"], "m1");
+    assert_eq!(delivered[0]["content"], "also add a README");
+    let kinds: Vec<String> = frames
+        .iter()
+        .map(|f| {
+            f["params"]["event"]["kind"]
+                .as_str()
+                .unwrap_or("")
+                .to_string()
+        })
+        .collect();
+    let at = |k: &str| kinds.iter().position(|x| x == k).unwrap();
+    assert!(at("tool_result") < at("user_message_delivered"));
+    assert!(at("user_message_delivered") < at("turn_complete"));
+    assert_eq!(events_of_kind(&frames, "turn_complete").len(), 1);
+
+    let requests = seen.lock().unwrap().clone();
+    assert_eq!(requests.len(), 2, "the tool call, then the answer");
+    let second = serde_json::to_value(&requests[1].messages).unwrap();
+    let rendered: Vec<String> = second
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m.to_string())
+        .collect();
+    let steer_at = rendered
+        .iter()
+        .position(|m| m.contains("also add a README"))
+        .expect("the answer was asked with the message in it");
+    let result_at = rendered
+        .iter()
+        .position(|m| m.contains("tool_result"))
+        .expect("and the tool result");
+    assert!(result_at < steer_at, "{rendered:?}");
+
+    let transcript = history(&srv.sock, &sid).await.to_string();
+    assert!(transcript.contains("also add a README"), "{transcript}");
+
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn a_queued_message_runs_as_the_next_turn_once_the_session_is_free() {
+    let mut rounds = asking_bash_rounds("queued.txt");
+    rounds.push(text_round("second answer"));
+    let (srv, seen) =
+        start_scripted_server(rounds, ask_settings_no_memory(), Duration::from_secs(30)).await;
+    let (mut turn, _w, sid, prompt_id) = turn_held_at_a_prompt(&srv.sock).await;
+
+    let queued = {
+        let sock = srv.sock.clone();
+        let sid = sid.clone();
+        tokio::spawn(async move {
+            rpc_streaming(
+                &sock,
+                &format!(
+                    r#"{{"jsonrpc":"2.0","method":"session.run_turn","params":{{"session_id":"{sid}","message":"next","turn_id":"t2","on_busy":"queue"}},"id":4}}"#
+                ),
+            )
+            .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !queued.is_finished(),
+        "a queued turn waits for the running one"
+    );
+
+    permit(&srv.sock, &sid, &prompt_id).await;
+    let (_frames, first) = drain_to_response(&mut turn).await;
+    assert!(first["result"].is_object(), "{first}");
+
+    let (frames, second) = tokio::time::timeout(Duration::from_secs(20), queued)
+        .await
+        .expect("the queued turn never ran")
+        .unwrap();
+    assert_eq!(second["result"]["turn_id"], "t2", "{second}");
+    assert_eq!(second["result"]["delivery"], "turn");
+    assert_eq!(events_of_kind(&frames, "turn_complete").len(), 1);
+    assert_eq!(seen.lock().unwrap().len(), 3);
+
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn an_interrupted_turn_hands_back_a_steered_message_it_never_read() {
+    let (srv, _seen) = start_scripted_server(
+        asking_bash_rounds("returned.txt"),
+        ask_settings_no_memory(),
+        Duration::from_secs(30),
+    )
+    .await;
+    let (mut turn, _w, sid, _prompt_id) = turn_held_at_a_prompt(&srv.sock).await;
+
+    let steered = rpc(
+        &srv.sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.run_turn","params":{{"session_id":"{sid}","message":"wait, stop","turn_id":"m1","on_busy":"steer"}},"id":3}}"#
+        ),
+    )
+    .await;
+    assert_eq!(steered["result"]["delivery"], "steer", "{steered}");
+    rpc(
+        &srv.sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.interrupt","params":{{"session_id":"{sid}"}},"id":5}}"#
+        ),
+    )
+    .await;
+
+    let (frames, _response) = drain_to_response(&mut turn).await;
+    let returned = events_of_kind(&frames, "user_messages_returned");
+    assert_eq!(returned.len(), 1, "{frames:?}");
+    assert_eq!(returned[0]["messages"][0]["message_id"], "m1");
+    assert_eq!(returned[0]["messages"][0]["content"], "wait, stop");
+    assert!(events_of_kind(&frames, "user_message_delivered").is_empty());
+
+    let transcript = history(&srv.sock, &sid).await.to_string();
+    assert!(!transcript.contains("wait, stop"), "{transcript}");
+
+    srv.stop().await;
+}

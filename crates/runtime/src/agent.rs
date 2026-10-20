@@ -44,6 +44,17 @@ pub enum InputMessage {
         kind: EngineCommand,
         content: String,
     },
+    /// A user message meant for the turn that is running, read by the model
+    /// at the turn's next step boundary. Only [`Agent::run`] routes these.
+    ///
+    /// With `ack`, the sender learns whether a turn took it, and keeps the
+    /// message when none did. Without `ack`, a message that finds no turn
+    /// running starts one, as an ordinary `User` message would.
+    Steer {
+        content: String,
+        message_id: String,
+        ack: Option<tokio::sync::oneshot::Sender<crate::steering::SteerAck>>,
+    },
 }
 
 /// Something the user attached to their message — a pasted screenshot, a
@@ -223,6 +234,10 @@ pub struct Agent {
     /// `CancelTurn` arriving while idle does nothing rather than poisoning
     /// the next turn.
     pub(crate) current_turn_cancel: Arc<std::sync::Mutex<CancellationToken>>,
+    /// User messages sent while a turn runs — see [`crate::steering`].
+    /// Shared with the input demultiplexer for the same reason
+    /// `current_turn_cancel` is.
+    pub(crate) steering: crate::steering::SharedSteerQueue,
     pub(crate) memory_store: Arc<MemoryStore>,
     pub(crate) session: SessionManager,
     /// The session's mutable tool-facing state — one instance for the whole
@@ -466,23 +481,13 @@ impl Agent {
 
         // ── Input demultiplexer ──
         //
-        // This loop `await`s `process_turn` inline, so while a turn is running
-        // it is not sitting at `input_rx.recv()`. That is fine for every
-        // message except two, both of which are only meaningful *during* a
-        // turn: a turn blocked on a permission prompt is waiting for an
-        // `InputMessage::PermissionResponse` that only this loop can dequeue —
-        // and it cannot, because it is inside the very turn that is waiting
-        // (both halves deadlock, which is why `session.respondToPrompt` never
-        // worked; nothing caught it because the daemon defaulted to allow-all,
-        // so the prompt path never ran in production) — and `CancelTurn`,
-        // which would otherwise be read only once the turn it was meant to
-        // interrupt had already ended.
-        //
-        // Fix: a task owns the real receiver and handles those two itself —
-        // it needs only `pending_permissions`, the denial counter and the
-        // current turn's token, all `Arc`-shared, never `&mut self`.
-        // Everything else is forwarded untouched to the loop below, which
-        // therefore behaves exactly as before for every other message type.
+        // The loop below `await`s `process_turn` inline, so while a turn is
+        // running it is not reading input. Three messages only mean something
+        // *during* a turn and would deadlock or arrive too late there: a
+        // `PermissionResponse` the running turn is blocked on, `CancelTurn`,
+        // and a `Steer` meant for the turn's next step. This task owns the
+        // real receiver and handles those three through `Arc`-shared state;
+        // everything else is forwarded to the loop untouched.
         let (fwd_tx, mut fwd_rx) = mpsc::unbounded_channel();
         {
             // `self.input_rx` is moved into the task; the field is left
@@ -493,9 +498,41 @@ impl Agent {
             let pending = self.pending_permissions.clone();
             let denials = self.permission_denial_count.clone();
             let turn_cancel = self.current_turn_cancel.clone();
+            let steering = self.steering.clone();
             tokio::spawn(async move {
                 while let Some(msg) = raw_rx.recv().await {
                     match msg {
+                        InputMessage::Steer {
+                            content,
+                            message_id,
+                            ack,
+                        } => {
+                            let offered = crate::steering::lock(&steering).offer(
+                                base::event::QueuedUserMessage {
+                                    message_id,
+                                    content,
+                                },
+                            );
+                            match (offered, ack) {
+                                (Ok(()), Some(ack)) => {
+                                    let _ = ack.send(crate::steering::SteerAck::Accepted);
+                                }
+                                (Ok(()), None) => {}
+                                (Err(_), Some(ack)) => {
+                                    let _ = ack.send(crate::steering::SteerAck::NotRunning);
+                                }
+                                (Err(m), None) => {
+                                    let turn = InputMessage::User {
+                                        content: m.content,
+                                        attachments: vec![],
+                                        turn_id: m.message_id,
+                                    };
+                                    if fwd_tx.send(turn).is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
                         InputMessage::PermissionResponse {
                             prompt_id,
                             decision,
@@ -2539,6 +2576,7 @@ impl Builder {
                 retrieval_hooks: Arc::new(self.retrieval_hooks),
                 pending_permissions,
                 current_turn_cancel: Arc::new(std::sync::Mutex::new(CancellationToken::new())),
+                steering: Default::default(),
                 memory_store,
                 session,
                 session_state,
@@ -6089,5 +6127,370 @@ mod tests {
                 scope: PersistScope::Local
             }
         ));
+    }
+
+    /// Released by the test, so a tool step lasts exactly as long as the
+    /// test needs to land a message in the middle of it.
+    struct GateTool(Arc<tokio::sync::Notify>);
+    #[async_trait::async_trait]
+    impl base::tool::Tool for GateTool {
+        fn name(&self) -> &str {
+            "Gate"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        async fn call(
+            &self,
+            _input: serde_json::Value,
+            ctx: base::tool::ToolContext,
+            _progress: base::tool::ProgressSender,
+        ) -> Result<base::tool::ToolResult, base::error::ToolError> {
+            tokio::select! {
+                _ = self.0.notified() => Ok(base::tool::ToolResult::text("gate opened")),
+                _ = ctx.cancel.cancelled() => Err(base::error::ToolError::Cancelled),
+            }
+        }
+    }
+
+    /// Calls `tool` once if given, then answers; records what every call
+    /// was sent. `hold_first` keeps the first call open until released.
+    struct StepRecordingModel {
+        tool: Option<&'static str>,
+        hold_first: Option<Arc<tokio::sync::Notify>>,
+        sent: Arc<std::sync::Mutex<Vec<Vec<base::interface::model::ModelMessage>>>>,
+    }
+    #[async_trait::async_trait]
+    impl Model for StepRecordingModel {
+        fn api_type(&self) -> base::provider::ApiType {
+            base::provider::ApiType::Anthropic
+        }
+        async fn stream(
+            &self,
+            _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+            _tools: Vec<base::interface::model::ToolDef>,
+            messages: Vec<base::interface::model::ModelMessage>,
+            params: base::interface::model::StreamParams,
+            _cancel: CancellationToken,
+        ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError>
+        {
+            use base::interface::model::ModelEvent;
+            let turn_call = matches!(
+                params.origin.as_ref().map(|o| &o.kind),
+                Some(base::interface::model::CallKind::Turn { .. })
+            );
+            if !turn_call {
+                return Ok(Box::new(futures::stream::iter(vec![Ok(
+                    ModelEvent::EndTurn {
+                        stop_reason: "end_turn".into(),
+                        usage: Default::default(),
+                    },
+                )])));
+            }
+            let call_no = {
+                let mut sent = self.sent.lock().unwrap();
+                sent.push(messages);
+                sent.len() - 1
+            };
+            if call_no == 0 {
+                if let Some(hold) = &self.hold_first {
+                    hold.notified().await;
+                }
+            }
+            let events = match (call_no, self.tool) {
+                (0, Some(tool)) => vec![
+                    Ok(ModelEvent::ToolUse {
+                        id: "toolu_1".into(),
+                        name: tool.into(),
+                        input: serde_json::json!({}),
+                    }),
+                    Ok(ModelEvent::EndTurn {
+                        stop_reason: "tool_use".into(),
+                        usage: Default::default(),
+                    }),
+                ],
+                _ => vec![
+                    Ok(ModelEvent::TextDelta {
+                        text: format!("answer {call_no}"),
+                    }),
+                    Ok(ModelEvent::EndTurn {
+                        stop_reason: "end_turn".into(),
+                        usage: Default::default(),
+                    }),
+                ],
+            };
+            Ok(Box::new(futures::stream::iter(events)))
+        }
+    }
+
+    fn text_of(m: &base::interface::model::ModelMessage) -> String {
+        m.content
+            .iter()
+            .filter_map(|b| match b {
+                base::interface::model::ModelContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    async fn next_event(
+        rx: &mut EventReceiver,
+        mut want: impl FnMut(&AgentEvent) -> bool,
+        what: &str,
+    ) -> AgentEvent {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                match rx.recv().await {
+                    Some(e) if want(&e) => break e,
+                    Some(_) => continue,
+                    None => panic!("event channel closed while waiting for {what}"),
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
+    }
+
+    async fn steer(input_tx: &InputSender, id: &str, text: &str) -> crate::steering::SteerAck {
+        let (ack, acked) = tokio::sync::oneshot::channel();
+        input_tx
+            .send(InputMessage::Steer {
+                content: text.into(),
+                message_id: id.into(),
+                ack: Some(ack),
+            })
+            .unwrap();
+        acked.await.expect("the demultiplexer always answers")
+    }
+
+    #[tokio::test]
+    async fn a_message_sent_during_a_tool_step_reaches_the_next_model_call() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let tools = Arc::new(InMemoryToolRegistry::new());
+        tools.register(Arc::new(GateTool(gate.clone())));
+        let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let model: Arc<dyn Model> = Arc::new(StepRecordingModel {
+            tool: Some("Gate"),
+            hold_first: None,
+            sent: sent.clone(),
+        });
+        let (mut agent, mut event_rx, input_tx) = Builder::new()
+            .scene(Arc::new(scene::scene::coding::CodingScene) as Arc<dyn AgentScene>)
+            .model(model)
+            .settings(Arc::new(test_settings()))
+            .tools(tools)
+            .skip_warmup(true)
+            .build()
+            .expect("build should succeed");
+        let engine = tokio::spawn(async move { agent.run(CancellationToken::new()).await });
+
+        input_tx
+            .send(InputMessage::User {
+                content: "start".into(),
+                attachments: vec![],
+                turn_id: "t1".into(),
+            })
+            .unwrap();
+        next_event(
+            &mut event_rx,
+            |e| matches!(e, AgentEvent::ToolUse { name, .. } if name == "Gate"),
+            "the tool call",
+        )
+        .await;
+
+        assert_eq!(
+            steer(&input_tx, "m1", "also check the tests").await,
+            crate::steering::SteerAck::Accepted
+        );
+        gate.notify_one();
+
+        let delivered = next_event(
+            &mut event_rx,
+            |e| matches!(e, AgentEvent::UserMessageDelivered { .. }),
+            "the delivery",
+        )
+        .await;
+        assert!(matches!(
+            delivered,
+            AgentEvent::UserMessageDelivered { ref message_id, ref turn_id, .. }
+                if message_id == "m1" && turn_id == "t1"
+        ));
+        next_event(
+            &mut event_rx,
+            |e| matches!(e, AgentEvent::TurnComplete { .. }),
+            "the end of the turn",
+        )
+        .await;
+
+        let sent = sent.lock().unwrap().clone();
+        assert_eq!(sent.len(), 2, "one call for the tool, one after it");
+        let second = &sent[1];
+        let at = second
+            .iter()
+            .position(|m| text_of(m) == "also check the tests")
+            .expect("the second call carries the message");
+        let result_at = second
+            .iter()
+            .position(|m| {
+                m.content.iter().any(|b| {
+                    matches!(
+                        b,
+                        base::interface::model::ModelContentBlock::ToolResult { .. }
+                    )
+                })
+            })
+            .expect("and the tool result");
+        assert!(
+            result_at < at,
+            "after the tool result, never between the pair"
+        );
+        assert_eq!(at, second.len() - 1);
+
+        drop(input_tx);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), engine).await;
+    }
+
+    #[tokio::test]
+    async fn a_message_sent_while_the_model_answers_is_answered_in_the_same_turn() {
+        let hold = Arc::new(tokio::sync::Notify::new());
+        let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let model: Arc<dyn Model> = Arc::new(StepRecordingModel {
+            tool: None,
+            hold_first: Some(hold.clone()),
+            sent: sent.clone(),
+        });
+        let (mut agent, mut event_rx, input_tx) = Builder::new()
+            .scene(Arc::new(scene::scene::coding::CodingScene) as Arc<dyn AgentScene>)
+            .model(model)
+            .settings(Arc::new(test_settings()))
+            .skip_warmup(true)
+            .build()
+            .expect("build should succeed");
+        let engine = tokio::spawn(async move { agent.run(CancellationToken::new()).await });
+
+        input_tx
+            .send(InputMessage::User {
+                content: "first".into(),
+                attachments: vec![],
+                turn_id: "t1".into(),
+            })
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while sent.lock().unwrap().is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the first call should start");
+
+        assert_eq!(
+            steer(&input_tx, "m1", "and one more thing").await,
+            crate::steering::SteerAck::Accepted
+        );
+        hold.notify_one();
+
+        let done = next_event(
+            &mut event_rx,
+            |e| matches!(e, AgentEvent::TurnComplete { .. }),
+            "the end of the turn",
+        )
+        .await;
+        assert!(matches!(
+            done,
+            AgentEvent::TurnComplete { api_calls: 2, .. }
+        ));
+        let sent = sent.lock().unwrap().clone();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(text_of(sent[1].last().unwrap()), "and one more thing");
+
+        assert_eq!(
+            steer(&input_tx, "m2", "too late").await,
+            crate::steering::SteerAck::NotRunning,
+            "an idle session takes no steering; the sender keeps the message"
+        );
+
+        drop(input_tx);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), engine).await;
+    }
+
+    #[tokio::test]
+    async fn an_interrupted_turn_hands_back_what_it_never_delivered() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let tools = Arc::new(InMemoryToolRegistry::new());
+        tools.register(Arc::new(GateTool(gate)));
+        let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let model: Arc<dyn Model> = Arc::new(StepRecordingModel {
+            tool: Some("Gate"),
+            hold_first: None,
+            sent: sent.clone(),
+        });
+        let (mut agent, mut event_rx, input_tx) = Builder::new()
+            .scene(Arc::new(scene::scene::coding::CodingScene) as Arc<dyn AgentScene>)
+            .model(model)
+            .settings(Arc::new(test_settings()))
+            .tools(tools)
+            .skip_warmup(true)
+            .build()
+            .expect("build should succeed");
+        let engine = tokio::spawn(async move { agent.run(CancellationToken::new()).await });
+
+        input_tx
+            .send(InputMessage::User {
+                content: "start".into(),
+                attachments: vec![],
+                turn_id: "t1".into(),
+            })
+            .unwrap();
+        next_event(
+            &mut event_rx,
+            |e| matches!(e, AgentEvent::ToolUse { .. }),
+            "the tool call",
+        )
+        .await;
+        assert_eq!(
+            steer(&input_tx, "m1", "never mind").await,
+            crate::steering::SteerAck::Accepted
+        );
+        input_tx
+            .send(InputMessage::System {
+                kind: EngineCommand::CancelTurn,
+                content: String::new(),
+            })
+            .unwrap();
+
+        let returned = next_event(
+            &mut event_rx,
+            |e| {
+                matches!(
+                    e,
+                    AgentEvent::UserMessagesReturned { .. }
+                        | AgentEvent::UserMessageDelivered { .. }
+                        | AgentEvent::TurnComplete { .. }
+                )
+            },
+            "the hand-back",
+        )
+        .await;
+        match returned {
+            AgentEvent::UserMessagesReturned { messages, .. } => {
+                assert_eq!(messages.len(), 1);
+                assert_eq!(messages[0].message_id, "m1");
+            }
+            other => panic!("expected the message back before the turn ended, got {other:?}"),
+        }
+        let done = next_event(
+            &mut event_rx,
+            |e| matches!(e, AgentEvent::TurnComplete { .. }),
+            "the end of the turn",
+        )
+        .await;
+        assert!(matches!(
+            done,
+            AgentEvent::TurnComplete { ref stop_reason, .. } if stop_reason == "cancelled"
+        ));
+        assert_eq!(sent.lock().unwrap().len(), 1, "the model never saw it");
+
+        drop(input_tx);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), engine).await;
     }
 }

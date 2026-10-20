@@ -168,6 +168,12 @@ impl Agent {
                 );
                 Ok(TurnOutcome::default())
             }
+            InputMessage::Steer { ack, .. } => {
+                if let Some(ack) = ack {
+                    let _ = ack.send(crate::steering::SteerAck::NotRunning);
+                }
+                Ok(TurnOutcome::default())
+            }
             InputMessage::System { kind, content } => {
                 match kind {
                     EngineCommand::Shutdown => Err(TurnError::Shutdown),
@@ -261,8 +267,50 @@ impl Agent {
         cancel: CancellationToken,
     ) -> Result<TurnOutcome, TurnError> {
         self.last_call_usage = None;
+        crate::steering::lock(&self.steering).open();
         let outcome = self.run_user_turn_inner(content, attachments, cancel).await;
+        let undelivered = crate::steering::lock(&self.steering).close();
+        if !undelivered.is_empty() {
+            let _ = self.event_tx.send(AgentEvent::UserMessagesReturned {
+                messages: undelivered,
+                turn_id: self.current_turn_id.clone(),
+            });
+        }
         self.finish_turn(outcome).await
+    }
+
+    /// Add the messages the user sent during this turn to the conversation.
+    ///
+    /// Called where the transcript ends on a complete step, so a delivered
+    /// message never lands between a `tool_use` and its `tool_result`. At
+    /// the turn's last boundary (`last`), finding nothing queued also closes
+    /// the turn to further messages. Returns whether anything was delivered.
+    fn deliver_queued_user_messages(&mut self, last: bool) -> bool {
+        let queued = {
+            let mut q = crate::steering::lock(&self.steering);
+            if last {
+                q.take_or_close()
+            } else {
+                q.take()
+            }
+        };
+        if queued.is_empty() {
+            return false;
+        }
+        for m in queued {
+            self.session.push_message(ModelMessage {
+                role: MessageRole::User,
+                content: vec![ModelContentBlock::Text {
+                    text: m.content.clone(),
+                }],
+            });
+            let _ = self.event_tx.send(AgentEvent::UserMessageDelivered {
+                message_id: m.message_id,
+                content: m.content,
+                turn_id: self.current_turn_id.clone(),
+            });
+        }
+        true
     }
 
     /// The one way a user turn ends: persist, then announce.
@@ -1372,6 +1420,9 @@ impl Agent {
                 sync_mcp_adapters(self.tools.as_ref(), &self.mcp, |n| {
                     self.scene.permits_tool(n)
                 });
+                if !cancel.is_cancelled() {
+                    self.deliver_queued_user_messages(false);
+                }
                 continue;
             }
 
@@ -1506,6 +1557,13 @@ impl Agent {
                 self.accumulated_output_tokens = 0;
                 self.token_budget_continuation_count = 0;
                 self.last_delta_tokens = 0;
+            }
+
+            // The model has answered; a message the user sent meanwhile is
+            // answered in the same turn rather than left for one nobody
+            // asked to start.
+            if self.deliver_queued_user_messages(true) {
+                continue;
             }
 
             // No tools → turn complete

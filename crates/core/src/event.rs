@@ -17,6 +17,13 @@ pub struct ContextUsage {
     pub window: u64,
 }
 
+/// A user message that arrived while a turn was running.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueuedUserMessage {
+    pub message_id: String,
+    pub content: String,
+}
+
 /// Events emitted by the Engine during a turn.
 ///
 /// The upper layer (CLI/TUI/daemon/Jiandu desktop) consumes these
@@ -83,6 +90,23 @@ pub enum AgentEvent {
         /// How full the context is. `None` when the turn made no model call.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         context: Option<ContextUsage>,
+    },
+
+    /// A message the user sent while this turn was running is now part of
+    /// the conversation; the model reads it on its next call.
+    UserMessageDelivered {
+        message_id: String,
+        content: String,
+        turn_id: String,
+    },
+
+    /// Messages the user sent while this turn was running that the model
+    /// never got to read — the turn ended (interrupted, stopped by a policy
+    /// or an error) before the next point they could be added. They are not
+    /// in the transcript; whether to send them again is the host's call.
+    UserMessagesReturned {
+        messages: Vec<QueuedUserMessage>,
+        turn_id: String,
     },
 
     // ── System ──

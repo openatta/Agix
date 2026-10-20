@@ -338,6 +338,12 @@ pub fn normalize_events(events: &[AgentEvent]) -> String {
             AgentEvent::TurnComplete { stop_reason, .. } => {
                 format!("TurnComplete stop_reason={stop_reason}")
             }
+            AgentEvent::UserMessageDelivered { content, .. } => {
+                format!("UserMessageDelivered {content:?}")
+            }
+            AgentEvent::UserMessagesReturned { messages, .. } => {
+                format!("UserMessagesReturned count={}", messages.len())
+            }
             AgentEvent::SystemInit { .. } => "SystemInit".to_string(),
             AgentEvent::System { message } => format!("System {:?}", first_line(message)),
             AgentEvent::CompactAction { strategy, .. } => format!("CompactAction {strategy}"),

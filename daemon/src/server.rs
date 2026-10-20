@@ -1169,6 +1169,20 @@ impl DaemonServer {
             })
             .unwrap_or_default();
 
+        let on_busy = match params.get("on_busy") {
+            None | Some(serde_json::Value::Null) => crate::session_pool::OnBusy::default(),
+            Some(v) => match serde_json::from_value(v.clone()) {
+                Ok(o) => o,
+                Err(_) => {
+                    return RpcResponse::err(
+                        id,
+                        codes::INVALID_PARAMS,
+                        "on_busy must be \"reject\", \"queue\" or \"steer\"",
+                    )
+                }
+            },
+        };
+
         self.pool
             .run_turn(
                 session_id,
@@ -1178,6 +1192,7 @@ impl DaemonServer {
                 client,
                 id,
                 options,
+                on_busy,
             )
             .await
     }
