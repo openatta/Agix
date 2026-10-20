@@ -44,6 +44,14 @@ impl ProcessSpec {
     }
 }
 
+/// How long output may keep arriving once the process itself has exited.
+///
+/// A background process the command started inherits its pipes, and they stay
+/// open as long as it runs. Reading on to EOF would wait for that process, not
+/// for the command; past this a reader stops and treats what it has as the
+/// output.
+pub const OUTPUT_GRACE_AFTER_EXIT: std::time::Duration = std::time::Duration::from_secs(1);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputStream {
     Stdout,
@@ -83,7 +91,9 @@ pub trait ProcessHandle: Send {
     /// returned everything at the end would remove that silently.
     fn output(&mut self) -> Option<BoxStream<'static, Result<OutputChunk, ExecError>>>;
 
-    /// Stop it. Best effort, and idempotent.
+    /// Stop it and whatever it started that is still running. Best effort,
+    /// and idempotent; also valid after `wait`, for the descendants that
+    /// outlived it.
     fn kill(&mut self) -> BoxFuture<'_, ()>;
 
     /// Wait for it to finish.

@@ -6,9 +6,13 @@
 use super::ssrf::ssrf_check_url;
 use super::{HookOutcome, HookRunner};
 use crate::payload::{HookDecision, HookInput, HookResponse};
-use std::process::Stdio;
+use base::interface::exec::local::LocalProcess;
+use base::interface::exec::{
+    ExecError, OutputChunk, OutputStream, Process, ProcessSpec, OUTPUT_GRACE_AFTER_EXIT,
+};
+use futures::StreamExt;
 use std::time::Duration;
-use tokio::io::AsyncWriteExt;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 impl HookRunner {
@@ -118,12 +122,7 @@ impl HookRunner {
         input: &HookInput,
         timeout: Duration,
     ) -> HookOutcome {
-        let mut cmd = tokio::process::Command::new(shell);
-        cmd.arg("-c").arg(command);
-        cmd.stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        cmd.kill_on_drop(true);
+        let mut spec = ProcessSpec::new(shell, ".").args(["-c", command]);
 
         // Let `command` reference a bare script name (e.g. `check.sh`) that
         // lives in `.atta/hooks/` by prepending the configured search dirs
@@ -134,49 +133,59 @@ impl HookRunner {
             let mut search: Vec<std::path::PathBuf> = self.hooks_search_dirs.clone();
             search.extend(std::env::split_paths(&existing));
             if let Ok(joined) = std::env::join_paths(search) {
-                cmd.env("PATH", joined);
+                spec.env
+                    .push(("PATH".into(), joined.to_string_lossy().into_owned()));
             }
         }
 
-        let mut child = match cmd.spawn() {
+        match serde_json::to_vec(input) {
+            Ok(mut payload) => {
+                payload.push(b'\n');
+                spec.stdin = Some(payload);
+            }
+            Err(e) => {
+                warn!("hook input serialize failed: {e}");
+                spec.stdin = Some(Vec::new());
+            }
+        }
+
+        let mut child = match LocalProcess.spawn(spec, CancellationToken::new()).await {
             Ok(c) => c,
             Err(e) => return HookOutcome::Error(format!("hook spawn failed: {e}")),
         };
+        let output = child.output().expect("the stream is taken once");
+        let stop_reading = CancellationToken::new();
+        let mut collect = tokio::spawn(collect_output(output, stop_reading.clone()));
 
-        // 喂 stdin
-        if let Some(mut stdin) = child.stdin.take() {
-            match serde_json::to_vec(input) {
-                Ok(mut payload) => {
-                    payload.push(b'\n');
-                    let _ = stdin.write_all(&payload).await;
-                    let _ = stdin.flush().await;
-                }
-                Err(e) => warn!("hook input serialize failed: {e}"),
-            }
-            // 关 stdin → hook 端读到 EOF
-            drop(stdin);
-        }
-
-        let wait = child.wait_with_output();
-        tokio::pin!(wait);
-        let output = tokio::select! {
+        let status = tokio::select! {
             _ = tokio::time::sleep(timeout) => {
+                child.kill().await;
+                stop_reading.cancel();
+                warn!(command, ?timeout, "command hook timed out; it does not block or rewrite anything");
                 return HookOutcome::Error(format!("hook timed out after {:?}", timeout));
             }
-            r = &mut wait => match r {
-                Ok(o) => o,
-                Err(e) => return HookOutcome::Error(format!("hook wait failed: {e}")),
+            r = child.wait() => match r {
+                Ok(s) => s,
+                Err(e) => {
+                    stop_reading.cancel();
+                    return HookOutcome::Error(format!("hook wait failed: {e}"));
+                }
             },
         };
-
-        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        let exit_code = output.status.code();
+        let (stdout, stderr) = tokio::select! {
+            r = &mut collect => r.unwrap_or_default(),
+            _ = tokio::time::sleep(OUTPUT_GRACE_AFTER_EXIT) => {
+                child.kill().await;
+                stop_reading.cancel();
+                (&mut collect).await.unwrap_or_default()
+            }
+        };
+        let exit_code = status.code;
 
         // 解析 stdout
         let response = if stdout.trim().is_empty() {
             // exit != 0 + 空 stdout → 视为 block，message 用 stderr
-            if !output.status.success() {
+            if !status.success {
                 debug!(
                     ?exit_code,
                     %stderr,
@@ -211,6 +220,29 @@ impl HookRunner {
             exit_code,
         }
     }
+}
+
+async fn collect_output(
+    mut output: futures::stream::BoxStream<'static, Result<OutputChunk, ExecError>>,
+    stop: CancellationToken,
+) -> (String, String) {
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    loop {
+        let next = tokio::select! {
+            biased;
+            _ = stop.cancelled() => None,
+            n = output.next() => n,
+        };
+        let Some(Ok(chunk)) = next else { break };
+        match chunk.stream {
+            OutputStream::Stdout => out.extend(chunk.bytes),
+            OutputStream::Stderr => err.extend(chunk.bytes),
+        }
+    }
+    (
+        String::from_utf8_lossy(&out).into_owned(),
+        String::from_utf8_lossy(&err).into_owned(),
+    )
 }
 
 /// 解析 hook 响应文本为 HookResponse。模型可能 wrap 在 ``` ```json``` 里；

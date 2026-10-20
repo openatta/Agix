@@ -4,7 +4,8 @@
 //! - `bash -c <command>` 子进程，cwd = session.cwd
 //! - **平台沙盒包装**（macOS sandbox-exec / Linux bwrap，受 `dangerously_disable_sandbox` 控制）
 //! - stdout / stderr 行级流式喂给 `ProgressSender`
-//! - 超时（默认 120s，上限 600s）+ cancel 通过 kill child 实现
+//! - 超时（默认 120s，上限 600s）+ cancel 通过停掉整个进程组实现；命令退出后仍占着输出管道的
+//!   后台进程同样被停掉
 //! - 命令分类用关键字白名单 / 黑名单（read-only / destructive）
 
 use base::interface::exec::local::sandbox;
@@ -98,12 +99,6 @@ pub struct BashInput {
     /// Brief one-sentence description of what the command does (for UI).
     #[serde(default)]
     pub description: Option<String>,
-
-    /// Run the command as a detached background task instead of blocking.
-    /// The model can poll with TaskOutput or check /proc for completion.
-    #[serde(default)]
-    #[serde(alias = "run_in_background")]
-    pub run_in_background: bool,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -155,6 +150,13 @@ impl Tool for BashTool {
     }
 
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {
+        if input.get("run_in_background").and_then(Value::as_bool) == Some(true) {
+            return ValidationResult::err(
+                "run_in_background is not supported: Bash runs in the foreground. Use the \
+                 Monitor tool for a long-running process",
+                5,
+            );
+        }
         let parsed: Result<BashInput, _> = serde_json::from_value(input.clone());
         match parsed {
             Ok(p) if p.command.trim().is_empty() => {
@@ -285,32 +287,39 @@ impl Tool for BashTool {
             .map_err(exec_error)?;
         let output = child.output().expect("the stream is taken once");
 
-        // 流式读 stdout / stderr
-        let drain = tokio::spawn(drain_output(output, progress.clone()));
+        let stop_reading = tokio_util::sync::CancellationToken::new();
+        let mut drain = tokio::spawn(drain_output(output, progress.clone(), stop_reading.clone()));
 
-        // 等待 + 超时 + cancel
         let wait_result = tokio::select! {
         biased;
         _ = ctx.cancel.cancelled() => {
             child.kill().await;
+            stop_reading.cancel();
             return Err(ToolError::Cancelled);
         }
         _ = tokio::time::sleep(timeout) => {
             child.kill().await;
+            stop_reading.cancel();
             return Err(ToolError::Timeout(timeout));
         }
         r = child.wait() => r};
         let status = wait_result.map_err(exec_error)?;
 
-        // exit code 130 (128 + SIGINT) = user pressed Ctrl-C during this tool.
-        // Treat as cancellation so the engine stops the turn instead of feeding
-        // a "tool error" back to the model, which would fight the user's intent.
-        // Child has already exited, so no kill needed.
-        if let Some(130) = status.code {
-            return Err(ToolError::Cancelled);
-        }
-
-        let (stdout_text, stderr_text) = drain.await.unwrap_or_default();
+        let (drained, left_running) = tokio::select! {
+            biased;
+            _ = ctx.cancel.cancelled() => {
+                child.kill().await;
+                stop_reading.cancel();
+                return Err(ToolError::Cancelled);
+            }
+            r = &mut drain => (r, false),
+            _ = tokio::time::sleep(base::interface::exec::OUTPUT_GRACE_AFTER_EXIT) => {
+                child.kill().await;
+                stop_reading.cancel();
+                ((&mut drain).await, true)
+            }
+        };
+        let (stdout_text, stderr_text) = drained.unwrap_or_default();
         let mut combined = stdout_text;
         if !stderr_text.is_empty() {
             if !combined.is_empty() && !combined.ends_with('\n') {
@@ -321,6 +330,13 @@ impl Tool for BashTool {
 
         if combined.is_empty() {
             combined.push_str("(no output)");
+        }
+        if left_running {
+            combined.push_str(
+                "\n[the command exited but processes it started in the background were \
+                 still holding its output open; they have been stopped. Run a long-lived \
+                 process with the Monitor tool instead]",
+            );
         }
         let is_error = !status.success;
         if is_error {
@@ -394,7 +410,8 @@ impl Lines {
     }
 }
 
-/// Drain the tagged output stream into one buffer per pipe.
+/// Drain the tagged output stream into one buffer per pipe, until it ends or
+/// `stop` fires.
 ///
 /// Two buffers rather than one, because the result reports all of stdout and
 /// then all of stderr — the interleaving on the wire is what keeps a quiet
@@ -405,10 +422,17 @@ async fn drain_output(
         Result<base::interface::exec::OutputChunk, base::interface::exec::ExecError>,
     >,
     progress: ProgressSender,
+    stop: tokio_util::sync::CancellationToken,
 ) -> (String, String) {
     use base::interface::exec::OutputStream;
     let (mut out, mut err) = (Lines::default(), Lines::default());
-    while let Some(chunk) = output.next().await {
+    loop {
+        let next = tokio::select! {
+            biased;
+            _ = stop.cancelled() => None,
+            n = output.next() => n,
+        };
+        let Some(chunk) = next else { break };
         let Ok(chunk) = chunk else { break };
         match chunk.stream {
             OutputStream::Stdout => out.feed(&chunk.bytes, &progress),
@@ -1532,6 +1556,80 @@ mod tests {
             }
             _ => panic!(),
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_background_process_does_not_hold_the_result_hostage() {
+        let dir = TempDir::new().unwrap();
+        let started = std::time::Instant::now();
+        let r = BashTool
+            .call(
+                json!({"command": "sleep 30 & echo $!", "timeout_ms": 20000}),
+                ctx_in(dir.path()),
+                ProgressSender::noop("t"),
+            )
+            .await
+            .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the call waited on the background sleep: {:?}",
+            started.elapsed()
+        );
+        let ToolResultContent::Text(text) = r.content else {
+            panic!()
+        };
+        assert!(text.contains("stopped"), "{text}");
+        let pid: i32 = text.lines().next().unwrap().trim().parse().unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        // SAFETY: signal 0 only asks whether the pid exists.
+        while unsafe { libc::kill(pid, 0) } == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the background sleep is still running"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_detached_background_process_is_left_alone() {
+        let dir = TempDir::new().unwrap();
+        let r = BashTool
+            .call(
+                json!({"command": "sleep 30 >/dev/null 2>&1 & echo $!"}),
+                ctx_in(dir.path()),
+                ProgressSender::noop("t"),
+            )
+            .await
+            .unwrap();
+        let ToolResultContent::Text(text) = r.content else {
+            panic!()
+        };
+        assert!(!text.contains("stopped"), "{text}");
+        let pid: i32 = text.lines().next().unwrap().trim().parse().unwrap();
+        // SAFETY: signal 0 asks whether it exists; SIGKILL cleans up after the test.
+        unsafe {
+            assert_eq!(
+                libc::kill(pid, 0),
+                0,
+                "a process that let go of the output was killed"
+            );
+            libc::kill(pid, libc::SIGKILL);
+        }
+    }
+
+    #[tokio::test]
+    async fn run_in_background_is_refused_rather_than_silently_ignored() {
+        let dir = TempDir::new().unwrap();
+        let v = BashTool
+            .validate_input(
+                &json!({"command": "make", "run_in_background": true}),
+                &ctx_in(dir.path()),
+            )
+            .await;
+        assert!(!v.is_ok());
     }
 
     #[tokio::test]

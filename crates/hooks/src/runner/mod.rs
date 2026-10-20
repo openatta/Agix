@@ -976,6 +976,85 @@ mod tests {
         }
     }
 
+    fn one_command_hook(command: &str, timeout_ms: u64) -> HookRunner {
+        let mut s: HooksSettings = HashMap::new();
+        s.insert(
+            HookEvent::PreToolUse,
+            vec![HookConfig::Command {
+                command: command.into(),
+                shell: None,
+                timeout: Some(timeout_ms),
+                if_pattern: None,
+                only_on_error: None,
+                once: None,
+                async_rewake: None,
+            }],
+        );
+        HookRunner::new(s)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_block_is_honored_when_the_hook_leaves_a_background_process_behind() {
+        let dir = tempfile_dir();
+        let r = one_command_hook(
+            &format!(
+                r#"sleep 30 & echo $! > '{}/pid'; echo '{{"decision":"block","message":"no"}}'"#,
+                dir.display()
+            ),
+            20_000,
+        );
+        let started = std::time::Instant::now();
+        let result = r.run(HookEvent::PreToolUse, &input_for_bash("ls")).await;
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the hook waited on its background sleep: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            result.blocked().and_then(|r| r.message.clone()).as_deref(),
+            Some("no"),
+            "{:?}",
+            result.outcomes
+        );
+        let pid: i32 = std::fs::read_to_string(dir.join("pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        // SAFETY: signal 0 only asks whether the pid exists.
+        while unsafe { libc::kill(pid, 0) } == 0 {
+            assert!(std::time::Instant::now() < deadline, "the sleep survived");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_hook_that_outlives_its_timeout_is_stopped_and_reported() {
+        let r = one_command_hook("sleep 30", 300);
+        let started = std::time::Instant::now();
+        let result = r.run(HookEvent::PreToolUse, &input_for_bash("ls")).await;
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(result.outcomes[0].is_error(), "{:?}", result.outcomes);
+        assert!(result.blocked().is_none());
+    }
+
+    fn tempfile_dir() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "atta-hooks-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn command_hook_without_search_dirs_does_not_resolve_bare_script_name() {

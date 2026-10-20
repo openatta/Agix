@@ -1,4 +1,8 @@
 //! `LocalProcess` — a child process on this machine.
+//!
+//! On Unix every spawned program leads a process group of its own, and stopping
+//! it signals the whole group: a command is everything it started, not just the
+//! one pid `spawn` returned.
 
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
@@ -12,6 +16,10 @@ use crate::interface::exec::{
 };
 
 pub struct LocalProcess;
+
+/// How long a stopped group gets to exit on `SIGTERM` before `SIGKILL`.
+#[cfg(unix)]
+const TERM_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
 
 #[async_trait::async_trait]
 impl Process for LocalProcess {
@@ -37,6 +45,11 @@ impl Process for LocalProcess {
         // process behind: cancellation drops the handle, and a leaked child
         // would keep writing to a pipe nobody reads.
         cmd.kill_on_drop(true);
+        // Its own group, so that stopping it reaches the background processes
+        // it started. The price is that a terminal's Ctrl-C no longer arrives
+        // here directly; a host turns Ctrl-C into cancellation, which does.
+        #[cfg(unix)]
+        cmd.process_group(0);
 
         let mut child = cmd
             .spawn()
@@ -44,19 +57,25 @@ impl Process for LocalProcess {
 
         if let Some(bytes) = spec.stdin {
             if let Some(mut stdin) = child.stdin.take() {
-                use tokio::io::AsyncWriteExt;
-                let _ = stdin.write_all(&bytes).await;
-                // Dropped here rather than at the end of the call: a child
-                // reading to EOF would otherwise wait for a pipe that stays
-                // open as long as this handle does.
-                drop(stdin);
+                // Fed from a task of its own and closed when done: a child that
+                // prints before it reads would otherwise fill its stdout pipe
+                // while this call is still blocked writing, and a child reading
+                // to EOF needs the pipe closed.
+                tokio::spawn(async move {
+                    use tokio::io::AsyncWriteExt;
+                    let _ = stdin.write_all(&bytes).await;
+                });
             }
         }
 
+        #[cfg(unix)]
+        let group = child.id().map(|pid| pid as libc::pid_t);
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         Ok(Box::new(LocalHandle {
             child,
+            #[cfg(unix)]
+            group,
             output: Some(interleave(stdout, stderr)),
         }))
     }
@@ -107,7 +126,29 @@ fn interleave(
 
 struct LocalHandle {
     child: tokio::process::Child,
+    #[cfg(unix)]
+    group: Option<libc::pid_t>,
     output: Option<BoxStream<'static, Result<OutputChunk, ExecError>>>,
+}
+
+#[cfg(unix)]
+fn signal_group(group: libc::pid_t, signal: libc::c_int) {
+    // SAFETY: plain integers in, nothing borrowed; a group that is already
+    // gone comes back as ESRCH, which is the outcome being asked for.
+    unsafe {
+        libc::killpg(group, signal);
+    }
+}
+
+impl Drop for LocalHandle {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(group) = self.group {
+            if matches!(self.child.try_wait(), Ok(None)) {
+                signal_group(group, libc::SIGKILL);
+            }
+        }
+    }
 }
 
 impl ProcessHandle for LocalHandle {
@@ -117,6 +158,12 @@ impl ProcessHandle for LocalHandle {
 
     fn kill(&mut self) -> BoxFuture<'_, ()> {
         Box::pin(async move {
+            #[cfg(unix)]
+            if let Some(group) = self.group {
+                signal_group(group, libc::SIGTERM);
+                let _ = tokio::time::timeout(TERM_GRACE, self.child.wait()).await;
+                signal_group(group, libc::SIGKILL);
+            }
             let _ = self.child.kill().await;
         })
     }
@@ -213,5 +260,74 @@ mod tests {
             .unwrap();
         assert_eq!(String::from_utf8_lossy(&first.bytes).trim(), "first");
         h.kill().await;
+    }
+
+    #[cfg(unix)]
+    async fn gone_within(pid: libc::pid_t, limit: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + limit;
+        while std::time::Instant::now() < deadline {
+            // SAFETY: signal 0 only asks whether the pid exists.
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        false
+    }
+
+    #[cfg(unix)]
+    async fn first_line(out: &mut BoxStream<'static, Result<OutputChunk, ExecError>>) -> String {
+        let chunk = tokio::time::timeout(std::time::Duration::from_secs(5), out.next())
+            .await
+            .expect("the background pid is printed straight away")
+            .unwrap()
+            .unwrap();
+        String::from_utf8_lossy(&chunk.bytes).trim().to_string()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_takes_the_background_children_with_it() {
+        let mut h = LocalProcess
+            .spawn(sh("sleep 300 & echo $!; wait"), CancellationToken::new())
+            .await
+            .unwrap();
+        let mut out = h.output().unwrap();
+        let pid: libc::pid_t = first_line(&mut out).await.parse().unwrap();
+        h.kill().await;
+        assert!(
+            gone_within(pid, std::time::Duration::from_secs(3)).await,
+            "the background sleep outlived the kill"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_after_exit_still_reaches_what_was_left_running() {
+        let mut h = LocalProcess
+            .spawn(sh("sleep 300 & echo $!"), CancellationToken::new())
+            .await
+            .unwrap();
+        let mut out = h.output().unwrap();
+        let pid: libc::pid_t = first_line(&mut out).await.parse().unwrap();
+        assert!(h.wait().await.unwrap().success);
+        h.kill().await;
+        assert!(
+            gone_within(pid, std::time::Duration::from_secs(3)).await,
+            "the orphaned sleep survived a kill issued after its parent exited"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_a_running_handle_stops_the_whole_group() {
+        let mut h = LocalProcess
+            .spawn(sh("sleep 300 & echo $!; wait"), CancellationToken::new())
+            .await
+            .unwrap();
+        let mut out = h.output().unwrap();
+        let pid: libc::pid_t = first_line(&mut out).await.parse().unwrap();
+        drop(h);
+        assert!(gone_within(pid, std::time::Duration::from_secs(3)).await);
     }
 }

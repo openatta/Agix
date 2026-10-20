@@ -11,6 +11,7 @@ description  = "AttaCore — MCP client (server connection, tool adaptation)"
 base          = { workspace = true }
 auth          = { workspace = true }
 rmcp          = { workspace = true }
+process-wrap  = { workspace = true }
 tokio         = { workspace = true }
 tokio-util    = { workspace = true }
 futures       = { workspace = true }

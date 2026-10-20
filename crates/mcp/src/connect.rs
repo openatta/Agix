@@ -539,6 +539,10 @@ async fn spawn_stdio_service(
     for (k, v) in env {
         cmd.env(k, v);
     }
+    let mut cmd = process_wrap::tokio::CommandWrap::from(cmd);
+    #[cfg(unix)]
+    cmd.wrap(process_wrap::tokio::ProcessGroup::leader());
+    cmd.wrap(process_wrap::tokio::KillOnDrop);
 
     let transport = rmcp::transport::child_process::TokioChildProcess::new(cmd).map_err(|e| {
         McpError::ConnectFailed {

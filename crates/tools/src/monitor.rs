@@ -142,7 +142,9 @@ impl Tool for MonitorTool {
 
         // Spawn a background task to drain stdout lines and send them as progress events.
         let progress_clone = progress.clone();
-        let drain_handle = tokio::spawn(async move {
+        let stop_reading = tokio_util::sync::CancellationToken::new();
+        let stop = stop_reading.clone();
+        let mut drain_handle = tokio::spawn(async move {
             let stdout = tokio_util::io::StreamReader::new(chunks.map(|chunk| match chunk {
                 // Only stdout becomes a notification. The stderr chunks are
                 // read and thrown away rather than left unread: a provider
@@ -154,7 +156,13 @@ impl Tool for MonitorTool {
             let mut framed =
                 FramedRead::new(stdout, LinesCodec::new_with_max_length(MAX_LINE_LENGTH));
             let mut line_count: u64 = 0;
-            while let Some(line_res) = framed.next().await {
+            loop {
+                let next = tokio::select! {
+                    biased;
+                    _ = stop.cancelled() => None,
+                    n = framed.next() => n,
+                };
+                let Some(line_res) = next else { break };
                 match line_res {
                     Ok(line) => {
                         line_count += 1;
@@ -173,6 +181,7 @@ impl Tool for MonitorTool {
                 biased;
                 _ = ctx.cancel.cancelled() => {
                     child.kill().await;
+                    stop_reading.cancel();
                     return Err(ToolError::Cancelled);
                 }
                 r = child.wait() => r,
@@ -183,10 +192,12 @@ impl Tool for MonitorTool {
                 biased;
                 _ = ctx.cancel.cancelled() => {
                     child.kill().await;
+                    stop_reading.cancel();
                     return Err(ToolError::Cancelled);
                 }
                 _ = tokio::time::sleep(timeout) => {
                     child.kill().await;
+                    stop_reading.cancel();
                     return Err(ToolError::Timeout(timeout));
                 }
                 r = child.wait() => r,
@@ -194,7 +205,14 @@ impl Tool for MonitorTool {
         };
 
         let status = wait_result.map_err(ToolError::from)?;
-        let line_count = drain_handle.await.unwrap_or(0);
+        let line_count = tokio::select! {
+            r = &mut drain_handle => r.unwrap_or(0),
+            _ = tokio::time::sleep(base::interface::exec::OUTPUT_GRACE_AFTER_EXIT) => {
+                child.kill().await;
+                stop_reading.cancel();
+                (&mut drain_handle).await.unwrap_or(0)
+            }
+        };
 
         let summary = if status.success {
             format!(
@@ -446,6 +464,26 @@ mod tests {
             Err(e) => panic!("expected Timeout, got: {e:?}"),
             Ok(_) => panic!("expected timeout error, got Ok"),
         }
+    }
+
+    #[tokio::test]
+    async fn a_background_process_holding_stdout_does_not_hold_the_watch_open() {
+        let dir = TempDir::new().unwrap();
+        let started = std::time::Instant::now();
+        let result = MonitorTool
+            .call(
+                json!({"command": "sleep 30 & echo up", "description": "bg", "timeout_ms": 20000}),
+                ctx_in(dir.path()),
+                ProgressSender::noop("t"),
+            )
+            .await
+            .unwrap();
+        assert!(!result.is_error);
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the watch waited on the background sleep: {:?}",
+            started.elapsed()
+        );
     }
 
     #[tokio::test]
