@@ -525,6 +525,10 @@ pub struct SessionPool {
     /// applies. Filled from the session's log the first time a session not
     /// built in this process is resumed.
     specs: std::sync::Mutex<HashMap<String, SessionSpec>>,
+    /// Every project this pool has built a session for, `None` being the
+    /// no-project tier. What `session.list` enumerates cold sessions under —
+    /// kept apart from `bindings`, which a settings change empties.
+    served: std::sync::Mutex<Vec<Option<PathBuf>>>,
     /// How long a `kind:"prompt"` permission ask may sit unanswered before
     /// the daemon answers it with a `Deny` on the client's behalf.
     /// `Duration::ZERO` disables the timer entirely (wait forever — the
@@ -763,6 +767,7 @@ impl SessionPool {
             },
             pool_watch: std::sync::Mutex::new(Vec::new()),
             specs: std::sync::Mutex::new(HashMap::new()),
+            served: std::sync::Mutex::new(Vec::new()),
             permission_prompt_timeout: DEFAULT_PERMISSION_PROMPT_TIMEOUT,
             credentials: Arc::new(base::interface::credentials::ConfigCredentials),
             pool_telemetry,
@@ -1736,6 +1741,7 @@ impl SessionPool {
     ) -> Result<String, String> {
         let spec = self.spec_for(&session_id, resume, options).await;
         let options = spec.options.as_ref();
+        self.note_served(project_root_for_meta.as_deref());
         let scene_id = scene.id().to_string();
         // The `Builder` takes ownership of the scene; the session keeps a
         // handle of its own because `run_turn` has to ask it things.
@@ -3321,17 +3327,15 @@ impl SessionPool {
     /// `session.get` that disagreed with the `session.list` entry for the
     /// same session would be worse than not having it.
     pub async fn session_detail(&self, session_id: &str) -> Result<serde_json::Value, RpcError> {
-        let info = self
+        let listed = self
             .list_all(true, None)
             .await
             .into_iter()
-            .find(|s| s.session_id == session_id)
-            .ok_or_else(|| {
-                (
-                    codes::SESSION_NOT_FOUND,
-                    format!("session not found: {session_id}"),
-                )
-            })?;
+            .find(|s| s.session_id == session_id);
+        let info = match listed {
+            Some(info) => info,
+            None => self.cold_session_info(session_id).await?,
+        };
 
         // The entry's own `scene`, not a second lookup: `session.get`
         // disagreeing with the `session.list` entry for the same session is
@@ -3605,9 +3609,44 @@ impl SessionPool {
         out
     }
 
-    /// Every project this daemon has served a session for, newest knowledge
-    /// first: its own, plus each one a `session.create {project_root}` built
-    /// a settings binding for. `None` is the no-project tier.
+    /// A session that is not in memory and not under any project `session.list`
+    /// enumerates — one whose project no session in this process has touched
+    /// yet. `session.resume` finds those by id, so `session.get` must too.
+    async fn cold_session_info(&self, session_id: &str) -> Result<SessionInfo, RpcError> {
+        let not_found = || {
+            (
+                codes::SESSION_NOT_FOUND,
+                format!("session not found: {session_id}"),
+            )
+        };
+        let store = self.history_store.as_ref().ok_or_else(not_found)?;
+        let sid = base::session::SessionId::parse(session_id).map_err(|_| not_found())?;
+        match store.load(sid).await {
+            Ok(entries) if !entries.is_empty() => {}
+            _ => return Err(not_found()),
+        }
+        let (facts, resumable) = self.session_facts_and_resumable(session_id).await;
+        let stats = self.stats_of(session_id).await;
+        Ok(SessionInfo {
+            session_id: session_id.to_string(),
+            name: stats.title,
+            preview: None,
+            message_count: 0,
+            created_at: String::new(),
+            last_active: String::new(),
+            status: SessionStatus::Inactive,
+            session_kind: facts.session_kind,
+            scene: facts.scene,
+            project_root: facts.project_root,
+            compact_count: stats.compact_count,
+            parent_session_id: facts.parent_session_id,
+            resumable,
+        })
+    }
+
+    /// Every project this daemon has served a session for: its own, plus each
+    /// one a session was created or resumed under in this process. `None` is
+    /// the no-project tier.
     ///
     /// This is what `session.list` enumerates cold sessions over. Not every
     /// project on disk (`SessionScope::AllProjects`), which would report
@@ -3616,18 +3655,33 @@ impl SessionPool {
     /// listed back when every session's transcript landed there regardless of
     /// which project the session was actually bound to.
     ///
-    /// A restart empties the binding cache, so a project no session has
-    /// touched since is not listed until one does. Bindings are built on
-    /// demand and nothing persists the set — the alternative is a daemon that
-    /// remembers projects it no longer serves.
+    /// Held apart from the binding cache, which a settings change empties.
+    /// Not persisted: after a restart a project no session has touched since
+    /// is not listed until one does — the alternative is a daemon that
+    /// remembers projects it no longer serves. `session.get` still finds such
+    /// a session by id.
     async fn served_projects(&self) -> Vec<Option<PathBuf>> {
         let mut out = vec![Some(self.cwd.clone())];
-        for (project, _scene) in self.bindings.lock().await.keys() {
+        for project in self.lock_served().iter() {
             if !out.contains(project) {
                 out.push(project.clone());
             }
         }
         out
+    }
+
+    fn lock_served(&self) -> std::sync::MutexGuard<'_, Vec<Option<PathBuf>>> {
+        self.served
+            .lock()
+            .expect("served mutex is never held across a panic")
+    }
+
+    fn note_served(&self, project: Option<&Path>) {
+        let project = project.map(Path::to_path_buf);
+        let mut served = self.lock_served();
+        if !served.contains(&project) {
+            served.push(project);
+        }
     }
 
     /// 获取活跃 session 数量。
@@ -6654,6 +6708,56 @@ mod session_listing_tests {
             ids.push(sid);
         }
         ids
+    }
+
+    /// A session on disk under a project no session in this process has
+    /// touched: `session.resume` finds it by id, and so must `session.get`.
+    #[tokio::test]
+    async fn session_get_finds_a_cold_session_of_a_project_not_served_yet() {
+        let store: Arc<dyn HistoryStore> = Arc::new(InMemoryHistoryStore::new());
+        let (pool, _dir) = test_pool_with_store(Some(store.clone())).await;
+        let sid = base::session::SessionId::new();
+        store
+            .append(
+                sid,
+                LogEntry::Meta {
+                    cwd: "/elsewhere/proj".into(),
+                    started_at: time::OffsetDateTime::now_utc(),
+                    model: "m".into(),
+                    permission_mode: "default".into(),
+                    engine_version: "0".into(),
+                    attacode_version: "0".into(),
+                    parent_session_id: None,
+                    scene: Some("coding".into()),
+                    project_root: Some("/elsewhere/proj".into()),
+                    session_kind: history::entry::SessionKind::Primary,
+                    schema_version: history::entry::CURRENT_META_SCHEMA_VERSION,
+                },
+            )
+            .await
+            .unwrap();
+
+        let detail = pool.session_detail(&sid.to_string()).await.unwrap();
+        assert_eq!(detail["project_root"], "/elsewhere/proj");
+        assert_eq!(detail["status"], "inactive");
+
+        let missing = base::session::SessionId::new().to_string();
+        assert_eq!(
+            pool.session_detail(&missing).await.unwrap_err().0,
+            codes::SESSION_NOT_FOUND
+        );
+    }
+
+    /// The projects `session.list` covers are the ones sessions were built
+    /// under, and a settings change does not make the pool forget them.
+    #[tokio::test]
+    async fn served_projects_outlive_a_settings_change() {
+        let (pool, dir) = test_pool_with_store(None).await;
+        let other = dir.path().join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        pool.note_served(Some(&other));
+        pool.invalidate_bindings(None).await;
+        assert!(pool.served_projects().await.contains(&Some(other)));
     }
 
     #[tokio::test]
