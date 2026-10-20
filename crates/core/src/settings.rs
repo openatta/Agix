@@ -1125,6 +1125,33 @@ mod tests {
     }
 
     #[test]
+    fn a_directory_serving_as_two_tiers_contributes_its_rules_once() {
+        use crate::interface::config_source::Tier;
+        let root = tempfile::tempdir().unwrap();
+        let home_atta = root.path().join("home");
+        write_settings(
+            &home_atta,
+            r#"{"permission_rules": [{"tool": "Bash(rm:*)", "action": "deny"}]}"#,
+        );
+
+        let settings = Settings::load(
+            home_atta.clone(),
+            root.path().join("scene"),
+            home_atta,
+            "code",
+            "m",
+        );
+        assert_eq!(
+            settings
+                .permission_rules
+                .iter()
+                .map(|r| (r.tool.as_str(), r.tier))
+                .collect::<Vec<_>>(),
+            vec![("Bash(rm:*)", Some(Tier::Project))]
+        );
+    }
+
+    #[test]
     fn local_overlay_can_never_override_paths_either() {
         let root = tempfile::tempdir().unwrap();
         let global = root.path().join("global");

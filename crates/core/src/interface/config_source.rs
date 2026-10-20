@@ -104,12 +104,21 @@ impl FileTiers {
 
 impl ConfigSource for FileTiers {
     fn layers(&self) -> Vec<ConfigLayer> {
-        let mut layers = Vec::new();
-        for (tier, dir) in [
+        let tiers = [
             (Tier::Global, &self.global_dir),
             (Tier::Scene, &self.scene_dir),
             (Tier::Project, &self.local_dir),
-        ] {
+        ];
+        let mut layers = Vec::new();
+        for (i, (tier, dir)) in tiers.iter().enumerate() {
+            // Two tiers can be one directory — a project rooted at `$HOME`
+            // shares `~/.atta` with the global tier. Read it once, at the
+            // higher tier: a merge applying it twice changes nothing, but
+            // `permission_rules` are concatenated and would be doubled.
+            if tiers[i + 1..].iter().any(|(_, later)| later == dir) {
+                continue;
+            }
+            let tier = *tier;
             for (file, machine_local) in [(SETTINGS_FILE, false), (SETTINGS_LOCAL_FILE, true)] {
                 let path = dir.join(file);
                 if let Some(value) = read_settings_file(tier, &path) {
