@@ -2155,17 +2155,8 @@ impl Builder {
             tools.register(std::sync::Arc::new(mcp::tools::DispatchMcpTool::new(
                 mcp.clients().to_vec(),
             )));
-            // Register each individual MCP tool adapter (mcp__<server>__<tool>)
-            // so the model can actually call the names `build_tool_defs()`
-            // (turn.rs) already advertises to it — previously these were
-            // only ever advertised, never executable: `execute_tool_inner`
-            // looks up this same `tools` registry, which had no per-tool
-            // adapters in it, only the 3 generic ones above. A caveat this
-            // doesn't address: this is a build-time snapshot, so a tool that
-            // only appears via a later `refresh_tools()` call (e.g. a
-            // reconnect that surfaces a genuinely new tool, not just the
-            // same set again) won't be registered here — closing that gap
-            // needs dispatch-time fallback to `self.mcp`, a bigger change.
+            // Dispatch looks tools up in this registry only, so MCP adapters
+            // live here too; `sync_mcp_adapters` (turn.rs) keeps them current.
             for adapter in mcp.tool_adapters() {
                 tools.register(adapter.clone());
             }

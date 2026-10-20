@@ -208,7 +208,7 @@ impl Agent {
                     }
                     EngineCommand::RefreshMcp => {
                         self.mcp.refresh_tools().await;
-                        register_new_mcp_adapters(self.tools.as_ref(), &self.mcp, |n| {
+                        sync_mcp_adapters(self.tools.as_ref(), &self.mcp, |n| {
                             self.scene.permits_tool(n)
                         });
                         Ok(TurnOutcome::default())
@@ -1367,13 +1367,8 @@ impl Agent {
                     }
                 }
 
-                // Refresh MCP tools between turns.
                 self.mcp.refresh_tools().await;
-                // Any tool a server exposed for the first time in that
-                // refresh (e.g. after a reconnect) needs to actually be
-                // callable, not just advertised — see
-                // `register_new_mcp_adapters`'s doc comment.
-                register_new_mcp_adapters(self.tools.as_ref(), &self.mcp, |n| {
+                sync_mcp_adapters(self.tools.as_ref(), &self.mcp, |n| {
                     self.scene.permits_tool(n)
                 });
                 continue;
@@ -1778,23 +1773,18 @@ or project context that should survive across sessions.
         /// guides are fetched. Named here because `build_tool_defs` must not
         /// advertise a guide when the scene has filtered the fetcher out.
         const TOOL_SEARCH_NAME: &str = "ToolSearch";
-        // Combine built-in + MCP tools with dedup. Built-in tools take
-        // priority on name conflicts.
         let mut pool: BTreeMap<String, Arc<dyn base::tool::Tool>> = BTreeMap::new();
-        // MCP tools first
         for t in self.mcp.tool_adapters() {
             pool.insert(t.name().to_string(), t.clone());
         }
-        // Built-in tools overwrite on name conflict
+        // MCP adapters also sit in `self.tools`, because dispatch looks them up
+        // there; only a non-MCP entry can shadow one. Built-ins win.
         for t in self.tools.list() {
+            if t.source().starts_with("mcp:") {
+                continue;
+            }
             let name = t.name().to_string();
             if pool.contains_key(&name) && self.mcp_shadow_warned.insert(name.clone()) {
-                // A built-in tool is about to silently shadow an MCP-provided
-                // tool of the same name — the MCP tool becomes permanently
-                // uncallable with no signal to the operator that it happened.
-                // Warned once per tool name per session (`mcp_shadow_warned`
-                // gates it) since this function runs on every API call and
-                // the collision, once present, doesn't go away turn to turn.
                 tracing::warn!(
                     tool = %name,
                     "built-in tool shadows an MCP tool of the same name; the MCP tool is not exposed to the model"
@@ -2527,7 +2517,7 @@ or project context that should survive across sessions.
         } else {
             Some(&skills_text)
         };
-        // Build comma-separated tool names for dynamic session guidance
+        let mut seen_names = HashSet::new();
         let tool_names: String = self
             .tools
             .list()
@@ -2539,6 +2529,7 @@ or project context that should survive across sessions.
                     .iter()
                     .map(|t| t.name().to_string()),
             )
+            .filter(|n| seen_names.insert(n.clone()))
             .collect::<Vec<_>>()
             .join(",");
         let tools_ref: Option<Cow<'_, str>> = if tool_names.is_empty() {
@@ -3715,24 +3706,48 @@ fn apply_result_transformers(
     }
 }
 
-/// Register any of `mcp`'s current tool adapters that aren't already in
-/// `tools` by name. `McpManager::refresh_tools()` (called between turns) only
-/// updates the manager's own internal adapter list; a tool a server exposes
-/// for the first time after
-/// that refresh (e.g. following a reconnect) would otherwise be advertised
-/// to the model via `build_tool_defs()` but stay uncallable — the same bug
-/// class as the `Builder::build()`-time registration gap this mirrors.
-/// Already-registered adapters are left alone (checked by name) so this is
-/// safe to call every refresh, not just the first time. Adapters the scene
-/// does not permit are never registered — see `AgentScene::permits_tool`.
-fn register_new_mcp_adapters(
+/// Make the dispatch registry's MCP entries match `mcp`'s current adapter
+/// list: new tools are added, re-listed ones take the fresh instance, and ones
+/// a server stopped listing are withdrawn so they can no longer be called.
+/// Adapters the scene does not permit are never registered — see
+/// `AgentScene::permits_tool`.
+fn sync_mcp_adapters(
     tools: &dyn base::tool::ToolRegistry,
     mcp: &McpManager,
     permits: impl Fn(&str) -> bool,
 ) {
-    for adapter in mcp.tool_adapters() {
-        if permits(adapter.name()) && tools.get(adapter.name()).is_none() {
-            tools.register(adapter.clone());
+    let is_mcp = |t: &Arc<dyn base::tool::Tool>| t.source().starts_with("mcp:");
+    let current: Vec<_> = mcp
+        .tool_adapters()
+        .iter()
+        .filter(|a| permits(a.name()))
+        .cloned()
+        .collect();
+    let live: HashSet<&str> = current.iter().map(|a| a.name()).collect();
+    let registered = tools.all();
+    let builtin_names: HashSet<&str> = registered
+        .iter()
+        .filter(|t| !is_mcp(t))
+        .map(|t| t.name())
+        .collect();
+    for stale in registered
+        .iter()
+        .filter(|t| is_mcp(t) && !live.contains(t.name()))
+    {
+        // `remove` withdraws every registration under the name, a builtin's too.
+        if !builtin_names.contains(stale.name()) {
+            tools.remove(stale.name());
+        }
+    }
+    for adapter in &current {
+        if builtin_names.contains(adapter.name()) {
+            continue;
+        }
+        match tools.get(adapter.name()) {
+            Some(existing) if Arc::ptr_eq(&existing, adapter) => {}
+            _ => {
+                tools.replace(adapter.clone());
+            }
         }
     }
 }
@@ -5271,61 +5286,6 @@ mod tests {
                 .exists(),
             "must not touch the shared/committed settings.json tier"
         );
-    }
-
-    // ── register_new_mcp_adapters (dynamic MCP tool discovery) ──
-
-    #[tokio::test]
-    async fn register_new_mcp_adapters_adds_previously_unseen_tools() {
-        let tools = base::tool::InMemoryToolRegistry::new();
-        let mock_client = Arc::new(mcp::client::MockMcpClient::new(
-            "test-server",
-            vec![mcp::client::McpToolMeta {
-                name: "new-tool".into(),
-                description: Some("appeared after reconnect".into()),
-                input_schema: serde_json::json!({"type": "object"}),
-            }],
-        ));
-        let mut mgr = McpManager::from_clients(vec![mock_client]);
-        mgr.refresh_tools().await;
-
-        assert!(
-            tools.get("mcp__test-server__new-tool").is_none(),
-            "sanity: not registered yet"
-        );
-        register_new_mcp_adapters(&tools, &mgr, |_| true);
-        assert!(
-            tools.get("mcp__test-server__new-tool").is_some(),
-            "newly-discovered MCP adapter should now be registered"
-        );
-    }
-
-    #[tokio::test]
-    async fn register_new_mcp_adapters_does_not_duplicate_already_registered_tools() {
-        let tools = base::tool::InMemoryToolRegistry::new();
-        let mock_client = Arc::new(mcp::client::MockMcpClient::new(
-            "test-server",
-            vec![mcp::client::McpToolMeta {
-                name: "existing-tool".into(),
-                description: Some("was already there".into()),
-                input_schema: serde_json::json!({"type": "object"}),
-            }],
-        ));
-        let mut mgr = McpManager::from_clients(vec![mock_client]);
-        mgr.refresh_tools().await;
-
-        // Simulate this having already been registered once (e.g. at
-        // Builder::build() time), then refresh_tools() running again later
-        // with the exact same tool still present — must not duplicate.
-        register_new_mcp_adapters(&tools, &mgr, |_| true);
-        register_new_mcp_adapters(&tools, &mgr, |_| true);
-
-        let count = tools
-            .list()
-            .iter()
-            .filter(|t| t.name() == "mcp__test-server__existing-tool")
-            .count();
-        assert_eq!(count, 1, "must not register the same tool twice");
     }
 
     #[test]
@@ -7180,6 +7140,108 @@ mod prompt_assembly_tests {
         );
     }
 
+    // ── sync_mcp_adapters ──
+
+    fn mcp_meta(name: &str, description: &str) -> mcp::client::McpToolMeta {
+        mcp::client::McpToolMeta {
+            name: name.into(),
+            description: Some(description.into()),
+            input_schema: serde_json::json!({"type": "object"}),
+        }
+    }
+
+    async fn manager_listing(tools: Vec<mcp::client::McpToolMeta>) -> McpManager {
+        let client = Arc::new(mcp::client::MockMcpClient::new("test-server", tools));
+        let mut mgr = McpManager::from_clients(vec![client]);
+        mgr.refresh_tools().await;
+        mgr
+    }
+
+    #[tokio::test]
+    async fn sync_mcp_adapters_adds_previously_unseen_tools() {
+        let tools = base::tool::InMemoryToolRegistry::new();
+        let mgr = manager_listing(vec![mcp_meta("new-tool", "appeared after reconnect")]).await;
+
+        sync_mcp_adapters(&tools, &mgr, |_| true);
+        assert!(tools.get("mcp__test-server__new-tool").is_some());
+    }
+
+    #[tokio::test]
+    async fn sync_mcp_adapters_registers_each_tool_once() {
+        let tools = base::tool::InMemoryToolRegistry::new();
+        let mgr = manager_listing(vec![mcp_meta("existing-tool", "was already there")]).await;
+
+        sync_mcp_adapters(&tools, &mgr, |_| true);
+        sync_mcp_adapters(&tools, &mgr, |_| true);
+
+        let count = tools
+            .list()
+            .iter()
+            .filter(|t| t.name() == "mcp__test-server__existing-tool")
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn sync_mcp_adapters_takes_the_relisted_instance_and_drops_vanished_tools() {
+        let tools = base::tool::InMemoryToolRegistry::new();
+        let before = manager_listing(vec![
+            mcp_meta("kept", "old schema"),
+            mcp_meta("gone", "server stops listing this"),
+        ])
+        .await;
+        sync_mcp_adapters(&tools, &before, |_| true);
+
+        let after = manager_listing(vec![mcp_meta("kept", "new schema")]).await;
+        sync_mcp_adapters(&tools, &after, |_| true);
+
+        assert!(
+            tools.get("mcp__test-server__gone").is_none(),
+            "a tool the server no longer lists must stop being callable"
+        );
+        let kept = tools.get("mcp__test-server__kept").unwrap();
+        assert!(Arc::ptr_eq(&kept, &after.tool_adapters()[0]));
+    }
+
+    #[tokio::test]
+    async fn sync_mcp_adapters_leaves_builtins_alone() {
+        let tools = base::tool::InMemoryToolRegistry::new();
+        let builtin: Arc<dyn base::tool::Tool> = Arc::new(PlainTool);
+        tools.register(builtin.clone());
+        let client = Arc::new(mcp::client::MockMcpClient::new("s", vec![]));
+        let mut mgr = McpManager::from_clients(vec![client]);
+        mgr.refresh_tools().await;
+
+        sync_mcp_adapters(&tools, &mgr, |_| true);
+        assert!(Arc::ptr_eq(&tools.get("Plain").unwrap(), &builtin));
+    }
+
+    #[tokio::test]
+    async fn an_mcp_adapter_is_advertised_once_and_not_reported_as_shadowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = manager_listing(vec![mcp_meta("lookup", "Look a thing up")]).await;
+        let (mut agent, _rx, _tx) = crate::agent::Builder::new()
+            .scene(test_scene(vec![]))
+            .model(Arc::new(DummyModel))
+            .tools(Arc::new(InMemoryToolRegistry::new()))
+            .settings(Arc::new(test_settings(dir.path())))
+            .mcp_manager(mgr)
+            .skip_warmup(true)
+            .build()
+            .unwrap();
+
+        let defs = agent.build_tool_defs().await;
+        let matching: Vec<_> = defs
+            .iter()
+            .filter(|d| d.name == "mcp__test-server__lookup")
+            .collect();
+        assert_eq!(matching.len(), 1);
+        assert_eq!(matching[0].source.as_deref(), Some("mcp:test-server"));
+        assert!(
+            agent.mcp_shadow_warned.is_empty(),
+            "the dispatch copy of an MCP adapter is not a builtin shadowing it"
+        );
+    }
     // ── A-3: parent AGENTS.md reaches the prompt ─────────────────────────
 
     /// A session rooted in a monorepo sub-package must still see the
