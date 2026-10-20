@@ -186,6 +186,56 @@ impl ProjectBinding {
         self.stale.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// The client for provider `id`, when the settings configure one that
+    /// built.
+    fn provider_client(&self, id: &str) -> Option<Arc<dyn base::interface::model::Model>> {
+        self.task_router.as_ref()?.provider(id)
+    }
+
+    /// Whether a session on this pair may talk to `provider` with `model`.
+    ///
+    /// A model is checked against the `models` allow-list of the provider it
+    /// would be sent to — the one named, else the one the conversation is
+    /// routed to. An empty list, or no provider at all, accepts any name: the
+    /// daemon has no catalog to check against.
+    fn check_model_choice(
+        &self,
+        provider: Option<&str>,
+        model: Option<&str>,
+    ) -> Result<(), String> {
+        if let Some(id) = provider {
+            if self.provider_client(id).is_none() {
+                return Err(format!(
+                    "provider `{id}` is not configured for this session's project"
+                ));
+            }
+        }
+        let Some(model) = model else {
+            return Ok(());
+        };
+        let routed = provider
+            .map(str::to_string)
+            .or_else(|| {
+                self.task_router
+                    .as_ref()
+                    .and_then(|r| r.provider_id_for("main").map(str::to_string))
+            })
+            .or_else(|| self.settings.default_provider.clone());
+        let Some(id) = routed else {
+            return Ok(());
+        };
+        match self.settings.providers.get(&id) {
+            Some(config)
+                if !config.models.is_empty() && !config.models.iter().any(|m| m == model) =>
+            {
+                Err(format!(
+                    "model `{model}` is not one of provider `{id}`'s models"
+                ))
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// Re-read the skill directories into the catalog every session on this
     /// pair already shares, so a skill file edit reaches them without a
     /// rebuild.
@@ -309,6 +359,23 @@ struct SessionSpec {
     recorder: Option<Arc<telemetry::recorder::Recorder>>,
 }
 
+impl SessionSpec {
+    /// The provider the conversation goes to: chosen since, else asked for
+    /// at creation. `None` follows the settings' routing.
+    fn provider(&self) -> Option<String> {
+        self.provider
+            .clone()
+            .or_else(|| self.options.as_ref().and_then(|o| o.provider.clone()))
+    }
+
+    /// The conversation's model, by the same precedence as `provider`.
+    fn model(&self) -> Option<String> {
+        self.model
+            .clone()
+            .or_else(|| self.options.as_ref().and_then(|o| o.model.clone()))
+    }
+}
+
 /// The persisted part of a [`SessionSpec`], written to the session's log as
 /// an extension entry each time it changes; the last one wins. An extension
 /// entry rather than a `Meta` field because the spec changes after `Meta` is
@@ -341,6 +408,8 @@ struct LiveSession {
     /// turn rather than at build time, so it is the one that needs the scene
     /// kept here to ask.
     scene: Arc<dyn AgentScene>,
+    /// The project this session is bound to, `None` for a no-project session.
+    project: Option<PathBuf>,
     /// Session name（CHAT 场景首轮后由 LLM 生成；CODING 为 None）。
     name: Option<String>,
     created_at: Instant,
@@ -1690,6 +1759,13 @@ impl SessionPool {
             }
         };
 
+        binding
+            .check_model_choice(
+                options.and_then(|o| o.provider.as_deref()),
+                options.and_then(|o| o.model.as_deref()),
+            )
+            .map_err(|e| (codes::INVALID_PARAMS, e))?;
+
         let scene_id_for_result = scene.id().to_string();
         let sid = Id::new().to_string();
         let created_id = self
@@ -1776,8 +1852,21 @@ impl SessionPool {
                         Divergence::Warn
                     },
                 });
+        let provider_id = spec.provider();
+        let conversation_model = match provider_id.as_deref() {
+            None => binding.model.clone(),
+            Some(id) => binding
+                .provider_client(id)
+                .ok_or_else(|| format!("provider `{id}` is not configured"))?,
+        };
+        let model_name = spec.model().or_else(|| {
+            provider_id
+                .as_ref()
+                .and_then(|id| binding.settings.providers.get(id))
+                .and_then(|config| config.default_model.clone())
+        });
         let (model, task_router) = match recorder_config {
-            None => (binding.model.clone(), task_router),
+            None => (conversation_model, task_router),
             Some(config) => {
                 let shared = spec
                     .recorder
@@ -1797,7 +1886,7 @@ impl SessionPool {
                         Arc::new(m) as Arc<dyn base::interface::model::Model>
                     };
                 (
-                    wrap(None, binding.model.clone()),
+                    wrap(provider_id.as_deref(), conversation_model),
                     task_router.map(|r| Arc::new(r.map_models(|id, inner| wrap(Some(id), inner)))),
                 )
             }
@@ -1817,6 +1906,9 @@ impl SessionPool {
             snap.execution.permission_prompt_timeout_secs =
                 self.permission_prompt_timeout.as_secs();
             snap.permission_mode = permission_mode;
+            if let Some(name) = &model_name {
+                snap.model.model_name = name.clone();
+            }
             Arc::new(snap)
         };
         let permission = resolve_session_permission(
@@ -2125,9 +2217,6 @@ impl SessionPool {
             evict_lru(&mut sessions);
         }
 
-        // Cloned before the sender moves into `LiveSession`; the model
-        // replay below needs it and the map is not the place to reach for it.
-        let input_for_override = input_tx.clone();
         let live = LiveSession {
             input_tx,
             event_rx: Arc::new(AsyncMutex::new(Some(event_rx))),
@@ -2135,6 +2224,7 @@ impl SessionPool {
             exited,
             context: None,
             scene: scene_for_session,
+            project: project_root_for_meta.clone(),
             name: None,
             created_at: Instant::now(),
             last_active: Instant::now(),
@@ -2155,15 +2245,6 @@ impl SessionPool {
         // running forever as a leaked task if we didn't cancel it here.
         if let Some(old) = sessions.insert(session_id.clone(), live) {
             old.cancel.cancel();
-        }
-        // Before this Agent serves anything: the command is queued ahead of
-        // whatever turn follows, so a session rebuilt mid-conversation never
-        // answers one turn on the model the caller replaced.
-        if let Some(model) = spec.model.clone() {
-            let _ = input_for_override.send(InputMessage::System {
-                kind: EngineCommand::UpdateModel,
-                content: model,
-            });
         }
         info!(%session_id, "session created");
         Ok(session_id)
@@ -2370,12 +2451,20 @@ impl SessionPool {
     /// not reading its input channel, so a command accepted here would take
     /// effect at some unannounced later moment — the caller would have been
     /// told the model changed and watched the old one answer.
+    ///
+    /// With `provider`, the conversation moves to that provider's client. An
+    /// engine is built around its client, so the session is rebuilt on the
+    /// new spec; it is idle, so nothing is cut off. A model is checked
+    /// against the provider it will be sent to and refused when that
+    /// provider's `models` list does not have it — sending a name to an
+    /// endpoint that does not serve it fails only later, and less legibly.
     pub async fn set_session_model(
         &self,
         session_id: &str,
-        model: &str,
+        model: Option<&str>,
+        provider: Option<&str>,
     ) -> Result<serde_json::Value, SetModelError> {
-        let input_tx = {
+        let (input_tx, project, scene) = {
             let mut sessions = self.sessions.lock().await;
             let Some(live) = sessions.get_mut(session_id) else {
                 return Err(SetModelError::Rpc((
@@ -2387,28 +2476,69 @@ impl SessionPool {
                 return Err(SetModelError::Busy { current_turn_id });
             }
             live.last_active = Instant::now();
-            live.input_tx.clone()
+            (
+                live.input_tx.clone(),
+                live.project.clone(),
+                live.scene.id().to_string(),
+            )
         };
 
-        self.update_spec(session_id, |spec| spec.model = Some(model.to_string()))
-            .await;
+        let current_provider = self
+            .lock_specs()
+            .get(session_id)
+            .and_then(SessionSpec::provider);
+        let binding = self.binding_for(project.as_deref(), &scene).await;
+        binding
+            .check_model_choice(provider.or(current_provider.as_deref()), model)
+            .map_err(|e| SetModelError::Rpc((codes::INVALID_PARAMS, e)))?;
 
-        if input_tx
-            .send(InputMessage::System {
-                kind: EngineCommand::UpdateModel,
-                content: model.to_string(),
-            })
-            .is_err()
-        {
-            return Err(SetModelError::Rpc((
-                codes::SESSION_NOT_FOUND,
-                format!("session is no longer running: {session_id}"),
-            )));
+        let switching_provider = provider.is_some_and(|p| current_provider.as_deref() != Some(p));
+        self.update_spec(session_id, |spec| {
+            if let Some(p) = provider {
+                spec.provider = Some(p.to_string());
+                // A model chosen for the old provider means nothing to the new
+                // one; without a new choice the new provider's default applies.
+                if switching_provider {
+                    spec.model = None;
+                }
+            }
+            if let Some(m) = model {
+                spec.model = Some(m.to_string());
+            }
+        })
+        .await;
+
+        // A provider is a different client, which an engine is built around
+        // rather than handed mid-life: rebuild the session on the new spec.
+        // It is idle (checked above), so nothing is cut off.
+        if switching_provider {
+            self.resume_or_create(session_id.to_string(), None)
+                .await
+                .map_err(|e| SetModelError::Rpc((codes::INTERNAL_ERROR, e)))?;
+        } else if let Some(m) = model {
+            if input_tx
+                .send(InputMessage::System {
+                    kind: EngineCommand::UpdateModel,
+                    content: m.to_string(),
+                })
+                .is_err()
+            {
+                return Err(SetModelError::Rpc((
+                    codes::SESSION_NOT_FOUND,
+                    format!("session is no longer running: {session_id}"),
+                )));
+            }
         }
 
+        let spec = self
+            .lock_specs()
+            .get(session_id)
+            .cloned()
+            .unwrap_or_default();
         Ok(serde_json::json!({
             "session_id": session_id,
-            "model": model,
+            "model": spec.model(),
+            "provider": spec.provider(),
             "applies": "next_turn",
         }))
     }
@@ -5922,6 +6052,7 @@ mod eviction_tests {
             exited: CancellationToken::new(),
             context: None,
             scene: Arc::new(scene::scene::coding::CodingScene),
+            project: None,
             name: None,
             created_at: last_active,
             last_active,
@@ -6447,7 +6578,10 @@ mod set_model_tests {
                 .current_turn = Some("t1".into());
         }
 
-        match pool.set_session_model(&session_id, "claude-opus-4-6").await {
+        match pool
+            .set_session_model(&session_id, Some("claude-opus-4-6"), None)
+            .await
+        {
             Err(SetModelError::Busy { current_turn_id }) => {
                 assert_eq!(
                     current_turn_id, "t1",

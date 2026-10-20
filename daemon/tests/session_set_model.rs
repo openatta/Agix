@@ -6,8 +6,8 @@
 //! the configuration and start a new session, which costs the conversation.
 //!
 //! What the client asked for has to outlive the `Agent` it was asked of. A
-//! session is rebuilt from settings whenever a reload moves the config
-//! generation on, and the model would go back to the configured one with
+//! session is rebuilt from settings whenever a reload invalidates its
+//! binding, and the model would go back to the configured one with
 //! nothing said to whoever chose otherwise — the second test is that case.
 
 use std::path::Path;

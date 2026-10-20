@@ -725,7 +725,9 @@ HashMap),客户端要按 `scene` 找条目,不要按下标。
     "permission_rules": [ ],
     "recorder": { "mode":"replay", "name":"…", "dir":"…", "strict":true },
     "telemetry": { "output":"/abs/path.jsonl" },
-    "output_schema": { "type":"object", … } } }   // 结构化输出必须满足的 JSON Schema
+    "output_schema": { "type":"object", … },  // 结构化输出必须满足的 JSON Schema
+    "provider": "deepseek",               // 可选,providers 里的 id
+    "model": "deepseek-chat" } }          // 可选
 // ← result
 { "session_id": "…", "scene": "coding", "session_kind": "primary",
   "project_root": "…", "created_at": "…" }
@@ -751,6 +753,11 @@ daemon 重启后恢复)都按同一份 `options` 重建,之后的调用里再传
 `output_schema` 给了,`StructuredOutput` 工具就以这份 schema 作为自己的参数格式直接
 宣告给模型(不再需要先 `ToolSearch`),不符合 schema 的调用以错误结果退回、模型可以
 改了再交;被接受的那一份出现在 `turn_complete` 的 `structured_output` 里(§7.2)。
+
+`provider` 让这个会话的对话走 `providers` 里那个厂商的 client,而不是设置里
+`task_models.main` 路由到的那个;子 Agent、压缩等其他路由任务仍按设置走。`model`
+省略时用该厂商的 `default_model`。厂商没配置、或 `model` 不在该厂商的 `models`
+白名单里 → `INVALID_PARAMS`。
 
 #### `session.run_turn`
 
@@ -991,26 +998,31 @@ sidecar),不是某个宿主自己的一层覆盖 —— 各宿主各存一份的
 
 ```jsonc
 // → params
-{ "session_id": "…", "model": "claude-opus-4-6" }
+{ "session_id": "…",
+  "model": "claude-opus-4-6",     // model 与 provider 至少给一个
+  "provider": "anthropic" }       // 可选,providers 里的 id
 // ← result
-{ "session_id": "…", "model": "claude-opus-4-6", "applies": "next_turn" }
+{ "session_id": "…", "model": "claude-opus-4-6", "provider": "anthropic",
+  "applies": "next_turn" }
 ```
 
 换掉这个会话**下一次模型调用**用的模型。transcript 不动 —— 这是换"谁来回答下一
 条",不是改写已经说过的话。所以"这一段用便宜的,接下来换个强的"不再需要新建会话,
 也就不再需要丢掉上下文。
 
-**换的是模型名,不是 provider。** 走的还是这个 daemon 当初建起来的那个 client;
-跨 provider 的切换要配 `providers` / `task_models`(§`config.setProvider`),不是
-这个方法能做的事。
+只给 `model`:换模型名,仍走当前厂商的 client。给 `provider`:对话改走那个厂商的
+client,会话在原地按新的规格重建(它是空闲的,不会腰斩什么),没同时给 `model` 就用
+该厂商的 `default_model`。`model` 按它将被发往的厂商的 `models` 白名单检查,不在
+白名单里 → `INVALID_PARAMS`,而不是把一个对端不认识的模型名静默发过去。子 Agent、
+压缩等其他路由任务仍按设置走。
 
 **有 turn 在跑时返回 `SESSION_BUSY`**,不排队。引擎跑 turn 的时候不读输入通道,
 排进去的命令会在某个没人宣布的时刻生效 —— 调用方被告知模型换了,却看着旧模型答完
 这一轮。要换就先 `session.interrupt`,或者等这一轮结束。
 
 **只对内存里的会话有效**,冷会话返回 `SESSION_NOT_FOUND`(先 `session.resume`)。
-选择跟着这个 daemon 活着:会话被驱逐后重建、`config.reload` 之后重建,选的还是这个
-模型;**daemon 重启则回到配置里的模型** —— 重启是看得见的事件,驱逐不是。
+选择记在会话日志里(见 `session.create` 的 `options`):会话被驱逐后重建、
+`config.reload` 之后重建、daemon 重启后恢复,选的都还是这个模型和厂商。
 
 #### `session.history`
 

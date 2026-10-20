@@ -284,6 +284,16 @@ impl TaskRouter {
         }
     }
 
+    /// The client configured for provider `id`, if there is one.
+    pub fn provider(&self, id: &str) -> Option<Arc<dyn crate::interface::model::Model>> {
+        self.providers.get(id).cloned()
+    }
+
+    /// The provider `task` is routed to, if `task_models` names one for it.
+    pub fn provider_id_for(&self, task: &str) -> Option<&str> {
+        self.resolved.get(task).map(|r| r.provider_id.as_str())
+    }
+
     /// The model name string `task` should use, if `task_models` has an
     /// explicit override for it. `None` means "no override" — callers
     /// combine this with `model_for()` (which already falls back to

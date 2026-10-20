@@ -314,6 +314,16 @@ pub struct SessionOptions {
     /// JSON Schema the session's structured output must satisfy — see
     /// `runtime::agent::Builder::output_schema`.
     pub output_schema: Option<serde_json::Value>,
+    /// The provider this session's conversation goes to, by its id in
+    /// `providers`. `None` follows the settings' routing. Sub-agents,
+    /// compaction and the other routed tasks keep the settings' routing
+    /// either way.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// The conversation's model. `None` takes the provider's `default_model`
+    /// when `provider` is given, the settings' model otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 /// Record or replay this session's LLM calls.

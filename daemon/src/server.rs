@@ -1419,14 +1419,24 @@ impl DaemonServer {
         let Some(session_id) = params.get("session_id").and_then(|v| v.as_str()) else {
             return RpcResponse::err(id, codes::INVALID_PARAMS, "missing session_id");
         };
-        let model = params.get("model").and_then(|v| v.as_str()).unwrap_or("");
-        if model.trim().is_empty() {
+        let named = |key: &str| {
+            params
+                .get(key)
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty())
+        };
+        let (model, provider) = (named("model"), named("provider"));
+        if model.is_none() && provider.is_none() {
             return RpcResponse::err(id, codes::INVALID_PARAMS, "missing model");
         }
         if let Some(err) = self.scene_mismatch_response(&id, session_id).await {
             return err;
         }
-        match self.pool.set_session_model(session_id, model).await {
+        match self
+            .pool
+            .set_session_model(session_id, model, provider)
+            .await
+        {
             Ok(v) => RpcResponse::ok(id, v),
             Err(crate::session_pool::SetModelError::Busy { current_turn_id }) => {
                 RpcResponse::err_with_data(
