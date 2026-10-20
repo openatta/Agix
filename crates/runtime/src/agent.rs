@@ -281,6 +281,8 @@ pub struct Agent {
     /// Whether the previous turn had tool uses (findWritePivot guard for skill
     /// discovery prefetch).
     pub(crate) last_had_tool_uses: bool,
+    /// The current turn's most recent model call, `None` before it makes one.
+    pub(crate) last_call_usage: Option<base::interface::model::Usage>,
     /// Whether the agent is currently in plan mode (for post-compact recovery T1.4).
     pub(crate) in_plan_mode: bool,
     /// Plan file content when in plan mode (for post-compact recovery T1.4).
@@ -2565,6 +2567,7 @@ impl Builder {
                 invoked_skills: Vec::new(),
                 request_overhead_tokens: 0,
                 last_had_tool_uses: true, // true → first turn scans for skills
+                last_call_usage: None,
                 in_plan_mode: false,
                 plan_content: None,
                 running_task_summaries: Vec::new(),

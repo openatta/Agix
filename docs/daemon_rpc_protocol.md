@@ -774,6 +774,9 @@ turn 期间的引擎错误不是事件,是**这次调用的错误响应**:`ENGIN
 `scene` / `project_root` 与 `session.list` 的条目**同源**(都是那一条 `SessionInfo`),
 所以两个方法对同一个会话不会给出不同的答案。
 
+**`context`——上下文用了多少。** 形状与 `turn_complete` 的 `context` 相同(§7.2),取最近
+一次调用过模型的那一轮。会话在内存里、且至少有一轮调过模型时才有这个键。
+
 **`scripts`——这个会话的脚本都干了什么。** 只有绑了脚本的会话才有这个键;没绑的会话
 **没有这个键**,而不是一个空对象——「这儿没有脚本」和「脚本一次都没跑」是两个不同的
 答案。
@@ -1379,7 +1382,7 @@ RPC 出口。要看子 Agent 干了什么,走它的侧链会话:`session.list
 | `team_progress` | `{team,team_id,stage,stage_index,stage_count,status,members,failed}` | 团队阶段生命周期 |
 | `skills_changed` | `{added,removed}` | 会话下的 skill 文件变了,缓存了 `commands.list` 的客户端该重取 |
 | `compact` | `{strategy,messages_before,messages_after,dropped_rounds?,dropped_messages?,estimated_tokens_saved?}` | 上下文被压缩了(§7.1) |
-| `turn_complete` | `{stop_reason,api_calls,tool_calls,usage,message?}` | 本轮结束,transcript 已落盘;最终响应随后到达 |
+| `turn_complete` | `{stop_reason,api_calls,tool_calls,usage,last_call_usage,context?,message?}` | 本轮结束,transcript 已落盘;最终响应随后到达 |
 | `error` | `{code,message}` | 本轮出错结束。只发给**发起这一轮之外**的订阅者 —— 发起者从 `run_turn` 的错误响应得知 |
 
 **这张表是白名单。** 引擎内部还有其它事件,但只有上面这些会被转成帧发出来。特别地:
@@ -1412,6 +1415,21 @@ RPC 出口。要看子 Agent 干了什么,走它的侧链会话:`session.list
 `turn_complete`。
 
 后三项是策略相关的:给不出的策略就不带这三个键,不是带 `null`。
+
+### 7.2 `turn_complete`
+
+```jsonc
+{ "kind":"turn_complete", "stop_reason":"end_turn", "api_calls":2, "tool_calls":1,
+  "usage":{…},                 // 本轮所有调用的合计
+  "last_call_usage":{…},       // 本轮最后一次调用
+  "context":{ "tokens":120000, "compact_threshold":150000, "window":200000 },
+  "message":"…" }              // 可选
+```
+
+`context.tokens` 是最后一次调用发出去的上下文大小,按厂商的计数(输入加两项缓存),不是
+本地估算。`compact_threshold` 是自动压缩开始的位置,`window` 是模型的上下文窗口 ——
+做一个"上下文用了多少"的指示条,这三个数就够了。本轮没有调用模型(被 hook 拦下、本地
+命令)时没有 `context` 键。
 
 `turn_complete` 的 `usage` 是完整的四字段用量(§3.5),
 **是这一轮所有模型调用的合计**,不是最后一趟。一轮可能来回好几趟

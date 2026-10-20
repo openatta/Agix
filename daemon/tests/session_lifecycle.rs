@@ -4214,3 +4214,34 @@ async fn a_failed_turn_tells_every_watcher_it_is_over() {
 
     srv.stop().await;
 }
+
+#[tokio::test]
+async fn a_turn_reports_how_full_the_context_is_after_its_last_call() {
+    let (srv, _seen) = start_scripted_server(
+        vec![
+            tool_round_costing("Glob", "tool-1", serde_json::json!({"pattern": "*"}), 50, 5),
+            text_round_costing("done", 120, 7),
+        ],
+        ask_settings_no_memory(),
+        Duration::ZERO,
+    )
+    .await;
+
+    let (sid, done) = turn_complete_of(&srv.sock, None, "look").await;
+    assert_eq!(done["usage"]["input_tokens"], 170, "{done}");
+    assert_eq!(done["last_call_usage"]["input_tokens"], 120, "{done}");
+    assert_eq!(done["context"]["tokens"], 120, "{done}");
+    assert!(done["context"]["window"].as_u64().unwrap() > 0, "{done}");
+    assert!(done["context"]["compact_threshold"].is_u64(), "{done}");
+
+    let detail = rpc(
+        &srv.sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.get","id":2,"params":{{"session_id":"{sid}"}}}}"#
+        ),
+    )
+    .await;
+    assert_eq!(detail["result"]["context"], done["context"], "{detail}");
+
+    srv.stop().await;
+}

@@ -260,6 +260,7 @@ impl Agent {
         attachments: Vec<crate::agent::Attachment>,
         cancel: CancellationToken,
     ) -> Result<TurnOutcome, TurnError> {
+        self.last_call_usage = None;
         let outcome = self.run_user_turn_inner(content, attachments, cancel).await;
         self.finish_turn(outcome).await
     }
@@ -285,9 +286,23 @@ impl Agent {
                 usage: o.total_usage,
                 turn_id: self.current_turn_id.clone(),
                 message: o.message.clone(),
+                last_call_usage: self.last_call_usage.unwrap_or_default(),
+                context: self.last_call_usage.map(|u| self.context_usage(u)),
             });
         }
         outcome
+    }
+
+    fn context_usage(&self, last_call: Usage) -> base::event::ContextUsage {
+        base::event::ContextUsage {
+            tokens: u64::from(last_call.input_tokens)
+                + u64::from(last_call.cache_read_input_tokens)
+                + u64::from(last_call.cache_creation_input_tokens),
+            compact_threshold: self.context_budget().compact_threshold as u64,
+            window: base::context::config::infer_context_window_tokens(
+                &self.settings.model.model_name,
+            ) as u64,
+        }
     }
 
     async fn run_user_turn_inner(
@@ -1095,6 +1110,7 @@ impl Agent {
             tool_calls += stream_result.tool_calls;
             let stop_reason = stream_result.stop_reason;
             let usage = stream_result.usage;
+            self.last_call_usage = Some(usage);
 
             // One call, accounted for. Every other number the engine reports is
             // per turn, and a turn is several calls — so this is the event a

@@ -5,6 +5,18 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
 
+/// How much of the context window a session is using, after a turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextUsage {
+    /// What the last model call was sent, as the provider counted it:
+    /// input plus both cache figures.
+    pub tokens: u64,
+    /// Where automatic compaction starts.
+    pub compact_threshold: u64,
+    /// The model's context window.
+    pub window: u64,
+}
+
 /// Events emitted by the Engine during a turn.
 ///
 /// The upper layer (CLI/TUI/daemon/Jiandu desktop) consumes these
@@ -65,6 +77,12 @@ pub enum AgentEvent {
         /// hook's `message`, for instance.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         message: Option<String>,
+        /// What the turn's last model call reported. `usage` is the sum.
+        #[serde(default)]
+        last_call_usage: Usage,
+        /// How full the context is. `None` when the turn made no model call.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context: Option<ContextUsage>,
     },
 
     // ── System ──

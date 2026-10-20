@@ -254,6 +254,8 @@ struct LiveSession {
     cancel: CancellationToken,
     /// Cancelled once the Agent's task has returned and dropped the Agent.
     exited: CancellationToken,
+    /// How full the context was after the last turn that called the model.
+    context: Option<base::event::ContextUsage>,
     /// The scene this session was created under — the one its `Meta` records,
     /// not this pool's default. Auto-naming is the one behaviour decided per
     /// turn rather than at build time, so it is the one that needs the scene
@@ -2015,6 +2017,7 @@ impl SessionPool {
             event_rx: Arc::new(AsyncMutex::new(Some(event_rx))),
             cancel,
             exited,
+            context: None,
             scene: scene_for_session,
             name: None,
             created_at: Instant::now(),
@@ -2727,12 +2730,20 @@ impl SessionPool {
                     tool_calls,
                     usage,
                     message,
+                    last_call_usage,
+                    context,
                     ..
                 }) => {
                     api_calls = ac;
+                    if context.is_some() {
+                        if let Some(live) = self.sessions.lock().await.get_mut(&sid) {
+                            live.context = context;
+                        }
+                    }
                     let mut event = serde_json::json!({
                         "kind":"turn_complete","stop_reason":stop_reason,"api_calls":api_calls,
                         "tool_calls":tool_calls,
+                        "last_call_usage":serde_json::to_value(last_call_usage).unwrap_or_else(|_| serde_json::json!({})),
                         // Serialized whole rather than field by field: a
                         // hand-written projection is invisible to the
                         // compiler when `Usage` grows.
@@ -2740,6 +2751,9 @@ impl SessionPool {
                     });
                     if let Some(message) = message {
                         event["message"] = serde_json::json!(message);
+                    }
+                    if let Some(context) = context {
+                        event["context"] = serde_json::json!(context);
                     }
                     let f = StreamFrame::event(&sid, &turn_id, event);
                     self.broadcast_to_session(&sid, &f).await;
@@ -3076,6 +3090,15 @@ impl SessionPool {
                 }),
             );
             obj.insert("current_turn_id".into(), serde_json::json!(current_turn));
+            let context = self
+                .sessions
+                .lock()
+                .await
+                .get(session_id)
+                .and_then(|live| live.context);
+            if let Some(context) = context {
+                obj.insert("context".into(), serde_json::json!(context));
+            }
             if let Some(scripts) = self.script_report(session_id).await {
                 obj.insert("scripts".into(), scripts);
             }
@@ -5528,6 +5551,7 @@ mod eviction_tests {
             event_rx: Arc::new(AsyncMutex::new(Some(event_rx))),
             cancel: CancellationToken::new(),
             exited: CancellationToken::new(),
+            context: None,
             scene: Arc::new(scene::scene::coding::CodingScene),
             name: None,
             created_at: last_active,
