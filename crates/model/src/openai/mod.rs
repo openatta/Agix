@@ -74,6 +74,7 @@ struct Inner {
     /// have been billed, a retry double-charges them, and that is a fact about
     /// this protocol rather than a thing a policy gets to decide.
     backoff: Arc<dyn BackoffPolicy>,
+    provenance: Option<String>,
 }
 
 impl OpenAICompatibleModel {
@@ -98,6 +99,7 @@ impl OpenAICompatibleModel {
                 extra_headers: Vec::new(),
                 default_model: model_default.into(),
                 backoff: Arc::new(LadderBackoff::new()),
+                provenance: None,
             }),
         })
     }
@@ -119,6 +121,12 @@ impl OpenAICompatibleModel {
     pub fn with_backoff_policy(mut self, backoff: Arc<dyn BackoffPolicy>) -> Self {
         let inner = Arc::make_mut(&mut self.inner);
         inner.backoff = backoff;
+        self
+    }
+
+    /// See [`Model::provenance`].
+    pub fn with_provenance(mut self, provider_id: impl Into<String>) -> Self {
+        Arc::make_mut(&mut self.inner).provenance = Some(provider_id.into());
         self
     }
 
@@ -148,6 +156,7 @@ impl Clone for Inner {
             extra_headers: self.extra_headers.clone(),
             default_model: self.default_model.clone(),
             backoff: self.backoff.clone(),
+            provenance: self.provenance.clone(),
         }
     }
 }
@@ -304,6 +313,10 @@ async fn send_with_retry(
 impl Model for OpenAICompatibleModel {
     fn api_type(&self) -> ApiType {
         ApiType::OpenAICompatible
+    }
+
+    fn provenance(&self) -> Option<&str> {
+        self.inner.provenance.as_deref()
     }
 
     async fn stream(

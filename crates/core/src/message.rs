@@ -69,9 +69,15 @@ pub enum ContentBlock {
         thinking: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         signature: Option<String>,
+        /// Which provider produced it. Transcript-only: request builders
+        /// always leave it `None`, so it never reaches a provider's wire.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
     },
     RedactedThinking {
         data: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
     },
     /// Anthropic `cache_edits` content block: requests server-side deletion of
     /// cached tool result content by tool_use_id. Only meaningful in the request;
@@ -307,6 +313,7 @@ mod tests {
         let block = ContentBlock::Thinking {
             thinking: "Let me think...".into(),
             signature: Some("sig_abc123".into()),
+            provider: None,
         };
         let json = serde_json::to_string(&block).unwrap();
         let back: ContentBlock = serde_json::from_str(&json).unwrap();
@@ -318,6 +325,7 @@ mod tests {
         let block = ContentBlock::Thinking {
             thinking: "reasoning".into(),
             signature: None,
+            provider: None,
         };
         let json = serde_json::to_value(&block).unwrap();
         assert_eq!(
@@ -332,6 +340,7 @@ mod tests {
     fn redacted_thinking_block_roundtrip() {
         let block = ContentBlock::RedactedThinking {
             data: "redacted_data".into(),
+            provider: None,
         };
         let json = serde_json::to_string(&block).unwrap();
         let back: ContentBlock = serde_json::from_str(&json).unwrap();

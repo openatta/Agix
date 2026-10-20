@@ -557,9 +557,11 @@ mod tests {
                         ModelContentBlock::Thinking {
                             text: "hmm".into(),
                             signature: Some("sig".into()),
+                            provider: None,
                         },
                         ModelContentBlock::RedactedThinking {
                             data: "opaque".into(),
+                            provider: None,
                         },
                     ],
                 ),

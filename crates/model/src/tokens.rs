@@ -145,7 +145,7 @@ fn estimate_model_block_tokens_with(block: &ModelContentBlock, bpe: &CoreBPE) ->
         // API requires us to echo back; it is not counted here, matching the
         // estimator this replaced.
         ModelContentBlock::Thinking { text, .. } => count_text(bpe, text),
-        ModelContentBlock::RedactedThinking { data } => count_text(bpe, data),
+        ModelContentBlock::RedactedThinking { data, .. } => count_text(bpe, data),
         ModelContentBlock::ToolResult {
             tool_use_id,
             content,
@@ -216,7 +216,7 @@ fn estimate_block_tokens(block: &ContentBlock, bpe: &CoreBPE) -> usize {
             id_tokens + body_tokens
         }
         ContentBlock::Thinking { thinking, .. } => count_text(bpe, thinking),
-        ContentBlock::RedactedThinking { data } => count_text(bpe, data),
+        ContentBlock::RedactedThinking { data, .. } => count_text(bpe, data),
         // Flat per-image estimate, shared with the interface-level estimator so
         // the wire-format and context-budget views of the same image agree.
         ContentBlock::Image { .. } => IMAGE_TOKEN_ESTIMATE,

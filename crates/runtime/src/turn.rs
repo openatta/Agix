@@ -1092,6 +1092,7 @@ impl Agent {
                 },
                 cancel.clone(),
                 &self.model_interceptors,
+                self.model.provenance(),
             )
             .await?;
 

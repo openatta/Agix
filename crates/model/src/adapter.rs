@@ -19,11 +19,21 @@ use tokio_util::sync::CancellationToken;
 
 pub struct AnthropicModel {
     inner: Arc<dyn AnthropicClient>,
+    provenance: Option<String>,
 }
 
 impl AnthropicModel {
     pub fn new(client: Arc<dyn AnthropicClient>) -> Self {
-        Self { inner: client }
+        Self {
+            inner: client,
+            provenance: None,
+        }
+    }
+
+    /// See [`Model::provenance`].
+    pub fn with_provenance(mut self, provider_id: impl Into<String>) -> Self {
+        self.provenance = Some(provider_id.into());
+        self
     }
 }
 
@@ -31,6 +41,10 @@ impl AnthropicModel {
 impl Model for AnthropicModel {
     fn api_type(&self) -> ApiType {
         ApiType::Anthropic
+    }
+
+    fn provenance(&self) -> Option<&str> {
+        self.provenance.as_deref()
     }
 
     async fn stream(
@@ -56,7 +70,7 @@ impl Model for AnthropicModel {
 
         let mut message_params: Vec<MessageParam> = messages
             .into_iter()
-            .map(to_message_param)
+            .map(|m| to_message_param(m, self.provenance.as_deref()))
             .filter(|m| !m.content.is_empty())
             .collect();
 
@@ -229,13 +243,18 @@ struct PendingToolUse {
 /// mapping is directly testable — the thinking-block half of it is a
 /// correctness requirement, not a formatting detail, and had no coverage while
 /// it lived inside an `async fn`.
-fn to_message_param(m: ModelMessage) -> MessageParam {
+fn to_message_param(m: ModelMessage, provenance: Option<&str>) -> MessageParam {
     MessageParam {
         role: match m.role {
             MessageRole::System | MessageRole::User => Role::User,
             MessageRole::Assistant => Role::Assistant,
         },
-        content: m.content.into_iter().filter_map(to_content_block).collect(),
+        content: m
+            .content
+            .into_iter()
+            .filter(|b| !b.is_foreign_reasoning(provenance))
+            .filter_map(to_content_block)
+            .collect(),
     }
 }
 
@@ -256,14 +275,19 @@ fn to_content_block(b: ModelContentBlock) -> Option<ContentBlock> {
         ModelContentBlock::Thinking {
             text,
             signature: Some(signature),
+            ..
         } => ContentBlock::Thinking {
             thinking: text,
             signature: Some(signature),
+            provider: None,
         },
         ModelContentBlock::Thinking {
             signature: None, ..
         } => return None,
-        ModelContentBlock::RedactedThinking { data } => ContentBlock::RedactedThinking { data },
+        ModelContentBlock::RedactedThinking { data, .. } => ContentBlock::RedactedThinking {
+            data,
+            provider: None,
+        },
         ModelContentBlock::ToolUse { id, name, input } => ContentBlock::ToolUse { id, name, input },
         ModelContentBlock::ToolResult {
             tool_use_id,
@@ -750,13 +774,16 @@ mod map_stream_event_tests {
                 ModelContentBlock::Thinking {
                     text: "reasoning".into(),
                     signature: Some("sig_1".into()),
+                    provider: None,
                 },
                 ModelContentBlock::Thinking {
                     text: "unsigned".into(),
                     signature: None,
+                    provider: None,
                 },
                 ModelContentBlock::RedactedThinking {
                     data: "opaque".into(),
+                    provider: None,
                 },
                 ModelContentBlock::Image {
                     media_type: "image/png".into(),
@@ -765,11 +792,11 @@ mod map_stream_event_tests {
             ],
         }];
 
-        let params = to_message_param(msgs.into_iter().next().unwrap());
+        let params = to_message_param(msgs.into_iter().next().unwrap(), None);
         let content = &params.content;
         assert!(matches!(
             &content[0],
-            ContentBlock::Thinking { thinking, signature }
+            ContentBlock::Thinking { thinking, signature, .. }
                 if thinking == "reasoning" && signature.as_deref() == Some("sig_1")
         ));
         assert_eq!(
@@ -779,7 +806,7 @@ mod map_stream_event_tests {
         );
         assert!(matches!(
             &content[1],
-            ContentBlock::RedactedThinking { data } if data == "opaque"
+            ContentBlock::RedactedThinking { data, .. } if data == "opaque"
         ));
         assert!(matches!(
             &content[2],
@@ -787,6 +814,47 @@ mod map_stream_event_tests {
                 source: ImageSource::Base64 { media_type, data }
             } if media_type == "image/png" && data == "AAAA"
         ));
+    }
+
+    /// Reasoning another provider produced cannot be verified here; only the
+    /// blocks this provider (or an unknown one) produced are sent.
+    #[test]
+    fn reasoning_from_another_provider_is_not_sent() {
+        use base::interface::model::{MessageRole, ModelMessage};
+        use base::message::ContentBlock;
+
+        let thinking = |text: &str, provider: Option<&str>| ModelContentBlock::Thinking {
+            text: text.into(),
+            signature: Some("sig".into()),
+            provider: provider.map(Into::into),
+        };
+        let msg = ModelMessage {
+            role: MessageRole::Assistant,
+            content: vec![
+                thinking("mine", Some("claude")),
+                thinking("theirs", Some("deepseek")),
+                thinking("unknown", None),
+                ModelContentBlock::RedactedThinking {
+                    data: "opaque".into(),
+                    provider: Some("deepseek".into()),
+                },
+            ],
+        };
+
+        let sent: Vec<String> = to_message_param(msg, Some("claude"))
+            .content
+            .into_iter()
+            .map(|b| match b {
+                ContentBlock::Thinking {
+                    thinking, provider, ..
+                } => {
+                    assert_eq!(provider, None, "provenance never reaches the wire");
+                    thinking
+                }
+                other => panic!("unexpected block {other:?}"),
+            })
+            .collect();
+        assert_eq!(sent, ["mine", "unknown"]);
     }
 
     /// Regression for the day-one bug: a streamed tool_use block starts with

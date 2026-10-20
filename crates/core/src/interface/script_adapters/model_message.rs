@@ -207,6 +207,7 @@ mod tests {
                 ModelContentBlock::Thinking {
                     text: "let me think".into(),
                     signature: Some("sig-abc".into()),
+                    provider: None,
                 },
                 ModelContentBlock::Text {
                     text: "the key is hunter2".into(),
@@ -263,7 +264,9 @@ mod tests {
     fn a_rewrite_leaves_thinking_and_its_signature_untouched() {
         let out = intercepted(serde_json::json!(["one", "two"]));
         match &out.content[0] {
-            ModelContentBlock::Thinking { text, signature } => {
+            ModelContentBlock::Thinking {
+                text, signature, ..
+            } => {
                 assert_eq!(text, "let me think");
                 assert_eq!(signature.as_deref(), Some("sig-abc"));
             }

@@ -76,7 +76,7 @@ impl TokenCounter for FixedTokenCounter {
         let text = match block {
             ModelContentBlock::Text { text } => text.len(),
             ModelContentBlock::Thinking { text, .. } => text.len(),
-            ModelContentBlock::RedactedThinking { data } => data.len(),
+            ModelContentBlock::RedactedThinking { data, .. } => data.len(),
             ModelContentBlock::ToolResult {
                 tool_use_id,
                 content,

@@ -1424,6 +1424,7 @@ mod binding_tests {
                 ModelContentBlock::Thinking {
                     text: "the key is hunter2".into(),
                     signature: Some("sig-abc".into()),
+                    provider: None,
                 },
                 ModelContentBlock::Text {
                     text: "the key is hunter2".into(),
@@ -1433,7 +1434,9 @@ mod binding_tests {
         bound.model_interceptors[0].on_message(&mut message);
 
         match &message.content[0] {
-            ModelContentBlock::Thinking { text, signature } => {
+            ModelContentBlock::Thinking {
+                text, signature, ..
+            } => {
                 assert_eq!(text, "the key is hunter2", "thinking is not reachable");
                 assert_eq!(signature.as_deref(), Some("sig-abc"));
             }

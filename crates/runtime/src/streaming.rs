@@ -72,6 +72,7 @@ pub async fn execute_stream<F, Fut, G>(
     is_concurrency_safe: G,
     cancel: CancellationToken,
     interceptors: &[Arc<dyn base::interface::model_interceptor::ModelInterceptor>],
+    provenance: Option<&str>,
 ) -> Result<StreamResult, crate::turn::TurnError>
 where
     F: Fn(String, String, serde_json::Value) -> Fut + Send + Sync + 'static,
@@ -134,7 +135,12 @@ where
         }
         match event.map_err(|e| crate::turn::TurnError::Model(e.to_string()))? {
             ModelEvent::TextDelta { text } => {
-                close_thinking(&mut pending_thinking, &mut completed_thinking, None);
+                close_thinking(
+                    &mut pending_thinking,
+                    &mut completed_thinking,
+                    None,
+                    provenance,
+                );
                 pending_text.push_str(&text);
                 let _ = event_tx.send(AgentEvent::TextDelta {
                     text,
@@ -153,14 +159,28 @@ where
                     &mut pending_thinking,
                     &mut completed_thinking,
                     Some(signature),
+                    provenance,
                 );
             }
             ModelEvent::RedactedThinking { data } => {
-                close_thinking(&mut pending_thinking, &mut completed_thinking, None);
-                completed_thinking.push(ModelContentBlock::RedactedThinking { data });
+                close_thinking(
+                    &mut pending_thinking,
+                    &mut completed_thinking,
+                    None,
+                    provenance,
+                );
+                completed_thinking.push(ModelContentBlock::RedactedThinking {
+                    data,
+                    provider: provenance.map(str::to_owned),
+                });
             }
             ModelEvent::ToolUse { id, name, input } => {
-                close_thinking(&mut pending_thinking, &mut completed_thinking, None);
+                close_thinking(
+                    &mut pending_thinking,
+                    &mut completed_thinking,
+                    None,
+                    provenance,
+                );
                 has_tool_uses = true;
                 // Flush thinking + pending text to session before tool block.
                 // This is the flush that matters for correctness: it is a
@@ -318,7 +338,12 @@ where
     // Flush remaining thinking + pending text. On a no-tool turn this is the
     // only flush, and it is what puts the reasoning into the transcript so a
     // later turn (or a resume) still sees it.
-    close_thinking(&mut pending_thinking, &mut completed_thinking, None);
+    close_thinking(
+        &mut pending_thinking,
+        &mut completed_thinking,
+        None,
+        provenance,
+    );
     flush_assistant_prefix(
         session,
         &mut completed_thinking,
@@ -455,11 +480,13 @@ fn close_thinking(
     pending: &mut String,
     completed: &mut Vec<ModelContentBlock>,
     signature: Option<String>,
+    provenance: Option<&str>,
 ) {
     if !pending.is_empty() {
         completed.push(ModelContentBlock::Thinking {
             text: std::mem::take(pending),
             signature,
+            provider: provenance.map(str::to_owned),
         });
     }
 }
@@ -598,6 +625,7 @@ mod tests {
             |_name, _input| true,
             CancellationToken::new(),
             &[],
+            None,
         )
         .await
         .expect("execute_stream should succeed");
@@ -613,7 +641,7 @@ mod tests {
         assert!(
             matches!(
                 &first_assistant.content[0],
-                ModelContentBlock::Thinking { text, signature }
+                ModelContentBlock::Thinking { text, signature, .. }
                     if text == "I should read the file" && signature.as_deref() == Some("sig_xyz")
             ),
             "thinking must lead the turn, got {:?}",
@@ -665,6 +693,7 @@ mod tests {
             |_name, _input| true,
             CancellationToken::new(),
             &[],
+            None,
         )
         .await
         .expect("execute_stream should succeed");
@@ -681,7 +710,8 @@ mod tests {
 
     /// Reasoning from a provider that never signs it (an OpenAI-compatible
     /// endpoint's `reasoning_content`, a relay that strips signatures) is
-    /// closed by whatever comes next and kept, unsigned, ahead of the text.
+    /// closed by whatever comes next and kept, unsigned, ahead of the text —
+    /// stamped with the provider that produced it.
     #[tokio::test]
     async fn unsigned_thinking_is_kept_ahead_of_the_text() {
         let events: Vec<Result<ModelEvent, ModelError>> = vec![
@@ -714,6 +744,7 @@ mod tests {
             |_name, _input| true,
             CancellationToken::new(),
             &[],
+            Some("deepseek"),
         )
         .await
         .expect("execute_stream should succeed");
@@ -729,6 +760,7 @@ mod tests {
                 ModelContentBlock::Thinking {
                     text: "weigh the options".into(),
                     signature: None,
+                    provider: Some("deepseek".into()),
                 },
                 ModelContentBlock::Text {
                     text: "Done.".into(),
@@ -782,6 +814,7 @@ mod tests {
             |_name, _input| true,
             CancellationToken::new(),
             &[],
+            None,
         )
         .await
         .expect("execute_stream should succeed");
@@ -848,6 +881,7 @@ mod tests {
             |name, _input| name == "Glob", // Glob concurrency-safe, Bash is not
             CancellationToken::new(),
             &[],
+            None,
         )
         .await
         .expect("execute_stream should succeed");
@@ -892,6 +926,7 @@ mod tests {
             |_name, _input| true,
             CancellationToken::new(),
             &[],
+            None,
         )
         .await
         .expect("execute_stream should succeed");
@@ -965,6 +1000,7 @@ mod tests {
             |_name, _input| true,
             CancellationToken::new(),
             &[],
+            None,
         )
         .await
         .expect("execute_stream should succeed");
@@ -1040,6 +1076,7 @@ mod tests {
             |_name, _input| true,
             CancellationToken::new(),
             &[],
+            None,
         )
         .await
         .expect("execute_stream should succeed");
@@ -1103,6 +1140,7 @@ mod tests {
             |_name, _input| false,
             CancellationToken::new(),
             &[],
+            None,
         )
         .await
         .expect("execute_stream should succeed");

@@ -968,7 +968,7 @@ pub fn analyze_context(messages: &[ModelMessage]) -> ContextAnalysis {
                     analysis.total_estimated_tokens += tokens;
                     analysis.assistant_text_tokens += tokens;
                 }
-                ModelContentBlock::RedactedThinking { data } => {
+                ModelContentBlock::RedactedThinking { data, .. } => {
                     let tokens = estimate(data);
                     analysis.total_estimated_tokens += tokens;
                     analysis.assistant_text_tokens += tokens;

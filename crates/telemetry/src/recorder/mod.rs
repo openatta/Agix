@@ -452,6 +452,10 @@ impl Model for RecorderModel {
         self.inner.api_type()
     }
 
+    fn provenance(&self) -> Option<&str> {
+        self.inner.provenance()
+    }
+
     async fn stream(
         &self,
         prompt_blocks: Vec<PromptBlock>,

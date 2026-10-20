@@ -423,11 +423,19 @@ fn model_content_block_to_content_block(
                 data: data.clone(),
             },
         },
-        M::Thinking { text, signature } => C::Thinking {
+        M::Thinking {
+            text,
+            signature,
+            provider,
+        } => C::Thinking {
             thinking: text.clone(),
             signature: signature.clone(),
+            provider: provider.clone(),
         },
-        M::RedactedThinking { data } => C::RedactedThinking { data: data.clone() },
+        M::RedactedThinking { data, provider } => C::RedactedThinking {
+            data: data.clone(),
+            provider: provider.clone(),
+        },
         M::ToolUse { id, name, input } => C::ToolUse {
             id: id.clone(),
             name: name.clone(),
@@ -525,11 +533,16 @@ fn content_block_to_model_content_block(
         C::Thinking {
             thinking,
             signature,
+            provider,
         } => Some(M::Thinking {
             text: thinking.clone(),
             signature: signature.clone(),
+            provider: provider.clone(),
         }),
-        C::RedactedThinking { data } => Some(M::RedactedThinking { data: data.clone() }),
+        C::RedactedThinking { data, provider } => Some(M::RedactedThinking {
+            data: data.clone(),
+            provider: provider.clone(),
+        }),
         C::Image {
             source: base::message::ImageSource::Url { .. },
         }
@@ -1064,13 +1077,16 @@ mod tests {
                 ModelContentBlock::Thinking {
                     text: "signed".into(),
                     signature: Some("sig".into()),
+                    provider: None,
                 },
                 ModelContentBlock::Thinking {
                     text: "unsigned".into(),
                     signature: None,
+                    provider: Some("deepseek".into()),
                 },
                 ModelContentBlock::RedactedThinking {
                     data: "opaque".into(),
+                    provider: Some("anthropic".into()),
                 },
                 ModelContentBlock::Text {
                     text: "answer".into(),

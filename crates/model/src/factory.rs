@@ -55,7 +55,9 @@ impl ModelFactory for AnthropicFactory {
                     .map_err(|e| format!("provider '{provider_id}': {e}"))?,
             ),
         };
-        Ok(Arc::new(AnthropicModel::new(client)))
+        Ok(Arc::new(
+            AnthropicModel::new(client).with_provenance(provider_id),
+        ))
     }
 }
 
@@ -90,7 +92,8 @@ impl ModelFactory for OpenAICompatibleFactory {
         let default_model = cfg.default_model.clone().unwrap_or_default();
         Ok(Arc::new(
             crate::OpenAICompatibleModel::new(&base_url, api_key.expose(), default_model)
-                .map_err(|e| format!("provider '{provider_id}': {e}"))?,
+                .map_err(|e| format!("provider '{provider_id}': {e}"))?
+                .with_provenance(provider_id),
         ))
     }
 }

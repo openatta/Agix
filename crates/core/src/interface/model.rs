@@ -17,6 +17,14 @@ pub trait Model: Send + Sync {
     /// Which API protocol this model client uses.
     fn api_type(&self) -> ApiType;
 
+    /// The provider id this client was built for, stamped on the reasoning it
+    /// produces so a later request to a different provider does not echo it
+    /// back. `None` for a client built outside a provider route; reasoning
+    /// from such a client carries no provenance and is sent wherever it goes.
+    fn provenance(&self) -> Option<&str> {
+        None
+    }
+
     /// Stream a response from the LLM.
     ///
     /// Returns a stream of `ModelEvent`s (text deltas, tool use blocks).
@@ -267,11 +275,16 @@ pub enum ModelContentBlock {
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         signature: Option<String>,
+        /// [`Model::provenance`] of the client that produced it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
     },
     /// Thinking the API chose to encrypt. Opaque to us; must still be echoed
     /// back verbatim for the same reason as [`ModelContentBlock::Thinking`].
     RedactedThinking {
         data: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
     },
     ToolUse {
         id: String,
@@ -283,6 +296,20 @@ pub enum ModelContentBlock {
         content: String,
         is_error: Option<bool>,
     },
+}
+
+impl ModelContentBlock {
+    /// Reasoning another provider produced. Only that provider can verify or
+    /// use it, so it is never sent to `provenance`. Blocks without a recorded
+    /// provider, and requests to a client without one, are not foreign.
+    pub fn is_foreign_reasoning(&self, provenance: Option<&str>) -> bool {
+        let produced_by = match self {
+            ModelContentBlock::Thinking { provider, .. }
+            | ModelContentBlock::RedactedThinking { provider, .. } => provider.as_deref(),
+            _ => return false,
+        };
+        matches!((produced_by, provenance), (Some(a), Some(b)) if a != b)
+    }
 }
 
 /// Stream of model events.
