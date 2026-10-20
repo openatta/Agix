@@ -1,10 +1,9 @@
 //! `RuleSet` —— 规则集合 + 匹配引擎。
 //!
-//! 匹配选优（key 元组比较，max wins）：
-//! 1. **特异性**（specificity）：有 content 的比无 content 的更特异；
-//!    longer pattern length = 更特异
-//! 2. **来源优先级**：CliArg > Session > Local > Project > User > Policy
-//! 3. **行为优先级**：Deny > Ask > Allow（同 source / 同特异性时 Deny 最强）
+//! 裁决只看行为：命中的规则里只要有一条 deny 就是 deny，否则有 ask 就是 ask，
+//! 否则才是 allow。来源层级与规则写得多具体都不参与裁决——deny 是硬边界，
+//! 不能被任何一层、任何一条更长的 allow 推翻。同一行为里有多条命中时，按
+//! （特异性、来源优先级）挑一条作为命中记录返回，只影响报出哪条规则。
 //!
 //! 不做"默认拒"语义；规则不命中就返回 None，由 mode 分派定夺。
 
@@ -97,37 +96,37 @@ impl RuleSet {
         &self.rules
     }
 
-    /// 给定工具名 + 可选匹配内容，返回最优命中。
+    /// 给定工具名 + 可选匹配内容，返回裁决（见模块头）。
     ///
     /// `content` 是 `Tool::permission_match_content(input)` 的结果（如 Bash 命令、
-    /// Read 文件路径）。`None` 表示工具没提供匹配内容；此时只按工具名（无 content
-    /// 限定的）规则匹配。
+    /// Read 文件路径），原样比对。`None` 表示工具没提供匹配内容；此时只按工具名
+    /// （无 content 限定的）规则匹配。
     pub fn evaluate(&self, tool_name: &str, content: Option<&str>) -> RuleHit {
-        let mut best: Option<(&PermissionRule, MatchScore)> = None;
-
-        for r in &self.rules {
+        self.decide(|r| {
             if !matches_tool_name(&r.tool_name, tool_name) {
-                continue;
+                return None;
             }
-            let specificity = match (&r.rule_content, content) {
-                (None, _) => 0, // 仅工具名
-                (Some(rc), Some(c)) => {
-                    if !matches_content(rc, c) {
-                        continue;
-                    }
-                    // 长度作为特异性的近似指标
-                    rc.len() as i32
-                }
-                (Some(_), None) => continue, // 规则要 content，工具没给
-            };
+            match (&r.rule_content, content) {
+                (None, _) => Some(0),
+                (Some(rc), Some(c)) => matches_content(rc, c).then_some(rc.len() as i32),
+                (Some(_), None) => None,
+            }
+        })
+    }
 
+    /// `matches` 对命中的规则返回其特异性，不命中返回 `None`。
+    fn decide(&self, mut matches: impl FnMut(&PermissionRule) -> Option<i32>) -> RuleHit {
+        let mut best: Option<(&PermissionRule, MatchScore)> = None;
+        for r in &self.rules {
+            let Some(specificity) = matches(r) else {
+                continue;
+            };
             let score = MatchScore {
+                behavior_rank: behavior_rank(r.behavior),
                 specificity,
                 source_priority: r.source.priority() as i32,
-                behavior_rank: behavior_rank(r.behavior),
             };
-
-            if best.is_none() || score > best.as_ref().unwrap().1 {
+            if best.as_ref().map_or(true, |(_, b)| score > *b) {
                 best = Some((r, score));
             }
         }
@@ -175,11 +174,13 @@ impl RuleSet {
     }
 }
 
+/// Field order is the comparison order: behavior decides, the other two only
+/// pick which rule of the winning behavior gets reported.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct MatchScore {
+    behavior_rank: i32,
     specificity: i32,
     source_priority: i32,
-    behavior_rank: i32,
 }
 
 fn behavior_rank(b: RuleBehavior) -> i32 {
@@ -395,8 +396,7 @@ mod tests {
     }
 
     #[test]
-    fn higher_priority_source_overrides_lower() {
-        // user 拒，cli 准 → CliArg 优先级更高
+    fn a_deny_from_a_lower_priority_source_is_not_overridden() {
         let rs = RuleSet::new(vec![
             rule(
                 "Bash",
@@ -413,33 +413,96 @@ mod tests {
         ]);
         assert!(matches!(
             rs.evaluate("Bash", Some("git push")),
+            RuleHit::Deny(_)
+        ));
+    }
+
+    #[test]
+    fn a_broad_deny_is_not_carved_open_by_a_more_specific_allow() {
+        let rs = RuleSet::new(vec![
+            rule("Bash", None, RuleBehavior::Deny, RuleSource::UserSettings),
+            rule(
+                "Bash",
+                Some("git status"),
+                RuleBehavior::Allow,
+                RuleSource::ProjectSettings,
+            ),
+        ]);
+        assert!(matches!(
+            rs.evaluate("Bash", Some("git status")),
+            RuleHit::Deny(_)
+        ));
+    }
+
+    #[test]
+    fn a_longer_allow_glob_does_not_beat_a_shorter_deny_glob() {
+        let rs = RuleSet::new(vec![
+            rule(
+                "Read",
+                Some("**/.env"),
+                RuleBehavior::Deny,
+                RuleSource::UserSettings,
+            ),
+            rule(
+                "Read",
+                Some("/Users/me/proj/**"),
+                RuleBehavior::Allow,
+                RuleSource::ProjectSettings,
+            ),
+        ]);
+        assert!(matches!(
+            rs.evaluate("Read", Some("/Users/me/proj/.env")),
+            RuleHit::Deny(_)
+        ));
+        assert!(matches!(
+            rs.evaluate("Read", Some("/Users/me/proj/src/main.rs")),
             RuleHit::Allow(_)
         ));
     }
 
     #[test]
-    fn more_specific_rule_wins_over_less_specific() {
+    fn ask_beats_allow_and_deny_beats_ask() {
         let rs = RuleSet::new(vec![
-            // 名字级 deny
-            rule("Bash", None, RuleBehavior::Deny, RuleSource::UserSettings),
-            // 具体内容 allow
+            rule("Bash", None, RuleBehavior::Allow, RuleSource::Session),
             rule(
                 "Bash",
-                Some("git status"),
-                RuleBehavior::Allow,
+                Some("git push:*"),
+                RuleBehavior::Ask,
+                RuleSource::UserSettings,
+            ),
+            rule(
+                "Bash",
+                Some("git push --force"),
+                RuleBehavior::Deny,
+                RuleSource::Plugin,
+            ),
+        ]);
+        assert!(matches!(rs.evaluate("Bash", Some("ls")), RuleHit::Allow(_)));
+        assert!(matches!(
+            rs.evaluate("Bash", Some("git push origin")),
+            RuleHit::Ask(_)
+        ));
+        assert!(matches!(
+            rs.evaluate("Bash", Some("git push --force")),
+            RuleHit::Deny(_)
+        ));
+    }
+
+    #[test]
+    fn within_one_behavior_the_most_specific_rule_is_the_one_reported() {
+        let rs = RuleSet::new(vec![
+            rule("Bash", None, RuleBehavior::Deny, RuleSource::UserSettings),
+            rule(
+                "Bash",
+                Some("rm:*"),
+                RuleBehavior::Deny,
                 RuleSource::UserSettings,
             ),
         ]);
-        // git status → 具体规则胜
-        assert!(matches!(
-            rs.evaluate("Bash", Some("git status")),
-            RuleHit::Allow(_)
-        ));
-        // 任意其它命令 → 名字级 deny
-        assert!(matches!(
-            rs.evaluate("Bash", Some("rm -rf /")),
-            RuleHit::Deny(_)
-        ));
+        match rs.evaluate("Bash", Some("rm -rf /")) {
+            RuleHit::Deny(r) => assert_eq!(r.rule_content.as_deref(), Some("rm:*")),
+            _ => panic!("expected deny"),
+        }
     }
 
     #[test]

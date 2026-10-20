@@ -1,24 +1,23 @@
-//! Shadowed rule detection for permission rules.
+//! Detection of permission rules that can never take effect.
 //!
-//! A rule is "shadowed" when a higher-priority rule with an equal or broader
-//! match pattern exists before it in the rules list. The shadowed rule will
-//! never be reached by the matching engine, making it dead weight that may
-//! confuse users who added it expecting it to take effect.
+//! Under the rule engine's verdict order (any matching deny wins, then any
+//! ask, then allow — see `ruleset`), a rule is dead when every call it could
+//! match is also matched by a rule of a stronger behavior: an allow covered
+//! by a deny or an ask, or an ask covered by a deny. Position in the list and
+//! the source tier play no part, exactly as they play no part in evaluation.
+//! Warning about these catches the common mistake of expecting a narrow
+//! allow to carve an exception out of a broad deny.
 
 use crate::rule::format_rule_string;
 use crate::ruleset::{matches_content, matches_tool_name};
-use base::permission::{PermissionRule, RuleBehavior};
+use base::permission::{PermissionRule, RuleBehavior, RuleSource};
 
-/// Describes one shadowed rule relationship.
-///
-/// A `shadowing` rule (higher priority, earlier in the list) completely
-/// covers the same match space as `shadowed` (lower priority, later),
-/// meaning `shadowed` will never be reached.
+/// One rule that never takes effect, and a rule that overrides it.
 #[derive(Debug, Clone)]
 pub struct ShadowedRule {
-    /// The rule that is being overridden (silently ignored).
+    /// The rule that never takes effect.
     pub shadowed: PermissionRule,
-    /// The higher-priority rule that shadows it.
+    /// A stronger-behavior rule covering every call `shadowed` matches.
     pub shadowing: PermissionRule,
     /// Index of the shadowed rule in the original rules list (0-based).
     pub shadowed_index: usize,
@@ -26,124 +25,74 @@ pub struct ShadowedRule {
     pub shadowing_index: usize,
 }
 
-/// Check a ruleset for shadowed rules.
+/// Every rule that is fully covered by a rule of a stronger behavior,
+/// reported once each against the first such rule in list order.
 ///
-/// Iterates rules from highest to lowest positional priority (index 0
-/// considered highest priority). For each rule at index `j`, checks
-/// if any higher-priority rule (index < j) has a pattern that fully
-/// contains its pattern. Returns all shadow relationships found.
-///
-/// # Shadow detection rules
-///
-/// | Higher (shadowing) | Lower (shadowed) | Detected? |
+/// | Overriding | Overridden | Detected? |
 /// |---|---|---|
-/// | `ToolName` | `ToolName(content)` | Yes — tool-only matches all content |
-/// | `ToolName(*)` | `ToolName(foo)` | Yes — wildcard matches any content |
-/// | `ToolName` (pos 0) | `ToolName` (pos 5) | Yes — duplicate, earlier wins |
-/// | `ToolName(git:*)` | `ToolName(git status)` | Yes — prefix glob covers specific |
-/// | `Read(/etc/**)` | `Read(/etc/passwd)` | Yes — path glob covers specific |
-/// | `ToolName(git status)` | `ToolName(git:*)` | No — specific does not shadow broader |
+/// | `Bash` deny | `Bash(git status)` allow | Yes |
+/// | `Bash(git:*)` ask | `Bash(git status)` allow | Yes |
+/// | `Read(/etc/**)` deny | `Read(/etc/passwd)` ask | Yes |
+/// | `Bash(git status)` deny | `Bash(git:*)` allow | No — the allow still covers `git log` |
+/// | `Bash` allow | `Bash(rm:*)` deny | No — the deny is the one that wins |
+/// | `Bash` deny | `Bash` deny | No — redundant, but it changes nothing |
 pub fn detect_shadowed_rules(rules: &[PermissionRule]) -> Vec<ShadowedRule> {
-    let mut result: Vec<ShadowedRule> = Vec::new();
-
-    // Track which rules have already been identified as shadowed to avoid
-    // reporting the same shadowed rule multiple times.
-    let mut reported: Vec<bool> = vec![false; rules.len()];
-
-    // (j, lower) is the lower-priority (candidate shadowed) rule;
-    // (i, higher) is the higher-priority (candidate shadowing) rule.
-    for (j, lower) in rules.iter().enumerate() {
-        for (i, higher) in rules.iter().enumerate().take(j) {
-            if reported[j] {
-                break;
-            }
-
-            // Must operate on the same tool (or MCP scope where broader
-            // scope shadows narrower)
-            if !matches_tool_name(&higher.tool_name, &lower.tool_name) {
-                continue;
-            }
-
-            if is_shadowed_by(higher, lower) {
-                result.push(ShadowedRule {
-                    shadowed: lower.clone(),
-                    shadowing: higher.clone(),
-                    shadowed_index: j,
-                    shadowing_index: i,
-                });
-                reported[j] = true;
-                // Break: first (closest) shadowing rule is the most relevant
-                break;
-            }
+    let mut result = Vec::new();
+    for (j, weaker) in rules.iter().enumerate() {
+        let overriding = rules.iter().enumerate().find(|(_, stronger)| {
+            strength(stronger.behavior) > strength(weaker.behavior)
+                && matches_tool_name(&stronger.tool_name, &weaker.tool_name)
+                && is_shadowed_by(stronger, weaker)
+        });
+        if let Some((i, stronger)) = overriding {
+            result.push(ShadowedRule {
+                shadowed: weaker.clone(),
+                shadowing: stronger.clone(),
+                shadowed_index: j,
+                shadowing_index: i,
+            });
         }
     }
-
     result
 }
 
-/// Check if `higher` (earlier, higher positional priority) shadows
-/// `lower` (later, lower positional priority).
-///
-/// Returns `true` when the higher-priority rule's pattern fully covers
-/// the match space of the lower-priority rule.
-pub(crate) fn is_shadowed_by(higher: &PermissionRule, lower: &PermissionRule) -> bool {
-    match (&higher.rule_content, &lower.rule_content) {
-        // Both tool-only: earlier tool-only rule shadows later tool-only rule
-        (None, None) => true,
-
-        // Higher is tool-only, lower has content:
-        // tool-only rule matches ALL content for that tool, so it shadows any specific content
-        (None, Some(_)) => true,
-
-        // Higher has content, lower is tool-only:
-        // specific content does NOT shadow the broader tool-only rule
-        (Some(_), None) => false,
-
-        // Both have content: check if higher-priority content pattern covers
-        // the lower-priority content.
-        (Some(hc), Some(lc)) => {
-            // Exact same content string → exact duplicate
-            if hc == lc {
-                return true;
-            }
-            // Check if higher-priority pattern matches the lower-priority content
-            // pattern treated as a content string. This catches:
-            //   `*`       matches `git status`      (wildcard shadows specific)
-            //   `git:*`   matches `git status`      (prefix covers specific)
-            //   `/etc/**` matches `/etc/passwd`     (path glob covers specific)
-            //
-            // This is not a perfect containment check for arbitrary globs
-            // (undecidable in general), but catches the practical cases.
-            matches_content(hc, lc)
-        }
+fn strength(b: RuleBehavior) -> u8 {
+    match b {
+        RuleBehavior::Deny => 2,
+        RuleBehavior::Ask => 1,
+        RuleBehavior::Allow => 0,
     }
 }
 
-/// Format a single shadow warning for human-readable display.
+/// Whether `covering`'s pattern matches every content `covered`'s does.
 ///
-/// Returns a string like:
-/// ```text
-/// Permission rule shadowed: "Bash(git:*)  [allow]" at line 5 is shadowed by "Bash(*)  [deny]" at line 2 (higher priority)
-/// ```
-pub fn format_shadow_warning(shadow: &ShadowedRule) -> String {
-    let shadowed_str = format_rule_string(&shadow.shadowed);
-    let shadowing_str = format_rule_string(&shadow.shadowing);
+/// Not a full containment check for arbitrary globs (undecidable in general):
+/// `covered`'s pattern is tried as a content string against `covering`'s, which
+/// catches the practical cases — `*` over `git status`, `git:*` over
+/// `git status`, `/etc/**` over `/etc/passwd`.
+pub(crate) fn is_shadowed_by(covering: &PermissionRule, covered: &PermissionRule) -> bool {
+    match (&covering.rule_content, &covered.rule_content) {
+        (None, _) => true,
+        (Some(_), None) => false,
+        (Some(hc), Some(lc)) => hc == lc || matches_content(hc, lc),
+    }
+}
 
+/// One human-readable warning, naming each rule's settings source.
+pub fn format_shadow_warning(shadow: &ShadowedRule) -> String {
     format!(
-        "Permission rule shadowed: \"{0}  [{3}]\" at line {4} is shadowed by \"{1}  [{2}]\" at line {5} (higher priority)",
-        shadowed_str,
-        shadowing_str,
-        behavior_label(shadow.shadowing.behavior),
+        "Permission rule never takes effect: \"{}\" [{}] from {} is overridden by \"{}\" [{}] from {} \
+         (a matching deny always wins, then ask, then allow)",
+        format_rule_string(&shadow.shadowed),
         behavior_label(shadow.shadowed.behavior),
-        shadow.shadowed_index + 1,
-        shadow.shadowing_index + 1,
+        source_label(shadow.shadowed.source),
+        format_rule_string(&shadow.shadowing),
+        behavior_label(shadow.shadowing.behavior),
+        source_label(shadow.shadowing.source),
     )
 }
 
-/// Format and log all shadow warnings via `tracing::warn!`.
-///
-/// Each shadow is logged as a separate warning so individual shadows
-/// are visible in filtered log output.
+/// Log each warning separately so individual findings survive log filtering.
 pub fn log_shadow_warnings(shadows: &[ShadowedRule]) {
     for s in shadows {
         tracing::warn!("{}", format_shadow_warning(s));
@@ -158,10 +107,22 @@ fn behavior_label(b: RuleBehavior) -> &'static str {
     }
 }
 
+fn source_label(s: RuleSource) -> &'static str {
+    match s {
+        RuleSource::UserSettings => "user settings",
+        RuleSource::ProjectSettings => "project settings",
+        RuleSource::LocalSettings => "local settings",
+        RuleSource::CliArg => "command-line arguments",
+        RuleSource::Session => "this session",
+        RuleSource::PolicySettings => "managed policy",
+        RuleSource::Command => "an active skill",
+        RuleSource::Plugin => "a plugin",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base::permission::{RuleBehavior, RuleSource};
 
     fn rule(
         tool: &str,
@@ -177,104 +138,68 @@ mod tests {
         }
     }
 
-    #[test]
-    fn tool_only_shadows_tool_with_content() {
-        let rules = vec![
-            rule("Bash", None, RuleBehavior::Deny, RuleSource::UserSettings),
-            rule(
-                "Bash",
-                Some("git status"),
-                RuleBehavior::Allow,
-                RuleSource::UserSettings,
-            ),
-        ];
-        let shadows = detect_shadowed_rules(&rules);
-        assert_eq!(shadows.len(), 1);
-        assert_eq!(shadows[0].shadowing_index, 0);
-        assert_eq!(shadows[0].shadowed_index, 1);
-        assert!(shadows[0].shadowing.rule_content.is_none());
+    fn pairs(rules: &[PermissionRule]) -> Vec<(usize, usize)> {
+        detect_shadowed_rules(rules)
+            .iter()
+            .map(|s| (s.shadowed_index, s.shadowing_index))
+            .collect()
     }
 
     #[test]
-    fn exact_content_duplicate_shadow() {
+    fn a_broad_deny_overrides_a_narrow_allow_listed_before_it() {
         let rules = vec![
             rule(
                 "Bash",
-                Some("git status"),
+                Some("git merge:*"),
                 RuleBehavior::Allow,
-                RuleSource::UserSettings,
+                RuleSource::ProjectSettings,
             ),
-            rule(
-                "Bash",
-                Some("git status"),
-                RuleBehavior::Allow,
-                RuleSource::UserSettings,
-            ),
+            rule("Bash", None, RuleBehavior::Deny, RuleSource::UserSettings),
         ];
-        let shadows = detect_shadowed_rules(&rules);
-        assert_eq!(shadows.len(), 1);
-        assert_eq!(shadows[0].shadowing_index, 0);
-        assert_eq!(shadows[0].shadowed_index, 1);
+        assert_eq!(pairs(&rules), vec![(0, 1)]);
     }
 
     #[test]
-    fn tool_only_duplicate_shadow() {
+    fn a_narrow_deny_inside_a_broad_allow_is_not_reported() {
         let rules = vec![
-            rule("Bash", None, RuleBehavior::Deny, RuleSource::UserSettings),
             rule("Bash", None, RuleBehavior::Allow, RuleSource::UserSettings),
+            rule(
+                "Bash",
+                Some("git merge:*"),
+                RuleBehavior::Deny,
+                RuleSource::UserSettings,
+            ),
         ];
-        let shadows = detect_shadowed_rules(&rules);
-        assert_eq!(shadows.len(), 1);
-        assert_eq!(shadows[0].shadowing_index, 0);
-        assert_eq!(shadows[0].shadowed_index, 1);
+        assert!(pairs(&rules).is_empty());
     }
 
     #[test]
-    fn wildcard_content_shadows_specific() {
+    fn an_ask_overrides_a_covered_allow_and_a_deny_overrides_a_covered_ask() {
         let rules = vec![
+            rule(
+                "Bash",
+                Some("git:*"),
+                RuleBehavior::Ask,
+                RuleSource::UserSettings,
+            ),
+            rule(
+                "Bash",
+                Some("git status"),
+                RuleBehavior::Allow,
+                RuleSource::LocalSettings,
+            ),
             rule(
                 "Bash",
                 Some("*"),
                 RuleBehavior::Deny,
-                RuleSource::UserSettings,
-            ),
-            rule(
-                "Bash",
-                Some("git status"),
-                RuleBehavior::Allow,
-                RuleSource::UserSettings,
+                RuleSource::PolicySettings,
             ),
         ];
-        let shadows = detect_shadowed_rules(&rules);
-        assert_eq!(shadows.len(), 1);
-        assert_eq!(shadows[0].shadowing_index, 0);
-        assert_eq!(shadows[0].shadowed_index, 1);
+        assert_eq!(pairs(&rules), vec![(0, 2), (1, 0)]);
     }
 
     #[test]
-    fn prefix_wildcard_shadows_specific() {
-        let rules = vec![
-            rule(
-                "Bash",
-                Some("git:*"),
-                RuleBehavior::Deny,
-                RuleSource::UserSettings,
-            ),
-            rule(
-                "Bash",
-                Some("git status"),
-                RuleBehavior::Allow,
-                RuleSource::UserSettings,
-            ),
-        ];
-        let shadows = detect_shadowed_rules(&rules);
-        assert_eq!(shadows.len(), 1);
-        assert_eq!(shadows[0].shadowing_index, 0);
-        assert_eq!(shadows[0].shadowed_index, 1);
-    }
-
-    #[test]
-    fn path_glob_shadows_specific() {
+    fn a_path_glob_deny_covers_a_specific_path_allow() {
         let rules = vec![
             rule(
                 "Read",
@@ -289,275 +214,91 @@ mod tests {
                 RuleSource::UserSettings,
             ),
         ];
-        let shadows = detect_shadowed_rules(&rules);
-        assert_eq!(shadows.len(), 1);
-        assert_eq!(shadows[0].shadowing_index, 0);
-        assert_eq!(shadows[0].shadowed_index, 1);
+        assert_eq!(pairs(&rules), vec![(1, 0)]);
     }
 
     #[test]
-    fn specific_content_does_not_shadow_broader() {
+    fn a_specific_deny_does_not_cover_a_broader_allow() {
         let rules = vec![
             rule(
                 "Bash",
                 Some("git status"),
-                RuleBehavior::Allow,
+                RuleBehavior::Deny,
                 RuleSource::UserSettings,
             ),
             rule(
                 "Bash",
                 Some("git:*"),
+                RuleBehavior::Allow,
+                RuleSource::UserSettings,
+            ),
+        ];
+        assert!(pairs(&rules).is_empty());
+    }
+
+    #[test]
+    fn same_behavior_duplicates_are_not_reported() {
+        let rules = vec![
+            rule("Bash", None, RuleBehavior::Deny, RuleSource::UserSettings),
+            rule(
+                "Bash",
+                None,
+                RuleBehavior::Deny,
+                RuleSource::ProjectSettings,
+            ),
+            rule(
+                "Bash",
+                Some("ls"),
+                RuleBehavior::Deny,
+                RuleSource::ProjectSettings,
+            ),
+        ];
+        assert!(pairs(&rules).is_empty());
+    }
+
+    #[test]
+    fn an_mcp_server_deny_covers_one_of_its_tools() {
+        let rules = vec![
+            rule(
+                "mcp__github__create_issue",
+                None,
+                RuleBehavior::Allow,
+                RuleSource::UserSettings,
+            ),
+            rule(
+                "mcp__github",
+                None,
                 RuleBehavior::Deny,
                 RuleSource::UserSettings,
             ),
         ];
-        let shadows = detect_shadowed_rules(&rules);
-        assert!(shadows.is_empty(), "specific should not shadow broader");
+        assert_eq!(pairs(&rules), vec![(0, 1)]);
     }
 
     #[test]
-    fn different_tools_no_shadow() {
+    fn an_mcp_tool_deny_does_not_cover_the_whole_server() {
         let rules = vec![
-            rule("Bash", None, RuleBehavior::Deny, RuleSource::UserSettings),
+            rule(
+                "mcp__github",
+                None,
+                RuleBehavior::Allow,
+                RuleSource::UserSettings,
+            ),
+            rule(
+                "mcp__github__create_issue",
+                None,
+                RuleBehavior::Deny,
+                RuleSource::UserSettings,
+            ),
+        ];
+        assert!(pairs(&rules).is_empty());
+    }
+
+    #[test]
+    fn rules_for_different_tools_or_disjoint_content_do_not_interact() {
+        let rules = vec![
+            rule("Write", None, RuleBehavior::Deny, RuleSource::UserSettings),
             rule("Read", None, RuleBehavior::Allow, RuleSource::UserSettings),
-        ];
-        let shadows = detect_shadowed_rules(&rules);
-        assert!(shadows.is_empty());
-    }
-
-    #[test]
-    fn mcp_server_shadows_specific_tool() {
-        let rules = vec![
-            rule(
-                "mcp__github",
-                None,
-                RuleBehavior::Deny,
-                RuleSource::UserSettings,
-            ),
-            rule(
-                "mcp__github__create_issue",
-                None,
-                RuleBehavior::Allow,
-                RuleSource::UserSettings,
-            ),
-        ];
-        let shadows = detect_shadowed_rules(&rules);
-        assert_eq!(shadows.len(), 1);
-        assert_eq!(shadows[0].shadowing_index, 0);
-        assert_eq!(shadows[0].shadowed_index, 1);
-    }
-
-    #[test]
-    fn mcp_specific_does_not_shadow_server() {
-        let rules = vec![
-            rule(
-                "mcp__github__create_issue",
-                None,
-                RuleBehavior::Allow,
-                RuleSource::UserSettings,
-            ),
-            rule(
-                "mcp__github",
-                None,
-                RuleBehavior::Deny,
-                RuleSource::UserSettings,
-            ),
-        ];
-        // The specific tool at higher priority does NOT shadow the broader MCP server rule
-        let shadows = detect_shadowed_rules(&rules);
-        assert!(
-            shadows.is_empty(),
-            "specific MCP should not shadow broader MCP"
-        );
-    }
-
-    #[test]
-    fn multiple_shadows_detected() {
-        let rules = vec![
-            rule("Bash", None, RuleBehavior::Deny, RuleSource::UserSettings),
-            rule(
-                "Bash",
-                Some("git status"),
-                RuleBehavior::Allow,
-                RuleSource::UserSettings,
-            ),
-            rule(
-                "Bash",
-                Some("git push"),
-                RuleBehavior::Allow,
-                RuleSource::UserSettings,
-            ),
-        ];
-        let shadows = detect_shadowed_rules(&rules);
-        assert_eq!(shadows.len(), 2);
-        // Both specific rules shadowed by same tool-only deny
-        assert_eq!(shadows[0].shadowing_index, 0);
-        assert_eq!(shadows[0].shadowed_index, 1);
-        assert_eq!(shadows[1].shadowing_index, 0);
-        assert_eq!(shadows[1].shadowed_index, 2);
-    }
-
-    #[test]
-    fn chain_shadow_reports_highest_priority() {
-        // Three rules for same tool: each shadows the ones after it.
-        // The algorithm reports the highest-priority (lowest index)
-        // shadowing rule, not the closest one.
-        let rules = vec![
-            rule("Bash", None, RuleBehavior::Deny, RuleSource::UserSettings),
-            rule(
-                "Bash",
-                Some("git:*"),
-                RuleBehavior::Allow,
-                RuleSource::UserSettings,
-            ),
-            rule(
-                "Bash",
-                Some("git status"),
-                RuleBehavior::Allow,
-                RuleSource::UserSettings,
-            ),
-        ];
-        let shadows = detect_shadowed_rules(&rules);
-        // git:* is shadowed by Bash (tool-only) — 1 shadow
-        // git status is ALSO shadowed by Bash (tool-only) — 1 shadow
-        assert_eq!(shadows.len(), 2);
-        // First shadow: Bash → git:*
-        assert_eq!(shadows[0].shadowing_index, 0);
-        assert_eq!(shadows[0].shadowed_index, 1);
-        // Second shadow: Bash (highest priority) → git status
-        assert_eq!(shadows[1].shadowing_index, 0);
-        assert_eq!(shadows[1].shadowed_index, 2);
-    }
-
-    #[test]
-    fn no_shadow_when_no_match() {
-        let rules = vec![
-            rule(
-                "Bash",
-                Some("git:*"),
-                RuleBehavior::Allow,
-                RuleSource::UserSettings,
-            ),
-            rule(
-                "Read",
-                Some("/etc/**"),
-                RuleBehavior::Deny,
-                RuleSource::UserSettings,
-            ),
-        ];
-        let shadows = detect_shadowed_rules(&rules);
-        assert!(shadows.is_empty());
-    }
-
-    #[test]
-    fn empty_rules_produce_no_shadows() {
-        let rules: Vec<PermissionRule> = vec![];
-        let shadows = detect_shadowed_rules(&rules);
-        assert!(shadows.is_empty());
-    }
-
-    #[test]
-    fn single_rule_produces_no_shadows() {
-        let rules = vec![rule(
-            "Bash",
-            None,
-            RuleBehavior::Deny,
-            RuleSource::UserSettings,
-        )];
-        let shadows = detect_shadowed_rules(&rules);
-        assert!(shadows.is_empty());
-    }
-
-    #[test]
-    fn content_of_one_tool_does_not_shadow_another_tool() {
-        // Even though "git status" ≠ "/etc/passwd" would suggest no shadow,
-        // the different tool name already prevents any shadow
-        let rules = vec![
-            rule(
-                "Read",
-                Some("/etc/**"),
-                RuleBehavior::Deny,
-                RuleSource::UserSettings,
-            ),
-            rule(
-                "Bash",
-                Some("/etc/passwd"),
-                RuleBehavior::Allow,
-                RuleSource::UserSettings,
-            ),
-        ];
-        let shadows = detect_shadowed_rules(&rules);
-        assert!(shadows.is_empty());
-    }
-
-    #[test]
-    fn format_shadow_warning_output() {
-        let shadow = ShadowedRule {
-            shadowed: PermissionRule {
-                source: RuleSource::UserSettings,
-                behavior: RuleBehavior::Allow,
-                tool_name: "Bash".into(),
-                rule_content: Some("git status".into()),
-            },
-            shadowing: PermissionRule {
-                source: RuleSource::UserSettings,
-                behavior: RuleBehavior::Deny,
-                tool_name: "Bash".into(),
-                rule_content: None,
-            },
-            shadowed_index: 4,
-            shadowing_index: 1,
-        };
-        let msg = format_shadow_warning(&shadow);
-        assert!(
-            msg.contains("Permission rule shadowed:"),
-            "should contain header: {msg}"
-        );
-        assert!(
-            msg.contains("Bash(git status)"),
-            "should contain rule: {msg}"
-        );
-        assert!(msg.contains("Bash"), "should contain shadowing rule: {msg}");
-        assert!(msg.contains("[allow]"), "should contain behavior: {msg}");
-        assert!(msg.contains("[deny]"), "should contain behavior: {msg}");
-        assert!(msg.contains("at line 5"), "should contain line: {msg}");
-        assert!(msg.contains("at line 2"), "should contain line: {msg}");
-        assert!(
-            msg.contains("higher priority"),
-            "should contain suffix: {msg}"
-        );
-    }
-
-    #[test]
-    fn format_shadow_warning_tool_only() {
-        let shadow = ShadowedRule {
-            shadowed: PermissionRule {
-                source: RuleSource::LocalSettings,
-                behavior: RuleBehavior::Ask,
-                tool_name: "mcp__github".into(),
-                rule_content: None,
-            },
-            shadowing: PermissionRule {
-                source: RuleSource::CliArg,
-                behavior: RuleBehavior::Deny,
-                tool_name: "mcp__github".into(),
-                rule_content: None,
-            },
-            shadowed_index: 2,
-            shadowing_index: 0,
-        };
-        let msg = format_shadow_warning(&shadow);
-        assert!(msg.contains("mcp__github"));
-        assert!(msg.contains("[ask]"));
-        assert!(msg.contains("[deny]"));
-        assert!(msg.contains("at line 3"));
-        assert!(msg.contains("at line 1"));
-    }
-
-    #[test]
-    fn prefix_pattern_does_not_shadow_non_matching_content() {
-        // git:* should NOT shadow rm commands
-        let rules = vec![
             rule(
                 "Bash",
                 Some("git:*"),
@@ -571,7 +312,26 @@ mod tests {
                 RuleSource::UserSettings,
             ),
         ];
-        let shadows = detect_shadowed_rules(&rules);
-        assert!(shadows.is_empty(), "git:* should not shadow rm:*");
+        assert!(pairs(&rules).is_empty());
+        assert!(pairs(&[]).is_empty());
+    }
+
+    #[test]
+    fn the_warning_names_both_rules_their_behaviors_and_their_sources() {
+        let rules = vec![
+            rule(
+                "Bash",
+                Some("git merge:*"),
+                RuleBehavior::Allow,
+                RuleSource::ProjectSettings,
+            ),
+            rule("Bash", None, RuleBehavior::Deny, RuleSource::UserSettings),
+        ];
+        let msg = format_shadow_warning(&detect_shadowed_rules(&rules)[0]);
+        assert!(
+            msg.contains("\"Bash(git merge:*)\" [allow] from project settings"),
+            "{msg}"
+        );
+        assert!(msg.contains("\"Bash\" [deny] from user settings"), "{msg}");
     }
 }

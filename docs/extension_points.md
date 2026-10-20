@@ -142,8 +142,8 @@ let settings = Settings::load_from(&source, global, scene, project, "code", "opu
 ```
 
 一个 source 只决定有哪些层、顺序如何、每层里是什么 JSON。合并两边是同一套——每层
-都剥掉 `paths`,覆盖层的 `permission_rules` 单独拎出来,靠后的层递归盖在靠前的
-上面——所以把配置从磁盘上搬走,改不了一个配置文件的含义。
+都剥掉 `paths`,每层的 `permission_rules` 单独拎出来按层拼接(不参与覆盖),其余
+靠后的层递归盖在靠前的上面——所以把配置从磁盘上搬走,改不了一个配置文件的含义。
 
 那几个目录参数即使 source 一个字节都不从里面读也得留着:它们是 scene 的*数据*待
 的地方,而这件事从来轮不到配置文件来决定。

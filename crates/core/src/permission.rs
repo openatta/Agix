@@ -157,14 +157,14 @@ pub enum RuleSource {
     PolicySettings,
     /// 由命令展开时临时注入
     Command,
-    /// 由已安装插件贡献。优先级最低——插件是从网络装进来的第三方内容，
-    /// 不该盖过用户设置，更不该盖过组织策略。卸载插件时用
-    /// `PermissionGate::remove_rules_by_source` 整批撤销。
+    /// 由已安装插件贡献。卸载插件时用 `PermissionGate::remove_rules_by_source`
+    /// 整批撤销。
     Plugin,
 }
 
 impl RuleSource {
-    /// 优先级：数值越大越优先（CliArg 最高）
+    /// 同一行为有多条规则命中时，用它挑出报告哪一条：数值越大越先选中。
+    /// 不参与 allow / ask / deny 之间的裁决——那只看行为，deny 永远优先。
     pub fn priority(self) -> u8 {
         match self {
             Self::CliArg => 60,

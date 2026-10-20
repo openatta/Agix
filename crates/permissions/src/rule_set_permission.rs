@@ -603,6 +603,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_session_allow_cannot_carve_an_exception_out_of_a_settings_deny() {
+        let perm = RuleSetPermission::new(
+            Arc::new(PermissionGate::new(RuleSet::new(vec![
+                base::permission::PermissionRule {
+                    source: base::permission::RuleSource::UserSettings,
+                    behavior: base::permission::RuleBehavior::Deny,
+                    tool_name: "Bash".into(),
+                    rule_content: None,
+                },
+            ]))),
+            registry_with_content_tool(ContentAwareFakeTool {
+                name: "Bash",
+                content: Some("git status"),
+            }),
+            PermissionMode::BypassPermissions,
+        );
+        perm.add_persistent_allow("Bash", Some("git status"));
+
+        let outcome = perm
+            .check("Bash", &json!({}), Path::new("/tmp"), "s1")
+            .await;
+        assert!(
+            matches!(outcome, PermissionOutcome::Deny { .. }),
+            "{outcome:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_rule_in_the_project_tier_does_not_erase_the_users_global_denies() {
         let root = tempfile::tempdir().unwrap();
         let global = root.path().join("global");

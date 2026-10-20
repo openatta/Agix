@@ -525,24 +525,34 @@ mod tests {
         assert_eq!(remaining[0].tool_name, "Read");
     }
 
-    /// A plugin is third-party content pulled off the network; its rules must
-    /// never outrank the user's own settings or the org's managed policy.
+    /// A plugin is third-party content pulled off the network; its allow
+    /// must never open up what the user's own settings or the org's managed
+    /// policy deny.
     #[test]
-    fn plugin_source_has_the_lowest_priority() {
-        use base::permission::RuleSource;
-        let plugin = RuleSource::Plugin.priority();
-        for higher in [
+    fn a_plugin_allow_never_overrides_a_deny_from_any_source() {
+        use base::permission::{RuleBehavior, RuleSource};
+        for denier in [
             RuleSource::PolicySettings,
             RuleSource::UserSettings,
             RuleSource::ProjectSettings,
-            RuleSource::LocalSettings,
-            RuleSource::Command,
-            RuleSource::Session,
-            RuleSource::CliArg,
         ] {
+            let rules = RuleSet::new(vec![
+                PermissionRule {
+                    source: denier,
+                    behavior: RuleBehavior::Deny,
+                    tool_name: "Bash".into(),
+                    rule_content: None,
+                },
+                PermissionRule {
+                    source: RuleSource::Plugin,
+                    behavior: RuleBehavior::Allow,
+                    tool_name: "Bash".into(),
+                    rule_content: Some("curl:*".into()),
+                },
+            ]);
             assert!(
-                plugin < higher.priority(),
-                "plugin must rank below {higher:?}"
+                matches!(rules.evaluate("Bash", Some("curl x")), RuleHit::Deny(_)),
+                "plugin allow overrode a {denier:?} deny"
             );
         }
     }
