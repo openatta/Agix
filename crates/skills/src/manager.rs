@@ -241,6 +241,17 @@ impl SkillManager {
         )
     }
 
+    /// Take `fresh`'s catalog and sources in place of this one's, keeping
+    /// the invocation history. Everything holding this manager sees the new
+    /// catalog at once.
+    pub fn replace_catalog(&self, fresh: SkillManager) {
+        let SkillManager {
+            skills, providers, ..
+        } = fresh;
+        *self.skills.write().unwrap() = skills.into_inner().unwrap();
+        *self.providers.write().unwrap() = providers.into_inner().unwrap();
+    }
+
     /// Register a bundled (in-memory) skill. Used for built-in skills.
     /// Disk-loaded skills with the same name take priority (skip).
     pub fn register_bundled(&self, entry: SkillEntry) {

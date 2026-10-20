@@ -1492,7 +1492,7 @@ async fn config_reload_attempts_to_connect_a_hand_edited_mcp_server() {
     // but never actually connect it — `apply_reloaded_settings` never
     // touched `self.mcp` at all. A hand-edited `mcp_servers` entry was
     // invisible to every session (including ones later rebuilt via
-    // `config_generation`, since `create()` sources MCP from the untouched
+    // a stale binding, since `create()` sources MCP from the untouched
     // central cache, not from `Settings` directly) — the only way to
     // actually connect it was `mcp.addServer` or a full daemon restart.
     //
@@ -1629,7 +1629,7 @@ async fn existing_session_survives_a_config_reload_between_turns() {
     // Smoke test for the lazy-recreate path in `run_turn`: a session created
     // before a reload must still be usable (same session_id, no
     // SESSION_NOT_FOUND / crash) for a turn sent after the reload bumped
-    // `config_generation` — proving the stale-generation branch in
+    // its binding going stale — proving the stale-binding branch in
     // `run_turn` (recreate via `resume_or_create`) doesn't break the normal
     // "session already exists" path. Uses `start_server_with_history()`
     // because the recreate path only engages for HistoryStore-backed
@@ -1654,7 +1654,7 @@ async fn existing_session_survives_a_config_reload_between_turns() {
         sessions[0]["session_id"].as_str().unwrap().to_string()
     };
 
-    // Bump config_generation without touching this session directly.
+    // Invalidate every binding without touching this session directly.
     let resp = rpc_call(
         &sock,
         r#"{"jsonrpc":"2.0","method":"config.reload","id":3}"#,
@@ -1738,8 +1738,8 @@ async fn recreating_a_stale_session_at_capacity_does_not_evict_an_unrelated_sess
         .find(|id| id != &id_older)
         .expect("second session must have a different id than the first");
 
-    // Bump config_generation, then send a second turn to the *newer* session
-    // — this triggers the stale-generation recreate path for it while the
+    // Invalidate every binding, then send a second turn to the *newer* session
+    // — this triggers the stale-binding recreate path for it while the
     // pool is already at capacity (2/2). If eviction incorrectly treats this
     // replace-in-place as "adding a new session", it'll evict whatever's
     // globally least-recently-active — `id_older`, which this call never

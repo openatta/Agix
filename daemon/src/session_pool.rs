@@ -90,6 +90,17 @@ pub enum SetModelError {
 /// resolutions, not one.
 type ProjectSceneKey = (Option<PathBuf>, String);
 
+/// Whether what `key` resolves to was merged from `tier`. The global tier is
+/// under every pair; a scene or project tier only under its own.
+fn tier_covers(tier: &crate::watch_hub::Tier, key: &ProjectSceneKey) -> bool {
+    use crate::watch_hub::Tier;
+    match tier {
+        Tier::Global => true,
+        Tier::Scene(scene) => &key.1 == scene,
+        Tier::Project(root) => key.0.as_deref() == Some(root.as_path()),
+    }
+}
+
 /// Everything a session reads that the pair `(project, scene)` decides: the
 /// merged settings, and the skills, agent types and commands that live in the
 /// directories those settings name.
@@ -125,6 +136,9 @@ struct ProjectBinding {
     /// releases its share of the watch (`WatchHub` refcounts, so the tiers
     /// several projects have in common are watched once).
     _watch: Vec<crate::watch_hub::WatchToken>,
+    /// Set once a tier this binding was merged from changed. Every session
+    /// built on it holds the same flag and rebuilds before its next turn.
+    stale: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ProjectBinding {
@@ -164,7 +178,22 @@ impl ProjectBinding {
             agent_types,
             commands,
             _watch: watch,
+            stale: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
+    }
+
+    fn mark_stale(&self) {
+        self.stale.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Re-read the skill directories into the catalog every session on this
+    /// pair already shares, so a skill file edit reaches them without a
+    /// rebuild.
+    fn reload_skills(&self) {
+        self.skills
+            .replace_catalog(runtime::agent::build_skill_manager_unwatched(
+                &self.settings,
+            ));
     }
 
     /// Re-merge what the plugin set now contributes.
@@ -287,14 +316,10 @@ struct LiveSession {
     /// that has one: a name somebody typed outranks a name a model guessed,
     /// and the guess arrives later.
     named_by_user: bool,
-    /// `SessionPool.config_generation` 的值，建这个 Agent 时记录的快照。
-    /// `run_turn` 每次分派给一个已存在的 session 前，会拿这个值跟池子当前的
-    /// 代数比——落后就说明期间有过 `config.setProvider`/`config.reload`，
-    /// 在真正发这条消息之前原地重建（见 `run_turn` 里的重建逻辑）。用代数
-    /// 而不是"reload 时主动去改每个 session"，是因为改动只需要在两处发生：
-    /// reload 时 `fetch_add(1)`，用到时惰性比较一次，不用遍历/标记所有
-    /// session。
-    config_generation: u64,
+    /// The `stale` flag of the binding this Agent was built from. `run_turn`
+    /// rebuilds the session before its next turn once it is set — lazily,
+    /// so an invalidation never has to walk the sessions.
+    binding_stale: Arc<std::sync::atomic::AtomicBool>,
     /// The turn currently running on this session, if any.
     ///
     /// A session runs one turn at a time — `event_rx` is taken exclusively
@@ -456,23 +481,17 @@ pub struct SessionPool {
     /// configuration changes reach the daemon through an explicit
     /// `config.reload` and not on their own.
     watch: Option<crate::watch_hub::WatchHub>,
-    /// Bumped by `apply_reloaded_settings()` on every successful reload.
-    /// Compared against each `LiveSession::config_generation` at dispatch
-    /// time (`run_turn`) to decide whether an already-running session needs
-    /// to be recreated before serving its next turn. `Ordering::Relaxed`
-    /// throughout — this is a "did *a* reload happen since I was built"
-    /// signal, not something anything is synchronized against; the actual
-    /// new config is read fresh (under its own lock) whenever a session
-    /// does recreate, so a relaxed load can't hand out stale settings, only
-    /// a stale *generation number* (worst case: one extra turn served on
-    /// old config before the recreate check catches up, never fewer).
-    config_generation: std::sync::atomic::AtomicU64,
+    /// The watch on the tiers of this daemon's own pair, held for the pool's
+    /// lifetime. Binding watches come and go with the bindings, and with every
+    /// binding invalidated nothing would be left to notice the next change to
+    /// the global tier or to the settings `self.settings` mirrors.
+    pool_watch: std::sync::Mutex<Vec<crate::watch_hub::WatchToken>>,
     /// Models chosen with `session.setModel`, by session id.
     ///
     /// The command itself reaches the engine through the session's input
     /// channel and lives in that `Agent`'s settings — which is not where it
-    /// can stay. An `Agent` is rebuilt from settings whenever
-    /// `config_generation` moves on or the janitor evicts an idle session,
+    /// can stay. An `Agent` is rebuilt from settings whenever its binding goes
+    /// stale or the janitor evicts an idle session,
     /// and a rebuild would put the model back to the configured one with
     /// nothing said to the client that chose otherwise. `create()` replays
     /// this map onto every session it builds, so the choice outlives the
@@ -718,7 +737,7 @@ impl SessionPool {
                     None
                 }
             },
-            config_generation: std::sync::atomic::AtomicU64::new(0),
+            pool_watch: std::sync::Mutex::new(Vec::new()),
             model_overrides: std::sync::Mutex::new(HashMap::new()),
             permission_prompt_timeout: DEFAULT_PERMISSION_PROMPT_TIMEOUT,
             credentials: Arc::new(base::interface::credentials::ConfigCredentials),
@@ -1034,8 +1053,8 @@ impl SessionPool {
     /// `mcp_servers` into the new `Settings` (so it was visible to
     /// `doctor`/`get_providers`) but never actually reconnected anything —
     /// a hand-edited `mcp_servers` entry picked up via `config.reload` was
-    /// invisible to every session, including ones rebuilt afterward via
-    /// `config_generation` (`create()` sources MCP from the same
+    /// invisible to every session, including ones rebuilt afterward from a
+    /// stale binding (`create()` sources MCP from the same
     /// `mcp_by_project` cache, not from `Settings` directly) — only
     /// `mcp.addServer` or a full daemon restart actually connected it.
     ///
@@ -1471,7 +1490,9 @@ impl SessionPool {
             .await
             .map_err(|e| format!("write {}: {e}", settings_path.display()))?;
 
-        let (reloaded, report) = self.apply_reloaded_settings(project_root, scene_id).await;
+        let (reloaded, report) = self
+            .apply_reloaded_settings(project_root, scene_id, None)
+            .await;
         let result = serde_json::json!({
             "written_to": settings_path.display().to_string(),
             "providers": reloaded.providers.keys().collect::<Vec<_>>(),
@@ -1489,14 +1510,26 @@ impl SessionPool {
     /// file directly instead of going through `config.setProvider`. Shares
     /// `apply_reloaded_settings()` with `set_provider()`, so both entry
     /// points converge on identical semantics (routing re-resolved,
-    /// `task_router` rebuilt, `config_generation` bumped so already-running
+    /// `task_router` rebuilt, bindings marked stale so already-running
     /// sessions recreate themselves lazily — see `run_turn`).
     pub async fn reload_settings(
         &self,
         project_root: Option<&Path>,
         scene_id: &str,
     ) -> serde_json::Value {
-        let (reloaded, report) = self.apply_reloaded_settings(project_root, scene_id).await;
+        self.reload_settings_from(project_root, scene_id, None)
+            .await
+    }
+
+    async fn reload_settings_from(
+        &self,
+        project_root: Option<&Path>,
+        scene_id: &str,
+        changed: Option<&crate::watch_hub::Tier>,
+    ) -> serde_json::Value {
+        let (reloaded, report) = self
+            .apply_reloaded_settings(project_root, scene_id, changed)
+            .await;
         serde_json::json!({
             "providers": reloaded.providers.keys().collect::<Vec<_>>(),
             "default_provider": reloaded.default_provider,
@@ -1507,9 +1540,10 @@ impl SessionPool {
 
     /// Re-read the three-tier merged settings.json from disk, re-resolve
     /// `providers`/`task_models`, rebuild `self.task_router` from the result,
-    /// swap `self.settings`, and bump `self.config_generation` so already
-    /// running sessions know to recreate themselves before their next turn
-    /// (see `run_turn`). Shared by `set_provider()` (called after writing a
+    /// swap `self.settings`, and invalidate the bindings built from `changed`
+    /// (every binding when `None`: an explicit reload does not know which tier
+    /// moved) so their running sessions recreate themselves before their next
+    /// turn (see `run_turn`). Shared by `set_provider()` (called after writing a
     /// patch) and `reload_settings()` (called directly, no patch — just
     /// "whatever's on disk right now").
     ///
@@ -1523,6 +1557,7 @@ impl SessionPool {
         &self,
         project_root: Option<&Path>,
         scene_id: &str,
+        changed: Option<&crate::watch_hub::Tier>,
     ) -> (Arc<Settings>, ReloadReport) {
         let startup_scene = self.settings.read().await.paths.scope.clone();
         let project_root = project_root.unwrap_or(self.cwd.as_path());
@@ -1547,9 +1582,7 @@ impl SessionPool {
         // The cached bindings hold the settings that were just replaced, and
         // the skill/agent catalogs and router built from them. Dropping them
         // is what makes a reload reach the next session.
-        self.invalidate_bindings().await;
-        self.config_generation
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.invalidate_bindings(changed).await;
 
         let binding = self.binding_for(Some(project_root), scene_id).await;
         let mut report = binding.routing.clone();
@@ -2058,9 +2091,7 @@ impl SessionPool {
             last_active: Instant::now(),
             is_first_turn: true,
             named_by_user: false,
-            config_generation: self
-                .config_generation
-                .load(std::sync::atomic::Ordering::Relaxed),
+            binding_stale: binding.stale.clone(),
             current_turn: None,
             idle: Arc::new(tokio::sync::Notify::new()),
             scripts: script_ledger,
@@ -2456,31 +2487,28 @@ impl SessionPool {
         // ── 解析或创建 session ──
         let sid = match session_id {
             Some(ref sid) => {
-                // 三种情况：① 不在内存里（走原有的 resume_or_create）；
-                // ② 在内存里且 config_generation 和池子当前代数一致（直接用，
-                // 最常见的路径）；③ 在内存里但代数落后——期间发生过
-                // `config.setProvider`/`config.reload`，需要在真正处理这条
-                // 消息之前原地重建，让它追上新配置。
+                // ① Not in memory: resume or create. ② In memory on a binding
+                // that is still current: use it. ③ In memory on a binding a
+                // settings change invalidated: rebuild before this message, so
+                // it is served on the new configuration.
                 //
-                // ③ 只有在这个 session 当前空闲（`event_rx` 是 `Some`，不是
-                // 正被另一个并发 turn 占用）时才重建——重建会取消旧 Agent、
-                // 换上新的，如果旧 Agent 正在处理另一条消息，这么做会把那条
-                // 消息腰斩。忙的话本次跳过重建，照旧用旧配置服务这条消息，
-                // 下一次调用到这个 session 时再检查一次（代数还是落后的，
-                // 不会漏检）。
+                // ③ only rebuilds an idle session (`event_rx` is `Some`). A
+                // rebuild replaces the Agent, and replacing one mid-turn would
+                // cut that turn off; a busy session is served on the old
+                // configuration this once and checked again next time — the
+                // flag stays set, so nothing is missed.
                 let stale_but_idle_check = {
                     let sessions = self.sessions.lock().await;
                     match sessions.get(sid) {
-                        None => Err(()), // 不在内存里
+                        None => Err(()),
                         Some(live)
-                            if live.config_generation
-                                == self
-                                    .config_generation
-                                    .load(std::sync::atomic::Ordering::Relaxed) =>
+                            if !live
+                                .binding_stale
+                                .load(std::sync::atomic::Ordering::Relaxed) =>
                         {
-                            Ok(None) // 在内存里，代数一致
+                            Ok(None)
                         }
-                        Some(live) => Ok(Some(live.event_rx.clone())), // 代数落后，带上 event_rx 供忙检查
+                        Some(live) => Ok(Some(live.event_rx.clone())),
                     }
                 };
 
@@ -4256,14 +4284,41 @@ impl SessionPool {
         tokens
     }
 
-    /// Drop every cached binding, so the next session on any pair is built
-    /// from what is on disk now.
-    ///
-    /// All of them, not just the pair that changed: the global and scene
-    /// tiers are layers under every project, so a reload of one project's
-    /// settings can move what another project resolves to.
-    async fn invalidate_bindings(&self) {
-        self.bindings.lock().await.clear();
+    /// Drop the cached bindings merged from `changed` — every binding when
+    /// `None` — and mark them stale, so the next session on those pairs is
+    /// built from what is on disk now and the running ones rebuild before
+    /// their next turn. A project tier sits under only its own pairs; the
+    /// scene and global tiers under more.
+    async fn invalidate_bindings(&self, changed: Option<&crate::watch_hub::Tier>) {
+        self.bindings.lock().await.retain(|key, binding| {
+            let hit = changed.map_or(true, |tier| tier_covers(tier, key));
+            if hit {
+                binding.mark_stale();
+            }
+            !hit
+        });
+    }
+
+    /// Re-read the skill or agent-type directories into the catalogs of the
+    /// bindings merged from `tier`, in place. Sessions share those catalogs,
+    /// so they see the change at once and nothing is rebuilt.
+    async fn refresh_catalogs(
+        &self,
+        tier: &crate::watch_hub::Tier,
+        target: crate::watch_hub::WatchTarget,
+    ) {
+        use crate::watch_hub::WatchTarget;
+        let plugin_agent_types = self.plugins.agent_types();
+        for (key, binding) in self.bindings.lock().await.iter() {
+            if !tier_covers(tier, key) {
+                continue;
+            }
+            match target {
+                WatchTarget::Skills => binding.reload_skills(),
+                WatchTarget::Agents => binding.refresh_plugins(&plugin_agent_types),
+                _ => {}
+            }
+        }
     }
 
     /// The binding this daemon's own project and startup scene resolve to —
@@ -4317,16 +4372,10 @@ impl SessionPool {
         tier: &crate::watch_hub::Tier,
         keep: Option<&ProjectSceneKey>,
     ) {
-        use crate::watch_hub::Tier;
-        self.mcp_by_project.lock().await.retain(|key, _| {
-            let (project, scene) = key;
-            let built_from = match tier {
-                Tier::Global => true,
-                Tier::Scene(s) => scene == s,
-                Tier::Project(root) => project.as_deref() == Some(root.as_path()),
-            };
-            !built_from || keep == Some(key)
-        });
+        self.mcp_by_project
+            .lock()
+            .await
+            .retain(|key, _| !tier_covers(tier, key) || keep == Some(key));
     }
 
     async fn mcp_for_project(
@@ -4716,20 +4765,18 @@ impl SessionPool {
         }
     }
 
-    /// 后台回收任务：定期驱逐超时 idle session。
-    /// React to settings files changing on disk, for **every** project this
-    /// daemon serves rather than only its own.
+    /// React to what a binding is built from changing on disk, for **every**
+    /// project this daemon serves rather than only its own.
     ///
-    /// Before this, a `(project, scene)` binding built once was never
-    /// rebuilt: `config.reload` re-read the daemon's own project and nothing
-    /// re-read anyone else's, so editing another project's `settings.json`
-    /// did nothing until the daemon restarted.
+    /// A settings change invalidates exactly the bindings merged from the tier
+    /// that changed; a change to this daemon's own tiers also goes through the
+    /// full reload, since the merged settings, the task router and the MCP
+    /// reconcile all hang off it. A skill or agent-type directory change is
+    /// re-read into the catalogs in place — sessions share them, so nothing
+    /// needs rebuilding.
     ///
-    /// A change to a tier under the daemon's own project goes through the
-    /// full reload — the merged settings, the task router and the MCP
-    /// reconcile all hang off it. A change under any other project drops the
-    /// cached bindings and bumps the generation, which is what makes a
-    /// running session on it rebuild before its next turn.
+    /// The pool's own tiers are watched for as long as the pool lives, not
+    /// only while some binding on them happens to exist.
     pub fn start_config_watcher(self: &Arc<Self>) {
         let Some(mut changes) = self.watch.as_ref().map(|hub| hub.changes()) else {
             return;
@@ -4737,6 +4784,15 @@ impl SessionPool {
         let pool = self.clone();
         tokio::spawn(async move {
             use crate::watch_hub::{Tier, WatchTarget};
+            {
+                let settings = pool.settings.read().await.clone();
+                let own = (Some(pool.cwd.clone()), settings.paths.scope.clone());
+                let tokens = pool.watch_tiers_of(&settings, &own);
+                *pool
+                    .pool_watch
+                    .lock()
+                    .expect("pool_watch is never held across a panic") = tokens;
+            }
             loop {
                 let key = match changes.recv().await {
                     Ok(key) => key,
@@ -4748,26 +4804,22 @@ impl SessionPool {
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 };
-                // Plugins are a global/scene concern with a refresh of their
-                // own (`plugin.reload`); everything else a binding is built
-                // from is here.
-                if !matches!(
-                    key.target,
-                    WatchTarget::Settings | WatchTarget::Skills | WatchTarget::Agents
-                ) {
-                    continue;
+                match key.target {
+                    WatchTarget::Settings => {}
+                    WatchTarget::Skills | WatchTarget::Agents => {
+                        info!(tier = ?key.tier, target = ?key.target, "a catalog changed on disk");
+                        pool.refresh_catalogs(&key.tier, key.target).await;
+                        continue;
+                    }
+                    // Plugins are a global/scene concern with a refresh of
+                    // their own (`plugin.reload`).
+                    _ => continue,
                 }
                 let ours = match &key.tier {
                     Tier::Project(root) => root == &pool.cwd,
-                    // The global and scene tiers sit under every project,
-                    // this daemon's own included.
                     Tier::Global | Tier::Scene(_) => true,
                 };
-                // A settings change to this daemon's own tier goes through
-                // the full reload — the merged settings, the task router and
-                // the MCP reconcile all hang off it. Everything else only has
-                // to drop what was built from the changed files.
-                if ours && key.target == WatchTarget::Settings {
+                if ours {
                     info!(tier = ?key.tier, "settings changed on disk; reloading");
                     let scene = match &key.tier {
                         Tier::Scene(scene) => scene.clone(),
@@ -4776,15 +4828,12 @@ impl SessionPool {
                     let reconciled = (Some(pool.cwd.clone()), scene.clone());
                     pool.forget_mcp_built_from(&key.tier, Some(&reconciled))
                         .await;
-                    pool.reload_settings(None, &scene).await;
+                    pool.reload_settings_from(None, &scene, Some(&key.tier))
+                        .await;
                 } else {
-                    info!(tier = ?key.tier, target = ?key.target, "a tier changed on disk");
-                    if key.target == WatchTarget::Settings {
-                        pool.forget_mcp_built_from(&key.tier, None).await;
-                    }
-                    pool.invalidate_bindings().await;
-                    pool.config_generation
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    info!(tier = ?key.tier, "settings changed on disk");
+                    pool.forget_mcp_built_from(&key.tier, None).await;
+                    pool.invalidate_bindings(Some(&key.tier)).await;
                 }
             }
         });
@@ -5697,7 +5746,7 @@ mod eviction_tests {
             last_active,
             is_first_turn: true,
             named_by_user: false,
-            config_generation: 0,
+            binding_stale: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             current_turn: None,
             idle: Arc::new(tokio::sync::Notify::new()),
             scripts: None,
@@ -5989,6 +6038,71 @@ mod mcp_for_project_tests {
             &pool.mcp_for_project(Some(pool.cwd()), "coding").await
         ));
         assert_eq!(pool.mcp_by_project.lock().await.len(), 1);
+    }
+
+    fn is_stale(binding: &ProjectBinding) -> bool {
+        binding.stale.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// A project's settings changing is that project's business: the other
+    /// projects' bindings, and the sessions built on them, stay as they are.
+    #[tokio::test]
+    async fn a_tier_change_invalidates_only_the_bindings_merged_from_it() {
+        use crate::watch_hub::Tier;
+        let (pool, dir) = test_pool().await;
+        let other = dir.path().join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        let own_coding = pool.binding_for(Some(pool.cwd()), "coding").await;
+        let own_chat = pool.binding_for(Some(pool.cwd()), "chat").await;
+        let other_coding = pool.binding_for(Some(&other), "coding").await;
+
+        pool.invalidate_bindings(Some(&Tier::Project(other.clone())))
+            .await;
+        assert!(is_stale(&other_coding));
+        assert!(!is_stale(&own_coding) && !is_stale(&own_chat));
+        assert!(Arc::ptr_eq(
+            &own_coding,
+            &pool.binding_for(Some(pool.cwd()), "coding").await
+        ));
+
+        pool.invalidate_bindings(Some(&Tier::Scene("chat".into())))
+            .await;
+        assert!(is_stale(&own_chat));
+        assert!(!is_stale(&own_coding));
+
+        pool.invalidate_bindings(Some(&Tier::Global)).await;
+        assert!(is_stale(&own_coding));
+        assert!(pool.bindings.lock().await.is_empty());
+    }
+
+    /// A skill file added after a binding was built shows up in the catalog
+    /// its sessions already hold, and nothing is marked for rebuilding.
+    #[tokio::test]
+    async fn a_skill_change_reloads_the_shared_catalog_in_place() {
+        use crate::watch_hub::{Tier, WatchTarget};
+        let (pool, _dir) = test_pool().await;
+        let binding = pool.binding_for(Some(pool.cwd()), "coding").await;
+        let skill_dir = pool.cwd().join(".agents").join("skills").join("late");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: late\ndescription: added after the binding was built\n---\nbody\n",
+        )
+        .unwrap();
+        assert!(binding.skills.get("late").is_none());
+
+        pool.refresh_catalogs(
+            &Tier::Project(pool.cwd().to_path_buf()),
+            WatchTarget::Skills,
+        )
+        .await;
+
+        assert!(binding.skills.get("late").is_some());
+        assert!(!is_stale(&binding));
+        assert!(Arc::ptr_eq(
+            &binding,
+            &pool.binding_for(Some(pool.cwd()), "coding").await
+        ));
     }
 }
 
