@@ -141,7 +141,7 @@ pub fn register_builtin_tools(reg: &std::sync::Arc<base::tool::InMemoryToolRegis
         Arc::new(crate::schedule_wakeup::ScheduleWakeupTool),
         Arc::new(crate::push_notification::PushNotificationTool),
         Arc::new(crate::ask_user::AskUserQuestionTool),
-        Arc::new(crate::structured_output::StructuredOutputTool),
+        Arc::new(crate::structured_output::StructuredOutputTool::default()),
     ];
     for t in simple {
         reg.register(t);

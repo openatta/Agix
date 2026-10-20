@@ -28,6 +28,7 @@ glob          = { workspace = true }
 globset       = { workspace = true }
 html2text     = { workspace = true }
 which         = { workspace = true }
+jsonschema    = { workspace = true }
 url           = { workspace = true }
 ignore        = { workspace = true }
 similar       = { workspace = true }

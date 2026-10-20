@@ -4107,6 +4107,7 @@ dependencies = [
  "globset",
  "html2text",
  "ignore",
+ "jsonschema",
  "libc",
  "mcp",
  "model",

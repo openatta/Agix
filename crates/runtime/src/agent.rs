@@ -1000,6 +1000,7 @@ pub struct Builder {
     parent_session_id: Option<String>,
     agent_type: Option<String>,
     skip_warmup: bool,
+    output_schema: Option<serde_json::Value>,
     /// Pre-built FrozenContext — skips lazy collection on first turn.
     /// When set, the Agent uses this snapshot instead of calling
     /// `FrozenContext::collect()`. Essential for deterministic replay.
@@ -1277,6 +1278,7 @@ impl Builder {
             agent_type: None,
             telemetry_handle_override: None,
             skip_warmup: false,
+            output_schema: None,
             frozen: None,
             wake_rx: None,
             plugin_host: None,
@@ -1706,6 +1708,16 @@ impl Builder {
     /// Essential for deterministic replay across runs.
     pub fn frozen(mut self, ctx: base::frozen::FrozenContext) -> Self {
         self.frozen = Some(ctx);
+        self
+    }
+
+    /// The JSON Schema this session's structured output must satisfy.
+    ///
+    /// `StructuredOutput` then shows the model this schema, refuses a call
+    /// that does not match it, and is announced up front rather than left
+    /// for `ToolSearch` to find. What it accepts arrives on `TurnComplete`.
+    pub fn output_schema(mut self, schema: serde_json::Value) -> Self {
+        self.output_schema = Some(schema);
         self
     }
 
@@ -2377,8 +2389,19 @@ impl Builder {
         // registry) is what keeps `ToolSearchTool` working: it closes over this
         // exact registry and reads it at call time, so a tool wrapped
         // underneath it stays discoverable.
+        let host_schema = self.output_schema.clone();
+        if let Some(schema) = &host_schema {
+            if tools.get("StructuredOutput").is_some() {
+                tools.replace(Arc::new(
+                    tools::structured_output::StructuredOutputTool::with_schema(schema.clone()),
+                ));
+            }
+        }
         {
-            let deferred = scene.deferred_tools();
+            let mut deferred = scene.deferred_tools();
+            if host_schema.is_some() {
+                deferred.retain(|n| n != "StructuredOutput");
+            }
             if !deferred.is_empty() {
                 for t in tools::deferred::apply_deferred_policy(tools.list(), &deferred) {
                     // `ToolSearch` must never be deferred — it is the only way

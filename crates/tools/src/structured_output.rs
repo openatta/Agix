@@ -15,7 +15,21 @@ pub struct StructuredOutputInput {
     pub payload: Value,
 }
 
-pub struct StructuredOutputTool;
+/// With a host schema, the model is shown that schema and a call that does
+/// not match it is refused, so the model can correct it and try again. A
+/// call that is accepted is handed to the session as the turn's result.
+#[derive(Default)]
+pub struct StructuredOutputTool {
+    schema: Option<Value>,
+}
+
+impl StructuredOutputTool {
+    pub fn with_schema(schema: Value) -> Self {
+        Self {
+            schema: Some(schema),
+        }
+    }
+}
 
 #[async_trait]
 impl Tool for StructuredOutputTool {
@@ -28,7 +42,12 @@ impl Tool for StructuredOutputTool {
     }
 
     fn input_schema(&self) -> Value {
-        serde_json::to_value(schemars::schema_for!(StructuredOutputInput)).expect("schema")
+        match &self.schema {
+            Some(schema) => schema.clone(),
+            None => {
+                serde_json::to_value(schemars::schema_for!(StructuredOutputInput)).expect("schema")
+            }
+        }
     }
 
     async fn prompt(&self, _: &PromptContext) -> String {
@@ -43,8 +62,41 @@ impl Tool for StructuredOutputTool {
         true
     }
 
-    async fn validate_input(&self, _: &Value, _: &ToolContext) -> ValidationResult {
-        ValidationResult::Ok
+    async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {
+        let Some(schema) = &self.schema else {
+            return ValidationResult::Ok;
+        };
+        let validator = match jsonschema::validator_for(schema) {
+            Ok(v) => v,
+            Err(e) => {
+                return ValidationResult::err(
+                    format!("the host's output schema is not a valid JSON Schema: {e}"),
+                    1,
+                )
+            }
+        };
+        let problems: Vec<String> = validator
+            .iter_errors(input)
+            .map(|e| {
+                let at = e.instance_path().to_string();
+                if at.is_empty() {
+                    e.to_string()
+                } else {
+                    format!("{at}: {e}")
+                }
+            })
+            .collect();
+        if problems.is_empty() {
+            ValidationResult::Ok
+        } else {
+            ValidationResult::err(
+                format!(
+                    "Output does not match the required schema:\n- {}",
+                    problems.join("\n- ")
+                ),
+                1,
+            )
+        }
     }
 
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
@@ -54,9 +106,10 @@ impl Tool for StructuredOutputTool {
     async fn call(
         &self,
         input: Value,
-        _: ToolContext,
+        ctx: ToolContext,
         _: ProgressSender,
     ) -> Result<ToolResult, ToolError> {
+        ctx.session.set_structured_output(input.clone());
         Ok(ToolResult {
             content: base::tool::ToolResultContent::Text(
                 "Structured output provided successfully".into(),

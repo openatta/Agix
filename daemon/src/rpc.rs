@@ -306,6 +306,9 @@ pub struct SessionOptions {
     /// is `None`.
     #[serde(default)]
     pub permission_rules: Vec<base::permission::PermissionRule>,
+    /// JSON Schema the session's structured output must satisfy — see
+    /// `runtime::agent::Builder::output_schema`.
+    pub output_schema: Option<serde_json::Value>,
 }
 
 /// Record or replay this session's LLM calls.

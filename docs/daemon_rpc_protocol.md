@@ -724,7 +724,8 @@ HashMap),客户端要按 `scene` 找条目,不要按下标。
     "permission_mode": "default",
     "permission_rules": [ ],
     "recorder": { "mode":"replay", "name":"…", "dir":"…", "strict":true },
-    "telemetry": { "output":"/abs/path.jsonl" } } }
+    "telemetry": { "output":"/abs/path.jsonl" },
+    "output_schema": { "type":"object", … } } }   // 结构化输出必须满足的 JSON Schema
 // ← result
 { "session_id": "…", "scene": "coding", "session_kind": "primary",
   "project_root": "…", "created_at": "…" }
@@ -739,6 +740,10 @@ HashMap),客户端要按 `scene` 找条目,不要按下标。
 
 `recorder.mode` 取 `record` / `replay` / `rerun`;`dir` 省略时用 daemon 自己的
 录制根目录。
+
+`output_schema` 给了,`StructuredOutput` 工具就以这份 schema 作为自己的参数格式直接
+宣告给模型(不再需要先 `ToolSearch`),不符合 schema 的调用以错误结果退回、模型可以
+改了再交;被接受的那一份出现在 `turn_complete` 的 `structured_output` 里(§7.2)。
 
 #### `session.run_turn`
 
@@ -1431,7 +1436,7 @@ RPC 出口。要看子 Agent 干了什么,走它的侧链会话:`session.list
 | `compact` | `{strategy,messages_before,messages_after,tokens_before,tokens_after,dropped_rounds?,dropped_messages?,estimated_tokens_saved?}` | 上下文被压缩了(§7.1) |
 | `user_message_delivered` | `{message_id,content}` | 运行中送来的消息(`on_busy:"steer"`)已加进对话,模型下一次调用会读到 |
 | `user_messages_returned` | `{messages:[{message_id,content}]}` | 运行中送来、但本轮结束前没读到的消息,不在 transcript 里,交还客户端 |
-| `turn_complete` | `{stop_reason,api_calls,tool_calls,usage,last_call_usage,context?,message?}` | 本轮结束,transcript 已落盘;最终响应随后到达 |
+| `turn_complete` | `{stop_reason,api_calls,tool_calls,usage,last_call_usage,context?,structured_output?,message?}` | 本轮结束,transcript 已落盘;最终响应随后到达 |
 | `error` | `{code,message}` | 本轮出错结束。只发给**发起这一轮之外**的订阅者 —— 发起者从 `run_turn` 的错误响应得知 |
 
 **这张表是白名单。** 引擎内部还有其它事件,但只有上面这些会被转成帧发出来。特别地:
@@ -1473,6 +1478,7 @@ RPC 出口。要看子 Agent 干了什么,走它的侧链会话:`session.list
   "usage":{…},                 // 本轮所有调用的合计
   "last_call_usage":{…},       // 本轮最后一次调用
   "context":{ "tokens":120000, "compact_threshold":150000, "window":200000 },
+  "structured_output":{…},     // 可选
   "message":"…" }              // 可选
 ```
 
@@ -1484,6 +1490,9 @@ RPC 出口。要看子 Agent 干了什么,走它的侧链会话:`session.list
 `turn_complete` 的 `usage` 是完整的四字段用量(§3.5),
 **是这一轮所有模型调用的合计**,不是最后一趟。一轮可能来回好几趟
 (`api_calls` 就是趟数),按最后一趟计费会少算——用它做预算的宿主尤其要看清这一点。
+
+`structured_output` 是本轮模型最后一次成功交给 `StructuredOutput` 的内容,会话带
+`output_schema` 时它一定满足那份 schema;本轮没有调用这个工具就没有这个键。
 
 `message` 只在截停这一轮的一方给了理由时出现 —— 比如 hook 返回的 `message`;`stop_reason` 此时是 `stopped_by_hook`。
 

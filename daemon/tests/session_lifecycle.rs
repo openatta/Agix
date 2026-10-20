@@ -4488,6 +4488,71 @@ async fn an_interrupted_turn_hands_back_a_steered_message_it_never_read() {
     srv.stop().await;
 }
 
+// ── structured output against a host schema ────────────────────────────
+
+#[tokio::test]
+async fn structured_output_is_checked_against_the_host_schema_and_returned_on_turn_complete() {
+    let (srv, seen) = start_scripted_server(
+        vec![
+            tool_round("StructuredOutput", "so-1", serde_json::json!({"wrong": 1})),
+            tool_round(
+                "StructuredOutput",
+                "so-2",
+                serde_json::json!({"answer": "42"}),
+            ),
+            text_round("done"),
+        ],
+        ask_settings_no_memory(),
+        Duration::ZERO,
+    )
+    .await;
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+        "additionalProperties": false
+    });
+    let (frames, response) = rpc_streaming(
+        &srv.sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.run_turn","params":{{"message":"answer in the format","options":{{"output_schema":{schema}}}}},"id":1}}"#
+        ),
+    )
+    .await;
+    assert!(response["result"].is_object(), "{response}");
+
+    let results = events_of_kind(&frames, "tool_result");
+    assert_eq!(results.len(), 2, "{frames:?}");
+    assert_eq!(results[0]["is_error"], true, "{results:?}");
+    assert!(
+        results[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("does not match the required schema"),
+        "{results:?}"
+    );
+    assert_eq!(results[1]["is_error"], false, "{results:?}");
+
+    let done = events_of_kind(&frames, "turn_complete");
+    assert_eq!(
+        done[0]["structured_output"],
+        serde_json::json!({"answer": "42"}),
+        "{done:?}"
+    );
+
+    let first = serde_json::to_value(&seen.lock().unwrap()[0]).unwrap();
+    let tool = first["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "StructuredOutput")
+        .expect("announced up front, not left for ToolSearch")
+        .clone();
+    assert_eq!(tool["input_schema"], schema, "{tool}");
+
+    srv.stop().await;
+}
+
 // ── session.compact / session.clear ─────────────────────────────────────
 
 #[tokio::test]

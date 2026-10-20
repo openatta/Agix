@@ -94,6 +94,8 @@ pub struct SessionState {
     read_cache: std::sync::Mutex<HashMap<PathBuf, FileReadEntry>>,
     /// **P (read dedup)**: 最近一次读取的文件路径，用于连续重复读取检测。
     last_read_path: std::sync::Mutex<Option<PathBuf>>,
+    /// What `StructuredOutput` last accepted in the current turn.
+    structured_output: std::sync::Mutex<Option<serde_json::Value>>,
 }
 
 /// **P1 (M30)**: 一条文件快照。把"工具改之前"的状态存下来，用于 `/rewind`。
@@ -220,6 +222,7 @@ impl SessionState {
             sandbox_allow_writes: std::sync::Mutex::new(Vec::new()),
             read_cache: std::sync::Mutex::new(HashMap::new()),
             last_read_path: std::sync::Mutex::new(None),
+            structured_output: std::sync::Mutex::new(None),
         }
     }
 
@@ -764,6 +767,20 @@ impl SessionState {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         last.as_ref().is_some_and(|p| p == path)
+    }
+
+    pub fn set_structured_output(&self, value: serde_json::Value) {
+        *self
+            .structured_output
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(value);
+    }
+
+    pub fn take_structured_output(&self) -> Option<serde_json::Value> {
+        self.structured_output
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
     }
 
     /// 当前已激活的 deferred 工具名（克隆 set；调用方只读）。

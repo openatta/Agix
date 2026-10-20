@@ -294,6 +294,7 @@ impl Agent {
         cancel: CancellationToken,
     ) -> Result<TurnOutcome, TurnError> {
         self.last_call_usage = None;
+        self.session_state.take_structured_output();
         crate::steering::lock(&self.steering).open();
         let outcome = self.run_user_turn_inner(content, attachments, cancel).await;
         let undelivered = crate::steering::lock(&self.steering).close();
@@ -363,6 +364,7 @@ impl Agent {
                 message: o.message.clone(),
                 last_call_usage: self.last_call_usage.unwrap_or_default(),
                 context: self.last_call_usage.map(|u| self.context_usage(u)),
+                structured_output: self.session_state.take_structured_output(),
             });
         }
         outcome

@@ -1894,6 +1894,9 @@ impl SessionPool {
             }
         }
 
+        if let Some(schema) = options.and_then(|o| o.output_schema.clone()) {
+            builder = builder.output_schema(schema);
+        }
         let (mut agent, event_rx, input_tx) =
             builder.build().map_err(|e| format!("build agent: {e}"))?;
 
@@ -2833,6 +2836,7 @@ impl SessionPool {
                     message,
                     last_call_usage,
                     context,
+                    structured_output,
                     ..
                 }) => {
                     api_calls = ac;
@@ -2855,6 +2859,9 @@ impl SessionPool {
                     }
                     if let Some(context) = context {
                         event["context"] = serde_json::json!(context);
+                    }
+                    if let Some(output) = structured_output {
+                        event["structured_output"] = output;
                     }
                     let f = StreamFrame::event(&sid, &turn_id, event);
                     self.broadcast_to_session(&sid, &f).await;

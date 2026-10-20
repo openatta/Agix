@@ -90,6 +90,10 @@ pub enum AgentEvent {
         /// How full the context is. `None` when the turn made no model call.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         context: Option<ContextUsage>,
+        /// What the model last handed to `StructuredOutput` in this turn —
+        /// validated against the host's schema when the session has one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        structured_output: Option<Value>,
     },
 
     /// A message the user sent while this turn was running is now part of
