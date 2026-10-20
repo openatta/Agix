@@ -1143,7 +1143,8 @@ impl SessionPool {
                 return;
             }
             let requested: std::collections::HashSet<String> = parsed.keys().cloned().collect();
-            let mut manager = McpManager::connect_all(parsed).await;
+            let env = pool.settings.read().await.sandbox.subprocess_env.clone();
+            let mut manager = McpManager::connect_all_with_env(parsed, env).await;
             // A server may have announced a tool change while this project's
             // manager was being built or reused. Acting on it here is what
             // keeps the announcement from being one more thing nobody reads.
@@ -1223,7 +1224,13 @@ impl SessionPool {
         }
 
         let requested: std::collections::HashSet<String> = parsed.keys().cloned().collect();
-        let manager = McpManager::connect_all(parsed).await;
+        let env = self
+            .settings_for_project(project_root, scene_id)
+            .await
+            .sandbox
+            .subprocess_env
+            .clone();
+        let manager = McpManager::connect_all_with_env(parsed, env).await;
         let statuses = manager.server_statuses();
         let connected: Vec<String> = statuses.iter().map(|s| s.name.clone()).collect();
         let connected_set: std::collections::HashSet<String> = connected.iter().cloned().collect();
@@ -1357,13 +1364,20 @@ impl SessionPool {
             Some(project_root.unwrap_or(self.cwd.as_path()).to_path_buf()),
             scene_id.to_string(),
         );
+        let env = self
+            .settings_for_project(target.0.as_deref(), scene_id)
+            .await
+            .sandbox
+            .subprocess_env
+            .clone();
         let statuses = {
             let mut cache = self.mcp_by_project.lock().await;
             let current = cache
                 .get(&target)
                 .cloned()
                 .unwrap_or_else(|| Arc::new(McpManager::empty()));
-            let mut updated = McpManager::from_clients(current.clients().to_vec());
+            let mut updated = McpManager::from_clients(current.clients().to_vec())
+                .with_subprocess_env(env.clone());
             updated.refresh_tools().await;
             updated.add_server(name, &cfg).await;
             let statuses = updated.server_statuses();
@@ -4810,7 +4824,9 @@ impl SessionPool {
                 }
             }
         }
-        let manager = Arc::new(McpManager::connect_all(parsed).await);
+        let manager = Arc::new(
+            McpManager::connect_all_with_env(parsed, settings.sandbox.subprocess_env.clone()).await,
+        );
         self.mcp_by_project
             .lock()
             .await

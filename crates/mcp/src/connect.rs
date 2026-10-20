@@ -70,6 +70,9 @@ pub struct StdioMcpClient {
     /// changed, so losing the sink here would silence the case that matters
     /// most.
     sink: Option<crate::notify::NotificationSink>,
+    /// The environment policy a stdio server's process starts under, kept
+    /// for the same reason: a reconnect must not start it under another.
+    env_policy: base::interface::exec::local::SubprocessEnv,
 }
 
 impl StdioMcpClient {
@@ -90,7 +93,24 @@ impl StdioMcpClient {
         config: &McpServerConfig,
         sink: Option<crate::notify::NotificationSink>,
     ) -> Result<Arc<Self>, McpError> {
-        let service = spawn_service(server_name, config, sink.clone()).await?;
+        Self::connect_with_env(
+            server_name,
+            config,
+            sink,
+            base::interface::exec::local::SubprocessEnv::default(),
+        )
+        .await
+    }
+
+    /// Connect, starting a stdio server's process under `env_policy` — the
+    /// `sandbox.subprocess_env` of the settings the server was declared in.
+    pub async fn connect_with_env(
+        server_name: &str,
+        config: &McpServerConfig,
+        sink: Option<crate::notify::NotificationSink>,
+        env_policy: base::interface::exec::local::SubprocessEnv,
+    ) -> Result<Arc<Self>, McpError> {
+        let service = spawn_service(server_name, config, sink.clone(), &env_policy).await?;
         let instructions = service
             .peer_info()
             .and_then(|info| info.instructions.clone())
@@ -103,6 +123,7 @@ impl StdioMcpClient {
             last_reconnect_at: Mutex::new(None),
             consecutive_failures: AtomicU32::new(0),
             sink,
+            env_policy,
         }))
     }
 
@@ -149,7 +170,14 @@ impl StdioMcpClient {
             let _ = old.cancel().await;
         }
 
-        match spawn_service(&self.server_name, &self.config, self.sink.clone()).await {
+        match spawn_service(
+            &self.server_name,
+            &self.config,
+            self.sink.clone(),
+            &self.env_policy,
+        )
+        .await
+        {
             Ok(new_svc) => {
                 *self.inner.lock().await = Some(new_svc);
                 self.consecutive_failures.store(0, Ordering::SeqCst);
@@ -448,6 +476,7 @@ async fn spawn_service(
     server_name: &str,
     config: &McpServerConfig,
     sink: Option<crate::notify::NotificationSink>,
+    env_policy: &base::interface::exec::local::SubprocessEnv,
 ) -> Result<
     rmcp::service::RunningService<rmcp::RoleClient, crate::notify::NotifyingHandler>,
     McpError,
@@ -467,7 +496,7 @@ async fn spawn_service(
                 .iter()
                 .map(|(k, v)| (k.clone(), crate::config::expand_env_vars(v)))
                 .collect();
-            spawn_stdio_service(server_name, &command, &args, &env, sink).await
+            spawn_stdio_service(server_name, &command, &args, &env, sink, env_policy).await
         }
         McpServerConfig::StreamableHttp {
             url,
@@ -536,6 +565,7 @@ async fn spawn_stdio_service(
     args: &[String],
     env: &std::collections::HashMap<String, String>,
     sink: Option<crate::notify::NotificationSink>,
+    env_policy: &base::interface::exec::local::SubprocessEnv,
 ) -> Result<
     rmcp::service::RunningService<rmcp::RoleClient, crate::notify::NotifyingHandler>,
     McpError,
@@ -544,7 +574,7 @@ async fn spawn_stdio_service(
     for a in args {
         cmd.arg(a);
     }
-    base::interface::exec::local::SubprocessEnv::default().apply(&mut cmd);
+    env_policy.apply(&mut cmd);
     for (k, v) in env {
         cmd.env(k, v);
     }
@@ -1043,6 +1073,43 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    /// A stdio server is a child process like any other, and starts under the
+    /// environment policy of the settings it was declared in.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stdio_server_starts_under_the_env_policy_it_was_given() {
+        use base::interface::exec::local::{SubprocessEnv, SubprocessEnvMode};
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("env.txt");
+        let cfg = McpServerConfig::Stdio {
+            command: "sh".into(),
+            args: vec!["-c".into(), format!("env > '{}'", out.display())],
+            env: HashMap::new(),
+            scope: None,
+        };
+        let policy = SubprocessEnv {
+            mode: SubprocessEnvMode::Allowlist,
+            allow: Vec::new(),
+        };
+        // The script answers no handshake, so the connect fails — after the
+        // process has run, which is all this needs.
+        let _ = StdioMcpClient::connect_with_env("probe", &cfg, None, policy).await;
+
+        let mut seen = String::new();
+        for _ in 0..100 {
+            seen = std::fs::read_to_string(&out).unwrap_or_default();
+            if seen.contains("PATH=") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(seen.contains("PATH="), "the server saw: {seen}");
+        assert!(
+            !seen.contains("CARGO_MANIFEST_DIR="),
+            "an allowlist policy passed the host's environment through: {seen}"
+        );
+    }
+
     #[test]
     fn is_transport_error_for_not_connected() {
         let e = McpError::NotConnected { name: "x".into() };
@@ -1150,6 +1217,7 @@ mod tests {
             last_reconnect_at: tokio::sync::Mutex::new(None),
             consecutive_failures: AtomicU32::new(0),
             sink: None,
+            env_policy: Default::default(),
         };
         assert_eq!(client.transport_kind(), "stdio");
     }
@@ -1169,6 +1237,7 @@ mod tests {
             last_reconnect_at: tokio::sync::Mutex::new(None),
             consecutive_failures: AtomicU32::new(0),
             sink: None,
+            env_policy: Default::default(),
         };
         assert_eq!(client.transport_kind(), "streamable_http");
     }
@@ -1193,6 +1262,7 @@ mod tests {
             last_reconnect_at: tokio::sync::Mutex::new(None),
             consecutive_failures: AtomicU32::new(0),
             sink: None,
+            env_policy: Default::default(),
         };
         let err = client
             .get_prompt("some-prompt", &HashMap::new())
@@ -1266,6 +1336,7 @@ mod tests {
             last_reconnect_at: tokio::sync::Mutex::new(None),
             consecutive_failures: AtomicU32::new(0),
             sink: None,
+            env_policy: Default::default(),
         };
         // 三次失败后 try_reconnect 应当 short-circuit NotConnected，不再 spawn
         let mut last_err = None;
@@ -1320,6 +1391,7 @@ mod tests {
             last_reconnect_at: tokio::sync::Mutex::new(None),
             consecutive_failures: AtomicU32::new(0),
             sink: None,
+            env_policy: Default::default(),
         };
         assert_eq!(client.transport_kind(), "web_socket");
     }
@@ -1339,6 +1411,7 @@ mod tests {
                 last_reconnect_at: tokio::sync::Mutex::new(None),
                 consecutive_failures: AtomicU32::new(0),
                 sink: None,
+                env_policy: Default::default(),
             }),
         };
         assert_eq!(client.transport_kind(), "web_socket");
@@ -1363,6 +1436,7 @@ mod tests {
                 last_reconnect_at: tokio::sync::Mutex::new(None),
                 consecutive_failures: AtomicU32::new(0),
                 sink: None,
+                env_policy: Default::default(),
             }),
         };
         // The inner StdioMcpClient would report "stdio",

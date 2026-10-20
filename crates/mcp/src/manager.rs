@@ -116,6 +116,8 @@ pub struct McpManager {
     /// already-built adapters too, which matters because `refresh_tools()`
     /// commonly runs before an embedder gets a chance to call it.
     elicitation_callback: Arc<Mutex<Option<ElicitationCallback>>>,
+    /// What a stdio server this manager starts gets for an environment.
+    subprocess_env: base::interface::exec::local::SubprocessEnv,
 }
 
 impl McpManager {
@@ -132,6 +134,7 @@ impl McpManager {
             tool_permissions: std::collections::HashMap::new(),
             output_cache: Arc::new(Mutex::new(McpOutputCache::new())),
             elicitation_callback: Arc::new(Mutex::new(None)),
+            subprocess_env: base::interface::exec::local::SubprocessEnv::default(),
         }
     }
 
@@ -217,7 +220,27 @@ impl McpManager {
     /// 使用并发连接——最多 3 个本地 stdio server 同时启动，远程 server 可更多。
     /// 单个 server 失败不整体失败 —— warn + skip。
     pub async fn connect_all(servers: HashMap<String, McpServerConfig>) -> Self {
-        Self::connect_all_impl(servers, None).await
+        Self::connect_all_impl(
+            servers,
+            None,
+            base::interface::exec::local::SubprocessEnv::default(),
+        )
+        .await
+    }
+
+    /// `connect_all`, with stdio servers started under `env` — the
+    /// `sandbox.subprocess_env` of the settings they were declared in.
+    pub async fn connect_all_with_env(
+        servers: HashMap<String, McpServerConfig>,
+        env: base::interface::exec::local::SubprocessEnv,
+    ) -> Self {
+        Self::connect_all_impl(servers, None, env).await
+    }
+
+    /// Start every stdio server this manager adds later under `env`.
+    pub fn with_subprocess_env(mut self, env: base::interface::exec::local::SubprocessEnv) -> Self {
+        self.subprocess_env = env;
+        self
     }
 
     /// 连所有 server，并传入一个 Optional 的 elicitation callback。
@@ -226,7 +249,12 @@ impl McpManager {
         servers: HashMap<String, McpServerConfig>,
         callback: ElicitationCallback,
     ) -> Self {
-        Self::connect_all_impl(servers, Some(callback)).await
+        Self::connect_all_impl(
+            servers,
+            Some(callback),
+            base::interface::exec::local::SubprocessEnv::default(),
+        )
+        .await
     }
 
     /// Internal implementation shared by `connect_all` and
@@ -234,6 +262,7 @@ impl McpManager {
     async fn connect_all_impl(
         servers: HashMap<String, McpServerConfig>,
         elicitation_cb: Option<ElicitationCallback>,
+        subprocess_env: base::interface::exec::local::SubprocessEnv,
     ) -> Self {
         // Shared cell (see the field doc comment on `elicitation_callback`)
         // threaded through every spawned connect task and every adapter it
@@ -284,6 +313,7 @@ impl McpManager {
             let cache_for_spawn = cache.clone();
             let cell_for_spawn = elicitation_cell.clone();
             let queue_for_spawn = notifications.clone();
+            let env_for_spawn = subprocess_env.clone();
             set.spawn(async move {
                 match Self::connect_with_retry(
                     &name,
@@ -291,6 +321,7 @@ impl McpManager {
                     cache_for_spawn,
                     cell_for_spawn,
                     queue_for_spawn,
+                    &env_for_spawn,
                 )
                 .await
                 {
@@ -319,6 +350,7 @@ impl McpManager {
             tool_permissions: std::collections::HashMap::new(),
             output_cache: cache,
             elicitation_callback: elicitation_cell,
+            subprocess_env,
         };
         // Collect MCP prompts from connected servers (non-blocking: fail silently)
         manager.collect_prompts().await
@@ -374,10 +406,16 @@ impl McpManager {
         cache: Arc<Mutex<McpOutputCache>>,
         elicitation_cell: Arc<Mutex<Option<ElicitationCallback>>>,
         notifications: Arc<crate::notify::NotificationQueue>,
+        subprocess_env: &base::interface::exec::local::SubprocessEnv,
     ) -> Result<(McpClientHandle, Vec<Arc<dyn Tool>>), McpError> {
         // StdioMcpClient 现在支持 stdio + streamable_http 两种 config（spawn_service 里分派）
-        let client =
-            StdioMcpClient::connect_with_sink(name, cfg, Some(notifications.sink())).await?;
+        let client = StdioMcpClient::connect_with_env(
+            name,
+            cfg,
+            Some(notifications.sink()),
+            subprocess_env.clone(),
+        )
+        .await?;
         let tools = client.list_tools().await?;
         let handle: McpClientHandle = client;
         let adapters: Vec<Arc<dyn Tool>> = tools
@@ -399,6 +437,7 @@ impl McpManager {
         cache: Arc<Mutex<McpOutputCache>>,
         elicitation_cell: Arc<Mutex<Option<ElicitationCallback>>>,
         notifications: Arc<crate::notify::NotificationQueue>,
+        subprocess_env: &base::interface::exec::local::SubprocessEnv,
     ) -> Result<(McpClientHandle, Vec<Arc<dyn Tool>>), McpError> {
         const MAX_RETRIES: u32 = 5;
         const INITIAL_DELAY_MS: u64 = 1_000;
@@ -412,6 +451,7 @@ impl McpManager {
                 cache.clone(),
                 elicitation_cell.clone(),
                 notifications.clone(),
+                subprocess_env,
             )
             .await
             {
@@ -464,6 +504,7 @@ impl McpManager {
             self.output_cache.clone(),
             cb,
             self.notifications.clone(),
+            &self.subprocess_env,
         )
         .await
         {
@@ -497,6 +538,7 @@ impl McpManager {
             tool_permissions: std::collections::HashMap::new(),
             output_cache: Arc::new(Mutex::new(McpOutputCache::new())),
             elicitation_callback: Arc::new(Mutex::new(None)),
+            subprocess_env: base::interface::exec::local::SubprocessEnv::default(),
         }
     }
 

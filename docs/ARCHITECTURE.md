@@ -233,8 +233,8 @@ MCP 连接、脚本绑定的 root、记忆目录、transcript 目录。
 5. **子进程的环境只在一处决定。** `base::interface::exec::local::SubprocessEnv`:缺省
    继承宿主环境但去掉引擎自己的凭据(`ANTHROPIC_*`、`ATTACORE_DAEMON_TOKEN`),
    `allowlist` 模式只留 `PATH` / `HOME` / 语言环境等几项加上 `allow` 列出的。Bash、
-   Monitor 与 command hook 按 `sandbox.subprocess_env` 取策略,MCP stdio 用缺省策略再叠
-   各服务自己的 `env`。这和沙箱无关——沙箱关着,模型一句 `printenv` 读到什么也由它决定。
+   Monitor、command hook 与 MCP stdio 服务都按 `sandbox.subprocess_env` 取策略——MCP
+   服务取的是声明它的那份设置(daemon 按项目、scene 建连),再叠各服务自己的 `env`。这和沙箱无关——沙箱关着,模型一句 `printenv` 读到什么也由它决定。
 
 沙箱是**轻量写限制,不是安全隔离**。已知逃逸路径写在
 `crates/core/src/interface/exec/local/sandbox.rs` 的模块头里,四条,都还没收口。
