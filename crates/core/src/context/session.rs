@@ -547,6 +547,25 @@ impl SessionState {
         None
     }
 
+    /// 在一次加锁里读改整张任务表：先读后写的调用（比如「找不到才插入」）
+    /// 不会被同一会话里并发的工具调用插进来。
+    pub fn with_tasks<T, R>(&self, f: impl FnOnce(&mut Vec<T>) -> R) -> R
+    where
+        T: serde::Serialize + serde::de::DeserializeOwned,
+    {
+        let mut slot = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
+        let mut typed: Vec<T> = slot
+            .iter()
+            .filter_map(|v| serde_json::from_value(v.clone()).ok())
+            .collect();
+        let out = f(&mut typed);
+        *slot = typed
+            .iter()
+            .filter_map(|t| serde_json::to_value(t).ok())
+            .collect();
+        out
+    }
+
     /// Builder：设初始权限模式（CLI 启动时从 settings/CLI 注入）。
     pub fn with_permission_mode(self, mode: PermissionMode) -> Self {
         *self

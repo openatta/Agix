@@ -5,16 +5,9 @@
 //! - Task 族有稳定 ID + subject + description + activeForm + 创建/更新时间；
 //!   适合"派发给 sub-agent + 长时间追踪"的场景
 //!
-//! State stored in static OnceLock<Mutex<HashMap<session_id, Vec<TaskEntry>>>>
-//! (in-memory, cross-turn, per-session).
-//!
-//! **Session isolation**: keyed by `ToolContext::session_id` — was a single
-//! process-wide `Vec` (no isolation at all: every daemon session, every
-//! team, shared one task list) until this was scoped. Still process-lifetime
-//! only (no cross-restart persistence) and still a single flat list per
-//! session (no further per-team subdivision within a session) — a team
-//! member's `owner` field is a plain string convention, not a structurally
-//! enforced boundary.
+//! 任务表存在本会话的 `SessionState` 上（`ToolContext::session`）：会话之间、
+//! 同一进程里的几个会话池之间都互不可见，会话结束就随之释放。只在内存里，
+//! 不跨重启。一个会话一张平铺的表：团队成员的 `owner` 字段只是约定，不是边界。
 
 use async_trait::async_trait;
 use base::error::ToolError;
@@ -25,27 +18,16 @@ use base::tool::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
-use std::sync::Mutex;
-use std::sync::OnceLock;
+use base::context::SessionState;
 
-/// Shared in-process task store, one task list per session.
-static TASK_STORE: OnceLock<Mutex<HashMap<String, Vec<TaskEntry>>>> = OnceLock::new();
-
-fn task_store() -> &'static Mutex<HashMap<String, Vec<TaskEntry>>> {
-    TASK_STORE.get_or_init(|| Mutex::new(HashMap::new()))
+/// Callers that need to read then write should do both inside one `f`, not
+/// two separate calls.
+fn with_session_tasks<R>(session: &SessionState, f: impl FnOnce(&mut Vec<TaskEntry>) -> R) -> R {
+    session.with_tasks(f)
 }
 
-/// Run `f` against the given session's task list, creating an empty one on
-/// first use. Single lock acquisition per call — callers that need to read
-/// then write should do both inside one `f`, not two separate calls.
-fn with_session_tasks<R>(session_id: &str, f: impl FnOnce(&mut Vec<TaskEntry>) -> R) -> R {
-    let mut store = task_store().lock().unwrap_or_else(|e| e.into_inner());
-    f(store.entry(session_id.to_string()).or_default())
-}
-
-fn remove_task_from_store(session_id: &str, task_id: &str) -> bool {
-    with_session_tasks(session_id, |tasks| {
+fn remove_task_from_store(session: &SessionState, task_id: &str) -> bool {
+    with_session_tasks(session, |tasks| {
         if let Some(pos) = tasks.iter().position(|t| t.id == task_id) {
             tasks.remove(pos);
             true
@@ -56,11 +38,11 @@ fn remove_task_from_store(session_id: &str, task_id: &str) -> bool {
 }
 
 fn update_task_in_store(
-    session_id: &str,
+    session: &SessionState,
     task_id: &str,
     f: impl FnOnce(&mut TaskEntry),
 ) -> Option<TaskEntry> {
-    with_session_tasks(session_id, |tasks| {
+    with_session_tasks(session, |tasks| {
         if let Some(t) = tasks.iter_mut().find(|t| t.id == task_id) {
             f(t);
             Some(t.clone())
@@ -235,7 +217,7 @@ impl Tool for TaskCreateTool {
             created_at: now,
             updated_at: now,
         };
-        with_session_tasks(&ctx.session_id, |tasks| tasks.push(entry.clone()));
+        with_session_tasks(&ctx.session, |tasks| tasks.push(entry.clone()));
         Ok(ToolResult {
             content: base::tool::ToolResultContent::Text(format!(
                 "Task created: id={} subject={}",
@@ -301,7 +283,7 @@ impl Tool for TaskGetTool {
         _: ProgressSender,
     ) -> Result<ToolResult, ToolError> {
         let input: TaskGetInput = serde_json::from_value(input)?;
-        let task: Option<TaskEntry> = with_session_tasks(&ctx.session_id, |tasks| {
+        let task: Option<TaskEntry> = with_session_tasks(&ctx.session, |tasks| {
             tasks.iter().find(|t| t.id == input.task_id).cloned()
         });
         match task {
@@ -376,7 +358,7 @@ impl Tool for TaskListTool {
         _: ProgressSender,
     ) -> Result<ToolResult, ToolError> {
         let input: TaskListInput = serde_json::from_value(input).unwrap_or_default();
-        let all: Vec<TaskEntry> = with_session_tasks(&ctx.session_id, |tasks| tasks.clone());
+        let all: Vec<TaskEntry> = with_session_tasks(&ctx.session, |tasks| tasks.clone());
         let filtered: Vec<TaskEntry> = match input.status {
             Some(s) => all.into_iter().filter(|t| t.status == s).collect(),
             None => all,
@@ -484,11 +466,11 @@ impl Tool for TaskUpdateTool {
 
         // Blocking check: when transitioning to InProgress, verify blockers are resolved
         if matches!(input.status, Some(TaskStatus::InProgress)) {
-            if let Some(task) = with_session_tasks(&ctx.session_id, |tasks| {
+            if let Some(task) = with_session_tasks(&ctx.session, |tasks| {
                 tasks.iter().find(|t| t.id == input.task_id).cloned()
             }) {
                 if !task.blocked_by.is_empty() {
-                    let all_tasks = with_session_tasks(&ctx.session_id, |tasks| tasks.clone());
+                    let all_tasks = with_session_tasks(&ctx.session, |tasks| tasks.clone());
                     let unresolved: Vec<String> = task
                         .blocked_by
                         .into_iter()
@@ -519,7 +501,7 @@ impl Tool for TaskUpdateTool {
 
         // Handle Deleted status specially: remove from store
         if matches!(input.status, Some(TaskStatus::Deleted)) {
-            let removed = remove_task_from_store(&ctx.session_id, &input.task_id);
+            let removed = remove_task_from_store(&ctx.session, &input.task_id);
             match removed {
                 true => Ok(ToolResult {
                     content: base::tool::ToolResultContent::Text(format!(
@@ -544,7 +526,7 @@ impl Tool for TaskUpdateTool {
             }
         } else {
             let updated: Option<TaskEntry> =
-                update_task_in_store(&ctx.session_id, &input.task_id, |t: &mut TaskEntry| {
+                update_task_in_store(&ctx.session, &input.task_id, |t: &mut TaskEntry| {
                     if let Some(s) = input.status {
                         t.status = s;
                     }
@@ -674,7 +656,7 @@ impl Tool for TaskStopTool {
 
         // 否则走 declarative task 路径
         let updated: Option<TaskEntry> =
-            update_task_in_store(&ctx.session_id, &input.task_id, |t: &mut TaskEntry| {
+            update_task_in_store(&ctx.session, &input.task_id, |t: &mut TaskEntry| {
                 t.status = TaskStatus::Cancelled;
                 t.updated_at = now_secs();
             });
@@ -714,13 +696,9 @@ mod tests {
         ctx
     }
 
-    /// Regression: `task_store()` used to be one flat `Vec` shared by the
-    /// whole process — every daemon session, every team, saw every other
-    /// one's tasks. Two different `session_id`s must now get independent
-    /// task lists: creating a task under session "a" must not be visible to
-    /// `TaskList` running under session "b".
     #[tokio::test]
-    async fn task_lists_are_isolated_by_session_id() {
+    async fn task_lists_are_isolated_by_session() {
+        let session_a = ctx_for("session-a");
         let create_input = serde_json::json!({
             "subject": "only in session a",
             "description": "d",
@@ -728,7 +706,7 @@ mod tests {
         TaskCreateTool
             .call(
                 create_input,
-                ctx_for("session-a"),
+                session_a.clone(),
                 ProgressSender::noop("t"),
             )
             .await
@@ -737,7 +715,7 @@ mod tests {
         let list_a = TaskListTool
             .call(
                 serde_json::json!({}),
-                ctx_for("session-a"),
+                session_a.clone(),
                 ProgressSender::noop("t"),
             )
             .await

@@ -1,7 +1,7 @@
 //! TodoWriteTool —— "TodoWrite"。
 //!
 //! 模型自己维护一份 todo 列表，跨 turn 持续。每次 call 一次性替换整个列表。
-//! 状态存储在 static OnceLock<Mutex<Vec<TodoItem>>> 中；用户用 `/tasks` slash 查看。
+//! 列表存在本会话的 `SessionState` 上（`ToolContext::session`），会话之间互不可见。
 
 use async_trait::async_trait;
 use base::context::TodoStatus;
@@ -13,19 +13,6 @@ use base::tool::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::Mutex;
-use std::sync::OnceLock;
-
-/// Shared in-process todo store (cross-turn persistence is handled by session
-/// serialization at the CLI layer).
-///
-/// **Session isolation**: This is process-wide. The agent crate is
-/// single-session-per-process; multi-session would need an owned store per session.
-static TODO_STORE: OnceLock<Mutex<Vec<TodoItem>>> = OnceLock::new();
-
-fn todo_store() -> &'static Mutex<Vec<TodoItem>> {
-    TODO_STORE.get_or_init(|| Mutex::new(Vec::new()))
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TodoItem {
@@ -112,13 +99,23 @@ impl Tool for TodoWriteTool {
     async fn call(
         &self,
         input: Value,
-        _ctx: ToolContext,
+        ctx: ToolContext,
         _progress: ProgressSender,
     ) -> Result<ToolResult, ToolError> {
         let input: TodoWriteInput = serde_json::from_value(input)?;
         let total = input.todos.len();
         let (p, i, c) = count_by_status(&input.todos);
-        *todo_store().lock().unwrap() = input.todos;
+        ctx.session.set_todos(
+            input
+                .todos
+                .into_iter()
+                .map(|t| base::context::TodoItem {
+                    content: t.content,
+                    status: t.status,
+                    active_form: t.active_form,
+                })
+                .collect(),
+        );
         Ok(ToolResult::text(format!(
             "{total} todos: {c} completed, {i} in_progress, {p} pending"
         )))
@@ -139,11 +136,6 @@ fn count_by_status(todos: &[TodoItem]) -> (usize, usize, usize) {
     (pending, in_progress, completed)
 }
 
-/// Read-only accessor for external consumers (e.g. `/tasks` slash command).
-pub fn read_todos() -> Vec<TodoItem> {
-    todo_store().lock().unwrap().clone()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,32 +146,26 @@ mod tests {
         ToolContext::for_test(PathBuf::from("/tmp"))
     }
 
-    /// `TODO_STORE` is one `static` for the whole process, and cargo runs a
-    /// crate's tests as threads in one process. Every test that writes it and
-    /// reads it back has to hold this, or it reads what a sibling wrote.
-    static STORE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-    async fn exclusive() -> tokio::sync::MutexGuard<'static, ()> {
-        STORE.lock().await
+    async fn write(tool: &TodoWriteTool, ctx: &ToolContext, todos: Value) -> ToolResult {
+        tool.call(json!({ "todos": todos }), ctx.clone(), ProgressSender::noop("t"))
+            .await
+            .unwrap()
     }
 
     #[tokio::test]
     async fn writes_todos() {
-        let _guard = exclusive().await;
-        let tool = TodoWriteTool;
-        let r = tool
-            .call(
-                json!({"todos": [
-                    {"content": "do A", "status": "pending", "active_form": "doing A"},
-                    {"content": "do B", "status": "in_progress", "active_form": "Doing B"},
-                ]}),
-                ctx(),
-                ProgressSender::noop("t"),
-            )
-            .await
-            .unwrap();
+        let ctx = ctx();
+        let r = write(
+            &TodoWriteTool,
+            &ctx,
+            json!([
+                {"content": "do A", "status": "pending", "active_form": "doing A"},
+                {"content": "do B", "status": "in_progress", "active_form": "Doing B"},
+            ]),
+        )
+        .await;
         assert!(!r.is_error);
-        let stored = read_todos();
+        let stored = ctx.session.todos();
         assert_eq!(stored.len(), 2);
         assert_eq!(stored[1].status, TodoStatus::InProgress);
         assert_eq!(stored[1].active_form, "Doing B");
@@ -187,39 +173,33 @@ mod tests {
 
     #[tokio::test]
     async fn replaces_entire_list() {
-        let _guard = exclusive().await;
-        // Seed the store
-        *todo_store().lock().unwrap() = vec![TodoItem {
-            content: "old".into(),
-            status: TodoStatus::Pending,
-            active_form: "old".into(),
-        }];
-        let tool = TodoWriteTool;
-        tool.call(
-            json!({"todos": [{"content": "new", "status": "pending", "active_form": "doing new"}]}),
-            ctx(),
-            ProgressSender::noop("t"),
+        let ctx = ctx();
+        write(&TodoWriteTool, &ctx, json!([{"content": "old", "status": "pending"}])).await;
+        write(
+            &TodoWriteTool,
+            &ctx,
+            json!([{"content": "new", "status": "pending", "active_form": "doing new"}]),
         )
-        .await
-        .unwrap();
-        let stored = read_todos();
+        .await;
+        let stored = ctx.session.todos();
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].content, "new");
     }
 
     #[tokio::test]
     async fn empty_list_clears_todos() {
-        let _guard = exclusive().await;
-        *todo_store().lock().unwrap() = vec![TodoItem {
-            content: "x".into(),
-            status: TodoStatus::Pending,
-            active_form: "x".into(),
-        }];
-        let tool = TodoWriteTool;
-        tool.call(json!({"todos": []}), ctx(), ProgressSender::noop("t"))
-            .await
-            .unwrap();
-        assert!(read_todos().is_empty());
+        let ctx = ctx();
+        write(&TodoWriteTool, &ctx, json!([{"content": "x", "status": "pending"}])).await;
+        write(&TodoWriteTool, &ctx, json!([])).await;
+        assert!(ctx.session.todos().is_empty());
+    }
+
+    #[tokio::test]
+    async fn sessions_do_not_see_each_others_todos() {
+        let (a, b) = (ctx(), ctx());
+        write(&TodoWriteTool, &a, json!([{"content": "only a", "status": "pending"}])).await;
+        assert_eq!(a.session.todos().len(), 1);
+        assert!(b.session.todos().is_empty());
     }
 
     #[tokio::test]
@@ -257,7 +237,6 @@ mod tests {
 
     #[tokio::test]
     async fn returns_summary() {
-        let _guard = exclusive().await;
         let tool = TodoWriteTool;
         let r = tool
             .call(
