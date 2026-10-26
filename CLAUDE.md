@@ -58,11 +58,11 @@
 
 **每次推送到远程就是一次发布，必须带版本标签。**
 
-版本标识的形式是 `AttaCore-v<x.y.z>-<YYYYMMDD><NN>`，例如 `AttaCore-v0.2.6-2026102001`：
+版本标识的形式是 `Agix-v<x.y.z>-<YYYYMMDD><NN>`，例如 `Agix-v0.2.6-2026102001`：
 
 - `x.y.z`：每次发布 `z` 加 1；`x`、`y` 的升级另行决定。
 - `YYYYMMDD`：发布当天的日期。
-- `NN`：当天第几次发布，从 `01` 起。用 `git tag -l 'AttaCore-v*-<YYYYMMDD>*'` 查当天已有的标签，取最大序号加 1。
+- `NN`：当天第几次发布，从 `01` 起。用 `git tag -l 'Agix-v*-<YYYYMMDD>*'` 查当天已有的标签，取最大序号加 1。
 
 `Cargo.toml` 的 `[workspace.package] version` 写成 `x.y.z-YYYYMMDDNN`，不带程序名前缀——Cargo 不接受前缀，而 `CARGO_PKG_VERSION`（`daemon.status` 等处报出的版本）就取这一段。
 
