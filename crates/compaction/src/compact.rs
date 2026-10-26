@@ -230,7 +230,6 @@ pub trait Compactor: Send + Sync {
             return ReactiveOutcome::NoEffect;
         }
         *messages = compacted;
-        crate::cleanup::run_cleanup_callbacks();
         ReactiveOutcome::Compacted
     }
 

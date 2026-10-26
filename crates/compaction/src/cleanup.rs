@@ -5,13 +5,8 @@
 //! - Session memory (re-extract from MemoryStore)
 //! - Active plan (if one exists)
 //! - Deferred tool listings (if ToolSearch was used)
-//!
-//! v2: Post-compact cache clearing callback mechanism.
-//! Consumers (e.g. runtime) can register cleanup callbacks that fire after
-//! each successful compaction, to clear whatever internal caches they maintain.
 
 use base::interface::model::{MessageRole, ModelContentBlock, ModelMessage};
-use std::sync::Mutex;
 
 /// Result of post-compact cleanup: messages to inject into the session.
 #[derive(Debug, Clone, Default)]
@@ -22,29 +17,6 @@ pub struct PostCompactContext {
     pub skills_text: Option<String>,
     /// Whether skills were re-injected.
     pub skills_reinjected: bool,
-}
-
-/// Global registry of post-compact cleanup callbacks.
-/// Each callback is called after a successful compaction to clear caches.
-#[allow(clippy::type_complexity)]
-static CLEANUP_CALLBACKS: std::sync::LazyLock<Mutex<Vec<Box<dyn Fn() + Send + Sync>>>> =
-    std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
-
-/// Register a cleanup callback that will fire after each successful compaction.
-pub fn register_cleanup_callback(cb: Box<dyn Fn() + Send + Sync>) {
-    if let Ok(mut guard) = CLEANUP_CALLBACKS.lock() {
-        guard.push(cb);
-    }
-}
-
-/// Run all registered post-compact cleanup callbacks.
-/// Called after a successful compaction.
-pub fn run_cleanup_callbacks() {
-    if let Ok(guard) = CLEANUP_CALLBACKS.lock() {
-        for cb in guard.iter() {
-            cb();
-        }
-    }
 }
 
 /// Build post-compact injection messages.

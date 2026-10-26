@@ -5,21 +5,10 @@
 //!
 //! ## Name-collision cleanup
 //!
-//! This module used to also define `TaskOutputTool` ("TaskOutput") and
-//! `ConfigTool` ("Config"), each duplicating the *name* of a tool defined
-//! elsewhere in this crate. Tool names are the model-visible identity and
-//! `InMemoryToolRegistry::get` returns the first match, so two types claiming
-//! one name is a latent "which one did dispatch actually reach?" bug. One
-//! survivor was picked per name and the loser deleted:
-//!
-//! - **TaskOutput** → [`crate::task_output::TaskOutputTool`] wins. It is the
-//!   one `Builder::build()` actually registers, and it is a superset —
-//!   `block` plus `timeout` polling until the task completes — versus this
-//!   module's single non-blocking peek.
-//! - **Config** → [`crate::config::ConfigTool`] wins. It supports get *and*
-//!   set against a live settings store, versus this module's read-only view
-//!   over a JSON snapshot that had to be injected at construction time (and
-//!   never was — nothing ever called `ConfigTool::new`).
+//! Tool names are the model-visible identity and `InMemoryToolRegistry::get`
+//! returns the first match, so this module defines no tool whose name another
+//! module in this crate already uses — `TaskOutput` in particular is
+//! [`crate::task_output::TaskOutputTool`].
 
 use crate::exec_capture::capture;
 use async_trait::async_trait;

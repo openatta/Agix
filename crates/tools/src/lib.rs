@@ -4,7 +4,6 @@ pub mod aliases;
 pub mod ask_user;
 pub mod bash;
 pub mod cancel;
-pub mod config;
 pub mod cron;
 pub mod deferred;
 mod exec_capture;
