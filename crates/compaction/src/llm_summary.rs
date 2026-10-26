@@ -85,7 +85,7 @@ pub const COMPACTED_CONTEXT_CLOSE: &str = "</compacted-context>";
 /// A fixed set of headings the model must fill in, rather than a free-form
 /// "summarize this" — a fixed shape is what makes the output usable as a
 /// handoff instead of a paraphrase. The headings are adapted to this codebase: §8 covers the
-/// skill / deferred-tool / background-task state that AttaCore's post-compact
+/// skill / deferred-tool / background-task state that Agix's post-compact
 /// recovery also re-attaches, so the summary and the recovery attachments
 /// describe the same world.
 const SUMMARY_PROMPT: &str = "\

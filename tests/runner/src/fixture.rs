@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-/// `tests/fixtures/template_project/.atta/settings.json` 里 `mcp_servers.demo.command`
+/// `tests/fixtures/template_project/.agix/settings.json` 里 `mcp_servers.demo.command`
 /// 的占位符——fixture 会被拷贝到随机临时目录运行，没法在提交的文件里写死绝对路径。
 const MCP_TOY_SERVER_PLACEHOLDER: &str = "{{MCP_TOY_SERVER_BIN}}";
 
@@ -25,11 +25,11 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 拷贝完 fixture 之后调用：把 `.atta/settings.json` 里的 `{{MCP_TOY_SERVER_BIN}}`
+/// 拷贝完 fixture 之后调用：把 `.agix/settings.json` 里的 `{{MCP_TOY_SERVER_BIN}}`
 /// 占位符换成 `mcp-toy-server` 真实编译出来的绝对路径（没编译过会先编译一次）。
 /// 占位符不存在（fixture 没用到 mcp-toy-server，或本来就不含 mcp_servers）时是 no-op。
 pub fn resolve_mcp_toy_server_placeholder(workdir: &Path) -> anyhow::Result<()> {
-    let settings_path = workdir.join(".atta").join("settings.json");
+    let settings_path = workdir.join(".agix").join("settings.json");
     let content = match std::fs::read_to_string(&settings_path) {
         Ok(c) => c,
         Err(_) => return Ok(()),

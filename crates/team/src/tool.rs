@@ -22,7 +22,7 @@ use std::sync::Arc;
 const TEAM_NAME_MAX_LEN: usize = 128;
 
 /// `name` is later spliced verbatim into `team_id` (`format!("team-{name}-…")`)
-/// and then `join`ed onto `.atta/teams/` to form the team's directory — so it
+/// and then `join`ed onto `.agix/teams/` to form the team's directory — so it
 /// must not be able to escape that directory. Allowlisting a safe character
 /// set (rather than denylisting `/`, `\`, `..`) also rules out things like
 /// embedded null bytes or leading/trailing whitespace without naming them

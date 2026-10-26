@@ -143,17 +143,17 @@ pub struct PermissionRule {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub enum RuleSource {
-    /// `~/.atta/scenes/<scope>/settings.json`
+    /// `~/.agix/scenes/<scope>/settings.json`
     UserSettings,
-    /// `<git-root>/.atta/settings.json`
+    /// `<git-root>/.agix/settings.json`
     ProjectSettings,
-    /// `<git-root>/.atta/settings.local.json`
+    /// `<git-root>/.agix/settings.local.json`
     LocalSettings,
     /// CLI flag (`--permission-mode`, `--allow-tool` 等)
     CliArg,
     /// 会话内通过 `/permissions` 命令设置
     Session,
-    /// 来自 attacode-managed-settings
+    /// 来自 agix-managed-settings
     PolicySettings,
     /// 由命令展开时临时注入
     Command,

@@ -34,8 +34,8 @@ pub fn search_near_executable(relatives: &[&str]) -> Option<PathBuf> {
 /// Find a companion executable this build needs but does not contain.
 ///
 /// The environment variable is named rather than derived from `name`: every
-/// one of these tools is already called `atta-something`, so deriving it
-/// produced `ATTA_ATTA_PLUGIN_COMPILE` and nothing anyone was told to set
+/// one of these tools is already called `agix-something`, so deriving it
+/// produced `AGIX_AGIX_PLUGIN_COMPILE` and nothing anyone was told to set
 /// was ever read.
 pub fn locate_tool(name: &str, var: &str) -> Option<PathBuf> {
     if let Ok(p) = std::env::var(var) {

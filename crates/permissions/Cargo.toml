@@ -5,7 +5,7 @@ edition      = { workspace = true }
 rust-version = { workspace = true }
 license      = { workspace = true }
 publish      = false
-description  = "AttaCore — permission engine (rule matching, mode dispatch, path safety)"
+description  = "Agix — permission engine (rule matching, mode dispatch, path safety)"
 
 [dependencies]
 base          = { workspace = true }

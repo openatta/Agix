@@ -874,7 +874,7 @@ pub fn extract_recent_reads(messages: &[ModelMessage]) -> Vec<(String, String)> 
 ///
 /// Returns the number of tool results that were modified.
 /// Replace image blocks with `[image]` text markers before LLM compaction.
-/// Note: AttaCore's `ModelContentBlock` currently has no `Image` variant — this
+/// Note: Agix's `ModelContentBlock` currently has no `Image` variant — this
 /// function is a forward-compat stub. When image support is added, it will
 /// strip them before compaction.
 pub fn strip_images_from_messages(messages: &mut [ModelMessage]) {

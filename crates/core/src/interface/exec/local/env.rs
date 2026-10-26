@@ -77,7 +77,7 @@ const BASELINE: &[&str] = &[
 /// bearer token.
 pub fn is_engine_credential(name: &OsStr) -> bool {
     let name = name.to_string_lossy();
-    name.starts_with("ANTHROPIC_") || name == "ATTACORE_DAEMON_TOKEN"
+    name.starts_with("ANTHROPIC_") || name == "AGIX_DAEMON_TOKEN"
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -132,7 +132,7 @@ mod tests {
             ("HOME", "/home/u"),
             ("ANTHROPIC_API_KEY", "sk-canary"),
             ("ANTHROPIC_BASE_URL", "https://example"),
-            ("ATTACORE_DAEMON_TOKEN", "t"),
+            ("AGIX_DAEMON_TOKEN", "t"),
             ("GITHUB_TOKEN", "gh"),
             ("SSH_AUTH_SOCK", "/tmp/agent"),
         ]
@@ -159,9 +159,9 @@ mod tests {
         assert_eq!(
             names(plan),
             [
+                "AGIX_DAEMON_TOKEN",
                 "ANTHROPIC_API_KEY",
-                "ANTHROPIC_BASE_URL",
-                "ATTACORE_DAEMON_TOKEN"
+                "ANTHROPIC_BASE_URL"
             ]
         );
     }
@@ -174,7 +174,7 @@ mod tests {
         };
         assert_eq!(
             names(policy.plan(host())),
-            ["ANTHROPIC_BASE_URL", "ATTACORE_DAEMON_TOKEN"]
+            ["AGIX_DAEMON_TOKEN", "ANTHROPIC_BASE_URL"]
         );
     }
 

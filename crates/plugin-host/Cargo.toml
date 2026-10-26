@@ -5,7 +5,7 @@ edition      = { workspace = true }
 rust-version = { workspace = true }
 license      = { workspace = true }
 publish      = false
-description  = "AttaCore — binds installed plugins to the engine's PluginHost seam"
+description  = "Agix — binds installed plugins to the engine's PluginHost seam"
 
 [dependencies]
 base       = { workspace = true }
@@ -25,7 +25,7 @@ tracing    = { workspace = true }
 [features]
 default = ["compile"]
 # Compile plugin components in-process. Off means the work goes to
-# `atta-plugin-compile`, and this build links no WebAssembly compiler.
+# `agix-plugin-compile`, and this build links no WebAssembly compiler.
 compile = ["wasm-host/compile"]
 
 [dev-dependencies]

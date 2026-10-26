@@ -1,4 +1,4 @@
-# AttaCore
+# Agix
 
 [![CI](https://github.com/openatta/agix/actions/workflows/ci.yml/badge.svg)](https://github.com/openatta/agix/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/openatta/agix?display_name=tag&sort=semver)](https://github.com/openatta/agix/releases)
@@ -7,7 +7,7 @@
 
 **An agent engine you build products on, not an assistant you talk to.**
 
-AttaCore is the runtime underneath a coding assistant: the turn loop, the tool
+Agix is the runtime underneath a coding assistant: the turn loop, the tool
 surface, permissions, context compaction, sub-agents, MCP, and the seams to
 change any of it. Ship it as a Rust library inside your app, or run it as a
 JSON-RPC daemon your IDE plugin talks to. Both are the same engine.
@@ -23,13 +23,13 @@ extension that fails costs its own contribution and nothing else.
 ```sh
 git clone https://github.com/openatta/agix && cd agix
 export ANTHROPIC_AUTH_TOKEN=sk-...          # or ANTHROPIC_API_KEY
-cargo run --release -p daemon               # listens on ~/.atta/scenes/coding/daemon.sock
+cargo run --release -p daemon               # listens on ~/.agix/scenes/coding/daemon.sock
 ```
 
 ```sh
 echo '{"jsonrpc":"2.0","id":1,"method":"session.run_turn",
        "params":{"message":"Write a TCP echo server in Rust"}}' \
-  | socat - UNIX-CONNECT:$HOME/.atta/scenes/coding/daemon.sock
+  | socat - UNIX-CONNECT:$HOME/.agix/scenes/coding/daemon.sock
 ```
 
 Tokens stream back as `session.event` frames while the turn runs; the response
@@ -80,7 +80,7 @@ let pool = daemon::assemble::pool(
 
 Provider routing, credentials, the memory store, the history layout and its
 migration, plugin components, MCP connection, session expiry — the order and
-the defaults are the engine's knowledge, not yours. `attacored` is this call
+the defaults are the engine's knowledge, not yours. `agixd` is this call
 plus a command line and its listeners, and a test fails the build if anything
 in the workspace assembles a pool a second way.
 
@@ -123,7 +123,7 @@ a call costs microseconds, no build step, no subprocess, no network.
 
 ```json
 { "scripts": [
-  { "path": ".atta/scripts/house_style.js", "point": "prompt.assemble", "entry": "onAssemble" }
+  { "path": ".agix/scripts/house_style.js", "point": "prompt.assemble", "entry": "onAssemble" }
 ] }
 ```
 
@@ -149,7 +149,7 @@ Full guide: [`docs/extending_quickjs.md`](docs/extending_quickjs.md).
 
 ### Plugins — the sandboxed tier
 
-WebAssembly components (component model, WIT world `atta:plugin@0.1.0`), not
+WebAssembly components (component model, WIT world `agix:plugin@0.1.0`), not
 dynamic libraries and not scripts:
 
 ```wit
@@ -188,7 +188,7 @@ depending on the event.
 
 ### And one more door
 
-Anything that speaks MCP is already an extension. `bridges/atta-dsh-bridge` runs
+Anything that speaks MCP is already an extension. `bridges/agix-dsh-bridge` runs
 an external JavaScript plugin as an MCP server, so a plugin written for a
 framework this engine knows nothing about reaches the model through the same
 path as any other server.
@@ -414,7 +414,7 @@ mode: dontAsk · plan · default · acceptEdits · auto / yolo (classifier) · b
 **A deny is a deny.** Any matching deny refuses the call, then any ask asks,
 and only then does an allow count. Which tier a rule came from and how specific
 it is decide nothing — so an allow committed to a repository's
-`.atta/settings.json`, contributed by a plugin or passed in over RPC cannot
+`.agix/settings.json`, contributed by a plugin or passed in over RPC cannot
 reopen what the user's own settings deny. Every tier's `permission_rules` apply
 side by side; none replaces another.
 
@@ -484,7 +484,7 @@ transport changes framing and nothing else, which is checked by running one
 exchange over all three.
 
 - **Session pool** with capacity, LRU eviction and idle timeout
-- **Discovery** via one JSON file per daemon under `~/.atta/daemon/instances.d/`,
+- **Discovery** via one JSON file per daemon under `~/.agix/daemon/instances.d/`,
   written at startup and removed on exit — a client reads the directory and
   picks by scene rather than reconstructing a socket path
 - **Graceful shutdown** that lets in-flight turns finish
@@ -525,13 +525,13 @@ the two executor traits it delegates to are injectable.
 ## Configuration
 
 Layers, lowest priority first: built-in defaults and CLI arguments (`--model`,
-`--max-tokens`, used only where no file sets them) → `$HOME/.atta/settings.json`
-→ `$HOME/.atta/scenes/<scene>/settings.json` → `<project>/.atta/settings.json`.
+`--max-tokens`, used only where no file sets them) → `$HOME/.agix/settings.json`
+→ `$HOME/.agix/scenes/<scene>/settings.json` → `<project>/.agix/settings.json`.
 Each tier may also carry an untracked `settings.local.json` on top of its own
 file. Later layers override earlier ones key by key — except
 `permission_rules`, which every layer adds to.
 
-`$HOME/.atta` is the global root, flat and shared by every scene; each scene
+`$HOME/.agix` is the global root, flat and shared by every scene; each scene
 gets its own subtree under `scenes/<scene>/` for the state that should not
 cross between them.
 
@@ -544,9 +544,9 @@ Rust types by a test, so it cannot describe a shape the code does not have.
 | `ANTHROPIC_AUTH_TOKEN` | **Required** unless `ANTHROPIC_API_KEY` is set or the embedding host supplies credentials — checked first, fails at boot if none is present |
 | `ANTHROPIC_API_KEY` | Fallback for the above |
 | `ANTHROPIC_BASE_URL` | Custom endpoint (proxies, compatible providers) |
-| `ATTACORE_DAEMON_TOKEN` | TCP / WebSocket handshake token |
-| `ATTA_CONFIG_HOME` | Global root (default `$HOME/.atta`); the scene's own root is `{it}/scenes/<scene>` |
-| `ATTA_RECORD` / `ATTA_REPLAY` | Recorder mode, with `ATTA_RECORDINGS_DIR` |
+| `AGIX_DAEMON_TOKEN` | TCP / WebSocket handshake token |
+| `AGIX_CONFIG_HOME` | Global root (default `$HOME/.agix`); the scene's own root is `{it}/scenes/<scene>` |
+| `AGIX_RECORD` / `AGIX_REPLAY` | Recorder mode, with `AGIX_RECORDINGS_DIR` |
 
 **Identifiers** are BASE58(UUID v4) — 22 characters, URL-safe, one generation
 path (`base::id::Id::new()`), a `#[sqlx(transparent)]` newtype over `[u8; 16]`
@@ -565,7 +565,7 @@ network or an API key — and all of it runs on every push.
 | `crates/*/tests` | does this crate keep its promise through its public seam | `cargo test` |
 | `daemon/tests` | a real server, a real socket, real JSON-RPC | `cargo test -p daemon` |
 | `tests/runner/tests` | a real Agent doing real work, with the model's answers written down | `cargo test -p test-runner` |
-| `tests/daemon_harness/tests` | the assembled product: in through JSON-RPC, out through an HTTP provider — run twice, in-process and against a spawned `attacored` | `cargo test -p daemon-harness` |
+| `tests/daemon_harness/tests` | the assembled product: in through JSON-RPC, out through an HTTP provider — run twice, in-process and against a spawned `agixd` | `cargo test -p daemon-harness` |
 
 Plus `tests/scripts/*.sh`, which asserts things about the build itself — that a
 no-plugin build links no WebAssembly, for one.
@@ -625,7 +625,7 @@ seconds — which is what makes gating on it possible at all.
 | L3 | `task` | Background task lifecycle | `TaskStore`, `RunningTaskStore`, `DreamTask` |
 | L4 | `runtime` | Agent runtime + turn loop | `Agent`, `Builder`, `PluginHost`, `CommandRegistry` |
 | L5 | `plugin-host` | Loads plugins, wires contributions | `InstalledPlugins`, `PluginScene` |
-| L5 | `plugin-compiler` | AOT component compile | `atta-plugin-compile` |
+| L5 | `plugin-compiler` | AOT component compile | `agix-plugin-compile` |
 | — | `daemon` | JSON-RPC 2.0 server | `DaemonServer`, `SessionPool`, `run_doctor` |
 
 21 crates under `crates/`, plus `daemon/` and the four test members — 26
@@ -660,7 +660,7 @@ is reclaimable and why.
 | Document | Audience |
 |---|---|
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | **The concepts and how they fit** — crates, a turn's skeleton, sessions and scenes, history, execution, locks, disk layout |
-| [extension_points.md](docs/extension_points.md) | **Every seam in the engine** — what you can replace, contribute to or intercept, what it costs, who may. Start here to build on AttaCore |
+| [extension_points.md](docs/extension_points.md) | **Every seam in the engine** — what you can replace, contribute to or intercept, what it costs, who may. Start here to build on Agix |
 | [daemon_rpc_protocol.md](docs/daemon_rpc_protocol.md) | JSON-RPC reference — methods, fields, error codes, auth handshake. Start here to write a client |
 | [extending_quickjs.md](docs/extending_quickjs.md) | Script extensions — the nine points, the API, the budgets, the failure rules |
 | [extending_wasm.md](docs/extending_wasm.md) | WebAssembly plugins — manifest, capabilities, contribution points |

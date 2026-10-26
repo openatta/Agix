@@ -5,7 +5,7 @@ edition      = { workspace = true }
 rust-version = { workspace = true }
 license      = { workspace = true }
 publish      = false
-description  = "AttaCore — in-memory session state management"
+description  = "Agix — in-memory session state management"
 
 [dependencies]
 base          = { workspace = true }

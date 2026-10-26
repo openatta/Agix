@@ -28,8 +28,8 @@ use tracing::{debug, warn};
 
 const SLUG_MAX_LEN: usize = 64;
 const GIT_TIMEOUT: Duration = Duration::from_secs(15);
-const WORKTREES_SUBDIR: &str = ".atta/worktrees";
-const BRANCH_PREFIX: &str = "attacode/worktree-";
+const WORKTREES_SUBDIR: &str = ".agix/worktrees";
+const BRANCH_PREFIX: &str = "agix/worktree-";
 
 /// `WorktreeHandle` —— 创建后持有；drop 时不自动清（避免 sync drop 起 tokio
 /// runtime）。caller 必须显式 await `cleanup()`。
@@ -116,7 +116,7 @@ pub enum WorktreeError {
 /// 创建 worktree。会:
 /// 1. 验 slug
 /// 2. 找 repo root（slug 错或非 git 都 fail-fast）
-/// 3. 写 `.gitignore` 加 `.atta/`（若未存在）
+/// 3. 写 `.gitignore` 加 `.agix/`（若未存在）
 /// 4. `git worktree add -b <branch> <path> HEAD`
 pub async fn create_worktree(
     exec: &ExecProviders,
@@ -137,7 +137,7 @@ pub async fn create_worktree(
         exec.filesystem.create_dir_all(parent).await?;
     }
 
-    ensure_gitignore_entry(exec, &repo_root, ".atta/").await;
+    ensure_gitignore_entry(exec, &repo_root, ".agix/").await;
 
     run_git(
         exec,
@@ -174,14 +174,14 @@ pub async fn create_worktree(
 /// - 找当前 cwd 所在 git repo（非 git 仓库时 silently no-op）
 /// - 跑 `git worktree prune` —— 清掉 git 元数据里"目录已经不存在"的 worktree
 ///   引用（这是 git 自带操作；安全）
-/// - 扫 `.atta/worktrees/<*>/` 下每个目录：如果对应分支
-///   `attacode/worktree-<flat>` 还在但 git worktree list 不见这个 worktree
+/// - 扫 `.agix/worktrees/<*>/` 下每个目录：如果对应分支
+///   `agix/worktree-<flat>` 还在但 git worktree list 不见这个 worktree
 ///   注册，就把整个目录 + 分支删了（恢复磁盘空间）
 ///
-/// 设计权衡：**我们只清以 `.atta/worktrees/` 为前缀的目录**。
+/// 设计权衡：**我们只清以 `.agix/worktrees/` 为前缀的目录**。
 /// 其它工具的 worktree 不动。
 ///
-/// 失败仅 warn，不阻塞启动 —— 用户体验上 "attacode 启动忽然卡住" 比 "孤儿没清"
+/// 失败仅 warn，不阻塞启动 —— 用户体验上 "agix 启动忽然卡住" 比 "孤儿没清"
 /// 更糟。
 pub async fn prune_orphan_worktrees(exec: &ExecProviders, cwd: &Path) {
     let repo_root = match find_git_root(exec, cwd).await {
@@ -194,7 +194,7 @@ pub async fn prune_orphan_worktrees(exec: &ExecProviders, cwd: &Path) {
         debug!(error = %e, "git worktree prune failed; ignoring");
     }
 
-    // 2. 扫 `.atta/worktrees/` 残留
+    // 2. 扫 `.agix/worktrees/` 残留
     let worktrees_root = repo_root.join(WORKTREES_SUBDIR);
     let entries = match exec.filesystem.read_dir(&worktrees_root).await {
         Ok(e) => e,
@@ -314,7 +314,7 @@ async fn ensure_gitignore_entry(exec: &ExecProviders, repo_root: &Path, entry: &
     if !new_content.is_empty() && !new_content.ends_with('\n') {
         new_content.push('\n');
     }
-    new_content.push_str("# attacode worktrees (auto-added)\n");
+    new_content.push_str("# agix worktrees (auto-added)\n");
     new_content.push_str(entry);
     if !entry.ends_with('\n') {
         new_content.push('\n');
@@ -564,25 +564,25 @@ mod tests {
             handle.path().join("README.md").exists(),
             "worktree should have README"
         );
-        assert_eq!(handle.branch(), "attacode/worktree-probe");
+        assert_eq!(handle.branch(), "agix/worktree-probe");
 
-        // .gitignore 应当多出 .atta/
+        // .gitignore 应当多出 .agix/
         let gi = tokio::fs::read_to_string(repo.path().join(".gitignore"))
             .await
             .unwrap_or_default();
         assert!(
-            gi.contains(".atta/"),
+            gi.contains(".agix/"),
             "expected .gitignore entry; got {gi:?}"
         );
 
         // cleanup 后路径 + 分支都应当消失
         handle.cleanup().await;
-        assert!(!repo.path().join(".atta/worktrees/probe").exists());
+        assert!(!repo.path().join(".agix/worktrees/probe").exists());
         let branches = run_git_capture(&exec(), repo.path(), &["branch", "--list"])
             .await
             .unwrap();
         assert!(
-            !branches.contains("attacode/worktree-probe"),
+            !branches.contains("agix/worktree-probe"),
             "branch should be deleted; got {branches:?}"
         );
     }
@@ -599,7 +599,7 @@ mod tests {
             "expected flattened path; got {}",
             handle.path().display()
         );
-        assert_eq!(handle.branch(), "attacode/worktree-team+feature-a");
+        assert_eq!(handle.branch(), "agix/worktree-team+feature-a");
         handle.cleanup().await;
     }
 
@@ -632,20 +632,20 @@ mod tests {
         let r = create_worktree(&exec(), repo.path(), "../escape").await;
         assert!(matches!(r, Err(WorktreeError::InvalidSlug(_))));
         // 路径不应当被创建
-        assert!(!repo.path().join(".atta").exists());
+        assert!(!repo.path().join(".agix").exists());
     }
 
     #[tokio::test]
     async fn ensure_gitignore_entry_is_idempotent() {
         let dir = TempDir::new().unwrap();
         // 第一次：写入
-        ensure_gitignore_entry(&exec(), dir.path(), ".atta/").await;
+        ensure_gitignore_entry(&exec(), dir.path(), ".agix/").await;
         let v1 = tokio::fs::read_to_string(dir.path().join(".gitignore"))
             .await
             .unwrap();
-        assert!(v1.contains(".atta/"));
+        assert!(v1.contains(".agix/"));
         // 第二次：no-op，文件不变
-        ensure_gitignore_entry(&exec(), dir.path(), ".atta/").await;
+        ensure_gitignore_entry(&exec(), dir.path(), ".agix/").await;
         let v2 = tokio::fs::read_to_string(dir.path().join(".gitignore"))
             .await
             .unwrap();
@@ -655,8 +655,8 @@ mod tests {
     #[tokio::test]
     async fn prune_removes_orphan_worktree_dir() {
         let repo = make_minimal_repo().await;
-        // 模拟孤儿：手动 mkdir .atta/worktrees/orphan/ —— 没经过 git worktree add
-        let orphan = repo.path().join(".atta/worktrees/orphan");
+        // 模拟孤儿：手动 mkdir .agix/worktrees/orphan/ —— 没经过 git worktree add
+        let orphan = repo.path().join(".agix/worktrees/orphan");
         tokio::fs::create_dir_all(&orphan).await.unwrap();
         tokio::fs::write(orphan.join("leftover.txt"), "stale")
             .await
@@ -680,7 +680,7 @@ mod tests {
             .unwrap();
         let active_path = active.path().to_path_buf();
         // 一个孤儿（不经 git worktree add）
-        let orphan = repo.path().join(".atta/worktrees/orphan");
+        let orphan = repo.path().join(".agix/worktrees/orphan");
         tokio::fs::create_dir_all(&orphan).await.unwrap();
 
         prune_orphan_worktrees(&exec(), repo.path()).await;
@@ -702,9 +702,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prune_with_no_attacode_dir_is_silent_noop() {
+    async fn prune_with_no_agix_dir_is_silent_noop() {
         let repo = make_minimal_repo().await;
-        // 全新 repo 没 .atta/worktrees/ 目录
+        // 全新 repo 没 .agix/worktrees/ 目录
         prune_orphan_worktrees(&exec(), repo.path()).await;
         // git 还是好的
         let r = run_git_capture(&exec(), repo.path(), &["status"]).await;
@@ -717,13 +717,13 @@ mod tests {
         tokio::fs::write(dir.path().join(".gitignore"), "node_modules/\n*.log\n")
             .await
             .unwrap();
-        ensure_gitignore_entry(&exec(), dir.path(), ".atta/").await;
+        ensure_gitignore_entry(&exec(), dir.path(), ".agix/").await;
         let after = tokio::fs::read_to_string(dir.path().join(".gitignore"))
             .await
             .unwrap();
         assert!(after.contains("node_modules/"), "preserved existing");
         assert!(after.contains("*.log"), "preserved existing");
-        assert!(after.contains(".atta/"), "added new");
+        assert!(after.contains(".agix/"), "added new");
     }
 
     #[tokio::test]

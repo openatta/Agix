@@ -27,7 +27,7 @@ pub struct CronCreateInput {
     /// match, then auto-delete.
     #[serde(default = "default_true")]
     pub recurring: bool,
-    /// true = persist to ~/.atta/scenes/<scope>/scheduled_tasks.json and survive
+    /// true = persist to ~/.agix/scenes/<scope>/scheduled_tasks.json and survive
     /// restarts. false (default) = in-memory only, dies when this
     /// session ends. Use true only when the user explicitly asks
     /// the task to survive across sessions.
@@ -113,7 +113,7 @@ impl Tool for CronCreateTool {
             .store
             .add(input.cron, input.prompt, input.recurring, input.durable);
         let where_str = if input.durable {
-            "Persisted to ~/.atta/scenes/<scope>/scheduled_tasks.json"
+            "Persisted to ~/.agix/scenes/<scope>/scheduled_tasks.json"
         } else {
             "Session-only (dies when this session exits)"
         };

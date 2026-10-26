@@ -185,7 +185,7 @@ impl Session {
     }
 
     /// Root the session at a project directory, the way a real one is rooted:
-    /// `Settings::load` from its `.atta`, so tools, rules and skills all
+    /// `Settings::load` from its `.agix`, so tools, rules and skills all
     /// resolve against it.
     pub fn in_project(mut self, dir: impl Into<PathBuf>) -> Self {
         self.project = Some(dir.into());
@@ -259,7 +259,7 @@ pub async fn drive(root: &Path, session: Session) -> Ran {
         Some(dir) => Settings::load(
             root.join("global_empty"),
             root.join("scene_empty"),
-            dir.join(".atta"),
+            dir.join(".agix"),
             "code",
             "script-model",
         ),

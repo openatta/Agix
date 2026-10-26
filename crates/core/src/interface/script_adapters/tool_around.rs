@@ -207,8 +207,8 @@ mod tests {
             Arc::new(ScriptCarrier::new(
                 engine,
                 ScriptSource {
-                    id: "./.atta/scripts/tool.js".into(),
-                    origin: BlockOrigin::Script("./.atta/scripts/tool.js".into()),
+                    id: "./.agix/scripts/tool.js".into(),
+                    origin: BlockOrigin::Script("./.agix/scripts/tool.js".into()),
                     code: String::new(),
                 },
                 "tool.around",
@@ -322,8 +322,8 @@ mod tests {
             Arc::new(ScriptCarrier::new(
                 engine,
                 ScriptSource {
-                    id: "./.atta/scripts/slow.js".into(),
-                    origin: BlockOrigin::Script("./.atta/scripts/slow.js".into()),
+                    id: "./.agix/scripts/slow.js".into(),
+                    origin: BlockOrigin::Script("./.agix/scripts/slow.js".into()),
                     code: String::new(),
                 },
                 "tool.around",

@@ -7,7 +7,7 @@
 //! in `docs/extension_points.md` is rendered from `base::interface::catalog`,
 //! and this fails if the file and the catalog disagree.
 //!
-//! Set `ATTA_UPDATE_DOCS=1` to rewrite the file from the catalog, and read the
+//! Set `AGIX_UPDATE_DOCS=1` to rewrite the file from the catalog, and read the
 //! diff before committing it — a generated table regenerated reflexively is a
 //! slower way of having a wrong one.
 
@@ -39,7 +39,7 @@ fn the_reference_table_matches_the_catalog() {
         return;
     }
 
-    if std::env::var("ATTA_UPDATE_DOCS").is_ok() {
+    if std::env::var("AGIX_UPDATE_DOCS").is_ok() {
         let rewritten = format!(
             "{}{}\n\n{}\n{}",
             &doc[..start],
@@ -53,7 +53,7 @@ fn the_reference_table_matches_the_catalog() {
 
     panic!(
         "docs/extension_points.md is out of date with base::interface::catalog.\n\
-         Re-run with ATTA_UPDATE_DOCS=1 and read the diff.\n\n\
+         Re-run with AGIX_UPDATE_DOCS=1 and read the diff.\n\n\
          expected:\n{generated}\n\nfound:\n{current}\n"
     );
 }
@@ -65,7 +65,7 @@ fn every_point_in_the_table_is_written_about_somewhere_in_the_document() {
     let doc = std::fs::read_to_string(doc_path()).expect("the extension point index exists");
     // The prose, with the generated table cut out. Counting mentions across
     // the whole file would make this test depend on whether the sibling above
-    // has rewritten the table yet, which under `ATTA_UPDATE_DOCS=1` is a race
+    // has rewritten the table yet, which under `AGIX_UPDATE_DOCS=1` is a race
     // between two tests in the same binary.
     let prose = match (doc.find(BEGIN), doc.find(END)) {
         (Some(start), Some(end)) if start < end => {

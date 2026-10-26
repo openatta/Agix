@@ -1,7 +1,7 @@
 //! In-memory cron scheduler — replaces the OS-crontab-based `ScheduleCronTool`.
 //!
 //! Three tools: `CronCreate`, `CronDelete`, `CronList`. The shared `CronStore`
-//! holds jobs in memory (optionally persisted to `~/.atta/scenes/<scope>/scheduled_tasks.json`)
+//! holds jobs in memory (optionally persisted to `~/.agix/scenes/<scope>/scheduled_tasks.json`)
 //! and provides `pop_due()` for the engine turn loop to check between turns.
 
 pub mod create;

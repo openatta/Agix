@@ -5,10 +5,10 @@ edition      = { workspace = true }
 rust-version = { workspace = true }
 license      = { workspace = true }
 publish      = false
-description  = "AttaCore daemon — JSON-RPC 2.0 over Unix socket / TCP, sample application"
+description  = "Agix daemon — JSON-RPC 2.0 over Unix socket / TCP, sample application"
 
 [[bin]]
-name = "attacored"
+name = "agixd"
 path = "src/main.rs"
 
 [dependencies]
@@ -106,7 +106,7 @@ plugin-packages = ["dep:plugin"]
 plugins = ["plugin-packages", "dep:plugin-host", "dep:wasm-host"]
 
 # Compile plugin components in-process at install. Off means the daemon links
-# no WebAssembly compiler at all and defers to `atta-plugin-compile`; a cache
+# no WebAssembly compiler at all and defers to `agix-plugin-compile`; a cache
 # miss at load then refuses rather than quietly compiling, which is the only
 # way the removal means anything. Two thirds of the plugin carrier's size is
 # this compiler.

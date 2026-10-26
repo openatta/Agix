@@ -78,7 +78,7 @@ impl SettingsTiersCheck {
         Self {
             global: paths.global_root(),
             scene: paths.config_root(),
-            project: paths.project_root().join(".atta"),
+            project: paths.project_root().join(".agix"),
         }
     }
 }

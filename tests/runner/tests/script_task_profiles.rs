@@ -152,7 +152,7 @@ async fn run(profile: Profile) -> Outcome {
     let root = tmp.path();
     let workdir = root.join("workdir");
     std::fs::create_dir_all(workdir.join("src")).expect("src");
-    std::fs::create_dir_all(workdir.join(".atta")).expect(".atta");
+    std::fs::create_dir_all(workdir.join(".agix")).expect(".agix");
     std::fs::write(workdir.join(FILE), BEFORE).expect("write the file");
 
     let registry = Arc::new(InMemoryToolRegistry::new());
@@ -243,7 +243,7 @@ fn seed_memories(store: &MemoryStore) {
 
 /// Everything the tools left behind, as one comparable string.
 ///
-/// `.atta` is skipped: it is the project's configuration, not the work, and
+/// `.agix` is skipped: it is the project's configuration, not the work, and
 /// nothing in these profiles writes to it.
 fn snapshot(workdir: &Path) -> String {
     fn walk(dir: &Path, base: &Path, out: &mut Vec<(String, String)>) {
@@ -254,7 +254,7 @@ fn snapshot(workdir: &Path) -> String {
         paths.sort();
         for path in paths {
             let relative = path.strip_prefix(base).unwrap_or(&path).to_path_buf();
-            if relative.starts_with(".atta") {
+            if relative.starts_with(".agix") {
                 continue;
             }
             if path.is_dir() {
@@ -417,7 +417,7 @@ async fn a_delegate_inherits_the_policy_scripts_and_not_the_prompt_ones() {
     let root = tmp.path();
     let workdir = root.join("workdir");
     std::fs::create_dir_all(workdir.join("src")).expect("src");
-    std::fs::create_dir_all(workdir.join(".atta")).expect(".atta");
+    std::fs::create_dir_all(workdir.join(".agix")).expect(".agix");
     std::fs::write(workdir.join(FILE), BEFORE).expect("write the file");
     let path = workdir.join(FILE).to_string_lossy().to_string();
 

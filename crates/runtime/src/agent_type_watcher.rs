@@ -1,4 +1,4 @@
-//! `AgentTypeWatcher` — watches `.atta/agents/*.md` directories for changes
+//! `AgentTypeWatcher` — watches `.agix/agents/*.md` directories for changes
 //! and keeps `AgentTool`'s merged agent-type catalog live-reloaded.
 //!
 //! Mirrors `skills::watcher::SkillWatcher`'s architecture (same `notify`

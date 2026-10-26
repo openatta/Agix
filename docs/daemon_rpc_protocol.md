@@ -1,6 +1,6 @@
-# AttaCore Daemon RPC 接口
+# Agix Daemon RPC 接口
 
-daemon(`attacored`)把一个多会话 Agent 引擎池暴露成 JSON-RPC 2.0 服务。
+daemon(`agixd`)把一个多会话 Agent 引擎池暴露成 JSON-RPC 2.0 服务。
 本文回答"怎么用它":怎么连上、有哪些方法、事件怎么读、错误怎么分辨。
 
 **协议版本:2**(`daemon.ping` 的 `protocol_version`,以及发现文件里的同名字段)。
@@ -39,7 +39,7 @@ daemon 的真实响应逐字段比对;`daemon.doctor` 的例子由 `daemon/src/d
 | TCP | `--listen <addr>` | `daemon.auth` 握手,见 §5.1 |
 | WebSocket | `--listen-ws <addr>` | `daemon.auth` 握手 + Origin 校验,见 §5.1 |
 
-TCP 与 WebSocket 都要求 `--token` 或 `ATTACORE_DAEMON_TOKEN`;没有 token 时监听器
+TCP 与 WebSocket 都要求 `--token` 或 `AGIX_DAEMON_TOKEN`;没有 token 时监听器
 **启动即失败**,不会先起来再拒绝所有人。
 
 **分帧之上的一切都与传输无关** —— 方法、参数、事件帧、权限提问三条路完全一致,
@@ -73,20 +73,20 @@ TCP 与 WebSocket 都要求 `--token` 或 `ATTACORE_DAEMON_TOKEN`;没有 token �
 
 ## 2. 发现:找到 daemon
 
-daemon 启动时在 `~/.atta/daemon/instances.d/` 下写自己那一份实例文件,正常退出时
+daemon 启动时在 `~/.agix/daemon/instances.d/` 下写自己那一份实例文件,正常退出时
 删除。**每个实例一个文件,没有共享写点**,多个 daemon 同时启动不会因为并发
 read-modify-write 同一个索引文件而丢更新。读取方 `read_dir` 汇总。
 
 ```
-~/.atta/daemon/instances.d/desktop.json
-~/.atta/daemon/instances.d/ci-runner.json
+~/.agix/daemon/instances.d/desktop.json
+~/.agix/daemon/instances.d/ci-runner.json
 ```
 
 ```jsonc
 { "instance": "desktop",
   "pid": 4210,
   "pid_start_time": 1754899200,
-  "socket": "/Users/x/.atta/daemon/desktop.sock",
+  "socket": "/Users/x/.agix/daemon/desktop.sock",
   "tcp": "127.0.0.1:7878",              // 仅在 --listen 时出现
   "ws": "127.0.0.1:7879",               // 仅在 --listen-ws 时出现
   "scenes": ["coding", "chat", "research"],
@@ -105,7 +105,7 @@ read-modify-write 同一个索引文件而丢更新。读取方 `read_dir` 汇�
 连它的 `socket`。**不要自己拼 socket 路径去猜**;daemon 换启动参数重启时,读实例
 文件的客户端不用改代码。
 
-daemon 另外还写一份 `~/.atta/scenes/<scene>/daemon.lock`(`{pid, pid_start_time,
+daemon 另外还写一份 `~/.agix/scenes/<scene>/daemon.lock`(`{pid, pid_start_time,
 socket_path, version, started_at, protocol_version}`)。它早于多场景支持,只描述
 一个场景,新客户端用 `instances.d/`。
 
@@ -113,10 +113,10 @@ socket_path, version, started_at, protocol_version}`)。它早于多场景支持
 
 ```
 --socket <path> 指定        → 用它
-否则                        → $HOME/.atta/scenes/<scene>/daemon.sock
+否则                        → $HOME/.agix/scenes/<scene>/daemon.sock
 ```
 
-(Windows 上没有 Unix socket,daemon 改用命名管道 `\\.\pipe\attacore-daemon`。)
+(Windows 上没有 Unix socket,daemon 改用命名管道 `\\.\pipe\agix-daemon`。)
 
 `--instance <name>` 决定 `instances.d/<name>.json` 的文件名,默认是把所有激活场景
 (`--scene` 加 `--scenes`)去重排序后用 `,` 连接。多 daemon 并存时 instance 名必须
@@ -383,7 +383,7 @@ settings 宽的被**静默夹到 settings 允许的最宽处**并记一条 warn 
 { "type": "permit" }
 { "type": "deny", "reason": "…" }
 { "type": "permit_always", "scope": "session" }   // 本会话内一直允许
-{ "type": "permit_always", "scope": "local" }     // 另外写进 .atta/settings.local.json
+{ "type": "permit_always", "scope": "local" }     // 另外写进 .agix/settings.local.json
 ```
 
 ### 4.8 `stop_reason`
@@ -606,7 +606,7 @@ Unix socket 靠文件系统权限,不握手,一样是"能连上就全权"。
   "settings_tiers": [
     { "tier":"global",  "path":"…/settings.json",       "exists":false, "parses":true, "error":null },
     { "tier":"scene",   "path":"…/settings.json",       "exists":false, "parses":true, "error":null },
-    { "tier":"project", "path":"…/.atta/settings.json", "exists":false, "parses":true, "error":null } ],
+    { "tier":"project", "path":"…/.agix/settings.json", "exists":false, "parses":true, "error":null } ],
   "providers": { "ok":true, "default_provider":null, "configured":[], "task_models":[],
                  "warnings":[], "error":null },
   "hooks": { "configured":false, "ok":true, "error":null },
@@ -662,7 +662,7 @@ Unix socket 靠文件系统权限,不握手,一样是"能连上就全权"。
 ```jsonc
 // ← result
 { "scenes": [
-    { "scene":"coding", "name":"AttaCode Coding", "description":"…",
+    { "scene":"coding", "name":"Agix Coding", "description":"…",
       "active":true, "sessions":0,
       "requires_project":true, "supports_team":true } ] }
 ```
@@ -702,7 +702,7 @@ HashMap),客户端要按 `scene` 找条目,不要按下标。
 // → params
 { "scene": "coding", "project_root": null, "include_secrets": false }
 // ← result
-{ "scene": "coding", "name": "AttaCode Coding", "description": "…",
+{ "scene": "coding", "name": "Agix Coding", "description": "…",
   "project_root": null,
   "active": true,
   "capabilities": { "requires_project": true, "supports_team": true },
@@ -750,7 +750,7 @@ HashMap),客户端要按 `scene` 找条目,不要按下标。
 `options` 在新建时生效,并随会话保存:之后每次重建引擎(设置变化、空闲回收后再用、
 daemon 重启后恢复)都按同一份 `options` 重建,之后的调用里再传的 `options` 被忽略。
 会话日志里没有记录过 `options` 的旧会话例外:恢复时采用这次调用带的那份。
-`options` 记在会话日志里一条 `ns` 为 `attacore.session`、`event` 为 `spec` 的扩展条目上,
+`options` 记在会话日志里一条 `ns` 为 `agix.session`、`event` 为 `spec` 的扩展条目上,
 `session.setModel` 选的模型也记在那里,所以同样跨重启保留。**形状不认识的 `options`
 会被整体当成"没传"**,不报错 —— 拼错字段名不会有任何提示。
 
@@ -834,7 +834,7 @@ turn 期间的引擎错误不是事件,是**这次调用的错误响应**:`ENGIN
   "calls": 7, "applied": 5, "no_change": 1, "failed": 1, "refused": 0,
   "dropped": 0,                    // 非 0 表示 recent 只是尾巴
   "recent": [                      // 最近 20 条,新的在前
-    { "point": "prompt.assemble", "script": "/proj/.atta/scripts/x.js",
+    { "point": "prompt.assemble", "script": "/proj/.agix/scripts/x.js",
       "entry": "onAssemble", "turn": 2, "outcome": "failed",
       "detail": "script exceeded its 100ms budget" }
   ]
@@ -990,9 +990,9 @@ turn 时返回 `SESSION_BUSY`。
 { "session_id": "…", "name": "重构 daemon 装配" }
 ```
 
-会话标题是**使用者的东西**,所以它写在会话自己的事实里(`~/.atta` 下的会话
+会话标题是**使用者的东西**,所以它写在会话自己的事实里(`~/.agix` 下的会话
 sidecar),不是某个宿主自己的一层覆盖 —— 各宿主各存一份的结果是同一个会话在这边
-叫一个名字、在那边叫另一个,共用 `~/.atta` 的意义就打了折。`session.list` /
+叫一个名字、在那边叫另一个,共用 `~/.agix` 的意义就打了折。`session.list` /
 `session.get` 的 `name` 就是这里写进去的值。
 
 **冷会话也能改名**:命名是关于会话的事实,不是对运行中引擎的操作,所以它不会为了
@@ -1269,7 +1269,7 @@ client,会话在原地按新的规格重建(它是空闲的,不会腰斩什么),
 
 两者都接受 `scene` / `project_root` 定位参数,语义与 `config.reload` 一致:省略 = 这个
 daemon 自己那一对,给路径 = 它服务的另一个项目,`null` → `INVALID_PARAMS`。
-`setProvider` 写的是**被指定项目**的 `{project_root}/.atta/settings.json`,
+`setProvider` 写的是**被指定项目**的 `{project_root}/.agix/settings.json`,
 `written_to` 回的就是那个路径。`mcp.addServer` 与 `mcp.updateServer` 同样接受这两个参数。
 
 **provider 路由是按 `(项目, 场景)` 解析的**:一个项目在自己的 settings 里配了
@@ -1300,7 +1300,7 @@ daemon 自己那一对,给路径 = 它服务的另一个项目,`null` → `INVAL
 
 响应是 `config.reload` 的结果再加一个 `written_to`(实际写入的文件路径)。
 
-**总是写项目层的 settings.json**(daemon 默认项目下的 `.atta/settings.json`),
+**总是写项目层的 settings.json**(daemon 默认项目下的 `.agix/settings.json`),
 没有选层的参数。`config` / `task_models` 是部分补丁:只提到的键被覆盖,没提到的
 保持原样。
 
@@ -1722,12 +1722,12 @@ TCP / WebSocket 上,第一件事是 `call("daemon.auth", {token})`。
 ### 11.2 走一遍
 
 ```jsonc
-// 1. 发现:读 ~/.atta/daemon/instances.d/*.json,联合判活后连它的 socket
+// 1. 发现:读 ~/.agix/daemon/instances.d/*.json,联合判活后连它的 socket
 
 // 2. 看有哪些场景,决定要不要弹"选择项目"
 → {"jsonrpc":"2.0","method":"scene.list","id":1}
 ← {"jsonrpc":"2.0","id":1,"result":{"scenes":[
-     {"scene":"coding","name":"AttaCode Coding","description":"…","active":true,
+     {"scene":"coding","name":"Agix Coding","description":"…","active":true,
       "sessions":0,"requires_project":true,"supports_team":true}]}}
 
 // 3. 订阅 daemon 级通知(可选)

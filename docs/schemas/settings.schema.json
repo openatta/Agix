@@ -208,11 +208,11 @@
       "properties": {
         "global_data_dir": {
           "default": "",
-          "description": "User-level, cross-scene global root — flat, shared by every scene\n(e.g. `~/.atta/`). Used by resources that don't have a scene tier\n(`memory`/`sessions`/`recordings`/`mcp`) and as the base layer for resources\nthat do (`settings.json`/`skills`/`plugins`/`agents`/`rules`/`hooks`).\nSee `base::paths::ConfigPaths` module docs for the full breakdown.",
+          "description": "User-level, cross-scene global root — flat, shared by every scene\n(e.g. `~/.agix/`). Used by resources that don't have a scene tier\n(`memory`/`sessions`/`recordings`/`mcp`) and as the base layer for resources\nthat do (`settings.json`/`skills`/`plugins`/`agents`/`rules`/`hooks`).\nSee `base::paths::ConfigPaths` module docs for the full breakdown.",
           "type": "string"
         },
         "local_data_dir": {
-          "description": "Local/project data root (e.g. `<cwd>/.atta/`)",
+          "description": "Local/project data root (e.g. `<cwd>/.agix/`)",
           "type": "string"
         },
         "scope": {
@@ -221,7 +221,7 @@
           "type": "string"
         },
         "user_data_dir": {
-          "description": "User-level, scene-specific override root (e.g. `~/.atta/scenes/<scope>/`).",
+          "description": "User-level, scene-specific override root (e.g. `~/.agix/scenes/<scope>/`).",
           "type": "string"
         }
       },
@@ -470,7 +470,7 @@
           "type": "array"
         },
         "deny_write": {
-          "description": "Extra filename segments a tool may never write, on top of the built-in\ncredential defaults (`.env`, `id_rsa`, `.ssh`, `.atta`, ...). A path is\nrefused if *any* of its components matches one, or begins with one\nfollowed by a dot — so `.env` also covers `.env.production`.",
+          "description": "Extra filename segments a tool may never write, on top of the built-in\ncredential defaults (`.env`, `id_rsa`, `.ssh`, `.agix`, ...). A path is\nrefused if *any* of its components matches one, or begins with one\nfollowed by a dot — so `.env` also covers `.env.production`.",
           "items": {
             "type": "string"
           },
@@ -491,7 +491,7 @@
           "default": {
             "mode": "inherit"
           },
-          "description": "The environment `Bash` / `Monitor` commands, command hooks and MCP\nstdio servers start from, sandboxed or not. By default the host's\nenvironment minus the engine's own credentials (`ANTHROPIC_*`,\n`ATTACORE_DAEMON_TOKEN`); `\"mode\": \"allowlist\"` keeps only `PATH`,\n`HOME`, the locale and a few others, plus whatever `allow` names. An MCP\nserver takes the policy of the settings it is declared in, with its own\n`env` added on top."
+          "description": "The environment `Bash` / `Monitor` commands, command hooks and MCP\nstdio servers start from, sandboxed or not. By default the host's\nenvironment minus the engine's own credentials (`ANTHROPIC_*`,\n`AGIX_DAEMON_TOKEN`); `\"mode\": \"allowlist\"` keeps only `PATH`,\n`HOME`, the locale and a few others, plus whatever `allow` names. An MCP\nserver takes the policy of the settings it is declared in, with its own\n`env` added on top."
         }
       },
       "required": [
@@ -501,7 +501,7 @@
       "type": "object"
     },
     "ScriptBinding": {
-      "description": "One script, bound to one extension point.\n\n```jsonc\n\"scripts\": [\n  { \"path\": \".atta/scripts/prompt.js\", \"point\": \"prompt.assemble\", \"entry\": \"onAssemble\" }\n]\n```\n\nThe point is a catalog id — see `base::interface::catalog` and\n`docs/extension_points.md`. A binding naming a point the engine does not\nhave, or one scripts may not use, is refused at startup with a message\nsaying which; it is not silently ignored, because a script that quietly\nnever runs is worse than one that fails to load.\n\nAuthority follows the file's location, not the configuration: a script\ninside the project is the operator's own and may rewrite anything, while\none that arrived with a plugin may add. Nothing in this struct can change\nthat, which is deliberate — it would otherwise be a field a plugin could\nset for itself.",
+      "description": "One script, bound to one extension point.\n\n```jsonc\n\"scripts\": [\n  { \"path\": \".agix/scripts/prompt.js\", \"point\": \"prompt.assemble\", \"entry\": \"onAssemble\" }\n]\n```\n\nThe point is a catalog id — see `base::interface::catalog` and\n`docs/extension_points.md`. A binding naming a point the engine does not\nhave, or one scripts may not use, is refused at startup with a message\nsaying which; it is not silently ignored, because a script that quietly\nnever runs is worse than one that fails to load.\n\nAuthority follows the file's location, not the configuration: a script\ninside the project is the operator's own and may rewrite anything, while\none that arrived with a plugin may add. Nothing in this struct can change\nthat, which is deliberate — it would otherwise be a field a plugin could\nset for itself.",
       "properties": {
         "calls_per_turn": {
           "description": "How many times it may run in a turn. Defaults to the carrier's.",

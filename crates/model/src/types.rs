@@ -1,6 +1,6 @@
 //! Anthropic Messages API 请求体类型。
 //!
-//! 字段名 / 形状对应 API；与 attacode-base::Message / ContentBlock 配合使用。
+//! 字段名 / 形状对应 API；与 agix-base::Message / ContentBlock 配合使用。
 
 use base::message::{ContentBlock, Role};
 use serde::Serialize;

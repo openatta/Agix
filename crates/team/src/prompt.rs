@@ -33,7 +33,7 @@ pub fn build_coordinator_prompt(team_name: &str, stage_names: &[String]) -> Stri
 pub struct WorkerContext<'a> {
     /// Team name as given to `TeamCreate`.
     pub team: &'a str,
-    /// Generated team id (also the `.atta/teams/<id>/` directory name).
+    /// Generated team id (also the `.agix/teams/<id>/` directory name).
     pub team_id: &'a str,
     /// This worker's label within the team.
     pub label: &'a str,
@@ -232,7 +232,7 @@ mod tests {
             stage_count: 2,
             peers,
             later_stages: later,
-            scratchpad: "/proj/.atta/teams/team-auth-fix-0001/SCRATCHPAD.md",
+            scratchpad: "/proj/.agix/teams/team-auth-fix-0001/SCRATCHPAD.md",
         }
     }
 

@@ -60,7 +60,7 @@ pub mod names {
     pub const SKILLS_CATALOG: &str = "skills.catalog";
     /// How to use the file-based memory system.
     pub const MEMORY_SESSION: &str = "memory.session";
-    /// The discovery index of `.atta/rules/` files.
+    /// The discovery index of `.agix/rules/` files.
     pub const RULES: &str = "rules";
     /// Instructions contributed by connected MCP servers.
     pub const MCP_INSTRUCTIONS: &str = "mcp.instructions";
@@ -273,7 +273,7 @@ pub fn assemble_prompt_with(
     }
 
     // 3b. Rules — lightweight discovery index only (filenames + first-line
-    // description), not full content. Omitted entirely when no `.atta/rules/`
+    // description), not full content. Omitted entirely when no `.agix/rules/`
     // files exist anywhere, so sessions that don't use this feature pay zero
     // extra tokens. See `crate::rules` module docs.
     if let Some(text) = build_rules_prompt(&settings.paths) {
@@ -425,9 +425,9 @@ mod tests {
                 fallback_model: None,
             },
             paths: PathSettings {
-                user_data_dir: "/tmp/atta/scenes/code".into(),
-                global_data_dir: "/tmp/atta".into(),
-                local_data_dir: "/tmp/atta/local".into(),
+                user_data_dir: "/tmp/agix/scenes/code".into(),
+                global_data_dir: "/tmp/agix".into(),
+                local_data_dir: "/tmp/agix/local".into(),
                 scope: "code".into(),
             },
             execution: ExecutionSettings::default(),
@@ -804,7 +804,7 @@ mod tests {
         let registry = InMemoryPromptRegistry::new();
         registry.register_variable(
             "project",
-            std::sync::Arc::new(|_: &ScenePromptContext<'_>| Some("atta".to_string())),
+            std::sync::Arc::new(|_: &ScenePromptContext<'_>| Some("agix".to_string())),
         );
         registry.register_context(
             "mine.greeting",
@@ -829,7 +829,7 @@ mod tests {
             .iter()
             .find(|b| b.name.as_deref() == Some("mine.greeting"))
             .unwrap();
-        assert_eq!(mine.content, "welcome to atta");
+        assert_eq!(mine.content, "welcome to agix");
     }
 
     /// End to end, through the real assembly: a downloaded extension that
@@ -905,7 +905,7 @@ mod tests {
         let registry = InMemoryPromptRegistry::new();
         registry.register_assembly_hook(
             std::sync::Arc::new(RewritesSkills),
-            Authority::local(BlockOrigin::Script("./.atta/scripts/prompt.js".into())),
+            Authority::local(BlockOrigin::Script("./.agix/scripts/prompt.js".into())),
         );
 
         let tmp = TempDir::new().unwrap();

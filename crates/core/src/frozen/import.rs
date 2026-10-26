@@ -1,7 +1,7 @@
 //! Cross-tool configuration import — detect and migrate Claude Code
 //! (`CLAUDE.md`/`.claude/skills/`), Cursor (`.cursorrules`/`.cursor/rules/*.mdc`),
 //! and Codex-style (`AGENTS.md` present but `.agents/skills/` missing) project
-//! state into this engine's `AGENTS.md` + `.agents/skills/` + `.atta/rules/`
+//! state into this engine's `AGENTS.md` + `.agents/skills/` + `.agix/rules/`
 //! layout.
 //!
 //! Three layers, kept separate on purpose:
@@ -188,7 +188,7 @@ async fn scan_cursor_mdc_files(dir: &Path) -> Vec<PathBuf> {
 }
 
 // ---------------------------------------------------------------------------
-// `.atta/.imported.json` marker
+// `.agix/.imported.json` marker
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -208,7 +208,7 @@ struct ImportedMarker {
 }
 
 fn marker_path(cwd: &Path) -> PathBuf {
-    cwd.join(".atta").join(".imported.json")
+    cwd.join(".agix").join(".imported.json")
 }
 
 async fn load_marker(cwd: &Path) -> ImportedMarker {
@@ -228,7 +228,7 @@ async fn write_marker(cwd: &Path, marker: &ImportedMarker) -> std::io::Result<()
 }
 
 /// Whether the **automatic** import-detection path should skip this project
-/// entirely: either it's already an AttaCore project (`.agents/` exists) or
+/// entirely: either it's already an Agix project (`.agents/` exists) or
 /// a previous decision (`imported`/`skipped`) was already recorded. Timeouts
 /// and "defer" decisions leave no marker, so they don't count here — the
 /// automatic path will ask again next process start.
@@ -361,14 +361,14 @@ pub async fn execute_import(
                 if let Ok(content) = tokio::fs::read_to_string(mdc_path).await {
                     if let Some(slug) = mdc_path.file_stem().and_then(|s| s.to_str()) {
                         let (rule_body, always_apply) = convert_mdc_to_rule(&content);
-                        let dest = cwd.join(".atta").join("rules").join(format!("{slug}.md"));
+                        let dest = cwd.join(".agix").join("rules").join(format!("{slug}.md"));
                         if let Some(parent) = dest.parent() {
                             tokio::fs::create_dir_all(parent).await?;
                         }
                         tokio::fs::write(&dest, rule_body).await?;
-                        actions.push(format!("wrote .atta/rules/{slug}.md"));
+                        actions.push(format!("wrote .agix/rules/{slug}.md"));
                         if always_apply {
-                            append_rule_reference(cwd, &format!(".atta/rules/{slug}.md")).await?;
+                            append_rule_reference(cwd, &format!(".agix/rules/{slug}.md")).await?;
                             actions.push(format!(
                                 "referenced always-apply rule {slug} from AGENTS.md"
                             ));
@@ -401,8 +401,8 @@ async fn merge_into_agents_md(
 /// Wrap `new_content` in HTML-comment markers tagged with `tag` and merge it
 /// into `existing`. On repeat calls with the same `tag`, replaces only the
 /// content between the markers, preserving anything after `END` (user edits).
-/// Generalizes the marker-wrap strategy `merge_atta_content()` in `memory.rs`
-/// used for the (unwired) `CLAUDE.md -> ATTA.md` auto-migration, parameterized
+/// Generalizes the marker-wrap strategy `merge_agix_content()` in `memory.rs`
+/// used for the (unwired) `CLAUDE.md -> AGIX.md` auto-migration, parameterized
 /// by `tag` so different import sources don't collide with each other's
 /// sections in the same `AGENTS.md`.
 fn merge_marked_section(existing: &str, new_content: &str, tag: &str) -> String {
@@ -463,8 +463,8 @@ async fn copy_skill_dirs(src_dir: &Path, dest_dir: &Path) -> std::io::Result<usi
 }
 
 /// Parse a Cursor `.mdc` file's YAML frontmatter (`description`/`globs`/
-/// `alwaysApply`) and produce the `.atta/rules/<slug>.md` body. `globs` is
-/// kept as a documentation comment only — AttaCore's `.atta/rules/` is
+/// `alwaysApply`) and produce the `.agix/rules/<slug>.md` body. `globs` is
+/// kept as a documentation comment only — Agix's `.agix/rules/` is
 /// lazily loaded (via `AGENTS.md` references), not auto-matched by path, so
 /// there's no live glob-matching behavior to wire it into. Returns
 /// `(body, always_apply)`.
@@ -478,7 +478,7 @@ fn convert_mdc_to_rule(content: &str) -> (String, bool) {
         }
         if let Some(globs) = extract_yaml_field(yaml, "globs") {
             header.push_str(&format!(
-                "<!-- globs: {globs} (imported from Cursor; not auto-matched by AttaCore) -->\n"
+                "<!-- globs: {globs} (imported from Cursor; not auto-matched by Agix) -->\n"
             ));
         }
         if let Some(aa) = extract_yaml_field(yaml, "alwaysApply") {
@@ -749,11 +749,11 @@ mod tests {
         assert!(agents_md.contains("always use tabs"));
         assert!(agents_md.contains("IMPORTED_FROM_CURSOR_RULES_BEGIN"));
         assert!(
-            agents_md.contains(".atta/rules/style.md"),
+            agents_md.contains(".agix/rules/style.md"),
             "always-apply rule must be referenced"
         );
 
-        let rule_content = tokio::fs::read_to_string(dir.path().join(".atta/rules/style.md"))
+        let rule_content = tokio::fs::read_to_string(dir.path().join(".agix/rules/style.md"))
             .await
             .unwrap();
         assert!(rule_content.contains("Use rustfmt."));

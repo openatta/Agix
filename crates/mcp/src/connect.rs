@@ -13,7 +13,7 @@
 //!   [`MAX_CONSECUTIVE_FAILURES`] 之后回到 NotConnected，留给下次显式调用再试
 //! - **不做主动 keepalive**：纯 lazy 检测；下个请求触发恢复
 //!
-//! 见 attacode-mcp/ATTA.md。
+//! 见 agix-mcp/AGIX.md。
 
 use crate::client::{
     McpCallResult, McpClient, McpContent, McpPromptArg, McpPromptMeta, McpResourceMeta, McpToolMeta,

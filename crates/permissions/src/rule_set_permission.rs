@@ -2,7 +2,7 @@
 //! implementation, wrapping `PermissionGate`/`RuleSet`.
 //!
 //! Named to match the doc comment on the `Permission` trait itself
-//! ("AttaCode uses `RuleSetPermission`"), which described this exact shape
+//! ("Agix uses `RuleSetPermission`"), which described this exact shape
 //! before any implementation existed — every production caller
 //! (`daemon::main`, `Builder::build()`'s default) previously used a no-op
 //! `AllowAllPermission`/`AllowAll` instead, so `permission_rules` in

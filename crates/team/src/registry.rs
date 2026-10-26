@@ -110,7 +110,7 @@ impl TeamRegistry {
     /// If `team_name` isn't registered yet (a persistent member can be the
     /// *first* thing to reference a team name, without a prior `TeamCreate`
     /// call), a minimal entry is created so `TeamList` still shows it —
-    /// `team_dir` is left empty in that case (no `.atta/teams/` directory
+    /// `team_dir` is left empty in that case (no `.agix/teams/` directory
     /// exists for a team that was never `TeamCreate`d).
     pub fn update_member_lifecycle(
         &self,

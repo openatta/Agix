@@ -4,7 +4,7 @@
 //! point, and passed down. A module that reads `$HOME` instead has quietly
 //! opted out: it writes to the invoking user's home no matter what the
 //! instance was configured with, which breaks redirected deployments and is
-//! why test runs used to leave files in a real `~/.atta`.
+//! why test runs used to leave files in a real `~/.agix`.
 //!
 //! Injecting the roots fixed the readers that existed. This test is what
 //! keeps the next one from being added — the failure mode is not a bug
@@ -32,14 +32,14 @@ const HOME_LOOKUPS: &[&str] = &[
 /// decision belongs — exactly one of them. And **facts about the machine**:
 /// the sandbox has to know the real home to protect `~/.ssh`, and a system
 /// prompt describing the environment is describing the user's environment.
-/// Neither is choosing where AttaCore keeps its files.
+/// Neither is choosing where Agix keeps its files.
 ///
 /// A storage root never qualifies. If a new entry is a place to write state,
 /// the answer is to take the root as a parameter.
 const ALLOWED: &[(&str, &str)] = &[
     (
         "daemon/src/config.rs",
-        "the entry point: resolves ATTA_CONFIG_HOME (or $HOME/.atta) once, \
+        "the entry point: resolves AGIX_CONFIG_HOME (or $HOME/.agix) once, \
          then passes it down. Everything else receives what this decides.",
     ),
     (
@@ -57,15 +57,15 @@ const ALLOWED: &[(&str, &str)] = &[
     (
         "crates/core/src/interface/exec/local/sandbox.rs",
         "a backend confines a process on this machine, and the state root it \
-         protects falls back to $HOME/.atta when the policy does not name one. \
-         Where AttaCore's own settings.json lives comes from \
+         protects falls back to $HOME/.agix when the policy does not name one. \
+         Where Agix's own settings.json lives comes from \
          `SandboxPolicy::state_root` first.",
     ),
     (
         "crates/permissions/src/path_rule.rs",
         "expands `~` in permission rules and in the paths tools are asked to \
          touch — the home a shell expands `~` to when the command runs. A fact \
-         about the machine, never a place AttaCore writes.",
+         about the machine, never a place Agix writes.",
     ),
     (
         "crates/tools/src/bash.rs",

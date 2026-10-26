@@ -417,7 +417,7 @@ mod as_a_tool {
 
 mod as_an_event_subscriber {
     use super::*;
-    use wasm_host::bindings::atta::plugin::types::HookDecision;
+    use wasm_host::bindings::agix::plugin::types::HookDecision;
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_component_can_refuse_an_event_with_a_reason() {

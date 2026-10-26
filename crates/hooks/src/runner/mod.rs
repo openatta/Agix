@@ -106,7 +106,7 @@ impl HookRunResult {
 /// consider returning a proper error type (e.g. `HookExecutorError`).
 ///
 /// CLI 注入一个 wrap AnthropicClient 的实现 —— hooks crate 自身**不**依赖
-/// attacode-anthropic，避免循环依赖（anthropic 依赖 core，hooks 依赖 core，
+/// agix-anthropic，避免循环依赖（anthropic 依赖 core，hooks 依赖 core，
 /// 双方独立扩展）。
 #[async_trait::async_trait]
 pub trait PromptHookExecutor: Send + Sync {
@@ -176,7 +176,7 @@ pub struct HookRunner {
     /// triggering re-execution of pending rewake hooks.
     wake_receiver: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<()>>>,
     /// Directories prepended to a `Command` hook's subprocess `PATH`, highest
-    /// priority first (typically project > scene > global `.atta/hooks/`).
+    /// priority first (typically project > scene > global `.agix/hooks/`).
     /// Lets `command` reference a bare script name (e.g. `check.sh`) that
     /// lives in one of these directories via normal shell `PATH` lookup,
     /// without inventing a second hook-script resolution scheme — `command`
@@ -952,7 +952,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = std::env::temp_dir().join(format!(
-            "atta-hooks-test-{}-{}",
+            "agix-hooks-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1121,7 +1121,7 @@ mod tests {
 
     fn tempfile_dir() -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "atta-hooks-test-{}-{}",
+            "agix-hooks-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1199,8 +1199,8 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         );
-        let path = std::env::temp_dir().join(format!("atta_hooks_watch_test_{unique}.txt"));
-        let marker = std::env::temp_dir().join(format!("atta_hooks_watch_test_{unique}.marker"));
+        let path = std::env::temp_dir().join(format!("agix_hooks_watch_test_{unique}.txt"));
+        let marker = std::env::temp_dir().join(format!("agix_hooks_watch_test_{unique}.marker"));
         std::fs::write(&path, "initial").unwrap();
         let _ = std::fs::remove_file(&marker);
 

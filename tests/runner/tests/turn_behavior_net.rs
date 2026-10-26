@@ -10,7 +10,7 @@
 //! # Reading a failure
 //!
 //! A failing case prints the expected and actual traces side by side. If the
-//! change was intended, re-run with `ATTA_UPDATE_GOLDEN=1` to rewrite the
+//! change was intended, re-run with `AGIX_UPDATE_GOLDEN=1` to rewrite the
 //! golden file, **and read the diff before committing it** — a regression net
 //! whose goldens get regenerated reflexively is a slower way of having none.
 //!

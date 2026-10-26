@@ -5,7 +5,7 @@ edition      = { workspace = true }
 rust-version = { workspace = true }
 license      = { workspace = true }
 publish      = false
-description  = "AttaCore — multi-agent team coordination (Coordinator, TeamTool, mailbox)"
+description  = "Agix — multi-agent team coordination (Coordinator, TeamTool, mailbox)"
 
 [dependencies]
 base          = { workspace = true }

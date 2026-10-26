@@ -1,7 +1,7 @@
 //! Tool 执行结果与进度。
 //!
 //! `ToolResult` —— 工具的成功输出（mapToolResultToToolResultBlockParam 在
-//!     attacode-engine 里把它翻成 ContentBlock::ToolResult 喂回 API）
+//!     agix-engine 里把它翻成 ContentBlock::ToolResult 喂回 API）
 //! `ProgressSender` —— 工具执行期间向上层发增量更新（spinner、partial output）
 //! `ToolProgressData` —— 进度的语义负载
 

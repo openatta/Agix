@@ -1,6 +1,6 @@
 //! 模板项目 fixture 的结构性冒烟测试 —— 不跑真实 Agent/LLM，只验证
 //! `tests/fixtures/template_project/` 里的配置文件能被真实的解析器认出来
-//! （hooks_config / mcp_servers / .atta/agents/*.md），防止 fixture 被改坏
+//! （hooks_config / mcp_servers / .agix/agents/*.md），防止 fixture 被改坏
 //! 而没人发现。
 
 use std::path::Path;
@@ -14,7 +14,7 @@ fn fixture_dir() -> &'static Path {
 
 #[test]
 fn settings_json_hooks_config_parses() {
-    let path = fixture_dir().join(".atta/settings.json");
+    let path = fixture_dir().join(".agix/settings.json");
     let content = std::fs::read_to_string(&path).expect("read settings.json");
     let v: serde_json::Value = serde_json::from_str(&content).expect("valid json");
 
@@ -29,7 +29,7 @@ fn settings_json_hooks_config_parses() {
 
 #[test]
 fn settings_json_mcp_servers_parses() {
-    let path = fixture_dir().join(".atta/settings.json");
+    let path = fixture_dir().join(".agix/settings.json");
     let content = std::fs::read_to_string(&path).expect("read settings.json");
     let v: serde_json::Value = serde_json::from_str(&content).expect("valid json");
 
@@ -45,11 +45,11 @@ fn settings_json_mcp_servers_parses() {
 
 #[test]
 fn custom_agent_type_frontmatter_parses() {
-    let dir = fixture_dir().join(".atta/agents");
+    let dir = fixture_dir().join(".agix/agents");
     let types = runtime::agent_tool::load_agent_types_from_dir(&dir);
     assert!(
         !types.is_empty(),
-        "expected at least one *.md agent type under .atta/agents/"
+        "expected at least one *.md agent type under .agix/agents/"
     );
     assert!(
         types.iter().any(|t| t.name == "reviewer"),
@@ -58,18 +58,18 @@ fn custom_agent_type_frontmatter_parses() {
 }
 
 /// 端到端验证 api_runner.rs 实际会走的路径：`Settings::load()` 指向拷贝出来的
-/// `.atta/`，`project_root()` 落在 fixture 根，hooks_config/mcp_servers 通过
+/// `.agix/`，`project_root()` 落在 fixture 根，hooks_config/mcp_servers 通过
 /// 三层合并读出来——不是靠读代码猜的。
 #[test]
 fn settings_load_resolves_project_root_and_config_from_fixture() {
-    let tmp = std::env::temp_dir().join(format!("atta_fixture_smoke_{}", std::process::id()));
+    let tmp = std::env::temp_dir().join(format!("agix_fixture_smoke_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp).unwrap();
 
     let settings = base::interface::settings::Settings::load(
         tmp.join("global_empty"),
         tmp.join("scene_empty"),
-        fixture_dir().join(".atta"),
+        fixture_dir().join(".agix"),
         "code",
         "claude-sonnet-4-6",
     );
@@ -81,11 +81,11 @@ fn settings_load_resolves_project_root_and_config_from_fixture() {
     );
     let hooks = settings
         .hooks_config
-        .expect("hooks_config should load from fixture's .atta/settings.json");
+        .expect("hooks_config should load from fixture's .agix/settings.json");
     assert!(hooks.get("PreToolUse").is_some());
     assert!(
         !settings.mcp_servers.is_empty(),
-        "mcp_servers should load from fixture's .atta/settings.json"
+        "mcp_servers should load from fixture's .agix/settings.json"
     );
 
     let _ = std::fs::remove_dir_all(&tmp);
@@ -97,12 +97,12 @@ fn settings_load_resolves_project_root_and_config_from_fixture() {
 /// `tests/mcp_toy_server_smoke.rs`（这里只测替换本身，避免重复拉起子进程）。
 #[test]
 fn mcp_toy_server_placeholder_resolves_to_real_binary() {
-    let tmp = std::env::temp_dir().join(format!("atta_fixture_smoke_mcp_{}", std::process::id()));
+    let tmp = std::env::temp_dir().join(format!("agix_fixture_smoke_mcp_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
     test_runner::fixture::copy_dir_recursive(fixture_dir(), &tmp).expect("copy fixture");
     test_runner::fixture::resolve_mcp_toy_server_placeholder(&tmp).expect("resolve placeholder");
 
-    let content = std::fs::read_to_string(tmp.join(".atta/settings.json"))
+    let content = std::fs::read_to_string(tmp.join(".agix/settings.json"))
         .expect("read copied settings.json");
     assert!(
         !content.contains("{{MCP_TOY_SERVER_BIN}}"),
@@ -133,7 +133,7 @@ fn mcp_toy_server_placeholder_resolves_to_real_binary() {
 #[test]
 fn hook_script_is_executable() {
     use std::os::unix::fs::PermissionsExt;
-    let path = fixture_dir().join(".atta/hooks/pre_bash_log.sh");
+    let path = fixture_dir().join(".agix/hooks/pre_bash_log.sh");
     let meta = std::fs::metadata(&path).expect("hook script exists");
     assert!(
         meta.permissions().mode() & 0o111 != 0,

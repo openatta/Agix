@@ -30,7 +30,7 @@ pub struct AgentRunnerConfig {
     pub telemetry_path: Option<PathBuf>,
     /// 模板项目 fixture 目录（如 `tests/fixtures/template_project`）。设置后，
     /// 每次跑用例前会把它拷贝到临时工作目录，Settings 通过真实的
-    /// `Settings::load()` 从拷贝出来的 `.atta/settings.json` 读 hooks/mcp/agents
+    /// `Settings::load()` 从拷贝出来的 `.agix/settings.json` 读 hooks/mcp/agents
     /// 配置——而不是像默认路径那样手搭一份空 Settings。None 时行为不变（兼容
     /// 不需要模板项目配置的用例，如裸 Agent 冒烟测试）。
     pub fixture_dir: Option<PathBuf>,
@@ -87,7 +87,7 @@ fn run_dir(scenario: &str) -> PathBuf {
         .chars()
         .map(|c| if c.is_alphanumeric() { c } else { '-' })
         .collect();
-    let dir = std::env::temp_dir().join(format!("atta-test-runner-{slug}"));
+    let dir = std::env::temp_dir().join(format!("agix-test-runner-{slug}"));
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::create_dir_all(&dir);
     dir
@@ -242,14 +242,14 @@ async fn build_agent(
 
     let mut settings = if config.fixture_dir.is_some() {
         // 真实的 Settings::load() 路径：从拷贝出来的模板项目读
-        // .atta/settings.json（hooks_config/mcp_servers/...），project_root()
+        // .agix/settings.json（hooks_config/mcp_servers/...），project_root()
         // 落在 workdir 本身，工具（Bash/Read/...)、skills/rules 发现都对着这份
         // 拷贝操作,不是手搭的空 Settings。
         let workdir = tmp.join("workdir");
         base::interface::settings::Settings::load(
             tmp.join("global_empty"),
             tmp.join("scene_empty"),
-            workdir.join(".atta"),
+            workdir.join(".agix"),
             "code",
             &model_name,
         )
@@ -409,7 +409,7 @@ async fn send_and_collect(
     // event_rx.recv() 永远 pending——不报错、不退出，只是安静地挂着。加一层
     // 可配置的整轮超时，超时就主动 cancel 掉 agent 任务并报出明确错误。
     let turn_timeout = std::time::Duration::from_secs(
-        std::env::var("ATTA_TEST_TURN_TIMEOUT_SECS")
+        std::env::var("AGIX_TEST_TURN_TIMEOUT_SECS")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(180),
@@ -470,7 +470,7 @@ async fn send_and_collect(
             anyhow::bail!(
                 "turn {} timed out after {turn_timeout:?} waiting for TurnComplete/Error — no event at \
                  all arrived in that window (as opposed to a reported turn failure, which surfaces \
-                 immediately above). Override with ATTA_TEST_TURN_TIMEOUT_SECS if a turn genuinely needs \
+                 immediately above). Override with AGIX_TEST_TURN_TIMEOUT_SECS if a turn genuinely needs \
                  longer.",
                 turn.index
             );

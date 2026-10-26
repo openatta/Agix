@@ -35,19 +35,19 @@ recordings/
 .env.local
 
 # Per-session runtime artifacts under the project-local data dir
-# (`local_data_dir = <cwd>/.atta/`). Project-*authored* content there —
-# `.atta/agents/*.md`, `.atta/settings.json` — is meant to be committed, so
-# this ignores the generated subdirectories rather than `.atta/` wholesale.
+# (`local_data_dir = <cwd>/.agix/`). Project-*authored* content there —
+# `.agix/agents/*.md`, `.agix/settings.json` — is meant to be committed, so
+# this ignores the generated subdirectories rather than `.agix/` wholesale.
 # `telemetry/` is new: sessions now record a JSONL transcript by default
 # (previously nothing was recorded unless a caller passed an explicit path).
-.atta/telemetry/
-.atta/sessions/
-.atta/teams/
+.agix/telemetry/
+.agix/sessions/
+.agix/teams/
 
-# The per-machine settings overlay — same tier as `.atta/settings.json` but
+# The per-machine settings overlay — same tier as `.agix/settings.json` but
 # never committed. Written by the interactive permission prompt's
 # "always allow, this project".
-.atta/settings.local.json
+.agix/settings.local.json
 
 # Intermediate-process documents (status assessments, comparison analyses,
 # audit reports) — see CLAUDE.md §2. They describe what the system *was like*

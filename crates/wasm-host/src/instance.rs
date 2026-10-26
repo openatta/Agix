@@ -100,14 +100,14 @@ impl PluginInstance {
             &mut linker,
             |s| s,
         )
-        .map_err(|e| anyhow!("adding the atta:plugin host interface to the linker: {e}"))?;
+        .map_err(|e| anyhow!("adding the agix:plugin host interface to the linker: {e}"))?;
 
         let pre = PluginPre::new(
             linker
                 .instantiate_pre(component.component())
                 .map_err(|e| anyhow!("linking plugin `{name}`: {e}"))?,
         )
-        .map_err(|e| anyhow!("plugin `{name}` does not match the atta:plugin world: {e}"))?;
+        .map_err(|e| anyhow!("plugin `{name}` does not match the agix:plugin world: {e}"))?;
 
         Ok(Self {
             engine: engine.clone(),
@@ -154,14 +154,14 @@ impl PluginInstance {
     pub async fn list_tools(
         &self,
         cancel: &tokio_util::sync::CancellationToken,
-    ) -> Result<Vec<crate::bindings::atta::plugin::types::ToolDef>, CallFailure> {
+    ) -> Result<Vec<crate::bindings::agix::plugin::types::ToolDef>, CallFailure> {
         let mut store = self
             .store()
             .map_err(|e| CallFailure::Faulted(e.to_string()))?;
         let call = async {
             let world = self.pre.instantiate_async(&mut store).await?;
             let tools = world
-                .atta_plugin_tools()
+                .agix_plugin_tools()
                 .call_list_tools(&mut store)
                 .await?;
             Ok(tools)
@@ -178,14 +178,14 @@ impl PluginInstance {
         call_id: &str,
         progress: Option<Arc<dyn ProgressSink>>,
         cancel: &tokio_util::sync::CancellationToken,
-    ) -> Result<crate::bindings::atta::plugin::types::ToolOutput, CallFailure> {
+    ) -> Result<crate::bindings::agix::plugin::types::ToolOutput, CallFailure> {
         let mut store = self
             .store_with(progress)
             .map_err(|e| CallFailure::Faulted(e.to_string()))?;
         let call = async {
             let world = self.pre.instantiate_async(&mut store).await?;
             let out = world
-                .atta_plugin_tools()
+                .agix_plugin_tools()
                 .call_call_tool(&mut store, name, input_json, call_id)
                 .await?;
             Ok(out)
@@ -221,14 +221,14 @@ impl PluginInstance {
         event: &str,
         payload_json: &str,
         cancel: &tokio_util::sync::CancellationToken,
-    ) -> Result<crate::bindings::atta::plugin::types::HookDecision, CallFailure> {
+    ) -> Result<crate::bindings::agix::plugin::types::HookDecision, CallFailure> {
         let mut store = self
             .store()
             .map_err(|e| CallFailure::Faulted(e.to_string()))?;
         let call = async {
             let world = self.pre.instantiate_async(&mut store).await?;
             let decision = world
-                .atta_plugin_events()
+                .agix_plugin_events()
                 .call_on_event(&mut store, event, payload_json)
                 .await?;
             Ok(decision)

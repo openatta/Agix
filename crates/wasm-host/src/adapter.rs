@@ -47,7 +47,7 @@ impl WasmToolAdapter {
     pub fn new(
         instance: Arc<PluginInstance>,
         plugin: &str,
-        def: &crate::bindings::atta::plugin::types::ToolDef,
+        def: &crate::bindings::agix::plugin::types::ToolDef,
     ) -> Self {
         // A component that ships a schema we cannot parse still gets to run;
         // it simply advertises the permissive shape, the same fallback the
@@ -239,7 +239,7 @@ impl Tool for WasmToolAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bindings::atta::plugin::types::ToolDef;
+    use crate::bindings::agix::plugin::types::ToolDef;
 
     fn def(name: &str, schema: &str) -> ToolDef {
         ToolDef {

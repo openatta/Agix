@@ -141,10 +141,10 @@ async fn a_tilde_in_a_rule_means_the_home_directory() {
     let dir = tempfile::tempdir().unwrap();
     let home = permissions::path_rule::resolve_pattern("~", dir.path());
     let perm = permission(
-        vec![rule(RuleBehavior::Deny, "Read", "~/attacore-test-creds/**")],
+        vec![rule(RuleBehavior::Deny, "Read", "~/agix-test-creds/**")],
         PermissionMode::BypassPermissions,
     );
-    let target = Path::new(&home).join("attacore-test-creds/token");
+    let target = Path::new(&home).join("agix-test-creds/token");
     let o = check(
         &perm,
         "Read",

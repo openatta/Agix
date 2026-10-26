@@ -263,8 +263,8 @@ mod tests {
             Arc::new(ScriptCarrier::new(
                 engine,
                 ScriptSource {
-                    id: "./.atta/scripts/model.js".into(),
-                    origin: BlockOrigin::Script("./.atta/scripts/model.js".into()),
+                    id: "./.agix/scripts/model.js".into(),
+                    origin: BlockOrigin::Script("./.agix/scripts/model.js".into()),
                     code: String::new(),
                 },
                 "model.request",

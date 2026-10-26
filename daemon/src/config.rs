@@ -2,7 +2,7 @@
 //!
 //! The [`DaemonPaths`] trait decouples filesystem layout from configuration
 //! loading. Implementors can swap in a tempdir for testing or a custom
-//! `ATTA_CONFIG_HOME` at runtime.
+//! `AGIX_CONFIG_HOME` at runtime.
 //!
 //! [`load_daemon_config`] delegates all settings.json parsing/merging to
 //! `base::interface::settings::Settings::load()` — the single canonical
@@ -36,7 +36,7 @@ pub trait DaemonPaths: Send + Sync {
 
     /// Cross-scene global settings root — the lowest-priority layer, shared
     /// by every scene on this machine (`config_root()` is scene-specific:
-    /// `$HOME/.atta/<scene>`; this is one level up: `$HOME/.atta`).
+    /// `$HOME/.agix/<scene>`; this is one level up: `$HOME/.agix`).
     ///
     /// Default: parent of `config_root()`, falling back to `config_root()`
     /// itself if it has no parent. Implementors used for deterministic
@@ -51,7 +51,7 @@ pub trait DaemonPaths: Send + Sync {
     }
 }
 
-/// Default path provider: `$ATTA_CONFIG_HOME` (or `$HOME/.atta`) is the flat
+/// Default path provider: `$AGIX_CONFIG_HOME` (or `$HOME/.agix`) is the flat
 /// global root; `config_root()` is `{global_root}/scenes/<scope>/`.
 ///
 /// `scope` identifies which product instance owns this scene-specific
@@ -65,8 +65,8 @@ pub trait DaemonPaths: Send + Sync {
 /// from `config_root`'s filesystem parent — `config_root` is now nested two
 /// levels under the global root (`.../scenes/<scope>/`), so a single
 /// `.parent()` call no longer reaches it. This also changes what
-/// `ATTA_CONFIG_HOME` overrides: it now sets the *global* root, with
-/// `config_root` derived as `{ATTA_CONFIG_HOME}/scenes/<scope>/` — previously
+/// `AGIX_CONFIG_HOME` overrides: it now sets the *global* root, with
+/// `config_root` derived as `{AGIX_CONFIG_HOME}/scenes/<scope>/` — previously
 /// it set `config_root` directly.
 #[derive(Debug, Clone)]
 pub struct DefaultDaemonPaths {
@@ -77,12 +77,12 @@ pub struct DefaultDaemonPaths {
 
 impl DefaultDaemonPaths {
     pub fn from_env(scope: &str) -> Self {
-        let global_root = if let Ok(p) = std::env::var("ATTA_CONFIG_HOME") {
+        let global_root = if let Ok(p) = std::env::var("AGIX_CONFIG_HOME") {
             PathBuf::from(p)
         } else if let Some(home) = std::env::var_os("HOME") {
-            PathBuf::from(home).join(".atta")
+            PathBuf::from(home).join(".agix")
         } else {
-            PathBuf::from("/tmp/attacore")
+            PathBuf::from("/tmp/agix")
         };
         let config_root = global_root.join("scenes").join(scope);
         let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -252,7 +252,7 @@ impl DaemonConfig {
 
 /// Priority (low → high): global (`global_root()/settings.json`, shared by
 /// every scene) → scene (`config_root()/settings.json`) → project
-/// (`project_root()/.atta/settings.json`) — delegates entirely to
+/// (`project_root()/.agix/settings.json`) — delegates entirely to
 /// `Settings::load()`; see its doc comment for the merge algorithm.
 pub fn load_daemon_config(
     cli_model: &str,
@@ -268,7 +268,7 @@ pub fn load_daemon_config(
     let mut settings = Settings::load(
         global_root.clone(),
         config_root.clone(),
-        project_root.join(".atta"),
+        project_root.join(".agix"),
         scope,
         cli_model,
     );
@@ -306,7 +306,7 @@ pub fn load_daemon_config(
 pub fn socket_path_from_root(root: &Path) -> PathBuf {
     #[cfg(windows)]
     {
-        PathBuf::from(r"\\.\pipe\attacore-daemon")
+        PathBuf::from(r"\\.\pipe\agix-daemon")
     }
     #[cfg(not(windows))]
     {
@@ -328,9 +328,9 @@ mod tests {
     }
 
     fn write_project_settings(project: &Path, content: &str) {
-        let atta_dir = project.join(".atta");
-        std::fs::create_dir_all(&atta_dir).unwrap();
-        std::fs::write(atta_dir.join("settings.json"), content).unwrap();
+        let agix_dir = project.join(".agix");
+        std::fs::create_dir_all(&agix_dir).unwrap();
+        std::fs::write(agix_dir.join("settings.json"), content).unwrap();
     }
 
     #[test]
@@ -342,8 +342,8 @@ mod tests {
 
     #[test]
     fn default_paths_from_env_respects_scope() {
-        // Clear ATTA_CONFIG_HOME so scope actually drives the path in this test.
-        std::env::remove_var("ATTA_CONFIG_HOME");
+        // Clear AGIX_CONFIG_HOME so scope actually drives the path in this test.
+        std::env::remove_var("AGIX_CONFIG_HOME");
         let code_paths = DefaultDaemonPaths::from_env("code");
         let ops_paths = DefaultDaemonPaths::from_env("ops");
         assert_ne!(code_paths.config_root(), ops_paths.config_root());
@@ -375,28 +375,28 @@ mod tests {
 
     #[test]
     fn default_daemon_paths_config_root_nests_under_global_root_scenes() {
-        std::env::remove_var("ATTA_CONFIG_HOME");
+        std::env::remove_var("AGIX_CONFIG_HOME");
         let paths = DefaultDaemonPaths::from_env("coding");
         assert_eq!(
             paths.config_root(),
             paths.global_root().join("scenes").join("coding")
         );
-        assert!(paths.global_root().ends_with(".atta"));
+        assert!(paths.global_root().ends_with(".agix"));
     }
 
     #[test]
     fn socket_path_derived_from_config_root() {
         #[cfg(not(windows))]
         {
-            let p = socket_path_from_root(Path::new("/home/user/.atta/code"));
-            assert_eq!(p, PathBuf::from("/home/user/.atta/code/daemon.sock"));
+            let p = socket_path_from_root(Path::new("/home/user/.agix/code"));
+            assert_eq!(p, PathBuf::from("/home/user/.agix/code/daemon.sock"));
         }
     }
 
     #[test]
     fn lock_path_derived_from_config_root() {
-        let p = lock_path_from_root(Path::new("/home/user/.atta/code"));
-        assert_eq!(p, PathBuf::from("/home/user/.atta/code/daemon.lock"));
+        let p = lock_path_from_root(Path::new("/home/user/.agix/code"));
+        assert_eq!(p, PathBuf::from("/home/user/.agix/code/daemon.lock"));
     }
 
     #[test]

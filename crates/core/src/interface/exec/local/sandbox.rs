@@ -42,13 +42,13 @@ pub use crate::interface::exec::{
 use std::path::{Path, PathBuf};
 
 /// The state root to protect: the one the caller named, else the
-/// conventional `$HOME/.atta`.
+/// conventional `$HOME/.agix`.
 #[cfg(feature = "sandbox")]
 fn state_root_of(policy: &SandboxPolicy) -> Option<PathBuf> {
     policy
         .state_root
         .clone()
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".atta")))
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".agix")))
 }
 
 /// Fallback set of scenes to protect when a caller doesn't supply
@@ -194,17 +194,17 @@ fn build_macos_profile(cwd: &Path, additional: &[PathBuf], policy: &SandboxPolic
     }
     s.push_str(")\n");
     // **Q4-followup **: re-deny writes to settings.json files even though
-    // they sit inside cwd. Stops Bash-driven sandbox escapes via attacode
+    // they sit inside cwd. Stops Bash-driven sandbox escapes via agix
     // overwriting its own permission rules. Aligns with TS sandbox-adapter.ts.
     // Project-level settings.json is cwd-relative and flat (no scope
     // segment).
     let cwd_str = cwd.display().to_string();
     s.push_str(&format!(
-        "(deny file-write* (literal \"{}/.atta/settings.json\"))\n",
+        "(deny file-write* (literal \"{}/.agix/settings.json\"))\n",
         sandbox_escape(&cwd_str)
     ));
     s.push_str(&format!(
-        "(deny file-write* (literal \"{}/.atta/settings.local.json\"))\n",
+        "(deny file-write* (literal \"{}/.agix/settings.local.json\"))\n",
         sandbox_escape(&cwd_str)
     ));
     if let Some(state_root) = state_root_of(policy) {
@@ -325,7 +325,7 @@ fn linux_wrap(opts: SandboxOptions<'_>) -> Confined {
     // error) when the source doesn't exist yet.
     let cwd_str = opts.cwd.display().to_string();
     for name in ["settings.json", "settings.local.json"] {
-        let p = format!("{cwd_str}/.atta/{name}");
+        let p = format!("{cwd_str}/.agix/{name}");
         args.push("--ro-bind-try".into());
         args.push(p.clone());
         args.push(p);
@@ -689,7 +689,7 @@ mod tests {
         if cmd.mode != SandboxMode::LinuxBwrap {
             return; // bwrap not installed in this environment — nothing to assert
         }
-        let needle = "/tmp/work/.atta/settings.json".to_string();
+        let needle = "/tmp/work/.agix/settings.json".to_string();
         let pos = cmd
             .spec
             .args
@@ -703,7 +703,7 @@ mod tests {
             .spec
             .args
             .iter()
-            .any(|a| a == "/tmp/work/.atta/settings.local.json"));
+            .any(|a| a == "/tmp/work/.agix/settings.local.json"));
     }
 
     #[cfg(target_os = "linux")]
@@ -721,9 +721,9 @@ mod tests {
             .spec
             .args
             .iter()
-            .any(|a| a == &format!("{home_str}/.atta/settings.json")));
+            .any(|a| a == &format!("{home_str}/.agix/settings.json")));
         for scene in KNOWN_SCENES {
-            let needle = format!("{home_str}/.atta/scenes/{scene}/settings.json");
+            let needle = format!("{home_str}/.agix/scenes/{scene}/settings.json");
             assert!(
                 cmd.spec.args.iter().any(|a| a == &needle),
                 "expected a --ro-bind-try re-mount for scene `{scene}`'s settings.json"
@@ -1073,9 +1073,9 @@ mod tests {
         };
         let cmd = wrap(o);
         let profile = &cmd.spec.args[1];
-        // Must still deny writes to .atta/settings.json even when deny_read is empty
+        // Must still deny writes to .agix/settings.json even when deny_read is empty
         assert!(
-            profile.contains("(deny file-write* (literal \"/tmp/work/.atta/settings.json\"))"),
+            profile.contains("(deny file-write* (literal \"/tmp/work/.agix/settings.json\"))"),
             "settings.json denial must appear unconditionally"
         );
     }
@@ -1100,7 +1100,7 @@ mod tests {
             "sanity: scene list must not be empty"
         );
         for scene in KNOWN_SCENES {
-            let needle = format!(".atta/scenes/{scene}/settings.json\"))");
+            let needle = format!(".agix/scenes/{scene}/settings.json\"))");
             assert!(
                 profile.contains(&needle),
                 "expected a deny-write rule for scene `{scene}`'s settings.json, profile:\n{profile}"
@@ -1124,7 +1124,7 @@ mod tests {
             return;
         };
         let home_str = std::path::Path::new(&home).display().to_string();
-        let needle = format!("(deny file-write* (literal \"{home_str}/.atta/settings.json\"))");
+        let needle = format!("(deny file-write* (literal \"{home_str}/.agix/settings.json\"))");
         assert!(
             profile.contains(&needle),
             "expected a deny-write rule for the cross-scene global settings.json, profile:\n{profile}"
@@ -1168,21 +1168,21 @@ mod tests {
     #[cfg(target_os = "macos")]
     fn the_profile_protects_the_instance_root_it_was_given() {
         let policy = SandboxPolicy {
-            state_root: Some(PathBuf::from("/srv/atta-state")),
+            state_root: Some(PathBuf::from("/srv/agix-state")),
             known_scenes: vec!["coding".into()],
             ..Default::default()
         };
         let profile = build_macos_profile(Path::new("/work/project"), &[], &policy);
 
-        assert!(profile.contains("(deny file-write* (literal \"/srv/atta-state/settings.json\"))"));
+        assert!(profile.contains("(deny file-write* (literal \"/srv/agix-state/settings.json\"))"));
         assert!(profile.contains(
-            "(deny file-write* (literal \"/srv/atta-state/scenes/coding/settings.json\"))"
+            "(deny file-write* (literal \"/srv/agix-state/scenes/coding/settings.json\"))"
         ));
         // The project-level rules under cwd stay; what must be absent is any
         // rule derived from the invoking user's home.
         if let Some(home) = std::env::var_os("HOME") {
             let home_rule = format!(
-                "(deny file-write* (literal \"{}/.atta/settings.json\"))",
+                "(deny file-write* (literal \"{}/.agix/settings.json\"))",
                 PathBuf::from(home).display()
             );
             assert!(
@@ -1204,7 +1204,7 @@ mod tests {
         let profile =
             build_macos_profile(Path::new("/work/project"), &[], &SandboxPolicy::default());
         assert!(profile.contains(&format!(
-            "(deny file-write* (literal \"{}/.atta/settings.json\"))",
+            "(deny file-write* (literal \"{}/.agix/settings.json\"))",
             home.display()
         )));
     }

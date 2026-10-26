@@ -201,19 +201,19 @@ mod tests {
 
     #[test]
     fn detect_cyrillic_a_homograph() {
-        // "attаplugin" with Cyrillic 'а' (U+0430) replacing Latin 'a'
-        let name = "att\u{0430}plugin";
-        let official = &["attaplugin"];
+        // "аgixplugin" with Cyrillic 'а' (U+0430) replacing Latin 'a'
+        let name = "\u{0430}gixplugin";
+        let official = &["agixplugin"];
         let msg = check_homograph_name(name, official);
         assert!(msg.is_some(), "should detect Cyrillic а homograph");
         assert!(msg.as_ref().unwrap().contains(name));
-        assert!(msg.unwrap().contains("attaplugin"));
+        assert!(msg.unwrap().contains("agixplugin"));
     }
 
     #[test]
     fn pass_legitimate_name() {
-        let name = "attaplugin";
-        let official = &["attaplugin"];
+        let name = "agixplugin";
+        let official = &["agixplugin"];
         let msg = check_homograph_name(name, official);
         assert!(msg.is_none(), "exact match should not be flagged");
     }
@@ -242,7 +242,7 @@ mod tests {
     #[test]
     fn multiple_official_names_no_false_positive() {
         let name = "safe-tool";
-        let official = &["attasafe", "atool"];
+        let official = &["agixsafe", "atool"];
         let msg = check_homograph_name(name, official);
         assert!(msg.is_none());
     }
@@ -262,8 +262,8 @@ mod tests {
     #[test]
     fn same_name_different_case_not_confusable() {
         // Uppercase vs lowercase is not a confusable issue — exact matching
-        // means "AttaPlugin" vs "attaplugin" will not match (expected).
-        let msg = check_homograph_name("AttaPlugin", &["attaplugin"]);
+        // means "AgixPlugin" vs "agixplugin" will not match (expected).
+        let msg = check_homograph_name("AgixPlugin", &["agixplugin"]);
         assert!(msg.is_none(), "case difference is not a confusable attack");
     }
 

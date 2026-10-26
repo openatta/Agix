@@ -1,17 +1,17 @@
-//! `atta-plugin-compile` — command-line front end for [`plugin_compiler`].
+//! `agix-plugin-compile` — command-line front end for [`plugin_compiler`].
 
 use anyhow::Result;
 
 fn main() {
     if let Err(e) = run(std::env::args().skip(1).collect()) {
-        eprintln!("atta-plugin-compile: {e:#}");
+        eprintln!("agix-plugin-compile: {e:#}");
         std::process::exit(1);
     }
 }
 
 fn run(args: Vec<String>) -> Result<()> {
     let Some(dir) = args.first() else {
-        anyhow::bail!("usage: atta-plugin-compile <plugin-directory>");
+        anyhow::bail!("usage: agix-plugin-compile <plugin-directory>");
     };
     let dir = std::path::PathBuf::from(dir);
     let compiled = plugin_compiler::compile_plugin(&dir)?;

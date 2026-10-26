@@ -10,7 +10,7 @@
 //! # Two modes
 //!
 //! Every case is written against a [`Mode`] and run twice. In this process it
-//! is fast and runs by default; against a spawned `attacored` it is
+//! is fast and runs by default; against a spawned `agixd` it is
 //! `#[ignore]`d, like every other case here that starts a subprocess, and CI
 //! runs it in the ignored step.
 //!
@@ -530,7 +530,7 @@ fn a_project_with_a_script(world: &World) -> anyhow::Result<std::path::PathBuf> 
     let project = world.project("scripted")?;
     world.write_project_file(
         "scripted",
-        ".atta/scripts/house.js",
+        ".agix/scripts/house.js",
         &format!(
             r#"function onAssemble(blocks) {{
                  var out = blocks.map(function (b) {{ return b; }});
@@ -545,7 +545,7 @@ fn a_project_with_a_script(world: &World) -> anyhow::Result<std::path::PathBuf> 
             "memory_enabled": false,
             "scripts": [
                 {
-                    "path": ".atta/scripts/house.js",
+                    "path": ".agix/scripts/house.js",
                     "point": "prompt.assemble",
                     "entry": "onAssemble",
                     // Far above the carrier's 100ms default. These cases are
@@ -897,9 +897,9 @@ async fn a_package_may_add_to_the_prompt_but_not_rewrite_it_in_a_spawned_daemon(
 #[ignore = "needs a second daemon, built without the script carrier"]
 async fn a_build_with_no_script_carrier_honors_no_scripts_section() -> anyhow::Result<()> {
     let carrierless = daemon_harness::alternate_daemon_binary(
-        "ATTA_TEST_DAEMON_BIN_NO_CARRIER",
+        "AGIX_TEST_DAEMON_BIN_NO_CARRIER",
         "CARGO_TARGET_DIR=$PWD/target/no-carrier cargo build -p daemon --no-default-features\n  \
-         ATTA_TEST_DAEMON_BIN_NO_CARRIER=$PWD/target/no-carrier/debug/attacored cargo test \
+         AGIX_TEST_DAEMON_BIN_NO_CARRIER=$PWD/target/no-carrier/debug/agixd cargo test \
          -p daemon-harness -- --ignored",
     )?;
 
@@ -1027,7 +1027,7 @@ async fn a_failing_tool_says_so_everywhere_in_a_spawned_daemon() -> anyhow::Resu
 const PLUGIN_DAEMON_HOWTO: &str =
     "CARGO_TARGET_DIR=$PWD/target/plugins cargo build -p daemon --no-default-features \
      --features plugin-compile\n  \
-     ATTA_TEST_DAEMON_BIN_PLUGINS=$PWD/target/plugins/debug/attacored cargo test \
+     AGIX_TEST_DAEMON_BIN_PLUGINS=$PWD/target/plugins/debug/agixd cargo test \
      -p daemon-harness -- --ignored";
 
 /// A package carrying a real WebAssembly component, ready for
@@ -1136,7 +1136,7 @@ fn collect_text(v: &serde_json::Value, out: &mut String) {
 #[ignore = "needs a second daemon, built with the plugin carrier"]
 async fn a_wasm_plugins_tool_is_called_and_answers() -> anyhow::Result<()> {
     let with_plugins = daemon_harness::alternate_daemon_binary(
-        "ATTA_TEST_DAEMON_BIN_PLUGINS",
+        "AGIX_TEST_DAEMON_BIN_PLUGINS",
         PLUGIN_DAEMON_HOWTO,
     )?;
 
@@ -1234,7 +1234,7 @@ async fn a_wasm_plugins_tool_is_called_and_answers() -> anyhow::Result<()> {
 #[ignore = "needs a second daemon, built with the plugin carrier"]
 async fn a_plugins_tools_are_offered_to_every_session() -> anyhow::Result<()> {
     let with_plugins = daemon_harness::alternate_daemon_binary(
-        "ATTA_TEST_DAEMON_BIN_PLUGINS",
+        "AGIX_TEST_DAEMON_BIN_PLUGINS",
         PLUGIN_DAEMON_HOWTO,
     )?;
 
@@ -1286,7 +1286,7 @@ async fn a_plugins_tools_are_offered_to_every_session() -> anyhow::Result<()> {
 #[ignore = "needs a second daemon, built with the plugin carrier"]
 async fn a_trapping_component_costs_its_call_and_not_the_turn() -> anyhow::Result<()> {
     let with_plugins = daemon_harness::alternate_daemon_binary(
-        "ATTA_TEST_DAEMON_BIN_PLUGINS",
+        "AGIX_TEST_DAEMON_BIN_PLUGINS",
         PLUGIN_DAEMON_HOWTO,
     )?;
 
@@ -1392,7 +1392,7 @@ async fn a_trapping_component_costs_its_call_and_not_the_turn() -> anyhow::Resul
 #[ignore = "needs a second daemon, built with the plugin carrier"]
 async fn a_plugin_that_keeps_faulting_is_set_aside() -> anyhow::Result<()> {
     let with_plugins = daemon_harness::alternate_daemon_binary(
-        "ATTA_TEST_DAEMON_BIN_PLUGINS",
+        "AGIX_TEST_DAEMON_BIN_PLUGINS",
         PLUGIN_DAEMON_HOWTO,
     )?;
 
@@ -1502,7 +1502,7 @@ async fn a_plugin_that_keeps_faulting_is_set_aside() -> anyhow::Result<()> {
 #[ignore = "needs a second daemon, built with the plugin carrier"]
 async fn a_component_that_will_not_load_says_why() -> anyhow::Result<()> {
     let with_plugins = daemon_harness::alternate_daemon_binary(
-        "ATTA_TEST_DAEMON_BIN_PLUGINS",
+        "AGIX_TEST_DAEMON_BIN_PLUGINS",
         PLUGIN_DAEMON_HOWTO,
     )?;
 
@@ -1600,7 +1600,7 @@ async fn a_component_that_will_not_load_says_why() -> anyhow::Result<()> {
 #[ignore = "needs a second daemon, built with the plugin carrier"]
 async fn a_capability_the_package_never_declared_is_unreachable() -> anyhow::Result<()> {
     let with_plugins = daemon_harness::alternate_daemon_binary(
-        "ATTA_TEST_DAEMON_BIN_PLUGINS",
+        "AGIX_TEST_DAEMON_BIN_PLUGINS",
         PLUGIN_DAEMON_HOWTO,
     )?;
 

@@ -217,7 +217,7 @@ mod tests {
     use base::tool::InMemoryToolRegistry;
 
     /// A scene root per test. These used to run against the real
-    /// `~/.atta/scenes/<scope>/dreams/` and delete the file afterwards.
+    /// `~/.agix/scenes/<scope>/dreams/` and delete the file afterwards.
     fn scene_root() -> tempfile::TempDir {
         tempfile::tempdir().unwrap()
     }

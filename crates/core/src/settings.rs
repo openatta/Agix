@@ -284,16 +284,16 @@ pub struct ModelSettings {
 /// Path configuration for data directories.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PathSettings {
-    /// User-level, scene-specific override root (e.g. `~/.atta/scenes/<scope>/`).
+    /// User-level, scene-specific override root (e.g. `~/.agix/scenes/<scope>/`).
     pub user_data_dir: PathBuf,
     /// User-level, cross-scene global root — flat, shared by every scene
-    /// (e.g. `~/.atta/`). Used by resources that don't have a scene tier
+    /// (e.g. `~/.agix/`). Used by resources that don't have a scene tier
     /// (`memory`/`sessions`/`recordings`/`mcp`) and as the base layer for resources
     /// that do (`settings.json`/`skills`/`plugins`/`agents`/`rules`/`hooks`).
     /// See `base::paths::ConfigPaths` module docs for the full breakdown.
     #[serde(default)]
     pub global_data_dir: PathBuf,
-    /// Local/project data root (e.g. `<cwd>/.atta/`)
+    /// Local/project data root (e.g. `<cwd>/.agix/`)
     pub local_data_dir: PathBuf,
     /// Which product instance's user-level state `user_data_dir` was built
     /// for (see `base::paths::ConfigPaths`). Carried alongside the resolved
@@ -313,13 +313,13 @@ fn default_scope() -> String {
 
 impl PathSettings {
     /// The actual project working directory — **not** `local_data_dir`
-    /// itself, which is `<project_root>/.atta` (flat, no scope segment; see
+    /// itself, which is `<project_root>/.agix` (flat, no scope segment; see
     /// `base::paths::ConfigPaths`). Several call sites used to pass
     /// `local_data_dir` straight to `FrozenContext::collect` as if it were
     /// the project root, which meant `AGENTS.md`/git-status discovery was
-    /// scanning the `.atta/` directory instead of the real project — this is
+    /// scanning the `.agix/` directory instead of the real project — this is
     /// the fixed, single place that derives it correctly (falls back to
-    /// `local_data_dir` itself if it has no parent, e.g. `.atta` sitting at
+    /// `local_data_dir` itself if it has no parent, e.g. `.agix` sitting at
     /// filesystem root — not expected in practice).
     pub fn project_root(&self) -> PathBuf {
         self.local_data_dir
@@ -331,7 +331,7 @@ impl PathSettings {
     /// The project tier's `settings.local.json` — the file the interactive
     /// permission prompt's "always allow, this project" writes to.
     ///
-    /// Inside `local_data_dir` (`<project_root>/.atta/`), not beside it: the
+    /// Inside `local_data_dir` (`<project_root>/.agix/`), not beside it: the
     /// Bash sandbox's deny-file-write rules (`tools::bash::sandbox`) protect
     /// exactly this path to stop a sandboxed command from granting itself
     /// permissions, and a copy written anywhere else would sit outside that
@@ -513,7 +513,7 @@ pub struct SandboxConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allow_read: Vec<PathBuf>,
     /// Extra filename segments a tool may never write, on top of the built-in
-    /// credential defaults (`.env`, `id_rsa`, `.ssh`, `.atta`, ...). A path is
+    /// credential defaults (`.env`, `id_rsa`, `.ssh`, `.agix`, ...). A path is
     /// refused if *any* of its components matches one, or begins with one
     /// followed by a dot — so `.env` also covers `.env.production`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -570,7 +570,7 @@ pub struct SandboxConfig {
     /// The environment `Bash` / `Monitor` commands, command hooks and MCP
     /// stdio servers start from, sandboxed or not. By default the host's
     /// environment minus the engine's own credentials (`ANTHROPIC_*`,
-    /// `ATTACORE_DAEMON_TOKEN`); `"mode": "allowlist"` keeps only `PATH`,
+    /// `AGIX_DAEMON_TOKEN`); `"mode": "allowlist"` keeps only `PATH`,
     /// `HOME`, the locale and a few others, plus whatever `allow` names. An MCP
     /// server takes the policy of the settings it is declared in, with its own
     /// `env` added on top.
@@ -582,7 +582,7 @@ pub struct SandboxConfig {
 ///
 /// ```jsonc
 /// "scripts": [
-///   { "path": ".atta/scripts/prompt.js", "point": "prompt.assemble", "entry": "onAssemble" }
+///   { "path": ".agix/scripts/prompt.js", "point": "prompt.assemble", "entry": "onAssemble" }
 /// ]
 /// ```
 ///
@@ -843,8 +843,8 @@ impl Settings {
                 fallback_model: None,
             },
             paths: PathSettings {
-                user_data_dir: PathBuf::from("~/.atta/scenes/agent"),
-                global_data_dir: PathBuf::from("~/.atta"),
+                user_data_dir: PathBuf::from("~/.agix/scenes/agent"),
+                global_data_dir: PathBuf::from("~/.agix"),
                 local_data_dir: PathBuf::from("."),
                 scope: default_scope(),
             },
@@ -1129,16 +1129,16 @@ mod tests {
     fn a_directory_serving_as_two_tiers_contributes_its_rules_once() {
         use crate::interface::config_source::Tier;
         let root = tempfile::tempdir().unwrap();
-        let home_atta = root.path().join("home");
+        let home_agix = root.path().join("home");
         write_settings(
-            &home_atta,
+            &home_agix,
             r#"{"permission_rules": [{"tool": "Bash(rm:*)", "action": "deny"}]}"#,
         );
 
         let settings = Settings::load(
-            home_atta.clone(),
+            home_agix.clone(),
             root.path().join("scene"),
-            home_atta,
+            home_agix,
             "code",
             "m",
         );

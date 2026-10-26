@@ -54,7 +54,7 @@ impl WorktreeRegistry {
         self.inner.lock().unwrap().as_ref().map(|h| {
             let slug = h
                 .branch()
-                .strip_prefix("attacode/worktree-")
+                .strip_prefix("agix/worktree-")
                 .unwrap_or("?")
                 .to_string();
             (slug, h.path().to_path_buf())
@@ -110,7 +110,7 @@ impl Tool for EnterWorktreeTool {
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
         // 创建 worktree 是文件系统副作用，但很受控；ask 是合理默认
         PermissionDecision::Ask {
-            message: "EnterWorktree will create a new git worktree under .atta/worktrees/".into(),
+            message: "EnterWorktree will create a new git worktree under .agix/worktrees/".into(),
             decision_reason: None,
         }
     }
@@ -268,7 +268,7 @@ impl Tool for ExitWorktreeTool {
             }
             handle.cleanup().await;
             let slug = branch
-                .strip_prefix("attacode/worktree-")
+                .strip_prefix("agix/worktree-")
                 .unwrap_or("?")
                 .to_string();
             Ok(ToolResult {

@@ -1,4 +1,4 @@
-package atta:plugin@0.1.0;
+package agix:plugin@0.1.0;
 
 interface types {
   /// One tool a component exports.

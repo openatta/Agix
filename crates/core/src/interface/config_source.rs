@@ -112,7 +112,7 @@ impl ConfigSource for FileTiers {
         let mut layers = Vec::new();
         for (i, (tier, dir)) in tiers.iter().enumerate() {
             // Two tiers can be one directory — a project rooted at `$HOME`
-            // shares `~/.atta` with the global tier. Read it once, at the
+            // shares `~/.agix` with the global tier. Read it once, at the
             // higher tier: a merge applying it twice changes nothing, but
             // `permission_rules` are concatenated and would be doubled.
             if tiers[i + 1..].iter().any(|(_, later)| later == dir) {

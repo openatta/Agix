@@ -213,7 +213,7 @@ impl FeatureFlagClient {
         self
     }
 
-    /// Set the disk cache path (e.g. `~/.atta/scenes/<scope>/feature_flags.json`).
+    /// Set the disk cache path (e.g. `~/.agix/scenes/<scope>/feature_flags.json`).
     pub fn with_disk_cache(mut self, path: PathBuf) -> Self {
         self.disk_cache_path = Some(path);
         self

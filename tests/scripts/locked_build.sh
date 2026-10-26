@@ -22,7 +22,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
-LOCKED_TARGET="${TMPDIR:-/tmp}/atta-locked-check-$$"
+LOCKED_TARGET="${TMPDIR:-/tmp}/agix-locked-check-$$"
 # Cleaned on every exit path, not just the happy one: a failed run is exactly
 # when someone re-runs it, and twice the artifacts is the last thing they need.
 trap 'rm -rf "$LOCKED_TARGET"' EXIT
@@ -52,7 +52,7 @@ fi
 
 # The other build worth guaranteeing: plugins present, compiler absent.
 #
-# A plugin's components are compiled once by `atta-plugin-compile` at install,
+# A plugin's components are compiled once by `agix-plugin-compile` at install,
 # so the process that runs them never needs Cranelift. That is only true if
 # Cranelift is actually gone — and it is easy to lose, because a single
 # dependency asking for it puts it back. `cranelift-entity` and friends stay:
@@ -98,7 +98,7 @@ cargo test -p daemon --no-default-features --features plugin-compile
 
 echo "==> the DSH bridge is a separate process and has its own suite"
 if command -v node >/dev/null 2>&1; then
-  (cd bridges/atta-dsh-bridge && node --test 'test/**/*.test.js' >/dev/null)
+  (cd bridges/agix-dsh-bridge && node --test 'test/**/*.test.js' >/dev/null)
   echo "    bridge tests pass"
 else
   echo "    skipped: node is not installed"

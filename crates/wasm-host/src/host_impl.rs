@@ -7,13 +7,13 @@
 //! silently returning empty would leave a plugin author debugging the wrong
 //! thing.
 
-use crate::bindings::atta::plugin::host::Host;
+use crate::bindings::agix::plugin::host::Host;
 use crate::state::PluginState;
 
 /// The `types` interface declares only records, so its generated `Host`
 /// trait carries no methods — it exists so the linker can be sure the shape
 /// definitions are accounted for. Implementing it is the acknowledgement.
-impl crate::bindings::atta::plugin::types::Host for PluginState {}
+impl crate::bindings::agix::plugin::types::Host for PluginState {}
 
 impl Host for PluginState {
     async fn log(&mut self, level: String, msg: String) {
@@ -181,16 +181,16 @@ mod tests {
 
     #[tokio::test]
     async fn an_undeclared_environment_variable_reads_as_absent() {
-        std::env::set_var("ATTA_TEST_DECLARED", "yes");
-        std::env::set_var("ATTA_TEST_UNDECLARED", "also-yes");
+        std::env::set_var("AGIX_TEST_DECLARED", "yes");
+        std::env::set_var("AGIX_TEST_UNDECLARED", "also-yes");
 
-        let mut s = state_with(vec![], vec!["ATTA_TEST_DECLARED".into()]);
+        let mut s = state_with(vec![], vec!["AGIX_TEST_DECLARED".into()]);
         assert_eq!(
-            s.secret("ATTA_TEST_DECLARED".into()).await.as_deref(),
+            s.secret("AGIX_TEST_DECLARED".into()).await.as_deref(),
             Some("yes")
         );
         assert_eq!(
-            s.secret("ATTA_TEST_UNDECLARED".into()).await,
+            s.secret("AGIX_TEST_UNDECLARED".into()).await,
             None,
             "a variable that exists but wasn't declared must still be invisible"
         );

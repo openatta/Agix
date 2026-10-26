@@ -223,7 +223,7 @@ impl PluginHost for InstalledPlugins {
     ///
     /// Only `kind = "native"` payloads produce a config here. A `dsh` payload
     /// names a JS entry module rather than a server, and reaches the host as
-    /// an `atta-dsh-bridge` invocation — see that bridge's own docs.
+    /// an `agix-dsh-bridge` invocation — see that bridge's own docs.
     fn mcp_servers(&self) -> Vec<(String, serde_json::Value)> {
         self.plugins
             .iter()
@@ -277,12 +277,12 @@ impl PluginHost for InstalledPlugins {
 ///
 /// With the compiler linked in this is a direct call. Without it — the
 /// hardened build, where the daemon has no Cranelift at all — the work goes
-/// to `atta-plugin-compile`, located the same way the DSH bridge is.
+/// to `agix-plugin-compile`, located the same way the DSH bridge is.
 pub async fn precompile_plugin(dir: &Path) -> anyhow::Result<()> {
     // What the package declares decides whether a compiler is needed at all.
     // Asking the manifest first is what keeps a script-only or MCP-only
     // package installable on a build that carries no compiler: going looking
-    // for `atta-plugin-compile` on its behalf failed the install over
+    // for `agix-plugin-compile` on its behalf failed the install over
     // components the package never had.
     let p = plugin::manifest::Plugin::load(dir, &dir.join("plugin.toml"))?;
     if p.manifest.wasm.is_empty() {
@@ -318,11 +318,11 @@ fn compile_in_process(p: &plugin::manifest::Plugin) -> anyhow::Result<usize> {
 
 #[cfg(not(feature = "compile"))]
 async fn compile_out_of_process(dir: &Path) -> anyhow::Result<()> {
-    let exe = plugin::locate::locate_tool("atta-plugin-compile", "ATTA_PLUGIN_COMPILE")
+    let exe = plugin::locate::locate_tool("agix-plugin-compile", "AGIX_PLUGIN_COMPILE")
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "this build cannot compile plugin components and `atta-plugin-compile` was not \
-             found; set ATTA_PLUGIN_COMPILE to its path"
+                "this build cannot compile plugin components and `agix-plugin-compile` was not \
+             found; set AGIX_PLUGIN_COMPILE to its path"
             )
         })?;
     let out = tokio::process::Command::new(&exe)
@@ -625,7 +625,7 @@ permission_mode = "make-me-root"
             "export function apply() {}",
         )
         .unwrap();
-        std::env::set_var("ATTA_TEST_DSH_TOKEN", "secret");
+        std::env::set_var("AGIX_TEST_DSH_TOKEN", "secret");
         let p = load(
             dir.path(),
             r#"
@@ -633,7 +633,7 @@ permission_mode = "make-me-root"
 name = "pr-helper"
 kind = "dsh"
 entry = "dist/index.js"
-env = ["ATTA_TEST_DSH_TOKEN", "ATTA_TEST_UNSET"]
+env = ["AGIX_TEST_DSH_TOKEN", "AGIX_TEST_UNSET"]
 "#,
         );
 
@@ -653,9 +653,9 @@ env = ["ATTA_TEST_DSH_TOKEN", "ATTA_TEST_UNSET"]
             args[1].as_str().unwrap().ends_with("dist/index.js"),
             "the plugin entry is its argument: {args:?}"
         );
-        assert_eq!(cfg["env"]["ATTA_TEST_DSH_TOKEN"], "secret");
+        assert_eq!(cfg["env"]["AGIX_TEST_DSH_TOKEN"], "secret");
         assert!(
-            cfg["env"].get("ATTA_TEST_UNSET").is_none(),
+            cfg["env"].get("AGIX_TEST_UNSET").is_none(),
             "a variable that isn't set is simply absent, not empty"
         );
     }
@@ -960,7 +960,7 @@ component = "broken.wasm"
 #[cfg(test)]
 mod precompile_tests {
     /// A package with no components must install on a build that carries no
-    /// compiler. This used to go looking for `atta-plugin-compile` on behalf
+    /// compiler. This used to go looking for `agix-plugin-compile` on behalf
     /// of components the package never declared, and fail the install when it
     /// was not there — which is what kept a script-only or MCP-only package
     /// off every build but the one with the compiler linked in.

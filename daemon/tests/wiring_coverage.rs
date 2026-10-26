@@ -16,7 +16,7 @@
 //! composition root instead of sitting completely unreferenced outside its
 //! own crate.
 //!
-//! AttaCore is also a library other embedders build their own composition
+//! Agix is also a library other embedders build their own composition
 //! root on top of,
 //! so a function genuinely meant for external embedders — not this repo's
 //! own `daemon` — is a legitimate exception, not a bug. Those go in
@@ -128,7 +128,7 @@ fn wiring_shaped_functions_are_referenced_from_a_composition_root() {
         "these functions exist to be called by a composition root but are referenced \
          nowhere in daemon/src or crates/runtime/src/agent.rs: {unreferenced:?}. Either \
          wire the call in (the usual fix — see this test's module doc for three real \
-         examples), or if this one is genuinely for external embedders of the AttaCore \
+         examples), or if this one is genuinely for external embedders of the Agix \
          library rather than this repo's own daemon, add it to INTENTIONALLY_UNWIRED \
          with a one-line reason."
     );

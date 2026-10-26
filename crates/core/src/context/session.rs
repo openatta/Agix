@@ -46,8 +46,8 @@ pub struct SessionState {
     /// 会被加进这里，下一次 turn 的 build_request 把它升级到 full schema。
     activated_tools: std::sync::Mutex<HashSet<String>>,
     /// **M6**: 结构化任务列表。Task{Create,Get,List,Update,Stop} 工具的后端。
-    /// 用 serde_json::Value 存避免跨 crate 类型循环（attacode-tools 定义
-    /// TaskEntry，attacode-core 不能依赖 tools）。caller 序列化进来 / 反序列化
+    /// 用 serde_json::Value 存避免跨 crate 类型循环（agix-tools 定义
+    /// TaskEntry，agix-core 不能依赖 tools）。caller 序列化进来 / 反序列化
     /// 出去。
     tasks: std::sync::Mutex<Vec<serde_json::Value>>,
     /// **P0 (M31)**: 文件持久化 task store. Some 时所有 add/remove/update 同步
@@ -460,7 +460,7 @@ impl SessionState {
         }
     }
 
-    /// **M6**: Task 工具用 —— 用 generic helpers 让 attacode-tools 操作 tasks
+    /// **M6**: Task 工具用 —— 用 generic helpers 让 agix-tools 操作 tasks
     /// 而不引 cycle。`T: Serialize + DeserializeOwned + Clone` 即可。
     /// 如果 task_store 已设，同时异步写到文件系统（fire-and-forget）。
     pub fn add_task<T: serde::Serialize>(&self, task: T) {

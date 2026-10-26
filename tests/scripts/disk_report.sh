@@ -64,7 +64,7 @@ cat <<'TXT'
   3. Changing a dependency version or the toolchain. Same story.
 
   Note: several hashes behind one target name is NOT a staleness signal.
-  A pristine tree has three `attacored-<hash>` executables — the binary, its
+  A pristine tree has three `agixd-<hash>` executables — the binary, its
   own test harness, and the feature-varied build — because the hash encodes
   the feature set, not the age. Counting them was tried here and reported
   four "duplicates" on a freshly cleaned checkout, which is why the number
@@ -85,7 +85,7 @@ cat <<TXT
     find tests/fixtures -name target -maxdepth 2 -type d -exec rm -rf {} +
 
   Test scratch directories, if a run was killed before its tempdirs dropped:
-    rm -rf "\${TMPDIR:-/tmp}"/atta-* "\${TMPDIR:-/tmp}"/attacode-*
+    rm -rf "\${TMPDIR:-/tmp}"/agix-* "\${TMPDIR:-/tmp}"/agix-*
 
   A full rebuild after a clean is about 1m10s on an M-series laptop, which is
   the whole cost of being wrong about what was still needed.

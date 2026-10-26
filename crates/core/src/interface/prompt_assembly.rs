@@ -378,7 +378,7 @@ mod tests {
     }
 
     fn own_script() -> Authority {
-        Authority::local(BlockOrigin::Script("./.atta/scripts/prompt.js".into()))
+        Authority::local(BlockOrigin::Script("./.agix/scripts/prompt.js".into()))
     }
 
     /// The acceptance property: something downloaded, declaring nothing,

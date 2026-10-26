@@ -46,7 +46,7 @@ impl EpochTicker {
         let engine = engine.weak();
         let flag = stop.clone();
         std::thread::Builder::new()
-            .name("atta-plugin-epoch".into())
+            .name("agix-plugin-epoch".into())
             .spawn(move || {
                 while !flag.load(std::sync::atomic::Ordering::Relaxed) {
                     std::thread::sleep(crate::instance::EPOCH_TICK);
@@ -152,7 +152,7 @@ impl WasmEngine {
     ///
     /// Only exists in a build that links Cranelift. Without it a cache miss
     /// is where loading stops: the artifact was supposed to be produced by
-    /// `atta-plugin-compile` at install, and quietly compiling here instead
+    /// `agix-plugin-compile` at install, and quietly compiling here instead
     /// would defeat the point of removing the compiler.
     #[cfg(feature = "compile")]
     fn compile_and_cache(
@@ -185,7 +185,7 @@ impl WasmEngine {
     ) -> Result<ComponentHandle> {
         anyhow::bail!(
             "no precompiled artifact for {} (expected {}), and this build cannot compile one. \
-             Reinstall the plugin so `atta-plugin-compile` runs, or check that the compiler and \
+             Reinstall the plugin so `agix-plugin-compile` runs, or check that the compiler and \
              this binary are the same version.",
             component_path.display(),
             artifact_path.display()
@@ -194,7 +194,7 @@ impl WasmEngine {
 
     /// Compile a component and leave the artifact in its plugin's cache.
     ///
-    /// What `atta-plugin-compile` calls. Returns where the artifact landed.
+    /// What `agix-plugin-compile` calls. Returns where the artifact landed.
     #[cfg(feature = "compile")]
     pub fn precompile(&self, component_path: &Path, plugin_version_dir: &Path) -> Result<PathBuf> {
         let bytes = std::fs::read(component_path)

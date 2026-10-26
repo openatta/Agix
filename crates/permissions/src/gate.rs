@@ -69,7 +69,7 @@ pub trait AutoClassifier: Send + Sync {
 
 /// classifier 决策。
 ///
-/// `Serialize` + `Deserialize` 允许 LlmClassifier 持久化决策缓存到 ~/.atta/。
+/// `Serialize` + `Deserialize` 允许 LlmClassifier 持久化决策缓存到 ~/.agix/。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "verdict", rename_all = "snake_case")]
 pub enum ClassifyDecision {
@@ -394,7 +394,7 @@ impl PermissionGate {
         //    也不在会硬拒的模式里。保住了原来的 UX：Default 模式下项目内的
         //    Write/Edit 与只读 Bash 依旧静默通过。
         //
-        //    唯一的例外是 agent / 仓库配置目录（`.git` / `.claude` / `.atta`）：
+        //    唯一的例外是 agent / 仓库配置目录（`.git` / `.claude` / `.agix`）：
         //    它们不是凭据（凭据在第 4 步就硬拒了），用户完全可能想让 agent 去
         //    改；但"工具自己说没问题"不足以让一次改写 agent 自身规则的调用静默
         //    通过。所以这里只是**跳过快速通道**，让它落到下面的模式分派去走正常
@@ -1093,7 +1093,7 @@ const BYPASS_IMMUNE_COMPONENTS: &[&str] = &[".ssh", ".aws", ".gnupg"];
 /// configuration.
 ///
 /// These were originally in [`BYPASS_IMMUNE_COMPONENTS`], which made editing
-/// `.claude/settings.json` or `.atta/agents/*.md` impossible — not merely
+/// `.claude/settings.json` or `.agix/agents/*.md` impossible — not merely
 /// gated, but denied with no way to say yes, even though configuring the
 /// agent is a thing users routinely ask the agent to do. They are not
 /// credentials; the actual risk is a tool quietly rewriting the rules it is
@@ -1104,7 +1104,7 @@ const BYPASS_IMMUNE_COMPONENTS: &[&str] = &[".ssh", ".aws", ".gnupg"];
 /// `.git` is here rather than above for the same reason — `git` plumbing
 /// through `Bash` is normal work, and a blanket deny on any path containing
 /// a `.git` component blocks far more than it protects.
-const CONFIRMATION_REQUIRED_COMPONENTS: &[&str] = &[".git", ".claude", ".atta"];
+const CONFIRMATION_REQUIRED_COMPONENTS: &[&str] = &[".git", ".claude", ".agix"];
 
 /// Does this path (or command argument) name something under
 /// [`CONFIRMATION_REQUIRED_COMPONENTS`]?
@@ -1213,14 +1213,14 @@ mod bypass_immune_tests {
         assert!(is_path_bypass_immune("/a/b/c/d/e/f/.aws/credentials"));
     }
 
-    /// 配置目录（`.git` / `.claude` / `.atta`）不是凭据，走的是"要确认"而不是
+    /// 配置目录（`.git` / `.claude` / `.agix`）不是凭据，走的是"要确认"而不是
     /// "一律拒绝"——否则 agent 连自己的 `.claude/settings.json` 都改不了，而
     /// 这恰恰是用户经常要求它做的事。
     #[test]
     fn config_dirs_require_confirmation_rather_than_being_denied() {
         for p in [
             "repo/.git/config",
-            "/Users/me/.atta/settings.json",
+            "/Users/me/.agix/settings.json",
             "/a/b/.claude/settings.local.json",
         ] {
             assert!(

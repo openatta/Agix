@@ -1,7 +1,7 @@
 //! Built-in scene implementations.
 //!
 //! Scenes are code-level AgentScene implementations, registered at compile time.
-//! AttaCore provides `coding` (full-capability agent), `chat` (general assistant),
+//! Agix provides `coding` (full-capability agent), `chat` (general assistant),
 //! `research` (search/compare/conclude), and `demo` (framework showcase).
 
 pub mod chat;

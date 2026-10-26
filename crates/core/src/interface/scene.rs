@@ -174,7 +174,7 @@ pub trait AgentScene: Send + Sync + 'static {
     /// Token budget configuration.
     fn token_budget(&self) -> TokenBudget;
 
-    // ── AttaCode-specific extensions (default noop) ──
+    // ── Agix-specific extensions (default noop) ──
 
     /// Build the `<system-reminder>` content injected before each turn.
     fn build_system_reminder(&self, _ctx: &ReminderContext) -> String {

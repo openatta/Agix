@@ -9,8 +9,8 @@ wit_bindgen::generate!({
     world: "plugin",
 });
 
-use exports::atta::plugin::tools::{Guest as ToolsGuest, ToolDef, ToolOutput};
-use exports::atta::plugin::events::{Guest as EventsGuest, HookDecision};
+use exports::agix::plugin::tools::{Guest as ToolsGuest, ToolDef, ToolOutput};
+use exports::agix::plugin::events::{Guest as EventsGuest, HookDecision};
 
 struct Component;
 
@@ -64,7 +64,7 @@ impl ToolsGuest for Component {
         match name.as_str() {
             "echo" => {
                 let text = field(&input_json, "text").unwrap_or_default();
-                atta::plugin::host::progress(&call_id, "echoing");
+                agix::plugin::host::progress(&call_id, "echoing");
                 ToolOutput {
                     content: text.clone(),
                     structured: Some(format!(r#"{{"echoed":"{text}"}}"#)),
@@ -81,7 +81,7 @@ impl ToolsGuest for Component {
             "explode" => unreachable!("this tool exists to trap"),
             "fetch" => {
                 let url = field(&input_json, "url").unwrap_or_default();
-                match atta::plugin::host::http_request("GET", &url, &[], None) {
+                match agix::plugin::host::http_request("GET", &url, &[], None) {
                     Ok(bytes) => ToolOutput {
                         content: format!("{} bytes", bytes.len()),
                         structured: None,
@@ -95,11 +95,11 @@ impl ToolsGuest for Component {
                 }
             }
             "remember" => {
-                let previous = atta::plugin::host::kv_get("last")
+                let previous = agix::plugin::host::kv_get("last")
                     .map(|b| String::from_utf8_lossy(&b).into_owned())
                     .unwrap_or_else(|| "(none)".into());
                 let value = field(&input_json, "value").unwrap_or_default();
-                atta::plugin::host::kv_set("last", value.as_bytes());
+                agix::plugin::host::kv_set("last", value.as_bytes());
                 ToolOutput {
                     content: previous,
                     structured: None,

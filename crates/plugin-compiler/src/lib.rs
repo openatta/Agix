@@ -1,4 +1,4 @@
-//! `atta-plugin-compile` — turns a plugin's components into machine code.
+//! `agix-plugin-compile` — turns a plugin's components into machine code.
 //!
 //! Exists so the daemon does not have to. A build serving plugins can run
 //! without Cranelift linked at all, which makes "this process cannot compile

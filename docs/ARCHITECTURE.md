@@ -1,6 +1,6 @@
-# AttaCore 架构
+# Agix 架构
 
-AttaCore 是一个**库**,不是一个应用。它提供的是"跑一个 agent 会话"这件事的引擎:
+Agix 是一个**库**,不是一个应用。它提供的是"跑一个 agent 会话"这件事的引擎:
 装配提示词、调模型、执行工具、管理上下文与历史。**交互界面不在这里**——那是使用方
 应用的事。`daemon` 是仓库里附带的一个参考宿主,
 把引擎包成 JSON-RPC 服务,同时也是集成测试的载体。
@@ -103,7 +103,7 @@ unit struct,`Arc<dyn AgentScene>` 只是一组函数。所以同一进程并存�
 - `--scene` 定 daemon 的默认场景,`--scenes chat,research` 追加激活
 - `scene.activate` / `scene.deactivate` 运行期增删
 - `session.create {"scene": "chat"}` 指定该会话用哪个;未激活的场景返回 `SCENE_NOT_FOUND`
-- **每个会话按自己的场景解析设置层**,包括 `~/.atta/scenes/<scene>/` 下的 settings、
+- **每个会话按自己的场景解析设置层**,包括 `~/.agix/scenes/<scene>/` 下的 settings、
   skills、agents、plugins。设置缓存的键是 `(project, scene)`——只按项目缓存会让先建好
   条目的那个场景的设置泄漏给所有场景。
 
@@ -126,7 +126,7 @@ RPC 里 `project_root` 有三种含义,靠 JSON 层面的"键缺失 / 键为 nul
 
 serde 的 `Option<Option<T>>` 免费区分前两者,但 `null` 与字符串的区分必须在 wire 层
 显式检查,**在到达 `SessionPool` 之前**。无项目会话的 `local_data_dir` 取
-`global_data_dir` 本身,而不是 `<project>/.atta`。
+`global_data_dir` 本身,而不是 `<project>/.agix`。
 
 `config.*` / `mcp.addServer` / `mcp.updateServer` / `import.*` 这几个**作用在项目层**的方法用的是另一套
 两态:省略 = 这个 daemon 自己的项目,给路径 = 它服务的另一个项目,**`null` 拒绝** ——
@@ -165,7 +165,7 @@ MCP 连接、脚本绑定的 root、记忆目录、transcript 目录。
 
 一个会话的 `Agent` 会被重建:它的绑定失效、janitor 回收后再被用到、daemon 重启后恢复。
 重建照的是**会话规格**,不是触发重建的那次调用碰巧带了什么:创建时的 `options`、
-`session.setModel` 选过的模型与厂商。规格以 `ns = "attacore.session"`、`event = "spec"`
+`session.setModel` 选过的模型与厂商。规格以 `ns = "agix.session"`、`event = "spec"`
 的扩展条目写进会话日志,每次变化追加一条,最后一条为准,所以跨 daemon 重启也成立。
 recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着原来的进度。
 
@@ -230,7 +230,7 @@ recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着
   否则 resume / fork / 搜索会看见三个不同的过去
 - `LogEntry::Extension { ns, event, payload }` 让内核之外的东西(插件、脚本、宿主)
   把状态放进同一条时间线。**未知 `ns` 必须可跳过**:卸载插件后旧日志仍能加载。
-  daemon 自己也用这条通道:会话规格记在 `attacore.session` 下(§3.2.2)。
+  daemon 自己也用这条通道:会话规格记在 `agix.session` 下(§3.2.2)。
   `ExtensionsAreVisible::all()` 不分 `ns` 地把扩展条目渲染给模型,这些也在其内——
   要让模型读到某个扩展的条目,按 `ns` 列名单
 - **模型可见即可从日志重建**。一个靠询问活着的插件来渲染条目的投影,会产出一个
@@ -271,7 +271,7 @@ recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着
    整组停;前台进程退出后输出最多再等 `OUTPUT_GRACE_AFTER_EXIT`,还被后台进程占着就
    连它们一起停。Bash、Monitor、command hook、MCP stdio 都是这条规矩。
 5. **子进程的环境只在一处决定。** `base::interface::exec::local::SubprocessEnv`:缺省
-   继承宿主环境但去掉引擎自己的凭据(`ANTHROPIC_*`、`ATTACORE_DAEMON_TOKEN`),
+   继承宿主环境但去掉引擎自己的凭据(`ANTHROPIC_*`、`AGIX_DAEMON_TOKEN`),
    `allowlist` 模式只留 `PATH` / `HOME` / 语言环境等几项加上 `allow` 列出的。Bash、
    Monitor、command hook 与 MCP stdio 服务都按 `sandbox.subprocess_env` 取策略——MCP
    服务取的是声明它的那份设置(daemon 按项目、scene 建连),再叠各服务自己的 `env`。这和沙箱无关——沙箱关着,模型一句 `printenv` 读到什么也由它决定。
@@ -321,9 +321,9 @@ recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着
 2. **它解析成的目标**——三份名单加上项目边界与系统目录前缀:
    - 凭据(`.env*` / `id_rsa` / `.ssh` / `.aws` / `.netrc` …)
    - 不该被随手改的生成物(`.gitignore` / `Cargo.lock` / `package-lock.json`)
-   - 引擎自己的配置(`settings.json` / `settings.local.json`,且在 `.atta` / `.claude` 下)
+   - 引擎自己的配置(`settings.json` / `settings.local.json`,且在 `.agix` / `.claude` 下)
 
-   最后一条**按"文件名 + 所在目录"匹配,不按目录**。`.atta` 同时是子代理 git worktree
+   最后一条**按"文件名 + 所在目录"匹配,不按目录**。`.agix` 同时是子代理 git worktree
    的落脚点,把整个目录设为拒写会否掉子代理被创建出来要做的每一次写入。
 
 `sandbox.allow_write` 给拒绝规则开例外,`sandbox.deny_write` 加自己的名字,
@@ -351,14 +351,14 @@ daemon 实例锁与 team 目录锁共用 `base::process_identity::decide_stale_l
 
 ## 8. 磁盘布局
 
-`~/.atta/` 下按**索引维度**分目录,不按产品名或场景分:
+`~/.agix/` 下按**索引维度**分目录,不按产品名或场景分:
 
 | 目录 | 索引键 | 内容 |
 |---|---|---|
 | `projects/<sanitized-cwd>/` | 项目 | `<session-id>.jsonl` transcript |
 | `projects/_no-project/` | ——(保留) | 无项目会话的 transcript |
 | `sessions/<session-id>/` | 会话 | 会话记忆、metadata、输入历史 |
-| `memory/` | 全局 | 跨会话记忆(项目级的在 `<项目>/.atta/memory/`) |
+| `memory/` | 全局 | 跨会话记忆(项目级的在 `<项目>/.agix/memory/`) |
 
 **会话进哪个项目目录由它自己的 `Meta.project_root` 决定**,不是由 daemon 的 cwd
 决定 —— 一个 daemon 同时服务多个项目时,后者会把所有项目的 transcript 堆进一个

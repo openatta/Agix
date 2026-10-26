@@ -5,7 +5,7 @@ edition      = { workspace = true }
 rust-version = { workspace = true }
 license      = { workspace = true }
 publish      = false
-description  = "AttaCore — wasmtime host for WASM component plugins"
+description  = "Agix — wasmtime host for WASM component plugins"
 
 [dependencies]
 base        = { workspace = true }

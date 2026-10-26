@@ -5,7 +5,7 @@ edition      = { workspace = true }
 rust-version = { workspace = true }
 license      = { workspace = true }
 publish      = false
-description  = "AttaCore — built-in tool implementations"
+description  = "Agix — built-in tool implementations"
 
 [dependencies]
 base          = { workspace = true }

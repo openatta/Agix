@@ -1,4 +1,4 @@
-# 用 WebAssembly 插件扩展 AttaCore
+# 用 WebAssembly 插件扩展 Agix
 
 一个插件就是一个目录,里面有一份 `plugin.toml`,通常还有一个或多个 WebAssembly
 组件(component)。它从压缩包安装,跑在一个沙箱里——这个沙箱能够到哪里,它在任何人
@@ -47,7 +47,7 @@ cargo build -p daemon --no-default-features                             # 什么
 - **`plugin-compile`** 把 Cranelift 链进 daemon。安装插件时,它的组件在进程内编译。
 - 单独的 **`plugins`** 不链接任何 WebAssembly 编译器。那个构建里根本没有
   `Component::new`,所以 daemon 只能加载别人产出的产物——安装时它 shell 出去调
-  `atta-plugin-compile` 这个二进制,从正在运行的可执行文件往上找;加载时缓存没命中
+  `agix-plugin-compile` 这个二进制,从正在运行的可执行文件往上找;加载时缓存没命中
   就是拒绝,而不是悄悄重编一遍。载体三分之二的体积是编译器,所以这是给那种"要跑插件、
   但不想让服务进程里带一个代码生成器"的部署用的构建。
 
@@ -72,7 +72,7 @@ fixture 加一份 manifest。
 
 ### 1. 你的组件要实现的 world
 
-契约就是一个 WIT world,`crates/wasm-host/wit/plugin.wit`,发布为 `atta:plugin@0.1.0`:
+契约就是一个 WIT world,`crates/wasm-host/wit/plugin.wit`,发布为 `agix:plugin@0.1.0`:
 
 ```wit
 world plugin {
@@ -111,8 +111,8 @@ wit-bindgen = "0.48"
 // src/lib.rs
 wit_bindgen::generate!({ path: "…/crates/wasm-host/wit", world: "plugin" });
 
-use exports::atta::plugin::tools::{Guest as ToolsGuest, ToolDef, ToolOutput};
-use exports::atta::plugin::events::{Guest as EventsGuest, HookDecision};
+use exports::agix::plugin::tools::{Guest as ToolsGuest, ToolDef, ToolOutput};
+use exports::agix::plugin::events::{Guest as EventsGuest, HookDecision};
 
 struct Component;
 
@@ -129,7 +129,7 @@ impl ToolsGuest for Component {
     }
 
     fn call_tool(_name: String, input_json: String, call_id: String) -> ToolOutput {
-        atta::plugin::host::progress(&call_id, "echoing");   // 流式推给用户
+        agix::plugin::host::progress(&call_id, "echoing");   // 流式推给用户
         ToolOutput { content: input_json, structured: None, is_error: false }
     }
 }
@@ -245,8 +245,8 @@ prompt = "scene/prompt.md"
 ### 6. 它落在哪
 
 ```
-~/.atta/plugins/cache/<name>/<version>/                   # global 层
-~/.atta/scenes/<scope>/plugins/cache/<name>/<version>/    # scene 层,同名时压过 global
+~/.agix/plugins/cache/<name>/<version>/                   # global 层
+~/.agix/scenes/<scope>/plugins/cache/<name>/<version>/    # scene 层,同名时压过 global
     plugin.toml
     echo.wasm
     config.json          # 可选,用户提供(见 [plugin.config])

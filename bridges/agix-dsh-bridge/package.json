@@ -1,0 +1,12 @@
+{
+  "name": "agix-dsh-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Runs a DeepSeek Harness plugin as an MCP server for Agix",
+  "bin": { "agix-dsh-bridge": "src/main.js" },
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "engines": { "node": ">=20" }
+}

@@ -1,4 +1,4 @@
-//! AttaCore — plugin manifest loader, marketplace integration, dependency
+//! Agix — plugin manifest loader, marketplace integration, dependency
 //! resolution, versioned cache, and the plugin lifecycle CLI commands.
 
 pub mod cache;

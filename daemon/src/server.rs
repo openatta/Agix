@@ -14,7 +14,7 @@
 //! top of that: Unix socket
 //! file permissions are the entire access-control story locally. For TCP,
 //! each connection must open with a `daemon.auth` handshake carrying the
-//! shared token (`--token`/`ATTACORE_DAEMON_TOKEN`, see
+//! shared token (`--token`/`AGIX_DAEMON_TOKEN`, see
 //! [`DaemonServer::authenticate_tcp`]) before any other method is dispatched
 //! — once a connection passes the handshake it is trusted for its lifetime,
 //! same as a Unix socket connection. In particular, `config.setProvider` lets
@@ -397,7 +397,7 @@ impl DaemonServer {
 
     /// TCP-only handshake: the first line on the connection must be a
     /// `daemon.auth` request carrying `params.token` equal to the token
-    /// configured via `--token`/`ATTACORE_DAEMON_TOKEN`. Writes back an ok/err
+    /// configured via `--token`/`AGIX_DAEMON_TOKEN`. Writes back an ok/err
     /// response either way. Returns `true` if the connection may proceed to
     /// the normal dispatch loop, `false` if it was rejected (or closed before
     /// sending anything) and the caller should just drop it.

@@ -1,4 +1,4 @@
-# AttaCore 测试系统
+# Agix 测试系统
 
 分几层，各自回答不同的问题：
 
@@ -8,16 +8,16 @@
 | `crates/*/tests/*.rs` | crate 验收：从公开的缝进去，这个 crate 的承诺还成立吗 | `cargo test` |
 | `daemon/tests/*.rs` | daemon 的 e2e：真的起一个 server，走真的 socket 收发 JSON-RPC | `cargo test -p daemon` |
 | `tests/runner/tests/*.rs` | 引擎行为网：真的驱动 Agent，模型那端是写死的脚本 | `cargo test -p test-runner` |
-| `tests/daemon_harness/tests/*.rs` | 装配面：从 JSON-RPC 进去，模型那端是一个 HTTP 桩；同一批用例跑「本进程」和「另起一个 attacored」两遍 | `cargo test -p daemon-harness`（跨进程那半在 `-- --ignored` 里） |
+| `tests/daemon_harness/tests/*.rs` | 装配面：从 JSON-RPC 进去，模型那端是一个 HTTP 桩；同一批用例跑「本进程」和「另起一个 agixd」两遍 | `cargo test -p daemon-harness`（跨进程那半在 `-- --ignored` 里） |
 | `tests/scripts/*.sh` | 构建面的断言（无插件构建里没有插件依赖等） | `tests/scripts/locked_build.sh` |
 
 其中三条要的不是同一个 daemon：一个构建只带一个载体，所以「没有脚本引擎的构建拿到
 `scripts` 段怎么办」和「一个组件到底会不会被调起来」都只能由另一个构建回答。用例会
-说清楚怎么建、往哪个环境变量里塞：`ATTA_TEST_DAEMON_BIN_NO_CARRIER` 和
-`ATTA_TEST_DAEMON_BIN_PLUGINS`。CI 两个都建。
+说清楚怎么建、往哪个环境变量里塞：`AGIX_TEST_DAEMON_BIN_NO_CARRIER` 和
+`AGIX_TEST_DAEMON_BIN_PLUGINS`。CI 两个都建。
 
 > **手工建别的载体时务必带上自己的 `CARGO_TARGET_DIR`。** 每种载体建出来的都叫
-> `attacored`，而跨进程用例默认捡的就是 `target/debug/attacored` —— 往默认目录建一个
+> `agixd`，而跨进程用例默认捡的就是 `target/debug/agixd` —— 往默认目录建一个
 > `--no-default-features` 的 daemon，等于把那批用例脚下的二进制换掉了。换掉之后它们
 > 不会说「你换了二进制」，只会说「脚本没进提示词」。用例里给出的两条建法都带着
 > `CARGO_TARGET_DIR=...`，不是为了省空间，是为了这个。
@@ -69,12 +69,12 @@
   对——那会让它退化成一份每次改提示词就全挂的录像。
 
 **黄金轨迹要读 diff 再提交。** `turn_behavior_net.rs` 把事件流和会话日志归一化后比
-对黄金文件，`ATTA_UPDATE_GOLDEN=1` 重新生成——反射式重生成的黄金文件是一种更慢的
+对黄金文件，`AGIX_UPDATE_GOLDEN=1` 重新生成——反射式重生成的黄金文件是一种更慢的
 「没有测试」。
 
-**测试进程不碰你的 `~/.atta`。** 每个测试自己拿 tempdir 当状态根；
+**测试进程不碰你的 `~/.agix`。** 每个测试自己拿 tempdir 当状态根；
 `daemon/tests/home_is_never_discovered.rs` 保证没有哪个 crate 会自己去找 `$HOME`。
-跑测试之后 `~/.atta` 里不该多出任何东西——如果多了，那是 bug。同理，起子进程的测试
+跑测试之后 `~/.agix` 里不该多出任何东西——如果多了，那是 bug。同理，起子进程的测试
 要自己给子进程一个 cwd：daemon 的「项目」就是它的工作目录，继承下来的那个是仓库本身。
 
 **文档不许漂移。** 这些都由测试比对，文档写错了会挂：
@@ -100,7 +100,7 @@
 
 ## fixture 项目
 
-`tests/fixtures/template_project/` 是模板项目：有 `.atta/settings.json`（hooks +
+`tests/fixtures/template_project/` 是模板项目：有 `.agix/settings.json`（hooks +
 MCP）、`.agents/skills/`、`AGENTS.md`。用例跑之前会整个拷贝到临时目录，改动不会污染
 这份原件。`tests/fixtures/scripts/` 是脚本载体九个点各自的 fixture，
 `tests/fixtures/scripts_outside/` 那一个故意放在项目根之外，用来验出身判定。

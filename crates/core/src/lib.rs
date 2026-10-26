@@ -1,4 +1,4 @@
-//! AttaCore foundation — types, traits, and context shared by all crates.
+//! Agix foundation — types, traits, and context shared by all crates.
 
 pub mod error;
 pub mod event;

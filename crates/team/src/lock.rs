@@ -1,4 +1,4 @@
-//! `<project>/.atta/teams/.lock` — a coarse, pid-reuse-safe lock over the
+//! `<project>/.agix/teams/.lock` — a coarse, pid-reuse-safe lock over the
 //! whole `teams/` directory for one project.
 //!
 //! One project is expected to be worked on by one daemon instance at a
@@ -236,7 +236,7 @@ mod tests {
     #[test]
     fn write_creates_the_teams_dir_and_lock_file() {
         let dir = TempDir::new().unwrap();
-        let teams_dir = dir.path().join(".atta/teams");
+        let teams_dir = dir.path().join(".agix/teams");
         let written = write_lock_file(&teams_dir, "desktop").unwrap();
         assert_eq!(written.pid, std::process::id());
         assert!(teams_dir.join(".lock").exists());
@@ -245,7 +245,7 @@ mod tests {
     #[test]
     fn write_reenters_when_the_recorded_pid_is_its_own() {
         let dir = TempDir::new().unwrap();
-        let teams_dir = dir.path().join(".atta/teams");
+        let teams_dir = dir.path().join(".agix/teams");
         write_lock_file(&teams_dir, "first").unwrap();
         let written = write_lock_file(&teams_dir, "second")
             .expect("re-writing under the same pid must be a reentry, not a rejection");
@@ -262,7 +262,7 @@ mod tests {
             return;
         };
         let dir = TempDir::new().unwrap();
-        let teams_dir = dir.path().join(".atta/teams");
+        let teams_dir = dir.path().join(".agix/teams");
         fs::create_dir_all(&teams_dir).unwrap();
         let alive = TeamsDirLock {
             pid: child.pid(),
@@ -286,7 +286,7 @@ mod tests {
     fn write_reclaims_the_lock_when_the_pid_was_reused_by_a_different_process() {
         let child = Child::spawn();
         let dir = TempDir::new().unwrap();
-        let teams_dir = dir.path().join(".atta/teams");
+        let teams_dir = dir.path().join(".agix/teams");
         fs::create_dir_all(&teams_dir).unwrap();
         let stale = TeamsDirLock {
             pid: child.pid(),
@@ -303,7 +303,7 @@ mod tests {
     #[test]
     fn write_reclaims_a_lock_from_a_dead_pid() {
         let dir = TempDir::new().unwrap();
-        let teams_dir = dir.path().join(".atta/teams");
+        let teams_dir = dir.path().join(".agix/teams");
         fs::create_dir_all(&teams_dir).unwrap();
         let stale = TeamsDirLock {
             pid: 999_999_999,
@@ -320,7 +320,7 @@ mod tests {
     #[test]
     fn release_removes_the_lock_and_is_a_noop_if_already_gone() {
         let dir = TempDir::new().unwrap();
-        let teams_dir = dir.path().join(".atta/teams");
+        let teams_dir = dir.path().join(".agix/teams");
         write_lock_file(&teams_dir, "me").unwrap();
         assert!(teams_dir.join(".lock").exists());
         release_lock_file(&teams_dir).unwrap();

@@ -1,4 +1,4 @@
-//! AttaCore — context compaction strategies (snip, micro-compact, collapse, LLM summarize).
+//! Agix — context compaction strategies (snip, micro-compact, collapse, LLM summarize).
 
 pub mod cached;
 pub mod cleanup;

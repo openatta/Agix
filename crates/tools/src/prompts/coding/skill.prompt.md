@@ -1,4 +1,4 @@
-Execute a user-invocable skill. Skills are loaded from ~/.atta/skills/ (global), ~/.atta/scenes/<scene>/skills/ (scene override), and <project>/.agents/skills/ (project-level).
+Execute a user-invocable skill. Skills are loaded from ~/.agix/skills/ (global), ~/.agix/scenes/<scene>/skills/ (scene override), and <project>/.agents/skills/ (project-level).
 
 When the user references a "slash command" or "/<something>", they are referring to a skill. Use this tool to invoke it.
 

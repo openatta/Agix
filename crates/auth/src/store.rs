@@ -1,4 +1,4 @@
-//! Token persistence. v0 uses plaintext JSON under `~/.atta/scenes/<scope>/tokens/<provider>.json`
+//! Token persistence. v0 uses plaintext JSON under `~/.agix/scenes/<scope>/tokens/<provider>.json`
 //! with `0600` perms on Unix. Future: switch to `keyring` crate so the OS
 //! keychain holds the secret.
 

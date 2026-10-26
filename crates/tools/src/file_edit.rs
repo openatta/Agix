@@ -531,7 +531,7 @@ mod tests {
                 json!({
                     "file_path": p.to_string_lossy(),
                     "old_string": "world",
-                    "new_string": "AttaCode"
+                    "new_string": "Agix"
                 }),
                 ctx_in(dir.path()),
                 ProgressSender::noop("t"),
@@ -540,7 +540,7 @@ mod tests {
             .unwrap();
         assert!(!r.is_error);
         let after = tokio::fs::read_to_string(&p).await.unwrap();
-        assert_eq!(after, "hello AttaCode\n");
+        assert_eq!(after, "hello Agix\n");
         match r.content {
             ToolResultContent::Text(s) => {
                 assert!(s.contains("1 edit") && s.contains("1 replacement"));
@@ -548,7 +548,7 @@ mod tests {
                 assert!(s.contains("---"));
                 assert!(s.contains("+++"));
                 assert!(s.contains("-hello world"));
-                assert!(s.contains("+hello AttaCode"));
+                assert!(s.contains("+hello Agix"));
             }
             _ => panic!(),
         }

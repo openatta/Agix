@@ -55,7 +55,7 @@ fn native_config(plugin: &Plugin, server: &McpPayload) -> Option<serde_json::Val
     }
 }
 
-/// A DSH payload as a stdio MCP server: `atta-dsh-bridge` loading the
+/// A DSH payload as a stdio MCP server: `agix-dsh-bridge` loading the
 /// plugin's entry module.
 fn dsh_bridge_config(plugin: &Plugin, server: &McpPayload) -> Option<serde_json::Value> {
     let entry = plugin.path(server.entry.as_ref()?);
@@ -85,7 +85,7 @@ fn dsh_bridge_config(plugin: &Plugin, server: &McpPayload) -> Option<serde_json:
 }
 
 /// Path of the bridge's entry module inside a checkout or an install.
-const BRIDGE_REL: &str = "bridges/atta-dsh-bridge/src/main.js";
+const BRIDGE_REL: &str = "bridges/agix-dsh-bridge/src/main.js";
 
 /// Where the bridge's entry point lives, or `None` when it cannot be found.
 ///
@@ -93,7 +93,7 @@ const BRIDGE_REL: &str = "bridges/atta-dsh-bridge/src/main.js";
 /// so a shipped binary would carry the build machine's absolute path and
 /// point at a directory that exists on no user's computer.
 ///
-/// Instead, `ATTA_DSH_BRIDGE` wins if it points at a file, and otherwise the
+/// Instead, `AGIX_DSH_BRIDGE` wins if it points at a file, and otherwise the
 /// search walks up from the running executable. Every candidate is checked
 /// for existence: handing `node` a script that is not there produces a
 /// failure message about node, from a process we did not start, with nothing
@@ -105,14 +105,14 @@ fn locate_bridge(override_path: Option<PathBuf>) -> Option<PathBuf> {
         }
         tracing::warn!(
             path = %p.display(),
-            "ATTA_DSH_BRIDGE does not point at a file; falling back to the search"
+            "AGIX_DSH_BRIDGE does not point at a file; falling back to the search"
         );
     }
-    crate::locate::search_near_executable(&[BRIDGE_REL, "atta-dsh-bridge/src/main.js"])
+    crate::locate::search_near_executable(&[BRIDGE_REL, "agix-dsh-bridge/src/main.js"])
 }
 
 fn bridge_entry_path() -> Option<PathBuf> {
-    locate_bridge(std::env::var("ATTA_DSH_BRIDGE").ok().map(Into::into))
+    locate_bridge(std::env::var("AGIX_DSH_BRIDGE").ok().map(Into::into))
 }
 
 #[cfg(test)]
@@ -155,6 +155,6 @@ mod tests {
     fn the_search_finds_the_repo_copy_from_a_test_binary() {
         let found = locate_bridge(None).expect("the in-repo bridge should be reachable");
         assert!(found.is_file());
-        assert!(found.ends_with("atta-dsh-bridge/src/main.js"), "{found:?}");
+        assert!(found.ends_with("agix-dsh-bridge/src/main.js"), "{found:?}");
     }
 }

@@ -1,17 +1,17 @@
 # template_project
 
-AttaCore 测试系统用的模板项目 fixture。目录结构就是一个真实项目的项目级布局
+Agix 测试系统用的模板项目 fixture。目录结构就是一个真实项目的项目级布局
 （`docs/ARCHITECTURE.md` 的「磁盘布局」一节），AGENT/SKILLS/HOOK/RULES/MCP 全部配好，
 用来验证"配置真的生效"，不是只测裸 Agent。
 
 | 配置面 | 位置 | 验证点 |
 |---|---|---|
-| 指令入口 | `AGENTS.md` | 引用 `.atta/rules/testing.md` |
+| 指令入口 | `AGENTS.md` | 引用 `.agix/rules/testing.md` |
 | Skill | `.agents/skills/code-review/SKILL.md` | 项目级 skill 能被发现 |
-| 自定义 subagent | `.atta/agents/reviewer.md` | `AgentTool` 能列出/派生这个自定义类型 |
-| Rule | `.atta/rules/testing.md` | 惰性发现（只读首行），被 `AGENTS.md` 显式引用 |
-| Hook | `.atta/hooks/pre_bash_log.sh` + `.atta/settings.json` 的 `hooks_config.PreToolUse` | 每次 Bash 调用会在 `.atta/hooks_log/pre_bash_log.jsonl` 留一行记录 |
-| MCP | `.atta/settings.json` 的 `mcp_servers.demo` | 真的能连上，`ping` 工具真的能调 |
+| 自定义 subagent | `.agix/agents/reviewer.md` | `AgentTool` 能列出/派生这个自定义类型 |
+| Rule | `.agix/rules/testing.md` | 惰性发现（只读首行），被 `AGENTS.md` 显式引用 |
+| Hook | `.agix/hooks/pre_bash_log.sh` + `.agix/settings.json` 的 `hooks_config.PreToolUse` | 每次 Bash 调用会在 `.agix/hooks_log/pre_bash_log.jsonl` 留一行记录 |
+| MCP | `.agix/settings.json` 的 `mcp_servers.demo` | 真的能连上，`ping` 工具真的能调 |
 
 ## 关于 `mcp_servers.demo`
 

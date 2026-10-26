@@ -1,7 +1,7 @@
 //! MCP 协议特性的工具包装：`ListMcpResources` / `ReadMcpResource`。
 //!
-//! **D1 **：原 `attacode-tools/src/mcp_tools.rs`，搬到这里以解除 tools →
-//! mcp 的反向依赖。CLI 直接从 `attacode_mcp::tools::{...}` 装配。
+//! **D1 **：原 `agix-tools/src/mcp_tools.rs`，搬到这里以解除 tools →
+//! mcp 的反向依赖。CLI 直接从 `agix_mcp::tools::{...}` 装配。
 //!
 //! 设计取舍：
 //! - **不绑定具体 server name**：列资源时枚举所有 connected server 并合并
@@ -290,10 +290,10 @@ pub fn make_mcp_tools(
 
 // ============ DispatchMcpTool ============
 //
-// **D1 **: moved from `attacode-tools/src/saas_stubs.rs`.
+// **D1 **: moved from `agix-tools/src/saas_stubs.rs`.
 //
 // Introspection tool: lists which MCP servers have registered which tools.
-// Because AttaCode flat-mounts each server's tools under `mcp__<server>__<tool>`
+// Because Agix flat-mounts each server's tools under `mcp__<server>__<tool>`
 // names, this tool is used for discovery rather than dispatching calls.
 
 #[derive(Debug, Deserialize, JsonSchema, Default)]
@@ -327,7 +327,7 @@ impl Tool for DispatchMcpTool {
         serde_json::to_value(schemars::schema_for!(DispatchMcpInput)).expect("schema")
     }
     async fn prompt(&self, _: &PromptContext) -> String {
-        "Introspect MCP server tools. AttaCode flat-mounts each MCP server's tools \
+        "Introspect MCP server tools. Agix flat-mounts each MCP server's tools \
          under `mcp__<server>__<tool>` names — call them directly, no dispatcher \
          needed. This tool just lists what's available so you know the names."
             .into()
@@ -550,7 +550,7 @@ mod tests {
         assert!(!matches!(r, ValidationResult::Ok));
     }
 
-    /// **D1 **: DispatchMcpTool migrated here from `attacode-tools/src/saas_stubs.rs`;
+    /// **D1 **: DispatchMcpTool migrated here from `agix-tools/src/saas_stubs.rs`;
     /// keep the no-servers smoke test alongside the implementation.
     #[tokio::test]
     async fn mcp_dispatch_lists_zero_when_no_servers() {

@@ -10,8 +10,8 @@
 //! # Agent type registry
 //!
 //! The module defines built-in agent types (`builtin_agent_types()`) and can
-//! load user-defined types from a directory (e.g. `~/.atta/scenes/<scope>/agents/*.md`
-//! or `<project>/.atta/agents/*.md`) via `load_agent_types_from_dir()`. Each
+//! load user-defined types from a directory (e.g. `~/.agix/scenes/<scope>/agents/*.md`
+//! or `<project>/.agix/agents/*.md`) via `load_agent_types_from_dir()`. Each
 //! type specifies a system prompt and an allowed tool set, which
 //! `resolve_tools()` applies when spawning sub-agents.
 
@@ -54,7 +54,7 @@ use tools::worktree::create_worktree;
 /// [`apply_agent_type_overrides`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum AgentTypeSource {
-    /// Shipped with AttaCore.
+    /// Shipped with Agix.
     #[default]
     Builtin,
     /// Loaded from an `agents/` directory the user controls.
@@ -121,7 +121,7 @@ pub struct AgentTypeDefinition {
     pub system_prompt: String,
 }
 
-/// Return the five built-in agent types shipped with AttaCore.
+/// Return the five built-in agent types shipped with Agix.
 ///
 /// Each type specifies its allowed tool set and system prompt. Custom types
 /// can be loaded from disk via [`load_agent_types_from_dir`].
@@ -252,7 +252,7 @@ pub fn load_agent_types_from_dir(dir: &Path) -> Vec<AgentTypeDefinition> {
 /// A definition with the same `name` as a lower-tier one replaces it
 /// entirely (not field-merged — a type definition is one atomic unit,
 /// same convention as `task_models` overrides in the multi-provider LLM
-/// config). This means `.atta/agents/*.md` customization always wins over a
+/// config). This means `.agix/agents/*.md` customization always wins over a
 /// plugin's default, but a plugin's agent type still overrides the bare
 /// built-in of the same name.
 pub fn merge_agent_types(
@@ -362,7 +362,7 @@ impl SharedAgentTypeCatalog {
 
 /// Render the one-line-per-type catalog injected into `AgentTool::description()`
 /// so the model can see what `subagent_type` values are actually available
-/// (built-in + any custom types loaded from `.atta/agents/`) without a
+/// (built-in + any custom types loaded from `.agix/agents/`) without a
 /// separate discovery call. Sorted by name for stable output.
 fn describe_agent_types(
     agent_types: &std::collections::HashMap<String, AgentTypeDefinition>,
@@ -637,7 +637,7 @@ async fn write_sidechain_meta(
             .and_then(|v| v.as_str().map(|s| s.to_string()))
             .unwrap_or_else(|| "default".to_string()),
         engine_version: env!("CARGO_PKG_VERSION").to_string(),
-        attacode_version: env!("CARGO_PKG_VERSION").to_string(),
+        agix_version: env!("CARGO_PKG_VERSION").to_string(),
         parent_session_id,
         scene: Some(scene_id.to_string()),
         project_root: None,
@@ -932,8 +932,8 @@ async fn run_persistent_member_loop(
 /// parent's actual scope/paths (skills/hooks/agents/memory all resolve
 /// correctly), auth, sandbox policy, etc.
 /// Map a five-level `effort` (`low`/`medium`/`high`/`xhigh`/`max`) onto
-/// AttaCore's coarser `ThinkingMode` (`Off`/`Auto`/`On`/`OnBudget`).
-/// Lossy by construction — AttaCore has no separate effort axis, this is
+/// Agix's coarser `ThinkingMode` (`Off`/`Auto`/`On`/`OnBudget`).
+/// Lossy by construction — Agix has no separate effort axis, this is
 /// the closest existing knob, not a new concept. Unrecognized values are
 /// left as `None` (no override) rather than guessing.
 fn effort_to_thinking_mode(effort: &str) -> Option<ThinkingMode> {
@@ -1181,7 +1181,7 @@ struct Inner {
     /// Built-in types merged with any disk-loaded custom types (see
     /// `merge_agent_types`). Keyed by `subagent_type` name. `RwLock<Arc<..>>`
     /// (not a plain `Arc<..>`) so `agent_type_watcher::AgentTypeWatcher` can
-    /// swap the whole map in place when a `.atta/agents/*.md` file changes —
+    /// swap the whole map in place when a `.agix/agents/*.md` file changes —
     /// readers clone the inner `Arc` out under a brief read lock (see
     /// `Inner::agent_type_def`) rather than holding the guard, so a lookup
     /// never blocks a concurrent reload or vice versa.
@@ -1542,7 +1542,7 @@ impl Inner {
                     // An agent type may *narrow* the scene, never widen it
                     // (N-17).
                     //
-                    // Agent types are loaded from `.atta/agents/*.md`, which
+                    // Agent types are loaded from `.agix/agents/*.md`, which
                     // is repository content — on a cloned repo it is
                     // attacker-supplied. A scene's `tools()` whitelist is the
                     // enforcement point for "this session may not run shell
@@ -1751,7 +1751,7 @@ pub struct AgentTool {
 }
 
 impl AgentTool {
-    /// Construct with only the built-in agent types (no `.atta/agents/`
+    /// Construct with only the built-in agent types (no `.agix/agents/`
     /// scan) — convenience for callers that don't need custom types (e.g.
     /// tests, or embedders that manage their own catalog).
     pub fn new(
@@ -1770,7 +1770,7 @@ impl AgentTool {
     }
 
     /// `agent_dirs` are scanned low → high priority (see `merge_agent_types`)
-    /// for `.atta/agents/*.md` custom type definitions, on top of the 6
+    /// for `.agix/agents/*.md` custom type definitions, on top of the 6
     /// built-in types and any `plugin_agent_types`. Pass `&[]` for either to
     /// skip that tier.
     pub fn with_parent_tools(
@@ -2132,7 +2132,7 @@ impl AgentTool {
 
     /// Does `tool_name` match an `allowed_tools`/`disallowed_tools` entry?
     /// Exact match, or an MCP server-level pattern: `mcp__<server>` or
-    /// `mcp__<server>__*` matches every tool from that server (AttaCore's
+    /// `mcp__<server>__*` matches every tool from that server (Agix's
     /// MCP tools are already named `mcp__<server>__<tool>`, so this is a
     /// plain prefix check, not a general glob).
     fn tool_name_matches(tool_name: &str, pattern: &str) -> bool {
@@ -2272,7 +2272,7 @@ impl AgentTool {
     /// Core: run sub-agent and collect text output.
     ///
     /// `subagent_type` — when it names a type in the merged catalog (built-in
-    /// or `.atta/agents/*.md`) that declares a `model` override, that model
+    /// or `.agix/agents/*.md`) that declares a `model` override, that model
     /// is used instead of the parent's. `None` (or an unknown/type-less
     /// call, e.g. from the generic `AgentSpawner` bridge used by team/skill-fork)
     /// keeps the parent's model, matching prior behavior.
@@ -3474,7 +3474,7 @@ mod catalog_tests {
     #[test]
     fn load_agent_types_from_dir_parses_frontmatter() {
         let dir = std::env::temp_dir().join(format!(
-            "atta-agent-types-test-{}-{}",
+            "agix-agent-types-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -3500,7 +3500,7 @@ mod catalog_tests {
     #[test]
     fn load_agent_types_from_dir_parses_new_fields() {
         let dir = std::env::temp_dir().join(format!(
-            "atta-agent-types-test-newfields-{}-{}",
+            "agix-agent-types-test-newfields-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -3530,7 +3530,7 @@ mod catalog_tests {
     #[test]
     fn load_agent_types_from_dir_falls_back_to_first_paragraph_description() {
         let dir = std::env::temp_dir().join(format!(
-            "atta-agent-types-test-para-{}-{}",
+            "agix-agent-types-test-para-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -3554,7 +3554,7 @@ mod catalog_tests {
     #[test]
     fn preload_skills_text_includes_full_body_and_skips_missing_and_disabled() {
         let dir = std::env::temp_dir().join(format!(
-            "atta-skills-preload-test-{}-{}",
+            "agix-skills-preload-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -3637,7 +3637,7 @@ mod catalog_tests {
     #[test]
     fn merge_agent_types_disk_definition_overrides_builtin_by_name() {
         let dir = std::env::temp_dir().join(format!(
-            "atta-agent-types-test-{}-{}",
+            "agix-agent-types-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -3660,7 +3660,7 @@ mod catalog_tests {
     #[test]
     fn merge_agent_types_precedence_is_low_to_high_across_dirs() {
         let base = std::env::temp_dir().join(format!(
-            "atta-agent-types-test-{}-{}",
+            "agix-agent-types-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -3714,7 +3714,7 @@ mod catalog_tests {
     #[test]
     fn merge_agent_types_dirs_override_plugin_definition_of_same_name() {
         let dir = std::env::temp_dir().join(format!(
-            "atta-agent-types-test-{}-{}",
+            "agix-agent-types-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -4298,7 +4298,7 @@ mod catalog_tests {
     }
 
     /// Regression: `agent_types` used to be a build-time-only snapshot — a
-    /// `.atta/agents/*.md` file edited after `with_parent_tools()` had no
+    /// `.agix/agents/*.md` file edited after `with_parent_tools()` had no
     /// effect on a running `AgentTool` at all, not even a partial one; the
     /// only way to pick it up was rebuilding the whole `Agent`. This
     /// exercises the real `notify` watcher end to end (not just the merge
@@ -4308,7 +4308,7 @@ mod catalog_tests {
     #[test]
     fn editing_an_agent_type_file_is_picked_up_without_rebuilding_agent_tool() {
         let dir = std::env::temp_dir().join(format!(
-            "atta-agent-watch-test-{}-{}",
+            "agix-agent-watch-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -5270,7 +5270,7 @@ mod catalog_tests {
     /// nothing real to find.
     fn parent_settings_for_test(scope: &str) -> (Settings, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!(
-            "atta-subagent-test-{}-{}",
+            "agix-subagent-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -5434,7 +5434,7 @@ mod catalog_tests {
     async fn subagent_transcript_is_written_as_a_linked_sidechain() {
         let (agent_tool, tools, _runs, dir) = wired_agent_tool("coding");
         let history_dir = std::env::temp_dir().join(format!(
-            "atta-subagent-history-test-{}-{}",
+            "agix-subagent-history-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -5499,7 +5499,7 @@ mod catalog_tests {
     async fn cancelled_subagent_run_writes_no_terminal_marker() {
         let (agent_tool, tools, _runs, dir) = wired_agent_tool("coding");
         let history_dir = std::env::temp_dir().join(format!(
-            "atta-subagent-cancelled-test-{}-{}",
+            "agix-subagent-cancelled-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -5554,7 +5554,7 @@ mod catalog_tests {
     async fn subagent_run_writes_a_terminal_marker_when_its_task_concludes() {
         let (agent_tool, tools, _runs, dir) = wired_agent_tool("coding");
         let history_dir = std::env::temp_dir().join(format!(
-            "atta-subagent-terminal-test-{}-{}",
+            "agix-subagent-terminal-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -5889,7 +5889,7 @@ mod catalog_tests {
         );
 
         // N-17: an agent type may *narrow* the scene, never widen it.
-        // `.atta/agents/*.md` is repository content; letting it name
+        // `.agix/agents/*.md` is repository content; letting it name
         // `scene: coding` (whose empty allow-list means "every registered
         // tool", `Bash` included) would let a file in the repo hand a
         // Research session — which forbids `Bash` by design — a shell.
@@ -6092,7 +6092,7 @@ mod catalog_tests {
     #[test]
     fn agent_type_frontmatter_parses_scene_override() {
         let dir = std::env::temp_dir().join(format!(
-            "atta-agent-scene-front-{}-{}",
+            "agix-agent-scene-front-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -6166,7 +6166,7 @@ mod catalog_tests {
     async fn resume_agent_writes_a_terminal_marker_when_its_task_concludes() {
         let (agent_tool, tools, _runs, dir) = wired_agent_tool("coding");
         let history_dir = std::env::temp_dir().join(format!(
-            "atta-resume-terminal-test-{}-{}",
+            "agix-resume-terminal-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -6245,7 +6245,7 @@ mod catalog_tests {
     async fn cancelled_resume_agent_writes_no_terminal_marker() {
         let (agent_tool, tools, _runs, dir) = wired_agent_tool("coding");
         let history_dir = std::env::temp_dir().join(format!(
-            "atta-resume-cancelled-test-{}-{}",
+            "agix-resume-cancelled-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

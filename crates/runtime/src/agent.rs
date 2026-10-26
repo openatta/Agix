@@ -88,7 +88,7 @@ pub enum Attachment {
 pub enum PersistScope {
     /// In-memory only, this session.
     Session,
-    /// In-memory for this session AND written to `.atta/settings.local.json`
+    /// In-memory for this session AND written to `.agix/settings.local.json`
     /// so future sessions in this project also allow it.
     Local,
 }
@@ -108,7 +108,7 @@ pub enum PermissionDecision {
     /// Like `Permit`, but also persists an Allow rule beyond this single
     /// tool call — see `base::interface::permission::Permission::add_persistent_allow`.
     /// `scope: Session` keeps it in-memory only (rest of this session);
-    /// `scope: Local` additionally writes it to `.atta/settings.local.json`
+    /// `scope: Local` additionally writes it to `.agix/settings.local.json`
     /// so future sessions in this project inherit it too.
     PermitAlways {
         scope: PersistScope,
@@ -664,7 +664,7 @@ impl Agent {
     /// minimize startup latency.
     async fn warmup(&mut self) {
         // NOTE: the actual project root, not `local_data_dir` itself (which
-        // is `<project_root>/.atta` — see `PathSettings::project_root` docs).
+        // is `<project_root>/.agix` — see `PathSettings::project_root` docs).
         let cwd = self.settings.paths.project_root();
         let paths = base::paths::ConfigPaths::from_settings(&self.settings.paths);
         let base_url = self.settings.model.base_url.clone();
@@ -1088,8 +1088,8 @@ pub struct Builder {
 /// instead of calling it per session — see `Builder::skill_catalog`'s doc
 /// comment.
 ///
-/// Scans `~/.atta/skills/` (global default), then
-/// `~/.atta/scenes/<scope>/skills/` (scene override — same name wins,
+/// Scans `~/.agix/skills/` (global default), then
+/// `~/.agix/scenes/<scope>/skills/` (scene override — same name wins,
 /// `load_dir_subdirs` overwrites by name), then `<project>/.agents/skills/`
 /// (project — external fact standard, also scanned by Codex).
 /// `load_dir_subdirs` (not the flat-only `load_dir`) so both `<name>.md` and
@@ -1167,7 +1167,7 @@ fn build_skill_manager(settings: &Settings, watch: bool) -> skills::manager::Ski
 ///
 /// A malformed value degrades to no hooks + a `tracing::warn!` rather than
 /// failing the build — same soft-degrade philosophy as the rest of
-/// settings.json. Also wires the `.atta/hooks/` three-tier search path
+/// settings.json. Also wires the `.agix/hooks/` three-tier search path
 /// (project > scene > global) so `Command` hooks can reference a bare
 /// script name — see `hooks::HookRunner::with_hooks_search_dirs` docs.
 ///
@@ -1224,7 +1224,7 @@ fn build_hook_runner(
         }
     }
     let hooks_search_dirs = vec![
-        settings.paths.project_root().join(".atta").join("hooks"),
+        settings.paths.project_root().join(".agix").join("hooks"),
         settings.paths.user_data_dir.join("hooks"),
         settings.paths.global_data_dir.join("hooks"),
     ];
@@ -2007,7 +2007,7 @@ impl Builder {
         // had zero production construction sites despite the CodingScene
         // system prompt instructing the model to use it (see
         // `render_session_guidance`'s `has_agent` check). Catalog is built
-        // from the 6 built-in types + any custom `.atta/agents/*.md`
+        // from the 6 built-in types + any custom `.agix/agents/*.md`
         // definitions, project > scene > global (same override order as
         // skills). `EngineConfig` isn't threaded through `Builder` today, so
         // this derives a minimal one from `settings.model` — just enough for
@@ -2043,7 +2043,7 @@ impl Builder {
                     shared,
                 )
             } else {
-                let project_agents_dir = settings.paths.project_root().join(".atta").join("agents");
+                let project_agents_dir = settings.paths.project_root().join(".agix").join("agents");
                 let scene_agents_dir = settings.paths.user_data_dir.join("agents");
                 let global_agents_dir = settings.paths.global_data_dir.join("agents");
                 let agent_dirs: [&std::path::Path; 3] =
@@ -2313,7 +2313,7 @@ impl Builder {
         );
 
         // Cron tools + the scheduler that actually drains the store.
-        // `~/.atta/scenes/<scope>/scheduled_tasks.json` is the exact path
+        // `~/.agix/scenes/<scope>/scheduled_tasks.json` is the exact path
         // `CronCreate`'s own prompt promises the user for `durable: true`
         // jobs; session-only jobs never touch disk.
         //

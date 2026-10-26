@@ -1,7 +1,7 @@
 //! 内置 skills —— 15 个常用 prompt 模板。
 //!
 //! 不写盘、不需要用户设置；每 session 自动注入到 skill 列表。用户在
-//! `~/.atta/skills/<name>/SKILL.md`（全局默认）、`~/.atta/scenes/<scene>/skills/<name>/SKILL.md`
+//! `~/.agix/skills/<name>/SKILL.md`（全局默认）、`~/.agix/scenes/<scene>/skills/<name>/SKILL.md`
 //! （scene 覆盖）或 `<cwd>/.agents/skills/<name>/SKILL.md`（项目级）创建同名 skill 即覆盖
 //! （disk 优先，因为 collect_skills 把 disk 后入但 dedup 不存在；同名时 `/<name>` slash 命中
 //! 第一个 —— 即用户的）。
@@ -24,11 +24,11 @@
 //! | `init` | 引导用户创建新项目的 AGENTS.md 文件 |
 //! | `security-review` | 审查代码变更中的安全漏洞 |
 //! | `rename` | 重命名当前对话会话标题 |
-//! | `import` | 检测并从 Claude Code/Codex/Cursor 导入配置到 AGENTS.md/.agents/.atta |
+//! | `import` | 检测并从 Claude Code/Codex/Cursor 导入配置到 AGENTS.md/.agents/.agix |
 //!
 //! 还有几个我们刻意不带：它们要么依赖 Anthropic SaaS / Chrome 扩展，要么是内部子流程。
 //!
-//! 架构照搬自参考实现，prompt 文本重写以贴 attacode 工具命名 + 不依赖 TS 特定能力。
+//! 架构照搬自参考实现，prompt 文本重写以贴 agix 工具命名 + 不依赖 TS 特定能力。
 
 use base::frozen::{SkillEntry, SkillSource};
 use std::path::PathBuf;
@@ -101,7 +101,7 @@ pub fn bundled_skills() -> Vec<SkillEntry> {
         },
         SkillEntry {
             name: "remember".into(),
-            description: "Save a fact / preference / decision to cross-session memory (~/.atta/memory).".into(),
+            description: "Save a fact / preference / decision to cross-session memory (~/.agix/memory).".into(),
             when_to_use: Some(
                 "When the user explicitly asks to remember something, or you learn a stable preference."
                     .into(),
@@ -180,7 +180,7 @@ pub fn bundled_skills() -> Vec<SkillEntry> {
         },
         SkillEntry {
             name: "import".into(),
-            description: "Detect and import configuration from Claude Code, Codex, or Cursor into this project's AGENTS.md/.agents/.atta layout.".into(),
+            description: "Detect and import configuration from Claude Code, Codex, or Cursor into this project's AGENTS.md/.agents/.agix layout.".into(),
             when_to_use: Some(
                 "When the user asks to import/migrate settings from Claude Code, Codex, or Cursor, or runs /import."
                     .into(),
@@ -446,7 +446,7 @@ Persist a fact / decision / preference to the per-project memory directory so fu
 
 ## Where things go
 
-The memory dir is `~/.atta/memory/<sha256(canonical_cwd)[..16]>/` (global, not scene-scoped) — already created and surfaced via the `# memory (cross-session)` system prompt block.
+The memory dir is `~/.agix/memory/<sha256(canonical_cwd)[..16]>/` (global, not scene-scoped) — already created and surfaced via the `# memory (cross-session)` system prompt block.
 
 - **`MEMORY.md`** — one-line index. Each entry like:
   `- [Title](file.md) — short hook (under ~150 chars)`
@@ -512,10 +512,10 @@ Make a precise change to one of the settings.json layers without nuking adjacent
 
 1. Read the target file first. If absent, create with `{}` and proceed.
 2. Identify which layer to change (low → high priority, higher wins):
-   - Global (applies to every scene): `~/.atta/settings.json`
-   - Scene-specific override: `~/.atta/scenes/<scene>/settings.json`
-   - Project (committed): `<cwd>/.atta/settings.json`
-   - Local override (gitignored): `<cwd>/.atta/settings.local.json`
+   - Global (applies to every scene): `~/.agix/settings.json`
+   - Scene-specific override: `~/.agix/scenes/<scene>/settings.json`
+   - Project (committed): `<cwd>/.agix/settings.json`
+   - Local override (gitignored): `<cwd>/.agix/settings.local.json`
 3. Preserve `$schema` and any unknown fields verbatim — other tools may write fields we don't model.
 
 ## Common edits
@@ -533,7 +533,7 @@ Make a precise change to one of the settings.json layers without nuking adjacent
 
 const KEYBINDINGS_HELP: &str = r#"# Keybindings Help: CLI/TUI Keyboard Shortcuts
 
-Reference for navigating the Claude Code / AttaCode CLI and TUI using keyboard shortcuts.
+Reference for navigating the Claude Code / Agix CLI and TUI using keyboard shortcuts.
 
 ## Common Shortcuts
 
@@ -755,7 +755,7 @@ Rename the current conversation session to a descriptive title that makes it eas
 const IMPORT: &str = r#"# Import: Migrate Config from Claude Code / Codex / Cursor
 
 Bring project configuration left behind by another agent tool into this
-engine's layout: `AGENTS.md` + `.agents/skills/` + `.atta/rules/`.
+engine's layout: `AGENTS.md` + `.agents/skills/` + `.agix/rules/`.
 
 Do the work with the ordinary file tools. There is no `Import` tool — the
 detection rules and output layout change often enough that they belong here,
@@ -816,7 +816,7 @@ the two must be able to re-run over each other's output.
 
 **cursor**
 - Merge `.cursorrules` (plain text) into `AGENTS.md` under tag `CURSOR_RULES`
-- Convert each `.cursor/rules/*.mdc` to `.atta/rules/<name>.md`
+- Convert each `.cursor/rules/*.mdc` to `.agix/rules/<name>.md`
 - An `.mdc` whose frontmatter has `alwaysApply: true` should also be
   referenced from `AGENTS.md`, so it is actually loaded
 
@@ -829,7 +829,7 @@ the two must be able to re-run over each other's output.
 - Don't invent a source the detection step did not find
 - Don't import a source the user did not pick
 - Don't overwrite existing project skills or rules
-- Don't touch `.atta/.imported.json` — that belongs to the automatic path
+- Don't touch `.agix/.imported.json` — that belongs to the automatic path
 "#;
 
 #[cfg(test)]

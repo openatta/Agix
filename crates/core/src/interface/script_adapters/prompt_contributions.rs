@@ -404,7 +404,7 @@ mod tests {
         Arc::new(ScriptCarrier::new(
             Arc::new(Blocking(f)),
             ScriptSource {
-                id: "./.atta/scripts/contribute.js".into(),
+                id: "./.agix/scripts/contribute.js".into(),
                 origin,
                 code: String::new(),
             },
@@ -422,7 +422,7 @@ mod tests {
     ) -> Arc<ScriptCarrier> {
         carrier_of(
             f,
-            BlockOrigin::Script("./.atta/scripts/contribute.js".into()),
+            BlockOrigin::Script("./.agix/scripts/contribute.js".into()),
         )
     }
 
@@ -445,7 +445,7 @@ mod tests {
         assert_eq!(text_of(&block, &ctx()).as_deref(), Some("be brief"));
         assert_eq!(
             block.origin,
-            BlockOrigin::Script("./.atta/scripts/contribute.js".into()),
+            BlockOrigin::Script("./.agix/scripts/contribute.js".into()),
             "the block must carry whose it is, not the kernel's name"
         );
     }

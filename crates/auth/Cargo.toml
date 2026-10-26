@@ -5,7 +5,7 @@ edition      = { workspace = true }
 rust-version = { workspace = true }
 license      = { workspace = true }
 publish      = false
-description  = "AttaCore — OAuth 2.0 PKCE client"
+description  = "Agix — OAuth 2.0 PKCE client"
 
 [dependencies]
 base          = { workspace = true }

@@ -1,10 +1,10 @@
-//! `.atta/rules/` discovery — a lightweight, lazy index surfaced in the
+//! `.agix/rules/` discovery — a lightweight, lazy index surfaced in the
 //! system prompt so the model knows rule documents exist without eagerly
 //! loading their content.
 //!
 //! Rules stay intentionally lazy (Read-tool-on-demand, not auto-injected in
 //! full). This module only
-//! closes the "orphaned rule file" gap: a `.md` file sitting in `.atta/rules/`
+//! closes the "orphaned rule file" gap: a `.md` file sitting in `.agix/rules/`
 //! that nobody referenced from `AGENTS.md` used to be invisible to the model.
 //! Discovery still only reads each file's first line, never full content.
 //!
@@ -39,7 +39,7 @@ pub fn default_rule_sources(paths: &PathSettings) -> Vec<Box<dyn RuleProvider>> 
         Box::new(RuleDirectory::new(paths.global_data_dir.join("rules"))),
         Box::new(RuleDirectory::new(paths.user_data_dir.join("rules"))),
         Box::new(RuleDirectory::new(
-            paths.project_root().join(".atta").join("rules"),
+            paths.project_root().join(".agix").join("rules"),
         )),
     ]
 }
@@ -76,7 +76,7 @@ pub fn build_rules_prompt(paths: &PathSettings) -> Option<String> {
     let mut lines = vec![
         "## Available Rules".to_string(),
         String::new(),
-        "The following rule documents exist under `.atta/rules/`. They are NOT \
+        "The following rule documents exist under `.agix/rules/`. They are NOT \
          auto-loaded — use the Read tool to load one when it's relevant to the \
          current task."
             .to_string(),
@@ -105,7 +105,7 @@ mod tests {
         PathSettings {
             user_data_dir: scene.to_path_buf(),
             global_data_dir: global.to_path_buf(),
-            local_data_dir: project.join(".atta"),
+            local_data_dir: project.join(".agix"),
             scope: "code".into(),
         }
     }
@@ -127,7 +127,7 @@ mod tests {
         let root = TempDir::new().unwrap();
         let project = root.path().join("project");
         write_rule(
-            &project.join(".atta").join("rules"),
+            &project.join(".agix").join("rules"),
             "security.md",
             "# Security guidelines\n\nBody text here.",
         );
@@ -151,7 +151,7 @@ mod tests {
         write_rule(&global.join("rules"), "testing.md", "from global");
         write_rule(&scene.join("rules"), "testing.md", "from scene");
         write_rule(
-            &project.join(".atta").join("rules"),
+            &project.join(".agix").join("rules"),
             "testing.md",
             "from project",
         );
@@ -169,7 +169,7 @@ mod tests {
         let global = root.path().join("global");
         write_rule(&global.join("rules"), "architecture.md", "global rule");
         write_rule(
-            &project.join(".atta").join("rules"),
+            &project.join(".agix").join("rules"),
             "security.md",
             "project rule",
         );
@@ -187,7 +187,7 @@ mod tests {
         let root = TempDir::new().unwrap();
         let project = root.path().join("project");
         write_rule(
-            &project.join(".atta").join("rules"),
+            &project.join(".agix").join("rules"),
             "testing.md",
             "Testing conventions",
         );

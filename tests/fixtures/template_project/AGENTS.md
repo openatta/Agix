@@ -1,6 +1,6 @@
 # 项目指令
 
-这是 AttaCore 测试系统的模板项目——一个最小但配置完整（agent/skills/hooks/rules/mcp 全配好）的
+这是 Agix 测试系统的模板项目——一个最小但配置完整（agent/skills/hooks/rules/mcp 全配好）的
 fixture，供 `.test` 用例在其**拷贝**上运行，验证配置真的生效，而不是只测裸 Agent。
 
 ## 项目结构
@@ -23,7 +23,7 @@ python3 src/main.py
 ## 详细规则
 
 完成编码任务前，遵循：
-- `.atta/rules/testing.md`
+- `.agix/rules/testing.md`
 
 ## 可用 Skills
 

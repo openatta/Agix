@@ -5,7 +5,7 @@ edition      = { workspace = true }
 rust-version = { workspace = true }
 license      = { workspace = true }
 publish      = false
-description  = "AttaCore — telemetry, usage stats, LLM call recording, perf"
+description  = "Agix — telemetry, usage stats, LLM call recording, perf"
 
 [dependencies]
 base          = { workspace = true }

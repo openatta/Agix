@@ -97,7 +97,7 @@ impl Tool for PushNotificationTool {
             let escaped = msg.replace('"', "\\\"");
             let spec = ProcessSpec::new("osascript", &ctx.cwd).args([
                 "-e".to_string(),
-                format!(r#"display notification "{escaped}" with title "AttaCode""#),
+                format!(r#"display notification "{escaped}" with title "Agix""#),
             ]);
 
             match capture(&ctx.exec, spec, ctx.cancel.clone()).await {

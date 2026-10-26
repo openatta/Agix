@@ -260,15 +260,15 @@ async fn the_gate_honours_a_configured_exemption() {
 
 // ── the two review findings that broke real work ──
 
-/// A sub-agent's worktree lives at `<repo>/.atta/worktrees/<slug>` and is its
-/// cwd. Guarding the `.atta` directory by name denied every write the
+/// A sub-agent's worktree lives at `<repo>/.agix/worktrees/<slug>` and is its
+/// cwd. Guarding the `.agix` directory by name denied every write the
 /// sub-agent was created to make — while the thing actually worth guarding is
 /// the settings file, which is one name in that directory rather than all of
 /// them.
 #[tokio::test]
 async fn a_sub_agent_can_write_inside_its_worktree() {
     let repo = tempfile::tempdir().unwrap();
-    let worktree = repo.path().join(".atta/worktrees/feature");
+    let worktree = repo.path().join(".agix/worktrees/feature");
     std::fs::create_dir_all(&worktree).unwrap();
 
     let d = write_decision(&ctx_in(&worktree), &worktree.join("src/main.rs")).await;
@@ -278,18 +278,18 @@ async fn a_sub_agent_can_write_inside_its_worktree() {
     );
 }
 
-/// And the thing that guarding `.atta` was for still holds.
+/// And the thing that guarding `.agix` was for still holds.
 #[tokio::test]
 async fn the_engines_own_settings_stay_guarded() {
     let repo = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(repo.path().join(".atta")).unwrap();
-    for name in [".atta/settings.json", ".atta/settings.local.json"] {
+    std::fs::create_dir_all(repo.path().join(".agix")).unwrap();
+    for name in [".agix/settings.json", ".agix/settings.local.json"] {
         let d = write_decision(&ctx_in(repo.path()), &repo.path().join(name)).await;
         assert!(denied(&d), "{name}: {d:?}");
     }
     // A file that merely lives beside them is not the settings.
     assert!(matches!(
-        write_decision(&ctx_in(repo.path()), &repo.path().join(".atta/notes.md")).await,
+        write_decision(&ctx_in(repo.path()), &repo.path().join(".agix/notes.md")).await,
         PermissionDecision::Allow { .. }
     ));
 }

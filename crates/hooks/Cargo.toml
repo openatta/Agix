@@ -5,7 +5,7 @@ edition      = { workspace = true }
 rust-version = { workspace = true }
 license      = { workspace = true }
 publish      = false
-description  = "AttaCore — lifecycle hook runner"
+description  = "Agix — lifecycle hook runner"
 
 [dependencies]
 base          = { workspace = true }

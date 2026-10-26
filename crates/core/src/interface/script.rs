@@ -435,7 +435,7 @@ mod tests {
 
     fn script(origin: BlockOrigin) -> ScriptSource {
         ScriptSource {
-            id: "./.atta/scripts/prompt.js".into(),
+            id: "./.agix/scripts/prompt.js".into(),
             origin,
             code: "export function onAssemble(p) { return p }".into(),
         }
@@ -444,7 +444,7 @@ mod tests {
     fn carrier(engine: Arc<dyn ScriptEngine>, limits: ScriptLimits) -> ScriptCarrier {
         ScriptCarrier::new(
             engine,
-            script(BlockOrigin::Script("./.atta/scripts/prompt.js".into())),
+            script(BlockOrigin::Script("./.agix/scripts/prompt.js".into())),
             "prompt.assemble",
             limits,
         )
@@ -569,7 +569,7 @@ mod tests {
         let ledger = Arc::new(ScriptLedger::new());
         let c = ScriptCarrier::new(
             Arc::new(RefusingEngine),
-            script(BlockOrigin::Script("./.atta/scripts/prompt.js".into())),
+            script(BlockOrigin::Script("./.agix/scripts/prompt.js".into())),
             "tool.result",
             ScriptLimits::default(),
         )
@@ -588,7 +588,7 @@ mod tests {
         );
         let first = &ledger.records()[0];
         assert_eq!(first.point, "tool.result");
-        assert_eq!(first.script, "./.atta/scripts/prompt.js");
+        assert_eq!(first.script, "./.agix/scripts/prompt.js");
     }
 
     /// A carrier nobody asked to record is not an error and not a panic — the
@@ -884,7 +884,7 @@ mod prompt_hook_tests {
             Arc::new(ScriptCarrier::new(
                 engine,
                 ScriptSource {
-                    id: "./.atta/scripts/prompt.js".into(),
+                    id: "./.agix/scripts/prompt.js".into(),
                     origin,
                     code: String::new(),
                 },
@@ -913,12 +913,12 @@ mod prompt_hook_tests {
                 PromptBlock::system("second section").named(names::SCENE_SKELETON),
                 PromptBlock::system("third section").named(names::SCENE_SKELETON),
             ],
-            Authority::local(BlockOrigin::Script("./.atta/scripts/prompt.js".into())),
+            Authority::local(BlockOrigin::Script("./.agix/scripts/prompt.js".into())),
         );
 
         let hook = script_hook(
             engine_that(|blocks| blocks),
-            BlockOrigin::Script("./.atta/scripts/prompt.js".into()),
+            BlockOrigin::Script("./.agix/scripts/prompt.js".into()),
         );
         hook.on_assemble_async(&mut assembly, &ctx())
             .await
@@ -945,7 +945,7 @@ mod prompt_hook_tests {
                 PromptBlock::system("first section").named(names::SCENE_SKELETON),
                 PromptBlock::system("second section").named(names::SCENE_SKELETON),
             ],
-            Authority::local(BlockOrigin::Script("./.atta/scripts/prompt.js".into())),
+            Authority::local(BlockOrigin::Script("./.agix/scripts/prompt.js".into())),
         );
 
         let hook = script_hook(
@@ -953,7 +953,7 @@ mod prompt_hook_tests {
                 blocks[1]["content"] = serde_json::json!("second section, edited");
                 blocks
             }),
-            BlockOrigin::Script("./.atta/scripts/prompt.js".into()),
+            BlockOrigin::Script("./.agix/scripts/prompt.js".into()),
         );
         let refused = hook
             .on_assemble_async(&mut assembly, &ctx())
@@ -991,11 +991,11 @@ mod prompt_hook_tests {
         });
         let hook = script_hook(
             engine,
-            BlockOrigin::Script("./.atta/scripts/prompt.js".into()),
+            BlockOrigin::Script("./.agix/scripts/prompt.js".into()),
         );
         let hooks: Vec<(Arc<dyn AsyncAssemblyHook>, Authority)> = vec![(
             Arc::new(hook),
-            Authority::local(BlockOrigin::Script("./.atta/scripts/prompt.js".into())),
+            Authority::local(BlockOrigin::Script("./.agix/scripts/prompt.js".into())),
         )];
 
         let out = run_async_assembly_hooks(prompt(), &hooks, &ctx()).await;
@@ -1045,11 +1045,11 @@ mod prompt_hook_tests {
         ));
         let hook = script_hook(
             engine,
-            BlockOrigin::Script("./.atta/scripts/prompt.js".into()),
+            BlockOrigin::Script("./.agix/scripts/prompt.js".into()),
         );
         let hooks: Vec<(Arc<dyn AsyncAssemblyHook>, Authority)> = vec![(
             Arc::new(hook),
-            Authority::local(BlockOrigin::Script("./.atta/scripts/prompt.js".into())),
+            Authority::local(BlockOrigin::Script("./.agix/scripts/prompt.js".into())),
         )];
 
         let out = run_async_assembly_hooks(prompt(), &hooks, &ctx()).await;
@@ -1068,8 +1068,8 @@ mod prompt_hook_tests {
             Arc::new(ScriptCarrier::new(
                 engine,
                 ScriptSource {
-                    id: "./.atta/scripts/slow.js".into(),
-                    origin: BlockOrigin::Script("./.atta/scripts/slow.js".into()),
+                    id: "./.agix/scripts/slow.js".into(),
+                    origin: BlockOrigin::Script("./.agix/scripts/slow.js".into()),
                     code: String::new(),
                 },
                 "prompt.assemble",
@@ -1082,7 +1082,7 @@ mod prompt_hook_tests {
         );
         let hooks: Vec<(Arc<dyn AsyncAssemblyHook>, Authority)> = vec![(
             Arc::new(hook),
-            Authority::local(BlockOrigin::Script("./.atta/scripts/slow.js".into())),
+            Authority::local(BlockOrigin::Script("./.agix/scripts/slow.js".into())),
         )];
 
         let out = run_async_assembly_hooks(prompt(), &hooks, &ctx()).await;

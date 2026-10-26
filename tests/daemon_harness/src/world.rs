@@ -4,10 +4,10 @@
 //! root, a scene root, one or more project roots, and somewhere to put the
 //! socket — and they reach them differently: this process hands
 //! `StaticDaemonPaths` the paths outright, a spawned one is told where they
-//! are with `ATTA_CONFIG_HOME` and `HOME`. A scenario knows only the
+//! are with `AGIX_CONFIG_HOME` and `HOME`. A scenario knows only the
 //! `World`, and each mode translates it.
 //!
-//! The layout mirrors a real `~/.atta` closely enough that a daemon cannot
+//! The layout mirrors a real `~/.agix` closely enough that a daemon cannot
 //! tell the difference, which is the point: the resolution code under test is
 //! the production code, not a test-only shortcut around it.
 
@@ -36,9 +36,9 @@ impl World {
         self.dir.path().join("home")
     }
 
-    /// `ATTA_CONFIG_HOME` — the cross-scene layer, `~/.atta`'s stand-in.
+    /// `AGIX_CONFIG_HOME` — the cross-scene layer, `~/.agix`'s stand-in.
     pub fn global_root(&self) -> PathBuf {
-        self.home().join(".atta")
+        self.home().join(".agix")
     }
 
     pub fn config_root(&self, scene: &str) -> PathBuf {
@@ -72,7 +72,7 @@ impl World {
         settings: &serde_json::Value,
     ) -> anyhow::Result<()> {
         let root = self.project(project)?;
-        write_json(&root.join(".atta").join("settings.json"), settings)
+        write_json(&root.join(".agix").join("settings.json"), settings)
     }
 
     /// Put a file inside a project — a script, a skill, whatever the case
@@ -116,7 +116,7 @@ impl World {
     ) -> anyhow::Result<PathBuf> {
         self.write_project_file(
             project,
-            &format!(".atta/agents/{name}.md"),
+            &format!(".agix/agents/{name}.md"),
             &format!("---\ndescription: {description}\n---\nbody\n"),
         )
     }

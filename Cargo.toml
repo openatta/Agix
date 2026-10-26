@@ -35,7 +35,7 @@ edition = "2021"
 rust-version = "1.80"
 license = "Apache-2.0"
 publish = false
-authors = ["AttaCore contributors"]
+authors = ["Agix contributors"]
 repository = "https://github.com/openatta/agix"
 
 [workspace.dependencies]

@@ -1,4 +1,4 @@
-//! `VerifyPlanExecutionTool` —— gated behind `ATTACODE_VERIFY_PLAN=true` env var.
+//! `VerifyPlanExecutionTool` —— gated behind `AGIX_VERIFY_PLAN=true` env var.
 //!
 //! Reads the current plan and compares it against the working-tree changes
 //! (git diff) so the model can verify whether the implementation matches the plan.
@@ -9,7 +9,7 @@
 //!
 //! # Gating
 //!
-//! Only registered when `ATTACODE_VERIFY_PLAN=true` is set.
+//! Only registered when `AGIX_VERIFY_PLAN=true` is set.
 
 use crate::exec_capture::capture;
 use async_trait::async_trait;
@@ -174,7 +174,7 @@ mod tests {
         ToolContext::for_test(PathBuf::from("/tmp"))
     }
 
-    /// Serialize access to the ATTACODE_PLAN_STORE_DIR env var across tests
+    /// Serialize access to the AGIX_PLAN_STORE_DIR env var across tests
     /// in this binary that depend on plan_store::base_dir() resolution.
     static ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
 
@@ -307,6 +307,6 @@ mod tests {
         }
 
         // Cleanup env var.
-        std::env::remove_var("ATTACODE_PLAN_STORE_DIR");
+        std::env::remove_var("AGIX_PLAN_STORE_DIR");
     }
 }

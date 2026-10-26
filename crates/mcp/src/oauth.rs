@@ -6,7 +6,7 @@
 //!
 //! # OAuth Store
 //!
-//! Tokens are persisted to `~/.atta/code/mcp/oauth/<provider>.json` so they
+//! Tokens are persisted to `~/.agix/code/mcp/oauth/<provider>.json` so they
 //! survive restarts. The store is checked before calling the resolver; the
 //! resolver is only invoked when no cached token is available or the token
 //! has been explicitly cleared (e.g. after a 401 response).
@@ -55,7 +55,7 @@ struct StoredToken {
 
 /// Disk-persisted OAuth token cache.
 ///
-/// Tokens are stored in `~/.atta/code/mcp/oauth/<provider>.json` as JSON
+/// Tokens are stored in `~/.agix/code/mcp/oauth/<provider>.json` as JSON
 /// with an `access_token` field. The store is checked before initiating an
 /// OAuth flow, and tokens are written back after successful resolution.
 ///

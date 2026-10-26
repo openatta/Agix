@@ -12,8 +12,8 @@ use serde_json::Value;
 use std::sync::Arc;
 
 /// A tool that invokes skills loaded from disk.
-/// Skills are .md files in `~/.atta/skills/` (global default),
-/// `~/.atta/scenes/<scene>/skills/` (scene override), and
+/// Skills are .md files in `~/.agix/skills/` (global default),
+/// `~/.agix/scenes/<scene>/skills/` (scene override), and
 /// `<project>/.agents/skills/` (project-level).
 ///
 /// Any skill the `SkillManager` loaded is invocable — the only gate is each
@@ -81,7 +81,7 @@ impl Tool for SkillTool {
         "Skill"
     }
     fn description(&self) -> &str {
-        "Execute a skill within the main conversation. Skills are loaded from ~/.atta/skills/ (global), ~/.atta/scenes/<scene>/skills/ (scene override), and <project>/.agents/skills/ (project-level). Only skills listed in the user-invocable section are available."
+        "Execute a skill within the main conversation. Skills are loaded from ~/.agix/skills/ (global), ~/.agix/scenes/<scene>/skills/ (scene override), and <project>/.agents/skills/ (project-level). Only skills listed in the user-invocable section are available."
     }
     fn input_schema(&self) -> Value {
         serde_json::json!({

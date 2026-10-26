@@ -5,7 +5,7 @@ edition      = { workspace = true }
 rust-version = { workspace = true }
 license      = { workspace = true }
 publish      = false
-description  = "AttaCore — context compaction (message grouping, cleanup, caching)"
+description  = "Agix — context compaction (message grouping, cleanup, caching)"
 
 [dependencies]
 base          = { workspace = true }

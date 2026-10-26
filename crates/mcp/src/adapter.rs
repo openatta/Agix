@@ -1,7 +1,7 @@
-//! `McpToolAdapter` —— 把一条 MCP server 提供的工具包装成 attacode `Tool`。
+//! `McpToolAdapter` —— 把一条 MCP server 提供的工具包装成 agix `Tool`。
 //!
 //! 工具名按 `mcp__<server>__<tool>` 命名，与权限规则匹配语义一致
-//! （见 attacode-permissions::ruleset）。
+//! （见 agix-permissions::ruleset）。
 
 use crate::client::{McpCallResult, McpClientHandle, McpContent, McpToolHints, McpToolMeta};
 use crate::error::McpError;

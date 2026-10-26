@@ -1,6 +1,6 @@
 //! Team memory sharing — persistent knowledge shared across team members.
 //!
-//! Each team gets a memory directory at `~/.atta/code/teams/{team_name}/memory/`.
+//! Each team gets a memory directory at `~/.agix/code/teams/{team_name}/memory/`.
 //! Memories use the same format as personal memories (MEMORY.md index + individual .md files),
 //! shared across all agents in the team.
 //!
@@ -17,17 +17,17 @@ use std::path::PathBuf;
 
 /// Team-scoped memory store.
 ///
-/// Each team has its own memory directory under `~/.atta/code/teams/{name}/memory/`.
+/// Each team has its own memory directory under `~/.agix/code/teams/{name}/memory/`.
 /// The underlying [`MemoryStore`] handles the file-per-memory + MEMORY.md index format.
 pub struct TeamMemoryStore {
-    /// Directory for this team's shared memories: `~/.atta/code/teams/{name}/memory/`
+    /// Directory for this team's shared memories: `~/.agix/code/teams/{name}/memory/`
     pub team_memory_dir: PathBuf,
     /// Underlying memory store (points both user_dir and local_dir at team_memory_dir).
     store: MemoryStore,
 }
 
 impl TeamMemoryStore {
-    /// Create a new team memory store at `~/.atta/scenes/<scope>/teams/{name}/memory/`.
+    /// Create a new team memory store at `~/.agix/scenes/<scope>/teams/{name}/memory/`.
     ///
     /// Creates the directory if it does not exist.
     pub fn new(team_name: &str, scope: &str) -> Self {
@@ -411,7 +411,7 @@ pub fn scan_store_for_secrets(store: &TeamMemoryStore) -> Vec<SecretPattern> {
 
 /// Build the path to a team's memory directory.
 pub fn team_memory_dir(team_name: &str, scope: &str) -> PathBuf {
-    base::paths::atta_scope_dir(scope)
+    base::paths::agix_scope_dir(scope)
         .join("teams")
         .join(team_name)
         .join("memory")
@@ -419,7 +419,7 @@ pub fn team_memory_dir(team_name: &str, scope: &str) -> PathBuf {
 
 /// Build the path to a team's root directory (contains `memory/` subdirectory).
 pub fn team_root_dir(team_name: &str, scope: &str) -> PathBuf {
-    base::paths::atta_scope_dir(scope).join("teams").join(team_name)
+    base::paths::agix_scope_dir(scope).join("teams").join(team_name)
 }
 
 /// Check if a team has any shared memories.
@@ -782,7 +782,7 @@ mod tests {
     fn team_has_memories_returns_false_for_empty_team() {
         let tmp = TempDir::new().unwrap();
 
-        // Use a local dir directly rather than atta_scope_dir(scope) for this test
+        // Use a local dir directly rather than agix_scope_dir(scope) for this test
         let dir = tmp.path().join("teams").join("empty-team");
         let mem_dir = dir.join("memory");
         std::fs::create_dir_all(&mem_dir).unwrap();

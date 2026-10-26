@@ -397,7 +397,7 @@ mod tests {
         assert_eq!(loaded.session_id, session);
         assert_eq!(loaded.schema_version, PROJECT_SESSION_SCHEMA_VERSION);
         assert!(loaded.history_file.ends_with(&format!("{session}.jsonl")));
-        assert!(!cwd.path().join(".atta/code/session.json.tmp").exists());
+        assert!(!cwd.path().join(".agix/code/session.json.tmp").exists());
     }
 
     #[tokio::test]
@@ -415,7 +415,7 @@ mod tests {
         let metadata = SessionMetadata::new(&cwd, &history, session);
 
         assert_eq!(metadata.session_id, session);
-        assert!(metadata.project_state_file.ends_with(".atta/session.json"));
+        assert!(metadata.project_state_file.ends_with(".agix/session.json"));
         assert!(metadata.history_file.ends_with(&format!("{session}.jsonl")));
     }
 

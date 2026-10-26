@@ -1,4 +1,4 @@
-# 用 QuickJS 脚本扩展 AttaCore
+# 用 QuickJS 脚本扩展 Agix
 
 一个脚本就是一个 `.js` 文件加一行配置。会话构建时引擎读这个文件,在你指定的
 扩展点上调用你指定的函数,再把结果交回给发问的那部分引擎。不用构建,不起子进程,
@@ -35,7 +35,7 @@ rebuild with the `scripts` feature or remove the section
 
 ## 从零开始
 
-**1. 写脚本。** 放项目里哪儿都行,`.atta/scripts/` 是惯例:
+**1. 写脚本。** 放项目里哪儿都行,`.agix/scripts/` 是惯例:
 
 ```js
 function onAssemble(blocks) {
@@ -50,13 +50,13 @@ function onAssemble(blocks) {
 }
 ```
 
-**2. 绑定它**,在项目的 `.atta/settings.json` 里:
+**2. 绑定它**,在项目的 `.agix/settings.json` 里:
 
 ```json
 {
   "scripts": [
     {
-      "path": ".atta/scripts/house_style.js",
+      "path": ".agix/scripts/house_style.js",
       "point": "prompt.assemble",
       "entry": "onAssemble"
     }

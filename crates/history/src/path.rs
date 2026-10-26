@@ -6,7 +6,7 @@ use crate::error::HistoryError;
 use base::session::SessionId;
 use std::path::{Path, PathBuf};
 
-/// Delegate to shared implementation in `attacode-core`.
+/// Delegate to shared implementation in `agix-core`.
 ///
 /// 把任意字符串变成跨平台安全的目录 / 文件名。
 ///
@@ -27,7 +27,7 @@ pub fn sanitize_path(name: &str) -> String {
 /// `<sanitized-cwd>/` 和 `<session-id>/` 两种命名的目录。
 ///
 /// 从同一个 `global_root` 派生这件事本身是重点：这两个根曾经一个走
-/// `ATTA_CONFIG_HOME`、一个走 `ATTA_DATA_DIR`，默认值相同但可以被配成不同的
+/// `AGIX_CONFIG_HOME`、一个走 `AGIX_DATA_DIR`，默认值相同但可以被配成不同的
 /// 目录——session memory 因此写去过没人会读的地方。现在只有一个来源。
 #[derive(Debug, Clone)]
 pub struct HistoryRoots {
@@ -46,10 +46,10 @@ impl HistoryRoots {
     }
 }
 
-/// Project-local state directory (`<cwd>/.atta`) —— 与
+/// Project-local state directory (`<cwd>/.agix`) —— 与
 /// `ConfigPaths::local_data_dir` 一致。
 pub fn project_local_dir(canonical_cwd: &Path) -> PathBuf {
-    canonical_cwd.join(".atta")
+    canonical_cwd.join(".agix")
 }
 
 /// Project-local active session pointer.
@@ -185,13 +185,13 @@ mod tests {
         let cwd = PathBuf::from("/Users/me/work");
         assert_eq!(
             project_session_state_file(&cwd),
-            PathBuf::from("/Users/me/work/.atta/session.json")
+            PathBuf::from("/Users/me/work/.agix/session.json")
         );
     }
 
     #[test]
     fn session_sidecar_layout() {
-        let root = PathBuf::from("/tmp/atta/code/sessions");
+        let root = PathBuf::from("/tmp/agix/code/sessions");
         let id = SessionId::new();
         assert_eq!(session_sidecar_dir(&root, &id), root.join(id.to_string()));
         assert_eq!(
@@ -236,8 +236,8 @@ mod tests {
     /// session memory 因此写去过没人会读的地方。
     #[test]
     fn both_roots_come_from_the_one_global_root() {
-        let roots = HistoryRoots::under(Path::new("/state/.atta"));
-        assert_eq!(roots.projects, Path::new("/state/.atta/projects"));
-        assert_eq!(roots.sessions, Path::new("/state/.atta/sessions"));
+        let roots = HistoryRoots::under(Path::new("/state/.agix"));
+        assert_eq!(roots.projects, Path::new("/state/.agix/projects"));
+        assert_eq!(roots.sessions, Path::new("/state/.agix/sessions"));
     }
 }

@@ -28,7 +28,7 @@ impl AgentScene for DemoScene {
 
     /// 人类可读名——目前只在日志/诊断输出里出现，不影响行为。
     fn name(&self) -> &str {
-        "AttaCode Demo"
+        "Agix Demo"
     }
 
     /// 一句话描述——同样只用于展示，不影响行为。
@@ -44,7 +44,7 @@ impl AgentScene for DemoScene {
     /// 的完整 prompt。
     fn build_system_prompt(&self, ctx: &ScenePromptContext) -> Vec<PromptBlock> {
         vec![
-            PromptBlock::system_cached("You are AttaCode Demo, a minimal agent for demonstration."),
+            PromptBlock::system_cached("You are Agix Demo, a minimal agent for demonstration."),
             PromptBlock::system(format!(
                 "Working directory: {}\nDate: {}\nOS: {}",
                 ctx.cwd, ctx.date, ctx.os

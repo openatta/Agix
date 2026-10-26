@@ -211,12 +211,12 @@ sidecar 只会让「这一组为什么这么绑」离断言更远。
 | daemon 那条路 | `daemon/tests/session_lifecycle.rs` |
 | 装配好的那条路 | `tests/daemon_harness/tests/daemon_surface.rs` |
 
-daemon 的两条单独在那边：从 `.atta/settings.json` 到装到会话上的这一段全是 daemon
+daemon 的两条单独在那边：从 `.agix/settings.json` 到装到会话上的这一段全是 daemon
 的活——解析、按项目根解析路径、每个会话绑一次——驱动 `Builder` 的用例问不到它。
 
 `daemon_harness` 那几条又低一层：进去是 JSON-RPC，出来是一个说 Anthropic SSE 的
 HTTP 桩，所以「脚本改的东西到没到模型」是从**桩收到的那个请求**里读出来的，不是从
-引擎内部的某个中间值。每条跑两遍，本进程和另起一个 `attacored`。
+引擎内部的某个中间值。每条跑两遍，本进程和另起一个 `agixd`。
 
 | 用例 | 问什么 |
 |---|---|
@@ -269,7 +269,7 @@ manifest 怎么变成注册好的工具，而**装配面**六条在
 | `a_build_with_no_plugin_carrier_installs_but_does_not_run` | 没有引擎的构建：装得上、披露说组件不会跑、一个 `plugin__` 工具都不给模型 |
 
 除最后一条外都要一个带载体的 daemon（测试二进制自己编的是默认载体，进程内没有引擎
-能跑组件），CI 在 `test` job 里另建一个并用 `ATTA_TEST_DAEMON_BIN_PLUGINS` 指过去。
+能跑组件），CI 在 `test` job 里另建一个并用 `AGIX_TEST_DAEMON_BIN_PLUGINS` 指过去。
 
 两个载体的**覆盖形态**对齐了，**行为**没有、也不该：脚本的权限分岔看文件在哪，插件
 看装时声明了什么；脚本绑到具体的点，插件的工具进每个会话。还有一处是真差距——脚本

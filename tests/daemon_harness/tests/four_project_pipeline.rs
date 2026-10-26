@@ -514,12 +514,12 @@ async fn a_provider_can_be_configured_for_one_project_only(mode: Mode) -> anyhow
     let written = written.result.as_ref().expect("setProvider result");
     assert_eq!(
         canonical(written["written_to"].as_str().expect("written_to")),
-        canonical(&c.join(".atta").join("settings.json").to_string_lossy()),
+        canonical(&c.join(".agix").join("settings.json").to_string_lossy()),
         "setProvider wrote somewhere other than the project it was given: {written}"
     );
 
     let on_disk: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(
-        c.join(".atta").join("settings.json"),
+        c.join(".agix").join("settings.json"),
     )?)?;
     assert_eq!(on_disk["providers"]["cheap"]["default_model"], "cheap-1");
     assert_eq!(
@@ -559,7 +559,7 @@ async fn a_provider_can_be_configured_for_one_project_only_here() -> anyhow::Res
 
 // ── Against a spawned daemon ─────────────────────────────────────────────
 
-/// The same three, against `attacored` as a process. A spawned daemon
+/// The same three, against `agixd` as a process. A spawned daemon
 /// resolves its own paths, settings and model endpoint from a command line
 /// and an environment; every project-scoped thing this file asserts is
 /// resolved again there, and a difference between the modes is a real one.

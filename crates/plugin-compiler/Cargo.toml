@@ -5,14 +5,14 @@ edition      = { workspace = true }
 rust-version = { workspace = true }
 license      = { workspace = true }
 publish      = false
-description  = "AttaCore — compiles plugin components ahead of time"
+description  = "Agix — compiles plugin components ahead of time"
 
 [lib]
 name = "plugin_compiler"
 path = "src/lib.rs"
 
 [[bin]]
-name = "atta-plugin-compile"
+name = "agix-plugin-compile"
 path = "src/main.rs"
 
 [dependencies]

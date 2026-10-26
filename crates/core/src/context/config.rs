@@ -48,7 +48,7 @@ pub struct EngineConfig {
     /// Once escalated, stays at strong for rest of the turn.
     /// `None` = no routing (use `model` for everything; current default).
     /// User-facing API: surface as `--strong-model` CLI flag, or in
-    /// `~/.atta/scenes/<scope>/settings.json`.
+    /// `~/.agix/scenes/<scope>/settings.json`.
     pub strong_model: Option<String>,
     /// **P2 (Phase 2)**: optional fallback model for retry on overloaded /
     /// transport errors. When the primary model returns 503/529/transport
@@ -74,7 +74,7 @@ pub struct EngineConfig {
     /// **Hardening **: Bash sandbox extended policy. Default:
     /// `default_deny_read` baked-in (~/.ssh, ~/.aws, etc), network unrestricted.
     /// Settings.json `sandbox.{deny_read,allow_read,allowed_domains,network_mode}`
-    /// overrides any field. Tool layer (`attacode-tools::bash::sandbox`) reads
+    /// overrides any field. Tool layer (`agix-tools::bash::sandbox`) reads
     /// these fields to build its platform-specific profile.
     pub sandbox_policy: SandboxPolicyConfig,
     /// Mirrors `Settings.disable_skill_shell_execution` — read by
@@ -187,7 +187,7 @@ pub struct SystemPromptSettings {
     pub memory_walk_up: bool,
     /// **A-5 **: 选中的 output style 名称（user/project 级别均可）。
     /// 引擎在 collect FrozenContext 时按此名称从
-    /// `~/.atta/scenes/<scope>/output-styles/<name>.md` 或 `<cwd>/.atta/output-styles/<name>.md`
+    /// `~/.agix/scenes/<scope>/output-styles/<name>.md` 或 `<cwd>/.agix/output-styles/<name>.md`
     /// 读取内容，注入 system prompt 末段。None = 不注入额外 style。
     pub output_style: Option<String>,
     /// When true (default), use TaskCreate/Update/List/Get/Stop instead of
@@ -220,7 +220,7 @@ pub enum ThinkingModeConfig {
 
 /// **Hardening **: data-only sandbox policy in core (so `EngineConfig`
 /// doesn't need to depend on the tools crate). Lifted to a real `SandboxPolicy`
-/// inside `attacode-tools::bash::sandbox` at call-site.
+/// inside `agix-tools::bash::sandbox` at call-site.
 #[derive(Debug, Clone, Default)]
 pub struct SandboxPolicyConfig {
     pub allow_read: Vec<PathBuf>,
@@ -239,7 +239,7 @@ pub struct SandboxPolicyConfig {
     pub allow_write: Vec<PathBuf>,
     /// This instance's global state root, so the profile can protect the
     /// settings.json files that actually govern it. `None` means the caller
-    /// didn't say, and the sandbox falls back to `$HOME/.atta` — which is
+    /// didn't say, and the sandbox falls back to `$HOME/.agix` — which is
     /// only right when the instance happens to live there.
     pub state_root: Option<PathBuf>,
     /// See `base::settings::SandboxConfig::require_enforcement`.

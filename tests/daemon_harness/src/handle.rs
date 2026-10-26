@@ -3,7 +3,7 @@
 //! What a scenario needs from a daemon is a socket to talk to. How that
 //! daemon came to exist is this module's business and nobody else's, which is
 //! what lets one case run against a server built in this process and against
-//! a spawned `attacored` without knowing which it got.
+//! a spawned `agixd` without knowing which it got.
 //!
 //! The in-process build goes through `load_daemon_config` and
 //! `daemon::assemble::pool` — the same two calls `main.rs` makes — rather
@@ -72,7 +72,7 @@ pub struct DaemonOptions {
     pub extra_wires: bool,
     /// The discovery entry this daemon writes, in the modes that write one.
     pub instance: String,
-    /// Which `attacored` to spawn. `None` takes the one built beside this
+    /// Which `agixd` to spawn. `None` takes the one built beside this
     /// test; a carrier case names another.
     pub binary: Option<PathBuf>,
     /// Extra arguments for a spawned daemon. Ignored in this process, which
@@ -459,11 +459,11 @@ async fn spawn_command(
     cmd.args(&opts.extra_args)
         .current_dir(&opts.project)
         .env("HOME", world.home())
-        .env("ATTA_CONFIG_HOME", world.global_root())
+        .env("AGIX_CONFIG_HOME", world.global_root())
         .env("ANTHROPIC_BASE_URL", provider.base_url().as_str())
         .env("ANTHROPIC_AUTH_TOKEN", "harness")
         .env_remove("ANTHROPIC_API_KEY")
-        .env_remove("ATTACORE_DAEMON_TOKEN")
+        .env_remove("AGIX_DAEMON_TOKEN")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::from(stderr))
@@ -474,18 +474,18 @@ async fn spawn_command(
     Ok((cmd, socket, stderr_path, tcp, ws))
 }
 
-/// The `attacored` to spawn.
+/// The `agixd` to spawn.
 ///
-/// `ATTA_TEST_DAEMON_BIN` first, because the carrier matrix is exactly the
+/// `AGIX_TEST_DAEMON_BIN` first, because the carrier matrix is exactly the
 /// case where the binary under test is *not* the one this test binary was
 /// built alongside. Otherwise the sibling of this test executable, which is
 /// where cargo puts it.
 pub fn daemon_binary() -> anyhow::Result<PathBuf> {
-    if let Ok(path) = std::env::var("ATTA_TEST_DAEMON_BIN") {
+    if let Ok(path) = std::env::var("AGIX_TEST_DAEMON_BIN") {
         let path = PathBuf::from(path);
         anyhow::ensure!(
             path.exists(),
-            "ATTA_TEST_DAEMON_BIN points at {}, which does not exist",
+            "AGIX_TEST_DAEMON_BIN points at {}, which does not exist",
             path.display()
         );
         return Ok(path);
@@ -500,11 +500,11 @@ pub fn daemon_binary() -> anyhow::Result<PathBuf> {
             .parent()
             .ok_or_else(|| anyhow::anyhow!("`deps` has no parent"))?;
     }
-    let candidate = dir.join("attacored");
+    let candidate = dir.join("agixd");
     anyhow::ensure!(
         candidate.exists(),
         "no daemon binary at {} — build one with `cargo build -p daemon`, \
-         or point ATTA_TEST_DAEMON_BIN at the one to test",
+         or point AGIX_TEST_DAEMON_BIN at the one to test",
         candidate.display()
     );
     Ok(candidate)
@@ -513,7 +513,7 @@ pub fn daemon_binary() -> anyhow::Result<PathBuf> {
 /// A daemon built with features this test binary was not built with.
 ///
 /// It cannot be found by looking beside the test executable: both builds
-/// produce a binary called `attacored`, so the second one has to be built
+/// produce a binary called `agixd`, so the second one has to be built
 /// into a target directory of its own and named here. CI does that; a
 /// developer running these by hand is told how.
 pub fn alternate_daemon_binary(var: &str, how_to_build: &str) -> anyhow::Result<PathBuf> {

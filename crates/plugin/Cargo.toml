@@ -5,7 +5,7 @@ edition      = { workspace = true }
 rust-version = { workspace = true }
 license      = { workspace = true }
 publish      = false
-description  = "AttaCore — plugin manifest loader"
+description  = "Agix — plugin manifest loader"
 
 [dependencies]
 base          = { workspace = true }

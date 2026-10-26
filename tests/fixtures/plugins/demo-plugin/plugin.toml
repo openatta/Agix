@@ -3,7 +3,7 @@ name = "demo-plugin"
 version = "1.0.0"
 api_version = "0.1"
 description = "Test-only plugin fixture — one slash command + one hook, exercised via plugin.install/list/uninstall RPC."
-author = "AttaCore test infra"
+author = "Agix test infra"
 
 [slash_commands]
 "/toy-greet" = "prompts/toy-greet.md"

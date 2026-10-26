@@ -32,13 +32,13 @@ const GUARDED_FILENAMES: &[&str] = &[".gitignore", "package-lock.json", "Cargo.l
 /// The engine's own configuration, wherever it lives.
 ///
 /// A tool that can rewrite these can rewrite the rules it is judged by, so
-/// they are guarded — but by *name and location*, not by directory. `.atta`
+/// they are guarded — but by *name and location*, not by directory. `.agix`
 /// is also where a sub-agent's git worktree lives, and denying the directory
 /// denies every write the sub-agent was created to make.
 const SETTINGS_FILENAMES: &[&str] = &["settings.json", "settings.local.json"];
 
 /// Directories those settings files live in.
-const SETTINGS_DIRS: &[&str] = &[".atta", ".claude"];
+const SETTINGS_DIRS: &[&str] = &[".agix", ".claude"];
 
 /// 不论 cwd 在哪，下面这些系统目录都拒写。
 const ABSOLUTE_DENY_PREFIXES: &[&str] = &[
@@ -752,7 +752,7 @@ mod tests {
 
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let stamp = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("attacore_symlink_midtest_{}", stamp));
+        let dir = std::env::temp_dir().join(format!("agix_symlink_midtest_{}", stamp));
         let allowed_root = dir.join("workdir");
         let outside = dir.join("outside");
 
@@ -790,7 +790,7 @@ mod tests {
 
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let stamp = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("attacore_symlink_inside_{}", stamp));
+        let dir = std::env::temp_dir().join(format!("agix_symlink_inside_{}", stamp));
         let allowed_root = dir.join("workdir");
         let real_sub = allowed_root.join("real_sub");
         let link_sub = allowed_root.join("link_sub");

@@ -104,7 +104,7 @@ impl AgentScene for CodingScene {
         "coding"
     }
     fn name(&self) -> &str {
-        "AttaCode Coding"
+        "Agix Coding"
     }
     fn description(&self) -> &str {
         "编程场景 — 完整工具权限的通用编程 Agent"
@@ -484,7 +484,7 @@ fn build_section_registry<'a>(ctx: &'a ScenePromptContext) -> Vec<SystemPromptSe
 // ═══════════════════════════════════════════════════════════
 
 fn identity_block(_ctx: &ScenePromptContext) -> String {
-    "You are AttaCode, OpenAtta's agent CLI. Use the \
+    "You are Agix, OpenAtta's agent CLI. Use the \
 instructions below and the tools available to you to assist the user.\n\n\
 IMPORTANT: Assist with authorized security testing, defensive security, CTF \
 challenges, and educational contexts. Refuse requests for destructive attacks, \
@@ -657,8 +657,8 @@ fn render_env(
          </env>\n\
          {model_desc}{cutoff_msg}\n\n\
          {model_recommendations}\n\n\
-         AttaCore is available as a CLI in the terminal and IDE extensions (VS Code, JetBrains).\n\n\
-         Fast mode for AttaCore uses Opus with faster output. It does NOT switch to a different model. It can be toggled with /fast."
+         Agix is available as a CLI in the terminal and IDE extensions (VS Code, JetBrains).\n\n\
+         Fast mode for Agix uses Opus with faster output. It does NOT switch to a different model. It can be toggled with /fast."
     )
 }
 
@@ -956,7 +956,7 @@ mod tests {
             .cloned()
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(text.contains("AttaCode"));
+        assert!(text.contains("Agix"));
         assert!(text.contains("software engineering"));
         assert!(text.contains("# Style"));
         assert!(text.contains("# Parallelism"));

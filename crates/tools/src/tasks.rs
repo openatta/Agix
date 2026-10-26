@@ -119,7 +119,7 @@ pub struct TaskEntry {
     pub updated_at: i64,
 }
 
-/// 生成短 ID —— 简单 base58(uuid v4)；attacode 里没引 uuid crate（避免膨胀），
+/// 生成短 ID —— 简单 base58(uuid v4)；agix 里没引 uuid crate（避免膨胀），
 /// 用 std::time + 计数器自滚（够给 in-memory 任务用，不需要全局唯一）
 fn new_task_id() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};

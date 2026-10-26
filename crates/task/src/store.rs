@@ -7,7 +7,7 @@
 //! (flock / proper-lockfile).
 //!
 //! Tasks are stored as serde_json::Value to avoid circular crate dependencies
-//! (the typed TaskEntry/TaskStatus live in attacode-tools). Callers serialize
+//! (the typed TaskEntry/TaskStatus live in agix-tools). Callers serialize
 //! at the boundary.
 
 use std::path::{Path, PathBuf};
@@ -71,7 +71,7 @@ impl TaskStore {
 
     /// Resolve the task list ID from env var, falling back to `fallback`.
     pub fn list_id_from_env(fallback: &str) -> String {
-        std::env::var("ATTACODE_TASK_LIST_ID").unwrap_or_else(|_| fallback.to_string())
+        std::env::var("AGIX_TASK_LIST_ID").unwrap_or_else(|_| fallback.to_string())
     }
 
     fn task_path(&self, id: &str) -> PathBuf {
@@ -297,7 +297,7 @@ mod tests {
     static TEST_CTR: AtomicU64 = AtomicU64::new(0);
     async fn test_store() -> TaskStore {
         let n = TEST_CTR.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("attacode-task-test-{n}"));
+        let dir = std::env::temp_dir().join(format!("agix-task-test-{n}"));
         let _ = tokio::fs::remove_dir_all(&dir).await;
         tokio::fs::create_dir_all(&dir).await.unwrap();
         TaskStore {
@@ -384,9 +384,9 @@ mod tests {
 
     #[tokio::test]
     async fn list_id_from_env() {
-        std::env::set_var("ATTACODE_TASK_LIST_ID", "my-list");
+        std::env::set_var("AGIX_TASK_LIST_ID", "my-list");
         assert_eq!(TaskStore::list_id_from_env("fallback"), "my-list");
-        std::env::remove_var("ATTACODE_TASK_LIST_ID");
+        std::env::remove_var("AGIX_TASK_LIST_ID");
         assert_eq!(TaskStore::list_id_from_env("fallback"), "fallback");
     }
 }

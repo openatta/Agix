@@ -326,7 +326,7 @@ fn map_stream_event(
                 // onto it — "{}" + "{\"pattern\": \"*.txt\"}" is two JSON
                 // values back to back, which fails to parse as one, and fell
                 // back to an empty object at `ContentBlockStop`. Confirmed
-                // via `ATTA_DEBUG_RAW_STREAM_EVENTS=1` against a real call.
+                // via `AGIX_DEBUG_RAW_STREAM_EVENTS=1` against a real call.
                 // Only seed from a genuinely non-empty object/array/scalar —
                 // a provider that sends the whole `input` up front (no
                 // deltas to follow) still round-trips correctly this way.
@@ -929,7 +929,7 @@ mod map_stream_event_tests {
     /// concatenated back to back, which fails to parse as one and silently
     /// degrades to an empty input — functionally the exact same failure as
     /// the original bug, just one seeding-condition bug away from it. Caught
-    /// via `ATTA_DEBUG_RAW_STREAM_EVENTS=1` against `deepseek-v4-pro[1m]`;
+    /// via `AGIX_DEBUG_RAW_STREAM_EVENTS=1` against `deepseek-v4-pro[1m]`;
     /// the first fix attempt only checked `input.is_null()`, which this
     /// relay's `{}` placeholder never satisfies.
     #[test]

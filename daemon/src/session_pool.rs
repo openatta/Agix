@@ -85,7 +85,7 @@ pub enum SetModelError {
 /// (`None` = the global no-project tier) and the scene it runs under.
 ///
 /// Both halves matter. The scene contributes a real settings layer
-/// (`~/.atta/scenes/<scene>/settings.json`, plus the skills, agents and
+/// (`~/.agix/scenes/<scene>/settings.json`, plus the skills, agents and
 /// plugins beside it), so one project under two scenes is two different
 /// resolutions, not one.
 type ProjectSceneKey = (Option<PathBuf>, String);
@@ -291,7 +291,7 @@ fn agent_type_dirs(settings: &Settings) -> [std::path::PathBuf; 3] {
     [
         settings.paths.global_data_dir.join("agents"),
         settings.paths.user_data_dir.join("agents"),
-        settings.paths.project_root().join(".atta").join("agents"),
+        settings.paths.project_root().join(".agix").join("agents"),
     ]
 }
 
@@ -411,7 +411,7 @@ struct RecordedSpec {
     provider: Option<String>,
 }
 
-const SPEC_NS: &str = "attacore.session";
+const SPEC_NS: &str = "agix.session";
 const SPEC_EVENT: &str = "spec";
 
 // ── LiveSession ─────────────────────────────────────────────────────────
@@ -593,7 +593,7 @@ pub struct SessionPool {
     /// tiers.
     ///
     /// Scene is part of the key because the scene tier is a real layer
-    /// (`~/.atta/scenes/<scene>/settings.json`, and the skills, agents and
+    /// (`~/.agix/scenes/<scene>/settings.json`, and the skills, agents and
     /// plugins beside it). Keying by project alone meant every session got
     /// whichever scene happened to be built first, so a `chat` session on a
     /// daemon started as `--scene coding` silently read coding's tier.
@@ -1534,7 +1534,7 @@ impl SessionPool {
     }
 
     /// Where this pool's project-tier settings.json lives
-    /// (`{project_root}/.atta/settings.json`) — the tier `config.setProvider`
+    /// (`{project_root}/.agix/settings.json`) — the tier `config.setProvider`
     /// writes to.
     pub fn project_settings_path(&self) -> PathBuf {
         self.settings_path_of(None)
@@ -1546,7 +1546,7 @@ impl SessionPool {
         project_root
             .map(Path::to_path_buf)
             .unwrap_or_else(|| self.paths.project_root())
-            .join(".atta")
+            .join(".agix")
             .join(base::interface::settings::SETTINGS_FILE)
     }
 
@@ -1756,7 +1756,7 @@ impl SessionPool {
             let reloaded = Arc::new(Settings::load(
                 self.paths.global_root(),
                 self.paths.config_root(),
-                self.paths.project_root().join(".atta"),
+                self.paths.project_root().join(".agix"),
                 self.scene.id(),
                 &default_model,
             ));
@@ -2226,7 +2226,7 @@ impl SessionPool {
                             .and_then(|v| v.as_str().map(|s| s.to_string()))
                             .unwrap_or_else(|| "default".to_string()),
                         engine_version: env!("CARGO_PKG_VERSION").to_string(),
-                        attacode_version: env!("CARGO_PKG_VERSION").to_string(),
+                        agix_version: env!("CARGO_PKG_VERSION").to_string(),
                         parent_session_id: None,
                         scene: Some(scene_id.clone()),
                         project_root: project_root_str,
@@ -2455,7 +2455,7 @@ impl SessionPool {
     ///
     /// `None` clears the name, putting the session back under whatever names
     /// it automatically. The name is written where the session's own facts
-    /// live, so every host sharing `~/.atta` sees it — a name each host kept
+    /// live, so every host sharing `~/.agix` sees it — a name each host kept
     /// in an overlay of its own is a name that differs depending on which
     /// window you have open.
     ///
@@ -3575,7 +3575,7 @@ impl SessionPool {
                     .join(scene_id)
                     .join("settings.json"),
             ),
-            "project" => project_root.map(|p| p.join(".atta").join("settings.json")),
+            "project" => project_root.map(|p| p.join(".agix").join("settings.json")),
             "effective" => None,
             other => {
                 return Err((
@@ -4443,7 +4443,7 @@ impl SessionPool {
                 .and_then(|v| v.as_str().map(|s| s.to_string()))
                 .unwrap_or_else(|| "default".to_string()),
             engine_version: env!("CARGO_PKG_VERSION").to_string(),
-            attacode_version: env!("CARGO_PKG_VERSION").to_string(),
+            agix_version: env!("CARGO_PKG_VERSION").to_string(),
             parent_session_id: Some(session_id.to_string()),
             scene: Some(source_scene.unwrap_or_else(|| self.scene.id().to_string())),
             project_root: project_root_for_fork.map(|p| p.display().to_string()),
@@ -4624,7 +4624,7 @@ impl SessionPool {
     /// built once and cached — see the `projects` field doc comment.
     /// `None` is the global no-project tier (docs/ARCHITECTURE.md §3.2):
     /// `local_data_dir` becomes
-    /// `global_data_dir` itself rather than `<project>/.atta`, so project-
+    /// `global_data_dir` itself rather than `<project>/.agix`, so project-
     /// layer settings are skipped entirely, same as the design's "no
     /// specific project" case.
     ///
@@ -4671,7 +4671,7 @@ impl SessionPool {
         } else {
             let default_model = self.settings.read().await.model.model_name.clone();
             let local_dir = match &key.0 {
-                Some(root) => root.join(".atta"),
+                Some(root) => root.join(".agix"),
                 None => self.paths.global_root(),
             };
             Arc::new(Settings::load(
@@ -4719,7 +4719,7 @@ impl SessionPool {
     ///
     /// Only paths that exist are subscribed. `WatchHub::subscribe` falls back
     /// to the nearest existing ancestor of a path that isn't there, and the
-    /// ancestor of `~/.atta/settings.json` is `~/.atta` — which also holds
+    /// ancestor of `~/.agix/settings.json` is `~/.agix` — which also holds
     /// every transcript this daemon writes. Watching that would turn each
     /// turn's own log writes into a settings-change notification. A file or
     /// directory created later is picked up the next time this binding is
@@ -4734,7 +4734,7 @@ impl SessionPool {
             return Vec::new();
         };
         // The project tier's skills sit beside the project (`.agents/skills`)
-        // rather than under `.atta`, which is why this is two paths and the
+        // rather than under `.agix`, which is why this is two paths and the
         // others are one — see `runtime::agent::build_default_skill_manager`.
         let project_root = key.0.clone();
         let mut tiers = vec![(
@@ -6497,9 +6497,9 @@ mod mcp_for_project_tests {
         // and the shared global and scene tiers again.
         for name in ["one", "two", "three"] {
             let root = dir.path().join(name);
-            std::fs::create_dir_all(root.join(".atta").join("agents")).unwrap();
+            std::fs::create_dir_all(root.join(".agix").join("agents")).unwrap();
             std::fs::create_dir_all(root.join(".agents").join("skills")).unwrap();
-            std::fs::write(root.join(".atta").join("settings.json"), "{}").unwrap();
+            std::fs::write(root.join(".agix").join("settings.json"), "{}").unwrap();
             pool.binding_for(Some(&root), "coding").await;
         }
 
@@ -7104,7 +7104,7 @@ mod session_listing_tests {
                     model: "m".into(),
                     permission_mode: "default".into(),
                     engine_version: "0".into(),
-                    attacode_version: "0".into(),
+                    agix_version: "0".into(),
                     parent_session_id: None,
                     scene: Some("coding".into()),
                     project_root: Some("/elsewhere/proj".into()),

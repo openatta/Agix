@@ -369,9 +369,9 @@ pub fn load_mcp_configs(paths: &ConfigPaths) -> HashMap<String, McpServerConfig>
 // ── Private helpers ──
 
 /// Compute the enterprise policy file path: `{global_data_dir}/policy/mcp.json`
-/// (e.g. `$HOME/.atta/policy/mcp.json`). Uses `global_data_dir` directly —
+/// (e.g. `$HOME/.agix/policy/mcp.json`). Uses `global_data_dir` directly —
 /// **not** derived from `user_data_dir`'s parent, since `user_data_dir` is
-/// now nested two levels deep (`$HOME/.atta/scenes/<scope>/`).
+/// now nested two levels deep (`$HOME/.agix/scenes/<scope>/`).
 fn enterprise_policy_path(paths: &ConfigPaths) -> PathBuf {
     paths.global_data_dir.join("policy").join("mcp.json")
 }
@@ -939,12 +939,12 @@ mod tests {
     #[test]
     fn enterprise_policy_path_uses_global_data_dir() {
         let paths = ConfigPaths {
-            user_data_dir: PathBuf::from("/home/user/.atta/scenes/code"),
-            global_data_dir: PathBuf::from("/home/user/.atta"),
-            local_data_dir: PathBuf::from("/tmp/proj/.atta"),
+            user_data_dir: PathBuf::from("/home/user/.agix/scenes/code"),
+            global_data_dir: PathBuf::from("/home/user/.agix"),
+            local_data_dir: PathBuf::from("/tmp/proj/.agix"),
         };
         let path = enterprise_policy_path(&paths);
-        assert_eq!(path, PathBuf::from("/home/user/.atta/policy/mcp.json"));
+        assert_eq!(path, PathBuf::from("/home/user/.agix/policy/mcp.json"));
     }
 
     #[test]
@@ -1069,13 +1069,13 @@ mod tests {
 
     #[test]
     fn expand_env_vars_supports_patterns() {
-        std::env::set_var("ATTA_TEST_EXPAND", "/opt/x");
-        assert_eq!(expand_env_vars("$ATTA_TEST_EXPAND/bin"), "/opt/x/bin");
-        assert_eq!(expand_env_vars("${ATTA_TEST_EXPAND}/bin"), "/opt/x/bin");
-        assert_eq!(expand_env_vars("${ATTA_TEST_EXPAND:-/fallback}"), "/opt/x");
-        assert_eq!(expand_env_vars("${ATTA_NOPE_VAR:-/fallback}"), "/fallback");
+        std::env::set_var("AGIX_TEST_EXPAND", "/opt/x");
+        assert_eq!(expand_env_vars("$AGIX_TEST_EXPAND/bin"), "/opt/x/bin");
+        assert_eq!(expand_env_vars("${AGIX_TEST_EXPAND}/bin"), "/opt/x/bin");
+        assert_eq!(expand_env_vars("${AGIX_TEST_EXPAND:-/fallback}"), "/opt/x");
+        assert_eq!(expand_env_vars("${AGIX_NOPE_VAR:-/fallback}"), "/fallback");
         assert_eq!(expand_env_vars("price $$5"), "price $5");
-        assert_eq!(expand_env_vars("$ATTA_NOPE_VAR/end"), "/end");
-        std::env::remove_var("ATTA_TEST_EXPAND");
+        assert_eq!(expand_env_vars("$AGIX_NOPE_VAR/end"), "/end");
+        std::env::remove_var("AGIX_TEST_EXPAND");
     }
 }

@@ -257,12 +257,12 @@ mod tests {
         );
 
         let unset = ProviderConfig {
-            api_key_env: Some("ATTA_TEST_CREDENTIAL_THAT_IS_NOT_SET".into()),
+            api_key_env: Some("AGIX_TEST_CREDENTIAL_THAT_IS_NOT_SET".into()),
             ..Default::default()
         };
         let err = ConfigCredentials.api_key("p", &unset).unwrap_err();
         assert!(
-            err.contains("ATTA_TEST_CREDENTIAL_THAT_IS_NOT_SET"),
+            err.contains("AGIX_TEST_CREDENTIAL_THAT_IS_NOT_SET"),
             "{err}"
         );
     }
@@ -297,12 +297,12 @@ mod tests {
 
     #[test]
     fn the_env_source_names_what_it_looked_for() {
-        let source = EnvCredentials::new(["ATTA_TEST_CREDENTIAL_THAT_IS_NOT_SET"]);
+        let source = EnvCredentials::new(["AGIX_TEST_CREDENTIAL_THAT_IS_NOT_SET"]);
         let err = source
             .api_key("main", &ProviderConfig::default())
             .unwrap_err();
         assert!(
-            err.contains("ATTA_TEST_CREDENTIAL_THAT_IS_NOT_SET"),
+            err.contains("AGIX_TEST_CREDENTIAL_THAT_IS_NOT_SET"),
             "{err}"
         );
     }

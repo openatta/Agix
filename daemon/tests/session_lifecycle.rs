@@ -242,7 +242,7 @@ async fn start_scripted_server_in(
     );
     config.session_cap = 8;
     // The caller's settings, kept inside this test's directory: `Settings::
-    // defaults_for` carries a literal `~/.atta`, and the assembly places the
+    // defaults_for` carries a literal `~/.agix`, and the assembly places the
     // memory store and the history roots from exactly these paths.
     let settings_paths = config.settings.paths.clone();
     config.settings = settings;
@@ -563,7 +563,7 @@ async fn a_listed_session_reports_how_often_it_was_compacted() {
 
 /// A session's name belongs to the person looking at it, and it has to
 /// survive that person closing the window. Kept beside the log rather than in
-/// a host's own overlay, so two hosts sharing `~/.atta` agree about what a
+/// a host's own overlay, so two hosts sharing `~/.agix` agree about what a
 /// session is called.
 #[tokio::test]
 async fn a_renamed_session_keeps_its_name_after_it_leaves_memory() {
@@ -1349,7 +1349,7 @@ async fn inject_session_in_scene(srv: &ScriptedServer, scene: &str) -> base::ses
                 model: "claude-sonnet-4-6".into(),
                 permission_mode: "default".into(),
                 engine_version: "0.0.1".into(),
-                attacode_version: "0.0.1".into(),
+                agix_version: "0.0.1".into(),
                 parent_session_id: None,
                 scene: Some(scene.to_string()),
                 project_root: None,
@@ -1565,7 +1565,7 @@ async fn session_resume_infers_scene_for_a_pre_v2_meta() {
                 model: "claude-sonnet-4-6".into(),
                 permission_mode: "default".into(),
                 engine_version: "0.0.1".into(),
-                attacode_version: "0.0.1".into(),
+                agix_version: "0.0.1".into(),
                 parent_session_id: None,
                 scene: None,
                 project_root: None,
@@ -1609,7 +1609,7 @@ async fn session_list_excludes_sidechains_by_default_and_returns_them_via_parent
                 model: "claude-sonnet-4-6".into(),
                 permission_mode: "default".into(),
                 engine_version: "0.0.1".into(),
-                attacode_version: "0.0.1".into(),
+                agix_version: "0.0.1".into(),
                 parent_session_id: Some(parent.clone()),
                 scene: Some("coding".into()),
                 project_root: None,
@@ -1747,9 +1747,9 @@ async fn session_create_binds_to_a_different_project_with_its_own_settings() {
     .await;
 
     let other_project = srv._dir.path().join("other-project");
-    std::fs::create_dir_all(other_project.join(".atta")).unwrap();
+    std::fs::create_dir_all(other_project.join(".agix")).unwrap();
     std::fs::write(
-        other_project.join(".atta").join("settings.json"),
+        other_project.join(".agix").join("settings.json"),
         r#"{"model": {"model_name": "other-project-model"}, "memory_enabled": false}"#,
     )
     .unwrap();
@@ -1878,14 +1878,14 @@ async fn a_project_bound_sessions_memories_land_in_its_own_project() {
     run_turn(&srv.sock, Some(&sid), "remember the freeze window").await;
 
     let own = other_project
-        .join(".atta")
+        .join(".agix")
         .join("memory")
         .join("merge-freeze.md");
     let pools = srv
         ._dir
         .path()
         .join("work")
-        .join(".atta")
+        .join(".agix")
         .join("memory")
         .join("merge-freeze.md");
     for _ in 0..60 {
@@ -2114,8 +2114,8 @@ async fn another_projects_settings_change_reaches_the_daemon_without_a_reload() 
         start_scripted_server(vec![text_round("a")], ask_settings(), Duration::ZERO).await;
 
     let other_project = srv._dir.path().join("other-project");
-    std::fs::create_dir_all(other_project.join(".atta")).unwrap();
-    let settings_file = other_project.join(".atta").join("settings.json");
+    std::fs::create_dir_all(other_project.join(".agix")).unwrap();
+    let settings_file = other_project.join(".agix").join("settings.json");
     std::fs::write(
         &settings_file,
         r#"{"model": {"model_name": "first-model"}}"#,
@@ -2169,7 +2169,7 @@ async fn a_project_bound_session_sees_that_projects_own_agent_types() {
     .await;
 
     let other_project = srv._dir.path().join("other-project");
-    let agents_dir = other_project.join(".atta").join("agents");
+    let agents_dir = other_project.join(".agix").join("agents");
     std::fs::create_dir_all(&agents_dir).unwrap();
     std::fs::write(
         agents_dir.join("freeze-bot.md"),
@@ -2247,9 +2247,9 @@ async fn a_projects_own_script_reaches_the_prompt_the_daemon_sends() {
     .await;
 
     let project = srv._dir.path().join("scripted-project");
-    std::fs::create_dir_all(project.join(".atta").join("scripts")).unwrap();
+    std::fs::create_dir_all(project.join(".agix").join("scripts")).unwrap();
     std::fs::write(
-        project.join(".atta").join("scripts").join("house.js"),
+        project.join(".agix").join("scripts").join("house.js"),
         // Adds one block and rewrites every block already there. The rewrite
         // is the half only the operator's own code may do.
         r#"function onAssemble(blocks) {
@@ -2270,11 +2270,11 @@ async fn a_projects_own_script_reaches_the_prompt_the_daemon_sends() {
     // deadline itself is covered where it belongs, by a script written to
     // exceed it (`tests/runner/tests/script_boundaries.rs`).
     std::fs::write(
-        project.join(".atta").join("settings.json"),
+        project.join(".agix").join("settings.json"),
         r#"{
              "memory_enabled": false,
              "scripts": [
-               {"path": ".atta/scripts/house.js", "point": "prompt.assemble",
+               {"path": ".agix/scripts/house.js", "point": "prompt.assemble",
                 "entry": "onAssemble", "timeout_ms": 5000}
              ]
            }"#,
@@ -2337,9 +2337,9 @@ async fn session_get_reports_what_the_scripts_did() {
     .await;
 
     let project = srv._dir.path().join("reported-project");
-    std::fs::create_dir_all(project.join(".atta").join("scripts")).unwrap();
+    std::fs::create_dir_all(project.join(".agix").join("scripts")).unwrap();
     std::fs::write(
-        project.join(".atta").join("scripts").join("broken.js"),
+        project.join(".agix").join("scripts").join("broken.js"),
         "function onAssemble() { throw new Error('nope'); }",
     )
     .unwrap();
@@ -2347,11 +2347,11 @@ async fn session_get_reports_what_the_scripts_did() {
     // reported, and a script that timed out would be reported as failed too
     // — passing for the wrong reason.
     std::fs::write(
-        project.join(".atta").join("settings.json"),
+        project.join(".agix").join("settings.json"),
         r#"{
              "memory_enabled": false,
              "scripts": [
-               {"path": ".atta/scripts/broken.js", "point": "prompt.assemble",
+               {"path": ".agix/scripts/broken.js", "point": "prompt.assemble",
                 "entry": "onAssemble", "timeout_ms": 5000}
              ]
            }"#,
@@ -2444,9 +2444,9 @@ async fn one_bad_binding_leaves_the_session_running_with_no_scripts() {
     .await;
 
     let project = srv._dir.path().join("half-scripted-project");
-    std::fs::create_dir_all(project.join(".atta").join("scripts")).unwrap();
+    std::fs::create_dir_all(project.join(".agix").join("scripts")).unwrap();
     std::fs::write(
-        project.join(".atta").join("scripts").join("house.js"),
+        project.join(".agix").join("scripts").join("house.js"),
         r#"function onAssemble(blocks) {
              blocks.push({ name: "daemon.house", content: "DAEMON-SCRIPT-ADD" });
              return blocks;
@@ -2454,13 +2454,13 @@ async fn one_bad_binding_leaves_the_session_running_with_no_scripts() {
     )
     .unwrap();
     std::fs::write(
-        project.join(".atta").join("settings.json"),
+        project.join(".agix").join("settings.json"),
         r#"{
              "memory_enabled": false,
              "scripts": [
-               {"path": ".atta/scripts/house.js", "point": "prompt.assemble",
+               {"path": ".agix/scripts/house.js", "point": "prompt.assemble",
                 "entry": "onAssemble", "timeout_ms": 5000},
-               {"path": ".atta/scripts/missing.js", "point": "tool.result",
+               {"path": ".agix/scripts/missing.js", "point": "tool.result",
                 "entry": "onResult", "timeout_ms": 5000}
              ]
            }"#,
@@ -2591,9 +2591,9 @@ async fn a_project_bound_session_keeps_its_own_settings_across_close_and_resume(
     .await;
 
     let other_project = srv._dir.path().join("other-project");
-    std::fs::create_dir_all(other_project.join(".atta")).unwrap();
+    std::fs::create_dir_all(other_project.join(".agix")).unwrap();
     std::fs::write(
-        other_project.join(".atta").join("settings.json"),
+        other_project.join(".agix").join("settings.json"),
         r#"{"model": {"model_name": "other-project-model"}, "memory_enabled": false}"#,
     )
     .unwrap();
@@ -2644,7 +2644,7 @@ async fn inject_sidechain(srv: &ScriptedServer, parent: &str) -> base::session::
                 model: "claude-sonnet-4-6".into(),
                 permission_mode: "default".into(),
                 engine_version: "0.0.1".into(),
-                attacode_version: "0.0.1".into(),
+                agix_version: "0.0.1".into(),
                 parent_session_id: Some(parent.to_string()),
                 scene: Some("coding".into()),
                 project_root: None,
@@ -2770,7 +2770,7 @@ async fn session_close_rejects_a_scene_mismatch() {
                 model: "claude-sonnet-4-6".into(),
                 permission_mode: "default".into(),
                 engine_version: "0.0.1".into(),
-                attacode_version: "0.0.1".into(),
+                agix_version: "0.0.1".into(),
                 parent_session_id: None,
                 scene: Some("chat".into()),
                 project_root: None,
@@ -3388,7 +3388,7 @@ async fn a_rebuilt_session_keeps_the_options_it_was_created_with() {
         .await
         .unwrap();
     let recorded = entries.iter().find_map(|env| match &env.entry {
-        history::entry::LogEntry::Extension { ns, payload, .. } if ns == "attacore.session" => {
+        history::entry::LogEntry::Extension { ns, payload, .. } if ns == "agix.session" => {
             Some(payload.clone())
         }
         _ => None,

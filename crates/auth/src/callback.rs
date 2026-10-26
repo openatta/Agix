@@ -105,7 +105,7 @@ async fn handle_one(mut stream: TcpStream) -> Result<CallbackResult, CallbackErr
         200,
         "text/html",
         r#"<!doctype html><body style="font-family:system-ui;padding:32px">
-        <h1>✓ attacode signed in</h1>
+        <h1>✓ agix signed in</h1>
         <p>You can close this window and return to your terminal.</p>
         </body>"#,
     )

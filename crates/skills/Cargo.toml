@@ -5,7 +5,7 @@ edition      = { workspace = true }
 rust-version = { workspace = true }
 license      = { workspace = true }
 publish      = false
-description  = "AttaCore — skill manager + bundled skills"
+description  = "Agix — skill manager + bundled skills"
 
 [dependencies]
 base          = { workspace = true }

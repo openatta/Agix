@@ -1,4 +1,4 @@
-//! AttaCore — agent runtime: turn loop, streaming, tool dispatch, agent lifecycle.
+//! Agix — agent runtime: turn loop, streaming, tool dispatch, agent lifecycle.
 
 pub mod agent;
 pub mod agent_spawner_impl;

@@ -528,7 +528,7 @@ handle.dispose();
 | `scene.<section>` | 自己给分节命名的 scene 保住那些名字,加上前缀 |
 | `skills.catalog` | 可用 skill 的清单 |
 | `memory.session` | 怎么用基于文件的记忆系统 |
-| `rules` | `.atta/rules/` 的发现索引 |
+| `rules` | `.agix/rules/` 的发现索引 |
 | `mcp.instructions` | 来自已连接 MCP server 的指令 |
 | `config.prompt_append` | `settings.prompt_append` |
 | `config.prompt_override` | `settings.prompt_override`,它把一切都替掉 |
@@ -549,8 +549,8 @@ store.append(session, LogEntry::Extension {
 内核从不解析 payload。命名空间没人认领的条目会被一路带着走,除此之外不闻不问,所以
 卸掉一个插件之后,它留下的老会话照样加载、分叉、恢复,和以前一模一样。
 
-`attacore.` 开头的命名空间是引擎自己的:daemon 把会话规格(创建时的 `options`、选过
-的模型与厂商)记在 `attacore.session` 下。这些条目是记账,不是对话内容,
+`agix.` 开头的命名空间是引擎自己的:daemon 把会话规格(创建时的 `options`、选过
+的模型与厂商)记在 `agix.session` 下。这些条目是记账,不是对话内容,
 `ExtensionsAreVisible` 无论开了哪些命名空间都不会把它们交给模型。
 
 ### 东西是不是正常 — `health.check`
@@ -728,7 +728,7 @@ let store = Arc::new(ObservedHistoryStore::new(inner, vec![my_observer]));
 绑一个脚本:在你的项目里写一个,在 `settings.json` 里点它的名:
 
 ```jsonc
-// .atta/scripts/prompt.js
+// .agix/scripts/prompt.js
 function onAssemble(blocks) {
   return blocks.map(b => {
     if (b.name === "skills.catalog") b.content = curate(b.content);
@@ -740,7 +740,7 @@ function onAssemble(blocks) {
 ```jsonc
 // settings.json
 "scripts": [
-  { "path": ".atta/scripts/prompt.js", "point": "prompt.assemble", "entry": "onAssemble" }
+  { "path": ".agix/scripts/prompt.js", "point": "prompt.assemble", "entry": "onAssemble" }
 ]
 ```
 
@@ -777,7 +777,7 @@ function onAssemble(blocks) {
 
 ```jsonc
 "scripts": [
-  { "path": ".atta/scripts/prompt.js", "point": "prompt.assemble", "entry": "onAssemble" }
+  { "path": ".agix/scripts/prompt.js", "point": "prompt.assemble", "entry": "onAssemble" }
 ]
 ```
 

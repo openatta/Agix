@@ -2,7 +2,7 @@
 //!
 //! Every other daemon test hands the assembly a store, a model and a
 //! permission, because a test wants to control those. That leaves the branch
-//! `attacored` actually takes — `Transcripts::UnderGlobalRoot` — run by
+//! `agixd` actually takes — `Transcripts::UnderGlobalRoot` — run by
 //! nothing, and it is the branch with the only irreversible side effect in
 //! the whole module: relocating an older on-disk layout before the store is
 //! opened against the new one.

@@ -42,7 +42,7 @@ jobs:
 
       # A second daemon, built with no script engine at all. It needs a
       # target directory of its own: both builds produce a binary called
-      # `attacored`, so building this one into `target/` would replace the
+      # `agixd`, so building this one into `target/` would replace the
       # daemon every other spawned case is meant to run against.
       #
       # What it buys is the only way to observe a build that has no carrier.
@@ -53,12 +53,12 @@ jobs:
         run: CARGO_TARGET_DIR=${{ github.workspace }}/target/no-carrier cargo build -p daemon --no-default-features
 
       # And a third, carrying WebAssembly. Same reason as above — one binary
-      # called `attacored` per target directory — and the same shape of claim:
+      # called `agixd` per target directory — and the same shape of claim:
       # whether a component a package shipped is ever called cannot be asked
       # from inside a build that has no engine to call it with. `plugin-compile`
       # rather than plain `plugins` because installing a package with
       # components compiles them, and without the in-process compiler that
-      # work goes looking for `atta-plugin-compile`.
+      # work goes looking for `agix-plugin-compile`.
       - name: build a daemon with the plugin carrier
         run: CARGO_TARGET_DIR=${{ github.workspace }}/target/plugins cargo build -p daemon --no-default-features --features plugin-compile
 
@@ -72,8 +72,8 @@ jobs:
       # switch on, and it does not compile on its own.
       - name: test (ignored)
         env:
-          ATTA_TEST_DAEMON_BIN_NO_CARRIER: ${{ github.workspace }}/target/no-carrier/debug/attacored
-          ATTA_TEST_DAEMON_BIN_PLUGINS: ${{ github.workspace }}/target/plugins/debug/attacored
+          AGIX_TEST_DAEMON_BIN_NO_CARRIER: ${{ github.workspace }}/target/no-carrier/debug/agixd
+          AGIX_TEST_DAEMON_BIN_PLUGINS: ${{ github.workspace }}/target/plugins/debug/agixd
         run: cargo test --workspace --all-targets -- --ignored
 
   carriers:
@@ -106,7 +106,7 @@ jobs:
       - name: packages without a carrier
         run: cargo check -p daemon --no-default-features --features plugin-packages
 
-      # `precompile_plugin` must not go looking for `atta-plugin-compile` on
+      # `precompile_plugin` must not go looking for `agix-plugin-compile` on
       # behalf of components a package never declared. The claim only bites
       # without the in-process compiler, so this is where it is checked; the
       # rest of this crate's suite needs the compiler to load its fixtures.

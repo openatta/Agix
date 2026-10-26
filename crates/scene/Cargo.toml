@@ -5,7 +5,7 @@ edition      = { workspace = true }
 rust-version = { workspace = true }
 license      = { workspace = true }
 publish      = false
-description  = "AttaCore — built-in agent scene implementations (coding, demo)"
+description  = "Agix — built-in agent scene implementations (coding, demo)"
 
 [dependencies]
 base          = { workspace = true }

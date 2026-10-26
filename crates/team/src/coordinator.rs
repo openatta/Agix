@@ -449,7 +449,7 @@ impl Coordinator for DefaultCoordinator {
             .flat_map(|s| s.agents.iter().map(|a| a.label.clone()))
             .collect();
         let team_id = format!("team-{}-{}", name, chrono_id());
-        let team_dir = ctx.session.cwd.join(".atta/teams").join(&team_id);
+        let team_dir = ctx.session.cwd.join(".agix/teams").join(&team_id);
         let sp_path = team_dir.join("SCRATCHPAD.md");
         if let Some(p) = sp_path.parent() {
             let _ = tokio::fs::create_dir_all(p).await;
@@ -912,7 +912,7 @@ impl Coordinator for DefaultCoordinator {
     }
 
     /// Real cleanup: removes the team from the shared registry and deletes
-    /// its `.atta/teams/{team_id}/` directory. Returns an error (rather than
+    /// its `.agix/teams/{team_id}/` directory. Returns an error (rather than
     /// silently succeeding) when `name` isn't a team this registry knows
     /// about — surfacing that to the model instead of letting it believe a
     /// nonexistent/mistyped team was cleaned up. `orchestrate()`'s batch
@@ -961,7 +961,7 @@ impl Coordinator for DefaultCoordinator {
 
     /// Resume a DefaultCoordinator workflow from its scratchpad checkpoint.
     ///
-    /// Reads the team's SCRATCHPAD.md from the `.atta/teams/<task_id>/`
+    /// Reads the team's SCRATCHPAD.md from the `.agix/teams/<task_id>/`
     /// directory, identifies the last completed stage, and returns a prompt
     /// that can be fed to a sub-agent to continue coordination.
     async fn resume_coordinator(
@@ -971,7 +971,7 @@ impl Coordinator for DefaultCoordinator {
     ) -> Result<ToolResult, ToolError> {
         let start = std::time::Instant::now();
 
-        let team_dir = ctx.session.cwd.join(".atta/teams").join(task_id);
+        let team_dir = ctx.session.cwd.join(".agix/teams").join(task_id);
         let sp_path = team_dir.join("SCRATCHPAD.md");
 
         let scratchpad = match tokio::fs::read_to_string(&sp_path).await {
@@ -1600,7 +1600,7 @@ mod tests {
     /// (f) Phase-1 regression: `orchestrate()` records the team in the
     /// shared registry (so `TeamList` can see it), and `cleanup_team()`
     /// actually removes both the registry entry and the on-disk
-    /// `.atta/teams/{id}/` directory — not the old no-op that claimed
+    /// `.agix/teams/{id}/` directory — not the old no-op that claimed
     /// success unconditionally. A second `cleanup_team()` call for the same
     /// name must error instead of silently "succeeding" again.
     #[tokio::test]
@@ -1939,7 +1939,7 @@ mod tests {
     #[tokio::test]
     async fn resume_coordinator_records_resume_action() {
         let (dir, ctx) = make_ctx();
-        let team_dir = dir.path().join(".atta/teams/task-1");
+        let team_dir = dir.path().join(".agix/teams/task-1");
         tokio::fs::create_dir_all(&team_dir).await.unwrap();
         tokio::fs::write(team_dir.join("SCRATCHPAD.md"), "## stage-one\n\nnotes\n")
             .await

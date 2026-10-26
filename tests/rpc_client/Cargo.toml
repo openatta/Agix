@@ -3,7 +3,7 @@ name = "rpc-client"
 version.workspace = true
 edition.workspace = true
 publish = false
-description = "Typed JSON-RPC client for the AttaCore daemon — shared by integration tests"
+description = "Typed JSON-RPC client for the Agix daemon — shared by integration tests"
 
 [dependencies]
 daemon      = { workspace = true }

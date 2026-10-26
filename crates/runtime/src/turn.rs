@@ -1,6 +1,6 @@
 //! Turn loop — user message → streaming events → TurnOutcome.
 //!
-//! Core processing logic. Ported from attacode-engine/src/engine/turn/mod.rs
+//! Core processing logic. Ported from agix-engine/src/engine/turn/mod.rs
 //! and adapted to use the agent's protocol-agnostic types.
 
 use crate::agent::{Agent, EngineCommand, InputMessage};
@@ -3991,9 +3991,9 @@ fn build_prompt_context<'a>(
         git_status: git_status.map(Cow::Owned),
         is_worktree,
         language: settings.language.clone().map(Cow::Owned),
-        // `local_data_dir` is already the `.atta/` dir (flat, no scope
-        // segment) — no need to prepend another `.atta/` (previously double-
-        // nested to `.atta/.atta/scratchpad`).
+        // `local_data_dir` is already the `.agix/` dir (flat, no scope
+        // segment) — no need to prepend another `.agix/` (previously double-
+        // nested to `.agix/.agix/scratchpad`).
         scratchpad_dir: settings
             .paths
             .local_data_dir
@@ -4807,7 +4807,7 @@ mod tests {
             tools,
             cwd: std::env::temp_dir(),
             local_settings_path: std::env::temp_dir()
-                .join(".atta")
+                .join(".agix")
                 .join(base::interface::settings::SETTINGS_LOCAL_FILE),
             session_id: "test-session".into(),
             turn_no: 1,
@@ -5374,12 +5374,12 @@ mod tests {
         // allows the rest of this session immediately, using the same
         // `tool.permission_match_content` derivation the rule engine itself
         // uses to match calls, and (2) write the equivalent rule to
-        // `<project_root>/.atta/settings.local.json` (NOT `settings.json` —
+        // `<project_root>/.agix/settings.local.json` (NOT `settings.json` —
         // that's the shared/committed project tier), in the shape
         // `Settings::load` reads back — and (3) still let the pending tool
         // call proceed, same as a plain `Permit` would.
         let dir = tempfile::tempdir().unwrap();
-        let atta_dir = dir.path().join(".atta");
+        let agix_dir = dir.path().join(".agix");
         let called = std::sync::Arc::new(std::sync::Mutex::new(None));
         let tools = Arc::new(base::tool::InMemoryToolRegistry::new());
         tools.register(std::sync::Arc::new(ContentProbeTool {
@@ -5396,7 +5396,7 @@ mod tests {
             tool_use_id: "toolu_test".into(),
             tools,
             cwd: dir.path().to_path_buf(),
-            local_settings_path: atta_dir.join(base::interface::settings::SETTINGS_LOCAL_FILE),
+            local_settings_path: agix_dir.join(base::interface::settings::SETTINGS_LOCAL_FILE),
             session_id: "test-session".into(),
             turn_no: 1,
             agent_depth: 0,
@@ -5436,7 +5436,7 @@ mod tests {
             "add_persistent_allow must be called with the tool's derived match content"
         );
 
-        let settings_local_path = atta_dir.join(base::interface::settings::SETTINGS_LOCAL_FILE);
+        let settings_local_path = agix_dir.join(base::interface::settings::SETTINGS_LOCAL_FILE);
         assert!(
             settings_local_path.exists(),
             "expected {} to exist — anywhere else is outside the Bash sandbox's \
@@ -5451,7 +5451,7 @@ mod tests {
         let loaded = base::interface::settings::Settings::load(
             empty.path().to_path_buf(),
             empty.path().to_path_buf(),
-            atta_dir.clone(),
+            agix_dir.clone(),
             "code",
             "m",
         );
@@ -5472,7 +5472,7 @@ mod tests {
 
         // Not written to the shared/committed settings.json tier.
         assert!(
-            !atta_dir
+            !agix_dir
                 .join(base::interface::settings::SETTINGS_FILE)
                 .exists(),
             "must not touch the shared/committed settings.json tier"
@@ -6659,7 +6659,7 @@ mod extract_memories_tests {
 
     fn tmp_memory_store() -> MemoryStore {
         let base =
-            std::env::temp_dir().join(format!("atta-test-memstore-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("agix-test-memstore-{}", uuid::Uuid::new_v4()));
         MemoryStore::new(base.join("user"), base.join("local"))
     }
 
@@ -7450,7 +7450,7 @@ mod prompt_assembly_tests {
 
         let frozen = base::frozen::FrozenContext::collect(
             child.clone(),
-            &base::paths::ConfigPaths::new(child.join(".state"), child.join(".atta"), "code"),
+            &base::paths::ConfigPaths::new(child.join(".state"), child.join(".agix"), "code"),
             &base::interface::environment::SystemEnvironment,
         )
         .await;
@@ -7498,7 +7498,7 @@ mod prompt_assembly_tests {
 
         let frozen = base::frozen::FrozenContext::collect(
             root.clone(),
-            &base::paths::ConfigPaths::new(root.join(".state"), root.join(".atta"), "code"),
+            &base::paths::ConfigPaths::new(root.join(".state"), root.join(".agix"), "code"),
             &base::interface::environment::SystemEnvironment,
         )
         .await;

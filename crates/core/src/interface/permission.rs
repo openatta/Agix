@@ -23,7 +23,7 @@ pub enum PermissionOutcome {
 /// Tool execution permission interface.
 ///
 /// Implementations decide whether a tool call is allowed.
-/// AttaCode uses `RuleSetPermission` (Allow/Deny/Ask + RuleSet engine).
+/// Agix uses `RuleSetPermission` (Allow/Deny/Ask + RuleSet engine).
 /// Jiandu uses `CwdPermission` (cwd boundary + callback hook).
 #[async_trait]
 pub trait Permission: Send + Sync {

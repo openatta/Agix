@@ -96,7 +96,7 @@ mod tests {
     async fn a_missing_program_is_the_targets_failure_not_an_unreachable_provider() {
         let e = capture(
             &ExecProviders::local(),
-            ProcessSpec::new("attacore-no-such-program", std::env::temp_dir()),
+            ProcessSpec::new("agix-no-such-program", std::env::temp_dir()),
             CancellationToken::new(),
         )
         .await

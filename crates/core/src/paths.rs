@@ -2,13 +2,13 @@
 //!
 //! `ConfigPaths` provides a single source of truth for all persistent
 //! directories used by the AGENT: a flat cross-scene **global** root
-//! (conventionally `~/.atta/`), a **scene**-specific override root nested
+//! (conventionally `~/.agix/`), a **scene**-specific override root nested
 //! under it (`<global>/scenes/<scope>/`), and a **local**/project root
-//! (`<cwd>/.atta/`).
+//! (`<cwd>/.agix/`).
 //!
 //! **The roots are given, never discovered.** Nothing in this module reads
 //! the environment: the process entry point decides which directory the
-//! instance owns and passes it down. `~/.atta` is what that entry point
+//! instance owns and passes it down. `~/.agix` is what that entry point
 //! usually picks, not something the library assumes — which is what lets a
 //! test, a service account, or a deployment with its state elsewhere work
 //! without every module having to agree separately.
@@ -21,18 +21,18 @@
 //! there's no collision to avoid the way there is under a shared `$HOME`.
 //!
 //! **2026-08-04 restructuring**: the user-level tree used to be entirely
-//! scene-scoped (`~/.atta/scenes/<scope>/{memory,sessions,recordings,skills,...}`). It is
+//! scene-scoped (`~/.agix/scenes/<scope>/{memory,sessions,recordings,skills,...}`). It is
 //! now split by resource type:
 //!
 //! - **Global + scene override** (config-shaped, keyed by name): `settings.json`,
 //!   `skills/`, `plugins/`, `agents/`, `rules/`, `hooks/`. Present at both
-//!   `~/.atta/<resource>/` (base) and `~/.atta/scenes/<scope>/<resource>/`
+//!   `~/.agix/<resource>/` (base) and `~/.agix/scenes/<scope>/<resource>/`
 //!   (override) — a scene-specific entry with the same name wins.
 //! - **Global + project only, no scene tier** (history/state-shaped):
-//!   `memory/`, `sessions/`, `recordings/`, `mcp/`. Present at `~/.atta/<resource>/`
+//!   `memory/`, `sessions/`, `recordings/`, `mcp/`. Present at `~/.agix/<resource>/`
 //!   (used when there's no specific project — reserved for a future
 //!   no-project/desktop mode, not yet exercised by `daemon`) and
-//!   `<cwd>/.atta/<resource>/` (project, used today). Deliberately **not**
+//!   `<cwd>/.agix/<resource>/` (project, used today). Deliberately **not**
 //!   scene-scoped: a scene's tool/system-prompt config has no bearing on
 //!   which project a session or memory file belongs to, so borrowing across
 //!   scenes would be a correctness hazard (e.g. resuming a session recorded
@@ -42,28 +42,28 @@
 //!   before it had a loader; there is no replacement path.
 //!
 //! Project-level skills are **not** under `ConfigPaths` at all — they live in
-//! `.agents/skills/`, a sibling of `.atta/`, because that's the path Codex
-//! and other external agent tools scan. `ConfigPaths` only models AttaCore's
+//! `.agents/skills/`, a sibling of `.agix/`, because that's the path Codex
+//! and other external agent tools scan. `ConfigPaths` only models Agix's
 //! own private state and extensions, which no other tool reads.
 
 use std::path::PathBuf;
 
 /// Unified management of AGENT persistent directory paths.
 ///
-/// Default: `global_data_dir = $HOME/.atta/`
-///          `user_data_dir   = $HOME/.atta/scenes/<scope>/`
-///          `local_data_dir  = <cwd>/.atta/`
+/// Default: `global_data_dir = $HOME/.agix/`
+///          `user_data_dir   = $HOME/.agix/scenes/<scope>/`
+///          `local_data_dir  = <cwd>/.agix/`
 ///
 /// `global_data_dir` (and therefore `user_data_dir`, derived from it) can be
-/// overridden via `ATTA_DATA_DIR`; `local_data_dir` via `ATTA_LOCAL_DATA_DIR`.
+/// overridden via `AGIX_DATA_DIR`; `local_data_dir` via `AGIX_LOCAL_DATA_DIR`.
 #[derive(Debug, Clone)]
 pub struct ConfigPaths {
-    /// User-level, scene-specific override root. Default `$HOME/.atta/scenes/<scope>/`.
+    /// User-level, scene-specific override root. Default `$HOME/.agix/scenes/<scope>/`.
     pub user_data_dir: PathBuf,
     /// User-level, cross-scene global root (flat, shared by every scene).
-    /// Default `$HOME/.atta/`.
+    /// Default `$HOME/.agix/`.
     pub global_data_dir: PathBuf,
-    /// Local/project data root. Default `<cwd>/.atta/`.
+    /// Local/project data root. Default `<cwd>/.agix/`.
     pub local_data_dir: PathBuf,
 }
 
@@ -109,25 +109,25 @@ impl ConfigPaths {
         self.user_data_dir.join("skills")
     }
 
-    /// Scene-specific installed plugins: `~/.atta/scenes/<scope>/plugins/`.
+    /// Scene-specific installed plugins: `~/.agix/scenes/<scope>/plugins/`.
     pub fn user_plugins_dir(&self) -> PathBuf {
         self.user_data_dir.join("plugins")
     }
 
-    /// Scene-specific subagent definitions: `~/.atta/scenes/<scope>/agents/`.
-    /// AttaCore extension, no external standard. Loader not yet implemented.
+    /// Scene-specific subagent definitions: `~/.agix/scenes/<scope>/agents/`.
+    /// Agix extension, no external standard. Loader not yet implemented.
     pub fn user_agents_dir(&self) -> PathBuf {
         self.user_data_dir.join("agents")
     }
 
-    /// Scene-specific rule documents: `~/.atta/scenes/<scope>/rules/`.
-    /// AttaCore extension, no external standard. Loader not yet implemented.
+    /// Scene-specific rule documents: `~/.agix/scenes/<scope>/rules/`.
+    /// Agix extension, no external standard. Loader not yet implemented.
     pub fn user_rules_dir(&self) -> PathBuf {
         self.user_data_dir.join("rules")
     }
 
-    /// Scene-specific hook scripts: `~/.atta/scenes/<scope>/hooks/`.
-    /// AttaCore extension, no external standard. Loader not yet implemented.
+    /// Scene-specific hook scripts: `~/.agix/scenes/<scope>/hooks/`.
+    /// Agix extension, no external standard. Loader not yet implemented.
     pub fn user_hooks_dir(&self) -> PathBuf {
         self.user_data_dir.join("hooks")
     }
@@ -206,8 +206,8 @@ mod tests {
 
     fn paths() -> ConfigPaths {
         ConfigPaths::new(
-            PathBuf::from("/state/.atta"),
-            PathBuf::from("/tmp/test-project/.atta"),
+            PathBuf::from("/state/.agix"),
+            PathBuf::from("/tmp/test-project/.agix"),
             "code",
         )
     }
@@ -215,8 +215,8 @@ mod tests {
     #[test]
     fn roots_are_exactly_what_the_caller_passed() {
         let p = paths();
-        assert_eq!(p.global_data_dir, PathBuf::from("/state/.atta"));
-        assert_eq!(p.local_data_dir, PathBuf::from("/tmp/test-project/.atta"));
+        assert_eq!(p.global_data_dir, PathBuf::from("/state/.agix"));
+        assert_eq!(p.local_data_dir, PathBuf::from("/tmp/test-project/.agix"));
     }
 
     #[test]
@@ -230,8 +230,8 @@ mod tests {
 
     #[test]
     fn different_scopes_get_different_user_roots_but_same_global_root() {
-        let global = PathBuf::from("/state/.atta");
-        let local = PathBuf::from("/tmp/p/.atta");
+        let global = PathBuf::from("/state/.agix");
+        let local = PathBuf::from("/tmp/p/.agix");
         let code = ConfigPaths::new(global.clone(), local.clone(), "code");
         let ops = ConfigPaths::new(global, local, "ops");
         assert_ne!(code.user_data_dir, ops.user_data_dir);

@@ -1,4 +1,4 @@
-//! Generated host-side bindings for `atta:plugin@0.1.0`.
+//! Generated host-side bindings for `agix:plugin@0.1.0`.
 //!
 //! The WIT world in `wit/plugin.wit` is the contract; this module is the
 //! typed glue `wit-bindgen` derives from it. Nothing here is hand-written on
@@ -27,7 +27,7 @@ pub const API_VERSION: &str = "0.1";
 /// carries this in its own metadata, which is the second check on the
 /// version a manifest claims — a manifest can be edited, the component's
 /// embedded WIT cannot without rebuilding it.
-pub const WIT_PACKAGE: &str = "atta:plugin@0.1.0";
+pub const WIT_PACKAGE: &str = "agix:plugin@0.1.0";
 
 #[cfg(test)]
 mod tests {

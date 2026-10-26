@@ -79,13 +79,13 @@ impl QuickJsEngine {
 /// hoists and is in scope by the time it is called.
 fn wrap(code: &str, entry: &str) -> String {
     format!(
-        "(function (__atta_input) {{\n\
+        "(function (__agix_input) {{\n\
          {code}\n\
          if (typeof {entry} !== 'function') {{\n\
            throw new Error('script does not export a function named {entry}');\n\
          }}\n\
-         var __atta_out = {entry}(JSON.parse(__atta_input));\n\
-         return __atta_out === undefined ? 'null' : JSON.stringify(__atta_out);\n\
+         var __agix_out = {entry}(JSON.parse(__agix_input));\n\
+         return __agix_out === undefined ? 'null' : JSON.stringify(__agix_out);\n\
          }})"
     )
 }
@@ -222,8 +222,8 @@ mod tests {
 
     fn script(code: &str) -> ScriptSource {
         ScriptSource {
-            id: "./.atta/scripts/test.js".into(),
-            origin: BlockOrigin::Script("./.atta/scripts/test.js".into()),
+            id: "./.agix/scripts/test.js".into(),
+            origin: BlockOrigin::Script("./.agix/scripts/test.js".into()),
             code: code.to_string(),
         }
     }
@@ -1190,7 +1190,7 @@ mod binding_tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let base = std::env::temp_dir().join(format!(
-            "atta-script-binding-{}-{}",
+            "agix-script-binding-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::SeqCst)
         ));
@@ -1462,7 +1462,7 @@ mod package_binding_tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let base = std::env::temp_dir().join(format!(
-            "atta-package-binding-{}-{}",
+            "agix-package-binding-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::SeqCst)
         ));

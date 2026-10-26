@@ -1,7 +1,7 @@
 //! Daemon library — JSON-RPC 2.0 server over Unix socket / TCP.
 //!
 //! This is a sample application showing how to build a long-running
-//! agent service using the AttaCore crates.
+//! agent service using the Agix crates.
 
 // A build carries one extension carrier or none.
 //

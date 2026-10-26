@@ -1,4 +1,4 @@
-//! AttaCore — skill manager and bundled skill definitions.
+//! Agix — skill manager and bundled skill definitions.
 
 pub mod bundled;
 pub mod manager;

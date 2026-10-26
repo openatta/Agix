@@ -18,7 +18,7 @@ pub use self::import::{
     already_decided as import_already_decided, detect_import_sources, execute_import,
     mark_imported, mark_skipped, ImportError, ImportSource, ImportSourceKind, ImportSummary,
 };
-pub use self::memory::{find_relevant_memories, maybe_migrate_claude_to_atta, MemoryFileEntry};
+pub use self::memory::{find_relevant_memories, maybe_migrate_claude_to_agix, MemoryFileEntry};
 pub use self::skill::{
     activate_conditional_skills, expand_skill_vars, load_session_skills,
     load_session_skills_with_bundled, load_skill_from_path, try_expand_skill_command, SkillEntry,
@@ -48,22 +48,22 @@ pub struct FrozenContext {
     pub platform: String,
     pub shell: Option<String>,
     /// 这台机器上用户的 home 目录——和 `platform`/`shell` 一样是**环境事实**，
-    /// 进 system prompt 给模型交代环境，不是 AttaCore 存东西的地方（那些根一律
+    /// 进 system prompt 给模型交代环境，不是 Agix 存东西的地方（那些根一律
     /// 由调用方注入，见 [`crate::paths::ConfigPaths`]）。收进快照而不是在拼
     /// prompt 时现读，是因为快照可以被测试替换，而 env 不能。
     pub home_dir: Option<String>,
     pub today: String,
     pub memory_blocks: Vec<MemoryFileEntry>,
     pub user_email: Option<String>,
-    /// `~/.atta/scenes/<scope>/skills/<name>/SKILL.md` + `<cwd>/.agents/skills/<name>/SKILL.md`
+    /// `~/.agix/scenes/<scope>/skills/<name>/SKILL.md` + `<cwd>/.agents/skills/<name>/SKILL.md`
     /// 的 metadata 索引（项目级技能挪到了 `.agents/skills/`——外部事实标准，Codex
-    /// 也扫描这个路径；用户级技能仍在 AttaCore 私有的 `.atta/scenes/<scope>/` 下，因为
+    /// 也扫描这个路径；用户级技能仍在 Agix 私有的 `.agix/scenes/<scope>/` 下，因为
     /// 用户主目录不存在"被别的工具扫描"的场景）。只入 frontmatter
     /// （name/description/when_to_use）+ 不嵌入 body / 不做参数代换 / 不做 slash
     /// 调用。模型能"知道"skills 存在 + 在合适时主动引用。
     pub skills: Vec<SkillEntry>,
     /// 跨会话 memory 目录（每个 cwd 一个）。位于
-    /// `~/.atta/scenes/<scope>/memory/<sha256(canonical_cwd)[..16]>/`。
+    /// `~/.agix/scenes/<scope>/memory/<sha256(canonical_cwd)[..16]>/`。
     pub memory_dir: PathBuf,
     /// 上面目录里 MEMORY.md 的内容（仅当存在时加载）。注入 system prompt。
     pub memory_index: Option<String>,
@@ -89,9 +89,9 @@ pub struct OutputStyle {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputStyleSource {
-    /// `~/.atta/scenes/<scope>/output-styles/<name>.md`
+    /// `~/.agix/scenes/<scope>/output-styles/<name>.md`
     User,
-    /// `<cwd>/.atta/output-styles/<name>.md`
+    /// `<cwd>/.agix/output-styles/<name>.md`
     Project,
 }
 
@@ -337,8 +337,8 @@ impl FrozenContext {
     }
 }
 
-/// **A-5 **: load `<cwd>/.atta/output-styles/<name>.md` if present,
-/// else `~/.atta/scenes/<scope>/output-styles/<name>.md`. Trims whitespace and caps body
+/// **A-5 **: load `<cwd>/.agix/output-styles/<name>.md` if present,
+/// else `~/.agix/scenes/<scope>/output-styles/<name>.md`. Trims whitespace and caps body
 /// at 8KB. Returns None if neither file is present or readable.
 async fn collect_output_style(cwd: &Path, name: &str, paths: &ConfigPaths) -> Option<OutputStyle> {
     let safe = name.trim();
@@ -346,7 +346,7 @@ async fn collect_output_style(cwd: &Path, name: &str, paths: &ConfigPaths) -> Op
         return None;
     }
     let project = cwd
-        .join(".atta")
+        .join(".agix")
         .join("output-styles")
         .join(format!("{safe}.md"));
     if let Ok(content) = tokio::fs::read_to_string(&project).await {
@@ -391,7 +391,7 @@ pub async fn list_output_style_names(cwd: &Path, paths: &ConfigPaths) -> Vec<Str
             .map(|n| (n, OutputStyleSource::User)),
     );
     all.extend(
-        scan_output_style_dir(&cwd.join(".atta").join("output-styles"))
+        scan_output_style_dir(&cwd.join(".agix").join("output-styles"))
             .await
             .into_iter()
             .map(|n| (n, OutputStyleSource::Project)),
@@ -433,7 +433,7 @@ mod tests {
     /// Roots under a tempdir. Tests never inherit the running user's home —
     /// that is the property this whole module was changed to guarantee.
     fn test_paths(root: &Path) -> ConfigPaths {
-        ConfigPaths::new(root.join(".atta"), root.join(".atta"), "code")
+        ConfigPaths::new(root.join(".agix"), root.join(".agix"), "code")
     }
 
     use tempfile::TempDir;
@@ -456,7 +456,7 @@ mod tests {
 
     #[tokio::test]
     async fn detects_git_repo_in_a_real_repo() {
-        // 当前 cwd 是 attacode 仓库本身，已经初始化了 git
+        // 当前 cwd 是 agix 仓库本身，已经初始化了 git
         let pwd = std::env::current_dir().unwrap();
         let ctx = FrozenContext::collect(
             pwd.clone(),
@@ -464,7 +464,7 @@ mod tests {
             &crate::interface::environment::SystemEnvironment,
         )
         .await;
-        assert!(ctx.is_git, "expected attacode workspace to be inside git");
+        assert!(ctx.is_git, "expected agix workspace to be inside git");
         assert!(ctx.git_branch.is_some());
     }
 
@@ -655,7 +655,7 @@ mod tests {
         let home = TempDir::new().unwrap();
         let cwd = TempDir::new().unwrap();
         let user_dir = test_paths(home.path()).user_data_dir.join("output-styles");
-        let proj_dir = cwd.path().join(".atta/output-styles");
+        let proj_dir = cwd.path().join(".agix/output-styles");
         tokio::fs::create_dir_all(&user_dir).await.unwrap();
         tokio::fs::create_dir_all(&proj_dir).await.unwrap();
         tokio::fs::write(user_dir.join("terse.md"), "USER VERSION")
@@ -716,7 +716,7 @@ mod tests {
         let home = TempDir::new().unwrap();
         let cwd = TempDir::new().unwrap();
         let user_dir = test_paths(home.path()).user_data_dir.join("output-styles");
-        let proj_dir = cwd.path().join(".atta/output-styles");
+        let proj_dir = cwd.path().join(".agix/output-styles");
         tokio::fs::create_dir_all(&user_dir).await.unwrap();
         tokio::fs::create_dir_all(&proj_dir).await.unwrap();
         tokio::fs::write(user_dir.join("terse.md"), "x")

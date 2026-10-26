@@ -54,7 +54,7 @@ fn sanitise_path(s: &str) -> String {
 }
 
 /// File-backed running-task store, sharing the same directory layout as
-/// `TaskStore` but maintaining separate files under `~/.atta/code/running/`.
+/// `TaskStore` but maintaining separate files under `~/.agix/code/running/`.
 ///
 /// All operations are async; callers typically fire-and-forget via `tokio::spawn`.
 #[derive(Debug)]

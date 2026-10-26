@@ -267,7 +267,7 @@ async fn set_provider_writes_project_settings_and_doctor_sees_it() {
     assert_eq!(v["result"]["default_provider"], "deepseek");
 
     // Written to disk at the project tier.
-    let written = std::fs::read_to_string(dir.path().join(".atta").join("settings.json")).unwrap();
+    let written = std::fs::read_to_string(dir.path().join(".agix").join("settings.json")).unwrap();
     let written: serde_json::Value = serde_json::from_str(&written).unwrap();
     assert_eq!(written["providers"]["deepseek"]["api_key"], "k");
 
@@ -304,18 +304,18 @@ async fn set_provider_can_target_another_project_this_daemon_serves() {
     assert_eq!(
         v["result"]["written_to"],
         other
-            .join(".atta")
+            .join(".agix")
             .join("settings.json")
             .display()
             .to_string(),
         "{v}"
     );
 
-    let written = std::fs::read_to_string(other.join(".atta").join("settings.json")).unwrap();
+    let written = std::fs::read_to_string(other.join(".agix").join("settings.json")).unwrap();
     let written: serde_json::Value = serde_json::from_str(&written).unwrap();
     assert_eq!(written["providers"]["deepseek"]["api_key"], "k");
     assert!(
-        !dir.path().join(".atta").join("settings.json").exists(),
+        !dir.path().join(".agix").join("settings.json").exists(),
         "the daemon's own project must not be written when another one was named"
     );
 
@@ -350,7 +350,7 @@ async fn set_provider_partial_patch_does_not_clobber_untouched_fields() {
     )
     .await;
 
-    let written = std::fs::read_to_string(dir.path().join(".atta").join("settings.json")).unwrap();
+    let written = std::fs::read_to_string(dir.path().join(".agix").join("settings.json")).unwrap();
     let written: serde_json::Value = serde_json::from_str(&written).unwrap();
     assert_eq!(written["providers"]["deepseek"]["api_key"], "new-key");
     assert_eq!(
@@ -381,7 +381,7 @@ async fn set_provider_delete_removes_entry() {
     )
     .await;
 
-    let written = std::fs::read_to_string(dir.path().join(".atta").join("settings.json")).unwrap();
+    let written = std::fs::read_to_string(dir.path().join(".agix").join("settings.json")).unwrap();
     let written: serde_json::Value = serde_json::from_str(&written).unwrap();
     assert!(written["providers"].get("deepseek").is_none());
 
@@ -408,9 +408,9 @@ async fn set_provider_rejects_missing_provider_id() {
 async fn set_provider_refuses_to_clobber_a_malformed_existing_settings_json() {
     let (_server, sock, dir, handle) = start_server().await;
 
-    let atta_dir = dir.path().join(".atta");
-    std::fs::create_dir_all(&atta_dir).unwrap();
-    let settings_path = atta_dir.join("settings.json");
+    let agix_dir = dir.path().join(".agix");
+    std::fs::create_dir_all(&agix_dir).unwrap();
+    let settings_path = agix_dir.join("settings.json");
     std::fs::write(&settings_path, "{not valid json").unwrap();
 
     let resp = rpc_call(
@@ -465,7 +465,7 @@ async fn mcp_add_server_writes_settings_and_reports_connect_failure() {
     let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
     assert!(v["result"].is_object(), "resp: {v}");
 
-    let written = std::fs::read_to_string(dir.path().join(".atta").join("settings.json")).unwrap();
+    let written = std::fs::read_to_string(dir.path().join(".agix").join("settings.json")).unwrap();
     let written: serde_json::Value = serde_json::from_str(&written).unwrap();
     assert_eq!(
         written["mcp_servers"]["bogus"]["command"],
@@ -510,7 +510,7 @@ async fn mcp_update_server_replaces_a_declared_server_and_refuses_an_unknown_one
     let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
     assert!(v["result"].is_object(), "resp: {v}");
 
-    let written = std::fs::read_to_string(dir.path().join(".atta").join("settings.json")).unwrap();
+    let written = std::fs::read_to_string(dir.path().join(".agix").join("settings.json")).unwrap();
     let written: serde_json::Value = serde_json::from_str(&written).unwrap();
     assert_eq!(
         written["mcp_servers"]["bogus"]["command"],
@@ -604,7 +604,7 @@ async fn mcp_add_server_connects_a_real_server_and_lists_its_tools() {
         "addServer should report the server it just connected, with its tools: {v}"
     );
 
-    let written = std::fs::read_to_string(dir.path().join(".atta").join("settings.json")).unwrap();
+    let written = std::fs::read_to_string(dir.path().join(".agix").join("settings.json")).unwrap();
     let written: serde_json::Value = serde_json::from_str(&written).unwrap();
     assert_eq!(
         written["mcp_servers"]["toy"]["command"],
@@ -1492,7 +1492,7 @@ async fn config_reload_picks_up_a_hand_edited_settings_file() {
     // call at all) and confirms `config.reload` alone picks it up.
     let (_server, sock, dir, handle) = start_server().await;
 
-    let settings_path = dir.path().join(".atta").join("settings.json");
+    let settings_path = dir.path().join(".agix").join("settings.json");
     std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
     std::fs::write(
         &settings_path,
@@ -1550,7 +1550,7 @@ async fn config_reload_attempts_to_connect_a_hand_edited_mcp_server() {
     // way, connect attempted or not, so its mere presence here is the proof.
     let (_server, sock, dir, handle) = start_server().await;
 
-    let settings_path = dir.path().join(".atta").join("settings.json");
+    let settings_path = dir.path().join(".agix").join("settings.json");
     std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
     std::fs::write(
         &settings_path,

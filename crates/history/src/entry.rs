@@ -171,7 +171,7 @@ pub enum LogEntry {
         model: String,
         permission_mode: String,
         engine_version: String,
-        attacode_version: String,
+        agix_version: String,
         /// The session ID that spawned this session (parent-child relationship).
         /// Set when a sub-agent or forked conversation is created from an existing session.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -478,7 +478,7 @@ mod tests {
                 model: "claude-sonnet-4-6".into(),
                 permission_mode: "default".into(),
                 engine_version: "0.0.1".into(),
-                attacode_version: "0.0.1".into(),
+                agix_version: "0.0.1".into(),
                 parent_session_id: None,
                 scene: Some("coding".into()),
                 project_root: Some("/repo".into()),
@@ -512,7 +512,7 @@ mod tests {
             "model": "claude-sonnet-4-6",
             "permission_mode": "default",
             "engine_version": "0.0.1",
-            "attacode_version": "0.0.1",
+            "agix_version": "0.0.1",
         });
         let env: EnvelopedEntry = serde_json::from_value(raw).unwrap();
         match env.entry {

@@ -2,7 +2,7 @@
 //! instructions come from.
 //!
 //! Two things reach the model without anyone asking for them: the instruction
-//! file (`AGENTS.md` / `CLAUDE.md`), injected verbatim, and the `.atta/rules/`
+//! file (`AGENTS.md` / `CLAUDE.md`), injected verbatim, and the `.agix/rules/`
 //! index, advertised by name and first line so the model knows the documents
 //! exist. Both were a fixed answer to a question a deployment may answer
 //! differently — one path out of `settings.instruction_file`, and three

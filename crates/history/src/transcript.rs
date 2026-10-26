@@ -97,11 +97,11 @@ impl TranscriptProjection for DefaultProjection {
 /// built this way reopenable after the plugin that wrote the entries is gone.
 pub struct ExtensionsAreVisible {
     /// Which namespaces to surface. Empty means all of them — except the
-    /// engine's own `attacore.*` bookkeeping, which is never model content.
+    /// engine's own `agix.*` bookkeeping, which is never model content.
     pub namespaces: Vec<String>,
 }
 
-const ENGINE_NAMESPACE_PREFIX: &str = "attacore.";
+const ENGINE_NAMESPACE_PREFIX: &str = "agix.";
 
 impl ExtensionsAreVisible {
     pub fn all() -> Self {
@@ -1100,12 +1100,12 @@ mod extension_entry_tests {
     #[test]
     fn engine_namespaces_never_reach_the_model() {
         let s = SessionId::new();
-        let entries: Vec<EnvelopedEntry> = [ext("attacore.session")]
+        let entries: Vec<EnvelopedEntry> = [ext("agix.session")]
             .into_iter()
             .map(|e| EnvelopedEntry::new(s, e))
             .collect();
         let named = ExtensionsAreVisible {
-            namespaces: vec!["attacore.session".into()],
+            namespaces: vec!["agix.session".into()],
         };
         for projection in [ExtensionsAreVisible::all(), named] {
             assert!(project_messages_with(&entries, &projection).is_empty());

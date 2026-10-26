@@ -1,4 +1,4 @@
-//! attacode-mcp 错误。
+//! agix-mcp 错误。
 
 #[derive(thiserror::Error, Debug)]
 pub enum McpError {

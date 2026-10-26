@@ -156,7 +156,7 @@ fn system_blocks(turn: u32) -> Vec<PromptBlock> {
         },
         PromptBlock {
             role: BlockRole::System,
-            content: "## Available Skills\n- atta-implement\n- atta-review".into(),
+            content: "## Available Skills\n- agix-implement\n- agix-review".into(),
             cache_strategy: None,
             name: Some(base::prompt::names::SKILLS_CATALOG.into()),
             origin: Default::default(),

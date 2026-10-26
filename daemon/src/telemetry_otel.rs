@@ -12,10 +12,10 @@
 //!
 //! # Metrics & spans exported
 //!
-//! - Turn duration histogram (`atta.turn.duration`)
-//! - Tool execution counter (`atta.tool.executions`)
-//! - API call latency histogram (`atta.api.latency`)
-//! - Token usage histogram (`atta.token.usage`)
+//! - Turn duration histogram (`agix.turn.duration`)
+//! - Tool execution counter (`agix.tool.executions`)
+//! - API call latency histogram (`agix.api.latency`)
+//! - Token usage histogram (`agix.token.usage`)
 
 use std::time::Duration;
 
@@ -151,10 +151,10 @@ impl telemetry::TelemetryRecorder for OtelExporter {
 ///
 /// | Instrument        | Name                   | Type        | Unit    |
 /// |-------------------|------------------------|-------------|---------|
-/// | Turn duration     | `atta.turn.duration`   | Histogram   | ms      |
-/// | Tool executions   | `atta.tool.executions` | Counter     | 1       |
-/// | API call latency  | `atta.api.latency`     | Histogram   | ms      |
-/// | Token usage       | `atta.token.usage`     | Histogram   | 1       |
+/// | Turn duration     | `agix.turn.duration`   | Histogram   | ms      |
+/// | Tool executions   | `agix.tool.executions` | Counter     | 1       |
+/// | API call latency  | `agix.api.latency`     | Histogram   | ms      |
+/// | Token usage       | `agix.token.usage`     | Histogram   | 1       |
 pub fn start_otel(endpoint: &str) -> Result<OtelExporter, OtelError> {
     if endpoint.is_empty() {
         return Err(OtelError::InvalidEndpoint("endpoint is empty".into()));
@@ -162,8 +162,7 @@ pub fn start_otel(endpoint: &str) -> Result<OtelExporter, OtelError> {
 
     let protocol = detect_protocol(endpoint);
 
-    let resource =
-        opentelemetry_sdk::Resource::new(vec![KeyValue::new("service.name", "attacore")]);
+    let resource = opentelemetry_sdk::Resource::new(vec![KeyValue::new("service.name", "agix")]);
 
     // ── Trace exporter ──────────────────────────────────────────────────
     let trace_exporter = match protocol {
@@ -219,28 +218,28 @@ pub fn start_otel(endpoint: &str) -> Result<OtelExporter, OtelError> {
     opentelemetry::global::set_meter_provider(meter_provider.clone());
 
     // Pre-register standard instruments via the global meter.
-    let meter = opentelemetry::global::meter("attacore");
+    let meter = opentelemetry::global::meter("agix");
 
     let _turn_duration = meter
-        .f64_histogram("atta.turn.duration")
+        .f64_histogram("agix.turn.duration")
         .with_description("Turn execution duration")
         .with_unit("ms")
         .build();
 
     let _tool_executions = meter
-        .u64_counter("atta.tool.executions")
+        .u64_counter("agix.tool.executions")
         .with_description("Number of tool executions")
         .with_unit("1")
         .build();
 
     let _api_latency = meter
-        .f64_histogram("atta.api.latency")
+        .f64_histogram("agix.api.latency")
         .with_description("API call latency")
         .with_unit("ms")
         .build();
 
     let _token_usage = meter
-        .u64_histogram("atta.token.usage")
+        .u64_histogram("agix.token.usage")
         .with_description("Token usage distribution")
         .with_unit("1")
         .build();
@@ -258,9 +257,9 @@ pub fn start_otel(endpoint: &str) -> Result<OtelExporter, OtelError> {
 /// This is a no-op if the global meter provider has not been configured
 /// (i.e. `start_otel` was not called).
 pub fn record_turn_duration(duration_ms: f64) {
-    let meter = opentelemetry::global::meter("attacore");
+    let meter = opentelemetry::global::meter("agix");
     meter
-        .f64_histogram("atta.turn.duration")
+        .f64_histogram("agix.turn.duration")
         .with_description("Turn execution duration")
         .with_unit("ms")
         .build()
@@ -271,10 +270,10 @@ pub fn record_turn_duration(duration_ms: f64) {
 ///
 /// This is a no-op if the global meter provider has not been configured.
 pub fn record_tool_execution(tool_name: &str, success: bool) {
-    let meter = opentelemetry::global::meter("attacore");
+    let meter = opentelemetry::global::meter("agix");
     let outcome = if success { "success" } else { "failure" };
     meter
-        .u64_counter("atta.tool.executions")
+        .u64_counter("agix.tool.executions")
         .with_description("Number of tool executions")
         .with_unit("1")
         .build()
@@ -291,9 +290,9 @@ pub fn record_tool_execution(tool_name: &str, success: bool) {
 ///
 /// This is a no-op if the global meter provider has not been configured.
 pub fn record_api_latency(latency_ms: f64, model: &str) {
-    let meter = opentelemetry::global::meter("attacore");
+    let meter = opentelemetry::global::meter("agix");
     meter
-        .f64_histogram("atta.api.latency")
+        .f64_histogram("agix.api.latency")
         .with_description("API call latency")
         .with_unit("ms")
         .build()
@@ -315,9 +314,9 @@ pub fn record_token_usage(
     cache_read_tokens: u64,
     model: &str,
 ) {
-    let meter = opentelemetry::global::meter("attacore");
+    let meter = opentelemetry::global::meter("agix");
     let hist = meter
-        .u64_histogram("atta.token.usage")
+        .u64_histogram("agix.token.usage")
         .with_description("Token usage distribution")
         .with_unit("1")
         .build();

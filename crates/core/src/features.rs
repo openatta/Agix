@@ -66,24 +66,24 @@ impl FeatureFlags {
         }
     }
 
-    /// Enable flags from environment variables (ATTAGO_FEATURE_*).
+    /// Enable flags from environment variables (AGIX_FEATURE_*).
     pub fn apply_env_overrides(&mut self) {
-        if std::env::var("ATTAGO_FEATURE_TEAM_MODE").is_ok() {
+        if std::env::var("AGIX_FEATURE_TEAM_MODE").is_ok() {
             self.team_mode = true;
         }
-        if std::env::var("ATTAGO_FEATURE_PLUGIN_MARKETPLACE").is_ok() {
+        if std::env::var("AGIX_FEATURE_PLUGIN_MARKETPLACE").is_ok() {
             self.plugin_marketplace = true;
         }
-        if std::env::var("ATTAGO_FEATURE_EXTENDED_MEMORY").is_ok() {
+        if std::env::var("AGIX_FEATURE_EXTENDED_MEMORY").is_ok() {
             self.extended_memory = true;
         }
-        if std::env::var("ATTAGO_FEATURE_EXPERIMENTAL_AGENT").is_ok() {
+        if std::env::var("AGIX_FEATURE_EXPERIMENTAL_AGENT").is_ok() {
             self.experimental_agent = true;
         }
-        if std::env::var("ATTAGO_FEATURE_REACTIVE_COMPACT").is_ok() {
+        if std::env::var("AGIX_FEATURE_REACTIVE_COMPACT").is_ok() {
             self.reactive_compact = true;
         }
-        if std::env::var("ATTAGO_FEATURE_DREAM_TASK").is_ok() {
+        if std::env::var("AGIX_FEATURE_DREAM_TASK").is_ok() {
             self.dream_task = true;
         }
     }
@@ -128,11 +128,11 @@ mod tests {
 
     #[test]
     fn env_override_enables_flags() {
-        std::env::set_var("ATTAGO_FEATURE_EXTENDED_MEMORY", "1");
+        std::env::set_var("AGIX_FEATURE_EXTENDED_MEMORY", "1");
         let mut flags = FeatureFlags::default();
         flags.apply_env_overrides();
         assert!(flags.extended_memory);
-        std::env::remove_var("ATTAGO_FEATURE_EXTENDED_MEMORY");
+        std::env::remove_var("AGIX_FEATURE_EXTENDED_MEMORY");
     }
 
     #[test]

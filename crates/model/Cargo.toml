@@ -5,7 +5,7 @@ edition      = { workspace = true }
 rust-version = { workspace = true }
 license      = { workspace = true }
 publish      = false
-description  = "AttaCore — LLM backend adapter (Anthropic API)"
+description  = "Agix — LLM backend adapter (Anthropic API)"
 
 [dependencies]
 base          = { workspace = true }

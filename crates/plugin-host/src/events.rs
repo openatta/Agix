@@ -87,8 +87,8 @@ impl WasmHookExecutor for WasmEvents {
 /// Refusing a call and quietly changing what it does are different powers,
 /// and only the first is one a package downloaded from a marketplace gets;
 /// the second stays with hooks the user wrote themselves.
-fn into_response(decision: wasm_host::bindings::atta::plugin::types::HookDecision) -> HookResponse {
-    use wasm_host::bindings::atta::plugin::types::HookDecision as D;
+fn into_response(decision: wasm_host::bindings::agix::plugin::types::HookDecision) -> HookResponse {
+    use wasm_host::bindings::agix::plugin::types::HookDecision as D;
     match decision {
         D::Proceed => HookResponse::default(),
         D::Block(reason) => HookResponse {
@@ -187,7 +187,7 @@ timeout_ms = 4321
 
     #[test]
     fn proceed_says_nothing_at_all() {
-        use wasm_host::bindings::atta::plugin::types::HookDecision as D;
+        use wasm_host::bindings::agix::plugin::types::HookDecision as D;
         let r = into_response(D::Proceed);
         assert!(r.decision.is_none());
         assert!(r.message.is_none());
@@ -196,7 +196,7 @@ timeout_ms = 4321
 
     #[test]
     fn block_carries_its_reason_to_the_user() {
-        use wasm_host::bindings::atta::plugin::types::HookDecision as D;
+        use wasm_host::bindings::agix::plugin::types::HookDecision as D;
         let r = into_response(D::Block("policy forbids this".into()));
         assert_eq!(r.decision, Some(HookDecision::Block));
         assert_eq!(r.message.as_deref(), Some("policy forbids this"));
@@ -207,7 +207,7 @@ timeout_ms = 4321
     /// powers, and a downloaded package only gets the first.
     #[test]
     fn no_plugin_answer_can_rewrite_a_tools_arguments() {
-        use wasm_host::bindings::atta::plugin::types::HookDecision as D;
+        use wasm_host::bindings::agix::plugin::types::HookDecision as D;
         for decision in [
             D::Proceed,
             D::Block("no".into()),
@@ -222,7 +222,7 @@ timeout_ms = 4321
 
     #[test]
     fn added_context_is_a_message_not_a_verdict() {
-        use wasm_host::bindings::atta::plugin::types::HookDecision as D;
+        use wasm_host::bindings::agix::plugin::types::HookDecision as D;
         let r = into_response(D::AddContext("the demo plugin is active".into()));
         assert!(
             r.decision.is_none(),

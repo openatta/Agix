@@ -83,7 +83,7 @@ fn move_dir(
     }
 }
 
-/// Run both relocations against `data_root` (`~/.atta` unless overridden).
+/// Run both relocations against `data_root` (`~/.agix` unless overridden).
 ///
 /// Idempotent: a second call over an already-migrated tree finds nothing to do
 /// and reports `did_nothing()`. Safe to call unconditionally at startup.

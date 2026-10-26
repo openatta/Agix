@@ -1252,7 +1252,7 @@ mod tests {
                     description: None,
                     mime_type: Some("text/markdown".into()),
                 }])
-                .with_resource_text("doc://guide/install", "Run `cargo install atta`."),
+                .with_resource_text("doc://guide/install", "Run `cargo install agix`."),
         );
         McpManager::from_clients(vec![client])
     }
@@ -1265,7 +1265,7 @@ mod tests {
             .await
             .expect("reference should have been found");
         assert!(out.contains("<mcp-resource server=\"docs\" uri=\"doc://guide/install\">"));
-        assert!(out.contains("Run `cargo install atta`."));
+        assert!(out.contains("Run `cargo install agix`."));
     }
 
     #[tokio::test]

@@ -201,7 +201,7 @@ pub enum McpKind {
     /// A standard MCP server; `config` points at its server config JSON.
     Native,
     /// A DeepSeek-Harness plugin; `entry` points at its JS entry, loaded by
-    /// the `atta-dsh-bridge` process which speaks MCP on its behalf.
+    /// the `agix-dsh-bridge` process which speaks MCP on its behalf.
     Dsh,
 }
 

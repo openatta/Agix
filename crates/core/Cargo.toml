@@ -5,7 +5,7 @@ edition      = { workspace = true }
 rust-version = { workspace = true }
 license      = { workspace = true }
 publish      = false
-description  = "AttaCore — foundation types, traits, and context"
+description  = "Agix — foundation types, traits, and context"
 
 [dependencies]
 tokio         = { workspace = true }

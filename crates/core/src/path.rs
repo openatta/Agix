@@ -36,7 +36,7 @@ fn radix36_encode(mut value: u64) -> String {
 
 /// Maximum length before truncation with hash suffix.
 const SANITIZE_MAX_LEN: usize = 200;
-/// Public constant for external crates (e.g. attacode-history tests) that need
+/// Public constant for external crates (e.g. agix-history tests) that need
 /// to verify sanitized output length bounds.
 pub const MAX_SANITIZED_LENGTH: usize = SANITIZE_MAX_LEN;
 

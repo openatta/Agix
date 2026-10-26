@@ -1,7 +1,7 @@
 //! Skill loading, expansion, and activation.
 //!
-//! Skills are loaded from three tiers: `~/.atta/skills/<name>/SKILL.md`
-//! (global default, shared by every scene), `~/.atta/scenes/<scope>/skills/<name>/SKILL.md`
+//! Skills are loaded from three tiers: `~/.agix/skills/<name>/SKILL.md`
+//! (global default, shared by every scene), `~/.agix/scenes/<scope>/skills/<name>/SKILL.md`
 //! (scene-specific override — same name wins over the global default; `scope`
 //! identifies the product instance, no default), and
 //! `<cwd>/.agents/skills/<name>/SKILL.md` (project-level — this is the
@@ -41,7 +41,7 @@ pub struct SkillEntry {
     /// Override model for this skill
     pub model: Option<String>,
     /// Effort/thinking-mode override while this skill is active. Maps onto
-    /// `base::interface::settings::ThinkingMode` — AttaCore has no separate
+    /// `base::interface::settings::ThinkingMode` — Agix has no separate
     /// "effort" axis, so this is not a new concept, just this field's name.
     pub effort: Option<String>,
     /// Execution context: "fork" (sub-agent) or "inline" (default)
@@ -148,17 +148,17 @@ impl SkillEntry {
 /// Skill 来源 -- user / project；同名时后入者覆盖先入者（见下方扫描顺序）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkillSource {
-    /// `~/.atta/skills/`（全局默认）或 `~/.atta/scenes/<scope>/skills/`（scene 覆盖）
+    /// `~/.agix/skills/`（全局默认）或 `~/.agix/scenes/<scope>/skills/`（scene 覆盖）
     User,
     /// `<cwd>/.agents/skills/`（外部事实标准，Codex 也扫描这个路径）
     Project,
-    /// Loaded from a plugin's manifest (`~/.atta/plugins/<name>/SKILL.md` or
-    /// `~/.atta/scenes/<scope>/plugins/<name>/SKILL.md`)
+    /// Loaded from a plugin's manifest (`~/.agix/plugins/<name>/SKILL.md` or
+    /// `~/.agix/scenes/<scope>/plugins/<name>/SKILL.md`)
     Plugin,
 }
 
-/// 从三层扫 SKILL.md：全局 `~/.atta/skills/` -> scene 覆盖
-/// `~/.atta/scenes/<scope>/skills/` -> 项目级 `<cwd>/.agents/skills/`（外部事实标准）。
+/// 从三层扫 SKILL.md：全局 `~/.agix/skills/` -> scene 覆盖
+/// `~/.agix/scenes/<scope>/skills/` -> 项目级 `<cwd>/.agents/skills/`（外部事实标准）。
 /// 同名时后扫到的覆盖先扫到的（`scan_skills_dir` 结果直接 extend 进 `Vec`，
 /// 调用方按"先入者优先"处理 slash 分发，所以顺序是：scene 覆盖需要排在它要
 /// 覆盖的全局条目**之前**，让 scene 版本先命中）。
@@ -386,7 +386,7 @@ pub async fn try_expand_skill_command(
 /// `arguments` frontmatter list on hand.
 ///
 /// Substitution rules (applied in order):
-/// 1. `{ARGS}` -> full `args` string (legacy attacode convention)
+/// 1. `{ARGS}` -> full `args` string (legacy agix convention)
 /// 2. `$ARGUMENTS` -> full `args` string (alternative legacy convention)
 /// 3. `$1`..`$9` -> corresponding positional arg (whitespace-separated); missing
 ///    positions become empty string
@@ -443,17 +443,17 @@ pub fn expand_skill_vars_named(body: &str, args: &str, arg_names: &[String]) -> 
         }
     }
 
-    // T2.3: ${ATTA_SKILL_DIR} and ${ATTA_SESSION_ID}
-    if out.contains("${ATTA_SKILL_DIR}") {
+    // T2.3: ${AGIX_SKILL_DIR} and ${AGIX_SESSION_ID}
+    if out.contains("${AGIX_SKILL_DIR}") {
         let skill_dir = std::env::current_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| ".".to_string());
-        out = out.replace("${ATTA_SKILL_DIR}", &skill_dir);
+        out = out.replace("${AGIX_SKILL_DIR}", &skill_dir);
         substituted = true;
     }
-    if out.contains("${ATTA_SESSION_ID}") {
-        let sid = std::env::var("ATTA_SESSION_ID").unwrap_or_else(|_| "unknown".to_string());
-        out = out.replace("${ATTA_SESSION_ID}", &sid);
+    if out.contains("${AGIX_SESSION_ID}") {
+        let sid = std::env::var("AGIX_SESSION_ID").unwrap_or_else(|_| "unknown".to_string());
+        out = out.replace("${AGIX_SESSION_ID}", &sid);
         substituted = true;
     }
 
@@ -498,7 +498,7 @@ mod tests {
     /// Roots under a tempdir — the same shape a real instance gets, minus any
     /// dependence on who is running the test.
     fn test_paths(home: &Path) -> crate::paths::ConfigPaths {
-        crate::paths::ConfigPaths::new(home.join(".atta"), home.join("project/.atta"), "code")
+        crate::paths::ConfigPaths::new(home.join(".agix"), home.join("project/.agix"), "code")
     }
 
     #[tokio::test]
@@ -506,7 +506,7 @@ mod tests {
         let home = TempDir::new().unwrap();
         let cwd = TempDir::new().unwrap();
         // scene-specific skill
-        let u_dir = home.path().join(".atta/scenes/code/skills/u-skill");
+        let u_dir = home.path().join(".agix/scenes/code/skills/u-skill");
         tokio::fs::create_dir_all(&u_dir).await.unwrap();
         tokio::fs::write(
             u_dir.join("SKILL.md"),
@@ -536,7 +536,7 @@ mod tests {
     async fn collect_skills_scene_overrides_global_default_by_name() {
         let home = TempDir::new().unwrap();
         let cwd = TempDir::new().unwrap();
-        let global_dir = home.path().join(".atta/skills/shared");
+        let global_dir = home.path().join(".agix/skills/shared");
         tokio::fs::create_dir_all(&global_dir).await.unwrap();
         tokio::fs::write(
             global_dir.join("SKILL.md"),
@@ -544,7 +544,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let scene_dir = home.path().join(".atta/scenes/code/skills/shared");
+        let scene_dir = home.path().join(".agix/scenes/code/skills/shared");
         tokio::fs::create_dir_all(&scene_dir).await.unwrap();
         tokio::fs::write(
             scene_dir.join("SKILL.md"),
@@ -568,19 +568,19 @@ mod tests {
         let home = TempDir::new().unwrap();
         let cwd = TempDir::new().unwrap();
         // 目录存在但没有 SKILL.md
-        let d = home.path().join(".atta/scenes/code/skills/empty");
+        let d = home.path().join(".agix/scenes/code/skills/empty");
         tokio::fs::create_dir_all(&d).await.unwrap();
         let skills = collect_skills(&test_paths(home.path()), cwd.path()).await;
         assert!(skills.is_empty());
     }
 
     #[tokio::test]
-    async fn collect_skills_ignores_old_atta_code_skills_path() {
-        // Pre-release, no back-compat: `.atta/code/skills/` is not scanned at
+    async fn collect_skills_ignores_old_agix_code_skills_path() {
+        // Pre-release, no back-compat: `.agix/code/skills/` is not scanned at
         // all (only `.agents/skills/` is the project-level source of truth).
         let home = TempDir::new().unwrap();
         let cwd = TempDir::new().unwrap();
-        let old_dir = cwd.path().join(".atta/code/skills/old-skill");
+        let old_dir = cwd.path().join(".agix/code/skills/old-skill");
         tokio::fs::create_dir_all(&old_dir).await.unwrap();
         tokio::fs::write(
             old_dir.join("SKILL.md"),
@@ -592,7 +592,7 @@ mod tests {
         let skills = collect_skills(&test_paths(home.path()), cwd.path()).await;
         assert!(
             skills.is_empty(),
-            "`.atta/code/skills/` must not be scanned"
+            "`.agix/code/skills/` must not be scanned"
         );
     }
 

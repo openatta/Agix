@@ -5,7 +5,7 @@ edition      = { workspace = true }
 rust-version = { workspace = true }
 license      = { workspace = true }
 publish      = false
-description  = "AttaCore — MCP client (server connection, tool adaptation)"
+description  = "Agix — MCP client (server connection, tool adaptation)"
 
 [dependencies]
 base          = { workspace = true }

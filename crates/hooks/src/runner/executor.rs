@@ -128,7 +128,7 @@ impl HookRunner {
         let mut spec = ProcessSpec::new(shell, cwd).args(["-c", command]);
 
         // Let `command` reference a bare script name (e.g. `check.sh`) that
-        // lives in `.atta/hooks/` by prepending the configured search dirs
+        // lives in `.agix/hooks/` by prepending the configured search dirs
         // to this subprocess's PATH — normal shell command lookup does the
         // rest, no custom resolution syntax needed.
         if !self.hooks_search_dirs.is_empty() {

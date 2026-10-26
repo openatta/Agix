@@ -77,7 +77,7 @@ pub trait ImportCallback: Send + Sync {
 /// the filesystem beyond the cheap "already decided" check.
 ///
 /// Behavior:
-/// - Already an AttaCore project (`.agents/` exists) or a prior `imported`/
+/// - Already an Agix project (`.agents/` exists) or a prior `imported`/
 ///   `skipped` decision is on record → returns `None` immediately, no scan.
 /// - No callback registered → returns `None` immediately, no scan.
 /// - No import sources detected → returns `None`.

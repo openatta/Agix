@@ -111,7 +111,7 @@ fn shared_client(no_proxy: bool) -> reqwest::Client {
 /// How long a call may take belongs to the caller.
 fn build_client(no_proxy: bool) -> reqwest::Client {
     let mut b = reqwest::Client::builder()
-        .user_agent(concat!("attacode/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("agix/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(CONNECT_TIMEOUT)
         .redirect(reqwest::redirect::Policy::none());
     if no_proxy {

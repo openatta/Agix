@@ -250,21 +250,21 @@ impl RecorderModel {
         self
     }
 
-    /// `ATTA_RECORD=<name>` / `ATTA_REPLAY=<name>` with `ATTA_RECORDINGS_DIR`
+    /// `AGIX_RECORD=<name>` / `AGIX_REPLAY=<name>` with `AGIX_RECORDINGS_DIR`
     /// for the root. Absent all of them, the decorator is a pass-through.
     fn env_config() -> Option<RecorderConfig> {
-        let root = std::env::var("ATTA_RECORDINGS_DIR")
+        let root = std::env::var("AGIX_RECORDINGS_DIR")
             .ok()
             .map(PathBuf::from)?;
         let on_divergence = Self::default_divergence();
-        if let Ok(name) = std::env::var("ATTA_RECORD") {
+        if let Ok(name) = std::env::var("AGIX_RECORD") {
             Some(RecorderConfig {
                 mode: RecorderMode::Record,
                 name: Some(name),
                 root,
                 on_divergence,
             })
-        } else if let Ok(name) = std::env::var("ATTA_REPLAY") {
+        } else if let Ok(name) = std::env::var("AGIX_REPLAY") {
             Some(RecorderConfig {
                 mode: RecorderMode::Replay,
                 name: Some(name),
@@ -356,14 +356,14 @@ impl RecorderModel {
     /// never reaches [`RecorderModel::env_config`], and re-deriving this is
     /// how the equivalent flag once shipped as a silent no-op.
     ///
-    /// Overrides, highest precedence first: `ATTA_REPLAY_STRICT=1`, then
-    /// `ATTA_REPLAY_WARN=1`.
+    /// Overrides, highest precedence first: `AGIX_REPLAY_STRICT=1`, then
+    /// `AGIX_REPLAY_WARN=1`.
     pub fn default_divergence() -> Divergence {
         resolve_divergence(DivergenceInputs {
-            forced_strict: flag("ATTA_REPLAY_STRICT"),
-            forced_warn: flag("ATTA_REPLAY_WARN"),
+            forced_strict: flag("AGIX_REPLAY_STRICT"),
+            forced_warn: flag("AGIX_REPLAY_WARN"),
             in_test: std::env::var("CARGO_TEST_RUNNER").is_ok()
-                || std::env::var("ATTA_RECORDER_AUTO_DETECT").is_ok(),
+                || std::env::var("AGIX_RECORDER_AUTO_DETECT").is_ok(),
             in_ci: flag("CI"),
         })
     }

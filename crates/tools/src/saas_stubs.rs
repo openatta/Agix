@@ -1,5 +1,5 @@
 //! Tools that historically required Anthropic SaaS / IDE infrastructure but in
-//! attacode have either (a) a real local implementation or (b) been retired
+//! agix have either (a) a real local implementation or (b) been retired
 //! because there is no sensible local equivalent.
 //!
 //! **D-2 收敛状态：**
@@ -16,8 +16,8 @@
 //!   PKCE flow and returns the authorization URL. Completion exchanges the
 //!   code for a token via `mcp::oauth`.
 //! - `DispatchMcpTool`: a **real** introspection helper. **D1 **: moved
-//!   to `attacode_mcp::tools::DispatchMcpTool` so this crate no longer needs
-//!   an `attacode-mcp` dependency.
+//!   to `agix_mcp::tools::DispatchMcpTool` so this crate no longer needs
+//!   an `agix-mcp` dependency.
 
 use async_trait::async_trait;
 use base::error::ToolError;
@@ -34,7 +34,7 @@ use serde_json::{json, Value};
 fn not_in_scope(tool: &str, alt: &str) -> ToolResult {
     ToolResult {
         content: base::tool::ToolResultContent::Text(format!(
-            "{tool} is not part of attacode's local-only scope (Anthropic SaaS / IDE \
+            "{tool} is not part of agix's local-only scope (Anthropic SaaS / IDE \
              integration required). Alternative for this use case: {alt}"
         )),
         is_error: true,
@@ -211,9 +211,9 @@ impl Tool for McpAuthTool {
     }
 }
 
-// **D1 **: DispatchMcpTool was moved to attacode-mcp::tools::DispatchMcpTool
+// **D1 **: DispatchMcpTool was moved to agix-mcp::tools::DispatchMcpTool
 // — it required McpClientHandle so it stayed coupled to the mcp crate; making
-// the move is what lets attacode-tools drop its attacode-mcp dependency.
+// the move is what lets agix-tools drop its agix-mcp dependency.
 
 #[cfg(test)]
 mod tests {

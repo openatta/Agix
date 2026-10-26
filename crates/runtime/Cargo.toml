@@ -5,7 +5,7 @@ edition      = { workspace = true }
 rust-version = { workspace = true }
 license      = { workspace = true }
 publish      = false
-description  = "AttaCore — agent runtime (turn loop, Agent + Builder)"
+description  = "Agix — agent runtime (turn loop, Agent + Builder)"
 
 [dependencies]
 base          = { workspace = true }

@@ -478,7 +478,7 @@ impl GoldenFile {
     }
 
     pub fn assert_eq(&self, actual: &str) {
-        if std::env::var("ATTA_UPDATE_GOLDEN").is_ok() {
+        if std::env::var("AGIX_UPDATE_GOLDEN").is_ok() {
             if let Some(p) = self.path.parent() {
                 std::fs::create_dir_all(p).expect("golden dir");
             }
@@ -489,7 +489,7 @@ impl GoldenFile {
         let expected = std::fs::read_to_string(&self.path).unwrap_or_else(|_| {
             panic!(
                 "no golden trace for `{}` at {}. If this case is new, create it with \
-                 ATTA_UPDATE_GOLDEN=1 and read what it produced before committing.\n\
+                 AGIX_UPDATE_GOLDEN=1 and read what it produced before committing.\n\
                  --- would be written ---\n{actual}",
                 self.name,
                 self.path.display()
@@ -501,7 +501,7 @@ impl GoldenFile {
                 "turn behavior for `{}` changed.\n\n\
                  --- expected ({}) ---\n{expected}\n\
                  --- actual ---\n{actual}\n\
-                 If this change is intended, re-run with ATTA_UPDATE_GOLDEN=1 — after \
+                 If this change is intended, re-run with AGIX_UPDATE_GOLDEN=1 — after \
                  reading the diff above.",
                 self.name,
                 self.path.display()

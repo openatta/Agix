@@ -1,4 +1,4 @@
-//! `attacored` — daemon binary.
+//! `agixd` — daemon binary.
 //!
 //! Builds a multi-session agent engine pool at startup and exposes it via
 //! JSON-RPC 2.0 over Unix socket (or TCP with token auth).
@@ -22,10 +22,10 @@ use tracing::info;
 #[derive(Parser, Debug)]
 #[command(
     version,
-    about = "AttaCore daemon: multi-session agent engine over JSON-RPC"
+    about = "Agix daemon: multi-session agent engine over JSON-RPC"
 )]
 struct Cli {
-    /// Unix socket path (default: $HOME/.atta/<scene>/daemon.sock)
+    /// Unix socket path (default: $HOME/.agix/<scene>/daemon.sock)
     #[arg(long)]
     socket: Option<PathBuf>,
 
@@ -46,24 +46,24 @@ struct Cli {
     max_tokens: u32,
 
     /// Bind a TCP listener at this addr (e.g. 127.0.0.1:7878).
-    /// Requires --token or ATTACORE_DAEMON_TOKEN env.
+    /// Requires --token or AGIX_DAEMON_TOKEN env.
     #[arg(long)]
     listen: Option<String>,
 
     /// Bind a WebSocket listener at this addr (e.g. 127.0.0.1:7879), so a
     /// browser front end can reach the daemon directly. Loopback only, and
-    /// requires --token or ATTACORE_DAEMON_TOKEN env.
+    /// requires --token or AGIX_DAEMON_TOKEN env.
     #[arg(long)]
     listen_ws: Option<String>,
 
     /// Shared secret for TCP and WebSocket auth. Falls back to
-    /// `ATTACORE_DAEMON_TOKEN`.
+    /// `AGIX_DAEMON_TOKEN`.
     #[arg(long)]
     token: Option<String>,
 
     /// Which scene this daemon serves (must be one the code actually
     /// registers — see `resolve_scene()`). Determines both session behavior
-    /// (system prompt/tools) and the user-level state root (`~/.atta/<scene>/`).
+    /// (system prompt/tools) and the user-level state root (`~/.agix/<scene>/`).
     /// There is no default scope concept separate from this — an unsupported
     /// value fails startup outright rather than silently falling back to
     /// anything.
@@ -82,7 +82,7 @@ struct Cli {
     scenes: Vec<String>,
 
     /// Named identity for this daemon instance — the filename of its
-    /// `~/.atta/daemon/instances.d/<instance>.json` discovery entry
+    /// `~/.agix/daemon/instances.d/<instance>.json` discovery entry
     /// (`docs/daemon_rpc_protocol.md` §2). Must be unique among daemons running on
     /// the same machine; two live instances racing to write the same name
     /// isn't reconciled here (each just overwrites the file — see
@@ -196,10 +196,8 @@ async fn main() -> anyhow::Result<()> {
         let token = cli
             .token
             .clone()
-            .or_else(|| std::env::var("ATTACORE_DAEMON_TOKEN").ok())
-            .ok_or_else(|| {
-                anyhow::anyhow!("--listen requires --token or env ATTACORE_DAEMON_TOKEN")
-            })?;
+            .or_else(|| std::env::var("AGIX_DAEMON_TOKEN").ok())
+            .ok_or_else(|| anyhow::anyhow!("--listen requires --token or env AGIX_DAEMON_TOKEN"))?;
         daemon_config.tcp_addr = Some(addr);
         daemon_config.tcp_token = Some(token);
     }
@@ -219,10 +217,10 @@ async fn main() -> anyhow::Result<()> {
         let token = cli
             .token
             .clone()
-            .or_else(|| std::env::var("ATTACORE_DAEMON_TOKEN").ok())
+            .or_else(|| std::env::var("AGIX_DAEMON_TOKEN").ok())
             .or_else(|| daemon_config.tcp_token.clone())
             .ok_or_else(|| {
-                anyhow::anyhow!("--listen-ws requires --token or env ATTACORE_DAEMON_TOKEN")
+                anyhow::anyhow!("--listen-ws requires --token or env AGIX_DAEMON_TOKEN")
             })?;
         daemon_config.ws_addr = Some(addr);
         daemon_config.tcp_token = Some(token);

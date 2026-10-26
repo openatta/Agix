@@ -37,7 +37,7 @@ pub struct SandboxPolicy {
     /// against the connection target's hostname (no wildcards) — see
     /// the macOS backend's network section for the exact rule shape.
     pub allowed_domains: Vec<String>,
-    /// Scene ids whose `~/.atta/scenes/<scene>/settings.json` the backend
+    /// Scene ids whose `~/.agix/scenes/<scene>/settings.json` the backend
     /// should protect from writes.
     ///
     /// Empty means the backend falls back to the builtin scenes it knows
@@ -53,9 +53,9 @@ pub struct SandboxPolicy {
     /// backend that received it separately could be handed a policy that
     /// looks complete and is not.
     pub additional_writable: Vec<PathBuf>,
-    /// This instance's global state root. `None` falls back to `$HOME/.atta`,
+    /// This instance's global state root. `None` falls back to `$HOME/.agix`,
     /// which is where an instance usually lives but not where it must: a
-    /// redirected instance whose sandbox protected `$HOME/.atta` would be
+    /// redirected instance whose sandbox protected `$HOME/.agix` would be
     /// guarding a file it does not use while leaving its real settings.json
     /// writable.
     pub state_root: Option<PathBuf>,

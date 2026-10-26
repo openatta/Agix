@@ -1,4 +1,4 @@
-//! Memory file management, cross-session memory search, and ATTA.md loading/migration.
+//! Memory file management, cross-session memory search, and AGIX.md loading/migration.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -10,10 +10,10 @@ use time::OffsetDateTime;
 use super::frontmatter::{extract_yaml_field, split_frontmatter};
 use super::utils::{sanitize_for_dir, truncate_chars, truncate_memory_entrypoint};
 
-/// ATTA.md total length cap.
+/// AGIX.md total length cap.
 const MAX_CLAUDE_MD_CHARS: usize = 20_000;
 
-/// 一段 ATTA.md 文件（路径 + 内容）。多条按"远到近"顺序排列。
+/// 一段 AGIX.md 文件（路径 + 内容）。多条按"远到近"顺序排列。
 #[derive(Debug, Clone)]
 pub struct MemoryFileEntry {
     pub path: PathBuf,
@@ -22,7 +22,7 @@ pub struct MemoryFileEntry {
 
 /// 跨会话 memory 目录 ＋ MEMORY.md 加载。
 ///
-/// 路径：`~/.atta/memory/<sha256(canonical_cwd)[..16]>/`——**2026-08-04 起不再
+/// 路径：`~/.agix/memory/<sha256(canonical_cwd)[..16]>/`——**2026-08-04 起不再
 /// 挂 scope**：memory 跟 sessions/recordings 一样，只分"项目级"与"全局级"，不分
 /// scene（不同 scene 的工具配置跟这份 memory 属于哪个项目无关）。
 ///
@@ -54,7 +54,7 @@ pub(crate) async fn collect_memory(cwd: &Path, global_root: &Path) -> (PathBuf, 
     (dir, index)
 }
 
-/// 项目级 memdir：`~/.atta/memory/<sanitize(cwd)>/*.md`，跨 session 持久知识
+/// 项目级 memdir：`~/.agix/memory/<sanitize(cwd)>/*.md`，跨 session 持久知识
 /// （如"项目 X 常用命令"、"曾经的设计决策"）。只是文件加载；
 /// auto-extract / save tools 推迟。返回路径列表按文件名排序，让加载顺序稳定。
 /// **2026-08-04 起不再挂 scope**，理由同 [`collect_memory`]。
@@ -98,7 +98,7 @@ pub(crate) async fn collect_memdir_files(global_root: &Path, cwd: &Path) -> Vec<
 /// `walk_up=false` 时只读 cwd 级 `AGENTS.md`，跳过中间所有父目录。给 monorepo
 /// 子目录想隔离父级上下文用。
 ///
-/// **不再读取** `.atta/ATTA.md`（旧的双轨指令文件）——`AGENTS.md` 是唯一权威
+/// **不再读取** `.agix/AGIX.md`（旧的双轨指令文件）——`AGENTS.md` 是唯一权威
 /// 指令文件。
 pub(crate) async fn collect_memory_files_with(
     cwd: &Path,
@@ -350,12 +350,12 @@ fn expand_synonyms(terms: &[String]) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
-// ATTA.md migration from CLAUDE.md
+// AGIX.md migration from CLAUDE.md
 // ---------------------------------------------------------------------------
 
 /// Walk up from `cwd` to root, find `CLAUDE.md` at each level, and
-/// create/update the sibling `ATTA.md` if `CLAUDE.md` has changed since the
-/// last migration. Records per-path mtime in `<cwd>/.atta/migration.json`.
+/// create/update the sibling `AGIX.md` if `CLAUDE.md` has changed since the
+/// last migration. Records per-path mtime in `<cwd>/.agix/migration.json`.
 ///
 /// # Merge strategy
 ///
@@ -379,10 +379,10 @@ fn expand_synonyms(terms: &[String]) -> Vec<String> {
 /// meant as the foundation for the future user-confirmed import feature
 /// (migration doc Phase 3), which will supersede the automatic/silent
 /// behavior described above with an explicit user-confirmation step and
-/// retarget the output to `AGENTS.md` instead of `ATTA.md`. Left as-is (not
+/// retarget the output to `AGENTS.md` instead of `AGIX.md`. Left as-is (not
 /// deleted, not wired up) so that future work can reuse the merge-marker
 /// logic.
-pub async fn maybe_migrate_claude_to_atta(cwd: &Path) {
+pub async fn maybe_migrate_claude_to_agix(cwd: &Path) {
     // Walk up from cwd to root (same pattern as collect_memory_files_with)
     let mut dirs: Vec<PathBuf> = Vec::new();
     let mut p = cwd.to_path_buf();
@@ -405,8 +405,8 @@ pub async fn maybe_migrate_claude_to_atta(cwd: &Path) {
         return;
     }
 
-    // Load migration state from cwd/.atta/migration.json
-    let mig_path = cwd.join(".atta").join("code").join("migration.json");
+    // Load migration state from cwd/.agix/migration.json
+    let mig_path = cwd.join(".agix").join("code").join("migration.json");
     let mut state: MigrationState = load_migration_state(&mig_path).await;
 
     let mut dirty = false;
@@ -434,19 +434,19 @@ pub async fn maybe_migrate_claude_to_atta(cwd: &Path) {
             Err(_) => continue,
         };
 
-        // Build ATTA.md path (same dir as CLAUDE.md)
-        let atta_path = claude_path.with_file_name("ATTA.md");
-        let existing = tokio::fs::read_to_string(&atta_path)
+        // Build AGIX.md path (same dir as CLAUDE.md)
+        let agix_path = claude_path.with_file_name("AGIX.md");
+        let existing = tokio::fs::read_to_string(&agix_path)
             .await
             .unwrap_or_default();
-        let new_atta = merge_atta_content(&existing, &claude_content, &now);
+        let new_agix = merge_agix_content(&existing, &claude_content, &now);
 
-        if let Some(parent) = atta_path.parent() {
+        if let Some(parent) = agix_path.parent() {
             if tokio::fs::create_dir_all(parent).await.is_err() {
                 continue;
             }
         }
-        if tokio::fs::write(&atta_path, &new_atta).await.is_err() {
+        if tokio::fs::write(&agix_path, &new_agix).await.is_err() {
             continue;
         }
 
@@ -468,7 +468,7 @@ pub async fn maybe_migrate_claude_to_atta(cwd: &Path) {
     }
 }
 
-/// Per-file migration state, persisted in `.atta/migration.json`.
+/// Per-file migration state, persisted in `.agix/migration.json`.
 #[derive(Debug, Serialize, Deserialize, Default)]
 struct MigrationState {
     /// Human-readable ISO 8601 timestamp of the most recent migration run.
@@ -495,12 +495,12 @@ async fn file_mtime_secs(path: &Path) -> Option<u64> {
         .map(|d| d.as_secs())
 }
 
-/// Merge CLAUDE.md content into existing ATTA.md content.
+/// Merge CLAUDE.md content into existing AGIX.md content.
 ///
-/// - If ATTA.md doesn't exist: wrap CLAUDE.md content in comment markers.
+/// - If AGIX.md doesn't exist: wrap CLAUDE.md content in comment markers.
 /// - If markers exist: replace content between begin/end, preserve user edits after end.
 /// - If no markers: prepend the marker section before existing content.
-fn merge_atta_content(existing: &str, claude_content: &str, now: &OffsetDateTime) -> String {
+fn merge_agix_content(existing: &str, claude_content: &str, now: &OffsetDateTime) -> String {
     let ts = now
         .format(&Iso8601::DEFAULT)
         .unwrap_or_else(|_| "unknown".to_string());
@@ -513,7 +513,7 @@ fn merge_atta_content(existing: &str, claude_content: &str, now: &OffsetDateTime
         return format!("{header}\n{END_MARKER}\n");
     }
 
-    // Check if ATTA.md already has migration markers
+    // Check if AGIX.md already has migration markers
     let begin_pos = existing.find("<!-- CLAUDE_MIGRATED_BEGIN");
     let end_pos = existing.find("<!-- CLAUDE_MIGRATED_END");
 
@@ -586,7 +586,7 @@ mod tests {
         let home = TempDir::new().unwrap();
         let cwd = TempDir::new().unwrap();
         let sanitized = sanitize_for_dir(&cwd.path().display().to_string());
-        let memdir = home.path().join(".atta").join("memory").join(&sanitized);
+        let memdir = home.path().join(".agix").join("memory").join(&sanitized);
         tokio::fs::create_dir_all(&memdir).await.unwrap();
         tokio::fs::write(memdir.join("commands.md"), "# Common commands\nfoo\nbar")
             .await
@@ -599,7 +599,7 @@ mod tests {
             .await
             .unwrap();
 
-        let files = collect_memdir_files(&home.path().join(".atta"), cwd.path()).await;
+        let files = collect_memdir_files(&home.path().join(".agix"), cwd.path()).await;
         assert_eq!(files.len(), 2);
         // Order is mtime-newest-first; assert by membership, not position.
         let names: Vec<String> = files
@@ -615,7 +615,7 @@ mod tests {
     async fn memdir_returns_empty_when_dir_missing() {
         let home = TempDir::new().unwrap();
         let cwd = TempDir::new().unwrap();
-        let files = collect_memdir_files(&home.path().join(".atta"), cwd.path()).await;
+        let files = collect_memdir_files(&home.path().join(".agix"), cwd.path()).await;
         assert!(files.is_empty());
     }
 
@@ -800,13 +800,13 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // merge_atta_content
+    // merge_agix_content
     // -----------------------------------------------------------------------
 
     #[test]
-    fn merge_atta_empty_creates_wrapped_content() {
+    fn merge_agix_empty_creates_wrapped_content() {
         let now = OffsetDateTime::now_utc();
-        let result = merge_atta_content("", "# Hello\n\nSome CLAUDE.md", &now);
+        let result = merge_agix_content("", "# Hello\n\nSome CLAUDE.md", &now);
         assert!(result.contains("<!-- CLAUDE_MIGRATED_AT:"));
         assert!(result.contains("<!-- CLAUDE_MIGRATED_BEGIN -->"));
         assert!(result.contains("Some CLAUDE.md"));
@@ -814,10 +814,10 @@ mod tests {
     }
 
     #[test]
-    fn merge_atta_with_existing_markers_replaces_content() {
+    fn merge_agix_with_existing_markers_replaces_content() {
         let now = OffsetDateTime::now_utc();
         let existing = "<!-- CLAUDE_MIGRATED_AT: 2024-01-01T00:00:00Z -->\n<!-- CLAUDE_MIGRATED_BEGIN -->\nold content\n<!-- CLAUDE_MIGRATED_END -->\n\n# User additions\ncustom notes\n";
-        let result = merge_atta_content(existing, "NEW content", &now);
+        let result = merge_agix_content(existing, "NEW content", &now);
         assert!(result.contains("NEW content"));
         assert!(!result.contains("old content"));
         assert!(result.contains("# User additions"));
@@ -825,18 +825,18 @@ mod tests {
     }
 
     #[test]
-    fn merge_atta_no_markers_prepends() {
+    fn merge_agix_no_markers_prepends() {
         let now = OffsetDateTime::now_utc();
-        let result = merge_atta_content("# My ATTA\n\nsome content", "CLAUDE content", &now);
+        let result = merge_agix_content("# My AGIX\n\nsome content", "CLAUDE content", &now);
         assert!(result.contains("<!-- CLAUDE_MIGRATED_BEGIN -->"));
         assert!(result.contains("CLAUDE content"));
-        assert!(result.contains("# My ATTA"));
+        assert!(result.contains("# My AGIX"));
     }
 
     #[tokio::test]
     async fn memdir_files_capped_at_200() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let global_root = tmp.path().join(".atta");
+        let global_root = tmp.path().join(".agix");
         let cwd = std::path::Path::new("/fake/project/abc");
         let sanitized = sanitize_for_dir(&cwd.display().to_string());
         let dir = global_root.join("memory").join(&sanitized);
