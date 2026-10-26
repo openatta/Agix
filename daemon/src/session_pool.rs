@@ -412,6 +412,7 @@ struct RecordedSpec {
 }
 
 const SPEC_NS: &str = "agix.session";
+const ENGINE_NS_PREFIX: &str = "agix.";
 const SPEC_EVENT: &str = "spec";
 
 // ── LiveSession ─────────────────────────────────────────────────────────
@@ -2453,6 +2454,11 @@ impl SessionPool {
         if spec.options.is_none() {
             spec.options = options.cloned();
         }
+        // `recorder` is never recorded, so the call bringing the session back
+        // is the only place it can come from.
+        if let Some(recorder) = options.and_then(|o| o.recorder.clone()) {
+            spec.options.get_or_insert_with(Default::default).recorder = Some(recorder);
+        }
         if spec.options.as_ref().is_some_and(|o| o.recorder.is_some()) {
             spec.recorder = Some(telemetry::recorder::Recorder::new());
         }
@@ -2618,6 +2624,105 @@ impl SessionPool {
         }
 
         Ok(serde_json::json!({ "session_id": session_id, "name": name }))
+    }
+
+    const MAX_ENTRY_NS: usize = 128;
+
+    pub async fn append_entry(
+        &self,
+        session_id: &str,
+        ns: &str,
+        event: &str,
+        payload: serde_json::Value,
+    ) -> Result<serde_json::Value, RpcError> {
+        if ns.is_empty() || ns.len() > Self::MAX_ENTRY_NS || ns.chars().any(char::is_control) {
+            return Err((
+                codes::INVALID_PARAMS,
+                format!(
+                    "ns must be 1–{} characters with no control characters",
+                    Self::MAX_ENTRY_NS
+                ),
+            ));
+        }
+        if ns.starts_with(ENGINE_NS_PREFIX) {
+            return Err((
+                codes::INVALID_PARAMS,
+                format!("the `{ENGINE_NS_PREFIX}*` namespaces are the engine's own"),
+            ));
+        }
+        if event.is_empty() || event.chars().any(char::is_control) {
+            return Err((
+                codes::INVALID_PARAMS,
+                "event must be a non-empty name".into(),
+            ));
+        }
+        let store = self.require_history_store()?;
+        let sid = base::session::SessionId::parse(session_id).map_err(|_| {
+            (
+                codes::INVALID_PARAMS,
+                format!("invalid session_id: {session_id}"),
+            )
+        })?;
+        // Appending to a session that does not exist would create a log for it.
+        self.load_entries(session_id).await?;
+        let entry = history::entry::LogEntry::Extension {
+            ns: ns.to_string(),
+            event: event.to_string(),
+            payload: payload.clone(),
+        };
+        store
+            .append(sid, entry)
+            .await
+            .map_err(|e| (codes::INTERNAL_ERROR, format!("could not append: {e}")))?;
+
+        let entries = self.load_entries(session_id).await?;
+        let lengths = history::transcript::projected_lengths_with(&entries, store.projection());
+        let written = entries
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(i, env)| match &env.entry {
+                history::entry::LogEntry::Extension {
+                    ns: n,
+                    event: e,
+                    payload: p,
+                } if n == ns && e == event && *p == payload => Some(entry_view(i, env, &lengths)),
+                _ => None,
+            })
+            .flatten()
+            .ok_or_else(|| {
+                (
+                    codes::INTERNAL_ERROR,
+                    "the entry was not found after writing it".to_string(),
+                )
+            })?;
+
+        let frame = StreamFrame::extension_entry(session_id, written.clone());
+        self.broadcast_to_session(session_id, &frame).await;
+        Ok(written)
+    }
+
+    pub async fn list_entries(
+        &self,
+        session_id: &str,
+        namespaces: Option<&[String]>,
+    ) -> Result<serde_json::Value, RpcError> {
+        let store = self.require_history_store()?;
+        let entries = self.load_entries(session_id).await?;
+        let lengths = history::transcript::projected_lengths_with(&entries, store.projection());
+        let listed: Vec<serde_json::Value> = entries
+            .iter()
+            .enumerate()
+            .filter(|(_, env)| match &env.entry {
+                history::entry::LogEntry::Extension { ns, .. } => {
+                    !ns.starts_with(ENGINE_NS_PREFIX)
+                        && namespaces.map_or(true, |wanted| wanted.iter().any(|w| w == ns))
+                }
+                _ => false,
+            })
+            .filter_map(|(i, env)| entry_view(i, env, &lengths))
+            .collect();
+        Ok(serde_json::json!({ "entries": listed }))
     }
 
     /// `session.setModel` — what the next API call this session makes should
@@ -4511,7 +4616,11 @@ impl SessionPool {
         // Shortest prefix already holding `target` messages. `target == 0`
         // keeps nothing (a fork of the bare session start), which is a legal
         // request: "give me this conversation's setup with none of its turns".
-        let cut = if target == 0 {
+        // A fork of the whole conversation keeps what follows its last message
+        // too: a host's entries written after the final turn.
+        let cut = if target >= total_messages {
+            entries.len()
+        } else if target == 0 {
             0
         } else {
             lengths
@@ -6386,6 +6495,37 @@ fn redact_secret(s: &str) -> String {
     }
     let tail: String = chars[chars.len() - 4..].iter().collect();
     format!("***{tail}")
+}
+
+/// One extension entry as `session.entries` and the `extension_entry` frame
+/// show it. `at` counts the messages before it, in `session.history`'s
+/// coordinates.
+fn entry_view(
+    index: usize,
+    env: &history::entry::EnvelopedEntry,
+    lengths: &[usize],
+) -> Option<serde_json::Value> {
+    if env.is_sidechain {
+        return None;
+    }
+    let history::entry::LogEntry::Extension { ns, event, payload } = &env.entry else {
+        return None;
+    };
+    let at = index
+        .checked_sub(1)
+        .map_or(0, |i| lengths.get(i).copied().unwrap_or(0));
+    let ts = env
+        .ts
+        .format(&time::format_description::well_known::Rfc3339)
+        .ok()?;
+    Some(serde_json::json!({
+        "id": env.id,
+        "ts": ts,
+        "ns": ns,
+        "event": event,
+        "payload": payload,
+        "at": at,
+    }))
 }
 
 /// One `session.history` item: the projected message as it always was

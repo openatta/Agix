@@ -505,6 +505,21 @@ async fn documented_session_results_are_real() {
         serde_json::json!({"session_id": sid}),
     )
     .await;
+    verify(
+        &doc,
+        &daemon,
+        "session.appendEntry",
+        serde_json::json!({"session_id": sid, "ns": "com.example.cards",
+                           "event": "job_done", "payload": {}}),
+    )
+    .await;
+    verify(
+        &doc,
+        &daemon,
+        "session.entries",
+        serde_json::json!({"session_id": sid, "namespaces": ["com.example.cards"]}),
+    )
+    .await;
     let fork = verify(
         &doc,
         &daemon,

@@ -713,6 +713,8 @@ impl DaemonServer {
             "session.resume" => self.method_session_resume(id, req.params).await,
             "session.setModel" => self.method_session_set_model(id, req.params).await,
             "session.rename" => self.method_session_rename(id, req.params).await,
+            "session.appendEntry" => self.method_session_append_entry(id, req.params).await,
+            "session.entries" => self.method_session_entries(id, req.params).await,
             "scene.list" => RpcResponse::ok(
                 id,
                 serde_json::json!({"scenes": self.pool.list_scenes().await}),
@@ -1583,6 +1585,65 @@ impl DaemonServer {
             return err;
         }
         match self.pool.rename_session(session_id, name).await {
+            Ok(v) => RpcResponse::ok(id, v),
+            Err((code, message)) => RpcResponse::err(id, code, message),
+        }
+    }
+
+    async fn method_session_append_entry(
+        &self,
+        id: serde_json::Value,
+        params: serde_json::Value,
+    ) -> RpcResponse {
+        let text = |key: &str| params.get(key).and_then(|v| v.as_str());
+        let (Some(session_id), Some(ns), Some(event)) =
+            (text("session_id"), text("ns"), text("event"))
+        else {
+            return RpcResponse::err(
+                id,
+                codes::INVALID_PARAMS,
+                "session.appendEntry needs session_id, ns and event",
+            );
+        };
+        if let Some(err) = self.scene_mismatch_response(&id, session_id).await {
+            return err;
+        }
+        let payload = params
+            .get("payload")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        match self.pool.append_entry(session_id, ns, event, payload).await {
+            Ok(v) => RpcResponse::ok(id, v),
+            Err((code, message)) => RpcResponse::err(id, code, message),
+        }
+    }
+
+    async fn method_session_entries(
+        &self,
+        id: serde_json::Value,
+        params: serde_json::Value,
+    ) -> RpcResponse {
+        let Some(session_id) = params.get("session_id").and_then(|v| v.as_str()) else {
+            return RpcResponse::err(id, codes::INVALID_PARAMS, "missing session_id");
+        };
+        let namespaces: Option<Vec<String>> = match params.get("namespaces") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(v) => match serde_json::from_value(v.clone()) {
+                Ok(list) => Some(list),
+                Err(_) => {
+                    return RpcResponse::err(
+                        id,
+                        codes::INVALID_PARAMS,
+                        "namespaces is a list of strings",
+                    )
+                }
+            },
+        };
+        match self
+            .pool
+            .list_entries(session_id, namespaces.as_deref())
+            .await
+        {
             Ok(v) => RpcResponse::ok(id, v),
             Err((code, message)) => RpcResponse::err(id, code, message),
         }

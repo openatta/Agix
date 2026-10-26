@@ -599,6 +599,7 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 | `schedule` | 有 `schedule.*` 方法与 daemon 内的调度器(§6.7) |
 | `session_tasks` | 有 `session.tasks` / `session.stopTask`,任务事件进 `session.event`(§6.3、§7) |
 | `context_edits` | 有 `session.inspectContext` / `session.dropMessages` / `session.editMessage`(§6.3) |
+| `extension_entries` | 有 `session.appendEntry` / `session.entries`,写入推 `extension_entry`(§6.3、§7) |
 
 #### `daemon.status`
 
@@ -781,8 +782,10 @@ daemon 重启后恢复)都按同一份 `options` 重建,之后的调用里再传
 `session.setModel` 选的模型也记在那里,所以同样跨重启保留。**形状不认识的 `options`
 会被整体当成"没传"**,不报错 —— 拼错字段名不会有任何提示。
 
-`recorder` 不落盘:同一进程里的重建接着原来的回放进度,不从头重放;daemon 重启之后
-这个会话不再录制或回放。
+`recorder` 不落盘:同一进程里的重建接着原来的回放进度,不从头重放;daemon 重启之后,
+把会话带回内存的那次调用(`session.resume`、带 `resume:true` 的 `session.subscribe`、
+自动恢复的 `session.run_turn`)在 `options` 里再给一次 `recorder` 才接着录制或回放 ——
+这是 `options` 里唯一一项以这次调用为准的,其余仍按建会话时记下的。
 
 `recorder.mode` 取 `record` / `replay` / `rerun`;`dir` 省略时用 daemon 自己的
 录制根目录。
@@ -1031,6 +1034,42 @@ sidecar),不是某个宿主自己的一层覆盖 —— 各宿主各存一份的
 **用户改过的名字不会被自动命名覆盖**:开了自动命名的场景在首轮结束后会生成一个
 名字,但它跳过已经被 `session.rename` 命名过的会话。
 
+#### `session.appendEntry`
+
+往会话日志里加一条扩展条目(`history.extension_entry`):宿主自己的、给人看的东西,
+比如一张任务卡、一次批准的结论。和其余条目同序,恢复、分叉、`session.entries` 都看得到;
+模型看不到它,除非宿主给这个命名空间配了 `ExtensionsAreVisible`。
+
+```jsonc
+// → params
+{ "session_id": "…",
+  "ns": "com.example.cards",   // 必填,1–128 字符;`agix.` 开头的是引擎自己的,拒绝
+  "event": "job_done",         // 必填
+  "payload": { } }             // 可选,任意 JSON,引擎从不解析
+// ← result
+{ "id": "…", "ts": "…", "ns": "com.example.cards", "event": "job_done",
+  "payload": { }, "at": "…" }  // at:它前面已有的消息数,坐标同 session.history 的 seq
+```
+
+会话冷着也能写,不会把它拉进内存。会话在内存里时给它的订阅者推一帧
+`extension_entry`(§7),`turn_id` 为 `null`。会话不存在 → `SESSION_NOT_FOUND`;`ns`
+或 `event` 不合规 → `INVALID_PARAMS`。
+
+#### `session.entries`
+
+按日志顺序列出会话的扩展条目,不含 `agix.*`(引擎的记账)与侧链里的。
+
+```jsonc
+// → params
+{ "session_id": "…", "namespaces": ["com.example.cards"] }   // namespaces 可选,省略 = 全部
+// ← result
+{ "entries": [ { "id": "…", "ts": "…", "ns": "com.example.cards", "event": "job_done",
+                 "payload": { }, "at": "…" } ] }
+```
+
+`at` 让宿主把条目插回对话里:它排在第 `at` 条消息(`seq == at`)之前,`at` 等于消息
+总数就是在最后。会话不存在 → `SESSION_NOT_FOUND`。
+
 #### `session.setModel`
 
 ```jsonc
@@ -1172,6 +1211,10 @@ client,会话在原地按新的规格重建(它是空闲的,不会腰斩什么),
 
 两处有意的丢失:**侧链条目不复制**;源的 `Meta` 行被换成一条新的,记下
 `parent_session_id`。
+
+整段复制(省略 `at_message`,或它不小于消息总数)时复制到日志末尾,最后一条消息之后
+写下的扩展条目(`session.appendEntry`)也在;从中间分叉时截在第 `at_message` 条消息
+所在的那一行。
 
 > ⚠️ **分叉出来的会话会被算成源会话的子会话。** 级联删除只看 `Meta` 里的
 > `parent_session_id`,不看 `session_kind`,所以对**源会话**调 `session.close` 或
@@ -1684,6 +1727,7 @@ disclosure 的 `wasm.runnable` 会如实报成 `false`。
 | `error` | `{code,message}` | 本轮出错结束。只发给**发起这一轮之外**的订阅者 —— 发起者从 `run_turn` 的错误响应得知 |
 | `task_started` | `{task}` | 这个会话的一件任务开始了(`task` 同 `session.tasks` 的条目)。Shell 命令与监视器只在跑过 1 秒后才报,短命令不报;不属于任何一轮,`turn_id` 为 `null` |
 | `task_finished` | `{task}` | 一件报过开始的任务结束了,`task.status` 是结局;`turn_id` 为 `null` |
+| `extension_entry` | `{entry}` | 宿主经 `session.appendEntry` 写了一条扩展条目(`entry` 同 `session.entries` 的条目);`turn_id` 为 `null` |
 | `subscription_dropped` | `{reason}` | 这条连接对该会话的订阅被取消了(`reason` 目前只有 `"overflow"`,§5.4);不属于任何一轮,`turn_id` 为 `null`。重新 `session.subscribe` 并追平 |
 
 **这张表是白名单。** 引擎内部还有其它事件,但只有上面这些会被转成帧发出来。特别地:

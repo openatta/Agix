@@ -168,6 +168,7 @@ pub const CAPABILITIES: &[&str] = &[
     "schedule",
     "session_tasks",
     "context_edits",
+    "extension_entries",
 ];
 
 /// Version, protocol version and capabilities: what a client is told

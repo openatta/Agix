@@ -477,6 +477,20 @@ impl StreamFrame {
         })
     }
 
+    /// A host wrote an extension entry into `session_id`'s log
+    /// (`session.appendEntry`). Not part of any turn.
+    pub fn extension_entry(session_id: &str, entry: Value) -> Self {
+        Self {
+            jsonrpc: "2.0",
+            method: "session.event",
+            params: serde_json::json!({
+                "session_id": session_id,
+                "turn_id": null,
+                "event": {"kind": "extension_entry", "entry": entry},
+            }),
+        }
+    }
+
     /// A daemon-level async notification (MCP connect outcome, import
     /// auto-detection, ...) pushed to any connection subscribed via
     /// `daemon.subscribeEvents` — not tied to any particular session/turn.
