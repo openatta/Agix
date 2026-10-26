@@ -162,6 +162,11 @@ pub enum Transcripts {
 
 /// A pool that is built, wired and serving.
 ///
+/// Several pools can share one process, each on its own configuration. The
+/// one exception is the OpenTelemetry exporter (`otel` feature): it installs
+/// process-wide providers, so the first endpoint any pool starts it on is the
+/// one every pool reports to, and a different endpoint is warned about once.
+///
 /// "Serving" is the part a caller cannot see and would not think to do: the
 /// returned pool has already loaded its plugin components, kicked off MCP
 /// connection in the background, and started its janitor. A pool missing any

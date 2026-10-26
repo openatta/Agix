@@ -5686,19 +5686,34 @@ fn otel_sink(endpoint: Option<&str>) -> Option<std::sync::Arc<dyn telemetry::Tel
         .or_else(|| std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok())
         .filter(|e| !e.trim().is_empty())?;
 
-    static OTEL: std::sync::OnceLock<Option<std::sync::Arc<crate::telemetry_otel::OtelExporter>>> =
-        std::sync::OnceLock::new();
-    let exporter = OTEL.get_or_init(|| match crate::telemetry_otel::start_otel(&endpoint) {
-        Ok(e) => {
-            info!(%endpoint, "OpenTelemetry exporter started");
-            Some(std::sync::Arc::new(e))
-        }
-        Err(e) => {
-            warn!(%endpoint, error = %e, "could not start the OpenTelemetry exporter; \
-                      telemetry still records to file");
-            None
-        }
+    type Started = (
+        String,
+        Option<std::sync::Arc<crate::telemetry_otel::OtelExporter>>,
+    );
+    static OTEL: std::sync::OnceLock<Started> = std::sync::OnceLock::new();
+    static TOLD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let (started_on, exporter) = OTEL.get_or_init(|| {
+        let exporter = match crate::telemetry_otel::start_otel(&endpoint) {
+            Ok(e) => {
+                info!(%endpoint, "OpenTelemetry exporter started");
+                Some(std::sync::Arc::new(e))
+            }
+            Err(e) => {
+                warn!(%endpoint, error = %e, "could not start the OpenTelemetry exporter; \
+                          telemetry still records to file");
+                None
+            }
+        };
+        (endpoint.clone(), exporter)
     });
+    if *started_on != endpoint && !TOLD.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        warn!(
+            used = %started_on,
+            ignored = %endpoint,
+            "the OpenTelemetry exporter is process-wide and was started on another endpoint; \
+             this pool's endpoint is ignored"
+        );
+    }
     exporter
         .clone()
         .map(|e| e as std::sync::Arc<dyn telemetry::TelemetryRecorder>)
