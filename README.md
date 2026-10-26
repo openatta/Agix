@@ -1,7 +1,7 @@
 # AttaCore
 
-[![CI](https://github.com/openatta/AttaCore/actions/workflows/ci.yml/badge.svg)](https://github.com/openatta/AttaCore/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/openatta/AttaCore?display_name=tag&sort=semver)](https://github.com/openatta/AttaCore/releases)
+[![CI](https://github.com/openatta/agix/actions/workflows/ci.yml/badge.svg)](https://github.com/openatta/agix/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/openatta/agix?display_name=tag&sort=semver)](https://github.com/openatta/agix/releases)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](#license)
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](#prerequisites)
 
@@ -21,7 +21,7 @@ extension that fails costs its own contribution and nothing else.
 ## Sixty seconds
 
 ```sh
-git clone https://github.com/openatta/AttaCore && cd AttaCore
+git clone https://github.com/openatta/agix && cd agix
 export ANTHROPIC_AUTH_TOKEN=sk-...          # or ANTHROPIC_API_KEY
 cargo run --release -p daemon               # listens on ~/.atta/scenes/coding/daemon.sock
 ```
