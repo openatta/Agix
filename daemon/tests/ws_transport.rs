@@ -124,6 +124,12 @@ async fn the_correct_token_opens_the_connection_and_requests_dispatch() {
     let mut ws = connect(addr, Some("http://localhost:5173")).await.unwrap();
     let v = handshake(&mut ws, "s3cr3t").await;
     assert_eq!(v["result"]["authenticated"], true, "resp: {v}");
+    assert_eq!(
+        v["result"]["protocol_version"],
+        daemon::discovery::INSTANCE_PROTOCOL_VERSION,
+        "the handshake says which protocol it speaks: {v}"
+    );
+    assert!(v["result"]["version"].is_string(), "resp: {v}");
 
     send(
         &mut ws,

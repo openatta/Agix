@@ -152,10 +152,26 @@ pub enum LockFileError {
 }
 
 /// Protocol version this daemon speaks, as reported in `instances.d/`
-/// entries and `daemon.status` (`docs/daemon_rpc_protocol.md` §5). Numeric here
-/// (unlike `DaemonLock::protocol_version`, which predates v2 and stayed a
-/// string for backward compatibility with existing readers).
-pub const INSTANCE_PROTOCOL_VERSION: u32 = 2;
+/// entries and by `daemon.auth`, `daemon.status` and `daemon.ping`
+/// (`docs/daemon_rpc_protocol.md` §5). Numeric here (unlike
+/// `DaemonLock::protocol_version`, which predates v2 and stayed a string for
+/// backward compatibility with existing readers).
+pub const INSTANCE_PROTOCOL_VERSION: u32 = 3;
+
+/// What this daemon can do beyond the protocol version, named so a client can
+/// check for one feature rather than infer it from a version number.
+pub const CAPABILITIES: &[&str] = &["on_busy_steer", "subscription_dropped_notice"];
+
+/// Version, protocol version and capabilities: what a client is told
+/// wherever it first meets the daemon, so it can refuse an incompatible one
+/// at the handshake rather than discover it mid-session.
+pub fn identity() -> serde_json::Value {
+    serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "protocol_version": INSTANCE_PROTOCOL_VERSION,
+        "capabilities": CAPABILITIES,
+    })
+}
 
 /// One `~/.agix/daemon/instances.d/<instance>.json` entry — `docs/daemon_rpc_protocol.md`
 /// §2. Every daemon instance writes its own file under a shared directory

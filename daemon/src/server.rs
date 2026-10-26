@@ -288,11 +288,27 @@ impl DaemonServer {
     }
 
     pub async fn serve_unix(self: Arc<Self>, socket_path: &Path) -> anyhow::Result<()> {
+        let listener = Self::bind_unix(socket_path)?;
+        self.serve_unix_listener(listener).await
+    }
+
+    /// Bind the unix socket, replacing a stale one. Split from
+    /// [`Self::serve_unix_listener`] so a caller can bind every listener before
+    /// announcing the daemon — a client that finds it must be able to connect.
+    pub fn bind_unix(socket_path: &Path) -> anyhow::Result<UnixListener> {
         if socket_path.exists() {
             std::fs::remove_file(socket_path)?;
         }
         let listener = UnixListener::bind(socket_path)?;
         info!(path=%socket_path.display());
+        Ok(listener)
+    }
+
+    /// Accept loop over an already-bound unix listener.
+    pub async fn serve_unix_listener(
+        self: Arc<Self>,
+        listener: UnixListener,
+    ) -> anyhow::Result<()> {
         loop {
             tokio::select! {
                 _ = self.shutdown_token.cancelled() => break,
@@ -451,10 +467,9 @@ impl DaemonServer {
         drop(expected);
 
         if authenticated {
-            Ok(RpcResponse::ok(
-                id,
-                serde_json::json!({"authenticated": true}),
-            ))
+            let mut result = crate::discovery::identity();
+            result["authenticated"] = serde_json::json!(true);
+            Ok(RpcResponse::ok(id, result))
         } else {
             Err(RpcResponse::err(id, codes::UNAUTHORIZED, "invalid token"))
         }
@@ -517,22 +532,16 @@ impl DaemonServer {
         match req.method.as_str() {
             "daemon.status" => {
                 let count = self.pool.active_count().await;
-                RpcResponse::ok(
-                    id,
-                    serde_json::json!({
-                        "version": env!("CARGO_PKG_VERSION"),
-                        "uptime_secs": self.started_at.elapsed().as_secs(),
-                        "sessions": count,
-                    }),
-                )
+                let mut result = crate::discovery::identity();
+                result["uptime_secs"] = serde_json::json!(self.started_at.elapsed().as_secs());
+                result["sessions"] = serde_json::json!(count);
+                RpcResponse::ok(id, result)
             }
-            "daemon.ping" => RpcResponse::ok(
-                id,
-                serde_json::json!({
-                    "pong": true,
-                    "protocol_version": crate::discovery::INSTANCE_PROTOCOL_VERSION,
-                }),
-            ),
+            "daemon.ping" => {
+                let mut result = crate::discovery::identity();
+                result["pong"] = serde_json::json!(true);
+                RpcResponse::ok(id, result)
+            }
             "daemon.doctor" => RpcResponse::ok(id, self.pool.doctor_report().await),
             "daemon.subscribeEvents" => self.method_daemon_subscribe_events(id, client).await,
             "config.setProvider" => self.method_config_set_provider(id, req.params).await,

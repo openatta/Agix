@@ -169,6 +169,11 @@ async fn status_returns_info() {
     assert!(v["result"].is_object(), "expected success, got: {v}");
     assert!(v["result"]["version"].is_string());
     assert_eq!(v["result"]["sessions"], 0);
+    assert_eq!(
+        v["result"]["protocol_version"],
+        daemon::discovery::INSTANCE_PROTOCOL_VERSION
+    );
+    assert!(v["result"]["capabilities"].is_array());
 
     _server.shutdown_token().cancel();
     let _ = handle.await;

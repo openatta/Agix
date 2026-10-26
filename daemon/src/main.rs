@@ -266,15 +266,6 @@ async fn main() -> anyhow::Result<()> {
         protocol_version: daemon::discovery::INSTANCE_PROTOCOL_VERSION,
         started_at: rfc3339_now(),
     };
-    match daemon::discovery::write_instance_file(&instances_dir, &instance_name, &instance_file) {
-        Ok(()) => info!(instance = %instance_name, "wrote instances.d discovery entry"),
-        Err(e) => tracing::warn!(
-            instance = %instance_name,
-            error = %e,
-            "failed to write instances.d discovery entry; multi-scene discovery clients won't see this daemon"
-        ),
-    }
-
     // ── Startup checkpoint: config_loaded ──────────────────────────────
     let _config_load_ms = perf.checkpoint("config_loaded");
     info!(elapsed_ms = _config_load_ms, "startup: config loaded");
@@ -399,15 +390,19 @@ async fn main() -> anyhow::Result<()> {
         server.set_tcp_token(token).await;
     }
 
+    // Every listener is bound here, before the daemon is announced, so a port
+    // already in use fails startup instead of leaving a daemon running without
+    // the transport the user asked for — and so a client that finds the
+    // `instances.d` entry can connect at once.
     if let Some(addr) = daemon_config.tcp_addr {
-        let s = server.clone();
+        let listener = tokio::net::TcpListener::bind(addr)
+            .await
+            .map_err(|e| anyhow::anyhow!("could not bind --listen `{addr}`: {e}"))?;
         info!(%addr, "TCP listener bound (token-auth required)");
-        tokio::spawn(async move { s.serve_tcp(addr).await });
+        let s = server.clone();
+        tokio::spawn(async move { s.serve_tcp_listener(listener).await });
     }
 
-    // Bound here rather than inside the task so a port already in use fails
-    // startup, instead of leaving a daemon running without the transport the
-    // user asked for.
     if let Some(addr) = daemon_config.ws_addr {
         let listener = tokio::net::TcpListener::bind(addr)
             .await
@@ -417,7 +412,18 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn(async move { daemon::ws::serve_ws_listener(s, listener).await });
     }
 
-    server.serve_unix(&socket).await?;
+    let unix = DaemonServer::bind_unix(&socket)?;
+
+    match daemon::discovery::write_instance_file(&instances_dir, &instance_name, &instance_file) {
+        Ok(()) => info!(instance = %instance_name, "wrote instances.d discovery entry"),
+        Err(e) => tracing::warn!(
+            instance = %instance_name,
+            error = %e,
+            "failed to write instances.d discovery entry; multi-scene discovery clients won't see this daemon"
+        ),
+    }
+
+    server.serve_unix_listener(unix).await?;
 
     let _ = std::fs::remove_file(&lock_path);
     daemon::discovery::remove_instance_file(&instances_dir, &instance_name);

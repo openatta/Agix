@@ -3654,7 +3654,17 @@ async fn ping_answers_without_a_session() {
     )
     .await;
     assert_eq!(resp["result"]["pong"], true, "{resp}");
-    assert_eq!(resp["result"]["protocol_version"], 2, "{resp}");
+    assert_eq!(
+        resp["result"]["protocol_version"],
+        daemon::discovery::INSTANCE_PROTOCOL_VERSION,
+        "{resp}"
+    );
+    assert!(
+        resp["result"]["capabilities"]
+            .as_array()
+            .is_some_and(|c| c.iter().any(|c| c == "subscription_dropped_notice")),
+        "{resp}"
+    );
 
     srv.stop().await;
 }

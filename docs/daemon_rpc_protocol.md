@@ -3,7 +3,7 @@
 daemon(`agixd`)把一个多会话 Agent 引擎池暴露成 JSON-RPC 2.0 服务。
 本文回答"怎么用它":怎么连上、有哪些方法、事件怎么读、错误怎么分辨。
 
-**协议版本:2**(`daemon.ping` 的 `protocol_version`,以及发现文件里的同名字段)。
+**协议版本:3**(`daemon.auth`、`daemon.ping`、`daemon.status` 的 `protocol_version`,以及发现文件里的同名字段)。
 
 场景、会话、侧链这些概念本身是什么,以及它们在磁盘上怎么落,见
 [`ARCHITECTURE.md`](ARCHITECTURE.md);本文只讲它们在 RPC 上长什么样。
@@ -40,7 +40,12 @@ daemon 的真实响应逐字段比对;`daemon.doctor` 的例子由 `daemon/src/d
 | WebSocket | `--listen-ws <addr>` | `daemon.auth` 握手 + Origin 校验,见 §5.1 |
 
 TCP 与 WebSocket 都要求 `--token` 或 `AGIX_DAEMON_TOKEN`;没有 token 时监听器
-**启动即失败**,不会先起来再拒绝所有人。
+**启动即失败**,不会先起来再拒绝所有人。**推荐用环境变量**:命令行参数在 `ps` 里
+别的用户也看得见。daemon 起子进程(模型调用的 Bash、stdio MCP 服务器)时会把这个变量
+剥掉,不会传下去。
+
+所有监听器都 bind 好之后,daemon 才写 `instances.d` 里自己的那一项(§2):宿主看到这个
+文件出现,就可以马上连上。
 
 **分帧之上的一切都与传输无关** —— 方法、参数、事件帧、权限提问三条路完全一致,
 换传输不需要改协议层代码。
@@ -90,7 +95,7 @@ read-modify-write 同一个索引文件而丢更新。读取方 `read_dir` 汇�
   "tcp": "127.0.0.1:7878",              // 仅在 --listen 时出现
   "ws": "127.0.0.1:7879",               // 仅在 --listen-ws 时出现
   "scenes": ["coding", "chat", "research"],
-  "protocol_version": 2,
+  "protocol_version": 3,
   "started_at": "2026-08-11T10:00:00Z" }
 ```
 
@@ -411,8 +416,13 @@ TCP 与 WebSocket 需要,两者用**同一个 token、同一段校验代码**。
 
 ```jsonc
 { "jsonrpc":"2.0", "method":"daemon.auth", "params":{"token":"…"}, "id":0 }
-← { "jsonrpc":"2.0", "id":0, "result":{"authenticated":true} }
+← { "jsonrpc":"2.0", "id":0, "result":{"authenticated":true,
+      "version":"…", "protocol_version":3, "capabilities":["…"]} }
 ```
+
+`version` 是 daemon 二进制的版本,`protocol_version` 是本文描述的协议版本,
+`capabilities` 是能力位(§6.1 `daemon.ping`)。宿主应当在握手这一步就拒绝它不认识的
+协议版本,而不是用到一半才发现。
 
 第一帧不是 `daemon.auth`、token 不对、或者根本不是合法 JSON → `UNAUTHORIZED
 (-32003)`,然后关连接(WebSocket 会先发 close 帧再断,浏览器端拿到的是"被拒绝"
@@ -505,9 +515,11 @@ Unix socket 靠文件系统权限,不握手,一样是"能连上就全权"。
 
 退订用 `session.unsubscribe`;连接断开时它的全部订阅一起消失,**别的什么都不动**。
 
-**关于慢客户端**:每条连接前面有一个 1024 帧的出站队列。填满之后,广播给它的帧被
-丢弃(连接本身不动)—— 一个卡住的 tab 不能拖住 turn,也不能拖住其他正在看的 tab。
-被丢掉的一方重新 `session.subscribe` 并靠 `last_seq` 追平(§5.6)。
+**关于慢客户端**:每条连接前面有一个 1024 帧的出站队列。某个会话的帧广播过来时队列
+已满,这条连接**对这个会话的订阅被取消**(连接本身和它的其它订阅不动)—— 一个卡住的
+tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方会收到一帧
+`subscription_dropped`(§7),它排在取消之前已经入队的全部帧之后;收到之后重新
+`session.subscribe` 并靠 `last_seq` 追平(§5.6)。
 
 `daemon.event`(§8)是另一条通道:与会话订阅无关,推给所有
 `daemon.subscribeEvents` 的订阅者。
@@ -572,8 +584,16 @@ Unix socket 靠文件系统权限,不握手,一样是"能连上就全权"。
 
 ```jsonc
 // ← result
-{ "pong": true, "protocol_version": 2 }
+{ "pong": true, "version": "…", "protocol_version": 3,
+  "capabilities": ["on_busy_steer", "subscription_dropped_notice"] }
 ```
+
+`capabilities` 列出协议版本之外、可以单独检查的能力。只会增加;客户端忽略不认识的项。
+
+| 能力 | 意思 |
+|---|---|
+| `on_busy_steer` | `session.run_turn` 接受 `on_busy:"steer"`(§5.3) |
+| `subscription_dropped_notice` | 订阅因为跟不上被取消时会收到 `subscription_dropped`(§5.4) |
 
 #### `daemon.status`
 
@@ -582,6 +602,8 @@ Unix socket 靠文件系统权限,不握手,一样是"能连上就全权"。
 ```jsonc
 // ← result
 { "version": "…",         // daemon 二进制版本
+  "protocol_version": 3,
+  "capabilities": ["…"],  // 同 daemon.ping
   "uptime_secs": "…",     // 数字,秒
   "sessions": 0 }         // 当前内存里的会话数(含侧链)
 ```
@@ -1517,6 +1539,7 @@ RPC 出口。要看子 Agent 干了什么,走它的侧链会话:`session.list
 | `user_messages_returned` | `{messages:[{message_id,content}]}` | 运行中送来、但本轮结束前没读到的消息,不在 transcript 里,交还客户端 |
 | `turn_complete` | `{stop_reason,api_calls,tool_calls,seq,usage,last_call_usage,context?,structured_output?,message?}` | 本轮结束,transcript 已落盘,`seq` 是此刻的消息数;最终响应随后到达 |
 | `error` | `{code,message}` | 本轮出错结束。只发给**发起这一轮之外**的订阅者 —— 发起者从 `run_turn` 的错误响应得知 |
+| `subscription_dropped` | `{reason}` | 这条连接对该会话的订阅被取消了(`reason` 目前只有 `"overflow"`,§5.4);不属于任何一轮,`turn_id` 为 `null`。重新 `session.subscribe` 并追平 |
 
 **这张表是白名单。** 引擎内部还有其它事件,但只有上面这些会被转成帧发出来。特别地:
 没有 `turn_state` / `agent_state` 事件 —— 判断 turn 是不是在跑要问 `session.get` 的

@@ -2775,8 +2775,9 @@ impl SessionPool {
     /// A subscriber that cannot take the frame — gone, or fallen far enough
     /// behind to fill its queue — is dropped here rather than waited on. One
     /// tab that stopped reading must not hold up the turn or the other tabs
-    /// watching it; a dropped subscriber can subscribe again and catch up
-    /// through `last_seq`, which is what makes dropping an acceptable answer.
+    /// watching it. A subscriber dropped for falling behind is told so
+    /// (`subscription_dropped`) and can subscribe again and catch up through
+    /// `last_seq`, which is what makes dropping an acceptable answer.
     async fn broadcast_to_session<T: serde::Serialize>(&self, session_id: &str, frame: &T) {
         self.broadcast_to_session_except(session_id, frame, None)
             .await;
@@ -2801,8 +2802,9 @@ impl SessionPool {
         let Some(live) = sessions.get_mut(session_id) else {
             return;
         };
-        live.subscribers
-            .retain(|id, client| Some(*id) == except || client.try_send_json(json.clone()));
+        live.subscribers.retain(|id, client| {
+            Some(*id) == except || client.try_send_for(session_id, json.clone())
+        });
     }
 
     /// The turn currently running on `session_id`, if any. `session.get`

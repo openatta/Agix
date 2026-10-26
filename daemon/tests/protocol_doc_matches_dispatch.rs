@@ -302,7 +302,29 @@ fn documented_event_kinds(doc: &str) -> Vec<String> {
     out
 }
 
-/// §7's table and the forwarding loop are the same whitelist.
+/// The `kind` of each `session.event` frame sent outside a turn — the ones
+/// `StreamFrame`'s own constructors build (`subscription_dropped`, …) rather
+/// than `run_turn`'s forwarding loop.
+fn out_of_turn_event_kinds(rpc_rs: &str) -> Vec<String> {
+    let start = rpc_rs
+        .find("impl StreamFrame {")
+        .expect("rpc.rs still has `impl StreamFrame`");
+    let block = &rpc_rs[start..];
+    let block = &block[..block.find("\n}\n").unwrap_or(block.len())];
+    let mut out: Vec<String> = block
+        .split("\"kind\":")
+        .skip(1)
+        .filter_map(|rest| {
+            let value = rest.trim_start().strip_prefix('"')?;
+            Some(value.split('"').next()?.to_string())
+        })
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// §7's table and the frames the daemon sends are the same whitelist.
 ///
 /// Both directions fail differently. A documented kind with no arm is a
 /// client waiting for a frame the engine will never send; an arm with no row
@@ -312,9 +334,13 @@ fn documented_event_kinds(doc: &str) -> Vec<String> {
 fn every_stream_event_is_documented_and_every_documented_one_is_sent() {
     let root = repo_root();
     let pool = std::fs::read_to_string(root.join("daemon/src/session_pool.rs")).unwrap();
+    let rpc = std::fs::read_to_string(root.join("daemon/src/rpc.rs")).unwrap();
     let doc = std::fs::read_to_string(root.join("docs/daemon_rpc_protocol.md")).unwrap();
 
-    let sent = forwarded_event_kinds(&pool);
+    let mut sent = forwarded_event_kinds(&pool);
+    sent.extend(out_of_turn_event_kinds(&rpc));
+    sent.sort();
+    sent.dedup();
     let documented = documented_event_kinds(&doc);
 
     assert!(
