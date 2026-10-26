@@ -33,7 +33,7 @@ echo '{"jsonrpc":"2.0","id":1,"method":"session.run_turn",
 ```
 
 Tokens stream back as `session.event` frames while the turn runs; the response
-arrives when it ends. Forty-two methods are documented in
+arrives when it ends. Forty-five methods are documented in
 [`docs/daemon_rpc_protocol.md`](docs/daemon_rpc_protocol.md), and every
 documented shape is compared against a real daemon's answer by a test — the
 document cannot drift from the code.
@@ -308,7 +308,7 @@ Concepts and how they fit: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Capabilities
 
-### Tools — 40 built in
+### Tools — 39 built in
 
 | Category | Tools |
 |---|---|
@@ -317,7 +317,7 @@ Concepts and how they fit: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 | **Web** | `WebFetch` `WebSearch` |
 | **Task** | `TaskCreate` `TaskList` `TaskGet` `TaskUpdate` `TaskStop` `TaskOutput` |
 | **Planning** | `EnterPlanMode` `ExitPlanMode` `VerifyPlanExecution` `TodoWrite` |
-| **Scheduling** | `CronCreate` `CronDelete` `CronList` `ScheduleWakeup` |
+| **Scheduling** | `CronCreate` `CronDelete` `CronList` |
 | **Workspace** | `EnterWorktree` `ExitWorktree` (isolated git worktree per session) |
 | **Collaboration** | `Skill` `Agent` `TeamCreate` `TeamList` `TeamDelete` |
 | **Protocol** | `MCP` `ListMcpResources` `ReadMcpResource`, plus one `mcp__<server>__<tool>` per discovered MCP tool |
@@ -325,7 +325,7 @@ Concepts and how they fit: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 | **Editor / Meta / Diagnostics** | `NotebookEdit` · `ToolSearch` · `Ping` `Sleep` |
 
 Registration is split on purpose. `tools::register_builtin_tools` installs the
-24 self-contained ones; the rest need per-session state, so the builder
+23 self-contained ones; the rest need per-session state, so the builder
 registers them into a registry it creates fresh for that session — `Agent` only
 under the sub-agent depth limit, the MCP tools only when servers are configured,
 `Team*` only when the setting **and** the scene's `supports_team()` both say yes.

@@ -482,7 +482,6 @@ pub fn expand_skill_for_command(entry: &SkillEntry, body: Option<String>, args: 
     )
 }
 
-
 /// Handle a local command: execute the handler and return the result.
 pub fn handle_local_command(cmd: &Command, sc: &SlashCommand) -> CommandResult {
     match cmd {
@@ -819,10 +818,8 @@ mod tests {
             path: std::path::PathBuf::from("(bundled:test-skill)"),
             ..Default::default()
         };
-        let expanded = CommandRegistry::default().handle_prompt_command(
-            &entry,
-            &parse_slash_command("/test-skill hello").unwrap(),
-        );
+        let expanded = CommandRegistry::default()
+            .handle_prompt_command(&entry, &parse_slash_command("/test-skill hello").unwrap());
         assert!(expanded.contains("test-skill"));
         assert!(!expanded.is_empty());
     }

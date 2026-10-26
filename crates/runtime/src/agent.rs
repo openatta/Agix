@@ -1079,6 +1079,9 @@ pub struct Builder {
     /// How many delegation hops separate this agent from the root session —
     /// see [`Builder::agent_depth`].
     agent_depth: u32,
+    /// Scheduled jobs, kept and fired by whoever owns this store — see
+    /// [`Builder::cron_store`].
+    cron_store: Option<Arc<tools::cron::CronStore>>,
 }
 
 /// Scan the three skill-directory tiers from disk and register bundled
@@ -1306,7 +1309,19 @@ impl Builder {
             delegate_scripts: None,
             event_sinks: Vec::new(),
             agent_depth: 0,
+            cron_store: None,
         }
+    }
+
+    /// Keep this session's scheduled jobs in `store`, and leave firing them to
+    /// its owner. A session pool hands every session one store and runs a
+    /// scheduler over it, so a job fires through the same path as any other
+    /// turn — and fires whether or not its session is in memory at the time.
+    /// Without one, the session keeps its own store and fires due jobs from
+    /// its input loop.
+    pub fn cron_store(mut self, store: Arc<tools::cron::CronStore>) -> Self {
+        self.cron_store = Some(store);
+        self
     }
 
     /// Send this session's events to `sink` as well as to the `event_rx`
@@ -2312,20 +2327,25 @@ impl Builder {
             Arc::new(tools::worktree_tools::WorktreeRegistry::new()),
         );
 
-        // Cron tools + the scheduler that actually drains the store.
-        // `~/.agix/scenes/<scope>/scheduled_tasks.json` is the exact path
-        // `CronCreate`'s own prompt promises the user for `durable: true`
-        // jobs; session-only jobs never touch disk.
+        // Cron tools, and — when no owner handed in a store — the scheduler
+        // that drains this session's own. `~/.agix/scenes/<scope>/scheduled_tasks.json`
+        // is the exact path `CronCreate`'s own prompt promises the user for
+        // `durable: true` jobs; session-only jobs never touch disk.
         //
-        // Known limitation: the store is per session, so two concurrent
+        // Known limitation of the store-per-session case only: two concurrent
         // sessions in the same scope each load the durable file and each
-        // schedule their own fire for a durable job. Deduplicating that needs
-        // a process-wide scheduler owning one store, which is a bigger change
-        // than wiring the tools up.
-        let _ = std::fs::create_dir_all(&settings.paths.user_data_dir);
-        let cron_store = Arc::new(tools::cron::CronStore::load_or_default(Some(
-            settings.paths.user_data_dir.join("scheduled_tasks.json"),
-        )));
+        // schedule their own fire for a durable job. A session pool avoids it
+        // by owning one store and one scheduler (`Builder::cron_store`).
+        let fire_jobs_here = self.cron_store.is_none();
+        let cron_store = match self.cron_store.clone() {
+            Some(store) => store,
+            None => {
+                let _ = std::fs::create_dir_all(&settings.paths.user_data_dir);
+                Arc::new(tools::cron::CronStore::load_or_default(Some(
+                    settings.paths.user_data_dir.join("scheduled_tasks.json"),
+                )))
+            }
+        };
         tools::register_cron_tools(&tools, cron_store.clone());
 
         // ── Registration is complete; everything below reads the final set ──
@@ -2435,6 +2455,7 @@ impl Builder {
         // non-async contexts, where `tokio::spawn` would panic; there the
         // tools still create/list/delete jobs, they just never fire.
         match tokio::runtime::Handle::try_current() {
+            Ok(_) if !fire_jobs_here => {}
             Ok(handle) => {
                 let store = cron_store.clone();
                 let tx = input_tx.clone();
@@ -3455,7 +3476,6 @@ mod tests {
                 "Glob",
                 "Grep",
                 "Read",
-                "ScheduleWakeup",
                 "Skill",
                 "ToolSearch",
                 "Write",

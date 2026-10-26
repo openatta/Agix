@@ -456,6 +456,8 @@ struct LiveSession {
     /// Woken whenever the session stops running a turn — a `run_turn` with
     /// `on_busy: queue` waits on it for its slot.
     idle: Arc<tokio::sync::Notify>,
+    /// Who started the running turn: `"client"` or `"schedule"`.
+    turn_initiator: Option<&'static str>,
     /// What this session's bound scripts did, if it bound any.
     ///
     /// Kept because a script that quietly does nothing is the failure mode of
@@ -568,6 +570,13 @@ pub struct SessionPool {
     /// This pool's OAuth state for MCP servers with an `oauth_provider`:
     /// tokens under its own scene root, and whatever resolver the host gave.
     mcp_oauth: Arc<mcp::oauth::McpOAuth>,
+    /// Every session's scheduled jobs, fired by this pool's scheduler (see
+    /// `start_scheduler`) whether or not the session is in memory.
+    schedule: Arc<tools::cron::CronStore>,
+    /// Ids for the connections the pool opens for itself — a scheduled turn
+    /// has no client — counted down from the top so they never meet the ids
+    /// the server hands to real connections.
+    internal_connections: std::sync::atomic::AtomicU64,
     /// Daemon-level async notifications (MCP connect outcomes, import
     /// auto-detection, future error events) — see `daemon.subscribeEvents`.
     /// `send()` returning `Err` just means "no subscribers right now", not
@@ -814,10 +823,14 @@ impl SessionPool {
         history_store: Option<Arc<dyn history::store::HistoryStore>>,
         paths: Arc<dyn crate::config::DaemonPaths>,
     ) -> Self {
-        let (events_tx, _) = tokio::sync::broadcast::channel(256);
+        let (events_tx, _) = tokio::sync::broadcast::channel(1024);
         let mcp_oauth = Arc::new(mcp::oauth::McpOAuth::new(
             settings.paths.user_data_dir.join("mcp").join("oauth"),
         ));
+        let _ = std::fs::create_dir_all(&settings.paths.user_data_dir);
+        let schedule = Arc::new(tools::cron::CronStore::load_or_default(Some(
+            settings.paths.user_data_dir.join("scheduled_tasks.json"),
+        )));
 
         let plugins = crate::plugins::PluginSubsystem::new(
             paths.clone(),
@@ -852,6 +865,8 @@ impl SessionPool {
             paths,
             mcp_by_project: AsyncMutex::new(HashMap::new()),
             mcp_oauth,
+            schedule,
+            internal_connections: std::sync::atomic::AtomicU64::new(u64::MAX),
             events_tx,
             health: std::sync::RwLock::new(match plugins.health_check() {
                 Some(check) => base::interface::health::HealthChecks::new().with(check),
@@ -932,6 +947,16 @@ impl SessionPool {
     /// failure, so this is intentionally infallible from the caller's side.
     pub fn emit_event(&self, event: serde_json::Value) {
         let _ = self.events_tx.send(event);
+    }
+
+    /// A session came into or left memory, or was deleted — a `daemon.event`
+    /// so a host learns of it without subscribing to every session.
+    fn emit_session_event(&self, kind: &str, session_id: &str, extra: serde_json::Value) {
+        let mut event = serde_json::json!({"kind": kind, "session_id": session_id});
+        if let (Some(event), serde_json::Value::Object(extra)) = (event.as_object_mut(), extra) {
+            event.extend(extra);
+        }
+        self.emit_event(event);
     }
 
     /// The project directory this pool's sessions run in.
@@ -2038,7 +2063,8 @@ impl SessionPool {
             .session_id(session_id.clone())
             .commands_override(binding.commands.clone())
             .shared_agent_types(binding.agent_types.handle())
-            .skill_catalog(binding.skills.clone());
+            .skill_catalog(binding.skills.clone())
+            .cron_store(self.schedule.clone());
         if let Some(ref store) = self.history_store {
             builder = builder.history_store(store.clone());
         }
@@ -2335,7 +2361,13 @@ impl SessionPool {
         // "替换同一个 key"，不是"新增一个"，`sessions.len()` 不会变，不该
         // 因为这次重建就凭空多驱逐一个无关的、真正最久未用的 session。
         if !sessions.contains_key(&session_id) && sessions.len() >= self.cap {
-            evict_lru(&mut sessions);
+            if let Some(evicted) = evict_lru(&mut sessions) {
+                self.emit_session_event(
+                    "session_evicted",
+                    &evicted,
+                    serde_json::json!({"reason": "capacity"}),
+                );
+            }
         }
 
         let live = LiveSession {
@@ -2353,6 +2385,7 @@ impl SessionPool {
             named_by_user: false,
             binding_stale: binding.stale.clone(),
             current_turn: None,
+            turn_initiator: None,
             idle: Arc::new(tokio::sync::Notify::new()),
             scripts: script_ledger,
             subscribers: HashMap::new(),
@@ -2364,8 +2397,27 @@ impl SessionPool {
         // confirmed absent from the map). Its `CancellationToken` isn't tied
         // to `Drop`, so the old Agent's background loop would otherwise keep
         // running forever as a leaked task if we didn't cancel it here.
-        if let Some(old) = sessions.insert(session_id.clone(), live) {
-            old.cancel.cancel();
+        let rebuilt = match sessions.insert(session_id.clone(), live) {
+            Some(old) => {
+                old.cancel.cancel();
+                true
+            }
+            None => false,
+        };
+        drop(sessions);
+        if !rebuilt {
+            self.emit_session_event(
+                if resume {
+                    "session_resumed"
+                } else {
+                    "session_created"
+                },
+                &session_id,
+                serde_json::json!({
+                    "scene": scene_id,
+                    "project_root": project_root_for_meta,
+                }),
+            );
         }
         info!(%session_id, "session created");
         Ok(session_id)
@@ -2858,7 +2910,16 @@ impl SessionPool {
     async fn clear_current_turn(&self, sid: &str) {
         let mut sessions = self.sessions.lock().await;
         if let Some(live) = sessions.get_mut(sid) {
-            live.current_turn = None;
+            if let Some(turn_id) = live.current_turn.take() {
+                self.emit_session_event(
+                    "turn_completed",
+                    sid,
+                    serde_json::json!({
+                        "turn_id": turn_id,
+                        "initiator": live.turn_initiator.take(),
+                    }),
+                );
+            }
             live.idle.notify_waiters();
         }
     }
@@ -2876,6 +2937,7 @@ impl SessionPool {
         id: serde_json::Value,
         options: Option<SessionOptions>,
         on_busy: OnBusy,
+        initiator: &'static str,
     ) -> RpcResponse {
         // ── 解析或创建 session ──
         let sid = match session_id {
@@ -3031,6 +3093,12 @@ impl SessionPool {
             let mut sessions = self.sessions.lock().await;
             if let Some(live) = sessions.get_mut(&sid) {
                 live.current_turn = Some(turn_id.clone());
+                live.turn_initiator = Some(initiator);
+                self.emit_session_event(
+                    "turn_started",
+                    &sid,
+                    serde_json::json!({"turn_id": turn_id, "initiator": initiator}),
+                );
                 // Whoever starts a turn watches it. Not a special role — it
                 // lands in the same subscriber set as any tab that called
                 // `session.subscribe`, and leaves the same way.
@@ -3374,9 +3442,15 @@ impl SessionPool {
                     self.broadcast_to_session_except(&sid, &f, Some(client.id()))
                         .await;
                     self.clear_pending_prompts(&sid).await;
-                    if let Some(dead) = self.sessions.lock().await.remove(&sid) {
+                    let dead = self.sessions.lock().await.remove(&sid);
+                    if let Some(dead) = dead {
                         dead.cancel.cancel();
                         dead.idle.notify_waiters();
+                        self.emit_session_event(
+                            "session_closed",
+                            &sid,
+                            serde_json::json!({"reason": "engine_stopped"}),
+                        );
                     }
                     warn!(%sid, "engine stopped before the turn completed");
                     return RpcResponse::err(
@@ -4114,7 +4188,15 @@ impl SessionPool {
                         }
                     }
                     match store.delete(child).await {
-                        Ok(()) => true,
+                        Ok(()) => {
+                            self.schedule.remove_session(&child_str);
+                            self.emit_session_event(
+                                "session_deleted",
+                                &child_str,
+                                serde_json::json!({"parent_session_id": parent_session_id}),
+                            );
+                            true
+                        }
                         Err(e) => {
                             warn!(
                                 session_id = %child_str,
@@ -4148,6 +4230,11 @@ impl SessionPool {
             if let Some(live) = sessions.remove(session_id) {
                 live.cancel.cancel();
                 info!(%session_id, "session removed");
+                self.emit_session_event(
+                    "session_closed",
+                    session_id,
+                    serde_json::json!({"reason": "closed"}),
+                );
             }
         }
         // The in-memory copy only: a session resumed later reads its spec back
@@ -4227,6 +4314,8 @@ impl SessionPool {
             })
             .await;
         delete_result.map_err(|e| (codes::INTERNAL_ERROR, e.to_string()))?;
+        self.schedule.remove_session(session_id);
+        self.emit_session_event("session_deleted", session_id, serde_json::json!({}));
 
         Ok(serde_json::json!({
             "session_id": session_id,
@@ -5368,6 +5457,105 @@ impl SessionPool {
         });
     }
 
+    /// Fire scheduled jobs as they come due, for as long as the pool lives.
+    ///
+    /// Checks at the top of every minute — a 5-field cron expression's
+    /// resolution. A due job runs as a turn of its session through
+    /// [`Self::run_turn`], the same path a client's message takes, so it
+    /// queues behind a running turn, is announced as `turn_started` /
+    /// `turn_completed` with initiator `"schedule"`, and its frames reach
+    /// whoever watches the session. A session that is not in memory is
+    /// resumed for it. Jobs missed while the daemon was down are not caught up.
+    pub fn start_scheduler(self: &Arc<Self>) {
+        let pool = Arc::downgrade(self);
+        tokio::spawn(async move {
+            loop {
+                let into_minute = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() % 60_000)
+                    .unwrap_or(0) as u64;
+                tokio::time::sleep(Duration::from_millis(60_000 - into_minute + 50)).await;
+                let Some(pool) = pool.upgrade() else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    pool.run_due_jobs(time::OffsetDateTime::now_utc()).await;
+                });
+            }
+        });
+    }
+
+    /// Fire every job due at `now`, each as its session's turn, and return
+    /// once those turns have ended. The scheduler calls this every minute.
+    pub async fn run_due_jobs(&self, now: time::OffsetDateTime) {
+        let turns: Vec<_> = self
+            .schedule
+            .pop_due_at(now)
+            .into_iter()
+            .map(|job| self.fire_scheduled(job))
+            .collect();
+        futures::future::join_all(turns).await;
+    }
+
+    /// Run one scheduled job as a turn of its session.
+    async fn fire_scheduled(&self, job: tools::cron::CronJob) {
+        let Some(session_id) = job.session_id.clone() else {
+            warn!(job_id = %job.id, "scheduled job belongs to no session; dropping it");
+            self.schedule.remove(&job.id);
+            return;
+        };
+        let connection = crate::rpc::ConnectionId(
+            self.internal_connections
+                .fetch_sub(1, std::sync::atomic::Ordering::Relaxed),
+        );
+        let client = Arc::new(crate::rpc::Client::new(connection, Arc::new(Discard)));
+        info!(job_id = %job.id, %session_id, "scheduled job fired");
+        let response = self
+            .run_turn(
+                Some(session_id.clone()),
+                job.prompt.clone(),
+                Vec::new(),
+                format!("schedule-{}-{}", job.id, Id::new()),
+                client,
+                serde_json::Value::Null,
+                None,
+                OnBusy::Queue,
+                "schedule",
+            )
+            .await;
+        self.drop_connection(connection).await;
+        if let Some(error) = response.error {
+            warn!(job_id = %job.id, %session_id, code = error.code, message = %error.message,
+                  "scheduled job's turn failed");
+        }
+    }
+
+    /// Schedule `prompt` to run as a turn of `session_id` on `cron`.
+    pub fn schedule_add(&self, new: tools::cron::NewCronJob) -> tools::cron::CronJob {
+        self.schedule.add_job(new)
+    }
+
+    /// Whether `session_id` names a session this pool has — in memory, or a
+    /// transcript it can resume.
+    pub async fn session_exists(&self, session_id: &str) -> bool {
+        if self.sessions.lock().await.contains_key(session_id) {
+            return true;
+        }
+        self.load_entries(session_id).await.is_ok()
+    }
+
+    /// Scheduled jobs, all of them or one session's.
+    pub fn schedule_list(&self, session_id: Option<&str>) -> Vec<tools::cron::CronJob> {
+        match session_id {
+            Some(sid) => self.schedule.list_for(sid),
+            None => self.schedule.list(),
+        }
+    }
+
+    pub fn schedule_remove(&self, id: &str) -> bool {
+        self.schedule.remove(id)
+    }
+
     pub fn start_janitor(self: &Arc<Self>) {
         let pool = self.clone();
         // Sweep interval scales with `idle_timeout` instead of a flat 300s:
@@ -5387,6 +5575,11 @@ impl SessionPool {
                     if let Some(live) = sessions.remove(sid) {
                         live.cancel.cancel();
                         info!(%sid, "session evicted (idle timeout)");
+                        pool.emit_session_event(
+                            "session_evicted",
+                            sid,
+                            serde_json::json!({"reason": "idle"}),
+                        );
                     }
                 }
                 if !to_evict.is_empty() {
@@ -5591,17 +5784,27 @@ fn registry_of(
     registry
 }
 
-fn evict_lru(sessions: &mut HashMap<String, LiveSession>) {
-    if let Some((sid, _)) = sessions
+/// Where a connection the pool opens for itself writes: nowhere. Its turn's
+/// frames still reach every real subscriber of the session.
+struct Discard;
+
+#[async_trait::async_trait]
+impl crate::rpc::FrameSink for Discard {
+    async fn send_json(&self, _json: String) -> bool {
+        true
+    }
+}
+
+/// Evict the least recently active session. Returns its id.
+fn evict_lru(sessions: &mut HashMap<String, LiveSession>) -> Option<String> {
+    let (sid, _) = sessions
         .iter()
         .min_by_key(|(_, live)| live.last_active)
-        .map(|(k, v)| (k.clone(), v.last_active))
-    {
-        if let Some(live) = sessions.remove(&sid) {
-            live.cancel.cancel();
-            info!(%sid, "session evicted (LRU, pool full)");
-        }
-    }
+        .map(|(k, v)| (k.clone(), v.last_active))?;
+    let live = sessions.remove(&sid)?;
+    live.cancel.cancel();
+    info!(%sid, "session evicted (LRU, pool full)");
+    Some(sid)
 }
 
 /// Session id 列表：`last_active` 距 `now` 超过 `timeout` 的那些。拆成纯函数
@@ -6350,6 +6553,7 @@ mod eviction_tests {
             named_by_user: false,
             binding_stale: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             current_turn: None,
+            turn_initiator: None,
             idle: Arc::new(tokio::sync::Notify::new()),
             scripts: None,
             subscribers: HashMap::new(),

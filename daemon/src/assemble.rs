@@ -271,6 +271,7 @@ pub async fn pool(
 
     pool.start_janitor();
     pool.start_config_watcher();
+    pool.start_scheduler();
 
     Ok(pool)
 }

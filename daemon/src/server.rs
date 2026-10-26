@@ -622,6 +622,21 @@ impl DaemonServer {
                     }),
                 )
             }
+            "schedule.create" => self.method_schedule_create(id, req.params).await,
+            "schedule.list" => {
+                let session_id = req.params.get("session_id").and_then(|v| v.as_str());
+                RpcResponse::ok(
+                    id,
+                    serde_json::json!({"jobs": self.pool.schedule_list(session_id)}),
+                )
+            }
+            "schedule.delete" => match req.params.get("id").and_then(|v| v.as_str()) {
+                Some(job) => RpcResponse::ok(
+                    id,
+                    serde_json::json!({"deleted": self.pool.schedule_remove(job)}),
+                ),
+                None => RpcResponse::err(id, codes::INVALID_PARAMS, "missing id"),
+            },
             "session.delete" => {
                 let session_id = match req.params.get("session_id").and_then(|v| v.as_str()) {
                     Some(s) => s.to_string(),
@@ -725,7 +740,14 @@ impl DaemonServer {
                             break; // connection closed
                         }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                        let frame = crate::rpc::StreamFrame::daemon_event(
+                            serde_json::json!({"kind": "events_lagged", "missed": missed}),
+                        );
+                        if !send_frame(&forward, &frame).await {
+                            break;
+                        }
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
@@ -1217,8 +1239,61 @@ impl DaemonServer {
                 id,
                 options,
                 on_busy,
+                "client",
             )
             .await
+    }
+
+    /// `schedule.create {session_id, cron, prompt, recurring?, durable?}`: run
+    /// `prompt` as a turn of `session_id` whenever `cron` (5 fields, UTC)
+    /// matches. Recurring and durable by default — a host schedules work that
+    /// should outlive the session's time in memory and the daemon's restarts.
+    async fn method_schedule_create(
+        &self,
+        id: serde_json::Value,
+        params: serde_json::Value,
+    ) -> RpcResponse {
+        let text = |key: &str| {
+            params
+                .get(key)
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+        };
+        let flag = |key: &str| params.get(key).and_then(|v| v.as_bool()).unwrap_or(true);
+        let (Some(session_id), Some(cron), Some(prompt)) =
+            (text("session_id"), text("cron"), text("prompt"))
+        else {
+            return RpcResponse::err(
+                id,
+                codes::INVALID_PARAMS,
+                "schedule.create needs session_id, cron and prompt",
+            );
+        };
+        if !tools::cron::cron_expression_valid(&cron) {
+            return RpcResponse::err(
+                id,
+                codes::INVALID_PARAMS,
+                format!("invalid cron expression `{cron}`: expected 5 fields, M H DoM Mon DoW"),
+            );
+        }
+        if !self.pool.session_exists(&session_id).await {
+            return RpcResponse::err(
+                id,
+                codes::SESSION_NOT_FOUND,
+                format!("no session `{session_id}`"),
+            );
+        }
+        let job = self.pool.schedule_add(tools::cron::NewCronJob {
+            cron,
+            prompt,
+            recurring: flag("recurring"),
+            durable: flag("durable"),
+            session_id: Some(session_id),
+            expires_ms: None,
+        });
+        RpcResponse::ok(id, serde_json::json!({"job": job}))
     }
 
     /// Default page size for `session.history` when the caller doesn't say.
@@ -1543,6 +1618,7 @@ impl DaemonServer {
                 id,
                 None,
                 crate::session_pool::OnBusy::Reject,
+                "client",
             )
             .await
     }

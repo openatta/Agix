@@ -19,7 +19,6 @@ pub mod plan_mode;
 pub mod plan_verify;
 pub mod push_notification;
 pub mod saas_stubs;
-pub mod schedule_wakeup;
 pub mod security;
 pub mod skill_tool;
 pub mod sleep;
@@ -137,7 +136,6 @@ pub fn register_builtin_tools(reg: &std::sync::Arc<base::tool::InMemoryToolRegis
         Arc::new(crate::plan_mode::EnterPlanModeTool),
         Arc::new(crate::plan_mode::ExitPlanModeTool),
         Arc::new(crate::plan_verify::VerifyPlanExecutionTool),
-        Arc::new(crate::schedule_wakeup::ScheduleWakeupTool),
         Arc::new(crate::push_notification::PushNotificationTool),
         Arc::new(crate::ask_user::AskUserQuestionTool),
         Arc::new(crate::structured_output::StructuredOutputTool::default()),

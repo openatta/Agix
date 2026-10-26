@@ -1,4 +1,9 @@
 //! Cron job storage — in-memory store with optional file persistence.
+//!
+//! Every job belongs to the session it runs in (`session_id`). A session pool
+//! keeps one store for all its sessions and fires due jobs itself; an engine
+//! running on its own keeps one per session and fires them from its input
+//! loop. Either way a session sees and changes only its own jobs.
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -25,7 +30,27 @@ pub struct CronJob {
     /// Unix millis of last fire (prevents double-fire within the same minute)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_fired_ms: Option<i64>,
+    /// The session the job's prompt is sent to when it fires.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Unix millis after which the job's next fire is its last. `None`: never.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_ms: Option<i64>,
 }
+
+/// What [`CronStore::add_job`] needs to know about a new job.
+#[derive(Debug, Clone, Default)]
+pub struct NewCronJob {
+    pub cron: String,
+    pub prompt: String,
+    pub recurring: bool,
+    pub durable: bool,
+    pub session_id: Option<String>,
+    pub expires_ms: Option<i64>,
+}
+
+/// How long a recurring job a model creates for itself keeps firing.
+pub const MODEL_JOB_LIFETIME_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 
 /// Thread-safe cron job store. Shared between cron tools and engine via `Arc`.
 pub struct CronStore {
@@ -54,39 +79,70 @@ impl CronStore {
         }
     }
 
-    /// Add a new cron job. Returns the assigned ID.
+    /// Add a new cron job, belonging to no session. Returns the assigned ID.
     pub fn add(&self, cron: String, prompt: String, recurring: bool, durable: bool) -> String {
-        let id = generate_id();
-        let job = CronJob {
-            id: id.clone(),
+        self.add_job(NewCronJob {
             cron,
             prompt,
             recurring,
             durable,
+            ..Default::default()
+        })
+        .id
+    }
+
+    /// Add a new cron job. Returns it as stored.
+    pub fn add_job(&self, new: NewCronJob) -> CronJob {
+        let job = CronJob {
+            id: generate_id(),
+            cron: new.cron,
+            prompt: new.prompt,
+            recurring: new.recurring,
+            durable: new.durable,
             created_ms: now_ms(),
             agent_id: None,
             last_fired_ms: None,
+            session_id: new.session_id,
+            expires_ms: new.expires_ms,
         };
         self.inner
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .push(job);
-        if durable {
+            .push(job.clone());
+        if job.durable {
             self.save();
         }
-        id
+        job
     }
 
     /// Remove a job by ID. Returns true if found and removed.
     pub fn remove(&self, id: &str) -> bool {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        let len_before = inner.len();
-        inner.retain(|j| j.id != id);
-        let removed = inner.len() < len_before;
-        if removed {
-            self.save();
+        self.remove_where(|j| j.id == id)
+    }
+
+    /// Remove a job by ID if it belongs to `session_id`.
+    pub fn remove_for(&self, session_id: &str, id: &str) -> bool {
+        self.remove_where(|j| j.id == id && j.session_id.as_deref() == Some(session_id))
+    }
+
+    /// Remove every job of `session_id` — the session is gone for good.
+    pub fn remove_session(&self, session_id: &str) -> usize {
+        let mut removed = 0;
+        while self.remove_where(|j| j.session_id.as_deref() == Some(session_id)) {
+            removed += 1;
         }
         removed
+    }
+
+    fn remove_where(&self, matches: impl Fn(&CronJob) -> bool) -> bool {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(at) = inner.iter().position(&matches) else {
+            return false;
+        };
+        inner.remove(at);
+        drop(inner);
+        self.save();
+        true
     }
 
     /// List all active jobs.
@@ -94,15 +150,28 @@ impl CronStore {
         self.inner.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// The jobs belonging to `session_id`.
+    pub fn list_for(&self, session_id: &str) -> Vec<CronJob> {
+        self.list()
+            .into_iter()
+            .filter(|j| j.session_id.as_deref() == Some(session_id))
+            .collect()
+    }
+
     /// Pop all jobs whose cron expression matches the current time.
     ///
     /// Recurring jobs have `last_fired_ms` updated so they won't re-fire
-    /// within the same minute. Non-recurring jobs are removed after firing.
+    /// within the same minute. Non-recurring jobs are removed after firing, and
+    /// so is a recurring job past its `expires_ms`, after this last fire.
     /// Returns due jobs (oldest first).
     pub fn pop_due(&self) -> Vec<CronJob> {
-        let now = time::OffsetDateTime::now_utc();
-        let now_ms = now_ms();
-        let current_minute = now.minute();
+        self.pop_due_at(time::OffsetDateTime::now_utc())
+    }
+
+    /// [`Self::pop_due`] as of `now`.
+    pub fn pop_due_at(&self, now: time::OffsetDateTime) -> Vec<CronJob> {
+        let now_ms = (now.unix_timestamp_nanos() / 1_000_000) as i64;
+        let this_minute = now_ms.div_euclid(60_000);
 
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let mut due: Vec<CronJob> = Vec::new();
@@ -110,18 +179,14 @@ impl CronStore {
 
         for mut job in inner.drain(..) {
             if cron_matches(&job.cron, &now) {
-                // Prevent double-fire within the same clock minute
                 let already_fired_this_minute = job
                     .last_fired_ms
-                    .map(|lf| {
-                        let last = time::OffsetDateTime::from_unix_timestamp(lf / 1000).ok();
-                        last.map(|t| t.minute() == current_minute).unwrap_or(false)
-                    })
-                    .unwrap_or(false);
+                    .is_some_and(|last| last.div_euclid(60_000) == this_minute);
+                let expired = job.expires_ms.is_some_and(|at| now_ms >= at);
 
                 if already_fired_this_minute {
                     keep.push(job);
-                } else if job.recurring {
+                } else if job.recurring && !expired {
                     job.last_fired_ms = Some(now_ms);
                     due.push(job.clone());
                     keep.push(job);
@@ -143,8 +208,15 @@ impl CronStore {
         let Some(ref path) = self.file_path else {
             return;
         };
-        let jobs = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if let Ok(json) = serde_json::to_string(&*jobs) {
+        let jobs: Vec<CronJob> = self
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|j| j.durable)
+            .cloned()
+            .collect();
+        if let Ok(json) = serde_json::to_string(&jobs) {
             let _ = std::fs::write(path, &json);
         }
     }
@@ -251,5 +323,67 @@ mod tests {
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].prompt, "durable task");
         assert!(jobs[0].durable);
+    }
+
+    fn at(rfc3339: &str) -> time::OffsetDateTime {
+        time::OffsetDateTime::parse(rfc3339, &time::format_description::well_known::Rfc3339)
+            .unwrap()
+    }
+
+    #[test]
+    fn only_durable_jobs_reach_the_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cron.json");
+        let store = CronStore::load_or_default(Some(path.clone()));
+        store.add("0 9 * * *".into(), "session only".into(), true, false);
+        store.add("0 9 * * *".into(), "durable".into(), true, true);
+        let reloaded = CronStore::load_or_default(Some(path));
+        let prompts: Vec<String> = reloaded.list().into_iter().map(|j| j.prompt).collect();
+        assert_eq!(prompts, vec!["durable".to_string()]);
+    }
+
+    #[test]
+    fn an_hourly_job_fires_every_hour_not_just_the_first() {
+        let store = CronStore::new();
+        store.add("0 * * * *".into(), "hourly".into(), true, false);
+        assert_eq!(store.pop_due_at(at("2026-10-26T10:00:05Z")).len(), 1);
+        assert_eq!(store.pop_due_at(at("2026-10-26T10:00:40Z")).len(), 0);
+        assert_eq!(store.pop_due_at(at("2026-10-26T11:00:05Z")).len(), 1);
+    }
+
+    #[test]
+    fn a_session_sees_and_removes_only_its_own_jobs() {
+        let store = CronStore::new();
+        let job = |sid: &str| NewCronJob {
+            cron: "0 9 * * *".into(),
+            prompt: "check".into(),
+            recurring: true,
+            session_id: Some(sid.into()),
+            ..Default::default()
+        };
+        let a = store.add_job(job("a"));
+        store.add_job(job("b"));
+        assert_eq!(store.list_for("a").len(), 1);
+        assert!(!store.remove_for("b", &a.id));
+        assert!(store.remove_for("a", &a.id));
+        assert_eq!(store.remove_session("b"), 1);
+        assert!(store.list().is_empty());
+    }
+
+    #[test]
+    fn an_expired_recurring_job_fires_once_more_then_goes() {
+        let store = CronStore::new();
+        let expires = at("2026-10-26T10:30:00Z").unix_timestamp() * 1000;
+        store.add_job(NewCronJob {
+            cron: "0 * * * *".into(),
+            prompt: "hourly".into(),
+            recurring: true,
+            expires_ms: Some(expires),
+            ..Default::default()
+        });
+        assert_eq!(store.pop_due_at(at("2026-10-26T10:00:00Z")).len(), 1);
+        assert_eq!(store.list().len(), 1);
+        assert_eq!(store.pop_due_at(at("2026-10-26T11:00:00Z")).len(), 1);
+        assert!(store.list().is_empty());
     }
 }

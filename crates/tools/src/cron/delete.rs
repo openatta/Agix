@@ -81,11 +81,11 @@ impl Tool for CronDeleteTool {
     async fn call(
         &self,
         input: Value,
-        _: ToolContext,
+        ctx: ToolContext,
         _: ProgressSender,
     ) -> Result<ToolResult, ToolError> {
         let input: CronDeleteInput = serde_json::from_value(input)?;
-        if self.store.remove(&input.id) {
+        if self.store.remove_for(&ctx.session_id, &input.id) {
             Ok(ToolResult {
                 content: base::tool::ToolResultContent::Text(format!(
                     "Cancelled job {}.",

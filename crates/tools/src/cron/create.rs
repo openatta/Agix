@@ -105,13 +105,28 @@ impl Tool for CronCreateTool {
     async fn call(
         &self,
         input: Value,
-        _: ToolContext,
+        ctx: ToolContext,
         _: ProgressSender,
     ) -> Result<ToolResult, ToolError> {
         let input: CronCreateInput = serde_json::from_value(input)?;
+        let expires_ms = input.recurring.then(|| {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            now + super::store::MODEL_JOB_LIFETIME_MS
+        });
         let id = self
             .store
-            .add(input.cron, input.prompt, input.recurring, input.durable);
+            .add_job(super::store::NewCronJob {
+                cron: input.cron,
+                prompt: input.prompt,
+                recurring: input.recurring,
+                durable: input.durable,
+                session_id: Some(ctx.session_id.clone()),
+                expires_ms,
+            })
+            .id;
         let where_str = if input.durable {
             "Persisted to ~/.agix/scenes/<scope>/scheduled_tasks.json"
         } else {
@@ -122,10 +137,14 @@ impl Tool for CronCreateTool {
         } else {
             "one-shot task"
         };
+        let expiry = if input.recurring {
+            " Auto-expires after 7 days."
+        } else {
+            ""
+        };
         Ok(ToolResult {
             content: base::tool::ToolResultContent::Text(format!(
-                "Scheduled {kind} {id}. {where_str}. Auto-expires after 7 days. \
-                 Use CronDelete to cancel sooner."
+                "Scheduled {kind} {id}. {where_str}.{expiry} Use CronDelete to cancel sooner."
             )),
             is_error: false,
             structured_content: Some(json!({

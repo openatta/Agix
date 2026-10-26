@@ -62,10 +62,10 @@ impl Tool for CronListTool {
     async fn call(
         &self,
         _input: Value,
-        _: ToolContext,
+        ctx: ToolContext,
         _: ProgressSender,
     ) -> Result<ToolResult, ToolError> {
-        let jobs = self.store.list();
+        let jobs = self.store.list_for(&ctx.session_id);
         if jobs.is_empty() {
             return Ok(ToolResult {
                 content: base::tool::ToolResultContent::Text("No scheduled jobs.".into()),

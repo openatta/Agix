@@ -585,7 +585,7 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 ```jsonc
 // ← result
 { "pong": true, "version": "…", "protocol_version": 3,
-  "capabilities": ["on_busy_steer", "subscription_dropped_notice"] }
+  "capabilities": ["on_busy_steer", "subscription_dropped_notice", "…"] }
 ```
 
 `capabilities` 列出协议版本之外、可以单独检查的能力。只会增加;客户端忽略不认识的项。
@@ -594,6 +594,9 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 |---|---|
 | `on_busy_steer` | `session.run_turn` 接受 `on_busy:"steer"`(§5.3) |
 | `subscription_dropped_notice` | 订阅因为跟不上被取消时会收到 `subscription_dropped`(§5.4) |
+| `session_lifecycle_events` | `daemon.event` 报会话进出内存与每一轮的开始结束(§8) |
+| `events_lagged_notice` | `daemon.event` 送不到时会收到 `events_lagged`(§8) |
+| `schedule` | 有 `schedule.*` 方法与 daemon 内的调度器(§6.7) |
 
 #### `daemon.status`
 
@@ -1507,6 +1510,53 @@ disclosure 的 `wasm.runnable` 会如实报成 `false`。
 RPC 出口。要看子 Agent 干了什么,走它的侧链会话:`session.list
 {parent_session_id}` 拿 id,再 `session.history`。
 
+### 6.7 `schedule.*`
+
+定时任务:到点时把一段 `prompt` 作为某个会话的一轮发给它。由 daemon 自己的调度器
+每分钟检查一次 —— 没有连接也照样跑;会话不在内存里就先恢复。它走的就是
+`run_turn` 那条路:这个会话正在跑时**排队**,开始和结束发 `turn_started` /
+`turn_completed`(`initiator:"schedule"`,§8),帧推给这个会话的订阅者。daemon 没在跑
+的那段时间里错过的触发**不补**。
+
+模型自己也能经 `CronCreate` / `CronList` / `CronDelete` 工具管理它所在会话的任务,和
+这里是同一份;模型建的周期任务 7 天后最后触发一次就删除,这里建的不会过期。
+
+#### `schedule.create`
+
+```jsonc
+// → params
+{ "session_id": "…",        // 必填,必须是这个 daemon 已有的会话
+  "cron": "0 9 * * 1-5",    // 必填,5 段:分 时 日 月 周,按 UTC
+  "prompt": "…",            // 必填
+  "recurring": true,        // 默认 true;false = 下一次匹配时跑一次然后删除
+  "durable": true }         // 默认 true;写进磁盘,daemon 重启后还在
+// ← result
+{ "job": { "id": "…", "cron": "…", "prompt": "…", "recurring": true, "durable": true,
+           "session_id": "…", "created_ms": 0 } }
+```
+
+`cron` 不合法 → `INVALID_PARAMS`;会话不存在 → `SESSION_NOT_FOUND`。
+
+#### `schedule.list`
+
+```jsonc
+// → params(可选)
+{ "session_id": "…" }        // 只列这个会话的;不给就列全部
+// ← result
+{ "jobs": [ /* 同上 job */ ] }
+```
+
+#### `schedule.delete`
+
+```jsonc
+// → params
+{ "id": "…" }
+// ← result
+{ "deleted": true }          // 不存在时为 false
+```
+
+会话被 `session.delete` 删掉时,它的定时任务一起删除。
+
 ---
 
 ## 7. 流式帧:`session.event`
@@ -1620,9 +1670,20 @@ RPC 出口。要看子 Agent 干了什么,走它的侧链会话:`session.list
 | `mcp_connected` | `{server, transport, tool_count}` | 启动连接、`config.reload` 重连、`mcp.addServer` / `mcp.updateServer` 成功 |
 | `mcp_connect_failed` | `{server, error}` | 同上,失败时。具体原因在 daemon 日志里 |
 | `import_detected` | `{sources:[{source,description}]}` | 启动时探测到还没处理过的可导入配置 |
+| `session_created` | `{session_id, scene, project_root}` | 一个新会话进了内存 |
+| `session_resumed` | `{session_id, scene, project_root}` | 一个已有的会话被恢复进内存 |
+| `session_evicted` | `{session_id, reason}` | 会话被移出内存,transcript 还在,可以恢复。`reason`:`idle`(空闲超时)、`capacity`(池子满了,挤掉最久没动的) |
+| `session_closed` | `{session_id, reason}` | 会话被关闭。`reason`:`closed`(`session.close` / `session.delete`)、`engine_stopped`(引擎在一轮中途退出) |
+| `session_deleted` | `{session_id, parent_session_id?}` | 会话连同 transcript 被删除;级联删除的侧链带 `parent_session_id` |
+| `turn_started` | `{session_id, turn_id, initiator}` | 一轮开始。`initiator`:`client`(某条连接的 `run_turn`)、`schedule`(定时任务,§6.7) |
+| `turn_completed` | `{session_id, turn_id, initiator}` | 这一轮结束,无论成功、出错还是被中断 |
+| `events_lagged` | `{missed}` | 这条连接读得太慢,有 `missed` 条通知没送到。需要的话用 `session.list` 等对账 |
 
-**只有这三种。** 没有 `config_reloaded` / `scene_activated` / `session_evicted` 之类
-的通知 —— 场景激活、配置重载、会话回收都不会广播。
+会话与轮的事件让宿主**不必订阅每个会话**就知道哪些会话在内存里、哪些在跑 ——
+包括不是它发起的轮(定时任务,或者别的客户端)。没有 `config_reloaded` /
+`scene_activated` 之类的通知:场景激活、配置重载不会广播。
+
+客户端必须忽略不认识的 `kind`,这张表只会往下长。
 
 ---
 

@@ -160,7 +160,13 @@ pub const INSTANCE_PROTOCOL_VERSION: u32 = 3;
 
 /// What this daemon can do beyond the protocol version, named so a client can
 /// check for one feature rather than infer it from a version number.
-pub const CAPABILITIES: &[&str] = &["on_busy_steer", "subscription_dropped_notice"];
+pub const CAPABILITIES: &[&str] = &[
+    "on_busy_steer",
+    "subscription_dropped_notice",
+    "session_lifecycle_events",
+    "events_lagged_notice",
+    "schedule",
+];
 
 /// Version, protocol version and capabilities: what a client is told
 /// wherever it first meets the daemon, so it can refuse an incompatible one
