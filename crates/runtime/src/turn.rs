@@ -3639,7 +3639,7 @@ async fn execute_tool_inner(
         additional_writable_dirs,
         snapshot_file: None,
         effects: None,
-        running_tasks: None,
+        running_tasks: Some(ctx.session_state.clone()),
         dangerously_disable_sandbox: ctx.config.dangerously_disable_sandbox,
         max_file_read_bytes: ctx.config.file_limits.max_file_read_bytes as usize,
         // The *live* mode, not the session's opening value — plan mode is

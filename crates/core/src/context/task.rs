@@ -69,8 +69,9 @@ impl std::fmt::Display for TaskId {
     }
 }
 
-/// 后台运行的 sub-agent。output / events_log / status 在 sub-agent task loop
-/// 中追加；TaskOutput 工具读快照；TaskStop 触发 cancel token。
+/// 一件属于会话、在会话里继续跑的工作：子 Agent、团队成员、执行中的 Shell……
+/// output / events_log / status 由跑它的那段代码追加；TaskOutput 工具读快照；
+/// TaskStop 与宿主的 `session.stopTask` 触发 cancel token。
 #[derive(Debug)]
 pub struct RunningTask {
     pub task_id: String,
@@ -83,12 +84,35 @@ pub struct RunningTask {
     /// 工具调用与结果的可读日志（每行一条）
     pub events_log: std::sync::Mutex<Vec<String>>,
     pub status: std::sync::Mutex<RunningStatus>,
+    /// What the work runs under: cancelling it stops the work.
     pub cancel: tokio_util::sync::CancellationToken,
+    /// Unix millis.
+    pub started_ms: i64,
+    /// Unix millis; `None` while it runs.
+    pub ended_ms: std::sync::Mutex<Option<i64>>,
+    /// What a viewer needs to tell this task from another: the command, the
+    /// sub-agent's type, the tool call it belongs to.
+    pub detail: std::sync::Mutex<serde_json::Value>,
+    /// Whether its start was announced; a task that never was ends silently.
+    pub announced: std::sync::atomic::AtomicBool,
 }
 
 impl RunningTask {
     /// Create a new running task with defaults.
     pub fn new(task_id: String, task_type: TaskType) -> Self {
+        Self::with_cancel(
+            task_id,
+            task_type,
+            tokio_util::sync::CancellationToken::new(),
+        )
+    }
+
+    /// A running task whose work runs under `cancel`.
+    pub fn with_cancel(
+        task_id: String,
+        task_type: TaskType,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Self {
         Self {
             task_id,
             typed_id: None,
@@ -96,9 +120,47 @@ impl RunningTask {
             output: std::sync::Mutex::new(String::new()),
             events_log: std::sync::Mutex::new(Vec::new()),
             status: std::sync::Mutex::new(RunningStatus::Running),
-            cancel: tokio_util::sync::CancellationToken::new(),
+            cancel,
+            started_ms: unix_ms(),
+            ended_ms: std::sync::Mutex::new(None),
+            detail: std::sync::Mutex::new(serde_json::Value::Null),
+            announced: std::sync::atomic::AtomicBool::new(false),
         }
     }
+
+    /// The wire shape of this task (`session.tasks`, `task_*` events).
+    pub fn info(&self) -> serde_json::Value {
+        let status = self
+            .status
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let (status, error) = match status {
+            RunningStatus::Running => ("running", None),
+            RunningStatus::Completed => ("done", None),
+            RunningStatus::Cancelled => ("stopped", None),
+            RunningStatus::Failed(e) => ("failed", Some(e)),
+        };
+        let mut info = serde_json::json!({
+            "task_id": self.task_id,
+            "kind": self.task_type.as_str(),
+            "status": status,
+            "started_ms": self.started_ms,
+            "ended_ms": *self.ended_ms.lock().unwrap_or_else(|e| e.into_inner()),
+            "detail": self.detail.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        });
+        if let Some(error) = error {
+            info["error"] = serde_json::json!(error);
+        }
+        info
+    }
+}
+
+pub(crate) fn unix_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

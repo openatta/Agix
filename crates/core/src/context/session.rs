@@ -60,6 +60,9 @@ pub struct SessionState {
     /// **M9**: 后台跑的 sub-agent 任务。AgentTool 在 background=true 时把每个
     /// 任务塞进来；TaskOutput 工具按 id 查；TaskStop 触发 cancel。
     running_tasks: std::sync::Mutex<HashMap<String, std::sync::Arc<RunningTask>>>,
+    /// `task_started` / `task_finished`, for whoever shows this session's
+    /// tasks — see [`SessionState::subscribe_tasks`].
+    task_events: tokio::sync::broadcast::Sender<serde_json::Value>,
     /// **M11.2**: 本 turn 内的权限拒绝累积。Engine.run_turn 开头 reset，
     /// turn_complete 时打包到事件里。
     permission_denials: std::sync::Mutex<Vec<PermissionDenial>>,
@@ -212,6 +215,7 @@ impl SessionState {
             task_store: None,
             running_task_store: None,
             running_tasks: std::sync::Mutex::new(HashMap::new()),
+            task_events: tokio::sync::broadcast::channel(256).0,
             permission_denials: std::sync::Mutex::new(Vec::new()),
             file_snapshots: std::sync::Mutex::new(FileSnapshotRegistry::default()),
             current_turn: std::sync::Mutex::new(0),
@@ -373,17 +377,138 @@ impl SessionState {
 
     // ---- M9: running tasks (background sub-agent tracking) ----
 
-    /// 注册一个新的 running task；返回 Arc 让 caller 持着写 output。
-    /// 如果 running_task_store 已配置，同步 persist 初始状态。
+    /// 注册一个新的后台子 Agent task；返回 Arc 让 caller 持着写 output。
     pub fn register_running_task(&self, task_id: impl Into<String>) -> std::sync::Arc<RunningTask> {
+        self.register_task(
+            task_id,
+            TaskType::Agent,
+            tokio_util::sync::CancellationToken::new(),
+            serde_json::Value::Null,
+        )
+    }
+
+    /// Register work this session is running, under `cancel` — the token the
+    /// work itself observes, so stopping the task stops the work.
+    ///
+    /// Its start is announced at once, except a shell command's or a
+    /// monitor's: most of those finish in milliseconds, and a list that
+    /// flickered with each one would hide the ones worth seeing. Those are
+    /// announced only if still running a second later, and a task never
+    /// announced ends without a word.
+    pub fn register_task(
+        &self,
+        task_id: impl Into<String>,
+        task_type: TaskType,
+        cancel: tokio_util::sync::CancellationToken,
+        detail: serde_json::Value,
+    ) -> std::sync::Arc<RunningTask> {
         let task_id = task_id.into();
-        let task = std::sync::Arc::new(RunningTask::new(task_id.clone(), TaskType::Agent));
+        let task =
+            std::sync::Arc::new(RunningTask::with_cancel(task_id.clone(), task_type, cancel));
+        *task.detail.lock().unwrap_or_else(|e| e.into_inner()) = detail;
         self.running_tasks
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .insert(task_id, task.clone());
-        // TODO: running_task_store persistence — downcast in task crate layer
+        let quiet = matches!(task_type, TaskType::Shell | TaskType::Monitor);
+        if !quiet {
+            self.announce(&task);
+        } else if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let (task, events) = (task.clone(), self.task_events.clone());
+            runtime.spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                if task
+                    .ended_ms
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .is_none()
+                {
+                    Self::announce_on(&events, &task);
+                }
+            });
+        }
         task
+    }
+
+    fn announce(&self, task: &RunningTask) {
+        Self::announce_on(&self.task_events, task);
+    }
+
+    fn announce_on(events: &tokio::sync::broadcast::Sender<serde_json::Value>, task: &RunningTask) {
+        if !task
+            .announced
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            let _ = events.send(serde_json::json!({"kind": "task_started", "task": task.info()}));
+        }
+    }
+
+    /// Record that a task ended with `status`. A task already ended — stopped
+    /// by `cancel_running_task`, say, before its own code got here — keeps the
+    /// ending it has. Finished tasks beyond the newest few are forgotten.
+    pub fn finish_task(&self, task_id: &str, status: RunningStatus) {
+        let Some(task) = self.find_running_task(task_id) else {
+            return;
+        };
+        {
+            let mut ended = task.ended_ms.lock().unwrap_or_else(|e| e.into_inner());
+            if ended.is_some() {
+                return;
+            }
+            *ended = Some(super::task::unix_ms());
+            let mut current = task.status.lock().unwrap_or_else(|e| e.into_inner());
+            if matches!(*current, RunningStatus::Running) {
+                *current = status;
+            }
+        }
+        if task.announced.load(std::sync::atomic::Ordering::SeqCst) {
+            let _ = self
+                .task_events
+                .send(serde_json::json!({"kind": "task_finished", "task": task.info()}));
+        }
+        self.forget_old_tasks();
+    }
+
+    const FINISHED_TASKS_KEPT: usize = 20;
+
+    fn forget_old_tasks(&self) {
+        let mut tasks = self.running_tasks.lock().unwrap_or_else(|e| e.into_inner());
+        let mut finished: Vec<(i64, String)> = tasks
+            .values()
+            .filter_map(|t| {
+                let ended = (*t.ended_ms.lock().unwrap_or_else(|e| e.into_inner()))?;
+                Some((ended, t.task_id.clone()))
+            })
+            .collect();
+        if finished.len() <= Self::FINISHED_TASKS_KEPT {
+            return;
+        }
+        finished.sort();
+        for (_, id) in finished
+            .iter()
+            .take(finished.len() - Self::FINISHED_TASKS_KEPT)
+        {
+            tasks.remove(id);
+        }
+    }
+
+    /// Every task this session knows — running, and the most recently ended —
+    /// oldest first, in their wire shape.
+    pub fn task_infos(&self) -> Vec<serde_json::Value> {
+        let mut tasks: Vec<std::sync::Arc<RunningTask>> = self
+            .running_tasks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .cloned()
+            .collect();
+        tasks.sort_by_key(|t| t.started_ms);
+        tasks.iter().map(|t| t.info()).collect()
+    }
+
+    /// `task_started` / `task_finished` as they happen, `{kind, task}`.
+    pub fn subscribe_tasks(&self) -> tokio::sync::broadcast::Receiver<serde_json::Value> {
+        self.task_events.subscribe()
     }
 
     /// Persist a running task's current state to disk (fire-and-forget).
@@ -444,20 +569,23 @@ impl SessionState {
             .collect()
     }
 
-    /// 主动取消一个 running task；返回是否找到。caller 后续调用 find_running_task
-    /// 看 status 应该会变成 Cancelled。
+    /// Stop a running task: cancel what it runs under and record it as
+    /// stopped. `false` if there is no such task or it had already ended.
     pub fn cancel_running_task(&self, task_id: &str) -> bool {
-        if let Some(task) = self
-            .running_tasks
+        let Some(task) = self.find_running_task(task_id) else {
+            return false;
+        };
+        if task
+            .ended_ms
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .get(task_id)
+            .is_some()
         {
-            task.cancel.cancel();
-            true
-        } else {
-            false
+            return false;
         }
+        task.cancel.cancel();
+        self.finish_task(task_id, RunningStatus::Cancelled);
+        true
     }
 
     /// **M6**: Task 工具用 —— 用 generic helpers 让 agix-tools 操作 tasks
@@ -864,5 +992,67 @@ pub struct NoopEffects;
 impl ToolEffects for NoopEffects {
     async fn ask_user(&self, _: PromptRequest) -> Result<PromptResponse, EffectError> {
         Err(EffectError::NotInteractive)
+    }
+}
+
+impl crate::interface::tool::RunningTasksCallback for SessionState {
+    fn find(&self, tid: &str) -> Option<(String, Vec<String>, RunningStatus)> {
+        let task = self.find_running_task(tid)?;
+        let output = task
+            .output
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let log = task
+            .events_log
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let status = task
+            .status
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        Some((output, log, status))
+    }
+
+    fn cancel(&self, tid: &str) -> bool {
+        self.cancel_running_task(tid)
+    }
+}
+
+/// A task that lasts as long as this value: registered on creation, ended on
+/// drop — stopped if its token was cancelled, done otherwise. For work bounded
+/// by one call, like a shell command.
+pub struct TaskScope {
+    session: std::sync::Arc<SessionState>,
+    task: std::sync::Arc<RunningTask>,
+}
+
+impl TaskScope {
+    pub fn new(
+        session: std::sync::Arc<SessionState>,
+        task_id: impl Into<String>,
+        task_type: TaskType,
+        cancel: tokio_util::sync::CancellationToken,
+        detail: serde_json::Value,
+    ) -> Self {
+        let task = session.register_task(task_id, task_type, cancel, detail);
+        Self { session, task }
+    }
+
+    pub fn task(&self) -> &std::sync::Arc<RunningTask> {
+        &self.task
+    }
+}
+
+impl Drop for TaskScope {
+    fn drop(&mut self) {
+        let status = if self.task.cancel.is_cancelled() {
+            RunningStatus::Cancelled
+        } else {
+            RunningStatus::Completed
+        };
+        self.session.finish_task(&self.task.task_id, status);
     }
 }

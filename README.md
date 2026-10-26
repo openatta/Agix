@@ -33,7 +33,7 @@ echo '{"jsonrpc":"2.0","id":1,"method":"session.run_turn",
 ```
 
 Tokens stream back as `session.event` frames while the turn runs; the response
-arrives when it ends. Forty-five methods are documented in
+arrives when it ends. Forty-seven methods are documented in
 [`docs/daemon_rpc_protocol.md`](docs/daemon_rpc_protocol.md), and every
 documented shape is compared against a real daemon's answer by a test — the
 document cannot drift from the code.

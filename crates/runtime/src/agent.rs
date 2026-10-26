@@ -365,6 +365,12 @@ pub struct Agent {
 }
 
 impl Agent {
+    /// The session's own state — its todos, tasks, permission mode — shared
+    /// with every tool call, for a host that shows or acts on it.
+    pub fn session_state(&self) -> Arc<base::context::SessionState> {
+        self.session_state.clone()
+    }
+
     /// The slash commands this session will actually resolve.
     ///
     /// For a host rendering a completion popup or a command palette: this is

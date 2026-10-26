@@ -461,6 +461,22 @@ impl StreamFrame {
         }
     }
 
+    /// A task of `session_id` started or finished (`SessionState`'s
+    /// `{kind, task}`), told to the session's watchers. Not part of any turn.
+    pub fn task_event(session_id: &str, event: &Value) -> Option<Self> {
+        let task = event.get("task")?.clone();
+        let event = match event.get("kind")?.as_str()? {
+            "task_started" => serde_json::json!({"kind": "task_started", "task": task}),
+            "task_finished" => serde_json::json!({"kind": "task_finished", "task": task}),
+            _ => return None,
+        };
+        Some(Self {
+            jsonrpc: "2.0",
+            method: "session.event",
+            params: serde_json::json!({"session_id": session_id, "turn_id": null, "event": event}),
+        })
+    }
+
     /// A daemon-level async notification (MCP connect outcome, import
     /// auto-detection, ...) pushed to any connection subscribed via
     /// `daemon.subscribeEvents` — not tied to any particular session/turn.

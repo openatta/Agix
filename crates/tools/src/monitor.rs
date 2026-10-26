@@ -136,10 +136,22 @@ impl Tool for MonitorTool {
         // Spawn the child process via bash -c
         let spec =
             ProcessSpec::new("bash", &ctx.cwd).args(["-c".to_string(), input.command.clone()]);
+        let run_cancel = ctx.cancel.child_token();
+        let _task = base::context::TaskScope::new(
+            ctx.session.clone(),
+            format!("monitor-{}", base::id::Id::new()),
+            base::context::TaskType::Monitor,
+            run_cancel.clone(),
+            serde_json::json!({
+                "command": input.command,
+                "description": input.description,
+                "tool_use_id": ctx.tool_use_id,
+            }),
+        );
         let mut child = ctx
             .exec
             .process
-            .spawn(spec, ctx.cancel.clone())
+            .spawn(spec, run_cancel.clone())
             .await
             .map_err(ToolError::from)?;
         let chunks = child.output().expect("the first call owns the pipes");
@@ -183,7 +195,7 @@ impl Tool for MonitorTool {
             // Persistent: only cancel can stop us.
             tokio::select! {
                 biased;
-                _ = ctx.cancel.cancelled() => {
+                _ = run_cancel.cancelled() => {
                     child.kill().await;
                     stop_reading.cancel();
                     return Err(ToolError::Cancelled);
@@ -194,7 +206,7 @@ impl Tool for MonitorTool {
             // Non-persistent: cancel or timeout can stop us.
             tokio::select! {
                 biased;
-                _ = ctx.cancel.cancelled() => {
+                _ = run_cancel.cancelled() => {
                     child.kill().await;
                     stop_reading.cancel();
                     return Err(ToolError::Cancelled);

@@ -597,6 +597,7 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 | `session_lifecycle_events` | `daemon.event` 报会话进出内存与每一轮的开始结束(§8) |
 | `events_lagged_notice` | `daemon.event` 送不到时会收到 `events_lagged`(§8) |
 | `schedule` | 有 `schedule.*` 方法与 daemon 内的调度器(§6.7) |
+| `session_tasks` | 有 `session.tasks` / `session.stopTask`,任务事件进 `session.event`(§6.3、§7) |
 
 #### `daemon.status`
 
@@ -1207,6 +1208,44 @@ client,会话在原地按新的规格重建(它是空闲的,不会腰斩什么),
 `dry_run: true` 只返回将要删除的清单(`deleted` 为 `false`),不实际删除 —— 供宿主
 做二次确认。
 
+#### `session.tasks`
+
+这个会话里在会话之外继续跑的工作:子 Agent(前台的和后台的)、团队成员、执行中的
+Shell 命令与监视器,以及安排给它的定时任务(§6.7)。和模型用 `TaskOutput` / `TaskStop`
+看到的是同一份。
+
+```jsonc
+// → params
+{ "session_id": "…" }
+// ← result
+{ "active": true,           // 引擎是否在内存里;不在时只有定时任务
+  "tasks": [
+    { "task_id": "…",
+      "kind": "agent",      // agent | teammate | shell | monitor | cron
+      "status": "running",  // running | done | failed | stopped;定时任务是 waiting
+      "started_ms": 0, "ended_ms": null,
+      "detail": { },        // agent:{agent_type,description,background,tool_use_id}
+                            // teammate:{team,member};shell / monitor:{command,tool_use_id,…}
+                            // cron:{cron,prompt,recurring,durable,expires_ms}
+      "error": "…" }        // 仅 failed
+  ] }
+```
+
+正在跑的全列出,已经结束的保留最近 20 个。会话不存在 → `SESSION_NOT_FOUND`。
+
+#### `session.stopTask`
+
+```jsonc
+// → params
+{ "session_id": "…", "task_id": "…" }
+// ← result
+{ "stopped": true }         // 没有这个任务,或者它已经结束 → false
+```
+
+和模型的 `TaskStop` 是同一个入口:取消这件工作所在的令牌 —— Shell 命令连同它的整个
+进程组一起结束,子 Agent 在下一个检查点停下;定时任务则是取消安排。被停掉的工具调用
+给模型回的是"已取消",这一轮照常继续。
+
 #### `session.respondToPrompt`
 
 ```jsonc
@@ -1503,11 +1542,9 @@ disclosure 的 `wasm.runnable` 会如实报成 `false`。
 
 ### 6.6 还没有的东西
 
-`agent.*`(列举/停止运行中的子 Agent)和 `team.*`(团队的列举/事件流)在早期设计里
-定过接口,但**代码里没有对应的 dispatch 分支**,调用返回 `METHOD_NOT_FOUND`。
-
-引擎里子 Agent 和团队都是有的,模型能通过 `Agent` / `TeamCreate` 等工具用;只是没有
-RPC 出口。要看子 Agent 干了什么,走它的侧链会话:`session.list
+`agent.*` 和 `team.*` 在早期设计里定过接口,**没有实现**,调用返回
+`METHOD_NOT_FOUND`。列举与停止运行中的子 Agent、团队成员走 `session.tasks` /
+`session.stopTask`(§6.3);要看一个子 Agent 干了什么,走它的侧链会话:`session.list
 {parent_session_id}` 拿 id,再 `session.history`。
 
 ### 6.7 `schedule.*`
@@ -1589,6 +1626,8 @@ RPC 出口。要看子 Agent 干了什么,走它的侧链会话:`session.list
 | `user_messages_returned` | `{messages:[{message_id,content}]}` | 运行中送来、但本轮结束前没读到的消息,不在 transcript 里,交还客户端 |
 | `turn_complete` | `{stop_reason,api_calls,tool_calls,seq,usage,last_call_usage,context?,structured_output?,message?}` | 本轮结束,transcript 已落盘,`seq` 是此刻的消息数;最终响应随后到达 |
 | `error` | `{code,message}` | 本轮出错结束。只发给**发起这一轮之外**的订阅者 —— 发起者从 `run_turn` 的错误响应得知 |
+| `task_started` | `{task}` | 这个会话的一件任务开始了(`task` 同 `session.tasks` 的条目)。Shell 命令与监视器只在跑过 1 秒后才报,短命令不报;不属于任何一轮,`turn_id` 为 `null` |
+| `task_finished` | `{task}` | 一件报过开始的任务结束了,`task.status` 是结局;`turn_id` 为 `null` |
 | `subscription_dropped` | `{reason}` | 这条连接对该会话的订阅被取消了(`reason` 目前只有 `"overflow"`,§5.4);不属于任何一轮,`turn_id` 为 `null`。重新 `session.subscribe` 并追平 |
 
 **这张表是白名单。** 引擎内部还有其它事件,但只有上面这些会被转成帧发出来。特别地:

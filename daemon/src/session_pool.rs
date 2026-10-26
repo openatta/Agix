@@ -458,6 +458,8 @@ struct LiveSession {
     idle: Arc<tokio::sync::Notify>,
     /// Who started the running turn: `"client"` or `"schedule"`.
     turn_initiator: Option<&'static str>,
+    /// The engine's own session state: the tasks `session.tasks` lists.
+    state: Option<Arc<base::context::SessionState>>,
     /// What this session's bound scripts did, if it bound any.
     ///
     /// Kept because a script that quietly does nothing is the failure mode of
@@ -577,6 +579,9 @@ pub struct SessionPool {
     /// has no client — counted down from the top so they never meet the ids
     /// the server hands to real connections.
     internal_connections: std::sync::atomic::AtomicU64,
+    /// This pool, for the tasks it starts that outlive the call that started
+    /// them. Set when the pool is started (`start_scheduler`).
+    this: std::sync::OnceLock<std::sync::Weak<SessionPool>>,
     /// Daemon-level async notifications (MCP connect outcomes, import
     /// auto-detection, future error events) — see `daemon.subscribeEvents`.
     /// `send()` returning `Err` just means "no subscribers right now", not
@@ -867,6 +872,7 @@ impl SessionPool {
             mcp_oauth,
             schedule,
             internal_connections: std::sync::atomic::AtomicU64::new(u64::MAX),
+            this: std::sync::OnceLock::new(),
             events_tx,
             health: std::sync::RwLock::new(match plugins.health_check() {
                 Some(check) => base::interface::health::HealthChecks::new().with(check),
@@ -2217,6 +2223,8 @@ impl SessionPool {
         }
         let (mut agent, event_rx, input_tx) =
             builder.build().map_err(|e| format!("build agent: {e}"))?;
+        let state = agent.session_state();
+        self.forward_task_events(&session_id, &state);
 
         let _ = agent
             .telemetry()
@@ -2386,6 +2394,7 @@ impl SessionPool {
             binding_stale: binding.stale.clone(),
             current_turn: None,
             turn_initiator: None,
+            state: Some(state),
             idle: Arc::new(tokio::sync::Notify::new()),
             scripts: script_ledger,
             subscribers: HashMap::new(),
@@ -5467,6 +5476,7 @@ impl SessionPool {
     /// whoever watches the session. A session that is not in memory is
     /// resumed for it. Jobs missed while the daemon was down are not caught up.
     pub fn start_scheduler(self: &Arc<Self>) {
+        let _ = self.this.set(Arc::downgrade(self));
         let pool = Arc::downgrade(self);
         tokio::spawn(async move {
             loop {
@@ -5528,6 +5538,78 @@ impl SessionPool {
             warn!(job_id = %job.id, %session_id, code = error.code, message = %error.message,
                   "scheduled job's turn failed");
         }
+    }
+
+    /// Push `session_id`'s task events to whoever watches the session, for as
+    /// long as its engine lives. Outside any turn, so `turn_id` is `null`.
+    fn forward_task_events(&self, session_id: &str, state: &Arc<base::context::SessionState>) {
+        let Some(pool) = self.this.get().cloned() else {
+            return;
+        };
+        let mut events = state.subscribe_tasks();
+        let session_id = session_id.to_string();
+        tokio::spawn(async move {
+            loop {
+                match events.recv().await {
+                    Ok(event) => {
+                        let Some(pool) = pool.upgrade() else { return };
+                        if let Some(frame) = StreamFrame::task_event(&session_id, &event) {
+                            pool.broadcast_to_session(&session_id, &frame).await;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        });
+    }
+
+    /// `session.tasks`: the work this session has running — sub-agents, team
+    /// members, shell commands, monitors, and the jobs scheduled for it.
+    /// `active` is whether its engine is in memory; a session that is not has
+    /// only its scheduled jobs.
+    pub async fn session_tasks(&self, session_id: &str) -> serde_json::Value {
+        let state = self
+            .sessions
+            .lock()
+            .await
+            .get(session_id)
+            .and_then(|live| live.state.clone());
+        let mut tasks = state.as_ref().map(|s| s.task_infos()).unwrap_or_default();
+        tasks.extend(self.schedule.list_for(session_id).into_iter().map(|job| {
+            serde_json::json!({
+                "task_id": job.id,
+                "kind": "cron",
+                "status": "waiting",
+                "started_ms": job.created_ms,
+                "ended_ms": null,
+                "detail": {
+                    "cron": job.cron,
+                    "prompt": job.prompt,
+                    "recurring": job.recurring,
+                    "durable": job.durable,
+                    "expires_ms": job.expires_ms,
+                },
+            })
+        }));
+        serde_json::json!({"active": state.is_some(), "tasks": tasks})
+    }
+
+    /// `session.stopTask`: stop one of `session.tasks`' entries. A scheduled
+    /// job is cancelled; running work is stopped the way the model's
+    /// `TaskStop` stops it — a shell command's whole process group goes.
+    /// `false` if there is no such running task.
+    pub async fn stop_task(&self, session_id: &str, task_id: &str) -> bool {
+        if self.schedule.remove_for(session_id, task_id) {
+            return true;
+        }
+        let state = self
+            .sessions
+            .lock()
+            .await
+            .get(session_id)
+            .and_then(|live| live.state.clone());
+        state.is_some_and(|s| s.cancel_running_task(task_id))
     }
 
     /// Schedule `prompt` to run as a turn of `session_id` on `cron`.
@@ -6554,6 +6636,7 @@ mod eviction_tests {
             binding_stale: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             current_turn: None,
             turn_initiator: None,
+            state: None,
             idle: Arc::new(tokio::sync::Notify::new()),
             scripts: None,
             subscribers: HashMap::new(),

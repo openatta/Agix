@@ -286,10 +286,21 @@ impl Tool for BashTool {
             );
         }
 
+        // The command runs under its own token, a child of the turn's: the
+        // turn being interrupted still stops it, and so does stopping just
+        // this task (`TaskStop`, or a host's `session.stopTask`).
+        let run_cancel = ctx.cancel.child_token();
+        let _task = base::context::TaskScope::new(
+            ctx.session.clone(),
+            format!("shell-{}", base::id::Id::new()),
+            base::context::TaskType::Shell,
+            run_cancel.clone(),
+            serde_json::json!({"command": input.command, "tool_use_id": ctx.tool_use_id}),
+        );
         let mut child = ctx
             .exec
             .process
-            .spawn(confined.spec, ctx.cancel.clone())
+            .spawn(confined.spec, run_cancel.clone())
             .await
             .map_err(exec_error)?;
         let output = child.output().expect("the stream is taken once");
@@ -299,7 +310,7 @@ impl Tool for BashTool {
 
         let wait_result = tokio::select! {
         biased;
-        _ = ctx.cancel.cancelled() => {
+        _ = run_cancel.cancelled() => {
             child.kill().await;
             stop_reading.cancel();
             return Err(ToolError::Cancelled);
@@ -314,7 +325,7 @@ impl Tool for BashTool {
 
         let (drained, left_running) = tokio::select! {
             biased;
-            _ = ctx.cancel.cancelled() => {
+            _ = run_cancel.cancelled() => {
                 child.kill().await;
                 stop_reading.cancel();
                 return Err(ToolError::Cancelled);

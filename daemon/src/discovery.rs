@@ -166,6 +166,7 @@ pub const CAPABILITIES: &[&str] = &[
     "session_lifecycle_events",
     "events_lagged_notice",
     "schedule",
+    "session_tasks",
 ];
 
 /// Version, protocol version and capabilities: what a client is told

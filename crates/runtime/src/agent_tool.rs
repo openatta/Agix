@@ -602,6 +602,14 @@ fn bg_task_id() -> String {
     base::id::Id::new().to_string()
 }
 
+/// How a task that ran a sub-agent ended.
+fn finished(result: &Result<String, base::error::ToolError>) -> base::context::RunningStatus {
+    match result {
+        Ok(_) => base::context::RunningStatus::Completed,
+        Err(e) => base::context::RunningStatus::Failed(e.to_string()),
+    }
+}
+
 /// Write the first `Meta` line for a freshly spawned sidechain (sub-agent /
 /// team member) session, linking it back to its parent via
 /// `parent_session_id` and marking it `session_kind: Sidechain` — this is
@@ -885,20 +893,13 @@ async fn run_persistent_member_loop(
         )
         .await;
 
-        match &result {
-            Ok(text) => {
-                task.output
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .push_str(text);
-                *task.status.lock().unwrap_or_else(|e| e.into_inner()) =
-                    base::context::RunningStatus::Completed;
-            }
-            Err(e) => {
-                *task.status.lock().unwrap_or_else(|e| e.into_inner()) =
-                    base::context::RunningStatus::Failed(e.to_string());
-            }
+        if let Ok(text) = &result {
+            task.output
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push_str(text);
         }
+        session.finish_task(&task.task_id, finished(&result));
         session.persist_running_task(&task);
         session.remove_running_task_persistence(&task.task_id);
 
@@ -2417,7 +2418,12 @@ impl AgentTool {
         session: Arc<base::context::SessionState>,
     ) -> String {
         let tid = bg_task_id();
-        let task = session.register_running_task(tid.clone());
+        let task = session.register_task(
+            tid.clone(),
+            base::context::TaskType::Agent,
+            cancel.clone(),
+            serde_json::json!({"agent_type": subagent_type, "background": true}),
+        );
         let subagent_type = subagent_type.map(str::to_string);
         let inner = self.inner.clone();
         let tc = task.clone();
@@ -2428,20 +2434,13 @@ impl AgentTool {
             let r =
                 Self::run_sub_inner(&inner, prompt, tools, cwd, cancel, subagent_type.as_deref())
                     .await;
-            let mut s = tc.status.lock().unwrap_or_else(|e| e.into_inner());
-            if matches!(*s, base::context::RunningStatus::Running) {
-                *s = match &r {
-                    Ok(_) => base::context::RunningStatus::Completed,
-                    Err(e) => base::context::RunningStatus::Failed(e.to_string()),
-                };
-            }
-            drop(s);
             if let Ok(ref text) = r {
                 tc.output
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .push_str(text);
             }
+            session_c.finish_task(&tid_c, finished(&r));
             session_c.persist_running_task(&tc);
             session_c.remove_running_task_persistence(&tid_c);
         });
@@ -2454,13 +2453,26 @@ impl AgentTool {
         ctx: &ToolContext,
     ) -> Result<base::tool::ToolResult, base::error::ToolError> {
         let tid = bg_task_id();
-        let task = ctx.session.register_running_task(tid.clone());
+        let outer_cancel = ctx.cancel.child_token();
+        let task = ctx.session.register_task(
+            tid.clone(),
+            base::context::TaskType::Agent,
+            outer_cancel.clone(),
+            serde_json::json!({
+                "agent_type": input.subagent_type,
+                "description": input.description,
+                "background": true,
+                "tool_use_id": ctx.tool_use_id,
+            }),
+        );
         let mut worktree_handle = match &input.worktree {
             Some(s) => match create_worktree(&ctx.exec, &ctx.session.cwd, s).await {
                 Ok(h) => Some(h),
                 Err(e) => {
-                    *task.status.lock().unwrap_or_else(|e| e.into_inner()) =
-                        base::context::RunningStatus::Failed(format!("worktree: {e}"));
+                    ctx.session.finish_task(
+                        &tid,
+                        base::context::RunningStatus::Failed(format!("worktree: {e}")),
+                    );
                     return Ok(bg_result(&tid, "worktree failed"));
                 }
             },
@@ -2476,7 +2488,6 @@ impl AgentTool {
         let inner = self.inner.clone();
         let tc = task.clone();
         let tid_c = tid.clone();
-        let outer_cancel = ctx.cancel.child_token();
         let session = ctx.session.clone();
         let _events_tx = ctx.events_tx.clone();
 
@@ -2493,19 +2504,13 @@ impl AgentTool {
             if let Some(h) = worktree_handle.as_mut() {
                 h.cleanup().await;
             }
-            let mut s = tc.status.lock().unwrap_or_else(|e| e.into_inner());
-            if matches!(*s, base::context::RunningStatus::Running) {
-                *s = match &r {
-                    Ok(_) => base::context::RunningStatus::Completed,
-                    Err(e) => base::context::RunningStatus::Failed(e.to_string()),
-                };
-            }
             if let Ok(ref text) = r {
                 tc.output
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .push_str(text);
             }
+            session.finish_task(&tid_c, finished(&r));
             session.persist_running_task(&tc);
             session.remove_running_task_persistence(&tid_c);
         });
@@ -2637,7 +2642,12 @@ impl AgentTool {
         self.reclaim_idle_team_members(Some(&key)).await;
 
         let tid = bg_task_id();
-        let task = session.register_running_task(tid.clone());
+        let task = session.register_task(
+            tid.clone(),
+            base::context::TaskType::Teammate,
+            tokio_util::sync::CancellationToken::new(),
+            serde_json::json!({"team": team_name, "member": member_name}),
+        );
 
         let existing_tx = self
             .inner
@@ -3395,12 +3405,25 @@ impl base::tool::Tool for AgentTool {
         // Bound rather than matched inline so the worktree is cleaned up
         // before the result is turned into a ToolResult — the sub-agent may
         // have failed, and the temporary worktree must go either way.
+        let run_cancel = ctx.cancel.child_token();
+        let _task = base::context::TaskScope::new(
+            ctx.session.clone(),
+            ctx.tool_use_id.clone(),
+            base::context::TaskType::Agent,
+            run_cancel.clone(),
+            serde_json::json!({
+                "agent_type": inp.subagent_type,
+                "description": inp.description,
+                "background": false,
+                "tool_use_id": ctx.tool_use_id,
+            }),
+        );
         let result = self
             .run_sub_tagged(
                 prompt,
                 tools,
                 cwd,
-                ctx.cancel.child_token(),
+                run_cancel,
                 perm,
                 inp.subagent_type.as_deref(),
                 Some((

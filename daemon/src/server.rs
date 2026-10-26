@@ -622,6 +622,34 @@ impl DaemonServer {
                     }),
                 )
             }
+            "session.tasks" => {
+                let Some(session_id) = req.params.get("session_id").and_then(|v| v.as_str()) else {
+                    return RpcResponse::err(id, codes::INVALID_PARAMS, "missing session_id");
+                };
+                if !self.pool.session_exists(session_id).await {
+                    return RpcResponse::err(
+                        id,
+                        codes::SESSION_NOT_FOUND,
+                        format!("no session `{session_id}`"),
+                    );
+                }
+                RpcResponse::ok(id, self.pool.session_tasks(session_id).await)
+            }
+            "session.stopTask" => {
+                let param = |key: &str| req.params.get(key).and_then(|v| v.as_str());
+                let (Some(session_id), Some(task_id)) = (param("session_id"), param("task_id"))
+                else {
+                    return RpcResponse::err(
+                        id,
+                        codes::INVALID_PARAMS,
+                        "session.stopTask needs session_id and task_id",
+                    );
+                };
+                RpcResponse::ok(
+                    id,
+                    serde_json::json!({"stopped": self.pool.stop_task(session_id, task_id).await}),
+                )
+            }
             "schedule.create" => self.method_schedule_create(id, req.params).await,
             "schedule.list" => {
                 let session_id = req.params.get("session_id").and_then(|v| v.as_str());
