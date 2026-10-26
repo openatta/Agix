@@ -118,6 +118,8 @@ pub struct McpManager {
     elicitation_callback: Arc<Mutex<Option<ElicitationCallback>>>,
     /// What a stdio server this manager starts gets for an environment.
     subprocess_env: base::interface::exec::local::SubprocessEnv,
+    /// The owning pool's OAuth state, handed to every connection.
+    oauth: Option<Arc<crate::oauth::McpOAuth>>,
 }
 
 impl McpManager {
@@ -135,6 +137,7 @@ impl McpManager {
             output_cache: Arc::new(Mutex::new(McpOutputCache::new())),
             elicitation_callback: Arc::new(Mutex::new(None)),
             subprocess_env: base::interface::exec::local::SubprocessEnv::default(),
+            oauth: None,
         }
     }
 
@@ -224,6 +227,7 @@ impl McpManager {
             servers,
             None,
             base::interface::exec::local::SubprocessEnv::default(),
+            None,
         )
         .await
     }
@@ -234,7 +238,19 @@ impl McpManager {
         servers: HashMap<String, McpServerConfig>,
         env: base::interface::exec::local::SubprocessEnv,
     ) -> Self {
-        Self::connect_all_impl(servers, None, env).await
+        Self::connect_all_impl(servers, None, env, None).await
+    }
+
+    /// `connect_all_with_env`, taking bearer tokens for servers with an
+    /// `oauth_provider` from `oauth` — the owning pool's, so pools in one
+    /// process never share tokens.
+    pub async fn connect_all_with_oauth(
+        servers: HashMap<String, McpServerConfig>,
+        env: base::interface::exec::local::SubprocessEnv,
+        oauth: Arc<crate::oauth::McpOAuth>,
+    ) -> Self {
+        oauth.remember_servers(&servers);
+        Self::connect_all_impl(servers, None, env, Some(oauth)).await
     }
 
     /// Start every stdio server this manager adds later under `env`.
@@ -253,6 +269,7 @@ impl McpManager {
             servers,
             Some(callback),
             base::interface::exec::local::SubprocessEnv::default(),
+            None,
         )
         .await
     }
@@ -263,6 +280,7 @@ impl McpManager {
         servers: HashMap<String, McpServerConfig>,
         elicitation_cb: Option<ElicitationCallback>,
         subprocess_env: base::interface::exec::local::SubprocessEnv,
+        oauth: Option<Arc<crate::oauth::McpOAuth>>,
     ) -> Self {
         // Shared cell (see the field doc comment on `elicitation_callback`)
         // threaded through every spawned connect task and every adapter it
@@ -314,6 +332,7 @@ impl McpManager {
             let cell_for_spawn = elicitation_cell.clone();
             let queue_for_spawn = notifications.clone();
             let env_for_spawn = subprocess_env.clone();
+            let oauth_for_spawn = oauth.clone();
             set.spawn(async move {
                 match Self::connect_with_retry(
                     &name,
@@ -322,6 +341,7 @@ impl McpManager {
                     cell_for_spawn,
                     queue_for_spawn,
                     &env_for_spawn,
+                    oauth_for_spawn,
                 )
                 .await
                 {
@@ -351,6 +371,7 @@ impl McpManager {
             output_cache: cache,
             elicitation_callback: elicitation_cell,
             subprocess_env,
+            oauth,
         };
         // Collect MCP prompts from connected servers (non-blocking: fail silently)
         manager.collect_prompts().await
@@ -407,6 +428,7 @@ impl McpManager {
         elicitation_cell: Arc<Mutex<Option<ElicitationCallback>>>,
         notifications: Arc<crate::notify::NotificationQueue>,
         subprocess_env: &base::interface::exec::local::SubprocessEnv,
+        oauth: Option<Arc<crate::oauth::McpOAuth>>,
     ) -> Result<(McpClientHandle, Vec<Arc<dyn Tool>>), McpError> {
         // StdioMcpClient 现在支持 stdio + streamable_http 两种 config（spawn_service 里分派）
         let client = StdioMcpClient::connect_with_env(
@@ -414,6 +436,7 @@ impl McpManager {
             cfg,
             Some(notifications.sink()),
             subprocess_env.clone(),
+            oauth,
         )
         .await?;
         let tools = client.list_tools().await?;
@@ -438,6 +461,7 @@ impl McpManager {
         elicitation_cell: Arc<Mutex<Option<ElicitationCallback>>>,
         notifications: Arc<crate::notify::NotificationQueue>,
         subprocess_env: &base::interface::exec::local::SubprocessEnv,
+        oauth: Option<Arc<crate::oauth::McpOAuth>>,
     ) -> Result<(McpClientHandle, Vec<Arc<dyn Tool>>), McpError> {
         const MAX_RETRIES: u32 = 5;
         const INITIAL_DELAY_MS: u64 = 1_000;
@@ -452,6 +476,7 @@ impl McpManager {
                 elicitation_cell.clone(),
                 notifications.clone(),
                 subprocess_env,
+                oauth.clone(),
             )
             .await
             {
@@ -497,6 +522,9 @@ impl McpManager {
     /// connected under `name` (its tools included). On failure the existing
     /// connection, if any, stays and a warning is logged.
     pub async fn add_server(&mut self, name: &str, cfg: &McpServerConfig) {
+        if let Some(oauth) = &self.oauth {
+            oauth.remember_servers(&HashMap::from([(name.to_string(), cfg.clone())]));
+        }
         let cb = self.elicitation_callback.clone();
         match Self::connect_one(
             name,
@@ -505,6 +533,7 @@ impl McpManager {
             cb,
             self.notifications.clone(),
             &self.subprocess_env,
+            self.oauth.clone(),
         )
         .await
         {
@@ -539,6 +568,7 @@ impl McpManager {
             output_cache: Arc::new(Mutex::new(McpOutputCache::new())),
             elicitation_callback: Arc::new(Mutex::new(None)),
             subprocess_env: base::interface::exec::local::SubprocessEnv::default(),
+            oauth: None,
         }
     }
 

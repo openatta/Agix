@@ -565,6 +565,9 @@ pub struct SessionPool {
     /// scene tier can declare its own `mcp_servers`, so two scenes on one
     /// project are not interchangeable.
     mcp_by_project: AsyncMutex<HashMap<ProjectSceneKey, Arc<McpManager>>>,
+    /// This pool's OAuth state for MCP servers with an `oauth_provider`:
+    /// tokens under its own scene root, and whatever resolver the host gave.
+    mcp_oauth: Arc<mcp::oauth::McpOAuth>,
     /// Daemon-level async notifications (MCP connect outcomes, import
     /// auto-detection, future error events) — see `daemon.subscribeEvents`.
     /// `send()` returning `Err` just means "no subscribers right now", not
@@ -812,6 +815,9 @@ impl SessionPool {
         paths: Arc<dyn crate::config::DaemonPaths>,
     ) -> Self {
         let (events_tx, _) = tokio::sync::broadcast::channel(256);
+        let mcp_oauth = Arc::new(mcp::oauth::McpOAuth::new(
+            settings.paths.user_data_dir.join("mcp").join("oauth"),
+        ));
 
         let plugins = crate::plugins::PluginSubsystem::new(
             paths.clone(),
@@ -845,6 +851,7 @@ impl SessionPool {
             history_store,
             paths,
             mcp_by_project: AsyncMutex::new(HashMap::new()),
+            mcp_oauth,
             events_tx,
             health: std::sync::RwLock::new(match plugins.health_check() {
                 Some(check) => base::interface::health::HealthChecks::new().with(check),
@@ -878,6 +885,22 @@ impl SessionPool {
     ) -> Self {
         self.credentials = credentials;
         self
+    }
+
+    /// Resolve OAuth bearer tokens for this pool's MCP servers with
+    /// `resolver` when the pool's token store has none.
+    pub fn with_mcp_oauth_resolver(
+        mut self,
+        resolver: Arc<dyn mcp::oauth::McpOAuthResolver>,
+    ) -> Self {
+        let store_dir = self.mcp_oauth.store_dir().to_path_buf();
+        self.mcp_oauth = Arc::new(mcp::oauth::McpOAuth::new(store_dir).with_resolver(resolver));
+        self
+    }
+
+    /// This pool's MCP OAuth state.
+    pub fn mcp_oauth(&self) -> Arc<mcp::oauth::McpOAuth> {
+        self.mcp_oauth.clone()
     }
 
     /// Override how long an unanswered permission prompt may block a turn
@@ -1144,7 +1167,8 @@ impl SessionPool {
             }
             let requested: std::collections::HashSet<String> = parsed.keys().cloned().collect();
             let env = pool.settings.read().await.sandbox.subprocess_env.clone();
-            let mut manager = McpManager::connect_all_with_env(parsed, env).await;
+            let mut manager =
+                McpManager::connect_all_with_oauth(parsed, env, pool.mcp_oauth.clone()).await;
             // A server may have announced a tool change while this project's
             // manager was being built or reused. Acting on it here is what
             // keeps the announcement from being one more thing nobody reads.
@@ -1230,7 +1254,7 @@ impl SessionPool {
             .sandbox
             .subprocess_env
             .clone();
-        let manager = McpManager::connect_all_with_env(parsed, env).await;
+        let manager = McpManager::connect_all_with_oauth(parsed, env, self.mcp_oauth.clone()).await;
         let statuses = manager.server_statuses();
         let connected: Vec<String> = statuses.iter().map(|s| s.name.clone()).collect();
         let connected_set: std::collections::HashSet<String> = connected.iter().cloned().collect();
@@ -4897,7 +4921,12 @@ impl SessionPool {
             }
         }
         let manager = Arc::new(
-            McpManager::connect_all_with_env(parsed, settings.sandbox.subprocess_env.clone()).await,
+            McpManager::connect_all_with_oauth(
+                parsed,
+                settings.sandbox.subprocess_env.clone(),
+                self.mcp_oauth.clone(),
+            )
+            .await,
         );
         self.mcp_by_project
             .lock()

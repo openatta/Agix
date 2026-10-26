@@ -73,6 +73,8 @@ pub struct StdioMcpClient {
     /// The environment policy a stdio server's process starts under, kept
     /// for the same reason: a reconnect must not start it under another.
     env_policy: base::interface::exec::local::SubprocessEnv,
+    /// The owning pool's OAuth state, for servers with an `oauth_provider`.
+    oauth: Option<Arc<crate::oauth::McpOAuth>>,
 }
 
 impl StdioMcpClient {
@@ -98,19 +100,29 @@ impl StdioMcpClient {
             config,
             sink,
             base::interface::exec::local::SubprocessEnv::default(),
+            None,
         )
         .await
     }
 
     /// Connect, starting a stdio server's process under `env_policy` — the
-    /// `sandbox.subprocess_env` of the settings the server was declared in.
+    /// `sandbox.subprocess_env` of the settings the server was declared in —
+    /// and taking bearer tokens for an `oauth_provider` from `oauth`.
     pub async fn connect_with_env(
         server_name: &str,
         config: &McpServerConfig,
         sink: Option<crate::notify::NotificationSink>,
         env_policy: base::interface::exec::local::SubprocessEnv,
+        oauth: Option<Arc<crate::oauth::McpOAuth>>,
     ) -> Result<Arc<Self>, McpError> {
-        let service = spawn_service(server_name, config, sink.clone(), &env_policy).await?;
+        let service = spawn_service(
+            server_name,
+            config,
+            sink.clone(),
+            &env_policy,
+            oauth.as_deref(),
+        )
+        .await?;
         let instructions = service
             .peer_info()
             .and_then(|info| info.instructions.clone())
@@ -124,6 +136,7 @@ impl StdioMcpClient {
             consecutive_failures: AtomicU32::new(0),
             sink,
             env_policy,
+            oauth,
         }))
     }
 
@@ -161,8 +174,8 @@ impl StdioMcpClient {
 
         // 如果 config 有 oauth_provider，清除缓存的 OAuth token 以确保
         // 重连时重新 resolve 一次（处理 401 / token 过期）。
-        if let Some(provider) = self.config.oauth_provider() {
-            crate::oauth::clear_oauth_token(provider).await;
+        if let (Some(provider), Some(oauth)) = (self.config.oauth_provider(), &self.oauth) {
+            oauth.clear_token(provider).await;
         }
 
         // 先把旧 service 清掉（cancel 会 kill 子进程）
@@ -175,6 +188,7 @@ impl StdioMcpClient {
             &self.config,
             self.sink.clone(),
             &self.env_policy,
+            self.oauth.as_deref(),
         )
         .await
         {
@@ -477,6 +491,7 @@ async fn spawn_service(
     config: &McpServerConfig,
     sink: Option<crate::notify::NotificationSink>,
     env_policy: &base::interface::exec::local::SubprocessEnv,
+    oauth: Option<&crate::oauth::McpOAuth>,
 ) -> Result<
     rmcp::service::RunningService<rmcp::RoleClient, crate::notify::NotifyingHandler>,
     McpError,
@@ -514,6 +529,7 @@ async fn spawn_service(
                 &url,
                 &headers,
                 oauth_provider.as_deref(),
+                oauth,
                 sink,
             )
             .await
@@ -534,7 +550,15 @@ async fn spawn_service(
                 url = %url,
                 "connecting to MCP server via SSE transport"
             );
-            spawn_sse_service(server_name, &url, &headers, oauth_provider.as_deref(), sink).await
+            spawn_sse_service(
+                server_name,
+                &url,
+                &headers,
+                oauth_provider.as_deref(),
+                oauth,
+                sink,
+            )
+            .await
         }
         McpServerConfig::InProcess { name, .. } => {
             // In-process servers are handled by InProcessMcpClient via
@@ -668,6 +692,7 @@ async fn spawn_streamable_http_service(
     url: &str,
     headers: &std::collections::HashMap<String, String>,
     oauth_provider: Option<&str>,
+    oauth: Option<&crate::oauth::McpOAuth>,
     sink: Option<crate::notify::NotificationSink>,
 ) -> Result<
     rmcp::service::RunningService<rmcp::RoleClient, crate::notify::NotifyingHandler>,
@@ -676,7 +701,11 @@ async fn spawn_streamable_http_service(
     use rmcp::transport::StreamableHttpClientTransport;
 
     let resolved_auth: Option<String> = if let Some(provider) = oauth_provider {
-        match resolve_oauth_bearer(provider).await {
+        let resolved = match oauth {
+            Some(oauth) => oauth.resolve_bearer(provider).await,
+            None => Err("this connection has no OAuth state".to_string()),
+        };
+        match resolved {
             Ok(tok) => Some(format!("Bearer {tok}")),
             Err(e) => {
                 warn!(
@@ -701,15 +730,6 @@ async fn spawn_streamable_http_service(
             name: server_name.into(),
             source: anyhow::anyhow!("{e}"),
         })
-}
-
-/// Resolve OAuth bearer token via the process-wide resolver (set by CLI at startup).
-/// If no resolver is installed, returns an error — caller falls back to
-/// connecting without a bearer token.
-async fn resolve_oauth_bearer(provider_name: &str) -> Result<String, anyhow::Error> {
-    crate::oauth::resolve_oauth_bearer(provider_name)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 /// 启发式判断：错误是不是 transport / connectivity 类（值得重连）vs
@@ -968,7 +988,7 @@ async fn spawn_websocket_service(
         http_url = %http_url,
         "WebSocket unavailable; falling back to StreamableHTTP transport"
     );
-    spawn_streamable_http_service(server_name, &http_url, headers, None, sink).await
+    spawn_streamable_http_service(server_name, &http_url, headers, None, None, sink).await
 }
 
 // ── SSE (Server-Sent Events) transport ──
@@ -978,13 +998,14 @@ async fn spawn_sse_service(
     url: &str,
     headers: &std::collections::HashMap<String, String>,
     oauth_provider: Option<&str>,
+    oauth: Option<&crate::oauth::McpOAuth>,
     sink: Option<crate::notify::NotificationSink>,
 ) -> Result<
     rmcp::service::RunningService<rmcp::RoleClient, crate::notify::NotifyingHandler>,
     McpError,
 > {
     tracing::info!(server = %server_name, url = %url, "SSE transport: delegating to streamable HTTP");
-    spawn_streamable_http_service(server_name, url, headers, oauth_provider, sink).await
+    spawn_streamable_http_service(server_name, url, headers, oauth_provider, oauth, sink).await
 }
 
 // ── WebSocketMcpClient ──
@@ -1093,7 +1114,7 @@ mod tests {
         };
         // The script answers no handshake, so the connect fails — after the
         // process has run, which is all this needs.
-        let _ = StdioMcpClient::connect_with_env("probe", &cfg, None, policy).await;
+        let _ = StdioMcpClient::connect_with_env("probe", &cfg, None, policy, None).await;
 
         let mut seen = String::new();
         for _ in 0..100 {
@@ -1218,6 +1239,7 @@ mod tests {
             consecutive_failures: AtomicU32::new(0),
             sink: None,
             env_policy: Default::default(),
+            oauth: None,
         };
         assert_eq!(client.transport_kind(), "stdio");
     }
@@ -1238,6 +1260,7 @@ mod tests {
             consecutive_failures: AtomicU32::new(0),
             sink: None,
             env_policy: Default::default(),
+            oauth: None,
         };
         assert_eq!(client.transport_kind(), "streamable_http");
     }
@@ -1263,6 +1286,7 @@ mod tests {
             consecutive_failures: AtomicU32::new(0),
             sink: None,
             env_policy: Default::default(),
+            oauth: None,
         };
         let err = client
             .get_prompt("some-prompt", &HashMap::new())
@@ -1337,6 +1361,7 @@ mod tests {
             consecutive_failures: AtomicU32::new(0),
             sink: None,
             env_policy: Default::default(),
+            oauth: None,
         };
         // 三次失败后 try_reconnect 应当 short-circuit NotConnected，不再 spawn
         let mut last_err = None;
@@ -1392,6 +1417,7 @@ mod tests {
             consecutive_failures: AtomicU32::new(0),
             sink: None,
             env_policy: Default::default(),
+            oauth: None,
         };
         assert_eq!(client.transport_kind(), "web_socket");
     }
@@ -1412,6 +1438,7 @@ mod tests {
                 consecutive_failures: AtomicU32::new(0),
                 sink: None,
                 env_policy: Default::default(),
+                oauth: None,
             }),
         };
         assert_eq!(client.transport_kind(), "web_socket");
@@ -1437,6 +1464,7 @@ mod tests {
                 consecutive_failures: AtomicU32::new(0),
                 sink: None,
                 env_policy: Default::default(),
+                oauth: None,
             }),
         };
         // The inner StdioMcpClient would report "stdio",

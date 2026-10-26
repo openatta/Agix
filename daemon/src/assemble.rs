@@ -123,6 +123,9 @@ pub struct Assembly {
     /// The host's last word on every session engine — see
     /// [`SessionCustomizer`].
     pub customize_session: Option<SessionCustomizer>,
+    /// Resolves OAuth bearer tokens for MCP servers with an `oauth_provider`
+    /// when this pool's token store has none. `None`: stored tokens only.
+    pub mcp_oauth_resolver: Option<Arc<dyn mcp::oauth::McpOAuthResolver>>,
 }
 
 impl Default for Assembly {
@@ -137,6 +140,7 @@ impl Default for Assembly {
             transcripts: Transcripts::default(),
             permission: None,
             customize_session: None,
+            mcp_oauth_resolver: None,
         }
     }
 }
@@ -233,6 +237,9 @@ pub async fn pool(
     .with_credentials(credentials);
     if let Some(customize) = assembly.customize_session {
         pool = pool.with_session_customizer(customize);
+    }
+    if let Some(resolver) = assembly.mcp_oauth_resolver {
+        pool = pool.with_mcp_oauth_resolver(resolver);
     }
     let pool = Arc::new(pool);
 

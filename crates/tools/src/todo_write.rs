@@ -147,9 +147,13 @@ mod tests {
     }
 
     async fn write(tool: &TodoWriteTool, ctx: &ToolContext, todos: Value) -> ToolResult {
-        tool.call(json!({ "todos": todos }), ctx.clone(), ProgressSender::noop("t"))
-            .await
-            .unwrap()
+        tool.call(
+            json!({ "todos": todos }),
+            ctx.clone(),
+            ProgressSender::noop("t"),
+        )
+        .await
+        .unwrap()
     }
 
     #[tokio::test]
@@ -174,7 +178,12 @@ mod tests {
     #[tokio::test]
     async fn replaces_entire_list() {
         let ctx = ctx();
-        write(&TodoWriteTool, &ctx, json!([{"content": "old", "status": "pending"}])).await;
+        write(
+            &TodoWriteTool,
+            &ctx,
+            json!([{"content": "old", "status": "pending"}]),
+        )
+        .await;
         write(
             &TodoWriteTool,
             &ctx,
@@ -189,7 +198,12 @@ mod tests {
     #[tokio::test]
     async fn empty_list_clears_todos() {
         let ctx = ctx();
-        write(&TodoWriteTool, &ctx, json!([{"content": "x", "status": "pending"}])).await;
+        write(
+            &TodoWriteTool,
+            &ctx,
+            json!([{"content": "x", "status": "pending"}]),
+        )
+        .await;
         write(&TodoWriteTool, &ctx, json!([])).await;
         assert!(ctx.session.todos().is_empty());
     }
@@ -197,7 +211,12 @@ mod tests {
     #[tokio::test]
     async fn sessions_do_not_see_each_others_todos() {
         let (a, b) = (ctx(), ctx());
-        write(&TodoWriteTool, &a, json!([{"content": "only a", "status": "pending"}])).await;
+        write(
+            &TodoWriteTool,
+            &a,
+            json!([{"content": "only a", "status": "pending"}]),
+        )
+        .await;
         assert_eq!(a.session.todos().len(), 1);
         assert!(b.session.todos().is_empty());
     }

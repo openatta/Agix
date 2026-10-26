@@ -69,7 +69,16 @@ fn default_callback_timeout() -> u64 {
     120
 }
 
-pub struct McpAuthTool;
+/// Runs the OAuth flow against one session pool's [`mcp::oauth::McpOAuth`].
+pub struct McpAuthTool {
+    oauth: std::sync::Arc<mcp::oauth::McpOAuth>,
+}
+
+impl McpAuthTool {
+    pub fn new(oauth: std::sync::Arc<mcp::oauth::McpOAuth>) -> Self {
+        Self { oauth }
+    }
+}
 
 #[async_trait]
 impl Tool for McpAuthTool {
@@ -118,11 +127,10 @@ impl Tool for McpAuthTool {
         match action {
             "complete" => {
                 // Complete a previously started OAuth flow by exchanging the code
-                match mcp::oauth::complete_oauth_flow(
-                    input.code.as_deref(),
-                    input.timeout_secs.max(30),
-                )
-                .await
+                match self
+                    .oauth
+                    .complete_flow(input.code.as_deref(), input.timeout_secs.max(30))
+                    .await
                 {
                     Ok(msg) => Ok(ToolResult {
                         content: base::tool::ToolResultContent::Text(msg),
@@ -148,7 +156,7 @@ impl Tool for McpAuthTool {
                     Some(ref name) if !name.is_empty() => name.clone(),
                     _ => {
                         // No server specified — find the first unauthenticated one
-                        match mcp::oauth::find_first_unauthenticated_server().await {
+                        match self.oauth.find_first_unauthenticated_server().await {
                             Some(name) => name,
                             None => {
                                 return Ok(ToolResult {
@@ -166,7 +174,7 @@ impl Tool for McpAuthTool {
                 };
 
                 // Check if the server has OAuth configured
-                if mcp::oauth::get_server_oauth_provider(&server_name).is_none() {
+                if self.oauth.server_oauth_provider(&server_name).is_none() {
                     return Ok(ToolResult {
                         content: base::tool::ToolResultContent::Text(format!(
                             "MCP server '{server_name}' does not support OAuth \
@@ -182,7 +190,7 @@ impl Tool for McpAuthTool {
                 }
 
                 // Start the OAuth flow
-                match mcp::oauth::start_oauth_flow(&server_name).await {
+                match self.oauth.start_flow(&server_name).await {
                     Ok(url) => Ok(ToolResult {
                         content: base::tool::ToolResultContent::Text(format!(
                             "Open this URL to authenticate '{server_name}':\n\n{url}"
@@ -221,7 +229,10 @@ mod tests {
 
     #[tokio::test]
     async fn mcp_auth_fails_gracefully_without_config() {
-        let tool = McpAuthTool;
+        let dir = tempfile::tempdir().unwrap();
+        let tool = McpAuthTool::new(std::sync::Arc::new(mcp::oauth::McpOAuth::new(
+            dir.path().to_path_buf(),
+        )));
         let r = tool
             .call(
                 json!({"server": "x"}),

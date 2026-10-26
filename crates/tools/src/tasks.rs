@@ -10,6 +10,7 @@
 //! 不跨重启。一个会话一张平铺的表：团队成员的 `owner` 字段只是约定，不是边界。
 
 use async_trait::async_trait;
+use base::context::SessionState;
 use base::error::ToolError;
 use base::tool::{
     PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
@@ -18,7 +19,6 @@ use base::tool::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use base::context::SessionState;
 
 /// Callers that need to read then write should do both inside one `f`, not
 /// two separate calls.
@@ -704,11 +704,7 @@ mod tests {
             "description": "d",
         });
         TaskCreateTool
-            .call(
-                create_input,
-                session_a.clone(),
-                ProgressSender::noop("t"),
-            )
+            .call(create_input, session_a.clone(), ProgressSender::noop("t"))
             .await
             .expect("create should succeed");
 

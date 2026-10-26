@@ -1,15 +1,18 @@
-//! OAuth bearer token resolution for MCP StreamableHttp connections.
+//! OAuth bearer tokens for MCP StreamableHttp / SSE connections.
 //!
-//! Agent itself does NOT depend on the `auth` crate (which depends on agent).
-//! Instead, CLI injects an `McpOAuthResolver` implementation backed by the
-//! `auth` crate. Without injection, OAuth is skipped (no bearer token).
+//! Everything OAuth needs — the resolver, the token store, the server and
+//! provider configurations, a flow waiting for its browser callback — lives on
+//! one [`McpOAuth`], and a session pool owns one. Several pools in one process
+//! therefore keep their tokens apart; nothing here is process-wide.
 //!
-//! # OAuth Store
+//! This crate does not resolve tokens itself: the host hands in an
+//! [`McpOAuthResolver`] (typically backed by the `auth` crate). Without one,
+//! only tokens already in the store are used.
 //!
-//! Tokens are persisted to `~/.agix/code/mcp/oauth/<provider>.json` so they
-//! survive restarts. The store is checked before calling the resolver; the
-//! resolver is only invoked when no cached token is available or the token
-//! has been explicitly cleared (e.g. after a 401 response).
+//! The store persists tokens under the directory the owner names — by
+//! convention `<scene root>/mcp/oauth/<provider>.json` — and is checked before
+//! the resolver. On a 401, [`McpOAuth::clear_token`] forces the next connection
+//! to resolve again.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -22,9 +25,9 @@ use auth::{CallbackListener, OAuth2Client, PkceMethod, PkceVerifier, ProviderCon
 
 /// Resolves OAuth bearer tokens for MCP servers.
 ///
-/// CLI implements this via the `auth` crate (`TokenStore`, `OAuth2Client`).
-/// Agent is agnostic — it just calls `resolve()` when an MCP server config
-/// declares an `oauth_provider`.
+/// The host implements this, typically with the `auth` crate (`TokenStore`,
+/// `OAuth2Client`). It is asked when an MCP server config declares an
+/// `oauth_provider` and the store has no token for it.
 ///
 /// NOTE: returns `Result<String, String>` — the `String` error type is a legacy
 /// pattern. The `auth` crate backing this trait uses its own error types, so
@@ -35,14 +38,6 @@ pub trait McpOAuthResolver: Send + Sync {
     /// Resolve a fresh bearer token for the named provider.
     /// Returns `Ok(token)` or `Err(message)` on failure.
     async fn resolve_bearer(&self, provider_name: &str) -> Result<String, String>;
-}
-
-/// Shared resolver for MCP connections — set by CLI at startup.
-static RESOLVER: std::sync::OnceLock<Arc<dyn McpOAuthResolver>> = std::sync::OnceLock::new();
-
-/// Install the process-wide OAuth resolver. Called once by CLI at startup.
-pub fn set_oauth_resolver(r: Arc<dyn McpOAuthResolver>) {
-    let _ = RESOLVER.set(r);
 }
 
 // ── OAuth Store (disk-persisted token cache) ──
@@ -59,7 +54,7 @@ struct StoredToken {
 /// with an `access_token` field. The store is checked before initiating an
 /// OAuth flow, and tokens are written back after successful resolution.
 ///
-/// On 401 responses, callers should call [`clear_oauth_token`] to force
+/// On 401 responses, callers should call [`McpOAuth::clear_token`] to force
 /// re-resolution on the next connection attempt.
 #[derive(Debug)]
 pub struct McpOAuthStore {
@@ -80,6 +75,10 @@ impl McpOAuthStore {
             dir,
             cache: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         }
+    }
+
+    pub fn dir(&self) -> &std::path::Path {
+        &self.dir
     }
 
     /// Path to the token file for a given provider.
@@ -137,73 +136,6 @@ impl McpOAuthStore {
     }
 }
 
-/// Process-wide OAuth token store.
-static OAUTH_STORE: std::sync::OnceLock<McpOAuthStore> = std::sync::OnceLock::new();
-
-/// Initialise the process-wide OAuth token store.
-/// Safe to call multiple times; only the first call takes effect.
-pub fn init_oauth_store_with(dir: PathBuf) {
-    let _ = OAUTH_STORE.set(McpOAuthStore::with_dir(dir));
-}
-
-/// Clear the cached OAuth token for a given provider, both in the in-memory
-/// cache and on disk. Should be called when a 401 is received so that the
-/// next connection attempt re-runs the OAuth flow.
-pub async fn clear_oauth_token(provider_name: &str) {
-    if let Some(store) = OAUTH_STORE.get() {
-        store.clear_token(provider_name).await;
-    }
-}
-
-/// Retrieve the process-wide OAuth store, if initialised.
-fn get_oauth_store() -> Option<&'static McpOAuthStore> {
-    OAUTH_STORE.get()
-}
-
-// ── Resolver helpers ──
-
-/// Resolve a bearer token using the installed resolver.
-/// Returns `None` if no resolver is installed (OAuth disabled).
-///
-/// Checks the OAuth token store first. If a cached token exists, returns it
-/// without calling the resolver. Otherwise calls the resolver and stores the
-/// result for future use.
-///
-/// NOTE: Returns `Result<String, String>` mirroring the trait. The connect
-/// layer wraps this into `anyhow::Error`. When the trait is updated, this
-/// function should return a dedicated error type.
-pub(crate) async fn resolve_oauth_bearer(provider_name: &str) -> Result<String, String> {
-    // Check the OAuth store first for a cached token.
-    if let Some(store) = get_oauth_store() {
-        if let Some(token) = store.get_token(provider_name).await {
-            return Ok(token);
-        }
-    }
-
-    // No cached token; call the resolver.
-    let token = match RESOLVER.get() {
-        Some(r) => r.resolve_bearer(provider_name).await?,
-        None => return Err("no OAuth resolver installed".into()),
-    };
-
-    // Store the resolved token for future use.
-    if let Some(store) = get_oauth_store() {
-        store.set_token(provider_name, &token).await;
-    }
-
-    Ok(token)
-}
-
-// ── OAuth flow initiator (used by McpAuthTool) ──
-
-/// Registered MCP server configurations for tool queries.
-static MCP_SERVER_CONFIGS: std::sync::OnceLock<HashMap<String, crate::config::McpServerConfig>> =
-    std::sync::OnceLock::new();
-
-/// Registered OAuth provider configurations from settings `oauth_providers`.
-static OAUTH_PROVIDER_CONFIGS: std::sync::OnceLock<HashMap<String, ProviderConfig>> =
-    std::sync::OnceLock::new();
-
 /// Pending OAuth flow awaiting browser callback + code exchange.
 struct PendingFlow {
     verifier: String,
@@ -212,167 +144,220 @@ struct PendingFlow {
     listener: CallbackListener,
 }
 
-static PENDING_FLOW: std::sync::OnceLock<tokio::sync::Mutex<Option<PendingFlow>>> =
-    std::sync::OnceLock::new();
-
-fn pending_flow_lock() -> &'static tokio::sync::Mutex<Option<PendingFlow>> {
-    PENDING_FLOW.get_or_init(|| tokio::sync::Mutex::new(None))
+/// One session pool's OAuth state for its MCP connections.
+pub struct McpOAuth {
+    resolver: Option<Arc<dyn McpOAuthResolver>>,
+    store: McpOAuthStore,
+    servers: std::sync::RwLock<HashMap<String, crate::config::McpServerConfig>>,
+    providers: HashMap<String, ProviderConfig>,
+    pending: tokio::sync::Mutex<Option<PendingFlow>>,
 }
 
-/// Register the full set of MCP server configurations so tools can query
-/// them (e.g., to discover which servers support OAuth).
-/// Called once at startup by the CLI/daemon after loading settings.
-pub fn register_mcp_server_configs(configs: HashMap<String, crate::config::McpServerConfig>) {
-    let _ = MCP_SERVER_CONFIGS.set(configs);
+impl std::fmt::Debug for McpOAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpOAuth")
+            .field("resolver", &self.resolver.is_some())
+            .field("store", &self.store)
+            .field("providers", &self.providers.keys().collect::<Vec<_>>())
+            .finish_non_exhaustive()
+    }
 }
 
-/// Register OAuth provider configurations (from settings `oauth_providers`).
-/// Called once at startup by the CLI/daemon after loading settings.
-pub fn register_oauth_providers(providers: HashMap<String, ProviderConfig>) {
-    let _ = OAUTH_PROVIDER_CONFIGS.set(providers);
-}
+impl McpOAuth {
+    /// OAuth state whose tokens persist under `store_dir`.
+    pub fn new(store_dir: PathBuf) -> Self {
+        Self {
+            resolver: None,
+            store: McpOAuthStore::with_dir(store_dir),
+            servers: std::sync::RwLock::new(HashMap::new()),
+            providers: HashMap::new(),
+            pending: tokio::sync::Mutex::new(None),
+        }
+    }
 
-/// Return a reference to the registered MCP server configs, if any.
-pub fn get_mcp_server_configs() -> Option<&'static HashMap<String, crate::config::McpServerConfig>>
-{
-    MCP_SERVER_CONFIGS.get()
-}
+    /// Where tokens persist.
+    pub fn store_dir(&self) -> &std::path::Path {
+        self.store.dir()
+    }
 
-/// Return a reference to the registered OAuth provider configs, if any.
-pub fn get_oauth_providers() -> Option<&'static HashMap<String, ProviderConfig>> {
-    OAUTH_PROVIDER_CONFIGS.get()
-}
+    pub fn with_resolver(mut self, resolver: Arc<dyn McpOAuthResolver>) -> Self {
+        self.resolver = Some(resolver);
+        self
+    }
 
-/// Get the OAuth provider name for a given server, if any.
-pub fn get_server_oauth_provider(server_name: &str) -> Option<&'static str> {
-    MCP_SERVER_CONFIGS.get()?.get(server_name)?.oauth_provider()
-}
+    /// OAuth provider configurations (settings `oauth_providers`), needed to
+    /// start a flow.
+    pub fn with_providers(mut self, providers: HashMap<String, ProviderConfig>) -> Self {
+        self.providers = providers;
+        self
+    }
 
-/// Find the first configured server that has OAuth enabled and no cached token.
-/// Returns the server name, or `None` if all OAuth-eligible servers are already
-/// authenticated.
-pub async fn find_first_unauthenticated_server() -> Option<String> {
-    let configs = MCP_SERVER_CONFIGS.get()?;
-    let store = get_oauth_store()?;
-    for (name, cfg) in configs {
-        if let Some(provider) = cfg.oauth_provider() {
-            if store.get_token(provider).await.is_none() {
-                return Some(name.clone());
+    /// Note server configurations this pool connects to, so a flow can be
+    /// started by server name. Merges into what is already known.
+    pub fn remember_servers(&self, servers: &HashMap<String, crate::config::McpServerConfig>) {
+        let mut known = self.servers.write().unwrap_or_else(|e| e.into_inner());
+        for (name, cfg) in servers {
+            known.insert(name.clone(), cfg.clone());
+        }
+    }
+
+    /// The OAuth provider a known server is configured with, if any.
+    pub fn server_oauth_provider(&self, server_name: &str) -> Option<String> {
+        self.servers
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(server_name)?
+            .oauth_provider()
+            .map(str::to_string)
+    }
+
+    /// Remove a cached token for `provider`, in memory and on disk. Called on a
+    /// 401 so the next connection attempt resolves again.
+    pub async fn clear_token(&self, provider: &str) {
+        self.store.clear_token(provider).await;
+    }
+
+    /// A bearer token for `provider`: the stored one if there is one, else one
+    /// from the resolver, which is then stored.
+    ///
+    /// NOTE: Returns `Result<String, String>` mirroring the trait. The connect
+    /// layer wraps this into `anyhow::Error`.
+    pub async fn resolve_bearer(&self, provider: &str) -> Result<String, String> {
+        if let Some(token) = self.store.get_token(provider).await {
+            return Ok(token);
+        }
+        let token = match &self.resolver {
+            Some(r) => r.resolve_bearer(provider).await?,
+            None => return Err("no OAuth resolver installed".into()),
+        };
+        self.store.set_token(provider, &token).await;
+        Ok(token)
+    }
+
+    /// The first known server that has OAuth enabled and no cached token.
+    pub async fn find_first_unauthenticated_server(&self) -> Option<String> {
+        let candidates: Vec<(String, String)> = self
+            .servers
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter_map(|(name, cfg)| Some((name.clone(), cfg.oauth_provider()?.to_string())))
+            .collect();
+        for (name, provider) in candidates {
+            if self.store.get_token(&provider).await.is_none() {
+                return Some(name);
             }
         }
+        None
     }
-    None
-}
 
-/// Start an OAuth flow for the specified MCP server.
-///
-/// 1. Looks up the server's `oauth_provider` in the registered configs.
-/// 2. Creates a PKCE challenge (S256) and starts a local HTTP callback listener
-///    on `127.0.0.1:<ephemeral>`.
-/// 3. Builds the authorization URL.
-/// 4. Stores the pending flow state for later completion via
-///    [`complete_oauth_flow`].
-///
-/// Returns the authorization URL the user should open in their browser.
-pub async fn start_oauth_flow(server_name: &str) -> Result<String, String> {
-    let configs = MCP_SERVER_CONFIGS.get().ok_or_else(|| {
-        "No MCP server configurations loaded. Configure MCP servers in settings.json.".to_string()
-    })?;
-    let server_cfg = configs.get(server_name).ok_or_else(|| {
-        format!("Unknown MCP server: '{server_name}'. Check your MCP server configuration.")
-    })?;
-    let provider_name = server_cfg.oauth_provider().ok_or_else(|| {
-        format!("MCP server '{server_name}' does not support OAuth authentication")
-    })?;
-    let providers = OAUTH_PROVIDER_CONFIGS
-        .get()
-        .ok_or_else(|| "No OAuth provider configurations loaded".to_string())?;
-    let provider_cfg = providers.get(provider_name).ok_or_else(|| {
-        format!(
-            "OAuth provider '{provider_name}' not found. \
-             Add it to settings.json under oauth_providers."
-        )
-    })?;
+    /// Start an OAuth flow for the named server.
+    ///
+    /// 1. Looks up the server's `oauth_provider` in the known configs.
+    /// 2. Creates a PKCE challenge (S256) and starts a local HTTP callback listener
+    ///    on `127.0.0.1:<ephemeral>`.
+    /// 3. Builds the authorization URL.
+    /// 4. Keeps the pending flow for [`Self::complete_flow`].
+    ///
+    /// Returns the authorization URL the user should open in their browser.
+    pub async fn start_flow(&self, server_name: &str) -> Result<String, String> {
+        let provider_name = {
+            let servers = self.servers.read().unwrap_or_else(|e| e.into_inner());
+            if servers.is_empty() {
+                return Err("No MCP server configurations loaded. \
+                            Configure MCP servers in settings.json."
+                    .to_string());
+            }
+            let server_cfg = servers.get(server_name).ok_or_else(|| {
+                format!("Unknown MCP server: '{server_name}'. Check your MCP server configuration.")
+            })?;
+            server_cfg
+                .oauth_provider()
+                .ok_or_else(|| {
+                    format!("MCP server '{server_name}' does not support OAuth authentication")
+                })?
+                .to_string()
+        };
+        let provider_cfg = self.providers.get(&provider_name).ok_or_else(|| {
+            format!(
+                "OAuth provider '{provider_name}' not found. \
+                 Add it to settings.json under oauth_providers."
+            )
+        })?;
 
-    // Create PKCE challenge (S256)
-    let pkce = PkceVerifier::new(PkceMethod::S256);
-    let verifier = pkce.verifier.clone();
+        let pkce = PkceVerifier::new(PkceMethod::S256);
+        let verifier = pkce.verifier.clone();
 
-    // Start a local callback listener on 127.0.0.1:<ephemeral>
-    let listener = CallbackListener::start()
-        .await
-        .map_err(|e| format!("Failed to start OAuth callback listener: {e}"))?;
-    let redirect_uri = listener.redirect_uri().to_string();
+        let listener = CallbackListener::start()
+            .await
+            .map_err(|e| format!("Failed to start OAuth callback listener: {e}"))?;
+        let redirect_uri = listener.redirect_uri().to_string();
 
-    // Build the authorization URL
-    let client = OAuth2Client::new(provider_cfg);
-    let (url, _state) = client
-        .build_authorize_url(&redirect_uri, &pkce)
-        .map_err(|e| format!("Failed to build authorization URL: {e}"))?;
+        let client = OAuth2Client::new(provider_cfg);
+        let (url, _state) = client
+            .build_authorize_url(&redirect_uri, &pkce)
+            .map_err(|e| format!("Failed to build authorization URL: {e}"))?;
 
-    // Store the pending flow state for later completion
-    *pending_flow_lock().lock().await = Some(PendingFlow {
-        verifier,
-        redirect_uri,
-        provider: provider_name.to_string(),
-        listener,
-    });
+        *self.pending.lock().await = Some(PendingFlow {
+            verifier,
+            redirect_uri,
+            provider: provider_name,
+            listener,
+        });
 
-    Ok(url)
-}
+        Ok(url)
+    }
 
-/// Complete a previously started OAuth flow by waiting for the browser callback
-/// and exchanging the authorization code for a token.
-///
-/// If `code` is provided, uses it directly instead of waiting for the callback.
-/// The `timeout_secs` controls how long to wait for the browser callback
-/// (ignored if `code` is provided). Minimum timeout is 30 seconds.
-pub async fn complete_oauth_flow(code: Option<&str>, timeout_secs: u64) -> Result<String, String> {
-    let mut guard = pending_flow_lock().lock().await;
-    let pending = guard
-        .take()
-        .ok_or_else(|| "No pending OAuth flow. Call start_oauth_flow first.".to_string())?;
+    /// Complete the flow [`Self::start_flow`] began: wait for the browser
+    /// callback (or take `code` directly) and exchange it for a token.
+    ///
+    /// `timeout_secs` bounds the wait for the callback (ignored with a `code`);
+    /// it is at least 30 seconds.
+    pub async fn complete_flow(
+        &self,
+        code: Option<&str>,
+        timeout_secs: u64,
+    ) -> Result<String, String> {
+        let pending = self
+            .pending
+            .lock()
+            .await
+            .take()
+            .ok_or_else(|| "No pending OAuth flow. Call start_flow first.".to_string())?;
 
-    // Get the authorization code
-    let auth_code = match code {
-        Some(c) if !c.is_empty() => c.to_string(),
-        _ => {
-            let timeout = std::time::Duration::from_secs(timeout_secs.max(30));
-            pending
-                .listener
-                .await_callback(timeout)
-                .await
-                .map_err(|e| format!("OAuth callback failed: {e}"))?
-                .code
-        }
-    };
+        let auth_code = match code {
+            Some(c) if !c.is_empty() => c.to_string(),
+            _ => {
+                let timeout = std::time::Duration::from_secs(timeout_secs.max(30));
+                pending
+                    .listener
+                    .await_callback(timeout)
+                    .await
+                    .map_err(|e| format!("OAuth callback failed: {e}"))?
+                    .code
+            }
+        };
 
-    // Look up the provider config
-    let providers = OAUTH_PROVIDER_CONFIGS
-        .get()
-        .ok_or_else(|| "OAuth provider configurations no longer available".to_string())?;
-    let provider_cfg = providers
-        .get(&pending.provider)
-        .ok_or_else(|| format!("OAuth provider '{}' not found", pending.provider))?;
+        let provider_cfg = self
+            .providers
+            .get(&pending.provider)
+            .ok_or_else(|| format!("OAuth provider '{}' not found", pending.provider))?;
 
-    // Exchange the code for a token
-    let client = OAuth2Client::new(provider_cfg);
-    let token_response = client
-        .exchange_code(&auth_code, &pending.redirect_uri, &pending.verifier)
-        .await
-        .map_err(|e| format!("Token exchange failed: {e}"))?;
+        let client = OAuth2Client::new(provider_cfg);
+        let token_response = client
+            .exchange_code(&auth_code, &pending.redirect_uri, &pending.verifier)
+            .await
+            .map_err(|e| format!("Token exchange failed: {e}"))?;
 
-    // Store the token for future use
-    if let Some(store) = get_oauth_store() {
-        store
+        self.store
             .set_token(&pending.provider, &token_response.access_token)
             .await;
-    }
 
-    Ok(format!(
-        "OAuth authentication successful for '{}'. Token stored.",
-        pending.provider
-    ))
+        Ok(format!(
+            "OAuth authentication successful for '{}'. Token stored.",
+            pending.provider
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -428,5 +413,41 @@ mod tests {
         let dir = tmp.path().join("scenes/code/mcp/oauth");
         let _ = McpOAuthStore::with_dir(dir.clone());
         assert!(dir.is_dir());
+    }
+
+    struct FixedResolver(&'static str);
+
+    #[async_trait::async_trait]
+    impl McpOAuthResolver for FixedResolver {
+        async fn resolve_bearer(&self, _provider: &str) -> Result<String, String> {
+            Ok(self.0.to_string())
+        }
+    }
+
+    #[tokio::test]
+    async fn without_a_resolver_only_stored_tokens_are_used() {
+        let dir = tempfile::tempdir().unwrap();
+        let oauth = McpOAuth::new(dir.path().to_path_buf());
+        assert!(oauth.resolve_bearer("github").await.is_err());
+        McpOAuthStore::with_dir(dir.path().to_path_buf())
+            .set_token("github", "stored")
+            .await;
+        assert_eq!(
+            oauth.resolve_bearer("github").await.as_deref(),
+            Ok("stored")
+        );
+    }
+
+    #[tokio::test]
+    async fn two_owners_keep_their_tokens_apart() {
+        let (a_dir, b_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let a =
+            McpOAuth::new(a_dir.path().to_path_buf()).with_resolver(Arc::new(FixedResolver("a")));
+        let b =
+            McpOAuth::new(b_dir.path().to_path_buf()).with_resolver(Arc::new(FixedResolver("b")));
+        assert_eq!(a.resolve_bearer("github").await.as_deref(), Ok("a"));
+        assert_eq!(b.resolve_bearer("github").await.as_deref(), Ok("b"));
+        a.clear_token("github").await;
+        assert_eq!(b.resolve_bearer("github").await.as_deref(), Ok("b"));
     }
 }
