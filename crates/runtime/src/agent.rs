@@ -55,6 +55,35 @@ pub enum InputMessage {
         message_id: String,
         ack: Option<tokio::sync::oneshot::Sender<crate::steering::SteerAck>>,
     },
+    /// A look at, or a change to, this session's context, handled between
+    /// turns. The answer — or why not — goes back on `reply`.
+    Context {
+        request: ContextRequest,
+        reply: tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
+    },
+}
+
+/// What a host asks of a session's context (`InputMessage::Context`).
+///
+/// Positions are those of the session's messages as `session.history`
+/// numbers them. `total`, when given, is how many messages the asker saw: a
+/// change refuses to apply if the context has since grown or been compacted,
+/// rather than land on a message the asker did not mean.
+#[derive(Debug, Clone)]
+pub enum ContextRequest {
+    /// What the next model call would carry, without making it.
+    Inspect,
+    /// Blank out user messages or tool results (see `SessionManager::drop_message`).
+    Drop {
+        at: Vec<usize>,
+        total: Option<usize>,
+    },
+    /// Rewrite a message the user typed.
+    Edit {
+        at: usize,
+        text: String,
+        total: Option<usize>,
+    },
 }
 
 /// Something the user attached to their message — a pasted screenshot, a

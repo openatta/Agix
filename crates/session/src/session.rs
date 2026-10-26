@@ -4,7 +4,7 @@
 //! session listing) is delegated to `history::store::HistoryStore`.
 
 use crate::session_memory::SessionMemory;
-use base::interface::model::ModelMessage;
+use base::interface::model::{ModelContentBlock, ModelMessage};
 use base::session::SessionId;
 use history::store::HistoryStore;
 pub use history::store::SessionSummary;
@@ -133,6 +133,59 @@ impl SessionManager {
 
     pub fn messages(&self) -> &[ModelMessage] {
         &self.messages
+    }
+
+    /// Replace the text and tool results of the user message at `at` with
+    /// [`history::transcript::DROPPED`], and drop its images — what replaying
+    /// an `agix.context` `drop` entry does to the log's projection. The
+    /// message stays, so later positions do not move and a tool result still
+    /// answers its call.
+    pub fn drop_message(&mut self, at: usize) -> Result<(), String> {
+        let content = self.user_message_mut(at)?;
+        content.retain(|b| !matches!(b, ModelContentBlock::Image { .. }));
+        for block in content.iter_mut() {
+            match block {
+                ModelContentBlock::Text { text } => {
+                    *text = history::transcript::DROPPED.to_string()
+                }
+                ModelContentBlock::ToolResult { content, .. } => {
+                    *content = history::transcript::DROPPED.to_string()
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Rewrite the user message at `at` as `text` — only one the user typed;
+    /// a message carrying tool results answers tool calls and is not
+    /// rewritten.
+    pub fn edit_message(&mut self, at: usize, text: String) -> Result<(), String> {
+        let content = self.user_message_mut(at)?;
+        if !content
+            .iter()
+            .all(|b| matches!(b, ModelContentBlock::Text { .. }))
+        {
+            return Err(format!(
+                "message {at} is not plain text the user wrote; only those can be edited"
+            ));
+        }
+        *content = vec![ModelContentBlock::Text { text }];
+        Ok(())
+    }
+
+    fn user_message_mut(&mut self, at: usize) -> Result<&mut Vec<ModelContentBlock>, String> {
+        let count = self.messages.len();
+        let message = self
+            .messages
+            .get_mut(at)
+            .ok_or_else(|| format!("there is no message {at}; the context has {count}"))?;
+        if message.role != base::interface::model::MessageRole::User {
+            return Err(format!(
+                "message {at} is the model's; only user messages and tool results can be changed"
+            ));
+        }
+        Ok(&mut message.content)
     }
 
     /// Estimated input tokens for the current conversation.

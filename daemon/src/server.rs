@@ -622,6 +622,9 @@ impl DaemonServer {
                     }),
                 )
             }
+            "session.inspectContext" | "session.dropMessages" | "session.editMessage" => {
+                self.method_context(id, &req.method, &req.params).await
+            }
             "session.tasks" => {
                 let Some(session_id) = req.params.get("session_id").and_then(|v| v.as_str()) else {
                     return RpcResponse::err(id, codes::INVALID_PARAMS, "missing session_id");
@@ -1270,6 +1273,67 @@ impl DaemonServer {
                 "client",
             )
             .await
+    }
+
+    /// `session.inspectContext {session_id}`, `session.dropMessages
+    /// {session_id, at:[…], total?}`, `session.editMessage {session_id, at,
+    /// text, total?}` — see `SessionPool::context_request`.
+    async fn method_context(
+        &self,
+        id: serde_json::Value,
+        method: &str,
+        params: &serde_json::Value,
+    ) -> RpcResponse {
+        use runtime::agent::ContextRequest;
+        let Some(session_id) = params.get("session_id").and_then(|v| v.as_str()) else {
+            return RpcResponse::err(id, codes::INVALID_PARAMS, "missing session_id");
+        };
+        let total = params
+            .get("total")
+            .and_then(|v| v.as_u64())
+            .map(|t| t as usize);
+        let request = match method {
+            "session.inspectContext" => ContextRequest::Inspect,
+            "session.dropMessages" => {
+                let at: Option<Vec<usize>> = params.get("at").and_then(|v| v.as_array()).map(|a| {
+                    a.iter()
+                        .filter_map(|i| i.as_u64().map(|i| i as usize))
+                        .collect()
+                });
+                match at {
+                    Some(at) if !at.is_empty() => ContextRequest::Drop { at, total },
+                    _ => {
+                        return RpcResponse::err(
+                            id,
+                            codes::INVALID_PARAMS,
+                            "session.dropMessages needs `at`, a list of message positions",
+                        )
+                    }
+                }
+            }
+            _ => {
+                let at = params.get("at").and_then(|v| v.as_u64());
+                let text = params.get("text").and_then(|v| v.as_str());
+                match (at, text) {
+                    (Some(at), Some(text)) => ContextRequest::Edit {
+                        at: at as usize,
+                        text: text.to_string(),
+                        total,
+                    },
+                    _ => {
+                        return RpcResponse::err(
+                            id,
+                            codes::INVALID_PARAMS,
+                            "session.editMessage needs `at` and `text`",
+                        )
+                    }
+                }
+            }
+        };
+        match self.pool.context_request(session_id, request).await {
+            Ok(result) => RpcResponse::ok(id, result),
+            Err((code, message)) => RpcResponse::err(id, code, message),
+        }
     }
 
     /// `schedule.create {session_id, cron, prompt, recurring?, durable?}`: run

@@ -397,6 +397,58 @@ pub fn latest_projected_message_entry_id_with(
         .map(|env| env.id)
 }
 
+/// The extension namespace of a host's edits to a session's context — a
+/// message dropped or rewritten after the fact. Unlike other extensions these
+/// change what the model sees, so projection applies them; an engine that
+/// predates them carries them along unapplied, and the session still loads.
+pub const CONTEXT_NS: &str = "agix.context";
+
+/// What a dropped message's text and tool results are replaced by. The
+/// message itself stays, so positions after it do not move and a tool result
+/// still answers its tool call.
+pub const DROPPED: &str = "[removed by the host]";
+
+/// Apply one `agix.context` entry: `drop` or `edit` the user message at
+/// `payload.at` (a projected position, as `session.history` numbers them).
+/// Anything else — an assistant message, an edit of a message carrying tool
+/// results, a position past the end — is left as it is: the engine refuses
+/// those before writing an entry, so meeting one here means a log written by
+/// something else.
+fn apply_context_edit(event: &str, payload: &serde_json::Value, messages: &mut [Message]) {
+    let Some(at) = payload.get("at").and_then(|v| v.as_u64()) else {
+        return;
+    };
+    let Some(Message::User { content }) = messages.get_mut(at as usize) else {
+        return;
+    };
+    match event {
+        "drop" => {
+            content.retain(|block| !matches!(block, ContentBlock::Image { .. }));
+            for block in content.iter_mut() {
+                match block {
+                    ContentBlock::Text { text, .. } => *text = DROPPED.to_string(),
+                    ContentBlock::ToolResult { content, .. } => {
+                        *content = ToolResultContent::Text(DROPPED.to_string())
+                    }
+                    _ => {}
+                }
+            }
+        }
+        "edit" => {
+            let only_text = content
+                .iter()
+                .all(|block| matches!(block, ContentBlock::Text { .. }));
+            if let (true, Some(text)) = (only_text, payload.get("text").and_then(|v| v.as_str())) {
+                *content = vec![ContentBlock::Text {
+                    text: text.to_string(),
+                    cache_control: None,
+                }];
+            }
+        }
+        _ => {}
+    }
+}
+
 fn apply_entry_to_messages(entry: &LogEntry, messages: &mut Vec<Message>) {
     match entry {
         LogEntry::Meta { .. }
@@ -405,9 +457,12 @@ fn apply_entry_to_messages(entry: &LogEntry, messages: &mut Vec<Message>) {
         | LogEntry::PasteRef { .. }
         | LogEntry::Blob { .. }
         | LogEntry::SessionEnd { .. } => {} // externalized content is hydrated by store::load()
-        // An extension's state is not model-visible. Whether it could be —
-        // and what would have to be true for it to be reconstructible from
-        // the log if it were — is the projection question, not this one.
+        LogEntry::Extension { ns, event, payload } if ns == CONTEXT_NS => {
+            apply_context_edit(event, payload, messages)
+        }
+        // Any other extension's state is not model-visible. Whether it could
+        // be — and what would have to be true for it to be reconstructible
+        // from the log if it were — is the projection question, not this one.
         // Skipping here is what makes an entry from an uninstalled plugin
         // inert rather than fatal.
         LogEntry::Extension { .. } => {}

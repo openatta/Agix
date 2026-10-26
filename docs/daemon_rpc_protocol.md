@@ -598,6 +598,7 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 | `events_lagged_notice` | `daemon.event` 送不到时会收到 `events_lagged`(§8) |
 | `schedule` | 有 `schedule.*` 方法与 daemon 内的调度器(§6.7) |
 | `session_tasks` | 有 `session.tasks` / `session.stopTask`,任务事件进 `session.event`(§6.3、§7) |
+| `context_edits` | 有 `session.inspectContext` / `session.dropMessages` / `session.editMessage`(§6.3) |
 
 #### `daemon.status`
 
@@ -1207,6 +1208,61 @@ client,会话在原地按新的规格重建(它是空闲的,不会腰斩什么),
 
 `dry_run: true` 只返回将要删除的清单(`deleted` 为 `false`),不实际删除 —— 供宿主
 做二次确认。
+
+#### `session.inspectContext`
+
+这个会话**下一次**调模型会带什么,但不真的调。会话不在内存里就先恢复它;正在跑一轮时
+返回 `SESSION_BUSY`。
+
+```jsonc
+// → params
+{ "session_id": "…" }
+// ← result
+{ "basis": "next_step_without_new_input",
+  "model": "…", "max_tokens": 0,
+  "system": [ { "name": "skills.catalog",   // 块名,见引擎的扩展点文档
+                "origin": "kernel",         // kernel | config | {"plugin":"…"} | {"script":"…"}
+                "tokens": 0, "text": "…" } ],
+  "tools": [ { "name": "Bash", "source": "builtin", "schema_bytes": 0, "tokens": 0 } ],
+  "messages": { "count": 0, "tokens": 0 },  // 坐标同 session.history
+  "total_tokens": 0,                        // 估算(cl100k 近似,偏高 5–15%)
+  "compact_threshold": 0, "hard_cap": null }
+```
+
+`basis` 说明这是什么:**现在开始一步、不带新输入**时的请求。真正的下一轮还会多出
+用户这句话、为它召回的记忆、提交时 hook 注入的内容,所以总量会更大。装配时脚本扩展照常
+运行(它们决定系统块),所以脚本自己的统计会把这一次也算进去。
+
+#### `session.dropMessages`
+
+把用户消息或工具结果从**此后的**上下文里去掉。消息本身留着,内容换成
+`[removed by the host]`(图片去掉):后面的位置不变,工具结果仍然回答它的那次调用。
+模型的消息不能去掉 —— 带签名的思考与工具调用去掉一半会被模型服务拒绝。
+
+```jsonc
+// → params
+{ "session_id": "…",
+  "at": [2, 5],     // 位置,坐标同 session.history
+  "total": 8 }      // 可选:你看到的消息数;对不上(期间新增或压缩过)就拒绝
+// ← result
+{ "dropped": [2, 5] }
+```
+
+改动先作用到引擎内存里的上下文,再以 `agix.context` 扩展条目写进 transcript,所以恢复
+之后照样生效;`session.history` 看到的是改过之后的内容。会改动前缀,模型服务的提示缓存
+从这一点往后失效。位置不对、是模型的消息、`total` 对不上 → `INVALID_PARAMS`;正在跑一轮
+→ `SESSION_BUSY`。
+
+#### `session.editMessage`
+
+把一条用户自己写的消息(只有文字,没有工具结果)改成 `text`。规则同上。
+
+```jsonc
+// → params
+{ "session_id": "…", "at": 0, "text": "…", "total": 8 }
+// ← result
+{ "edited": 0 }
+```
 
 #### `session.tasks`
 

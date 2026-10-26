@@ -5612,6 +5612,96 @@ impl SessionPool {
         state.is_some_and(|s| s.cancel_running_task(task_id))
     }
 
+    /// Ask a session's engine about, or change, its context
+    /// (`session.inspectContext`, `session.dropMessages`,
+    /// `session.editMessage`). A session not in memory is resumed for it; one
+    /// running a turn answers `SESSION_BUSY` — its context is moving under
+    /// the question. A change is applied to the engine first and then written
+    /// to the log as an `agix.context` entry, so a resume reproduces it.
+    pub async fn context_request(
+        &self,
+        session_id: &str,
+        request: runtime::agent::ContextRequest,
+    ) -> Result<serde_json::Value, RpcError> {
+        if !self.session_exists(session_id).await {
+            return Err((
+                codes::SESSION_NOT_FOUND,
+                format!("no session `{session_id}`"),
+            ));
+        }
+        if !self.sessions.lock().await.contains_key(session_id) {
+            self.resume_or_create(session_id.to_string(), None)
+                .await
+                .map_err(|e| (codes::INTERNAL_ERROR, e))?;
+        }
+        let input_tx = {
+            let sessions = self.sessions.lock().await;
+            let live = sessions.get(session_id).ok_or_else(|| {
+                (
+                    codes::SESSION_NOT_FOUND,
+                    format!("no session `{session_id}`"),
+                )
+            })?;
+            if let Some(turn) = &live.current_turn {
+                return Err((
+                    codes::SESSION_BUSY,
+                    format!("session `{session_id}` is running turn `{turn}`"),
+                ));
+            }
+            live.input_tx.clone()
+        };
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        input_tx
+            .send(InputMessage::Context {
+                request: request.clone(),
+                reply,
+            })
+            .map_err(|_| {
+                (
+                    codes::ENGINE_ERROR,
+                    "the session's engine has stopped".to_string(),
+                )
+            })?;
+        let result = tokio::time::timeout(Duration::from_secs(30), answer)
+            .await
+            .map_err(|_| (codes::ENGINE_ERROR, "the engine did not answer".to_string()))?
+            .map_err(|_| (codes::ENGINE_ERROR, "the engine went away".to_string()))?
+            .map_err(|e| (codes::INVALID_PARAMS, e))?;
+
+        let edits: Vec<(&str, serde_json::Value)> = match &request {
+            runtime::agent::ContextRequest::Inspect => Vec::new(),
+            runtime::agent::ContextRequest::Drop { at, .. } => at
+                .iter()
+                .map(|i| ("drop", serde_json::json!({"at": i})))
+                .collect(),
+            runtime::agent::ContextRequest::Edit { at, text, .. } => {
+                vec![("edit", serde_json::json!({"at": at, "text": text}))]
+            }
+        };
+        if let (false, Some(store)) = (edits.is_empty(), self.history_store.as_ref()) {
+            let sid = base::session::SessionId::parse(session_id)
+                .map_err(|e| (codes::INVALID_PARAMS, e.to_string()))?;
+            for (event, mut payload) in edits {
+                payload["at_ms"] = serde_json::json!(std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0));
+                let entry = history::entry::LogEntry::Extension {
+                    ns: history::transcript::CONTEXT_NS.to_string(),
+                    event: event.to_string(),
+                    payload,
+                };
+                store.append(sid, entry).await.map_err(|e| {
+                    (
+                        codes::INTERNAL_ERROR,
+                        format!("the change was made but not logged: {e}"),
+                    )
+                })?;
+            }
+        }
+        Ok(result)
+    }
+
     /// Schedule `prompt` to run as a turn of `session_id` on `cron`.
     pub fn schedule_add(&self, new: tools::cron::NewCronJob) -> tools::cron::CronJob {
         self.schedule.add_job(new)

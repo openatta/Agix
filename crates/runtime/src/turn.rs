@@ -231,6 +231,10 @@ impl Agent {
                 }
                 Ok(TurnOutcome::default())
             }
+            InputMessage::Context { request, reply } => {
+                let _ = reply.send(self.handle_context(request).await);
+                Ok(TurnOutcome::default())
+            }
             InputMessage::System { kind, content } => {
                 match kind {
                     EngineCommand::Shutdown => Err(TurnError::Shutdown),
@@ -2785,6 +2789,113 @@ or project context that should survive across sessions.
         self.request_overhead_tokens = estimate_request_overhead(&prompt_blocks, &tool_defs);
         let messages = pair_dangling_tool_uses(self.session.messages().to_vec());
         (prompt_blocks, tool_defs, messages)
+    }
+
+    async fn handle_context(
+        &mut self,
+        request: crate::agent::ContextRequest,
+    ) -> Result<serde_json::Value, String> {
+        use crate::agent::ContextRequest;
+        let count = self.session.messages().len();
+        let unchanged = |total: Option<usize>| match total {
+            Some(total) if total != count => Err(format!(
+                "the context has {count} messages, not {total}: it changed since it was read"
+            )),
+            _ => Ok(()),
+        };
+        match request {
+            ContextRequest::Inspect => Ok(self.inspect_context().await),
+            ContextRequest::Drop { at, total } => {
+                unchanged(total)?;
+                for &i in &at {
+                    match self.session.messages().get(i) {
+                        None => return Err(format!("there is no message {i}; the context has {count}")),
+                        Some(m) if m.role != base::interface::model::MessageRole::User => {
+                            return Err(format!(
+                                "message {i} is the model's; only user messages and tool results can be dropped"
+                            ))
+                        }
+                        Some(_) => {}
+                    }
+                }
+                for &i in &at {
+                    self.session.drop_message(i)?;
+                }
+                Ok(serde_json::json!({"dropped": at}))
+            }
+            ContextRequest::Edit { at, text, total } => {
+                unchanged(total)?;
+                self.session.edit_message(at, text)?;
+                Ok(serde_json::json!({"edited": at}))
+            }
+        }
+    }
+
+    /// What the next model call would carry if a step started now with no new
+    /// input: the system blocks and who contributed each, the tool table, the
+    /// messages, and roughly what each costs. Assembled the way a step
+    /// assembles its request, minus what only a real call should do — it
+    /// records no request overhead and spends no pending cache edits.
+    ///
+    /// A real next turn differs by what it adds: the user's message, any
+    /// memories recalled for it, anything a hook injects on submit.
+    async fn inspect_context(&mut self) -> serde_json::Value {
+        let tokens_of = |text: &str| {
+            compaction::grouping::estimate_tokens(&[ModelMessage {
+                role: base::interface::model::MessageRole::User,
+                content: vec![ModelContentBlock::Text {
+                    text: text.to_string(),
+                }],
+            }])
+        };
+        let model = self.settings.model.model_name.clone();
+        let blocks = self.build_prompt_blocks(&model).await;
+        let tools = self.build_tool_defs().await;
+        let messages = pair_dangling_tool_uses(self.session.messages().to_vec());
+
+        let system: Vec<serde_json::Value> = blocks
+            .iter()
+            .map(|b| {
+                serde_json::json!({
+                    "name": b.name,
+                    "origin": b.origin,
+                    "tokens": tokens_of(&b.content),
+                    "text": b.content,
+                })
+            })
+            .collect();
+        let tools: Vec<serde_json::Value> = tools
+            .iter()
+            .map(|t| {
+                let schema = t.input_schema.to_string();
+                serde_json::json!({
+                    "name": t.name,
+                    "source": t.source,
+                    "schema_bytes": schema.len(),
+                    "tokens": tokens_of(&t.description) + tokens_of(&schema),
+                })
+            })
+            .collect();
+        let message_tokens = compaction::grouping::estimate_tokens(&messages);
+        let sum = |items: &[serde_json::Value]| {
+            items
+                .iter()
+                .filter_map(|i| i["tokens"].as_u64())
+                .sum::<u64>() as usize
+        };
+        let total = sum(&system) + sum(&tools) + message_tokens;
+        let budget = self.context_budget();
+        serde_json::json!({
+            "basis": "next_step_without_new_input",
+            "model": model,
+            "max_tokens": self.settings.model.max_tokens,
+            "system": system,
+            "tools": tools,
+            "messages": {"count": messages.len(), "tokens": message_tokens},
+            "total_tokens": total,
+            "compact_threshold": budget.compact_threshold,
+            "hard_cap": budget.hard_cap,
+        })
     }
 
     /// Assemble a step's request and account for what it costs before any
