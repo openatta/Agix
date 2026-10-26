@@ -136,7 +136,7 @@ impl SkillProvider for McpSkills {
     }
 
     fn body(&self, name: &str) -> Option<String> {
-        crate::mcp_builder::mcp_skill_body(name)
+        crate::mcp_builder::mcp_skill_body(&self.server, &self.tools, name)
     }
 }
 

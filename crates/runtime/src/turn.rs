@@ -121,7 +121,7 @@ impl Agent {
                         match cmd {
                             crate::commands::Command::Prompt { entry } => {
                                 // Expand skill body → replace content → continue to LLM
-                                let expanded = crate::commands::handle_prompt_command(&entry, &sc);
+                                let expanded = self.commands.handle_prompt_command(&entry, &sc);
                                 return self
                                     .run_user_turn(
                                         expanded,

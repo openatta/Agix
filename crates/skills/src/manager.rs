@@ -344,20 +344,15 @@ impl SkillManager {
     /// Get the full content of a skill file (for prompt expansion at invocation time).
     ///
     /// Bundled and MCP-derived skills use sentinel `path` values —
-    /// `(bundled:name)` / `(mcp:server:tool)` — not real filesystem paths;
-    /// their bodies live in-memory instead (see `crate::bundled::bundled_body`
-    /// / `crate::mcp_builder::mcp_skill_body`). Mirrors the same special-
-    /// casing `runtime::commands::expand_skill_for_command` already does for
-    /// the slash-command path — this is the counterpart for the model-facing
-    /// `Skill` tool, which was previously always `None` for both cases.
+    /// `(bundled:name)` / `(mcp:server:tool)` — not real filesystem paths.
+    /// Bundled bodies are compiled in (`crate::bundled::bundled_body`); an
+    /// MCP skill's body comes from the source that holds its tool list
+    /// (`crate::sources::McpSkills`), like any other source's.
     pub fn get_skill_content(&self, name: &str) -> Option<String> {
         let info = self.get(name)?;
         let path_str = info.path.to_string_lossy();
         if path_str.starts_with("(bundled:") {
             return crate::bundled::bundled_body(name).map(|s| s.to_string());
-        }
-        if path_str.starts_with("(mcp:") {
-            return crate::mcp_builder::mcp_skill_body(name);
         }
         // Newest source first: a source registered later is the one whose
         // entry is in the catalog if two of them claimed the same name.
@@ -766,12 +761,8 @@ mod tests {
             input_schema: serde_json::json!({"type": "object"}),
             source: None,
         };
-        let entries =
-            crate::mcp_builder::build_skills_from_mcp("test-server-get-skill-content", &[tool]);
         let mgr = SkillManager::new();
-        for entry in entries {
-            mgr.register_bundled(entry);
-        }
+        mgr.register_mcp_skills("test-server-get-skill-content", &[tool]);
         let content = mgr.get_skill_content("mcp__test-server-get-skill-content__search");
         assert!(content.is_some(), "expected mcp skill content, got None");
         assert!(content.unwrap().contains("search"));

@@ -274,6 +274,29 @@ impl CommandRegistry {
         self.builtin.get(name).cloned()
     }
 
+    /// The body a skill-derived command expands to: asked of the live skill
+    /// catalog, which knows every source's bodies — bundled, on disk, and the
+    /// ones an MCP server's tools generate.
+    pub fn skill_body(&self, entry: &SkillEntry) -> Option<String> {
+        if let Some(body) = self
+            .skills
+            .as_ref()
+            .and_then(|s| s.get_skill_content(&entry.name))
+        {
+            return Some(body);
+        }
+        if entry.path.to_string_lossy().starts_with("(bundled:") {
+            return ::skills::bundled::bundled_body(&entry.name);
+        }
+        std::fs::read_to_string(&entry.path).ok()
+    }
+
+    /// Handle a prompt command: expand the skill body and return the
+    /// replacement content.
+    pub fn handle_prompt_command(&self, entry: &SkillEntry, cmd: &SlashCommand) -> String {
+        expand_skill_for_command(entry, self.skill_body(entry), &cmd.args)
+    }
+
     /// The `argument_hint` to display next to a command in `/help`, if any.
     pub fn argument_hint(&self, name: &str) -> Option<String> {
         match self.resolve(name)? {
@@ -431,24 +454,12 @@ impl Default for CommandRegistry {
 
 // ── Skill expansion ──
 
-/// Expand a skill entry for a slash command invocation.
-/// Reads the skill body, substitutes {args}, and returns the expanded content.
-pub fn expand_skill_for_command(entry: &SkillEntry, args: &str) -> String {
-    // Try to read the skill file body
-    let body = if entry.path.to_string_lossy().starts_with("(bundled:") {
-        // Bundled skills: use the body map from skills crate
-        ::skills::bundled::bundled_body(&entry.name)
-            .unwrap_or_else(|| format!("# {}\n\n{}", entry.name, entry.description))
-            .to_string()
-    } else if entry.path.to_string_lossy().starts_with("(mcp:") {
-        // MCP skills: use the in-memory body from mcp_builder
-        ::skills::mcp_builder::mcp_skill_body(&entry.name)
-            .unwrap_or_else(|| format!("# {}\n\n{}", entry.name, entry.description))
-    } else {
-        // Disk skills: read from filesystem
-        std::fs::read_to_string(&entry.path)
-            .unwrap_or_else(|_| format!("# {}\n\n{}", entry.name, entry.description))
-    };
+/// Expand a skill entry for a slash command invocation: substitute `{args}`
+/// into `body` (see [`CommandRegistry::skill_body`]) and wrap it in the
+/// invocation header. With no body, the entry's own name and description stand
+/// in for it.
+pub fn expand_skill_for_command(entry: &SkillEntry, body: Option<String>, args: &str) -> String {
+    let body = body.unwrap_or_else(|| format!("# {}\n\n{}", entry.name, entry.description));
 
     // Expand variables: {args}, $ARGUMENTS, $name (named `arguments:`), etc.
     let expanded = base::frozen::skill::expand_skill_vars_named(
@@ -471,10 +482,6 @@ pub fn expand_skill_for_command(entry: &SkillEntry, args: &str) -> String {
     )
 }
 
-/// Handle a prompt command: expand skill body and return the replacement content.
-pub fn handle_prompt_command(entry: &SkillEntry, cmd: &SlashCommand) -> String {
-    expand_skill_for_command(entry, &cmd.args)
-}
 
 /// Handle a local command: execute the handler and return the result.
 pub fn handle_local_command(cmd: &Command, sc: &SlashCommand) -> CommandResult {
@@ -812,7 +819,10 @@ mod tests {
             path: std::path::PathBuf::from("(bundled:test-skill)"),
             ..Default::default()
         };
-        let expanded = expand_skill_for_command(&entry, "hello");
+        let expanded = CommandRegistry::default().handle_prompt_command(
+            &entry,
+            &parse_slash_command("/test-skill hello").unwrap(),
+        );
         assert!(expanded.contains("test-skill"));
         assert!(!expanded.is_empty());
     }

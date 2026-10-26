@@ -7,15 +7,7 @@
 
 use base::frozen::{SkillEntry, SkillSource};
 use base::interface::model::ToolDef;
-use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{OnceLock, RwLock};
-
-/// Get the global MCP skill body storage, lazily initialized.
-fn mcp_bodies() -> &'static RwLock<HashMap<String, String>> {
-    static BODIES: OnceLock<RwLock<HashMap<String, String>>> = OnceLock::new();
-    BODIES.get_or_init(|| RwLock::new(HashMap::new()))
-}
 
 /// Build skill entries from a list of MCP tool definitions.
 ///
@@ -23,26 +15,15 @@ fn mcp_bodies() -> &'static RwLock<HashMap<String, String>> {
 /// - Name: `mcp__{server}__{tool}`
 /// - Description: from the tool's description
 /// - Source: `Plugin` (MCP servers are treated as plugin capabilities)
-/// - Path: `(mcp:{server}:{tool})` — resolved via `mcp_skill_body()`
+/// - Path: `(mcp:{server}:{tool})` — the body is built on demand by
+///   [`mcp_skill_body`] from the same tool list
 /// - `user_invocable: true` — visible in `/skills` list
-///
-/// The prompt body explains how to use the MCP tool and is stored
-/// in an in-memory lookup for later expansion.
 pub fn build_skills_from_mcp(server_name: &str, tools: &[ToolDef]) -> Vec<SkillEntry> {
     let mut entries = Vec::with_capacity(tools.len());
 
     for tool in tools {
-        let skill_name = format!("mcp__{server_name}__{}", tool.name);
-        let body = build_tool_prompt(server_name, tool);
-
-        // Store the body in the in-memory map
-        mcp_bodies()
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(skill_name.clone(), body);
-
         entries.push(SkillEntry {
-            name: skill_name.clone(),
+            name: skill_name(server_name, &tool.name),
             description: tool.description.clone(),
             source: SkillSource::Plugin,
             path: PathBuf::from(format!("(mcp:{server_name}:{})", tool.name)),
@@ -54,16 +35,17 @@ pub fn build_skills_from_mcp(server_name: &str, tools: &[ToolDef]) -> Vec<SkillE
     entries
 }
 
-/// Look up the stored prompt body for an MCP skill.
-///
-/// Called by the command expansion logic to retrieve the in-memory
-/// prompt body for skills with the `(mcp:...)` path prefix.
-pub fn mcp_skill_body(skill_name: &str) -> Option<String> {
-    mcp_bodies()
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(skill_name)
-        .cloned()
+/// The prompt body for one of the skills [`build_skills_from_mcp`] produced
+/// from `tools`, or `None` if `name` is not one of them.
+pub fn mcp_skill_body(server_name: &str, tools: &[ToolDef], name: &str) -> Option<String> {
+    tools
+        .iter()
+        .find(|tool| skill_name(server_name, &tool.name) == name)
+        .map(|tool| build_tool_prompt(server_name, tool))
+}
+
+fn skill_name(server_name: &str, tool_name: &str) -> String {
+    format!("mcp__{server_name}__{tool_name}")
 }
 
 /// Build the prompt body text for a single MCP tool.
@@ -97,11 +79,6 @@ above. Pass it as the arguments for the `{tool_name}` tool.
         tool_description = tool.description,
         schema_json = schema_json,
     )
-}
-
-/// Return the number of stored MCP skill bodies.
-pub fn mcp_skill_count() -> usize {
-    mcp_bodies().read().unwrap_or_else(|e| e.into_inner()).len()
 }
 
 #[cfg(test)]
@@ -141,11 +118,9 @@ mod tests {
     }
 
     #[test]
-    fn mcp_skill_body_returns_stored_prompt() {
+    fn mcp_skill_body_is_built_from_the_tool() {
         let tools = vec![make_tool("search", "Search the web")];
-        build_skills_from_mcp("test-server", &tools);
-
-        let body = mcp_skill_body("mcp__test-server__search");
+        let body = mcp_skill_body("test-server", &tools, "mcp__test-server__search");
         assert!(body.is_some());
         let body = body.unwrap();
         assert!(body.contains("test-server"));
@@ -156,7 +131,9 @@ mod tests {
 
     #[test]
     fn mcp_skill_body_returns_none_for_unknown() {
-        assert!(mcp_skill_body("mcp__unknown__tool").is_none());
+        let tools = vec![make_tool("search", "Search the web")];
+        assert!(mcp_skill_body("test-server", &tools, "mcp__unknown__tool").is_none());
+        assert!(mcp_skill_body("other-server", &tools, "mcp__test-server__search").is_none());
     }
 
     #[test]
