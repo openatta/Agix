@@ -290,7 +290,7 @@ impl Tool for BashTool {
         // turn being interrupted still stops it, and so does stopping just
         // this task (`TaskStop`, or a host's `session.stopTask`).
         let run_cancel = ctx.cancel.child_token();
-        let _task = base::context::TaskScope::new(
+        let task_scope = base::context::TaskScope::new(
             ctx.session.clone(),
             format!("shell-{}", base::id::Id::new()),
             base::context::TaskType::Shell,
@@ -306,7 +306,11 @@ impl Tool for BashTool {
         let output = child.output().expect("the stream is taken once");
 
         let stop_reading = tokio_util::sync::CancellationToken::new();
-        let mut drain = tokio::spawn(drain_output(output, progress.clone(), stop_reading.clone()));
+        let sink = Sink {
+            progress: progress.clone(),
+            task: task_scope.task().clone(),
+        };
+        let mut drain = tokio::spawn(drain_output(output, sink, stop_reading.clone()));
 
         let wait_result = tokio::select! {
         biased;
@@ -390,7 +394,7 @@ struct Lines {
 const MAX_LINE_BYTES: usize = 64 * 1024;
 
 impl Lines {
-    fn feed(&mut self, bytes: &[u8], progress: &ProgressSender) {
+    fn feed(&mut self, bytes: &[u8], sink: &Sink) {
         if self.stopped {
             return;
         }
@@ -401,17 +405,17 @@ impl Lines {
             if line.last() == Some(&b'\r') {
                 line.pop();
             }
-            self.push(String::from_utf8_lossy(&line).into_owned(), progress);
+            self.push(String::from_utf8_lossy(&line).into_owned(), sink);
         }
         if self.pending.len() > MAX_LINE_BYTES {
             self.stopped = true;
         }
     }
 
-    fn finish(mut self, progress: &ProgressSender) -> String {
+    fn finish(mut self, sink: &Sink) -> String {
         if !self.stopped && !self.pending.is_empty() {
             let line = String::from_utf8_lossy(&std::mem::take(&mut self.pending)).into_owned();
-            self.push(line, progress);
+            self.push(line, sink);
         }
         if self.buf.len() >= MAX_OUTPUT_BYTES {
             self.buf.push_str("\n[output truncated]\n");
@@ -419,12 +423,27 @@ impl Lines {
         self.buf
     }
 
-    fn push(&mut self, line: String, progress: &ProgressSender) {
+    fn push(&mut self, line: String, sink: &Sink) {
         if self.buf.len() < MAX_OUTPUT_BYTES {
             self.buf.push_str(&line);
             self.buf.push('\n');
         }
-        progress.send(&format!("{line}\n"));
+        sink.line(&line);
+    }
+}
+
+/// Where each line goes as it arrives: the tool call's progress, and the
+/// task's own output (`TaskOutput`, a host's `session.taskOutput`).
+struct Sink {
+    progress: ProgressSender,
+    task: std::sync::Arc<base::context::RunningTask>,
+}
+
+impl Sink {
+    fn line(&self, line: &str) {
+        let line = format!("{line}\n");
+        self.progress.send(&line);
+        self.task.append_output(&line);
     }
 }
 
@@ -439,7 +458,7 @@ async fn drain_output(
         'static,
         Result<base::interface::exec::OutputChunk, base::interface::exec::ExecError>,
     >,
-    progress: ProgressSender,
+    sink: Sink,
     stop: tokio_util::sync::CancellationToken,
 ) -> (String, String) {
     use base::interface::exec::OutputStream;
@@ -453,11 +472,11 @@ async fn drain_output(
         let Some(chunk) = next else { break };
         let Ok(chunk) = chunk else { break };
         match chunk.stream {
-            OutputStream::Stdout => out.feed(&chunk.bytes, &progress),
-            OutputStream::Stderr => err.feed(&chunk.bytes, &progress),
+            OutputStream::Stdout => out.feed(&chunk.bytes, &sink),
+            OutputStream::Stderr => err.feed(&chunk.bytes, &sink),
         }
     }
-    (out.finish(&progress), err.finish(&progress))
+    (out.finish(&sink), err.finish(&sink))
 }
 
 fn exec_error(e: base::interface::exec::ExecError) -> ToolError {

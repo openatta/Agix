@@ -359,6 +359,11 @@ pub mod codes {
     /// rather than at the first tool call, so a host can put the user in front
     /// of a project picker instead of a failed turn.
     pub const PROJECT_REQUIRED: i32 = -32012;
+
+    /// `session.taskOutput`: the session's engine knows no such task — it
+    /// never ran, ended long enough ago to be forgotten, or the engine is not
+    /// in memory.
+    pub const TASK_NOT_FOUND: i32 = -32018;
 }
 
 // ── Session options (extensible, passed via session.run_turn params) ──

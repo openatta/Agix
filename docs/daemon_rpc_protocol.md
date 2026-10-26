@@ -600,6 +600,7 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 | `session_tasks` | 有 `session.tasks` / `session.stopTask`,任务事件进 `session.event`(§6.3、§7) |
 | `context_edits` | 有 `session.inspectContext` / `session.dropMessages` / `session.editMessage`(§6.3) |
 | `extension_entries` | 有 `session.appendEntry` / `session.entries`,写入推 `extension_entry`(§6.3、§7) |
+| `task_output` | 有 `session.taskOutput`,Shell 命令与监视器的输出边跑边记(§6.3) |
 
 #### `daemon.status`
 
@@ -1332,6 +1333,26 @@ Shell 命令与监视器,以及安排给它的定时任务(§6.7)。和模型用
 
 正在跑的全列出,已经结束的保留最近 20 个。会话不存在 → `SESSION_NOT_FOUND`。
 
+#### `session.taskOutput`
+
+`session.tasks` 里一件任务到目前为止产出了什么 —— 和模型的 `TaskOutput` 读的是同一份,只读、
+不等它结束。
+
+```jsonc
+// → params
+{ "session_id": "…", "task_id": "…",
+  "tail_bytes": 8192 }      // 可选:要最后多少字节,默认 8 KiB,最多 256 KiB
+// ← result
+{ "output": "…",            // 最后 tail_bytes 字节(在字符边界上截)
+  "truncated": false,       // 前面还有没给的,或者早已丢掉的
+  "status": "running" }     // 同 session.tasks 的 status
+```
+
+Shell 命令与监视器的输出逐行记下(stdout 与 stderr 按到达的顺序交错;监视器只记 stdout),
+每件任务保留最后 256 KiB。子 Agent 与团队成员的 `output` 是它们每一轮结束时的回答文字,
+不是过程 —— 过程走它们的侧链会话。会话不存在 → `SESSION_NOT_FOUND`;引擎不知道这个任务
+→ `TASK_NOT_FOUND`;定时任务没有输出,也是 `TASK_NOT_FOUND`。
+
 #### `session.stopTask`
 
 ```jsonc
@@ -1642,8 +1663,8 @@ disclosure 的 `wasm.runnable` 会如实报成 `false`。
 ### 6.6 还没有的东西
 
 `agent.*` 和 `team.*` 在早期设计里定过接口,**没有实现**,调用返回
-`METHOD_NOT_FOUND`。列举与停止运行中的子 Agent、团队成员走 `session.tasks` /
-`session.stopTask`(§6.3);要看一个子 Agent 干了什么,走它的侧链会话:`session.list
+`METHOD_NOT_FOUND`。列举、读输出、停止运行中的子 Agent、团队成员走 `session.tasks` /
+`session.taskOutput` / `session.stopTask`(§6.3);要看一个子 Agent 干了什么,走它的侧链会话:`session.list
 {parent_session_id}` 拿 id,再 `session.history`。
 
 ### 6.7 `schedule.*`
@@ -1845,6 +1866,7 @@ disclosure 的 `wasm.runnable` 会如实报成 `false`。
 | -32015 | SESSION_BUSY | 该会话已有 turn 在跑,且 `on_busy` 是 `reject`(§5.3) |
 | -32016 | PLUGINS_DISABLED | 插件子系统不可用 —— 被编译裁掉或被策略关闭 |
 | -32017 | TOO_MANY_IN_FLIGHT | 这条连接同时在途的请求已达上限(§5.2) |
+| -32018 | TASK_NOT_FOUND | `session.taskOutput`:引擎不知道这个任务(没跑过、结束得早已被忘掉,或引擎不在内存里) |
 
 还有三个常量在代码里定义了但**没有任何路径会发出**,客户端不必为它们写分支:
 `PARSE_ERROR (-32700)` / `INVALID_REQUEST (-32600)`(解析不了的帧被静默丢弃,见

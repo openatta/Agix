@@ -137,7 +137,7 @@ impl Tool for MonitorTool {
         let spec =
             ProcessSpec::new("bash", &ctx.cwd).args(["-c".to_string(), input.command.clone()]);
         let run_cancel = ctx.cancel.child_token();
-        let _task = base::context::TaskScope::new(
+        let task_scope = base::context::TaskScope::new(
             ctx.session.clone(),
             format!("monitor-{}", base::id::Id::new()),
             base::context::TaskType::Monitor,
@@ -158,6 +158,7 @@ impl Tool for MonitorTool {
 
         // Spawn a background task to drain stdout lines and send them as progress events.
         let progress_clone = progress.clone();
+        let task = task_scope.task().clone();
         let stop_reading = tokio_util::sync::CancellationToken::new();
         let stop = stop_reading.clone();
         let mut drain_handle = tokio::spawn(async move {
@@ -182,7 +183,9 @@ impl Tool for MonitorTool {
                 match line_res {
                     Ok(line) => {
                         line_count += 1;
-                        progress_clone.send(&format!("{line}\n"));
+                        let line = format!("{line}\n");
+                        progress_clone.send(&line);
+                        task.append_output(&line);
                     }
                     Err(_) => break,
                 }

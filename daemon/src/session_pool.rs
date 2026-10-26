@@ -5704,6 +5704,30 @@ impl SessionPool {
         serde_json::json!({"active": state.is_some(), "tasks": tasks})
     }
 
+    /// `session.taskOutput`: the last `tail_bytes` of what one of
+    /// `session.tasks`' entries has produced — what the model's `TaskOutput`
+    /// reads. `None` if the session's engine does not know the task.
+    pub async fn task_output(
+        &self,
+        session_id: &str,
+        task_id: &str,
+        tail_bytes: usize,
+    ) -> Option<serde_json::Value> {
+        let state = self
+            .sessions
+            .lock()
+            .await
+            .get(session_id)
+            .and_then(|live| live.state.clone())?;
+        let task = state.find_running_task(task_id)?;
+        let (output, truncated) = task.output_tail(tail_bytes);
+        Some(serde_json::json!({
+            "output": output,
+            "truncated": truncated,
+            "status": task.info()["status"],
+        }))
+    }
+
     /// `session.stopTask`: stop one of `session.tasks`' entries. A scheduled
     /// job is cancelled; running work is stopped the way the model's
     /// `TaskStop` stops it — a shell command's whole process group goes.

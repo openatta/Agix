@@ -3406,7 +3406,7 @@ impl base::tool::Tool for AgentTool {
         // before the result is turned into a ToolResult — the sub-agent may
         // have failed, and the temporary worktree must go either way.
         let run_cancel = ctx.cancel.child_token();
-        let _task = base::context::TaskScope::new(
+        let task_scope = base::context::TaskScope::new(
             ctx.session.clone(),
             ctx.tool_use_id.clone(),
             base::context::TaskType::Agent,
@@ -3436,6 +3436,9 @@ impl base::tool::Tool for AgentTool {
 
         if let Some(h) = worktree_handle.as_mut() {
             h.cleanup().await;
+        }
+        if let Ok(text) = &result {
+            task_scope.task().append_output(text);
         }
 
         match result {

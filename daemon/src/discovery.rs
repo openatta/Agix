@@ -167,6 +167,7 @@ pub const CAPABILITIES: &[&str] = &[
     "events_lagged_notice",
     "schedule",
     "session_tasks",
+    "task_output",
     "context_edits",
     "extension_entries",
 ];

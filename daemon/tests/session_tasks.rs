@@ -1,9 +1,9 @@
-//! A session's tasks can be listed and stopped by its host.
+//! A session's tasks can be listed, read and stopped by its host.
 //!
 //! What runs on in a session beyond the model's reply — a shell command, a
-//! sub-agent, a scheduled job — is listed by `session.tasks`, stopped by
-//! `session.stopTask`, and announced to the session's watchers as it starts
-//! and ends, outside any turn.
+//! sub-agent, a scheduled job — is listed by `session.tasks`, read by
+//! `session.taskOutput`, stopped by `session.stopTask`, and announced to the
+//! session's watchers as it starts and ends, outside any turn.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -18,6 +18,7 @@ use tokio::net::UnixStream;
 use tokio_util::sync::CancellationToken;
 
 const SESSION_NOT_FOUND: i64 = -32000;
+const TASK_NOT_FOUND: i64 = -32018;
 
 fn text_round(text: &str) -> Vec<StreamEvent> {
     vec![
@@ -325,4 +326,172 @@ async fn an_unknown_session_has_no_tasks_to_list() {
         .call("session.tasks", serde_json::json!({"session_id": "nope"}))
         .await;
     assert_eq!(response["error"]["code"], SESSION_NOT_FOUND, "{response}");
+}
+
+#[tokio::test]
+async fn a_running_shell_commands_output_can_be_read_as_it_runs() {
+    let model = Arc::new(MockAnthropicClient::new());
+    model.push_turn(tool_round(
+        "Bash",
+        "toolu_chatty",
+        serde_json::json!({"command": "echo first; echo second >&2; sleep 30"}),
+    ));
+    model.push_turn(text_round("stopped"));
+    let daemon = Arc::new(Daemon::start(model).await);
+
+    let session = daemon.ok("session.create", serde_json::json!({})).await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let turn = {
+        let (daemon, session) = (daemon.clone(), session.clone());
+        tokio::spawn(async move {
+            daemon
+                .call(
+                    "session.run_turn",
+                    serde_json::json!({"session_id": session, "message": "run it"}),
+                )
+                .await
+        })
+    };
+
+    let task_id = eventually!("the shell command listed", {
+        daemon
+            .ok("session.tasks", serde_json::json!({"session_id": session}))
+            .await["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["kind"] == "shell")
+            .map(|t| t["task_id"].clone())
+    });
+    let read = |tail: Option<u64>| {
+        let (daemon, session, task_id) = (daemon.clone(), session.clone(), task_id.clone());
+        async move {
+            let mut params = serde_json::json!({"session_id": session, "task_id": task_id});
+            if let Some(tail) = tail {
+                params["tail_bytes"] = tail.into();
+            }
+            daemon.ok("session.taskOutput", params).await
+        }
+    };
+
+    let whole = eventually!("both lines in the output", {
+        let out = read(None).await;
+        let text = out["output"].as_str().unwrap().to_string();
+        (text.contains("first\n") && text.contains("second\n")).then_some(out)
+    });
+    assert_eq!(whole["status"], "running");
+    assert_eq!(whole["truncated"], false);
+
+    let tail = read(Some(7)).await;
+    assert_eq!(tail["output"].as_str().unwrap().len(), 7);
+    assert_eq!(tail["truncated"], true);
+
+    daemon
+        .ok(
+            "session.stopTask",
+            serde_json::json!({"session_id": session, "task_id": task_id}),
+        )
+        .await;
+    tokio::time::timeout(Duration::from_secs(10), turn)
+        .await
+        .expect("the turn ends once its command is stopped")
+        .unwrap();
+
+    let after = read(None).await;
+    assert_eq!(after["status"], "stopped");
+    assert!(
+        after["output"].as_str().unwrap().contains("first\n"),
+        "an ended task keeps its output: {after}"
+    );
+}
+
+#[tokio::test]
+async fn output_is_only_for_a_task_the_engine_knows() {
+    let daemon = Daemon::start(Arc::new(MockAnthropicClient::new())).await;
+    let session = daemon.ok("session.create", serde_json::json!({})).await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let job = daemon
+        .ok(
+            "schedule.create",
+            serde_json::json!({"session_id": session, "cron": "0 9 * * *", "prompt": "report"}),
+        )
+        .await["job"]["id"]
+        .clone();
+
+    for task_id in [serde_json::json!("sh-nope"), job] {
+        let response = daemon
+            .call(
+                "session.taskOutput",
+                serde_json::json!({"session_id": session, "task_id": task_id}),
+            )
+            .await;
+        assert_eq!(response["error"]["code"], TASK_NOT_FOUND, "{response}");
+    }
+
+    let response = daemon
+        .call(
+            "session.taskOutput",
+            serde_json::json!({"session_id": "nope", "task_id": "sh-nope"}),
+        )
+        .await;
+    assert_eq!(response["error"]["code"], SESSION_NOT_FOUND, "{response}");
+
+    let response = daemon
+        .call(
+            "session.taskOutput",
+            serde_json::json!({"session_id": session, "task_id": "sh-nope", "tail_bytes": 0}),
+        )
+        .await;
+    assert_eq!(response["error"]["code"], -32602, "{response}");
+}
+
+#[tokio::test]
+async fn a_sub_agents_output_is_its_answer() {
+    let model = Arc::new(MockAnthropicClient::new());
+    model.push_turn(tool_round(
+        "Agent",
+        "toolu_agent",
+        serde_json::json!({
+            "description": "say hello",
+            "prompt": "Reply with: hello from below",
+            "subagent_type": "general-purpose",
+        }),
+    ));
+    model.push_turn(text_round("hello from below"));
+    model.push_turn(text_round("done"));
+    let daemon = Daemon::start(model).await;
+
+    let session = daemon.ok("session.create", serde_json::json!({})).await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    daemon
+        .ok(
+            "session.run_turn",
+            serde_json::json!({"session_id": session, "message": "delegate"}),
+        )
+        .await;
+
+    let tasks = daemon
+        .ok("session.tasks", serde_json::json!({"session_id": session}))
+        .await;
+    let agent = tasks["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["kind"] == "agent")
+        .cloned()
+        .unwrap_or_else(|| panic!("no agent task: {tasks}"));
+    let out = daemon
+        .ok(
+            "session.taskOutput",
+            serde_json::json!({"session_id": session, "task_id": agent["task_id"]}),
+        )
+        .await;
+    assert_eq!(out["status"], "done");
+    assert_eq!(out["output"], "hello from below");
 }

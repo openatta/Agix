@@ -33,6 +33,7 @@
 use crate::rpc::{codes, RpcRequest, RpcResponse};
 use crate::rpc::{send_frame, Client, FrameSink, Sink};
 use crate::session_pool::SessionPool;
+use base::context::RunningTask;
 use base::id::Id;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -43,6 +44,9 @@ use tokio::net::{TcpListener, UnixListener};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
+
+/// What `session.taskOutput` returns when the caller does not say.
+const DEFAULT_TASK_OUTPUT_TAIL: usize = 8 * 1024;
 
 type Reader = Box<dyn AsyncRead + Send + Unpin + 'static>;
 
@@ -637,6 +641,45 @@ impl DaemonServer {
                     );
                 }
                 RpcResponse::ok(id, self.pool.session_tasks(session_id).await)
+            }
+            "session.taskOutput" => {
+                let param = |key: &str| req.params.get(key).and_then(|v| v.as_str());
+                let (Some(session_id), Some(task_id)) = (param("session_id"), param("task_id"))
+                else {
+                    return RpcResponse::err(
+                        id,
+                        codes::INVALID_PARAMS,
+                        "session.taskOutput needs session_id and task_id",
+                    );
+                };
+                let tail_bytes = match req.params.get("tail_bytes") {
+                    None | Some(serde_json::Value::Null) => DEFAULT_TASK_OUTPUT_TAIL,
+                    Some(v) => match v.as_u64() {
+                        Some(n) if n > 0 => (n as usize).min(RunningTask::OUTPUT_KEPT_BYTES),
+                        _ => {
+                            return RpcResponse::err(
+                                id,
+                                codes::INVALID_PARAMS,
+                                "tail_bytes must be a positive integer",
+                            )
+                        }
+                    },
+                };
+                if !self.pool.session_exists(session_id).await {
+                    return RpcResponse::err(
+                        id,
+                        codes::SESSION_NOT_FOUND,
+                        format!("no session `{session_id}`"),
+                    );
+                }
+                match self.pool.task_output(session_id, task_id, tail_bytes).await {
+                    Some(result) => RpcResponse::ok(id, result),
+                    None => RpcResponse::err(
+                        id,
+                        codes::TASK_NOT_FOUND,
+                        format!("session `{session_id}` has no task `{task_id}`"),
+                    ),
+                }
             }
             "session.stopTask" => {
                 let param = |key: &str| req.params.get(key).and_then(|v| v.as_str());

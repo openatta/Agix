@@ -70,7 +70,8 @@ impl std::fmt::Display for TaskId {
 }
 
 /// 一件属于会话、在会话里继续跑的工作：子 Agent、团队成员、执行中的 Shell……
-/// output / events_log / status 由跑它的那段代码追加；TaskOutput 工具读快照；
+/// output / events_log / status 由跑它的那段代码追加；TaskOutput 工具与宿主的
+/// `session.taskOutput` 读快照；
 /// TaskStop 与宿主的 `session.stopTask` 触发 cancel token。
 #[derive(Debug)]
 pub struct RunningTask {
@@ -95,6 +96,8 @@ pub struct RunningTask {
     pub detail: std::sync::Mutex<serde_json::Value>,
     /// Whether its start was announced; a task that never was ends silently.
     pub announced: std::sync::atomic::AtomicBool,
+    /// Whether `append_output` has let the head of `output` go.
+    pub output_dropped: std::sync::atomic::AtomicBool,
 }
 
 impl RunningTask {
@@ -125,7 +128,39 @@ impl RunningTask {
             ended_ms: std::sync::Mutex::new(None),
             detail: std::sync::Mutex::new(serde_json::Value::Null),
             announced: std::sync::atomic::AtomicBool::new(false),
+            output_dropped: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// The most of a streamed output (a shell command's, a monitor's) a task
+    /// keeps; beyond it the oldest goes.
+    pub const OUTPUT_KEPT_BYTES: usize = 256 * 1024;
+
+    /// Add to `output` as the work produces it, keeping its last
+    /// [`Self::OUTPUT_KEPT_BYTES`].
+    pub fn append_output(&self, text: &str) {
+        let mut output = self.output.lock().unwrap_or_else(|e| e.into_inner());
+        output.push_str(text);
+        if output.len() > Self::OUTPUT_KEPT_BYTES {
+            let cut = ceil_char_boundary(&output, output.len() - Self::OUTPUT_KEPT_BYTES);
+            output.drain(..cut);
+            self.output_dropped
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// The last `max_bytes` of `output`, and whether anything before them is
+    /// missing.
+    pub fn output_tail(&self, max_bytes: usize) -> (String, bool) {
+        let output = self.output.lock().unwrap_or_else(|e| e.into_inner());
+        let dropped = self
+            .output_dropped
+            .load(std::sync::atomic::Ordering::SeqCst);
+        if output.len() <= max_bytes {
+            return (output.clone(), dropped);
+        }
+        let cut = ceil_char_boundary(&output, output.len() - max_bytes);
+        (output[cut..].to_string(), true)
     }
 
     /// The wire shape of this task (`session.tasks`, `task_*` events).
@@ -156,11 +191,43 @@ impl RunningTask {
     }
 }
 
+fn ceil_char_boundary(text: &str, mut at: usize) -> usize {
+    while !text.is_char_boundary(at) {
+        at += 1;
+    }
+    at
+}
+
 pub(crate) fn unix_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod output_tests {
+    use super::*;
+
+    #[test]
+    fn a_tail_is_cut_on_a_character_boundary() {
+        let task = RunningTask::new("sh-1".into(), TaskType::Shell);
+        task.append_output("ab\u{4e2d}\n");
+        assert_eq!(task.output_tail(64), ("ab\u{4e2d}\n".to_string(), false));
+        assert_eq!(task.output_tail(2), ("\n".to_string(), true));
+        assert_eq!(task.output_tail(4), ("\u{4e2d}\n".to_string(), true));
+    }
+
+    #[test]
+    fn the_oldest_output_goes_past_the_cap() {
+        let task = RunningTask::new("sh-2".into(), TaskType::Shell);
+        task.append_output("head\n");
+        task.append_output(&"x".repeat(RunningTask::OUTPUT_KEPT_BYTES));
+        let (whole, truncated) = task.output_tail(usize::MAX);
+        assert_eq!(whole.len(), RunningTask::OUTPUT_KEPT_BYTES);
+        assert!(!whole.contains("head"));
+        assert!(truncated, "what was dropped is reported");
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
