@@ -353,6 +353,9 @@ pub fn normalize_events(events: &[AgentEvent]) -> String {
             AgentEvent::UserMessageDelivered { content, .. } => {
                 format!("UserMessageDelivered {content:?}")
             }
+            AgentEvent::UserMessageRefused { content, .. } => {
+                format!("UserMessageRefused {content:?}")
+            }
             AgentEvent::UserMessagesReturned { messages, .. } => {
                 format!("UserMessagesReturned count={}", messages.len())
             }

@@ -497,6 +497,10 @@ Unix socket 靠文件系统权限,不握手,一样是"能连上就全权"。
   收尾时到达的消息也会被读到 —— 那一轮会再调一次模型,不会留到下一轮。
 - 那一轮在读到它之前就结束了(被 `session.interrupt`、预算、策略截停或出错),消息
   **不进 transcript**,以一帧 `user_messages_returned` 交还,要不要重发由客户端决定。
+- 配了 `UserPromptSubmit` hook 时,消息在加进对话前同样过它(hook 输入里 `delivery` 为 `"steer"`,
+  开一轮的消息为 `"turn"`)。改写了的,`user_message_delivered.content` 是改写后的文本;被拒的
+  **不进 transcript**,那一轮照常继续,推一帧 `user_message_refused` 带回原文与 hook 的 `message`——
+  再发一遍还会被拒,所以不走 `user_messages_returned`。
 
 正在跑的 turn 已经过了最后一个步骤边界时,`steer` 退化成 `queue`。带 `attachments`
 的消息不走 `steer`,直接按 `queue` 处理。
@@ -1743,6 +1747,7 @@ disclosure 的 `wasm.runnable` 会如实报成 `false`。
 | `skills_changed` | `{added,removed}` | 会话下的 skill 文件变了,缓存了 `commands.list` 的客户端该重取 |
 | `compact` | `{strategy,messages_before,messages_after,tokens_before,tokens_after,dropped_rounds?,dropped_messages?,estimated_tokens_saved?}` | 上下文被压缩了(§7.1) |
 | `user_message_delivered` | `{message_id,content}` | 运行中送来的消息(`on_busy:"steer"`)已加进对话,模型下一次调用会读到 |
+| `user_message_refused` | `{message_id,content,message}` | 运行中送来的消息被 `UserPromptSubmit` 拒收,不在 transcript 里;`message` 是 hook 给的理由,可为 `null` |
 | `user_messages_returned` | `{messages:[{message_id,content}]}` | 运行中送来、但本轮结束前没读到的消息,不在 transcript 里,交还客户端 |
 | `turn_complete` | `{stop_reason,api_calls,tool_calls,seq,usage,last_call_usage,context?,structured_output?,message?}` | 本轮结束,transcript 已落盘,`seq` 是此刻的消息数;最终响应随后到达 |
 | `error` | `{code,message}` | 本轮出错结束。只发给**发起这一轮之外**的订阅者 —— 发起者从 `run_turn` 的错误响应得知 |

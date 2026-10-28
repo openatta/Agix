@@ -341,35 +341,91 @@ impl Agent {
     /// message never lands between a `tool_use` and its `tool_result`. At
     /// the turn's last boundary (`last`), finding nothing queued also closes
     /// the turn to further messages. Returns whether anything was delivered.
-    fn deliver_queued_user_messages(&mut self, last: bool) -> bool {
-        let queued = {
-            let mut q = crate::steering::lock(&self.steering);
-            if last {
-                q.take_or_close()
-            } else {
-                q.take()
+    ///
+    /// Each message passes the same screening as one that opens a turn; a
+    /// refused one is announced and left out, and the turn goes on.
+    async fn deliver_queued_user_messages(&mut self, last: bool) -> bool {
+        let mut delivered = false;
+        loop {
+            let queued = {
+                let mut q = crate::steering::lock(&self.steering);
+                if last {
+                    q.take_or_close()
+                } else {
+                    q.take()
+                }
+            };
+            if queued.is_empty() {
+                return delivered;
             }
+            for m in queued {
+                match self.screen_user_prompt(m.content.clone(), "steer").await {
+                    PromptScreen::Pass(content) => {
+                        self.session.push_message_from(
+                            ModelMessage {
+                                role: MessageRole::User,
+                                content: vec![ModelContentBlock::Text {
+                                    text: content.clone(),
+                                }],
+                            },
+                            history::entry::MessageOrigin::Steer,
+                        );
+                        let _ = self.event_tx.send(AgentEvent::UserMessageDelivered {
+                            message_id: m.message_id,
+                            content,
+                            turn_id: self.current_turn_id.clone(),
+                        });
+                        delivered = true;
+                    }
+                    PromptScreen::Blocked(message) => {
+                        let _ = self.event_tx.send(AgentEvent::UserMessageRefused {
+                            message_id: m.message_id,
+                            content: m.content,
+                            message,
+                            turn_id: self.current_turn_id.clone(),
+                        });
+                    }
+                }
+            }
+            // At the last boundary a queue that only held refused messages is
+            // still open; looking again is what closes it.
+            if delivered || !last {
+                return delivered;
+            }
+        }
+    }
+
+    /// `UserPromptSubmit` for one user message: what to put in the
+    /// transcript, or why not to.
+    async fn screen_user_prompt(&self, content: String, delivery: &str) -> PromptScreen {
+        if !self.hooks.has_hooks_for(hooks::HookEvent::UserPromptSubmit) {
+            return PromptScreen::Pass(content);
+        }
+        let prompt_input = hooks::HookInput {
+            hook_event_name: "UserPromptSubmit".into(),
+            session_id: self.session.session_id.clone(),
+            cwd: self.settings.paths.project_root().display().to_string(),
+            permission_mode: hook_permission_mode(self.session_state.permission_mode()),
+            user_prompt: Some(content.clone()),
+            delivery: Some(delivery.to_string()),
+            ..Default::default()
         };
-        if queued.is_empty() {
-            return false;
-        }
-        for m in queued {
-            self.session.push_message_from(
-                ModelMessage {
-                    role: MessageRole::User,
-                    content: vec![ModelContentBlock::Text {
-                        text: m.content.clone(),
-                    }],
-                },
-                history::entry::MessageOrigin::Steer,
+        let hook_result = self
+            .hooks
+            .run(hooks::HookEvent::UserPromptSubmit, &prompt_input)
+            .await;
+        if let Some(response) = hook_result.blocked() {
+            tracing::info!(
+                delivery,
+                reason = response.message.as_deref().unwrap_or("no reason given"),
+                "UserPromptSubmit hook blocked this message"
             );
-            let _ = self.event_tx.send(AgentEvent::UserMessageDelivered {
-                message_id: m.message_id,
-                content: m.content,
-                turn_id: self.current_turn_id.clone(),
-            });
+            return PromptScreen::Blocked(response.message.clone());
         }
-        true
+        match hook_result.updated_input().and_then(|v| v.as_str()) {
+            Some(rewritten) => PromptScreen::Pass(rewritten.to_string()),
+            None => PromptScreen::Pass(content),
+        }
     }
 
     /// The one way a user turn ends: persist, then announce.
@@ -430,8 +486,8 @@ impl Agent {
             carrier.begin_turn();
         }
 
-        // UserPromptSubmit: the one point where a hook sees the user's
-        // message before any turn setup (skills rescan, FrozenContext,
+        // UserPromptSubmit: where a hook sees the message that opens a turn,
+        // before any turn setup (skills rescan, FrozenContext,
         // CLAUDE.md injection, ...) has touched anything. Previously in the
         // `HookEvent` enum but never triggered anywhere — CodingScene's
         // system prompt used to (wrongly) tell the model to expect it, see
@@ -450,39 +506,15 @@ impl Agent {
         //   that actually gets processed — the same field name
         //   `PreToolUse` uses for rewriting tool input, repurposed here for
         //   the one thing there is to rewrite: the prompt text itself.
-        if self.hooks.has_hooks_for(hooks::HookEvent::UserPromptSubmit) {
-            let prompt_input = hooks::HookInput {
-                hook_event_name: "UserPromptSubmit".into(),
-                session_id: self.session.session_id.clone(),
-                cwd: self.settings.paths.project_root().display().to_string(),
-                permission_mode: hook_permission_mode(self.session_state.permission_mode()),
-                tool_name: None,
-                tool_input: None,
-                tool_use_id: None,
-                tool_result: None,
-                is_error: None,
-                user_prompt: Some(content.clone()),
-                ..Default::default()
-            };
-            let hook_result = self
-                .hooks
-                .run(hooks::HookEvent::UserPromptSubmit, &prompt_input)
-                .await;
-            if let Some(response) = hook_result.blocked() {
-                tracing::info!(
-                    reason = response.message.as_deref().unwrap_or("no reason given"),
-                    "UserPromptSubmit hook blocked this message"
-                );
-                let message = response.message.clone();
+        match self.screen_user_prompt(content, "turn").await {
+            PromptScreen::Pass(screened) => content = screened,
+            PromptScreen::Blocked(message) => {
                 self.record_turn_complete("stopped_by_hook", 0, 0, std::time::Instant::now());
                 return Ok(TurnOutcome {
                     stop_reason: "stopped_by_hook".into(),
                     message,
                     ..TurnOutcome::default()
                 });
-            }
-            if let Some(rewritten) = hook_result.updated_input().and_then(|v| v.as_str()) {
-                content = rewritten.to_string();
             }
         }
 
@@ -1518,7 +1550,7 @@ impl Agent {
                     self.scene.permits_tool(n)
                 });
                 if !cancel.is_cancelled() {
-                    self.deliver_queued_user_messages(false);
+                    self.deliver_queued_user_messages(false).await;
                 }
                 continue;
             }
@@ -1659,7 +1691,7 @@ impl Agent {
             // The model has answered; a message the user sent meanwhile is
             // answered in the same turn rather than left for one nobody
             // asked to start.
-            if self.deliver_queued_user_messages(true) {
+            if self.deliver_queued_user_messages(true).await {
                 continue;
             }
 
@@ -4540,6 +4572,11 @@ fn strip_token_budget_directive(input: &str) -> String {
 type ModelRequest = base::interface::model_interceptor::ModelRequestView;
 
 /// A permission mode as hooks see it: the name settings files use.
+enum PromptScreen {
+    Pass(String),
+    Blocked(Option<String>),
+}
+
 fn hook_permission_mode(mode: base::permission::PermissionMode) -> String {
     serde_json::to_value(mode)
         .ok()

@@ -6433,6 +6433,168 @@ mod tests {
         assert_eq!(empty.compact_now().await, None, "nothing to compact");
     }
 
+    /// Runs one turn whose tool step is held open while `steered` is sent,
+    /// then lets it finish. Returns every event up to `TurnComplete` and what
+    /// each model call was sent.
+    async fn steer_during_a_tool_step(
+        settings: base::interface::settings::Settings,
+        builder: impl FnOnce(Builder) -> Builder,
+        steered: &[(&str, &str)],
+    ) -> (
+        Vec<AgentEvent>,
+        Vec<Vec<base::interface::model::ModelMessage>>,
+    ) {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let tools = Arc::new(InMemoryToolRegistry::new());
+        tools.register(Arc::new(GateTool(gate.clone())));
+        let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let model: Arc<dyn Model> = Arc::new(StepRecordingModel {
+            tool: Some("Gate"),
+            hold_first: None,
+            sent: sent.clone(),
+        });
+        let (mut agent, mut event_rx, input_tx) = builder(
+            Builder::new()
+                .scene(Arc::new(scene::scene::coding::CodingScene) as Arc<dyn AgentScene>)
+                .model(model)
+                .settings(Arc::new(settings))
+                .tools(tools)
+                .skip_warmup(true),
+        )
+        .build()
+        .expect("build should succeed");
+        let engine = tokio::spawn(async move { agent.run(CancellationToken::new()).await });
+
+        input_tx
+            .send(InputMessage::User {
+                content: "start".into(),
+                attachments: vec![],
+                turn_id: "t1".into(),
+            })
+            .unwrap();
+        let mut events = Vec::new();
+        loop {
+            let e = next_event(&mut event_rx, |_| true, "the tool call").await;
+            let started = matches!(&e, AgentEvent::ToolUse { name, .. } if name == "Gate");
+            events.push(e);
+            if started {
+                break;
+            }
+        }
+        for (id, text) in steered {
+            assert_eq!(
+                steer(&input_tx, id, text).await,
+                crate::steering::SteerAck::Accepted
+            );
+        }
+        gate.notify_one();
+        loop {
+            let e = next_event(&mut event_rx, |_| true, "the end of the turn").await;
+            let done = matches!(e, AgentEvent::TurnComplete { .. });
+            events.push(e);
+            if done {
+                break;
+            }
+        }
+
+        drop(input_tx);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), engine).await;
+        let sent = sent.lock().unwrap().clone();
+        (events, sent)
+    }
+
+    fn prompt_hook(command: &str) -> base::interface::settings::Settings {
+        let mut settings = test_settings();
+        settings.hooks_config = Some(serde_json::json!({
+            "UserPromptSubmit": [ { "type": "command", "command": command } ]
+        }));
+        settings
+    }
+
+    fn steer_outcomes(events: &[AgentEvent]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::UserMessageDelivered {
+                    message_id,
+                    content,
+                    ..
+                } => Some(format!("delivered {message_id} {content}")),
+                AgentEvent::UserMessageRefused {
+                    message_id,
+                    content,
+                    message,
+                    ..
+                } => Some(format!("refused {message_id} {content} {message:?}")),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_steered_message_the_prompt_hook_blocks_is_refused_and_the_turn_goes_on() {
+        let settings = prompt_hook(
+            r#"grep -q secret && echo '{"decision":"block","message":"no secrets"}' || true"#,
+        );
+        let (events, sent) = steer_during_a_tool_step(
+            settings,
+            |b| b,
+            &[("m1", "the secret plan"), ("m2", "also check the tests")],
+        )
+        .await;
+
+        assert_eq!(
+            steer_outcomes(&events),
+            [
+                "refused m1 the secret plan Some(\"no secrets\")",
+                "delivered m2 also check the tests",
+            ]
+        );
+        assert!(matches!(
+            events.last(),
+            Some(AgentEvent::TurnComplete { stop_reason, .. }) if stop_reason == "end_turn"
+        ));
+        assert_eq!(sent.len(), 2, "the turn went on to its next call");
+        let second: Vec<String> = sent[1].iter().map(text_of).collect();
+        assert!(
+            !second.iter().any(|t| t.contains("secret")),
+            "the refused message never reached the transcript: {second:?}"
+        );
+        assert_eq!(second.last().unwrap(), "also check the tests");
+    }
+
+    #[tokio::test]
+    async fn a_steered_message_reaches_the_transcript_as_the_prompt_hook_rewrote_it() {
+        let settings = prompt_hook(
+            r#"grep -q '"delivery":"steer"' && echo '{"updated_input":"REWRITTEN"}' || true"#,
+        );
+        let (events, sent) =
+            steer_during_a_tool_step(settings, |b| b, &[("m1", "original")]).await;
+
+        assert_eq!(steer_outcomes(&events), ["delivered m1 REWRITTEN"]);
+        assert_eq!(text_of(sent[0].last().unwrap()), "start", "a turn says \"turn\"");
+        assert_eq!(text_of(sent[1].last().unwrap()), "REWRITTEN");
+    }
+
+    #[tokio::test]
+    async fn without_a_prompt_hook_steered_messages_are_delivered_as_sent() {
+        let (events, sent) = steer_during_a_tool_step(
+            test_settings(),
+            |b| b,
+            &[("m1", "the secret plan"), ("m2", "also check the tests")],
+        )
+        .await;
+
+        assert_eq!(
+            steer_outcomes(&events),
+            [
+                "delivered m1 the secret plan",
+                "delivered m2 also check the tests",
+            ]
+        );
+        assert_eq!(sent.len(), 2);
+    }
+
     #[tokio::test]
     async fn a_message_sent_during_a_tool_step_reaches_the_next_model_call() {
         let gate = Arc::new(tokio::sync::Notify::new());

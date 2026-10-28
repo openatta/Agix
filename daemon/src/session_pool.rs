@@ -3506,6 +3506,22 @@ impl SessionPool {
                     );
                     self.broadcast_to_session(&sid, &f).await;
                 }
+                Some(AgentEvent::UserMessageRefused {
+                    message_id,
+                    content,
+                    message,
+                    ..
+                }) => {
+                    let f = StreamFrame::event(
+                        &sid,
+                        &turn_id,
+                        serde_json::json!({
+                            "kind":"user_message_refused","message_id":message_id,
+                            "content":content,"message":message
+                        }),
+                    );
+                    self.broadcast_to_session(&sid, &f).await;
+                }
                 Some(AgentEvent::UserMessagesReturned { messages, .. }) => {
                     let f = StreamFrame::event(
                         &sid,

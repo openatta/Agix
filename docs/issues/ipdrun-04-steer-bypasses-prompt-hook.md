@@ -53,3 +53,14 @@
 ## 来源
 
 IPDrun 准备在界面上给人「立即送达」（steer）的选项，发现这样发出去的话会绕过它用 UserPromptSubmit 做的检查。
+
+## 实现记录
+
+- 在送达时跑（`deliver_queued_user_messages` 改成 async）：知道是哪一步、哪一轮，与开一轮的消息共用同一个
+  `screen_user_prompt`。`HookInput.delivery`：开一轮的为 `"turn"`，steer 的为 `"steer"`。
+- 拒收发 `AgentEvent::UserMessageRefused { message_id, content, message, turn_id }`，daemon 转成
+  `{"kind":"user_message_refused","message_id","content","message"}`；协议文档 §7 与 steer 一节已补。
+  最后一个步骤边界上取到的全被拒时再看一次队列，把它关上（或送达新到的）。
+- 测试：`crates/runtime/src/agent.rs` 的 `a_steered_message_the_prompt_hook_blocks_is_refused_and_the_turn_goes_on`、
+  `a_steered_message_reaches_the_transcript_as_the_prompt_hook_rewrote_it`、
+  `without_a_prompt_hook_steered_messages_are_delivered_as_sent`。

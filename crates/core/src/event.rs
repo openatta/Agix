@@ -147,6 +147,17 @@ pub enum AgentEvent {
         turn_id: String,
     },
 
+    /// A message the user sent while this turn was running was refused on its
+    /// way in (`UserPromptSubmit` blocked it). It is not in the transcript and
+    /// the turn goes on; sending it again would be refused again.
+    UserMessageRefused {
+        message_id: String,
+        content: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+        turn_id: String,
+    },
+
     /// Messages the user sent while this turn was running that the model
     /// never got to read — the turn ended (interrupted, stopped by a policy
     /// or an error) before the next point they could be added. They are not

@@ -30,6 +30,10 @@ pub struct HookInput {
     // UserPromptSubmit
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_prompt: Option<String>,
+    /// How the message reached the session: `"turn"` opens a turn, `"steer"`
+    /// joins the running one at a step boundary.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<String>,
 
     // ── Lifecycle events ──
     // TurnStart / TurnComplete / SessionStart / SessionEnd / SubagentStart /
