@@ -1358,7 +1358,10 @@ impl Builder {
     /// a command that exits leaves its background processes to run on.
     ///
     /// [`GroupLedger::reap`]: base::interface::exec::local::GroupLedger::reap
-    pub fn process_groups(mut self, ledger: Arc<base::interface::exec::local::GroupLedger>) -> Self {
+    pub fn process_groups(
+        mut self,
+        ledger: Arc<base::interface::exec::local::GroupLedger>,
+    ) -> Self {
         self.process_groups = Some(ledger);
         self
     }
@@ -6568,11 +6571,14 @@ mod tests {
         let settings = prompt_hook(
             r#"grep -q '"delivery":"steer"' && echo '{"updated_input":"REWRITTEN"}' || true"#,
         );
-        let (events, sent) =
-            steer_during_a_tool_step(settings, |b| b, &[("m1", "original")]).await;
+        let (events, sent) = steer_during_a_tool_step(settings, |b| b, &[("m1", "original")]).await;
 
         assert_eq!(steer_outcomes(&events), ["delivered m1 REWRITTEN"]);
-        assert_eq!(text_of(sent[0].last().unwrap()), "start", "a turn says \"turn\"");
+        assert_eq!(
+            text_of(sent[0].last().unwrap()),
+            "start",
+            "a turn says \"turn\""
+        );
         assert_eq!(text_of(sent[1].last().unwrap()), "REWRITTEN");
     }
 

@@ -6,11 +6,11 @@
 //! handle, so whoever owns a session can stop what its commands left running.
 
 use futures::future::BoxFuture;
-use std::collections::BTreeSet;
-use std::sync::{Arc, Mutex};
 use futures::stream::BoxStream;
 use futures::StreamExt;
+use std::collections::BTreeSet;
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 
@@ -79,8 +79,7 @@ impl GroupLedger {
                 signal_group(*g, libc::SIGTERM);
             }
             let deadline = tokio::time::Instant::now() + grace;
-            while tokio::time::Instant::now() < deadline
-                && targets.iter().any(|g| group_alive(*g))
+            while tokio::time::Instant::now() < deadline && targets.iter().any(|g| group_alive(*g))
             {
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             }
@@ -438,7 +437,10 @@ mod tests {
         let ledger = GroupLedger::new();
         let process = LocalProcess::with_ledger(SubprocessEnv::default(), ledger.clone());
         let mut h = process
-            .spawn(sh("sleep 300 >/dev/null 2>&1 & echo $!"), CancellationToken::new())
+            .spawn(
+                sh("sleep 300 >/dev/null 2>&1 & echo $!"),
+                CancellationToken::new(),
+            )
             .await
             .unwrap();
         let mut out = h.output().unwrap();

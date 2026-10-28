@@ -3531,17 +3531,17 @@ fn exec_providers_from(
 ) -> base::interface::exec::ExecProviders {
     let env = config.subprocess_env.clone();
     match &config.process_groups {
-        Some(ledger) => base::interface::exec::ExecProviders::local_with_ledger(env, ledger.clone()),
+        Some(ledger) => {
+            base::interface::exec::ExecProviders::local_with_ledger(env, ledger.clone())
+        }
         None => base::interface::exec::ExecProviders::local_with(env),
     }
-    .with_network(
-        Arc::new(
-            base::interface::exec::local::LocalNetwork::for_agent_policy(
-                config.sandbox_policy.network_mode,
-                config.sandbox_policy.allowed_domains.clone(),
-            ),
+    .with_network(Arc::new(
+        base::interface::exec::local::LocalNetwork::for_agent_policy(
+            config.sandbox_policy.network_mode,
+            config.sandbox_policy.allowed_domains.clone(),
         ),
-    )
+    ))
 }
 
 async fn execute_tool_inner(

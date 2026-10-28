@@ -5071,7 +5071,10 @@ async fn turn_leaving_a_sleep(sock: &std::path::Path) -> (String, libc::pid_t) {
         .take_while(char::is_ascii_digit)
         .collect();
     (
-        response["result"]["session_id"].as_str().unwrap().to_string(),
+        response["result"]["session_id"]
+            .as_str()
+            .unwrap()
+            .to_string(),
         digits.parse().unwrap(),
     )
 }
