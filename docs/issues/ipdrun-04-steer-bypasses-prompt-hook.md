@@ -64,3 +64,4 @@ IPDrun 准备在界面上给人「立即送达」（steer）的选项，发现�
 - 测试：`crates/runtime/src/agent.rs` 的 `a_steered_message_the_prompt_hook_blocks_is_refused_and_the_turn_goes_on`、
   `a_steered_message_reaches_the_transcript_as_the_prompt_hook_rewrote_it`、
   `without_a_prompt_hook_steered_messages_are_delivered_as_sent`。
+- 提交：118e39b。
