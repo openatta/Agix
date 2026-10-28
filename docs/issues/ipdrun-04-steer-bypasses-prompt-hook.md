@@ -24,6 +24,9 @@
   ```
   daemon 照 `user_message_delivered` 的样子转成 `{"kind":"user_message_refused", …}`（`daemon/src/session_pool.rs:3464` 旁边）。
   消息原文还给发送方，由它决定要不要提示用户。
+  不复用 `UserMessagesReturned`：它的意思是「没来得及读，要不要再发由宿主定」，宿主照这个意思会把它们重新排队
+  （Harnix 的中枢就把退回的消息排到队首），被拒的消息再发一遍只会再被拒一次。
+- hook 除了拒收、改写之外的副作用（记日志、计数之类）对 steer 的消息也会发生；在意的 hook 读 `delivery` 区分。
 - `deliver_queued_user_messages` 现在是同步函数；hook 是异步的，实现上要么把它改成 async，要么在 `offer` 之前（入队时）跑。
   入队时跑更早告诉发送方，但那时还不知道属于哪一步；交给维护者定。
 
