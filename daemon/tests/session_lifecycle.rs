@@ -720,6 +720,105 @@ async fn the_automatic_namer_does_not_overwrite_a_name_somebody_typed() {
     srv.stop().await;
 }
 
+async fn session_name(sock: &std::path::Path, sid: &str) -> (serde_json::Value, serde_json::Value) {
+    let detail = rpc(
+        sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.get","id":7,"params":{{"session_id":"{sid}"}}}}"#
+        ),
+    )
+    .await;
+    let listed = rpc(sock, r#"{"jsonrpc":"2.0","method":"session.list","id":8}"#).await;
+    let row = listed["result"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["session_id"] == sid)
+        .cloned()
+        .unwrap_or_else(|| panic!("session missing from the list: {listed}"));
+    (detail["result"]["name"].clone(), row["name"].clone())
+}
+
+async fn close_and_resume(sock: &std::path::Path, sid: &str) {
+    rpc(
+        sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.close","id":5,"params":{{"session_id":"{sid}"}}}}"#
+        ),
+    )
+    .await;
+    let resumed = rpc(
+        sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.resume","id":6,"params":{{"session_id":"{sid}"}}}}"#
+        ),
+    )
+    .await;
+    assert_eq!(resumed["result"]["status"], "resumed", "{resumed}");
+}
+
+#[tokio::test]
+async fn a_resumed_session_keeps_the_name_somebody_typed() {
+    let (srv, _seen) = start_scripted_server_in(
+        "chat",
+        vec![
+            text_round("answer"),
+            text_round("自动起的标题"),
+            text_round("second answer"),
+            text_round("模型猜的标题"),
+        ],
+        ask_settings_no_memory(),
+        Duration::ZERO,
+    )
+    .await;
+
+    let sid = run_turn(&srv.sock, None, "hello").await;
+    rpc(
+        &srv.sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.rename","id":2,"params":{{"session_id":"{sid}","name":"我起的名字"}}}}"#
+        ),
+    )
+    .await;
+
+    close_and_resume(&srv.sock, &sid).await;
+    let (got, listed) = session_name(&srv.sock, &sid).await;
+    assert_eq!(got, "我起的名字", "session.get after resume");
+    assert_eq!(listed, "我起的名字", "session.list after resume");
+
+    run_turn(&srv.sock, Some(&sid), "and then").await;
+    let (got, listed) = session_name(&srv.sock, &sid).await;
+    assert_eq!(
+        got, "我起的名字",
+        "the turn after a resume is not a first turn"
+    );
+    assert_eq!(listed, "我起的名字");
+
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn an_automatic_name_survives_a_resume() {
+    let (srv, _seen) = start_scripted_server_in(
+        "chat",
+        vec![text_round("answer"), text_round("自动起的标题")],
+        ask_settings_no_memory(),
+        Duration::ZERO,
+    )
+    .await;
+
+    let sid = run_turn(&srv.sock, None, "hello").await;
+    let (before, _) = session_name(&srv.sock, &sid).await;
+    assert_eq!(before, "自动起的标题");
+
+    close_and_resume(&srv.sock, &sid).await;
+    let (got, listed) = session_name(&srv.sock, &sid).await;
+    assert_eq!(got, "自动起的标题", "session.get after resume");
+    assert_eq!(listed, "自动起的标题", "session.list after resume");
+
+    srv.stop().await;
+}
+
 // ── session.subscribe ───────────────────────────────────────────────────
 
 /// Opening a session that is only on disk is the most ordinary thing a client

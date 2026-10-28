@@ -2308,6 +2308,8 @@ impl SessionPool {
         // A failure here (corrupt entry, race with a concurrent delete, ...)
         // degrades to the same "id reused, empty context" behavior as before
         // this was wired up, rather than failing session creation outright.
+        let mut stored_name = None;
+        let mut has_user_turn = false;
         if resume {
             self.stop_live_agent(&session_id).await;
             let resume_start = std::time::Instant::now();
@@ -2330,6 +2332,10 @@ impl SessionPool {
                 .filter(|e| matches!(e.entry, history::entry::LogEntry::Compact { .. }))
                 .count();
             let sidechain_entry_count = entries.iter().filter(|e| e.is_sidechain).count();
+            has_user_turn = entries.iter().any(|e| {
+                !e.is_sidechain && matches!(e.entry, history::entry::LogEntry::User { .. })
+            });
+            stored_name = self.stats_of(&session_id).await.title;
             let _ = agent
                 .telemetry()
                 .record(telemetry::TelemetryEvent::resume_action(
@@ -2387,11 +2393,11 @@ impl SessionPool {
             context: None,
             scene: scene_for_session,
             project: project_root_for_meta.clone(),
-            name: None,
+            named_by_user: stored_name.is_some(),
+            name: stored_name,
             created_at: Instant::now(),
             last_active: Instant::now(),
-            is_first_turn: true,
-            named_by_user: false,
+            is_first_turn: !has_user_turn,
             binding_stale: binding.stale.clone(),
             current_turn: None,
             turn_initiator: None,
@@ -3625,10 +3631,7 @@ impl SessionPool {
         if let Some(prompt) = name_prompt {
             match self.generate_session_name(&prompt).await {
                 Ok(name) => {
-                    if let Some(live) = self.sessions.lock().await.get_mut(&sid) {
-                        live.name = Some(name.clone());
-                    }
-                    session_name = Some(name);
+                    session_name = self.adopt_generated_name(&sid, name).await;
                 }
                 Err(e) => {
                     warn!(%sid, error=%e, "session name generation failed");
@@ -3646,6 +3649,29 @@ impl SessionPool {
                 "api_calls": api_calls,
             }),
         )
+    }
+
+    /// A name somebody typed while the naming call was out wins over the
+    /// guess; otherwise the guess is stored like any other name, so a resume
+    /// or a daemon restart finds it.
+    async fn adopt_generated_name(&self, sid: &str, name: String) -> Option<String> {
+        {
+            let mut sessions = self.sessions.lock().await;
+            let live = sessions.get_mut(sid)?;
+            if live.named_by_user {
+                return live.name.clone();
+            }
+            live.name = Some(name.clone());
+        }
+        if let (Some(store), Ok(parsed)) = (
+            self.history_store.as_ref(),
+            base::session::SessionId::parse(sid),
+        ) {
+            if let Err(e) = store.set_session_title(parsed, Some(name.clone())).await {
+                warn!(%sid, error=%e, "could not store the generated session name");
+            }
+        }
+        Some(name)
     }
 
     /// A session's recorded `session_kind`/`parent_session_id`/`resumable`,

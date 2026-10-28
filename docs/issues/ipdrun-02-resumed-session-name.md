@@ -47,3 +47,13 @@
 
 IPDrun 的宿主在 daemon 重启后恢复会话，界面上的会话名变空；现在每轮结束时查一次 `session.get`，空了就再 `rename` 一次
 （`crates/agent/src/host.rs` 的 `recheck_name`）。
+
+## 实现记录
+
+- 恢复（`create(…, resume: true)`）时从存储读标题填 `live.name`，有标题就置 `named_by_user`；转录里已有主线的
+  `User` 条目就不再当第一轮。
+- 自动起的名字经 `set_session_title` 落盘；起名调用在外面时有人 rename 了，以人起的为准（内存、盘上都不盖）。
+- 偏离：没加 sidecar 的 `title_source`。自动起名只发生在第一轮，而有标题的恢复会话必然已过第一轮，
+  区分来源不改变任何行为；人改名照样优先。
+- 测试：`daemon/tests/session_lifecycle.rs` 的 `a_resumed_session_keeps_the_name_somebody_typed`、
+  `an_automatic_name_survives_a_resume`（修之前两条都失败）。
