@@ -81,3 +81,4 @@ IPDrun 的执行 Agent 用 Bash 起了 `nohup … &` 的后台进程，宿主停
   `daemon/tests/session_lifecycle.rs` 的 `closing_a_session_stops_what_its_commands_left_running`、
   `without_the_setting_a_background_process_outlives_its_session`、`a_daemon_shutdown_stops_what_its_sessions_left_running`、
   `evicting_a_session_stops_what_its_commands_left_running`。
+- 提交：51436dc。
