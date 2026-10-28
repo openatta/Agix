@@ -78,3 +78,14 @@ ipdrun-03（`PromptMiddleware`）、ipdrun-04（steer 过同一条链）。Harni
 ## 来源
 
 IPDrun 的某类会话不许带附件进来；它在 prompt 中间件里拦，但中间件看不到附件，只能在界面上提示。
+
+## 实现记录
+
+- `base::interface::prompt_middleware`：`PromptAttachmentKind { File, Text, Image }`（另有 `as_str`）、
+  `PromptAttachment`（`#[non_exhaustive]`，构造函数 `file` / `text` / `image`）、
+  `PromptMiddleware::inspect_with_attachments`（缺省交给 `inspect`）；与草图一致。
+- 运行时（`turn.rs` 的 `screen_user_prompt`）改调 `inspect_with_attachments`；链为空时不构造视图。
+  `Image` 的大小按 base64 解码后的长度算。steer 的消息给空切片。
+- 测试：`crates/runtime/src/agent.rs` 的 `a_prompt_middleware_sees_the_attachments_of_a_turn_and_none_on_a_steer`
+  （同时装一个只实现 `inspect` 的旧式中间件，证明它照常运行）。
+- 提交：ce121c6。
