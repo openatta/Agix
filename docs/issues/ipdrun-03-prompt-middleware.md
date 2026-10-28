@@ -79,3 +79,15 @@ pub fn prompt_middleware(mut self, m: Arc<dyn PromptMiddleware>) -> Self;  // �
 
 IPDrun 要在人直接对某类会话说话时先过一遍自己的规则；进程内只能走 command hook，每条消息起一次 `ipdrun user-prompt`
 子进程，cargo 测试里没有这个二进制时这一层就不在。
+
+## 实现记录
+
+- `base::interface::prompt_middleware`：`PromptDelivery { Turn, Steer }`（另有 `as_str`）、`PromptCall`、
+  `PromptDecision { Continue, Rewrite(String), Block { message } }`、`PromptMiddleware::inspect`；与草图一致。
+- `Builder::prompt_middleware(Arc<dyn PromptMiddleware>)`，可多次调用；在设置层 UserPromptSubmit hook 之后按加入
+  顺序跑，与 ipdrun-04 共用 `screen_user_prompt`；steer 的拒收走 `UserMessageRefused`。链为空时只是一次空迭代。
+- catalog 加了 `prompt.submit`（拦截、仅宿主），`extension_points.md` 的表随之重新生成并加了一节。
+- 测试：`crates/runtime/src/agent.rs` 的 `a_prompt_middleware_block_ends_the_turn_before_any_model_call`、
+  `a_prompt_middleware_rewrite_is_what_the_model_and_the_transcript_get`、
+  `prompt_middlewares_run_after_the_configured_hook_in_the_order_they_were_added`、
+  `a_steered_message_passes_the_prompt_middleware_too`。

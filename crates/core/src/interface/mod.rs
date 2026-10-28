@@ -94,6 +94,7 @@ pub mod model_interceptor;
 pub mod permission;
 pub mod prompt_assembler;
 pub mod prompt_assembly;
+pub mod prompt_middleware;
 pub mod prompt_registry;
 pub mod recovery_policy;
 #[deprecated(note = "moved to `base::prompt` — prompt data types and the assembler function")]

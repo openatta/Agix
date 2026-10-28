@@ -10,6 +10,7 @@ use base::interface::model::{
     MessageRole, ModelContentBlock, ModelMessage, ModelStream, ToolDef, Usage,
 };
 use base::interface::prompt::PromptBlock;
+use base::interface::prompt_middleware::{PromptDecision, PromptDelivery};
 use base::interface::scene::ScenePromptContext;
 use base::tool::{ToolContext, ToolResultContent};
 use mcp::manager::McpManager;
@@ -359,7 +360,10 @@ impl Agent {
                 return delivered;
             }
             for m in queued {
-                match self.screen_user_prompt(m.content.clone(), "steer").await {
+                match self
+                    .screen_user_prompt(m.content.clone(), PromptDelivery::Steer)
+                    .await
+                {
                     PromptScreen::Pass(content) => {
                         self.session.push_message_from(
                             ModelMessage {
@@ -395,9 +399,38 @@ impl Agent {
         }
     }
 
-    /// `UserPromptSubmit` for one user message: what to put in the
-    /// transcript, or why not to.
-    async fn screen_user_prompt(&self, content: String, delivery: &str) -> PromptScreen {
+    /// `UserPromptSubmit` and then the prompt middlewares for one user
+    /// message: what to put in the transcript, or why not to.
+    async fn screen_user_prompt(&self, content: String, delivery: PromptDelivery) -> PromptScreen {
+        let mut content = match self.run_prompt_hooks(content, delivery).await {
+            PromptScreen::Pass(content) => content,
+            blocked => return blocked,
+        };
+        for middleware in self.prompt_middleware.iter() {
+            let call = base::interface::prompt_middleware::PromptCall {
+                session_id: &self.session.session_id,
+                turn_id: &self.current_turn_id,
+                content: &content,
+                delivery,
+                permission_mode: self.session_state.permission_mode(),
+            };
+            match middleware.inspect(&call).await {
+                PromptDecision::Continue => {}
+                PromptDecision::Rewrite(rewritten) => content = rewritten,
+                PromptDecision::Block { message } => {
+                    tracing::info!(
+                        delivery = delivery.as_str(),
+                        reason = message.as_deref().unwrap_or("no reason given"),
+                        "a prompt middleware blocked this message"
+                    );
+                    return PromptScreen::Blocked(message);
+                }
+            }
+        }
+        PromptScreen::Pass(content)
+    }
+
+    async fn run_prompt_hooks(&self, content: String, delivery: PromptDelivery) -> PromptScreen {
         if !self.hooks.has_hooks_for(hooks::HookEvent::UserPromptSubmit) {
             return PromptScreen::Pass(content);
         }
@@ -407,7 +440,7 @@ impl Agent {
             cwd: self.settings.paths.project_root().display().to_string(),
             permission_mode: hook_permission_mode(self.session_state.permission_mode()),
             user_prompt: Some(content.clone()),
-            delivery: Some(delivery.to_string()),
+            delivery: Some(delivery.as_str().to_string()),
             ..Default::default()
         };
         let hook_result = self
@@ -416,7 +449,7 @@ impl Agent {
             .await;
         if let Some(response) = hook_result.blocked() {
             tracing::info!(
-                delivery,
+                delivery = delivery.as_str(),
                 reason = response.message.as_deref().unwrap_or("no reason given"),
                 "UserPromptSubmit hook blocked this message"
             );
@@ -506,7 +539,7 @@ impl Agent {
         //   that actually gets processed — the same field name
         //   `PreToolUse` uses for rewriting tool input, repurposed here for
         //   the one thing there is to rewrite: the prompt text itself.
-        match self.screen_user_prompt(content, "turn").await {
+        match self.screen_user_prompt(content, PromptDelivery::Turn).await {
             PromptScreen::Pass(screened) => content = screened,
             PromptScreen::Blocked(message) => {
                 self.record_turn_complete("stopped_by_hook", 0, 0, std::time::Instant::now());

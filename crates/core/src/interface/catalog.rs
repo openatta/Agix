@@ -172,7 +172,7 @@ pub fn all() -> &'static [ExtensionPoint] {
     &POINTS
 }
 
-static POINTS: [ExtensionPoint; 44] = [
+static POINTS: [ExtensionPoint; 45] = [
     ExtensionPoint {
         id: "tool.registry",
         kind: Kind::Contract,
@@ -252,6 +252,16 @@ static POINTS: [ExtensionPoint; 44] = [
         frequency: Frequency::PerTurn,
         trust: Trust::operator_full_plugin_declares(),
         defined_in: "base::interface::prompt_assembly::AssemblyHook",
+    },
+    ExtensionPoint {
+        id: "prompt.submit",
+        kind: Kind::Interception,
+        summary: "用户消息进对话之前的最后一道:放行、改写或拒收",
+        timing: "每条用户消息进转录之前,开一轮的与 steer 进来的都算;在 UserPromptSubmit hook 之后",
+        rewrites: "消息文本;或者拒收这条",
+        frequency: Frequency::PerTurn,
+        trust: Trust::host_only(),
+        defined_in: "base::interface::prompt_middleware::PromptMiddleware",
     },
     ExtensionPoint {
         id: "event.sink",

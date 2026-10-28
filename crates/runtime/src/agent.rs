@@ -225,6 +225,10 @@ pub struct Agent {
     pub(crate) prompt_assembler: Arc<dyn base::interface::prompt_assembler::PromptAssembler>,
     /// Rings around every tool call — see [`Builder::tool_middleware`].
     pub(crate) tool_middleware: Arc<Vec<Arc<dyn base::interface::tool_middleware::ToolMiddleware>>>,
+    /// What every user message passes on its way in — see
+    /// [`Builder::prompt_middleware`].
+    pub(crate) prompt_middleware:
+        Arc<Vec<Arc<dyn base::interface::prompt_middleware::PromptMiddleware>>>,
     /// The last hands on a tool's output — see
     /// [`Builder::tool_result_transformer`].
     pub(crate) result_transformers:
@@ -1085,6 +1089,8 @@ pub struct Builder {
     prompt_assembler: Option<Arc<dyn base::interface::prompt_assembler::PromptAssembler>>,
     /// Rings around tool dispatch — see [`Builder::tool_middleware`].
     tool_middleware: Vec<Arc<dyn base::interface::tool_middleware::ToolMiddleware>>,
+    /// User-message screening — see [`Builder::prompt_middleware`].
+    prompt_middleware: Vec<Arc<dyn base::interface::prompt_middleware::PromptMiddleware>>,
     /// Result policies — see [`Builder::tool_result_transformer`].
     result_transformers: Vec<Arc<dyn base::interface::tool_result::ToolResultTransformer>>,
     /// Turn stop conditions — see [`Builder::turn_policy`].
@@ -1334,6 +1340,7 @@ impl Builder {
             prompt_registry: None,
             prompt_assembler: None,
             tool_middleware: Vec::new(),
+            prompt_middleware: Vec::new(),
             result_transformers: Vec::new(),
             turn_policy: None,
             budget_policy: None,
@@ -1457,6 +1464,24 @@ impl Builder {
         m: Arc<dyn base::interface::tool_middleware::ToolMiddleware>,
     ) -> Self {
         self.tool_middleware.push(m);
+        self
+    }
+
+    /// Look at every user message before it enters the conversation — the one
+    /// that opens a turn and the ones steered into a running turn — and let it
+    /// through, rewrite it, or refuse it.
+    ///
+    /// Middlewares run after the `UserPromptSubmit` hooks configured in
+    /// settings, in the order they are added; each sees the text the previous
+    /// one left. A refused turn ends as a hook block ends it
+    /// (`stopped_by_hook`, no model call); a refused steered message stays out
+    /// of the transcript, the turn goes on, and `AgentEvent::UserMessageRefused`
+    /// tells the sender.
+    pub fn prompt_middleware(
+        mut self,
+        m: Arc<dyn base::interface::prompt_middleware::PromptMiddleware>,
+    ) -> Self {
+        self.prompt_middleware.push(m);
         self
     }
 
@@ -2664,6 +2689,7 @@ impl Builder {
                     Arc::new(base::interface::prompt_assembler::DefaultAssembler)
                 }),
                 tool_middleware: Arc::new(self.tool_middleware),
+                prompt_middleware: Arc::new(self.prompt_middleware),
                 result_transformers: Arc::new(self.result_transformers),
                 turn_policy,
                 budget_policy,
@@ -6599,6 +6625,196 @@ mod tests {
             ]
         );
         assert_eq!(sent.len(), 2);
+    }
+
+    type SeenPrompts =
+        Arc<std::sync::Mutex<Vec<(base::interface::prompt_middleware::PromptDelivery, String)>>>;
+
+    /// Records what it was shown, then answers with `decide`.
+    struct Screen {
+        seen: SeenPrompts,
+        decide: fn(&str) -> base::interface::prompt_middleware::PromptDecision,
+    }
+
+    impl Screen {
+        fn new(
+            decide: fn(&str) -> base::interface::prompt_middleware::PromptDecision,
+        ) -> (Arc<Self>, SeenPrompts) {
+            let seen = SeenPrompts::default();
+            (
+                Arc::new(Self {
+                    seen: seen.clone(),
+                    decide,
+                }),
+                seen,
+            )
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl base::interface::prompt_middleware::PromptMiddleware for Screen {
+        async fn inspect(
+            &self,
+            call: &base::interface::prompt_middleware::PromptCall<'_>,
+        ) -> base::interface::prompt_middleware::PromptDecision {
+            self.seen
+                .lock()
+                .unwrap()
+                .push((call.delivery, call.content.to_string()));
+            (self.decide)(call.content)
+        }
+    }
+
+    fn answering_agent(
+        settings: base::interface::settings::Settings,
+        builder: impl FnOnce(Builder) -> Builder,
+    ) -> (
+        Agent,
+        EventReceiver,
+        Arc<std::sync::Mutex<Vec<Vec<base::interface::model::ModelMessage>>>>,
+    ) {
+        let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let model: Arc<dyn Model> = Arc::new(StepRecordingModel {
+            tool: None,
+            hold_first: None,
+            sent: sent.clone(),
+        });
+        let (agent, event_rx, _input_tx) = builder(
+            Builder::new()
+                .scene(Arc::new(scene::scene::coding::CodingScene) as Arc<dyn AgentScene>)
+                .model(model)
+                .settings(Arc::new(settings))
+                .skip_warmup(true),
+        )
+        .build()
+        .expect("build should succeed");
+        (agent, event_rx, sent)
+    }
+
+    async fn user_turn(agent: &mut Agent, id: &str, text: &str) -> crate::turn::TurnOutcome {
+        agent
+            .process_turn(
+                InputMessage::User {
+                    content: text.into(),
+                    attachments: vec![],
+                    turn_id: id.into(),
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .expect("process_turn should succeed")
+    }
+
+    #[tokio::test]
+    async fn a_prompt_middleware_block_ends_the_turn_before_any_model_call() {
+        use base::interface::prompt_middleware::PromptDecision;
+        let (screen, _) = Screen::new(|text| {
+            if text.contains("forbidden") {
+                PromptDecision::Block {
+                    message: Some("not here".into()),
+                }
+            } else {
+                PromptDecision::Continue
+            }
+        });
+        let (mut agent, mut event_rx, sent) =
+            answering_agent(test_settings(), |b| b.prompt_middleware(screen));
+
+        let outcome = user_turn(&mut agent, "t1", "a forbidden topic").await;
+        assert_eq!(outcome.stop_reason, "stopped_by_hook");
+        assert!(sent.lock().unwrap().is_empty(), "no model call");
+        let done = next_event(
+            &mut event_rx,
+            |e| matches!(e, AgentEvent::TurnComplete { .. }),
+            "turn_complete",
+        )
+        .await;
+        assert!(matches!(
+            done,
+            AgentEvent::TurnComplete { ref stop_reason, ref message, .. }
+                if stop_reason == "stopped_by_hook" && message.as_deref() == Some("not here")
+        ));
+
+        let outcome = user_turn(&mut agent, "t2", "something else").await;
+        assert_eq!(outcome.stop_reason, "end_turn");
+        assert_eq!(sent.lock().unwrap().len(), 1, "the next turn runs as usual");
+    }
+
+    #[tokio::test]
+    async fn a_prompt_middleware_rewrite_is_what_the_model_and_the_transcript_get() {
+        use base::interface::prompt_middleware::PromptDecision;
+        let (screen, _) = Screen::new(|_| PromptDecision::Rewrite("REWRITTEN".into()));
+        let (mut agent, _event_rx, sent) =
+            answering_agent(test_settings(), |b| b.prompt_middleware(screen));
+
+        user_turn(&mut agent, "t1", "original message").await;
+
+        assert_eq!(
+            text_of(sent.lock().unwrap()[0].last().unwrap()),
+            "REWRITTEN"
+        );
+        let texts: Vec<String> = agent.session.messages().iter().map(text_of).collect();
+        assert!(texts.iter().any(|t| t == "REWRITTEN"), "{texts:?}");
+        assert!(!texts.iter().any(|t| t == "original message"), "{texts:?}");
+    }
+
+    #[tokio::test]
+    async fn prompt_middlewares_run_after_the_configured_hook_in_the_order_they_were_added() {
+        use base::interface::prompt_middleware::{PromptDecision, PromptDelivery};
+        let settings = prompt_hook(r#"echo '{"updated_input":"B"}'"#);
+        let (first, first_saw) = Screen::new(|text| PromptDecision::Rewrite(format!("{text}1")));
+        let (second, second_saw) = Screen::new(|text| PromptDecision::Rewrite(format!("{text}2")));
+        let (mut agent, _event_rx, sent) = answering_agent(settings, |b| {
+            b.prompt_middleware(first).prompt_middleware(second)
+        });
+
+        user_turn(&mut agent, "t1", "A").await;
+
+        assert_eq!(
+            *first_saw.lock().unwrap(),
+            [(PromptDelivery::Turn, "B".to_string())],
+            "the hook's rewrite is what the first middleware sees"
+        );
+        assert_eq!(
+            *second_saw.lock().unwrap(),
+            [(PromptDelivery::Turn, "B1".to_string())]
+        );
+        assert_eq!(text_of(sent.lock().unwrap()[0].last().unwrap()), "B12");
+    }
+
+    #[tokio::test]
+    async fn a_steered_message_passes_the_prompt_middleware_too() {
+        use base::interface::prompt_middleware::{PromptDecision, PromptDelivery};
+        let (screen, seen) = Screen::new(|text| {
+            if text.contains("secret") {
+                PromptDecision::Block { message: None }
+            } else {
+                PromptDecision::Continue
+            }
+        });
+        let (events, sent) = steer_during_a_tool_step(
+            test_settings(),
+            |b| b.prompt_middleware(screen),
+            &[("m1", "the secret plan"), ("m2", "also check the tests")],
+        )
+        .await;
+
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [
+                (PromptDelivery::Turn, "start".to_string()),
+                (PromptDelivery::Steer, "the secret plan".to_string()),
+                (PromptDelivery::Steer, "also check the tests".to_string()),
+            ]
+        );
+        assert_eq!(
+            steer_outcomes(&events),
+            [
+                "refused m1 the secret plan None",
+                "delivered m2 also check the tests",
+            ]
+        );
+        assert_eq!(text_of(sent[1].last().unwrap()), "also check the tests");
     }
 
     #[tokio::test]

@@ -41,6 +41,7 @@
 | `prompt.variable` | 注册 | 提示组装时,块合并之后 | 只有自己那个占位符,别的都不行 | 每轮(10⁰–10¹ 量级) | 完全 | 完全 | 只能新增 |
 | `prompt.assembler` | 契约 | 提示组装时,取代引擎自己那套 | 顺序、缓存边界、合并策略——整个结果 | 每次模型调用(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
 | `prompt.assemble` | 拦截 | 提示组装的最后一步 | 块的内容、顺序和取舍 | 每轮(10⁰–10¹ 量级) | 完全 | 完全 | 需声明能力 |
+| `prompt.submit` | 拦截 | 每条用户消息进转录之前,开一轮的与 steer 进来的都算;在 UserPromptSubmit hook 之后 | 消息文本;或者拒收这条 | 每轮(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
 | `event.sink` | 契约 | 每次发射,在 sink 自己的 task 上 | 什么都改不了——只能观察 | 每个流式分片(10³–10⁴ 量级) | 不开放 | 不开放 | 不开放 |
 | `health.check` | 注册 | 每当有人要一份健康报告 | 什么都改不了——检查只汇报,不修复 | 每进程(10⁰ 量级) | 不开放 | 不开放 | 不开放 |
 | `elicitation.ask` | 契约 | 每当一个决定需要人来做 | 答案 | 每轮(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
@@ -677,6 +678,28 @@ impl AssemblyHook for Mine {
 以 `Authority::local(BlockOrigin::Script(path))` 注册的 hook 权限全有。以
 `Authority::plugin(name, caps)` 注册的只有 `caps` 声明过的那些,而一次被拒的编辑
 返回 `Denied` 并记在这次组装上,不会无声无息地失败。
+
+### 用户消息进对话之前 — `prompt.submit`
+
+```rust
+#[async_trait]
+impl PromptMiddleware for NoSecrets {
+    async fn inspect(&self, call: &PromptCall<'_>) -> PromptDecision {
+        if call.content.contains("secret") {
+            return PromptDecision::Block { message: Some("no secrets here".into()) };
+        }
+        PromptDecision::Continue
+    }
+}
+Builder::new().prompt_middleware(Arc::new(NoSecrets));
+```
+
+设置层 `UserPromptSubmit` hook 的 Rust 对应物,规则写在嵌入方自己代码里时用它,不必为每条消息起一个
+子进程。开一轮的消息(`PromptDelivery::Turn`)和一轮在跑时 steer 进来的消息(`PromptDelivery::Steer`)
+都过它。跑在设置层 hook **之后**,按加入顺序,前一个的改写是后一个看到的原文——嵌入方的规则是最后
+一道,配置里的 hook 改不回来。`Block` 对开一轮的消息与 hook 拒收同一条收尾:不调模型,
+`stop_reason = "stopped_by_hook"`,`message` 进 `turn_complete`;对 steer 的消息,这条不进转录,
+这一轮照常继续,发 `AgentEvent::UserMessageRefused`。不调 `prompt_middleware` 时什么都不跑。
 
 ### 模型请求与成品消息 — `model.request`、`model.message`
 
