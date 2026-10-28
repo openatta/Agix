@@ -12,7 +12,7 @@ surface, permissions, context compaction, sub-agents, MCP, and the seams to
 change any of it. Ship it as a Rust library inside your app, or run it as a
 JSON-RPC daemon your IDE plugin talks to. Both are the same engine.
 
-What makes it worth looking at is the last part — **44 extension points**, three
+What makes it worth looking at is the last part — **45 extension points**, three
 different ways to reach them, and a rule that runs through all of them: an
 extension that fails costs its own contribution and nothing else.
 
@@ -90,7 +90,7 @@ in the workspace assembles a pool a second way.
 
 | | |
 |---|---|
-| **Extend it without forking it** | 44 points in a published catalog, each with its cost and its trust rules. A `.js` file and one line of config reaches nine of them; a WebAssembly plugin reaches five; a Rust trait reaches all of them. |
+| **Extend it without forking it** | 45 points in a published catalog, each with its cost and its trust rules. A `.js` file and one line of config reaches nine of them; a WebAssembly plugin reaches five; a Rust trait reaches all of them. |
 | **A failing extension is a non-event** | Every adapter computes its change fully before applying any of it. A script that throws, times out, exhausts its quota or answers in the wrong shape leaves its point exactly as it found it — a prompt half-edited by something that died mid-pass is worse than an unedited one. |
 | **And you can find out that it did** | Which makes "nothing happened" the failure everyone hits, and the four ways of doing nothing identical from inside the engine. Every call is written down and `session.get` reports it, so "why is my script not working" has an answer that is not a log line on somebody else's stderr. |
 | **Policy survives delegation** | The rings around tool and model calls follow sub-agents, team members and background tasks. A rule that stopped at the first `Agent` call would be one model decision away from being bypassed. |
