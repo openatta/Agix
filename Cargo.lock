@@ -781,6 +781,7 @@ dependencies = [
  "hex",
  "history",
  "hooks",
+ "libc",
  "mcp",
  "model",
  "notify",
