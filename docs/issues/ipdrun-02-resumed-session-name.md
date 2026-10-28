@@ -57,3 +57,4 @@ IPDrun 的宿主在 daemon 重启后恢复会话，界面上的会话名变空�
   区分来源不改变任何行为；人改名照样优先。
 - 测试：`daemon/tests/session_lifecycle.rs` 的 `a_resumed_session_keeps_the_name_somebody_typed`、
   `an_automatic_name_survives_a_resume`（修之前两条都失败）。
+- 提交：b077ac6。
