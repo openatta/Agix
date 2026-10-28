@@ -347,6 +347,10 @@ pub type SessionCustomizer = Arc<dyn Fn(Builder, &SessionCtx<'_>) -> Builder + S
 /// How long a stopping Agent gets to finish its turn and persist it.
 const AGENT_EXIT_GRACE: Duration = Duration::from_secs(5);
 
+/// How long a process group left behind by an ended session gets on
+/// `SIGTERM` before `SIGKILL`.
+const PROCESS_GROUP_GRACE: Duration = Duration::from_millis(500);
+
 /// What `session.run_turn` does when the session is already running a turn.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -484,6 +488,9 @@ struct LiveSession {
     /// and an answer to a `prompt_id` nobody awaits is already a documented
     /// no-op.
     pending_prompts: HashMap<String, serde_json::Value>,
+    /// The process groups this session's commands started, kept when
+    /// `sandbox.reap_process_groups` is on and stopped when the session ends.
+    process_groups: Option<Arc<base::interface::exec::local::GroupLedger>>,
 }
 
 // ── SessionPool ─────────────────────────────────────────────────────────
@@ -2211,6 +2218,22 @@ impl SessionPool {
         if let Some(schema) = options.and_then(|o| o.output_schema.clone()) {
             builder = builder.output_schema(schema);
         }
+        // A rebuild keeps the ledger: the session goes on, and so do the
+        // groups its earlier commands started.
+        let process_groups = if base_settings.sandbox.reap_process_groups {
+            let kept = self
+                .sessions
+                .lock()
+                .await
+                .get(&session_id)
+                .and_then(|live| live.process_groups.clone());
+            Some(kept.unwrap_or_else(base::interface::exec::local::GroupLedger::new))
+        } else {
+            None
+        };
+        if let Some(ledger) = &process_groups {
+            builder = builder.process_groups(ledger.clone());
+        }
         if let Some(customize) = &self.customize {
             builder = customize(
                 builder,
@@ -2406,6 +2429,7 @@ impl SessionPool {
             scripts: script_ledger,
             subscribers: HashMap::new(),
             pending_prompts: HashMap::new(),
+            process_groups,
         };
         // `insert` returning `Some` means a live entry already existed under
         // this exact sid — only reachable via the config-generation recreate
@@ -3566,6 +3590,7 @@ impl SessionPool {
                     if let Some(dead) = dead {
                         dead.cancel.cancel();
                         dead.idle.notify_waiters();
+                        reap_process_groups_later(&dead);
                         self.emit_session_event(
                             "session_closed",
                             &sid,
@@ -4325,6 +4350,7 @@ impl SessionPool {
                         let mut sessions = self.sessions.lock().await;
                         if let Some(live) = sessions.remove(&child_str) {
                             live.cancel.cancel();
+                            reap_process_groups_later(&live);
                         }
                     }
                     match store.delete(child).await {
@@ -4365,9 +4391,9 @@ impl SessionPool {
         session_id: &str,
         children: Vec<base::session::SessionId>,
     ) -> usize {
-        {
+        let process_groups = {
             let mut sessions = self.sessions.lock().await;
-            if let Some(live) = sessions.remove(session_id) {
+            sessions.remove(session_id).and_then(|live| {
                 live.cancel.cancel();
                 info!(%session_id, "session removed");
                 self.emit_session_event(
@@ -4375,7 +4401,11 @@ impl SessionPool {
                     session_id,
                     serde_json::json!({"reason": "closed"}),
                 );
-            }
+                live.process_groups
+            })
+        };
+        if let Some(ledger) = process_groups {
+            ledger.reap(PROCESS_GROUP_GRACE).await;
         }
         // The in-memory copy only: a session resumed later reads its spec back
         // from its log.
@@ -5491,21 +5521,28 @@ impl SessionPool {
 
     /// 关闭所有 session，等每个 Agent 把手上的一轮收尾落盘再返回。
     pub async fn shutdown_all(&self) {
-        let exits: Vec<CancellationToken> = {
+        let (exits, ledgers): (Vec<CancellationToken>, Vec<_>) = {
             let mut sessions = self.sessions.lock().await;
             sessions
                 .drain()
                 .map(|(sid, live)| {
                     live.cancel.cancel();
                     info!(%sid, "session removed (shutdown)");
-                    live.exited
+                    (live.exited, live.process_groups)
                 })
-                .collect()
+                .unzip()
         };
         let all = futures::future::join_all(exits.iter().map(|e| e.cancelled()));
         if tokio::time::timeout(AGENT_EXIT_GRACE, all).await.is_err() {
             warn!("some sessions did not stop within the grace period");
         }
+        futures::future::join_all(
+            ledgers
+                .iter()
+                .flatten()
+                .map(|ledger| ledger.reap(PROCESS_GROUP_GRACE)),
+        )
+        .await;
     }
 
     /// Stops the Agent running under `session_id`, if any, and waits for it
@@ -5905,6 +5942,7 @@ impl SessionPool {
                 for sid in &to_evict {
                     if let Some(live) = sessions.remove(sid) {
                         live.cancel.cancel();
+                        reap_process_groups_later(&live);
                         info!(%sid, "session evicted (idle timeout)");
                         pool.emit_session_event(
                             "session_evicted",
@@ -6134,8 +6172,15 @@ fn evict_lru(sessions: &mut HashMap<String, LiveSession>) -> Option<String> {
         .map(|(k, v)| (k.clone(), v.last_active))?;
     let live = sessions.remove(&sid)?;
     live.cancel.cancel();
+    reap_process_groups_later(&live);
     info!(%sid, "session evicted (LRU, pool full)");
     Some(sid)
+}
+
+fn reap_process_groups_later(live: &LiveSession) {
+    if let Some(ledger) = live.process_groups.clone() {
+        tokio::spawn(async move { ledger.reap(PROCESS_GROUP_GRACE).await });
+    }
 }
 
 /// Session id 列表：`last_active` 距 `now` 超过 `timeout` 的那些。拆成纯函数
@@ -6921,6 +6966,7 @@ mod eviction_tests {
             scripts: None,
             subscribers: HashMap::new(),
             pending_prompts: HashMap::new(),
+            process_groups: None,
         }
     }
 

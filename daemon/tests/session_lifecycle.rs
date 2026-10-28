@@ -5032,3 +5032,146 @@ async fn the_live_frames_and_the_history_of_a_turn_agree() {
 
     srv.stop().await;
 }
+
+// ── sandbox.reap_process_groups ─────────────────────────────────────────
+
+async fn start_server_running_a_background_sleep(reap: bool) -> ScriptedServer {
+    let mut settings = ask_settings_no_memory();
+    settings.permission_mode = base::interface::settings::PermissionMode::BypassPermissions;
+    settings.sandbox.reap_process_groups = reap;
+    let (srv, _seen) = start_scripted_server(
+        vec![
+            tool_round(
+                "Bash",
+                "tool-1",
+                serde_json::json!({"command": "sleep 300 >/dev/null 2>&1 & echo \"PID=$!\""}),
+            ),
+            text_round("started"),
+        ],
+        settings,
+        Duration::from_secs(30),
+    )
+    .await;
+    srv
+}
+
+async fn turn_leaving_a_sleep(sock: &std::path::Path) -> (String, libc::pid_t) {
+    let (frames, response) = rpc_streaming(
+        sock,
+        r#"{"jsonrpc":"2.0","method":"session.run_turn","params":{"message":"start it"},"id":1}"#,
+    )
+    .await;
+    assert!(response["result"].is_object(), "turn failed: {response}");
+    let rendered = serde_json::to_string(&events_of_kind(&frames, "tool_result")).unwrap();
+    let digits: String = rendered
+        .split("PID=")
+        .nth(1)
+        .unwrap_or_else(|| panic!("no pid in the tool result: {rendered}"))
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    (
+        response["result"]["session_id"].as_str().unwrap().to_string(),
+        digits.parse().unwrap(),
+    )
+}
+
+fn alive(pid: libc::pid_t) -> bool {
+    // SAFETY: signal 0 only asks whether the pid exists.
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+async fn gone_within(pid: libc::pid_t, limit: Duration) -> bool {
+    let deadline = std::time::Instant::now() + limit;
+    while std::time::Instant::now() < deadline {
+        if !alive(pid) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    false
+}
+
+fn kill_leftover(pid: libc::pid_t) {
+    if alive(pid) {
+        // SAFETY: plain integers; the pid is the test's own sleep.
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+    }
+}
+
+#[tokio::test]
+async fn closing_a_session_stops_what_its_commands_left_running() {
+    let srv = start_server_running_a_background_sleep(true).await;
+    let (sid, pid) = turn_leaving_a_sleep(&srv.sock).await;
+    assert!(alive(pid), "the command left its sleep running");
+
+    rpc(
+        &srv.sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.close","id":2,"params":{{"session_id":"{sid}"}}}}"#
+        ),
+    )
+    .await;
+    let gone = gone_within(pid, Duration::from_secs(3)).await;
+    kill_leftover(pid);
+    assert!(gone, "session.close reaps the background sleep");
+
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn without_the_setting_a_background_process_outlives_its_session() {
+    let srv = start_server_running_a_background_sleep(false).await;
+    let (sid, pid) = turn_leaving_a_sleep(&srv.sock).await;
+
+    rpc(
+        &srv.sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.close","id":2,"params":{{"session_id":"{sid}"}}}}"#
+        ),
+    )
+    .await;
+    let gone = gone_within(pid, Duration::from_millis(1500)).await;
+    kill_leftover(pid);
+    assert!(!gone, "the default leaves a background service alone");
+
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn a_daemon_shutdown_stops_what_its_sessions_left_running() {
+    let srv = start_server_running_a_background_sleep(true).await;
+    let (_sid, pid) = turn_leaving_a_sleep(&srv.sock).await;
+
+    rpc(
+        &srv.sock,
+        r#"{"jsonrpc":"2.0","method":"daemon.shutdown","id":2}"#,
+    )
+    .await;
+    let gone = gone_within(pid, Duration::from_secs(3)).await;
+    kill_leftover(pid);
+    assert!(gone, "shutdown_all reaps the background sleep");
+
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn evicting_a_session_stops_what_its_commands_left_running() {
+    let srv = start_server_running_a_background_sleep(true).await;
+    let (_sid, pid) = turn_leaving_a_sleep(&srv.sock).await;
+
+    // The pool holds 8; the eighth new one pushes the oldest out.
+    for i in 0..8 {
+        let created = rpc(
+            &srv.sock,
+            &format!(r#"{{"jsonrpc":"2.0","method":"session.create","id":{i},"params":{{}}}}"#),
+        )
+        .await;
+        assert!(created["result"]["session_id"].is_string(), "{created}");
+    }
+    let gone = gone_within(pid, Duration::from_secs(3)).await;
+    kill_leftover(pid);
+    assert!(gone, "LRU eviction reaps the background sleep");
+
+    srv.stop().await;
+}

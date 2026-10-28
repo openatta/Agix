@@ -14,5 +14,5 @@ pub mod sandbox;
 pub use env::{SubprocessEnv, SubprocessEnvMode};
 pub use filesystem::LocalFileSystem;
 pub use network::LocalNetwork;
-pub use process::LocalProcess;
+pub use process::{GroupLedger, LocalProcess};
 pub use sandbox::PlatformSandbox;

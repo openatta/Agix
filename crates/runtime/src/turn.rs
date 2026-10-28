@@ -3497,7 +3497,12 @@ fn sandbox_settings_from(config: &base::context::EngineConfig) -> base::tool::Sa
 fn exec_providers_from(
     config: &base::context::EngineConfig,
 ) -> base::interface::exec::ExecProviders {
-    base::interface::exec::ExecProviders::local_with(config.subprocess_env.clone()).with_network(
+    let env = config.subprocess_env.clone();
+    match &config.process_groups {
+        Some(ledger) => base::interface::exec::ExecProviders::local_with_ledger(env, ledger.clone()),
+        None => base::interface::exec::ExecProviders::local_with(env),
+    }
+    .with_network(
         Arc::new(
             base::interface::exec::local::LocalNetwork::for_agent_policy(
                 config.sandbox_policy.network_mode,

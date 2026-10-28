@@ -1222,6 +1222,7 @@ struct Inner {
     /// the rings around tool and model calls, never the prompt contributions.
     /// See `BoundScripts::for_delegate` for where that line is drawn and why.
     delegate_scripts: Option<Arc<base::interface::script_adapters::BoundScripts>>,
+    process_groups: Option<Arc<base::interface::exec::local::GroupLedger>>,
     /// The parent session's `SkillManager`, when known — used to resolve
     /// the `skills:` preload field on `AgentTypeDefinition`. Set via
     /// `AgentTool::set_skill_manager` *after* construction (interior
@@ -1427,6 +1428,9 @@ impl Inner {
         // permission decisions, cost — goes to `Builder::build()`'s noop.
         if let Some(handle) = self.telemetry_handle() {
             builder = builder.telemetry_handle(handle);
+        }
+        if let Some(ledger) = &self.process_groups {
+            builder = builder.process_groups(ledger.clone());
         }
         builder
     }
@@ -1821,6 +1825,7 @@ impl AgentTool {
                 parent_settings: None,
                 task_router: None,
                 delegate_scripts: None,
+                process_groups: None,
                 skill_manager: Arc::new(std::sync::RwLock::new(None)),
                 mcp_tool_adapters: Arc::new(std::sync::RwLock::new(Vec::new())),
                 team_registry: Arc::new(std::sync::RwLock::new(None)),
@@ -1883,6 +1888,7 @@ impl AgentTool {
                 parent_settings: None,
                 task_router: None,
                 delegate_scripts: None,
+                process_groups: None,
                 skill_manager: Arc::new(std::sync::RwLock::new(None)),
                 mcp_tool_adapters: Arc::new(std::sync::RwLock::new(Vec::new())),
                 team_registry: Arc::new(std::sync::RwLock::new(None)),
@@ -1931,6 +1937,16 @@ impl AgentTool {
     ) -> Self {
         let mut inner = (*self.inner).clone();
         inner.delegate_scripts = Some(scripts);
+        self.inner = Arc::new(inner);
+        self
+    }
+
+    pub fn with_process_groups(
+        mut self,
+        ledger: Arc<base::interface::exec::local::GroupLedger>,
+    ) -> Self {
+        let mut inner = (*self.inner).clone();
+        inner.process_groups = Some(ledger);
         self.inner = Arc::new(inner);
         self
     }

@@ -320,6 +320,13 @@ provider——模型、OAuth、遥测和 registry 的 client 各造各的。所�
 也该守住:"停掉一个命令"指的是它起的全部进程,模型 `printenv` 能读到什么也该是一个
 明确的决定。
 
+命令自己先退出、留在后台的进程(`nohup … &`、`npm run dev &`)不随句柄停。要在会话结束时
+收掉它们,给会话一份 `local::GroupLedger`:`Builder::process_groups(ledger)` 让这个会话
+(连同它派出的子 Agent)起的每个进程组记进台账,引擎停下后由嵌入方调 `ledger.reap(grace)`
+——先 `SIGTERM`,`grace` 后还在的 `SIGKILL`。daemon 里对应设置 `sandbox.reap_process_groups`
+(缺省关):打开后会话关闭、被逐出、daemon 收尾时都会收,故意留在后台的服务也一并停掉。
+自己拼 `ExecProviders` 的用 `ExecProviders::local_with_ledger`。
+
 沙箱有一条不变量是引擎强制而不是请求的:**要求过约束的策略,绝不会悄悄变成一次不
 受约束的运行。** 后端报告 `Full`、`Partial` 或 `None`,并说清自己没能兑现什么;
 `sandbox.require_enforcement` 决定不到 `Full` 要不要拒。约束什么、要不要约束,始终

@@ -2,9 +2,12 @@
 //!
 //! On Unix every spawned program leads a process group of its own, and stopping
 //! it signals the whole group: a command is everything it started, not just the
-//! one pid `spawn` returned.
+//! one pid `spawn` returned. A [`GroupLedger`] remembers those groups past the
+//! handle, so whoever owns a session can stop what its commands left running.
 
 use futures::future::BoxFuture;
+use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex};
 use futures::stream::BoxStream;
 use futures::StreamExt;
 use std::process::Stdio;
@@ -19,12 +22,88 @@ use crate::interface::exec::{
 #[derive(Debug, Clone, Default)]
 pub struct LocalProcess {
     env: SubprocessEnv,
+    ledger: Option<Arc<GroupLedger>>,
 }
 
 impl LocalProcess {
     pub fn new(env: SubprocessEnv) -> Self {
-        Self { env }
+        Self { env, ledger: None }
     }
+
+    pub fn with_ledger(env: SubprocessEnv, ledger: Arc<GroupLedger>) -> Self {
+        Self {
+            env,
+            ledger: Some(ledger),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct GroupLedger {
+    groups: Mutex<BTreeSet<i32>>,
+}
+
+impl GroupLedger {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    /// Forgets the groups that have emptied first: a group id is reused once
+    /// its group is gone, and a stale entry would one day signal a stranger.
+    pub fn record(&self, group: i32) {
+        let mut groups = self.groups.lock().unwrap_or_else(|e| e.into_inner());
+        groups.retain(|g| group_alive(*g));
+        groups.insert(group);
+    }
+
+    pub fn groups(&self) -> Vec<i32> {
+        let mut groups = self.groups.lock().unwrap_or_else(|e| e.into_inner());
+        groups.retain(|g| group_alive(*g));
+        groups.iter().copied().collect()
+    }
+
+    pub async fn reap(&self, grace: std::time::Duration) {
+        let targets: Vec<i32> = {
+            let mut groups = self.groups.lock().unwrap_or_else(|e| e.into_inner());
+            std::mem::take(&mut *groups)
+                .into_iter()
+                .filter(|g| group_alive(*g))
+                .collect()
+        };
+        if targets.is_empty() {
+            return;
+        }
+        #[cfg(unix)]
+        {
+            for g in &targets {
+                signal_group(*g, libc::SIGTERM);
+            }
+            let deadline = tokio::time::Instant::now() + grace;
+            while tokio::time::Instant::now() < deadline
+                && targets.iter().any(|g| group_alive(*g))
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            for g in &targets {
+                if group_alive(*g) {
+                    signal_group(*g, libc::SIGKILL);
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = grace;
+    }
+}
+
+#[cfg(unix)]
+fn group_alive(group: i32) -> bool {
+    // SAFETY: signal 0 only asks whether the group exists and is ours to signal.
+    unsafe { libc::killpg(group, 0) == 0 }
+}
+
+#[cfg(not(unix))]
+fn group_alive(_group: i32) -> bool {
+    false
 }
 
 /// How long a stopped group gets to exit on `SIGTERM` before `SIGKILL`.
@@ -81,6 +160,10 @@ impl Process for LocalProcess {
 
         #[cfg(unix)]
         let group = child.id().map(|pid| pid as libc::pid_t);
+        #[cfg(unix)]
+        if let (Some(ledger), Some(group)) = (&self.ledger, group) {
+            ledger.record(group);
+        }
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         Ok(Box::new(LocalHandle {
@@ -347,6 +430,45 @@ mod tests {
             gone_within(pid, std::time::Duration::from_secs(3)).await,
             "the orphaned sleep survived a kill issued after its parent exited"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_ledger_reaps_what_a_finished_command_left_running() {
+        let ledger = GroupLedger::new();
+        let process = LocalProcess::with_ledger(SubprocessEnv::default(), ledger.clone());
+        let mut h = process
+            .spawn(sh("sleep 300 >/dev/null 2>&1 & echo $!"), CancellationToken::new())
+            .await
+            .unwrap();
+        let mut out = h.output().unwrap();
+        let pid: libc::pid_t = first_line(&mut out).await.parse().unwrap();
+        assert!(h.wait().await.unwrap().success);
+        drop(out);
+        drop(h);
+        assert!(
+            !gone_within(pid, std::time::Duration::from_millis(200)).await,
+            "dropping a finished handle leaves the background sleep alone"
+        );
+        assert_eq!(ledger.groups().len(), 1, "the group is still on record");
+
+        ledger.reap(std::time::Duration::from_millis(500)).await;
+        let reaped = gone_within(pid, std::time::Duration::from_secs(3)).await;
+        if !reaped {
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+        assert!(reaped, "reap stops the background sleep");
+        assert!(ledger.groups().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_emptied_group_drops_off_the_ledger() {
+        let ledger = GroupLedger::new();
+        let process = LocalProcess::with_ledger(SubprocessEnv::default(), ledger.clone());
+        let (_, _, status) = run_with(process, sh("true")).await;
+        assert!(status.success);
+        assert!(ledger.groups().is_empty(), "{:?}", ledger.groups());
     }
 
     #[cfg(unix)]

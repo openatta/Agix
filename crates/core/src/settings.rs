@@ -576,6 +576,12 @@ pub struct SandboxConfig {
     /// `env` added on top.
     #[serde(default)]
     pub subprocess_env: crate::interface::exec::local::SubprocessEnv,
+    /// Stop, when a daemon session ends (closed, evicted, or the daemon
+    /// shutting down), every process group its commands started that is still
+    /// running — including services a command deliberately left in the
+    /// background. Off by default: such a service outlives the session.
+    #[serde(default)]
+    pub reap_process_groups: bool,
 }
 
 /// One script, bound to one extension point.

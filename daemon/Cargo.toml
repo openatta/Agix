@@ -55,6 +55,7 @@ tonic              = { version = "0.12", optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+libc = { workspace = true }
 compaction = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }

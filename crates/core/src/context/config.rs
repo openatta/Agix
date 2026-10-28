@@ -86,6 +86,9 @@ pub struct EngineConfig {
     pub disable_skill_shell_execution: bool,
     /// Mirrors `Settings.sandbox.subprocess_env`.
     pub subprocess_env: crate::interface::exec::local::SubprocessEnv,
+    /// Where the commands of this session record their process groups;
+    /// `None` keeps no record.
+    pub process_groups: Option<std::sync::Arc<crate::interface::exec::local::GroupLedger>>,
 
     // ---- file-op limits (grouped 2026-05-09; was 3 flat fields) ----
     /// File read/write byte/line limits. Sub-config keeps related field
@@ -294,6 +297,7 @@ impl EngineConfig {
             sandbox_policy: SandboxPolicyConfig::default(),
             disable_skill_shell_execution: false,
             subprocess_env: Default::default(),
+            process_groups: None,
 
             // grouped sub-configs
             file_limits: FileLimits::default(),

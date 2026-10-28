@@ -66,6 +66,18 @@ impl ExecProviders {
         }
     }
 
+    /// [`local_with`](Self::local_with), with every process group a command
+    /// starts recorded in `ledger`.
+    pub fn local_with_ledger(
+        env: local::SubprocessEnv,
+        ledger: std::sync::Arc<local::GroupLedger>,
+    ) -> Self {
+        Self {
+            process: std::sync::Arc::new(local::LocalProcess::with_ledger(env, ledger)),
+            ..Self::local_with(local::SubprocessEnv::default())
+        }
+    }
+
     /// Nothing on the machine: a memory tree, commands decided in advance, no
     /// network, and a sandbox honest enough to say it constrains nothing.
     ///

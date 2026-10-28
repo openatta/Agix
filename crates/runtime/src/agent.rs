@@ -1117,6 +1117,9 @@ pub struct Builder {
     /// Scheduled jobs, kept and fired by whoever owns this store — see
     /// [`Builder::cron_store`].
     cron_store: Option<Arc<tools::cron::CronStore>>,
+    /// Where this session's commands record their process groups — see
+    /// [`Builder::process_groups`].
+    process_groups: Option<Arc<base::interface::exec::local::GroupLedger>>,
 }
 
 /// Scan the three skill-directory tiers from disk and register bundled
@@ -1345,7 +1348,19 @@ impl Builder {
             event_sinks: Vec::new(),
             agent_depth: 0,
             cron_store: None,
+            process_groups: None,
         }
+    }
+
+    /// Record in `ledger` every process group this session's commands start,
+    /// its delegates' included, so that whoever owns the session can stop what
+    /// they left running with [`GroupLedger::reap`] once it ends. Without one,
+    /// a command that exits leaves its background processes to run on.
+    ///
+    /// [`GroupLedger::reap`]: base::interface::exec::local::GroupLedger::reap
+    pub fn process_groups(mut self, ledger: Arc<base::interface::exec::local::GroupLedger>) -> Self {
+        self.process_groups = Some(ledger);
+        self
     }
 
     /// Keep this session's scheduled jobs in `store`, and leave firing them to
@@ -2115,6 +2130,9 @@ impl Builder {
             if let Some(scripts) = self.delegate_scripts.clone() {
                 agent_tool = agent_tool.with_delegate_scripts(scripts);
             }
+            if let Some(ledger) = self.process_groups.clone() {
+                agent_tool = agent_tool.with_process_groups(ledger);
+            }
             Arc::new(agent_tool)
         };
         let hooks = self.hooks.unwrap_or_else(|| {
@@ -2275,7 +2293,11 @@ impl Builder {
         // coordination. Only affects sessions built after the setting
         // changes — same as every other `Settings` field, no separate
         // restart requirement.
-        let team_config = Arc::new(base::context::EngineConfig::from_settings(&settings));
+        let team_config = Arc::new({
+            let mut c = base::context::EngineConfig::from_settings(&settings);
+            c.process_groups = self.process_groups.clone();
+            c
+        });
         // Bound outside the `team_enabled` block so the event-channel wiring
         // below can reach it; `None` when team tools are not registered.
         let mut team_create_tool: Option<Arc<team::tool::TeamCreateTool>> = None;

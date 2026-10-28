@@ -66,3 +66,18 @@ daemon 自己被 `kill -9` 时台账来不及用，那一半要由起 daemon 的
 
 IPDrun 的执行 Agent 用 Bash 起了 `nohup … &` 的后台进程，宿主停掉实例后它们一直活着；IPDrun 现在靠 `ps` + 工作目录
 的启发式清理（`crates/agent/src/reap.rs`），想换成引擎自己记账。
+
+## 实现记录
+
+- `base::interface::exec::local::GroupLedger`（`new`、`record`、`groups`、`reap`）；`LocalProcess::with_ledger`；
+  另加 `ExecProviders::local_with_ledger`。组号用 `i32`（unix 上即 `pid_t`），非 unix 上台账恒空。
+- 进程内嵌入：`Builder::process_groups(Arc<GroupLedger>)`，经 `EngineConfig.process_groups` 到每次工具调用的
+  `ExecProviders`，经 `AgentTool` 跟到子 Agent / 团队成员。引擎停下后由嵌入方自己调 `reap`。
+- daemon：`sandbox.reap_process_groups`（缺省 `false`）打开时每个会话一份台账（配置变更后的重建沿用同一份）；
+  `session.close` 等收完再返回，`shutdown_all` 等 Agent 退出后收；LRU 逐出、空闲逐出、引擎意外停止、
+  级联删除子会话时在后台收。宽限 500 ms。
+- 没做：`session.get` / `daemon.status` 报台账组数（issue 写的「可后做」）。
+- 测试：`process.rs` 的 `the_ledger_reaps_what_a_finished_command_left_running`、`an_emptied_group_drops_off_the_ledger`；
+  `daemon/tests/session_lifecycle.rs` 的 `closing_a_session_stops_what_its_commands_left_running`、
+  `without_the_setting_a_background_process_outlives_its_session`、`a_daemon_shutdown_stops_what_its_sessions_left_running`、
+  `evicting_a_session_stops_what_its_commands_left_running`。

@@ -481,6 +481,11 @@
           "default": "unrestricted",
           "description": "Outbound network policy for sandboxed `Bash` commands."
         },
+        "reap_process_groups": {
+          "default": false,
+          "description": "Stop, when a daemon session ends (closed, evicted, or the daemon\nshutting down), every process group its commands started that is still\nrunning — including services a command deliberately left in the\nbackground. Off by default: such a service outlives the session.",
+          "type": "boolean"
+        },
         "require_enforcement": {
           "default": false,
           "description": "Refuse to run a sandboxed command when this build on this platform\ncannot actually enforce the policy, instead of running it\nunconstrained.\n\nTwo ways to be unable: the `sandbox` compile-time feature is off, so no\nbackend was compiled at all — the default — or it is on and the\nplatform's tool is missing. Both refuse here, and the message says\nwhich.\n\nOff by default, which is the historical behavior: on Linux without\n`bwrap`, and on platforms with no backend at all, a command whose\npolicy cannot be honored runs anyway with a warning. That is a silent\ndowngrade from \"constrained\" to \"unconstrained\" — fine for a laptop,\nnot fine for a host that treats the sandbox as a boundary.\n\nTurning it on makes such a command fail with an error naming the\nmissing backend. The default is `false` rather than `true` only\nbecause flipping it would break every Linux box without bubblewrap\ninstalled, and every Windows host, on upgrade.",
@@ -794,6 +799,7 @@
         "dangerously_disable_sandbox": false,
         "deny_read": [],
         "network_mode": "unrestricted",
+        "reap_process_groups": false,
         "require_enforcement": false,
         "subprocess_env": {
           "mode": "inherit"
