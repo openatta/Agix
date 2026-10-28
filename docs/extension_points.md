@@ -701,6 +701,10 @@ Builder::new().prompt_middleware(Arc::new(NoSecrets));
 `stop_reason = "stopped_by_hook"`,`message` 进 `turn_complete`;对 steer 的消息,这条不进转录,
 这一轮照常继续,发 `AgentEvent::UserMessageRefused`。不调 `prompt_middleware` 时什么都不跑。
 
+消息带的附件要看就另实现 `inspect_with_attachments`(缺省实现忽略附件、交给 `inspect`):每项一个只读的
+`PromptAttachment`——类型(`File`、`Text`、`Image`)、名字、媒体类型、字节数、`Text` 附件的内容;`File`
+不替中间件读内容。附件改写不了,`Rewrite` 只换文本,`Block` 连附件一起拒。steer 进来的消息不带附件。
+
 ### 模型请求与成品消息 — `model.request`、`model.message`
 
 ```rust

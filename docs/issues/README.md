@@ -10,7 +10,7 @@
 
 ## IPDrun
 
-提出于 2026-10-27，代码位置对照 `e8a1dd8`（`Agix-v0.2.9-2026102603`）。
+提出于 2026-10-27，代码位置对照 `e8a1dd8`（`Agix-v0.2.9-2026102603`）；ipdrun-05 对照 `2e5ade3`（`Agix-v0.2.9-2026102701`）。
 
 | 编号 | 标题 | 类型 | 优先级 | 依赖 |
 |---|---|---|---|---|
@@ -18,6 +18,7 @@
 | [ipdrun-02](ipdrun-02-resumed-session-name.md) | 恢复的会话不报存着的名字，下一轮还会重新自动起名 | 缺陷 | 中 | — |
 | [ipdrun-03](ipdrun-03-prompt-middleware.md) | 进程内嵌入没有「消息进一轮之前」的原生拦截 | 新能力 | 中 | 拒收 steer 的回告依赖 ipdrun-04 |
 | [ipdrun-04](ipdrun-04-steer-bypasses-prompt-hook.md) | 步骤边界送进去的消息（steer）不经 UserPromptSubmit | 缺陷 | 中 | — |
+| [ipdrun-05](ipdrun-05-prompt-middleware-attachments.md) | prompt 中间件判断一条消息时看不到它带的附件 | 新能力 | 中 | ipdrun-03、ipdrun-04 |
 
 Harnix 那边与之相关的：Harnix `ipdrun-07`（spawn 实例的进程组，对应 ipdrun-01 的另一半）、Harnix `ipdrun-13`（经 `EngineContrib`
 把 ipdrun-03 交给模块）。

@@ -6817,6 +6817,151 @@ mod tests {
         assert_eq!(text_of(sent[1].last().unwrap()), "also check the tests");
     }
 
+    type SeenAttachments = Arc<
+        std::sync::Mutex<
+            Vec<(
+                base::interface::prompt_middleware::PromptDelivery,
+                Vec<(
+                    &'static str,
+                    Option<String>,
+                    Option<String>,
+                    Option<u64>,
+                    Option<String>,
+                )>,
+            )>,
+        >,
+    >;
+
+    /// Records the attachments it was shown and refuses a message that has any.
+    struct NoAttachments(SeenAttachments);
+
+    #[async_trait::async_trait]
+    impl base::interface::prompt_middleware::PromptMiddleware for NoAttachments {
+        async fn inspect(
+            &self,
+            _call: &base::interface::prompt_middleware::PromptCall<'_>,
+        ) -> base::interface::prompt_middleware::PromptDecision {
+            unreachable!("the runtime calls inspect_with_attachments")
+        }
+
+        async fn inspect_with_attachments(
+            &self,
+            call: &base::interface::prompt_middleware::PromptCall<'_>,
+            attachments: &[base::interface::prompt_middleware::PromptAttachment<'_>],
+        ) -> base::interface::prompt_middleware::PromptDecision {
+            use base::interface::prompt_middleware::PromptDecision;
+            self.0.lock().unwrap().push((
+                call.delivery,
+                attachments
+                    .iter()
+                    .map(|a| {
+                        (
+                            a.kind.as_str(),
+                            a.name.map(str::to_string),
+                            a.media_type.map(str::to_string),
+                            a.size,
+                            a.text.map(str::to_string),
+                        )
+                    })
+                    .collect(),
+            ));
+            if attachments.is_empty() {
+                PromptDecision::Continue
+            } else {
+                PromptDecision::Block {
+                    message: Some("no attachments here".into()),
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_prompt_middleware_sees_the_attachments_of_a_turn_and_none_on_a_steer() {
+        use base::interface::prompt_middleware::{PromptDecision, PromptDelivery};
+        let dir = tempfile::tempdir().unwrap();
+        let picture = dir.path().join("photo.PNG");
+        std::fs::write(&picture, [0u8; 42]).unwrap();
+        let picture = picture.display().to_string();
+
+        let seen = SeenAttachments::default();
+        let (old_style, old_saw) = Screen::new(|_| PromptDecision::Continue);
+        let (mut agent, _event_rx, sent) = answering_agent(test_settings(), |b| {
+            b.prompt_middleware(old_style)
+                .prompt_middleware(Arc::new(NoAttachments(seen.clone())))
+        });
+        let outcome = agent
+            .process_turn(
+                InputMessage::User {
+                    content: "look at these".into(),
+                    attachments: vec![
+                        Attachment::Text {
+                            path: "notes.md".into(),
+                            content: "héllo".into(),
+                        },
+                        Attachment::Image {
+                            media_type: "image/jpeg".into(),
+                            data: "aGVsbG8=".into(),
+                        },
+                        Attachment::File {
+                            path: picture.clone(),
+                        },
+                    ],
+                    turn_id: "t1".into(),
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .expect("process_turn should succeed");
+
+        assert_eq!(outcome.stop_reason, "stopped_by_hook");
+        assert_eq!(outcome.message.as_deref(), Some("no attachments here"));
+        assert!(sent.lock().unwrap().is_empty(), "no model call");
+        assert_eq!(
+            *old_saw.lock().unwrap(),
+            [(PromptDelivery::Turn, "look at these".to_string())],
+            "a middleware that only implements inspect still runs"
+        );
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [(
+                PromptDelivery::Turn,
+                vec![
+                    (
+                        "text",
+                        Some("notes.md".to_string()),
+                        None,
+                        Some(6),
+                        Some("héllo".to_string()),
+                    ),
+                    ("image", None, Some("image/jpeg".to_string()), Some(5), None),
+                    (
+                        "file",
+                        Some(picture),
+                        Some("image/png".to_string()),
+                        Some(42),
+                        None,
+                    ),
+                ],
+            )]
+        );
+
+        let steer_seen = SeenAttachments::default();
+        let (events, _sent) = steer_during_a_tool_step(
+            test_settings(),
+            |b| b.prompt_middleware(Arc::new(NoAttachments(steer_seen.clone()))),
+            &[("m1", "also this")],
+        )
+        .await;
+        assert_eq!(
+            *steer_seen.lock().unwrap(),
+            [
+                (PromptDelivery::Turn, vec![]),
+                (PromptDelivery::Steer, vec![])
+            ]
+        );
+        assert_eq!(steer_outcomes(&events), ["delivered m1 also this"]);
+    }
+
     #[tokio::test]
     async fn a_message_sent_during_a_tool_step_reaches_the_next_model_call() {
         let gate = Arc::new(tokio::sync::Notify::new());

@@ -361,7 +361,7 @@ impl Agent {
             }
             for m in queued {
                 match self
-                    .screen_user_prompt(m.content.clone(), PromptDelivery::Steer)
+                    .screen_user_prompt(m.content.clone(), &[], PromptDelivery::Steer)
                     .await
                 {
                     PromptScreen::Pass(content) => {
@@ -401,10 +401,20 @@ impl Agent {
 
     /// `UserPromptSubmit` and then the prompt middlewares for one user
     /// message: what to put in the transcript, or why not to.
-    async fn screen_user_prompt(&self, content: String, delivery: PromptDelivery) -> PromptScreen {
+    async fn screen_user_prompt(
+        &self,
+        content: String,
+        attachments: &[crate::agent::Attachment],
+        delivery: PromptDelivery,
+    ) -> PromptScreen {
         let mut content = match self.run_prompt_hooks(content, delivery).await {
             PromptScreen::Pass(content) => content,
             blocked => return blocked,
+        };
+        let attachments = if self.prompt_middleware.is_empty() {
+            Vec::new()
+        } else {
+            describe_attachments(attachments).await
         };
         for middleware in self.prompt_middleware.iter() {
             let call = base::interface::prompt_middleware::PromptCall {
@@ -414,7 +424,10 @@ impl Agent {
                 delivery,
                 permission_mode: self.session_state.permission_mode(),
             };
-            match middleware.inspect(&call).await {
+            match middleware
+                .inspect_with_attachments(&call, &attachments)
+                .await
+            {
                 PromptDecision::Continue => {}
                 PromptDecision::Rewrite(rewritten) => content = rewritten,
                 PromptDecision::Block { message } => {
@@ -539,7 +552,10 @@ impl Agent {
         //   that actually gets processed — the same field name
         //   `PreToolUse` uses for rewriting tool input, repurposed here for
         //   the one thing there is to rewrite: the prompt text itself.
-        match self.screen_user_prompt(content, PromptDelivery::Turn).await {
+        match self
+            .screen_user_prompt(content, &attachments, PromptDelivery::Turn)
+            .await
+        {
             PromptScreen::Pass(screened) => content = screened,
             PromptScreen::Blocked(message) => {
                 self.record_turn_complete("stopped_by_hook", 0, 0, std::time::Instant::now());
@@ -4276,6 +4292,34 @@ fn image_media_type(path: &std::path::Path) -> Option<&'static str> {
 /// 4/3 — so 3.75 MB of raw bytes is the real limit. Rounded down to leave room
 /// for the rest of the request.
 const MAX_ATTACHMENT_IMAGE_BYTES: u64 = 3_500_000;
+
+/// What a prompt middleware is shown of the attachments.
+async fn describe_attachments(
+    attachments: &[crate::agent::Attachment],
+) -> Vec<base::interface::prompt_middleware::PromptAttachment<'_>> {
+    use crate::agent::Attachment;
+    use base::interface::prompt_middleware::PromptAttachment;
+
+    let mut described = Vec::with_capacity(attachments.len());
+    for att in attachments {
+        described.push(match att {
+            Attachment::File { path } => {
+                let size = tokio::fs::metadata(path).await.ok().map(|m| m.len());
+                PromptAttachment::file(path, image_media_type(std::path::Path::new(path)), size)
+            }
+            Attachment::Text { path, content } => PromptAttachment::text(path, content),
+            Attachment::Image { media_type, data } => {
+                PromptAttachment::image(media_type, base64_decoded_len(data))
+            }
+        });
+    }
+    described
+}
+
+fn base64_decoded_len(data: &str) -> u64 {
+    let padding = data.bytes().rev().take_while(|b| *b == b'=').count().min(2);
+    ((data.len() / 4) * 3).saturating_sub(padding) as u64
+}
 
 /// Turn attachments into content blocks for the user message.
 ///
