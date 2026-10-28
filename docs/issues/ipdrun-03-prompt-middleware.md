@@ -91,3 +91,4 @@ IPDrun 要在人直接对某类会话说话时先过一遍自己的规则；进�
   `a_prompt_middleware_rewrite_is_what_the_model_and_the_transcript_get`、
   `prompt_middlewares_run_after_the_configured_hook_in_the_order_they_were_added`、
   `a_steered_message_passes_the_prompt_middleware_too`。
+- 提交：44f2291。
