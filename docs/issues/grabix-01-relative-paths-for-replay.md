@@ -51,3 +51,23 @@ pub enum PathStyle { Absolute /* 缺省，现状 */, WorkspaceRelative }
 
 Grabix 的生成与修复会话要录下来供离线测试回放；测试的数据目录每次不同，模型照抄工具结果里的绝对路径时，录像就回放不了。
 Grabix 已在自己的工具里只给相对路径，但 Read 说明的「必须是绝对路径」和 Grep / Glob 结果仍会把模型带回绝对路径。
+
+## 实现记录
+
+- 选项：`Settings.path_style`（`base::context::config::PathStyle`，也从 `base::tool` 导出；
+  `Absolute` 缺省 / `WorkspaceRelative`，JSON 里写 `"absolute"` / `"workspace_relative"`）。
+  经 `EngineConfig.path_style` 进每次工具调用的 `ToolContext.config`。
+- 宿主怎么开：
+  - 配置文件：在会话读取的任一层 `settings.json` 里写 `"path_style": "workspace_relative"`——
+    全局（`<数据根>/settings.json`）、场景（`<数据根>/scenes/<场景>/settings.json`）或项目（`<项目>/.agix/settings.json`），
+    各层照常合并，后写的层覆盖前面的。
+  - 嵌入：`Builder::settings(Arc<Settings>)` 传入的 `Settings` 上设 `path_style = PathStyle::WorkspaceRelative`。
+  - 子代理沿用父会话的 `Settings`，同样生效。
+- 行为：Read / Write / Edit 的 `file_path` 参数文档与 Read 指南改为「相对工作目录；也接受绝对路径」
+  （新方法 `Tool::input_schema_for(PathStyle)`，`PromptContext.path_style`，`build_tool_defs` 与 `ToolSearch` 各自带上）；
+  Grep / Glob 结果、Write 的「Wrote …」、Edit 的「Applied …」及其 diff 头里，工作目录之下的路径打印成相对路径，
+  工作目录本身为 `.`，之外的仍是绝对路径（`PathStyle::render`）。路径解析不变。
+- 测试：`crates/tools/tests/path_style.rs`（两种模式下 Grep / Glob / Write / Edit 的输出、参数文档、Read 指南；
+  缺省下输出逐字等于原样）；`crates/core/src/context/config.rs` 的 `path_style_is_absolute_unless_settings_say_otherwise`、
+  `render_is_relative_only_under_the_working_directory`。`docs/schemas/settings.schema.json` 已重新生成。
+- 提交：36b7da2；发布：`Agix-v0.2.9-2026103001`。

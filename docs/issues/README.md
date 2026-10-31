@@ -29,4 +29,4 @@ Harnix 那边与之相关的：Harnix `ipdrun-07`（spawn 实例的进程组，�
 
 | 编号 | 标题 | 类型 | 优先级 | 依赖 |
 |---|---|---|---|---|
-| [grabix-01](grabix-01-relative-paths-for-replay.md) | 文件工具的说明与结果都以绝对路径为准，录像换了工作目录就回放不了 | 新能力 | 中 | — |
+| [grabix-01](grabix-01-relative-paths-for-replay.md) | 文件工具的说明与结果都以绝对路径为准，录像换了工作目录就回放不了 | 新能力（已落地：`Agix-v0.2.9-2026103001`） | 中 | — |
