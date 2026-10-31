@@ -49,6 +49,10 @@ impl Tool for FileWriteTool {
             .expect("schemars output is valid JSON")
     }
 
+    fn input_schema_for(&self, style: base::tool::PathStyle) -> Value {
+        crate::file_read::workspace_relative_file_path(self.input_schema(), style, "write")
+    }
+
     async fn prompt(&self, _: &PromptContext) -> String {
         include_str!("prompts/coding/file_write.prompt.md").to_string()
     }
@@ -175,7 +179,7 @@ impl Tool for FileWriteTool {
                 "Wrote {} byte{} to {}",
                 bytes,
                 if bytes == 1 { "" } else { "s" },
-                path.display()
+                ctx.config.path_style.render(&path, &ctx.cwd)
             ))
         })
     }

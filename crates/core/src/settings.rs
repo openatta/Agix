@@ -79,6 +79,14 @@ pub struct Settings {
     #[serde(default)]
     pub disable_skill_shell_execution: bool,
 
+    /// How the file tools word paths for the model. `absolute` (default)
+    /// keeps today's text; `workspace_relative` makes tool descriptions say
+    /// paths are relative to the working directory and prints Grep / Glob /
+    /// Write / Edit paths under it relative, so a recorded session replays in
+    /// another working directory. Resolving paths is unchanged.
+    #[serde(default)]
+    pub path_style: crate::context::config::PathStyle,
+
     /// Permission mode for tool execution.
     #[serde(default)]
     pub permission_mode: PermissionMode,
@@ -869,6 +877,7 @@ impl Settings {
             session_dir: None,
             memory_enabled: true,
             disable_skill_shell_execution: false,
+            path_style: Default::default(),
             permission_mode: PermissionMode::default(),
             permission_rules: Vec::new(),
             local_permission_rules: Vec::new(),

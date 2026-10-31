@@ -1090,6 +1090,7 @@ fn fallback_settings(
         session_dir: None,
         memory_enabled: true,
         disable_skill_shell_execution: false,
+        path_style: Default::default(),
         permission_mode: PermissionMode::default(),
         permission_rules: Vec::new(),
         local_permission_rules: Vec::new(),

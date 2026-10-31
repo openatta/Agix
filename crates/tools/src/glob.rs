@@ -182,7 +182,7 @@ impl Tool for GlobTool {
 
         let mut output = String::with_capacity(paths.len() * 80);
         for (p, _) in &paths {
-            output.push_str(&p.display().to_string());
+            output.push_str(&ctx.config.path_style.render(p, &ctx.cwd));
             output.push('\n');
         }
         if truncated {

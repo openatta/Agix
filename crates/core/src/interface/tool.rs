@@ -35,6 +35,7 @@ pub enum InterruptBehavior {
     Cancel,
     Block,
 }
+pub use crate::context::config::PathStyle;
 pub use crate::permission::PermissionMode;
 #[derive(Debug, Clone)]
 pub struct PromptContext {
@@ -44,6 +45,7 @@ pub struct PromptContext {
     pub is_interactive: bool,
     pub all_tool_names: Vec<String>,
     pub allowed_agent_types: Vec<String>,
+    pub path_style: PathStyle,
 }
 impl Default for PromptContext {
     fn default() -> Self {
@@ -54,6 +56,7 @@ impl Default for PromptContext {
             is_interactive: false,
             all_tool_names: vec![],
             allowed_agent_types: vec![],
+            path_style: PathStyle::default(),
         }
     }
 }
@@ -372,6 +375,12 @@ pub trait Tool: Send + Sync + 'static {
     /// Differs from [`input_schema`](Self::input_schema) only for a wrapper
     /// that withholds the real one from the per-request tool list.
     fn full_input_schema(&self) -> Value {
+        self.input_schema()
+    }
+
+    /// [`input_schema`](Self::input_schema) as worded for a session's
+    /// [`PathStyle`]; only tools whose argument docs mention paths differ.
+    fn input_schema_for(&self, _style: PathStyle) -> Value {
         self.input_schema()
     }
 

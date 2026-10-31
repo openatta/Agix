@@ -231,6 +231,14 @@
       ],
       "type": "object"
     },
+    "PathStyle": {
+      "description": "How file tools word the paths the model reads: in tool descriptions and in\nthe paths Grep, Glob, Write and Edit print. Resolving a path the model\npasses in is the same in both styles (relative against the working\ndirectory, absolute as is).",
+      "enum": [
+        "absolute",
+        "workspace_relative"
+      ],
+      "type": "string"
+    },
     "PermissionAction": {
       "enum": [
         "allow",
@@ -735,6 +743,11 @@
     },
     "model": {
       "$ref": "#/$defs/ModelSettings"
+    },
+    "path_style": {
+      "$ref": "#/$defs/PathStyle",
+      "default": "absolute",
+      "description": "How the file tools word paths for the model. `absolute` (default)\nkeeps today's text; `workspace_relative` makes tool descriptions say\npaths are relative to the working directory and prints Grep / Glob /\nWrite / Edit paths under it relative, so a recorded session replays in\nanother working directory. Resolving paths is unchanged."
     },
     "paths": {
       "$ref": "#/$defs/PathSettings"

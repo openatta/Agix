@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use base::error::ToolError;
 use base::interface::exec::{ExecError, FileSystem, Metadata};
 use base::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
+    PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
     ToolResultBlock, ToolResultContent, ValidationResult,
 };
 use schemars::JsonSchema;
@@ -57,8 +57,16 @@ impl Tool for FileReadTool {
             .expect("schemars output is valid JSON")
     }
 
-    async fn prompt(&self, _: &PromptContext) -> String {
-        include_str!("prompts/coding/file_read.prompt.md").to_string()
+    fn input_schema_for(&self, style: PathStyle) -> Value {
+        workspace_relative_file_path(self.input_schema(), style, "read")
+    }
+
+    async fn prompt(&self, ctx: &PromptContext) -> String {
+        let guide = include_str!("prompts/coding/file_read.prompt.md");
+        match ctx.path_style {
+            PathStyle::Absolute => guide.to_string(),
+            PathStyle::WorkspaceRelative => guide.replace(ABSOLUTE_PATH_LINE, RELATIVE_PATH_LINE),
+        }
     }
 
     fn is_concurrency_safe(&self, _: &Value) -> bool {
@@ -177,6 +185,28 @@ impl Tool for FileReadTool {
             Err(e) => Err(e),
         }
     }
+}
+
+const ABSOLUTE_PATH_LINE: &str =
+    "The file_path parameter must be an absolute path, not a relative path";
+const RELATIVE_PATH_LINE: &str = "The file_path parameter is relative to the current working directory; an absolute path is also accepted";
+
+/// Rewords the `file_path` argument doc of Read / Write / Edit for
+/// `WorkspaceRelative`; any other style leaves the schema as generated.
+pub(crate) fn workspace_relative_file_path(
+    mut schema: Value,
+    style: PathStyle,
+    verb: &str,
+) -> Value {
+    if style == PathStyle::WorkspaceRelative {
+        if let Some(prop) = schema.pointer_mut("/properties/file_path") {
+            prop["description"] = Value::String(format!(
+                "The path of the file to {verb}, relative to the current working directory. \
+                 An absolute path is also accepted."
+            ));
+        }
+    }
+    schema
 }
 
 /// 把相对路径解到 cwd。绝对路径原样返回。

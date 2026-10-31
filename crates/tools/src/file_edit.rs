@@ -109,6 +109,10 @@ impl Tool for FileEditTool {
             .expect("schemars output is valid JSON")
     }
 
+    fn input_schema_for(&self, style: base::tool::PathStyle) -> Value {
+        crate::file_read::workspace_relative_file_path(self.input_schema(), style, "edit")
+    }
+
     async fn prompt(&self, _: &PromptContext) -> String {
         include_str!("prompts/coding/file_edit.prompt.md").to_string()
     }
@@ -256,7 +260,12 @@ impl Tool for FileEditTool {
 
         let outcome = run_with_cancel(
             &ctx.cancel,
-            perform_edits_structured(&*ctx.exec.filesystem, &path, &edits),
+            perform_edits_structured(
+                &*ctx.exec.filesystem,
+                &path,
+                &ctx.config.path_style.render(&path, &ctx.cwd),
+                &edits,
+            ),
         )
         .await??;
 
@@ -325,6 +334,7 @@ struct PerformOutcome {
 async fn perform_edits_structured(
     fs: &dyn FileSystem,
     path: &Path,
+    shown_path: &str,
     edits: &[SingleEdit],
 ) -> Result<PerformOutcome, ToolError> {
     let metadata = fs
@@ -385,8 +395,7 @@ async fn perform_edits_structured(
 
     fs.write_str(path, &current).await?;
 
-    let path_str = path.display().to_string();
-    let (diff_text, diff_payload) = render_diff(&original, &current, &path_str);
+    let (diff_text, diff_payload) = render_diff(&original, &current, shown_path);
     let edit_count = edits.len();
     let summary = format!(
         "Applied {} edit{} ({} replacement{}) to {} ({} → {} bytes)\n\n{}",
@@ -394,7 +403,7 @@ async fn perform_edits_structured(
         if edit_count == 1 { "" } else { "s" },
         total_replacements,
         if total_replacements == 1 { "" } else { "s" },
-        path.display(),
+        shown_path,
         original.len(),
         current.len(),
         diff_text,

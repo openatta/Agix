@@ -2045,6 +2045,7 @@ or project context that should survive across sessions.
             is_interactive: false,
             all_tool_names: selected.iter().map(|t| t.name().to_string()).collect(),
             allowed_agent_types: vec![],
+            path_style: self.config.path_style,
         };
 
         let mut defs = Vec::with_capacity(selected.len());
@@ -2066,7 +2067,7 @@ or project context that should survive across sessions.
             defs.push(base::interface::model::ToolDef {
                 name: t.name().to_string(),
                 description,
-                input_schema: t.input_schema(),
+                input_schema: t.input_schema_for(self.config.path_style),
                 source: Some(t.source().into_owned()),
             });
         }

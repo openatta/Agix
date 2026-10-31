@@ -115,6 +115,8 @@ pub struct EngineConfig {
     /// **RC-23**: 是否保留完整工具结果文本。默认 false —— 工具结果会被截断到
     /// 2KB 再送回给模型。设 true 时原样透传（长输出场景可能显著消耗 context）。
     pub verbose_tool_results: bool,
+    /// See [`PathStyle`]; mirrors `Settings.path_style`.
+    pub path_style: PathStyle,
 }
 
 /// **§5 (2026-05-09)**: file-op limits sub-config. Was 3 flat fields on
@@ -268,6 +270,45 @@ pub enum NetworkModeConfig {
     Allowlist,
 }
 
+/// How file tools word the paths the model reads: in tool descriptions and in
+/// the paths Grep, Glob, Write and Edit print. Resolving a path the model
+/// passes in is the same in both styles (relative against the working
+/// directory, absolute as is).
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum PathStyle {
+    #[default]
+    Absolute,
+    WorkspaceRelative,
+}
+
+impl PathStyle {
+    /// `path` as the model should see it: under `cwd` and relative in
+    /// `WorkspaceRelative`, otherwise exactly `path.display()`.
+    pub fn render(self, path: &std::path::Path, cwd: &std::path::Path) -> String {
+        if self == PathStyle::WorkspaceRelative {
+            if let Ok(rel) = path.strip_prefix(cwd) {
+                return if rel.as_os_str().is_empty() {
+                    ".".to_string()
+                } else {
+                    rel.display().to_string()
+                };
+            }
+        }
+        path.display().to_string()
+    }
+}
+
 impl EngineConfig {
     /// 合理默认值；具体使用方根据 CLI 与 settings 覆盖。
     pub fn defaults_for(model: impl Into<String>) -> Self {
@@ -315,6 +356,7 @@ impl EngineConfig {
             // misc
             max_agent_depth: 3,
             verbose_tool_results: false,
+            path_style: PathStyle::default(),
         }
     }
 
@@ -381,6 +423,7 @@ impl EngineConfig {
             require_enforcement: settings.sandbox.require_enforcement,
         };
         c.disable_skill_shell_execution = settings.disable_skill_shell_execution;
+        c.path_style = settings.path_style;
         c.subprocess_env = settings.sandbox.subprocess_env.clone();
 
         c.compact = CompactSettings {
@@ -433,6 +476,39 @@ pub fn default_blocking_limit(model: &str, max_tokens: u32) -> usize {
 mod sandbox_wiring_tests {
     use super::*;
     use crate::settings::Settings;
+
+    #[test]
+    fn path_style_is_absolute_unless_settings_say_otherwise() {
+        let mut s = Settings::defaults_for("test-model");
+        assert_eq!(
+            EngineConfig::from_settings(&s).path_style,
+            PathStyle::Absolute
+        );
+        s = serde_json::from_value(serde_json::json!({
+            "model": serde_json::to_value(&s.model).unwrap(),
+            "paths": serde_json::to_value(&s.paths).unwrap(),
+            "path_style": "workspace_relative",
+        }))
+        .unwrap();
+        assert_eq!(
+            EngineConfig::from_settings(&s).path_style,
+            PathStyle::WorkspaceRelative
+        );
+    }
+
+    #[test]
+    fn render_is_relative_only_under_the_working_directory() {
+        use std::path::Path;
+        let cwd = Path::new("/ws");
+        let inside = Path::new("/ws/src/a.rs");
+        assert_eq!(PathStyle::Absolute.render(inside, cwd), "/ws/src/a.rs");
+        assert_eq!(PathStyle::WorkspaceRelative.render(inside, cwd), "src/a.rs");
+        assert_eq!(PathStyle::WorkspaceRelative.render(cwd, cwd), ".");
+        assert_eq!(
+            PathStyle::WorkspaceRelative.render(Path::new("/other/a.rs"), cwd),
+            "/other/a.rs"
+        );
+    }
 
     fn settings_with_sandbox(f: impl FnOnce(&mut crate::settings::SandboxConfig)) -> Settings {
         let mut s = Settings::defaults_for("test-model");

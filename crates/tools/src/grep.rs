@@ -171,6 +171,8 @@ impl Tool for GrepTool {
         let pattern_arc = Arc::new(re);
         let glob_arc = Arc::new(glob_matcher);
         let root_owned = root.clone();
+        let style = ctx.config.path_style;
+        let cwd = ctx.cwd.clone();
         let filesystem = ctx.exec.filesystem.clone();
         // The walk runs on `ignore`'s own threads, which are outside any
         // runtime, so blocking on them cannot stall a reactor.
@@ -194,6 +196,7 @@ impl Tool for GrepTool {
                 let glob = glob_arc.clone();
                 let filesystem: Arc<dyn FileSystem> = filesystem.clone();
                 let runtime = runtime.clone();
+                let cwd = cwd.clone();
                 Box::new(move |entry| {
                     let entry = match entry {
                         Ok(e) => e,
@@ -231,23 +234,28 @@ impl Tool for GrepTool {
                         GrepMode::FilesWithMatches => {
                             if pat.is_match(content) {
                                 let mut g = lines.lock().unwrap();
-                                g.push(format!("{}\n", path.display()));
+                                g.push(format!("{}\n", style.render(path, &cwd)));
                             }
                         }
                         GrepMode::Count => {
                             let n = pat.find_iter(content).count();
                             if n > 0 {
                                 let mut g = lines.lock().unwrap();
-                                g.push(format!("{}:{}\n", path.display(), n));
+                                g.push(format!("{}:{}\n", style.render(path, &cwd), n));
                             }
                         }
                         GrepMode::Content => {
                             for (idx, line) in content.lines().enumerate() {
                                 if pat.is_match(line) {
                                     let s = if line_numbers {
-                                        format!("{}:{}:{}\n", path.display(), idx + 1, line)
+                                        format!(
+                                            "{}:{}:{}\n",
+                                            style.render(path, &cwd),
+                                            idx + 1,
+                                            line
+                                        )
                                     } else {
-                                        format!("{}:{}\n", path.display(), line)
+                                        format!("{}:{}\n", style.render(path, &cwd), line)
                                     };
                                     let mut g = lines.lock().unwrap();
                                     g.push(s);

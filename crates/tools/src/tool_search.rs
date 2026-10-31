@@ -225,6 +225,7 @@ impl Tool for ToolSearchTool {
             is_interactive: false,
             all_tool_names: all.iter().map(|t| t.name().to_string()).collect(),
             allowed_agent_types: vec![],
+            path_style: ctx.config.path_style,
         };
         let describe = |t: &Arc<dyn Tool>| {
             t.short_description()
