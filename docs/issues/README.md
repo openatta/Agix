@@ -22,3 +22,11 @@
 
 Harnix 那边与之相关的：Harnix `ipdrun-07`（spawn 实例的进程组，对应 ipdrun-01 的另一半）、Harnix `ipdrun-13`（经 `EngineContrib`
 把 ipdrun-03 交给模块）。
+
+## Grabix
+
+提出于 2026-10-31，代码位置对照 `a228cf2`（`Agix-v0.2.9-2026102702`）。
+
+| 编号 | 标题 | 类型 | 优先级 | 依赖 |
+|---|---|---|---|---|
+| [grabix-01](grabix-01-relative-paths-for-replay.md) | 文件工具的说明与结果都以绝对路径为准，录像换了工作目录就回放不了 | 新能力 | 中 | — |
