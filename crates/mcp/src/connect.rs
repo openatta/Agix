@@ -1,4 +1,4 @@
-//! 真实 MCP server 连接：用 rmcp 1.6 的 client API 起 stdio / streamable-http。
+//! 真实 MCP server 连接：用 rmcp 3.x 的 client API 起 stdio / streamable-http。
 //!
 //! 注：rmcp 把 RunningService 暴露成 generic over transport；我们用 trait
 //! object 屏蔽，让上层只看 `dyn McpClient`。
@@ -356,15 +356,11 @@ impl McpClient for StdioMcpClient {
             .map_err(|e| McpError::RmcpService(format!("list_resources: {e}")))?;
         Ok(resources
             .into_iter()
-            .map(|r| {
-                // Annotated<RawResource> derefs to RawResource; clone fields out
-                let raw = &r.raw;
-                McpResourceMeta {
-                    uri: raw.uri.clone(),
-                    name: raw.name.clone(),
-                    description: raw.description.clone(),
-                    mime_type: raw.mime_type.clone(),
-                }
+            .map(|r| McpResourceMeta {
+                uri: r.uri,
+                name: r.name,
+                description: r.description,
+                mime_type: r.mime_type,
             })
             .collect())
     }
@@ -394,6 +390,9 @@ impl McpClient for StdioMcpClient {
                         media_type: mime_type.unwrap_or_else(|| "application/octet-stream".into()),
                     });
                 }
+                other => out.push(McpContent::Other(
+                    serde_json::to_value(other).unwrap_or(serde_json::Value::Null),
+                )),
             }
         }
         Ok(out)
@@ -462,18 +461,18 @@ impl McpClient for StdioMcpClient {
 /// 用方期望一个可以直接当 prompt body 用的字符串，不是结构化多模态内容。
 /// 消息为空时退回 `description`（服务器可能只填了这一个字段）。
 fn render_prompt_result(result: rmcp::model::GetPromptResult) -> String {
-    use rmcp::model::PromptMessageContent;
+    use rmcp::model::ContentBlock;
 
     let rendered = result
         .messages
         .iter()
         .map(|m| match &m.content {
-            PromptMessageContent::Text { text } => text.clone(),
-            PromptMessageContent::Image { .. } => "[image content omitted]".to_string(),
-            PromptMessageContent::Resource { .. } => "[embedded resource omitted]".to_string(),
-            PromptMessageContent::ResourceLink { link } => {
-                format!("[resource link: {}]", link.uri)
-            }
+            ContentBlock::Text(t) => t.text.clone(),
+            ContentBlock::Image(_) => "[image content omitted]".to_string(),
+            ContentBlock::Audio(_) => "[audio content omitted]".to_string(),
+            ContentBlock::Resource(_) => "[embedded resource omitted]".to_string(),
+            ContentBlock::ResourceLink(link) => format!("[resource link: {}]", link.uri),
+            _ => "[content omitted]".to_string(),
         })
         .collect::<Vec<_>>()
         .join("\n\n");
@@ -786,11 +785,11 @@ pub(crate) fn is_auth_error(e: &McpError) -> bool {
     }
 }
 
-/// 把 rmcp::model::Content 转成我们的 McpContent。
-fn rmcp_content_to_ours(c: &rmcp::model::Annotated<rmcp::model::RawContent>) -> McpContent {
-    match &c.raw {
-        rmcp::model::RawContent::Text(t) => McpContent::Text(t.text.to_string()),
-        rmcp::model::RawContent::Image(i) => McpContent::Image {
+/// 把 rmcp::model::ContentBlock 转成我们的 McpContent。
+fn rmcp_content_to_ours(c: &rmcp::model::ContentBlock) -> McpContent {
+    match c {
+        rmcp::model::ContentBlock::Text(t) => McpContent::Text(t.text.to_string()),
+        rmcp::model::ContentBlock::Image(i) => McpContent::Image {
             data: i.data.to_string(),
             media_type: i.mime_type.to_string(),
         },
@@ -1295,19 +1294,16 @@ mod tests {
         assert!(matches!(err, McpError::NotConnected { .. }), "err: {err:?}");
     }
 
-    fn text_message(
-        role: rmcp::model::PromptMessageRole,
-        text: &str,
-    ) -> rmcp::model::PromptMessage {
+    fn text_message(role: rmcp::model::Role, text: &str) -> rmcp::model::PromptMessage {
         rmcp::model::PromptMessage::new_text(role, text)
     }
 
     #[test]
     fn render_prompt_result_joins_text_messages() {
-        use rmcp::model::PromptMessageRole;
+        use rmcp::model::Role;
         let result = rmcp::model::GetPromptResult::new(vec![
-            text_message(PromptMessageRole::User, "first"),
-            text_message(PromptMessageRole::Assistant, "second"),
+            text_message(Role::User, "first"),
+            text_message(Role::Assistant, "second"),
         ]);
         assert_eq!(render_prompt_result(result), "first\n\nsecond");
     }
@@ -1327,14 +1323,11 @@ mod tests {
 
     #[test]
     fn render_prompt_result_placeholders_non_text_content() {
-        use rmcp::model::{PromptMessage, PromptMessageContent, PromptMessageRole};
-        let resource = rmcp::model::Annotated::new(
-            rmcp::model::RawResource::new("file:///tmp/x.txt", "x.txt"),
-            None,
-        );
+        use rmcp::model::{ContentBlock, PromptMessage, Resource, Role};
+        let resource = Resource::new("file:///tmp/x.txt", "x.txt");
         let result = rmcp::model::GetPromptResult::new(vec![PromptMessage::new(
-            PromptMessageRole::User,
-            PromptMessageContent::resource_link(resource),
+            Role::User,
+            ContentBlock::resource_link(resource),
         )]);
         let rendered = render_prompt_result(result);
         assert!(

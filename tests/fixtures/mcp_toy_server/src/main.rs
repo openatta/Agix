@@ -3,7 +3,7 @@
 //! 不是产品代码，只服务于测试基础设施。
 
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{ServerCapabilities, ServerInfo};
+use rmcp::model::{ServerCapabilities, ServerConfig};
 use rmcp::transport::stdio;
 use rmcp::{tool, tool_handler, tool_router, ServerHandler, ServiceExt};
 
@@ -30,8 +30,8 @@ impl ToyServer {
 
 #[tool_handler]
 impl ServerHandler for ToyServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_instructions("Test-only MCP server: one 'ping' tool.")
     }
 }

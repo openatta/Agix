@@ -93,10 +93,10 @@ bs58 = "0.5"
 async-stream = "0.3"
 
 # MCP
-rmcp = { version = "1.6", features = ["client", "transport-child-process", "client-side-sse", "transport-streamable-http-client", "transport-streamable-http-client-reqwest"] }
+rmcp = { version = "3.5", default-features = false, features = ["client", "transport-child-process", "client-side-sse", "transport-streamable-http-client", "transport-streamable-http-client-reqwest"] }
 # The process wrapper rmcp spawns stdio servers through; named directly so a
 # server can lead its own process group.
-process-wrap = { version = "9", default-features = false, features = ["tokio1", "process-group", "kill-on-drop"] }
+process-wrap = { version = "10", default-features = false, features = ["tokio1", "process-group", "kill-on-drop"] }
 
 # Dev
 tempfile = "3"
