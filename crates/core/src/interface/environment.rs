@@ -19,6 +19,7 @@
 //! nothing.
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use time::OffsetDateTime;
 
@@ -92,6 +93,44 @@ impl Environment for FixedEnvironment {
     }
 }
 
+/// The machine's clock moved to another starting point: it reads `start` when made, and from
+/// there runs at wall-clock speed. Identifiers stay fresh.
+///
+/// For a session whose kept time has to be some other day than today — replaying a recording, so
+/// the date in its prompt is the day it was recorded — while the order and spacing of what it
+/// writes stay real.
+pub struct ShiftedEnvironment {
+    start: OffsetDateTime,
+    origin: Instant,
+}
+
+impl ShiftedEnvironment {
+    pub fn starting_at(start: OffsetDateTime) -> Self {
+        Self {
+            start,
+            origin: Instant::now(),
+        }
+    }
+
+    /// From milliseconds since the Unix epoch; `None` when out of range.
+    pub fn starting_at_ms(ms: u64) -> Option<Self> {
+        let ns = i128::from(ms).checked_mul(1_000_000)?;
+        OffsetDateTime::from_unix_timestamp_nanos(ns)
+            .ok()
+            .map(Self::starting_at)
+    }
+}
+
+impl Environment for ShiftedEnvironment {
+    fn now(&self) -> OffsetDateTime {
+        self.start + self.origin.elapsed()
+    }
+
+    fn new_id(&self) -> Id {
+        Id::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,6 +146,22 @@ mod tests {
             time::Duration::seconds(1),
             "entries must still order"
         );
+    }
+
+    #[test]
+    fn a_shifted_clock_starts_where_it_is_told_and_keeps_running() {
+        let start = OffsetDateTime::UNIX_EPOCH + time::Duration::days(20_000);
+        let env = ShiftedEnvironment::starting_at(start);
+        let a = env.now();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let b = env.now();
+        assert!(a >= start && a - start < time::Duration::seconds(1));
+        assert!(b > a, "it runs");
+        assert_ne!(env.new_id(), env.new_id());
+        let from_ms = ShiftedEnvironment::starting_at_ms(1_761_955_200_000)
+            .unwrap()
+            .now();
+        assert_eq!(from_ms.date().to_string(), "2025-11-01");
     }
 
     #[test]

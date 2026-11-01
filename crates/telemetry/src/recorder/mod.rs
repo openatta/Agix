@@ -317,6 +317,24 @@ impl RecorderModel {
     }
 }
 
+/// When the recording `name` under `root` began (its header's `created_at`, milliseconds since
+/// the epoch), reading only its first line. `None` when there is no such recording.
+///
+/// What a replaying session sets its clock to, so the date its prompt carries is the date the
+/// recording's prompt carried.
+pub fn recorded_at(root: &std::path::Path, name: &str) -> Option<u64> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(root.join(name).join("calls.jsonl")).ok()?;
+    let line = std::io::BufReader::new(file)
+        .lines()
+        .map_while(Result::ok)
+        .find(|l| !l.trim().is_empty())?;
+    match serde_json::from_str::<format::Record>(&line).ok()? {
+        format::Record::Recording(header) => Some(header.created_at),
+        _ => None,
+    }
+}
+
 fn flag(name: &str) -> bool {
     std::env::var(name).is_ok_and(|v| v != "0" && !v.is_empty())
 }

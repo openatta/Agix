@@ -380,6 +380,10 @@ pub mod codes {
 pub struct SessionOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recorder: Option<RecorderOptions>,
+    /// Where this session's kept time starts (the date in its prompt, its log's timestamps).
+    /// Omitted: the machine's clock — except in replay, where it starts when the recording did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clock: Option<ClockOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub telemetry: Option<TelemetryOptions>,
     /// This session's permission mode. `None` takes the settings'
@@ -427,6 +431,14 @@ pub struct RecorderOptions {
     /// fails the call (`true`) or only warns (`false`).
     #[serde(default)]
     pub strict: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(default)]
+pub struct ClockOptions {
+    /// RFC 3339, e.g. `2026-10-28T09:00:00Z`. The clock reads this when the session is built
+    /// and runs on at wall-clock speed.
+    pub start: String,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]

@@ -456,6 +456,10 @@ let agent = Builder::new()./* … */.history_store(store).environment(env).build
 要配两处,因为日志那一半是 store 写的,模型可见那一半是 agent 写的。两个都配上,
 否则重放会在你漏掉的那一半上对不上。
 
+经 daemon 建的会话不必自己装:`session.create` 的 `options.clock.start` 给出起点,daemon 装一个
+从那里起、按墙上时钟走的 `ShiftedEnvironment`;回放时不给也从录像开录的时刻起(见
+daemon_rpc_protocol.md 的 `session.create`)。
+
 builder 会把同一个 environment 交给它自己创建的记忆 store,所以长期记忆也是照着它
 变旧的——而这决定了它们中哪些会被端到模型面前。用 `Builder::memory_store` 传进来的
 store 由造它的人自己配:`MemoryStore::new(user, local).with_environment(env)`。

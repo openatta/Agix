@@ -2001,6 +2001,7 @@ impl SessionPool {
                         Divergence::Warn
                     },
                 });
+        let clock = session_clock(options, recorder_config.as_ref(), &session_id);
         let provider_id = spec.provider();
         let conversation_model = match provider_id.as_deref() {
             None => binding.model.clone(),
@@ -2081,6 +2082,9 @@ impl SessionPool {
             .cron_store(self.schedule.clone());
         if let Some(ref store) = self.history_store {
             builder = builder.history_store(store.clone());
+        }
+        if let Some(clock) = clock {
+            builder = builder.environment(clock);
         }
         if let Some(router) = task_router {
             builder = builder.task_router(router);
@@ -6357,6 +6361,33 @@ fn otel_sink(endpoint: Option<&str>) -> Option<std::sync::Arc<dyn telemetry::Tel
     None
 }
 
+/// The clock a session's kept time comes from, when it is not the machine's: the start the
+/// host asked for, else — replaying — the moment the recording began, so the date in the
+/// prompt is the one the recording's prompt carried.
+fn session_clock(
+    options: Option<&SessionOptions>,
+    recorder: Option<&RecorderConfig>,
+    session_id: &str,
+) -> Option<Arc<dyn base::interface::environment::Environment>> {
+    use base::interface::environment::ShiftedEnvironment;
+    if let Some(clock) = options.and_then(|o| o.clock.as_ref()) {
+        match time::OffsetDateTime::parse(
+            &clock.start,
+            &time::format_description::well_known::Rfc3339,
+        ) {
+            Ok(start) => return Some(Arc::new(ShiftedEnvironment::starting_at(start))),
+            Err(e) => {
+                tracing::warn!(start = %clock.start, error = %e, "clock.start is not RFC 3339; using the machine's clock")
+            }
+        }
+    }
+    let recorder = recorder.filter(|r| r.mode == RecorderMode::Replay)?;
+    let name = recorder.name.as_deref().unwrap_or(session_id);
+    let started = telemetry::recorder::recorded_at(&recorder.root, name)?;
+    ShiftedEnvironment::starting_at_ms(started)
+        .map(|e| Arc::new(e) as Arc<dyn base::interface::environment::Environment>)
+}
+
 /// The permission mode a session will actually run under.
 ///
 /// The caller's `options.permission_mode` is honored, but **clamped** to the
@@ -6864,6 +6895,65 @@ mod resolve_session_permission_tests {
     /// configured with gets clamped, not obeyed. Before this, `settings.json`'s
     /// `permission_mode` was only a default: anyone who could authenticate to
     /// the socket could open a `bypassPermissions` session regardless of it.
+    #[test]
+    fn a_session_clock_is_the_hosts_start_else_the_recordings_else_the_machines() {
+        let date = |env: Option<Arc<dyn base::interface::environment::Environment>>| {
+            env.map(|e| e.now().date().to_string())
+        };
+        let asked = SessionOptions {
+            clock: Some(crate::rpc::ClockOptions {
+                start: "2026-10-28T09:00:00Z".into(),
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            date(session_clock(Some(&asked), None, "s")),
+            Some("2026-10-28".into())
+        );
+
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("rec")).unwrap();
+        std::fs::write(
+            root.path().join("rec/calls.jsonl"),
+            "{\"type\":\"recording\",\"version\":1,\"name\":\"rec\",\"session_id\":\"s0\",\
+             \"created_at\":1761955200000,\"engine_version\":\"x\"}\n",
+        )
+        .unwrap();
+        let recorder = |mode, name: Option<&str>| RecorderConfig {
+            mode,
+            name: name.map(str::to_string),
+            root: root.path().to_path_buf(),
+            on_divergence: Divergence::Warn,
+        };
+        let replay = recorder(RecorderMode::Replay, Some("rec"));
+        assert_eq!(
+            date(session_clock(None, Some(&replay), "s")),
+            Some("2025-11-01".into())
+        );
+        assert_eq!(
+            date(session_clock(Some(&asked), Some(&replay), "s")),
+            Some("2026-10-28".into()),
+            "what the host asked for wins"
+        );
+        assert!(session_clock(
+            None,
+            Some(&recorder(RecorderMode::Record, Some("rec"))),
+            "s"
+        )
+        .is_none());
+        assert!(
+            session_clock(None, Some(&recorder(RecorderMode::Replay, None)), "no-such").is_none(),
+            "no recording, no shift"
+        );
+        let garbled = SessionOptions {
+            clock: Some(crate::rpc::ClockOptions {
+                start: "yesterday".into(),
+            }),
+            ..Default::default()
+        };
+        assert!(session_clock(Some(&garbled), None, "s").is_none());
+    }
+
     #[test]
     fn session_options_cannot_loosen_an_asking_settings_default() {
         let opts = SessionOptions {

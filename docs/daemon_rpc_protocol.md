@@ -767,6 +767,7 @@ HashMap),客户端要按 `scene` 找条目,不要按下标。
     "permission_mode": "default",
     "permission_rules": [ ],
     "recorder": { "mode":"replay", "name":"…", "dir":"…", "strict":true },
+    "clock": { "start": "2026-10-28T09:00:00Z" },  // 可选,记下来的时间从这里起
     "telemetry": { "output":"/abs/path.jsonl" },
     "output_schema": { "type":"object", … },  // 结构化输出必须满足的 JSON Schema
     "provider": "deepseek",               // 可选,providers 里的 id
@@ -794,6 +795,12 @@ daemon 重启后恢复)都按同一份 `options` 重建,之后的调用里再传
 
 `recorder.mode` 取 `record` / `replay` / `rerun`;`dir` 省略时用 daemon 自己的
 录制根目录。
+
+`clock.start`(RFC 3339)是这个会话"记下来的时间"的起点:提示里的日期、会话日志的时间戳
+从它起、按墙上时钟往前走(`ShiftedEnvironment`)。不给时用机器的时钟 —— 回放(`recorder.mode`
+为 `replay`)例外:从录像开录的时刻(录像头的 `created_at`)起,于是提示里的日期与录下来的
+那天相同,严格回放(`strict:true`)不会因为换了一天而对不上。`start` 写错只记警告、照旧用
+机器的时钟。
 
 `output_schema` 给了,`StructuredOutput` 工具就以这份 schema 作为自己的参数格式直接
 宣告给模型(不再需要先 `ToolSearch`),不符合 schema 的调用以错误结果退回、模型可以
