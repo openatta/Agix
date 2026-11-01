@@ -36,3 +36,12 @@
 
 IPDrun 的回放档（Harnix 的 `--replay-dir`）只能非严格：提示里的日期与绝对路径让录像隔天就对不上（Harnix `with_recording` 的注释），
 发散数靠阈值兜着。
+
+## 实现记录
+
+- `base::interface::environment::ShiftedEnvironment`（`starting_at` / `starting_at_ms`）；`telemetry::recorder::recorded_at(root, name)`；
+  daemon `rpc::ClockOptions { start }`（字段带缺省）、`SessionOptions.clock`；`session_pool.rs` 的 `session_clock` 在组装 `Builder` 时装上
+  （宿主给的起点优先，其次回放的录像头 `created_at`，都没有 ⇒ 不装，即机器的时钟）。与草图一致。
+- 测试：`crates/core` 的 `a_shifted_clock_starts_where_it_is_told_and_keeps_running`、daemon 的
+  `a_session_clock_is_the_hosts_start_else_the_recordings_else_the_machines`。
+- 提交：54f3938。
