@@ -75,4 +75,4 @@ IPDrun 的锁里 rmcp 1.8 与 3.8 两份、base64 三份（ROADMAP T12 / R4）�
 - 测试：`cargo test -p mcp` 174 过；`mcp_toy_server_smoke` 与 `fixture_smoke` 7 过；`daemon_e2e` 的 MCP 用例 6 过；
   `model` / `compaction` / `session` 全过；`cargo clippy -p mcp -p mcp-toy-server -p model --all-targets -D warnings`
   与 `cargo fmt --all --check` 干净。
-- 提交：（待记）
+- 提交：89edaeb（rmcp 3.x）、8bc3519（tiktoken-rs 0.12）。
