@@ -262,11 +262,9 @@ dependencies = [
  "time",
  "tokio",
  "tokio-util",
- "toml",
  "tracing",
  "url",
  "uuid",
- "walkdir",
 ]
 
 [[package]]
@@ -3557,9 +3555,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
- "toml",
  "tracing",
- "walkdir",
 ]
 
 [[package]]
@@ -4144,7 +4140,6 @@ dependencies = [
  "base",
  "base64 0.22.1",
  "futures",
- "glob",
  "globset",
  "html2text",
  "ignore",
