@@ -7,7 +7,7 @@
 
 use base::interface::prompt::{CacheStrategy, PromptBlock};
 use base::interface::scene::{
-    AgentScene, ExecutionParams, ReminderContext, ScenePromptContext, TokenBudget,
+    ExecutionParams, ReminderContext, Scene, ScenePromptContext, TokenBudget,
 };
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -97,7 +97,7 @@ const ALL_DEFERRABLE_TOOLS: &[&str] = &[
 
 pub struct CodingScene;
 
-impl AgentScene for CodingScene {
+impl Scene for CodingScene {
     fn id(&self) -> &str {
         "coding"
     }

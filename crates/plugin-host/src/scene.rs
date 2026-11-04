@@ -1,8 +1,8 @@
 //! `PluginScene` — a scene built from a plugin's manifest rather than from
 //! Rust source.
 //!
-//! `SceneRegistry::register` accepts any `Arc<dyn AgentScene>`, so this
-//! needs no new machinery. What `AgentScene`'s doc means by "code-level,
+//! `SceneRegistry::register` accepts any `Arc<dyn Scene>`, so this
+//! needs no new machinery. What `Scene`'s doc means by "code-level,
 //! immutable" is the second half: a scene must not change under a running
 //! session. A struct whose fields are filled once at load and never written
 //! again satisfies that as well as a unit struct does.
@@ -15,7 +15,7 @@
 
 use base::interface::prompt::PromptBlock;
 use base::interface::scene::{
-    AgentScene, ExecutionParams, ReminderContext, ScenePromptContext, TokenBudget,
+    ExecutionParams, ReminderContext, Scene, ScenePromptContext, TokenBudget,
 };
 use std::sync::Arc;
 
@@ -109,7 +109,7 @@ impl PluginScene {
     }
 }
 
-impl AgentScene for PluginScene {
+impl Scene for PluginScene {
     fn id(&self) -> &str {
         &self.id
     }

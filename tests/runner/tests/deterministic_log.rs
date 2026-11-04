@@ -11,7 +11,7 @@
 use base::id::Id;
 use base::interface::environment::FixedEnvironment;
 use base::interface::model::Model;
-use base::interface::scene::AgentScene;
+use base::interface::scene::Scene;
 use base::interface::settings::{PathSettings, PermissionMode, Settings, ThinkingMode};
 use base::interface::tool::InMemoryToolRegistry;
 use runtime::agent::{Builder, InputMessage};
@@ -65,7 +65,7 @@ async fn run_and_read_log(root: &std::path::Path, fixed: bool) -> String {
     let session_id = Id::from_bytes([7u8; 16]);
 
     let mut builder = Builder::new()
-        .scene(Arc::new(scene::scene::chat::ChatScene) as Arc<dyn AgentScene>)
+        .scene(Arc::new(scene::chat::ChatScene) as Arc<dyn Scene>)
         .model(model)
         .tools(registry)
         .settings(settings)

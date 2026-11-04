@@ -1,11 +1,11 @@
-//! `AgentScene` trait — defines agent behavior for a domain.
+//! `Scene` trait — defines agent behavior for a domain.
 //!
 //! Scenes are code-level (compile-time), bound at Engine creation, immutable.
 
 use crate::prompt::PromptBlock;
 use std::borrow::Cow;
 
-/// Context passed to `AgentScene::build_system_prompt()`.
+/// Context passed to `Scene::build_system_prompt()`.
 #[derive(Debug, Clone)]
 pub struct ScenePromptContext<'a> {
     pub cwd: Cow<'a, str>,
@@ -108,7 +108,7 @@ impl Default for ExecutionParams {
 ///
 /// Implementations are code-level (Rust source files), registered at compile time,
 /// bound to an Engine instance at creation, and immutable thereafter.
-pub trait AgentScene: Send + Sync + 'static {
+pub trait Scene: Send + Sync + 'static {
     /// Unique scene identifier (e.g. "coding", "demo").
     fn id(&self) -> &str;
 

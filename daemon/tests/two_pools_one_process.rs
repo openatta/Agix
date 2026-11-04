@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base::interface::prompt::PromptBlock;
-use base::interface::scene::{AgentScene, ScenePromptContext, TokenBudget};
+use base::interface::scene::{Scene, ScenePromptContext, TokenBudget};
 use daemon::config::{load_daemon_config, StaticDaemonPaths};
 use daemon::{DaemonServer, SessionPool};
 use model::client::AnthropicClient;
@@ -25,7 +25,7 @@ const BETA_ONLY_SCENE: &str = "beta-only";
 
 struct BetaScene;
 
-impl AgentScene for BetaScene {
+impl Scene for BetaScene {
     fn id(&self) -> &str {
         BETA_ONLY_SCENE
     }
@@ -36,13 +36,13 @@ impl AgentScene for BetaScene {
         "a scene only the beta pool's host defines"
     }
     fn build_system_prompt(&self, ctx: &ScenePromptContext) -> Vec<PromptBlock> {
-        scene::scene::coding::CodingScene.build_system_prompt(ctx)
+        scene::coding::CodingScene.build_system_prompt(ctx)
     }
     fn tools(&self) -> Vec<String> {
-        scene::scene::coding::CodingScene.tools()
+        scene::coding::CodingScene.tools()
     }
     fn token_budget(&self) -> TokenBudget {
-        scene::scene::coding::CodingScene.token_budget()
+        scene::coding::CodingScene.token_budget()
     }
 }
 
@@ -77,7 +77,7 @@ struct Pool {
 }
 
 impl Pool {
-    async fn start(name: &str, scenes: Vec<Arc<dyn AgentScene>>) -> Self {
+    async fn start(name: &str, scenes: Vec<Arc<dyn Scene>>) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join(format!("{name}.sock"));
         let cwd = dir.path().join("work");
@@ -103,7 +103,7 @@ impl Pool {
         model.push_turn(one_turn());
         let pool = daemon::assemble::pool(
             &config,
-            Arc::new(scene::scene::coding::CodingScene),
+            Arc::new(scene::coding::CodingScene),
             daemon::Assembly {
                 cwd: Some(cwd),
                 scenes,
@@ -221,7 +221,7 @@ fn the_engine_keeps_no_new_process_wide_state() {
         ("crates/model/src/tokens.rs", "static B:", "the BPE table: a constant, loaded once"),
         ("crates/model/src/tokens.rs", "Mutex<HashMap<u64, usize>>", "token counts keyed by a hash of the text: the same answer for every pool"),
         ("crates/model/src/tokens.rs", "TokenCounter", "the default counter: always the same tiktoken counter"),
-        ("crates/scene/src/scene/coding.rs", "SECTION_CACHE", "prompt sections keyed by a fingerprint of their inputs"),
+        ("crates/scene/src/coding.rs", "SECTION_CACHE", "prompt sections keyed by a fingerprint of their inputs"),
         ("crates/team/src/team_memory.rs", "PATTERNS", "compiled regexes"),
         ("crates/tools/src/bash.rs", "SUFFIXES", "a constant table"),
         ("crates/mcp/src/manager.rs", "REGISTRY", "the official MCP registry: a constant"),

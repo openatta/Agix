@@ -15,7 +15,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use base::interface::scene::{AgentScene, ScenePromptContext, TokenBudget};
+use base::interface::scene::{Scene, ScenePromptContext, TokenBudget};
 use base::prompt::PromptBlock;
 use daemon::config::{load_daemon_config, StaticDaemonPaths};
 use daemon::DaemonServer;
@@ -29,9 +29,9 @@ use tokio_util::sync::CancellationToken;
 /// The coding scene with a context budget one token wide, so the first turn
 /// crosses it. Compaction is otherwise a function of conversation length,
 /// which a test would have to spend a great many turns reaching.
-struct HairTriggerScene(scene::scene::coding::CodingScene);
+struct HairTriggerScene(scene::coding::CodingScene);
 
-impl AgentScene for HairTriggerScene {
+impl Scene for HairTriggerScene {
     fn id(&self) -> &str {
         "hair-trigger"
     }
@@ -185,7 +185,7 @@ async fn a_compacted_turn_says_so_on_the_wire() {
 
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(HairTriggerScene(scene::scene::coding::CodingScene)),
+        Arc::new(HairTriggerScene(scene::coding::CodingScene)),
         daemon::Assembly {
             cwd: Some(cwd.clone()),
             model_client: Some(Arc::new(OneTurnClient)),

@@ -260,7 +260,7 @@ async fn start_scripted_server_in(
     // The entry point `main.rs` uses: these tests are about the behaviour of
     // an assembled daemon, and an assembly of their own would be one more
     // copy to keep in step with it.
-    let mut registry = scene::scene::SceneRegistry::new();
+    let mut registry = scene::SceneRegistry::new();
     registry.register_builtin();
     let agent_scene = registry.resolve(scene_id).expect("a builtin scene");
 
@@ -327,7 +327,7 @@ async fn start_server_without_history() -> (
 
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::scene::coding::CodingScene),
+        Arc::new(scene::coding::CodingScene),
         daemon::Assembly {
             cwd: Some(dir.path().to_path_buf()),
             model_client: Some(client),
@@ -2620,7 +2620,7 @@ async fn session_create_with_null_project_root_is_a_no_project_session() {
 
     // `chat`, not the daemon's `coding`: a no-project session is only
     // meaningful in a scene that doesn't require one, and `coding` now
-    // refuses (see `AgentScene::requires_project`).
+    // refuses (see `Scene::requires_project`).
     let _ = rpc(
         &srv.sock,
         r#"{"jsonrpc":"2.0","method":"scene.activate","params":{"scene":"chat"},"id":0}"#,

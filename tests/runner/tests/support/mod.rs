@@ -524,7 +524,7 @@ impl GoldenFile {
 /// whitelist decides what a session has at all, and the cases' fake tools
 /// are on no real scene's list. Everything else delegates.
 pub struct BudgetScene {
-    inner: scene::scene::chat::ChatScene,
+    inner: scene::chat::ChatScene,
     pub compact_threshold: usize,
     /// `None` leaves the chat scene's own ceiling. `Some` is how a case pins
     /// the stop-on-max-turns decision without running dozens of model calls.
@@ -534,7 +534,7 @@ pub struct BudgetScene {
 impl BudgetScene {
     pub fn new(compact_threshold: usize) -> Self {
         Self {
-            inner: scene::scene::chat::ChatScene,
+            inner: scene::chat::ChatScene,
             compact_threshold,
             max_api_calls: None,
         }
@@ -546,7 +546,7 @@ impl BudgetScene {
     }
 }
 
-impl base::interface::scene::AgentScene for BudgetScene {
+impl base::interface::scene::Scene for BudgetScene {
     fn id(&self) -> &str {
         self.inner.id()
     }

@@ -22,7 +22,7 @@ use base::context::EngineConfig;
 use base::interface::event::AgentEvent;
 use base::interface::model::{MessageRole, Model, ModelContentBlock, ModelMessage};
 use base::interface::permission::Permission;
-use base::interface::scene::AgentScene;
+use base::interface::scene::Scene;
 use base::interface::settings::{
     ExecutionSettings, ModelSettings, PathSettings, PermissionMode, SandboxConfig, Settings,
     ThinkingMode,
@@ -501,15 +501,15 @@ fn parse_agent_type_file(content: &str, path: &Path) -> Option<AgentTypeDefiniti
 /// The fallback for callers that never wired a `SceneRegistry` — see
 /// `Inner::scene_registry` and `Inner::resolve_scene_id`. This is also how a
 /// sub-agent recovers its parent's scene when no explicit
-/// `Arc<dyn AgentScene>` was wired in (the daemon sets `Settings.paths.scope`
+/// `Arc<dyn Scene>` was wired in (the daemon sets `Settings.paths.scope`
 /// to `scene.id()`, so the scope *is* the scene id there). Unknown ids return
 /// `None` so the caller can fall back rather than guessing.
-fn builtin_scene_by_id(id: &str) -> Option<Arc<dyn AgentScene>> {
+fn builtin_scene_by_id(id: &str) -> Option<Arc<dyn Scene>> {
     match id {
-        "coding" => Some(Arc::new(scene::scene::coding::CodingScene)),
-        "chat" => Some(Arc::new(scene::scene::chat::ChatScene)),
-        "demo" => Some(Arc::new(scene::scene::demo::DemoScene)),
-        "research" => Some(Arc::new(scene::scene::research::ResearchScene)),
+        "coding" => Some(Arc::new(scene::coding::CodingScene)),
+        "chat" => Some(Arc::new(scene::chat::ChatScene)),
+        "demo" => Some(Arc::new(scene::demo::DemoScene)),
+        "research" => Some(Arc::new(scene::research::ResearchScene)),
         _ => None,
     }
 }
@@ -1332,14 +1332,14 @@ struct Inner {
     /// hand its sub-agents a programming-shop system prompt. `None` falls
     /// back to resolving `Settings.paths.scope` via `resolve_scene_id`, then to
     /// `CodingScene`.
-    parent_scene: Arc<std::sync::RwLock<Option<Arc<dyn AgentScene>>>>,
+    parent_scene: Arc<std::sync::RwLock<Option<Arc<dyn Scene>>>>,
     /// Every scene this process knows about, for resolving an agent type's
     /// `scene:` id. `None` falls back to [`builtin_scene_by_id`], which is
     /// what an embedder that never wires a registry (tests, library callers)
     /// gets — the built-in four, exactly as before. A host that registers
     /// scenes beyond those (the daemon, which also registers plugin scenes)
     /// wires its registry here so those ids resolve too.
-    scene_registry: Arc<std::sync::RwLock<Option<Arc<scene::scene::SceneRegistry>>>>,
+    scene_registry: Arc<std::sync::RwLock<Option<Arc<scene::SceneRegistry>>>>,
     /// The parent's resolved instruction file (AGENTS.md / CLAUDE.md), for
     /// the case where it came from `Builder::instruction_file(..)` and so
     /// isn't visible in `Settings` — see `settings_from_parent`.
@@ -1540,7 +1540,7 @@ impl Inner {
         &self,
         def: Option<&AgentTypeDefinition>,
         settings: &Settings,
-    ) -> Arc<dyn AgentScene> {
+    ) -> Arc<dyn Scene> {
         let parent = self.parent_scene.read().unwrap().clone();
         if let Some(name) = def.and_then(|d| d.scene.as_deref()) {
             match self.resolve_scene_id(name) {
@@ -1588,7 +1588,7 @@ impl Inner {
             return parent;
         }
         self.resolve_scene_id(&settings.paths.scope)
-            .unwrap_or_else(|| Arc::new(scene::scene::coding::CodingScene))
+            .unwrap_or_else(|| Arc::new(scene::coding::CodingScene))
     }
 
     /// A scene id resolved against the host's registry when one was wired,
@@ -1596,7 +1596,7 @@ impl Inner {
     /// only exist in the registry, so without this an agent type naming one
     /// would silently fall through to "unrecognized scene" and inherit the
     /// parent's instead.
-    fn resolve_scene_id(&self, id: &str) -> Option<Arc<dyn AgentScene>> {
+    fn resolve_scene_id(&self, id: &str) -> Option<Arc<dyn Scene>> {
         if let Some(registry) = self.scene_registry.read().unwrap().as_ref() {
             return registry.resolve(id);
         }
@@ -1614,7 +1614,7 @@ impl Inner {
 /// So: a parent with an empty allow-list (CodingScene) permits any child. A
 /// parent with a real allow-list permits only a child whose own allow-list is
 /// non-empty and contained in it, minus anything the parent disallows.
-fn scene_is_narrower_or_equal(candidate: &dyn AgentScene, parent: &dyn AgentScene) -> bool {
+fn scene_is_narrower_or_equal(candidate: &dyn Scene, parent: &dyn Scene) -> bool {
     let parent_allow = parent.tools();
     let parent_deny = parent.disallowed_tools();
     if parent_allow.is_empty() && parent_deny.is_empty() {
@@ -2082,13 +2082,13 @@ impl AgentTool {
 
     /// Let sub-agents inherit the parent's scene (S-5) — see
     /// `Inner::parent_scene`.
-    pub fn set_scene(&self, scene: Arc<dyn AgentScene>) {
+    pub fn set_scene(&self, scene: Arc<dyn Scene>) {
         *self.inner.parent_scene.write().unwrap() = Some(scene);
     }
 
     /// Let an agent type's `scene:` id resolve against every scene the host
     /// registered, not just the built-in four — see `Inner::scene_registry`.
-    pub fn set_scene_registry(&self, registry: Arc<scene::scene::SceneRegistry>) {
+    pub fn set_scene_registry(&self, registry: Arc<scene::SceneRegistry>) {
         *self.inner.scene_registry.write().unwrap() = Some(registry);
     }
 
@@ -4524,7 +4524,7 @@ mod catalog_tests {
     #[tokio::test]
     async fn team_member_inherits_the_parents_scene_instead_of_always_coding() {
         let agent_tool = team_enabled_agent_tool();
-        agent_tool.set_scene(Arc::new(scene::scene::research::ResearchScene));
+        agent_tool.set_scene(Arc::new(scene::research::ResearchScene));
 
         let (agent, _event_rx, _input_tx) = agent_tool
             .build_team_member_agent(
@@ -5921,7 +5921,7 @@ mod catalog_tests {
     #[test]
     fn subagent_scene_inherits_parent_and_agent_type_override_wins() {
         let agent_tool = test_agent_tool();
-        let research: Arc<dyn AgentScene> = Arc::new(scene::scene::research::ResearchScene);
+        let research: Arc<dyn Scene> = Arc::new(scene::research::ResearchScene);
         agent_tool.set_scene(research);
         let settings = Settings::defaults_for("test-model");
 
@@ -6004,7 +6004,7 @@ mod catalog_tests {
         // tool surface for N-17 to admit it. Reusing ChatScene under a
         // plugin-style id keeps this test about *resolution*, not about the
         // narrowing rule the test above already covers.
-        let chat: Arc<dyn AgentScene> = Arc::new(scene::scene::chat::ChatScene);
+        let chat: Arc<dyn Scene> = Arc::new(scene::chat::ChatScene);
         agent_tool.set_scene(chat);
 
         assert_eq!(
@@ -6016,11 +6016,11 @@ mod catalog_tests {
             "without a registry, a non-builtin id is unresolvable and the parent scene is kept"
         );
 
-        let mut registry = scene::scene::SceneRegistry::new();
+        let mut registry = scene::SceneRegistry::new();
         registry.register_builtin();
         registry.register(Arc::new(AliasScene {
             id: "plugin:demo",
-            inner: Arc::new(scene::scene::chat::ChatScene),
+            inner: Arc::new(scene::chat::ChatScene),
         }));
         agent_tool.set_scene_registry(Arc::new(registry));
 
@@ -6038,10 +6038,10 @@ mod catalog_tests {
     /// in for a plugin scene without depending on the plugin crate.
     struct AliasScene {
         id: &'static str,
-        inner: Arc<dyn AgentScene>,
+        inner: Arc<dyn Scene>,
     }
 
-    impl AgentScene for AliasScene {
+    impl Scene for AliasScene {
         fn id(&self) -> &str {
             self.id
         }

@@ -4,7 +4,7 @@
 
 use base::interface::event::AgentEvent;
 use base::interface::model::Model;
-use base::interface::scene::AgentScene;
+use base::interface::scene::Scene;
 use base::interface::settings::{PermissionMode, RecorderConfig, RecorderMode, ThinkingMode};
 use base::provider::ApiType;
 use base::tool::InMemoryToolRegistry;
@@ -34,9 +34,9 @@ pub struct AgentRunnerConfig {
     /// 配置——而不是像默认路径那样手搭一份空 Settings。None 时行为不变（兼容
     /// 不需要模板项目配置的用例，如裸 Agent 冒烟测试）。
     pub fixture_dir: Option<PathBuf>,
-    /// 用哪个 `AgentScene` 跑这个用例——之前这里写死 `CodingScene`，chat/research
+    /// 用哪个 `Scene` 跑这个用例——之前这里写死 `CodingScene`，chat/research
     /// 场景从没被端到端跑过。调用方（`main.rs`）负责按 `--scene` 解析出实例。
-    pub scene: Arc<dyn AgentScene>,
+    pub scene: Arc<dyn Scene>,
     /// This case's full name, including the directory it lives in — the
     /// working directory is derived from it, and two cases in different
     /// directories can share a leaf name.

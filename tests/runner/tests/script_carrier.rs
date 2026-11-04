@@ -294,7 +294,7 @@ enum Bind {
 
 fn session(turns: &[&str], replies: Vec<Reply>) -> Session {
     Session::new(fixtures(), turns, replies)
-        .scene(Arc::new(scene::scene::coding::CodingScene))
+        .scene(Arc::new(scene::coding::CodingScene))
         .tool(Arc::new(ScriptEcho) as Arc<dyn Tool>)
 }
 

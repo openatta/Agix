@@ -42,7 +42,7 @@ Or skip the process boundary entirely:
 
 ```rust
 let (mut agent, mut events, input) = runtime::agent::Builder::new()
-    .scene(Arc::new(scene::scene::coding::CodingScene))
+    .scene(Arc::new(scene::coding::CodingScene))
     .model(model)
     .settings(settings)
     .build()?;
@@ -72,7 +72,7 @@ hands over a configuration and gets one back, assembled:
 ```rust
 let pool = daemon::assemble::pool(
     &load_daemon_config("claude-sonnet-4-6", 2000, None, "coding", &paths),
-    Arc::new(scene::scene::coding::CodingScene),
+    Arc::new(scene::coding::CodingScene),
     daemon::Assembly::default(),
 )
 .await?;
@@ -291,7 +291,7 @@ the layers below it noticing.
 **L0 — cross-cutting** (no internal deps): `auth` (OAuth 2.0 PKCE), `hooks` (30
 events, 5 backends), `plugin` (marketplace, dependency resolution, disclosure),
 `telemetry` (37 event types, OpenTelemetry export, recorder).
-**L1 — foundation**: `core` (every shared trait and type: `Model`, `AgentScene`,
+**L1 — foundation**: `core` (every shared trait and type: `Model`, `Scene`,
 `Permission`, `Tool`, `Id`, `EngineConfig`, `FrozenContext`), and the two
 carriers — `wasm-host` and `script-host` — each depending on `core` and nothing
 else, so a build that wants neither links neither.
@@ -339,7 +339,7 @@ that is ~17k tokens of schemas that stop shipping on every call.
 ### Scenes — behavior is a trait, not a constant
 
 System prompt, tool whitelist, token budget, execution limits live behind
-[`AgentScene`](crates/core/src/interface/scene.rs). Four ship, and three of them
+[`Scene`](crates/core/src/interface/scene.rs). Four ship, and three of them
 double as a ladder you can copy from:
 
 | Scene | Depth |
@@ -499,7 +499,7 @@ exchange over all three.
 
 ```rust
 Builder::new()
-    .scene(my_scene)              // Arc<dyn AgentScene>    — prompt, tools, budgets
+    .scene(my_scene)              // Arc<dyn Scene>    — prompt, tools, budgets
     .model(my_model)              // Arc<dyn Model>         — any backend
     .permission(my_permission)    // Arc<dyn Permission>    — your authorization
     .compactor(my_compactor)      // Arc<dyn Compactor>     — your compaction
@@ -609,7 +609,7 @@ seconds — which is what makes gating on it possible at all.
 | L0 | `hooks` | Lifecycle hooks | `HookRunner`, `HookConfig` (5 backends), `HookEvent` (30) |
 | L0 | `plugin` | Marketplace, resolution, disclosure | `PluginManifest`, `PluginResolver`, `Disclosure`, `Capabilities` |
 | L0 | `telemetry` | Telemetry + recorder | `TelemetryHandle`, `EventPayload` (37), `RecorderModel` |
-| L1 | `core` (`base`) | Shared traits and types | `Model`, `AgentScene`, `Permission`, `Tool`, `Id`, `EngineConfig` |
+| L1 | `core` (`base`) | Shared traits and types | `Model`, `Scene`, `Permission`, `Tool`, `Id`, `EngineConfig` |
 | L1 | `wasm-host` | WASM component runtime | `API_VERSION`, capability resolver, health tracking |
 | L1 | `script-host` | QuickJS carrier | `QuickJsEngine`, `bindings::bind_into` / `bind_lenient` |
 | L2 | `model` | Anthropic + OpenAI adapters | `AnthropicModel`, `OpenAICompatibleModel`, `ModelEvent` |

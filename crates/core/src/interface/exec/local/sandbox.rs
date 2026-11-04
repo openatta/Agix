@@ -60,7 +60,7 @@ fn state_root_of(policy: &SandboxPolicy) -> Option<PathBuf> {
 /// covers the four builtins, so a deployment running a scene this list
 /// doesn't know about would otherwise get no protection for that scene's
 /// `settings.json` at all. Keep in sync with `daemon::main::resolve_scene`
-/// and `crates/scene/src/scene/*.rs` regardless, since it's still the
+/// and `crates/scene/src/*.rs` regardless, since it's still the
 /// default every caller gets today.
 #[cfg(feature = "sandbox")]
 const KNOWN_SCENES: &[&str] = &["coding", "chat", "demo", "research"];

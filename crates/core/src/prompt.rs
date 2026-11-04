@@ -1,6 +1,6 @@
 //! Prompt assembly — pure function that stitches together multi-source content.
 
-use crate::interface::scene::{AgentScene, ScenePromptContext};
+use crate::interface::scene::{Scene, ScenePromptContext};
 use crate::memory::{build_memory_prompt, MemoryStore};
 use crate::rules::build_rules_prompt;
 use crate::settings::Settings;
@@ -159,7 +159,7 @@ impl PromptBlock {
 /// Assemble the full system prompt from all sources.
 ///
 /// Concatenation order:
-/// 1. Scene skeleton (AgentScene::build_system_prompt)
+/// 1. Scene skeleton (Scene::build_system_prompt)
 /// 2. Skills loaded from skills/ directories
 /// 3. Memory loaded from MemoryStore
 ///    3b. Rules discovery index (filenames + first line only; see `crate::rules`)
@@ -170,7 +170,7 @@ impl PromptBlock {
 /// Note: CLAUDE.md / instruction file is NOT in the system prompt — it is injected
 /// as a synthetic `<system-reminder>` user message (TS userContext parity).
 pub fn assemble_prompt(
-    scene: &dyn AgentScene,
+    scene: &dyn Scene,
     settings: &Settings,
     memory_store: &MemoryStore,
     ctx: &ScenePromptContext,
@@ -201,7 +201,7 @@ pub fn assemble_prompt(
 /// mean something narrower than it says.
 pub fn assemble_prompt_with(
     registry: &dyn crate::interface::prompt_registry::PromptRegistry,
-    scene: &dyn AgentScene,
+    scene: &dyn Scene,
     settings: &Settings,
     _memory_store: &MemoryStore,
     ctx: &ScenePromptContext,
@@ -366,7 +366,7 @@ mod tests {
     use tempfile::TempDir;
 
     struct TestScene;
-    impl AgentScene for TestScene {
+    impl Scene for TestScene {
         fn id(&self) -> &str {
             "test"
         }
@@ -602,7 +602,7 @@ mod tests {
     #[test]
     fn unnamed_scene_sections_are_numbered_so_each_can_be_addressed() {
         struct ThreeSections;
-        impl AgentScene for ThreeSections {
+        impl Scene for ThreeSections {
             fn id(&self) -> &str {
                 "three"
             }
@@ -651,7 +651,7 @@ mod tests {
     #[test]
     fn a_scene_that_names_its_sections_keeps_the_names_under_the_prefix() {
         struct SectionedScene;
-        impl AgentScene for SectionedScene {
+        impl Scene for SectionedScene {
             fn id(&self) -> &str {
                 "sectioned"
             }

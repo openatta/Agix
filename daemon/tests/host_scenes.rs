@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base::interface::prompt::PromptBlock;
-use base::interface::scene::{AgentScene, ScenePromptContext, TokenBudget};
+use base::interface::scene::{Scene, ScenePromptContext, TokenBudget};
 use daemon::config::{load_daemon_config, StaticDaemonPaths};
 use daemon::DaemonServer;
 use model::client::AnthropicClient;
@@ -19,7 +19,7 @@ const HOST_SCENE: &str = "host-review";
 
 struct HostScene;
 
-impl AgentScene for HostScene {
+impl Scene for HostScene {
     fn id(&self) -> &str {
         HOST_SCENE
     }
@@ -30,13 +30,13 @@ impl AgentScene for HostScene {
         "a scene this host defines"
     }
     fn build_system_prompt(&self, ctx: &ScenePromptContext) -> Vec<PromptBlock> {
-        scene::scene::coding::CodingScene.build_system_prompt(ctx)
+        scene::coding::CodingScene.build_system_prompt(ctx)
     }
     fn tools(&self) -> Vec<String> {
-        scene::scene::coding::CodingScene.tools()
+        scene::coding::CodingScene.tools()
     }
     fn token_budget(&self) -> TokenBudget {
-        scene::scene::coding::CodingScene.token_budget()
+        scene::coding::CodingScene.token_budget()
     }
 }
 
@@ -78,7 +78,7 @@ async fn a_host_scene_is_served_and_survives_being_turned_off() {
     );
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::scene::coding::CodingScene),
+        Arc::new(scene::coding::CodingScene),
         daemon::Assembly {
             cwd: Some(cwd),
             model_client: Some(Arc::new(MockAnthropicClient::new()) as Arc<dyn AnthropicClient>),

@@ -95,7 +95,7 @@ impl Daemon {
             base::interface::settings::PermissionMode::BypassPermissions;
         let pool = daemon::assemble::pool(
             &config,
-            Arc::new(scene::scene::coding::CodingScene),
+            Arc::new(scene::coding::CodingScene),
             daemon::Assembly {
                 cwd: Some(cwd),
                 model_client: Some(model.clone() as Arc<dyn AnthropicClient>),

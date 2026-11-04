@@ -11,7 +11,7 @@ use crate::rpc::{codes, RpcResponse, SessionOptions, StreamFrame};
 use base::id::Id;
 use base::interface::event::AgentEvent;
 use base::interface::permission::Permission;
-use base::interface::scene::AgentScene;
+use base::interface::scene::Scene;
 use base::interface::settings::Settings;
 use base::interface::settings::{Divergence, RecorderConfig, RecorderMode};
 use mcp::manager::McpManager;
@@ -433,7 +433,7 @@ struct LiveSession {
     /// not this pool's default. Auto-naming is the one behaviour decided per
     /// turn rather than at build time, so it is the one that needs the scene
     /// kept here to ask.
-    scene: Arc<dyn AgentScene>,
+    scene: Arc<dyn Scene>,
     /// The project this session is bound to, `None` for a no-project session.
     project: Option<PathBuf>,
     /// Session name（CHAT 场景首轮后由 LLM 生成；CODING 为 None）。
@@ -518,7 +518,7 @@ pub struct SessionPool {
     /// session, since this predates `session.create`'s `scene` param —
     /// uses this one. Left completely alone by P4: every existing call site
     /// that reads `self.scene` keeps meaning exactly what it always has.
-    scene: Arc<dyn AgentScene>,
+    scene: Arc<dyn Scene>,
     /// P4: every scene this daemon instance currently serves, keyed by id —
     /// always at least `{self.scene.id(): self.scene}`, plus whatever
     /// `--scenes` added at startup or `scene.activate` added at runtime.
@@ -526,19 +526,19 @@ pub struct SessionPool {
     /// `self.scene` — the pool's *default* scene concept and *which scenes
     /// are currently servable* are related but distinct (the default is
     /// always servable; not everything servable is the default).
-    active_scenes: AsyncRwLock<HashMap<String, Arc<dyn AgentScene>>>,
+    active_scenes: AsyncRwLock<HashMap<String, Arc<dyn Scene>>>,
     /// Every scene this pool can serve, active or not — what `scene.list`
     /// enumerates and `scene.activate` resolves against: the built-in ones,
     /// the host's and the plugins'. Swapped wholesale when the plugin set
     /// changes or the host registers a scene; a session already running
-    /// holds its own `Arc<dyn AgentScene>` and is unaffected.
-    scene_registry: std::sync::RwLock<Arc<scene::scene::SceneRegistry>>,
+    /// holds its own `Arc<dyn Scene>` and is unaffected.
+    scene_registry: std::sync::RwLock<Arc<scene::SceneRegistry>>,
     /// Scenes the host defined rather than the binary or a plugin: the one
     /// the pool was started with, and every one passed to
     /// [`register_scene`](Self::register_scene). Kept so each rebuild of the
     /// registry has them; without that, a host scene once deactivated could
     /// never be activated again.
-    host_scenes: std::sync::RwLock<Vec<Arc<dyn AgentScene>>>,
+    host_scenes: std::sync::RwLock<Vec<Arc<dyn Scene>>>,
     /// The **opt-out** permission instance: an allow-everything
     /// `Permission` handed to a session only when its effective permission
     /// mode is `bypassPermissions` (see `resolve_session_permission`).
@@ -830,7 +830,7 @@ impl SessionPool {
         idle_timeout_secs: u64,
         client: Arc<dyn AnthropicClient>,
         settings: Arc<Settings>,
-        scene: Arc<dyn AgentScene>,
+        scene: Arc<dyn Scene>,
         permission: Arc<dyn Permission>,
         cwd: PathBuf,
         history_store: Option<Arc<dyn history::store::HistoryStore>>,
@@ -996,7 +996,7 @@ impl SessionPool {
         self.plugins.mcp_servers()
     }
 
-    fn scene_registry(&self) -> Arc<scene::scene::SceneRegistry> {
+    fn scene_registry(&self) -> Arc<scene::SceneRegistry> {
         self.scene_registry
             .read()
             .unwrap_or_else(|e| e.into_inner())
@@ -1958,7 +1958,7 @@ impl SessionPool {
     async fn create(
         &self,
         session_id: String,
-        scene: Arc<dyn AgentScene>,
+        scene: Arc<dyn Scene>,
         binding: Arc<ProjectBinding>,
         project_root_for_meta: Option<PathBuf>,
         options: Option<&SessionOptions>,
@@ -3816,7 +3816,7 @@ impl SessionPool {
                 "supports_team": scene.supports_team(),
             },
             "tools": {
-                // `AgentScene::tools()` is a whitelist, and empty means "no
+                // `Scene::tools()` is a whitelist, and empty means "no
                 // whitelist — every registered tool". Reporting that as `[]`
                 // would read to a client as "no tools at all", the opposite;
                 // `null` says there is no restriction.
@@ -4819,7 +4819,7 @@ impl SessionPool {
     /// (the pool default) against `self.scene` directly. `session.create`'s
     /// resolution rule: omitted `scene` param always means the default,
     /// regardless of what else is active.
-    async fn resolve_scene(&self, scene_id: Option<&str>) -> Option<Arc<dyn AgentScene>> {
+    async fn resolve_scene(&self, scene_id: Option<&str>) -> Option<Arc<dyn Scene>> {
         match scene_id {
             None => Some(self.scene.clone()),
             Some(id) => self.active_scenes.read().await.get(id).cloned(),
@@ -4868,7 +4868,7 @@ impl SessionPool {
     /// one replaces it.
     ///
     /// [`Assembly::extra_scenes`]: crate::assemble::Assembly::extra_scenes
-    pub fn register_scene(&self, scene: Arc<dyn AgentScene>) {
+    pub fn register_scene(&self, scene: Arc<dyn Scene>) {
         let plugin_scenes = self.plugins.scenes();
         let mut host = self.host_scenes.write().unwrap_or_else(|e| e.into_inner());
         host.retain(|s| s.id() != scene.id());
@@ -6162,10 +6162,10 @@ impl SessionPool {
 /// The scenes a pool can serve: the built-in ones, then the host's, then the
 /// plugins'. Later ones replace earlier ones of the same id.
 fn registry_of(
-    host_scenes: &[Arc<dyn AgentScene>],
-    plugin_scenes: &[Arc<dyn AgentScene>],
-) -> scene::scene::SceneRegistry {
-    let mut registry = scene::scene::SceneRegistry::new();
+    host_scenes: &[Arc<dyn Scene>],
+    plugin_scenes: &[Arc<dyn Scene>],
+) -> scene::SceneRegistry {
+    let mut registry = scene::SceneRegistry::new();
     registry.register_builtin();
     for s in host_scenes.iter().chain(plugin_scenes) {
         registry.register(s.clone());
@@ -7057,7 +7057,7 @@ mod eviction_tests {
             cancel: CancellationToken::new(),
             exited: CancellationToken::new(),
             context: None,
-            scene: Arc::new(scene::scene::coding::CodingScene),
+            scene: Arc::new(scene::coding::CodingScene),
             project: None,
             name: None,
             created_at: last_active,
@@ -7211,7 +7211,7 @@ mod mcp_for_project_tests {
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path().join("work");
         std::fs::create_dir_all(&cwd).unwrap();
-        let scene: Arc<dyn AgentScene> = Arc::new(scene::scene::coding::CodingScene);
+        let scene: Arc<dyn Scene> = Arc::new(scene::coding::CodingScene);
         let permission: Arc<dyn Permission> = Arc::new(AllowAllTestPermission);
         let paths: Arc<dyn crate::config::DaemonPaths> = Arc::new(
             crate::config::StaticDaemonPaths::new(dir.path().to_path_buf()),
@@ -7636,7 +7636,7 @@ mod with_session_lock_tests {
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path().join("work");
         std::fs::create_dir_all(&cwd).unwrap();
-        let scene: Arc<dyn AgentScene> = Arc::new(scene::scene::coding::CodingScene);
+        let scene: Arc<dyn Scene> = Arc::new(scene::coding::CodingScene);
         let permission: Arc<dyn Permission> = Arc::new(AllowAllTestPermission);
         let paths: Arc<dyn crate::config::DaemonPaths> = Arc::new(
             crate::config::StaticDaemonPaths::new(dir.path().to_path_buf()),

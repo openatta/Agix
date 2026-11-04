@@ -73,7 +73,7 @@ struct Cli {
     /// Additional scenes to activate alongside `--scene`, comma-separated
     /// (e.g. `--scenes chat,research`). `--scene`'s own value doesn't need
     /// repeating here — it's always active. Each must be one
-    /// `scene::scene::SceneRegistry::register_builtin` actually registers;
+    /// `scene::SceneRegistry::register_builtin` actually registers;
     /// an unknown name fails startup the same way an unsupported `--scene`
     /// does. Session creation still defaults to `--scene`'s scene;
     /// `session.create {"scene": "..."}` is how a caller reaches one of
@@ -110,15 +110,15 @@ struct Cli {
 }
 
 /// The closed set of scenes this daemon knows how to construct. Keep in sync
-/// with `crates/scene/src/scene/*.rs` and the sandbox's per-scene settings.json
+/// with `crates/scene/src/*.rs` and the sandbox's per-scene settings.json
 /// protection list (`crates/tools/src/bash/sandbox.rs::KNOWN_SCENES`).
-/// Resolves against `scene::scene::SceneRegistry` (P2: the registry existed
+/// Resolves against `scene::SceneRegistry` (P2: the registry existed
 /// with zero production callers before this — every scene was a hardcoded
 /// match arm here instead) rather than a hardcoded match, so `--scenes`
 /// (plural, P4) can register more than the four built-ins without touching
 /// this function again.
-fn resolve_scene(name: &str) -> anyhow::Result<Arc<dyn base::interface::scene::AgentScene>> {
-    let mut registry = scene::scene::SceneRegistry::new();
+fn resolve_scene(name: &str) -> anyhow::Result<Arc<dyn base::interface::scene::Scene>> {
+    let mut registry = scene::SceneRegistry::new();
     registry.register_builtin();
     registry.resolve(name).ok_or_else(|| {
         let mut known = registry.ids();

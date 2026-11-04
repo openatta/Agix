@@ -179,7 +179,7 @@ impl Daemon {
             provider.base_url(),
         )?);
 
-        let mut registry = scene::scene::SceneRegistry::new();
+        let mut registry = scene::SceneRegistry::new();
         registry.register_builtin();
         let agent_scene = registry
             .resolve(&opts.scene)

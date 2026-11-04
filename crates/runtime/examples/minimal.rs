@@ -12,7 +12,7 @@
 use std::sync::Arc;
 
 use base::event::AgentEvent;
-use base::interface::scene::AgentScene;
+use base::interface::scene::Scene;
 use base::interface::settings::*;
 use base::tool::{InMemoryToolRegistry, Tool};
 use model::adapter::AnthropicModel;
@@ -92,7 +92,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let (mut agent, mut events, _input) = runtime::agent::Builder::new()
-        .scene(Arc::new(scene::scene::coding::CodingScene) as Arc<dyn AgentScene>)
+        .scene(Arc::new(scene::coding::CodingScene) as Arc<dyn Scene>)
         .model(model)
         .settings(Arc::new(settings(model_name, data_dir)))
         .tools(registry)

@@ -24,7 +24,7 @@
 use base::event::AgentEvent;
 use base::id::Id;
 use base::interface::model::Model;
-use base::interface::scene::AgentScene;
+use base::interface::scene::Scene;
 use base::interface::settings::{PathSettings, PermissionMode, Settings, ThinkingMode};
 use base::interface::tool::{InMemoryToolRegistry, Tool};
 use history::store::HistoryStore as _;
@@ -143,7 +143,7 @@ async fn trace(case: Case) -> String {
         ),
     );
 
-    let scene: Arc<dyn AgentScene> = {
+    let scene: Arc<dyn Scene> = {
         let scene = BudgetScene::new(case.compact_threshold);
         Arc::new(match case.max_api_calls {
             Some(max) => scene.with_max_api_calls(max),

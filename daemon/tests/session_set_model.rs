@@ -158,7 +158,7 @@ async fn start_daemon(turns: usize) -> Daemon {
 
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::scene::coding::CodingScene),
+        Arc::new(scene::coding::CodingScene),
         daemon::Assembly {
             cwd: Some(cwd.clone()),
             model_client: Some(model.clone() as Arc<dyn AnthropicClient>),

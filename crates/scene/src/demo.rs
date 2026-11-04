@@ -1,6 +1,6 @@
 //! Demo scene — minimal agent for framework validation.
 //!
-//! 这是 [`AgentScene`] trait 最小可用实现的范例——只覆盖 6 个必须实现的方法
+//! 这是 [`Scene`] trait 最小可用实现的范例——只覆盖 6 个必须实现的方法
 //! （`id`/`name`/`description`/`build_system_prompt`/`tools`/`token_budget`），
 //! **刻意不覆写**任何有默认值的扩展方法（`build_system_reminder` /
 //! `disallowed_tools` / `default_skills` / `execution_params` /
@@ -13,11 +13,11 @@
 //! （精简但完整的参照实现，每个方法都有"为什么这么写"的注释）。
 
 use base::interface::prompt::PromptBlock;
-use base::interface::scene::{AgentScene, ScenePromptContext, TokenBudget};
+use base::interface::scene::{Scene, ScenePromptContext, TokenBudget};
 
 pub struct DemoScene;
 
-impl AgentScene for DemoScene {
+impl Scene for DemoScene {
     /// 场景唯一 id——daemon `--scene demo` 用它做匹配（见
     /// `daemon::main::resolve_scene`）。必须和 `KNOWN_SCENES`
     /// （`crates/tools/src/bash/sandbox.rs`）里的字符串保持一致，否则沙盒
@@ -33,7 +33,7 @@ impl AgentScene for DemoScene {
 
     /// 一句话描述——同样只用于展示，不影响行为。
     fn description(&self) -> &str {
-        "演示场景 — 展示 AgentScene 框架的可扩展性"
+        "演示场景 — 展示 Scene 框架的可扩展性"
     }
 
     /// 构建系统提示词。这里展示了 `PromptBlock` 两种块的最小用法：

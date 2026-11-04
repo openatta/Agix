@@ -12,11 +12,11 @@
 //! 边界）。
 
 use base::interface::prompt::PromptBlock;
-use base::interface::scene::{AgentScene, ReminderContext, ScenePromptContext, TokenBudget};
+use base::interface::scene::{ReminderContext, Scene, ScenePromptContext, TokenBudget};
 
 pub struct ChatScene;
 
-impl AgentScene for ChatScene {
+impl Scene for ChatScene {
     fn id(&self) -> &str {
         "chat"
     }

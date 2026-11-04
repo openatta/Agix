@@ -15,7 +15,7 @@
 //! has to keep working across refactors, so adding a sixth is a decision to
 //! argue for, not a detail to slip in.
 
-use base::interface::scene::AgentScene;
+use base::interface::scene::Scene;
 use base::tool::Tool;
 use std::sync::Arc;
 
@@ -49,7 +49,7 @@ pub trait PluginHost: Send + Sync {
     /// A plugin that only adds tools contributes none; this is for the ones
     /// that want their own system prompt, tool surface and budgets, which
     /// they get by owning a scene instead of altering someone else's.
-    fn scenes(&self) -> Vec<Arc<dyn AgentScene>>;
+    fn scenes(&self) -> Vec<Arc<dyn Scene>>;
 
     /// Agent types plugins declare, discoverable through `AgentTool`'s
     /// `subagent_type`.
@@ -91,7 +91,7 @@ impl PluginHost for NoPlugins {
     fn hook_configs(&self) -> Vec<(hooks::config::HookEvent, hooks::config::HookConfig)> {
         Vec::new()
     }
-    fn scenes(&self) -> Vec<Arc<dyn AgentScene>> {
+    fn scenes(&self) -> Vec<Arc<dyn Scene>> {
         Vec::new()
     }
     fn agent_types(&self) -> Vec<crate::agent_tool::AgentTypeDefinition> {

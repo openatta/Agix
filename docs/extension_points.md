@@ -189,7 +189,7 @@ Builder::new().permission(Arc::new(MyGate));
 
 ### 一个 agent 怎么呈现自己 — `scene`
 
-`base::interface::scene::AgentScene` 持有系统提示骨架、工具白名单和预算:
+`base::interface::scene::Scene` 持有系统提示骨架、工具白名单和预算:
 
 ```rust
 Builder::new().scene(Arc::new(MyScene));

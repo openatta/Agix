@@ -6,7 +6,7 @@
 //! array on every API call, whether the scene expected it to be used or not.
 //!
 //! This module supplies the missing half — a scene declares tool names as
-//! deferred (`AgentScene::deferred_tools()`), and those tools get wrapped in
+//! deferred (`Scene::deferred_tools()`), and those tools get wrapped in
 //! [`DeferredTool`] before they reach the session registry. The wrapper is a
 //! transparent delegate except for two things:
 //!

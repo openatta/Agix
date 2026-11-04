@@ -99,7 +99,7 @@ async fn a_rebuilt_session_still_has_what_the_host_added() {
     let (sink, seen) = (turns.clone(), builds.clone());
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::scene::coding::CodingScene),
+        Arc::new(scene::coding::CodingScene),
         daemon::Assembly {
             cwd: Some(cwd),
             model_client: Some(model as Arc<dyn AnthropicClient>),

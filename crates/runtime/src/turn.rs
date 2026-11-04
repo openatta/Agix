@@ -4099,7 +4099,7 @@ fn apply_result_transformers(
 /// list: new tools are added, re-listed ones take the fresh instance, and ones
 /// a server stopped listing are withdrawn so they can no longer be called.
 /// Adapters the scene does not permit are never registered — see
-/// `AgentScene::permits_tool`.
+/// `Scene::permits_tool`.
 fn sync_mcp_adapters(
     tools: &dyn base::tool::ToolRegistry,
     mcp: &McpManager,
@@ -6100,8 +6100,7 @@ mod tests {
         };
         let model: Arc<dyn base::interface::model::Model> =
             Arc::new(FixedUsageModel { usage: reported });
-        let scene: Arc<dyn base::interface::scene::AgentScene> =
-            Arc::new(scene::scene::coding::CodingScene);
+        let scene: Arc<dyn base::interface::scene::Scene> = Arc::new(scene::coding::CodingScene);
         let policy = Arc::new(Recording::default());
 
         let (telemetry_tx, _telemetry_rx) = tokio::sync::mpsc::channel(16);
@@ -6160,8 +6159,7 @@ mod tests {
                 ..Default::default()
             },
         });
-        let scene: Arc<dyn base::interface::scene::AgentScene> =
-            Arc::new(scene::scene::coding::CodingScene);
+        let scene: Arc<dyn base::interface::scene::Scene> = Arc::new(scene::coding::CodingScene);
 
         let mut settings = recall_test_settings(tmp.path());
         settings.execution = base::interface::settings::ExecutionSettings {
@@ -6245,8 +6243,7 @@ mod tests {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let model: Arc<dyn base::interface::model::Model> =
             Arc::new(RecordingAnswerModel { seen: seen.clone() });
-        let scene: Arc<dyn base::interface::scene::AgentScene> =
-            Arc::new(scene::scene::coding::CodingScene);
+        let scene: Arc<dyn base::interface::scene::Scene> = Arc::new(scene::coding::CodingScene);
 
         let (mut agent, _event_rx, _input_tx) = crate::agent::Builder::new()
             .scene(scene)
@@ -6385,8 +6382,7 @@ mod tests {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let model: Arc<dyn base::interface::model::Model> =
             Arc::new(RecordingAnswerModel { seen: seen.clone() });
-        let scene: Arc<dyn base::interface::scene::AgentScene> =
-            Arc::new(scene::scene::coding::CodingScene);
+        let scene: Arc<dyn base::interface::scene::Scene> = Arc::new(scene::coding::CodingScene);
         let mut settings = recall_test_settings(tmp.path());
         // Keep the transcript to just what this test injects.
         settings.memory_enabled = false;
@@ -6421,8 +6417,7 @@ mod tests {
         let model: Arc<dyn base::interface::model::Model> = Arc::new(RecordingAnswerModel {
             seen: Arc::new(std::sync::Mutex::new(Vec::new())),
         });
-        let scene: Arc<dyn base::interface::scene::AgentScene> =
-            Arc::new(scene::scene::coding::CodingScene);
+        let scene: Arc<dyn base::interface::scene::Scene> = Arc::new(scene::coding::CodingScene);
         let (agent, _event_rx, _input_tx) = crate::agent::Builder::new()
             .scene(scene)
             .model(model)
@@ -6550,7 +6545,7 @@ mod tests {
 /// back to the main conversation model otherwise, mirroring
 /// `AgentTool::Inner::model_for_subagent`'s pattern for the `"subagent"`
 /// task type. `prompt_intro` is the scene's `memory_extraction_prompt()`
-/// override, if any — see `AgentScene::memory_extraction_prompt`.
+/// override, if any — see `Scene::memory_extraction_prompt`.
 pub(crate) async fn extract_memories_after_turn(
     store: &MemoryStore,
     messages: &[ModelMessage],
@@ -7271,12 +7266,12 @@ mod tool_result_content_tests {
 /// - **A-1** `Tool::prompt()` had no production call site at all.
 /// - **A-3** `FrozenContext.memory_blocks` (parent `AGENTS.md`) had no consumer.
 /// - **A-4** the two recovery paths rebuilt the prompt without skills or MCP.
-/// - **A-5** `AgentScene::execution_params()` had no caller.
+/// - **A-5** `Scene::execution_params()` had no caller.
 #[cfg(test)]
 mod prompt_assembly_tests {
     use super::*;
     use base::error::ToolError;
-    use base::interface::scene::{AgentScene, ExecutionParams, TokenBudget};
+    use base::interface::scene::{ExecutionParams, Scene, TokenBudget};
     use base::interface::settings::Settings;
     use base::tool::{
         InMemoryToolRegistry, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext,
@@ -7369,7 +7364,7 @@ mod prompt_assembly_tests {
         allowed: Vec<String>,
         max_api_calls: u32,
     }
-    impl AgentScene for TestScene {
+    impl Scene for TestScene {
         fn id(&self) -> &str {
             "test"
         }
@@ -7398,7 +7393,7 @@ mod prompt_assembly_tests {
         }
     }
 
-    fn test_scene(allowed: Vec<String>) -> Arc<dyn AgentScene> {
+    fn test_scene(allowed: Vec<String>) -> Arc<dyn Scene> {
         Arc::new(TestScene {
             allowed,
             max_api_calls: 200,

@@ -57,7 +57,7 @@ async fn the_default_assembly_puts_transcripts_under_the_configured_root() {
 
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::scene::coding::CodingScene),
+        Arc::new(scene::coding::CodingScene),
         daemon::Assembly {
             cwd: Some(cwd.clone()),
             ..assembly()
@@ -114,7 +114,7 @@ async fn the_default_assembly_relocates_an_older_layout_first() {
 
     daemon::assemble::pool(
         &config,
-        Arc::new(scene::scene::coding::CodingScene),
+        Arc::new(scene::coding::CodingScene),
         daemon::Assembly {
             cwd: Some(cwd),
             ..assembly()
@@ -155,7 +155,7 @@ async fn nowhere_really_writes_nothing() {
 
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::scene::coding::CodingScene),
+        Arc::new(scene::coding::CodingScene),
         daemon::Assembly {
             cwd: Some(cwd),
             transcripts: daemon::Transcripts::Nowhere,
@@ -188,7 +188,7 @@ async fn an_unknown_extra_scene_fails_the_assembly() {
 
     let outcome = daemon::assemble::pool(
         &config_in(dir.path()),
-        Arc::new(scene::scene::coding::CodingScene),
+        Arc::new(scene::coding::CodingScene),
         daemon::Assembly {
             cwd: Some(cwd.clone()),
             extra_scenes: vec!["not-a-real-scene".into()],
@@ -209,7 +209,7 @@ async fn an_unknown_extra_scene_fails_the_assembly() {
     // about `extra_scenes` being populated at all.
     let pool = daemon::assemble::pool(
         &config_in(dir.path()),
-        Arc::new(scene::scene::coding::CodingScene),
+        Arc::new(scene::coding::CodingScene),
         daemon::Assembly {
             cwd: Some(cwd),
             extra_scenes: vec!["chat".into(), "coding".into()],
@@ -249,7 +249,7 @@ async fn a_host_credential_source_supplies_keys_the_settings_leave_out() {
 
     let without = daemon::assemble::pool(
         &config_in(dir.path()),
-        Arc::new(scene::scene::coding::CodingScene),
+        Arc::new(scene::coding::CodingScene),
         daemon::Assembly {
             cwd: Some(cwd.clone()),
             transcripts: daemon::Transcripts::Nowhere,
@@ -269,7 +269,7 @@ async fn a_host_credential_source_supplies_keys_the_settings_leave_out() {
     )]));
     let pool = daemon::assemble::pool(
         &config_in(dir.path()),
-        Arc::new(scene::scene::coding::CodingScene),
+        Arc::new(scene::coding::CodingScene),
         daemon::Assembly {
             cwd: Some(cwd.clone()),
             transcripts: daemon::Transcripts::Nowhere,

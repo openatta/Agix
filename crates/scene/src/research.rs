@@ -12,11 +12,11 @@
 //! 缓存机制——内容规模小，构建成本可以忽略。
 
 use base::interface::prompt::PromptBlock;
-use base::interface::scene::{AgentScene, ReminderContext, ScenePromptContext, TokenBudget};
+use base::interface::scene::{ReminderContext, Scene, ScenePromptContext, TokenBudget};
 
 pub struct ResearchScene;
 
-impl AgentScene for ResearchScene {
+impl Scene for ResearchScene {
     fn id(&self) -> &str {
         "research"
     }

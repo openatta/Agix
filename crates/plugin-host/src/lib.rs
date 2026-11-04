@@ -46,7 +46,7 @@ pub struct InstalledPlugins {
     /// tools because a plugin's own scene lists its own tools in
     /// `extra_tools`, and that list is only known after the components have
     /// been asked.
-    scenes: Vec<Arc<dyn base::interface::scene::AgentScene>>,
+    scenes: Vec<Arc<dyn base::interface::scene::Scene>>,
     /// Loaded components by plugin name, so the event executor can find the
     /// one a `HookConfig::Wasm` entry names.
     instances: std::collections::HashMap<String, Arc<wasm_host::PluginInstance>>,
@@ -136,7 +136,7 @@ impl InstalledPlugins {
         };
 
         let mut tools: Vec<Arc<dyn base::tool::Tool>> = Vec::new();
-        let mut scenes: Vec<Arc<dyn base::interface::scene::AgentScene>> = Vec::new();
+        let mut scenes: Vec<Arc<dyn base::interface::scene::Scene>> = Vec::new();
         let mut instances = std::collections::HashMap::new();
         let mut tool_text: Vec<ToolText> = Vec::new();
         let mut component_faults: Vec<(String, String)> = Vec::new();
@@ -243,7 +243,7 @@ impl PluginHost for InstalledPlugins {
             .collect()
     }
 
-    fn scenes(&self) -> Vec<Arc<dyn base::interface::scene::AgentScene>> {
+    fn scenes(&self) -> Vec<Arc<dyn base::interface::scene::Scene>> {
         self.scenes.clone()
     }
 

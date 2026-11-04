@@ -26,7 +26,7 @@
 //! | [`tool::Tool`] / [`tool::ToolRegistry`] | a tool, or the whole tool set |
 //! | [`tool_middleware::ToolMiddleware`] | a ring around every tool call |
 //! | [`tool_result::ToolResultTransformer`] | what a result may look like |
-//! | [`scene::AgentScene`] | system prompt, tool surface, budgets |
+//! | [`scene::Scene`] | system prompt, tool surface, budgets |
 //! | [`turn_policy::TurnPolicy`] | when a turn has gone on long enough |
 //! | [`recovery_policy::RecoveryPolicy`] | what to do when a call goes wrong |
 //! | [`budget_policy::BudgetPolicy`] | what a turn may spend and how much it may carry |

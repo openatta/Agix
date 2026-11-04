@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use base::interface::memory::MemoryStore;
 use base::interface::model::Model;
-use base::interface::scene::AgentScene;
+use base::interface::scene::Scene;
 use base::interface::script::{ScriptLedger, ScriptOutcome, ScriptRecord};
 use base::interface::settings::{PathSettings, ScriptBinding, Settings, ThinkingMode};
 use base::interface::tool::{InMemoryToolRegistry, Tool};
@@ -44,7 +44,7 @@ pub struct Session {
     memory: Option<Arc<MemoryStore>>,
     keep_log: bool,
     project: Option<PathBuf>,
-    scene: Option<Arc<dyn AgentScene>>,
+    scene: Option<Arc<dyn Scene>>,
     asking: bool,
     hooks: Option<serde_json::Value>,
     #[allow(clippy::type_complexity)]
@@ -179,7 +179,7 @@ impl Session {
 
     /// Which scene to run under. Chat by default, because most cases only
     /// need a turn loop; a case about tools needs the scene that offers them.
-    pub fn scene(mut self, scene: Arc<dyn AgentScene>) -> Self {
+    pub fn scene(mut self, scene: Arc<dyn Scene>) -> Self {
         self.scene = Some(scene);
         self
     }
@@ -292,9 +292,9 @@ pub async fn drive(root: &Path, session: Session) -> Ran {
         registry.register(tool);
     }
 
-    let scene: Arc<dyn AgentScene> = session
+    let scene: Arc<dyn Scene> = session
         .scene
-        .unwrap_or_else(|| Arc::new(scene::scene::chat::ChatScene));
+        .unwrap_or_else(|| Arc::new(scene::chat::ChatScene));
 
     // The gate the daemon builds for a session that is not bypassing, rather
     // than the builder's own allow-everything default: a case about the

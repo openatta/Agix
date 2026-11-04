@@ -15,7 +15,7 @@
 //! sum and a last-value pass the same assertion.
 
 use base::interface::model::{Model, Usage};
-use base::interface::scene::AgentScene;
+use base::interface::scene::Scene;
 use base::interface::settings::{PathSettings, PermissionMode, Settings, ThinkingMode};
 use base::interface::tool::{
     InMemoryToolRegistry, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext,
@@ -76,7 +76,7 @@ async fn one_turn_of_two_calls() -> Ran {
 
     let (telemetry_tx, mut telemetry_rx) = tokio::sync::mpsc::channel(64);
     let (mut agent, mut event_rx, input_tx) = Builder::new()
-        .scene(Arc::new(scene::scene::chat::ChatScene) as Arc<dyn AgentScene>)
+        .scene(Arc::new(scene::chat::ChatScene) as Arc<dyn Scene>)
         .model(model)
         .tools(registry)
         .settings(Arc::new(settings))

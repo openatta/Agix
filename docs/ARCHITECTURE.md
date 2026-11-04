@@ -97,8 +97,8 @@ transcript,以 `UserMessagesReturned` 交还宿主。
 
 ### 3.1 一个进程可以跑多个场景
 
-场景(`AgentScene`)是无状态的:`CodingScene` / `ChatScene` / `ResearchScene` 都是零字段
-unit struct,`Arc<dyn AgentScene>` 只是一组函数。所以同一进程并存多个场景没有障碍。
+场景(`Scene`)是无状态的:`CodingScene` / `ChatScene` / `ResearchScene` 都是零字段
+unit struct,`Arc<dyn Scene>` 只是一组函数。所以同一进程并存多个场景没有障碍。
 
 - `--scene` 定 daemon 的默认场景,`--scenes chat,research` 追加激活
 - `scene.activate` / `scene.deactivate` 运行期增删
@@ -207,7 +207,7 @@ recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着
 | `extra_tools()` | 贡献注册表里没有的工具——**只能加** |
 | `deferred_tools()` | 哪些工具只报名字不带 schema |
 
-白名单(连同白名单为空时的 `disallowed_tools()`)经 `AgentScene::permits_tool` 作用在会话
+白名单(连同白名单为空时的 `disallowed_tools()`)经 `Scene::permits_tool` 作用在会话
 注册表本身:`Builder::build()` 把不许的工具从注册表里移走,之后运行期才出现的 MCP 适配器
 也按它过滤。宣告、`ToolSearch`、分派读的是同一张表,不存在"不宣告但能调用"的工具。
 
