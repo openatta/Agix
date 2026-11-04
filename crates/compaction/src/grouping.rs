@@ -84,8 +84,8 @@ fn finish_round(messages: &[ModelMessage], start: usize) -> ApiRound {
 
 /// Estimate tokens for a slice of messages.
 ///
-/// Delegates to the workspace's one real tokenizer
-/// ([`model::tokens::estimate_message_tokens`], tiktoken `cl100k_base`). This
+/// Delegates to the workspace's one estimator
+/// ([`model::tokens::estimate_message_tokens`]). This
 /// used to be a hand-rolled `len() / 4` variant with invented per-block
 /// overheads (20 for a tool result, 30 for a tool use), which disagreed with
 /// `session::SessionManager::token_count`'s *different* `len() / 4` variant —

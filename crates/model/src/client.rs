@@ -341,7 +341,7 @@ impl AnthropicClient for HttpAnthropicClient {
     }
 
     fn count_tokens<'a>(&'a self, req: &'a MessagesRequest) -> CountFuture<'a> {
-        // 本地 tiktoken 估算（cl100k_base，Anthropic 不公开精确 tokenizer）。
+        // 本地字符类估算（Anthropic 不公开精确 tokenizer）。
         // 用于 autoCompact 的阈值检查，足够。
         // 实际精确计 token 走 Anthropic /v1/messages/count_tokens 端点 —— 推迟到 。
         Box::pin(async move { Ok(crate::tokens::estimate_input_tokens(req)) })

@@ -10,7 +10,7 @@ description  = "Agix — in-memory session state management"
 [dependencies]
 base          = { workspace = true }
 history       = { workspace = true }
-# For the single shared tiktoken-based token estimator (`model::tokens`) —
+# For the single shared token estimator (`model::tokens`) —
 # `token_count()` must agree with the compaction path's estimate.
 model         = { workspace = true }
 tokio         = { workspace = true }

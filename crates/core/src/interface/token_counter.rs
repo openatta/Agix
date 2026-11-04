@@ -3,14 +3,14 @@
 //! Every budget decision rests on one number: how many tokens the context
 //! currently holds. Compaction triggers on it, strategies choose what to drop
 //! by it, and the warning shown to the user quotes it. That number came from
-//! one hardcoded algorithm — a local `cl100k_base` tokenizer standing in for
-//! Anthropic's, which nobody publishes — with no way for a host to supply a
-//! better one.
+//! one hardcoded algorithm — a local character-class estimate standing in for
+//! Anthropic's tokenizer, which nobody publishes — with no way for a host to
+//! supply a better one.
 //!
 //! A better one is not hypothetical. A host talking to a provider with a
 //! published tokenizer can count exactly. A host willing to spend a call on
 //! `/v1/messages/count_tokens` can be exact for Anthropic too. Both are
-//! strictly more accurate than an estimate documented to run 5–15% high, and
+//! strictly more accurate than an estimate documented to be off by up to ~12%, and
 //! neither could be plugged in.
 //!
 //! # An estimate, not a measurement

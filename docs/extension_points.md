@@ -276,8 +276,8 @@ Builder::new().event_sink(sink)
 
 ### 判断上下文有多大 — `token.count`
 
-`base::interface::token_counter::TokenCounter`。默认是本地的 `cl100k_base` 估算,
-会偏高 5–15%,因为 Anthropic 没有公开 tokenizer;算得准的宿主就该自己算。
+`base::interface::token_counter::TokenCounter`。默认是本地的字符类估算(不加载词表),
+与 BPE 分词相差约 ±12%,因为 Anthropic 没有公开 tokenizer;算得准的宿主就该自己算。
 
 ### 够到机器 — `exec.process`、`exec.filesystem`、`exec.network`、`exec.sandbox`
 

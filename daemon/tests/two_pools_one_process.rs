@@ -218,9 +218,7 @@ async fn two_pools_in_one_process_see_nothing_of_each_other() {
 #[test]
 fn the_engine_keeps_no_new_process_wide_state() {
     const ALLOWED: &[(&str, &str, &str)] = &[
-        ("crates/model/src/tokens.rs", "static B:", "the BPE table: a constant, loaded once"),
-        ("crates/model/src/tokens.rs", "Mutex<HashMap<u64, usize>>", "token counts keyed by a hash of the text: the same answer for every pool"),
-        ("crates/model/src/tokens.rs", "TokenCounter", "the default counter: always the same tiktoken counter"),
+        ("crates/model/src/tokens.rs", "TokenCounter", "the default counter: a stateless estimator"),
         ("crates/scene/src/coding.rs", "SECTION_CACHE", "prompt sections keyed by a fingerprint of their inputs"),
         ("crates/team/src/team_memory.rs", "PATTERNS", "compiled regexes"),
         ("crates/tools/src/bash.rs", "SUFFIXES", "a constant table"),

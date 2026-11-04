@@ -1280,7 +1280,7 @@ client,会话在原地按新的规格重建(它是空闲的,不会腰斩什么),
                 "tokens": 0, "text": "…" } ],
   "tools": [ { "name": "Bash", "source": "builtin", "schema_bytes": 0, "tokens": 0 } ],
   "messages": { "count": 0, "tokens": 0 },  // 坐标同 session.history
-  "total_tokens": 0,                        // 估算(cl100k 近似,偏高 5–15%)
+  "total_tokens": 0,                        // 本地估算(与 BPE 分词相差约 ±12%)
   "compact_threshold": 0, "hard_cap": null }
 ```
 

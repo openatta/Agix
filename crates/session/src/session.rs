@@ -193,8 +193,7 @@ impl SessionManager {
     /// This is the number the runtime compares against
     /// `token_budget().compact_threshold`, so it must agree with the estimate
     /// the compaction strategies use to decide what to drop. It therefore
-    /// delegates to the workspace's single tiktoken-based estimator rather than
-    /// approximating.
+    /// delegates to the workspace's single estimator rather than keeping its own.
     ///
     /// It used to be `text.len() / 4` with a flat 50 tokens charged to every
     /// non-text block — which valued a 40 KB tool result and an empty one
@@ -210,9 +209,8 @@ impl SessionManager {
     /// Judge this session's size with `counter` instead of the engine's local
     /// estimate.
     ///
-    /// The default is documented to run 5–15% high, because Anthropic does not
-    /// publish its tokenizer and a local `cl100k_base` approximation is the
-    /// cheap stand-in. A host talking to a provider that does publish one, or
+    /// The default is a local estimate within about ±12% of a BPE tokenizer,
+    /// because Anthropic does not publish its tokenizer. A host talking to a provider that does publish one, or
     /// willing to spend a call on `count_tokens`, can be exact — and the
     /// number this returns is the one compaction triggers on, so being exact
     /// here is worth something.

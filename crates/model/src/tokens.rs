@@ -1,73 +1,79 @@
-//! Token 估算 —— 用 tiktoken `cl100k_base` 做近似（Anthropic 不公开精确 tokenizer，
-//! cl100k 实测高估约 5-15%，足以用作 autoCompact 阈值判断）。
+//! Token 估算 —— 不加载任何词表的字符类启发式。
 //!
-//! 真实 token 数应当走 Anthropic 的 `/v1/messages/count_tokens` 端点，但那需要
-//! 网络调用 + API 配额；本地估算是它的廉价代理。
+//! Anthropic 不公开 tokenizer，本地数只能是近似；真实用量以 API 返回的 usage 为准。
+//! 这里按字符类计数：ASCII 单词按长度折算，数字每 3 位一个，标点连串每 3 个一个，
+//! 空格与缩进不计，连续换行算一个，CJK 每字一个。对照 `cl100k_base`，代码与 JSON 高估约 8–12%，
+//! 英文文档约 4%，中文文档低估约 4%——用作上下文预算与压缩阈值足够，且偏高一侧更安全。
 
 use crate::types::{MessagesRequest, SystemBlock};
 use base::interface::model::{ModelContentBlock, ModelMessage, IMAGE_TOKEN_ESTIMATE};
 use base::message::{ContentBlock, ToolResultContent};
-use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
-use std::sync::{Mutex, OnceLock};
-use tiktoken_rs::CoreBPE;
+use std::sync::OnceLock;
 
-/// 进程级 BPE 单例。`cl100k_base` BPE 表会从 tiktoken-rs 内嵌资源里加载（数 MB）；
-/// 第一次访问后缓存。
-fn bpe() -> &'static CoreBPE {
-    static B: OnceLock<CoreBPE> = OnceLock::new();
-    B.get_or_init(|| tiktoken_rs::cl100k_base().expect("cl100k_base BPE table bundled and valid"))
+const SHORT_WORD: usize = 12;
+const CHARS_PER_WORD_TOKEN: usize = 5;
+const DIGITS_PER_TOKEN: usize = 3;
+const PUNCT_PER_TOKEN: usize = 3;
+
+fn is_cjk(c: char) -> bool {
+    matches!(c as u32,
+        0x3000..=0x303F
+        | 0x3040..=0x30FF
+        | 0x3400..=0x4DBF
+        | 0x4E00..=0x9FFF
+        | 0xAC00..=0xD7AF
+        | 0xF900..=0xFAFF
+        | 0xFF00..=0xFFEF
+        | 0x20000..=0x2FFFF)
 }
 
-// ── Memoized text counting ──
-//
-// The compaction path re-counts the *same* conversation several times per turn
-// (budget check → warning check → threshold check → per-round grouping →
-// per-strategy re-check), and a near-full context is on the order of a megabyte
-// of text. Running the BPE over all of it every time is the difference between
-// "free" and "hundreds of milliseconds per turn", which is what kept the
-// compaction path on `len() / 4` in the first place.
-//
-// So: memoize by content hash. Old messages are immutable once pushed, so the
-// same block hashes to the same key on every pass and is encoded exactly once.
-// Only bodies above `CACHE_MIN_LEN` are cached — short strings encode faster
-// than the hash+lookup would cost, and caching them would evict the large tool
-// results that actually matter.
-//
-// A 64-bit hash collision would yield a slightly wrong *estimate*; nothing here
-// is load-bearing beyond a budget threshold, so that trade is deliberate.
-const CACHE_MIN_LEN: usize = 512;
-const CACHE_MAX_ENTRIES: usize = 4096;
-
-fn text_cache() -> &'static Mutex<HashMap<u64, usize>> {
-    static C: OnceLock<Mutex<HashMap<u64, usize>>> = OnceLock::new();
-    C.get_or_init(|| Mutex::new(HashMap::new()))
+fn is_word_char(c: char) -> bool {
+    c.is_ascii_alphabetic() || (!c.is_ascii() && c.is_alphabetic() && !is_cjk(c))
 }
 
-/// Token count of `s` under the shared BPE, memoized for large inputs.
-fn count_text(bpe: &CoreBPE, s: &str) -> usize {
-    if s.len() < CACHE_MIN_LEN {
-        return bpe.encode_with_special_tokens(s).len();
+fn run_len(
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    pred: impl Fn(char) -> bool,
+) -> usize {
+    let mut len = 1;
+    while chars.next_if(|&d| pred(d)).is_some() {
+        len += 1;
     }
-    let key = {
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        s.hash(&mut h);
-        h.finish()
-    };
-    if let Ok(cache) = text_cache().lock() {
-        if let Some(&n) = cache.get(&key) {
-            return n;
+    len
+}
+
+/// Estimated token count of `s`.
+pub fn count_text(s: &str) -> usize {
+    let mut n = 0usize;
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if is_word_char(c) {
+            let mut len = 1;
+            let mut ascii = c.is_ascii();
+            while let Some(d) = chars.next_if(|&d| is_word_char(d)) {
+                ascii &= d.is_ascii();
+                len += 1;
+            }
+            n += match (ascii, len) {
+                (true, l) if l <= SHORT_WORD => 1,
+                (true, l) => l.div_ceil(CHARS_PER_WORD_TOKEN),
+                (false, l) => l.div_ceil(2),
+            };
+        } else if c.is_ascii_digit() {
+            n += run_len(&mut chars, |d| d.is_ascii_digit()).div_ceil(DIGITS_PER_TOKEN);
+        } else if c == ' ' || c == '\t' {
+            // cl100k folds spaces into the next token, indentation included.
+            run_len(&mut chars, |d| d == ' ' || d == '\t');
+        } else if c == '\n' || c == '\r' {
+            run_len(&mut chars, |d| d == '\n' || d == '\r');
+            n += 1;
+        } else if is_cjk(c) {
+            n += 1;
+        } else if c.is_ascii() {
+            n += run_len(&mut chars, |d| d.is_ascii_punctuation()).div_ceil(PUNCT_PER_TOKEN);
+        } else {
+            n += 2;
         }
-    }
-    let n = bpe.encode_with_special_tokens(s).len();
-    if let Ok(mut cache) = text_cache().lock() {
-        // Crude bound: a full cache is dropped wholesale rather than evicted by
-        // recency. The working set is one conversation; when it turns over
-        // completely, re-encoding it once is cheaper than tracking LRU order.
-        if cache.len() >= CACHE_MAX_ENTRIES {
-            cache.clear();
-        }
-        cache.insert(key, n);
     }
     n
 }
@@ -91,34 +97,50 @@ fn count_text(bpe: &CoreBPE, s: &str) -> usize {
 /// punctuation) is a handful of tokens per message and is deliberately not
 /// modelled — same omission as [`estimate_input_tokens`].
 pub fn estimate_message_tokens(messages: &[ModelMessage]) -> usize {
-    let bpe = bpe();
     messages
         .iter()
         .flat_map(|m| &m.content)
-        .map(|b| estimate_model_block_tokens_with(b, bpe))
+        .map(estimate_model_block_tokens)
         .sum()
 }
 
 /// Estimate input tokens for a single [`ModelContentBlock`].
 pub fn estimate_model_block_tokens(block: &ModelContentBlock) -> usize {
-    estimate_model_block_tokens_with(block, bpe())
+    match block {
+        ModelContentBlock::Text { text } => count_text(text),
+        // Flat estimate. Counting the base64 payload would read a 1 MB
+        // screenshot as hundreds of thousands of tokens and trip compaction on
+        // the first image the user pastes — see `IMAGE_TOKEN_ESTIMATE`.
+        ModelContentBlock::Image { .. } => IMAGE_TOKEN_ESTIMATE,
+        // Thinking is billed as text. The signature is an opaque blob that the
+        // API requires us to echo back; it is not counted.
+        ModelContentBlock::Thinking { text, .. } => count_text(text),
+        ModelContentBlock::RedactedThinking { data, .. } => count_text(data),
+        ModelContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            ..
+        } => count_text(tool_use_id) + count_text(content),
+        ModelContentBlock::ToolUse { id, name, input } => {
+            count_text(id) + count_text(name) + count_text(&input.to_string())
+        }
+    }
 }
 
 /// The engine's default [`TokenCounter`]: everything above, behind the
 /// contract, so a host with a better answer can supply one.
 ///
-/// Stateless — the BPE table and the memo cache are process-wide already —
-/// so constructing one costs nothing and any number of them agree.
+/// Stateless, so constructing one costs nothing and any number of them agree.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct TiktokenCounter;
+pub struct HeuristicCounter;
 
-impl base::interface::token_counter::TokenCounter for TiktokenCounter {
+impl base::interface::token_counter::TokenCounter for HeuristicCounter {
     fn count_text(&self, text: &str) -> usize {
-        count_text(bpe(), text)
+        count_text(text)
     }
 
     fn count_block(&self, block: &ModelContentBlock) -> usize {
-        estimate_model_block_tokens_with(block, bpe())
+        estimate_model_block_tokens(block)
     }
 
     fn count_messages(&self, messages: &[ModelMessage]) -> usize {
@@ -130,31 +152,8 @@ impl base::interface::token_counter::TokenCounter for TiktokenCounter {
 pub fn default_counter() -> std::sync::Arc<dyn base::interface::token_counter::TokenCounter> {
     static C: OnceLock<std::sync::Arc<dyn base::interface::token_counter::TokenCounter>> =
         OnceLock::new();
-    C.get_or_init(|| std::sync::Arc::new(TiktokenCounter))
+    C.get_or_init(|| std::sync::Arc::new(HeuristicCounter))
         .clone()
-}
-
-fn estimate_model_block_tokens_with(block: &ModelContentBlock, bpe: &CoreBPE) -> usize {
-    match block {
-        ModelContentBlock::Text { text } => count_text(bpe, text),
-        // Flat estimate. Encoding the base64 payload would read a 1 MB
-        // screenshot as ~250_000 tokens and trip compaction on the first image
-        // the user pastes — see `IMAGE_TOKEN_ESTIMATE`'s doc comment.
-        ModelContentBlock::Image { .. } => IMAGE_TOKEN_ESTIMATE,
-        // Thinking is billed as text. The signature is an opaque blob that the
-        // API requires us to echo back; it is not counted here, matching the
-        // estimator this replaced.
-        ModelContentBlock::Thinking { text, .. } => count_text(bpe, text),
-        ModelContentBlock::RedactedThinking { data, .. } => count_text(bpe, data),
-        ModelContentBlock::ToolResult {
-            tool_use_id,
-            content,
-            ..
-        } => count_text(bpe, tool_use_id) + count_text(bpe, content),
-        ModelContentBlock::ToolUse { id, name, input } => {
-            count_text(bpe, id) + count_text(bpe, name) + count_text(bpe, &input.to_string())
-        }
-    }
 }
 
 /// 估算一段 `MessagesRequest` 的输入 token 数（不含模型输出）。
@@ -168,55 +167,51 @@ fn estimate_model_block_tokens_with(block: &ModelContentBlock, bpe: &CoreBPE) ->
 /// - role / 字段名等 API 框架开销（实际占 ~5-15 token）
 /// - JSON 结构本身（`{` `}` `,` 等）
 pub fn estimate_input_tokens(req: &MessagesRequest) -> usize {
-    let bpe = bpe();
     let mut total = 0usize;
 
     // system
     for block in &req.system {
         let SystemBlock::Text { text, .. } = block;
-        total += bpe.encode_with_special_tokens(text).len();
+        total += count_text(text);
     }
 
     // tools
     for tool in &req.tools {
-        total += bpe.encode_with_special_tokens(&tool.description).len();
-        let schema_str = tool.input_schema.to_string();
-        total += bpe.encode_with_special_tokens(&schema_str).len();
-        total += bpe.encode_with_special_tokens(&tool.name).len();
+        total += count_text(&tool.description);
+        total += count_text(&tool.input_schema.to_string());
+        total += count_text(&tool.name);
     }
 
     // messages
     for msg in &req.messages {
         for block in &msg.content {
-            total += estimate_block_tokens(block, bpe);
+            total += estimate_block_tokens(block);
         }
     }
 
     total
 }
 
-fn estimate_block_tokens(block: &ContentBlock, bpe: &CoreBPE) -> usize {
+fn estimate_block_tokens(block: &ContentBlock) -> usize {
     match block {
-        ContentBlock::Text { text, .. } => count_text(bpe, text),
+        ContentBlock::Text { text, .. } => count_text(text),
         ContentBlock::ToolUse { name, input, id } => {
-            count_text(bpe, name) + count_text(bpe, id) + count_text(bpe, &input.to_string())
+            count_text(name) + count_text(id) + count_text(&input.to_string())
         }
         ContentBlock::ToolResult {
             tool_use_id,
             content,
             ..
         } => {
-            let id_tokens = count_text(bpe, tool_use_id);
+            let id_tokens = count_text(tool_use_id);
             let body_tokens = match content {
-                ToolResultContent::Text(t) => count_text(bpe, t),
-                ToolResultContent::Blocks(blocks) => {
-                    blocks.iter().map(|b| estimate_block_tokens(b, bpe)).sum()
-                }
+                ToolResultContent::Text(t) => count_text(t),
+                ToolResultContent::Blocks(blocks) => blocks.iter().map(estimate_block_tokens).sum(),
             };
             id_tokens + body_tokens
         }
-        ContentBlock::Thinking { thinking, .. } => count_text(bpe, thinking),
-        ContentBlock::RedactedThinking { data, .. } => count_text(bpe, data),
+        ContentBlock::Thinking { thinking, .. } => count_text(thinking),
+        ContentBlock::RedactedThinking { data, .. } => count_text(data),
         // Flat per-image estimate, shared with the interface-level estimator so
         // the wire-format and context-budget views of the same image agree.
         ContentBlock::Image { .. } => IMAGE_TOKEN_ESTIMATE,
@@ -247,7 +242,6 @@ mod tests {
     fn user_message_text_counted() {
         let req = MessagesRequest::minimal("test", "hello world");
         let n = estimate_input_tokens(&req);
-        // "hello world" 是 2 个 token (按 cl100k)
         assert!((2..=5).contains(&n), "expected 2-5 tokens, got {n}");
     }
 
@@ -350,7 +344,7 @@ mod tests {
 
     #[test]
     fn message_tokens_are_real_tokens_not_char_quarters() {
-        // "len() / 4" would call this 1 token; the tokenizer sees 4+.
+        // "len() / 4" would call this 7; a long word is several tokens, not one.
         let msgs = vec![model_user(vec![ModelContentBlock::Text {
             text: "antidisestablishmentarianism".into(),
         }])];
@@ -393,23 +387,14 @@ mod tests {
     }
 
     #[test]
-    fn memoized_and_unmemoized_paths_agree() {
-        // Same content, once below the cache threshold and once above it — the
-        // memoized path must not change the answer.
-        let unit = "the quick brown fox jumps over the lazy dog. ";
-        let short = unit.to_string();
-        let long = unit.repeat(64); // > CACHE_MIN_LEN
-        assert!(short.len() < CACHE_MIN_LEN && long.len() > CACHE_MIN_LEN);
-
-        let direct = bpe().encode_with_special_tokens(&long).len();
-        let first = estimate_message_tokens(&[model_user(vec![ModelContentBlock::Text {
-            text: long.clone(),
-        }])]);
-        let second =
-            estimate_message_tokens(&[model_user(vec![ModelContentBlock::Text { text: long }])]);
-        assert_eq!(first, direct);
-        assert_eq!(second, direct, "cache hit must return the same count");
-        let _ = short;
+    fn estimates_track_the_shape_of_text() {
+        assert_eq!(count_text(""), 0);
+        assert_eq!(count_text("hello world"), 2);
+        assert_eq!(count_text("1234567"), 3);
+        assert_eq!(count_text("这是中文"), 4);
+        assert_eq!(count_text("fn main() {}"), 4);
+        assert_eq!(count_text("    indented"), count_text("indented"));
+        assert_eq!(count_text("a\n\n\nb"), 3);
     }
 
     #[test]
@@ -432,7 +417,7 @@ mod counter_contract_tests {
     /// being true the moment a caller moves to the trait.
     #[test]
     fn the_default_counter_agrees_with_the_free_functions() {
-        let counter = TiktokenCounter;
+        let counter = HeuristicCounter;
         let messages = vec![ModelMessage {
             role: base::interface::model::MessageRole::User,
             content: vec![
@@ -461,10 +446,7 @@ mod counter_contract_tests {
                 estimate_model_block_tokens(block)
             );
         }
-        assert_eq!(
-            counter.count_text("hello there"),
-            count_text(bpe(), "hello there")
-        );
+        assert_eq!(counter.count_text("hello there"), count_text("hello there"));
     }
 
     #[test]

@@ -9,7 +9,7 @@ description  = "Agix — context compaction (message grouping, cleanup, caching)
 
 [dependencies]
 base          = { workspace = true }
-# For the single shared tiktoken-based token estimator (`model::tokens`).
+# For the single shared token estimator (`model::tokens`).
 # `model` depends on `base` only, so this stays acyclic.
 model         = { workspace = true }
 tokio         = { workspace = true }
