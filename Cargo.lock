@@ -3129,6 +3129,7 @@ dependencies = [
  "history",
  "hooks",
  "mcp",
+ "model",
  "notify",
  "permissions",
  "scene",
