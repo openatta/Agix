@@ -171,8 +171,8 @@ version = "0.2.10-2026110101"
 dependencies = [
  "base",
  "base64 0.22.1",
+ "getrandom 0.4.2",
  "hex",
- "rand 0.8.6",
  "serde",
  "serde_json",
  "sha2",

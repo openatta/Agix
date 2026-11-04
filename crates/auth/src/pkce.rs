@@ -2,7 +2,6 @@
 //! flow for public clients (CLI tools that can't keep a client secret).
 
 use sha2::{Digest, Sha256};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Code challenge method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,35 +47,26 @@ impl PkceVerifier {
 }
 
 /// Generate `len` characters in the unreserved set [A-Za-z0-9-._~] per RFC 7636.
+///
+/// Bytes at or above the largest multiple of the alphabet's size are dropped
+/// rather than reduced, so every character is equally likely.
 fn generate_verifier(len: usize) -> String {
     let alphabet: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
-    let mut state = seed_state();
+    let limit = 256 - 256 % alphabet.len();
     let mut out = String::with_capacity(len);
-    for _ in 0..len {
-        let r = next_rand(&mut state);
-        out.push(alphabet[(r as usize) % alphabet.len()] as char);
+    let mut buf = [0u8; 64];
+    while out.len() < len {
+        getrandom::fill(&mut buf).expect("the OS random source is unavailable");
+        for &b in &buf {
+            if out.len() == len {
+                break;
+            }
+            if (b as usize) < limit {
+                out.push(alphabet[b as usize % alphabet.len()] as char);
+            }
+        }
     }
     out
-}
-
-fn seed_state() -> u64 {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0) as u64;
-    let pid = std::process::id() as u64;
-    nanos ^ pid.wrapping_mul(0x9E37_79B9_7F4A_7C15)
-}
-
-/// Splitmix64 — fast, decent-quality PRNG. Adequate for PKCE: even under
-/// attacker observation, cracking the verifier still requires intercepting
-/// the auth code mid-flight, which TLS prevents.
-fn next_rand(state: &mut u64) -> u64 {
-    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    let mut z = *state;
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^ (z >> 31)
 }
 
 /// Base64URL no-padding (RFC 4648 §5).
