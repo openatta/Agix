@@ -13,6 +13,6 @@ pub mod sandbox;
 
 pub use env::{SubprocessEnv, SubprocessEnvMode};
 pub use filesystem::LocalFileSystem;
-pub use network::LocalNetwork;
+pub use network::{install_tls_provider, LocalNetwork};
 pub use process::{GroupLedger, LocalProcess};
 pub use sandbox::PlatformSandbox;

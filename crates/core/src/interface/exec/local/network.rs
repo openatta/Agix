@@ -110,6 +110,7 @@ fn shared_client(no_proxy: bool) -> reqwest::Client {
 /// a server-sent-event stream means tearing the connection down mid-answer.
 /// How long a call may take belongs to the caller.
 fn build_client(no_proxy: bool) -> reqwest::Client {
+    install_tls_provider();
     let mut b = reqwest::Client::builder()
         .user_agent(concat!("agix/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(CONNECT_TIMEOUT)
@@ -125,6 +126,16 @@ fn build_client(no_proxy: bool) -> reqwest::Client {
         tracing::error!(error = %e, no_proxy, "could not build the HTTP client; falling back to the default one");
         reqwest::Client::default()
     })
+}
+
+/// reqwest is built with `rustls-no-provider` (ring, not its aws-lc default)
+/// and panics on the first client it builds if no process-wide provider is
+/// installed — including clients built inside dependencies such as rmcp.
+pub fn install_tls_provider() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
 }
 
 fn headers_of(map: &reqwest::header::HeaderMap) -> BTreeMap<String, String> {

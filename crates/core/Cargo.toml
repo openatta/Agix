@@ -30,6 +30,7 @@ walkdir       = { workspace = true }
 ignore        = { workspace = true }
 url           = { workspace = true }
 reqwest       = { workspace = true }
+rustls        = { workspace = true }
 serde_yaml    = "0.9"
 
 [target.'cfg(unix)'.dependencies]

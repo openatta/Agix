@@ -720,6 +720,7 @@ async fn spawn_streamable_http_service(
         None
     };
     let config = http_transport_config(server_name, url, headers, resolved_auth);
+    base::interface::exec::local::install_tls_provider();
     let transport = StreamableHttpClientTransport::from_config(config);
 
     crate::notify::NotifyingHandler::new(server_name, sink)
