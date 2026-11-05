@@ -18,9 +18,7 @@ pub mod ping;
 pub mod plan_mode;
 pub mod plan_verify;
 pub mod push_notification;
-pub mod saas_stubs;
 pub mod security;
-pub mod skill_tool;
 pub mod sleep;
 pub mod structured_output;
 pub mod task_output;
@@ -75,19 +73,6 @@ pub fn assemble_tool_pool_refs<'a>(
     pool.into_values().collect()
 }
 
-pub fn register_skill_tool(
-    r: &base::tool::InMemoryToolRegistry,
-    m: std::sync::Arc<skills::manager::SkillManager>,
-    spawner: Option<std::sync::Arc<dyn base::interface::agent_spawner::AgentSpawner>>,
-    permission: std::sync::Arc<dyn base::interface::permission::Permission>,
-) {
-    let mut tool = crate::skill_tool::SkillTool::new(m).with_permission(permission);
-    if let Some(spawner) = spawner {
-        tool = tool.with_spawner(spawner);
-    }
-    r.register(std::sync::Arc::new(tool));
-}
-
 /// Register the standard set of self-contained built-in tools — no host-specific
 /// wiring (bridges, external providers, registries) required to construct any of
 /// them. Every embedder (daemon, test harness, ...) that wants a working
@@ -113,7 +98,7 @@ pub fn register_skill_tool(
 /// `EnterWorktreeTool`/`ExitWorktreeTool` ([`register_worktree_tools`] — need
 /// a session-scoped `WorktreeRegistry`).
 ///
-/// Still excluded with no helper: `saas_stubs::McpAuthTool` (needs SaaS auth
+/// Still excluded with no helper: `mcp::auth_tool::McpAuthTool` (needs SaaS auth
 /// infrastructure that does not exist here).
 pub fn register_builtin_tools(reg: &std::sync::Arc<base::tool::InMemoryToolRegistry>) {
     let simple: Vec<Arc<dyn Tool>> = vec![
@@ -217,7 +202,7 @@ pub fn register_worktree_tools(
     )));
 }
 
-pub(crate) fn input_schema<T: schemars::JsonSchema>() -> serde_json::Value {
+pub fn input_schema<T: schemars::JsonSchema>() -> serde_json::Value {
     #[allow(clippy::expect_used)]
     serde_json::to_value(schemars::schema_for!(T)).expect("a schemars schema is always valid JSON")
 }

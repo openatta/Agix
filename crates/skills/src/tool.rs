@@ -27,7 +27,7 @@ use std::sync::Arc;
 /// blocked legitimate project skills, so it's gone.
 pub struct SkillTool {
     /// Reference to the skill manager for looking up and expanding skills.
-    skill_manager: std::sync::Arc<skills::manager::SkillManager>,
+    skill_manager: std::sync::Arc<crate::manager::SkillManager>,
     /// P2-10: Agent spawner for forked skill execution (context: "fork").
     spawner: Option<Arc<dyn AgentSpawner>>,
     /// Real permission checker — held here (not read off `ToolContext`,
@@ -50,7 +50,7 @@ pub struct SkillTool {
 }
 
 impl SkillTool {
-    pub fn new(skill_manager: std::sync::Arc<skills::manager::SkillManager>) -> Self {
+    pub fn new(skill_manager: std::sync::Arc<crate::manager::SkillManager>) -> Self {
         Self {
             skill_manager,
             spawner: None,
@@ -104,7 +104,7 @@ impl Tool for SkillTool {
     }
 
     async fn prompt(&self, _: &PromptContext) -> String {
-        include_str!("prompts/coding/skill_tool.prompt.md").to_string()
+        include_str!("prompts/skill_tool.prompt.md").to_string()
     }
 
     async fn call(
@@ -321,7 +321,7 @@ impl Tool for SkillTool {
         ) {
             let from_project = matches!(
                 skill_info.map(|s| &s.source),
-                Some(skills::manager::SkillSource::Project)
+                Some(crate::manager::SkillSource::Project)
             );
             for entry in &allowed {
                 let (tool_name, rule_content) = split_allowed_tool_entry(entry);
@@ -619,7 +619,7 @@ async fn run_skill_shell_command(command: &str, ctx: &ToolContext, disabled: boo
     if disabled {
         return DISABLED_PLACEHOLDER.to_string();
     }
-    let result = crate::bash::BashTool
+    let result = tools::bash::BashTool
         .call(
             serde_json::json!({"command": command}),
             ctx.clone(),
@@ -638,6 +638,20 @@ async fn run_skill_shell_command(command: &str, ctx: &ToolContext, disabled: boo
         },
         Err(e) => format!("[error running `{command}`: {e}]"),
     }
+}
+
+/// Register the `Skill` tool over `m` in `r`.
+pub fn register(
+    r: &base::tool::InMemoryToolRegistry,
+    m: std::sync::Arc<crate::manager::SkillManager>,
+    spawner: Option<std::sync::Arc<dyn base::interface::agent_spawner::AgentSpawner>>,
+    permission: std::sync::Arc<dyn base::interface::permission::Permission>,
+) {
+    let mut tool = SkillTool::new(m).with_permission(permission);
+    if let Some(spawner) = spawner {
+        tool = tool.with_spawner(spawner);
+    }
+    r.register(std::sync::Arc::new(tool));
 }
 
 #[cfg(test)]
@@ -719,7 +733,7 @@ mod tests {
     use base::frozen::skill::{SkillEntry, SkillSource as FrozenSkillSource};
 
     fn register_test_skill(
-        mgr: &skills::manager::SkillManager,
+        mgr: &crate::manager::SkillManager,
         name: &str,
         body: &str,
         disable_model_invocation: bool,
@@ -728,7 +742,7 @@ mod tests {
     }
 
     fn register_test_skill_with(
-        mgr: &skills::manager::SkillManager,
+        mgr: &crate::manager::SkillManager,
         name: &str,
         body: &str,
         disable_model_invocation: bool,
@@ -803,7 +817,7 @@ mod tests {
     /// exactly the case that was broken.
     #[tokio::test]
     async fn project_skill_without_disable_flag_is_invocable() {
-        let mgr = Arc::new(skills::manager::SkillManager::new());
+        let mgr = Arc::new(crate::manager::SkillManager::new());
         register_test_skill(&mgr, "code-review", "Review the changed files.", false);
         let tool = SkillTool::new(mgr);
 
@@ -840,7 +854,7 @@ mod tests {
         use permissions::gate::PermissionGate;
         use permissions::rule_set_permission::RuleSetPermission;
 
-        let mgr = Arc::new(skills::manager::SkillManager::new());
+        let mgr = Arc::new(crate::manager::SkillManager::new());
         let dir = tempfile::tempdir().unwrap();
         let path = dir.keep().join("uses-bash.md");
         std::fs::write(&path, "Run some commands.").unwrap();
@@ -948,7 +962,7 @@ mod tests {
         use permissions::gate::PermissionGate;
         use permissions::rule_set_permission::RuleSetPermission;
 
-        let mgr = Arc::new(skills::manager::SkillManager::new());
+        let mgr = Arc::new(crate::manager::SkillManager::new());
         let dir = tempfile::tempdir().unwrap();
         let path = dir.keep().join("grabby.md");
         std::fs::write(&path, "Run whatever you like.").unwrap();
@@ -1029,7 +1043,7 @@ mod tests {
     /// call through the Skill tool must record the invocation.
     #[tokio::test]
     async fn successful_call_records_invocation_on_the_skill_manager() {
-        let mgr = Arc::new(skills::manager::SkillManager::new());
+        let mgr = Arc::new(crate::manager::SkillManager::new());
         register_test_skill(&mgr, "code-review", "Review the changed files.", false);
         let tool = SkillTool::new(mgr.clone());
 
@@ -1057,7 +1071,7 @@ mod tests {
     /// invocation — the metric tracks actual use, not attempted use.
     #[tokio::test]
     async fn denied_call_does_not_record_an_invocation() {
-        let mgr = Arc::new(skills::manager::SkillManager::new());
+        let mgr = Arc::new(crate::manager::SkillManager::new());
         register_test_skill(&mgr, "manual-only", "Only run via slash command.", true);
         let tool = SkillTool::new(mgr.clone());
 
@@ -1075,7 +1089,7 @@ mod tests {
     /// same session must not inject a second full copy.
     #[tokio::test]
     async fn identical_reinvocation_in_same_session_skips_duplicate_content() {
-        let mgr = Arc::new(skills::manager::SkillManager::new());
+        let mgr = Arc::new(crate::manager::SkillManager::new());
         register_test_skill(&mgr, "code-review", "Review the changed files.", false);
         let tool = SkillTool::new(mgr);
 
@@ -1116,7 +1130,7 @@ mod tests {
     /// must inject full content, even if another session already has it.
     #[tokio::test]
     async fn identical_content_in_a_different_session_still_injects_full_content() {
-        let mgr = Arc::new(skills::manager::SkillManager::new());
+        let mgr = Arc::new(crate::manager::SkillManager::new());
         register_test_skill(&mgr, "code-review", "Review the changed files.", false);
         let tool = SkillTool::new(mgr);
 
@@ -1154,7 +1168,7 @@ mod tests {
     /// type to fork into.
     #[tokio::test]
     async fn fork_context_passes_agent_field_to_spawner() {
-        let mgr = Arc::new(skills::manager::SkillManager::new());
+        let mgr = Arc::new(crate::manager::SkillManager::new());
         register_test_skill_with(
             &mgr,
             "deep-research",
@@ -1188,7 +1202,7 @@ mod tests {
     /// `spawn_agent`'s synchronous result.
     #[tokio::test]
     async fn fork_context_with_background_true_uses_the_background_spawner_method() {
-        let mgr = Arc::new(skills::manager::SkillManager::new());
+        let mgr = Arc::new(crate::manager::SkillManager::new());
         let dir = tempfile::tempdir().unwrap();
         let path = dir.keep().join("bg-research.md");
         std::fs::write(&path, "Research the topic thoroughly.").unwrap();
@@ -1229,7 +1243,7 @@ mod tests {
     /// default (general-purpose), this tool doesn't hardcode one.
     #[tokio::test]
     async fn fork_context_without_agent_field_passes_none() {
-        let mgr = Arc::new(skills::manager::SkillManager::new());
+        let mgr = Arc::new(crate::manager::SkillManager::new());
         register_test_skill_with(
             &mgr,
             "pr-summary",
@@ -1256,7 +1270,7 @@ mod tests {
     /// this is the one gate that survived (per-skill, not per-scene).
     #[tokio::test]
     async fn skill_with_disable_model_invocation_is_denied() {
-        let mgr = Arc::new(skills::manager::SkillManager::new());
+        let mgr = Arc::new(crate::manager::SkillManager::new());
         register_test_skill(&mgr, "manual-only", "Only run via slash command.", true);
         let tool = SkillTool::new(mgr);
 
@@ -1274,7 +1288,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_skill_returns_not_found() {
-        let mgr = Arc::new(skills::manager::SkillManager::new());
+        let mgr = Arc::new(crate::manager::SkillManager::new());
         let tool = SkillTool::new(mgr);
 
         let err = tool
@@ -1305,7 +1319,7 @@ mod tests {
         .unwrap();
         std::fs::write(skill_dir.join("notes.md"), "KNOWN_MARKER_CONTENT_XYZ").unwrap();
 
-        let mgr = Arc::new(skills::manager::SkillManager::new());
+        let mgr = Arc::new(crate::manager::SkillManager::new());
         mgr.register_bundled(SkillEntry {
             name: "bundled-notes".into(),
             description: "has bundled notes".into(),
@@ -1342,7 +1356,7 @@ mod tests {
     /// in the main body-truncation path this time.
     #[tokio::test]
     async fn skill_body_truncation_does_not_panic_on_multibyte_content() {
-        let mgr = Arc::new(skills::manager::SkillManager::new());
+        let mgr = Arc::new(crate::manager::SkillManager::new());
         // Each "你" is a 3-byte UTF-8 char; 9000 of them is well over the
         // 8000-char body cap and, at a byte-index cut, lands mid-char for
         // almost any cap value that isn't a multiple of 3.
@@ -1389,7 +1403,7 @@ mod tests {
         let long_cjk = "你".repeat(2500);
         std::fs::write(skill_dir.join("notes.md"), &long_cjk).unwrap();
 
-        let mgr = Arc::new(skills::manager::SkillManager::new());
+        let mgr = Arc::new(crate::manager::SkillManager::new());
         mgr.register_bundled(SkillEntry {
             name: "cjk-notes".into(),
             description: "has cjk bundled notes".into(),
@@ -1437,7 +1451,7 @@ mod tests {
         )
         .unwrap();
 
-        let mgr = Arc::new(skills::manager::SkillManager::new());
+        let mgr = Arc::new(crate::manager::SkillManager::new());
         mgr.register_bundled(SkillEntry {
             name: "escaping-skill".into(),
             description: "tries to escape".into(),
@@ -1484,7 +1498,7 @@ mod tests {
     /// `<command-name>`/`<command-args>`-wrapped message.
     #[tokio::test]
     async fn skill_without_files_field_is_unaffected() {
-        let mgr = Arc::new(skills::manager::SkillManager::new());
+        let mgr = Arc::new(crate::manager::SkillManager::new());
         register_test_skill(&mgr, "no-files", "Just a plain skill body.", false);
         let tool = SkillTool::new(mgr);
 

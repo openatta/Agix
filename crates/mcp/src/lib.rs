@@ -1,6 +1,7 @@
 //! MCP (Model Context Protocol) client — server connection, tool adaptation.
 
 pub mod adapter;
+pub mod auth_tool;
 pub mod client;
 pub mod config;
 pub mod connect;

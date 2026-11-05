@@ -10,7 +10,6 @@ description  = "Agix — built-in tool implementations"
 [dependencies]
 base          = { workspace = true }
 model         = { workspace = true }
-mcp           = { workspace = true }
 permissions   = { workspace = true }
 tokio         = { workspace = true }
 tokio-util    = { workspace = true }
@@ -33,7 +32,6 @@ ignore        = { workspace = true }
 similar       = { workspace = true }
 base64        = { workspace = true }
 time = { workspace = true }
-skills = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

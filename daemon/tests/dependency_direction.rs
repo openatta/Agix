@@ -36,16 +36,6 @@ const MODULES: &[&str] = &[
 
 const NOT_YET: &[(&str, &str, &str)] = &[
     (
-        "tools",
-        "mcp",
-        "the MCP tool adapters move into the mcp module",
-    ),
-    (
-        "tools",
-        "skills",
-        "the Skill tool moves into the skills module",
-    ),
-    (
         "runtime",
         "mcp",
         "the turn loop reaches MCP through a kernel trait",

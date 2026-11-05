@@ -2103,6 +2103,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tokio-util",
+ "tools",
  "tracing",
  "url",
 ]
@@ -3584,14 +3585,19 @@ checksum = "8ee5873ec9cce0195efcb7a4e9507a04cd49aec9c83d0389df45b1ef7ba2e649"
 name = "skills"
 version = "0.2.10-2026110101"
 dependencies = [
+ "async-trait",
  "base",
  "globset",
  "notify",
+ "permissions",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
+ "tools",
  "tracing",
 ]
 
@@ -4165,7 +4171,6 @@ dependencies = [
  "ignore",
  "jsonschema",
  "libc",
- "mcp",
  "model",
  "permissions",
  "regex",
@@ -4173,7 +4178,6 @@ dependencies = [
  "serde",
  "serde_json",
  "similar",
- "skills",
  "tempfile",
  "thiserror 2.0.18",
  "time",

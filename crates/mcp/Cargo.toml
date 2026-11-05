@@ -9,6 +9,7 @@ description  = "Agix — MCP client (server connection, tool adaptation)"
 
 [dependencies]
 base          = { workspace = true }
+tools         = { workspace = true }
 auth          = { workspace = true }
 rmcp          = { workspace = true }
 process-wrap  = { workspace = true }

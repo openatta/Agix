@@ -2196,14 +2196,14 @@ impl Builder {
             std::sync::Arc::new(registry)
         });
         // Register SkillTool using the populated skill manager. Also gives
-        // it a real `AgentSpawner` — previously `register_skill_tool` never
+        // it a real `AgentSpawner` — previously `skills::tool::register` never
         // received one at all, so a `context: fork` skill's spawner branch
         // (`SkillTool::call`) was unreachable in every real session; it
         // silently fell through to running inline instead of forking, no
         // matter what the skill's frontmatter said.
         let skill_tool_spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner> =
             Arc::new(agent_spawner.clone());
-        tools::register_skill_tool(
+        skills::tool::register(
             &tools,
             Arc::clone(&skill_mgr_arc),
             Some(skill_tool_spawner),

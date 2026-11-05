@@ -1,23 +1,6 @@
-//! Tools that historically required Anthropic SaaS / IDE infrastructure but in
-//! agix have either (a) a real local implementation or (b) been retired
-//! because there is no sensible local equivalent.
-//!
-//! **D-2 收敛状态：**
-//! - `SendMessage` / `RemoteTrigger` / `TeamCreate` / `TeamDelete`: removed.
-//!   Bash + slack-cli/curl/mail covers messaging; AgentTool with `remote=true`
-//!   covers remote-trigger; multi-agent orchestration now lives in
-//!   `agent::TeamCreateTool`.
-//! - `LspTool`: removed. The registered instance was always
-//!   `LspTool::ephemeral()`, which spawns a language server per request and
-//!   drops it; the pooling half (`LspManager`) had no caller outside its own
-//!   tests. Code intelligence is better served by the language's own CLI via
-//!   `Bash` than by a tool that only ever ran its fallback path.
-//! - `McpAuthTool`: real OAuth flow implementation. Starts a browser-based
-//!   PKCE flow and returns the authorization URL. Completion exchanges the
-//!   code for a token via `mcp::oauth`.
-//! - `DispatchMcpTool`: a **real** introspection helper. **D1 **: moved
-//!   to `agix_mcp::tools::DispatchMcpTool` so this crate no longer needs
-//!   an `agix-mcp` dependency.
+//! `McpAuth` — runs an MCP server's OAuth flow against one session pool's
+//! [`crate::oauth::McpOAuth`]: starts a browser-based PKCE flow, returns the
+//! authorization URL, and exchanges the code for a token on completion.
 
 use async_trait::async_trait;
 use base::error::ToolError;
@@ -69,13 +52,13 @@ fn default_callback_timeout() -> u64 {
     120
 }
 
-/// Runs the OAuth flow against one session pool's [`mcp::oauth::McpOAuth`].
+/// Runs the OAuth flow against one session pool's [`crate::oauth::McpOAuth`].
 pub struct McpAuthTool {
-    oauth: std::sync::Arc<mcp::oauth::McpOAuth>,
+    oauth: std::sync::Arc<crate::oauth::McpOAuth>,
 }
 
 impl McpAuthTool {
-    pub fn new(oauth: std::sync::Arc<mcp::oauth::McpOAuth>) -> Self {
+    pub fn new(oauth: std::sync::Arc<crate::oauth::McpOAuth>) -> Self {
         Self { oauth }
     }
 }
@@ -93,7 +76,7 @@ impl Tool for McpAuthTool {
         false
     }
     fn input_schema(&self) -> Value {
-        crate::input_schema::<McpAuthInput>()
+        tools::input_schema::<McpAuthInput>()
     }
     async fn prompt(&self, _: &PromptContext) -> String {
         "The `{serverName}` MCP server ({transport}) is installed but requires \
@@ -230,7 +213,7 @@ mod tests {
     #[tokio::test]
     async fn mcp_auth_fails_gracefully_without_config() {
         let dir = tempfile::tempdir().unwrap();
-        let tool = McpAuthTool::new(std::sync::Arc::new(mcp::oauth::McpOAuth::new(
+        let tool = McpAuthTool::new(std::sync::Arc::new(crate::oauth::McpOAuth::new(
             dir.path().to_path_buf(),
         )));
         let r = tool
