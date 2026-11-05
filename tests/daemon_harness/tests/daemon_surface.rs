@@ -392,7 +392,7 @@ async fn a_daemon_publishes_a_discovery_entry_for_as_long_as_it_runs() -> anyhow
     );
     assert_eq!(
         published.get("protocol_version").and_then(|v| v.as_u64()),
-        Some(2),
+        Some(u64::from(daemon::discovery::INSTANCE_PROTOCOL_VERSION)),
         "discovery entry is missing the protocol version: {published}"
     );
 
