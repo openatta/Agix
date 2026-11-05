@@ -184,6 +184,13 @@ pub async fn pool(
     assembly: Assembly,
 ) -> anyhow::Result<Arc<SessionPool>> {
     let settings = Arc::new(config.settings.clone());
+    for (section, module) in crate::modules::unassembled_settings(&settings) {
+        tracing::warn!(
+            section,
+            module,
+            "settings configure a module this build does not include; ignored"
+        );
+    }
 
     // Validation, not a value: every session's router is built by its own
     // `(project, scene)` binding from that pair's settings. What this still

@@ -39,6 +39,19 @@ pub fn compiled() -> Vec<&'static str> {
     out
 }
 
+/// The settings that configure a module this build does not carry, named
+/// so a section that will be ignored says so instead of doing nothing.
+pub fn unassembled_settings(settings: &Settings) -> Vec<(&'static str, &'static str)> {
+    let mut out = Vec::new();
+    if !cfg!(feature = "mcp") && !settings.mcp_servers.is_empty() {
+        out.push(("mcp_servers", "mcp"));
+    }
+    if !cfg!(feature = "agents") && settings.execution.team_enabled {
+        out.push(("execution.team_enabled", "agents"));
+    }
+    out
+}
+
 pub(crate) struct ProjectModules {
     /// Live-reloaded: a skill file added or removed after this was built is
     /// picked up without a rebuild, and every session on this pair sees it at
@@ -142,4 +155,27 @@ fn agent_type_dirs(settings: &Settings) -> [std::path::PathBuf; 3] {
         settings.paths.user_data_dir.join("agents"),
         settings.paths.project_root().join(".agix").join("agents"),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_section_for_a_missing_module_is_named() {
+        let mut settings = Settings::defaults_for("test");
+        settings
+            .mcp_servers
+            .insert("x".into(), serde_json::json!({}));
+        settings.execution.team_enabled = true;
+        let named = unassembled_settings(&settings);
+        assert_eq!(
+            named.contains(&("mcp_servers", "mcp")),
+            !cfg!(feature = "mcp")
+        );
+        assert_eq!(
+            named.contains(&("execution.team_enabled", "agents")),
+            !cfg!(feature = "agents")
+        );
+    }
 }
