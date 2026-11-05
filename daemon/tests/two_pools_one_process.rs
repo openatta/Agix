@@ -226,6 +226,7 @@ fn the_engine_keeps_no_new_process_wide_state() {
         ("crates/core/src/interface/exec/local/network.rs", "PROXIED", "an HTTP client; it reads the process environment's proxy, which every pool shares anyway"),
         ("crates/core/src/interface/exec/local/network.rs", "DIRECT", "an HTTP client with no per-pool configuration"),
         ("crates/core/src/interface/exec/local/sandbox.rs", "AVAILABLE", "whether this machine can sandbox at all"),
+        ("crates/core/src/interface/exec/local/orphans.rs", "ORPHANS", "the process groups this process leads: an OS resource of the process, which an aborting panic hook must reach in full"),
         ("crates/permissions/src/settings_patch.rs", "WRITE_LOCK", "serialises writes to settings files, which pools may share"),
         ("daemon/src/session_pool.rs", "OTEL", "the OpenTelemetry exporter installs process-wide providers; see assemble::pool"),
     ];

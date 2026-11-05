@@ -289,6 +289,12 @@ async fn main() -> anyhow::Result<()> {
     daemon_config.session_cap = cli.session_cap;
     daemon_config.session_idle_timeout_secs = cli.session_idle_timeout;
     daemon_config.settings.session_dir = Some(daemon_config.settings.paths.local_data_dir.clone());
+    let daemon_root = daemon_config.paths.global_root().join("daemon");
+    base::crash::install(
+        daemon_root.join("crashes"),
+        "agixd",
+        env!("CARGO_PKG_VERSION"),
+    );
 
     // TCP listener config
     if let Some(ref addr_str) = cli.listen {
@@ -351,11 +357,30 @@ async fn main() -> anyhow::Result<()> {
         .instance
         .clone()
         .unwrap_or_else(|| default_instance_name(&cli.scene, &cli.scenes));
-    let instances_dir = daemon_config
-        .paths
-        .global_root()
-        .join("daemon")
-        .join("instances.d");
+    let instances_dir = daemon_root.join("instances.d");
+
+    // Only after the lock is ours: a second daemon refused above must not
+    // touch the first one's commands.
+    let groups_file = daemon_root
+        .join("groups")
+        .join(format!("{instance_name}.json"));
+    let reaped = {
+        let path = groups_file.clone();
+        tokio::task::spawn_blocking(move || {
+            base::interface::exec::local::orphans::reap_previous(
+                &path,
+                std::time::Duration::from_millis(500),
+            )
+        })
+        .await?
+    };
+    if !reaped.is_empty() {
+        tracing::warn!(
+            groups = ?reaped,
+            "stopped process groups a previous run of this instance left running"
+        );
+    }
+    base::interface::exec::local::orphans::persist_to(groups_file.clone());
     let identity = base::process_identity::ProcessIdentity::current();
     let instance_file = daemon::discovery::InstanceFile {
         instance: instance_name.clone(),
@@ -473,13 +498,13 @@ async fn main() -> anyhow::Result<()> {
     // ── Start server ───────────────────────────────────────────────────
     let cancel = CancellationToken::new();
 
-    // Ctrl-C graceful shutdown
+    // Ctrl-C, and the SIGTERM a supervisor stops a service with, shut down
+    // gracefully.
     {
         let cancel = cancel.clone();
         let pool = pool.clone();
         tokio::spawn(async move {
-            let _ = tokio::signal::ctrl_c().await;
-            info!("ctrl-c received; shutting down");
+            shutdown_signal().await;
             pool.shutdown_all().await;
             cancel.cancel();
         });
@@ -528,9 +553,26 @@ async fn main() -> anyhow::Result<()> {
     server.serve_unix_listener(unix).await?;
 
     let _ = std::fs::remove_file(&lock_path);
+    let _ = std::fs::remove_file(&groups_file);
     daemon::discovery::remove_instance_file(&instances_dir, &instance_name);
     info!("daemon stopped");
     Ok(())
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        if let Ok(mut term) = signal(SignalKind::terminate()) {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => info!("ctrl-c received; shutting down"),
+                _ = term.recv() => info!("SIGTERM received; shutting down"),
+            }
+            return;
+        }
+    }
+    let _ = tokio::signal::ctrl_c().await;
+    info!("ctrl-c received; shutting down");
 }
 
 fn rfc3339_now() -> String {

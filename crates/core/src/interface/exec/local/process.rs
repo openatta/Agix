@@ -52,13 +52,13 @@ impl GroupLedger {
     /// its group is gone, and a stale entry would one day signal a stranger.
     pub fn record(&self, group: i32) {
         let mut groups = self.groups.lock().unwrap_or_else(|e| e.into_inner());
-        groups.retain(|g| group_alive(*g));
+        forget_emptied(&mut groups);
         groups.insert(group);
     }
 
     pub fn groups(&self) -> Vec<i32> {
         let mut groups = self.groups.lock().unwrap_or_else(|e| e.into_inner());
-        groups.retain(|g| group_alive(*g));
+        forget_emptied(&mut groups);
         groups.iter().copied().collect()
     }
 
@@ -73,6 +73,7 @@ impl GroupLedger {
         if targets.is_empty() {
             return;
         }
+        let _forget = ForgetOnDrop(&targets);
         #[cfg(unix)]
         {
             for g in &targets {
@@ -94,14 +95,36 @@ impl GroupLedger {
     }
 }
 
+fn forget_emptied(groups: &mut BTreeSet<i32>) {
+    groups.retain(|g| {
+        let alive = group_alive(*g);
+        if !alive {
+            super::orphans::stopped(*g);
+        }
+        alive
+    });
+}
+
+/// Takes the reaped groups off the process-wide list even if `reap` is
+/// dropped while it waits out the grace period.
+struct ForgetOnDrop<'a>(&'a [i32]);
+
+impl Drop for ForgetOnDrop<'_> {
+    fn drop(&mut self) {
+        for g in self.0 {
+            super::orphans::stopped(*g);
+        }
+    }
+}
+
 #[cfg(unix)]
-fn group_alive(group: i32) -> bool {
+pub(super) fn group_alive(group: i32) -> bool {
     // SAFETY: signal 0 only asks whether the group exists and is ours to signal.
     unsafe { libc::killpg(group, 0) == 0 }
 }
 
 #[cfg(not(unix))]
-fn group_alive(_group: i32) -> bool {
+pub(super) fn group_alive(_group: i32) -> bool {
     false
 }
 
@@ -160,8 +183,11 @@ impl Process for LocalProcess {
         #[cfg(unix)]
         let group = child.id().map(|pid| pid as libc::pid_t);
         #[cfg(unix)]
-        if let (Some(ledger), Some(group)) = (&self.ledger, group) {
-            ledger.record(group);
+        if let Some(group) = group {
+            super::orphans::started(group);
+            if let Some(ledger) = &self.ledger {
+                ledger.record(group);
+            }
         }
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
@@ -169,6 +195,7 @@ impl Process for LocalProcess {
             child,
             #[cfg(unix)]
             group,
+            kept: self.ledger.is_some(),
             output: Some(interleave(stdout, stderr)),
         }))
     }
@@ -221,11 +248,14 @@ struct LocalHandle {
     child: tokio::process::Child,
     #[cfg(unix)]
     group: Option<libc::pid_t>,
+    /// A ledger keeps the group past this handle and takes it off the
+    /// process-wide list when it reaps it.
+    kept: bool,
     output: Option<BoxStream<'static, Result<OutputChunk, ExecError>>>,
 }
 
 #[cfg(unix)]
-fn signal_group(group: libc::pid_t, signal: libc::c_int) {
+pub(super) fn signal_group(group: libc::pid_t, signal: libc::c_int) {
     // SAFETY: plain integers in, nothing borrowed; a group that is already
     // gone comes back as ESRCH, which is the outcome being asked for.
     unsafe {
@@ -239,6 +269,9 @@ impl Drop for LocalHandle {
         if let Some(group) = self.group {
             if matches!(self.child.try_wait(), Ok(None)) {
                 signal_group(group, libc::SIGKILL);
+            }
+            if !self.kept {
+                super::orphans::stopped(group);
             }
         }
     }

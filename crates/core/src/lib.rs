@@ -15,6 +15,7 @@ pub use interface::tool;
 // `DurableMemoryStore` used to sit alongside it with no production wiring — it
 // was deleted rather than kept as a parallel format.
 pub mod context;
+pub mod crash;
 pub mod features;
 pub mod frozen;
 pub mod intent;

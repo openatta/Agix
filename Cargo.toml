@@ -145,3 +145,14 @@ daemon-harness = { path = "tests/daemon_harness" }
 strip = "symbols"
 lto = "thin"
 codegen-units = 1
+
+# The smallest artifact. A panic aborts the process instead of unwinding: the
+# hook `base::crash` installs stops the commands it started and writes a crash
+# record first, and a supervisor restarts it (docs/deployment.md).
+#
+#     cargo build --profile release-small -p daemon --bin agixd
+[profile.release-small]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+panic = "abort"

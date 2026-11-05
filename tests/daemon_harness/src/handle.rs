@@ -348,6 +348,14 @@ impl Daemon {
         }
     }
 
+    /// `SIGKILL` a spawned daemon: no shutdown, no hooks, no `Drop` — what a
+    /// crash the panic hook never saw looks like from outside.
+    pub async fn kill(&mut self) {
+        if let Running::Spawned { child, .. } = &mut self.running {
+            let _ = child.kill().await;
+        }
+    }
+
     pub async fn stop(mut self) {
         match &mut self.running {
             Running::InProcess { cancel, tasks } => {
