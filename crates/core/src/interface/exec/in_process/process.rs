@@ -59,14 +59,20 @@ impl ScriptedProcess {
     }
 
     pub fn with(self, argv: impl Into<String>, run: ScriptedRun) -> Self {
-        self.runs.lock().unwrap().insert(argv.into(), run);
+        self.runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(argv.into(), run);
         self
     }
 
     /// Every command that was asked for, in order — including the ones with
     /// no entry.
     pub fn seen(&self) -> Vec<String> {
-        self.seen.lock().unwrap().clone()
+        self.seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     fn key(spec: &ProcessSpec) -> String {
@@ -85,8 +91,16 @@ impl Process for ScriptedProcess {
         _cancel: CancellationToken,
     ) -> Result<Box<dyn ProcessHandle>, ExecError> {
         let key = Self::key(&spec);
-        self.seen.lock().unwrap().push(key.clone());
-        let run = self.runs.lock().unwrap().get(&key).cloned();
+        self.seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(key.clone());
+        let run = self
+            .runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&key)
+            .cloned();
         let Some(run) = run else {
             return Err(ExecError::failed(format!("nothing scripted for `{key}`")));
         };

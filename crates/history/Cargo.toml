@@ -21,3 +21,7 @@ tracing       = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+
+[lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"

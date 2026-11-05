@@ -61,7 +61,7 @@ impl Tool for CronCreateTool {
     }
 
     fn input_schema(&self) -> Value {
-        serde_json::to_value(schemars::schema_for!(CronCreateInput)).expect("schema")
+        crate::input_schema::<CronCreateInput>()
     }
 
     async fn prompt(&self, _: &PromptContext) -> String {

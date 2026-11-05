@@ -115,8 +115,7 @@ impl Tool for BashTool {
     }
 
     fn input_schema(&self) -> Value {
-        serde_json::to_value(schemars::schema_for!(BashInput))
-            .expect("schemars output is valid JSON")
+        crate::input_schema::<BashInput>()
     }
 
     async fn prompt(&self, _: &PromptContext) -> String {
@@ -303,6 +302,7 @@ impl Tool for BashTool {
             .spawn(confined.spec, run_cancel.clone())
             .await
             .map_err(exec_error)?;
+        #[allow(clippy::expect_used)]
         let output = child.output().expect("the stream is taken once");
 
         let stop_reading = tokio_util::sync::CancellationToken::new();

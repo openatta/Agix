@@ -217,6 +217,11 @@ pub fn register_worktree_tools(
     )));
 }
 
+pub(crate) fn input_schema<T: schemars::JsonSchema>() -> serde_json::Value {
+    #[allow(clippy::expect_used)]
+    serde_json::to_value(schemars::schema_for!(T)).expect("a schemars schema is always valid JSON")
+}
+
 #[cfg(test)]
 mod register_builtin_tools_tests {
     use super::*;

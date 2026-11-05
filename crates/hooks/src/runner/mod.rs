@@ -275,7 +275,10 @@ impl HookRunner {
     /// Works on `&self` (uses interior mutability) so it can be called on
     /// an `Arc<HookRunner>`.
     pub fn set_wake_receiver(&self, rx: tokio::sync::mpsc::UnboundedReceiver<()>) {
-        *self.wake_receiver.lock().unwrap() = Some(rx);
+        *self
+            .wake_receiver
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(rx);
     }
 
     /// Register a hook config at runtime (e.g. from plugin install).
@@ -304,7 +307,10 @@ impl HookRunner {
     ) -> Result<(), String> {
         let mut watcher = crate::watcher::FileWatcher::new();
         watcher.watch_paths(paths, Arc::clone(self), debounce_ms)?;
-        *self.file_watcher.lock().unwrap() = Some(watcher);
+        *self
+            .file_watcher
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(watcher);
         Ok(())
     }
 
@@ -441,7 +447,10 @@ impl HookRunner {
 
         // Filter out already-executed `once` hooks so they don't fire again.
         let once_done = {
-            let once_set = self.once_executed.lock().unwrap();
+            let once_set = self
+                .once_executed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             configs
                 .iter()
                 .enumerate()
@@ -492,7 +501,10 @@ impl HookRunner {
                             }
                         );
                         if is_async_rewake {
-                            self.pending_rewakes.lock().unwrap().insert((event, idx));
+                            self.pending_rewakes
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .insert((event, idx));
                         }
                     }
                 }
@@ -500,7 +512,10 @@ impl HookRunner {
         }
 
         // Mark executed `once` hooks so they don't fire on subsequent run() calls.
-        let mut once_set = self.once_executed.lock().unwrap();
+        let mut once_set = self
+            .once_executed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for &idx in &once_done {
             once_set.insert((event, idx));
         }
@@ -657,7 +672,10 @@ impl HookRunner {
     pub async fn check_rewakes(&self) -> Vec<HookResponse> {
         // Drain the pending set under lock
         let pending: Vec<(HookEvent, usize)> = {
-            let mut set = self.pending_rewakes.lock().unwrap();
+            let mut set = self
+                .pending_rewakes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if set.is_empty() {
                 return Vec::new();
             }
@@ -666,7 +684,10 @@ impl HookRunner {
 
         // Check for a wake signal on the channel
         let should_wake = {
-            let mut rx_guard = self.wake_receiver.lock().unwrap();
+            let mut rx_guard = self
+                .wake_receiver
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             match rx_guard.as_mut() {
                 Some(rx) => match rx.try_recv() {
                     Ok(()) => true,
@@ -683,7 +704,10 @@ impl HookRunner {
 
         if !should_wake {
             // No wake signal yet — restore the pending set for next time
-            let mut set = self.pending_rewakes.lock().unwrap();
+            let mut set = self
+                .pending_rewakes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             set.extend(pending);
             return Vec::new();
         }

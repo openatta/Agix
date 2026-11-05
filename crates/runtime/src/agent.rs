@@ -585,7 +585,10 @@ impl Agent {
                             ..
                         } => {
                             tracing::info!("Cancelling in-flight turn");
-                            turn_cancel.lock().unwrap().cancel();
+                            turn_cancel
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .cancel();
                         }
                         // Receiver gone means the engine loop has exited;
                         // nothing left to forward to.
@@ -622,7 +625,7 @@ impl Agent {
                             // Cancelling the session's own token still
                             // cascades into whatever turn is in flight.
                             let turn_cancel = cancel.child_token();
-                            *self.current_turn_cancel.lock().unwrap() = turn_cancel.clone();
+                            *self.current_turn_cancel.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = turn_cancel.clone();
                             match self.process_turn(input, turn_cancel).await {
                                 Ok(_) => {}
                                 Err(crate::turn::TurnError::Shutdown) => {

@@ -271,7 +271,9 @@ struct HttpInner {
 impl HttpAnthropicClient {
     /// 创建一个默认指向 `https://api.anthropic.com` 的 client。
     pub fn new(auth: AuthMode) -> Result<Self, AnthropicError> {
-        Self::with_base(auth, Url::parse(ANTHROPIC_API_BASE_URL).unwrap())
+        #[allow(clippy::unwrap_used)]
+        let base = Url::parse(ANTHROPIC_API_BASE_URL).unwrap();
+        Self::with_base(auth, base)
     }
 
     /// 自定义 base URL（用于本地 mock server / Bedrock relay 等）。

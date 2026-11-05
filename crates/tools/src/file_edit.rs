@@ -105,8 +105,7 @@ impl Tool for FileEditTool {
     }
 
     fn input_schema(&self) -> Value {
-        serde_json::to_value(schemars::schema_for!(FileEditInput))
-            .expect("schemars output is valid JSON")
+        crate::input_schema::<FileEditInput>()
     }
 
     fn input_schema_for(&self, style: base::tool::PathStyle) -> Value {

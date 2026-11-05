@@ -44,9 +44,7 @@ impl Tool for StructuredOutputTool {
     fn input_schema(&self) -> Value {
         match &self.schema {
             Some(schema) => schema.clone(),
-            None => {
-                serde_json::to_value(schemars::schema_for!(StructuredOutputInput)).expect("schema")
-            }
+            None => crate::input_schema::<StructuredOutputInput>(),
         }
     }
 

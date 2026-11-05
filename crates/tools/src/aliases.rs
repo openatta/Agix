@@ -54,7 +54,7 @@ impl Tool for BriefTool {
     /// **P3b **: 标 deferred —— 系统 prompt 仅暴露 name + 短描述，模型用
     /// ToolSearch 激活后下一轮拉 full schema。减少静态 prompt 占用。
     fn input_schema(&self) -> Value {
-        serde_json::to_value(schemars::schema_for!(BriefInput)).expect("schema")
+        crate::input_schema::<BriefInput>()
     }
     async fn prompt(&self, _: &PromptContext) -> String {
         "Send a short message the user will read. Use this to surface important \
@@ -129,7 +129,7 @@ impl Tool for PowerShellTool {
     /// **P3b **: 标 deferred —— 系统 prompt 仅暴露 name + 短描述，模型用
     /// ToolSearch 激活后下一轮拉 full schema。减少静态 prompt 占用。
     fn input_schema(&self) -> Value {
-        serde_json::to_value(schemars::schema_for!(PowerShellInput)).expect("schema")
+        crate::input_schema::<PowerShellInput>()
     }
     async fn prompt(&self, _: &PromptContext) -> String {
         "Executes a given PowerShell command with optional timeout. Working directory \
@@ -309,7 +309,7 @@ impl Tool for ReplTool {
     /// **P3b **: 标 deferred —— 系统 prompt 仅暴露 name + 短描述，模型用
     /// ToolSearch 激活后下一轮拉 full schema。减少静态 prompt 占用。
     fn input_schema(&self) -> Value {
-        serde_json::to_value(schemars::schema_for!(ReplInput)).expect("schema")
+        crate::input_schema::<ReplInput>()
     }
     async fn prompt(&self, _: &PromptContext) -> String {
         "- Eval a short snippet in Python, Node.js, or Ruby (one-shot — no REPL \

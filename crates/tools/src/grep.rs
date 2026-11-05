@@ -78,8 +78,7 @@ impl Tool for GrepTool {
     }
 
     fn input_schema(&self) -> Value {
-        serde_json::to_value(schemars::schema_for!(GrepInput))
-            .expect("schemars output is valid JSON")
+        crate::input_schema::<GrepInput>()
     }
 
     async fn prompt(&self, _: &PromptContext) -> String {
@@ -233,14 +232,18 @@ impl Tool for GrepTool {
                     match mode {
                         GrepMode::FilesWithMatches => {
                             if pat.is_match(content) {
-                                let mut g = lines.lock().unwrap();
+                                let mut g = lines
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                                 g.push(format!("{}\n", style.render(path, &cwd)));
                             }
                         }
                         GrepMode::Count => {
                             let n = pat.find_iter(content).count();
                             if n > 0 {
-                                let mut g = lines.lock().unwrap();
+                                let mut g = lines
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                                 g.push(format!("{}:{}\n", style.render(path, &cwd), n));
                             }
                         }
@@ -257,7 +260,9 @@ impl Tool for GrepTool {
                                     } else {
                                         format!("{}:{}\n", style.render(path, &cwd), line)
                                     };
-                                    let mut g = lines.lock().unwrap();
+                                    let mut g = lines
+                                        .lock()
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                                     g.push(s);
                                 }
                             }
@@ -268,8 +273,15 @@ impl Tool for GrepTool {
             });
 
             let lines = Arc::try_unwrap(lines)
-                .map(|m| m.into_inner().unwrap())
-                .unwrap_or_else(|arc| arc.lock().unwrap().clone());
+                .map(|m| {
+                    m.into_inner()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                })
+                .unwrap_or_else(|arc| {
+                    arc.lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone()
+                });
             // 排序结果，让输出 deterministic
             let mut lines = lines;
             lines.sort();

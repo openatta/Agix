@@ -65,7 +65,7 @@ impl Tool for NotebookEditTool {
     /// **P3b **: 标 deferred —— 系统 prompt 仅暴露 name + 短描述，模型用
     /// ToolSearch 激活后下一轮拉 full schema。减少静态 prompt 占用。
     fn input_schema(&self) -> Value {
-        serde_json::to_value(schemars::schema_for!(NotebookEditInput)).expect("schema")
+        crate::input_schema::<NotebookEditInput>()
     }
     async fn prompt(&self, _: &PromptContext) -> String {
         include_str!("prompts/coding/notebook_edit.prompt.md").to_string()

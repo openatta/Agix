@@ -10,3 +10,7 @@ description  = "Agix — built-in agent scene implementations (coding, demo)"
 [dependencies]
 base          = { workspace = true }
 
+
+[lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"

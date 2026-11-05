@@ -257,7 +257,7 @@ impl SessionState {
         };
         self.file_snapshots
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .record(turn, path.to_path_buf(), before, tool_name);
     }
 
@@ -344,7 +344,7 @@ impl SessionState {
     ) {
         self.permission_denials
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(PermissionDenial {
                 tool_name: tool_name.into(),
                 tool_use_id: tool_use_id.into(),
@@ -542,7 +542,10 @@ impl SessionState {
     /// TODO: Needs concrete RunningTaskData from `task` crate.
     /// Caller (in task crate) should handle this via the public fields.
     pub fn insert_running_task(&self, task_id: String, task: std::sync::Arc<RunningTask>) {
-        self.running_tasks.lock().unwrap().insert(task_id, task);
+        self.running_tasks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(task_id, task);
     }
 
     /// 找一个 running task。返回 Arc 让 caller 读快照（output / status）。
@@ -558,7 +561,7 @@ impl SessionState {
     pub fn list_running_tasks(&self) -> Vec<(String, RunningStatus)> {
         self.running_tasks
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .map(|(k, v)| {
                 (
@@ -638,7 +641,7 @@ impl SessionState {
     pub fn tasks<T: serde::de::DeserializeOwned>(&self) -> Vec<T> {
         self.tasks
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .filter_map(|v| serde_json::from_value(v.clone()).ok())
             .collect()
@@ -647,7 +650,7 @@ impl SessionState {
     pub fn find_task<T: serde::de::DeserializeOwned>(&self, id: &str) -> Option<T> {
         self.tasks
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .find(|v| v.get("id").and_then(|i| i.as_str()) == Some(id))
             .and_then(|v| serde_json::from_value(v.clone()).ok())

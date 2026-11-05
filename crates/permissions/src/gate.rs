@@ -161,18 +161,28 @@ impl PermissionGate {
 
     /// Snapshot view of the rule list.
     pub fn rules(&self) -> Vec<PermissionRule> {
-        self.rules.read().unwrap().rules().to_vec()
+        self.rules
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .rules()
+            .to_vec()
     }
 
     /// **P (2026-05-17)**: 运行时加规则。用于"允许此项目"流程 —— 用户选
     /// "allow for this project" 后，Engine 构造 ProjectSettings 规则写入。
     pub fn add_rules(&self, additional: Vec<PermissionRule>) {
-        self.rules.write().unwrap().extend(additional);
+        self.rules
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend(additional);
     }
 
     /// Drop every rule from `source` — see `RuleSet::remove_by_source`.
     pub fn remove_rules_by_source(&self, source: base::permission::RuleSource) {
-        self.rules.write().unwrap().remove_by_source(source);
+        self.rules
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove_by_source(source);
     }
 
     /// Produce a human-readable explanation of what permission decision
@@ -200,7 +210,10 @@ impl PermissionGate {
         }
 
         // 2. Rule engine evaluation.
-        let rules = self.rules.read().unwrap();
+        let rules = self
+            .rules
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match rules.evaluate(tool_name, content.as_deref()) {
             RuleHit::Allow(rule) => {
                 let rule_str = format_rule_string(&rule);
@@ -294,7 +307,10 @@ impl PermissionGate {
             .zip(content.as_deref())
             .map(|(_, c)| ResolvedPath::new(c, &ctx.cwd));
         let rule_hit = {
-            let rules = self.rules.read().unwrap();
+            let rules = self
+                .rules
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             match (path_group, &resolved, content.as_deref()) {
                 (Some(group), Some(path), _) => {
                     rules.evaluate_path(tool.name(), group, path, &ctx.cwd)

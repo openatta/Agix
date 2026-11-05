@@ -66,7 +66,7 @@ impl AgentTypeWatcher {
         std::thread::Builder::new()
             .name("agent-type-watcher".into())
             .spawn(move || drain_events(rx, &dirs, &plugin_types, &target))
-            .expect("agent-type-watcher thread");
+            .map_err(|e| format!("could not start the agent-type-watcher thread: {e}"))?;
 
         Ok(Self { watcher_handle })
     }
@@ -90,7 +90,9 @@ fn drain_events(
                         dirs.iter().map(|p| p.as_path()).collect();
                     let merged = merge_agent_types(&dir_refs, plugin_types);
                     let count = merged.len();
-                    *target.write().unwrap() = Arc::new(merged);
+                    *target
+                        .write()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(merged);
                     tracing::debug!(count, "agent types reloaded from file change");
                 }
             }

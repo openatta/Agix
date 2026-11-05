@@ -117,13 +117,12 @@ fn new_task_id() -> String {
             return "0".into();
         }
         let chars: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
-        let mut buf = Vec::new();
+        let mut digits = Vec::new();
         while x > 0 {
-            buf.push(chars[(x % 36) as usize]);
+            digits.push(chars[(x % 36) as usize]);
             x /= 36;
         }
-        buf.reverse();
-        String::from_utf8(buf).unwrap()
+        digits.iter().rev().map(|&d| d as char).collect()
     }
     format!("task_{}-{}", b36(secs), b36(n))
 }
@@ -173,7 +172,7 @@ impl Tool for TaskCreateTool {
         false // eager — model needs to see task tools without ToolSearch discovery
     }
     fn input_schema(&self) -> Value {
-        serde_json::to_value(schemars::schema_for!(TaskCreateInput)).expect("schema")
+        crate::input_schema::<TaskCreateInput>()
     }
     async fn prompt(&self, _: &PromptContext) -> String {
         include_str!("prompts/coding/task_create.prompt.md").to_string()
@@ -253,7 +252,7 @@ impl Tool for TaskGetTool {
         false // eager — model needs to see task tools without ToolSearch discovery
     }
     fn input_schema(&self) -> Value {
-        serde_json::to_value(schemars::schema_for!(TaskGetInput)).expect("schema")
+        crate::input_schema::<TaskGetInput>()
     }
     async fn prompt(&self, _: &PromptContext) -> String {
         include_str!("prompts/coding/task_get.prompt.md").to_string()
@@ -334,7 +333,7 @@ impl Tool for TaskListTool {
         false // eager — model needs to see task tools without ToolSearch discovery
     }
     fn input_schema(&self) -> Value {
-        serde_json::to_value(schemars::schema_for!(TaskListInput)).expect("schema")
+        crate::input_schema::<TaskListInput>()
     }
     async fn prompt(&self, _: &PromptContext) -> String {
         include_str!("prompts/coding/task_list.prompt.md").to_string()
@@ -436,7 +435,7 @@ impl Tool for TaskUpdateTool {
         false // eager — model needs to see task tools without ToolSearch discovery
     }
     fn input_schema(&self) -> Value {
-        serde_json::to_value(schemars::schema_for!(TaskUpdateInput)).expect("schema")
+        crate::input_schema::<TaskUpdateInput>()
     }
     async fn prompt(&self, _: &PromptContext) -> String {
         include_str!("prompts/coding/task_update.prompt.md").to_string()
@@ -598,7 +597,7 @@ impl Tool for TaskStopTool {
         false // eager — model needs to see task tools without ToolSearch discovery
     }
     fn input_schema(&self) -> Value {
-        serde_json::to_value(schemars::schema_for!(TaskStopInput)).expect("schema")
+        crate::input_schema::<TaskStopInput>()
     }
     async fn prompt(&self, _: &PromptContext) -> String {
         include_str!("prompts/coding/task_stop.prompt.md").to_string()

@@ -2,6 +2,8 @@
 //! argument docs and the Read guide, and the paths Grep, Glob, Write and Edit
 //! print. The default style must keep every byte of today's output.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use base::interface::tool::{PathStyle, ProgressSender, PromptContext, Tool, ToolContext};
 use base::tool::ToolResultContent;
 use serde_json::{json, Value};

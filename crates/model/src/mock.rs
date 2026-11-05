@@ -29,28 +29,41 @@ impl MockAnthropicClient {
     pub fn push_turn(&self, events: Vec<StreamEvent>) {
         self.turns
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push_back(events.into_iter().map(Ok).collect());
     }
 
     /// 队尾追加一个 turn，允许混入 Err（用来测错误传播）。
     pub fn push_turn_with_errors(&self, events: Vec<Result<StreamEvent, AnthropicError>>) {
-        self.turns.lock().unwrap().push_back(events);
+        self.turns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push_back(events);
     }
 
     /// 还剩多少个 turn 没回放。
     pub fn turns_remaining(&self) -> usize {
-        self.turns.lock().unwrap().len()
+        self.turns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
     }
 
     /// 已经接收了多少次 `stream_messages` 调用。
     pub fn calls(&self) -> usize {
-        self.captured.lock().unwrap().len()
+        self.captured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
     }
 
     /// 取走第 N 次调用的请求 clone。
     pub fn nth_request(&self, idx: usize) -> Option<MessagesRequest> {
-        self.captured.lock().unwrap().get(idx).cloned()
+        self.captured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(idx)
+            .cloned()
     }
 }
 
@@ -62,8 +75,16 @@ impl Default for MockAnthropicClient {
 
 impl AnthropicClient for MockAnthropicClient {
     fn stream_messages(&self, req: MessagesRequest) -> EventStream {
-        self.captured.lock().unwrap().push(req);
-        let events = self.turns.lock().unwrap().pop_front().unwrap_or_default();
+        self.captured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(req);
+        let events = self
+            .turns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pop_front()
+            .unwrap_or_default();
         Box::pin(stream::iter(events))
     }
 

@@ -340,7 +340,10 @@ impl Tool for SkillTool {
 
         let content_hash = hash_skill_content(&skill_msg);
         let already_loaded = {
-            let mut sessions = self.already_injected.lock().unwrap();
+            let mut sessions = self
+                .already_injected
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let seen = sessions.entry(ctx.session_id.clone()).or_default();
             !seen.insert(content_hash)
         };
@@ -570,8 +573,10 @@ async fn expand_dynamic_context(body: &str, ctx: &ToolContext) -> String {
         return body.to_string();
     }
 
+    #[allow(clippy::unwrap_used)]
     static FENCED: std::sync::LazyLock<regex::Regex> =
         std::sync::LazyLock::new(|| regex::Regex::new(r"(?s)```!\n(.*?)\n```").unwrap());
+    #[allow(clippy::unwrap_used)]
     static INLINE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         // `!` at start-of-line or preceded by a space/tab only —
         // `KEY=!\`cmd\`` (no separating whitespace) is left as literal text.
@@ -584,9 +589,9 @@ async fn expand_dynamic_context(body: &str, ctx: &ToolContext) -> String {
     let mut out = String::with_capacity(body.len());
     let mut last_end = 0;
     for caps in FENCED.captures_iter(body) {
-        let m = caps.get(0).unwrap();
+        let Some(m) = caps.get(0) else { continue };
         out.push_str(&body[last_end..m.start()]);
-        let command = caps.get(1).unwrap().as_str();
+        let command = caps.get(1).map_or("", |c| c.as_str());
         out.push_str(&run_skill_shell_command(command, ctx, disabled).await);
         last_end = m.end();
     }
@@ -599,10 +604,10 @@ async fn expand_dynamic_context(body: &str, ctx: &ToolContext) -> String {
     let mut out = String::with_capacity(body.len());
     let mut last_end = 0;
     for caps in INLINE.captures_iter(&body) {
-        let m = caps.get(0).unwrap();
+        let Some(m) = caps.get(0) else { continue };
         out.push_str(&body[last_end..m.start()]);
-        out.push_str(caps.get(1).unwrap().as_str()); // preserve the leading space/tab (or nothing at line start)
-        let command = caps.get(2).unwrap().as_str();
+        out.push_str(caps.get(1).map_or("", |c| c.as_str())); // preserve the leading space/tab (or nothing at line start)
+        let command = caps.get(2).map_or("", |c| c.as_str());
         out.push_str(&run_skill_shell_command(command, ctx, disabled).await);
         last_end = m.end();
     }

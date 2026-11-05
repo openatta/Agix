@@ -7,10 +7,12 @@ use std::sync::LazyLock;
 // ── Compiled regex patterns (lazy, one-time initialisation) ─────────────────
 
 /// Match common email addresses.
+#[allow(clippy::unwrap_used)]
 static EMAIL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}").unwrap());
 
 /// Match IPv4 addresses.
+#[allow(clippy::unwrap_used)]
 static IPV4_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b")
         .unwrap()
@@ -25,6 +27,7 @@ static IPV4_RE: LazyLock<Regex> = LazyLock::new(|| {
 /// pattern for `::`-prefixed forms omits the leading word boundary.
 /// This may (very rarely) cause a false positive inside hex-like content,
 /// which is acceptable for telemetry redaction.
+#[allow(clippy::unwrap_used)]
 static IPV6_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
         r"\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b|", // full
@@ -36,6 +39,7 @@ static IPV6_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// Match paths containing home directory-like segments: `/Users/name` or `/home/name`.
+#[allow(clippy::unwrap_used)]
 static HOME_PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)(/Users/[^/\s]+|/home/[^/\s]+|C:\\Users\\[^\\\s]+)").unwrap()
 });

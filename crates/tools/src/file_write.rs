@@ -45,8 +45,7 @@ impl Tool for FileWriteTool {
 
     /// **P3f **: deferred -- only Bash/Read/Edit/ToolSearch 4 eager.
     fn input_schema(&self) -> Value {
-        serde_json::to_value(schemars::schema_for!(FileWriteInput))
-            .expect("schemars output is valid JSON")
+        crate::input_schema::<FileWriteInput>()
     }
 
     fn input_schema_for(&self, style: base::tool::PathStyle) -> Value {

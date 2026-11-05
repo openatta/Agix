@@ -5,6 +5,8 @@
 //! program under a sandbox — so it is the one worth proving this on. Nothing
 //! below forks a process, writes a file or opens a socket.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use base::interface::exec::in_process::{
     InMemoryFileSystem, NoSandbox, ScriptedProcess, ScriptedRun,
 };

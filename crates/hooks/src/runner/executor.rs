@@ -156,6 +156,7 @@ impl HookRunner {
             Ok(c) => c,
             Err(e) => return HookOutcome::Error(format!("hook spawn failed: {e}")),
         };
+        #[allow(clippy::expect_used)]
         let output = child.output().expect("the stream is taken once");
         let stop_reading = CancellationToken::new();
         let mut collect = tokio::spawn(collect_output(output, stop_reading.clone()));

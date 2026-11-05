@@ -11,6 +11,8 @@
 //! plausible-looking source would be a few hundred files nobody reads, and
 //! the properties here care about shape and volume, not content.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use base::tool::{ProgressSender, Tool, ToolContext, ToolResultContent};
 use std::path::Path;
 

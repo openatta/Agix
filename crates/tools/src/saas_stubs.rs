@@ -93,7 +93,7 @@ impl Tool for McpAuthTool {
         false
     }
     fn input_schema(&self) -> Value {
-        serde_json::to_value(schemars::schema_for!(McpAuthInput)).expect("schema")
+        crate::input_schema::<McpAuthInput>()
     }
     async fn prompt(&self, _: &PromptContext) -> String {
         "The `{serverName}` MCP server ({transport}) is installed but requires \

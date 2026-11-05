@@ -6,6 +6,8 @@
 //! brain away. Both wire protocols are driven here because the mistake is one
 //! constant per protocol and each would have to make it separately.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use base::context::config::NetworkModeConfig;
 use base::interface::exec::local::LocalNetwork;
 use base::interface::exec::{Network, Origin};

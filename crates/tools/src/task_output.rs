@@ -59,7 +59,7 @@ impl Tool for TaskOutputTool {
     }
 
     fn input_schema(&self) -> Value {
-        serde_json::to_value(schemars::schema_for!(TaskOutputInput)).expect("schema")
+        crate::input_schema::<TaskOutputInput>()
     }
 
     fn is_concurrency_safe(&self, _: &Value) -> bool {

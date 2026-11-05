@@ -90,7 +90,7 @@ impl FileWatcher {
             .spawn(move || {
                 run_watcher_loop(rx, &hook_runner, &handle, debounce_ms);
             })
-            .expect("file-watcher thread");
+            .map_err(|e| format!("could not start the file-watcher thread: {e}"))?;
 
         self.watcher_handle = Some(w);
         Ok(())

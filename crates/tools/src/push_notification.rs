@@ -43,8 +43,7 @@ impl Tool for PushNotificationTool {
     }
 
     fn input_schema(&self) -> Value {
-        serde_json::to_value(schemars::schema_for!(PushNotificationInput))
-            .expect("schemars output is valid JSON")
+        crate::input_schema::<PushNotificationInput>()
     }
 
     async fn prompt(&self, _: &PromptContext) -> String {

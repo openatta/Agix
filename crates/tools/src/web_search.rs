@@ -134,8 +134,7 @@ impl Tool for WebSearchTool {
     }
 
     fn input_schema(&self) -> Value {
-        serde_json::to_value(schemars::schema_for!(WebSearchInput))
-            .expect("schemars output is valid JSON")
+        crate::input_schema::<WebSearchInput>()
     }
 
     async fn prompt(&self, _: &PromptContext) -> String {

@@ -24,6 +24,8 @@
 //! To run the same check against a real provider, point `INNER` at a live model
 //! (see `tests/runner` for building one from `.env`); nothing else changes.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use base::interface::model::{
     CallOrigin, Model, ModelContentBlock, ModelError, ModelEvent, ModelMessage, ModelStream,
     StreamParams, ToolDef, Usage,

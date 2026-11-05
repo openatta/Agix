@@ -22,30 +22,39 @@ impl OfflineNetwork {
     }
 
     pub fn with(self, url: impl Into<String>, status: u16, body: impl Into<String>) -> Self {
-        self.fixtures.lock().unwrap().insert(
-            url.into(),
-            HttpResponse {
-                status,
-                headers: BTreeMap::new(),
-                body: body.into().into_bytes(),
-            },
-        );
+        self.fixtures
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                url.into(),
+                HttpResponse {
+                    status,
+                    headers: BTreeMap::new(),
+                    body: body.into().into_bytes(),
+                },
+            );
         self
     }
 
     /// Every url that was asked for, in order.
     pub fn asked(&self) -> Vec<String> {
-        self.asked.lock().unwrap().clone()
+        self.asked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 }
 
 #[async_trait::async_trait]
 impl Network for OfflineNetwork {
     async fn send(&self, req: HttpRequest, _origin: Origin) -> Result<HttpResponse, ExecError> {
-        self.asked.lock().unwrap().push(req.url.clone());
+        self.asked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(req.url.clone());
         self.fixtures
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&req.url)
             .cloned()
             .ok_or_else(|| ExecError::unavailable(format!("offline: {}", req.url)))

@@ -40,7 +40,7 @@ impl Tool for CronDeleteTool {
     }
 
     fn input_schema(&self) -> Value {
-        serde_json::to_value(schemars::schema_for!(CronDeleteInput)).expect("schema")
+        crate::input_schema::<CronDeleteInput>()
     }
 
     async fn prompt(&self, _: &PromptContext) -> String {

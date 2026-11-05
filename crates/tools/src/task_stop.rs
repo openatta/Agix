@@ -45,7 +45,7 @@ impl Tool for TaskStopTool {
     }
 
     fn input_schema(&self) -> Value {
-        serde_json::to_value(schemars::schema_for!(TaskStopInput)).expect("schema")
+        crate::input_schema::<TaskStopInput>()
     }
 
     fn is_concurrency_safe(&self, _: &Value) -> bool {

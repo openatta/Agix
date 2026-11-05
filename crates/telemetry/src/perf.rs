@@ -117,13 +117,14 @@ impl PerfCollector {
             return None;
         }
         let mut sorted = values.clone();
-        sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+        sorted.sort_unstable_by(f64::total_cmp);
         let len = sorted.len() as f64;
+        let max = sorted[sorted.len() - 1];
         Some(MetricStats {
-            last: *sorted.last().unwrap(),
+            last: max,
             avg: sorted.iter().sum::<f64>() / len,
             min: sorted[0],
-            max: *sorted.last().unwrap(),
+            max,
             p95: sorted[(len * 0.95) as usize],
             count: values.len(),
         })

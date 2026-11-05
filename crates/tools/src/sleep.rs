@@ -32,7 +32,7 @@ impl Tool for SleepTool {
     }
 
     fn input_schema(&self) -> Value {
-        serde_json::to_value(schemars::schema_for!(SleepInput)).expect("schema")
+        crate::input_schema::<SleepInput>()
     }
 
     async fn prompt(&self, _: &PromptContext) -> String {

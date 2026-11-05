@@ -43,8 +43,7 @@ impl Tool for VerifyPlanExecutionTool {
     }
 
     fn input_schema(&self) -> Value {
-        serde_json::to_value(schemars::schema_for!(VerifyPlanExecutionInput))
-            .expect("schemars output is valid JSON")
+        crate::input_schema::<VerifyPlanExecutionInput>()
     }
 
     fn is_concurrency_safe(&self, _: &Value) -> bool {

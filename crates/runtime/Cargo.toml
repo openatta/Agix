@@ -40,3 +40,7 @@ base64        = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 model    = { workspace = true }
+
+[lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"

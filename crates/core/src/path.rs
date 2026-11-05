@@ -25,13 +25,12 @@ fn radix36_encode(mut value: u64) -> String {
     if value == 0 {
         return "0".to_string();
     }
-    let mut result = Vec::new();
+    let mut digits = Vec::new();
     while value > 0 {
-        result.push(CHARS[(value % 36) as usize]);
+        digits.push(CHARS[(value % 36) as usize]);
         value /= 36;
     }
-    result.reverse();
-    String::from_utf8(result).expect("radix36 encoding is always valid ASCII")
+    digits.iter().rev().map(|&d| d as char).collect()
 }
 
 /// Maximum length before truncation with hash suffix.

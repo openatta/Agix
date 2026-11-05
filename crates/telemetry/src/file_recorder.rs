@@ -43,7 +43,10 @@ impl FileRecorder {
 
 impl TelemetryRecorder for FileRecorder {
     fn record(&self, event: TelemetryEvent) -> Result<(), crate::handle::TelemetryHandleError> {
-        let mut f = self.file.lock().unwrap();
+        let mut f = self
+            .file
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut line = serde_json::to_string(&event).unwrap_or_default();
         line.push('\n');
         f.write_all(line.as_bytes())

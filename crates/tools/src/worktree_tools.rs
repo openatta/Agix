@@ -51,14 +51,18 @@ impl WorktreeRegistry {
 
     /// Currently active worktree path + slug, if any.
     pub fn current(&self) -> Option<(String, std::path::PathBuf)> {
-        self.inner.lock().unwrap().as_ref().map(|h| {
-            let slug = h
-                .branch()
-                .strip_prefix("agix/worktree-")
-                .unwrap_or("?")
-                .to_string();
-            (slug, h.path().to_path_buf())
-        })
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|h| {
+                let slug = h
+                    .branch()
+                    .strip_prefix("agix/worktree-")
+                    .unwrap_or("?")
+                    .to_string();
+                (slug, h.path().to_path_buf())
+            })
     }
 }
 
@@ -90,7 +94,7 @@ impl Tool for EnterWorktreeTool {
     }
     /// **P3b **: 标 deferred —— 系统 prompt 仅暴露 name + 短描述。
     fn input_schema(&self) -> Value {
-        serde_json::to_value(schemars::schema_for!(EnterWorktreeInput)).expect("schema")
+        crate::input_schema::<EnterWorktreeInput>()
     }
     async fn prompt(&self, _: &PromptContext) -> String {
         include_str!("prompts/coding/worktree_enter.prompt.md").to_string()
@@ -139,7 +143,11 @@ impl Tool for EnterWorktreeTool {
                 let branch = handle.branch().to_string();
                 // Store the handle directly — cleanup() takes &mut self,
                 // so ExitWorktree can call it through the Mutex.
-                *self.registry.inner.lock().unwrap() = Some(handle);
+                *self
+                    .registry
+                    .inner
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handle);
                 Ok(ToolResult {
                     content: base::tool::ToolResultContent::Text(format!(
                         "Worktree created at {}. Branch: {}. Use this absolute path \
@@ -193,7 +201,7 @@ impl Tool for ExitWorktreeTool {
     }
     /// **P3b **: 标 deferred —— 系统 prompt 仅暴露 name + 短描述。
     fn input_schema(&self) -> Value {
-        serde_json::to_value(schemars::schema_for!(ExitWorktreeInput)).expect("schema")
+        crate::input_schema::<ExitWorktreeInput>()
     }
     async fn prompt(&self, _: &PromptContext) -> String {
         include_str!("prompts/coding/worktree_exit.prompt.md").to_string()
@@ -224,7 +232,13 @@ impl Tool for ExitWorktreeTool {
         let discard = inp.discard_changes.unwrap_or(false);
 
         // Release lock before any await points
-        let Some(mut handle) = self.registry.inner.lock().unwrap().take() else {
+        let Some(mut handle) = self
+            .registry
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        else {
             return Ok(ToolResult {
                 content: base::tool::ToolResultContent::Text("No active worktree to exit.".into()),
                 is_error: true,
@@ -237,7 +251,11 @@ impl Tool for ExitWorktreeTool {
         let branch = handle.branch().to_string();
 
         if action == "keep" {
-            self.registry.inner.lock().unwrap().replace(handle);
+            self.registry
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .replace(handle);
             return Ok(ToolResult {
                 content: base::tool::ToolResultContent::Text(format!(
                     "Kept worktree at {} (branch {}). Continue working there.",

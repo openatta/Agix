@@ -53,8 +53,7 @@ impl Tool for FileReadTool {
 
     fn input_schema(&self) -> Value {
         // schemars::schema_for! 给的 RootSchema 序列化是合法 JSON Schema draft-07
-        serde_json::to_value(schemars::schema_for!(FileReadInput))
-            .expect("schemars output is valid JSON")
+        crate::input_schema::<FileReadInput>()
     }
 
     fn input_schema_for(&self, style: PathStyle) -> Value {

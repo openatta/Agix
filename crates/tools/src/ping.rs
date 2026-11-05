@@ -43,8 +43,7 @@ impl Tool for PingTool {
     }
 
     fn input_schema(&self) -> Value {
-        serde_json::to_value(schemars::schema_for!(PingInput))
-            .expect("schemars output is valid JSON")
+        crate::input_schema::<PingInput>()
     }
 
     async fn prompt(&self, _: &PromptContext) -> String {

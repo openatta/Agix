@@ -64,8 +64,7 @@ impl Tool for MonitorTool {
     }
 
     fn input_schema(&self) -> Value {
-        serde_json::to_value(schemars::schema_for!(MonitorInput))
-            .expect("schemars output is valid JSON")
+        crate::input_schema::<MonitorInput>()
     }
 
     async fn prompt(&self, _: &PromptContext) -> String {
@@ -154,6 +153,7 @@ impl Tool for MonitorTool {
             .spawn(spec, run_cancel.clone())
             .await
             .map_err(ToolError::from)?;
+        #[allow(clippy::expect_used)]
         let chunks = child.output().expect("the first call owns the pipes");
 
         // Spawn a background task to drain stdout lines and send them as progress events.

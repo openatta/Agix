@@ -49,7 +49,7 @@ impl Tool for AskUserQuestionTool {
     /// **P3f **: deferred -- only Bash/Read/Edit/ToolSearch 4 eager.
     /// Other tools activated via ToolSearch, saving ~13KB tools schema.
     fn input_schema(&self) -> Value {
-        serde_json::to_value(schemars::schema_for!(AskUserQuestionInput)).expect("schema")
+        crate::input_schema::<AskUserQuestionInput>()
     }
     async fn prompt(&self, _: &PromptContext) -> String {
         include_str!("prompts/coding/ask_user.prompt.md").to_string()

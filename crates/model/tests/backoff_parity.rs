@@ -9,6 +9,8 @@
 //! The turn-level replay net cannot reach here: it substitutes a scripted
 //! `Model`, which sits above both of these.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use base::interface::backoff::{Backoff, BackoffPolicy, FailedAttempt, NoBackoff, RequestFailure};
 use base::interface::model::{Model, StreamParams};
 use base::settings::ThinkingMode;

@@ -76,8 +76,7 @@ impl Tool for EnterPlanModeTool {
 
     /// **P3b **: 标 deferred —— 系统 prompt 仅暴露 name + 短描述，模型用
     fn input_schema(&self) -> Value {
-        serde_json::to_value(schemars::schema_for!(EnterPlanModeInput))
-            .expect("schemars output is valid JSON")
+        crate::input_schema::<EnterPlanModeInput>()
     }
 
     async fn prompt(&self, _: &PromptContext) -> String {
@@ -180,8 +179,7 @@ impl Tool for ExitPlanModeTool {
 
     /// **P3b **: 标 deferred —— 系统 prompt 仅暴露 name + 短描述，模型用
     fn input_schema(&self) -> Value {
-        serde_json::to_value(schemars::schema_for!(ExitPlanModeInput))
-            .expect("schemars output is valid JSON")
+        crate::input_schema::<ExitPlanModeInput>()
     }
 
     async fn prompt(&self, _: &PromptContext) -> String {

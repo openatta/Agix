@@ -27,18 +27,24 @@ impl InMemoryFileSystem {
         self.mark_parents(&p);
         self.files
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(p, contents.as_ref().to_vec());
         self
     }
 
     /// What is in there now, for a test to assert against.
     pub fn snapshot(&self) -> BTreeMap<PathBuf, Vec<u8>> {
-        self.files.lock().unwrap().clone()
+        self.files
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     fn mark_parents(&self, path: &Path) {
-        let mut dirs = self.dirs.lock().unwrap();
+        let mut dirs = self
+            .dirs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut cur = path.parent();
         while let Some(d) = cur {
             if d.as_os_str().is_empty() {
@@ -50,7 +56,10 @@ impl InMemoryFileSystem {
     }
 
     fn is_dir(&self, path: &Path) -> bool {
-        self.dirs.lock().unwrap().contains_key(path)
+        self.dirs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(path)
     }
 }
 
@@ -81,7 +90,7 @@ impl FileSystem for InMemoryFileSystem {
         let p = normalize(path);
         self.files
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&p)
             .cloned()
             .ok_or_else(|| missing(path))
@@ -90,24 +99,42 @@ impl FileSystem for InMemoryFileSystem {
     async fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), ExecError> {
         let p = normalize(path);
         self.mark_parents(&p);
-        self.files.lock().unwrap().insert(p, bytes.to_vec());
+        self.files
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(p, bytes.to_vec());
         Ok(())
     }
 
     async fn create_dir_all(&self, path: &Path) -> Result<(), ExecError> {
         let p = normalize(path);
-        self.dirs.lock().unwrap().insert(p.clone(), ());
+        self.dirs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(p.clone(), ());
         self.mark_parents(&p);
         Ok(())
     }
 
     async fn read_dir(&self, path: &Path) -> Result<Vec<DirEntry>, ExecError> {
         let p = normalize(path);
-        if !self.is_dir(&p) && !self.files.lock().unwrap().keys().any(|k| k.starts_with(&p)) {
+        if !self.is_dir(&p)
+            && !self
+                .files
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .keys()
+                .any(|k| k.starts_with(&p))
+        {
             return Err(missing(path));
         }
         let mut out: Vec<DirEntry> = Vec::new();
-        for k in self.files.lock().unwrap().keys() {
+        for k in self
+            .files
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+        {
             if k.parent() == Some(p.as_path()) {
                 out.push(DirEntry {
                     path: k.clone(),
@@ -115,7 +142,12 @@ impl FileSystem for InMemoryFileSystem {
                 });
             }
         }
-        for d in self.dirs.lock().unwrap().keys() {
+        for d in self
+            .dirs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+        {
             if d.parent() == Some(p.as_path()) {
                 out.push(DirEntry {
                     path: d.clone(),
@@ -129,14 +161,25 @@ impl FileSystem for InMemoryFileSystem {
 
     async fn remove_dir_all(&self, path: &Path) -> Result<(), ExecError> {
         let p = normalize(path);
-        self.files.lock().unwrap().retain(|k, _| !k.starts_with(&p));
-        self.dirs.lock().unwrap().retain(|k, _| !k.starts_with(&p));
+        self.files
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|k, _| !k.starts_with(&p));
+        self.dirs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|k, _| !k.starts_with(&p));
         Ok(())
     }
 
     async fn metadata(&self, path: &Path) -> Result<Metadata, ExecError> {
         let p = normalize(path);
-        if let Some(bytes) = self.files.lock().unwrap().get(&p) {
+        if let Some(bytes) = self
+            .files
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&p)
+        {
             return Ok(Metadata {
                 is_dir: false,
                 is_file: true,
@@ -157,7 +200,13 @@ impl FileSystem for InMemoryFileSystem {
 
     async fn canonicalize(&self, path: &Path) -> Result<PathBuf, ExecError> {
         let p = normalize(path);
-        if self.files.lock().unwrap().contains_key(&p) || self.is_dir(&p) {
+        if self
+            .files
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(&p)
+            || self.is_dir(&p)
+        {
             Ok(p)
         } else {
             Err(missing(path))

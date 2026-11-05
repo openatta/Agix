@@ -351,7 +351,11 @@ impl SharedAgentTypeCatalog {
     /// disable changes `plugin_types` and there's no filesystem event to
     /// trigger the watcher's own reload. See the caveat on `build()`.
     pub fn refresh(&self, dirs: &[&Path], plugin_types: &[AgentTypeDefinition]) {
-        *self.agent_types.write().unwrap() = Arc::new(merge_agent_types(dirs, plugin_types));
+        *self
+            .agent_types
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Arc::new(merge_agent_types(dirs, plugin_types));
     }
 
     /// Handle to pass to `AgentTool::with_shared_agent_types` for each session.
@@ -1451,35 +1455,60 @@ impl Inner {
     /// a handful of strings and a short tool-name list, not a hot-path
     /// concern at sub-agent-spawn frequency.
     fn agent_type_def(&self, name: &str) -> Option<AgentTypeDefinition> {
-        self.agent_types.read().unwrap().get(name).cloned()
+        self.agent_types
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(name)
+            .cloned()
     }
 
     fn skill_manager(&self) -> Option<Arc<skills::manager::SkillManager>> {
-        self.skill_manager.read().unwrap().clone()
+        self.skill_manager
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     fn mcp_tool_adapters(&self) -> Vec<Arc<dyn base::tool::Tool>> {
-        self.mcp_tool_adapters.read().unwrap().clone()
+        self.mcp_tool_adapters
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     fn event_tx(&self) -> Option<crate::agent::EventSender> {
-        self.event_tx.read().unwrap().clone()
+        self.event_tx
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     fn history_store(&self) -> Option<Arc<dyn HistoryStore>> {
-        self.history_store.read().unwrap().clone()
+        self.history_store
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     fn instruction_file(&self) -> Option<std::path::PathBuf> {
-        self.instruction_file.read().unwrap().clone()
+        self.instruction_file
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     fn parent_session_id(&self) -> Option<String> {
-        self.parent_session_id.read().unwrap().clone()
+        self.parent_session_id
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     fn telemetry_handle(&self) -> Option<TelemetryHandle> {
-        self.telemetry_handle.read().unwrap().clone()
+        self.telemetry_handle
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// See `AgentTool::permission_handler` — same resolution, reachable from
@@ -1494,11 +1523,20 @@ impl Inner {
                 "coordinator",
             ));
         }
-        if let Some(parent) = self.parent_permission.read().unwrap().clone() {
+        if let Some(parent) = self
+            .parent_permission
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        {
             return Arc::new(ParentPermission {
                 inner: parent,
                 event_tx: self.event_tx(),
-                pending: self.parent_pending_permissions.read().unwrap().clone(),
+                pending: self
+                    .parent_pending_permissions
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone(),
             });
         }
         Arc::new(AlwaysPermit)
@@ -1541,7 +1579,11 @@ impl Inner {
         def: Option<&AgentTypeDefinition>,
         settings: &Settings,
     ) -> Arc<dyn Scene> {
-        let parent = self.parent_scene.read().unwrap().clone();
+        let parent = self
+            .parent_scene
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         if let Some(name) = def.and_then(|d| d.scene.as_deref()) {
             match self.resolve_scene_id(name) {
                 Some(requested) => {
@@ -1597,7 +1639,12 @@ impl Inner {
     /// would silently fall through to "unrecognized scene" and inherit the
     /// parent's instead.
     fn resolve_scene_id(&self, id: &str) -> Option<Arc<dyn Scene>> {
-        if let Some(registry) = self.scene_registry.read().unwrap().as_ref() {
+        if let Some(registry) = self
+            .scene_registry
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
             return registry.resolve(id);
         }
         builtin_scene_by_id(id)
@@ -1872,7 +1919,9 @@ impl AgentTool {
         shared_agent_types: SharedAgentTypeMap,
     ) -> Self {
         let description: Arc<str> = {
-            let snapshot = shared_agent_types.read().unwrap();
+            let snapshot = shared_agent_types
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             describe_agent_types(&snapshot).into()
         };
         Self {
@@ -1968,7 +2017,11 @@ impl AgentTool {
     /// finished `Arc<AgentTool>` for hook construction — see the call site
     /// in `agent.rs`.
     pub fn set_skill_manager(&self, mgr: Arc<skills::manager::SkillManager>) {
-        *self.inner.skill_manager.write().unwrap() = Some(mgr);
+        *self
+            .inner
+            .skill_manager
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(mgr);
     }
 
     /// Attach a snapshot of the parent session's connected MCP tools — same
@@ -1978,7 +2031,11 @@ impl AgentTool {
     /// see `Inner::mcp_tool_adapters`'s doc comment for why this takes a
     /// snapshot `Vec` rather than the live `McpManager`.
     pub fn set_mcp_tool_adapters(&self, adapters: Vec<Arc<dyn base::tool::Tool>>) {
-        *self.inner.mcp_tool_adapters.write().unwrap() = adapters;
+        *self
+            .inner
+            .mcp_tool_adapters
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = adapters;
     }
 
     /// Attach the same shared `TeamRegistry` `Builder::build()` hands to
@@ -1989,7 +2046,11 @@ impl AgentTool {
     /// `set_mcp_tool_adapters` — only called when `settings.execution.
     /// team_enabled` is true (see the call site in `agent.rs`).
     pub fn set_team_registry(&self, registry: Arc<team::registry::TeamRegistry>) {
-        *self.inner.team_registry.write().unwrap() = Some(registry);
+        *self
+            .inner
+            .team_registry
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(registry);
     }
 
     /// Attach the parent session's event channel so sub-agent activity is
@@ -1998,13 +2059,21 @@ impl AgentTool {
     /// `Builder::build()` creates this `AgentTool` before it creates the
     /// session's event channel.
     pub fn set_event_sender(&self, tx: crate::agent::EventSender) {
-        *self.inner.event_tx.write().unwrap() = Some(tx);
+        *self
+            .inner
+            .event_tx
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tx);
     }
 
     /// Attach the parent session's hook runner so sub-agent spawns fire
     /// `SubagentStart`/`SubagentStop` — see `Inner::hooks`.
     pub fn set_hooks(&self, runner: Arc<hooks::HookRunner>) {
-        *self.inner.hooks.write().unwrap() = Some(runner);
+        *self
+            .inner
+            .hooks
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(runner);
     }
 
     /// Fire one sub-agent lifecycle hook. Notification only — the response is
@@ -2017,7 +2086,13 @@ impl AgentTool {
         agent_type: &Option<String>,
         stop_reason: Option<&str>,
     ) {
-        let Some(runner) = self.inner.hooks.read().unwrap().clone() else {
+        let Some(runner) = self
+            .inner
+            .hooks
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        else {
             return;
         };
         if !runner.has_hooks_for(event) {
@@ -2039,27 +2114,43 @@ impl AgentTool {
     /// Attach the parent session's history store so sub-agent transcripts are
     /// persisted (S-4) — see `Inner::history_store`.
     pub fn set_history_store(&self, store: Arc<dyn HistoryStore>) {
-        *self.inner.history_store.write().unwrap() = Some(store);
+        *self
+            .inner
+            .history_store
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(store);
     }
 
     /// Record the parent `Agent`'s own session id, so sub-agents spawned
     /// from here can stamp `parent_session_id` on their own `Meta` line —
     /// see `Inner::parent_session_id`.
     pub fn set_parent_session_id(&self, id: String) {
-        *self.inner.parent_session_id.write().unwrap() = Some(id);
+        *self
+            .inner
+            .parent_session_id
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(id);
     }
 
     /// Record the parent `Agent`'s own telemetry handle, so sub-agents
     /// spawned from here inherit it instead of getting `Builder::build()`'s
     /// noop default — see `Inner::telemetry_handle`.
     pub fn set_telemetry_handle(&self, handle: TelemetryHandle) {
-        *self.inner.telemetry_handle.write().unwrap() = Some(handle);
+        *self
+            .inner
+            .telemetry_handle
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handle);
     }
 
     /// Route sub-agent permission checks to the parent agent's `Permission`
     /// impl (S-3) — see `Inner::parent_permission`.
     pub fn set_parent_permission(&self, permission: Arc<dyn Permission>) {
-        *self.inner.parent_permission.write().unwrap() = Some(permission);
+        *self
+            .inner
+            .parent_permission
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(permission);
     }
 
     /// Route sub-agent permission *prompts* to the parent session's host
@@ -2077,26 +2168,42 @@ impl AgentTool {
             >,
         >,
     ) {
-        *self.inner.parent_pending_permissions.write().unwrap() = Some(pending);
+        *self
+            .inner
+            .parent_pending_permissions
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(pending);
     }
 
     /// Let sub-agents inherit the parent's scene (S-5) — see
     /// `Inner::parent_scene`.
     pub fn set_scene(&self, scene: Arc<dyn Scene>) {
-        *self.inner.parent_scene.write().unwrap() = Some(scene);
+        *self
+            .inner
+            .parent_scene
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(scene);
     }
 
     /// Let an agent type's `scene:` id resolve against every scene the host
     /// registered, not just the built-in four — see `Inner::scene_registry`.
     pub fn set_scene_registry(&self, registry: Arc<scene::SceneRegistry>) {
-        *self.inner.scene_registry.write().unwrap() = Some(registry);
+        *self
+            .inner
+            .scene_registry
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(registry);
     }
 
     /// Let sub-agents inherit an instruction file that the parent got from
     /// `Builder::instruction_file(..)` rather than from settings.json (S-2)
     /// — see `settings_from_parent`.
     pub fn set_instruction_file(&self, path: Option<std::path::PathBuf>) {
-        *self.inner.instruction_file.write().unwrap() = path;
+        *self
+            .inner
+            .instruction_file
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = path;
     }
 
     /// Run this `AgentTool`'s sub-agents as team members whose permission
