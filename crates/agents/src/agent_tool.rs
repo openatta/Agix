@@ -520,6 +520,87 @@ fn finished(result: &Result<String, base::error::ToolError>) -> base::context::R
     }
 }
 
+/// A sub-agent's [`base::context::TaskInbox`]: messages join its running turn
+/// at the next step boundary, as a user's steering does.
+#[derive(Debug)]
+struct SteerInbox(runtime::steering::SteerHandle);
+
+impl base::context::TaskInbox for SteerInbox {
+    fn deliver(&self, message: String) -> Result<(), String> {
+        match self.0.offer(base::id::Id::new().to_string(), message) {
+            runtime::steering::SteerAck::Accepted => Ok(()),
+            runtime::steering::SteerAck::NotRunning => {
+                Err("the sub-agent is not in a turn that can take messages".into())
+            }
+        }
+    }
+}
+
+fn open_inbox(task: Option<&base::context::RunningTask>, agent: &Agent) {
+    if let Some(task) = task {
+        let _ = task.inbox.set(Arc::new(SteerInbox(agent.steer_handle())));
+    }
+}
+
+const NOTIFIED_RESULT_BYTES: usize = 4 * 1024;
+
+/// Record how a background sub-agent's task ended and tell the agent that
+/// started it. A task stopped on purpose ends without a notice: whoever
+/// stopped it already knows.
+fn conclude_background_task(
+    session: &base::context::SessionState,
+    task: &base::context::RunningTask,
+    result: &Result<String, base::error::ToolError>,
+) {
+    if let Ok(text) = result {
+        task.output
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push_str(text);
+    }
+    // Posted before the task ends, so whoever wakes on its end and reads the
+    // result (TaskWait, TaskOutput) finds the notice there to withdraw.
+    if !task.has_ended() {
+        session.post_notice(Some(task.task_id.clone()), task_notification(task, result));
+    }
+    session.finish_task(&task.task_id, finished(result));
+    session.persist_running_task(task);
+    session.remove_running_task_persistence(&task.task_id);
+}
+
+fn task_notification(
+    task: &base::context::RunningTask,
+    result: &Result<String, base::error::ToolError>,
+) -> String {
+    let status = if result.is_ok() { "done" } else { "failed" };
+    let mut notice = format!(
+        "<task-notification>\n<task-id>{}</task-id>\n<status>{status}</status>\n",
+        task.task_id
+    );
+    let detail = task
+        .detail
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    if let Some(d) = detail["description"].as_str() {
+        notice.push_str(&format!("<description>{d}</description>\n"));
+    }
+    if let Err(e) = result {
+        notice.push_str(&format!("<error>{e}</error>\n"));
+    }
+    let (tail, cut) = task.output_tail(NOTIFIED_RESULT_BYTES);
+    if !tail.is_empty() {
+        let more = if cut {
+            " (the start is cut; TaskOutput has what is kept)"
+        } else {
+            ""
+        };
+        notice.push_str(&format!("<result{more}>\n{tail}\n</result>\n"));
+    }
+    notice.push_str("</task-notification>");
+    notice
+}
+
 /// Write the first `Meta` line for a freshly spawned sidechain (sub-agent /
 /// team member) session, linking it back to its parent via
 /// `parent_session_id` and marking it `session_kind: Sidechain` — this is
@@ -847,6 +928,7 @@ async fn run_persistent_member_loop(
         // Persistent members have no one-shot sidechain terminal marker to
         // write (they outlive any single message), so the cancelled flag
         // `run_one_turn` reports isn't needed here — only the text result is.
+        open_inbox(Some(&task), &agent);
         let (result, _cancelled) = run_one_turn(
             &mut agent,
             &mut event_rx,
@@ -862,15 +944,7 @@ async fn run_persistent_member_loop(
         )
         .await;
 
-        if let Ok(text) = &result {
-            task.output
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push_str(text);
-        }
-        session.finish_task(&task.task_id, finished(&result));
-        session.persist_running_task(&task);
-        session.remove_running_task_persistence(&task.task_id);
+        conclude_background_task(&session, &task, &result);
 
         let now = now_secs();
         idle_since.store(now, std::sync::atomic::Ordering::SeqCst);
@@ -2533,22 +2607,20 @@ impl AgentTool {
         let subagent_type = subagent_type.map(str::to_string);
         let inner = self.inner.clone();
         let tc = task.clone();
-        let tid_c = tid.clone();
         let session_c = session.clone();
 
         tokio::spawn(async move {
-            let r =
-                Self::run_sub_inner(&inner, prompt, tools, cwd, cancel, subagent_type.as_deref())
-                    .await;
-            if let Ok(ref text) = r {
-                tc.output
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .push_str(text);
-            }
-            session_c.finish_task(&tid_c, finished(&r));
-            session_c.persist_running_task(&tc);
-            session_c.remove_running_task_persistence(&tid_c);
+            let r = Self::run_sub_inner(
+                &inner,
+                prompt,
+                tools,
+                cwd,
+                cancel,
+                subagent_type.as_deref(),
+                Some(&tc),
+            )
+            .await;
+            conclude_background_task(&session_c, &tc, &r);
         });
         tid
     }
@@ -2593,7 +2665,6 @@ impl AgentTool {
         let subagent_type = input.subagent_type.clone();
         let inner = self.inner.clone();
         let tc = task.clone();
-        let tid_c = tid.clone();
         let session = ctx.session.clone();
         let _events_tx = ctx.events_tx.clone();
 
@@ -2605,20 +2676,13 @@ impl AgentTool {
                 cwd,
                 outer_cancel,
                 subagent_type.as_deref(),
+                Some(&tc),
             )
             .await;
             if let Some(h) = worktree_handle.as_mut() {
                 h.cleanup().await;
             }
-            if let Ok(ref text) = r {
-                tc.output
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .push_str(text);
-            }
-            session.finish_task(&tid_c, finished(&r));
-            session.persist_running_task(&tc);
-            session.remove_running_task_persistence(&tid_c);
+            conclude_background_task(&session, &tc, &r);
         });
         Ok(bg_result(&tid, "spawned"))
     }
@@ -2967,6 +3031,7 @@ impl AgentTool {
         cwd: std::path::PathBuf,
         cancel: tokio_util::sync::CancellationToken,
         subagent_type: Option<&str>,
+        task: Option<&base::context::RunningTask>,
     ) -> Result<String, base::error::ToolError> {
         let child_depth = inner
             .spawn_guard()
@@ -3020,6 +3085,7 @@ impl AgentTool {
             .await;
         }
 
+        open_inbox(task, &agent);
         let (result, cancelled) =
             run_one_turn(&mut agent, &mut event_rx, &input_tx, prompt, cancel, tag).await;
         drop(input_tx);
@@ -4740,6 +4806,97 @@ mod catalog_tests {
             elapsed < std::time::Duration::from_millis(750),
             "two 400ms sub-agents took {elapsed:?}: they were polled one after the other"
         );
+    }
+
+    /// First call: waits for `go`, then answers. Later calls: record the last
+    /// user message they were shown, then answer.
+    struct SteerableModel {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        started: Arc<tokio::sync::Notify>,
+        go: Arc<tokio::sync::Notify>,
+        seen_later: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+    #[async_trait]
+    impl Model for SteerableModel {
+        fn api_type(&self) -> base::provider::ApiType {
+            base::provider::ApiType::Anthropic
+        }
+        async fn stream(
+            &self,
+            _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+            _tools: Vec<base::interface::model::ToolDef>,
+            messages: Vec<ModelMessage>,
+            _params: base::interface::model::StreamParams,
+            _cancel: tokio_util::sync::CancellationToken,
+        ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError>
+        {
+            use base::interface::model::ModelEvent;
+            if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                self.started.notify_one();
+                self.go.notified().await;
+            } else {
+                let last_user = messages
+                    .iter()
+                    .rev()
+                    .find(|m| matches!(m.role, MessageRole::User))
+                    .map(|m| format!("{:?}", m.content))
+                    .unwrap_or_default();
+                self.seen_later.lock().unwrap().push(last_user);
+            }
+            Ok(Box::new(futures::stream::iter(vec![
+                Ok(ModelEvent::TextDelta {
+                    text: "report".into(),
+                }),
+                Ok(ModelEvent::EndTurn {
+                    stop_reason: "end_turn".into(),
+                    usage: Default::default(),
+                }),
+            ])))
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_background_sub_agent_reads_its_messages_and_reports_back_when_done() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let go = Arc::new(tokio::sync::Notify::new());
+        let seen_later = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let agent_tool = agent_tool_with_model(Arc::new(SteerableModel {
+            calls: Default::default(),
+            started: started.clone(),
+            go: go.clone(),
+            seen_later: seen_later.clone(),
+        }));
+        let session = Arc::new(base::context::SessionState::new(std::env::temp_dir()));
+        let tid = agent_tool
+            .spawn_background(
+                "look into it".into(),
+                Arc::new(InMemoryToolRegistry::new()),
+                std::env::temp_dir(),
+                tokio_util::sync::CancellationToken::new(),
+                None,
+                session.clone(),
+            )
+            .await;
+        started.notified().await;
+        tools::task_message::deliver(&session, &tid, "also check the lexer".into())
+            .expect("a running sub-agent takes messages");
+        go.notify_one();
+
+        let task = session.find_running_task(&tid).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), task.wait_ended())
+            .await
+            .expect("the sub-agent finishes");
+        assert!(
+            seen_later.lock().unwrap()[0].contains("also check the lexer"),
+            "the message joins the sub-agent's turn: {:?}",
+            seen_later.lock().unwrap()
+        );
+        let notices = session.take_notices();
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert!(notices[0].contains("<task-notification>"));
+        assert!(notices[0].contains(&tid));
+        assert!(notices[0].contains("<status>done</status>"));
+        assert!(notices[0].contains("report"));
     }
 
     // ── Persistent team members (phase 3) ──

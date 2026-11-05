@@ -703,6 +703,34 @@ impl DaemonServer {
                     serde_json::json!({"stopped": self.pool.stop_task(session_id, task_id).await}),
                 )
             }
+            "session.messageTask" => {
+                let param = |key: &str| req.params.get(key).and_then(|v| v.as_str());
+                let (Some(session_id), Some(task_id), Some(message)) =
+                    (param("session_id"), param("task_id"), param("message"))
+                else {
+                    return RpcResponse::err(
+                        id,
+                        codes::INVALID_PARAMS,
+                        "session.messageTask needs session_id, task_id and message",
+                    );
+                };
+                match self
+                    .pool
+                    .message_task(session_id, task_id, message.to_string())
+                    .await
+                {
+                    None => RpcResponse::err(
+                        id,
+                        codes::SESSION_NOT_FOUND,
+                        format!("session `{session_id}` is not running"),
+                    ),
+                    Some(Ok(())) => RpcResponse::ok(id, serde_json::json!({"delivered": true})),
+                    Some(Err(reason)) => RpcResponse::ok(
+                        id,
+                        serde_json::json!({"delivered": false, "reason": reason}),
+                    ),
+                }
+            }
             "schedule.create" => self.method_schedule_create(id, req.params).await,
             "schedule.list" => {
                 let session_id = req.params.get("session_id").and_then(|v| v.as_str());

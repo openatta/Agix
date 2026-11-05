@@ -612,6 +612,7 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 | `context_edits` | 有 `session.inspectContext` / `session.dropMessages` / `session.editMessage`(§6.3) |
 | `extension_entries` | 有 `session.appendEntry` / `session.entries`,写入推 `extension_entry`(§6.3、§7) |
 | `task_output` | 有 `session.taskOutput`,Shell 命令与监视器的输出边跑边记(§6.3) |
+| `task_messages` | 有 `session.messageTask`,消息进运行中的后台子 Agent(§6.3) |
 
 #### `daemon.status`
 
@@ -1447,6 +1448,20 @@ Shell 命令与监视器的输出逐行记下(stdout 与 stderr 按到达的顺�
 进程组一起结束,子 Agent 在下一个检查点停下;定时任务则是取消安排。被停掉的工具调用
 给模型回的是"已取消",这一轮照常继续。
 
+#### `session.messageTask`
+
+```jsonc
+// → params
+{ "session_id": "…", "task_id": "…", "message": "…" }
+// ← result
+{ "delivered": true }
+{ "delivered": false, "reason": "…" }   // 任务不存在、已结束、不是子 Agent,或者它此刻不在一轮里
+```
+
+和模型的 `TaskMessage` 是同一个入口:消息进后台子 Agent(含团队常驻成员正在处理的那条)
+正在跑的这一轮,在它下一个步骤边界读到,和用户在一轮中途发给主 Agent 的消息一样。
+Shell 命令、监视器没有收件箱。会话不在内存里 → `SESSION_NOT_FOUND`。
+
 #### `session.respondToPrompt`
 
 ```jsonc
@@ -1744,8 +1759,8 @@ disclosure 的 `wasm.runnable` 会如实报成 `false`。
 ### 6.6 还没有的东西
 
 `agent.*` 和 `team.*` 在早期设计里定过接口,**没有实现**,调用返回
-`METHOD_NOT_FOUND`。列举、读输出、停止运行中的子 Agent、团队成员走 `session.tasks` /
-`session.taskOutput` / `session.stopTask`(§6.3);要看一个子 Agent 干了什么,走它的侧链会话:`session.list
+`METHOD_NOT_FOUND`。列举、读输出、发消息给、停止运行中的子 Agent、团队成员走 `session.tasks` /
+`session.taskOutput` / `session.messageTask` / `session.stopTask`(§6.3);要看一个子 Agent 干了什么,走它的侧链会话:`session.list
 {parent_session_id}` 拿 id,再 `session.history`。
 
 ### 6.7 `schedule.*`

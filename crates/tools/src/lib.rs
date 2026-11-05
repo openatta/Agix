@@ -22,8 +22,10 @@ pub mod security;
 pub mod sleep;
 #[cfg(feature = "structured-output")]
 pub mod structured_output;
+pub mod task_message;
 pub mod task_output;
 pub mod task_stop;
+pub mod task_wait;
 pub mod tasks;
 pub mod todo_write;
 pub mod tool_search;

@@ -63,6 +63,10 @@ pub struct SessionState {
     /// `task_started` / `task_finished`, for whoever shows this session's
     /// tasks — see [`SessionState::subscribe_tasks`].
     task_events: tokio::sync::broadcast::Sender<serde_json::Value>,
+    /// What the session's own agent should read at its next step boundary,
+    /// each under the key it can be retracted by — see
+    /// [`SessionState::post_notice`].
+    notices: std::sync::Mutex<Vec<(Option<String>, String)>>,
     /// **M11.2**: 本 turn 内的权限拒绝累积。Engine.run_turn 开头 reset，
     /// turn_complete 时打包到事件里。
     permission_denials: std::sync::Mutex<Vec<PermissionDenial>>,
@@ -216,6 +220,7 @@ impl SessionState {
             running_task_store: None,
             running_tasks: std::sync::Mutex::new(HashMap::new()),
             task_events: tokio::sync::broadcast::channel(256).0,
+            notices: std::sync::Mutex::new(Vec::new()),
             permission_denials: std::sync::Mutex::new(Vec::new()),
             file_snapshots: std::sync::Mutex::new(FileSnapshotRegistry::default()),
             current_turn: std::sync::Mutex::new(0),
@@ -461,12 +466,41 @@ impl SessionState {
                 *current = status;
             }
         }
+        task.ended.notify_waiters();
         if task.announced.load(std::sync::atomic::Ordering::SeqCst) {
             let _ = self
                 .task_events
                 .send(serde_json::json!({"kind": "task_finished", "task": task.info()}));
         }
         self.forget_old_tasks();
+    }
+
+    /// Tell this session's agent something it did not ask for in this turn,
+    /// such as a background sub-agent having finished. A running turn reads
+    /// it at its next step boundary; otherwise the next turn opens with it.
+    ///
+    /// A notice under `key` can be [retracted](Self::retract_notice) before
+    /// it is read: one about a task the agent has since waited for tells it
+    /// nothing new.
+    pub fn post_notice(&self, key: Option<String>, text: impl Into<String>) {
+        self.notices
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((key, text.into()));
+    }
+
+    pub fn retract_notice(&self, key: &str) {
+        self.notices
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|(k, _)| k.as_deref() != Some(key));
+    }
+
+    pub fn take_notices(&self) -> Vec<String> {
+        std::mem::take(&mut *self.notices.lock().unwrap_or_else(|e| e.into_inner()))
+            .into_iter()
+            .map(|(_, text)| text)
+            .collect()
     }
 
     const FINISHED_TASKS_KEPT: usize = 20;

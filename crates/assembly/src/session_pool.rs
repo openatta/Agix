@@ -5992,6 +5992,24 @@ impl SessionPool {
         state.is_some_and(|s| s.cancel_running_task(task_id))
     }
 
+    /// `session.messageTask`: hand a message to a running background
+    /// sub-agent, the way the model's `TaskMessage` does. `None` when the
+    /// session is not in memory; otherwise why the task did not take it.
+    pub async fn message_task(
+        &self,
+        session_id: &str,
+        task_id: &str,
+        message: String,
+    ) -> Option<Result<(), String>> {
+        let state = self
+            .sessions
+            .lock()
+            .await
+            .get(session_id)
+            .and_then(|live| live.state.clone())?;
+        Some(tools::task_message::deliver(&state, task_id, message))
+    }
+
     /// Ask a session's engine about, or change, its context
     /// (`session.inspectContext`, `session.dropMessages`,
     /// `session.editMessage`). A session not in memory is resumed for it; one

@@ -25,6 +25,25 @@ pub(crate) struct SteerQueue {
 
 pub(crate) type SharedSteerQueue = std::sync::Arc<std::sync::Mutex<SteerQueue>>;
 
+/// Offers messages to the turn its agent is running without going through
+/// the agent's input channel, which only [`crate::agent::Agent::run`] reads.
+/// A sub-agent driven turn by turn takes its inbox this way.
+#[derive(Debug, Clone)]
+pub struct SteerHandle(pub(crate) SharedSteerQueue);
+
+impl SteerHandle {
+    pub fn offer(&self, message_id: impl Into<String>, content: impl Into<String>) -> SteerAck {
+        let message = QueuedUserMessage {
+            message_id: message_id.into(),
+            content: content.into(),
+        };
+        match lock(&self.0).offer(message) {
+            Ok(()) => SteerAck::Accepted,
+            Err(_) => SteerAck::NotRunning,
+        }
+    }
+}
+
 pub(crate) fn lock(queue: &SharedSteerQueue) -> std::sync::MutexGuard<'_, SteerQueue> {
     queue.lock().unwrap_or_else(|e| e.into_inner())
 }

@@ -423,6 +423,10 @@ pub struct Agent {
 }
 
 impl Agent {
+    pub fn steer_handle(&self) -> crate::steering::SteerHandle {
+        crate::steering::SteerHandle(self.steering.clone())
+    }
+
     /// The session's own state — its todos, tasks, permission mode — shared
     /// with every tool call, for a host that shows or acts on it.
     pub fn session_state(&self) -> Arc<base::context::SessionState> {
@@ -1997,6 +2001,8 @@ impl Builder {
         tools.register(std::sync::Arc::new(tools::task_stop::TaskStopTool));
         // Register TaskOutputTool — retrieve output from running/completed tasks
         tools.register(std::sync::Arc::new(tools::task_output::TaskOutputTool));
+        tools.register(std::sync::Arc::new(tools::task_wait::TaskWaitTool));
+        tools.register(std::sync::Arc::new(tools::task_message::TaskMessageTool));
 
         let config = Arc::new({
             let mut c = base::context::EngineConfig::from_settings(&settings);
@@ -5909,6 +5915,47 @@ mod tests {
             })
             .unwrap();
         acked.await.expect("the demultiplexer always answers")
+    }
+
+    #[tokio::test]
+    async fn notices_reach_the_model_at_turn_start_and_at_step_boundaries() {
+        let hold = Arc::new(tokio::sync::Notify::new());
+        let sent: Arc<std::sync::Mutex<Vec<Vec<base::interface::model::ModelMessage>>>> =
+            Default::default();
+        let model: Arc<dyn Model> = Arc::new(StepRecordingModel {
+            tool: None,
+            hold_first: Some(hold.clone()),
+            sent: sent.clone(),
+        });
+        let (mut agent, _event_rx, _input_tx) = Builder::new()
+            .scene(Arc::new(scene::coding::CodingScene) as Arc<dyn Scene>)
+            .model(model)
+            .settings(Arc::new(test_settings()))
+            .skip_warmup(true)
+            .build()
+            .expect("build should succeed");
+        let state = agent.session_state();
+        state.post_notice(None, "notice from before the turn");
+
+        let poster = async {
+            while sent.lock().unwrap().is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            state.post_notice(None, "notice from during the turn");
+            hold.notify_one();
+        };
+        let turn = agent.run_turn("the question".into(), "t1".into(), CancellationToken::new());
+        let (outcome, ()) = tokio::join!(turn, poster);
+        outcome.expect("the turn runs");
+
+        let text = |m: &base::interface::model::ModelMessage| format!("{:?}", m.content);
+        let sent = sent.lock().unwrap();
+        assert_eq!(sent.len(), 2, "the turn goes on to answer the notice");
+        let first: Vec<String> = sent[0].iter().map(text).collect();
+        let notice_at = first.iter().position(|t| t.contains("notice from before"));
+        let question_at = first.iter().position(|t| t.contains("the question"));
+        assert!(notice_at.unwrap() < question_at.unwrap(), "{first:?}");
+        assert!(text(sent[1].last().unwrap()).contains("notice from during the turn"));
     }
 
     #[tokio::test]

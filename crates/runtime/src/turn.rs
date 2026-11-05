@@ -345,7 +345,10 @@ impl Agent {
     /// Each message passes the same screening as one that opens a turn; a
     /// refused one is announced and left out, and the turn goes on.
     async fn deliver_queued_user_messages(&mut self, last: bool) -> bool {
-        let mut delivered = false;
+        let mut delivered = self.deliver_notices();
+        // The turn goes on to answer the notices, so it must stay open to
+        // messages too.
+        let last = last && !delivered;
         loop {
             let queued = {
                 let mut q = crate::steering::lock(&self.steering);
@@ -396,6 +399,21 @@ impl Agent {
                 return delivered;
             }
         }
+    }
+
+    /// [`base::context::SessionState::post_notice`]s, into the conversation.
+    fn deliver_notices(&mut self) -> bool {
+        let notices = self.session_state.take_notices();
+        for text in &notices {
+            self.session.push_message_from(
+                ModelMessage {
+                    role: MessageRole::User,
+                    content: vec![ModelContentBlock::Text { text: text.clone() }],
+                },
+                history::entry::MessageOrigin::Injected,
+            );
+        }
+        !notices.is_empty()
     }
 
     /// `UserPromptSubmit` and then the prompt middlewares for one user
@@ -890,6 +908,7 @@ impl Agent {
             role: MessageRole::User,
             content: user_blocks,
         };
+        self.deliver_notices();
         self.pending_input = user_text_fingerprint(&message).map(|fp| (fp, spans));
         self.session.push_message_from(message, origin);
 

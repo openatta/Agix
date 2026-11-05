@@ -95,7 +95,28 @@ impl Tool for TaskOutputTool {
         _: ProgressSender,
     ) -> Result<ToolResult, ToolError> {
         let input: TaskOutputInput = serde_json::from_value(input)?;
+        let result = self.retrieve(&input, &ctx).await;
+        if let Ok(r) = &result {
+            let ended = r
+                .structured_content
+                .as_ref()
+                .and_then(|c| c.get("status"))
+                .and_then(Value::as_str)
+                .is_some_and(|s| s != "running");
+            if ended {
+                ctx.session.retract_notice(&input.task_id);
+            }
+        }
+        result
+    }
+}
 
+impl TaskOutputTool {
+    async fn retrieve(
+        &self,
+        input: &TaskOutputInput,
+        ctx: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
         // Look up the task in the running task store
         let (output, status) = match ctx
             .running_tasks

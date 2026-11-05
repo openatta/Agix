@@ -98,6 +98,17 @@ pub struct RunningTask {
     pub announced: std::sync::atomic::AtomicBool,
     /// Whether `append_output` has let the head of `output` go.
     pub output_dropped: std::sync::atomic::AtomicBool,
+    /// Woken once `ended_ms` is set — see [`RunningTask::wait_ended`].
+    pub ended: tokio::sync::Notify,
+    /// Where messages for the work go while it runs; set by work that can
+    /// take them (a sub-agent), absent for the rest.
+    pub inbox: std::sync::OnceLock<std::sync::Arc<dyn TaskInbox>>,
+}
+
+/// Delivers a message to a running task's work.
+pub trait TaskInbox: Send + Sync + std::fmt::Debug {
+    /// `Err` says why the work cannot take it now.
+    fn deliver(&self, message: String) -> Result<(), String>;
 }
 
 impl RunningTask {
@@ -129,7 +140,27 @@ impl RunningTask {
             detail: std::sync::Mutex::new(serde_json::Value::Null),
             announced: std::sync::atomic::AtomicBool::new(false),
             output_dropped: std::sync::atomic::AtomicBool::new(false),
+            ended: tokio::sync::Notify::new(),
+            inbox: std::sync::OnceLock::new(),
         }
+    }
+
+    pub fn has_ended(&self) -> bool {
+        self.ended_ms
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+    }
+
+    /// Resolves once the task has ended (at once if it already has).
+    pub async fn wait_ended(&self) {
+        let notified = self.ended.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if self.has_ended() {
+            return;
+        }
+        notified.await;
     }
 
     /// The most of a streamed output (a shell command's, a monitor's) a task
