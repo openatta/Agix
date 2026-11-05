@@ -34,18 +34,11 @@ const MODULES: &[&str] = &[
     "plugin-compiler",
 ];
 
-const NOT_YET: &[(&str, &str, &str)] = &[
-    (
-        "runtime",
-        "mcp",
-        "the turn loop reaches MCP through a kernel trait",
-    ),
-    (
-        "runtime",
-        "skills",
-        "the turn loop reaches skills through a kernel trait",
-    ),
-];
+const NOT_YET: &[(&str, &str, &str)] = &[(
+    "runtime",
+    "mcp",
+    "the turn loop reaches MCP through a kernel trait",
+)];
 
 fn dependencies(manifest: &str) -> Vec<String> {
     let mut in_deps = false;

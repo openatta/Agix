@@ -96,7 +96,7 @@ impl Module for AgentsModule {
         // For `AgentTypeDefinition.mcp_servers` and `.skills`: a delegate is
         // granted a subset of what its parent already has connected/loaded.
         tool.set_mcp_tool_adapters(cx.mcp.tool_adapters().to_vec());
-        tool.set_skill_manager(cx.skills.clone());
+        tool.set_skill_catalog(cx.skill_catalog());
         tool.set_event_sender(cx.events.clone());
         tool.set_hooks(cx.hooks.clone());
         tool.set_parent_permission(cx.permission.clone());

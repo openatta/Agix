@@ -163,7 +163,7 @@ impl ProjectBinding {
         // second mechanism would be both redundant and — at one `notify`
         // stream per catalog per project — the thing that runs a process out
         // of them.
-        let skills = Arc::new(runtime::agent::build_skill_manager_unwatched(&settings));
+        let skills = Arc::new(skills::module::build_skill_manager_unwatched(&settings));
         let commands = build_shared_commands(skills.clone());
         let dirs = agent_type_dirs(&settings);
         let dirs_ref: [&std::path::Path; 3] = [&dirs[0], &dirs[1], &dirs[2]];
@@ -241,7 +241,7 @@ impl ProjectBinding {
     /// rebuild.
     fn reload_skills(&self) {
         self.skills
-            .replace_catalog(runtime::agent::build_skill_manager_unwatched(
+            .replace_catalog(skills::module::build_skill_manager_unwatched(
                 &self.settings,
             ));
     }
@@ -252,7 +252,7 @@ impl ProjectBinding {
     /// live-reloaded manager every session on this pair shares, and
     /// rescanning would hand new sessions a different instance than the
     /// running ones hold. `commands` needs nothing either — it is a view onto
-    /// that same manager (`CommandRegistry::from_skill_manager` keeps the
+    /// that same manager (`CommandRegistry::from_skill_catalog` keeps the
     /// `Arc`, it does not copy a list out of it), so it already reflects
     /// whatever the manager reloaded.
     fn refresh_plugins(&self, plugin_agent_types: &[base::agent_type::AgentTypeDefinition]) {
@@ -297,13 +297,13 @@ fn agent_type_dirs(settings: &Settings) -> [std::path::PathBuf; 3] {
 
 /// Build the command catalog shared by every session: the 5 built-in local
 /// commands plus a live view of `skill_catalog` (via
-/// `CommandRegistry::from_skill_manager`). The skill half tracks the catalog,
+/// `CommandRegistry::from_skill_catalog`). The skill half tracks the catalog,
 /// so a skill file added or deleted after daemon startup is reflected here —
 /// and in `commands.list` — without a rebuild.
 fn build_shared_commands(
     skill_catalog: Arc<skills::manager::SkillManager>,
 ) -> Arc<runtime::commands::CommandRegistry> {
-    Arc::new(runtime::commands::CommandRegistry::from_skill_manager(
+    Arc::new(runtime::commands::CommandRegistry::from_skill_catalog(
         skill_catalog,
     ))
 }
@@ -2080,7 +2080,9 @@ impl SessionPool {
             .module(Arc::new(
                 agents::AgentsModule::new().shared_agent_types(binding.agent_types.handle()),
             ))
-            .skill_catalog(binding.skills.clone())
+            .module(Arc::new(skills::SkillsModule::shared(
+                binding.skills.clone(),
+            )))
             .cron_store(self.schedule.clone());
         if let Some(ref store) = self.history_store {
             builder = builder.history_store(store.clone());
@@ -5046,7 +5048,7 @@ impl SessionPool {
         };
         // The project tier's skills sit beside the project (`.agents/skills`)
         // rather than under `.agix`, which is why this is two paths and the
-        // others are one — see `runtime::agent::build_default_skill_manager`.
+        // others are one — see `skills::module::build_default_skill_manager`.
         let project_root = key.0.clone();
         let mut tiers = vec![(
             Tier::Global,

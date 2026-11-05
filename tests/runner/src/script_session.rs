@@ -313,6 +313,7 @@ pub async fn drive(root: &Path, session: Session) -> Ran {
     let mut builder = Builder::new()
         .scene(scene)
         .module(Arc::new(agents::AgentsModule::new()))
+        .module(Arc::new(skills::SkillsModule::new()))
         .model(model)
         .tools(registry)
         .settings(settings.clone())

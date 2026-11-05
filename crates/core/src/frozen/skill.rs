@@ -157,6 +157,16 @@ pub enum SkillSource {
     Plugin,
 }
 
+impl SkillSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SkillSource::User => "user",
+            SkillSource::Project => "project",
+            SkillSource::Plugin => "plugin",
+        }
+    }
+}
+
 /// 从三层扫 SKILL.md：全局 `~/.agix/skills/` -> scene 覆盖
 /// `~/.agix/scenes/<scope>/skills/` -> 项目级 `<cwd>/.agents/skills/`（外部事实标准）。
 /// 同名时后扫到的覆盖先扫到的（`scan_skills_dir` 结果直接 extend 进 `Vec`，

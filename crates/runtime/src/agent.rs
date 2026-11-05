@@ -286,7 +286,7 @@ pub struct Agent {
 
     pub(crate) compactor: Arc<dyn Compactor>,
     pub(crate) hooks: Arc<HookRunner>,
-    pub(crate) skills: std::sync::Arc<skills::manager::SkillManager>,
+    pub(crate) skills: Arc<dyn base::interface::skill_catalog::SkillCatalog>,
     pub(crate) commands: std::sync::Arc<crate::commands::CommandRegistry>,
     pub(crate) mcp: McpManager,
 
@@ -834,13 +834,11 @@ impl Agent {
         &self.memory_store
     }
 
-    /// Access the skill manager for runtime loading/listing/reloading.
-    pub fn skills(&self) -> &skills::manager::SkillManager {
-        &self.skills
+    pub fn skills(&self) -> &dyn base::interface::skill_catalog::SkillCatalog {
+        self.skills.as_ref()
     }
 
-    /// Get shared Arc to the skill manager (for tool registration).
-    pub fn skills_arc(&self) -> std::sync::Arc<skills::manager::SkillManager> {
+    pub fn skills_arc(&self) -> Arc<dyn base::interface::skill_catalog::SkillCatalog> {
         self.skills.clone()
     }
 
@@ -852,46 +850,6 @@ impl Agent {
     /// Access the MCP manager (read-only).
     pub fn mcp(&self) -> &McpManager {
         &self.mcp
-    }
-
-    /// Initialize MCP skills after the agent is constructed.
-    ///
-    /// For each connected MCP server, fetches the tool list and registers
-    /// each tool as a user-invocable skill (name: `mcp__{server}__{tool}`).
-    /// Must be called from an async context with a tokio runtime.
-    pub async fn init_mcp_skills(&self) {
-        for client in self.mcp.clients() {
-            match client.list_tools().await {
-                Ok(metas) => {
-                    let tool_defs: Vec<base::interface::model::ToolDef> = metas
-                        .into_iter()
-                        .map(|m| base::interface::model::ToolDef {
-                            name: m.name,
-                            description: m.description.unwrap_or_default(),
-                            input_schema: m.input_schema,
-                            source: Some(format!("mcp:{}", client.server_name())),
-                        })
-                        .collect();
-                    if !tool_defs.is_empty() {
-                        let count = self
-                            .skills
-                            .register_mcp_skills(client.server_name(), &tool_defs);
-                        tracing::info!(
-                            server = %client.server_name(),
-                            count,
-                            "MCP skills registered"
-                        );
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        server = %client.server_name(),
-                        error = %e,
-                        "Failed to list MCP tools for skill registration"
-                    );
-                }
-            }
-        }
     }
 
     /// Set plan mode state and optional plan content (for post-compact recovery).
@@ -1077,17 +1035,6 @@ pub struct Builder {
     /// name one beyond the built-in four (plugin scenes, in particular) —
     /// see `agents::agent_tool::AgentTool::set_scene_registry`.
     scene_registry: Option<Arc<scene::SceneRegistry>>,
-    /// Pool-level shared agent-type catalog — see
-    /// Pre-built, pool-level shared skill catalog — see
-    /// `Builder::skill_catalog`. When set, `build()` uses it directly instead
-    /// of scanning the three skill-directory tiers from disk itself. `None`
-    /// (the default) preserves prior per-session behavior for non-daemon
-    /// callers (tests, library embedding): `build()` self-scans and starts
-    /// its own watcher, same as always.
-    skill_catalog: Option<Arc<skills::manager::SkillManager>>,
-    /// Skill sources beyond the engine's own three — see
-    /// [`Builder::skill_provider`].
-    skill_providers: Vec<Arc<dyn base::interface::skill_provider::SkillProvider>>,
     /// Where the standing instructions come from — see
     /// [`Builder::instruction_provider`].
     instruction_provider:
@@ -1139,86 +1086,6 @@ pub struct Builder {
     /// [`Builder::process_groups`].
     process_groups: Option<Arc<base::interface::exec::local::GroupLedger>>,
     modules: Vec<Arc<dyn crate::module::Module>>,
-}
-
-/// Scan the three skill-directory tiers from disk and register bundled
-/// skills — `Builder::build()`'s fallback for callers that don't inject a
-/// pre-built catalog via `Builder::skill_catalog` (tests, library
-/// embedding). A daemon-style caller builds this once at the pool level
-/// instead of calling it per session — see `Builder::skill_catalog`'s doc
-/// comment.
-///
-/// Scans `~/.agix/skills/` (global default), then
-/// `~/.agix/scenes/<scope>/skills/` (scene override — same name wins,
-/// `load_dir_subdirs` overwrites by name), then `<project>/.agents/skills/`
-/// (project — external fact standard, also scanned by Codex).
-/// `load_dir_subdirs` (not the flat-only `load_dir`) so both `<name>.md` and
-/// the `<name>/SKILL.md` subdirectory convention (what
-/// `discover_for_paths`/`reload_skill` already supported) are
-/// picked up at startup — a project skill authored the SKILL.md way used to
-/// silently never load until its first live-reload edit. Found via the recording
-/// test suite: the fixture project's `code-review` skill (subdirectory
-/// format) was completely absent from every recorded system prompt.
-///
-/// Also starts this manager's own live-reload watcher (`notify` setup
-/// failing degrades to no live reload, logged, not a hard error — every
-/// other watcher in this codebase handles it the same way).
-///
-/// A host that already watches these directories wants
-/// [`build_skill_manager_unwatched`] instead: one watcher per manager is
-/// fine for one manager, and a `notify` backend has a per-process ceiling
-/// that a host building one of these per project will reach.
-pub fn build_default_skill_manager(settings: &Settings) -> skills::manager::SkillManager {
-    build_skill_manager(settings, true)
-}
-
-/// [`build_default_skill_manager`] without the watcher — the same catalog,
-/// reloaded by whoever is already watching rather than by a `notify` thread
-/// of its own.
-pub fn build_skill_manager_unwatched(settings: &Settings) -> skills::manager::SkillManager {
-    build_skill_manager(settings, false)
-}
-
-fn build_skill_manager(settings: &Settings, watch: bool) -> skills::manager::SkillManager {
-    use skills::manager::SkillSource;
-    use skills::sources::{BundledSkills, SkillDirectory};
-
-    let skill_mgr = skills::manager::SkillManager::new();
-    let project_skills_dir = settings.paths.project_root().join(".agents").join("skills");
-    let tiers: [Arc<dyn base::interface::skill_provider::SkillProvider>; 3] = [
-        Arc::new(SkillDirectory::tier(
-            settings.paths.global_data_dir.join("skills"),
-            SkillSource::User,
-        )),
-        Arc::new(SkillDirectory::tier(
-            settings.paths.user_data_dir.join("skills"),
-            SkillSource::User,
-        )),
-        Arc::new(SkillDirectory::tier(
-            project_skills_dir.clone(),
-            SkillSource::Project,
-        )),
-    ];
-    let loaded_count: usize = tiers
-        .into_iter()
-        .map(|tier| skill_mgr.load_from(tier))
-        .sum();
-    // Built-ins come last and defer: a project that writes its own skill of
-    // the same name means to replace the one in the binary.
-    skill_mgr.load_from(Arc::new(BundledSkills));
-    let total_skills = skill_mgr.list().len();
-    tracing::info!(loaded_count, total_skills, "skills loaded (incl. bundled)");
-
-    if watch {
-        if let Err(e) = skill_mgr.enable_watching(&[
-            settings.paths.global_data_dir.join("skills"),
-            settings.paths.user_data_dir.join("skills"),
-            project_skills_dir,
-        ]) {
-            tracing::warn!(error = %e, "failed to enable skill file watching; live skill reload disabled for this session");
-        }
-    }
-    skill_mgr
 }
 
 /// Build a `HookRunner` from `settings.hooks_config` (raw JSON from
@@ -1342,8 +1209,6 @@ impl Builder {
             commands_override: None,
             task_router: None,
             scene_registry: None,
-            skill_catalog: None,
-            skill_providers: Vec::new(),
             instruction_provider: None,
             elicitation: None,
             prompt_registry: None,
@@ -1859,8 +1724,8 @@ impl Builder {
 
     /// Inject a pre-built command registry (built once, shared across many
     /// sessions — see `daemon::SessionPool`) instead of scanning skill dirs
-    /// fresh for every session. Falls back to the existing per-session
-    /// `CommandRegistry::from_skill_manager` scan when not set.
+    /// fresh for every session. Falls back to a registry over this session's
+    /// own skill catalog when not set.
     pub fn commands_override(mut self, c: Arc<crate::commands::CommandRegistry>) -> Self {
         self.commands_override = Some(c);
         self
@@ -1884,36 +1749,6 @@ impl Builder {
     /// scene instead.
     pub fn scene_registry(mut self, r: Arc<scene::SceneRegistry>) -> Self {
         self.scene_registry = Some(r);
-        self
-    }
-
-    /// Use a pre-built, pool-level shared `SkillManager` instead of scanning
-    /// the three skill-directory tiers from disk in `build()` — see
-    /// `Builder`'s field doc comment. The catalog is expected to already be
-    /// attached to a live-reload watcher if the caller wants one (see
-    /// `skills::manager::SkillManager::attach_watcher`); `build()` does not
-    /// attach one itself when a catalog is injected.
-    pub fn skill_catalog(mut self, catalog: Arc<skills::manager::SkillManager>) -> Self {
-        self.skill_catalog = Some(catalog);
-        self
-    }
-
-    /// Add a skill source of the host's own.
-    ///
-    /// The engine's three — the directory tiers, the built-ins, the tools of
-    /// each connected MCP server — are `SkillProvider`s too; this one is
-    /// registered after them, so by default it fills names nobody claimed and
-    /// leaves the rest alone. A source that means to replace a skill the
-    /// engine ships says so with
-    /// [`SkillPrecedence::Override`](base::interface::skill_provider::SkillPrecedence::Override).
-    ///
-    /// Can be called more than once; sources are consulted in the order they
-    /// were added.
-    pub fn skill_provider(
-        mut self,
-        provider: Arc<dyn base::interface::skill_provider::SkillProvider>,
-    ) -> Self {
-        self.skill_providers.push(provider);
         self
     }
 
@@ -2158,23 +1993,11 @@ impl Builder {
                 });
             }));
         }
-        // Skill catalog: a daemon-style caller hands in a pre-built, shared
-        // `SkillManager` via `Builder::skill_catalog` (built once at the
-        // pool level, not re-scanned per session — see that method's doc
-        // comment). Without one (tests, library embedding), fall back to
-        // scanning the three tiers here, same as always.
-        let skill_mgr_arc = match self.skill_catalog.clone() {
-            Some(catalog) => catalog,
-            None => std::sync::Arc::new(build_default_skill_manager(&settings)),
-        };
-        for provider in self.skill_providers.clone() {
-            let id = provider.id().to_string();
-            let count = skill_mgr_arc.load_from(provider);
-            tracing::info!(source = %id, count, "host skill source registered");
-        }
+        let skill_catalog = crate::module::LateSkillCatalog::default();
         let command_registry = self.commands_override.clone().unwrap_or_else(|| {
-            let mut registry =
-                crate::commands::CommandRegistry::from_skill_manager(skill_mgr_arc.clone());
+            let mut registry = crate::commands::CommandRegistry::from_skill_catalog(Arc::new(
+                skill_catalog.clone(),
+            ));
             // MCP prompts become `/mcp__<server>__<prompt>` slash commands,
             // the same way skills become slash commands above. `all_prompts()`
             // is already populated — `McpManager::connect_all` runs
@@ -2195,20 +2018,6 @@ impl Builder {
             }
             std::sync::Arc::new(registry)
         });
-        // Register SkillTool using the populated skill manager. Also gives
-        // it a real `AgentSpawner` — previously `skills::tool::register` never
-        // received one at all, so a `context: fork` skill's spawner branch
-        // (`SkillTool::call`) was unreachable in every real session; it
-        // silently fell through to running inline instead of forking, no
-        // matter what the skill's frontmatter said.
-        let skill_tool_spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner> =
-            Arc::new(agent_spawner.clone());
-        skills::tool::register(
-            &tools,
-            Arc::clone(&skill_mgr_arc),
-            Some(skill_tool_spawner),
-            permission.clone(),
-        );
         // Register TaskStopTool — stop running background tasks by ID
         tools.register(std::sync::Arc::new(tools::task_stop::TaskStopTool));
         // Register TaskOutputTool — retrieve output from running/completed tasks
@@ -2330,8 +2139,8 @@ impl Builder {
                 plugin_host: self.plugin_host.as_ref(),
                 mcp: &mcp,
                 modules: &self.modules,
-                skills: &skill_mgr_arc,
                 agent_spawner: &agent_spawner,
+                skill_catalog: &skill_catalog,
             };
             for module in &self.modules {
                 module
@@ -2571,7 +2380,7 @@ impl Builder {
                 compactor,
                 hooks,
                 mcp,
-                skills: skill_mgr_arc,
+                skills: Arc::new(skill_catalog),
                 commands: command_registry,
                 telemetry_handle,
                 current_turn_id: String::new(),
@@ -3220,88 +3029,6 @@ mod tests {
         assert_eq!(payload["server_name"], serde_json::json!("test-server"));
     }
 
-    /// P2: `Builder::skill_catalog` must be used as-is, with `build()` never
-    /// falling back to its own disk scan — a skill that only exists in the
-    /// injected catalog (never written to `settings.paths`' skill
-    /// directories) must still resolve as a slash command.
-    #[tokio::test]
-    async fn build_uses_the_injected_skill_catalog_instead_of_scanning_disk() {
-        let settings = Arc::new(test_settings());
-        let model: Arc<dyn Model> = Arc::new(DummyModel);
-        let scene: Arc<dyn Scene> = Arc::new(scene::coding::CodingScene);
-
-        let catalog = skills::manager::SkillManager::new();
-        catalog.register_bundled(base::frozen::SkillEntry {
-            name: "p2-injected-only".into(),
-            description: "only exists in the injected catalog".into(),
-            source: base::frozen::SkillSource::User,
-            path: std::path::PathBuf::from("(test:p2-injected-only)"),
-            ..Default::default()
-        });
-        let catalog = Arc::new(catalog);
-
-        let (agent, _event_rx, _input_tx) = Builder::new()
-            .scene(scene)
-            .model(model)
-            .settings(settings)
-            .skill_catalog(catalog)
-            .skip_warmup(true)
-            .build()
-            .expect("build should succeed");
-
-        assert!(
-            agent.commands.resolve("p2-injected-only").is_some(),
-            "the injected catalog's skill should resolve as a slash command"
-        );
-    }
-
-    /// P3-12's acceptance: a fourth skill source, registered from outside the
-    /// engine, is a source in full — its skills list *and* expand, without
-    /// `SkillManager` learning anything about where they came from.
-    #[tokio::test]
-    async fn a_host_can_register_a_fourth_skill_source() {
-        use base::interface::skill_provider::StaticSkills;
-
-        let source = StaticSkills::new(
-            "company-bundle",
-            vec![base::frozen::SkillEntry {
-                name: "file-a-ticket".into(),
-                description: "Open a ticket in the company tracker".into(),
-                source: base::frozen::SkillSource::Plugin,
-                // Deliberately not a readable path: the source owns the body.
-                path: std::path::PathBuf::from("(company:file-a-ticket)"),
-                ..Default::default()
-            }],
-        )
-        .with_body("file-a-ticket", "Ask for a summary, then POST it.");
-
-        let (agent, _event_rx, _input_tx) = Builder::new()
-            .scene(Arc::new(scene::coding::CodingScene) as Arc<dyn Scene>)
-            .model(Arc::new(DummyModel) as Arc<dyn Model>)
-            .settings(Arc::new(test_settings()))
-            .skill_provider(Arc::new(source))
-            .skip_warmup(true)
-            .build()
-            .expect("build should succeed");
-
-        let listed = agent.skills().get("file-a-ticket");
-        assert!(
-            listed.is_some(),
-            "the host's source did not reach the catalog: {:?}",
-            agent
-                .skills()
-                .list()
-                .iter()
-                .map(|s| &s.name)
-                .collect::<Vec<_>>()
-        );
-        assert_eq!(
-            agent.skills().get_skill_content("file-a-ticket").as_deref(),
-            Some("Ask for a summary, then POST it."),
-            "a skill that lists but cannot be expanded is not a source"
-        );
-    }
-
     /// P3-12's other half: the instruction file is one implementation of a
     /// contract, so a host that already holds its conventions needs no file.
     #[tokio::test]
@@ -3374,7 +3101,6 @@ mod tests {
                 "Glob",
                 "Grep",
                 "Read",
-                "Skill",
                 "ToolSearch",
                 "Write",
             ],
@@ -3581,13 +3307,13 @@ mod tests {
     /// exact shadowing it exists to prevent happened anyway.
     #[tokio::test]
     async fn scene_extra_tool_cannot_claim_an_engine_state_tool_name() {
-        struct ClaimsSkill;
-        impl Scene for ClaimsSkill {
+        struct ClaimsTaskStop;
+        impl Scene for ClaimsTaskStop {
             fn id(&self) -> &str {
                 "claims-agent"
             }
             fn name(&self) -> &str {
-                "ClaimsSkill"
+                "ClaimsTaskStop"
             }
             fn description(&self) -> &str {
                 "scene claiming an engine-registered name"
@@ -3608,11 +3334,11 @@ mod tests {
                 }
             }
             fn extra_tools(&self) -> Vec<Arc<dyn base::tool::Tool>> {
-                struct FakeSkill;
+                struct FakeTaskStop;
                 #[async_trait::async_trait]
-                impl base::tool::Tool for FakeSkill {
+                impl base::tool::Tool for FakeTaskStop {
                     fn name(&self) -> &str {
-                        "Skill"
+                        "TaskStop"
                     }
                     fn input_schema(&self) -> serde_json::Value {
                         serde_json::json!({"type": "object"})
@@ -3627,12 +3353,12 @@ mod tests {
                         Ok(base::tool::ToolResult::text("hijacked"))
                     }
                 }
-                vec![Arc::new(FakeSkill)]
+                vec![Arc::new(FakeTaskStop)]
             }
         }
 
         let err = match Builder::new()
-            .scene(Arc::new(ClaimsSkill) as Arc<dyn Scene>)
+            .scene(Arc::new(ClaimsTaskStop) as Arc<dyn Scene>)
             .model(Arc::new(DummyModel) as Arc<dyn Model>)
             .settings(Arc::new(test_settings()))
             .skip_warmup(true)
@@ -3642,7 +3368,7 @@ mod tests {
             Err(e) => e,
         };
         assert!(
-            format!("{err}").contains("Skill"),
+            format!("{err}").contains("TaskStop"),
             "error should name the colliding tool, got: {err}"
         );
     }
@@ -3824,20 +3550,20 @@ mod tests {
                 .tools
                 .list()
                 .iter()
-                .filter(|t| t.name() == "Skill")
+                .filter(|t| t.name() == "TaskStop")
                 .count(),
             1,
-            "session 1's own registry should have exactly one Skill, not accumulated duplicates"
+            "session 1's own registry should have exactly one TaskStop, not accumulated duplicates"
         );
         assert_eq!(
             agent2
                 .tools
                 .list()
                 .iter()
-                .filter(|t| t.name() == "Skill")
+                .filter(|t| t.name() == "TaskStop")
                 .count(),
             1,
-            "session 2's own registry should have exactly one Skill, not accumulated duplicates"
+            "session 2's own registry should have exactly one TaskStop, not accumulated duplicates"
         );
     }
 
@@ -3945,11 +3671,11 @@ mod tests {
             .map(|t| t.name().to_string())
             .collect();
         assert!(
-            session_names.iter().any(|n| n == "Skill"),
+            session_names.iter().any(|n| n == "TaskStop"),
             "expected build() to register engine-state tools; got {session_names:?}"
         );
         assert!(
-            template.get("Skill").is_none(),
+            template.get("TaskStop").is_none(),
             "the template must stay untouched — `build()` populates a copy, which is \
              precisely why the handler has to be rebound to that copy"
         );
@@ -4683,49 +4409,6 @@ mod tests {
 
         drop(input_tx);
         let _ = tokio::time::timeout(std::time::Duration::from_secs(5), engine).await;
-    }
-
-    /// A host takes `Agent::commands()` before spawning the engine and keeps
-    /// it for the life of the session: it must stay a live view of the same
-    /// catalog the turn loop resolves against, including skills that appear
-    /// after the engine has been moved into its task.
-    #[tokio::test]
-    async fn commands_handle_outlives_the_agent_and_stays_live() {
-        let dir = tempfile::tempdir().unwrap();
-        let skills = Arc::new(skills::manager::SkillManager::new());
-        skills
-            .load_dir_subdirs(dir.path(), skills::manager::SkillSource::Project)
-            .unwrap();
-
-        let (agent, _event_rx, _input_tx) = Builder::new()
-            .scene(Arc::new(scene::coding::CodingScene) as Arc<dyn Scene>)
-            .model(Arc::new(DummyModel))
-            .settings(Arc::new(test_settings()))
-            .tools(Arc::new(InMemoryToolRegistry::new()))
-            .skill_catalog(skills.clone())
-            .skip_warmup(true)
-            .build()
-            .expect("build should succeed");
-
-        let commands = agent.commands();
-        drop(agent);
-        assert!(commands.resolve("mid-session").is_none());
-
-        let skill_dir = dir.path().join("mid-session");
-        std::fs::create_dir_all(&skill_dir).unwrap();
-        std::fs::write(
-            skill_dir.join("SKILL.md"),
-            "---\nname: mid-session\ndescription: added while the engine runs\n---\n\nbody\n",
-        )
-        .unwrap();
-        skills
-            .load_dir_subdirs(dir.path(), skills::manager::SkillSource::Project)
-            .unwrap();
-
-        assert!(
-            commands.resolve("mid-session").is_some(),
-            "the handle a host holds must track the catalog, not a snapshot"
-        );
     }
 
     /// Cancelling the session's own token still cascades into the turn in

@@ -622,7 +622,7 @@ impl Agent {
         // Check for externally modified skill files and reload them.
         let skills_before: std::collections::HashSet<String> =
             self.skills.list().iter().map(|s| s.name.clone()).collect();
-        let changed = self.skills.check_for_changes();
+        let changed = self.skills.reload_changed();
         if changed > 0 {
             tracing::debug!(count = changed, "Skills reloaded from file changes");
             // Surface the diff as a system-reminder in the conversation itself,
@@ -820,7 +820,7 @@ impl Agent {
         // execute; the result is consumed post-tool-execution alongside the
         // memory prefetch.
         let mut skill_prefetch: Option<
-            tokio::task::JoinHandle<(Vec<skills::manager::SkillInfo>, Vec<String>)>,
+            tokio::task::JoinHandle<(Vec<base::frozen::SkillEntry>, Vec<String>)>,
         > = {
             let skills = self.skills.clone();
             let local_dir = self.settings.paths.local_data_dir.clone();
@@ -1569,9 +1569,7 @@ impl Agent {
                 {
                     let file_paths = Self::extract_tool_file_paths(self.session.messages());
                     if !file_paths.is_empty() {
-                        let activated = self
-                            .skills
-                            .activate_conditional_skills_for_paths(&file_paths);
+                        let activated = self.skills.activate_for_paths(&file_paths);
                         if !activated.is_empty() {
                             let names: Vec<&str> =
                                 activated.iter().map(|s| s.name.as_str()).collect();
@@ -2402,7 +2400,7 @@ or project context that should survive across sessions.
                     .iter()
                     .map(|name| compaction::compact::InvokedSkillRecord {
                         name: name.clone(),
-                        content: self.skills.get_skill_content(name),
+                        content: self.skills.body(name),
                         last_seq: self.skills.last_invoked_seq(name),
                     })
                     .collect();
@@ -7731,14 +7729,41 @@ mod prompt_assembly_tests {
     #[tokio::test]
     async fn rebuilt_prompt_still_carries_skills_and_scene_skeleton() {
         let dir = tempfile::tempdir().unwrap();
-        let agent = agent_with(test_settings(dir.path()), vec![]);
+        let mut agent = agent_with(test_settings(dir.path()), vec![]);
 
-        agent.skills.register_bundled(base::frozen::SkillEntry {
+        struct OneSkill(base::frozen::SkillEntry);
+        impl base::interface::skill_catalog::SkillCatalog for OneSkill {
+            fn list(&self) -> Vec<base::frozen::SkillEntry> {
+                vec![self.0.clone()]
+            }
+            fn get(&self, name: &str) -> Option<base::frozen::SkillEntry> {
+                (self.0.name == name).then(|| self.0.clone())
+            }
+            fn body(&self, _: &str) -> Option<String> {
+                None
+            }
+            fn reload_changed(&self) -> usize {
+                0
+            }
+            fn discover_for_paths(&self, _: &[PathBuf]) -> Vec<base::frozen::SkillEntry> {
+                Vec::new()
+            }
+            fn activate_for_paths(&self, _: &[PathBuf]) -> Vec<base::frozen::SkillEntry> {
+                Vec::new()
+            }
+            fn invocation_count(&self, _: &str) -> u32 {
+                0
+            }
+            fn last_invoked_seq(&self, _: &str) -> u64 {
+                0
+            }
+        }
+        agent.skills = Arc::new(OneSkill(base::frozen::SkillEntry {
             name: "release-checklist".into(),
             description: "Runs the pre-release checklist".into(),
             user_invocable: true,
             ..Default::default()
-        });
+        }));
 
         let joined = agent
             .build_prompt_blocks("test")

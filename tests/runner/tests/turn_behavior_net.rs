@@ -153,6 +153,7 @@ async fn trace(case: Case) -> String {
     let (mut agent, mut event_rx, input_tx) = Builder::new()
         .scene(scene)
         .module(Arc::new(agents::AgentsModule::new()))
+        .module(Arc::new(skills::SkillsModule::new()))
         .model(model)
         .tools(registry)
         .permission(permission)

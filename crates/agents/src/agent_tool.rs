@@ -1138,14 +1138,15 @@ struct Inner {
     modules: Vec<Arc<dyn runtime::module::Module>>,
     /// The parent session's `SkillManager`, when known — used to resolve
     /// the `skills:` preload field on `AgentTypeDefinition`. Set via
-    /// `AgentTool::set_skill_manager` *after* construction (interior
+    /// `AgentTool::set_skill_catalog` *after* construction (interior
     /// mutability, `RwLock` not a plain field) because `Builder::build()`
     /// constructs `AgentTool` before it loads skills — see the call site in
     /// `agent.rs` for why reordering wasn't the simpler fix. `None` (tests,
     /// the generic `AgentSpawner` bridge) means `skills:` preload is
     /// silently skipped, matching how `parent_settings`/`task_router`
     /// absence degrades elsewhere in this struct.
-    skill_manager: Arc<std::sync::RwLock<Option<Arc<skills::manager::SkillManager>>>>,
+    skill_manager:
+        Arc<std::sync::RwLock<Option<Arc<dyn base::interface::skill_catalog::SkillCatalog>>>>,
     /// A snapshot of the parent session's connected MCP tools, used to
     /// resolve `AgentTypeDefinition.mcp_servers` by reusing already-
     /// connected tool instances (not reconnecting). Same interior-
@@ -1370,7 +1371,7 @@ impl Inner {
             .cloned()
     }
 
-    fn skill_manager(&self) -> Option<Arc<skills::manager::SkillManager>> {
+    fn skill_manager(&self) -> Option<Arc<dyn base::interface::skill_catalog::SkillCatalog>> {
         self.skill_manager
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1677,7 +1678,10 @@ fn subagent_label(agent_type: Option<&str>, session_id: &str) -> String {
 /// the whole spawn.
 /// Returns an empty string when nothing resolved, so callers can
 /// unconditionally prepend the result without an extra branch.
-fn preload_skills_text(mgr: &skills::manager::SkillManager, skill_names: &[String]) -> String {
+fn preload_skills_text(
+    mgr: &dyn base::interface::skill_catalog::SkillCatalog,
+    skill_names: &[String],
+) -> String {
     let mut sections = Vec::new();
     for name in skill_names {
         let Some(info) = mgr.get(name) else {
@@ -1691,7 +1695,7 @@ fn preload_skills_text(mgr: &skills::manager::SkillManager, skill_names: &[Strin
             );
             continue;
         }
-        let Some(content) = mgr.get_skill_content(name) else {
+        let Some(content) = mgr.body(name) else {
             tracing::warn!(skill = %name, "agent skills: preload — skill has no readable content, skipping");
             continue;
         };
@@ -1926,14 +1930,9 @@ impl AgentTool {
         self
     }
 
-    /// Attach the session's `SkillManager` so `AgentTypeDefinition.skills`
-    /// (preload) can resolve. Callable through `&self` (interior mutability
-    /// via `Inner::skill_manager`'s `RwLock`) rather than the `.with_X(self)
-    /// -> Self` builder pattern the other two use, because `Builder::build()`
-    /// only has a `SkillManager` to hand *after* it already needs the
-    /// finished `Arc<AgentTool>` for hook construction — see the call site
-    /// in `agent.rs`.
-    pub fn set_skill_manager(&self, mgr: Arc<skills::manager::SkillManager>) {
+    /// Attach the session's skill catalog so `AgentTypeDefinition.skills`
+    /// (preload) can resolve.
+    pub fn set_skill_catalog(&self, mgr: Arc<dyn base::interface::skill_catalog::SkillCatalog>) {
         *self
             .inner
             .skill_manager
@@ -1943,7 +1942,7 @@ impl AgentTool {
 
     /// Attach a snapshot of the parent session's connected MCP tools — same
     /// interior-mutability, set-after-construction pattern as
-    /// `set_skill_manager`. Resolves `AgentTypeDefinition.mcp_servers` when
+    /// `set_skill_catalog`. Resolves `AgentTypeDefinition.mcp_servers` when
     /// a subagent is spawned. Pass `mcp_manager.tool_adapters().to_vec()`;
     /// see `Inner::mcp_tool_adapters`'s doc comment for why this takes a
     /// snapshot `Vec` rather than the live `McpManager`.
@@ -1959,7 +1958,7 @@ impl AgentTool {
     /// `TeamCreate`/`TeamList`/`TeamDelete`, so persistent team members
     /// spawned through this `AgentTool` (see `spawn_or_message_team_member`)
     /// update state those tools can see. Same interior-mutability,
-    /// set-after-construction pattern as `set_skill_manager`/
+    /// set-after-construction pattern as `set_skill_catalog`/
     /// `set_mcp_tool_adapters` — only called when `settings.execution.
     /// team_enabled` is true (see the call site in `agent.rs`).
     pub fn set_team_registry(&self, registry: Arc<team::registry::TeamRegistry>) {
@@ -2367,7 +2366,7 @@ impl AgentTool {
 
         let prompt = match (&def, self.inner.skill_manager()) {
             (Some(d), Some(mgr)) if !d.skills.is_empty() => {
-                format!("{}{prompt}", preload_skills_text(&mgr, &d.skills))
+                format!("{}{prompt}", preload_skills_text(mgr.as_ref(), &d.skills))
             }
             _ => prompt,
         };
@@ -2922,7 +2921,7 @@ impl AgentTool {
 
         let prompt = match (&def, inner.skill_manager()) {
             (Some(d), Some(mgr)) if !d.skills.is_empty() => {
-                format!("{}{prompt}", preload_skills_text(&mgr, &d.skills))
+                format!("{}{prompt}", preload_skills_text(mgr.as_ref(), &d.skills))
             }
             _ => prompt,
         };
@@ -3671,14 +3670,14 @@ mod catalog_tests {
     }
 
     #[test]
-    fn set_skill_manager_makes_it_available_via_inner() {
+    fn set_skill_catalog_makes_it_available_via_inner() {
         let tools = Arc::new(InMemoryToolRegistry::new());
         let model: Arc<dyn Model> = Arc::new(DummyModel);
         let config = Arc::new(EngineConfig::defaults_for("test-model"));
         let agent_tool =
             AgentTool::with_parent_tools(model, config, tools.clone(), tools, &[], &[]);
         assert!(agent_tool.inner.skill_manager().is_none());
-        agent_tool.set_skill_manager(Arc::new(skills::manager::SkillManager::new()));
+        agent_tool.set_skill_catalog(Arc::new(skills::manager::SkillManager::new()));
         assert!(agent_tool.inner.skill_manager().is_some());
     }
 

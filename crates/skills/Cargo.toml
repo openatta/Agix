@@ -10,6 +10,7 @@ description  = "Agix — skill manager + bundled skills"
 [dependencies]
 base          = { workspace = true }
 tools         = { workspace = true }
+runtime       = { workspace = true }
 permissions   = { workspace = true }
 async-trait   = { workspace = true }
 regex         = { workspace = true }
@@ -22,5 +23,6 @@ notify        = { workspace = true }
 globset       = { workspace = true }
 
 [dev-dependencies]
+scene      = { workspace = true }
 tokio-util = { workspace = true }
 tempfile = { workspace = true }

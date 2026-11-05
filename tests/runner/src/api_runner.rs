@@ -294,6 +294,7 @@ async fn build_agent(
     let mut builder = Builder::new()
         .environment(environment)
         .module(Arc::new(agents::AgentsModule::new()))
+        .module(Arc::new(skills::SkillsModule::new()))
         .scene(config.scene.clone())
         .model(recorder_model)
         .tools(tools_registry)

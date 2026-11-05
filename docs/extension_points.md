@@ -466,13 +466,16 @@ store 由造它的人自己配:`MemoryStore::new(user, local).with_environment(e
 
 ### skill 从哪来 — `skill.source`
 
-`base::interface::skill_provider::SkillProvider`。自带三个实现,覆盖 skill 一直
+`base::interface::skill_provider::SkillProvider`,由 `skills::SkillsModule` 装进会话;
+引擎经 `base::interface::skill_catalog::SkillCatalog` 读 skill,不直接依赖 skills。自带三个实现,覆盖 skill 一直
 以来的三个来源:`skills::sources::SkillDirectory`(一层目录)、`BundledSkills`
 (编进二进制的内建)和 `McpSkills`(一台连上的 server 的工具)。第四个是加进去,
 不是替掉:
 
 ```rust
-Builder::new().skill_provider(Arc::new(StaticSkills::new("company", entries)))
+Builder::new().module(Arc::new(
+    SkillsModule::new().provider(Arc::new(StaticSkills::new("company", entries))),
+))
 ```
 
 这样注册的 source 让位给已经加载好的东西。有意要替掉引擎自带某个 skill 的,返回

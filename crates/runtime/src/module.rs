@@ -14,11 +14,13 @@ use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use base::context::{EngineConfig, SessionState};
+use base::frozen::SkillEntry;
 use base::interface::agent_spawner::AgentSpawner;
 use base::interface::model::Model;
 use base::interface::permission::Permission;
 use base::interface::scene::Scene;
 use base::interface::settings::Settings;
+use base::interface::skill_catalog::{NoSkills, SkillCatalog};
 use base::tool::InMemoryToolRegistry;
 use tokio_util::sync::CancellationToken;
 
@@ -81,8 +83,8 @@ pub struct SessionContext<'a> {
     /// what a module that spawns delegates assembles them with.
     pub modules: &'a [Arc<dyn Module>],
     pub mcp: &'a mcp::manager::McpManager,
-    pub skills: &'a Arc<skills::manager::SkillManager>,
     pub(crate) agent_spawner: &'a LateAgentSpawner,
+    pub(crate) skill_catalog: &'a LateSkillCatalog,
 }
 
 impl SessionContext<'_> {
@@ -92,8 +94,67 @@ impl SessionContext<'_> {
         self.agent_spawner.set(spawner);
     }
 
+    /// The session's spawner if a module earlier in the list provided one.
     pub fn agent_spawner(&self) -> Option<Arc<dyn AgentSpawner>> {
         self.agent_spawner.get()
+    }
+
+    /// Makes `catalog` the skills the session lists, expands and reminds the
+    /// model of.
+    pub fn provide_skill_catalog(&mut self, catalog: Arc<dyn SkillCatalog>) {
+        self.skill_catalog.set(catalog);
+    }
+
+    /// The session's skill catalog — whichever module provides it, before or
+    /// after this one; empty if none does.
+    pub fn skill_catalog(&self) -> Arc<dyn SkillCatalog> {
+        Arc::new(self.skill_catalog.clone())
+    }
+}
+
+/// A [`SkillCatalog`] provided after the things reading it were built: the
+/// command registry, the agent and other modules hold this and see the real
+/// catalog once a module provides it.
+#[derive(Default, Clone)]
+pub(crate) struct LateSkillCatalog(Arc<OnceLock<Arc<dyn SkillCatalog>>>);
+
+impl LateSkillCatalog {
+    fn set(&self, catalog: Arc<dyn SkillCatalog>) {
+        let _ = self.0.set(catalog);
+    }
+
+    fn inner(&self) -> &dyn SkillCatalog {
+        match self.0.get() {
+            Some(c) => c.as_ref(),
+            None => &NoSkills,
+        }
+    }
+}
+
+impl SkillCatalog for LateSkillCatalog {
+    fn list(&self) -> Vec<SkillEntry> {
+        self.inner().list()
+    }
+    fn get(&self, name: &str) -> Option<SkillEntry> {
+        self.inner().get(name)
+    }
+    fn body(&self, name: &str) -> Option<String> {
+        self.inner().body(name)
+    }
+    fn reload_changed(&self) -> usize {
+        self.inner().reload_changed()
+    }
+    fn discover_for_paths(&self, paths: &[PathBuf]) -> Vec<SkillEntry> {
+        self.inner().discover_for_paths(paths)
+    }
+    fn activate_for_paths(&self, files: &[PathBuf]) -> Vec<SkillEntry> {
+        self.inner().activate_for_paths(files)
+    }
+    fn invocation_count(&self, name: &str) -> u32 {
+        self.inner().invocation_count(name)
+    }
+    fn last_invoked_seq(&self, name: &str) -> u64 {
+        self.inner().last_invoked_seq(name)
     }
 }
 
