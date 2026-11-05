@@ -5,6 +5,10 @@
 //! It exists as the size and composition baseline for the minimal build:
 //! whatever this binary links is what the kernel cannot yet shed.
 //!
+//! Reads the same environment as `agixd`: `ANTHROPIC_AUTH_TOKEN` or
+//! `ANTHROPIC_API_KEY`, optionally `ANTHROPIC_BASE_URL` for an
+//! Anthropic-compatible endpoint, and `ANTHROPIC_MODEL`.
+//!
 //! ```sh
 //! ANTHROPIC_API_KEY=... cargo run --release -p runtime --example minimal -- "list the files here"
 //! ```
@@ -19,7 +23,11 @@ use model::adapter::AnthropicModel;
 use model::client::{AuthMode, HttpAnthropicClient};
 use tokio_util::sync::CancellationToken;
 
-fn settings(model_name: String, data_dir: std::path::PathBuf) -> Settings {
+fn settings(
+    model_name: String,
+    data_dir: std::path::PathBuf,
+    project: std::path::PathBuf,
+) -> Settings {
     Settings {
         model: ModelSettings {
             api_type: base::provider::ApiType::Anthropic,
@@ -32,8 +40,9 @@ fn settings(model_name: String, data_dir: std::path::PathBuf) -> Settings {
         },
         paths: PathSettings {
             user_data_dir: data_dir.clone(),
-            global_data_dir: data_dir.clone(),
-            local_data_dir: data_dir,
+            global_data_dir: data_dir,
+            // The project is the directory this lives in.
+            local_data_dir: project.join(".agix"),
             scope: "code".into(),
         },
         execution: ExecutionSettings::default(),
@@ -69,13 +78,23 @@ fn settings(model_name: String, data_dir: std::path::PathBuf) -> Settings {
 async fn main() -> anyhow::Result<()> {
     let prompt = std::env::args().skip(1).collect::<Vec<_>>().join(" ");
     anyhow::ensure!(!prompt.is_empty(), "usage: minimal <prompt>");
-    let api_key = std::env::var("ANTHROPIC_API_KEY")?;
+    let api_key = std::env::var("ANTHROPIC_AUTH_TOKEN")
+        .or_else(|_| std::env::var("ANTHROPIC_API_KEY"))
+        .map_err(|_| anyhow::anyhow!("set ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY"))?;
     let model_name =
-        std::env::var("AGIX_MODEL").unwrap_or_else(|_| "claude-sonnet-5-5".to_string());
+        std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| "claude-sonnet-5-5".to_string());
     let data_dir = std::env::temp_dir().join("agix-minimal");
     std::fs::create_dir_all(&data_dir)?;
 
-    let client = Arc::new(HttpAnthropicClient::new(AuthMode::ApiKey(api_key))?);
+    let auth = AuthMode::ApiKey(api_key);
+    let client = Arc::new(match std::env::var("ANTHROPIC_BASE_URL") {
+        // A trailing slash, so joining the endpoint path appends to it.
+        Ok(base) => HttpAnthropicClient::with_base(
+            auth,
+            url::Url::parse(&format!("{}/", base.trim_end_matches('/')))?,
+        )?,
+        Err(_) => HttpAnthropicClient::new(auth)?,
+    });
     let model = Arc::new(AnthropicModel::new(client));
 
     let registry = Arc::new(InMemoryToolRegistry::new());
@@ -94,7 +113,11 @@ async fn main() -> anyhow::Result<()> {
     let (mut agent, mut events, _input) = runtime::agent::Builder::new()
         .scene(Arc::new(scene::coding::CodingScene) as Arc<dyn Scene>)
         .model(model)
-        .settings(Arc::new(settings(model_name, data_dir)))
+        .settings(Arc::new(settings(
+            model_name,
+            data_dir,
+            std::env::current_dir()?,
+        )))
         .tools(registry)
         .skip_warmup(true)
         .build()?;
