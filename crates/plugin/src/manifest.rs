@@ -1,9 +1,11 @@
 //! `plugin.toml` schema + the loaded `Plugin` it produces.
 //!
 //! Everything here is data. Nothing in this crate executes a plugin or knows
-//! what a tool, scene or hook *is* — the translation into engine types lives
-//! in `plugin-host`, which is what lets this crate stay a dependency-light
-//! manifest reader that the daemon can compile out.
+//! what a tool or hook *is* — the translation into engine types lives in
+//! `plugin-host`, which is what lets this crate stay a dependency-light
+//! manifest reader that the daemon can compile out. The one exception is a
+//! declarative scene directory, which is itself data and is read here (see
+//! [`crate::scenes`]) so that it needs no carrier.
 
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -230,6 +232,11 @@ pub struct SceneSection {
     /// The scene this plugin owns, registered as `plugin:<name>`.
     #[serde(default)]
     pub own: Option<OwnScene>,
+    /// The scene this plugin owns, as a declarative scene directory
+    /// (`scene.json` + `prompt.md`) relative to the plugin root. Its id must
+    /// be `plugin:<name>`. Exclusive with [`own`](Self::own).
+    #[serde(default)]
+    pub dir: Option<PathBuf>,
 }
 
 /// A plugin's own scene: its system prompt, tool surface and budgets.
@@ -335,11 +342,8 @@ impl Plugin {
 
     /// Scene id this plugin's own scene registers under, if it declares one.
     pub fn scene_id(&self) -> Option<String> {
-        self.manifest
-            .scene
-            .own
-            .as_ref()
-            .map(|_| format!("plugin:{}", self.name()))
+        let scene = &self.manifest.scene;
+        (scene.own.is_some() || scene.dir.is_some()).then(|| format!("plugin:{}", self.name()))
     }
 
     /// Resolve a manifest-relative path against this plugin's root.
@@ -448,6 +452,22 @@ fn validate(m: &PluginManifest) -> Result<(), PluginError> {
         }
     }
 
+    if let Some(dir) = &m.scene.dir {
+        if m.scene.own.is_some() {
+            return Err(PluginError::Schema(
+                "`[scene] dir` and `[scene.own]` both declare the plugin's scene; a plugin \
+                 owns one"
+                    .into(),
+            ));
+        }
+        if dir.is_absolute() || dir.components().any(|c| c.as_os_str() == "..") {
+            return Err(PluginError::Schema(format!(
+                "`[scene] dir` `{}` must name a directory inside the package",
+                dir.display()
+            )));
+        }
+    }
+
     for s in &m.mcp {
         match s.kind {
             McpKind::Native if s.config.is_none() => {
@@ -504,6 +524,25 @@ api_version = "0.1"
     fn a_misspelled_engine_section_is_still_reported() {
         let manifest = format!("{MINIMAL}\n[[scripts]]\nentry = \"main.js\"\n");
         assert_eq!(unknown_sections(&manifest), vec!["scripts".to_string()]);
+    }
+
+    #[test]
+    fn a_scene_dir_is_the_plugins_one_scene() {
+        let m = load_str(&format!("{MINIMAL}\n[scene]\ndir = \"scene\"\n")).unwrap();
+        assert_eq!(m.scene.dir.as_deref(), Some(Path::new("scene")));
+
+        let both = format!(
+            "{MINIMAL}\n[scene]\ndir = \"scene\"\n\n[scene.own]\nname = \"D\"\nprompt = \"p.md\"\n"
+        );
+        let e = load_str(&both).unwrap_err().to_string();
+        assert!(e.contains("a plugin owns one"), "{e}");
+
+        for outside in ["../elsewhere", "/abs/scene"] {
+            let e = load_str(&format!("{MINIMAL}\n[scene]\ndir = \"{outside}\"\n"))
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains("inside the package"), "{outside}: {e}");
+        }
     }
 
     #[test]

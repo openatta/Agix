@@ -12,6 +12,7 @@ pub mod manifest;
 pub mod marketplace;
 pub mod mcp;
 pub mod resolver;
+pub mod scenes;
 pub mod state;
 
 pub use disclosure::Disclosure;

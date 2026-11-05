@@ -2654,6 +2654,7 @@ dependencies = [
  "async-trait",
  "base",
  "hex",
+ "scene",
  "semver",
  "serde",
  "serde_json",

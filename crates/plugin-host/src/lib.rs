@@ -162,6 +162,15 @@ impl InstalledPlugins {
             {
                 scenes.push(Arc::new(scene));
             }
+            match plugin::scenes::declared_scene(&plugin) {
+                Some(Ok(scene)) => scenes.push(Arc::new(scene.with_extra_tools(own_tools.clone()))),
+                Some(Err(e)) => tracing::warn!(
+                    plugin = %plugin.name(),
+                    error = %e,
+                    "plugin declares a scene directory that does not load; not registering the scene"
+                ),
+                None => {}
+            }
             tools.append(&mut own_tools);
             tool_text.append(&mut text);
         }
@@ -1108,5 +1117,50 @@ events = ["PreToolUse"]
 
         assert!(host.hook_configs().is_empty());
         assert!(host.hook_executor().is_none());
+    }
+}
+
+#[cfg(test)]
+mod declared_scene_tests {
+    use super::*;
+
+    fn write_package(dir: &Path, scene_json: &str) -> plugin::manifest::Plugin {
+        std::fs::create_dir_all(dir.join("scene")).unwrap();
+        std::fs::write(dir.join("scene/scene.json"), scene_json).unwrap();
+        std::fs::write(dir.join("scene/prompt.md"), "You review.").unwrap();
+        std::fs::write(
+            dir.join("plugin.toml"),
+            "[plugin]\nname = \"review\"\nversion = \"1.0.0\"\napi_version = \"0.1\"\n\n\
+             [scene]\ndir = \"scene\"\n",
+        )
+        .unwrap();
+        plugin::manifest::Plugin::load(dir, &dir.join("plugin.toml")).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_package_scene_directory_reaches_the_host_without_any_component() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_package(
+            dir.path(),
+            r#"{"id": "plugin:review", "name": "Review", "tools": ["Read"]}"#,
+        );
+        let mut host = InstalledPlugins::new(vec![p]);
+        host.load_components(&WasmEngine::new().unwrap(), dir.path())
+            .await;
+
+        assert_eq!(host.scene_ids(), ["plugin:review"]);
+        let scenes = host.scenes();
+        assert_eq!(scenes[0].name(), "Review");
+        assert_eq!(scenes[0].tools(), ["Read"]);
+    }
+
+    #[tokio::test]
+    async fn a_package_scene_that_does_not_load_is_withheld() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_package(dir.path(), r#"{"id": "review", "name": "Review"}"#);
+        let mut host = InstalledPlugins::new(vec![p]);
+        host.load_components(&WasmEngine::new().unwrap(), dir.path())
+            .await;
+        assert!(host.scenes().is_empty());
     }
 }

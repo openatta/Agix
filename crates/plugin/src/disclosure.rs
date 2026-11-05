@@ -128,6 +128,18 @@ impl Disclosure {
             }
         }
 
+        // Unlike `[scene.own]` above, a scene directory that does not load is
+        // refused here: it is validated strictly, and a package whose scene is
+        // known to be broken is not one to install.
+        if let Some(loaded) = crate::scenes::declared_scene(plugin) {
+            let scene = loaded.map_err(|e| PluginError::Schema(e.to_string()))?;
+            let description = base::interface::scene::Scene::description(&scene);
+            if !description.is_empty() {
+                d.push_text("scene description", description, MAX_DESCRIPTION_CHARS)?;
+            }
+            d.push_text("scene system prompt", scene.prompt(), MAX_PROMPT_CHARS)?;
+        }
+
         Ok(d)
     }
 
@@ -327,6 +339,37 @@ prompt = "agent.md"
         let err = Disclosure::from_plugin(&p).unwrap_err().to_string();
         assert!(err.contains("over the"), "{err}");
         assert!(err.contains("reaches the model"), "{err}");
+    }
+
+    #[test]
+    fn a_scene_directory_is_disclosed_and_a_broken_one_refuses_the_install() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("scene")).unwrap();
+        std::fs::write(
+            dir.path().join("scene/scene.json"),
+            r#"{"id": "plugin:demo", "name": "Demo", "description": "the demo scene"}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("scene/prompt.md"), "Obey {{cwd}}.").unwrap();
+        let p = load(dir.path(), "\n[scene]\ndir = \"scene\"\n");
+        let d = Disclosure::from_plugin(&p).unwrap();
+        assert_eq!(d.scene.as_deref(), Some("plugin:demo"));
+        assert!(d
+            .model_visible
+            .iter()
+            .any(|v| v.origin == "scene system prompt" && v.text == "Obey {{cwd}}."));
+        assert!(d
+            .model_visible
+            .iter()
+            .any(|v| v.origin == "scene description" && v.text == "the demo scene"));
+
+        std::fs::write(
+            dir.path().join("scene/scene.json"),
+            r#"{"id": "plugin:demo", "name": "Demo", "tool": ["Bash"]}"#,
+        )
+        .unwrap();
+        let err = Disclosure::from_plugin(&p).unwrap_err().to_string();
+        assert!(err.contains("unknown field `tool`"), "{err}");
     }
 
     #[test]
