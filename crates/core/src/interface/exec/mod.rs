@@ -61,7 +61,10 @@ impl ExecProviders {
         Self {
             process: std::sync::Arc::new(local::LocalProcess::new(env)),
             filesystem: std::sync::Arc::new(local::LocalFileSystem),
+            #[cfg(feature = "http")]
             network: std::sync::Arc::new(local::LocalNetwork::default()),
+            #[cfg(not(feature = "http"))]
+            network: std::sync::Arc::new(NoNetwork),
             sandbox: std::sync::Arc::new(local::PlatformSandbox),
         }
     }
@@ -167,5 +170,23 @@ impl From<ExecError> for crate::error::ToolError {
             ExecError::Denied(m) => Self::Denied(m),
             ExecError::Failed(m) => Self::exec(m),
         }
+    }
+}
+
+/// The network of a `base` built without `http`: every request is refused as
+/// a provider that is not there, never sent some other way.
+#[cfg(not(feature = "http"))]
+struct NoNetwork;
+
+#[cfg(not(feature = "http"))]
+#[async_trait::async_trait]
+impl Network for NoNetwork {
+    async fn send(&self, _: HttpRequest, _: Origin) -> Result<HttpResponse, ExecError> {
+        Err(ExecError::Unavailable(
+            "this build of `base` has no HTTP client (feature `http`)".into(),
+        ))
+    }
+    fn permits(&self, _: &str, _: Origin) -> bool {
+        false
     }
 }

@@ -7,6 +7,7 @@
 //! environment once, when they are first built, so a test that sets it has to
 //! be the only thing in the process that could trigger that build.
 
+#![cfg(feature = "http")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use base::interface::exec::local::LocalNetwork;

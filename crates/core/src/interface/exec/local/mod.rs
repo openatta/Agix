@@ -7,6 +7,7 @@
 
 pub mod env;
 pub mod filesystem;
+#[cfg(feature = "http")]
 pub mod network;
 pub mod orphans;
 pub mod process;
@@ -14,6 +15,7 @@ pub mod sandbox;
 
 pub use env::{SubprocessEnv, SubprocessEnvMode};
 pub use filesystem::LocalFileSystem;
+#[cfg(feature = "http")]
 pub use network::{install_tls_provider, LocalNetwork};
 pub use process::{GroupLedger, LocalProcess};
 pub use sandbox::PlatformSandbox;

@@ -149,3 +149,13 @@ jobs:
 
       - name: sandbox tests
         run: cargo test -p base --features sandbox
+
+      # The contract crate without an HTTP stack: what a crate that only
+      # implements the traits depends on. The graph check is the claim.
+      - name: base without http
+        run: |
+          cargo test -p base --no-default-features
+          if cargo tree -p base --no-default-features -e normal | grep -Eq '\b(reqwest|rustls|hyper) v'; then
+            echo "base without http still links an HTTP stack"
+            exit 1
+          fi
