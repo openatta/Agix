@@ -142,12 +142,13 @@ daemon-harness = { path = "tests/daemon_harness" }
 # daemon down with every session on it — `spawn_blocking` join errors are
 # handled in several places precisely because that is not the wanted outcome.
 #
-# `lto` is `thin` rather than `fat` on purpose: fat reaches 30.6 MB and nearly
-# doubles the build, which is a poor trade for 2.4 MB on a profile people
-# build locally.
+# `lto` is `fat`: the crates share most of their generic instantiations
+# (serde, tokio, rmcp), and only whole-program optimisation folds the copies
+# each one compiles. 23.4 MB → 21.4 MB for `agixd`, no measurable change in a
+# turn's time (`turn_throughput`), about half again the build time.
 [profile.release]
 strip = "symbols"
-lto = "thin"
+lto = "fat"
 codegen-units = 1
 
 # Half the size of `release` for about a tenth more of the daemon's own time
@@ -163,5 +164,4 @@ codegen-units = 1
 [profile.release-small]
 inherits = "release"
 opt-level = "s"
-lto = "fat"
 panic = "abort"

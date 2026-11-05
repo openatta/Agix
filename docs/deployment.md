@@ -10,7 +10,7 @@
 | `release` | `cargo build --release -p daemon --bin agixd` | panic 时展开;任务边界内的 panic 只结束那个任务 |
 | `release-small` | `cargo build --profile release-small -p daemon --bin agixd` | panic 时直接中止进程 |
 
-`release-small` 用 fat LTO、`opt-level = "s"` 与 `panic = "abort"`,产物约为
+两者都用 fat LTO。`release-small` 另加 `opt-level = "s"` 与 `panic = "abort"`,产物约为
 `release` 的一半,daemon 自身每轮的耗时多一成左右。体积更要紧时可以再加
 `--config 'profile.release-small.opt-level="z"'`,再小三分之一,耗时多三分之二。
 
