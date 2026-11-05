@@ -739,8 +739,10 @@ mod imp {
             Vec::new()
         }
 
+        /// The declarative scenes packages ship; a package's WebAssembly
+        /// scene is among the components this build does not run.
         pub fn scenes(&self) -> Vec<Arc<dyn base::interface::scene::Scene>> {
-            Vec::new()
+            plugin::scenes::declared_scenes(&self.packages.active())
         }
 
         pub fn health_check(&self) -> Option<Arc<dyn base::interface::health::HealthCheck>> {

@@ -211,17 +211,17 @@ impl Cli {
     }
 }
 
-/// The closed set of scenes this daemon knows how to construct. Keep in sync
-/// with `crates/scene/src/*.rs` and the sandbox's per-scene settings.json
-/// protection list (`crates/tools/src/bash/sandbox.rs::KNOWN_SCENES`).
-/// Resolves against `scene::SceneRegistry` (P2: the registry existed
-/// with zero production callers before this — every scene was a hardcoded
-/// match arm here instead) rather than a hardcoded match, so `--scenes`
-/// (plural, P4) can register more than the four built-ins without touching
-/// this function again.
-fn resolve_scene(name: &str) -> anyhow::Result<Arc<dyn base::interface::scene::Scene>> {
+/// The scene `--scene` names: a built-in, or a declarative scene under
+/// `user_scenes` (`<state root>/scenes/<id>/scene.json`).
+fn resolve_scene(
+    name: &str,
+    user_scenes: &std::path::Path,
+) -> anyhow::Result<Arc<dyn base::interface::scene::Scene>> {
     let mut registry = scene::SceneRegistry::new();
     registry.register_builtin();
+    for e in registry.register_declarative_dir(user_scenes) {
+        tracing::warn!(error = %e, "a declarative scene was not loaded");
+    }
     registry.resolve(name).ok_or_else(|| {
         let mut known = registry.ids();
         known.sort();
@@ -268,7 +268,12 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     // ── Resolve scene (fails fast on an unsupported value) ──────────────
-    let scene = resolve_scene(&cli.scene)?;
+    let scene = resolve_scene(
+        &cli.scene,
+        &DefaultDaemonPaths::from_env(&cli.scene)
+            .global_root()
+            .join("scenes"),
+    )?;
     let scope = scene.id().to_string();
 
     // ── Resolve paths + load settings ────────────────────────────────────
@@ -604,7 +609,7 @@ mod tests {
     fn resolve_scene_finds_every_builtin_via_the_registry() {
         for id in ["coding", "chat", "demo", "research"] {
             assert_eq!(
-                resolve_scene(id)
+                resolve_scene(id, std::path::Path::new("/nonexistent"))
                     .expect("builtin scene should resolve")
                     .id(),
                 id
@@ -614,7 +619,7 @@ mod tests {
 
     #[test]
     fn resolve_scene_rejects_an_unknown_name_and_lists_the_known_ones() {
-        let err = match resolve_scene("not-a-real-scene") {
+        let err = match resolve_scene("not-a-real-scene", std::path::Path::new("/nonexistent")) {
             Ok(_) => panic!("expected an error for an unknown scene name"),
             Err(e) => e.to_string(),
         };
@@ -622,6 +627,20 @@ mod tests {
         for id in ["coding", "chat", "demo", "research"] {
             assert!(err.contains(id), "expected `{id}` in error, got: {err}");
         }
+    }
+
+    #[test]
+    fn resolve_scene_finds_a_declarative_scene_under_the_state_root() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("triage");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("scene.json"),
+            r#"{"id": "triage", "name": "Triage"}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.join("prompt.md"), "Sort incoming issues.").unwrap();
+        assert_eq!(resolve_scene("triage", root.path()).unwrap().id(), "triage");
     }
 
     #[test]

@@ -225,6 +225,10 @@ for refused in registry.register_declarative_dir(&global_root.join("scenes")) {
 原样留着——家目录里的一个文件不该能冒名顶替。所以要在内建和宿主 scene 登记之后再调。
 单个目录用 `DeclarativeScene::load(dir)`,编进二进制的用 `DeclarativeScene::from_sources`。
 
+`agixd` 就是这样做的:会话池与 `--scene` 都从 `<状态根>/scenes/`(默认 `~/.agix/scenes/`)
+读声明式场景,和内建场景一样经 `scene.activate` / `--scenes` 激活后可用。沙箱把这个目录下
+每个场景的 `settings.json`、`scene.json`、`prompt.md` 都设为不可写。
+
 `scene.json`:
 
 ```json

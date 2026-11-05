@@ -807,7 +807,11 @@ impl SessionPool {
         tools::register_builtin_tools(&tools);
 
         let host_scenes = vec![scene.clone()];
-        let scene_registry = std::sync::RwLock::new(Arc::new(registry_of(&host_scenes, &[])));
+        let scene_registry = std::sync::RwLock::new(Arc::new(registry_of(
+            &host_scenes,
+            &[],
+            &paths.global_root().join("scenes"),
+        )));
         let mut active_scenes = HashMap::new();
         active_scenes.insert(scene.id().to_string(), scene.clone());
 
@@ -993,6 +997,7 @@ impl SessionPool {
         let registry = registry_of(
             &self.host_scenes.read().unwrap_or_else(|e| e.into_inner()),
             &plugin_scenes,
+            &self.paths.global_root().join("scenes"),
         );
         let plugin_ids: std::collections::HashSet<String> =
             plugin_scenes.iter().map(|s| s.id().to_string()).collect();
@@ -4847,7 +4852,11 @@ impl SessionPool {
         *self
             .scene_registry
             .write()
-            .unwrap_or_else(|e| e.into_inner()) = Arc::new(registry_of(&host, &plugin_scenes));
+            .unwrap_or_else(|e| e.into_inner()) = Arc::new(registry_of(
+            &host,
+            &plugin_scenes,
+            &self.paths.global_root().join("scenes"),
+        ));
     }
 
     pub async fn activate_scene(&self, scene_id: &str) -> Result<(), RpcError> {
@@ -6137,13 +6146,24 @@ impl SessionPool {
 /// 让测试不用搭一整个 `SessionPool` 就能直接验证驱逐选中的是最旧的那个。
 /// The scenes a pool can serve: the built-in ones, then the host's, then the
 /// plugins'. Later ones replace earlier ones of the same id.
+/// Built-ins, then the host's, then the declarative scenes under
+/// `user_scenes` (`<state root>/scenes/<id>/scene.json`), then the plugins'.
+/// A declarative scene cannot take an id already registered; one that fails
+/// to load is logged and left out, and the rest load.
 fn registry_of(
     host_scenes: &[Arc<dyn Scene>],
     plugin_scenes: &[Arc<dyn Scene>],
+    user_scenes: &std::path::Path,
 ) -> scene::SceneRegistry {
     let mut registry = scene::SceneRegistry::new();
     registry.register_builtin();
-    for s in host_scenes.iter().chain(plugin_scenes) {
+    for s in host_scenes {
+        registry.register(s.clone());
+    }
+    for e in registry.register_declarative_dir(user_scenes) {
+        warn!(error = %e, "a declarative scene was not loaded");
+    }
+    for s in plugin_scenes {
         registry.register(s.clone());
     }
     registry

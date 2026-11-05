@@ -136,3 +136,67 @@ async fn a_host_scene_is_served_and_survives_being_turned_off() {
         "a host scene turned off must be possible to turn on again: {on}"
     );
 }
+
+/// A scene defined by files under the state root — `scenes/<id>/scene.json`
+/// and `prompt.md` — is served like a built-in once activated, with no code.
+#[tokio::test]
+async fn a_declarative_scene_under_the_state_root_is_served() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("declared.sock");
+    let cwd = dir.path().join("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let config = load_daemon_config(
+        "claude-sonnet-4-6",
+        2000,
+        Some(&sock),
+        "coding",
+        &StaticDaemonPaths::new(dir.path().to_path_buf()),
+    );
+    let scene_dir = config.paths.global_root().join("scenes").join("triage");
+    std::fs::create_dir_all(&scene_dir).unwrap();
+    std::fs::write(
+        scene_dir.join("scene.json"),
+        r#"{"id": "triage", "name": "Triage", "tools": ["Read", "Grep"]}"#,
+    )
+    .unwrap();
+    std::fs::write(scene_dir.join("prompt.md"), "Sort incoming issues.").unwrap();
+
+    let pool = daemon::assemble::pool(
+        &config,
+        Arc::new(scene::coding::CodingScene),
+        daemon::Assembly {
+            cwd: Some(cwd),
+            model_client: Some(Arc::new(MockAnthropicClient::new()) as Arc<dyn AnthropicClient>),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("pool");
+    let server = Arc::new(DaemonServer::new(pool, CancellationToken::new()));
+    let serving = server.clone();
+    let bind = sock.clone();
+    tokio::spawn(async move {
+        let _ = serving.serve_unix(&bind).await;
+    });
+    for _ in 0..80 {
+        if sock.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    let on = call(
+        &sock,
+        "scene.activate",
+        serde_json::json!({"scene": "triage"}),
+    )
+    .await;
+    assert_eq!(on["result"]["active"], true, "{on}");
+    let created = call(
+        &sock,
+        "session.create",
+        serde_json::json!({"scene": "triage"}),
+    )
+    .await;
+    assert_eq!(created["result"]["scene"], "triage", "{created}");
+}

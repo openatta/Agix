@@ -75,6 +75,40 @@ fn effective_known_scenes(policy: &SandboxPolicy) -> Vec<&str> {
     }
 }
 
+/// The files under `<state root>/scenes/<scene>/` a sandboxed command must not
+/// rewrite: the scene's settings, and — for a declarative scene — the files
+/// that define it.
+#[cfg(feature = "sandbox")]
+const SCENE_FILES: &[&str] = &["settings.json", "scene.json", "prompt.md"];
+
+/// Every scene directory to protect: the known scenes, and every directory
+/// that exists under `<state root>/scenes/` — a declarative scene is whatever
+/// a directory there defines, so no list of names can be complete.
+#[cfg(feature = "sandbox")]
+fn protected_scene_files(policy: &SandboxPolicy, state_root: &Path) -> Vec<PathBuf> {
+    let mut scenes: std::collections::BTreeSet<String> = effective_known_scenes(policy)
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    if let Ok(entries) = std::fs::read_dir(state_root.join("scenes")) {
+        for entry in entries.flatten() {
+            if entry.path().is_dir() {
+                if let Some(name) = entry.file_name().to_str() {
+                    scenes.insert(name.to_string());
+                }
+            }
+        }
+    }
+    scenes
+        .iter()
+        .flat_map(|scene| {
+            SCENE_FILES
+                .iter()
+                .map(move |file| state_root.join("scenes").join(scene).join(file))
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 pub struct SandboxOptions<'a> {
     pub command: &'a str,
@@ -220,11 +254,10 @@ fn build_macos_profile(cwd: &Path, additional: &[PathBuf], policy: &SandboxPolic
         // `daemon::resolve_scene` / `KNOWN_SCENES` below) — not an arbitrary
         // string, so we can just enumerate all of them rather than needing
         // to know which one the current session actually uses.
-        for scene in effective_known_scenes(policy) {
+        for p in protected_scene_files(policy, &state_root) {
             s.push_str(&format!(
-                "(deny file-write* (literal \"{}/scenes/{}/settings.json\"))\n",
-                sandbox_escape(&root_str),
-                scene
+                "(deny file-write* (literal \"{}\"))\n",
+                sandbox_escape(&p.display().to_string())
             ));
         }
     }
@@ -341,8 +374,8 @@ fn linux_wrap(opts: SandboxOptions<'_>) -> Confined {
         args.push("--ro-bind-try".into());
         args.push(global_settings.clone());
         args.push(global_settings);
-        for scene in effective_known_scenes(&opts.policy) {
-            let p = format!("{root_str}/scenes/{scene}/settings.json");
+        for p in protected_scene_files(&opts.policy, &state_root) {
+            let p = p.display().to_string();
             args.push("--ro-bind-try".into());
             args.push(p.clone());
             args.push(p);
@@ -1157,6 +1190,30 @@ mod tests {
             !profile.contains("(deny file-read*"),
             "no deny-read rules when deny_read is empty"
         );
+    }
+
+    /// A declarative scene is defined by the files in its directory, so every
+    /// scene directory on disk is protected — not just the names the engine
+    /// knows — and its definition along with its settings.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn every_scene_directory_on_disk_is_protected() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("scenes").join("triage")).unwrap();
+        let policy = SandboxPolicy {
+            state_root: Some(root.path().to_path_buf()),
+            ..Default::default()
+        };
+        let profile = build_macos_profile(Path::new("/work/project"), &[], &policy);
+        let scene_dir = root.path().join("scenes").join("triage");
+        for file in ["settings.json", "scene.json", "prompt.md"] {
+            let rule = format!(
+                "(deny file-write* (literal \"{}\"))",
+                sandbox_escape(&scene_dir.join(file).display().to_string())
+            );
+            assert!(profile.contains(&rule), "missing {rule}");
+        }
+        assert!(profile.contains("/scenes/coding/scene.json"));
     }
 
     /// The profile has to protect the settings.json this instance actually
