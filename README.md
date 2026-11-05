@@ -641,10 +641,10 @@ seconds — which is what makes gating on it possible at all.
 | L3 | `task` | Background task lifecycle | `TaskStore`, `RunningTaskStore`, `DreamTask` |
 | L4 | `runtime` | Agent runtime + turn loop | `Agent`, `Builder`, `PluginHost`, `CommandRegistry` |
 | L5 | `agents` | Sub-agents and teams, as a module | `AgentsModule`, `AgentTool`, `SharedAgentTypeCatalog` |
-| L6 | `assembly` | Modules into sessions, sessions into a pool | `SessionPool`, `Assembly`, `build_task_router`, `run_doctor` |
+| L6 | `assembly` | Modules into sessions, sessions into a pool, the JSON-RPC server over it | `SessionPool`, `Assembly`, `DaemonServer`, `run_doctor` |
 | L5 | `plugin-host` | Loads plugins, wires contributions | `InstalledPlugins`, `PluginScene` |
 | L5 | `plugin-compiler` | AOT component compile | `agix-plugin-compile` |
-| — | `daemon` | JSON-RPC 2.0 server | `DaemonServer`, `discovery` |
+| — | `daemon` | The `agixd` binary | `agixd` |
 
 23 crates under `crates/`, plus `daemon/` and the four test members — 28
 workspace members in total.

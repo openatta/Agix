@@ -113,7 +113,7 @@ pub struct Settings {
     /// either direction, which made this setting a default rather than a
     /// policy: any client that could authenticate could open a
     /// `bypassPermissions` session no matter how the daemon was configured
-    /// (and `daemon/src/server.rs` notes there is no per-method
+    /// (and `crates/assembly/src/server.rs` notes there is no per-method
     /// authorization on that socket). With this `false` — the default — a
     /// client can still *tighten* the mode for its own session, but a
     /// request to loosen it is clamped to what is configured here.

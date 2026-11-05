@@ -18,9 +18,10 @@ Agix 是一个**库**,不是一个应用。它提供的是"跑一个 agent 会�
 ## 1. 分层
 
 ```
- 外壳    daemon ─────────── agixd:参数、监听(Unix socket / TCP / WS)、RPC 分发、实例发现
+ 外壳    daemon ─────────── agixd:参数、进程(锁、信号、崩溃收尾)
            │
- 装配    assembly ───────── 会话池、(项目, 场景) 绑定与失效、provider 路由、载体、模块清单
+ 装配    assembly ───────── 会话池、(项目, 场景) 绑定与失效、provider 路由、载体、模块清单;
+           │                JSON-RPC 服务(Unix socket / TCP / WS)与实例发现
            │
  模块    agents(+team) · mcp · skills · script-host · plugin / plugin-host / wasm-host
            │                经 runtime::module::Module 进入会话
@@ -36,7 +37,10 @@ Agix 是一个**库**,不是一个应用。它提供的是"跑一个 agent 会�
 - 内核 crate 只依赖契约与其它内核 crate,**不依赖任何模块 crate**。
 - 模块依赖契约与内核;模块之间的依赖只经 `Module::requires` 声明的顺序。
 - 只有装配层与外壳知道有哪些模块;模块 feature 的 `#[cfg]` 只出现在
-  `assembly::modules`、会话池的 MCP 部分与 `daemon` 里。
+  `assembly`(模块清单、会话池的 MCP 部分、RPC 服务)与 `daemon` 里。
+
+RPC 服务和会话池在同一个 crate 里是体积上的取舍:两者共用大量泛型实例(serde_json、
+tokio、rmcp),分在两个 crate 时各编一份,release 的 `agixd` 因此大约 2.8 MB。
 
 **`core` 里没有任何第一方依赖。** 它定义 trait 与数据类型,别的 crate 实现它们。
 这条约束是整个扩展面成立的前提:一个宿主要替换某个子系统时,面对的是 `core` 里的
@@ -57,8 +61,8 @@ Agix 是一个**库**,不是一个应用。它提供的是"跑一个 agent 会�
 | `script-host` | 模块 | QuickJS 脚本载体 |
 | `plugin` / `plugin-host` / `wasm-host` / `plugin-compiler` | 模块 | 插件包与 WASM 载体 |
 | `task` | — | 后台任务生命周期 |
-| `assembly` | 装配 | 会话池、配置加载、provider 路由、自检、模块清单 |
-| `daemon` | 外壳 | `agixd`:JSON-RPC 服务与实例发现 |
+| `assembly` | 装配 | 会话池、配置加载、provider 路由、自检、模块清单,以及其上的 JSON-RPC 服务与实例发现 |
+| `daemon` | 外壳 | `agixd` 二进制:参数、锁、信号;库部分按旧路径重新导出 assembly |
 
 ### 1.1 模块怎么进入会话
 

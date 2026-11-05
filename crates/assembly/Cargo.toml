@@ -47,6 +47,8 @@ opentelemetry_sdk  = { version = "0.27", default-features = false, features = ["
 opentelemetry-otlp = { version = "0.27", default-features = false, features = ["trace", "metrics", "grpc-tonic", "http-proto"], optional = true }
 tonic              = { version = "0.12", optional = true }
 
+tokio-tungstenite = { workspace = true, optional = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 libc = { workspace = true }
@@ -82,6 +84,8 @@ default = ["scripts", "plugin-packages", "mcp", "agents", "skills"]
 
 # The modules a session can be assembled with; see `modules.rs`.
 mcp = ["dep:mcp"]
+# The WebSocket listener.
+ws = ["dep:tokio-tungstenite"]
 agents = ["dep:agents"]
 skills = ["dep:skills"]
 

@@ -1453,7 +1453,7 @@ impl SessionPool {
     /// to redacted so a caller that just wants to know *which* providers
     /// are configured doesn't accidentally end up with plaintext keys in
     /// its own logs/UI. See the trust-boundary note on `config.setProvider`
-    /// in `daemon/src/server.rs` — `include_secrets: true` is still gated
+    /// in `crates/assembly/src/server.rs` — `include_secrets: true` is still gated
     /// by nothing more than "can reach this socket", same as every other
     /// method here.
     pub async fn get_providers(
@@ -6391,7 +6391,7 @@ fn session_clock(
 /// mode for its own session and may not loosen it. Without the clamp,
 /// `settings.permission_mode` was only a default — any client that could
 /// authenticate could ask for `bypassPermissions` and get it, regardless of
-/// how the daemon was configured, and `daemon/src/server.rs` is explicit
+/// how the daemon was configured, and `crates/assembly/src/server.rs` is explicit
 /// that there is no per-method authorization on this socket.
 ///
 /// `settings.allow_client_permission_override` (default `false`) restores

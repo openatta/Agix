@@ -109,7 +109,7 @@ const UNDOCUMENTED_BY_DESIGN: &[&str] = &["daemon.auth"];
 #[test]
 fn every_dispatched_method_is_documented() {
     let root = repo_root();
-    let server = std::fs::read_to_string(root.join("daemon/src/server.rs")).unwrap();
+    let server = std::fs::read_to_string(root.join("crates/assembly/src/server.rs")).unwrap();
     let doc = std::fs::read_to_string(root.join("docs/daemon_rpc_protocol.md")).unwrap();
 
     let dispatched = dispatched_methods(&server);
@@ -134,7 +134,7 @@ fn every_dispatched_method_is_documented() {
 #[test]
 fn every_documented_method_is_dispatched() {
     let root = repo_root();
-    let server = std::fs::read_to_string(root.join("daemon/src/server.rs")).unwrap();
+    let server = std::fs::read_to_string(root.join("crates/assembly/src/server.rs")).unwrap();
     let doc = std::fs::read_to_string(root.join("docs/daemon_rpc_protocol.md")).unwrap();
 
     let dispatched = dispatched_methods(&server);
@@ -212,8 +212,9 @@ fn every_documented_error_code_exists() {
 #[test]
 fn every_method_a_client_can_send_is_driven_by_a_test() {
     let root = repo_root();
-    let mut required =
-        dispatched_methods(&std::fs::read_to_string(root.join("daemon/src/server.rs")).unwrap());
+    let mut required = dispatched_methods(
+        &std::fs::read_to_string(root.join("crates/assembly/src/server.rs")).unwrap(),
+    );
     required.push("daemon.auth".to_string());
 
     let wrappers = client_wrappers(&root);

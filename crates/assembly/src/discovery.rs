@@ -180,7 +180,7 @@ pub fn identity() -> serde_json::Value {
         "version": env!("CARGO_PKG_VERSION"),
         "protocol_version": INSTANCE_PROTOCOL_VERSION,
         "capabilities": CAPABILITIES,
-        "modules": assembly::modules::compiled(),
+        "modules": crate::modules::compiled(),
     })
 }
 

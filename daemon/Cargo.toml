@@ -23,7 +23,6 @@ session       = { workspace = true }
 tools         = { workspace = true }
 tokio         = { workspace = true, features = ["full"] }
 tokio-util    = { workspace = true }
-tokio-tungstenite = { workspace = true, optional = true }
 serde         = { workspace = true }
 serde_json    = { workspace = true }
 thiserror     = { workspace = true }
@@ -43,6 +42,7 @@ assembly      = { workspace = true }
 script-host   = { workspace = true, optional = true }
 
 [dev-dependencies]
+tokio-tungstenite = { workspace = true }
 agents      = { workspace = true }
 mcp         = { workspace = true }
 skills      = { workspace = true }
@@ -70,7 +70,7 @@ full = ["coding", "ws"]
 mcp = ["assembly/mcp"]
 agents = ["assembly/agents"]
 skills = ["assembly/skills"]
-ws = ["dep:tokio-tungstenite"]
+ws = ["assembly/ws"]
 web = ["runtime/web"]
 structured-output = ["runtime/structured-output"]
 scripts = ["assembly/scripts", "dep:script-host"]
