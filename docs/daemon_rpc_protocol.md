@@ -1468,6 +1468,24 @@ Shell 命令与监视器的输出逐行记下(stdout 与 stderr 按到达的顺�
 还不存在**:不存在的文件监视不了,新建出来的那一份要等到下一次绑定重建或者这里
 被显式调用。
 
+#### `config.getPrompt` / `config.setPrompt`
+
+这个 daemon 实例的默认系统提示词:一段追加文字与一份整体替换,作用于它服务的**每个**
+项目与场景,优先于三层 settings.json 里的 `prompt_append` / `prompt_override`。只存在
+内存里,daemon 重启后回到 settings 文件的值;要长期生效,写进 settings.json。
+
+```jsonc
+// → config.setPrompt params(都可选)
+{ "append": "回答一律用中文。",   // 字符串 = 设置
+  "override": null }               // null = 清除,回到 settings 文件的值;省略 = 不变
+// ← result(两个方法相同)
+{ "append": "回答一律用中文。", "override": null }
+```
+
+`override` 替换整份系统提示(场景骨架、规则、MCP 说明都不再出现),`append` 接在最后。
+设置之后新建的会话直接用;已在运行的会话在下一轮之前按新提示重建,与 settings 文件被改动时
+相同,会话历史不受影响。`config.getPrompt` 无参。参数类型不对 → `INVALID_PARAMS`。
+
 #### `config.getProvider` / `config.setProvider`
 
 两者都接受 `scene` / `project_root` 定位参数,语义与 `config.reload` 一致:省略 = 这个

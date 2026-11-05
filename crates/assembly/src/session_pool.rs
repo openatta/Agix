@@ -273,6 +273,27 @@ fn find_meta(entries: &[history::entry::EnvelopedEntry]) -> Option<&history::ent
         .find(|entry| matches!(entry, history::entry::LogEntry::Meta { .. }))
 }
 
+/// A system-prompt append and override that take the place of the settings
+/// files' `prompt_append` / `prompt_override` for every session of this
+/// instance. `None` leaves the settings files' value in force.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct InstancePrompt {
+    pub append: Option<String>,
+    #[serde(rename = "override")]
+    pub override_text: Option<String>,
+}
+
+impl InstancePrompt {
+    fn apply(&self, settings: &mut Settings) {
+        if let Some(append) = &self.append {
+            settings.prompt_append = Some(append.clone());
+        }
+        if let Some(text) = &self.override_text {
+            settings.prompt_override = Some(text.clone());
+        }
+    }
+}
+
 /// What a [`SessionCustomizer`] is told about the session being built.
 pub struct SessionCtx<'a> {
     pub session_id: &'a str,
@@ -535,6 +556,9 @@ pub struct SessionPool {
     /// Every session's scheduled jobs, fired by this pool's scheduler (see
     /// `start_scheduler`) whether or not the session is in memory.
     schedule: Arc<tools::cron::CronStore>,
+    /// The system-prompt append / override this instance applies over every
+    /// settings tier — `config.setPrompt`. Held in memory only.
+    instance_prompt: std::sync::RwLock<InstancePrompt>,
     /// Ids for the connections the pool opens for itself — a scheduled turn
     /// has no client — counted down from the top so they never meet the ids
     /// the server hands to real connections.
@@ -838,6 +862,7 @@ impl SessionPool {
             #[cfg(feature = "mcp")]
             mcp_oauth,
             schedule,
+            instance_prompt: std::sync::RwLock::new(InstancePrompt::default()),
             internal_connections: std::sync::atomic::AtomicU64::new(u64::MAX),
             this: std::sync::OnceLock::new(),
             events_tx,
@@ -2031,6 +2056,10 @@ impl SessionPool {
             if let Some(name) = &model_name {
                 snap.model.model_name = name.clone();
             }
+            self.instance_prompt
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .apply(&mut snap);
             Arc::new(snap)
         };
         let permission = resolve_session_permission(
@@ -4787,6 +4816,26 @@ impl SessionPool {
     }
 
     /// This daemon instance's *default* scene id — see the `scene` field.
+    /// What `config.setPrompt` last set.
+    pub fn instance_prompt(&self) -> InstancePrompt {
+        self.instance_prompt
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Replace this instance's system-prompt append / override. Sessions built
+    /// from now on use it; running ones rebuild before their next turn, the
+    /// same way they do when a settings file changes.
+    pub async fn set_instance_prompt(&self, prompt: InstancePrompt) -> InstancePrompt {
+        *self
+            .instance_prompt
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = prompt.clone();
+        self.invalidate_bindings(None).await;
+        prompt
+    }
+
     pub fn scene_id(&self) -> &str {
         self.scene.id()
     }

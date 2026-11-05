@@ -559,6 +559,10 @@ impl DaemonServer {
             // already-running sessions recreate themselves lazily on their
             // next turn — see `SessionPool::run_turn`).
             "config.reload" => self.method_config_reload(id, req.params).await,
+            "config.getPrompt" => {
+                RpcResponse::ok(id, serde_json::json!(self.pool.instance_prompt()))
+            }
+            "config.setPrompt" => self.method_config_set_prompt(id, req.params).await,
             "config.get" => self.method_config_get(id, req.params).await,
             #[cfg(feature = "mcp")]
             "mcp.status" => RpcResponse::ok(
@@ -879,6 +883,38 @@ impl DaemonServer {
             self.pool
                 .reload_settings(project_root.as_deref(), &scene)
                 .await,
+        )
+    }
+
+    /// `config.setPrompt` params: `{"append": "...", "override": "..."}`.
+    /// A string sets the field, `null` clears it back to the settings files'
+    /// value, and an absent key leaves it as it is.
+    async fn method_config_set_prompt(
+        &self,
+        id: serde_json::Value,
+        params: serde_json::Value,
+    ) -> RpcResponse {
+        let mut prompt = self.pool.instance_prompt();
+        for (key, slot) in [
+            ("append", &mut prompt.append),
+            ("override", &mut prompt.override_text),
+        ] {
+            match params.get(key) {
+                None => {}
+                Some(serde_json::Value::Null) => *slot = None,
+                Some(serde_json::Value::String(text)) => *slot = Some(text.clone()),
+                Some(_) => {
+                    return RpcResponse::err(
+                        id,
+                        codes::INVALID_PARAMS,
+                        format!("`{key}` must be a string or null"),
+                    )
+                }
+            }
+        }
+        RpcResponse::ok(
+            id,
+            serde_json::json!(self.pool.set_instance_prompt(prompt).await),
         )
     }
 
