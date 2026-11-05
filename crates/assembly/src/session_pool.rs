@@ -4197,7 +4197,7 @@ impl SessionPool {
             {
                 for summary in summaries {
                     let sid_str = summary.session_id.to_string();
-                    if seen.contains(&sid_str) {
+                    if !seen.insert(sid_str.clone()) {
                         continue;
                     }
                     // The name somebody gave it. A cold session has no live
@@ -4283,11 +4283,20 @@ impl SessionPool {
     /// is not listed until one does — the alternative is a daemon that
     /// remembers projects it no longer serves. `session.get` still finds such
     /// a session by id.
+    ///
+    /// Compared resolved, as the store resolves a project before reading it:
+    /// one folder named two ways (`/var/…` and `/private/var/…` on macOS) is
+    /// one project.
     async fn served_projects(&self) -> Vec<Option<PathBuf>> {
-        let mut out = vec![Some(self.cwd.clone())];
-        for project in self.lock_served().iter() {
-            if !out.contains(project) {
-                out.push(project.clone());
+        let noted: Vec<Option<PathBuf>> = self.lock_served().clone();
+        let mut out = Vec::with_capacity(noted.len() + 1);
+        for project in std::iter::once(Some(self.cwd.clone())).chain(noted) {
+            let project = match project {
+                Some(p) => Some(history::path::canonicalize_cwd(&p).await.unwrap_or(p)),
+                None => None,
+            };
+            if !out.contains(&project) {
+                out.push(project);
             }
         }
         out
@@ -8112,7 +8121,61 @@ mod session_listing_tests {
         std::fs::create_dir_all(&other).unwrap();
         pool.note_served(Some(&other));
         pool.invalidate_bindings(None).await;
+        let other = std::fs::canonicalize(&other).unwrap();
         assert!(pool.served_projects().await.contains(&Some(other)));
+    }
+
+    /// A project served under two spellings of its path — a symlink, or
+    /// macOS's `/var` against `/private/var` — is one project, and each of
+    /// its cold sessions is listed once.
+    #[tokio::test]
+    async fn a_project_served_under_two_spellings_lists_each_session_once() {
+        let state = tempfile::tempdir().unwrap();
+        let store: Arc<dyn HistoryStore> = Arc::new(
+            history::store::JsonlHistoryStore::with_roots(
+                state.path(),
+                history::path::HistoryRoots::under(state.path()),
+            )
+            .await
+            .unwrap(),
+        );
+        let (pool, dir) = test_pool_with_store(Some(store.clone())).await;
+        let work = dir.path().join("work");
+        let alias = dir.path().join("alias");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&work, &alias).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(&work, &alias).unwrap();
+
+        let sid = base::session::SessionId::new();
+        store
+            .append(
+                sid,
+                LogEntry::Meta {
+                    cwd: alias.display().to_string(),
+                    started_at: time::OffsetDateTime::now_utc(),
+                    model: "m".into(),
+                    permission_mode: "default".into(),
+                    engine_version: "0".into(),
+                    agix_version: "0".into(),
+                    parent_session_id: None,
+                    scene: Some("coding".into()),
+                    project_root: Some(alias.display().to_string()),
+                    session_kind: history::entry::SessionKind::Primary,
+                    schema_version: history::entry::CURRENT_META_SCHEMA_VERSION,
+                },
+            )
+            .await
+            .unwrap();
+        pool.note_served(Some(&alias));
+
+        let listed: Vec<String> = pool
+            .list_all(false, None)
+            .await
+            .into_iter()
+            .map(|info| info.session_id)
+            .collect();
+        assert_eq!(listed, vec![sid.to_string()]);
     }
 
     #[tokio::test]
