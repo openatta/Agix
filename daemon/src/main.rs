@@ -12,53 +12,69 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use clap::Parser;
 use daemon::{config::*, write_lock_file, DaemonServer};
 use telemetry::events::StartupTimingPayload;
 use telemetry::perf::PerfCollector;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
-#[derive(Parser, Debug)]
-#[command(
-    version,
-    about = "Agix daemon: multi-session agent engine over JSON-RPC"
-)]
+const HELP: &str = "\
+Agix daemon: multi-session agent engine over JSON-RPC
+
+Usage: agixd [OPTIONS]
+
+Options:
+      --socket <PATH>              Unix socket path [default: $HOME/.agix/<scene>/daemon.sock]
+      --session-cap <N>            Maximum concurrent sessions [default: 32]
+      --session-idle-timeout <SECS>
+                                   Session idle timeout in seconds [default: 3600]
+      --model <NAME>               Model name for sessions [default: claude-sonnet-4-6]
+      --max-tokens <N>             Max tokens per turn [default: 2000]
+      --listen <ADDR>              Bind a TCP listener at ADDR (e.g. 127.0.0.1:7878);
+                                   requires --token or AGIX_DAEMON_TOKEN
+      --listen-ws <ADDR>           Bind a WebSocket listener at a loopback ADDR
+                                   (e.g. 127.0.0.1:7879); requires --token or AGIX_DAEMON_TOKEN
+      --token <SECRET>             Shared secret for TCP and WebSocket auth [env: AGIX_DAEMON_TOKEN]
+      --scene <ID>                 Scene this daemon serves; also selects the state root
+                                   ~/.agix/<scene>/ [default: coding]
+      --scenes <ID,...>            Additional scenes to activate alongside --scene
+      --instance <NAME>            Name of this daemon's ~/.agix/daemon/instances.d/ entry
+                                   [default: the active scenes, sorted and comma-joined]
+      --permission-prompt-timeout <SECS>
+                                   Seconds a permission prompt may go unanswered before it is
+                                   denied (0 = wait forever) [default: 300]
+  -h, --help                       Print help
+  -V, --version                    Print version
+";
+
+#[derive(Debug)]
 struct Cli {
     /// Unix socket path (default: $HOME/.agix/<scene>/daemon.sock)
-    #[arg(long)]
     socket: Option<PathBuf>,
 
     /// Maximum concurrent sessions
-    #[arg(long, default_value = "32")]
     session_cap: usize,
 
     /// Session idle timeout in seconds (default: 3600 = 1 hour)
-    #[arg(long, default_value = "3600")]
     session_idle_timeout: u64,
 
     /// Model name for sessions
-    #[arg(long, default_value = "claude-sonnet-4-6")]
     model: String,
 
     /// Max tokens per turn
-    #[arg(long, default_value = "2000")]
     max_tokens: u32,
 
     /// Bind a TCP listener at this addr (e.g. 127.0.0.1:7878).
     /// Requires --token or AGIX_DAEMON_TOKEN env.
-    #[arg(long)]
     listen: Option<String>,
 
     /// Bind a WebSocket listener at this addr (e.g. 127.0.0.1:7879), so a
     /// browser front end can reach the daemon directly. Loopback only, and
     /// requires --token or AGIX_DAEMON_TOKEN env.
-    #[arg(long)]
     listen_ws: Option<String>,
 
     /// Shared secret for TCP and WebSocket auth. Falls back to
     /// `AGIX_DAEMON_TOKEN`.
-    #[arg(long)]
     token: Option<String>,
 
     /// Which scene this daemon serves (must be one the code actually
@@ -67,7 +83,6 @@ struct Cli {
     /// There is no default scope concept separate from this — an unsupported
     /// value fails startup outright rather than silently falling back to
     /// anything.
-    #[arg(long, default_value = "coding")]
     scene: String,
 
     /// Additional scenes to activate alongside `--scene`, comma-separated
@@ -78,7 +93,6 @@ struct Cli {
     /// does. Session creation still defaults to `--scene`'s scene;
     /// `session.create {"scene": "..."}` is how a caller reaches one of
     /// these instead.
-    #[arg(long, value_delimiter = ',')]
     scenes: Vec<String>,
 
     /// Named identity for this daemon instance — the filename of its
@@ -93,7 +107,6 @@ struct Cli {
     /// `--scenes`), deduplicated, sorted, and comma-joined — e.g.
     /// `--scene coding --scenes chat,research` defaults to
     /// `chat,coding,research`. See `default_instance_name()`.
-    #[arg(long)]
     instance: Option<String>,
 
     /// Seconds a permission prompt may go unanswered before the daemon
@@ -105,8 +118,97 @@ struct Cli {
     /// `session.run_turn` call forever. The timeout fails *closed* — it
     /// denies the tool call, never approves it — and the turn then continues
     /// normally with an error `tool_result`.
-    #[arg(long, default_value = "300")]
     permission_prompt_timeout: u64,
+}
+
+fn number<T: std::str::FromStr>(parser: &mut lexopt::Parser, flag: &str) -> Result<T, lexopt::Error>
+where
+    T::Err: std::fmt::Display,
+{
+    use lexopt::prelude::*;
+    let value = parser.value()?.string()?;
+    value
+        .parse()
+        .map_err(|e| format!("invalid value '{value}' for '--{flag}': {e}").into())
+}
+
+enum Invocation {
+    Run(Box<Cli>),
+    Help,
+    Version,
+}
+
+impl Cli {
+    fn parse() -> Self {
+        match Self::parse_from(std::env::args_os().skip(1)) {
+            Ok(Invocation::Run(cli)) => *cli,
+            Ok(Invocation::Help) => {
+                print!("{HELP}");
+                std::process::exit(0)
+            }
+            Ok(Invocation::Version) => {
+                println!("agixd {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0)
+            }
+            Err(e) => {
+                eprintln!("error: {e}\n\nFor more information, try '--help'.");
+                std::process::exit(2)
+            }
+        }
+    }
+
+    fn parse_from(
+        args: impl IntoIterator<Item = std::ffi::OsString>,
+    ) -> Result<Invocation, lexopt::Error> {
+        use lexopt::prelude::*;
+        let mut cli = Cli {
+            socket: None,
+            session_cap: 32,
+            session_idle_timeout: 3600,
+            model: "claude-sonnet-4-6".into(),
+            max_tokens: 2000,
+            listen: None,
+            listen_ws: None,
+            token: None,
+            scene: "coding".into(),
+            scenes: Vec::new(),
+            instance: None,
+            permission_prompt_timeout: 300,
+        };
+        let mut parser = lexopt::Parser::from_args(args);
+        while let Some(arg) = parser.next()? {
+            match arg {
+                Long("socket") => cli.socket = Some(parser.value()?.into()),
+                Long("session-cap") => cli.session_cap = number(&mut parser, "session-cap")?,
+                Long("session-idle-timeout") => {
+                    cli.session_idle_timeout = number(&mut parser, "session-idle-timeout")?
+                }
+                Long("model") => cli.model = parser.value()?.string()?,
+                Long("max-tokens") => cli.max_tokens = number(&mut parser, "max-tokens")?,
+                Long("listen") => cli.listen = Some(parser.value()?.string()?),
+                Long("listen-ws") => cli.listen_ws = Some(parser.value()?.string()?),
+                Long("token") => cli.token = Some(parser.value()?.string()?),
+                Long("scene") => cli.scene = parser.value()?.string()?,
+                Long("scenes") => cli.scenes.extend(
+                    parser
+                        .value()?
+                        .string()?
+                        .split(',')
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string),
+                ),
+                Long("instance") => cli.instance = Some(parser.value()?.string()?),
+                Long("permission-prompt-timeout") => {
+                    cli.permission_prompt_timeout =
+                        number(&mut parser, "permission-prompt-timeout")?
+                }
+                Short('h') | Long("help") => return Ok(Invocation::Help),
+                Short('V') | Long("version") => return Ok(Invocation::Version),
+                _ => return Err(arg.unexpected()),
+            }
+        }
+        Ok(Invocation::Run(Box::new(cli)))
+    }
 }
 
 /// The closed set of scenes this daemon knows how to construct. Keep in sync
@@ -484,6 +586,69 @@ mod tests {
             "coding",
             "--scene's own value repeated in --scenes must not appear twice"
         );
+    }
+
+    fn parse(args: &[&str]) -> Cli {
+        match Cli::parse_from(args.iter().map(std::ffi::OsString::from)) {
+            Ok(Invocation::Run(cli)) => *cli,
+            Ok(_) => panic!("expected a run invocation for {args:?}"),
+            Err(e) => panic!("{args:?}: {e}"),
+        }
+    }
+
+    #[test]
+    fn no_arguments_give_the_documented_defaults() {
+        let cli = parse(&[]);
+        assert_eq!(cli.session_cap, 32);
+        assert_eq!(cli.session_idle_timeout, 3600);
+        assert_eq!(cli.model, "claude-sonnet-4-6");
+        assert_eq!(cli.max_tokens, 2000);
+        assert_eq!(cli.scene, "coding");
+        assert_eq!(cli.permission_prompt_timeout, 300);
+        assert!(cli.socket.is_none() && cli.instance.is_none() && cli.scenes.is_empty());
+    }
+
+    #[test]
+    fn options_take_separate_or_inline_values() {
+        let cli = parse(&[
+            "--socket",
+            "/tmp/a.sock",
+            "--session-cap=4",
+            "--scene",
+            "chat",
+            "--scenes",
+            "research,demo",
+            "--scenes=coding",
+            "--listen",
+            "127.0.0.1:7878",
+            "--token=s",
+        ]);
+        assert_eq!(
+            cli.socket.as_deref(),
+            Some(std::path::Path::new("/tmp/a.sock"))
+        );
+        assert_eq!(cli.session_cap, 4);
+        assert_eq!(cli.scene, "chat");
+        assert_eq!(cli.scenes, ["research", "demo", "coding"]);
+        assert_eq!(cli.listen.as_deref(), Some("127.0.0.1:7878"));
+        assert_eq!(cli.token.as_deref(), Some("s"));
+    }
+
+    #[test]
+    fn unknown_flags_and_bad_numbers_are_errors() {
+        let parse_err =
+            |args: &[&str]| Cli::parse_from(args.iter().map(std::ffi::OsString::from)).is_err();
+        assert!(parse_err(&["--bogus"]));
+        assert!(parse_err(&["--session-cap", "many"]));
+        assert!(parse_err(&["--model"]));
+        assert!(parse_err(&["stray"]));
+    }
+
+    #[test]
+    fn help_and_version_short_circuit() {
+        let run = |args: &[&str]| Cli::parse_from(args.iter().map(std::ffi::OsString::from));
+        assert!(matches!(run(&["--model", "x", "-h"]), Ok(Invocation::Help)));
+        assert!(matches!(run(&["--version"]), Ok(Invocation::Version)));
     }
 
     #[test]
