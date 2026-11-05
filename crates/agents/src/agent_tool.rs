@@ -699,6 +699,65 @@ async fn run_one_turn(
     (result, cancelled)
 }
 
+/// [`run_one_turn`] on a task of its own, so a foreground sub-agent is
+/// scheduled like any other agent instead of being polled from inside the
+/// parent's turn. The parent still waits for it; if the parent's tool call is
+/// dropped instead, the guard aborts the sub-agent rather than leaving it
+/// running unobserved.
+async fn run_one_turn_detached(
+    session_id: &str,
+    mut agent: Agent,
+    mut event_rx: EventReceiver,
+    input_tx: InputSender,
+    prompt: String,
+    cancel: tokio_util::sync::CancellationToken,
+    tag: Option<SubagentTag>,
+) -> (Result<String, base::error::ToolError>, bool) {
+    use tracing::Instrument;
+    let span = tracing::info_span!("subagent", session = %session_id);
+    let mut task = AbortOnDrop(tokio::spawn(
+        async move {
+            let outcome =
+                run_one_turn(&mut agent, &mut event_rx, &input_tx, prompt, cancel, tag).await;
+            drop(input_tx);
+            outcome
+        }
+        .instrument(span),
+    ));
+    match (&mut task.0).await {
+        Ok(outcome) => outcome,
+        Err(e) if e.is_panic() => (
+            Err(base::error::ToolError::Execution(anyhow!(
+                "sub-agent panicked: {}",
+                panic_message(e.into_panic())
+            ))),
+            false,
+        ),
+        Err(_) => (
+            Err(base::error::ToolError::Execution(anyhow!(
+                "sub-agent task was aborted"
+            ))),
+            true,
+        ),
+    }
+}
+
+struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "(non-string panic payload)".into())
+}
+
 /// After a one-shot sidechain's turn has finished — successfully, with an
 /// error, or because `cancel` fired — writes the matching `SessionEnd`
 /// terminal marker. The single place `run_sub_tagged`, `run_sub_inner`, and
@@ -2394,7 +2453,7 @@ impl AgentTool {
         // keeps it in a separate JSONL file from the parent's.
         let history_store = self.inner.history_store();
         builder = self.inner.inherited_by_a_delegate(builder);
-        let (mut agent, mut event_rx, input_tx) = builder
+        let (agent, event_rx, input_tx) = builder
             .build()
             .map_err(|e| base::error::ToolError::Execution(anyhow!("build: {e}")))?;
         if let Some(store) = &history_store {
@@ -2421,9 +2480,16 @@ impl AgentTool {
             None,
         )
         .await;
-        let (result, cancelled) =
-            run_one_turn(&mut agent, &mut event_rx, &input_tx, prompt, cancel, tag).await;
-        drop(input_tx);
+        let (result, cancelled) = run_one_turn_detached(
+            &sid_for_hook,
+            agent,
+            event_rx,
+            input_tx,
+            prompt,
+            cancel,
+            tag,
+        )
+        .await;
         self.fire_subagent_hook(
             hooks::HookEvent::SubagentStop,
             &sid_for_hook,
@@ -3075,7 +3141,7 @@ impl AgentTool {
         // `BoundScripts::for_delegate`. Without this, spawning is a way
         // around every rule they wrote, chosen by the model.
         builder = self.inner.inherited_by_a_delegate(builder);
-        let (mut agent, mut event_rx, input_tx) = builder
+        let (mut agent, event_rx, input_tx) = builder
             .build()
             .map_err(|e| base::error::ToolError::Execution(anyhow!("build: {e}")))?;
         write_sidechain_meta(
@@ -3091,15 +3157,8 @@ impl AgentTool {
         // Pre-load historical messages into the new agent's session
         agent.seed_history(model_messages, projected.len() as u32);
 
-        // 5. Run the agent. Routed through `run_one_turn` — same as
-        // `run_sub_tagged`/`run_sub_inner` — rather than the previous
-        // spawn-a-collector-and-await-it-unconditionally approach: that
-        // approach waited on `TurnComplete`, which a cancelled turn (see
-        // `run_one_turn`'s doc comment) never emits, so a cancelled resume
-        // hung forever instead of returning.
         let (result, cancelled) =
-            run_one_turn(&mut agent, &mut event_rx, &input_tx, prompt, cancel, tag).await;
-        drop(input_tx);
+            run_one_turn_detached(&new_sid, agent, event_rx, input_tx, prompt, cancel, tag).await;
 
         // 6. Emit resume telemetry via structured tracing
         let latency_ms = start.elapsed().as_millis() as u64;
@@ -4550,6 +4609,136 @@ mod catalog_tests {
         assert!(
             result.is_err(),
             "DummyModel always errors on .stream(); run_sub should surface that as Err"
+        );
+    }
+
+    fn agent_tool_with_model(model: Arc<dyn Model>) -> AgentTool {
+        let tools = Arc::new(InMemoryToolRegistry::new());
+        let config = Arc::new(EngineConfig::defaults_for("test-model"));
+        AgentTool::with_parent_tools(model, config, tools.clone(), tools, &[], &[])
+    }
+
+    async fn run_sub_with(agent_tool: &AgentTool) -> Result<String, base::error::ToolError> {
+        agent_tool
+            .run_sub(
+                "do the thing".into(),
+                Arc::new(InMemoryToolRegistry::new()),
+                std::path::PathBuf::from("/tmp"),
+                tokio_util::sync::CancellationToken::new(),
+                Arc::new(AlwaysPermit),
+                None,
+            )
+            .await
+    }
+
+    struct PanickingModel;
+    #[async_trait]
+    impl Model for PanickingModel {
+        fn api_type(&self) -> base::provider::ApiType {
+            base::provider::ApiType::Anthropic
+        }
+        async fn stream(
+            &self,
+            _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+            _tools: Vec<base::interface::model::ToolDef>,
+            _messages: Vec<ModelMessage>,
+            _params: base::interface::model::StreamParams,
+            _cancel: tokio_util::sync::CancellationToken,
+        ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError>
+        {
+            panic!("model exploded");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_panicking_sub_agent_becomes_an_error_for_its_parent() {
+        let agent_tool = agent_tool_with_model(Arc::new(PanickingModel));
+        let err = run_sub_with(&agent_tool).await.unwrap_err();
+        assert!(err.to_string().contains("model exploded"), "{err}");
+    }
+
+    struct SetOnDrop(Arc<std::sync::atomic::AtomicBool>);
+    impl Drop for SetOnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    struct HangingModel {
+        started: Arc<tokio::sync::Notify>,
+        dropped: Arc<std::sync::atomic::AtomicBool>,
+    }
+    #[async_trait]
+    impl Model for HangingModel {
+        fn api_type(&self) -> base::provider::ApiType {
+            base::provider::ApiType::Anthropic
+        }
+        async fn stream(
+            &self,
+            _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+            _tools: Vec<base::interface::model::ToolDef>,
+            _messages: Vec<ModelMessage>,
+            _params: base::interface::model::StreamParams,
+            _cancel: tokio_util::sync::CancellationToken,
+        ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError>
+        {
+            let _guard = SetOnDrop(self.dropped.clone());
+            self.started.notify_one();
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dropping_the_parent_call_aborts_the_foreground_sub_agent() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let agent_tool = agent_tool_with_model(Arc::new(HangingModel {
+            started: started.clone(),
+            dropped: dropped.clone(),
+        }));
+        tokio::select! {
+            _ = run_sub_with(&agent_tool) => panic!("the model never answers"),
+            _ = started.notified() => {}
+        }
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !dropped.load(std::sync::atomic::Ordering::SeqCst) {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the sub-agent kept running after its parent dropped the call"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    struct BlockingModel;
+    #[async_trait]
+    impl Model for BlockingModel {
+        fn api_type(&self) -> base::provider::ApiType {
+            base::provider::ApiType::Anthropic
+        }
+        async fn stream(
+            &self,
+            _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+            _tools: Vec<base::interface::model::ToolDef>,
+            _messages: Vec<ModelMessage>,
+            _params: base::interface::model::StreamParams,
+            _cancel: tokio_util::sync::CancellationToken,
+        ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError>
+        {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            Err(base::interface::model::ModelError::Internal("done".into()))
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn foreground_sub_agents_of_one_turn_run_on_separate_threads() {
+        let agent_tool = agent_tool_with_model(Arc::new(BlockingModel));
+        let start = std::time::Instant::now();
+        let _ = futures::join!(run_sub_with(&agent_tool), run_sub_with(&agent_tool));
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(750),
+            "two 400ms sub-agents took {elapsed:?}: they were polled one after the other"
         );
     }
 
