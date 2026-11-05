@@ -16,9 +16,9 @@
 脚本载体是 `daemon` crate 的 `scripts` feature,**默认开启**:
 
 ```sh
-cargo build -p daemon                                             # QuickJS
-cargo build -p daemon --no-default-features --features plugin-compile
-cargo build -p daemon --no-default-features                       # neither
+cargo build -p daemon                                                       # QuickJS
+cargo build -p daemon --no-default-features --features full,plugin-compile
+cargo build -p daemon --no-default-features --features full                 # neither
 ```
 
 一个构建只带**一个**扩展载体,或者一个都不带。`scripts` 和 `plugins` 互斥,同时

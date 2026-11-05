@@ -880,7 +880,7 @@ thinking 签名。每一条排除都在它被做出的地方给出理由,因为�
 3. **每个载体都是一个编译期 feature,而且一个构建最多带一个。** `scripts` 带来
    QuickJS,是默认;`plugins` 带来 WebAssembly 那一档,要拿它得加
    `--no-default-features`——因为两个都要会被一个 `compile_error!` 拒掉,而不是被
-   悄悄接受。`cargo build -p daemon --no-default-features` 一个都不链。
+   悄悄接受。`cargo build -p daemon --no-default-features --features full` 一个都不链。
 
    互斥是因为:两个都带,就为一个没人要过两遍的能力付两倍的攻击面;还因为 cargo 的
    feature 合并让"两个都带"成为一个你踩进去而不是选进去的地方——`--features plugins`

@@ -56,7 +56,7 @@ cat <<'TXT'
 
   2. Building a different feature combination. Each keeps its own set:
        cargo build --workspace                      default, with the plugin compiler
-       cargo build -p daemon --no-default-features  no plugin subsystem at all
+       cargo build -p daemon --no-default-features --features full  no plugin subsystem at all
        cargo build -p daemon --features plugins     plugins without the compiler
      (`locked_build.sh` builds the last two into a throwaway target dir of its
      own for exactly this reason, so it leaves nothing behind here.)

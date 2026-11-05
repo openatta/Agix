@@ -15,13 +15,14 @@
 compile_error!(
     "the script carrier (`scripts`) and the plugin carrier (`plugins`) are \
      mutually exclusive. `scripts` is the default, so a plugin build needs \
-     `--no-default-features --features plugins` (or `plugin-compile`)."
+     `--no-default-features --features full,plugins` (or `plugin-compile`)."
 );
 
 pub mod assemble;
 pub mod config;
 pub mod doctor;
 pub mod model_router;
+pub mod modules;
 pub mod plugins;
 pub mod rpc;
 pub mod session_manager;

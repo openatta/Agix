@@ -11,7 +11,7 @@
 //! 怎么跑然后停下，而不是报一个和插件毫无关系的红：
 //!
 //! ```sh
-//! cargo build -p daemon --no-default-features --features plugins \
+//! cargo build -p daemon --no-default-features --features full,plugins \
 //!   --target-dir target/plugins
 //! AGIX_PLUGIN_DAEMON=target/plugins/debug/agixd \
 //!   cargo test -p test-runner --test plugin_lifecycle_smoke -- --ignored

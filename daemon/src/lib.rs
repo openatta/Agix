@@ -10,6 +10,7 @@ pub use assembly::{
 
 pub mod discovery;
 pub mod server;
+#[cfg(feature = "ws")]
 pub mod ws;
 
 pub use assembly::{

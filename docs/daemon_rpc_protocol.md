@@ -589,8 +589,15 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 ```jsonc
 // ← result
 { "pong": true, "version": "…", "protocol_version": 3,
-  "capabilities": ["on_busy_steer", "subscription_dropped_notice", "…"] }
+  "capabilities": ["on_busy_steer", "subscription_dropped_notice", "…"],
+  "modules": ["mcp", "agents", "skills", "scripts", "plugin-packages"] }
 ```
+
+`modules` 列出这个构建编入的模块,按装配顺序:`mcp`、`agents`、`skills`,以及载体与包
+方案(`scripts`、`plugin-packages`、`plugins`)。只含内核的构建(`minimal` 档)为空。
+属于某个模块的方法在没编入它的构建里返回 `METHOD_NOT_FOUND`,`error.data` 为
+`{"module": "<id>"}`;目前这样的方法是 `mcp.*`(模块 `mcp`)。`plugin.*` 在没有包方案
+时仍返回 `PLUGINS_DISABLED`。
 
 `capabilities` 列出协议版本之外、可以单独检查的能力。只会增加;客户端忽略不认识的项。
 
@@ -615,6 +622,7 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 { "version": "…",         // daemon 二进制版本
   "protocol_version": 3,
   "capabilities": ["…"],  // 同 daemon.ping
+  "modules": ["…"],       // 同 daemon.ping
   "uptime_secs": "…",     // 数字,秒
   "sessions": 0 }         // 当前内存里的会话数(含侧链)
 ```
@@ -1863,7 +1871,7 @@ disclosure 的 `wasm.runnable` 会如实报成 `false`。
 
 | 码 | 名称 | 含义 |
 |---|---|---|
-| -32601 | METHOD_NOT_FOUND | 未知方法 |
+| -32601 | METHOD_NOT_FOUND | 未知方法;或方法所属的模块没有编入这个构建,此时 `data.module` 指明模块(§6.1 `daemon.ping`) |
 | -32602 | INVALID_PARAMS | 参数缺失/类型错/取值非法 |
 | -32603 | INTERNAL_ERROR | 服务端内部错误(写盘失败、会话创建失败等) |
 | -32000 | SESSION_NOT_FOUND | 会话不存在,或该方法要求它在内存里而它不在 |

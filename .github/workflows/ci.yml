@@ -50,7 +50,7 @@ jobs:
       # other does with a `scripts` section — see `docs/testing_scripts.md`,
       # which lists exactly that as outside the script carrier's own net.
       - name: build a daemon with no carrier
-        run: CARGO_TARGET_DIR=${{ github.workspace }}/target/no-carrier cargo build -p daemon --no-default-features
+        run: CARGO_TARGET_DIR=${{ github.workspace }}/target/no-carrier cargo build -p daemon --no-default-features --features full
 
       # And a third, carrying WebAssembly. Same reason as above — one binary
       # called `agixd` per target directory — and the same shape of claim:
@@ -60,7 +60,12 @@ jobs:
       # components compiles them, and without the in-process compiler that
       # work goes looking for `agix-plugin-compile`.
       - name: build a daemon with the plugin carrier
-        run: CARGO_TARGET_DIR=${{ github.workspace }}/target/plugins cargo build -p daemon --no-default-features --features plugin-compile
+        run: CARGO_TARGET_DIR=${{ github.workspace }}/target/plugins cargo build -p daemon --no-default-features --features full,plugin-compile
+
+      # The kernel alone: no MCP, sub-agents, skills, web tools, WebSocket,
+      # carrier or package layer. `minimal_tier` runs a session against it.
+      - name: build a minimal daemon
+        run: CARGO_TARGET_DIR=${{ github.workspace }}/target/minimal cargo build -p daemon --no-default-features
 
       # The ignored set is where the slow cases live — a real daemon, a real
       # MCP server over stdio, the schema the documents are generated from.
@@ -74,6 +79,7 @@ jobs:
         env:
           AGIX_TEST_DAEMON_BIN_NO_CARRIER: ${{ github.workspace }}/target/no-carrier/debug/agixd
           AGIX_TEST_DAEMON_BIN_PLUGINS: ${{ github.workspace }}/target/plugins/debug/agixd
+          AGIX_TEST_DAEMON_BIN_MINIMAL: ${{ github.workspace }}/target/minimal/debug/agixd
         run: cargo test --workspace --all-targets -- --ignored
 
   carriers:
@@ -93,10 +99,16 @@ jobs:
       # `plugin.reload` under the carrier — and while this job only built
       # them, those tests had never been run anywhere.
       - name: no carrier
-        run: cargo test -p daemon --no-default-features
+        run: cargo test -p daemon --no-default-features --features full
 
       - name: plugin carrier
-        run: cargo test -p daemon --no-default-features --features plugins
+        run: cargo test -p daemon --no-default-features --features full,plugins
+
+      # The middle tier, with each carrier and with none.
+      - name: coding tier
+        run: |
+          cargo check -p daemon --no-default-features --features coding
+          cargo check -p daemon --no-default-features --features coding,scripts
 
       # The package layer without any carrier: `plugin.*` works, nothing runs.
       # A build worth checking on its own because it is the one that proves
@@ -104,7 +116,7 @@ jobs:
       # than tested because every test gated on the package layer also
       # compiles into the default build, which the `test` job runs.
       - name: packages without a carrier
-        run: cargo check -p daemon --no-default-features --features plugin-packages
+        run: cargo check -p daemon --no-default-features --features full,plugin-packages
 
       # `precompile_plugin` must not go looking for `agix-plugin-compile` on
       # behalf of components a package never declared. The claim only bites

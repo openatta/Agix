@@ -389,9 +389,9 @@ sidecar 答得出**:`Meta` 在 transcript 里,而要读 transcript 先得知道�
 **两个载体互斥,一个构建只带一个:**
 
 ```
-cargo build -p daemon                                                    # QuickJS(默认)
-cargo build -p daemon --no-default-features --features plugin-compile    # WASM
-cargo build -p daemon --no-default-features                              # 两者皆无
+cargo build -p daemon                                                       # QuickJS(默认)
+cargo build -p daemon --no-default-features --features full,plugin-compile  # WASM
+cargo build -p daemon --no-default-features --features full                 # 两者皆无
 ```
 
 同时带两个会被 `compile_error!` 拒绝。这不是洁癖:cargo 的 feature 并集让"两个都带"

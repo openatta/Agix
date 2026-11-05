@@ -14,6 +14,7 @@ use base::interface::permission::Permission;
 use base::interface::scene::Scene;
 use base::interface::settings::Settings;
 use base::interface::settings::{Divergence, RecorderConfig, RecorderMode};
+#[cfg(feature = "mcp")]
 use mcp::manager::McpManager;
 use model::adapter::AnthropicModel;
 use model::client::AnthropicClient;
@@ -125,11 +126,7 @@ struct ProjectBinding {
     /// What building `task_router` had to say — reported by `config.reload`
     /// and `config.setProvider` for the pair they targeted.
     routing: ReloadReport,
-    /// Live-reloaded: a skill file added or removed after this was built is
-    /// picked up without a rebuild, and every session on this pair sees it at
-    /// once because they share this instance.
-    skills: Arc<skills::manager::SkillManager>,
-    agent_types: agents::agent_tool::SharedAgentTypeCatalog,
+    modules: crate::modules::ProjectModules,
     commands: Arc<runtime::commands::CommandRegistry>,
     /// Subscriptions to the settings files this binding was merged from.
     /// Held, not read: dropping them is how a binding that gets invalidated
@@ -158,24 +155,14 @@ impl ProjectBinding {
             Some(router) => router.model_for("main"),
             None => Arc::new(AnthropicModel::new(client.clone())),
         };
-        // Neither of these starts a watcher of its own: this pool watches
-        // every tier through one `WatchHub` and rebuilds the binding, so a
-        // second mechanism would be both redundant and — at one `notify`
-        // stream per catalog per project — the thing that runs a process out
-        // of them.
-        let skills = Arc::new(skills::module::build_skill_manager_unwatched(&settings));
-        let commands = build_shared_commands(skills.clone());
-        let dirs = agent_type_dirs(&settings);
-        let dirs_ref: [&std::path::Path; 3] = [&dirs[0], &dirs[1], &dirs[2]];
-        let agent_types =
-            agents::agent_tool::SharedAgentTypeCatalog::unwatched(&dirs_ref, plugin_agent_types);
+        let modules = crate::modules::ProjectModules::build(&settings, plugin_agent_types);
+        let commands = modules.commands();
         Self {
             settings,
             model,
             task_router,
             routing,
-            skills,
-            agent_types,
+            modules,
             commands,
             _watch: watch,
             stale: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -236,29 +223,16 @@ impl ProjectBinding {
         }
     }
 
-    /// Re-read the skill directories into the catalog every session on this
-    /// pair already shares, so a skill file edit reaches them without a
-    /// rebuild.
     fn reload_skills(&self) {
-        self.skills
-            .replace_catalog(skills::module::build_skill_manager_unwatched(
-                &self.settings,
-            ));
+        self.modules.reload_skills(&self.settings);
     }
 
-    /// Re-merge what the plugin set now contributes.
-    ///
-    /// Skill directories are deliberately not re-scanned: `skills` is the
-    /// live-reloaded manager every session on this pair shares, and
-    /// rescanning would hand new sessions a different instance than the
-    /// running ones hold. `commands` needs nothing either — it is a view onto
-    /// that same manager (`CommandRegistry::from_skill_catalog` keeps the
-    /// `Arc`, it does not copy a list out of it), so it already reflects
-    /// whatever the manager reloaded.
+    /// Re-merge what the plugin set now contributes. Skill directories are
+    /// not re-scanned: the catalog every session on the pair shares is
+    /// live-reloaded, and `commands` is a view onto that same catalog.
     fn refresh_plugins(&self, plugin_agent_types: &[base::agent_type::AgentTypeDefinition]) {
-        let dirs = agent_type_dirs(&self.settings);
-        let dirs_ref: [&std::path::Path; 3] = [&dirs[0], &dirs[1], &dirs[2]];
-        self.agent_types.refresh(&dirs_ref, plugin_agent_types);
+        self.modules
+            .refresh_agent_types(&self.settings, plugin_agent_types);
     }
 }
 
@@ -283,30 +257,6 @@ pub enum ProjectSelector {
 /// `INTERNAL_ERROR` — so those carry the code with the message instead of
 /// inventing a new response envelope for it.
 pub type RpcError = (i32, String);
-
-/// Global → scene → project `agents/*.md` directories — same three tiers,
-/// same order, as `Builder::build()`'s own (now `SessionPool`-shared) copy of
-/// this computation; see `SessionPool::agent_type_catalog`.
-fn agent_type_dirs(settings: &Settings) -> [std::path::PathBuf; 3] {
-    [
-        settings.paths.global_data_dir.join("agents"),
-        settings.paths.user_data_dir.join("agents"),
-        settings.paths.project_root().join(".agix").join("agents"),
-    ]
-}
-
-/// Build the command catalog shared by every session: the 5 built-in local
-/// commands plus a live view of `skill_catalog` (via
-/// `CommandRegistry::from_skill_catalog`). The skill half tracks the catalog,
-/// so a skill file added or deleted after daemon startup is reflected here —
-/// and in `commands.list` — without a rebuild.
-fn build_shared_commands(
-    skill_catalog: Arc<skills::manager::SkillManager>,
-) -> Arc<runtime::commands::CommandRegistry> {
-    Arc::new(runtime::commands::CommandRegistry::from_skill_catalog(
-        skill_catalog,
-    ))
-}
 
 /// The first `LogEntry::Meta` line in `entries`, if any — every session
 /// history has at most one (see `create()`), always first when present, but
@@ -576,9 +526,11 @@ pub struct SessionPool {
     /// Keyed by `(project, scene)` for the same reason `projects` is: a
     /// scene tier can declare its own `mcp_servers`, so two scenes on one
     /// project are not interchangeable.
+    #[cfg(feature = "mcp")]
     mcp_by_project: AsyncMutex<HashMap<ProjectSceneKey, Arc<McpManager>>>,
     /// This pool's OAuth state for MCP servers with an `oauth_provider`:
     /// tokens under its own scene root, and whatever resolver the host gave.
+    #[cfg(feature = "mcp")]
     mcp_oauth: Arc<mcp::oauth::McpOAuth>,
     /// Every session's scheduled jobs, fired by this pool's scheduler (see
     /// `start_scheduler`) whether or not the session is in memory.
@@ -837,6 +789,7 @@ impl SessionPool {
         paths: Arc<dyn crate::config::DaemonPaths>,
     ) -> Self {
         let (events_tx, _) = tokio::sync::broadcast::channel(1024);
+        #[cfg(feature = "mcp")]
         let mcp_oauth = Arc::new(mcp::oauth::McpOAuth::new(
             settings.paths.user_data_dir.join("mcp").join("oauth"),
         ));
@@ -876,7 +829,9 @@ impl SessionPool {
             cwd,
             history_store,
             paths,
+            #[cfg(feature = "mcp")]
             mcp_by_project: AsyncMutex::new(HashMap::new()),
+            #[cfg(feature = "mcp")]
             mcp_oauth,
             schedule,
             internal_connections: std::sync::atomic::AtomicU64::new(u64::MAX),
@@ -918,6 +873,7 @@ impl SessionPool {
 
     /// Resolve OAuth bearer tokens for this pool's MCP servers with
     /// `resolver` when the pool's token store has none.
+    #[cfg(feature = "mcp")]
     pub fn with_mcp_oauth_resolver(
         mut self,
         resolver: Arc<dyn mcp::oauth::McpOAuthResolver>,
@@ -928,6 +884,7 @@ impl SessionPool {
     }
 
     /// This pool's MCP OAuth state.
+    #[cfg(feature = "mcp")]
     pub fn mcp_oauth(&self) -> Arc<mcp::oauth::McpOAuth> {
         self.mcp_oauth.clone()
     }
@@ -1148,6 +1105,7 @@ impl SessionPool {
     /// unlike `mcp_for_project`, this never triggers a connect, so an
     /// unconnected (or not-yet-connected) project just reports no servers
     /// rather than paying for a connect attempt on a status query.
+    #[cfg(feature = "mcp")]
     pub async fn mcp_status(&self) -> Vec<serde_json::Value> {
         let startup_scene = self.settings.read().await.paths.scope.clone();
         self.mcp_by_project
@@ -1176,6 +1134,7 @@ impl SessionPool {
     /// created for the default project after that point see the connected
     /// servers; sessions already running, and every other project's cache
     /// entry, are unaffected.
+    #[cfg(feature = "mcp")]
     pub fn connect_mcp_servers_in_background(
         self: &Arc<Self>,
         servers: HashMap<String, serde_json::Value>,
@@ -1266,6 +1225,7 @@ impl SessionPool {
     /// every other pair's cached connections are left untouched.
     ///
     /// Returns `(connected, failed)` server names for `ReloadReport`.
+    #[cfg(feature = "mcp")]
     async fn reconcile_mcp_servers(
         &self,
         project_root: Option<&Path>,
@@ -1327,6 +1287,7 @@ impl SessionPool {
     /// (same partial-patch semantics as `set_provider` — see its doc
     /// comment for why raw JSON, not a typed struct), then connect it live
     /// so it's usable immediately without a daemon restart.
+    #[cfg(feature = "mcp")]
     pub async fn add_mcp_server(
         &self,
         project_root: Option<&Path>,
@@ -1342,6 +1303,7 @@ impl SessionPool {
     /// project's settings already declare (a rotated token, a new header) and
     /// reconnect it. Sessions on the project pick the new connection up at
     /// their next turn.
+    #[cfg(feature = "mcp")]
     pub async fn update_mcp_server(
         &self,
         project_root: Option<&Path>,
@@ -1353,6 +1315,7 @@ impl SessionPool {
             .await
     }
 
+    #[cfg(feature = "mcp")]
     async fn put_mcp_server(
         &self,
         project_root: Option<&Path>,
@@ -1832,12 +1795,16 @@ impl SessionPool {
         self.invalidate_bindings(changed).await;
 
         let binding = self.binding_for(Some(project_root), scene_id).await;
+        #[cfg_attr(not(feature = "mcp"), allow(unused_mut))]
         let mut report = binding.routing.clone();
-        let (mcp_connected, mcp_failed) = self
-            .reconcile_mcp_servers(Some(project_root), scene_id, &binding.settings.mcp_servers)
-            .await;
-        report.mcp_connected = mcp_connected;
-        report.mcp_failed = mcp_failed;
+        #[cfg(feature = "mcp")]
+        {
+            let (mcp_connected, mcp_failed) = self
+                .reconcile_mcp_servers(Some(project_root), scene_id, &binding.settings.mcp_servers)
+                .await;
+            report.mcp_connected = mcp_connected;
+            report.mcp_failed = mcp_failed;
+        }
 
         (binding.settings.clone(), report)
     }
@@ -2131,6 +2098,9 @@ impl SessionPool {
         // which a shared `Agent` field can't give it). Skipped entirely
         // when nothing's connected, so the common "no MCP servers
         // configured" case pays zero cost.
+        #[cfg(not(feature = "mcp"))]
+        let mcp_server_count = 0;
+        #[cfg(feature = "mcp")]
         let mcp_server_count = {
             let central = self
                 .mcp_for_project(project_root_for_meta.as_deref(), &scene_id)
@@ -2145,13 +2115,7 @@ impl SessionPool {
         };
         // After MCP, so the `Agent` tool sees the servers it may grant a
         // delegate; skills after agents, so forked skills can fork.
-        builder = builder
-            .module(Arc::new(
-                agents::AgentsModule::new().shared_agent_types(binding.agent_types.handle()),
-            ))
-            .module(Arc::new(skills::SkillsModule::shared(
-                binding.skills.clone(),
-            )));
+        builder = builder.modules(binding.modules.session_modules());
 
         // ── Telemetry ──
         //
@@ -2283,7 +2247,7 @@ impl SessionPool {
                     auth_modes: Vec::new(),
                     mcp_server_count,
                     plugin_count: self.plugins.count(),
-                    skill_count: binding.skills.list().len(),
+                    skill_count: binding.modules.skill_count(),
                     output_format: "jsonrpc".to_string(),
                     started_at_ms: (time::OffsetDateTime::now_utc().unix_timestamp_nanos()
                         / 1_000_000) as i64,
@@ -5179,6 +5143,7 @@ impl SessionPool {
     /// next session or rebuild on those keys connects with the changed config
     /// (a new `Authorization`, say) instead of reusing the old connection.
     /// `keep` is a key the caller reconnects itself.
+    #[cfg(feature = "mcp")]
     async fn forget_mcp_built_from(
         &self,
         tier: &crate::watch_hub::Tier,
@@ -5190,6 +5155,7 @@ impl SessionPool {
             .retain(|key, _| !tier_covers(tier, key) || keep == Some(key));
     }
 
+    #[cfg(feature = "mcp")]
     async fn mcp_for_project(
         &self,
         project_root: Option<&Path>,
@@ -5651,13 +5617,16 @@ impl SessionPool {
                         Tier::Scene(scene) => scene.clone(),
                         _ => pool.scene_id().to_string(),
                     };
+                    #[cfg(feature = "mcp")]
                     let reconciled = (Some(pool.cwd.clone()), scene.clone());
+                    #[cfg(feature = "mcp")]
                     pool.forget_mcp_built_from(&key.tier, Some(&reconciled))
                         .await;
                     pool.reload_settings_from(None, &scene, Some(&key.tier))
                         .await;
                 } else {
                     info!(tier = ?key.tier, "settings changed on disk");
+                    #[cfg(feature = "mcp")]
                     pool.forget_mcp_built_from(&key.tier, None).await;
                     pool.invalidate_bindings(Some(&key.tier)).await;
                 }
@@ -7282,6 +7251,7 @@ mod mcp_for_project_tests {
         );
     }
 
+    #[cfg(feature = "mcp")]
     #[tokio::test]
     async fn cache_hit_returns_the_same_arc_without_reconnecting() {
         let (pool, _dir) = test_pool().await;
@@ -7293,6 +7263,7 @@ mod mcp_for_project_tests {
         );
     }
 
+    #[cfg(feature = "mcp")]
     #[tokio::test]
     async fn different_projects_get_independent_cache_entries() {
         let (pool, dir) = test_pool().await;
@@ -7314,6 +7285,7 @@ mod mcp_for_project_tests {
         );
     }
 
+    #[cfg(feature = "mcp")]
     #[tokio::test]
     async fn no_project_key_is_cached_independently_of_the_default_project() {
         let (pool, _dir) = test_pool().await;
@@ -7327,6 +7299,7 @@ mod mcp_for_project_tests {
 
     /// A changed `Authorization` has to reach the next connection; reusing the
     /// cached one would keep sending the old token until a daemon restart.
+    #[cfg(feature = "mcp")]
     #[tokio::test]
     async fn a_settings_change_drops_exactly_the_connections_built_from_it() {
         use crate::watch_hub::Tier;
@@ -7405,6 +7378,7 @@ mod mcp_for_project_tests {
 
     /// A skill file added after a binding was built shows up in the catalog
     /// its sessions already hold, and nothing is marked for rebuilding.
+    #[cfg(feature = "skills")]
     #[tokio::test]
     async fn a_skill_change_reloads_the_shared_catalog_in_place() {
         use crate::watch_hub::{Tier, WatchTarget};
@@ -7417,7 +7391,7 @@ mod mcp_for_project_tests {
             "---\nname: late\ndescription: added after the binding was built\n---\nbody\n",
         )
         .unwrap();
-        assert!(binding.skills.get("late").is_none());
+        assert!(binding.modules.skills().get("late").is_none());
 
         pool.refresh_catalogs(
             &Tier::Project(pool.cwd().to_path_buf()),
@@ -7425,7 +7399,7 @@ mod mcp_for_project_tests {
         )
         .await;
 
-        assert!(binding.skills.get("late").is_some());
+        assert!(binding.modules.skills().get("late").is_some());
         assert!(!is_stale(&binding));
         assert!(Arc::ptr_eq(
             &binding,

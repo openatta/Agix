@@ -6,7 +6,7 @@
 # are absent from the dependency graph, so this checks the graph rather than
 # trusting the feature flag.
 #
-# `-p daemon --no-default-features` is not interchangeable with
+# `-p daemon --no-default-features --features full` is not interchangeable with
 # `--workspace --no-default-features`: cargo unifies features across the
 # graph, so any other member that depends on daemon with `plugins` on turns it
 # back on. The locked artifact must be built for this one package alone.
@@ -39,10 +39,10 @@ if cargo check -p daemon --features plugins >/dev/null 2>&1; then
 fi
 
 echo "==> building daemon without either carrier"
-cargo build -p daemon --no-default-features
+cargo build -p daemon --no-default-features --features full
 
 echo "==> asserting no carrier machinery is in the dependency graph"
-leaked=$(cargo tree -p daemon --no-default-features -e normal \
+leaked=$(cargo tree -p daemon --no-default-features --features full -e normal \
   | grep -Eo '\b(plugin|plugin-host|wasm-host|wasmtime|cranelift-codegen|script-host|rquickjs|rquickjs-core|rquickjs-sys) v' || true)
 if [ -n "$leaked" ]; then
   echo "FAIL: carrier machinery is still linked into the locked build:" >&2
@@ -58,7 +58,7 @@ fi
 # dependency asking for it puts it back. `cranelift-entity` and friends stay:
 # they are arenas and bitsets, not a compiler.
 echo "==> asserting the plugins-without-compiler build links no compiler"
-compiler=$(cargo tree -p daemon --no-default-features --features plugins -e normal \
+compiler=$(cargo tree -p daemon --no-default-features --features full,plugins -e normal \
   | grep -Eo '\b(cranelift-codegen|wasmtime-internal-cranelift|wasmtime-cranelift) v' || true)
 if [ -n "$compiler" ]; then
   echo "FAIL: a WebAssembly compiler is linked into the runtime-only build:" >&2
@@ -87,14 +87,14 @@ if [ -n "$wasm" ]; then
 fi
 
 echo "==> running the daemon test suite in the locked configuration"
-cargo test -p daemon --no-default-features
+cargo test -p daemon --no-default-features --features full
 
 # The plugin carrier is no longer part of the default build, so `cargo test
 # --workspace` does not reach it any more. Nothing else does either — which
 # would leave the whole subsystem untested a week after it stopped being the
 # default, and nobody would notice until a release.
 echo "==> running the daemon test suite carrying the plugin carrier"
-cargo test -p daemon --no-default-features --features plugin-compile
+cargo test -p daemon --no-default-features --features full,plugin-compile
 
 echo "==> the DSH bridge is a separate process and has its own suite"
 if command -v node >/dev/null 2>&1; then

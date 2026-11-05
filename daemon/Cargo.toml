@@ -14,19 +14,16 @@ path = "src/main.rs"
 [dependencies]
 base          = { workspace = true }
 runtime       = { workspace = true }
-agents        = { workspace = true }
 model         = { workspace = true }
-mcp           = { workspace = true }
 permissions   = { workspace = true }
 scene         = { workspace = true }
 history       = { workspace = true }
 hooks         = { workspace = true }
 session       = { workspace = true }
-skills        = { workspace = true }
-tools         = { workspace = true, features = ["web", "structured-output"] }
+tools         = { workspace = true }
 tokio         = { workspace = true, features = ["full"] }
 tokio-util    = { workspace = true }
-tokio-tungstenite = { workspace = true }
+tokio-tungstenite = { workspace = true, optional = true }
 serde         = { workspace = true }
 serde_json    = { workspace = true }
 thiserror     = { workspace = true }
@@ -46,6 +43,9 @@ assembly      = { workspace = true }
 script-host   = { workspace = true, optional = true }
 
 [dev-dependencies]
+agents      = { workspace = true }
+mcp         = { workspace = true }
+skills      = { workspace = true }
 tempfile = { workspace = true }
 libc = { workspace = true }
 compaction = { workspace = true }
@@ -56,7 +56,23 @@ zip = { workspace = true }
 [features]
 # The same switches as `assembly`'s, where they are documented; the binary
 # only forwards them.
-default = ["scripts", "plugin-packages"]
+#
+# The tiers. The carrier (`scripts`, or `plugins` / `plugin-compile`) and the
+# package layer (`plugin-packages`) are chosen separately:
+#
+#     cargo build -p daemon                                            # full + scripts + packages
+#     cargo build -p daemon --no-default-features --features full,plugin-compile
+#     cargo build -p daemon --no-default-features --features coding,scripts
+#     cargo build -p daemon --no-default-features                      # minimal: the kernel
+default = ["full", "scripts", "plugin-packages"]
+coding = ["mcp", "agents", "skills", "web", "structured-output"]
+full = ["coding", "ws"]
+mcp = ["assembly/mcp"]
+agents = ["assembly/agents"]
+skills = ["assembly/skills"]
+ws = ["dep:tokio-tungstenite"]
+web = ["runtime/web"]
+structured-output = ["runtime/structured-output"]
 scripts = ["assembly/scripts", "dep:script-host"]
 plugin-packages = ["assembly/plugin-packages"]
 plugins = ["assembly/plugins"]

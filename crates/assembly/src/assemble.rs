@@ -125,6 +125,7 @@ pub struct Assembly {
     pub customize_session: Option<SessionCustomizer>,
     /// Resolves OAuth bearer tokens for MCP servers with an `oauth_provider`
     /// when this pool's token store has none. `None`: stored tokens only.
+    #[cfg(feature = "mcp")]
     pub mcp_oauth_resolver: Option<Arc<dyn mcp::oauth::McpOAuthResolver>>,
 }
 
@@ -140,6 +141,7 @@ impl Default for Assembly {
             transcripts: Transcripts::default(),
             permission: None,
             customize_session: None,
+            #[cfg(feature = "mcp")]
             mcp_oauth_resolver: None,
         }
     }
@@ -238,6 +240,7 @@ pub async fn pool(
     if let Some(customize) = assembly.customize_session {
         pool = pool.with_session_customizer(customize);
     }
+    #[cfg(feature = "mcp")]
     if let Some(resolver) = assembly.mcp_oauth_resolver {
         pool = pool.with_mcp_oauth_resolver(resolver);
     }
@@ -265,9 +268,12 @@ pub async fn pool(
     // path user-configured ones do. Connecting is deliberately backgrounded:
     // a slow or unreachable server can never delay startup, and a failure
     // warns and emits `mcp_connect_failed` rather than aborting.
-    let mut mcp_servers = config.settings.mcp_servers.clone();
-    mcp_servers.extend(pool.plugin_mcp_servers().await);
-    pool.connect_mcp_servers_in_background(mcp_servers);
+    #[cfg(feature = "mcp")]
+    {
+        let mut mcp_servers = config.settings.mcp_servers.clone();
+        mcp_servers.extend(pool.plugin_mcp_servers().await);
+        pool.connect_mcp_servers_in_background(mcp_servers);
+    }
 
     pool.start_janitor();
     pool.start_config_watcher();

@@ -10,9 +10,9 @@ description  = "Agix — the assembly: modules into sessions, sessions into a po
 [dependencies]
 base          = { workspace = true }
 runtime       = { workspace = true }
-agents        = { workspace = true }
+agents        = { workspace = true, optional = true }
 model         = { workspace = true }
-mcp           = { workspace = true }
+mcp           = { workspace = true, optional = true }
 permissions   = { workspace = true }
 scene         = { workspace = true }
 history       = { workspace = true }
@@ -22,8 +22,8 @@ plugin        = { workspace = true, optional = true }
 plugin-host   = { workspace = true, optional = true }
 wasm-host     = { workspace = true, optional = true }
 script-host   = { workspace = true, optional = true }
-skills        = { workspace = true }
-tools         = { workspace = true, features = ["web", "structured-output"] }
+skills        = { workspace = true, optional = true }
+tools         = { workspace = true }
 tokio         = { workspace = true, features = ["full"] }
 tokio-util    = { workspace = true }
 serde         = { workspace = true }
@@ -73,12 +73,17 @@ zip = { workspace = true }
 # megabyte, where the WebAssembly carrier costs twenty.
 #
 #     cargo build -p daemon                                          # QuickJS + packages
-#     cargo build -p daemon --no-default-features --features plugin-compile
-#     cargo build -p daemon --no-default-features                    # neither
+#     cargo build -p daemon --no-default-features --features full,plugin-compile
+#     cargo build -p daemon --no-default-features --features full                    # neither
 #
 # `--no-default-features` is required for the plugin builds: without it the
 # default `scripts` is unioned in and the guard refuses the build.
-default = ["scripts", "plugin-packages"]
+default = ["scripts", "plugin-packages", "mcp", "agents", "skills"]
+
+# The modules a session can be assembled with; see `modules.rs`.
+mcp = ["dep:mcp"]
+agents = ["dep:agents"]
+skills = ["dep:skills"]
 
 # The script carrier. Off means no JavaScript engine is compiled into the
 # binary at all, and a `scripts` section in settings.json is refused at startup
@@ -96,7 +101,7 @@ plugin-packages = ["dep:plugin"]
 # The WASM carrier: what runs a package's components. Off means `plugin-host`
 # and `wasm-host` (and wasmtime) are not compiled into the binary at all — see
 # `daemon::plugins`. Build the locked-down artifact with
-# `cargo build -p daemon --no-default-features`, never `--workspace`: cargo
+# `cargo build -p daemon --no-default-features --features full`, never `--workspace`: cargo
 # unifies features across the graph, so any other member enabling it wins.
 plugins = ["plugin-packages", "dep:plugin-host", "dep:wasm-host"]
 

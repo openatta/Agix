@@ -560,12 +560,19 @@ impl DaemonServer {
             // next turn — see `SessionPool::run_turn`).
             "config.reload" => self.method_config_reload(id, req.params).await,
             "config.get" => self.method_config_get(id, req.params).await,
+            #[cfg(feature = "mcp")]
             "mcp.status" => RpcResponse::ok(
                 id,
                 serde_json::json!({"servers": self.pool.mcp_status().await}),
             ),
+            #[cfg(feature = "mcp")]
             "mcp.addServer" => self.method_mcp_put_server(id, req.params, false).await,
+            #[cfg(feature = "mcp")]
             "mcp.updateServer" => self.method_mcp_put_server(id, req.params, true).await,
+            #[cfg(not(feature = "mcp"))]
+            "mcp.status" | "mcp.addServer" | "mcp.updateServer" => {
+                module_not_compiled(id, &req.method, "mcp")
+            }
             "commands.list" => RpcResponse::ok(
                 id,
                 serde_json::json!({"commands": self.pool.list_commands().await}),
@@ -1106,6 +1113,7 @@ impl DaemonServer {
         }
     }
 
+    #[cfg(feature = "mcp")]
     async fn method_mcp_put_server(
         &self,
         id: serde_json::Value,
@@ -1984,6 +1992,19 @@ impl DaemonServer {
             Err(e) => RpcResponse::err(id, codes::SESSION_NOT_FOUND, e),
         }
     }
+}
+
+/// A method this protocol defines whose module this build was compiled
+/// without: `METHOD_NOT_FOUND`, with the module named so a client can tell
+/// "not in this build" from a typo.
+#[cfg_attr(feature = "mcp", allow(dead_code))]
+fn module_not_compiled(id: serde_json::Value, method: &str, module: &str) -> RpcResponse {
+    RpcResponse::err_with_data(
+        id,
+        codes::METHOD_NOT_FOUND,
+        format!("`{method}` belongs to the `{module}` module, which this build does not include"),
+        serde_json::json!({ "module": module }),
+    )
 }
 
 #[cfg(test)]

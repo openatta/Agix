@@ -229,11 +229,23 @@ managing a package — needs no runtime and is exclusive with neither, so it is
 on by default too:
 
 ```sh
-cargo build -p daemon                                                   # QuickJS + packages
-cargo build -p daemon --no-default-features --features plugins          # WebAssembly + packages
-cargo build -p daemon --no-default-features --features plugin-packages  # packages, no carrier
-cargo build -p daemon --no-default-features                             # neither
+cargo build -p daemon                                                        # QuickJS + packages
+cargo build -p daemon --no-default-features --features full,plugins          # WebAssembly + packages
+cargo build -p daemon --no-default-features --features full,plugin-packages  # packages, no carrier
+cargo build -p daemon --no-default-features --features full                  # neither
 ```
+
+The carrier and the package layer sit on top of a tier:
+
+| tier | what it assembles |
+|---|---|
+| `minimal` (`--no-default-features`) | the kernel only: models, the turn loop, scenes, sessions, telemetry, hooks, file and shell tools |
+| `coding` | + MCP, sub-agents and teams, skills, the web tools, structured output |
+| `full` | + the WebSocket listener |
+
+`daemon.ping` and `daemon.status` list the modules a build carries under
+`modules`; a method that belongs to one it does not carry answers
+`METHOD_NOT_FOUND` with `data.module` naming it.
 
 Every configuration is checked on every push, including that the two carriers
 still refuse to compile together and that the default build links no

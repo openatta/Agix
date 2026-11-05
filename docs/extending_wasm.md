@@ -28,11 +28,11 @@
   走到的地方。
 
 ```bash
-cargo build -p daemon                                                   # QuickJS + 包方案(默认)
-cargo build -p daemon --no-default-features --features plugin-compile   # 包 + WASM,编译器在进程内
-cargo build -p daemon --no-default-features --features plugins          # 包 + WASM,不链接编译器
-cargo build -p daemon --no-default-features --features plugin-packages  # 只有包方案,没有任何载体
-cargo build -p daemon --no-default-features                             # 什么都不带
+cargo build -p daemon                                                        # QuickJS + 包方案(默认)
+cargo build -p daemon --no-default-features --features full,plugin-compile   # 包 + WASM,编译器在进程内
+cargo build -p daemon --no-default-features --features full,plugins          # 包 + WASM,不链接编译器
+cargo build -p daemon --no-default-features --features full,plugin-packages  # 只有包方案,没有任何载体
+cargo build -p daemon --no-default-features --features full                  # 什么都不带
 ```
 
 `--no-default-features` 对带 `plugins` 的构建是必须的:单独给 `--features plugins`,

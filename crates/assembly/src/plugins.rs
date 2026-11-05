@@ -18,7 +18,7 @@
 //! anyone has to remember to take.
 //!
 //! Build the locked-down artifact with
-//! `cargo build -p daemon --no-default-features`. Not `--workspace`: cargo
+//! `cargo build -p daemon --no-default-features --features full`. Not `--workspace`: cargo
 //! unifies features across the graph, so any other member enabling a feature
 //! turns it back on.
 

@@ -310,6 +310,10 @@ async fn main() -> anyhow::Result<()> {
         daemon_config.tcp_token = Some(token);
     }
 
+    #[cfg(not(feature = "ws"))]
+    if cli.listen_ws.is_some() {
+        anyhow::bail!("--listen-ws: this build has no WebSocket listener (feature `ws`)");
+    }
     if let Some(ref addr_str) = cli.listen_ws {
         let addr: std::net::SocketAddr = addr_str
             .parse()
@@ -536,7 +540,10 @@ async fn main() -> anyhow::Result<()> {
             .map_err(|e| anyhow::anyhow!("could not bind --listen-ws `{addr}`: {e}"))?;
         info!(%addr, "WebSocket listener bound (token-auth required)");
         let s = server.clone();
+        #[cfg(feature = "ws")]
         tokio::spawn(async move { daemon::ws::serve_ws_listener(s, listener).await });
+        #[cfg(not(feature = "ws"))]
+        drop((s, listener));
     }
 
     let unix = DaemonServer::bind_unix(&socket)?;

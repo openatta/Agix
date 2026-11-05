@@ -121,7 +121,7 @@ permissions = { path = "crates/permissions" }
 mcp      = { path = "crates/mcp" }
 tools    = { path = "crates/tools", default-features = false }
 skills   = { path = "crates/skills" }
-runtime    = { path = "crates/runtime" }
+runtime    = { path = "crates/runtime", default-features = false }
 compaction = { path = "crates/compaction" }
 session    = { path = "crates/session" }
 scene      = { path = "crates/scene" }
