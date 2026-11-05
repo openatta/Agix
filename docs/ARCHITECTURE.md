@@ -10,42 +10,99 @@ Agix 是一个**库**,不是一个应用。它提供的是"跑一个 agent 会�
 - `daemon_rpc_protocol.md` —— 通过 RPC 使用它
 - `extension_points.md` —— 能扩展什么(总揽)
 - `extending_quickjs.md` / `extending_wasm.md` —— 怎么扩展
+- `deployment.md` —— 构建档位、崩溃时的行为、supervisor
+- `migrating_to_0.3.md` —— 从 0.2.x 迁移
 
 ---
 
 ## 1. 分层
 
 ```
-                    daemon  (参考宿主:JSON-RPC / 会话池 / 插件安装)
-                      │
-   runtime ── 轮次循环、流式、工具调度、子代理生命周期
-      │
-   ┌──┴──────────────┬───────────┬──────────┬──────────┐
- tools            model      history    compaction   skills / hooks / mcp / team / task
- (40 个内建工具)   (协议适配)  (日志)     (上下文治理)
-      └────────────────┴───────────┴──────────┴──────────┘
-                      │
-              core (包名 base) —— 所有契约、所有共享类型
+ 外壳    daemon ─────────── agixd:参数、监听(Unix socket / TCP / WS)、RPC 分发、实例发现
+           │
+ 装配    assembly ───────── 会话池、(项目, 场景) 绑定与失效、provider 路由、载体、模块清单
+           │
+ 模块    agents(+team) · mcp · skills · script-host · plugin / plugin-host / wasm-host
+           │                经 runtime::module::Module 进入会话
+ 内核    runtime ────────── turn loop、提示词组装、工具调度、扩展点调度、Module 接口
+           │
+         model · scene · history · session · compaction · telemetry · hooks · permissions · tools
+           │
+ 契约    core(包名 base)── 所有 trait、所有共享数据类型
 ```
+
+**依赖方向**(`daemon/tests/dependency_direction.rs` 检查):
+
+- 内核 crate 只依赖契约与其它内核 crate,**不依赖任何模块 crate**。
+- 模块依赖契约与内核;模块之间的依赖只经 `Module::requires` 声明的顺序。
+- 只有装配层与外壳知道有哪些模块;模块 feature 的 `#[cfg]` 只出现在
+  `assembly::modules`、会话池的 MCP 部分与 `daemon` 里。
 
 **`core` 里没有任何第一方依赖。** 它定义 trait 与数据类型,别的 crate 实现它们。
 这条约束是整个扩展面成立的前提:一个宿主要替换某个子系统时,面对的是 `core` 里的
-一个 trait,而不是某个具体 crate 的内部结构。
+一个 trait,而不是某个具体 crate 的内部结构。本机 HTTP 客户端(`LocalNetwork`)在
+默认开启的 `http` feature 下;只实现契约的 crate 可以不要它。
 
-| crate | 职责 |
+| crate | 层 | 职责 |
+|---|---|---|
+| `core`(包名 `base`) | 契约 | 所有 `trait`、`Settings`、消息与提示词类型、扩展点清单、`SkillCatalog` / `McpServers` 等内核面向模块的接口 |
+| `runtime` | 内核 | 轮次循环、流式解析、工具调度、`Module` / `SessionContext` |
+| `model` | 内核 | 模型协议适配(Anthropic Messages / OpenAI Chat Completions),重试与退避 |
+| `tools` | 内核 | 内建工具;`web`、`structured-output` 两组是 feature |
+| `scene` | 内核 | 内建场景、`SceneRegistry`、声明式场景(§3.7) |
+| `history` / `session` / `compaction` / `telemetry` / `hooks` / `permissions` | 内核 | 日志、会话状态、上下文压缩、遥测与录制回放、hooks、权限 |
+| `agents` | 模块 | 子 agent(`Agent` 工具)、agent 类型目录、团队工具;依赖 `team` |
+| `mcp` | 模块 | MCP 连接、工具适配器、资源工具、prompt 命令;依赖 `auth` |
+| `skills` | 模块 | skill 目录与 `Skill` 工具 |
+| `script-host` | 模块 | QuickJS 脚本载体 |
+| `plugin` / `plugin-host` / `wasm-host` / `plugin-compiler` | 模块 | 插件包与 WASM 载体 |
+| `task` | — | 后台任务生命周期 |
+| `assembly` | 装配 | 会话池、配置加载、provider 路由、自检、模块清单 |
+| `daemon` | 外壳 | `agixd`:JSON-RPC 服务与实例发现 |
+
+### 1.1 模块怎么进入会话
+
+`runtime::agent::Builder::module(..)` 按顺序装入模块。`build()` 先按场景收窄
+(§3.6)、再检查 `requires`(缺失、排在后面、重复都拒绝),在会话的工具表、事件总线、
+权限、hooks 都建好之后、场景的工具策略生效之前,依次调用 `on_session`——模块注册的
+工具和内建工具受同一套场景约束。
+
+`SessionContext` 把正在构建的会话交给模块。两样东西是**晚绑定**的,因为读它们的
+东西比提供它们的模块先建好:
+
+- **agent spawner**:`"agent"` 型 hook 与 `context: fork` 的 skill 拿到的是一个之后才
+  填入实现的 spawner,由 agents 模块 `provide_agent_spawner`;没有人提供时派生被拒绝。
+- **skill 目录**:命令表、agent、其它模块拿到的都是同一个晚绑定的 `SkillCatalog`,
+  由 skills 模块提供;没有时为空。
+
+MCP 连接由 mcp 模块交给会话独占(`provide_mcp`),和原先会话独占 `McpManager` 一样。
+
+装配顺序是 **mcp → agents → skills**:agents 要看到它可以授予子 agent 的 MCP 工具,
+fork 型 skill 要 agents 提供的 spawner。委派出去的子会话用父会话(收窄后)的模块
+清单装配,所以嵌套委派照旧;MCP 连接只给第一个装配它的会话,子会话经 `Agent` 工具
+按 agent 类型授予父会话已连接的服务器。
+
+### 1.2 档位
+
+`daemon` 的 feature 按档位组织,载体(`scripts` / `plugins` / `plugin-compile`)与
+包方案(`plugin-packages`)另选:
+
+| 档 | 装配的模块 |
 |---|---|
-| `core`(包名 `base`) | 契约与共享类型。所有 `trait`、`Settings`、消息与提示词类型、扩展点清单 |
-| `runtime` | 轮次循环、流式解析、工具调度、子代理与团队的生命周期 |
-| `model` | 模型协议适配(Anthropic Messages / OpenAI Chat Completions),重试与退避 |
-| `tools` | 内建工具的具体实现 |
-| `history` | 会话日志:`HistoryStore` 契约、JSONL 实现、投影、查询、大对象外置 |
-| `session` | 内存中的会话状态(消息列表、会话记忆、摘要) |
-| `compaction` | 上下文压缩:何时压、怎么压 |
-| `permissions` | 权限规则匹配、模式分发、路径安全 |
-| `skills` / `hooks` / `mcp` / `team` / `task` / `telemetry` / `auth` | 各自领域 |
-| `script-host` | QuickJS 脚本载体 |
-| `plugin` / `plugin-host` / `wasm-host` / `plugin-compiler` | WASM 插件载体 |
-| `daemon` | 参考宿主 |
+| `minimal`(`--no-default-features`) | 只有内核:模型、turn loop、场景、会话、遥测、hooks、文件与 shell 工具 |
+| `coding` | + mcp、agents、skills、web 工具、structured-output |
+| `full` | + WebSocket 监听 |
+
+默认 `full + scripts + plugin-packages`。`daemon.ping` / `daemon.status` 的 `modules`
+列出编入的模块;属于未编入模块的方法返回 `METHOD_NOT_FOUND`,`data.module` 指明模块;
+配置了未编入模块的设置段(如 minimal 下的 `mcp_servers`)启动时警告并忽略。
+
+### 1.3 失败策略
+
+`release` profile 在 panic 时展开;`release-small`(fat LTO、`opt-level = "s"`、
+`panic = "abort"`)在 panic 时中止进程,由 supervisor 拉起。中止前 panic hook 停掉
+命令所在的进程组并写崩溃记录;来不及跑 hook 的(SIGKILL、OOM)由下次启动按落盘的
+进程组记录清理。部署与 supervisor 配置见 `deployment.md`。
 
 ---
 
@@ -373,6 +430,9 @@ daemon 实例锁与 team 目录锁共用 `base::process_identity::decide_stale_l
 | `projects/_no-project/` | ——(保留) | 无项目会话的 transcript |
 | `sessions/<session-id>/` | 会话 | 会话记忆、metadata、输入历史 |
 | `memory/` | 全局 | 跨会话记忆(项目级的在 `<项目>/.agix/memory/`) |
+| `scenes/<id>/` | 场景 | 该场景的设置层(`settings.json`、skills、agents);声明式场景在这里放 `scene.json` + `prompt.md` |
+| `daemon/groups/<instance>.json` | 实例 | 在跑命令的进程组,供崩溃后下次启动清理 |
+| `daemon/crashes/` | 进程 | 崩溃记录 |
 
 **会话进哪个项目目录由它自己的 `Meta.project_root` 决定**,不是由 daemon 的 cwd
 决定 —— 一个 daemon 同时服务多个项目时,后者会把所有项目的 transcript 堆进一个

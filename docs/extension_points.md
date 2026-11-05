@@ -848,6 +848,42 @@ let store = Arc::new(ObservedHistoryStore::new(inner, vec![my_observer]));
 
 ---
 
+## 一组能力打成一个模块
+
+上面的点一个一个接,适合单项替换。一项能力要同时注册工具、提供服务、接到 hooks
+上时——子 agent、MCP、skill 都是这样——把它写成 `runtime::module::Module`,
+一次装进会话:
+
+```rust
+struct Tickets;
+
+impl runtime::module::Module for Tickets {
+    fn id(&self) -> &'static str { "tickets" }
+    fn requires(&self) -> &'static [&'static str] { &["agents"] }   // 可省略
+    fn on_session(&self, cx: &mut SessionContext<'_>) -> Result<(), ModuleError> {
+        cx.tools.register(Arc::new(FileTicketTool::new(cx.settings.clone())));
+        Ok(())
+    }
+}
+
+Builder::new().module(Arc::new(agents::AgentsModule::new())).module(Arc::new(Tickets))
+```
+
+`on_session` 在会话的工具表、事件总线、权限、hooks 都建好之后、场景的工具策略
+生效之前调用,所以模块注册的工具与内建工具受同一套场景约束。`SessionContext`
+交出这些部件,外加三样晚绑定的服务:`provide_agent_spawner` / `agent_spawner`、
+`provide_skill_catalog` / `skill_catalog`、`provide_mcp` / `mcp_tools`。
+
+- 模块按装入顺序运行;`requires` 列出的必须排在前面,缺失、排在后面、重复装入都让
+  `build()` 失败。
+- 场景用 `modules` / `disabled_modules` 收窄一个会话实际运行的模块(§`scene`)。
+- 委派出去的子会话用父会话收窄后的模块清单装配。同一个模块实例会对子会话再调一次
+  `on_session`;只能给一个会话的东西(如 `McpModule` 持有的连接)要自己处理。
+- 自带的三个:`agents::AgentsModule`、`mcp::McpModule`、`skills::SkillsModule`,
+  装配顺序 mcp → agents → skills。`agixd` 的会话池按档位装配它们(`ARCHITECTURE.md` §1.2)。
+
+---
+
 ## 在一个点上跑自己的代码 — `script.carrier`
 
 `base::interface::script::ScriptEngine` 是便宜的那一档:运维者自己的一小段代码,

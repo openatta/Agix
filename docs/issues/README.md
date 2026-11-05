@@ -8,6 +8,19 @@
 
 落地时，提交说明里写上对应的编号（如 `ipdrun-03`）。
 
+## 升级到 0.3 时要改的
+
+全部变化见 `docs/migrating_to_0.3.md`。对这里两个项目最相关的几条:
+
+- **IPDrun**(进程内直接用 `runtime::agent::Builder`):`build()` 不再自带 `Agent` / `Team*` /
+  `Skill` / MCP 工具,要的按 mcp → agents → skills 的顺序 `.module(..)` 装入;
+  `.mcp_manager` / `.skill_catalog` / `.shared_agent_types` 改为对应模块的构造参数。
+  `AgentScene` → `Scene`、`scene::scene::` → `scene::`。`hooks`、`prompt_middleware`、
+  `tool_middleware`、`process_groups`、`environment` 这些 Builder 入口不变。
+  进程组(ipdrun-01)另有崩溃后的收尾:进程内的列表与 `orphans::reap_previous`。
+- **Grabix**:文件工具的相对路径(grabix-01)不受影响;依赖 `tools` 时注意它的 workspace
+  依赖改为 `default-features = false`,需要 WebFetch / WebSearch 的打开 `web`。
+
 ## IPDrun
 
 提出于 2026-10-27，代码位置对照 `e8a1dd8`（`Agix-v0.2.9-2026102603`）；ipdrun-05 对照 `2e5ade3`（`Agix-v0.2.9-2026102701`）；ipdrun-06、ipdrun-07 对照 `f5d20b9`（`Agix-v0.2.9-2026103001`）。

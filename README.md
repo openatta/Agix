@@ -683,12 +683,15 @@ is reclaimable and why.
 | [extending_quickjs.md](docs/extending_quickjs.md) | Script extensions — the nine points, the API, the budgets, the failure rules |
 | [extending_wasm.md](docs/extending_wasm.md) | WebAssembly plugins — manifest, capabilities, contribution points |
 | [testing_scripts.md](docs/testing_scripts.md) | How the script carrier is tested, and what a case must satisfy to count |
+| [deployment.md](docs/deployment.md) | Build profiles, what a crash does, running `agixd` under launchd / systemd |
+| [migrating_to_0.3.md](docs/migrating_to_0.3.md) | Upgrading from 0.2.x — renamed paths, modules, feature tiers |
 | [tests/README.md](tests/README.md) | The five test layers, how to run each, why recordings are not committed |
 | [schemas/settings.schema.json](docs/schemas/settings.schema.json) | Generated JSON Schema for `settings.json` |
 
 There is no prose API reference for library mode yet; the entry points are
-`runtime::agent::Builder` and the extension-point catalog, which lists every
-trait the builder accepts with a minimal example for each.
+`runtime::agent::Builder`, the modules it assembles (`agents::AgentsModule`,
+`mcp::McpModule`, `skills::SkillsModule`), and the extension-point catalog,
+which lists every trait the builder accepts with a minimal example for each.
 
 ## Design principles
 
