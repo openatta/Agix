@@ -146,13 +146,18 @@ strip = "symbols"
 lto = "thin"
 codegen-units = 1
 
-# The smallest artifact. A panic aborts the process instead of unwinding: the
-# hook `base::crash` installs stops the commands it started and writes a crash
-# record first, and a supervisor restarts it (docs/deployment.md).
+# Half the size of `release` for about a tenth more of the daemon's own time
+# per turn (`tests/daemon_harness/tests/turn_throughput.rs`). `"z"` is a third
+# smaller again and about two thirds slower; per-crate `opt-level = 3` overrides
+# change neither, because fat LTO re-optimises everything at this level.
+#
+# A panic aborts the process instead of unwinding: the hook `base::crash`
+# installs stops the commands it started and writes a crash record first, and
+# a supervisor restarts it (docs/deployment.md).
 #
 #     cargo build --profile release-small -p daemon --bin agixd
 [profile.release-small]
 inherits = "release"
-opt-level = "z"
+opt-level = "s"
 lto = "fat"
 panic = "abort"

@@ -10,9 +10,12 @@
 | `release` | `cargo build --release -p daemon --bin agixd` | panic 时展开;任务边界内的 panic 只结束那个任务 |
 | `release-small` | `cargo build --profile release-small -p daemon --bin agixd` | panic 时直接中止进程 |
 
-`release-small` 用 fat LTO、`opt-level = "z"` 与 `panic = "abort"`,产物约为
-`release` 的一半。中止意味着一个 bug 让整个进程退出,而不是带着可能不一致的状态
-继续跑——前提是有人把它重新拉起来,也就是下面的 supervisor。
+`release-small` 用 fat LTO、`opt-level = "s"` 与 `panic = "abort"`,产物约为
+`release` 的一半,daemon 自身每轮的耗时多一成左右。体积更要紧时可以再加
+`--config 'profile.release-small.opt-level="z"'`,再小三分之一,耗时多三分之二。
+
+中止意味着一个 bug 让整个进程退出,而不是带着可能不一致的状态继续跑——前提是
+有人把它重新拉起来,也就是下面的 supervisor。
 
 ## 崩溃时发生什么
 
