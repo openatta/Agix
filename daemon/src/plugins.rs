@@ -382,8 +382,8 @@ fn disclosure_json(
 #[cfg(feature = "plugins")]
 mod imp {
     use super::*;
+    use base::agent_type::AgentTypeDefinition;
     use plugin_host::InstalledPlugins;
-    use runtime::agent_tool::AgentTypeDefinition;
     use runtime::plugin_host::PluginHost;
     use std::sync::RwLock;
 
@@ -696,7 +696,7 @@ mod imp {
 #[cfg(all(feature = "plugin-packages", not(feature = "plugins")))]
 mod imp {
     use super::*;
-    use runtime::agent_tool::AgentTypeDefinition;
+    use base::agent_type::AgentTypeDefinition;
     use runtime::plugin_host::PluginHost;
 
     pub struct PluginSubsystem {
@@ -847,7 +847,7 @@ mod imp {
 #[cfg(not(feature = "plugin-packages"))]
 mod imp {
     use super::*;
-    use runtime::agent_tool::AgentTypeDefinition;
+    use base::agent_type::AgentTypeDefinition;
     use runtime::plugin_host::PluginHost;
 
     pub struct PluginSubsystem;

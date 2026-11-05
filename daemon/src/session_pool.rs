@@ -129,7 +129,7 @@ struct ProjectBinding {
     /// picked up without a rebuild, and every session on this pair sees it at
     /// once because they share this instance.
     skills: Arc<skills::manager::SkillManager>,
-    agent_types: runtime::agent_tool::SharedAgentTypeCatalog,
+    agent_types: agents::agent_tool::SharedAgentTypeCatalog,
     commands: Arc<runtime::commands::CommandRegistry>,
     /// Subscriptions to the settings files this binding was merged from.
     /// Held, not read: dropping them is how a binding that gets invalidated
@@ -144,7 +144,7 @@ struct ProjectBinding {
 impl ProjectBinding {
     fn build(
         settings: Arc<Settings>,
-        plugin_agent_types: &[runtime::agent_tool::AgentTypeDefinition],
+        plugin_agent_types: &[base::agent_type::AgentTypeDefinition],
         watch: Vec<crate::watch_hub::WatchToken>,
         client: &Arc<dyn AnthropicClient>,
         last_good_router: Option<Arc<base::provider::TaskRouter>>,
@@ -168,7 +168,7 @@ impl ProjectBinding {
         let dirs = agent_type_dirs(&settings);
         let dirs_ref: [&std::path::Path; 3] = [&dirs[0], &dirs[1], &dirs[2]];
         let agent_types =
-            runtime::agent_tool::SharedAgentTypeCatalog::unwatched(&dirs_ref, plugin_agent_types);
+            agents::agent_tool::SharedAgentTypeCatalog::unwatched(&dirs_ref, plugin_agent_types);
         Self {
             settings,
             model,
@@ -255,7 +255,7 @@ impl ProjectBinding {
     /// that same manager (`CommandRegistry::from_skill_manager` keeps the
     /// `Arc`, it does not copy a list out of it), so it already reflects
     /// whatever the manager reloaded.
-    fn refresh_plugins(&self, plugin_agent_types: &[runtime::agent_tool::AgentTypeDefinition]) {
+    fn refresh_plugins(&self, plugin_agent_types: &[base::agent_type::AgentTypeDefinition]) {
         let dirs = agent_type_dirs(&self.settings);
         let dirs_ref: [&std::path::Path; 3] = [&dirs[0], &dirs[1], &dirs[2]];
         self.agent_types.refresh(&dirs_ref, plugin_agent_types);
@@ -2077,7 +2077,9 @@ impl SessionPool {
             .permission(permission)
             .session_id(session_id.clone())
             .commands_override(binding.commands.clone())
-            .shared_agent_types(binding.agent_types.handle())
+            .module(Arc::new(
+                agents::AgentsModule::new().shared_agent_types(binding.agent_types.handle()),
+            ))
             .skill_catalog(binding.skills.clone())
             .cron_store(self.schedule.clone());
         if let Some(ref store) = self.history_store {
@@ -3393,7 +3395,7 @@ impl SessionPool {
                     self.broadcast_to_session(&sid, &f).await;
                 }
                 // Sub-agent activity, mirrored from the sub-agent's own
-                // channel (see `runtime::agent_tool`'s `SubagentTag`). Relayed
+                // channel (see `agents::agent_tool`'s `SubagentTag`). Relayed
                 // under a distinct `kind` so a client that doesn't know about
                 // it ignores it, and one that does can render the sub-agent's
                 // tool calls live under a node keyed by `agent_label` instead

@@ -7534,32 +7534,6 @@ mod prompt_assembly_tests {
         assert_eq!(guided.description, "Launch a sub-agent.");
     }
 
-    /// The defect in its original, concrete form. `AgentTool` implements
-    /// `Tool::prompt()` with the whole of `agent_tool.prompt.md`, and the
-    /// model had never seen a word of it — `grep` found no production caller.
-    /// Pins that the real tool is now classified as documented (so
-    /// `build_tool_defs` points at it) and that what `ToolSearch` would hand
-    /// back is the actual file, not a paraphrase of its description.
-    #[tokio::test]
-    async fn the_real_agent_tools_guide_is_now_reachable() {
-        let agent_tool = crate::agent_tool::AgentTool::new(
-            Arc::new(DummyModel),
-            Arc::new(base::context::EngineConfig::defaults_for("test")),
-            Arc::new(InMemoryToolRegistry::new()),
-        );
-        let guide = agent_tool
-            .detailed_prompt(&PromptContext::default())
-            .await
-            .expect("AgentTool ships agent_tool.prompt.md and must count as documented");
-        assert_eq!(guide, include_str!("agent_tool.prompt.md"));
-        assert_ne!(
-            guide.trim(),
-            agent_tool.description().trim(),
-            "the guide must be distinguishable from the short description — \
-             that difference is exactly what the default derivation keys on"
-        );
-    }
-
     // ── sync_mcp_adapters ──
 
     fn mcp_meta(name: &str, description: &str) -> mcp::client::McpToolMeta {

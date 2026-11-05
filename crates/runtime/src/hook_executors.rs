@@ -97,7 +97,7 @@ impl PromptHookExecutor for ModelPromptHookExecutor {
 }
 
 /// Runs a `"type": "agent"` hook by delegating to the same `AgentSpawner`
-/// used for sub-agent tool calls (see `crate::agent_spawner_impl::RuntimeAgentSpawner`).
+/// used for sub-agent tool calls (see `agents::spawner::RuntimeAgentSpawner`).
 /// The `HookInput` payload is folded into the prompt text (`AgentSpawner`
 /// has no separate "context" parameter); the `model` override is not
 /// honored — `AgentSpawner::spawn_agent` has no model-selection parameter.

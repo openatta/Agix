@@ -152,7 +152,7 @@ impl Scene for ChatScene {
     // 都没有生效：`execution_params()` 在整个仓库里除了 trait 定义和各 scene
     // 的 impl 之外没有任何调用点。而且即使接线了也无从生效——子 agent 的递归
     // 深度是**结构性**封死在 1 的（`AgentTool` 按名字把自己排除在每个子 agent
-    // 的工具集之外，见 `runtime::agent_tool` 的 `AGENT_TOOL_NAME`），所以任何
+    // 的工具集之外，见 `agents::agent_tool` 的 `AGENT_TOOL_NAME`），所以任何
     // ≥1 的取值效果完全相同。与其留一条读起来像保证、实际什么都不约束的配置，
     // 不如把这个字段整个删掉：详见 `base::interface::scene::ExecutionParams`。
     //

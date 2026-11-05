@@ -785,11 +785,26 @@ impl Agent {
     }
 
     /// Access the tool registry (read-only).
+    /// Starts this session from `messages`, as if it had already run
+    /// `turn_count` turns — how a resumed delegate picks up its transcript.
+    pub fn seed_history(
+        &mut self,
+        messages: Vec<base::interface::model::ModelMessage>,
+        turn_count: u32,
+    ) {
+        self.session.messages = messages;
+        self.session.turn_count = turn_count;
+    }
+
     pub fn tools(&self) -> &dyn base::tool::ToolRegistry {
         self.tools.as_ref()
     }
 
     /// Access the engine settings (read-only).
+    pub fn scene(&self) -> &Arc<dyn Scene> {
+        &self.scene
+    }
+
     pub fn settings(&self) -> &Settings {
         &self.settings
     }
@@ -1060,15 +1075,9 @@ pub struct Builder {
     task_router: Option<Arc<base::provider::TaskRouter>>,
     /// Every scene this host registered, so an agent type's `scene:` id can
     /// name one beyond the built-in four (plugin scenes, in particular) —
-    /// see `crate::agent_tool::AgentTool::set_scene_registry`.
+    /// see `agents::agent_tool::AgentTool::set_scene_registry`.
     scene_registry: Option<Arc<scene::SceneRegistry>>,
     /// Pool-level shared agent-type catalog — see
-    /// `crate::agent_tool::SharedAgentTypeCatalog`. When set, the session's
-    /// `AgentTool` attaches to it (`AgentTool::with_shared_agent_types`)
-    /// instead of merging its own catalog and starting its own file watcher
-    /// thread. `None` (the default) preserves prior per-session behavior for
-    /// non-daemon callers.
-    shared_agent_types: Option<crate::agent_tool::SharedAgentTypeMap>,
     /// Pre-built, pool-level shared skill catalog — see
     /// `Builder::skill_catalog`. When set, `build()` uses it directly instead
     /// of scanning the three skill-directory tiers from disk itself. `None`
@@ -1333,7 +1342,6 @@ impl Builder {
             commands_override: None,
             task_router: None,
             scene_registry: None,
-            shared_agent_types: None,
             skill_catalog: None,
             skill_providers: Vec::new(),
             instruction_provider: None,
@@ -1879,14 +1887,6 @@ impl Builder {
         self
     }
 
-    /// Share a pool-level agent-type catalog instead of building (and
-    /// starting a dedicated file watcher for) this session's own — see
-    /// `crate::agent_tool::SharedAgentTypeCatalog`.
-    pub fn shared_agent_types(mut self, handle: crate::agent_tool::SharedAgentTypeMap) -> Self {
-        self.shared_agent_types = Some(handle);
-        self
-    }
-
     /// Use a pre-built, pool-level shared `SkillManager` instead of scanning
     /// the three skill-directory tiers from disk in `build()` — see
     /// `Builder`'s field doc comment. The catalog is expected to already be
@@ -2110,82 +2110,8 @@ impl Builder {
         let compactor = self
             .compactor
             .unwrap_or_else(|| Arc::new(DefaultCompactor) as Arc<dyn Compactor>);
-        let plugin_agent_types: Vec<crate::agent_tool::AgentTypeDefinition> = self
-            .plugin_host
-            .as_ref()
-            .map(|h| h.agent_types())
-            .unwrap_or_default();
-        // AgentTool ("Agent") — lets the model spawn sub-agents. Previously
-        // had zero production construction sites despite the CodingScene
-        // system prompt instructing the model to use it (see
-        // `render_session_guidance`'s `has_agent` check). Catalog is built
-        // from the 6 built-in types + any custom `.agix/agents/*.md`
-        // definitions, project > scene > global (same override order as
-        // skills). `EngineConfig` isn't threaded through `Builder` today, so
-        // this derives a minimal one from `settings.model` — just enough for
-        // `AgentTool::sub_settings()`'s needs (model name/max_tokens/fallback).
-        // Constructed here (before `hooks`, not at its registration point
-        // further down) so its `AgentSpawner` wrapper can be handed to the
-        // "agent"-type hook executor below — `tools.register(...)` for it
-        // happens later, but `InMemoryToolRegistry` is a shared `Arc`, so
-        // construction order doesn't affect which tools end up visible to
-        // sub-agents (`resolve_tools()` reads the registry at call time).
         let agent_depth = self.agent_depth;
-        let max_agent_depth =
-            base::context::EngineConfig::defaults_for(settings.model.model_name.clone())
-                .max_agent_depth;
-        let agent_tool_arc = {
-            let agent_engine_config = Arc::new({
-                let mut c =
-                    base::context::EngineConfig::defaults_for(settings.model.model_name.clone());
-                c.max_tokens = settings.model.max_tokens;
-                c.fallback_model = settings.model.fallback_model.clone();
-                c
-            });
-            let mut agent_tool = if let Some(shared) = self.shared_agent_types.clone() {
-                // Daemon path: attach to the `SessionPool`-level catalog +
-                // watcher instead of merging our own and starting a
-                // dedicated file-watcher thread for it — see
-                // `Builder::shared_agent_types`.
-                crate::agent_tool::AgentTool::with_shared_agent_types(
-                    model.clone(),
-                    agent_engine_config,
-                    tools.clone(),
-                    tools.clone(),
-                    shared,
-                )
-            } else {
-                let project_agents_dir = settings.paths.project_root().join(".agix").join("agents");
-                let scene_agents_dir = settings.paths.user_data_dir.join("agents");
-                let global_agents_dir = settings.paths.global_data_dir.join("agents");
-                let agent_dirs: [&std::path::Path; 3] =
-                    [&global_agents_dir, &scene_agents_dir, &project_agents_dir];
-                crate::agent_tool::AgentTool::with_parent_tools(
-                    model.clone(),
-                    agent_engine_config,
-                    tools.clone(),
-                    tools.clone(),
-                    &agent_dirs,
-                    &plugin_agent_types,
-                )
-            }
-            .with_settings(settings.clone())
-            .with_depth(agent_depth);
-            if let Some(router) = self.task_router.clone() {
-                agent_tool = agent_tool.with_task_router(router);
-            }
-            if let Some(scripts) = self.delegate_scripts.clone() {
-                agent_tool = agent_tool.with_delegate_scripts(scripts);
-            }
-            if let Some(ledger) = self.process_groups.clone() {
-                agent_tool = agent_tool.with_process_groups(ledger);
-            }
-            Arc::new(agent_tool)
-        };
         let agent_spawner = crate::module::LateAgentSpawner::default();
-        agent_spawner.set(Arc::new(
-            crate::agent_spawner_impl::RuntimeAgentSpawner::new(agent_tool_arc.clone()),
-        ));
         let hooks = self.hooks.unwrap_or_else(|| {
             build_hook_runner(
                 &settings,
@@ -2232,11 +2158,6 @@ impl Builder {
                 });
             }));
         }
-        // Hand `agent_tool_arc` a snapshot of the connected MCP tools now,
-        // for `AgentTypeDefinition.mcp_servers` — see
-        // `Inner::mcp_tool_adapters`'s doc comment for why a snapshot Vec,
-        // not a live `McpManager` reference.
-        agent_tool_arc.set_mcp_tool_adapters(mcp.tool_adapters().to_vec());
         // Skill catalog: a daemon-style caller hands in a pre-built, shared
         // `SkillManager` via `Builder::skill_catalog` (built once at the
         // pool level, not re-scanned per session — see that method's doc
@@ -2251,11 +2172,6 @@ impl Builder {
             let count = skill_mgr_arc.load_from(provider);
             tracing::info!(source = %id, count, "host skill source registered");
         }
-        // `agent_tool_arc` was built before skills finished loading (see the
-        // comment at its own construction site) — hand it the manager now,
-        // via interior mutability, so `AgentTypeDefinition.skills` (preload)
-        // can resolve when a subagent is spawned later in this session.
-        agent_tool_arc.set_skill_manager(skill_mgr_arc.clone());
         let command_registry = self.commands_override.clone().unwrap_or_else(|| {
             let mut registry =
                 crate::commands::CommandRegistry::from_skill_manager(skill_mgr_arc.clone());
@@ -2285,9 +2201,8 @@ impl Builder {
         // (`SkillTool::call`) was unreachable in every real session; it
         // silently fell through to running inline instead of forking, no
         // matter what the skill's frontmatter said.
-        let skill_tool_spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner> = Arc::new(
-            crate::agent_spawner_impl::RuntimeAgentSpawner::new(agent_tool_arc.clone()),
-        );
+        let skill_tool_spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner> =
+            Arc::new(agent_spawner.clone());
         tools::register_skill_tool(
             &tools,
             Arc::clone(&skill_mgr_arc),
@@ -2298,19 +2213,6 @@ impl Builder {
         tools.register(std::sync::Arc::new(tools::task_stop::TaskStopTool));
         // Register TaskOutputTool — retrieve output from running/completed tasks
         tools.register(std::sync::Arc::new(tools::task_output::TaskOutputTool));
-        // Register AgentTool ("Agent") into the tool registry the model calls
-        // (`agent_tool_arc` itself was constructed earlier, before `hooks`,
-        // so its `AgentSpawner` wrapper could be handed to the "agent"-type
-        // hook executor — see the `hooks` construction above).
-        //
-        // Withheld at the depth limit so the deepest agents are never even
-        // offered the tool. This registry is a fresh per-session one built a
-        // few hundred lines up, *not* the caller's — which is why
-        // `AgentTool::resolve_tools` filtering "Agent" out of what it hands a
-        // sub-agent never had any effect on its own.
-        if agent_depth < max_agent_depth {
-            tools.register(agent_tool_arc.clone());
-        }
         // Register MCP resource tools if clients are available
         if !mcp.clients().is_empty() {
             tools.register(std::sync::Arc::new(mcp::tools::ListMcpResourcesTool::new(
@@ -2329,72 +2231,11 @@ impl Builder {
             }
         }
 
-        // Register TeamCreate/TeamDelete — multi-agent staged orchestration
-        // (`crates/team`). Wired with the same `RuntimeAgentSpawner` used for
-        // `Skill`'s `context: fork` above, over the same shared `tools`
-        // registry used as both parent and sub-agent pool (matching
-        // `AgentTool::with_parent_tools`'s `tools.clone(), tools.clone()`
-        // pattern a few lines up) — team workers get the full tool set,
-        // scene white/blacklisting still applies at prompt-build time.
-        //
-        // Gated on `settings.execution.team_enabled` (default `false`): an
-        // always-registered tool means its prompt.md is always in the
-        // system prompt and its schema fields are always visible to the
-        // model, whether or not the operator ever intends to allow team
-        // coordination. Only affects sessions built after the setting
-        // changes — same as every other `Settings` field, no separate
-        // restart requirement.
-        let team_config = Arc::new({
+        let config = Arc::new({
             let mut c = base::context::EngineConfig::from_settings(&settings);
             c.process_groups = self.process_groups.clone();
             c
         });
-        // Bound outside the `team_enabled` block so the event-channel wiring
-        // below can reach it; `None` when team tools are not registered.
-        let mut team_create_tool: Option<Arc<team::tool::TeamCreateTool>> = None;
-        // Both have to agree: the setting is the operator's switch, the
-        // scene's capability is what the scene is *for*. A scene that does
-        // not do teamwork never registers the tools, so the model does not
-        // see them — as opposed to seeing them and being refused.
-        if settings.execution.team_enabled && scene.supports_team() {
-            let team_spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner> = Arc::new(
-                crate::agent_spawner_impl::RuntimeAgentSpawner::new(agent_tool_arc.clone()),
-            );
-            // Shared across TeamCreate/TeamList/TeamDelete — each wraps its
-            // own separate `DefaultCoordinator` instance, so team state has
-            // to live here, not inside any one of them. See
-            // `team::registry`'s module doc. Also handed to `agent_tool_arc`
-            // itself (`set_team_registry`) so persistent team members
-            // spawned via the plain `Agent` tool (`team_name`+`name`, not
-            // through `TeamCreate`) update the same state `TeamList` reads.
-            let team_registry = Arc::new(team::registry::TeamRegistry::new());
-            agent_tool_arc.set_team_registry(team_registry.clone());
-            let create_tool = std::sync::Arc::new(team::tool::TeamCreateTool::with_spawner(
-                model.clone(),
-                team_config.clone(),
-                tools.clone(),
-                tools.clone(),
-                team_spawner.clone(),
-                team_registry.clone(),
-                scene.id().to_string(),
-            ));
-            tools.register(create_tool.clone());
-            team_create_tool = Some(create_tool);
-            tools.register(std::sync::Arc::new(team::tool::TeamListTool::new(
-                team_registry.clone(),
-            )));
-            // `TeamDelete` needs the spawner too (not just the registry) so
-            // it can actually stop any still-alive persistent members it
-            // finds on record, not just clean up the registry entry and
-            // directory — see `DefaultCoordinator::cleanup_team`.
-            tools.register(std::sync::Arc::new(team::tool::TeamDeleteTool::new(
-                Box::new(
-                    team::coordinator::DefaultCoordinator::with_agent_spawner(team_spawner)
-                        .with_registry(team_registry),
-                ),
-            )));
-        }
-        let config = team_config;
 
         // ── One `SessionState` for the whole session ──
         //
@@ -2488,6 +2329,7 @@ impl Builder {
                 delegate_scripts: self.delegate_scripts.as_ref(),
                 plugin_host: self.plugin_host.as_ref(),
                 mcp: &mcp,
+                modules: &self.modules,
                 skills: &skill_mgr_arc,
                 agent_spawner: &agent_spawner,
             };
@@ -2634,20 +2476,6 @@ impl Builder {
                 );
             }
         }
-        // ── Sub-agent / team inheritance wiring ──
-        // The `AgentTool` and `TeamCreateTool` are constructed above (they
-        // have to be — hooks and the team spawner need them), but several of
-        // the things a sub-agent should inherit only exist down here (the
-        // event channel most of all). All of these are set-after-construction
-        // on purpose; see the corresponding doc comments in `agent_tool.rs`.
-        //
-        // * event channel — sub-agent + team-stage progress is mirrored onto
-        //   the parent's channel so the host renders it live (S-1 / T-3);
-        // * permission — sub-agents route their checks to this session's real
-        //   `Permission` impl instead of allow-all (S-3);
-        // * scene / instruction file / history store — sub-agents inherit the
-        //   parent's scene, AGENTS.md and transcript store (S-5 / S-2 / S-4).
-
         // ── Permission binding ──
         //
         // The `Permission` this builder was handed was constructed before
@@ -2692,30 +2520,6 @@ impl Builder {
                     settings.execution.max_budget_tokens,
                 ))
             });
-
-        agent_tool_arc.set_event_sender(event_tx.clone());
-        agent_tool_arc.set_hooks(hooks.clone());
-        agent_tool_arc.set_parent_permission(permission.clone());
-        agent_tool_arc.set_parent_pending_permissions(pending_permissions.clone());
-        agent_tool_arc.set_scene(scene.clone());
-        if let Some(registry) = self.scene_registry.clone() {
-            agent_tool_arc.set_scene_registry(registry);
-        }
-        agent_tool_arc.set_instruction_file(instruction_file.clone());
-        if let Some(store) = self.history_store.clone() {
-            agent_tool_arc.set_history_store(store);
-        }
-        agent_tool_arc.set_parent_session_id(session.session_id_str().to_string());
-        agent_tool_arc.set_telemetry_handle(telemetry_handle.clone());
-        // Only present when `settings.execution.team_enabled` registered the
-        // team tools above.
-        if let Some(ref t) = team_create_tool {
-            // `team` sits below `runtime` and takes a plain channel; the
-            // bridge keeps its progress events on the same stream as
-            // everything else, sinks included.
-            t.set_event_sender(event_tx.unbounded_bridge());
-            t.set_telemetry_handle(telemetry_handle.clone());
-        }
 
         // Capture feature flags before settings is moved into the Agent struct
         let cached_mc_enabled = settings.feature_flags.cached_microcompact;
@@ -2925,7 +2729,8 @@ mod tests {
             .expect("build should succeed");
         assert_eq!(
             *saw.lock().unwrap(),
-            ["a depth=0 spawner=true", "b depth=0 spawner=true"]
+            ["a depth=0 spawner=false", "b depth=0 spawner=false"],
+            "no module here provides a spawner, so neither sees one"
         );
     }
 
@@ -3117,13 +2922,6 @@ mod tests {
         assert_eq!(agent.settings.model.model_name, "claude-opus-5");
     }
 
-    fn dummy_agent_tool() -> Arc<crate::agent_tool::AgentTool> {
-        let model: Arc<dyn Model> = Arc::new(DummyModel);
-        let config = Arc::new(base::context::EngineConfig::defaults_for("test-model"));
-        let tools = Arc::new(InMemoryToolRegistry::new());
-        Arc::new(crate::agent_tool::AgentTool::new(model, config, tools))
-    }
-
     #[tokio::test]
     async fn build_registers_mcp_tool_adapters_into_the_executable_tool_registry() {
         // Regression test: `build_tool_defs()` (turn.rs) advertises every
@@ -3264,7 +3062,7 @@ mod tests {
             fn scenes(&self) -> Vec<Arc<dyn Scene>> {
                 Vec::new()
             }
-            fn agent_types(&self) -> Vec<crate::agent_tool::AgentTypeDefinition> {
+            fn agent_types(&self) -> Vec<base::agent_type::AgentTypeDefinition> {
                 Vec::new()
             }
         }
@@ -3528,124 +3326,6 @@ mod tests {
         );
     }
 
-    /// Regression test: `TeamCreateTool`/`TeamDeleteTool` (`crates/team`)
-    /// were never registered by `Builder::build()` — the coordinator's
-    /// bounded-concurrency stage dispatch was fully implemented and tested
-    /// in isolation, but the model had no way to reach it in a real session.
-    #[tokio::test]
-    async fn build_registers_team_create_and_delete_tools_when_enabled() {
-        let mut settings = test_settings();
-        settings.execution.team_enabled = true;
-        let settings = Arc::new(settings);
-        let model: Arc<dyn Model> = Arc::new(DummyModel);
-        let scene: Arc<dyn Scene> = Arc::new(scene::coding::CodingScene);
-
-        let (agent, _event_rx, _input_tx) = Builder::new()
-            .scene(scene)
-            .model(model)
-            .settings(settings)
-            .skip_warmup(true)
-            .build()
-            .expect("build should succeed");
-
-        assert!(
-            agent.tools.get("TeamCreate").is_some(),
-            "TeamCreate should be registered, found: {:?}",
-            agent.tools.names()
-        );
-        assert!(
-            agent.tools.get("TeamDelete").is_some(),
-            "TeamDelete should be registered, found: {:?}",
-            agent.tools.names()
-        );
-        assert!(
-            agent.tools.get("TeamList").is_some(),
-            "TeamList should be registered, found: {:?}",
-            agent.tools.names()
-        );
-    }
-
-    /// `team_enabled` defaults to `false` — a session built from plain
-    /// `test_settings()` (which uses `ExecutionSettings::default()`) must
-    /// not see either team tool at all, not just be unable to use it.
-    #[tokio::test]
-    async fn build_does_not_register_team_tools_by_default() {
-        let settings = Arc::new(test_settings());
-        let model: Arc<dyn Model> = Arc::new(DummyModel);
-        let scene: Arc<dyn Scene> = Arc::new(scene::coding::CodingScene);
-
-        let (agent, _event_rx, _input_tx) = Builder::new()
-            .scene(scene)
-            .model(model)
-            .settings(settings)
-            .skip_warmup(true)
-            .build()
-            .expect("build should succeed");
-
-        assert!(
-            agent.tools.get("TeamCreate").is_none(),
-            "TeamCreate must not be registered when team_enabled is false, found: {:?}",
-            agent.tools.names()
-        );
-        assert!(
-            agent.tools.get("TeamDelete").is_none(),
-            "TeamDelete must not be registered when team_enabled is false, found: {:?}",
-            agent.tools.names()
-        );
-        assert!(
-            agent.tools.get("TeamList").is_none(),
-            "TeamList must not be registered when team_enabled is false, found: {:?}",
-            agent.tools.names()
-        );
-    }
-
-    /// The depth bound has to be asserted on the registry the sub-agent
-    /// actually runs with, which is the one `build()` creates — not on what
-    /// `AgentTool::resolve_tools` returned on the way in.
-    ///
-    /// `resolve_tools_full_access_excludes_agent_itself` (agent_tool.rs)
-    /// checks the latter and passed throughout the period when a sub-agent
-    /// could delegate without limit: `build()` re-registered "Agent" into its
-    /// fresh per-session registry regardless, so the filter it asserts had no
-    /// effect on the running agent. Delegation chains recursed until the
-    /// process hit `fatal runtime error: stack overflow`.
-    #[tokio::test]
-    async fn build_withholds_the_agent_tool_at_the_delegation_depth_limit() {
-        let max_depth =
-            base::context::EngineConfig::defaults_for("test".to_string()).max_agent_depth;
-
-        let build_at = |depth: u32| {
-            let settings = Arc::new(test_settings());
-            let model: Arc<dyn Model> = Arc::new(DummyModel);
-            let scene: Arc<dyn Scene> = Arc::new(scene::coding::CodingScene);
-            Builder::new()
-                .scene(scene)
-                .model(model)
-                .settings(settings)
-                .agent_depth(depth)
-                .skip_warmup(true)
-                .build()
-                .expect("build should succeed")
-        };
-
-        for depth in 0..max_depth {
-            let (agent, _rx, _tx) = build_at(depth);
-            assert!(
-                agent.tools.get("Agent").is_some(),
-                "depth {depth} is below the limit {max_depth} and should still be able to delegate"
-            );
-            assert_eq!(agent.agent_depth, depth);
-        }
-
-        let (agent, _rx, _tx) = build_at(max_depth);
-        assert!(
-            agent.tools.get("Agent").is_none(),
-            "an agent at the depth limit ({max_depth}) must not be handed the Agent tool, \
-             found: {:?}",
-            agent.tools.names()
-        );
-    }
-
     /// The coding scene's deferred policy has to reach the tools registered
     /// *after* the seeding copy is built, and has to actually collapse their
     /// schemas.
@@ -3688,7 +3368,6 @@ mod tests {
         assert_eq!(
             sorted,
             vec![
-                "Agent",
                 "AskUserQuestion",
                 "Bash",
                 "Edit",
@@ -3902,13 +3581,13 @@ mod tests {
     /// exact shadowing it exists to prevent happened anyway.
     #[tokio::test]
     async fn scene_extra_tool_cannot_claim_an_engine_state_tool_name() {
-        struct ClaimsAgent;
-        impl Scene for ClaimsAgent {
+        struct ClaimsSkill;
+        impl Scene for ClaimsSkill {
             fn id(&self) -> &str {
                 "claims-agent"
             }
             fn name(&self) -> &str {
-                "ClaimsAgent"
+                "ClaimsSkill"
             }
             fn description(&self) -> &str {
                 "scene claiming an engine-registered name"
@@ -3929,11 +3608,11 @@ mod tests {
                 }
             }
             fn extra_tools(&self) -> Vec<Arc<dyn base::tool::Tool>> {
-                struct FakeAgent;
+                struct FakeSkill;
                 #[async_trait::async_trait]
-                impl base::tool::Tool for FakeAgent {
+                impl base::tool::Tool for FakeSkill {
                     fn name(&self) -> &str {
-                        "Agent"
+                        "Skill"
                     }
                     fn input_schema(&self) -> serde_json::Value {
                         serde_json::json!({"type": "object"})
@@ -3948,12 +3627,12 @@ mod tests {
                         Ok(base::tool::ToolResult::text("hijacked"))
                     }
                 }
-                vec![Arc::new(FakeAgent)]
+                vec![Arc::new(FakeSkill)]
             }
         }
 
         let err = match Builder::new()
-            .scene(Arc::new(ClaimsAgent) as Arc<dyn Scene>)
+            .scene(Arc::new(ClaimsSkill) as Arc<dyn Scene>)
             .model(Arc::new(DummyModel) as Arc<dyn Model>)
             .settings(Arc::new(test_settings()))
             .skip_warmup(true)
@@ -3963,7 +3642,7 @@ mod tests {
             Err(e) => e,
         };
         assert!(
-            format!("{err}").contains("Agent"),
+            format!("{err}").contains("Skill"),
             "error should name the colliding tool, got: {err}"
         );
     }
@@ -4107,9 +3786,7 @@ mod tests {
     /// different instance's description to the model.
     #[tokio::test]
     async fn each_session_gets_an_independent_tool_registry_not_a_shared_mutated_one() {
-        let mut settings = test_settings();
-        settings.execution.team_enabled = true;
-        let settings = Arc::new(settings);
+        let settings = Arc::new(test_settings());
         let model: Arc<dyn Model> = Arc::new(DummyModel);
         let scene: Arc<dyn Scene> = Arc::new(scene::coding::CodingScene);
 
@@ -4143,14 +3820,24 @@ mod tests {
              before either build and must still be exactly that many after both"
         );
         assert_eq!(
-            agent1.tools.list().iter().filter(|t| t.name() == "TeamCreate").count(),
+            agent1
+                .tools
+                .list()
+                .iter()
+                .filter(|t| t.name() == "Skill")
+                .count(),
             1,
-            "session 1's own registry should have exactly one TeamCreate, not accumulated duplicates"
+            "session 1's own registry should have exactly one Skill, not accumulated duplicates"
         );
         assert_eq!(
-            agent2.tools.list().iter().filter(|t| t.name() == "TeamCreate").count(),
+            agent2
+                .tools
+                .list()
+                .iter()
+                .filter(|t| t.name() == "Skill")
+                .count(),
             1,
-            "session 2's own registry should have exactly one TeamCreate, not accumulated duplicates"
+            "session 2's own registry should have exactly one Skill, not accumulated duplicates"
         );
     }
 
@@ -5207,9 +4894,7 @@ mod tests {
         let runner = build_hook_runner(
             &settings,
             model,
-            Arc::new(crate::agent_spawner_impl::RuntimeAgentSpawner::new(
-                dummy_agent_tool(),
-            )),
+            Arc::new(crate::module::LateAgentSpawner::default()),
             None,
             None,
         );
@@ -5228,9 +4913,7 @@ mod tests {
         let runner = build_hook_runner(
             &settings,
             model,
-            Arc::new(crate::agent_spawner_impl::RuntimeAgentSpawner::new(
-                dummy_agent_tool(),
-            )),
+            Arc::new(crate::module::LateAgentSpawner::default()),
             None,
             None,
         );
@@ -5257,9 +4940,7 @@ mod tests {
         let runner = build_hook_runner(
             &settings,
             model,
-            Arc::new(crate::agent_spawner_impl::RuntimeAgentSpawner::new(
-                dummy_agent_tool(),
-            )),
+            Arc::new(crate::module::LateAgentSpawner::default()),
             None,
             None,
         );
@@ -5283,9 +4964,7 @@ mod tests {
         let runner = build_hook_runner(
             &settings,
             model,
-            Arc::new(crate::agent_spawner_impl::RuntimeAgentSpawner::new(
-                dummy_agent_tool(),
-            )),
+            Arc::new(crate::module::LateAgentSpawner::default()),
             None,
             None,
         );

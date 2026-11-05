@@ -77,6 +77,9 @@ pub struct SessionContext<'a> {
     pub process_groups: Option<&'a Arc<base::interface::exec::local::GroupLedger>>,
     pub delegate_scripts: Option<&'a Arc<base::interface::script_adapters::BoundScripts>>,
     pub plugin_host: Option<&'a Arc<dyn crate::plugin_host::PluginHost>>,
+    /// Every module this session is assembled with, this one included —
+    /// what a module that spawns delegates assembles them with.
+    pub modules: &'a [Arc<dyn Module>],
     pub mcp: &'a mcp::manager::McpManager,
     pub skills: &'a Arc<skills::manager::SkillManager>,
     pub(crate) agent_spawner: &'a LateAgentSpawner,

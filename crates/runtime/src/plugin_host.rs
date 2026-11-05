@@ -54,10 +54,10 @@ pub trait PluginHost: Send + Sync {
     /// Agent types plugins declare, discoverable through `AgentTool`'s
     /// `subagent_type`.
     ///
-    /// These carry [`AgentTypeSource::Plugin`](crate::agent_tool::AgentTypeSource::Plugin),
+    /// These carry [`AgentTypeSource::Plugin`](base::agent_type::AgentTypeSource::Plugin),
     /// which is what clamps their `permission_mode` / `max_turns` overrides —
-    /// see `agent_tool::apply_agent_type_overrides`.
-    fn agent_types(&self) -> Vec<crate::agent_tool::AgentTypeDefinition>;
+    /// see `agents::agent_tool::apply_agent_type_overrides`.
+    fn agent_types(&self) -> Vec<base::agent_type::AgentTypeDefinition>;
 
     /// The backend that runs `HookConfig::Wasm` entries, when this host has
     /// components loaded. `None` means the entries from
@@ -94,7 +94,7 @@ impl PluginHost for NoPlugins {
     fn scenes(&self) -> Vec<Arc<dyn Scene>> {
         Vec::new()
     }
-    fn agent_types(&self) -> Vec<crate::agent_tool::AgentTypeDefinition> {
+    fn agent_types(&self) -> Vec<base::agent_type::AgentTypeDefinition> {
         Vec::new()
     }
 }

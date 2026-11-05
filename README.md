@@ -624,11 +624,12 @@ seconds — which is what makes gating on it possible at all.
 | L3 | `team` | Multi-agent coordination | `Coordinator`, `TeamRegistry`, `Mailbox` |
 | L3 | `task` | Background task lifecycle | `TaskStore`, `RunningTaskStore`, `DreamTask` |
 | L4 | `runtime` | Agent runtime + turn loop | `Agent`, `Builder`, `PluginHost`, `CommandRegistry` |
+| L5 | `agents` | Sub-agents and teams, as a module | `AgentsModule`, `AgentTool`, `SharedAgentTypeCatalog` |
 | L5 | `plugin-host` | Loads plugins, wires contributions | `InstalledPlugins`, `PluginScene` |
 | L5 | `plugin-compiler` | AOT component compile | `agix-plugin-compile` |
 | — | `daemon` | JSON-RPC 2.0 server | `DaemonServer`, `SessionPool`, `run_doctor` |
 
-21 crates under `crates/`, plus `daemon/` and the four test members — 26
+22 crates under `crates/`, plus `daemon/` and the four test members — 27
 workspace members in total.
 
 ---

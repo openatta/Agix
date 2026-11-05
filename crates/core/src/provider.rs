@@ -17,7 +17,7 @@
 //! construction site is `daemon::model_router::build_task_router`; wiring it
 //! into `SessionPool`/`AgentTool`'s sub-agent spawn points is
 //! `crates/runtime/src/agent.rs::Builder::task_router` /
-//! `crates/runtime/src/agent_tool.rs::Inner::model_for_subagent`.
+//! `crates/agents/src/agent_tool.rs::Inner::model_for_subagent`.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

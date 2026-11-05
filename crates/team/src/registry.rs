@@ -100,7 +100,7 @@ impl TeamRegistry {
     /// Update (or add) one member's lifecycle (and, for persistent members,
     /// its idle-since timestamp) within `team_name`. Used by the
     /// persistent-member path (`Agent` tool's `team_name`+`name` mode,
-    /// `runtime::agent_tool`) to keep `TeamList` accurate as a member goes
+    /// `agents::agent_tool`) to keep `TeamList` accurate as a member goes
     /// Active/Idle/Shutdown across many turns — unlike `TeamCreate`'s batch
     /// path, which only ever writes a team's final state once via
     /// `upsert()` after every member has already finished. `idle_since_secs`

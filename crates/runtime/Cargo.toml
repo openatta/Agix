@@ -19,7 +19,6 @@ hooks         = { workspace = true }
 compaction    = { workspace = true }
 session       = { workspace = true }
 scene         = { workspace = true }
-team          = { workspace = true }
 tokio         = { workspace = true }
 tokio-util    = { workspace = true }
 futures       = { workspace = true }

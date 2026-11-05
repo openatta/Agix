@@ -13,7 +13,7 @@ pub mod scene;
 pub use events::WasmEvents;
 pub use scene::PluginScene;
 
-use runtime::agent_tool::{AgentTypeDefinition, AgentTypeSource};
+use base::agent_type::{AgentTypeDefinition, AgentTypeSource};
 use runtime::plugin_host::PluginHost;
 use std::path::Path;
 use std::sync::Arc;
@@ -496,7 +496,7 @@ pub fn agent_def_to_type(
     };
 
     let permission_mode = def.permission_mode.as_deref().and_then(|raw| {
-        let parsed = runtime::agent_tool::parse_permission_mode(raw);
+        let parsed = base::agent_type::parse_permission_mode(raw);
         if parsed.is_none() {
             tracing::warn!(
                 agent = %def.name,

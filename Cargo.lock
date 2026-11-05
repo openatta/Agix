@@ -18,6 +18,37 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "agents"
+version = "0.2.10-2026110101"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base",
+ "futures",
+ "history",
+ "hooks",
+ "model",
+ "notify",
+ "permissions",
+ "runtime",
+ "scene",
+ "schemars",
+ "serde",
+ "serde_json",
+ "skills",
+ "team",
+ "telemetry",
+ "tempfile",
+ "thiserror 2.0.18",
+ "time",
+ "tokio",
+ "tokio-util",
+ "tools",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -775,6 +806,7 @@ dependencies = [
 name = "daemon"
 version = "0.2.10-2026110101"
 dependencies = [
+ "agents",
  "anyhow",
  "async-trait",
  "base",
@@ -3117,7 +3149,6 @@ dependencies = [
  "serde_json",
  "session",
  "skills",
- "team",
  "telemetry",
  "tempfile",
  "thiserror 2.0.18",
@@ -3830,6 +3861,7 @@ dependencies = [
 name = "test-runner"
 version = "0.1.0"
 dependencies = [
+ "agents",
  "anyhow",
  "async-trait",
  "base",

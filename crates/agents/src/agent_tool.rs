@@ -15,7 +15,6 @@
 //! type specifies a system prompt and an allowed tool set, which
 //! `resolve_tools()` applies when spawning sub-agents.
 
-use crate::agent::{Agent, Builder, EventReceiver, InputMessage, InputSender};
 use anyhow::anyhow;
 use async_trait::async_trait;
 use base::context::EngineConfig;
@@ -32,6 +31,7 @@ use base::tool::ProgressSender;
 use base::tool::ToolContext;
 use base::tool::ToolResultContent;
 use history::store::HistoryStore;
+use runtime::agent::{Agent, Builder, EventReceiver, InputMessage, InputSender};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
@@ -44,82 +44,7 @@ use tools::worktree::create_worktree;
 // Agent type registry
 // ═══════════════════════════════════════════════════════════
 
-/// Where an [`AgentTypeDefinition`] came from, which decides whether its
-/// `permission_mode` / `max_turns` are honored as written or clamped.
-///
-/// A definition can loosen the session it spawns into: `permission_mode`
-/// overwrites the parent's mode, and `max_turns` overwrites the API-call cap.
-/// That is the user's prerogative for a file they wrote themselves. It is not
-/// something a package downloaded from a marketplace gets to do — see
-/// [`apply_agent_type_overrides`].
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum AgentTypeSource {
-    /// Shipped with Agix.
-    #[default]
-    Builtin,
-    /// Loaded from an `agents/` directory the user controls.
-    LocalFile,
-    /// Declared by an installed plugin.
-    Plugin,
-}
-
-impl AgentTypeSource {
-    /// May a definition from this source hand its sub-agent *more* than the
-    /// session it was spawned from already had?
-    fn may_loosen(self) -> bool {
-        !matches!(self, Self::Plugin)
-    }
-}
-
-/// A named agent type definition with associated system prompt and tool set.
-#[derive(Debug, Clone, Default)]
-pub struct AgentTypeDefinition {
-    /// Unique name (e.g. "explore", "plan", "code-reviewer").
-    pub name: String,
-    /// Provenance, for the override clamp — see [`AgentTypeSource`].
-    pub source: AgentTypeSource,
-    /// Short description of the agent type's purpose.
-    pub description: String,
-    /// Tool names the agent type is allowed to use (empty = all tools).
-    pub allowed_tools: Vec<String>,
-    /// Tool names removed from the pool, applied before `allowed_tools`
-    /// (deny first, then allow).
-    pub disallowed_tools: Vec<String>,
-    /// Optional model override (e.g. "claude-sonnet-4-20250514").
-    pub model: Option<String>,
-    /// Optional permission-mode override for spawned subagents of this type,
-    /// independent of the parent session's mode.
-    pub permission_mode: Option<base::interface::settings::PermissionMode>,
-    /// Optional effort/thinking-mode override. Maps onto
-    /// `base::interface::settings::ThinkingMode` — not a new concept,
-    /// just this field's name.
-    pub effort: Option<String>,
-    /// Maximum API calls a spawned subagent of this type may make, applied
-    /// as this subagent's own `execution.max_api_calls_per_turn` instead of
-    /// inheriting the parent's cap wholesale. `None` = inherit parent's cap.
-    pub max_turns: Option<u32>,
-    /// Skill names to preload in full at subagent startup (not just their
-    /// descriptions) — see `AgentTool`'s spawn path. A name that doesn't
-    /// resolve, or resolves to a `disable_model_invocation: true` skill, is
-    /// skipped with a `tracing::warn!` rather than failing the spawn.
-    pub skills: Vec<String>,
-    /// MCP server names to grant this subagent, referencing servers already
-    /// connected in the parent session (`settings.mcp_servers` keys) — the
-    /// parent's live connections are reused, not reconnected. A subagent
-    /// gets **zero** MCP tools by default — MCP access is opt-in per
-    /// subagent, not inherited; this is the opt-in list. Only name
-    /// references to an already-configured server are supported, not inline
-    /// server config.
-    pub mcp_servers: Vec<String>,
-    /// Scene id (`coding`/`chat`/`research`/`demo`) this agent type forces
-    /// its sub-agents into, overriding the scene inherited from the parent.
-    /// `None` (the default) inherits — see `Inner::scene_for_subagent`. An
-    /// unknown id is ignored with a `tracing::warn!` and the inherited scene
-    /// is kept, same non-fatal handling as an unrecognized `effort`.
-    pub scene: Option<String>,
-    /// System prompt injected into the sub-agent's context.
-    pub system_prompt: String,
-}
+pub use base::agent_type::{parse_permission_mode, AgentTypeDefinition, AgentTypeSource};
 
 /// Return the five built-in agent types shipped with Agix.
 ///
@@ -290,7 +215,7 @@ pub(crate) type SharedAgentTypeMap =
 pub struct SharedAgentTypeCatalog {
     agent_types: SharedAgentTypeMap,
     // Kept alive only for its background thread; see `Inner::_agent_type_watcher`.
-    _watcher: Option<Arc<crate::agent_type_watcher::AgentTypeWatcher>>,
+    _watcher: Option<Arc<crate::type_watcher::AgentTypeWatcher>>,
 }
 
 impl SharedAgentTypeCatalog {
@@ -331,7 +256,7 @@ impl SharedAgentTypeCatalog {
             };
         }
         let owned_dirs: Vec<std::path::PathBuf> = dirs.iter().map(|p| p.to_path_buf()).collect();
-        let _watcher = crate::agent_type_watcher::AgentTypeWatcher::watch(
+        let _watcher = crate::type_watcher::AgentTypeWatcher::watch(
             owned_dirs,
             plugin_types.to_vec(),
             agent_types.clone(),
@@ -387,25 +312,6 @@ fn describe_agent_types(
 
 /// Parse a single agent type definition from a markdown file with YAML
 /// frontmatter. Returns `None` if the file lacks a valid `description`.
-/// Parse the textual `permission_mode` an agent-type declaration carries —
-/// agent `.md` frontmatter and plugin manifests both spell it as a string.
-/// `auto`/`bubble` are program-only and deliberately unparseable here.
-pub fn parse_permission_mode(value: &str) -> Option<base::interface::settings::PermissionMode> {
-    use base::interface::settings::PermissionMode;
-    match value {
-        "default" => Some(PermissionMode::Default),
-        "acceptEdits" | "accept_edits" | "accept-edits" => Some(PermissionMode::AcceptEdits),
-        "bypassPermissions" | "bypass_permissions" | "bypass-permissions" => {
-            Some(PermissionMode::BypassPermissions)
-        }
-        "plan" => Some(PermissionMode::Plan),
-        "dontAsk" | "dont_ask" | "dont-ask" => Some(PermissionMode::DontAsk),
-        // "auto" is program-only (requires a transcript classifier) and not
-        // settable from frontmatter; anything else is left unrecognized.
-        _ => None,
-    }
-}
-
 fn parse_agent_type_file(content: &str, path: &Path) -> Option<AgentTypeDefinition> {
     use base::frozen::frontmatter::{first_paragraph, parse_yaml_list, split_frontmatter};
 
@@ -780,7 +686,7 @@ async fn run_one_turn(
 
     let cancelled = matches!(&outcome, Ok(o) if o.stop_reason == "cancelled");
     let result = match outcome {
-        Ok(_) | Err(crate::turn::TurnError::Shutdown) => Ok(text),
+        Ok(_) | Err(runtime::turn::TurnError::Shutdown) => Ok(text),
         Err(e) => Err(base::error::ToolError::Execution(anyhow!("sub: {e}"))),
     };
     if let Some(tag) = &tag {
@@ -1198,7 +1104,7 @@ struct Inner {
     /// `notify` setup failed) — degrades to the pre-watcher behavior of a
     /// build-time-only catalog, same as `SkillManager::enable_watching`'s
     /// failure mode.
-    _agent_type_watcher: Option<Arc<crate::agent_type_watcher::AgentTypeWatcher>>,
+    _agent_type_watcher: Option<Arc<crate::type_watcher::AgentTypeWatcher>>,
     /// Precomputed from the catalog at construction time — see
     /// `describe_agent_types`. Deliberately **not** kept live-reloaded like
     /// `agent_types` itself: `Tool::description(&self) -> &str` returns a
@@ -1228,6 +1134,8 @@ struct Inner {
     /// See `BoundScripts::for_delegate` for where that line is drawn and why.
     delegate_scripts: Option<Arc<base::interface::script_adapters::BoundScripts>>,
     process_groups: Option<Arc<base::interface::exec::local::GroupLedger>>,
+    /// What every delegate is assembled with: the parent session's modules.
+    modules: Vec<Arc<dyn runtime::module::Module>>,
     /// The parent session's `SkillManager`, when known — used to resolve
     /// the `skills:` preload field on `AgentTypeDefinition`. Set via
     /// `AgentTool::set_skill_manager` *after* construction (interior
@@ -1298,7 +1206,7 @@ struct Inner {
     /// Same interior-mutability, set-after-construction pattern as
     /// `skill_manager` — `Builder::build()` creates the `AgentTool` before it
     /// creates the session's event channel.
-    event_tx: Arc<std::sync::RwLock<Option<crate::agent::EventSender>>>,
+    event_tx: Arc<std::sync::RwLock<Option<runtime::agent::EventSender>>>,
     /// The parent session's hook runner, so sub-agent spawns can fire
     /// `SubagentStart`/`SubagentStop`. Same set-after-construction pattern as
     /// `event_tx` — `Builder::build()` constructs the `AgentTool` before the
@@ -1330,7 +1238,7 @@ struct Inner {
     /// answers the parent's own prompts, via the same
     /// `session.respondToPrompt` RPC. `None` (unwired embedders) keeps the
     /// refuse-with-an-explanation behavior.
-    parent_pending_permissions: Arc<std::sync::RwLock<Option<crate::agent::PendingPermissions>>>,
+    parent_pending_permissions: Arc<std::sync::RwLock<Option<runtime::agent::PendingPermissions>>>,
     /// The parent agent's scene. Sub-agents inherit it (S-5) rather than
     /// always being built as `CodingScene` — a Research-scene parent used to
     /// hand its sub-agents a programming-shop system prompt. `None` falls
@@ -1437,7 +1345,7 @@ impl Inner {
         if let Some(ledger) = &self.process_groups {
             builder = builder.process_groups(ledger.clone());
         }
-        builder
+        builder.modules(self.modules.iter().cloned())
     }
 
     fn model_for_subagent(&self) -> Arc<dyn Model> {
@@ -1476,7 +1384,7 @@ impl Inner {
             .clone()
     }
 
-    fn event_tx(&self) -> Option<crate::agent::EventSender> {
+    fn event_tx(&self) -> Option<runtime::agent::EventSender> {
         self.event_tx
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1681,7 +1589,7 @@ fn scene_is_narrower_or_equal(candidate: &dyn Scene, parent: &dyn Scene) -> bool
 /// channel. Built once per spawn; cloned into the collector task.
 #[derive(Clone)]
 struct SubagentTag {
-    parent_tx: crate::agent::EventSender,
+    parent_tx: runtime::agent::EventSender,
     agent_label: String,
     agent_session_id: String,
     agent_type: Option<String>,
@@ -1848,7 +1756,7 @@ impl AgentTool {
         // `SkillManager::enable_watching`.
         let owned_dirs: Vec<std::path::PathBuf> =
             agent_dirs.iter().map(|p| p.to_path_buf()).collect();
-        let _agent_type_watcher = crate::agent_type_watcher::AgentTypeWatcher::watch(
+        let _agent_type_watcher = crate::type_watcher::AgentTypeWatcher::watch(
             owned_dirs,
             plugin_agent_types.to_vec(),
             agent_types.clone(),
@@ -1874,6 +1782,7 @@ impl AgentTool {
                 task_router: None,
                 delegate_scripts: None,
                 process_groups: None,
+                modules: Vec::new(),
                 skill_manager: Arc::new(std::sync::RwLock::new(None)),
                 mcp_tool_adapters: Arc::new(std::sync::RwLock::new(Vec::new())),
                 team_registry: Arc::new(std::sync::RwLock::new(None)),
@@ -1939,6 +1848,7 @@ impl AgentTool {
                 task_router: None,
                 delegate_scripts: None,
                 process_groups: None,
+                modules: Vec::new(),
                 skill_manager: Arc::new(std::sync::RwLock::new(None)),
                 mcp_tool_adapters: Arc::new(std::sync::RwLock::new(Vec::new())),
                 team_registry: Arc::new(std::sync::RwLock::new(None)),
@@ -1973,6 +1883,13 @@ impl AgentTool {
     /// chain, so `spawn_guard` can refuse to go past
     /// `EngineConfig::max_agent_depth`. Set by `Builder::build()` from
     /// `Builder::agent_depth`; `0` (a root session) otherwise.
+    pub fn with_modules(mut self, modules: Vec<Arc<dyn runtime::module::Module>>) -> Self {
+        let mut inner = (*self.inner).clone();
+        inner.modules = modules;
+        self.inner = Arc::new(inner);
+        self
+    }
+
     pub fn with_depth(mut self, depth: u32) -> Self {
         let mut inner = (*self.inner).clone();
         inner.depth = depth;
@@ -2058,7 +1975,7 @@ impl AgentTool {
     /// (`&self`, not the `with_X(self) -> Self` builder form) because
     /// `Builder::build()` creates this `AgentTool` before it creates the
     /// session's event channel.
-    pub fn set_event_sender(&self, tx: crate::agent::EventSender) {
+    pub fn set_event_sender(&self, tx: runtime::agent::EventSender) {
         *self
             .inner
             .event_tx
@@ -2163,7 +2080,7 @@ impl AgentTool {
             std::sync::Mutex<
                 std::collections::HashMap<
                     String,
-                    tokio::sync::oneshot::Sender<crate::agent::PermissionDecision>,
+                    tokio::sync::oneshot::Sender<runtime::agent::PermissionDecision>,
                 >,
             >,
         >,
@@ -3173,8 +3090,7 @@ impl AgentTool {
         .await;
 
         // Pre-load historical messages into the new agent's session
-        agent.session.messages = model_messages;
-        agent.session.turn_count = projected.len() as u32;
+        agent.seed_history(model_messages, projected.len() as u32);
 
         // 5. Run the agent. Routed through `run_one_turn` — same as
         // `run_sub_tagged`/`run_sub_inner` — rather than the previous
@@ -3254,8 +3170,8 @@ impl AgentTool {
 /// refuse-with-an-explanation behavior rather than blocking forever.
 struct ParentPermission {
     inner: Arc<dyn Permission>,
-    event_tx: Option<crate::agent::EventSender>,
-    pending: Option<crate::agent::PendingPermissions>,
+    event_tx: Option<runtime::agent::EventSender>,
+    pending: Option<runtime::agent::PendingPermissions>,
 }
 
 #[async_trait]
@@ -3322,8 +3238,8 @@ impl Permission for ParentPermission {
         }
 
         match rx.await {
-            Ok(crate::agent::PermissionDecision::Permit) => PermissionOutcome::Permit,
-            Ok(crate::agent::PermissionDecision::PermitAlways { .. }) => {
+            Ok(runtime::agent::PermissionDecision::Permit) => PermissionOutcome::Permit,
+            Ok(runtime::agent::PermissionDecision::PermitAlways { .. }) => {
                 // Persist on the *parent's* handler, which is where the rule
                 // engine actually lives — `self.inner` is the parent's
                 // `Permission`, so a sub-agent's "always" answer applies to
@@ -3331,7 +3247,7 @@ impl Permission for ParentPermission {
                 self.inner.add_persistent_allow(tool_name, None);
                 PermissionOutcome::Permit
             }
-            Ok(crate::agent::PermissionDecision::Deny { reason }) => {
+            Ok(runtime::agent::PermissionDecision::Deny { reason }) => {
                 PermissionOutcome::Deny { reason }
             }
             // Sender dropped without an answer — fail closed, same as the
@@ -3906,6 +3822,33 @@ mod catalog_tests {
         assert!(claude_pos < explore_pos);
     }
 
+    /// The defect in its original, concrete form. `AgentTool` implements
+    /// `Tool::prompt()` with the whole of `agent_tool.prompt.md`, and the
+    /// model had never seen a word of it — `grep` found no production caller.
+    /// Pins that the real tool is now classified as documented (so
+    /// `build_tool_defs` points at it) and that what `ToolSearch` would hand
+    /// back is the actual file, not a paraphrase of its description.
+    #[tokio::test]
+    async fn the_real_agent_tools_guide_is_now_reachable() {
+        use base::tool::Tool;
+        let agent_tool = AgentTool::new(
+            Arc::new(DummyModel),
+            Arc::new(base::context::EngineConfig::defaults_for("test")),
+            Arc::new(InMemoryToolRegistry::new()),
+        );
+        let guide = agent_tool
+            .detailed_prompt(&base::tool::PromptContext::default())
+            .await
+            .expect("AgentTool ships agent_tool.prompt.md and must count as documented");
+        assert_eq!(guide, include_str!("agent_tool.prompt.md"));
+        assert_ne!(
+            guide.trim(),
+            agent_tool.description().trim(),
+            "the guide must be distinguishable from the short description — \
+             that difference is exactly what the default derivation keys on"
+        );
+    }
+
     struct DummyModel;
     #[async_trait]
     impl Model for DummyModel {
@@ -4416,7 +4359,7 @@ mod catalog_tests {
         let agent_tool =
             AgentTool::with_parent_tools(model, config, tools.clone(), tools.clone(), &[], &[]);
         use base::interface::agent_spawner::AgentSpawner as _;
-        let spawner = crate::agent_spawner_impl::RuntimeAgentSpawner::new(Arc::new(agent_tool));
+        let spawner = crate::spawner::RuntimeAgentSpawner::new(Arc::new(agent_tool));
         let session = Arc::new(base::context::SessionState::new(std::path::PathBuf::from(
             "/tmp",
         )));
@@ -4642,7 +4585,7 @@ mod catalog_tests {
             )
             .await
             .expect("build should succeed");
-        assert_eq!(agent.scene.id(), "research");
+        assert_eq!(agent.scene().id(), "research");
     }
 
     fn agent_tool_with_config(config: EngineConfig) -> AgentTool {
@@ -5142,9 +5085,8 @@ mod catalog_tests {
             .unwrap_or_else(|e| e.into_inner())
             .clone()
             .expect("team_enabled_agent_tool sets a registry");
-        let spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner> = Arc::new(
-            crate::agent_spawner_impl::RuntimeAgentSpawner::new(agent_tool.clone()),
-        );
+        let spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner> =
+            Arc::new(crate::spawner::RuntimeAgentSpawner::new(agent_tool.clone()));
         let coordinator = team::coordinator::DefaultCoordinator::with_agent_spawner(spawner)
             .with_registry(registry);
 
@@ -5792,7 +5734,7 @@ mod catalog_tests {
     async fn subagent_events_reach_the_parent_channel_tagged_without_changing_the_text_result() {
         let (agent_tool, tools, _runs, dir) = wired_agent_tool("coding");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        agent_tool.set_event_sender(crate::event_bus::EventBus::new(tx));
+        agent_tool.set_event_sender(runtime::event_bus::EventBus::new(tx));
 
         let text = agent_tool
             .run_sub_tagged(

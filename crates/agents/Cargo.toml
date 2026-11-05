@@ -1,0 +1,41 @@
+[package]
+name = "agents"
+version      = { workspace = true }
+edition      = { workspace = true }
+rust-version = { workspace = true }
+license      = { workspace = true }
+publish      = false
+description  = "Agix — sub-agents: the Agent tool, agent types, and team orchestration, as a module"
+
+[dependencies]
+base          = { workspace = true }
+runtime       = { workspace = true }
+team          = { workspace = true }
+tools         = { workspace = true }
+history       = { workspace = true }
+hooks         = { workspace = true }
+telemetry     = { workspace = true }
+scene         = { workspace = true }
+skills        = { workspace = true }
+permissions   = { workspace = true }
+tokio         = { workspace = true }
+tokio-util    = { workspace = true }
+futures       = { workspace = true }
+async-trait   = { workspace = true }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+thiserror     = { workspace = true }
+anyhow        = { workspace = true }
+tracing       = { workspace = true }
+uuid          = { workspace = true }
+time          = { workspace = true }
+schemars      = { workspace = true }
+notify        = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+model    = { workspace = true }
+
+[lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"

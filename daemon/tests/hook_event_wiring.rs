@@ -28,7 +28,11 @@ use std::path::{Path, PathBuf};
 /// counting it would mark all 30 as wired. `run_elicitation_result` is the
 /// exact case that makes this distinction load-bearing — the wrapper fires
 /// `ElicitationResult`, but nothing calls the wrapper.
-const PRODUCTION_SOURCES: &[&str] = &["crates/runtime/src", "crates/hooks/src/watcher.rs"];
+const PRODUCTION_SOURCES: &[&str] = &[
+    "crates/runtime/src",
+    "crates/agents/src",
+    "crates/hooks/src/watcher.rs",
+];
 
 /// Events dispatched through a named wrapper method rather than by naming the
 /// variant at the call site. Without these, an event fired only via its

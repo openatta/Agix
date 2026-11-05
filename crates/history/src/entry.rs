@@ -274,7 +274,7 @@ pub enum LogEntry {
     /// Marks a sidechain session as having run its one-shot task to
     /// conclusion. Only written for sub-agent sessions that returned from
     /// their single turn on their own (see `run_sub_inner`/`run_sub_tagged`
-    /// in `runtime::agent_tool`) — a session with no `SessionEnd` line is
+    /// in `agents::agent_tool`) — a session with no `SessionEnd` line is
     /// either primary, still running, or was cut off externally (process
     /// exit, `agent.stop`, parent crash), all of which stay resumable.
     /// `session.resume` rejects a sidechain that has one with

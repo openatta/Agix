@@ -146,8 +146,8 @@ fn wiring_shaped_functions_are_referenced_from_a_composition_root() {
 #[test]
 fn every_spawn_site_takes_the_whole_inheritance() {
     let root = repo_root();
-    let agent_tool = std::fs::read_to_string(root.join("crates/runtime/src/agent_tool.rs"))
-        .expect("crates/runtime/src/agent_tool.rs should exist");
+    let agent_tool = std::fs::read_to_string(root.join("crates/agents/src/agent_tool.rs"))
+        .expect("crates/agents/src/agent_tool.rs should exist");
 
     let lines: Vec<&str> = agent_tool.lines().collect();
     let mut missing = Vec::new();
