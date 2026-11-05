@@ -158,6 +158,52 @@ dependencies = [
 ]
 
 [[package]]
+name = "assembly"
+version = "0.2.10-2026110101"
+dependencies = [
+ "agents",
+ "anyhow",
+ "async-trait",
+ "base",
+ "compaction",
+ "futures",
+ "hex",
+ "history",
+ "hooks",
+ "libc",
+ "mcp",
+ "model",
+ "notify",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "permissions",
+ "plugin",
+ "plugin-host",
+ "reqwest",
+ "runtime",
+ "scene",
+ "script-host",
+ "serde",
+ "serde_json",
+ "session",
+ "sha2",
+ "skills",
+ "telemetry",
+ "tempfile",
+ "thiserror 2.0.18",
+ "time",
+ "tokio",
+ "tokio-util",
+ "tonic",
+ "tools",
+ "tracing",
+ "url",
+ "wasm-host",
+ "zip",
+]
+
+[[package]]
 name = "async-stream"
 version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -808,6 +854,7 @@ version = "0.2.10-2026110101"
 dependencies = [
  "agents",
  "anyhow",
+ "assembly",
  "async-trait",
  "base",
  "compaction",
@@ -820,12 +867,7 @@ dependencies = [
  "mcp",
  "model",
  "notify",
- "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
  "permissions",
- "plugin",
- "plugin-host",
  "reqwest",
  "runtime",
  "scene",
@@ -842,12 +884,10 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tokio-util",
- "tonic",
  "tools",
  "tracing",
  "tracing-subscriber",
  "url",
- "wasm-host",
  "zip",
 ]
 

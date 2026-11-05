@@ -162,7 +162,7 @@ fn every_documented_method_is_dispatched() {
 #[test]
 fn every_documented_error_code_exists() {
     let root = repo_root();
-    let rpc = std::fs::read_to_string(root.join("daemon/src/rpc.rs")).unwrap();
+    let rpc = std::fs::read_to_string(root.join("crates/assembly/src/rpc.rs")).unwrap();
     let doc = std::fs::read_to_string(root.join("docs/daemon_rpc_protocol.md")).unwrap();
 
     let mut missing = Vec::new();
@@ -186,7 +186,7 @@ fn every_documented_error_code_exists() {
 
     assert!(
         missing.is_empty(),
-        "these error codes are documented but not declared in daemon/src/rpc.rs: {missing:?}"
+        "these error codes are documented but not declared in crates/assembly/src/rpc.rs: {missing:?}"
     );
 }
 
@@ -333,8 +333,8 @@ fn out_of_turn_event_kinds(rpc_rs: &str) -> Vec<String> {
 #[test]
 fn every_stream_event_is_documented_and_every_documented_one_is_sent() {
     let root = repo_root();
-    let pool = std::fs::read_to_string(root.join("daemon/src/session_pool.rs")).unwrap();
-    let rpc = std::fs::read_to_string(root.join("daemon/src/rpc.rs")).unwrap();
+    let pool = std::fs::read_to_string(root.join("crates/assembly/src/session_pool.rs")).unwrap();
+    let rpc = std::fs::read_to_string(root.join("crates/assembly/src/rpc.rs")).unwrap();
     let doc = std::fs::read_to_string(root.join("docs/daemon_rpc_protocol.md")).unwrap();
 
     let mut sent = forwarded_event_kinds(&pool);

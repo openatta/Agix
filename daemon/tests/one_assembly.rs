@@ -28,7 +28,10 @@ fn repo_root() -> PathBuf {
 /// `assemble.rs` is the assembly. `session_pool.rs`'s own unit tests are a
 /// layer below it — they exercise the type this module assembles, and routing
 /// them through the assembly would test the wrong thing.
-const MAY_ASSEMBLE: &[&str] = &["daemon/src/assemble.rs", "daemon/src/session_pool.rs"];
+const MAY_ASSEMBLE: &[&str] = &[
+    "crates/assembly/src/assemble.rs",
+    "crates/assembly/src/session_pool.rs",
+];
 
 fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {

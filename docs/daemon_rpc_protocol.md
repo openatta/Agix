@@ -21,7 +21,7 @@ daemon(`agixd`)把一个多会话 Agent 引擎池暴露成 JSON-RPC 2.0 服务�
 计数)。`{}` / `[]` 表示该字段是对象/数组,内容随情况而定。
 
 带 `// ← result` 的块由 `daemon/tests/protocol_doc_examples.rs` 读回来,跟一个真实
-daemon 的真实响应逐字段比对;`daemon.doctor` 的例子由 `daemon/src/doctor.rs` 的
+daemon 的真实响应逐字段比对;`daemon.doctor` 的例子由 `crates/assembly/src/doctor.rs` 的
 `documented_shape_tests` 比对。文档里写了的方法必须可调用、可调用的方法必须写进
 §6,由 `daemon/tests/protocol_doc_matches_dispatch.rs` 保证。
 

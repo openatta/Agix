@@ -99,7 +99,8 @@ fn concat_rs_files(dir: &Path) -> String {
 #[test]
 fn wiring_shaped_functions_are_referenced_from_a_composition_root() {
     let root = repo_root();
-    let daemon_src = concat_rs_files(&root.join("daemon/src"));
+    let daemon_src = concat_rs_files(&root.join("daemon/src"))
+        + &concat_rs_files(&root.join("crates/assembly/src"));
     // The kernel's assembly and each module's `on_session` are composition
     // roots too: a module wires its capability into the session there.
     let agent_rs = [
@@ -194,7 +195,8 @@ fn count_occurrences(haystack: &str, needle: &str) -> usize {
 #[test]
 fn wiring_check_scan_logic_actually_detects_absence() {
     let root = repo_root();
-    let daemon_src = concat_rs_files(&root.join("daemon/src"));
+    let daemon_src = concat_rs_files(&root.join("daemon/src"))
+        + &concat_rs_files(&root.join("crates/assembly/src"));
     let agent_rs = std::fs::read_to_string(root.join("crates/runtime/src/agent.rs"))
         .expect("crates/runtime/src/agent.rs should exist");
     let bogus = "definitely_not_a_real_function_name_zzz_12345";

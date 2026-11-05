@@ -8,7 +8,7 @@
 （同文件 `:170-180`）。但句柄 drop 时，只有**组长还在跑**才 `killpg`（`:154-163`）。命令本身很快结束、组里留下的进程
 （`nohup sleep 600 >/dev/null 2>&1 &`、`npm run dev &` 这类）从此没有人记着：
 
-- `session.close`（`daemon/src/session_pool.rs:4377` 的 `shutdown_session`）、会话池满时的 LRU 逐出（`:6104`）、
+- `session.close`（`crates/assembly/src/session_pool.rs:4377` 的 `shutdown_session`）、会话池满时的 LRU 逐出（`:6104`）、
   daemon 收尾（`:5467` 的 `shutdown_all`）都不碰它们；
 - 嵌入方停掉整个引擎后它们还在，父进程变成 1。
 

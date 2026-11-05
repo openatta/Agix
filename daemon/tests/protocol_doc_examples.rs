@@ -12,7 +12,7 @@
 //! socket. The example may say *less* than the response — a new field does
 //! not break the doc — but it may not say anything different.
 //!
-//! `daemon.doctor` is checked the same way by `daemon/src/doctor.rs`'s
+//! `daemon.doctor` is checked the same way by `crates/assembly/src/doctor.rs`'s
 //! `documented_shape_tests`, which can call `run_doctor` directly and so
 //! doesn't need a socket.
 

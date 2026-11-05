@@ -169,8 +169,8 @@ fn carriers_do_not_reach_for_each_other() {
 #[test]
 fn every_carrier_is_optional_at_compile_time() {
     let root = repo_root();
-    let manifest =
-        std::fs::read_to_string(root.join("daemon/Cargo.toml")).expect("daemon manifest");
+    let manifest = std::fs::read_to_string(root.join("crates/assembly/Cargo.toml"))
+        .expect("assembly manifest");
 
     for (dependency, feature) in [
         ("plugin-host", "plugins = ["),
@@ -179,10 +179,10 @@ fn every_carrier_is_optional_at_compile_time() {
         let declared = manifest
             .lines()
             .find(|l| l.trim_start().starts_with(dependency))
-            .unwrap_or_else(|| panic!("daemon must declare `{dependency}`"));
+            .unwrap_or_else(|| panic!("assembly must declare `{dependency}`"));
         assert!(
             declared.contains("optional = true"),
-            "`{dependency}` must be an optional dependency of daemon, found: {declared}"
+            "`{dependency}` must be an optional dependency of assembly, found: {declared}"
         );
         assert!(
             manifest.contains(feature),
@@ -199,11 +199,12 @@ fn every_carrier_is_optional_at_compile_time() {
 #[test]
 fn the_two_carriers_cannot_both_be_compiled_in() {
     let root = repo_root();
-    let lib = std::fs::read_to_string(root.join("daemon/src/lib.rs")).expect("daemon lib");
+    let lib =
+        std::fs::read_to_string(root.join("crates/assembly/src/lib.rs")).expect("assembly lib");
     let guard = lib
         .lines()
         .position(|l| l.contains(r#"cfg(all(feature = "scripts", feature = "plugins"))"#))
-        .expect("daemon/src/lib.rs must refuse a build carrying both carriers");
+        .expect("crates/assembly/src/lib.rs must refuse a build carrying both carriers");
     assert!(
         lib.lines()
             .skip(guard)

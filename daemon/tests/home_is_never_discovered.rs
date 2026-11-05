@@ -38,7 +38,7 @@ const HOME_LOOKUPS: &[&str] = &[
 /// the answer is to take the root as a parameter.
 const ALLOWED: &[(&str, &str)] = &[
     (
-        "daemon/src/config.rs",
+        "crates/assembly/src/config.rs",
         "the entry point: resolves AGIX_CONFIG_HOME (or $HOME/.agix) once, \
          then passes it down. Everything else receives what this decides.",
     ),

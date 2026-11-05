@@ -30,11 +30,11 @@ export CARGO_TARGET_DIR="$LOCKED_TARGET"
 
 echo "==> asserting the two carriers cannot be built together"
 # The rule the feature layout exists to state. It is enforced by a
-# `compile_error!` in `daemon/src/lib.rs`, and a compile-time guard nobody
+# `compile_error!` in `crates/assembly/src/lib.rs`, and a compile-time guard nobody
 # tests is a guard that gets deleted by whoever is fixing an unrelated build.
 if cargo check -p daemon --features plugins >/dev/null 2>&1; then
   echo "FAIL: a build carrying both the script and plugin carriers was accepted" >&2
-  echo "The guard in daemon/src/lib.rs is gone or unreachable." >&2
+  echo "The guard in crates/assembly/src/lib.rs is gone or unreachable." >&2
   exit 1
 fi
 

@@ -494,8 +494,7 @@ mod documented_shape_tests {
 
     fn protocol_doc() -> String {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("daemon crate has a parent")
+            .join("../..")
             .join("docs")
             .join("daemon_rpc_protocol.md");
         std::fs::read_to_string(&path).expect("protocol doc is readable")

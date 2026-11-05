@@ -22,10 +22,6 @@ scene         = { workspace = true }
 history       = { workspace = true }
 hooks         = { workspace = true }
 session       = { workspace = true }
-plugin        = { workspace = true, optional = true }
-plugin-host   = { workspace = true, optional = true }
-wasm-host     = { workspace = true, optional = true }
-script-host   = { workspace = true, optional = true }
 skills        = { workspace = true }
 tools         = { workspace = true, features = ["web", "structured-output"] }
 tokio         = { workspace = true, features = ["full"] }
@@ -45,14 +41,9 @@ futures       = { workspace = true }
 telemetry     = { workspace = true }
 notify        = { workspace = true }
 url           = { workspace = true }
-
-# Optional: OpenTelemetry OTLP export (gated by "otel" feature). Lives here,
-# not in `telemetry`, because that crate never talks to the network itself —
-# see `telemetry_otel.rs`.
-opentelemetry      = { version = "0.27", default-features = false, features = ["trace", "metrics"], optional = true }
-opentelemetry_sdk  = { version = "0.27", default-features = false, features = ["trace", "metrics", "rt-tokio"], optional = true }
-opentelemetry-otlp = { version = "0.27", default-features = false, features = ["trace", "metrics", "grpc-tonic", "http-proto"], optional = true }
-tonic              = { version = "0.12", optional = true }
+assembly      = { workspace = true }
+# Only for the extension-point docs test, which reads the carrier's bindable points.
+script-host   = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
@@ -63,67 +54,12 @@ hex = { workspace = true }
 zip = { workspace = true }
 
 [features]
-# ── Carriers and the package layer ──────────────────────────────────────
-#
-# A build carries **one** extension carrier or none. The two are mutually
-# exclusive, enforced at compile time in `lib.rs` rather than left as a
-# convention here — a binary that quietly shipped both would be twice the
-# attack surface and twice the size, and nobody would notice until they
-# measured it.
-#
-# The *package* layer is not a carrier and is exclusive with nothing. Reading
-# a manifest, fetching, verifying a checksum, unpacking, disclosing and
-# enabling need no runtime at all, and tying them to the WebAssembly one is
-# what made "install a plugin" impossible in the default build.
-#
-# The default is the script carrier plus packages: together they cost about a
-# megabyte, where the WebAssembly carrier costs twenty.
-#
-#     cargo build -p daemon                                          # QuickJS + packages
-#     cargo build -p daemon --no-default-features --features plugin-compile
-#     cargo build -p daemon --no-default-features                    # neither
-#
-# `--no-default-features` is required for the plugin builds: without it the
-# default `scripts` is unioned in and the guard refuses the build.
+# The same switches as `assembly`'s, where they are documented; the binary
+# only forwards them.
 default = ["scripts", "plugin-packages"]
-
-# The script carrier. Off means no JavaScript engine is compiled into the
-# binary at all, and a `scripts` section in settings.json is refused at startup
-# rather than silently ignored — a script that quietly never runs is worse than
-# one that fails to load.
-scripts = ["dep:script-host"]
-
-# The package layer: manifest, fetch, checksum, unpack, versioned cache,
-# disclosure, enable state. No runtime, so `plugin.*` works — and a package's
-# `[[mcp]]` servers and `[[script]]` bindings are honored — in a build with no
-# WebAssembly in it. A package's `[[wasm]]` components are disclosed as what
-# this build will not run, rather than making the package uninstallable.
-plugin-packages = ["dep:plugin"]
-
-# The WASM carrier: what runs a package's components. Off means `plugin-host`
-# and `wasm-host` (and wasmtime) are not compiled into the binary at all — see
-# `daemon::plugins`. Build the locked-down artifact with
-# `cargo build -p daemon --no-default-features`, never `--workspace`: cargo
-# unifies features across the graph, so any other member enabling it wins.
-plugins = ["plugin-packages", "dep:plugin-host", "dep:wasm-host"]
-
-# Compile plugin components in-process at install. Off means the daemon links
-# no WebAssembly compiler at all and defers to `agix-plugin-compile`; a cache
-# miss at load then refuses rather than quietly compiling, which is the only
-# way the removal means anything. Two thirds of the plugin carrier's size is
-# this compiler.
-plugin-compile = ["plugins", "plugin-host/compile", "wasm-host/compile"]
-
-# ── Everything else ─────────────────────────────────────────────────────
-
-# The OS process sandbox around `Bash` — see `base`'s feature of the same name
-# for what it does and why it is off. Independent of the carriers: it
-# constrains the model's own shell commands, not anybody's extensions.
-#
-#     cargo build -p daemon --features sandbox
-sandbox = ["base/sandbox"]
-
-# Fan session telemetry out to an OTLP collector in addition to the per-session
-# JSONL file. Off by default: the OTLP SDK is a large dependency tree and the
-# file recorder is what makes a run debuggable out of the box.
-otel = ["opentelemetry", "opentelemetry_sdk", "opentelemetry-otlp", "tonic"]
+scripts = ["assembly/scripts", "dep:script-host"]
+plugin-packages = ["assembly/plugin-packages"]
+plugins = ["assembly/plugins"]
+plugin-compile = ["assembly/plugin-compile"]
+sandbox = ["assembly/sandbox"]
+otel = ["assembly/otel"]

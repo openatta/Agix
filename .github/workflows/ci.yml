@@ -116,7 +116,7 @@ jobs:
       - name: both carriers must not compile
         run: |
           if cargo check -p daemon --features plugins 2>/dev/null; then
-            echo "the two carriers compiled together; the guard in daemon/src/lib.rs is gone"
+            echo "the two carriers compiled together; the guard in crates/assembly/src/lib.rs is gone"
             exit 1
           fi
 

@@ -22,6 +22,7 @@ members = [
     "crates/scene",
     "crates/team",
     "crates/agents",
+    "crates/assembly",
     "crates/task",
     "daemon",
     "tests/rpc_client",
@@ -126,6 +127,7 @@ session    = { path = "crates/session" }
 scene      = { path = "crates/scene" }
 team       = { path = "crates/team" }
 agents     = { path = "crates/agents" }
+assembly   = { path = "crates/assembly", default-features = false }
 task       = { path = "crates/task" }
 daemon     = { path = "daemon" }
 rpc-client = { path = "tests/rpc_client" }

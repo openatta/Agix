@@ -6,7 +6,7 @@
 
 严格回放（`recorder.strict: true`，`Divergence::Strict`）逐块比对这次的请求与录下的请求（`crates/telemetry/src/recorder/mod.rs` 的 `diverges`）。
 组装的提示里有今天的日期（`crates/core/src/frozen/mod.rs` 的 `today`、`crates/runtime/src/turn.rs` 注入 claudeMd 时的 `currentDate`），
-都取自 agent 的 `Environment`；经 daemon 建的会话从不设它（`daemon/src/session_pool.rs` 组装 `Builder` 处），于是是机器的时钟。
+都取自 agent 的 `Environment`；经 daemon 建的会话从不设它（`crates/assembly/src/session_pool.rs` 组装 `Builder` 处），于是是机器的时钟。
 结果：一份录像第二天就严格回放不了，宿主只能开非严格、把发散当噪声数。`Builder::environment` 这个接缝在，但只有进程内嵌入方够得着。
 
 ## 建议（只加不改）

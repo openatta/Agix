@@ -4,7 +4,7 @@
 
 ## 现象
 
-会话池建活会话只有一个入口 `create(…, resume: bool)`（`daemon/src/session_pool.rs:1951`），不论是新建还是恢复，都把
+会话池建活会话只有一个入口 `create(…, resume: bool)`（`crates/assembly/src/session_pool.rs:1951`），不论是新建还是恢复，都把
 `LiveSession` 初始化成 `name: None`、`is_first_turn: true`、`named_by_user: false`（`:2382-2394`）。于是一个
 `session.rename` 过、存了标题的会话，经 `session.resume`（`:5251`）或 `session.subscribe` 的自动恢复回到内存以后：
 
