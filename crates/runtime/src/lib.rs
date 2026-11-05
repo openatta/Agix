@@ -9,6 +9,7 @@ pub mod context;
 pub mod elicitation;
 pub mod event_bus;
 pub mod hook_executors;
+pub mod module;
 pub mod plugin_host;
 pub mod steering;
 pub mod streaming;

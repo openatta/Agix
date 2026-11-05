@@ -180,7 +180,7 @@ pub type EventReceiver = mpsc::UnboundedReceiver<AgentEvent>;
 /// `prompt_id`. Shared between `Agent::pending_permissions` and
 /// `agent_tool::ParentPermission` (a sub-agent registers into the *parent's*
 /// copy of this same map — see `ParentPermission`'s doc comment).
-pub(crate) type PendingPermissions = Arc<
+pub type PendingPermissions = Arc<
     std::sync::Mutex<
         std::collections::HashMap<String, tokio::sync::oneshot::Sender<PermissionDecision>>,
     >,
@@ -1129,6 +1129,7 @@ pub struct Builder {
     /// Where this session's commands record their process groups — see
     /// [`Builder::process_groups`].
     process_groups: Option<Arc<base::interface::exec::local::GroupLedger>>,
+    modules: Vec<Arc<dyn crate::module::Module>>,
 }
 
 /// Scan the three skill-directory tiers from disk and register bundled
@@ -1228,7 +1229,7 @@ fn build_skill_manager(settings: &Settings, watch: bool) -> skills::manager::Ski
 fn build_hook_runner(
     settings: &Settings,
     model: Arc<dyn Model>,
-    agent_tool: Arc<crate::agent_tool::AgentTool>,
+    agent_spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner>,
     plugin_host: Option<&Arc<dyn crate::plugin_host::PluginHost>>,
     session_id: Option<String>,
 ) -> Arc<HookRunner> {
@@ -1284,9 +1285,6 @@ fn build_hook_runner(
         settings.model.max_tokens,
         session_id,
     ));
-    let agent_spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner> = Arc::new(
-        crate::agent_spawner_impl::RuntimeAgentSpawner::new(agent_tool),
-    );
     let agent_executor = Arc::new(crate::hook_executors::AgentSpawnerHookExecutor::new(
         agent_spawner,
         settings.paths.project_root(),
@@ -1359,7 +1357,23 @@ impl Builder {
             agent_depth: 0,
             cron_store: None,
             process_groups: None,
+            modules: Vec::new(),
         }
+    }
+
+    /// Add `module` to this session. Modules run in the order they are added;
+    /// see [`crate::module`].
+    pub fn module(mut self, module: Arc<dyn crate::module::Module>) -> Self {
+        self.modules.push(module);
+        self
+    }
+
+    pub fn modules(
+        mut self,
+        modules: impl IntoIterator<Item = Arc<dyn crate::module::Module>>,
+    ) -> Self {
+        self.modules.extend(modules);
+        self
     }
 
     /// Record in `ledger` every process group this session's commands start,
@@ -1919,6 +1933,8 @@ impl Builder {
     }
 
     pub fn build(self) -> Result<(Agent, EventReceiver, InputSender), EngineError> {
+        crate::module::check_order(&self.modules)
+            .map_err(|e| EngineError::Internal(e.to_string()))?;
         let scene = self
             .scene
             .ok_or_else(|| EngineError::Internal("scene required".into()))?;
@@ -2166,11 +2182,15 @@ impl Builder {
             }
             Arc::new(agent_tool)
         };
+        let agent_spawner = crate::module::LateAgentSpawner::default();
+        agent_spawner.set(Arc::new(
+            crate::agent_spawner_impl::RuntimeAgentSpawner::new(agent_tool_arc.clone()),
+        ));
         let hooks = self.hooks.unwrap_or_else(|| {
             build_hook_runner(
                 &settings,
                 model.clone(),
-                agent_tool_arc.clone(),
+                Arc::new(agent_spawner.clone()),
                 self.plugin_host.as_ref(),
                 Some(session.session_id_str().to_string()),
             )
@@ -2436,6 +2456,48 @@ impl Builder {
         };
         tools::register_cron_tools(&tools, cron_store.clone());
 
+        let (primary_tx, event_rx) = mpsc::unbounded_channel();
+        let event_tx = crate::event_bus::EventBus::with_sinks(primary_tx, self.event_sinks);
+        // Created before the modules run, because a sub-agent's permission
+        // prompts are registered in this same map — see
+        // `AgentTool::set_parent_pending_permissions`.
+        let pending_permissions: PendingPermissions =
+            Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+
+        {
+            let session_id = session.session_id_str().to_string();
+            let mut cx = crate::module::SessionContext {
+                tools: &tools,
+                settings: &settings,
+                config: &config,
+                scene: &scene,
+                scene_registry: self.scene_registry.as_ref(),
+                model: &model,
+                permission: &permission,
+                pending_permissions: &pending_permissions,
+                hooks: &hooks,
+                events: &event_tx,
+                telemetry: &telemetry_handle,
+                session_id: &session_id,
+                session_state: &session_state,
+                history_store: self.history_store.as_ref(),
+                instruction_file: instruction_file.as_ref(),
+                depth: agent_depth,
+                task_router: self.task_router.as_ref(),
+                process_groups: self.process_groups.as_ref(),
+                delegate_scripts: self.delegate_scripts.as_ref(),
+                plugin_host: self.plugin_host.as_ref(),
+                mcp: &mcp,
+                skills: &skill_mgr_arc,
+                agent_spawner: &agent_spawner,
+            };
+            for module in &self.modules {
+                module
+                    .on_session(&mut cx)
+                    .map_err(|e| EngineError::Internal(e.to_string()))?;
+            }
+        }
+
         // ── Registration is complete; everything below reads the final set ──
 
         // Scene-contributed tools (`Scene::extra_tools`, default empty).
@@ -2572,9 +2634,6 @@ impl Builder {
                 );
             }
         }
-        let (primary_tx, event_rx) = mpsc::unbounded_channel();
-        let event_tx = crate::event_bus::EventBus::with_sinks(primary_tx, self.event_sinks);
-
         // ── Sub-agent / team inheritance wiring ──
         // The `AgentTool` and `TeamCreateTool` are constructed above (they
         // have to be — hooks and the team spawner need them), but several of
@@ -2588,14 +2647,6 @@ impl Builder {
         //   `Permission` impl instead of allow-all (S-3);
         // * scene / instruction file / history store — sub-agents inherit the
         //   parent's scene, AGENTS.md and transcript store (S-5 / S-2 / S-4).
-        // Created here, before the `AgentTool` wiring below, because a
-        // sub-agent's permission prompts are registered in this same map —
-        // see `AgentTool::set_parent_pending_permissions`.
-        let pending_permissions: Arc<
-            std::sync::Mutex<
-                std::collections::HashMap<String, tokio::sync::oneshot::Sender<PermissionDecision>>,
-            >,
-        > = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
 
         // ── Permission binding ──
         //
@@ -2821,6 +2872,87 @@ mod tests {
     #[test]
     fn builder_requires_scene() {
         assert!(Builder::new().build().is_err());
+    }
+
+    struct Probe {
+        id: &'static str,
+        requires: &'static [&'static str],
+        saw: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl crate::module::Module for Probe {
+        fn id(&self) -> &'static str {
+            self.id
+        }
+        fn requires(&self) -> &'static [&'static str] {
+            self.requires
+        }
+        fn on_session(
+            &self,
+            cx: &mut crate::module::SessionContext<'_>,
+        ) -> Result<(), crate::module::ModuleError> {
+            self.saw.lock().unwrap().push(format!(
+                "{} depth={} spawner={}",
+                self.id,
+                cx.depth,
+                cx.agent_spawner().is_some()
+            ));
+            Ok(())
+        }
+    }
+
+    fn probe_builder(modules: Vec<Arc<dyn crate::module::Module>>) -> Builder {
+        Builder::new()
+            .scene(Arc::new(scene::coding::CodingScene) as Arc<dyn Scene>)
+            .model(Arc::new(DummyModel))
+            .settings(Arc::new(test_settings()))
+            .skip_warmup(true)
+            .modules(modules)
+    }
+
+    #[test]
+    fn modules_run_in_order_once_the_session_exists() {
+        let saw = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let probe = |id, requires| {
+            Arc::new(Probe {
+                id,
+                requires,
+                saw: saw.clone(),
+            }) as Arc<dyn crate::module::Module>
+        };
+        probe_builder(vec![probe("a", &[]), probe("b", &["a"])])
+            .build()
+            .expect("build should succeed");
+        assert_eq!(
+            *saw.lock().unwrap(),
+            ["a depth=0 spawner=true", "b depth=0 spawner=true"]
+        );
+    }
+
+    #[test]
+    fn a_module_whose_requirement_comes_later_is_refused() {
+        let saw = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let probe = |id, requires| {
+            Arc::new(Probe {
+                id,
+                requires,
+                saw: saw.clone(),
+            }) as Arc<dyn crate::module::Module>
+        };
+        let err = match probe_builder(vec![probe("b", &["a"]), probe("a", &[])]).build() {
+            Ok(_) => panic!("a module list out of order was accepted"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("requires `a`"), "{err}");
+        assert!(
+            saw.lock().unwrap().is_empty(),
+            "a refused list still ran modules"
+        );
+        let err = match probe_builder(vec![probe("a", &[]), probe("a", &[])]).build() {
+            Ok(_) => panic!("a module assembled twice was accepted"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("assembled twice"), "{err}");
     }
 
     #[tokio::test]
@@ -5072,7 +5204,15 @@ mod tests {
     fn build_hook_runner_defaults_to_empty_without_hooks_config() {
         let settings = test_settings();
         let model: Arc<dyn Model> = Arc::new(DummyModel);
-        let runner = build_hook_runner(&settings, model, dummy_agent_tool(), None, None);
+        let runner = build_hook_runner(
+            &settings,
+            model,
+            Arc::new(crate::agent_spawner_impl::RuntimeAgentSpawner::new(
+                dummy_agent_tool(),
+            )),
+            None,
+            None,
+        );
         assert!(runner.is_empty());
     }
 
@@ -5085,7 +5225,15 @@ mod tests {
             ]
         }));
         let model: Arc<dyn Model> = Arc::new(DummyModel);
-        let runner = build_hook_runner(&settings, model, dummy_agent_tool(), None, None);
+        let runner = build_hook_runner(
+            &settings,
+            model,
+            Arc::new(crate::agent_spawner_impl::RuntimeAgentSpawner::new(
+                dummy_agent_tool(),
+            )),
+            None,
+            None,
+        );
         assert!(!runner.is_empty());
         assert!(runner.has_hooks_for(hooks::HookEvent::PreToolUse));
     }
@@ -5106,7 +5254,15 @@ mod tests {
             ]
         }));
         let model: Arc<dyn Model> = Arc::new(DummyModel);
-        let runner = build_hook_runner(&settings, model, dummy_agent_tool(), None, None);
+        let runner = build_hook_runner(
+            &settings,
+            model,
+            Arc::new(crate::agent_spawner_impl::RuntimeAgentSpawner::new(
+                dummy_agent_tool(),
+            )),
+            None,
+            None,
+        );
         assert!(
             runner.has_hooks_for(hooks::HookEvent::ConfigChange),
             "an unwired event's hook must still be registered — the engine warns, it does \
@@ -5124,7 +5280,15 @@ mod tests {
         // Wrong shape: hooks value must be a map of event -> Vec<HookConfig>.
         settings.hooks_config = Some(serde_json::json!("not-a-hooks-map"));
         let model: Arc<dyn Model> = Arc::new(DummyModel);
-        let runner = build_hook_runner(&settings, model, dummy_agent_tool(), None, None);
+        let runner = build_hook_runner(
+            &settings,
+            model,
+            Arc::new(crate::agent_spawner_impl::RuntimeAgentSpawner::new(
+                dummy_agent_tool(),
+            )),
+            None,
+            None,
+        );
         assert!(runner.is_empty());
     }
 
