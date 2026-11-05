@@ -200,3 +200,126 @@ async fn a_declarative_scene_under_the_state_root_is_served() {
     .await;
     assert_eq!(created["result"]["scene"], "triage", "{created}");
 }
+
+/// Scenes added while the daemon runs: one registered over RPC with no file
+/// behind it, and one written to disk after startup and picked up by
+/// `scene.reload`.
+#[tokio::test]
+async fn scenes_can_be_added_while_the_daemon_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("dynamic.sock");
+    let cwd = dir.path().join("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let config = load_daemon_config(
+        "claude-sonnet-4-6",
+        2000,
+        Some(&sock),
+        "coding",
+        &StaticDaemonPaths::new(dir.path().to_path_buf()),
+    );
+    let scenes_root = config.paths.global_root().join("scenes");
+    let pool = daemon::assemble::pool(
+        &config,
+        Arc::new(scene::coding::CodingScene),
+        daemon::Assembly {
+            cwd: Some(cwd),
+            model_client: Some(Arc::new(MockAnthropicClient::new()) as Arc<dyn AnthropicClient>),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("pool");
+    let server = Arc::new(DaemonServer::new(pool, CancellationToken::new()));
+    let serving = server.clone();
+    let bind = sock.clone();
+    tokio::spawn(async move {
+        let _ = serving.serve_unix(&bind).await;
+    });
+    for _ in 0..80 {
+        if sock.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    let registered = call(
+        &sock,
+        "scene.register",
+        serde_json::json!({
+            "scene": {"id": "triage", "name": "Triage", "tools": ["Read"]},
+            "prompt": "Sort incoming issues."
+        }),
+    )
+    .await;
+    assert_eq!(registered["result"]["scene"], "triage", "{registered}");
+    let again = call(
+        &sock,
+        "scene.register",
+        serde_json::json!({"scene": {"id": "coding", "name": "Mine"}, "prompt": "x"}),
+    )
+    .await;
+    assert_eq!(
+        again["error"]["code"], -32602,
+        "a built-in id must not be taken: {again}"
+    );
+
+    call(
+        &sock,
+        "scene.activate",
+        serde_json::json!({"scene": "triage"}),
+    )
+    .await;
+    let created = call(
+        &sock,
+        "session.create",
+        serde_json::json!({"scene": "triage"}),
+    )
+    .await;
+    assert_eq!(created["result"]["scene"], "triage", "{created}");
+    let sid = created["result"]["session_id"].clone();
+    let busy = call(
+        &sock,
+        "scene.unregister",
+        serde_json::json!({"scene": "triage"}),
+    )
+    .await;
+    assert_eq!(busy["error"]["code"], -32009, "{busy}");
+    call(
+        &sock,
+        "session.close",
+        serde_json::json!({"session_id": sid}),
+    )
+    .await;
+    let gone = call(
+        &sock,
+        "scene.unregister",
+        serde_json::json!({"scene": "triage"}),
+    )
+    .await;
+    assert_eq!(gone["result"]["registered"], false, "{gone}");
+    let not_ours = call(
+        &sock,
+        "scene.unregister",
+        serde_json::json!({"scene": "coding"}),
+    )
+    .await;
+    assert_eq!(not_ours["error"]["code"], -32004, "{not_ours}");
+
+    let late = scenes_root.join("late");
+    std::fs::create_dir_all(&late).unwrap();
+    std::fs::write(late.join("scene.json"), r#"{"id": "late", "name": "Late"}"#).unwrap();
+    std::fs::write(late.join("prompt.md"), "Arrived after startup.").unwrap();
+    let reloaded = call(&sock, "scene.reload", serde_json::json!({})).await;
+    assert_eq!(
+        reloaded["result"]["added"],
+        serde_json::json!(["late"]),
+        "{reloaded}"
+    );
+    let on = call(
+        &sock,
+        "scene.activate",
+        serde_json::json!({"scene": "late"}),
+    )
+    .await;
+    assert_eq!(on["result"]["active"], true, "{on}");
+}

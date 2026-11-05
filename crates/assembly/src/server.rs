@@ -766,6 +766,18 @@ impl DaemonServer {
             "session.rename" => self.method_session_rename(id, req.params).await,
             "session.appendEntry" => self.method_session_append_entry(id, req.params).await,
             "session.entries" => self.method_session_entries(id, req.params).await,
+            "scene.reload" => RpcResponse::ok(id, self.pool.reload_scenes().await),
+            "scene.register" => self.method_scene_register(id, req.params).await,
+            "scene.unregister" => match req.params.get("scene").and_then(|v| v.as_str()) {
+                Some(scene) => match self.pool.unregister_scene(scene).await {
+                    Ok(()) => RpcResponse::ok(
+                        id,
+                        serde_json::json!({ "scene": scene, "registered": false }),
+                    ),
+                    Err((code, message)) => RpcResponse::err(id, code, message),
+                },
+                None => RpcResponse::err(id, codes::INVALID_PARAMS, "missing scene"),
+            },
             "scene.list" => RpcResponse::ok(
                 id,
                 serde_json::json!({"scenes": self.pool.list_scenes().await}),
@@ -1748,6 +1760,34 @@ impl DaemonServer {
             Err(crate::session_pool::SetModelError::Rpc((code, message))) => {
                 RpcResponse::err(id, code, message)
             }
+        }
+    }
+
+    /// `scene.register` params: `{"scene": {…scene.json…}, "prompt": "…"}` —
+    /// `scene` as an object or as the JSON text.
+    async fn method_scene_register(
+        &self,
+        id: serde_json::Value,
+        params: serde_json::Value,
+    ) -> RpcResponse {
+        let scene_json = match params.get("scene") {
+            Some(serde_json::Value::String(text)) => text.clone(),
+            Some(v @ serde_json::Value::Object(_)) => v.to_string(),
+            _ => return RpcResponse::err(id, codes::INVALID_PARAMS, "missing scene"),
+        };
+        let Some(prompt) = params.get("prompt").and_then(|v| v.as_str()) else {
+            return RpcResponse::err(id, codes::INVALID_PARAMS, "missing prompt");
+        };
+        match self
+            .pool
+            .register_scene_from_sources(&scene_json, prompt)
+            .await
+        {
+            Ok(scene) => RpcResponse::ok(
+                id,
+                serde_json::json!({ "scene": scene, "registered": true }),
+            ),
+            Err((code, message)) => RpcResponse::err(id, code, message),
         }
     }
 

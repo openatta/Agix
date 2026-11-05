@@ -737,6 +737,44 @@ HashMap),客户端要按 `scene` 找条目,不要按下标。
 停用只是把场景移出激活集合,**不删除磁盘上任何内容**;它的历史会话仍然列得出来,
 重新激活后仍可 resume。
 
+#### `scene.reload`
+
+无参。重新读 `<状态根>/scenes/<id>/` 下的声明式场景,重建场景表。
+
+```jsonc
+// ← result
+{ "scenes": [ "chat", "coding", "triage", "…" ],  // 重建后全部可用的场景 id
+  "added": [ "triage" ], "removed": [ ],
+  "errors": [ "…" ] }                              // 没加载上的,逐条说明原因
+```
+
+已激活、重建后仍在的场景指向新的定义:改过 `prompt.md` 的场景,此后新建的会话用改过的版本;
+已经在跑的会话保持建会话时的那份。新增的场景照常需要 `scene.activate`。消失的场景从场景表
+移除,已激活的仍需 `scene.deactivate`。
+
+#### `scene.register` / `scene.unregister`
+
+不落盘地登记一个声明式场景,只在这个实例里有效:
+
+```jsonc
+// → scene.register params
+{ "scene": { "id": "triage", "name": "Triage", "tools": ["Read", "Grep"] },  // scene.json 的内容;对象或 JSON 文本
+  "prompt": "把进来的问题分类。" }                                          // prompt.md 的内容
+// ← result
+{ "scene": "triage", "registered": true }
+
+// → scene.unregister params
+{ "scene": "triage" }
+// ← result
+{ "scene": "triage", "registered": false }
+```
+
+`scene` 按声明式场景的规则从严校验(格式见 `extension_points.md`「声明式场景」),不合格或 id
+已被占用(内建、宿主、磁盘或已登记的场景)→ `INVALID_PARAMS`。登记不等于激活,要用就
+`scene.activate`。`scene.unregister` 只撤 `scene.register` 登记的场景,别的 →
+`SCENE_NOT_FOUND`;有内存中的会话在用时与 `scene.deactivate` 一样返回
+`SCENE_HAS_ACTIVE_SESSIONS`。daemon 重启后登记的场景不在了。
+
 #### `scene.describe`
 
 ```jsonc

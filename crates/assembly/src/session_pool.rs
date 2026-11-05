@@ -273,6 +273,12 @@ fn find_meta(entries: &[history::entry::EnvelopedEntry]) -> Option<&history::ent
         .find(|entry| matches!(entry, history::entry::LogEntry::Meta { .. }))
 }
 
+struct SceneTableChange {
+    added: Vec<String>,
+    removed: Vec<String>,
+    refused: Vec<String>,
+}
+
 /// What a [`SessionCustomizer`] is told about the session being built.
 pub struct SessionCtx<'a> {
     pub session_id: &'a str,
@@ -500,6 +506,8 @@ pub struct SessionPool {
     /// registry has them; without that, a host scene once deactivated could
     /// never be activated again.
     host_scenes: std::sync::RwLock<Vec<Arc<dyn Scene>>>,
+    /// Scenes `scene.register` added, held in memory only.
+    registered_scenes: std::sync::RwLock<Vec<Arc<dyn Scene>>>,
     /// The **opt-out** permission instance: an allow-everything
     /// `Permission` handed to a session only when its effective permission
     /// mode is `bypassPermissions` (see `resolve_session_permission`).
@@ -818,11 +826,9 @@ impl SessionPool {
         tools::register_builtin_tools(&tools);
 
         let host_scenes = vec![scene.clone()];
-        let scene_registry = std::sync::RwLock::new(Arc::new(registry_of(
-            &host_scenes,
-            &[],
-            &paths.global_root().join("scenes"),
-        )));
+        let scene_registry = std::sync::RwLock::new(Arc::new(
+            registry_of(&host_scenes, &[], &paths.global_root().join("scenes"), &[]).0,
+        ));
         let mut active_scenes = HashMap::new();
         active_scenes.insert(scene.id().to_string(), scene.clone());
 
@@ -839,6 +845,7 @@ impl SessionPool {
             active_scenes: AsyncRwLock::new(active_scenes),
             scene_registry,
             host_scenes: std::sync::RwLock::new(host_scenes),
+            registered_scenes: std::sync::RwLock::new(Vec::new()),
             permission,
             tools,
             cwd,
@@ -1005,11 +1012,7 @@ impl SessionPool {
     async fn adopt_plugin_scenes(&self) {
         let plugin_scenes = self.plugins.scenes();
 
-        let registry = registry_of(
-            &self.host_scenes.read().unwrap_or_else(|e| e.into_inner()),
-            &plugin_scenes,
-            &self.paths.global_root().join("scenes"),
-        );
+        let (registry, _) = self.scene_registry_now(&plugin_scenes);
         let plugin_ids: std::collections::HashSet<String> =
             plugin_scenes.iter().map(|s| s.id().to_string()).collect();
         *self
@@ -4914,18 +4917,125 @@ impl SessionPool {
     ///
     /// [`Assembly::extra_scenes`]: crate::assemble::Assembly::extra_scenes
     pub fn register_scene(&self, scene: Arc<dyn Scene>) {
-        let plugin_scenes = self.plugins.scenes();
-        let mut host = self.host_scenes.write().unwrap_or_else(|e| e.into_inner());
-        host.retain(|s| s.id() != scene.id());
-        host.push(scene);
+        {
+            let mut host = self.host_scenes.write().unwrap_or_else(|e| e.into_inner());
+            host.retain(|s| s.id() != scene.id());
+            host.push(scene);
+        }
+        let (registry, _) = self.scene_registry_now(&self.plugins.scenes());
         *self
             .scene_registry
             .write()
-            .unwrap_or_else(|e| e.into_inner()) = Arc::new(registry_of(
-            &host,
-            &plugin_scenes,
+            .unwrap_or_else(|e| e.into_inner()) = Arc::new(registry);
+    }
+
+    fn scene_registry_now(
+        &self,
+        plugin_scenes: &[Arc<dyn Scene>],
+    ) -> (scene::SceneRegistry, Vec<String>) {
+        registry_of(
+            &self.host_scenes.read().unwrap_or_else(|e| e.into_inner()),
+            plugin_scenes,
             &self.paths.global_root().join("scenes"),
-        ));
+            &self
+                .registered_scenes
+                .read()
+                .unwrap_or_else(|e| e.into_inner()),
+        )
+    }
+
+    /// Rebuild the scene table from everything that contributes to it, and
+    /// point active scenes that are still there at their current definition —
+    /// a declarative scene edited on disk is served as edited to the sessions
+    /// created from now on. Sessions already running keep the definition they
+    /// were built with.
+    async fn refresh_scene_table(&self) -> SceneTableChange {
+        let before: std::collections::BTreeSet<String> =
+            self.scene_registry().ids().into_iter().collect();
+        let (registry, refused) = self.scene_registry_now(&self.plugins.scenes());
+        let after: std::collections::BTreeSet<String> = registry.ids().into_iter().collect();
+        {
+            let mut active = self.active_scenes.write().await;
+            for (id, scene) in active.iter_mut() {
+                if let Some(current) = registry.resolve(id) {
+                    *scene = current;
+                }
+            }
+        }
+        *self
+            .scene_registry
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = Arc::new(registry);
+        SceneTableChange {
+            added: after.difference(&before).cloned().collect(),
+            removed: before.difference(&after).cloned().collect(),
+            refused,
+        }
+    }
+
+    /// `scene.reload`: read the declarative scenes on disk again.
+    pub async fn reload_scenes(&self) -> serde_json::Value {
+        let change = self.refresh_scene_table().await;
+        let mut scenes = self.scene_registry().ids();
+        scenes.sort();
+        serde_json::json!({
+            "scenes": scenes,
+            "added": change.added,
+            "removed": change.removed,
+            "errors": change.refused,
+        })
+    }
+
+    /// `scene.register`: add a declarative scene from its `scene.json` and
+    /// `prompt.md` text, in memory only. It is not activated.
+    pub async fn register_scene_from_sources(
+        &self,
+        scene_json: &str,
+        prompt_md: &str,
+    ) -> Result<String, RpcError> {
+        let scene = scene::DeclarativeScene::from_sources(
+            std::path::Path::new("scene.register"),
+            scene_json,
+            prompt_md,
+        )
+        .map_err(|e| (codes::INVALID_PARAMS, e.to_string()))?;
+        let id = scene.id().to_string();
+        if self.scene_registry().resolve(&id).is_some() {
+            return Err((
+                codes::INVALID_PARAMS,
+                format!("scene `{id}` is already registered"),
+            ));
+        }
+        self.registered_scenes
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(Arc::new(scene));
+        self.refresh_scene_table().await;
+        Ok(id)
+    }
+
+    /// `scene.unregister`: withdraw a scene `scene.register` added. Refused
+    /// while sessions in memory run in it, as `scene.deactivate` is.
+    pub async fn unregister_scene(&self, scene_id: &str) -> Result<(), RpcError> {
+        let known = self
+            .registered_scenes
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .any(|s| s.id() == scene_id);
+        if !known {
+            return Err((
+                codes::SCENE_NOT_FOUND,
+                format!("scene `{scene_id}` was not added by scene.register"),
+            ));
+        }
+        self.deactivate_scene(scene_id).await?;
+        self.registered_scenes
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|s| s.id() != scene_id);
+        self.refresh_scene_table().await;
+        Ok(())
     }
 
     pub async fn activate_scene(&self, scene_id: &str) -> Result<(), RpcError> {
@@ -6213,29 +6323,43 @@ impl SessionPool {
 /// LRU 驱逐：从 `sessions` 里移除最久未活跃的一个（若非空）。不依赖 `SessionPool`
 /// 的任何字段，拆成自由函数而非 `&self` 方法——一是本来就没用到 `self`，二是
 /// 让测试不用搭一整个 `SessionPool` 就能直接验证驱逐选中的是最旧的那个。
-/// The scenes a pool can serve: the built-in ones, then the host's, then the
-/// plugins'. Later ones replace earlier ones of the same id.
-/// Built-ins, then the host's, then the declarative scenes under
-/// `user_scenes` (`<state root>/scenes/<id>/scene.json`), then the plugins'.
-/// A declarative scene cannot take an id already registered; one that fails
-/// to load is logged and left out, and the rest load.
+/// The scenes a pool can serve: built-ins, then the host's, then the
+/// declarative scenes under `user_scenes` (`<state root>/scenes/<id>/`), then
+/// those `scene.register` added, then the plugins'. A declarative or
+/// registered scene cannot take an id already there; one that does not load
+/// is left out, named in the returned list, and the rest load.
 fn registry_of(
     host_scenes: &[Arc<dyn Scene>],
     plugin_scenes: &[Arc<dyn Scene>],
     user_scenes: &std::path::Path,
-) -> scene::SceneRegistry {
+    registered: &[Arc<dyn Scene>],
+) -> (scene::SceneRegistry, Vec<String>) {
     let mut registry = scene::SceneRegistry::new();
+    let mut refused = Vec::new();
     registry.register_builtin();
     for s in host_scenes {
         registry.register(s.clone());
     }
     for e in registry.register_declarative_dir(user_scenes) {
         warn!(error = %e, "a declarative scene was not loaded");
+        refused.push(e.to_string());
+    }
+    for s in registered {
+        if registry.resolve(s.id()).is_some() {
+            let e = format!(
+                "scene `{}` (scene.register): the id is already registered",
+                s.id()
+            );
+            warn!(error = %e, "a registered scene was not loaded");
+            refused.push(e);
+        } else {
+            registry.register(s.clone());
+        }
     }
     for s in plugin_scenes {
         registry.register(s.clone());
     }
-    registry
+    (registry, refused)
 }
 
 /// Where a connection the pool opens for itself writes: nowhere. Its turn's
