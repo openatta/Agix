@@ -423,6 +423,13 @@ pub struct ExecutionSettings {
     /// combined.
     #[serde(default = "default_team_member_idle_timeout_secs")]
     pub team_member_idle_timeout_secs: u64,
+    /// Sub-agents the model may have running at once anywhere under one
+    /// session — foreground, background and resumed ones, at every depth.
+    /// A spawn beyond it is refused with a message telling the model to wait
+    /// or do the work itself. `TeamCreate` members and persistent team
+    /// members have their own limits above and do not count.
+    #[serde(default = "default_max_concurrent_subagents")]
+    pub max_concurrent_subagents: usize,
 }
 
 fn default_permission_prompt_timeout_secs() -> u64 {
@@ -435,6 +442,10 @@ fn default_team_stage_concurrency() -> usize {
 
 fn default_team_max_persistent_members() -> usize {
     20
+}
+
+fn default_max_concurrent_subagents() -> usize {
+    6
 }
 
 fn default_team_member_idle_timeout_secs() -> u64 {
@@ -452,6 +463,7 @@ impl Default for ExecutionSettings {
             team_enabled: false,
             team_max_persistent_members: default_team_max_persistent_members(),
             team_member_idle_timeout_secs: default_team_member_idle_timeout_secs(),
+            max_concurrent_subagents: default_max_concurrent_subagents(),
         }
     }
 }

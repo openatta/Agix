@@ -1213,6 +1213,36 @@ struct PersistentMessage {
     task: Arc<base::context::RunningTask>,
 }
 
+pub const DEFAULT_MAX_CONCURRENT_SUBAGENTS: usize = 6;
+
+/// The cap on sub-agents running at once in one session tree.
+#[derive(Clone, Debug)]
+pub struct SubagentSlots {
+    slots: Arc<tokio::sync::Semaphore>,
+    cap: usize,
+}
+
+impl SubagentSlots {
+    pub fn new(cap: usize) -> Self {
+        let cap = cap.max(1);
+        Self {
+            slots: Arc::new(tokio::sync::Semaphore::new(cap)),
+            cap,
+        }
+    }
+
+    pub fn running(&self) -> usize {
+        self.cap - self.slots.available_permits()
+    }
+}
+
+/// Leave to start one sub-agent: the depth it runs at and, when it counts
+/// against the session's cap, the slot it holds until it ends.
+struct Admission {
+    depth: u32,
+    _slot: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
 #[derive(Clone)]
 struct Inner {
     model: Arc<dyn Model>,
@@ -1222,6 +1252,9 @@ struct Inner {
     /// Delegation depth of the agent that *owns* this tool, not of the
     /// children it spawns — those get `depth + 1` (see `spawn_guard`).
     depth: u32,
+    /// Sub-agents running anywhere under the root session; shared by every
+    /// delegate's `AgentTool` (see `AgentsModule::for_delegates`).
+    subagent_slots: SubagentSlots,
     mailbox: Option<(std::sync::Arc<team::mailbox::MailboxStore>, String)>,
     /// Built-in types merged with any disk-loaded custom types (see
     /// `merge_agent_types`). Keyed by `subagent_type` name. `RwLock<Arc<..>>`
@@ -1427,6 +1460,38 @@ impl Inner {
     /// no-op is the point: the model sees "you cannot delegate further" and
     /// can do the work itself, which is what a runaway retry loop needs in
     /// order to terminate instead of recursing until the process dies.
+    /// Refuses rather than waits when the session is at its cap: an agent
+    /// holding a slot while it waits for one for its own child could
+    /// deadlock a tree whose every slot is held that way.
+    fn admit(&self) -> Result<Admission, String> {
+        let depth = self.spawn_guard()?;
+        let slot = self
+            .subagent_slots
+            .slots
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| {
+                format!(
+                    "{} sub-agents are already running in this session, the most it allows \
+                     (execution.max_concurrent_subagents). Wait for one to finish (TaskWait), \
+                     or do this part yourself.",
+                    self.subagent_slots.cap
+                )
+            })?;
+        Ok(Admission {
+            depth,
+            _slot: Some(slot),
+        })
+    }
+
+    /// TeamCreate members are bounded by `team_stage_concurrency` instead.
+    fn admit_team_member(&self) -> Result<Admission, String> {
+        Ok(Admission {
+            depth: self.spawn_guard()?,
+            _slot: None,
+        })
+    }
+
     fn spawn_guard(&self) -> Result<u32, String> {
         let max = self.config.max_agent_depth;
         if self.depth >= max {
@@ -1911,6 +1976,7 @@ impl AgentTool {
                 fallback_tools,
                 parent_tools,
                 depth: 0,
+                subagent_slots: SubagentSlots::new(DEFAULT_MAX_CONCURRENT_SUBAGENTS),
                 mailbox: None,
                 agent_types,
                 _agent_type_watcher,
@@ -1977,6 +2043,7 @@ impl AgentTool {
                 fallback_tools,
                 parent_tools,
                 depth: 0,
+                subagent_slots: SubagentSlots::new(DEFAULT_MAX_CONCURRENT_SUBAGENTS),
                 mailbox: None,
                 agent_types: shared_agent_types,
                 _agent_type_watcher: None,
@@ -2023,6 +2090,13 @@ impl AgentTool {
     pub fn with_modules(mut self, modules: Vec<Arc<dyn runtime::module::Module>>) -> Self {
         let mut inner = (*self.inner).clone();
         inner.modules = modules;
+        self.inner = Arc::new(inner);
+        self
+    }
+
+    pub fn with_subagent_slots(mut self, slots: SubagentSlots) -> Self {
+        let mut inner = (*self.inner).clone();
+        inner.subagent_slots = slots;
         self.inner = Arc::new(inner);
         self
     }
@@ -2480,10 +2554,63 @@ impl AgentTool {
         subagent_type: Option<&str>,
         parent: Option<(&str, u32, &str)>,
     ) -> Result<String, base::error::ToolError> {
-        let child_depth = self
+        let admission = self.inner.admit().map_err(base::error::ToolError::Denied)?;
+        self.run_sub_admitted(
+            admission,
+            prompt,
+            tools,
+            cwd,
+            cancel,
+            perm,
+            subagent_type,
+            parent,
+        )
+        .await
+    }
+
+    /// `run_sub` for a `TeamCreate` member.
+    pub(crate) async fn run_team_member(
+        &self,
+        prompt: String,
+        tools: Arc<InMemoryToolRegistry>,
+        cwd: std::path::PathBuf,
+        cancel: tokio_util::sync::CancellationToken,
+        perm: Arc<dyn Permission>,
+        subagent_type: Option<&str>,
+    ) -> Result<String, base::error::ToolError> {
+        let admission = self
             .inner
-            .spawn_guard()
+            .admit_team_member()
             .map_err(base::error::ToolError::Denied)?;
+        self.run_sub_admitted(
+            admission,
+            prompt,
+            tools,
+            cwd,
+            cancel,
+            perm,
+            subagent_type,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_sub_admitted(
+        &self,
+        admission: Admission,
+        prompt: String,
+        tools: Arc<InMemoryToolRegistry>,
+        cwd: std::path::PathBuf,
+        cancel: tokio_util::sync::CancellationToken,
+        perm: Arc<dyn Permission>,
+        subagent_type: Option<&str>,
+        parent: Option<(&str, u32, &str)>,
+    ) -> Result<String, base::error::ToolError> {
+        let Admission {
+            depth: child_depth,
+            _slot,
+        } = admission;
         let cwd_for_meta = cwd.clone();
         let def = subagent_type.and_then(|t| self.inner.agent_type_def(t));
         let model_override = def.as_ref().and_then(|d| d.model.clone());
@@ -2596,7 +2723,8 @@ impl AgentTool {
         cancel: tokio_util::sync::CancellationToken,
         subagent_type: Option<&str>,
         session: Arc<base::context::SessionState>,
-    ) -> String {
+    ) -> Result<String, base::error::ToolError> {
+        let admission = self.inner.admit().map_err(base::error::ToolError::Denied)?;
         let tid = bg_task_id();
         let task = session.register_task(
             tid.clone(),
@@ -2618,11 +2746,12 @@ impl AgentTool {
                 cancel,
                 subagent_type.as_deref(),
                 Some(&tc),
+                admission,
             )
             .await;
             conclude_background_task(&session_c, &tc, &r);
         });
-        tid
+        Ok(tid)
     }
 
     async fn launch_bg(
@@ -2630,6 +2759,7 @@ impl AgentTool {
         input: &AgentInput,
         ctx: &ToolContext,
     ) -> Result<base::tool::ToolResult, base::error::ToolError> {
+        let admission = self.inner.admit().map_err(base::error::ToolError::Denied)?;
         let tid = bg_task_id();
         let outer_cancel = ctx.cancel.child_token();
         let task = ctx.session.register_task(
@@ -2677,6 +2807,7 @@ impl AgentTool {
                 outer_cancel,
                 subagent_type.as_deref(),
                 Some(&tc),
+                admission,
             )
             .await;
             if let Some(h) = worktree_handle.as_mut() {
@@ -3024,6 +3155,7 @@ impl AgentTool {
 
     /// Static helper for background execution. `subagent_type` — see
     /// `run_sub`'s doc comment; resolved the same way against `inner.agent_types`.
+    #[allow(clippy::too_many_arguments)]
     async fn run_sub_inner(
         inner: &Inner,
         prompt: String,
@@ -3032,10 +3164,12 @@ impl AgentTool {
         cancel: tokio_util::sync::CancellationToken,
         subagent_type: Option<&str>,
         task: Option<&base::context::RunningTask>,
+        admission: Admission,
     ) -> Result<String, base::error::ToolError> {
-        let child_depth = inner
-            .spawn_guard()
-            .map_err(base::error::ToolError::Denied)?;
+        let Admission {
+            depth: child_depth,
+            _slot,
+        } = admission;
         // S-3: same resolution as the foreground path — a background spawn
         // used to hardcode `AlwaysPermit`, escaping the parent's rules.
         let perm: Arc<dyn Permission> = inner.permission_handler();
@@ -3112,10 +3246,10 @@ impl AgentTool {
         cwd: std::path::PathBuf,
         cancel: tokio_util::sync::CancellationToken,
     ) -> Result<String, base::error::ToolError> {
-        let child_depth = self
-            .inner
-            .spawn_guard()
-            .map_err(base::error::ToolError::Denied)?;
+        let Admission {
+            depth: child_depth,
+            _slot,
+        } = self.inner.admit().map_err(base::error::ToolError::Denied)?;
         let start = std::time::Instant::now();
 
         // 1. Load transcript from history store
@@ -4876,7 +5010,8 @@ mod catalog_tests {
                 None,
                 session.clone(),
             )
-            .await;
+            .await
+            .unwrap();
         started.notified().await;
         tools::task_message::deliver(&session, &tid, "also check the lexer".into())
             .expect("a running sub-agent takes messages");
@@ -4897,6 +5032,48 @@ mod catalog_tests {
         assert!(notices[0].contains(&tid));
         assert!(notices[0].contains("<status>done</status>"));
         assert!(notices[0].contains("report"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_session_cap_refuses_one_sub_agent_too_many_but_not_a_team_member() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let slots = SubagentSlots::new(1);
+        let agent_tool = agent_tool_with_model(Arc::new(HangingModel {
+            started: started.clone(),
+            dropped: dropped.clone(),
+        }))
+        .with_subagent_slots(slots.clone());
+
+        let mut first = Box::pin(run_sub_with(&agent_tool));
+        tokio::select! {
+            _ = &mut first => panic!("the model never answers"),
+            _ = started.notified() => {}
+        }
+        assert_eq!(slots.running(), 1);
+
+        let refused = run_sub_with(&agent_tool).await.unwrap_err();
+        assert!(
+            refused.to_string().contains("max_concurrent_subagents"),
+            "{refused}"
+        );
+
+        let member = agent_tool.run_team_member(
+            "member task".into(),
+            Arc::new(InMemoryToolRegistry::new()),
+            std::path::PathBuf::from("/tmp"),
+            tokio_util::sync::CancellationToken::new(),
+            Arc::new(AlwaysPermit),
+            None,
+        );
+        tokio::select! {
+            _ = member => panic!("the model never answers"),
+            _ = started.notified() => {}
+        }
+        assert_eq!(slots.running(), 1, "a team member holds no slot");
+
+        drop(first);
+        assert_eq!(slots.running(), 0, "an ended sub-agent gives its slot back");
     }
 
     // ── Persistent team members (phase 3) ──

@@ -61,6 +61,13 @@
             "null"
           ]
         },
+        "max_concurrent_subagents": {
+          "default": 6,
+          "description": "Sub-agents the model may have running at once anywhere under one\nsession — foreground, background and resumed ones, at every depth.\nA spawn beyond it is refused with a message telling the model to wait\nor do the work itself. `TeamCreate` members and persistent team\nmembers have their own limits above and do not count.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
         "max_parallelism": {
           "format": "uint",
           "minimum": 0,
@@ -664,7 +671,7 @@
   "properties": {
     "allow_client_permission_override": {
       "default": false,
-      "description": "Whether an RPC client may request a *more permissive* mode than\n`permission_mode` above.\n\nThe daemon's `session.create` takes an optional `permission_mode` in\nits options. That used to override `permission_mode` outright in\neither direction, which made this setting a default rather than a\npolicy: any client that could authenticate could open a\n`bypassPermissions` session no matter how the daemon was configured\n(and `daemon/src/server.rs` notes there is no per-method\nauthorization on that socket). With this `false` — the default — a\nclient can still *tighten* the mode for its own session, but a\nrequest to loosen it is clamped to what is configured here.\n\nSet it to `true` only when every client of this daemon is as trusted\nas the daemon itself.",
+      "description": "Whether an RPC client may request a *more permissive* mode than\n`permission_mode` above.\n\nThe daemon's `session.create` takes an optional `permission_mode` in\nits options. That used to override `permission_mode` outright in\neither direction, which made this setting a default rather than a\npolicy: any client that could authenticate could open a\n`bypassPermissions` session no matter how the daemon was configured\n(and `crates/assembly/src/server.rs` notes there is no per-method\nauthorization on that socket). With this `false` — the default — a\nclient can still *tighten* the mode for its own session, but a\nrequest to loosen it is clamped to what is configured here.\n\nSet it to `true` only when every client of this daemon is as trusted\nas the daemon itself.",
       "type": "boolean"
     },
     "compaction": {
@@ -691,6 +698,7 @@
       "default": {
         "max_api_calls_per_turn": 25,
         "max_budget_tokens": null,
+        "max_concurrent_subagents": 6,
         "max_parallelism": 10,
         "permission_prompt_timeout_secs": 300,
         "team_enabled": false,

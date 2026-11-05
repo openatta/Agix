@@ -16,7 +16,7 @@ use std::sync::Arc;
 use base::context::EngineConfig;
 use runtime::module::{Module, ModuleError, SessionContext};
 
-use crate::agent_tool::{AgentTool, SharedAgentTypeMap};
+use crate::agent_tool::{AgentTool, SharedAgentTypeMap, SubagentSlots};
 use crate::spawner::RuntimeAgentSpawner;
 
 pub const MODULE_ID: &str = "agents";
@@ -24,6 +24,9 @@ pub const MODULE_ID: &str = "agents";
 #[derive(Clone, Default)]
 pub struct AgentsModule {
     shared_types: Option<SharedAgentTypeMap>,
+    /// Set on the copy a session's delegates are assembled with, so the
+    /// whole tree draws on the root's `execution.max_concurrent_subagents`.
+    slots: Option<SubagentSlots>,
 }
 
 impl AgentsModule {
@@ -37,6 +40,28 @@ impl AgentsModule {
     pub fn shared_agent_types(mut self, handle: SharedAgentTypeMap) -> Self {
         self.shared_types = Some(handle);
         self
+    }
+}
+
+impl AgentsModule {
+    fn for_delegates(
+        &self,
+        modules: &[Arc<dyn Module>],
+        slots: &SubagentSlots,
+    ) -> Vec<Arc<dyn Module>> {
+        modules
+            .iter()
+            .map(|m| -> Arc<dyn Module> {
+                if m.id() == MODULE_ID {
+                    Arc::new(Self {
+                        shared_types: self.shared_types.clone(),
+                        slots: Some(slots.clone()),
+                    })
+                } else {
+                    m.clone()
+                }
+            })
+            .collect()
     }
 }
 
@@ -56,6 +81,10 @@ impl Module for AgentsModule {
             c
         });
 
+        let slots = self
+            .slots
+            .clone()
+            .unwrap_or_else(|| SubagentSlots::new(settings.execution.max_concurrent_subagents));
         let mut tool = match &self.shared_types {
             Some(shared) => AgentTool::with_shared_agent_types(
                 cx.model.clone(),
@@ -81,7 +110,8 @@ impl Module for AgentsModule {
         }
         .with_settings(settings.clone())
         .with_depth(cx.depth)
-        .with_modules(cx.modules.to_vec());
+        .with_subagent_slots(slots.clone())
+        .with_modules(self.for_delegates(cx.modules, &slots));
         if let Some(router) = cx.task_router {
             tool = tool.with_task_router(router.clone());
         }

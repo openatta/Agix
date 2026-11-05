@@ -55,11 +55,10 @@ impl AgentSpawner for RuntimeAgentSpawner {
         session: Arc<base::context::SessionState>,
     ) -> Result<String, Box<dyn std::error::Error + Send>> {
         let tools = self.agent_tool.sub_tools();
-        let task_id = self
-            .agent_tool
+        self.agent_tool
             .spawn_background(prompt, tools, cwd, cancel, agent_type.as_deref(), session)
-            .await;
-        Ok(task_id)
+            .await
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send>)
     }
 
     async fn spawn_agent_with_tools(
@@ -106,7 +105,7 @@ impl AgentSpawner for RuntimeAgentSpawner {
         };
 
         self.agent_tool
-            .run_sub(prompt, tools, cwd, cancel, perm, agent_type.as_deref())
+            .run_team_member(prompt, tools, cwd, cancel, perm, agent_type.as_deref())
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send>)
     }
