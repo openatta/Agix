@@ -204,6 +204,96 @@ daemon 的嵌入方把自己的 scene 交给 `Assembly { scenes: vec![Arc::new(M
 `extra_scenes` 和 `scene.activate` 能按 id 把它打开,停用之后也还能再打开。登记不等于
 激活;id 与内建 scene 相同的,替换内建的那个。
 
+#### 声明式场景——不写 Rust 的 scene
+
+一个目录,两个文件:`scene.json` 描述场景,`prompt.md` 是系统提示正文。
+`scene::DeclarativeScene` 读它们、实现 `Scene`,所以纯配置和插件包都能贡献场景,
+和 Rust 写的 scene 进同一张 `SceneRegistry`:
+
+```rust
+let mut registry = scene::SceneRegistry::new();
+registry.register_builtin();
+for refused in registry.register_declarative_dir(&global_root.join("scenes")) {
+    tracing::warn!(error = %refused, "scene not registered");
+}
+```
+
+`register_declarative_dir` 扫 `<root>/<id>/scene.json`。只有 `settings.json`、`plugins/`
+之类而没有 `scene.json` 的子目录不是场景,跳过——`~/.agix/scenes/<id>/` 本来就是每个
+场景(包括内建场景)的设置层目录;有 `prompt.md` 却没有 `scene.json` 的会报出来。
+**声明式场景不替换已登记的 id**:`scene.json` 写 `"id": "coding"` 会被拒,内建的那个
+原样留着——家目录里的一个文件不该能冒名顶替。所以要在内建和宿主 scene 登记之后再调。
+单个目录用 `DeclarativeScene::load(dir)`,编进二进制的用 `DeclarativeScene::from_sources`。
+
+`scene.json`:
+
+```json
+{
+  "id": "review",
+  "name": "Code review",
+  "description": "Reads code and reports; never edits",
+  "tools": ["Read", "Glob", "Grep", "ToolSearch", "mcp__*"],
+  "disallowed_tools": ["mcp__shell__*"],
+  "deferred_tools": ["Grep"],
+  "token_budget": { "compact_threshold": 120000, "compact_keep_recent": 20 },
+  "execution": { "max_api_calls_per_turn": 40 },
+  "requires_project": true,
+  "supports_team": false,
+  "modules": ["agents", "skills", "mcp"],
+  "disabled_modules": [],
+  "reminders": ["git_status", "memory"]
+}
+```
+
+| 字段 | 类型 | 缺省 | 含义 |
+|---|---|---|---|
+| `id` | string,必填 | — | 1–64 个 `a-z0-9-_`,字母或数字开头;从目录加载时必须等于目录名 |
+| `name` | string,必填 | — | 非空 |
+| `description` | string | `""` | |
+| `tools` | string[] | `[]`(全部) | 白名单;`*` 只能出现一次、在末尾,按前缀匹配 |
+| `disallowed_tools` | string[] | `[]` | 黑名单,同样的通配;**白名单非空时也生效** |
+| `deferred_tools` | string[] | `[]` | 只报名字、schema 经 `ToolSearch` 取的工具;不支持通配 |
+| `token_budget.compact_threshold` | 整数 | 150000 | 0 = 不自动压缩 |
+| `token_budget.compact_keep_recent` | 整数 | 20 | |
+| `execution.max_api_calls_per_turn` | 整数 ≥ 1 | 不设上限 | 和设置取较小的那个,所以只能收紧 |
+| `requires_project` | bool | `false` | |
+| `supports_team` | bool | `false` | |
+| `modules` | string[] 或缺省 | 缺省 = 全部 | 这个场景的会话跑哪些模块,见下 |
+| `disabled_modules` | string[] | `[]` | 即使 `modules` 放行也不跑的模块 |
+| `reminders` | `"git_status"` / `"memory"` 的数组 | `[]` | 每轮 `<system-reminder>` 带什么,按列出的顺序 |
+
+校验从严:未知字段、缺了必填字段、id 不合规、同一列表里重复、一个名字同时在
+`tools` 与 `disallowed_tools`(或 `modules` 与 `disabled_modules`)里、
+`max_api_calls_per_turn` 为 0、`prompt.md` 为空——都是带文件路径的加载错误,不会被
+悄悄当成缺省值。两个文件只在加载时读一次;改文件不影响已经在跑的会话。
+
+`prompt.md` 里可以写这几个占位符,由场景每次调用时填:
+
+| 占位符 | 值 |
+|---|---|
+| `{{cwd}}` | 工作目录 |
+| `{{os}}` / `{{shell}}` / `{{home}}` | 平台、shell、家目录 |
+| `{{date}}` | 当天日期 |
+| `{{model}}` | 解析后的模型名 |
+| `{{environment}}` | 标准环境块(工作目录、平台、shell、日期,设了语言偏好时带上语言) |
+
+第一个占位符所在那一行之前的部分是一个可缓存的块,从那一行起每次重新渲染。一个占位符
+都没用的 `prompt.md` 整个缓存,后面由内核接一段标准环境块。别的 `{{name}}` 原样留下,
+交给 `prompt.variable` 的注册去展开——它能不能展开取决于宿主注册了什么,所以加载时
+不拒。
+
+插件包也可以带一个这样的目录,见 `extending_wasm.md` 的 `[scene] dir`;那时 `id` 必须
+写成 `plugin:<插件名>`。
+
+#### 场景收窄模块
+
+`Scene::modules()`(白名单,`None` 是全部)和 `Scene::disabled_modules()` 决定一个
+会话跑宿主装配的哪些模块。`Builder::build()` 先按场景过滤 `Builder::modules` 给的列表,
+再检查顺序、调 `on_session`:场景不允许的模块在这个会话里根本不跑,它派出去的子 agent
+拿到的也是过滤后的列表。白名单里写了宿主没装配的模块不算错——只能收窄,不能凭空加。
+留下来的模块 `requires` 一个被场景排除的模块,则构建失败,错误里写明是哪个场景排除的:
+连带丢掉它会悄悄拿走场景要的能力。
+
 ### 会话存储 — `history.store`
 
 `history::store::HistoryStore`。自带两个实现:`JsonlHistoryStore`(项目目录下的

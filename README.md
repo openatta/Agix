@@ -361,6 +361,10 @@ double as a ladder you can copy from:
 | `DemoScene` | Minimal skeleton — only the 6 required methods; everything optional left at its default |
 | `ResearchScene` | A working non-coding scene — evidence the trait is not coding-shaped |
 
+A scene does not have to be Rust: `scene::DeclarativeScene` reads a directory of
+`scene.json` (tool surface, budgets, which modules run) plus `prompt.md`, from a
+host's scene directory or a plugin package — see `docs/extension_points.md`.
+
 One process runs several at once: `--scene` sets the default, `--scenes` activates
 more, `scene.activate`/`scene.deactivate` change the set at runtime, and each
 session picks one. A request that touches a session belonging to another scene is

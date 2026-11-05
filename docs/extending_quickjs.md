@@ -11,6 +11,10 @@
 `docs/extension_points.md` 是引擎里所有可扩展之处的总目录,不限使用者、不限方式。
 本文只讲今天脚本能绑上去的那九个点。
 
+要的是一整个场景——自己的系统提示、工具面、预算——不用写脚本:场景可以纯声明,
+一个 `scene.json` 加一个 `prompt.md`,宿主从 `~/.agix/scenes/<id>/` 这样的目录读,
+或者随插件包一起发(`[scene] dir`)。格式见 `docs/extension_points.md` 的「声明式场景」。
+
 ## 这个构建带载体吗
 
 脚本载体是 `daemon` crate 的 `scripts` feature,**默认开启**:

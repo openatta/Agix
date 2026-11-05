@@ -147,7 +147,7 @@ MCP 连接、脚本绑定的 root、记忆目录、transcript 目录。
 |---|---|
 | `DaemonPaths::config_root()` | 启动时按首个场景算定,见 §3.1 |
 | 工具注册表 | 内置工具是编译期事实 |
-| 场景注册表 | 内建、宿主登记(`Assembly.scenes` / `SessionPool::register_scene`)、插件贡献三类;激活集合是运行期状态,但不按项目 |
+| 场景注册表 | 内建、宿主登记(`Assembly.scenes` / `SessionPool::register_scene`)、插件贡献三类,宿主登记的可以是声明式场景;激活集合是运行期状态,但不按项目 |
 | plugin host / 插件集合 | 插件只有全局层与场景层,**没有项目层** |
 | WASM 插件的 `${workspace}` | 组件是池级加载的,跟着 daemon 的工作目录 |
 | `WatchHub` | 一个 `notify` 线程,按 tier 分键去重,watched 目录是 `1 + M + P` |
@@ -219,6 +219,20 @@ recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着
 2. **`ToolSearch` 永不 defer。** 它是取回 deferred 工具 schema 的唯一途径。
 3. **`Tool::is_deferred()` 不是策略输入**,是 `DeferredTool` 包装器设置的输出。
    工具自己声明它没有裁剪 schema 的效果——只会让它对 `ToolSearch` 撒谎。
+
+### 3.6 场景收窄模块
+
+`Scene::modules()` / `Scene::disabled_modules()` 对模块做的事和 `tools()` 对工具做的一样:
+**只能减**。`Builder::build()` 在任何模块运行之前按 `Scene::permits_module` 过滤装配
+列表,`SessionContext::modules` 和子 agent 拿到的都是过滤后的那份。留下的模块 `requires`
+一个被排除的模块时构建失败——依赖关系由模块声明,场景不能悄悄拆掉它。
+
+### 3.7 声明式场景
+
+`scene::DeclarativeScene` 是内核自己的一个 `Scene` 实现,数据来自 `scene.json` +
+`prompt.md`。它和 Rust 写的场景一样是加载后不再变的值:两个文件只读一次。注册走
+`SceneRegistry::register_declarative*`,不替换已登记的 id;插件包里的那份 id 固定为
+`plugin:<name>`。格式与占位符见 `extension_points.md`。
 
 ---
 

@@ -327,6 +327,12 @@ compact_threshold = 120000     # 默认 150000
 compact_keep_recent = 20       # 默认 20
 max_api_calls_per_turn = 40    # 默认不设上限
 
+# 或者:把场景写成一个声明式场景目录(scene.json + prompt.md),
+# 和 `[scene.own]` 二选一。格式见 docs/extension_points.md「声明式场景」;
+# scene.json 的 id 必须是 "plugin:<name>"。
+# [scene]
+# dir = "scene"
+
 # ── 插件声明的 agent 类型 ──
 [[agent]]
 name = "pr-reviewer"
@@ -350,6 +356,9 @@ scene = "plugin:github-tools"  # 让这个 agent 的子代理跑在插件的场�
   为准——真正被注册的是那个。
 - `[[script]]` 的 `entry` 必须是 `<文件>:<函数>`,文件必须落在包里面。绝对路径、
   `..`、以及解析后指到包外面的符号链接,都会被拒。
+- `[scene] dir` 同样必须在包里面,且不能和 `[scene.own]` 同时出现——一个插件只拥有一个
+  场景。目录里的 `scene.json` 按声明式场景的规则从严校验,校验不过的包**装不上**
+  (安装期披露就会失败),而不是装上之后少一个场景。
 
 `[[script]]` 还有两条运行期的规矩:
 
@@ -514,7 +523,7 @@ agent 描述、场景的系统提示词,都会一字不差地到达模型,而"�
 | **工具** | 从组件的 `list-tools` 适配成普通的引擎工具,名字是 `plugin__<plugin>__<tool>` |
 | **MCP server** | 并进 daemon 已配置的 server 集合,key 为 `<plugin>-mcp-<name>` |
 | **Hook 订阅** | 注册进会话的 `HookRunner`,背后是组件的 `on-event` |
-| **一个场景** | 以 `plugin:<name>` 注册并激活;用 `session.create {"scene": "plugin:<name>"}` 进入 |
+| **一个场景** | `[scene.own]` 或 `[scene] dir`;以 `plugin:<name>` 注册并激活;用 `session.create {"scene": "plugin:<name>"}` 进入 |
 | **Agent 类型** | 通过 `Agent` 的 `subagent_type` 被发现 |
 
 这张表里有两件事值得挑明。
@@ -536,6 +545,11 @@ manifest 允许,而那样的插件在只走场景那条路的时候,工具哪儿
 拥有一个用户明确进入的场景,是插件在干自己的活。所以插件拿到自己的场景,永远拿不到别人
 的。插件场景的 `max_api_calls_per_turn` 也**抬不高**真正的上限——轮次循环把预算解析成
 `min(settings, scene)`,所以场景只可能收紧。
+
+两种写法落在不同的层:`[scene.own]` 由 WASM 载体这边的 `plugin_host::PluginScene` 读;
+`[scene] dir` 是纯数据,由包方案自己读(`plugin::scenes::declared_scenes`,背后是
+`scene::DeclarativeScene`),不需要任何载体。载体加载组件时把插件自己导出的工具作为这个
+场景的 `extra_tools` 交给它,和 `[scene.own]` 一样。
 
 工具适配器有几个后果常常出乎人意料:
 
