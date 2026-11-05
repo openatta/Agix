@@ -118,7 +118,7 @@ telemetry = { path = "crates/telemetry" }
 history  = { path = "crates/history" }
 permissions = { path = "crates/permissions" }
 mcp      = { path = "crates/mcp" }
-tools    = { path = "crates/tools" }
+tools    = { path = "crates/tools", default-features = false }
 skills   = { path = "crates/skills" }
 runtime    = { path = "crates/runtime" }
 compaction = { path = "crates/compaction" }

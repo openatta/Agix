@@ -34,6 +34,13 @@ notify        = { workspace = true }
 # API as base64 — see `resolve_attachments` in turn.rs.
 base64        = { workspace = true }
 
+[features]
+# The tool groups the kernel registers without being asked: off in the minimal
+# build (`--no-default-features`), on everywhere else.
+default = ["web", "structured-output"]
+web = ["tools/web"]
+structured-output = ["tools/structured-output"]
+
 [dev-dependencies]
 url      = { workspace = true }
 tempfile = { workspace = true }

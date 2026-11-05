@@ -20,18 +20,22 @@ pub mod plan_verify;
 pub mod push_notification;
 pub mod security;
 pub mod sleep;
+#[cfg(feature = "structured-output")]
 pub mod structured_output;
 pub mod task_output;
 pub mod task_stop;
 pub mod tasks;
 pub mod todo_write;
 pub mod tool_search;
+#[cfg(feature = "web")]
 pub mod web_fetch;
+#[cfg(feature = "web")]
 pub mod web_search;
 pub mod worktree;
 pub mod worktree_tools;
 
 // From anthropic/ — tool-side logic
+#[cfg(feature = "web")]
 pub mod native_search;
 pub mod secondary_llm;
 
@@ -114,7 +118,6 @@ pub fn register_builtin_tools(reg: &std::sync::Arc<base::tool::InMemoryToolRegis
         Arc::new(crate::tasks::TaskGetTool),
         Arc::new(crate::tasks::TaskListTool),
         Arc::new(crate::tasks::TaskUpdateTool),
-        Arc::new(crate::web_fetch::WebFetchTool::new()),
         Arc::new(crate::monitor::MonitorTool),
         Arc::new(crate::sleep::SleepTool),
         Arc::new(crate::ping::PingTool),
@@ -123,11 +126,16 @@ pub fn register_builtin_tools(reg: &std::sync::Arc<base::tool::InMemoryToolRegis
         Arc::new(crate::plan_verify::VerifyPlanExecutionTool),
         Arc::new(crate::push_notification::PushNotificationTool),
         Arc::new(crate::ask_user::AskUserQuestionTool),
-        Arc::new(crate::structured_output::StructuredOutputTool::default()),
     ];
     for t in simple {
         reg.register(t);
     }
+    #[cfg(feature = "web")]
+    reg.register(Arc::new(crate::web_fetch::WebFetchTool::new()));
+    #[cfg(feature = "structured-output")]
+    reg.register(Arc::new(
+        crate::structured_output::StructuredOutputTool::default(),
+    ));
     // Needs the same registry it searches over — registered last so it sees
     // every tool registered above (it reads `reg.list()` at call time via the
     // `Arc`, so registration order doesn't actually matter for correctness,
@@ -154,18 +162,39 @@ pub fn register_builtin_tools(reg: &std::sync::Arc<base::tool::InMemoryToolRegis
 /// Anthropic-direct path the provider is never consulted at all — see
 /// `UnavailableSearchProvider`'s docs for why registration alone is what
 /// switches search on there.
+///
+/// Registers nothing in a build without the `web` tools.
 pub fn register_web_search(
     reg: &std::sync::Arc<base::tool::InMemoryToolRegistry>,
     settings: &base::interface::settings::Settings,
 ) {
-    let provider: Box<dyn crate::web_search::SearchProvider> =
-        match crate::native_search::NativeSearchProvider::from_settings(settings) {
-            Some(p) => Box::new(p),
-            None => Box::new(crate::web_search::UnavailableSearchProvider::new(
-                "no Anthropic-compatible endpoint or credentials resolved from settings/env",
-            )),
-        };
-    reg.register(Arc::new(crate::web_search::WebSearchTool::new(provider)));
+    #[cfg(not(feature = "web"))]
+    let _ = (reg, settings);
+    #[cfg(feature = "web")]
+    {
+        let provider: Box<dyn crate::web_search::SearchProvider> =
+            match crate::native_search::NativeSearchProvider::from_settings(settings) {
+                Some(p) => Box::new(p),
+                None => Box::new(crate::web_search::UnavailableSearchProvider::new(
+                    "no Anthropic-compatible endpoint or credentials resolved from settings/env",
+                )),
+            };
+        reg.register(Arc::new(crate::web_search::WebSearchTool::new(provider)));
+    }
+}
+
+/// Makes a registered `StructuredOutput` tool validate against `schema`, the
+/// host's output contract. Does nothing when no such tool is registered —
+/// including in a build without the `structured-output` tool.
+pub fn bind_output_schema(reg: &base::tool::InMemoryToolRegistry, schema: &serde_json::Value) {
+    #[cfg(not(feature = "structured-output"))]
+    let _ = (reg, schema);
+    #[cfg(feature = "structured-output")]
+    if reg.get("StructuredOutput").is_some() {
+        reg.replace(Arc::new(
+            crate::structured_output::StructuredOutputTool::with_schema(schema.clone()),
+        ));
+    }
 }
 
 /// Register `CronCreate` / `CronDelete` / `CronList` against a shared store.

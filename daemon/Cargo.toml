@@ -27,7 +27,7 @@ plugin-host   = { workspace = true, optional = true }
 wasm-host     = { workspace = true, optional = true }
 script-host   = { workspace = true, optional = true }
 skills        = { workspace = true }
-tools         = { workspace = true }
+tools         = { workspace = true, features = ["web", "structured-output"] }
 tokio         = { workspace = true, features = ["full"] }
 tokio-util    = { workspace = true }
 tokio-tungstenite = { workspace = true }

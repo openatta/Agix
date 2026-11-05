@@ -2159,11 +2159,7 @@ impl Builder {
         // underneath it stays discoverable.
         let host_schema = self.output_schema.clone();
         if let Some(schema) = &host_schema {
-            if tools.get("StructuredOutput").is_some() {
-                tools.replace(Arc::new(
-                    tools::structured_output::StructuredOutputTool::with_schema(schema.clone()),
-                ));
-            }
+            tools::bind_output_schema(&tools, schema);
         }
         {
             let mut deferred = scene.deferred_tools();
