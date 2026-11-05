@@ -117,7 +117,7 @@ fork 型 skill 要 agents 提供的 spawner。委派出去的子会话用父会�
 
 ```
 收用户消息
-  └─ UserPromptSubmit hook · 斜杠命令 · 记忆召回
+  └─ UserPromptSubmit hook · 斜杠命令 · 记忆召回 · 先放进空闲期间到的通知(§3.8)
 循环:
   ├─ 0. 落盘        上一步写进内存的消息先落盘
   ├─ 1. 停止判断    TurnPolicy::before_model_call   ← 这一轮还该不该继续
@@ -129,7 +129,7 @@ fork 型 skill 要 agents 提供的 spawner。委派出去的子会话用父会�
   ├─ 6. 复查        TurnPolicy::after_model_call
   ├─ 7. 记账        BudgetPolicy::on_usage          ← 继续 / 警告 / 耗尽
   ├─ 8. 执行工具    Permission → ToolMiddleware → Tool → ToolResultTransformer
-  │     └─ 这批结果写进对话之后:送达这一轮运行期间收到的用户消息
+  │     └─ 这批结果写进对话之后:送达这一轮运行期间收到的用户消息与通知
   └─ 9. 有工具调用则再来一轮;否则 BudgetPolicy::on_output_target 决定是否续写
          (收尾时还有没送达的用户消息,再调一次模型回答它们)
 出口:finish_turn —— 先落盘,再发 TurnComplete
@@ -145,7 +145,8 @@ fork 型 skill 要 agents 提供的 spawner。委派出去的子会话用父会�
 **运行中的用户消息在步骤边界送达。** 一轮在跑时收到的用户消息先排队,在一批工具结果
 写进对话之后、下一次调模型之前加进去,所以永远不会落在一对 `tool_use` /
 `tool_result` 中间。这一轮在送达之前就结束了(取消、截停、出错)的,消息不进
-transcript,以 `UserMessagesReturned` 交还宿主。
+transcript,以 `UserMessagesReturned` 交还宿主。通知(`SessionState::post_notice`,
+如后台子 Agent 结束)走同一组边界;一轮已经结束的,留给下一轮开头。
 
 
 **骨架与决策的分界是这套设计的核心。** 步骤顺序写死,是因为顺序本身就是"一轮"的定义;
@@ -226,7 +227,7 @@ MCP 连接、脚本绑定的 root、记忆目录、transcript 目录。
 
 一个会话的 `Agent` 会被重建:它的绑定失效、janitor 回收后再被用到、daemon 重启后恢复。
 重建照的是**会话规格**,不是触发重建的那次调用碰巧带了什么:创建时的 `options`、
-`session.setModel` 选过的模型与厂商。规格以 `ns = "agix.session"`、`event = "spec"`
+`session.setModel` 选过的模型与厂商、`session.setPrompt` 设的会话提示词。规格以 `ns = "agix.session"`、`event = "spec"`
 的扩展条目写进会话日志,每次变化追加一条,最后一条为准,所以跨 daemon 重启也成立。
 recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着原来的进度。
 
@@ -252,7 +253,7 @@ recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着
 
 委派链由 `EngineConfig::max_agent_depth` **计数**约束,不靠从工具集里摘掉 `Agent`。
 `Inner::spawn_guard` 在每一条 spawn 路径上检查;到顶时返回普通工具错误,模型看得见,
-可以改为自己做。
+可以改为自己做。同时在跑的个数另有上限,见 §3.8。
 
 **过滤工具名不构成约束**:`Builder::build()` 会为子会话新建注册表并把 `Agent` 注册进去,
 与父级传入的工具集无关;`RuntimeAgentSpawner`(Skill fork、team 成员)直接透传
@@ -293,7 +294,54 @@ recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着
 `scene::DeclarativeScene` 是内核自己的一个 `Scene` 实现,数据来自 `scene.json` +
 `prompt.md`。它和 Rust 写的场景一样是加载后不再变的值:两个文件只读一次。注册走
 `SceneRegistry::register_declarative*`,不替换已登记的 id;插件包里的那份 id 固定为
-`plugin:<name>`。格式与占位符见 `extension_points.md`。
+`plugin:<name>`。运行中的 daemon 经 `scene.reload` 重读 `~/.agix/scenes/`,经
+`scene.register` / `scene.unregister` 登记、撤销一个不落盘的场景。格式与占位符见
+`extension_points.md`。
+
+### 3.8 并发:每个 agent 是一个任务
+
+会话的主 Agent、前台与后台子 Agent、`TeamCreate` 成员、常驻团队成员,各自是多线程
+tokio 运行时上的**一个任务**,带自己的循环与上下文。一个 Agent 一轮里并发的工具调用
+是这个任务里交错执行的 future(`runtime::streaming`),不另起任务——它们共享这个
+Agent 的上下文,本来就该在一处。
+
+前台子 Agent 也是独立任务:父 Agent 的工具调用 spawn 它并等结果
+(`run_one_turn_detached`),所以同一轮的几个前台 `Agent` 调用、`TeamCreate` 同一阶段
+的成员是真并行,一个子 Agent 的同步重活不会卡住兄弟和父 Agent。父 Agent 的调用被丢弃
+时子任务被中止,不留无人观察的子 Agent;子任务 panic 变成父 Agent 的工具错误;取消照旧
+走 `CancellationToken`。
+
+**Agent 之间只经通道说话,不共享可变状态:**
+
+| 方向 | 通道 | 入口 |
+|---|---|---|
+| 父 → 子 | 收件箱:`RunningTask::inbox`,即子 Agent 的 steering 队列,步骤边界读到 | `TaskMessage`、`session.messageTask` |
+| 子 → 父 | 结束时 `post_notice` 一条 `<task-notification>`,父 Agent 下一个步骤边界或下一轮开头读到 | 自动;宿主另有 `task_started` / `task_finished` 事件 |
+| 父等子 | `RunningTask::wait_ended` | `TaskWait`(any / all + 超时)、`TaskOutput` |
+| 成员之间 | 团队 mailbox 与团队共享记忆(§8) | `SendMessage` / `ReadMail`、`TeamMemorySave` / `TeamMemoryRead` |
+
+通知在任务结束**之前**投递,父 Agent 已经用 `TaskWait` / `TaskOutput` 读到结果的,
+通知随之撤回,同一件事不说两遍;被 `TaskStop` 停掉的不发通知。
+
+**写新的 Agent 级代码守四条:**
+
+1. 长期运行的 Agent 级工作用 `tokio::spawn` 起自己的任务,不要在另一个 Agent 的任务里
+   poll 它。持有 `JoinHandle` 的一方负责它的生命周期——丢弃即中止,或交给取消令牌。
+2. 一个 Agent 的状态只由它自己的任务改。别人经收件箱、通知、事件跟它说话;锁只用于
+   短暂的快照读写,不跨 `.await` 持有。
+3. 超过约 1 ms 的同步工作(扫目录、解析大文件、全量正则)放 `spawn_blocking`。独占线程
+   只留给需要线程亲和的东西(`notify` 的 watcher 那类)。
+4. 资源上限都在一处可配:委派深度 `max_agent_depth`(§3.4);同时在跑的子 Agent
+   `execution.max_concurrent_subagents`(默认 6,整棵会话树共用一份);`TeamCreate`
+   每阶段 `team_stage_concurrency`;常驻成员 `team_max_persistent_members`。
+
+**并发上限超出时拒绝,不排队。** 持有名额的子 Agent 再为自己的子 Agent 等名额,整棵树
+的名额可能全被这样的等待者占着。拒绝是一个模型看得见的工具错误,它可以等(`TaskWait`)
+或自己做。`TeamCreate` 成员与常驻成员各有自己的上限,不计入。
+
+**为什么不是一个 Agent 一个 OS 线程。** 多线程运行时已经把任务分到所有核上,一个 Agent
+绝大部分时间在等模型 API;专用线程意味着每个 Agent 一个运行时或一套同步桥,换来的只是
+同步重活不互相阻塞——这一点 `spawn_blocking` 已经给了。
 
 ---
 
@@ -437,6 +485,10 @@ daemon 实例锁与 team 目录锁共用 `base::process_identity::decide_stale_l
 | `scenes/<id>/` | 场景 | 该场景的设置层(`settings.json`、skills、agents);声明式场景在这里放 `scene.json` + `prompt.md` |
 | `daemon/groups/<instance>.json` | 实例 | 在跑命令的进程组,供崩溃后下次启动清理 |
 | `daemon/crashes/` | 进程 | 崩溃记录 |
+
+项目里的 `<项目>/.agix/teams/<team_id>/` 是一个 `TeamCreate` 团队的全部状态:`team.json`、
+`state.json`、`events.jsonl`、`SCRATCHPAD.md`、`mailbox/`、`memory/`(团队共享记忆,
+格式同个人记忆)。每个阶段开始时成员读到 `memory/` 的索引;`TeamDelete` 删掉整个目录。
 
 **会话进哪个项目目录由它自己的 `Meta.project_root` 决定**,不是由 daemon 的 cwd
 决定 —— 一个 daemon 同时服务多个项目时,后者会把所有项目的 transcript 堆进一个

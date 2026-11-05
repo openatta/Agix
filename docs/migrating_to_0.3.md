@@ -74,6 +74,28 @@ skill 命令。
   没装 provider 时第一个 client 就会 panic。证书根改为系统信任库,企业代理装在
   系统钥匙串里的根证书现在会被信任。
 
+### 子 Agent 的并发与通信
+
+- 前台子 Agent 现在跑在自己的 tokio 任务上(`ARCHITECTURE.md` §3.8),同一轮的几个
+  `Agent` 调用、`TeamCreate` 同阶段成员真正并行。自己实现的 `Model`、`Tool`、hook 若
+  暗含"子 Agent 与父 Agent 在同一个任务里"的假设(比如用 task-local 传状态),要改。
+- 同时在跑的子 Agent 默认最多 6 个(`execution.max_concurrent_subagents`,整棵会话树
+  共用),超出的 spawn 返回工具错误。`TeamCreate` 成员与常驻成员不计入。
+- 后台子 Agent 结束时,父会话的对话里会多一条 `<task-notification>` 用户消息
+  (`MessageOrigin::Injected`)。读 transcript 的代码按 origin 区分它与用户输入。
+  自己的代码也可以经 `SessionState::post_notice` 给会话的 Agent 递话。
+- `base::context::RunningTask` 新增 `ended`(配 `wait_ended()`)与 `inbox`
+  (`TaskInbox`);`runtime::agent::Agent::steer_handle()` 把一个不经 `Agent::run` 驱动
+  的 Agent 的 steering 队列交出来。
+- 新工具 `TaskWait`、`TaskMessage`,在 `CodingScene` 里延迟加载;`TeamCreate` 成员另有
+  `TeamMemorySave`、`TeamMemoryRead`。
+- `team::prompt::WorkerContext` 新增 `team_memory` 字段,结构体字面量要补上(空串即可)。
+
+### 会话级提示词
+
+`Builder::session_prompt(SessionPrompt { append, override_text })` 给一个会话单独的
+追加 / 覆盖提示词,不写任何 settings.json,也不传给它派生的子 Agent。对应 RPC 见下。
+
 ### token 估算
 
 `model::tokens` 不再加载 cl100k 词表,改为按字符类估算:相对 cl100k,代码与 JSON
@@ -119,3 +141,9 @@ skill、web 工具、WebSocket、载体与包方案。
 - `daemon.ping` / `daemon.status` 增加 `modules`:这个构建编入的模块。
 - 在没编入某个模块的构建里,属于它的方法(目前是 `mcp.*`)返回 `METHOD_NOT_FOUND`,
   `error.data.module` 指明模块。默认构建不受影响。
+- `session.create` 的 `options.prompt` 与 `session.setPrompt`:会话自己的系统提示词,
+  从下一轮起生效,重建与重启后保留。
+- `scene.reload`、`scene.register`、`scene.unregister`:不重启 daemon 增减场景。
+- `session.messageTask`(capability `task_messages`):给运行中的后台子 Agent 发消息。
+- 后台子 Agent 结束后,父会话下一次调模型时带着它的 `<task-notification>`,宿主不必
+  再替模型轮询 `session.taskOutput`。
