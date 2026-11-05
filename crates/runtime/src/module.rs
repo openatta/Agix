@@ -6,6 +6,8 @@
 //! list, and `build()` calls each one's [`Module::on_session`] once the
 //! session's registry and services exist, before the scene's tool policy is
 //! applied, so whatever a module registers is subject to it like any built-in.
+//! A scene can narrow the list (`Scene::modules` / `Scene::disabled_modules`);
+//! a module it does not permit is not run for that session at all.
 //!
 //! [`Builder::modules`]: crate::agent::Builder::modules
 
@@ -80,8 +82,9 @@ pub struct SessionContext<'a> {
     pub process_groups: Option<&'a Arc<base::interface::exec::local::GroupLedger>>,
     pub delegate_scripts: Option<&'a Arc<base::interface::script_adapters::BoundScripts>>,
     pub plugin_host: Option<&'a Arc<dyn crate::plugin_host::PluginHost>>,
-    /// Every module this session is assembled with, this one included —
-    /// what a module that spawns delegates assembles them with.
+    /// Every module this session runs, this one included: the assembled
+    /// list narrowed by the scene. What a module that spawns delegates
+    /// assembles them with.
     pub modules: &'a [Arc<dyn Module>],
     pub(crate) mcp: &'a mut Option<Box<dyn McpServers>>,
     pub(crate) agent_spawner: &'a LateAgentSpawner,
@@ -251,6 +254,36 @@ impl AgentSpawner for LateAgentSpawner {
             spawner.stop_team_member(team_name, member_name).await;
         }
     }
+}
+
+/// The modules `scene` lets run, in the order they were assembled.
+///
+/// Refuses a kept module that requires one the scene left out: dropping the
+/// dependent as well would quietly take away a capability the scene asked
+/// for, and running it without its requirement is what `check_order`
+/// exists to prevent.
+pub(crate) fn permitted_by(
+    modules: &[Arc<dyn Module>],
+    scene: &dyn Scene,
+) -> Result<Vec<Arc<dyn Module>>, ModuleError> {
+    let (kept, left_out): (Vec<_>, Vec<_>) = modules
+        .iter()
+        .cloned()
+        .partition(|m| scene.permits_module(m.id()));
+    for m in &kept {
+        for needed in m.requires() {
+            if left_out.iter().any(|out| out.id() == *needed) {
+                return Err(ModuleError::new(
+                    m.id(),
+                    format!(
+                        "requires `{needed}`, which scene `{}` does not run",
+                        scene.id()
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(kept)
 }
 
 /// Refuses a module list whose `requires` cannot be met in order.

@@ -227,6 +227,34 @@ pub trait Scene: Send + Sync + 'static {
         vec![]
     }
 
+    /// Modules a session in this scene runs, by module id (`agents`, `mcp`,
+    /// `skills`, ...). `None` runs every module the host assembled.
+    ///
+    /// Like [`tools`](Self::tools) this only narrows: naming a module the
+    /// host did not assemble adds nothing. `runtime::agent::Builder::build()`
+    /// drops the modules this scene does not permit before any of them runs,
+    /// and the delegates a session spawns inherit the narrowed list.
+    fn modules(&self) -> Option<Vec<String>> {
+        None
+    }
+
+    /// Modules this scene leaves out even when [`modules`](Self::modules)
+    /// would admit them.
+    fn disabled_modules(&self) -> Vec<String> {
+        vec![]
+    }
+
+    /// Whether a session in this scene runs the module `id`: admitted by
+    /// [`modules`](Self::modules) and not named in
+    /// [`disabled_modules`](Self::disabled_modules).
+    fn permits_module(&self, id: &str) -> bool {
+        let admitted = match self.modules() {
+            Some(allowed) => allowed.iter().any(|m| m == id),
+            None => true,
+        };
+        admitted && !self.disabled_modules().iter().any(|m| m == id)
+    }
+
     /// Execution limits this scene imposes on its own turns.
     ///
     /// Consumed by `runtime::turn::Agent::run_user_turn`, which resolves the

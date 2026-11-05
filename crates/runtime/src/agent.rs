@@ -1747,11 +1747,12 @@ impl Builder {
     }
 
     pub fn build(self) -> Result<(Agent, EventReceiver, InputSender), EngineError> {
-        crate::module::check_order(&self.modules)
-            .map_err(|e| EngineError::Internal(e.to_string()))?;
         let scene = self
             .scene
             .ok_or_else(|| EngineError::Internal("scene required".into()))?;
+        let modules = crate::module::permitted_by(&self.modules, scene.as_ref())
+            .map_err(|e| EngineError::Internal(e.to_string()))?;
+        crate::module::check_order(&modules).map_err(|e| EngineError::Internal(e.to_string()))?;
         let model = self
             .model
             .ok_or_else(|| EngineError::Internal("model required".into()))?;
@@ -2059,11 +2060,11 @@ impl Builder {
                 delegate_scripts: self.delegate_scripts.as_ref(),
                 plugin_host: self.plugin_host.as_ref(),
                 mcp: &mut mcp_slot,
-                modules: &self.modules,
+                modules: &modules,
                 agent_spawner: &agent_spawner,
                 skill_catalog: &skill_catalog,
             };
-            for module in &self.modules {
+            for module in &modules {
                 module
                     .on_session(&mut cx)
                     .map_err(|e| EngineError::Internal(e.to_string()))?;
@@ -2510,6 +2511,152 @@ mod tests {
             Err(e) => e.to_string(),
         };
         assert!(err.contains("assembled twice"), "{err}");
+    }
+
+    struct NarrowingScene {
+        modules: Option<Vec<String>>,
+        disabled: Vec<String>,
+    }
+
+    impl Scene for NarrowingScene {
+        fn id(&self) -> &str {
+            "narrowing"
+        }
+        fn name(&self) -> &str {
+            "Narrowing"
+        }
+        fn description(&self) -> &str {
+            ""
+        }
+        fn build_system_prompt(
+            &self,
+            _: &base::interface::scene::ScenePromptContext,
+        ) -> Vec<base::interface::prompt::PromptBlock> {
+            Vec::new()
+        }
+        fn tools(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn token_budget(&self) -> base::interface::scene::TokenBudget {
+            base::interface::scene::TokenBudget {
+                compact_threshold: 0,
+                compact_keep_recent: 10,
+            }
+        }
+        fn modules(&self) -> Option<Vec<String>> {
+            self.modules.clone()
+        }
+        fn disabled_modules(&self) -> Vec<String> {
+            self.disabled.clone()
+        }
+    }
+
+    struct ListsModules {
+        saw: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl crate::module::Module for ListsModules {
+        fn id(&self) -> &'static str {
+            "lister"
+        }
+        fn on_session(
+            &self,
+            cx: &mut crate::module::SessionContext<'_>,
+        ) -> Result<(), crate::module::ModuleError> {
+            let mut saw = self.saw.lock().unwrap();
+            saw.extend(cx.modules.iter().map(|m| format!("handed {}", m.id())));
+            Ok(())
+        }
+    }
+
+    fn narrowed_build(
+        modules: Option<&[&str]>,
+        disabled: &[&str],
+        assembled: Vec<(&'static str, &'static [&'static str])>,
+    ) -> (Result<(), String>, Vec<String>) {
+        let saw = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut list: Vec<Arc<dyn crate::module::Module>> = assembled
+            .into_iter()
+            .map(|(id, requires)| {
+                Arc::new(Probe {
+                    id,
+                    requires,
+                    saw: saw.clone(),
+                }) as Arc<dyn crate::module::Module>
+            })
+            .collect();
+        list.push(Arc::new(ListsModules { saw: saw.clone() }));
+        let scene = NarrowingScene {
+            modules: modules.map(|m| m.iter().map(|s| s.to_string()).collect()),
+            disabled: disabled.iter().map(|s| s.to_string()).collect(),
+        };
+        let result = Builder::new()
+            .scene(Arc::new(scene) as Arc<dyn Scene>)
+            .model(Arc::new(DummyModel))
+            .settings(Arc::new(test_settings()))
+            .skip_warmup(true)
+            .modules(list)
+            .build()
+            .map(|_| ())
+            .map_err(|e| e.to_string());
+        let saw = saw.lock().unwrap().clone();
+        (result, saw)
+    }
+
+    #[test]
+    fn a_scene_that_names_no_modules_runs_every_assembled_one() {
+        let (result, saw) = narrowed_build(None, &[], vec![("a", &[]), ("b", &[])]);
+        result.unwrap();
+        assert_eq!(
+            saw,
+            [
+                "a depth=0 spawner=false",
+                "b depth=0 spawner=false",
+                "handed a",
+                "handed b",
+                "handed lister",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_module_the_scene_does_not_permit_does_not_run_and_is_not_handed_on() {
+        let (result, saw) = narrowed_build(
+            Some(&["a", "c", "lister"]),
+            &["c"],
+            vec![("a", &[]), ("b", &[]), ("c", &[])],
+        );
+        result.unwrap();
+        assert_eq!(
+            saw,
+            ["a depth=0 spawner=false", "handed a", "handed lister"],
+            "`b` is outside the whitelist and `c` is disabled; delegates must not get them either"
+        );
+    }
+
+    #[test]
+    fn disabling_a_module_leaves_the_rest_running() {
+        let (result, saw) = narrowed_build(None, &["a"], vec![("a", &[]), ("b", &[])]);
+        result.unwrap();
+        assert_eq!(
+            saw,
+            ["b depth=0 spawner=false", "handed b", "handed lister"]
+        );
+    }
+
+    #[test]
+    fn a_kept_module_whose_requirement_the_scene_excludes_is_refused() {
+        let (result, saw) =
+            narrowed_build(Some(&["b", "lister"]), &[], vec![("a", &[]), ("b", &["a"])]);
+        let err = result.expect_err("`b` cannot run without `a`");
+        assert!(
+            err.contains("module `b`") && err.contains("requires `a`") && err.contains("narrowing"),
+            "{err}"
+        );
+        assert!(saw.is_empty(), "a refused list still ran modules");
+
+        let (result, _) = narrowed_build(None, &["a"], vec![("a", &[]), ("b", &["a"])]);
+        assert!(result.unwrap_err().contains("requires `a`"));
     }
 
     #[tokio::test]
