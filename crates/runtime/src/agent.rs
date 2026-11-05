@@ -179,6 +179,32 @@ pub type EventReceiver = mpsc::UnboundedReceiver<AgentEvent>;
 /// `prompt_id`. Shared between `Agent::pending_permissions` and
 /// `agent_tool::ParentPermission` (a sub-agent registers into the *parent's*
 /// copy of this same map — see `ParentPermission`'s doc comment).
+/// What [`Builder::session_prompt`] puts over a session's settings. `None`
+/// leaves the settings' `prompt_append` / `prompt_override` in force.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SessionPrompt {
+    pub append: Option<String>,
+    #[serde(rename = "override")]
+    pub override_text: Option<String>,
+}
+
+impl SessionPrompt {
+    pub fn is_empty(&self) -> bool {
+        self.append.is_none() && self.override_text.is_none()
+    }
+
+    fn applied_to(&self, settings: &Settings) -> Settings {
+        let mut out = settings.clone();
+        if let Some(append) = &self.append {
+            out.prompt_append = Some(append.clone());
+        }
+        if let Some(text) = &self.override_text {
+            out.prompt_override = Some(text.clone());
+        }
+        out
+    }
+}
+
 pub type PendingPermissions = Arc<
     std::sync::Mutex<
         std::collections::HashMap<String, tokio::sync::oneshot::Sender<PermissionDecision>>,
@@ -1083,6 +1109,7 @@ pub struct Builder {
     /// [`Builder::process_groups`].
     process_groups: Option<Arc<base::interface::exec::local::GroupLedger>>,
     modules: Vec<Arc<dyn crate::module::Module>>,
+    session_prompt: Option<SessionPrompt>,
 }
 
 /// Build a `HookRunner` from `settings.hooks_config` (raw JSON from
@@ -1226,7 +1253,17 @@ impl Builder {
             cron_store: None,
             process_groups: None,
             modules: Vec::new(),
+            session_prompt: None,
         }
+    }
+
+    /// A system-prompt append and/or override for this session's own agent,
+    /// over whatever its settings say. Delegates it spawns are not given it:
+    /// modules see the settings without it, so a sub-agent keeps the prompt
+    /// its own type and scene give it.
+    pub fn session_prompt(mut self, prompt: SessionPrompt) -> Self {
+        self.session_prompt = Some(prompt);
+        self
     }
 
     /// Add `module` to this session. Modules run in the order they are added;
@@ -2274,6 +2311,11 @@ impl Builder {
                 ))
             });
 
+        let settings = match &self.session_prompt {
+            Some(prompt) => Arc::new(prompt.applied_to(&settings)),
+            None => settings,
+        };
+
         // Capture feature flags before settings is moved into the Agent struct
         let cached_mc_enabled = settings.feature_flags.cached_microcompact;
 
@@ -2484,6 +2526,42 @@ mod tests {
             *saw.lock().unwrap(),
             ["a depth=0 spawner=false", "b depth=0 spawner=false"],
             "no module here provides a spawner, so neither sees one"
+        );
+    }
+
+    struct SeesPrompt(Arc<std::sync::Mutex<Option<Option<String>>>>);
+
+    impl crate::module::Module for SeesPrompt {
+        fn id(&self) -> &'static str {
+            "sees-prompt"
+        }
+        fn on_session(
+            &self,
+            cx: &mut crate::module::SessionContext<'_>,
+        ) -> Result<(), crate::module::ModuleError> {
+            *self.0.lock().unwrap() = Some(cx.settings.prompt_append.clone());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_session_prompt_reaches_the_agent_and_not_its_modules() {
+        let saw = Arc::new(std::sync::Mutex::new(None));
+        let (agent, _rx, _tx) = probe_builder(vec![Arc::new(SeesPrompt(saw.clone()))])
+            .session_prompt(SessionPrompt {
+                append: Some("SESSION-ONLY".into()),
+                override_text: None,
+            })
+            .build()
+            .expect("build should succeed");
+        assert_eq!(
+            agent.settings().prompt_append.as_deref(),
+            Some("SESSION-ONLY")
+        );
+        assert_eq!(
+            *saw.lock().unwrap(),
+            Some(None),
+            "modules — and the delegates they spawn — must not inherit a session's own prompt"
         );
     }
 

@@ -779,7 +779,8 @@ HashMap),客户端要按 `scene` 找条目,不要按下标。
     "telemetry": { "output":"/abs/path.jsonl" },
     "output_schema": { "type":"object", … },  // 结构化输出必须满足的 JSON Schema
     "provider": "deepseek",               // 可选,providers 里的 id
-    "model": "deepseek-chat" } }          // 可选
+    "model": "deepseek-chat",             // 可选
+    "prompt": { "append": "…", "override": null } } }  // 可选,见 session.setPrompt
 // ← result
 { "session_id": "…", "scene": "coding", "session_kind": "primary",
   "project_root": "…", "created_at": "…" }
@@ -1119,6 +1120,29 @@ client,会话在原地按新的规格重建(它是空闲的,不会腰斩什么),
 **只对内存里的会话有效**,冷会话返回 `SESSION_NOT_FOUND`(先 `session.resume`)。
 选择记在会话日志里(见 `session.create` 的 `options`):会话被驱逐后重建、
 `config.reload` 之后重建、daemon 重启后恢复,选的都还是这个模型和厂商。
+
+#### `session.setPrompt`
+
+这个会话自己的系统提示词:一段追加文字与一份整体替换,优先于 settings.json 的
+`prompt_append` / `prompt_override`。`session.create` 的 `options.prompt` 给初值,这个方法
+在会话进行中改。
+
+```jsonc
+// → params
+{ "session_id": "…",
+  "append": "回答一律用中文。",   // 字符串 = 设置
+  "override": null }               // null = 清除,回到 settings 文件的值;省略 = 不变
+// ← result
+{ "session_id": "…", "append": "回答一律用中文。", "override": null, "applies": "next_turn" }
+```
+
+`override` 替换整份系统提示(场景骨架、规则、MCP 说明都不再出现),`append` 接在最后。
+从下一轮生效:空闲的会话立即按新提示重建,历史不变。和 `options` 一样记在会话日志里,
+重建、空闲回收后再用、daemon 重启后恢复都保留;settings 文件不被改动。只作用于这个会话
+自己的 agent,它派生的子 agent 用各自类型与场景的提示。
+
+有一轮正在跑时拒绝,`SESSION_BUSY`,`data` 同 `session.setModel`。`append` 与 `override`
+都没给,或类型不对 → `INVALID_PARAMS`;会话不存在 → `SESSION_NOT_FOUND`。
 
 #### `session.history`
 

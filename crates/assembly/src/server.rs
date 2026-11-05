@@ -762,6 +762,7 @@ impl DaemonServer {
             "session.fork" => self.method_session_fork(id, req.params).await,
             "session.resume" => self.method_session_resume(id, req.params).await,
             "session.setModel" => self.method_session_set_model(id, req.params).await,
+            "session.setPrompt" => self.method_session_set_prompt(id, req.params).await,
             "session.rename" => self.method_session_rename(id, req.params).await,
             "session.appendEntry" => self.method_session_append_entry(id, req.params).await,
             "session.entries" => self.method_session_entries(id, req.params).await,
@@ -1732,6 +1733,65 @@ impl DaemonServer {
             .set_session_model(session_id, model, provider)
             .await
         {
+            Ok(v) => RpcResponse::ok(id, v),
+            Err(crate::session_pool::SetModelError::Busy { current_turn_id }) => {
+                RpcResponse::err_with_data(
+                    id,
+                    codes::SESSION_BUSY,
+                    "session is busy",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "current_turn_id": current_turn_id,
+                    }),
+                )
+            }
+            Err(crate::session_pool::SetModelError::Rpc((code, message))) => {
+                RpcResponse::err(id, code, message)
+            }
+        }
+    }
+
+    /// `session.setPrompt` params: `{"session_id": "...", "append": "...",
+    /// "override": "..."}`. A string sets the field, `null` clears it back to
+    /// the settings files' value, an absent key leaves it.
+    async fn method_session_set_prompt(
+        &self,
+        id: serde_json::Value,
+        params: serde_json::Value,
+    ) -> RpcResponse {
+        let Some(session_id) = params.get("session_id").and_then(|v| v.as_str()) else {
+            return RpcResponse::err(id, codes::INVALID_PARAMS, "missing session_id");
+        };
+        let mut changes: Vec<(&str, Option<String>)> = Vec::new();
+        for key in ["append", "override"] {
+            match params.get(key) {
+                None => {}
+                Some(serde_json::Value::Null) => changes.push((key, None)),
+                Some(serde_json::Value::String(text)) => changes.push((key, Some(text.clone()))),
+                Some(_) => {
+                    return RpcResponse::err(
+                        id,
+                        codes::INVALID_PARAMS,
+                        format!("`{key}` must be a string or null"),
+                    )
+                }
+            }
+        }
+        if changes.is_empty() {
+            return RpcResponse::err(id, codes::INVALID_PARAMS, "give `append` and/or `override`");
+        }
+        if let Some(err) = self.scene_mismatch_response(&id, session_id).await {
+            return err;
+        }
+        let change = move |prompt: &mut runtime::agent::SessionPrompt| {
+            for (key, value) in changes {
+                match key {
+                    "append" => prompt.append = value,
+                    _ => prompt.override_text = value,
+                }
+            }
+        };
+        match self.pool.set_session_prompt(session_id, change).await {
             Ok(v) => RpcResponse::ok(id, v),
             Err(crate::session_pool::SetModelError::Busy { current_turn_id }) => {
                 RpcResponse::err_with_data(

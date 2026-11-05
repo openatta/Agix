@@ -410,6 +410,10 @@ pub struct SessionOptions {
     /// when `provider` is given, the settings' model otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// A system-prompt append / override for this session's own agent, over
+    /// the settings files'. Its delegates do not get it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<runtime::agent::SessionPrompt>,
 }
 
 /// Record or replay this session's LLM calls.

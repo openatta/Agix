@@ -327,6 +327,7 @@ struct SessionSpec {
     options: Option<SessionOptions>,
     model: Option<String>,
     provider: Option<String>,
+    prompt: Option<runtime::agent::SessionPrompt>,
     /// Shared by every Agent this process builds for the session, so a
     /// rebuild continues a replay where it stood instead of from the first
     /// recorded call. Not persisted: a recording in progress does not outlive
@@ -341,6 +342,14 @@ impl SessionSpec {
         self.provider
             .clone()
             .or_else(|| self.options.as_ref().and_then(|o| o.provider.clone()))
+    }
+
+    /// The session's own prompt: set since, else given at creation.
+    fn prompt(&self) -> Option<runtime::agent::SessionPrompt> {
+        self.prompt
+            .clone()
+            .or_else(|| self.options.as_ref().and_then(|o| o.prompt.clone()))
+            .filter(|p| !p.is_empty())
     }
 
     /// The conversation's model, by the same precedence as `provider`.
@@ -359,6 +368,8 @@ impl SessionSpec {
 struct RecordedSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     options: Option<SessionOptions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prompt: Option<runtime::agent::SessionPrompt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2195,6 +2206,9 @@ impl SessionPool {
             }
         }
 
+        if let Some(prompt) = spec.prompt() {
+            builder = builder.session_prompt(prompt);
+        }
         if let Some(schema) = options.and_then(|o| o.output_schema.clone()) {
             builder = builder.output_schema(schema);
         }
@@ -2502,6 +2516,7 @@ impl SessionPool {
             options: recorded.options,
             model: recorded.model,
             provider: recorded.provider,
+            prompt: recorded.prompt,
             recorder: None,
         }
     }
@@ -2520,6 +2535,7 @@ impl SessionPool {
             }),
             model: spec.model.clone(),
             provider: spec.provider.clone(),
+            prompt: spec.prompt.clone(),
         };
         let Ok(payload) = serde_json::to_value(&recorded) else {
             return;
@@ -2836,6 +2852,59 @@ impl SessionPool {
             "session_id": session_id,
             "model": spec.model(),
             "provider": spec.provider(),
+            "applies": "next_turn",
+        }))
+    }
+
+    /// `session.setPrompt` — this session's own system-prompt append and
+    /// override from its next turn on. A string sets a field, `None` in
+    /// `change` leaves it. Refused while a turn runs, like `setModel`; an
+    /// idle session is rebuilt on the new prompt at once, its history kept.
+    pub async fn set_session_prompt(
+        &self,
+        session_id: &str,
+        change: impl FnOnce(&mut runtime::agent::SessionPrompt),
+    ) -> Result<serde_json::Value, SetModelError> {
+        {
+            let sessions = self.sessions.lock().await;
+            if let Some(current_turn_id) = sessions
+                .get(session_id)
+                .and_then(|l| l.current_turn.clone())
+            {
+                return Err(SetModelError::Busy { current_turn_id });
+            }
+        }
+        if !self.session_exists(session_id).await {
+            return Err(SetModelError::Rpc((
+                codes::SESSION_NOT_FOUND,
+                format!("session not found: {session_id}"),
+            )));
+        }
+        if !self.lock_specs().contains_key(session_id) {
+            let recorded = self.recorded_spec(session_id).await;
+            self.lock_specs().insert(session_id.to_string(), recorded);
+        }
+        self.update_spec(session_id, |spec| {
+            let mut prompt = spec.prompt().unwrap_or_default();
+            change(&mut prompt);
+            spec.prompt = Some(prompt);
+        })
+        .await;
+        let live = self.sessions.lock().await.contains_key(session_id);
+        if live {
+            self.resume_or_create(session_id.to_string(), None)
+                .await
+                .map_err(|e| SetModelError::Rpc((codes::INTERNAL_ERROR, e)))?;
+        }
+        let prompt = self
+            .lock_specs()
+            .get(session_id)
+            .and_then(SessionSpec::prompt)
+            .unwrap_or_default();
+        Ok(serde_json::json!({
+            "session_id": session_id,
+            "append": prompt.append,
+            "override": prompt.override_text,
             "applies": "next_turn",
         }))
     }
