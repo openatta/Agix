@@ -48,6 +48,8 @@ pub struct WorkerContext<'a> {
     pub later_stages: &'a [String],
     /// Absolute path of the team scratchpad.
     pub scratchpad: &'a str,
+    /// [`crate::team_memory::TeamMemoryStore::build_team_memory_prompt`], or empty.
+    pub team_memory: &'a str,
 }
 
 /// Prepend a minimal team-context block to a worker's task prompt.
@@ -92,6 +94,10 @@ pub fn build_worker_prompt(ctx: &WorkerContext<'_>, task: &str) -> String {
          under your label and is the only thing the rest of the team will see.\n",
     );
     block.push_str("</team-context>\n\n");
+    if !ctx.team_memory.is_empty() {
+        block.push_str(ctx.team_memory.trim_end());
+        block.push_str("\n\n");
+    }
     block.push_str(task);
     block
 }
@@ -233,6 +239,7 @@ mod tests {
             peers,
             later_stages: later,
             scratchpad: "/proj/.agix/teams/team-auth-fix-0001/SCRATCHPAD.md",
+            team_memory: "",
         }
     }
 

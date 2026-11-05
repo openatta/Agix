@@ -14,4 +14,5 @@ pub mod mailbox;
 pub mod persist;
 pub mod prompt;
 pub mod registry;
+pub mod team_memory;
 pub mod tool;

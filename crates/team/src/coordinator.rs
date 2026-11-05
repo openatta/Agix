@@ -524,6 +524,7 @@ impl Coordinator for DefaultCoordinator {
             all_labels,
             team_dir.join("mailbox"),
         ));
+        let memory = Arc::new(crate::team_memory::TeamMemoryStore::for_team_dir(&team_dir));
 
         // Create permission bridges for each agent in the team.
         // These bridges are used when spawning team members to bubble
@@ -640,6 +641,12 @@ impl Coordinator for DefaultCoordinator {
                 ));
                 let later_stages: Vec<String> =
                     all_stage_names[(si + 1).min(stage_count)..].to_vec();
+                let memory_prompt = {
+                    let memory = memory.clone();
+                    tokio::task::spawn_blocking(move || memory.build_team_memory_prompt())
+                        .await
+                        .unwrap_or_default()
+                };
                 let futs = stage.agents.iter().map(|agent_spec| {
                     let permits = permits.clone();
                     let spawner = spawner.clone();
@@ -665,6 +672,7 @@ impl Coordinator for DefaultCoordinator {
                             peers: &peers,
                             later_stages: &later_stages,
                             scratchpad: &sp_display,
+                            team_memory: &memory_prompt,
                         },
                         &agent_spec.prompt,
                     );
@@ -689,6 +697,11 @@ impl Coordinator for DefaultCoordinator {
                             label.clone(),
                         )),
                         Arc::new(crate::mailbox::ListPeersTool::new(mailbox.clone())),
+                        Arc::new(crate::team_memory::TeamMemorySaveTool::new(
+                            memory.clone(),
+                            format!("{team_id}/{label}"),
+                        )),
+                        Arc::new(crate::team_memory::TeamMemoryReadTool::new(memory.clone())),
                     ];
                     let role = agent_type.clone().unwrap_or_else(|| "default".to_string());
                     async move {
@@ -1595,6 +1608,106 @@ mod tests {
             text.contains("bob"),
             "expected 'bob' to appear via a real ListPeers call in:\n{text}"
         );
+    }
+
+    /// Saves a team memory when its task says "remember", otherwise answers
+    /// with the prompt it was given.
+    struct MemoryAwareSpawner;
+
+    #[async_trait]
+    impl AgentSpawner for MemoryAwareSpawner {
+        async fn spawn_agent(
+            &self,
+            _prompt: String,
+            _allowed_tools: Vec<String>,
+            _cwd: std::path::PathBuf,
+            _cancel: tokio_util::sync::CancellationToken,
+            _agent_type: Option<String>,
+        ) -> Result<String, Box<dyn std::error::Error + Send>> {
+            panic!("only spawn_agent_with_tools is expected");
+        }
+
+        async fn spawn_agent_background(
+            &self,
+            _prompt: String,
+            _allowed_tools: Vec<String>,
+            _cwd: std::path::PathBuf,
+            _cancel: tokio_util::sync::CancellationToken,
+            _agent_type: Option<String>,
+            _session: Arc<base::context::SessionState>,
+        ) -> Result<String, Box<dyn std::error::Error + Send>> {
+            panic!("not used by this test");
+        }
+
+        async fn spawn_agent_with_tools(
+            &self,
+            prompt: String,
+            _allowed_tools: Vec<String>,
+            extra_tools: Vec<Arc<dyn base::tool::Tool>>,
+            cwd: std::path::PathBuf,
+            _cancel: tokio_util::sync::CancellationToken,
+            _agent_type: Option<String>,
+            _permission_mode: Option<base::interface::settings::PermissionMode>,
+        ) -> Result<String, Box<dyn std::error::Error + Send>> {
+            if !prompt.contains("remember") {
+                return Ok(prompt);
+            }
+            let save = extra_tools
+                .iter()
+                .find(|t| t.name() == "TeamMemorySave")
+                .expect("coordinator must hand each team member TeamMemorySave");
+            let input = serde_json::json!({
+                "name": "api-style",
+                "description": "Handlers return typed errors",
+                "content": "Every handler returns a typed error, never a string."
+            });
+            let ctx = ToolContext::for_test(cwd);
+            let result = save
+                .call(input, ctx, base::tool::ProgressSender::noop("test"))
+                .await
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send>)?;
+            assert!(!result.is_error);
+            Ok("saved".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_later_stage_sees_what_an_earlier_stage_saved_to_team_memory() {
+        let stage = |name: &str, label: &str, prompt: &str| TeamStage {
+            name: name.into(),
+            agents: vec![TeamAgentSpec {
+                label: label.into(),
+                prompt: prompt.into(),
+                agent_type: None,
+            }],
+            aggregate: None,
+        };
+        let stages = vec![
+            stage("design", "architect", "remember the API style"),
+            stage("build", "builder", "implement it"),
+        ];
+
+        let (dir, ctx) = make_ctx();
+        let registry = Arc::new(crate::registry::TeamRegistry::new());
+        let coordinator = DefaultCoordinator::with_agent_spawner(Arc::new(MemoryAwareSpawner))
+            .with_registry(registry.clone());
+        let mut req = make_request(ctx, stages);
+        req.name = "mem".into();
+        let result = coordinator.orchestrate(req).await.expect("orchestrate ok");
+        let text = match &result.content {
+            ToolResultContent::Text(t) => t.clone(),
+            ToolResultContent::Blocks(_) => panic!("expected text content"),
+        };
+        assert!(
+            text.contains("[api-style](api-style.md)"),
+            "the build stage's prompt should list the saved entry:\n{text}"
+        );
+
+        let team_dir = registry.list()[0].team_dir.clone();
+        assert!(team_dir.join("memory").join("api-style.md").is_file());
+        assert!(team_dir.starts_with(dir.path()));
+        coordinator.cleanup_team("mem").await.unwrap();
+        assert!(!team_dir.join("memory").exists());
     }
 
     /// (f) Phase-1 regression: `orchestrate()` records the team in the
