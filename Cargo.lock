@@ -3346,6 +3346,10 @@ name = "scene"
 version = "0.2.10-2026110101"
 dependencies = [
  "base",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
