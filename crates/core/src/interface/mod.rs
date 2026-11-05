@@ -101,6 +101,7 @@ pub mod recovery_policy;
 pub use crate::prompt;
 #[deprecated(note = "moved to `base::rules` — this module defines no extension contract")]
 pub use crate::rules;
+pub mod mcp_servers;
 pub mod scene;
 pub mod script;
 pub mod script_adapters;

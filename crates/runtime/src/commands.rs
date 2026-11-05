@@ -169,22 +169,20 @@ impl CommandRegistry {
     /// prompts show up in `/help`, in `commands.list`, and resolve in the
     /// turn loop's slash-command interception.
     ///
-    /// Called with `McpManager::all_prompts()` once the servers are connected
+    /// Called with `McpServers::prompt_commands()` once the servers are connected
     /// (see `Builder::build`). Re-registering is idempotent: names are stable,
     /// so a later call after `refresh_prompts` overwrites in place.
-    pub fn register_mcp_prompts(&mut self, prompts: &[::mcp::manager::McpPromptEntry]) {
+    pub fn register_mcp_prompts(
+        &mut self,
+        prompts: &[base::interface::mcp_servers::McpPromptCommand],
+    ) {
         for p in prompts {
-            let command = p.command_name();
             self.registered.insert(
-                command.clone(),
+                p.command.clone(),
                 Command::McpPrompt {
-                    command,
-                    description: if p.description.is_empty() {
-                        format!("MCP prompt `{}` from server `{}`", p.name, p.server)
-                    } else {
-                        p.description.clone()
-                    },
-                    argument_hint: p.argument_hint(),
+                    command: p.command.clone(),
+                    description: p.description.clone(),
+                    argument_hint: p.argument_hint.clone(),
                 },
             );
         }
@@ -532,23 +530,11 @@ mod tests {
         assert_eq!(names, sorted);
     }
 
-    fn mcp_prompt_entry() -> ::mcp::manager::McpPromptEntry {
-        ::mcp::manager::McpPromptEntry {
-            server: "github".into(),
-            name: "review_pr".into(),
+    fn mcp_prompt_entry() -> base::interface::mcp_servers::McpPromptCommand {
+        base::interface::mcp_servers::McpPromptCommand {
+            command: "mcp__github__review_pr".into(),
             description: "Review a pull request".into(),
-            arguments: vec![
-                ::mcp::client::McpPromptArg {
-                    name: "repo".into(),
-                    description: None,
-                    required: Some(true),
-                },
-                ::mcp::client::McpPromptArg {
-                    name: "note".into(),
-                    description: None,
-                    required: Some(false),
-                },
-            ],
+            argument_hint: "repo=<value> [note=<value>]".into(),
         }
     }
 

@@ -16,6 +16,7 @@ use async_trait::async_trait;
 use base::context::{EngineConfig, SessionState};
 use base::frozen::SkillEntry;
 use base::interface::agent_spawner::AgentSpawner;
+use base::interface::mcp_servers::McpServers;
 use base::interface::model::Model;
 use base::interface::permission::Permission;
 use base::interface::scene::Scene;
@@ -82,7 +83,7 @@ pub struct SessionContext<'a> {
     /// Every module this session is assembled with, this one included —
     /// what a module that spawns delegates assembles them with.
     pub modules: &'a [Arc<dyn Module>],
-    pub mcp: &'a mcp::manager::McpManager,
+    pub(crate) mcp: &'a mut Option<Box<dyn McpServers>>,
     pub(crate) agent_spawner: &'a LateAgentSpawner,
     pub(crate) skill_catalog: &'a LateSkillCatalog,
 }
@@ -97,6 +98,16 @@ impl SessionContext<'_> {
     /// The session's spawner if a module earlier in the list provided one.
     pub fn agent_spawner(&self) -> Option<Arc<dyn AgentSpawner>> {
         self.agent_spawner.get()
+    }
+
+    /// Makes `servers` the MCP servers the session is connected to.
+    pub fn provide_mcp(&mut self, servers: Box<dyn McpServers>) {
+        *self.mcp = Some(servers);
+    }
+
+    /// The tools of the MCP servers a module earlier in the list provided.
+    pub fn mcp_tools(&self) -> Vec<Arc<dyn base::tool::Tool>> {
+        self.mcp.as_ref().map(|m| m.tools()).unwrap_or_default()
     }
 
     /// Makes `catalog` the skills the session lists, expands and reminds the
@@ -258,4 +269,102 @@ pub(crate) fn check_order(modules: &[Arc<dyn Module>]) -> Result<(), ModuleError
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+pub(crate) mod fakes {
+    //! An MCP server set for the kernel's own tests: tools only, and a module
+    //! that installs them the way the mcp module does.
+
+    use super::*;
+    use base::context::McpServerInstruction;
+    use base::error::ToolError;
+    use base::interface::mcp_servers::{McpPromptCommand, McpPromptInvocation};
+    use base::tool::{ProgressSender, Tool, ToolContext, ToolResult};
+    use std::sync::Mutex;
+
+    pub(crate) struct FakeMcpTool {
+        name: String,
+        source: String,
+    }
+
+    pub(crate) fn mcp_tool(server: &str, tool: &str) -> Arc<dyn Tool> {
+        Arc::new(FakeMcpTool {
+            name: format!("mcp__{server}__{tool}"),
+            source: format!("mcp:{server}"),
+        })
+    }
+
+    #[async_trait]
+    impl Tool for FakeMcpTool {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn description(&self) -> &str {
+            "a tool an MCP server lists"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        fn source(&self) -> std::borrow::Cow<'_, str> {
+            std::borrow::Cow::Borrowed(&self.source)
+        }
+        async fn call(
+            &self,
+            _: serde_json::Value,
+            _: ToolContext,
+            _: ProgressSender,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::text("ok"))
+        }
+    }
+
+    pub(crate) struct FakeMcp(pub(crate) Vec<Arc<dyn Tool>>);
+
+    #[async_trait]
+    impl McpServers for FakeMcp {
+        fn tools(&self) -> Vec<Arc<dyn Tool>> {
+            self.0.clone()
+        }
+        async fn refresh_tools(&mut self) {}
+        fn instructions(&self) -> Vec<McpServerInstruction> {
+            Vec::new()
+        }
+        async fn resolve_resource_refs(&self, _: &str) -> Option<String> {
+            None
+        }
+        fn prompt_commands(&self) -> Vec<McpPromptCommand> {
+            Vec::new()
+        }
+        fn has_prompt_command(&self, _: &str) -> bool {
+            false
+        }
+        async fn invoke_prompt_command(&self, _: &str, _: &str) -> McpPromptInvocation {
+            McpPromptInvocation {
+                text: String::new(),
+                is_error: true,
+            }
+        }
+    }
+
+    pub(crate) struct FakeMcpModule(Mutex<Option<FakeMcp>>);
+
+    pub(crate) fn mcp_module(tools: Vec<Arc<dyn Tool>>) -> Arc<dyn Module> {
+        Arc::new(FakeMcpModule(Mutex::new(Some(FakeMcp(tools)))))
+    }
+
+    impl Module for FakeMcpModule {
+        fn id(&self) -> &'static str {
+            "mcp"
+        }
+        fn on_session(&self, cx: &mut SessionContext<'_>) -> Result<(), ModuleError> {
+            if let Some(mcp) = self.0.lock().unwrap().take() {
+                for t in mcp.tools() {
+                    cx.tools.register(t);
+                }
+                cx.provide_mcp(Box::new(mcp));
+            }
+            Ok(())
+        }
+    }
 }

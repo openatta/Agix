@@ -12,7 +12,6 @@ base          = { workspace = true }
 permissions   = { workspace = true }
 history       = { workspace = true }
 tools         = { workspace = true }
-mcp           = { workspace = true }
 telemetry     = { workspace = true }
 hooks         = { workspace = true }
 compaction    = { workspace = true }

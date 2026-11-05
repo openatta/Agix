@@ -293,8 +293,6 @@ async fn build_agent(
 
     let mut builder = Builder::new()
         .environment(environment)
-        .module(Arc::new(agents::AgentsModule::new()))
-        .module(Arc::new(skills::SkillsModule::new()))
         .scene(config.scene.clone())
         .model(recorder_model)
         .tools(tools_registry)
@@ -348,9 +346,12 @@ async fn build_agent(
                     }
                 );
             }
-            builder = builder.mcp_manager(manager);
+            builder = builder.module(Arc::new(mcp::McpModule::new(manager)));
         }
     }
+    builder = builder
+        .module(Arc::new(agents::AgentsModule::new()))
+        .module(Arc::new(skills::SkillsModule::new()));
 
     // Inject telemetry if configured
     if let Some(ref tp) = config.telemetry_path {

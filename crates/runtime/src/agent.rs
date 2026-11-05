@@ -10,7 +10,6 @@ use base::tool::InMemoryToolRegistry;
 use compaction::cached::CachedMicroCompact;
 use compaction::compact::{Compactor, DefaultCompactor};
 use hooks::HookRunner;
-use mcp::manager::McpManager;
 use session::session::SessionManager;
 use session::session_memory::SessionMemory;
 use std::path::PathBuf;
@@ -288,7 +287,7 @@ pub struct Agent {
     pub(crate) hooks: Arc<HookRunner>,
     pub(crate) skills: Arc<dyn base::interface::skill_catalog::SkillCatalog>,
     pub(crate) commands: std::sync::Arc<crate::commands::CommandRegistry>,
-    pub(crate) mcp: McpManager,
+    pub(crate) mcp: Box<dyn base::interface::mcp_servers::McpServers>,
 
     pub(crate) telemetry_handle: TelemetryHandle,
     pub(crate) current_turn_id: String,
@@ -848,8 +847,8 @@ impl Agent {
     }
 
     /// Access the MCP manager (read-only).
-    pub fn mcp(&self) -> &McpManager {
-        &self.mcp
+    pub fn mcp(&self) -> &dyn base::interface::mcp_servers::McpServers {
+        self.mcp.as_ref()
     }
 
     /// Set plan mode state and optional plan content (for post-compact recovery).
@@ -1002,8 +1001,6 @@ pub struct Builder {
     /// `None` = in-memory only, matching prior behavior — this is purely
     /// additive, existing callers that don't set it are unaffected.
     history_store: Option<Arc<dyn history::store::HistoryStore>>,
-    mcp_servers: Option<Vec<String>>,
-    mcp_manager_override: Option<McpManager>,
     telemetry_url: Option<String>,
     telemetry_handle_override: Option<TelemetryHandle>,
     instruction_file: Option<PathBuf>,
@@ -1193,8 +1190,6 @@ impl Builder {
             compactor: None,
             hooks: None,
             history_store: None,
-            mcp_servers: None,
-            mcp_manager_override: None,
             telemetry_url: None,
             instruction_file: None,
             session_id: None,
@@ -1671,22 +1666,6 @@ impl Builder {
         self.telemetry_handle_override = Some(h);
         self
     }
-    /// Inject a pre-built MCP manager with live connections. To share one
-    /// centrally-connected set of MCP servers across many sessions without
-    /// reconnecting per session, build this from the shared connection's
-    /// `McpClientHandle`s via `McpManager::from_clients(...)` +
-    /// `refresh_tools()` (see `daemon::SessionPool::create()`), rather than
-    /// re-running `McpManager::connect_all(...)` for every session.
-    pub fn mcp_manager(mut self, m: McpManager) -> Self {
-        self.mcp_servers = None;
-        self.mcp_manager_override = Some(m);
-        self
-    }
-    pub fn mcp_servers(mut self, names: Vec<String>) -> Self {
-        self.mcp_servers = Some(names);
-        self
-    }
-
     /// Pre-seed the FrozenContext snapshot (skips lazy collection on first turn).
     /// Essential for deterministic replay across runs.
     pub fn frozen(mut self, ctx: base::frozen::FrozenContext) -> Self {
@@ -1975,70 +1954,11 @@ impl Builder {
                 }
             }
         }
-        // MCP: use pre-built manager if injected, else empty (no servers).
-        let mut mcp = self.mcp_manager_override.unwrap_or_else(McpManager::empty);
-        // `McpManager::set_elicitation_callback` existed with zero production
-        // callers — an MCP server embedding an elicitation URL (mcp:// or
-        // elicitation://) in a tool result silently never reached the hook
-        // system. Wire it to this session's real `HookRunner`; the sync
-        // callback signature (`ElicitationCallback`) needs a `tokio::spawn`
-        // to reach the async `run_elicitation`, same pattern as
-        // `hooks::watcher::FileWatcher`'s background-thread dispatch.
-        {
-            let hooks_for_elicitation = hooks.clone();
-            mcp.set_elicitation_callback(std::sync::Arc::new(move |server_name, url| {
-                let hooks = hooks_for_elicitation.clone();
-                tokio::spawn(async move {
-                    hooks.run_elicitation(&server_name, &url).await;
-                });
-            }));
-        }
         let skill_catalog = crate::module::LateSkillCatalog::default();
-        let command_registry = self.commands_override.clone().unwrap_or_else(|| {
-            let mut registry = crate::commands::CommandRegistry::from_skill_catalog(Arc::new(
-                skill_catalog.clone(),
-            ));
-            // MCP prompts become `/mcp__<server>__<prompt>` slash commands,
-            // the same way skills become slash commands above. `all_prompts()`
-            // is already populated — `McpManager::connect_all` runs
-            // `prompts/list` on every server it connects (see
-            // `collect_prompts`), it just had no consumer until now.
-            //
-            // Only the registry *this* builder owns can be extended; a
-            // `commands_override` is shared across sessions, so the turn loop
-            // falls back to resolving `/mcp__…` off the live `McpManager`
-            // instead — see the slash-command interception in `turn.rs`.
-            let mcp_prompts = mcp.all_prompts();
-            if !mcp_prompts.is_empty() {
-                tracing::info!(
-                    count = mcp_prompts.len(),
-                    "registering MCP prompts as slash commands"
-                );
-                registry.register_mcp_prompts(mcp_prompts);
-            }
-            std::sync::Arc::new(registry)
-        });
         // Register TaskStopTool — stop running background tasks by ID
         tools.register(std::sync::Arc::new(tools::task_stop::TaskStopTool));
         // Register TaskOutputTool — retrieve output from running/completed tasks
         tools.register(std::sync::Arc::new(tools::task_output::TaskOutputTool));
-        // Register MCP resource tools if clients are available
-        if !mcp.clients().is_empty() {
-            tools.register(std::sync::Arc::new(mcp::tools::ListMcpResourcesTool::new(
-                mcp.clients().to_vec(),
-            )));
-            tools.register(std::sync::Arc::new(mcp::tools::ReadMcpResourceTool::new(
-                mcp.clients().to_vec(),
-            )));
-            tools.register(std::sync::Arc::new(mcp::tools::DispatchMcpTool::new(
-                mcp.clients().to_vec(),
-            )));
-            // Dispatch looks tools up in this registry only, so MCP adapters
-            // live here too; `sync_mcp_adapters` (turn.rs) keeps them current.
-            for adapter in mcp.tool_adapters() {
-                tools.register(adapter.clone());
-            }
-        }
 
         let config = Arc::new({
             let mut c = base::context::EngineConfig::from_settings(&settings);
@@ -2114,6 +2034,7 @@ impl Builder {
         let pending_permissions: PendingPermissions =
             Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
 
+        let mut mcp_slot: Option<Box<dyn base::interface::mcp_servers::McpServers>> = None;
         {
             let session_id = session.session_id_str().to_string();
             let mut cx = crate::module::SessionContext {
@@ -2137,7 +2058,7 @@ impl Builder {
                 process_groups: self.process_groups.as_ref(),
                 delegate_scripts: self.delegate_scripts.as_ref(),
                 plugin_host: self.plugin_host.as_ref(),
-                mcp: &mcp,
+                mcp: &mut mcp_slot,
                 modules: &self.modules,
                 agent_spawner: &agent_spawner,
                 skill_catalog: &skill_catalog,
@@ -2148,6 +2069,32 @@ impl Builder {
                     .map_err(|e| EngineError::Internal(e.to_string()))?;
             }
         }
+
+        let mcp = mcp_slot.unwrap_or_else(|| Box::new(base::interface::mcp_servers::NoMcpServers));
+        let command_registry = self.commands_override.clone().unwrap_or_else(|| {
+            let mut registry = crate::commands::CommandRegistry::from_skill_catalog(Arc::new(
+                skill_catalog.clone(),
+            ));
+            // MCP prompts become `/mcp__<server>__<prompt>` slash commands,
+            // the same way skills become slash commands above. `all_prompts()`
+            // is already populated — `McpManager::connect_all` runs
+            // `prompts/list` on every server it connects (see
+            // `collect_prompts`), it just had no consumer until now.
+            //
+            // Only the registry *this* builder owns can be extended; a
+            // `commands_override` is shared across sessions, so the turn loop
+            // falls back to resolving `/mcp__…` off the live `McpManager`
+            // instead — see the slash-command interception in `turn.rs`.
+            let mcp_prompts = mcp.prompt_commands();
+            if !mcp_prompts.is_empty() {
+                tracing::info!(
+                    count = mcp_prompts.len(),
+                    "registering MCP prompts as slash commands"
+                );
+                registry.register_mcp_prompts(&mcp_prompts);
+            }
+            std::sync::Arc::new(registry)
+        });
 
         // ── Registration is complete; everything below reads the final set ──
 
@@ -2731,72 +2678,11 @@ mod tests {
         assert_eq!(agent.settings.model.model_name, "claude-opus-5");
     }
 
-    #[tokio::test]
-    async fn build_registers_mcp_tool_adapters_into_the_executable_tool_registry() {
-        // Regression test: `build_tool_defs()` (turn.rs) advertises every
-        // `mcp.tool_adapters()` entry to the model as a callable tool, but
-        // `Builder::build()` previously only registered the 3 generic
-        // List/Read/Dispatch MCP tools into `self.tools` — never the
-        // individual per-tool adapters. The model would see
-        // `mcp__test-server__do-thing` in its tool list and calling it would
-        // always fail with "Tool not found" (`turn.rs::execute_tool_inner`
-        // looks up `ctx.tools`, a clone of this same registry).
-        let settings = Arc::new(test_settings());
-        let model: Arc<dyn Model> = Arc::new(DummyModel);
-        let scene: Arc<dyn Scene> = Arc::new(scene::coding::CodingScene);
-
-        let mock_client = Arc::new(mcp::client::MockMcpClient::new(
-            "test-server",
-            vec![mcp::client::McpToolMeta {
-                name: "do-thing".into(),
-                description: Some("does a thing".into()),
-                input_schema: serde_json::json!({"type": "object"}),
-                hints: Default::default(),
-            }],
-        ));
-        let mut mcp_manager = McpManager::from_clients(vec![mock_client]);
-        mcp_manager.refresh_tools().await;
-        assert_eq!(
-            mcp_manager.tool_adapters().len(),
-            1,
-            "sanity check: mock client should have produced one adapter"
-        );
-
-        let (agent, _event_rx, _input_tx) = Builder::new()
-            .scene(scene)
-            .model(model)
-            .settings(settings)
-            .mcp_manager(mcp_manager)
-            .skip_warmup(true)
-            .build()
-            .expect("build should succeed");
-
-        assert!(
-            agent.tools.get("mcp__test-server__do-thing").is_some(),
-            "MCP tool adapter should be registered in the executable tool registry, found: {:?}",
-            agent.tools.names()
-        );
-    }
-
     /// A scene's whitelist decides what the session *has*, not only what it
     /// advertises: dispatch and `ToolSearch` read the same registry.
     #[tokio::test]
     async fn build_leaves_out_of_the_registry_every_tool_the_scene_excludes() {
-        async fn mcp_with_one_tool() -> McpManager {
-            let client = Arc::new(mcp::client::MockMcpClient::new(
-                "srv",
-                vec![mcp::client::McpToolMeta {
-                    name: "do-thing".into(),
-                    description: None,
-                    input_schema: serde_json::json!({"type": "object"}),
-                    hints: Default::default(),
-                }],
-            ));
-            let mut m = McpManager::from_clients(vec![client]);
-            m.refresh_tools().await;
-            m
-        }
-        let build = |scene: Arc<dyn Scene>, mcp: McpManager| {
+        let build = |scene: Arc<dyn Scene>| {
             let template = Arc::new(InMemoryToolRegistry::new());
             tools::register_builtin_tools(&template);
             Builder::new()
@@ -2804,14 +2690,16 @@ mod tests {
                 .model(Arc::new(DummyModel))
                 .settings(Arc::new(test_settings()))
                 .tools(template)
-                .mcp_manager(mcp)
+                .module(crate::module::fakes::mcp_module(vec![
+                    crate::module::fakes::mcp_tool("srv", "do-thing"),
+                ]))
                 .skip_warmup(true)
                 .build()
                 .expect("build should succeed")
                 .0
         };
 
-        let chat = build(Arc::new(scene::chat::ChatScene), mcp_with_one_tool().await);
+        let chat = build(Arc::new(scene::chat::ChatScene));
         for absent in ["Bash", "Write", "Edit", "Agent"] {
             assert!(chat.tools.get(absent).is_none(), "{absent} in chat");
         }
@@ -2846,7 +2734,7 @@ mod tests {
                 scene::chat::ChatScene.token_budget()
             }
         }
-        let narrow = build(Arc::new(ReadOnly), mcp_with_one_tool().await);
+        let narrow = build(Arc::new(ReadOnly));
         assert_eq!(narrow.tools.names(), vec!["Read".to_string()]);
     }
 
@@ -2911,122 +2799,6 @@ mod tests {
              dispatches against, found: {:?}",
             agent.tools.names()
         );
-    }
-
-    /// Regression: `McpManager::set_elicitation_callback` existed with zero
-    /// production callers — an MCP tool result containing an elicitation URL
-    /// silently never reached the hook system no matter what hooks were
-    /// configured. This exercises the real path end to end: an MCP tool call
-    /// returns a result with an `elicitation://` URL in it, and a configured
-    /// `Elicitation` hook must actually fire.
-    #[tokio::test]
-    async fn build_wires_mcp_elicitation_urls_to_the_elicitation_hook() {
-        // Observed through an injected hook executor, in this process. The
-        // previous version configured a `command` hook that appended to a file
-        // and polled for it, which measured how long the machine took to fork
-        // a shell under a full `cargo test --workspace` — not what this test is
-        // about, and it timed out at sixty seconds saying so. An `http` hook is
-        // not an option either: the SSRF guard blocks loopback, correctly.
-        struct RecordingPromptExecutor {
-            fired: tokio::sync::mpsc::Sender<serde_json::Value>,
-        }
-
-        #[async_trait::async_trait]
-        impl hooks::runner::PromptHookExecutor for RecordingPromptExecutor {
-            async fn execute(
-                &self,
-                _prompt: &str,
-                _model: Option<&str>,
-                payload: &hooks::HookInput,
-            ) -> Result<String, String> {
-                let _ = self
-                    .fired
-                    .send(payload.tool_input.clone().unwrap_or_default())
-                    .await;
-                Ok("{}".to_string())
-            }
-        }
-
-        let (fired_tx, mut fired_rx) = tokio::sync::mpsc::channel(1);
-        let mut hooks_settings: hooks::HooksSettings = Default::default();
-        hooks_settings.insert(
-            hooks::HookEvent::Elicitation,
-            vec![hooks::config::HookConfig::Prompt {
-                prompt: "an elicitation happened".into(),
-                timeout: None,
-                model: None,
-            }],
-        );
-        let runner = Arc::new(
-            hooks::HookRunner::new(hooks_settings)
-                .with_prompt_executor(Arc::new(RecordingPromptExecutor { fired: fired_tx })),
-        );
-
-        let dir = tempfile::tempdir().unwrap();
-        let settings = Arc::new(test_settings());
-        let model: Arc<dyn Model> = Arc::new(DummyModel);
-        let scene: Arc<dyn Scene> = Arc::new(scene::coding::CodingScene);
-
-        let mock_client = Arc::new(mcp::client::MockMcpClient::new(
-            "test-server",
-            vec![mcp::client::McpToolMeta {
-                name: "authorize".into(),
-                description: Some("needs out-of-band authorization".into()),
-                input_schema: serde_json::json!({"type": "object"}),
-                hints: Default::default(),
-            }],
-        ));
-        mock_client.push_response(
-            "authorize",
-            mcp::client::McpCallResult {
-                content: vec![mcp::client::McpContent::Text(
-                    "Please authorize at elicitation://example.com/auth/123".into(),
-                )],
-                is_error: false,
-                meta: None,
-            },
-        );
-        let mut mcp_manager = McpManager::from_clients(vec![mock_client]);
-        mcp_manager.refresh_tools().await;
-
-        let (agent, _event_rx, _input_tx) = Builder::new()
-            .scene(scene)
-            .model(model)
-            .settings(settings)
-            .hooks(runner)
-            .mcp_manager(mcp_manager)
-            .skip_warmup(true)
-            .build()
-            .expect("build should succeed");
-
-        assert!(agent.hooks().has_hooks_for(hooks::HookEvent::Elicitation));
-
-        let tool = agent
-            .tools
-            .get("mcp__test-server__authorize")
-            .expect("MCP tool adapter registered");
-        let ctx = base::tool::ToolContext::for_test(dir.path().to_path_buf());
-        let progress = base::tool::ProgressSender::noop("test-tool-use");
-        tool.call(serde_json::json!({}), ctx, progress)
-            .await
-            .expect("mock tool call succeeds");
-
-        // The callback dispatches through `tokio::spawn`, so this arrives
-        // after `call` returns. Waiting on the dispatch itself means a slow
-        // machine makes the test slower and never makes it fail.
-        let payload = tokio::time::timeout(std::time::Duration::from_secs(30), fired_rx.recv())
-            .await
-            .expect(
-                "an MCP tool result containing an elicitation URL should have fired the \
-                 Elicitation hook",
-            )
-            .expect("the executor sends before returning");
-        assert_eq!(
-            payload["url"],
-            serde_json::json!("elicitation://example.com/auth/123"),
-            "the hook must be told which URL, got: {payload}"
-        );
-        assert_eq!(payload["server_name"], serde_json::json!("test-server"));
     }
 
     /// P3-12's other half: the instruction file is one implementation of a

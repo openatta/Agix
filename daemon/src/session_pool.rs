@@ -2077,12 +2077,6 @@ impl SessionPool {
             .permission(permission)
             .session_id(session_id.clone())
             .commands_override(binding.commands.clone())
-            .module(Arc::new(
-                agents::AgentsModule::new().shared_agent_types(binding.agent_types.handle()),
-            ))
-            .module(Arc::new(skills::SkillsModule::shared(
-                binding.skills.clone(),
-            )))
             .cron_store(self.schedule.clone());
         if let Some(ref store) = self.history_store {
             builder = builder.history_store(store.clone());
@@ -2145,10 +2139,19 @@ impl SessionPool {
             if count > 0 {
                 let mut per_session = McpManager::from_clients(central.clients().to_vec());
                 per_session.refresh_tools().await;
-                builder = builder.mcp_manager(per_session);
+                builder = builder.module(Arc::new(mcp::McpModule::new(per_session)));
             }
             count
         };
+        // After MCP, so the `Agent` tool sees the servers it may grant a
+        // delegate; skills after agents, so forked skills can fork.
+        builder = builder
+            .module(Arc::new(
+                agents::AgentsModule::new().shared_agent_types(binding.agent_types.handle()),
+            ))
+            .module(Arc::new(skills::SkillsModule::shared(
+                binding.skills.clone(),
+            )));
 
         // ── Telemetry ──
         //

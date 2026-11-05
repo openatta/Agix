@@ -10,6 +10,7 @@ description  = "Agix — MCP client (server connection, tool adaptation)"
 [dependencies]
 base          = { workspace = true }
 tools         = { workspace = true }
+runtime       = { workspace = true }
 auth          = { workspace = true }
 rmcp          = { workspace = true }
 process-wrap  = { workspace = true }
@@ -29,4 +30,6 @@ globset       = { workspace = true }
 tokio-tungstenite = { workspace = true }
 
 [dev-dependencies]
+scene = { workspace = true }
+hooks = { workspace = true }
 tempfile = { workspace = true }

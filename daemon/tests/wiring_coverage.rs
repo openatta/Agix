@@ -100,8 +100,18 @@ fn concat_rs_files(dir: &Path) -> String {
 fn wiring_shaped_functions_are_referenced_from_a_composition_root() {
     let root = repo_root();
     let daemon_src = concat_rs_files(&root.join("daemon/src"));
-    let agent_rs = std::fs::read_to_string(root.join("crates/runtime/src/agent.rs"))
-        .expect("crates/runtime/src/agent.rs should exist");
+    // The kernel's assembly and each module's `on_session` are composition
+    // roots too: a module wires its capability into the session there.
+    let agent_rs = [
+        "crates/runtime/src/agent.rs",
+        "crates/agents/src/lib.rs",
+        "crates/mcp/src/module.rs",
+        "crates/skills/src/module.rs",
+    ]
+    .iter()
+    .map(|p| std::fs::read_to_string(root.join(p)).unwrap_or_else(|e| panic!("{p}: {e}")))
+    .collect::<Vec<_>>()
+    .join("\n");
 
     let mut unreferenced = Vec::new();
     for &(crate_name, func_name) in WIRING_CHECKS {
@@ -126,7 +136,7 @@ fn wiring_shaped_functions_are_referenced_from_a_composition_root() {
     assert!(
         unreferenced.is_empty(),
         "these functions exist to be called by a composition root but are referenced \
-         nowhere in daemon/src or crates/runtime/src/agent.rs: {unreferenced:?}. Either \
+         nowhere in daemon/src, the kernel's assembly or a module: {unreferenced:?}. Either \
          wire the call in (the usual fix — see this test's module doc for three real \
          examples), or if this one is genuinely for external embedders of the Agix \
          library rather than this repo's own daemon, add it to INTENTIONALLY_UNWIRED \

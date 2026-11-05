@@ -13,7 +13,6 @@ use base::interface::prompt::PromptBlock;
 use base::interface::prompt_middleware::{PromptDecision, PromptDelivery};
 use base::interface::scene::ScenePromptContext;
 use base::tool::{ToolContext, ToolResultContent};
-use mcp::manager::McpManager;
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -90,8 +89,8 @@ impl Agent {
                         Some(_) => None,
                         None => self
                             .mcp
-                            .find_prompt_command(&sc.name)
-                            .map(|_| sc.name.clone()),
+                            .has_prompt_command(&sc.name)
+                            .then(|| sc.name.clone()),
                     };
                     if let Some(command) = mcp_command {
                         // Argument mapping + validation and every failure mode
@@ -267,7 +266,7 @@ impl Agent {
                     }
                     EngineCommand::RefreshMcp => {
                         self.mcp.refresh_tools().await;
-                        sync_mcp_adapters(self.tools.as_ref(), &self.mcp, |n| {
+                        sync_mcp_adapters(self.tools.as_ref(), self.mcp.as_ref(), |n| {
                             self.scene.permits_tool(n)
                         });
                         Ok(TurnOutcome::default())
@@ -1593,7 +1592,7 @@ impl Agent {
                 }
 
                 self.mcp.refresh_tools().await;
-                sync_mcp_adapters(self.tools.as_ref(), &self.mcp, |n| {
+                sync_mcp_adapters(self.tools.as_ref(), self.mcp.as_ref(), |n| {
                     self.scene.permits_tool(n)
                 });
                 if !cancel.is_cancelled() {
@@ -2009,8 +2008,8 @@ or project context that should survive across sessions.
         /// advertise a guide when the scene has filtered the fetcher out.
         const TOOL_SEARCH_NAME: &str = "ToolSearch";
         let mut pool: BTreeMap<String, Arc<dyn base::tool::Tool>> = BTreeMap::new();
-        for t in self.mcp.tool_adapters() {
-            pool.insert(t.name().to_string(), t.clone());
+        for t in self.mcp.tools() {
+            pool.insert(t.name().to_string(), t);
         }
         // MCP adapters also sit in `self.tools`, because dispatch looks them up
         // there; only a non-MCP entry can shadow one. Built-ins win.
@@ -2605,7 +2604,7 @@ or project context that should survive across sessions.
     /// Per-server and total length are already bounded by
     /// `McpManager::server_instructions()` — see that method's doc comment.
     fn build_mcp_instructions(&self) -> String {
-        let instructions = self.mcp.server_instructions();
+        let instructions = self.mcp.instructions();
         if instructions.is_empty() {
             return String::new();
         }
@@ -2798,12 +2797,7 @@ or project context that should survive across sessions.
             .list()
             .iter()
             .map(|t| t.name().to_string())
-            .chain(
-                self.mcp
-                    .tool_adapters()
-                    .iter()
-                    .map(|t| t.name().to_string()),
-            )
+            .chain(self.mcp.tools().into_iter().map(|t| t.name().to_string()))
             .filter(|n| seen_names.insert(n.clone()))
             .collect::<Vec<_>>()
             .join(",");
@@ -4100,15 +4094,14 @@ fn apply_result_transformers(
 /// `Scene::permits_tool`.
 fn sync_mcp_adapters(
     tools: &dyn base::tool::ToolRegistry,
-    mcp: &McpManager,
+    mcp: &dyn base::interface::mcp_servers::McpServers,
     permits: impl Fn(&str) -> bool,
 ) {
     let is_mcp = |t: &Arc<dyn base::tool::Tool>| t.source().starts_with("mcp:");
     let current: Vec<_> = mcp
-        .tool_adapters()
-        .iter()
+        .tools()
+        .into_iter()
         .filter(|a| permits(a.name()))
-        .cloned()
         .collect();
     let live: HashSet<&str> = current.iter().map(|a| a.name()).collect();
     let registered = tools.all();
@@ -6322,213 +6315,6 @@ mod tests {
             scripts: Vec::new(),
         }
     }
-
-    // ── MCP prompts (slash commands) and resources (`@` refs) reach the model ──
-    //
-    // Regression suite for W-3: `McpManager::all_prompts` / `execute_prompt` /
-    // `list_resources` / `read_resource` were fully implemented but had zero
-    // call sites outside the `mcp` crate — only MCP *tools* were reachable.
-    // These drive a whole turn through `process_turn`, so they cover the
-    // registration in `Builder::build`, the slash-command interception, and
-    // the pre-push `@`-reference resolution together.
-
-    fn prompt_arg(name: &str, required: bool) -> mcp::client::McpPromptArg {
-        mcp::client::McpPromptArg {
-            name: name.into(),
-            description: None,
-            required: Some(required),
-        }
-    }
-
-    /// A mock MCP server exposing one prompt (two required args) and one
-    /// readable resource.
-    async fn mcp_manager_for_turn_tests(down: bool) -> McpManager {
-        let client = Arc::new(
-            mcp::client::MockMcpClient::new("github", Vec::new())
-                .with_prompts(vec![mcp::client::McpPromptMeta {
-                    name: "review_pr".into(),
-                    description: Some("Review a pull request".into()),
-                    arguments: vec![prompt_arg("repo", true), prompt_arg("pr", true)],
-                }])
-                .with_prompt_body(
-                    "review_pr",
-                    "PROMPT-BODY: review PR {pr} in {repo} thoroughly.",
-                )
-                .with_resource_text("doc://guide/install", "RESOURCE-BODY: run cargo install."),
-        );
-        let mut mgr = McpManager::from_clients(vec![client]);
-        mgr.refresh_prompts().await;
-        if down {
-            // Collect the prompt list while the server is up, *then* knock it
-            // over — that is what a mid-session disconnect actually looks
-            // like, and the case where the command is still offered but the
-            // invocation must degrade rather than fail.
-            let prompts = mgr.all_prompts().to_vec();
-            let dead = Arc::new(mcp::client::MockMcpClient::new("github", Vec::new()).down());
-            let mut dead_mgr = McpManager::from_clients(vec![dead]);
-            dead_mgr.set_prompts_for_test(prompts);
-            return dead_mgr;
-        }
-        mgr
-    }
-
-    async fn run_one_turn(
-        mcp_manager: McpManager,
-        input: &str,
-    ) -> (TurnOutcome, String, tempfile::TempDir) {
-        let tmp = tempfile::tempdir().unwrap();
-        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let model: Arc<dyn base::interface::model::Model> =
-            Arc::new(RecordingAnswerModel { seen: seen.clone() });
-        let scene: Arc<dyn base::interface::scene::Scene> = Arc::new(scene::coding::CodingScene);
-        let mut settings = recall_test_settings(tmp.path());
-        // Keep the transcript to just what this test injects.
-        settings.memory_enabled = false;
-
-        let (mut agent, _event_rx, _input_tx) = crate::agent::Builder::new()
-            .scene(scene)
-            .model(model)
-            .settings(Arc::new(settings))
-            .mcp_manager(mcp_manager)
-            .skip_warmup(true)
-            .build()
-            .expect("build should succeed");
-
-        let outcome = agent
-            .process_turn(
-                InputMessage::User {
-                    content: input.into(),
-                    attachments: vec![],
-                    turn_id: "t1".into(),
-                },
-                tokio_util::sync::CancellationToken::new(),
-            )
-            .await
-            .expect("a broken MCP server must never fail the turn");
-        let transcript = seen.lock().unwrap().join("\n");
-        (outcome, transcript, tmp)
-    }
-
-    #[tokio::test]
-    async fn mcp_prompt_is_registered_as_a_slash_command() {
-        let tmp = tempfile::tempdir().unwrap();
-        let model: Arc<dyn base::interface::model::Model> = Arc::new(RecordingAnswerModel {
-            seen: Arc::new(std::sync::Mutex::new(Vec::new())),
-        });
-        let scene: Arc<dyn base::interface::scene::Scene> = Arc::new(scene::coding::CodingScene);
-        let (agent, _event_rx, _input_tx) = crate::agent::Builder::new()
-            .scene(scene)
-            .model(model)
-            .settings(Arc::new(recall_test_settings(tmp.path())))
-            .mcp_manager(mcp_manager_for_turn_tests(false).await)
-            .skip_warmup(true)
-            .build()
-            .expect("build should succeed");
-
-        let cmd = agent
-            .commands
-            .resolve("mcp__github__review_pr")
-            .expect("MCP prompt should be a slash command");
-        assert_eq!(cmd.description(), "Review a pull request");
-        assert!(agent
-            .commands
-            .list()
-            .iter()
-            .any(|(n, _)| *n == "mcp__github__review_pr"));
-    }
-
-    #[tokio::test]
-    async fn invoking_an_mcp_prompt_command_injects_the_servers_messages() {
-        let (outcome, transcript, _tmp) = run_one_turn(
-            mcp_manager_for_turn_tests(false).await,
-            "/mcp__github__review_pr repo=acme/widgets pr=42",
-        )
-        .await;
-        assert_eq!(outcome.stop_reason, "end_turn");
-        assert!(
-            transcript.contains("PROMPT-BODY: review PR 42 in acme/widgets thoroughly."),
-            "the server's prompt messages never reached the model: {transcript}"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_missing_required_prompt_argument_surfaces_a_clear_error() {
-        let (outcome, transcript, _tmp) = run_one_turn(
-            mcp_manager_for_turn_tests(false).await,
-            "/mcp__github__review_pr repo=acme/widgets",
-        )
-        .await;
-        assert_eq!(outcome.stop_reason, "end_turn", "the turn must not fail");
-        assert!(
-            transcript.contains("missing required argument: pr"),
-            "no clear argument error reached the model: {transcript}"
-        );
-        assert!(
-            !transcript.contains("PROMPT-BODY"),
-            "the prompt must not have been called at all: {transcript}"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_down_mcp_server_degrades_to_visible_text_without_failing_the_turn() {
-        let (outcome, transcript, _tmp) = run_one_turn(
-            mcp_manager_for_turn_tests(true).await,
-            "/mcp__github__review_pr repo=acme/widgets pr=42",
-        )
-        .await;
-        assert_eq!(outcome.stop_reason, "end_turn");
-        assert!(
-            transcript.contains("could not be run") && transcript.contains("is not connected"),
-            "the failure was not surfaced as text the model can explain: {transcript}"
-        );
-    }
-
-    #[tokio::test]
-    async fn an_at_reference_inlines_the_resource_into_the_user_message() {
-        let (_outcome, transcript, _tmp) = run_one_turn(
-            mcp_manager_for_turn_tests(false).await,
-            "summarise @github:doc://guide/install for me",
-        )
-        .await;
-        assert!(
-            transcript.contains("RESOURCE-BODY: run cargo install."),
-            "the resource was never inlined: {transcript}"
-        );
-        assert!(transcript.contains("<mcp-resource server=\"github\""));
-        // The original reference stays put so the model can correlate.
-        assert!(transcript.contains("summarise @github:doc://guide/install for me"));
-    }
-
-    #[tokio::test]
-    async fn at_signs_that_are_not_resource_references_never_trigger_a_fetch() {
-        for text in [
-            "email me at xbitshans@gmail.com when done",
-            "why does @Component({ selector: 'x' }) fail here?",
-            "fix fn f<'a>(x: &'a str) -> &'a str { x }",
-            "run npm i @anthropic-ai/sdk @types/node",
-        ] {
-            let (_outcome, transcript, _tmp) =
-                run_one_turn(mcp_manager_for_turn_tests(false).await, text).await;
-            assert!(
-                !transcript.contains("<mcp-resources>"),
-                "false-positive `@` fetch on {text:?}: {transcript}"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn an_unresolvable_at_reference_degrades_to_visible_text() {
-        let (outcome, transcript, _tmp) = run_one_turn(
-            mcp_manager_for_turn_tests(false).await,
-            "read @github:doc://guide/does-not-exist",
-        )
-        .await;
-        assert_eq!(outcome.stop_reason, "end_turn", "the turn must not fail");
-        assert!(
-            transcript.contains("error=\"true\"") && transcript.contains("no such resource"),
-            "the bad URI was not surfaced as visible text: {transcript}"
-        );
-    }
 }
 
 // ── Post-turn memory extraction ──
@@ -7534,26 +7320,12 @@ mod prompt_assembly_tests {
 
     // ── sync_mcp_adapters ──
 
-    fn mcp_meta(name: &str, description: &str) -> mcp::client::McpToolMeta {
-        mcp::client::McpToolMeta {
-            name: name.into(),
-            description: Some(description.into()),
-            input_schema: serde_json::json!({"type": "object"}),
-            hints: Default::default(),
-        }
-    }
-
-    async fn manager_listing(tools: Vec<mcp::client::McpToolMeta>) -> McpManager {
-        let client = Arc::new(mcp::client::MockMcpClient::new("test-server", tools));
-        let mut mgr = McpManager::from_clients(vec![client]);
-        mgr.refresh_tools().await;
-        mgr
-    }
+    use crate::module::fakes::{mcp_module, mcp_tool, FakeMcp};
 
     #[tokio::test]
     async fn sync_mcp_adapters_adds_previously_unseen_tools() {
         let tools = base::tool::InMemoryToolRegistry::new();
-        let mgr = manager_listing(vec![mcp_meta("new-tool", "appeared after reconnect")]).await;
+        let mgr = FakeMcp(vec![mcp_tool("test-server", "new-tool")]);
 
         sync_mcp_adapters(&tools, &mgr, |_| true);
         assert!(tools.get("mcp__test-server__new-tool").is_some());
@@ -7562,7 +7334,7 @@ mod prompt_assembly_tests {
     #[tokio::test]
     async fn sync_mcp_adapters_registers_each_tool_once() {
         let tools = base::tool::InMemoryToolRegistry::new();
-        let mgr = manager_listing(vec![mcp_meta("existing-tool", "was already there")]).await;
+        let mgr = FakeMcp(vec![mcp_tool("test-server", "existing-tool")]);
 
         sync_mcp_adapters(&tools, &mgr, |_| true);
         sync_mcp_adapters(&tools, &mgr, |_| true);
@@ -7578,14 +7350,13 @@ mod prompt_assembly_tests {
     #[tokio::test]
     async fn sync_mcp_adapters_takes_the_relisted_instance_and_drops_vanished_tools() {
         let tools = base::tool::InMemoryToolRegistry::new();
-        let before = manager_listing(vec![
-            mcp_meta("kept", "old schema"),
-            mcp_meta("gone", "server stops listing this"),
-        ])
-        .await;
+        let before = FakeMcp(vec![
+            mcp_tool("test-server", "kept"),
+            mcp_tool("test-server", "gone"),
+        ]);
         sync_mcp_adapters(&tools, &before, |_| true);
 
-        let after = manager_listing(vec![mcp_meta("kept", "new schema")]).await;
+        let after = FakeMcp(vec![mcp_tool("test-server", "kept")]);
         sync_mcp_adapters(&tools, &after, |_| true);
 
         assert!(
@@ -7593,7 +7364,7 @@ mod prompt_assembly_tests {
             "a tool the server no longer lists must stop being callable"
         );
         let kept = tools.get("mcp__test-server__kept").unwrap();
-        assert!(Arc::ptr_eq(&kept, &after.tool_adapters()[0]));
+        assert!(Arc::ptr_eq(&kept, &after.0[0]));
     }
 
     #[tokio::test]
@@ -7601,9 +7372,7 @@ mod prompt_assembly_tests {
         let tools = base::tool::InMemoryToolRegistry::new();
         let builtin: Arc<dyn base::tool::Tool> = Arc::new(PlainTool);
         tools.register(builtin.clone());
-        let client = Arc::new(mcp::client::MockMcpClient::new("s", vec![]));
-        let mut mgr = McpManager::from_clients(vec![client]);
-        mgr.refresh_tools().await;
+        let mgr = FakeMcp(Vec::new());
 
         sync_mcp_adapters(&tools, &mgr, |_| true);
         assert!(Arc::ptr_eq(&tools.get("Plain").unwrap(), &builtin));
@@ -7612,13 +7381,13 @@ mod prompt_assembly_tests {
     #[tokio::test]
     async fn an_mcp_adapter_is_advertised_once_and_not_reported_as_shadowed() {
         let dir = tempfile::tempdir().unwrap();
-        let mgr = manager_listing(vec![mcp_meta("lookup", "Look a thing up")]).await;
+
         let (mut agent, _rx, _tx) = crate::agent::Builder::new()
             .scene(test_scene(vec![]))
             .model(Arc::new(DummyModel))
             .tools(Arc::new(InMemoryToolRegistry::new()))
             .settings(Arc::new(test_settings(dir.path())))
-            .mcp_manager(mgr)
+            .module(mcp_module(vec![mcp_tool("test-server", "lookup")]))
             .skip_warmup(true)
             .build()
             .unwrap();

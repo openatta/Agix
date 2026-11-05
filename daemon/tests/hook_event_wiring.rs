@@ -31,6 +31,8 @@ use std::path::{Path, PathBuf};
 const PRODUCTION_SOURCES: &[&str] = &[
     "crates/runtime/src",
     "crates/agents/src",
+    "crates/mcp/src/module.rs",
+    "crates/skills/src/module.rs",
     "crates/hooks/src/watcher.rs",
 ];
 
