@@ -445,57 +445,21 @@ impl MemoryStore {
             }
         };
 
-        // Try serde_yaml parsing first (flat format: name/description/type at top level)
-        let name: String;
-        let description: String;
-        let memory_type: MemoryType;
-
-        if let Ok(parsed) = serde_yaml::from_str::<serde_yaml::Value>(frontmatter) {
-            name = parsed
-                .get("name")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())?;
-            description = parsed
-                .get("description")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .unwrap_or_default();
-            // Look for flat "type:" field first (new format).
-            // Fall back to nested "metadata.type:" for backward compatibility
-            // with files written by the old write_memory_file.
-            let type_str = parsed.get("type").and_then(|v| v.as_str()).or_else(|| {
-                parsed
-                    .get("metadata")
-                    .and_then(|v| v.get("type"))
-                    .and_then(|v| v.as_str())
-            });
-            memory_type = type_str
-                .map(|t| match t {
-                    "user" => MemoryType::User,
-                    "feedback" => MemoryType::Feedback,
-                    "project" => MemoryType::Project,
-                    "reference" => MemoryType::Reference,
-                    _ => MemoryType::User,
-                })
-                .unwrap_or_default();
-        } else {
-            // Fallback to manual line-scanning for edge cases (no serde_yaml available)
-            name = extract_yaml_field(frontmatter, "name")?;
-            description = extract_yaml_field(frontmatter, "description").unwrap_or_default();
-            memory_type = extract_yaml_field(frontmatter, "type")
-                .or_else(|| {
-                    // Backward-compat: old nested "metadata:\n  type:" format
-                    extract_yaml_field_nested(frontmatter, "metadata", "type")
-                })
-                .map(|t| match t.as_str() {
-                    "user" => MemoryType::User,
-                    "feedback" => MemoryType::Feedback,
-                    "project" => MemoryType::Project,
-                    "reference" => MemoryType::Reference,
-                    _ => MemoryType::User,
-                })
-                .unwrap_or_default();
-        }
+        use crate::frozen::frontmatter::{nested_scalar, scalar};
+        let name = scalar(frontmatter, "name").filter(|n| !n.is_empty())?;
+        let description = scalar(frontmatter, "description").unwrap_or_default();
+        // Flat `type:` first; files written before the fields were flattened
+        // nest it under `metadata:`.
+        let memory_type = scalar(frontmatter, "type")
+            .or_else(|| nested_scalar(frontmatter, "metadata", "type"))
+            .map(|t| match t.as_str() {
+                "user" => MemoryType::User,
+                "feedback" => MemoryType::Feedback,
+                "project" => MemoryType::Project,
+                "reference" => MemoryType::Reference,
+                _ => MemoryType::User,
+            })
+            .unwrap_or_default();
 
         // Content is everything after the closing ---
         let content = if let Some(end) = trimmed[3..].find("\n---") {
@@ -507,14 +471,7 @@ impl MemoryStore {
         // Metadata fields. Each falls back to the value this function used to
         // return unconditionally, so a file written before these were
         // serialized still parses and behaves exactly as it did before.
-        let meta_str = |key: &str| -> Option<String> {
-            if let Ok(v) = serde_yaml::from_str::<serde_yaml::Value>(frontmatter) {
-                if let Some(s) = v.get(key).and_then(|v| v.as_str()) {
-                    return Some(s.to_string());
-                }
-            }
-            extract_yaml_field(frontmatter, key)
-        };
+        let meta_str = |key: &str| scalar(frontmatter, key);
 
         Some(DurableMemory {
             name,
@@ -646,51 +603,6 @@ fn index_line_name(line: &str) -> Option<String> {
     }
 }
 
-fn extract_yaml_field(frontmatter: &str, key: &str) -> Option<String> {
-    for line in frontmatter.lines() {
-        let trimmed = line.trim();
-        if let Some(v) = trimmed.strip_prefix(&format!("{}:", key)) {
-            let val = v.trim();
-            if val.is_empty() {
-                return Some(String::new());
-            }
-            let unquoted = val.trim_matches('"').trim_matches('\'');
-            return Some(unquoted.to_string());
-        }
-    }
-    None
-}
-
-/// Extract a nested YAML field (e.g., "metadata" → "type").
-/// Backward-compat: old write_memory_file wrote `metadata:\n  type:`.
-fn extract_yaml_field_nested(
-    frontmatter: &str,
-    parent_key: &str,
-    child_key: &str,
-) -> Option<String> {
-    let mut in_parent = false;
-    for line in frontmatter.lines() {
-        let trimmed = line.trim();
-        if trimmed == format!("{}:", parent_key) {
-            in_parent = true;
-            continue;
-        }
-        if in_parent {
-            if let Some(v) = trimmed.strip_prefix(&format!("{}:", child_key)) {
-                let val = v.trim().trim_matches('"').trim_matches('\'');
-                return Some(val.to_string());
-            }
-            // If we hit an unindented line (not starting with space), we've left the parent block
-            if !trimmed.starts_with(' ') {
-                in_parent = false;
-            }
-        }
-    }
-    None
-}
-
-/// Sanitize a memory name for use as a filename.
-/// Prevents path traversal and filesystem issues.
 /// Quote a YAML scalar so free-form prose can't change the document's shape.
 /// Memory descriptions routinely contain `:` (which would make the line parse
 /// as a nested mapping) and `#` (a comment), and `last_seen` is an ISO-8601
@@ -699,6 +611,8 @@ fn yaml_quote(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
+/// Sanitize a memory name for use as a filename.
+/// Prevents path traversal and filesystem issues.
 fn sanitize_filename(name: &str) -> String {
     name.chars()
         .map(|c| {

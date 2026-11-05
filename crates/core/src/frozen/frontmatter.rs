@@ -215,8 +215,148 @@ pub(crate) fn extract_yaml_field(yaml: &str, key: &str) -> Option<String> {
     None
 }
 
+/// The value of the top-level `key` in a frontmatter block, with YAML's
+/// quoting undone: double-quoted strings and their escapes, single-quoted
+/// strings and `''`, plain scalars up to a ` #` comment, and `|` / `>` block
+/// scalars. A flat block is all the engine writes; this covers what a person
+/// editing one by hand is likely to write too.
+pub fn scalar(frontmatter: &str, key: &str) -> Option<String> {
+    let lines: Vec<&str> = frontmatter.lines().collect();
+    let prefix = format!("{key}:");
+    let at = lines
+        .iter()
+        .position(|l| !l.starts_with([' ', '\t']) && l.starts_with(&prefix))?;
+    let rest = lines[at][prefix.len()..].trim();
+    match rest.chars().next() {
+        Some('|') | Some('>') => Some(block_scalar(&lines[at + 1..], rest.starts_with('>'))),
+        _ => Some(inline_scalar(rest)),
+    }
+}
+
+/// `child` under the top-level mapping `parent` — the layout memory files
+/// used before their fields were flattened.
+pub fn nested_scalar(frontmatter: &str, parent: &str, child: &str) -> Option<String> {
+    let lines: Vec<&str> = frontmatter.lines().collect();
+    let header = format!("{parent}:");
+    let start = lines.iter().position(|l| l.trim_end() == header)?;
+    let prefix = format!("{child}:");
+    lines[start + 1..]
+        .iter()
+        .take_while(|l| l.starts_with([' ', '\t']))
+        .find_map(|l| {
+            l.trim()
+                .strip_prefix(prefix.as_str())
+                .map(|v| inline_scalar(v.trim()))
+        })
+}
+
+fn inline_scalar(raw: &str) -> String {
+    if let Some(body) = raw.strip_prefix('"') {
+        let mut out = String::new();
+        let mut chars = body.chars();
+        while let Some(c) = chars.next() {
+            match c {
+                '"' => break,
+                '\\' => match chars.next() {
+                    Some('n') => out.push('\n'),
+                    Some('t') => out.push('\t'),
+                    Some('r') => out.push('\r'),
+                    Some('0') => out.push('\0'),
+                    Some('u') => {
+                        let hex: String = chars.by_ref().take(4).collect();
+                        if let Some(ch) =
+                            u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32)
+                        {
+                            out.push(ch);
+                        }
+                    }
+                    Some(other) => out.push(other),
+                    None => {}
+                },
+                other => out.push(other),
+            }
+        }
+        return out;
+    }
+    if let Some(body) = raw.strip_prefix('\'') {
+        let mut out = String::new();
+        let mut chars = body.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\'' {
+                if chars.peek() == Some(&'\'') {
+                    chars.next();
+                    out.push('\'');
+                    continue;
+                }
+                break;
+            }
+            out.push(c);
+        }
+        return out;
+    }
+    match raw.find(" #") {
+        Some(i) => raw[..i].trim_end().to_string(),
+        None => raw.to_string(),
+    }
+}
+
+/// The indented lines after a `|` (kept) or `>` (folded) header.
+fn block_scalar(following: &[&str], folded: bool) -> String {
+    let body: Vec<&str> = following
+        .iter()
+        .take_while(|l| l.is_empty() || l.starts_with([' ', '\t']))
+        .copied()
+        .collect();
+    let indent = body
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.len() - l.trim_start().len())
+        .min()
+        .unwrap_or(0);
+    let lines: Vec<&str> = body
+        .iter()
+        .map(|l| if l.len() >= indent { &l[indent..] } else { "" })
+        .collect();
+    let joined = if folded {
+        lines.join(" ")
+    } else {
+        lines.join("\n")
+    };
+    joined.trim_end().to_string()
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn scalars_undo_yaml_quoting() {
+        let fm = "name: plain value # a comment\n\
+                  description: \"says \\\"hi\\\" at C:\\\\x: ok\\u00e9\"\n\
+                  single: 'it''s'\n\
+                  empty:\n\
+                  folded: >\n  one\n  two\n\
+                  kept: |\n  a\n  b\n\
+                  metadata:\n  type: feedback\n";
+        assert_eq!(scalar(fm, "name").as_deref(), Some("plain value"));
+        assert_eq!(
+            scalar(fm, "description").as_deref(),
+            Some("says \"hi\" at C:\\x: ok\u{e9}")
+        );
+        assert_eq!(scalar(fm, "single").as_deref(), Some("it's"));
+        assert_eq!(scalar(fm, "empty").as_deref(), Some(""));
+        assert_eq!(scalar(fm, "folded").as_deref(), Some("one two"));
+        assert_eq!(scalar(fm, "kept").as_deref(), Some("a\nb"));
+        assert_eq!(
+            scalar(fm, "type"),
+            None,
+            "a nested key is not a top-level one"
+        );
+        assert_eq!(
+            nested_scalar(fm, "metadata", "type").as_deref(),
+            Some("feedback")
+        );
+        assert_eq!(scalar(fm, "missing"), None);
+    }
+
     use super::*;
 
     #[test]
