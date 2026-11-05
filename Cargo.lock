@@ -891,27 +891,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "daemon-harness"
-version = "0.2.10-2026110101"
-dependencies = [
- "anyhow",
- "async-trait",
- "base",
- "daemon",
- "history",
- "model",
- "rpc-client",
- "scene",
- "serde",
- "serde_json",
- "tempfile",
- "test-runner",
- "tokio",
- "tokio-util",
- "url",
-]
-
-[[package]]
 name = "darling"
 version = "0.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2058,6 +2037,28 @@ name = "litemap"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
+
+[[package]]
+name = "live"
+version = "0.2.10-2026110101"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base",
+ "daemon",
+ "history",
+ "model",
+ "reqwest",
+ "rpc-client",
+ "scene",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "test-runner",
+ "tokio",
+ "tokio-util",
+ "url",
+]
 
 [[package]]
 name = "lock_api"

@@ -20,7 +20,7 @@
 //! git — here, a file copy. Nothing in the daemon knows these four sessions
 //! have anything to do with each other.
 
-use daemon_harness::{Block, Daemon, DaemonOptions, Mode, ProviderStub, Reply, World};
+use live::{Block, Daemon, DaemonOptions, Mode, ProviderStub, Reply, World};
 use rpc_client::Target;
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -101,7 +101,7 @@ impl Pipeline {
     /// and extracting memories both fire their own request, with their own
     /// (or no) system prompt and never a tool table. Reading `last()` gets
     /// whichever of those landed most recently.
-    fn last_turn_call(&self) -> daemon_harness::SeenRequest {
+    fn last_turn_call(&self) -> live::SeenRequest {
         self.provider
             .calls()
             .into_iter()

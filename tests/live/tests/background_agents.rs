@@ -1,7 +1,7 @@
 //! A background sub-agent tells the agent that started it when it is done,
 //! and a host can reach it through the daemon while it runs.
 
-use daemon_harness::{Block, Daemon, DaemonOptions, ProviderStub, Reply, World};
+use live::{Block, Daemon, DaemonOptions, ProviderStub, Reply, World};
 use serde_json::json;
 use std::time::Duration;
 

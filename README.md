@@ -573,7 +573,8 @@ that maps to `TEXT` in Postgres and SQLite alike.
 ## Testing
 
 Five layers, each answering a different question, none of them needing a
-network or an API key — and all of it runs on every push.
+network or an API key — and all of it runs on every push. A sixth, the live
+tier, runs the same harness against a real model by hand.
 
 | Layer | What it answers | How |
 |---|---|---|
@@ -581,7 +582,8 @@ network or an API key — and all of it runs on every push.
 | `crates/*/tests` | does this crate keep its promise through its public seam | `cargo test` |
 | `daemon/tests` | a real server, a real socket, real JSON-RPC | `cargo test -p daemon` |
 | `tests/runner/tests` | a real Agent doing real work, with the model's answers written down | `cargo test -p test-runner` |
-| `tests/daemon_harness/tests` | the assembled product: in through JSON-RPC, out through an HTTP provider — run twice, in-process and against a spawned `agixd` | `cargo test -p daemon-harness` |
+| `tests/live/tests` | the assembled product: in through JSON-RPC, out through an HTTP provider — run twice, in-process and against a spawned `agixd` | `cargo test -p live` |
+| `tests/live/tests/live_*` | the same, with a real model behind a recording proxy: does a model actually make use of it | `cargo test -p live --features real-model` (credentials in `.env`; see `tests/README.md`) |
 
 Plus `tests/scripts/*.sh`, which asserts things about the build itself — that a
 no-plugin build links no WebAssembly, for one.

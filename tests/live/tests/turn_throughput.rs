@@ -9,7 +9,7 @@
 //! ```sh
 //! cargo build --release -p daemon --bin agixd
 //! AGIX_TEST_DAEMON_BIN=target/release/agixd \
-//!   cargo test --release -p daemon-harness --test turn_throughput -- --ignored --nocapture
+//!   cargo test --release -p live --test turn_throughput -- --ignored --nocapture
 //! ```
 //!
 //! Each turn makes the model ask for a content Grep over a copy of this
@@ -19,9 +19,9 @@
 
 use std::time::{Duration, Instant};
 
-use daemon_harness::handle::{Daemon, DaemonOptions, Mode};
-use daemon_harness::provider::{Block, ProviderStub, Reply};
-use daemon_harness::world::World;
+use live::handle::{Daemon, DaemonOptions, Mode};
+use live::provider::{Block, ProviderStub, Reply};
+use live::world::World;
 use serde_json::json;
 
 const TURNS: usize = 10;

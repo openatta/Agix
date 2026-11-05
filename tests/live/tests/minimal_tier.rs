@@ -7,19 +7,19 @@
 //! context; a method that belongs to a module the build lacks answers
 //! `METHOD_NOT_FOUND` naming the module, not a generic unknown method.
 
-use daemon_harness::handle::{Daemon, DaemonOptions};
-use daemon_harness::provider::{ProviderStub, Reply};
-use daemon_harness::world::World;
+use live::handle::{Daemon, DaemonOptions};
+use live::provider::{ProviderStub, Reply};
+use live::world::World;
 use serde_json::json;
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a second daemon, built with no modules"]
 async fn the_kernel_alone_runs_a_session_and_names_what_it_lacks() -> anyhow::Result<()> {
-    let minimal = daemon_harness::alternate_daemon_binary(
+    let minimal = live::alternate_daemon_binary(
         "AGIX_TEST_DAEMON_BIN_MINIMAL",
         "CARGO_TARGET_DIR=$PWD/target/minimal cargo build -p daemon --no-default-features\n  \
          AGIX_TEST_DAEMON_BIN_MINIMAL=$PWD/target/minimal/debug/agixd cargo test \
-         -p daemon-harness --test minimal_tier -- --ignored",
+         -p live --test minimal_tier -- --ignored",
     )?;
 
     let world = World::new()?;

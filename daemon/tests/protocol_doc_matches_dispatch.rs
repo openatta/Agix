@@ -371,7 +371,7 @@ fn starts_a_daemon(src: &str) -> bool {
     const MARKERS: &[&str] = &[
         "assemble::pool",
         "DaemonRpcClient::connect",
-        "daemon_harness::",
+        "live::",
         "serve_unix",
     ];
     MARKERS.iter().any(|marker| src.contains(marker))
@@ -409,11 +409,7 @@ fn client_wrappers(root: &Path) -> Vec<(String, String)> {
 /// This file is excluded: it names methods to reason about them and sends
 /// none of them, which would make it evidence for itself.
 fn test_sources(root: &Path) -> Vec<(String, String)> {
-    let dirs = [
-        "daemon/tests",
-        "tests/daemon_harness/tests",
-        "tests/rpc_client/tests",
-    ];
+    let dirs = ["daemon/tests", "tests/live/tests", "tests/rpc_client/tests"];
     let mut out = Vec::new();
     for dir in dirs {
         let Ok(entries) = std::fs::read_dir(root.join(dir)) else {

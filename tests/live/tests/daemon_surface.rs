@@ -20,7 +20,7 @@
 //! and an environment, and every one of those is a step the in-process build
 //! is handed rather than takes.
 
-use daemon_harness::{Block, Daemon, DaemonOptions, Mode, ProviderStub, Reply, World};
+use live::{Block, Daemon, DaemonOptions, Mode, ProviderStub, Reply, World};
 use serde_json::json;
 use std::time::Duration;
 
@@ -896,11 +896,11 @@ async fn a_package_may_add_to_the_prompt_but_not_rewrite_it_in_a_spawned_daemon(
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a second daemon, built without the script carrier"]
 async fn a_build_with_no_script_carrier_honors_no_scripts_section() -> anyhow::Result<()> {
-    let carrierless = daemon_harness::alternate_daemon_binary(
+    let carrierless = live::alternate_daemon_binary(
         "AGIX_TEST_DAEMON_BIN_NO_CARRIER",
         "CARGO_TARGET_DIR=$PWD/target/no-carrier cargo build -p daemon --no-default-features --features full\n  \
          AGIX_TEST_DAEMON_BIN_NO_CARRIER=$PWD/target/no-carrier/debug/agixd cargo test \
-         -p daemon-harness -- --ignored",
+         -p live -- --ignored",
     )?;
 
     let world = World::new()?;
@@ -1028,7 +1028,7 @@ const PLUGIN_DAEMON_HOWTO: &str =
     "CARGO_TARGET_DIR=$PWD/target/plugins cargo build -p daemon --no-default-features --features full \
      --features plugin-compile\n  \
      AGIX_TEST_DAEMON_BIN_PLUGINS=$PWD/target/plugins/debug/agixd cargo test \
-     -p daemon-harness -- --ignored";
+     -p live -- --ignored";
 
 /// A package carrying a real WebAssembly component, ready for
 /// `plugin.install`.
@@ -1091,7 +1091,7 @@ async fn install_the_component_package(
 
 /// The `tool_result` block answering `tool_use_id`, out of a request's
 /// messages.
-fn tool_result_for(request: &daemon_harness::SeenRequest, id: &str) -> Option<serde_json::Value> {
+fn tool_result_for(request: &live::SeenRequest, id: &str) -> Option<serde_json::Value> {
     request
         .body
         .get("messages")?
@@ -1135,10 +1135,8 @@ fn collect_text(v: &serde_json::Value, out: &mut String) {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a second daemon, built with the plugin carrier"]
 async fn a_wasm_plugins_tool_is_called_and_answers() -> anyhow::Result<()> {
-    let with_plugins = daemon_harness::alternate_daemon_binary(
-        "AGIX_TEST_DAEMON_BIN_PLUGINS",
-        PLUGIN_DAEMON_HOWTO,
-    )?;
+    let with_plugins =
+        live::alternate_daemon_binary("AGIX_TEST_DAEMON_BIN_PLUGINS", PLUGIN_DAEMON_HOWTO)?;
 
     let world = World::new()?;
     let project = world.project("plugged")?;
@@ -1233,10 +1231,8 @@ async fn a_wasm_plugins_tool_is_called_and_answers() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a second daemon, built with the plugin carrier"]
 async fn a_plugins_tools_are_offered_to_every_session() -> anyhow::Result<()> {
-    let with_plugins = daemon_harness::alternate_daemon_binary(
-        "AGIX_TEST_DAEMON_BIN_PLUGINS",
-        PLUGIN_DAEMON_HOWTO,
-    )?;
+    let with_plugins =
+        live::alternate_daemon_binary("AGIX_TEST_DAEMON_BIN_PLUGINS", PLUGIN_DAEMON_HOWTO)?;
 
     let world = World::new()?;
     let project = world.project("unplugged")?;
@@ -1285,10 +1281,8 @@ async fn a_plugins_tools_are_offered_to_every_session() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a second daemon, built with the plugin carrier"]
 async fn a_trapping_component_costs_its_call_and_not_the_turn() -> anyhow::Result<()> {
-    let with_plugins = daemon_harness::alternate_daemon_binary(
-        "AGIX_TEST_DAEMON_BIN_PLUGINS",
-        PLUGIN_DAEMON_HOWTO,
-    )?;
+    let with_plugins =
+        live::alternate_daemon_binary("AGIX_TEST_DAEMON_BIN_PLUGINS", PLUGIN_DAEMON_HOWTO)?;
 
     let world = World::new()?;
     let project = world.project("trapping")?;
@@ -1391,10 +1385,8 @@ async fn a_trapping_component_costs_its_call_and_not_the_turn() -> anyhow::Resul
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a second daemon, built with the plugin carrier"]
 async fn a_plugin_that_keeps_faulting_is_set_aside() -> anyhow::Result<()> {
-    let with_plugins = daemon_harness::alternate_daemon_binary(
-        "AGIX_TEST_DAEMON_BIN_PLUGINS",
-        PLUGIN_DAEMON_HOWTO,
-    )?;
+    let with_plugins =
+        live::alternate_daemon_binary("AGIX_TEST_DAEMON_BIN_PLUGINS", PLUGIN_DAEMON_HOWTO)?;
 
     let world = World::new()?;
     let project = world.project("faulting")?;
@@ -1501,10 +1493,8 @@ async fn a_plugin_that_keeps_faulting_is_set_aside() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a second daemon, built with the plugin carrier"]
 async fn a_component_that_will_not_load_says_why() -> anyhow::Result<()> {
-    let with_plugins = daemon_harness::alternate_daemon_binary(
-        "AGIX_TEST_DAEMON_BIN_PLUGINS",
-        PLUGIN_DAEMON_HOWTO,
-    )?;
+    let with_plugins =
+        live::alternate_daemon_binary("AGIX_TEST_DAEMON_BIN_PLUGINS", PLUGIN_DAEMON_HOWTO)?;
 
     let world = World::new()?;
     let project = world.project("unloadable")?;
@@ -1599,10 +1589,8 @@ async fn a_component_that_will_not_load_says_why() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a second daemon, built with the plugin carrier"]
 async fn a_capability_the_package_never_declared_is_unreachable() -> anyhow::Result<()> {
-    let with_plugins = daemon_harness::alternate_daemon_binary(
-        "AGIX_TEST_DAEMON_BIN_PLUGINS",
-        PLUGIN_DAEMON_HOWTO,
-    )?;
+    let with_plugins =
+        live::alternate_daemon_binary("AGIX_TEST_DAEMON_BIN_PLUGINS", PLUGIN_DAEMON_HOWTO)?;
 
     let world = World::new()?;
     let project = world.project("ungranted")?;
@@ -1806,12 +1794,12 @@ async fn telemetry_counts_what_the_turn_actually_did(mode: Mode) -> anyhow::Resu
     for request in of_type("api_request") {
         assert_eq!(
             request["input_tokens"].as_u64(),
-            Some(daemon_harness::provider::INPUT_TOKENS),
+            Some(live::provider::INPUT_TOKENS),
             "the input count the wire carried is not in the telemetry: {request}"
         );
         assert_eq!(
             request["output_tokens"].as_u64(),
-            Some(daemon_harness::provider::OUTPUT_TOKENS),
+            Some(live::provider::OUTPUT_TOKENS),
             "the output count the wire carried is not in the telemetry: {request}"
         );
         // Their own fields, not folded into the input count: a cache read is
@@ -1819,12 +1807,12 @@ async fn telemetry_counts_what_the_turn_actually_did(mode: Mode) -> anyhow::Resu
         // one number for all three cannot be turned back into a cost.
         assert_eq!(
             request["cache_creation_tokens"].as_u64(),
-            Some(daemon_harness::provider::CACHE_CREATION_TOKENS),
+            Some(live::provider::CACHE_CREATION_TOKENS),
             "the cache write the wire reported is not in the telemetry: {request}"
         );
         assert_eq!(
             request["cache_read_tokens"].as_u64(),
-            Some(daemon_harness::provider::CACHE_READ_TOKENS),
+            Some(live::provider::CACHE_READ_TOKENS),
             "the cache read the wire reported is not in the telemetry: {request}"
         );
     }
@@ -1890,16 +1878,13 @@ async fn the_turn_complete_event_carries_the_whole_of_usage(mode: Mode) -> anyho
     // the protocol, and a test that deserialized them back into the type it
     // is guarding would agree with any renaming the type ever does.
     for (field, expected) in [
-        ("input_tokens", daemon_harness::provider::INPUT_TOKENS),
-        ("output_tokens", daemon_harness::provider::OUTPUT_TOKENS),
+        ("input_tokens", live::provider::INPUT_TOKENS),
+        ("output_tokens", live::provider::OUTPUT_TOKENS),
         (
             "cache_creation_input_tokens",
-            daemon_harness::provider::CACHE_CREATION_TOKENS,
+            live::provider::CACHE_CREATION_TOKENS,
         ),
-        (
-            "cache_read_input_tokens",
-            daemon_harness::provider::CACHE_READ_TOKENS,
-        ),
+        ("cache_read_input_tokens", live::provider::CACHE_READ_TOKENS),
     ] {
         assert_eq!(
             usage[field].as_u64(),
@@ -2121,7 +2106,7 @@ async fn a_call_no_turn_made_is_still_accounted_for() -> anyhow::Result<()> {
         .expect("just asserted");
     assert_eq!(
         memory_call["input_tokens"].as_u64(),
-        Some(daemon_harness::provider::INPUT_TOKENS),
+        Some(live::provider::INPUT_TOKENS),
         "an auxiliary call is accounted for without what it cost: {memory_call}"
     );
 

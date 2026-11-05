@@ -10,9 +10,9 @@
 use std::path::Path;
 use std::time::Duration;
 
-use daemon_harness::handle::{Daemon, DaemonOptions, Mode};
-use daemon_harness::provider::{Block, ProviderStub, Reply};
-use daemon_harness::world::World;
+use live::handle::{Daemon, DaemonOptions, Mode};
+use live::provider::{Block, ProviderStub, Reply};
+use live::world::World;
 use serde_json::json;
 
 fn group_alive(group: i64) -> bool {

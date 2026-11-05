@@ -34,8 +34,8 @@ use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::provider::ProviderStub;
 use crate::world::World;
+use crate::ModelEndpoint;
 
 pub const TOKEN: &str = "harness-token";
 
@@ -146,7 +146,7 @@ enum Running {
 impl Daemon {
     pub async fn start(
         world: &World,
-        provider: &ProviderStub,
+        provider: &dyn ModelEndpoint,
         opts: DaemonOptions,
     ) -> anyhow::Result<Self> {
         match opts.mode {
@@ -157,7 +157,7 @@ impl Daemon {
 
     async fn start_in_process(
         world: &World,
-        provider: &ProviderStub,
+        provider: &dyn ModelEndpoint,
         opts: DaemonOptions,
     ) -> anyhow::Result<Self> {
         let paths =
@@ -166,13 +166,7 @@ impl Daemon {
         std::fs::create_dir_all(paths.config_root())?;
 
         let socket = world.socket();
-        let config = load_daemon_config(
-            "claude-sonnet-4-6",
-            2000,
-            Some(&socket),
-            &opts.scene,
-            &paths,
-        );
+        let config = load_daemon_config(provider.model(), 2000, Some(&socket), &opts.scene, &paths);
 
         let client: Arc<dyn AnthropicClient> = Arc::new(HttpAnthropicClient::with_base(
             AuthMode::ApiKey("harness".to_string()),
@@ -253,7 +247,7 @@ impl Daemon {
 
     async fn start_spawned(
         world: &World,
-        provider: &ProviderStub,
+        provider: &dyn ModelEndpoint,
         opts: DaemonOptions,
     ) -> anyhow::Result<Self> {
         let (mut cmd, socket, stderr_path, tcp, ws) = spawn_command(world, provider, &opts).await?;
@@ -278,7 +272,7 @@ impl Daemon {
     /// healthy daemon cannot observe any of them.
     pub async fn spawn_and_wait(
         world: &World,
-        provider: &ProviderStub,
+        provider: &dyn ModelEndpoint,
         opts: DaemonOptions,
         timeout: Duration,
     ) -> anyhow::Result<(std::process::ExitStatus, String)> {
@@ -427,7 +421,7 @@ type SpawnPlan = (
 /// the whole difference between the two modes.
 async fn spawn_command(
     world: &World,
-    provider: &ProviderStub,
+    provider: &dyn ModelEndpoint,
     opts: &DaemonOptions,
 ) -> anyhow::Result<SpawnPlan> {
     std::fs::create_dir_all(world.config_root(&opts.scene))?;
@@ -452,6 +446,8 @@ async fn spawn_command(
         .arg(&opts.scene)
         .arg("--instance")
         .arg(&opts.instance)
+        .arg("--model")
+        .arg(provider.model())
         .arg("--session-cap")
         .arg(opts.session_cap.to_string())
         .arg("--permission-prompt-timeout")

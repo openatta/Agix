@@ -119,6 +119,14 @@ pub struct SeenRequest {
 }
 
 impl SeenRequest {
+    /// The model this request asked for.
+    pub fn model(&self) -> &str {
+        self.body
+            .get("model")
+            .and_then(|m| m.as_str())
+            .unwrap_or_default()
+    }
+
     /// The system prompt as one string. Blocks are joined so a case can ask
     /// whether a mark is in the prompt without caring which block carries it.
     pub fn system_text(&self) -> String {
@@ -285,7 +293,7 @@ impl ProviderStub {
     }
 
     async fn serve_one(&self, mut sock: tokio::net::TcpStream) -> anyhow::Result<()> {
-        let Some((path, body)) = read_request(&mut sock).await? else {
+        let Some(RawRequest { path, body, .. }) = read_request(&mut sock).await? else {
             return Ok(());
         };
         self.seen.lock().unwrap().push(SeenRequest {
@@ -312,10 +320,27 @@ impl ProviderStub {
     }
 }
 
+/// One HTTP request as it came off the socket.
+pub(crate) struct RawRequest {
+    pub path: String,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+}
+
+impl crate::ModelEndpoint for ProviderStub {
+    fn base_url(&self) -> url::Url {
+        self.base_url.clone()
+    }
+
+    fn model(&self) -> &str {
+        "claude-sonnet-4-6"
+    }
+}
+
 /// Read one HTTP request: the head, then exactly `content-length` bytes.
-async fn read_request(
+pub(crate) async fn read_request(
     sock: &mut tokio::net::TcpStream,
-) -> anyhow::Result<Option<(String, Vec<u8>)>> {
+) -> anyhow::Result<Option<RawRequest>> {
     let mut buf = Vec::new();
     let head_end = loop {
         if let Some(at) = find(&buf, b"\r\n\r\n") {
@@ -330,17 +355,20 @@ async fn read_request(
     };
 
     let head = String::from_utf8_lossy(&buf[..head_end]).into_owned();
-    let path = head
-        .lines()
+    let mut lines = head.lines();
+    let path = lines
         .next()
         .and_then(|l| l.split_whitespace().nth(1))
         .unwrap_or("/")
         .to_string();
-    let len: usize = head
-        .lines()
-        .find(|l| l.to_ascii_lowercase().starts_with("content-length:"))
-        .and_then(|l| l.split(':').nth(1))
-        .and_then(|v| v.trim().parse().ok())
+    let headers: Vec<(String, String)> = lines
+        .filter_map(|l| l.split_once(':'))
+        .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
+        .collect();
+    let len: usize = headers
+        .iter()
+        .find(|(k, _)| k == "content-length")
+        .and_then(|(_, v)| v.parse().ok())
         .unwrap_or(0);
 
     let mut body = buf[head_end..].to_vec();
@@ -353,14 +381,18 @@ async fn read_request(
         body.extend_from_slice(&chunk[..n]);
     }
     body.truncate(len);
-    Ok(Some((path, body)))
+    Ok(Some(RawRequest {
+        path,
+        headers,
+        body,
+    }))
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
 }
 
-fn http_response(code: u16, headers: &[(String, String)], body: &str) -> String {
+pub(crate) fn http_response(code: u16, headers: &[(String, String)], body: &str) -> String {
     let mut out = format!("HTTP/1.1 {code} X\r\n");
     for (name, value) in headers {
         out.push_str(&format!("{name}: {value}\r\n"));

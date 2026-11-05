@@ -156,7 +156,7 @@ ToolWithdrawn(name)   绑上时请求不再提供这个工具，不绑时提供
 
 **曾经不在这张网里的那一条**：没有载体的构建拿一个 `scripts` 段怎么办。一个「带着
 载体」的构建跑出来的测试观测不到「不带载体」的那个构建——除非被测的 daemon 是另一
-个进程。`tests/daemon_harness` 就是干这个的：同一个项目、同一份 settings，分别喂给
+个进程。`tests/live` 就是干这个的：同一个项目、同一份 settings，分别喂给
 默认构建和 `--no-default-features` 构建，前者痕迹到达提示词且 `session.get` 有账本，
 后者两样都没有。
 
@@ -209,12 +209,12 @@ sidecar 只会让「这一组为什么这么绑」离断言更远。
 | C | `tests/runner/tests/script_boundaries.rs` |
 | D | `tests/runner/tests/script_task_profiles.rs` |
 | daemon 那条路 | `daemon/tests/session_lifecycle.rs` |
-| 装配好的那条路 | `tests/daemon_harness/tests/daemon_surface.rs` |
+| 装配好的那条路 | `tests/live/tests/daemon_surface.rs` |
 
 daemon 的两条单独在那边：从 `.agix/settings.json` 到装到会话上的这一段全是 daemon
 的活——解析、按项目根解析路径、每个会话绑一次——驱动 `Builder` 的用例问不到它。
 
-`daemon_harness` 那几条又低一层：进去是 JSON-RPC，出来是一个说 Anthropic SSE 的
+`tests/live` 那几条又低一层：进去是 JSON-RPC，出来是一个说 Anthropic SSE 的
 HTTP 桩，所以「脚本改的东西到没到模型」是从**桩收到的那个请求**里读出来的，不是从
 引擎内部的某个中间值。每条跑两遍，本进程和另起一个 `agixd`。
 
@@ -257,7 +257,7 @@ C 档里「项目外的脚本只能新增」问的是同一条规则，但那是
 确实不在这张网里——但它有自己的那张：`crates/wasm-host/tests/component_roundtrip.rs`
 拿真组件问载体本身（超时、陷阱、能力、状态不外泄），`crates/plugin-host` 问一份
 manifest 怎么变成注册好的工具，而**装配面**六条在
-`tests/daemon_harness/tests/daemon_surface.rs`：
+`tests/live/tests/daemon_surface.rs`：
 
 | 用例 | 问什么 |
 |---|---|

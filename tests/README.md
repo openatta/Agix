@@ -8,7 +8,8 @@
 | `crates/*/tests/*.rs` | crate 验收：从公开的缝进去，这个 crate 的承诺还成立吗 | `cargo test` |
 | `daemon/tests/*.rs` | daemon 的 e2e：真的起一个 server，走真的 socket 收发 JSON-RPC | `cargo test -p daemon` |
 | `tests/runner/tests/*.rs` | 引擎行为网：真的驱动 Agent，模型那端是写死的脚本 | `cargo test -p test-runner` |
-| `tests/daemon_harness/tests/*.rs` | 装配面：从 JSON-RPC 进去，模型那端是一个 HTTP 桩；同一批用例跑「本进程」和「另起一个 agixd」两遍 | `cargo test -p daemon-harness`（跨进程那半在 `-- --ignored` 里） |
+| `tests/live/tests/*.rs` | 装配面：从 JSON-RPC 进去，模型那端是一个 HTTP 桩；同一批用例跑「本进程」和「另起一个 agixd」两遍 | `cargo test -p live`（跨进程那半在 `-- --ignored` 里） |
+| `tests/live/tests/live_*.rs` | LIVE 层：同一套框架，模型那端换成真实模型，以二次开发者的身份黑盒地把特性用一遍 | `cargo test -p live --features real-model`，见下文「LIVE 层」 |
 | `tests/scripts/*.sh` | 构建面的断言（无插件构建里没有插件依赖等） | `tests/scripts/locked_build.sh` |
 
 其中三条要的不是同一个 daemon：一个构建只带一个载体，所以「没有脚本引擎的构建拿到
@@ -22,16 +23,72 @@
 > 不会说「你换了二进制」，只会说「脚本没进提示词」。用例里给出的两条建法都带着
 > `CARGO_TARGET_DIR=...`，不是为了省空间，是为了这个。
 
-**全部不联网、不需要凭据**，`cargo test --workspace` 一条命令跑完，CI 每次 push 都跑。
+除 LIVE 层外都不联网、不需要凭据，`cargo test --workspace` 一条命令跑完，CI 每次
+push 都跑。LIVE 层要凭据、要花 token，不进 CI，改动涉及模型怎么用这些能力时手工跑。
 
 脚本载体（QuickJS）的那一张网横跨其中几层，单独有一份设计说明：
 `docs/testing_scripts.md`。要点是它为什么需要一本账——脚本每次调用拿到全新运行时、
 没有文件系统，所以「这个点被触发了吗」只能从外面回答，而「失败的脚本什么都改不了」
 意味着失败和从没绑上在外面长得一模一样。
 
+## LIVE 层
+
+桩层证明的是「模型这样回答时，产品做对了」；它答不了「真实模型拿到这套工具、提示词
+和协议，能不能把事做成」。LIVE 层答后一个问题：`tests/live` 同一套 `World` /
+`Daemon` / RPC 客户端，模型那端从 `ProviderStub` 换成 `LiveProvider`。用例只经
+JSON-RPC 与盘上的文件跟产品打交道，和下游二次开发的用法相同。
+
+**`LiveProvider` 是一个本机录制代理**，daemon 像指向桩一样指向它，它把请求转发给真实
+端点、把 SSE 原样流回来。走代理而不是直接把端点交给 daemon，换来两样东西：
+
+- 每个请求照样被记下，「子 agent 用的是哪个模型」「通知有没有进对话」仍然能从外面读；
+- 凭据只在测试进程里，daemon 拿到的是假 key，由代理换成真的。
+
+**凭据**从工作区的 `.env`（已在 `.gitignore`）读，读不到再看进程环境：
+
+| 变量 | 含义 |
+|---|---|
+| `ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN`（或 `ANTHROPIC_API_KEY`） | Anthropic 兼容端点 |
+| `ANTHROPIC_MODEL`（`AGIX_LIVE_MODEL` 优先） | 会话的默认模型 |
+| `AGIX_LIVE_MODELS` | 逗号分隔的可用模型，给「每个子 agent 一个模型」的用例分配；缺省只有默认模型 |
+| `AGIX_LIVE_MAX_CALLS` | 一个用例最多调几次模型，默认 400；超出后代理直接回错误，不再花钱 |
+| `AGIX_LIVE_TURN_TIMEOUT_SECS` | 一轮的上限，默认 900 |
+| `AGIX_LIVE_ENV_FILE` | 换一个 `.env` |
+
+文件优先于进程环境，因为跑测试的那个 shell 很可能带着给别的工具用的 `ANTHROPIC_*`。
+
+```sh
+cargo build -p daemon                       # 另起进程的那条用例要 target/debug/agixd
+AGIX_LIVE_MODELS=deepseek-flash,deepseek-v4-pro,deepseek-chat \
+  cargo test -p live --features real-model --test 'live_*' -- --nocapture
+```
+
+`--nocapture` 会打出每一轮的耗时、用到的工具、模型的回答，以及每个用例的调用次数和
+token 用量。改了 `tests/live` 后 lint 也要带上 feature：
+`cargo clippy -p live --features real-model --all-targets -- -D warnings`。
+
+| 用例 | 用一遍什么 |
+|---|---|
+| `live_basics.rs` | Read / Write / Edit / Grep / Bash 改项目；会话提示词与 resume；Plan 模式不改文件；另起进程的 `agixd` |
+| `live_agents.rs` | 两个前台子 agent 各用自己类型指定的模型；后台子 agent 收宿主的消息、结束后通知父会话 |
+| `live_team.rs` | `TeamCreate` 两个阶段，后一阶段从团队记忆里拿前一阶段存的东西 |
+| `live_extensions.rs` | 项目 skill；MCP server 的工具；`PreToolUse` hook 看到工具调用 |
+| `live_multi_agent.rs` | 主控 + 三个不同模型的后台 worker，每个 worker 里多个后台任务；人为制造一个任务失败、一个 worker 故障，修复后重跑，主控汇总 |
+
+**断言只看结果，不看措辞。** 真实模型每次说法不同，能断言的是：盘上的文件、任务状态、
+代理记下的请求，以及只有真跑过才拿得到的值——用例里的随机令牌由脚本在运行时从输入文件
+算出来，汇报里出现它，说明结果确实是一层层传上来的。断言模型「说了某句话」的用例会
+随模型版本时好时坏，不要写。
+
+**提示词写成操作步骤。** 用例要验证的是产品能力，不是模型的规划能力，所以让模型做什么、
+用哪个工具、失败了怎么办都写明。用例里的「操作员」是测试代码：它盯着 `runs.log` 和
+`session.tasks`，看到故障就修复，再经 `session.messageTask`（给 worker）或
+`on_busy: "steer"`（给主控）告诉模型；主控的一轮在活还没干完时就结束了，它就再推一轮，
+次数会打印出来——这个数本身就是一个观测值。
+
 ## 四个项目那条流水线
 
-`tests/daemon_harness/tests/four_project_pipeline.rs` 是唯一一条**把各层放到一起
+`tests/live/tests/four_project_pipeline.rs` 是唯一一条**把各层放到一起
 互相为难**的用例：一个 daemon 同时服务四个项目（A 产出数据 → 人工评审提交 → B/C
 并行消费 → D 判定 → 打回重跑），每个项目有自己的 settings、skill、子代理类型，D 还
 跑在另一个场景上。
@@ -59,7 +116,7 @@
   （运维者可以录自己的会话拿去排查），不再是测试基础设施：本仓库不再录制、也不再
   提交任何录像。用它的方式见 `docs/ARCHITECTURE.md` 与 `settings.json` 的
   `recorder` 段。
-- `daemon_harness::ProviderStub` —— 一个说 Anthropic SSE 的 HTTP 服务器。它扎得
+- `live::ProviderStub` —— 一个说 Anthropic SSE 的 HTTP 服务器。它扎得
   最深：请求序列化、SSE 解码、退避重试全都真的在跑，而这三样在前三种假法里都被跳
   过了。它也是**唯一能给另一个进程用的**假法——`Arc<dyn AnthropicClient>` 递不进
   子进程，`ANTHROPIC_BASE_URL` 可以。桩记下收到的每个请求，「脚本/插件改了发出去

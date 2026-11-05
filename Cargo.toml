@@ -26,7 +26,7 @@ members = [
     "crates/task",
     "daemon",
     "tests/rpc_client",
-    "tests/daemon_harness",
+    "tests/live",
     "tests/runner",
     "tests/fixtures/mcp_toy_server",
 ]
@@ -131,7 +131,7 @@ assembly   = { path = "crates/assembly", default-features = false }
 task       = { path = "crates/task" }
 daemon     = { path = "daemon" }
 rpc-client = { path = "tests/rpc_client" }
-daemon-harness = { path = "tests/daemon_harness" }
+live = { path = "tests/live" }
 
 # The release artifact was 54 MB of which 14 MB was symbols nobody ships and
 # reads, and the rest was compiled without any cross-crate inlining. Three
@@ -152,7 +152,7 @@ lto = "fat"
 codegen-units = 1
 
 # Half the size of `release` for about a tenth more of the daemon's own time
-# per turn (`tests/daemon_harness/tests/turn_throughput.rs`). `"z"` is a third
+# per turn (`tests/live/tests/turn_throughput.rs`). `"z"` is a third
 # smaller again and about two thirds slower; per-crate `opt-level = 3` overrides
 # change neither, because fat LTO re-optimises everything at this level.
 #

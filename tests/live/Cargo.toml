@@ -1,9 +1,9 @@
 [package]
-name = "daemon-harness"
+name = "live"
 version.workspace = true
 edition.workspace = true
 publish = false
-description = "Runs a scenario against a daemon — in this process or a spawned one — over the real RPC surface"
+description = "Runs a scenario against a daemon — in this process or a spawned one — over the real RPC surface, with a scripted or a real model"
 
 [dependencies]
 daemon      = { workspace = true }
@@ -20,8 +20,34 @@ anyhow      = { workspace = true }
 async-trait = { workspace = true }
 url         = { workspace = true }
 tempfile    = { workspace = true }
+reqwest     = { workspace = true }
 
 [dev-dependencies]
 # For the demo package's zip: one packer, shared, rather than a second copy
 # of "walk a directory into an archive and hash it".
 test-runner = { path = "../runner" }
+
+[features]
+# The live tier: cases that talk to a real model, with the credentials in the
+# workspace's `.env`. Off by default so `cargo test --workspace` stays offline.
+real-model = []
+
+[[test]]
+name = "live_multi_agent"
+required-features = ["real-model"]
+
+[[test]]
+name = "live_basics"
+required-features = ["real-model"]
+
+[[test]]
+name = "live_agents"
+required-features = ["real-model"]
+
+[[test]]
+name = "live_team"
+required-features = ["real-model"]
+
+[[test]]
+name = "live_extensions"
+required-features = ["real-model"]

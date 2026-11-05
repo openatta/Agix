@@ -1,7 +1,7 @@
 //! A session's own system prompt: given at creation, changed mid-session,
 //! kept across a rebuild, and never written into a settings file.
 
-use daemon_harness::{Daemon, DaemonOptions, ProviderStub, Reply, World};
+use live::{Daemon, DaemonOptions, ProviderStub, Reply, World};
 use serde_json::json;
 
 #[tokio::test(flavor = "multi_thread")]
