@@ -122,6 +122,15 @@ skill 命令。
   `ModelEvent` 新增 `SearchResults`,`ModelError` 新增 `Unsupported`,穷尽匹配要补分支。
   自己实现 `Model` 的,收到 `provider_search` 而做不到时回 `Unsupported`。
 
+### Monitor 真的在后台跑
+
+0.2.x 的 `Monitor` 说是后台监视，实际挡住这一轮直到脚本退出或超时(常驻的一直挂着),
+打出的行也没有送到模型,工具结果只有行数。0.3 里它登记成会话的任务后立即返回任务 id;
+打出的行 200 毫秒内的合成一条 `<task-notification>`,模型在下一步(或下一轮开头)读到,
+没读的通知会并进下一条;脚本退出、超时、事件过多时最后报一次;`TaskStop` /
+`session.stopTask` 停掉它,本轮被中断或会话关闭时也一并停掉。宿主经 `task_progress`
+边跑边看到它的输出。
+
 ### token 估算
 
 `model::tokens` 不再加载 cl100k 词表,改为按字符类估算:相对 cl100k,代码与 JSON

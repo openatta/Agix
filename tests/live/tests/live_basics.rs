@@ -1,5 +1,6 @@
 //! The single-agent surface with a real model: the file and shell tools, web
-//! search, a session's own prompt, a resume, plan mode, and a spawned `agixd`.
+//! search, a monitor whose events reach the model while it works, a session's
+//! own prompt, a resume, plan mode, and a spawned `agixd`.
 
 use live::{LiveRun, Mode};
 use serde_json::json;
@@ -214,6 +215,83 @@ async fn web_search_is_the_engines_tool_searching_through_the_sessions_model() -
             .collect();
         assert!(names.contains(&"WebSearch") && !names.contains(&"web_search"));
     }
+    run.finish().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_monitors_events_reach_the_model_while_it_works() -> anyhow::Result<()> {
+    let mut run = LiveRun::start("watch", json!({}), Mode::InProcess).await?;
+    let code = format!("E-{}", nonce());
+    run.write_file("app.log", "")?;
+    run.write_file(
+        "deploy.sh",
+        &format!(
+            "sleep 1\necho 'INFO deploy started' >> app.log\nsleep 1\n\
+             echo 'ERROR {code} payment gateway timeout' >> app.log\nsleep 1\n\
+             echo 'INFO deploy finished' >> app.log\nsleep 1\necho deployed\n"
+        ),
+    )?;
+    let session = run.session().await?;
+    let watcher = run.watch(&session, false).await?;
+
+    let events = run
+        .turn(
+            &session,
+            "1. Start a Monitor with persistent true, description \"errors in app.log\" and \
+             command `tail -n 0 -F app.log | grep --line-buffered ERROR`.\n\
+             2. Then run `sh deploy.sh` with the Bash tool; it takes a few seconds.\n\
+             3. When the monitor reports an ERROR line, write its error code (the word that \
+             starts with E-) to incident.txt with the Write tool.\n\
+             4. Stop the monitor with TaskStop, then reply with the error code.",
+        )
+        .await?;
+    let monitor_at = events.tool_uses.iter().position(|(n, _)| n == "Monitor");
+    let deploy_at = events.tool_uses.iter().position(|(n, input)| {
+        n == "Bash"
+            && input["command"]
+                .as_str()
+                .is_some_and(|c| c.contains("deploy.sh"))
+    });
+    assert!(
+        monitor_at.is_some() && monitor_at < deploy_at,
+        "the monitor returned at once and the work went on: {:?}",
+        events.tool_uses
+    );
+    assert_eq!(
+        run.read_file("incident.txt").map(|s| s.trim().to_string()),
+        Some(code.clone())
+    );
+    assert!(events.text.contains(&code), "{}", events.text);
+
+    let told = run.provider.calls().iter().position(|c| {
+        let text = c.messages_text();
+        text.contains("<kind>monitor</kind>") && text.contains(&code)
+    });
+    assert!(
+        told.is_some(),
+        "the event reached the model as a notification"
+    );
+
+    let tasks = run.tasks(&session).await?;
+    let monitor = tasks
+        .iter()
+        .find(|t| t["kind"] == "monitor")
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(monitor["status"], "stopped", "TaskStop ended it: {tasks:?}");
+    let task_id = monitor["task_id"].clone();
+    assert!(
+        watcher
+            .events("task_progress")
+            .iter()
+            .any(|f| f["event"]["task_id"] == task_id
+                && f["event"]["appended"]
+                    .as_str()
+                    .is_some_and(|a| a.contains(&code))),
+        "the host saw the error line as it came"
+    );
+    drop(watcher);
     run.finish().await;
     Ok(())
 }

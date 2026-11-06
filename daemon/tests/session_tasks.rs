@@ -639,3 +639,98 @@ async fn a_flood_of_output_streams_as_its_tail_and_says_what_it_left_out() {
         "what a frame left out is still there to read"
     );
 }
+
+#[tokio::test]
+async fn a_monitor_runs_beside_the_session_and_its_events_reach_the_model() {
+    let model = Arc::new(MockAnthropicClient::new());
+    model.push_turn(tool_round(
+        "Monitor",
+        "toolu_watch",
+        serde_json::json!({
+            "command": "for i in 1 2 3; do echo tick-$i; sleep 0.4; done; sleep 60",
+            "description": "ticks",
+            "persistent": true
+        }),
+    ));
+    model.push_turn(text_round("watching"));
+    model.push_turn(text_round("saw the ticks"));
+    let daemon = Daemon::start(model.clone()).await;
+    let session = daemon.ok("session.create", serde_json::json!({})).await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let frames = daemon.watch(&session).await;
+
+    let started = std::time::Instant::now();
+    daemon
+        .ok(
+            "session.run_turn",
+            serde_json::json!({"session_id": session, "message": "watch it"}),
+        )
+        .await;
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the turn did not wait for the monitor"
+    );
+
+    let task_id = eventually!("the monitor's third tick streamed to the host", {
+        let frames = frames.lock().unwrap();
+        frames
+            .iter()
+            .find(|f| {
+                f["event"]["kind"] == "task_progress"
+                    && f["event"]["appended"]
+                        .as_str()
+                        .is_some_and(|a| a.contains("tick-3"))
+            })
+            .map(|f| f["event"]["task_id"].clone())
+    });
+    let tasks = daemon
+        .ok("session.tasks", serde_json::json!({"session_id": session}))
+        .await;
+    let monitor = tasks["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["task_id"] == task_id)
+        .cloned()
+        .unwrap();
+    assert_eq!(monitor["kind"], "monitor");
+    assert_eq!(monitor["status"], "running");
+    assert_eq!(monitor["detail"]["description"], "ticks");
+
+    // Past the window lines are batched in, so the last tick has been posted.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    daemon
+        .ok(
+            "session.run_turn",
+            serde_json::json!({"session_id": session, "message": "anything new?"}),
+        )
+        .await;
+    let asked =
+        serde_json::to_string(&model.nth_request(2).expect("the second turn's call")).unwrap();
+    assert!(
+        asked.contains("<kind>monitor</kind>")
+            && asked.contains("tick-1\\ntick-2\\ntick-3\\n</events>"),
+        "the events opened the next turn: {asked}"
+    );
+
+    let stopped = daemon
+        .ok(
+            "session.stopTask",
+            serde_json::json!({"session_id": session, "task_id": task_id}),
+        )
+        .await;
+    assert_eq!(stopped["stopped"], true);
+    let finished = eventually!("the monitor's end", {
+        frames
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|f| {
+                f["event"]["kind"] == "task_finished" && f["event"]["task"]["task_id"] == task_id
+            })
+            .cloned()
+    });
+    assert_eq!(finished["event"]["task"]["status"], "stopped");
+}

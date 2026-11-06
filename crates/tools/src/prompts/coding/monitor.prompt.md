@@ -1,4 +1,4 @@
-Start a background monitor that streams events from a long-running script. Each stdout line is an event — you keep working and notifications arrive in the chat. Events arrive on their own schedule and are not replies from the user, even if one lands while you're waiting for the user to answer a question.
+Start a background monitor that streams events from a long-running script. The call returns at once with the monitor's task id. Each stdout line is an event — you keep working and notifications arrive in the chat: between your own steps while you are working, or at the start of your next turn if you have stopped. Events arrive on their own schedule and are not replies from the user, even if one lands while you're waiting for the user to answer a question.
 
 Pick by how many notifications you need:
 - **One** ("tell me when the server is ready / the build finishes") → use **Bash** with a command that exits when the condition is true, e.g. `until grep -q "Ready in" dev.log; do sleep 0.5; done`, and a `timeout_ms` that covers the wait.
@@ -42,7 +42,7 @@ Your script's stdout is the event stream. Each line becomes a notification. Exit
 - In poll loops, handle transient failures (`curl ... || true`) — one failed request shouldn't kill the monitor.
 - Poll intervals: 30s+ for remote APIs (rate limits), 0.5-1s for local checks.
 - Write a specific `description` — it appears in every notification ("errors in deploy.log" not "watching logs").
-- Only stdout is the event stream. Stderr goes to the output file (readable via Read) but does not trigger notifications — for a command you run directly, merge stderr with `2>&1` so its failures reach your filter.
+- Only stdout is the event stream. Stderr is kept in the monitor's output (readable via TaskOutput) but does not trigger notifications — for a command you run directly, merge stderr with `2>&1` so its failures reach your filter.
 
 **Coverage — silence is not success.** When watching a job or process for an outcome, your filter must match every terminal state, not just the happy path. A monitor that greps only for the success marker stays silent through a crashloop, a hung process, or an unexpected exit — and silence looks identical to "still running." Before arming, ask: *if this process crashed right now, would my filter emit anything?* If not, widen it.
 
@@ -56,6 +56,6 @@ For poll loops checking job state, emit on every terminal status (`succeeded|fai
 
 **Output volume**: Every stdout line is a conversation message, so the filter should be selective — but selective means "the lines you'd act on," not "only good news." Never pipe raw logs; filter to exactly the success and failure signals you care about. Monitors that produce too many events are automatically stopped; restart with a tighter filter if this happens.
 
-Stdout lines within 200ms are batched into a single notification, so multiline output from a single event groups naturally.
+Stdout lines within 200ms are batched into a single notification, so multiline output from a single event groups naturally. Events that arrive before you have read the last notification join it; one notification shows the latest 50 lines and says how many earlier ones TaskOutput still has.
 
-The script runs in the same shell environment as Bash. Exit ends the watch (exit code is reported). Timeout → killed. Set `persistent: true` for session-length watches (PR monitoring, log tails) — the monitor runs until you call TaskStop or the session ends. Use TaskStop to cancel early.
+The script runs in the same shell environment as Bash. Exit ends the watch (exit code is reported). Timeout → killed (reported). Set `persistent: true` for session-length watches (PR monitoring, log tails) — the monitor runs until you call TaskStop, the turn is interrupted, or the session ends. Use TaskStop with the task id to cancel early; a stopped monitor sends nothing more.

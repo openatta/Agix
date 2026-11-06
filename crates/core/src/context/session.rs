@@ -499,11 +499,13 @@ impl SessionState {
             .push((key, text.into()));
     }
 
-    pub fn retract_notice(&self, key: &str) {
-        self.notices
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .retain(|(k, _)| k.as_deref() != Some(key));
+    /// Withdraw the unread notice under `key`; `false` if there was none —
+    /// never posted, or already read.
+    pub fn retract_notice(&self, key: &str) -> bool {
+        let mut notices = self.notices.lock().unwrap_or_else(|e| e.into_inner());
+        let before = notices.len();
+        notices.retain(|(k, _)| k.as_deref() != Some(key));
+        notices.len() != before
     }
 
     pub fn take_notices(&self) -> Vec<String> {

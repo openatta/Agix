@@ -1,17 +1,21 @@
 //! MonitorTool — "Monitor".
 //!
-//! Start a background script that streams stdout lines as events.
-//! Each stdout line becomes a notification. Exit ends the watch.
-//!
-//! Supports:
-//! - Timeout (default 300s, max 3600s)
-//! - Persistent mode (ignores timeout, runs until cancelled via TaskStop or session end)
-//! - Cancellation via context cancel token
-//! - Line-by-line streaming via ProgressSender
+//! Starts a script as a task of the session and returns at once. Each line
+//! the script prints on stdout becomes an event: lines that arrive close
+//! together are batched into one `<task-notification>`, which the session's
+//! agent reads at its next step boundary (or, if no turn is running, when the
+//! next one opens). Events that arrive while the last notification is still
+//! unread join it, keeping its most recent lines, so a watch left running
+//! over an idle session is one notification, not hundreds. The script's
+//! exit, its timeout, or a flood of events
+//! ends the watch with one last notification; `TaskStop` (or the host's
+//! `session.stopTask`) ends it silently. What it prints — stderr too — is the
+//! task's output (`TaskOutput`, `session.taskOutput`, `task_progress`).
 
 use async_trait::async_trait;
+use base::context::{RunningStatus, RunningTask, SessionState, TaskType};
 use base::error::ToolError;
-use base::interface::exec::{OutputStream, ProcessSpec};
+use base::interface::exec::{OutputStream, ProcessHandle, ProcessSpec};
 use base::tool::{
     InterruptBehavior, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext,
     ToolResult, ValidationResult,
@@ -20,8 +24,10 @@ use futures::StreamExt;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::codec::{FramedRead, LinesCodec};
+use tokio_util::sync::CancellationToken;
 
 /// Default monitor timeout (300 seconds).
 const DEFAULT_TIMEOUT_MS: u64 = 300_000;
@@ -31,6 +37,17 @@ const MAX_TIMEOUT_MS: u64 = 3_600_000;
 
 /// Maximum line length accepted from the FramedRead LinesCodec.
 const MAX_LINE_LENGTH: usize = 64 * 1024;
+
+/// Lines that arrive within this of the first one go out as one notification.
+const BATCH_WINDOW: Duration = Duration::from_millis(200);
+
+/// The most lines one notification carries — the most recent; the rest are
+/// counted and left for `TaskOutput`.
+const LINES_PER_NOTICE: usize = 50;
+
+/// More events than this within [`FLOOD_WINDOW`] stops the monitor.
+const FLOOD_LINES: usize = 300;
+const FLOOD_WINDOW: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct MonitorInput {
@@ -122,136 +139,279 @@ impl Tool for MonitorTool {
         &self,
         input: Value,
         ctx: ToolContext,
-        progress: ProgressSender,
+        _progress: ProgressSender,
     ) -> Result<ToolResult, ToolError> {
         let input: MonitorInput = serde_json::from_value(input)?;
-        let timeout = Duration::from_millis(
-            input
-                .timeout_ms
-                .unwrap_or(DEFAULT_TIMEOUT_MS)
-                .min(MAX_TIMEOUT_MS),
-        );
-
-        // Spawn the child process via bash -c
-        let spec =
-            ProcessSpec::new("bash", &ctx.cwd).args(["-c".to_string(), input.command.clone()]);
-        let run_cancel = ctx.cancel.child_token();
-        let task_scope = base::context::TaskScope::new(
-            ctx.session.clone(),
-            format!("monitor-{}", base::id::Id::new()),
-            base::context::TaskType::Monitor,
-            run_cancel.clone(),
+        let timeout = (!input.persistent).then(|| {
+            Duration::from_millis(
+                input
+                    .timeout_ms
+                    .unwrap_or(DEFAULT_TIMEOUT_MS)
+                    .min(MAX_TIMEOUT_MS),
+            )
+        });
+        // Under the turn's token, like a background sub-agent: it outlives the
+        // turn that started it, and goes when the turn is interrupted or the
+        // session closes.
+        let cancel = ctx.cancel.child_token();
+        let task_id = format!("monitor-{}", base::id::Id::new());
+        let task = ctx.session.register_task(
+            task_id.clone(),
+            TaskType::Monitor,
+            cancel.clone(),
             serde_json::json!({
                 "command": input.command,
                 "description": input.description,
+                "persistent": input.persistent,
                 "tool_use_id": ctx.tool_use_id,
             }),
         );
-        let mut child = ctx
-            .exec
-            .process
-            .spawn(spec, run_cancel.clone())
-            .await
-            .map_err(ToolError::from)?;
+        let spec = ProcessSpec::new("bash", &ctx.cwd).args(["-c".to_string(), input.command]);
+        let child = match ctx.exec.process.spawn(spec, cancel.clone()).await {
+            Ok(child) => child,
+            Err(e) => {
+                ctx.session
+                    .finish_task(&task_id, RunningStatus::Failed(e.to_string()));
+                return Err(ToolError::from(e));
+            }
+        };
+        tokio::spawn(
+            Watch {
+                session: ctx.session.clone(),
+                task,
+                description: input.description,
+                cancel,
+                timeout,
+            }
+            .run(child),
+        );
+        Ok(ToolResult::text(format!(
+            "Monitor started as task {task_id}. Each line it prints reaches you as a \
+             <task-notification> while you keep working; its exit is reported the same way. \
+             Stop it with TaskStop (task_id {task_id}); read everything it printed with \
+             TaskOutput."
+        )))
+    }
+}
+
+/// One running monitor, from its first line to its end.
+struct Watch {
+    session: Arc<SessionState>,
+    task: Arc<RunningTask>,
+    description: String,
+    cancel: CancellationToken,
+    timeout: Option<Duration>,
+}
+
+/// How a watch ended.
+enum Ending {
+    Exited(base::interface::exec::ExitStatus),
+    TimedOut(Duration),
+    Flooded,
+    Stopped,
+    Failed(String),
+}
+
+impl Watch {
+    async fn run(self, mut child: Box<dyn ProcessHandle>) {
+        let (lines_tx, mut lines) = tokio::sync::mpsc::unbounded_channel::<String>();
         #[allow(clippy::expect_used)]
         let chunks = child.output().expect("the first call owns the pipes");
-
-        // Spawn a background task to drain stdout lines and send them as progress events.
-        let progress_clone = progress.clone();
-        let task = task_scope.task().clone();
-        let stop_reading = tokio_util::sync::CancellationToken::new();
+        let task = self.task.clone();
+        let stop_reading = CancellationToken::new();
         let stop = stop_reading.clone();
-        let mut drain_handle = tokio::spawn(async move {
-            let stdout = tokio_util::io::StreamReader::new(chunks.map(|chunk| match chunk {
-                // Only stdout becomes a notification. The stderr chunks are
-                // read and thrown away rather than left unread: a provider
-                // pipes both, and a pipe nobody drains stalls the child.
+        let reader = tokio::spawn(async move {
+            // Only stdout is an event. Stderr is kept as output rather than
+            // left unread: a pipe nobody drains stalls the child.
+            let stdout = tokio_util::io::StreamReader::new(chunks.map(move |chunk| match chunk {
                 Ok(c) if c.stream == OutputStream::Stdout => Ok(std::io::Cursor::new(c.bytes)),
-                Ok(_) => Ok(std::io::Cursor::new(Vec::new())),
+                Ok(c) => {
+                    task.append_output(&String::from_utf8_lossy(&c.bytes));
+                    Ok(std::io::Cursor::new(Vec::new()))
+                }
                 Err(e) => Err(std::io::Error::other(e.to_string())),
             }));
             let mut framed =
                 FramedRead::new(stdout, LinesCodec::new_with_max_length(MAX_LINE_LENGTH));
-            let mut line_count: u64 = 0;
             loop {
                 let next = tokio::select! {
                     biased;
                     _ = stop.cancelled() => None,
                     n = framed.next() => n,
                 };
-                let Some(line_res) = next else { break };
-                match line_res {
-                    Ok(line) => {
-                        line_count += 1;
-                        let line = format!("{line}\n");
-                        progress_clone.send(&line);
-                        task.append_output(&line);
+                match next {
+                    Some(Ok(line)) => {
+                        if lines_tx.send(line).is_err() {
+                            break;
+                        }
                     }
-                    Err(_) => break,
+                    _ => break,
                 }
             }
-            line_count
         });
 
-        // Wait for child exit, respecting cancel and optionally timeout.
-        let wait_result = if input.persistent {
-            // Persistent: only cancel can stop us.
+        let deadline = self.timeout.map(|t| tokio::time::Instant::now() + t);
+        let mut batch: Vec<String> = Vec::new();
+        let mut flush_at: Option<tokio::time::Instant> = None;
+        let mut recent: std::collections::VecDeque<tokio::time::Instant> = Default::default();
+        let mut exited: Option<base::interface::exec::ExitStatus> = None;
+        let mut reading = true;
+        let mut grace_until: Option<tokio::time::Instant> = None;
+        let mut unread = Unread::default();
+
+        let ending = loop {
+            let far = tokio::time::Instant::now() + Duration::from_secs(86_400);
             tokio::select! {
                 biased;
-                _ = run_cancel.cancelled() => {
-                    child.kill().await;
-                    stop_reading.cancel();
-                    return Err(ToolError::Cancelled);
+                _ = self.cancel.cancelled() => break Ending::Stopped,
+                _ = tokio::time::sleep_until(deadline.unwrap_or(far)), if deadline.is_some() && exited.is_none() => {
+                    break Ending::TimedOut(self.timeout.unwrap_or_default());
                 }
-                r = child.wait() => r,
-            }
-        } else {
-            // Non-persistent: cancel or timeout can stop us.
-            tokio::select! {
-                biased;
-                _ = run_cancel.cancelled() => {
-                    child.kill().await;
-                    stop_reading.cancel();
-                    return Err(ToolError::Cancelled);
+                _ = tokio::time::sleep_until(flush_at.unwrap_or(far)), if flush_at.is_some() => {
+                    self.notify(&mut batch, None, &mut unread);
+                    flush_at = None;
                 }
-                _ = tokio::time::sleep(timeout) => {
-                    child.kill().await;
-                    stop_reading.cancel();
-                    return Err(ToolError::Timeout(timeout));
+                line = lines.recv(), if reading => match line {
+                    Some(line) => {
+                        self.task.append_output(&format!("{line}\n"));
+                        let now = tokio::time::Instant::now();
+                        recent.push_back(now);
+                        while recent.front().is_some_and(|t| now - *t > FLOOD_WINDOW) {
+                            recent.pop_front();
+                        }
+                        if recent.len() > FLOOD_LINES {
+                            break Ending::Flooded;
+                        }
+                        batch.push(line);
+                        flush_at.get_or_insert(now + BATCH_WINDOW);
+                    }
+                    None => {
+                        reading = false;
+                        if let Some(status) = exited {
+                            break Ending::Exited(status);
+                        }
+                    }
+                },
+                status = child.wait(), if exited.is_none() => match status {
+                    Ok(status) => {
+                        if !reading {
+                            break Ending::Exited(status);
+                        }
+                        exited = Some(status);
+                        grace_until = Some(
+                            tokio::time::Instant::now()
+                                + base::interface::exec::OUTPUT_GRACE_AFTER_EXIT,
+                        );
+                    }
+                    Err(e) => break Ending::Failed(e.to_string()),
+                },
+                _ = tokio::time::sleep_until(grace_until.unwrap_or(far)), if grace_until.is_some() => {
+                    if let Some(status) = exited {
+                        break Ending::Exited(status);
+                    }
                 }
-                r = child.wait() => r,
             }
         };
 
-        let status = wait_result.map_err(ToolError::from)?;
-        let line_count = tokio::select! {
-            r = &mut drain_handle => r.unwrap_or(0),
-            _ = tokio::time::sleep(base::interface::exec::OUTPUT_GRACE_AFTER_EXIT) => {
-                child.kill().await;
-                stop_reading.cancel();
-                (&mut drain_handle).await.unwrap_or(0)
-            }
-        };
-
-        let summary = if status.success {
-            format!(
-                "Command completed successfully (exit code 0). {} lines streamed.",
-                line_count
-            )
-        } else {
-            let code = status.code.unwrap_or(-1);
-            format!(
-                "Command exited with code {}. {} lines streamed.",
-                code, line_count
-            )
-        };
-
-        if status.success {
-            Ok(ToolResult::text(summary))
-        } else {
-            Ok(ToolResult::error_text(summary))
+        child.kill().await;
+        stop_reading.cancel();
+        let _ = reader.await;
+        while let Ok(line) = lines.try_recv() {
+            self.task.append_output(&format!("{line}\n"));
+            batch.push(line);
         }
+        let (status, closing) = match ending {
+            Ending::Stopped => (RunningStatus::Cancelled, None),
+            Ending::Exited(status) if status.success => (
+                RunningStatus::Completed,
+                Some("The command exited with code 0; the watch is over.".to_string()),
+            ),
+            Ending::Exited(status) => {
+                let how = status
+                    .code
+                    .map_or("was killed by a signal".to_string(), |c| {
+                        format!("exited with code {c}")
+                    });
+                (
+                    RunningStatus::Failed(format!("the command {how}")),
+                    Some(format!("The command {how}; the watch is over.")),
+                )
+            }
+            Ending::TimedOut(after) => (
+                RunningStatus::Failed(format!("timed out after {}s", after.as_secs())),
+                Some(format!(
+                    "Timed out after {}s and was stopped; set persistent for a session-long watch.",
+                    after.as_secs()
+                )),
+            ),
+            Ending::Flooded => (
+                RunningStatus::Failed("too many events".into()),
+                Some(format!(
+                    "Stopped: more than {FLOOD_LINES} events within {}s. Restart it with a \
+                     tighter filter.",
+                    FLOOD_WINDOW.as_secs()
+                )),
+            ),
+            Ending::Failed(why) => (
+                RunningStatus::Failed(why.clone()),
+                Some(format!("The watch failed: {why}")),
+            ),
+        };
+        if closing.is_some() || !batch.is_empty() {
+            self.notify(&mut batch, closing.as_deref(), &mut unread);
+        }
+        self.session.finish_task(&self.task.task_id, status);
     }
+
+    /// Tell the session's agent what the script printed since the last time,
+    /// and, as the watch ends, how it ended — in the notice it has not read
+    /// yet, if there is one.
+    fn notify(&self, batch: &mut Vec<String>, closing: Option<&str>, unread: &mut Unread) {
+        if batch.is_empty() && closing.is_none() {
+            return;
+        }
+        if !self.session.retract_notice(&self.task.task_id) {
+            *unread = Unread::default();
+        }
+        unread.lines.append(batch);
+        if unread.lines.len() > LINES_PER_NOTICE {
+            let over = unread.lines.len() - LINES_PER_NOTICE;
+            unread.lines.drain(..over);
+            unread.omitted += over;
+        }
+        let mut notice = format!(
+            "<task-notification>\n<task-id>{}</task-id>\n<kind>monitor</kind>\n\
+             <description>{}</description>\n",
+            self.task.task_id, self.description
+        );
+        if !unread.lines.is_empty() {
+            notice.push_str("<events>\n");
+            if unread.omitted > 0 {
+                notice.push_str(&format!(
+                    "({} earlier lines — read them with TaskOutput)\n",
+                    unread.omitted
+                ));
+            }
+            for line in &unread.lines {
+                notice.push_str(line);
+                notice.push('\n');
+            }
+            notice.push_str("</events>\n");
+        }
+        if let Some(closing) = closing {
+            notice.push_str(&format!("<ended>{closing}</ended>\n"));
+        }
+        notice.push_str("</task-notification>");
+        self.session
+            .post_notice(Some(self.task.task_id.clone()), notice);
+    }
+}
+
+/// The events in the notice the agent has not read yet.
+#[derive(Default)]
+struct Unread {
+    lines: Vec<String>,
+    omitted: usize,
 }
 
 #[cfg(test)]
@@ -363,208 +523,241 @@ mod tests {
 
     // ── Execution tests ──
 
-    #[tokio::test]
-    async fn basic_command_succeeds() {
-        let dir = TempDir::new().unwrap();
-        let tool = MonitorTool;
-        let result = tool
-            .call(
-                json!({"command": "echo 'hello world'", "description": "basic test", "timeout_ms": 5000}),
-                ctx_in(dir.path()),
-                ProgressSender::noop("t"),
-            )
-            .await
-            .unwrap();
-        assert!(!result.is_error, "successful exit should not be error");
+    fn session_in(dir: &std::path::Path) -> (ToolContext, Arc<SessionState>) {
+        let ctx = ctx_in(dir);
+        let session = ctx.session.clone();
+        (ctx, session)
     }
 
-    /// stderr used to go to `/dev/null`; the contract pipes both streams. It
-    /// has to be read — an undrained pipe stops the child at the kernel's
-    /// buffer — and then dropped, because only stdout is a notification.
-    #[tokio::test]
-    async fn a_flood_of_stderr_is_swallowed_without_wedging_the_child() {
-        let dir = TempDir::new().unwrap();
-        let tool = MonitorTool;
-        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let callback = base::tool::ProgressSender::with_callback(
-            "test",
-            std::sync::Arc::new(collector::Collector(captured.clone())),
-        );
+    async fn start(ctx: ToolContext, input: Value) -> ToolResult {
+        MonitorTool
+            .call(input, ctx, ProgressSender::noop("t"))
+            .await
+            .expect("the monitor starts")
+    }
 
-        let result = tokio::time::timeout(
-            Duration::from_secs(20),
-            tool.call(
-                json!({
-                    "command": "head -c 400000 /dev/zero | tr '\\0' 'e' >&2; echo done",
-                    "description": "stderr flood",
-                    "timeout_ms": 15000
-                }),
-                ctx_in(dir.path()),
-                callback,
-            ),
+    /// The notices posted so far, waiting `up_to` for at least `n`.
+    async fn notices(session: &SessionState, n: usize, up_to: Duration) -> Vec<String> {
+        let deadline = tokio::time::Instant::now() + up_to;
+        let mut seen = Vec::new();
+        while seen.len() < n && tokio::time::Instant::now() < deadline {
+            seen.extend(session.take_notices());
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        seen
+    }
+
+    fn monitor_task(session: &SessionState) -> Arc<RunningTask> {
+        let id = session
+            .task_infos()
+            .into_iter()
+            .find(|t| t["kind"] == "monitor")
+            .and_then(|t| t["task_id"].as_str().map(str::to_string))
+            .expect("the monitor is a task");
+        session.find_running_task(&id).unwrap()
+    }
+
+    #[tokio::test]
+    async fn it_returns_at_once_and_its_lines_arrive_as_notifications() {
+        let dir = TempDir::new().unwrap();
+        let (ctx, session) = session_in(dir.path());
+        let started = std::time::Instant::now();
+        let result = start(
+            ctx,
+            json!({"command": "echo first; sleep 0.6; echo second; sleep 30",
+                   "description": "two events", "persistent": true}),
         )
-        .await
-        .expect("an unread stderr pipe would wedge the child here")
-        .unwrap();
-        assert!(!result.is_error, "the command exits zero: {result:?}");
+        .await;
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the call waited for the script"
+        );
+        let task = monitor_task(&session);
+        assert!(format!("{:?}", result.content).contains(&task.task_id));
 
-        let lines = captured.lock().unwrap().clone();
+        let seen = notices(&session, 2, Duration::from_secs(10)).await;
         assert_eq!(
-            lines,
-            vec!["done\n".to_string()],
-            "stderr must not become notifications"
+            seen.len(),
+            2,
+            "two events far apart are two notices: {seen:?}"
+        );
+        assert!(
+            seen[0].contains("<events>\nfirst\n</events>"),
+            "{}",
+            seen[0]
+        );
+        assert!(seen[0].contains("<description>two events</description>"));
+        assert!(seen[1].contains("second"));
+        assert!(!task.has_ended(), "a persistent watch runs on");
+
+        assert!(session.cancel_running_task(&task.task_id));
+        task.wait_ended().await;
+        assert_eq!(*task.status.lock().unwrap(), RunningStatus::Cancelled);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            session.take_notices().is_empty(),
+            "a stopped watch ends silently"
         );
     }
 
     #[tokio::test]
-    async fn failing_command_returns_error() {
+    async fn lines_close_together_are_one_notification_and_the_exit_is_reported() {
         let dir = TempDir::new().unwrap();
-        let tool = MonitorTool;
-        let result = tool
-            .call(
-                json!({"command": "exit 42", "description": "failure test", "timeout_ms": 5000}),
-                ctx_in(dir.path()),
-                ProgressSender::noop("t"),
-            )
+        let (ctx, session) = session_in(dir.path());
+        start(
+            ctx,
+            json!({"command": "printf 'a\\nb\\nc\\n'; sleep 0.5; exit 3", "description": "burst"}),
+        )
+        .await;
+        let task = monitor_task(&session);
+        task.wait_ended().await;
+        let seen = notices(&session, 2, Duration::from_secs(5)).await;
+        assert!(seen[0].contains("<events>\na\nb\nc\n</events>"), "{seen:?}");
+        let last = seen.last().unwrap();
+        assert!(last.contains("exited with code 3"), "{last}");
+        assert!(matches!(
+            &*task.status.lock().unwrap(),
+            RunningStatus::Failed(_)
+        ));
+        assert_eq!(task.output_tail(1024).0, "a\nb\nc\n");
+    }
+
+    #[tokio::test]
+    async fn a_clean_exit_completes_the_task() {
+        let dir = TempDir::new().unwrap();
+        let (ctx, session) = session_in(dir.path());
+        start(ctx, json!({"command": "echo done", "description": "once"})).await;
+        let task = monitor_task(&session);
+        task.wait_ended().await;
+        assert_eq!(*task.status.lock().unwrap(), RunningStatus::Completed);
+        let seen = notices(&session, 1, Duration::from_secs(5)).await;
+        assert!(
+            seen.iter()
+                .any(|n| n.contains("done") && n.contains("exited with code 0")),
+            "{seen:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn events_nobody_has_read_yet_join_one_notification() {
+        let dir = TempDir::new().unwrap();
+        let (ctx, session) = session_in(dir.path());
+        start(
+            ctx,
+            json!({"command": "for i in $(seq 1 80); do echo event-$i; sleep 0.25; done",
+                   "description": "steady", "persistent": true}),
+        )
+        .await;
+        let task = monitor_task(&session);
+        tokio::time::timeout(Duration::from_secs(40), task.wait_ended())
             .await
-            .unwrap();
-        assert!(result.is_error, "non-zero exit should be marked as error");
+            .expect("the script ends");
+        let seen = session.take_notices();
+        assert_eq!(
+            seen.len(),
+            1,
+            "one unread notice, however long it ran: {seen:?}"
+        );
+        let notice = &seen[0];
+        assert!(notice.contains("(30 earlier lines — read them with TaskOutput)\nevent-31\n"));
+        assert!(notice.contains("event-80\n</events>"));
+        assert!(notice.contains("exited with code 0"));
     }
 
     #[tokio::test]
-    async fn cancellation_returns_cancelled_error() {
+    async fn a_timeout_stops_it_and_says_so() {
         let dir = TempDir::new().unwrap();
-        let tool = MonitorTool;
+        let (ctx, session) = session_in(dir.path());
+        start(
+            ctx,
+            json!({"command": "sleep 30", "description": "slow", "timeout_ms": 300}),
+        )
+        .await;
+        let task = monitor_task(&session);
+        tokio::time::timeout(Duration::from_secs(10), task.wait_ended())
+            .await
+            .expect("the timeout ends it");
+        let seen = notices(&session, 1, Duration::from_secs(5)).await;
+        assert!(seen[0].contains("Timed out"), "{seen:?}");
+    }
 
-        let cancel = tokio_util::sync::CancellationToken::new();
-        let cancel_clone = cancel.clone();
-        // Cancel after a short delay
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            cancel_clone.cancel();
-        });
+    #[tokio::test]
+    async fn a_flood_of_events_stops_it() {
+        let dir = TempDir::new().unwrap();
+        let (ctx, session) = session_in(dir.path());
+        start(
+            ctx,
+            json!({"command": "while true; do echo tick; done", "description": "noisy", "persistent": true}),
+        )
+        .await;
+        let task = monitor_task(&session);
+        tokio::time::timeout(Duration::from_secs(10), task.wait_ended())
+            .await
+            .expect("the flood stops it");
+        let seen = notices(&session, 1, Duration::from_secs(5)).await;
+        let last = seen.last().unwrap();
+        assert!(last.contains("tighter filter"), "{last}");
+        assert!(
+            last.contains("earlier lines — read them with TaskOutput"),
+            "{last}"
+        );
+    }
 
-        // Build a custom ToolContext with our CancellationToken
+    #[tokio::test]
+    async fn the_turn_being_interrupted_stops_it() {
+        let dir = TempDir::new().unwrap();
+        let turn = CancellationToken::new();
         let ctx = ToolContext {
-            cwd: dir.path().to_path_buf(),
-            cancel,
-            ..ToolContext::for_test(dir.path().to_path_buf())
+            cancel: turn.clone(),
+            ..ctx_in(dir.path())
         };
-
-        let result = tool
-            .call(
-                json!({"command": "sleep 60 && echo done", "description": "cancel test", "timeout_ms": 30000}),
-                ctx,
-                ProgressSender::noop("t"),
-            )
-            .await;
-
-        match result {
-            Err(ToolError::Cancelled) => {} // expected
-            Err(e) => panic!("expected Cancelled, got: {e:?}"),
-            Ok(_) => panic!("expected cancellation error, got Ok"),
-        }
+        let session = ctx.session.clone();
+        start(
+            ctx,
+            json!({"command": "sleep 60", "description": "x", "persistent": true}),
+        )
+        .await;
+        let task = monitor_task(&session);
+        turn.cancel();
+        tokio::time::timeout(Duration::from_secs(10), task.wait_ended())
+            .await
+            .expect("the interrupt reaches it");
     }
 
+    /// stderr is read and kept as output; only stdout lines are events.
     #[tokio::test]
-    async fn timeout_returns_timeout_error() {
+    async fn stderr_is_output_but_not_an_event() {
         let dir = TempDir::new().unwrap();
-        let tool = MonitorTool;
-        let result = tool
-            .call(
-                json!({"command": "sleep 30", "description": "timeout test", "timeout_ms": 100}),
-                ctx_in(dir.path()),
-                ProgressSender::noop("t"),
-            )
-            .await;
-
-        match result {
-            Err(ToolError::Timeout(_)) => {} // expected
-            Err(e) => panic!("expected Timeout, got: {e:?}"),
-            Ok(_) => panic!("expected timeout error, got Ok"),
-        }
+        let (ctx, session) = session_in(dir.path());
+        start(
+            ctx,
+            json!({"command": "head -c 400000 /dev/zero | tr '\\0' 'e' >&2; echo done",
+                   "description": "stderr flood", "timeout_ms": 15000}),
+        )
+        .await;
+        let task = monitor_task(&session);
+        tokio::time::timeout(Duration::from_secs(20), task.wait_ended())
+            .await
+            .expect("an unread stderr pipe would wedge the child here");
+        let seen = notices(&session, 1, Duration::from_secs(5)).await;
+        let events: String = seen.concat();
+        assert!(events.contains("<events>\ndone\n</events>"), "{events}");
+        assert!(!events.contains("eeee"));
+        assert!(task.output_tail(16).0.ends_with("done\n"));
     }
 
     #[tokio::test]
     async fn a_background_process_holding_stdout_does_not_hold_the_watch_open() {
         let dir = TempDir::new().unwrap();
-        let started = std::time::Instant::now();
-        let result = MonitorTool
-            .call(
-                json!({"command": "sleep 30 & echo up", "description": "bg", "timeout_ms": 20000}),
-                ctx_in(dir.path()),
-                ProgressSender::noop("t"),
-            )
+        let (ctx, session) = session_in(dir.path());
+        start(
+            ctx,
+            json!({"command": "sleep 30 & echo up", "description": "bg"}),
+        )
+        .await;
+        let task = monitor_task(&session);
+        tokio::time::timeout(Duration::from_secs(10), task.wait_ended())
             .await
-            .unwrap();
-        assert!(!result.is_error);
-        assert!(
-            started.elapsed() < Duration::from_secs(10),
-            "the watch waited on the background sleep: {:?}",
-            started.elapsed()
-        );
-    }
-
-    #[tokio::test]
-    async fn persistent_command_not_killed_by_timeout() {
-        let dir = TempDir::new().unwrap();
-        let tool = MonitorTool;
-        // persistent=true with a very small timeout_ms — should NOT kill the process.
-        // The command echoes quickly and exits, so it completes before any cancel.
-        let result = tool
-            .call(
-                json!({
-                    "command": "echo 'persistent works'",
-                    "description": "persistent test",
-                    "timeout_ms": 1,
-                    "persistent": true
-                }),
-                ctx_in(dir.path()),
-                ProgressSender::noop("t"),
-            )
-            .await
-            .unwrap();
-        assert!(!result.is_error, "persistent command should complete");
-    }
-
-    #[tokio::test]
-    async fn lines_are_streamed_via_progress() {
-        let dir = TempDir::new().unwrap();
-        let tool = MonitorTool;
-
-        // Use a progress sender that captures lines
-        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let captured_clone = captured.clone();
-        let callback = base::tool::ProgressSender::with_callback(
-            "test",
-            std::sync::Arc::new(collector::Collector(captured_clone)),
-        );
-
-        let result = tool
-            .call(
-                json!({"command": "printf 'line1\\nline2\\nline3\\n'", "description": "stream test", "timeout_ms": 5000}),
-                ctx_in(dir.path()),
-                callback,
-            )
-            .await
-            .unwrap();
-        assert!(!result.is_error, "streaming command should succeed");
-
-        let lines = captured.lock().unwrap();
-        assert!(!lines.is_empty(), "should have received progress lines");
-    }
-}
-
-/// Helper module for progress callback test.
-#[cfg(test)]
-mod collector {
-    use base::tool::ProgressCallback;
-
-    pub struct Collector(pub std::sync::Arc<std::sync::Mutex<Vec<String>>>);
-
-    impl ProgressCallback for Collector {
-        fn on_progress(&self, _tool_use_id: &str, data: &str) {
-            self.0.lock().unwrap().push(data.to_string());
-        }
+            .expect("the watch waited on the background sleep");
     }
 }
