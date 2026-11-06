@@ -1018,6 +1018,9 @@ pub enum EngineError {
 
 // ── Builder ──
 
+/// Whether a tool, by name, is let through.
+pub type ToolFilter = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
 pub struct Builder {
     scene: Option<Arc<dyn Scene>>,
     model: Option<Arc<dyn Model>>,
@@ -1043,6 +1046,7 @@ pub struct Builder {
     agent_type: Option<String>,
     skip_warmup: bool,
     output_schema: Option<serde_json::Value>,
+    scene_tool_filter: Option<ToolFilter>,
     /// Pre-built FrozenContext — skips lazy collection on first turn.
     /// When set, the Agent uses this snapshot instead of calling
     /// `FrozenContext::collect()`. Essential for deterministic replay.
@@ -1229,6 +1233,7 @@ impl Builder {
             telemetry_handle_override: None,
             skip_warmup: false,
             output_schema: None,
+            scene_tool_filter: None,
             frozen: None,
             wake_rx: None,
             plugin_host: None,
@@ -1724,6 +1729,15 @@ impl Builder {
         self
     }
 
+    /// Which of the scene's own tools (`Scene::extra_tools`) this session
+    /// gets; the rest are not registered. A sub-agent narrows its scene's
+    /// contributions with its type's tool lists this way, as the tools it
+    /// inherits from its parent are narrowed before they reach `tools`.
+    pub fn scene_tool_filter(mut self, admits: ToolFilter) -> Self {
+        self.scene_tool_filter = Some(admits);
+        self
+    }
+
     /// Disable startup warmup (for tests).
     pub fn skip_warmup(mut self, val: bool) -> Self {
         self.skip_warmup = val;
@@ -2152,6 +2166,13 @@ impl Builder {
         // (`get` returns the first match, and the engine's own instance is
         // appended after). That is precisely the shadowing this rejects.
         for t in scene.extra_tools() {
+            if self
+                .scene_tool_filter
+                .as_ref()
+                .is_some_and(|admits| !admits(t.name()))
+            {
+                continue;
+            }
             if tools.get(t.name()).is_some() {
                 return Err(EngineError::Internal(format!(
                     "scene {:?} contributes a tool named {:?}, which is already \

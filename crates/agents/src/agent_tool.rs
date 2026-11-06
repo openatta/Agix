@@ -1030,6 +1030,21 @@ fn permission_restraint(mode: base::interface::settings::PermissionMode) -> u8 {
 /// session is the point of writing the file. `ExecutionParams`'s
 /// `max_api_calls_per_turn` documents the same "one side must not silently
 /// widen the other" rule for scenes; this brings agent types in line.
+/// Whether an agent type's `allowed_tools` / `disallowed_tools` let a tool
+/// through. No type, or a type with neither list, admits everything.
+fn type_admits_tool(def: Option<&AgentTypeDefinition>, name: &str) -> bool {
+    let Some(def) = def else {
+        return true;
+    };
+    let listed = |names: &[String]| names.iter().any(|n| AgentTool::tool_name_matches(name, n));
+    !listed(&def.disallowed_tools) && (def.allowed_tools.is_empty() || listed(&def.allowed_tools))
+}
+
+fn scene_tool_filter(def: Option<&AgentTypeDefinition>) -> Arc<dyn Fn(&str) -> bool + Send + Sync> {
+    let def = def.cloned();
+    Arc::new(move |name| type_admits_tool(def.as_ref(), name))
+}
+
 fn apply_agent_type_overrides(settings: &mut Settings, def: &AgentTypeDefinition) {
     if let Some(mode) = def.permission_mode {
         if def.source.may_loosen()
@@ -1679,6 +1694,39 @@ impl Inner {
                 instruction_file.as_ref(),
             ),
         }
+    }
+
+    /// The parent's tools a delegate starts from: all of them but the ones
+    /// the parent's scene contributed. Those belong to the scene, and the
+    /// delegate's own scene contributes its tools again when it is built —
+    /// inheriting them as well would register each twice.
+    fn inherited_tools(&self) -> Vec<Arc<dyn base::tool::Tool>> {
+        let parent_scene = self
+            .parent_scene
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let scene_tools: std::collections::HashSet<String> = parent_scene
+            .map(|scene| {
+                scene
+                    .extra_tools()
+                    .iter()
+                    .map(|t| t.name().to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut out: Vec<Arc<dyn base::tool::Tool>> = Vec::new();
+        for tool in self
+            .parent_tools
+            .all()
+            .into_iter()
+            .chain(self.fallback_tools.all())
+        {
+            if !scene_tools.contains(tool.name()) && !out.iter().any(|t| t.name() == tool.name()) {
+                out.push(tool);
+            }
+        }
+        out
     }
 
     fn scene_for_subagent(
@@ -2355,7 +2403,11 @@ impl AgentTool {
 
     /// Returns the fallback tool registry for sub-agent creation.
     pub(crate) fn sub_tools(&self) -> Arc<InMemoryToolRegistry> {
-        self.inner.fallback_tools.clone()
+        let registry = InMemoryToolRegistry::new();
+        for tool in self.inner.inherited_tools() {
+            registry.register(tool);
+        }
+        Arc::new(registry)
     }
 
     /// Returns a permission handler for sub-agent creation.
@@ -2414,59 +2466,12 @@ impl AgentTool {
     /// is opt-in per subagent, not inherited.
     fn resolve_tools(&self, subagent_type: Option<&str>) -> Arc<InMemoryToolRegistry> {
         let def = subagent_type.and_then(|name| self.inner.agent_type_def(name));
-        let disallowed: Vec<String> = def
-            .as_ref()
-            .map(|d| d.disallowed_tools.clone())
-            .unwrap_or_default();
-        let allowed_names: Option<Vec<String>> = def
-            .as_ref()
-            .map(|d| d.allowed_tools.clone())
-            .filter(|tools| !tools.is_empty());
-
+        // `disallowed_tools` and `allowed_tools` together; a tool listed in
+        // both ends up removed either way.
         let registry = InMemoryToolRegistry::new();
-        match &allowed_names {
-            None => {
-                // Full access minus `disallowed_tools` — every tool except
-                // "Agent" (no recursive spawning) and anything explicitly denied.
-                for tool in self
-                    .inner
-                    .parent_tools
-                    .all()
-                    .iter()
-                    .chain(self.inner.fallback_tools.all().iter())
-                {
-                    if tool.name() != AGENT_TOOL_NAME
-                        && !disallowed
-                            .iter()
-                            .any(|n| Self::tool_name_matches(tool.name(), n))
-                    {
-                        registry.register(tool.clone());
-                    }
-                }
-            }
-            Some(allowed) => {
-                // Collect from both parent and fallback to cover all available tools.
-                // `disallowed_tools` is applied first, then `allowed_tools` is
-                // resolved against what's left; a tool listed in both ends up
-                // removed either way.
-                for tool in self
-                    .inner
-                    .parent_tools
-                    .all()
-                    .iter()
-                    .chain(self.inner.fallback_tools.all().iter())
-                {
-                    if tool.name() != AGENT_TOOL_NAME
-                        && !disallowed
-                            .iter()
-                            .any(|n| Self::tool_name_matches(tool.name(), n))
-                        && allowed
-                            .iter()
-                            .any(|n| Self::tool_name_matches(tool.name(), n))
-                    {
-                        registry.register(tool.clone());
-                    }
-                }
+        for tool in self.inner.inherited_tools() {
+            if tool.name() != AGENT_TOOL_NAME && type_admits_tool(def.as_ref(), tool.name()) {
+                registry.register(tool);
             }
         }
 
@@ -2645,6 +2650,7 @@ impl AgentTool {
             .session_id(sid)
             .lineage(parent_session_id.clone(), subagent_type)
             .scene(scene)
+            .scene_tool_filter(scene_tool_filter(def.as_ref()))
             .model(self.inner.model_for_subagent())
             .tools(tools)
             .settings(settings.clone())
@@ -2876,6 +2882,7 @@ impl AgentTool {
         let mut builder = Builder::new()
             .session_id(sid)
             .scene(scene)
+            .scene_tool_filter(scene_tool_filter(def.as_ref()))
             .model(self.inner.model_for_subagent())
             .tools(tools)
             .settings(settings.clone())
@@ -3197,6 +3204,7 @@ impl AgentTool {
         let mut builder = Builder::new()
             .session_id(sid)
             .scene(scene)
+            .scene_tool_filter(scene_tool_filter(def.as_ref()))
             .model(inner.model_for_subagent())
             .tools(tools)
             .settings(settings.clone())
@@ -5032,6 +5040,202 @@ mod catalog_tests {
         assert!(notices[0].contains(&tid));
         assert!(notices[0].contains("<status>done</status>"));
         assert!(notices[0].contains("report"));
+    }
+
+    /// A scene that brings a tool of its own, the way an embedder's does: a
+    /// fresh instance on every call.
+    struct SceneWithProbe;
+    impl base::interface::scene::Scene for SceneWithProbe {
+        fn id(&self) -> &str {
+            "with-probe"
+        }
+        fn name(&self) -> &str {
+            "With probe"
+        }
+        fn description(&self) -> &str {
+            "scene contributing scene_probe"
+        }
+        fn build_system_prompt(
+            &self,
+            _: &base::interface::scene::ScenePromptContext,
+        ) -> Vec<base::interface::prompt::PromptBlock> {
+            vec![]
+        }
+        fn tools(&self) -> Vec<String> {
+            vec![]
+        }
+        fn token_budget(&self) -> base::interface::scene::TokenBudget {
+            base::interface::scene::TokenBudget {
+                compact_threshold: 150_000,
+                compact_keep_recent: 20,
+            }
+        }
+        fn extra_tools(&self) -> Vec<Arc<dyn base::tool::Tool>> {
+            vec![Arc::new(NamedTool("scene_probe"))]
+        }
+    }
+
+    /// Answers at once, noting the tools each request offered.
+    struct ToolCensusModel {
+        offered: Arc<std::sync::Mutex<Vec<Vec<String>>>>,
+    }
+    #[async_trait]
+    impl Model for ToolCensusModel {
+        fn api_type(&self) -> base::provider::ApiType {
+            base::provider::ApiType::Anthropic
+        }
+        async fn stream(
+            &self,
+            _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+            tools: Vec<base::interface::model::ToolDef>,
+            _messages: Vec<ModelMessage>,
+            _params: base::interface::model::StreamParams,
+            _cancel: tokio_util::sync::CancellationToken,
+        ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError>
+        {
+            use base::interface::model::ModelEvent;
+            self.offered
+                .lock()
+                .unwrap()
+                .push(tools.into_iter().map(|t| t.name).collect());
+            Ok(Box::new(futures::stream::iter(vec![
+                Ok(ModelEvent::TextDelta {
+                    text: "done".into(),
+                }),
+                Ok(ModelEvent::EndTurn {
+                    stop_reason: "end_turn".into(),
+                    usage: Default::default(),
+                }),
+            ])))
+        }
+    }
+
+    /// The `AgentTool` of a session on `SceneWithProbe`: its registry already
+    /// holds the scene's tool, as `Builder::build()` leaves it.
+    fn agent_tool_on_a_scene_with_a_tool(
+        types: &[AgentTypeDefinition],
+    ) -> (AgentTool, Arc<std::sync::Mutex<Vec<Vec<String>>>>) {
+        let offered = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let tools = Arc::new(InMemoryToolRegistry::new());
+        tools.register(Arc::new(NamedTool("Read")));
+        tools.register(Arc::new(NamedTool("scene_probe")));
+        let agent_tool = AgentTool::with_parent_tools(
+            Arc::new(ToolCensusModel {
+                offered: offered.clone(),
+            }),
+            Arc::new(EngineConfig::defaults_for("test-model")),
+            tools.clone(),
+            tools,
+            &[],
+            types,
+        );
+        agent_tool.set_scene(Arc::new(SceneWithProbe));
+        (agent_tool, offered)
+    }
+
+    fn offered_once(offered: &[Vec<String>], name: &str) -> bool {
+        offered
+            .first()
+            .is_some_and(|tools| tools.iter().filter(|t| *t == name).count() == 1)
+    }
+
+    #[tokio::test]
+    async fn a_foreground_sub_agent_on_its_parents_scene_gets_the_scenes_tools_once() {
+        let (agent_tool, offered) = agent_tool_on_a_scene_with_a_tool(&[]);
+        let result = base::tool::Tool::call(
+            &agent_tool,
+            serde_json::json!({ "prompt": "look", "description": "look" }),
+            ToolContext::for_test(std::env::temp_dir()),
+            ProgressSender::noop("t"),
+        )
+        .await
+        .expect("the sub-agent is built and runs");
+        assert!(!result.is_error, "{:?}", result.content);
+        let offered = offered.lock().unwrap();
+        assert!(offered_once(&offered, "scene_probe"), "{offered:?}");
+        assert!(offered_once(&offered, "Read"), "{offered:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_background_sub_agent_and_a_spawned_one_get_the_scenes_tools_once() {
+        let (agent_tool, offered) = agent_tool_on_a_scene_with_a_tool(&[]);
+        let ctx = ToolContext::for_test(std::env::temp_dir());
+        let session = ctx.session.clone();
+        base::tool::Tool::call(
+            &agent_tool,
+            serde_json::json!({ "prompt": "look", "description": "look", "background": true }),
+            ctx,
+            ProgressSender::noop("t"),
+        )
+        .await
+        .expect("the background sub-agent is started");
+        let task = session.task_infos().pop().expect("a registered task");
+        let task = session
+            .find_running_task(task["task_id"].as_str().unwrap())
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), task.wait_ended())
+            .await
+            .expect("the sub-agent finishes");
+        assert!(
+            offered_once(&offered.lock().unwrap(), "scene_probe"),
+            "{:?}",
+            offered.lock().unwrap()
+        );
+
+        offered.lock().unwrap().clear();
+        use base::interface::agent_spawner::AgentSpawner as _;
+        crate::spawner::RuntimeAgentSpawner::new(Arc::new(agent_tool))
+            .spawn_agent(
+                "look".into(),
+                vec![],
+                std::env::temp_dir(),
+                tokio_util::sync::CancellationToken::new(),
+                None,
+            )
+            .await
+            .expect("a spawner sub-agent is built and runs");
+        assert!(
+            offered_once(&offered.lock().unwrap(), "scene_probe"),
+            "{:?}",
+            offered.lock().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_agent_types_tool_lists_narrow_the_scenes_tools_too() {
+        let types = [
+            AgentTypeDefinition {
+                name: "reader".into(),
+                description: "reads".into(),
+                allowed_tools: vec!["Read".into()],
+                ..Default::default()
+            },
+            AgentTypeDefinition {
+                name: "no-probe".into(),
+                description: "no probe".into(),
+                disallowed_tools: vec!["scene_probe".into()],
+                ..Default::default()
+            },
+        ];
+        for agent_type in ["reader", "no-probe"] {
+            let (agent_tool, offered) = agent_tool_on_a_scene_with_a_tool(&types);
+            base::tool::Tool::call(
+                &agent_tool,
+                serde_json::json!({
+                    "prompt": "look", "description": "look", "subagent_type": agent_type
+                }),
+                ToolContext::for_test(std::env::temp_dir()),
+                ProgressSender::noop("t"),
+            )
+            .await
+            .expect("the sub-agent is built and runs");
+            let offered = offered.lock().unwrap();
+            assert!(
+                offered[0].contains(&"Read".to_string())
+                    && !offered[0].contains(&"scene_probe".to_string()),
+                "{agent_type}: {offered:?}"
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

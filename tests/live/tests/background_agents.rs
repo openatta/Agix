@@ -1,5 +1,6 @@
 //! A background sub-agent tells the agent that started it when it is done,
-//! and a host can reach it through the daemon while it runs.
+//! and a host can reach it through the daemon while it runs. A foreground one
+//! stays listed under its parent once its turn is over.
 
 use live::{Block, Daemon, DaemonOptions, ProviderStub, Reply, World};
 use serde_json::json;
@@ -91,6 +92,68 @@ async fn a_finished_background_agent_reaches_its_parents_next_call() -> anyhow::
         1,
         "told once: {body}"
     );
+    daemon.stop().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_finished_foreground_agent_stays_listed_under_its_parent() -> anyhow::Result<()> {
+    let world = World::new()?;
+    let project = world.project("fg")?;
+    world.write_project_settings(
+        "fg",
+        &json!({
+            "memory_enabled": false,
+            "permission_rules": [{ "tool": "Agent", "action": "allow" }]
+        }),
+    )?;
+    let provider = ProviderStub::start().await?;
+    provider.script_when(
+        "PARENT-MARK",
+        [
+            Reply::Blocks(vec![Block::tool(
+                "call-1",
+                "Agent",
+                json!({ "prompt": "count the files", "description": "file count" }),
+            )]),
+            Reply::text("it said 42"),
+        ],
+    );
+    provider.script([Reply::text("SUB-RESULT-42")]);
+
+    let daemon = Daemon::start(&world, &provider, DaemonOptions::new(project.clone())).await?;
+    let mut client = daemon.connect().await?;
+    let session = client
+        .session_create(json!({ "project_root": project.to_string_lossy() }))
+        .await?;
+    client
+        .session_run_turn(&session, "PARENT-MARK count", "t1", None)
+        .await?;
+
+    let tasks = client
+        .call("session.tasks", json!({ "session_id": session }))
+        .await?
+        .result
+        .unwrap_or_default();
+    assert_eq!(tasks["active"], json!(true), "{tasks}");
+    let agents: Vec<_> = tasks["tasks"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|t| t["kind"] == "agent")
+        .collect();
+    assert_eq!(agents.len(), 1, "{tasks}");
+    assert_eq!(agents[0]["status"], "done", "{tasks}");
+    assert_eq!(agents[0]["detail"]["background"], json!(false), "{tasks}");
+
+    let children = client
+        .call("session.list", json!({ "parent_session_id": session }))
+        .await?
+        .result
+        .unwrap_or_default();
+    let children = children["sessions"].as_array().cloned().unwrap_or_default();
+    assert_eq!(children.len(), 1, "{children:?}");
+    assert_eq!(children[0]["session_kind"], "sidechain", "{children:?}");
     daemon.stop().await;
     Ok(())
 }
