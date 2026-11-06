@@ -27,7 +27,6 @@ pub mod task_message;
 pub mod task_output;
 pub mod task_stop;
 pub mod task_wait;
-pub mod tasks;
 pub mod todo_write;
 pub mod tool_search;
 #[cfg(feature = "web")]
@@ -117,10 +116,6 @@ pub fn register_builtin_tools(reg: &std::sync::Arc<base::tool::InMemoryToolRegis
         Arc::new(crate::glob::GlobTool),
         Arc::new(crate::notebook_edit::NotebookEditTool),
         Arc::new(crate::todo_write::TodoWriteTool),
-        Arc::new(crate::tasks::TaskCreateTool),
-        Arc::new(crate::tasks::TaskGetTool),
-        Arc::new(crate::tasks::TaskListTool),
-        Arc::new(crate::tasks::TaskUpdateTool),
         Arc::new(crate::monitor::MonitorTool),
         Arc::new(crate::sleep::SleepTool),
         Arc::new(crate::ping::PingTool),

@@ -1,12 +1,5 @@
 //! 会话可变状态 + 文件快照 + 副作用注入接口。
 
-/// Trait for persistent task storage — implemented by the `task` crate.
-/// Core uses this trait to avoid a circular dependency on `task`.
-pub trait TaskPersist: Send + Sync + std::fmt::Debug {
-    fn persist_tasks(&self, tasks: &[serde_json::Value]) -> Result<(), String>;
-    fn load_tasks(&self) -> Result<Vec<serde_json::Value>, String>;
-}
-
 /// Trait for persistent running-task storage — implemented by the `task` crate.
 pub trait RunningTaskPersist: Send + Sync + std::fmt::Debug {
     fn persist_task(&self, task_data: serde_json::Value) -> Result<(), String>;
@@ -45,15 +38,6 @@ pub struct SessionState {
     /// 为 true 的工具默认仅暴露 name + description；模型用 `ToolSearch` 命中后
     /// 会被加进这里，下一次 turn 的 build_request 把它升级到 full schema。
     activated_tools: std::sync::Mutex<HashSet<String>>,
-    /// **M6**: 结构化任务列表。Task{Create,Get,List,Update,Stop} 工具的后端。
-    /// 用 serde_json::Value 存避免跨 crate 类型循环（agix-tools 定义
-    /// TaskEntry，agix-core 不能依赖 tools）。caller 序列化进来 / 反序列化
-    /// 出去。
-    tasks: std::sync::Mutex<Vec<serde_json::Value>>,
-    /// **P0 (M31)**: 文件持久化 task store. Some 时所有 add/remove/update 同步
-    /// 写到文件系统，支持跨 session resume。None 时退化为纯内存（向后兼容）。
-    /// 注入来自 `task` crate，通过 `TaskPersist` trait 避免循环依赖。
-    pub task_store: Option<std::sync::Arc<dyn TaskPersist>>,
     /// **P2 (M31)**: 文件持久化 running task store。注入来自 `task` crate。
     /// 通过 `RunningTaskPersist` trait 避免循环依赖。
     pub running_task_store: Option<std::sync::Arc<dyn RunningTaskPersist>>,
@@ -224,8 +208,6 @@ impl SessionState {
             permission_mode: std::sync::Mutex::new(PermissionMode::Default),
             todos: std::sync::Mutex::new(Vec::new()),
             activated_tools: std::sync::Mutex::new(HashSet::new()),
-            tasks: std::sync::Mutex::new(Vec::new()),
-            task_store: None,
             running_task_store: None,
             running_tasks: std::sync::Mutex::new(HashMap::new()),
             task_events: tokio::sync::broadcast::channel(256).0,
@@ -742,44 +724,6 @@ impl SessionState {
         true
     }
 
-    /// **M6**: Task 工具用 —— 用 generic helpers 让 agix-tools 操作 tasks
-    /// 而不引 cycle。`T: Serialize + DeserializeOwned + Clone` 即可。
-    /// 如果 task_store 已设，同时异步写到文件系统（fire-and-forget）。
-    pub fn add_task<T: serde::Serialize>(&self, task: T) {
-        if let Ok(v) = serde_json::to_value(&task) {
-            // TODO: task_store persistence — downcast from Arc<dyn Any> in task crate layer
-            self.tasks.lock().unwrap_or_else(|e| e.into_inner()).push(v);
-        }
-    }
-
-    /// 按 id 从内存缓存删除任务。如果 task_store 已设，同时删文件。
-    pub fn remove_task(&self, id: &str) -> bool {
-        let mut found = false;
-        {
-            let mut tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(pos) = tasks
-                .iter()
-                .position(|v| v.get("id").and_then(|i| i.as_str()) == Some(id))
-            {
-                tasks.remove(pos);
-                found = true;
-            }
-        }
-        if found {
-            // TODO: task_store persistence — downcast from Arc<dyn Any> in task crate layer
-        }
-        found
-    }
-
-    /// Set a file-backed task store for persistence.
-    /// Inject a file-backed task store for persistence.
-    /// The store type-erased via `Arc<dyn Any>` (core cannot depend on task crate).
-    /// Inject a file-backed task store for persistence (implements [`TaskPersist`]).
-    pub fn with_task_store(mut self, store: std::sync::Arc<dyn TaskPersist>) -> Self {
-        self.task_store = Some(store);
-        self
-    }
-
     /// Inject a file-backed running task store for crash recovery (implements [`RunningTaskPersist`]).
     pub fn with_running_task_store(
         mut self,
@@ -787,65 +731,6 @@ impl SessionState {
     ) -> Self {
         self.running_task_store = Some(store);
         self
-    }
-
-    pub fn tasks<T: serde::de::DeserializeOwned>(&self) -> Vec<T> {
-        self.tasks
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-            .filter_map(|v| serde_json::from_value(v.clone()).ok())
-            .collect()
-    }
-
-    pub fn find_task<T: serde::de::DeserializeOwned>(&self, id: &str) -> Option<T> {
-        self.tasks
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-            .find(|v| v.get("id").and_then(|i| i.as_str()) == Some(id))
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-    }
-
-    /// 找 id 匹配的 task，调 `mutate` 改它，返回更新后的 task。`mutate` 看到
-    /// 的是反序列化后的 T；写回时再序列化。
-    /// 如果 task_store 已设，同时异步写到文件系统。
-    pub fn update_task<T, F>(&self, id: &str, mutate: F) -> Option<T>
-    where
-        T: serde::Serialize + serde::de::DeserializeOwned,
-        F: FnOnce(&mut T),
-    {
-        let mut tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
-        for slot in tasks.iter_mut() {
-            if slot.get("id").and_then(|i| i.as_str()) == Some(id) {
-                let mut t: T = serde_json::from_value(slot.clone()).ok()?;
-                mutate(&mut t);
-                let updated = serde_json::to_value(&t).ok()?;
-                // TODO: task_store persistence — downcast from Arc<dyn Any> in task crate layer
-                *slot = updated;
-                return Some(t);
-            }
-        }
-        None
-    }
-
-    /// 在一次加锁里读改整张任务表：先读后写的调用（比如「找不到才插入」）
-    /// 不会被同一会话里并发的工具调用插进来。
-    pub fn with_tasks<T, R>(&self, f: impl FnOnce(&mut Vec<T>) -> R) -> R
-    where
-        T: serde::Serialize + serde::de::DeserializeOwned,
-    {
-        let mut slot = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
-        let mut typed: Vec<T> = slot
-            .iter()
-            .filter_map(|v| serde_json::from_value(v.clone()).ok())
-            .collect();
-        let out = f(&mut typed);
-        *slot = typed
-            .iter()
-            .filter_map(|t| serde_json::to_value(t).ok())
-            .collect();
-        out
     }
 
     /// Builder：设初始权限模式（CLI 启动时从 settings/CLI 注入）。

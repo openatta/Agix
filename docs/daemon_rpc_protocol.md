@@ -155,7 +155,7 @@ socket_path, version, started_at, protocol_version}`)。它早于多场景支持
 | 能力 | 含义 | code | harnix | mini |
 |---|---|---|---|---|
 | `requires_project` | 会话必须绑定项目根 | ✅ | ❌ | ❌ |
-| `supports_team` | 注册 Team 工具 | ✅ | ❌ | ❌ |
+| `supports_team` | 注册 Team 工具 | ✅ | ✅ | ❌ |
 
 宿主据此决定新建会话时要不要先弹"选择项目"。`requires_project` 的场景传
 `project_root: null` 会在 `session.create` 就被拒(`PROJECT_REQUIRED`),而不是等到

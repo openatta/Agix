@@ -3735,7 +3735,7 @@ async fn scene_list_reports_the_capability_bits() {
     assert_eq!(by_id("code")["requires_project"], true);
     assert_eq!(by_id("code")["supports_team"], true);
     assert_eq!(by_id("harnix")["requires_project"], false);
-    assert_eq!(by_id("harnix")["supports_team"], false);
+    assert_eq!(by_id("harnix")["supports_team"], true);
 
     srv.stop().await;
 }

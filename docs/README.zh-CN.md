@@ -283,14 +283,14 @@ let pool = daemon::assemble::pool(
 
 ## 能力
 
-### 工具——44 个内建
+### 工具——40 个内建
 
 | 类别 | 工具 |
 |---|---|
 | **文件** | `Read` `Write` `Edit` `Glob` `Grep` |
 | **Shell** | `Bash`(沙箱、路径安全、可控超时) |
 | **Web** | `WebFetch` `WebSearch` |
-| **任务** | `TaskCreate` `TaskList` `TaskGet` `TaskUpdate` `TaskStop` `TaskOutput` `TaskWait` `TaskMessage` |
+| **任务**（运行中的子 Agent、Shell 命令、监视器） | `TaskOutput` `TaskWait` `TaskStop` `TaskMessage` |
 | **规划** | `EnterPlanMode` `ExitPlanMode` `VerifyPlanExecution` `TodoWrite` |
 | **目标** | `GoalCreate` `GoalGet` `GoalUpdate`(目标让会话一轮轮自动推进下去) |
 | **定时** | `CronCreate` `CronDelete` `CronList` |
@@ -300,7 +300,7 @@ let pool = daemon::assemble::pool(
 | **交互** | `AskUserQuestion` `PushNotification` `Monitor` `StructuredOutput` |
 | **编辑 / 元 / 诊断** | `NotebookEdit` · `ToolSearch` · `Ping` `Sleep` |
 
-`tools::register_builtin_tools` 装上其中 26 个自给自足的;其余需要会话状态,由 builder
+`tools::register_builtin_tools` 装上其中 22 个自给自足的;其余需要会话状态,由 builder
 或模块注册。延迟加载的工具只报名字,要用时经 `ToolSearch` 取 schema。
 
 ### 模型路由

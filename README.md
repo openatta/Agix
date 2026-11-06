@@ -327,14 +327,14 @@ build if anything in the workspace assembles a pool a second way.
 
 ## Capabilities
 
-### Tools — 44 built in
+### Tools — 40 built in
 
 | Category | Tools |
 |---|---|
 | **Filesystem** | `Read` `Write` `Edit` `Glob` `Grep` |
 | **Shell** | `Bash` (sandboxed, path-safe, timeout-controlled) |
 | **Web** | `WebFetch` `WebSearch` |
-| **Task** | `TaskCreate` `TaskList` `TaskGet` `TaskUpdate` `TaskStop` `TaskOutput` `TaskWait` `TaskMessage` |
+| **Task** (running sub-agents, shell commands, monitors) | `TaskOutput` `TaskWait` `TaskStop` `TaskMessage` |
 | **Planning** | `EnterPlanMode` `ExitPlanMode` `VerifyPlanExecution` `TodoWrite` |
 | **Goals** | `GoalCreate` `GoalGet` `GoalUpdate` (a goal keeps the session working across automatic rounds) |
 | **Scheduling** | `CronCreate` `CronDelete` `CronList` |
@@ -344,7 +344,7 @@ build if anything in the workspace assembles a pool a second way.
 | **Interaction** | `AskUserQuestion` `PushNotification` `Monitor` `StructuredOutput` |
 | **Editor / Meta / Diagnostics** | `NotebookEdit` · `ToolSearch` · `Ping` `Sleep` |
 
-`tools::register_builtin_tools` installs the 26 self-contained ones; the rest
+`tools::register_builtin_tools` installs the 22 self-contained ones; the rest
 need per-session state and are registered by the builder or by a module.
 Deferred tools are advertised by name and fetched with `ToolSearch` when needed.
 

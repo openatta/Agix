@@ -12,10 +12,6 @@ pub enum TaskType {
     Teammate,
     /// Cron/scheduled job.
     CronJob,
-    /// Dream/background thinking task.
-    Dream,
-    /// Workflow orchestration task.
-    Workflow,
     /// MCP monitor task.
     Monitor,
 }
@@ -27,8 +23,6 @@ impl TaskType {
             TaskType::Agent => "agent",
             TaskType::Teammate => "teammate",
             TaskType::CronJob => "cron",
-            TaskType::Dream => "dream",
-            TaskType::Workflow => "workflow",
             TaskType::Monitor => "monitor",
         }
     }
@@ -40,8 +34,6 @@ impl TaskType {
             TaskType::Agent => "ag",
             TaskType::Teammate => "tm",
             TaskType::CronJob => "cj",
-            TaskType::Dream => "dr",
-            TaskType::Workflow => "wf",
             TaskType::Monitor => "mo",
         }
     }

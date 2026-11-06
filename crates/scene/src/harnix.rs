@@ -24,6 +24,9 @@ pub const TOOLS: &[&str] = &[
     "TaskOutput",
     "TaskStop",
     "TaskWait",
+    "TeamCreate",
+    "TeamDelete",
+    "TeamList",
     "TodoWrite",
     "ToolSearch",
     "WebFetch",
@@ -41,6 +44,8 @@ const DEFERRED: &[&str] = &[
     "TaskOutput",
     "TaskStop",
     "TaskWait",
+    "TeamDelete",
+    "TeamList",
 ];
 
 pub struct HarnixScene;
@@ -63,6 +68,10 @@ impl Scene for HarnixScene {
         let mut rules = PromptBlock::system_cached(RULES);
         rules.name = Some("rules".into());
         vec![identity, rules, common::session_block(ctx)]
+    }
+
+    fn supports_team(&self) -> bool {
+        true
     }
 
     fn tools(&self) -> Vec<String> {
@@ -116,6 +125,15 @@ const RULES: &str = "\
 - For an objective one turn won't finish, set a goal with GoalCreate: rounds then continue automatically until you mark it complete with GoalUpdate. Mark complete only when the whole objective is achieved, and blocked only when the same blocker has held for several rounds.
 - Earlier messages are compacted automatically near the context limit.
 - Lead with the answer and keep replies short. No emojis unless asked. Reference code as `file_path:line_number`.
+
+# Batch work
+
+For many independent pieces of work (audit N files, try K approaches, migrate M modules):
+- Plan the batch with TodoWrite, one item per piece, and keep it current as results arrive.
+- Fan-out known up front: one TeamCreate call; dependent steps as stages; use aggregate \"aggregate\" or \"best\" to get one combined answer, not every member's output.
+- Next step depends on results: start sub-agents with Agent background:true, several per message. Each writes its full result to a file in the scratchpad and returns one line. Collect with TaskWait / TaskOutput, then decide the next batch.
+- Keep the main conversation for decisions; never pull every full result into it.
+- One to three delegations: plain Agent calls.
 ";
 
 #[cfg(test)]
@@ -135,7 +153,7 @@ mod tests {
         let scene = HarnixScene;
         assert!(scene.permits_tool("mcp__github__search"));
         assert!(scene.permits_tool("Agent"));
-        for excluded in ["CronCreate", "NotebookEdit", "TeamCreate", "EnterWorktree"] {
+        for excluded in ["CronCreate", "NotebookEdit", "EnterWorktree"] {
             assert!(!scene.permits_tool(excluded), "{excluded}");
         }
     }

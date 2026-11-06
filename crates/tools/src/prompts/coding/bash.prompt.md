@@ -40,7 +40,7 @@ Steps:
    `Co-Authored-By: {model} <noreply@anthropic.com>`; then run `git status` after the commit to confirm.
 4. If a pre-commit hook fails, fix it and make a NEW commit.
 
-While committing, run only git commands — no exploring code, no TaskCreate or Agent. Don't push unless asked. Never use `-i` (git rebase -i, git add -i): interactive input isn't supported. Don't pass `--no-edit` to git rebase. Always pass the message through a HEREDOC:
+While committing, run only git commands — no exploring code, no TodoWrite or Agent. Don't push unless asked. Never use `-i` (git rebase -i, git add -i): interactive input isn't supported. Don't pass `--no-edit` to git rebase. Always pass the message through a HEREDOC:
 <example>
 git commit -m "$(cat <<'EOF'
    Commit message here.
@@ -68,7 +68,7 @@ gh pr create --title "the pr title" --body "$(cat <<'EOF'
 EOF
 )"
 </example>
-Don't use TaskCreate or Agent while doing this, and return the PR URL at the end.
+Don't use TodoWrite or Agent while doing this, and return the PR URL at the end.
 
 # Other common operations
 - View comments on a GitHub PR: gh api repos/foo/bar/pulls/123/comments

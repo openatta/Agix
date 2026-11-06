@@ -4047,7 +4047,7 @@ async fn execute_tool_inner(
 
     // Tool-shaped lifecycle events (N-14).
     //
-    // `TaskCreated`, `WorktreeCreate` and `WorktreeRemove` were declared in
+    // `WorktreeCreate` and `WorktreeRemove` were declared in
     // `HookEvent` and fired nowhere. They describe things a *tool* does, but
     // tools have no access to the `HookRunner` — `ToolContext` deliberately
     // carries no hooks handle, and threading one through every tool for this
@@ -4059,7 +4059,6 @@ async fn execute_tool_inner(
     // worktree that was never created.
     if outcome.is_ok() {
         let lifecycle_event = match name {
-            "TaskCreate" => Some(hooks::HookEvent::TaskCreated),
             "EnterWorktree" => Some(hooks::HookEvent::WorktreeCreate),
             "ExitWorktree" => Some(hooks::HookEvent::WorktreeRemove),
             _ => None,

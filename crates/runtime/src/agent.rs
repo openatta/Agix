@@ -2327,6 +2327,35 @@ impl Builder {
             }
         }
 
+        // `TaskCreated` fires when a running task starts — a sub-agent, a
+        // shell command, a monitor, a team member — whatever started it.
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let hooks = hooks.clone();
+            let mut events = session_state.subscribe_tasks();
+            let session_id = session.session_id.clone();
+            let cwd = settings.paths.project_root().display().to_string();
+            handle.spawn(async move {
+                loop {
+                    match events.recv().await {
+                        Ok(event) if event["kind"] == "task_started" => {
+                            if hooks.has_hooks_for(hooks::HookEvent::TaskCreated) {
+                                let input = hooks::HookInput::lifecycle(
+                                    "TaskCreated",
+                                    session_id.clone(),
+                                    cwd.clone(),
+                                    String::new(),
+                                )
+                                .with_reason(event["task"].to_string());
+                                let _ = hooks.run(hooks::HookEvent::TaskCreated, &input).await;
+                            }
+                        }
+                        Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                    }
+                }
+            });
+        }
+
         let (input_tx, input_rx) = mpsc::unbounded_channel();
 
         // The scheduler half of the cron bridge: without this, `CronCreate`
@@ -3025,7 +3054,7 @@ mod tests {
         };
 
         let harnix = build(Arc::new(scene::harnix::HarnixScene));
-        for absent in ["CronCreate", "NotebookEdit", "TeamCreate", "EnterWorktree"] {
+        for absent in ["CronCreate", "NotebookEdit", "EnterWorktree"] {
             assert!(harnix.tools.get(absent).is_none(), "{absent} in harnix");
         }
         for present in ["Read", "ToolSearch", "mcp__srv__do-thing"] {
@@ -4108,6 +4137,48 @@ mod tests {
 
         assert_eq!(outcome.stop_reason, "end_turn");
         assert_eq!(outcome.api_calls, 2);
+    }
+
+    #[tokio::test]
+    async fn task_created_fires_when_a_running_task_starts() {
+        let dir = tempfile::tempdir().unwrap();
+        let seen = dir.path().join("task_created.json");
+        let mut settings = test_settings();
+        settings.hooks_config = Some(serde_json::json!({
+            "TaskCreated": [
+                { "type": "command", "command": format!("cat > '{}'", seen.display()) }
+            ]
+        }));
+        let (agent, _event_rx, _input_tx) = Builder::new()
+            .scene(Arc::new(scene::code::CodeScene))
+            .model(Arc::new(DummyModel))
+            .settings(Arc::new(settings))
+            .skip_warmup(true)
+            .build()
+            .expect("build should succeed");
+        agent.session_state.register_task(
+            "t-1",
+            base::context::TaskType::Agent,
+            CancellationToken::new(),
+            serde_json::json!({"agent_type": "explore"}),
+        );
+
+        let mut payload = None;
+        for _ in 0..200 {
+            if let Ok(text) = std::fs::read_to_string(&seen) {
+                if !text.is_empty() {
+                    payload = Some(text);
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let payload: serde_json::Value =
+            serde_json::from_str(&payload.expect("the hook ran")).unwrap();
+        assert_eq!(payload["hook_event_name"], "TaskCreated");
+        let task: serde_json::Value =
+            serde_json::from_str(payload["reason"].as_str().unwrap()).unwrap();
+        assert_eq!(task["task_id"], "t-1");
     }
 
     #[tokio::test]

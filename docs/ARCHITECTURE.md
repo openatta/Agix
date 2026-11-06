@@ -174,7 +174,7 @@ unit struct,`Arc<dyn Scene>` 只是一组函数。所以同一进程并存多个
 | id | 工具 | 用途 |
 |---|---|---|
 | `code` | 注册的全部工具;`RESIDENT_TOOLS` 之外只报名字,schema 经 `ToolSearch` 取 | 编程,需要项目;daemon 的默认场景 |
-| `harnix` | 常用集:文件读写与搜索、`Bash`、`Skill`、`TodoWrite`、`AskUserQuestion`、`Agent` 与任务控制、计划模式、网页检索与抓取、`ToolSearch`、`mcp__*`;宿主经 `extra_tools` 加自己的 | Harnix 宿主会话的默认场景 |
+| `harnix` | 常用集:文件读写与搜索、`Bash`、`Skill`、`TodoWrite`、`AskUserQuestion`、`Agent` 与任务控制、`Team*`、目标、计划模式、网页检索与抓取、`ToolSearch`、`mcp__*`;宿主经 `extra_tools` 加自己的 | Harnix 宿主会话的默认场景 |
 | `mini` | `RESIDENT_TOOLS` 那十个,全部常驻 | 最小可用的编码 agent |
 
 - `--scene` 定 daemon 的默认场景,`--scenes harnix,mini` 追加激活
@@ -327,6 +327,15 @@ recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着
 `extension_points.md`。
 
 ### 3.8 并发:每个 agent 是一个任务
+
+几个词在本文与代码里的含义:
+
+| 词 | 含义 |
+|---|---|
+| **Agent** | 执行实体:自己的上下文与步进循环(一轮之内「调模型 → 调工具」直到结束);会话的主 Agent 与常驻团队成员另有输入循环(`Agent::run`),一次性子 Agent 跑完一轮即止。都是线程池上的一个 tokio 任务 |
+| **Task**(运行任务) | 在跑的工作的句柄:状态、输出、取消、收件箱。类型有 agent / shell / monitor / teammate / cron;`TaskOutput` / `TaskWait` / `TaskStop` / `TaskMessage`、`session.tasks`、`task_*` 事件说的都是它 |
+| **Todo** | 记账清单(`TodoWrite`),不执行任何东西 |
+| **Event / Message** | Agent 之间、Agent 与宿主之间的全部交互:输入通道与收件箱进,`AgentEvent` 与 `session.event` 出 |
 
 会话的主 Agent、前台与后台子 Agent、`TeamCreate` 成员、常驻团队成员,各自是多线程
 tokio 运行时上的**一个任务**,带自己的循环与上下文。一个 Agent 一轮里并发的工具调用

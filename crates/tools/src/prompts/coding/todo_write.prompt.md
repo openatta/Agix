@@ -33,5 +33,6 @@ Assistant: *Edits the function directly, no todo list.*
 - Exactly one item is in_progress at any time. Update status in real time; mark an item completed immediately after finishing it, never in batches. Finish the current item before starting another. Remove items that are no longer relevant.
 - Mark completed only when fully accomplished — not with failing tests, partial implementation, unresolved errors, or missing files or dependencies. When blocked, keep the item in_progress and add an item describing what must be resolved.
 - Make items specific and actionable; break complex tasks into small steps.
+- Dependencies and owners go in the item text: "Run migration (after: Write migration)", "Review API docs — reviewer agent".
 
 When in doubt, use this tool.

@@ -68,13 +68,9 @@ const ALL_DEFERRABLE_TOOLS: &[&str] = &[
     "Skill",
     "Sleep",
     "StructuredOutput",
-    "TaskCreate",
-    "TaskGet",
-    "TaskList",
     "TaskMessage",
     "TaskOutput",
     "TaskStop",
-    "TaskUpdate",
     "TaskWait",
     "TeamCreate",
     "TeamDelete",
@@ -307,6 +303,9 @@ fn build_section_registry<'a>(ctx: &'a ScenePromptContext) -> Vec<SystemPromptSe
     sections.push(static_section("tool_usage", || {
         TOOL_USAGE_BLOCK.to_string()
     }));
+    sections.push(static_section("batch_work", || {
+        BATCH_WORK_BLOCK.to_string()
+    }));
     sections.push(static_section("tone_style", || {
         TONE_STYLE_BLOCK.to_string()
     }));
@@ -433,7 +432,7 @@ const TOOL_USAGE_BLOCK: &str = "\
 - Prefer dedicated tools over Bash: Read (not cat/head/tail), Edit (not sed/awk), Write (not heredoc or echo redirection), Glob (not find/ls), Grep (not grep/rg). Keep Bash for what needs a shell.
 - Make independent tool calls in one message so they run in parallel; run dependent ones in sequence. Read-only calls (Read, Grep, Glob, WebSearch, WebFetch) parallelize freely; serialize writes to the same file; run destructive steps one at a time.
 - Before calling tools, say in one sentence what you're about to do; afterwards state results or decisions directly.
-- Track multi-step work with the task tools when available, marking each item done as soon as it is.
+- Track multi-step work with TodoWrite, marking each item done as soon as it is.
 
 # Sub-agents
 
@@ -444,6 +443,17 @@ The Agent tool runs a sub-agent for complex, multi-step work; each agent type ha
 - Long independent work: `background: true`; you'll be notified on completion — don't poll or sleep.
 
 Don't delegate understanding: give file paths, line numbers and exactly what to change, not \"fix the bug based on your findings\".
+";
+
+const BATCH_WORK_BLOCK: &str = "\
+# Batch work
+
+For many independent pieces of work (audit N files, try K approaches, migrate M modules):
+- Plan the batch with TodoWrite, one item per piece, and keep it current as results arrive.
+- Fan-out known up front: one TeamCreate call; dependent steps as stages; use aggregate \"aggregate\" or \"best\" to get one combined answer, not every member's output.
+- Next step depends on results: start sub-agents with Agent background:true, several per message. Each writes its full result to a file in the scratchpad and returns one line. Collect with TaskWait / TaskOutput, then decide the next batch.
+- Keep the main conversation for decisions; never pull every full result into it.
+- One to three delegations: plain Agent calls.
 ";
 
 const TONE_STYLE_BLOCK: &str = "\

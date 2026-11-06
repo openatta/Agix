@@ -112,7 +112,8 @@ pub enum HookEvent {
     SubagentStart,
     /// Team member idle notification.
     TeammateIdle,
-    /// Task lifecycle events.
+    /// A running task started (a sub-agent, shell command, monitor, team
+    /// member); `reason` carries the task as `session.tasks` lists it.
     TaskCreated,
     TaskCompleted,
     /// An MCP server's tool result contains an elicitation URL (`mcp://` or
