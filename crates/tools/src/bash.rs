@@ -106,6 +106,12 @@ pub struct BashTool;
 
 #[async_trait]
 impl Tool for BashTool {
+    fn callable_from_code(&self) -> bool {
+        true
+    }
+    fn code_result(&self) -> Option<&'static str> {
+        Some("{stdout, stderr, exit_code}; a non-zero exit rejects with the output")
+    }
     fn name(&self) -> &str {
         "Bash"
     }
@@ -342,6 +348,11 @@ impl Tool for BashTool {
             }
         };
         let (stdout_text, stderr_text) = drained.unwrap_or_default();
+        let structured = serde_json::json!({
+            "stdout": stdout_text,
+            "stderr": stderr_text,
+            "exit_code": status.code,
+        });
         let mut combined = stdout_text;
         if !stderr_text.is_empty() {
             if !combined.is_empty() && !combined.ends_with('\n') {
@@ -369,11 +380,13 @@ impl Tool for BashTool {
             }
         }
 
-        if is_error {
-            Ok(ToolResult::error_text(combined))
+        let mut result = if is_error {
+            ToolResult::error_text(combined)
         } else {
-            Ok(ToolResult::text(combined))
-        }
+            ToolResult::text(combined)
+        };
+        result.structured_content = Some(structured);
+        Ok(result)
     }
 }
 

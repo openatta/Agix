@@ -55,6 +55,9 @@ pub struct NotebookEditTool;
 
 #[async_trait]
 impl Tool for NotebookEditTool {
+    fn callable_from_code(&self) -> bool {
+        true
+    }
     fn description(&self) -> &str {
         "Edit Jupyter notebook cells (replace, insert, delete)"
     }

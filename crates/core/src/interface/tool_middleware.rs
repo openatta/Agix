@@ -61,6 +61,8 @@ pub struct ToolAnswer {
     pub new_messages: Option<Vec<serde_json::Value>>,
     /// The tool ran and is calling its own result a failure.
     pub reported_failure: bool,
+    /// The result's structured content, when the tool gave one.
+    pub structured: Option<serde_json::Value>,
 }
 
 impl ToolAnswer {
@@ -70,6 +72,7 @@ impl ToolAnswer {
             text: s.into(),
             new_messages: None,
             reported_failure: false,
+            structured: None,
         }
     }
 
@@ -79,6 +82,7 @@ impl ToolAnswer {
             text: s.into(),
             new_messages: None,
             reported_failure: true,
+            structured: None,
         }
     }
 }

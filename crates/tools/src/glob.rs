@@ -48,6 +48,12 @@ pub struct GlobTool;
 
 #[async_trait]
 impl Tool for GlobTool {
+    fn callable_from_code(&self) -> bool {
+        true
+    }
+    fn code_result(&self) -> Option<&'static str> {
+        Some("{paths: string[], more: number} — newest first; more counts what max_results cut")
+    }
     fn name(&self) -> &str {
         "Glob"
     }
@@ -194,7 +200,15 @@ impl Tool for GlobTool {
             output.push_str("(no matches)\n");
         }
 
-        Ok(ToolResult::text(output))
+        let mut result = ToolResult::text(output);
+        result.structured_content = Some(serde_json::json!({
+            "paths": paths
+                .iter()
+                .map(|(p, _)| ctx.config.path_style.render(p, &ctx.cwd))
+                .collect::<Vec<_>>(),
+            "more": total - paths.len(),
+        }));
+        Ok(result)
     }
 }
 
@@ -248,6 +262,30 @@ mod tests {
         assert!(txt.contains("b.rs"));
         assert!(!txt.contains("c.toml"));
         assert!(!txt.contains("lib.rs"), "*.rs shouldn't match nested");
+    }
+
+    #[tokio::test]
+    async fn a_program_gets_the_paths_as_a_list() {
+        let dir = TempDir::new().unwrap();
+        make_tree(dir.path()).await;
+        let r = GlobTool
+            .call(
+                json!({"pattern": "*.rs"}),
+                ctx_in(dir.path()),
+                ProgressSender::noop("t"),
+            )
+            .await
+            .unwrap();
+        let s = r.structured_content.unwrap();
+        let mut paths: Vec<String> = s["paths"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p.as_str().unwrap().rsplit('/').next().unwrap().to_string())
+            .collect();
+        paths.sort();
+        assert_eq!(paths, ["a.rs", "b.rs"]);
+        assert_eq!(s["more"], 0);
     }
 
     #[tokio::test]

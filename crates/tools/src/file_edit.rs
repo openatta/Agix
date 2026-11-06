@@ -91,6 +91,9 @@ pub struct FileEditTool;
 
 #[async_trait]
 impl Tool for FileEditTool {
+    fn callable_from_code(&self) -> bool {
+        true
+    }
     fn name(&self) -> &str {
         "Edit"
     }

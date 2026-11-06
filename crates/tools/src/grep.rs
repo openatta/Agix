@@ -65,6 +65,12 @@ pub struct GrepTool;
 
 #[async_trait]
 impl Tool for GrepTool {
+    fn callable_from_code(&self) -> bool {
+        true
+    }
+    fn code_result(&self) -> Option<&'static str> {
+        Some("files_with_matches (default): {files: string[]}; count: {counts: {path: n}}; content: text, one 'path:line' match per line")
+    }
     fn name(&self) -> &str {
         "Grep"
     }
@@ -296,6 +302,22 @@ impl Tool for GrepTool {
 
         let mut lines = result.map_err(|e| ToolError::exec(format!("grep walk panicked: {e}")))?;
 
+        let structured = match mode {
+            GrepMode::FilesWithMatches => Some(serde_json::json!({
+                "files": lines.iter().map(|l| l.trim_end_matches('\n')).collect::<Vec<_>>(),
+            })),
+            GrepMode::Count => Some(serde_json::json!({
+                "counts": lines
+                    .iter()
+                    .filter_map(|l| {
+                        let (path, n) = l.trim_end_matches('\n').rsplit_once(':')?;
+                        Some((path.to_string(), serde_json::json!(n.parse::<u64>().ok()?)))
+                    })
+                    .collect::<serde_json::Map<_, _>>(),
+            })),
+            GrepMode::Content => None,
+        };
+
         // 截断输出
         let total_lines = lines.len();
         if head_limit > 0 && total_lines > head_limit {
@@ -315,7 +337,9 @@ impl Tool for GrepTool {
             text.push_str("(no matches)\n");
         }
 
-        Ok(ToolResult::text(text))
+        let mut result = ToolResult::text(text);
+        result.structured_content = structured;
+        Ok(result)
     }
 }
 
@@ -423,6 +447,9 @@ mod tests {
             )
             .await
             .unwrap();
+        let files = r.structured_content.clone().unwrap()["files"].clone();
+        assert_eq!(files.as_array().unwrap().len(), 1);
+        assert!(files[0].as_str().unwrap().ends_with("a.txt"), "{files}");
         match r.content {
             ToolResultContent::Text(t) => {
                 assert!(t.contains("a.txt"));

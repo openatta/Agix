@@ -80,6 +80,9 @@ impl WebSearchTool {
 
 #[async_trait]
 impl Tool for WebSearchTool {
+    fn callable_from_code(&self) -> bool {
+        true
+    }
     fn description(&self) -> &str {
         "Search the web and return results with linked sources"
     }

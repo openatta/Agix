@@ -222,11 +222,12 @@ does not carry answers `METHOD_NOT_FOUND` naming the module.
 | module | `mcp` · `auth` | MCP client and tool adapters, OAuth 2.0 PKCE |
 | module | `skills` | skill catalog and the `Skill` tool |
 | module | `script-host` | the QuickJS carrier |
+| kernel | `ptc` | `RunCode`: the model's programs, run in an embedded QuickJS ([`docs/ptc.md`](docs/ptc.md)) |
 | module | `plugin` · `plugin-host` · `wasm-host` · `plugin-compiler` | plugin packages and the WebAssembly carrier |
 | assembly | `assembly` | session pool, configuration, provider routing, the JSON-RPC server |
 | shell | `daemon` | the `agixd` binary |
 
-23 crates under `crates/`, plus `daemon/` and the four test members — 28
+24 crates under `crates/`, plus `daemon/` and the four test members — 29
 workspace members in total. The full picture — sessions and scenes, the history
 log, execution, locks, disk layout — is in
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
@@ -327,7 +328,7 @@ build if anything in the workspace assembles a pool a second way.
 
 ## Capabilities
 
-### Tools — 40 built in
+### Tools — 41 built in
 
 | Category | Tools |
 |---|---|
@@ -342,6 +343,7 @@ build if anything in the workspace assembles a pool a second way.
 | **Collaboration** | `Skill` `Agent` `TeamCreate` `TeamList` `TeamDelete` |
 | **Protocol** | `MCP` `ListMcpResources` `ReadMcpResource`, plus one `mcp__<server>__<tool>` per discovered MCP tool |
 | **Interaction** | `AskUserQuestion` `PushNotification` `Monitor` `StructuredOutput` |
+| **Programs** | `RunCode` (a JavaScript program that calls the session's tools; only its return value comes back) |
 | **Editor / Meta / Diagnostics** | `NotebookEdit` · `ToolSearch` · `Ping` `Sleep` |
 
 `tools::register_builtin_tools` installs the 22 self-contained ones; the rest

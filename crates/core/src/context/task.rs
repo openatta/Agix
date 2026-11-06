@@ -14,6 +14,8 @@ pub enum TaskType {
     CronJob,
     /// MCP monitor task.
     Monitor,
+    /// A program the model wrote (`RunCode`).
+    Code,
 }
 
 impl TaskType {
@@ -24,6 +26,7 @@ impl TaskType {
             TaskType::Teammate => "teammate",
             TaskType::CronJob => "cron",
             TaskType::Monitor => "monitor",
+            TaskType::Code => "code",
         }
     }
 
@@ -35,6 +38,7 @@ impl TaskType {
             TaskType::Teammate => "tm",
             TaskType::CronJob => "cj",
             TaskType::Monitor => "mo",
+            TaskType::Code => "cd",
         }
     }
 }
@@ -212,7 +216,10 @@ impl RunningTask {
     /// a shell command's and a monitor's. A sub-agent's output is its final
     /// answer, reported when it finishes.
     pub fn streams_output(&self) -> bool {
-        matches!(self.task_type, TaskType::Shell | TaskType::Monitor)
+        matches!(
+            self.task_type,
+            TaskType::Shell | TaskType::Monitor | TaskType::Code
+        )
     }
 
     /// The most of the new output one `task_progress` carries.

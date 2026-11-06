@@ -186,11 +186,12 @@ let (mut agent, events, input) = runtime::agent::Builder::new()
 | 模块 | `mcp` · `auth` | MCP 客户端与工具适配、OAuth 2.0 PKCE |
 | 模块 | `skills` | skill 目录与 `Skill` 工具 |
 | 模块 | `script-host` | QuickJS 载体 |
+| 内核 | `ptc` | `RunCode`:模型写的程序,在内嵌的 QuickJS 里跑([`ptc.md`](ptc.md)) |
 | 模块 | `plugin` · `plugin-host` · `wasm-host` · `plugin-compiler` | 插件包与 WebAssembly 载体 |
 | 装配 | `assembly` | 会话池、配置、provider 路由、JSON-RPC 服务 |
 | 外壳 | `daemon` | `agixd` 二进制 |
 
-`crates/` 下 23 个 crate,加上 `daemon/` 与四个测试成员,工作区共 28 个成员。完整的
+`crates/` 下 24 个 crate,加上 `daemon/` 与四个测试成员,工作区共 29 个成员。完整的
 图景——会话与场景、历史日志、执行层、锁、磁盘布局——在 [`ARCHITECTURE.md`](ARCHITECTURE.md)。
 
 ---
@@ -283,7 +284,7 @@ let pool = daemon::assemble::pool(
 
 ## 能力
 
-### 工具——40 个内建
+### 工具——41 个内建
 
 | 类别 | 工具 |
 |---|---|
@@ -298,6 +299,7 @@ let pool = daemon::assemble::pool(
 | **协作** | `Skill` `Agent` `TeamCreate` `TeamList` `TeamDelete` |
 | **协议** | `MCP` `ListMcpResources` `ReadMcpResource`,另外每个发现的 MCP 工具一个 `mcp__<server>__<tool>` |
 | **交互** | `AskUserQuestion` `PushNotification` `Monitor` `StructuredOutput` |
+| **程序** | `RunCode`(一段调用本会话工具的 JavaScript 程序,只把返回值交回) |
 | **编辑 / 元 / 诊断** | `NotebookEdit` · `ToolSearch` · `Ping` `Sleep` |
 
 `tools::register_builtin_tools` 装上其中 22 个自给自足的;其余需要会话状态,由 builder

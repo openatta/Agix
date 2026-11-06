@@ -339,3 +339,53 @@ async fn a_goal_keeps_the_session_working_round_after_round() -> anyhow::Result<
     run.finish().await;
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn one_program_does_a_search_the_model_would_otherwise_do_call_by_call() -> anyhow::Result<()>
+{
+    let mut run = LiveRun::start("ptc", json!({}), Mode::InProcess).await?;
+    let marker = format!("MARK-{}", nonce());
+    let with_marker = [3, 7, 15];
+    for i in 0..20 {
+        let body = if with_marker.contains(&i) {
+            format!("// {marker}\nfn f{i}() {{}}\n")
+        } else {
+            format!("fn f{i}() {{}}\n")
+        };
+        run.write_file(&format!("src/f{i:02}.rs"), &body)?;
+    }
+    let session = run.session().await?;
+    let events = run
+        .turn(
+            &session,
+            &format!(
+                "Use one RunCode program to find which files under src/ contain the text {marker}: \
+                 list them with tools.Glob, check each with tools.Grep, and return the sorted file \
+                 names. Then write those names, one per line, to found.txt with the Write tool."
+            ),
+        )
+        .await?;
+    for ((name, input), (_, result, is_error)) in events.tool_uses.iter().zip(&events.tool_results)
+    {
+        if name == "RunCode" {
+            eprintln!(
+                "[live ptc] RunCode{}\n{}\n  => {}",
+                if *is_error { " (error)" } else { "" },
+                input["code"].as_str().unwrap_or_default(),
+                result.chars().take(600).collect::<String>()
+            );
+        }
+    }
+    let used: Vec<&str> = events.tool_uses.iter().map(|(n, _)| n.as_str()).collect();
+    assert!(used.contains(&"RunCode"), "{used:?}");
+    let found: Vec<String> = run
+        .read_file("found.txt")
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.trim().rsplit('/').next().map(str::to_string))
+        .filter(|l| !l.is_empty())
+        .collect();
+    assert_eq!(found, ["f03.rs", "f07.rs", "f15.rs"]);
+    run.finish().await;
+    Ok(())
+}

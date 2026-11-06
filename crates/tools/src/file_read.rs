@@ -43,6 +43,12 @@ pub struct FileReadTool;
 
 #[async_trait]
 impl Tool for FileReadTool {
+    fn callable_from_code(&self) -> bool {
+        true
+    }
+    fn code_result(&self) -> Option<&'static str> {
+        Some("text, each line prefixed with its number and a tab")
+    }
     fn name(&self) -> &str {
         "Read"
     }

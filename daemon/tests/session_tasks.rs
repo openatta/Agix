@@ -734,3 +734,90 @@ async fn a_monitor_runs_beside_the_session_and_its_events_reach_the_model() {
     });
     assert_eq!(finished["event"]["task"]["status"], "stopped");
 }
+
+#[tokio::test]
+async fn a_running_program_is_a_code_task_that_wraps_up_when_stopped() {
+    let model = Arc::new(MockAnthropicClient::new());
+    model.push_turn(tool_round(
+        "RunCode",
+        "toolu_code",
+        serde_json::json!({
+            "description": "count until told to stop",
+            "code": "let n = 0;
+                while (!stopRequested()) {
+                    await tools.Bash({command: 'sleep 0.05'}); n++;
+                    log('round ' + n);
+                }
+                return {rounds: n};"
+        }),
+    ));
+    model.push_turn(text_round("stopped"));
+    let daemon = Arc::new(Daemon::start(model).await);
+
+    let session = daemon.ok("session.create", serde_json::json!({})).await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let turn = {
+        let (daemon, session) = (daemon.clone(), session.clone());
+        tokio::spawn(async move {
+            daemon
+                .call(
+                    "session.run_turn",
+                    serde_json::json!({"session_id": session, "message": "run it"}),
+                )
+                .await
+        })
+    };
+
+    let program = eventually!("the program listed as a running code task", {
+        let tasks = daemon
+            .ok("session.tasks", serde_json::json!({"session_id": session}))
+            .await;
+        tasks["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["kind"] == "code" && t["status"] == "running")
+            .cloned()
+    });
+    assert_eq!(program["detail"]["description"], "count until told to stop");
+
+    let output = eventually!("its call log as it runs", {
+        let out = daemon
+            .ok(
+                "session.taskOutput",
+                serde_json::json!({"session_id": session, "task_id": program["task_id"]}),
+            )
+            .await;
+        out["output"]
+            .as_str()
+            .filter(|o| o.contains("round 2"))
+            .map(str::to_string)
+    });
+    assert!(output.contains("→ Bash(command: sleep 0.05)"), "{output}");
+
+    daemon
+        .ok(
+            "session.stopTask",
+            serde_json::json!({"session_id": session, "task_id": program["task_id"]}),
+        )
+        .await;
+    let response = tokio::time::timeout(Duration::from_secs(20), turn)
+        .await
+        .expect("the turn ends once the program wraps up")
+        .unwrap();
+    assert!(response.get("result").is_some(), "{response}");
+
+    let out = daemon
+        .ok(
+            "session.taskOutput",
+            serde_json::json!({"session_id": session, "task_id": program["task_id"]}),
+        )
+        .await;
+    let output = out["output"].as_str().unwrap();
+    assert!(
+        output.contains("\"rounds\":"),
+        "it returned what it had: {output}"
+    );
+}

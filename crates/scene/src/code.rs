@@ -31,6 +31,7 @@ pub const RESIDENT_TOOLS: &[&str] = &[
     "Glob",
     "Grep",
     "Read",
+    "RunCode",
     "Skill",
     "ToolSearch",
     "Write",
@@ -65,6 +66,7 @@ const ALL_DEFERRABLE_TOOLS: &[&str] = &[
     "Ping",
     "PushNotification",
     "Read",
+    "RunCode",
     "Skill",
     "Sleep",
     "StructuredOutput",
@@ -448,12 +450,13 @@ Don't delegate understanding: give file paths, line numbers and exactly what to 
 const BATCH_WORK_BLOCK: &str = "\
 # Batch work
 
-For many independent pieces of work (audit N files, try K approaches, migrate M modules):
-- Plan the batch with TodoWrite, one item per piece, and keep it current as results arrive.
-- Fan-out known up front: one TeamCreate call; dependent steps as stages; use aggregate \"aggregate\" or \"best\" to get one combined answer, not every member's output.
-- Next step depends on results: start sub-agents with Agent background:true, several per message. Each writes its full result to a file in the scratchpad and returns one line. Collect with TaskWait / TaskOutput, then decide the next batch.
+For many pieces of work (search N files, fetch K pages, review M modules):
+- Intermediate results you don't need to read one by one: one RunCode program. It calls the tools — and agent() for sub-agents — in parallel and hands back only what it returns.
+- Plan the batch with TodoWrite when it spans several steps, and keep it current.
+- Each next step needs your judgement: start sub-agents with Agent background:true, several per message. Each writes its full result to a file in the scratchpad and returns one line. Collect with TaskWait / TaskOutput, then decide the next batch.
+- Fixed stages, or members that must talk to each other: one TeamCreate call; use aggregate \"aggregate\" or \"best\" to get one combined answer.
 - Keep the main conversation for decisions; never pull every full result into it.
-- One to three delegations: plain Agent calls.
+- One to three calls: call the tools directly.
 ";
 
 const TONE_STYLE_BLOCK: &str = "\

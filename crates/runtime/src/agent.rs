@@ -2101,6 +2101,7 @@ impl Builder {
         //
         // The tool-dispatch path used to build a **brand new** one for every
         // single tool call (`turn.rs`'s `ToolContext { session: Arc::new(
+        // SessionState::new(cwd))     dispatch: None,
         // SessionState::new(cwd)) }`), so none of that state survived from
         // one call to the next: plan mode never took effect, read-before-edit
         // staleness detection never fired, read dedup never deduped, and
@@ -2325,6 +2326,14 @@ impl Builder {
             if !scene.permits_tool(t.name()) {
                 tools.remove(t.name());
             }
+        }
+
+        // Last, so its description lists the tools this session ended up
+        // with. Only the root session writes programs: a sub-agent is already
+        // one delegation down.
+        #[cfg(feature = "ptc")]
+        if self.agent_depth == 0 && scene.permits_tool(ptc::TOOL_NAME) {
+            tools.register(Arc::new(ptc::RunCodeTool::for_registry(tools.as_ref())));
         }
 
         // `TaskCreated` fires when a running task starts — a sub-agent, a
@@ -3227,6 +3236,7 @@ mod tests {
                 "Glob",
                 "Grep",
                 "Read",
+                "RunCode",
                 "ToolSearch",
                 "Write",
             ],
@@ -4137,6 +4147,169 @@ mod tests {
 
         assert_eq!(outcome.stop_reason, "end_turn");
         assert_eq!(outcome.api_calls, 2);
+    }
+
+    /// Calls `name` once with `input`, then answers "done".
+    #[cfg(feature = "ptc")]
+    struct OneCallModel {
+        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        name: &'static str,
+        input: serde_json::Value,
+    }
+    #[cfg(feature = "ptc")]
+    #[async_trait::async_trait]
+    impl Model for OneCallModel {
+        fn api_type(&self) -> base::provider::ApiType {
+            base::provider::ApiType::Anthropic
+        }
+        async fn stream(
+            &self,
+            _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+            _tools: Vec<base::interface::model::ToolDef>,
+            _messages: Vec<base::interface::model::ModelMessage>,
+            _params: base::interface::model::StreamParams,
+            _cancel: CancellationToken,
+        ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError>
+        {
+            use base::interface::model::ModelEvent;
+            let first = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+            let events: Vec<Result<ModelEvent, base::interface::model::ModelError>> = if first {
+                vec![
+                    Ok(ModelEvent::ToolUse {
+                        id: "toolu_code".into(),
+                        name: self.name.into(),
+                        input: self.input.clone(),
+                    }),
+                    Ok(ModelEvent::EndTurn {
+                        stop_reason: "tool_use".into(),
+                        usage: Default::default(),
+                    }),
+                ]
+            } else {
+                vec![
+                    Ok(ModelEvent::TextDelta {
+                        text: "done".into(),
+                    }),
+                    Ok(ModelEvent::EndTurn {
+                        stop_reason: "end_turn".into(),
+                        usage: Default::default(),
+                    }),
+                ]
+            };
+            Ok(Box::new(futures::stream::iter(events)))
+        }
+    }
+
+    #[cfg(feature = "ptc")]
+    struct AsksForAllButRunCode;
+    #[cfg(feature = "ptc")]
+    #[async_trait::async_trait]
+    impl base::interface::permission::Permission for AsksForAllButRunCode {
+        async fn check(
+            &self,
+            tool_name: &str,
+            _tool_input: &serde_json::Value,
+            _cwd: &std::path::Path,
+            _session_id: &str,
+        ) -> base::interface::permission::PermissionOutcome {
+            if tool_name == "RunCode" {
+                return base::interface::permission::PermissionOutcome::Permit;
+            }
+            base::interface::permission::PermissionOutcome::Prompt {
+                prompt_id: "p1".into(),
+                message: format!("allow {tool_name}?"),
+                paths: vec![],
+            }
+        }
+    }
+
+    #[cfg(feature = "ptc")]
+    async fn run_code_result(
+        code: &str,
+        args: serde_json::Value,
+        permission: Option<Arc<dyn base::interface::permission::Permission>>,
+    ) -> (String, bool) {
+        let template = Arc::new(InMemoryToolRegistry::new());
+        tools::register_builtin_tools(&template);
+        let model: Arc<dyn Model> = Arc::new(OneCallModel {
+            calls: Default::default(),
+            name: "RunCode",
+            input: serde_json::json!({"code": code, "args": args}),
+        });
+        let mut builder = Builder::new()
+            .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+            .model(model)
+            .settings(Arc::new(test_settings()))
+            .tools(template)
+            .skip_warmup(true);
+        if let Some(p) = permission {
+            builder = builder.permission(p);
+        }
+        let (mut agent, mut event_rx, _input_tx) = builder.build().expect("build should succeed");
+        assert!(
+            agent.tools.get("RunCode").is_some(),
+            "the code scene offers RunCode"
+        );
+        agent
+            .process_turn(
+                InputMessage::User {
+                    content: "go".into(),
+                    attachments: vec![],
+                    turn_id: "t1".into(),
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .expect("the turn runs");
+        while let Ok(event) = event_rx.try_recv() {
+            if let AgentEvent::ToolResult {
+                name,
+                content,
+                is_error,
+                ..
+            } = event
+            {
+                if name == "RunCode" {
+                    return (content, is_error.unwrap_or(false));
+                }
+            }
+        }
+        panic!("no RunCode result");
+    }
+
+    #[cfg(feature = "ptc")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_program_reads_files_through_the_sessions_own_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "alpha\n").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "beta\n").unwrap();
+        let (content, is_error) = run_code_result(
+            "const texts = await Promise.all(['a.txt', 'b.txt'].map(f =>
+                tools.Read({file_path: args.dir + '/' + f})));
+             return texts.map(t => t.includes('alpha') ? 'a' : t.includes('beta') ? 'b' : '?');",
+            serde_json::json!({"dir": dir.path()}),
+            None,
+        )
+        .await;
+        assert!(!is_error, "{content}");
+        assert!(content.starts_with(r#"["a","b"]"#), "{content}");
+        assert!(content.contains("(2 tool calls, 0 failed)"), "{content}");
+    }
+
+    #[cfg(feature = "ptc")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_call_that_needs_approval_fails_instead_of_asking() {
+        let (content, _) = run_code_result(
+            "try { await tools.Read({file_path: '/etc/hosts'}); return 'ran'; }
+             catch (e) { return e.message; }",
+            serde_json::json!({}),
+            Some(Arc::new(AsksForAllButRunCode)),
+        )
+        .await;
+        assert!(
+            content.contains("a program cannot ask for"),
+            "the program should see the refusal, got: {content}"
+        );
     }
 
     #[tokio::test]

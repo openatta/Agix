@@ -62,6 +62,9 @@ impl WebFetchTool {
 
 #[async_trait]
 impl Tool for WebFetchTool {
+    fn callable_from_code(&self) -> bool {
+        true
+    }
     fn name(&self) -> &str {
         "WebFetch"
     }

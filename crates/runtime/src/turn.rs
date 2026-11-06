@@ -3644,6 +3644,100 @@ fn exec_providers_from(
     ))
 }
 
+/// Sub-calls a tool makes (`RunCode`), through the same dispatch as the
+/// model's own calls. Each runs under its own tool-use id derived from the
+/// caller's, cannot ask a person anything, and leaves the round's batch alone:
+/// a hook ending the turn or an image a sub-call returned are the caller's to
+/// report, not the round's.
+struct SubCallDispatcher {
+    ctx: ToolExecCtx,
+    next: std::sync::atomic::AtomicU64,
+}
+
+impl SubCallDispatcher {
+    fn new(ctx: &ToolExecCtx) -> Self {
+        let mut ctx = ctx.clone();
+        ctx.elicitation = Arc::new(NoAsking);
+        ctx.discontinued = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        ctx.images = Arc::default();
+        Self {
+            ctx,
+            next: std::sync::atomic::AtomicU64::new(1),
+        }
+    }
+
+    fn callable_tool(&self, name: &str) -> Option<Arc<dyn base::tool::Tool>> {
+        self.ctx.tools.get(name).filter(|t| t.callable_from_code())
+    }
+}
+
+#[async_trait::async_trait]
+impl base::interface::tool_dispatch::ToolDispatch for SubCallDispatcher {
+    fn callable(&self) -> Vec<base::interface::tool_dispatch::CallableTool> {
+        let mut tools: Vec<_> = self
+            .ctx
+            .tools
+            .list()
+            .into_iter()
+            .filter(|t| t.callable_from_code())
+            .map(|t| base::interface::tool_dispatch::CallableTool {
+                name: t.name().to_string(),
+                description: t
+                    .short_description()
+                    .unwrap_or_else(|| t.description().to_string()),
+                input_schema: base::tool::compact_schema(t.full_input_schema()),
+                result: t.code_result().map(str::to_string),
+            })
+            .collect();
+        tools.sort_by(|a, b| a.name.cmp(&b.name));
+        tools
+    }
+
+    fn concurrency_safe(&self, name: &str, input: &serde_json::Value) -> bool {
+        self.callable_tool(name)
+            .is_some_and(|t| t.is_concurrency_safe(input))
+    }
+
+    async fn call(
+        &self,
+        name: &str,
+        input: serde_json::Value,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<base::interface::tool_dispatch::SubCallAnswer, String> {
+        if self.callable_tool(name).is_none() {
+            return Err(format!("{name} cannot be called from code in this session"));
+        }
+        let n = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut ctx = self.ctx.clone();
+        ctx.tool_use_id = format!("{}.{n}", self.ctx.tool_use_id);
+        ctx.cancel = cancel;
+        execute_tool_with_telemetry(&ctx, name, input)
+            .await
+            .map(|a| base::interface::tool_dispatch::SubCallAnswer {
+                text: a.text,
+                structured: a.structured,
+                reported_failure: a.reported_failure,
+            })
+    }
+}
+
+/// The approval a sub-call would need cannot be asked for from inside a
+/// program; the model has to make that call itself.
+struct NoAsking;
+
+#[async_trait::async_trait]
+impl base::interface::elicitation::Elicitation for NoAsking {
+    async fn ask(
+        &self,
+        _: base::interface::elicitation::ElicitRequest,
+    ) -> base::interface::elicitation::ElicitOutcome {
+        base::interface::elicitation::ElicitOutcome::declined(
+            "this call needs the user's approval, which a program cannot ask for — \
+             make this call directly instead of from code",
+        )
+    }
+}
+
 async fn execute_tool_inner(
     ctx: &ToolExecCtx,
     name: &str,
@@ -3902,6 +3996,10 @@ async fn execute_tool_inner(
         events_tx: None,
         elicitation: Some(Arc::clone(&ctx.elicitation)),
         exec: exec_providers_from(&ctx.config),
+        dispatch: tool.needs_dispatch().then(|| {
+            Arc::new(SubCallDispatcher::new(ctx))
+                as Arc<dyn base::interface::tool_dispatch::ToolDispatch>
+        }),
     };
     let input_for_post_hook = input.clone();
     let input_json_size = serde_json::to_string(&input)
@@ -3969,6 +4067,7 @@ async fn execute_tool_inner(
                 text,
                 new_messages: r.new_messages,
                 reported_failure: r.is_error,
+                structured: r.structured_content,
             })
         }
         Err(e) => Err(e.to_string()),
@@ -4106,9 +4205,9 @@ fn apply_result_transformers(
     // itself already called a failure hands back the same shape, because
     // nothing about it changed.
     let was_reported_failure = matches!(&outcome, Ok(a) if a.reported_failure);
-    let (text, is_error, new_messages) = match outcome {
-        Ok(a) => (a.text, a.reported_failure, a.new_messages),
-        Err(e) => (e, true, None),
+    let (text, is_error, new_messages, structured) = match outcome {
+        Ok(a) => (a.text, a.reported_failure, a.new_messages, a.structured),
+        Err(e) => (e, true, None, None),
     };
     let images = std::mem::take(&mut *ctx.images.lock().unwrap_or_else(|e| e.into_inner()));
     let mut draft = base::interface::tool_result::ToolResultDraft {
@@ -4140,6 +4239,7 @@ fn apply_result_transformers(
             text: draft.text,
             new_messages,
             reported_failure: draft.is_error,
+            structured,
         })
     }
 }

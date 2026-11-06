@@ -65,7 +65,7 @@ zip = { workspace = true }
 #     cargo build -p daemon --no-default-features --features coding,scripts
 #     cargo build -p daemon --no-default-features                      # minimal: the kernel
 default = ["full", "scripts", "plugin-packages"]
-coding = ["mcp", "agents", "skills", "web", "structured-output"]
+coding = ["mcp", "agents", "skills", "web", "structured-output", "ptc"]
 full = ["coding", "ws"]
 mcp = ["assembly/mcp"]
 agents = ["assembly/agents"]
@@ -73,6 +73,8 @@ skills = ["assembly/skills"]
 ws = ["assembly/ws"]
 web = ["runtime/web"]
 structured-output = ["runtime/structured-output"]
+# RunCode (docs/ptc.md). Not an extension carrier, so exclusive with neither.
+ptc = ["runtime/ptc"]
 scripts = ["assembly/scripts", "dep:script-host"]
 plugin-packages = ["assembly/plugin-packages"]
 plugins = ["assembly/plugins"]

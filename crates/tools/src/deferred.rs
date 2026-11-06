@@ -116,6 +116,18 @@ impl Tool for DeferredTool {
         self.inner.is_concurrency_safe(input)
     }
 
+    fn callable_from_code(&self) -> bool {
+        self.inner.callable_from_code()
+    }
+
+    fn code_result(&self) -> Option<&'static str> {
+        self.inner.code_result()
+    }
+
+    fn needs_dispatch(&self) -> bool {
+        self.inner.needs_dispatch()
+    }
+
     fn is_destructive(&self, input: &Value) -> bool {
         self.inner.is_destructive(input)
     }

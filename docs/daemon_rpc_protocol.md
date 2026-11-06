@@ -612,7 +612,7 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 | `context_edits` | 有 `session.inspectContext` / `session.dropMessages` / `session.editMessage`(§6.3) |
 | `extension_entries` | 有 `session.appendEntry` / `session.entries`,写入推 `extension_entry`(§6.3、§7) |
 | `task_output` | 有 `session.taskOutput`,Shell 命令与监视器的输出边跑边记(§6.3) |
-| `task_progress` | 任务边跑边推:`task_progress` 推 Shell 命令与监视器新增的输出,`task_updated` 推子 Agent 的用量与等待;`subagent_progress` 带 `task_id`(§7) |
+| `task_progress` | 任务边跑边推:`task_progress` 推 Shell 命令、监视器与 `RunCode` 程序新增的输出(程序的是 `log()` 行与每次子调用的一行),`task_updated` 推子 Agent 的用量与等待;`subagent_progress` 带 `task_id`(§7) |
 | `task_messages` | 有 `session.messageTask`,消息进运行中的后台子 Agent(§6.3) |
 | `host_agents` | 有 `session.startAgent`,宿主不经模型在会话下起子 Agent;子 Agent 任务带 `usage`、`structured_output`、`detail.tag`(§6.3) |
 
@@ -1438,12 +1438,13 @@ Shell 命令与监视器,以及安排给它的定时任务(§6.7)。和模型用
 { "active": true,           // 引擎是否在内存里;不在时只有定时任务
   "tasks": [
     { "task_id": "…",
-      "kind": "agent",      // agent | teammate | shell | monitor | cron
+      "kind": "agent",      // agent | teammate | shell | monitor | cron | code
       "status": "running",  // running | waiting | done | failed | stopped;定时任务总是 waiting
       "started_ms": 0, "ended_ms": null,
       "detail": { },        // agent:{agent_type,description,background,tool_use_id,agent_session_id,tag?}
                             // teammate:{team,member};shell:{command,tool_use_id}
                             // monitor:{command,description,persistent,tool_use_id}
+                            // code:{description,background,tool_use_id}(RunCode 的程序,docs/ptc.md)
                             // cron:{cron,prompt,recurring,durable,expires_ms}
       "usage": { },         // agent / teammate:它自己的模型调用到此刻的合计(§3.5 四字段)
       "structured_output": { },  // 带 output_schema 起的子 Agent 交了才有

@@ -33,12 +33,15 @@ notify        = { workspace = true }
 # Attachment images arrive as raw bytes (Attachment::File) and must reach the
 # API as base64 — see `resolve_attachments` in turn.rs.
 base64        = { workspace = true }
+# RunCode: the model's programs, run in an embedded QuickJS — see docs/ptc.md.
+ptc           = { workspace = true, optional = true }
 
 [features]
 # The tool groups the kernel registers without being asked: off in the minimal
 # build (`--no-default-features`), on everywhere else.
-default = ["web", "structured-output"]
+default = ["web", "structured-output", "ptc"]
 web = ["tools/web"]
+ptc = ["dep:ptc"]
 structured-output = ["tools/structured-output"]
 
 [dev-dependencies]

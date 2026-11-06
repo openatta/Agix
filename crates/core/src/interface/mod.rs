@@ -109,6 +109,7 @@ pub mod skill_catalog;
 pub mod skill_provider;
 pub mod token_counter;
 pub mod tool;
+pub mod tool_dispatch;
 pub mod tool_middleware;
 pub mod tool_result;
 pub mod turn_policy;

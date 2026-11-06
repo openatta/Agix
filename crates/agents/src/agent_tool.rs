@@ -442,6 +442,10 @@ pub struct AgentInput {
     pub model: Option<String>,
     #[serde(default)]
     pub auto_background_after_secs: Option<u64>,
+    /// A JSON Schema the sub-agent's final answer must satisfy; the answer is
+    /// then also returned as structured content.
+    #[serde(default)]
+    pub output_schema: Option<Value>,
     /// A team to join, together with `name`. If that member is alive, `prompt`
     /// is queued as its next message instead of spawning a new one. Needs
     /// team mode enabled for the session.
@@ -2970,6 +2974,7 @@ impl AgentTool {
         let inner = self.inner.clone();
         let run = SubRun {
             model: input.model.clone(),
+            output_schema: input.output_schema.clone(),
             ..SubRun::for_task(&task, &sid)
         };
         let session = ctx.session.clone();
@@ -3935,6 +3940,12 @@ fn bg_result(task_id: &str, status: &str) -> base::tool::ToolResult {
 
 #[async_trait]
 impl base::tool::Tool for AgentTool {
+    fn callable_from_code(&self) -> bool {
+        true
+    }
+    fn code_result(&self) -> Option<&'static str> {
+        Some("the sub-agent's final text; an object when output_schema is given")
+    }
     fn name(&self) -> &str {
         AGENT_TOOL_NAME
     }
@@ -4082,6 +4093,7 @@ impl base::tool::Tool for AgentTool {
                 )),
                 SubRun {
                     model: inp.model.clone(),
+                    output_schema: inp.output_schema.clone(),
                     ..SubRun::for_task(task_scope.task(), &sid)
                 },
             )
@@ -4093,12 +4105,13 @@ impl base::tool::Tool for AgentTool {
         if let Ok(text) = &result {
             task_scope.task().append_output(text);
         }
+        let structured = task_scope.task().structured_output.get().cloned();
 
         match result {
             Ok(text) => Ok(base::tool::ToolResult {
                 content: ToolResultContent::Text(text),
                 is_error: false,
-                structured_content: None,
+                structured_content: structured,
                 mcp_meta: None,
                 new_messages: None,
             }),

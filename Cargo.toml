@@ -8,6 +8,7 @@ members = [
     "crates/plugin",
     "crates/plugin-host",
     "crates/script-host",
+    "crates/ptc",
     "crates/wasm-host",
     "crates/plugin-compiler",
     "crates/telemetry",
@@ -115,6 +116,7 @@ plugin   = { path = "crates/plugin" }
 plugin-host = { path = "crates/plugin-host", default-features = false }
 wasm-host = { path = "crates/wasm-host", default-features = false }
 script-host = { path = "crates/script-host" }
+ptc = { path = "crates/ptc" }
 telemetry = { path = "crates/telemetry" }
 history  = { path = "crates/history" }
 permissions = { path = "crates/permissions" }

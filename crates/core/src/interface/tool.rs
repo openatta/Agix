@@ -291,6 +291,9 @@ pub struct ToolContext {
     /// [`crate::interface::exec`]. The default is this machine; a deployment
     /// executing somewhere else replaces the set and no tool notices.
     pub exec: crate::interface::exec::ExecProviders,
+    /// How this tool calls other tools — set only for a tool whose
+    /// [`Tool::needs_dispatch`] says it does.
+    pub dispatch: Option<Arc<dyn crate::interface::tool_dispatch::ToolDispatch>>,
 }
 impl ToolContext {
     pub fn for_test(cwd: PathBuf) -> Self {
@@ -316,6 +319,7 @@ impl ToolContext {
             events_tx: None,
             elicitation: None,
             exec: Default::default(),
+            dispatch: None,
         }
     }
     pub fn from_engine_ctx(cwd: PathBuf, cancel: CancellationToken) -> Self {
@@ -341,6 +345,7 @@ impl ToolContext {
             events_tx: None,
             elicitation: None,
             exec: Default::default(),
+            dispatch: None,
         }
     }
 }
@@ -460,6 +465,22 @@ pub trait Tool: Send + Sync + 'static {
         false
     }
     fn is_concurrency_safe(&self, _: &Value) -> bool {
+        false
+    }
+    /// Whether a program the model writes (`RunCode`) may call this tool.
+    /// Tools that do work and return data say yes; tools that talk to the
+    /// conversation or a person do not.
+    fn callable_from_code(&self) -> bool {
+        false
+    }
+    /// What a program gets back from this tool, when that is more than the
+    /// text the model sees — the shape of its structured content.
+    fn code_result(&self) -> Option<&'static str> {
+        None
+    }
+    /// Whether this tool calls other tools, and so needs
+    /// [`ToolContext::dispatch`].
+    fn needs_dispatch(&self) -> bool {
         false
     }
     fn is_destructive(&self, _: &Value) -> bool {
