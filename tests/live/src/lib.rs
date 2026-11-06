@@ -40,7 +40,7 @@ pub mod provider;
 pub mod world;
 
 pub use handle::{alternate_daemon_binary, Daemon, DaemonOptions, Mode, Wire};
-pub use live::{Exchange, LiveConfig, LiveProvider, LiveRun};
+pub use live::{Asked, Exchange, LiveConfig, LiveProvider, LiveRun, Watcher};
 pub use provider::{Block, ProviderStub, Reply, SeenRequest};
 pub use world::World;
 

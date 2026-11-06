@@ -17,9 +17,11 @@
 //!
 //! [`LiveRun`] is the scaffolding every live case repeats: a world, one
 //! project with permissive settings, the proxy, a daemon, a client, and turns
-//! bounded by a timeout. Assertions belong to the cases, and they should be
-//! about outcomes — files, task states, values only a real run can produce —
-//! never about the model's wording.
+//! bounded by a timeout. [`Watcher`] is the host's second pair of eyes — a
+//! connection that only watches a session, and answers its questions when
+//! told to. Assertions belong to the cases, and they should be about
+//! outcomes — files, task states, frames, values only a real run can
+//! produce — never about the model's wording.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -33,6 +35,8 @@ use tokio::net::TcpListener;
 
 use crate::provider::{http_response, read_request, RawRequest, SeenRequest};
 use crate::{Daemon, DaemonOptions, Mode, ModelEndpoint, World};
+
+type HostScenes = Vec<Arc<dyn base::interface::scene::Scene>>;
 
 const DEFAULT_MAX_CALLS: usize = 400;
 const DEFAULT_TURN_TIMEOUT_SECS: u64 = 900;
@@ -385,6 +389,8 @@ pub struct LiveRun {
     pub client: DaemonRpcClient,
     name: String,
     turns: usize,
+    mode: Mode,
+    scenes: HostScenes,
 }
 
 impl LiveRun {
@@ -402,6 +408,25 @@ impl LiveRun {
     /// `settings` is merged over [`base_settings`](Self::base_settings), one
     /// level deep.
     pub async fn start(name: &str, settings: Value, mode: Mode) -> anyhow::Result<Self> {
+        Self::start_with(name, settings, mode, Vec::new()).await
+    }
+
+    /// [`start`](Self::start) on a daemon in this process that also serves
+    /// `scenes`, as an embedder's does.
+    pub async fn start_with_scenes(
+        name: &str,
+        settings: Value,
+        scenes: HostScenes,
+    ) -> anyhow::Result<Self> {
+        Self::start_with(name, settings, Mode::InProcess, scenes).await
+    }
+
+    async fn start_with(
+        name: &str,
+        settings: Value,
+        mode: Mode,
+        scenes: HostScenes,
+    ) -> anyhow::Result<Self> {
         let config = LiveConfig::load()?;
         let world = World::new()?;
         let project = world.project(name)?;
@@ -423,7 +448,9 @@ impl LiveRun {
         let daemon = Daemon::start(
             &world,
             &provider,
-            DaemonOptions::new(project.clone()).mode(mode),
+            DaemonOptions::new(project.clone())
+                .mode(mode)
+                .scenes(scenes.clone()),
         )
         .await?;
         let client = daemon.connect().await?;
@@ -440,7 +467,31 @@ impl LiveRun {
             client,
             name: name.to_string(),
             turns: 0,
+            mode,
+            scenes,
         })
+    }
+
+    /// Stop the daemon and start another on the same world and model, as a
+    /// host restarting its engine does: what comes back is what is on disk.
+    pub async fn restart(&mut self) -> anyhow::Result<()> {
+        self.daemon.halt().await;
+        self.daemon = Daemon::start(
+            &self.world,
+            &self.provider,
+            DaemonOptions::new(self.project.clone())
+                .mode(self.mode)
+                .scenes(self.scenes.clone()),
+        )
+        .await?;
+        self.client = self.daemon.connect().await?;
+        Ok(())
+    }
+
+    /// A second connection watching `session`; with `approve`, it answers
+    /// every question with a permit.
+    pub async fn watch(&self, session: &str, approve: bool) -> anyhow::Result<Watcher> {
+        Watcher::start(&self.daemon, session, approve).await
     }
 
     pub fn config(&self) -> &LiveConfig {
@@ -510,7 +561,7 @@ impl LiveRun {
             .unwrap_or_default())
     }
 
-    /// Poll until no task of the session is still running.
+    /// Poll until no task of the session is still running or waiting.
     pub async fn wait_tasks_settled(
         &mut self,
         session: &str,
@@ -519,7 +570,9 @@ impl LiveRun {
         let deadline = Instant::now() + timeout;
         loop {
             let tasks = self.tasks(session).await?;
-            if tasks.iter().all(|t| t["status"] != "running") {
+            if tasks.iter().all(|t| {
+                t["status"] != "running" && (t["status"] != "waiting" || t["kind"] == "cron")
+            }) {
                 return Ok(tasks);
             }
             anyhow::ensure!(
@@ -538,4 +591,121 @@ impl LiveRun {
         );
         self.daemon.stop().await;
     }
+}
+
+/// A question a session put to its host, and the session's task list as the
+/// host saw it on reading the question.
+#[derive(Clone, Debug)]
+pub struct Asked {
+    /// The `session.event` params of the `prompt` frame.
+    pub prompt: Value,
+    pub tasks: Vec<Value>,
+}
+
+/// A connection that only watches a session — what a host's monitoring view
+/// is. It keeps every `session.event` it is sent, in order; one that approves
+/// answers each `prompt` with a permit, after reading `session.tasks` over a
+/// connection of its own.
+pub struct Watcher {
+    seen: Arc<Mutex<Vec<Value>>>,
+    asked: Arc<Mutex<Vec<Asked>>>,
+    reader: tokio::task::JoinHandle<()>,
+}
+
+impl Watcher {
+    pub async fn start(daemon: &Daemon, session: &str, approve: bool) -> anyhow::Result<Self> {
+        let mut watcher = daemon.connect().await?;
+        let subscribed = watcher.session_subscribe(session).await?;
+        anyhow::ensure!(subscribed.error.is_none(), "{subscribed:?}");
+        let mut answerer = daemon.connect().await?;
+        let (seen, asked) = (
+            Arc::<Mutex<Vec<Value>>>::default(),
+            Arc::<Mutex<Vec<Asked>>>::default(),
+        );
+        let (into_seen, into_asked, session) = (seen.clone(), asked.clone(), session.to_string());
+        let reader = tokio::spawn(async move {
+            while let Ok(Some(frame)) = watcher.next_frame().await {
+                if frame["method"] != "session.event" {
+                    continue;
+                }
+                let params = frame["params"].clone();
+                lock(&into_seen).push(params.clone());
+                if !approve || params["event"]["kind"] != "prompt" {
+                    continue;
+                }
+                let tasks = answerer
+                    .call("session.tasks", json!({ "session_id": session }))
+                    .await
+                    .ok()
+                    .and_then(|r| r.result)
+                    .and_then(|r| r["tasks"].as_array().cloned())
+                    .unwrap_or_default();
+                lock(&into_asked).push(Asked {
+                    prompt: params.clone(),
+                    tasks,
+                });
+                let _ = answerer
+                    .call(
+                        "session.respondToPrompt",
+                        json!({
+                            "session_id": session,
+                            "prompt_id": params["event"]["prompt_id"],
+                            "decision": { "type": "permit" }
+                        }),
+                    )
+                    .await;
+            }
+        });
+        Ok(Self {
+            seen,
+            asked,
+            reader,
+        })
+    }
+
+    /// Every frame so far.
+    pub fn frames(&self) -> Vec<Value> {
+        lock(&self.seen).clone()
+    }
+
+    /// The frames so far whose event is a `kind`.
+    pub fn events(&self, kind: &str) -> Vec<Value> {
+        lock(&self.seen)
+            .iter()
+            .filter(|f| f["event"]["kind"] == kind)
+            .cloned()
+            .collect()
+    }
+
+    pub fn asked(&self) -> Vec<Asked> {
+        lock(&self.asked).clone()
+    }
+
+    /// The first frame whose event satisfies `wanted`, waiting up to
+    /// `timeout` for it.
+    pub async fn wait_for(
+        &self,
+        what: &str,
+        timeout: Duration,
+        wanted: impl Fn(&Value) -> bool,
+    ) -> anyhow::Result<Value> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(frame) = lock(&self.seen).iter().find(|f| wanted(&f["event"])) {
+                return Ok(frame.clone());
+            }
+            anyhow::ensure!(Instant::now() < deadline, "no {what} within {timeout:?}");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+}
+
+impl Drop for Watcher {
+    fn drop(&mut self) {
+        self.reader.abort();
+    }
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }

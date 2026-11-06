@@ -51,3 +51,7 @@ required-features = ["real-model"]
 [[test]]
 name = "live_extensions"
 required-features = ["real-model"]
+
+[[test]]
+name = "live_host"
+required-features = ["real-model"]

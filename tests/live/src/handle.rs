@@ -78,6 +78,10 @@ pub struct DaemonOptions {
     /// Extra arguments for a spawned daemon. Ignored in this process, which
     /// has no command line to put them on.
     pub extra_args: Vec<String>,
+    /// Scenes the host defines, served beside the built-in ones — what an
+    /// embedder hands `daemon::Assembly`. Only in this process: a spawned
+    /// daemon has no way to be given Rust code.
+    pub scenes: Vec<Arc<dyn base::interface::scene::Scene>>,
 }
 
 impl DaemonOptions {
@@ -92,6 +96,7 @@ impl DaemonOptions {
             instance: "harness".to_string(),
             binary: None,
             extra_args: Vec::new(),
+            scenes: Vec::new(),
         }
     }
 
@@ -121,6 +126,11 @@ impl DaemonOptions {
 
     pub fn arg(mut self, arg: impl Into<String>) -> Self {
         self.extra_args.push(arg.into());
+        self
+    }
+
+    pub fn scenes(mut self, scenes: Vec<Arc<dyn base::interface::scene::Scene>>) -> Self {
+        self.scenes = scenes;
         self
     }
 }
@@ -195,6 +205,8 @@ impl Daemon {
                 permission_prompt_timeout: opts.prompt_timeout,
                 model_client: Some(client),
                 permission: Some(Arc::new(AllowAll) as Arc<dyn Permission>),
+                extra_scenes: opts.scenes.iter().map(|s| s.id().to_string()).collect(),
+                scenes: opts.scenes.clone(),
                 ..Default::default()
             },
         )
@@ -250,6 +262,10 @@ impl Daemon {
         provider: &dyn ModelEndpoint,
         opts: DaemonOptions,
     ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            opts.scenes.is_empty(),
+            "a host's own scenes reach only a daemon built in this process"
+        );
         let (mut cmd, socket, stderr_path, tcp, ws) = spawn_command(world, provider, &opts).await?;
         let child = cmd.spawn()?;
         let mut daemon = Self {
@@ -351,6 +367,11 @@ impl Daemon {
     }
 
     pub async fn stop(mut self) {
+        self.halt().await;
+    }
+
+    /// [`stop`](Self::stop), for a holder that starts another in its place.
+    pub async fn halt(&mut self) {
         match &mut self.running {
             Running::InProcess { cancel, tasks } => {
                 cancel.cancel();
