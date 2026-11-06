@@ -146,6 +146,10 @@ fn params_of(request: &CallRecord) -> StreamParams {
             .as_ref()
             .map(|id| CallOrigin::auxiliary(id, "rerun")),
         input_map: request.input_map.clone(),
+        provider_search: request
+            .params
+            .search_max_uses
+            .map(|max_uses| base::interface::model::ProviderSearch { max_uses }),
     }
 }
 
@@ -506,6 +510,7 @@ mod tests {
                 provider: "anthropic".into(),
                 api_type: ApiType::Anthropic,
                 params: RecordedParams {
+                    search_max_uses: None,
                     model: "claude-opus-5".into(),
                     max_tokens: 4096,
                     thinking_mode: ThinkingMode::Off,

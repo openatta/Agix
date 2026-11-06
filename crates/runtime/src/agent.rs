@@ -20,6 +20,9 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing;
 
+/// The `task_models` key that routes `WebSearch` to a provider of its own.
+const WEB_SEARCH_TASK: &str = "web_search";
+
 // ── Channel types ──
 
 #[derive(Debug)]
@@ -2052,15 +2055,24 @@ impl Builder {
                 .with_permission_mode(config.permission_mode),
         );
 
-        // WebSearch — registered here rather than in
-        // `tools::register_builtin_tools` because choosing a `SearchProvider`
-        // needs resolved `Settings` (endpoint + credentials) and that function
-        // deliberately takes nothing but a registry. Both `ChatScene::tools()`
-        // and `ResearchScene::tools()` list "WebSearch", and a scene whitelist
-        // is *intersected* with the registry — so an unregistered name is not
-        // an error, it just silently disappears, which is how Research ended
-        // up with no search capability at all.
-        tools::register_web_search(&tools, &settings);
+        // WebSearch searches through the session's own model unless
+        // `task_models.web_search` routes it elsewhere.
+        let (search_model, search_model_name) = match self
+            .task_router
+            .as_ref()
+            .and_then(|router| Some((router, router.model_name_for(WEB_SEARCH_TASK)?)))
+        {
+            Some((router, name)) => (
+                Arc::new(telemetry::model::TelemetryModel::new(
+                    router.model_for(WEB_SEARCH_TASK),
+                    telemetry_handle.clone(),
+                    settings.model.model_name.clone(),
+                )) as Arc<dyn Model>,
+                name.to_string(),
+            ),
+            None => (model.clone(), settings.model.model_name.clone()),
+        };
+        tools::register_web_search(&tools, search_model, search_model_name);
 
         // Worktree tools — one `WorktreeRegistry` per session (it holds at
         // most one active worktree; `EnterWorktree` refuses a second and
@@ -6787,5 +6799,112 @@ mod tests {
 
         drop(input_tx);
         let _ = tokio::time::timeout(std::time::Duration::from_secs(5), engine).await;
+    }
+
+    /// Answers a provider search with one page, noting which model name each
+    /// search asked for.
+    struct SearchSpy {
+        page: &'static str,
+        asked: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Model for SearchSpy {
+        fn api_type(&self) -> base::provider::ApiType {
+            base::provider::ApiType::Anthropic
+        }
+        async fn stream(
+            &self,
+            _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+            _tools: Vec<base::interface::model::ToolDef>,
+            _messages: Vec<base::interface::model::ModelMessage>,
+            params: base::interface::model::StreamParams,
+            _cancel: CancellationToken,
+        ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError>
+        {
+            assert!(params.provider_search.is_some(), "only searches reach here");
+            self.asked.lock().unwrap().push(params.model);
+            Ok(Box::new(futures::stream::iter(vec![
+                Ok(base::interface::model::ModelEvent::SearchResults {
+                    hits: vec![base::interface::model::SearchHit {
+                        title: "page".into(),
+                        url: self.page.into(),
+                    }],
+                }),
+                Ok(base::interface::model::ModelEvent::EndTurn {
+                    stop_reason: "end_turn".into(),
+                    usage: Default::default(),
+                }),
+            ])))
+        }
+    }
+
+    fn search_spy(page: &'static str) -> (Arc<SearchSpy>, Arc<std::sync::Mutex<Vec<String>>>) {
+        let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+        (
+            Arc::new(SearchSpy {
+                page,
+                asked: asked.clone(),
+            }),
+            asked,
+        )
+    }
+
+    async fn search_once(agent: &Agent) -> String {
+        let result = agent
+            .tools
+            .get("WebSearch")
+            .expect("WebSearch is registered")
+            .call(
+                serde_json::json!({"query": "rust"}),
+                base::tool::ToolContext::for_test(std::env::temp_dir()),
+                base::tool::ProgressSender::noop("t"),
+            )
+            .await
+            .expect("the search answered");
+        format!("{:?}", result.content)
+    }
+
+    #[tokio::test]
+    async fn web_search_goes_through_the_sessions_own_model() {
+        let (session, asked) = search_spy("https://from.session.example");
+        let (agent, _rx, _tx) = Builder::new()
+            .scene(Arc::new(scene::coding::CodingScene) as Arc<dyn Scene>)
+            .model(session as Arc<dyn Model>)
+            .settings(Arc::new(test_settings()))
+            .skip_warmup(true)
+            .build()
+            .expect("build should succeed");
+        assert!(search_once(&agent).await.contains("from.session.example"));
+        assert_eq!(*asked.lock().unwrap(), [test_settings().model.model_name]);
+    }
+
+    #[tokio::test]
+    async fn task_models_can_route_web_search_to_another_provider() {
+        let (session, session_asked) = search_spy("https://from.session.example");
+        let (searcher, searcher_asked) = search_spy("https://from.searcher.example");
+        let router = base::provider::TaskRouter::new(
+            [("searcher".to_string(), searcher as Arc<dyn Model>)].into(),
+            [(
+                WEB_SEARCH_TASK.to_string(),
+                base::provider::ResolvedModel {
+                    provider_id: "searcher".into(),
+                    model: "search-model".into(),
+                },
+            )]
+            .into(),
+            session.clone() as Arc<dyn Model>,
+        );
+        let (agent, _rx, _tx) = Builder::new()
+            .scene(Arc::new(scene::coding::CodingScene) as Arc<dyn Scene>)
+            .model(session as Arc<dyn Model>)
+            .settings(Arc::new(test_settings()))
+            .task_router(Arc::new(router))
+            .skip_warmup(true)
+            .build()
+            .expect("build should succeed");
+        assert!(search_once(&agent).await.contains("from.searcher.example"));
+        assert_eq!(*searcher_asked.lock().unwrap(), ["search-model"]);
+        assert!(session_asked.lock().unwrap().is_empty());
     }
 }

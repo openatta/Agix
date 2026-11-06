@@ -384,8 +384,12 @@ refused with `SCENE_MISMATCH` rather than executed across the boundary.
 }
 ```
 
-Four task keys are wired — `main`, `subagent`, `compact`, `memory` — and anything
-unrouted falls back to the default provider. A session can also pick its own
+Five task keys are wired — `main`, `subagent`, `compact`, `memory`, `web_search` —
+and anything unrouted falls back to the default provider, except `web_search`:
+`WebSearch` searches through the session's own model (its provider's built-in
+search, one extra call per search) unless `task_models.web_search` names a provider
+whose search to use instead. A provider with no search of its own (every
+`openai_compatible` one) answers `WebSearch` with an error saying so. A session can also pick its own
 provider (`options.provider`, or `session.setModel` mid-session); its
 sub-agents and compaction keep the routing above. A key need not sit in the
 file: `api_key_env` names the variable to read it from, and an embedding host

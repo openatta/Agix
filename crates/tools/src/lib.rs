@@ -147,42 +147,27 @@ pub fn register_builtin_tools(reg: &std::sync::Arc<base::tool::InMemoryToolRegis
     )));
 }
 
-/// Register `WebSearchTool` ("WebSearch"), the Research/Chat scenes' only
-/// search capability.
+/// Register `WebSearchTool` ("WebSearch"), searching through `model`'s
+/// provider as `model_name` ([`native_search::NativeSearchProvider`]).
 ///
-/// Not part of [`register_builtin_tools`] because picking a `SearchProvider`
-/// needs resolved `Settings` (endpoint + credentials), which only the session
-/// builder has. Both scenes list `"WebSearch"` in their `tools()` whitelist,
-/// and whitelists are *intersected* with the registry — so while this was
-/// unregistered the effect was silent absence: no error, the model simply
-/// never saw the tool and Research had no way to search.
-///
-/// The provider is [`native_search::NativeSearchProvider`] (a sub-call using
-/// the provider's server-side `web_search_20250305` tool) when settings
-/// resolve to an Anthropic-compatible endpoint, and
-/// [`web_search::UnavailableSearchProvider`] otherwise. Note that on the
-/// Anthropic-direct path the provider is never consulted at all — see
-/// `UnavailableSearchProvider`'s docs for why registration alone is what
-/// switches search on there.
+/// Not part of [`register_builtin_tools`] because the search goes through a
+/// model, which only the session builder has. Both the Research and Chat
+/// scenes list `"WebSearch"` in their `tools()` whitelist, and whitelists are
+/// *intersected* with the registry — an unregistered name is not an error, it
+/// silently disappears.
 ///
 /// Registers nothing in a build without the `web` tools.
 pub fn register_web_search(
     reg: &std::sync::Arc<base::tool::InMemoryToolRegistry>,
-    settings: &base::interface::settings::Settings,
+    model: Arc<dyn base::interface::model::Model>,
+    model_name: String,
 ) {
     #[cfg(not(feature = "web"))]
-    let _ = (reg, settings);
+    let _ = (reg, model, model_name);
     #[cfg(feature = "web")]
-    {
-        let provider: Box<dyn crate::web_search::SearchProvider> =
-            match crate::native_search::NativeSearchProvider::from_settings(settings) {
-                Some(p) => Box::new(p),
-                None => Box::new(crate::web_search::UnavailableSearchProvider::new(
-                    "no Anthropic-compatible endpoint or credentials resolved from settings/env",
-                )),
-            };
-        reg.register(Arc::new(crate::web_search::WebSearchTool::new(provider)));
-    }
+    reg.register(Arc::new(crate::web_search::WebSearchTool::new(Box::new(
+        crate::native_search::NativeSearchProvider::new(model, model_name),
+    ))));
 }
 
 /// Makes a registered `StructuredOutput` tool validate against `schema`, the
@@ -278,19 +263,27 @@ mod register_builtin_tools_tests {
         }
     }
 
-    /// Settings that deterministically resolve to *no* client-side search
-    /// backend. `api_type: OpenAICompatible` short-circuits
-    /// `NativeSearchProvider::from_settings` before it consults
-    /// `ANTHROPIC_*` environment variables, so this test doesn't depend on
-    /// whether the developer running it happens to have a key exported.
-    fn settings_without_search_backend() -> base::interface::settings::Settings {
-        let mut s = base::interface::settings::Settings::defaults_for("test-model");
-        s.model.api_type = base::provider::ApiType::OpenAICompatible;
-        s.model.auth_token = String::new();
-        s.model.base_url = String::new();
-        s.providers.clear();
-        s.default_provider = None;
-        s
+    /// A model whose provider has no search of its own.
+    struct NoSearch;
+
+    #[async_trait::async_trait]
+    impl base::interface::model::Model for NoSearch {
+        fn api_type(&self) -> base::provider::ApiType {
+            base::provider::ApiType::OpenAICompatible
+        }
+        async fn stream(
+            &self,
+            _: Vec<base::interface::prompt::PromptBlock>,
+            _: Vec<base::interface::model::ToolDef>,
+            _: Vec<base::interface::model::ModelMessage>,
+            _: base::interface::model::StreamParams,
+            _: tokio_util::sync::CancellationToken,
+        ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError>
+        {
+            Err(base::interface::model::ModelError::Unsupported(
+                "this provider has no web search of its own".into(),
+            ))
+        }
     }
 
     /// W-1: `WebSearch` must end up in the registry, because both
@@ -303,20 +296,19 @@ mod register_builtin_tools_tests {
         register_builtin_tools(&reg);
         assert!(
             reg.get("WebSearch").is_none(),
-            "register_builtin_tools must stay settings-free; WebSearch comes from register_web_search"
+            "register_builtin_tools must stay model-free; WebSearch comes from register_web_search"
         );
-        register_web_search(&reg, &settings_without_search_backend());
+        register_web_search(&reg, Arc::new(NoSearch), "m".into());
         let t = reg.get("WebSearch").expect("WebSearch registered");
         assert!(t.is_read_only(&serde_json::Value::Null));
     }
 
-    /// Invocable, not merely present: with no credentials the tool still
-    /// validates input and returns an actionable error instead of silently
-    /// producing nothing.
+    /// Invocable, not merely present: on a provider that cannot search the
+    /// tool still validates its input, and says why it found nothing.
     #[tokio::test]
     async fn registered_web_search_is_invocable() {
         let reg = Arc::new(base::tool::InMemoryToolRegistry::new());
-        register_web_search(&reg, &settings_without_search_backend());
+        register_web_search(&reg, Arc::new(NoSearch), "m".into());
         let t = reg.get("WebSearch").unwrap();
 
         let bad = t
@@ -338,7 +330,7 @@ mod register_builtin_tools_tests {
             Err(e) => {
                 let msg = e.to_string();
                 assert!(
-                    msg.contains("no client-side web search backend is configured"),
+                    msg.contains("no web search of its own"),
                     "unhelpful error: {msg}"
                 );
             }

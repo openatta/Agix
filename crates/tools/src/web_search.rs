@@ -1,9 +1,9 @@
 //! WebSearchTool —— "WebSearch"。
 //!
-//! 通过 provider 的服务端搜索能力（Anthropic `web_search_20250305` 等）
-//! 获取搜索结果，不走客户端 HTML 抓取。
-//!
-//! `SearchProvider` trait 可插拔 —— test mock 或自定义后端注入。
+//! 引擎自己的搜索工具：模型调它，它交给 `SearchProvider` 去搜，结果作为工具结果
+//! 回给模型。在所有提供方下都是这一个名字、这一条路，所以 hook、权限规则、宿主
+//! 看到的帧与 `inspectContext` 报的都是它。默认后端是会话的模型提供方自带的搜索
+//! （[`crate::native_search`]）；`SearchProvider` 可插拔，别的后端实现它即可。
 
 use crate::cancel::run_with_cancel;
 use async_trait::async_trait;
@@ -57,52 +57,13 @@ pub struct SearchOutput {
 /// Pluggable search backend.
 #[async_trait]
 pub trait SearchProvider: Send + Sync + std::fmt::Debug {
-    /// Execute a search query and return results.
-    async fn search(&self, query: &str, max_results: usize) -> Result<SearchOutput, SearchError>;
-}
-
-/// Placeholder provider used when no client-side search backend could be
-/// constructed (no resolvable Anthropic credentials, or an
-/// `openai_compatible` provider that has no server-side search tool).
-///
-/// `WebSearchTool` is still registered with it on purpose: on the
-/// Anthropic-direct path the tool is never actually *called* — the model
-/// adapter (`model::adapter::AnthropicModel::stream`) sees a `ToolDef` named
-/// `"WebSearch"` in the request, strips it from the function-tool list, and
-/// replaces it with the server-side `web_search_20250305` built-in tool plus
-/// its beta header. The search then happens inside the API call and comes
-/// back as ordinary assistant content. So the thing that actually enables web
-/// search on the primary path is the tool being *present in the registry*
-/// (hence in `build_tool_defs`'s output), not this provider.
-///
-/// `call()` is only reached on backends that do not support the built-in
-/// tool and instead emit a real `WebSearch` tool_use — there we owe the model
-/// an actionable error rather than a silent empty result.
-#[derive(Debug)]
-pub struct UnavailableSearchProvider {
-    reason: String,
-}
-
-impl UnavailableSearchProvider {
-    /// Construct with a human-readable reason surfaced to the model.
-    pub fn new(reason: impl Into<String>) -> Self {
-        Self {
-            reason: reason.into(),
-        }
-    }
-}
-
-#[async_trait]
-impl SearchProvider for UnavailableSearchProvider {
-    async fn search(&self, _query: &str, _max_results: usize) -> Result<SearchOutput, SearchError> {
-        Err(SearchError::Other(anyhow::anyhow!(
-            "no client-side web search backend is configured ({}). \
-             On Anthropic-compatible providers the search runs server-side and \
-             this tool is never invoked; on other providers, configure an \
-             Anthropic-compatible endpoint or an MCP search server instead.",
-            self.reason
-        )))
-    }
+    /// Search for `query` on behalf of `session_id`.
+    async fn search(
+        &self,
+        query: &str,
+        max_results: usize,
+        session_id: &str,
+    ) -> Result<SearchOutput, SearchError>;
 }
 
 #[derive(Debug)]
@@ -196,13 +157,15 @@ impl Tool for WebSearchTool {
             .unwrap_or(DEFAULT_MAX_RESULTS)
             .min(HARD_CAP_RESULTS);
 
-        let SearchOutput { items } =
-            run_with_cancel(&ctx.cancel, self.provider.search(&input.query, max))
-                .await?
-                .map_err(|e| match e {
-                    SearchError::Timeout => ToolError::Timeout(std::time::Duration::from_secs(30)),
-                    SearchError::Other(e) => ToolError::exec(e.to_string()),
-                })?;
+        let SearchOutput { items } = run_with_cancel(
+            &ctx.cancel,
+            self.provider.search(&input.query, max, &ctx.session_id),
+        )
+        .await?
+        .map_err(|e| match e {
+            SearchError::Timeout => ToolError::Timeout(std::time::Duration::from_secs(30)),
+            SearchError::Other(e) => ToolError::exec(e.to_string()),
+        })?;
         let items = filter_items_by_domain(items, &input.allowed_domains, &input.blocked_domains);
 
         let has_content = items.iter().any(|item| match item {
@@ -339,6 +302,7 @@ mod tests {
             &self,
             _query: &str,
             _max_results: usize,
+            _session_id: &str,
         ) -> Result<SearchOutput, SearchError> {
             Ok(SearchOutput {
                 items: if self.0.is_empty() {

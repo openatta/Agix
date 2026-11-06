@@ -113,6 +113,7 @@ mod tests {
                 cache_edits: Vec::new(),
                 origin: None,
                 input_map: None,
+                provider_search: None,
             },
         }
     }

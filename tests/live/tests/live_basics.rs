@@ -1,5 +1,5 @@
-//! The single-agent surface with a real model: the file and shell tools, a
-//! session's own prompt, a resume, plan mode, and a spawned `agixd`.
+//! The single-agent surface with a real model: the file and shell tools, web
+//! search, a session's own prompt, a resume, plan mode, and a spawned `agixd`.
 
 use live::{LiveRun, Mode};
 use serde_json::json;
@@ -154,6 +154,66 @@ async fn a_spawned_agixd_works_with_the_real_model() -> anyhow::Result<()> {
             .all(|c| c.model() == run.config().model),
         "every request must ask for the configured model"
     );
+    run.finish().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn web_search_is_the_engines_tool_searching_through_the_sessions_model() -> anyhow::Result<()>
+{
+    let mut run = LiveRun::start("search", json!({}), Mode::InProcess).await?;
+    let session = run.session().await?;
+    let events = run
+        .turn(
+            &session,
+            "Use the WebSearch tool to find the Rust 1.80.0 release announcement, then reply \
+             with its release date in the form YYYY-MM-DD and nothing else.",
+        )
+        .await?;
+
+    assert!(
+        events.tool_uses.iter().any(|(name, _)| name == "WebSearch"),
+        "the host saw the search as a tool call: {:?}",
+        events.tool_uses
+    );
+    let (_, found, failed) = events
+        .tool_results
+        .iter()
+        .find(|(name, _, _)| name == "WebSearch")
+        .cloned()
+        .unwrap_or_default();
+    assert!(!failed && found.contains("http"), "{found}");
+    assert!(events.text.contains("2024-07-25"), "{}", events.text);
+
+    let calls = run.provider.calls();
+    let is_provider_search = |tool: &serde_json::Value| {
+        tool["type"]
+            .as_str()
+            .is_some_and(|t| t.starts_with("web_search_"))
+    };
+    let (searches, turn_calls): (Vec<_>, Vec<_>) = calls.iter().partition(|c| {
+        c.body["tools"]
+            .as_array()
+            .is_some_and(|tools| tools.iter().any(is_provider_search))
+    });
+    assert!(!searches.is_empty(), "the search went to the provider");
+    for search in &searches {
+        assert_eq!(search.body["tools"].as_array().map(Vec::len), Some(1));
+        assert_eq!(
+            search.model(),
+            run.config().model,
+            "the session's own model"
+        );
+    }
+    for call in &turn_calls {
+        let names: Vec<&str> = call.body["tools"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        assert!(names.contains(&"WebSearch") && !names.contains(&"web_search"));
+    }
     run.finish().await;
     Ok(())
 }

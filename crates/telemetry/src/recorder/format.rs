@@ -113,6 +113,10 @@ pub struct RecordedParams {
     pub fallback_model: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cache_edits: Vec<String>,
+    /// `StreamParams::provider_search`'s `max_uses`, when the call asked the
+    /// provider to search.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_max_uses: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -189,6 +193,7 @@ pub enum RecordedError {
     Network { message: String },
     Cancelled,
     Internal { message: String },
+    Unsupported { message: String },
 }
 
 impl From<&ModelError> for RecordedError {
@@ -204,6 +209,7 @@ impl From<&ModelError> for RecordedError {
             ModelError::Network(m) => Self::Network { message: m.clone() },
             ModelError::Cancelled => Self::Cancelled,
             ModelError::Internal(m) => Self::Internal { message: m.clone() },
+            ModelError::Unsupported(m) => Self::Unsupported { message: m.clone() },
         }
     }
 }
@@ -218,6 +224,7 @@ impl RecordedError {
             Self::Network { message } => ModelError::Network(message),
             Self::Cancelled => ModelError::Cancelled,
             Self::Internal { message } => ModelError::Internal(message),
+            Self::Unsupported { message } => ModelError::Unsupported(message),
         }
     }
 }
@@ -256,6 +263,7 @@ mod tests {
             provider: "anthropic".into(),
             api_type: ApiType::Anthropic,
             params: RecordedParams {
+                search_max_uses: None,
                 model: "claude-opus-5".into(),
                 max_tokens: 8192,
                 thinking_mode: ThinkingMode::Off,

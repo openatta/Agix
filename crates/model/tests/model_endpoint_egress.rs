@@ -100,6 +100,7 @@ async fn chat_completions_is_reachable_from_behind_an_allowlist() {
         cache_edits: Vec::new(),
         origin: None,
         input_map: None,
+        provider_search: None,
     };
     let mut stream = m
         .stream(

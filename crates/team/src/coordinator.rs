@@ -1184,6 +1184,7 @@ async fn drain(
             )
         }),
         input_map: None,
+        provider_search: None,
     };
     let cancel = tokio_util::sync::CancellationToken::new();
     let mut stream = model

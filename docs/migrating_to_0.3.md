@@ -104,6 +104,24 @@ skill 命令。
 `Builder::session_prompt(SessionPrompt { append, override_text })` 给一个会话单独的
 追加 / 覆盖提示词,不写任何 settings.json,也不传给它派生的子 Agent。对应 RPC 见下。
 
+### WebSearch 只有一条路
+
+0.2.x 在 Anthropic 协议的提供方上,适配层把 `WebSearch` 从工具表里拿掉,换成提供方自带
+的 `web_search` 发出去;提供方搜索的调用又被当成一次普通工具调用交给引擎,结果块被丢掉。
+0.3 里 `WebSearch` 在所有提供方下都是引擎的普通工具:模型调它,它另发一次调用让提供方
+自己搜,结果作为工具结果回给模型。hook、权限规则、宿主看到的帧与 `inspectContext` 都只
+见到 `WebSearch` 这一个名字;代价是每次搜索多一次模型调用。
+
+- 默认用会话自己的模型搜;`task_models.web_search` 可以换一个提供方。没有自带搜索的
+  提供方(所有 `openai_compatible` 的)对 `WebSearch` 回错误,说明要怎么配。
+- `tools::register_web_search(reg, model, model_name)`:原来收 `&Settings`、自己从
+  设置与环境变量拼 HTTP 客户端;`NativeSearchProvider::new(model, model_name)` 同理,
+  `from_settings` 与 `UnavailableSearchProvider` 删除。
+- `SearchProvider::search` 多一个 `session_id` 参数。
+- `StreamParams` 新增 `provider_search`(结构体字面量补 `provider_search: None`);
+  `ModelEvent` 新增 `SearchResults`,`ModelError` 新增 `Unsupported`,穷尽匹配要补分支。
+  自己实现 `Model` 的,收到 `provider_search` 而做不到时回 `Unsupported`。
+
 ### token 估算
 
 `model::tokens` 不再加载 cl100k 词表,改为按字符类估算:相对 cl100k,代码与 JSON

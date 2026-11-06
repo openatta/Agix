@@ -411,6 +411,7 @@ impl RequestShape {
                 thinking_mode: params.thinking_mode.clone(),
                 fallback_model: params.fallback_model.clone(),
                 cache_edits: params.cache_edits.clone(),
+                search_max_uses: params.provider_search.map(|s| s.max_uses),
             },
             system: prompt_blocks.iter().map(BlobId::of_value).collect(),
             tools: BlobId::of_value(&tools),
@@ -643,6 +644,7 @@ impl RecorderModel {
                 thinking_mode: params.thinking_mode.clone(),
                 fallback_model: params.fallback_model.clone(),
                 cache_edits: params.cache_edits.clone(),
+                search_max_uses: params.provider_search.map(|s| s.max_uses),
             },
             input_map: params.input_map.clone(),
             system,
@@ -972,6 +974,7 @@ mod tests {
             cache_edits: vec![],
             origin: Some(CallOrigin::turn(session, 0, step)),
             input_map: None,
+            provider_search: None,
         }
     }
 

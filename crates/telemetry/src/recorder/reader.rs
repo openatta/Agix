@@ -215,6 +215,7 @@ mod tests {
             provider: "anthropic".into(),
             api_type: ApiType::Anthropic,
             params: RecordedParams {
+                search_max_uses: None,
                 model: "m".into(),
                 max_tokens: 100,
                 thinking_mode: ThinkingMode::Off,

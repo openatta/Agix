@@ -55,6 +55,24 @@ pub struct StreamParams {
     pub origin: Option<CallOrigin>,
     /// What this turn's user message is made of. Observers only, like `origin`.
     pub input_map: Option<InputMap>,
+    /// Have the provider search the web itself during this call, reporting
+    /// what it found as [`ModelEvent::SearchResults`]. A provider with no
+    /// search of its own refuses the call with [`ModelError::Unsupported`].
+    pub provider_search: Option<ProviderSearch>,
+}
+
+/// A web search the provider runs itself, inside the call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderSearch {
+    /// The most searches the call may make.
+    pub max_uses: u32,
+}
+
+/// One page a provider's own web search found.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchHit {
+    pub title: String,
+    pub url: String,
 }
 
 /// The composition of the user message a turn was started by.
@@ -195,6 +213,8 @@ pub mod call_purpose {
     pub const HOOK: &str = "hook";
     /// Team aggregation picking or merging its agents' results.
     pub const TEAM_JUDGE: &str = "team_judge";
+    /// The provider searching the web for a `WebSearch` call.
+    pub const WEB_SEARCH: &str = "web_search";
 }
 
 /// Tool definition sent to the model.
@@ -367,6 +387,11 @@ pub enum ModelEvent {
     ContentBlockStop {
         index: usize,
     },
+    /// What a search the provider ran itself found (see
+    /// [`StreamParams::provider_search`]), in the order it reported them.
+    SearchResults {
+        hits: Vec<SearchHit>,
+    },
     EndTurn {
         stop_reason: String,
         usage: Usage,
@@ -429,4 +454,7 @@ pub enum ModelError {
     Cancelled,
     #[error("internal: {0}")]
     Internal(String),
+    /// The provider cannot do what the call asked of it.
+    #[error("unsupported: {0}")]
+    Unsupported(String),
 }

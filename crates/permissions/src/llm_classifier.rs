@@ -329,6 +329,7 @@ impl AutoClassifier for LlmClassifier {
                 )
             }),
             input_map: None,
+            provider_search: None,
         };
 
         // 3. Call the model

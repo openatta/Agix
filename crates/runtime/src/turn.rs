@@ -3017,6 +3017,7 @@ or project context that should survive across sessions.
                 cache_edits: self.cached_mc.consume_pending_edits(),
                 origin,
                 input_map,
+                provider_search: None,
             },
         }
     }
@@ -3054,6 +3055,7 @@ or project context that should survive across sessions.
                 cache_edits: Vec::new(),
                 origin,
                 input_map,
+                provider_search: None,
             },
         }
     }
@@ -6434,6 +6436,7 @@ Return only a JSON array of memories. If nothing is worth saving, return []."
             base::interface::model::call_purpose::MEMORY,
         )),
         input_map: None,
+        provider_search: None,
     };
     let mut full_text = String::new();
     let stream_result = model

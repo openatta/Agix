@@ -69,6 +69,7 @@ impl PromptHookExecutor for ModelPromptHookExecutor {
                 )
             }),
             input_map: None,
+            provider_search: None,
         };
         let messages = vec![ModelMessage {
             role: MessageRole::User,

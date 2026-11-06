@@ -689,17 +689,7 @@ fn tool_names(tools: &Value) -> Vec<String> {
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|t| t["name"].as_str())
-        // The Anthropic adapter sends `WebSearch` as the provider's own
-        // `web_search` tool; the engine's catalog keeps its own name.
-        .map(|name| {
-            if name == "web_search" {
-                "WebSearch"
-            } else {
-                name
-            }
-        })
-        .map(str::to_string)
+        .filter_map(|t| t["name"].as_str().map(str::to_string))
         .collect();
     names.sort();
     names
@@ -721,7 +711,14 @@ fn user_side(request: &live::SeenRequest) -> String {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_host_edits_what_the_session_carries_and_sees_the_next_call_first() -> anyhow::Result<()>
 {
-    let mut run = LiveRun::start("context", json!({}), Mode::InProcess).await?;
+    // Without thinking, so the model's own earlier reasoning — which a host's
+    // edits cannot reach — does not carry the stale codename forward.
+    let mut run = LiveRun::start(
+        "context",
+        json!({ "model": { "thinking_mode": "off" } }),
+        Mode::InProcess,
+    )
+    .await?;
     let n = nonce();
     let (stale, corrected, key) = (
         format!("MAPLE-{n}"),
@@ -802,8 +799,6 @@ async fn a_host_edits_what_the_session_carries_and_sees_the_next_call_first() ->
              what build cache key was in notes.txt? Write UNKNOWN for whichever you do not know.",
         )
         .await?;
-    assert!(answer.text.contains(&corrected), "{}", answer.text);
-
     let next = run.provider.calls()[asked_before].clone();
     let sent = user_side(&next);
     assert!(sent.contains(&corrected));
@@ -816,6 +811,7 @@ async fn a_host_edits_what_the_session_carries_and_sees_the_next_call_first() ->
             &sent[at.saturating_sub(300)..(at + 100).min(sent.len())]
         );
     }
+    assert!(answer.text.contains(&corrected), "{}", answer.text);
     assert_eq!(inspected["model"], next.model(), "{inspected}");
     assert_eq!(
         tool_names(&inspected["tools"]),

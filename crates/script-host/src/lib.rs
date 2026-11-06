@@ -1385,6 +1385,7 @@ mod binding_tests {
                 cache_edits: Vec::new(),
                 origin: None,
                 input_map: None,
+                provider_search: None,
             },
         };
         bound.model_interceptors[0].on_request(&mut request);

@@ -206,6 +206,7 @@ impl LlmSummarizer {
                 )
             }),
             input_map: None,
+            provider_search: None,
         };
 
         // The cancel token is dropped with the future on timeout, which is what

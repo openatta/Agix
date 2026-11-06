@@ -255,6 +255,7 @@ async fn every_recorded_call_matches_what_crossed_the_boundary() {
                             .with_lineage(Some("P0".into()), Some("code-reviewer".into())),
                     ),
                     input_map: None,
+                    provider_search: None,
                 },
                 CancellationToken::new(),
             )
@@ -383,6 +384,7 @@ async fn token_boundaries_and_argument_fragments_survive_the_round_trip() {
                 cache_edits: vec![],
                 origin: None,
                 input_map: None,
+                provider_search: None,
             },
             CancellationToken::new(),
         )
@@ -454,6 +456,7 @@ async fn replaying_a_recording_reproduces_the_boundary_traffic() {
         cache_edits: vec![],
         origin: None,
         input_map: None,
+        provider_search: None,
     };
 
     let recorder = RecorderModel::new(tap, Some(config(RecorderMode::Record)), "test");

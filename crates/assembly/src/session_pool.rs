@@ -6333,6 +6333,7 @@ impl SessionPool {
                     cache_edits: vec![],
                     origin: None,
                     input_map: None,
+                    provider_search: None,
                 },
                 CancellationToken::new(),
             )

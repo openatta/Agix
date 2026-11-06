@@ -120,6 +120,7 @@ async fn run_openai(policy: Arc<dyn BackoffPolicy>) -> usize {
         cache_edits: Vec::new(),
         origin: None,
         input_map: None,
+        provider_search: None,
     };
     let mut stream = m
         .stream(

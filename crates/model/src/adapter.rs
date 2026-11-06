@@ -17,6 +17,9 @@ use futures::StreamExt;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+/// The name the provider's own web search goes by in a request.
+const PROVIDER_SEARCH_TOOL: &str = "web_search";
+
 pub struct AnthropicModel {
     inner: Arc<dyn AnthropicClient>,
     provenance: Option<String>,
@@ -98,29 +101,25 @@ impl Model for AnthropicModel {
             }
         }
 
-        // DIRECT mode: WebSearch → built-in web_search_20250305
-        let has_websearch = tools.iter().any(|t| t.name == "WebSearch");
-        let anthropic_builtins: Vec<BuiltinTool> = if has_websearch {
-            vec![BuiltinTool::WebSearch {
-                name: "web_search".into(),
+        let anthropic_builtins: Vec<BuiltinTool> = params
+            .provider_search
+            .map(|search| BuiltinTool::WebSearch {
+                name: PROVIDER_SEARCH_TOOL.into(),
                 allowed_domains: None,
                 blocked_domains: None,
-                max_uses: None,
-            }]
-        } else {
-            vec![]
-        };
-        let mut betas: Vec<String> = if has_websearch {
-            vec!["web-search-20250305-2025-03-05".into()]
-        } else {
-            vec![]
-        };
+                max_uses: Some(search.max_uses),
+            })
+            .into_iter()
+            .collect();
+        let mut betas: Vec<String> = Vec::new();
+        if params.provider_search.is_some() {
+            betas.push("web-search-20250305-2025-03-05".into());
+        }
         if has_cache_edits {
             betas.push("context-management-2025-06-27".into());
         }
         let anthropic_tools: Vec<crate::types::ToolDef> = tools
             .into_iter()
-            .filter(|t| t.name != "WebSearch")
             .map(|t| crate::types::ToolDef {
                 name: t.name,
                 description: t.description,
@@ -140,6 +139,14 @@ impl Model for AnthropicModel {
             ThinkingMode::OnBudget(n) => Some(ThinkingConfig::Enabled { budget_tokens: n }),
         };
 
+        // A call that is only a search has nothing else to do, so it is told
+        // to search rather than left to decide whether to.
+        let tool_choice =
+            (params.provider_search.is_some() && anthropic_tools.is_empty()).then(|| {
+                crate::types::ToolChoice::Tool {
+                    name: PROVIDER_SEARCH_TOOL.into(),
+                }
+            });
         let mut req = MessagesRequest {
             model: params.model,
             max_tokens: params.max_tokens,
@@ -147,7 +154,7 @@ impl Model for AnthropicModel {
             messages: message_params,
             tools: anthropic_tools,
             anthropic_tools: anthropic_builtins,
-            tool_choice: None,
+            tool_choice,
             stream: true,
             thinking,
             temperature: None,
@@ -189,7 +196,7 @@ impl Model for AnthropicModel {
 
 /// What one message's events have said so far.
 ///
-/// `tool_uses` buffers each `tool_use`/`server_tool_use` block's `id`/`name`
+/// `tool_uses` buffers each `tool_use` block's `id`/`name`
 /// plus its still-streaming JSON input, keyed by content-block index (a
 /// single message can have several interleaved with text blocks at different
 /// indices); an entry is removed once its `ContentBlockStop` arrives and the
@@ -301,6 +308,26 @@ fn to_content_block(b: ModelContentBlock) -> Option<ContentBlock> {
     })
 }
 
+/// The pages in a `web_search_tool_result`'s content — a list of results, or
+/// an error object, which found none.
+fn search_hits(content: &serde_json::Value) -> Vec<base::interface::model::SearchHit> {
+    content
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| {
+            Some(base::interface::model::SearchHit {
+                title: r
+                    .get("title")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                url: r.get("url")?.as_str()?.to_string(),
+            })
+        })
+        .collect()
+}
+
 fn map_stream_event(
     event: crate::stream::StreamEvent,
     acc: &mut StreamState,
@@ -315,8 +342,15 @@ fn map_stream_event(
                 index: index as usize,
                 block: ModelContentBlock::Text { text },
             })],
-            ContentBlockStart::ToolUse { id, name, input }
-            | ContentBlockStart::ServerToolUse { id, name, input } => {
+            // The provider runs its own search and answers it inside the
+            // call; there is nothing for the engine to run.
+            ContentBlockStart::ServerToolUse { .. } => vec![],
+            ContentBlockStart::WebSearchToolResult { content, .. } => {
+                vec![Ok(ModelEvent::SearchResults {
+                    hits: search_hits(&content),
+                })]
+            }
+            ContentBlockStart::ToolUse { id, name, input } => {
                 // A streamed tool_use block's `ContentBlockStart.input` is a
                 // placeholder, not real content — this relay sends `{}` (an
                 // empty object), not `null`, so checking `is_null()` alone
@@ -362,7 +396,6 @@ fn map_stream_event(
             ContentBlockStart::RedactedThinking { data } => {
                 vec![Ok(ModelEvent::RedactedThinking { data })]
             }
-            _ => vec![],
         },
         StreamEvent::ContentBlockDelta { index, delta } => match delta {
             BlockDelta::TextDelta { text } => vec![Ok(ModelEvent::TextDelta { text })],
@@ -1157,5 +1190,143 @@ mod map_stream_event_tests {
     fn content_block_stop_for_untracked_index_emits_nothing() {
         let out = run(vec![StreamEvent::ContentBlockStop { index: 5 }]);
         assert!(out.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod provider_search_tests {
+    use super::*;
+    use crate::mock::MockAnthropicClient;
+    use crate::stream::{ContentBlockStart, StreamEvent};
+
+    fn params(provider_search: Option<base::interface::model::ProviderSearch>) -> StreamParams {
+        StreamParams {
+            model: "m".into(),
+            max_tokens: 100,
+            thinking_mode: ThinkingMode::Off,
+            fallback_model: None,
+            cache_edits: Vec::new(),
+            origin: None,
+            input_map: None,
+            provider_search,
+        }
+    }
+
+    fn tool(name: &str) -> ToolDef {
+        ToolDef {
+            name: name.into(),
+            description: String::new(),
+            input_schema: serde_json::json!({"type": "object"}),
+            source: None,
+        }
+    }
+
+    async fn sent(
+        tools: Vec<ToolDef>,
+        provider_search: Option<base::interface::model::ProviderSearch>,
+    ) -> MessagesRequest {
+        let client = Arc::new(MockAnthropicClient::new());
+        client.push_turn(vec![]);
+        let model = AnthropicModel::new(client.clone());
+        let _ = model
+            .stream(
+                vec![],
+                tools,
+                vec![],
+                params(provider_search),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("the request goes out");
+        client.nth_request(0).expect("one request")
+    }
+
+    #[tokio::test]
+    async fn the_engines_web_search_tool_goes_out_under_its_own_name() {
+        let req = sent(vec![tool("Read"), tool("WebSearch")], None).await;
+        let names: Vec<&str> = req.tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["Read", "WebSearch"]);
+        assert!(
+            req.anthropic_tools.is_empty(),
+            "no search of the provider's own"
+        );
+        assert!(req.betas.iter().all(|b| !b.starts_with("web-search")));
+        assert!(req.tool_choice.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_search_call_has_the_provider_search_and_nothing_else() {
+        let req = sent(
+            vec![],
+            Some(base::interface::model::ProviderSearch { max_uses: 3 }),
+        )
+        .await;
+        assert!(matches!(
+            req.anthropic_tools.as_slice(),
+            [BuiltinTool::WebSearch { name, max_uses: Some(3), .. }] if name == PROVIDER_SEARCH_TOOL
+        ));
+        assert!(req
+            .betas
+            .contains(&"web-search-20250305-2025-03-05".to_string()));
+        assert!(matches!(
+            req.tool_choice,
+            Some(crate::types::ToolChoice::Tool { ref name }) if name == PROVIDER_SEARCH_TOOL
+        ));
+    }
+
+    #[test]
+    fn the_providers_search_is_reported_as_results_not_as_a_call_to_run() {
+        let mut acc = StreamState::default();
+        let out: Vec<ModelEvent> = [
+            StreamEvent::ContentBlockStart {
+                index: 0,
+                content_block: ContentBlockStart::ServerToolUse {
+                    id: "srvtoolu_1".into(),
+                    name: "web_search".into(),
+                    input: serde_json::json!({}),
+                },
+            },
+            StreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: crate::stream::BlockDelta::InputJsonDelta {
+                    partial_json: "{\"query\":\"rust\"}".into(),
+                },
+            },
+            StreamEvent::ContentBlockStop { index: 0 },
+            StreamEvent::ContentBlockStart {
+                index: 1,
+                content_block: ContentBlockStart::WebSearchToolResult {
+                    tool_use_id: "srvtoolu_1".into(),
+                    content: serde_json::json!([
+                        {"type": "web_search_result", "title": "Rust", "url": "https://rust-lang.org"},
+                        {"type": "web_search_result", "url": "https://untitled.example"},
+                        {"type": "web_search_result", "title": "no address"}
+                    ]),
+                },
+            },
+            StreamEvent::ContentBlockStop { index: 1 },
+        ]
+        .into_iter()
+        .flat_map(|e| map_stream_event(e, &mut acc))
+        .map(|r| r.expect("no errors"))
+        .collect();
+        assert!(
+            out.iter().all(|e| !matches!(
+                e,
+                ModelEvent::ToolUse { .. } | ModelEvent::ToolUseStart { .. }
+            )),
+            "{out:?}"
+        );
+        match out.as_slice() {
+            [ModelEvent::SearchResults { hits }] => {
+                let urls: Vec<&str> = hits.iter().map(|h| h.url.as_str()).collect();
+                assert_eq!(
+                    urls,
+                    ["https://rust-lang.org", "https://untitled.example"],
+                    "a page is its address; one without is nothing to show"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
     }
 }

@@ -352,6 +352,13 @@ impl Model for OpenAICompatibleModel {
         //   Anthropic adapter does not act on it either.
         // - `_cancel`: dropping the returned stream ends the request, which is
         //   what the engine does on cancel (same as the Anthropic path).
+        if params.provider_search.is_some() {
+            return Err(ModelError::Unsupported(
+                "this provider has no web search of its own; route `task_models.web_search` \
+                 to one that has"
+                    .into(),
+            ));
+        }
         let model = if params.model.is_empty() {
             self.inner.default_model.clone()
         } else {
@@ -470,6 +477,37 @@ mod tests {
             "https://api.openai.com/v1/chat/completions"
         );
         let _: Arc<dyn Model> = Arc::new(m);
+    }
+
+    /// Chat Completions has no web search of the provider's own; asking for
+    /// one is refused before anything goes out, saying where to route it.
+    #[tokio::test]
+    async fn a_provider_search_is_refused() {
+        let m =
+            OpenAICompatibleModel::new("http://127.0.0.1:9/v1", "k", "m").expect("valid config");
+        let refused = m
+            .stream(
+                vec![],
+                vec![],
+                vec![],
+                StreamParams {
+                    model: "m".into(),
+                    max_tokens: 10,
+                    thinking_mode: base::interface::settings::ThinkingMode::Off,
+                    fallback_model: None,
+                    cache_edits: Vec::new(),
+                    origin: None,
+                    input_map: None,
+                    provider_search: Some(base::interface::model::ProviderSearch { max_uses: 1 }),
+                },
+                CancellationToken::new(),
+            )
+            .await;
+        match refused {
+            Err(ModelError::Unsupported(why)) => assert!(why.contains("task_models.web_search")),
+            Err(other) => panic!("{other:?}"),
+            Ok(_) => panic!("a provider search went out"),
+        }
     }
 
     /// Extra headers survive the builder chain (the `Arc::make_mut` path).
