@@ -70,7 +70,7 @@ token 用量。改了 `tests/live` 后 lint 也要带上 feature：
 | 用例 | 用一遍什么 |
 |---|---|
 | `live_basics.rs` | Read / Write / Edit / Grep / Bash 改项目；`WebSearch` 是引擎的工具，经会话自己的模型让提供方搜索；会话提示词与 resume；Plan 模式不改文件；另起进程的 `agixd` |
-| `live_agents.rs` | 两个前台子 agent 各用自己类型指定的模型；后台子 agent 收宿主的消息、结束后通知父会话；`session.startAgent` 起的子 agent 交回满足 schema 的结构化输出，任务上的用量与代理记下的相等 |
+| `live_agents.rs` | 两个前台子 agent 各用自己类型指定的模型；前台子 agent 的询问在父会话这一轮里到达宿主（带这一轮的 `turn_id`），批准前它的任务是 `waiting`、批准后回到 `running`；后台子 agent 收宿主的消息、结束后通知父会话；`session.startAgent` 起的子 agent 交回满足 schema 的结构化输出，任务上的用量与代理记下的相等 |
 | `live_team.rs` | `TeamCreate` 两个阶段，后一阶段从团队记忆里拿前一阶段存的东西 |
 | `live_extensions.rs` | 项目 skill；MCP server 的工具；`PreToolUse` hook 看到工具调用 |
 | `live_multi_agent.rs` | 主控 + 三个不同模型的后台 worker，每个 worker 里多个后台任务；人为制造一个任务失败、一个 worker 故障，修复后重跑，主控汇总 |

@@ -1,10 +1,12 @@
 //! Sub-agents with a real model: foreground ones on their own models in
-//! parallel, and a background one a host talks to while it runs.
+//! parallel, a foreground one whose question reaches the host inside its
+//! parent's turn, and a background one a host talks to while it runs.
 
 use std::time::Duration;
 
 use live::{LiveRun, Mode};
 use serde_json::json;
+use serde_json::Value;
 
 fn nonce() -> String {
     format!(
@@ -212,6 +214,106 @@ async fn a_host_started_agent_hands_in_what_its_schema_asks_for() -> anyhow::Res
     assert!(calls >= 2, "it read the file, then handed in");
     assert_eq!(task["usage"]["output_tokens"], output, "{task}");
     assert_eq!(task["usage"]["input_tokens"], input, "{task}");
+    run.finish().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_foreground_sub_agents_question_reaches_the_host_inside_its_parents_turn(
+) -> anyhow::Result<()> {
+    let mut run = LiveRun::start(
+        "asker",
+        json!({
+            "permission_mode": "default",
+            "permission_rules": [{ "tool": "Agent", "action": "allow" }]
+        }),
+        Mode::InProcess,
+    )
+    .await?;
+    let stamp = format!("STAMP-{}", nonce());
+    run.write_file(
+        "check.sh",
+        &format!("echo {stamp} > stamp.txt\necho {stamp}\n"),
+    )?;
+    let session = run.session().await?;
+    let watcher = run.watch(&session, true).await?;
+
+    let events = run
+        .turn(
+            &session,
+            "Delegate this, do not run anything yourself: call the Agent tool once, in the \
+             foreground, with prompt \"Run `sh check.sh` with the Bash tool and answer with \
+             exactly what it printed.\" Then reply with what the sub-agent reported.",
+        )
+        .await?;
+    assert!(events.text.contains(&stamp), "{}", events.text);
+    assert_eq!(
+        run.read_file("stamp.txt").map(|s| s.trim().to_string()),
+        Some(stamp)
+    );
+
+    let tasks = run.tasks(&session).await?;
+    let agent = tasks
+        .iter()
+        .find(|t| t["kind"] == "agent" && t["detail"]["background"] == false)
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(agent["status"], "done", "{tasks:?}");
+    let task_id = agent["task_id"].clone();
+    let sidechain = agent["detail"]["agent_session_id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+
+    let asked: Vec<_> = watcher
+        .asked()
+        .into_iter()
+        .filter(|a| {
+            a.prompt["event"]["message"]
+                .as_str()
+                .is_some_and(|m| m.starts_with("[sub-agent "))
+        })
+        .collect();
+    assert!(!asked.is_empty(), "running a command asks in default mode");
+    for question in &asked {
+        assert_eq!(
+            question.prompt["turn_id"], "asker-t1",
+            "asked while the parent's turn ran"
+        );
+        assert!(question.prompt["event"]["message"]
+            .as_str()
+            .is_some_and(|m| m.starts_with(&format!("[sub-agent {sidechain}]"))));
+        let then = question
+            .tasks
+            .iter()
+            .find(|t| t["task_id"] == task_id)
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(then["status"], "waiting", "{then}");
+        assert!(then["waiting_for"]
+            .as_array()
+            .is_some_and(|ids| ids.contains(&question.prompt["event"]["prompt_id"])));
+    }
+
+    let states: Vec<Value> = watcher
+        .events("task_updated")
+        .into_iter()
+        .filter(|f| f["event"]["task"]["task_id"] == task_id)
+        .map(|f| f["event"]["task"]["status"].clone())
+        .collect();
+    assert_eq!(
+        states.last(),
+        Some(&json!("running")),
+        "back to running once answered: {states:?}"
+    );
+    let progress = watcher.events("subagent_progress");
+    assert!(progress
+        .iter()
+        .all(|f| f["event"]["task_id"] == task_id && f["turn_id"] == "asker-t1"));
+    assert!(progress.iter().any(
+        |f| f["event"]["event"]["kind"] == "tool_use" && f["event"]["event"]["name"] == "Bash"
+    ));
+    drop(watcher);
     run.finish().await;
     Ok(())
 }

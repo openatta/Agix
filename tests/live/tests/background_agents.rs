@@ -1,8 +1,9 @@
 //! A background sub-agent tells the agent that started it when it is done,
 //! and a host can reach it through the daemon while it runs. A foreground one
-//! stays listed under its parent once its turn is over.
+//! stays listed under its parent once its turn is over, and its questions
+//! reach the host inside the parent's turn, its task waiting until answered.
 
-use live::{Block, Daemon, DaemonOptions, ProviderStub, Reply, World};
+use live::{Block, Daemon, DaemonOptions, ProviderStub, Reply, Watcher, World};
 use serde_json::json;
 use std::time::Duration;
 
@@ -173,6 +174,115 @@ async fn a_finished_foreground_agent_stays_listed_under_its_parent() -> anyhow::
         children[0]["session_id"], agents[0]["detail"]["agent_session_id"],
         "the task names its sidechain"
     );
+    daemon.stop().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_foreground_agents_question_comes_through_its_parents_turn() -> anyhow::Result<()> {
+    let world = World::new()?;
+    let project = world.project("ask-fg")?;
+    world.write_project_settings(
+        "ask-fg",
+        &json!({
+            "memory_enabled": false,
+            "permission_rules": [{ "tool": "Agent", "action": "allow" }]
+        }),
+    )?;
+    let provider = ProviderStub::start().await?;
+    provider.script_when(
+        "PARENT-MARK",
+        [
+            Reply::Blocks(vec![Block::tool(
+                "call-1",
+                "Agent",
+                json!({ "prompt": "stamp the project", "description": "stamp" }),
+            )]),
+            Reply::text("the sub-agent stamped it"),
+        ],
+    );
+    provider.script([
+        Reply::calls(
+            "b-1",
+            "Bash",
+            json!({ "command": "echo stamped > stamped.txt" }),
+        ),
+        Reply::text("stamped"),
+    ]);
+
+    let daemon = Daemon::start(&world, &provider, DaemonOptions::new(project.clone())).await?;
+    let mut client = daemon.connect().await?;
+    let session = client
+        .session_create(json!({ "project_root": project.to_string_lossy() }))
+        .await?;
+    let watcher = Watcher::start(&daemon, &session, true).await?;
+    client
+        .session_run_turn(&session, "PARENT-MARK stamp it", "t1", None)
+        .await?;
+
+    let asked: Vec<_> = watcher
+        .asked()
+        .into_iter()
+        .filter(|a| {
+            a.prompt["event"]["message"]
+                .as_str()
+                .is_some_and(|m| m.starts_with("[sub-agent "))
+        })
+        .collect();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    let question = &asked[0];
+    assert_eq!(
+        question.prompt["turn_id"], "t1",
+        "asked inside the parent's turn, so it carries that turn"
+    );
+    let agent = question
+        .tasks
+        .iter()
+        .find(|t| t["kind"] == "agent")
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(agent["detail"]["background"], false, "{agent}");
+    assert_eq!(agent["status"], "waiting", "{agent}");
+    assert_eq!(
+        agent["waiting_for"],
+        json!([question.prompt["event"]["prompt_id"]])
+    );
+    let sidechain = agent["detail"]["agent_session_id"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(question.prompt["event"]["message"]
+        .as_str()
+        .is_some_and(|m| m.starts_with(&format!("[sub-agent {sidechain}]"))));
+    assert_eq!(
+        std::fs::read_to_string(project.join("stamped.txt"))?,
+        "stamped\n",
+        "the answered question let the command run"
+    );
+
+    let task_id = agent["task_id"].clone();
+    watcher
+        .wait_for("the agent to finish", Duration::from_secs(10), |e| {
+            e["kind"] == "task_finished" && e["task"]["task_id"] == task_id
+        })
+        .await?;
+    let updates: Vec<_> = watcher
+        .events("task_updated")
+        .into_iter()
+        .filter(|f| f["event"]["task"]["task_id"] == task_id)
+        .collect();
+    let states: Vec<&str> = updates
+        .iter()
+        .filter_map(|f| f["event"]["task"]["status"].as_str())
+        .collect();
+    let waited = states.iter().position(|s| *s == "waiting");
+    assert!(
+        waited.is_some_and(|at| states[at + 1..].contains(&"running")),
+        "waiting while asked, running once answered: {states:?}"
+    );
+    assert!(watcher
+        .events("subagent_progress")
+        .iter()
+        .all(|f| f["event"]["task_id"] == task_id));
     daemon.stop().await;
     Ok(())
 }
