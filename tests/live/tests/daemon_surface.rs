@@ -519,7 +519,7 @@ async fn a_spawned_run_leaves_nothing_outside_the_world_it_was_given() -> anyhow
 // A build carries one extension carrier or none, decided at compile time.
 // That makes the interesting question — what does a build *without* a
 // carrier do with a settings file that asks for one — unanswerable from
-// inside a build that has one, which is why `docs/testing_scripts.md` lists
+// inside a build that has one, which is why `tests/testing_scripts.md` lists
 // it as outside the script carrier's own net. A spawned daemon can be a
 // different build, so here it is.
 

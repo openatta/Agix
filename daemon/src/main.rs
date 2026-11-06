@@ -24,7 +24,7 @@ Agix daemon: multi-session agent engine over JSON-RPC
 Usage: agixd [OPTIONS]
 
 Options:
-      --socket <PATH>              Unix socket path [default: $HOME/.agix/<scene>/daemon.sock]
+      --socket <PATH>              Unix socket path [default: $HOME/.agix/scenes/<scene>/daemon.sock]
       --session-cap <N>            Maximum concurrent sessions [default: 32]
       --session-idle-timeout <SECS>
                                    Session idle timeout in seconds [default: 3600]
@@ -36,7 +36,7 @@ Options:
                                    (e.g. 127.0.0.1:7879); requires --token or AGIX_DAEMON_TOKEN
       --token <SECRET>             Shared secret for TCP and WebSocket auth [env: AGIX_DAEMON_TOKEN]
       --scene <ID>                 Scene this daemon serves; also selects the state root
-                                   ~/.agix/<scene>/ [default: coding]
+                                   ~/.agix/scenes/<scene>/ [default: coding]
       --scenes <ID,...>            Additional scenes to activate alongside --scene
       --instance <NAME>            Name of this daemon's ~/.agix/daemon/instances.d/ entry
                                    [default: the active scenes, sorted and comma-joined]
@@ -49,7 +49,7 @@ Options:
 
 #[derive(Debug)]
 struct Cli {
-    /// Unix socket path (default: $HOME/.agix/<scene>/daemon.sock)
+    /// Unix socket path (default: $HOME/.agix/scenes/<scene>/daemon.sock)
     socket: Option<PathBuf>,
 
     /// Maximum concurrent sessions
@@ -79,7 +79,7 @@ struct Cli {
 
     /// Which scene this daemon serves (must be one the code actually
     /// registers — see `resolve_scene()`). Determines both session behavior
-    /// (system prompt/tools) and the user-level state root (`~/.agix/<scene>/`).
+    /// (system prompt/tools) and the user-level state root (`~/.agix/scenes/<scene>/`).
     /// There is no default scope concept separate from this — an unsupported
     /// value fails startup outright rather than silently falling back to
     /// anything.

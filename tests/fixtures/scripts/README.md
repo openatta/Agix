@@ -16,4 +16,4 @@ running.
 `broken/` holds the ones that misbehave on purpose — throwing, never
 returning, allocating without bound, answering in a shape its point cannot
 act on, asking for a name the engine owns. They are how the carrier's promises
-about failure get checked instead of believed; see `docs/testing_scripts.md`.
+about failure get checked instead of believed; see `tests/testing_scripts.md`.

@@ -47,7 +47,7 @@ jobs:
       #
       # What it buys is the only way to observe a build that has no carrier.
       # A test running inside a build that has one cannot answer what the
-      # other does with a `scripts` section — see `docs/testing_scripts.md`,
+      # other does with a `scripts` section — see `tests/testing_scripts.md`,
       # which lists exactly that as outside the script carrier's own net.
       - name: build a daemon with no carrier
         run: CARGO_TARGET_DIR=${{ github.workspace }}/target/no-carrier cargo build -p daemon --no-default-features --features full

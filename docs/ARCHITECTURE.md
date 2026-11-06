@@ -5,12 +5,12 @@ Agix 是一个**库**,不是一个应用。它提供的是"跑一个 agent 会�
 应用的事。`daemon` 是仓库里附带的一个参考宿主,
 把引擎包成 JSON-RPC 服务,同时也是集成测试的载体。
 
-这份文档讲**组件、概念、和它们之间的约束**。想知道怎么用请看:
+这份文档讲**组件、概念、和它们之间的约束**。总览与快速开始见仓库根目录的 `README.md`
+(中文版 `README.zh-CN.md`)。想知道怎么用请看:
 
 - `daemon_rpc_protocol.md` —— 通过 RPC 使用它
 - `extension_points.md` —— 能扩展什么(总揽)
 - `extending_quickjs.md` / `extending_wasm.md` —— 怎么扩展
-- `deployment.md` —— 构建档位、崩溃时的行为、supervisor
 - `migrating_to_0.3.md` —— 从 0.2.x 迁移
 
 ---
@@ -105,8 +105,15 @@ fork 型 skill 要 agents 提供的 spawner。委派出去的子会话用父会�
 
 `release` profile 在 panic 时展开;`release-small`(fat LTO、`opt-level = "s"`、
 `panic = "abort"`)在 panic 时中止进程,由 supervisor 拉起。中止前 panic hook 停掉
-命令所在的进程组并写崩溃记录;来不及跑 hook 的(SIGKILL、OOM)由下次启动按落盘的
-进程组记录清理。部署与 supervisor 配置见 `deployment.md`。
+命令所在的进程组并写崩溃记录(`~/.agix/daemon/crashes/`);来不及跑 hook 的(SIGKILL、
+OOM)由同名实例下次启动、拿到锁之后按落盘的进程组记录(`~/.agix/daemon/groups/`)
+清理:先 `SIGTERM`,500 ms 后 `SIGKILL`。会话历史每次写入都落盘,重启后照常恢复;
+崩溃时正在进行的那一轮不续跑。
+
+daemon 不自己重启自己,交给 launchd(`KeepAlive` 设 `SuccessfulExit = false`)或
+systemd(`Restart=on-failure`)。systemd 下要设 `KillMode=process`:`daemon.shutdown` 与
+`SIGTERM` 走正常关闭,由 daemon 按会话设置决定哪些后台命令停、哪些留,整组杀掉会抹掉
+这个区别。
 
 ---
 

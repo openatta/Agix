@@ -162,7 +162,7 @@ skill、web 工具、WebSocket、载体与包方案。
   `KillMode=process`,让 daemon 自己决定哪些后台命令停、哪些留。
 - 用 `release-small` 构建的,panic 会中止进程,需要 supervisor 拉起;配置示例、
   崩溃记录(`~/.agix/daemon/crashes/`)与进程组记录(`~/.agix/daemon/groups/`)
-  见 `deployment.md`。
+  见 `ARCHITECTURE.md` §1.3 与 README 的「Running `agixd`」。
 - `--help` 的文字改为简短说明;`--version` 输出 `agixd <版本>`(原先是 `daemon <版本>`)。
   选项与默认值不变。
 - 声明式场景:在 `~/.agix/scenes/<id>/` 放 `scene.json` + `prompt.md` 即可定义一个
