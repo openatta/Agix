@@ -30,7 +30,7 @@ async fn the_file_and_shell_tools_change_the_project() -> anyhow::Result<()> {
             &session,
             &format!(
                 "Do these four things with your tools, then reply DONE:\n\
-                 1. Read data/numbers.txt and write their sum (just the number) to sum.txt.\n\
+                 1. Read data/numbers.txt with the Read tool and write their sum (just the number) to sum.txt.\n\
                  2. Search src/ for the text {needle} and write the matching file's path, \
                  relative to the project root, to where.txt.\n\
                  3. In config.toml change `level = 1` to `level = 7` with the Edit tool.\n\
