@@ -8,6 +8,7 @@
 //! - **取消** → `CancellationToken`
 
 pub mod config;
+pub mod goal;
 pub mod prompt;
 pub mod session;
 pub mod task;

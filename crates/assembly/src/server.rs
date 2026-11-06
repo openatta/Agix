@@ -796,6 +796,11 @@ impl DaemonServer {
             "session.setModel" => self.method_session_set_model(id, req.params).await,
             "session.setPrompt" => self.method_session_set_prompt(id, req.params).await,
             "session.rename" => self.method_session_rename(id, req.params).await,
+            "session.goal" => self.method_session_goal(id, req.params).await,
+            "session.setGoal" | "session.updateGoal" => {
+                self.method_session_change_goal(id, &req.method, req.params)
+                    .await
+            }
             "session.appendEntry" => self.method_session_append_entry(id, req.params).await,
             "session.entries" => self.method_session_entries(id, req.params).await,
             "scene.reload" => RpcResponse::ok(id, self.pool.reload_scenes().await),
@@ -1723,6 +1728,82 @@ impl DaemonServer {
             return err;
         }
         match self.pool.rename_session(session_id, name).await {
+            Ok(v) => RpcResponse::ok(id, v),
+            Err((code, message)) => RpcResponse::err(id, code, message),
+        }
+    }
+
+    async fn method_session_goal(
+        &self,
+        id: serde_json::Value,
+        params: serde_json::Value,
+    ) -> RpcResponse {
+        let Some(session_id) = params.get("session_id").and_then(|v| v.as_str()) else {
+            return RpcResponse::err(id, codes::INVALID_PARAMS, "missing session_id");
+        };
+        match self.pool.session_goal(session_id).await {
+            Ok(v) => RpcResponse::ok(id, v),
+            Err((code, message)) => RpcResponse::err(id, code, message),
+        }
+    }
+
+    async fn method_session_change_goal(
+        &self,
+        id: serde_json::Value,
+        method: &str,
+        params: serde_json::Value,
+    ) -> RpcResponse {
+        use crate::session_pool::GoalChange;
+        let Some(session_id) = params.get("session_id").and_then(|v| v.as_str()) else {
+            return RpcResponse::err(id, codes::INVALID_PARAMS, "missing session_id");
+        };
+        let objective = params
+            .get("objective")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let max_rounds = match params.get("max_rounds") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(v) => match v.as_u64().and_then(|n| u32::try_from(n).ok()) {
+                Some(n) => Some(n),
+                None => {
+                    return RpcResponse::err(
+                        id,
+                        codes::INVALID_PARAMS,
+                        "max_rounds must be a positive integer",
+                    )
+                }
+            },
+        };
+        let change = if method == "session.setGoal" {
+            let Some(objective) = objective else {
+                return RpcResponse::err(id, codes::INVALID_PARAMS, "missing objective");
+            };
+            GoalChange::Set {
+                objective,
+                max_rounds,
+            }
+        } else {
+            match params.get("action").and_then(|v| v.as_str()) {
+                Some("pause") => GoalChange::Pause,
+                Some("resume") => GoalChange::Resume,
+                Some("clear") => GoalChange::Clear,
+                Some("edit") => GoalChange::Edit {
+                    objective,
+                    max_rounds,
+                },
+                _ => {
+                    return RpcResponse::err(
+                        id,
+                        codes::INVALID_PARAMS,
+                        "action must be one of pause, resume, edit, clear",
+                    )
+                }
+            }
+        };
+        if let Some(err) = self.scene_mismatch_response(&id, session_id).await {
+            return err;
+        }
+        match self.pool.change_session_goal(session_id, change).await {
             Ok(v) => RpcResponse::ok(id, v),
             Err((code, message)) => RpcResponse::err(id, code, message),
         }

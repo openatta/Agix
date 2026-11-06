@@ -428,7 +428,7 @@ struct LiveSession {
     /// Woken whenever the session stops running a turn — a `run_turn` with
     /// `on_busy: queue` waits on it for its slot.
     idle: Arc<tokio::sync::Notify>,
-    /// Who started the running turn: `"client"` or `"schedule"`.
+    /// Who started the running turn: `"client"`, `"schedule"` or `"goal"`.
     turn_initiator: Option<&'static str>,
     /// The engine's own session state: the tasks `session.tasks` lists.
     state: Option<Arc<base::context::SessionState>>,
@@ -2244,11 +2244,14 @@ impl SessionPool {
                 },
             );
         }
-        let (mut agent, event_rx, input_tx) =
-            builder.build().map_err(|e| format!("build agent: {e}"))?;
+        let (mut agent, event_rx, input_tx) = builder
+            .goal_rounds_from_owner()
+            .build()
+            .map_err(|e| format!("build agent: {e}"))?;
         let state = agent.session_state();
         let spawner = agent.agent_spawner();
         self.forward_task_events(&session_id, &state);
+        self.forward_goal_events(&session_id, &state);
 
         let _ = agent
             .telemetry()
@@ -3099,6 +3102,218 @@ impl SessionPool {
         Ok(true)
     }
 
+    /// Start the session's next goal round if the turn that just ended with
+    /// `stop_reason` leaves its goal active and armed.
+    async fn continue_goal(&self, sid: &str, stop_reason: &str) {
+        if !matches!(stop_reason, "end_turn" | "stop_sequence") {
+            return;
+        }
+        let Some(state) = self.live_state(sid).await else {
+            return;
+        };
+        let round = state.goal_next_round();
+        self.record_goal_changes(sid, &state).await;
+        let (Some(round), Some(pool)) = (round, self.this.get().and_then(|p| p.upgrade())) else {
+            return;
+        };
+        tokio::spawn(goal_round_task(pool, sid.to_string(), round));
+    }
+
+    async fn run_goal_round(&self, sid: String, round: base::context::goal::GoalRound) {
+        let connection = crate::rpc::ConnectionId(
+            self.internal_connections
+                .fetch_sub(1, std::sync::atomic::Ordering::Relaxed),
+        );
+        let client = Arc::new(crate::rpc::Client::new(connection, Arc::new(Discard)));
+        info!(%sid, turn_id = %round.turn_id, "goal round started");
+        let response = self
+            .run_turn(
+                Some(sid.clone()),
+                round.message,
+                Vec::new(),
+                round.turn_id,
+                client,
+                serde_json::Value::Null,
+                None,
+                OnBusy::Queue,
+                "goal",
+            )
+            .await;
+        self.drop_connection(connection).await;
+        if let Some(error) = response.error {
+            warn!(%sid, code = error.code, message = %error.message, "goal round failed");
+        }
+    }
+
+    async fn live_state(&self, sid: &str) -> Option<Arc<base::context::SessionState>> {
+        self.sessions
+            .lock()
+            .await
+            .get(sid)
+            .and_then(|live| live.state.clone())
+    }
+
+    /// Write the goal changes `sid`'s log does not have yet.
+    async fn record_goal_changes(&self, sid: &str, state: &base::context::SessionState) {
+        let changes = state.take_unrecorded_goal_changes();
+        let (Some(store), Ok(parsed)) = (
+            self.history_store.as_ref(),
+            base::session::SessionId::parse(sid),
+        ) else {
+            return;
+        };
+        for goal in changes {
+            let entry = history::entry::LogEntry::Extension {
+                ns: base::context::goal::GOAL_NS.to_string(),
+                event: base::context::goal::GOAL_EVENT.to_string(),
+                payload: serde_json::json!({ "goal": goal }),
+            };
+            if let Err(e) = store.append(parsed, entry).await {
+                warn!(%sid, error = %e, "failed to record a goal change");
+            }
+        }
+    }
+
+    /// `session.goal`: the session's goal, read from its log when the session
+    /// is not in memory (and then reported disarmed).
+    pub async fn session_goal(&self, sid: &str) -> Result<serde_json::Value, RpcError> {
+        if let Some(state) = self.live_state(sid).await {
+            return Ok(serde_json::json!({ "goal": state.goal_view() }));
+        }
+        let entries = self.load_entries(sid).await?;
+        let goal: Option<base::context::goal::Goal> = entries
+            .iter()
+            .rev()
+            .find_map(|env| match &env.entry {
+                history::entry::LogEntry::Extension { ns, event, payload }
+                    if ns == base::context::goal::GOAL_NS
+                        && event == base::context::goal::GOAL_EVENT =>
+                {
+                    Some(payload["goal"].clone())
+                }
+                _ => None,
+            })
+            .and_then(|goal| serde_json::from_value(goal).ok());
+        Ok(serde_json::json!({
+            "goal": base::context::goal::GoalSlot::restored(goal).view()
+        }))
+    }
+
+    /// `session.setGoal` / `session.updateGoal`: a host acts on the goal with
+    /// a person's authority. A goal left active and armed on an idle session
+    /// starts its next round at once.
+    pub async fn change_session_goal(
+        &self,
+        sid: &str,
+        change: GoalChange,
+    ) -> Result<serde_json::Value, RpcError> {
+        if self.live_state(sid).await.is_none() {
+            self.resume_session(sid, false, None)
+                .await
+                .map_err(|e| match e {
+                    ResumeError::Rpc(e) => e,
+                    ResumeError::SidechainTerminal { session_id, .. } => (
+                        codes::SIDECHAIN_TERMINAL,
+                        format!("session {session_id} is a finished sub-agent session"),
+                    ),
+                })?;
+        }
+        let state = self.live_state(sid).await.ok_or_else(|| {
+            (
+                codes::SESSION_NOT_FOUND,
+                format!("session not found: {sid}"),
+            )
+        })?;
+        let human = base::context::goal::TurnOrigin::Human;
+        let current = || {
+            let view = state.goal_view();
+            (
+                view["id"].as_str().unwrap_or_default().to_string(),
+                view["revision"].as_u64().unwrap_or_default(),
+            )
+        };
+        let invalid = |e: base::context::goal::GoalError| (codes::INVALID_PARAMS, e.to_string());
+        let pausing = matches!(change, GoalChange::Pause);
+        match change {
+            GoalChange::Set {
+                objective,
+                max_rounds,
+            } => {
+                state
+                    .goal_create(objective, max_rounds, human)
+                    .map_err(invalid)?;
+            }
+            GoalChange::Clear => state.goal_clear(human).map_err(invalid)?,
+            GoalChange::Pause => {
+                let (id, rev) = current();
+                state
+                    .goal_update(&id, rev, base::context::goal::GoalAction::Pause, human)
+                    .map_err(invalid)?;
+            }
+            GoalChange::Resume => {
+                let (id, rev) = current();
+                state
+                    .goal_update(&id, rev, base::context::goal::GoalAction::Resume, human)
+                    .map_err(invalid)?;
+            }
+            GoalChange::Edit {
+                objective,
+                max_rounds,
+            } => {
+                let (id, rev) = current();
+                state
+                    .goal_update(
+                        &id,
+                        rev,
+                        base::context::goal::GoalAction::Edit {
+                            objective,
+                            max_rounds,
+                        },
+                        human,
+                    )
+                    .map_err(invalid)?;
+            }
+        }
+        self.record_goal_changes(sid, &state).await;
+
+        let initiator = self
+            .sessions
+            .lock()
+            .await
+            .get(sid)
+            .map(|live| (live.current_turn.is_some(), live.turn_initiator));
+        match initiator {
+            Some((true, Some("goal"))) if pausing => {
+                self.interrupt_session(sid).await?;
+            }
+            Some((false, _)) => self.continue_goal(sid, "end_turn").await,
+            _ => {}
+        }
+        Ok(serde_json::json!({ "goal": state.goal_view() }))
+    }
+
+    /// Push `session_id`'s goal changes to whoever watches the session.
+    fn forward_goal_events(&self, session_id: &str, state: &Arc<base::context::SessionState>) {
+        let Some(pool) = self.this.get().cloned() else {
+            return;
+        };
+        let mut events = state.subscribe_goal();
+        let session_id = session_id.to_string();
+        tokio::spawn(async move {
+            loop {
+                match events.recv().await {
+                    Ok(goal) => {
+                        let Some(pool) = pool.upgrade() else { return };
+                        let frame = StreamFrame::goal_changed(&session_id, goal);
+                        pool.broadcast_to_session(&session_id, &frame).await;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        });
+    }
+
     /// Drop every outstanding ask for this session.
     async fn clear_pending_prompts(&self, session_id: &str) {
         let mut sessions = self.sessions.lock().await;
@@ -3316,6 +3531,7 @@ impl SessionPool {
         });
 
         let api_calls;
+        let ended_with;
         loop {
             let event = event_rx.recv().await;
             if let Some((frame, prompt_id)) = event
@@ -3522,6 +3738,7 @@ impl SessionPool {
                     ..
                 }) => {
                     api_calls = ac;
+                    ended_with = stop_reason.clone();
                     if context.is_some() {
                         if let Some(live) = self.sessions.lock().await.get_mut(&sid) {
                             live.context = context;
@@ -3617,6 +3834,7 @@ impl SessionPool {
         // Whatever was still being asked died with the turn — replaying it to
         // the next subscriber would be offering an answer nobody awaits.
         self.clear_pending_prompts(&sid).await;
+        self.continue_goal(&sid, &ended_with).await;
 
         // ── 首轮自动命名 ──
         //
@@ -6406,6 +6624,32 @@ fn registry_of(
 
 /// Where a connection the pool opens for itself writes: nowhere. Its turn's
 /// frames still reach every real subscriber of the session.
+/// A goal round as its own boxed future: `run_turn` starts rounds and rounds
+/// run `run_turn`, so the `Send` of one cannot be inferred from the other.
+fn goal_round_task(
+    pool: Arc<SessionPool>,
+    sid: String,
+    round: base::context::goal::GoalRound,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+    Box::pin(async move { pool.run_goal_round(sid, round).await })
+}
+
+/// What a host asks of a session's goal.
+#[derive(Debug, Clone)]
+pub enum GoalChange {
+    Set {
+        objective: String,
+        max_rounds: Option<u32>,
+    },
+    Edit {
+        objective: Option<String>,
+        max_rounds: Option<u32>,
+    },
+    Pause,
+    Resume,
+    Clear,
+}
+
 struct Discard;
 
 #[async_trait::async_trait]

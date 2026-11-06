@@ -418,6 +418,48 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Append an extension entry (`LogEntry::Extension`) to this session's
+    /// log. A no-op without a store.
+    pub async fn record_extension(
+        &self,
+        ns: &str,
+        event: &str,
+        payload: serde_json::Value,
+    ) -> Result<(), SessionError> {
+        let Some(store) = self.history_store.as_ref() else {
+            return Ok(());
+        };
+        let sid =
+            SessionId::parse(&self.session_id).map_err(|e| SessionError::Id(e.to_string()))?;
+        store
+            .append(
+                sid,
+                history::entry::LogEntry::Extension {
+                    ns: ns.to_string(),
+                    event: event.to_string(),
+                    payload,
+                },
+            )
+            .await
+            .map_err(|e| SessionError::Store(e.to_string()))
+    }
+
+    /// The payload of the last `ns`/`event` extension entry in this session's
+    /// log.
+    pub async fn latest_extension(&self, ns: &str, event: &str) -> Option<serde_json::Value> {
+        let store = self.history_store.as_ref()?;
+        let sid = SessionId::parse(&self.session_id).ok()?;
+        let entries = store.load(sid).await.ok()?;
+        entries.into_iter().rev().find_map(|env| match env.entry {
+            history::entry::LogEntry::Extension {
+                ns: n,
+                event: e,
+                payload,
+            } if n == ns && e == event => Some(payload),
+            _ => None,
+        })
+    }
+
     /// Access the session ID (read-only).
     pub fn session_id_str(&self) -> &str {
         &self.session_id

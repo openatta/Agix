@@ -63,6 +63,15 @@ pub struct SessionState {
     /// Its tasks' events, for whoever shows this session's tasks — see
     /// [`SessionState::subscribe_tasks`].
     task_events: tokio::sync::broadcast::Sender<serde_json::Value>,
+    /// This session's goal — see [`super::goal`].
+    goal: std::sync::Mutex<super::goal::GoalSlot>,
+    /// Goal snapshots changed but not yet written to the session log; `None`
+    /// records a cleared goal.
+    unrecorded_goal_changes: std::sync::Mutex<Vec<Option<super::goal::Goal>>>,
+    goal_events: tokio::sync::broadcast::Sender<serde_json::Value>,
+    /// Who started the turn now running, which decides what goal operations
+    /// it may perform.
+    turn_origin: std::sync::Mutex<super::goal::TurnOrigin>,
     /// What the session's own agent should read at its next step boundary,
     /// each under the key it can be retracted by — see
     /// [`SessionState::post_notice`].
@@ -221,6 +230,10 @@ impl SessionState {
             running_tasks: std::sync::Mutex::new(HashMap::new()),
             task_events: tokio::sync::broadcast::channel(256).0,
             notices: std::sync::Mutex::new(Vec::new()),
+            goal: std::sync::Mutex::new(super::goal::GoalSlot::default()),
+            unrecorded_goal_changes: std::sync::Mutex::new(Vec::new()),
+            goal_events: tokio::sync::broadcast::channel(64).0,
+            turn_origin: std::sync::Mutex::new(super::goal::TurnOrigin::default()),
             permission_denials: std::sync::Mutex::new(Vec::new()),
             file_snapshots: std::sync::Mutex::new(FileSnapshotRegistry::default()),
             current_turn: std::sync::Mutex::new(0),
@@ -557,6 +570,96 @@ impl SessionState {
     /// happen.
     pub fn subscribe_tasks(&self) -> tokio::sync::broadcast::Receiver<serde_json::Value> {
         self.task_events.subscribe()
+    }
+
+    pub fn set_turn_origin(&self, origin: super::goal::TurnOrigin) {
+        *lock(&self.turn_origin) = origin;
+    }
+
+    pub fn turn_origin(&self) -> super::goal::TurnOrigin {
+        *lock(&self.turn_origin)
+    }
+
+    /// The goal as hosts and the model see it, `null` when there is none.
+    pub fn goal_view(&self) -> serde_json::Value {
+        lock(&self.goal).view()
+    }
+
+    pub fn goal_create(
+        &self,
+        objective: String,
+        max_rounds: Option<u32>,
+        origin: super::goal::TurnOrigin,
+    ) -> Result<serde_json::Value, super::goal::GoalError> {
+        let mut slot = lock(&self.goal);
+        slot.create(objective, max_rounds, origin)?;
+        Ok(self.goal_changed(&slot, true))
+    }
+
+    pub fn goal_update(
+        &self,
+        goal_id: &str,
+        revision: u64,
+        action: super::goal::GoalAction,
+        origin: super::goal::TurnOrigin,
+    ) -> Result<serde_json::Value, super::goal::GoalError> {
+        let mut slot = lock(&self.goal);
+        slot.update(goal_id, revision, action, origin)?;
+        Ok(self.goal_changed(&slot, true))
+    }
+
+    pub fn goal_clear(
+        &self,
+        origin: super::goal::TurnOrigin,
+    ) -> Result<(), super::goal::GoalError> {
+        let mut slot = lock(&self.goal);
+        slot.clear(origin)?;
+        self.goal_changed(&slot, true);
+        Ok(())
+    }
+
+    /// Stop automatic rounds, keeping the goal as it is.
+    pub fn goal_disarm(&self) {
+        let mut slot = lock(&self.goal);
+        if slot.disarm() {
+            self.goal_changed(&slot, false);
+        }
+    }
+
+    /// The next automatic round, counted as started — see
+    /// [`super::goal::GoalSlot::next_round`].
+    pub fn goal_next_round(&self) -> Option<super::goal::GoalRound> {
+        let mut slot = lock(&self.goal);
+        let (round, changed) = slot.next_round();
+        if changed {
+            self.goal_changed(&slot, true);
+        }
+        round
+    }
+
+    /// Put back the goal a session log recorded, disarmed.
+    pub fn restore_goal(&self, goal: Option<super::goal::Goal>) {
+        *lock(&self.goal) = super::goal::GoalSlot::restored(goal);
+    }
+
+    /// Goal changes the session log does not have yet, oldest first; whoever
+    /// takes them writes them.
+    pub fn take_unrecorded_goal_changes(&self) -> Vec<Option<super::goal::Goal>> {
+        std::mem::take(&mut *lock(&self.unrecorded_goal_changes))
+    }
+
+    /// The goal's view each time it changes.
+    pub fn subscribe_goal(&self) -> tokio::sync::broadcast::Receiver<serde_json::Value> {
+        self.goal_events.subscribe()
+    }
+
+    fn goal_changed(&self, slot: &super::goal::GoalSlot, record: bool) -> serde_json::Value {
+        if record {
+            lock(&self.unrecorded_goal_changes).push(slot.goal.clone());
+        }
+        let view = slot.view();
+        let _ = self.goal_events.send(view.clone());
+        view
     }
 
     /// Persist a running task's current state to disk (fire-and-forget).
@@ -1106,4 +1209,8 @@ impl Drop for TaskScope {
         };
         self.session.finish_task(&self.task.task_id, status);
     }
+}
+
+fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }

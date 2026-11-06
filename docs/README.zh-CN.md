@@ -221,7 +221,7 @@ echo '{"jsonrpc":"2.0","id":2,"method":"session.run_turn",
 一轮在跑时,`session.event` 帧不断推回来(文字增量、工具调用、工具结果、询问、任务
 进度);这一轮结束时响应到达。常见的客户端用一条连接订阅会话(`session.subscribe`),
 用另一条驱动它。协议参考 [`daemon_rpc_protocol.md`](daemon_rpc_protocol.md) 里记了
-五十九个方法——会话、历史与上下文、任务与子 Agent、场景、配置、MCP、插件、定时任务
+六十二个方法——会话、历史与上下文、任务与子 Agent、场景、配置、MCP、插件、定时任务
 ——每个文档里写的响应形状都有测试拿真实 daemon 的回答对照。
 
 常用参数:`--scene` / `--scenes`(服务哪些场景)、`--listen` / `--listen-ws` 加
@@ -283,7 +283,7 @@ let pool = daemon::assemble::pool(
 
 ## 能力
 
-### 工具——41 个内建
+### 工具——44 个内建
 
 | 类别 | 工具 |
 |---|---|
@@ -292,6 +292,7 @@ let pool = daemon::assemble::pool(
 | **Web** | `WebFetch` `WebSearch` |
 | **任务** | `TaskCreate` `TaskList` `TaskGet` `TaskUpdate` `TaskStop` `TaskOutput` `TaskWait` `TaskMessage` |
 | **规划** | `EnterPlanMode` `ExitPlanMode` `VerifyPlanExecution` `TodoWrite` |
+| **目标** | `GoalCreate` `GoalGet` `GoalUpdate`(目标让会话一轮轮自动推进下去) |
 | **定时** | `CronCreate` `CronDelete` `CronList` |
 | **工作区** | `EnterWorktree` `ExitWorktree`(每个会话独立的 git worktree) |
 | **协作** | `Skill` `Agent` `TeamCreate` `TeamList` `TeamDelete` |
@@ -299,7 +300,7 @@ let pool = daemon::assemble::pool(
 | **交互** | `AskUserQuestion` `PushNotification` `Monitor` `StructuredOutput` |
 | **编辑 / 元 / 诊断** | `NotebookEdit` · `ToolSearch` · `Ping` `Sleep` |
 
-`tools::register_builtin_tools` 装上其中 23 个自给自足的;其余需要会话状态,由 builder
+`tools::register_builtin_tools` 装上其中 26 个自给自足的;其余需要会话状态,由 builder
 或模块注册。延迟加载的工具只报名字,要用时经 `ToolSearch` 取 schema。
 
 ### 模型路由

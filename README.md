@@ -259,7 +259,7 @@ echo '{"jsonrpc":"2.0","id":2,"method":"session.run_turn",
 While the turn runs, `session.event` frames stream back (text deltas, tool
 calls, tool results, prompts, task progress); the response arrives when the turn
 ends. A typical client subscribes to a session on one connection
-(`session.subscribe`) and drives it from another. Fifty-nine methods are
+(`session.subscribe`) and drives it from another. Sixty-two methods are
 documented in [`docs/daemon_rpc_protocol.md`](docs/daemon_rpc_protocol.md) —
 sessions, history and context, tasks and sub-agents, scenes, configuration,
 MCP, plugins, scheduling — and every documented response shape is compared
@@ -327,7 +327,7 @@ build if anything in the workspace assembles a pool a second way.
 
 ## Capabilities
 
-### Tools — 41 built in
+### Tools — 44 built in
 
 | Category | Tools |
 |---|---|
@@ -336,6 +336,7 @@ build if anything in the workspace assembles a pool a second way.
 | **Web** | `WebFetch` `WebSearch` |
 | **Task** | `TaskCreate` `TaskList` `TaskGet` `TaskUpdate` `TaskStop` `TaskOutput` `TaskWait` `TaskMessage` |
 | **Planning** | `EnterPlanMode` `ExitPlanMode` `VerifyPlanExecution` `TodoWrite` |
+| **Goals** | `GoalCreate` `GoalGet` `GoalUpdate` (a goal keeps the session working across automatic rounds) |
 | **Scheduling** | `CronCreate` `CronDelete` `CronList` |
 | **Workspace** | `EnterWorktree` `ExitWorktree` (isolated git worktree per session) |
 | **Collaboration** | `Skill` `Agent` `TeamCreate` `TeamList` `TeamDelete` |
@@ -343,7 +344,7 @@ build if anything in the workspace assembles a pool a second way.
 | **Interaction** | `AskUserQuestion` `PushNotification` `Monitor` `StructuredOutput` |
 | **Editor / Meta / Diagnostics** | `NotebookEdit` · `ToolSearch` · `Ping` `Sleep` |
 
-`tools::register_builtin_tools` installs the 23 self-contained ones; the rest
+`tools::register_builtin_tools` installs the 26 self-contained ones; the rest
 need per-session state and are registered by the builder or by a module.
 Deferred tools are advertised by name and fetched with `ToolSearch` when needed.
 

@@ -571,6 +571,20 @@ impl StreamFrame {
         })
     }
 
+    /// `session_id`'s goal changed; `goal` is its view, `null` once cleared.
+    /// Not part of any turn.
+    pub fn goal_changed(session_id: &str, goal: Value) -> Self {
+        Self {
+            jsonrpc: "2.0",
+            method: "session.event",
+            params: serde_json::json!({
+                "session_id": session_id,
+                "turn_id": null,
+                "event": {"kind": "goal_changed", "goal": goal},
+            }),
+        }
+    }
+
     /// A host wrote an extension entry into `session_id`'s log
     /// (`session.appendEntry`). Not part of any turn.
     pub fn extension_entry(session_id: &str, entry: Value) -> Self {

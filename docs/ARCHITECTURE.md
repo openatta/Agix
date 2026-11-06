@@ -274,6 +274,19 @@ recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着
 与父级传入的工具集无关;`RuntimeAgentSpawner`(Skill fork、team 成员)直接透传
 `sub_tools()`,根本不经过 `AgentTool::resolve_tools`。
 
+### 3.4.1 会话目标
+
+目标(`base::context::goal`)让一个会话一轮轮自己推进:一轮正常结束(`end_turn`)时,
+目标若仍是 `active` 且已武装,就开下一轮,注入 `<goal_round>` 提醒目标与轮次,直到模型标
+完成或受阻、或轮数用完(转 `blocked`)。
+
+- **谁开下一轮**:daemon 下是会话池,和定时任务同一条路径(`run_turn`,`initiator:"goal"`),
+  会话用 `Builder::goal_rounds_from_owner()` 建;直接嵌入时 `Agent::run` 自己开。
+- **谁能做什么**由这一轮是谁发起的决定(`TurnOrigin`,从 `turn_id` 读出,模型改不了):人发起的
+  一轮什么都能做;自动轮只能标完成或受阻,受阻要自武装起已跑满 3 轮;子 Agent 碰不到目标。
+- **武装不落盘**:每次变化以扩展条目(`ns:"agix.goal"`)记进会话日志,恢复后的目标一律不武装,
+  要人说继续。一轮以取消、hook 中止、预算耗尽或出错结束,也解除武装。
+
 ### 3.5 场景的工具面
 
 场景对工具有三种方向不同的控制:

@@ -11,6 +11,7 @@ pub mod file_edit;
 pub mod file_read;
 pub mod file_write;
 pub mod glob;
+pub mod goal;
 pub mod grep;
 pub mod monitor;
 pub mod notebook_edit;
@@ -128,6 +129,9 @@ pub fn register_builtin_tools(reg: &std::sync::Arc<base::tool::InMemoryToolRegis
         Arc::new(crate::plan_verify::VerifyPlanExecutionTool),
         Arc::new(crate::push_notification::PushNotificationTool),
         Arc::new(crate::ask_user::AskUserQuestionTool),
+        Arc::new(crate::goal::GoalCreateTool),
+        Arc::new(crate::goal::GoalGetTool),
+        Arc::new(crate::goal::GoalUpdateTool),
     ];
     for t in simple {
         reg.register(t);

@@ -1096,6 +1096,39 @@ sidecar),不是某个宿主自己的一层覆盖 —— 各宿主各存一份的
 **用户改过的名字不会被自动命名覆盖**:开了自动命名的场景在首轮结束后会生成一个
 名字,但它跳过已经被 `session.rename` 命名过的会话。
 
+#### `session.goal` / `session.setGoal` / `session.updateGoal`
+
+会话目标:一个一轮做不完的目标。会话空闲时引擎自动开下一轮(`initiator:"goal"`),注入
+`<goal_round>` 提醒模型目标和轮次,直到模型标记完成或受阻,或者轮数用完(用完即转为
+`blocked`)。模型经 `GoalCreate` / `GoalGet` / `GoalUpdate` 工具操作同一个目标。
+
+```jsonc
+// session.goal → params
+{ "session_id": "…" }
+// ← result;没有目标时 goal 为 null
+{ "goal": { "id": "…", "revision": 3, "objective": "迁移到新接口,测试全绿",
+            "phase": "active", "armed": true, "max_rounds": 256,
+            "rounds_started": 2, "rounds_since_armed": 2, "blocked_reason": null } }
+
+// session.setGoal → params(会话已有未完成的目标时失败)
+{ "session_id": "…", "objective": "…", "max_rounds": 256 }   // max_rounds 可选,默认 256
+// session.updateGoal → params
+{ "session_id": "…", "action": "pause" }   // pause | resume | edit | clear
+{ "session_id": "…", "action": "edit", "objective": "…", "max_rounds": 64 }
+// ← 二者的 result 同 session.goal
+```
+
+- `phase`:`active` / `paused` / `blocked` / `complete`。只有 `active` 且 `armed` 的目标
+  会自动开轮。`armed` 不落盘:会话恢复后目标一律不武装,要人 `resume` 才继续。
+- 宿主经这两个方法的操作都按「用户亲自发起」对待。模型那一侧:设定、修改、暂停、恢复
+  只能在用户发起的那一轮做;自动轮里只能标完成或受阻,受阻要自武装起已跑满 3 轮。
+- 一轮以取消、hook 中止、预算耗尽、出错结束,目标就解除武装,等人决定。
+- 在空闲会话上设定或恢复目标,第一轮马上开始;`pause` 碰上正在跑的自动轮会中断它。
+- 会话不在内存里时,`session.goal` 从日志读(`armed` 为 `false`),`setGoal` /
+  `updateGoal` 先把它恢复起来。会话不存在 → `SESSION_NOT_FOUND`;状态不允许的操作 →
+  `INVALID_PARAMS`,`message` 说明原因。
+- 每次变化推 `goal_changed`(§7),并以扩展条目(`ns:"agix.goal"`)记进会话日志。
+
 #### `session.appendEntry`
 
 往会话日志里加一条扩展条目(`history.extension_entry`):宿主自己的、给人看的东西,
@@ -1894,6 +1927,7 @@ disclosure 的 `wasm.runnable` 会如实报成 `false`。
 | `task_updated` | `{task}` | 一件报过开始、还没结束的任务变了:子 Agent 每调完一次模型(`task.usage`),有询问开始或结束等待(`task.status` 在 `waiting` 与 `running` 之间);`turn_id` 为 `null` |
 | `task_progress` | `{task_id,appended,skipped_bytes}` | 一件报过开始的 Shell 命令或监视器新打出来的输出。每件任务每秒至多一帧,结束时在 `task_finished` 之前补最后一帧;一帧至多 8 KiB,多出的只发结尾,`skipped_bytes` 是跳过的字节数,要全文用 `session.taskOutput`;`turn_id` 为 `null` |
 | `task_finished` | `{task}` | 一件报过开始的任务结束了,`task.status` 是结局;`turn_id` 为 `null` |
+| `goal_changed` | `{goal}` | 会话目标变了(`goal` 同 `session.goal`,清除后为 `null`);`turn_id` 为 `null` |
 | `extension_entry` | `{entry}` | 宿主经 `session.appendEntry` 写了一条扩展条目(`entry` 同 `session.entries` 的条目);`turn_id` 为 `null` |
 | `subscription_dropped` | `{reason}` | 这条连接对该会话的订阅被取消了(`reason` 目前只有 `"overflow"`,§5.4);不属于任何一轮,`turn_id` 为 `null`。重新 `session.subscribe` 并追平 |
 
@@ -1987,7 +2021,7 @@ disclosure 的 `wasm.runnable` 会如实报成 `false`。
 | `session_evicted` | `{session_id, reason}` | 会话被移出内存,transcript 还在,可以恢复。`reason`:`idle`(空闲超时)、`capacity`(池子满了,挤掉最久没动的) |
 | `session_closed` | `{session_id, reason}` | 会话被关闭。`reason`:`closed`(`session.close` / `session.delete`)、`engine_stopped`(引擎在一轮中途退出) |
 | `session_deleted` | `{session_id, parent_session_id?}` | 会话连同 transcript 被删除;级联删除的侧链带 `parent_session_id` |
-| `turn_started` | `{session_id, turn_id, initiator}` | 一轮开始。`initiator`:`client`(某条连接的 `run_turn`)、`schedule`(定时任务,§6.7) |
+| `turn_started` | `{session_id, turn_id, initiator}` | 一轮开始。`initiator`:`client`(某条连接的 `run_turn`)、`schedule`(定时任务,§6.7)、`goal`(目标的自动轮) |
 | `turn_completed` | `{session_id, turn_id, initiator}` | 这一轮结束,无论成功、出错还是被中断 |
 | `events_lagged` | `{missed}` | 这条连接读得太慢,有 `missed` 条通知没送到。需要的话用 `session.list` 等对账 |
 

@@ -310,6 +310,9 @@ pub struct Agent {
     /// snapshots, todos, tasks). See `Builder::build()` for why sharing one
     /// instance matters — dispatch used to mint a fresh one per tool call.
     pub(crate) session_state: Arc<base::context::SessionState>,
+    /// Whether [`Agent::run`] starts the goal's automatic rounds — see
+    /// [`Builder::goal_rounds_from_owner`].
+    drive_goals: bool,
     agent_spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner>,
     pub(crate) perf: Arc<PerfCollector>,
 
@@ -567,6 +570,9 @@ impl Agent {
         // real receiver and handles those three through `Arc`-shared state;
         // everything else is forwarded to the loop untouched.
         let (fwd_tx, mut fwd_rx) = mpsc::unbounded_channel();
+        // Weak, so a goal round can be queued without keeping the loop alive
+        // after the real input channel closes.
+        let own_input = fwd_tx.downgrade();
         {
             // `self.input_rx` is moved into the task; the field is left
             // holding a receiver whose sender is dropped immediately, so any
@@ -666,7 +672,19 @@ impl Agent {
                             let turn_cancel = cancel.child_token();
                             *self.current_turn_cancel.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = turn_cancel.clone();
                             match self.process_turn(input, turn_cancel).await {
-                                Ok(_) => {}
+                                Ok(outcome) => {
+                                    if self.drive_goals {
+                                        if let Some(round) = self.goal_round_after(&outcome.stop_reason).await {
+                                            if let Some(tx) = own_input.upgrade() {
+                                                let _ = tx.send(InputMessage::User {
+                                                    content: round.message,
+                                                    attachments: vec![],
+                                                    turn_id: round.turn_id,
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
                                 Err(crate::turn::TurnError::Shutdown) => {
                                     exit_reason = "shutdown_command";
                                     break;
@@ -815,7 +833,33 @@ impl Agent {
     /// processing turns — it's a plain field replacement, not safe to race
     /// against an active turn.
     pub async fn resume_session(&mut self, id: &str) -> Result<(), session::session::SessionError> {
-        self.session.resume(id).await
+        self.session.resume(id).await?;
+        let goal = self
+            .session
+            .latest_extension(
+                base::context::goal::GOAL_NS,
+                base::context::goal::GOAL_EVENT,
+            )
+            .await
+            .and_then(|payload| serde_json::from_value(payload["goal"].clone()).ok());
+        self.session_state.restore_goal(goal);
+        Ok(())
+    }
+
+    /// The goal round to start now that a turn ended with `stop_reason`, if
+    /// any. Only a turn that ended normally continues a goal; any other end
+    /// disarms it, leaving the decision to a person. What this changes is
+    /// recorded before it returns.
+    pub async fn goal_round_after(
+        &mut self,
+        stop_reason: &str,
+    ) -> Option<base::context::goal::GoalRound> {
+        let round = match stop_reason {
+            "end_turn" | "stop_sequence" => self.session_state.goal_next_round(),
+            _ => None,
+        };
+        self.record_goal_changes().await;
+        round
     }
 
     /// Access the performance collector.
@@ -1123,6 +1167,8 @@ pub struct Builder {
     /// Scheduled jobs, kept and fired by whoever owns this store — see
     /// [`Builder::cron_store`].
     cron_store: Option<Arc<tools::cron::CronStore>>,
+    /// See [`Builder::goal_rounds_from_owner`].
+    goal_rounds_from_owner: bool,
     /// Where this session's commands record their process groups — see
     /// [`Builder::process_groups`].
     process_groups: Option<Arc<base::interface::exec::local::GroupLedger>>,
@@ -1270,6 +1316,7 @@ impl Builder {
             event_sinks: Vec::new(),
             agent_depth: 0,
             cron_store: None,
+            goal_rounds_from_owner: false,
             process_groups: None,
             modules: Vec::new(),
             session_prompt: None,
@@ -1322,6 +1369,15 @@ impl Builder {
     /// its input loop.
     pub fn cron_store(mut self, store: Arc<tools::cron::CronStore>) -> Self {
         self.cron_store = Some(store);
+        self
+    }
+
+    /// Leave starting the goal's automatic rounds to this session's owner,
+    /// which asks [`Agent::goal_round_after`] when a turn ends. A session
+    /// pool does, so a round is a turn like any other; without it,
+    /// [`Agent::run`] starts them itself.
+    pub fn goal_rounds_from_owner(mut self) -> Self {
+        self.goal_rounds_from_owner = true;
         self
     }
 
@@ -2408,6 +2464,7 @@ impl Builder {
                 memory_store,
                 session,
                 session_state,
+                drive_goals: !self.goal_rounds_from_owner,
                 agent_spawner: Arc::new(agent_spawner),
                 perf: Arc::new(PerfCollector::new()),
                 compactor,
@@ -3934,6 +3991,70 @@ mod tests {
             };
             Ok(Box::new(futures::stream::iter(events)))
         }
+    }
+
+    /// Without an owner driving them, `run` starts a goal's rounds itself,
+    /// one turn each, until the round limit marks the goal blocked.
+    #[tokio::test]
+    async fn run_starts_goal_rounds_until_the_limit() {
+        let model: Arc<dyn Model> = Arc::new(ToolThenStopModel {
+            calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            tool: "Nope",
+        });
+        let (mut agent, mut event_rx, input_tx) = Builder::new()
+            .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+            .model(model)
+            .settings(Arc::new(test_settings()))
+            .skip_warmup(true)
+            .build()
+            .expect("build should succeed");
+        let state = agent.session_state();
+        state
+            .goal_create(
+                "finish".into(),
+                Some(2),
+                base::context::goal::TurnOrigin::Human,
+            )
+            .unwrap();
+        let cancel = CancellationToken::new();
+        let stop = cancel.clone();
+        let engine = tokio::spawn(async move { agent.run(cancel).await });
+        input_tx
+            .send(InputMessage::User {
+                content: "go".into(),
+                attachments: vec![],
+                turn_id: "t1".into(),
+            })
+            .unwrap();
+
+        let turns = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let mut turns = Vec::new();
+            let mut completed = 0;
+            while completed < 3 {
+                match event_rx.recv().await {
+                    Some(AgentEvent::TurnStart { turn_id }) => turns.push(turn_id),
+                    Some(AgentEvent::TurnComplete { .. }) => completed += 1,
+                    Some(_) => {}
+                    None => break,
+                }
+            }
+            turns
+        })
+        .await
+        .expect("three turns should run");
+        assert_eq!(turns[0], "t1");
+        assert!(turns[1].starts_with("goal-1-1-"), "{turns:?}");
+        assert!(turns[2].starts_with("goal-1-2-"), "{turns:?}");
+
+        for _ in 0..100 {
+            if state.goal_view()["phase"] == "blocked" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(state.goal_view()["phase"], "blocked");
+        stop.cancel();
+        let _ = engine.await;
     }
 
     #[tokio::test]

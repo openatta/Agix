@@ -14,6 +14,9 @@ pub const TOOLS: &[&str] = &[
     "EnterPlanMode",
     "ExitPlanMode",
     "Glob",
+    "GoalCreate",
+    "GoalGet",
+    "GoalUpdate",
     "Grep",
     "Read",
     "Skill",
@@ -110,6 +113,7 @@ const RULES: &str = "\
 - Search the web (WebSearch) for current facts and documentation rather than answering from memory or guessing URLs; WebFetch reads a given page.
 - Use Skill for a matching skill or a `/<skill-name>` the user types. ToolSearch fetches the schema of a tool listed by name only, and a tool's detailed guide.
 - For work that needs a plan the user approves first, EnterPlanMode; present the plan with ExitPlanMode.
+- For an objective one turn won't finish, set a goal with GoalCreate: rounds then continue automatically until you mark it complete with GoalUpdate. Mark complete only when the whole objective is achieved, and blocked only when the same blocker has held for several rounds.
 - Earlier messages are compacted automatically near the context limit.
 - Lead with the answer and keep replies short. No emojis unless asked. Reference code as `file_path:line_number`.
 ";

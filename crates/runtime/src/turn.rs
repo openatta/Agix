@@ -51,7 +51,34 @@ pub struct CompactSummary {
     pub tokens_after: usize,
 }
 
+/// Turn endings that leave a goal armed. Anything else — a cancel, a hook
+/// veto, an exhausted budget, an error — stops its automatic rounds.
+const ENDS_A_GOAL_ROUND_NORMALLY: &[&str] = &[
+    "end_turn",
+    "stop_sequence",
+    "command_executed",
+    "tool_result_received",
+];
+
 impl Agent {
+    /// Write the goal changes the session log does not have yet.
+    pub(crate) async fn record_goal_changes(&mut self) {
+        for goal in self.session_state.take_unrecorded_goal_changes() {
+            let payload = serde_json::json!({ "goal": goal });
+            if let Err(e) = self
+                .session
+                .record_extension(
+                    base::context::goal::GOAL_NS,
+                    base::context::goal::GOAL_EVENT,
+                    payload,
+                )
+                .await
+            {
+                tracing::warn!(error = %e, "failed to record a goal change");
+            }
+        }
+    }
+
     /// Process one input message — the core turn loop.
     /// Internal turn processing. Consumers should use [`Agent::run`] or [`Agent::run_turn`].
     pub(crate) async fn process_turn(
@@ -65,6 +92,8 @@ impl Agent {
                 attachments,
                 turn_id,
             } => {
+                self.session_state
+                    .set_turn_origin(base::context::goal::TurnOrigin::from_turn_id(&turn_id));
                 self.current_turn_id = turn_id;
                 self.session.set_turn_id(Some(self.current_turn_id.clone()));
                 let _ = self.event_tx.send(AgentEvent::TurnStart {
@@ -504,6 +533,11 @@ impl Agent {
         if let Err(e) = self.session.persist().await {
             tracing::warn!(error = %e, "failed to persist session");
         }
+        if !matches!(&outcome, Ok(o) if ENDS_A_GOAL_ROUND_NORMALLY.contains(&o.stop_reason.as_str()))
+        {
+            self.session_state.goal_disarm();
+        }
+        self.record_goal_changes().await;
         if let Ok(o) = &outcome {
             let _ = self.event_tx.send(AgentEvent::TurnComplete {
                 stop_reason: o.stop_reason.clone(),
@@ -1048,6 +1082,7 @@ impl Agent {
             if let Err(e) = self.session.persist().await {
                 tracing::warn!(error = %e, "failed to persist session");
             }
+            self.record_goal_changes().await;
             if cancel.is_cancelled() {
                 self.last_had_tool_uses = had_tool_uses_this_turn;
                 self.record_turn_complete("cancelled", api_calls, tool_calls, start);

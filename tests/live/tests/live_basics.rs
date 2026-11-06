@@ -1,9 +1,10 @@
 //! The single-agent surface with a real model: the file and shell tools, web
 //! search, a monitor whose events reach the model while it works, a session's
-//! own prompt, a resume, plan mode, and a spawned `agixd`.
+//! own prompt, a resume, plan mode, a goal that runs over several automatic
+//! rounds, and a spawned `agixd`.
 
 use live::{LiveRun, Mode};
-use serde_json::json;
+use serde_json::{json, Value};
 
 fn nonce() -> String {
     format!(
@@ -292,6 +293,49 @@ async fn a_monitors_events_reach_the_model_while_it_works() -> anyhow::Result<()
         "the host saw the error line as it came"
     );
     drop(watcher);
+    run.finish().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_goal_keeps_the_session_working_round_after_round() -> anyhow::Result<()> {
+    let mut run = LiveRun::start("goal", json!({}), Mode::InProcess).await?;
+    run.write_file("count.txt", "")?;
+    let session = run.session().await?;
+    run.turn(
+        &session,
+        "Set a goal with the GoalCreate tool, objective: \"count.txt holds the lines 1, 2 and 3\", \
+         max_rounds 6. Do nothing else in this turn — no edits — and end the turn right after.\n\
+         In each later goal round: read count.txt, append exactly one line with the next number \
+         (1, then 2, then 3) using Bash `echo N >> count.txt`, and end the round. In the round \
+         where count.txt reaches 3 lines, mark the goal complete with GoalUpdate (use GoalGet for \
+         its id and revision; fetch either tool with ToolSearch if it is not loaded).",
+    )
+    .await?;
+
+    let mut goal = Value::Null;
+    for _ in 0..240 {
+        let resp = run
+            .client
+            .call("session.goal", json!({ "session_id": session }))
+            .await?;
+        goal = resp.result.unwrap_or_default()["goal"].clone();
+        if goal["phase"] != "active" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    eprintln!("[live goal] final goal: {goal}");
+    assert_eq!(goal["phase"], "complete", "{goal}");
+    assert!(goal["rounds_started"].as_u64().unwrap_or(0) >= 2, "{goal}");
+    let lines: Vec<String> = run
+        .read_file("count.txt")
+        .unwrap_or_default()
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    assert_eq!(lines, ["1", "2", "3"]);
     run.finish().await;
     Ok(())
 }
