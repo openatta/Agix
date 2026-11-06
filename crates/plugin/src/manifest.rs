@@ -591,7 +591,7 @@ kind = "dsh"
 entry = "dist/index.js"
 
 [scene]
-visible_in = ["coding"]
+visible_in = ["code"]
 
 [scene.own]
 name = "GitHub workflow"
@@ -625,7 +625,7 @@ scene = "plugin:github-tools"
         assert_eq!(m.mcp.len(), 2);
         assert_eq!(m.mcp[0].kind, McpKind::Native);
         assert_eq!(m.mcp[1].kind, McpKind::Dsh);
-        assert_eq!(m.scene.visible_in, ["coding"]);
+        assert_eq!(m.scene.visible_in, ["code"]);
         let own = m.scene.own.unwrap();
         assert_eq!(own.disallowed_tools, ["Bash"]);
         assert_eq!(own.budget.compact_threshold, Some(120_000));

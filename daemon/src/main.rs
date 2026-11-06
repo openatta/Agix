@@ -36,7 +36,7 @@ Options:
                                    (e.g. 127.0.0.1:7879); requires --token or AGIX_DAEMON_TOKEN
       --token <SECRET>             Shared secret for TCP and WebSocket auth [env: AGIX_DAEMON_TOKEN]
       --scene <ID>                 Scene this daemon serves; also selects the state root
-                                   ~/.agix/scenes/<scene>/ [default: coding]
+                                   ~/.agix/scenes/<scene>/ [default: code]
       --scenes <ID,...>            Additional scenes to activate alongside --scene
       --instance <NAME>            Name of this daemon's ~/.agix/daemon/instances.d/ entry
                                    [default: the active scenes, sorted and comma-joined]
@@ -86,7 +86,7 @@ struct Cli {
     scene: String,
 
     /// Additional scenes to activate alongside `--scene`, comma-separated
-    /// (e.g. `--scenes chat,research`). `--scene`'s own value doesn't need
+    /// (e.g. `--scenes harnix,mini`). `--scene`'s own value doesn't need
     /// repeating here — it's always active. Each must be one
     /// `scene::SceneRegistry::register_builtin` actually registers;
     /// an unknown name fails startup the same way an unsupported `--scene`
@@ -105,8 +105,8 @@ struct Cli {
     ///
     /// Default (when omitted): every active scene (`--scene` plus
     /// `--scenes`), deduplicated, sorted, and comma-joined — e.g.
-    /// `--scene coding --scenes chat,research` defaults to
-    /// `chat,coding,research`. See `default_instance_name()`.
+    /// `--scene code --scenes harnix,mini` defaults to
+    /// `code,harnix,mini`. See `default_instance_name()`.
     instance: Option<String>,
 
     /// Seconds a permission prompt may go unanswered before the daemon
@@ -170,7 +170,7 @@ impl Cli {
             listen: None,
             listen_ws: None,
             token: None,
-            scene: "coding".into(),
+            scene: "code".into(),
             scenes: Vec::new(),
             instance: None,
             permission_prompt_timeout: 300,
@@ -607,7 +607,7 @@ mod tests {
 
     #[test]
     fn resolve_scene_finds_every_builtin_via_the_registry() {
-        for id in ["coding", "chat", "demo", "research"] {
+        for id in ["code", "harnix", "mini"] {
             assert_eq!(
                 resolve_scene(id, std::path::Path::new("/nonexistent"))
                     .expect("builtin scene should resolve")
@@ -624,7 +624,7 @@ mod tests {
             Err(e) => e.to_string(),
         };
         assert!(err.contains("not-a-real-scene"), "{err}");
-        for id in ["coding", "chat", "demo", "research"] {
+        for id in ["code", "harnix", "mini"] {
             assert!(err.contains(id), "expected `{id}` in error, got: {err}");
         }
     }
@@ -646,12 +646,12 @@ mod tests {
     #[test]
     fn default_instance_name_sorts_and_dedupes_scenes() {
         assert_eq!(
-            default_instance_name("coding", &["chat".to_string(), "research".to_string()]),
-            "chat,coding,research"
+            default_instance_name("mini", &["harnix".to_string(), "code".to_string()]),
+            "code,harnix,mini"
         );
         assert_eq!(
-            default_instance_name("coding", &["coding".to_string()]),
-            "coding",
+            default_instance_name("code", &["code".to_string()]),
+            "code",
             "--scene's own value repeated in --scenes must not appear twice"
         );
     }
@@ -671,7 +671,7 @@ mod tests {
         assert_eq!(cli.session_idle_timeout, 3600);
         assert_eq!(cli.model, "claude-sonnet-4-6");
         assert_eq!(cli.max_tokens, 2000);
-        assert_eq!(cli.scene, "coding");
+        assert_eq!(cli.scene, "code");
         assert_eq!(cli.permission_prompt_timeout, 300);
         assert!(cli.socket.is_none() && cli.instance.is_none() && cli.scenes.is_empty());
     }
@@ -683,10 +683,10 @@ mod tests {
             "/tmp/a.sock",
             "--session-cap=4",
             "--scene",
-            "chat",
+            "mini",
             "--scenes",
-            "research,demo",
-            "--scenes=coding",
+            "harnix,triage",
+            "--scenes=code",
             "--listen",
             "127.0.0.1:7878",
             "--token=s",
@@ -696,8 +696,8 @@ mod tests {
             Some(std::path::Path::new("/tmp/a.sock"))
         );
         assert_eq!(cli.session_cap, 4);
-        assert_eq!(cli.scene, "chat");
-        assert_eq!(cli.scenes, ["research", "demo", "coding"]);
+        assert_eq!(cli.scene, "mini");
+        assert_eq!(cli.scenes, ["harnix", "triage", "code"]);
         assert_eq!(cli.listen.as_deref(), Some("127.0.0.1:7878"));
         assert_eq!(cli.token.as_deref(), Some("s"));
     }
@@ -722,8 +722,8 @@ mod tests {
     #[test]
     fn default_instance_name_is_order_independent() {
         assert_eq!(
-            default_instance_name("research", &["chat".to_string(), "coding".to_string()]),
-            default_instance_name("coding", &["chat".to_string(), "research".to_string()]),
+            default_instance_name("harnix", &["mini".to_string(), "code".to_string()]),
+            default_instance_name("code", &["mini".to_string(), "harnix".to_string()]),
         );
     }
 }

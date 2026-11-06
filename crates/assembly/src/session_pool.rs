@@ -593,8 +593,8 @@ pub struct SessionPool {
     /// Scene is part of the key because the scene tier is a real layer
     /// (`~/.agix/scenes/<scene>/settings.json`, and the skills, agents and
     /// plugins beside it). Keying by project alone meant every session got
-    /// whichever scene happened to be built first, so a `chat` session on a
-    /// daemon started as `--scene coding` silently read coding's tier.
+    /// whichever scene happened to be built first, so a `harnix` session on a
+    /// daemon started as `--scene code` silently read code's tier.
     ///
     /// Entries are built on demand and dropped wholesale by
     /// `invalidate_bindings` — a reload, or a plugin set that changed. The
@@ -3621,8 +3621,8 @@ impl SessionPool {
         // ── 首轮自动命名 ──
         //
         // Whether a session names itself is its *own* scene's call, not this
-        // pool's default scene's: a `chat` session created on a `--scene
-        // coding` daemon is still a chat session, and the two scenes disagree
+        // pool's default scene's: a `harnix` session created on a `--scene
+        // code` daemon is still a harnix session, and the two scenes disagree
         // about this exactly as they disagree about the system prompt.
         //
         // The decision is taken under the lock and the naming call made
@@ -5350,8 +5350,8 @@ impl SessionPool {
     ///
     /// Matches against any *currently active* scene (`self.active_scenes`),
     /// not just this pool's default — a session legitimately created via
-    /// `session.create {scene: "chat"}` after `scene.activate {scene:
-    /// "chat"}` is exactly as resumable/closeable/forkable as one under the
+    /// `session.create {scene: "harnix"}` after `scene.activate {scene:
+    /// "harnix"}` is exactly as resumable/closeable/forkable as one under the
     /// default scene; only a scene this daemon isn't currently serving at
     /// all counts as a mismatch.
     pub async fn check_scene(&self, session_id: &str) -> SceneCheck {
@@ -7366,7 +7366,7 @@ mod eviction_tests {
             cancel: CancellationToken::new(),
             exited: CancellationToken::new(),
             context: None,
-            scene: Arc::new(scene::coding::CodingScene),
+            scene: Arc::new(scene::code::CodeScene),
             project: None,
             name: None,
             created_at: last_active,
@@ -7521,7 +7521,7 @@ mod mcp_for_project_tests {
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path().join("work");
         std::fs::create_dir_all(&cwd).unwrap();
-        let scene: Arc<dyn Scene> = Arc::new(scene::coding::CodingScene);
+        let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene);
         let permission: Arc<dyn Permission> = Arc::new(AllowAllTestPermission);
         let paths: Arc<dyn crate::config::DaemonPaths> = Arc::new(
             crate::config::StaticDaemonPaths::new(dir.path().to_path_buf()),
@@ -7564,7 +7564,7 @@ mod mcp_for_project_tests {
 
         // The tiers of the pool's own project: whatever of them exist on
         // disk are registered once each.
-        pool.binding_for(Some(pool.cwd()), "coding").await;
+        pool.binding_for(Some(pool.cwd()), "code").await;
         let baseline = watched(&pool);
 
         // Three more projects, each with a settings file, a skills directory
@@ -7575,7 +7575,7 @@ mod mcp_for_project_tests {
             std::fs::create_dir_all(root.join(".agix").join("agents")).unwrap();
             std::fs::create_dir_all(root.join(".agents").join("skills")).unwrap();
             std::fs::write(root.join(".agix").join("settings.json"), "{}").unwrap();
-            pool.binding_for(Some(&root), "coding").await;
+            pool.binding_for(Some(&root), "code").await;
         }
 
         let grown = watched(&pool) - baseline;
@@ -7589,8 +7589,8 @@ mod mcp_for_project_tests {
     #[tokio::test]
     async fn cache_hit_returns_the_same_arc_without_reconnecting() {
         let (pool, _dir) = test_pool().await;
-        let first = pool.mcp_for_project(Some(pool.cwd()), "coding").await;
-        let second = pool.mcp_for_project(Some(pool.cwd()), "coding").await;
+        let first = pool.mcp_for_project(Some(pool.cwd()), "code").await;
+        let second = pool.mcp_for_project(Some(pool.cwd()), "code").await;
         assert!(
             Arc::ptr_eq(&first, &second),
             "a cache hit must return the exact cached Arc, not a freshly connected one"
@@ -7604,15 +7604,15 @@ mod mcp_for_project_tests {
         let other_project = dir.path().join("other");
         std::fs::create_dir_all(&other_project).unwrap();
 
-        let default_manager = pool.mcp_for_project(Some(pool.cwd()), "coding").await;
-        let other_manager = pool.mcp_for_project(Some(&other_project), "coding").await;
+        let default_manager = pool.mcp_for_project(Some(pool.cwd()), "code").await;
+        let other_manager = pool.mcp_for_project(Some(&other_project), "code").await;
         assert!(
             !Arc::ptr_eq(&default_manager, &other_manager),
             "a project seen for the first time must get its own cache miss and connect, \
              not silently inherit another project's connections"
         );
 
-        let other_again = pool.mcp_for_project(Some(&other_project), "coding").await;
+        let other_again = pool.mcp_for_project(Some(&other_project), "code").await;
         assert!(
             Arc::ptr_eq(&other_manager, &other_again),
             "the second lookup for the same non-default project must be a cache hit"
@@ -7623,8 +7623,8 @@ mod mcp_for_project_tests {
     #[tokio::test]
     async fn no_project_key_is_cached_independently_of_the_default_project() {
         let (pool, _dir) = test_pool().await;
-        let none_manager = pool.mcp_for_project(None, "coding").await;
-        let default_manager = pool.mcp_for_project(Some(pool.cwd()), "coding").await;
+        let none_manager = pool.mcp_for_project(None, "code").await;
+        let default_manager = pool.mcp_for_project(Some(pool.cwd()), "code").await;
         assert!(
             !Arc::ptr_eq(&none_manager, &default_manager),
             "the no-project tier (`None`) must not share a cache slot with the default project"
@@ -7640,37 +7640,37 @@ mod mcp_for_project_tests {
         let (pool, dir) = test_pool().await;
         let other = dir.path().join("other");
         std::fs::create_dir_all(&other).unwrap();
-        let default_coding = pool.mcp_for_project(Some(pool.cwd()), "coding").await;
-        let default_chat = pool.mcp_for_project(Some(pool.cwd()), "chat").await;
-        let other_coding = pool.mcp_for_project(Some(&other), "coding").await;
+        let default_coding = pool.mcp_for_project(Some(pool.cwd()), "code").await;
+        let default_harnix = pool.mcp_for_project(Some(pool.cwd()), "harnix").await;
+        let other_coding = pool.mcp_for_project(Some(&other), "code").await;
 
         pool.forget_mcp_built_from(&Tier::Project(other.clone()), None)
             .await;
         assert!(!Arc::ptr_eq(
             &other_coding,
-            &pool.mcp_for_project(Some(&other), "coding").await
+            &pool.mcp_for_project(Some(&other), "code").await
         ));
         assert!(Arc::ptr_eq(
             &default_coding,
-            &pool.mcp_for_project(Some(pool.cwd()), "coding").await
+            &pool.mcp_for_project(Some(pool.cwd()), "code").await
         ));
 
-        pool.forget_mcp_built_from(&Tier::Scene("chat".into()), None)
+        pool.forget_mcp_built_from(&Tier::Scene("harnix".into()), None)
             .await;
         assert!(!Arc::ptr_eq(
-            &default_chat,
-            &pool.mcp_for_project(Some(pool.cwd()), "chat").await
+            &default_harnix,
+            &pool.mcp_for_project(Some(pool.cwd()), "harnix").await
         ));
         assert!(Arc::ptr_eq(
             &default_coding,
-            &pool.mcp_for_project(Some(pool.cwd()), "coding").await
+            &pool.mcp_for_project(Some(pool.cwd()), "code").await
         ));
 
-        let kept = (Some(pool.cwd().to_path_buf()), "coding".to_string());
+        let kept = (Some(pool.cwd().to_path_buf()), "code".to_string());
         pool.forget_mcp_built_from(&Tier::Global, Some(&kept)).await;
         assert!(Arc::ptr_eq(
             &default_coding,
-            &pool.mcp_for_project(Some(pool.cwd()), "coding").await
+            &pool.mcp_for_project(Some(pool.cwd()), "code").await
         ));
         assert_eq!(pool.mcp_by_project.lock().await.len(), 1);
     }
@@ -7687,22 +7687,22 @@ mod mcp_for_project_tests {
         let (pool, dir) = test_pool().await;
         let other = dir.path().join("other");
         std::fs::create_dir_all(&other).unwrap();
-        let own_coding = pool.binding_for(Some(pool.cwd()), "coding").await;
-        let own_chat = pool.binding_for(Some(pool.cwd()), "chat").await;
-        let other_coding = pool.binding_for(Some(&other), "coding").await;
+        let own_coding = pool.binding_for(Some(pool.cwd()), "code").await;
+        let own_harnix = pool.binding_for(Some(pool.cwd()), "harnix").await;
+        let other_coding = pool.binding_for(Some(&other), "code").await;
 
         pool.invalidate_bindings(Some(&Tier::Project(other.clone())))
             .await;
         assert!(is_stale(&other_coding));
-        assert!(!is_stale(&own_coding) && !is_stale(&own_chat));
+        assert!(!is_stale(&own_coding) && !is_stale(&own_harnix));
         assert!(Arc::ptr_eq(
             &own_coding,
-            &pool.binding_for(Some(pool.cwd()), "coding").await
+            &pool.binding_for(Some(pool.cwd()), "code").await
         ));
 
-        pool.invalidate_bindings(Some(&Tier::Scene("chat".into())))
+        pool.invalidate_bindings(Some(&Tier::Scene("harnix".into())))
             .await;
-        assert!(is_stale(&own_chat));
+        assert!(is_stale(&own_harnix));
         assert!(!is_stale(&own_coding));
 
         pool.invalidate_bindings(Some(&Tier::Global)).await;
@@ -7717,7 +7717,9 @@ mod mcp_for_project_tests {
     async fn a_skill_change_reloads_the_shared_catalog_in_place() {
         use crate::watch_hub::{Tier, WatchTarget};
         let (pool, _dir) = test_pool().await;
-        let binding = pool.binding_for(Some(pool.cwd()), "coding").await;
+        // Not the pool's startup scene: `test_pool`'s startup scene tier is
+        // the tempdir root, which also holds the project.
+        let binding = pool.binding_for(Some(pool.cwd()), "mini").await;
         let skill_dir = pool.cwd().join(".agents").join("skills").join("late");
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(
@@ -7737,7 +7739,7 @@ mod mcp_for_project_tests {
         assert!(!is_stale(&binding));
         assert!(Arc::ptr_eq(
             &binding,
-            &pool.binding_for(Some(pool.cwd()), "coding").await
+            &pool.binding_for(Some(pool.cwd()), "mini").await
         ));
     }
 }
@@ -7752,35 +7754,35 @@ mod multi_scene_tests {
     ///
     /// `settings_for_project` used to key on project alone and take `scope`
     /// from the pool's own settings, so whichever scene built an entry first
-    /// answered for every scene afterwards: a `chat` session on a daemon
-    /// started as `--scene coding` silently ran on coding's tier.
+    /// answered for every scene afterwards: a `harnix` session on a daemon
+    /// started as `--scene code` silently ran on code's tier.
     #[tokio::test]
     async fn each_scene_resolves_its_own_settings_tier() {
         let (pool, dir) = test_pool().await;
 
-        // `scenes/chat/settings.json` sets a model the pool's own tier never
-        // mentions — if the chat session picks it up, it read chat's tier.
-        let chat_tier = dir.path().join("scenes").join("chat");
-        std::fs::create_dir_all(&chat_tier).unwrap();
+        // `scenes/harnix/settings.json` sets a model the pool's own tier never
+        // mentions — if the harnix session picks it up, it read harnix's tier.
+        let harnix_tier = dir.path().join("scenes").join("harnix");
+        std::fs::create_dir_all(&harnix_tier).unwrap();
         std::fs::write(
-            chat_tier.join("settings.json"),
-            r#"{"model": {"model_name": "model-from-chat-tier"}}"#,
+            harnix_tier.join("settings.json"),
+            r#"{"model": {"model_name": "model-from-harnix-tier"}}"#,
         )
         .unwrap();
 
-        let coding = pool.settings_for_project(None, "coding").await;
-        let chat = pool.settings_for_project(None, "chat").await;
+        let code = pool.settings_for_project(None, "code").await;
+        let harnix = pool.settings_for_project(None, "harnix").await;
 
-        assert_eq!(chat.model.model_name, "model-from-chat-tier");
+        assert_eq!(harnix.model.model_name, "model-from-harnix-tier");
         assert_ne!(
-            coding.model.model_name, chat.model.model_name,
+            code.model.model_name, harnix.model.model_name,
             "two scenes must not share one settings entry"
         );
         assert_eq!(
-            chat.paths.scope, "chat",
+            harnix.paths.scope, "harnix",
             "scope must be the session's scene"
         );
-        assert_eq!(coding.paths.scope, "coding");
+        assert_eq!(code.paths.scope, "code");
     }
 
     /// The same project under two scenes gets two cache entries, and each is
@@ -7791,9 +7793,9 @@ mod multi_scene_tests {
         let other = dir.path().join("other");
         std::fs::create_dir_all(&other).unwrap();
 
-        let a1 = pool.settings_for_project(Some(&other), "coding").await;
-        let a2 = pool.settings_for_project(Some(&other), "coding").await;
-        let b = pool.settings_for_project(Some(&other), "chat").await;
+        let a1 = pool.settings_for_project(Some(&other), "code").await;
+        let a2 = pool.settings_for_project(Some(&other), "code").await;
+        let b = pool.settings_for_project(Some(&other), "harnix").await;
 
         assert!(
             Arc::ptr_eq(&a1, &a2),
@@ -7803,8 +7805,8 @@ mod multi_scene_tests {
             !Arc::ptr_eq(&a1, &b),
             "one project under two scenes must not collapse to one entry"
         );
-        assert_eq!(a1.paths.scope, "coding");
-        assert_eq!(b.paths.scope, "chat");
+        assert_eq!(a1.paths.scope, "code");
+        assert_eq!(b.paths.scope, "harnix");
     }
 
     /// The daemon's own scene keeps the injected `config_root()`; any other
@@ -7818,13 +7820,13 @@ mod multi_scene_tests {
         let (pool, _dir) = test_pool().await;
 
         assert_eq!(
-            pool.scene_root("coding", "coding"),
+            pool.scene_root("code", "code"),
             pool.paths.config_root(),
             "the startup scene must not be recomputed"
         );
         assert_eq!(
-            pool.scene_root("chat", "coding"),
-            pool.paths.global_root().join("scenes").join("chat"),
+            pool.scene_root("harnix", "code"),
+            pool.paths.global_root().join("scenes").join("harnix"),
             "another scene is derived the way DefaultDaemonPaths derives one"
         );
     }
@@ -7835,12 +7837,12 @@ mod multi_scene_tests {
     async fn creating_a_session_in_an_inactive_scene_is_refused() {
         let (pool, _dir) = test_pool().await;
         assert!(
-            pool.resolve_scene(Some("research")).await.is_none(),
-            "research was never activated on this pool"
+            pool.resolve_scene(Some("mini")).await.is_none(),
+            "mini was never activated on this pool"
         );
         assert!(
-            pool.resolve_scene(Some("chat")).await.is_none(),
-            "chat was never activated either"
+            pool.resolve_scene(Some("harnix")).await.is_none(),
+            "harnix was never activated either"
         );
         assert!(
             pool.resolve_scene(None).await.is_some(),
@@ -7854,22 +7856,21 @@ mod multi_scene_tests {
     async fn two_scenes_can_be_active_in_one_process() {
         let (pool, _dir) = test_pool().await;
 
-        pool.activate_scene("chat").await.expect("activate chat");
+        pool.activate_scene("harnix")
+            .await
+            .expect("activate harnix");
 
-        let coding = pool.resolve_scene(Some("coding")).await.expect("coding");
-        let chat = pool.resolve_scene(Some("chat")).await.expect("chat");
-        assert_eq!(coding.id(), "coding");
-        assert_eq!(chat.id(), "chat");
+        let code = pool.resolve_scene(Some("code")).await.expect("code");
+        let harnix = pool.resolve_scene(Some("harnix")).await.expect("harnix");
+        assert_eq!(code.id(), "code");
+        assert_eq!(harnix.id(), "harnix");
 
         // Distinct scenes, so distinct tool surfaces — this is what makes
         // running both in one process meaningful rather than cosmetic.
+        assert!(code.tools().is_empty(), "code allows every registered tool");
         assert!(
-            coding.tools().is_empty(),
-            "coding allows every registered tool"
-        );
-        assert!(
-            !chat.tools().is_empty(),
-            "chat restricts its tools to a whitelist"
+            !harnix.tools().is_empty(),
+            "harnix restricts its tools to a whitelist"
         );
     }
 }
@@ -7951,7 +7952,7 @@ mod with_session_lock_tests {
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path().join("work");
         std::fs::create_dir_all(&cwd).unwrap();
-        let scene: Arc<dyn Scene> = Arc::new(scene::coding::CodingScene);
+        let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene);
         let permission: Arc<dyn Permission> = Arc::new(AllowAllTestPermission);
         let paths: Arc<dyn crate::config::DaemonPaths> = Arc::new(
             crate::config::StaticDaemonPaths::new(dir.path().to_path_buf()),
@@ -8186,7 +8187,7 @@ mod session_listing_tests {
                     engine_version: "0".into(),
                     agix_version: "0".into(),
                     parent_session_id: None,
-                    scene: Some("coding".into()),
+                    scene: Some("code".into()),
                     project_root: Some("/elsewhere/proj".into()),
                     session_kind: history::entry::SessionKind::Primary,
                     schema_version: history::entry::CURRENT_META_SCHEMA_VERSION,
@@ -8253,7 +8254,7 @@ mod session_listing_tests {
                     engine_version: "0".into(),
                     agix_version: "0".into(),
                     parent_session_id: None,
-                    scene: Some("coding".into()),
+                    scene: Some("code".into()),
                     project_root: Some(alias.display().to_string()),
                     session_kind: history::entry::SessionKind::Primary,
                     schema_version: history::entry::CURRENT_META_SCHEMA_VERSION,

@@ -39,9 +39,9 @@ struct Pipeline {
 }
 
 /// Scene per project: A/B/C write code, D only reads and reports, so it runs
-/// under `chat` — which is not this daemon's own scene, and has to be
+/// under `harnix` — which is not this daemon's own scene, and has to be
 /// activated before a session can ask for it.
-const D_SCENE: &str = "chat";
+const D_SCENE: &str = "harnix";
 
 impl Pipeline {
     async fn start(mode: Mode) -> anyhow::Result<Self> {
@@ -121,8 +121,7 @@ impl Pipeline {
     /// Three tiers on one request, so there is no chance of reading one
     /// session's prompt against another session's tool table. The sub-agent
     /// catalog rides on the `Agent` tool's description and so is only there
-    /// for a scene that offers that tool — `chat` does not, which is checked
-    /// where D runs rather than smuggled in here.
+    /// for a scene that offers that tool.
     fn only_saw(&self, project: &str) {
         let call = self.last_turn_call();
         let prompt = call.system_text();
@@ -269,8 +268,8 @@ async fn four_projects_run_one_pipeline(mode: Mode) -> anyhow::Result<()> {
     );
 
     // ── Stage D: verify, under another scene ─────────────────────────────
-    // Two replies: the verdict, then the title `chat` asks for after a first
-    // turn. This daemon's own scene is `coding`, which does not name — so a
+    // Two replies: the verdict, then the title `harnix` asks for after a first
+    // turn. This daemon's own scene is `code`, which does not name — so a
     // name coming back at all is D's scene being asked, not the pool's.
     p.provider.script([
         Reply::text("D-SAYS-THEY-DISAGREE"),
@@ -300,13 +299,13 @@ async fn four_projects_run_one_pipeline(mode: Mode) -> anyhow::Result<()> {
         "D's own scene names its sessions; the daemon's does not: {verdict:?}"
     );
     p.only_saw("d-verify");
-    // `chat` has no Bash in its whitelist and `coding` does — the scene a
+    // `harnix` has no NotebookEdit in its whitelist and `code` does — the scene a
     // session asked for reached it, on a daemon whose own scene is the other
-    // one, while three `coding` sessions were live beside it.
+    // one, while three `code` sessions were live beside it.
     let d_tools = p.provider.calls().last().expect("D's call").tool_names();
     assert!(
-        !d_tools.contains(&"Bash".to_string()),
-        "D ran under `coding`'s tool surface, not the scene it asked for: {d_tools:?}"
+        !d_tools.contains(&"NotebookEdit".to_string()),
+        "D ran under `code`'s tool surface, not the scene it asked for: {d_tools:?}"
     );
 
     // ── The send-back: D rejected, so B runs again ───────────────────────
@@ -330,9 +329,9 @@ async fn four_projects_run_one_pipeline(mode: Mode) -> anyhow::Result<()> {
         .expect("an array")
         .clone();
     for (id, project, scene) in [
-        (&a, "a-data", "coding"),
-        (&b, "b-left", "coding"),
-        (&c, "c-right", "coding"),
+        (&a, "a-data", "code"),
+        (&b, "b-left", "code"),
+        (&c, "c-right", "code"),
         (&d, "d-verify", D_SCENE),
     ] {
         let entry = sessions
@@ -382,9 +381,9 @@ async fn four_projects_run_one_pipeline(mode: Mode) -> anyhow::Result<()> {
 
     // ── The verifier's scene is switched off ─────────────────────────────
     //
-    // An operator deactivates `chat` while D's transcript is still on disk.
-    // Reaching for D now must fail loudly: D is a chat session, and serving
-    // it under `coding` — this daemon's own scene — would quietly give it a
+    // An operator deactivates `harnix` while D's transcript is still on disk.
+    // Reaching for D now must fail loudly: D is a harnix session, and serving
+    // it under `code` — this daemon's own scene — would quietly give it a
     // different system prompt and a different tool surface than the one it
     // has been running with all along.
     client.session_close(&d).await?;
@@ -431,7 +430,7 @@ async fn a_consumers_settings_change_reaches_it_mid_pipeline(mode: Mode) -> anyh
     let p = Pipeline::start(mode).await?;
     let mut client = p.daemon.connect().await?;
     let b = p.root("b-left");
-    let target = Target::project(b.clone()).scene("coding");
+    let target = Target::project(b.clone()).scene("code");
 
     let before = client.config_get(&target, "effective").await?;
     assert_eq!(
@@ -476,7 +475,7 @@ async fn a_consumers_settings_change_reaches_it_mid_pipeline(mode: Mode) -> anyh
     // The other three projects are untouched by any of it.
     for other in ["a-data", "c-right", "d-verify"] {
         let theirs = client
-            .config_get(&Target::project(p.root(other)).scene("coding"), "effective")
+            .config_get(&Target::project(p.root(other)).scene("code"), "effective")
             .await?;
         assert_eq!(
             theirs.result.as_ref().expect("config.get result")["settings"]["prompt_append"],

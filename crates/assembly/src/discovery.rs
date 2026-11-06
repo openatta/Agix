@@ -3,7 +3,7 @@
 //!
 //! The daemon writes `~/.agix/scenes/<scene>/daemon.lock` (mode 0600, `<scene>` is
 //! the `Scene` id resolved from `--scene` in `main.rs`, default
-//! `coding`) on startup with `{pid, socket_path, version, started_at}`. IDE
+//! `code`) on startup with `{pid, socket_path, version, started_at}`. IDE
 //! plugins read this file to find a running daemon — no env var hunting, no
 //! port scan.
 //!
@@ -461,7 +461,7 @@ mod tests {
             socket: PathBuf::from(format!("/tmp/{instance}.sock")),
             tcp: None,
             ws: None,
-            scenes: vec!["coding".to_string()],
+            scenes: vec!["code".to_string()],
             protocol_version: INSTANCE_PROTOCOL_VERSION,
             started_at: "2026-08-12T00:00:00Z".to_string(),
         }
@@ -490,12 +490,12 @@ mod tests {
         write_instance_file(&instances_dir, "desktop", &first).unwrap();
 
         let mut second = first.clone();
-        second.scenes = vec!["chat".to_string(), "research".to_string()];
+        second.scenes = vec!["harnix".to_string(), "mini".to_string()];
         write_instance_file(&instances_dir, "desktop", &second).unwrap();
 
         let found = discover_instances(&instances_dir);
         assert_eq!(found.len(), 1);
-        assert_eq!(found[0].scenes, vec!["chat", "research"]);
+        assert_eq!(found[0].scenes, vec!["harnix", "mini"]);
     }
 
     #[test]

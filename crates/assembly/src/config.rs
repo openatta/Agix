@@ -58,7 +58,7 @@ pub trait DaemonPaths: Send + Sync {
 /// override state (see `base::paths::ConfigPaths`). This struct itself does
 /// not default anything — callers must pass a value. `daemon`'s own caller
 /// (`daemon/src/main.rs::resolve_scene`) derives that value from the
-/// validated `--scene` CLI flag (`coding`/`chat`/`demo`; unsupported values
+/// validated `--scene` CLI flag (`code`/`harnix`/`mini`; unsupported values
 /// fail startup) rather than accepting an arbitrary string.
 ///
 /// **2026-08-04**: `global_root` is stored explicitly rather than derived
@@ -376,10 +376,10 @@ mod tests {
     #[test]
     fn default_daemon_paths_config_root_nests_under_global_root_scenes() {
         std::env::remove_var("AGIX_CONFIG_HOME");
-        let paths = DefaultDaemonPaths::from_env("coding");
+        let paths = DefaultDaemonPaths::from_env("code");
         assert_eq!(
             paths.config_root(),
-            paths.global_root().join("scenes").join("coding")
+            paths.global_root().join("scenes").join("code")
         );
         assert!(paths.global_root().ends_with(".agix"));
     }

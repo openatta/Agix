@@ -389,7 +389,7 @@ mod tests {
             schema_version: CURRENT_TEAM_SCHEMA_VERSION,
             team_id: "team-refactor-1".into(),
             name: "refactor".into(),
-            scene: "coding".into(),
+            scene: "code".into(),
             project_root: "/repo".into(),
             owner_session_id: "S1".into(),
             created_at: iso_now(),

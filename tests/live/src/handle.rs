@@ -88,7 +88,7 @@ impl DaemonOptions {
     pub fn new(project: PathBuf) -> Self {
         Self {
             mode: Mode::InProcess,
-            scene: "coding".to_string(),
+            scene: "code".to_string(),
             project,
             session_cap: 8,
             prompt_timeout: Duration::from_secs(10),

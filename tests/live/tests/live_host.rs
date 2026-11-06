@@ -511,7 +511,7 @@ impl Tool for ServiceStatus {
     }
 }
 
-/// The scene an on-call host serves: the coding scene, plus the host's own
+/// The scene an on-call host serves: the code scene, plus the host's own
 /// `ServiceStatus` — a new instance each time a session is built, as a host
 /// scene hands them out.
 struct OnCallScene {
@@ -530,13 +530,13 @@ impl Scene for OnCallScene {
         "Production on-call, with the host's service status tool"
     }
     fn build_system_prompt(&self, ctx: &ScenePromptContext) -> Vec<PromptBlock> {
-        scene::coding::CodingScene.build_system_prompt(ctx)
+        scene::code::CodeScene.build_system_prompt(ctx)
     }
     fn tools(&self) -> Vec<String> {
         Vec::new()
     }
     fn token_budget(&self) -> TokenBudget {
-        scene::coding::CodingScene.token_budget()
+        scene::code::CodeScene.token_budget()
     }
     fn extra_tools(&self) -> Vec<Arc<dyn Tool>> {
         vec![Arc::new(ServiceStatus {

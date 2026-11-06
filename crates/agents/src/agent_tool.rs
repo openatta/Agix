@@ -416,10 +416,9 @@ fn parse_agent_type_file(content: &str, path: &Path) -> Option<AgentTypeDefiniti
 /// `None` so the caller can fall back rather than guessing.
 fn builtin_scene_by_id(id: &str) -> Option<Arc<dyn Scene>> {
     match id {
-        "coding" => Some(Arc::new(scene::coding::CodingScene)),
-        "chat" => Some(Arc::new(scene::chat::ChatScene)),
-        "demo" => Some(Arc::new(scene::demo::DemoScene)),
-        "research" => Some(Arc::new(scene::research::ResearchScene)),
+        "code" => Some(Arc::new(scene::code::CodeScene)),
+        "harnix" => Some(Arc::new(scene::harnix::HarnixScene)),
+        "mini" => Some(Arc::new(scene::mini::MiniScene)),
         _ => None,
     }
 }
@@ -443,38 +442,25 @@ pub struct AgentInput {
     pub model: Option<String>,
     #[serde(default)]
     pub auto_background_after_secs: Option<u64>,
-    /// Persistent team membership (must be given together with `name`, or
-    /// not at all — see `AgentTool::call`). Names a team this call joins:
-    /// if `(team_name, name)` already names a member that's still alive,
-    /// `prompt` is queued as its next message instead of spawning a new
-    /// one. Requires `settings.execution.team_enabled` to be true for this
-    /// session — `AgentTool::call` returns a validation error otherwise
-    /// (the schema can't conditionally hide this field per-session, so the
-    /// check happens at call time instead).
+    /// A team to join, together with `name`. If that member is alive, `prompt`
+    /// is queued as its next message instead of spawning a new one. Needs
+    /// team mode enabled for the session.
+    // The schema cannot hide this per session, so `AgentTool::call` rejects it
+    // when team mode is off.
     #[serde(default)]
     pub team_name: Option<String>,
-    /// This member's own name within `team_name` — see `team_name`'s doc
-    /// comment. Reusing the same `(team_name, name)` pair across separate
-    /// calls is *how* you keep messaging the same persistent member; it's
-    /// not a collision to avoid.
+    /// This member's name within `team_name`. Reuse the same pair to keep
+    /// messaging the same member.
     #[serde(default)]
     pub name: Option<String>,
-    /// Only meaningful together with `team_name`+`name`. The permission
-    /// grant this member runs under for its **entire** lifetime, chosen
-    /// once at spawn time rather than negotiated per tool call ("one team,
-    /// one authorization" — see `AgentTool::build_team_member_agent`'s doc
-    /// comment for why interactive per-call negotiation doesn't work for a
-    /// persistent member). Omit for the safe default (`Plan`: read-only
-    /// tools only). Only consulted when spawning a **new** member — sending
-    /// another message to an already-alive one ignores this (its grant was
-    /// fixed when it was created); if a `team_name` doesn't have an
-    /// established grant yet, the *first* call that spawns a member under
-    /// it sets it for every member spawned under that name afterward,
-    /// whether or not they repeat this field. `Auto`/`Bubble` aren't
-    /// accepted here (rejected at call time) — `Auto` needs a transcript
-    /// classifier this call site doesn't have, and `Bubble` needs a lead
-    /// that's actually available to answer mid-call, which a persistent
-    /// member's lead isn't (it only runs code during its own turns).
+    /// With `team_name` + `name`: the permission mode a new member runs under
+    /// for its whole lifetime (default `plan`, read-only). The first member
+    /// spawned under a team fixes it for the team; messaging a live member
+    /// ignores it. `auto` and `bubble` are rejected.
+    // Fixed at spawn because a persistent member's lead is not around to
+    // answer per-call prompts (see `AgentTool::build_team_member_agent`):
+    // `bubble` needs that lead, and `auto` needs a transcript classifier this
+    // call site doesn't have.
     #[serde(default)]
     pub permission_mode: Option<base::interface::settings::PermissionMode>,
 }
@@ -1554,10 +1540,9 @@ struct Inner {
     /// refuse-with-an-explanation behavior.
     parent_pending_permissions: Arc<std::sync::RwLock<Option<runtime::agent::PendingPermissions>>>,
     /// The parent agent's scene. Sub-agents inherit it (S-5) rather than
-    /// always being built as `CodingScene` — a Research-scene parent used to
-    /// hand its sub-agents a programming-shop system prompt. `None` falls
+    /// always being built as `CodeScene`. `None` falls
     /// back to resolving `Settings.paths.scope` via `resolve_scene_id`, then to
-    /// `CodingScene`.
+    /// `CodeScene`.
     parent_scene: Arc<std::sync::RwLock<Option<Arc<dyn Scene>>>>,
     /// Every scene this process knows about, for resolving an agent type's
     /// `scene:` id. `None` falls back to [`builtin_scene_by_id`], which is
@@ -1812,7 +1797,7 @@ impl Inner {
     ///
     /// Precedence: the agent type's own `scene:` override > the parent's
     /// scene (wired via `AgentTool::set_scene`) > the scene named by
-    /// `Settings.paths.scope` > `CodingScene`. The last two steps mean a
+    /// `Settings.paths.scope` > `CodeScene`. The last two steps mean a
     /// daemon session inherits correctly even without explicit wiring: the
     /// daemon sets `scope` to `scene.id()`.
     /// Build a sub-agent's `Settings`, inheriting the parent's when known.
@@ -1893,9 +1878,9 @@ impl Inner {
                     // is repository content — on a cloned repo it is
                     // attacker-supplied. A scene's `tools()` whitelist is the
                     // enforcement point for "this session may not run shell
-                    // commands" (ChatScene and ResearchScene both rely on it,
-                    // and say so in their doc comments), so letting a file in
-                    // the repo pick the scene meant a Research session could
+                    // commands" (the `harnix` and `mini` scenes rely on it), so
+                    // letting a file in the repo pick the scene meant a narrow
+                    // session could
                     // spawn `Agent(subagent_type: "x")` where `x.md` said
                     // `scene: code` and get `Bash` back. The boundary the
                     // parent scene draws has to hold across a spawn.
@@ -1929,7 +1914,7 @@ impl Inner {
             return parent;
         }
         self.resolve_scene_id(&settings.paths.scope)
-            .unwrap_or_else(|| Arc::new(scene::coding::CodingScene))
+            .unwrap_or_else(|| Arc::new(scene::code::CodeScene))
     }
 
     /// A scene id resolved against the host's registry when one was wired,
@@ -1957,7 +1942,7 @@ impl Inner {
 /// empty list meaning "everything registered is allowed"; `disallowed_tools()`
 /// subtracts from it.
 ///
-/// So: a parent with an empty allow-list (CodingScene) permits any child. A
+/// So: a parent with an empty allow-list (CodeScene) permits any child. A
 /// parent with a real allow-list permits only a child whose own allow-list is
 /// non-empty and contained in it, minus anything the parent disallows.
 fn scene_is_narrower_or_equal(candidate: &dyn Scene, parent: &dyn Scene) -> bool {
@@ -2791,7 +2776,7 @@ impl AgentTool {
         if let Some(d) = &def {
             apply_agent_type_overrides(&mut sub_settings, d);
         }
-        // S-5: inherit the parent's scene instead of always CodingScene, with
+        // S-5: inherit the parent's scene instead of always CodeScene, with
         // the agent type's own `scene:` winning over the inherited one.
         let scene = self.inner.scene_for_subagent(def.as_ref(), &sub_settings);
         let scene_id = scene.id().to_string();
@@ -5654,15 +5639,12 @@ mod catalog_tests {
         agent_tool
     }
 
-    /// P5: `build_team_member_agent` used to hardcode `CodingScene`
-    /// unconditionally, handing a Research- or Chat-scene team a
-    /// programming-shop member regardless of what spawned it. Called
-    /// directly (not through `spawn_or_message_team_member`, which only
+    /// Called directly (not through `spawn_or_message_team_member`, which only
     /// returns a task id) so the built `Agent`'s own scene is inspectable.
     #[tokio::test]
     async fn team_member_inherits_the_parents_scene_instead_of_always_coding() {
         let agent_tool = team_enabled_agent_tool();
-        agent_tool.set_scene(Arc::new(scene::research::ResearchScene));
+        agent_tool.set_scene(Arc::new(scene::harnix::HarnixScene));
 
         let (agent, _event_rx, _input_tx) = agent_tool
             .build_team_member_agent(
@@ -5673,7 +5655,7 @@ mod catalog_tests {
             )
             .await
             .expect("build should succeed");
-        assert_eq!(agent.scene().id(), "research");
+        assert_eq!(agent.scene().id(), "harnix");
     }
 
     fn agent_tool_with_config(config: EngineConfig) -> AgentTool {
@@ -6612,7 +6594,7 @@ mod catalog_tests {
     /// `session.list {parent_session_id}`) find it.
     #[tokio::test]
     async fn subagent_transcript_is_written_as_a_linked_sidechain() {
-        let (agent_tool, tools, _runs, dir) = wired_agent_tool("coding");
+        let (agent_tool, tools, _runs, dir) = wired_agent_tool("code");
         let history_dir = std::env::temp_dir().join(format!(
             "agix-subagent-history-test-{}-{}",
             std::process::id(),
@@ -6662,7 +6644,7 @@ mod catalog_tests {
             } => {
                 assert_eq!(parent_session_id.as_deref(), Some("parent-session-1"));
                 assert_eq!(*session_kind, history::entry::SessionKind::Sidechain);
-                assert_eq!(scene.as_deref(), Some("coding"));
+                assert_eq!(scene.as_deref(), Some("code"));
             }
             other => panic!("expected LogEntry::Meta as the first entry, got {other:?}"),
         }
@@ -6678,7 +6660,7 @@ mod catalog_tests {
     /// than being rejected as `SIDECHAIN_TERMINAL`.
     #[tokio::test]
     async fn cancelled_subagent_run_writes_no_terminal_marker() {
-        let (agent_tool, tools, _runs, dir) = wired_agent_tool("coding");
+        let (agent_tool, tools, _runs, dir) = wired_agent_tool("code");
         let history_dir = std::env::temp_dir().join(format!(
             "agix-subagent-cancelled-test-{}-{}",
             std::process::id(),
@@ -6734,7 +6716,7 @@ mod catalog_tests {
     /// reattaching to it.
     #[tokio::test]
     async fn subagent_run_writes_a_terminal_marker_when_its_task_concludes() {
-        let (agent_tool, tools, _runs, dir) = wired_agent_tool("coding");
+        let (agent_tool, tools, _runs, dir) = wired_agent_tool("code");
         let history_dir = std::env::temp_dir().join(format!(
             "agix-subagent-terminal-test-{}-{}",
             std::process::id(),
@@ -6793,7 +6775,7 @@ mod catalog_tests {
     /// ever recorded" from the outside.
     #[tokio::test]
     async fn subagent_telemetry_events_reach_the_parents_sink() {
-        let (agent_tool, tools, _runs, dir) = wired_agent_tool("coding");
+        let (agent_tool, tools, _runs, dir) = wired_agent_tool("code");
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         agent_tool.set_telemetry_handle(telemetry::TelemetryHandle::new(tx));
 
@@ -6824,7 +6806,7 @@ mod catalog_tests {
     /// unchanged by that forwarding.
     #[tokio::test]
     async fn subagent_events_reach_the_parent_channel_tagged_without_changing_the_text_result() {
-        let (agent_tool, tools, _runs, dir) = wired_agent_tool("coding");
+        let (agent_tool, tools, _runs, dir) = wired_agent_tool("code");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         agent_tool.set_event_sender(runtime::event_bus::EventBus::new(tx));
 
@@ -6845,7 +6827,7 @@ mod catalog_tests {
 
         // Forwarding is additive: the value handed back to the model must be
         // byte-identical to what the un-forwarded path produces.
-        let (plain_tool, plain_tools, _r, plain_dir) = wired_agent_tool("coding");
+        let (plain_tool, plain_tools, _r, plain_dir) = wired_agent_tool("code");
         let baseline = plain_tool
             .run_sub_tagged(
                 "go".into(),
@@ -6950,7 +6932,7 @@ mod catalog_tests {
     /// `Permission` impl, and a `Deny` there must actually stop the tool.
     #[tokio::test]
     async fn subagent_permission_check_routes_to_parent_and_deny_blocks_the_tool() {
-        let (agent_tool, tools, runs, dir) = wired_agent_tool("coding");
+        let (agent_tool, tools, runs, dir) = wired_agent_tool("code");
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         agent_tool.set_parent_permission(Arc::new(RecordingPermission {
             seen: seen.clone(),
@@ -7061,29 +7043,29 @@ mod catalog_tests {
     }
 
     /// S-5: the sub-agent inherits the parent's scene rather than always
-    /// being handed `CodingScene`, and an agent type's own `scene:` wins.
+    /// being handed `CodeScene`, and an agent type's own `scene:` wins.
     #[test]
     fn subagent_scene_inherits_parent_and_agent_type_override_wins() {
         let agent_tool = test_agent_tool();
-        let research: Arc<dyn Scene> = Arc::new(scene::research::ResearchScene);
-        agent_tool.set_scene(research);
+        let harnix: Arc<dyn Scene> = Arc::new(scene::harnix::HarnixScene);
+        agent_tool.set_scene(harnix);
         let settings = Settings::defaults_for("test-model");
 
         assert_eq!(
             agent_tool.inner.scene_for_subagent(None, &settings).id(),
-            "research",
-            "a Research-scene parent must not hand its sub-agent a coding system prompt"
+            "harnix",
+            "a harnix-scene parent must not hand its sub-agent the code scene"
         );
 
         // N-17: an agent type may *narrow* the scene, never widen it.
         // `.agix/agents/*.md` is repository content; letting it name
-        // `scene: coding` (whose empty allow-list means "every registered
-        // tool", `Bash` included) would let a file in the repo hand a
-        // Research session — which forbids `Bash` by design — a shell.
+        // `scene: code` (whose empty allow-list means "every registered
+        // tool") would let a file in the repo hand a harnix session tools its
+        // scene leaves out.
         let widening = AgentTypeDefinition {
             name: "coder".into(),
             description: "d".into(),
-            scene: Some("coding".into()),
+            scene: Some("code".into()),
             ..Default::default()
         };
         assert_eq!(
@@ -7091,16 +7073,15 @@ mod catalog_tests {
                 .inner
                 .scene_for_subagent(Some(&widening), &settings)
                 .id(),
-            "research",
+            "harnix",
             "an agent type must not be able to widen the parent scene's tool surface"
         );
 
-        // Narrowing is fine: ChatScene's allow-list is a strict subset of
-        // Research's (no Write, no TeamCreate/TeamDelete, no Agent).
+        // Narrowing is fine: mini's allow-list is a strict subset of harnix's.
         let narrowing = AgentTypeDefinition {
-            name: "chatter".into(),
+            name: "minimal".into(),
             description: "d".into(),
-            scene: Some("chat".into()),
+            scene: Some("mini".into()),
             ..Default::default()
         };
         assert_eq!(
@@ -7108,7 +7089,7 @@ mod catalog_tests {
                 .inner
                 .scene_for_subagent(Some(&narrowing), &settings)
                 .id(),
-            "chat",
+            "mini",
             "an agent type narrowing the parent scene must still be honored"
         );
 
@@ -7123,7 +7104,7 @@ mod catalog_tests {
                 .inner
                 .scene_for_subagent(Some(&bogus), &settings)
                 .id(),
-            "research",
+            "harnix",
             "an unknown scene id is ignored, not fatal — inherited scene is kept"
         );
     }
@@ -7144,19 +7125,17 @@ mod catalog_tests {
             ..Default::default()
         };
 
-        // Parent is Chat, so the requested scene must be no wider than Chat's
-        // tool surface for N-17 to admit it. Reusing ChatScene under a
-        // plugin-style id keeps this test about *resolution*, not about the
-        // narrowing rule the test above already covers.
-        let chat: Arc<dyn Scene> = Arc::new(scene::chat::ChatScene);
-        agent_tool.set_scene(chat);
+        // Reusing the parent's scene under a plugin-style id keeps this test
+        // about *resolution*, not about the narrowing rule above.
+        let mini: Arc<dyn Scene> = Arc::new(scene::mini::MiniScene);
+        agent_tool.set_scene(mini);
 
         assert_eq!(
             agent_tool
                 .inner
                 .scene_for_subagent(Some(&named), &settings)
                 .id(),
-            "chat",
+            "mini",
             "without a registry, a non-builtin id is unresolvable and the parent scene is kept"
         );
 
@@ -7164,7 +7143,7 @@ mod catalog_tests {
         registry.register_builtin();
         registry.register(Arc::new(AliasScene {
             id: "plugin:demo",
-            inner: Arc::new(scene::chat::ChatScene),
+            inner: Arc::new(scene::mini::MiniScene),
         }));
         agent_tool.set_scene_registry(Arc::new(registry));
 
@@ -7214,22 +7193,22 @@ mod catalog_tests {
 
     /// With no explicit scene wired in, `Settings.paths.scope` (which the
     /// daemon sets to `scene.id()`) is the fallback, and an unknown scope
-    /// still degrades to the historical `CodingScene`.
+    /// degrades to `CodeScene`.
     #[test]
-    fn subagent_scene_falls_back_to_settings_scope_then_coding() {
+    fn subagent_scene_falls_back_to_settings_scope_then_code() {
         let agent_tool = test_agent_tool();
         let mut settings = Settings::defaults_for("test-model");
 
-        settings.paths.scope = "chat".into();
+        settings.paths.scope = "mini".into();
         assert_eq!(
             agent_tool.inner.scene_for_subagent(None, &settings).id(),
-            "chat"
+            "mini"
         );
 
-        settings.paths.scope = "code".into(); // the historical stand-in value
+        settings.paths.scope = "nonexistent".into();
         assert_eq!(
             agent_tool.inner.scene_for_subagent(None, &settings).id(),
-            "coding"
+            "code"
         );
     }
 
@@ -7289,11 +7268,11 @@ mod catalog_tests {
         write_agent_md(
             &dir,
             "digger.md",
-            "---\nname: digger\ndescription: Source digger\nscene: research\n---\nBody.",
+            "---\nname: digger\ndescription: Source digger\nscene: harnix\n---\nBody.",
         );
         let types = load_agent_types_from_dir(&dir);
         let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(types[0].scene.as_deref(), Some("research"));
+        assert_eq!(types[0].scene.as_deref(), Some("harnix"));
     }
 
     /// The daemon relays the forwarded event by serializing it — a nested
@@ -7352,7 +7331,7 @@ mod catalog_tests {
     /// `write_sidechain_terminal_marker`.
     #[tokio::test]
     async fn resume_agent_writes_a_terminal_marker_when_its_task_concludes() {
-        let (agent_tool, tools, _runs, dir) = wired_agent_tool("coding");
+        let (agent_tool, tools, _runs, dir) = wired_agent_tool("code");
         let history_dir = std::env::temp_dir().join(format!(
             "agix-resume-terminal-test-{}-{}",
             std::process::id(),
@@ -7432,7 +7411,7 @@ mod catalog_tests {
     /// resumable, not get nailed down as `Completed`.
     #[tokio::test]
     async fn cancelled_resume_agent_writes_no_terminal_marker() {
-        let (agent_tool, tools, _runs, dir) = wired_agent_tool("coding");
+        let (agent_tool, tools, _runs, dir) = wired_agent_tool("code");
         let history_dir = std::env::temp_dir().join(format!(
             "agix-resume-cancelled-test-{}-{}",
             std::process::id(),

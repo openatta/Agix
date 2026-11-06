@@ -71,7 +71,7 @@ pub struct AgentTypeDefinition {
     /// references to an already-configured server are supported, not inline
     /// server config.
     pub mcp_servers: Vec<String>,
-    /// Scene id (`coding`/`chat`/`research`/`demo`) this agent type forces
+    /// Scene id (`code`/`harnix`/`mini`) this agent type forces
     /// its sub-agents into, overriding the scene inherited from the parent.
     /// `None` (the default) inherits — see `Inner::scene_for_subagent`. An
     /// unknown id is ignored with a `tracing::warn!` and the inherited scene

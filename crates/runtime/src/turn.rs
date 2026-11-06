@@ -552,7 +552,7 @@ impl Agent {
         // UserPromptSubmit: where a hook sees the message that opens a turn,
         // before any turn setup (skills rescan, FrozenContext,
         // CLAUDE.md injection, ...) has touched anything. Previously in the
-        // `HookEvent` enum but never triggered anywhere — CodingScene's
+        // `HookEvent` enum but never triggered anywhere — CodeScene's
         // system prompt used to (wrongly) tell the model to expect it, see
         // the fixed copy in `coding.rs`'s `system_info` section.
         //
@@ -755,8 +755,8 @@ impl Agent {
         }
 
         // Inject system-reminder: git status + memory summary, via the scene's
-        // own `build_system_reminder` — each scene decides what belongs here
-        // (e.g. ResearchScene deliberately omits git status). Called once per
+        // own `build_system_reminder` — each scene decides what belongs here.
+        // Called once per
         // turn, and the git slice it reads was refreshed just above, so the
         // status shown is this turn's, not the session's opening snapshot.
         if let Some(ref frozen) = self.frozen {
@@ -2083,7 +2083,9 @@ or project context that should survive across sessions.
             defs.push(base::interface::model::ToolDef {
                 name: t.name().to_string(),
                 description,
-                input_schema: t.input_schema_for(self.config.path_style),
+                input_schema: base::tool::compact_schema(
+                    t.input_schema_for(self.config.path_style),
+                ),
                 source: Some(t.source().into_owned()),
             });
         }
@@ -6112,7 +6114,7 @@ mod tests {
         };
         let model: Arc<dyn base::interface::model::Model> =
             Arc::new(FixedUsageModel { usage: reported });
-        let scene: Arc<dyn base::interface::scene::Scene> = Arc::new(scene::coding::CodingScene);
+        let scene: Arc<dyn base::interface::scene::Scene> = Arc::new(scene::code::CodeScene);
         let policy = Arc::new(Recording::default());
 
         let (telemetry_tx, _telemetry_rx) = tokio::sync::mpsc::channel(16);
@@ -6171,7 +6173,7 @@ mod tests {
                 ..Default::default()
             },
         });
-        let scene: Arc<dyn base::interface::scene::Scene> = Arc::new(scene::coding::CodingScene);
+        let scene: Arc<dyn base::interface::scene::Scene> = Arc::new(scene::code::CodeScene);
 
         let mut settings = recall_test_settings(tmp.path());
         settings.execution = base::interface::settings::ExecutionSettings {
@@ -6255,7 +6257,7 @@ mod tests {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let model: Arc<dyn base::interface::model::Model> =
             Arc::new(RecordingAnswerModel { seen: seen.clone() });
-        let scene: Arc<dyn base::interface::scene::Scene> = Arc::new(scene::coding::CodingScene);
+        let scene: Arc<dyn base::interface::scene::Scene> = Arc::new(scene::code::CodeScene);
 
         let (mut agent, _event_rx, _input_tx) = crate::agent::Builder::new()
             .scene(scene)

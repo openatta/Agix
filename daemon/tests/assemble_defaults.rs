@@ -29,7 +29,7 @@ fn config_in(dir: &Path) -> DaemonConfig {
         "claude-sonnet-4-6",
         2000,
         None,
-        "coding",
+        "code",
         &StaticDaemonPaths::new(dir.to_path_buf()),
     )
 }
@@ -57,7 +57,7 @@ async fn the_default_assembly_puts_transcripts_under_the_configured_root() {
 
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::coding::CodingScene),
+        Arc::new(scene::code::CodeScene),
         daemon::Assembly {
             cwd: Some(cwd.clone()),
             ..assembly()
@@ -114,7 +114,7 @@ async fn the_default_assembly_relocates_an_older_layout_first() {
 
     daemon::assemble::pool(
         &config,
-        Arc::new(scene::coding::CodingScene),
+        Arc::new(scene::code::CodeScene),
         daemon::Assembly {
             cwd: Some(cwd),
             ..assembly()
@@ -155,7 +155,7 @@ async fn nowhere_really_writes_nothing() {
 
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::coding::CodingScene),
+        Arc::new(scene::code::CodeScene),
         daemon::Assembly {
             cwd: Some(cwd),
             transcripts: daemon::Transcripts::Nowhere,
@@ -188,7 +188,7 @@ async fn an_unknown_extra_scene_fails_the_assembly() {
 
     let outcome = daemon::assemble::pool(
         &config_in(dir.path()),
-        Arc::new(scene::coding::CodingScene),
+        Arc::new(scene::code::CodeScene),
         daemon::Assembly {
             cwd: Some(cwd.clone()),
             extra_scenes: vec!["not-a-real-scene".into()],
@@ -209,15 +209,15 @@ async fn an_unknown_extra_scene_fails_the_assembly() {
     // about `extra_scenes` being populated at all.
     let pool = daemon::assemble::pool(
         &config_in(dir.path()),
-        Arc::new(scene::coding::CodingScene),
+        Arc::new(scene::code::CodeScene),
         daemon::Assembly {
             cwd: Some(cwd),
-            extra_scenes: vec!["chat".into(), "coding".into()],
+            extra_scenes: vec!["harnix".into(), "code".into()],
             ..assembly()
         },
     )
     .await
-    .expect("chat is a builtin scene");
+    .expect("harnix is a builtin scene");
     let scenes = pool.list_scenes().await;
     let active: Vec<&str> = scenes
         .iter()
@@ -225,7 +225,7 @@ async fn an_unknown_extra_scene_fails_the_assembly() {
         .filter_map(|s| s["scene"].as_str())
         .collect();
     assert!(
-        active.contains(&"chat") && active.contains(&"coding"),
+        active.contains(&"harnix") && active.contains(&"code"),
         "both scenes are active: {active:?}"
     );
 }
@@ -249,7 +249,7 @@ async fn a_host_credential_source_supplies_keys_the_settings_leave_out() {
 
     let without = daemon::assemble::pool(
         &config_in(dir.path()),
-        Arc::new(scene::coding::CodingScene),
+        Arc::new(scene::code::CodeScene),
         daemon::Assembly {
             cwd: Some(cwd.clone()),
             transcripts: daemon::Transcripts::Nowhere,
@@ -269,7 +269,7 @@ async fn a_host_credential_source_supplies_keys_the_settings_leave_out() {
     )]));
     let pool = daemon::assemble::pool(
         &config_in(dir.path()),
-        Arc::new(scene::coding::CodingScene),
+        Arc::new(scene::code::CodeScene),
         daemon::Assembly {
             cwd: Some(cwd.clone()),
             transcripts: daemon::Transcripts::Nowhere,
@@ -280,7 +280,7 @@ async fn a_host_credential_source_supplies_keys_the_settings_leave_out() {
     .await
     .expect("the host's source answers for the provider");
 
-    let reloaded = pool.reload_settings(Some(&cwd), "coding").await;
+    let reloaded = pool.reload_settings(Some(&cwd), "code").await;
     assert_eq!(reloaded["routing"]["router_rebuilt"], true, "{reloaded}");
     assert!(reloaded["routing"]["router_error"].is_null(), "{reloaded}");
 }

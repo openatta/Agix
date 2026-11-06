@@ -39,7 +39,7 @@ pub struct ScenePromptContext<'a> {
     /// Whether any tool result has actually been cleared (time-based/cached
     /// micro-compact, tool-result budget enforcement, or a `MicroCompact`
     /// main-compaction pass) at any point in this session. Gates
-    /// `CodingScene`'s `function_result_clearing` prompt section — without
+    /// `CodeScene`'s `function_result_clearing` prompt section — without
     /// this it was injected unconditionally every turn even when nothing
     /// had ever been cleared.
     pub tool_results_ever_cleared: bool,
@@ -109,7 +109,7 @@ impl Default for ExecutionParams {
 /// Implementations are code-level (Rust source files), registered at compile time,
 /// bound to an Engine instance at creation, and immutable thereafter.
 pub trait Scene: Send + Sync + 'static {
-    /// Unique scene identifier (e.g. "coding", "demo").
+    /// Unique scene identifier (e.g. "code", "mini").
     fn id(&self) -> &str;
 
     /// Human-readable name.
@@ -130,7 +130,7 @@ pub trait Scene: Send + Sync + 'static {
     /// "choose a project" step; the daemon enforces it, refusing a session
     /// with no `project_root` for a scene that requires one. Scenes whose
     /// work *is* a project (writing code, researching a codebase) say yes;
-    /// a chat has nothing to bind to.
+    /// a general assistant has nothing to bind to.
     fn requires_project(&self) -> bool {
         false
     }
@@ -267,7 +267,7 @@ pub trait Scene: Send + Sync + 'static {
     }
 
     /// 是否在首轮完成后自动生成 session 名称（通过额外的 LLM 调用）。
-    /// 默认 false —— CODING 等场景不需要。
+    /// 默认 false。
     fn auto_name_session(&self) -> bool {
         false
     }
@@ -280,9 +280,9 @@ pub trait Scene: Send + Sync + 'static {
 
     /// Override the intro sentence used by post-turn durable-memory
     /// extraction (see `runtime::turn::extract_memories_after_turn`). The
-    /// built-in default is coding-flavored ("not derivable from the current
-    /// codebase or git history") — scenes without a codebase concept (chat,
-    /// research) can return `Some(..)` here to describe what counts as a
+    /// built-in default is code-flavored ("not derivable from the current
+    /// codebase or git history") — scenes without a codebase concept can
+    /// return `Some(..)` here to describe what counts as a
     /// durable memory in their own domain. `None` (default) keeps the
     /// built-in wording. Only the intro is replaceable; the JSON output
     /// schema instructions that follow it are fixed, since the extraction

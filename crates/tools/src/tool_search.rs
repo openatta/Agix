@@ -234,7 +234,9 @@ impl Tool for ToolSearchTool {
             name: t.name().to_string(),
             description: describe(t),
             guide,
-            deferred_schema: t.is_deferred().then(|| t.full_input_schema()),
+            deferred_schema: t
+                .is_deferred()
+                .then(|| base::tool::compact_schema(t.full_input_schema())),
         };
 
         let mut matches: Vec<Match> = Vec::new();

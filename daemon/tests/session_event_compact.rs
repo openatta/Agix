@@ -26,10 +26,10 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio_util::sync::CancellationToken;
 
-/// The coding scene with a context budget one token wide, so the first turn
+/// The code scene with a context budget one token wide, so the first turn
 /// crosses it. Compaction is otherwise a function of conversation length,
 /// which a test would have to spend a great many turns reaching.
-struct HairTriggerScene(scene::coding::CodingScene);
+struct HairTriggerScene(scene::code::CodeScene);
 
 impl Scene for HairTriggerScene {
     fn id(&self) -> &str {
@@ -41,7 +41,7 @@ impl Scene for HairTriggerScene {
     }
 
     fn description(&self) -> &str {
-        "coding, compacting on the first turn"
+        "code, compacting on the first turn"
     }
 
     fn build_system_prompt(&self, ctx: &ScenePromptContext) -> Vec<PromptBlock> {
@@ -168,7 +168,7 @@ async fn a_compacted_turn_says_so_on_the_wire() {
         "claude-sonnet-4-6",
         2000,
         Some(&sock),
-        "coding",
+        "code",
         &StaticDaemonPaths::new(dir.path().to_path_buf()),
     );
     // A second model call after the turn, for a session nothing reads back.
@@ -185,7 +185,7 @@ async fn a_compacted_turn_says_so_on_the_wire() {
 
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(HairTriggerScene(scene::coding::CodingScene)),
+        Arc::new(HairTriggerScene(scene::code::CodeScene)),
         daemon::Assembly {
             cwd: Some(cwd.clone()),
             model_client: Some(Arc::new(OneTurnClient)),

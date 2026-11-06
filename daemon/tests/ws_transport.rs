@@ -49,12 +49,12 @@ async fn start_ws_server(
         "claude-sonnet-4-6",
         2000,
         None,
-        "coding",
+        "code",
         &StaticDaemonPaths::new(dir.path().to_path_buf()),
     );
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::coding::CodingScene),
+        Arc::new(scene::code::CodeScene),
         daemon::Assembly {
             cwd: Some(dir.path().to_path_buf()),
             model_client: Some(client),
@@ -234,12 +234,12 @@ async fn serving_without_a_token_fails_instead_of_refusing_everyone_forever() {
         "claude-sonnet-4-6",
         2000,
         None,
-        "coding",
+        "code",
         &StaticDaemonPaths::new(dir.path().to_path_buf()),
     );
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::coding::CodingScene),
+        Arc::new(scene::code::CodeScene),
         daemon::Assembly {
             cwd: Some(dir.path().to_path_buf()),
             model_client: Some(client),

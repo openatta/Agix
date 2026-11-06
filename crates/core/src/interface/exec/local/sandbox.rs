@@ -63,7 +63,7 @@ fn state_root_of(policy: &SandboxPolicy) -> Option<PathBuf> {
 /// and `crates/scene/src/*.rs` regardless, since it's still the
 /// default every caller gets today.
 #[cfg(feature = "sandbox")]
-const KNOWN_SCENES: &[&str] = &["coding", "chat", "demo", "research"];
+const KNOWN_SCENES: &[&str] = &["code", "harnix", "mini"];
 
 /// `policy.known_scenes` if the caller supplied one, else [`KNOWN_SCENES`].
 #[cfg(feature = "sandbox")]
@@ -1213,7 +1213,7 @@ mod tests {
             );
             assert!(profile.contains(&rule), "missing {rule}");
         }
-        assert!(profile.contains("/scenes/coding/scene.json"));
+        assert!(profile.contains("/scenes/code/scene.json"));
     }
 
     /// The profile has to protect the settings.json this instance actually
@@ -1226,14 +1226,14 @@ mod tests {
     fn the_profile_protects_the_instance_root_it_was_given() {
         let policy = SandboxPolicy {
             state_root: Some(PathBuf::from("/srv/agix-state")),
-            known_scenes: vec!["coding".into()],
+            known_scenes: vec!["code".into()],
             ..Default::default()
         };
         let profile = build_macos_profile(Path::new("/work/project"), &[], &policy);
 
         assert!(profile.contains("(deny file-write* (literal \"/srv/agix-state/settings.json\"))"));
         assert!(profile.contains(
-            "(deny file-write* (literal \"/srv/agix-state/scenes/coding/settings.json\"))"
+            "(deny file-write* (literal \"/srv/agix-state/scenes/code/settings.json\"))"
         ));
         // The project-level rules under cwd stay; what must be absent is any
         // rule derived from the invoking user's home.

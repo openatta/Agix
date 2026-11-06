@@ -177,7 +177,7 @@ impl Session {
         self
     }
 
-    /// Which scene to run under. Chat by default, because most cases only
+    /// Which scene to run under. Harnix by default, because most cases only
     /// need a turn loop; a case about tools needs the scene that offers them.
     pub fn scene(mut self, scene: Arc<dyn Scene>) -> Self {
         self.scene = Some(scene);
@@ -294,7 +294,7 @@ pub async fn drive(root: &Path, session: Session) -> Ran {
 
     let scene: Arc<dyn Scene> = session
         .scene
-        .unwrap_or_else(|| Arc::new(scene::chat::ChatScene));
+        .unwrap_or_else(|| Arc::new(scene::harnix::HarnixScene));
 
     // The gate the daemon builds for a session that is not bypassing, rather
     // than the builder's own allow-everything default: a case about the

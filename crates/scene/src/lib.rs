@@ -1,15 +1,16 @@
 //! Built-in scene implementations, declarative scenes, and the registry hosts
 //! resolve them from.
 //!
-//! Agix provides `coding` (full-capability agent), `chat` (general assistant),
-//! `research` (search/compare/conclude), and `demo` (framework showcase).
-//! [`declarative`] turns a `scene.json` + `prompt.md` directory into a scene.
+//! Agix provides `code` (full-capability coding agent), `harnix` (the
+//! default scene of Harnix-hosted sessions) and `mini` (the smallest working
+//! coding agent). [`declarative`] turns a `scene.json` + `prompt.md`
+//! directory into a scene.
 
-pub mod chat;
-pub mod coding;
+pub mod code;
+mod common;
 pub mod declarative;
-pub mod demo;
-pub mod research;
+pub mod harnix;
+pub mod mini;
 
 pub use declarative::{DeclarativeScene, SceneLoadError};
 
@@ -65,7 +66,7 @@ impl SceneRegistry {
     /// Register a declarative scene unless its id is already taken.
     ///
     /// Call after the built-in and host scenes are in: a file in a user's
-    /// home directory must not be able to stand in for `coding` under the
+    /// home directory must not be able to stand in for `code` under the
     /// same name.
     pub fn register_declarative(&mut self, scene: DeclarativeScene) -> Result<(), SceneLoadError> {
         if self.scenes.contains_key(scene.id()) {
@@ -89,10 +90,9 @@ impl SceneRegistry {
     }
 
     pub fn register_builtin(&mut self) {
-        self.register(Arc::new(chat::ChatScene));
-        self.register(Arc::new(coding::CodingScene));
-        self.register(Arc::new(demo::DemoScene));
-        self.register(Arc::new(research::ResearchScene));
+        self.register(Arc::new(code::CodeScene));
+        self.register(Arc::new(harnix::HarnixScene));
+        self.register(Arc::new(mini::MiniScene));
     }
 }
 
@@ -114,7 +114,7 @@ mod tests {
     #[test]
     fn a_declarative_scene_cannot_shadow_a_built_in_one() {
         let root = tempfile::tempdir().unwrap();
-        write_scene(root.path(), "coding");
+        write_scene(root.path(), "code");
         write_scene(root.path(), "review");
 
         let mut registry = SceneRegistry::new();
@@ -123,13 +123,13 @@ mod tests {
 
         assert_eq!(refused.len(), 1, "{refused:?}");
         assert!(
-            matches!(&refused[0], SceneLoadError::IdTaken { id, .. } if id == "coding"),
+            matches!(&refused[0], SceneLoadError::IdTaken { id, .. } if id == "code"),
             "{refused:?}"
         );
         assert!(refused[0].to_string().contains("already registered"));
         assert_eq!(
-            registry.resolve("coding").unwrap().name(),
-            coding::CodingScene.name(),
+            registry.resolve("code").unwrap().name(),
+            code::CodeScene.name(),
             "the built-in stays in place"
         );
         assert_eq!(registry.resolve("review").unwrap().name(), "review");

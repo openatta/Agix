@@ -227,12 +227,8 @@ pub fn input_schema<T: schemars::JsonSchema>() -> serde_json::Value {
 mod register_builtin_tools_tests {
     use super::*;
 
-    /// Regression: `daemon` used to never call `Builder::tools()` at all, so
-    /// every daemon session ran with zero of these — only the handful
-    /// `Builder::build()` registers internally (Skill/TaskStop/TaskOutput/
-    /// Import/Agent/MCP). Pin down that the tools every built-in scene
-    /// actually lists (CodingScene/ChatScene/ResearchScene) end up
-    /// registered by this single function.
+    /// The tools the built-in scenes list are registered by this single
+    /// function, not by `Builder::build()`.
     #[test]
     fn registers_the_tools_every_built_in_scene_lists() {
         let reg = Arc::new(base::tool::InMemoryToolRegistry::new());
@@ -243,7 +239,7 @@ mod register_builtin_tools_tests {
             .map(|t| t.name().to_string())
             .collect();
 
-        // CodingScene's tools() is an empty allow-list ("everything
+        // CodeScene's tools() is an empty allow-list ("everything
         // registered is allowed") — it depends on these actually being
         // registered, not just declared in a scene's tools() list.
         for expected in [
@@ -286,10 +282,9 @@ mod register_builtin_tools_tests {
         }
     }
 
-    /// W-1: `WebSearch` must end up in the registry, because both
-    /// `ChatScene::tools()` and `ResearchScene::tools()` list it and a
-    /// whitelist is intersected with the registry — an unregistered name is
-    /// silently dropped, leaving Research with no search capability at all.
+    /// `WebSearch` must end up in the registry: the `harnix` scene lists it,
+    /// and a whitelist is intersected with the registry, so an unregistered
+    /// name is silently dropped.
     #[test]
     fn register_web_search_puts_websearch_in_the_registry() {
         let reg = Arc::new(base::tool::InMemoryToolRegistry::new());

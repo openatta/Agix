@@ -29,7 +29,7 @@ pub struct TestCase {
     /// 用例声明的模板项目 fixture（`fixture: tests/fixtures/template_project`）。
     /// 命令行 `--fixture` 优先。
     pub fixture: Option<String>,
-    /// 用例声明的场景（`scene: chat`）。命令行 `--scene` 优先。
+    /// 用例声明的场景（`scene: mini`）。命令行 `--scene` 优先。
     pub scene: Option<String>,
     /// 多轮对话
     pub turns: Vec<Turn>,
@@ -189,7 +189,7 @@ pub fn parse_test_script(content: &str, source_path: &str) -> anyhow::Result<Tes
 /// A `key: value` line in the meta block, if the case declares one.
 ///
 /// Prerequisites used to live only in the prose header (`# 前置: --fixture …
-/// --scene chat`), which meant every runner invocation had to remember to pass
+/// --scene mini`), which meant every runner invocation had to remember to pass
 /// them by hand — and `tests/run_api.sh` never did. A case that needs MCP, or a
 /// scene other than the default, was therefore recorded without them: the
 /// recording looked fine and exercised none of what the case was written for.
@@ -359,7 +359,7 @@ Just input, no expected output marker.
         assert!(tc.turns[0].expected.is_empty());
     }
 
-    /// The prose header said `# 前置: --fixture … --scene chat` and nothing
+    /// The prose header said `# 前置: --fixture … --scene mini` and nothing
     /// read it, so `run_api.sh` recorded every such case without either. A
     /// declaration the runner actually consults is the difference between a
     /// recording that exercises MCP and one that silently does not.
@@ -367,13 +367,13 @@ Just input, no expected output marker.
     fn a_case_declares_its_own_fixture_and_scene() {
         let script = "# 前置: --fixture tests/fixtures/template_project\n\
                       # fixture: tests/fixtures/template_project\n\
-                      # scene: chat\n\n>>>>>>>>>>>>>>>>\nhi\n";
+                      # scene: mini\n\n>>>>>>>>>>>>>>>>\nhi\n";
         let tc = parse_test_script(script, "t.test").unwrap();
         assert_eq!(
             tc.fixture.as_deref(),
             Some("tests/fixtures/template_project")
         );
-        assert_eq!(tc.scene.as_deref(), Some("chat"));
+        assert_eq!(tc.scene.as_deref(), Some("mini"));
     }
 
     /// The prose line alone must not be mistaken for a declaration — it is
@@ -381,7 +381,7 @@ Just input, no expected output marker.
     #[test]
     fn a_case_that_declares_nothing_leaves_both_absent() {
         let tc = parse_test_script(
-            "# 前置: 无（--scene chat）\n\n>>>>>>>>>>>>>>>>\nhi\n",
+            "# 前置: 无（--scene mini）\n\n>>>>>>>>>>>>>>>>\nhi\n",
             "t.test",
         )
         .unwrap();

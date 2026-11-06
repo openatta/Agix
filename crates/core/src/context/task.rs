@@ -557,9 +557,7 @@ pub struct TodoItem {
     /// 状态
     pub status: TodoStatus,
     /// 现在时态描述（spinner 用），如 "Writing tests"。必填。
-    /// **Q4 **: serde alias so payloads using `activeForm` (camelCase)
-    /// deserialize into our `active_form` (snake_case) field. Models trained
-    /// on TS schema can call our TodoWrite without contortion.
+    // Models trained on camelCase tool schemas send `activeForm`.
     #[serde(alias = "activeForm")]
     pub active_form: String,
 }

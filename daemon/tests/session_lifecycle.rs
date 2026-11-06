@@ -205,11 +205,11 @@ async fn start_scripted_server(
     settings: Settings,
     prompt_timeout: Duration,
 ) -> (ScriptedServer, SeenRequests) {
-    start_scripted_server_in("coding", rounds, settings, prompt_timeout).await
+    start_scripted_server_in("code", rounds, settings, prompt_timeout).await
 }
 
-/// The same daemon in a named scene — `chat` names its own sessions after the
-/// first turn, which `coding` does not, and that difference is a behaviour
+/// The same daemon in a named scene — `harnix` names its own sessions after the
+/// first turn, which `code` does not, and that difference is a behaviour
 /// worth a test.
 async fn start_scripted_server_in(
     scene_id: &str,
@@ -321,13 +321,13 @@ async fn start_server_without_history() -> (
         "claude-sonnet-4-6",
         2000,
         Some(&sock),
-        "coding",
+        "code",
         &StaticDaemonPaths::new(dir.path().to_path_buf()),
     );
 
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::coding::CodingScene),
+        Arc::new(scene::code::CodeScene),
         daemon::Assembly {
             cwd: Some(dir.path().to_path_buf()),
             model_client: Some(client),
@@ -467,7 +467,7 @@ async fn a_listed_session_says_which_scene_and_project_it_belongs_to() {
         .unwrap_or_else(|| panic!("the session that just ran is not listed: {listed}"))
         .clone();
 
-    assert_eq!(entry["scene"], "coding");
+    assert_eq!(entry["scene"], "code");
     let project_root = entry["project_root"]
         .as_str()
         .unwrap_or_else(|| panic!("the entry names no project: {entry}"));
@@ -499,7 +499,7 @@ async fn a_listed_session_says_which_scene_and_project_it_belongs_to() {
 #[tokio::test]
 async fn a_listed_session_reports_how_often_it_was_compacted() {
     let (srv, _seen) = start_scripted_server_in(
-        "coding",
+        "code",
         vec![text_round("answer")],
         ask_settings(),
         Duration::ZERO,
@@ -677,7 +677,7 @@ async fn a_name_that_would_break_a_list_is_refused() {
 #[tokio::test]
 async fn the_automatic_namer_does_not_overwrite_a_name_somebody_typed() {
     let (srv, _seen) = start_scripted_server_in(
-        "chat",
+        "harnix",
         vec![text_round("answer"), text_round("模型猜的标题")],
         ask_settings(),
         Duration::ZERO,
@@ -760,7 +760,7 @@ async fn close_and_resume(sock: &std::path::Path, sid: &str) {
 #[tokio::test]
 async fn a_resumed_session_keeps_the_name_somebody_typed() {
     let (srv, _seen) = start_scripted_server_in(
-        "chat",
+        "harnix",
         vec![
             text_round("answer"),
             text_round("自动起的标题"),
@@ -800,7 +800,7 @@ async fn a_resumed_session_keeps_the_name_somebody_typed() {
 #[tokio::test]
 async fn an_automatic_name_survives_a_resume() {
     let (srv, _seen) = start_scripted_server_in(
-        "chat",
+        "harnix",
         vec![text_round("answer"), text_round("自动起的标题")],
         ask_settings_no_memory(),
         Duration::ZERO,
@@ -1361,7 +1361,7 @@ async fn session_resume_reattaches_and_reports_state() {
     .await;
     assert_eq!(active["result"]["status"], "already_active", "{active}");
     assert!(active["result"]["message_count"].as_u64().unwrap() >= 2);
-    assert_eq!(active["result"]["scene"], "coding");
+    assert_eq!(active["result"]["scene"], "code");
     assert_eq!(active["result"]["permission"]["mode"], "default");
     assert_eq!(active["result"]["permission"]["prompts"], true);
     assert_eq!(active["result"]["permission"]["prompt_timeout_secs"], 42);
@@ -1468,7 +1468,7 @@ async fn session_resume_rejects_a_scene_mismatch() {
     let (srv, _seen) =
         start_scripted_server(vec![text_round("x")], ask_settings(), Duration::ZERO).await;
 
-    let sid = inject_session_in_scene(&srv, "chat").await;
+    let sid = inject_session_in_scene(&srv, "harnix").await;
 
     let resumed = rpc(
         &srv.sock,
@@ -1479,8 +1479,8 @@ async fn session_resume_rejects_a_scene_mismatch() {
     .await;
     assert_eq!(resumed["error"]["code"], codes::SCENE_MISMATCH, "{resumed}");
     assert_eq!(resumed["error"]["data"]["session_id"], sid.to_string());
-    assert_eq!(resumed["error"]["data"]["recorded_scene"], "chat");
-    assert_eq!(resumed["error"]["data"]["requested_scene"], "coding");
+    assert_eq!(resumed["error"]["data"]["recorded_scene"], "harnix");
+    assert_eq!(resumed["error"]["data"]["requested_scene"], "code");
 
     srv.stop().await;
 }
@@ -1495,7 +1495,7 @@ async fn session_resume_rejects_a_scene_mismatch() {
 async fn the_newer_methods_reject_a_scene_mismatch_too() {
     let (srv, _seen) =
         start_scripted_server(vec![text_round("x")], ask_settings(), Duration::ZERO).await;
-    let sid = inject_session_in_scene(&srv, "chat").await;
+    let sid = inject_session_in_scene(&srv, "harnix").await;
 
     let calls = [
         (
@@ -1524,11 +1524,11 @@ async fn the_newer_methods_reject_a_scene_mismatch_too() {
             "{method} did not refuse a session from another scene: {response}"
         );
         assert_eq!(
-            response["error"]["data"]["recorded_scene"], "chat",
+            response["error"]["data"]["recorded_scene"], "harnix",
             "{method}"
         );
         assert_eq!(
-            response["error"]["data"]["requested_scene"], "coding",
+            response["error"]["data"]["requested_scene"], "code",
             "{method}"
         );
     }
@@ -1710,7 +1710,7 @@ async fn session_list_excludes_sidechains_by_default_and_returns_them_via_parent
                 engine_version: "0.0.1".into(),
                 agix_version: "0.0.1".into(),
                 parent_session_id: Some(parent.clone()),
-                scene: Some("coding".into()),
+                scene: Some("code".into()),
                 project_root: None,
                 session_kind: history::entry::SessionKind::Sidechain,
                 schema_version: history::entry::CURRENT_META_SCHEMA_VERSION,
@@ -1869,7 +1869,7 @@ async fn session_create_binds_to_a_different_project_with_its_own_settings() {
         created["result"]["project_root"],
         other_project.display().to_string()
     );
-    assert_eq!(created["result"]["scene"], "coding");
+    assert_eq!(created["result"]["scene"], "code");
     assert_eq!(created["result"]["session_kind"], "primary");
 
     let entries = srv
@@ -2077,12 +2077,12 @@ async fn a_no_project_sessions_transcript_lands_in_the_no_project_bucket() {
 
     rpc(
         &srv.sock,
-        r#"{"jsonrpc":"2.0","method":"scene.activate","params":{"scene":"chat"},"id":1}"#,
+        r#"{"jsonrpc":"2.0","method":"scene.activate","params":{"scene":"harnix"},"id":1}"#,
     )
     .await;
     let created = rpc(
         &srv.sock,
-        r#"{"jsonrpc":"2.0","method":"session.create","params":{"scene":"chat","project_root":null},"id":2}"#,
+        r#"{"jsonrpc":"2.0","method":"session.create","params":{"scene":"harnix","project_root":null},"id":2}"#,
     )
     .await;
     let sid = created["result"]["session_id"]
@@ -2225,7 +2225,7 @@ async fn another_projects_settings_change_reaches_the_daemon_without_a_reload() 
     // project's binding — the state the file change has to invalidate.
     let effective = |root: &std::path::Path| {
         format!(
-            r#"{{"jsonrpc":"2.0","method":"config.get","params":{{"scene":"coding","project_root":"{}","tier":"effective"}},"id":1}}"#,
+            r#"{{"jsonrpc":"2.0","method":"config.get","params":{{"scene":"code","project_root":"{}","tier":"effective"}},"id":1}}"#,
             root.display()
         )
     };
@@ -2618,17 +2618,17 @@ async fn session_create_with_null_project_root_is_a_no_project_session() {
     let (srv, _seen) =
         start_scripted_server(vec![text_round("x")], ask_settings(), Duration::ZERO).await;
 
-    // `chat`, not the daemon's `coding`: a no-project session is only
-    // meaningful in a scene that doesn't require one, and `coding` now
+    // `harnix`, not the daemon's `code`: a no-project session is only
+    // meaningful in a scene that doesn't require one, and `code` now
     // refuses (see `Scene::requires_project`).
     let _ = rpc(
         &srv.sock,
-        r#"{"jsonrpc":"2.0","method":"scene.activate","params":{"scene":"chat"},"id":0}"#,
+        r#"{"jsonrpc":"2.0","method":"scene.activate","params":{"scene":"harnix"},"id":0}"#,
     )
     .await;
     let created = rpc(
         &srv.sock,
-        r#"{"jsonrpc":"2.0","method":"session.create","params":{"scene":"chat","project_root":null},"id":1}"#,
+        r#"{"jsonrpc":"2.0","method":"session.create","params":{"scene":"harnix","project_root":null},"id":1}"#,
     )
     .await;
     let sid = created["result"]["session_id"]
@@ -2745,7 +2745,7 @@ async fn inject_sidechain(srv: &ScriptedServer, parent: &str) -> base::session::
                 engine_version: "0.0.1".into(),
                 agix_version: "0.0.1".into(),
                 parent_session_id: Some(parent.to_string()),
-                scene: Some("coding".into()),
+                scene: Some("code".into()),
                 project_root: None,
                 session_kind: history::entry::SessionKind::Sidechain,
                 schema_version: history::entry::CURRENT_META_SCHEMA_VERSION,
@@ -2853,7 +2853,7 @@ async fn session_delete_dry_run_reports_without_deleting_anything() {
 /// check `session.resume`/`.fork` already had, so a session recorded under
 /// a scene this daemon isn't even serving could still be closed/deleted
 /// through it. Mirrors `session_resume_rejects_a_scene_mismatch`'s setup —
-/// a session recorded under `"chat"`, which this daemon never activated.
+/// a session recorded under `"harnix"`, which this daemon never activated.
 #[tokio::test]
 async fn session_close_rejects_a_scene_mismatch() {
     let (srv, _seen) =
@@ -2871,7 +2871,7 @@ async fn session_close_rejects_a_scene_mismatch() {
                 engine_version: "0.0.1".into(),
                 agix_version: "0.0.1".into(),
                 parent_session_id: None,
-                scene: Some("chat".into()),
+                scene: Some("harnix".into()),
                 project_root: None,
                 session_kind: history::entry::SessionKind::Primary,
                 schema_version: history::entry::CURRENT_META_SCHEMA_VERSION,
@@ -2888,7 +2888,7 @@ async fn session_close_rejects_a_scene_mismatch() {
     )
     .await;
     assert_eq!(closed["error"]["code"], codes::SCENE_MISMATCH, "{closed}");
-    assert_eq!(closed["error"]["data"]["recorded_scene"], "chat");
+    assert_eq!(closed["error"]["data"]["recorded_scene"], "harnix");
     assert!(
         srv.store.load(sid).await.is_ok(),
         "a rejected session.close must not touch the transcript"
@@ -2923,16 +2923,16 @@ async fn scene_list_reports_the_default_scene_as_active() {
     )
     .await;
     let scenes = resp["result"]["scenes"].as_array().unwrap();
-    let coding = scenes
+    let code = scenes
         .iter()
-        .find(|s| s["scene"] == "coding")
-        .expect("coding should be registered");
-    assert_eq!(coding["active"], true, "{resp}");
-    let chat = scenes
+        .find(|s| s["scene"] == "code")
+        .expect("code should be registered");
+    assert_eq!(code["active"], true, "{resp}");
+    let harnix = scenes
         .iter()
-        .find(|s| s["scene"] == "chat")
-        .expect("chat should be registered even though inactive");
-    assert_eq!(chat["active"], false, "{resp}");
+        .find(|s| s["scene"] == "harnix")
+        .expect("harnix should be registered even though inactive");
+    assert_eq!(harnix["active"], false, "{resp}");
 
     srv.stop().await;
 }
@@ -2944,7 +2944,7 @@ async fn session_create_rejects_an_inactive_scene() {
 
     let resp = rpc(
         &srv.sock,
-        r#"{"jsonrpc":"2.0","method":"session.create","params":{"scene":"chat"},"id":1}"#,
+        r#"{"jsonrpc":"2.0","method":"session.create","params":{"scene":"harnix"},"id":1}"#,
     )
     .await;
     assert_eq!(resp["error"]["code"], codes::SCENE_NOT_FOUND, "{resp}");
@@ -2959,21 +2959,21 @@ async fn scene_activate_makes_a_new_scene_available_for_session_create() {
 
     let activated = rpc(
         &srv.sock,
-        r#"{"jsonrpc":"2.0","method":"scene.activate","params":{"scene":"chat"},"id":1}"#,
+        r#"{"jsonrpc":"2.0","method":"scene.activate","params":{"scene":"harnix"},"id":1}"#,
     )
     .await;
     assert_eq!(activated["result"]["active"], true, "{activated}");
 
     let created = rpc(
         &srv.sock,
-        r#"{"jsonrpc":"2.0","method":"session.create","params":{"scene":"chat"},"id":2}"#,
+        r#"{"jsonrpc":"2.0","method":"session.create","params":{"scene":"harnix"},"id":2}"#,
     )
     .await;
     let sid = match created["result"]["session_id"].as_str() {
         Some(s) => s,
-        None => panic!("session.create should succeed once chat is active: {created}"),
+        None => panic!("session.create should succeed once harnix is active: {created}"),
     };
-    assert_eq!(created["result"]["scene"], "chat");
+    assert_eq!(created["result"]["scene"], "harnix");
 
     let entries = srv
         .store
@@ -2982,7 +2982,7 @@ async fn scene_activate_makes_a_new_scene_available_for_session_create() {
         .unwrap();
     match &entries[0].entry {
         history::entry::LogEntry::Meta { scene, .. } => {
-            assert_eq!(scene.as_deref(), Some("chat"));
+            assert_eq!(scene.as_deref(), Some("harnix"));
         }
         other => panic!("expected Meta as the first entry, got {other:?}"),
     }
@@ -3012,12 +3012,12 @@ async fn scene_deactivate_is_blocked_by_active_sessions_then_succeeds_after_clos
 
     rpc(
         &srv.sock,
-        r#"{"jsonrpc":"2.0","method":"scene.activate","params":{"scene":"chat"},"id":1}"#,
+        r#"{"jsonrpc":"2.0","method":"scene.activate","params":{"scene":"harnix"},"id":1}"#,
     )
     .await;
     let created = rpc(
         &srv.sock,
-        r#"{"jsonrpc":"2.0","method":"session.create","params":{"scene":"chat"},"id":2}"#,
+        r#"{"jsonrpc":"2.0","method":"session.create","params":{"scene":"harnix"},"id":2}"#,
     )
     .await;
     let sid = created["result"]["session_id"]
@@ -3027,7 +3027,7 @@ async fn scene_deactivate_is_blocked_by_active_sessions_then_succeeds_after_clos
 
     let blocked = rpc(
         &srv.sock,
-        r#"{"jsonrpc":"2.0","method":"scene.deactivate","params":{"scene":"chat"},"id":3}"#,
+        r#"{"jsonrpc":"2.0","method":"scene.deactivate","params":{"scene":"harnix"},"id":3}"#,
     )
     .await;
     assert_eq!(
@@ -3046,23 +3046,23 @@ async fn scene_deactivate_is_blocked_by_active_sessions_then_succeeds_after_clos
 
     let deactivated = rpc(
         &srv.sock,
-        r#"{"jsonrpc":"2.0","method":"scene.deactivate","params":{"scene":"chat"},"id":5}"#,
+        r#"{"jsonrpc":"2.0","method":"scene.deactivate","params":{"scene":"harnix"},"id":5}"#,
     )
     .await;
-    assert_eq!(deactivated["result"]["scene"], "chat", "{deactivated}");
+    assert_eq!(deactivated["result"]["scene"], "harnix", "{deactivated}");
 
     let listed = rpc(
         &srv.sock,
         r#"{"jsonrpc":"2.0","method":"scene.list","id":6}"#,
     )
     .await;
-    let chat = listed["result"]["scenes"]
+    let harnix = listed["result"]["scenes"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|s| s["scene"] == "chat")
+        .find(|s| s["scene"] == "harnix")
         .unwrap();
-    assert_eq!(chat["active"], false, "{listed}");
+    assert_eq!(harnix["active"], false, "{listed}");
 
     srv.stop().await;
 }
@@ -3078,12 +3078,12 @@ async fn a_reattached_session_comes_back_under_its_own_scene() {
 
     rpc(
         &srv.sock,
-        r#"{"jsonrpc":"2.0","method":"scene.activate","params":{"scene":"chat"},"id":1}"#,
+        r#"{"jsonrpc":"2.0","method":"scene.activate","params":{"scene":"harnix"},"id":1}"#,
     )
     .await;
     let created = rpc(
         &srv.sock,
-        r#"{"jsonrpc":"2.0","method":"session.create","params":{"scene":"chat"},"id":2}"#,
+        r#"{"jsonrpc":"2.0","method":"session.create","params":{"scene":"harnix"},"id":2}"#,
     )
     .await;
     let sid = created["result"]["session_id"]
@@ -3092,10 +3092,10 @@ async fn a_reattached_session_comes_back_under_its_own_scene() {
         .to_string();
 
     run_turn(&srv.sock, Some(&sid), "first").await;
-    // The last request that carried a tool surface at all: `chat` renames a
+    // The last request that carried a tool surface at all: `harnix` renames a
     // session after its first turn, and that naming call is a bare request
     // with no tools on it, so `last()` alone would be asking the wrong one.
-    let offered_bash = |seen: &SeenRequests| {
+    let offered_notebook_edit = |seen: &SeenRequests| {
         seen.lock()
             .unwrap()
             .iter()
@@ -3104,11 +3104,11 @@ async fn a_reattached_session_comes_back_under_its_own_scene() {
             .expect("some request carried a tool surface")
             .tools
             .iter()
-            .any(|t| t.name == "Bash")
+            .any(|t| t.name == "NotebookEdit")
     };
     assert!(
-        !offered_bash(&seen),
-        "chat's tool whitelist has no Bash in it"
+        !offered_notebook_edit(&seen),
+        "harnix's tool whitelist has no NotebookEdit in it"
     );
 
     rpc(
@@ -3121,7 +3121,7 @@ async fn a_reattached_session_comes_back_under_its_own_scene() {
 
     run_turn(&srv.sock, Some(&sid), "second, after reattach").await;
     assert!(
-        !offered_bash(&seen),
+        !offered_notebook_edit(&seen),
         "reattaching must rebuild against the session's own recorded scene, not the pool default"
     );
 
@@ -3135,12 +3135,12 @@ async fn run_turn_refuses_a_session_recorded_under_a_scene_this_daemon_stopped_s
 
     rpc(
         &srv.sock,
-        r#"{"jsonrpc":"2.0","method":"scene.activate","params":{"scene":"chat"},"id":1}"#,
+        r#"{"jsonrpc":"2.0","method":"scene.activate","params":{"scene":"harnix"},"id":1}"#,
     )
     .await;
     let created = rpc(
         &srv.sock,
-        r#"{"jsonrpc":"2.0","method":"session.create","params":{"scene":"chat"},"id":2}"#,
+        r#"{"jsonrpc":"2.0","method":"session.create","params":{"scene":"harnix"},"id":2}"#,
     )
     .await;
     let sid = created["result"]["session_id"]
@@ -3156,7 +3156,7 @@ async fn run_turn_refuses_a_session_recorded_under_a_scene_this_daemon_stopped_s
     .await;
     rpc(
         &srv.sock,
-        r#"{"jsonrpc":"2.0","method":"scene.deactivate","params":{"scene":"chat"},"id":4}"#,
+        r#"{"jsonrpc":"2.0","method":"scene.deactivate","params":{"scene":"harnix"},"id":4}"#,
     )
     .await;
 
@@ -3168,15 +3168,15 @@ async fn run_turn_refuses_a_session_recorded_under_a_scene_this_daemon_stopped_s
     )
     .await;
     assert_eq!(resp["error"]["code"], codes::SCENE_MISMATCH, "{resp}");
-    assert_eq!(resp["error"]["data"]["recorded_scene"], "chat", "{resp}");
+    assert_eq!(resp["error"]["data"]["recorded_scene"], "harnix", "{resp}");
 
     srv.stop().await;
 }
 
 #[tokio::test]
-async fn a_chat_session_names_itself_on_a_daemon_whose_own_scene_does_not() {
-    // Two rounds: the turn's own answer, then the naming call `chat` makes
-    // after a first turn. `coding` — this daemon's own scene — makes neither.
+async fn a_harnix_session_names_itself_on_a_daemon_whose_own_scene_does_not() {
+    // Two rounds: the turn's own answer, then the naming call `harnix` makes
+    // after a first turn. `code` — this daemon's own scene — makes neither.
     let (srv, _seen) = start_scripted_server(
         vec![text_round("answered"), text_round("会话标题")],
         ask_settings(),
@@ -3186,15 +3186,15 @@ async fn a_chat_session_names_itself_on_a_daemon_whose_own_scene_does_not() {
 
     rpc(
         &srv.sock,
-        r#"{"jsonrpc":"2.0","method":"scene.activate","params":{"scene":"chat"},"id":1}"#,
+        r#"{"jsonrpc":"2.0","method":"scene.activate","params":{"scene":"harnix"},"id":1}"#,
     )
     .await;
     let created = rpc(
         &srv.sock,
-        r#"{"jsonrpc":"2.0","method":"session.create","params":{"scene":"chat"},"id":2}"#,
+        r#"{"jsonrpc":"2.0","method":"session.create","params":{"scene":"harnix"},"id":2}"#,
     )
     .await;
-    let chat_sid = created["result"]["session_id"]
+    let harnix_sid = created["result"]["session_id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -3202,13 +3202,13 @@ async fn a_chat_session_names_itself_on_a_daemon_whose_own_scene_does_not() {
     let (_frames, resp) = rpc_streaming(
         &srv.sock,
         &format!(
-            r#"{{"jsonrpc":"2.0","method":"session.run_turn","params":{{"session_id":"{chat_sid}","message":"hello"}},"id":3}}"#
+            r#"{{"jsonrpc":"2.0","method":"session.run_turn","params":{{"session_id":"{harnix_sid}","message":"hello"}},"id":3}}"#
         ),
     )
     .await;
     assert_eq!(
         resp["result"]["name"], "会话标题",
-        "a chat session must name itself even when the daemon's own scene would not: {resp}"
+        "a harnix session must name itself even when the daemon's own scene would not: {resp}"
     );
 
     // The control: the same daemon's own scene still does not.
@@ -3219,7 +3219,7 @@ async fn a_chat_session_names_itself_on_a_daemon_whose_own_scene_does_not() {
     .await;
     assert!(
         resp["result"]["name"].is_null(),
-        "coding does not auto-name, and reading the session's scene must not change that: {resp}"
+        "code does not auto-name, and reading the session's scene must not change that: {resp}"
     );
 
     srv.stop().await;
@@ -3694,7 +3694,7 @@ async fn a_session_accepts_a_new_turn_after_the_previous_one_finishes() {
     srv.stop().await;
 }
 
-/// `coding` requires a project, and says so at creation rather than letting
+/// `code` requires a project, and says so at creation rather than letting
 /// the session exist and fail on its first tool call.
 #[tokio::test]
 async fn a_scene_that_requires_a_project_refuses_a_session_without_one() {
@@ -3703,7 +3703,7 @@ async fn a_scene_that_requires_a_project_refuses_a_session_without_one() {
 
     let resp = rpc(
         &srv.sock,
-        r#"{"jsonrpc":"2.0","method":"session.create","params":{"scene":"coding","project_root":null},"id":1}"#,
+        r#"{"jsonrpc":"2.0","method":"session.create","params":{"scene":"code","project_root":null},"id":1}"#,
     )
     .await;
     assert_eq!(resp["error"]["code"], codes::PROJECT_REQUIRED, "{resp}");
@@ -3732,10 +3732,10 @@ async fn scene_list_reports_the_capability_bits() {
             .clone()
     };
 
-    assert_eq!(by_id("coding")["requires_project"], true);
-    assert_eq!(by_id("coding")["supports_team"], true);
-    assert_eq!(by_id("chat")["requires_project"], false);
-    assert_eq!(by_id("chat")["supports_team"], false);
+    assert_eq!(by_id("code")["requires_project"], true);
+    assert_eq!(by_id("code")["supports_team"], true);
+    assert_eq!(by_id("harnix")["requires_project"], false);
+    assert_eq!(by_id("harnix")["supports_team"], false);
 
     srv.stop().await;
 }
@@ -3785,7 +3785,7 @@ async fn session_get_reports_the_summary_and_the_turn_state() {
     .await;
 
     assert_eq!(got["result"]["session_id"], sid, "{got}");
-    assert_eq!(got["result"]["scene"], "coding", "{got}");
+    assert_eq!(got["result"]["scene"], "code", "{got}");
     assert_eq!(got["result"]["scene_active"], true, "{got}");
     assert_eq!(got["result"]["turn_state"], "idle", "{got}");
     assert!(got["result"]["current_turn_id"].is_null(), "{got}");
@@ -3891,14 +3891,14 @@ async fn scene_describe_reports_capabilities_tools_and_effective_settings() {
 
     let resp = rpc(
         &srv.sock,
-        r#"{"jsonrpc":"2.0","method":"scene.describe","params":{"scene":"coding"},"id":1}"#,
+        r#"{"jsonrpc":"2.0","method":"scene.describe","params":{"scene":"code"},"id":1}"#,
     )
     .await;
 
-    assert_eq!(resp["result"]["scene"], "coding", "{resp}");
+    assert_eq!(resp["result"]["scene"], "code", "{resp}");
     assert_eq!(resp["result"]["capabilities"]["requires_project"], true);
     assert_eq!(resp["result"]["capabilities"]["supports_team"], true);
-    // `coding` sets no whitelist, which is `null` rather than `[]` — the
+    // `code` sets no whitelist, which is `null` rather than `[]` — the
     // latter would read as "no tools allowed", the opposite of the truth.
     assert!(resp["result"]["tools"]["allowed"].is_null(), "{resp}");
     assert!(
@@ -3938,7 +3938,7 @@ async fn config_get_distinguishes_an_absent_tier_from_an_empty_one() {
 
     let scene_tier = rpc(
         &srv.sock,
-        r#"{"jsonrpc":"2.0","method":"config.get","params":{"scene":"coding","tier":"scene"},"id":1}"#,
+        r#"{"jsonrpc":"2.0","method":"config.get","params":{"scene":"code","tier":"scene"},"id":1}"#,
     )
     .await;
     assert_eq!(scene_tier["result"]["tier"], "scene", "{scene_tier}");
@@ -3946,7 +3946,7 @@ async fn config_get_distinguishes_an_absent_tier_from_an_empty_one() {
 
     let effective = rpc(
         &srv.sock,
-        r#"{"jsonrpc":"2.0","method":"config.get","params":{"scene":"coding"},"id":2}"#,
+        r#"{"jsonrpc":"2.0","method":"config.get","params":{"scene":"code"},"id":2}"#,
     )
     .await;
     assert_eq!(effective["result"]["tier"], "effective", "{effective}");
@@ -3962,7 +3962,7 @@ async fn config_get_rejects_an_unknown_tier() {
 
     let resp = rpc(
         &srv.sock,
-        r#"{"jsonrpc":"2.0","method":"config.get","params":{"scene":"coding","tier":"nope"},"id":1}"#,
+        r#"{"jsonrpc":"2.0","method":"config.get","params":{"scene":"code","tier":"nope"},"id":1}"#,
     )
     .await;
     assert_eq!(resp["error"]["code"], codes::INVALID_PARAMS, "{resp}");
@@ -3978,7 +3978,7 @@ async fn config_get_redacts_credentials_by_default() {
 
     let resp = rpc(
         &srv.sock,
-        r#"{"jsonrpc":"2.0","method":"config.get","params":{"scene":"coding"},"id":1}"#,
+        r#"{"jsonrpc":"2.0","method":"config.get","params":{"scene":"code"},"id":1}"#,
     )
     .await;
     let dumped = resp.to_string();

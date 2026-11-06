@@ -1,5 +1,5 @@
 //! The smallest agent the current crates can assemble: one Anthropic model,
-//! the coding scene, six basic tools, no MCP/skills/plugins/daemon. Reads one
+//! the code scene, six basic tools, no MCP/skills/plugins/daemon. Reads one
 //! prompt from argv, runs one turn, prints the text and the turn's usage.
 //!
 //! It exists as the size and composition baseline for the minimal build:
@@ -111,7 +111,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let (mut agent, mut events, _input) = runtime::agent::Builder::new()
-        .scene(Arc::new(scene::coding::CodingScene) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
         .model(model)
         .settings(Arc::new(settings(
             model_name,

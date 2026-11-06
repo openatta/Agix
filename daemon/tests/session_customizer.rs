@@ -85,7 +85,7 @@ async fn a_rebuilt_session_still_has_what_the_host_added() {
         "claude-sonnet-4-6",
         2000,
         Some(&sock),
-        "coding",
+        "code",
         &StaticDaemonPaths::new(dir.path().to_path_buf()),
     );
     config.settings.memory_enabled = false;
@@ -99,7 +99,7 @@ async fn a_rebuilt_session_still_has_what_the_host_added() {
     let (sink, seen) = (turns.clone(), builds.clone());
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::coding::CodingScene),
+        Arc::new(scene::code::CodeScene),
         daemon::Assembly {
             cwd: Some(cwd),
             model_client: Some(model as Arc<dyn AnthropicClient>),

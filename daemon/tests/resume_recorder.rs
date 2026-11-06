@@ -50,14 +50,14 @@ async fn start(
         "claude-sonnet-4-6",
         2000,
         Some(&sock),
-        "coding",
+        "code",
         &StaticDaemonPaths::new(root.to_path_buf()),
     );
     config.settings.memory_enabled = false;
     config.settings.permission_mode = base::interface::settings::PermissionMode::BypassPermissions;
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::coding::CodingScene),
+        Arc::new(scene::code::CodeScene),
         daemon::Assembly {
             cwd: Some(cwd),
             model_client: Some(model as Arc<dyn AnthropicClient>),

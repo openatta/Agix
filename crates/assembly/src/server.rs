@@ -980,7 +980,7 @@ impl DaemonServer {
     }
 
     /// `scene.describe` params:
-    /// `{"scene": "coding", "project_root": "...", "include_secrets": false}`
+    /// `{"scene": "code", "project_root": "...", "include_secrets": false}`
     async fn method_scene_describe(
         &self,
         id: serde_json::Value,
@@ -1001,7 +1001,7 @@ impl DaemonServer {
     }
 
     /// `config.get` params:
-    /// `{"scene": "coding", "project_root": "...", "tier": "effective"}`
+    /// `{"scene": "code", "project_root": "...", "tier": "effective"}`
     async fn method_config_get(
         &self,
         id: serde_json::Value,

@@ -84,7 +84,7 @@ fn settings() -> Settings {
 
 fn build(settings: Settings, depth: u32, with_agents: bool) -> Agent {
     let mut builder = Builder::new()
-        .scene(Arc::new(scene::coding::CodingScene) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
         .model(Arc::new(DummyModel))
         .settings(Arc::new(settings))
         .tools({
@@ -109,7 +109,7 @@ async fn the_agent_tool_is_resident_and_needs_the_module() {
         .expect("the module registers Agent");
     assert!(
         !tool.is_deferred(),
-        "Agent is in CodingScene's resident set and must ship its full schema"
+        "Agent is in CodeScene's resident set and must ship its full schema"
     );
     assert!(build(settings(), 0, false).tools().get("Agent").is_none());
 }

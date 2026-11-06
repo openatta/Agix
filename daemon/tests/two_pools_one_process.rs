@@ -36,13 +36,13 @@ impl Scene for BetaScene {
         "a scene only the beta pool's host defines"
     }
     fn build_system_prompt(&self, ctx: &ScenePromptContext) -> Vec<PromptBlock> {
-        scene::coding::CodingScene.build_system_prompt(ctx)
+        scene::code::CodeScene.build_system_prompt(ctx)
     }
     fn tools(&self) -> Vec<String> {
-        scene::coding::CodingScene.tools()
+        scene::code::CodeScene.tools()
     }
     fn token_budget(&self) -> TokenBudget {
-        scene::coding::CodingScene.token_budget()
+        scene::code::CodeScene.token_budget()
     }
 }
 
@@ -94,7 +94,7 @@ impl Pool {
             "claude-sonnet-4-6",
             2000,
             Some(&sock),
-            "coding",
+            "code",
             &StaticDaemonPaths::new(dir.path().to_path_buf()),
         );
         config.settings.memory_enabled = false;
@@ -103,7 +103,7 @@ impl Pool {
         model.push_turn(one_turn());
         let pool = daemon::assemble::pool(
             &config,
-            Arc::new(scene::coding::CodingScene),
+            Arc::new(scene::code::CodeScene),
             daemon::Assembly {
                 cwd: Some(cwd),
                 scenes,
@@ -219,7 +219,7 @@ async fn two_pools_in_one_process_see_nothing_of_each_other() {
 fn the_engine_keeps_no_new_process_wide_state() {
     const ALLOWED: &[(&str, &str, &str)] = &[
         ("crates/model/src/tokens.rs", "TokenCounter", "the default counter: a stateless estimator"),
-        ("crates/scene/src/coding.rs", "SECTION_CACHE", "prompt sections keyed by a fingerprint of their inputs"),
+        ("crates/scene/src/code.rs", "SECTION_CACHE", "prompt sections keyed by a fingerprint of their inputs"),
         ("crates/team/src/team_memory.rs", "PATTERNS", "compiled regexes"),
         ("crates/tools/src/bash.rs", "SUFFIXES", "a constant table"),
         ("crates/mcp/src/manager.rs", "REGISTRY", "the official MCP registry: a constant"),

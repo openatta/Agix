@@ -231,7 +231,7 @@ impl Harness {
             "claude-sonnet-4-6",
             2000,
             Some(&sock),
-            "coding",
+            "code",
             &StaticDaemonPaths::new(dir.path().to_path_buf()),
         );
         // Assembled the way `main.rs` assembles, so a transport claim is
@@ -239,7 +239,7 @@ impl Harness {
         // this file put together itself.
         let pool = daemon::assemble::pool(
             &config,
-            Arc::new(scene::coding::CodingScene),
+            Arc::new(scene::code::CodeScene),
             daemon::Assembly {
                 cwd: Some(cwd.clone()),
                 model_client: Some(client),

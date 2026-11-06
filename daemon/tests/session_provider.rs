@@ -85,7 +85,7 @@ async fn start_daemon() -> Daemon {
         "claude-sonnet-4-6",
         2000,
         Some(&sock),
-        "coding",
+        "code",
         &StaticDaemonPaths::new(dir.path().to_path_buf()),
     );
     config.settings.memory_enabled = false;
@@ -101,7 +101,7 @@ async fn start_daemon() -> Daemon {
 
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::coding::CodingScene),
+        Arc::new(scene::code::CodeScene),
         daemon::Assembly {
             cwd: Some(cwd.clone()),
             model_client: Some(Arc::new(MockAnthropicClient::new()) as Arc<dyn AnthropicClient>),

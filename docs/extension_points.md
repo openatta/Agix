@@ -221,7 +221,7 @@ for refused in registry.register_declarative_dir(&global_root.join("scenes")) {
 `register_declarative_dir` 扫 `<root>/<id>/scene.json`。只有 `settings.json`、`plugins/`
 之类而没有 `scene.json` 的子目录不是场景,跳过——`~/.agix/scenes/<id>/` 本来就是每个
 场景(包括内建场景)的设置层目录;有 `prompt.md` 却没有 `scene.json` 的会报出来。
-**声明式场景不替换已登记的 id**:`scene.json` 写 `"id": "coding"` 会被拒,内建的那个
+**声明式场景不替换已登记的 id**:`scene.json` 写 `"id": "code"` 会被拒,内建的那个
 原样留着——家目录里的一个文件不该能冒名顶替。所以要在内建和宿主 scene 登记之后再调。
 单个目录用 `DeclarativeScene::load(dir)`,编进二进制的用 `DeclarativeScene::from_sources`。
 

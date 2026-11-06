@@ -280,7 +280,7 @@ mod tests {
         let settings = base_settings();
         let report = run_doctor(
             &paths,
-            "coding",
+            "code",
             settings,
             false,
             crate::plugins::PluginStatus::Enabled,
@@ -302,7 +302,7 @@ mod tests {
         let settings = base_settings();
         let report = run_doctor(
             &paths,
-            "coding",
+            "code",
             settings,
             false,
             crate::plugins::PluginStatus::Enabled,
@@ -337,7 +337,7 @@ mod tests {
         let settings = Arc::new(settings);
         let report = run_doctor(
             &paths,
-            "coding",
+            "code",
             settings,
             false,
             crate::plugins::PluginStatus::Enabled,
@@ -354,7 +354,7 @@ mod tests {
         let settings = base_settings();
         let report = run_doctor(
             &paths,
-            "coding",
+            "code",
             settings,
             true,
             crate::plugins::PluginStatus::Enabled,
@@ -379,7 +379,7 @@ mod tests {
         ] {
             let report = run_doctor(
                 &paths,
-                "coding",
+                "code",
                 settings.clone(),
                 false,
                 status,
@@ -409,7 +409,7 @@ mod tests {
         let paths = StaticDaemonPaths::new(dir.path().to_path_buf());
         let report = run_doctor(
             &paths,
-            "coding",
+            "code",
             base_settings(),
             false,
             crate::plugins::PluginStatus::Enabled,
@@ -447,7 +447,7 @@ mod tests {
         let paths = StaticDaemonPaths::new(dir.path().to_path_buf());
         let report = run_doctor(
             &paths,
-            "coding",
+            "code",
             base_settings(),
             false,
             crate::plugins::PluginStatus::Enabled,
@@ -484,7 +484,7 @@ mod documented_shape_tests {
     fn report_the_example_describes(dir: &Path) -> serde_json::Value {
         run_doctor(
             &StaticDaemonPaths::new(dir.to_path_buf()),
-            "coding",
+            "code",
             Arc::new(Settings::defaults_for("claude-sonnet-4-6")),
             true,
             crate::plugins::PluginStatus::Enabled,

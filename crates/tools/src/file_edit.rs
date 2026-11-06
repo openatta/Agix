@@ -22,40 +22,35 @@ pub struct FileEditInput {
     /// against the current working directory.
     pub file_path: String,
 
-    /// **Q2 **: list of edits to apply atomically. If provided, the
-    /// `old_string` / `new_string` / `replace_all` top-level fields are
-    /// ignored. Edits are applied **in order** (each one runs against the
-    /// in-memory result of the previous). If any edit fails (no match, or
-    /// non-unique without replace_all) the whole call aborts and the file
-    /// is left untouched.
+    /// Edits applied atomically, in order, each to the result of the one
+    /// before. When given, the top-level `old_string` / `new_string` /
+    /// `replace_all` are ignored. If any edit fails, nothing is written.
     #[serde(default)]
     pub edits: Option<Vec<SingleEdit>>,
 
-    /// Single-edit shorthand. Used when `edits` is None. The literal text to
-    /// find — must match exactly (incl. whitespace).
+    /// Single edit (when `edits` is absent): the literal text to find,
+    /// matched exactly, whitespace included.
     #[serde(default)]
     pub old_string: Option<String>,
 
-    /// Single-edit shorthand: the text to replace `old_string` with. Must
-    /// differ from `old_string`.
+    /// Single edit: the replacement; must differ from `old_string`.
     #[serde(default)]
     pub new_string: Option<String>,
 
-    /// Single-edit shorthand: when false (default), `old_string` must appear
-    /// exactly once. When true, every occurrence is replaced at once.
+    /// Single edit: false (default) requires `old_string` to occur exactly
+    /// once; true replaces every occurrence.
     #[serde(default)]
     pub replace_all: Option<bool>,
 }
 
-/// **Q2 **: one entry in a multi-edit batch.
 #[derive(Debug, Deserialize, JsonSchema, Clone)]
 pub struct SingleEdit {
     /// Literal text to find. Must match exactly.
     pub old_string: String,
     /// Replacement text. Must differ from `old_string`.
     pub new_string: String,
-    /// `false` (default) → `old_string` must appear exactly once at the time
-    /// this edit is applied. `true` → replace every occurrence.
+    /// false (default) requires `old_string` to occur exactly once; true
+    /// replaces every occurrence.
     #[serde(default)]
     pub replace_all: Option<bool>,
 }
@@ -326,7 +321,7 @@ struct PerformOutcome {
     diff: DiffPayload,
 }
 
-/// **Q2 **: apply N edits atomically. Each edit runs against the
+/// Apply N edits atomically. Each edit runs against the
 /// in-memory result of the previous one. If any edit fails (no match, or
 /// non-unique without replace_all), the file is **not** written and an
 /// error is returned describing which edit failed and why.
@@ -674,8 +669,6 @@ mod tests {
     fn parse_hunk_header_garbage_returns_none() {
         assert!(super::parse_hunk_header("not a header").is_none());
     }
-
-    // ---- Q2 : multi-edit ----
 
     #[tokio::test]
     async fn multi_edit_applies_all_in_order() {

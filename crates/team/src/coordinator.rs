@@ -1798,7 +1798,7 @@ mod tests {
         let registry = Arc::new(crate::registry::TeamRegistry::new());
         let coordinator = DefaultCoordinator::with_agent_spawner(spawner)
             .with_registry(registry.clone())
-            .with_scene_id("coding".to_string());
+            .with_scene_id("code".to_string());
         let req = make_request(ctx, stages);
 
         coordinator.orchestrate(req).await.expect("orchestrate ok");
@@ -1808,7 +1808,7 @@ mod tests {
             .unwrap()
             .expect("team.json should exist");
         assert_eq!(decl.name, "test-team");
-        assert_eq!(decl.scene, "coding");
+        assert_eq!(decl.scene, "code");
         assert_eq!(decl.mode, crate::persist::TeamMode::Batch);
         assert_eq!(decl.stages.len(), 1);
         assert_eq!(decl.stages[0].members[0].label, "worker");

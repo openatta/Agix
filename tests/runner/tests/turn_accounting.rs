@@ -76,7 +76,7 @@ async fn one_turn_of_two_calls() -> Ran {
 
     let (telemetry_tx, mut telemetry_rx) = tokio::sync::mpsc::channel(64);
     let (mut agent, mut event_rx, input_tx) = Builder::new()
-        .scene(Arc::new(scene::chat::ChatScene) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::harnix::HarnixScene) as Arc<dyn Scene>)
         .model(model)
         .tools(registry)
         .settings(Arc::new(settings))

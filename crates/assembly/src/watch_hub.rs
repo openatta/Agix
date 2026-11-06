@@ -330,7 +330,7 @@ mod tests {
             target: WatchTarget::Settings,
         };
         let key_b = WatchKey {
-            tier: Tier::Scene("coding".into()),
+            tier: Tier::Scene("code".into()),
             target: WatchTarget::Settings,
         };
 
@@ -460,11 +460,11 @@ mod tests {
         std::fs::write(&file_b, "{}").unwrap();
 
         let key_a = WatchKey {
-            tier: Tier::Scene("coding".into()),
+            tier: Tier::Scene("code".into()),
             target: WatchTarget::Settings,
         };
         let key_b = WatchKey {
-            tier: Tier::Scene("chat".into()),
+            tier: Tier::Scene("harnix".into()),
             target: WatchTarget::Settings,
         };
         let mut rx = hub.changes();

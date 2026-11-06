@@ -80,7 +80,7 @@ mod tests {
     #[test]
     fn a_package_scene_cannot_take_another_id() {
         let dir = tempfile::tempdir().unwrap();
-        let p = package(dir.path(), r#"{"id": "coding", "name": "Not coding"}"#);
+        let p = package(dir.path(), r#"{"id": "code", "name": "Not coding"}"#);
         let e = declared_scene(&p).unwrap().unwrap_err().to_string();
         assert!(e.contains(r#"must be "plugin:review""#), "{e}");
         assert!(declared_scenes(&[p]).is_empty());

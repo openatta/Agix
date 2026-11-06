@@ -942,8 +942,8 @@ mod tests {
             r#"{"id": "triage", "name": "T"}"#,
             "p",
         );
-        std::fs::create_dir_all(root.path().join("coding")).unwrap();
-        std::fs::write(root.path().join("coding/settings.json"), "{}").unwrap();
+        std::fs::create_dir_all(root.path().join("code")).unwrap();
+        std::fs::write(root.path().join("code/settings.json"), "{}").unwrap();
         std::fs::create_dir_all(root.path().join(".hidden")).unwrap();
         std::fs::write(root.path().join("notes.txt"), "").unwrap();
 

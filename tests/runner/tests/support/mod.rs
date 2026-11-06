@@ -515,7 +515,7 @@ impl GoldenFile {
 
 // ── scene ───────────────────────────────────────────────────────────────
 
-/// `ChatScene` with a caller-chosen compaction threshold, offering whatever
+/// `HarnixScene` with a caller-chosen compaction threshold, offering whatever
 /// tools the case registers.
 ///
 /// The threshold lives on the scene, not in settings, so a case that wants to
@@ -524,9 +524,9 @@ impl GoldenFile {
 /// whitelist decides what a session has at all, and the cases' fake tools
 /// are on no real scene's list. Everything else delegates.
 pub struct BudgetScene {
-    inner: scene::chat::ChatScene,
+    inner: scene::harnix::HarnixScene,
     pub compact_threshold: usize,
-    /// `None` leaves the chat scene's own ceiling. `Some` is how a case pins
+    /// `None` leaves the inner scene's own ceiling. `Some` is how a case pins
     /// the stop-on-max-turns decision without running dozens of model calls.
     pub max_api_calls: Option<u32>,
 }
@@ -534,7 +534,7 @@ pub struct BudgetScene {
 impl BudgetScene {
     pub fn new(compact_threshold: usize) -> Self {
         Self {
-            inner: scene::chat::ChatScene,
+            inner: scene::harnix::HarnixScene,
             compact_threshold,
             max_api_calls: None,
         }

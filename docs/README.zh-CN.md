@@ -202,13 +202,13 @@ let (mut agent, events, input) = runtime::agent::Builder::new()
 ```sh
 git clone https://github.com/openatta/agix && cd agix
 export ANTHROPIC_AUTH_TOKEN=sk-...        # 或 ANTHROPIC_API_KEY;兼容端点另设 ANTHROPIC_BASE_URL
-cargo run --release -p daemon --bin agixd # 监听 ~/.agix/scenes/coding/daemon.sock
+cargo run --release -p daemon --bin agixd # 监听 ~/.agix/scenes/code/daemon.sock
 ```
 
 和它说话——每行一个 JSON 对象:
 
 ```sh
-sock=$HOME/.agix/scenes/coding/daemon.sock
+sock=$HOME/.agix/scenes/code/daemon.sock
 echo '{"jsonrpc":"2.0","id":1,"method":"session.create","params":{"project_root":"'$PWD'"}}' \
   | socat - UNIX-CONNECT:$sock
 # → {"jsonrpc":"2.0","id":1,"result":{"session_id":"…",…}}
@@ -235,7 +235,7 @@ echo '{"jsonrpc":"2.0","id":2,"method":"session.run_turn",
 
 ```rust
 let (mut agent, mut events, _input) = runtime::agent::Builder::new()
-    .scene(Arc::new(scene::coding::CodingScene) as Arc<dyn Scene>)
+    .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
     .model(Arc::new(model::adapter::AnthropicModel::new(client)))
     .settings(Arc::new(settings))
     .build()?;
@@ -260,8 +260,8 @@ ANTHROPIC_API_KEY=... cargo run --release -p runtime --example minimal -- "列�
 
 ```rust
 let pool = daemon::assemble::pool(
-    &load_daemon_config("claude-sonnet-4-6", 8192, None, "coding", &paths),
-    Arc::new(scene::coding::CodingScene),
+    &load_daemon_config("claude-sonnet-4-6", 8192, None, "code", &paths),
+    Arc::new(scene::code::CodeScene),
     daemon::Assembly { scenes: vec![my_scene], ..Default::default() },
 )
 .await?;

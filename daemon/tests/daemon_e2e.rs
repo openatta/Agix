@@ -98,7 +98,7 @@ async fn start_server_in(
         "claude-sonnet-4-6",
         2000,
         Some(&sock),
-        "coding",
+        "code",
         &StaticDaemonPaths::new(dir.path().to_path_buf()),
     );
 
@@ -109,7 +109,7 @@ async fn start_server_in(
     // are about the RPC surface, not about transcripts.
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::coding::CodingScene),
+        Arc::new(scene::code::CodeScene),
         daemon::Assembly {
             cwd: Some(dir.path().to_path_buf()),
             model_client: Some(client),
@@ -1221,14 +1221,14 @@ async fn start_server_with_history(
         "claude-sonnet-4-6",
         2000,
         None,
-        "coding",
+        "code",
         &StaticDaemonPaths::new(dir.path().to_path_buf()),
     );
     config.session_cap = cap;
 
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::coding::CodingScene),
+        Arc::new(scene::code::CodeScene),
         daemon::Assembly {
             cwd: Some(dir.path().to_path_buf()),
             model_client: Some(client),
@@ -1308,14 +1308,14 @@ async fn start_tcp_server(
         "claude-sonnet-4-6",
         2000,
         None,
-        "coding",
+        "code",
         &StaticDaemonPaths::new(dir.path().to_path_buf()),
     );
     config.session_cap = 8;
 
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::coding::CodingScene),
+        Arc::new(scene::code::CodeScene),
         daemon::Assembly {
             cwd: Some(dir.path().to_path_buf()),
             model_client: Some(client),
@@ -1444,12 +1444,12 @@ async fn serve_tcp_listener_bails_without_a_token_even_when_called_directly() {
         "claude-sonnet-4-6",
         2000,
         None,
-        "coding",
+        "code",
         &StaticDaemonPaths::new(dir.path().to_path_buf()),
     );
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::coding::CodingScene),
+        Arc::new(scene::code::CodeScene),
         daemon::Assembly {
             cwd: Some(dir.path().to_path_buf()),
             model_client: Some(client),

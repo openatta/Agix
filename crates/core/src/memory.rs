@@ -627,14 +627,8 @@ fn sanitize_filename(name: &str) -> String {
         .to_string()
 }
 
-/// Build the memory system prompt for injection into the system prompt.
-///
-/// v2: Full XML-style type descriptions with `<when_to_save>`, `<how_to_use>`,
-/// `<body_structure>`, and `<examples>` tags, to give the model the same
-/// guidance on what/when/how to save memories.
-///
-/// v3: Reads MEMORY.md index content from disk and appends it to the prompt,
-/// truncated to 200 lines / 25KB.
+/// Build the memory system prompt: how to write and use memories, followed by
+/// the `MEMORY.md` index read from disk (truncated to 200 lines / 25KB).
 pub fn build_memory_prompt(memory_dir: &Path) -> String {
     let dir_str = memory_dir.display().to_string();
     let mut sections = vec![
@@ -730,9 +724,9 @@ fn truncate_entrypoint_content(raw: &str) -> TruncatedEntry {
 const MEMORY_HEADER: &str = "\
 # Memory
 
-You have a persistent file-based memory at `{dir}`. This directory already exists — write \
-to it directly (do not run mkdir or check for its existence). Each memory is one file \
-holding one fact, with frontmatter:
+You have a persistent file-based memory at `{dir}`. The directory exists — write to it \
+directly (no mkdir, no existence check). Each memory is one file holding one fact, with \
+frontmatter:
 
 ```
 ---
@@ -745,109 +739,48 @@ type: user | feedback | project | reference
 Link related memories with `[[their-name]]`.>
 ```
 
-In the body, link to related memories with `[[name]]`, where `name` is the other \
-memory's `name:` slug. Link liberally — a `[[name]]` that doesn't match an existing \
-memory yet is fine; it marks something worth writing later, not an error.
+`[[name]]` refers to another memory's `name:` slug. Link liberally; a link to a memory \
+that doesn't exist yet marks something worth writing later, not an error.
 
-After writing the file, add a one-line pointer in `MEMORY.md` (`- [Title](file.md) — \
-hook`). `MEMORY.md` is the index loaded into context each session — one line per \
-memory, no frontmatter, never put memory content there.
+After writing the file, add a one-line pointer to `MEMORY.md` (`- [Title](file.md) — \
+hook`). `MEMORY.md` is the index loaded into context each session: one line per memory, \
+no frontmatter, never memory content.
 
-Before saving, check for an existing file that already covers it — update that file \
-rather than creating a duplicate. Delete memories that turn out to be wrong. Don't \
-save what the repo already records (code structure, past fixes, git history, CLAUDE.md).";
+Before saving, check for an existing file that covers it and update that instead of \
+duplicating. Delete memories that turn out to be wrong.";
 
 const TYPES_SECTION_INDIVIDUAL: &str = r#"## Types of memory
 
-There are several discrete types of memory that you can store in your memory system:
+- **user** — the user's role, goals, responsibilities, knowledge and preferences, so you can tailor your work to them (a senior engineer is helped differently from a first-time coder). Save when you learn such details. Nothing judgemental, nothing irrelevant to the work.
+- **feedback** — how the user wants work approached: what to avoid *and* what to keep doing. Save when they correct you ("no not that", "stop doing X") and when they confirm a non-obvious approach worked ("yes exactly", accepting an unusual choice without pushback) — recording only corrections drifts you away from validated approaches and makes you overly cautious. Save what applies to future conversations, especially if surprising. Lead with the rule, then **Why:** (the reason given) and **How to apply:** (when it kicks in), so you can judge edge cases. These exist so the user never has to give the same guidance twice.
+- **project** — ongoing work, goals, initiatives, bugs or incidents not derivable from the code or git history: who is doing what, why, by when. Convert relative dates to absolute ("Thursday" → "2026-03-05"). Lead with the fact or decision, then **Why:** and **How to apply:**; these change fast, so keep them current.
+- **reference** — where information lives in external systems and what it is for (a Linear project, a Slack channel, a dashboard). Use when the user refers to such a system.
 
-<types>
-<type>
-    <name>user</name>
-    <description>Contain information about the user's role, goals, responsibilities, and knowledge. Great user memories help you tailor your future behavior to the user's preferences and perspective. Your goal in reading and writing these memories is to build up an understanding of who the user is and how you can be most helpful to them specifically. For example, you should collaborate with a senior software engineer differently than a student who is coding for the very first time. Keep in mind, that the aim here is to be helpful to the user. Avoid writing memories about the user that could be viewed as a negative judgement or that are not relevant to the work you're trying to accomplish together.</description>
-    <when_to_save>When you learn any details about the user's role, preferences, responsibilities, or knowledge</when_to_save>
-    <how_to_use>When your work should be informed by the user's profile or perspective. For example, if the user is asking you to explain a part of the code, you should answer that question in a way that is tailored to the specific details that they will find most valuable or that helps them build their mental model in relation to domain knowledge they already have.</how_to_use>
-    <examples>
-    user: I'm a data scientist investigating what logging we have in place
-    assistant: [saves user memory: user is a data scientist, currently focused on observability/logging]
+Examples:
+- "I've been writing Go for ten years but this is my first time touching the React side" → user: deep Go expertise, new to React and this frontend — explain frontend in backend terms.
+- "don't mock the database in these tests — we got burned when mocked tests passed but the prod migration failed" → feedback: integration tests hit a real database. **Why:** a mock/prod divergence once hid a broken migration. **How to apply:** any test touching persistence.
+- "yeah the single bundled PR was the right call here" → feedback: for refactors in this area the user prefers one bundled PR — a confirmed judgement call, not a correction.
+- "we're freezing non-critical merges after Thursday for the mobile release" → project: merge freeze begins 2026-03-05; flag non-critical PR work after that date.
+- "pipeline bugs are tracked in the Linear project INGEST" → reference: pipeline bugs live in Linear project "INGEST"."#;
 
-    user: I've been writing Go for ten years but this is my first time touching the React side of this repo
-    assistant: [saves user memory: deep Go expertise, new to React and this project's frontend — frame frontend explanations in terms of backend analogues]
-    </examples>
-</type>
-<type>
-    <name>feedback</name>
-    <description>Guidance the user has given you about how to approach work — both what to avoid and what to keep doing. These are a very important type of memory to read and write as they allow you to remain coherent and responsive to the way you should approach work in the project. Record from failure AND success: if you only save corrections, you will avoid past mistakes but drift away from approaches the user has already validated, and may grow overly cautious.</description>
-    <when_to_save>Any time the user corrects your approach ("no not that", "don't", "stop doing X") OR confirms a non-obvious approach worked ("yes exactly", "perfect, keep doing that", accepting an unusual choice without pushback). Corrections are easy to notice; confirmations are quieter — watch for them. In both cases, save what is applicable to future conversations, especially if surprising or not obvious from the code. Include *why* so you can judge edge cases later.</when_to_save>
-    <how_to_use>Let these memories guide your behavior so that the user does not need to offer the same guidance twice.</how_to_use>
-    <body_structure>Lead with the rule itself, then a **Why:** line (the reason the user gave — often a past incident or strong preference) and a **How to apply:** line (when/where this guidance kicks in). Knowing *why* lets you judge edge cases instead of blindly following the rule.</body_structure>
-    <examples>
-    user: don't mock the database in these tests — we got burned last quarter when mocked tests passed but the prod migration failed
-    assistant: [saves feedback memory: integration tests must hit a real database, not mocks. Reason: prior incident where mock/prod divergence masked a broken migration]
+const WHAT_NOT_TO_SAVE_SECTION: &str = r#"## What NOT to save
 
-    user: stop summarizing what you just did at the end of every response, I can read the diff
-    assistant: [saves feedback memory: this user wants terse responses with no trailing summaries]
+- Code patterns, conventions, architecture, file paths, project structure — read the project instead.
+- Git history, recent changes, who changed what — `git log` / `git blame` are authoritative.
+- Debugging solutions or fix recipes — the fix is in the code, the context in the commit message.
+- Anything already in CLAUDE.md files.
+- Ephemeral task details: in-progress work, temporary state, the current conversation.
 
-    user: yeah the single bundled PR was the right call here, splitting this one would've just been churn
-    assistant: [saves feedback memory: for refactors in this area, user prefers one bundled PR over many small ones. Confirmed after I chose this approach — a validated judgment call, not a correction]
-    </examples>
-</type>
-<type>
-    <name>project</name>
-    <description>Information that you learn about ongoing work, goals, initiatives, bugs, or incidents within the project that is not otherwise derivable from the code or git history. Project memories help you understand the broader context and motivation behind the work the user is doing within this working directory.</description>
-    <when_to_save>When you learn who is doing what, why, or by when. These states change relatively quickly so try to keep your understanding of this up to date. Always convert relative dates in user messages to absolute dates when saving (e.g., "Thursday" → "2026-03-05"), so the memory remains interpretable after time passes.</when_to_save>
-    <how_to_use>Use these memories to more fully understand the details and nuance behind the user's request and make better informed suggestions.</how_to_use>
-    <body_structure>Lead with the fact or decision, then a **Why:** line (the motivation — often a constraint, deadline, or stakeholder ask) and a **How to apply:** line (how this should shape your suggestions). Project memories decay fast, so the why helps future-you judge whether the memory is still load-bearing.</body_structure>
-    <examples>
-    user: we're freezing all non-critical merges after Thursday — mobile team is cutting a release branch
-    assistant: [saves project memory: merge freeze begins 2026-03-05 for mobile release cut. Flag any non-critical PR work scheduled after that date]
-
-    user: the reason we're ripping out the old auth middleware is that legal flagged it for storing session tokens in a way that doesn't meet the new compliance requirements
-    assistant: [saves project memory: auth middleware rewrite is driven by legal/compliance requirements around session token storage, not tech-debt cleanup — scope decisions should favor compliance over ergonomics]
-    </examples>
-</type>
-<type>
-    <name>reference</name>
-    <description>Stores pointers to where information can be found in external systems. These memories allow you to remember where to look to find up-to-date information outside of the project directory.</description>
-    <when_to_save>When you learn about resources in external systems and their purpose. For example, that bugs are tracked in a specific project in Linear or that feedback can be found in a specific Slack channel.</when_to_save>
-    <how_to_use>When the user references an external system or information that may be in an external system.</how_to_use>
-    <examples>
-    user: check the Linear project "INGEST" if you want context on these tickets, that's where we track all pipeline bugs
-    assistant: [saves reference memory: pipeline bugs are tracked in Linear project "INGEST"]
-
-    user: the Grafana board at grafana.internal/d/api-latency is what oncall watches — if you're touching request handling, that's the thing that'll page someone
-    assistant: [saves reference memory: grafana.internal/d/api-latency is the oncall latency dashboard — check it when editing request-path code]
-    </examples>
-</type>
-</types>"#;
-
-const WHAT_NOT_TO_SAVE_SECTION: &str = r#"## What NOT to save in memory
-
-- Code patterns, conventions, architecture, file paths, or project structure — these can be derived by reading the current project state.
-- Git history, recent changes, or who-changed-what — `git log` / `git blame` are authoritative.
-- Debugging solutions or fix recipes — the fix is in the code; the commit message has the context.
-- Anything already documented in CLAUDE.md files.
-- Ephemeral task details: in-progress work, temporary state, current conversation context.
-
-These exclusions apply even when the user explicitly asks you to save. If they ask you to save a PR list or activity summary, ask what was *surprising* or *non-obvious* about it — that is the part worth keeping."#;
+These hold even when the user asks you to save. Asked to save a PR list or activity summary, ask what was *surprising* or *non-obvious* about it — that is the part worth keeping."#;
 
 const WHEN_TO_ACCESS_SECTION: &str = r#"## When to access memories
-- When memories seem relevant, or the user references prior-conversation work.
-- You MUST access memory when the user explicitly asks you to check, recall, or remember.
-- If the user says to *ignore* or *not use* memory: proceed as if MEMORY.md were empty. Do not apply remembered facts, cite, compare against, or mention memory content.
-- Memory records can become stale over time. Use memory as context for what was true at a given point in time. Before answering the user or building assumptions based solely on information in memory records, verify that the memory is still correct and up-to-date by reading the current state of the files or resources. If a recalled memory conflicts with current information, trust what you observe now — and update or remove the stale memory rather than acting on it."#;
+- When memories seem relevant, or the user refers to earlier conversations. You MUST access memory when the user asks you to check, recall or remember.
+- If the user says to ignore memory, proceed as if MEMORY.md were empty: don't apply, cite, compare against or mention it.
+- Memories can go stale. Before answering or acting on one alone, verify it against the current files or resources; if it conflicts with what you observe, trust the observation and update or remove the memory."#;
 
 const TRUSTING_RECALL_SECTION: &str = r#"## Before recommending from memory
 
-A memory that names a specific function, file, or flag is a claim that it existed *when the memory was written*. It may have been renamed, removed, or never merged. Before recommending it:
-
-- If the memory names a file path: check the file exists.
-- If the memory names a function or flag: grep for it.
-- If the user is about to act on your recommendation (not just asking about history), verify first.
-
-"The memory says X exists" is not the same as "X exists now."
-
-A memory that summarizes repo state (activity logs, architecture snapshots) is frozen in time. If the user asks about *recent* or *current* state, prefer `git log` or reading the code over recalling the snapshot."#;
+A memory naming a file, function or flag says it existed *when written*; it may have been renamed, removed or never merged. Check a path exists or grep for the name before recommending it, and always verify first when the user is about to act on it. A memory summarizing repo state is a snapshot: for *recent* or *current* state, prefer `git log` or the code."#;
 
 /// Select the most relevant memories using an LLM (Sonnet-tier), picking up
 /// to 5 most relevant memories from the MEMORY.md index.

@@ -251,7 +251,7 @@ async fn a_monitors_events_reach_the_model_while_it_works() -> anyhow::Result<()
         n == "Bash"
             && input["command"]
                 .as_str()
-                .is_some_and(|c| c.contains("deploy.sh"))
+                .is_some_and(|c| c.contains("sh deploy.sh"))
     });
     assert!(
         monitor_at.is_some() && monitor_at < deploy_at,

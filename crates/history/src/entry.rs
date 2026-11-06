@@ -480,7 +480,7 @@ mod tests {
                 engine_version: "0.0.1".into(),
                 agix_version: "0.0.1".into(),
                 parent_session_id: None,
-                scene: Some("coding".into()),
+                scene: Some("code".into()),
                 project_root: Some("/repo".into()),
                 session_kind: SessionKind::Primary,
                 schema_version: CURRENT_META_SCHEMA_VERSION,
@@ -489,7 +489,7 @@ mod tests {
         let v = serde_json::to_value(&env).unwrap();
         assert_eq!(v["kind"], "meta");
         assert_eq!(v["cwd"], "/tmp");
-        assert_eq!(v["scene"], "coding");
+        assert_eq!(v["scene"], "code");
         assert_eq!(v["session_kind"], "primary");
         assert_eq!(v["schema_version"], 2);
         assert!(v["v"].is_number());

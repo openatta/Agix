@@ -87,7 +87,7 @@ impl Daemon {
             "claude-sonnet-4-6",
             2000,
             Some(&sock),
-            "coding",
+            "code",
             &StaticDaemonPaths::new(dir.path().to_path_buf()),
         );
         config.settings.memory_enabled = false;
@@ -95,7 +95,7 @@ impl Daemon {
             base::interface::settings::PermissionMode::BypassPermissions;
         let pool = daemon::assemble::pool(
             &config,
-            Arc::new(scene::coding::CodingScene),
+            Arc::new(scene::code::CodeScene),
             daemon::Assembly {
                 cwd: Some(cwd),
                 model_client: Some(model.clone() as Arc<dyn AnthropicClient>),

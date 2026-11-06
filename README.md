@@ -240,13 +240,13 @@ log, execution, locks, disk layout — is in
 ```sh
 git clone https://github.com/openatta/agix && cd agix
 export ANTHROPIC_AUTH_TOKEN=sk-...        # or ANTHROPIC_API_KEY; ANTHROPIC_BASE_URL for a compatible endpoint
-cargo run --release -p daemon --bin agixd # listens on ~/.agix/scenes/coding/daemon.sock
+cargo run --release -p daemon --bin agixd # listens on ~/.agix/scenes/code/daemon.sock
 ```
 
 Talk to it — one JSON object per line:
 
 ```sh
-sock=$HOME/.agix/scenes/coding/daemon.sock
+sock=$HOME/.agix/scenes/code/daemon.sock
 echo '{"jsonrpc":"2.0","id":1,"method":"session.create","params":{"project_root":"'$PWD'"}}' \
   | socat - UNIX-CONNECT:$sock
 # → {"jsonrpc":"2.0","id":1,"result":{"session_id":"…",…}}
@@ -277,7 +277,7 @@ As a library — one agent, driven directly:
 
 ```rust
 let (mut agent, mut events, _input) = runtime::agent::Builder::new()
-    .scene(Arc::new(scene::coding::CodingScene) as Arc<dyn Scene>)
+    .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
     .model(Arc::new(model::adapter::AnthropicModel::new(client)))
     .settings(Arc::new(settings))
     .build()?;
@@ -303,8 +303,8 @@ settings tiers, routing, history layout and modules, and your own scenes:
 
 ```rust
 let pool = daemon::assemble::pool(
-    &load_daemon_config("claude-sonnet-4-6", 8192, None, "coding", &paths),
-    Arc::new(scene::coding::CodingScene),
+    &load_daemon_config("claude-sonnet-4-6", 8192, None, "code", &paths),
+    Arc::new(scene::code::CodeScene),
     daemon::Assembly { scenes: vec![my_scene], ..Default::default() },
 )
 .await?;

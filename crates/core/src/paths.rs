@@ -15,7 +15,7 @@
 //!
 //! `scope` identifies which product built on this engine owns the
 //! scene-specific override state (e.g. a coding-agent product might use
-//! `"coding"`). The engine never assumes a default — callers must pass one
+//! `"code"`). The engine never assumes a default — callers must pass one
 //! explicitly. The local/project root is flat and has no scope segment: a
 //! project is assumed to be worked on by one product instance at a time, so
 //! there's no collision to avoid the way there is under a shared `$HOME`.

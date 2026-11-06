@@ -1456,7 +1456,7 @@ mod tests {
                     engine_version: "0.0.1".into(),
                     agix_version: "0.0.1".into(),
                     parent_session_id: None,
-                    scene: Some("coding".into()),
+                    scene: Some("code".into()),
                     project_root: None,
                     session_kind: SessionKind::Primary,
                     schema_version: entry::CURRENT_META_SCHEMA_VERSION,
@@ -2794,11 +2794,11 @@ mod contract_tests {
         the_scene_and_project_a_session_was_created_under_are_readable,
         |store| {
             let s = SessionId::new();
-            store.append(s, meta_in("chat", "/repo/a")).await.unwrap();
+            store.append(s, meta_in("harnix", "/repo/a")).await.unwrap();
             store.append(s, user("hi")).await.unwrap();
 
             let facts = store.session_facts(s).await.unwrap();
-            assert_eq!(facts.scene.as_deref(), Some("chat"));
+            assert_eq!(facts.scene.as_deref(), Some("harnix"));
             assert_eq!(facts.project_root.as_deref(), Some("/repo/a"));
             assert_eq!(facts.session_kind, SessionKind::Primary);
         }

@@ -94,7 +94,7 @@ read-modify-write 同一个索引文件而丢更新。读取方 `read_dir` 汇�
   "socket": "/Users/x/.agix/daemon/desktop.sock",
   "tcp": "127.0.0.1:7878",              // 仅在 --listen 时出现
   "ws": "127.0.0.1:7879",               // 仅在 --listen-ws 时出现
-  "scenes": ["coding", "chat", "research"],
+  "scenes": ["code", "harnix", "mini"],
   "protocol_version": 3,
   "started_at": "2026-08-11T10:00:00Z" }
 ```
@@ -152,10 +152,10 @@ socket_path, version, started_at, protocol_version}`)。它早于多场景支持
 
 每个场景声明两个能力位,`scene.list` / `scene.describe` 暴露:
 
-| 能力 | 含义 | coding | research | chat | demo |
-|---|---|---|---|---|---|
-| `requires_project` | 会话必须绑定项目根 | ✅ | ✅ | ❌ | ❌ |
-| `supports_team` | 注册 Team 工具 | ✅ | ✅ | ❌ | ❌ |
+| 能力 | 含义 | code | harnix | mini |
+|---|---|---|---|---|
+| `requires_project` | 会话必须绑定项目根 | ✅ | ❌ | ❌ |
+| `supports_team` | 注册 Team 工具 | ✅ | ❌ | ❌ |
 
 宿主据此决定新建会话时要不要先弹"选择项目"。`requires_project` 的场景传
 `project_root: null` 会在 `session.create` 就被拒(`PROJECT_REQUIRED`),而不是等到
@@ -640,7 +640,7 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 (`path` 因机器而异,其余是字面值):
 
 ```jsonc
-{ "scene": "coding",
+{ "scene": "code",
   "health": {
     "status": "ok",                   // ok | degraded | failing,取所有检查里最差的一项
     "checks": [                       // 每项的 details 与下面同名的顶层字段是同一份数据
@@ -706,7 +706,7 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 ```jsonc
 // ← result
 { "scenes": [
-    { "scene":"coding", "name":"Agix Coding", "description":"…",
+    { "scene":"code", "name":"Agix Code", "description":"…",
       "active":true, "sessions":0,
       "requires_project":true, "supports_team":true } ] }
 ```
@@ -718,9 +718,9 @@ HashMap),客户端要按 `scene` 找条目,不要按下标。
 
 ```jsonc
 // → params
-{ "scene": "chat" }
+{ "scene": "harnix" }
 // ← result
-{ "scene": "chat", "active": true }
+{ "scene": "harnix", "active": true }
 ```
 
 幂等。场景 id 不是这个二进制注册的 → `SCENE_NOT_FOUND`。
@@ -729,9 +729,9 @@ HashMap),客户端要按 `scene` 找条目,不要按下标。
 
 ```jsonc
 // → params
-{ "scene": "chat" }
+{ "scene": "harnix" }
 // ← result
-{ "scene": "chat" }
+{ "scene": "harnix" }
 ```
 
 该场景下还有**内存中的**会话时失败,`SCENE_HAS_ACTIVE_SESSIONS`,`message` 里列出
@@ -746,7 +746,7 @@ HashMap),客户端要按 `scene` 找条目,不要按下标。
 
 ```jsonc
 // ← result
-{ "scenes": [ "chat", "coding", "triage", "…" ],  // 重建后全部可用的场景 id
+{ "scenes": [ "code", "harnix", "triage", "…" ],  // 重建后全部可用的场景 id
   "added": [ "triage" ], "removed": [ ],
   "errors": [ "…" ] }                              // 没加载上的,逐条说明原因
 ```
@@ -782,9 +782,9 @@ HashMap),客户端要按 `scene` 找条目,不要按下标。
 
 ```jsonc
 // → params
-{ "scene": "coding", "project_root": null, "include_secrets": false }
+{ "scene": "code", "project_root": null, "include_secrets": false }
 // ← result
-{ "scene": "coding", "name": "Agix Coding", "description": "…",
+{ "scene": "code", "name": "Agix Code", "description": "…",
   "project_root": null,
   "active": true,
   "capabilities": { "requires_project": true, "supports_team": true },
@@ -810,7 +810,7 @@ HashMap),客户端要按 `scene` 找条目,不要按下标。
 
 ```jsonc
 // → params
-{ "scene": "coding",                      // 可选,默认 daemon 的 --scene
+{ "scene": "code",                      // 可选,默认 daemon 的 --scene
   "project_root": "/Users/x/repo-a",      // 见 §3.1 的三态
   "options": {                            // 可选,只在创建时生效
     "permission_mode": "default",
@@ -823,7 +823,7 @@ HashMap),客户端要按 `scene` 找条目,不要按下标。
     "model": "deepseek-chat",             // 可选
     "prompt": { "append": "…", "override": null } } }  // 可选,见 session.setPrompt
 // ← result
-{ "session_id": "…", "scene": "coding", "session_kind": "primary",
+{ "session_id": "…", "scene": "code", "session_kind": "primary",
   "project_root": "…", "created_at": "…" }
 ```
 
@@ -901,7 +901,7 @@ turn 期间的引擎错误不是事件,是**这次调用的错误响应**:`ENGIN
   "status": "active",              // active | inactive
   "session_kind": "primary",
   "resumable": true,
-  "scene": "coding", "project_root": "…",   // null = 无项目会话,或老日志没记
+  "scene": "code", "project_root": "…",   // null = 无项目会话,或老日志没记
   "scene_active": true,
   "turn_state": "idle",            // idle | running
   "current_turn_id": null }
@@ -954,7 +954,7 @@ turn 期间的引擎错误不是事件,是**这次调用的错误响应**:`ENGIN
     { "session_id": "…", "name": null, "preview": null,
       "message_count": 0, "created_at": "…", "last_active": "…",
       "status": "active", "session_kind": "primary", "resumable": true,
-      "scene": "coding", "project_root": "…", "compact_count": 0 } ] }
+      "scene": "code", "project_root": "…", "compact_count": 0 } ] }
 ```
 
 返回内存中的会话 + 磁盘上的历史会话,合并去重,**不分页、不过滤场景**。
@@ -1255,7 +1255,7 @@ client,会话在原地按新的规格重建(它是空闲的,不会腰斩什么),
   "message_count": "…", "entry_count": "…",
   "name": null,
   "created_at": "…", "last_active": "…",
-  "scene": "coding",
+  "scene": "code",
   "permission": { "mode": "default", "prompts": true, "prompt_timeout_secs": "…" },
   "scene_inferred": false }
 ```
@@ -1536,11 +1536,11 @@ Shell 命令、监视器没有收件箱。会话不在内存里 → `SESSION_NOT
 
 ```jsonc
 // → params
-{ "scene": "coding", "project_root": null,
+{ "scene": "code", "project_root": null,
   "tier": "effective",            // global | scene | project | effective,默认 effective
   "include_secrets": false }
 // ← result
-{ "scene": "coding", "project_root": null, "tier": "effective",
+{ "scene": "code", "project_root": null, "tier": "effective",
   "settings": { } }
 ```
 
@@ -1570,7 +1570,7 @@ Shell 命令、监视器没有收件箱。会话不在内存里 → `SESSION_NOT
 
 ```jsonc
 // → params(都可选)
-{ "scene": "coding",            // 省略 = 这个 daemon 的默认场景
+{ "scene": "code",            // 省略 = 这个 daemon 的默认场景
   "project_root": "/Users/x/repo-b" }   // 省略 = 这个 daemon 自己的项目
 ```
 
@@ -1604,7 +1604,7 @@ daemon 自己那一对,给路径 = 它服务的另一个项目,`null` → `INVAL
 
 ```jsonc
 // → params (getProvider)
-{ "scene": "coding",                      // 都可选,见上
+{ "scene": "code",                      // 都可选,见上
   "project_root": "/Users/x/repo-b",
   "include_secrets": false }
 // ← result (getProvider)
@@ -2034,7 +2034,7 @@ disclosure 的 `wasm.runnable` 会如实报成 `false`。
 { "session_id": "S1", "current_turn_id": "t1" }
 
 // SCENE_MISMATCH
-{ "session_id": "S1", "recorded_scene": "chat", "requested_scene": "coding" }
+{ "session_id": "S1", "recorded_scene": "harnix", "requested_scene": "code" }
 
 // SIDECHAIN_TERMINAL
 { "session_id": "S1c1", "parent_session_id": "S1", "final_state": "completed" }  // completed | failed
@@ -2135,7 +2135,7 @@ TCP / WebSocket 上,第一件事是 `call("daemon.auth", {token})`。
 // 2. 看有哪些场景,决定要不要弹"选择项目"
 → {"jsonrpc":"2.0","method":"scene.list","id":1}
 ← {"jsonrpc":"2.0","id":1,"result":{"scenes":[
-     {"scene":"coding","name":"Agix Coding","description":"…","active":true,
+     {"scene":"code","name":"Agix Code","description":"…","active":true,
       "sessions":0,"requires_project":true,"supports_team":true}]}}
 
 // 3. 订阅 daemon 级通知(可选)
@@ -2144,8 +2144,8 @@ TCP / WebSocket 上,第一件事是 `call("daemon.auth", {token})`。
 
 // 4. 建会话
 → {"jsonrpc":"2.0","method":"session.create","id":3,
-   "params":{"scene":"coding","project_root":"/Users/x/repo-a"}}
-← {"jsonrpc":"2.0","id":3,"result":{"session_id":"S1","scene":"coding",
+   "params":{"scene":"code","project_root":"/Users/x/repo-a"}}
+← {"jsonrpc":"2.0","id":3,"result":{"session_id":"S1","scene":"code",
    "session_kind":"primary","project_root":"/Users/x/repo-a",
    "created_at":"2026-08-11T10:00:00Z"}}
 
@@ -2201,20 +2201,20 @@ TCP / WebSocket 上,第一件事是 `call("daemon.auth", {token})`。
 
 // B. 场景需要项目但传了 null
 → {"jsonrpc":"2.0","method":"session.create","id":11,
-   "params":{"scene":"coding","project_root":null}}
+   "params":{"scene":"code","project_root":null}}
 ← {"jsonrpc":"2.0","id":11,"error":{"code":-32012,
-   "message":"scene `coding` requires a project; pass project_root"}}
+   "message":"scene `code` requires a project; pass project_root"}}
 // 处理:先看 scene.list 的 requires_project,该弹项目选择框就弹。
 
 // C. 恢复到了错的场景 —— 最该被拦住的一类
 ← {"jsonrpc":"2.0","id":12,"error":{"code":-32006,"message":"scene mismatch",
-   "data":{"session_id":"S9","recorded_scene":"chat","requested_scene":"coding"}}}
+   "data":{"session_id":"S9","recorded_scene":"harnix","requested_scene":"code"}}}
 // 处理:用 data.recorded_scene 找到对的 daemon(或先 scene.activate)重试。
 //       不要当普通失败吞掉 —— 它意味着 UI 里那条会话挂在了错误的场景下。
 
 // D. 停用场景被会话挡住
 ← {"jsonrpc":"2.0","id":13,"error":{"code":-32009,
-   "message":"scene chat has active sessions: s1, s2"}}
+   "message":"scene harnix has active sessions: s1, s2"}}
 // 处理:没有结构化 data,会话 id 在 message 文本里。想稳妥就自己用 session.list
 //       找出该场景的会话逐个 close 后重试。
 

@@ -166,12 +166,20 @@ transcript,以 `UserMessagesReturned` 交还宿主。通知(`SessionState::post_
 
 ### 3.1 一个进程可以跑多个场景
 
-场景(`Scene`)是无状态的:`CodingScene` / `ChatScene` / `ResearchScene` 都是零字段
+场景(`Scene`)是无状态的:`CodeScene` / `HarnixScene` / `MiniScene` 都是零字段
 unit struct,`Arc<dyn Scene>` 只是一组函数。所以同一进程并存多个场景没有障碍。
 
-- `--scene` 定 daemon 的默认场景,`--scenes chat,research` 追加激活
+内建三个:
+
+| id | 工具 | 用途 |
+|---|---|---|
+| `code` | 注册的全部工具;`RESIDENT_TOOLS` 之外只报名字,schema 经 `ToolSearch` 取 | 编程,需要项目;daemon 的默认场景 |
+| `harnix` | 常用集:文件读写与搜索、`Bash`、`Skill`、`TodoWrite`、`AskUserQuestion`、`Agent` 与任务控制、计划模式、网页检索与抓取、`ToolSearch`、`mcp__*`;宿主经 `extra_tools` 加自己的 | Harnix 宿主会话的默认场景 |
+| `mini` | `RESIDENT_TOOLS` 那十个,全部常驻 | 最小可用的编码 agent |
+
+- `--scene` 定 daemon 的默认场景,`--scenes harnix,mini` 追加激活
 - `scene.activate` / `scene.deactivate` 运行期增删
-- `session.create {"scene": "chat"}` 指定该会话用哪个;未激活的场景返回 `SCENE_NOT_FOUND`
+- `session.create {"scene": "harnix"}` 指定该会话用哪个;未激活的场景返回 `SCENE_NOT_FOUND`
 - **每个会话按自己的场景解析设置层**,包括 `~/.agix/scenes/<scene>/` 下的 settings、
   skills、agents、plugins。设置缓存的键是 `(project, scene)`——只按项目缓存会让先建好
   条目的那个场景的设置泄漏给所有场景。

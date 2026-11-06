@@ -232,7 +232,7 @@ async fn start_daemon() -> Daemon {
         "claude-sonnet-4-6",
         2000,
         Some(&sock),
-        "coding",
+        "code",
         &StaticDaemonPaths::new(dir.path().to_path_buf()),
     );
     config.session_cap = 8;
@@ -251,7 +251,7 @@ async fn start_daemon() -> Daemon {
 
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::coding::CodingScene),
+        Arc::new(scene::code::CodeScene),
         daemon::Assembly {
             cwd: Some(cwd.clone()),
             model_client: Some(Arc::new(OneTurnClient)),
@@ -371,21 +371,21 @@ async fn documented_daemon_scene_and_config_results_are_real() {
         &doc,
         &daemon,
         "scene.describe",
-        serde_json::json!({"scene": "coding", "project_root": null}),
+        serde_json::json!({"scene": "code", "project_root": null}),
     )
     .await;
     verify(
         &doc,
         &daemon,
         "scene.activate",
-        serde_json::json!({"scene": "chat"}),
+        serde_json::json!({"scene": "harnix"}),
     )
     .await;
     verify(
         &doc,
         &daemon,
         "scene.deactivate",
-        serde_json::json!({"scene": "chat"}),
+        serde_json::json!({"scene": "harnix"}),
     )
     .await;
 
@@ -393,7 +393,7 @@ async fn documented_daemon_scene_and_config_results_are_real() {
         &doc,
         &daemon,
         "config.get",
-        serde_json::json!({"scene": "coding", "tier": "effective"}),
+        serde_json::json!({"scene": "code", "tier": "effective"}),
     )
     .await;
     verify(&doc, &daemon, "config.getProvider", serde_json::json!({})).await;
@@ -435,7 +435,7 @@ async fn documented_session_results_are_real() {
         &doc,
         &daemon,
         "session.create",
-        serde_json::json!({"scene": "coding", "project_root": project}),
+        serde_json::json!({"scene": "code", "project_root": project}),
     )
     .await;
     let sid = created["session_id"].as_str().unwrap().to_string();
@@ -535,7 +535,7 @@ async fn documented_session_results_are_real() {
     let spare = daemon
         .call(
             "session.create",
-            serde_json::json!({"scene": "coding", "project_root": project}),
+            serde_json::json!({"scene": "code", "project_root": project}),
         )
         .await;
     verify(

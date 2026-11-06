@@ -30,13 +30,13 @@ impl Scene for HostScene {
         "a scene this host defines"
     }
     fn build_system_prompt(&self, ctx: &ScenePromptContext) -> Vec<PromptBlock> {
-        scene::coding::CodingScene.build_system_prompt(ctx)
+        scene::code::CodeScene.build_system_prompt(ctx)
     }
     fn tools(&self) -> Vec<String> {
-        scene::coding::CodingScene.tools()
+        scene::code::CodeScene.tools()
     }
     fn token_budget(&self) -> TokenBudget {
-        scene::coding::CodingScene.token_budget()
+        scene::code::CodeScene.token_budget()
     }
 }
 
@@ -73,12 +73,12 @@ async fn a_host_scene_is_served_and_survives_being_turned_off() {
         "claude-sonnet-4-6",
         2000,
         Some(&sock),
-        "coding",
+        "code",
         &StaticDaemonPaths::new(dir.path().to_path_buf()),
     );
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::coding::CodingScene),
+        Arc::new(scene::code::CodeScene),
         daemon::Assembly {
             cwd: Some(cwd),
             model_client: Some(Arc::new(MockAnthropicClient::new()) as Arc<dyn AnthropicClient>),
@@ -149,7 +149,7 @@ async fn a_declarative_scene_under_the_state_root_is_served() {
         "claude-sonnet-4-6",
         2000,
         Some(&sock),
-        "coding",
+        "code",
         &StaticDaemonPaths::new(dir.path().to_path_buf()),
     );
     let scene_dir = config.paths.global_root().join("scenes").join("triage");
@@ -163,7 +163,7 @@ async fn a_declarative_scene_under_the_state_root_is_served() {
 
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::coding::CodingScene),
+        Arc::new(scene::code::CodeScene),
         daemon::Assembly {
             cwd: Some(cwd),
             model_client: Some(Arc::new(MockAnthropicClient::new()) as Arc<dyn AnthropicClient>),
@@ -214,13 +214,13 @@ async fn scenes_can_be_added_while_the_daemon_runs() {
         "claude-sonnet-4-6",
         2000,
         Some(&sock),
-        "coding",
+        "code",
         &StaticDaemonPaths::new(dir.path().to_path_buf()),
     );
     let scenes_root = config.paths.global_root().join("scenes");
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::coding::CodingScene),
+        Arc::new(scene::code::CodeScene),
         daemon::Assembly {
             cwd: Some(cwd),
             model_client: Some(Arc::new(MockAnthropicClient::new()) as Arc<dyn AnthropicClient>),
@@ -255,7 +255,7 @@ async fn scenes_can_be_added_while_the_daemon_runs() {
     let again = call(
         &sock,
         "scene.register",
-        serde_json::json!({"scene": {"id": "coding", "name": "Mine"}, "prompt": "x"}),
+        serde_json::json!({"scene": {"id": "code", "name": "Mine"}, "prompt": "x"}),
     )
     .await;
     assert_eq!(
@@ -300,7 +300,7 @@ async fn scenes_can_be_added_while_the_daemon_runs() {
     let not_ours = call(
         &sock,
         "scene.unregister",
-        serde_json::json!({"scene": "coding"}),
+        serde_json::json!({"scene": "code"}),
     )
     .await;
     assert_eq!(not_ours["error"]["code"], -32004, "{not_ours}");

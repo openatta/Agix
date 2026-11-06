@@ -140,7 +140,7 @@ async fn start_daemon(turns: usize) -> Daemon {
         DEFAULT_MODEL,
         2000,
         Some(&sock),
-        "coding",
+        "code",
         &StaticDaemonPaths::new(dir.path().to_path_buf()),
     );
     // Memory extraction would spend a canned turn of its own, off by one from
@@ -158,7 +158,7 @@ async fn start_daemon(turns: usize) -> Daemon {
 
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::coding::CodingScene),
+        Arc::new(scene::code::CodeScene),
         daemon::Assembly {
             cwd: Some(cwd.clone()),
             model_client: Some(model.clone() as Arc<dyn AnthropicClient>),

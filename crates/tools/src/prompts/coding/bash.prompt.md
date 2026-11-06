@@ -1,83 +1,46 @@
-Executes a given bash command and returns its output.
+Executes a bash command and returns its output.
 
-The working directory persists between commands, but shell state does not. The shell environment is initialized from the user's profile (bash or zsh).
+The working directory persists between commands; shell state does not. The environment is initialized from the user's profile (bash or zsh).
 
 # Sandbox
 
-Commands run inside a sandbox that isolates your actions from the user's system. The sandbox restricts filesystem access to the project directory and approved paths. You can read and write files within the working directory freely, but access outside requires user approval. Network access is controlled — localhost and common developer ports are available, but outbound connections may be restricted.
+Commands run in a sandbox: files in the project directory and approved paths are readable and writable, anything outside needs user approval. Localhost and common developer ports are reachable; outbound connections may be restricted.
 
-IMPORTANT: Avoid using this tool to run `find`, `grep`, `cat`, `head`, `tail`, `sed`, `awk`, or `echo` commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user:
-
-- File search: Use Glob (NOT find or ls)
-- Content search: Use Grep (NOT grep or rg)
-- Read files: Use Read (NOT cat/head/tail)
-- Edit files: Use Edit (NOT sed/awk)
-- Write files: Use Write (NOT echo >/cat <<EOF)
-- Communication: Output text directly (NOT echo/printf)
-
-While the Bash tool can do similar things, it's better to use the built-in tools as they provide a better user experience and make it easier to review tool calls and give permission.
+IMPORTANT: Don't use this tool for `find`, `grep`, `cat`, `head`, `tail`, `sed`, `awk` or `echo` unless explicitly told to or a dedicated tool can't do the job — the dedicated tools are easier for the user to review and approve:
+- File search: Glob (not find/ls). Content search: Grep (not grep/rg).
+- Read: Read (not cat/head/tail). Edit: Edit (not sed/awk). Write: Write (not echo > / cat <<EOF).
+- Talking to the user: plain text output (not echo/printf).
 
 # Instructions
-- If your command will create new directories or files, first use this tool to run `ls` to verify the parent directory exists and is the correct location.
-- Always quote file paths that contain spaces with double quotes in your command (e.g., cd "path with spaces/file.txt")
-- Try to maintain your current working directory throughout the session by using absolute paths and avoiding usage of `cd`. You may use `cd` if the User explicitly requests it. In particular, never prepend `cd <current-directory>` to a `git` command — `git` already operates on the current working tree, and the compound triggers a permission prompt.
-- You may specify an optional timeout in milliseconds (up to 600000ms / 10 minutes). By default, your command will timeout after 120000ms (2 minutes).
-- A process left running in the background that still writes to the command's output (`server &`) is stopped about a second after the command itself exits. Start a service and exercise it within the same command (`server & sleep 2 && curl localhost:8080`), or use the Monitor tool for a long-running process.
-- When issuing multiple commands:
-  - If the commands are independent and can run in parallel, make multiple Bash tool calls in a single message. Example: if you need to run "git status" and "git diff", send a single message with two Bash tool calls in parallel.
-  - If the commands depend on each other and must run sequentially, use a single Bash call with '&&' to chain them together.
-  - Use ';' only when you need to run commands sequentially but don't care if earlier commands fail.
-  - DO NOT use newlines to separate commands (newlines are ok in quoted strings).
-- For git commands:
-  - Prefer to create a new commit rather than amending an existing commit.
-  - Before running destructive operations (e.g., git reset --hard, git push --force, git checkout --), consider whether there is a safer alternative that achieves the same goal. Only use destructive operations when they are truly the best approach.
-  - Never skip hooks (--no-verify) or bypass signing (--no-gpg-sign, -c commit.gpgsign=false) unless the user has explicitly asked for it. If a hook fails, investigate and fix the underlying issue.
-- Avoid unnecessary `sleep` commands:
-  - Do not sleep between commands that can run immediately — just run them.
-  - Use the Monitor tool to stream events from a long-running process (each stdout line is a notification). For one-shot "wait until done," run a command that exits when the condition is true, with a timeout that covers it.
-  - Do not retry failing commands in a sleep loop — diagnose the root cause.
-  - If you must poll an external process, use a check command (e.g. `gh run view`) rather than sleeping first.
+- Before creating files or directories, `ls` the parent to check it exists and is the right place.
+- Double-quote paths containing spaces.
+- Stay in one working directory using absolute paths; use `cd` only if the user asks. Never prefix a `git` command with `cd <current-directory>` — git already works on the current tree, and the compound triggers a permission prompt.
+- Timeout: optional, in milliseconds, up to 600000 (10 min); default 120000 (2 min).
+- A background process still writing to the command's output (`server &`) is stopped about a second after the command exits. Start and exercise a service in one command (`server & sleep 2 && curl localhost:8080`), or use Monitor for a long-running process.
+- Several commands: independent ones go in parallel Bash calls in one message; dependent ones in one call chained with `&&`; use `;` only when earlier failures don't matter. Never separate commands with newlines (newlines inside quoted strings are fine).
+- Git: prefer a new commit over amending. Before destructive operations (reset --hard, push --force, checkout --) look for a safer alternative. Never skip hooks (--no-verify) or signing (--no-gpg-sign, -c commit.gpgsign=false) unless explicitly asked; if a hook fails, fix the cause.
+- No unnecessary `sleep`: don't sleep between commands that can run now; stream a long-running process with Monitor; for "wait until done", run a command that exits when the condition holds, with a timeout that covers it; don't retry failures in a sleep loop — diagnose them; to poll an external process, use a check command (e.g. `gh run view`) rather than sleeping first.
 
-# Committing changes with git
+# Committing with git
 
-Only create commits when requested by the user. If unclear, ask first. When the user asks you to create a new git commit, follow these steps carefully:
+Commit only when the user asks; if unclear, ask first.
 
-You can call multiple tools in a single response. When multiple independent pieces of information are requested and all commands are likely to succeed, run multiple tool calls in parallel for optimal performance. The numbered steps below indicate which commands should be batched in parallel.
+Safety rules:
+- Never change the git config.
+- Never run destructive git commands (push --force, reset --hard, checkout ., restore ., clean -f, branch -D) unless the user explicitly asks. Never force-push to main/master; warn the user if they ask for it.
+- Never skip hooks (--no-verify, --no-gpg-sign, …) unless explicitly asked.
+- Always create a NEW commit rather than amending unless explicitly asked. When a pre-commit hook fails the commit did not happen, so `--amend` would rewrite the previous commit: fix the issue, re-stage, and commit anew.
+- Stage files by name rather than `git add -A` / `git add .`, which can pick up secrets (.env, credentials) or large binaries. Don't commit likely secrets; warn the user if they ask you to.
+- Don't create an empty commit when there is nothing to commit.
 
-Git Safety Protocol:
-- NEVER update the git config
-- NEVER run destructive git commands (push --force, reset --hard, checkout ., restore ., clean -f, branch -D) unless the user explicitly requests these actions. Taking unauthorized destructive actions is unhelpful and can result in lost work, so it's best to ONLY run these commands when given direct instructions 
-- NEVER skip hooks (--no-verify, --no-gpg-sign, etc) unless the user explicitly requests it
-- NEVER run force push to main/master, warn the user if they request it
-- CRITICAL: Always create NEW commits rather than amending, unless the user explicitly requests a git amend. When a pre-commit hook fails, the commit did NOT happen — so --amend would modify the PREVIOUS commit, which may result in destroying work or losing previous changes. Instead, after hook failure, fix the issue, re-stage, and create a NEW commit
-- When staging files, prefer adding specific files by name rather than using "git add -A" or "git add .", which can accidentally include sensitive files (.env, credentials) or large binaries
-- NEVER commit changes unless the user explicitly asks you to. It is VERY IMPORTANT to only commit when explicitly asked, otherwise the user will feel that you are being too proactive
+Steps:
+1. In parallel: `git status` (never `-uall`), `git diff` (staged and unstaged), and `git log` for the repository's message style.
+2. Draft a 1–2 sentence message about the *why*, accurately naming the kind of change ("add" = new feature, "update" = enhancement, "fix" = bug fix, also refactor, test, docs…).
+3. In parallel: stage the relevant files and commit with a message ending in
+   `Co-Authored-By: {model} <noreply@anthropic.com>`; then run `git status` after the commit to confirm.
+4. If a pre-commit hook fails, fix it and make a NEW commit.
 
-1. Run the following bash commands in parallel, each using the Bash tool:
-  - Run a git status command to see all untracked files. IMPORTANT: Never use the -uall flag as it can cause memory issues on large repos.
-  - Run a git diff command to see both staged and unstaged changes that will be committed.
-  - Run a git log command to see recent commit messages, so that you can follow this repository's commit message style.
-2. Analyze all staged changes (both previously staged and newly added) and draft a commit message:
-  - Summarize the nature of the changes (eg. new feature, enhancement to an existing feature, bug fix, refactoring, test, docs, etc.). Ensure the message accurately reflects the changes and their purpose (i.e. "add" means a wholly new feature, "update" means an enhancement to an existing feature, "fix" means a bug fix, etc.).
-  - Do not commit files that likely contain secrets (.env, credentials.json, etc). Warn the user if they specifically request to commit those files
-  - Draft a concise (1-2 sentences) commit message that focuses on the "why" rather than the "what"
-  - Ensure it accurately reflects the changes and their purpose
-3. Run the following commands in parallel:
-   - Add relevant untracked files to the staging area.
-   - Create the commit with a message ending with:
-   Co-Authored-By: {model} <noreply@anthropic.com>
-   - Run git status after the commit completes to verify success.
-   Note: git status depends on the commit completing, so run it sequentially after the commit.
-4. If the commit fails due to pre-commit hook: fix the issue and create a NEW commit
-
-Important notes:
-- NEVER run additional commands to read or explore code, besides git bash commands
-- NEVER use the TaskCreate or Agent tools
-- DO NOT push to the remote repository unless the user explicitly asks you to do so
-- IMPORTANT: Never use git commands with the -i flag (like git rebase -i or git add -i) since they require interactive input which is not supported.
-- IMPORTANT: Do not use --no-edit with git rebase commands, as the --no-edit flag is not a valid option for git rebase.
-- If there are no changes to commit (i.e., no untracked files and no modifications), do not create an empty commit
-- In order to ensure good formatting, ALWAYS pass the commit message via a HEREDOC, a la this example:
+While committing, run only git commands — no exploring code, no TaskCreate or Agent. Don't push unless asked. Never use `-i` (git rebase -i, git add -i): interactive input isn't supported. Don't pass `--no-edit` to git rebase. Always pass the message through a HEREDOC:
 <example>
 git commit -m "$(cat <<'EOF'
    Commit message here.
@@ -87,23 +50,12 @@ git commit -m "$(cat <<'EOF'
    )"
 </example>
 
-# Creating pull requests
-Use the gh command via the Bash tool for ALL GitHub-related tasks including working with issues, pull requests, checks, and releases. If given a Github URL use the gh command to get the information needed.
+# Pull requests
 
-IMPORTANT: When the user asks you to create a pull request, follow these steps carefully:
-
-1. Run the following bash commands in parallel using the Bash tool, in order to understand the current state of the branch since it diverged from the main branch:
-   - Run a git status command to see all untracked files (never use -uall flag)
-   - Run a git diff command to see both staged and unstaged changes that will be committed
-   - Check if the current branch tracks a remote branch and is up to date with the remote, so you know if you need to push to the remote
-   - Run a git log command and `git diff [base-branch]...HEAD` to understand the full commit history for the current branch (from the time it diverged from the base branch)
-2. Analyze all changes that will be included in the pull request, making sure to look at all relevant commits (NOT just the latest commit, but ALL commits that will be included in the pull request!!!), and draft a pull request title and summary:
-   - Keep the PR title short (under 70 characters)
-   - Use the description/body for details, not the title
-3. Run the following commands in parallel:
-   - Create new branch if needed
-   - Push to remote with -u flag if needed
-   - Create PR using gh pr create with the format below. Use a HEREDOC to pass the body to ensure correct formatting.
+Use `gh` for everything GitHub (issues, PRs, checks, releases, GitHub URLs). When asked to create a PR:
+1. In parallel: `git status` (never `-uall`), `git diff`, whether the branch tracks a remote and is up to date, and `git log` plus `git diff [base-branch]...HEAD` for the whole branch.
+2. Read every commit the PR will include, not just the latest; write a title under 70 characters and put details in the body.
+3. In parallel: create a branch if needed, push with `-u` if needed, and run `gh pr create` with a HEREDOC body:
 <example>
 gh pr create --title "the pr title" --body "$(cat <<'EOF'
 ## Summary
@@ -116,10 +68,7 @@ gh pr create --title "the pr title" --body "$(cat <<'EOF'
 EOF
 )"
 </example>
-
-Important:
-- DO NOT use the TaskCreate or Agent tools
-- Return the PR URL when you're done, so the user can see it
+Don't use TaskCreate or Agent while doing this, and return the PR URL at the end.
 
 # Other common operations
-- View comments on a Github PR: gh api repos/foo/bar/pulls/123/comments
+- View comments on a GitHub PR: gh api repos/foo/bar/pulls/123/comments
