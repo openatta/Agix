@@ -364,6 +364,61 @@ pub mod codes {
     /// never ran, ended long enough ago to be forgotten, or the engine is not
     /// in memory.
     pub const TASK_NOT_FOUND: i32 = -32018;
+
+    /// `session.startAgent`: the session already runs as many sub-agents as
+    /// `execution.max_concurrent_subagents` allows, or is as deep as
+    /// delegation goes. Refused rather than queued, as the model's own
+    /// `Agent` call is.
+    pub const TASK_LIMIT: i32 = -32019;
+}
+
+/// `session.startAgent`'s params.
+#[derive(Debug, serde::Deserialize)]
+pub struct StartAgentParams {
+    pub session_id: String,
+    pub prompt: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub subagent_type: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Refused when given: a sub-agent runs on its parent's provider.
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub allowed_tools: Vec<String>,
+    #[serde(default)]
+    pub disallowed_tools: Vec<String>,
+    #[serde(default)]
+    pub permission_rules: Vec<base::permission::PermissionRule>,
+    #[serde(default)]
+    pub output_schema: Option<serde_json::Value>,
+    #[serde(default = "notify_parent_by_default")]
+    pub notify_parent: bool,
+    #[serde(default)]
+    pub tag: Option<String>,
+}
+
+fn notify_parent_by_default() -> bool {
+    true
+}
+
+impl StartAgentParams {
+    pub fn into_request(self) -> base::interface::agent_spawner::AgentRequest {
+        base::interface::agent_spawner::AgentRequest {
+            prompt: self.prompt,
+            description: self.description,
+            subagent_type: self.subagent_type,
+            model: self.model,
+            allowed_tools: self.allowed_tools,
+            disallowed_tools: self.disallowed_tools,
+            permission_rules: self.permission_rules,
+            output_schema: self.output_schema,
+            notify_parent: self.notify_parent,
+            tag: self.tag,
+        }
+    }
 }
 
 // ── Session options (extensible, passed via session.run_turn params) ──
@@ -461,6 +516,16 @@ pub struct StreamFrame {
 
 impl StreamFrame {
     pub fn event(session_id: &str, turn_id: &str, event: Value) -> Self {
+        Self {
+            jsonrpc: "2.0",
+            method: "session.event",
+            params: serde_json::json!({"session_id": session_id, "turn_id": turn_id, "event": event}),
+        }
+    }
+
+    /// [`Self::event`], or outside any turn (`turn_id: null`) when `turn_id`
+    /// is `None`.
+    pub fn event_in(session_id: &str, turn_id: Option<&str>, event: Value) -> Self {
         Self {
             jsonrpc: "2.0",
             method: "session.event",

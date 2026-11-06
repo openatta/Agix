@@ -90,6 +90,14 @@ skill 命令。
 - 新工具 `TaskWait`、`TaskMessage`,在 `CodingScene` 里延迟加载;`TeamCreate` 成员另有
   `TeamMemorySave`、`TeamMemoryRead`。
 - `team::prompt::WorkerContext` 新增 `team_memory` 字段,结构体字面量要补上(空串即可)。
+- `Agent` 工具的 `model` 参数以前被忽略,现在生效,压过 agent 类型的 `model`。
+- 子 Agent 的工具输入按它自己的工具校验(带 `output_schema` 的 `StructuredOutput` 以前
+  按父会话那个不带 schema 的校验,什么都收);它的权限询问也受
+  `permission_prompt_timeout_secs` 约束,超时按拒绝,以前一直等。
+- 子 Agent 不再继承父场景 `Scene::extra_tools` 贡献的那份工具,而由自己的场景重新贡献,
+  并受 agent 类型的 `allowed_tools` / `disallowed_tools` 约束。
+- `RunningTask` 新增 `usage` 与 `structured_output`;`AgentSpawner` 新增有默认实现的
+  `start_agent`。自己实现 `AgentSpawner` 的不用改。
 
 ### 会话级提示词
 
@@ -147,3 +155,10 @@ skill、web 工具、WebSocket、载体与包方案。
 - `session.messageTask`(capability `task_messages`):给运行中的后台子 Agent 发消息。
 - 后台子 Agent 结束后,父会话下一次调模型时带着它的 `<task-notification>`,宿主不必
   再替模型轮询 `session.taskOutput`。
+- `session.startAgent`(capability `host_agents`):宿主不经模型在会话下起子 Agent;
+  新错误码 `TASK_LIMIT`(-32019)。
+- 子 Agent 任务的条目多了 `detail.agent_session_id`、`usage`,`session.startAgent` 起的
+  还有 `detail.tag` 与 `structured_output`。
+- `prompt`、`subagent_progress`、`team_progress`、`skills_changed` 帧在两轮之间也会到,
+  `turn_id` 为 `null`。以前它们攒到下一轮开始时才发,而且带着那一轮的 `turn_id`。
+  子 Agent 的询问一直是用父会话的 `session_id` 回答。

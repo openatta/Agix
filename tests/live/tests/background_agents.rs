@@ -114,7 +114,11 @@ async fn a_finished_foreground_agent_stays_listed_under_its_parent() -> anyhow::
             Reply::Blocks(vec![Block::tool(
                 "call-1",
                 "Agent",
-                json!({ "prompt": "count the files", "description": "file count" }),
+                json!({
+                    "prompt": "count the files",
+                    "description": "file count",
+                    "model": "claude-haiku-4-5"
+                }),
             )]),
             Reply::text("it said 42"),
         ],
@@ -145,6 +149,17 @@ async fn a_finished_foreground_agent_stays_listed_under_its_parent() -> anyhow::
     assert_eq!(agents.len(), 1, "{tasks}");
     assert_eq!(agents[0]["status"], "done", "{tasks}");
     assert_eq!(agents[0]["detail"]["background"], json!(false), "{tasks}");
+    let sub_calls: Vec<_> = provider
+        .calls()
+        .into_iter()
+        .filter(|c| c.model() == "claude-haiku-4-5")
+        .collect();
+    assert_eq!(sub_calls.len(), 1, "the call's `model` is the sub-agent's");
+    assert_eq!(
+        agents[0]["usage"]["input_tokens"],
+        live::provider::INPUT_TOKENS,
+        "{tasks}"
+    );
 
     let children = client
         .call("session.list", json!({ "parent_session_id": session }))
@@ -154,6 +169,10 @@ async fn a_finished_foreground_agent_stays_listed_under_its_parent() -> anyhow::
     let children = children["sessions"].as_array().cloned().unwrap_or_default();
     assert_eq!(children.len(), 1, "{children:?}");
     assert_eq!(children[0]["session_kind"], "sidechain", "{children:?}");
+    assert_eq!(
+        children[0]["session_id"], agents[0]["detail"]["agent_session_id"],
+        "the task names its sidechain"
+    );
     daemon.stop().await;
     Ok(())
 }

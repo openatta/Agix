@@ -110,6 +110,17 @@ impl AgentSpawner for RuntimeAgentSpawner {
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send>)
     }
 
+    async fn start_agent(
+        &self,
+        request: base::interface::agent_spawner::AgentRequest,
+        session: Arc<base::context::SessionState>,
+    ) -> Result<
+        base::interface::agent_spawner::StartedAgent,
+        base::interface::agent_spawner::StartAgentError,
+    > {
+        self.agent_tool.start_for_host(request, session)
+    }
+
     async fn stop_team_member(&self, team_name: &str, member_name: &str) {
         self.agent_tool
             .stop_team_member(team_name, member_name)

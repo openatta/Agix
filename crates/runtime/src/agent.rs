@@ -307,6 +307,7 @@ pub struct Agent {
     /// snapshots, todos, tasks). See `Builder::build()` for why sharing one
     /// instance matters — dispatch used to mint a fresh one per tool call.
     pub(crate) session_state: Arc<base::context::SessionState>,
+    agent_spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner>,
     pub(crate) perf: Arc<PerfCollector>,
 
     pub(crate) compactor: Arc<dyn Compactor>,
@@ -431,6 +432,12 @@ impl Agent {
     /// with every tool call, for a host that shows or acts on it.
     pub fn session_state(&self) -> Arc<base::context::SessionState> {
         self.session_state.clone()
+    }
+
+    /// How this session starts sub-agents, for a host that starts one itself
+    /// (`AgentSpawner::start_agent`). Refuses when no module provided one.
+    pub fn agent_spawner(&self) -> Arc<dyn base::interface::agent_spawner::AgentSpawner> {
+        self.agent_spawner.clone()
     }
 
     /// The slash commands this session will actually resolve.
@@ -2389,6 +2396,7 @@ impl Builder {
                 memory_store,
                 session,
                 session_state,
+                agent_spawner: Arc::new(agent_spawner),
                 perf: Arc::new(PerfCollector::new()),
                 compactor,
                 hooks,

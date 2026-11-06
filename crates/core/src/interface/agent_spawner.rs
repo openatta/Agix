@@ -114,4 +114,56 @@ pub trait AgentSpawner: Send + Sync {
     async fn stop_team_member(&self, team_name: &str, member_name: &str) {
         let _ = (team_name, member_name);
     }
+
+    /// Start a sub-agent a host asked for, in the background, as a task of
+    /// `session` — the way the model's `Agent` call with `background: true`
+    /// starts one, but with nobody's turn behind it.
+    async fn start_agent(
+        &self,
+        request: AgentRequest,
+        session: Arc<crate::context::SessionState>,
+    ) -> Result<StartedAgent, StartAgentError> {
+        let _ = (request, session);
+        Err(StartAgentError::Unsupported(
+            "this session cannot start sub-agents".into(),
+        ))
+    }
+}
+
+/// A sub-agent a host starts under a session (`session.startAgent`).
+#[derive(Debug, Clone, Default)]
+pub struct AgentRequest {
+    pub prompt: String,
+    pub description: Option<String>,
+    pub subagent_type: Option<String>,
+    /// Over the agent type's model.
+    pub model: Option<String>,
+    /// Narrow what the agent type already allows; they never widen it.
+    pub allowed_tools: Vec<String>,
+    pub disallowed_tools: Vec<String>,
+    /// Only their `deny` rules take effect: a host-started agent is held to
+    /// its parent's permissions and can only be refused more.
+    pub permission_rules: Vec<crate::permission::PermissionRule>,
+    pub output_schema: Option<serde_json::Value>,
+    /// Whether the parent hears of it ending as a `<task-notification>`.
+    pub notify_parent: bool,
+    /// The host's own label, carried on the task untouched.
+    pub tag: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StartedAgent {
+    pub task_id: String,
+    /// The sidechain session the agent runs in.
+    pub agent_session_id: String,
+}
+
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum StartAgentError {
+    /// The session is running as many sub-agents as it may, or is as deep
+    /// as delegation goes.
+    #[error("{0}")]
+    Limit(String),
+    #[error("{0}")]
+    Unsupported(String),
 }

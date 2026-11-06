@@ -160,3 +160,58 @@ async fn a_background_agent_takes_a_message_and_reports_back() -> anyhow::Result
     run.finish().await;
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_started_agent_hands_in_what_its_schema_asks_for() -> anyhow::Result<()> {
+    let mut run = LiveRun::start("hosted", json!({}), Mode::InProcess).await?;
+    let code = format!("KESTREL-{}", nonce());
+    run.write_file("ticket.txt", &format!("ticket code: {code}\npriority: 4\n"))?;
+    let session = run.session().await?;
+
+    let started = run
+        .client
+        .call(
+            "session.startAgent",
+            json!({
+                "session_id": session,
+                "prompt": "Read ticket.txt, then hand in its code and priority with the \
+                           StructuredOutput tool.",
+                "description": "ticket",
+                "tag": "live:ticket",
+                "output_schema": {
+                    "type": "object",
+                    "required": ["code", "priority"],
+                    "properties": {
+                        "code": { "type": "string" },
+                        "priority": { "type": "integer" }
+                    }
+                }
+            }),
+        )
+        .await?;
+    assert!(started.error.is_none(), "{started:?}");
+    let task_id = started.result.unwrap_or_default()["task_id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+
+    let tasks = run
+        .wait_tasks_settled(&session, Duration::from_secs(300))
+        .await?;
+    let task = tasks
+        .iter()
+        .find(|t| t["task_id"] == task_id.as_str())
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(task["status"], "done", "{task}");
+    assert_eq!(task["detail"]["tag"], "live:ticket", "{task}");
+    assert_eq!(task["structured_output"]["code"], code.as_str(), "{task}");
+    assert_eq!(task["structured_output"]["priority"], 4, "{task}");
+
+    let (calls, input, output) = run.provider.spend();
+    assert!(calls >= 2, "it read the file, then handed in");
+    assert_eq!(task["usage"]["output_tokens"], output, "{task}");
+    assert_eq!(task["usage"]["input_tokens"], input, "{task}");
+    run.finish().await;
+    Ok(())
+}

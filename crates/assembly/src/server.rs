@@ -731,6 +731,10 @@ impl DaemonServer {
                     ),
                 }
             }
+            #[cfg(feature = "agents")]
+            "session.startAgent" => self.method_start_agent(id, req.params).await,
+            #[cfg(not(feature = "agents"))]
+            "session.startAgent" => module_not_compiled(id, &req.method, "agents"),
             "schedule.create" => self.method_schedule_create(id, req.params).await,
             "schedule.list" => {
                 let session_id = req.params.get("session_id").and_then(|v| v.as_str());
@@ -1425,6 +1429,48 @@ impl DaemonServer {
             }
         };
         match self.pool.context_request(session_id, request).await {
+            Ok(result) => RpcResponse::ok(id, result),
+            Err((code, message)) => RpcResponse::err(id, code, message),
+        }
+    }
+
+    /// `session.startAgent`: a sub-agent the host starts under a session.
+    #[cfg(feature = "agents")]
+    async fn method_start_agent(
+        &self,
+        id: serde_json::Value,
+        params: serde_json::Value,
+    ) -> RpcResponse {
+        let params: crate::rpc::StartAgentParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::err(
+                    id,
+                    codes::INVALID_PARAMS,
+                    format!("session.startAgent: {e}"),
+                )
+            }
+        };
+        if params.prompt.trim().is_empty() {
+            return RpcResponse::err(
+                id,
+                codes::INVALID_PARAMS,
+                "session.startAgent needs a prompt",
+            );
+        }
+        if params.provider.is_some() {
+            return RpcResponse::err(
+                id,
+                codes::INVALID_PARAMS,
+                "session.startAgent: a sub-agent runs on its parent's provider; give `model` only",
+            );
+        }
+        let session_id = params.session_id.clone();
+        match self
+            .pool
+            .start_agent(&session_id, params.into_request())
+            .await
+        {
             Ok(result) => RpcResponse::ok(id, result),
             Err((code, message)) => RpcResponse::err(id, code, message),
         }
@@ -2125,7 +2171,7 @@ impl DaemonServer {
 /// A method this protocol defines whose module this build was compiled
 /// without: `METHOD_NOT_FOUND`, with the module named so a client can tell
 /// "not in this build" from a typo.
-#[cfg_attr(feature = "mcp", allow(dead_code))]
+#[cfg_attr(all(feature = "mcp", feature = "agents"), allow(dead_code))]
 fn module_not_compiled(id: serde_json::Value, method: &str, module: &str) -> RpcResponse {
     RpcResponse::err_with_data(
         id,

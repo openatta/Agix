@@ -281,6 +281,23 @@ fn forwarded_event_kinds(pool_rs: &str) -> Vec<String> {
     out
 }
 
+/// The `kind` of each frame `background_frame` builds — the events forwarded
+/// the same way inside a turn and between turns.
+fn background_event_kinds(pool_rs: &str) -> Vec<String> {
+    let start = pool_rs
+        .find("fn background_frame(")
+        .expect("session_pool.rs still has `background_frame`");
+    let body = &pool_rs[start..];
+    let body = &body[..body.find("\n}\n").unwrap_or(body.len())];
+    body.split("\"kind\":")
+        .skip(1)
+        .filter_map(|rest| {
+            let value = rest.trim_start().strip_prefix('"')?;
+            Some(value.split('"').next()?.to_string())
+        })
+        .collect()
+}
+
 /// `kind`s documented in §7's table — the first cell of each row, backticked.
 fn documented_event_kinds(doc: &str) -> Vec<String> {
     let section = doc
@@ -339,6 +356,7 @@ fn every_stream_event_is_documented_and_every_documented_one_is_sent() {
     let doc = std::fs::read_to_string(root.join("docs/daemon_rpc_protocol.md")).unwrap();
 
     let mut sent = forwarded_event_kinds(&pool);
+    sent.extend(background_event_kinds(&pool));
     sent.extend(out_of_turn_event_kinds(&rpc));
     sent.sort();
     sent.dedup();

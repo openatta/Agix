@@ -547,10 +547,119 @@ const NOTIFIED_RESULT_BYTES: usize = 4 * 1024;
 /// Record how a background sub-agent's task ended and tell the agent that
 /// started it. A task stopped on purpose ends without a notice: whoever
 /// stopped it already knows.
+/// What a caller fixes about one sub-agent run besides its prompt and tools.
+#[derive(Default)]
+pub(crate) struct SubRun {
+    /// The task the run's cost and structured output are reported on.
+    task: Option<Arc<base::context::RunningTask>>,
+    /// The sidechain's id, when the caller has already handed it out.
+    session_id: Option<String>,
+    /// Over the agent type's model.
+    model: Option<String>,
+    allowed_tools: Vec<String>,
+    disallowed_tools: Vec<String>,
+    deny_rules: Vec<base::permission::PermissionRule>,
+    output_schema: Option<Value>,
+}
+
+impl SubRun {
+    fn for_task(task: &Arc<base::context::RunningTask>, session_id: &str) -> Self {
+        Self {
+            task: Some(task.clone()),
+            session_id: Some(session_id.to_string()),
+            ..Default::default()
+        }
+    }
+
+    fn permission(&self, base: Arc<dyn Permission>) -> Arc<dyn Permission> {
+        if self.deny_rules.is_empty() {
+            return base;
+        }
+        Arc::new(DenyRulesFirst {
+            rules: permissions::rule_set_permission::RuleSetPermission::new(
+                Arc::new(permissions::gate::PermissionGate::new(
+                    permissions::ruleset::RuleSet::new(self.deny_rules.clone()),
+                )),
+                Arc::new(InMemoryToolRegistry::new()),
+                base::permission::PermissionMode::BypassPermissions,
+            ),
+            inner: base,
+        })
+    }
+}
+
+/// A permission with a host's `deny` rules in front: what they refuse is
+/// refused, anything else is decided as it would have been.
+///
+/// The rules sit in a bypass-mode rule set so that its only verdicts of its
+/// own are the denials; its mode never decides anything here.
+struct DenyRulesFirst {
+    rules: permissions::rule_set_permission::RuleSetPermission,
+    inner: Arc<dyn Permission>,
+}
+
+#[async_trait]
+impl Permission for DenyRulesFirst {
+    async fn check(
+        &self,
+        tool_name: &str,
+        tool_input: &Value,
+        cwd: &std::path::Path,
+        session_id: &str,
+    ) -> base::interface::permission::PermissionOutcome {
+        use base::interface::permission::PermissionOutcome;
+        match self
+            .rules
+            .check(tool_name, tool_input, cwd, session_id)
+            .await
+        {
+            denied @ PermissionOutcome::Deny { .. } => denied,
+            _ => {
+                self.inner
+                    .check(tool_name, tool_input, cwd, session_id)
+                    .await
+            }
+        }
+    }
+    fn bind_tool_registry(&self, tools: Arc<dyn base::tool::ToolRegistry>) {
+        self.rules.bind_tool_registry(tools.clone());
+        self.inner.bind_tool_registry(tools);
+    }
+    fn bind_session_state(&self, session: Arc<base::context::SessionState>) {
+        self.inner.bind_session_state(session);
+    }
+    fn add_temporary_allow(&self, tool_name: &str, rule_content: Option<&str>) {
+        self.inner.add_temporary_allow(tool_name, rule_content);
+    }
+    fn clear_temporary_allows(&self) {
+        self.inner.clear_temporary_allows();
+    }
+    fn add_persistent_allow(&self, tool_name: &str, rule_content: Option<&str>) {
+        self.inner.add_persistent_allow(tool_name, rule_content);
+    }
+}
+
+/// What one of a sub-agent's events tells its task: a model call's cost, the
+/// structured output it handed in.
+fn note_on_task(task: Option<&base::context::RunningTask>, event: &AgentEvent) {
+    let Some(task) = task else { return };
+    match event {
+        AgentEvent::StepEnd { usage, .. } => task.add_usage(*usage),
+        AgentEvent::TurnComplete {
+            structured_output: Some(output),
+            ..
+        } => {
+            let _ = task.structured_output.set(output.clone());
+        }
+        _ => {}
+    }
+}
+
 fn conclude_background_task(
     session: &base::context::SessionState,
     task: &base::context::RunningTask,
     result: &Result<String, base::error::ToolError>,
+    notify_parent: bool,
 ) {
     if let Ok(text) = result {
         task.output
@@ -560,7 +669,7 @@ fn conclude_background_task(
     }
     // Posted before the task ends, so whoever wakes on its end and reads the
     // result (TaskWait, TaskOutput) finds the notice there to withdraw.
-    if !task.has_ended() {
+    if notify_parent && !task.has_ended() {
         session.post_notice(Some(task.task_id.clone()), task_notification(task, result));
     }
     session.finish_task(&task.task_id, finished(result));
@@ -707,6 +816,7 @@ async fn run_one_turn(
     // the host can render sub-agent activity live (S-1). Purely additive: the
     // text return value is identical either way.
     tag: Option<SubagentTag>,
+    task: Option<&base::context::RunningTask>,
 ) -> (Result<String, base::error::ToolError>, bool) {
     let turn_id = uuid::Uuid::new_v4().to_string();
     let _ = input_tx.send(InputMessage::User {
@@ -733,6 +843,7 @@ async fn run_one_turn(
                     if let AgentEvent::TextDelta { text: ref t, .. } = ev {
                         text.push_str(t);
                     }
+                    note_on_task(task, &ev);
                     if let Some(tag) = &tag {
                         tag.forward(ev);
                     }
@@ -757,6 +868,7 @@ async fn run_one_turn(
                 if let AgentEvent::TextDelta { text: ref t, .. } = ev {
                     text.push_str(t);
                 }
+                note_on_task(task, &ev);
                 if let Some(tag) = &tag {
                     tag.forward(ev);
                 }
@@ -785,6 +897,7 @@ async fn run_one_turn(
 /// parent's turn. The parent still waits for it; if the parent's tool call is
 /// dropped instead, the guard aborts the sub-agent rather than leaving it
 /// running unobserved.
+#[allow(clippy::too_many_arguments)]
 async fn run_one_turn_detached(
     session_id: &str,
     mut agent: Agent,
@@ -793,13 +906,22 @@ async fn run_one_turn_detached(
     prompt: String,
     cancel: tokio_util::sync::CancellationToken,
     tag: Option<SubagentTag>,
+    task: Option<Arc<base::context::RunningTask>>,
 ) -> (Result<String, base::error::ToolError>, bool) {
     use tracing::Instrument;
     let span = tracing::info_span!("subagent", session = %session_id);
     let mut task = AbortOnDrop(tokio::spawn(
         async move {
-            let outcome =
-                run_one_turn(&mut agent, &mut event_rx, &input_tx, prompt, cancel, tag).await;
+            let outcome = run_one_turn(
+                &mut agent,
+                &mut event_rx,
+                &input_tx,
+                prompt,
+                cancel,
+                tag,
+                task.as_deref(),
+            )
+            .await;
             drop(input_tx);
             outcome
         }
@@ -941,10 +1063,11 @@ async fn run_persistent_member_loop(
             // events to. Persistent members surface through `TeamProgress`
             // and `TeamList` instead.
             None,
+            Some(task.as_ref()),
         )
         .await;
 
-        conclude_background_task(&session, &task, &result);
+        conclude_background_task(&session, &task, &result, true);
 
         let now = now_secs();
         idle_since.store(now, std::sync::atomic::Ordering::SeqCst);
@@ -1033,16 +1156,25 @@ fn permission_restraint(mode: base::interface::settings::PermissionMode) -> u8 {
 /// Whether an agent type's `allowed_tools` / `disallowed_tools` let a tool
 /// through. No type, or a type with neither list, admits everything.
 fn type_admits_tool(def: Option<&AgentTypeDefinition>, name: &str) -> bool {
-    let Some(def) = def else {
-        return true;
-    };
-    let listed = |names: &[String]| names.iter().any(|n| AgentTool::tool_name_matches(name, n));
-    !listed(&def.disallowed_tools) && (def.allowed_tools.is_empty() || listed(&def.allowed_tools))
+    def.map_or(true, |def| {
+        lists_admit_tool(&def.allowed_tools, &def.disallowed_tools, name)
+    })
 }
 
-fn scene_tool_filter(def: Option<&AgentTypeDefinition>) -> Arc<dyn Fn(&str) -> bool + Send + Sync> {
+fn lists_admit_tool(allowed: &[String], disallowed: &[String], name: &str) -> bool {
+    let listed = |names: &[String]| names.iter().any(|n| AgentTool::tool_name_matches(name, n));
+    !listed(disallowed) && (allowed.is_empty() || listed(allowed))
+}
+
+fn scene_tool_filter(
+    def: Option<&AgentTypeDefinition>,
+    run: &SubRun,
+) -> runtime::agent::ToolFilter {
     let def = def.cloned();
-    Arc::new(move |name| type_admits_tool(def.as_ref(), name))
+    let (allowed, disallowed) = (run.allowed_tools.clone(), run.disallowed_tools.clone());
+    Arc::new(move |name| {
+        type_admits_tool(def.as_ref(), name) && lists_admit_tool(&allowed, &disallowed, name)
+    })
 }
 
 fn apply_agent_type_overrides(settings: &mut Settings, def: &AgentTypeDefinition) {
@@ -1659,6 +1791,8 @@ impl Inner {
                     .read()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .clone(),
+                timeout_secs: self.config.permission_prompt_timeout_secs,
+                own_tools: Default::default(),
             });
         }
         Arc::new(AlwaysPermit)
@@ -2422,11 +2556,11 @@ impl AgentTool {
             .map(|d| d.system_prompt)
     }
 
-    fn build_prompt(&self, input: &AgentInput) -> String {
-        if let Some(p) = self.type_prompt(input.subagent_type.as_deref()) {
-            format!("{p}\n\nTask: {}", input.prompt)
+    fn build_prompt(&self, subagent_type: Option<&str>, prompt: &str) -> String {
+        if let Some(p) = self.type_prompt(subagent_type) {
+            format!("{p}\n\nTask: {prompt}")
         } else {
-            input.prompt.clone()
+            prompt.to_string()
         }
     }
 
@@ -2538,8 +2672,17 @@ impl AgentTool {
         perm: Arc<dyn Permission>,
         subagent_type: Option<&str>,
     ) -> Result<String, base::error::ToolError> {
-        self.run_sub_tagged(prompt, tools, cwd, cancel, perm, subagent_type, None)
-            .await
+        self.run_sub_tagged(
+            prompt,
+            tools,
+            cwd,
+            cancel,
+            perm,
+            subagent_type,
+            None,
+            SubRun::default(),
+        )
+        .await
     }
 
     /// `run_sub` plus the parent's `(session_id, turn_no)` for event
@@ -2558,6 +2701,7 @@ impl AgentTool {
         perm: Arc<dyn Permission>,
         subagent_type: Option<&str>,
         parent: Option<(&str, u32, &str)>,
+        run: SubRun,
     ) -> Result<String, base::error::ToolError> {
         let admission = self.inner.admit().map_err(base::error::ToolError::Denied)?;
         self.run_sub_admitted(
@@ -2569,6 +2713,7 @@ impl AgentTool {
             perm,
             subagent_type,
             parent,
+            run,
         )
         .await
     }
@@ -2596,6 +2741,7 @@ impl AgentTool {
             perm,
             subagent_type,
             None,
+            SubRun::default(),
         )
         .await
     }
@@ -2611,6 +2757,7 @@ impl AgentTool {
         perm: Arc<dyn Permission>,
         subagent_type: Option<&str>,
         parent: Option<(&str, u32, &str)>,
+        run: SubRun,
     ) -> Result<String, base::error::ToolError> {
         let Admission {
             depth: child_depth,
@@ -2618,7 +2765,10 @@ impl AgentTool {
         } = admission;
         let cwd_for_meta = cwd.clone();
         let def = subagent_type.and_then(|t| self.inner.agent_type_def(t));
-        let model_override = def.as_ref().and_then(|d| d.model.clone());
+        let model_override = run
+            .model
+            .clone()
+            .or_else(|| def.as_ref().and_then(|d| d.model.clone()));
         let mut sub_settings = self.sub_settings(model_override.as_deref(), cwd);
         if let Some(d) = &def {
             apply_agent_type_overrides(&mut sub_settings, d);
@@ -2636,7 +2786,10 @@ impl AgentTool {
             _ => prompt,
         };
 
-        let sid = base::id::Id::new().to_string();
+        let sid = run
+            .session_id
+            .clone()
+            .unwrap_or_else(|| base::id::Id::new().to_string());
         let tag = SubagentTag::new(&self.inner, &sid, subagent_type, parent);
         let sid_for_hook = sid.clone();
         let sid_for_meta = sid.clone();
@@ -2650,12 +2803,15 @@ impl AgentTool {
             .session_id(sid)
             .lineage(parent_session_id.clone(), subagent_type)
             .scene(scene)
-            .scene_tool_filter(scene_tool_filter(def.as_ref()))
+            .scene_tool_filter(scene_tool_filter(def.as_ref(), &run))
             .model(self.inner.model_for_subagent())
             .tools(tools)
             .settings(settings.clone())
             .agent_depth(child_depth)
-            .permission(perm);
+            .permission(run.permission(perm));
+        if let Some(schema) = &run.output_schema {
+            builder = builder.output_schema(schema.clone());
+        }
         // S-4: persist the sub-agent's transcript. Its own fresh session id
         // keeps it in a separate JSONL file from the parent's.
         let history_store = self.inner.history_store();
@@ -2695,6 +2851,7 @@ impl AgentTool {
             prompt,
             cancel,
             tag,
+            run.task.clone(),
         )
         .await;
         self.fire_subagent_hook(
@@ -2732,15 +2889,20 @@ impl AgentTool {
     ) -> Result<String, base::error::ToolError> {
         let admission = self.inner.admit().map_err(base::error::ToolError::Denied)?;
         let tid = bg_task_id();
+        let sid = base::id::Id::new().to_string();
         let task = session.register_task(
             tid.clone(),
             base::context::TaskType::Agent,
             cancel.clone(),
-            serde_json::json!({"agent_type": subagent_type, "background": true}),
+            serde_json::json!({
+                "agent_type": subagent_type,
+                "background": true,
+                "agent_session_id": sid,
+            }),
         );
         let subagent_type = subagent_type.map(str::to_string);
         let inner = self.inner.clone();
-        let tc = task.clone();
+        let run = SubRun::for_task(&task, &sid);
         let session_c = session.clone();
 
         tokio::spawn(async move {
@@ -2751,11 +2913,11 @@ impl AgentTool {
                 cwd,
                 cancel,
                 subagent_type.as_deref(),
-                Some(&tc),
+                run,
                 admission,
             )
             .await;
-            conclude_background_task(&session_c, &tc, &r);
+            conclude_background_task(&session_c, &task, &r, true);
         });
         Ok(tid)
     }
@@ -2767,6 +2929,7 @@ impl AgentTool {
     ) -> Result<base::tool::ToolResult, base::error::ToolError> {
         let admission = self.inner.admit().map_err(base::error::ToolError::Denied)?;
         let tid = bg_task_id();
+        let sid = base::id::Id::new().to_string();
         let outer_cancel = ctx.cancel.child_token();
         let task = ctx.session.register_task(
             tid.clone(),
@@ -2777,6 +2940,7 @@ impl AgentTool {
                 "description": input.description,
                 "background": true,
                 "tool_use_id": ctx.tool_use_id,
+                "agent_session_id": sid,
             }),
         );
         let mut worktree_handle = match &input.worktree {
@@ -2797,12 +2961,14 @@ impl AgentTool {
             .map(|h| h.path().to_path_buf())
             .unwrap_or_else(|| ctx.session.cwd.clone());
         let tools = self.resolve_tools(input.subagent_type.as_deref());
-        let prompt = self.build_prompt(input);
+        let prompt = self.build_prompt(input.subagent_type.as_deref(), &input.prompt);
         let subagent_type = input.subagent_type.clone();
         let inner = self.inner.clone();
-        let tc = task.clone();
+        let run = SubRun {
+            model: input.model.clone(),
+            ..SubRun::for_task(&task, &sid)
+        };
         let session = ctx.session.clone();
-        let _events_tx = ctx.events_tx.clone();
 
         tokio::spawn(async move {
             let r = Self::run_sub_inner(
@@ -2812,16 +2978,91 @@ impl AgentTool {
                 cwd,
                 outer_cancel,
                 subagent_type.as_deref(),
-                Some(&tc),
+                run,
                 admission,
             )
             .await;
             if let Some(h) = worktree_handle.as_mut() {
                 h.cleanup().await;
             }
-            conclude_background_task(&session, &tc, &r);
+            conclude_background_task(&session, &task, &r, true);
         });
         Ok(bg_result(&tid, "spawned"))
+    }
+
+    /// A sub-agent a host asked for (`session.startAgent`): in the
+    /// background, as a task of `session`, under the same limits as the
+    /// model's own `Agent` calls and never with more than they would get.
+    pub(crate) fn start_for_host(
+        &self,
+        request: base::interface::agent_spawner::AgentRequest,
+        session: Arc<base::context::SessionState>,
+    ) -> Result<
+        base::interface::agent_spawner::StartedAgent,
+        base::interface::agent_spawner::StartAgentError,
+    > {
+        use base::interface::agent_spawner::{StartAgentError, StartedAgent};
+        let admission = self.inner.admit().map_err(StartAgentError::Limit)?;
+        let tid = bg_task_id();
+        let sid = base::id::Id::new().to_string();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let task = session.register_task(
+            tid.clone(),
+            base::context::TaskType::Agent,
+            cancel.clone(),
+            serde_json::json!({
+                "agent_type": request.subagent_type,
+                "description": request.description,
+                "background": true,
+                "agent_session_id": sid,
+                "tag": request.tag,
+            }),
+        );
+        let tools = InMemoryToolRegistry::new();
+        for tool in self.resolve_tools(request.subagent_type.as_deref()).all() {
+            if lists_admit_tool(
+                &request.allowed_tools,
+                &request.disallowed_tools,
+                tool.name(),
+            ) {
+                tools.register(tool);
+            }
+        }
+        let prompt = self.build_prompt(request.subagent_type.as_deref(), &request.prompt);
+        let run = SubRun {
+            model: request.model,
+            allowed_tools: request.allowed_tools,
+            disallowed_tools: request.disallowed_tools,
+            deny_rules: request
+                .permission_rules
+                .into_iter()
+                .filter(|r| r.behavior == base::permission::RuleBehavior::Deny)
+                .collect(),
+            output_schema: request.output_schema,
+            ..SubRun::for_task(&task, &sid)
+        };
+        let inner = self.inner.clone();
+        let subagent_type = request.subagent_type;
+        let notify_parent = request.notify_parent;
+        let cwd = session.cwd.clone();
+        tokio::spawn(async move {
+            let r = Self::run_sub_inner(
+                &inner,
+                prompt,
+                Arc::new(tools),
+                cwd,
+                cancel,
+                subagent_type.as_deref(),
+                run,
+                admission,
+            )
+            .await;
+            conclude_background_task(&session, &task, &r, notify_parent);
+        });
+        Ok(StartedAgent {
+            task_id: tid,
+            agent_session_id: sid,
+        })
     }
 
     /// Build the `Agent`/channels for a team member, without running any
@@ -2882,7 +3123,7 @@ impl AgentTool {
         let mut builder = Builder::new()
             .session_id(sid)
             .scene(scene)
-            .scene_tool_filter(scene_tool_filter(def.as_ref()))
+            .scene_tool_filter(scene_tool_filter(def.as_ref(), &SubRun::default()))
             .model(self.inner.model_for_subagent())
             .tools(tools)
             .settings(settings.clone())
@@ -3170,7 +3411,7 @@ impl AgentTool {
         cwd: std::path::PathBuf,
         cancel: tokio_util::sync::CancellationToken,
         subagent_type: Option<&str>,
-        task: Option<&base::context::RunningTask>,
+        run: SubRun,
         admission: Admission,
     ) -> Result<String, base::error::ToolError> {
         let Admission {
@@ -3179,10 +3420,13 @@ impl AgentTool {
         } = admission;
         // S-3: same resolution as the foreground path — a background spawn
         // used to hardcode `AlwaysPermit`, escaping the parent's rules.
-        let perm: Arc<dyn Permission> = inner.permission_handler();
+        let perm: Arc<dyn Permission> = run.permission(inner.permission_handler());
         let cwd_for_meta = cwd.clone();
         let def = subagent_type.and_then(|t| inner.agent_type_def(t));
-        let model_name = def.as_ref().and_then(|d| d.model.clone());
+        let model_name = run
+            .model
+            .clone()
+            .or_else(|| def.as_ref().and_then(|d| d.model.clone()));
         let mut sub_settings = Inner::sub_settings(inner, model_name.as_deref(), cwd);
         if let Some(d) = &def {
             apply_agent_type_overrides(&mut sub_settings, d);
@@ -3198,18 +3442,24 @@ impl AgentTool {
             _ => prompt,
         };
 
-        let sid = base::id::Id::new().to_string();
+        let sid = run
+            .session_id
+            .clone()
+            .unwrap_or_else(|| base::id::Id::new().to_string());
         let sid_for_meta = sid.clone();
         let tag = SubagentTag::new(inner, &sid, subagent_type, None);
         let mut builder = Builder::new()
             .session_id(sid)
             .scene(scene)
-            .scene_tool_filter(scene_tool_filter(def.as_ref()))
+            .scene_tool_filter(scene_tool_filter(def.as_ref(), &run))
             .model(inner.model_for_subagent())
             .tools(tools)
             .settings(settings.clone())
             .agent_depth(child_depth)
             .permission(perm);
+        if let Some(schema) = &run.output_schema {
+            builder = builder.output_schema(schema.clone());
+        }
         let history_store = inner.history_store();
         builder = inner.inherited_by_a_delegate(builder);
         let (mut agent, mut event_rx, input_tx) = builder
@@ -3227,9 +3477,17 @@ impl AgentTool {
             .await;
         }
 
-        open_inbox(task, &agent);
-        let (result, cancelled) =
-            run_one_turn(&mut agent, &mut event_rx, &input_tx, prompt, cancel, tag).await;
+        open_inbox(run.task.as_deref(), &agent);
+        let (result, cancelled) = run_one_turn(
+            &mut agent,
+            &mut event_rx,
+            &input_tx,
+            prompt,
+            cancel,
+            tag,
+            run.task.as_deref(),
+        )
+        .await;
         drop(input_tx);
         // §5.6: see the matching comment in `run_sub_tagged`.
         mark_sidechain_terminal(history_store.as_ref(), &sid_for_meta, &result, cancelled).await;
@@ -3365,8 +3623,10 @@ impl AgentTool {
         // Pre-load historical messages into the new agent's session
         agent.seed_history(model_messages, projected.len() as u32);
 
-        let (result, cancelled) =
-            run_one_turn_detached(&new_sid, agent, event_rx, input_tx, prompt, cancel, tag).await;
+        let (result, cancelled) = run_one_turn_detached(
+            &new_sid, agent, event_rx, input_tx, prompt, cancel, tag, None,
+        )
+        .await;
 
         // 6. Emit resume telemetry via structured tracing
         let latency_ms = start.elapsed().as_millis() as u64;
@@ -3438,6 +3698,12 @@ struct ParentPermission {
     inner: Arc<dyn Permission>,
     event_tx: Option<runtime::agent::EventSender>,
     pending: Option<runtime::agent::PendingPermissions>,
+    /// How long a question waits for its answer; `0` waits indefinitely.
+    timeout_secs: u64,
+    /// The sub-agent's own tools. `inner` looks a tool up in the parent's,
+    /// where a tool the sub-agent holds its own instance of — a
+    /// `StructuredOutput` bound to its output schema — is a different one.
+    own_tools: std::sync::RwLock<Option<Arc<dyn base::tool::ToolRegistry>>>,
 }
 
 #[async_trait]
@@ -3450,6 +3716,23 @@ impl Permission for ParentPermission {
         session_id: &str,
     ) -> base::interface::permission::PermissionOutcome {
         use base::interface::permission::PermissionOutcome;
+        let own = self
+            .own_tools
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .and_then(|tools| tools.get(tool_name));
+        if let Some(tool) = own {
+            let ctx = ToolContext::from_engine_ctx(
+                cwd.to_path_buf(),
+                tokio_util::sync::CancellationToken::new(),
+            );
+            if let base::tool::ValidationResult::Err(reason, _) =
+                tool.validate_input(tool_input, &ctx).await
+            {
+                return PermissionOutcome::Deny { reason };
+            }
+        }
         let outcome = self
             .inner
             .check(tool_name, tool_input, cwd, session_id)
@@ -3503,7 +3786,24 @@ impl Permission for ParentPermission {
             };
         }
 
-        match rx.await {
+        let answer = match self.timeout_secs {
+            0 => rx.await,
+            secs => match tokio::time::timeout(std::time::Duration::from_secs(secs), rx).await {
+                Ok(answer) => answer,
+                Err(_) => {
+                    pending
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&prompt_id);
+                    return PermissionOutcome::Deny {
+                        reason: format!(
+                            "`{tool_name}`: no answer to the permission prompt within {secs}s"
+                        ),
+                    };
+                }
+            },
+        };
+        match answer {
             Ok(runtime::agent::PermissionDecision::Permit) => PermissionOutcome::Permit,
             Ok(runtime::agent::PermissionDecision::PermitAlways { .. }) => {
                 // Persist on the *parent's* handler, which is where the rule
@@ -3522,6 +3822,13 @@ impl Permission for ParentPermission {
                 reason: format!("`{tool_name}`: permission request closed without an answer"),
             },
         }
+    }
+
+    fn bind_tool_registry(&self, tools: Arc<dyn base::tool::ToolRegistry>) {
+        *self
+            .own_tools
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tools);
     }
 }
 
@@ -3705,8 +4012,9 @@ impl base::tool::Tool for AgentTool {
             .map(|h| h.path().to_path_buf())
             .unwrap_or_else(|| ctx.session.cwd.clone());
         let tools = self.resolve_tools(inp.subagent_type.as_deref());
-        let prompt = self.build_prompt(&inp);
+        let prompt = self.build_prompt(inp.subagent_type.as_deref(), &inp.prompt);
         let perm = self.permission_handler();
+        let sid = base::id::Id::new().to_string();
 
         // Bound rather than matched inline so the worktree is cleaned up
         // before the result is turned into a ToolResult — the sub-agent may
@@ -3722,6 +4030,7 @@ impl base::tool::Tool for AgentTool {
                 "description": inp.description,
                 "background": false,
                 "tool_use_id": ctx.tool_use_id,
+                "agent_session_id": sid,
             }),
         );
         let result = self
@@ -3737,6 +4046,10 @@ impl base::tool::Tool for AgentTool {
                     ctx.turn_no,
                     ctx.tool_use_id.as_str(),
                 )),
+                SubRun {
+                    model: inp.model.clone(),
+                    ..SubRun::for_task(task_scope.task(), &sid)
+                },
             )
             .await;
 
@@ -6279,6 +6592,7 @@ mod catalog_tests {
                 Arc::new(AlwaysPermit),
                 Some("explore"),
                 Some(("parent-session-1", 1, "")),
+                SubRun::default(),
             )
             .await
             .expect("sub-agent turn should complete");
@@ -6346,6 +6660,7 @@ mod catalog_tests {
                 Arc::new(AlwaysPermit),
                 Some("explore"),
                 Some(("parent-session-1", 1, "")),
+                SubRun::default(),
             )
             .await
             .expect("a cancelled turn still resolves Ok — cancellation isn't an error");
@@ -6399,6 +6714,7 @@ mod catalog_tests {
                 Arc::new(AlwaysPermit),
                 Some("explore"),
                 Some(("parent-session-1", 1, "")),
+                SubRun::default(),
             )
             .await
             .expect("sub-agent turn should complete");
@@ -6441,6 +6757,7 @@ mod catalog_tests {
                 Arc::new(AlwaysPermit),
                 Some("explore"),
                 Some(("parent-session-1", 1, "")),
+                SubRun::default(),
             )
             .await
             .expect("sub-agent turn should complete");
@@ -6471,6 +6788,7 @@ mod catalog_tests {
                 Arc::new(AlwaysPermit),
                 Some("explore"),
                 Some(("parent-session", 7, "toolu_parent")),
+                SubRun::default(),
             )
             .await
             .expect("sub-agent turn should complete");
@@ -6488,6 +6806,7 @@ mod catalog_tests {
                 Arc::new(AlwaysPermit),
                 Some("explore"),
                 None,
+                SubRun::default(),
             )
             .await
             .expect("baseline sub-agent turn should complete");
@@ -6600,6 +6919,7 @@ mod catalog_tests {
                 perm,
                 None,
                 None,
+                SubRun::default(),
             )
             .await;
         let _ = std::fs::remove_dir_all(&dir);
@@ -7012,6 +7332,7 @@ mod catalog_tests {
                 Arc::new(AlwaysPermit),
                 Some("explore"),
                 Some(("parent-session-1", 1, "")),
+                SubRun::default(),
             )
             .await
             .expect("sub-agent turn should complete");
@@ -7090,6 +7411,7 @@ mod catalog_tests {
                 Arc::new(AlwaysPermit),
                 Some("explore"),
                 Some(("parent-session-1", 1, "")),
+                SubRun::default(),
             )
             .await
             .expect("sub-agent turn should complete");

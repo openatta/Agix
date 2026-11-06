@@ -432,6 +432,8 @@ struct LiveSession {
     turn_initiator: Option<&'static str>,
     /// The engine's own session state: the tasks `session.tasks` lists.
     state: Option<Arc<base::context::SessionState>>,
+    /// How the engine starts sub-agents, for `session.startAgent`.
+    spawner: Option<Arc<dyn base::interface::agent_spawner::AgentSpawner>>,
     /// What this session's bound scripts did, if it bound any.
     ///
     /// Kept because a script that quietly does nothing is the failure mode of
@@ -2245,6 +2247,7 @@ impl SessionPool {
         let (mut agent, event_rx, input_tx) =
             builder.build().map_err(|e| format!("build agent: {e}"))?;
         let state = agent.session_state();
+        let spawner = agent.agent_spawner();
         self.forward_task_events(&session_id, &state);
 
         let _ = agent
@@ -2405,9 +2408,11 @@ impl SessionPool {
             }
         }
 
+        let event_rx = Arc::new(AsyncMutex::new(Some(event_rx)));
+        self.forward_events_between_turns(&session_id, &event_rx, &cancel);
         let live = LiveSession {
             input_tx,
-            event_rx: Arc::new(AsyncMutex::new(Some(event_rx))),
+            event_rx,
             cancel,
             exited,
             context: None,
@@ -2422,6 +2427,7 @@ impl SessionPool {
             current_turn: None,
             turn_initiator: None,
             state: Some(state),
+            spawner: Some(spawner),
             idle: Arc::new(tokio::sync::Notify::new()),
             scripts: script_ledger,
             subscribers: HashMap::new(),
@@ -3311,7 +3317,20 @@ impl SessionPool {
 
         let api_calls;
         loop {
-            match event_rx.recv().await {
+            let event = event_rx.recv().await;
+            if let Some((frame, prompt_id)) = event
+                .as_ref()
+                .and_then(|event| background_frame(&sid, Some(&turn_id), event))
+            {
+                // Registered before it is sent: a tab that subscribes between
+                // the two must still be handed the question.
+                if let Some(prompt_id) = prompt_id {
+                    self.remember_prompt(&sid, &prompt_id, &frame).await;
+                }
+                self.broadcast_to_session(&sid, &frame).await;
+                continue;
+            }
+            match event {
                 Some(AgentEvent::SystemInit { .. }) => continue,
                 Some(AgentEvent::TurnStart { .. }) => {
                     let f = StreamFrame::event(
@@ -3408,100 +3427,6 @@ impl SessionPool {
                         &sid,
                         &turn_id,
                         serde_json::json!({"kind":"tool_result","id":tid,"name":name,"content":content,"is_error":is_error}),
-                    );
-                    self.broadcast_to_session(&sid, &f).await;
-                }
-                Some(AgentEvent::PermissionPrompt {
-                    prompt_id,
-                    tool_name,
-                    message,
-                    paths,
-                    tool_use_id,
-                    ..
-                }) => {
-                    // NOT a terminal event — the turn is still in progress,
-                    // waiting on `session.respondToPrompt` before the tool
-                    // call resolves and `tool_use`/`tool_result` continue as
-                    // normal. Same `kind: "prompt"` / `prompt_type` shape
-                    // documented in `docs/daemon_rpc_protocol.md`, deliberately
-                    // generic so a future non-permission "stop and ask" need
-                    // can reuse it without a new RPC method.
-                    let mut event = serde_json::json!({
-                        "kind":"prompt","prompt_type":"permission","prompt_id":prompt_id,
-                        "tool_name":tool_name,"message":message,
-                        "paths":paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>()
-                    });
-                    if let Some(tool_use_id) = tool_use_id {
-                        event["tool_use_id"] = serde_json::json!(tool_use_id);
-                    }
-                    let f = StreamFrame::event(&sid, &turn_id, event);
-                    // Registered before it is sent: a tab that subscribes
-                    // between the two must still be handed the question.
-                    self.remember_prompt(&sid, &prompt_id, &f).await;
-                    self.broadcast_to_session(&sid, &f).await;
-                }
-                // Sub-agent activity, mirrored from the sub-agent's own
-                // channel (see `agents::agent_tool`'s `SubagentTag`). Relayed
-                // under a distinct `kind` so a client that doesn't know about
-                // it ignores it, and one that does can render the sub-agent's
-                // tool calls live under a node keyed by `agent_label` instead
-                // of showing a stalled `Agent` tool call. Not terminal — the
-                // parent turn continues.
-                Some(AgentEvent::SubagentProgress {
-                    agent_label,
-                    agent_session_id,
-                    agent_type,
-                    parent_turn,
-                    parent_tool_use_id,
-                    event,
-                    ..
-                }) => {
-                    let f = StreamFrame::event(
-                        &sid,
-                        &turn_id,
-                        serde_json::json!({
-                            "kind":"subagent_progress","agent_label":agent_label,
-                            "agent_session_id":agent_session_id,"agent_type":agent_type,
-                            "parent_turn":parent_turn,"parent_tool_use_id":parent_tool_use_id,
-                            "event":serde_json::to_value(&*event).unwrap_or(serde_json::Value::Null)
-                        }),
-                    );
-                    self.broadcast_to_session(&sid, &f).await;
-                }
-                // Skill files changed under a live session — forwarded so a
-                // client caching `commands.list` knows to re-fetch. This
-                // match is a whitelist (`_ => continue` at the bottom), so an
-                // unlisted variant never reaches the client no matter what
-                // the engine emits.
-                Some(AgentEvent::SkillsChanged { added, removed, .. }) => {
-                    let f = StreamFrame::event(
-                        &sid,
-                        &turn_id,
-                        serde_json::json!({
-                            "kind":"skills_changed","added":added,"removed":removed
-                        }),
-                    );
-                    self.broadcast_to_session(&sid, &f).await;
-                }
-                // Team stage lifecycle — same non-terminal treatment.
-                Some(AgentEvent::TeamProgress {
-                    team,
-                    team_id,
-                    stage,
-                    stage_index,
-                    stage_count,
-                    status,
-                    members,
-                    failed,
-                }) => {
-                    let f = StreamFrame::event(
-                        &sid,
-                        &turn_id,
-                        serde_json::json!({
-                            "kind":"team_progress","team":team,"team_id":team_id,"stage":stage,
-                            "stage_index":stage_index,"stage_count":stage_count,
-                            "status":status,"members":members,"failed":failed
-                        }),
                     );
                     self.broadcast_to_session(&sid, &f).await;
                 }
@@ -5905,6 +5830,51 @@ impl SessionPool {
         }
     }
 
+    /// While no turn holds `event_rx`, pass on what the engine still says: a
+    /// background sub-agent's question and progress, a team stage. A turn
+    /// that starts takes the receiver as before; this only ever tries the
+    /// lock, so it never makes a turn wait.
+    fn forward_events_between_turns(
+        &self,
+        session_id: &str,
+        event_rx: &Arc<AsyncMutex<Option<EventReceiver>>>,
+        cancel: &CancellationToken,
+    ) {
+        let Some(pool) = self.this.get().cloned() else {
+            return;
+        };
+        let (event_rx, cancel) = (event_rx.clone(), cancel.clone());
+        let session_id = session_id.to_string();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => return,
+                    _ = tokio::time::sleep(Duration::from_millis(200)) => {}
+                }
+                let mut waiting = Vec::new();
+                if let Ok(mut slot) = event_rx.try_lock() {
+                    if let Some(rx) = slot.as_mut() {
+                        while let Ok(event) = rx.try_recv() {
+                            waiting.push(event);
+                        }
+                    }
+                }
+                if waiting.is_empty() {
+                    continue;
+                }
+                let Some(pool) = pool.upgrade() else { return };
+                for event in waiting {
+                    if let Some((frame, prompt_id)) = background_frame(&session_id, None, &event) {
+                        if let Some(prompt_id) = prompt_id {
+                            pool.remember_prompt(&session_id, &prompt_id, &frame).await;
+                        }
+                        pool.broadcast_to_session(&session_id, &frame).await;
+                    }
+                }
+            }
+        });
+    }
+
     /// Push `session_id`'s task events to whoever watches the session, for as
     /// long as its engine lives. Outside any turn, so `turn_id` is `null`.
     fn forward_task_events(&self, session_id: &str, state: &Arc<base::context::SessionState>) {
@@ -6017,6 +5987,50 @@ impl SessionPool {
             .get(session_id)
             .and_then(|live| live.state.clone())?;
         Some(tools::task_message::deliver(&state, task_id, message))
+    }
+
+    /// `session.startAgent`: a sub-agent the host starts under `session_id`,
+    /// in the background, whether or not a turn is running. A session not in
+    /// memory is resumed for it.
+    pub async fn start_agent(
+        &self,
+        session_id: &str,
+        request: base::interface::agent_spawner::AgentRequest,
+    ) -> Result<serde_json::Value, RpcError> {
+        use base::interface::agent_spawner::StartAgentError;
+        let not_found = || {
+            (
+                codes::SESSION_NOT_FOUND,
+                format!("no session `{session_id}`"),
+            )
+        };
+        if !self.session_exists(session_id).await {
+            return Err(not_found());
+        }
+        if !self.sessions.lock().await.contains_key(session_id) {
+            self.resume_or_create(session_id.to_string(), None)
+                .await
+                .map_err(|e| (codes::INTERNAL_ERROR, e))?;
+        }
+        let (state, spawner) = {
+            let sessions = self.sessions.lock().await;
+            let live = sessions.get(session_id).ok_or_else(not_found)?;
+            (live.state.clone(), live.spawner.clone())
+        };
+        let (Some(state), Some(spawner)) = (state, spawner) else {
+            return Err(not_found());
+        };
+        let started = spawner
+            .start_agent(request, state)
+            .await
+            .map_err(|e| match e {
+                StartAgentError::Limit(m) => (codes::TASK_LIMIT, m),
+                StartAgentError::Unsupported(m) => (codes::INVALID_REQUEST, m),
+            })?;
+        Ok(serde_json::json!({
+            "task_id": started.task_id,
+            "agent_session_id": started.agent_session_id,
+        }))
     }
 
     /// Ask a session's engine about, or change, its context
@@ -6411,6 +6425,82 @@ fn evict_lru(sessions: &mut HashMap<String, LiveSession>) -> Option<String> {
     reap_process_groups_later(&live);
     info!(%sid, "session evicted (LRU, pool full)");
     Some(sid)
+}
+
+/// The frame for an event the engine sends whether or not a turn is running
+/// — a question, a sub-agent's or a team's progress, changed skills — with
+/// the id of the question when it is one; `None` for any other event.
+///
+/// A question is not terminal: the tool call that asked waits on
+/// `session.respondToPrompt`. A sub-agent's activity arrives under its own
+/// `kind`, so a client that does not know it ignores it and one that does
+/// can show the sub-agent's tool calls under its `agent_label` instead of a
+/// stalled `Agent` call.
+fn background_frame(
+    sid: &str,
+    turn_id: Option<&str>,
+    event: &AgentEvent,
+) -> Option<(StreamFrame, Option<String>)> {
+    let (body, prompt_id) = match event {
+        AgentEvent::PermissionPrompt {
+            prompt_id,
+            tool_name,
+            message,
+            paths,
+            tool_use_id,
+            ..
+        } => {
+            let mut body = serde_json::json!({
+                "kind":"prompt","prompt_type":"permission","prompt_id":prompt_id,
+                "tool_name":tool_name,"message":message,
+                "paths":paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>()
+            });
+            if let Some(tool_use_id) = tool_use_id {
+                body["tool_use_id"] = serde_json::json!(tool_use_id);
+            }
+            (body, Some(prompt_id.clone()))
+        }
+        AgentEvent::SubagentProgress {
+            agent_label,
+            agent_session_id,
+            agent_type,
+            parent_turn,
+            parent_tool_use_id,
+            event,
+            ..
+        } => (
+            serde_json::json!({
+                "kind":"subagent_progress","agent_label":agent_label,
+                "agent_session_id":agent_session_id,"agent_type":agent_type,
+                "parent_turn":parent_turn,"parent_tool_use_id":parent_tool_use_id,
+                "event":serde_json::to_value(&**event).unwrap_or(serde_json::Value::Null)
+            }),
+            None,
+        ),
+        AgentEvent::SkillsChanged { added, removed, .. } => (
+            serde_json::json!({"kind":"skills_changed","added":added,"removed":removed}),
+            None,
+        ),
+        AgentEvent::TeamProgress {
+            team,
+            team_id,
+            stage,
+            stage_index,
+            stage_count,
+            status,
+            members,
+            failed,
+        } => (
+            serde_json::json!({
+                "kind":"team_progress","team":team,"team_id":team_id,"stage":stage,
+                "stage_index":stage_index,"stage_count":stage_count,
+                "status":status,"members":members,"failed":failed
+            }),
+            None,
+        ),
+        _ => return None,
+    };
+    Some((StreamFrame::event_in(sid, turn_id, body), prompt_id))
 }
 
 fn reap_process_groups_later(live: &LiveSession) {
@@ -7284,6 +7374,7 @@ mod eviction_tests {
             current_turn: None,
             turn_initiator: None,
             state: None,
+            spawner: None,
             idle: Arc::new(tokio::sync::Notify::new()),
             scripts: None,
             subscribers: HashMap::new(),

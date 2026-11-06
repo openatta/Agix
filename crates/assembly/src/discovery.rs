@@ -173,6 +173,15 @@ pub const CAPABILITIES: &[&str] = &[
     "extension_entries",
 ];
 
+/// [`CAPABILITIES`], plus those of the modules this build carries.
+pub fn capabilities() -> Vec<&'static str> {
+    let mut out = CAPABILITIES.to_vec();
+    if cfg!(feature = "agents") {
+        out.push("host_agents");
+    }
+    out
+}
+
 /// Version, protocol version and capabilities: what a client is told
 /// wherever it first meets the daemon, so it can refuse an incompatible one
 /// at the handshake rather than discover it mid-session.
@@ -180,7 +189,7 @@ pub fn identity() -> serde_json::Value {
     serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
         "protocol_version": INSTANCE_PROTOCOL_VERSION,
-        "capabilities": CAPABILITIES,
+        "capabilities": capabilities(),
         "modules": crate::modules::compiled(),
     })
 }

@@ -103,6 +103,11 @@ pub struct RunningTask {
     /// Where messages for the work go while it runs; set by work that can
     /// take them (a sub-agent), absent for the rest.
     pub inbox: std::sync::OnceLock<std::sync::Arc<dyn TaskInbox>>,
+    /// What the work's own model calls have cost so far; `None` for work that
+    /// makes none (a shell command).
+    pub usage: std::sync::Mutex<Option<crate::interface::model::Usage>>,
+    /// What a sub-agent with an output schema handed in.
+    pub structured_output: std::sync::OnceLock<serde_json::Value>,
 }
 
 /// Delivers a message to a running task's work.
@@ -142,7 +147,18 @@ impl RunningTask {
             output_dropped: std::sync::atomic::AtomicBool::new(false),
             ended: tokio::sync::Notify::new(),
             inbox: std::sync::OnceLock::new(),
+            usage: std::sync::Mutex::new(
+                matches!(task_type, TaskType::Agent | TaskType::Teammate)
+                    .then(crate::interface::model::Usage::default),
+            ),
+            structured_output: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Count one more model call of this task's work.
+    pub fn add_usage(&self, call: crate::interface::model::Usage) {
+        let mut usage = self.usage.lock().unwrap_or_else(|e| e.into_inner());
+        *usage = Some(usage.unwrap_or_default().plus(call));
     }
 
     pub fn has_ended(&self) -> bool {
@@ -217,6 +233,12 @@ impl RunningTask {
         });
         if let Some(error) = error {
             info["error"] = serde_json::json!(error);
+        }
+        if let Some(usage) = *self.usage.lock().unwrap_or_else(|e| e.into_inner()) {
+            info["usage"] = serde_json::json!(usage);
+        }
+        if let Some(output) = self.structured_output.get() {
+            info["structured_output"] = output.clone();
         }
         info
     }
