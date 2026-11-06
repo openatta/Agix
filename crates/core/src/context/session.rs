@@ -60,8 +60,8 @@ pub struct SessionState {
     /// **M9**: 后台跑的 sub-agent 任务。AgentTool 在 background=true 时把每个
     /// 任务塞进来；TaskOutput 工具按 id 查；TaskStop 触发 cancel。
     running_tasks: std::sync::Mutex<HashMap<String, std::sync::Arc<RunningTask>>>,
-    /// `task_started` / `task_finished`, for whoever shows this session's
-    /// tasks — see [`SessionState::subscribe_tasks`].
+    /// Its tasks' events, for whoever shows this session's tasks — see
+    /// [`SessionState::subscribe_tasks`].
     task_events: tokio::sync::broadcast::Sender<serde_json::Value>,
     /// What the session's own agent should read at its next step boundary,
     /// each under the key it can be retracted by — see
@@ -399,7 +399,8 @@ impl SessionState {
     /// monitor's: most of those finish in milliseconds, and a list that
     /// flickered with each one would hide the ones worth seeing. Those are
     /// announced only if still running a second later, and a task never
-    /// announced ends without a word.
+    /// announced ends without a word. From then on what they print goes out
+    /// as `task_progress`, at most once a second, and once more as they end.
     pub fn register_task(
         &self,
         task_id: impl Into<String>,
@@ -411,6 +412,7 @@ impl SessionState {
         let task =
             std::sync::Arc::new(RunningTask::with_cancel(task_id.clone(), task_type, cancel));
         *task.detail.lock().unwrap_or_else(|e| e.into_inner()) = detail;
+        task.report_to(self.task_events.clone());
         self.running_tasks
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -421,14 +423,21 @@ impl SessionState {
         } else if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             let (task, events) = (task.clone(), self.task_events.clone());
             runtime.spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                if task
-                    .ended_ms
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .is_none()
-                {
-                    Self::announce_on(&events, &task);
+                let a_second = std::time::Duration::from_secs(1);
+                tokio::select! {
+                    _ = tokio::time::sleep(a_second) => {}
+                    _ = task.wait_ended() => return,
+                }
+                if task.has_ended() {
+                    return;
+                }
+                Self::announce_on(&events, &task);
+                loop {
+                    task.report_progress(false);
+                    tokio::select! {
+                        _ = tokio::time::sleep(a_second) => {}
+                        _ = task.wait_ended() => return,
+                    }
                 }
             });
         }
@@ -467,6 +476,7 @@ impl SessionState {
             }
         }
         task.ended.notify_waiters();
+        task.report_progress(true);
         if task.announced.load(std::sync::atomic::Ordering::SeqCst) {
             let _ = self
                 .task_events
@@ -540,7 +550,9 @@ impl SessionState {
         tasks.iter().map(|t| t.info()).collect()
     }
 
-    /// `task_started` / `task_finished` as they happen, `{kind, task}`.
+    /// `task_started` / `task_updated` / `task_finished` (`{kind, task}`) and
+    /// `task_progress` (`{kind, task_id, appended, skipped_bytes}`) as they
+    /// happen.
     pub fn subscribe_tasks(&self) -> tokio::sync::broadcast::Receiver<serde_json::Value> {
         self.task_events.subscribe()
     }

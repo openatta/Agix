@@ -612,6 +612,7 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 | `context_edits` | 有 `session.inspectContext` / `session.dropMessages` / `session.editMessage`(§6.3) |
 | `extension_entries` | 有 `session.appendEntry` / `session.entries`,写入推 `extension_entry`(§6.3、§7) |
 | `task_output` | 有 `session.taskOutput`,Shell 命令与监视器的输出边跑边记(§6.3) |
+| `task_progress` | 任务边跑边推:`task_progress` 推 Shell 命令与监视器新增的输出,`task_updated` 推子 Agent 的用量与等待;`subagent_progress` 带 `task_id`(§7) |
 | `task_messages` | 有 `session.messageTask`,消息进运行中的后台子 Agent(§6.3) |
 | `host_agents` | 有 `session.startAgent`,宿主不经模型在会话下起子 Agent;子 Agent 任务带 `usage`、`structured_output`、`detail.tag`(§6.3) |
 
@@ -1405,13 +1406,14 @@ Shell 命令与监视器,以及安排给它的定时任务(§6.7)。和模型用
   "tasks": [
     { "task_id": "…",
       "kind": "agent",      // agent | teammate | shell | monitor | cron
-      "status": "running",  // running | done | failed | stopped;定时任务是 waiting
+      "status": "running",  // running | waiting | done | failed | stopped;定时任务总是 waiting
       "started_ms": 0, "ended_ms": null,
       "detail": { },        // agent:{agent_type,description,background,tool_use_id,agent_session_id,tag?}
                             // teammate:{team,member};shell / monitor:{command,tool_use_id,…}
                             // cron:{cron,prompt,recurring,durable,expires_ms}
       "usage": { },         // agent / teammate:它自己的模型调用到此刻的合计(§3.5 四字段)
       "structured_output": { },  // 带 output_schema 起的子 Agent 交了才有
+      "waiting_for": [ "…" ],    // 仅 waiting(定时任务除外):在等宿主回答的 prompt_id
       "error": "…" }        // 仅 failed
   ] }
 ```
@@ -1422,6 +1424,9 @@ Shell 命令与监视器,以及安排给它的定时任务(§6.7)。和模型用
 
 `usage` 只算这个子 Agent 自己的调用,与它的侧链会话各次调用之和相等;它再起的子 Agent
 另算在它们各自的任务上。父会话 `turn_complete` 的 `usage` 也不含子 Agent(§7.2)。
+
+子 Agent 有询问在等宿主回答(§10)时是 `waiting`,`waiting_for` 列出这些询问的
+`prompt_id`;答完(或超时)回到 `running`。它仍在跑:`stopTask`、`messageTask` 照常。
 
 正在跑的全列出,已经结束的保留最近 20 个。会话不存在 → `SESSION_NOT_FOUND`。
 
@@ -1875,7 +1880,7 @@ disclosure 的 `wasm.runnable` 会如实报成 `false`。
 | `tool_use` | `{id,name,input}` | 模型发起工具调用,参数已完整 |
 | `tool_result` | `{id,name,content,is_error}` | 工具返回 |
 | `prompt` | `{prompt_type,prompt_id,tool_name,message,paths[],tool_use_id?}` | 需宿主决策,用 `session.respondToPrompt` 回答;`tool_use_id` 是被问的那次 `tool_use` |
-| `subagent_progress` | `{agent_label,agent_session_id,agent_type,parent_turn,parent_tool_use_id,event}` | 子 Agent 事件镜像,`event` 是嵌套的本表结构;`parent_tool_use_id` 是父会话里发起它的那次 `Agent` 调用,不知道时为 `null` |
+| `subagent_progress` | `{agent_label,agent_session_id,agent_type,parent_turn,parent_tool_use_id,task_id,event}` | 子 Agent 事件镜像,`event` 是嵌套的本表结构;`parent_tool_use_id` 是父会话里发起它的那次 `Agent` 调用,不知道时为 `null`;`task_id` 是它在 `session.tasks` 里的任务 |
 | `team_progress` | `{team,team_id,stage,stage_index,stage_count,status,members,failed}` | 团队阶段生命周期 |
 | `skills_changed` | `{added,removed}` | 会话下的 skill 文件变了,缓存了 `commands.list` 的客户端该重取 |
 | `compact` | `{strategy,messages_before,messages_after,tokens_before,tokens_after,dropped_rounds?,dropped_messages?,estimated_tokens_saved?}` | 上下文被压缩了(§7.1) |
@@ -1885,6 +1890,8 @@ disclosure 的 `wasm.runnable` 会如实报成 `false`。
 | `turn_complete` | `{stop_reason,api_calls,tool_calls,seq,usage,last_call_usage,context?,structured_output?,message?}` | 本轮结束,transcript 已落盘,`seq` 是此刻的消息数;最终响应随后到达 |
 | `error` | `{code,message}` | 本轮出错结束。只发给**发起这一轮之外**的订阅者 —— 发起者从 `run_turn` 的错误响应得知 |
 | `task_started` | `{task}` | 这个会话的一件任务开始了(`task` 同 `session.tasks` 的条目)。Shell 命令与监视器只在跑过 1 秒后才报,短命令不报;不属于任何一轮,`turn_id` 为 `null` |
+| `task_updated` | `{task}` | 一件报过开始、还没结束的任务变了:子 Agent 每调完一次模型(`task.usage`),有询问开始或结束等待(`task.status` 在 `waiting` 与 `running` 之间);`turn_id` 为 `null` |
+| `task_progress` | `{task_id,appended,skipped_bytes}` | 一件报过开始的 Shell 命令或监视器新打出来的输出。每件任务每秒至多一帧,结束时在 `task_finished` 之前补最后一帧;一帧至多 8 KiB,多出的只发结尾,`skipped_bytes` 是跳过的字节数,要全文用 `session.taskOutput`;`turn_id` 为 `null` |
 | `task_finished` | `{task}` | 一件报过开始的任务结束了,`task.status` 是结局;`turn_id` 为 `null` |
 | `extension_entry` | `{entry}` | 宿主经 `session.appendEntry` 写了一条扩展条目(`entry` 同 `session.entries` 的条目);`turn_id` 为 `null` |
 | `subscription_dropped` | `{reason}` | 这条连接对该会话的订阅被取消了(`reason` 目前只有 `"overflow"`,§5.4);不属于任何一轮,`turn_id` 为 `null`。重新 `session.subscribe` 并追平 |
@@ -2052,8 +2059,9 @@ daemon 会话的默认权限模式是 **`default`(ask)**,不是放行一切。
 **子 Agent 的询问在父会话上问。** 子 Agent(模型起的、`session.startAgent` 起的、前台
 的、后台的)的工具调用照父会话的权限判;要问时,父会话推一帧 `prompt`,`message` 以
 `[sub-agent <侧链会话 id>]` 开头。用 `session.respondToPrompt` 回答,`session_id` 填
-**父会话**,不是侧链会话。父会话空闲时这帧照样推(`turn_id` 为 `null`,§7)。超时与关闭
-的规则同上。
+**父会话**,不是侧链会话。父会话空闲时这帧照样推(`turn_id` 为 `null`,§7)。等回答
+期间子 Agent 的任务是 `waiting`,`waiting_for` 里有这个 `prompt_id`(§6.3 `session.tasks`、
+§7 `task_updated`)。超时与关闭的规则同上。
 
 `permission_mode: "bubble"` 不是另一条路:子 Agent 的询问无论它是什么模式,到宿主的都是
 上面这条父会话的 `prompt` 帧。团队成员例外,它们的询问交给团队的协调者。

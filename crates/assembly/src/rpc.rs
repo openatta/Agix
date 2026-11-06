@@ -547,13 +547,21 @@ impl StreamFrame {
         }
     }
 
-    /// A task of `session_id` started or finished (`SessionState`'s
-    /// `{kind, task}`), told to the session's watchers. Not part of any turn.
+    /// A task of `session_id` started, changed, printed or finished
+    /// (`SessionState::subscribe_tasks`), told to the session's watchers. Not
+    /// part of any turn.
     pub fn task_event(session_id: &str, event: &Value) -> Option<Self> {
-        let task = event.get("task")?.clone();
+        let task = || event.get("task").cloned();
         let event = match event.get("kind")?.as_str()? {
-            "task_started" => serde_json::json!({"kind": "task_started", "task": task}),
-            "task_finished" => serde_json::json!({"kind": "task_finished", "task": task}),
+            "task_started" => serde_json::json!({"kind": "task_started", "task": task()?}),
+            "task_updated" => serde_json::json!({"kind": "task_updated", "task": task()?}),
+            "task_finished" => serde_json::json!({"kind": "task_finished", "task": task()?}),
+            "task_progress" => serde_json::json!({
+                "kind": "task_progress",
+                "task_id": event.get("task_id")?,
+                "appended": event.get("appended")?,
+                "skipped_bytes": event.get("skipped_bytes")?,
+            }),
             _ => return None,
         };
         Some(Self {

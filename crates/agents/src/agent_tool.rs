@@ -1769,6 +1769,15 @@ impl Inner {
     /// the static `run_sub_inner` path (background spawns), which used to
     /// hardcode `AlwaysPermit` and so silently escaped the parent's rules.
     fn permission_handler(&self) -> Arc<dyn Permission> {
+        self.permission_handler_for(None)
+    }
+
+    /// `permission_handler` for a sub-agent running as `task`, which shows as
+    /// waiting while a question of the sub-agent's waits on the host.
+    fn permission_handler_for(
+        &self,
+        task: Option<Arc<base::context::RunningTask>>,
+    ) -> Arc<dyn Permission> {
         if let Some((ref mailbox, ref label)) = self.mailbox {
             // Team member: bubble the prompt up to the coordinator's mailbox.
             return Arc::new(team::coordinator::PermissionBridge::new(
@@ -1793,6 +1802,7 @@ impl Inner {
                     .clone(),
                 timeout_secs: self.config.permission_prompt_timeout_secs,
                 own_tools: Default::default(),
+                task,
             });
         }
         Arc::new(AlwaysPermit)
@@ -1977,6 +1987,7 @@ struct SubagentTag {
     parent_session_id: String,
     parent_turn: u32,
     parent_tool_use_id: Option<String>,
+    task_id: Option<String>,
 }
 
 impl SubagentTag {
@@ -1999,7 +2010,13 @@ impl SubagentTag {
             parent_turn,
             parent_tool_use_id: (!parent_tool_use_id.is_empty())
                 .then(|| parent_tool_use_id.to_string()),
+            task_id: None,
         })
+    }
+
+    fn for_task(mut self, task: Option<&Arc<base::context::RunningTask>>) -> Self {
+        self.task_id = task.map(|t| t.task_id.clone());
+        self
     }
 
     fn forward(&self, event: AgentEvent) {
@@ -2010,6 +2027,7 @@ impl SubagentTag {
             parent_session_id: self.parent_session_id.clone(),
             parent_turn: self.parent_turn,
             parent_tool_use_id: self.parent_tool_use_id.clone(),
+            task_id: self.task_id.clone(),
             event: Box::new(event),
         });
     }
@@ -2790,7 +2808,8 @@ impl AgentTool {
             .session_id
             .clone()
             .unwrap_or_else(|| base::id::Id::new().to_string());
-        let tag = SubagentTag::new(&self.inner, &sid, subagent_type, parent);
+        let tag = SubagentTag::new(&self.inner, &sid, subagent_type, parent)
+            .map(|tag| tag.for_task(run.task.as_ref()));
         let sid_for_hook = sid.clone();
         let sid_for_meta = sid.clone();
         // Resolved once and shared by the sub-agent's own lineage and its `Meta`
@@ -3420,7 +3439,8 @@ impl AgentTool {
         } = admission;
         // S-3: same resolution as the foreground path — a background spawn
         // used to hardcode `AlwaysPermit`, escaping the parent's rules.
-        let perm: Arc<dyn Permission> = run.permission(inner.permission_handler());
+        let perm: Arc<dyn Permission> =
+            run.permission(inner.permission_handler_for(run.task.clone()));
         let cwd_for_meta = cwd.clone();
         let def = subagent_type.and_then(|t| inner.agent_type_def(t));
         let model_name = run
@@ -3447,7 +3467,8 @@ impl AgentTool {
             .clone()
             .unwrap_or_else(|| base::id::Id::new().to_string());
         let sid_for_meta = sid.clone();
-        let tag = SubagentTag::new(inner, &sid, subagent_type, None);
+        let tag = SubagentTag::new(inner, &sid, subagent_type, None)
+            .map(|tag| tag.for_task(run.task.as_ref()));
         let mut builder = Builder::new()
             .session_id(sid)
             .scene(scene)
@@ -3704,6 +3725,31 @@ struct ParentPermission {
     /// where a tool the sub-agent holds its own instance of — a
     /// `StructuredOutput` bound to its output schema — is a different one.
     own_tools: std::sync::RwLock<Option<Arc<dyn base::tool::ToolRegistry>>>,
+    task: Option<Arc<base::context::RunningTask>>,
+}
+
+/// Holds a task as waiting on one question until dropped — answered, timed
+/// out, or the sub-agent stopped while it waited.
+struct Waiting<'a> {
+    task: Option<&'a base::context::RunningTask>,
+    prompt_id: &'a str,
+}
+
+impl<'a> Waiting<'a> {
+    fn on(task: Option<&'a base::context::RunningTask>, prompt_id: &'a str) -> Self {
+        if let Some(task) = task {
+            task.begin_waiting(prompt_id);
+        }
+        Self { task, prompt_id }
+    }
+}
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        if let Some(task) = self.task {
+            task.end_waiting(self.prompt_id);
+        }
+    }
 }
 
 #[async_trait]
@@ -3762,6 +3808,7 @@ impl Permission for ParentPermission {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(prompt_id.clone(), tx);
+        let _waiting = Waiting::on(self.task.as_deref(), &prompt_id);
         // Prefixed so the host can tell a sub-agent's question apart from the
         // parent's own — the prompt itself is otherwise identical, which is
         // deliberate: it is answered through the identical path.
@@ -4013,7 +4060,6 @@ impl base::tool::Tool for AgentTool {
             .unwrap_or_else(|| ctx.session.cwd.clone());
         let tools = self.resolve_tools(inp.subagent_type.as_deref());
         let prompt = self.build_prompt(inp.subagent_type.as_deref(), &inp.prompt);
-        let perm = self.permission_handler();
         let sid = base::id::Id::new().to_string();
 
         // Bound rather than matched inline so the worktree is cleaned up
@@ -4033,6 +4079,9 @@ impl base::tool::Tool for AgentTool {
                 "agent_session_id": sid,
             }),
         );
+        let perm = self
+            .inner
+            .permission_handler_for(Some(task_scope.task().clone()));
         let result = self
             .run_sub_tagged(
                 prompt,
@@ -7258,6 +7307,7 @@ mod catalog_tests {
             parent_session_id: "parent-1".into(),
             parent_turn: 3,
             parent_tool_use_id: Some("toolu_0".into()),
+            task_id: Some("ag-1".into()),
             event: Box::new(AgentEvent::ToolUse {
                 id: "toolu_1".into(),
                 name: "Read".into(),

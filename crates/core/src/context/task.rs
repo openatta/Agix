@@ -108,6 +108,15 @@ pub struct RunningTask {
     pub usage: std::sync::Mutex<Option<crate::interface::model::Usage>>,
     /// What a sub-agent with an output schema handed in.
     pub structured_output: std::sync::OnceLock<serde_json::Value>,
+    /// The questions the work is waiting on the host to answer, by prompt id.
+    pub waiting_for: std::sync::Mutex<Vec<String>>,
+    /// Everything `append_output` was ever given, in bytes — `output` keeps
+    /// only the tail, so its length cannot say what is new.
+    output_total: std::sync::atomic::AtomicU64,
+    /// How much of `output_total` has gone out as `task_progress`.
+    progress_sent: std::sync::Mutex<u64>,
+    /// The session's task event channel, once the task is registered.
+    events: std::sync::OnceLock<tokio::sync::broadcast::Sender<serde_json::Value>>,
 }
 
 /// Delivers a message to a running task's work.
@@ -152,13 +161,103 @@ impl RunningTask {
                     .then(crate::interface::model::Usage::default),
             ),
             structured_output: std::sync::OnceLock::new(),
+            waiting_for: std::sync::Mutex::new(Vec::new()),
+            output_total: std::sync::atomic::AtomicU64::new(0),
+            progress_sent: std::sync::Mutex::new(0),
+            events: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Where this task's `task_*` events go; set once, by the session that
+    /// registers it.
+    pub fn report_to(&self, events: tokio::sync::broadcast::Sender<serde_json::Value>) {
+        let _ = self.events.set(events);
     }
 
     /// Count one more model call of this task's work.
     pub fn add_usage(&self, call: crate::interface::model::Usage) {
-        let mut usage = self.usage.lock().unwrap_or_else(|e| e.into_inner());
-        *usage = Some(usage.unwrap_or_default().plus(call));
+        {
+            let mut usage = self.usage.lock().unwrap_or_else(|e| e.into_inner());
+            *usage = Some(usage.unwrap_or_default().plus(call));
+        }
+        self.report_update();
+    }
+
+    /// The work is waiting on the host's answer to `prompt_id`.
+    pub fn begin_waiting(&self, prompt_id: &str) {
+        self.waiting_for
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(prompt_id.to_string());
+        self.report_update();
+    }
+
+    /// The question `prompt_id` was answered, or given up on.
+    pub fn end_waiting(&self, prompt_id: &str) {
+        let removed = {
+            let mut waiting = self.waiting_for.lock().unwrap_or_else(|e| e.into_inner());
+            let before = waiting.len();
+            waiting.retain(|id| id != prompt_id);
+            waiting.len() != before
+        };
+        if removed {
+            self.report_update();
+        }
+    }
+
+    /// `task_updated`, for a task whose start was announced and which has
+    /// not ended: what changed is in the snapshot.
+    fn report_update(&self) {
+        let Some(events) = self.events.get() else {
+            return;
+        };
+        if self.announced.load(std::sync::atomic::Ordering::SeqCst) && !self.has_ended() {
+            let _ = events.send(serde_json::json!({"kind": "task_updated", "task": self.info()}));
+        }
+    }
+
+    /// Whether what the work prints is streamed as it runs (`task_progress`):
+    /// a shell command's and a monitor's. A sub-agent's output is its final
+    /// answer, reported when it finishes.
+    pub fn streams_output(&self) -> bool {
+        matches!(self.task_type, TaskType::Shell | TaskType::Monitor)
+    }
+
+    /// The most of the new output one `task_progress` carries.
+    pub const PROGRESS_FRAME_BYTES: usize = 8 * 1024;
+
+    /// Send what the work printed since the last `task_progress`, if anything.
+    /// Only `last` — the one sent as the task ends, before `task_finished` —
+    /// goes out once the task has ended, so none can follow `task_finished`.
+    pub fn report_progress(&self, last: bool) {
+        let mut sent = self.progress_sent.lock().unwrap_or_else(|e| e.into_inner());
+        if !self.streams_output()
+            || !self.announced.load(std::sync::atomic::Ordering::SeqCst)
+            || (!last && self.has_ended())
+        {
+            return;
+        }
+        let Some(events) = self.events.get() else {
+            return;
+        };
+        let (appended, new) = {
+            let output = self.output.lock().unwrap_or_else(|e| e.into_inner());
+            let total = self.output_total.load(std::sync::atomic::Ordering::SeqCst);
+            if total == *sent {
+                return;
+            }
+            let new = (total - *sent) as usize;
+            let shown = new.min(Self::PROGRESS_FRAME_BYTES).min(output.len());
+            let cut = ceil_char_boundary(&output, output.len() - shown);
+            *sent = total;
+            (output[cut..].to_string(), new)
+        };
+        let _ = events.send(serde_json::json!({
+            "kind": "task_progress",
+            "task_id": self.task_id,
+            "skipped_bytes": new - appended.len(),
+            "appended": appended,
+        }));
     }
 
     pub fn has_ended(&self) -> bool {
@@ -188,6 +287,8 @@ impl RunningTask {
     pub fn append_output(&self, text: &str) {
         let mut output = self.output.lock().unwrap_or_else(|e| e.into_inner());
         output.push_str(text);
+        self.output_total
+            .fetch_add(text.len() as u64, std::sync::atomic::Ordering::SeqCst);
         if output.len() > Self::OUTPUT_KEPT_BYTES {
             let cut = ceil_char_boundary(&output, output.len() - Self::OUTPUT_KEPT_BYTES);
             output.drain(..cut);
@@ -217,7 +318,13 @@ impl RunningTask {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
+        let waiting_for = self
+            .waiting_for
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         let (status, error) = match status {
+            RunningStatus::Running if !waiting_for.is_empty() => ("waiting", None),
             RunningStatus::Running => ("running", None),
             RunningStatus::Completed => ("done", None),
             RunningStatus::Cancelled => ("stopped", None),
@@ -233,6 +340,9 @@ impl RunningTask {
         });
         if let Some(error) = error {
             info["error"] = serde_json::json!(error);
+        }
+        if status == "waiting" {
+            info["waiting_for"] = serde_json::json!(waiting_for);
         }
         if let Some(usage) = *self.usage.lock().unwrap_or_else(|e| e.into_inner()) {
             info["usage"] = serde_json::json!(usage);
@@ -259,7 +369,7 @@ pub(crate) fn unix_ms() -> i64 {
 }
 
 #[cfg(test)]
-mod output_tests {
+mod tests {
     use super::*;
 
     #[test]
@@ -280,6 +390,147 @@ mod output_tests {
         assert_eq!(whole.len(), RunningTask::OUTPUT_KEPT_BYTES);
         assert!(!whole.contains("head"));
         assert!(truncated, "what was dropped is reported");
+    }
+
+    fn reporting(
+        task_type: TaskType,
+    ) -> (
+        RunningTask,
+        tokio::sync::broadcast::Receiver<serde_json::Value>,
+    ) {
+        let (events, rx) = tokio::sync::broadcast::channel(64);
+        let task = RunningTask::new("t-1".into(), task_type);
+        task.report_to(events);
+        (task, rx)
+    }
+
+    fn drain(
+        rx: &mut tokio::sync::broadcast::Receiver<serde_json::Value>,
+    ) -> Vec<serde_json::Value> {
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    #[test]
+    fn progress_goes_out_only_between_announcement_and_end() {
+        let (task, mut rx) = reporting(TaskType::Shell);
+        task.append_output("early\n");
+        task.report_progress(false);
+        assert!(drain(&mut rx).is_empty(), "not announced yet");
+
+        task.announced
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        task.report_progress(false);
+        task.append_output("more\n");
+        task.report_progress(false);
+        task.report_progress(false);
+        let sent: Vec<_> = drain(&mut rx)
+            .into_iter()
+            .map(|e| e["appended"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            sent,
+            ["early\n", "more\n"],
+            "each byte once, nothing when idle"
+        );
+
+        task.append_output("last\n");
+        *task.ended_ms.lock().unwrap() = Some(1);
+        task.report_progress(false);
+        assert!(
+            drain(&mut rx).is_empty(),
+            "only the closing report follows the end"
+        );
+        task.report_progress(true);
+        assert_eq!(drain(&mut rx)[0]["appended"], "last\n");
+    }
+
+    #[test]
+    fn a_burst_beyond_a_frame_is_sent_as_its_tail() {
+        let (task, mut rx) = reporting(TaskType::Monitor);
+        task.announced
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let burst = "x".repeat(RunningTask::PROGRESS_FRAME_BYTES * 3);
+        task.append_output(&burst);
+        task.report_progress(false);
+        let frame = drain(&mut rx).remove(0);
+        assert_eq!(frame["kind"], "task_progress");
+        assert_eq!(frame["task_id"], "t-1");
+        assert_eq!(
+            frame["appended"].as_str().unwrap().len(),
+            RunningTask::PROGRESS_FRAME_BYTES
+        );
+        assert_eq!(
+            frame["skipped_bytes"],
+            RunningTask::PROGRESS_FRAME_BYTES * 2,
+            "what was left out is counted"
+        );
+    }
+
+    #[test]
+    fn a_sub_agents_answer_is_not_streamed() {
+        let (task, mut rx) = reporting(TaskType::Agent);
+        task.announced
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        task.append_output("the answer");
+        task.report_progress(true);
+        assert!(drain(&mut rx).is_empty());
+    }
+
+    #[test]
+    fn usage_and_waiting_are_reported_as_snapshots() {
+        let (task, mut rx) = reporting(TaskType::Agent);
+        let call = crate::interface::model::Usage {
+            input_tokens: 10,
+            output_tokens: 2,
+            ..Default::default()
+        };
+        task.add_usage(call);
+        assert!(drain(&mut rx).is_empty(), "not announced yet");
+
+        task.announced
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        task.add_usage(call);
+        let update = drain(&mut rx).remove(0);
+        assert_eq!(update["kind"], "task_updated");
+        assert_eq!(update["task"]["usage"]["input_tokens"], 20);
+        assert_eq!(update["task"]["status"], "running");
+
+        task.begin_waiting("p-1");
+        task.begin_waiting("p-2");
+        task.end_waiting("p-1");
+        let states: Vec<_> = drain(&mut rx)
+            .into_iter()
+            .map(|e| {
+                (
+                    e["task"]["status"].clone(),
+                    e["task"]["waiting_for"].clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            states,
+            [
+                (serde_json::json!("waiting"), serde_json::json!(["p-1"])),
+                (
+                    serde_json::json!("waiting"),
+                    serde_json::json!(["p-1", "p-2"])
+                ),
+                (serde_json::json!("waiting"), serde_json::json!(["p-2"])),
+            ]
+        );
+        task.end_waiting("p-2");
+        task.end_waiting("p-2");
+        let back = drain(&mut rx);
+        assert_eq!(back.len(), 1, "an answer already counted changes nothing");
+        assert_eq!(back[0]["task"]["status"], "running");
+        assert!(back[0]["task"].get("waiting_for").is_none());
+
+        *task.ended_ms.lock().unwrap() = Some(1);
+        task.add_usage(call);
+        assert!(
+            drain(&mut rx).is_empty(),
+            "an ended task's final word is task_finished"
+        );
     }
 }
 

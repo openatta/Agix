@@ -1,7 +1,8 @@
 //! A sub-agent the host starts under a session (`session.startAgent`): a task
 //! of the session like one the model starts, reported with the host's tag,
 //! its own usage and its structured output, held to the session's limits and
-//! permissions, and able to ask the host while its parent is idle.
+//! permissions, and able to ask the host while its parent is idle — its task
+//! showing as waiting until the host answers.
 
 use std::time::Duration;
 
@@ -34,15 +35,31 @@ async fn event_where(
     watcher: &mut DaemonRpcClient,
     wanted: impl Fn(&Value) -> bool,
 ) -> anyhow::Result<Value> {
+    let mut seen = events_until(watcher, wanted).await?;
+    Ok(seen.pop().unwrap_or_default())
+}
+
+/// Every `session.event` up to and including the first whose event satisfies
+/// `last`.
+async fn events_until(
+    watcher: &mut DaemonRpcClient,
+    last: impl Fn(&Value) -> bool,
+) -> anyhow::Result<Vec<Value>> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let mut seen = Vec::new();
     loop {
         let left = deadline.saturating_duration_since(tokio::time::Instant::now());
         let frame = tokio::time::timeout(left, watcher.next_frame())
             .await
             .map_err(|_| anyhow::anyhow!("no such event within 20s"))??
             .ok_or_else(|| anyhow::anyhow!("the connection closed"))?;
-        if frame["method"] == "session.event" && wanted(&frame["params"]["event"]) {
-            return Ok(frame["params"].clone());
+        if frame["method"] != "session.event" {
+            continue;
+        }
+        let done = last(&frame["params"]["event"]);
+        seen.push(frame["params"].clone());
+        if done {
+            return Ok(seen);
         }
     }
 }
@@ -82,7 +99,8 @@ async fn an_agent_started_on_an_idle_session_runs_as_its_task() -> anyhow::Resul
     );
 
     let begun = event_where(&mut watcher, |e| e["kind"] == "task_started").await?;
-    let ended = event_where(&mut watcher, |e| e["kind"] == "task_finished").await?;
+    let mut between = events_until(&mut watcher, |e| e["kind"] == "task_finished").await?;
+    let ended = between.pop().unwrap_or_default();
     for frame in [&begun, &ended] {
         let task = &frame["event"]["task"];
         assert_eq!(task["task_id"], task_id.as_str(), "{frame}");
@@ -94,6 +112,23 @@ async fn an_agent_started_on_an_idle_session_runs_as_its_task() -> anyhow::Resul
     assert_eq!(task["status"], "done", "{task}");
     let calls = provider.calls().len() as u64;
     assert_eq!(calls, 1);
+    let updates: Vec<&Value> = between
+        .iter()
+        .filter(|f| f["event"]["kind"] == "task_updated")
+        .collect();
+    assert_eq!(updates.len() as u64, calls, "one update per model call");
+    assert_eq!(updates[0]["event"]["task"]["usage"], task["usage"]);
+    let progress: Vec<&Value> = between
+        .iter()
+        .filter(|f| f["event"]["kind"] == "subagent_progress")
+        .collect();
+    assert!(!progress.is_empty());
+    assert!(
+        progress
+            .iter()
+            .all(|f| f["event"]["task_id"] == task_id.as_str()),
+        "the agent's progress names its task"
+    );
     assert_eq!(
         task["usage"]["input_tokens"],
         live::provider::INPUT_TOKENS * calls
@@ -320,6 +355,15 @@ async fn the_hosts_deny_rules_hold_and_a_question_reaches_it_between_turns() -> 
     assert_eq!(asked["turn_id"], Value::Null, "{asked}");
     let message = asked["event"]["message"].as_str().unwrap_or_default();
     assert!(message.starts_with("[sub-agent "), "{asked}");
+    let prompt_id = asked["event"]["prompt_id"].clone();
+    let listed = client
+        .call("session.tasks", json!({ "session_id": session }))
+        .await?
+        .result
+        .unwrap_or_default();
+    let waiting = &listed["tasks"][0];
+    assert_eq!(waiting["status"], "waiting", "{listed}");
+    assert_eq!(waiting["waiting_for"], json!([prompt_id]), "{listed}");
     let answered = client
         .call(
             "session.respondToPrompt",
@@ -332,8 +376,15 @@ async fn the_hosts_deny_rules_hold_and_a_question_reaches_it_between_turns() -> 
         .await?;
     assert!(answered.error.is_none(), "{answered:?}");
 
-    let ended = event_where(&mut watcher, |e| e["kind"] == "task_finished").await?;
+    let mut between = events_until(&mut watcher, |e| e["kind"] == "task_finished").await?;
+    let ended = between.pop().unwrap_or_default();
     assert_eq!(ended["event"]["task"]["status"], "done", "{ended}");
+    assert!(
+        between.iter().any(|f| f["event"]["kind"] == "task_updated"
+            && f["event"]["task"]["status"] == "running"
+            && f["event"]["task"].get("waiting_for").is_none()),
+        "the answer puts the task back to running"
+    );
     let project = world.project("ask")?;
     assert_eq!(
         std::fs::read_to_string(project.join("asked.txt"))

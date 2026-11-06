@@ -162,3 +162,7 @@ skill、web 工具、WebSocket、载体与包方案。
 - `prompt`、`subagent_progress`、`team_progress`、`skills_changed` 帧在两轮之间也会到,
   `turn_id` 为 `null`。以前它们攒到下一轮开始时才发,而且带着那一轮的 `turn_id`。
   子 Agent 的询问一直是用父会话的 `session_id` 回答。
+- 任务边跑边推(capability `task_progress`):新帧 `task_progress`(Shell 命令与监视器
+  新增的输出)与 `task_updated`(子 Agent 的用量、等待宿主回答);`subagent_progress`
+  多了 `task_id`。子 Agent 有询问在等时,任务的 `status` 是 `waiting`,不认识这个值的
+  客户端把它当 `running` 即可。

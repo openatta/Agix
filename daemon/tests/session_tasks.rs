@@ -3,7 +3,8 @@
 //! What runs on in a session beyond the model's reply — a shell command, a
 //! sub-agent, a scheduled job — is listed by `session.tasks`, read by
 //! `session.taskOutput`, stopped by `session.stopTask`, and announced to the
-//! session's watchers as it starts and ends, outside any turn.
+//! session's watchers as it starts, changes and ends, outside any turn — with
+//! what a command prints streamed to them as it runs.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -494,4 +495,147 @@ async fn a_sub_agents_output_is_its_answer() {
         .await;
     assert_eq!(out["status"], "done");
     assert_eq!(out["output"], "hello from below");
+}
+
+/// The frames about `task_id`, in the order they arrived.
+fn about(
+    frames: &Mutex<Vec<serde_json::Value>>,
+    task_id: &serde_json::Value,
+) -> Vec<serde_json::Value> {
+    frames
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|f| f["event"]["task_id"] == *task_id || f["event"]["task"]["task_id"] == *task_id)
+        .cloned()
+        .collect()
+}
+
+async fn run_command(command: &str) -> (Arc<Daemon>, Arc<Mutex<Vec<serde_json::Value>>>, String) {
+    let model = Arc::new(MockAnthropicClient::new());
+    model.push_turn(tool_round(
+        "Bash",
+        "toolu_cmd",
+        serde_json::json!({"command": command}),
+    ));
+    model.push_turn(text_round("ran"));
+    let daemon = Arc::new(Daemon::start(model).await);
+    let session = daemon.ok("session.create", serde_json::json!({})).await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let frames = daemon.watch(&session).await;
+    daemon
+        .ok(
+            "session.run_turn",
+            serde_json::json!({"session_id": session, "message": "run it"}),
+        )
+        .await;
+    (daemon, frames, session)
+}
+
+#[tokio::test]
+async fn what_a_running_command_prints_streams_to_the_sessions_watchers() {
+    let (_daemon, frames, _session) =
+        run_command("for i in 1 2 3 4 5 6; do echo line-$i; sleep 0.5; done").await;
+
+    let finished = eventually!("task_finished", {
+        frames
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|f| f["event"]["kind"] == "task_finished")
+            .cloned()
+    });
+    let task_id = finished["event"]["task"]["task_id"].clone();
+    let seen = about(&frames, &task_id);
+    let kinds: Vec<&str> = seen
+        .iter()
+        .map(|f| f["event"]["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds.first(), Some(&"task_started"), "{kinds:?}");
+    assert_eq!(kinds.last(), Some(&"task_finished"), "{kinds:?}");
+    let progress: Vec<&serde_json::Value> = seen
+        .iter()
+        .filter(|f| f["event"]["kind"] == "task_progress")
+        .collect();
+    assert!(
+        progress.len() >= 2,
+        "a three-second command streams more than once a run: {kinds:?}"
+    );
+    assert!(progress
+        .iter()
+        .all(|f| f["turn_id"].is_null() && f["event"]["skipped_bytes"] == 0));
+    let streamed: String = progress
+        .iter()
+        .map(|f| f["event"]["appended"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        streamed, "line-1\nline-2\nline-3\nline-4\nline-5\nline-6\n",
+        "every line once, in order, the last before task_finished"
+    );
+}
+
+#[tokio::test]
+async fn a_quick_command_streams_nothing() {
+    let (_daemon, frames, _session) = run_command("echo quick").await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let task_frames: Vec<_> = frames
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|f| {
+            f["event"]["kind"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("task_")
+        })
+        .cloned()
+        .collect();
+    assert!(task_frames.is_empty(), "{task_frames:?}");
+}
+
+#[tokio::test]
+async fn a_flood_of_output_streams_as_its_tail_and_says_what_it_left_out() {
+    let (daemon, frames, session) =
+        run_command("sleep 1.2; head -c 40000 /dev/zero | tr '\\0' x; echo; sleep 1.2").await;
+    let finished = eventually!("task_finished", {
+        frames
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|f| f["event"]["kind"] == "task_finished")
+            .cloned()
+    });
+    let task_id = finished["event"]["task"]["task_id"].clone();
+    let progress: Vec<serde_json::Value> = about(&frames, &task_id)
+        .into_iter()
+        .filter(|f| f["event"]["kind"] == "task_progress")
+        .collect();
+    let (shown, skipped) = progress.iter().fold((0, 0), |(shown, skipped), f| {
+        let appended = f["event"]["appended"].as_str().unwrap().len();
+        assert!(appended <= 8 * 1024, "a frame carries at most 8 KiB");
+        (
+            shown + appended,
+            skipped + f["event"]["skipped_bytes"].as_u64().unwrap() as usize,
+        )
+    });
+    assert!(skipped > 0, "{progress:?}");
+    assert_eq!(
+        shown + skipped,
+        40_001,
+        "every byte is either sent or counted"
+    );
+
+    let whole = daemon
+        .ok(
+            "session.taskOutput",
+            serde_json::json!({"session_id": session, "task_id": task_id, "tail_bytes": 100_000}),
+        )
+        .await;
+    assert_eq!(
+        whole["output"].as_str().unwrap().len(),
+        40_001,
+        "what a frame left out is still there to read"
+    );
 }

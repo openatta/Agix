@@ -6466,6 +6466,7 @@ fn background_frame(
             agent_type,
             parent_turn,
             parent_tool_use_id,
+            task_id,
             event,
             ..
         } => (
@@ -6473,6 +6474,7 @@ fn background_frame(
                 "kind":"subagent_progress","agent_label":agent_label,
                 "agent_session_id":agent_session_id,"agent_type":agent_type,
                 "parent_turn":parent_turn,"parent_tool_use_id":parent_tool_use_id,
+                "task_id":task_id,
                 "event":serde_json::to_value(&**event).unwrap_or(serde_json::Value::Null)
             }),
             None,
