@@ -303,7 +303,9 @@ let pool = daemon::assemble::pool(
 | **编辑 / 元 / 诊断** | `NotebookEdit` · `ToolSearch` · `Ping` `Sleep` |
 
 `tools::register_builtin_tools` 装上其中 22 个自给自足的;其余需要会话状态,由 builder
-或模块注册。延迟加载的工具只报名字,要用时经 `ToolSearch` 取 schema。
+或模块注册。延迟加载的工具只报名字,要用时经 `ToolSearch` 取 schema。`code` 场景不提供
+`NotebookEdit`、worktree 两个工具、`Ping`、`Sleep`、`PushNotification` 和
+`VerifyPlanExecution`;`StructuredOutput` 只在宿主给了输出 schema 时才有。
 
 ### 模型路由
 

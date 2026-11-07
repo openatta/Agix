@@ -168,9 +168,10 @@ fn closest_names<'a>(wanted: &str, names: impl Iterator<Item = &'a str>) -> Vec<
 #[async_trait]
 impl Tool for ToolSearchTool {
     fn description(&self) -> &str {
-        "Fetch the full JSON schema of a deferred tool (returned in a <functions> \
-         block) and/or a tool's detailed usage guide. Query \"select:A,B\" for \
-         known names, or keywords to search (\"+term\" must appear in the name)."
+        "A tool listed with an empty input schema is deferred: fetch its schema here \
+         before calling it. Returns the schema in a <functions> block, and a tool's \
+         detailed usage guide when it has one. Query \"select:A,B\" for known names, \
+         or keywords to search (\"+term\" must appear in the name)."
     }
     fn name(&self) -> &str {
         "ToolSearch"

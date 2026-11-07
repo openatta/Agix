@@ -1,6 +1,7 @@
-//! Code scene — the full-capability coding agent: every registered tool is
-//! allowed, and everything outside [`RESIDENT_TOOLS`] is advertised by name
-//! until `ToolSearch` fetches its schema.
+//! Code scene — the full-capability coding agent: every registered tool but
+//! a few in [`NOT_OFFERED`] is allowed, and everything outside
+//! [`RESIDENT_TOOLS`] is advertised by name until `ToolSearch` fetches its
+//! schema.
 //!
 //! System prompt assembly uses a section cache keyed by content fingerprint
 //! (see `SECTION_CACHE` below) so unchanged sections are not rebuilt on
@@ -53,22 +54,16 @@ const ALL_DEFERRABLE_TOOLS: &[&str] = &[
     "CronList",
     "Edit",
     "EnterPlanMode",
-    "EnterWorktree",
     "ExitPlanMode",
-    "ExitWorktree",
     "Glob",
     "GoalCreate",
     "GoalGet",
     "GoalUpdate",
     "Grep",
     "Monitor",
-    "NotebookEdit",
-    "Ping",
-    "PushNotification",
     "Read",
     "RunCode",
     "Skill",
-    "Sleep",
     "StructuredOutput",
     "TaskMessage",
     "TaskOutput",
@@ -79,10 +74,22 @@ const ALL_DEFERRABLE_TOOLS: &[&str] = &[
     "TeamList",
     "TodoWrite",
     "ToolSearch",
-    "VerifyPlanExecution",
     "WebFetch",
     "WebSearch",
     "Write",
+];
+
+/// Registered tools this scene leaves out: ones with no counterpart in the
+/// harnesses it is measured against, each a schema the model would otherwise
+/// carry on every request.
+const NOT_OFFERED: &[&str] = &[
+    "EnterWorktree",
+    "ExitWorktree",
+    "NotebookEdit",
+    "Ping",
+    "PushNotification",
+    "Sleep",
+    "VerifyPlanExecution",
 ];
 
 pub struct CodeScene;
@@ -116,7 +123,7 @@ impl Scene for CodeScene {
         vec![]
     }
     fn disallowed_tools(&self) -> Vec<String> {
-        vec![]
+        NOT_OFFERED.iter().map(|s| s.to_string()).collect()
     }
 
     fn deferred_tools(&self) -> Vec<String> {

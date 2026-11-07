@@ -349,6 +349,9 @@ build if anything in the workspace assembles a pool a second way.
 `tools::register_builtin_tools` installs the 22 self-contained ones; the rest
 need per-session state and are registered by the builder or by a module.
 Deferred tools are advertised by name and fetched with `ToolSearch` when needed.
+The `code` scene leaves out `NotebookEdit`, the worktree tools, `Ping`, `Sleep`,
+`PushNotification` and `VerifyPlanExecution`; `StructuredOutput` is there only
+when the host sets an output schema.
 
 ### Model routing
 

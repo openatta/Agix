@@ -2300,8 +2300,11 @@ impl Builder {
         // exact registry and reads it at call time, so a tool wrapped
         // underneath it stays discoverable.
         let host_schema = self.output_schema.clone();
-        if let Some(schema) = &host_schema {
-            tools::bind_output_schema(&tools, schema);
+        match &host_schema {
+            Some(schema) => tools::bind_output_schema(&tools, schema),
+            None => {
+                tools.remove("StructuredOutput");
+            }
         }
         {
             let mut deferred = scene.deferred_tools();
@@ -3247,7 +3250,7 @@ mod tests {
 
         // Registered after the seeding copy — the set the old single-pass
         // policy could not reach.
-        for late in ["CronCreate", "EnterWorktree", "WebSearch"] {
+        for late in ["CronCreate", "WebSearch"] {
             let t = agent.tools.get(late).expect(late);
             assert!(t.is_deferred(), "{late} must be deferred");
             let schema = serde_json::to_string(&t.input_schema()).unwrap();
@@ -3518,7 +3521,10 @@ mod tests {
     async fn build_registers_web_search_and_the_other_bridged_tools() {
         let settings = Arc::new(test_settings());
         let model: Arc<dyn Model> = Arc::new(DummyModel);
-        let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene);
+        let scene: Arc<dyn Scene> = Arc::new(NarrowingScene {
+            modules: None,
+            disabled: vec![],
+        });
 
         let (agent, _event_rx, _input_tx) = Builder::new()
             .scene(scene)
@@ -3562,10 +3568,10 @@ mod tests {
         // Registry seeded the way a daemon does it.
         let template = Arc::new(InMemoryToolRegistry::new());
         tools::register_builtin_tools(&template);
-        let full_schema = template.get("NotebookEdit").unwrap().input_schema();
+        let full_schema = template.get("GoalCreate").unwrap().input_schema();
         assert!(
-            full_schema["properties"].as_object().unwrap().len() > 1,
-            "precondition: NotebookEdit normally ships a real schema"
+            !full_schema["properties"].as_object().unwrap().is_empty(),
+            "precondition: GoalCreate normally ships a real schema"
         );
 
         let (agent, _rx, _tx) = Builder::new()
@@ -3579,9 +3585,9 @@ mod tests {
 
         let deferred = agent
             .tools
-            .get("NotebookEdit")
-            .expect("NotebookEdit still registered");
-        assert!(deferred.is_deferred(), "CodeScene defers NotebookEdit");
+            .get("GoalCreate")
+            .expect("GoalCreate still registered");
+        assert!(deferred.is_deferred(), "CodeScene defers GoalCreate");
         assert_eq!(
             deferred.input_schema()["properties"],
             serde_json::json!({}),
@@ -3605,7 +3611,7 @@ mod tests {
         assert!(scene::code::CodeScene.permits_tool("ToolSearch"));
 
         // The session's ToolSearch must see the session's deferred wrappers,
-        // not the template's un-wrapped originals — i.e. `select:NotebookEdit` has to
+        // not the template's un-wrapped originals — i.e. `select:GoalCreate` has to
         // actually find something, or the name is advertised with no way to
         // get the schema back.
         let found = agent
@@ -3613,7 +3619,7 @@ mod tests {
             .get("ToolSearch")
             .expect("ToolSearch rebound onto the session registry")
             .call(
-                serde_json::json!({"query": "select:NotebookEdit"}),
+                serde_json::json!({"query": "select:GoalCreate"}),
                 base::tool::ToolContext::for_test("/tmp".into()),
                 base::tool::ProgressSender::noop("t"),
             )
@@ -3621,10 +3627,7 @@ mod tests {
             .unwrap();
         match &found.content {
             base::tool::ToolResultContent::Text(s) => {
-                assert!(
-                    s.contains("NotebookEdit") && !s.contains("No matches"),
-                    "{s}"
-                )
+                assert!(s.contains("GoalCreate") && !s.contains("No matches"), "{s}")
             }
             _ => panic!("expected text"),
         }

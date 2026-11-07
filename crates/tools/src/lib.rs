@@ -169,18 +169,17 @@ pub fn register_web_search(
     ))));
 }
 
-/// Makes a registered `StructuredOutput` tool validate against `schema`, the
-/// host's output contract. Does nothing when no such tool is registered —
-/// including in a build without the `structured-output` tool.
+/// Registers `StructuredOutput` bound to `schema`, the host's output contract,
+/// in place of any unbound one. A session without a schema has no use for the
+/// tool, so this is the only way it gets one. Does nothing in a build without
+/// the `structured-output` tool.
 pub fn bind_output_schema(reg: &base::tool::InMemoryToolRegistry, schema: &serde_json::Value) {
     #[cfg(not(feature = "structured-output"))]
     let _ = (reg, schema);
     #[cfg(feature = "structured-output")]
-    if reg.get("StructuredOutput").is_some() {
-        reg.replace(Arc::new(
-            crate::structured_output::StructuredOutputTool::with_schema(schema.clone()),
-        ));
-    }
+    reg.replace(Arc::new(
+        crate::structured_output::StructuredOutputTool::with_schema(schema.clone()),
+    ));
 }
 
 /// Register `CronCreate` / `CronDelete` / `CronList` against a shared store.

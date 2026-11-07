@@ -2070,14 +2070,13 @@ or project context that should survive across sessions.
         let mut defs = Vec::with_capacity(selected.len());
         for t in selected {
             let mut description = t.description().to_string();
-            // A-1: surface the existence of `Tool::prompt()`, not its body.
-            // Inlining the guides would add ~85 KB (~21k tokens) to every
-            // request; this adds one line to the ~35 tools that have one, and
-            // the body is fetched on demand (see `ToolSearchTool` docs). The
-            // pointer is deliberately terse and mechanical — the *how* lives
-            // once in `ToolSearch`'s own description, which is always present
-            // whenever any of these pointers are.
-            if can_fetch_guides && t.detailed_prompt(&prompt_ctx).await.is_some() {
+            // Surface the existence of `Tool::prompt()`, not its body: inlining
+            // the guides would add ~85 KB to every request. A deferred tool
+            // needs no pointer — fetching its schema returns the guide too.
+            if can_fetch_guides
+                && !t.is_deferred()
+                && t.detailed_prompt(&prompt_ctx).await.is_some()
+            {
                 description.push_str(&format!(
                     "\n\nDetailed guide: ToolSearch{{\"query\":\"select:{}\"}}",
                     t.name()

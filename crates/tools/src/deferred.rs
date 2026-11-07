@@ -10,9 +10,9 @@
 //! [`DeferredTool`] before they reach the session registry. The wrapper is a
 //! transparent delegate except for two things:
 //!
-//! - `input_schema()` collapses to a stub object that names the tool and says
-//!   how to get the real schema, so the per-call token cost of the entry drops
-//!   to the name + one line;
+//! - `input_schema()` collapses to an empty object schema, so the per-call
+//!   cost of the entry drops to its name and description; a call that fails
+//!   validation is answered with the real schema;
 //! - `is_deferred()` reports `true`, which is exactly the predicate
 //!   `ToolSearchTool` filters on — so the tool stays *discoverable by name*
 //!   through `ToolSearch{query: "select:<name>"}`.
@@ -63,18 +63,10 @@ impl Tool for DeferredTool {
 
     /// The whole point: a stub in place of the real schema. Kept a valid
     /// (if empty) JSON Schema object so a provider that validates the `tools`
-    /// array still accepts it.
+    /// array still accepts it. What an empty schema means is said once, in
+    /// `ToolSearch`'s description, not in every stub.
     fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {},
-            "additionalProperties": true,
-            "description": format!(
-                "Schema deferred. Call ToolSearch with query \"select:{}\" to load \
-                 this tool's full input schema before invoking it.",
-                self.inner.name()
-            ),
-        })
+        json!({"type": "object", "properties": {}})
     }
 
     fn full_input_schema(&self) -> Value {
@@ -161,7 +153,12 @@ impl Tool for DeferredTool {
     }
 
     async fn validate_input(&self, input: &Value, ctx: &ToolContext) -> ValidationResult {
-        self.inner.validate_input(input, ctx).await
+        match self.inner.validate_input(input, ctx).await {
+            ValidationResult::Err(message, code) => {
+                ValidationResult::Err(self.with_schema(&message), code)
+            }
+            ok => ok,
+        }
     }
 
     async fn check_permissions(&self, input: &Value, ctx: &ToolContext) -> PermissionDecision {
@@ -174,7 +171,26 @@ impl Tool for DeferredTool {
         ctx: ToolContext,
         progress: ProgressSender,
     ) -> Result<ToolResult, ToolError> {
-        self.inner.call(input, ctx, progress).await
+        match self.inner.call(input, ctx, progress).await {
+            Err(ToolError::Schema(e)) => {
+                Err(ToolError::InvalidInput(self.with_schema(&e.to_string())))
+            }
+            Err(ToolError::InvalidInput(m)) => Err(ToolError::InvalidInput(self.with_schema(&m))),
+            Err(ToolError::Validation(m)) => Err(ToolError::Validation(self.with_schema(&m))),
+            other => other,
+        }
+    }
+}
+
+impl DeferredTool {
+    /// A model that called the tool without fetching its schema gets the
+    /// schema with the refusal, so the retry can be right the first time.
+    fn with_schema(&self, message: &str) -> String {
+        format!(
+            "{message}\n\nInput schema of {}: {}",
+            self.inner.name(),
+            base::tool::compact_schema(self.inner.full_input_schema())
+        )
     }
 }
 
@@ -222,6 +238,52 @@ mod tests {
     use super::*;
     use base::tool::InMemoryToolRegistry;
 
+    #[tokio::test]
+    async fn a_call_with_the_wrong_input_is_answered_with_the_schema() {
+        struct Strict;
+        #[async_trait]
+        impl Tool for Strict {
+            fn name(&self) -> &str {
+                "Strict"
+            }
+            fn description(&self) -> &str {
+                "needs a path"
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object", "properties": {"path": {"type": "string"}},
+                       "required": ["path"]})
+            }
+            async fn call(
+                &self,
+                input: Value,
+                _: ToolContext,
+                _: ProgressSender,
+            ) -> Result<ToolResult, ToolError> {
+                #[derive(serde::Deserialize)]
+                #[allow(dead_code)]
+                struct In {
+                    path: String,
+                }
+                let _: In = serde_json::from_value(input)?;
+                Ok(ToolResult::text("ok"))
+            }
+        }
+
+        let deferred = DeferredTool::new(Arc::new(Strict));
+        let err = deferred
+            .call(
+                json!({"file": "a.txt"}),
+                ToolContext::for_test("/tmp".into()),
+                ProgressSender::noop("t"),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("missing field `path`"), "{err}");
+        assert!(err.contains("Input schema of Strict"), "{err}");
+        assert!(err.contains("\"required\":[\"path\"]"), "{err}");
+    }
+
     fn tool_named(name: &'static str) -> Arc<dyn Tool> {
         struct T(&'static str);
         #[async_trait]
@@ -264,15 +326,11 @@ mod tests {
         assert_eq!(grep.name(), "Grep");
         assert_eq!(grep.description(), "does a thing");
         // The real schema does not.
-        let schema = grep.input_schema();
-        assert!(
-            schema.get("required").is_none() && schema["properties"] == json!({}),
-            "deferred tool must not carry its real schema: {schema}"
+        assert_eq!(
+            grep.input_schema(),
+            json!({"type": "object", "properties": {}}),
+            "deferred tool must not carry its real schema"
         );
-        assert!(schema["description"]
-            .as_str()
-            .unwrap()
-            .contains("select:Grep"));
         // Untouched tool keeps everything.
         assert_eq!(read.input_schema()["required"], json!(["path"]));
         assert!(!read.is_deferred());
