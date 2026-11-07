@@ -12,11 +12,12 @@ TurnComplete stop_reason=end_turn
 
 == session log ==
 User blocks=1
+User blocks=1
 Assistant
 User blocks=1
 Assistant
 
 == model calls ==
-golden-model max_tokens=1024 messages=1 content_bytes=6 truncated_results=0
-golden-model max_tokens=1024 messages=3 content_bytes=19 truncated_results=0
+golden-model max_tokens=1024 messages=2 content_bytes=304 truncated_results=0
+golden-model max_tokens=1024 messages=4 content_bytes=317 truncated_results=0
 unconsumed_replies=0

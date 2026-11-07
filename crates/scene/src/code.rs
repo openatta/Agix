@@ -138,6 +138,10 @@ impl Scene for CodeScene {
         common::reminder(ctx)
     }
 
+    fn build_session_context(&self, ctx: &ScenePromptContext) -> String {
+        common::session_context(ctx)
+    }
+
     fn execution_params(&self) -> ExecutionParams {
         ExecutionParams::default()
     }
@@ -312,28 +316,10 @@ fn build_section_registry<'a>(ctx: &'a ScenePromptContext) -> Vec<SystemPromptSe
         TONE_STYLE_BLOCK.to_string()
     }));
 
-    let env_key = fingerprint_env(ctx);
-    let cwd = ctx.cwd.to_string();
-    let os = ctx.os.to_string();
-    let shell = ctx.shell.to_string();
-    let date = ctx.date.to_string();
     let model_name = ctx.model_name.to_string();
-    let is_git = ctx.is_git;
-    let git_branch = ctx.git_branch.clone().map(|s| s.into_owned());
-    let is_worktree = ctx.is_worktree;
-    let git_status = ctx.git_status.clone().map(|s| s.into_owned());
-    sections.push(memoized_section("env", env_key, move || {
-        Some(render_env(
-            &cwd,
-            &os,
-            &shell,
-            &date,
-            &model_name,
-            is_git,
-            git_branch.as_deref(),
-            is_worktree,
-            git_status.as_deref(),
-        ))
+    let model_key = fingerprint(&model_name);
+    sections.push(memoized_section("model", model_key, move || {
+        Some(render_model(&model_name))
     }));
 
     if ctx.language.is_some() {
@@ -358,12 +344,6 @@ fn build_section_registry<'a>(ctx: &'a ScenePromptContext) -> Vec<SystemPromptSe
     let style_key = fingerprint(&style_content);
     sections.push(memoized_section("output_style", style_key, move || {
         Some(render_output_style_block(style_content.as_deref()))
-    }));
-
-    let scratchpad = ctx.scratchpad_dir.clone().map(|s| s.into_owned());
-    let scratchpad_key = fingerprint(&scratchpad);
-    sections.push(memoized_section("scratchpad", scratchpad_key, move || {
-        Some(common::scratchpad_section(scratchpad.as_deref()))
     }));
 
     // Constant text, so a fixed key is correct here.
@@ -482,49 +462,12 @@ const TOKEN_BUDGET_BLOCK: &str = "\
 When the user sets a token target (e.g. \"+500k\", \"spend 2M tokens\"), your output token count is shown each turn and work continues automatically between turns until the target is met. The target is a hard ceiling. Let its size set how thorough to be.
 ";
 
-#[allow(clippy::too_many_arguments)]
-fn render_env(
-    cwd: &str,
-    os: &str,
-    shell: &str,
-    date: &str,
-    model_name: &str,
-    is_git: bool,
-    git_branch: Option<&str>,
-    is_worktree: bool,
-    git_status: Option<&str>,
-) -> String {
+fn render_model(model_name: &str) -> String {
     let cutoff_msg = get_knowledge_cutoff(model_name)
         .map(|c| format!(" Knowledge cutoff: {c}."))
         .unwrap_or_default();
     let model_recommendations = build_model_recommendations(model_name);
-
-    let mut env_fields = format!(
-        "Working directory: {cwd}\n\
-         OS Version: {os}\n\
-         Shell: {shell}\n\
-         Date: {date}\n",
-    );
-    if is_git {
-        env_fields.push_str("Is directory a git repo: Yes\n");
-        if let Some(branch) = git_branch {
-            env_fields.push_str(&format!("Git branch: {branch}\n"));
-        }
-        if is_worktree {
-            env_fields.push_str("This is a git worktree — an isolated copy of the repository. Changes here do not affect other worktrees.\n");
-        }
-        if let Some(status) = git_status {
-            env_fields.push_str(&format!("gitStatus: {status}\n"));
-        }
-    }
-
-    format!(
-        "<env>\n\
-         {env_fields}\
-         </env>\n\
-         You are powered by the model {model_name}.{cutoff_msg}\n\n\
-         {model_recommendations}"
-    )
+    format!("You are powered by the model {model_name}.{cutoff_msg}\n\n{model_recommendations}")
 }
 
 fn get_knowledge_cutoff(model_name: &str) -> Option<&'static str> {
@@ -613,20 +556,6 @@ fn render_session_guidance(available_tools: Option<&str>) -> String {
     format!("# Session-specific guidance\n\n{body}\n")
 }
 
-fn fingerprint_env(ctx: &ScenePromptContext) -> u64 {
-    fingerprint(&(
-        ctx.cwd.as_ref(),
-        ctx.os.as_ref(),
-        ctx.shell.as_ref(),
-        ctx.date.as_ref(),
-        ctx.model_name.as_ref(),
-        ctx.is_git,
-        ctx.git_branch.as_ref().map(|s| s.as_ref()),
-        ctx.is_worktree,
-        ctx.git_status.as_ref().map(|s| s.as_ref()),
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -672,10 +601,40 @@ mod tests {
     }
 
     #[test]
-    fn prompt_contains_env() {
-        let text = text(&CodeScene.build_system_prompt(&ctx()));
-        assert!(text.contains("/home/user/project"));
-        assert!(text.contains("2026-06-10"));
+    fn session_facts_are_in_the_context_not_the_prompt() {
+        let mut c = ctx();
+        c.scratchpad_dir = Some(Cow::Borrowed("/home/user/project/.agix/scratchpad"));
+        c.git_status = Some(Cow::Borrowed("M src/main.rs"));
+        let prompt = text(&CodeScene.build_system_prompt(&c));
+        assert!(!prompt.contains("/home/user/project"), "{prompt}");
+        assert!(!prompt.contains("2026-06-10"));
+        assert!(!prompt.contains("M src/main.rs"));
+
+        let context = CodeScene.build_session_context(&c);
+        assert!(context.contains("Working directory: /home/user/project"));
+        assert!(context.contains("Git branch: main"));
+        assert!(context.contains(".agix/scratchpad"));
+        assert!(
+            !context.contains("M src/main.rs"),
+            "the per-turn reminder has git status"
+        );
+    }
+
+    #[test]
+    fn prompt_is_identical_across_sessions() {
+        let mut a = ctx();
+        a.cwd = Cow::Borrowed("/a");
+        a.date = Cow::Borrowed("2026-01-01");
+        a.scratchpad_dir = Some(Cow::Borrowed("/a/.agix/scratchpad"));
+        let mut b = ctx();
+        b.cwd = Cow::Borrowed("/b");
+        b.date = Cow::Borrowed("2026-02-02");
+        b.git_branch = Some(Cow::Borrowed("dev"));
+        b.scratchpad_dir = Some(Cow::Borrowed("/b/.agix/scratchpad"));
+        assert_eq!(
+            CodeScene.build_system_prompt(&a),
+            CodeScene.build_system_prompt(&b)
+        );
     }
 
     #[test]
@@ -746,28 +705,6 @@ mod tests {
             "got: {dynamic_b}"
         );
         assert!(!dynamic_b.contains("Style A: be terse."));
-    }
-
-    #[test]
-    fn env_section_reflects_changed_git_status_not_stale_cache() {
-        let mut ctx_dirty = ctx();
-        ctx_dirty.git_status = Some(Cow::Borrowed("M src/main.rs"));
-        let blocks_dirty = CodeScene.build_system_prompt(&ctx_dirty);
-        assert!(blocks_dirty
-            .last()
-            .expect("dynamic block")
-            .content
-            .contains("M src/main.rs"));
-
-        let mut ctx_clean = ctx();
-        ctx_clean.git_status = Some(Cow::Borrowed("nothing to commit, working tree clean"));
-        let blocks_clean = CodeScene.build_system_prompt(&ctx_clean);
-        let dynamic_clean = &blocks_clean.last().expect("dynamic block").content;
-        assert!(
-            dynamic_clean.contains("nothing to commit, working tree clean"),
-            "got: {dynamic_clean}"
-        );
-        assert!(!dynamic_clean.contains("M src/main.rs"));
     }
 
     #[test]

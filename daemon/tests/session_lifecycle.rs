@@ -5008,16 +5008,22 @@ async fn the_live_frames_and_the_history_of_a_turn_agree() {
         .iter()
         .map(|m| m["origin"].as_str().unwrap())
         .collect();
-    assert_eq!(origins, ["user", "assistant", "tool_result", "assistant"]);
-    assert_eq!(messages[1]["usage"]["input_tokens"], 7);
-    assert_eq!(messages[3]["usage"]["output_tokens"], 5);
+    assert_eq!(
+        origins,
+        ["injected", "user", "assistant", "tool_result", "assistant"]
+    );
+    assert_eq!(messages[2]["usage"]["input_tokens"], 7);
+    assert_eq!(messages[4]["usage"]["output_tokens"], 5);
     for (i, m) in messages.iter().enumerate() {
         assert_eq!(m["seq"], i);
         assert!(m["id"].is_string() && m["ts"].is_string(), "{m}");
     }
 
     let ends = events_of_kind(&frames, "step_end");
-    assert_eq!(ends[0]["seq"], 3, "user, reply, results are on disk");
+    assert_eq!(
+        ends[0]["seq"], 4,
+        "context, user, reply, results are on disk"
+    );
     let done = events_of_kind(&frames, "turn_complete")[0];
     assert_eq!(done["seq"], h["total"]);
 

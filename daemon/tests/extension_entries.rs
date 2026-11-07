@@ -240,7 +240,10 @@ async fn an_entry_is_listed_where_it_was_written_and_the_model_never_sees_it() {
             serde_json::json!({"title": "card-marker-7f3"}),
         )
         .await;
-    assert_eq!(written["at"], 2, "after the user's message and the reply");
+    assert_eq!(
+        written["at"], 3,
+        "after the context message, the user's message and the reply"
+    );
     assert_eq!(written["ns"], "com.example.cards");
 
     model.push_turn(text_round("ok"));
@@ -261,8 +264,8 @@ async fn an_entry_is_listed_where_it_was_written_and_the_model_never_sees_it() {
     assert_eq!(
         events,
         vec![
-            (serde_json::json!("job_done"), serde_json::json!(2)),
-            (serde_json::json!("second"), serde_json::json!(4)),
+            (serde_json::json!("job_done"), serde_json::json!(3)),
+            (serde_json::json!("second"), serde_json::json!(5)),
         ],
         "in log order, the engine's own `agix.*` entries left out"
     );
@@ -353,12 +356,12 @@ async fn a_whole_fork_keeps_the_entries_after_the_last_message_and_a_cut_one_doe
         .await;
     let whole_entries = daemon.entries(whole["session_id"].as_str().unwrap()).await;
     assert_eq!(whole_entries.len(), 1, "{whole_entries:?}");
-    assert_eq!(whole_entries[0]["at"], 2);
+    assert_eq!(whole_entries[0]["at"], 3);
 
     let cut = daemon
         .ok(
             "session.fork",
-            serde_json::json!({"session_id": session, "at_message": 1}),
+            serde_json::json!({"session_id": session, "at_message": 2}),
         )
         .await;
     assert!(daemon
@@ -389,5 +392,5 @@ async fn entries_outlive_the_session_leaving_memory_and_can_be_written_to_a_cold
     daemon.turn(&session, "again").await;
     let listed = daemon.entries(&session).await;
     assert_eq!(listed.len(), 2);
-    assert!(listed.iter().all(|e| e["at"] == 2), "{listed:?}");
+    assert!(listed.iter().all(|e| e["at"] == 3), "{listed:?}");
 }

@@ -2,7 +2,7 @@
 //! kind of recording proxy: what each spends, how long it takes, and whether
 //! what it built actually runs.
 //!
-//! Three tasks, each verified by running the result against inputs the model
+//! Four tasks, each verified by running the result against inputs the model
 //! never saw:
 //!
 //! - `stats` — short: one small program from a precise spec.

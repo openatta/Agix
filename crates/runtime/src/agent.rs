@@ -331,8 +331,9 @@ pub struct Agent {
     pub(crate) frozen: Option<base::frozen::FrozenContext>,
     /// Pre-read AGENTS.md/CLAUDE.md content for userContext injection.
     pub(crate) claude_md_content: Option<String>,
-    /// Whether CLAUDE.md has been injected as a synthetic user message this session.
-    pub(crate) claude_md_injected: bool,
+    /// Whether the opening context message (session facts, CLAUDE.md, date)
+    /// is in the conversation. Cleared by `/clear` and by compaction.
+    pub(crate) session_context_injected: bool,
     /// Track invoked skill names during the turn (for post-compact recovery T1.4).
     pub(crate) invoked_skills: Vec<String>,
     /// This turn's user message: a fingerprint of its text and what the text is
@@ -1031,7 +1032,7 @@ impl Agent {
         if let Err(e) = self.session.clear().await {
             tracing::warn!(error = %e, "failed to record /clear in the transcript");
         }
-        self.claude_md_injected = false; // re-inject CLAUDE.md on next turn
+        self.session_context_injected = false;
         self.invoked_skills.clear();
         self.permission_denial_count
             .store(0, std::sync::atomic::Ordering::Relaxed);
@@ -2067,7 +2068,7 @@ impl Builder {
         // configured, since it isn't free (one OS-level watch + a dedicated
         // thread). The instruction file is the one file this engine already
         // treats as "loaded once into the session and never re-read" (see
-        // `claude_md_injected` above) — a user editing it mid-session is
+        // `session_context_injected` above) — a user editing it mid-session is
         // exactly the case a `FileChanged` hook exists to let a host react to.
         if hooks.has_hooks_for(hooks::HookEvent::FileChanged) {
             if let Some(ref path) = instruction_file {
@@ -2514,7 +2515,7 @@ impl Builder {
                 current_turn_id: String::new(),
                 frozen: self.frozen, // pre-seeded or lazily computed on first turn
                 claude_md_content,
-                claude_md_injected: false,
+                session_context_injected: false,
                 pending_input: None,
                 agent_type: self.agent_type,
                 invoked_skills: Vec::new(),
@@ -5871,7 +5872,11 @@ mod tests {
             _cancel: CancellationToken,
         ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError>
         {
-            *self.0.lock().unwrap() = prompt_blocks;
+            let mut first = self.0.lock().unwrap();
+            if first.is_empty() {
+                *first = prompt_blocks;
+            }
+            drop(first);
             let events: Vec<
                 Result<base::interface::model::ModelEvent, base::interface::model::ModelError>,
             > = vec![Ok(base::interface::model::ModelEvent::EndTurn {

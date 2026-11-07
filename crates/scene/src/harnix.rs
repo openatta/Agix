@@ -94,6 +94,10 @@ impl Scene for HarnixScene {
         common::reminder(ctx)
     }
 
+    fn build_session_context(&self, ctx: &ScenePromptContext) -> String {
+        common::session_context(ctx)
+    }
+
     fn auto_name_session(&self) -> bool {
         true
     }
@@ -161,11 +165,14 @@ mod tests {
     }
 
     #[test]
-    fn prompt_is_static_then_per_session() {
+    fn session_facts_stay_out_of_the_prompt() {
         let blocks = HarnixScene.build_system_prompt(&test_ctx());
         assert_eq!(blocks.len(), 3);
         assert!(blocks[0].content.contains("Harnix"));
-        assert!(blocks[2].content.contains("/home/user/project"));
+        assert!(!blocks[2].content.contains("/home/user/project"));
         assert!(blocks[2].content.contains("claude-sonnet-4-6"));
+        assert!(HarnixScene
+            .build_session_context(&test_ctx())
+            .contains("/home/user/project"));
     }
 }

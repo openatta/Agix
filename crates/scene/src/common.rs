@@ -1,5 +1,5 @@
-//! Prompt pieces the built-in scenes share: the safety rules, the per-session
-//! environment block, and the reminder wrapping.
+//! Prompt pieces the built-in scenes share: the safety rules, the session
+//! context, the prompt tail and the reminder wrapping.
 
 use base::interface::prompt::PromptBlock;
 use base::interface::scene::{ReminderContext, ScenePromptContext};
@@ -51,12 +51,12 @@ pub(crate) fn reminder(ctx: &ReminderContext) -> String {
     r
 }
 
-/// The per-session tail of a short scene prompt: environment, language,
-/// scratchpad and the cleared-results notice, as one uncached block.
-pub(crate) fn session_block(ctx: &ScenePromptContext) -> PromptBlock {
+/// The built-in scenes' session context: the `<env>` facts and where the
+/// scratchpad is. Git status is not here — the per-turn reminder carries it.
+pub(crate) fn session_context(ctx: &ScenePromptContext) -> String {
     let mut env = format!(
-        "<env>\nWorking directory: {}\nOS: {}\nShell: {}\nDate: {}\n",
-        ctx.cwd, ctx.os, ctx.shell, ctx.date
+        "<env>\nWorking directory: {}\nOS: {}\nShell: {}\n",
+        ctx.cwd, ctx.os, ctx.shell
     );
     if ctx.is_git {
         env.push_str("Git repo: yes\n");
@@ -66,21 +66,21 @@ pub(crate) fn session_block(ctx: &ScenePromptContext) -> PromptBlock {
         if ctx.is_worktree {
             env.push_str("This is a git worktree; changes here do not affect other worktrees.\n");
         }
-        if let Some(status) = &ctx.git_status {
-            env.push_str(&format!("gitStatus: {status}\n"));
-        }
     }
-    env.push_str(&format!(
-        "</env>\nYou are powered by the model {}.",
-        ctx.model_name
-    ));
+    env.push_str("</env>");
+    match ctx.scratchpad_dir.as_deref() {
+        Some(dir) => format!("{env}\n\n{}", scratchpad_section(Some(dir))),
+        None => env,
+    }
+}
 
-    let mut parts = vec![env];
+/// The tail of a short scene prompt: model, language, output style and the
+/// cleared-results notice. Nothing in it varies between sessions of one
+/// deployment.
+pub(crate) fn session_block(ctx: &ScenePromptContext) -> PromptBlock {
+    let mut parts = vec![format!("You are powered by the model {}.", ctx.model_name)];
     if let Some(lang) = &ctx.language {
         parts.push(language_section(lang));
-    }
-    if ctx.scratchpad_dir.is_some() {
-        parts.push(scratchpad_section(ctx.scratchpad_dir.as_deref()));
     }
     if let Some(style) = &ctx.output_style_content {
         parts.push(format!("# Output style\n\n{style}\n"));

@@ -52,6 +52,10 @@ impl Scene for MiniScene {
     fn build_system_reminder(&self, ctx: &ReminderContext) -> String {
         common::reminder(ctx)
     }
+
+    fn build_session_context(&self, ctx: &ScenePromptContext) -> String {
+        common::session_context(ctx)
+    }
 }
 
 const PROMPT: &str = "\
@@ -81,6 +85,9 @@ mod tests {
     fn prompt_is_short() {
         let blocks = MiniScene.build_system_prompt(&test_ctx());
         assert!(blocks[0].content.len() < 1_500);
-        assert!(blocks[1].content.contains("/home/user/project"));
+        assert!(!blocks[1].content.contains("/home/user/project"));
+        assert!(MiniScene
+            .build_session_context(&test_ctx())
+            .contains("/home/user/project"));
     }
 }

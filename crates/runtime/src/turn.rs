@@ -752,40 +752,8 @@ impl Agent {
             }
         }
 
-        // Inject CLAUDE.md / AGENTS.md as userContext — synthetic
-        // <system-reminder> user message. Injected once per session.
-        if !self.claude_md_injected {
-            let instructions = self.build_instruction_context();
-            if !instructions.is_empty() {
-                let today = chrono_now(&*self.environment);
-                self.session.push_message(ModelMessage {
-                    role: MessageRole::User,
-                    content: vec![ModelContentBlock::Text {
-                        text: format!(
-                            "<system-reminder>\n\
-                             As you answer the user's questions, you can use the following context:\n\
-                             # claudeMd\n\
-                             {instructions}\n\n\
-                             # currentDate\n\
-                             Today's date is {today}.\n\n\
-                             IMPORTANT: this context may or may not be relevant to your tasks. \
-                             You should not respond to this context unless it is highly relevant \
-                             to your task.\n\
-                             </system-reminder>"
-                        ),
-                    }],
-                });
-                self.claude_md_injected = true;
-                // The project's own instructions have just entered the
-                // context. `InstructionsLoaded` exists for exactly this and
-                // had no trigger; a hook here can audit or annotate what the
-                // agent was told to do before it does anything.
-                let bytes = instructions.len();
-                self.fire_lifecycle_hook(hooks::HookEvent::InstructionsLoaded, |i| {
-                    i.with_reason(format!("{bytes} bytes of project instructions injected"))
-                })
-                .await;
-            }
+        if !self.session_context_injected {
+            self.inject_session_context().await;
         }
 
         // Inject system-reminder: git status + memory summary, via the scene's
@@ -2551,9 +2519,9 @@ or project context that should survive across sessions.
                 // transcript, and are therefore ordinary compaction
                 // victims:
                 //
-                // * the project instructions (`AGENTS.md`/`CLAUDE.md`),
-                //   gated by `claude_md_injected`, which was only ever
-                //   reset by `/clear`;
+                // * the opening context message — session facts and the
+                //   project instructions (`AGENTS.md`/`CLAUDE.md`) — gated
+                //   by `session_context_injected`;
                 // * recalled memories, whose names go into
                 //   `frozen.already_surfaced` so they are not re-injected
                 //   turn after turn.
@@ -2570,7 +2538,7 @@ or project context that should survive across sessions.
                 // eligible again, which puts the instructions back at the
                 // head of the fresh context and lets a still-relevant
                 // memory surface a second time.
-                self.claude_md_injected = false;
+                self.session_context_injected = false;
                 if let Some(ref mut frozen) = self.frozen {
                     frozen.already_surfaced.clear();
                 }
@@ -2817,6 +2785,57 @@ or project context that should survive across sessions.
                 }
                 out
             }
+        }
+    }
+
+    /// The conversation's opening `<system-reminder>`: the scene's session
+    /// facts, the project instructions and today's date, as one user message.
+    async fn inject_session_context(&mut self) {
+        let model = self.settings.model.model_name.clone();
+        let facts = {
+            let ctx = build_prompt_context(
+                &self.settings,
+                self.frozen.as_ref(),
+                None,
+                None,
+                &model,
+                self.tool_results_ever_cleared,
+                &*self.environment,
+            );
+            self.scene.build_session_context(&ctx)
+        };
+        let instructions = self.build_instruction_context();
+        let today = chrono_now(&*self.environment);
+
+        let mut text = String::from(
+            "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n",
+        );
+        if !facts.is_empty() {
+            text.push_str(&format!("# environment\n{facts}\n\n"));
+        }
+        if !instructions.is_empty() {
+            text.push_str(&format!("# claudeMd\n{instructions}\n\n"));
+        }
+        text.push_str(&format!(
+            "# currentDate\n\
+             Today's date is {today}.\n\n\
+             IMPORTANT: this context may or may not be relevant to your tasks. \
+             You should not respond to this context unless it is highly relevant \
+             to your task.\n\
+             </system-reminder>"
+        ));
+        self.session.push_message(ModelMessage {
+            role: MessageRole::User,
+            content: vec![ModelContentBlock::Text { text }],
+        });
+        self.session_context_injected = true;
+
+        if !instructions.is_empty() {
+            let bytes = instructions.len();
+            self.fire_lifecycle_hook(hooks::HookEvent::InstructionsLoaded, |i| {
+                i.with_reason(format!("{bytes} bytes of project instructions injected"))
+            })
+            .await;
         }
     }
 

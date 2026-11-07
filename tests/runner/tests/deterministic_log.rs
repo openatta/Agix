@@ -128,8 +128,12 @@ fn collect_jsonl(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
 async fn the_same_session_replayed_leaves_the_same_log() {
     let a = tempfile::tempdir().expect("tempdir");
     let b = tempfile::tempdir().expect("tempdir");
-    let first = run_and_read_log(a.path(), true).await;
-    let second = run_and_read_log(b.path(), true).await;
+    let first = run_and_read_log(a.path(), true)
+        .await
+        .replace(&a.path().display().to_string(), "<root>");
+    let second = run_and_read_log(b.path(), true)
+        .await
+        .replace(&b.path().display().to_string(), "<root>");
 
     assert!(
         !first.trim().is_empty(),

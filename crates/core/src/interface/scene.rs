@@ -181,6 +181,16 @@ pub trait Scene: Send + Sync + 'static {
         String::new()
     }
 
+    /// Facts about this session — working directory, platform, scratchpad —
+    /// sent once in the opening context message instead of the system prompt.
+    ///
+    /// Some endpoints (DeepSeek) cache the request prefix in the order system,
+    /// tools, messages: anything per-session in the system prompt makes every
+    /// new session re-read the whole tool table uncached.
+    fn build_session_context(&self, _ctx: &ScenePromptContext) -> String {
+        String::new()
+    }
+
     /// Tools explicitly disallowed in this scene.
     fn disallowed_tools(&self) -> Vec<String> {
         vec![]

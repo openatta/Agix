@@ -11,10 +11,11 @@ Error code=turn_error
 
 == session log ==
 User blocks=1
+User blocks=1
 Assistant
 User blocks=1
 
 == model calls ==
-golden-model max_tokens=1024 messages=1 content_bytes=21 truncated_results=0
-golden-model max_tokens=1024 messages=3 content_bytes=86 truncated_results=0
+golden-model max_tokens=1024 messages=2 content_bytes=319 truncated_results=0
+golden-model max_tokens=1024 messages=4 content_bytes=384 truncated_results=0
 unconsumed_replies=1

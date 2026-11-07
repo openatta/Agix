@@ -163,9 +163,9 @@ impl Daemon {
     }
 }
 
-/// A session whose context is: 0 the user's message, 1 the model's `Bash`
-/// call, 2 its result (`the-secret-value`, which only the result spells out),
-/// 3 the model's reply.
+/// A session whose context is: 0 the opening context message, 1 the user's
+/// message, 2 the model's `Bash` call, 3 its result (`the-secret-value`, which
+/// only the result spells out), 4 the model's reply.
 async fn a_session_that_saw_a_secret(model: &Arc<MockAnthropicClient>, daemon: &Daemon) -> String {
     model.push_turn(tool_round(
         "Bash",
@@ -196,7 +196,7 @@ async fn the_next_call_can_be_seen_without_being_made() {
         .await;
     assert_eq!(model.calls(), calls, "inspecting calls no model");
     assert_eq!(context["basis"], "next_step_without_new_input");
-    assert_eq!(context["messages"]["count"], 4);
+    assert_eq!(context["messages"]["count"], 5);
     let system = context["system"].as_array().unwrap();
     assert!(!system.is_empty());
     assert!(system.iter().all(|b| b["tokens"].as_u64().is_some()));
@@ -218,10 +218,10 @@ async fn a_dropped_tool_result_is_gone_from_every_call_after_including_after_a_r
     let dropped = daemon
         .ok(
             "session.dropMessages",
-            serde_json::json!({"session_id": session, "at": [2], "total": 4}),
+            serde_json::json!({"session_id": session, "at": [3], "total": 5}),
         )
         .await;
-    assert_eq!(dropped["dropped"], serde_json::json!([2]));
+    assert_eq!(dropped["dropped"], serde_json::json!([3]));
 
     model.push_turn(text_round("ok"));
     daemon.turn(&session, "go on").await;
@@ -254,7 +254,7 @@ async fn a_users_message_can_be_rewritten_and_the_models_cannot() {
     let models_own = daemon
         .call(
             "session.editMessage",
-            serde_json::json!({"session_id": session, "at": 1, "text": "x"}),
+            serde_json::json!({"session_id": session, "at": 2, "text": "x"}),
         )
         .await;
     assert_eq!(models_own["error"]["code"], INVALID_PARAMS, "{models_own}");
@@ -262,7 +262,7 @@ async fn a_users_message_can_be_rewritten_and_the_models_cannot() {
     let stale = daemon
         .call(
             "session.editMessage",
-            serde_json::json!({"session_id": session, "at": 0, "text": "x", "total": 3}),
+            serde_json::json!({"session_id": session, "at": 1, "text": "x", "total": 3}),
         )
         .await;
     assert_eq!(stale["error"]["code"], INVALID_PARAMS, "{stale}");
@@ -270,7 +270,7 @@ async fn a_users_message_can_be_rewritten_and_the_models_cannot() {
     daemon
         .ok(
             "session.editMessage",
-            serde_json::json!({"session_id": session, "at": 0, "text": "say hello instead"}),
+            serde_json::json!({"session_id": session, "at": 1, "text": "say hello instead"}),
         )
         .await;
     model.push_turn(text_round("hello"));
