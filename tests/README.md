@@ -96,7 +96,8 @@ token 用量。改了 `tests/live` 后 lint 也要带上 feature：
 恰好是那六个；以及一个批量改动（`tests/fixtures/compare_dsh/migrate`）：三十个模块里 58 处调用
 从弃用的 `fetch_json(url, timeout_ms)` 迁到 `get_json(url, timeout_s=…)`，毫秒换成秒，调用写法有
 位置参数、关键字、跨行、常量四种，一次文本替换做不完；由 `migrate_check.py` 拿新接口的桩把每个
-服务重放一遍核对。产物用模型没见过的输入实际运行来判定；token 取 DeepSeek 在每个响应里报的数，两边计量口径相同。它要一个
+服务重放一遍核对。产物用模型没见过的输入实际运行来判定；token 取 DeepSeek 在每个响应里报的数，工具调用数取这些响应里的
+`tool_use` 块，都从代理读、子 Agent 的也算在内，两边计量口径相同。它要一个
 `dsh` 启动器，所以不在 `live_*` 的通配里：
 
 ```sh

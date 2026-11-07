@@ -24,8 +24,9 @@
 //!   three ways, so one textual substitution does not do it. Checked by
 //!   replaying every service against a stub of the new helper.
 //!
-//! Token counts are what DeepSeek reported on each response, read off the
-//! proxy, so both sides are measured the same way. Wall time for DSH includes
+//! Token counts are what DeepSeek reported on each response, and tool calls
+//! are the `tool_use` blocks in those responses, both read off the proxy —
+//! sub-agents included — so both sides are measured the same way. Wall time for DSH includes
 //! its process start; Agix's daemon is already up. Not part of the `live_*`
 //! glob: it needs `AGIX_DSH_BIN` pointing at a `dsh` launcher
 //! (`npm i @deepseek-ai/dsh`). `AGIX_COMPARE_CASES=stats,biglog` runs a
@@ -894,7 +895,7 @@ impl Outcome {
             finished: false,
             wall: Duration::ZERO,
             calls: calls.len(),
-            tool_calls: 0,
+            tool_calls: calls.iter().map(|e| e.tool_uses()).sum(),
             tokens,
             first_prompt: main.map(|e| e.tokens().prompt()).unwrap_or(0),
             models,
@@ -945,11 +946,10 @@ async fn run_agix(case: Case, seed: u64) -> anyhow::Result<Outcome> {
     case.setup(&run.project, seed)?;
     let session = run.session().await?;
     let started = Instant::now();
-    let mut tool_calls = 0;
     let mut error = None;
     for prompt in case.prompts() {
         match run.turn(&session, prompt).await {
-            Ok(events) => tool_calls += events.tool_uses.len(),
+            Ok(_) => {}
             Err(e) => {
                 error = Some(format!("{e:#}"));
                 break;
@@ -959,7 +959,6 @@ async fn run_agix(case: Case, seed: u64) -> anyhow::Result<Outcome> {
     let wall = started.elapsed();
     let mut outcome = Outcome::from_exchanges("agix", case, &run.provider.exchanges());
     outcome.wall = wall;
-    outcome.tool_calls = tool_calls;
     match error {
         None => outcome.finished = true,
         Some(e) => outcome.note = e,
@@ -980,7 +979,6 @@ async fn run_dsh(bin: &Path, case: Case, seed: u64) -> anyhow::Result<Outcome> {
 
     let started = Instant::now();
     let mut session_id: Option<String> = None;
-    let mut tool_calls = 0;
     let mut error = None;
     for prompt in case.prompts() {
         let mut command = tokio::process::Command::new(bin);
@@ -1017,7 +1015,6 @@ async fn run_dsh(bin: &Path, case: Case, seed: u64) -> anyhow::Result<Outcome> {
             .lines()
             .filter_map(|l| serde_json::from_str(l).ok())
             .collect();
-        tool_calls += events.iter().filter(|e| e["type"] == "tool_call").count();
         if session_id.is_none() {
             session_id = events
                 .iter()
@@ -1045,7 +1042,6 @@ async fn run_dsh(bin: &Path, case: Case, seed: u64) -> anyhow::Result<Outcome> {
 
     let mut outcome = Outcome::from_exchanges("dsh", case, &provider.exchanges());
     outcome.wall = wall;
-    outcome.tool_calls = tool_calls;
     match error {
         None => outcome.finished = true,
         Some(e) => outcome.note = e,

@@ -205,6 +205,24 @@ impl Exchange {
         (t.input, t.output)
     }
 
+    /// How many tool calls the response asked for, streamed or not.
+    pub fn tool_uses(&self) -> usize {
+        if let Ok(whole) = serde_json::from_str::<Value>(&self.response) {
+            return whole["content"]
+                .as_array()
+                .map_or(0, |c| c.iter().filter(|b| b["type"] == "tool_use").count());
+        }
+        self.response
+            .lines()
+            .filter_map(|line| line.strip_prefix("data:"))
+            .filter_map(|data| serde_json::from_str::<Value>(data.trim()).ok())
+            .filter(|event| {
+                event["type"] == "content_block_start"
+                    && event["content_block"]["type"] == "tool_use"
+            })
+            .count()
+    }
+
     pub fn tokens(&self) -> Tokens {
         let mut t = Tokens::default();
         let mut take = |usage: &Value| {
@@ -773,4 +791,41 @@ impl Drop for Watcher {
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn exchange(response: &str) -> Exchange {
+        Exchange {
+            request: SeenRequest {
+                path: "/v1/messages".into(),
+                body: Value::Null,
+            },
+            status: 200,
+            response: response.into(),
+            at: Duration::ZERO,
+            elapsed: Duration::ZERO,
+        }
+    }
+
+    #[test]
+    fn tool_uses_are_counted_in_streamed_and_whole_responses() {
+        let streamed = "\
+event: content_block_start
+data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\"}}
+
+event: content_block_start
+data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"a\",\"name\":\"Read\"}}
+
+event: content_block_start
+data: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"tool_use\",\"id\":\"b\",\"name\":\"Grep\"}}
+";
+        assert_eq!(exchange(streamed).tool_uses(), 2);
+
+        let whole = r#"{"content":[{"type":"text","text":"x"},{"type":"tool_use","id":"a","name":"Bash","input":{}}]}"#;
+        assert_eq!(exchange(whole).tool_uses(), 1);
+        assert_eq!(exchange("").tool_uses(), 0);
+    }
 }
