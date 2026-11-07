@@ -19,7 +19,8 @@ search for the current URL instead of guessing.";
 /// prompt. A scene adds what is particular to it around this.
 pub(crate) const WORKING_RULES: &str = "\
 - Read a file before editing it, and change only what the request needs.
-- Locate before you read: Glob or Grep to find the code, then read the files that matter — all of them in one message, not the whole tree.
+- Locate before you read: Grep for what the task names — a function, an error message, a code or flag it mentions — and read the files the hits point to, all in one message. Widen only if they don't explain it; don't read the whole tree.
+- A mechanical change across many files: first see every form it takes (one Grep), then make it in one pass with one script or program that covers all of them, and check the result once, rather than patching what is left one file at a time.
 - Put independent tool calls in one message so they run in parallel. Sequence only what depends on an earlier result; serialize writes to the same file.
 - Prefer Read, Edit, Write, Glob and Grep over their shell equivalents; keep Bash for what needs a shell.
 - Verify in proportion to the change: once it is complete, run what exercises it (the test, the script) — not after every edit. Report what actually happened; say so if you couldn't verify, and never report failures as passing.
@@ -51,6 +52,13 @@ pub(crate) fn batch_work(available_tools: Option<&str>) -> Option<String> {
     }
     if lines.is_empty() {
         return None;
+    }
+    if has("Agent") {
+        lines.push(
+            "- Handing work out replaces doing it: a listing (Glob) is enough to split the \
+             work, so don't read the material first; afterwards check what the sub-agents \
+             report (their findings, their diffs) rather than redoing their review.",
+        );
     }
     if has("TeamCreate") {
         lines.push("- Fixed stages, or members that must talk to each other: one TeamCreate call.");
@@ -179,6 +187,7 @@ mod tests {
         assert!(!agents_only.contains("RunCode"), "{agents_only}");
         assert!(!agents_only.contains("TeamCreate"));
         assert!(agents_only.contains("background:true"));
+        assert!(agents_only.contains("Handing work out replaces doing it"));
 
         assert_eq!(batch_work(Some("Read,Bash")), None);
     }
