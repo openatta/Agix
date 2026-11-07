@@ -2,7 +2,7 @@
 //! kind of recording proxy: what each spends, how long it takes, and whether
 //! what it built actually runs.
 //!
-//! Four tasks, each verified by running the result against inputs the model
+//! Five tasks, each verified by running the result against inputs the model
 //! never saw:
 //!
 //! - `stats` — short: one small program from a precise spec.
@@ -15,6 +15,10 @@
 //!   multi-module project (`tests/fixtures/compare_dsh/shop`). First a bug
 //!   report to locate and fix, then a feature request that builds on it,
 //!   checked against an independent reference over random carts.
+//! - `audit` — a workflow: 24 modules in four packages, six of which break
+//!   their own docstring. Fan the review out, one sub-agent per package, fix
+//!   what is broken and list it; checked by a hidden contract suite, that the
+//!   correct modules are untouched, and that the list is exactly right.
 //!
 //! Token counts are what DeepSeek reported on each response, read off the
 //! proxy, so both sides are measured the same way. Wall time for DSH includes
@@ -40,10 +44,17 @@ enum Case {
     Inventory,
     BigLog,
     Shop,
+    Audit,
 }
 
 impl Case {
-    const ALL: [Case; 4] = [Case::Stats, Case::Inventory, Case::BigLog, Case::Shop];
+    const ALL: [Case; 5] = [
+        Case::Stats,
+        Case::Inventory,
+        Case::BigLog,
+        Case::Shop,
+        Case::Audit,
+    ];
 
     fn name(self) -> &'static str {
         match self {
@@ -51,6 +62,7 @@ impl Case {
             Case::Inventory => "inventory",
             Case::BigLog => "biglog",
             Case::Shop => "shop",
+            Case::Audit => "audit",
         }
     }
 
@@ -61,6 +73,7 @@ impl Case {
             Case::Inventory => &[INVENTORY_PROMPT],
             Case::BigLog => &[BIGLOG_PROMPT],
             Case::Shop => &SHOP_PROMPTS,
+            Case::Audit => &[AUDIT_PROMPT],
         }
     }
 
@@ -75,6 +88,7 @@ impl Case {
             }
             Case::BigLog => write(project, "logs/access.log", &BigLog::new(seed).text),
             Case::Shop => copy_tree(&shop_fixture(), project),
+            Case::Audit => copy_tree(&audit_fixture(), project),
         }
     }
 
@@ -85,6 +99,7 @@ impl Case {
             Case::Inventory => verify_inventory(project, seed),
             Case::BigLog => verify_biglog(project, seed),
             Case::Shop => verify_shop(project, seed),
+            Case::Audit => verify_audit(project),
         };
         result.unwrap_or_else(|e| vec![format!("verifier could not run: {e:#}")])
     }
@@ -150,6 +165,25 @@ Marketing wants a new coupon code `FREESHIP`: it takes nothing off the items, bu
 free for that order whatever its size. It has to work from the command line \
 (`python3 -m shop cart.csv --coupon FREESHIP`) and, like the other codes, regardless of case. \
 Add a test for it too. Reply DONE when the tests pass.",
+];
+
+const AUDIT_PROMPT: &str = "\
+This repository has a small library under `lib/` in four packages — billing, inventory, text \
+and dates — six modules each. Every module's docstring is its contract. Audit the whole \
+library: find every module whose code breaks its own docstring and fix the code, changing \
+nothing else. Split the work: review the four packages in parallel, one sub-agent per \
+package, then merge what they report. Finally write `findings.json` in the project root: a \
+sorted JSON array of the paths of the modules you fixed, like `[\"lib/billing/tax.py\"]`. \
+Reply DONE when it is written.";
+
+/// The modules the `audit` fixture breaks; every other module is correct.
+const AUDIT_BROKEN: [&str; 6] = [
+    "lib/billing/discount.py",
+    "lib/billing/split.py",
+    "lib/dates/age.py",
+    "lib/inventory/bins.py",
+    "lib/text/slug.py",
+    "lib/text/truncate.py",
 ];
 
 const INVENTORY_FILES: [(&str, &str); 5] = [
@@ -270,6 +304,10 @@ fn fixtures() -> PathBuf {
 
 fn shop_fixture() -> PathBuf {
     fixtures().join("shop")
+}
+
+fn audit_fixture() -> PathBuf {
+    fixtures().join("audit")
 }
 
 fn copy_tree(from: &Path, to: &Path) -> anyhow::Result<()> {
@@ -685,6 +723,80 @@ fn verify_shop(project: &Path, seed: u64) -> anyhow::Result<Vec<String>> {
     )?;
     if bogus.code != Some(2) {
         failures.push(format!("unknown coupon exited {:?}, want 2", bogus.code));
+    }
+    Ok(failures)
+}
+
+/// Every contract holds (`audit_check.py`), the correct modules are untouched,
+/// and `findings.json` names exactly the broken ones.
+fn verify_audit(project: &Path) -> anyhow::Result<Vec<String>> {
+    let mut failures = Vec::new();
+    let checker = fixtures().join("audit_check.py");
+    let ran = python(
+        project,
+        &[checker.to_str().unwrap(), project.to_str().unwrap()],
+    )?;
+    if ran.code != Some(0) {
+        failures.extend(ran.stdout.lines().map(|l| format!("contract: {l}")));
+        if ran.stdout.trim().is_empty() {
+            failures.push(format!(
+                "checker exited {:?}: {}",
+                ran.code,
+                ran.stderr.trim()
+            ));
+        }
+    }
+
+    let fixture = audit_fixture();
+    for package in ["billing", "inventory", "text", "dates"] {
+        for entry in std::fs::read_dir(fixture.join("lib").join(package))? {
+            let path = entry?.path();
+            let relative = path
+                .strip_prefix(&fixture)?
+                .to_string_lossy()
+                .replace('\\', "/");
+            if !relative.ends_with(".py") || relative.ends_with("__init__.py") {
+                continue;
+            }
+            if AUDIT_BROKEN.contains(&relative.as_str()) {
+                continue;
+            }
+            let normalized = |text: String| {
+                text.lines()
+                    .map(str::trim_end)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    .trim_end()
+                    .to_string()
+            };
+            let before = normalized(std::fs::read_to_string(&path)?);
+            let after = std::fs::read_to_string(project.join(&relative)).map(normalized);
+            if after.as_deref().ok() != Some(before.as_str()) {
+                failures.push(format!("{relative} was correct and has been changed"));
+            }
+        }
+    }
+
+    match std::fs::read_to_string(project.join("findings.json")) {
+        Err(e) => failures.push(format!("findings.json: {e}")),
+        Ok(text) => match serde_json::from_str::<Vec<String>>(&text) {
+            Err(e) => failures.push(format!("findings.json is not an array of paths: {e}")),
+            Ok(found) => {
+                let found: std::collections::BTreeSet<String> = found
+                    .iter()
+                    .map(|p| p.trim_start_matches("./").to_string())
+                    .collect();
+                let want: std::collections::BTreeSet<String> =
+                    AUDIT_BROKEN.iter().map(|p| p.to_string()).collect();
+                if found != want {
+                    failures.push(format!(
+                        "findings.json: missing {:?}, extra {:?}",
+                        want.difference(&found).collect::<Vec<_>>(),
+                        found.difference(&want).collect::<Vec<_>>()
+                    ));
+                }
+            }
+        },
     }
     Ok(failures)
 }
