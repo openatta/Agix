@@ -57,9 +57,14 @@ JSON-RPC 与盘上的文件跟产品打交道，和下游二次开发的用法�
 
 文件优先于进程环境，因为跑测试的那个 shell 很可能带着给别的工具用的 `ANTHROPIC_*`。
 
+**真实层只用 Flash。** 配置里出现 Pro 模型名，`LiveConfig::load` 直接报错；代理也拒绝转发
+任何会落到 Pro 上的请求——DeepSeek 的 Anthropic 端点把 `claude-opus*` 也映射到 Pro，所以
+按名字判断时这一类同样算 Pro。下面例子里的三个名字都落在 Flash 上，名字不同只是为了让
+「每个子 agent 一个模型」的用例分得出谁是谁。
+
 ```sh
 cargo build -p daemon                       # 另起进程的那条用例要 target/debug/agixd
-AGIX_LIVE_MODELS=deepseek-flash,deepseek-v4-pro,deepseek-chat \
+AGIX_LIVE_MODELS=deepseek-flash,deepseek-v4-flash,claude-haiku-4-5 \
   cargo test -p live --features real-model --test 'live_*' -- --nocapture
 ```
 
@@ -80,6 +85,26 @@ token 用量。改了 `tests/live` 后 lint 也要带上 feature：
 代理记下的请求，以及只有真跑过才拿得到的值——用例里的随机令牌由脚本在运行时从输入文件
 算出来，汇报里出现它，说明结果确实是一层层传上来的。断言模型「说了某句话」的用例会
 随模型版本时好时坏，不要写。
+
+**和 DSH 对比：`compare_dsh.rs`。** 同一组任务、同一个模型，Agix 和 DeepSeek Harness 各自
+接一个录制代理，各跑一遍：短任务（照规格写一个小程序）、长流程（修一个包里的三个缺陷让测试
+通过，再加一个命令行入口）、长输入（回答一个约 1.4 MB 访问日志里的问题），以及日常用法——
+同一会话两轮，在一个陌生的多模块项目（`tests/fixtures/compare_dsh/shop`）里先按缺陷报告定位
+修复，再加一个功能。产物用模型没见过的输入实际运行来判定；token 取 DeepSeek 在每个响应里报的数，两边计量口径相同。它要一个
+`dsh` 启动器，所以不在 `live_*` 的通配里：
+
+```sh
+npm i --prefix /some/dir @deepseek-ai/dsh
+AGIX_DSH_BIN=/some/dir/node_modules/.bin/dsh \
+  cargo test -p live --features real-model --test compare_dsh -- --nocapture
+```
+
+`AGIX_COMPARE_CASES=stats,biglog` 只跑其中几项；`AGIX_COMPARE_REPEAT=3` 每项跑三遍，表里
+是中位数——单次读数波动很大，下结论至少跑三遍。汇总表打到 stderr，明细（含每次调用的未命中
+/命中/输出 token）写进 `tests/output/compare_dsh/<seed>.json`，两边各自第一个带工具的请求
+原样存在旁边的 `<seed>-<case>-<harness>.request.json`，用来对比系统提示和工具表。断言只有
+两条：两边都没用到 Pro，Agix 的产物全部通过；DSH 的结果只记录不断言。两边都是 thinking
+开、effort high（表后每行的 `request` 里能看到实际发出的字段）。
 
 **宿主的那一侧用 `Watcher` 看。** `LiveRun::watch` 开第二条连接只订阅会话，按到达顺序
 留下每一帧，可以让它照批准回答每个询问（回答前先读一次 `session.tasks`，留下当时的任务

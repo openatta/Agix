@@ -111,6 +111,9 @@ impl LiveConfig {
         if !models.contains(&model) {
             models.insert(0, model.clone());
         }
+        if let Some(pro) = models.iter().find(|m| is_pro_model(m)) {
+            anyhow::bail!("live tier runs on Flash only, but `{pro}` is configured");
+        }
         let max_calls = get("AGIX_LIVE_MAX_CALLS")
             .and_then(|v| v.parse().ok())
             .unwrap_or(DEFAULT_MAX_CALLS);
@@ -169,11 +172,53 @@ pub struct Exchange {
     pub elapsed: Duration,
 }
 
+/// What one response said it cost. `input` excludes the two cache counts, as
+/// the Messages API reports it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Tokens {
+    pub input: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+    pub output: u64,
+}
+
+impl std::ops::AddAssign for Tokens {
+    fn add_assign(&mut self, o: Self) {
+        self.input += o.input;
+        self.cache_read += o.cache_read;
+        self.cache_write += o.cache_write;
+        self.output += o.output;
+    }
+}
+
+impl Tokens {
+    /// Everything the model read on the call, cached or not.
+    pub fn prompt(&self) -> u64 {
+        self.input + self.cache_read + self.cache_write
+    }
+}
+
 impl Exchange {
     /// Input and output tokens the response reported.
     pub fn usage(&self) -> (u64, u64) {
-        let mut input = 0;
-        let mut output = 0;
+        let t = self.tokens();
+        (t.input, t.output)
+    }
+
+    pub fn tokens(&self) -> Tokens {
+        let mut t = Tokens::default();
+        let mut take = |usage: &Value| {
+            let n = |k: &str| usage[k].as_u64().unwrap_or(0);
+            t.input = t.input.max(n("input_tokens"));
+            t.cache_read = t.cache_read.max(n("cache_read_input_tokens"));
+            t.cache_write = t.cache_write.max(n("cache_creation_input_tokens"));
+            t.output = t.output.max(n("output_tokens"));
+        };
+        if let Ok(whole) = serde_json::from_str::<Value>(&self.response) {
+            if let Some(usage) = whole.get("usage") {
+                take(usage);
+            }
+        }
         for line in self.response.lines() {
             let Some(data) = line.strip_prefix("data:") else {
                 continue;
@@ -181,16 +226,22 @@ impl Exchange {
             let Ok(event) = serde_json::from_str::<Value>(data.trim()) else {
                 continue;
             };
-            let usage = event
+            if let Some(usage) = event
                 .pointer("/message/usage")
-                .or_else(|| event.get("usage"));
-            if let Some(usage) = usage {
-                input = input.max(usage["input_tokens"].as_u64().unwrap_or(0));
-                output = output.max(usage["output_tokens"].as_u64().unwrap_or(0));
+                .or_else(|| event.get("usage"))
+            {
+                take(usage);
             }
         }
-        (input, output)
+        t
     }
+}
+
+/// DeepSeek's Anthropic endpoint serves `claude-opus*` names on its Pro model,
+/// so a name does not have to say "pro" to be billed as one.
+pub fn is_pro_model(model: &str) -> bool {
+    let m = model.to_ascii_lowercase();
+    m.contains("pro") || m.starts_with("claude-opus")
 }
 
 #[derive(Clone)]
@@ -286,6 +337,21 @@ impl LiveProvider {
             path: path.clone(),
             body: serde_json::from_slice(&body).unwrap_or(Value::Null),
         };
+
+        if let Some(model) = seen.body["model"].as_str().filter(|m| is_pro_model(m)) {
+            let body = json!({
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": format!("live tier runs on Flash only; refused model `{model}`")
+                }
+            })
+            .to_string();
+            self.record(seen, 400, body.clone(), at);
+            sock.write_all(http_response(400, &[], &body).as_bytes())
+                .await?;
+            return Ok(());
+        }
 
         if self.calls.fetch_add(1, Ordering::SeqCst) >= self.config.max_calls {
             let message = format!(
