@@ -31,6 +31,16 @@ impl StructuredOutputTool {
     }
 }
 
+/// A string field whose text is itself a result the schema accepts: the model
+/// serialized its answer into one argument, which the schema alone lets through
+/// whenever that field is typed as a string.
+fn packed_field(input: &Value, validator: &jsonschema::Validator) -> Option<String> {
+    input.as_object()?.iter().find_map(|(name, value)| {
+        let inner: Value = serde_json::from_str(value.as_str()?).ok()?;
+        (inner.is_object() && validator.is_valid(&inner)).then(|| name.clone())
+    })
+}
+
 #[async_trait]
 impl Tool for StructuredOutputTool {
     fn name(&self) -> &str {
@@ -38,7 +48,9 @@ impl Tool for StructuredOutputTool {
     }
 
     fn description(&self) -> &str {
-        "Return structured output in the requested format"
+        "Hand in the result in the requested format. The arguments are the result itself: put \
+         each field's actual value in it (the text, the number), not code that would compute it \
+         and not the whole result as one string."
     }
 
     fn input_schema(&self) -> Value {
@@ -85,7 +97,16 @@ impl Tool for StructuredOutputTool {
             })
             .collect();
         if problems.is_empty() {
-            ValidationResult::Ok
+            match packed_field(input, &validator) {
+                Some(field) => ValidationResult::err(
+                    format!(
+                        "`{field}` holds the whole result as a string. Pass each field as its \
+                         own argument with its own value instead."
+                    ),
+                    1,
+                ),
+                None => ValidationResult::Ok,
+            }
         } else {
             ValidationResult::err(
                 format!(
