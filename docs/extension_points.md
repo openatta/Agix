@@ -245,7 +245,9 @@ for refused in registry.register_declarative_dir(&global_root.join("scenes")) {
   "supports_team": false,
   "modules": ["agents", "skills", "mcp"],
   "disabled_modules": [],
-  "reminders": ["git_status", "memory"]
+  "reminders": ["git_status", "memory"],
+  "interactive": false,
+  "bundled_skills": ["skillify"]
 }
 ```
 
@@ -265,6 +267,8 @@ for refused in registry.register_declarative_dir(&global_root.join("scenes")) {
 | `modules` | string[] 或缺省 | 缺省 = 全部 | 这个场景的会话跑哪些模块,见下 |
 | `disabled_modules` | string[] | `[]` | 即使 `modules` 放行也不跑的模块 |
 | `reminders` | `"git_status"` / `"memory"` 的数组 | `[]` | 每轮 `<system-reminder>` 带什么,按列出的顺序 |
+| `interactive` | bool | `false` | 有没有人应答提示;`false` 时需要批准的调用直接拒绝,见 `ARCHITECTURE.md` §3.2.1 |
+| `bundled_skills` | string[] 或缺省 | 缺省 = `["skillify"]` | 列出哪些内置技能;依赖的工具不被允许的不列 |
 
 校验从严:未知字段、缺了必填字段、id 不合规、同一列表里重复、一个名字同时在
 `tools` 与 `disallowed_tools`(或 `modules` 与 `disabled_modules`)里、

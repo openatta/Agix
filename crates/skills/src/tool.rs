@@ -28,6 +28,9 @@ use std::sync::Arc;
 pub struct SkillTool {
     /// Reference to the skill manager for looking up and expanding skills.
     skill_manager: std::sync::Arc<crate::manager::SkillManager>,
+    /// The built-in skills this session's scene lists; the others are not
+    /// found here either.
+    admission: crate::catalog::BundledAdmission,
     /// P2-10: Agent spawner for forked skill execution (context: "fork").
     spawner: Option<Arc<dyn AgentSpawner>>,
     /// Real permission checker — held here (not read off `ToolContext`,
@@ -53,10 +56,16 @@ impl SkillTool {
     pub fn new(skill_manager: std::sync::Arc<crate::manager::SkillManager>) -> Self {
         Self {
             skill_manager,
+            admission: Default::default(),
             spawner: None,
             permission: None,
             already_injected: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
+    }
+
+    pub fn with_admission(mut self, admission: crate::catalog::BundledAdmission) -> Self {
+        self.admission = admission;
+        self
     }
 
     /// P2-10: Set the agent spawner for forked skill execution.
@@ -121,6 +130,11 @@ impl Tool for SkillTool {
         // Look up the skill info to check disable_model_invocation
         let skills = self.skill_manager.list();
         let skill_info = skills.iter().find(|s| s.name == skill_name);
+        if skill_info.is_some_and(|s| !self.admission.admits(&s.name, &s.path)) {
+            return Err(ToolError::NotFound(format!(
+                "Skill '{skill_name}' not found."
+            )));
+        }
 
         // Check disable_model_invocation: if true, model cannot invoke this skill
         let context_mode = skill_info.and_then(|s| s.context.clone());
@@ -644,10 +658,13 @@ async fn run_skill_shell_command(command: &str, ctx: &ToolContext, disabled: boo
 pub fn register(
     r: &base::tool::InMemoryToolRegistry,
     m: std::sync::Arc<crate::manager::SkillManager>,
+    admission: crate::catalog::BundledAdmission,
     spawner: Option<std::sync::Arc<dyn base::interface::agent_spawner::AgentSpawner>>,
     permission: std::sync::Arc<dyn base::interface::permission::Permission>,
 ) {
-    let mut tool = SkillTool::new(m).with_permission(permission);
+    let mut tool = SkillTool::new(m)
+        .with_admission(admission)
+        .with_permission(permission);
     if let Some(spawner) = spawner {
         tool = tool.with_spawner(spawner);
     }

@@ -13,8 +13,8 @@
 
 use crate::provider::{ApiType, ProviderConfig, TaskModelOverride};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
 
 /// The shared, committed settings file present in every tier.
 pub const SETTINGS_FILE: &str = "settings.json";
@@ -79,13 +79,15 @@ pub struct Settings {
     #[serde(default)]
     pub disable_skill_shell_execution: bool,
 
-    /// How the file tools word paths for the model. `absolute` (default)
-    /// keeps today's text; `workspace_relative` makes tool descriptions say
-    /// paths are relative to the working directory and prints Grep / Glob /
-    /// Write / Edit paths under it relative, so a recorded session replays in
-    /// another working directory. Resolving paths is unchanged.
-    #[serde(default)]
-    pub path_style: crate::context::config::PathStyle,
+    /// How the file tools word paths for the model. `absolute` keeps
+    /// today's text; `workspace_relative` makes tool descriptions say paths
+    /// are relative to the working directory and prints Grep / Glob / Write /
+    /// Edit paths under it relative, so a recorded session replays in another
+    /// working directory and long paths stop repeating in every call.
+    /// Resolving paths is unchanged. Unset, the scene decides
+    /// (`Scene::path_style`: `harnix` is relative, the rest absolute).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_style: Option<crate::context::config::PathStyle>,
 
     /// Permission mode for tool execution.
     #[serde(default)]
@@ -529,6 +531,29 @@ impl PluginsConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 /// Sandbox/security configuration.
 pub struct SandboxConfig {
+    /// Directories outside the project that tools may read and write, as if
+    /// they were part of it. The instance's own state directory (`~/.agix`
+    /// by default) is always one; its settings files stay protected.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_directories: Vec<PathBuf>,
+    /// Directories outside the project that the file tools (`Read`, `Glob`,
+    /// `Grep`) and read-only shell commands may read without asking. Reading
+    /// anywhere else needs a person's approval, and an unattended session —
+    /// one with nobody to approve — is refused.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub read_directories: Vec<PathBuf>,
+    /// Let the file tools read anywhere, as `read_directories` would if it
+    /// listed `/`. Off by default.
+    #[serde(default)]
+    pub read_anywhere: bool,
+    /// Package and build caches outside the project that a sandboxed `Bash`
+    /// command may write — `pip`, `npm`, `cargo` and the like fail without
+    /// them. Grouped by toolchain; a settings file replaces one group by
+    /// naming it (`"python": []` drops it), adds a group under a new name, and
+    /// leaves the rest at their defaults. `~/` means the user's home. The file
+    /// tools do not get these.
+    #[serde(default)]
+    pub cache_directories: CacheDirectories,
     pub deny_read: Vec<PathBuf>,
     /// Paths to re-allow reading, on top of the built-in credential deny
     /// defaults (`~/.ssh`, `~/.aws`, `~/.npmrc`, ...). Most specific wins.
@@ -610,6 +635,101 @@ pub struct SandboxConfig {
     /// background. Off by default: such a service outlives the session.
     #[serde(default)]
     pub reap_process_groups: bool,
+}
+
+/// [`SandboxConfig::cache_directories`]: toolchain name → cache paths.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(transparent)]
+pub struct CacheDirectories(pub BTreeMap<String, Vec<String>>);
+
+impl Default for CacheDirectories {
+    fn default() -> Self {
+        let groups: &[(&str, &[&str])] = &[
+            (
+                "python",
+                &[
+                    "~/.cache/pip",
+                    "~/.cache/uv",
+                    "~/.cache/pypoetry",
+                    "~/Library/Caches/pip",
+                    "~/Library/Caches/pypoetry",
+                    "~/Library/Caches/com.apple.python",
+                ],
+            ),
+            (
+                "node",
+                &[
+                    "~/.npm",
+                    "~/.cache/yarn",
+                    "~/Library/Caches/Yarn",
+                    "~/.cache/node-gyp",
+                    "~/Library/Caches/node-gyp",
+                    "~/.local/share/pnpm",
+                    "~/Library/pnpm",
+                    "~/.bun/install/cache",
+                ],
+            ),
+            (
+                "rust",
+                &[
+                    "~/.cargo/registry",
+                    "~/.cargo/git",
+                    "~/.cargo/.package-cache",
+                    "~/.cargo/.global-cache",
+                ],
+            ),
+            (
+                "go",
+                &[
+                    "~/go/pkg/mod",
+                    "~/.cache/go-build",
+                    "~/Library/Caches/go-build",
+                ],
+            ),
+            (
+                "java",
+                &["~/.m2/repository", "~/.gradle/caches", "~/.gradle/wrapper"],
+            ),
+            ("ruby", &["~/.gem", "~/.bundle/cache"]),
+            ("dotnet", &["~/.nuget/packages"]),
+            (
+                "swift",
+                &[
+                    "~/Library/Caches/org.swift.swiftpm",
+                    "~/Library/org.swift.swiftpm",
+                ],
+            ),
+        ];
+        Self(
+            groups
+                .iter()
+                .map(|(name, dirs)| {
+                    (
+                        name.to_string(),
+                        dirs.iter().map(|d| d.to_string()).collect(),
+                    )
+                })
+                .collect(),
+        )
+    }
+}
+
+impl CacheDirectories {
+    /// Every listed path: `~/…` kept as it is for the command runner to
+    /// expand, anything else relative resolved against `project`.
+    pub fn paths(&self, project: &Path) -> Vec<PathBuf> {
+        self.0
+            .values()
+            .flatten()
+            .map(|dir| {
+                if dir.starts_with("~/") {
+                    PathBuf::from(dir)
+                } else {
+                    project.join(dir)
+                }
+            })
+            .collect()
+    }
 }
 
 /// One script, bound to one extension point.
@@ -1024,6 +1144,27 @@ mod tests {
             base["providers"]["deepseek"]["default_model"],
             "deepseek-pro"
         );
+    }
+
+    #[test]
+    fn a_settings_file_replaces_one_cache_group_and_keeps_the_rest() {
+        let mut merged = serde_json::to_value(Settings::defaults_for("m")).unwrap();
+        merge_json_values(
+            &mut merged,
+            serde_json::json!({ "sandbox": { "cache_directories": {
+                "python": [], "zig": ["~/.cache/zig", "build-cache"]
+            } } }),
+        );
+        let settings: Settings = serde_json::from_value(merged).unwrap();
+        let groups = &settings.sandbox.cache_directories.0;
+        assert!(groups["python"].is_empty());
+        assert_eq!(groups["node"], CacheDirectories::default().0["node"]);
+
+        let dirs = settings.sandbox.cache_directories.paths(Path::new("/work"));
+        assert!(dirs.contains(&PathBuf::from("~/.cache/zig")));
+        assert!(dirs.contains(&PathBuf::from("/work/build-cache")));
+        assert!(dirs.contains(&PathBuf::from("~/.npm")));
+        assert!(!dirs.iter().any(|d| d.ends_with("pip")));
     }
 
     #[test]

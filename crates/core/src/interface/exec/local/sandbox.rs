@@ -341,7 +341,7 @@ fn linux_wrap(opts: SandboxOptions<'_>) -> Confined {
         "--die-with-parent".into(),
     ];
     for p in opts.additional_writable {
-        args.push("--bind".into());
+        args.push("--bind-try".into());
         let s = p.display().to_string();
         args.push(s.clone());
         args.push(s);

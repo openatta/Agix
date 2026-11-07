@@ -24,6 +24,6 @@ Compact
 Assistant
 
 == model calls ==
-golden-model max_tokens=1024 messages=2 content_bytes=373 truncated_results=0
-golden-model max_tokens=1024 messages=2 content_bytes=374 truncated_results=0
+golden-model max_tokens=1024 messages=2 content_bytes=165 truncated_results=0
+golden-model max_tokens=1024 messages=2 content_bytes=166 truncated_results=0
 unconsumed_replies=0

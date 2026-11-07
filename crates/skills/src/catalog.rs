@@ -1,9 +1,12 @@
 //! [`SkillManager`] as the kernel's [`SkillCatalog`]: the turn loop, slash
 //! commands and delegates see skills only through this.
 
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use base::frozen::SkillEntry;
+use base::interface::scene::Scene;
 use base::interface::skill_catalog::SkillCatalog;
 
 use crate::manager::{SkillInfo, SkillManager, SkillSource};
@@ -73,5 +76,158 @@ impl SkillCatalog for SkillManager {
     }
     fn last_invoked_seq(&self, name: &str) -> u64 {
         SkillManager::last_invoked_seq(self, name)
+    }
+}
+
+/// Which built-in skills a session lists: the ones its scene names, less any
+/// whose required tools the scene does not permit. Skills from disk and host
+/// providers always pass, so a project's own `loop` still shows in a scene
+/// that leaves the built-in one out.
+#[derive(Clone, Default)]
+pub struct BundledAdmission(Option<Arc<HashSet<String>>>);
+
+impl BundledAdmission {
+    pub fn for_scene(scene: &dyn Scene) -> Self {
+        let names = scene
+            .bundled_skills()
+            .into_iter()
+            .filter(|name| {
+                crate::bundled::required_tools(name)
+                    .iter()
+                    .all(|tool| scene.permits_tool(tool))
+            })
+            .collect();
+        Self(Some(Arc::new(names)))
+    }
+
+    pub fn admits(&self, name: &str, path: &Path) -> bool {
+        match &self.0 {
+            None => true,
+            Some(names) => !path.to_string_lossy().starts_with("(bundled:") || names.contains(name),
+        }
+    }
+}
+
+/// A [`SkillManager`] as one session's scene sees it — see [`BundledAdmission`].
+pub struct SceneSkills {
+    manager: Arc<SkillManager>,
+    admission: BundledAdmission,
+}
+
+impl SceneSkills {
+    pub fn new(manager: Arc<SkillManager>, admission: BundledAdmission) -> Self {
+        Self { manager, admission }
+    }
+
+    fn keep(&self, entries: Vec<SkillEntry>) -> Vec<SkillEntry> {
+        entries
+            .into_iter()
+            .filter(|e| self.admission.admits(&e.name, &e.path))
+            .collect()
+    }
+}
+
+impl SkillCatalog for SceneSkills {
+    fn list(&self) -> Vec<SkillEntry> {
+        self.keep(SkillCatalog::list(&*self.manager))
+    }
+    fn get(&self, name: &str) -> Option<SkillEntry> {
+        SkillCatalog::get(&*self.manager, name).filter(|e| self.admission.admits(&e.name, &e.path))
+    }
+    fn body(&self, name: &str) -> Option<String> {
+        SkillCatalog::get(self, name)?;
+        self.manager.get_skill_content(name)
+    }
+    fn reload_changed(&self) -> usize {
+        self.manager.check_for_changes()
+    }
+    fn discover_for_paths(&self, paths: &[PathBuf]) -> Vec<SkillEntry> {
+        self.keep(SkillCatalog::discover_for_paths(&*self.manager, paths))
+    }
+    fn activate_for_paths(&self, files: &[PathBuf]) -> Vec<SkillEntry> {
+        self.keep(SkillCatalog::activate_for_paths(&*self.manager, files))
+    }
+    fn invocation_count(&self, name: &str) -> u32 {
+        self.manager.invocation_count(name)
+    }
+    fn last_invoked_seq(&self, name: &str) -> u64 {
+        self.manager.last_invoked_seq(name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base::interface::prompt::PromptBlock;
+    use base::interface::scene::{ScenePromptContext, TokenBudget};
+
+    struct Picky(Vec<&'static str>, Vec<&'static str>);
+    impl Scene for Picky {
+        fn id(&self) -> &str {
+            "picky"
+        }
+        fn name(&self) -> &str {
+            "picky"
+        }
+        fn description(&self) -> &str {
+            ""
+        }
+        fn build_system_prompt(&self, _: &ScenePromptContext) -> Vec<PromptBlock> {
+            vec![]
+        }
+        fn tools(&self) -> Vec<String> {
+            self.1.iter().map(|s| s.to_string()).collect()
+        }
+        fn token_budget(&self) -> TokenBudget {
+            TokenBudget {
+                compact_threshold: 1,
+                compact_keep_recent: 1,
+            }
+        }
+        fn bundled_skills(&self) -> Vec<String> {
+            self.0.iter().map(|s| s.to_string()).collect()
+        }
+    }
+
+    fn manager() -> Arc<SkillManager> {
+        let mgr = SkillManager::new();
+        for skill in crate::bundled::bundled_skills() {
+            mgr.register_bundled(skill);
+        }
+        Arc::new(mgr)
+    }
+
+    fn names(catalog: &SceneSkills) -> Vec<String> {
+        let mut names: Vec<_> = SkillCatalog::list(catalog)
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_scene_lists_the_built_ins_it_names_and_can_run() {
+        let scene = Picky(vec!["skillify", "loop", "debug"], vec!["Read", "Write"]);
+        let catalog = SceneSkills::new(manager(), BundledAdmission::for_scene(&scene));
+        assert_eq!(
+            names(&catalog),
+            ["debug", "skillify"],
+            "loop needs CronCreate"
+        );
+        assert!(SkillCatalog::get(&catalog, "loop").is_none());
+        assert!(SkillCatalog::body(&catalog, "loop").is_none());
+        assert!(SkillCatalog::body(&catalog, "skillify").is_some());
+    }
+
+    #[test]
+    fn skills_from_elsewhere_pass_whatever_the_scene_names() {
+        let mgr = manager();
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("loop.md");
+        std::fs::write(&file, "---\nname: loop\ndescription: mine\n---\nbody").unwrap();
+        mgr.reload_skill(&file).unwrap();
+        let catalog = SceneSkills::new(mgr, BundledAdmission::for_scene(&Picky(vec![], vec![])));
+        assert_eq!(names(&catalog), ["loop"]);
     }
 }

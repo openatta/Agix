@@ -8,6 +8,16 @@
       ],
       "type": "string"
     },
+    "CacheDirectories": {
+      "additionalProperties": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "description": "[`SandboxConfig::cache_directories`]: toolchain name → cache paths.",
+      "type": "object"
+    },
     "CompactionConfig": {
       "description": "Context compaction configuration.",
       "properties": {
@@ -476,6 +486,13 @@
     "SandboxConfig": {
       "description": "Sandbox/security configuration.",
       "properties": {
+        "additional_directories": {
+          "description": "Directories outside the project that tools may read and write, as if\nthey were part of it. The instance's own state directory (`~/.agix`\nby default) is always one; its settings files stay protected.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "allow_read": {
           "description": "Paths to re-allow reading, on top of the built-in credential deny\ndefaults (`~/.ssh`, `~/.aws`, `~/.npmrc`, ...). Most specific wins.\n\nExists because those defaults are now actually applied to `Bash` (they\nused to be defined and never reached production), and some of them\nsit on legitimate workflows — `npm install` against a private registry\nreads `~/.npmrc`, `docker build` reads `~/.docker/config.json`.\nWithout this there was no way to say \"yes, that one is fine here\".",
           "items": {
@@ -495,6 +512,57 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "cache_directories": {
+          "$ref": "#/$defs/CacheDirectories",
+          "default": {
+            "dotnet": [
+              "~/.nuget/packages"
+            ],
+            "go": [
+              "~/go/pkg/mod",
+              "~/.cache/go-build",
+              "~/Library/Caches/go-build"
+            ],
+            "java": [
+              "~/.m2/repository",
+              "~/.gradle/caches",
+              "~/.gradle/wrapper"
+            ],
+            "node": [
+              "~/.npm",
+              "~/.cache/yarn",
+              "~/Library/Caches/Yarn",
+              "~/.cache/node-gyp",
+              "~/Library/Caches/node-gyp",
+              "~/.local/share/pnpm",
+              "~/Library/pnpm",
+              "~/.bun/install/cache"
+            ],
+            "python": [
+              "~/.cache/pip",
+              "~/.cache/uv",
+              "~/.cache/pypoetry",
+              "~/Library/Caches/pip",
+              "~/Library/Caches/pypoetry",
+              "~/Library/Caches/com.apple.python"
+            ],
+            "ruby": [
+              "~/.gem",
+              "~/.bundle/cache"
+            ],
+            "rust": [
+              "~/.cargo/registry",
+              "~/.cargo/git",
+              "~/.cargo/.package-cache",
+              "~/.cargo/.global-cache"
+            ],
+            "swift": [
+              "~/Library/Caches/org.swift.swiftpm",
+              "~/Library/org.swift.swiftpm"
+            ]
+          },
+          "description": "Package and build caches outside the project that a sandboxed `Bash`\ncommand may write — `pip`, `npm`, `cargo` and the like fail without\nthem. Grouped by toolchain; a settings file replaces one group by\nnaming it (`\"python\": []` drops it), adds a group under a new name, and\nleaves the rest at their defaults. `~/` means the user's home. The file\ntools do not get these."
         },
         "dangerously_disable_sandbox": {
           "default": false,
@@ -518,6 +586,18 @@
           "$ref": "#/$defs/NetworkModeConfig",
           "default": "unrestricted",
           "description": "Outbound network policy for sandboxed `Bash` commands."
+        },
+        "read_anywhere": {
+          "default": false,
+          "description": "Let the file tools read anywhere, as `read_directories` would if it\nlisted `/`. Off by default.",
+          "type": "boolean"
+        },
+        "read_directories": {
+          "description": "Directories outside the project that the file tools (`Read`, `Glob`,\n`Grep`) and read-only shell commands may read without asking. Reading\nanywhere else needs a person's approval, and an unattended session —\none with nobody to approve — is refused.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "reap_process_groups": {
           "default": false,
@@ -776,9 +856,15 @@
       "$ref": "#/$defs/ModelSettings"
     },
     "path_style": {
-      "$ref": "#/$defs/PathStyle",
-      "default": "absolute",
-      "description": "How the file tools word paths for the model. `absolute` (default)\nkeeps today's text; `workspace_relative` makes tool descriptions say\npaths are relative to the working directory and prints Grep / Glob /\nWrite / Edit paths under it relative, so a recorded session replays in\nanother working directory. Resolving paths is unchanged."
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PathStyle"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "How the file tools word paths for the model. `absolute` keeps\ntoday's text; `workspace_relative` makes tool descriptions say paths\nare relative to the working directory and prints Grep / Glob / Write /\nEdit paths under it relative, so a recorded session replays in another\nworking directory and long paths stop repeating in every call.\nResolving paths is unchanged. Unset, the scene decides\n(`Scene::path_style`: `harnix` is relative, the rest absolute)."
     },
     "paths": {
       "$ref": "#/$defs/PathSettings"
@@ -840,9 +926,57 @@
       "$ref": "#/$defs/SandboxConfig",
       "default": {
         "allowed_domains": [],
+        "cache_directories": {
+          "dotnet": [
+            "~/.nuget/packages"
+          ],
+          "go": [
+            "~/go/pkg/mod",
+            "~/.cache/go-build",
+            "~/Library/Caches/go-build"
+          ],
+          "java": [
+            "~/.m2/repository",
+            "~/.gradle/caches",
+            "~/.gradle/wrapper"
+          ],
+          "node": [
+            "~/.npm",
+            "~/.cache/yarn",
+            "~/Library/Caches/Yarn",
+            "~/.cache/node-gyp",
+            "~/Library/Caches/node-gyp",
+            "~/.local/share/pnpm",
+            "~/Library/pnpm",
+            "~/.bun/install/cache"
+          ],
+          "python": [
+            "~/.cache/pip",
+            "~/.cache/uv",
+            "~/.cache/pypoetry",
+            "~/Library/Caches/pip",
+            "~/Library/Caches/pypoetry",
+            "~/Library/Caches/com.apple.python"
+          ],
+          "ruby": [
+            "~/.gem",
+            "~/.bundle/cache"
+          ],
+          "rust": [
+            "~/.cargo/registry",
+            "~/.cargo/git",
+            "~/.cargo/.package-cache",
+            "~/.cargo/.global-cache"
+          ],
+          "swift": [
+            "~/Library/Caches/org.swift.swiftpm",
+            "~/Library/org.swift.swiftpm"
+          ]
+        },
         "dangerously_disable_sandbox": false,
         "deny_read": [],
         "network_mode": "unrestricted",
+        "read_anywhere": false,
         "reap_process_groups": false,
         "require_enforcement": false,
         "subprocess_env": {

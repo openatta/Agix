@@ -414,10 +414,11 @@ impl PermissionGate {
         //    它们不是凭据（凭据在第 4 步就硬拒了），用户完全可能想让 agent 去
         //    改；但"工具自己说没问题"不足以让一次改写 agent 自身规则的调用静默
         //    通过。所以这里只是**跳过快速通道**，让它落到下面的模式分派去走正常
-        //    确认流程 —— 该问就问，而不是一律拒绝。
-        let needs_confirmation = checked_strings
-            .iter()
-            .any(|s| is_path_confirmation_required(s));
+        //    确认流程 —— 该问就问，而不是一律拒绝。只读的调用改不了规则，不算。
+        let needs_confirmation = !tool.is_read_only(input)
+            && checked_strings
+                .iter()
+                .any(|s| is_path_confirmation_required(s));
         if tool_self_allow && !needs_confirmation {
             return Ok(PermissionDecision::Allow {
                 updated_input: None,
@@ -1122,6 +1123,11 @@ const BYPASS_IMMUNE_COMPONENTS: &[&str] = &[".ssh", ".aws", ".gnupg"];
 /// a `.git` component blocks far more than it protects.
 const CONFIRMATION_REQUIRED_COMPONENTS: &[&str] = &[".git", ".claude", ".agix"];
 
+/// What under `.agix` is the agent's own working space rather than its
+/// configuration: the scratchpad its prompt sends temporary files to, and
+/// the memory directory it is told to write to directly.
+const AGIX_WORKING_DIRS: &[&str] = &["scratchpad", "memory"];
+
 /// Does this path (or command argument) name something under
 /// [`CONFIRMATION_REQUIRED_COMPONENTS`]?
 ///
@@ -1129,10 +1135,20 @@ const CONFIRMATION_REQUIRED_COMPONENTS: &[&str] = &[".git", ".claude", ".agix"];
 /// must not match `.git`.
 fn is_path_confirmation_required(content: &str) -> bool {
     let lowered = content.to_lowercase();
+    let components: Vec<&str> = lowered.split('/').collect();
     lowered.contains('/')
-        && lowered
-            .split('/')
-            .any(|component| CONFIRMATION_REQUIRED_COMPONENTS.contains(&component))
+        && components.iter().enumerate().any(|(i, component)| {
+            CONFIRMATION_REQUIRED_COMPONENTS.contains(component)
+                && !(*component == ".agix"
+                    && components.get(i + 1).is_some_and(|next| {
+                        // In a shell command the name runs on into whatever follows it.
+                        let name = next
+                            .split(|c: char| !(c.is_alphanumeric() || "._-".contains(c)))
+                            .next()
+                            .unwrap_or_default();
+                        AGIX_WORKING_DIRS.contains(&name)
+                    }))
+        })
 }
 
 /// Check whether a path (or command argument) references a bypass-immune
@@ -1253,6 +1269,24 @@ mod bypass_immune_tests {
             "/repo/.github/workflows/ci.yml"
         ));
         assert!(!is_path_confirmation_required("/repo/src/main.rs"));
+    }
+
+    #[test]
+    fn the_agents_working_space_under_agix_is_not_configuration() {
+        for p in [
+            "/repo/.agix/scratchpad/cases.txt",
+            "/Users/me/.agix/memory/MEMORY.md",
+            "cd /repo\nS=/repo/.agix/scratchpad\nmkdir -p \"$S\"",
+            "printf x > \"$d/.agix/scratchpad\"",
+        ] {
+            assert!(!is_path_confirmation_required(p), "{p}");
+        }
+        for p in [
+            "/repo/.agix/agents/reviewer.md",
+            "/repo/.agix/scratchpad.md",
+        ] {
+            assert!(is_path_confirmation_required(p), "{p}");
+        }
     }
 
     #[test]

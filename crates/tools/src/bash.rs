@@ -202,6 +202,13 @@ impl Tool for BashTool {
                 decision_reason: Some("read_only".into()),
             };
         }
+        // Nobody can answer the question below, and the OS sandbox already
+        // holds the command to the directories it may write.
+        if ctx.session.unattended && sandbox_holds(ctx) {
+            return PermissionDecision::Allow {
+                decision_reason: Some("sandboxed".into()),
+            };
+        }
         PermissionDecision::Ask {
             message: "Bash command requires confirmation".into(),
             decision_reason: None,
@@ -224,8 +231,7 @@ impl Tool for BashTool {
 
         // 平台沙盒包装：拒写 cwd / additional 之外。
         // dangerously_disable_sandbox=true 时直跑 bash。
-        let mut policy = to_sandbox_policy(&ctx.sandbox);
-        policy.additional_writable = ctx.additional_writable_dirs.clone();
+        let policy = sandbox_policy(&ctx);
         let intent = base::interface::exec::ProcessSpec::new("bash", &ctx.cwd)
             .args(["-c".to_string(), input.command.clone()]);
         let confined = if ctx.dangerously_disable_sandbox {
@@ -526,12 +532,43 @@ fn parse_classification(input: &Value) -> Option<CmdClassification> {
     Some(classify::classify(&parsed.command))
 }
 
+fn sandbox_policy(ctx: &ToolContext) -> sandbox::SandboxPolicy {
+    let mut policy = to_sandbox_policy(&ctx.sandbox);
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let caches =
+        ctx.session
+            .cache_directories
+            .iter()
+            .filter_map(|dir| match dir.strip_prefix("~") {
+                Ok(rest) => home.as_ref().map(|h| h.join(rest)),
+                Err(_) => Some(dir.clone()),
+            });
+    policy.additional_writable = ctx
+        .additional_writable_dirs
+        .iter()
+        .cloned()
+        .chain(caches)
+        .collect();
+    policy
+}
+
+/// Whether a command run now would be fully confined by the OS sandbox.
+fn sandbox_holds(ctx: &ToolContext) -> bool {
+    if ctx.dangerously_disable_sandbox {
+        return false;
+    }
+    let policy = sandbox_policy(ctx);
+    let probe = base::interface::exec::ProcessSpec::new("bash", &ctx.cwd).args(["-c", "true"]);
+    ctx.exec.sandbox.confine(probe, &policy).enforcement == base::interface::exec::Enforcement::Full
+}
+
 /// Whether every path-looking argument of every command in `line` resolves
 /// inside the session's cwd or one of its additional directories.
 fn path_args_stay_within(line: &str, ctx: &ToolContext) -> bool {
-    let roots: Vec<&std::path::Path> = std::iter::once(ctx.cwd.as_path())
-        .chain(ctx.additional_writable_dirs.iter().map(|d| d.as_path()))
-        .collect();
+    if ctx.session.read_anywhere {
+        return true;
+    }
+    let roots = crate::security::readable_roots(ctx);
     permissions::shell::simple_commands(line)
         .iter()
         .flat_map(|cmd| permissions::shell::words(cmd).into_iter().skip(1))
@@ -1360,6 +1397,21 @@ mod tests {
 
     fn ctx_in(cwd: &std::path::Path) -> ToolContext {
         ToolContext::for_test(cwd.to_path_buf())
+    }
+
+    #[test]
+    fn a_sandboxed_command_may_write_the_cache_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = ctx_in(dir.path());
+        let mut session = base::context::SessionState::new(dir.path().to_path_buf());
+        session.cache_directories = vec!["~/.npm".into(), "/opt/cache".into()];
+        ctx.session = std::sync::Arc::new(session);
+        let writable = sandbox_policy(&ctx).additional_writable;
+        assert!(writable.contains(&std::path::PathBuf::from("/opt/cache")));
+        if let Some(home) = std::env::var_os("HOME") {
+            assert!(writable.contains(&std::path::PathBuf::from(home).join(".npm")));
+        }
+        assert!(!writable.iter().any(|p| p.starts_with("~")));
     }
 
     // ---- to_sandbox_policy ----

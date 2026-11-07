@@ -148,7 +148,7 @@ async fn build_registers_mcp_tool_adapters_into_the_executable_tool_registry() {
     // looks up `ctx.tools`, a clone of this same registry).
     let settings = Arc::new(test_settings());
     let model: Arc<dyn Model> = Arc::new(DummyModel);
-    let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene);
+    let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene::default());
 
     let mock_client = Arc::new(mcp::client::MockMcpClient::new(
         "test-server",
@@ -235,7 +235,7 @@ async fn build_wires_mcp_elicitation_urls_to_the_elicitation_hook() {
     let dir = tempfile::tempdir().unwrap();
     let settings = Arc::new(test_settings());
     let model: Arc<dyn Model> = Arc::new(DummyModel);
-    let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene);
+    let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene::default());
 
     let mock_client = Arc::new(mcp::client::MockMcpClient::new(
         "test-server",
@@ -347,7 +347,7 @@ async fn run_one_turn(
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let model: Arc<dyn base::interface::model::Model> =
         Arc::new(RecordingAnswerModel { seen: seen.clone() });
-    let scene: Arc<dyn base::interface::scene::Scene> = Arc::new(scene::code::CodeScene);
+    let scene: Arc<dyn base::interface::scene::Scene> = Arc::new(scene::code::CodeScene::default());
     let mut settings = recall_test_settings(tmp.path());
     // Keep the transcript to just what this test injects.
     settings.memory_enabled = false;
@@ -379,7 +379,7 @@ async fn mcp_prompt_is_registered_as_a_slash_command() {
     let model: Arc<dyn base::interface::model::Model> = Arc::new(RecordingAnswerModel {
         seen: Arc::new(std::sync::Mutex::new(Vec::new())),
     });
-    let scene: Arc<dyn base::interface::scene::Scene> = Arc::new(scene::code::CodeScene);
+    let scene: Arc<dyn base::interface::scene::Scene> = Arc::new(scene::code::CodeScene::default());
     let (agent, _event_rx, _input_tx) = Builder::new()
         .scene(scene)
         .model(model)

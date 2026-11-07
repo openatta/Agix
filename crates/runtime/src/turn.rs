@@ -1437,6 +1437,9 @@ impl Agent {
                     frozen.refresh_git().await;
                 }
             }
+            if has_tool_uses {
+                self.notice_repeated_calls();
+            }
 
             // A PostToolUse hook can request the turn end right here — every
             // tool_use emitted in this round already has its tool_result
@@ -1818,7 +1821,6 @@ impl Agent {
             // (the flag's whole point is opting out of the memory subsystem entirely, not just
             // the static prompt injection).
             if self.settings.memory_enabled {
-                const DEFAULT_MEMORY_MODEL: &str = "claude-haiku-4-5-20251001";
                 let session_messages = self.session.messages().to_vec();
                 let store = self.memory_store.clone();
                 // `task_models.memory` lets an app point this background
@@ -1833,10 +1835,10 @@ impl Agent {
                         self.accounted(router.model_for("memory")),
                         router
                             .model_name_for("memory")
-                            .unwrap_or(DEFAULT_MEMORY_MODEL)
+                            .unwrap_or(&self.settings.model.model_name)
                             .to_string(),
                     ),
-                    None => (self.model.clone(), DEFAULT_MEMORY_MODEL.to_string()),
+                    None => (self.model.clone(), self.settings.model.model_name.clone()),
                 };
                 let prompt_intro = self.scene.memory_extraction_prompt();
                 let environment = self.environment.clone();
@@ -1984,6 +1986,42 @@ or project context that should survive across sessions.
     /// e.g. a wrapper script) just mean the pre-existing "frozen until next
     /// session" staleness persists a bit longer — neither is a correctness
     /// hazard, both degrade to prior behavior.
+    /// Counts the calls of the step that just ran — see [`crate::repeat_guard`].
+    fn notice_repeated_calls(&mut self) {
+        let Some(step) = self
+            .session
+            .messages()
+            .iter()
+            .rev()
+            .find(|m| m.role == MessageRole::Assistant)
+        else {
+            return;
+        };
+        let turn = self.session.turn_count;
+        let notices: Vec<String> = step
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ModelContentBlock::ToolUse { name, input, .. } => self
+                    .repeat_guard
+                    .record(turn, name, input)
+                    .map(|count| (name.clone(), count)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|(name, count)| {
+                crate::repeat_guard::notice(&name, count, self.scene.interactive())
+            })
+            .collect();
+        for text in notices {
+            self.session.push_message(ModelMessage {
+                role: MessageRole::User,
+                content: vec![ModelContentBlock::Text { text }],
+            });
+        }
+    }
+
     fn turn_included_git_mutating_bash_call(messages: &[ModelMessage]) -> bool {
         const GIT_MUTATING_SUBCOMMANDS: &[&str] = &[
             "checkout",
@@ -3834,6 +3872,19 @@ async fn execute_tool_inner(
     {
         PermissionOutcome::Permit => {}
         PermissionOutcome::Deny { reason } => {
+            fire_ctx_lifecycle_hook(ctx, hooks::HookEvent::PermissionDenied, |i| {
+                i.with_tool(name, input.clone()).with_reason(reason.clone())
+            })
+            .await;
+            return Err(format!("Denied by permission: {reason}"));
+        }
+        PermissionOutcome::Prompt { message, .. } if ctx.session_state.unattended => {
+            let reason = format!(
+                "{message} — and nobody is attending this session to approve it. Work within \
+                 what is allowed; if the task needs this, report it: the instance's settings \
+                 grant it (`sandbox.additional_directories`, `sandbox.read_directories`, or a \
+                 `permission_rules` allow rule)."
+            );
             fire_ctx_lifecycle_hook(ctx, hooks::HookEvent::PermissionDenied, |i| {
                 i.with_tool(name, input.clone()).with_reason(reason.clone())
             })
@@ -6354,7 +6405,8 @@ mod tests {
         };
         let model: Arc<dyn base::interface::model::Model> =
             Arc::new(FixedUsageModel { usage: reported });
-        let scene: Arc<dyn base::interface::scene::Scene> = Arc::new(scene::code::CodeScene);
+        let scene: Arc<dyn base::interface::scene::Scene> =
+            Arc::new(scene::code::CodeScene::default());
         let policy = Arc::new(Recording::default());
 
         let (telemetry_tx, _telemetry_rx) = tokio::sync::mpsc::channel(16);
@@ -6413,7 +6465,8 @@ mod tests {
                 ..Default::default()
             },
         });
-        let scene: Arc<dyn base::interface::scene::Scene> = Arc::new(scene::code::CodeScene);
+        let scene: Arc<dyn base::interface::scene::Scene> =
+            Arc::new(scene::code::CodeScene::default());
 
         let mut settings = recall_test_settings(tmp.path());
         settings.execution = base::interface::settings::ExecutionSettings {
@@ -6497,7 +6550,8 @@ mod tests {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let model: Arc<dyn base::interface::model::Model> =
             Arc::new(RecordingAnswerModel { seen: seen.clone() });
-        let scene: Arc<dyn base::interface::scene::Scene> = Arc::new(scene::code::CodeScene);
+        let scene: Arc<dyn base::interface::scene::Scene> =
+            Arc::new(scene::code::CodeScene::default());
 
         let (mut agent, _event_rx, _input_tx) = crate::agent::Builder::new()
             .scene(scene)

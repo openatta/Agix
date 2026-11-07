@@ -1,4 +1,4 @@
-//! 内置 skills —— 15 个常用 prompt 模板。
+//! 内置 skills —— 13 个常用 prompt 模板。
 //!
 //! 不写盘、不需要用户设置；每 session 自动注入到 skill 列表。用户在
 //! `~/.agix/skills/<name>/SKILL.md`（全局默认）、`~/.agix/scenes/<scene>/skills/<name>/SKILL.md`
@@ -16,17 +16,18 @@
 //! | `batch` | 规划机械性批量变更，在并行 worktree agent 中执行 |
 //! | `stuck` | 多次失败后停下来记录已知信息并请求用户方向 |
 //! | `loop` | 在固定/动态间隔重复执行任务（监视 build / 状态轮询） |
-//! | `loremIpsum` | 生成指定结构的占位文本（原型 / fixture 用） |
 //! | `remember` | 把事实 / 偏好 / 决策保存到跨会话 memory |
 //! | `skillify` | 把刚跑过的工作流抽成可复用的 SKILL.md |
 //! | `updateConfig` | 安全编辑 settings.json（permissions / hooks / mcp_servers） |
-//! | `keybindings-help` | 展示 CLI/TUI 键盘快捷键参考 |
 //! | `init` | 引导用户创建新项目的 AGENTS.md 文件 |
 //! | `security-review` | 审查代码变更中的安全漏洞 |
 //! | `rename` | 重命名当前对话会话标题 |
 //! | `import` | 检测并从 Claude Code/Codex/Cursor 导入配置到 AGENTS.md/.agents/.agix |
 //!
 //! 还有几个我们刻意不带：它们要么依赖 Anthropic SaaS / Chrome 扩展，要么是内部子流程。
+//!
+//! 一个 session 列出哪些由它的 scene 决定（`Scene::bundled_skills`），还要
+//! [`required_tools`] 里的工具在这个 scene 都允许——见 `catalog::BundledAdmission`。
 //!
 //! 架构照搬自参考实现，prompt 文本重写以贴 agix 工具命名 + 不依赖 TS 特定能力。
 
@@ -91,15 +92,6 @@ pub fn bundled_skills() -> Vec<SkillEntry> {
             ..Default::default()
         },
         SkillEntry {
-            name: "loremIpsum".into(),
-            description: "Generate placeholder text of a requested length / structure for prototypes."
-                .into(),
-            when_to_use: Some("When prototyping UI / docs and any placeholder text will do.".into()),
-            source: SkillSource::User,
-            path: PathBuf::from("(bundled:loremIpsum)"),
-            ..Default::default()
-        },
-        SkillEntry {
             name: "remember".into(),
             description: "Save a fact / preference / decision to cross-session memory (~/.agix/memory).".into(),
             when_to_use: Some(
@@ -134,17 +126,6 @@ pub fn bundled_skills() -> Vec<SkillEntry> {
             ..Default::default()
         },
         // -- Phase 4 additions: 4 more skills --
-        SkillEntry {
-            name: "keybindings-help".into(),
-            description: "Show keyboard shortcuts and key bindings reference for the CLI/TUI.".into(),
-            when_to_use: Some(
-                "When the user asks about keyboard shortcuts, key bindings, or how to navigate the CLI/TUI."
-                    .into(),
-            ),
-            source: SkillSource::User,
-            path: PathBuf::from("(bundled:keybindings-help)"),
-            ..Default::default()
-        },
         SkillEntry {
             name: "init".into(),
             description: "Guide the user through initializing a new AGENTS.md file for a project.".into(),
@@ -192,6 +173,19 @@ pub fn bundled_skills() -> Vec<SkillEntry> {
     ]
 }
 
+/// Tools a built-in skill cannot do its job without. A scene that does not
+/// permit one of them does not list the skill.
+pub fn required_tools(name: &str) -> &'static [&'static str] {
+    match name {
+        "verify" => &["Bash"],
+        "batch" => &["Agent"],
+        "loop" => &["CronCreate"],
+        "remember" | "skillify" | "init" | "import" => &["Write"],
+        "updateConfig" => &["Edit"],
+        _ => &[],
+    }
+}
+
 /// 把 `(bundled:<name>)` 路径形式解析回 prompt body。`SkillEntry::read_body` 在
 /// 看到这种路径时调这里而不是读盘。
 pub fn bundled_body(name: &str) -> Option<String> {
@@ -202,11 +196,9 @@ pub fn bundled_body(name: &str) -> Option<String> {
         "batch" => BATCH,
         "stuck" => STUCK,
         "loop" => LOOP,
-        "loremIpsum" => LOREM_IPSUM,
         "remember" => REMEMBER,
         "skillify" => SKILLIFY,
         "updateConfig" => UPDATE_CONFIG,
-        "keybindings-help" => KEYBINDINGS_HELP,
         "init" => INIT,
         "security-review" => SECURITY_REVIEW,
         "rename" => RENAME,
@@ -419,46 +411,16 @@ If the user doesn't give an interval ("dynamic mode"):
 - 3+ consecutive iterations produce no useful new info → ask the user before continuing
 "#;
 
-const LOREM_IPSUM: &str = r#"# Lorem Ipsum: Placeholder Text Generator
-
-Produce filler text of the requested shape (sentences / paragraphs / words; English or classical Latin lorem). For UI prototypes, demo fixtures, schema seed data, etc.
-
-## Defaults
-
-- Latin lorem ipsum unless the user asks for English-flavored placeholder
-- Paragraphs default to ~50 words each
-- Don't insert real-looking PII (no fake emails, names, addresses) unless asked — the goal is "obviously placeholder"
-
-## Format options
-
-- `length=words:N` → exactly N words
-- `length=sentences:N` → exactly N sentences
-- `length=paragraphs:N` → N paragraphs (default 50 words each)
-- `style=english` → English-flavored placeholder
-- `style=classical` → real Cicero passage from De Finibus (the original)
-
-If unsure, ask: "How long, how many paragraphs, and English or Latin?" before generating.
-"#;
-
 const REMEMBER: &str = r#"# Remember: Save to Cross-Session Memory
 
-Persist a fact / decision / preference to the per-project memory directory so future sessions see it.
+Persist a fact / decision / preference so future sessions see it.
 
 ## Where things go
 
-The memory dir is `~/.agix/memory/<sha256(canonical_cwd)[..16]>/` (global, not scene-scoped) — already created and surfaced via the `# memory (cross-session)` system prompt block.
-
-- **`MEMORY.md`** — one-line index. Each entry like:
-  `- [Title](file.md) — short hook (under ~150 chars)`
-- **`<topic>.md`** — the actual content. Frontmatter:
-  ```
-  ---
-  name: descriptive name
-  description: one line
-  type: user | feedback | project | reference
-  ---
-  body
-  ```
+In the memory directory named by the `# Memory` section of your instructions, in the
+format that section describes: one file per fact with frontmatter, plus a one-line
+entry in its `MEMORY.md` index. Without that section, memory is turned off for this
+session — say so instead of writing files.
 
 ## When to apply
 
@@ -529,60 +491,6 @@ Make a precise change to one of the settings.json layers without nuking adjacent
 - Always read → mutate parsed JSON in-place → write whole file. Don't string-edit.
 - Verify by re-reading after write.
 - If `schema_version` is present don't downgrade it.
-"#;
-
-const KEYBINDINGS_HELP: &str = r#"# Keybindings Help: CLI/TUI Keyboard Shortcuts
-
-Reference for navigating the Claude Code / Agix CLI and TUI using keyboard shortcuts.
-
-## Common Shortcuts
-
-| Shortcut | Action |
-|----------|--------|
-| `Ctrl+C` | Cancel current operation / interrupt |
-| `Ctrl+D` | End input / exit multi-line mode |
-| `Ctrl+Z` | Suspend / background process |
-| `Up` / `Ctrl+P` | Previous command from history |
-| `Down` / `Ctrl+N` | Next command from history |
-| `Ctrl+R` | Reverse search through command history |
-| `Ctrl+A` | Move cursor to beginning of line |
-| `Ctrl+E` | Move cursor to end of line |
-| `Ctrl+U` | Delete text from cursor to beginning of line |
-| `Ctrl+K` | Delete text from cursor to end of line |
-| `Ctrl+W` | Delete word before cursor |
-| `Ctrl+L` | Clear screen |
-| `Tab` | Auto-complete (commands, file paths, slash commands) |
-| `/?` | Open slash-command list |
-| `Ctrl+T` | Open session / thread management |
-
-## Multi-line Mode
-
-| Shortcut | Action |
-|----------|--------|
-| `Alt+Enter` | Insert newline without submitting |
-| `Shift+Enter` | Insert newline (same as Alt+Enter) |
-| `Esc` then `Enter` | Submit the multi-line input |
-
-## Prompt / Search
-
-| Shortcut | Action |
-|----------|--------|
-| `Ctrl+F` | Toggle file-search mode |
-| `Ctrl+G` | Search for symbol or file |
-| `Ctrl+P` | Quick file picker (when not in history context) |
-
-## Session Navigation
-
-| Shortcut | Action |
-|----------|--------|
-| `Ctrl+[` / `Esc` | Escape from current context / menu |
-| `Ctrl+N` | New session (when at top-level prompt) |
-| `Ctrl+W` | Close current session (when at top-level) |
-
-## Notes
-
-- Key bindings can be customized via `~/.claude/keybindings.json` (Claude Code) or equivalent configuration.
-- If a shortcut doesn't work, check whether a terminal emulator or tmux/screen is intercepting it first.
 "#;
 
 const INIT: &str = r#"# Init: New Project AGENTS.md
@@ -837,9 +745,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fifteen_bundled_skills_present() {
+    fn thirteen_bundled_skills_present() {
         let s = bundled_skills();
-        assert_eq!(s.len(), 15);
+        assert_eq!(s.len(), 13);
         let names: Vec<&str> = s.iter().map(|e| e.name.as_str()).collect();
         for n in [
             "simplify",
@@ -848,11 +756,9 @@ mod tests {
             "batch",
             "stuck",
             "loop",
-            "loremIpsum",
             "remember",
             "skillify",
             "updateConfig",
-            "keybindings-help",
             "init",
             "security-review",
             "rename",
@@ -878,11 +784,9 @@ mod tests {
             "batch",
             "stuck",
             "loop",
-            "loremIpsum",
             "remember",
             "skillify",
             "updateConfig",
-            "keybindings-help",
             "init",
             "security-review",
             "rename",

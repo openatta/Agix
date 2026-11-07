@@ -1,0 +1,38 @@
+== events ==
+SystemInit
+TurnStart
+StepStart step=0
+ToolUse GoldenEcho {"say":"again"}
+ToolResult GoldenEcho is_error=Some(false) content="echo: again"
+StepEnd step=0 stop_reason=tool_use tool_calls=1
+StepStart step=1
+ToolUse GoldenEcho {"say":"again"}
+ToolResult GoldenEcho is_error=Some(false) content="echo: again"
+StepEnd step=1 stop_reason=tool_use tool_calls=1
+StepStart step=2
+ToolUse GoldenEcho {"say":"again"}
+ToolResult GoldenEcho is_error=Some(false) content="echo: again"
+StepEnd step=2 stop_reason=tool_use tool_calls=1
+StepStart step=3
+TextDelta "changing approach"
+StepEnd step=3 stop_reason=end_turn tool_calls=0
+TurnComplete stop_reason=end_turn
+
+== session log ==
+User blocks=1
+User blocks=1
+Assistant
+User blocks=1
+Assistant
+User blocks=1
+Assistant
+User blocks=1
+User blocks=1
+Assistant
+
+== model calls ==
+golden-model max_tokens=1024 messages=3 content_bytes=610 truncated_results=0
+golden-model max_tokens=1024 messages=5 content_bytes=621 truncated_results=0
+golden-model max_tokens=1024 messages=7 content_bytes=632 truncated_results=0
+golden-model max_tokens=1024 messages=10 content_bytes=889 truncated_results=0
+unconsumed_replies=0

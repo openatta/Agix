@@ -109,7 +109,7 @@ async fn start_server_in(
     // are about the RPC surface, not about transcripts.
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::code::CodeScene),
+        Arc::new(scene::code::CodeScene::default()),
         daemon::Assembly {
             cwd: Some(dir.path().to_path_buf()),
             model_client: Some(client),
@@ -1228,7 +1228,7 @@ async fn start_server_with_history(
 
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::code::CodeScene),
+        Arc::new(scene::code::CodeScene::default()),
         daemon::Assembly {
             cwd: Some(dir.path().to_path_buf()),
             model_client: Some(client),
@@ -1315,7 +1315,7 @@ async fn start_tcp_server(
 
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::code::CodeScene),
+        Arc::new(scene::code::CodeScene::default()),
         daemon::Assembly {
             cwd: Some(dir.path().to_path_buf()),
             model_client: Some(client),
@@ -1449,7 +1449,7 @@ async fn serve_tcp_listener_bails_without_a_token_even_when_called_directly() {
     );
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::code::CodeScene),
+        Arc::new(scene::code::CodeScene::default()),
         daemon::Assembly {
             cwd: Some(dir.path().to_path_buf()),
             model_client: Some(client),

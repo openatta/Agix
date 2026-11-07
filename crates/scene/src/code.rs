@@ -1,7 +1,9 @@
 //! Code scene — the full-capability coding agent: every registered tool but
 //! a few in [`NOT_OFFERED`] is allowed, and everything outside
 //! [`RESIDENT_TOOLS`] is advertised by name until `ToolSearch` fetches its
-//! schema.
+//! schema. Created [`Interaction::Interactive`] (someone answers questions
+//! and permission prompts) or [`Interaction::Unattended`] (nobody does: the
+//! tools, prompt lines and skills that wait on a reply are left out).
 //!
 //! System prompt assembly uses a section cache keyed by content fingerprint
 //! (see `SECTION_CACHE` below) so unchanged sections are not rebuilt on
@@ -92,7 +94,46 @@ const NOT_OFFERED: &[&str] = &[
     "VerifyPlanExecution",
 ];
 
-pub struct CodeScene;
+/// Asked of the user only when someone answers.
+const NEEDS_A_USER: &[&str] = &["AskUserQuestion", "EnterPlanMode", "ExitPlanMode"];
+
+/// Built-in skills for coding work that runs to the end on its own.
+const CODING_SKILLS: &[&str] = &["skillify", "simplify", "verify", "debug", "security-review"];
+
+/// Built-in skills that hand something back to the user mid-task.
+const USER_SKILLS: &[&str] = &[
+    "batch",
+    "stuck",
+    "remember",
+    "init",
+    "import",
+    "loop",
+    "rename",
+    "updateConfig",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Interaction {
+    Interactive,
+    Unattended,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CodeScene {
+    interaction: Interaction,
+}
+
+impl CodeScene {
+    pub const fn new(interaction: Interaction) -> Self {
+        Self { interaction }
+    }
+}
+
+impl Default for CodeScene {
+    fn default() -> Self {
+        Self::new(Interaction::Interactive)
+    }
+}
 
 impl Scene for CodeScene {
     fn id(&self) -> &str {
@@ -106,7 +147,7 @@ impl Scene for CodeScene {
     }
 
     fn build_system_prompt(&self, ctx: &ScenePromptContext) -> Vec<PromptBlock> {
-        let sections = build_section_registry(ctx);
+        let sections = build_section_registry(ctx, self.interactive());
         let resolved = resolve_sections(sections);
         render_prompt_blocks(resolved)
     }
@@ -123,7 +164,29 @@ impl Scene for CodeScene {
         vec![]
     }
     fn disallowed_tools(&self) -> Vec<String> {
-        NOT_OFFERED.iter().map(|s| s.to_string()).collect()
+        let unattended: &[&str] = if self.interactive() {
+            &[]
+        } else {
+            NEEDS_A_USER
+        };
+        NOT_OFFERED
+            .iter()
+            .chain(unattended)
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    fn interactive(&self) -> bool {
+        self.interaction == Interaction::Interactive
+    }
+
+    fn bundled_skills(&self) -> Vec<String> {
+        let user: &[&str] = if self.interactive() { USER_SKILLS } else { &[] };
+        CODING_SKILLS
+            .iter()
+            .chain(user)
+            .map(|s| s.to_string())
+            .collect()
     }
 
     fn deferred_tools(&self) -> Vec<String> {
@@ -302,20 +365,27 @@ fn render_prompt_blocks(sections: Vec<ResolvedSection>) -> Vec<PromptBlock> {
     out
 }
 
-fn build_section_registry<'a>(ctx: &'a ScenePromptContext) -> Vec<SystemPromptSection<'a>> {
+fn build_section_registry<'a>(
+    ctx: &'a ScenePromptContext,
+    interactive: bool,
+) -> Vec<SystemPromptSection<'a>> {
     let mut sections = Vec::with_capacity(12);
+    let pick = |attended: &str, unattended: &str| match interactive {
+        true => attended.to_string(),
+        false => unattended.to_string(),
+    };
 
     sections.push(static_section("identity", identity_block));
-    sections.push(static_section("system_info", || {
-        SYSTEM_INFO_BLOCK.to_string()
-    }));
+    let system_info = pick(SYSTEM_INFO_BLOCK, SYSTEM_INFO_UNATTENDED);
+    sections.push(static_section("system_info", move || system_info));
     sections.push(static_section("working", || {
         format!("# Working\n\n{}", common::WORKING_RULES)
     }));
     sections.push(static_section("doing_tasks", || {
         DOING_TASKS_BLOCK.to_string()
     }));
-    sections.push(static_section("actions", || ACTIONS_BLOCK.to_string()));
+    let actions = pick(ACTIONS_BLOCK, ACTIONS_UNATTENDED);
+    sections.push(static_section("actions", move || actions));
     sections.push(static_section("tool_usage", || {
         TOOL_USAGE_BLOCK.to_string()
     }));
@@ -326,9 +396,8 @@ fn build_section_registry<'a>(ctx: &'a ScenePromptContext) -> Vec<SystemPromptSe
         cache: SectionCachePolicy::StaticPrefix,
         compute: Box::new(move || common::batch_work(batch_tools.as_deref())),
     });
-    sections.push(static_section("tone_style", || {
-        TONE_STYLE_BLOCK.to_string()
-    }));
+    let tone = pick(TONE_STYLE_BLOCK, TONE_STYLE_UNATTENDED);
+    sections.push(static_section("tone_style", move || tone));
 
     let model_name = ctx.model_name.to_string();
     let model_key = fingerprint(&model_name);
@@ -358,9 +427,9 @@ fn build_section_registry<'a>(ctx: &'a ScenePromptContext) -> Vec<SystemPromptSe
     }
 
     let tools_list = ctx.available_tools.clone().map(|s| s.into_owned());
-    let tools_key = fingerprint(&tools_list);
+    let tools_key = fingerprint(&(&tools_list, interactive));
     sections.push(memoized_section("session_guidance", tools_key, move || {
-        Some(render_session_guidance(tools_list.as_deref()))
+        Some(render_session_guidance(tools_list.as_deref(), interactive))
     }));
 
     sections
@@ -380,6 +449,14 @@ const SYSTEM_INFO_BLOCK: &str = "\
 - Text outside tool calls is shown to the user as GitHub-flavored markdown.
 - Tools run under a permission mode; a call it does not allow goes to the user to approve or deny.
 - Hooks may run around tool calls, the end of a turn and compaction. If one blocks you, adjust; if you can't, ask the user to check their hooks.
+";
+
+const SYSTEM_INFO_UNATTENDED: &str = "\
+# System
+
+- Nobody answers mid-task: text outside tool calls is your report to whoever started it, as GitHub-flavored markdown.
+- Tools run under a permission policy; a call it does not allow is refused, not put to anyone. Work within it, and say in your report what it kept you from doing.
+- Hooks may run around tool calls, the end of a turn and compaction. If one blocks you, adjust; if you can't, report it.
 ";
 
 const DOING_TASKS_BLOCK: &str = "\
@@ -405,6 +482,17 @@ Local, reversible actions such as editing files or running tests are fine. Check
 Don't bypass safety checks (e.g. --no-verify) to get past an obstacle; fix the cause. Investigate unfamiliar files, branches or configuration before deleting or overwriting them — they may be someone's work in progress. Resolve merge conflicts rather than discarding changes.
 ";
 
+const ACTIONS_UNATTENDED: &str = "\
+# Executing actions with care
+
+Local, reversible actions such as editing files or running tests are fine. Nobody is there to confirm anything else, so do it only when the task asks for it in so many words — otherwise leave it undone and say so in your report:
+- destructive: deleting files or branches, dropping tables, killing processes, rm -rf, overwriting uncommitted changes;
+- hard to reverse: force-pushing, git reset --hard, amending published commits, removing packages, changing CI/CD;
+- visible to others: pushing, creating or commenting on PRs and issues, sending messages, posting to external services — an upload may stay cached or indexed after it is deleted.
+
+Don't bypass safety checks (e.g. --no-verify) to get past an obstacle; fix the cause. Investigate unfamiliar files, branches or configuration before deleting or overwriting them — they may be someone's work in progress. Resolve merge conflicts rather than discarding changes.
+";
+
 const TOOL_USAGE_BLOCK: &str = "\
 # Sub-agents and tracking
 
@@ -419,6 +507,14 @@ const TONE_STYLE_BLOCK: &str = "\
 - Spend text on decisions that need the user, status at milestones, and errors that change the plan. Summarize long tool output as its key points. No emojis unless asked.
 - Reference code as `file_path:line_number`, and issues or pull requests as owner/repo#123.
 - No colon before a tool call — write \"Let me read the file.\" rather than \"Let me read the file:\".
+";
+
+const TONE_STYLE_UNATTENDED: &str = "\
+# Tone and output
+
+- Be brief and direct: no preamble, filler or restating the task. Code and tool calls are exempt.
+- End with the report: what changed, what you verified and how, and what is left or could not be done. Summarize long tool output as its key points. No emojis.
+- Reference code as `file_path:line_number`, and issues or pull requests as owner/repo#123.
 ";
 
 /// The Claude model list is advice for building on Claude, which only a
@@ -484,16 +580,19 @@ fn build_model_recommendations(model_name: &str) -> &'static str {
     }
 }
 
-fn render_session_guidance(available_tools: Option<&str>) -> String {
+fn render_session_guidance(available_tools: Option<&str>, interactive: bool) -> String {
     let has = |name: &str| available_tools.map(|t| t.contains(name)).unwrap_or(true);
 
-    let mut items = vec![
-        "If you need the user to run a shell command themselves, suggest they type `! <command>` in the prompt.",
-    ];
+    let mut items = vec![];
+    if interactive {
+        items.push(
+            "If you need the user to run a shell command themselves, suggest they type `! <command>` in the prompt.",
+        );
+    }
     if has("Skill") {
         items.push("`/<skill-name>` (e.g. /commit) is shorthand for a user-invocable skill; run it with the Skill tool.");
     }
-    if has("AskUserQuestion") {
+    if interactive && has("AskUserQuestion") {
         items.push(
             "If you don't understand why the user denied a tool call, ask with AskUserQuestion.",
         );
@@ -541,23 +640,23 @@ mod tests {
     fn only_a_claude_model_is_given_the_claude_model_list() {
         let mut c = ctx();
         c.model_name = Cow::Borrowed("deepseek-flash");
-        let deepseek = text(&CodeScene.build_system_prompt(&c));
+        let deepseek = text(&CodeScene::default().build_system_prompt(&c));
         assert!(deepseek.contains("You are powered by the model deepseek-flash."));
         assert!(!deepseek.contains("Claude"), "{deepseek}");
 
-        let claude = text(&CodeScene.build_system_prompt(&ctx()));
+        let claude = text(&CodeScene::default().build_system_prompt(&ctx()));
         assert!(claude.contains("Knowledge cutoff: August 2025"));
         assert!(claude.contains("Latest Claude model IDs"));
     }
 
     #[test]
     fn code_id() {
-        assert_eq!(CodeScene.id(), "code");
+        assert_eq!(CodeScene::default().id(), "code");
     }
 
     #[test]
     fn prompt_contains_identity_and_behavior() {
-        let text = text(&CodeScene.build_system_prompt(&ctx()));
+        let text = text(&CodeScene::default().build_system_prompt(&ctx()));
         assert!(text.contains("Agix"));
         assert!(text.contains("software engineering"));
         assert!(text.contains("# Doing tasks"));
@@ -570,12 +669,12 @@ mod tests {
         let mut c = ctx();
         c.scratchpad_dir = Some(Cow::Borrowed("/home/user/project/.agix/scratchpad"));
         c.git_status = Some(Cow::Borrowed("M src/main.rs"));
-        let prompt = text(&CodeScene.build_system_prompt(&c));
+        let prompt = text(&CodeScene::default().build_system_prompt(&c));
         assert!(!prompt.contains("/home/user/project"), "{prompt}");
         assert!(!prompt.contains("2026-06-10"));
         assert!(!prompt.contains("M src/main.rs"));
 
-        let context = CodeScene.build_session_context(&c);
+        let context = CodeScene::default().build_session_context(&c);
         assert!(context.contains("Working directory: /home/user/project"));
         assert!(context.contains("Git branch: main"));
         assert!(context.contains(".agix/scratchpad"));
@@ -597,14 +696,14 @@ mod tests {
         b.git_branch = Some(Cow::Borrowed("dev"));
         b.scratchpad_dir = Some(Cow::Borrowed("/b/.agix/scratchpad"));
         assert_eq!(
-            CodeScene.build_system_prompt(&a),
-            CodeScene.build_system_prompt(&b)
+            CodeScene::default().build_system_prompt(&a),
+            CodeScene::default().build_system_prompt(&b)
         );
     }
 
     #[test]
     fn static_sections_have_global_cache() {
-        let blocks = CodeScene.build_system_prompt(&ctx());
+        let blocks = CodeScene::default().build_system_prompt(&ctx());
         assert_eq!(blocks[0].cache_strategy, Some(CacheStrategy::Global));
     }
 
@@ -615,15 +714,15 @@ mod tests {
             git_status: Some(Cow::Borrowed("On branch main")),
             memory_summary: None,
         };
-        let r = CodeScene.build_system_reminder(&rctx);
+        let r = CodeScene::default().build_system_reminder(&rctx);
         assert!(r.contains("On branch main"));
         assert!(r.contains("system-reminder"));
     }
 
     #[test]
     fn section_cache_is_reusable() {
-        let b1 = CodeScene.build_system_prompt(&ctx());
-        let b2 = CodeScene.build_system_prompt(&ctx());
+        let b1 = CodeScene::default().build_system_prompt(&ctx());
+        let b2 = CodeScene::default().build_system_prompt(&ctx());
         assert_eq!(b1.len(), b2.len());
         for (a, b) in b1.iter().zip(b2.iter()) {
             assert_eq!(a.content, b.content);
@@ -634,7 +733,7 @@ mod tests {
     fn function_result_clearing_only_appears_after_something_was_actually_cleared() {
         let mut ctx_fresh = ctx();
         ctx_fresh.tool_results_ever_cleared = false;
-        let blocks_fresh = CodeScene.build_system_prompt(&ctx_fresh);
+        let blocks_fresh = CodeScene::default().build_system_prompt(&ctx_fresh);
         let dynamic_fresh = &blocks_fresh.last().expect("dynamic block").content;
         assert!(
             !dynamic_fresh.contains("Function results have been cleared"),
@@ -643,7 +742,7 @@ mod tests {
 
         let mut ctx_cleared = ctx();
         ctx_cleared.tool_results_ever_cleared = true;
-        let blocks_cleared = CodeScene.build_system_prompt(&ctx_cleared);
+        let blocks_cleared = CodeScene::default().build_system_prompt(&ctx_cleared);
         let dynamic_cleared = &blocks_cleared.last().expect("dynamic block").content;
         assert!(dynamic_cleared.contains("Function results have been cleared"));
     }
@@ -654,7 +753,7 @@ mod tests {
     fn output_style_section_reflects_changed_content_not_stale_cache() {
         let mut ctx_a = ctx();
         ctx_a.output_style_content = Some(Cow::Borrowed("Style A: be terse."));
-        let blocks_a = CodeScene.build_system_prompt(&ctx_a);
+        let blocks_a = CodeScene::default().build_system_prompt(&ctx_a);
         assert!(blocks_a
             .last()
             .expect("dynamic block")
@@ -663,7 +762,7 @@ mod tests {
 
         let mut ctx_b = ctx();
         ctx_b.output_style_content = Some(Cow::Borrowed("Style B: be verbose."));
-        let blocks_b = CodeScene.build_system_prompt(&ctx_b);
+        let blocks_b = CodeScene::default().build_system_prompt(&ctx_b);
         let dynamic_b = &blocks_b.last().expect("dynamic block").content;
         assert!(
             dynamic_b.contains("Style B: be verbose."),
@@ -674,7 +773,7 @@ mod tests {
 
     #[test]
     fn every_block_names_its_section() {
-        let blocks = CodeScene.build_system_prompt(&ctx());
+        let blocks = CodeScene::default().build_system_prompt(&ctx());
         assert!(blocks.iter().all(|b| b.name.is_some()));
         assert_eq!(blocks[0].name.as_deref(), Some("identity"));
 
@@ -689,10 +788,41 @@ mod tests {
 
     #[test]
     fn session_guidance_drops_lines_for_absent_tools() {
-        let guidance = render_session_guidance(Some("Read,Bash"));
+        let guidance = render_session_guidance(Some("Read,Bash"), true);
         assert!(!guidance.contains("Skill tool"));
         assert!(!guidance.contains("AskUserQuestion"));
         assert!(!guidance.contains("sub-agent"));
         assert!(guidance.contains("! <command>"));
+    }
+
+    #[test]
+    fn unattended_leaves_out_what_waits_on_a_reply() {
+        let unattended = CodeScene::new(Interaction::Unattended);
+        let interactive = CodeScene::default();
+        assert!(interactive.interactive() && !unattended.interactive());
+        for tool in NEEDS_A_USER {
+            assert!(interactive.permits_tool(tool), "{tool}");
+            assert!(!unattended.permits_tool(tool), "{tool}");
+        }
+
+        let prompt = text(&unattended.build_system_prompt(&ctx()));
+        for line in ["Check with the user", "`! <command>`", "AskUserQuestion"] {
+            assert!(!prompt.contains(line), "{line}");
+        }
+        assert!(prompt.contains("Nobody is there to confirm"));
+        assert!(text(&interactive.build_system_prompt(&ctx())).contains("Check with the user"));
+    }
+
+    #[test]
+    fn only_an_interactive_session_gets_the_skills_that_hand_back_to_the_user() {
+        let unattended = CodeScene::new(Interaction::Unattended).bundled_skills();
+        let interactive = CodeScene::default().bundled_skills();
+        assert!(unattended
+            .iter()
+            .all(|s| CODING_SKILLS.contains(&s.as_str())));
+        for skill in USER_SKILLS {
+            assert!(interactive.iter().any(|s| s == skill), "{skill}");
+            assert!(!unattended.iter().any(|s| s == skill), "{skill}");
+        }
     }
 }

@@ -529,6 +529,9 @@ pub struct BudgetScene {
     /// `None` leaves the inner scene's own ceiling. `Some` is how a case pins
     /// the stop-on-max-turns decision without running dozens of model calls.
     pub max_api_calls: Option<u32>,
+    /// Whether a permission prompt reaches the harness. On, unlike the inner
+    /// scene, so the prompt flow itself stays under test.
+    pub interactive: bool,
 }
 
 impl BudgetScene {
@@ -537,6 +540,7 @@ impl BudgetScene {
             inner: scene::harnix::HarnixScene,
             compact_threshold,
             max_api_calls: None,
+            interactive: true,
         }
     }
 
@@ -564,6 +568,9 @@ impl base::interface::scene::Scene for BudgetScene {
     }
     fn tools(&self) -> Vec<String> {
         Vec::new()
+    }
+    fn interactive(&self) -> bool {
+        self.interactive
     }
     fn token_budget(&self) -> base::interface::scene::TokenBudget {
         base::interface::scene::TokenBudget {

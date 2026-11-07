@@ -109,9 +109,11 @@ AGIX_DSH_BIN=/some/dir/node_modules/.bin/dsh \
 `AGIX_COMPARE_CASES=stats,biglog` 只跑其中几项；`AGIX_COMPARE_REPEAT=3` 每项跑三遍，表里
 是中位数——单次读数波动很大，下结论至少跑三遍。汇总表打到 stderr，明细（含每次调用的未命中
 /命中/输出 token）写进 `tests/output/compare_dsh/<seed>.json`，两边各自第一个带工具的请求
-原样存在旁边的 `<seed>-<case>-<harness>.request.json`，用来对比系统提示和工具表。断言只有
+原样存在旁边的 `<seed>-<case>-<harness>.request.json`，用来对比系统提示和工具表；每一遍最长的那个
+存成 `<seed>-<case>-<harness>-<第几遍>.last.json`，主对话的整个过程都在里面。断言只有
 两条：两边都没用到 Pro，Agix 的产物全部通过；DSH 的结果只记录不断言。两边都是 thinking
-开、effort high（表后每行的 `request` 里能看到实际发出的字段）。
+开、effort high（表后每行的 `request` 里能看到实际发出的字段）。Agix 跑的是 `harnix` 场景、
+缺省权限策略——和 DSH headless 一样无人值守，权限检查不绕过。
 
 **宿主的那一侧用 `Watcher` 看。** `LiveRun::watch` 开第二条连接只订阅会话，按到达顺序
 留下每一帧，可以让它照批准回答每个询问（回答前先读一次 `session.tasks`，留下当时的任务

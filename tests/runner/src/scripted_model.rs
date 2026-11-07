@@ -180,6 +180,9 @@ pub struct ScriptedModel {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Call {
     pub model: String,
+    /// What an auxiliary call is for (`memory`, `title`, ...); `None` for a
+    /// step of a turn.
+    pub purpose: Option<String>,
     pub max_tokens: u32,
     /// How many messages went out. Compaction and nudges move this.
     pub messages: usize,
@@ -304,6 +307,11 @@ impl Model for ScriptedModel {
             .unwrap_or_else(|e| e.into_inner())
             .push(Call {
                 model: params.model.clone(),
+                purpose: params
+                    .origin
+                    .as_ref()
+                    .and_then(|o| o.purpose())
+                    .map(str::to_string),
                 max_tokens: params.max_tokens,
                 messages: messages.len(),
                 content_bytes,

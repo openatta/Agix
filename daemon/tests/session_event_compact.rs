@@ -185,7 +185,7 @@ async fn a_compacted_turn_says_so_on_the_wire() {
 
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(HairTriggerScene(scene::code::CodeScene)),
+        Arc::new(HairTriggerScene(scene::code::CodeScene::default())),
         daemon::Assembly {
             cwd: Some(cwd.clone()),
             model_client: Some(Arc::new(OneTurnClient)),

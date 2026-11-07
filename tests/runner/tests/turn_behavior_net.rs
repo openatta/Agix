@@ -62,6 +62,8 @@ struct Case {
     /// Tools registered only for this case. The default set is shared, so a
     /// tool added there changes the schemas every other case sends.
     extra_tools: Vec<Arc<dyn Tool>>,
+    /// Whether anyone answers permission prompts.
+    interactive: bool,
 }
 
 impl Case {
@@ -78,6 +80,7 @@ impl Case {
             max_api_calls: None,
             reactive_compact: false,
             extra_tools: Vec::new(),
+            interactive: true,
         }
     }
 }
@@ -144,7 +147,8 @@ async fn trace(case: Case) -> String {
     );
 
     let scene: Arc<dyn Scene> = {
-        let scene = BudgetScene::new(case.compact_threshold);
+        let mut scene = BudgetScene::new(case.compact_threshold);
+        scene.interactive = case.interactive;
         Arc::new(match case.max_api_calls {
             Some(max) => scene.with_max_api_calls(max),
             None => scene,
@@ -463,6 +467,49 @@ async fn permission_prompt_denied() {
     case.permission_mode = PermissionMode::Default;
     case.approve_prompts = Some(false);
     check(case).await;
+}
+
+/// The same prompt with nobody attending. It is refused without being put to
+/// anyone, and the model is told what would grant it.
+#[tokio::test]
+async fn permission_prompt_unattended() {
+    let mut case = Case::new(
+        "permission_unattended",
+        vec!["do the guarded thing"],
+        vec![
+            Reply::Tool {
+                id: "c1",
+                name: "GoldenAsk",
+                input: serde_json::json!({}),
+            },
+            Reply::Text("not allowed here, reporting it"),
+        ],
+    );
+    case.permission_mode = PermissionMode::Default;
+    case.interactive = false;
+    check(case).await;
+}
+
+/// The same call three times in a turn. The third gets a notice after its
+/// result, and the call itself still runs.
+#[tokio::test]
+async fn repeated_calls_are_noticed() {
+    let echo = |id| Reply::Tool {
+        id,
+        name: "GoldenEcho",
+        input: serde_json::json!({"say": "again"}),
+    };
+    check(Case::new(
+        "repeated_calls",
+        vec!["keep asking"],
+        vec![
+            echo("c1"),
+            echo("c2"),
+            echo("c3"),
+            Reply::Text("changing approach"),
+        ],
+    ))
+    .await;
 }
 
 /// A `PreToolUse` hook that blocks the call. The tool must not run, and the

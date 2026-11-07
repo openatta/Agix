@@ -6519,11 +6519,24 @@ impl SessionPool {
 
     /// LRU 驱逐：移除最久未活跃的 session。
     /// 调用 LLM 生成 session 名称。
-    /// Names a session with the daemon's own project's model. The naming
-    /// call is a fixed cheap model either way; what the binding decides is
-    /// which client (and so which provider) it goes through.
+    /// Names a session through the daemon's own project: its `title` task
+    /// route when it has one, else its conversation model — a model name the
+    /// project's provider actually serves.
     async fn generate_session_name(&self, prompt: &str) -> Result<String, String> {
-        let model = self.default_binding().await.model.clone();
+        let binding = self.default_binding().await;
+        let title = base::interface::model::call_purpose::TITLE;
+        let routed = binding.task_router.as_ref().and_then(|router| {
+            Some((
+                router.model_for(title),
+                router.model_name_for(title)?.to_string(),
+            ))
+        });
+        let (model, model_name) = routed.unwrap_or_else(|| {
+            (
+                binding.model.clone(),
+                binding.settings.model.model_name.clone(),
+            )
+        });
         use base::interface::model::{MessageRole, ModelContentBlock, ModelMessage, StreamParams};
         use base::interface::prompt::PromptBlock;
         use futures::StreamExt;
@@ -6544,7 +6557,7 @@ impl SessionPool {
                 vec![],
                 messages,
                 StreamParams {
-                    model: "claude-haiku-4-5-20251001".into(),
+                    model: model_name,
                     max_tokens: 50,
                     thinking_mode: base::interface::settings::ThinkingMode::Off,
                     effort: None,
@@ -7611,7 +7624,7 @@ mod eviction_tests {
             cancel: CancellationToken::new(),
             exited: CancellationToken::new(),
             context: None,
-            scene: Arc::new(scene::code::CodeScene),
+            scene: Arc::new(scene::code::CodeScene::default()),
             project: None,
             name: None,
             created_at: last_active,
@@ -7766,7 +7779,7 @@ mod mcp_for_project_tests {
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path().join("work");
         std::fs::create_dir_all(&cwd).unwrap();
-        let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene);
+        let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene::default());
         let permission: Arc<dyn Permission> = Arc::new(AllowAllTestPermission);
         let paths: Arc<dyn crate::config::DaemonPaths> = Arc::new(
             crate::config::StaticDaemonPaths::new(dir.path().to_path_buf()),
@@ -8197,7 +8210,7 @@ mod with_session_lock_tests {
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path().join("work");
         std::fs::create_dir_all(&cwd).unwrap();
-        let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene);
+        let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene::default());
         let permission: Arc<dyn Permission> = Arc::new(AllowAllTestPermission);
         let paths: Arc<dyn crate::config::DaemonPaths> = Arc::new(
             crate::config::StaticDaemonPaths::new(dir.path().to_path_buf()),

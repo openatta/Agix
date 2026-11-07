@@ -68,8 +68,18 @@ impl Module for SkillsModule {
             let count = manager.load_from(provider.clone());
             tracing::info!(source = %id, count, "host skill source registered");
         }
-        cx.provide_skill_catalog(manager.clone());
-        crate::tool::register(cx.tools, manager, cx.agent_spawner(), cx.permission.clone());
+        let admission = crate::catalog::BundledAdmission::for_scene(cx.scene.as_ref());
+        cx.provide_skill_catalog(Arc::new(crate::catalog::SceneSkills::new(
+            manager.clone(),
+            admission.clone(),
+        )));
+        crate::tool::register(
+            cx.tools,
+            manager,
+            admission,
+            cx.agent_spawner(),
+            cx.permission.clone(),
+        );
         Ok(())
     }
 }

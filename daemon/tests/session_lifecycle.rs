@@ -327,7 +327,7 @@ async fn start_server_without_history() -> (
 
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::code::CodeScene),
+        Arc::new(scene::code::CodeScene::default()),
         daemon::Assembly {
             cwd: Some(dir.path().to_path_buf()),
             model_client: Some(client),

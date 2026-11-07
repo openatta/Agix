@@ -175,6 +175,9 @@ impl Tool for FileWriteTool {
             write_file(&*ctx.exec.filesystem, &path, &input.content),
         )
         .await?;
+        if result.is_ok() {
+            ctx.session.record_write(&path);
+        }
 
         result.map(|bytes| {
             ToolResult::text(format!(

@@ -24,6 +24,9 @@
 //!   three ways, so one textual substitution does not do it. Checked by
 //!   replaying every service against a stub of the new helper.
 //!
+//! Agix runs the `harnix` scene — unattended, like DSH headless — under the
+//! default permission policy, not with checks bypassed.
+//!
 //! Token counts are what DeepSeek reported on each response, and tool calls
 //! are the `tool_use` blocks in those responses, both read off the proxy —
 //! sub-agents included — so both sides are measured the same way. Wall time for DSH includes
@@ -850,6 +853,8 @@ struct Outcome {
     models: Vec<String>,
     shape: Value,
     first_request: Value,
+    /// The longest tool-carrying request: the main conversation as it ended.
+    last_request: Value,
     per_call: Vec<[u64; 3]>,
     failures: Vec<String>,
     note: String,
@@ -901,6 +906,16 @@ impl Outcome {
             models,
             shape,
             first_request: main.map(|e| e.request.body.clone()).unwrap_or(Value::Null),
+            last_request: calls
+                .iter()
+                .filter(|e| {
+                    e.request.body["tools"]
+                        .as_array()
+                        .is_some_and(|t| !t.is_empty())
+                })
+                .max_by_key(|e| e.request.body["messages"].as_array().map_or(0, Vec::len))
+                .map(|e| e.request.body.clone())
+                .unwrap_or(Value::Null),
             per_call: calls
                 .iter()
                 .map(|e| {
@@ -941,10 +956,19 @@ impl Outcome {
 }
 
 async fn run_agix(case: Case, seed: u64) -> anyhow::Result<Outcome> {
-    let mut run =
-        LiveRun::start(&format!("agix-{}", case.name()), json!({}), Mode::InProcess).await?;
+    // As a host runs it: the harnix scene, unattended, under the default
+    // permission policy rather than with checks bypassed.
+    let mut run = LiveRun::start(
+        &format!("agix-{}", case.name()),
+        json!({ "permission_mode": "default" }),
+        Mode::InProcess,
+    )
+    .await?;
     case.setup(&run.project, seed)?;
-    let session = run.session().await?;
+    run.client
+        .call("scene.activate", json!({ "scene": "harnix" }))
+        .await?;
+    let session = run.session_with(json!({ "scene": "harnix" })).await?;
     let started = Instant::now();
     let mut error = None;
     for prompt in case.prompts() {
@@ -1237,9 +1261,18 @@ async fn agix_and_dsh_on_the_same_tasks() -> anyhow::Result<()> {
             request,
             serde_json::to_string_pretty(&g.runs[0].first_request)?,
         )?;
+        for (i, run) in g.runs.iter().enumerate() {
+            let last = dir.join(format!(
+                "{seed}-{}-{}-{}.last.json",
+                g.case.name(),
+                g.harness,
+                i + 1
+            ));
+            std::fs::write(last, serde_json::to_string_pretty(&run.last_request)?)?;
+        }
     }
     eprintln!(
-        "\nreport: {} (first tool-carrying request of each beside it)",
+        "\nreport: {} (first and last tool-carrying request of each beside it)",
         file.display()
     );
 

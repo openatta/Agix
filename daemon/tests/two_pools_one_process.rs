@@ -36,13 +36,13 @@ impl Scene for BetaScene {
         "a scene only the beta pool's host defines"
     }
     fn build_system_prompt(&self, ctx: &ScenePromptContext) -> Vec<PromptBlock> {
-        scene::code::CodeScene.build_system_prompt(ctx)
+        scene::code::CodeScene::default().build_system_prompt(ctx)
     }
     fn tools(&self) -> Vec<String> {
-        scene::code::CodeScene.tools()
+        scene::code::CodeScene::default().tools()
     }
     fn token_budget(&self) -> TokenBudget {
-        scene::code::CodeScene.token_budget()
+        scene::code::CodeScene::default().token_budget()
     }
 }
 
@@ -103,7 +103,7 @@ impl Pool {
         model.push_turn(one_turn());
         let pool = daemon::assemble::pool(
             &config,
-            Arc::new(scene::code::CodeScene),
+            Arc::new(scene::code::CodeScene::default()),
             daemon::Assembly {
                 cwd: Some(cwd),
                 scenes,

@@ -112,7 +112,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let (mut agent, mut events, _input) = runtime::agent::Builder::new()
-        .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
         .model(model)
         .settings(Arc::new(settings(
             model_name,

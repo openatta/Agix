@@ -140,15 +140,10 @@ jobs:
       - name: otel recorder
         run: cargo check -p daemon --features otel
 
-      # The OS sandbox is optional too, and independent of the carriers. Its
-      # backends and the ~30 tests that drive them are compiled out of every
-      # default build, so this job is the only place they are built at all —
-      # and Linux is the platform whose backend nobody develops on.
-      - name: sandbox backend
-        run: cargo check -p daemon --features sandbox
-
-      - name: sandbox tests
-        run: cargo test -p base --features sandbox
+      # The OS sandbox is on in the default build; this is the build without
+      # it, whose `PlatformSandbox` confines nothing.
+      - name: no sandbox backend
+        run: cargo check -p base
 
       # The contract crate without an HTTP stack: what a crate that only
       # implements the traits depends on. The graph check is the claim.

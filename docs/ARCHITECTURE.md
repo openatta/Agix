@@ -167,16 +167,17 @@ transcript,以 `UserMessagesReturned` 交还宿主。通知(`SessionState::post_
 
 ### 3.1 一个进程可以跑多个场景
 
-场景(`Scene`)是无状态的:`CodeScene` / `HarnixScene` / `MiniScene` 都是零字段
-unit struct,`Arc<dyn Scene>` 只是一组函数。所以同一进程并存多个场景没有障碍。
+场景(`Scene`)是无状态的:`HarnixScene` / `MiniScene` 是零字段 unit struct,
+`CodeScene` 只带一个创建时定下的 `Interaction`,`Arc<dyn Scene>` 只是一组函数。所以同一
+进程并存多个场景没有障碍。
 
 内建三个:
 
 | id | 工具 | 用途 |
 |---|---|---|
-| `code` | 注册的全部工具;`RESIDENT_TOOLS` 之外只报名字,schema 经 `ToolSearch` 取 | 编程,需要项目;daemon 的默认场景 |
-| `harnix` | 常用集:文件读写与搜索、`Bash`、`Skill`、`TodoWrite`、`AskUserQuestion`、`Agent` 与任务控制、`Team*`、目标、计划模式、网页检索与抓取、`ToolSearch`、`mcp__*`;宿主经 `extra_tools` 加自己的 | Harnix 宿主会话的默认场景 |
-| `mini` | `Agent` `AskUserQuestion` `Bash` `Edit` `Glob` `Grep` `Read` `Skill` `ToolSearch` `Write`,全部常驻 | 最小可用的编码 agent |
+| `code` | 注册的全部工具;`RESIDENT_TOOLS` 之外只报名字,schema 经 `ToolSearch` 取 | 编程,需要项目;daemon 的默认场景。注册的是交互版(`Interaction::Interactive`),嵌入方可换成 `CodeScene::new(Interaction::Unattended)` |
+| `harnix` | 常用集:文件读写与搜索、`Bash`、`Skill`、`TodoWrite`、`Agent` 与任务控制、`Team*`、目标、网页检索与抓取、`ToolSearch`、`mcp__*`;宿主经 `extra_tools` 加自己的 | Harnix 宿主会话的默认场景,无人值守 |
+| `mini` | `Agent` `Bash` `Edit` `Glob` `Grep` `Read` `Skill` `ToolSearch` `Write`,全部常驻 | 最小可用的编码 agent,无人值守 |
 
 - `--scene` 定 daemon 的默认场景,`--scenes harnix,mini` 追加激活
 - `scene.activate` / `scene.deactivate` 运行期增删
@@ -253,6 +254,33 @@ recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着
 会话可以指定自己的厂商(`options.provider`):对话走那个厂商的 client,子 Agent、压缩
 等其余路由任务仍按绑定的路由走。宿主可以经 `Assembly.customize_session` 在每个会话的
 `Builder` 建成之前改它,新建、恢复、重建都经过这一处。
+
+### 3.2.1 有人值守与无人值守
+
+`Scene::interactive()` 回答"会话进行中有没有人回答问题、批准计划、应答权限提示"。缺省
+`false`;只有交互版 `code` 是 `true`(声明式场景在 `scene.json` 里写 `"interactive": true`)。
+这一个答案同时决定四件事:
+
+| | 无人值守 | 有人值守 |
+|---|---|---|
+| 工具 | 没有 `AskUserQuestion`、`EnterPlanMode` / `ExitPlanMode` | 有 |
+| 提示词 | 不写"问用户""先确认";写"任务没明说就不做,在报告里说明" | 写 |
+| 内置技能 | 只有能独立做完的 | 再加需要用户在场的 |
+| 权限提示 | 不送给任何人,直接拒绝,拒绝消息里写清怎么授权(§6.3) | 送给宿主等回答 |
+
+内置技能由 `Scene::bundled_skills()` 点名,缺省只有 `skillify`;依赖的工具(`skills::bundled::required_tools`,
+如 `loop` 要 `CronCreate`)在场景里不被允许的,也不列。磁盘上和宿主 provider 给的技能不受
+影响,同名的照样覆盖内置。`code` 无人值守带 `skillify` `simplify` `verify` `debug`
+`security-review`,有人值守再加 `batch` `stuck` `remember` `init` `import` `loop` `rename`
+`updateConfig`。
+
+运行时另有一个与提示词无关的兜底:同一 agent 在一个 turn 里用同样的输入调同一个工具到第 3、
+5、8 次,在结果后附一条提醒,让模型看上次的结果、换方法或停下汇报(`runtime::repeat_guard`)。
+只提醒,不拦调用;不触发就不花 token。
+
+文件工具给模型看的路径由 `Scene::path_style()` 定缺省:`harnix` 用相对工作目录的路径
+(参数说明、Glob / Grep / Write / Edit 的输出都按相对写),其余场景用绝对路径;设置里写了
+`path_style` 就以设置为准。相对路径省掉的是每次调用都重复出现的那段项目前缀。
 
 ### 3.3 Sidechain 会话
 
@@ -489,7 +517,32 @@ Agent 的上下文,本来就该在一处。
 
 `sandbox.allow_write` 给拒绝规则开例外,`sandbox.deny_write` 加自己的名字,
 与读侧的 `allow_read` / `deny_read` 对称。**例外只解除拒绝规则,不解除项目边界**——
-放宽可写范围是 `additional_directories` 的事,两者分开,不然一个配置会悄悄干另一个的活。
+放宽可写范围是 `sandbox.additional_directories` 的事,两者分开,不然一个配置会悄悄干另一个的活。
+
+### 6.3 项目之外
+
+可读写的根:项目目录、实例自己的状态目录(`~/.agix`,其中的 settings 文件仍按 §6.2
+拒写)、`sandbox.additional_directories`。只读的根再加 `sandbox.read_directories`。
+`Read` / `Glob` / `Grep` 与只读 shell 命令在这些根之内直接放行,之外要人批准;
+`sandbox.read_anywhere: true` 把读放开到任意位置。这些都是实例的设置——嵌入方创建实例时定。
+
+无人值守的会话没人批准,所以根之外的读写一律拒绝。授权只走设置(上面几项,或
+`permission_rules` 的 allow),不从任务文本里读:任务文本常常带着外部内容,让模型照着
+一句话给自己开权限,等于让注入的内容给自己开权限。
+
+`Bash` 不能事先知道一条命令会写哪里,所以无人值守时它靠 OS 沙箱:沙箱完整生效
+(`Enforcement::Full`)就放行,写入被限制在可写根之内;沙箱不可用(关掉了,或 Linux
+上没有 bubblewrap)就和别的未授权调用一样被拒。沙箱在 `assembly` / `daemon` 缺省编译进来。
+沙箱只限写,不限读——读的限制落在文件工具上,`Bash` 读项目外的东西只受凭据黑名单约束。
+
+包管理与构建工具要写自己的缓存(`pip`、`npm`、`cargo`、`go` …),所以沙箱里的 `Bash`
+另外可写 `sandbox.cache_directories`:按工具链分组的缓存目录,缺省列好了 python / node /
+rust / go / java / ruby / dotnet / swift 的常见位置,开箱即用。设置文件里写一个组名就整组替换
+(`"python": []` 去掉这一组),写新组名就是加一组,没提到的组保持缺省。这些目录只对 `Bash`
+放开,文件工具写不到。
+
+`.agix` 下的路径缺省要人确认(它是 agent 的配置),只有 `scratchpad` 与 `memory` 两处除外:
+那是提示词让模型去写的工作区。
 
 ---
 

@@ -351,7 +351,11 @@ need per-session state and are registered by the builder or by a module.
 Deferred tools are advertised by name and fetched with `ToolSearch` when needed.
 The `code` scene leaves out `NotebookEdit`, the worktree tools, `Ping`, `Sleep`,
 `PushNotification` and `VerifyPlanExecution`; `StructuredOutput` is there only
-when the host sets an output schema.
+when the host sets an output schema. A scene is interactive (someone answers
+prompts) or unattended: `harnix` and `mini` are unattended, `code` is created
+either way. An unattended session has no `AskUserQuestion` or plan mode, refuses
+what would need approval instead of asking, and runs `Bash` only inside the OS
+sandbox — see `docs/ARCHITECTURE.md` §3.2.1 and §6.3.
 
 ### Model routing
 

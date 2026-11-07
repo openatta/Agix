@@ -19,6 +19,6 @@ User blocks=1
 Assistant
 
 == model calls ==
-golden-model max_tokens=1024 messages=3 content_bytes=3131 truncated_results=0
-golden-model max_tokens=1024 messages=5 content_bytes=3158 truncated_results=0
+golden-model max_tokens=1024 messages=3 content_bytes=613 truncated_results=0
+golden-model max_tokens=1024 messages=5 content_bytes=640 truncated_results=0
 unconsumed_replies=0

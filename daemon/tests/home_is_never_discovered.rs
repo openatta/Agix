@@ -70,7 +70,8 @@ const ALLOWED: &[(&str, &str)] = &[
     (
         "crates/tools/src/bash.rs",
         "same deny-list, reused by the command classifier so `cat ~/.ssh/id_rsa` \
-         is not waved through as a read-only command.",
+         is not waved through as a read-only command; and the `~/` of \
+         `sandbox.cache_directories`, where pip and npm keep their caches.",
     ),
 ];
 

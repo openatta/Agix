@@ -101,9 +101,19 @@ impl Tool for GlobTool {
         }
     }
 
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        // 只读，交给上层 gate（plan 模式 read_only=true 自动 allow）
-        PermissionDecision::allow()
+    async fn check_permissions(&self, input: &Value, ctx: &ToolContext) -> PermissionDecision {
+        let path = serde_json::from_value::<GlobInput>(input.clone())
+            .ok()
+            .and_then(|i| i.path);
+        match path {
+            Some(p) if !crate::security::read_allowed(&resolve_path(&p, &ctx.cwd), ctx) => {
+                PermissionDecision::Ask {
+                    message: "Glob outside the project requires confirmation".into(),
+                    decision_reason: None,
+                }
+            }
+            _ => PermissionDecision::allow(),
+        }
     }
 
     async fn call(

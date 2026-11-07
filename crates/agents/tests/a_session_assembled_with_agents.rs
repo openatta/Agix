@@ -85,7 +85,7 @@ fn settings() -> Settings {
 
 fn build(settings: Settings, depth: u32, with_agents: bool) -> Agent {
     let mut builder = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
         .model(Arc::new(DummyModel))
         .settings(Arc::new(settings))
         .tools({

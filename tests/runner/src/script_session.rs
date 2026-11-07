@@ -216,13 +216,17 @@ impl Ran {
         self.requests.iter().any(|r| r.contains(needle))
     }
 
-    /// How many calls the session's own model answered.
+    /// How many steps of a turn the session's own model answered.
     ///
     /// Not every request in a run belongs to the turn: memory work and
-    /// summarization reach for the small model on their own schedule, and a
-    /// case that counted every request would be counting those too.
+    /// summarization go out on their own schedule, possibly to the same
+    /// model, and a case that counted every request would be counting those
+    /// too.
     pub fn calls_to(&self, model: &str) -> usize {
-        self.calls.iter().filter(|c| c.model == model).count()
+        self.calls
+            .iter()
+            .filter(|c| c.model == model && c.purpose.is_none())
+            .count()
     }
 
     pub fn offers(&self, tool: &str) -> bool {

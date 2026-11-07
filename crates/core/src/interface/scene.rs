@@ -237,6 +237,30 @@ pub trait Scene: Send + Sync + 'static {
         vec![]
     }
 
+    /// How the file tools word paths for the model when `path_style` is not
+    /// set — see `Settings::path_style`.
+    fn path_style(&self) -> crate::context::config::PathStyle {
+        crate::context::config::PathStyle::Absolute
+    }
+
+    /// Whether someone is there to answer: a question, a plan to approve, a
+    /// permission prompt.
+    ///
+    /// `false` (the default) means nobody is: a call the permission policy
+    /// would ask about is refused instead, with what would allow it, and the
+    /// scene's prompt and tools must not count on a reply.
+    fn interactive(&self) -> bool {
+        false
+    }
+
+    /// The built-in skills (compiled into Agix) a session in this scene
+    /// lists, by name. Skills on disk and from host providers are listed
+    /// whatever this says; a built-in is also left out when a tool it needs
+    /// is not permitted here.
+    fn bundled_skills(&self) -> Vec<String> {
+        vec!["skillify".into()]
+    }
+
     /// Modules a session in this scene runs, by module id (`agents`, `mcp`,
     /// `skills`, ...). `None` runs every module the host assembled.
     ///

@@ -305,7 +305,10 @@ let pool = daemon::assemble::pool(
 `tools::register_builtin_tools` 装上其中 22 个自给自足的;其余需要会话状态,由 builder
 或模块注册。延迟加载的工具只报名字,要用时经 `ToolSearch` 取 schema。`code` 场景不提供
 `NotebookEdit`、worktree 两个工具、`Ping`、`Sleep`、`PushNotification` 和
-`VerifyPlanExecution`;`StructuredOutput` 只在宿主给了输出 schema 时才有。
+`VerifyPlanExecution`;`StructuredOutput` 只在宿主给了输出 schema 时才有。场景分有人值守
+(有人应答提示)和无人值守:`harnix`、`mini` 无人值守,`code` 创建时二选一。无人值守的会话
+没有 `AskUserQuestion` 和计划模式,需要批准的调用直接拒绝而不是去问,`Bash` 只在 OS 沙箱里跑——
+见 `docs/ARCHITECTURE.md` §3.2.1、§6.3。
 
 ### 模型路由
 

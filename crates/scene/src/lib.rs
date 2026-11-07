@@ -90,7 +90,7 @@ impl SceneRegistry {
     }
 
     pub fn register_builtin(&mut self) {
-        self.register(Arc::new(code::CodeScene));
+        self.register(Arc::new(code::CodeScene::default()));
         self.register(Arc::new(harnix::HarnixScene));
         self.register(Arc::new(mini::MiniScene));
     }
@@ -129,7 +129,7 @@ mod tests {
         assert!(refused[0].to_string().contains("already registered"));
         assert_eq!(
             registry.resolve("code").unwrap().name(),
-            code::CodeScene.name(),
+            code::CodeScene::default().name(),
             "the built-in stays in place"
         );
         assert_eq!(registry.resolve("review").unwrap().name(), "review");

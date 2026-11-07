@@ -423,7 +423,7 @@ impl EngineConfig {
             require_enforcement: settings.sandbox.require_enforcement,
         };
         c.disable_skill_shell_execution = settings.disable_skill_shell_execution;
-        c.path_style = settings.path_style;
+        c.path_style = settings.path_style.unwrap_or_default();
         c.subprocess_env = settings.sandbox.subprocess_env.clone();
 
         c.compact = CompactSettings {

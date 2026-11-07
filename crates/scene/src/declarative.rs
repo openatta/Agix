@@ -86,6 +86,10 @@ struct SceneFile {
     disabled_modules: Vec<String>,
     #[serde(default)]
     reminders: Vec<Reminder>,
+    #[serde(default)]
+    interactive: bool,
+    #[serde(default)]
+    bundled_skills: Option<Vec<String>>,
 }
 
 #[derive(Default, Deserialize)]
@@ -253,6 +257,8 @@ pub struct DeclarativeScene {
     modules: Option<Vec<String>>,
     disabled_modules: Vec<String>,
     reminders: Vec<Reminder>,
+    interactive: bool,
+    bundled_skills: Option<Vec<String>>,
     extra_tools: Vec<Arc<dyn Tool>>,
 }
 
@@ -355,6 +361,9 @@ impl DeclarativeScene {
             .map_err(invalid)?;
         }
         check_names("disabled_modules", &file.disabled_modules, false).map_err(invalid)?;
+        if let Some(skills) = &file.bundled_skills {
+            check_names("bundled_skills", skills, false).map_err(invalid)?;
+        }
         for (i, r) in file.reminders.iter().enumerate() {
             if file.reminders[..i].contains(r) {
                 return Err(invalid(format!("`reminders` lists {r:?} twice")));
@@ -403,6 +412,8 @@ impl DeclarativeScene {
             modules: file.modules,
             disabled_modules: file.disabled_modules,
             reminders: file.reminders,
+            interactive: file.interactive,
+            bundled_skills: file.bundled_skills,
             extra_tools: Vec::new(),
         })
     }
@@ -600,6 +611,17 @@ impl Scene for DeclarativeScene {
 
     fn supports_team(&self) -> bool {
         self.supports_team
+    }
+
+    fn interactive(&self) -> bool {
+        self.interactive
+    }
+
+    fn bundled_skills(&self) -> Vec<String> {
+        match &self.bundled_skills {
+            Some(names) => names.clone(),
+            None => vec!["skillify".into()],
+        }
     }
 
     fn modules(&self) -> Option<Vec<String>> {

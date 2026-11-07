@@ -80,7 +80,7 @@ zip = { workspace = true }
 #
 # `--no-default-features` is required for the plugin builds: without it the
 # default `scripts` is unioned in and the guard refuses the build.
-default = ["scripts", "plugin-packages", "mcp", "agents", "skills"]
+default = ["scripts", "plugin-packages", "mcp", "agents", "skills", "sandbox"]
 
 # The modules a session can be assembled with; see `modules.rs`.
 mcp = ["dep:mcp"]
@@ -118,11 +118,10 @@ plugin-compile = ["plugins", "plugin-host/compile", "wasm-host/compile"]
 
 # ── Everything else ─────────────────────────────────────────────────────
 
-# The OS process sandbox around `Bash` — see `base`'s feature of the same name
-# for what it does and why it is off. Independent of the carriers: it
-# constrains the model's own shell commands, not anybody's extensions.
-#
-#     cargo build -p daemon --features sandbox
+# The OS process sandbox around `Bash` — see `base`'s feature of the same name.
+# On by default: an unattended session runs shell commands only when the
+# sandbox holds them. Independent of the carriers: it constrains the model's
+# own shell commands, not anybody's extensions.
 sandbox = ["base/sandbox"]
 
 # Fan session telemetry out to an OTLP collector in addition to the per-session

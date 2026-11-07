@@ -124,12 +124,8 @@ impl Tool for FileReadTool {
 
     async fn check_permissions(&self, input: &Value, ctx: &ToolContext) -> PermissionDecision {
         if let Ok(parsed) = serde_json::from_value::<FileReadInput>(input.clone()) {
-            let path = crate::security::normalize_path_lexically(&resolve_path(
-                &parsed.file_path,
-                &ctx.cwd,
-            ));
-            let cwd = crate::security::normalize_path_lexically(&ctx.cwd);
-            if crate::security::is_path_within_root(&path, &cwd) {
+            let path = resolve_path(&parsed.file_path, &ctx.cwd);
+            if crate::security::read_allowed(&path, ctx) {
                 return PermissionDecision::allow();
             }
         }

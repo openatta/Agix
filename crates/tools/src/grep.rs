@@ -126,8 +126,19 @@ impl Tool for GrepTool {
         }
     }
 
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        PermissionDecision::allow()
+    async fn check_permissions(&self, input: &Value, ctx: &ToolContext) -> PermissionDecision {
+        let path = serde_json::from_value::<GrepInput>(input.clone())
+            .ok()
+            .and_then(|i| i.path);
+        match path {
+            Some(p) if !crate::security::read_allowed(&resolve_path(&p, &ctx.cwd), ctx) => {
+                PermissionDecision::Ask {
+                    message: "Grep outside the project requires confirmation".into(),
+                    decision_reason: None,
+                }
+            }
+            _ => PermissionDecision::allow(),
+        }
     }
 
     async fn call(

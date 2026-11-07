@@ -1,6 +1,7 @@
 //! Harnix scene — the default scene of sessions hosted by Harnix: a common
 //! working tool set and a short prompt, which a Harnix scene wraps to add its
-//! own tools and instructions.
+//! own tools and instructions. Unattended: nobody answers mid-task, so the
+//! tools and prompt lines that would wait on a reply are not here.
 
 use crate::common;
 use base::interface::prompt::PromptBlock;
@@ -8,11 +9,8 @@ use base::interface::scene::{ReminderContext, Scene, ScenePromptContext, TokenBu
 
 pub const TOOLS: &[&str] = &[
     "Agent",
-    "AskUserQuestion",
     "Bash",
     "Edit",
-    "EnterPlanMode",
-    "ExitPlanMode",
     "Glob",
     "GoalCreate",
     "GoalGet",
@@ -39,8 +37,6 @@ pub const TOOLS: &[&str] = &[
 /// Reached for occasionally, so advertised by name until `ToolSearch` fetches
 /// their schemas.
 const DEFERRED: &[&str] = &[
-    "EnterPlanMode",
-    "ExitPlanMode",
     "TaskMessage",
     "TaskOutput",
     "TaskStop",
@@ -87,6 +83,10 @@ impl Scene for HarnixScene {
         DEFERRED.iter().map(|s| s.to_string()).collect()
     }
 
+    fn path_style(&self) -> base::interface::tool::PathStyle {
+        base::interface::tool::PathStyle::WorkspaceRelative
+    }
+
     fn token_budget(&self) -> TokenBudget {
         TokenBudget {
             compact_threshold: 150_000,
@@ -117,15 +117,15 @@ const IDENTITY: &str = "You are Agix, an agent hosted by Harnix. You work with c
 information in the working directory; the host may add tools and instructions of its own.";
 
 const RULES: &str = "\
-- Find facts by inspecting the workspace and your tools; ask the user only for choices that are theirs to make.
-- Confirm before actions that are hard to undo or reach outside the workspace: deleting, overwriting, pushing, sending, publishing.
+- Nobody answers mid-task. Find facts by inspecting the workspace and your tools; where the task leaves a choice open, take the most reasonable reading and say which you took.
+- Actions that are hard to undo or reach outside the workspace — deleting, overwriting, pushing, sending, publishing — only when the task asks for them in so many words; otherwise leave them undone and say so.
+- A call the permission policy refuses was not put to anyone: work within the policy, and report what it kept you from doing.
 - Track work of 3+ steps with TodoWrite: exactly one item in_progress, each marked completed as soon as it is done.
 - Hand self-contained work to a sub-agent (Agent) with a brief that stands on its own — file paths, what to change, what to return; independent agents go in one message. For long work use `background: true` and wait for the completion notice instead of polling; TaskOutput, TaskWait and TaskStop reach background work.
 - Search the web (WebSearch) for current facts and documentation rather than answering from memory or guessing URLs; WebFetch reads a given page.
-- Use Skill for a matching skill or a `/<skill-name>` the user types. ToolSearch fetches the schema of a tool listed by name only, and a tool's detailed guide.
-- For work that needs a plan the user approves first, EnterPlanMode; present the plan with ExitPlanMode.
+- Use Skill for a matching skill or a `/<skill-name>` in the task. ToolSearch fetches the schema of a tool listed by name only, and a tool's detailed guide.
 - For an objective one turn won't finish, set a goal with GoalCreate: rounds then continue automatically until you mark it complete with GoalUpdate. Mark complete only when the whole objective is achieved, and blocked only when the same blocker has held for several rounds.
-- Lead with the answer and keep replies short. No emojis unless asked. Reference code as `file_path:line_number`.
+- End with a short report: the answer or what changed, what you verified, what is left. No emojis. Reference code as `file_path:line_number`.
 ";
 
 #[cfg(test)]
@@ -145,7 +145,18 @@ mod tests {
         let scene = HarnixScene;
         assert!(scene.permits_tool("mcp__github__search"));
         assert!(scene.permits_tool("Agent"));
-        for excluded in ["CronCreate", "NotebookEdit", "EnterWorktree"] {
+        assert!(!scene.interactive());
+        assert_eq!(
+            scene.path_style(),
+            base::interface::tool::PathStyle::WorkspaceRelative
+        );
+        for excluded in [
+            "AskUserQuestion",
+            "EnterPlanMode",
+            "CronCreate",
+            "NotebookEdit",
+            "EnterWorktree",
+        ] {
             assert!(!scene.permits_tool(excluded), "{excluded}");
         }
     }

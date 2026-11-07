@@ -416,7 +416,7 @@ fn parse_agent_type_file(content: &str, path: &Path) -> Option<AgentTypeDefiniti
 /// `None` so the caller can fall back rather than guessing.
 fn builtin_scene_by_id(id: &str) -> Option<Arc<dyn Scene>> {
     match id {
-        "code" => Some(Arc::new(scene::code::CodeScene)),
+        "code" => Some(Arc::new(scene::code::CodeScene::default())),
         "harnix" => Some(Arc::new(scene::harnix::HarnixScene)),
         "mini" => Some(Arc::new(scene::mini::MiniScene)),
         _ => None,
@@ -1783,6 +1783,7 @@ impl Inner {
                 timeout_secs: self.config.permission_prompt_timeout_secs,
                 own_tools: Default::default(),
                 task,
+                session: Default::default(),
             });
         }
         Arc::new(AlwaysPermit)
@@ -1909,7 +1910,7 @@ impl Inner {
             return parent;
         }
         self.resolve_scene_id(&settings.paths.scope)
-            .unwrap_or_else(|| Arc::new(scene::code::CodeScene))
+            .unwrap_or_else(|| Arc::new(scene::code::CodeScene::default()))
     }
 
     /// A scene id resolved against the host's registry when one was wired,
@@ -3707,6 +3708,9 @@ struct ParentPermission {
     /// `StructuredOutput` bound to its output schema — is a different one.
     own_tools: std::sync::RwLock<Option<Arc<dyn base::tool::ToolRegistry>>>,
     task: Option<Arc<base::context::RunningTask>>,
+    /// The sub-agent's own session. When nobody attends it, a question is
+    /// handed back for the turn to refuse, not sent up to wait for an answer.
+    session: std::sync::RwLock<Option<Arc<base::context::SessionState>>>,
 }
 
 /// Holds a task as waiting on one question until dropped — answered, timed
@@ -3764,6 +3768,15 @@ impl Permission for ParentPermission {
             .inner
             .check(tool_name, tool_input, cwd, session_id)
             .await;
+        let unattended = self
+            .session
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(|s| s.unattended);
+        if unattended {
+            return outcome;
+        }
         let PermissionOutcome::Prompt {
             prompt_id,
             message,
@@ -3857,6 +3870,13 @@ impl Permission for ParentPermission {
             .own_tools
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tools);
+    }
+
+    fn bind_session_state(&self, session: Arc<base::context::SessionState>) {
+        *self
+            .session
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(session);
     }
 }
 

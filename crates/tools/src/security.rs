@@ -98,6 +98,28 @@ pub async fn write_policy(ctx: &base::tool::ToolContext) -> permissions::path_sa
         .with_allowed(allowed)
 }
 
+/// Where the file tools may read without asking: the project, every
+/// directory they may write, and `sandbox.read_directories`.
+pub fn readable_roots(ctx: &base::tool::ToolContext) -> Vec<PathBuf> {
+    std::iter::once(ctx.cwd.clone())
+        .chain(ctx.additional_writable_dirs.iter().cloned())
+        .chain(ctx.session.read_directories.iter().cloned())
+        .collect()
+}
+
+/// Whether a file tool may read `path` (absolute, or relative to the
+/// working directory) without asking — under a [`readable_roots`] entry, or
+/// anywhere when the instance sets `sandbox.read_anywhere`.
+pub fn read_allowed(path: &Path, ctx: &base::tool::ToolContext) -> bool {
+    if ctx.session.read_anywhere {
+        return true;
+    }
+    let path = normalize_path_lexically(&ctx.cwd.join(path));
+    readable_roots(ctx)
+        .iter()
+        .any(|root| is_path_within_root(&path, &normalize_path_lexically(root)))
+}
+
 // ── Write policy types ──
 
 pub fn is_path_within_root(path: &Path, root: &Path) -> bool {

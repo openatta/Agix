@@ -29,6 +29,21 @@ pub struct SessionState {
     pub started_at: time::OffsetDateTime,
     /// 用户级附加可写目录（`additional_directories`）—— Tool 在做路径校验时用
     pub additional_writable_dirs: Vec<PathBuf>,
+    /// Directories outside the project the file tools may read without
+    /// asking — `sandbox.read_directories`.
+    pub read_directories: Vec<PathBuf>,
+    /// `sandbox.read_anywhere`.
+    pub read_anywhere: bool,
+    /// Package and build caches a sandboxed command may write —
+    /// `sandbox.cache_directories`; a `~/` path is expanded when the command
+    /// runs.
+    pub cache_directories: Vec<PathBuf>,
+    /// Nobody answers this session's questions or permission prompts — see
+    /// `Scene::interactive`.
+    pub unattended: bool,
+    /// `sandbox.dangerously_disable_sandbox`, for checks made before a
+    /// command runs.
+    pub sandbox_disabled: bool,
     /// 权限模式（运行时可变；EnterPlanMode / ExitPlanMode 工具会切）。
     /// 私有 + Mutex 内部可变 —— 调用方走 `permission_mode()` / `set_permission_mode()`。
     permission_mode: std::sync::Mutex<PermissionMode>,
@@ -188,6 +203,10 @@ pub struct FileReadEntry {
     /// 读取时的 limit（FileRead 的 limit 参数）。
     /// `None` 表示读至文件末尾。
     pub limit: Option<usize>,
+    /// Recorded by `Edit` / `Write` after they changed the file: the model
+    /// knows what is in it, but saw a diff rather than the text, so a later
+    /// `Read` still returns the content.
+    pub written: bool,
 }
 
 /// 权限拒绝记录（M11.2）。一次工具调用因权限被拒时记一行。
@@ -205,6 +224,11 @@ impl SessionState {
             cwd,
             started_at: time::OffsetDateTime::now_utc(),
             additional_writable_dirs: Vec::new(),
+            read_directories: Vec::new(),
+            read_anywhere: false,
+            cache_directories: Vec::new(),
+            unattended: false,
+            sandbox_disabled: false,
             permission_mode: std::sync::Mutex::new(PermissionMode::Default),
             todos: std::sync::Mutex::new(Vec::new()),
             activated_tools: std::sync::Mutex::new(HashSet::new()),
@@ -870,25 +894,44 @@ impl SessionState {
 
     /// Record a file read with offset/limit for precise dedup; also stores the mtime.
     pub fn record_read_with_range(&self, path: &Path, offset: Option<usize>, limit: Option<usize>) {
-        if let Ok(meta) = std::fs::metadata(path) {
-            if let Ok(mtime) = meta.modified() {
-                self.read_cache
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(
-                        path.to_path_buf(),
-                        FileReadEntry {
-                            mtime,
-                            offset,
-                            limit,
-                        },
-                    );
-                *self
-                    .last_read_path
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner()) = Some(path.to_path_buf());
-            }
+        if self.remember_file(path, offset, limit, false) {
+            *self
+                .last_read_path
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(path.to_path_buf());
         }
+    }
+
+    /// Record that `Edit` / `Write` just changed `path`, so the next edit of
+    /// it does not ask for a `Read` first or call the session's own change
+    /// an outside one.
+    pub fn record_write(&self, path: &Path) {
+        self.remember_file(path, None, None, true);
+    }
+
+    fn remember_file(
+        &self,
+        path: &Path,
+        offset: Option<usize>,
+        limit: Option<usize>,
+        written: bool,
+    ) -> bool {
+        let Some(mtime) = std::fs::metadata(path).and_then(|m| m.modified()).ok() else {
+            return false;
+        };
+        self.read_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                path.to_path_buf(),
+                FileReadEntry {
+                    mtime,
+                    offset,
+                    limit,
+                    written,
+                },
+            );
+        true
     }
 
     /// **P (read-before-edit)**: 检查文件是否已读且未过期。
@@ -941,7 +984,10 @@ impl SessionState {
         };
         let cache = self.read_cache.lock().unwrap_or_else(|e| e.into_inner());
         cache.get(path).is_some_and(|entry| {
-            entry.mtime == current_mtime && entry.offset == offset && entry.limit == limit
+            !entry.written
+                && entry.mtime == current_mtime
+                && entry.offset == offset
+                && entry.limit == limit
         })
     }
 

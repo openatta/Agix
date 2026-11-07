@@ -412,6 +412,7 @@ pub struct Agent {
     /// A target was set by the message being handled and the model has not
     /// been told what it means yet.
     pub(crate) output_token_target_unannounced: bool,
+    pub(crate) repeat_guard: crate::repeat_guard::RepeatGuard,
     /// Accumulated output tokens for the current budget session.
     /// Reset each time a new budget target is set.
     pub(crate) accumulated_output_tokens: u64,
@@ -2090,6 +2091,7 @@ impl Builder {
 
         let config = Arc::new({
             let mut c = base::context::EngineConfig::from_settings(&settings);
+            c.path_style = settings.path_style.unwrap_or_else(|| scene.path_style());
             c.process_groups = self.process_groups.clone();
             c
         });
@@ -2111,10 +2113,31 @@ impl Builder {
         // staleness detection never fired, read dedup never deduped, and
         // `/rewind` had nothing recorded. Own exactly one here and hand the
         // same `Arc` to every call.
-        let session_state = Arc::new(
-            base::context::SessionState::new(settings.paths.project_root())
-                .with_permission_mode(config.permission_mode),
-        );
+        prepare_scratchpad(&settings.paths.local_data_dir.join("scratchpad"));
+        let session_state = Arc::new({
+            let project = settings.paths.project_root();
+            let resolve = |dir: &std::path::PathBuf| project.join(dir);
+            let mut state = base::context::SessionState::new(project.clone())
+                .with_permission_mode(config.permission_mode);
+            state.additional_writable_dirs = settings
+                .sandbox
+                .additional_directories
+                .iter()
+                .map(resolve)
+                .chain([settings.paths.global_data_dir.clone()])
+                .collect();
+            state.read_directories = settings
+                .sandbox
+                .read_directories
+                .iter()
+                .map(resolve)
+                .collect();
+            state.read_anywhere = settings.sandbox.read_anywhere;
+            state.cache_directories = settings.sandbox.cache_directories.paths(&project);
+            state.unattended = !scene.interactive();
+            state.sandbox_disabled = settings.sandbox.dangerously_disable_sandbox;
+            state
+        });
 
         // WebSearch searches through the session's own model unless
         // `task_models.web_search` routes it elsewhere.
@@ -2547,6 +2570,7 @@ impl Builder {
                 messages_to_ack: Vec::new(),
                 output_token_target: None,
                 output_token_target_unannounced: false,
+                repeat_guard: Default::default(),
                 accumulated_output_tokens: 0,
                 token_budget_continuation_count: 0,
                 last_delta_tokens: 0,
@@ -2564,6 +2588,20 @@ impl Builder {
 impl Default for Builder {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// The prompt tells the model the scratchpad is there to write into, so it
+/// has to exist before a shell redirect into it; its `.gitignore` keeps it out
+/// of the project's git status. A relative `local_data_dir` (tests, embedders
+/// that never set `paths`) would land in the process's working directory, so
+/// nothing is created then.
+fn prepare_scratchpad(dir: &std::path::Path) {
+    if !dir.is_absolute() || dir.is_dir() {
+        return;
+    }
+    if std::fs::create_dir_all(dir).is_ok() {
+        let _ = std::fs::write(dir.join(".gitignore"), "*\n");
     }
 }
 
@@ -2653,7 +2691,7 @@ mod tests {
 
     fn probe_builder(modules: Vec<Arc<dyn crate::module::Module>>) -> Builder {
         Builder::new()
-            .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
             .model(Arc::new(DummyModel))
             .settings(Arc::new(test_settings()))
             .skip_warmup(true)
@@ -2892,7 +2930,7 @@ mod tests {
     async fn run_emits_session_end_and_shutdown_signal_on_exit() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
         let (mut agent, _event_rx, _input_tx) = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
             .model(Arc::new(DummyModel))
             .settings(Arc::new(test_settings()))
             .tools(Arc::new(base::tool::InMemoryToolRegistry::new()))
@@ -2985,7 +3023,7 @@ mod tests {
 
         let settings = Arc::new(test_settings());
         let model: Arc<dyn Model> = Arc::new(FailingModel);
-        let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene);
+        let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene::default());
         let sid = base::session::SessionId::new().to_string();
 
         let (mut agent, _event_rx, _input_tx) = Builder::new()
@@ -3027,7 +3065,7 @@ mod tests {
     #[tokio::test]
     async fn update_model_command_changes_the_model_the_next_turn_uses() {
         let (mut agent, _event_rx, _input_tx) = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
             .model(Arc::new(DummyModel) as Arc<dyn Model>)
             .settings(Arc::new(test_settings()))
             .skip_warmup(true)
@@ -3157,7 +3195,7 @@ mod tests {
 
         let exported: Arc<dyn base::tool::Tool> = Arc::new(Exported);
         let (agent, _event_rx, _input_tx) = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
             .model(Arc::new(DummyModel) as Arc<dyn Model>)
             .settings(Arc::new(test_settings()))
             .plugin_host(Arc::new(OnePluginTool(exported)))
@@ -3180,7 +3218,7 @@ mod tests {
         use base::interface::instruction_provider::InlineInstructions;
 
         let (agent, _event_rx, _input_tx) = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
             .model(Arc::new(DummyModel) as Arc<dyn Model>)
             .settings(Arc::new(test_settings()))
             .instruction_provider(Arc::new(InlineInstructions::new(
@@ -3214,7 +3252,7 @@ mod tests {
     #[tokio::test]
     async fn coding_scene_defers_everything_outside_its_resident_set() {
         let (agent, _rx, _tx) = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
             .model(Arc::new(DummyModel) as Arc<dyn Model>)
             .settings(Arc::new(test_settings()))
             .tools({
@@ -3293,9 +3331,9 @@ mod tests {
     /// along on every request unnoticed. This is the sync check.
     #[tokio::test]
     async fn every_registered_tool_has_a_deferral_policy() {
-        let scene = scene::code::CodeScene;
+        let scene = scene::code::CodeScene::default();
         let (agent, _rx, _tx) = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
             .model(Arc::new(DummyModel) as Arc<dyn Model>)
             .settings(Arc::new(test_settings()))
             .tools({
@@ -3579,7 +3617,7 @@ mod tests {
         );
 
         let (agent, _rx, _tx) = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
             .model(model)
             .settings(settings)
             .tools(template)
@@ -3612,7 +3650,7 @@ mod tests {
 
         // And the scene admits ToolSearch, without which a deferred tool
         // could never be activated.
-        assert!(scene::code::CodeScene.permits_tool("ToolSearch"));
+        assert!(scene::code::CodeScene::default().permits_tool("ToolSearch"));
 
         // The session's ToolSearch must see the session's deferred wrappers,
         // not the template's un-wrapped originals — i.e. `select:GoalCreate` has to
@@ -3654,7 +3692,7 @@ mod tests {
     async fn each_session_gets_an_independent_tool_registry_not_a_shared_mutated_one() {
         let settings = Arc::new(test_settings());
         let model: Arc<dyn Model> = Arc::new(DummyModel);
-        let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene);
+        let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene::default());
 
         // Simulates `SessionPool.tools`: built once, handed to every session's Builder.
         let shared_template = Arc::new(InMemoryToolRegistry::new());
@@ -3728,7 +3766,7 @@ mod tests {
         settings.paths.global_data_dir = projects_tmp.path().to_path_buf();
         let settings = Arc::new(settings);
         let model: Arc<dyn Model> = Arc::new(DummyModel);
-        let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene);
+        let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene::default());
         let sid = base::session::SessionId::new().to_string();
 
         let (agent, _event_rx, _input_tx) = Builder::new()
@@ -3779,7 +3817,7 @@ mod tests {
 
         let settings = Arc::new(test_settings());
         let model: Arc<dyn Model> = Arc::new(DummyModel);
-        let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene);
+        let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene::default());
 
         // Exactly what a daemon does: seed a template with the self-contained
         // built-ins and build the handler over *that*.
@@ -3857,7 +3895,7 @@ mod tests {
 
         let settings = Arc::new(test_settings());
         let model: Arc<dyn Model> = Arc::new(DummyModel);
-        let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene);
+        let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene::default());
 
         let template = Arc::new(InMemoryToolRegistry::new());
         tools::register_builtin_tools(&template);
@@ -3911,7 +3949,7 @@ mod tests {
     async fn build_skips_session_memory_without_history_store() {
         let settings = Arc::new(test_settings());
         let model: Arc<dyn Model> = Arc::new(DummyModel);
-        let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene);
+        let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene::default());
 
         let (agent, _event_rx, _input_tx) = Builder::new()
             .scene(scene)
@@ -4050,7 +4088,7 @@ mod tests {
             tool: "Nope",
         });
         let (mut agent, mut event_rx, input_tx) = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
             .model(model)
             .settings(Arc::new(test_settings()))
             .skip_warmup(true)
@@ -4112,7 +4150,7 @@ mod tests {
             tool: "Probe",
         });
         let (mut agent, _event_rx, _input_tx) = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene))
+            .scene(Arc::new(scene::code::CodeScene::default()))
             .model(model)
             .settings(Arc::new(test_settings()))
             .skip_warmup(true)
@@ -4246,7 +4284,7 @@ mod tests {
             input: serde_json::json!({"code": code, "args": args}),
         });
         let mut builder = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
             .model(model)
             .settings(Arc::new(test_settings()))
             .tools(template)
@@ -4332,7 +4370,7 @@ mod tests {
             ]
         }));
         let (agent, _event_rx, _input_tx) = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene))
+            .scene(Arc::new(scene::code::CodeScene::default()))
             .model(Arc::new(DummyModel))
             .settings(Arc::new(settings))
             .skip_warmup(true)
@@ -4380,7 +4418,7 @@ mod tests {
         let tools = Arc::new(InMemoryToolRegistry::new());
         tools.register(Arc::new(ProbeTool));
         let (mut agent, _event_rx, _input_tx) = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene))
+            .scene(Arc::new(scene::code::CodeScene::default()))
             .model(model)
             .settings(Arc::new(settings))
             .tools(tools)
@@ -4429,7 +4467,7 @@ mod tests {
             calls: call_count.clone(),
             tool: "Probe",
         });
-        let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene);
+        let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene::default());
         let tools = Arc::new(InMemoryToolRegistry::new());
         tools.register(Arc::new(ProbeTool));
 
@@ -4529,7 +4567,7 @@ mod tests {
         let mut settings = test_settings();
         settings.memory_enabled = true;
         let model: Arc<dyn Model> = Arc::new(AnswersDirectlySlowPrefetchModel);
-        let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene);
+        let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene::default());
 
         // >5 entries so `select_memories_with_llm` doesn't short-circuit
         // (skip the model call entirely) before ever reaching our mock's
@@ -4649,7 +4687,7 @@ mod tests {
             tool: "Probe",
         });
         let (mut agent, mut event_rx, input_tx) = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
             .model(model)
             .settings(Arc::new(test_settings()))
             .tools(tools)
@@ -4735,7 +4773,7 @@ mod tests {
             tool: "Hang",
         });
         let (mut agent, mut event_rx, input_tx) = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
             .model(model)
             .settings(Arc::new(test_settings()))
             .tools(tools)
@@ -4832,7 +4870,7 @@ mod tests {
             tool: "Hang",
         });
         let (mut agent, mut event_rx, input_tx) = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
             .model(model)
             .settings(Arc::new(test_settings()))
             .tools(tools)
@@ -4891,7 +4929,7 @@ mod tests {
             calls: call_count.clone(),
             tool: "Probe",
         });
-        let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene);
+        let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene::default());
 
         let (mut agent, _event_rx, _input_tx) = Builder::new()
             .scene(scene)
@@ -4936,7 +4974,7 @@ mod tests {
         // test (unlike the block test above) lets the turn actually reach
         // the model call.
         let model: Arc<dyn Model> = Arc::new(AnswersDirectlySlowPrefetchModel);
-        let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene);
+        let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene::default());
 
         let (mut agent, _event_rx, _input_tx) = Builder::new()
             .scene(scene)
@@ -5114,7 +5152,7 @@ mod tests {
         );
 
         let model: Arc<dyn Model> = Arc::new(DummyModel);
-        let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene);
+        let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene::default());
         let (agent, _event_rx, _input_tx) = Builder::new()
             .scene(scene)
             .model(model)
@@ -5189,7 +5227,7 @@ mod tests {
             tool: "Hang",
         });
         let (mut agent, mut event_rx, input_tx) = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
             .model(model)
             .settings(Arc::new(test_settings()))
             .tools(tools)
@@ -5281,7 +5319,7 @@ mod tests {
             tool: "Leak",
         });
         let (mut agent, mut event_rx, input_tx) = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
             .model(model)
             .settings(Arc::new(test_settings()))
             .tools(tools)
@@ -5360,7 +5398,7 @@ mod tests {
         let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
         let model: Arc<dyn Model> = Arc::new(PlainReplyModel);
         let (mut agent, mut event_rx, input_tx) = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
             .model(model)
             .settings(Arc::new(test_settings()))
             .tools(Arc::new(InMemoryToolRegistry::new()))
@@ -5468,7 +5506,7 @@ mod tests {
 
         let counting = Arc::new(Counting::default());
         let (mut agent, mut event_rx, input_tx) = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
             .model(Arc::new(ChattyModel) as Arc<dyn Model>)
             .settings(Arc::new(test_settings()))
             .tools(Arc::new(InMemoryToolRegistry::new()))
@@ -5541,7 +5579,7 @@ mod tests {
         tools.register(Arc::new(ProbeTool));
 
         let (mut agent, mut event_rx, input_tx) = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
             .model(model)
             .settings(Arc::new(test_settings()))
             .tools(tools)
@@ -5598,7 +5636,7 @@ mod tests {
         // Zero: the system prompt alone is over it, so the first request is
         // one this deployment has said must never be sent.
         let (mut agent, mut event_rx, input_tx) = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
             .model(model)
             .settings(Arc::new(test_settings()))
             .tools(tools)
@@ -5685,7 +5723,7 @@ mod tests {
         tools.register(Arc::new(EgressProbe));
 
         let (mut agent, mut event_rx, input_tx) = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
             .model(model)
             .settings(Arc::new(settings))
             .tools(tools)
@@ -5754,7 +5792,7 @@ mod tests {
 
         let backed_up = Arc::new(AtomicBool::new(false));
         let (agent, _event_rx, _input_tx) = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
             .model(Arc::new(DummyModel) as Arc<dyn Model>)
             .settings(Arc::new(test_settings()))
             .health_check(Arc::new(Queue(backed_up.clone())))
@@ -5817,7 +5855,7 @@ mod tests {
         settings.model.fallback_model = Some("some-other-model".into());
 
         let (mut agent, mut event_rx, input_tx) = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
             .model(Arc::new(AlwaysOverloaded) as Arc<dyn Model>)
             .settings(Arc::new(settings))
             .tools(Arc::new(InMemoryToolRegistry::new()))
@@ -5900,7 +5938,7 @@ mod tests {
     ) -> Vec<base::interface::prompt::PromptBlock> {
         let recorded = Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut builder = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
             .model(Arc::new(RecordingModel(recorded.clone())) as Arc<dyn Model>)
             .settings(Arc::new(test_settings()))
             .tools(Arc::new(InMemoryToolRegistry::new()))
@@ -6030,7 +6068,7 @@ mod tests {
         sinks: Vec<Arc<dyn base::interface::event_sink::EventSink>>,
     ) -> Vec<AgentEvent> {
         let mut builder = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
             .model(Arc::new(PlainReplyModel) as Arc<dyn Model>)
             .settings(Arc::new(test_settings()))
             .tools(Arc::new(InMemoryToolRegistry::new()))
@@ -6342,7 +6380,7 @@ mod tests {
             sent: sent.clone(),
         });
         let (mut agent, _event_rx, _input_tx) = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
             .model(model)
             .settings(Arc::new(test_settings()))
             .skip_warmup(true)
@@ -6380,7 +6418,7 @@ mod tests {
             sent: Default::default(),
         });
         let (mut agent, mut event_rx, _input_tx) = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
             .model(model)
             .settings(Arc::new(test_settings()))
             .skip_warmup(true)
@@ -6429,7 +6467,7 @@ mod tests {
         ));
 
         let mut empty = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
             .model(Arc::new(StepRecordingModel {
                 tool: None,
                 hold_first: None,
@@ -6465,7 +6503,7 @@ mod tests {
         });
         let (mut agent, mut event_rx, input_tx) = builder(
             Builder::new()
-                .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+                .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
                 .model(model)
                 .settings(Arc::new(settings))
                 .tools(tools)
@@ -6662,7 +6700,7 @@ mod tests {
         });
         let (agent, event_rx, _input_tx) = builder(
             Builder::new()
-                .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+                .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
                 .model(model)
                 .settings(Arc::new(settings))
                 .skip_warmup(true),
@@ -6955,7 +6993,7 @@ mod tests {
             sent: sent.clone(),
         });
         let (mut agent, mut event_rx, input_tx) = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
             .model(model)
             .settings(Arc::new(test_settings()))
             .tools(tools)
@@ -7040,7 +7078,7 @@ mod tests {
             sent: sent.clone(),
         });
         let (mut agent, mut event_rx, input_tx) = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
             .model(model)
             .settings(Arc::new(test_settings()))
             .skip_warmup(true)
@@ -7105,7 +7143,7 @@ mod tests {
             sent: sent.clone(),
         });
         let (mut agent, mut event_rx, input_tx) = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
             .model(model)
             .settings(Arc::new(test_settings()))
             .tools(tools)
@@ -7242,7 +7280,7 @@ mod tests {
     async fn web_search_goes_through_the_sessions_own_model() {
         let (session, asked) = search_spy("https://from.session.example");
         let (agent, _rx, _tx) = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
             .model(session as Arc<dyn Model>)
             .settings(Arc::new(test_settings()))
             .skip_warmup(true)
@@ -7269,7 +7307,7 @@ mod tests {
             session.clone() as Arc<dyn Model>,
         );
         let (agent, _rx, _tx) = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
             .model(session as Arc<dyn Model>)
             .settings(Arc::new(test_settings()))
             .task_router(Arc::new(router))

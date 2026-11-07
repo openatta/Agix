@@ -70,7 +70,7 @@ impl Daemon {
         model.push_turn(one_turn());
         let pool = daemon::assemble::pool(
             &config,
-            Arc::new(scene::code::CodeScene),
+            Arc::new(scene::code::CodeScene::default()),
             daemon::Assembly {
                 cwd: Some(cwd),
                 model_client: Some(model.clone() as Arc<dyn AnthropicClient>),

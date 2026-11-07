@@ -42,10 +42,9 @@ default = ["http"]
 http = ["dep:reqwest", "dep:rustls"]
 
 # The OS process sandbox for `Bash` — macOS `sandbox-exec`, Linux
-# `bubblewrap`. Off by default: it constrains the commands the *model* runs,
-# which is defence in depth on a machine whose owner is sitting at it, and a
-# boundary only where the agent acts on someone else's behalf. A deployment
-# that needs the boundary asks for it.
+# `bubblewrap`. Off in this crate, on in `assembly` and `daemon`: it is the
+# boundary an unattended session's shell commands run inside — with nobody to
+# approve a command, one runs only when the sandbox fully holds it.
 #
 # Off means no backend is compiled at all: `PlatformSandbox` says it cannot
 # confine anything, and `sandbox.require_enforcement` — which exists to refuse

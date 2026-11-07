@@ -530,13 +530,13 @@ impl Scene for OnCallScene {
         "Production on-call, with the host's service status tool"
     }
     fn build_system_prompt(&self, ctx: &ScenePromptContext) -> Vec<PromptBlock> {
-        scene::code::CodeScene.build_system_prompt(ctx)
+        scene::code::CodeScene::default().build_system_prompt(ctx)
     }
     fn tools(&self) -> Vec<String> {
         Vec::new()
     }
     fn token_budget(&self) -> TokenBudget {
-        scene::code::CodeScene.token_budget()
+        scene::code::CodeScene::default().token_budget()
     }
     fn extra_tools(&self) -> Vec<Arc<dyn Tool>> {
         vec![Arc::new(ServiceStatus {

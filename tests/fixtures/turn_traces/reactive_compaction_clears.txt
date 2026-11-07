@@ -43,9 +43,11 @@ Assistant
 User blocks=1
 Assistant
 User blocks=1
+User blocks=1
 Assistant
 User blocks=1
 Assistant
+User blocks=1
 User blocks=1
 Assistant
 User blocks=1
@@ -54,12 +56,12 @@ User blocks=1
 Assistant
 
 == model calls ==
-golden-model max_tokens=1024 messages=3 content_bytes=1388 truncated_results=0
-golden-model max_tokens=1024 messages=5 content_bytes=2388 truncated_results=0
-golden-model max_tokens=1024 messages=7 content_bytes=3388 truncated_results=0
-golden-model max_tokens=1024 messages=9 content_bytes=4388 truncated_results=0
-golden-model max_tokens=1024 messages=11 content_bytes=5388 truncated_results=0
-golden-model max_tokens=1024 messages=13 content_bytes=6388 truncated_results=0
-golden-model max_tokens=1024 messages=15 content_bytes=6421 truncated_results=0
-golden-model max_tokens=1024 messages=17 content_bytes=6454 truncated_results=0
+golden-model max_tokens=1024 messages=3 content_bytes=612 truncated_results=0
+golden-model max_tokens=1024 messages=5 content_bytes=1612 truncated_results=0
+golden-model max_tokens=1024 messages=7 content_bytes=2612 truncated_results=0
+golden-model max_tokens=1024 messages=10 content_bytes=3852 truncated_results=0
+golden-model max_tokens=1024 messages=12 content_bytes=4852 truncated_results=0
+golden-model max_tokens=1024 messages=15 content_bytes=5125 truncated_results=0
+golden-model max_tokens=1024 messages=17 content_bytes=6125 truncated_results=0
+golden-model max_tokens=1024 messages=19 content_bytes=6158 truncated_results=0
 unconsumed_replies=0

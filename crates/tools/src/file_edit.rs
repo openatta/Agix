@@ -265,6 +265,7 @@ impl Tool for FileEditTool {
             ),
         )
         .await??;
+        ctx.session.record_write(&path);
 
         // **S1-a **: emit structured diff payload alongside text. TUI
         // parses `structured_content.kind == "diff"` and renders inline; CLI
