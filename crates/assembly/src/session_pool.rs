@@ -6547,6 +6547,7 @@ impl SessionPool {
                     model: "claude-haiku-4-5-20251001".into(),
                     max_tokens: 50,
                     thinking_mode: base::interface::settings::ThinkingMode::Off,
+                    effort: None,
                     fallback_model: None,
                     cache_edits: vec![],
                     origin: None,

@@ -422,6 +422,7 @@ mod tests {
                 model_name: "test-model".into(),
                 max_tokens: 4096,
                 thinking_mode: ThinkingMode::Auto,
+                effort: None,
                 fallback_model: None,
             },
             paths: PathSettings {

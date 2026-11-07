@@ -43,6 +43,17 @@
         }
       ]
     },
+    "Effort": {
+      "description": "How much work the model puts into a reply. DeepSeek accepts `low`,\n`high` and `max`, folding `medium` and `xhigh` into `high`.",
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "type": "string"
+    },
     "ExecutionSettings": {
       "description": "Execution constraints.",
       "properties": {
@@ -170,6 +181,18 @@
         },
         "base_url": {
           "type": "string"
+        },
+        "effort": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Effort"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Sent as `output_config.effort`; `None` leaves it to the endpoint."
         },
         "fallback_model": {
           "default": null,

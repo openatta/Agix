@@ -56,6 +56,7 @@ impl SearchProvider for NativeSearchProvider {
             model: self.model_name.clone(),
             max_tokens: 8192,
             thinking_mode: ThinkingMode::Off,
+            effort: None,
             fallback_model: None,
             cache_edits: Vec::new(),
             origin: Some(CallOrigin::auxiliary(session_id, call_purpose::WEB_SEARCH)),

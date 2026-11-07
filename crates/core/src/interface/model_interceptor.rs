@@ -109,6 +109,7 @@ mod tests {
                 model: "test-model".into(),
                 max_tokens: 1024,
                 thinking_mode: crate::settings::ThinkingMode::Off,
+                effort: None,
                 fallback_model: None,
                 cache_edits: Vec::new(),
                 origin: None,

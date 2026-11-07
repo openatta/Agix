@@ -1381,6 +1381,7 @@ mod binding_tests {
                 model: "claude-opus-5".into(),
                 max_tokens: 8192,
                 thinking_mode: base::settings::ThinkingMode::Auto,
+                effort: None,
                 fallback_model: None,
                 cache_edits: Vec::new(),
                 origin: None,

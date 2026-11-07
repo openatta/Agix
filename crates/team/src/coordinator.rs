@@ -1175,6 +1175,7 @@ async fn drain(
         model: model_name.to_string(),
         max_tokens,
         thinking_mode: ThinkingMode::Off,
+        effort: None,
         fallback_model: None,
         cache_edits: vec![],
         origin: session_id.map(|id| {

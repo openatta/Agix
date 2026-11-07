@@ -219,6 +219,7 @@ mod tests {
                 model: "m".into(),
                 max_tokens: 100,
                 thinking_mode: ThinkingMode::Off,
+                effort: None,
                 fallback_model: None,
                 cache_edits: vec![],
             },

@@ -85,6 +85,7 @@ fn recall_test_settings(root: &std::path::Path) -> Settings {
             model_name: "test-model".into(),
             max_tokens: 4096,
             thinking_mode: ThinkingMode::Off,
+            effort: None,
             fallback_model: None,
         },
         paths: PathSettings {

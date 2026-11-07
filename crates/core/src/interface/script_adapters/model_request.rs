@@ -292,6 +292,7 @@ mod tests {
                 model: "claude-opus-5".into(),
                 max_tokens: 8192,
                 thinking_mode: ThinkingMode::Auto,
+                effort: None,
                 fallback_model: Some("claude-sonnet-5".into()),
                 cache_edits: Vec::new(),
                 origin: None,

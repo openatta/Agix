@@ -941,6 +941,7 @@ Respond with ONLY valid JSON matching this schema (no markdown, no extra text, n
         model: model_name.into(),
         max_tokens: 1000,
         thinking_mode: ThinkingMode::Off,
+        effort: None,
         fallback_model: None,
         cache_edits: vec![],
         origin: session_id.map(|id| {

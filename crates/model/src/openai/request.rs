@@ -8,7 +8,7 @@
 use base::interface::model::{MessageRole, ModelContentBlock, ModelMessage, ToolDef};
 use base::interface::prompt::PromptBlock;
 use base::provider::ThinkingToggle;
-use base::settings::ThinkingMode;
+use base::settings::{Effort, ThinkingMode};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
@@ -98,9 +98,13 @@ pub struct Reasoning {
 }
 
 /// The request fields that turn thinking on or off on an endpoint that has
-/// such a switch. `auto`, or no known switch, sends nothing and leaves the
-/// choice to the endpoint.
-pub fn thinking_switch(toggle: Option<ThinkingToggle>, mode: &ThinkingMode) -> Map<String, Value> {
+/// such a switch, plus DeepSeek's `reasoning_effort` while it is on. `auto`,
+/// or no known switch, sends nothing and leaves the choice to the endpoint.
+pub fn thinking_switch(
+    toggle: Option<ThinkingToggle>,
+    mode: &ThinkingMode,
+    effort: Option<Effort>,
+) -> Map<String, Value> {
     let on = match mode {
         ThinkingMode::Auto => return Map::new(),
         ThinkingMode::Off => false,
@@ -108,10 +112,16 @@ pub fn thinking_switch(toggle: Option<ThinkingToggle>, mode: &ThinkingMode) -> M
     };
     let (key, value) = match toggle {
         None => return Map::new(),
-        Some(ThinkingToggle::Deepseek) => (
-            "thinking",
-            serde_json::json!({ "type": if on { "enabled" } else { "disabled" } }),
-        ),
+        Some(ThinkingToggle::Deepseek) => {
+            let mut fields = Map::from_iter([(
+                "thinking".to_string(),
+                serde_json::json!({ "type": if on { "enabled" } else { "disabled" } }),
+            )]);
+            if let (true, Some(effort)) = (on, effort) {
+                fields.insert("reasoning_effort".into(), serde_json::json!(effort));
+            }
+            return fields;
+        }
         Some(ThinkingToggle::EnableThinking) => ("enable_thinking", Value::Bool(on)),
         Some(ThinkingToggle::ChatTemplateKwargs) => (
             "chat_template_kwargs",
@@ -778,7 +788,7 @@ mod tests {
     fn thinking_switch_speaks_each_endpoints_dialect() {
         use base::provider::ThinkingToggle as T;
 
-        let switch = |t, mode| serde_json::Value::Object(thinking_switch(t, &mode));
+        let switch = |t, mode| serde_json::Value::Object(thinking_switch(t, &mode, None));
         assert_eq!(
             switch(Some(T::Deepseek), ThinkingMode::Off),
             json!({"thinking": {"type": "disabled"}})
@@ -796,6 +806,22 @@ mod tests {
             json!({"chat_template_kwargs": {"enable_thinking": true}})
         );
         assert_eq!(switch(Some(T::Deepseek), ThinkingMode::Auto), json!({}));
+        assert_eq!(
+            Value::Object(thinking_switch(
+                Some(T::Deepseek),
+                &ThinkingMode::On,
+                Some(Effort::High)
+            )),
+            json!({"thinking": {"type": "enabled"}, "reasoning_effort": "high"})
+        );
+        assert_eq!(
+            Value::Object(thinking_switch(
+                Some(T::Deepseek),
+                &ThinkingMode::Off,
+                Some(Effort::High)
+            )),
+            json!({"thinking": {"type": "disabled"}})
+        );
         assert_eq!(switch(None, ThinkingMode::Off), json!({}));
     }
 
@@ -812,6 +838,7 @@ mod tests {
         req.thinking_switch = thinking_switch(
             Some(base::provider::ThinkingToggle::Deepseek),
             &ThinkingMode::Off,
+            None,
         );
         let v = serde_json::to_value(&req).unwrap();
         assert_eq!(v["thinking"], json!({"type": "disabled"}));

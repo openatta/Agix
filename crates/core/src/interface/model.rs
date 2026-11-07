@@ -2,7 +2,7 @@
 
 use crate::prompt::PromptBlock;
 use crate::provider::ApiType;
-use crate::settings::ThinkingMode;
+use crate::settings::{Effort, ThinkingMode};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -45,6 +45,7 @@ pub struct StreamParams {
     pub model: String,
     pub max_tokens: u32,
     pub thinking_mode: ThinkingMode,
+    pub effort: Option<Effort>,
     /// Fallback model to switch to on persistent Overloaded/529 errors (e.g. Opus → Sonnet).
     pub fallback_model: Option<String>,
     /// Cache edits: tool_use_ids whose tool result content should be deleted from the

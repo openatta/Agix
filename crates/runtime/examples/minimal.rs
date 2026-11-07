@@ -36,6 +36,7 @@ fn settings(
             model_name,
             max_tokens: 8192,
             thinking_mode: ThinkingMode::Auto,
+            effort: None,
             fallback_model: None,
         },
         paths: PathSettings {

@@ -50,9 +50,8 @@ pub struct AgentTypeDefinition {
     /// Optional permission-mode override for spawned subagents of this type,
     /// independent of the parent session's mode.
     pub permission_mode: Option<crate::interface::settings::PermissionMode>,
-    /// Optional effort/thinking-mode override. Maps onto
-    /// `crate::interface::settings::ThinkingMode` — not a new concept,
-    /// just this field's name.
+    /// Optional `ModelSettings::effort` override for spawned subagents, by
+    /// name (`low` … `max`).
     pub effort: Option<String>,
     /// Maximum API calls a spawned subagent of this type may make, applied
     /// as this subagent's own `execution.max_api_calls_per_turn` instead of

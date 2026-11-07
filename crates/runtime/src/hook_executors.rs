@@ -60,6 +60,7 @@ impl PromptHookExecutor for ModelPromptHookExecutor {
                 .unwrap_or_else(|| self.default_model_name.clone()),
             max_tokens: self.max_tokens,
             thinking_mode: ThinkingMode::Off,
+            effort: None,
             fallback_model: None,
             cache_edits: vec![],
             origin: self.session_id.as_ref().map(|id| {

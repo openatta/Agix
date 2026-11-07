@@ -10,7 +10,7 @@
 //! representation, so there is no second shape that can drift from the first.
 
 use base::interface::model::{InputMap, ModelError, ModelEvent, Usage};
-use base::interface::settings::ThinkingMode;
+use base::interface::settings::{Effort, ThinkingMode};
 use base::provider::ApiType;
 use serde::{Deserialize, Serialize};
 
@@ -109,6 +109,8 @@ pub struct RecordedParams {
     pub model: String,
     pub max_tokens: u32,
     pub thinking_mode: ThinkingMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<Effort>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback_model: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -267,6 +269,7 @@ mod tests {
                 model: "claude-opus-5".into(),
                 max_tokens: 8192,
                 thinking_mode: ThinkingMode::Off,
+                effort: None,
                 fallback_model: None,
                 cache_edits: vec![],
             },

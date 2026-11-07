@@ -2,6 +2,7 @@
 //!
 //! 字段名 / 形状对应 API；与 agix-base::Message / ContentBlock 配合使用。
 
+use base::interface::settings::Effort;
 use base::message::{ContentBlock, Role};
 use serde::Serialize;
 use serde_json::Value;
@@ -71,6 +72,9 @@ pub struct MessagesRequest {
     /// `Some(Enabled{...}) / Some(Adaptive)` = 开思考。
     pub thinking: Option<ThinkingConfig>,
 
+    /// 写成 `output_config.effort`；`None` 不发这个字段。
+    pub effort: Option<Effort>,
+
     /// 当 thinking 开启时**必须** None；否则 API 报错
     pub temperature: Option<f32>,
 
@@ -110,6 +114,7 @@ impl MessagesRequest {
             tool_choice: None,
             stream: true,
             thinking: None,
+            effort: None,
             temperature: None,
             top_p: None,
             top_k: None,
@@ -348,6 +353,9 @@ impl Serialize for MessagesRequest {
         }
         if let Some(ref th) = self.thinking {
             map.serialize_entry("thinking", th)?;
+        }
+        if let Some(effort) = self.effort {
+            map.serialize_entry("output_config", &serde_json::json!({ "effort": effort }))?;
         }
         if let Some(ref t) = self.temperature {
             map.serialize_entry("temperature", t)?;
@@ -665,6 +673,7 @@ mod tests {
             thinking: Some(ThinkingConfig::Enabled {
                 budget_tokens: 8000,
             }),
+            effort: Some(Effort::High),
             temperature: None,
             top_p: None,
             top_k: None,
@@ -721,6 +730,7 @@ mod tests {
         // --- Thinking ---
         assert_eq!(obj["thinking"]["type"], "enabled");
         assert_eq!(obj["thinking"]["budget_tokens"], 8000);
+        assert_eq!(obj["output_config"], json!({"effort": "high"}));
 
         // --- Optional fields omitted ---
         assert!(obj.get("temperature").is_none());

@@ -23,8 +23,8 @@ use base::interface::model::{MessageRole, Model, ModelContentBlock, ModelMessage
 use base::interface::permission::Permission;
 use base::interface::scene::Scene;
 use base::interface::settings::{
-    ExecutionSettings, ModelSettings, PathSettings, PermissionMode, SandboxConfig, Settings,
-    ThinkingMode,
+    Effort, ExecutionSettings, ModelSettings, PathSettings, PermissionMode, SandboxConfig,
+    Settings, ThinkingMode,
 };
 use base::tool::InMemoryToolRegistry;
 use base::tool::ProgressSender;
@@ -1088,18 +1088,8 @@ async fn run_persistent_member_loop(
 /// overriding only the model-selection fields — the sub-agent inherits the
 /// parent's actual scope/paths (skills/hooks/agents/memory all resolve
 /// correctly), auth, sandbox policy, etc.
-/// Map a five-level `effort` (`low`/`medium`/`high`/`xhigh`/`max`) onto
-/// Agix's coarser `ThinkingMode` (`Off`/`Auto`/`On`/`OnBudget`).
-/// Lossy by construction — Agix has no separate effort axis, this is
-/// the closest existing knob, not a new concept. Unrecognized values are
-/// left as `None` (no override) rather than guessing.
-fn effort_to_thinking_mode(effort: &str) -> Option<ThinkingMode> {
-    match effort {
-        "low" => Some(ThinkingMode::Off),
-        "medium" => Some(ThinkingMode::Auto),
-        "high" | "xhigh" | "max" => Some(ThinkingMode::On),
-        _ => None,
-    }
+fn parse_effort(effort: &str) -> Option<Effort> {
+    serde_json::from_value(serde_json::Value::String(effort.to_string())).ok()
 }
 
 /// How much a permission mode restrains the agent. Higher restrains more.
@@ -1183,8 +1173,8 @@ fn apply_agent_type_overrides(settings: &mut Settings, def: &AgentTypeDefinition
         }
     }
     if let Some(effort) = &def.effort {
-        if let Some(mode) = effort_to_thinking_mode(effort) {
-            settings.model.thinking_mode = mode;
+        if let Some(level) = parse_effort(effort) {
+            settings.model.effort = Some(level);
         } else {
             tracing::warn!(effort = %effort, agent_type = %def.name, "unrecognized effort value, ignoring");
         }
@@ -1248,6 +1238,7 @@ fn fallback_settings(
             model_name,
             max_tokens,
             thinking_mode: ThinkingMode::Auto,
+            effort: None,
             fallback_model,
         },
         paths: PathSettings {
@@ -4793,13 +4784,13 @@ mod catalog_tests {
     }
 
     #[test]
-    fn effort_to_thinking_mode_maps_five_levels_onto_three() {
-        assert_eq!(effort_to_thinking_mode("low"), Some(ThinkingMode::Off));
-        assert_eq!(effort_to_thinking_mode("medium"), Some(ThinkingMode::Auto));
-        assert_eq!(effort_to_thinking_mode("high"), Some(ThinkingMode::On));
-        assert_eq!(effort_to_thinking_mode("xhigh"), Some(ThinkingMode::On));
-        assert_eq!(effort_to_thinking_mode("max"), Some(ThinkingMode::On));
-        assert_eq!(effort_to_thinking_mode("not-a-level"), None);
+    fn effort_names_parse_to_their_levels() {
+        assert_eq!(parse_effort("low"), Some(Effort::Low));
+        assert_eq!(parse_effort("medium"), Some(Effort::Medium));
+        assert_eq!(parse_effort("high"), Some(Effort::High));
+        assert_eq!(parse_effort("xhigh"), Some(Effort::Xhigh));
+        assert_eq!(parse_effort("max"), Some(Effort::Max));
+        assert_eq!(parse_effort("not-a-level"), None);
     }
 
     #[test]
@@ -4808,7 +4799,7 @@ mod catalog_tests {
             name: "db-reader".into(),
             description: "d".into(),
             permission_mode: Some(base::interface::settings::PermissionMode::Plan),
-            effort: Some("high".into()),
+            effort: Some("max".into()),
             max_turns: Some(5),
             ..Default::default()
         };
@@ -4819,7 +4810,7 @@ mod catalog_tests {
             settings.permission_mode,
             base::interface::settings::PermissionMode::Plan
         );
-        assert_eq!(settings.model.thinking_mode, ThinkingMode::On);
+        assert_eq!(settings.model.effort, Some(Effort::Max));
         assert_eq!(settings.execution.max_api_calls_per_turn, 5);
         assert_ne!(
             settings.execution.max_api_calls_per_turn,
@@ -4927,6 +4918,7 @@ mod catalog_tests {
         let before = (
             settings.permission_mode,
             settings.model.thinking_mode.clone(),
+            settings.model.effort,
             settings.execution.max_api_calls_per_turn,
         );
         apply_agent_type_overrides(&mut settings, &def);
@@ -4934,6 +4926,7 @@ mod catalog_tests {
             (
                 settings.permission_mode,
                 settings.model.thinking_mode,
+                settings.model.effort,
                 settings.execution.max_api_calls_per_turn
             ),
             before

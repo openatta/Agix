@@ -133,9 +133,7 @@ impl Model for AnthropicModel {
         let thinking = match params.thinking_mode {
             ThinkingMode::Auto => None,
             ThinkingMode::Off => Some(ThinkingConfig::Disabled),
-            ThinkingMode::On => Some(ThinkingConfig::Enabled {
-                budget_tokens: 4096,
-            }),
+            ThinkingMode::On => Some(ThinkingConfig::Adaptive),
             ThinkingMode::OnBudget(n) => Some(ThinkingConfig::Enabled { budget_tokens: n }),
         };
 
@@ -157,6 +155,7 @@ impl Model for AnthropicModel {
             tool_choice,
             stream: true,
             thinking,
+            effort: params.effort,
             temperature: None,
             top_p: None,
             top_k: None,
@@ -1204,6 +1203,7 @@ mod provider_search_tests {
             model: "m".into(),
             max_tokens: 100,
             thinking_mode: ThinkingMode::Off,
+            effort: None,
             fallback_model: None,
             cache_edits: Vec::new(),
             origin: None,

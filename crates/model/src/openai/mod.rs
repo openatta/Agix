@@ -376,8 +376,11 @@ impl Model for OpenAICompatibleModel {
                 provenance: self.inner.provenance.clone(),
             },
         );
-        req.thinking_switch =
-            request::thinking_switch(self.inner.thinking_toggle, &params.thinking_mode);
+        req.thinking_switch = request::thinking_switch(
+            self.inner.thinking_toggle,
+            &params.thinking_mode,
+            params.effort,
+        );
 
         let inner = self.inner.clone();
         let s = async_stream::stream! {
@@ -494,6 +497,7 @@ mod tests {
                     model: "m".into(),
                     max_tokens: 10,
                     thinking_mode: base::interface::settings::ThinkingMode::Off,
+                    effort: None,
                     fallback_model: None,
                     cache_edits: Vec::new(),
                     origin: None,

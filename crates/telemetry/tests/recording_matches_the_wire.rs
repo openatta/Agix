@@ -248,6 +248,7 @@ async fn every_recorded_call_matches_what_crossed_the_boundary() {
                     model: "claude-opus-5".into(),
                     max_tokens: 8192,
                     thinking_mode: ThinkingMode::Off,
+                    effort: None,
                     fallback_model: Some("claude-sonnet-5".into()),
                     cache_edits: vec![],
                     origin: Some(
@@ -380,6 +381,7 @@ async fn token_boundaries_and_argument_fragments_survive_the_round_trip() {
                 model: "m".into(),
                 max_tokens: 100,
                 thinking_mode: ThinkingMode::Off,
+                effort: None,
                 fallback_model: None,
                 cache_edits: vec![],
                 origin: None,
@@ -452,6 +454,7 @@ async fn replaying_a_recording_reproduces_the_boundary_traffic() {
         model: "m".into(),
         max_tokens: 100,
         thinking_mode: ThinkingMode::Off,
+        effort: None,
         fallback_model: None,
         cache_edits: vec![],
         origin: None,

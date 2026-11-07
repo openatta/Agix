@@ -283,6 +283,9 @@ pub struct ModelSettings {
     pub model_name: String,
     pub max_tokens: u32,
     pub thinking_mode: ThinkingMode,
+    /// Sent as `output_config.effort`; `None` leaves it to the endpoint.
+    #[serde(default)]
+    pub effort: Option<Effort>,
     /// Fallback model for persistent Overloaded/529 errors (e.g. Opus → Sonnet).
     /// None = no fallback.
     #[serde(default)]
@@ -701,6 +704,18 @@ pub enum ThinkingMode {
     OnBudget(u32),
 }
 
+/// How much work the model puts into a reply. DeepSeek accepts `low`,
+/// `high` and `max`, folding `medium` and `xhigh` into `high`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Effort {
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+}
+
 impl Settings {
     /// Load settings from user and local directories, with ENV override.
     /// Priority (low → high): `global_dir/settings.json` (shared by every
@@ -865,7 +880,8 @@ impl Settings {
                 auth_token: String::new(),
                 model_name: model_name.to_string(),
                 max_tokens: 2000,
-                thinking_mode: ThinkingMode::Auto,
+                thinking_mode: ThinkingMode::On,
+                effort: Some(Effort::High),
                 fallback_model: None,
             },
             paths: PathSettings {

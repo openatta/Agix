@@ -72,6 +72,7 @@ impl SecondaryLlm for AnthropicSecondaryLlm {
             tool_choice: None,
             stream: true,
             thinking: None,
+            effort: None,
             temperature: None,
             top_p: None,
             top_k: None,

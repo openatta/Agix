@@ -116,6 +116,7 @@ async fn run_openai(policy: Arc<dyn BackoffPolicy>) -> usize {
         model: String::new(),
         max_tokens: 256,
         thinking_mode: ThinkingMode::Off,
+        effort: None,
         fallback_model: None,
         cache_edits: Vec::new(),
         origin: None,

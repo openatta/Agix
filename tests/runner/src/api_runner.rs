@@ -262,6 +262,7 @@ async fn build_agent(
         model_name: model_name.clone(),
         max_tokens: 2000,
         thinking_mode: ThinkingMode::Off,
+        effort: None,
         fallback_model: None,
     };
     if config.fixture_dir.is_none() {

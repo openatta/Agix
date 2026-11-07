@@ -137,6 +137,7 @@ fn params_of(request: &CallRecord) -> StreamParams {
         model: request.params.model.clone(),
         max_tokens: request.params.max_tokens,
         thinking_mode: request.params.thinking_mode.clone(),
+        effort: request.params.effort,
         fallback_model: request.params.fallback_model.clone(),
         cache_edits: request.params.cache_edits.clone(),
         // Attributed to the session that made it originally, and marked as a
@@ -514,6 +515,7 @@ mod tests {
                     model: "claude-opus-5".into(),
                     max_tokens: 4096,
                     thinking_mode: ThinkingMode::Off,
+                    effort: None,
                     fallback_model: None,
                     cache_edits: vec![],
                 },

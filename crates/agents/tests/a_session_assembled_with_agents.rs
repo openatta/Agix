@@ -45,6 +45,7 @@ fn settings() -> Settings {
             model_name: "test".into(),
             max_tokens: 2000,
             thinking_mode: ThinkingMode::Auto,
+            effort: None,
             fallback_model: None,
         },
         paths: PathSettings {

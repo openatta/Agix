@@ -3050,6 +3050,7 @@ or project context that should survive across sessions.
                 model: model.to_string(),
                 max_tokens,
                 thinking_mode: self.settings.model.thinking_mode.clone(),
+                effort: self.settings.model.effort,
                 fallback_model: self.settings.model.fallback_model.clone(),
                 cache_edits: self.cached_mc.consume_pending_edits(),
                 origin,
@@ -3088,6 +3089,7 @@ or project context that should survive across sessions.
                 model: model.to_string(),
                 max_tokens,
                 thinking_mode: self.settings.model.thinking_mode.clone(),
+                effort: self.settings.model.effort,
                 fallback_model,
                 cache_edits: Vec::new(),
                 origin,
@@ -6070,6 +6072,7 @@ mod tests {
                 model_name: "test-model".into(),
                 max_tokens: 4096,
                 thinking_mode: ThinkingMode::Auto,
+                effort: None,
                 fallback_model: None,
             },
             paths: base::interface::settings::PathSettings {
@@ -6436,6 +6439,7 @@ mod tests {
                 model_name: "test-model".into(),
                 max_tokens: 4096,
                 thinking_mode: ThinkingMode::Off,
+                effort: None,
                 fallback_model: None,
             },
             paths: base::interface::settings::PathSettings {
@@ -6562,6 +6566,7 @@ Return only a JSON array of memories. If nothing is worth saving, return []."
         model: model_name.to_string(),
         max_tokens: 2000,
         thinking_mode: ThinkingMode::Off,
+        effort: None,
         fallback_model: None,
         cache_edits: vec![],
         // A call the session pays for, outside any turn. Saying so is what
@@ -7352,6 +7357,7 @@ mod prompt_assembly_tests {
                 model_name: "test".into(),
                 max_tokens: 2000,
                 thinking_mode: ThinkingMode::Auto,
+                effort: None,
                 fallback_model: None,
             },
             paths: PathSettings {
