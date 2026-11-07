@@ -462,12 +462,11 @@ pub struct LiveRun {
 impl LiveRun {
     /// Settings every live project starts from: no memory (it would make one
     /// run's answers depend on the last), no permission prompts (nobody is
-    /// there to answer them), room for a model that thinks before it answers.
+    /// there to answer them).
     pub fn base_settings() -> Value {
         json!({
             "memory_enabled": false,
-            "permission_mode": "bypassPermissions",
-            "model": { "max_tokens": 16000 }
+            "permission_mode": "bypassPermissions"
         })
     }
 

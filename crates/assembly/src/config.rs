@@ -274,11 +274,8 @@ pub fn load_daemon_config(
     );
     // `--max-tokens` is a fallback (same tier as `Settings::load`'s
     // `default_model` param) — only takes effect when no settings.json
-    // layer set it. `Settings::load` doesn't take this as a parameter
-    // itself (unlike `default_model`) because its own hardcoded default
-    // (2000) already matches the CLI flag's own default, so this
-    // only matters when a caller explicitly passes a non-default value.
-    if settings.model.max_tokens == 2000 {
+    // layer set it, which is what still holding the default means.
+    if settings.model.max_tokens == base::settings::DEFAULT_MAX_TOKENS {
         settings.model.max_tokens = cli_max_tokens;
     }
 

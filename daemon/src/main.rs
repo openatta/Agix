@@ -29,7 +29,7 @@ Options:
       --session-idle-timeout <SECS>
                                    Session idle timeout in seconds [default: 3600]
       --model <NAME>               Model name for sessions [default: claude-sonnet-4-6]
-      --max-tokens <N>             Max tokens per turn [default: 2000]
+      --max-tokens <N>             Max tokens per turn [default: 32000]
       --listen <ADDR>              Bind a TCP listener at ADDR (e.g. 127.0.0.1:7878);
                                    requires --token or AGIX_DAEMON_TOKEN
       --listen-ws <ADDR>           Bind a WebSocket listener at a loopback ADDR
@@ -166,7 +166,7 @@ impl Cli {
             session_cap: 32,
             session_idle_timeout: 3600,
             model: "claude-sonnet-4-6".into(),
-            max_tokens: 2000,
+            max_tokens: base::settings::DEFAULT_MAX_TOKENS,
             listen: None,
             listen_ws: None,
             token: None,
@@ -670,7 +670,7 @@ mod tests {
         assert_eq!(cli.session_cap, 32);
         assert_eq!(cli.session_idle_timeout, 3600);
         assert_eq!(cli.model, "claude-sonnet-4-6");
-        assert_eq!(cli.max_tokens, 2000);
+        assert_eq!(cli.max_tokens, 32_000);
         assert_eq!(cli.scene, "code");
         assert_eq!(cli.permission_prompt_timeout, 300);
         assert!(cli.socket.is_none() && cli.instance.is_none() && cli.scenes.is_empty());

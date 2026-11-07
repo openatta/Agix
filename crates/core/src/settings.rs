@@ -273,6 +273,11 @@ pub enum PermissionAction {
     Ask,
 }
 
+/// Output ceiling per model call when nothing configures one. Thinking counts
+/// against it, so a small ceiling cuts replies off mid-thought; 32K is within
+/// every current Claude model's limit.
+pub const DEFAULT_MAX_TOKENS: u32 = 32_000;
+
 /// LLM model configuration for a single provider.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ModelSettings {
@@ -879,7 +884,7 @@ impl Settings {
                 base_url: String::new(),
                 auth_token: String::new(),
                 model_name: model_name.to_string(),
-                max_tokens: 2000,
+                max_tokens: DEFAULT_MAX_TOKENS,
                 thinking_mode: ThinkingMode::On,
                 effort: Some(Effort::High),
                 fallback_model: None,
