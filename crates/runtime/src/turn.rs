@@ -210,6 +210,7 @@ impl Agent {
                 let processed_content = if let Some(target) = parse_token_budget_directive(&content)
                 {
                     self.output_token_target = Some(target);
+                    self.output_token_target_unannounced = true;
                     self.accumulated_output_tokens = 0;
                     self.token_budget_continuation_count = 0;
                     tracing::info!(target, "Token budget directive parsed — set output target");
@@ -913,6 +914,21 @@ impl Agent {
         self.deliver_notices();
         self.pending_input = user_text_fingerprint(&message).map(|fp| (fp, spans));
         self.session.push_message_from(message, origin);
+        if std::mem::take(&mut self.output_token_target_unannounced) {
+            if let Some(target) = self.output_token_target {
+                self.session.push_message(ModelMessage {
+                    role: MessageRole::User,
+                    content: vec![ModelContentBlock::Text {
+                        text: format!(
+                            "<system-reminder>\nThe user set an output token target of {target}. \
+                             Your output token count is shown as you go and work continues \
+                             automatically until the target is met. The target is a hard \
+                             ceiling; let its size set how thorough to be.\n</system-reminder>"
+                        ),
+                    }],
+                });
+            }
+        }
 
         // ── Memory recall: collect the prefetch and inject it into this turn ──
         //
@@ -2698,11 +2714,8 @@ or project context that should survive across sessions.
 
         let mut text = String::from(
             "## Available Skills\n\n\
-             This list reflects what's available right now, in this turn — \
-             skills can be added or removed while a session is running. If \
-             it disagrees with something you or the user said about skill \
-             availability earlier in this conversation, this current list \
-             is the accurate one.\n\n",
+             Current as of this turn; it overrides anything said earlier about \
+             which skills exist.\n\n",
         );
         for (i, s) in llm_skills.iter().enumerate() {
             if !keeps_description[i] {

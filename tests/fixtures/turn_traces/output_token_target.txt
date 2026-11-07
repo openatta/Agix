@@ -18,6 +18,7 @@ TurnComplete stop_reason=end_turn
 == session log ==
 User blocks=1
 User blocks=1
+User blocks=1
 Assistant
 User blocks=1
 Assistant
@@ -27,8 +28,8 @@ User blocks=1
 Assistant
 
 == model calls ==
-golden-model max_tokens=1024 messages=2 content_bytes=319 truncated_results=0
-golden-model max_tokens=1024 messages=4 content_bytes=429 truncated_results=0
-golden-model max_tokens=1024 messages=6 content_bytes=540 truncated_results=0
-golden-model max_tokens=1024 messages=8 content_bytes=650 truncated_results=0
+golden-model max_tokens=1024 messages=3 content_bytes=569 truncated_results=0
+golden-model max_tokens=1024 messages=5 content_bytes=679 truncated_results=0
+golden-model max_tokens=1024 messages=7 content_bytes=790 truncated_results=0
+golden-model max_tokens=1024 messages=9 content_bytes=900 truncated_results=0
 unconsumed_replies=1

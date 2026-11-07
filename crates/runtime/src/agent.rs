@@ -409,6 +409,9 @@ pub struct Agent {
     pub(crate) messages_to_ack: Vec<String>,
     /// Output token budget target (e.g., 500k, 2M). `None` = no budget active.
     pub(crate) output_token_target: Option<u64>,
+    /// A target was set by the message being handled and the model has not
+    /// been told what it means yet.
+    pub(crate) output_token_target_unannounced: bool,
     /// Accumulated output tokens for the current budget session.
     /// Reset each time a new budget target is set.
     pub(crate) accumulated_output_tokens: u64,
@@ -2543,6 +2546,7 @@ impl Builder {
                 has_handled_orphaned_permission: false,
                 messages_to_ack: Vec::new(),
                 output_token_target: None,
+                output_token_target_unannounced: false,
                 accumulated_output_tokens: 0,
                 token_budget_continuation_count: 0,
                 last_delta_tokens: 0,

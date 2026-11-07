@@ -176,7 +176,13 @@ impl Daemon {
         std::fs::create_dir_all(paths.config_root())?;
 
         let socket = world.socket();
-        let config = load_daemon_config(provider.model(), 2000, Some(&socket), &opts.scene, &paths);
+        let config = load_daemon_config(
+            provider.model(),
+            base::settings::DEFAULT_MAX_TOKENS,
+            Some(&socket),
+            &opts.scene,
+            &paths,
+        );
 
         let client: Arc<dyn AnthropicClient> = Arc::new(HttpAnthropicClient::with_base(
             AuthMode::ApiKey("harness".to_string()),
