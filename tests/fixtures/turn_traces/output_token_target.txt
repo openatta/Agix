@@ -28,8 +28,8 @@ User blocks=1
 Assistant
 
 == model calls ==
-golden-model max_tokens=1024 messages=3 content_bytes=569 truncated_results=0
-golden-model max_tokens=1024 messages=5 content_bytes=679 truncated_results=0
-golden-model max_tokens=1024 messages=7 content_bytes=790 truncated_results=0
-golden-model max_tokens=1024 messages=9 content_bytes=900 truncated_results=0
+golden-model max_tokens=1024 messages=4 content_bytes=3388 truncated_results=0
+golden-model max_tokens=1024 messages=6 content_bytes=3498 truncated_results=0
+golden-model max_tokens=1024 messages=8 content_bytes=3609 truncated_results=0
+golden-model max_tokens=1024 messages=10 content_bytes=3719 truncated_results=0
 unconsumed_replies=1

@@ -635,12 +635,17 @@ handle.dispose();
 |---|---|
 | `scene.skeleton` | scene 的提示,在这个 scene 不给分节命名的时候;第二段起依次是 `scene.skeleton.2`、`.3` |
 | `scene.<section>` | 自己给分节命名的 scene 保住那些名字,加上前缀 |
-| `skills.catalog` | 可用 skill 的清单 |
+| `skills.catalog` | 可用 skill 的清单（`User` 块，见下） |
 | `memory.session` | 怎么用基于文件的记忆系统 |
 | `rules` | `.agix/rules/` 的发现索引 |
 | `mcp.instructions` | 来自已连接 MCP server 的指令 |
 | `config.prompt_append` | `settings.prompt_append` |
 | `config.prompt_override` | `settings.prompt_override`,它把一切都替掉 |
+
+块的 `role` 决定它送到哪里：`System` 进系统提示；`User` 不进系统提示，而是每次调用都作为
+对话开头的一条 `<system-reminder>` 消息送出。有的端点（DeepSeek）按 system → tools →
+messages 的顺序做前缀缓存，系统提示里一段随项目变化的内容会让其后整张工具表都失去缓存，
+`skills.catalog` 因此是 `User` 块。扩展照常按名字定位、修改、删除它。
 
 每个块还带一个 `origin`——`Kernel`、`Config`、`Plugin(name)` 或 `Script(path)`
 ——组装 hook 的权限规则读的就是它。

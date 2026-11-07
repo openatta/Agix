@@ -56,7 +56,8 @@ pub mod names {
     pub const SCENE_SKELETON: &str = "scene.skeleton";
     /// Prefix for a scene that does name its sections.
     pub const SCENE_PREFIX: &str = "scene.";
-    /// The inventory of available skills.
+    /// The inventory of available skills. A `User` block — it opens the
+    /// conversation rather than joining the system prompt.
     pub const SKILLS_CATALOG: &str = "skills.catalog";
     /// How to use the file-based memory system.
     pub const MEMORY_SESSION: &str = "memory.session";
@@ -99,6 +100,12 @@ impl BlockOrigin {
     }
 }
 
+/// Where a block is delivered. `User` blocks open the conversation, as one
+/// `<system-reminder>` message ahead of everything else, instead of joining
+/// the system prompt: endpoints that cache the prefix in the order system,
+/// tools, messages (DeepSeek) would otherwise re-read the whole tool table
+/// whenever such a block differs, as the skills inventory does between
+/// projects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BlockRole {
@@ -255,7 +262,7 @@ pub fn assemble_prompt_with(
         if !text.is_empty() {
             kernel.push((
                 orders::SKILLS_CATALOG,
-                PromptBlock::system(text.to_string()).named(names::SKILLS_CATALOG),
+                PromptBlock::user(text.to_string()).named(names::SKILLS_CATALOG),
             ));
         }
     }

@@ -3019,6 +3019,7 @@ or project context that should survive across sessions.
             .map(|b| {
                 serde_json::json!({
                     "name": b.name,
+                    "role": b.role,
                     "origin": b.origin,
                     "tokens": tokens_of(&b.content),
                     "text": b.content,
@@ -3149,6 +3150,7 @@ or project context that should survive across sessions.
             &self.model_interceptors,
             &mut request,
         );
+        open_conversation_with_user_blocks(&mut request);
         self.model
             .stream(
                 request.prompt_blocks,
@@ -4322,6 +4324,36 @@ fn sync_mcp_adapters(
     }
 }
 
+/// Moves the request's `User` prompt blocks into one `<system-reminder>`
+/// message at the head of the conversation (see `BlockRole`).
+fn open_conversation_with_user_blocks(request: &mut ModelRequest) {
+    let (opening, system): (Vec<PromptBlock>, Vec<PromptBlock>) =
+        std::mem::take(&mut request.prompt_blocks)
+            .into_iter()
+            .partition(|b| b.role == base::interface::prompt::BlockRole::User);
+    request.prompt_blocks = system;
+    if opening.is_empty() {
+        return;
+    }
+    let text = opening
+        .iter()
+        .map(|b| b.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    request.messages.insert(
+        0,
+        ModelMessage {
+            role: MessageRole::User,
+            content: vec![ModelContentBlock::Text {
+                text: format!("<system-reminder>\n{text}\n</system-reminder>"),
+            }],
+        },
+    );
+    if let Some(map) = request.params.input_map.as_mut() {
+        map.user_message += 1;
+    }
+}
+
 fn build_prompt_context<'a>(
     settings: &'a base::interface::settings::Settings,
     frozen: Option<&'a base::frozen::FrozenContext>,
@@ -5014,6 +5046,46 @@ mod sandbox_settings_tests {
 mod tests {
     use super::*;
     use base::interface::settings::ThinkingMode;
+
+    #[test]
+    fn user_blocks_open_the_conversation_and_the_input_map_follows() {
+        let text = |t: &str| ModelMessage {
+            role: MessageRole::User,
+            content: vec![ModelContentBlock::Text { text: t.into() }],
+        };
+        let mut request = ModelRequest {
+            prompt_blocks: vec![
+                PromptBlock::system("rules"),
+                PromptBlock::user("skills: a, b").named(base::prompt::names::SKILLS_CATALOG),
+            ],
+            tool_defs: vec![],
+            messages: vec![text("context"), text("hello")],
+            params: base::interface::model::StreamParams {
+                model: "m".into(),
+                max_tokens: 1,
+                thinking_mode: ThinkingMode::Off,
+                effort: None,
+                fallback_model: None,
+                cache_edits: vec![],
+                origin: None,
+                input_map: Some(base::interface::model::InputMap {
+                    user_message: 1,
+                    spans: vec![],
+                }),
+                provider_search: None,
+            },
+        };
+        open_conversation_with_user_blocks(&mut request);
+
+        assert_eq!(request.prompt_blocks.len(), 1);
+        assert_eq!(request.prompt_blocks[0].content, "rules");
+        assert_eq!(request.messages.len(), 3);
+        assert!(matches!(
+            &request.messages[0].content[0],
+            ModelContentBlock::Text { text } if text == "<system-reminder>\nskills: a, b\n</system-reminder>"
+        ));
+        assert_eq!(request.params.input_map.unwrap().user_message, 2);
+    }
 
     /// The session-memory staleness reset (`run_user_turn`'s "Feature #9"
     /// block) recognizes a self-update by comparing `extract_tool_file_paths`

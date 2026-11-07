@@ -143,7 +143,9 @@ impl Pipeline {
                 "settings of `{name}` in a `{project}` session's prompt: {mine} expected"
             );
             assert_eq!(
-                prompt.contains(&format!("skill-{name}")),
+                call.body["messages"][0]
+                    .to_string()
+                    .contains(&format!("skill-{name}")),
                 mine,
                 "skills of `{name}` in a `{project}` session's prompt: {mine} expected"
             );

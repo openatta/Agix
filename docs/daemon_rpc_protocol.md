@@ -1382,6 +1382,7 @@ client,会话在原地按新的规格重建(它是空闲的,不会腰斩什么),
 { "basis": "next_step_without_new_input",
   "model": "…", "max_tokens": 0,
   "system": [ { "name": "skills.catalog",   // 块名,见引擎的扩展点文档
+                "role": "user",             // system:进系统提示;user:作为对话开头的一条消息
                 "origin": "kernel",         // kernel | config | {"plugin":"…"} | {"script":"…"}
                 "tokens": 0, "text": "…" } ],
   "tools": [ { "name": "Bash", "source": "builtin", "schema_bytes": 0, "tokens": 0 } ],

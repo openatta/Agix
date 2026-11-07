@@ -2176,31 +2176,26 @@ async fn a_project_bound_session_sees_that_projects_own_skills() {
 
     // The last request that carried a system prompt: the background memory
     // extraction fires a request of its own after every turn, and it sends
-    // none, so `last()` alone would be reading the wrong one.
-    let system_of_last = |seen: &SeenRequests| {
-        seen.lock()
-            .unwrap()
+    // none, so `last()` alone would be reading the wrong one. The skills
+    // inventory opens that request's conversation.
+    let opening_of_last = |seen: &SeenRequests| {
+        let seen = seen.lock().unwrap();
+        let req = seen
             .iter()
             .rev()
             .find(|req| !req.system.is_empty())
-            .expect("some request carried a system prompt")
-            .system
-            .iter()
-            .map(|b| match b {
-                model::types::SystemBlock::Text { text, .. } => text.clone(),
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+            .expect("some request carried a system prompt");
+        serde_json::to_string(&req.messages[0]).unwrap()
     };
     assert!(
-        system_of_last(&seen).contains("freeze-check"),
+        opening_of_last(&seen).contains("freeze-check"),
         "a session must see the skills of the project it is bound to"
     );
 
     // And the daemon's own project does not acquire them.
     run_turn(&srv.sock, None, "anything").await;
     assert!(
-        !system_of_last(&seen).contains("freeze-check"),
+        !opening_of_last(&seen).contains("freeze-check"),
         "one project's skills must not leak into another's sessions"
     );
 
