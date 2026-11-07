@@ -350,8 +350,8 @@ async fn the_log_comes_back_with_the_result() {
     assert!(t.contains("Log:\nsaw {\"n\":2}\nsecond"), "{t}");
 }
 
-#[test]
-fn the_description_lists_callable_tools_as_signatures() {
+#[tokio::test]
+async fn the_description_lists_call_shapes_and_the_guide_says_the_rest() {
     let tool = RunCodeTool::new(
         &[
             CallableTool {
@@ -372,12 +372,30 @@ fn the_description_lists_callable_tools_as_signatures() {
     );
     let d = tool.description();
     assert!(
-        d.contains("tools.Read({file_path, limit?}) → text — Read a file (text/image/PDF) with optional line range."),
+        d.contains("tools.Read({file_path, limit?}) → text\n"),
         "{d}"
     );
+    assert!(d.contains("callTool(\"mcp__x__do-it\", {a?})"), "{d}");
+    assert!(d.contains("workflows or multi-agent orchestration"));
     assert!(
-        d.contains("callTool(\"mcp__x__do-it\", {a?}) — Does it"),
-        "{d}"
+        !d.contains("stopRequested"),
+        "the details belong to the guide"
     );
-    assert!(d.contains("QuickJS"));
+
+    let ctx = base::tool::PromptContext {
+        cwd: "/tmp".into(),
+        model: String::new(),
+        session_id: String::new(),
+        is_interactive: false,
+        all_tool_names: vec![],
+        allowed_agent_types: vec![],
+        path_style: Default::default(),
+    };
+    let guide = tool.detailed_prompt(&ctx).await.expect("a guide");
+    assert!(
+        guide.contains("tools.Read({file_path, limit?}) → text — Read a file (text/image/PDF) with optional line range."),
+        "{guide}"
+    );
+    assert!(guide.contains("callTool(\"mcp__x__do-it\", {a?}) — Does it"));
+    assert!(guide.contains("stopRequested()"));
 }

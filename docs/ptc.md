@@ -80,8 +80,8 @@ return reviews.map((r, i) => ({ module: args.modules[i], ...(r.status === "fulfi
 | `Agent`（脚本里经 `agent()` 用） | `Skill`、`ToolSearch`、`RunCode` 自己 |
 | MCP 工具（`mcp__*`） | `Team*`、`Task*`、`Monitor`、`Cron*`、`PushNotification`、`StructuredOutput`、worktree |
 
-工具描述里列出本会话可调的那些，一行一个签名，由各工具的 schema 与它声明的返回形状
-（`Tool::code_result`）生成；场景过滤掉的不出现：
+使用指南里列出本会话可调的那些，一行一个签名，由各工具的 schema 与它声明的返回形状
+（`Tool::code_result`）生成；场景过滤掉的不出现（工具描述里只列调用形状，见 §6）：
 
 ```
 tools.Glob({pattern, path?, …}) → {paths: string[], more: number} — Find files …
@@ -149,28 +149,31 @@ tools.Read({file_path, offset?, limit?}) → text, each line prefixed with its n
 
 ## 6. 提示词
 
-`RunCode` 的描述（常驻，进提示词缓存）= 一段固定说明 + 本会话可调工具的签名清单：
+`RunCode` 常驻，描述每次请求都带，所以只放够用的部分（约 1.2K 字符）：用途、什么时候用、
+脚本环境一句话，加上本会话可调工具的调用形状（不含各工具的一句话说明；`Agent` 不列，
+脚本里用 `agent()`）：
 
 ```
-Write a JavaScript program that calls this session's tools, and get back only its return
-value. Use it when a task needs many tool calls whose intermediate results you don't need
-to read one by one — searching many files, fetching many pages, fanning out sub-agents and
-merging what they find. For a few calls, call the tools directly.
+Run a JavaScript program that calls this session's tools — in parallel, in loops or in
+stages — and get back only its return value. For batch work (many files, pages or items)
+and for workflows or multi-agent orchestration: agent(prompt, {type, schema}) starts a
+sub-agent. For a single task or a few calls, call the tools directly.
 
-Runs as a script (not a module) in an embedded QuickJS engine: ES2023 with the standard
-library (JSON, Math, Date, RegExp, Map/Set, Promise incl. all/allSettled), top-level await.
-No require/import, npm packages, or Node/browser APIs (fs, process, Buffer, fetch,
-setTimeout). Globals: tools.<Name>(input) and callTool(name, input) → Promise (rejects on
-failure); agent(prompt, {type, schema, label, model}) → Promise; args; log(text);
-notify(text); stopRequested(); messages(). End with `return <JSON value>`.
+A script (QuickJS, ES2023, top-level await; no require/import or Node/browser APIs).
+tools.<Name>(input) and callTool(name, input) return Promises that reject on failure;
+log(text) reports progress. End with `return <JSON value>`.
 
-Calls go through the same permission checks as direct calls; one that would need the
-user's approval fails instead of asking — make that call directly.
-
-Tools callable here:
-  tools.Read({file_path, offset?, limit?}) — Read a file …
+Callable here (MCP tools too, with callTool; the guide has the rest):
+  tools.Read({file_path, limit?, offset?, pages?}) → text, each line prefixed with …
   …
 ```
+
+其余——全部全局函数（`args`、`notify`、`stopRequested`、`messages`）、权限与限额、
+带一句话说明的完整签名清单——在它的使用指南里，`ToolSearch select:RunCode` 取。脚本抛错时
+结果末尾提示去取指南。
+
+Agix 没有单独的 workflow 工具：用户要的 workflow / 多 Agent 编排也写成一个 RunCode 程序，
+阶段就是先后 await，扇出就是对 `agent()` 的 `Promise.all`。
 
 场景提示词的「批量工作」一段把它放在首位：中间结果不必逐条看的批量，写一个 RunCode；
 要按结果一步步判断的，才用后台 `Agent` + `TaskWait`；事先定好的分阶段委派用 `TeamCreate`。

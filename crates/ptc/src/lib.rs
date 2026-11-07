@@ -87,6 +87,7 @@ pub struct RunCodeInput {
 
 pub struct RunCodeTool {
     description: String,
+    guide: String,
     limits: Limits,
 }
 
@@ -114,6 +115,7 @@ impl RunCodeTool {
     pub fn new(callable: &[CallableTool], limits: Limits) -> Self {
         Self {
             description: describe(callable),
+            guide: guide(callable),
             limits,
         }
     }
@@ -123,7 +125,9 @@ const INTRO: &str = "\
 Write a JavaScript program that calls this session's tools, and get back only its return \
 value. Use it when a task needs many tool calls whose intermediate results you don't need to \
 read one by one — searching many files, fetching many pages, fanning out sub-agents and \
-merging what they find. For a few calls, call the tools directly.
+merging what they find — and for a workflow or multi-agent orchestration the user asks for: \
+stages are just awaits, a fan-out is Promise.all over agent(). For a few calls, call the tools \
+directly.
 
 Runs as a script (not a module) in an embedded QuickJS engine: ES2023 with the standard \
 library (JSON, Math, Date, RegExp, Map/Set, Promise incl. all/allSettled) and top-level \
@@ -142,7 +146,30 @@ approval fails instead of asking — make that call directly. Limits: 5 minutes 
 sub-agent is started), 1,000 calls, 100 sub-agents, 8 at a time; the result is cut at \
 50,000 characters.";
 
+/// What every request carries: enough to decide to use it and to write a
+/// first program. Everything else is in [`guide`].
+const SUMMARY: &str = "\
+Run a JavaScript program that calls this session's tools — in parallel, in loops or in stages \
+— and get back only its return value. For batch work (many files, pages or items) and for \
+workflows or multi-agent orchestration: agent(prompt, {type, schema}) starts a sub-agent. For \
+a single task or a few calls, call the tools directly.
+
+A script (QuickJS, ES2023, top-level await; no require/import or Node/browser APIs). \
+tools.<Name>(input) and callTool(name, input) return Promises that reject on failure; log(text) \
+reports progress. End with `return <JSON value>`.";
+
 fn describe(callable: &[CallableTool]) -> String {
+    let mut out = format!(
+        "{SUMMARY}\n\nCallable here (MCP tools too, with callTool; the guide has the rest):"
+    );
+    for tool in callable.iter().filter(|t| t.name != "Agent") {
+        out.push_str("\n  ");
+        out.push_str(&call_shape(tool));
+    }
+    out
+}
+
+fn guide(callable: &[CallableTool]) -> String {
     let mut out = format!("{INTRO}\n\nTools callable here (MCP tools too, by name with callTool):");
     for tool in callable {
         out.push_str("\n  ");
@@ -152,6 +179,16 @@ fn describe(callable: &[CallableTool]) -> String {
 }
 
 fn signature(tool: &CallableTool) -> String {
+    let call = call_shape(tool);
+    let summary = first_sentence(&tool.description, 110);
+    if summary.is_empty() {
+        call
+    } else {
+        format!("{call} — {summary}")
+    }
+}
+
+fn call_shape(tool: &CallableTool) -> String {
     let props = tool.input_schema["properties"].as_object();
     let required: Vec<&str> = tool.input_schema["required"]
         .as_array()
@@ -175,15 +212,9 @@ fn signature(tool: &CallableTool) -> String {
     } else {
         format!("callTool(\"{}\", {{{}}})", tool.name, params.join(", "))
     };
-    let call = match &tool.result {
+    match &tool.result {
         Some(shape) => format!("{call} → {shape}"),
         None => call,
-    };
-    let summary = first_sentence(&tool.description, 110);
-    if summary.is_empty() {
-        call
-    } else {
-        format!("{call} — {summary}")
     }
 }
 
@@ -219,7 +250,7 @@ impl Tool for RunCodeTool {
         serde_json::to_value(schemars::schema_for!(RunCodeInput)).unwrap_or(Value::Null)
     }
     async fn prompt(&self, _: &PromptContext) -> String {
-        self.description.clone()
+        self.guide.clone()
     }
     fn needs_dispatch(&self) -> bool {
         true
@@ -533,7 +564,8 @@ async fn execute(
         }
         ScriptEnd::Threw(message) => Outcome {
             text: format!(
-                "The program threw:\n{message}\n{summary}{}",
+                "The program threw:\n{message}\n{summary}{}\n\
+                 The full guide to what a program can use: ToolSearch select:RunCode.",
                 completed_calls(&calls_log)
             ),
             value: None,
