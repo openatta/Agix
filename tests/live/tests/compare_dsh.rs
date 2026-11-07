@@ -2,7 +2,7 @@
 //! kind of recording proxy: what each spends, how long it takes, and whether
 //! what it built actually runs.
 //!
-//! Five tasks, each verified by running the result against inputs the model
+//! Six tasks, each verified by running the result against inputs the model
 //! never saw:
 //!
 //! - `stats` — short: one small program from a precise spec.
@@ -19,6 +19,10 @@
 //!   their own docstring. Fan the review out, one sub-agent per package, fix
 //!   what is broken and list it; checked by a hidden contract suite, that the
 //!   correct modules are untouched, and that the list is exactly right.
+//! - `migrate` — batch work: move 58 calls in 30 modules off a deprecated
+//!   helper, converting each timeout from milliseconds to seconds; written
+//!   three ways, so one textual substitution does not do it. Checked by
+//!   replaying every service against a stub of the new helper.
 //!
 //! Token counts are what DeepSeek reported on each response, read off the
 //! proxy, so both sides are measured the same way. Wall time for DSH includes
@@ -45,15 +49,17 @@ enum Case {
     BigLog,
     Shop,
     Audit,
+    Migrate,
 }
 
 impl Case {
-    const ALL: [Case; 5] = [
+    const ALL: [Case; 6] = [
         Case::Stats,
         Case::Inventory,
         Case::BigLog,
         Case::Shop,
         Case::Audit,
+        Case::Migrate,
     ];
 
     fn name(self) -> &'static str {
@@ -63,6 +69,7 @@ impl Case {
             Case::BigLog => "biglog",
             Case::Shop => "shop",
             Case::Audit => "audit",
+            Case::Migrate => "migrate",
         }
     }
 
@@ -74,6 +81,7 @@ impl Case {
             Case::BigLog => &[BIGLOG_PROMPT],
             Case::Shop => &SHOP_PROMPTS,
             Case::Audit => &[AUDIT_PROMPT],
+            Case::Migrate => &[MIGRATE_PROMPT],
         }
     }
 
@@ -89,6 +97,7 @@ impl Case {
             Case::BigLog => write(project, "logs/access.log", &BigLog::new(seed).text),
             Case::Shop => copy_tree(&shop_fixture(), project),
             Case::Audit => copy_tree(&audit_fixture(), project),
+            Case::Migrate => copy_tree(&fixtures().join("migrate"), project),
         }
     }
 
@@ -100,6 +109,7 @@ impl Case {
             Case::BigLog => verify_biglog(project, seed),
             Case::Shop => verify_shop(project, seed),
             Case::Audit => verify_audit(project),
+            Case::Migrate => verify_migrate(project),
         };
         result.unwrap_or_else(|e| vec![format!("verifier could not run: {e:#}")])
     }
@@ -175,6 +185,12 @@ nothing else. Split the work: review the four packages in parallel, one sub-agen
 package, then merge what they report. Finally write `findings.json` in the project root: a \
 sorted JSON array of the paths of the modules you fixed, like `[\"lib/billing/tax.py\"]`. \
 Reply DONE when it is written.";
+
+const MIGRATE_PROMPT: &str = "\
+`app.util.fetch_json(url, timeout_ms)` is deprecated. Migrate every caller in this project to \
+`util.get_json(url, timeout_s=...)`, keeping each timeout the same (converted to seconds), \
+then delete `fetch_json` from `app/util.py`. `python3 tests/run_tests.py` must still pass. \
+Reply DONE when it does.";
 
 /// The modules the `audit` fixture breaks; every other module is correct.
 const AUDIT_BROKEN: [&str; 6] = [
@@ -797,6 +813,25 @@ fn verify_audit(project: &Path) -> anyhow::Result<Vec<String>> {
                 }
             }
         },
+    }
+    Ok(failures)
+}
+
+/// Every service makes the calls it made before, through `get_json` with the
+/// timeout in seconds, and nothing mentions `fetch_json` (`migrate_check.py`).
+fn verify_migrate(project: &Path) -> anyhow::Result<Vec<String>> {
+    let checker = fixtures().join("migrate_check.py");
+    let ran = python(
+        project,
+        &[checker.to_str().unwrap(), project.to_str().unwrap()],
+    )?;
+    let mut failures: Vec<String> = ran.stdout.lines().map(str::to_string).collect();
+    if ran.code != Some(0) && failures.is_empty() {
+        failures.push(format!(
+            "checker exited {:?}: {}",
+            ran.code,
+            ran.stderr.trim()
+        ));
     }
     Ok(failures)
 }

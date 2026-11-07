@@ -93,7 +93,10 @@ token 用量。改了 `tests/live` 后 lint 也要带上 feature：
 修复，再加一个功能；还有一个 workflow 式的审计（`tests/fixtures/compare_dsh/audit`）：四个包
 二十四个模块，六个违背了自己的 docstring，要求按包分给四个子 Agent 并行审、修好、汇总成
 `findings.json`，由项目之外的 `audit_check.py` 逐个校验契约，并核对没坏的模块一字未动、清单
-恰好是那六个。产物用模型没见过的输入实际运行来判定；token 取 DeepSeek 在每个响应里报的数，两边计量口径相同。它要一个
+恰好是那六个；以及一个批量改动（`tests/fixtures/compare_dsh/migrate`）：三十个模块里 58 处调用
+从弃用的 `fetch_json(url, timeout_ms)` 迁到 `get_json(url, timeout_s=…)`，毫秒换成秒，调用写法有
+位置参数、关键字、跨行、常量四种，一次文本替换做不完；由 `migrate_check.py` 拿新接口的桩把每个
+服务重放一遍核对。产物用模型没见过的输入实际运行来判定；token 取 DeepSeek 在每个响应里报的数，两边计量口径相同。它要一个
 `dsh` 启动器，所以不在 `live_*` 的通配里：
 
 ```sh

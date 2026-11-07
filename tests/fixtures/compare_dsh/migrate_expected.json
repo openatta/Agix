@@ -1,0 +1,294 @@
+{
+ "svc_accounts": [
+  [
+   "https://accounts.internal.example.com/v1/items",
+   0.5
+  ]
+ ],
+ "svc_billing": [
+  [
+   "https://billing.internal.example.com/v3/summary",
+   2.5
+  ],
+  [
+   "https://billing.internal.example.com/v1/status",
+   7.5
+  ]
+ ],
+ "svc_catalog": [
+  [
+   "https://catalog.internal.example.com/v2/items",
+   0.8
+  ],
+  [
+   "https://catalog.internal.example.com/v1/health",
+   2.0
+  ]
+ ],
+ "svc_checkout": [
+  [
+   "https://checkout.internal.example.com/v3/limits",
+   0.5
+  ]
+ ],
+ "svc_coupons": [
+  [
+   "https://coupons.internal.example.com/v1/items",
+   10.0
+  ],
+  [
+   "https://coupons.internal.example.com/v3/config",
+   10.0
+  ]
+ ],
+ "svc_delivery": [
+  [
+   "https://delivery.internal.example.com/v2/recent",
+   0.8
+  ]
+ ],
+ "svc_email": [
+  [
+   "https://email.internal.example.com/v2/health",
+   0.8
+  ],
+  [
+   "https://email.internal.example.com/v1/config",
+   1.0
+  ]
+ ],
+ "svc_fraud": [
+  [
+   "https://fraud.internal.example.com/v2/status",
+   1.0
+  ]
+ ],
+ "svc_geo": [
+  [
+   "https://geo.internal.example.com/v3/summary",
+   1.0
+  ],
+  [
+   "https://geo.internal.example.com/v2/config",
+   0.5
+  ]
+ ],
+ "svc_gifts": [
+  [
+   "https://gifts.internal.example.com/v1/status",
+   2.5
+  ]
+ ],
+ "svc_inventory": [
+  [
+   "https://inventory.internal.example.com/v1/status",
+   5.0
+  ],
+  [
+   "https://inventory.internal.example.com/v1/config",
+   5.0
+  ],
+  [
+   "https://inventory.internal.example.com/v3/config",
+   0.25
+  ]
+ ],
+ "svc_invoices": [
+  [
+   "https://invoices.internal.example.com/v2/summary",
+   5.0
+  ],
+  [
+   "https://invoices.internal.example.com/v2/status",
+   4.0
+  ]
+ ],
+ "svc_loyalty": [
+  [
+   "https://loyalty.internal.example.com/v3/limits",
+   0.5
+  ],
+  [
+   "https://loyalty.internal.example.com/v3/recent",
+   1.5
+  ]
+ ],
+ "svc_media": [
+  [
+   "https://media.internal.example.com/v2/config",
+   7.5
+  ],
+  [
+   "https://media.internal.example.com/v2/config",
+   4.0
+  ]
+ ],
+ "svc_notify": [
+  [
+   "https://notify.internal.example.com/v2/health",
+   10.0
+  ]
+ ],
+ "svc_orders": [
+  [
+   "https://orders.internal.example.com/v3/status",
+   0.5
+  ],
+  [
+   "https://orders.internal.example.com/v2/config",
+   1.5
+  ]
+ ],
+ "svc_payments": [
+  [
+   "https://payments.internal.example.com/v3/config",
+   10.0
+  ],
+  [
+   "https://payments.internal.example.com/v1/health",
+   2.5
+  ],
+  [
+   "https://payments.internal.example.com/v3/items",
+   5.0
+  ]
+ ],
+ "svc_pricing": [
+  [
+   "https://pricing.internal.example.com/v1/recent",
+   2.5
+  ],
+  [
+   "https://pricing.internal.example.com/v3/health",
+   4.0
+  ]
+ ],
+ "svc_profiles": [
+  [
+   "https://profiles.internal.example.com/v2/limits",
+   0.5
+  ],
+  [
+   "https://profiles.internal.example.com/v1/recent",
+   7.5
+  ]
+ ],
+ "svc_ratings": [
+  [
+   "https://ratings.internal.example.com/v1/status",
+   0.8
+  ],
+  [
+   "https://ratings.internal.example.com/v3/summary",
+   0.5
+  ]
+ ],
+ "svc_refunds": [
+  [
+   "https://refunds.internal.example.com/v2/summary",
+   7.5
+  ],
+  [
+   "https://refunds.internal.example.com/v2/summary",
+   7.5
+  ],
+  [
+   "https://refunds.internal.example.com/v2/config",
+   5.0
+  ]
+ ],
+ "svc_reports": [
+  [
+   "https://reports.internal.example.com/v1/limits",
+   3.0
+  ],
+  [
+   "https://reports.internal.example.com/v2/config",
+   1.5
+  ],
+  [
+   "https://reports.internal.example.com/v2/items",
+   1.0
+  ]
+ ],
+ "svc_returns": [
+  [
+   "https://returns.internal.example.com/v3/recent",
+   10.0
+  ],
+  [
+   "https://returns.internal.example.com/v2/health",
+   4.0
+  ]
+ ],
+ "svc_reviews": [
+  [
+   "https://reviews.internal.example.com/v2/recent",
+   0.5
+  ],
+  [
+   "https://reviews.internal.example.com/v3/status",
+   2.0
+  ],
+  [
+   "https://reviews.internal.example.com/v2/summary",
+   1.5
+  ]
+ ],
+ "svc_search": [
+  [
+   "https://search.internal.example.com/v2/recent",
+   5.0
+  ]
+ ],
+ "svc_sessions": [
+  [
+   "https://sessions.internal.example.com/v2/status",
+   1.0
+  ],
+  [
+   "https://sessions.internal.example.com/v2/health",
+   7.5
+  ]
+ ],
+ "svc_shipping": [
+  [
+   "https://shipping.internal.example.com/v1/health",
+   7.5
+  ],
+  [
+   "https://shipping.internal.example.com/v2/status",
+   0.5
+  ]
+ ],
+ "svc_tax": [
+  [
+   "https://tax.internal.example.com/v2/summary",
+   0.5
+  ],
+  [
+   "https://tax.internal.example.com/v1/limits",
+   0.8
+  ],
+  [
+   "https://tax.internal.example.com/v3/summary",
+   5.0
+  ]
+ ],
+ "svc_tickets": [
+  [
+   "https://tickets.internal.example.com/v2/items",
+   0.5
+  ]
+ ],
+ "svc_wishlist": [
+  [
+   "https://wishlist.internal.example.com/v3/items",
+   1.0
+  ],
+  [
+   "https://wishlist.internal.example.com/v2/config",
+   10.0
+  ]
+ ]
+}
