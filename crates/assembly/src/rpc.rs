@@ -479,7 +479,24 @@ pub struct SessionOptions {
     /// the settings files'. Its delegates do not get it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt: Option<runtime::agent::SessionPrompt>,
+    /// The kinds of `prompt` frame this session's host answers: `permission`
+    /// always, `question` when listed. Names this daemon does not know are
+    /// ignored rather than voiding the options.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prompt_types: Vec<String>,
 }
+
+impl SessionOptions {
+    /// Whether the host answers the model's questions (`AskUserQuestion`).
+    pub fn answers_questions(&self) -> bool {
+        self.prompt_types.iter().any(|t| t == PROMPT_TYPE_QUESTION)
+    }
+}
+
+/// `prompt_type` of a `prompt` frame that asks whether a tool call may run.
+pub const PROMPT_TYPE_PERMISSION: &str = "permission";
+/// `prompt_type` of a `prompt` frame that carries the model's question.
+pub const PROMPT_TYPE_QUESTION: &str = "question";
 
 /// Record or replay this session's LLM calls.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]

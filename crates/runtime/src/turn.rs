@@ -275,6 +275,14 @@ impl Agent {
                 );
                 Ok(TurnOutcome::default())
             }
+            InputMessage::QuestionResponse { prompt_id, answer } => {
+                crate::elicitation::resolve_question_response(
+                    &self.pending_questions,
+                    &prompt_id,
+                    answer,
+                );
+                Ok(TurnOutcome::default())
+            }
             InputMessage::Steer { ack, .. } => {
                 if let Some(ack) = ack {
                     let _ = ack.send(crate::steering::SteerAck::NotRunning);

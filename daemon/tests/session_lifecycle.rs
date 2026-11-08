@@ -3225,8 +3225,9 @@ async fn a_harnix_session_names_itself_on_a_daemon_whose_own_scene_does_not() {
 /// Drive a turn on one connection while answering prompts on another — the
 /// turn's own connection is blocked streaming frames, which is exactly the
 /// shape a real client is in when a prompt arrives. `answer` is called once
-/// per prompt with `(session_id, prompt_id)` and returns the `decision`
-/// JSON to send back, or `None` to leave the prompt unanswered.
+/// per prompt with the prompt's `event` and returns the JSON to send back —
+/// the `decision` for a permission prompt, the `answer` for a question — or
+/// `None` to leave the prompt unanswered.
 async fn run_turn_answering_prompts<F>(
     sock: &std::path::Path,
     message: &str,
@@ -3234,7 +3235,7 @@ async fn run_turn_answering_prompts<F>(
     mut answer: F,
 ) -> (Vec<serde_json::Value>, serde_json::Value)
 where
-    F: FnMut(usize) -> Option<String>,
+    F: FnMut(&serde_json::Value) -> Option<String>,
 {
     let request = format!(
         r#"{{"jsonrpc":"2.0","method":"session.run_turn","params":{{"message":"{message}"{options}}},"id":1}}"#
@@ -3246,7 +3247,6 @@ where
     let mut br = BufReader::new(r);
 
     let mut frames = Vec::new();
-    let mut prompt_no = 0usize;
     loop {
         let mut line = String::new();
         let n = br.read_line(&mut line).await.unwrap();
@@ -3256,19 +3256,23 @@ where
             return (frames, v);
         }
         if v["params"]["event"]["kind"] == "prompt" {
-            if let Some(decision) = answer(prompt_no) {
+            if let Some(reply) = answer(&v["params"]["event"]) {
                 let sid = v["params"]["session_id"].as_str().unwrap();
                 let prompt_id = v["params"]["event"]["prompt_id"].as_str().unwrap();
+                let field = if v["params"]["event"]["prompt_type"] == "question" {
+                    r#""prompt_type":"question","answer""#
+                } else {
+                    r#""decision""#
+                };
                 let ack = rpc(
                     sock,
                     &format!(
-                        r#"{{"jsonrpc":"2.0","method":"session.respondToPrompt","params":{{"session_id":"{sid}","prompt_id":"{prompt_id}","decision":{decision}}},"id":99}}"#
+                        r#"{{"jsonrpc":"2.0","method":"session.respondToPrompt","params":{{"session_id":"{sid}","prompt_id":"{prompt_id}",{field}:{reply}}},"id":99}}"#
                     ),
                 )
                 .await;
                 assert_eq!(ack["result"]["prompt_id"], prompt_id, "{ack}");
             }
-            prompt_no += 1;
         }
         frames.push(v);
     }
@@ -3335,6 +3339,299 @@ async fn ask_default_blocks_the_tool_when_denied() {
         rendered.contains("Denied by permission") && rendered.contains("not on my machine"),
         "a denied call must surface the denial to the model: {rendered}"
     );
+
+    srv.stop().await;
+}
+
+// ── AskUserQuestion over the prompt channel ─────────────────────────────
+
+const ANSWERS_QUESTIONS: &str = r#","options":{"prompt_types":["permission","question"]}"#;
+
+fn asking_a_question_rounds() -> Vec<Vec<StreamEvent>> {
+    vec![
+        tool_round(
+            "AskUserQuestion",
+            "tool-1",
+            serde_json::json!({
+                "question": "which branch?",
+                "header": "Branch",
+                "options": [{"key": "a", "label": "main"}, {"key": "b", "label": "dev"}],
+            }),
+        ),
+        text_round("thanks"),
+    ]
+}
+
+/// Answer a question with `answer`, and permit anything else that asks.
+fn answering_questions_with(answer: &str) -> impl FnMut(&serde_json::Value) -> Option<String> {
+    let answer = answer.to_string();
+    move |event| {
+        Some(if event["prompt_type"] == "question" {
+            answer.clone()
+        } else {
+            r#"{"type":"permit"}"#.to_string()
+        })
+    }
+}
+
+/// What the model was sent back for its `AskUserQuestion` call, as the next
+/// request carried it.
+fn sent_back(seen: &SeenRequests) -> String {
+    let requests = seen.lock().unwrap();
+    requests
+        .iter()
+        .map(|r| format!("{:?}", r.messages))
+        .find(|m| m.contains("tool-1") && m.contains("ToolResult"))
+        .unwrap_or_else(|| panic!("no request carried the question's result"))
+}
+
+fn offered_tools(seen: &SeenRequests) -> Vec<String> {
+    let requests = seen.lock().unwrap();
+    requests
+        .first()
+        .expect("the turn called the model")
+        .tools
+        .iter()
+        .map(|t| t.name.clone())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_session_that_answers_questions_puts_the_question_to_the_host_and_the_answer_to_the_model(
+) {
+    let (srv, seen) = start_scripted_server(
+        asking_a_question_rounds(),
+        ask_settings_no_memory(),
+        Duration::from_secs(30),
+    )
+    .await;
+
+    let (frames, response) = run_turn_answering_prompts(
+        &srv.sock,
+        "ask me",
+        ANSWERS_QUESTIONS,
+        answering_questions_with(r#"{"type":"answer","text":"a"}"#),
+    )
+    .await;
+    assert!(response["result"].is_object(), "turn failed: {response}");
+
+    let questions: Vec<_> = events_of_kind(&frames, "prompt")
+        .into_iter()
+        .filter(|p| p["prompt_type"] == "question")
+        .collect();
+    assert_eq!(questions.len(), 1, "{frames:?}");
+    assert_eq!(
+        *questions[0],
+        serde_json::json!({
+            "kind": "prompt", "prompt_type": "question",
+            "prompt_id": "tool-1", "tool_use_id": "tool-1",
+            "question": "which branch?", "header": "Branch",
+            "options": [{"key": "a", "label": "main"}, {"key": "b", "label": "dev"}],
+        })
+    );
+    assert!(offered_tools(&seen).iter().any(|t| t == "AskUserQuestion"));
+    let result = sent_back(&seen);
+    assert!(result.contains("a: main"), "{result}");
+
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn a_session_that_did_not_say_it_answers_questions_is_not_offered_ask_user_question() {
+    let (srv, seen) = start_scripted_server(
+        vec![text_round("hi")],
+        ask_settings_no_memory(),
+        Duration::from_secs(30),
+    )
+    .await;
+
+    run_turn(&srv.sock, None, "hello").await;
+
+    let tools = offered_tools(&seen);
+    assert!(
+        !tools.iter().any(|t| t == "AskUserQuestion"),
+        "a tool every call of which is declined must not be offered: {tools:?}"
+    );
+    assert!(tools.iter().any(|t| t == "ExitPlanMode"), "{tools:?}");
+
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn a_declined_question_reaches_the_model_as_unanswered() {
+    let (srv, seen) = start_scripted_server(
+        asking_a_question_rounds(),
+        ask_settings_no_memory(),
+        Duration::from_secs(30),
+    )
+    .await;
+
+    let (_frames, response) = run_turn_answering_prompts(
+        &srv.sock,
+        "ask me",
+        ANSWERS_QUESTIONS,
+        answering_questions_with(r#"{"type":"decline","reason":"ask me later"}"#),
+    )
+    .await;
+    assert!(response["result"].is_object(), "turn failed: {response}");
+
+    let result = sent_back(&seen);
+    assert!(
+        result.contains("has not answered") && result.contains("ask me later"),
+        "{result}"
+    );
+
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn a_question_nobody_answers_times_out_and_the_model_is_told() {
+    let (srv, seen) = start_scripted_server(
+        asking_a_question_rounds(),
+        ask_settings_no_memory(),
+        Duration::from_secs(1),
+    )
+    .await;
+
+    let (frames, response) = tokio::time::timeout(
+        Duration::from_secs(20),
+        run_turn_answering_prompts(&srv.sock, "ask me", ANSWERS_QUESTIONS, |event| {
+            (event["prompt_type"] != "question").then(|| r#"{"type":"permit"}"#.to_string())
+        }),
+    )
+    .await
+    .expect("an unanswered question must not hold the turn open");
+    assert!(response["result"].is_object(), "turn failed: {response}");
+    assert!(!events_of_kind(&frames, "prompt").is_empty(), "{frames:?}");
+
+    let result = sent_back(&seen);
+    assert!(
+        result.contains("has not answered") && result.contains("within 1s"),
+        "{result}"
+    );
+
+    srv.stop().await;
+}
+
+/// Start a turn in a session that answers questions and wait until its
+/// question is open, as `session.subscribe` hands it to a late subscriber.
+async fn open_question(
+    sock: &std::path::Path,
+) -> (
+    String,
+    serde_json::Value,
+    tokio::task::JoinHandle<(Vec<serde_json::Value>, serde_json::Value)>,
+) {
+    let created = rpc(
+        sock,
+        r#"{"jsonrpc":"2.0","method":"session.create","id":1,"params":{"options":{"prompt_types":["permission","question"]}}}"#,
+    )
+    .await;
+    let sid = created["result"]["session_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{created}"))
+        .to_string();
+    let turn = {
+        let (sock, sid) = (sock.to_path_buf(), sid.clone());
+        tokio::spawn(async move {
+            rpc_streaming(
+                &sock,
+                &format!(
+                    r#"{{"jsonrpc":"2.0","method":"session.run_turn","params":{{"session_id":"{sid}","message":"ask me"}},"id":1}}"#
+                ),
+            )
+            .await
+        })
+    };
+    for _ in 0..200 {
+        let subscribed = rpc(
+            sock,
+            &format!(
+                r#"{{"jsonrpc":"2.0","method":"session.subscribe","id":2,"params":{{"session_id":"{sid}"}}}}"#
+            ),
+        )
+        .await;
+        if let Some(prompt) = subscribed["result"]["pending_prompts"]
+            .as_array()
+            .and_then(|p| p.first())
+        {
+            return (sid, prompt.clone(), turn);
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("the question never opened");
+}
+
+async fn respond(sock: &std::path::Path, sid: &str, rest: &str) -> serde_json::Value {
+    rpc(
+        sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.respondToPrompt","id":3,"params":{{"session_id":"{sid}","prompt_id":"tool-1",{rest}}}}}"#
+        ),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn an_open_question_is_handed_to_a_late_subscriber_and_can_be_answered_from_there() {
+    let (srv, seen) = start_scripted_server(
+        asking_a_question_rounds(),
+        ask_settings_no_memory(),
+        Duration::from_secs(30),
+    )
+    .await;
+
+    let (sid, prompt, turn) = open_question(&srv.sock).await;
+    let event = &prompt["params"]["event"];
+    assert_eq!(event["kind"], "prompt", "{prompt}");
+    assert_eq!(event["prompt_type"], "question", "{prompt}");
+    assert_eq!(event["prompt_id"], "tool-1", "{prompt}");
+    assert_eq!(event["question"], "which branch?", "{prompt}");
+
+    let ack = respond(
+        &srv.sock,
+        &sid,
+        r#""prompt_type":"question","answer":{"type":"answer","text":"the release branch"}"#,
+    )
+    .await;
+    assert_eq!(ack["result"]["prompt_id"], "tool-1", "{ack}");
+    let (_frames, response) = turn.await.unwrap();
+    assert!(response["result"].is_object(), "turn failed: {response}");
+    let result = sent_back(&seen);
+    assert!(result.contains("the release branch"), "{result}");
+
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn a_question_answered_as_a_permission_prompt_is_refused() {
+    let (srv, seen) = start_scripted_server(
+        asking_a_question_rounds(),
+        ask_settings_no_memory(),
+        Duration::from_secs(30),
+    )
+    .await;
+
+    let (sid, _prompt, turn) = open_question(&srv.sock).await;
+    for wrong in [
+        r#""decision":{"type":"permit"}"#,
+        r#""prompt_type":"permission","decision":{"type":"permit"}"#,
+    ] {
+        let refused = respond(&srv.sock, &sid, wrong).await;
+        assert_eq!(refused["error"]["code"], codes::INVALID_PARAMS, "{refused}");
+    }
+
+    let ack = respond(
+        &srv.sock,
+        &sid,
+        r#""prompt_type":"question","answer":{"type":"answer","text":"b"}"#,
+    )
+    .await;
+    assert_eq!(ack["result"]["prompt_id"], "tool-1", "{ack}");
+    let (_frames, response) = turn.await.unwrap();
+    assert!(response["result"].is_object(), "turn failed: {response}");
+    let result = sent_back(&seen);
+    assert!(result.contains("b: dev"), "{result}");
 
     srv.stop().await;
 }

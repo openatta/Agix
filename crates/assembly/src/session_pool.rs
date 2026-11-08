@@ -451,7 +451,8 @@ struct LiveSession {
     /// watch one conversation, and closing the one that sent the message is
     /// not a reason to stop.
     subscribers: HashMap<crate::rpc::ConnectionId, Arc<crate::rpc::Client>>,
-    /// Permission asks raised and not yet answered, by `prompt_id`.
+    /// Asks (permission prompts and questions) raised and not yet answered,
+    /// by `prompt_id`.
     ///
     /// Kept so a connection that subscribes later — a second tab, or the
     /// same tab after a refresh — is handed the question instead of finding
@@ -465,11 +466,27 @@ struct LiveSession {
     process_groups: Option<Arc<base::interface::exec::local::GroupLedger>>,
 }
 
-/// A raised permission ask: its `prompt_id`, and the background task asking
-/// it when one does.
+/// A raised ask: its `prompt_id`, and the background task asking it when
+/// one does.
 type Ask = (String, Option<String>);
 
-/// A raised permission ask, as redelivered to a late subscriber.
+/// What `session.respondToPrompt` delivers, by `prompt_type`.
+#[derive(Debug, Clone)]
+pub enum PromptAnswer {
+    Permission(runtime::agent::PermissionDecision),
+    Question(runtime::agent::QuestionAnswer),
+}
+
+impl PromptAnswer {
+    pub fn prompt_type(&self) -> &'static str {
+        match self {
+            Self::Permission(_) => crate::rpc::PROMPT_TYPE_PERMISSION,
+            Self::Question(_) => crate::rpc::PROMPT_TYPE_QUESTION,
+        }
+    }
+}
+
+/// A raised ask, as redelivered to a late subscriber.
 struct PendingPrompt {
     frame: serde_json::Value,
     /// The background task whose sub-agent asks, when one does. Such an ask
@@ -2075,7 +2092,8 @@ impl SessionPool {
             .permission(permission)
             .session_id(session_id.clone())
             .commands_override(binding.commands.clone())
-            .cron_store(self.schedule.clone());
+            .cron_store(self.schedule.clone())
+            .question_prompts(options.is_some_and(SessionOptions::answers_questions));
         if let Some(ref store) = self.history_store {
             builder = builder.history_store(store.clone());
         }
@@ -2976,7 +2994,7 @@ impl SessionPool {
         self.lock_specs().remove(session_id);
     }
 
-    /// Record a raised permission ask so late subscribers can be handed it.
+    /// Record a raised ask so late subscribers can be handed it.
     async fn remember_prompt<T: serde::Serialize>(
         &self,
         session_id: &str,
@@ -4862,34 +4880,58 @@ impl SessionPool {
         }))
     }
 
-    /// `session.respondToPrompt` — deliver a decision for a pending
-    /// `AgentEvent::PermissionPrompt` (see `session_pool.rs`'s `run_turn`
-    /// event loop). Unlike `shutdown_session`, an unknown `session_id` here
-    /// is a real caller error (answering a prompt for a session that isn't
-    /// running can't silently no-op the way closing an already-closed
-    /// session can) — `Err` on a miss rather than treating it as done.
+    /// `session.respondToPrompt` — deliver the host's answer to a pending
+    /// `prompt` frame (see `run_turn`'s event loop). Unlike `shutdown_session`,
+    /// an unknown `session_id` here is a real caller error (answering a prompt
+    /// for a session that isn't running can't silently no-op the way closing
+    /// an already-closed session can). An answer of the other `prompt_type`
+    /// than the open prompt it names is refused rather than dropped, so a
+    /// client that confused the two learns of it.
     pub async fn respond_to_prompt(
         &self,
         session_id: &str,
         prompt_id: String,
-        decision: runtime::agent::PermissionDecision,
-    ) -> Result<(), String> {
+        answer: PromptAnswer,
+    ) -> Result<(), RpcError> {
         let input_tx = {
             let sessions = self.sessions.lock().await;
-            match sessions.get(session_id) {
-                Some(live) => live.input_tx.clone(),
-                None => return Err(format!("session not found: {session_id}")),
+            let Some(live) = sessions.get(session_id) else {
+                return Err((
+                    codes::SESSION_NOT_FOUND,
+                    format!("session not found: {session_id}"),
+                ));
+            };
+            let asked = live.pending_prompts.get(&prompt_id).and_then(|prompt| {
+                prompt
+                    .frame
+                    .pointer("/params/event/prompt_type")
+                    .and_then(|t| t.as_str())
+                    .map(str::to_string)
+            });
+            if let Some(asked) = asked.filter(|asked| asked != answer.prompt_type()) {
+                return Err((
+                    codes::INVALID_PARAMS,
+                    format!(
+                        "prompt `{prompt_id}` is a {asked} prompt, not a {}",
+                        answer.prompt_type()
+                    ),
+                ));
             }
+            live.input_tx.clone()
         };
 
-        // Straight to the engine, which parks the blocked tool call on
-        // `pending_permissions` and is woken by `Agent::run`'s input
-        // demultiplexer. A `prompt_id` nobody is waiting on (already
-        // answered, timed out, stale) is a silent no-op — the documented
-        // behaviour.
-        let _ = input_tx.send(InputMessage::PermissionResponse {
-            prompt_id: prompt_id.clone(),
-            decision,
+        // Straight to the engine, whose input demultiplexer wakes the blocked
+        // tool call. A `prompt_id` nobody is waiting on (already answered,
+        // timed out, stale) is a silent no-op — the documented behaviour.
+        let _ = input_tx.send(match answer {
+            PromptAnswer::Permission(decision) => InputMessage::PermissionResponse {
+                prompt_id: prompt_id.clone(),
+                decision,
+            },
+            PromptAnswer::Question(answer) => InputMessage::QuestionResponse {
+                prompt_id: prompt_id.clone(),
+                answer,
+            },
         });
         self.forget_prompt(session_id, &prompt_id).await;
         Ok(())
@@ -6998,7 +7040,7 @@ fn background_frame(
             ..
         } => {
             let mut body = serde_json::json!({
-                "kind":"prompt","prompt_type":"permission","prompt_id":prompt_id,
+                "kind":"prompt","prompt_type":crate::rpc::PROMPT_TYPE_PERMISSION,"prompt_id":prompt_id,
                 "tool_name":tool_name,"message":message,
                 "paths":paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>()
             });
@@ -7007,6 +7049,22 @@ fn background_frame(
             }
             (body, Some((prompt_id.clone(), task_id.clone())))
         }
+        AgentEvent::QuestionPrompt {
+            prompt_id,
+            question,
+            header,
+            options,
+            tool_use_id,
+            task_id,
+            ..
+        } => (
+            serde_json::json!({
+                "kind":"prompt","prompt_type":crate::rpc::PROMPT_TYPE_QUESTION,
+                "prompt_id":prompt_id,"tool_use_id":tool_use_id,
+                "question":question,"header":header,"options":options
+            }),
+            Some((prompt_id.clone(), task_id.clone())),
+        ),
         AgentEvent::SubagentProgress {
             agent_label,
             agent_session_id,

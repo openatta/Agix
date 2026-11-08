@@ -173,6 +173,7 @@ pub const CAPABILITIES: &[&str] = &[
     "context_edits",
     "extension_entries",
     "goals",
+    "question_prompts",
 ];
 
 /// [`CAPABILITIES`], plus those of the modules this build carries.
