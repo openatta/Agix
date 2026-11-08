@@ -53,6 +53,10 @@ pub struct ReminderContext<'a> {
     pub memory_summary: Option<Cow<'a, str>>,
 }
 
+/// Tools that only work when someone answers. A session whose scene is not
+/// [`Scene::interactive`] does not register them.
+pub const NEEDS_A_USER: &[&str] = &["AskUserQuestion", "EnterPlanMode", "ExitPlanMode"];
+
 /// Token budget configuration for a scene.
 #[derive(Debug, Clone)]
 pub struct TokenBudget {
@@ -247,8 +251,9 @@ pub trait Scene: Send + Sync + 'static {
     /// permission prompt.
     ///
     /// `false` (the default) means nobody is: a call the permission policy
-    /// would ask about is refused instead, with what would allow it, and the
-    /// scene's prompt and tools must not count on a reply.
+    /// would ask about is refused instead, with what would allow it, the
+    /// tools in [`NEEDS_A_USER`] are left out of the session, and the scene's
+    /// prompt must not count on a reply.
     fn interactive(&self) -> bool {
         false
     }

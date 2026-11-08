@@ -246,7 +246,7 @@ Builder::new().scene(Arc::new(MyScene));
 
 | 方法 | 缺省 | 决定什么 |
 |---|---|---|
-| `interactive()` | `false` | 有没有人在场。`false` 时权限询问直接变成写明怎么授权的拒绝、只在实例授权的根内读写、`Bash` 只在 OS 沙箱完整生效时放行(`ARCHITECTURE.md` §3.2.3、§6.3)。**要等人回答的工具(`AskUserQuestion`、`EnterPlanMode` / `ExitPlanMode`)由场景自己从白名单里拿掉**——`CodeScene` 无人值守时就是这样做的 |
+| `interactive()` | `false` | 有没有人在场。`false` 时权限询问直接变成写明怎么授权的拒绝、只在实例授权的根内读写、`Bash` 只在 OS 沙箱完整生效时放行(`ARCHITECTURE.md` §3.2.3、§6.3)。要等人回答的工具(`AskUserQuestion`、`EnterPlanMode` / `ExitPlanMode`,`base::interface::scene::NEEDS_A_USER`)由 `Builder::build()` 统一不注册,场景不必自己从白名单里拿掉 |
 | `build_session_context()` | 空 | 本会话的事实(工作目录、平台、草稿目录),由内核在会话开头连同项目说明作为一条上下文消息注入一次,压缩与 `/clear` 之后重新注入。**随会话而变的东西放这里,不要放进系统提示**:系统提示逐字节相同,厂商的前缀缓存才能跨会话命中 |
 | `bundled_skills()` | `["skillify"]` | 列出哪些内置技能;依赖的工具不被允许的自动不列 |
 | `path_style()` | 绝对路径 | 文件工具给模型看的路径;`harnix` 用相对路径,省掉每次都重复的项目前缀。设置里写了 `path_style` 以设置为准 |

@@ -294,6 +294,9 @@ pub struct ToolContext {
     /// How this tool calls other tools — set only for a tool whose
     /// [`Tool::needs_dispatch`] says it does.
     pub dispatch: Option<Arc<dyn crate::interface::tool_dispatch::ToolDispatch>>,
+    /// The call comes from a program (`RunCode`), not from the model: there
+    /// is nobody to ask and no conversation to report back to mid-call.
+    pub from_code: bool,
 }
 impl ToolContext {
     pub fn for_test(cwd: PathBuf) -> Self {
@@ -320,6 +323,7 @@ impl ToolContext {
             elicitation: None,
             exec: Default::default(),
             dispatch: None,
+            from_code: false,
         }
     }
     pub fn from_engine_ctx(cwd: PathBuf, cancel: CancellationToken) -> Self {
@@ -346,6 +350,7 @@ impl ToolContext {
             elicitation: None,
             exec: Default::default(),
             dispatch: None,
+            from_code: false,
         }
     }
 }

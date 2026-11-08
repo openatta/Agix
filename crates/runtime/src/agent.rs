@@ -2363,8 +2363,11 @@ impl Builder {
         // The scene's tool policy, applied to the registry itself rather than
         // only to what is advertised: `ToolSearch` and dispatch read this same
         // registry, so a tool the scene excludes has to be absent from it.
+        let attended = scene.interactive();
         for t in tools.list() {
-            if !scene.permits_tool(t.name()) {
+            let waits_on_a_reply =
+                !attended && base::interface::scene::NEEDS_A_USER.contains(&t.name());
+            if waits_on_a_reply || !scene.permits_tool(t.name()) {
                 tools.remove(t.name());
             }
         }
@@ -2487,8 +2490,8 @@ impl Builder {
 
         let budget_policy: Arc<dyn base::interface::budget_policy::BudgetPolicy> =
             self.budget_policy.clone().unwrap_or_else(|| {
-                Arc::new(base::interface::budget_policy::EngineBudget::new(
-                    settings.execution.max_budget_tokens,
+                Arc::new(base::interface::budget_policy::EngineBudget::from_settings(
+                    &settings,
                 ))
             });
 
@@ -3260,6 +3263,42 @@ mod tests {
     /// - The policy ran once, on the seeding registry, before `Agent`,
     ///   `Skill`, `Cron*`, `Worktree*`, `WebSearch` and `Team*` were
     ///   registered, exempting exactly the tools a scene most wants deferred.
+    #[test]
+    fn an_unattended_scene_gets_no_tools_that_wait_on_a_reply() {
+        let registered = |interactive: bool| {
+            let scene = scene::declarative::DeclarativeScene::from_sources(
+                std::path::Path::new("/scenes/probe"),
+                &format!(r#"{{"id": "probe", "name": "Probe", "interactive": {interactive}}}"#),
+                "You probe.",
+            )
+            .unwrap();
+            let (agent, _rx, _tx) = Builder::new()
+                .scene(Arc::new(scene) as Arc<dyn Scene>)
+                .model(Arc::new(DummyModel) as Arc<dyn Model>)
+                .settings(Arc::new(test_settings()))
+                .tools({
+                    let t = Arc::new(InMemoryToolRegistry::new());
+                    tools::register_builtin_tools(&t);
+                    t
+                })
+                .skip_warmup(true)
+                .build()
+                .expect("build should succeed");
+            agent
+                .tools
+                .list()
+                .iter()
+                .map(|t| t.name().to_string())
+                .collect::<Vec<_>>()
+        };
+        let (unattended, attended) = (registered(false), registered(true));
+        for tool in base::interface::scene::NEEDS_A_USER {
+            assert!(!unattended.iter().any(|t| t == tool), "{tool}");
+            assert!(attended.iter().any(|t| t == tool), "{tool}");
+        }
+        assert!(unattended.iter().any(|t| t == "Read"));
+    }
+
     #[tokio::test]
     async fn coding_scene_defers_everything_outside_its_resident_set() {
         let (agent, _rx, _tx) = Builder::new()
@@ -5627,6 +5666,28 @@ mod tests {
 
         drop(input_tx);
         let _ = tokio::time::timeout(std::time::Duration::from_secs(5), engine).await;
+    }
+
+    #[test]
+    fn the_settings_compaction_numbers_reach_the_sessions_context_budget() {
+        let mut settings = test_settings();
+        settings.compaction.threshold_tokens = Some(1234);
+        let (agent, _rx, _tx) = Builder::new()
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+            .model(Arc::new(DummyModel) as Arc<dyn Model>)
+            .settings(Arc::new(settings))
+            .skip_warmup(true)
+            .build()
+            .expect("build should succeed");
+        let budget = agent
+            .budget_policy
+            .context_budget(&agent.scene.token_budget());
+        assert_eq!(budget.compact_threshold, 1234);
+        assert_eq!(
+            budget.compact_keep_recent,
+            agent.scene.token_budget().compact_keep_recent,
+            "what settings leave out stays the scene's"
+        );
     }
 
     /// P3-6's acceptance: a deployment configures a ceiling on request size

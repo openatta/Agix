@@ -60,7 +60,7 @@ impl ToolDispatch for Fake {
                 reported_failure: false,
             }),
             "Fail" => Ok(SubCallAnswer {
-                text: "it broke".into(),
+                text: input["text"].as_str().unwrap_or("it broke").to_string(),
                 structured: None,
                 reported_failure: true,
             }),
@@ -348,6 +348,198 @@ async fn the_log_comes_back_with_the_result() {
     let (r, _) = run("console.log('saw', {n: 2}); log('second'); return 1;").await;
     let t = text(&r);
     assert!(t.contains("Log:\nsaw {\"n\":2}\nsecond"), "{t}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_background_run_ends_when_the_session_does() {
+    let fake = Arc::new(Fake::default());
+    let mut ctx = ToolContext::for_test("/tmp".into());
+    ctx.tool_use_id = "toolu_bg".into();
+    ctx.dispatch = Some(fake.clone());
+    let (session, session_cancel) = (ctx.session.clone(), ctx.cancel.clone());
+    let tool = RunCodeTool::new(
+        &[],
+        Limits {
+            stop_grace: Duration::from_secs(60),
+            ..limits()
+        },
+    );
+    let started = tool
+        .call(
+            json!({"code": "while (true) { await tools.Echo({text: 'x', delay_ms: 20}); }",
+                   "background": true}),
+            ctx,
+            ProgressSender::noop("t"),
+        )
+        .await
+        .unwrap();
+    let task_id = text(&started)
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .to_string();
+    let task = session.find_running_task(&task_id).expect("registered");
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    session_cancel.cancel();
+    tokio::time::timeout(Duration::from_secs(5), task.wait_ended())
+        .await
+        .expect("the run is cut off well before the stop grace");
+    let calls = fake.calls.lock().unwrap().len();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(
+        fake.calls.lock().unwrap().len(),
+        calls,
+        "no calls after it ended"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_task_stop_on_a_background_run_still_gets_the_grace_period() {
+    let fake = Arc::new(Fake::default());
+    let mut ctx = ToolContext::for_test("/tmp".into());
+    ctx.dispatch = Some(fake.clone());
+    let session = ctx.session.clone();
+    let tool = RunCodeTool::new(&[], limits());
+    let started = tool
+        .call(
+            json!({"code": "let n = 0;
+                while (!stopRequested()) { await tools.Echo({text: 'x', delay_ms: 20}); n++; }
+                return {wrapped_up: n > 0};",
+                   "background": true}),
+            ctx,
+            ProgressSender::noop("t"),
+        )
+        .await
+        .unwrap();
+    let task_id = text(&started)
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .to_string();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(session.cancel_running_task(&task_id));
+    let task = session.find_running_task(&task_id).unwrap();
+    let wrapped_up = tokio::time::timeout(Duration::from_secs(5), async {
+        while !task
+            .output
+            .lock()
+            .unwrap()
+            .contains("{\"wrapped_up\":true}")
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(wrapped_up.is_ok(), "{}", task.output.lock().unwrap());
+}
+
+#[test]
+fn the_log_keeps_only_its_end_while_the_program_runs() {
+    let mut log = ProgramLog::new(100);
+    for i in 0..10_000 {
+        log.push(&format!("第{i}行 of the log"));
+    }
+    assert!(log.text.len() <= 800, "{} bytes kept", log.text.len());
+    let tail = log.tail();
+    assert!(tail.contains("(last 100 characters)"), "{tail}");
+    assert!(tail.ends_with("第9999行 of the log"), "{tail}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn import_and_export_statements_get_the_no_modules_message() {
+    let (r, _) = run("const a = 1;\nexport const b = a;\nreturn b;").await;
+    assert!(r.is_error);
+    assert!(
+        text(&r).contains("line 2 uses import/export"),
+        "{}",
+        text(&r)
+    );
+
+    let (r, _) = run("const m = await import('fs'); return 1;").await;
+    assert!(
+        text(&r).contains("there are no modules here"),
+        "{}",
+        text(&r)
+    );
+
+    let (r, _) = run("const s = `first\nimport this line is text\n`; return s.length;").await;
+    assert!(!r.is_error, "{}", text(&r));
+    assert_eq!(r.structured_content, Some(json!(31)));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn failures_thrown_messages_and_oversized_results_are_cut() {
+    let small = Limits {
+        call_result_chars: 100,
+        result_chars: 120,
+        ..limits()
+    };
+    let (r, _, _) = run_with(
+        "const out = {};
+         try { await tools.Fail({text: 'e'.repeat(5000)}); } catch (e) { out.error = e.message.length; }
+         out.data = typeof (await tools.Data({pad: 'p'.repeat(5000)}));
+         return out;",
+        json!({}),
+        small.clone(),
+    )
+    .await;
+    let v = r.structured_content.clone().expect("an object");
+    assert!(v["error"].as_u64().unwrap() < 150, "{v}");
+    assert_eq!(v["data"], "string", "too big to hand over as an object");
+
+    let (r, _, _) = run_with("throw new Error('t'.repeat(5000));", json!({}), small).await;
+    assert!(r.is_error);
+    assert!(!text(&r).contains(&"t".repeat(121)), "{}", text(&r));
+    assert!(text(&r).contains("cut at 120 characters"), "{}", text(&r));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn serial_calls_keep_their_order_and_do_not_hold_slots_while_they_wait() {
+    let (r, fake, _) = run_with(
+        "await Promise.all([
+            tools.Write({text: 'w1', delay_ms: 300}),
+            tools.Write({text: 'w2', delay_ms: 10}),
+            tools.Echo({text: 'r1', delay_ms: 50}),
+            tools.Write({text: 'w3', delay_ms: 10}),
+         ]);
+         return 'ok';",
+        json!({}),
+        Limits {
+            parallel: 2,
+            ..limits()
+        },
+    )
+    .await;
+    assert!(!r.is_error, "{}", text(&r));
+    let calls = fake.calls.lock().unwrap();
+    let order: Vec<&str> = calls
+        .iter()
+        .map(|(_, input)| input["text"].as_str().unwrap())
+        .collect();
+    let at = |t: &str| order.iter().position(|o| *o == t).unwrap();
+    assert!(at("w1") < at("w2") && at("w2") < at("w3"), "{order:?}");
+    assert!(
+        at("r1") < at("w2"),
+        "the read ran while the writes queued: {order:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn notify_in_the_foreground_goes_to_the_log() {
+    let (r, _, ctx) = run_with("notify('halfway there'); return 1;", json!({}), limits()).await;
+    assert!(text(&r).contains("Log:\nhalfway there"), "{}", text(&r));
+    assert!(ctx.session.take_notices().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fs_is_a_stub_that_says_what_to_use() {
+    let (r, _) = run("return fs.readFileSync('a.txt');").await;
+    assert!(r.is_error);
+    assert!(
+        text(&r).contains("fs is not available in RunCode"),
+        "{}",
+        text(&r)
+    );
 }
 
 #[tokio::test]

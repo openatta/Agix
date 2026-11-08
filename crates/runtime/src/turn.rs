@@ -203,18 +203,21 @@ impl Agent {
                     // Unknown slash command — pass through to LLM as-is
                 }
 
-                // ── Token budget directive parsing ──
-                // Parse directives like "+500k", "spend 2M tokens", "use 1B tokens"
-                // from the user message, set the budget on Agent state, and strip
-                // the directive before passing content to the turn loop.
-                let processed_content = if let Some(target) = parse_token_budget_directive(&content)
-                {
+                let typed_by_a_person = crate::commands::parse_slash_command(&content).is_none()
+                    && !matches!(
+                        base::context::goal::TurnOrigin::from_turn_id(&self.current_turn_id),
+                        base::context::goal::TurnOrigin::GoalRound { .. }
+                    );
+                let directive = typed_by_a_person
+                    .then(|| find_token_budget_directive(&content))
+                    .flatten();
+                let processed_content = if let Some((target, range)) = directive {
                     self.output_token_target = Some(target);
                     self.output_token_target_unannounced = true;
                     self.accumulated_output_tokens = 0;
                     self.token_budget_continuation_count = 0;
                     tracing::info!(target, "Token budget directive parsed — set output target");
-                    strip_token_budget_directive(&content)
+                    strip_token_budget_directive(&content, range)
                 } else {
                     content
                 };
@@ -1333,6 +1336,7 @@ impl Agent {
                         result_transformers: Arc::clone(&result_transformers_for_exec),
                         discontinued: Arc::clone(&discontinued_for_exec),
                         images: Arc::clone(&tool_images_for_exec),
+                        from_code: false,
                     };
                     async move { execute_tool_with_telemetry(&exec_ctx, &name, input).await }
                 },
@@ -3473,6 +3477,9 @@ pub(crate) struct ToolExecCtx {
     /// completion order, which is fine — images trail all `tool_result` blocks
     /// either way, and the text of each result names its own image.
     pub images: Arc<std::sync::Mutex<Vec<PendingToolImage>>>,
+    /// Set on the calls a `RunCode` program makes — see
+    /// `ToolContext::from_code`.
+    pub from_code: bool,
 }
 
 /// A base64 image a tool returned, waiting to be attached to this round's
@@ -3733,6 +3740,7 @@ impl SubCallDispatcher {
         ctx.elicitation = Arc::new(NoAsking);
         ctx.discontinued = Arc::new(std::sync::atomic::AtomicBool::new(false));
         ctx.images = Arc::default();
+        ctx.from_code = true;
         Self {
             ctx,
             next: std::sync::atomic::AtomicU64::new(1),
@@ -4086,6 +4094,7 @@ async fn execute_tool_inner(
             Arc::new(SubCallDispatcher::new(ctx))
                 as Arc<dyn base::interface::tool_dispatch::ToolDispatch>
         }),
+        from_code: ctx.from_code,
     };
     let input_for_post_hook = input.clone();
     let input_json_size = serde_json::to_string(&input)
@@ -4295,6 +4304,7 @@ fn apply_result_transformers(
         Ok(a) => (a.text, a.reported_failure, a.new_messages, a.structured),
         Err(e) => (e, true, None, None),
     };
+    let original = (text.clone(), is_error);
     let images = std::mem::take(&mut *ctx.images.lock().unwrap_or_else(|e| e.into_inner()));
     let mut draft = base::interface::tool_result::ToolResultDraft {
         text,
@@ -4308,6 +4318,11 @@ fn apply_result_transformers(
         is_error,
     };
     base::interface::tool_result::apply(&ctx.result_transformers, &call, &mut draft);
+    // The structured form is the same answer as the text; once a transformer
+    // has rewritten the text (a redaction, say), handing a program the
+    // untouched structure would undo it.
+    let structured =
+        structured.filter(|_| (&draft.text, draft.is_error) == (&original.0, original.1));
 
     *ctx.images.lock().unwrap_or_else(|e| e.into_inner()) = draft
         .images
@@ -4667,239 +4682,125 @@ fn count_structured_output_calls(messages: &[base::interface::model::ModelMessag
         .count() as u32
 }
 
-/// Parse a token budget directive from user input.
-///
-/// Supports:
-/// - Shorthand: `+500k`, `+2M`, `+1B` (at start of message, after optional whitespace)
-/// - Natural language: `spend 2M tokens`, `use 1B tokens`, `set 500k output tokens`
-///   (case-insensitive, anywhere in message)
-///
-/// Returns the token target as raw token count, or `None` if no directive found.
-fn parse_token_budget_directive(input: &str) -> Option<u64> {
-    let trimmed = input.trim();
+const MAX_TOKEN_TARGET: u64 = 2_000_000_000;
 
-    // 1. Shorthand: +500k, +2M, +1B at message start
-    if let Some(after_plus) = trimmed.strip_prefix('+') {
-        if let Some(tokens) = parse_suffixed_number(after_plus) {
-            if tokens > 0 && tokens <= 2_000_000_000 {
-                return Some(tokens);
+/// Words that may introduce a natural-language budget, taken out with it.
+const BUDGET_VERBS: &[&str] = &["spend", "use", "set", "budget"];
+
+/// An output-token target the user set in their message, and the bytes of the
+/// message that say it: `+500k` opening the message, or `500k tokens` /
+/// `2M output tokens` anywhere in it, with a `spend` / `use` / `set` /
+/// `budget` just before. The multiplier is required, so a bare number next to
+/// a word (`use 4 spaces`) is never a budget.
+fn find_token_budget_directive(input: &str) -> Option<(u64, std::ops::Range<usize>)> {
+    let bytes = input.as_bytes();
+    let first = input.len() - input.trim_start().len();
+    if bytes.get(first) == Some(&b'+') {
+        if let Some((target, end)) = suffixed_number(bytes, first + 1) {
+            if at_word_end(bytes, end) {
+                return Some((target, first..end));
             }
         }
     }
-
-    // 2. Natural language patterns: look for "spend 2M tokens", "use 500k output tokens", etc.
-    let lower = trimmed.to_lowercase();
-    let actions = ["spend ", "use ", "set ", "budget "];
-    for action in &actions {
-        if let Some(idx) = lower.find(action) {
-            let after_action = &lower[idx + action.len()..];
-            if let Some(tokens) = extract_suffixed_number_from_start(after_action) {
-                if tokens > 0 && tokens <= 2_000_000_000 {
-                    return Some(tokens);
-                }
-            }
-        }
-    }
-
-    // 3. Pattern: <number><suffix> token(s) at end of message (implicit)
-    if let Some(idx) = lower.rfind(" token") {
-        let before = &lower[..idx].trim();
-        if let Some(tokens) = extract_suffixed_number_from_end(before) {
-            if tokens > 0 && tokens <= 2_000_000_000 {
-                return Some(tokens);
-            }
-        }
-    }
-
-    None
+    (0..bytes.len())
+        .filter(|&i| bytes[i].is_ascii_digit() && (i == 0 || bytes[i - 1].is_ascii_whitespace()))
+        .find_map(|i| {
+            let (target, after) = suffixed_number(bytes, i)?;
+            let end = tokens_word(bytes, after)?;
+            Some((target, budget_verb_before(bytes, i)..end))
+        })
 }
 
-/// Parse a suffixed number like "500k" or "2M" or "1B" or "1000".
-fn parse_suffixed_number(s: &str) -> Option<u64> {
-    let s = s.trim();
-    if s.is_empty() {
+/// `500k` / `2M` / `1B` starting at `at`: the count and where it ends.
+fn suffixed_number(bytes: &[u8], at: usize) -> Option<(u64, usize)> {
+    let digits = bytes[at.min(bytes.len())..]
+        .iter()
+        .take_while(|b| b.is_ascii_digit())
+        .count();
+    if digits == 0 {
         return None;
     }
-    let (num_str, rest) = split_numeric_prefix(s)?;
-    let rest = rest.trim();
-
-    // Check for suffix character
-    let multiplier = match rest.chars().next() {
-        Some('k' | 'K') => 1_000u64,
-        Some('m' | 'M') => 1_000_000u64,
-        Some('b' | 'B') => 1_000_000_000u64,
-        _ => {
-            // No suffix, just the number
-            let n: u64 = num_str.parse().ok()?;
-            return Some(n);
-        }
+    let multiplier = match bytes.get(at + digits)?.to_ascii_lowercase() {
+        b'k' => 1_000,
+        b'm' => 1_000_000,
+        b'b' => 1_000_000_000,
+        _ => return None,
     };
-
-    let n: u64 = num_str.parse().ok()?;
-    n.checked_mul(multiplier)
+    let n: u64 = std::str::from_utf8(&bytes[at..at + digits])
+        .ok()?
+        .parse()
+        .ok()?;
+    let target = n.checked_mul(multiplier)?;
+    (1..=MAX_TOKEN_TARGET)
+        .contains(&target)
+        .then_some((target, at + digits + 1))
 }
 
-/// Split off the numeric prefix from a string, returning (num_str, rest).
-fn split_numeric_prefix(s: &str) -> Option<(&str, &str)> {
-    let s = s.trim();
-    let end = s
-        .chars()
-        .position(|c| !c.is_ascii_digit())
-        .unwrap_or(s.len());
-    if end == 0 {
-        return None;
+/// ` tokens` / ` output tokens` starting at `at`: where it ends.
+fn tokens_word(bytes: &[u8], at: usize) -> Option<usize> {
+    let mut i = skip_spaces(bytes, at)?;
+    if let Some(after) = word_at(bytes, i, "output") {
+        i = skip_spaces(bytes, after)?;
     }
-    Some((&s[..end], &s[end..]))
+    let mut end = word_at(bytes, i, "token")?;
+    if bytes
+        .get(end)
+        .is_some_and(|b| b.eq_ignore_ascii_case(&b's'))
+    {
+        end += 1;
+    }
+    at_word_end(bytes, end).then_some(end)
 }
 
-/// Extract a suffixed number from the start of a string (for natural language matching).
-fn extract_suffixed_number_from_start(s: &str) -> Option<u64> {
-    let s = s.trim();
-    let (num_str, rest) = split_numeric_prefix(s)?;
-    let rest = rest.trim();
-
-    // Check for suffix character
-    let mut multiplier = 1u64;
-    if let Some(c) = rest.chars().next() {
-        multiplier = match c {
-            'k' | 'K' => 1_000u64,
-            'm' | 'M' => 1_000_000u64,
-            'b' | 'B' => 1_000_000_000u64,
-            _ => 1u64,
-        };
-    }
-
-    let n: u64 = num_str.parse().ok()?;
-    n.checked_mul(multiplier)
+fn skip_spaces(bytes: &[u8], at: usize) -> Option<usize> {
+    let n = bytes[at..].iter().take_while(|b| **b == b' ').count();
+    (n > 0).then_some(at + n)
 }
 
-/// Extract a suffixed number from the end of a string.
-/// E.g., "spend 500k" -> Some(500_000)
-fn extract_suffixed_number_from_end(s: &str) -> Option<u64> {
-    let s = s.trim();
-    if s.is_empty() {
-        return None;
-    }
-
-    let chars: Vec<char> = s.chars().collect();
-    let len = chars.len();
-
-    // Check for suffix at the end
-    let mut end = len;
-    let mut multiplier = 1u64;
-    if end > 0 {
-        match chars[end - 1] {
-            'k' | 'K' => {
-                multiplier = 1_000;
-                end -= 1;
-            }
-            'm' | 'M' => {
-                multiplier = 1_000_000;
-                end -= 1;
-            }
-            'b' | 'B' => {
-                multiplier = 1_000_000_000;
-                end -= 1;
-            }
-            _ => {}
-        }
-    }
-
-    if end == 0 || !chars[end - 1].is_ascii_digit() {
-        return None;
-    }
-
-    // Find start of digits
-    let mut start = end;
-    while start > 0 && chars[start - 1].is_ascii_digit() {
-        start -= 1;
-    }
-
-    if start == end {
-        return None;
-    }
-
-    let num_str: String = chars[start..end].iter().collect();
-    let n: u64 = num_str.parse().ok()?;
-    n.checked_mul(multiplier)
+fn word_at(bytes: &[u8], at: usize, word: &str) -> Option<usize> {
+    let end = at + word.len();
+    bytes
+        .get(at..end)
+        .is_some_and(|w| w.eq_ignore_ascii_case(word.as_bytes()))
+        .then_some(end)
 }
 
-/// Strip the token budget directive from user input.
-/// Handles shorthand (`+500k task`) and natural language directives.
-fn strip_token_budget_directive(input: &str) -> String {
-    let trimmed = input.trim();
+fn at_word_end(bytes: &[u8], at: usize) -> bool {
+    !bytes.get(at).is_some_and(u8::is_ascii_alphanumeric)
+}
 
-    // 1. Shorthand at start: "+500k", "+2M", "+1B"
-    if let Some(rest) = trimmed.strip_prefix('+') {
-        if parse_suffixed_number(rest).is_some() {
-            let (_, after_num) = split_numeric_prefix(rest).unwrap_or(("", rest));
-            let after_suffix = after_num
-                .chars()
-                .next()
-                .and_then(|c| {
-                    if matches!(c, 'k' | 'K' | 'm' | 'M' | 'b' | 'B') {
-                        Some(&after_num[1..])
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or(after_num);
-            return after_suffix.trim().to_string();
-        }
+/// Where a budget verb right before `at` starts, or `at` when there is none.
+fn budget_verb_before(bytes: &[u8], at: usize) -> usize {
+    let mut end = at;
+    while end > 0 && bytes[end - 1] == b' ' {
+        end -= 1;
     }
+    BUDGET_VERBS
+        .iter()
+        .find_map(|verb| {
+            let start = end.checked_sub(verb.len())?;
+            let word_start = start == 0 || bytes[start - 1].is_ascii_whitespace();
+            (word_start && bytes[start..end].eq_ignore_ascii_case(verb.as_bytes())).then_some(start)
+        })
+        .unwrap_or(at)
+}
 
-    // 2. Natural language directives
-    let lower = trimmed.to_lowercase();
-    let actions = ["spend ", "use ", "set ", "budget "];
-    for action in &actions {
-        if let Some(idx) = lower.find(action) {
-            // Found a potential action word — check if followed by a number
-            let after_action = &trimmed[idx + action.len()..];
-            let (_num_str, after_num) = match split_numeric_prefix(after_action) {
-                Some(pair) => pair,
-                None => continue,
-            };
-
-            // Check for optional suffix
-            let after_suffix = if let Some(c) = after_num.chars().next() {
-                if matches!(c, 'k' | 'K' | 'm' | 'M' | 'b' | 'B') {
-                    &after_num[1..]
-                } else {
-                    after_num
-                }
-            } else {
-                after_num
-            };
-
-            // Skip optional " output" and " tokens"
-            let after_skip = after_suffix
-                .strip_prefix(" output ")
-                .or_else(|| after_suffix.strip_prefix(" output"))
-                .or_else(|| after_suffix.strip_prefix(" "))
-                .unwrap_or(after_suffix);
-            let after_skip = after_skip
-                .strip_prefix("tokens")
-                .or_else(|| after_skip.strip_prefix("token"))
-                .unwrap_or(after_skip);
-
-            // Combine prefix + remaining text
-            let prefix = &trimmed[..idx].trim();
-            let remaining = after_skip.trim();
-            let result = if prefix.is_empty() && remaining.is_empty() {
-                String::new()
-            } else if prefix.is_empty() {
-                remaining.to_string()
-            } else if remaining.is_empty() {
-                prefix.to_string()
-            } else {
-                format!("{} {}", prefix, remaining)
-            };
-            return result.trim().to_string();
-        }
+/// The message without the directive at `range`.
+fn strip_token_budget_directive(input: &str, range: std::ops::Range<usize>) -> String {
+    let (head, tail) = (&input[..range.start], &input[range.end..]);
+    let (before, after) = (head.trim(), tail.trim());
+    if before.is_empty() || after.is_empty() {
+        return format!("{before}{after}");
     }
-
-    // No directive found — return original
-    input.to_string()
+    let gap = |s: &str| s.contains('\n');
+    let sep = if gap(&head[head.trim_end().len()..])
+        || gap(&tail[..tail.len() - tail.trim_start().len()])
+    {
+        "\n"
+    } else {
+        " "
+    };
+    format!("{before}{sep}{after}")
 }
 
 /// One assembled call to the model.
@@ -5359,6 +5260,7 @@ mod tests {
             tool_middleware: Arc::new(Vec::new()),
             result_transformers: Arc::new(Vec::new()),
             images: Arc::new(std::sync::Mutex::new(Vec::new())),
+            from_code: false,
         }
     }
 
@@ -5953,6 +5855,7 @@ mod tests {
                 ),
             ),
             images: Arc::new(std::sync::Mutex::new(Vec::new())),
+            from_code: false,
         };
 
         let result = execute_tool_with_telemetry(&ctx, "Probe", serde_json::json!({})).await;
@@ -6020,40 +5923,118 @@ mod tests {
         assert_eq!(outcome.api_calls, 0);
     }
 
-    // ── Token budget directive parsing tests ──
+    fn budget_target(input: &str) -> Option<u64> {
+        find_token_budget_directive(input).map(|(target, _)| target)
+    }
+
+    fn strip_budget(input: &str) -> String {
+        match find_token_budget_directive(input) {
+            Some((_, range)) => strip_token_budget_directive(input, range),
+            None => input.to_string(),
+        }
+    }
 
     #[test]
-    fn parse_shorthand_500k() {
+    fn a_number_without_a_multiplier_or_the_word_tokens_is_not_a_budget() {
+        for text in [
+            "please use 4 spaces",
+            "use 1 banana",
+            "+1",
+            "+12 more reviewers",
+            "set 3 tokens aside",
+            "use 500k",
+            "spend 2M tokensmith",
+        ] {
+            assert_eq!(budget_target(text), None, "{text}");
+            assert_eq!(strip_budget(text), text, "{text}");
+        }
+    }
+
+    #[test]
+    fn a_budget_after_multibyte_text_is_found_and_stripped_without_panicking() {
+        assert_eq!(budget_target("İ use é 500k tokens"), Some(500_000));
+        assert_eq!(strip_budget("İ use é 500k tokens"), "İ use é");
         assert_eq!(
-            parse_token_budget_directive("+500k do this task"),
-            Some(500_000)
+            strip_budget("重构这个模块 USE 2M Output Tokens 然后提交"),
+            "重构这个模块 然后提交"
         );
     }
 
     #[test]
+    fn stripping_keeps_the_rest_of_the_message_and_its_line_breaks() {
+        assert_eq!(
+            strip_budget("Fix the parser.\nspend 1m tokens\nThen run the tests."),
+            "Fix the parser.\nThen run the tests."
+        );
+        assert_eq!(strip_budget("  +2M  "), "");
+    }
+
+    #[test]
+    fn a_redacting_transformer_also_takes_the_structured_result_away() {
+        let mut ctx = test_exec_ctx(
+            Arc::new(base::tool::InMemoryToolRegistry::new()),
+            Arc::new(hooks::HookRunner::new(std::collections::HashMap::new())),
+        );
+        ctx.result_transformers =
+            Arc::new(vec![
+                Arc::new(base::interface::tool_result::RedactLiterals::new([
+                    "hunter2",
+                ])) as Arc<dyn base::interface::tool_result::ToolResultTransformer>,
+            ]);
+        let answer = |text: &str| {
+            Ok(base::interface::tool_middleware::ToolAnswer {
+                text: text.into(),
+                new_messages: None,
+                reported_failure: false,
+                structured: Some(serde_json::json!({"password": text})),
+            })
+        };
+
+        let redacted = apply_result_transformers(
+            &ctx,
+            "Read",
+            &serde_json::json!({}),
+            answer("password: hunter2"),
+        )
+        .unwrap();
+        assert!(!redacted.text.contains("hunter2"), "{}", redacted.text);
+        assert_eq!(redacted.structured, None);
+
+        let untouched =
+            apply_result_transformers(&ctx, "Read", &serde_json::json!({}), answer("nothing here"))
+                .unwrap();
+        assert_eq!(
+            untouched.structured,
+            Some(serde_json::json!({"password": "nothing here"}))
+        );
+    }
+
+    #[test]
+    fn parse_shorthand_500k() {
+        assert_eq!(budget_target("+500k do this task"), Some(500_000));
+    }
+
+    #[test]
     fn parse_shorthand_2m() {
-        assert_eq!(parse_token_budget_directive("+2M"), Some(2_000_000));
+        assert_eq!(budget_target("+2M"), Some(2_000_000));
     }
 
     #[test]
     fn parse_shorthand_1b() {
-        assert_eq!(parse_token_budget_directive("+1B"), Some(1_000_000_000));
+        assert_eq!(budget_target("+1B"), Some(1_000_000_000));
     }
 
     #[test]
     fn parse_spend_natural_language() {
         assert_eq!(
-            parse_token_budget_directive("spend 2M tokens on refactoring"),
+            budget_target("spend 2M tokens on refactoring"),
             Some(2_000_000)
         );
     }
 
     #[test]
     fn parse_use_natural_language() {
-        assert_eq!(
-            parse_token_budget_directive("use 500k output tokens"),
-            Some(500_000)
-        );
+        assert_eq!(budget_target("use 500k output tokens"), Some(500_000));
     }
 
     #[test]
@@ -6145,75 +6126,49 @@ mod tests {
 
     #[test]
     fn parse_set_natural_language() {
-        assert_eq!(
-            parse_token_budget_directive("set 1B output tokens"),
-            Some(1_000_000_000)
-        );
+        assert_eq!(budget_target("set 1B output tokens"), Some(1_000_000_000));
     }
 
     #[test]
     fn parse_budget_natural_language() {
         assert_eq!(
-            parse_token_budget_directive("budget 100k tokens for testing"),
+            budget_target("budget 100k tokens for testing"),
             Some(100_000)
         );
     }
 
     #[test]
     fn parse_no_directive() {
-        assert_eq!(parse_token_budget_directive("hello world"), None);
+        assert_eq!(budget_target("hello world"), None);
     }
 
     #[test]
     fn parse_empty_string() {
-        assert_eq!(parse_token_budget_directive(""), None);
+        assert_eq!(budget_target(""), None);
     }
 
     #[test]
     fn strip_shorthand_500k() {
-        assert_eq!(
-            strip_token_budget_directive("+500k do this task"),
-            "do this task"
-        );
+        assert_eq!(strip_budget("+500k do this task"), "do this task");
     }
 
     #[test]
     fn strip_spend_natural_language() {
         assert_eq!(
-            strip_token_budget_directive("spend 2M tokens refactor this code"),
+            strip_budget("spend 2M tokens refactor this code"),
             "refactor this code"
         );
     }
 
     #[test]
     fn strip_no_directive() {
-        assert_eq!(strip_token_budget_directive("hello world"), "hello world");
-    }
-
-    #[test]
-    fn parse_suffixed_number_k() {
-        assert_eq!(parse_suffixed_number("500k"), Some(500_000));
-    }
-
-    #[test]
-    fn parse_suffixed_number_m() {
-        assert_eq!(parse_suffixed_number("2M"), Some(2_000_000));
-    }
-
-    #[test]
-    fn parse_suffixed_number_plain() {
-        assert_eq!(parse_suffixed_number("100"), Some(100));
-    }
-
-    #[test]
-    fn parse_suffixed_number_invalid() {
-        assert_eq!(parse_suffixed_number("abc"), None);
+        assert_eq!(strip_budget("hello world"), "hello world");
     }
 
     #[test]
     fn test_token_budget_exceeds_limit() {
         // Above 2B should be rejected
-        assert_eq!(parse_token_budget_directive("+999999999999999999"), None);
+        assert_eq!(budget_target("+999999999999999999"), None);
     }
 
     #[test]

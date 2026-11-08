@@ -158,15 +158,32 @@ pub trait BudgetPolicy: Send + Sync {
 }
 
 /// The engine's own numbers.
+#[derive(Default)]
 pub struct EngineBudget {
     /// `settings.execution.max_budget_tokens`. `None` is unlimited, which is
     /// the default.
     pub max_total_tokens: Option<u64>,
+    /// `settings.compaction`: over the scene's threshold and kept rounds when
+    /// set.
+    pub compact_threshold: Option<usize>,
+    pub compact_keep_recent: Option<usize>,
 }
 
 impl EngineBudget {
     pub fn new(max_total_tokens: Option<u64>) -> Self {
-        Self { max_total_tokens }
+        Self {
+            max_total_tokens,
+            ..Self::default()
+        }
+    }
+
+    /// The numbers a session's settings give.
+    pub fn from_settings(settings: &crate::settings::Settings) -> Self {
+        Self {
+            max_total_tokens: settings.execution.max_budget_tokens,
+            compact_threshold: settings.compaction.threshold_tokens,
+            compact_keep_recent: settings.compaction.keep_recent,
+        }
     }
 }
 
@@ -213,6 +230,16 @@ Continue working. Used {}/{} output tokens ({} remaining).
 </system-reminder>",
                 p.accumulated, p.target, remaining
             ),
+        }
+    }
+
+    fn context_budget(&self, scene: &TokenBudget) -> ContextBudget {
+        ContextBudget {
+            compact_threshold: self.compact_threshold.unwrap_or(scene.compact_threshold),
+            compact_keep_recent: self
+                .compact_keep_recent
+                .unwrap_or(scene.compact_keep_recent),
+            hard_cap: None,
         }
     }
 }
@@ -436,6 +463,34 @@ mod tests {
         assert_eq!(
             capped.compact_threshold, 150_000,
             "a ceiling is not a trigger — the scene still says when to compact"
+        );
+    }
+
+    #[test]
+    fn the_settings_compaction_numbers_override_the_scenes_when_set() {
+        let scene = TokenBudget {
+            compact_threshold: 150_000,
+            compact_keep_recent: 20,
+        };
+        let configured = EngineBudget {
+            compact_threshold: Some(60_000),
+            compact_keep_recent: Some(4),
+            ..EngineBudget::default()
+        }
+        .context_budget(&scene);
+        assert_eq!(
+            (configured.compact_threshold, configured.compact_keep_recent),
+            (60_000, 4)
+        );
+
+        let half = EngineBudget {
+            compact_keep_recent: Some(4),
+            ..EngineBudget::default()
+        }
+        .context_budget(&scene);
+        assert_eq!(
+            (half.compact_threshold, half.compact_keep_recent),
+            (150_000, 4)
         );
     }
 }
