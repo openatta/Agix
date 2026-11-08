@@ -278,8 +278,9 @@ for refused in registry.register_declarative_dir(&global_root.join("scenes")) {
 单个目录用 `DeclarativeScene::load(dir)`,编进二进制的用 `DeclarativeScene::from_sources`。
 
 `agixd` 就是这样做的:会话池与 `--scene` 都从 `<状态根>/scenes/`(默认 `~/.agix/scenes/`)
-读声明式场景,和内建场景一样经 `scene.activate` / `--scenes` 激活后可用。沙箱把这个目录下
-每个场景的 `settings.json`、`scene.json`、`prompt.md` 都设为不可写。
+读声明式场景,和内建场景一样经 `scene.activate` / `--scenes` 激活后可用。沙箱里的命令在
+状态根下只能写 `scratchpad/` 与 `memory/`,这个目录下每个场景的 `settings.json`、`scene.json`、
+`prompt.md` 另外逐个设为不可写(`ARCHITECTURE.md` §6.3)。
 
 `scene.json`:
 

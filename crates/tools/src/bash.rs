@@ -229,73 +229,10 @@ impl Tool for BashTool {
                 .min(MAX_TIMEOUT_MS),
         );
 
-        // 平台沙盒包装：拒写 cwd / additional 之外。
-        // dangerously_disable_sandbox=true 时直跑 bash。
-        let policy = sandbox_policy(&ctx);
-        let intent = base::interface::exec::ProcessSpec::new("bash", &ctx.cwd)
-            .args(["-c".to_string(), input.command.clone()]);
-        let confined = if ctx.dangerously_disable_sandbox {
-            base::interface::exec::Confined {
-                spec: intent,
-                mode: base::interface::exec::SandboxMode::Disabled,
-                enforcement: base::interface::exec::Enforcement::None,
-                unmet: vec!["the sandbox is turned off".into()],
-            }
-        } else {
-            ctx.exec.sandbox.confine(intent, &policy)
+        let spec = match confine_shell("Bash", &input.command, &ctx) {
+            Ok(spec) => spec,
+            Err(refused) => return Ok(refused),
         };
-
-        // A policy that cannot be enforced is the one case where "log it and
-        // carry on" is the wrong default *and* the wrong thing to change
-        // silently: refusing breaks every Linux host without bubblewrap and
-        // every Windows host, while permitting means a command the operator
-        // believes is constrained runs with nothing holding it. So the engine
-        // reports honestly and lets the host decide which it wants.
-        //
-        // `Partial` counts as unenforced here. A host that turned
-        // `require_enforcement` on wants an absolute boundary, and "most of
-        // your policy" is not one.
-        let shortfall = match confined.enforcement {
-            base::interface::exec::Enforcement::Full => None,
-            base::interface::exec::Enforcement::None
-                if confined.mode == base::interface::exec::SandboxMode::Disabled =>
-            {
-                None
-            }
-            _ => Some(confined.unmet.join("; ")),
-        };
-        if let Some(shortfall) = shortfall {
-            if ctx.sandbox.require_enforcement {
-                return Ok(ToolResult {
-                    content: base::tool::ToolResultContent::Text(format!(
-                        "Refused: a sandbox policy is configured but this build on this \
-                         platform ({}) cannot enforce all of it — {shortfall} — and \
-                         `sandbox.require_enforcement` is on. The backend is behind a \
-                         compile-time feature that is off by default: rebuild with \
-                         `--features sandbox`, and on Linux install bubblewrap. Or set \
-                         `sandbox.require_enforcement: false` to accept what this build \
-                         can do, or `sandbox.dangerously_disable_sandbox: true` to stop \
-                         asking for a sandbox.",
-                        std::env::consts::OS
-                    )),
-                    is_error: true,
-                    structured_content: Some(serde_json::json!({
-                        "refused": "sandbox_unenforceable",
-                        "platform": std::env::consts::OS,
-                        "unmet": confined.unmet,
-                    })),
-                    mcp_meta: None,
-                    new_messages: Some(vec![]),
-                });
-            }
-            tracing::warn!(
-                platform = std::env::consts::OS,
-                unmet = %shortfall,
-                "BashTool sandbox policy is not fully enforced. Install bwrap (Linux), \
-                 set sandbox.require_enforcement to refuse instead, or \
-                 dangerously_disable_sandbox to stop asking."
-            );
-        }
 
         // The command runs under its own token, a child of the turn's: the
         // turn being interrupted still stops it, and so does stopping just
@@ -311,7 +248,7 @@ impl Tool for BashTool {
         let mut child = ctx
             .exec
             .process
-            .spawn(confined.spec, run_cancel.clone())
+            .spawn(spec, run_cancel.clone())
             .await
             .map_err(exec_error)?;
         #[allow(clippy::expect_used)]
@@ -548,8 +485,117 @@ fn sandbox_policy(ctx: &ToolContext) -> sandbox::SandboxPolicy {
         .iter()
         .cloned()
         .chain(caches)
+        .chain([session_temp_dir(ctx)])
         .collect();
     policy
+}
+
+/// The session's own temporary directory: a sandboxed command's `TMPDIR`,
+/// and the only temporary directory it may write besides the one macOS
+/// `mktemp` insists on.
+fn session_temp_dir(ctx: &ToolContext) -> std::path::PathBuf {
+    let id: String = ctx
+        .session_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .collect();
+    std::env::temp_dir().join(format!("agix-{id}"))
+}
+
+/// [`session_temp_dir`], created private to this user if it is not there yet.
+fn prepared_session_temp_dir(ctx: &ToolContext) -> Option<std::path::PathBuf> {
+    let dir = session_temp_dir(ctx);
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    match builder.create(&dir) {
+        Ok(()) => Some(dir),
+        Err(e)
+            if e.kind() == std::io::ErrorKind::AlreadyExists
+                && dir.symlink_metadata().is_ok_and(|m| m.is_dir()) =>
+        {
+            Some(dir)
+        }
+        Err(e) => {
+            tracing::warn!(dir = %dir.display(), error = %e, "could not create the session's TMPDIR");
+            None
+        }
+    }
+}
+
+/// `command` as the process a shell-running tool spawns: wrapped by the OS
+/// sandbox unless the session turned it off. `Err` is the refusal to return
+/// instead, when the sandbox cannot hold the command and the host said it
+/// must.
+pub(crate) fn confine_shell(
+    tool: &str,
+    command: &str,
+    ctx: &ToolContext,
+) -> Result<base::interface::exec::ProcessSpec, ToolResult> {
+    use base::interface::exec::{Enforcement, ProcessSpec, SandboxMode};
+    let intent = ProcessSpec::new("bash", &ctx.cwd).args(["-c".to_string(), command.to_string()]);
+    if ctx.dangerously_disable_sandbox {
+        return Ok(intent);
+    }
+    let mut confined = ctx.exec.sandbox.confine(intent, &sandbox_policy(ctx));
+    if confined.enforcement != Enforcement::None {
+        if let Some(tmp) = prepared_session_temp_dir(ctx) {
+            confined
+                .spec
+                .env
+                .push(("TMPDIR".to_string(), tmp.display().to_string()));
+        }
+    }
+
+    // A policy that cannot be enforced is the one case where "log it and
+    // carry on" is the wrong default *and* the wrong thing to change
+    // silently: refusing breaks every Linux host without bubblewrap and
+    // every Windows host, while permitting means a command the operator
+    // believes is constrained runs with nothing holding it. So the engine
+    // reports honestly and lets the host decide which it wants.
+    //
+    // `Partial` counts as unenforced here. A host that turned
+    // `require_enforcement` on wants an absolute boundary, and "most of
+    // your policy" is not one.
+    let shortfall = match confined.enforcement {
+        Enforcement::Full => None,
+        Enforcement::None if confined.mode == SandboxMode::Disabled => None,
+        _ => Some(confined.unmet.join("; ")),
+    };
+    if let Some(shortfall) = shortfall {
+        if ctx.sandbox.require_enforcement {
+            return Err(ToolResult {
+                content: base::tool::ToolResultContent::Text(format!(
+                    "Refused: a sandbox policy is configured but this build on this \
+                     platform ({}) cannot enforce all of it — {shortfall} — and \
+                     `sandbox.require_enforcement` is on. The backend is behind a \
+                     compile-time feature that is off by default: rebuild with \
+                     `--features sandbox`, and on Linux install bubblewrap. Or set \
+                     `sandbox.require_enforcement: false` to accept what this build \
+                     can do, or `sandbox.dangerously_disable_sandbox: true` to stop \
+                     asking for a sandbox.",
+                    std::env::consts::OS
+                )),
+                is_error: true,
+                structured_content: Some(serde_json::json!({
+                    "refused": "sandbox_unenforceable",
+                    "platform": std::env::consts::OS,
+                    "unmet": confined.unmet,
+                })),
+                mcp_meta: None,
+                new_messages: Some(vec![]),
+            });
+        }
+        tracing::warn!(
+            tool,
+            platform = std::env::consts::OS,
+            unmet = %shortfall,
+            "sandbox policy is not fully enforced. Install bwrap (Linux), \
+             set sandbox.require_enforcement to refuse instead, or \
+             dangerously_disable_sandbox to stop asking."
+        );
+    }
+    Ok(confined.spec)
 }
 
 /// Whether a command run now would be fully confined by the OS sandbox.
@@ -1412,6 +1458,47 @@ mod tests {
             assert!(writable.contains(&std::path::PathBuf::from(home).join(".npm")));
         }
         assert!(!writable.iter().any(|p| p.starts_with("~")));
+    }
+
+    fn tmpdir_of(spec: &ProcessSpec) -> Option<PathBuf> {
+        spec.env
+            .iter()
+            .find(|(k, _)| k == "TMPDIR")
+            .map(|(_, v)| PathBuf::from(v))
+    }
+
+    #[test]
+    fn a_confined_command_gets_the_sessions_own_writable_tmpdir() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = ctx_in(dir.path());
+        ctx.session_id = uuid::Uuid::new_v4().to_string();
+        ctx.dangerously_disable_sandbox = false;
+        ctx.exec.sandbox =
+            std::sync::Arc::new(Reports(Enforcement::Full, SandboxMode::MacOSSandboxExec));
+        let spec = confine_shell("Bash", "true", &ctx).unwrap();
+        let tmp = tmpdir_of(&spec).expect("TMPDIR is set");
+        assert!(tmp.is_dir());
+        assert_ne!(tmp, std::env::temp_dir());
+        assert!(sandbox_policy(&ctx).additional_writable.contains(&tmp));
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn a_command_nothing_confines_keeps_the_callers_tmpdir() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = ctx_in(dir.path());
+        ctx.dangerously_disable_sandbox = false;
+        ctx.exec.sandbox =
+            std::sync::Arc::new(Reports(Enforcement::None, SandboxMode::Unavailable));
+        assert_eq!(
+            tmpdir_of(&confine_shell("Bash", "true", &ctx).unwrap()),
+            None
+        );
+        ctx.dangerously_disable_sandbox = true;
+        assert_eq!(
+            tmpdir_of(&confine_shell("Bash", "true", &ctx).unwrap()),
+            None
+        );
     }
 
     // ---- to_sandbox_policy ----

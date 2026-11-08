@@ -340,7 +340,9 @@ async fn run_git_capture(
     cwd: &Path,
     args: &[&str],
 ) -> Result<String, WorktreeError> {
-    let mut spec = ProcessSpec::new("git", cwd).args(args.iter().copied());
+    let mut spec = ProcessSpec::new("git", cwd)
+        .args(base::frozen::git::ENGINE_GIT_OPTIONS.iter().copied())
+        .args(args.iter().copied());
     spec.env = vec![
         ("GIT_TERMINAL_PROMPT".to_string(), "0".to_string()),
         ("GIT_ASKPASS".to_string(), String::new()),
@@ -741,6 +743,14 @@ mod tests {
             argv.iter().all(|a| a[0] == "git"),
             "nothing but git should be spawned: {argv:?}"
         );
+        let options = base::frozen::git::ENGINE_GIT_OPTIONS;
+        assert!(
+            argv.iter()
+                .all(|a| a[1..]
+                    .starts_with(&options.iter().map(|o| o.to_string()).collect::<Vec<_>>())),
+            "every git call carries the engine's options: {argv:?}"
+        );
+        let subcommands: Vec<&[String]> = argv.iter().map(|a| &a[1 + options.len()..]).collect();
         for expected in [
             vec!["rev-parse", "--show-toplevel"],
             vec!["worktree", "add"],
@@ -748,10 +758,10 @@ mod tests {
             vec!["branch", "-D"],
         ] {
             assert!(
-                argv.iter().any(
-                    |a| a[1..].iter().zip(&expected).all(|(got, want)| got == want)
-                        && a.len() > expected.len()
-                ),
+                subcommands
+                    .iter()
+                    .any(|a| a.iter().zip(&expected).all(|(got, want)| got == want)
+                        && a.len() >= expected.len()),
                 "`git {}` never reached the Process contract; got {argv:?}",
                 expected.join(" ")
             );
@@ -767,5 +777,25 @@ mod tests {
             "the .gitignore write is the one write this path makes, and it has \
              to go through the FileSystem contract"
         );
+    }
+
+    /// `git worktree add` runs the repository's post-checkout hook, and the
+    /// engine's git runs outside the sandbox.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn creating_a_worktree_does_not_run_the_repositorys_hooks() {
+        use std::os::unix::fs::PermissionsExt;
+        let repo = make_minimal_repo().await;
+        let marker = repo.path().join("hook-ran");
+        let hook = repo.path().join(".git").join("hooks").join("post-checkout");
+        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        std::fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut handle = create_worktree(&exec(), repo.path(), "hooked")
+            .await
+            .unwrap();
+        handle.cleanup().await;
+        assert!(!marker.exists(), "post-checkout ran");
     }
 }

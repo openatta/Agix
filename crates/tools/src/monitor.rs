@@ -11,11 +11,14 @@
 //! ends the watch with one last notification; `TaskStop` (or the host's
 //! `session.stopTask`) ends it silently. What it prints — stderr too — is the
 //! task's output (`TaskOutput`, `session.taskOutput`, `task_progress`).
+//!
+//! The script runs inside the same OS sandbox as `Bash`, under the same
+//! `sandbox.require_enforcement`.
 
 use async_trait::async_trait;
 use base::context::{RunningStatus, RunningTask, SessionState, TaskType};
 use base::error::ToolError;
-use base::interface::exec::{OutputStream, ProcessHandle, ProcessSpec};
+use base::interface::exec::{OutputStream, ProcessHandle};
 use base::tool::{
     InterruptBehavior, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext,
     ToolResult, ValidationResult,
@@ -150,6 +153,10 @@ impl Tool for MonitorTool {
                     .min(MAX_TIMEOUT_MS),
             )
         });
+        let spec = match crate::bash::confine_shell("Monitor", &input.command, &ctx) {
+            Ok(spec) => spec,
+            Err(refused) => return Ok(refused),
+        };
         // Under the turn's token, like a background sub-agent: it outlives the
         // turn that started it, and goes when the turn is interrupted or the
         // session closes.
@@ -166,7 +173,6 @@ impl Tool for MonitorTool {
                 "tool_use_id": ctx.tool_use_id,
             }),
         );
-        let spec = ProcessSpec::new("bash", &ctx.cwd).args(["-c".to_string(), input.command]);
         let child = match ctx.exec.process.spawn(spec, cancel.clone()).await {
             Ok(child) => child,
             Err(e) => {
@@ -635,6 +641,69 @@ mod tests {
             seen.iter()
                 .any(|n| n.contains("done") && n.contains("exited with code 0")),
             "{seen:?}"
+        );
+    }
+
+    use base::interface::exec::{Confined, Enforcement, ProcessSpec, Sandbox, SandboxMode};
+
+    /// Replaces every command with one that announces it ran confined.
+    struct Confines(Enforcement);
+
+    impl Sandbox for Confines {
+        fn confine(
+            &self,
+            spec: ProcessSpec,
+            _policy: &base::interface::exec::SandboxPolicy,
+        ) -> Confined {
+            Confined {
+                spec: ProcessSpec {
+                    args: vec!["-c".into(), "echo inside".into()],
+                    ..spec
+                },
+                mode: SandboxMode::MacOSSandboxExec,
+                enforcement: self.0,
+                unmet: match self.0 {
+                    Enforcement::Full => Vec::new(),
+                    _ => vec!["the thing it could not do".into()],
+                },
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn the_script_runs_as_the_sandbox_confined_it() {
+        let dir = TempDir::new().unwrap();
+        let (mut ctx, session) = session_in(dir.path());
+        ctx.exec.sandbox = Arc::new(Confines(Enforcement::Full));
+        ctx.dangerously_disable_sandbox = false;
+        start(
+            ctx,
+            json!({"command": "echo outside", "description": "where"}),
+        )
+        .await;
+        let task = monitor_task(&session);
+        task.wait_ended().await;
+        let seen = notices(&session, 1, Duration::from_secs(5)).await;
+        assert!(seen.iter().any(|n| n.contains("inside")), "{seen:?}");
+        assert!(!seen.iter().any(|n| n.contains("outside")), "{seen:?}");
+    }
+
+    #[tokio::test]
+    async fn a_sandbox_that_cannot_hold_the_script_refuses_it_when_enforcement_is_required() {
+        let dir = TempDir::new().unwrap();
+        let (mut ctx, session) = session_in(dir.path());
+        ctx.exec.sandbox = Arc::new(Confines(Enforcement::Partial));
+        ctx.dangerously_disable_sandbox = false;
+        ctx.sandbox.require_enforcement = true;
+        let result = start(ctx, json!({"command": "echo hi", "description": "refused"})).await;
+        assert!(result.is_error);
+        assert_eq!(
+            result.structured_content.as_ref().unwrap()["refused"],
+            "sandbox_unenforceable"
+        );
+        assert!(
+            session.task_infos().is_empty(),
+            "a refused script is no task"
         );
     }
 

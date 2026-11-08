@@ -466,7 +466,8 @@ Agent 的上下文,本来就该在一处。
    服务取的是声明它的那份设置(daemon 按项目、scene 建连),再叠各服务自己的 `env`。这和沙箱无关——沙箱关着,模型一句 `printenv` 读到什么也由它决定。
 
 沙箱是**轻量写限制,不是安全隔离**。已知逃逸路径写在
-`crates/core/src/interface/exec/local/sandbox.rs` 的模块头里,四条,都还没收口。
+`crates/core/src/interface/exec/local/sandbox.rs` 的模块头里,五条,都还没收口。
+它限住的写入范围见 §6.3。
 
 ---
 
@@ -525,8 +526,8 @@ Agent 的上下文,本来就该在一处。
 
 ### 6.3 项目之外
 
-可读写的根:项目目录、实例自己的状态目录(`~/.agix`,其中的 settings 文件仍按 §6.2
-拒写)、`sandbox.additional_directories`。只读的根再加 `sandbox.read_directories`。
+可读写的根:项目目录、实例状态目录(`~/.agix`)下的 `scratchpad` 与 `memory`、
+`sandbox.additional_directories`。只读的根再加整个状态目录与 `sandbox.read_directories`。
 `Read` / `Glob` / `Grep` 与只读 shell 命令在这些根之内直接放行,之外要人批准;
 `sandbox.read_anywhere: true` 把读放开到任意位置。这些都是实例的设置——嵌入方创建实例时定。
 
@@ -538,6 +539,29 @@ Agent 的上下文,本来就该在一处。
 (`Enforcement::Full`)就放行,写入被限制在可写根之内;沙箱不可用(关掉了,或 Linux
 上没有 bubblewrap)就和别的未授权调用一样被拒。沙箱在 `assembly` / `daemon` 缺省编译进来。
 沙箱只限写,不限读——读的限制落在文件工具上,`Bash` 读项目外的东西只受凭据黑名单约束。
+`Monitor` 的脚本进同一个沙箱,`sandbox.require_enforcement` 对它同样生效。
+
+沙箱里的命令能写的:工作目录、`sandbox.additional_directories` 与会话授予的目录、
+`sandbox.cache_directories`(见下)、状态目录下的 `scratchpad` 与 `memory`、`/dev`,以及
+会话自己的临时目录——它作为 `TMPDIR` 交给命令(`<系统临时目录>/agix-<会话 id>`)。
+`/tmp`、`/var/tmp` 这类共享的临时目录写不到;macOS 上另外放开当前用户的
+`DARWIN_USER_TEMP_DIR`,因为系统的 `mktemp` 不看 `TMPDIR`、只往那里建文件。Linux 上
+`/tmp` 是每条命令私有、用完即弃的 tmpfs。写规则之前每个路径都先解析符号链接(macOS 的
+`/tmp` 实为 `/private/tmp`),否则规则落不到内核检查的那个路径上。
+
+可写范围之内,引擎或 git 之后会在沙箱外照着执行的东西不可写:项目的 `.git`、`.agix`
+这两个目录项本身(不能改名挪走或换成符号链接)、`.git/config`、`.git/config.worktree`、
+`.git/commondir`、`.git/hooks/`、`.agix` 下的配置(`settings.json`、`settings.local.json`、
+`mcp.local.json`,以及 `mcp`、`hooks`、`agents`、`skills`、`plugins`、`rules`、`scenes`、
+`policy`、`scripts`、`output-styles` 目录)、引擎 worktree 的 `.git` 链接;状态目录除
+`scratchpad` 与 `memory` 外整个不可写。`git add` / `git commit`、在 `.agix` 下写草稿照常可用;
+`git config`、`git remote add` 这类改仓库配置的命令在沙箱里会失败。Linux 上 `.agix` 整个只读、
+已有的工作目录逐个重新打开,所以 `.agix` 下直接新建条目也会失败;没有 `.git` 的项目、没有
+`commondir` 的仓库在 Linux 上补不上这一道(见 `sandbox.rs` 模块头第 5 条)。
+
+引擎自己在沙箱外跑的 git(每轮的 `git status`、worktree 的创建与清理、`VerifyPlanExecution`
+的 `git diff`)都带 `-c core.fsmonitor=false -c core.hooksPath=/dev/null`,不跑仓库指定的
+fsmonitor 与 hook。filter driver 这样关不掉,挡住它的是上面对 `.git/config` 的拒写。
 
 包管理与构建工具要写自己的缓存(`pip`、`npm`、`cargo`、`go` …),所以沙箱里的 `Bash`
 另外可写 `sandbox.cache_directories`:按工具链分组的缓存目录,缺省列好了 python / node /

@@ -48,6 +48,11 @@
 
 use std::path::PathBuf;
 
+/// The state root's subdirectories that are the agent's own working space
+/// rather than configuration: the only parts of it the agent's tools and its
+/// sandboxed commands may write.
+pub const STATE_ROOT_WORKING_DIRS: &[&str] = &["scratchpad", "memory"];
+
 /// Unified management of AGENT persistent directory paths.
 ///
 /// Default: `global_data_dir = $HOME/.agix/`
