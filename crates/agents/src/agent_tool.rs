@@ -640,10 +640,7 @@ fn conclude_background_task(
     notify_parent: bool,
 ) {
     if let Ok(text) = result {
-        task.output
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push_str(text);
+        task.append_output(text);
     }
     // Posted before the task ends, so whoever wakes on its end and reads the
     // result (TaskWait, TaskOutput) finds the notice there to withdraw.
@@ -675,14 +672,14 @@ fn task_notification(
     if let Err(e) = result {
         notice.push_str(&format!("<error>{e}</error>\n"));
     }
-    let (tail, cut) = task.output_tail(NOTIFIED_RESULT_BYTES);
-    if !tail.is_empty() {
-        let more = if cut {
+    let tail = task.output_tail(NOTIFIED_RESULT_BYTES);
+    if !tail.text.is_empty() {
+        let more = if tail.from_byte > 0 {
             " (the start is cut; TaskOutput has what is kept)"
         } else {
             ""
         };
-        notice.push_str(&format!("<result{more}>\n{tail}\n</result>\n"));
+        notice.push_str(&format!("<result{more}>\n{}\n</result>\n", tail.text));
     }
     notice.push_str("</task-notification>");
     notice
@@ -7741,5 +7738,22 @@ mod catalog_tests {
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&history_dir);
+    }
+
+    #[test]
+    fn a_background_agents_answer_is_its_whole_output_by_offset() {
+        let session = base::context::SessionState::new(std::env::temp_dir());
+        let task = session.register_task(
+            "ag-answer",
+            base::context::TaskType::Agent,
+            tokio_util::sync::CancellationToken::new(),
+            serde_json::Value::Null,
+        );
+        let answer = "the answer, \u{4e2d}".to_string();
+        super::conclude_background_task(&session, &task, &Ok(answer.clone()), false);
+        let read = task.output_from(0).unwrap();
+        assert_eq!(read.text, answer);
+        assert_eq!(read.next_byte, answer.len() as u64);
+        assert!(read.closed);
     }
 }

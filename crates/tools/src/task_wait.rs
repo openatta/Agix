@@ -148,19 +148,19 @@ impl Tool for TaskWaitTool {
             text.push_str(&format!("## {} — {status}\n", t.task_id));
             if t.has_ended() {
                 ctx.session.retract_notice(&t.task_id);
-                let (tail, cut) = t.output_tail(OUTPUT_TAIL_BYTES);
+                let tail = t.output_tail(OUTPUT_TAIL_BYTES);
                 if let Some(e) = info["error"].as_str() {
                     text.push_str(&format!("error: {e}\n"));
                     entry["error"] = json!(e);
                 }
-                if !tail.is_empty() {
-                    if cut {
+                if !tail.text.is_empty() {
+                    if tail.from_byte > 0 {
                         text.push_str("(the start is cut; TaskOutput has what is kept)\n");
                     }
-                    text.push_str(&tail);
+                    text.push_str(&tail.text);
                     text.push('\n');
                 }
-                entry["output"] = json!(tail);
+                entry["output"] = json!(tail.text);
             }
             text.push('\n');
             report.push(entry);

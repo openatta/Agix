@@ -447,7 +447,7 @@ impl SessionState {
                 }
                 Self::announce_on(&events, &task);
                 loop {
-                    task.report_progress(false);
+                    task.report_progress();
                     tokio::select! {
                         _ = tokio::time::sleep(a_second) => {}
                         _ = task.wait_ended() => return,
@@ -471,13 +471,23 @@ impl SessionState {
         }
     }
 
-    /// Record that a task ended with `status`. A task already ended — stopped
-    /// by `cancel_running_task`, say, before its own code got here — keeps the
-    /// ending it has. Finished tasks beyond the newest few are forgotten.
+    /// Record that a task's work is over, having ended with `status`: its
+    /// output closes and `task_finished` goes out. A task already ended —
+    /// stopped by `cancel_running_task`, say, before its own code got here —
+    /// keeps the ending it has. Finished tasks beyond the newest few are
+    /// forgotten.
     pub fn finish_task(&self, task_id: &str, status: RunningStatus) {
         let Some(task) = self.find_running_task(task_id) else {
             return;
         };
+        Self::mark_ended(&task, status);
+        if Self::close_on(&self.task_events, &task) {
+            self.forget_old_tasks();
+        }
+    }
+
+    /// Set the task's end and `status`, unless it has ended already.
+    fn mark_ended(task: &RunningTask, status: RunningStatus) {
         {
             let mut ended = task.ended_ms.lock().unwrap_or_else(|e| e.into_inner());
             if ended.is_some() {
@@ -490,14 +500,27 @@ impl SessionState {
             }
         }
         task.ended.notify_waiters();
-        task.report_progress(true);
-        if task.announced.load(std::sync::atomic::Ordering::SeqCst) {
-            let _ = self
-                .task_events
-                .send(serde_json::json!({"kind": "task_finished", "task": task.info()}));
-        }
-        self.forget_old_tasks();
     }
+
+    /// Close the task's output and announce `task_finished`; `false` if it
+    /// was closed already.
+    fn close_on(
+        events: &tokio::sync::broadcast::Sender<serde_json::Value>,
+        task: &RunningTask,
+    ) -> bool {
+        if !task.close_output() {
+            return false;
+        }
+        if task.announced.load(std::sync::atomic::Ordering::SeqCst) {
+            let _ = events.send(serde_json::json!({"kind": "task_finished", "task": task.info()}));
+        }
+        true
+    }
+
+    /// How long stopped work has to wind down and reach its own
+    /// [`finish_task`](Self::finish_task) before its output is closed for it;
+    /// longer than the 10 s a stopped program gets to wrap up.
+    const STOPPED_WORK_GRACE: std::time::Duration = std::time::Duration::from_secs(15);
 
     /// Tell this session's agent something it did not ask for in this turn,
     /// such as a background sub-agent having finished. A running turn reads
@@ -535,6 +558,7 @@ impl SessionState {
         let mut tasks = self.running_tasks.lock().unwrap_or_else(|e| e.into_inner());
         let mut finished: Vec<(i64, String)> = tasks
             .values()
+            .filter(|t| t.output_closed())
             .filter_map(|t| {
                 let ended = (*t.ended_ms.lock().unwrap_or_else(|e| e.into_inner()))?;
                 Some((ended, t.task_id.clone()))
@@ -770,20 +794,30 @@ impl SessionState {
 
     /// Stop a running task: cancel what it runs under and record it as
     /// stopped. `false` if there is no such task or it had already ended.
+    ///
+    /// `task_finished` waits for the work to wind down — what it prints on
+    /// the way out is part of its output — up to [`Self::STOPPED_WORK_GRACE`].
     pub fn cancel_running_task(&self, task_id: &str) -> bool {
         let Some(task) = self.find_running_task(task_id) else {
             return false;
         };
-        if task
-            .ended_ms
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_some()
-        {
+        if task.has_ended() {
             return false;
         }
         task.cancel.cancel();
-        self.finish_task(task_id, RunningStatus::Cancelled);
+        Self::mark_ended(&task, RunningStatus::Cancelled);
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => {
+                let events = self.task_events.clone();
+                runtime.spawn(async move {
+                    tokio::time::sleep(Self::STOPPED_WORK_GRACE).await;
+                    Self::close_on(&events, &task);
+                });
+            }
+            Err(_) => {
+                Self::close_on(&self.task_events, &task);
+            }
+        }
         true
     }
 
@@ -1122,11 +1156,7 @@ impl ToolEffects for NoopEffects {
 impl crate::interface::tool::RunningTasksCallback for SessionState {
     fn find(&self, tid: &str) -> Option<(String, Vec<String>, RunningStatus)> {
         let task = self.find_running_task(tid)?;
-        let output = task
-            .output
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
+        let output = task.output_text();
         let log = task
             .events_log
             .lock()
