@@ -74,7 +74,10 @@ pub enum ResumeError {
 /// `RpcError` — `(code, message)` — has no room for. Same shape and same
 /// reason as [`ResumeError`].
 pub enum SetModelError {
-    Busy { current_turn_id: String },
+    /// Running the turn named, if one has started yet.
+    Busy {
+        current_turn_id: Option<String>,
+    },
     Rpc(RpcError),
 }
 
@@ -456,10 +459,23 @@ struct LiveSession {
     /// whether an answer is still wanted; this is a mirror for redelivery,
     /// and an answer to a `prompt_id` nobody awaits is already a documented
     /// no-op.
-    pending_prompts: HashMap<String, serde_json::Value>,
+    pending_prompts: HashMap<String, PendingPrompt>,
     /// The process groups this session's commands started, kept when
     /// `sandbox.reap_process_groups` is on and stopped when the session ends.
     process_groups: Option<Arc<base::interface::exec::local::GroupLedger>>,
+}
+
+/// A raised permission ask: its `prompt_id`, and the background task asking
+/// it when one does.
+type Ask = (String, Option<String>);
+
+/// A raised permission ask, as redelivered to a late subscriber.
+struct PendingPrompt {
+    frame: serde_json::Value,
+    /// The background task whose sub-agent asks, when one does. Such an ask
+    /// is not the running turn's and outlives it; it goes when it is answered
+    /// or its task ends.
+    task_id: Option<String>,
 }
 
 // ── SessionPool ─────────────────────────────────────────────────────────
@@ -2331,9 +2347,18 @@ impl SessionPool {
         let mut stored_name = None;
         let mut has_user_turn = false;
         if resume {
+            let previous_state = self
+                .sessions
+                .lock()
+                .await
+                .get(&session_id)
+                .and_then(|live| live.state.clone());
             self.stop_live_agent(&session_id).await;
             let resume_start = std::time::Instant::now();
             let resume_result = agent.resume_session(&session_id).await;
+            if let Some(previous) = &previous_state {
+                state.carry_goal_arming_from(previous);
+            }
             let outcome = match &resume_result {
                 Ok(()) => telemetry::ResumeOutcome::Succeeded,
                 // Doesn't fail session creation — degrades to the same
@@ -2423,7 +2448,7 @@ impl SessionPool {
             binding_stale: binding.stale.clone(),
             current_turn: None,
             turn_initiator: None,
-            state: Some(state),
+            state: Some(state.clone()),
             spawner: Some(spawner),
             idle: Arc::new(tokio::sync::Notify::new()),
             scripts: script_ledger,
@@ -2432,19 +2457,30 @@ impl SessionPool {
             process_groups,
         };
         // `insert` returning `Some` means a live entry already existed under
-        // this exact sid — only reachable via the config-generation recreate
-        // path in `run_turn` (every other caller uses a freshly minted id
-        // confirmed absent from the map). Its `CancellationToken` isn't tied
-        // to `Drop`, so the old Agent's background loop would otherwise keep
-        // running forever as a leaked task if we didn't cancel it here.
+        // this exact sid — only an in-place rebuild (`rebuild_idle`) gets
+        // here. Its `CancellationToken` isn't tied to `Drop`, so the old
+        // Agent's background loop would otherwise keep running forever as a
+        // leaked task if we didn't cancel it here. Who watches the session
+        // and what it is still being asked go on with it; a turn waiting for
+        // the old entry's slot is woken to find the new one.
         let rebuilt = match sessions.insert(session_id.clone(), live) {
             Some(old) => {
                 old.cancel.cancel();
+                if let Some(new) = sessions.get_mut(&session_id) {
+                    new.subscribers.extend(old.subscribers);
+                    new.pending_prompts.extend(old.pending_prompts);
+                }
+                old.idle.notify_waiters();
                 true
             }
             None => false,
         };
         drop(sessions);
+        let goal = state.goal_view();
+        if resume && !goal.is_null() {
+            let frame = StreamFrame::goal_changed(&session_id, goal);
+            self.broadcast_to_session(&session_id, &frame).await;
+        }
         if !rebuilt {
             self.emit_session_event(
                 if resume {
@@ -2792,7 +2828,9 @@ impl SessionPool {
                 )));
             };
             if let Some(current_turn_id) = live.current_turn.clone() {
-                return Err(SetModelError::Busy { current_turn_id });
+                return Err(SetModelError::Busy {
+                    current_turn_id: Some(current_turn_id),
+                });
             }
             live.last_active = Instant::now();
             (
@@ -2812,7 +2850,7 @@ impl SessionPool {
             .map_err(|e| SetModelError::Rpc((codes::INVALID_PARAMS, e)))?;
 
         let switching_provider = provider.is_some_and(|p| current_provider.as_deref() != Some(p));
-        self.update_spec(session_id, |spec| {
+        let record = self.update_spec(session_id, |spec| {
             if let Some(p) = provider {
                 spec.provider = Some(p.to_string());
                 // A model chosen for the old provider means nothing to the new
@@ -2824,17 +2862,25 @@ impl SessionPool {
             if let Some(m) = model {
                 spec.model = Some(m.to_string());
             }
-        })
-        .await;
+        });
 
         // A provider is a different client, which an engine is built around
         // rather than handed mid-life: rebuild the session on the new spec.
-        // It is idle (checked above), so nothing is cut off.
+        // The turn slot is taken before the change is recorded, so a turn
+        // that started since the check above refuses both rather than being
+        // cut off or finding the change applied by some later rebuild.
         if switching_provider {
-            self.resume_or_create(session_id.to_string(), None)
-                .await
-                .map_err(|e| SetModelError::Rpc((codes::INTERNAL_ERROR, e)))?;
-        } else if let Some(m) = model {
+            self.with_session_lock(session_id, async {
+                let held = self.take_idle_slot(session_id).await?;
+                record.await;
+                self.rebuild_holding(session_id, held, None).await
+            })
+            .await
+            .map_err(SetModelError::from)?;
+        } else {
+            record.await;
+        }
+        if let (false, Some(m)) = (switching_provider, model) {
             if input_tx
                 .send(InputMessage::System {
                     kind: EngineCommand::UpdateModel,
@@ -2877,7 +2923,9 @@ impl SessionPool {
                 .get(session_id)
                 .and_then(|l| l.current_turn.clone())
             {
-                return Err(SetModelError::Busy { current_turn_id });
+                return Err(SetModelError::Busy {
+                    current_turn_id: Some(current_turn_id),
+                });
             }
         }
         if !self.session_exists(session_id).await {
@@ -2890,18 +2938,25 @@ impl SessionPool {
             let recorded = self.recorded_spec(session_id).await;
             self.lock_specs().insert(session_id.to_string(), recorded);
         }
-        self.update_spec(session_id, |spec| {
+        let record = self.update_spec(session_id, |spec| {
             let mut prompt = spec.prompt().unwrap_or_default();
             change(&mut prompt);
             spec.prompt = Some(prompt);
+        });
+        self.with_session_lock(session_id, async {
+            let held = match self.take_idle_slot(session_id).await {
+                Ok(held) => Some(held),
+                Err(Rebuild::NotLive) => None,
+                Err(busy) => return Err(busy),
+            };
+            record.await;
+            match held {
+                Some(held) => self.rebuild_holding(session_id, held, None).await.map(drop),
+                None => Ok(()),
+            }
         })
-        .await;
-        let live = self.sessions.lock().await.contains_key(session_id);
-        if live {
-            self.resume_or_create(session_id.to_string(), None)
-                .await
-                .map_err(|e| SetModelError::Rpc((codes::INTERNAL_ERROR, e)))?;
-        }
+        .await
+        .map_err(SetModelError::from)?;
         let prompt = self
             .lock_specs()
             .get(session_id)
@@ -2925,15 +2980,21 @@ impl SessionPool {
     async fn remember_prompt<T: serde::Serialize>(
         &self,
         session_id: &str,
-        prompt_id: &str,
+        (prompt_id, task_id): &Ask,
         frame: &T,
     ) {
-        let Ok(value) = serde_json::to_value(frame) else {
+        let Ok(frame) = serde_json::to_value(frame) else {
             return;
         };
         let mut sessions = self.sessions.lock().await;
         if let Some(live) = sessions.get_mut(session_id) {
-            live.pending_prompts.insert(prompt_id.to_string(), value);
+            live.pending_prompts.insert(
+                prompt_id.clone(),
+                PendingPrompt {
+                    frame,
+                    task_id: task_id.clone(),
+                },
+            );
         }
     }
 
@@ -2942,6 +3003,15 @@ impl SessionPool {
         let mut sessions = self.sessions.lock().await;
         if let Some(live) = sessions.get_mut(session_id) {
             live.pending_prompts.remove(prompt_id);
+        }
+    }
+
+    /// Forget the asks of a background task that ended.
+    async fn forget_prompts_of_task(&self, session_id: &str, task_id: &str) {
+        let mut sessions = self.sessions.lock().await;
+        if let Some(live) = sessions.get_mut(session_id) {
+            live.pending_prompts
+                .retain(|_, prompt| prompt.task_id.as_deref() != Some(task_id));
         }
     }
 
@@ -2967,7 +3037,10 @@ impl SessionPool {
                 ));
             };
             live.subscribers.insert(client.id(), client);
-            live.pending_prompts.values().cloned().collect()
+            live.pending_prompts
+                .values()
+                .map(|prompt| prompt.frame.clone())
+                .collect()
         };
 
         Ok(serde_json::json!({
@@ -3053,6 +3126,7 @@ impl SessionPool {
         let Some(live) = sessions.get_mut(session_id) else {
             return;
         };
+        live.last_active = Instant::now();
         live.subscribers.retain(|id, client| {
             Some(*id) == except || client.try_send_for(session_id, json.clone())
         });
@@ -3096,21 +3170,38 @@ impl SessionPool {
         Ok(true)
     }
 
-    /// Start the session's next goal round if the turn that just ended with
-    /// `stop_reason` leaves its goal active and armed.
-    async fn continue_goal(&self, sid: &str, stop_reason: &str) {
-        if !matches!(stop_reason, "end_turn" | "stop_sequence") {
-            return;
+    /// The goal round to start once a turn that ended with `stop_reason`
+    /// gives its slot back, if it leaves `state`'s goal active and armed.
+    /// Asked before the slot is given back, so a rebuild that takes the slot
+    /// next carries the round over.
+    async fn goal_round_after(
+        &self,
+        sid: &str,
+        state: &base::context::SessionState,
+        stop_reason: &str,
+    ) -> Option<base::context::goal::GoalRound> {
+        if !runtime::turn::CONTINUES_A_GOAL.contains(&stop_reason) {
+            return None;
         }
+        let round = state.goal_next_round();
+        self.record_goal_changes(sid, state).await;
+        round
+    }
+
+    fn start_goal_round(&self, sid: &str, round: base::context::goal::GoalRound) {
+        if let Some(pool) = self.this.get().and_then(|p| p.upgrade()) {
+            tokio::spawn(goal_round_task(pool, sid.to_string(), round));
+        }
+    }
+
+    /// Start the next goal round of an idle session, if its goal wants one.
+    async fn continue_goal(&self, sid: &str) {
         let Some(state) = self.live_state(sid).await else {
             return;
         };
-        let round = state.goal_next_round();
-        self.record_goal_changes(sid, &state).await;
-        let (Some(round), Some(pool)) = (round, self.this.get().and_then(|p| p.upgrade())) else {
-            return;
-        };
-        tokio::spawn(goal_round_task(pool, sid.to_string(), round));
+        if let Some(round) = self.goal_round_after(sid, &state, "end_turn").await {
+            self.start_goal_round(sid, round);
+        }
     }
 
     async fn run_goal_round(&self, sid: String, round: base::context::goal::GoalRound) {
@@ -3125,7 +3216,7 @@ impl SessionPool {
                 Some(sid.clone()),
                 round.message,
                 Vec::new(),
-                round.turn_id,
+                round.turn_id.clone(),
                 client,
                 serde_json::Value::Null,
                 None,
@@ -3134,6 +3225,9 @@ impl SessionPool {
             )
             .await;
         self.drop_connection(connection).await;
+        if let Some(state) = self.live_state(&sid).await {
+            state.goal_abandon_round(&round.turn_id);
+        }
         if let Some(error) = response.error {
             warn!(%sid, code = error.code, message = %error.message, "goal round failed");
         }
@@ -3280,7 +3374,7 @@ impl SessionPool {
             Some((true, Some("goal"))) if pausing => {
                 self.interrupt_session(sid).await?;
             }
-            Some((false, _)) => self.continue_goal(sid, "end_turn").await,
+            Some((false, _)) => self.continue_goal(sid).await,
             _ => {}
         }
         Ok(serde_json::json!({ "goal": state.goal_view() }))
@@ -3308,31 +3402,43 @@ impl SessionPool {
         });
     }
 
-    /// Drop every outstanding ask for this session.
-    async fn clear_pending_prompts(&self, session_id: &str) {
+    /// Give the turn slot `slot` back and mark the session idle again, if
+    /// `slot` is still the session's — a session closed or replaced while the
+    /// turn ran is not this turn's to touch. Done under the sessions lock, so
+    /// nothing sees the slot free while `turn_id` still reads as running.
+    /// Whatever the turn's own engine was asking died with the turn;
+    /// a background task's asks stay. Returns whether `slot` was the
+    /// session's.
+    async fn release_turn_slot(
+        &self,
+        sid: &str,
+        slot: &Arc<AsyncMutex<Option<EventReceiver>>>,
+        event_rx: EventReceiver,
+        turn_id: &str,
+    ) -> bool {
         let mut sessions = self.sessions.lock().await;
-        if let Some(live) = sessions.get_mut(session_id) {
-            live.pending_prompts.clear();
+        *slot.lock().await = Some(event_rx);
+        let Some(live) = sessions
+            .get_mut(sid)
+            .filter(|live| Arc::ptr_eq(&live.event_rx, slot))
+        else {
+            return false;
+        };
+        if live.current_turn.as_deref() == Some(turn_id) {
+            live.current_turn = None;
+            self.emit_session_event(
+                "turn_completed",
+                sid,
+                serde_json::json!({
+                    "turn_id": turn_id,
+                    "initiator": live.turn_initiator.take(),
+                }),
+            );
+            live.pending_prompts
+                .retain(|_, prompt| prompt.task_id.is_some());
         }
-    }
-
-    /// Mark the session idle again. Called on every path that gives
-    /// `event_rx` back, because "busy" is exactly "someone holds the channel".
-    async fn clear_current_turn(&self, sid: &str) {
-        let mut sessions = self.sessions.lock().await;
-        if let Some(live) = sessions.get_mut(sid) {
-            if let Some(turn_id) = live.current_turn.take() {
-                self.emit_session_event(
-                    "turn_completed",
-                    sid,
-                    serde_json::json!({
-                        "turn_id": turn_id,
-                        "initiator": live.turn_initiator.take(),
-                    }),
-                );
-            }
-            live.idle.notify_waiters();
-        }
+        live.idle.notify_waiters();
+        true
     }
 
     /// 执行一个 turn：发送消息 → 流式返回事件 → 返回结果。
@@ -3358,44 +3464,31 @@ impl SessionPool {
                 // settings change invalidated: rebuild before this message, so
                 // it is served on the new configuration.
                 //
-                // ③ only rebuilds an idle session (`event_rx` is `Some`). A
-                // rebuild replaces the Agent, and replacing one mid-turn would
-                // cut that turn off; a busy session is served on the old
-                // configuration this once and checked again next time — the
-                // flag stays set, so nothing is missed.
-                let stale_but_idle_check = {
+                // ③ only rebuilds an idle session. A rebuild replaces the
+                // Agent, and replacing one mid-turn would cut that turn off;
+                // a busy session is served on the old configuration this once
+                // and checked again next time — the flag stays set, so
+                // nothing is missed.
+                let stale = {
                     let sessions = self.sessions.lock().await;
-                    match sessions.get(sid) {
-                        None => Err(()),
-                        Some(live)
-                            if !live
-                                .binding_stale
-                                .load(std::sync::atomic::Ordering::Relaxed) =>
-                        {
-                            Ok(None)
-                        }
-                        Some(live) => Ok(Some(live.event_rx.clone())),
-                    }
+                    sessions.get(sid).map(|live| {
+                        live.binding_stale
+                            .load(std::sync::atomic::Ordering::Relaxed)
+                    })
                 };
-
-                let needs_resume = match stale_but_idle_check {
-                    Err(()) => true,
-                    Ok(None) => false,
-                    Ok(Some(event_rx_mutex)) => {
-                        // 只锁一下看现在是不是 Some（空闲），不 take——这里
-                        // 不负责真正 drain 它，只是探测忙不忙。
-                        event_rx_mutex.lock().await.is_some()
-                    }
+                let resolved = match stale {
+                    None => self.ensure_live(sid, options.as_ref()).await,
+                    Some(false) => Ok(sid.clone()),
+                    Some(true) => match self.rebuild_idle(sid, options.as_ref()).await {
+                        Ok(sid) => Ok(sid),
+                        Err(Rebuild::Busy(_)) => Ok(sid.clone()),
+                        Err(Rebuild::NotLive) => self.ensure_live(sid, options.as_ref()).await,
+                        Err(Rebuild::Failed(e)) => Err(e),
+                    },
                 };
-                if needs_resume {
-                    match self.resume_or_create(sid.clone(), options.as_ref()).await {
-                        Ok(sid) => sid,
-                        Err(e) => {
-                            return RpcResponse::err(id, codes::INTERNAL_ERROR, e);
-                        }
-                    }
-                } else {
-                    sid.clone()
+                match resolved {
+                    Ok(sid) => sid,
+                    Err(e) => return RpcResponse::err(id, codes::INTERNAL_ERROR, e),
                 }
             }
             None => {
@@ -3448,7 +3541,17 @@ impl SessionPool {
             became_idle.as_mut().enable();
             let taken = event_rx_mutex.lock().await.take();
             if let Some(rx) = taken {
-                break (input_tx, event_rx_mutex, rx);
+                let still_this_session = self
+                    .sessions
+                    .lock()
+                    .await
+                    .get(&sid)
+                    .is_some_and(|live| Arc::ptr_eq(&live.event_rx, &event_rx_mutex));
+                if still_this_session {
+                    break (input_tx, event_rx_mutex, rx);
+                }
+                *event_rx_mutex.lock().await = Some(rx);
+                continue;
             }
             match on_busy {
                 OnBusy::Reject => {
@@ -3500,21 +3603,60 @@ impl SessionPool {
             }
         };
 
-        {
+        // A goal round runs only if it is still the one its goal handed out:
+        // a pause, clear or change since then, or another turn's round, means
+        // nobody wants it any more.
+        let started = {
             let mut sessions = self.sessions.lock().await;
-            if let Some(live) = sessions.get_mut(&sid) {
-                live.current_turn = Some(turn_id.clone());
-                live.turn_initiator = Some(initiator);
-                self.emit_session_event(
-                    "turn_started",
-                    &sid,
-                    serde_json::json!({"turn_id": turn_id, "initiator": initiator}),
-                );
-                // Whoever starts a turn watches it. Not a special role — it
-                // lands in the same subscriber set as any tab that called
-                // `session.subscribe`, and leaves the same way.
-                live.subscribers.insert(client.id(), client.clone());
+            match sessions
+                .get_mut(&sid)
+                .filter(|live| Arc::ptr_eq(&live.event_rx, &event_rx_mutex))
+            {
+                None => None,
+                Some(live) => {
+                    let wanted = initiator != "goal"
+                        || live
+                            .state
+                            .as_ref()
+                            .is_some_and(|state| state.goal_claim_round(&turn_id));
+                    if wanted {
+                        live.current_turn = Some(turn_id.clone());
+                        live.turn_initiator = Some(initiator);
+                        self.emit_session_event(
+                            "turn_started",
+                            &sid,
+                            serde_json::json!({"turn_id": turn_id, "initiator": initiator}),
+                        );
+                        // Whoever starts a turn watches it. Not a special role
+                        // — it lands in the same subscriber set as any tab that
+                        // called `session.subscribe`, and leaves the same way.
+                        live.subscribers.insert(client.id(), client.clone());
+                    }
+                    Some((wanted, live.state.clone()))
+                }
             }
+        };
+        let turn_state = match started {
+            Some((true, state)) => state,
+            Some((false, _)) => {
+                self.release_turn_slot(&sid, &event_rx_mutex, event_rx, &turn_id)
+                    .await;
+                return RpcResponse::ok(
+                    id,
+                    serde_json::json!({"session_id": sid, "turn_id": turn_id, "skipped": true}),
+                );
+            }
+            None => {
+                *event_rx_mutex.lock().await = Some(event_rx);
+                return RpcResponse::err(
+                    id,
+                    codes::SESSION_NOT_FOUND,
+                    format!("session not found: {sid}"),
+                );
+            }
+        };
+        if let (Some(state), "goal") = (&turn_state, initiator) {
+            self.record_goal_changes(&sid, state).await;
         }
 
         // 发送用户消息
@@ -3528,14 +3670,14 @@ impl SessionPool {
         let ended_with;
         loop {
             let event = event_rx.recv().await;
-            if let Some((frame, prompt_id)) = event
+            if let Some((frame, ask)) = event
                 .as_ref()
                 .and_then(|event| background_frame(&sid, Some(&turn_id), event))
             {
                 // Registered before it is sent: a tab that subscribes between
                 // the two must still be handed the question.
-                if let Some(prompt_id) = prompt_id {
-                    self.remember_prompt(&sid, &prompt_id, &frame).await;
+                if let Some(ask) = &ask {
+                    self.remember_prompt(&sid, ask, &frame).await;
                 }
                 self.broadcast_to_session(&sid, &frame).await;
                 continue;
@@ -3770,9 +3912,8 @@ impl SessionPool {
                     );
                     self.broadcast_to_session_except(&sid, &f, Some(client.id()))
                         .await;
-                    // 归还 event_rx
-                    *event_rx_mutex.lock().await = Some(event_rx);
-                    self.clear_current_turn(&sid).await;
+                    self.release_turn_slot(&sid, &event_rx_mutex, event_rx, &turn_id)
+                        .await;
                     return RpcResponse::err(id, codes::ENGINE_ERROR, format!("{code}: {message}"));
                 }
                 // The engine is gone. Dropping the entry is what lets the
@@ -3789,8 +3930,17 @@ impl SessionPool {
                     );
                     self.broadcast_to_session_except(&sid, &f, Some(client.id()))
                         .await;
-                    self.clear_pending_prompts(&sid).await;
-                    let dead = self.sessions.lock().await.remove(&sid);
+                    let dead = {
+                        let mut sessions = self.sessions.lock().await;
+                        let ours = sessions
+                            .get(&sid)
+                            .is_some_and(|live| Arc::ptr_eq(&live.event_rx, &event_rx_mutex));
+                        if ours {
+                            sessions.remove(&sid)
+                        } else {
+                            None
+                        }
+                    };
                     if let Some(dead) = dead {
                         dead.cancel.cancel();
                         dead.idle.notify_waiters();
@@ -3822,13 +3972,16 @@ impl SessionPool {
         // session's sidechain transcripts, so closing one tab would delete
         // another tab's sub-agent records.
 
-        // 归还 event_rx
-        *event_rx_mutex.lock().await = Some(event_rx);
-        self.clear_current_turn(&sid).await;
-        // Whatever was still being asked died with the turn — replaying it to
-        // the next subscriber would be offering an answer nobody awaits.
-        self.clear_pending_prompts(&sid).await;
-        self.continue_goal(&sid, &ended_with).await;
+        let next_round = match &turn_state {
+            Some(state) => self.goal_round_after(&sid, state, &ended_with).await,
+            None => None,
+        };
+        let ours = self
+            .release_turn_slot(&sid, &event_rx_mutex, event_rx, &turn_id)
+            .await;
+        if let (true, Some(round)) = (ours, next_round) {
+            self.start_goal_round(&sid, round);
+        }
 
         // ── 首轮自动命名 ──
         //
@@ -5751,6 +5904,25 @@ impl SessionPool {
                 )));
             }
 
+            let raced = self.sessions.lock().await.get(session_id).map(|live| {
+                (
+                    live.name.clone(),
+                    format_instant(live.created_at),
+                    format_instant(live.last_active),
+                )
+            });
+            if let Some((name, created_at, last_active)) = raced {
+                return Ok(self.resume_report(
+                    session_id,
+                    "already_active",
+                    message_count,
+                    entry_count,
+                    name,
+                    created_at,
+                    last_active,
+                    mode,
+                ));
+            }
             let sid = self
                 .resume_or_create(session_id.to_string(), options)
                 .await
@@ -6076,9 +6248,9 @@ impl SessionPool {
                 }
                 let Some(pool) = pool.upgrade() else { return };
                 for event in waiting {
-                    if let Some((frame, prompt_id)) = background_frame(&session_id, None, &event) {
-                        if let Some(prompt_id) = prompt_id {
-                            pool.remember_prompt(&session_id, &prompt_id, &frame).await;
+                    if let Some((frame, ask)) = background_frame(&session_id, None, &event) {
+                        if let Some(ask) = &ask {
+                            pool.remember_prompt(&session_id, ask, &frame).await;
                         }
                         pool.broadcast_to_session(&session_id, &frame).await;
                     }
@@ -6100,6 +6272,11 @@ impl SessionPool {
                 match events.recv().await {
                     Ok(event) => {
                         let Some(pool) = pool.upgrade() else { return };
+                        if event["kind"] == "task_finished" {
+                            if let Some(task_id) = event["task"]["task_id"].as_str() {
+                                pool.forget_prompts_of_task(&session_id, task_id).await;
+                            }
+                        }
                         if let Some(frame) = StreamFrame::task_event(&session_id, &event) {
                             pool.broadcast_to_session(&session_id, &frame).await;
                         }
@@ -6219,21 +6396,23 @@ impl SessionPool {
         if !self.session_exists(session_id).await {
             return Err(not_found());
         }
-        if !self.sessions.lock().await.contains_key(session_id) {
-            self.resume_or_create(session_id.to_string(), None)
-                .await
-                .map_err(|e| (codes::INTERNAL_ERROR, e))?;
-        }
-        let (state, spawner) = {
+        self.ensure_live(session_id, None)
+            .await
+            .map_err(|e| (codes::INTERNAL_ERROR, e))?;
+        let (state, spawner, cancel) = {
             let sessions = self.sessions.lock().await;
             let live = sessions.get(session_id).ok_or_else(not_found)?;
-            (live.state.clone(), live.spawner.clone())
+            (
+                live.state.clone(),
+                live.spawner.clone(),
+                live.cancel.child_token(),
+            )
         };
         let (Some(state), Some(spawner)) = (state, spawner) else {
             return Err(not_found());
         };
         let started = spawner
-            .start_agent(request, state)
+            .start_agent(request, state, cancel)
             .await
             .map_err(|e| match e {
                 StartAgentError::Limit(m) => (codes::TASK_LIMIT, m),
@@ -6262,11 +6441,9 @@ impl SessionPool {
                 format!("no session `{session_id}`"),
             ));
         }
-        if !self.sessions.lock().await.contains_key(session_id) {
-            self.resume_or_create(session_id.to_string(), None)
-                .await
-                .map_err(|e| (codes::INTERNAL_ERROR, e))?;
-        }
+        self.ensure_live(session_id, None)
+            .await
+            .map_err(|e| (codes::INTERNAL_ERROR, e))?;
         let input_tx = {
             let sessions = self.sessions.lock().await;
             let live = sessions.get(session_id).ok_or_else(|| {
@@ -6511,6 +6688,72 @@ impl SessionPool {
         }
     }
 
+    /// `sid` in memory: resumed from its log, or created, unless it already
+    /// is. Serialized per id, so two callers racing on one cold session get
+    /// one engine rather than the second replacing the first's.
+    async fn ensure_live(
+        &self,
+        sid: &str,
+        options: Option<&SessionOptions>,
+    ) -> Result<String, String> {
+        self.with_session_lock(sid, async {
+            if self.sessions.lock().await.contains_key(sid) {
+                return Ok(sid.to_string());
+            }
+            self.resume_or_create(sid.to_string(), options).await
+        })
+        .await
+    }
+
+    /// Rebuild a live, idle session in place from its spec and log. Its
+    /// turn slot is held from before the old engine stops until the new one
+    /// is in the map, so no turn can start on, or be cut off by, the
+    /// replacement; a session running a turn is refused.
+    async fn rebuild_idle(
+        &self,
+        sid: &str,
+        options: Option<&SessionOptions>,
+    ) -> Result<String, Rebuild> {
+        self.with_session_lock(sid, async {
+            let held = self.take_idle_slot(sid).await?;
+            self.rebuild_holding(sid, held, options).await
+        })
+        .await
+    }
+
+    /// Take the turn slot of live, idle `sid`, so no turn starts until it
+    /// is given back or the session rebuilt. Callers hold `sid`'s session
+    /// lock.
+    async fn take_idle_slot(&self, sid: &str) -> Result<HeldSlot, Rebuild> {
+        let (slot, current_turn) = {
+            let sessions = self.sessions.lock().await;
+            let live = sessions.get(sid).ok_or(Rebuild::NotLive)?;
+            (live.event_rx.clone(), live.current_turn.clone())
+        };
+        let Some(event_rx) = slot.lock().await.take() else {
+            return Err(Rebuild::Busy(current_turn));
+        };
+        Ok(HeldSlot { slot, event_rx })
+    }
+
+    /// Rebuild `sid` while `held` keeps turns off it. A rebuild that did not
+    /// land on `sid` gives the slot back to the session that is still there.
+    async fn rebuild_holding(
+        &self,
+        sid: &str,
+        held: HeldSlot,
+        options: Option<&SessionOptions>,
+    ) -> Result<String, Rebuild> {
+        let rebuilt = self.resume_or_create(sid.to_string(), options).await;
+        if !matches!(&rebuilt, Ok(rebuilt) if rebuilt == sid) {
+            *held.slot.lock().await = Some(held.event_rx);
+            if let Some(live) = self.sessions.lock().await.get(sid) {
+                live.idle.notify_waiters();
+            }
+        }
+        rebuilt.map_err(Rebuild::Failed)
+    }
+
     /// LRU 驱逐：移除最久未活跃的 session。
     /// 调用 LLM 生成 session 名称。
     /// Names a session through the daemon's own project: its `title` task
@@ -6642,6 +6885,33 @@ fn goal_round_task(
     Box::pin(async move { pool.run_goal_round(sid, round).await })
 }
 
+/// A session's turn slot, taken from it.
+struct HeldSlot {
+    slot: Arc<AsyncMutex<Option<EventReceiver>>>,
+    event_rx: EventReceiver,
+}
+
+/// Why [`SessionPool::rebuild_idle`] did not rebuild.
+enum Rebuild {
+    NotLive,
+    /// Running the turn named, if one has started yet.
+    Busy(Option<String>),
+    Failed(String),
+}
+
+impl From<Rebuild> for SetModelError {
+    fn from(e: Rebuild) -> Self {
+        match e {
+            Rebuild::Busy(current_turn_id) => SetModelError::Busy { current_turn_id },
+            Rebuild::NotLive => SetModelError::Rpc((
+                codes::SESSION_NOT_FOUND,
+                "session is no longer running".to_string(),
+            )),
+            Rebuild::Failed(e) => SetModelError::Rpc((codes::INTERNAL_ERROR, e)),
+        }
+    }
+}
+
 /// What a host asks of a session's goal.
 #[derive(Debug, Clone)]
 pub enum GoalChange {
@@ -6667,10 +6937,32 @@ impl crate::rpc::FrameSink for Discard {
     }
 }
 
-/// Evict the least recently active session. Returns its id.
+/// Whether `live` is doing anything eviction would cut off: running a turn,
+/// holding its turn slot (a turn about to start, a rebuild), or running
+/// background tasks.
+fn is_busy(live: &LiveSession) -> bool {
+    if live.current_turn.is_some() {
+        return true;
+    }
+    let slot_free = live.event_rx.try_lock().is_ok_and(|slot| slot.is_some());
+    if !slot_free {
+        return true;
+    }
+    live.state.as_ref().is_some_and(|state| {
+        state
+            .list_running_tasks()
+            .iter()
+            .any(|(_, status)| matches!(status, base::context::RunningStatus::Running))
+    })
+}
+
+/// Evict the least recently active idle session. Returns its id, or `None`
+/// when every session is busy — the pool then runs over its cap rather than
+/// cut one off.
 fn evict_lru(sessions: &mut HashMap<String, LiveSession>) -> Option<String> {
     let (sid, _) = sessions
         .iter()
+        .filter(|(_, live)| !is_busy(live))
         .min_by_key(|(_, live)| live.last_active)
         .map(|(k, v)| (k.clone(), v.last_active))?;
     let live = sessions.remove(&sid)?;
@@ -6682,7 +6974,8 @@ fn evict_lru(sessions: &mut HashMap<String, LiveSession>) -> Option<String> {
 
 /// The frame for an event the engine sends whether or not a turn is running
 /// — a question, a sub-agent's or a team's progress, changed skills — with
-/// the id of the question when it is one; `None` for any other event.
+/// the id of the question and of the background task asking it when it is
+/// one; `None` for any other event.
 ///
 /// A question is not terminal: the tool call that asked waits on
 /// `session.respondToPrompt`. A sub-agent's activity arrives under its own
@@ -6693,7 +6986,7 @@ fn background_frame(
     sid: &str,
     turn_id: Option<&str>,
     event: &AgentEvent,
-) -> Option<(StreamFrame, Option<String>)> {
+) -> Option<(StreamFrame, Option<Ask>)> {
     let (body, prompt_id) = match event {
         AgentEvent::PermissionPrompt {
             prompt_id,
@@ -6701,6 +6994,7 @@ fn background_frame(
             message,
             paths,
             tool_use_id,
+            task_id,
             ..
         } => {
             let mut body = serde_json::json!({
@@ -6711,7 +7005,7 @@ fn background_frame(
             if let Some(tool_use_id) = tool_use_id {
                 body["tool_use_id"] = serde_json::json!(tool_use_id);
             }
-            (body, Some(prompt_id.clone()))
+            (body, Some((prompt_id.clone(), task_id.clone())))
         }
         AgentEvent::SubagentProgress {
             agent_label,
@@ -6764,7 +7058,7 @@ fn reap_process_groups_later(live: &LiveSession) {
     }
 }
 
-/// Session id 列表：`last_active` 距 `now` 超过 `timeout` 的那些。拆成纯函数
+/// Session id 列表：`last_active` 距 `now` 超过 `timeout`、且手上没有活的那些。拆成纯函数
 /// （不做任何驱逐动作，只挑出 id）——原逻辑内嵌在 `start_janitor` 真实跑
 /// 300 秒一次的循环体里，没法在测试里等 5 分钟去验证；抽出来之后可以直接用
 /// 人为构造的" last_active 已经很旧"的 session 测，不用真的睡觉。
@@ -6775,7 +7069,7 @@ fn idle_session_ids(
 ) -> Vec<String> {
     sessions
         .iter()
-        .filter(|(_, live)| now.duration_since(live.last_active) > timeout)
+        .filter(|(_, live)| now.duration_since(live.last_active) > timeout && !is_busy(live))
         .map(|(sid, _)| sid.clone())
         .collect()
 }
@@ -7717,6 +8011,40 @@ mod eviction_tests {
         assert_eq!(sessions.len(), 1);
     }
 
+    fn running_a_task() -> Arc<base::context::SessionState> {
+        let state = Arc::new(base::context::SessionState::new("/tmp".into()));
+        state.register_task(
+            "task-1",
+            base::context::TaskType::Agent,
+            CancellationToken::new(),
+            serde_json::json!({}),
+        );
+        state
+    }
+
+    #[test]
+    fn eviction_passes_over_a_session_that_is_doing_something() {
+        let now = Instant::now();
+        let long_ago = now.checked_sub(Duration::from_secs(600)).unwrap();
+        let mut sessions = HashMap::new();
+        let mut in_a_turn = dummy_live_session(long_ago);
+        in_a_turn.current_turn = Some("t1".into());
+        sessions.insert("in_a_turn".to_string(), in_a_turn);
+        let slot_taken = dummy_live_session(long_ago);
+        slot_taken.event_rx.try_lock().unwrap().take();
+        sessions.insert("slot_taken".to_string(), slot_taken);
+        let mut with_a_task = dummy_live_session(long_ago);
+        with_a_task.state = Some(running_a_task());
+        sessions.insert("with_a_task".to_string(), with_a_task);
+
+        assert!(idle_session_ids(&sessions, now, Duration::from_secs(300)).is_empty());
+        assert_eq!(evict_lru(&mut sessions), None, "every session is busy");
+        assert_eq!(sessions.len(), 3);
+
+        sessions.insert("idle".to_string(), dummy_live_session(now));
+        assert_eq!(evict_lru(&mut sessions).as_deref(), Some("idle"));
+    }
+
     #[test]
     fn evict_lru_on_empty_map_is_a_noop() {
         let mut sessions: HashMap<String, LiveSession> = HashMap::new();
@@ -8185,7 +8513,8 @@ mod set_model_tests {
         {
             Err(SetModelError::Busy { current_turn_id }) => {
                 assert_eq!(
-                    current_turn_id, "t1",
+                    current_turn_id.as_deref(),
+                    Some("t1"),
                     "the refusal names the turn holding it"
                 )
             }
@@ -8609,5 +8938,182 @@ mod session_listing_tests {
                 "resumable": true,
             })
         );
+    }
+}
+
+#[cfg(test)]
+mod rebuild_tests {
+    use super::mcp_for_project_tests::test_pool_with_store;
+    use super::*;
+    use base::context::goal::TurnOrigin;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    async fn pool_with_history() -> (SessionPool, tempfile::TempDir, tempfile::TempDir) {
+        let store_dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn history::store::HistoryStore> = Arc::new(
+            history::store::JsonlHistoryStore::with_roots(
+                store_dir.path(),
+                history::path::HistoryRoots::under(store_dir.path()),
+            )
+            .await
+            .unwrap(),
+        );
+        let (pool, dir) = test_pool_with_store(Some(store)).await;
+        (pool, dir, store_dir)
+    }
+
+    async fn new_session(pool: &SessionPool) -> String {
+        pool.create_session(None, ProjectSelector::Default, None)
+            .await
+            .expect("a session")["session_id"]
+            .as_str()
+            .expect("a session id")
+            .to_string()
+    }
+
+    async fn slot_and_state(
+        pool: &SessionPool,
+        sid: &str,
+    ) -> (
+        Arc<AsyncMutex<Option<EventReceiver>>>,
+        Arc<base::context::SessionState>,
+    ) {
+        let sessions = pool.sessions.lock().await;
+        let live = sessions.get(sid).expect("the session is live");
+        (live.event_rx.clone(), live.state.clone().expect("a state"))
+    }
+
+    fn append(prompt: &mut runtime::agent::SessionPrompt) {
+        prompt.append = Some("Answer briefly.".into());
+    }
+
+    #[tokio::test]
+    async fn a_prompt_change_is_refused_once_a_turn_holds_the_slot_even_before_it_is_named() {
+        let (pool, _dir, _store) = pool_with_history().await;
+        let sid = new_session(&pool).await;
+        let (slot, _) = slot_and_state(&pool, &sid).await;
+        let held = slot.lock().await.take().expect("an idle session");
+
+        match pool.set_session_prompt(&sid, append).await {
+            Err(SetModelError::Busy { current_turn_id }) => assert_eq!(current_turn_id, None),
+            Err(SetModelError::Rpc((code, message))) => panic!("{code}: {message}"),
+            Ok(v) => panic!("a rebuild cut off a starting turn: {v}"),
+        }
+        let (still, _) = slot_and_state(&pool, &sid).await;
+        assert!(
+            Arc::ptr_eq(&slot, &still),
+            "the engine was replaced under the turn"
+        );
+
+        *slot.lock().await = Some(held);
+        pool.set_session_prompt(&sid, append)
+            .await
+            .unwrap_or_else(|_| panic!("an idle session takes the change"));
+        let (rebuilt, _) = slot_and_state(&pool, &sid).await;
+        assert!(!Arc::ptr_eq(&slot, &rebuilt), "an idle session is rebuilt");
+    }
+
+    #[tokio::test]
+    async fn a_rebuild_keeps_the_goal_armed_and_the_round_it_was_about_to_start() {
+        let (pool, _dir, _store) = pool_with_history().await;
+        let sid = new_session(&pool).await;
+        let (_, before) = slot_and_state(&pool, &sid).await;
+        before
+            .goal_create("keep going".into(), Some(3), TurnOrigin::Human)
+            .unwrap();
+        pool.record_goal_changes(&sid, &before).await;
+        let round = before.goal_next_round().expect("a round");
+
+        pool.set_session_prompt(&sid, append)
+            .await
+            .unwrap_or_else(|_| panic!("an idle session takes the change"));
+        let (_, after) = slot_and_state(&pool, &sid).await;
+        assert!(!Arc::ptr_eq(&before, &after), "the session was rebuilt");
+        assert_eq!(after.goal_view()["armed"], true, "{}", after.goal_view());
+        assert!(after.goal_claim_round(&round.turn_id));
+    }
+
+    #[tokio::test]
+    async fn a_rebuild_moves_the_sessions_watchers_and_open_questions_along() {
+        let (pool, _dir, _store) = pool_with_history().await;
+        let sid = new_session(&pool).await;
+        let watcher = Arc::new(crate::rpc::Client::new(
+            crate::rpc::ConnectionId(u64::MAX - 7),
+            Arc::new(Discard),
+        ));
+        pool.subscribe_session(&sid, watcher.clone()).await.unwrap();
+        pool.remember_prompt(
+            &sid,
+            &("p1".to_string(), Some("task-1".to_string())),
+            &serde_json::json!({"kind": "prompt"}),
+        )
+        .await;
+
+        pool.set_session_prompt(&sid, append)
+            .await
+            .unwrap_or_else(|_| panic!("an idle session takes the change"));
+        let sessions = pool.sessions.lock().await;
+        let live = sessions.get(&sid).unwrap();
+        assert!(live.subscribers.contains_key(&watcher.id()));
+        assert!(live.pending_prompts.contains_key("p1"));
+    }
+
+    #[tokio::test]
+    async fn two_callers_reviving_one_cold_session_build_one_engine() {
+        let (pool, _dir, _store) = pool_with_history().await;
+        let builds = Arc::new(AtomicUsize::new(0));
+        let counted = builds.clone();
+        let pool = pool.with_session_customizer(Arc::new(move |builder, _| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            builder
+        }));
+        let sid = new_session(&pool).await;
+        pool.shutdown_session(&sid).await;
+        assert!(!pool.sessions.lock().await.contains_key(&sid));
+
+        let (a, b) = tokio::join!(pool.ensure_live(&sid, None), pool.ensure_live(&sid, None));
+        assert_eq!((a.unwrap(), b.unwrap()), (sid.clone(), sid.clone()));
+        assert_eq!(
+            builds.load(Ordering::SeqCst),
+            2,
+            "one build to create, one to revive"
+        );
+        let (_, state) = slot_and_state(&pool, &sid).await;
+        assert!(state.goal_view().is_null());
+    }
+
+    #[tokio::test]
+    async fn a_background_tasks_question_outlives_the_turn_and_goes_with_its_task() {
+        let (pool, _dir, _store) = pool_with_history().await;
+        let sid = new_session(&pool).await;
+        let (slot, _) = slot_and_state(&pool, &sid).await;
+        let rx = slot.lock().await.take().unwrap();
+        pool.sessions
+            .lock()
+            .await
+            .get_mut(&sid)
+            .unwrap()
+            .current_turn = Some("t1".into());
+        pool.remember_prompt(&sid, &("own".into(), None), &serde_json::json!({}))
+            .await;
+        pool.remember_prompt(
+            &sid,
+            &("background".into(), Some("task-1".into())),
+            &serde_json::json!({}),
+        )
+        .await;
+
+        assert!(pool.release_turn_slot(&sid, &slot, rx, "t1").await);
+        assert_eq!(
+            pending_ids(&pool, &sid).await,
+            vec!["background".to_string()]
+        );
+        pool.forget_prompts_of_task(&sid, "task-1").await;
+        assert!(pending_ids(&pool, &sid).await.is_empty());
+    }
+
+    async fn pending_ids(pool: &SessionPool, sid: &str) -> Vec<String> {
+        let sessions = pool.sessions.lock().await;
+        sessions[sid].pending_prompts.keys().cloned().collect()
     }
 }

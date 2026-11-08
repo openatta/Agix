@@ -668,6 +668,9 @@ impl Agent {
                 }
                 msg = fwd_rx.recv() => {
                     match msg {
+                        Some(input) if self.drive_goals && !self.claims_goal_round(&input) => {
+                            tracing::debug!("dropped a goal round that is no longer wanted");
+                        }
                         Some(input) => {
                             // Each turn runs under its own child token, so
                             // `CancelTurn` interrupts one turn and leaves the
@@ -839,6 +842,7 @@ impl Agent {
     /// against an active turn.
     pub async fn resume_session(&mut self, id: &str) -> Result<(), session::session::SessionError> {
         self.session.resume(id).await?;
+        self.session_context_injected = crate::turn::holds_session_context(&self.session.messages);
         let goal = self
             .session
             .latest_extension(
@@ -859,12 +863,27 @@ impl Agent {
         &mut self,
         stop_reason: &str,
     ) -> Option<base::context::goal::GoalRound> {
-        let round = match stop_reason {
-            "end_turn" | "stop_sequence" => self.session_state.goal_next_round(),
-            _ => None,
+        let round = if crate::turn::CONTINUES_A_GOAL.contains(&stop_reason) {
+            self.session_state.goal_next_round()
+        } else {
+            None
         };
         self.record_goal_changes().await;
         round
+    }
+
+    /// Whether `input` may run: anything but a goal round does, and a goal
+    /// round only when it is still the one outstanding.
+    fn claims_goal_round(&self, input: &InputMessage) -> bool {
+        let InputMessage::User { turn_id, .. } = input else {
+            return true;
+        };
+        match base::context::goal::TurnOrigin::from_turn_id(turn_id) {
+            base::context::goal::TurnOrigin::GoalRound { .. } => {
+                self.session_state.goal_claim_round(turn_id)
+            }
+            _ => true,
+        }
     }
 
     /// Access the performance collector.
@@ -7389,5 +7408,99 @@ mod tests {
         assert!(search_once(&agent).await.contains("from.searcher.example"));
         assert_eq!(*searcher_asked.lock().unwrap(), ["search-model"]);
         assert!(session_asked.lock().unwrap().is_empty());
+    }
+
+    /// Compacts by keeping the messages for which `keep` holds, reported as
+    /// the in-place strategy that blanks tool results.
+    struct KeepingCompactor {
+        keep: fn(&base::interface::model::ModelMessage) -> bool,
+    }
+
+    #[async_trait::async_trait]
+    impl compaction::compact::Compactor for KeepingCompactor {
+        async fn compact(
+            &self,
+            messages: Vec<base::interface::model::ModelMessage>,
+            _max_tokens: usize,
+            _keep_rounds: usize,
+        ) -> Result<
+            (
+                Vec<base::interface::model::ModelMessage>,
+                compaction::compact::CompactResult,
+            ),
+            compaction::compact::CompactError,
+        > {
+            let before = messages.len();
+            let kept: Vec<_> = messages.into_iter().filter(|m| (self.keep)(m)).collect();
+            let result = compaction::compact::CompactResult {
+                strategy: compaction::compact::CompactStrategy::MicroCompact,
+                messages_before: before,
+                messages_after: kept.len(),
+                tokens_before: 0,
+                tokens_after: 0,
+                projection: None,
+            };
+            Ok((kept, result))
+        }
+
+        fn wants_llm_summary(
+            &self,
+            _messages: &[base::interface::model::ModelMessage],
+            _max_tokens: usize,
+            _keep_rounds: usize,
+        ) -> bool {
+            false
+        }
+    }
+
+    fn text_message(
+        role: base::interface::model::MessageRole,
+        text: &str,
+    ) -> base::interface::model::ModelMessage {
+        base::interface::model::ModelMessage {
+            role,
+            content: vec![base::interface::model::ModelContentBlock::Text { text: text.into() }],
+        }
+    }
+
+    fn is_opening(m: &base::interface::model::ModelMessage) -> bool {
+        crate::turn::holds_session_context(std::slice::from_ref(m))
+    }
+
+    async fn compacted_with(keep: fn(&base::interface::model::ModelMessage) -> bool) -> bool {
+        use base::interface::model::MessageRole;
+        let (mut agent, _rx, _tx) = Builder::new()
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+            .model(Arc::new(DummyModel))
+            .settings(Arc::new(test_settings()))
+            .compactor(Arc::new(KeepingCompactor { keep }))
+            .skip_warmup(true)
+            .build()
+            .expect("build should succeed");
+        let opening = format!(
+            "{}# currentDate\nToday.\n</system-reminder>",
+            crate::turn::SESSION_CONTEXT_OPENING
+        );
+        agent
+            .session
+            .push_message(text_message(MessageRole::User, &opening));
+        agent
+            .session
+            .push_message(text_message(MessageRole::User, "hello"));
+        agent
+            .session
+            .push_message(text_message(MessageRole::Assistant, "hi"));
+        agent.session_context_injected = true;
+        agent
+            .run_compaction(1, 1, crate::turn::CompactTrigger::Auto)
+            .await
+            .expect("a compaction");
+        agent.session_context_injected
+    }
+
+    #[tokio::test]
+    async fn a_compaction_that_kept_the_opening_context_does_not_ask_for_it_again() {
+        assert!(compacted_with(|_| true).await);
+        assert!(!compacted_with(|m| !is_opening(m)).await);
     }
 }

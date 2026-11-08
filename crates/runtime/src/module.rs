@@ -230,12 +230,13 @@ impl AgentSpawner for LateAgentSpawner {
         &self,
         request: base::interface::agent_spawner::AgentRequest,
         session: Arc<SessionState>,
+        cancel: CancellationToken,
     ) -> Result<
         base::interface::agent_spawner::StartedAgent,
         base::interface::agent_spawner::StartAgentError,
     > {
         match self.0.get() {
-            Some(spawner) => spawner.start_agent(request, session).await,
+            Some(spawner) => spawner.start_agent(request, session, cancel).await,
             None => Err(
                 base::interface::agent_spawner::StartAgentError::Unsupported(
                     "this session was assembled without sub-agents".into(),

@@ -114,11 +114,12 @@ impl AgentSpawner for RuntimeAgentSpawner {
         &self,
         request: base::interface::agent_spawner::AgentRequest,
         session: Arc<base::context::SessionState>,
+        cancel: CancellationToken,
     ) -> Result<
         base::interface::agent_spawner::StartedAgent,
         base::interface::agent_spawner::StartAgentError,
     > {
-        self.agent_tool.start_for_host(request, session)
+        self.agent_tool.start_for_host(request, session, cancel)
     }
 
     async fn stop_team_member(&self, team_name: &str, member_name: &str) {

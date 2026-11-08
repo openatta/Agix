@@ -86,6 +86,10 @@ pub enum AgentEvent {
         /// The `tool_use` block this prompt is about, when known.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tool_use_id: Option<String>,
+        /// The background task whose sub-agent asks, when one does. Its
+        /// question outlives the turn it happened to arrive during.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task_id: Option<String>,
     },
 
     // ── Turn lifecycle ──

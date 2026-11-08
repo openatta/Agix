@@ -3053,10 +3053,12 @@ impl AgentTool {
     /// A sub-agent a host asked for (`session.startAgent`): in the
     /// background, as a task of `session`, under the same limits as the
     /// model's own `Agent` calls and never with more than they would get.
+    /// It stops when `session_cancel` does.
     pub(crate) fn start_for_host(
         &self,
         request: base::interface::agent_spawner::AgentRequest,
         session: Arc<base::context::SessionState>,
+        session_cancel: tokio_util::sync::CancellationToken,
     ) -> Result<
         base::interface::agent_spawner::StartedAgent,
         base::interface::agent_spawner::StartAgentError,
@@ -3065,7 +3067,7 @@ impl AgentTool {
         let admission = self.inner.admit().map_err(StartAgentError::Limit)?;
         let tid = bg_task_id();
         let sid = base::id::Id::new().to_string();
-        let cancel = tokio_util::sync::CancellationToken::new();
+        let cancel = session_cancel.child_token();
         let task = session.register_task(
             tid.clone(),
             base::context::TaskType::Agent,
@@ -3919,6 +3921,7 @@ impl Permission for ParentPermission {
                 paths,
                 turn_id: String::new(),
                 tool_use_id: None,
+                task_id: self.task.as_ref().map(|task| task.task_id.clone()),
             })
             .is_err()
         {

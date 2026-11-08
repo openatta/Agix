@@ -124,6 +124,7 @@ impl Elicitation for ChannelElicitation {
             paths,
             turn_id: String::new(),
             tool_use_id,
+            task_id: None,
         });
 
         match rx.await {

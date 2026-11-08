@@ -12,3 +12,6 @@ mod repeat_guard;
 pub mod steering;
 pub mod streaming;
 pub mod turn;
+
+/// Whether this build carries `RunCode` (the `ptc` feature).
+pub const PTC_ENABLED: bool = cfg!(feature = "ptc");

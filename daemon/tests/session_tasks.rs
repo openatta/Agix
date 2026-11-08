@@ -11,9 +11,10 @@ use std::time::Duration;
 
 use daemon::config::{load_daemon_config, StaticDaemonPaths};
 use daemon::DaemonServer;
-use model::client::AnthropicClient;
+use model::client::{AnthropicClient, CountFuture, EventStream};
 use model::mock::MockAnthropicClient;
 use model::stream::{BlockDelta, ContentBlockStart, MessageDeltaPayload, StreamEvent, Usage};
+use model::types::MessagesRequest;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio_util::sync::CancellationToken;
@@ -78,6 +79,10 @@ struct Daemon {
 
 impl Daemon {
     async fn start(model: Arc<MockAnthropicClient>) -> Self {
+        Self::start_with(model).await
+    }
+
+    async fn start_with(model: Arc<dyn AnthropicClient>) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("tasks.sock");
         let cwd = dir.path().join("work");
@@ -97,7 +102,7 @@ impl Daemon {
             Arc::new(scene::code::CodeScene::default()),
             daemon::Assembly {
                 cwd: Some(cwd),
-                model_client: Some(model as Arc<dyn AnthropicClient>),
+                model_client: Some(model),
                 ..Default::default()
             },
         )
@@ -495,6 +500,82 @@ async fn a_sub_agents_output_is_its_answer() {
         .await;
     assert_eq!(out["status"], "done");
     assert_eq!(out["output"], "hello from below");
+}
+
+/// Keeps talking and never finishes, and counts the calls given up on — a
+/// stream dropped unfinished is a model call whose caller was stopped.
+#[derive(Default)]
+struct NeverFinishes {
+    calls: std::sync::atomic::AtomicUsize,
+    abandoned: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+struct CountsWhenDropped(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Drop for CountsWhenDropped {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl AnthropicClient for NeverFinishes {
+    fn stream_messages(&self, _req: MessagesRequest) -> EventStream {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let guard = CountsWhenDropped(self.abandoned.clone());
+        let start = StreamEvent::ContentBlockStart {
+            index: 0,
+            content_block: ContentBlockStart::Text {
+                text: String::new(),
+            },
+        };
+        let talking = futures::stream::unfold(guard, |guard| async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let delta = StreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: BlockDelta::TextDelta {
+                    text: "still thinking ".into(),
+                },
+            };
+            Some((Ok(delta), guard))
+        });
+        Box::pin(futures::StreamExt::chain(
+            futures::stream::iter([Ok(start)]),
+            talking,
+        ))
+    }
+
+    fn count_tokens<'a>(&'a self, _req: &'a MessagesRequest) -> CountFuture<'a> {
+        Box::pin(async { Ok(0usize) })
+    }
+}
+
+#[tokio::test]
+async fn a_sub_agent_the_host_started_stops_when_its_session_closes() {
+    let model = Arc::new(NeverFinishes::default());
+    let daemon = Daemon::start_with(model.clone()).await;
+    let session = daemon.ok("session.create", serde_json::json!({})).await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    daemon
+        .ok(
+            "session.startAgent",
+            serde_json::json!({"session_id": session, "prompt": "think about it"}),
+        )
+        .await;
+    eventually!(
+        "the sub-agent call the model",
+        (model.calls.load(std::sync::atomic::Ordering::SeqCst) > 0).then_some(())
+    );
+    assert_eq!(model.abandoned.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+    daemon
+        .ok("session.close", serde_json::json!({"session_id": session}))
+        .await;
+    eventually!(
+        "the sub-agent stop",
+        (model.abandoned.load(std::sync::atomic::Ordering::SeqCst) > 0).then_some(())
+    );
 }
 
 /// The frames about `task_id`, in the order they arrived.

@@ -5,7 +5,8 @@
 //! This module is the state machine and its authority rules. The tools that
 //! drive it from the model live in `tools::goal`; whoever owns the turn loop
 //! (`runtime::Agent::run`, or the daemon's session pool) asks
-//! [`GoalSlot::next_round`] when a turn ends and starts the round it returns.
+//! [`GoalSlot::next_round`] when a turn ends, and claims the round it returns
+//! with [`GoalSlot::claim_round`] when that round's turn starts.
 
 use serde::{Deserialize, Serialize};
 
@@ -118,6 +119,12 @@ pub enum GoalError {
 pub struct GoalSlot {
     pub goal: Option<Goal>,
     pub armed: bool,
+    /// The turn id of the round handed out and not yet started. At most one
+    /// round is outstanding, so turns that end while it waits start no other.
+    pub pending_round: Option<String>,
+    /// The least revision the next goal may take, so a goal created after a
+    /// clear never repeats a revision an earlier round still carries.
+    pub next_revision: u64,
 }
 
 /// The next automatic round to run.
@@ -141,7 +148,10 @@ impl GoalSlot {
 
     /// The goal as read back from a log: disarmed.
     pub fn restored(goal: Option<Goal>) -> Self {
-        Self { goal, armed: false }
+        Self {
+            goal,
+            ..Self::default()
+        }
     }
 
     pub fn create(
@@ -158,7 +168,11 @@ impl GoalSlot {
                 return Err(GoalError::AlreadyActive(goal.id.clone()));
             }
         }
-        let revision = self.goal.as_ref().map_or(1, |g| g.revision + 1);
+        let revision = self
+            .goal
+            .as_ref()
+            .map_or(1, |g| g.revision + 1)
+            .max(self.next_revision);
         let goal = Goal {
             id: crate::id::Id::new().to_string(),
             revision,
@@ -171,6 +185,7 @@ impl GoalSlot {
         };
         self.goal = Some(goal.clone());
         self.armed = true;
+        self.pending_round = None;
         Ok(goal)
     }
 
@@ -281,16 +296,18 @@ impl GoalSlot {
             }
         }
         goal.revision += 1;
+        self.pending_round = None;
         Ok(goal.clone())
     }
 
     pub fn clear(&mut self, origin: TurnOrigin) -> Result<(), GoalError> {
         require_human(origin, "clear a goal")?;
-        if self.goal.is_none() {
+        let Some(goal) = self.goal.take() else {
             return Err(GoalError::NoGoal);
-        }
-        self.goal = None;
+        };
+        self.next_revision = self.next_revision.max(goal.revision + 1);
         self.armed = false;
+        self.pending_round = None;
         Ok(())
     }
 
@@ -298,17 +315,19 @@ impl GoalSlot {
     /// abnormally (cancelled, errored, out of budget) leaves it for a person
     /// to resume.
     pub fn disarm(&mut self) -> bool {
+        self.pending_round = None;
         std::mem::replace(&mut self.armed, false)
     }
 
-    /// The next automatic round, counted as started, or `None` when the goal
-    /// is not active and armed. A goal whose rounds are used up is marked
-    /// blocked instead; the second value says whether the goal changed.
+    /// The next automatic round, or `None` when the goal is not active and
+    /// armed or a round is already outstanding. A goal whose rounds are used
+    /// up is marked blocked instead; the second value says whether the goal
+    /// changed. The round counts as started only once it is claimed.
     pub fn next_round(&mut self) -> (Option<GoalRound>, bool) {
         let Some(goal) = self.goal.as_mut() else {
             return (None, false);
         };
-        if !self.armed || goal.phase != GoalPhase::Active {
+        if !self.armed || goal.phase != GoalPhase::Active || self.pending_round.is_some() {
             return (None, false);
         }
         if goal.rounds_started >= goal.max_rounds {
@@ -318,22 +337,66 @@ impl GoalSlot {
             self.armed = false;
             return (None, true);
         }
-        goal.rounds_started += 1;
-        goal.rounds_since_armed += 1;
+        let number = goal.rounds_started + 1;
         let round = GoalRound {
             turn_id: format!(
-                "{GOAL_TURN_PREFIX}{}-{}-{}",
+                "{GOAL_TURN_PREFIX}{}-{number}-{}",
                 goal.revision,
-                goal.rounds_started,
                 crate::id::Id::new()
             ),
-            message: round_message(goal),
+            message: round_message(goal, number),
         };
-        (Some(round), true)
+        self.pending_round = Some(round.turn_id.clone());
+        (Some(round), false)
+    }
+
+    /// Start the outstanding round `turn_id`, counting it. `false` when it is
+    /// no longer wanted — the goal was paused, cleared, changed or disarmed
+    /// since it was handed out — and the turn must not run.
+    pub fn claim_round(&mut self, turn_id: &str) -> bool {
+        if self.pending_round.as_deref() != Some(turn_id) {
+            return false;
+        }
+        self.pending_round = None;
+        let Some(goal) = self.goal.as_mut() else {
+            return false;
+        };
+        if !self.armed || goal.phase != GoalPhase::Active {
+            return false;
+        }
+        goal.rounds_started += 1;
+        goal.rounds_since_armed += 1;
+        true
+    }
+
+    /// Give up the outstanding round `turn_id` without running it, so the
+    /// next turn to end may hand out another.
+    pub fn abandon_round(&mut self, turn_id: &str) {
+        if self.pending_round.as_deref() == Some(turn_id) {
+            self.pending_round = None;
+        }
+    }
+
+    /// Take over the arming and the outstanding round of `previous`, the
+    /// same session's slot before its engine was rebuilt, when it still holds
+    /// the very goal this one restored.
+    pub fn carry_arming_from(&mut self, previous: &GoalSlot) {
+        let same_goal = match (&self.goal, &previous.goal) {
+            (Some(now), Some(before)) => now.id == before.id && now.revision == before.revision,
+            _ => false,
+        };
+        if same_goal
+            && previous.armed
+            && self.goal.as_ref().map(|g| g.phase) == Some(GoalPhase::Active)
+        {
+            self.armed = true;
+            self.pending_round = previous.pending_round.clone();
+        }
+        self.next_revision = self.next_revision.max(previous.next_revision);
     }
 }
 
-fn round_message(goal: &Goal) -> String {
+fn round_message(goal: &Goal, round: u32) -> String {
     format!(
         "<goal_round>\nObjective: {}\nRound: {}/{}\n\nContinue working toward the objective in this \
          session. Treat the workspace, tool results and session state as authoritative. Before \
@@ -342,7 +405,7 @@ fn round_message(goal: &Goal) -> String {
          remains, leave the goal active for the next round. Mark it blocked only when the same \
          blocker has held for {BLOCKED_MIN_ROUNDS} consecutive rounds — difficulty or remaining \
          work is not a blocker.\n</goal_round>",
-        goal.objective, goal.rounds_started, goal.max_rounds, goal.id
+        goal.objective, round, goal.max_rounds, goal.id
     )
 }
 
@@ -407,6 +470,12 @@ mod tests {
         (g.id.clone(), g.revision)
     }
 
+    fn start_round(slot: &mut GoalSlot) -> Option<GoalRound> {
+        let round = slot.next_round().0?;
+        assert!(slot.claim_round(&round.turn_id));
+        Some(round)
+    }
+
     fn round_origin(slot: &GoalSlot) -> TurnOrigin {
         TurnOrigin::GoalRound {
             revision: slot.goal.as_ref().unwrap().revision,
@@ -419,7 +488,7 @@ mod tests {
         let mut slot = active();
         let (round, changed) = slot.next_round();
         let round = round.unwrap();
-        assert!(changed);
+        assert!(!changed);
         assert_eq!(
             TurnOrigin::from_turn_id(&round.turn_id),
             TurnOrigin::GoalRound {
@@ -491,7 +560,7 @@ mod tests {
     fn a_round_may_block_only_after_the_lower_bound() {
         let mut slot = active();
         for round in 1..=BLOCKED_MIN_ROUNDS {
-            slot.next_round();
+            start_round(&mut slot);
             let (id, rev) = ids(&slot);
             let result = slot.update(
                 &id,
@@ -544,8 +613,8 @@ mod tests {
     fn rounds_run_out_into_blocked() {
         let mut slot = GoalSlot::default();
         slot.create("x".into(), Some(2), TurnOrigin::Human).unwrap();
-        assert!(slot.next_round().0.is_some());
-        assert!(slot.next_round().0.is_some());
+        assert!(start_round(&mut slot).is_some());
+        assert!(start_round(&mut slot).is_some());
         let (round, changed) = slot.next_round();
         assert!(round.is_none() && changed);
         let goal = slot.goal.as_ref().unwrap();
@@ -603,5 +672,109 @@ mod tests {
             .unwrap();
         assert_eq!(next.max_rounds, DEFAULT_MAX_ROUNDS);
         assert!(next.revision > rev);
+    }
+
+    #[test]
+    fn only_one_round_is_outstanding_at_a_time() {
+        let mut slot = active();
+        let first = slot.next_round().0.unwrap();
+        assert_eq!(slot.next_round(), (None, false));
+        assert!(slot.claim_round(&first.turn_id));
+        assert!(!slot.claim_round(&first.turn_id));
+        let second = slot.next_round().0.unwrap();
+        assert!(second.message.contains("Round: 2/5"));
+        assert_ne!(first.turn_id, second.turn_id);
+    }
+
+    #[test]
+    fn rounds_count_only_once_claimed() {
+        let mut slot = active();
+        let round = slot.next_round().0.unwrap();
+        let goal = slot.goal.as_ref().unwrap();
+        assert_eq!((goal.rounds_started, goal.rounds_since_armed), (0, 0));
+        assert!(slot.claim_round(&round.turn_id));
+        let goal = slot.goal.as_ref().unwrap();
+        assert_eq!((goal.rounds_started, goal.rounds_since_armed), (1, 1));
+    }
+
+    #[test]
+    fn a_round_handed_out_before_a_pause_clear_or_change_cannot_start() {
+        let mut slot = active();
+        let round = slot.next_round().0.unwrap();
+        let (id, rev) = ids(&slot);
+        slot.update(&id, rev, GoalAction::Pause, TurnOrigin::Human)
+            .unwrap();
+        assert!(!slot.claim_round(&round.turn_id));
+
+        let mut slot = active();
+        let round = slot.next_round().0.unwrap();
+        slot.clear(TurnOrigin::Human).unwrap();
+        assert!(!slot.claim_round(&round.turn_id));
+
+        let mut slot = active();
+        let round = slot.next_round().0.unwrap();
+        let (id, rev) = ids(&slot);
+        slot.update(
+            &id,
+            rev,
+            GoalAction::Edit {
+                objective: Some("ship it twice".into()),
+                max_rounds: None,
+            },
+            TurnOrigin::Human,
+        )
+        .unwrap();
+        assert!(!slot.claim_round(&round.turn_id));
+        let next = slot.next_round().0.unwrap();
+        assert!(slot.claim_round(&next.turn_id));
+
+        let mut slot = active();
+        let round = slot.next_round().0.unwrap();
+        slot.disarm();
+        assert!(!slot.claim_round(&round.turn_id));
+        assert_eq!(slot.goal.as_ref().unwrap().rounds_started, 0);
+    }
+
+    #[test]
+    fn an_abandoned_round_lets_the_next_one_be_handed_out() {
+        let mut slot = active();
+        let round = slot.next_round().0.unwrap();
+        slot.abandon_round("goal-1-1-someone-else");
+        assert_eq!(slot.next_round(), (None, false));
+        slot.abandon_round(&round.turn_id);
+        assert!(slot.next_round().0.is_some());
+    }
+
+    #[test]
+    fn a_goal_created_after_a_clear_never_reuses_a_revision() {
+        let mut slot = active();
+        let stale = round_origin(&slot);
+        slot.clear(TurnOrigin::Human).unwrap();
+        slot.create("another".into(), None, TurnOrigin::Human)
+            .unwrap();
+        let (id, rev) = ids(&slot);
+        assert!(matches!(
+            slot.update(&id, rev, GoalAction::Complete, stale),
+            Err(GoalError::NotAllowed(_))
+        ));
+    }
+
+    #[test]
+    fn a_rebuilt_slot_keeps_the_arming_of_the_same_goal() {
+        let mut before = active();
+        let round = before.next_round().0.unwrap();
+        let mut after = GoalSlot::restored(before.goal.clone());
+        after.carry_arming_from(&before);
+        assert!(after.armed);
+        assert!(after.claim_round(&round.turn_id));
+
+        let mut paused = active();
+        let (id, rev) = ids(&paused);
+        paused
+            .update(&id, rev, GoalAction::Pause, TurnOrigin::Human)
+            .unwrap();
+        let mut after = GoalSlot::restored(paused.goal.clone());
+        after.carry_arming_from(&paused);
+        assert!(!after.armed);
     }
 }

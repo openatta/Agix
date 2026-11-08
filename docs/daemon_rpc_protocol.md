@@ -187,9 +187,8 @@ socket_path, version, started_at, protocol_version}`)。它早于多场景支持
   遗留的侧链**没有任何自动回收**:仓库里没有清理它们的 GC,也没有对应的保留期
   配置。要清理只能手工删 transcript 文件。
 
-  级联删除认的是 `Meta` 里的 `parent_session_id`,**不看 `session_kind`** ——
-  `session.fork` 出来的会话也记着源会话作父,所以它同样会被上表的规则删掉
-  (见 `session.fork`)。
+  级联删除只删 `session_kind` 为 `sidechain` 的子会话。`session.fork` 出来的会话也记着
+  源会话作父,但它是 `primary`,不受上表影响(见 `session.fork`)。
 
   实际含义:**"打开子 Agent 的会话查 history"只在父会话还没 close 时可用。**
   父会话 close 之后,它自己的 transcript 里仍留有 `Agent` 工具的 `tool_use` 与
@@ -615,6 +614,8 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 | `task_progress` | 任务边跑边推:`task_progress` 推 Shell 命令、监视器与 `RunCode` 程序新增的输出(程序的是 `log()` 行与每次子调用的一行),`task_updated` 推子 Agent 的用量与等待;`subagent_progress` 带 `task_id`(§7) |
 | `task_messages` | 有 `session.messageTask`,消息进运行中的后台子 Agent(§6.3) |
 | `host_agents` | 有 `session.startAgent`,宿主不经模型在会话下起子 Agent;子 Agent 任务带 `usage`、`structured_output`、`detail.tag`(§6.3) |
+| `goals` | 有 `session.goal` / `session.setGoal` / `session.updateGoal`,目标变化推 `goal_changed`(§6.3、§7) |
+| `ptc` | 这个构建带 `RunCode`,模型能写程序调本会话的工具(`docs/ptc.md`) |
 
 #### `daemon.status`
 
@@ -678,7 +679,8 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 #### `daemon.subscribeEvents`
 
 无参。把当前连接标记为异步通知订阅者,此后推送 §8 的 `daemon.event` 帧,直到连接
-关闭。**不补发过去的事件** —— 关心启动期通知的客户端要在连上后立刻订阅。
+关闭。**不补发过去的事件** —— 关心启动期通知的客户端要在连上后立刻订阅。同一条连接
+再调一次照样回 `subscribed: true`,但每条通知仍只送一份。
 
 ```jsonc
 // ← result
@@ -870,7 +872,7 @@ daemon 重启后恢复)都按同一份 `options` 重建,之后的调用里再传
 // → params
 { "session_id": "…",              // 可选!省略则自动新建一个会话
   "message": "把权限层重构一下",     // 必填
-  "turn_id": "t-1",               // 可选,省略则服务端生成
+  "turn_id": "t-1",               // 可选,省略则服务端生成;不能以 goal- / schedule- / cron- 开头
   "attachments": [ ],             // 可选,见 §4.4
   "options": { },                 // 可选,同 session.create,仅新建时生效
   "on_busy": "reject" }           // 可选,reject | queue | steer,见 §5.3
@@ -1020,7 +1022,8 @@ turn 期间的引擎错误不是事件,是**这次调用的错误响应**:`ENGIN
 的规矩来。
 
 `pending_prompts` 里的帧带**原来的 `prompt_id`**,所以中途打开的 tab 可以直接答那个
-还悬着的权限提问。这些帧在 turn 结束时清空。
+还悬着的权限提问。一轮自己的提问在这一轮结束时清掉;后台子 Agent 的提问不属于哪一轮,
+留到被回答或它的任务结束。
 
 #### `session.unsubscribe`
 
@@ -1119,11 +1122,17 @@ sidecar),不是某个宿主自己的一层覆盖 —— 各宿主各存一份的
 ```
 
 - `phase`:`active` / `paused` / `blocked` / `complete`。只有 `active` 且 `armed` 的目标
-  会自动开轮。`armed` 不落盘:会话恢复后目标一律不武装,要人 `resume` 才继续。
+  会自动开轮。`armed` 不落盘:会话从日志恢复(驱逐后、daemon 重启后)目标一律不武装,要人
+  `resume` 才继续。会话在内存里原地重建(`session.setPrompt`、`session.setModel` 换厂商、
+  配置变化)保留武装;重建之后推一次 `goal_changed`。
 - 宿主经这两个方法的操作都按「用户亲自发起」对待。模型那一侧:设定、修改、暂停、恢复
-  只能在用户发起的那一轮做;自动轮里只能标完成或受阻,受阻要自武装起已跑满 3 轮。
-- 一轮以取消、hook 中止、预算耗尽、出错结束,目标就解除武装,等人决定。
+  只能在用户发起的那一轮做;自动轮里只能标完成或受阻,受阻要从自武装起的第 3 个自动轮起。
+- 一轮以取消、hook 中止、预算耗尽、出错结束,目标就解除武装,等人决定。以 `max_tokens`
+  结束的一轮和正常结束一样,接着开下一轮。
 - 在空闲会话上设定或恢复目标,第一轮马上开始;`pause` 碰上正在跑的自动轮会中断它。
+- 同一时刻至多有一个自动轮在等着开始:别的轮(客户端的、定时任务的)在它之前结束,不会
+  再开一轮。等着的这一轮开始前目标被暂停、清除、修改或解除武装,它就不跑了。
+- 清除之后再设的目标,`revision` 接着清除前的往上数,不会和旧目标的重复。
 - 会话不在内存里时,`session.goal` 从日志读(`armed` 为 `false`),`setGoal` /
   `updateGoal` 先把它恢复起来。会话不存在 → `SESSION_NOT_FOUND`;状态不允许的操作 →
   `INVALID_PARAMS`,`message` 说明原因。
@@ -1334,11 +1343,9 @@ client,会话在原地按新的规格重建(它是空闲的,不会腰斩什么),
 写下的扩展条目(`session.appendEntry`)也在;从中间分叉时截在第 `at_message` 条消息
 所在的那一行。
 
-> ⚠️ **分叉出来的会话会被算成源会话的子会话。** 级联删除只看 `Meta` 里的
-> `parent_session_id`,不看 `session_kind`,所以对**源会话**调 `session.close` 或
-> `session.delete` 会**连带删掉这个分叉的 transcript**;`session.list
-> {parent_session_id}` 也会把它列出来,而且把它标成 `"session_kind":"sidechain"`。
-> 想留住分叉,就别关它的源会话。
+分叉记着源会话作 `parent_session_id`,但它是 `"session_kind":"primary"`,不是侧链:对源会话
+调 `session.close` 或 `session.delete` 不会删它。`session.list {parent_session_id}` 会把它和
+源会话的侧链一起列出,`session_kind` 照实标成 `primary`。
 
 #### `session.close`
 
@@ -1537,6 +1544,8 @@ Shell 命令、监视器没有收件箱。会话不在内存里 → `SESSION_NOT
 ```
 
 - 父会话空闲、正在一轮里都能起,互不阻塞;不在内存里时先恢复,同 `session.run_turn`。
+- 子 Agent 随父会话的运行体结束:父会话被 `session.close` 或 `daemon.shutdown` 时,它被停下
+  (`stopped`)。还有子 Agent 在跑的会话不会被驱逐。
 - 计入 `execution.max_concurrent_subagents`,也受委派深度限制;超了 → `TASK_LIMIT`,不排队。
 - 权限:子 Agent 的工具调用照父会话的权限判;`permission_rules` 里的 deny 规则先判,命中
   就拒。allow / ask 规则不生效 —— 宿主起的子 Agent 只能比父会话更严。询问怎么答见 §10。
@@ -2020,7 +2029,7 @@ disclosure 的 `wasm.runnable` 会如实报成 `false`。
 | `import_detected` | `{sources:[{source,description}]}` | 启动时探测到还没处理过的可导入配置 |
 | `session_created` | `{session_id, scene, project_root}` | 一个新会话进了内存 |
 | `session_resumed` | `{session_id, scene, project_root}` | 一个已有的会话被恢复进内存 |
-| `session_evicted` | `{session_id, reason}` | 会话被移出内存,transcript 还在,可以恢复。`reason`:`idle`(空闲超时)、`capacity`(池子满了,挤掉最久没动的) |
+| `session_evicted` | `{session_id, reason}` | 会话被移出内存,transcript 还在,可以恢复。`reason`:`idle`(空闲超时)、`capacity`(池子满了,挤掉最久没动的)。正在跑一轮、或还有后台任务在跑的会话不会被驱逐;池子满了而个个都忙时,新会话照样建,池子暂时超出上限 |
 | `session_closed` | `{session_id, reason}` | 会话被关闭。`reason`:`closed`(`session.close` / `session.delete`)、`engine_stopped`(引擎在一轮中途退出) |
 | `session_deleted` | `{session_id, parent_session_id?}` | 会话连同 transcript 被删除;级联删除的侧链带 `parent_session_id` |
 | `turn_started` | `{session_id, turn_id, initiator}` | 一轮开始。`initiator`:`client`(某条连接的 `run_turn`)、`schedule`(定时任务,§6.7)、`goal`(目标的自动轮) |
@@ -2059,7 +2068,7 @@ disclosure 的 `wasm.runnable` 会如实报成 `false`。
 
 还有三个常量在代码里定义了但**没有任何路径会发出**,客户端不必为它们写分支:
 `PARSE_ERROR (-32700)` / `INVALID_REQUEST (-32600)`(解析不了的帧被静默丢弃,见
-§1)、`SESSION_CAP_REACHED (-32001)`(会话数到顶时驱逐最久未用的那个,不拒绝新建)。
+§1)、`SESSION_CAP_REACHED (-32001)`(会话数到顶时驱逐最久未用的空闲会话,不拒绝新建)。
 
 ### 9.1 `error.data` 的形状
 
