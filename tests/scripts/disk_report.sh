@@ -3,8 +3,7 @@
 #
 # One clean build of this workspace is ~13 GB, and that is not waste: every
 # integration test file is its own binary that statically links the whole
-# graph — wasmtime and cranelift alone are half a gigabyte of rlib — so a
-# test binary lands around 190 MB and there are dozens of them. Stripping
+# graph, so a test binary lands around 190 MB and there are dozens of them. Stripping
 # barely moves it (~18 MB on macOS, where the debug info is not in the
 # binary to begin with): that size is machine code.
 #

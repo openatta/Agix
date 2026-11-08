@@ -1,9 +1,7 @@
 //! Turning a package's `[[mcp]]` declarations into MCP server configs.
 //!
 //! Pure data: reading a config file, or naming the bridge process that speaks
-//! MCP on a DSH payload's behalf. No component is compiled and no runtime is
-//! involved, which is why this lives with the package layer — an MCP-only
-//! package is usable in a build that carries no WebAssembly at all.
+//! MCP on a DSH payload's behalf.
 
 use crate::manifest::{McpKind, McpPayload, Plugin};
 use std::path::PathBuf;
@@ -68,8 +66,7 @@ fn dsh_bridge_config(plugin: &Plugin, server: &McpPayload) -> Option<serde_json:
         return None;
     }
     let bridge = bridge_entry_path()?;
-    // Only the variables the manifest named are passed through, the same
-    // rule the WASM capability list follows.
+    // Only the variables the manifest named are passed through.
     let env: serde_json::Map<String, serde_json::Value> = server
         .env
         .iter()
@@ -156,5 +153,79 @@ mod tests {
         let found = locate_bridge(None).expect("the in-repo bridge should be reachable");
         assert!(found.is_file());
         assert!(found.ends_with("agix-dsh-bridge/src/main.js"), "{found:?}");
+    }
+
+    const HEAD: &str = "[plugin]\nname = \"p\"\nversion = \"1.0.0\"\napi_version = \"0.1\"\n";
+
+    fn load(root: &std::path::Path, body: &str) -> Plugin {
+        std::fs::write(root.join("plugin.toml"), format!("{HEAD}{body}")).unwrap();
+        Plugin::load(root, &root.join("plugin.toml")).unwrap()
+    }
+
+    #[test]
+    fn a_dsh_payload_becomes_a_bridge_invocation() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("dist")).unwrap();
+        std::fs::write(
+            dir.path().join("dist/index.js"),
+            "export function apply() {}",
+        )
+        .unwrap();
+        std::env::set_var("AGIX_TEST_DSH_TOKEN", "secret");
+        let p = load(
+            dir.path(),
+            r#"
+[[mcp]]
+name = "pr-helper"
+kind = "dsh"
+entry = "dist/index.js"
+env = ["AGIX_TEST_DSH_TOKEN", "AGIX_TEST_UNSET"]
+"#,
+        );
+
+        let servers = servers_for(&p);
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].0, "p-mcp-pr-helper");
+
+        let cfg = &servers[0].1;
+        assert_eq!(cfg["type"], "stdio");
+        assert_eq!(cfg["command"], "node");
+        let args = cfg["args"].as_array().unwrap();
+        assert!(args[0].as_str().unwrap().ends_with("main.js"), "{args:?}");
+        assert!(
+            args[1].as_str().unwrap().ends_with("dist/index.js"),
+            "{args:?}"
+        );
+        assert_eq!(cfg["env"]["AGIX_TEST_DSH_TOKEN"], "secret");
+        assert!(cfg["env"].get("AGIX_TEST_UNSET").is_none());
+    }
+
+    #[test]
+    fn a_dsh_payload_with_no_entry_module_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = load(
+            dir.path(),
+            "\n[[mcp]]\nname = \"gone\"\nkind = \"dsh\"\nentry = \"dist/missing.js\"\n",
+        );
+        assert!(servers_for(&p).is_empty());
+    }
+
+    #[test]
+    fn native_mcp_payloads_are_namespaced() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("mcp")).unwrap();
+        std::fs::write(
+            dir.path().join("mcp/server.json"),
+            r#"{"command":"echo","args":[]}"#,
+        )
+        .unwrap();
+        let p = load(
+            dir.path(),
+            "\n[[mcp]]\nname = \"github\"\nkind = \"native\"\nconfig = \"mcp/server.json\"\n",
+        );
+        let servers = servers_for(&p);
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].0, "p-mcp-github");
+        assert_eq!(servers[0].1["command"], "echo");
     }
 }

@@ -118,24 +118,6 @@ pub trait PromptHookExecutor: Send + Sync {
 /// provide sub-agent execution for Agent-type hooks. The executor receives the
 /// hook prompt + payload and returns structured JSON: `{"ok": bool, "reason": "..."}`.
 #[async_trait::async_trait]
-pub trait WasmHookExecutor: Send + Sync {
-    /// Ask `plugin` about this event.
-    ///
-    /// The returned `HookResponse` is deliberately restricted by the
-    /// implementation: a plugin may proceed, block with a reason, or add an
-    /// attributable note. It may **not** set `updated_input`. Quietly
-    /// rewriting another party's tool arguments is a different power from
-    /// refusing the call, and it is not one a downloaded package gets — that
-    /// capability stays with hooks the user wrote themselves.
-    async fn execute(
-        &self,
-        plugin: &str,
-        payload: &HookInput,
-        timeout_ms: Option<u64>,
-    ) -> Result<crate::payload::HookResponse, String>;
-}
-
-#[async_trait::async_trait]
 pub trait AgentHookExecutor: Send + Sync {
     /// Execute an agent hook with the given prompt and model.
     /// Returns the agent's JSON response string.
@@ -154,7 +136,6 @@ pub struct HookRunner {
     prompt_executor: Option<Arc<dyn PromptHookExecutor>>,
     /// Agent hook 执行器；None 时 Agent hook 报"no executor"
     agent_executor: Option<Arc<dyn AgentHookExecutor>>,
-    wasm_executor: Option<Arc<dyn WasmHookExecutor>>,
     /// HTTP hook 的出口；按需 lazy 初始化（绝大多数 session 不用 http hook）
     net: std::sync::OnceLock<std::sync::Arc<dyn base::interface::exec::Network>>,
     /// Track executed `once` hooks: set of (HookEvent, config_index) that have
@@ -188,7 +169,6 @@ impl HookRunner {
             default_timeout: Duration::from_millis(DEFAULT_HOOK_TIMEOUT_MS),
             prompt_executor: None,
             agent_executor: None,
-            wasm_executor: None,
             net: std::sync::OnceLock::new(),
             once_executed: std::sync::Mutex::new(std::collections::HashSet::new()),
             file_watcher: std::sync::Mutex::new(None),
@@ -241,14 +221,6 @@ impl HookRunner {
     /// 注入 Prompt hook 执行器。CLI 用 AnthropicClient 包一层注入。
     pub fn with_prompt_executor(mut self, executor: Arc<dyn PromptHookExecutor>) -> Self {
         self.prompt_executor = Some(executor);
-        self
-    }
-
-    /// Wire the backend that runs plugin-provided hooks. Absent in a build
-    /// without the plugin subsystem, where `HookConfig::Wasm` entries are
-    /// skipped with an explanation rather than silently ignored.
-    pub fn with_wasm_executor(mut self, executor: Arc<dyn WasmHookExecutor>) -> Self {
-        self.wasm_executor = Some(executor);
         self
     }
 
@@ -564,41 +536,6 @@ impl HookRunner {
             } => {
                 self.exec_agent(prompt, model.as_deref(), input, *timeout)
                     .await
-            }
-            HookConfig::Wasm { plugin, timeout } => self.exec_wasm(plugin, input, *timeout).await,
-        }
-    }
-
-    /// Hand the event to an installed plugin's component.
-    ///
-    /// Delegated to an injected executor for the same reason the prompt and
-    /// agent backends are: this crate must not depend on wasmtime, or the
-    /// hook dispatcher could not exist in a build with the plugin subsystem
-    /// compiled out.
-    async fn exec_wasm(
-        &self,
-        plugin: &str,
-        input: &HookInput,
-        timeout_ms: Option<u64>,
-    ) -> HookOutcome {
-        let Some(ref executor) = self.wasm_executor else {
-            return HookOutcome::Skipped(
-                "wasm hook: no WasmHookExecutor configured — plugins are unavailable in this build",
-            );
-        };
-        match executor.execute(plugin, input, timeout_ms).await {
-            Ok(response) => HookOutcome::Ran {
-                stdout: response.message.clone().unwrap_or_default(),
-                response,
-                stderr: String::new(),
-                exit_code: Some(0),
-            },
-            // A plugin that fails to answer is a plugin that has not
-            // objected. Treating a fault as a block would let a broken
-            // package halt every tool call in the session.
-            Err(e) => {
-                tracing::warn!(plugin = %plugin, error = %e, "wasm hook failed; proceeding");
-                HookOutcome::Skipped("wasm hook: the plugin failed to answer")
             }
         }
     }

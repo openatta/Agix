@@ -621,7 +621,7 @@ static POINTS: [ExtensionPoint; 45] = [
     ExtensionPoint {
         id: "hooks",
         kind: Kind::Interception,
-        summary: "生命周期回调——command、prompt、HTTP、agent 或 wasm",
+        summary: "生命周期回调——command、prompt、HTTP 或 agent",
         timing: "三十个具名时刻;见 hook 事件清单",
         rewrites: "按事件而异:拦截、改写输入、结束这一轮",
         frequency: Frequency::PerToolCall,

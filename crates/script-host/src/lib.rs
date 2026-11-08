@@ -29,10 +29,8 @@
 //!
 //! Nothing. No filesystem, no network, no clock beyond `Date`, no host
 //! bindings at all. A script gets its input and returns its output, both as
-//! JSON. Capabilities are declared and resolved through
-//! `base::interface::capabilities` like every other carrier's, and until
-//! something is wired to grant one, the honest answer is that this carrier
-//! grants none.
+//! JSON. The limits bound what a script costs; they are not a security
+//! boundary against hostile code, so trust follows where a script came from.
 
 use std::time::{Duration, Instant};
 
@@ -73,7 +71,7 @@ impl QuickJsEngine {
 /// JSON in and JSON out rather than converting Rust values through QuickJS's
 /// type system: the contract is already JSON-shaped, and going through
 /// `JSON.parse` / `JSON.stringify` means a script sees exactly what a command
-/// hook or a wasm component would see for the same point.
+/// hook would see for the same point.
 ///
 /// The user's code goes inside the function body, so `function onAssemble(…)`
 /// hoists and is in scope by the time it is called.

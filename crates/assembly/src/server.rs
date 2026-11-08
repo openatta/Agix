@@ -1098,15 +1098,8 @@ impl DaemonServer {
     /// `plugin.*` methods answer `PLUGINS_DISABLED` rather than pretending
     /// (an empty `plugin.list` would read as "nothing installed", which is a
     /// different fact from "this build has no plugin support").
-    ///
-    /// A packages-only build counts as on. Managing packages is exactly what
-    /// it can do; what it cannot do is run their components, and that is the
-    /// disclosure's business, not this gate's.
     fn plugins_enabled(&self) -> bool {
-        matches!(
-            self.pool.plugin_status(),
-            crate::plugins::PluginStatus::Enabled | crate::plugins::PluginStatus::PackagesOnly
-        )
+        self.pool.plugin_status() == crate::plugins::PluginStatus::Enabled
     }
 
     fn plugins_disabled(&self, id: serde_json::Value) -> RpcResponse {

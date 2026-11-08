@@ -21,12 +21,11 @@
 `crates/core/tests` 的两个文件各自一个——它们动的是进程级的状态（只构建一次的 HTTP 客户端
 读到的代理环境变量、本进程领的全部进程组），和别的测试同进程就不成立。
 
-其中三条要的不是同一个 daemon：一个构建只带一个载体，所以「没有脚本引擎的构建拿到
-`scripts` 段怎么办」和「一个组件到底会不会被调起来」都只能由另一个构建回答。用例会
-说清楚怎么建、往哪个环境变量里塞：`AGIX_TEST_DAEMON_BIN_NO_CARRIER` 和
-`AGIX_TEST_DAEMON_BIN_PLUGINS`。CI 两个都建。
+有几条要的不是同一个 daemon：「没有脚本引擎的构建拿到 `scripts` 段怎么办」只能由
+另一个构建回答。用例会说清楚怎么建、往哪个环境变量里塞：`AGIX_TEST_DAEMON_BIN_NO_CARRIER`
+（以及最小档的 `AGIX_TEST_DAEMON_BIN_MINIMAL`）。CI 都建。
 
-> **手工建别的载体时务必带上自己的 `CARGO_TARGET_DIR`。** 每种载体建出来的都叫
+> **手工建别的构建时务必带上自己的 `CARGO_TARGET_DIR`。** 每种构建建出来的都叫
 > `agixd`，而跨进程用例默认捡的就是 `target/debug/agixd` —— 往默认目录建一个
 > `--no-default-features` 的 daemon，等于把那批用例脚下的二进制换掉了。换掉之后它们
 > 不会说「你换了二进制」，只会说「脚本没进提示词」。用例里给出的两条建法都带着
@@ -221,7 +220,7 @@ MCP）、`.agents/skills/`、`AGENTS.md`。用例跑之前会整个拷贝到临�
 ## 磁盘
 
 一次干净构建 **~13 GB**，这不是浪费：每个集成测试文件都是一个独立二进制，静态链接
-整张依赖图（光 wasmtime + cranelift 的 rlib 就 507 MB），所以单个测试二进制约 190 MB，
+整张依赖图，所以单个测试二进制约 190 MB，
 而这样的二进制有几十个。strip 只能省 18 MB——macOS 上调试信息本来就不在二进制里，
 那 190 MB 是实打实的机器码。
 

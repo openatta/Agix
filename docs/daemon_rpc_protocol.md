@@ -1908,7 +1908,7 @@ daemon 自己那一对,给路径 = 它服务的另一个项目,`null` → `INVAL
 { "plugins": [ ] }
 // 元素:{ "name":"…", "version":"…", "description":"…", "enabled": true,
 //        "root": "/…/plugins/cache/<name>/<version>",
-//        "script_faults": [], "component_faults": [] }
+//        "script_faults": [] }
 ```
 
 列出磁盘上的全部插件及启用状态,包括已停用的。
@@ -1919,15 +1919,6 @@ daemon 自己那一对,给路径 = 它服务的另一个项目,`null` → `INVAL
 
 `script_faults` 是这个包的 `[[script]]` 绑定里没能兑现的那些,每条带原因。来自包的绑定
 是逐条降级的,所以这里非空不代表包没装上,只代表少了那几条贡献。
-
-`component_faults` 是同一回事,换成 `[[wasm]]` 组件:哪个组件没能加载,以及为什么,
-每条以组件文件名开头(一个包可以声明不止一个)。**这一条比上一条更要紧**——一个包
-如果只有组件、而组件加载不了,它照样列在这里、照样 `enabled: true`、什么也不贡献,
-而其他每个能问的问题都答"没事":装上了、启用着、也没被熔断——熔断数的是调用产生的
-故障,而一个从没加载成功的组件从来不会被调用。
-
-不带载体的构建这一项恒为空:它不加载组件,所以没有可报的。那种构建里"组件不会跑"
-这件事由 `plugin.install` 的披露(`wasm.runnable`)说,不由这里说。
 
 #### `plugin.install`
 
@@ -1943,15 +1934,12 @@ daemon 自己那一对,给路径 = 它服务的另一个项目,`null` → `INVAL
 **daemon 自己去取,没有上传通道。** 没有 marketplace 查询,直接从给的源装。
 
 **`checksum` 对 `http(s)://` 源是必填的**,缺了会在发起请求之前就拒绝;`file://`
-源可以省略。流程:取包 → 校验 → 解包 → **在安装时就把组件编译成 AOT 产物**;编译
-失败会把这次安装**回滚**并报错,而不是留一个每次加载都要重编的插件。
-
-**组件数为 0 的包不走编译这一步**,也就不需要任何编译器。纯脚本、纯 MCP 的包在
-默认构建(`plugin-packages`,不带 WASM 载体)上装得上;带 `[[wasm]]` 的包也装得上,
-disclosure 的 `wasm.runnable` 会如实报成 `false`。
+源可以省略。流程:取包 → 校验 → 解包 → 按发现时的方式把 manifest 读回来;读不回来就把
+这次安装**回滚**并报错。带 `[[wasm]]` 或 `[scene.own]` 段的包在这一步被拒——引擎不跑
+WebAssembly 组件,场景改用 `[scene] dir`。
 
 响应:`{ "success": true, "message": "…", "disclosure": … }`。`disclosure` 是这个
-插件会往模型上下文里塞的文本,让调用方在依赖它之前先看见。
+插件会往模型上下文里塞的文本,让调用方在依赖它之前先看见;字段见 `plugin_packages.md`。
 
 #### `plugin.uninstall`
 
@@ -1960,7 +1948,7 @@ disclosure 的 `wasm.runnable` 会如实报成 `false`。
 { "name": "…", "version": "1.0.0", "scope": "global" }   // version 省略 = 全部版本
 ```
 
-响应 `{ "success": true, "message": "…" }`。AOT 产物在版本目录下,一起带走。
+响应 `{ "success": true, "message": "…" }`。
 
 #### `plugin.enable` / `plugin.disable`
 
@@ -1977,7 +1965,7 @@ disclosure 的 `wasm.runnable` 会如实报成 `false`。
 无参。重扫插件目录并重新加载,响应与 `plugin.list` 同形。
 
 上面四个方法各自会自动刷新,**这个是给它们盖不到的情况用的**:有人手工把插件放进
-目录、或者开发时原地替换了组件。
+目录、或者开发时原地改了包的内容。
 
 **关于 `scope`**:只有 `global`(全局根下的 `plugins/`,跨场景共享)和 `scene`
 (场景根下的,只对这个 daemon 的场景生效)两个值,默认 `global`,别的值返回
@@ -1987,7 +1975,7 @@ disclosure 的 `wasm.runnable` 会如实报成 `false`。
 会话创建时注入工具表的,已经在跑的会话保持原样。受影响的场景与斜杠命令会立即刷新,
 所以 `scene.list` / `commands.list` 在调用返回之后就是新的。
 
-> 插件子系统可以在编译期整个裁掉(daemon 的 `plugins` feature,**默认不开**)。
+> 插件子系统可以在编译期整个裁掉(daemon 的 `plugin-packages` feature,默认开启)。
 > 裁掉或被策略关掉的构建里,上面五个方法一律返回 `PLUGINS_DISABLED (-32016)` ——
 > 不是"未知方法",因为方法是存在的,只是这个构建不提供它。用 `daemon.doctor` 的
 > `plugins.status` 判断当前是哪种情况。

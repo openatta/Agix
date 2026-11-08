@@ -12,9 +12,9 @@
   坐进引擎正在做的那件事的路径里。
 
 三者都是 Rust:实现那个 trait,交给 `runtime::agent::Builder`。要扩展一个不由你
-编译的构建,就得借助载体——脚本(`extending_quickjs.md`)或者 WebAssembly 插件
-(`extending_wasm.md`)。每种载体只够得着这里列出的一部分,各自那份文档会说清楚是
-哪一部分。引擎本身怎么搭起来的,见 `ARCHITECTURE.md`。
+编译的构建,就用 QuickJS 脚本(`extending_quickjs.md`),它只够得着这里列出的九个点;
+脚本、MCP 服务器、场景和 agent 类型可以打成插件包分发(`plugin_packages.md`)。引擎本身
+怎么搭起来的,见 `ARCHITECTURE.md`。
 
 ## 这张表怎么读
 
@@ -344,7 +344,7 @@ for refused in registry.register_declarative_dir(&global_root.join("scenes")) {
 交给 `prompt.variable` 的注册去展开——它能不能展开取决于宿主注册了什么,所以加载时
 不拒。
 
-插件包也可以带一个这样的目录,见 `extending_wasm.md` 的 `[scene] dir`;那时 `id` 必须
+插件包也可以带一个这样的目录,见 `plugin_packages.md` 的 `[scene] dir`;那时 `id` 必须
 写成 `plugin:<插件名>`。
 
 #### 场景收窄模块
@@ -912,7 +912,7 @@ let store = Arc::new(ObservedHistoryStore::new(inner, vec![my_observer]));
 
 ### 生命周期 hook — `hooks`
 
-三十个具名事件,五种后端(command、prompt、HTTP、agent、wasm),在 `settings.json`
+三十个具名事件,四种后端(command、prompt、HTTP、agent),在 `settings.json`
 里配。有些事件能解析、能接受配置,但还没有任何地方触发它们;`hooks::UNWIRED_EVENTS`
 是那份清单,配到这类事件时引擎会告警,而 `daemon/tests/hook_event_wiring.rs` 从两个
 方向盯着这份清单不许说谎。
@@ -1114,27 +1114,18 @@ thinking 签名。每一条排除都在它被做出的地方给出理由,因为�
 
 ## 载体不变量
 
-无论是什么在加载扩展——今天是 WebAssembly,旁边还会有一个脚本引擎——四件事成立,
-`daemon/tests/carrier_invariants.rs` 会在它们不再成立时失败:
+扩展只有两种:编译进宿主的 Rust,和 QuickJS 脚本。`daemon/tests/carrier_invariants.rs`
+在下面几条不再成立时失败:
 
-1. **一张能力表,一个授权函数。** 两者都在 `base::interface::capabilities`。载体把
-   自己的清单转成 `CapabilityDeclaration` 然后去问;它不作答。
-2. **载体之间不互相调用。** 它们通过宿主契约互相够到,绝不跨内存模型直接调。
-3. **每个载体都是一个编译期 feature,而且一个构建最多带一个。** `scripts` 带来
-   QuickJS,是默认;`plugins` 带来 WebAssembly 那一档,要拿它得加
-   `--no-default-features`——因为两个都要会被一个 `compile_error!` 拒掉,而不是被
-   悄悄接受。`cargo build -p daemon --no-default-features --features full` 一个都不链。
+1. **没有 WebAssembly 运行时。** 工作区里没有任何 crate 依赖 wasmtime 一类的运行时;
+   需要它的宿主在 Rust 接口上自己做。
+2. **脚本载体是一个编译期 feature。** `scripts` 带来 QuickJS,是默认;
+   `cargo build -p daemon --no-default-features --features full` 不链任何 JavaScript 引擎。
+3. **披露不点引擎的名。** 它管的是一个包*声明*了什么,和脚本怎么跑无关。
 
-   互斥是因为:两个都带,就为一个没人要过两遍的能力付两倍的攻击面;还因为 cargo 的
-   feature 合并让"两个都带"成为一个你踩进去而不是选进去的地方——`--features plugins`
-   不加 `--no-default-features` 就足以踩进去。
-4. **披露覆盖每一个载体。** 它管的是一个扩展*声明*了什么,所以它压根不点任何载体
-   的名。
-
-什么都不会因为没提就被授予:一个不声明任何能力的扩展,能计算,仅此而已。
-
-**`extending_wasm.md`** 是 WebAssembly 载体的指南——一个组件要实现的 world、
-`plugin.toml`、能力模型、安装期披露,以及一个插件能贡献什么。
+脚本和 `RunCode` 跑在同一套内嵌 QuickJS 里。内存、时间、每轮调用次数的限额限的是开销,
+不是对恶意代码的隔离边界:脚本能做什么,由它从哪来决定(见上面的「这张表怎么读」),
+而它够不到任何 I/O——这一条不会因为哪个点需要而放开。
 
 ---
 
@@ -1145,7 +1136,7 @@ thinking 签名。每一条排除都在它被做出的地方给出理由,因为�
 
 | # | 只在内核 | 为什么不能开 |
 |---|---|---|
-| 1 | 能力授权与模块解析 | 决定 `import 'host:fs'` 解不解析得开的那个函数。可替换就等于没授权 |
+| 1 | 脚本够得到什么 | 没有文件系统、网络、宿主绑定。可替换就等于给下载来的代码开了 I/O |
 | 2 | 权限规则的求值顺序 | 那八个阶段的顺序*就是*那条安全性质——一个工具自己的 Allow 必须排在 deny 规则和路径检查之后 |
 | 3 | 资源限额与中断 | 停下一个失控扩展的唯一手段 |
 | 4 | 调度与配额记账 | 可替换的记账就是可绕开的配额 |

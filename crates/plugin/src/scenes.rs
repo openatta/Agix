@@ -1,13 +1,8 @@
 //! The declarative scene a package ships in `[scene] dir`.
 //!
 //! A directory of `scene.json` + `prompt.md`, read by `scene::DeclarativeScene`
-//! like a scene in `~/.agix/scenes/`. No component is compiled and no runtime
-//! is involved, which is why this lives with the package layer: a package
-//! whose contribution is a scene is usable in a build that carries no
-//! WebAssembly at all.
-//!
-//! The id is the plugin's, `plugin:<name>`, as for `[scene.own]` — a plugin
-//! owns its own scene and never anyone else's.
+//! like a scene in `~/.agix/scenes/`. The id is the plugin's, `plugin:<name>`
+//! — a plugin owns its own scene and never anyone else's.
 
 use crate::manifest::Plugin;
 use ::scene::{DeclarativeScene, SceneLoadError};

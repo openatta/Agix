@@ -1,19 +1,10 @@
 //! `HealthCheck` — whether the engine, and what a host wired into it, is
 //! working.
 //!
-//! Two things in this codebase already knew something about whether the engine
-//! was well, and neither could be reached or extended from outside. `daemon`'s
-//! `doctor` re-inspects the settings tiers, provider routing and hooks
-//! configuration and answers an RPC; it exists only in the daemon, so an
-//! embedder linking the engine directly has no way to ask. `wasm-host`'s fault
-//! records decide when a plugin has trapped often enough to stop being called;
-//! that verdict is acted on and never reported, so "three of your plugins have
-//! been set aside" is a fact the process knows and nobody can see.
-//!
-//! Both are the same shape — something with state, asked "are you all right",
-//! answering with a verdict and enough detail to act on. This is that shape as
-//! a contract, so a host can read the engine's answers and add its own checks
-//! beside them.
+//! Something with state, asked "are you all right", answering with a verdict
+//! and enough detail to act on. `daemon`'s `doctor` is one such answer; this
+//! is the shape as a contract, so an embedder linking the engine directly can
+//! read the engine's answers and add its own checks beside them.
 //!
 //! # A check answers from what it already knows
 //!

@@ -28,10 +28,7 @@ const MODULES: &[&str] = &[
     "auth",
     "task",
     "plugin",
-    "plugin-host",
     "script-host",
-    "wasm-host",
-    "plugin-compiler",
 ];
 
 const NOT_YET: &[(&str, &str, &str)] = &[];

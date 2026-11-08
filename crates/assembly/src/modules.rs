@@ -33,9 +33,6 @@ pub fn compiled() -> Vec<&'static str> {
     if cfg!(feature = "plugin-packages") {
         out.push("plugin-packages");
     }
-    if cfg!(feature = "plugins") {
-        out.push("plugins");
-    }
     out
 }
 

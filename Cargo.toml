@@ -6,11 +6,8 @@ members = [
     "crates/auth",
     "crates/hooks",
     "crates/plugin",
-    "crates/plugin-host",
     "crates/script-host",
     "crates/ptc",
-    "crates/wasm-host",
-    "crates/plugin-compiler",
     "crates/telemetry",
     "crates/history",
     "crates/permissions",
@@ -109,12 +106,6 @@ model    = { path = "crates/model" }
 auth     = { path = "crates/auth" }
 hooks    = { path = "crates/hooks" }
 plugin   = { path = "crates/plugin" }
-# `default-features = false` has to live here rather than on the members:
-# a member that inherits a workspace dependency cannot turn its defaults off,
-# so writing it there is silently ignored — which is how the daemon ended up
-# linking the WebAssembly compiler it was supposed to be built without.
-plugin-host = { path = "crates/plugin-host", default-features = false }
-wasm-host = { path = "crates/wasm-host", default-features = false }
 script-host = { path = "crates/script-host" }
 ptc = { path = "crates/ptc" }
 telemetry = { path = "crates/telemetry" }

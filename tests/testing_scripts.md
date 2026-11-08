@@ -253,24 +253,6 @@ C 档里「项目外的脚本只能新增」问的是同一条规则，但那是
 **hooks** 是另一个子系统，另一套进程模型，成本和抖动都不同。目录里其余的点是构建期
 接好的 Rust trait，脚本没有注册入口，不属于这张网要回答的问题。
 
-**WASM 插件**与脚本是互斥的 feature，一个构建只带一个载体，同时开编译不过，所以它
-确实不在这张网里——但它有自己的那张：`crates/wasm-host/tests/component_roundtrip.rs`
-拿真组件问载体本身（超时、陷阱、能力、状态不外泄），`crates/plugin-host` 问一份
-manifest 怎么变成注册好的工具，而**装配面**六条在
-`tests/live/tests/daemon_surface.rs`：
-
-| 用例 | 问什么 |
-|---|---|
-| `a_wasm_plugins_tool_is_called_and_answers` | 一个包带着组件装进去、模型调它的工具、guest 的答案回到模型 |
-| `a_plugins_tools_are_offered_to_every_session` | 那些工具到底进了哪些会话（答案是：所有会话，包括内建场景的） |
-| `a_trapping_component_costs_its_call_and_not_the_turn` | 陷阱只赔那一次调用，同一插件的下一次照常 |
-| `a_plugin_that_keeps_faulting_is_set_aside` | 连续三次故障之后整个插件被搁置——最后一次问的是一个能用的工具，它也被拒 |
-| `a_capability_the_package_never_declared_is_unreachable` | 没声明的能力够不着，理由点名它到达模型；披露里也没吹过 |
-| `a_build_with_no_plugin_carrier_installs_but_does_not_run` | 没有引擎的构建：装得上、披露说组件不会跑、一个 `plugin__` 工具都不给模型 |
-
-除最后一条外都要一个带载体的 daemon（测试二进制自己编的是默认载体，进程内没有引擎
-能跑组件），CI 在 `test` job 里另建一个并用 `AGIX_TEST_DAEMON_BIN_PLUGINS` 指过去。
-
-两个载体的**覆盖形态**对齐了，**行为**没有、也不该：脚本的权限分岔看文件在哪，插件
-看装时声明了什么；脚本绑到具体的点，插件的工具进每个会话。还有一处是真差距——脚本
-有 `session.get` 的账本说得清「这次为什么没生效」，插件今天没有对等的 RPC 可观测面。
+**Rust 插件**是编译期接进来的 trait 实现，由各自 crate 的单元测试和 `runtime` 的构建测试覆盖，不走脚本载体。
+包里声明 `[[wasm]]` 的安装会被拒绝，这一条在 `tests/live/tests/daemon_surface.rs` 的
+`a_package_with_a_wasm_component_is_refused`。

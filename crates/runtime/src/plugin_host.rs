@@ -1,17 +1,12 @@
 //! `PluginHost` — the entire surface installed plugins present to the engine.
 //!
 //! Everything a plugin can contribute arrives through this one trait, and the
-//! host holds it as an `Option`. That is what lets the plugin subsystem be
-//! compiled out (`daemon`'s `plugins` feature): with no implementation linked
-//! in, the option is `None` and every call site is an `if let Some(..)` that
-//! does nothing — no `#[cfg]` scattered through the engine, and no behavior
-//! difference to reason about beyond "there are no plugins".
+//! host holds it as an `Option`: with none set, every call site is an
+//! `if let Some(..)` that does nothing.
 //!
 //! There are five contribution points — tools, MCP servers, hook
-//! subscriptions, scenes, agent types — plus two supporting methods that
-//! serve them rather than adding new ones ([`PluginHost::hook_executor`] is
-//! the backend for the hook subscriptions; [`PluginHost::permission_rules`]
-//! is data the host merges). Each contribution point is a seam the engine
+//! subscriptions, scenes, agent types — plus [`PluginHost::permission_rules`],
+//! data the host merges. Each contribution point is a seam the engine
 //! has to keep working across refactors, so adding a sixth is a decision to
 //! argue for, not a detail to slip in.
 
@@ -24,8 +19,7 @@ use std::sync::Arc;
 /// Implementations are built once per daemon instance and shared; every
 /// method may be called repeatedly and must be cheap enough for that.
 pub trait PluginHost: Send + Sync {
-    /// Tools to register into the session's tool registry, already wrapped as
-    /// ordinary [`Tool`]s (a WASM component's exports, typically).
+    /// Tools to register into the session's tool registry.
     fn tools(&self) -> Vec<Arc<dyn Tool>>;
 
     /// MCP server declarations, as `(name, raw config JSON)`.
@@ -58,14 +52,6 @@ pub trait PluginHost: Send + Sync {
     /// which is what clamps their `permission_mode` / `max_turns` overrides —
     /// see `agents::agent_tool::apply_agent_type_overrides`.
     fn agent_types(&self) -> Vec<base::agent_type::AgentTypeDefinition>;
-
-    /// The backend that runs `HookConfig::Wasm` entries, when this host has
-    /// components loaded. `None` means the entries from
-    /// [`hook_configs`](Self::hook_configs) would have nothing to answer
-    /// them, and the dispatcher skips them with an explanation.
-    fn hook_executor(&self) -> Option<Arc<dyn hooks::runner::WasmHookExecutor>> {
-        None
-    }
 
     /// Permission rules plugins contribute, tagged
     /// [`RuleSource::Plugin`](base::permission::RuleSource::Plugin) so that

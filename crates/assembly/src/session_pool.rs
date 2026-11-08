@@ -984,10 +984,7 @@ impl SessionPool {
             internal_connections: std::sync::atomic::AtomicU64::new(u64::MAX),
             this: std::sync::OnceLock::new(),
             events_tx,
-            health: std::sync::RwLock::new(match plugins.health_check() {
-                Some(check) => base::interface::health::HealthChecks::new().with(check),
-                None => base::interface::health::HealthChecks::new(),
-            }),
+            health: std::sync::RwLock::new(base::interface::health::HealthChecks::new()),
             plugins,
             last_good_routers: AsyncMutex::new(HashMap::new()),
             bindings: AsyncMutex::new(HashMap::new()),
@@ -1107,17 +1104,12 @@ impl SessionPool {
             .clone()
     }
 
-    /// Compile and interrogate installed plugin components, then take up
-    /// whatever scenes they own.
+    /// Take up the scenes installed packages own.
     ///
     /// **Every embedder that constructs a `SessionPool` must call this
-    /// before serving.** It cannot happen in `new`, which is synchronous
-    /// while compiling a component is not; and until it has run, plugins
-    /// contribute their manifests but none of their tools or scenes, so a
-    /// session created in that window is silently missing them with nothing
-    /// to indicate why.
-    pub async fn load_plugin_components(&self) {
-        self.plugins.load_components().await;
+    /// before serving**: `new` is synchronous and cannot, and a session
+    /// created before it runs cannot enter a package's scene.
+    pub async fn load_plugins(&self) {
         self.adopt_plugin_scenes().await;
     }
 
@@ -2197,9 +2189,6 @@ impl SessionPool {
             builder = builder.task_router(router);
         }
         builder = builder.scene_registry(self.scene_registry());
-        if let Some(host) = self.plugins.host() {
-            builder = builder.plugin_host(host);
-        }
         // A project's scripts belong to that project: the paths in its
         // settings resolve against it, and so does the question of whether a
         // file is inside it — which is what decides whether the script may

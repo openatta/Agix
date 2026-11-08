@@ -1,11 +1,9 @@
 //! `plugin.toml` schema + the loaded `Plugin` it produces.
 //!
-//! Everything here is data. Nothing in this crate executes a plugin or knows
-//! what a tool or hook *is* — the translation into engine types lives in
-//! `plugin-host`, which is what lets this crate stay a dependency-light
-//! manifest reader that the daemon can compile out. The one exception is a
-//! declarative scene directory, which is itself data and is read here (see
-//! [`crate::scenes`]) so that it needs no carrier.
+//! Everything here is data. Nothing in this crate executes a plugin: a
+//! package declares MCP servers, scripts for the host's QuickJS carrier, a
+//! declarative scene directory and agent types, and each is turned into what
+//! the engine consumes without running anything the package shipped.
 
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -13,32 +11,13 @@ use std::path::{Path, PathBuf};
 /// Plugin API contract versions this build understands.
 ///
 /// A manifest naming anything else is refused rather than loaded on a
-/// best-effort basis: the WIT world, the capability semantics and the event
-/// whitelist all move together, and a plugin built against a different
-/// version has no meaningful degraded mode.
+/// best-effort basis: a package built against a different version has no
+/// meaningful degraded mode.
 pub const SUPPORTED_API_VERSIONS: &[&str] = &["0.1"];
-
-/// Lifecycle events a plugin may subscribe to.
-///
-/// A deliberate subset of the engine's full event set. Two rules decide what
-/// is on it: the event must be low-frequency (a plugin runs in a fresh WASM
-/// store per call, which is what contains its failures), and its payload must be small enough to cross the
-/// sandbox boundary by value.
-///
-/// Kept as strings because this crate does not depend on the hooks crate;
-/// `plugin-host` asserts each name resolves to a real event.
-pub const SUBSCRIBABLE_EVENTS: &[&str] = &[
-    "PreToolUse",
-    "PostToolUse",
-    "PostToolUseFailure",
-    "PermissionRequested",
-    "SessionStart",
-    "SessionEnd",
-];
 
 /// Top-level sections this build understands, for the unknown-section
 /// warning in [`Plugin::load`].
-pub const KNOWN_SECTIONS: &[&str] = &["plugin", "wasm", "mcp", "script", "scene", "agent"];
+pub const KNOWN_SECTIONS: &[&str] = &["plugin", "mcp", "script", "scene", "agent"];
 
 /// Top-level sections addressed to whoever embeds the engine, not to the
 /// engine.
@@ -56,16 +35,13 @@ pub const HOST_SECTION_PREFIX: &str = "x-";
 #[derive(Debug, Deserialize, Clone)]
 pub struct PluginManifest {
     pub plugin: PluginMeta,
-    /// WASM component payloads.
-    #[serde(default)]
-    pub wasm: Vec<WasmPayload>,
     /// MCP server payloads, native or DSH-bridged.
     #[serde(default)]
     pub mcp: Vec<McpPayload>,
     /// Scripts this package binds to extension points.
     #[serde(default)]
     pub script: Vec<ScriptPayload>,
-    /// How this plugin appears in other scenes, and the scene it owns.
+    /// The scene this plugin owns.
     #[serde(default)]
     pub scene: SceneSection,
     /// Agent types this plugin declares.
@@ -85,79 +61,6 @@ pub struct PluginMeta {
     pub author: String,
     #[serde(default)]
     pub homepage: String,
-    /// JSON Schema for this plugin's user-supplied configuration, validated
-    /// before the plugin is initialized so a bad config fails at load time
-    /// rather than inside the plugin's own parsing.
-    #[serde(default)]
-    pub config: ConfigSection,
-}
-
-#[derive(Debug, Deserialize, Clone, Default)]
-pub struct ConfigSection {
-    /// Path to a JSON Schema file, relative to the plugin root.
-    #[serde(default)]
-    pub schema: Option<PathBuf>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct WasmPayload {
-    /// Component file, relative to the plugin root.
-    pub component: PathBuf,
-    /// Tool names this component is expected to export. Install-time
-    /// visibility only — at runtime the component's own `list-tools` is the
-    /// authority, since that is what the engine actually registers.
-    #[serde(default)]
-    pub tools: Vec<String>,
-    /// Events this component subscribes to; each must be in
-    /// [`SUBSCRIBABLE_EVENTS`].
-    #[serde(default)]
-    pub events: Vec<String>,
-    #[serde(default)]
-    pub capabilities: Capabilities,
-}
-
-/// What a component is permitted to reach.
-///
-/// Every field defaults to nothing. A component that declares no
-/// capabilities can compute and nothing else: no files, no network, no
-/// environment. Whatever a plugin wants has to be written down, and what is
-/// written down is what the installer shows the user.
-#[derive(Debug, Deserialize, Clone)]
-#[serde(default)]
-pub struct Capabilities {
-    /// Directories exposed read-only, as WASI preopens.
-    pub fs_read: Vec<String>,
-    /// Directories exposed writable, as WASI preopens.
-    pub fs_write: Vec<String>,
-    /// Hosts the component's HTTP calls may reach.
-    pub net: Vec<String>,
-    /// Environment variable names readable through the host's `secret`.
-    pub env: Vec<String>,
-    pub max_memory_mb: u32,
-    pub timeout_ms: u64,
-}
-
-impl Default for Capabilities {
-    fn default() -> Self {
-        Self {
-            fs_read: Vec::new(),
-            fs_write: Vec::new(),
-            net: Vec::new(),
-            env: Vec::new(),
-            max_memory_mb: 64,
-            timeout_ms: 30_000,
-        }
-    }
-}
-
-impl Capabilities {
-    /// Does this declare access to anything outside the component itself?
-    pub fn reaches_outside(&self) -> bool {
-        !self.fs_read.is_empty()
-            || !self.fs_write.is_empty()
-            || !self.net.is_empty()
-            || !self.env.is_empty()
-    }
 }
 
 /// A script this package binds to an extension point.
@@ -223,61 +126,18 @@ pub struct McpPayload {
 
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct SceneSection {
-    /// Scenes whose explicit tool whitelist should admit this plugin's tools.
-    /// Scenes with an empty whitelist ("everything registered is allowed")
-    /// admit them regardless.
-    #[serde(default)]
-    pub visible_in: Vec<String>,
-    /// The scene this plugin owns, registered as `plugin:<name>`.
-    #[serde(default)]
-    pub own: Option<OwnScene>,
     /// The scene this plugin owns, as a declarative scene directory
     /// (`scene.json` + `prompt.md`) relative to the plugin root. Its id must
-    /// be `plugin:<name>`. Exclusive with [`own`](Self::own).
+    /// be `plugin:<name>`.
     #[serde(default)]
     pub dir: Option<PathBuf>,
 }
 
-/// A plugin's own scene: its system prompt, tool surface and budgets.
-///
-/// This is where a plugin may shape behavior. It may not shape anyone else's
-/// — altering the prompt of a scene the user chose for other reasons is
-/// hijacking; owning a scene the user explicitly enters is not.
-#[derive(Debug, Deserialize, Clone)]
-pub struct OwnScene {
-    pub name: String,
-    #[serde(default)]
-    pub description: String,
-    /// Markdown system prompt, relative to the plugin root.
-    pub prompt: PathBuf,
-    /// Optional per-turn reminder body.
-    #[serde(default)]
-    pub reminder: Option<PathBuf>,
-    #[serde(default)]
-    pub tools: Vec<String>,
-    #[serde(default)]
-    pub disallowed_tools: Vec<String>,
-    #[serde(default)]
-    pub deferred_tools: Vec<String>,
-    #[serde(default)]
-    pub budget: SceneBudget,
-}
-
-#[derive(Debug, Deserialize, Clone, Default)]
-pub struct SceneBudget {
-    #[serde(default)]
-    pub compact_threshold: Option<usize>,
-    #[serde(default)]
-    pub compact_keep_recent: Option<usize>,
-    #[serde(default)]
-    pub max_api_calls_per_turn: Option<u32>,
-}
-
 /// A plugin-declared agent type.
 ///
-/// `permission_mode` and `effort` stay strings here — parsing them into
-/// engine enums is `plugin-host`'s job, and keeping this crate free of that
-/// dependency is what keeps it compile-out-able.
+/// `permission_mode` stays a string here and is parsed when the definition
+/// becomes an engine agent type ([`crate::agents`]), so one bad value costs
+/// that field rather than the whole manifest.
 #[derive(Debug, Deserialize, Clone)]
 pub struct AgentDef {
     pub name: String,
@@ -326,6 +186,7 @@ pub struct Plugin {
 impl Plugin {
     pub fn load(root: &Path, manifest_path: &Path) -> Result<Self, PluginError> {
         let raw = std::fs::read_to_string(manifest_path)?;
+        refuse_retired_sections(&raw)?;
         let manifest: PluginManifest = toml::from_str(&raw)?;
         validate(&manifest)?;
         warn_unknown_sections(&raw, &manifest.plugin.name);
@@ -341,8 +202,11 @@ impl Plugin {
 
     /// Scene id this plugin's own scene registers under, if it declares one.
     pub fn scene_id(&self) -> Option<String> {
-        let scene = &self.manifest.scene;
-        (scene.own.is_some() || scene.dir.is_some()).then(|| format!("plugin:{}", self.name()))
+        self.manifest
+            .scene
+            .dir
+            .is_some()
+            .then(|| format!("plugin:{}", self.name()))
     }
 
     /// Resolve a manifest-relative path against this plugin's root.
@@ -387,6 +251,35 @@ fn unknown_sections(raw: &str) -> Vec<String> {
         .collect()
 }
 
+/// Refused rather than warned about like an unknown section: these were written
+/// for something this build removed, so the package would install and the part
+/// its author cared about would never run.
+fn refuse_retired_sections(raw: &str) -> Result<(), PluginError> {
+    let Ok(toml::Value::Table(table)) = raw.parse::<toml::Value>() else {
+        return Ok(());
+    };
+    if table.contains_key("wasm") {
+        return Err(PluginError::Schema(
+            "`[[wasm]]` is not supported: Agix runs no WebAssembly components. Extend the \
+             engine with a Rust plugin or a `[[script]]`; content for the embedding host \
+             goes in an `x-` section"
+                .into(),
+        ));
+    }
+    if table
+        .get("scene")
+        .and_then(toml::Value::as_table)
+        .is_some_and(|scene| scene.contains_key("own"))
+    {
+        return Err(PluginError::Schema(
+            "`[scene.own]` is not supported; declare the scene as a directory with \
+             `[scene] dir` (`scene.json` + `prompt.md`)"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate(m: &PluginManifest) -> Result<(), PluginError> {
     if m.plugin.name.trim().is_empty() {
         return Err(PluginError::Schema("plugin.name must not be empty".into()));
@@ -396,28 +289,6 @@ fn validate(m: &PluginManifest) -> Result<(), PluginError> {
             found: m.plugin.api_version.clone(),
             supported: SUPPORTED_API_VERSIONS.join(", "),
         });
-    }
-    // One component per plugin may subscribe. The host resolves an event to
-    // a plugin *by name*, so two subscribing components would give one name
-    // two possible answers — and whichever the host picked, the other's
-    // subscription would be silently ignored.
-    let subscribers = m.wasm.iter().filter(|w| !w.events.is_empty()).count();
-    if subscribers > 1 {
-        return Err(PluginError::Schema(format!(
-            "{subscribers} components declare `events`; at most one may, because \
-             the host dispatches an event to a plugin by name"
-        )));
-    }
-
-    for w in &m.wasm {
-        for e in &w.events {
-            if !SUBSCRIBABLE_EVENTS.contains(&e.as_str()) {
-                return Err(PluginError::Schema(format!(
-                    "event `{e}` is not one a plugin may subscribe to (allowed: {})",
-                    SUBSCRIBABLE_EVENTS.join(", ")
-                )));
-            }
-        }
     }
     for s in &m.script {
         if s.point.trim().is_empty() {
@@ -452,13 +323,6 @@ fn validate(m: &PluginManifest) -> Result<(), PluginError> {
     }
 
     if let Some(dir) = &m.scene.dir {
-        if m.scene.own.is_some() {
-            return Err(PluginError::Schema(
-                "`[scene] dir` and `[scene.own]` both declare the plugin's scene; a plugin \
-                 owns one"
-                    .into(),
-            ));
-        }
         if dir.is_absolute() || dir.components().any(|c| c.as_os_str() == "..") {
             return Err(PluginError::Schema(format!(
                 "`[scene] dir` `{}` must name a directory inside the package",
@@ -492,6 +356,7 @@ mod tests {
     use super::*;
 
     fn load_str(toml_str: &str) -> Result<PluginManifest, PluginError> {
+        refuse_retired_sections(toml_str)?;
         let m: PluginManifest = toml::from_str(toml_str)?;
         validate(&m)?;
         Ok(m)
@@ -530,12 +395,6 @@ api_version = "0.1"
         let m = load_str(&format!("{MINIMAL}\n[scene]\ndir = \"scene\"\n")).unwrap();
         assert_eq!(m.scene.dir.as_deref(), Some(Path::new("scene")));
 
-        let both = format!(
-            "{MINIMAL}\n[scene]\ndir = \"scene\"\n\n[scene.own]\nname = \"D\"\nprompt = \"p.md\"\n"
-        );
-        let e = load_str(&both).unwrap_err().to_string();
-        assert!(e.contains("a plugin owns one"), "{e}");
-
         for outside in ["../elsewhere", "/abs/scene"] {
             let e = load_str(&format!("{MINIMAL}\n[scene]\ndir = \"{outside}\"\n"))
                 .unwrap_err()
@@ -548,10 +407,9 @@ api_version = "0.1"
     fn a_manifest_may_declare_no_payloads_at_all() {
         let m = load_str(MINIMAL).unwrap();
         assert_eq!(m.plugin.name, "p");
-        assert!(m.wasm.is_empty());
         assert!(m.mcp.is_empty());
         assert!(m.agent.is_empty());
-        assert!(m.scene.own.is_none());
+        assert!(m.scene.dir.is_none());
     }
 
     #[test]
@@ -564,21 +422,6 @@ version = "1.2.0"
 api_version = "0.1"
 description = "GitHub tools"
 
-[plugin.config]
-schema = "config.schema.json"
-
-[[wasm]]
-component = "gh.wasm"
-tools = ["diff"]
-events = ["PreToolUse", "PostToolUse"]
-
-[wasm.capabilities]
-fs_read = ["${workspace}"]
-net = ["api.github.com"]
-env = ["GITHUB_TOKEN"]
-max_memory_mb = 128
-timeout_ms = 5000
-
 [[mcp]]
 name = "github"
 kind = "native"
@@ -589,18 +432,12 @@ name = "pr-helper"
 kind = "dsh"
 entry = "dist/index.js"
 
+[[script]]
+point = "tool.result"
+entry = "scripts/annotate.js:onResult"
+
 [scene]
-visible_in = ["code"]
-
-[scene.own]
-name = "GitHub workflow"
-prompt = "scene/prompt.md"
-tools = ["Read", "Grep"]
-disallowed_tools = ["Bash"]
-
-[scene.own.budget]
-compact_threshold = 120000
-max_api_calls_per_turn = 40
+dir = "scene"
 
 [[agent]]
 name = "pr-reviewer"
@@ -614,32 +451,13 @@ scene = "plugin:github-tools"
         )
         .unwrap();
 
-        assert_eq!(
-            m.plugin.config.schema.unwrap().to_str().unwrap(),
-            "config.schema.json"
-        );
-        assert_eq!(m.wasm.len(), 1);
-        assert_eq!(m.wasm[0].capabilities.net, ["api.github.com"]);
-        assert_eq!(m.wasm[0].capabilities.max_memory_mb, 128);
         assert_eq!(m.mcp.len(), 2);
         assert_eq!(m.mcp[0].kind, McpKind::Native);
         assert_eq!(m.mcp[1].kind, McpKind::Dsh);
-        assert_eq!(m.scene.visible_in, ["code"]);
-        let own = m.scene.own.unwrap();
-        assert_eq!(own.disallowed_tools, ["Bash"]);
-        assert_eq!(own.budget.compact_threshold, Some(120_000));
-        assert_eq!(own.budget.compact_keep_recent, None);
+        assert_eq!(m.script[0].point, "tool.result");
+        assert_eq!(m.scene.dir.as_deref(), Some(Path::new("scene")));
         assert_eq!(m.agent[0].scene.as_deref(), Some("plugin:github-tools"));
         assert_eq!(m.agent[0].permission_mode.as_deref(), Some("plan"));
-    }
-
-    /// Nothing declared means nothing reachable — that default is the whole
-    /// point of the capability list, so it is worth pinning.
-    #[test]
-    fn undeclared_capabilities_reach_nothing() {
-        let c = Capabilities::default();
-        assert!(!c.reaches_outside());
-        assert!(c.fs_read.is_empty() && c.net.is_empty() && c.env.is_empty());
     }
 
     #[test]
@@ -748,64 +566,22 @@ version = "1.0.0"
     }
 
     #[test]
-    fn subscribing_to_an_event_outside_the_whitelist_is_refused() {
-        let err = load_str(
-            r#"
-[plugin]
-name = "p"
-version = "1.0.0"
-api_version = "0.1"
-
-[[wasm]]
-component = "p.wasm"
-events = ["PreCompact"]
-"#,
-        )
-        .unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("PreCompact"), "{msg}");
-        assert!(
-            msg.contains("PreToolUse"),
-            "the error should list what is allowed: {msg}"
-        );
+    fn a_wasm_section_is_refused_with_where_to_go_instead() {
+        let err = load_str(&format!("{MINIMAL}\n[[wasm]]\ncomponent = \"p.wasm\"\n"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("[[wasm]]"), "{err}");
+        assert!(err.contains("`x-`"), "{err}");
     }
 
-    /// The host dispatches an event to a plugin by name, so two subscribing
-    /// components would give one name two possible answers and one of the
-    /// two subscriptions would be silently ignored.
     #[test]
-    fn only_one_component_may_subscribe_to_events() {
+    fn an_inline_scene_is_refused_in_favour_of_a_scene_directory() {
         let err = load_str(&format!(
-            "{MINIMAL}
-[[wasm]]
-component = \"a.wasm\"
-events = [\"PreToolUse\"]
-
-[[wasm]]
-component = \"b.wasm\"
-events = [\"PostToolUse\"]
-"
+            "{MINIMAL}\n[scene.own]\nname = \"Own\"\nprompt = \"scene/prompt.md\"\n"
         ))
         .unwrap_err()
         .to_string();
-        assert!(err.contains("2 components"), "{err}");
-        assert!(err.contains("by name"), "{err}");
-    }
-
-    #[test]
-    fn several_components_are_fine_when_only_one_subscribes() {
-        let m = load_str(&format!(
-            "{MINIMAL}
-[[wasm]]
-component = \"a.wasm\"
-events = [\"PreToolUse\"]
-
-[[wasm]]
-component = \"b.wasm\"
-"
-        ))
-        .unwrap();
-        assert_eq!(m.wasm.len(), 2);
+        assert!(err.contains("[scene] dir"), "{err}");
     }
 
     #[test]
@@ -842,7 +618,7 @@ kind = "dsh"
 
         std::fs::write(
             dir.path().join("plugin.toml"),
-            format!("{MINIMAL}\n[scene.own]\nname = \"Own\"\nprompt = \"scene/prompt.md\"\n"),
+            format!("{MINIMAL}\n[scene]\ndir = \"scene\"\n"),
         )
         .unwrap();
         let p = Plugin::load(dir.path(), &dir.path().join("plugin.toml")).unwrap();

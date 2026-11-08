@@ -66,8 +66,8 @@ when no one is watching.
    every run correct** ([how it was measured](tests/live/tests/compare_dsh.rs)).
 5. **Your product stays in charge.** Every session, task, sub-agent, goal and
    prompt is visible, stoppable and editable over one JSON-RPC protocol.
-   45 extension points let you replace or intercept any subsystem from Rust,
-   a script or a WebAssembly plugin without forking. Every session is an
+   45 extension points let you replace or intercept any subsystem from Rust
+   or a QuickJS script without forking. Every session is an
    append-only log you can resume, fork, export or replay byte for byte
    with no network.
 
@@ -149,9 +149,9 @@ monitors and structured output ([table below](#tools--41-built-in)).
 **Extensibility**
 - 45 published extension points: 30 contracts, 9 interceptions and 6
   registrations.
-- QuickJS scripts, and WebAssembly plugins with declared capabilities.
-- Hooks at thirty moments, with command, prompt, HTTP, agent and WASM
-  backends.
+- Rust plugins compiled into the host, and QuickJS scripts, installable as
+  packages with install-time disclosure.
+- Hooks at thirty moments, with command, prompt, HTTP and agent backends.
 - An MCP client (stdio, SSE, streamable HTTP, OAuth 2.0 PKCE), declarative
   scenes, and custom agent types.
 
@@ -176,9 +176,9 @@ other way.
  shell      daemon ─────────── agixd: command line, process lifecycle (lock, signals, crash cleanup)
               │
  assembly   assembly ───────── session pool, (project, scene) bindings, provider routing,
-              │                carriers, the module list; the JSON-RPC server and discovery
+              │                plugin packages, the module list; the JSON-RPC server and discovery
               │
- modules    agents (+team) · mcp · skills · script-host · plugin / plugin-host / wasm-host
+ modules    agents (+team) · mcp · skills · script-host · plugin
               │                enter a session through runtime::module::Module
  kernel     runtime ────────── turn loop, prompt assembly, tool dispatch, the Module interface
               │
@@ -196,7 +196,7 @@ other way.
   Completions), the built-in tools, scenes, the history log, compaction,
   permissions, hooks, telemetry. Kernel crates never depend on a module crate.
 - **Modules.** Optional capabilities that plug into a session at build time:
-  sub-agents and teams, MCP, skills, and the two extension carriers. Only the
+  sub-agents and teams, MCP, skills, the script carrier and plugin packages. Only the
   assembly layer and the shell know which modules exist.
 - **Assembly.** Turns configuration into running sessions: merges the settings
   tiers, resolves provider routing, binds each session to its project and scene,
@@ -301,17 +301,18 @@ The engine publishes a catalog of its seams, generated from the code: **45
 extension points** — 30 *contracts* (replace a subsystem), 9 *interceptions* (sit
 in the path of something in flight), 6 *registrations* (contribute to a
 collection). From Rust, implement the trait and hand it to the builder. From
-outside a Rust build, three carriers reach a subset:
+outside a Rust build:
 
-| Carrier | Reaches | Cost |
+| Route | Reaches | Cost |
 |---|---|---|
 | **Scripts** (QuickJS, default) | nine points: four that write the prompt, two around a tool call, two around a model call, memory recall | a `.js` file and one line of config; microseconds per call |
-| **WebAssembly plugins** | five contribution points: tools, MCP servers, hook subscriptions, scenes, agent types | sandboxed components with declared capabilities and install-time disclosure |
-| **Hooks** | Thirty named moments in a turn (`HookEvent` (30)), five backends: command, prompt, HTTP, agent, WASM | observe, rewrite an input, block a tool call, end a turn |
+| **Plugin packages** | MCP servers, scripts, a declarative scene, agent types | a zip with a `plugin.toml`; everything it will show the model is disclosed at install |
+| **Hooks** | Thirty named moments in a turn (`HookEvent` (30)), four backends: command, prompt, HTTP, agent | observe, rewrite an input, block a tool call, end a turn |
 
-And anything that speaks MCP is already an extension. A build carries one
-script/plugin carrier at most — `scripts` (default) or `plugins` — and the two
-refuse to compile together.
+And anything that speaks MCP is already an extension. Scripts run in the same
+embedded QuickJS as `RunCode`: their limits bound cost, not hostile code, so
+what a script may do follows from where it came from. There is no
+WebAssembly runtime; a host that wants one builds it on the Rust interfaces.
 
 ### Build tiers
 
@@ -341,11 +342,11 @@ does not carry answers `METHOD_NOT_FOUND` naming the module.
 | module | `skills` | skill catalog and the `Skill` tool |
 | module | `script-host` | the QuickJS carrier |
 | kernel | `ptc` | `RunCode`: the model's programs, run in an embedded QuickJS ([`docs/ptc.md`](docs/ptc.md)) |
-| module | `plugin` · `plugin-host` · `wasm-host` · `plugin-compiler` | plugin packages and the WebAssembly carrier |
+| module | `plugin` | plugin packages: manifest, fetch, cache, disclosure |
 | assembly | `assembly` | session pool, configuration, provider routing, the JSON-RPC server |
 | shell | `daemon` | the `agixd` binary |
 
-24 crates under `crates/`, plus `daemon/` and the four test members — 29
+21 crates under `crates/`, plus `daemon/` and the four test members — 26
 workspace members in total. The full picture — sessions and scenes, the history
 log, execution, locks, disk layout — is in
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
@@ -436,8 +437,10 @@ build if anything in the workspace assembles a pool a second way.
 
 - A new behavior for one point → a script: a `.js` file and one line in
   `settings.json` ([`docs/extending_quickjs.md`](docs/extending_quickjs.md)).
-- A packaged capability — tools, a scene, agent types — → a WebAssembly plugin
-  ([`docs/extending_wasm.md`](docs/extending_wasm.md)).
+- A packaged capability — MCP servers, scripts, a scene, agent types — → a
+  plugin package ([`docs/extension_points.md`](docs/extension_points.md)).
+- Tools or interceptors in your own build → a Rust implementation handed to
+  the builder.
 - A different subsystem → implement its trait
   ([`docs/extension_points.md`](docs/extension_points.md) lists every one, with
   what it costs and who may use it).
@@ -564,7 +567,6 @@ works and how to run it: [`tests/README.md`](tests/README.md).
 | [docs/extension_points.md](docs/extension_points.md) | every seam: what you can replace, contribute to or intercept, what it costs, who may |
 | [docs/daemon_rpc_protocol.md](docs/daemon_rpc_protocol.md) | the JSON-RPC reference — methods, events, error codes, auth |
 | [docs/extending_quickjs.md](docs/extending_quickjs.md) | writing script extensions |
-| [docs/extending_wasm.md](docs/extending_wasm.md) | writing WebAssembly plugins |
 | [docs/ptc.md](docs/ptc.md) | `RunCode`: what a model's program can call, its permissions, limits and prompt |
 | [docs/migrating_to_0.3.md](docs/migrating_to_0.3.md) | upgrading an embedder or client from 0.2.x |
 | [docs/schemas/settings.schema.json](docs/schemas/settings.schema.json) | the generated schema of `settings.json` |

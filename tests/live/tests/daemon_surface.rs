@@ -1006,71 +1006,6 @@ async fn a_failing_tool_says_so_everywhere_in_a_spawned_daemon() -> anyhow::Resu
     a_failing_tool_says_so_everywhere(Mode::Spawned).await
 }
 
-const PLUGIN_DAEMON_HOWTO: &str =
-    "CARGO_TARGET_DIR=$PWD/target/plugins cargo build -p daemon --no-default-features --features full \
-     --features plugin-compile\n  \
-     AGIX_TEST_DAEMON_BIN_PLUGINS=$PWD/target/plugins/debug/agixd cargo test \
-     -p live -- --ignored";
-
-/// A package carrying a real WebAssembly component, ready for
-/// `plugin.install`.
-///
-/// It declares a scene as well, because that is how a plugin's tools reach a
-/// session at all: `PluginScene` carries them as its `extra_tools`, so a
-/// session on a built-in scene never sees them. A component with no scene
-/// beside it is a component nothing can call.
-fn a_package_with_a_component(world: &World) -> anyhow::Result<(std::path::PathBuf, String)> {
-    let src = world.root().join("packages").join("echo-plugin");
-    std::fs::create_dir_all(src.join("scene"))?;
-    std::fs::copy(
-        test_runner::plugin_fixture::echo_component(),
-        src.join("echo.wasm"),
-    )?;
-    std::fs::write(src.join("scene/prompt.md"), "You are the echo agent.")?;
-    std::fs::write(
-        src.join("plugin.toml"),
-        "[plugin]\n\
-         name = \"echo-plugin\"\n\
-         version = \"1.0.0\"\n\
-         api_version = \"0.1\"\n\
-         description = \"one component, one scene to reach it through\"\n\
-         \n\
-         [[wasm]]\n\
-         component = \"echo.wasm\"\n\
-         \n\
-         [scene.own]\n\
-         name = \"Echo\"\n\
-         description = \"A plugin-owned scene\"\n\
-         prompt = \"scene/prompt.md\"\n",
-    )?;
-
-    test_runner::plugin_fixture::package_dir(&src, &world.root().join("packed"), "echo-plugin")
-}
-
-/// Install the component package on a running daemon.
-async fn install_the_component_package(
-    world: &World,
-    client: &mut rpc_client::DaemonRpcClient,
-) -> anyhow::Result<serde_json::Value> {
-    let (archive, checksum) = a_package_with_a_component(world)?;
-    let installed = client
-        .plugin_install(json!({
-            "name": "echo-plugin",
-            "version": "1.0.0",
-            "download_url": test_runner::plugin_fixture::file_url(&archive),
-            "checksum": checksum,
-        }))
-        .await?;
-    anyhow::ensure!(
-        installed.error.is_none(),
-        "plugin.install failed: {:?}",
-        installed.error
-    );
-    installed
-        .result
-        .ok_or_else(|| anyhow::anyhow!("plugin.install answered with neither result nor error"))
-}
-
 /// The `tool_result` block answering `tool_use_id`, out of a request's
 /// messages.
 fn tool_result_for(request: &live::SeenRequest, id: &str) -> Option<serde_json::Value> {
@@ -1085,577 +1020,31 @@ fn tool_result_for(request: &live::SeenRequest, id: &str) -> Option<serde_json::
         .cloned()
 }
 
-/// Every string under a value, joined — a `tool_result`'s content is a string
-/// or a list of blocks depending on what produced it.
-fn collect_text(v: &serde_json::Value, out: &mut String) {
-    match v {
-        serde_json::Value::String(s) => {
-            out.push_str(s);
-            out.push('\n');
-        }
-        serde_json::Value::Array(a) => a.iter().for_each(|x| collect_text(x, out)),
-        serde_json::Value::Object(o) => o.values().for_each(|x| collect_text(x, out)),
-        _ => {}
-    }
-}
-
-/// A plugin's tool is called by the model, runs in wasmtime, and its answer
-/// comes back — through the RPC surface, in one turn.
-///
-/// `wasm-host` drives a real component thoroughly and `plugin-host` turns one
-/// into registered tools, but both stop at a seam inside the process. What
-/// neither can say is whether a component that arrived as a package ever gets
-/// called: install, precompile, discovery, the plugin's own scene, the
-/// deferred-tool advertisement, the permission gate and the tool loop all sit
-/// between `plugin.install` and the guest, and every one of them is a place
-/// the call can quietly not happen.
-///
-/// Spawned only, and it needs a daemon somebody else built: the two carriers
-/// are mutually exclusive features and this test binary is compiled against
-/// the default one, so the daemon that can run a component is necessarily a
-/// different binary.
-#[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs a second daemon, built with the plugin carrier"]
-async fn a_wasm_plugins_tool_is_called_and_answers() -> anyhow::Result<()> {
-    let with_plugins =
-        live::alternate_daemon_binary("AGIX_TEST_DAEMON_BIN_PLUGINS", PLUGIN_DAEMON_HOWTO)?;
-
+/// A package written for the WebAssembly carrier is refused, and leaves nothing
+/// installed behind it.
+async fn a_package_with_a_wasm_component_is_refused(mode: Mode) -> anyhow::Result<()> {
     let world = World::new()?;
-    let project = world.project("plugged")?;
-    // Plugin tools always answer `Ask`; a plugin asserting its own call is
-    // fine is not evidence. An operator who wants one to run says so, and
-    // says it with the whole name — the prefix shorthand that covers an MCP
-    // server is an `mcp__` special case and matches nothing here.
-    world.write_project_settings(
-        "plugged",
-        &json!({
-            "memory_enabled": false,
-            "permission_rules": [
-                { "tool": "plugin__echo-plugin__echo", "action": "allow" }
-            ]
-        }),
-    )?;
-    let provider = ProviderStub::start().await?;
-    let daemon = Daemon::start(
-        &world,
-        &provider,
-        DaemonOptions::new(project.clone()).binary(with_plugins),
-    )
-    .await?;
+    let project = world.project("wasm-refused")?;
+    world.write_project_settings("wasm-refused", &json!({ "memory_enabled": false }))?;
 
-    let mut client = daemon.connect().await?;
-    install_the_component_package(&world, &mut client).await?;
-
-    provider.script([
-        Reply::Blocks(vec![Block::tool(
-            "call-1",
-            "plugin__echo-plugin__echo",
-            json!({ "text": "COMPONENT-ANSWERED" }),
-        )]),
-        Reply::text("done"),
-    ]);
-
-    let session = client
-        .session_create(json!({
-            "project_root": project.to_string_lossy(),
-            "scene": "plugin:echo-plugin",
-        }))
-        .await?;
-    let turn = client
-        .session_run_turn(&session, "echo something", "t1", None)
-        .await?;
-
-    assert!(
-        turn.tool_uses
-            .iter()
-            .any(|(name, _)| name == "plugin__echo-plugin__echo"),
-        "the client never saw the plugin tool run: {turn:?}"
-    );
-    assert_eq!(
-        provider.call_count(),
-        2,
-        "a tool result should have cost a second call"
-    );
-
-    // The result block, not `messages_text()`: the text the guest echoes back
-    // is the text it was sent, and that string is already in the request as
-    // the tool call's own input. Searching the whole conversation for it
-    // would pass on a plugin that was never asked and on one that trapped.
-    let result = tool_result_for(&provider.calls()[1], "call-1")
-        .ok_or_else(|| anyhow::anyhow!("no tool result for the plugin call reached the model"))?;
-    assert!(
-        result["is_error"] != json!(true),
-        "the plugin call came back as an error: {result}"
-    );
-    let mut answer = String::new();
-    collect_text(&result["content"], &mut answer);
-    assert!(
-        answer.contains("COMPONENT-ANSWERED"),
-        "the guest's answer is not in the result the model was given: {result}"
-    );
-
-    daemon.stop().await;
-    Ok(())
-}
-
-/// An installed plugin's tools are offered to every session, including ones
-/// on a built-in scene.
-///
-/// Worth its own case because it is the surprising half and the one with a
-/// consequence: installing a plugin hands its tools to the whole process, not
-/// to the scene it ships. `extending_wasm.md` claimed the opposite until this
-/// test was written — the containment sentence predated
-/// `Builder::build`'s registration of `PluginHost::tools()` and survived a
-/// translation without being revisited, which is how a document ends up
-/// promising an isolation nobody implements.
-///
-/// If that reach is ever narrowed, this is the test that says so.
-#[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs a second daemon, built with the plugin carrier"]
-async fn a_plugins_tools_are_offered_to_every_session() -> anyhow::Result<()> {
-    let with_plugins =
-        live::alternate_daemon_binary("AGIX_TEST_DAEMON_BIN_PLUGINS", PLUGIN_DAEMON_HOWTO)?;
-
-    let world = World::new()?;
-    let project = world.project("unplugged")?;
-    world.write_project_settings("unplugged", &json!({ "memory_enabled": false }))?;
-    let provider = ProviderStub::start().await?;
-    let daemon = Daemon::start(
-        &world,
-        &provider,
-        DaemonOptions::new(project.clone()).binary(with_plugins),
-    )
-    .await?;
-
-    let mut client = daemon.connect().await?;
-    install_the_component_package(&world, &mut client).await?;
-
-    provider.script([Reply::text("done")]);
-    // No `scene`, so this is the daemon's default — a built-in one, with no
-    // relationship to the plugin.
-    let session = client
-        .session_create(json!({ "project_root": project.to_string_lossy() }))
-        .await?;
-    client
-        .session_run_turn(&session, "hello", "t1", None)
-        .await?;
-
-    let offered = provider.calls()[0].tool_names();
-    assert!(
-        offered.iter().any(|t| t == "plugin__echo-plugin__echo"),
-        "a session on a built-in scene was not offered the plugin's tools, \
-         which is what extending_wasm.md is written against: {offered:?}"
-    );
-
-    daemon.stop().await;
-    Ok(())
-}
-
-/// A component that traps costs its own call and nothing else.
-///
-/// The rule the whole extension surface is built on, asked of the carrier
-/// that can fail hardest: a guest that traps takes down its own invocation,
-/// the model is told what happened in a result it can act on, and the turn
-/// goes on to do the next thing. `wasm-host` asks this of a `PluginInstance`
-/// in isolation; what it cannot ask is whether the turn loop above it agrees
-/// — a trap that surfaced as an engine error rather than a tool result would
-/// end the turn, and look identical from inside the carrier.
-#[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs a second daemon, built with the plugin carrier"]
-async fn a_trapping_component_costs_its_call_and_not_the_turn() -> anyhow::Result<()> {
-    let with_plugins =
-        live::alternate_daemon_binary("AGIX_TEST_DAEMON_BIN_PLUGINS", PLUGIN_DAEMON_HOWTO)?;
-
-    let world = World::new()?;
-    let project = world.project("trapping")?;
-    world.write_project_settings(
-        "trapping",
-        &json!({
-            "memory_enabled": false,
-            "permission_rules": [
-                { "tool": "plugin__echo-plugin__explode", "action": "allow" },
-                { "tool": "plugin__echo-plugin__echo", "action": "allow" }
-            ]
-        }),
-    )?;
-
-    let provider = ProviderStub::start().await?;
-    let daemon = Daemon::start(
-        &world,
-        &provider,
-        DaemonOptions::new(project.clone()).binary(with_plugins),
-    )
-    .await?;
-    let mut client = daemon.connect().await?;
-    install_the_component_package(&world, &mut client).await?;
-
-    provider.script([
-        Reply::Blocks(vec![Block::tool(
-            "boom",
-            "plugin__echo-plugin__explode",
-            json!({}),
-        )]),
-        Reply::Blocks(vec![Block::tool(
-            "after",
-            "plugin__echo-plugin__echo",
-            json!({ "text": "STILL-HERE" }),
-        )]),
-        Reply::text("done"),
-    ]);
-
-    let session = client
-        .session_create(json!({
-            "project_root": project.to_string_lossy(),
-            "scene": "plugin:echo-plugin",
-        }))
-        .await?;
-    client
-        .session_run_turn(&session, "provoke it", "t1", None)
-        .await?;
-
-    assert_eq!(
-        provider.call_count(),
-        3,
-        "the turn did not continue past the trap"
-    );
-
-    let trapped = tool_result_for(&provider.calls()[1], "boom")
-        .ok_or_else(|| anyhow::anyhow!("the trap produced no result for the model to read"))?;
-    let mut reason = String::new();
-    collect_text(&trapped["content"], &mut reason);
-    assert!(
-        reason.contains("echo-plugin") && reason.contains("explode"),
-        "the failure does not say which plugin and tool it was: {reason}"
-    );
-
-    // `wasm-host`'s adapter answers a trap with `Ok(ToolResult::error_text(..))`
-    // — the tool failed, the turn did not — and the flag has to survive the
-    // dispatch chain to get here, which is what `ToolAnswer::reported_failure`
-    // is for. Without it a trapped guest reads to the model exactly like an
-    // answer.
-    assert!(
-        trapped["is_error"] == json!(true),
-        "a trap must reach the model as a failed tool, not as an answer: {trapped}"
-    );
-
-    let after = tool_result_for(&provider.calls()[2], "after")
-        .ok_or_else(|| anyhow::anyhow!("the call after the trap never happened"))?;
-    assert!(
-        after["is_error"] != json!(true),
-        "the trap poisoned the next call to the same plugin: {after}"
-    );
-
-    daemon.stop().await;
-    Ok(())
-}
-
-/// Three faults in a row and the plugin is set aside — all of it, not just
-/// the tool that trapped.
-///
-/// Per-call isolation is what makes it safe to keep calling something that
-/// just failed; it is not a reason to. A component that traps on every
-/// invocation turns each of the model's attempts into an error result and the
-/// model will keep trying, so something has to decide the plugin is broken.
-/// `wasm-host` counts the faults and `HealthRegistry` makes the verdict
-/// outlive the instance; neither can say whether a turn ever reaches the
-/// refusal, which is the only form of it anyone sees.
-///
-/// The last call is the point. It asks a tool that works, and is refused
-/// anyway, because health is the plugin's and not the tool's — a breaker that
-/// only stopped the trapping tool would leave the model working its way
-/// through the other four.
-#[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs a second daemon, built with the plugin carrier"]
-async fn a_plugin_that_keeps_faulting_is_set_aside() -> anyhow::Result<()> {
-    let with_plugins =
-        live::alternate_daemon_binary("AGIX_TEST_DAEMON_BIN_PLUGINS", PLUGIN_DAEMON_HOWTO)?;
-
-    let world = World::new()?;
-    let project = world.project("faulting")?;
-    world.write_project_settings(
-        "faulting",
-        &json!({
-            "memory_enabled": false,
-            "permission_rules": [
-                { "tool": "plugin__echo-plugin__explode", "action": "allow" },
-                { "tool": "plugin__echo-plugin__echo", "action": "allow" }
-            ]
-        }),
-    )?;
-
-    let provider = ProviderStub::start().await?;
-    let daemon = Daemon::start(
-        &world,
-        &provider,
-        DaemonOptions::new(project.clone()).binary(with_plugins),
-    )
-    .await?;
-    let mut client = daemon.connect().await?;
-    install_the_component_package(&world, &mut client).await?;
-
-    // `wasm_host::health::FAULT_LIMIT` is three. One short of it would prove
-    // nothing, so this goes exactly to it and then asks for something else.
-    provider.script([
-        Reply::Blocks(vec![Block::tool(
-            "t1",
-            "plugin__echo-plugin__explode",
-            json!({}),
-        )]),
-        Reply::Blocks(vec![Block::tool(
-            "t2",
-            "plugin__echo-plugin__explode",
-            json!({}),
-        )]),
-        Reply::Blocks(vec![Block::tool(
-            "t3",
-            "plugin__echo-plugin__explode",
-            json!({}),
-        )]),
-        Reply::Blocks(vec![Block::tool(
-            "healthy",
-            "plugin__echo-plugin__echo",
-            json!({ "text": "anyone home" }),
-        )]),
-        Reply::text("done"),
-    ]);
-
-    let session = client
-        .session_create(json!({
-            "project_root": project.to_string_lossy(),
-            "scene": "plugin:echo-plugin",
-        }))
-        .await?;
-    client
-        .session_run_turn(&session, "keep at it", "t1", None)
-        .await?;
-
-    let reason_for = |call: usize, id: &str| -> anyhow::Result<String> {
-        let result = tool_result_for(&provider.calls()[call], id)
-            .ok_or_else(|| anyhow::anyhow!("no result for `{id}` reached the model"))?;
-        anyhow::ensure!(
-            result["is_error"] == json!(true),
-            "`{id}` did not reach the model as a failure: {result}"
-        );
-        let mut text = String::new();
-        collect_text(&result["content"], &mut text);
-        Ok(text)
-    };
-
-    // The three that trapped say so, and say nothing about being disabled —
-    // the third is the one that trips the limit, not the one that reports it.
-    for (call, id) in [(1, "t1"), (2, "t2"), (3, "t3")] {
-        let reason = reason_for(call, id)?;
-        assert!(
-            !reason.contains("disabled"),
-            "call {call} was refused before the limit was reached: {reason}"
-        );
-    }
-
-    let refused = reason_for(4, "healthy")?;
-    assert!(
-        refused.contains("disabled") && refused.contains("consecutive"),
-        "a tool that works was called anyway after its plugin was set aside: {refused}"
-    );
-
-    daemon.stop().await;
-    Ok(())
-}
-
-/// A component that will not load says so where the operator is looking.
-///
-/// `plugin.list` reports `script_faults` for a package's `[[script]]`
-/// bindings that could not be honored, for a stated reason: a contribution
-/// that silently never happens sends its author looking for a bug in their
-/// own code. A `[[wasm]]` component that will not load had no such report —
-/// it was a `tracing::warn!` on the daemon's stderr and nothing else. The
-/// plugin stays listed, stays enabled, contributes no tools, and every
-/// question an operator can ask over RPC answers "fine": installed, enabled,
-/// not set aside — the breaker counts faults from calls, and a component that
-/// never loaded is never called.
-#[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs a second daemon, built with the plugin carrier"]
-async fn a_component_that_will_not_load_says_why() -> anyhow::Result<()> {
-    let with_plugins =
-        live::alternate_daemon_binary("AGIX_TEST_DAEMON_BIN_PLUGINS", PLUGIN_DAEMON_HOWTO)?;
-
-    let world = World::new()?;
-    let project = world.project("unloadable")?;
-    world.write_project_settings("unloadable", &json!({ "memory_enabled": false }))?;
-
-    // Straight onto disk, the way `plugin.reload` is meant to find one — an
-    // install would refuse this at its compile step, which is a different
-    // and already-covered path. What is under test is the one where a
-    // package is on disk and its component cannot be made to run.
-    let dir = world
-        .global_root()
-        .join("plugins")
-        .join("cache")
-        .join("dud-plugin")
-        .join("1.0.0");
-    std::fs::create_dir_all(&dir)?;
-    std::fs::write(dir.join("dud.wasm"), b"not a WebAssembly component at all")?;
+    let src = world.root().join("packages").join("echo-plugin");
+    std::fs::create_dir_all(&src)?;
+    std::fs::write(src.join("echo.wasm"), b"\0asm")?;
     std::fs::write(
-        dir.join("plugin.toml"),
+        src.join("plugin.toml"),
         "[plugin]\n\
-         name = \"dud-plugin\"\n\
+         name = \"echo-plugin\"\n\
          version = \"1.0.0\"\n\
          api_version = \"0.1\"\n\
-         description = \"a component that will not load\"\n\
          \n\
          [[wasm]]\n\
-         component = \"dud.wasm\"\n",
+         component = \"echo.wasm\"\n",
     )?;
-
-    let provider = ProviderStub::start().await?;
-    let daemon = Daemon::start(
-        &world,
-        &provider,
-        DaemonOptions::new(project.clone()).binary(with_plugins),
-    )
-    .await?;
-    let mut client = daemon.connect().await?;
-
-    let reloaded = client.call("plugin.reload", json!({})).await?;
-    anyhow::ensure!(
-        reloaded.error.is_none(),
-        "plugin.reload failed: {:?}",
-        reloaded.error
-    );
-
-    let listed = client.plugin_list().await?;
-    let plugins = listed
-        .result
-        .and_then(|r| r.get("plugins").cloned())
-        .and_then(|p| p.as_array().cloned())
-        .unwrap_or_default();
-    let dud = plugins
-        .iter()
-        .find(|p| p["name"] == "dud-plugin")
-        .ok_or_else(|| anyhow::anyhow!("the package is not listed at all: {plugins:?}"))?;
-
-    // Listed and enabled, which is true and is exactly why it is misleading
-    // on its own.
-    assert_eq!(dud["enabled"], json!(true), "{dud}");
-
-    let faults = dud["component_faults"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
-    assert!(
-        !faults.is_empty(),
-        "a package whose only component will not load is listed as if it were \
-         working: {dud}"
-    );
-    let reason: String = faults
-        .iter()
-        .filter_map(|f| f.as_str())
-        .collect::<Vec<_>>()
-        .join(" ");
-    assert!(
-        reason.contains("dud.wasm"),
-        "the fault does not name the component it is about: {reason}"
-    );
-
-    daemon.stop().await;
-    Ok(())
-}
-
-/// A capability the package never declared is unreachable, and the guest is
-/// told which one would have allowed it.
-///
-/// The plugin carrier's answer to the question the script carrier answers
-/// with provenance: what an extension may do is decided outside it, and a
-/// refusal has to arrive somewhere it can be acted on rather than as silence.
-/// Here the package declares no `net`, so `fetch` cannot reach the host —
-/// and the reason travels all the way out to the model's tool result.
-#[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs a second daemon, built with the plugin carrier"]
-async fn a_capability_the_package_never_declared_is_unreachable() -> anyhow::Result<()> {
-    let with_plugins =
-        live::alternate_daemon_binary("AGIX_TEST_DAEMON_BIN_PLUGINS", PLUGIN_DAEMON_HOWTO)?;
-
-    let world = World::new()?;
-    let project = world.project("ungranted")?;
-    world.write_project_settings(
-        "ungranted",
-        &json!({
-            "memory_enabled": false,
-            "permission_rules": [
-                { "tool": "plugin__echo-plugin__fetch", "action": "allow" }
-            ]
-        }),
+    let (archive, checksum) = test_runner::plugin_fixture::package_dir(
+        &src,
+        &world.root().join("packed"),
+        "echo-plugin",
     )?;
-
-    let provider = ProviderStub::start().await?;
-    let daemon = Daemon::start(
-        &world,
-        &provider,
-        DaemonOptions::new(project.clone()).binary(with_plugins),
-    )
-    .await?;
-    let mut client = daemon.connect().await?;
-    let disclosure = install_the_component_package(&world, &mut client).await?;
-
-    // What the installer was shown is half the claim: a capability that is
-    // enforced but never disclosed is one nobody could have refused.
-    let capabilities = disclosure["disclosure"]["capabilities"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
-    assert!(
-        !capabilities
-            .iter()
-            .any(|c| c.as_str().unwrap_or_default().contains("net")),
-        "the package was disclosed as having network access it did not ask for: {capabilities:?}"
-    );
-
-    provider.script([
-        Reply::Blocks(vec![Block::tool(
-            "reach",
-            "plugin__echo-plugin__fetch",
-            json!({ "url": "https://example.com/" }),
-        )]),
-        Reply::text("done"),
-    ]);
-
-    let session = client
-        .session_create(json!({
-            "project_root": project.to_string_lossy(),
-            "scene": "plugin:echo-plugin",
-        }))
-        .await?;
-    client
-        .session_run_turn(&session, "fetch something", "t1", None)
-        .await?;
-
-    let refused = tool_result_for(&provider.calls()[1], "reach")
-        .ok_or_else(|| anyhow::anyhow!("the fetch produced no result for the model to read"))?;
-    let mut reason = String::new();
-    collect_text(&refused["content"], &mut reason);
-    assert!(
-        reason.contains("net"),
-        "the refusal does not name the capability that would have allowed it: {reason}"
-    );
-
-    daemon.stop().await;
-    Ok(())
-}
-
-/// A build with no plugin carrier installs a package carrying components,
-/// says they will not run, and does not run them.
-///
-/// The mirror of `a_build_with_no_script_carrier_honors_no_scripts_section`,
-/// and it needs no second binary: the default build is the one with the
-/// package layer and no WebAssembly engine, which is exactly the deployment
-/// this is about. Installing has to keep working — a package whose components
-/// are dead weight may still carry an MCP server or a script worth having —
-/// while the components themselves reach nothing.
-async fn a_build_with_no_plugin_carrier_installs_but_does_not_run(
-    mode: Mode,
-) -> anyhow::Result<()> {
-    let world = World::new()?;
-    let project = world.project("carrierless")?;
-    world.write_project_settings("carrierless", &json!({ "memory_enabled": false }))?;
 
     let provider = ProviderStub::start().await?;
     let daemon = Daemon::start(
@@ -1665,30 +1054,27 @@ async fn a_build_with_no_plugin_carrier_installs_but_does_not_run(
     )
     .await?;
     let mut client = daemon.connect().await?;
-    let disclosure = install_the_component_package(&world, &mut client).await?;
-
-    assert_eq!(
-        disclosure["disclosure"]["wasm"]["components"], 1,
-        "the disclosure hides that the package carries a component: {disclosure}"
-    );
-    assert_eq!(
-        disclosure["disclosure"]["wasm"]["runnable"],
-        json!(false),
-        "a build with no engine told the installer its components would run: {disclosure}"
-    );
-
-    provider.script([Reply::text("done")]);
-    let session = client
-        .session_create(json!({ "project_root": project.to_string_lossy() }))
+    let installed = client
+        .plugin_install(json!({
+            "name": "echo-plugin",
+            "version": "1.0.0",
+            "download_url": test_runner::plugin_fixture::file_url(&archive),
+            "checksum": checksum,
+        }))
         .await?;
-    client
-        .session_run_turn(&session, "hello", "t1", None)
-        .await?;
-
-    let offered = provider.calls()[0].tool_names();
+    let error = installed.error.ok_or_else(|| {
+        anyhow::anyhow!("a `[[wasm]]` package was installed: {:?}", installed.result)
+    })?;
     assert!(
-        !offered.iter().any(|t| t.starts_with("plugin__")),
-        "a build with no engine offered the model a component's tools: {offered:?}"
+        error.message.contains("[[wasm]]"),
+        "the refusal does not name the section: {}",
+        error.message
+    );
+
+    let listed = client.plugin_list().await?.result.unwrap_or_default();
+    assert!(
+        !listed.to_string().contains("echo-plugin"),
+        "the refused package is still listed: {listed}"
     );
 
     daemon.stop().await;
@@ -1696,15 +1082,14 @@ async fn a_build_with_no_plugin_carrier_installs_but_does_not_run(
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_build_with_no_plugin_carrier_installs_but_does_not_run_here() -> anyhow::Result<()> {
-    a_build_with_no_plugin_carrier_installs_but_does_not_run(Mode::InProcess).await
+async fn a_package_with_a_wasm_component_is_refused_here() -> anyhow::Result<()> {
+    a_package_with_a_wasm_component_is_refused(Mode::InProcess).await
 }
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "spawns a real daemon process"]
-async fn a_build_with_no_plugin_carrier_installs_but_does_not_run_in_a_spawned_daemon(
-) -> anyhow::Result<()> {
-    a_build_with_no_plugin_carrier_installs_but_does_not_run(Mode::Spawned).await
+async fn a_package_with_a_wasm_component_is_refused_in_a_spawned_daemon() -> anyhow::Result<()> {
+    a_package_with_a_wasm_component_is_refused(Mode::Spawned).await
 }
 
 /// Telemetry is a report about a turn, so it is checked against an

@@ -16,9 +16,7 @@
 //! interpreter: `base` has no internal dependencies and linking a JavaScript
 //! runtime into it would put one in every build of everything. `script-host`
 //! is the carrier crate — QuickJS behind this trait — and it is an optional
-//! dependency of `daemon` under the `scripts` feature, the same way the wasm
-//! carrier sits behind `plugins`. A build can carry one carrier, both, or
-//! neither.
+//! dependency of `daemon` under the `scripts` feature.
 //!
 //! [`RefusingEngine`] is what runs when a host wired nothing, and
 //! [`FnScriptEngine`] gives a host the governance around logic written in
@@ -105,9 +103,9 @@ impl std::fmt::Display for ScriptError {
 
 /// Runs a script.
 ///
-/// One call, one entry point, JSON in and JSON out — the same shape the
-/// command and wasm backends already speak, so a hook point does not need a
-/// third input contract to gain a third backend.
+/// One call, one entry point, JSON in and JSON out — the same shape a command
+/// hook already speaks, so a hook point does not need a second input contract
+/// to gain a second backend.
 #[async_trait]
 pub trait ScriptEngine: Send + Sync {
     /// Call `entry` in `script` with `input`.

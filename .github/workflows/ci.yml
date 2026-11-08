@@ -22,11 +22,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
-          # The wasm-host tests build a real component from
-          # `tests/fixtures/wasm_echo_plugin` — the claims they check are about
-          # the whole path to a guest, so there is no version of them that does
-          # not need the target.
-          targets: wasm32-wasip2
       - uses: Swatinem/rust-cache@v2
 
       # Both are clean today, and the gate is the only thing that keeps them
@@ -52,16 +47,6 @@ jobs:
       - name: build a daemon with no carrier
         run: CARGO_TARGET_DIR=${{ github.workspace }}/target/no-carrier cargo build -p daemon --no-default-features --features full
 
-      # And a third, carrying WebAssembly. Same reason as above — one binary
-      # called `agixd` per target directory — and the same shape of claim:
-      # whether a component a package shipped is ever called cannot be asked
-      # from inside a build that has no engine to call it with. `plugin-compile`
-      # rather than plain `plugins` because installing a package with
-      # components compiles them, and without the in-process compiler that
-      # work goes looking for `agix-plugin-compile`.
-      - name: build a daemon with the plugin carrier
-        run: CARGO_TARGET_DIR=${{ github.workspace }}/target/plugins cargo build -p daemon --no-default-features --features full,plugin-compile
-
       # The kernel alone: no MCP, sub-agents, skills, web tools, WebSocket,
       # carrier or package layer. `minimal_tier` runs a session against it.
       - name: build a minimal daemon
@@ -78,14 +63,13 @@ jobs:
       - name: test (ignored)
         env:
           AGIX_TEST_DAEMON_BIN_NO_CARRIER: ${{ github.workspace }}/target/no-carrier/debug/agixd
-          AGIX_TEST_DAEMON_BIN_PLUGINS: ${{ github.workspace }}/target/plugins/debug/agixd
           AGIX_TEST_DAEMON_BIN_MINIMAL: ${{ github.workspace }}/target/minimal/debug/agixd
         run: cargo test --workspace --all-targets -- --ignored
 
   carriers:
-    # A build carries one extension carrier, or none. Each configuration is a
-    # build nobody makes by accident, so each is one nobody would notice
-    # breaking.
+    # Builds with and without the script carrier and the package layer. Each
+    # configuration is a build nobody makes by accident, so each is one nobody
+    # would notice breaking.
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -93,44 +77,22 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      # Tested, not just checked. Each of these two configurations compiles
-      # in daemon tests that no other configuration does — the
-      # plugins-disabled RPC answers here, the plugin-owned scene and
-      # `plugin.reload` under the carrier — and while this job only built
-      # them, those tests had never been run anywhere.
+      # Tested, not just checked: the plugins-disabled RPC answers compile
+      # into no other configuration.
       - name: no carrier
         run: cargo test -p daemon --no-default-features --features full
 
-      - name: plugin carrier
-        run: cargo test -p daemon --no-default-features --features full,plugins
-
-      # The middle tier, with each carrier and with none.
+      # The middle tier, with the carrier and without.
       - name: coding tier
         run: |
           cargo check -p daemon --no-default-features --features coding
           cargo check -p daemon --no-default-features --features coding,scripts
 
-      # The package layer without any carrier: `plugin.*` works, nothing runs.
-      # A build worth checking on its own because it is the one that proves
-      # the split — package management that needs no runtime. Checked rather
-      # than tested because every test gated on the package layer also
-      # compiles into the default build, which the `test` job runs.
+      # The package layer without the script carrier. Checked rather than
+      # tested because every test gated on the package layer also compiles
+      # into the default build, which the `test` job runs.
       - name: packages without a carrier
         run: cargo check -p daemon --no-default-features --features full,plugin-packages
-
-      # `precompile_plugin` must not go looking for `agix-plugin-compile` on
-      # behalf of components a package never declared. The claim only bites
-      # without the in-process compiler, so this is where it is checked; the
-      # rest of this crate's suite needs the compiler to load its fixtures.
-      - name: a package with no components needs no compiler
-        run: cargo test -p plugin-host --no-default-features precompile_tests
-
-      - name: both carriers must not compile
-        run: |
-          if cargo check -p daemon --features plugins 2>/dev/null; then
-            echo "the two carriers compiled together; the guard in crates/assembly/src/lib.rs is gone"
-            exit 1
-          fi
 
       # The OTLP recorder is compiled out of every default build — the SDK is
       # a large dependency tree and the file recorder is what makes a run

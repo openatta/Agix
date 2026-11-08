@@ -77,34 +77,6 @@ fn add_dir_to_zip<W: std::io::Write + std::io::Seek>(
     Ok(())
 }
 
-/// `tests/fixtures/wasm_echo_plugin` 的组件，没编过就先编一次。
-///
-/// `wasm-host` 和 `plugin-host` 各自有一份一样的，因为它们在 `test-runner`
-/// 底下，依赖不过来。改这里的时候三处一起看。
-pub fn echo_component() -> PathBuf {
-    static BUILT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-    BUILT
-        .get_or_init(|| {
-            let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/wasm_echo_plugin");
-            let out = dir.join("target/wasm32-wasip2/release/wasm_echo_plugin.wasm");
-            if out.exists() {
-                return out;
-            }
-            let status = std::process::Command::new(env!("CARGO"))
-                .args(["build", "--release", "--target", "wasm32-wasip2"])
-                .current_dir(&dir)
-                .status()
-                .expect("cargo should be runnable");
-            assert!(
-                status.success(),
-                "could not build the fixture component. If the target is missing: \
-                 rustup target add wasm32-wasip2"
-            );
-            out
-        })
-        .clone()
-}
-
 /// `file://` URL for `plugin.install`'s `download_url` param — this scheme
 /// doesn't require a checksum (see `crates/plugin/src/fetch.rs`), but we pass
 /// one anyway since `package_demo_plugin` computes it for free and it's the

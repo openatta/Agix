@@ -58,24 +58,6 @@ pub enum HookConfig {
         #[serde(default)]
         timeout: Option<u64>,
     },
-    /// Call an installed plugin's WASM component.
-    ///
-    /// The one hook backend a downloaded package may use. It exists so that
-    /// a plugin can take part in the engine's lifecycle without the host
-    /// gaining a *new* place to call out from: this is a fifth executor
-    /// behind the dispatcher that already runs, not a new call site in the
-    /// turn loop.
-    ///
-    /// Which events a plugin may subscribe to is a whitelist enforced when
-    /// its manifest is parsed (`plugin::manifest::SUBSCRIBABLE_EVENTS`), and
-    /// the decisions it may return are narrower than a local hook's — see
-    /// `WasmHookExecutor`.
-    Wasm {
-        /// Installed plugin name; the executor resolves it to a component.
-        plugin: String,
-        #[serde(default)]
-        timeout: Option<u64>,
-    },
 }
 
 /// Hook 事件枚举。命名使用 PascalCase。

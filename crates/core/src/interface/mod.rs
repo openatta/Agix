@@ -68,7 +68,6 @@
 
 pub mod agent_spawner;
 pub mod backoff;
-pub mod capabilities;
 pub mod catalog;
 pub mod config_source;
 pub mod credentials;

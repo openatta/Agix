@@ -320,3 +320,38 @@ skill、web 工具、WebSocket、载体与包方案。
 - **工作线程数可配**:`--worker-threads <N>` 或环境变量 `AGIX_WORKER_THREADS`(命令行优先),
   不配时等于 CPU 核数。只管异步工作线程;文件读写、搜索、脚本走各自的阻塞线程池,不受影响。
   嵌入式板子上 `--worker-threads 1` 即可。
+
+## 0.3.8 之后:到 0.3.9
+
+扩展只剩两种:编译进宿主的 Rust 插件,和 QuickJS 脚本(与 `RunCode` 同一套虚拟机)。
+WebAssembly 载体整个移除。
+
+### 自己选 feature 构建 `agixd` 的
+
+- `plugins`、`plugin-compile` 两个 feature 没有了,`agix-plugin-compile` 二进制也没有了。
+  原来用 `--no-default-features --features full,plugin-compile` 的构建,改回默认构建。
+- `scripts` 与插件包不再互斥:默认构建两样都带。
+
+### 插件包作者
+
+- `[[wasm]]` 段**拒装**,安装时报错。给宿主看的内容放 `x-` 前缀的段。
+- `[scene.own]` 段**拒装**,改用 `[scene] dir`(`scene.json` + `prompt.md`,格式见
+  `extension_points.md`「声明式场景」),它是 `own` 的超集。`[scene] visible_in` 删除。
+- `[plugin.config]` 不再读取(它只服务组件的 `init`)。
+- `[[agent]]` 现在在默认构建上生效;以前只有带 WASM 载体的构建兑现它。
+- 包格式见新的 `plugin_packages.md`;`extending_wasm.md` 删除。
+
+### 嵌入方
+
+- `crates/wasm-host`、`crates/plugin-host`、`crates/plugin-compiler` 删除;
+  `base::interface::capabilities` 删除(它只服务 WASM 组件的能力声明)。
+- `hooks::config::HookConfig::Wasm`、`hooks::runner::WasmHookExecutor`、
+  `HookRunner::with_wasm_executor`、`PluginHost::hook_executor` 删除。
+- `SessionPool::load_plugin_components` 改名 `load_plugins`(现在只接管插件包的场景)。
+- `plugin::locate::locate_tool` 删除。
+
+### RPC 客户端
+
+- `plugin.install` 的 `disclosure` 去掉 `wasm`(`components` / `runnable`)与 `events`。
+- `plugin.list` 的条目去掉 `component_faults`。
+- `daemon.doctor` 的 `plugins.status` 不再出现 `packages-only`;带插件包的构建报 `enabled`。

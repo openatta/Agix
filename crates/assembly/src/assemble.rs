@@ -245,7 +245,7 @@ pub async fn pool(
     // Before anything can create a session: a session built while this is
     // still running would be missing every plugin tool, with nothing to
     // indicate why.
-    pool.load_plugin_components().await;
+    pool.load_plugins().await;
 
     // Plugin-declared MCP servers (`plugin.toml`'s `[mcp] servers`) merge in
     // here so they take the same centrally-connected, shared-across-sessions

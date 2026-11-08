@@ -1286,9 +1286,6 @@ fn build_hook_runner(
         .with_prompt_executor(prompt_executor)
         .with_agent_executor(agent_executor);
     if let Some(host) = plugin_host {
-        if let Some(executor) = host.hook_executor() {
-            runner = runner.with_wasm_executor(executor);
-        }
         for (event, config) in host.hook_configs() {
             runner.register_hook(event, config);
         }

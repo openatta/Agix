@@ -10,7 +10,7 @@ Agix 是一个**库**,不是一个应用。它提供的是"跑一个 agent 会�
 
 - `daemon_rpc_protocol.md` —— 通过 RPC 使用它
 - `extension_points.md` —— 能扩展什么(总揽)
-- `extending_quickjs.md` / `extending_wasm.md` —— 怎么扩展
+- `extending_quickjs.md` —— 怎么用脚本扩展;`extension_points.md` —— 全部扩展点
 - `migrating_to_0.3.md` —— 从 0.2.x 迁移
 
 ---
@@ -20,10 +20,10 @@ Agix 是一个**库**,不是一个应用。它提供的是"跑一个 agent 会�
 ```
  外壳    daemon ─────────── agixd:参数、进程(锁、信号、崩溃收尾)
            │
- 装配    assembly ───────── 会话池、(项目, 场景) 绑定与失效、provider 路由、载体、模块清单;
+ 装配    assembly ───────── 会话池、(项目, 场景) 绑定与失效、provider 路由、插件包、模块清单;
            │                JSON-RPC 服务(Unix socket / TCP / WS)与实例发现
            │
- 模块    agents(+team) · mcp · skills · script-host · plugin / plugin-host / wasm-host
+ 模块    agents(+team) · mcp · skills · script-host · plugin
            │                经 runtime::module::Module 进入会话
  内核    runtime ────────── turn loop、提示词组装、工具调度、扩展点调度、Module 接口
            │
@@ -59,8 +59,8 @@ tokio、rmcp),分在两个 crate 时各编一份,release 的 `agixd` 因此大�
 | `mcp` | 模块 | MCP 连接、工具适配器、资源工具、prompt 命令;依赖 `auth` |
 | `skills` | 模块 | skill 目录与 `Skill` 工具 |
 | `script-host` | 模块 | QuickJS 脚本载体 |
-| `ptc` | 内核 | `RunCode`:模型写的一次性程序,在内嵌的 QuickJS 里跑,经 `ToolContext::dispatch` 调本会话的工具(`docs/ptc.md`);`ptc` feature,和扩展载体不互斥 |
-| `plugin` / `plugin-host` / `wasm-host` / `plugin-compiler` | 模块 | 插件包与 WASM 载体 |
+| `ptc` | 内核 | `RunCode`:模型写的一次性程序,在内嵌的 QuickJS 里跑,经 `ToolContext::dispatch` 调本会话的工具(`docs/ptc.md`);`ptc` feature,与脚本载体用同一套 QuickJS,两者各自独立开关 |
+| `plugin` | 模块 | 插件包:manifest、获取、缓存、披露;包里的 MCP、脚本、场景、agent 类型 |
 | `task` | — | 后台任务生命周期 |
 | `assembly` | 装配 | 会话池、配置加载、provider 路由、自检、模块清单,以及其上的 JSON-RPC 服务与实例发现 |
 | `daemon` | 外壳 | `agixd` 二进制:参数、锁、信号;库部分按旧路径重新导出 assembly |
@@ -89,7 +89,7 @@ fork 型 skill 要 agents 提供的 spawner。委派出去的子会话用父会�
 
 ### 1.2 档位
 
-`daemon` 的 feature 按档位组织,载体(`scripts` / `plugins` / `plugin-compile`)与
+`daemon` 的 feature 按档位组织,脚本载体(`scripts`)与
 包方案(`plugin-packages`)另选:
 
 | 档 | 装配的模块 |
@@ -228,8 +228,7 @@ MCP 连接、脚本绑定的 root、记忆目录、transcript 目录。
 | `DaemonPaths::config_root()` | 启动时按首个场景算定,见 §3.1 |
 | 工具注册表 | 内置工具是编译期事实 |
 | 场景注册表 | 内建、宿主登记(`Assembly.scenes` / `SessionPool::register_scene`)、插件贡献三类,宿主登记的可以是声明式场景;激活集合是运行期状态,但不按项目 |
-| plugin host / 插件集合 | 插件只有全局层与场景层,**没有项目层** |
-| WASM 插件的 `${workspace}` | 组件是池级加载的,跟着 daemon 的工作目录 |
+| 插件集合 | 插件只有全局层与场景层,**没有项目层** |
 | `WatchHub` | 一个 `notify` 线程,按 tier 分键去重,watched 目录是 `1 + M + P` |
 
 **加一样按项目索引的东西,就把它放进 `ProjectBinding`**,不要在池上再挂一个
@@ -674,21 +673,17 @@ sidecar 答得出**:`Meta` 在 transcript 里,而要读 transcript 先得知道�
 引擎有 45 个扩展点,分三类:**契约** 30 个(换掉一个子系统)、**拦截** 9 个
 (坐在某件事的路径上)、**注册** 6 个(往一个集合里贡献)。
 
-用 Rust 实现它们不需要载体——直接 `impl` 那个 trait 交给 `runtime::agent::Builder`。
-**载体**是给不重新编译引擎的人用的:把脚本或 WASM 组件挂到其中一部分点上。
+扩展只有两种:**Rust**——直接 `impl` 那个 trait 交给 `runtime::agent::Builder`,全部
+扩展点可用;**QuickJS 脚本**——给不重新编译引擎的人,挂到其中九个点上。脚本和 `RunCode`
+跑在同一套内嵌 QuickJS 里,限额限的是开销,不是对恶意代码的隔离,所以脚本能做什么按它
+从哪来定。引擎不带 WebAssembly 运行时;需要的上层在 Rust 接口上自己做。
 
 完整清单、各自的触发时机与信任级别在 **`extension_points.md`**——那张表是从
 `base::interface::catalog` 生成的,有测试保证它和代码一致。
 
-**两个载体互斥,一个构建只带一个:**
-
 ```
-cargo build -p daemon                                                       # QuickJS(默认)
-cargo build -p daemon --no-default-features --features full,plugin-compile  # WASM
-cargo build -p daemon --no-default-features --features full                 # 两者皆无
+cargo build -p daemon                                          # QuickJS + 插件包(默认)
+cargo build -p daemon --no-default-features --features full    # 两者皆无
 ```
 
-同时带两个会被 `compile_error!` 拒绝。这不是洁癖:cargo 的 feature 并集让"两个都带"
-是踩出来的而不是选出来的,而代价是双倍的扩展攻击面和二十兆字节。
-
-怎么写脚本 / 插件见 `extending_quickjs.md` 与 `extending_wasm.md`。
+怎么写脚本见 `extending_quickjs.md`;插件包的格式见 `extension_points.md`。

@@ -43,7 +43,7 @@ Agix 是 agent 产品底下的那台引擎:它运行一个**会话**——装配
    工程任务上,与另一个开源 agent 框架用同一个模型对比:**总耗时少 34%,提示 token 少 13%,
    每次都做对**([测法](../tests/live/tests/compare_dsh.rs))。
 5. **主导权在你的产品手里。** 每个会话、任务、子 Agent、目标和询问,都能通过同一套 JSON-RPC
-   看到、叫停、修改。45 个扩展点,用 Rust、脚本或 WebAssembly 插件替换或拦截任何子系统,不用
+   看到、叫停、修改。45 个扩展点,用 Rust 或 QuickJS 脚本替换或拦截任何子系统,不用
    fork。每个会话都是只追加的日志,可以恢复、分叉、导出,也能不联网逐字节回放。
 
 ---
@@ -107,8 +107,8 @@ MCP、询问、通知、监视、结构化输出(见下文[能力](#能力))。
 
 **扩展**
 - 公开的 45 个扩展点:30 个契约、9 个拦截点、6 个注册点。
-- QuickJS 脚本;声明能力的 WebAssembly 插件。
-- 三十个时机的 hook,后端有 command、prompt、HTTP、agent、WASM 五种。
+- 编译进宿主的 Rust 插件,与 QuickJS 脚本;可以打成插件包安装,安装时强制披露。
+- 三十个时机的 hook,后端有 command、prompt、HTTP、agent 四种。
 - MCP 客户端(stdio、SSE、streamable HTTP、OAuth 2.0 PKCE);声明式场景;自定义 Agent 类型。
 
 **记录**
@@ -129,10 +129,10 @@ MCP、询问、通知、监视、结构化输出(见下文[能力](#能力))。
 ```
  外壳      daemon ─────────── agixd:命令行、进程生命周期(锁、信号、崩溃收尾)
              │
- 装配      assembly ───────── 会话池、(项目, 场景) 绑定、provider 路由、载体、模块清单;
+ 装配      assembly ───────── 会话池、(项目, 场景) 绑定、provider 路由、插件包、模块清单;
              │                JSON-RPC 服务与实例发现
              │
- 模块      agents(+team) · mcp · skills · script-host · plugin / plugin-host / wasm-host
+ 模块      agents(+team) · mcp · skills · script-host · plugin
              │                经 runtime::module::Module 进入会话
  内核      runtime ────────── turn loop、提示词装配、工具调度、Module 接口
              │
@@ -147,8 +147,8 @@ MCP、询问、通知、监视、结构化输出(见下文[能力](#能力))。
 - **内核。** 一个会话跑一轮所需的一切:turn loop(`runtime`)、模型适配(Anthropic
   Messages 与 OpenAI 兼容的 Chat Completions)、内建工具、场景、历史日志、上下文压缩、
   权限、hooks、遥测。内核 crate 从不依赖模块 crate。
-- **模块。** 构建会话时插进去的可选能力:子 Agent 与团队、MCP、skills,以及两种扩展
-  载体。只有装配层与外壳知道有哪些模块。
+- **模块。** 构建会话时插进去的可选能力:子 Agent 与团队、MCP、skills、脚本载体与插件
+  包。只有装配层与外壳知道有哪些模块。
 - **装配。** 把配置变成运行中的会话:合并各层设置、解析 provider 路由、把每个会话绑到
   它的项目和场景、管理会话池、经 JSON-RPC 对外服务。想把 daemon 的引擎放进自己进程的
   宿主,调用的是和 `agixd` 同一个入口。
@@ -235,16 +235,17 @@ let (mut agent, events, input) = runtime::agent::Builder::new()
 
 引擎公开一份从代码生成的接缝清单:**45 个扩展点**——30 个**契约**(换掉一个子系统)、
 9 个**拦截**(坐在进行中的某件事的路径上)、6 个**注册**(往一个集合里贡献)。用 Rust
-就实现 trait 交给 builder;不重新编译引擎的,经三种载体够到其中一部分:
+就实现 trait 交给 builder;不重新编译引擎的,经下面几条路够到其中一部分:
 
-| 载体 | 够到什么 | 代价 |
+| 途径 | 够到什么 | 代价 |
 |---|---|---|
 | **脚本**(QuickJS,默认) | 九个点:四个写提示词、两个围着工具调用、两个围着模型调用、记忆召回 | 一个 `.js` 文件加一行配置;每次调用微秒级 |
-| **WebAssembly 插件** | 五种贡献:工具、MCP 服务器、hook 订阅、场景、agent 类型 | 沙箱里的组件,能力需声明,安装时强制披露 |
-| **Hooks** | 一轮里的三十个时点、五种后端:命令、提示词、HTTP、agent、WASM | 观察、改写输入、拦下工具调用、结束一轮 |
+| **插件包** | MCP 服务器、脚本、声明式场景、agent 类型 | 一个带 `plugin.toml` 的 zip;要给模型看的文本安装时全部披露 |
+| **Hooks** | 一轮里的三十个时点、四种后端:命令、提示词、HTTP、agent | 观察、改写输入、拦下工具调用、结束一轮 |
 
-另外,任何说 MCP 的东西本来就是扩展。一个构建最多带一种脚本 / 插件载体——`scripts`
-(默认)或 `plugins`——两个同时编译会被拒绝。
+另外,任何说 MCP 的东西本来就是扩展。脚本和 `RunCode` 跑在同一套内嵌 QuickJS 里:限额
+限的是开销,不是恶意代码,所以脚本能做什么按它从哪来定。引擎不带 WebAssembly 运行时,
+需要的宿主在 Rust 接口上自己做。
 
 ### 构建档位
 
@@ -274,11 +275,11 @@ let (mut agent, events, input) = runtime::agent::Builder::new()
 | 模块 | `skills` | skill 目录与 `Skill` 工具 |
 | 模块 | `script-host` | QuickJS 载体 |
 | 内核 | `ptc` | `RunCode`:模型写的程序,在内嵌的 QuickJS 里跑([`ptc.md`](ptc.md)) |
-| 模块 | `plugin` · `plugin-host` · `wasm-host` · `plugin-compiler` | 插件包与 WebAssembly 载体 |
+| 模块 | `plugin` | 插件包:manifest、获取、缓存、披露 |
 | 装配 | `assembly` | 会话池、配置、provider 路由、JSON-RPC 服务 |
 | 外壳 | `daemon` | `agixd` 二进制 |
 
-`crates/` 下 24 个 crate,加上 `daemon/` 与四个测试成员,工作区共 29 个成员。完整的
+`crates/` 下 21 个 crate,加上 `daemon/` 与四个测试成员,工作区共 26 个成员。完整的
 图景——会话与场景、历史日志、执行层、锁、磁盘布局——在 [`ARCHITECTURE.md`](ARCHITECTURE.md)。
 
 ---
@@ -362,8 +363,9 @@ let pool = daemon::assemble::pool(
 
 - 给某一个点换个做法 → 写脚本:一个 `.js` 文件加 `settings.json` 里一行
   ([`extending_quickjs.md`](extending_quickjs.md))。
-- 打包一组能力——工具、场景、agent 类型 → 写 WebAssembly 插件
-  ([`extending_wasm.md`](extending_wasm.md))。
+- 打包一组能力——MCP 服务器、脚本、场景、agent 类型 → 做成插件包
+  ([`extension_points.md`](extension_points.md))。
+- 在自己的构建里加工具或拦截 → 写 Rust 实现交给 builder。
 - 换掉一个子系统 → 实现它的 trait([`extension_points.md`](extension_points.md) 列出了
   每一个,以及代价和谁能用)。
 
@@ -476,7 +478,6 @@ cargo test  -p live --features real-model --test real_model  # LIVE 层,对真�
 | [extension_points.md](extension_points.md) | 每个接缝:能换什么、能往哪里贡献、能拦截什么,代价与谁能用 |
 | [daemon_rpc_protocol.md](daemon_rpc_protocol.md) | JSON-RPC 参考——方法、事件、错误码、认证 |
 | [extending_quickjs.md](extending_quickjs.md) | 写脚本扩展 |
-| [extending_wasm.md](extending_wasm.md) | 写 WebAssembly 插件 |
 | [ptc.md](ptc.md) | `RunCode`:模型写的程序能调什么、权限、限额与提示词 |
 | [migrating_to_0.3.md](migrating_to_0.3.md) | 嵌入方与客户端从 0.2.x 升级 |
 | [schemas/settings.schema.json](schemas/settings.schema.json) | 生成的 `settings.json` schema |

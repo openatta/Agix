@@ -11,9 +11,8 @@ use daemon::config::{load_daemon_config, StaticDaemonPaths};
 use daemon::rpc::codes;
 use daemon::DaemonServer;
 use model::client::{AnthropicClient, AuthMode, HttpAnthropicClient};
-// Only the plugin-archive helper hashes anything, and that helper is gated —
-// on the package layer, which is what installing needs; running a package's
-// components is a separate feature and a separate set of tests below.
+// Only the plugin-archive helper hashes anything, and that helper is gated on
+// the package layer, which is what installing needs.
 #[cfg(feature = "plugin-packages")]
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -919,8 +918,7 @@ async fn commands_list_returns_builtin_local_commands() {
     let _ = handle.await;
 }
 
-/// A package whose whole content is a script: no components, nothing to
-/// compile, nothing that needs a WebAssembly engine.
+/// A package whose whole content is a script.
 #[cfg(feature = "plugin-packages")]
 fn build_script_plugin_zip(dir: &std::path::Path, plugin_name: &str) -> (PathBuf, String) {
     let mut buf = Vec::new();
@@ -947,8 +945,7 @@ fn build_script_plugin_zip(dir: &std::path::Path, plugin_name: &str) -> (PathBuf
     (archive_path, hex::encode(hasher.finalize()))
 }
 
-/// A package that only ships a script installs in the default build, which
-/// carries no WebAssembly at all.
+/// A package that only ships a script installs in the default build.
 #[cfg(feature = "plugin-packages")]
 #[tokio::test]
 async fn a_script_only_package_installs_and_discloses_what_it_will_run() {
@@ -968,8 +965,8 @@ async fn a_script_only_package_installs_and_discloses_what_it_will_run() {
     assert_eq!(v["result"]["success"], true, "install resp: {v}");
 
     // The script is a capability, not an implementation detail: it runs in
-    // this process at a point that rewrites what the model reads, and the
-    // sandbox has nothing to say about that. Whoever installs it has to see
+    // this process at a point that rewrites what the model reads, and
+    // nothing isolates it from the host. Whoever installs it has to see
     // it before they rely on it.
     let d = &v["result"]["disclosure"];
     let caps = d["capabilities"].as_array().unwrap();
@@ -978,7 +975,6 @@ async fn a_script_only_package_installs_and_discloses_what_it_will_run() {
             .any(|c| c.as_str().unwrap().contains("`tool.result`")),
         "the script binding must be disclosed: {d}"
     );
-    assert_eq!(d["wasm"]["components"], 0, "{d}");
 
     // `root` so a host can read what it cares about out of the package
     // without rebuilding the daemon's disk layout for itself.
@@ -1105,15 +1101,6 @@ async fn plugin_lifecycle_install_list_disable_enable_uninstall() {
         0,
         "this fixture asks for nothing: {d}"
     );
-    // Whether this binary will run a package's components is a fact about
-    // the build, and the disclosure is where it is answerable — otherwise
-    // "installed, and its tool is missing" has no explanation from here.
-    assert_eq!(
-        d["wasm"]["runnable"],
-        cfg!(feature = "plugins"),
-        "the disclosure must say whether this build runs components: {d}"
-    );
-    assert_eq!(d["wasm"]["components"], 0, "this fixture ships none: {d}");
 
     // The plugin's own description reaches the model, so it is listed with
     // its provenance rather than left for the reader to infer.
@@ -1795,11 +1782,6 @@ async fn recreating_a_stale_session_at_capacity_does_not_evict_an_unrelated_sess
 /// A build without the package layer must say so, not pretend. An empty
 /// `plugin.list` would read as "nothing installed", which is a different fact
 /// from "this binary cannot load plugins at all".
-///
-/// Gated on the *package* layer, not on the carrier: a build that reads
-/// packages but runs no components manages them perfectly well, and answering
-/// `PLUGINS_DISABLED` there was the whole defect — a package with nothing to
-/// run was refused for want of an engine it never needed.
 #[cfg(not(feature = "plugin-packages"))]
 #[tokio::test]
 async fn plugin_rpcs_report_plugins_disabled_when_compiled_out() {
@@ -1842,13 +1824,21 @@ async fn plugin_rpcs_report_plugins_disabled_when_compiled_out() {
 
 /// Install a plugin that owns a scene directly into the global tier's
 /// versioned cache — the layout `plugin::discovery` reads.
-#[cfg(feature = "plugins")]
+#[cfg(feature = "plugin-packages")]
 fn install_scene_plugin(root: &std::path::Path, name: &str) {
     let dir = root.join("plugins").join("cache").join(name).join("1.0.0");
     std::fs::create_dir_all(dir.join("scene")).unwrap();
     std::fs::write(
         dir.join("scene/prompt.md"),
         "You are the demo workflow agent.",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("scene/scene.json"),
+        format!(
+            r#"{{"id": "plugin:{name}", "name": "Demo workflow", "description": "A plugin-owned scene",
+                "tools": ["Read", "Grep"], "disallowed_tools": ["Bash"]}}"#
+        ),
     )
     .unwrap();
     std::fs::write(
@@ -1861,12 +1851,8 @@ version = "1.0.0"
 api_version = "0.1"
 description = "owns a scene"
 
-[scene.own]
-name = "Demo workflow"
-description = "A plugin-owned scene"
-prompt = "scene/prompt.md"
-tools = ["Read", "Grep"]
-disallowed_tools = ["Bash"]
+[scene]
+dir = "scene"
 "#
         ),
     )
@@ -1876,7 +1862,7 @@ disallowed_tools = ["Bash"]
 /// A plugin that owns a scene needs no `scene.activate`: installing and
 /// enabling it is the consent, and entering the scene is still an explicit
 /// `session.create`.
-#[cfg(feature = "plugins")]
+#[cfg(feature = "plugin-packages")]
 #[tokio::test]
 async fn a_plugin_owned_scene_is_listed_and_can_host_a_session() {
     let dir = tempfile::tempdir().unwrap();
@@ -1914,7 +1900,7 @@ async fn a_plugin_owned_scene_is_listed_and_can_host_a_session() {
 
 /// A scene id no plugin owns must still be refused, so a typo does not
 /// silently land the user in the default scene.
-#[cfg(feature = "plugins")]
+#[cfg(feature = "plugin-packages")]
 #[tokio::test]
 async fn an_unknown_plugin_scene_is_refused() {
     let (server, sock, _dir, handle) = start_server().await;
@@ -1933,7 +1919,7 @@ async fn an_unknown_plugin_scene_is_refused() {
 
 /// Installing must state what a plugin will contribute — above all the text
 /// that will reach the model, which no sandbox can vet.
-#[cfg(feature = "plugins")]
+#[cfg(feature = "plugin-packages")]
 #[tokio::test]
 async fn a_scene_owning_plugin_discloses_its_prompt_and_capabilities() {
     let dir = tempfile::tempdir().unwrap();
@@ -1975,8 +1961,8 @@ async fn a_scene_owning_plugin_discloses_its_prompt_and_capabilities() {
 /// `plugin.list` rescans the directories on every call, so it would report a
 /// hand-placed plugin with or without a reload and prove nothing. What needs
 /// the reload is everything derived from the installed set — scenes, agent
-/// types, commands, and the loaded components themselves.
-#[cfg(feature = "plugins")]
+/// types, commands.
+#[cfg(feature = "plugin-packages")]
 #[tokio::test]
 async fn plugin_reload_picks_up_a_plugin_that_appeared_on_disk() {
     let dir = tempfile::tempdir().unwrap();

@@ -58,11 +58,10 @@ zip = { workspace = true }
 # The same switches as `assembly`'s, where they are documented; the binary
 # only forwards them.
 #
-# The tiers. The carrier (`scripts`, or `plugins` / `plugin-compile`) and the
-# package layer (`plugin-packages`) are chosen separately:
+# The tiers. The script carrier (`scripts`) and the package layer
+# (`plugin-packages`) are chosen separately:
 #
 #     cargo build -p daemon                                            # full + scripts + packages
-#     cargo build -p daemon --no-default-features --features full,plugin-compile
 #     cargo build -p daemon --no-default-features --features coding,scripts
 #     cargo build -p daemon --no-default-features                      # minimal: the kernel
 default = ["full", "scripts", "plugin-packages", "sandbox"]
@@ -74,12 +73,10 @@ skills = ["assembly/skills"]
 ws = ["assembly/ws"]
 web = ["runtime/web"]
 structured-output = ["runtime/structured-output"]
-# RunCode (docs/ptc.md). Not an extension carrier, so exclusive with neither.
+# RunCode (docs/ptc.md). Independent of the script carrier, though both run QuickJS.
 ptc = ["runtime/ptc"]
 scripts = ["assembly/scripts", "dep:script-host"]
 plugin-packages = ["assembly/plugin-packages"]
-plugins = ["assembly/plugins"]
-plugin-compile = ["assembly/plugin-compile"]
 sandbox = ["assembly/sandbox"]
 otel = ["assembly/otel"]
 
