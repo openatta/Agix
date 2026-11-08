@@ -397,6 +397,15 @@ pub async fn drive(root: &Path, session: Session) -> Ran {
                         },
                     });
                 }
+                base::event::AgentEvent::QuestionPrompt { prompt_id, .. } => {
+                    prompts.push("AskUserQuestion".into());
+                    let _ = input_tx.send(InputMessage::QuestionResponse {
+                        prompt_id,
+                        answer: runtime::agent::QuestionAnswer::Decline {
+                            reason: "no one is here to answer this".into(),
+                        },
+                    });
+                }
                 base::event::AgentEvent::TurnComplete { usage, .. } => {
                     reported_usage.push(usage);
                     break;

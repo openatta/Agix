@@ -1,7 +1,8 @@
 //! `AskUserQuestionTool` —— 让模型主动向用户提问。
 //!
-//! 模型显式调用此工具以向用户提问。工具返回格式化的 JSON 结构，
-//! TUI/权限层渲染交互式对话框。
+//! 模型显式调用此工具以向用户提问。问题经会话的 `Elicitation` 送到宿主，
+//! 等待时长同权限提问（`permission_prompt_timeout_secs`，0 为不限）；
+//! 回答作为工具结果交还模型，没人回答也照实告诉模型。
 
 use async_trait::async_trait;
 use base::error::ToolError;
@@ -13,6 +14,7 @@ use base::tool::{
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::time::Duration;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AskUserQuestionInput {
@@ -88,26 +90,36 @@ impl Tool for AskUserQuestionTool {
             "options": input.options.iter().map(|o| json!({"key": o.key, "label": o.label})).collect::<Vec<_>>(),
         });
 
-        let outcome = match &ctx.elicitation {
-            Some(asker) => {
-                asker
-                    .ask(ElicitRequest {
-                        id: ctx.tool_use_id.clone(),
-                        kind: ElicitKind::Clarification {
-                            header: input.header.clone(),
-                        },
-                        message: input.question.clone(),
-                        options: input
-                            .options
-                            .iter()
-                            .map(|o| ElicitOption {
-                                key: o.key.clone(),
-                                label: o.label.clone(),
-                            })
-                            .collect(),
-                    })
+        let asked = match &ctx.elicitation {
+            Some(asker) => Some(
+                asker.ask(ElicitRequest {
+                    id: ctx.tool_use_id.clone(),
+                    kind: ElicitKind::Clarification {
+                        header: input.header.clone(),
+                        tool_use_id: Some(ctx.tool_use_id.clone()),
+                    },
+                    message: input.question.clone(),
+                    options: input
+                        .options
+                        .iter()
+                        .map(|o| ElicitOption {
+                            key: o.key.clone(),
+                            label: o.label.clone(),
+                        })
+                        .collect(),
+                }),
+            ),
+            None => None,
+        };
+        let outcome = match asked {
+            Some(ask) => match ctx.config.permission_prompt_timeout_secs {
+                0 => ask.await,
+                secs => tokio::time::timeout(Duration::from_secs(secs), ask)
                     .await
-            }
+                    .unwrap_or_else(|_| {
+                        ElicitOutcome::declined(format!("the user did not answer within {secs}s"))
+                    }),
+            },
             None => ElicitOutcome::declined(
                 "this engine was built with no way to reach the user, so the question \
                  was not asked",
@@ -117,12 +129,18 @@ impl Tool for AskUserQuestionTool {
         // An unanswered question must not read as an answered one: echoing the
         // model's own question back invites it to treat the echo as a reply.
         let text = match &outcome {
-            ElicitOutcome::Answered(v) => v
-                .as_str()
-                .map(str::to_string)
-                .unwrap_or_else(|| v.to_string()),
+            ElicitOutcome::Answered(v) => {
+                let answer = v
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| v.to_string());
+                match input.options.iter().find(|o| o.key == answer) {
+                    Some(picked) => format!("{}: {}", picked.key, picked.label),
+                    None => answer,
+                }
+            }
             ElicitOutcome::Declined { reason } => {
-                format!("The user was not asked and has not answered: {reason}")
+                format!("The user has not answered: {reason}")
             }
         };
 
@@ -232,5 +250,71 @@ mod elicitation_tests {
         assert_eq!(asked.len(), 1);
         assert_eq!(asked[0].message, "which branch?");
         assert_eq!(asked[0].options.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod waiting_tests {
+    use super::*;
+    use base::interface::elicitation::{Elicitation, FixedElicitation};
+    use std::sync::Arc;
+
+    struct NeverAnswers;
+
+    #[async_trait]
+    impl Elicitation for NeverAnswers {
+        async fn ask(&self, _: ElicitRequest) -> ElicitOutcome {
+            std::future::pending().await
+        }
+    }
+
+    fn ctx_with(asker: Arc<dyn Elicitation>, timeout_secs: u64) -> ToolContext {
+        let mut ctx = ToolContext::for_test("/tmp".into());
+        ctx.elicitation = Some(asker);
+        let mut config = (*ctx.config).clone();
+        config.permission_prompt_timeout_secs = timeout_secs;
+        ctx.config = Arc::new(config);
+        ctx
+    }
+
+    async fn ask(ctx: ToolContext) -> String {
+        let result = AskUserQuestionTool
+            .call(
+                json!({"question": "which branch?", "options": [{"key": "a", "label": "main"}]}),
+                ctx,
+                ProgressSender::noop("ask"),
+            )
+            .await
+            .expect("the tool itself does not fail");
+        match result.content {
+            base::tool::ToolResultContent::Text(text) => text,
+            other => panic!("expected text, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_picked_option_reaches_the_model_with_its_label() {
+        let asker = FixedElicitation::new(ElicitOutcome::answered(&"a".to_string()));
+        assert_eq!(ask(ctx_with(asker, 300)).await, "a: main");
+    }
+
+    #[tokio::test]
+    async fn free_text_reaches_the_model_as_typed() {
+        let asker = FixedElicitation::new(ElicitOutcome::answered(&"the dev branch".to_string()));
+        assert_eq!(ask(ctx_with(asker, 300)).await, "the dev branch");
+    }
+
+    #[tokio::test]
+    async fn a_question_nobody_answers_is_given_up_on_after_the_prompt_timeout() {
+        let text = tokio::time::timeout(
+            Duration::from_secs(10),
+            ask(ctx_with(Arc::new(NeverAnswers), 1)),
+        )
+        .await
+        .expect("the configured timeout must end the wait");
+        assert!(
+            text.contains("has not answered") && text.contains("within 1s"),
+            "{text}"
+        );
     }
 }

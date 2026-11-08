@@ -379,9 +379,9 @@ settings 宽的被**静默夹到 settings 允许的最宽处**并记一条 warn 
 
 `source` 与 `behavior` 都是 camelCase/小写的既有序列化格式,不是笔误。
 
-### 4.7 `PermissionDecision` — 回答权限提问
+### 4.7 `PermissionDecision` / `QuestionAnswer` — 回答提问
 
-`session.respondToPrompt` 的 `decision`,四种形态:
+`prompt_type` 为 `permission` 时,`session.respondToPrompt` 的 `decision`,四种形态:
 
 ```jsonc
 { "type": "permit" }
@@ -389,6 +389,15 @@ settings 宽的被**静默夹到 settings 允许的最宽处**并记一条 warn 
 { "type": "permit_always", "scope": "session" }   // 本会话内一直允许
 { "type": "permit_always", "scope": "local" }     // 另外写进 .agix/settings.local.json
 ```
+
+`prompt_type` 为 `question` 时,`session.respondToPrompt` 的 `answer`,两种形态:
+
+```jsonc
+{ "type": "answer", "text": "a" }        // 选项的 key,或者自由文本
+{ "type": "decline", "reason": "…" }     // 不回答
+```
+
+`text` 等于某个选项的 `key` 时,模型读到的是 `key: label`(如 `a: main`);否则原样交给模型。
 
 ### 4.8 `stop_reason`
 
@@ -615,6 +624,7 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 | `task_messages` | 有 `session.messageTask`,消息进运行中的后台子 Agent(§6.3) |
 | `host_agents` | 有 `session.startAgent`,宿主不经模型在会话下起子 Agent;子 Agent 任务带 `usage`、`structured_output`、`detail.tag`(§6.3) |
 | `goals` | 有 `session.goal` / `session.setGoal` / `session.updateGoal`,目标变化推 `goal_changed`(§6.3、§7) |
+| `question_prompts` | `session.create` 接受 `options.prompt_types`;列了 `question` 的会话把模型的 `AskUserQuestion` 推成 `prompt_type:"question"` 的 `prompt` 帧,用 `session.respondToPrompt` 回答(§6.3、§7) |
 | `ptc` | 这个构建带 `RunCode`,模型能写程序调本会话的工具(`docs/ptc.md`) |
 
 #### `daemon.status`
@@ -823,7 +833,8 @@ HashMap),客户端要按 `scene` 找条目,不要按下标。
     "output_schema": { "type":"object", … },  // 结构化输出必须满足的 JSON Schema
     "provider": "deepseek",               // 可选,providers 里的 id
     "model": "deepseek-chat",             // 可选
-    "prompt": { "append": "…", "override": null } } }  // 可选,见 session.setPrompt
+    "prompt": { "append": "…", "override": null },  // 可选,见 session.setPrompt
+    "prompt_types": ["permission", "question"] } }  // 可选,宿主能回答的提问,默认只有 permission
 // ← result
 { "session_id": "…", "scene": "code", "session_kind": "primary",
   "project_root": "…", "created_at": "…" }
@@ -862,6 +873,12 @@ daemon 重启后恢复)都按同一份 `options` 重建,之后的调用里再传
 `output_schema` 给了,`StructuredOutput` 工具就以这份 schema 作为自己的参数格式直接
 宣告给模型(不再需要先 `ToolSearch`),不符合 schema 的调用以错误结果退回、模型可以
 改了再交;被接受的那一份出现在 `turn_complete` 的 `structured_output` 里(§7.2)。
+
+`prompt_types` 说宿主能回答哪几种 `prompt` 帧(§7)。`permission` 总是会问,写不写都一样。
+列了 `question`,有人值守场景(`ARCHITECTURE.md` §3.2.3,如 `code`)的会话才有
+`AskUserQuestion`,模型的提问推成 `prompt_type:"question"` 的帧等宿主回答;没列时这个
+会话根本没有 `AskUserQuestion` —— 一个只会被拒绝的工具不该给模型看。不认识的取值被忽略,
+不会让整份 `options` 作废。
 
 `provider` 让这个会话的对话走 `providers` 里那个厂商的 client,而不是设置里
 `task_models.main` 路由到的那个;子 Agent、压缩等其他路由任务仍按设置走。`model`
@@ -1027,7 +1044,7 @@ turn 期间的引擎错误不是事件,是**这次调用的错误响应**:`ENGIN
 的规矩来。
 
 `pending_prompts` 里的帧带**原来的 `prompt_id`**,所以中途打开的 tab 可以直接答那个
-还悬着的权限提问。一轮自己的提问在这一轮结束时清掉;后台子 Agent 的提问不属于哪一轮,
+还悬着的提问(权限提问与模型的提问都在里面)。一轮自己的提问在这一轮结束时清掉;后台子 Agent 的提问不属于哪一轮,
 留到被回答或它的任务结束。
 
 #### `session.unsubscribe`
@@ -1564,11 +1581,24 @@ Shell 命令、监视器没有收件箱。会话不在内存里 → `SESSION_NOT
 ```jsonc
 // → params
 { "session_id": "…", "prompt_id": "…",
-  "prompt_type": "permission",          // 可选,默认也是唯一取值
+  "prompt_type": "permission",          // 可选,默认 permission;取值同那一帧的 prompt_type
   "decision": { "type": "permit" } }    // 见 §4.7
 // ← result
 { "prompt_id": "…" }
 ```
+
+回答模型的提问(`prompt_type:"question"` 的帧)带 `answer` 而不是 `decision`:
+
+```jsonc
+// → params
+{ "session_id": "…", "prompt_id": "…",
+  "prompt_type": "question",
+  "answer": { "type": "answer", "text": "a" } }   // 见 §4.7
+```
+
+`prompt_type` 必须与这个 `prompt_id` 那一帧的相同:拿 `decision` 去答一个还悬着的
+`question`(或反过来)→ `INVALID_PARAMS`。认不出的 `prompt_type`、缺了或形状不对的
+`decision` / `answer` 也是 `INVALID_PARAMS`。
 
 **谁都能答,先答者生效。** 提问广播给该会话的全部订阅者,任何一条连接都可以回答,
 不必是发起 turn 的那条。`prompt_id` 未知(已超时、已被别人答掉)时**静默成功** ——
@@ -1577,8 +1607,9 @@ Shell 命令、监视器没有收件箱。会话不在内存里 → `SESSION_NOT
 会话不在内存里 → `SESSION_NOT_FOUND`(这个和 `session.close` 不一样:答一个没在跑
 的会话的提问不可能是"已经完成了")。
 
-未在 `--permission-prompt-timeout`(默认 300 秒)内回答的提问**失败关闭**:按拒绝
-处理,turn 带着一条 error `tool_result` 继续,不会挂死。
+未在 `--permission-prompt-timeout`(默认 300 秒)内回答的提问**失败关闭**:权限提问按拒绝
+处理,turn 带着一条 error `tool_result` 继续;模型的提问以"用户没有回答"作为
+`AskUserQuestion` 的结果交还模型。都不会挂死。
 
 ### 6.4 `config.*`
 
@@ -1930,7 +1961,7 @@ disclosure 的 `wasm.runnable` 会如实报成 `false`。
 | `tool_args_delta` | `{id,partial_json}` | 这次调用参数的原始片段,按到达顺序拼起来就是 `tool_use.input` 的 JSON 文本(高频) |
 | `tool_use` | `{id,name,input}` | 模型发起工具调用,参数已完整 |
 | `tool_result` | `{id,name,content,is_error}` | 工具返回 |
-| `prompt` | `{prompt_type,prompt_id,tool_name,message,paths[],tool_use_id?}` | 需宿主决策,用 `session.respondToPrompt` 回答;`tool_use_id` 是被问的那次 `tool_use` |
+| `prompt` | `permission`:`{prompt_type,prompt_id,tool_name,message,paths[],tool_use_id?}`;`question`:`{prompt_type,prompt_id,tool_use_id,question,header,options:[{key,label}]}` | 需宿主回答,用 `session.respondToPrompt`;`tool_use_id` 是被问的那次 `tool_use`(`question` 的 `prompt_id` 就是它)。`question` 的 `header` 可为 `null`,`options` 为空表示自由回答 |
 | `subagent_progress` | `{agent_label,agent_session_id,agent_type,parent_turn,parent_tool_use_id,task_id,event}` | 子 Agent 事件镜像,`event` 是嵌套的本表结构;`parent_tool_use_id` 是父会话里发起它的那次 `Agent` 调用,不知道时为 `null`;`task_id` 是它在 `session.tasks` 里的任务 |
 | `team_progress` | `{team,team_id,stage,stage_index,stage_count,status,members,failed}` | 团队阶段生命周期 |
 | `skills_changed` | `{added,removed}` | 会话下的 skill 文件变了,缓存了 `commands.list` 的客户端该重取 |
@@ -1964,8 +1995,9 @@ disclosure 的 `wasm.runnable` 会如实报成 `false`。
 里,最后是 `turn_complete`(或 `error`)。本地命令(`/clear` 之类)不调用模型,只有
 `turn_start` 和 `turn_complete`。
 
-`prompt_type` 目前只有 `"permission"`,但字段刻意保持通用 —— 未来的"停下来问一句"
-可以复用同一帧与同一回答通道。
+`prompt_type` 有两种:`"permission"` 问一次工具调用能不能跑;`"question"` 是模型用
+`AskUserQuestion` 问用户的,只发给在 `session.create` 的 `options.prompt_types` 里列了
+`question` 的会话(§6.3)。两种共用同一帧、同一回答方法与同一个超时。
 
 ### 7.1 `compact`
 
@@ -2107,6 +2139,10 @@ daemon 会话的默认权限模式是 **`default`(ask)**,不是放行一切。
 (默认 300 秒)→ **按拒绝处理**;或会话被关闭 → 按拒绝处理。
 
 超时**永远失败关闭**,不会自动放行 —— 无人应答不等于同意。
+
+模型的提问(`prompt_type:"question"`,§7)用同一个 `--permission-prompt-timeout` 计时(0 为
+不限);超时、会话关闭或宿主 `decline`,模型都从 `AskUserQuestion` 的结果里读到用户没有回答,
+不会把沉默当成回答。子 Agent 没有 `AskUserQuestion`。
 
 **子 Agent 的询问在父会话上问。** 子 Agent(模型起的、`session.startAgent` 起的、前台
 的、后台的)的工具调用照父会话的权限判;要问时,父会话推一帧 `prompt`,`message` 以

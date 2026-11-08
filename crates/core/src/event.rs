@@ -92,6 +92,23 @@ pub enum AgentEvent {
         task_id: Option<String>,
     },
 
+    /// The model asked the user something (`AskUserQuestion`) and waits for
+    /// the host's answer.
+    QuestionPrompt {
+        prompt_id: String,
+        question: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        header: Option<String>,
+        /// Offered answers; empty means free-form.
+        #[serde(default)]
+        options: Vec<crate::interface::elicitation::ElicitOption>,
+        turn_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_use_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task_id: Option<String>,
+    },
+
     // ── Turn lifecycle ──
     /// A turn has started. Every `TurnStart` is followed by exactly one
     /// `TurnComplete` or `Error` with the same `turn_id`.

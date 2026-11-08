@@ -29,7 +29,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// What is being asked, and how the answer will be read.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +48,8 @@ pub enum ElicitKind {
     Clarification {
         /// Short label for the question, for a host with room for one.
         header: Option<String>,
+        /// The `tool_use` block asking, when the asker knows it.
+        tool_use_id: Option<String>,
     },
     /// Shall configuration detected from another agent tool be imported? The
     /// answer is a `base::interface::import_callback::ImportDecision`.
@@ -58,7 +60,7 @@ pub enum ElicitKind {
 }
 
 /// One offered answer.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ElicitOption {
     /// What the answer carries if this one is picked.
     pub key: String,
@@ -224,7 +226,10 @@ mod tests {
                 paths: vec![],
                 tool_use_id: None,
             },
-            ElicitKind::Clarification { header: None },
+            ElicitKind::Clarification {
+                header: None,
+                tool_use_id: None,
+            },
             ElicitKind::Import { sources: vec![] },
         ];
         for kind in kinds {

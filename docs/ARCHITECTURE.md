@@ -265,7 +265,7 @@ recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着
 
 | | 无人值守 | 有人值守 |
 |---|---|---|
-| 工具 | 没有 `AskUserQuestion`、`EnterPlanMode` / `ExitPlanMode` | 有 |
+| 工具 | 没有 `AskUserQuestion`、`EnterPlanMode` / `ExitPlanMode` | 有;`AskUserQuestion` 另要宿主能回答提问(`Builder::question_prompts`、自带的 `Builder::elicitation`,daemon 上是 `options.prompt_types` 列了 `question`) |
 | 提示词 | 不写"问用户""先确认";写"任务没明说就不做,在报告里说明" | 写 |
 | 内置技能 | 只有能独立做完的 | 再加需要用户在场的 |
 | 权限提示 | 不送给任何人,直接拒绝,拒绝消息里写清怎么授权(§6.3) | 送给宿主等回答 |

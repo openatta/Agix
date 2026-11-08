@@ -23,6 +23,10 @@ use tracing;
 /// The `task_models` key that routes `WebSearch` to a provider of its own.
 const WEB_SEARCH_TASK: &str = "web_search";
 
+/// The one tool in `NEEDS_A_USER` an attended session also needs a host for:
+/// see [`Builder::question_prompts`].
+const ASK_USER_QUESTION: &str = "AskUserQuestion";
+
 // ── Channel types ──
 
 #[derive(Debug)]
@@ -41,6 +45,11 @@ pub enum InputMessage {
     PermissionResponse {
         prompt_id: String,
         decision: PermissionDecision,
+    },
+    /// The host's answer to an `AgentEvent::QuestionPrompt`.
+    QuestionResponse {
+        prompt_id: String,
+        answer: QuestionAnswer,
     },
     System {
         kind: EngineCommand,
@@ -146,6 +155,17 @@ pub enum PermissionDecision {
     },
 }
 
+/// Wire shape: `{"type":"answer","text":"..."}` / `{"type":"decline","reason":"..."}`
+/// — what `session.respondToPrompt` parses out of its `answer` param for a
+/// question and what `InputMessage::QuestionResponse` carries. `text` is one
+/// of the question's option keys or free text.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum QuestionAnswer {
+    Answer { text: String },
+    Decline { reason: String },
+}
+
 #[derive(Debug, Clone)]
 pub enum EngineCommand {
     SetSessionId,
@@ -240,6 +260,9 @@ pub struct Agent {
     /// by `prompt_id` and fires it. A `prompt_id` with no entry (already
     /// timed out, or a stale/duplicate response) is silently ignored.
     pub(crate) pending_permissions: PendingPermissions,
+    /// Questions put to the host and not yet answered, woken by
+    /// `InputMessage::QuestionResponse` the same way.
+    pub(crate) pending_questions: crate::elicitation::PendingQuestions,
     /// How this session asks a person something — see
     /// [`base::interface::elicitation::Elicitation`]. Defaults to
     /// [`crate::elicitation::ChannelElicitation`], which speaks the event /
@@ -568,12 +591,13 @@ impl Agent {
         // ── Input demultiplexer ──
         //
         // The loop below `await`s `process_turn` inline, so while a turn is
-        // running it is not reading input. Three messages only mean something
+        // running it is not reading input. Some messages only mean something
         // *during* a turn and would deadlock or arrive too late there: a
-        // `PermissionResponse` the running turn is blocked on, `CancelTurn`,
-        // and a `Steer` meant for the turn's next step. This task owns the
-        // real receiver and handles those three through `Arc`-shared state;
-        // everything else is forwarded to the loop untouched.
+        // `PermissionResponse` or `QuestionResponse` the running turn is
+        // blocked on, `CancelTurn`, and a `Steer` meant for the turn's next
+        // step. This task owns the real receiver and handles those through
+        // `Arc`-shared state; everything else is forwarded to the loop
+        // untouched.
         let (fwd_tx, mut fwd_rx) = mpsc::unbounded_channel();
         // Weak, so a goal round can be queued without keeping the loop alive
         // after the real input channel closes.
@@ -585,6 +609,7 @@ impl Agent {
             let (_closed_tx, closed_rx) = mpsc::unbounded_channel();
             let mut raw_rx = std::mem::replace(&mut self.input_rx, closed_rx);
             let pending = self.pending_permissions.clone();
+            let questions = self.pending_questions.clone();
             let denials = self.permission_denial_count.clone();
             let turn_cancel = self.current_turn_cancel.clone();
             let steering = self.steering.clone();
@@ -628,6 +653,11 @@ impl Agent {
                         } => {
                             crate::turn::resolve_permission_response(
                                 &pending, &denials, prompt_id, decision,
+                            );
+                        }
+                        InputMessage::QuestionResponse { prompt_id, answer } => {
+                            crate::elicitation::resolve_question_response(
+                                &questions, &prompt_id, answer,
                             );
                         }
                         InputMessage::System {
@@ -1157,6 +1187,8 @@ pub struct Builder {
     /// Replaces the built-in way of asking a person something — see
     /// [`Builder::elicitation`].
     elicitation: Option<Arc<dyn base::interface::elicitation::Elicitation>>,
+    /// See [`Builder::question_prompts`].
+    question_prompts: bool,
     /// Contributions to the system prompt — see [`Builder::prompt_registry`].
     prompt_registry: Option<Arc<dyn base::interface::prompt_registry::PromptRegistry>>,
     /// Replaces prompt assembly itself — see [`Builder::prompt_assembler`].
@@ -1328,6 +1360,7 @@ impl Builder {
             scene_registry: None,
             instruction_provider: None,
             elicitation: None,
+            question_prompts: false,
             prompt_registry: None,
             prompt_assembler: None,
             tool_middleware: Vec::new(),
@@ -1431,13 +1464,22 @@ impl Builder {
     /// [`Elicitation`] and gets the question directly, rather than pumping
     /// `AgentEvent::PermissionPrompt` and `InputMessage::PermissionResponse`
     /// by hand. Whatever is registered here is also what the engine asks when
-    /// it needs a clarification or an import confirmation — the built-in
-    /// implementation declines those, because the channel protocol has no
-    /// wire form for them.
+    /// it needs a clarification or an import confirmation, so an attended
+    /// session built with one keeps `AskUserQuestion`.
     ///
     /// [`Elicitation`]: base::interface::elicitation::Elicitation
     pub fn elicitation(mut self, e: Arc<dyn base::interface::elicitation::Elicitation>) -> Self {
         self.elicitation = Some(e);
+        self
+    }
+
+    /// Whether the host answers the model's questions over the channel
+    /// protocol: `AgentEvent::QuestionPrompt` out, `InputMessage::QuestionResponse`
+    /// back. Off by default, and with it off and no [`Builder::elicitation`]
+    /// the session has no `AskUserQuestion` — a tool whose every call is
+    /// declined is one the model should not be offered.
+    pub fn question_prompts(mut self, on: bool) -> Self {
+        self.question_prompts = on;
         self
     }
 
@@ -2224,6 +2266,7 @@ impl Builder {
         // `AgentTool::set_parent_pending_permissions`.
         let pending_permissions: PendingPermissions =
             Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let pending_questions: crate::elicitation::PendingQuestions = Default::default();
 
         let mut mcp_slot: Option<Box<dyn base::interface::mcp_servers::McpServers>> = None;
         {
@@ -2383,9 +2426,10 @@ impl Builder {
         // only to what is advertised: `ToolSearch` and dispatch read this same
         // registry, so a tool the scene excludes has to be absent from it.
         let attended = scene.interactive();
+        let questions_answered = self.question_prompts || self.elicitation.is_some();
         for t in tools.list() {
-            let waits_on_a_reply =
-                !attended && base::interface::scene::NEEDS_A_USER.contains(&t.name());
+            let waits_on_a_reply = base::interface::scene::NEEDS_A_USER.contains(&t.name())
+                && (!attended || (t.name() == ASK_USER_QUESTION && !questions_answered));
             if waits_on_a_reply || !scene.permits_tool(t.name()) {
                 tools.remove(t.name());
             }
@@ -2533,10 +2577,15 @@ impl Builder {
                 agent_depth,
                 permission,
                 elicitation: self.elicitation.unwrap_or_else(|| {
-                    Arc::new(crate::elicitation::ChannelElicitation::new(
+                    let channel = crate::elicitation::ChannelElicitation::new(
                         event_tx.clone(),
                         pending_permissions.clone(),
-                    ))
+                    );
+                    Arc::new(if self.question_prompts {
+                        channel.with_questions(pending_questions.clone())
+                    } else {
+                        channel
+                    })
                 }),
                 prompt_registry: self
                     .prompt_registry
@@ -2560,6 +2609,7 @@ impl Builder {
                     .unwrap_or_else(|| Arc::new(base::interface::memory_contracts::LlmRetriever)),
                 retrieval_hooks: Arc::new(self.retrieval_hooks),
                 pending_permissions,
+                pending_questions,
                 current_turn_cancel: Arc::new(std::sync::Mutex::new(CancellationToken::new())),
                 steering: Default::default(),
                 memory_store,
@@ -3284,38 +3334,60 @@ mod tests {
     ///   registered, exempting exactly the tools a scene most wants deferred.
     #[test]
     fn an_unattended_scene_gets_no_tools_that_wait_on_a_reply() {
-        let registered = |interactive: bool| {
-            let scene = scene::declarative::DeclarativeScene::from_sources(
-                std::path::Path::new("/scenes/probe"),
-                &format!(r#"{{"id": "probe", "name": "Probe", "interactive": {interactive}}}"#),
-                "You probe.",
-            )
-            .unwrap();
-            let (agent, _rx, _tx) = Builder::new()
-                .scene(Arc::new(scene) as Arc<dyn Scene>)
-                .model(Arc::new(DummyModel) as Arc<dyn Model>)
-                .settings(Arc::new(test_settings()))
-                .tools({
-                    let t = Arc::new(InMemoryToolRegistry::new());
-                    tools::register_builtin_tools(&t);
-                    t
-                })
-                .skip_warmup(true)
-                .build()
-                .expect("build should succeed");
-            agent
-                .tools
-                .list()
-                .iter()
-                .map(|t| t.name().to_string())
-                .collect::<Vec<_>>()
-        };
-        let (unattended, attended) = (registered(false), registered(true));
+        let (unattended, attended) = (
+            registered_tools(false, |b| b.question_prompts(true)),
+            registered_tools(true, |b| b.question_prompts(true)),
+        );
         for tool in base::interface::scene::NEEDS_A_USER {
             assert!(!unattended.iter().any(|t| t == tool), "{tool}");
             assert!(attended.iter().any(|t| t == tool), "{tool}");
         }
         assert!(unattended.iter().any(|t| t == "Read"));
+    }
+
+    fn registered_tools(
+        interactive: bool,
+        configure: impl FnOnce(Builder) -> Builder,
+    ) -> Vec<String> {
+        let scene = scene::declarative::DeclarativeScene::from_sources(
+            std::path::Path::new("/scenes/probe"),
+            &format!(r#"{{"id": "probe", "name": "Probe", "interactive": {interactive}}}"#),
+            "You probe.",
+        )
+        .unwrap();
+        let builder = Builder::new()
+            .scene(Arc::new(scene) as Arc<dyn Scene>)
+            .model(Arc::new(DummyModel) as Arc<dyn Model>)
+            .settings(Arc::new(test_settings()))
+            .tools({
+                let t = Arc::new(InMemoryToolRegistry::new());
+                tools::register_builtin_tools(&t);
+                t
+            })
+            .skip_warmup(true);
+        let (agent, _rx, _tx) = configure(builder).build().expect("build should succeed");
+        agent
+            .tools
+            .list()
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn an_attended_session_whose_host_cannot_answer_questions_is_not_offered_ask_user_question() {
+        let tools = registered_tools(true, |b| b);
+        assert!(!tools.iter().any(|t| t == ASK_USER_QUESTION), "{tools:?}");
+        assert!(tools.iter().any(|t| t == "ExitPlanMode"), "{tools:?}");
+    }
+
+    #[test]
+    fn an_embedder_with_its_own_elicitation_keeps_ask_user_question() {
+        let asker = base::interface::elicitation::FixedElicitation::new(
+            base::interface::elicitation::ElicitOutcome::declined("test"),
+        );
+        let tools = registered_tools(true, |b| b.elicitation(asker));
+        assert!(tools.iter().any(|t| t == ASK_USER_QUESTION), "{tools:?}");
     }
 
     #[tokio::test]
@@ -3324,6 +3396,7 @@ mod tests {
             .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
             .model(Arc::new(DummyModel) as Arc<dyn Model>)
             .settings(Arc::new(test_settings()))
+            .question_prompts(true)
             .tools({
                 let t = Arc::new(InMemoryToolRegistry::new());
                 tools::register_builtin_tools(&t);

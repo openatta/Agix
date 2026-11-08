@@ -2220,9 +2220,8 @@ impl DaemonServer {
     }
 
     /// `session.respondToPrompt` — answers a pending `kind:"prompt"`
-    /// `session.event` (currently only `prompt_type: "permission"`; the
-    /// method name and this dispatch are deliberately generic so a future
-    /// non-permission prompt type can reuse both without a new RPC method).
+    /// `session.event`: a `decision` for a `permission` prompt, an `answer`
+    /// for a `question`.
     async fn method_session_respond_to_prompt(
         &self,
         id: serde_json::Value,
@@ -2239,34 +2238,45 @@ impl DaemonServer {
         let prompt_type = params
             .get("prompt_type")
             .and_then(|v| v.as_str())
-            .unwrap_or("permission");
-        if prompt_type != "permission" {
-            return RpcResponse::err(
-                id,
-                codes::INVALID_PARAMS,
-                format!("unsupported prompt_type: {prompt_type}"),
-            );
-        }
-        let decision: runtime::agent::PermissionDecision = match params
-            .get("decision")
-            .cloned()
-            .map(serde_json::from_value)
-        {
-            Some(Ok(d)) => d,
-            Some(Err(e)) => {
-                return RpcResponse::err(id, codes::INVALID_PARAMS, format!("bad decision: {e}"))
+            .unwrap_or(crate::rpc::PROMPT_TYPE_PERMISSION);
+        let answer = match prompt_type {
+            crate::rpc::PROMPT_TYPE_PERMISSION => match parse_param(&params, "decision") {
+                Ok(d) => crate::session_pool::PromptAnswer::Permission(d),
+                Err(e) => return RpcResponse::err(id, codes::INVALID_PARAMS, e),
+            },
+            crate::rpc::PROMPT_TYPE_QUESTION => match parse_param(&params, "answer") {
+                Ok(a) => crate::session_pool::PromptAnswer::Question(a),
+                Err(e) => return RpcResponse::err(id, codes::INVALID_PARAMS, e),
+            },
+            other => {
+                return RpcResponse::err(
+                    id,
+                    codes::INVALID_PARAMS,
+                    format!("unsupported prompt_type: {other}"),
+                )
             }
-            None => return RpcResponse::err(id, codes::INVALID_PARAMS, "missing decision"),
         };
 
         match self
             .pool
-            .respond_to_prompt(&session_id, prompt_id.clone(), decision)
+            .respond_to_prompt(&session_id, prompt_id.clone(), answer)
             .await
         {
             Ok(()) => RpcResponse::ok(id, serde_json::json!({"prompt_id": prompt_id})),
-            Err(e) => RpcResponse::err(id, codes::SESSION_NOT_FOUND, e),
+            Err((code, message)) => RpcResponse::err(id, code, message),
         }
+    }
+}
+
+/// `params[name]`, parsed; the message says which of missing or malformed.
+fn parse_param<T: serde::de::DeserializeOwned>(
+    params: &serde_json::Value,
+    name: &str,
+) -> Result<T, String> {
+    match params.get(name).cloned().map(serde_json::from_value) {
+        Some(Ok(v)) => Ok(v),
+        Some(Err(e)) => Err(format!("bad {name}: {e}")),
+        None => Err(format!("missing {name}")),
     }
 }
 
