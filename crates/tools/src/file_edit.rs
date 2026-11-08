@@ -147,15 +147,18 @@ impl Tool for FileEditTool {
                 ValidationResult::err("file_path must not be empty", 1)
             }
             Ok(p) => {
-                // **P (read-before-edit)**: staleness check — file must have been
-                // Read before it can be Edited.
-                let resolved = if Path::new(&p.file_path).is_absolute() {
-                    PathBuf::from(&p.file_path)
-                } else {
-                    ctx.cwd.join(&p.file_path)
-                };
-                let resolved = crate::security::normalize_path_lexically(&resolved);
-                if let Some(msg) = ctx.session.check_read_staleness(&resolved) {
+                if let Err(e) =
+                    permissions::path_safety::check_requested_path(Path::new(&p.file_path))
+                {
+                    return ValidationResult::err(e.to_string(), 9);
+                }
+                let target = crate::security::resolve_write_target(
+                    &p.file_path,
+                    &ctx.cwd,
+                    &*ctx.exec.filesystem,
+                )
+                .await;
+                if let Some(msg) = ctx.session.check_read_staleness(&target) {
                     return ValidationResult::err(msg, 8);
                 }
 
@@ -205,13 +208,13 @@ impl Tool for FileEditTool {
         // 1. 路径安全（与 Write 同款）
         if let Ok(parsed) = serde_json::from_value::<FileEditInput>(input.clone()) {
             let requested = PathBuf::from(&parsed.file_path);
-            let path = if requested.is_absolute() {
-                PathBuf::from(parsed.file_path)
-            } else {
-                ctx.cwd.join(parsed.file_path)
-            };
-            let path = crate::security::normalize_path_lexically(&path);
-            let path = ctx.exec.filesystem.canonicalize_best_effort(&path).await;
+            let target = crate::security::resolve_write_target(
+                &parsed.file_path,
+                &ctx.cwd,
+                &*ctx.exec.filesystem,
+            )
+            .await;
+            let path = ctx.exec.filesystem.canonicalize_best_effort(&target).await;
             let policy = crate::security::write_policy(ctx).await;
             match permissions::path_safety::check_write_for(&requested, &path, &policy) {
                 Ok(()) => {
@@ -248,7 +251,9 @@ impl Tool for FileEditTool {
     ) -> Result<ToolResult, ToolError> {
         let input: FileEditInput = serde_json::from_value(input)?;
         let (file_path, edits) = input.into_edits()?;
-        let path = resolve_path(&file_path, &ctx.cwd);
+        let path =
+            crate::security::resolve_write_target(&file_path, &ctx.cwd, &*ctx.exec.filesystem)
+                .await;
 
         // **P1 **: snapshot before mutate so /rewind can restore.
         if let Some(snapshot) = &ctx.snapshot_file {
@@ -274,15 +279,6 @@ impl Tool for FileEditTool {
         let mut result = ToolResult::text(outcome.summary);
         result.structured_content = structured;
         Ok(result)
-    }
-}
-
-fn resolve_path(s: &str, cwd: &Path) -> PathBuf {
-    let p = PathBuf::from(s);
-    if p.is_absolute() {
-        p
-    } else {
-        cwd.join(p)
     }
 }
 
@@ -888,6 +884,32 @@ mod tests {
             .check_permissions(&json!({}), &ctx_in(dir.path()))
             .await;
         assert!(matches!(d, PermissionDecision::Ask { .. }));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_dotdot_after_a_symlink_is_judged_where_the_edit_really_lands() {
+        let dir = TempDir::new().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let (proj, outside) = (root.join("proj"), root.join("outside"));
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::create_dir_all(outside.join("sub")).unwrap();
+        std::fs::write(outside.join("x"), "a").unwrap();
+        std::fs::write(proj.join("x"), "a").unwrap();
+        std::os::unix::fs::symlink(outside.join("sub"), proj.join("link")).unwrap();
+        let input = json!({"file_path": "link/../x", "old_string": "a", "new_string": "b"});
+
+        let decision = FileEditTool.check_permissions(&input, &ctx_in(&proj)).await;
+        assert!(
+            matches!(decision, PermissionDecision::Ask { .. }),
+            "{decision:?}"
+        );
+        if matches!(decision, PermissionDecision::Allow { .. }) {
+            let _ = FileEditTool
+                .call(input, ctx_in(&proj), ProgressSender::noop("t"))
+                .await;
+        }
+        assert_eq!(std::fs::read_to_string(outside.join("x")).unwrap(), "a");
     }
 
     #[tokio::test]

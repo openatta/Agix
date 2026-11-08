@@ -1,5 +1,6 @@
 //! Tool security helpers — path validation, sandbox detection, safe guards.
 
+use base::interface::exec::FileSystem;
 use std::path::{Component, Path, PathBuf};
 
 /// Validate that a file path is within one of the allowed working directories.
@@ -71,6 +72,51 @@ pub fn canonicalize_best_effort(p: &Path) -> PathBuf {
             p.to_path_buf()
         }
     })
+}
+
+/// The file a write to `raw` lands on, for the permission check, the
+/// read-before-write check and the write itself alike.
+///
+/// The normalized spelling when it means the same file, which keeps it the
+/// key a `Read` of that spelling recorded. Otherwise — a `..` after a symlink,
+/// which the OS resolves from the link's target, not from the link — the
+/// path as the filesystem resolves it, so the write cannot land anywhere the
+/// check did not look.
+pub async fn resolve_write_target(raw: &str, cwd: &Path, fs: &dyn FileSystem) -> PathBuf {
+    let joined = cwd.join(raw);
+    let lexical = normalize_path_lexically(&joined);
+    if !contains_path_traversal(&joined) {
+        return lexical;
+    }
+    let physical = resolve_physically(&joined, fs).await;
+    if fs.canonicalize_best_effort(&lexical).await == physical {
+        lexical
+    } else {
+        physical
+    }
+}
+
+/// `path`'s deepest prefix that exists, resolved by `fs`, with the rest put
+/// back on lexically. The rest does not exist, so it holds no symlink a
+/// lexical `..` could misjudge.
+async fn resolve_physically(path: &Path, fs: &dyn FileSystem) -> PathBuf {
+    let parts: Vec<Component> = path.components().collect();
+    for split in (1..=parts.len()).rev() {
+        let prefix: PathBuf = parts[..split].iter().collect();
+        if let Ok(mut out) = fs.canonicalize(&prefix).await {
+            for part in &parts[split..] {
+                match part {
+                    Component::ParentDir => {
+                        out.pop();
+                    }
+                    Component::CurDir => {}
+                    other => out.push(other),
+                }
+            }
+            return out;
+        }
+    }
+    normalize_path_lexically(path)
 }
 
 /// The write policy for this call, with every root resolved by the same
@@ -151,6 +197,31 @@ mod tests {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/tmp"));
         let target = cwd.join("test.txt");
         assert!(validate_path_within_bounds(&target, &cwd, &[]).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_write_target_follows_the_os_through_a_symlink_before_a_dotdot() {
+        let fs = base::interface::exec::local::LocalFileSystem;
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let (proj, outside) = (root.join("proj"), root.join("outside"));
+        std::fs::create_dir_all(proj.join("src")).unwrap();
+        std::fs::create_dir_all(outside.join("sub")).unwrap();
+        std::os::unix::fs::symlink(outside.join("sub"), proj.join("link")).unwrap();
+
+        assert_eq!(
+            resolve_write_target("link/../x", &proj, &fs).await,
+            outside.join("x")
+        );
+        assert_eq!(
+            resolve_write_target("src/../a.txt", &proj, &fs).await,
+            proj.join("a.txt")
+        );
+        assert_eq!(
+            resolve_write_target("new/../b.txt", &proj, &fs).await,
+            proj.join("b.txt")
+        );
     }
 
     #[test]

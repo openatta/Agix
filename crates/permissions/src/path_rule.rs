@@ -19,8 +19,10 @@ pub struct ResolvedPath {
     /// normalized.
     pub primary: PathBuf,
     /// The same file reached another way: `~` expanded to the home
-    /// directory, or symlinks resolved. A deny or ask on any of these
-    /// applies; an allow has to match `primary`.
+    /// directory, or symlinks resolved — of the normalized path, and of the
+    /// path as written, where a `..` after a symlink climbs out of the link's
+    /// target. A deny or ask on any of these applies; an allow has to match
+    /// `primary`.
     pub aliases: Vec<PathBuf>,
 }
 
@@ -31,8 +33,11 @@ impl ResolvedPath {
         if let Some(expanded) = expand_home(raw) {
             aliases.push(normalize(&expanded));
         }
-        if let Ok(real) = std::fs::canonicalize(&primary) {
-            if real != primary {
+        for real in [
+            resolve_physically(&primary),
+            resolve_physically(&cwd.join(raw)),
+        ] {
+            if real != primary && !aliases.contains(&real) {
                 aliases.push(real);
             }
         }
@@ -119,6 +124,29 @@ fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// Where `path` lands on this machine's disk: its deepest prefix that exists,
+/// resolved by the OS, with the rest put back on lexically. The rest does not
+/// exist, so it holds no symlink a lexical `..` could misjudge.
+pub fn resolve_physically(path: &Path) -> PathBuf {
+    let parts: Vec<Component> = path.components().collect();
+    for split in (1..=parts.len()).rev() {
+        let prefix: PathBuf = parts[..split].iter().collect();
+        if let Ok(mut out) = std::fs::canonicalize(&prefix) {
+            for part in &parts[split..] {
+                match part {
+                    Component::ParentDir => {
+                        out.pop();
+                    }
+                    Component::CurDir => {}
+                    other => out.push(other),
+                }
+            }
+            return out;
+        }
+    }
+    normalize(path)
+}
+
 fn normalize(p: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for c in p.components() {
@@ -173,6 +201,21 @@ mod tests {
             let r = ResolvedPath::new(link.to_str().unwrap(), Path::new("/"));
             assert!(r.aliases.contains(&std::fs::canonicalize(&real).unwrap()));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dotdot_after_a_symlink_carries_where_it_really_lands_as_an_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let (proj, outside) = (root.join("proj"), root.join("outside"));
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::create_dir_all(outside.join("sub")).unwrap();
+        std::os::unix::fs::symlink(outside.join("sub"), proj.join("link")).unwrap();
+
+        let r = ResolvedPath::new("link/../x", &proj);
+        assert_eq!(r.primary, proj.join("x"));
+        assert!(r.aliases.contains(&outside.join("x")), "{:?}", r.aliases);
     }
 
     #[test]

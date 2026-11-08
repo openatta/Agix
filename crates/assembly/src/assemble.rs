@@ -35,41 +35,20 @@ use tracing::{info, warn};
 use crate::config::DaemonConfig;
 use crate::session_pool::{SessionCustomizer, SessionPool, DEFAULT_PERMISSION_PROMPT_TIMEOUT};
 
-/// Allow-everything permission — **the opt-out**, no longer the default.
+/// A `Permission` that permits every call without looking at it — not even
+/// to validate its input.
 ///
-/// The original design comment here read "always-allow permission for daemon
-/// sessions (IDE plugins manage their own sandbox)". That was a real
-/// decision, not an oversight: the daemon's callers were assumed to be
-/// editor plugins that had already sandboxed the workspace themselves, so a
-/// second permission layer inside the engine would only have been friction,
-/// and nothing on the wire could answer a prompt anyway.
-///
-/// **That boundary moved on purpose.** Two things changed underneath it.
-/// First, the daemon grew a real answer channel — `session.respondToPrompt`
-/// plus the `kind:"prompt"` stream frame — so "stop and ask" is now
-/// expressible over JSON-RPC instead of being a dead end. Second, the
-/// caller population stopped being "editor plugins we shipped": anything
-/// that can open the socket gets a fully-tooled agent with Bash and file
-/// writes, and "the host sandboxes it" became an assumption the daemon was
-/// making on the host's behalf rather than one the host had stated.
-///
-/// So the default is now `PermissionMode::Default` (ask), and a host that
-/// genuinely does sandbox the daemon states so explicitly — either
-/// `"permission_mode": "bypassPermissions"` in any settings.json tier
-/// (daemon-wide) or `options.permission_mode: "bypassPermissions"` on
-/// `session.run_turn` (one session). Both resolve to *this* instance; see
-/// `daemon::session_pool::resolve_session_permission` and
+/// Not the default for anything. A daemon session asks unless its settings
+/// say otherwise (`PermissionMode::Default`); one whose effective mode is
+/// `bypassPermissions` runs the rule gate, which in that mode consults no
+/// rule at all — no deny, no protected path, no ask, no tool's own verdict —
+/// but still rejects malformed input and follows a later `EnterPlanMode`.
+/// See `daemon::session_pool::resolve_session_permission` and
 /// `docs/daemon_rpc_protocol.md`'s "权限默认值" section.
 ///
-/// Kept as a distinct type rather than folded into `RuleSetPermission`'s
-/// bypass mode because the two aren't quite the same: `PermissionGate` keeps
-/// a small bypass-immune deny list (`is_path_bypass_immune`) that still
-/// fires under `bypassPermissions`, whereas this really does permit
-/// everything — which is what "I have my own sandbox" asks for.
-///
-/// The pool holds one instance and hands it out only to sessions whose
-/// effective `permission_mode` is `bypassPermissions`; everything else gets a
-/// real `RuleSetPermission` built from the settings.
+/// A host that wants its bypass sessions to skip even input validation
+/// passes this as [`Assembly::permission`]; what it supplies there replaces
+/// the gate for those sessions only.
 pub struct AllowAllPermission;
 
 #[async_trait::async_trait]
@@ -117,8 +96,8 @@ pub struct Assembly {
     pub credentials: Option<Arc<dyn base::interface::credentials::CredentialSource>>,
     /// Where transcripts live.
     pub transcripts: Transcripts,
-    /// What a `bypassPermissions` session runs under. `None` is
-    /// [`AllowAllPermission`].
+    /// What a `bypassPermissions` session runs under in place of the rule
+    /// gate. `None` keeps the gate, which in that mode only validates input.
     pub permission: Option<Arc<dyn Permission>>,
     /// The host's last word on every session engine — see
     /// [`SessionCustomizer`].
@@ -206,16 +185,14 @@ pub async fn pool(
         Some(client) => client,
         None => default_anthropic_client(assembly.credentials.as_deref())?,
     };
-    let permission = assembly
-        .permission
-        .unwrap_or_else(|| Arc::new(AllowAllPermission));
+    let permission = assembly.permission;
     if matches!(
         config.settings.permission_mode,
         base::interface::settings::PermissionMode::BypassPermissions
     ) {
         warn!(
-            "settings.permission_mode = bypassPermissions — every tool call in every session \
-             runs unchecked; this daemon is trusting its host to sandbox it"
+            "settings.permission_mode = bypassPermissions — no permission rule is consulted for \
+             any tool call in any session; this daemon is trusting its host to sandbox it"
         );
     }
 

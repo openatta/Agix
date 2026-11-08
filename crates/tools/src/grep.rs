@@ -341,7 +341,8 @@ impl Tool for GrepTool {
 
         let mut text: String = lines.concat();
         if text.len() > MAX_OUTPUT_BYTES {
-            text.truncate(MAX_OUTPUT_BYTES);
+            let kept = base::text::truncate_at_char_boundary(&text, MAX_OUTPUT_BYTES).len();
+            text.truncate(kept);
             text.push_str("\n[output truncated]\n");
         }
         if text.is_empty() {
@@ -611,6 +612,32 @@ mod tests {
             Ok(_) => {}                     // completed before cancel took effect
             Err(ToolError::Cancelled) => {} // cancel worked
             Err(e) => panic!("unexpected error: {e:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn output_cut_at_the_size_cap_never_splits_a_multibyte_character() {
+        let line = "中".repeat(40);
+        for shift in 0..3 {
+            let dir = TempDir::new().unwrap();
+            let mut body = format!("{}{line}\n", "x".repeat(shift));
+            body.push_str(&format!("{line}\n").repeat(MAX_OUTPUT_BYTES / line.len() + 100));
+            tokio::fs::write(dir.path().join("a.txt"), body)
+                .await
+                .unwrap();
+            let r = GrepTool
+                .call(
+                    json!({"pattern": "中", "output_mode": "content", "head_limit": 0}),
+                    ctx_in(dir.path()),
+                    ProgressSender::noop("t"),
+                )
+                .await
+                .unwrap();
+            let ToolResultContent::Text(text) = r.content else {
+                panic!("text result");
+            };
+            assert!(text.ends_with("[output truncated]\n"), "shift {shift}");
+            assert!(text.len() <= MAX_OUTPUT_BYTES + "\n[output truncated]\n".len());
         }
     }
 

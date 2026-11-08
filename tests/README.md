@@ -84,9 +84,9 @@ token 用量。改了 `tests/live` 后 lint 也要带上 feature：
 | `live_unattended.rs` | `harnix` 场景、缺省权限、无人值守：项目内 Edit 与沙箱里的 Bash 照常做完，往实例授权的根之外写被拒绝且没有任何询问发给宿主；`AskUserQuestion` 与计划模式连名字都不出现 |
 | `live_context.rs` | 手动压缩由模型写摘要（`FullCompact`），压缩前给的事实之后还答得出；`session.fork` 的分叉记得分叉前的、不知道源会话之后的；带 `output_schema` 建的会话一轮以符合 schema 的 `structured_output` 结束 |
 
-**权限模式。** `LiveRun` 缺省用 `bypassPermissions`。daemon 在这个模式下不装规则引擎，deny
-规则也不生效，所以要验证规则的用例得换成 `acceptEdits` 或 `default`（`live_programs`、
-`live_unattended` 就是这样）。
+**权限模式。** `LiveRun` 缺省用 `bypassPermissions`。这个模式下一条规则都不看，deny
+规则也不生效（只剩输入校验与 `Bash` 的 OS 沙箱），所以要验证规则的用例得换成 `acceptEdits`
+或 `default`（`live_programs`、`live_unattended` 就是这样）。
 
 **断言只看结果，不看措辞。** 真实模型每次说法不同，能断言的是：盘上的文件、任务状态、
 代理记下的请求，以及只有真跑过才拿得到的值——用例里的随机令牌由脚本在运行时从输入文件

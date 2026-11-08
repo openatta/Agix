@@ -158,7 +158,7 @@ impl Tool for BashTool {
         base::tool::PermissionContentKind::ShellCommand
     }
 
-    async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {
+    async fn validate_input(&self, input: &Value, ctx: &ToolContext) -> ValidationResult {
         if input.get("run_in_background").and_then(Value::as_bool) == Some(true) {
             return ValidationResult::err(
                 "run_in_background is not supported: Bash runs in the foreground. Use the \
@@ -174,11 +174,35 @@ impl Tool for BashTool {
             Ok(p) if p.timeout_ms.unwrap_or(0) > MAX_TIMEOUT_MS => {
                 ValidationResult::err(format!("timeout_ms exceeds {} ms cap", MAX_TIMEOUT_MS), 3)
             }
-            // Block `sleep N` (N >= 2) — use Monitor tool instead for polling.
-            Ok(ref p) if is_long_sleep(&p.command) => ValidationResult::err(
-                "sleep >= 2s is blocked — use the Monitor tool for polling, or sleep 1 if you must",
-                4,
-            ),
+            Ok(ref p) if is_long_sleep(&p.command) => {
+                let running = ctx.session.running_background_task_ids();
+                if running.is_empty() {
+                    ValidationResult::err(
+                        "sleep >= 2s is blocked — use the Monitor tool for polling, or sleep 1 if \
+                         you must",
+                        4,
+                    )
+                } else {
+                    ValidationResult::err(
+                        format!("sleep >= 2s is blocked. {}", wait_with_task_wait(&running)),
+                        4,
+                    )
+                }
+            }
+            Ok(ref p) if is_sleep_loop(&p.command) => {
+                let running = ctx.session.running_background_task_ids();
+                if running.is_empty() {
+                    ValidationResult::Ok
+                } else {
+                    ValidationResult::err(
+                        format!(
+                            "a sleep loop cannot wait for background tasks. {}",
+                            wait_with_task_wait(&running)
+                        ),
+                        6,
+                    )
+                }
+            }
             Ok(_) => ValidationResult::Ok,
             Err(e) => ValidationResult::err(format!("invalid input: {e}"), 2),
         }
@@ -445,8 +469,6 @@ pub struct CmdClassification {
     pub destructive: bool,
 }
 
-/// 命令中不允许出现的字符 — `;` 链式、`&` 后台/AND、`>` `<` 重定向、
-/// `` ` `` 命令替换、`$` 变量展开/命令替换。
 /// Detect `sleep N` where N >= 2 (blocking poll patterns). Single
 /// `sleep 1` is allowed; longer sleeps should use the Monitor tool.
 fn is_long_sleep(cmd: &str) -> bool {
@@ -462,8 +484,46 @@ fn is_long_sleep(cmd: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// `|` 不在此列：pipe chain 单独检查每段内的程序是否安全。
-/// `DESTRUCTIVE_PREFIXES` 等常量仍在 `classify` 模块中使用。
+/// A `for` / `while` / `until` loop and nothing else, whose rounds only
+/// sleep (2s or more) and check or print something trivial — the shape a
+/// model reaches for to wait out background work.
+fn is_sleep_loop(cmd: &str) -> bool {
+    let trimmed = cmd.trim().trim_end_matches(';').trim_end();
+    let opens_a_loop = matches!(
+        trimmed.split_whitespace().next(),
+        Some("for" | "while" | "until")
+    );
+    if !opens_a_loop || !trimmed.ends_with("done") {
+        return false;
+    }
+    let mut sleeps = false;
+    for segment in permissions::shell::simple_commands(trimmed) {
+        let words = permissions::shell::words(&segment);
+        match words.first().map(String::as_str) {
+            Some("sleep") if is_long_sleep(&segment) => sleeps = true,
+            Some(
+                "for" | ":" | "true" | "false" | "echo" | "printf" | "test" | "[" | "[[" | "seq"
+                | "break" | "continue",
+            ) => {}
+            _ => return false,
+        }
+    }
+    sleeps
+}
+
+/// Background tasks report their end as a notice delivered once the current
+/// tool call returns, so a command that sleeps until they finish never sees
+/// them finish.
+fn wait_with_task_wait(running: &[String]) -> String {
+    let ids = serde_json::to_string(running).unwrap_or_default();
+    format!(
+        "Background tasks are still running ({}); their completion notices arrive only after \
+         this tool call returns, so sleeping here cannot see them end. Wait with TaskWait \
+         {{\"task_ids\": {ids}, \"mode\": \"all\", \"timeout_ms\": 600000}} instead.",
+        running.join(", ")
+    )
+}
+
 fn parse_classification(input: &Value) -> Option<CmdClassification> {
     let parsed = serde_json::from_value::<BashInput>(input.clone()).ok()?;
     Some(classify::classify(&parsed.command))
@@ -651,10 +711,12 @@ pub mod classify {
     /// 命令前缀分类。**保守**：未识别 → read_only=false, destructive=false（不算
     /// 安全也不算危险，走默认 ask 路径）。
     ///
-    /// Compound commands with `&&` are split and each segment classified
-    /// independently: all segments must be read-only for the whole to be
-    /// read-only; any segment destructive → whole is destructive. This allows
-    /// `cd dir && git status` to be recognized as read-only.
+    /// A command line is split into its simple commands the way the
+    /// permission rules split it ([`permissions::shell::simple_commands`]:
+    /// `;`, newline, `&`, `&&`, `||`, `|`, quote-aware) and each one is
+    /// classified on its own: all must be read-only for the line to be,
+    /// any destructive makes the line destructive. So `cd dir && git status`
+    /// is read-only and `ls` followed by `python3 x` on the next line is not.
     ///
     /// # `read_only` 的语义（2026-08-11 审计 N-3）
     ///
@@ -697,48 +759,44 @@ pub mod classify {
         // 走私写/读的命令漏成"只读"。
         let escape_hatch = has_shell_escape_hatch(trimmed);
 
-        // Does the command contain quoted strings? If so, don't split on
-        // `;` or `|` — those characters may be inside quotes (e.g.,
-        // `bash -c 'echo hello; echo world'`). `&&` is safe to split
-        // because it's almost never inside quotes.
-        let has_quotes = trimmed.contains('\'') || trimmed.contains('\"');
-        // Compound command: split on &&, ;, and | to classify each segment.
-        // Each segment is classified independently; the overall verdict is
-        // "safe only if all segments are safe" and "destructive if any
-        // segment is destructive".
-        let segments: Vec<&str> = if trimmed.contains("&&") {
-            trimmed.split("&&").collect()
-        } else if !has_quotes && trimmed.contains(';') {
-            trimmed.split(';').collect()
-        } else if !has_quotes && trimmed.contains('|') && !trimmed.contains("||") {
-            // Only split on single pipe, not || (OR is conditional/unsafe).
-            trimmed.split('|').collect()
-        } else {
-            vec![trimmed]
-        };
-        if segments.len() > 1 {
-            let mut all_read_only = true;
-            let mut any_destructive = false;
-            for seg in segments {
-                let c = classify_single(seg.trim());
-                if !c.read_only {
-                    all_read_only = false;
-                }
-                if c.destructive {
-                    any_destructive = true;
-                }
-            }
-            return CmdClassification {
-                read_only: all_read_only && !escape_hatch,
-                destructive: any_destructive,
-            };
+        let mut read_only = !escape_hatch && !has_unsplit_construct(trimmed);
+        let mut destructive = false;
+        for segment in permissions::shell::simple_commands(trimmed) {
+            let c = classify_single(&segment);
+            read_only &= c.read_only;
+            destructive |= c.destructive;
         }
-
-        let c = classify_single(trimmed);
         CmdClassification {
-            read_only: c.read_only && !escape_hatch,
-            destructive: c.destructive,
+            read_only,
+            destructive,
         }
+    }
+
+    /// Shell syntax [`permissions::shell::simple_commands`] folds into its
+    /// neighbours instead of splitting on: a subshell or brace group, `|&`,
+    /// a here-document. What runs inside them is not what the segments say,
+    /// so a line holding one is never read-only.
+    fn has_unsplit_construct(cmd: &str) -> bool {
+        let chars: Vec<char> = cmd.chars().collect();
+        let (mut in_single, mut in_double) = (false, false);
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            let next = chars.get(i + 1).copied();
+            match c {
+                '\\' if !in_single => i += 1,
+                '\'' if !in_double => in_single = !in_single,
+                '"' if !in_single => in_double = !in_double,
+                _ if in_single || in_double => {}
+                '(' | ')' => return true,
+                '{' if i == 0 || chars[i - 1] != '$' => return true,
+                '|' if next == Some('&') => return true,
+                '<' if next == Some('<') => return true,
+                _ => {}
+            }
+            i += 1;
+        }
+        false
     }
 
     /// 命令替换 / 重定向 / 进程替换的存在即取消只读资格。
@@ -1635,6 +1693,92 @@ mod tests {
         // 跨段的替换：按段分类会漏，所以整串检查必须在分段之前跑
         assert!(!read_only("cd /tmp && ls $(cat /etc/passwd)"));
         assert!(!read_only("ls | grep x > out.txt"));
+    }
+
+    #[test]
+    fn every_command_a_line_runs_must_be_read_only_for_the_line_to_be() {
+        for line in [
+            "ls\npython3 -c 'print(1)'",
+            "ls & python3 x",
+            "ls || python3 -c x",
+            "ls 'a' ; python3 x",
+            "cat 'a' | sh",
+            "(python3 x)",
+            "{ ls; python3 x; }",
+            "ls |& sh",
+            "cat <<EOF\nx\nEOF",
+        ] {
+            assert!(!read_only(line), "{line:?} must not be read-only");
+        }
+        for line in [
+            "cd x && git status",
+            "ls 'a;b' | grep -c x",
+            "grep '(foo)' src/a.rs",
+            "echo ${HOME}",
+        ] {
+            assert!(read_only(line), "{line:?} should stay read-only");
+        }
+    }
+
+    fn ctx_with_running_agent(cwd: &std::path::Path) -> ToolContext {
+        let mut ctx = ctx_in(cwd);
+        let session = base::context::SessionState::new(cwd.to_path_buf());
+        session.register_task(
+            "agent-1",
+            base::context::task::TaskType::Agent,
+            tokio_util::sync::CancellationToken::new(),
+            serde_json::Value::Null,
+        );
+        session.register_task(
+            "shell-1",
+            base::context::task::TaskType::Shell,
+            tokio_util::sync::CancellationToken::new(),
+            serde_json::Value::Null,
+        );
+        ctx.session = std::sync::Arc::new(session);
+        ctx
+    }
+
+    #[tokio::test]
+    async fn a_sleep_loop_is_turned_away_towards_task_wait_while_a_background_task_runs() {
+        let dir = TempDir::new().unwrap();
+        let busy = ctx_with_running_agent(dir.path());
+        for loop_ in [
+            "while true; do sleep 10; done",
+            "for i in $(seq 1 30); do sleep 5; echo waiting; done",
+            "until [ -f done.txt ]; do sleep 2; done",
+        ] {
+            let input = json!({ "command": loop_ });
+            match BashTool.validate_input(&input, &busy).await {
+                ValidationResult::Err(msg, 6) => {
+                    assert!(msg.contains("TaskWait"), "{msg}");
+                    assert!(msg.contains("\"agent-1\""), "{msg}");
+                    assert!(!msg.contains("shell-1"), "{msg}");
+                }
+                other => panic!("{loop_}: {other:?}"),
+            }
+            assert!(
+                matches!(
+                    BashTool.validate_input(&input, &ctx_in(dir.path())).await,
+                    ValidationResult::Ok
+                ),
+                "{loop_} with nothing running"
+            );
+        }
+
+        let input = json!({ "command": "while true; do sleep 10; make; done" });
+        assert!(matches!(
+            BashTool.validate_input(&input, &busy).await,
+            ValidationResult::Ok
+        ));
+
+        match BashTool
+            .validate_input(&json!({ "command": "sleep 30" }), &busy)
+            .await
+        {
+            ValidationResult::Err(msg, 4) => assert!(msg.contains("TaskWait"), "{msg}"),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

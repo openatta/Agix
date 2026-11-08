@@ -20,6 +20,7 @@ IMPORTANT: Don't use this tool for `find`, `grep`, `cat`, `head`, `tail`, `sed`,
 - Several commands: independent ones go in parallel Bash calls in one message; dependent ones in one call chained with `&&`; use `;` only when earlier failures don't matter. Never separate commands with newlines (newlines inside quoted strings are fine).
 - Git: prefer a new commit over amending. Before destructive operations (reset --hard, push --force, checkout --) look for a safer alternative. Never skip hooks (--no-verify) or signing (--no-gpg-sign, -c commit.gpgsign=false) unless explicitly asked; if a hook fails, fix the cause.
 - No unnecessary `sleep`: don't sleep between commands that can run now; stream a long-running process with Monitor; for "wait until done", run a command that exits when the condition holds, with a timeout that covers it; don't retry failures in a sleep loop — diagnose them; to poll an external process, use a check command (e.g. `gh run view`) rather than sleeping first.
+- Wait for background tasks (sub-agents, programs) with TaskWait, never a `sleep` loop: a task's completion notice arrives only when the current tool call returns, so a command that sleeps until the task is done never sees it finish.
 
 # Committing with git
 

@@ -142,7 +142,7 @@ async fn a_tilde_in_a_rule_means_the_home_directory() {
     let home = permissions::path_rule::resolve_pattern("~", dir.path());
     let perm = permission(
         vec![rule(RuleBehavior::Deny, "Read", "~/agix-test-creds/**")],
-        PermissionMode::BypassPermissions,
+        PermissionMode::Default,
     );
     let target = Path::new(&home).join("agix-test-creds/token");
     let o = check(
@@ -171,6 +171,33 @@ async fn a_symlink_to_a_denied_file_is_denied_too() {
         PermissionMode::Default,
     );
     let o = check(&perm, "Read", json!({"file_path": "innocent.txt"}), &cwd).await;
+    assert!(is_deny(&o), "{o:?}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_deny_on_where_a_write_really_lands_reaches_a_dotdot_after_a_symlink() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    let (proj, outside) = (root.join("proj"), root.join("outside"));
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::create_dir_all(outside.join("sub")).unwrap();
+    std::os::unix::fs::symlink(outside.join("sub"), proj.join("link")).unwrap();
+    let perm = permission(
+        vec![rule(
+            RuleBehavior::Deny,
+            "Write",
+            format!("{}/**", outside.display()),
+        )],
+        PermissionMode::Default,
+    );
+    let o = check(
+        &perm,
+        "Write",
+        json!({"file_path": "link/../x", "content": "x"}),
+        &proj,
+    )
+    .await;
     assert!(is_deny(&o), "{o:?}");
 }
 
@@ -259,7 +286,7 @@ async fn a_deny_for_one_command_reaches_it_wherever_it_sits_in_the_line() {
     let dir = tempfile::tempdir().unwrap();
     let perm = permission(
         vec![rule(RuleBehavior::Deny, "Bash", "rm:*")],
-        PermissionMode::BypassPermissions,
+        PermissionMode::Default,
     );
     for line in [
         "true; rm -rf build",

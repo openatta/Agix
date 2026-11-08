@@ -216,11 +216,35 @@ pub fn check_write(target: &Path, policy: &WritePolicy) -> Result<(), PathSafety
     check_write_for(target, target, policy)
 }
 
+/// Whether `requested` would be misread rather than resolved: an unexpanded
+/// `~`, a UNC share, a shell substitution. None of these names the file the
+/// caller means, so they are refused as bad input, before any permission is
+/// asked about — and under a mode that asks nothing.
+pub fn check_requested_path(requested: &Path) -> Result<(), PathSafetyError> {
+    let path_str = requested.to_string_lossy();
+    if path_str == "~" || path_str.starts_with("~/") || path_str.starts_with("~\\") {
+        return Err(PathSafetyError::TildeExpansion(requested.to_path_buf()));
+    }
+    if path_str.starts_with("\\\\") {
+        return Err(PathSafetyError::UncPathDetected(requested.to_path_buf()));
+    }
+    for matched in ["$(", "`"] {
+        if path_str.contains(matched) {
+            return Err(PathSafetyError::ShellExpansion {
+                matched: matched.into(),
+                path: requested.to_path_buf(),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// The same, with the two questions told apart.
 ///
-/// Steps 1–3 and 5 are about the path someone *asked for*: an unexpanded `~`,
-/// a UNC share, a shell substitution, a name whose normalization differs from
-/// what it displays as. Steps 4 and 6–8 are about the file it *resolves to*.
+/// The [`check_requested_path`] step and the normalization check are about
+/// the path someone *asked for*: an unexpanded `~`, a UNC share, a shell
+/// substitution, a name whose normalization differs from what it displays
+/// as. The rest are about the file it *resolves to*.
 ///
 /// Running the first group on a resolved path is wrong, and expensively so on
 /// macOS: `realpath` hands back the name as the filesystem stores it, which
@@ -232,23 +256,9 @@ pub fn check_write_for(
     target: &Path,
     policy: &WritePolicy,
 ) -> Result<(), PathSafetyError> {
-    // 1. Tilde 展开阻断：路径以 `~` 开头说明未展开家目录
-    //    必须在绝对路径检查之前，因为 `~/foo` 不是绝对路径（shell 未展开）
-    {
-        let path_str = requested.to_string_lossy();
-        if path_str == "~" || path_str.starts_with("~/") || path_str.starts_with("~\\") {
-            return Err(PathSafetyError::TildeExpansion(requested.to_path_buf()));
-        }
-    }
-
-    // 2. UNC / 远程路径检测：`\\server\share\...`
-    //    必须在绝对路径检查之前，因为 `\\host\share` 只在 Windows 上是绝对路径
-    {
-        let path_str = requested.to_string_lossy();
-        if path_str.starts_with("\\\\") {
-            return Err(PathSafetyError::UncPathDetected(requested.to_path_buf()));
-        }
-    }
+    // Before the absolute-path check: `~/foo` and `\\host\share` are not
+    // absolute here, and refusing them as such would hide what is wrong.
+    check_requested_path(requested)?;
 
     // 3. Unicode normalization attack detection (NFC round-trip check)
     {
@@ -271,23 +281,6 @@ pub fn check_write_for(
     for c in target.components() {
         if matches!(c, Component::ParentDir) {
             return Err(PathSafetyError::UnresolvedTraversal(target.to_path_buf()));
-        }
-    }
-
-    // 5. Shell 展开阻断：`$(...)` 与 `` ` `` 可能是注入
-    {
-        let path_str = requested.to_string_lossy();
-        if path_str.contains("$(") {
-            return Err(PathSafetyError::ShellExpansion {
-                matched: "$(".into(),
-                path: requested.to_path_buf(),
-            });
-        }
-        if path_str.contains('`') {
-            return Err(PathSafetyError::ShellExpansion {
-                matched: "`".into(),
-                path: requested.to_path_buf(),
-            });
         }
     }
 

@@ -480,7 +480,7 @@ Agent 的上下文,本来就该在一处。
 顺序在 `crates/permissions/src/gate.rs` 的模块头。规则这一步有四条约束:
 
 1. **deny 永远优先。** 一次调用命中的规则里有一条 deny 就拒绝,否则有 ask 就问,否则
-   才 allow。哪一层写的、写得多具体,都不参与裁决——项目仓库里提交的一条 allow 推不翻
+   才 allow(`bypassPermissions` 不看规则,见本节末)。哪一层写的、写得多具体,都不参与裁决——项目仓库里提交的一条 allow 推不翻
    用户自己设置里的 deny,插件贡献的、客户端经 RPC 传进来的 allow 也一样。要"大范围
    禁止、小范围例外",写法是 `dontAsk` 模式加只列允许范围的 allow,而不是一条宽 deny
    加一条窄 allow。
@@ -489,8 +489,9 @@ Agent 的上下文,本来就该在一处。
    哪一层——全局与 scene 层是 `UserSettings`,项目层是 `ProjectSettings`,local 是
    `LocalSettings`——只用来报出命中的是哪一条。
 3. **路径先规整再匹配。** 读写路径的工具,路径按会话 cwd 解析成绝对路径并去掉 `.` /
-   `..`,`~` 在规则与路径两边都展开;符号链接解析后的路径算作别名——别名上命中 deny /
-   ask 照样生效,allow 只认工具真正打开的那个路径。glob 按 gitignore 约定:`*` 不跨
+   `..`,`~` 在规则与路径两边都展开;符号链接解析后的路径算作别名——按原样写法解析的
+   也算,符号链接后面的 `..` 是从链接目标往上走的,`link/../x` 落在哪里,deny 就在哪里
+   命中。别名上命中 deny / ask 照样生效,allow 只认工具真正打开的那个路径。glob 按 gitignore 约定:`*` 不跨
    `/`,`**` 跨。`Read(...)` 规则同样作用于 `Grep` / `Glob`,`Edit(...)` 规则同样作用
    于 `Write` / `NotebookEdit`。
 4. **shell 命令逐段匹配。** `Bash(...)` 规则对命令行里的每一条简单命令分别匹配:认
@@ -502,17 +503,28 @@ Agent 的上下文,本来就该在一处。
 场景的工具白名单不在这里:它在会话注册表上就把工具拿掉了(§3.5),被拿掉的工具根本
 到不了权限这一步。
 
-例外是 `agixd` 的 `bypassPermissions` 会话:会话池不给它装 `PermissionGate`,而是用
-`Assembly.permission`(缺省放行一切),上面这些规则、§6.2 的拒写名单都不经过。要 deny 规则
-仍然算数,用 `acceptEdits`,或 `dontAsk` 加 allow 规则。
+`bypassPermissions` 一条规则都不看:deny、ask、免于 bypass 的路径(`.ssh` / `.aws`、
+`rm -rf /` 一类)、`.git` / `.agix` 的确认、工具自己的判定(含 §6.2 第 2 道的拒写名单)
+全部跳过,输入合法就放行。仍然生效的是输入校验——读后再写的过期检查、大小上限、§6.2
+第 1 道的误读路径、`Bash` 的超时上限与长 `sleep` 拦截——和 OS 沙箱:`Bash` 照样被关在
+可写根之内(`dangerously_disable_sandbox` 除外),无人值守会话也一样。`agixd` 的
+`bypassPermissions` 会话同样走这道 gate,运行中进了计划模式也照样只读;只有宿主自己给了
+`Assembly.permission` 时,才换成宿主的那一个。要 deny 规则仍然算数,用 `acceptEdits`,
+或 `dontAsk` 加 allow 规则。
+
+`acceptEdits` 只多放行只读调用:项目内的 `Edit` / `Write` 本来就由工具自己放行,项目外
+的、`.git` / `.agix` 下要确认的,在 `acceptEdits` 下照样询问——无人值守的会话里就是拒绝。
 
 ### 6.2 写路径的管控
 
 写文件走两道:
 
 1. **路径请求本身**——未展开的 `~`、UNC 路径、shell 替换、归一化与显示不一致的名字。
-   这些是关于"模型递过来的那个字符串"的。
-2. **它解析成的目标**——三份名单加上项目边界与系统目录前缀:
+   这些是关于"模型递过来的那个字符串"的。前三样会让路径被读错,算输入不合法,在工具的
+   `validate_input` 里就拒掉,任何模式都生效。
+2. **它解析成的目标**——三份名单加上项目边界与系统目录前缀。目标按会话 cwd 解析;
+   路径里有 `..` 而且跟在符号链接后面时,取文件系统解析出的真实位置,检查、读后再写的
+   比对和真正的写入用的是同一个路径:
    - 凭据(`.env*` / `id_rsa` / `.ssh` / `.aws` / `.netrc` …)
    - 不该被随手改的生成物(`.gitignore` / `Cargo.lock` / `package-lock.json`)
    - 引擎自己的配置(`settings.json` / `settings.local.json`,且在 `.agix` / `.claude` 下)
