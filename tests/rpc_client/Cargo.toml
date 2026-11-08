@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 publish = false
 description = "Typed JSON-RPC client for the Agix daemon — shared by integration tests"
+autotests = false
 
 [dependencies]
 daemon      = { workspace = true }
@@ -25,3 +26,7 @@ tempfile    = { workspace = true }
 async-stream = { workspace = true }
 uuid        = { workspace = true }
 futures     = { workspace = true }
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

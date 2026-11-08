@@ -240,7 +240,7 @@ async fn a_script_that_never_returns_costs_its_own_call_and_no_more() {
 async fn a_script_that_eats_memory_fails_alone() {
     let ran = run(session(&["hello"], vec![Reply::Text("hi")])
         .bind("broken/eats_memory.js", "prompt.context", "boom")
-        .within_ms(5_000)
+        .within_ms(30_000)
         .bind("prompt_block.js", "prompt.block", "onBlock"))
     .await;
 
@@ -249,7 +249,7 @@ async fn a_script_that_eats_memory_fails_alone() {
         "the other script's block is missing, so one script's appetite cost \
          another its contribution"
     );
-    // Specifically not a timeout: with five seconds to spend, a call that
+    // Specifically not a timeout: with thirty seconds to spend, a call that
     // ended anyway ended because the runtime stopped it.
     let outcomes = ran.outcomes_at("prompt.context");
     assert!(

@@ -415,8 +415,8 @@ Rust 1.80+。测试不需要网络,也不需要 key。
 
 ```sh
 cargo build --workspace
-cargo test  --workspace                                   # 全部离线
-cargo test  -p live --features real-model --test 'live_*' # LIVE 层,对真实模型
+cargo test  --workspace                                      # 全部离线
+cargo test  -p live --features real-model --test real_model  # LIVE 层,对真实模型
 ```
 
 六层,从单元测试到组装好的产品:各 crate 的测试;一张行为网,让真实的 `Agent` 对着写好的

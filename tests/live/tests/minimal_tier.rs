@@ -19,7 +19,7 @@ async fn the_kernel_alone_runs_a_session_and_names_what_it_lacks() -> anyhow::Re
         "AGIX_TEST_DAEMON_BIN_MINIMAL",
         "CARGO_TARGET_DIR=$PWD/target/minimal cargo build -p daemon --no-default-features\n  \
          AGIX_TEST_DAEMON_BIN_MINIMAL=$PWD/target/minimal/debug/agixd cargo test \
-         -p live --test minimal_tier -- --ignored",
+         -p live --test integration minimal_tier:: -- --ignored",
     )?;
 
     let world = World::new()?;

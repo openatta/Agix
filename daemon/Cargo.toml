@@ -6,6 +6,7 @@ rust-version = { workspace = true }
 license      = { workspace = true }
 publish      = false
 description  = "Agix daemon — JSON-RPC 2.0 over Unix socket / TCP, sample application"
+autotests    = false
 
 [[bin]]
 name = "agixd"
@@ -81,3 +82,7 @@ plugins = ["assembly/plugins"]
 plugin-compile = ["assembly/plugin-compile"]
 sandbox = ["assembly/sandbox"]
 otel = ["assembly/otel"]
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

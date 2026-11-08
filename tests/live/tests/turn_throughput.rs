@@ -9,7 +9,7 @@
 //! ```sh
 //! cargo build --release -p daemon --bin agixd
 //! AGIX_TEST_DAEMON_BIN=target/release/agixd \
-//!   cargo test --release -p live --test turn_throughput -- --ignored --nocapture
+//!   cargo test --release -p live --test integration turn_throughput:: -- --ignored --nocapture
 //! ```
 //!
 //! Each turn makes the model ask for a content Grep over a copy of this

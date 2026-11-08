@@ -12,6 +12,15 @@
 | `tests/live/tests/live_*.rs` | LIVE 层：同一套框架，模型那端换成真实模型，以二次开发者的身份黑盒地把特性用一遍 | `cargo test -p live --features real-model`，见下文「LIVE 层」 |
 | `tests/scripts/*.sh` | 构建面的断言（无插件构建里没有插件依赖等） | `tests/scripts/locked_build.sh` |
 
+一个 crate 的集成测试编成一个测试程序 `integration`：`tests/integration.rs` 把同目录的
+每个文件声明成一个模块（`autotests = false`），共用的辅助模块（如 `tests/runner/tests/support`）
+也只在那里声明一次。这样整张依赖图每个 crate 只链接一次，而不是每个文件一次；代价是新加的
+测试文件要在 `integration.rs` 里补一行 `mod`，同一程序里的测试共用一个进程。只跑其中一个
+文件，用模块名过滤：`cargo test -p daemon --test integration session_lifecycle::`。例外有三个：LIVE 层的
+`live_*` 合成另一个程序 `real_model`（要 `real-model` feature），`compare_dsh` 单独一个，
+`crates/core/tests` 的两个文件各自一个——它们动的是进程级的状态（只构建一次的 HTTP 客户端
+读到的代理环境变量、本进程领的全部进程组），和别的测试同进程就不成立。
+
 其中三条要的不是同一个 daemon：一个构建只带一个载体，所以「没有脚本引擎的构建拿到
 `scripts` 段怎么办」和「一个组件到底会不会被调起来」都只能由另一个构建回答。用例会
 说清楚怎么建、往哪个环境变量里塞：`AGIX_TEST_DAEMON_BIN_NO_CARRIER` 和
@@ -65,7 +74,7 @@ JSON-RPC 与盘上的文件跟产品打交道，和下游二次开发的用法�
 ```sh
 cargo build -p daemon                       # 另起进程的那条用例要 target/debug/agixd
 AGIX_LIVE_MODELS=deepseek-flash,deepseek-v4-flash,claude-haiku-4-5 \
-  cargo test -p live --features real-model --test 'live_*' -- --nocapture
+  cargo test -p live --features real-model --test real_model -- --nocapture
 ```
 
 `--nocapture` 会打出每一轮的耗时、用到的工具、模型的回答，以及每个用例的调用次数和
@@ -105,7 +114,7 @@ token 用量。改了 `tests/live` 后 lint 也要带上 feature：
 位置参数、关键字、跨行、常量四种，一次文本替换做不完；由 `migrate_check.py` 拿新接口的桩把每个
 服务重放一遍核对。产物用模型没见过的输入实际运行来判定；token 取 DeepSeek 在每个响应里报的数，工具调用数取这些响应里的
 `tool_use` 块，都从代理读、子 Agent 的也算在内，两边计量口径相同。它要一个
-`dsh` 启动器，所以不在 `live_*` 的通配里：
+`dsh` 启动器，所以不在 `real_model` 里，单独一个测试程序：
 
 ```sh
 npm i --prefix /some/dir @deepseek-ai/dsh

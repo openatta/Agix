@@ -4,6 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 publish = false
 description = "Agix test runner — executes .test scenario files against Agent API or Daemon"
+autotests = false
 
 [lib]
 name = "test_runner"
@@ -45,3 +46,7 @@ script-host   = { workspace = true }
 
 [dev-dependencies]
 tempfile      = { workspace = true }
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
