@@ -3763,6 +3763,49 @@ impl base::interface::elicitation::Elicitation for NoAsking {
     }
 }
 
+/// The context a call to `tool` runs with: the same for validating its input
+/// as for running it.
+fn tool_context_for(ctx: &ToolExecCtx, tool: &Arc<dyn base::tool::Tool>) -> ToolContext {
+    // Writable roots: the user's configured extras plus whatever the host
+    // accumulated by answering "allow writes here for this project" —
+    // both live on the shared `SessionState`.
+    let additional_writable_dirs = {
+        let mut dirs = ctx.session_state.additional_writable_dirs.clone();
+        dirs.extend(ctx.session_state.sandbox_allow_writes());
+        dirs
+    };
+    ToolContext {
+        cwd: ctx.cwd.clone(),
+        session_id: ctx.session_id.clone(),
+        turn_no: ctx.turn_no,
+        sandbox: sandbox_settings_from(&ctx.config),
+        cancel: ctx.cancel.clone(),
+        additional_writable_dirs,
+        snapshot_file: None,
+        effects: None,
+        running_tasks: Some(ctx.session_state.clone()),
+        dangerously_disable_sandbox: ctx.config.dangerously_disable_sandbox,
+        max_file_read_bytes: ctx.config.file_limits.max_file_read_bytes as usize,
+        // The *live* mode, not the session's opening value — plan mode is
+        // entered and left mid-session.
+        permission_mode: ctx.session_state.permission_mode(),
+        config: ctx.config.clone(),
+        session: ctx.session_state.clone(),
+        tool_use_id: ctx.tool_use_id.clone(),
+        agent: None,
+        parent_messages: None,
+        agent_depth: ctx.agent_depth,
+        events_tx: None,
+        elicitation: Some(Arc::clone(&ctx.elicitation)),
+        exec: exec_providers_from(&ctx.config),
+        dispatch: tool.needs_dispatch().then(|| {
+            Arc::new(SubCallDispatcher::new(ctx))
+                as Arc<dyn base::interface::tool_dispatch::ToolDispatch>
+        }),
+        from_code: ctx.from_code,
+    }
+}
+
 async fn execute_tool_inner(
     ctx: &ToolExecCtx,
     name: &str,
@@ -3816,6 +3859,15 @@ async fn execute_tool_inner(
     // `Agent::run(cancel)` → `process_turn` → `run_user_turn` — no new
     // plumbing needed. If nobody explicitly approved the call before the
     // session tore down, the safe default is to *not* run it.
+    // Whatever permission handler the host installed, a call whose input the
+    // tool rejects never reaches it.
+    if let base::tool::ValidationResult::Err(message, _) = tool
+        .validate_input(&input, &tool_context_for(ctx, &tool))
+        .await
+    {
+        return Err(message);
+    }
+
     use base::interface::permission::PermissionOutcome;
     match ctx
         .permission
@@ -3998,45 +4050,7 @@ async fn execute_tool_inner(
         }
     }
 
-    // Writable roots: the user's configured extras plus whatever the host
-    // accumulated by answering "allow writes here for this project" —
-    // both live on the shared `SessionState`. This was `vec![]`, which meant
-    // a project-scoped write grant could be recorded and then never consulted.
-    let additional_writable_dirs = {
-        let mut dirs = ctx.session_state.additional_writable_dirs.clone();
-        dirs.extend(ctx.session_state.sandbox_allow_writes());
-        dirs
-    };
-    let tool_ctx = ToolContext {
-        cwd: ctx.cwd.clone(),
-        session_id: ctx.session_id.clone(),
-        turn_no: ctx.turn_no,
-        sandbox: sandbox_settings_from(&ctx.config),
-        cancel: ctx.cancel.clone(),
-        additional_writable_dirs,
-        snapshot_file: None,
-        effects: None,
-        running_tasks: Some(ctx.session_state.clone()),
-        dangerously_disable_sandbox: ctx.config.dangerously_disable_sandbox,
-        max_file_read_bytes: ctx.config.file_limits.max_file_read_bytes as usize,
-        // The *live* mode, not the session's opening value — plan mode is
-        // entered and left mid-session.
-        permission_mode: ctx.session_state.permission_mode(),
-        config: ctx.config.clone(),
-        session: ctx.session_state.clone(),
-        tool_use_id: ctx.tool_use_id.clone(),
-        agent: None,
-        parent_messages: None,
-        agent_depth: ctx.agent_depth,
-        events_tx: None,
-        elicitation: Some(Arc::clone(&ctx.elicitation)),
-        exec: exec_providers_from(&ctx.config),
-        dispatch: tool.needs_dispatch().then(|| {
-            Arc::new(SubCallDispatcher::new(ctx))
-                as Arc<dyn base::interface::tool_dispatch::ToolDispatch>
-        }),
-        from_code: ctx.from_code,
-    };
+    let tool_ctx = tool_context_for(ctx, &tool);
     let input_for_post_hook = input.clone();
     let input_json_size = serde_json::to_string(&input)
         .map(|s| s.len() as u64)
@@ -5101,6 +5115,36 @@ mod tests {
         }
     }
 
+    /// Rejects every input, and records whether it ran anyway.
+    struct PickyTool {
+        ran: Arc<std::sync::atomic::AtomicBool>,
+    }
+    #[async_trait::async_trait]
+    impl base::tool::Tool for PickyTool {
+        fn name(&self) -> &str {
+            "Picky"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        async fn validate_input(
+            &self,
+            _input: &serde_json::Value,
+            _ctx: &base::tool::ToolContext,
+        ) -> base::tool::ValidationResult {
+            base::tool::ValidationResult::err("picky refuses this input", 1)
+        }
+        async fn call(
+            &self,
+            _input: serde_json::Value,
+            _ctx: base::tool::ToolContext,
+            _progress: base::tool::ProgressSender,
+        ) -> Result<base::tool::ToolResult, base::error::ToolError> {
+            self.ran.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(base::tool::ToolResult::text("picky-ran"))
+        }
+    }
+
     /// Always errors, so the failure-only lifecycle events have something to
     /// fire on.
     struct FailingTool;
@@ -5217,6 +5261,20 @@ mod tests {
             .await
             .expect("tool_execution should have been recorded");
         assert_eq!(second.kind(), "tool_execution");
+    }
+
+    #[tokio::test]
+    async fn input_the_tool_rejects_never_runs_whatever_the_permission_handler() {
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let tools = Arc::new(base::tool::InMemoryToolRegistry::new());
+        tools.register(Arc::new(PickyTool { ran: ran.clone() }));
+        let hooks_runner = Arc::new(hooks::HookRunner::new(std::collections::HashMap::new()));
+        let ctx = test_exec_ctx(tools, hooks_runner);
+
+        let result = execute_tool_with_telemetry(&ctx, "Picky", serde_json::json!({})).await;
+        let error = result.expect_err("an allow-all permission does not let invalid input through");
+        assert!(error.contains("picky refuses this input"), "{error}");
+        assert!(!ran.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[tokio::test]

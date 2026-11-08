@@ -1,6 +1,8 @@
 //! Sub-agents with a real model: foreground ones on their own models in
 //! parallel, a foreground one whose question reaches the host inside its
-//! parent's turn, and a background one a host talks to while it runs.
+//! parent's turn, a background one a host talks to while it runs, and a
+//! sleep loop that would wait out a background one blind, turned towards
+//! `TaskWait`.
 
 use std::time::Duration;
 
@@ -314,6 +316,56 @@ async fn a_foreground_sub_agents_question_reaches_the_host_inside_its_parents_tu
         |f| f["event"]["event"]["kind"] == "tool_use" && f["event"]["event"]["name"] == "Bash"
     ));
     drop(watcher);
+    run.finish().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sleep_loop_waiting_on_a_background_agent_is_turned_towards_task_wait(
+) -> anyhow::Result<()> {
+    let mut run = LiveRun::start("waiter", json!({}), Mode::InProcess).await?;
+    let token = format!("KESTREL-{}", nonce());
+    run.write_file(
+        "slow.sh",
+        &format!("i=0\nwhile [ $i -lt 6 ]; do i=$((i+1)); sleep 2; done\necho {token}\n"),
+    )?;
+    run.write_file(
+        ".agix/agents/slowpoke.md",
+        &agent_type(
+            "Runs a slow script",
+            run.config().model_at(0),
+            "Run `sh slow.sh` with Bash and answer with exactly what it prints.",
+        ),
+    )?;
+
+    let session = run.session().await?;
+    let events = run
+        .turn(
+            &session,
+            "Start one background sub-agent with the Agent tool: subagent_type slowpoke, \
+             background true, description slow, prompt \"Run the script.\". Then wait for it \
+             to finish by running exactly this Bash command: \
+             `for i in 1 2 3 4 5 6 7 8; do sleep 5; done`. If that command is refused, do what \
+             the refusal says instead. Once the sub-agent has finished, reply with exactly what \
+             it reported.",
+        )
+        .await?;
+    let refused = events
+        .tool_results
+        .iter()
+        .find(|(n, out, _)| n == "Bash" && out.contains("TaskWait"));
+    eprintln!("[live waiter] refusal: {refused:?}");
+    assert!(
+        refused.is_some(),
+        "the sleep loop was refused with a pointer to TaskWait: {:?}",
+        events.tool_results
+    );
+    assert!(
+        events.tool_uses.iter().any(|(n, _)| n == "TaskWait"),
+        "{:?}",
+        events.tool_uses
+    );
+    assert!(events.text.contains(&token), "{}", events.text);
     run.finish().await;
     Ok(())
 }
