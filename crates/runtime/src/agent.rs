@@ -1134,8 +1134,6 @@ pub struct Builder {
     /// `FrozenContext::collect()`. Essential for deterministic replay.
     frozen: Option<base::frozen::FrozenContext>,
     wake_rx: Option<tokio::sync::mpsc::UnboundedReceiver<()>>,
-    /// The deprecated single-slot plugin seam — see [`Builder::plugin_host`].
-    plugin_host: Option<Arc<dyn crate::plugin_host::PluginHost>>,
     /// Rust plugins, in the order added — see [`Builder::plugin`].
     plugins: Vec<Arc<dyn crate::plugin::Plugin>>,
     /// The QuickJS layer, kept apart from the Rust contributions until
@@ -1224,7 +1222,6 @@ fn build_hook_runner(
     settings: &Settings,
     model: Arc<dyn Model>,
     agent_spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner>,
-    plugin_host: Option<&Arc<dyn crate::plugin_host::PluginHost>>,
     session_id: Option<String>,
 ) -> Arc<HookRunner> {
     // Key by key, not whole-map. `HooksSettings` is keyed by `HookEvent`,
@@ -1282,16 +1279,11 @@ fn build_hook_runner(
         agent_spawner,
         settings.paths.project_root(),
     ));
-    let mut runner = HookRunner::new(parsed)
+    let runner = HookRunner::new(parsed)
         .with_hooks_search_dirs(hooks_search_dirs)
         .with_subprocess_env(settings.sandbox.subprocess_env.clone())
         .with_prompt_executor(prompt_executor)
         .with_agent_executor(agent_executor);
-    if let Some(host) = plugin_host {
-        for (event, config) in host.hook_configs() {
-            runner.register_hook(event, config);
-        }
-    }
     Arc::new(runner)
 }
 
@@ -1318,7 +1310,6 @@ impl Builder {
             scene_tool_filter: None,
             frozen: None,
             wake_rx: None,
-            plugin_host: None,
             plugins: Vec::new(),
             scripts: None,
             commands_override: None,
@@ -1836,22 +1827,6 @@ impl Builder {
         self
     }
 
-    /// Inject the daemon-discovered plugin list (see
-    /// `plugin::discover_plugins`) so this session's hooks and agent types
-    /// include plugin-declared ones. Defaults to none — non-daemon callers
-    /// (tests, single-process CLI mode) are unaffected. Plugin-contributed
-    /// slash commands are *not* installed from this list — see
-    /// `commands_override` — since daemon builds one shared command
-    /// registry up front instead of per session.
-    #[deprecated(
-        since = "0.3.9",
-        note = "implement `runtime::plugin::Plugin` and add it with `Builder::plugin`"
-    )]
-    pub fn plugin_host(mut self, h: Arc<dyn crate::plugin_host::PluginHost>) -> Self {
-        self.plugin_host = Some(h);
-        self
-    }
-
     /// Inject a pre-built command registry (built once, shared across many
     /// sessions — see `daemon::SessionPool`) instead of scanning skill dirs
     /// fresh for every session. Falls back to a registry over this session's
@@ -2085,19 +2060,13 @@ impl Builder {
                 plugin.register(&plugin_session, &mut registered);
             }
         }
-        let plugin_agent_types: Vec<base::agent_type::AgentTypeDefinition> = self
-            .plugin_host
-            .iter()
-            .flat_map(|h| h.agent_types())
-            .chain(std::mem::take(&mut registered.agent_types))
-            .collect();
+        let plugin_agent_types = std::mem::take(&mut registered.agent_types);
         let agent_spawner = crate::module::LateAgentSpawner::default();
         let hooks = self.hooks.unwrap_or_else(|| {
             build_hook_runner(
                 &settings,
                 model.clone(),
                 Arc::new(agent_spawner.clone()),
-                self.plugin_host.as_ref(),
                 Some(session.session_id_str().to_string()),
             )
         });
@@ -2325,12 +2294,7 @@ impl Builder {
 
         // After the scene's tools. The same `Arc` arriving twice is not a
         // collision; a different tool under a taken name is.
-        let plugin_tools = self
-            .plugin_host
-            .iter()
-            .flat_map(|h| h.tools())
-            .chain(std::mem::take(&mut registered.tools));
-        for t in plugin_tools {
+        for t in std::mem::take(&mut registered.tools) {
             match tools.get(t.name()) {
                 Some(existing) if Arc::ptr_eq(&existing, &t) => continue,
                 Some(_) => {
@@ -3244,66 +3208,6 @@ mod tests {
         }
         let narrow = build(Arc::new(ReadOnly));
         assert_eq!(narrow.tools.names(), vec!["Read".to_string()]);
-    }
-
-    /// The deprecated seam keeps working until it is removed.
-    #[tokio::test]
-    #[allow(deprecated)]
-    async fn build_registers_the_tools_installed_plugins_export() {
-        struct OnePluginTool(Arc<dyn base::tool::Tool>);
-        impl crate::plugin_host::PluginHost for OnePluginTool {
-            fn tools(&self) -> Vec<Arc<dyn base::tool::Tool>> {
-                vec![self.0.clone()]
-            }
-            fn mcp_servers(&self) -> Vec<(String, serde_json::Value)> {
-                Vec::new()
-            }
-            fn hook_configs(&self) -> Vec<(hooks::config::HookEvent, hooks::config::HookConfig)> {
-                Vec::new()
-            }
-            fn scenes(&self) -> Vec<Arc<dyn Scene>> {
-                Vec::new()
-            }
-            fn agent_types(&self) -> Vec<base::agent_type::AgentTypeDefinition> {
-                Vec::new()
-            }
-        }
-
-        struct Exported;
-        #[async_trait::async_trait]
-        impl base::tool::Tool for Exported {
-            fn name(&self) -> &str {
-                "plugin__demo__do_thing"
-            }
-            fn input_schema(&self) -> serde_json::Value {
-                serde_json::json!({"type": "object"})
-            }
-            async fn call(
-                &self,
-                _: serde_json::Value,
-                _: base::tool::ToolContext,
-                _: base::tool::ProgressSender,
-            ) -> Result<base::tool::ToolResult, base::error::ToolError> {
-                Ok(base::tool::ToolResult::text("done"))
-            }
-        }
-
-        let exported: Arc<dyn base::tool::Tool> = Arc::new(Exported);
-        let (agent, _event_rx, _input_tx) = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
-            .model(Arc::new(DummyModel) as Arc<dyn Model>)
-            .settings(Arc::new(test_settings()))
-            .plugin_host(Arc::new(OnePluginTool(exported)))
-            .skip_warmup(true)
-            .build()
-            .expect("build should succeed");
-
-        assert!(
-            agent.tools.get("plugin__demo__do_thing").is_some(),
-            "a plugin's exported tool must be in the registry the turn loop \
-             dispatches against, found: {:?}",
-            agent.tools.names()
-        );
     }
 
     #[tokio::test]
@@ -5182,7 +5086,6 @@ mod tests {
             model,
             Arc::new(crate::module::LateAgentSpawner::default()),
             None,
-            None,
         );
         assert!(runner.is_empty());
     }
@@ -5200,7 +5103,6 @@ mod tests {
             &settings,
             model,
             Arc::new(crate::module::LateAgentSpawner::default()),
-            None,
             None,
         );
         assert!(!runner.is_empty());
@@ -5228,7 +5130,6 @@ mod tests {
             model,
             Arc::new(crate::module::LateAgentSpawner::default()),
             None,
-            None,
         );
         assert!(
             runner.has_hooks_for(hooks::HookEvent::ConfigChange),
@@ -5251,7 +5152,6 @@ mod tests {
             &settings,
             model,
             Arc::new(crate::module::LateAgentSpawner::default()),
-            None,
             None,
         );
         assert!(runner.is_empty());

@@ -8,7 +8,6 @@ pub mod event_bus;
 pub mod hook_executors;
 pub mod module;
 pub mod plugin;
-pub mod plugin_host;
 mod repeat_guard;
 pub mod steering;
 pub mod streaming;

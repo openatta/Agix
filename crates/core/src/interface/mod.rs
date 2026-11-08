@@ -60,7 +60,7 @@
 //! The engine's other replaceable contracts live in the crate that owns them
 //! and **cannot be re-exported here** without pointing a dependency edge
 //! downward: `Compactor` (`compaction`), `HistoryStore` (`history`),
-//! `PluginHost` (`runtime`), `TelemetryRecorder` (`telemetry`),
+//! `Plugin` (`runtime`), `TelemetryRecorder` (`telemetry`),
 //! `PluginResolver` (`plugin`), `AutoClassifier` (`permissions`),
 //! `McpClient` (`mcp`), `AnthropicClient` (`model`), `SearchProvider`
 //! (`tools`). Anyone looking for the full map wants the extension-point

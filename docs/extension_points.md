@@ -962,8 +962,6 @@ Assembly { plugins: vec![Arc::new(Tickets)], ..Default::default() }  // 池里�
   场景仍是 `Assembly.scenes`;MCP 服务器与 hooks 仍走配置。
 - **稳定性。** `Plugin` trait 不再加方法;新的能力只会作为 `Registrar` 的新方法出现,
   已有的插件不用改。
-- `runtime::plugin_host::PluginHost` 与 `Builder::plugin_host` 是被它取代的旧接口,标为
-  deprecated,保留到下一个版本。
 
 和下一节的 `Module` 的区别:`Module` 拿到的是会话正在构建中的部件——工具表、事件总线、
 晚绑定的服务——它跟着内核一起变,是引擎自己装配子 agent、MCP、skill 用的;对外承诺
