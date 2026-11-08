@@ -706,8 +706,6 @@ mod tests {
         assert!(check_write_resolve_symlinks(&link_path, None, &p).is_ok());
     }
 
-    // ── Unicode normalization attack detection ─────────────────────────
-
     #[test]
     fn rejects_unicode_normalization_attack() {
         let p = policy("/tmp/work");
@@ -731,8 +729,6 @@ mod tests {
             "NFC path should pass all checks"
         );
     }
-
-    // ── Intermediate symlink escape via parent dirs ────────────────────
 
     #[cfg(unix)]
     #[test]

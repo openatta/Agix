@@ -9,8 +9,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-// ── Shared types (used by ALL tools) ──
-
 /// Cross-crate, data-only view of the sandbox policy a tool should apply.
 /// Mirrors `context::config::SandboxPolicyConfig` field-for-field; `tools`
 /// converts it into its own `bash::sandbox::SandboxPolicy` at the call site.
@@ -255,8 +253,6 @@ impl ToolResult {
     }
 }
 
-// ── Unified ToolContext (legacy + v2 fields) ──
-
 #[derive(Clone)]
 pub struct ToolContext {
     pub cwd: PathBuf,
@@ -369,8 +365,6 @@ pub enum PermissionContentKind {
     /// A shell command line, matched one simple command at a time.
     ShellCommand,
 }
-
-// ── Unified Tool trait ──
 
 #[async_trait]
 pub trait Tool: Send + Sync + 'static {

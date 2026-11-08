@@ -21,7 +21,7 @@
 //!   the policy might have arrived with a plugin.
 //! * **The model asked for tools, so there is more to do.** That is the loop's
 //!   definition rather than an opinion about it — the skeleton, which stays
-//!   closed (design §5 item 7).
+//!   closed.
 //!
 //! # Asked where the judgements already happen
 //!
@@ -98,7 +98,7 @@ pub struct LimitsPolicy {
 }
 
 impl LimitsPolicy {
-    /// The lower of the two ceilings, which is the rule the loop applied.
+    /// `max_api_calls` is the lower of the two ceilings.
     pub fn new(settings_max_api_calls: u32, scene_max_api_calls: u32, max_retries: u32) -> Self {
         Self {
             max_api_calls: settings_max_api_calls.min(scene_max_api_calls),

@@ -171,8 +171,6 @@ async fn four_projects_run_one_pipeline(mode: Mode) -> anyhow::Result<()> {
     let p = Pipeline::start(mode).await?;
     let mut client = p.daemon.connect().await?;
 
-    // ── Stage A: produce ─────────────────────────────────────────────────
-    //
     // The path is relative, which is the whole point: it resolves against
     // the session's own project, and the same reply will be used again for
     // B and C without naming a directory.
@@ -196,8 +194,6 @@ async fn four_projects_run_one_pipeline(mode: Mode) -> anyhow::Result<()> {
         "A's tool call must resolve against A's own directory"
     );
 
-    // ── The review gate, and the commit ──────────────────────────────────
-    //
     // No daemon involved, deliberately. A person reads what A produced and
     // decides; the handoff to B and C is git, which is a file appearing at a
     // path they already look at. The daemon has no shared state for this and
@@ -210,8 +206,6 @@ async fn four_projects_run_one_pipeline(mode: Mode) -> anyhow::Result<()> {
         std::fs::write(vendored.join("report.json"), &produced)?;
     }
 
-    // ── Stage B and C: in parallel ───────────────────────────────────────
-    //
     // Two sessions, two connections, one daemon, at the same time. Both get
     // the same two scripted replies — the FIFO makes no promise about which
     // turn gets which — so the assertion cannot be about the answers. It is
@@ -269,7 +263,6 @@ async fn four_projects_run_one_pipeline(mode: Mode) -> anyhow::Result<()> {
         "a consumer's relative write reached the daemon's project instead of its own"
     );
 
-    // ── Stage D: verify, under another scene ─────────────────────────────
     // Two replies: the verdict, then the title `harnix` asks for after a first
     // turn. This daemon's own scene is `code`, which does not name — so a
     // name coming back at all is D's scene being asked, not the pool's.
@@ -310,8 +303,6 @@ async fn four_projects_run_one_pipeline(mode: Mode) -> anyhow::Result<()> {
         "D ran under `code`'s tool surface, not the scene it asked for: {d_tools:?}"
     );
 
-    // ── The send-back: D rejected, so B runs again ───────────────────────
-    //
     // Through a close first, which frees the running engine and leaves only
     // the transcript — the state a daemon restart or an idle eviction would
     // also leave. What comes back has to be B again: B's project, and the
@@ -324,7 +315,6 @@ async fn four_projects_run_one_pipeline(mode: Mode) -> anyhow::Result<()> {
     assert!(redo.text.contains("B-FIXED-IT"), "{redo:?}");
     p.only_saw("b-left");
 
-    // ── Four sessions, four projects, one list ───────────────────────────
     let listed = client.session_list().await?;
     let sessions = listed.result.as_ref().expect("session.list result")["sessions"]
         .as_array()
@@ -352,8 +342,6 @@ async fn four_projects_run_one_pipeline(mode: Mode) -> anyhow::Result<()> {
         );
     }
 
-    // ── An operator console, belonging to no project at all ──────────────
-    //
     // The fifth session in the same daemon, and the one that must not be
     // filed under any of the four: `project_root: null` is not "the
     // daemon's project", it is "no project", and its transcript has its own
@@ -381,8 +369,6 @@ async fn four_projects_run_one_pipeline(mode: Mode) -> anyhow::Result<()> {
         "a no-project session's transcript was filed under a project"
     );
 
-    // ── The verifier's scene is switched off ─────────────────────────────
-    //
     // An operator deactivates `harnix` while D's transcript is still on disk.
     // Reaching for D now must fail loudly: D is a harnix session, and serving
     // it under `code` — this daemon's own scene — would quietly give it a
@@ -541,8 +527,6 @@ async fn a_provider_can_be_configured_for_one_project_only(mode: Mode) -> anyhow
     Ok(())
 }
 
-// ── In this process ──────────────────────────────────────────────────────
-
 #[tokio::test]
 async fn four_projects_run_one_pipeline_here() -> anyhow::Result<()> {
     four_projects_run_one_pipeline(Mode::InProcess).await
@@ -557,8 +541,6 @@ async fn a_consumers_settings_change_reaches_it_mid_pipeline_here() -> anyhow::R
 async fn a_provider_can_be_configured_for_one_project_only_here() -> anyhow::Result<()> {
     a_provider_can_be_configured_for_one_project_only(Mode::InProcess).await
 }
-
-// ── Against a spawned daemon ─────────────────────────────────────────────
 
 /// The same three, against `agixd` as a process. A spawned daemon
 /// resolves its own paths, settings and model endpoint from a command line

@@ -32,10 +32,8 @@ impl AgentSpawner for RuntimeAgentSpawner {
         cancel: CancellationToken,
         agent_type: Option<String>,
     ) -> Result<String, Box<dyn std::error::Error + Send>> {
-        // Delegate to AgentTool::run_sub with all tools available.
-        // allowed_tools filtering is not yet implemented — the sub-agent gets
-        // the same tool pool as the parent (matching the TS reference where
-        // workers run with the full tool set unless explicitly restricted).
+        // allowed_tools filtering is not implemented — the sub-agent gets
+        // the same tool pool as the parent.
         let tools = self.agent_tool.sub_tools();
         let perm = self.agent_tool.sub_permission();
 

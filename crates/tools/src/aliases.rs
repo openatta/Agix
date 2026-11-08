@@ -1,8 +1,6 @@
 //! 一组"轻量"工具集合：要么 alias 到已有能力（Skill/Brief），要么是简单
 //! cross-platform spawn（PowerShell/REPL）。
 //!
-//! 与对应工具对齐 schema 字段名 + 语义。
-//!
 //! ## Name-collision cleanup
 //!
 //! Tool names are the model-visible identity and `InMemoryToolRegistry::get`
@@ -29,8 +27,6 @@ const MAX_POWERSHELL_TIMEOUT_MS: u64 = 600_000;
 /// REPL timeout (30s, both default and max).
 const REPL_TIMEOUT_MS: u64 = 30_000;
 
-// ============ BriefTool placeholder marker ============
-//
 // Brief 是"短消息给用户看"——本质是 AskUserQuestion 的简化形式（不强制
 // 用户回 y/n，仅显示）。Rust 直接调 effects.append_system_message。
 
@@ -99,11 +95,8 @@ impl Tool for BriefTool {
     }
 }
 
-// ============ PowerShellTool ============
-//
 // 在 PATH 上有 `pwsh`（PowerShell Core，跨平台）就可以跑；未找到时返回清晰错误。
 // Windows 上还兼容老的 `powershell.exe`（Windows PowerShell 5.x）。
-// 与 TS 同 schema：command。
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct PowerShellInput {
@@ -269,10 +262,7 @@ fn truncate_output(s: &str) -> String {
     out
 }
 
-// ============ REPLTool ============
-//
 // 跑 `python -c <expr>` / `node -e <expr>` —— 单 shot eval，不维护 REPL 状态。
-// TS 的实现可能更花哨；我们 minimal viable。
 
 #[derive(Debug, serde::Serialize, Deserialize, JsonSchema, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -396,8 +386,6 @@ mod tests {
         ToolContext::for_test(PathBuf::from("/tmp"))
     }
 
-    // ---- BriefTool ----
-
     #[tokio::test]
     async fn brief_validates_empty() {
         let tool = BriefTool;
@@ -418,8 +406,6 @@ mod tests {
             .unwrap();
         assert!(!r.is_error);
     }
-
-    // ---- PowerShell ----
 
     #[tokio::test]
     async fn powershell_runs_when_pwsh_present_or_errors_clearly() {
@@ -456,8 +442,6 @@ mod tests {
         assert!(t.len() <= MAX_OUTPUT_BYTES + 200);
         assert!(t.contains("output truncated"));
     }
-
-    // ---- REPL ----（依赖 python3 / node 安装；跑测试机器一般有 python3）
 
     #[tokio::test]
     async fn repl_python_simple_expr() {

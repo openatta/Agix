@@ -7767,9 +7767,9 @@ mod prompt_assembly_tests {
         assert!(joined.contains("skeleton"), "scene skeleton missing");
     }
 
-    /// A scene's declared ceiling binds. Resolution is `min(settings,
-    /// scene)` — whichever is stricter wins — and `run_user_turn` reads
-    /// exactly this expression into `max_calls`.
+    /// A scene's declared ceiling binds: the turn's ceiling is `min(settings,
+    /// scene)`, whichever is stricter. The rule lives in `LimitsPolicy::new`,
+    /// which the agent builder feeds these two values.
     #[test]
     fn scene_execution_params_tighten_the_api_call_ceiling() {
         let dir = tempfile::tempdir().unwrap();

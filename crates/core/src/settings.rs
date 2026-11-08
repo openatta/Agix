@@ -53,7 +53,6 @@ pub struct Settings {
     #[serde(default)]
     pub prompt_override: Option<String>,
 
-    // ── Internal component configuration ──
     /// LLM interaction recording. None = pass-through.
     #[serde(default)]
     pub recorder: Option<RecorderConfig>,

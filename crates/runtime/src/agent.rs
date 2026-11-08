@@ -2484,8 +2484,6 @@ impl Builder {
                 Arc::new(base::interface::turn_policy::LimitsPolicy::new(
                     settings.execution.max_api_calls_per_turn,
                     scene.execution_params().max_api_calls_per_turn,
-                    // Was a `const` in the turn function; the value is
-                    // unchanged, its home is not.
                     5,
                 ))
             });

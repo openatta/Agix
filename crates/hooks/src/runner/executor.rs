@@ -272,8 +272,6 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-// ---- Tests for parse_hook_response_lenient ----
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -430,8 +430,6 @@ mod tests {
         ToolContext::for_test(cwd.to_path_buf())
     }
 
-    // ── Validation tests ──
-
     #[tokio::test]
     async fn empty_command_rejected() {
         let tool = MonitorTool;
@@ -518,16 +516,12 @@ mod tests {
         );
     }
 
-    // ── Schema ──
-
     #[test]
     fn schema_is_valid_object() {
         let tool = MonitorTool;
         let schema = tool.input_schema();
         assert!(schema.is_object(), "schema should be an object");
     }
-
-    // ── Execution tests ──
 
     fn session_in(dir: &std::path::Path) -> (ToolContext, Arc<SessionState>) {
         let ctx = ctx_in(dir);

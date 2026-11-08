@@ -71,7 +71,6 @@ pub enum EffectError {
 /// 通过 [`HttpError::from_status`] 按状态码构造。
 #[derive(thiserror::Error, Clone, Debug, PartialEq, Eq)]
 pub enum HttpError {
-    // ── 4xx Client errors ──
     #[error("400 Bad Request")]
     BadRequest,
     #[error("401 Unauthorized")]
@@ -99,7 +98,6 @@ pub enum HttpError {
     #[error("429 Too Many Requests")]
     TooManyRequests,
 
-    // ── 5xx Server errors ──
     #[error("500 Internal Server Error")]
     InternalServerError,
     #[error("501 Not Implemented")]

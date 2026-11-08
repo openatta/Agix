@@ -30,10 +30,6 @@ const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// Maximum number of messages to drain per polling cycle.
 const DEFAULT_DRAIN_MAX: usize = 100;
 
-// ═══════════════════════════════════════════════════════════
-// Poller
-// ═══════════════════════════════════════════════════════════
-
 /// A running mailbox poller handle. Dropping the handle cancels the poller.
 pub struct MailboxPoller {
     /// Token used to cancel the poller task.
@@ -56,10 +52,6 @@ impl MailboxPoller {
     }
 }
 
-// ═══════════════════════════════════════════════════════════
-// Poller configuration
-// ═══════════════════════════════════════════════════════════
-
 /// Configuration for the [`MailboxPoller`].
 #[derive(Debug, Clone)]
 pub struct PollerConfig {
@@ -78,10 +70,6 @@ impl Default for PollerConfig {
     }
 }
 
-// ═══════════════════════════════════════════════════════════
-// Message handler trait
-// ═══════════════════════════════════════════════════════════
-
 /// Callback trait for processing incoming protocol messages discovered by
 /// the poller.
 ///
@@ -94,10 +82,6 @@ pub trait MessageHandler: Send + Sync + 'static {
     /// The `from` field identifies the sender agent label.
     fn handle_message(&self, from: &str, message: &ProtocolMessage);
 }
-
-// ═══════════════════════════════════════════════════════════
-// Start polling
-// ═══════════════════════════════════════════════════════════
 
 /// Start a background polling task that monitors the team mailbox for new
 /// protocol messages and dispatches them to the provided [`MessageHandler`].
@@ -197,10 +181,6 @@ fn tick(mailbox: &MailboxStore, my_label: &str, handler: &dyn MessageHandler, ma
     }
 }
 
-// ═══════════════════════════════════════════════════════════
-// Convenience: start default polling for team initialization
-// ═══════════════════════════════════════════════════════════
-
 /// Start a polling session with default configuration.
 ///
 /// This is the simplest entry point — call it during team initialisation to
@@ -212,10 +192,6 @@ pub fn start_default_polling(
 ) -> MailboxPoller {
     start_polling(mailbox, my_label, handler, PollerConfig::default())
 }
-
-// ═══════════════════════════════════════════════════════════
-// Tests
-// ═══════════════════════════════════════════════════════════
 
 #[cfg(test)]
 mod tests {

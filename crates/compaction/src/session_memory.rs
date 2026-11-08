@@ -28,8 +28,6 @@ use base::interface::model::{ModelContentBlock, ModelMessage, MessageRole};
 use crate::compact::{Compactor, CompactError, CompactResult, CompactStrategy};
 use crate::grouping::{estimate_tokens, group_by_api_round};
 
-// ── Configuration ──
-
 /// Configuration for the SessionMemory compaction strategy.
 #[derive(Debug, Clone)]
 pub struct SessionMemoryCompactConfig {
@@ -56,8 +54,6 @@ impl Default for SessionMemoryCompactConfig {
         }
     }
 }
-
-// ── Compactor ──
 
 /// A compactor that prunes old messages which have already been durably
 /// stored in the `session_memory.md` sidecar file.
@@ -141,12 +137,10 @@ impl Compactor for SessionMemoryCompactor {
         let count_before = messages.len();
         let cursor = self.last_summarized_count.load(Ordering::Acquire);
 
-        // ── Pre-conditions ──
         if cursor == 0 || count_before <= keep_rounds.max(1) {
             return Ok(self.noop_result(messages, tokens_before, count_before));
         }
 
-        // ── Find API-round boundary nearest the cursor ──
         // We never split a round, so we prune complete rounds whose messages
         // are all before `cursor`.
         let rounds = group_by_api_round(&messages);
@@ -173,7 +167,6 @@ impl Compactor for SessionMemoryCompactor {
             return Ok(self.noop_result(messages, tokens_before, count_before));
         }
 
-        // ── Token thresholds ──
         let pruned_tokens = Self::round_tokens_up_to(&rounds, effective_prune);
 
         // Must free at least min_tokens.
@@ -181,7 +174,6 @@ impl Compactor for SessionMemoryCompactor {
             return Ok(self.noop_result(messages, tokens_before, count_before));
         }
 
-        // ── Text-block threshold ──
         // Count text blocks in the pruned region.
         let pruned_msgs: Vec<&ModelMessage> = rounds[..effective_prune]
             .iter()
@@ -196,7 +188,6 @@ impl Compactor for SessionMemoryCompactor {
             return Ok(self.noop_result(messages, tokens_before, count_before));
         }
 
-        // ── Max-tokens cap ──
         // If we would free more than max_tokens, restore the innermost
         // (most recent) pruned rounds until we are within budget.
         let final_prune = if pruned_tokens > self.config.max_tokens {
@@ -216,7 +207,6 @@ impl Compactor for SessionMemoryCompactor {
             return Ok(self.noop_result(messages, tokens_before, count_before));
         }
 
-        // ── Build compacted message list ──
         let result: Vec<ModelMessage> = rounds[final_prune..]
             .iter()
             .flat_map(|r| r.messages.clone())
@@ -225,7 +215,6 @@ impl Compactor for SessionMemoryCompactor {
         let tokens_after = estimate_tokens(&result);
         let messages_after = result.len();
 
-        // ── Truncate session memory file ──
         if let Some(ref path) = self.session_memory_path {
             if let Err(e) = truncate_session_memory_file(path, self.config.max_tokens).await {
                 tracing::warn!(
@@ -236,7 +225,7 @@ impl Compactor for SessionMemoryCompactor {
             }
         }
 
-        // ── Reset cursor — the extracted messages are gone ──
+        // The summarized messages were just dropped, so the cursor restarts.
         self.last_summarized_count.store(0, Ordering::Release);
 
         Ok((
@@ -252,8 +241,6 @@ impl Compactor for SessionMemoryCompactor {
         ))
     }
 }
-
-// ── Internal helpers ──
 
 impl SessionMemoryCompactor {
     /// Build a "no work done" CompactResult, returning the original messages.
@@ -277,8 +264,6 @@ impl SessionMemoryCompactor {
     }
 }
 
-// ── Session memory file truncation ──
-
 /// Truncate the `session_memory.md` sidecar file when its body exceeds a
 /// reasonable token budget.
 ///
@@ -295,7 +280,6 @@ async fn truncate_session_memory_file(path: &Path, max_token_equivalent: usize) 
         return Ok(());
     }
 
-    // ── Parse frontmatter ──
     // The frontmatter is a YAML block delimited by two `---` lines at the
     // very start of the file.
     let (frontmatter, body) = if let Some(after_first) = content.strip_prefix("---") {
@@ -311,19 +295,16 @@ async fn truncate_session_memory_file(path: &Path, max_token_equivalent: usize) 
         (None, content)
     };
 
-    // ── Size check ──
     let max_chars = max_token_equivalent.saturating_mul(4);
     if body.len() <= max_chars {
         return Ok(());
     }
 
-    // ── Truncate body ──
     // Character-boundary aware: the early return above already established
     // `body.len() > max_chars`, so this always cuts, and session notes are
     // model-authored prose that is routinely non-ASCII.
     let truncated_body = base::text::truncate_at_char_boundary(body, max_chars);
 
-    // ── Reconstruct ──
     let new_content = if let Some(ref fm) = frontmatter {
         format!("{}\n\n{}", fm, truncated_body)
     } else {
@@ -334,15 +315,11 @@ async fn truncate_session_memory_file(path: &Path, max_token_equivalent: usize) 
     Ok(())
 }
 
-// ── Tests ──
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::compact::Compactor;
     use tempfile::TempDir;
-
-    // ── Helpers ──
 
     fn text_user(s: &str) -> ModelMessage {
         ModelMessage {
@@ -414,8 +391,6 @@ mod tests {
         c
     }
 
-    // ── Cursor / pre-condition tests ──
-
     #[tokio::test]
     async fn cursor_zero_means_noop() {
         let compactor = mk_compactor(SessionMemoryCompactConfig::default());
@@ -444,8 +419,6 @@ mod tests {
         // keep_rounds=3 means keep at least 3 rounds = 6 msgs = all
         assert_eq!(result.len(), msgs.len(), "no pruning when keep_rounds covers everything");
     }
-
-    // ── Pruning tests ──
 
     #[tokio::test]
     async fn prunes_messages_before_cursor() {
@@ -589,8 +562,6 @@ mod tests {
         );
     }
 
-    // ── Session memory file truncation ──
-
     #[tokio::test]
     async fn truncates_session_memory_file_when_over_budget() {
         let dir = TempDir::new().unwrap();
@@ -648,8 +619,6 @@ mod tests {
         assert_eq!(saved.len(), content.len(), "file should not be truncated");
     }
 
-    // ── Edge cases ──
-
     #[tokio::test]
     async fn empty_messages() {
         let compactor = mk_compactor(SessionMemoryCompactConfig::default());
@@ -672,8 +641,6 @@ mod tests {
         // With keep_rounds=1 and only 1 round, nothing should be pruned
         assert_eq!(result.len(), 2, "should keep the only round");
     }
-
-    // ── Helper ──
 
     fn cursor_reset(compactor: &SessionMemoryCompactor) -> bool {
         compactor.extracted_count() == 0

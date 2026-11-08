@@ -26,8 +26,6 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio_util::sync::CancellationToken;
 
-// ── Scripted model ──────────────────────────────────────────────────────
-
 /// An `AnthropicClient` that replays one canned SSE-event batch per call, in
 /// order, then repeats the last one forever — so an unexpected extra round
 /// trip ends the turn instead of hanging the test.
@@ -179,8 +177,6 @@ fn asking_bash_rounds(marker: &str) -> Vec<Vec<StreamEvent>> {
         text_round("all done"),
     ]
 }
-
-// ── Harness ─────────────────────────────────────────────────────────────
 
 struct ScriptedServer {
     server: Arc<DaemonServer>,
@@ -441,8 +437,6 @@ fn ask_settings_no_memory() -> Settings {
     s
 }
 
-// ── session.list / session.get identity ─────────────────────────────────
-
 /// A list a host can group by. Scene and project come from the session's own
 /// `Meta` line, so an entry answers "which project, which scene" without the
 /// caller asking `session.get` once per row — which was the only way to find
@@ -489,8 +483,6 @@ async fn a_listed_session_says_which_scene_and_project_it_belongs_to() {
 
     srv.stop().await;
 }
-
-// ── session.list counters ───────────────────────────────────────────────
 
 /// How many times a conversation has been compacted is a by-product of a
 /// write that already happened, and it reached nobody: the marker went into
@@ -558,8 +550,6 @@ async fn a_listed_session_reports_how_often_it_was_compacted() {
 
     srv.stop().await;
 }
-
-// ── session.rename ──────────────────────────────────────────────────────
 
 /// A session's name belongs to the person looking at it, and it has to
 /// survive that person closing the window. Kept beside the log rather than in
@@ -819,8 +809,6 @@ async fn an_automatic_name_survives_a_resume() {
     srv.stop().await;
 }
 
-// ── session.subscribe ───────────────────────────────────────────────────
-
 /// Opening a session that is only on disk is one call, not subscribe,
 /// recognize `SESSION_NOT_FOUND`, resume, subscribe again: the details that
 /// sequence has to get right (which scene, which project) are the ones a
@@ -891,8 +879,6 @@ async fn subscribing_with_resume_opens_a_session_that_left_memory() {
 
     srv.stop().await;
 }
-
-// ── session.history ─────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn session_history_returns_the_real_transcript() {
@@ -1059,8 +1045,6 @@ async fn session_history_is_unavailable_without_a_history_store() {
     server.shutdown_token().cancel();
     let _ = handle.await;
 }
-
-// ── session.fork ────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn session_fork_produces_an_independent_session() {
@@ -1337,8 +1321,6 @@ async fn listing_by_parent_reports_each_child_as_what_it_is() {
     srv.stop().await;
 }
 
-// ── session.resume ──────────────────────────────────────────────────────
-
 #[tokio::test]
 async fn session_resume_reattaches_and_reports_state() {
     let (srv, seen) = start_scripted_server(
@@ -1435,7 +1417,7 @@ async fn session_resume_refuses_an_unknown_id_unless_asked_to_create() {
 }
 
 /// A transcript recorded under `scene`, with nothing in it but its `Meta`
-/// line — enough for §3.4's check, which reads that line and nothing else.
+/// line — enough for the check in `docs/daemon_rpc_protocol.md` §3.4, which reads that line and nothing else.
 async fn inject_session_in_scene(srv: &ScriptedServer, scene: &str) -> base::session::SessionId {
     let sid = base::session::SessionId::new();
     srv.store
@@ -1484,7 +1466,7 @@ async fn session_resume_rejects_a_scene_mismatch() {
     srv.stop().await;
 }
 
-/// §3.4 binds every method that names a session. A guard is added per method and the newest one is the
+/// `docs/daemon_rpc_protocol.md` §3.4 binds every method that names a session. A guard is added per method and the newest one is the
 /// easiest to forget — `session.rename` in particular reads like metadata
 /// rather than like reaching into a session, and naming a conversation that
 /// belongs to another scene is how it would end up labelled in a list it does
@@ -1686,8 +1668,6 @@ async fn session_resume_infers_scene_for_a_pre_v2_meta() {
     srv.stop().await;
 }
 
-// ── session.list sidechain filtering ────────────────────────────────────
-
 /// Sidechains are hidden from the default list, and returned
 /// exactly via `parent_session_id`.
 #[tokio::test]
@@ -1769,7 +1749,7 @@ async fn session_list_excludes_sidechains_by_default_and_returns_them_via_parent
     srv.stop().await;
 }
 
-/// `SessionInfo.resumable` (§5.6): a primary session is always resumable; a
+/// `SessionInfo.resumable` (`docs/daemon_rpc_protocol.md` §3.3): a primary session is always resumable; a
 /// sidechain is resumable until it gets a `SessionEnd` marker, after which
 /// `session.list` must report it as `false` too — not just `session.resume`.
 #[tokio::test]
@@ -1828,8 +1808,6 @@ async fn session_list_reports_resumable_and_flips_it_off_after_a_terminal_marker
 
     srv.stop().await;
 }
-
-// ── session.create ──────────────────────────────────────────────────────
 
 /// A session bound to a project other than the pool's default must use
 /// *that* project's merged settings — proven functionally (the model name
@@ -2309,8 +2287,6 @@ async fn a_project_bound_session_sees_that_projects_own_agent_types() {
     srv.stop().await;
 }
 
-// ── scripts ─────────────────────────────────────────────────────────────
-
 /// A project that binds a script gets it, through the daemon, on the prompt
 /// the daemon sends.
 ///
@@ -2721,8 +2697,6 @@ async fn a_project_bound_session_keeps_its_own_settings_across_close_and_resume(
     srv.stop().await;
 }
 
-// ── session.close / session.delete cascade ──────────────────────────────
-
 async fn inject_sidechain(srv: &ScriptedServer, parent: &str) -> base::session::SessionId {
     let child_sid = base::session::SessionId::new();
     srv.store
@@ -2900,8 +2874,6 @@ async fn session_close_rejects_a_scene_mismatch() {
 
     srv.stop().await;
 }
-
-// ── scene.* ──────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn scene_list_reports_the_default_scene_as_active() {
@@ -3216,8 +3188,6 @@ async fn a_harnix_session_names_itself_on_a_daemon_whose_own_scene_does_not() {
     srv.stop().await;
 }
 
-// ── permission default = ask, end to end ────────────────────────────────
-
 /// Drive a turn on one connection while answering prompts on another — the
 /// turn's own connection is blocked streaming frames, which is exactly the
 /// shape a real client is in when a prompt arrives. `answer` is called once
@@ -3338,8 +3308,6 @@ async fn ask_default_blocks_the_tool_when_denied() {
 
     srv.stop().await;
 }
-
-// ── AskUserQuestion over the prompt channel ─────────────────────────────
 
 const ANSWERS_QUESTIONS: &str = r#","options":{"prompt_types":["permission","question"]}"#;
 
@@ -3864,8 +3832,6 @@ async fn an_unanswered_prompt_is_denied_instead_of_hanging_forever() {
     srv.stop().await;
 }
 
-// ── §5.3 一个会话同时只跑一个 turn / §3.2 场景能力 ──────────────────────
-
 /// A session runs one turn at a time, and the second caller is told so
 /// rather than being served an internal error.
 ///
@@ -4026,8 +3992,6 @@ async fn scene_list_reports_the_capability_bits() {
 
     srv.stop().await;
 }
-
-// ── §6.1/§6.3 其余方法 ──────────────────────────────────────────────────
 
 #[tokio::test]
 async fn ping_answers_without_a_session() {
@@ -4446,8 +4410,6 @@ async fn config_get_redacts_credentials_by_default() {
     srv.stop().await;
 }
 
-// ── §5.2 一条连接上的并发 ────────────────────────────────────────────────
-
 /// A prompt raised by a turn can be answered **on the connection running
 /// that turn**.
 ///
@@ -4571,8 +4533,6 @@ async fn a_turn_can_be_interrupted_from_the_connection_running_it() {
     srv.stop().await;
 }
 
-// ── a hook that ends the turn ───────────────────────────────────────────
-
 fn hooked_settings(hooks: serde_json::Value) -> Settings {
     let mut s = ask_settings_no_memory();
     s.hooks_config = Some(hooks);
@@ -4655,8 +4615,6 @@ async fn a_stop_hook_that_discontinues_still_ends_the_turn_and_frees_the_session
     srv.stop().await;
 }
 
-// ── what is on disk while a turn is still running ───────────────────────
-
 /// A step that finished is on disk before the next one starts, so a daemon
 /// killed while the model is answering loses only that answer.
 #[tokio::test]
@@ -4736,8 +4694,6 @@ async fn clear_reaches_the_transcript_and_what_follows_it_does_too() {
 
     srv.stop().await;
 }
-
-// ── frames a watching client needs ──────────────────────────────────────
 
 #[tokio::test]
 async fn thinking_reaches_the_client_as_its_own_frame() {
@@ -4897,8 +4853,6 @@ async fn a_turn_reports_how_full_the_context_is_after_its_last_call() {
 
     srv.stop().await;
 }
-
-// ── messages sent while a turn is running ───────────────────────────────
 
 /// Start a turn whose Bash call stops at a permission prompt, and return the
 /// connection it streams on together with the session and prompt ids. The
@@ -5140,8 +5094,6 @@ async fn an_interrupted_turn_hands_back_a_steered_message_it_never_read() {
     srv.stop().await;
 }
 
-// ── structured output against a host schema ────────────────────────────
-
 #[tokio::test]
 async fn structured_output_is_checked_against_the_host_schema_and_returned_on_turn_complete() {
     let (srv, seen) = start_scripted_server(
@@ -5205,8 +5157,6 @@ async fn structured_output_is_checked_against_the_host_schema_and_returned_on_tu
     srv.stop().await;
 }
 
-// ── session.compact / session.clear ─────────────────────────────────────
-
 #[tokio::test]
 async fn session_compact_compacts_a_short_conversation_on_request() {
     let (srv, _seen) = start_scripted_server(
@@ -5262,8 +5212,6 @@ async fn session_compact_compacts_a_short_conversation_on_request() {
 
     srv.stop().await;
 }
-
-// ── turn and step boundaries ────────────────────────────────────────────
 
 /// A client can draw a turn without guessing where it begins and where one
 /// model call ends: `turn_start` comes first, every call is bracketed by
@@ -5393,8 +5341,6 @@ async fn a_tool_call_is_announced_before_its_arguments_are_complete() {
     srv.stop().await;
 }
 
-// ── live frames and history tell the same story ─────────────────────────
-
 /// What a client needs from a turn, read off the live frames.
 fn reduce_frames(frames: &[serde_json::Value]) -> serde_json::Value {
     let text: String = events_of_kind(frames, "text_delta")
@@ -5494,8 +5440,6 @@ async fn the_live_frames_and_the_history_of_a_turn_agree() {
 
     srv.stop().await;
 }
-
-// ── sandbox.reap_process_groups ─────────────────────────────────────────
 
 async fn start_server_running_a_background_sleep(reap: bool) -> ScriptedServer {
     let mut settings = ask_settings_no_memory();

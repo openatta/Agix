@@ -56,8 +56,6 @@ impl SessionMemory {
         }
     }
 
-    // ── Initialization ──
-
     /// Create the `session_memory.md` file with a default header if it does
     /// not already exist. Safe to call multiple times.
     pub async fn init_session_memory(&self) -> std::io::Result<()> {
@@ -76,8 +74,6 @@ impl SessionMemory {
         tokio::fs::write(path, &header).await?;
         Ok(())
     }
-
-    // ── Extraction lifecycle ──
 
     /// Record that an extraction cycle has started by writing the current
     /// UTC timestamp into the frontmatter.
@@ -105,8 +101,6 @@ impl SessionMemory {
         Ok(())
     }
 
-    // ── Staleness ──
-
     /// Returns `true` if `current_turn - last_update_turn > 10`, meaning the
     /// session notes have not been refreshed recently enough.
     pub fn is_stale(&self, current_turn: u32) -> bool {
@@ -114,8 +108,6 @@ impl SessionMemory {
         let threshold: u32 = 10;
         current_turn.saturating_sub(last) > threshold
     }
-
-    // ── Accessors ──
 
     /// The turn number at which session memory was last updated.
     pub fn last_update_turn(&self) -> u32 {
@@ -136,8 +128,6 @@ impl SessionMemory {
         let content = tokio::fs::read_to_string(path).await?;
         Ok(Some(content))
     }
-
-    // ── Helpers ──
 
     /// Update a single frontmatter field in-place, preserving the rest of the
     /// file content. The frontmatter is a YAML block delimited by `---`.
@@ -181,8 +171,6 @@ impl SessionMemory {
         Ok(())
     }
 }
-
-// ── Helpers ──
 
 fn iso_now() -> String {
     let now = time::OffsetDateTime::now_utc();

@@ -187,10 +187,6 @@ async fn scan_cursor_mdc_files(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-// ---------------------------------------------------------------------------
-// `.agix/.imported.json` marker
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Serialize, Deserialize, Default)]
 struct ImportedMarker {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -293,10 +289,6 @@ pub async fn mark_skipped(
     };
     write_marker(cwd, &marker).await
 }
-
-// ---------------------------------------------------------------------------
-// Execution
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct ImportSummary {

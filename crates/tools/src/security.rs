@@ -166,8 +166,6 @@ pub fn read_allowed(path: &Path, ctx: &base::tool::ToolContext) -> bool {
         .any(|root| is_path_within_root(&path, &normalize_path_lexically(root)))
 }
 
-// ── Write policy types ──
-
 pub fn is_path_within_root(path: &Path, root: &Path) -> bool {
     canonicalize_best_effort(path).starts_with(canonicalize_best_effort(root))
 }

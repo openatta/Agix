@@ -1313,8 +1313,6 @@ mod tests {
         assert!(matches!(err, ToolError::NotFound(_)));
     }
 
-    // ── Bundled reference files (`files:` frontmatter) ─────────────────
-
     /// A skill with `files: [notes.md]` gets that file's content read and
     /// injected alongside the body, wrapped in a `## Bundled file:` header.
     #[tokio::test]

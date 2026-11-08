@@ -169,8 +169,6 @@ pub trait Scene: Send + Sync + 'static {
     /// Token budget configuration.
     fn token_budget(&self) -> TokenBudget;
 
-    // ── Agix-specific extensions (default noop) ──
-
     /// Build the `<system-reminder>` content injected before each turn.
     fn build_system_reminder(&self, _ctx: &ReminderContext) -> String {
         String::new()

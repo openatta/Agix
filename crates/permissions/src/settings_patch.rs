@@ -128,11 +128,10 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    /// Regression guard for the read-modify-write race: N threads appending
-    /// distinct rules to the *same* settings file concurrently must all
-    /// survive — without `WRITE_LOCK` serializing them, this reliably loses
-    /// updates (a thread reads the file before an earlier thread's rename
-    /// lands, then overwrites it on its own write).
+    /// N threads appending distinct rules to the *same* settings file
+    /// concurrently must all survive — without `WRITE_LOCK` serializing them,
+    /// a thread reads the file before an earlier thread's rename lands, then
+    /// overwrites it on its own write.
     #[test]
     fn concurrent_appends_to_the_same_file_do_not_lose_updates() {
         let dir = TempDir::new().unwrap();

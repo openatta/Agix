@@ -122,14 +122,11 @@ pub enum MemoryScope {
 ///
 /// The store spans two directories — a global one (`user_dir`) and a
 /// project-local one (`local_dir`) — and every operation must respect that
-/// split. The historical bug class here was an asymmetry: the *read* path
-/// (`load_all`) merged both directories into one flat list, while every
-/// *write* path collapsed to `user_dir`. A caller doing the natural
-/// `load_all()` → mutate → `persist_batch()` round trip therefore silently
-/// relocated every project-local memory into the global directory, and left
-/// `local_dir`'s index permanently out of sync with its files.
+/// split. The *read* path (`load_all`) merges both directories into one flat
+/// list, so the natural `load_all()` → mutate → `persist_batch()` round trip
+/// has to write each memory back where it came from.
 ///
-/// The fix threads *provenance* rather than an explicit scope argument: since
+/// Writes follow *provenance* rather than an explicit scope argument: since
 /// memory identity is the file name, the directory a memory currently lives in
 /// is recoverable from disk. `persist_batch` resolves each entry's home
 /// directory that way (see [`MemoryStore::home_dir_for`]), which keeps the
@@ -138,11 +135,10 @@ pub enum MemoryScope {
 /// extraction classifying a memory as `project`) use
 /// [`MemoryStore::persist_batch_scoped`], which overrides the resolution.
 ///
-/// The second half of the fix is that indices are never built from a
-/// caller-supplied list; [`MemoryStore::rebuild_index_from_disk`] regenerates a
-/// directory's `MEMORY.md` from the `.md` files actually in it. That makes
-/// "index ⊇ only this batch" (the MEMORY.md wipe) structurally impossible to
-/// reintroduce.
+/// Indices are never built from a caller-supplied list:
+/// [`MemoryStore::rebuild_index_from_disk`] regenerates a directory's
+/// `MEMORY.md` from the `.md` files actually in it, so an index can never
+/// shrink to just the batch that was written.
 pub struct MemoryStore {
     user_dir: PathBuf,
     local_dir: PathBuf,
@@ -396,8 +392,6 @@ impl MemoryStore {
         Ok(())
     }
 
-    // ── Internal helpers ──
-
     fn memory_dir(dir: &Path) -> PathBuf {
         dir.to_path_buf()
     }
@@ -490,8 +484,8 @@ impl MemoryStore {
         // Sanitize filename: strip path separators and parent-dir traversal
         let safe_name = sanitize_filename(&mem.name);
         let path = md.join(format!("{}.md", safe_name));
-        // Flat frontmatter format matching TS reference and parse_memory_file
-        // expectations — name/description/type at top level, not nested under
+        // Flat frontmatter format matching parse_memory_file's expectations —
+        // name/description/type at top level, not nested under
         // `metadata:`. Description is quoted because it is free-form prose that
         // routinely contains `:` (which would otherwise make the line parse as
         // a nested mapping).
@@ -834,7 +828,6 @@ pub async fn select_memories_from(
         return Vec::new();
     }
 
-    // ── Dedup filtering ──
     // 1. Exclude memories already surfaced in prior turns.
     headers.retain(|h| !already_surfaced.contains(&h.name));
     // 2. Exclude memories whose name matches a recently-used tool (ambiguity guard).
@@ -1152,10 +1145,8 @@ This memory was written before the flat-format fix."#;
         assert!(!result.contains(".."));
     }
 
-    // ── Two-directory read/write symmetry ──
-    //
-    // These cover the bug class where the read path merged `user_dir` and
-    // `local_dir` but every write path collapsed to `user_dir`.
+    // The read path merges `user_dir` and `local_dir`; every write path has
+    // to put each memory back in its own directory.
 
     #[test]
     fn all_metadata_survives_a_write_read_round_trip() {

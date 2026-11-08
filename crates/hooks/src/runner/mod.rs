@@ -100,11 +100,6 @@ impl HookRunResult {
 /// Prompt-type hook 执行器。HookRunner 持有 `Option<Arc<dyn PromptHookExecutor>>`；
 /// 不注入时 Prompt hook skip 报错 "no executor configured"。
 ///
-/// NOTE: returns `Result<String, String>` — the `String` error type is a legacy
-/// pattern inherited from the TS codebase. This is a trait method, so changing
-/// the signature would be a breaking API change. When this trait gets a v2,
-/// consider returning a proper error type (e.g. `HookExecutorError`).
-///
 /// CLI 注入一个 wrap AnthropicClient 的实现 —— hooks crate 自身**不**依赖
 /// agix-anthropic，避免循环依赖（anthropic 依赖 core，hooks 依赖 core，
 /// 双方独立扩展）。
@@ -424,9 +419,7 @@ impl HookRunner {
         self.run(HookEvent::ElicitationResult, &input).await
     }
 
-    /// 跑某事件的所有 hook。短路：第一个 `continue=false` 之后不再跑。
-    /// 跑所有 hook **in parallel** (was: sequential stop-on-block).
-    /// Aligns with TS `AsyncHookRegistry`'s `Promise.all` model.
+    /// 并行跑某事件的所有 hook。
     /// Failures of individual hooks are isolated — one slow / crashing hook
     /// doesn't block the others.
     ///

@@ -26,9 +26,6 @@ pub struct ApiRound {
 ///
 /// Tool result messages (User role with ToolResult blocks) always stay in the
 /// same round as their preceding assistant message.
-///
-/// This matches TS `groupMessagesByApiRound` where each unique assistant
-/// message.id signals a new API response boundary.
 pub fn group_by_api_round(messages: &[ModelMessage]) -> Vec<ApiRound> {
     if messages.is_empty() {
         return vec![];

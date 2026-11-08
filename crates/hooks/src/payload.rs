@@ -35,7 +35,6 @@ pub struct HookInput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delivery: Option<String>,
 
-    // ── Lifecycle events ──
     // TurnStart / TurnComplete / SessionStart / SessionEnd / SubagentStart /
     // SubagentStop / PermissionRequested / PermissionDenied. These are
     // notification-only: `HookRunner::run`'s return value is discarded at

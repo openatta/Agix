@@ -38,7 +38,7 @@ use crate::interface::elicitation::{
 #[serde(tag = "type", content = "source", rename_all = "snake_case")]
 pub enum ImportDecision {
     /// Import from exactly one of the offered sources (single-select by
-    /// design — see migration doc §3.0).
+    /// design).
     Import(crate::frozen::ImportSourceKind),
     /// User explicitly declined. Persists a `skipped` marker so the
     /// automatic path won't ask again for this project.

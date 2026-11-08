@@ -138,8 +138,6 @@ pub trait McpClient: Send + Sync {
     }
 }
 
-// -------- mock 实现（in-memory） --------
-
 /// 测试用 mock client。
 pub struct MockMcpClient {
     name: String,

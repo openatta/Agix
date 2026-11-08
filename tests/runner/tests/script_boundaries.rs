@@ -72,8 +72,6 @@ fn calls_echo(id: &'static str, say: &'static str) -> Reply {
     }
 }
 
-// ── one bad binding drops the whole set ─────────────────────────────────
-
 /// A `scripts` section is honored whole or not at all.
 ///
 /// Half a configuration is a configuration nobody wrote: the operator reads
@@ -119,8 +117,6 @@ fn a_binding_whose_file_is_missing_drops_every_other() {
         "the error must name the file: {err}"
     );
 }
-
-// ── authority follows the file ──────────────────────────────────────────
 
 /// A script from outside the project may add to the prompt and may not rewrite
 /// it — and the refusal costs it only the edit it was not allowed to make.
@@ -199,8 +195,6 @@ async fn the_operators_own_script_may_rewrite_what_it_likes() {
         "the operator's own script was refused something"
     );
 }
-
-// ── budgets ─────────────────────────────────────────────────────────────
 
 /// A script that never returns is stopped, and the turn goes on without it.
 ///
@@ -338,8 +332,6 @@ async fn the_quota_stops_a_turn_and_the_next_turn_starts_over() {
     );
 }
 
-// ── the ring sits outside the gate ──────────────────────────────────────
-
 /// A refusal from the around ring happens before anyone is asked to approve
 /// the call.
 ///
@@ -388,8 +380,6 @@ async fn a_refusal_lands_before_the_permission_question_is_asked() {
         "the tool did not ask for approval, so the case proves nothing"
     );
 }
-
-// ── shapes a point cannot act on ────────────────────────────────────────
 
 /// A message rewrite of the wrong length is discarded whole.
 ///
@@ -470,8 +460,6 @@ async fn a_contribution_cannot_take_a_kernel_block_name() {
         "the ledger does not say why the block is missing: {outcomes:?}"
     );
 }
-
-// ── when a script is read, and what a binding checks ────────────────────
 
 /// A script is read when the session is built, and not again.
 ///

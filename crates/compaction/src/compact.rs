@@ -27,8 +27,6 @@ use std::time::Instant;
 use crate::grouping::{estimate_tokens, group_by_api_round, ApiRound};
 use crate::time_based_mc::{TimeBasedMcConfig, TimeBasedMcResult};
 
-// ── Strategy types ──
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompactStrategy {
     /// Nothing was done — the conversation was already within budget.
@@ -86,8 +84,6 @@ pub enum CompactError {
     #[error("{0}")]
     Internal(String),
 }
-
-// ── Compactor trait ──
 
 /// What the aging passes may look at.
 ///
@@ -325,8 +321,6 @@ impl<C: Compactor> Compactor for OnlyAtThreshold<C> {
         None
     }
 }
-
-// ── DefaultCompactor: Snip + MicroCompact + CollapseContext ──
 
 pub struct DefaultCompactor;
 
@@ -1185,8 +1179,6 @@ mod tests {
         }
         msgs
     }
-
-    // ── the trigger judgements ──
 
     /// `rounds` rounds of "the model called Read, here is a kilobyte back".
     fn read_rounds(rounds: usize) -> Vec<ModelMessage> {

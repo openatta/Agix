@@ -1085,7 +1085,6 @@ async fn plugin_lifecycle_install_list_disable_enable_uninstall() {
     let (_server, sock, dir, handle) = start_server().await;
     let (archive_path, checksum) = build_demo_plugin_zip(dir.path(), "demo-plugin");
 
-    // ── install ──
     let resp = rpc_call(
         &sock,
         &format!(
@@ -1098,7 +1097,6 @@ async fn plugin_lifecycle_install_list_disable_enable_uninstall() {
     let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
     assert_eq!(v["result"]["success"], true, "install resp: {v}");
 
-    // ── the install reports what the plugin will contribute ──
     let d = &v["result"]["disclosure"];
     assert_eq!(d["plugin"], "demo-plugin", "install must disclose: {v}");
     assert_eq!(d["version"], "1.0.0");
@@ -1127,14 +1125,12 @@ async fn plugin_lifecycle_install_list_disable_enable_uninstall() {
         "{d}"
     );
 
-    // ── plugin.list shows it, enabled ──
     let resp = rpc_call(&sock, r#"{"jsonrpc":"2.0","method":"plugin.list","id":2}"#).await;
     let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
     let plugins = v["result"]["plugins"].as_array().unwrap();
     let demo = plugins.iter().find(|p| p["name"] == "demo-plugin").unwrap();
     assert_eq!(demo["enabled"], true);
 
-    // ── disable ──
     let resp = rpc_call(
         &sock,
         r#"{"jsonrpc":"2.0","method":"plugin.disable","id":4,"params":{"name":"demo-plugin"}}"#,
@@ -1152,7 +1148,6 @@ async fn plugin_lifecycle_install_list_disable_enable_uninstall() {
         "plugin.list still shows enabled: {demo:?}"
     );
 
-    // ── re-enable ──
     let resp = rpc_call(
         &sock,
         r#"{"jsonrpc":"2.0","method":"plugin.enable","id":7,"params":{"name":"demo-plugin"}}"#,
@@ -1161,7 +1156,6 @@ async fn plugin_lifecycle_install_list_disable_enable_uninstall() {
     let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
     assert_eq!(v["result"]["enabled"], true, "resp: {v}");
 
-    // ── uninstall ──
     let resp = rpc_call(
         &sock,
         r#"{"jsonrpc":"2.0","method":"plugin.uninstall","id":9,"params":{"name":"demo-plugin"}}"#,
@@ -1275,8 +1269,6 @@ async fn run_turn_with_malformed_session_id_and_history_store_does_not_panic() {
     _server.shutdown_token().cancel();
     let _ = handle.await;
 }
-
-// ── TCP daemon.auth handshake ───────────────────────────────────────────
 
 /// Mirrors `start_server()` but over TCP via `serve_tcp_listener` (bound
 /// separately so the test knows the OS-assigned ephemeral port before the
@@ -1457,8 +1449,6 @@ async fn serve_tcp_listener_bails_without_a_token_even_when_called_directly() {
     let err = server.serve_tcp_listener(listener).await.unwrap_err();
     assert!(err.to_string().contains("token"), "err: {err}");
 }
-
-// ── config.reload + hot-reloadable task routing ─────────────────────────
 
 #[tokio::test]
 async fn config_reload_with_no_providers_reports_ok_and_no_router() {

@@ -132,8 +132,6 @@ impl UsageAccumulator {
         }
     }
 
-    // ── Pricing ──
-
     /// Prefix-match pricing. E.g. "claude-sonnet-4-20250514" → "claude-sonnet-4".
     fn price_for(model: &str) -> (f64, f64, f64, f64) {
         for (prefix, inp, outp, cw, cr) in PRICING {

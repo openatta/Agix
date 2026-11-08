@@ -254,7 +254,6 @@ fn default_instance_name(scene: &str, scenes: &[String]) -> String {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // ── Startup profiler ────────────────────────────────────────────────────
     let perf = PerfCollector::new();
 
     tracing_subscriber::fmt()
@@ -266,7 +265,6 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    // ── Resolve scene (fails fast on an unsupported value) ──────────────
     let scene = resolve_scene(
         &cli.scene,
         &DefaultDaemonPaths::from_env(&cli.scene)
@@ -275,7 +273,6 @@ async fn main() -> anyhow::Result<()> {
     )?;
     let scope = scene.id().to_string();
 
-    // ── Resolve paths + load settings ────────────────────────────────────
     // `load_daemon_config` delegates all settings.json parsing/merging to
     // `Settings::load()` — the single canonical loader (global → scene →
     // project).
@@ -398,11 +395,9 @@ async fn main() -> anyhow::Result<()> {
         protocol_version: daemon::discovery::INSTANCE_PROTOCOL_VERSION,
         started_at: rfc3339_now(),
     };
-    // ── Startup checkpoint: config_loaded ──────────────────────────────
     let _config_load_ms = perf.checkpoint("config_loaded");
     info!(elapsed_ms = _config_load_ms, "startup: config loaded");
 
-    // ── Build the engine ───────────────────────────────────────────────
     // Every step of this — provider routing, credentials, the memory store,
     // the history layout and its migration, the pool's own arguments, and the
     // three startup steps a session is quietly worse without — lives in
@@ -422,7 +417,6 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
 
-    // ── Startup checkpoints ────────────────────────────────────────────
     // Phases the assembly performs in one call; the markers stay because the
     // startup-timing telemetry below is keyed by them.
     for phase in [
@@ -435,7 +429,6 @@ async fn main() -> anyhow::Result<()> {
         info!(elapsed_ms = elapsed, phase, "startup phase complete");
     }
 
-    // ── Cross-tool config import (process-level, once) ─────────────────
     // `daemon` is headless — no client is connected yet at this point in
     // startup, so there's nobody to synchronously ask "import from X?" the
     // way `ImportCallback` expects. Rather than wire a callback with no
@@ -471,11 +464,9 @@ async fn main() -> anyhow::Result<()> {
     // 启动后台回收
     pool.start_janitor();
 
-    // ── Startup checkpoint: pool_ready ─────────────────────────────────
     let _pool_ready_ms = perf.checkpoint("pool_ready");
     info!(elapsed_ms = _pool_ready_ms, "startup: session pool ready");
 
-    // ── Emit StartupTimingPayload ──────────────────────────────────────
     let total_startup_ms = perf.elapsed_ms() as u64;
     let checkpoints: std::collections::HashMap<String, u64> = perf
         .checkpoint_snapshot()
@@ -500,7 +491,6 @@ async fn main() -> anyhow::Result<()> {
     // (The daemon currently does not wire up the full telemetry pipeline
     //  at startup, but this demonstrates the pattern.)
 
-    // ── Start server ───────────────────────────────────────────────────
     let cancel = CancellationToken::new();
 
     // Ctrl-C, and the SIGTERM a supervisor stops a service with, shut down

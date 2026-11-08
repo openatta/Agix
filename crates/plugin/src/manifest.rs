@@ -22,8 +22,7 @@ pub const SUPPORTED_API_VERSIONS: &[&str] = &["0.1"];
 ///
 /// A deliberate subset of the engine's full event set. Two rules decide what
 /// is on it: the event must be low-frequency (a plugin runs in a fresh WASM
-/// store per call, which is what contains its failures — see the design doc's
-/// execution model), and its payload must be small enough to cross the
+/// store per call, which is what contains its failures), and its payload must be small enough to cross the
 /// sandbox boundary by value.
 ///
 /// Kept as strings because this crate does not depend on the hooks crate;

@@ -153,8 +153,6 @@ async fn on_the_machines_own_clock_the_two_runs_disagree() {
     assert_ne!(first, second);
 }
 
-// ── the one tool the script calls ──
-
 #[derive(Debug)]
 struct Echo;
 

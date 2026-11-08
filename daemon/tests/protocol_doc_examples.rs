@@ -29,8 +29,6 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio_util::sync::CancellationToken;
 
-// ── The doc side ────────────────────────────────────────────────────────
-
 fn protocol_doc() -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -178,8 +176,6 @@ fn check(
         )),
     }
 }
-
-// ── The daemon side ─────────────────────────────────────────────────────
 
 /// One canned assistant turn: says "ok" and stops. `session.run_turn` has to
 /// reach `turn_complete` for its response shape to exist at all.
@@ -345,8 +341,6 @@ async fn verify(
     assert_documented(method, &documented_result(doc, method), &actual);
     actual
 }
-
-// ── The walk ────────────────────────────────────────────────────────────
 
 /// Everything a client can reach without a session, in the order §11 walks
 /// them. `daemon.status`'s documented `"sessions": 0` is why this runs

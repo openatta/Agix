@@ -55,56 +55,42 @@ pub struct TelemetryEvent {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EventPayload {
-    // ---- session ----
     SessionStart(SessionStartPayload),
     SessionEnd(SessionEndPayload),
     ConfigLoaded(ConfigLoadedPayload),
     StartupTiming(StartupTimingPayload),
-    // ---- API ----
     ApiRequest(ApiRequestPayload),
     ApiError(ApiErrorPayload),
-    // ---- tool lifecycle ----
     ToolStart(ToolStartPayload),
     ToolExecution(ToolExecutionPayload),
     ToolCancelled(ToolCancelledPayload),
-    // ---- permissions ----
     ToolDecision(ToolDecisionPayload),
     PermissionDecision(PermissionDecisionPayload),
-    // ---- intent & user ----
     IntentClassified(IntentClassifiedPayload),
     UserPromptSubmit(UserPromptSubmitPayload),
     SlashCommandUsed(SlashCommandUsedPayload),
     InterruptSignal(InterruptSignalPayload),
-    // ---- turn lifecycle ----
     TurnStart(TurnStartPayload),
     TurnComplete(TurnCompletePayload),
     ContextWindowReport(ContextWindowReportPayload),
     ModelRoute(ModelRoutePayload),
     BudgetEnforced(BudgetEnforcedPayload),
-    // ---- compact & resume ----
     CompactAction(CompactActionPayload),
     ResumeAction(ResumeActionPayload),
-    // ---- error & resilience ----
     ErrorRecord(ErrorRecordPayload),
     ShutdownSignal(ShutdownSignalPayload),
-    // ---- MCP ----
     McpServerConnected(McpServerConnectedPayload),
     McpServerDisconnected(McpServerDisconnectedPayload),
     McpToolCall(McpToolCallPayload),
     McpConnectionError(McpConnectionErrorPayload),
-    // ---- team / multi-agent ----
     AgentSpawned(AgentSpawnedPayload),
     AgentCompleted(AgentCompletedPayload),
     TeamStageComplete(TeamStageCompletePayload),
     AgentMessage(AgentMessagePayload),
-    // ---- system ----
     MemorySnapshot(MemorySnapshotPayload),
     FileOperation(FileOperationPayload),
-    // ---- TUI ----
     TuiAction(TuiActionPayload),
-    // ---- hook ----
     HookExecution(HookExecutionPayload),
-    // ---- generic ----
     OutcomeRecord(OutcomeRecordPayload),
 }
 
@@ -155,8 +141,6 @@ impl EventPayload {
     }
 }
 
-// ---- shared enums ----
-
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CompactOutcome {
@@ -175,8 +159,6 @@ pub enum ResumeOutcome {
     Degraded,
     Failed,
 }
-
-// ---- remaining payloads ----
 
 /// 单轮开始事件的载荷。
 #[derive(Debug, Clone, Serialize)]
@@ -316,16 +298,12 @@ pub struct InterruptSignalPayload {
     pub current_tool: Option<String>,
 }
 
-// ---- redact 辅助 ----
-
 pub(crate) fn redact_string(s: &str) -> String {
     if s.is_empty() {
         return s.to_string();
     }
     "[REDACTED]".to_string()
 }
-
-// ---- 构造辅助 ----
 
 impl TelemetryEvent {
     fn new(session_id: &str, turn_no: u32, turn_id: Option<String>, payload: EventPayload) -> Self {
@@ -339,8 +317,6 @@ impl TelemetryEvent {
             payload,
         }
     }
-
-    // ---- session ----
 
     /// Session 开始。
     pub fn session_start(
@@ -382,8 +358,6 @@ impl TelemetryEvent {
         Self::new(session_id, turn_no, turn_id, EventPayload::StartupTiming(p))
     }
 
-    // ---- API ----
-
     /// API 请求成功。
     pub fn api_request(
         session_id: &str,
@@ -403,8 +377,6 @@ impl TelemetryEvent {
     ) -> Self {
         Self::new(session_id, turn_no, turn_id, EventPayload::ApiError(p))
     }
-
-    // ---- tool lifecycle ----
 
     /// 工具开始执行。
     pub fn tool_start(
@@ -436,8 +408,6 @@ impl TelemetryEvent {
         Self::new(session_id, turn_no, turn_id, EventPayload::ToolCancelled(p))
     }
 
-    // ---- permissions ----
-
     /// 权限决策（permission engine 层）。
     pub fn tool_decision(
         session_id: &str,
@@ -462,8 +432,6 @@ impl TelemetryEvent {
             EventPayload::PermissionDecision(p),
         )
     }
-
-    // ---- intent & user ----
 
     /// 意图分类。
     pub fn intent_classified(
@@ -525,8 +493,6 @@ impl TelemetryEvent {
         )
     }
 
-    // ---- turn lifecycle ----
-
     /// 单轮开始。
     pub fn turn_start(
         session_id: &str,
@@ -587,8 +553,6 @@ impl TelemetryEvent {
         )
     }
 
-    // ---- compact & resume ----
-
     /// 压缩行为。
     pub fn compact_action(
         session_id: &str,
@@ -608,8 +572,6 @@ impl TelemetryEvent {
     ) -> Self {
         Self::new(session_id, turn_no, turn_id, EventPayload::ResumeAction(p))
     }
-
-    // ---- error & resilience ----
 
     /// 错误记录。
     pub fn error_record(
@@ -635,8 +597,6 @@ impl TelemetryEvent {
             EventPayload::ShutdownSignal(p),
         )
     }
-
-    // ---- MCP ----
 
     /// MCP 服务器已连接。
     pub fn mcp_server_connected(
@@ -693,8 +653,6 @@ impl TelemetryEvent {
         )
     }
 
-    // ---- team / multi-agent ----
-
     /// Agent 已创建。
     pub fn agent_spawned(
         session_id: &str,
@@ -745,8 +703,6 @@ impl TelemetryEvent {
         Self::new(session_id, turn_no, turn_id, EventPayload::AgentMessage(p))
     }
 
-    // ---- system ----
-
     /// 内存快照。
     pub fn memory_snapshot(
         session_id: &str,
@@ -772,8 +728,6 @@ impl TelemetryEvent {
         Self::new(session_id, turn_no, turn_id, EventPayload::FileOperation(p))
     }
 
-    // ---- TUI ----
-
     /// TUI 交互动作。
     pub fn tui_action(
         session_id: &str,
@@ -784,8 +738,6 @@ impl TelemetryEvent {
         Self::new(session_id, turn_no, turn_id, EventPayload::TuiAction(p))
     }
 
-    // ---- hook ----
-
     /// Hook 执行。
     pub fn hook_execution(
         session_id: &str,
@@ -795,8 +747,6 @@ impl TelemetryEvent {
     ) -> Self {
         Self::new(session_id, turn_no, turn_id, EventPayload::HookExecution(p))
     }
-
-    // ---- generic ----
 
     /// 轻量 outcome 记录，用于尚未有专属 payload 的诊断点。
     pub fn outcome_record(
@@ -850,8 +800,6 @@ impl EventPayload {
         }
     }
 }
-
-// ---- redact impls for remaining types ----
 
 impl ErrorRecordPayload {
     pub(crate) fn redact(mut self, _policy: &crate::RedactionPolicy) -> Self {

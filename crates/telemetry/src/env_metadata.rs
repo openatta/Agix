@@ -30,8 +30,6 @@ pub struct EnvMetadata {
     #[serde(default)]
     pub is_remote: bool,
 
-    // ── Extended fields ──────────────────────────────────────────────
-
     /// Detected package manager (e.g. "npm", "yarn", "pnpm", "bun", "cargo",
     /// "pip", "poetry"), based on lockfile presence under cwd.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -106,10 +104,6 @@ pub fn collect_env_metadata() -> EnvMetadata {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════╗
-//                         Terminal detection                            ║
-// ═══════════════════════════════════════════════════════════════════════╝
-
 /// Detect the terminal emulator program.
 ///
 /// Checks `TERM_PROGRAM` (macOS terminal emulators and VS Code) first, then
@@ -130,10 +124,6 @@ fn detect_terminal() -> Option<String> {
 fn detect_terminal_type() -> Option<String> {
     std::env::var("TERM").ok().filter(|s| !s.is_empty())
 }
-
-// ═══════════════════════════════════════════════════════════════════════╗
-//                       CI / remote detection                           ║
-// ═══════════════════════════════════════════════════════════════════════╝
 
 /// Check if we're running inside a CI/CD environment.
 ///
@@ -175,10 +165,6 @@ fn is_remote_session() -> bool {
     }
     false
 }
-
-// ═══════════════════════════════════════════════════════════════════════╗
-//                          OS version                                   ║
-// ═══════════════════════════════════════════════════════════════════════╝
 
 /// Get a human-readable OS version string.
 ///
@@ -239,10 +225,6 @@ fn get_os_version() -> String {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════╗
-//                   Package manager detection                           ║
-// ═══════════════════════════════════════════════════════════════════════╝
-
 /// Detect the project package manager by walking up from `cwd` looking for
 /// recognised lockfiles / marker files.
 ///
@@ -287,10 +269,6 @@ pub fn detect_package_manager(cwd: &Path) -> Option<String> {
     None
 }
 
-// ═══════════════════════════════════════════════════════════════════════╗
-//                    Linux distro detection                             ║
-// ═══════════════════════════════════════════════════════════════════════╝
-
 /// Read `/etc/os-release` and return the Linux distribution name.
 ///
 /// Tries `NAME` first (e.g. "Ubuntu"), falls back to `ID` (e.g. "ubuntu").
@@ -322,10 +300,6 @@ fn detect_linux_distro() -> Option<String> {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════╗
-//                         WSL detection                                 ║
-// ═══════════════════════════════════════════════════════════════════════╝
-
 /// Detect whether we are running under Windows Subsystem for Linux.
 ///
 /// Checks `/proc/sys/kernel/osrelease` for a "microsoft" or "WSL" marker
@@ -353,10 +327,6 @@ fn detect_wsl() -> bool {
     std::env::var("WSL_DISTRO_NAME").is_ok()
 }
 
-// ═══════════════════════════════════════════════════════════════════════╗
-//                       VCS detection                                   ║
-// ═══════════════════════════════════════════════════════════════════════╝
-
 /// Detect the version-control system by walking up from `cwd` looking for
 /// VCS metadata directories.
 ///
@@ -383,10 +353,6 @@ pub fn detect_vcs(cwd: &Path) -> Option<String> {
     None
 }
 
-// ═══════════════════════════════════════════════════════════════════════╗
-//                       Runtime version                                 ║
-// ═══════════════════════════════════════════════════════════════════════╝
-
 /// Get the Rust compiler version via `rustc --version`.
 ///
 /// Falls back to the `RUSTC_VERSION` env var (set by some build systems) if
@@ -408,10 +374,6 @@ fn detect_runtime_version() -> String {
         .or_else(|| std::env::var("RUSTC_VERSION").ok())
         .unwrap_or_else(|| "unknown".into())
 }
-
-// ═══════════════════════════════════════════════════════════════════════╗
-//                  GPU / display / CPU / memory detection                ║
-// ═══════════════════════════════════════════════════════════════════════╝
 
 /// Detect GPU model information.
 ///
@@ -628,15 +590,9 @@ fn detect_total_memory_mb() -> Option<u64> {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════╗
-//                                Tests                                  ║
-// ═══════════════════════════════════════════════════════════════════════╝
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── Basic smoke tests ──────────────────────────────────────────────
 
     #[test]
     fn env_metadata_has_platform() {
@@ -691,8 +647,6 @@ mod tests {
         let _ = is_remote_session();
     }
 
-    // ── Extended field: rust_version ───────────────────────────────────
-
     #[test]
     fn rust_version_is_non_empty() {
         let version = detect_runtime_version();
@@ -715,8 +669,6 @@ mod tests {
         }
     }
 
-    // ── Extended field: terminal_type ──────────────────────────────────
-
     #[test]
     fn terminal_type_vs_terminal() {
         // terminal_type reads TERM; terminal reads TERM_PROGRAM then TERM.
@@ -734,8 +686,6 @@ mod tests {
             assert!(!ttype.as_ref().unwrap().is_empty());
         }
     }
-
-    // ── Extended field: package_manager ────────────────────────────────
 
     #[test]
     fn package_manager_none_in_tmpdir() {
@@ -802,8 +752,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // ── Extended field: vcs ───────────────────────────────────────────
-
     #[test]
     fn vcs_none_in_tmpdir() {
         let tmp = std::env::temp_dir();
@@ -848,21 +796,15 @@ mod tests {
         );
     }
 
-    // ── Extended field: linux_distro (platform-dependent) ──────────────
-
     #[test]
     fn linux_distro_does_not_panic() {
         let _ = detect_linux_distro();
     }
 
-    // ── Extended field: is_wsl ─────────────────────────────────────────
-
     #[test]
     fn wsl_detection_does_not_panic() {
         let _ = detect_wsl();
     }
-
-    // ── collect_env_metadata includes all extended fields ──────────────
 
     #[test]
     fn extended_fields_populated() {
@@ -912,8 +854,6 @@ mod tests {
             let _ = obj.get(key);
         }
     }
-
-    // ── New hardware metadata fields ──────────────────────────────────────
 
     #[test]
     fn cpu_count_is_positive() {

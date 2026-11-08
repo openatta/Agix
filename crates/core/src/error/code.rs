@@ -19,7 +19,6 @@ use std::fmt;
 /// - `9xxx` — 内部 / 未分类
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorCode {
-    // ── 1xxx: 通用 ──
     /// 输入格式不符合预期
     InvalidInput = 1001,
     /// 缺少必填参数
@@ -33,7 +32,6 @@ pub enum ErrorCode {
     /// 不支持的配置
     UnsupportedConfig = 1006,
 
-    // ── 2xxx: 工具 ──
     /// 工具未找到
     ToolNotFound = 2001,
     /// 工具输入校验失败
@@ -43,7 +41,6 @@ pub enum ErrorCode {
     /// 工具被沙箱拒绝
     ToolSandboxed = 2004,
 
-    // ── 3xxx: 权限 ──
     /// 权限拒绝
     PermissionDenied = 3001,
     /// 路径不在允许范围内
@@ -51,7 +48,6 @@ pub enum ErrorCode {
     /// 网络访问被策略阻止
     NetworkBlocked = 3003,
 
-    // ── 4xxx: 网络 / API ──
     /// HTTP 客户端错误 (4xx)
     HttpClientError = 4001,
     /// HTTP 服务端错误 (5xx)
@@ -65,7 +61,6 @@ pub enum ErrorCode {
     /// DNS / TCP 连接失败
     ConnectionFailed = 4006,
 
-    // ── 5xxx: 文件 / IO ──
     /// 文件不存在
     FileNotFound = 5001,
     /// 文件读取失败
@@ -79,7 +74,6 @@ pub enum ErrorCode {
     /// 磁盘空间不足
     DiskFull = 5006,
 
-    // ── 6xxx: 会话 ──
     /// 会话不存在
     SessionNotFound = 6001,
     /// 会话已过期
@@ -89,7 +83,6 @@ pub enum ErrorCode {
     /// JSONL 格式错误
     TranscriptCorrupt = 6004,
 
-    // ── 7xxx: 模型 / LLM ──
     /// 模型不支持的参数
     ModelUnsupportedParam = 7001,
     /// token 超出上下文窗口
@@ -101,7 +94,6 @@ pub enum ErrorCode {
     /// 流意外终止
     StreamAborted = 7005,
 
-    // ── 8xxx: MCP ──
     /// MCP 服务连接失败
     McpConnectFailed = 8001,
     /// MCP 工具调用失败
@@ -109,7 +101,6 @@ pub enum ErrorCode {
     /// MCP OAuth 流程失败
     McpOAuthFailed = 8003,
 
-    // ── 9xxx: 内部 ──
     /// 内部状态不一致
     InternalInconsistency = 9001,
     /// channel 发送端断开

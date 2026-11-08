@@ -5,8 +5,8 @@
 //! - [`mailbox`] — inter-agent message passing
 //! - [`registry`] — shared team state (`TeamList`/`TeamDelete` see what `TeamCreate` made)
 //! - [`prompt`] — coordinator system prompt
-//! - [`persist`] — on-disk team.json/state.json/events.jsonl (§6.3)
-//! - [`lock`] — `<project>/.agix/teams/.lock` (§6.5)
+//! - [`persist`] — on-disk team.json/state.json/events.jsonl
+//! - [`lock`] — `<project>/.agix/teams/.lock`
 
 pub mod coordinator;
 pub mod lock;

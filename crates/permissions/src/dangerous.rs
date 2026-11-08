@@ -248,8 +248,6 @@ mod tests {
         }
     }
 
-    // ── Broad allow on dangerous tools (Critical) ──
-
     #[test]
     fn unrestricted_bash_allow_is_critical() {
         let dangers = detect_dangerous_rules(&[rule(
@@ -311,8 +309,6 @@ mod tests {
         assert_eq!(dangers[0].severity, Severity::Critical);
     }
 
-    // ── Safe / not flagged ──
-
     #[test]
     fn deny_rules_not_dangerous() {
         let dangers = detect_dangerous_rules(&[rule(
@@ -370,8 +366,6 @@ mod tests {
         )]);
         assert!(dangers.is_empty());
     }
-
-    // ── Destructive subcommand prefix wildcards (Warning) ──
 
     #[test]
     fn bash_rm_wildcard_is_warning() {
@@ -446,8 +440,6 @@ mod tests {
         assert!(dangers.is_empty());
     }
 
-    // ── Mixed rules ──
-
     #[test]
     fn multiple_dangers_detected() {
         let rules = vec![
@@ -475,8 +467,6 @@ mod tests {
         assert_eq!(dangers[1].severity, Severity::Warning);
     }
 
-    // ── Edge cases ──
-
     #[test]
     fn empty_rules_produce_no_dangers() {
         let rules: Vec<PermissionRule> = vec![];
@@ -495,8 +485,6 @@ mod tests {
         let dangers = detect_dangerous_rules(&rules);
         assert!(dangers.is_empty());
     }
-
-    // ── Formatting ──
 
     #[test]
     fn format_dangerous_warning_output() {

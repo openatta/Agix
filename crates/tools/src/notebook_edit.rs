@@ -5,8 +5,6 @@
 //! - **insert**: 在指定 index 插入新 cell
 //! - **edit**: 替换指定 index cell 的 source
 //! - **delete**: 删指定 index cell
-//!
-//! 与 NotebookEditTool schema 对齐。
 
 use async_trait::async_trait;
 use base::error::ToolError;

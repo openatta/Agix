@@ -633,8 +633,6 @@ impl McpManager {
         format!("MCP server '{server}' not found")
     }
 
-    // ── Prompts as slash commands ──
-
     /// Look up a collected prompt by its slash command name
     /// (`mcp__<server>__<prompt>`).
     pub fn find_prompt_command(&self, command: &str) -> Option<&McpPromptEntry> {
@@ -703,8 +701,6 @@ impl McpManager {
             }
         }
     }
-
-    // ── Resources as `@` references ──
 
     /// Read one resource and flatten it to text. `Err` carries a
     /// human-readable reason; nothing here panics or propagates.
@@ -1077,8 +1073,6 @@ mod tests {
         assert_eq!(m.tool_count(), 0);
     }
 
-    // ── server_instructions bounds ──
-
     #[test]
     fn server_instructions_are_bounded_per_server() {
         let long = "x".repeat(MAX_SERVER_INSTRUCTION_BYTES * 3);
@@ -1132,8 +1126,6 @@ mod tests {
         let out = m.server_instructions();
         assert!(out[0].instructions.starts_with("中中"));
     }
-
-    // ── prompts as slash commands ──
 
     fn prompt_meta(
         name: &str,
@@ -1265,8 +1257,6 @@ mod tests {
             .text
             .contains("no connected MCP server exposes this prompt"));
     }
-
-    // ── resources as `@` references ──
 
     async fn manager_with_resource_server() -> McpManager {
         let client = Arc::new(

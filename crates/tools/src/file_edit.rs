@@ -611,8 +611,6 @@ mod tests {
         }
     }
 
-    // ---- S1-a : structured diff payload ----
-
     #[tokio::test]
     async fn structured_content_carries_diff_payload() {
         let dir = TempDir::new().unwrap();

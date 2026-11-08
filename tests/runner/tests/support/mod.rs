@@ -17,8 +17,6 @@ use base::interface::tool::{
 };
 use std::sync::Arc;
 
-// ── tools ───────────────────────────────────────────────────────────────
-
 /// Echoes its `say` argument. Concurrency-safe, so a batch of them exercises
 /// the parallel dispatch path.
 #[derive(Debug)]
@@ -296,8 +294,6 @@ pub fn fake_tools() -> Vec<Arc<dyn Tool>> {
     ]
 }
 
-// ── normalization ───────────────────────────────────────────────────────
-
 /// Replace run-varying substrings with stable placeholders.
 fn scrub(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -463,8 +459,6 @@ fn canonical_json(v: &serde_json::Value) -> String {
     }
 }
 
-// ── golden files ────────────────────────────────────────────────────────
-
 pub struct GoldenFile {
     path: std::path::PathBuf,
     name: String,
@@ -515,8 +509,6 @@ impl GoldenFile {
         }
     }
 }
-
-// ── scene ───────────────────────────────────────────────────────────────
 
 /// `HarnixScene` with a caller-chosen compaction threshold, offering whatever
 /// tools the case registers.
