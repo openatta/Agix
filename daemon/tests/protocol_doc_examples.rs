@@ -514,6 +514,15 @@ async fn documented_session_results_are_real() {
         serde_json::json!({"session_id": sid, "namespaces": ["com.example.cards"]}),
     )
     .await;
+    verify(
+        &doc,
+        &daemon,
+        "session.export",
+        serde_json::json!({"session_id": sid,
+                           "path": daemon._dir.path().join("doc.agix.zip"),
+                           "format": "zip", "include": ["sidechains", "attachments"]}),
+    )
+    .await;
     let fork = verify(
         &doc,
         &daemon,

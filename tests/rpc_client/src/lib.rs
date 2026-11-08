@@ -363,6 +363,27 @@ impl DaemonRpcClient {
         .await
     }
 
+    /// 把会话连同侧链、附件打包写到 daemon 所在机器上的 `path`。`format` 为 `None` 时是 zip，
+    /// `include` 为 `None` 时带侧链与附件、不带录像。
+    pub async fn session_export(
+        &mut self,
+        session_id: &str,
+        path: &Path,
+        format: Option<&str>,
+        include: Option<&[&str]>,
+    ) -> anyhow::Result<RpcResponse> {
+        self.call(
+            "session.export",
+            serde_json::json!({
+                "session_id": session_id,
+                "path": path,
+                "format": format,
+                "include": include,
+            }),
+        )
+        .await
+    }
+
     /// 给会话起名字；`None` 清除。
     pub async fn session_rename(
         &mut self,

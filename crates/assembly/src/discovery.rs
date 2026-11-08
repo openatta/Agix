@@ -173,6 +173,7 @@ pub const CAPABILITIES: &[&str] = &[
     "extension_entries",
     "goals",
     "question_prompts",
+    "session_export",
 ];
 
 /// [`CAPABILITIES`], plus those of the modules this build carries.

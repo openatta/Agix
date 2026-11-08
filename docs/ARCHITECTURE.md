@@ -433,6 +433,15 @@ Agent 的上下文,本来就该在一处。
   重新打开就不一样的会话。`model_visible_content_is_reconstructible` 把这条变成可检查的
 - 大内容外置到 `BlobStore`,日志里只留引用;**引用解析不了时条目保持惰性,不是报错**
 
+**一个会话连同它的侧链可以在同一时刻截下来**(`HistoryStore::snapshot_lineage`)。
+`JsonlHistoryStore` 在 append 共用的那把锁下量一遍父会话项目目录里每份日志的长度,放锁后
+各自读到量下的位置——append 一次写完整的一行,所以量到的总是行尾;锁只占一次列目录加
+stat 的时间,读盘不挡写入。走的是 `Meta` 里的父子关系,只沿 `session_kind: sidechain`
+往下走,分叉只记 id。默认实现一个接一个地 `load`,不是同一时刻,自己实现 store 的要覆盖它。
+`session.export` 就站在这上面:快照加上图片本体、两种 RPC 视图和一份带版本的清单写成
+一个归档,这份布局也是将来 `session.import` 要读的格式(`daemon_rpc_protocol.md` 的
+`session.export`)。
+
 **留存的时间戳与标识符走 `Environment` 契约**,所以同一段录制能重放出逐位相同的日志。
 纯测量用的 `Instant` 不走契约——那正是它该做的事。
 

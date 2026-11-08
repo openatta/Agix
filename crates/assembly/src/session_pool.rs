@@ -5048,8 +5048,8 @@ impl SessionPool {
     /// Reads the on-disk log, not the live `Agent`'s in-memory message list:
     /// the store is the only view that exists for an *inactive* session
     /// (the whole point — an IDE that restarted has nothing in memory), and
-    /// for an active one it's the same content one turn-boundary behind
-    /// (`SessionManager::persist` runs once per turn). A turn currently in
+    /// for an active one it's the same content up to the last completed step
+    /// (the transcript is written at every step boundary). A step currently in
     /// flight therefore isn't visible here until it completes; `active` in
     /// the response tells a caller when that caveat applies.
     ///
@@ -5098,6 +5098,203 @@ impl SessionPool {
             "entry_count": entries.len(),
             "active": active,
         }))
+    }
+
+    /// `session.export` — the session, its sidechains and what they refer to,
+    /// as one archive at `request.path` (see `crate::export`).
+    ///
+    /// Read-only: nothing is resumed or created, and a session in another
+    /// scene exports like any other. The logs are cut at one moment, under
+    /// this session's lock so a cascade delete cannot run through the middle
+    /// of the cut; a turn running meanwhile carries on, and the archive holds
+    /// what it had written by its last completed step. The recording, when
+    /// asked for, is measured in the same moment.
+    pub async fn export_session(
+        &self,
+        request: crate::export::ExportRequest,
+    ) -> Result<serde_json::Value, RpcError> {
+        let store = self.require_history_store()?.clone();
+        let root = base::session::SessionId::parse(&request.session_id).map_err(|e| {
+            (
+                codes::INVALID_PARAMS,
+                format!("invalid session_id `{}`: {e}", request.session_id),
+            )
+        })?;
+        let settings = self.settings.read().await.clone();
+        let roots = history::path::HistoryRoots::under(&settings.paths.global_data_dir);
+        crate::export::check_target(&request.path, &[roots.projects, roots.sessions.clone()])?;
+
+        let include = request.include;
+        let (lineage, cut_at, live, recordings) = self
+            .with_session_lock(&request.session_id, async {
+                let mut lineage = store.snapshot_lineage(root).await.map_err(|e| match e {
+                    history::error::HistoryError::SessionNotFound(_) => (
+                        codes::SESSION_NOT_FOUND,
+                        format!("session not found: {}", request.session_id),
+                    ),
+                    other => (
+                        codes::INTERNAL_ERROR,
+                        format!("failed to read session history: {other}"),
+                    ),
+                })?;
+                let cut_at = store.environment().now();
+                if !include.sidechains {
+                    lineage.sessions.truncate(1);
+                }
+                let live: HashMap<
+                    String,
+                    (Option<String>, Option<Arc<base::context::SessionState>>),
+                > = {
+                    let sessions = self.sessions.lock().await;
+                    lineage
+                        .sessions
+                        .iter()
+                        .filter_map(|(sid, _)| {
+                            let sid = sid.to_string();
+                            let live = sessions.get(&sid)?;
+                            Some((sid, (live.current_turn.clone(), live.state.clone())))
+                        })
+                        .collect()
+                };
+                let recordings = if include.recording {
+                    self.measure_recordings(&settings, &request.session_id, &lineage)
+                } else {
+                    Vec::new()
+                };
+                Ok::<_, RpcError>((lineage, cut_at, live, recordings))
+            })
+            .await?;
+
+        let mut warnings = Vec::new();
+        if include.recording && recordings.is_empty() {
+            warnings.push("no recording was found for these sessions".to_string());
+        }
+        let mut sessions = Vec::with_capacity(lineage.sessions.len());
+        for (sid, entries) in lineage.sessions {
+            let id = sid.to_string();
+            let (history, extension_entries) =
+                export_views(&entries, store.projection()).map_err(|e| {
+                    (
+                        codes::INTERNAL_ERROR,
+                        format!("failed to serialize transcript: {e}"),
+                    )
+                })?;
+            let stats = store.session_stats(sid).await.unwrap_or_default();
+            let metadata: Option<history::project::SessionMetadata> = tokio::fs::read_to_string(
+                history::path::session_metadata_file(&roots.sessions, &sid),
+            )
+            .await
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok());
+            let memory = tokio::fs::read_to_string(history::path::session_memory_file(
+                &roots.sessions,
+                &sid,
+            ))
+            .await
+            .ok();
+            let (current_turn, state) = live.get(&id).cloned().unwrap_or((None, None));
+            let runtime = state.map(|state| {
+                serde_json::json!({
+                    "durable": false,
+                    "permission_mode": state.permission_mode(),
+                    "plan_text": state.plan_text(),
+                    "todos": state.todos(),
+                    "goal": state.goal_view(),
+                })
+            });
+            sessions.push(crate::export::SessionPart {
+                session_id: sid,
+                entries,
+                history,
+                extension_entries,
+                title: stats.title,
+                tags: metadata
+                    .as_ref()
+                    .map(|m| m.tags.clone())
+                    .unwrap_or_default(),
+                total_input_tokens: metadata.as_ref().and_then(|m| m.total_input_tokens),
+                total_output_tokens: metadata.as_ref().and_then(|m| m.total_output_tokens),
+                compact_count: stats.compact_count,
+                memory,
+                active: live.contains_key(&id),
+                current_turn,
+                runtime,
+            });
+        }
+        let snapshot = crate::export::ExportSnapshot {
+            root,
+            cut_at,
+            sessions,
+            forks: lineage.forks,
+            recordings,
+            warnings,
+        };
+        tokio::task::spawn_blocking(move || crate::export::write(&request, snapshot))
+            .await
+            .map_err(|e| (codes::INTERNAL_ERROR, format!("export did not finish: {e}")))?
+            .map_err(RpcError::from)
+    }
+
+    /// The recordings these sessions write to, with how long each one's
+    /// `calls.jsonl` is right now.
+    ///
+    /// A recording is named by its `recorder.name`, or else by the session
+    /// whose calls it holds, under the root the session's recorder named or
+    /// the daemon's own. `recorder` is never written to the log, so for a
+    /// session this process did not build only the daemon's root and the
+    /// session ids are known.
+    fn measure_recordings(
+        &self,
+        settings: &Settings,
+        root_session: &str,
+        lineage: &history::store::LineageSnapshot,
+    ) -> Vec<crate::export::RecordingPart> {
+        let recorder = self
+            .lock_specs()
+            .get(root_session)
+            .and_then(|spec| spec.options.as_ref()?.recorder.clone());
+        let mut dirs = vec![recordings_root(
+            settings,
+            recorder.as_ref().and_then(|r| r.dir.as_deref()),
+        )];
+        let default_root = recordings_root(settings, None);
+        if !dirs.contains(&default_root) {
+            dirs.push(default_root);
+        }
+        let ids: Vec<String> = lineage
+            .sessions
+            .iter()
+            .map(|(sid, _)| sid.to_string())
+            .collect();
+        let mut names: Vec<(String, Vec<String>)> = Vec::new();
+        if let Some(name) = recorder.as_ref().and_then(|r| r.name.clone()) {
+            names.push((name, ids.clone()));
+        }
+        names.extend(ids.iter().map(|id| (id.clone(), vec![id.clone()])));
+
+        let mut found: Vec<crate::export::RecordingPart> = Vec::new();
+        for (name, sessions) in names {
+            let one_component = matches!(
+                Path::new(&name).components().collect::<Vec<_>>().as_slice(),
+                [std::path::Component::Normal(_)]
+            );
+            if !one_component || found.iter().any(|r| r.name == name) {
+                continue;
+            }
+            for root in &dirs {
+                let dir = root.join(&name);
+                if let Ok(meta) = std::fs::metadata(dir.join("calls.jsonl")) {
+                    found.push(crate::export::RecordingPart {
+                        name: name.clone(),
+                        dir,
+                        calls_len: meta.len(),
+                        sessions: sessions.clone(),
+                    });
+                    break;
+                }
+            }
+        }
+        found
     }
 
     /// `session.fork` — branch a session at a message boundary into a new
@@ -7551,6 +7748,30 @@ fn entry_view(
         "payload": payload,
         "at": at,
     }))
+}
+
+/// A whole transcript as `session.history` pages it and the rows
+/// `session.entries` lists, for an export to carry beside the raw log.
+fn export_views(
+    entries: &[history::entry::EnvelopedEntry],
+    projection: &dyn history::transcript::TranscriptProjection,
+) -> Result<(Vec<serde_json::Value>, Vec<serde_json::Value>), serde_json::Error> {
+    let history = history::transcript::project_messages_sourced(entries, projection)
+        .iter()
+        .enumerate()
+        .map(|(seq, m)| history_item(seq, m))
+        .collect::<Result<Vec<_>, _>>()?;
+    let lengths = history::transcript::projected_lengths_with(entries, projection);
+    let rows = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, env)| {
+            matches!(&env.entry, history::entry::LogEntry::Extension { ns, .. }
+                if !ns.starts_with(ENGINE_NS_PREFIX))
+        })
+        .filter_map(|(i, env)| entry_view(i, env, &lengths))
+        .collect();
+    Ok((history, rows))
 }
 
 /// One `session.history` item: the projected message as it always was
