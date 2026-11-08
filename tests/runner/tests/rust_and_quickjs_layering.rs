@@ -220,42 +220,87 @@ impl Plugin for RecordsDepth {
 
     fn register(&self, session: &PluginSession<'_>, r: &mut Registrar) {
         self.0.lock().unwrap().push(session.depth);
-        r.tool_result(Arc::new(Wraps));
+        r.tool_result(Arc::new(Wraps)).tool(Arc::new(PluginEcho));
     }
 }
 
+#[derive(Debug)]
+struct PluginEcho;
+
+#[async_trait::async_trait]
+impl Tool for PluginEcho {
+    fn name(&self) -> &str {
+        "PluginEcho"
+    }
+    fn description(&self) -> &str {
+        "Echo the `say` argument back, from a plugin."
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object", "properties": {"say": {"type": "string"}}})
+    }
+    async fn prompt(&self, _: &PromptContext) -> String {
+        self.description().to_string()
+    }
+    async fn call(
+        &self,
+        _input: serde_json::Value,
+        _ctx: ToolContext,
+        _p: ProgressSender,
+    ) -> Result<ToolResult, base::error::ToolError> {
+        Ok(ToolResult::text("plugin echo"))
+    }
+}
+
+/// A delegate is built with the session's plugins, and gets the tools they
+/// register from them — not as copies of its parent's, which would collide —
+/// narrowed by its type's tool list like any other tool.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_rust_plugin_follows_the_work_into_a_sub_agent() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let depths = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let plugin = Arc::new(RecordsDepth(depths.clone()));
-    let replies = vec![
-        Reply::Tool {
-            id: "spawn-1",
-            name: "Agent",
-            input: serde_json::json!({
-                "prompt": "DELEGATED-TASK: echo something",
-                "subagent_type": "general-purpose",
-            }),
-        },
-        Reply::Tool {
-            id: "call-1",
-            name: "ScriptEcho",
-            input: serde_json::json!({"say": "from the delegate"}),
-        },
-        Reply::Text("the delegate echoed"),
-        Reply::Text("the delegate reported back"),
-        Reply::Text("(background)"),
-    ];
-    let session = Session::new(fixtures(), &["delegate an echo"], replies)
-        .scene(Arc::new(scene::code::CodeScene::default()))
-        .tool(Arc::new(ScriptEcho))
-        .rust(RustOrder::AfterScripts, move |b| b.plugin(plugin));
-    let ran = drive(tmp.path(), session).await;
+    for (subagent_type, offered) in [("general-purpose", true), ("explore", false)] {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let depths = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let plugin = Arc::new(RecordsDepth(depths.clone()));
+        let replies = vec![
+            Reply::Tool {
+                id: "spawn-1",
+                name: "Agent",
+                input: serde_json::json!({
+                    "prompt": "DELEGATED-TASK: echo something",
+                    "subagent_type": subagent_type,
+                }),
+            },
+            Reply::Tool {
+                id: "call-1",
+                name: "ScriptEcho",
+                input: serde_json::json!({"say": "from the delegate"}),
+            },
+            Reply::Text("the delegate echoed"),
+            Reply::Text("the delegate reported back"),
+            Reply::Text("(background)"),
+        ];
+        let session = Session::new(fixtures(), &["delegate an echo"], replies)
+            .scene(Arc::new(scene::code::CodeScene::default()))
+            .tool(Arc::new(ScriptEcho))
+            .rust(RustOrder::AfterScripts, move |b| b.plugin(plugin));
+        let ran = drive(tmp.path(), session).await;
 
-    assert!(
-        ran.holds("RUST(echo: from the delegate)"),
-        "the delegate's tool result did not go through the Rust plugin"
-    );
-    assert_eq!(*depths.lock().unwrap(), vec![0, 1]);
+        assert_eq!(*depths.lock().unwrap(), vec![0, 1], "{subagent_type}");
+        let delegate = ran
+            .requests
+            .iter()
+            .position(|r| r.contains("DELEGATED-TASK") && !r.contains("delegate an echo"))
+            .unwrap_or_else(|| panic!("{subagent_type}: the delegate never called the model"));
+        let tools = &ran.tools[delegate];
+        assert_eq!(
+            tools.iter().any(|t| t == "PluginEcho"),
+            offered,
+            "{subagent_type}: {tools:?}"
+        );
+        if offered {
+            assert!(
+                ran.holds("RUST(echo: from the delegate)"),
+                "the delegate's tool result did not go through the Rust plugin"
+            );
+        }
+    }
 }

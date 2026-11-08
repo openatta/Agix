@@ -83,6 +83,9 @@ pub struct SessionContext<'a> {
     /// The Rust plugins this session was built with; a delegate is built
     /// with them too.
     pub delegate_plugins: &'a [Arc<dyn crate::plugin::Plugin>],
+    /// The tools those plugins registered here. A delegate gets its own from
+    /// the plugins, not this session's copies.
+    pub plugin_tools: &'a [String],
     /// Agent types the session's plugins declare.
     pub plugin_agent_types: &'a [base::agent_type::AgentTypeDefinition],
     /// Every module this session runs, this one included: the assembled

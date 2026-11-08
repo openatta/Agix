@@ -1145,7 +1145,7 @@ fn lists_admit_tool(allowed: &[String], disallowed: &[String], name: &str) -> bo
     !listed(disallowed) && (allowed.is_empty() || listed(allowed))
 }
 
-fn scene_tool_filter(
+fn contributed_tool_filter(
     def: Option<&AgentTypeDefinition>,
     run: &SubRun,
 ) -> runtime::agent::ToolFilter {
@@ -1414,6 +1414,9 @@ struct Inner {
     /// The plugins every delegate is built with, as its parent was — the
     /// QuickJS layer among them, which decides itself what follows a delegate.
     delegate_plugins: Vec<Arc<dyn runtime::plugin::Plugin>>,
+    /// The tools those plugins registered in this session. A delegate is not
+    /// handed these copies: its own plugins register its own.
+    plugin_tools: Arc<std::collections::HashSet<String>>,
     /// Agent types this session's plugins declare, over the shared catalog:
     /// above built-in and package types, below the ones on disk.
     session_agent_types: Arc<std::collections::HashMap<String, AgentTypeDefinition>>,
@@ -1871,7 +1874,10 @@ impl Inner {
             .into_iter()
             .chain(self.fallback_tools.all())
         {
-            if !scene_tools.contains(tool.name()) && !out.iter().any(|t| t.name() == tool.name()) {
+            if !scene_tools.contains(tool.name())
+                && !self.plugin_tools.contains(tool.name())
+                && !out.iter().any(|t| t.name() == tool.name())
+            {
                 out.push(tool);
             }
         }
@@ -2188,6 +2194,7 @@ impl AgentTool {
                 parent_settings: None,
                 task_router: None,
                 delegate_plugins: Vec::new(),
+                plugin_tools: Default::default(),
                 session_agent_types: Default::default(),
                 process_groups: None,
                 modules: Vec::new(),
@@ -2256,6 +2263,7 @@ impl AgentTool {
                 parent_settings: None,
                 task_router: None,
                 delegate_plugins: Vec::new(),
+                plugin_tools: Default::default(),
                 session_agent_types: Default::default(),
                 process_groups: None,
                 modules: Vec::new(),
@@ -2314,10 +2322,16 @@ impl AgentTool {
         self
     }
 
-    /// The plugins every agent this tool spawns is built with.
-    pub fn with_delegate_plugins(mut self, plugins: Vec<Arc<dyn runtime::plugin::Plugin>>) -> Self {
+    /// The plugins every agent this tool spawns is built with, and the tools
+    /// they registered in this session.
+    pub fn with_delegate_plugins(
+        mut self,
+        plugins: Vec<Arc<dyn runtime::plugin::Plugin>>,
+        their_tools: &[String],
+    ) -> Self {
         let mut inner = (*self.inner).clone();
         inner.delegate_plugins = plugins;
+        inner.plugin_tools = Arc::new(their_tools.iter().cloned().collect());
         self.inner = Arc::new(inner);
         self
     }
@@ -2851,7 +2865,7 @@ impl AgentTool {
             .session_id(sid)
             .lineage(parent_session_id.clone(), subagent_type)
             .scene(scene)
-            .scene_tool_filter(scene_tool_filter(def.as_ref(), &run))
+            .contributed_tool_filter(contributed_tool_filter(def.as_ref(), &run))
             .model(self.inner.model_for_subagent())
             .tools(tools)
             .settings(settings.clone())
@@ -3186,7 +3200,7 @@ impl AgentTool {
         let mut builder = Builder::new()
             .session_id(sid)
             .scene(scene)
-            .scene_tool_filter(scene_tool_filter(def.as_ref(), &SubRun::default()))
+            .contributed_tool_filter(contributed_tool_filter(def.as_ref(), &SubRun::default()))
             .model(self.inner.model_for_subagent())
             .tools(tools)
             .settings(settings.clone())
@@ -3514,7 +3528,7 @@ impl AgentTool {
         let mut builder = Builder::new()
             .session_id(sid)
             .scene(scene)
-            .scene_tool_filter(scene_tool_filter(def.as_ref(), &run))
+            .contributed_tool_filter(contributed_tool_filter(def.as_ref(), &run))
             .model(inner.model_for_subagent())
             .tools(tools)
             .settings(settings.clone())

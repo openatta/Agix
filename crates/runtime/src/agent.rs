@@ -1102,6 +1102,10 @@ pub enum EngineError {
 /// Whether a tool, by name, is let through.
 pub type ToolFilter = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
+fn admits(filter: &Option<ToolFilter>, name: &str) -> bool {
+    filter.as_ref().map_or(true, |admits| admits(name))
+}
+
 pub struct Builder {
     scene: Option<Arc<dyn Scene>>,
     model: Option<Arc<dyn Model>>,
@@ -1127,7 +1131,7 @@ pub struct Builder {
     agent_type: Option<String>,
     skip_warmup: bool,
     output_schema: Option<serde_json::Value>,
-    scene_tool_filter: Option<ToolFilter>,
+    contributed_tool_filter: Option<ToolFilter>,
     /// Pre-built FrozenContext — skips lazy collection on first turn.
     /// When set, the Agent uses this snapshot instead of calling
     /// `FrozenContext::collect()`. Essential for deterministic replay.
@@ -1297,7 +1301,7 @@ impl Builder {
             telemetry_handle_override: None,
             skip_warmup: false,
             output_schema: None,
-            scene_tool_filter: None,
+            contributed_tool_filter: None,
             frozen: None,
             wake_rx: None,
             plugins: Vec::new(),
@@ -1766,12 +1770,13 @@ impl Builder {
         self
     }
 
-    /// Which of the scene's own tools (`Scene::extra_tools`) this session
-    /// gets; the rest are not registered. A sub-agent narrows its scene's
-    /// contributions with its type's tool lists this way, as the tools it
-    /// inherits from its parent are narrowed before they reach `tools`.
-    pub fn scene_tool_filter(mut self, admits: ToolFilter) -> Self {
-        self.scene_tool_filter = Some(admits);
+    /// Which of the tools contributed at build — the scene's own
+    /// (`Scene::extra_tools`) and the plugins' — this session gets; the rest
+    /// are not registered. A sub-agent narrows those with its type's tool
+    /// lists this way, as the tools it inherits from its parent are narrowed
+    /// before they reach `tools`.
+    pub fn contributed_tool_filter(mut self, admits: ToolFilter) -> Self {
+        self.contributed_tool_filter = Some(admits);
         self
     }
 
@@ -2019,6 +2024,12 @@ impl Builder {
             )
             .map_err(EngineError::Internal)?
         };
+        let plugin_tools: Vec<String> = rust_layer
+            .tools
+            .iter()
+            .chain(&quickjs_layer.tools)
+            .map(|t| t.name().to_string())
+            .collect();
         let plugin_agent_types: Vec<base::agent_type::AgentTypeDefinition> =
             std::mem::take(&mut rust_layer.agent_types)
                 .into_iter()
@@ -2185,6 +2196,7 @@ impl Builder {
                 task_router: self.task_router.as_ref(),
                 process_groups: self.process_groups.as_ref(),
                 delegate_plugins: &self.plugins,
+                plugin_tools: &plugin_tools,
                 plugin_agent_types: &plugin_agent_types,
                 mcp: &mut mcp_slot,
                 modules: &modules,
@@ -2236,11 +2248,7 @@ impl Builder {
         // (`get` returns the first match, and the engine's own instance is
         // appended after). That is precisely the shadowing this rejects.
         for t in scene.extra_tools() {
-            if self
-                .scene_tool_filter
-                .as_ref()
-                .is_some_and(|admits| !admits(t.name()))
-            {
+            if !admits(&self.contributed_tool_filter, t.name()) {
                 continue;
             }
             if tools.get(t.name()).is_some() {
@@ -2260,6 +2268,9 @@ impl Builder {
             .into_iter()
             .chain(std::mem::take(&mut quickjs_layer.tools));
         for t in plugin_tools {
+            if !admits(&self.contributed_tool_filter, t.name()) {
+                continue;
+            }
             match tools.get(t.name()) {
                 Some(existing) if Arc::ptr_eq(&existing, &t) => continue,
                 Some(_) => {
