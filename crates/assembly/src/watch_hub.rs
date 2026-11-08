@@ -71,6 +71,13 @@ struct Inner {
     /// after the debounce window — cheaper than cancelling/restarting a
     /// timer task per event.
     debounce_gen: Mutex<HashMap<WatchKey, Arc<AtomicU64>>>,
+    /// What each watched file held when it was last reported to the key
+    /// watching it (or first watched), so an event that leaves it as it was
+    /// reports nothing.
+    /// FSEvents delivers writes made shortly *before* a watch was registered,
+    /// and a pool that took one of those for a change would rebuild every
+    /// session on settings it already has.
+    file_contents: Mutex<HashMap<(WatchKey, PathBuf), Option<u64>>>,
     /// `notify`'s callback runs on its own OS thread (`drain_events`, spawned
     /// below), not inside a Tokio runtime — `tokio::spawn` from there would
     /// panic with "no reactor running". Captured at construction time (which
@@ -117,6 +124,7 @@ impl WatchHub {
             path_keys: Mutex::new(HashMap::new()),
             changes_tx,
             debounce_gen: Mutex::new(HashMap::new()),
+            file_contents: Mutex::new(HashMap::new()),
             runtime_handle,
         });
 
@@ -179,6 +187,15 @@ impl WatchHub {
             .or_default()
             .push(key.clone());
 
+        if actual_path.is_file() {
+            self.inner
+                .file_contents
+                .lock()
+                .unwrap()
+                .entry((key.clone(), actual_path.clone()))
+                .or_insert_with(|| content_hash(&actual_path));
+        }
+
         if first_registration && actual_path.exists() {
             if let Some(w) = self.inner.watcher.lock().unwrap().as_mut() {
                 if let Err(e) = w.watch(&actual_path, RecursiveMode::Recursive) {
@@ -214,6 +231,12 @@ impl Inner {
         if let Some(keys) = self.path_keys.lock().unwrap().get_mut(actual_path) {
             if let Some(pos) = keys.iter().position(|k| k == key) {
                 keys.remove(pos);
+            }
+            if !keys.contains(key) {
+                self.file_contents
+                    .lock()
+                    .unwrap()
+                    .remove(&(key.clone(), actual_path.to_path_buf()));
             }
         }
 
@@ -268,11 +291,48 @@ impl Inner {
         let inner = self.clone();
         self.runtime_handle.spawn(async move {
             tokio::time::sleep(DEBOUNCE).await;
-            if gen_counter.load(Ordering::SeqCst) == my_gen {
+            if gen_counter.load(Ordering::SeqCst) == my_gen && inner.has_changed(&key) {
                 let _ = inner.changes_tx.send(key);
             }
         });
     }
+
+    /// Whether what `key` watches is different from when it was last
+    /// reported. A key watching a directory always is; one watching only
+    /// files is when any of them now holds something else, and those
+    /// become what the next event is compared against.
+    fn has_changed(&self, key: &WatchKey) -> bool {
+        let paths: Vec<PathBuf> = self
+            .path_keys
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, keys)| keys.contains(key))
+            .map(|(path, _)| path.clone())
+            .collect();
+        let mut contents = self.file_contents.lock().unwrap();
+        let mut changed = false;
+        for path in paths {
+            let Some(before) = contents.get_mut(&(key.clone(), path.clone())) else {
+                changed = true;
+                continue;
+            };
+            let now = content_hash(&path);
+            if *before != now {
+                *before = now;
+                changed = true;
+            }
+        }
+        changed
+    }
+}
+
+fn content_hash(path: &Path) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let bytes = std::fs::read(path).ok()?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    Some(hasher.finish())
 }
 
 fn drain_events(rx: std::sync::mpsc::Receiver<notify::Result<Event>>, inner: Arc<Inner>) {
@@ -479,5 +539,51 @@ mod tests {
             key_a,
             "only the changed path's key should fire"
         );
+    }
+
+    /// FSEvents hands a new watch writes made just before it, most of the
+    /// time within a second; a file that holds what it held when the watch
+    /// began has not changed.
+    #[tokio::test]
+    async fn a_write_made_before_the_watch_began_is_not_a_change() {
+        let hub = WatchHub::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        std::fs::write(&file, "{\"model\":\"a\"}").unwrap();
+
+        let key = WatchKey {
+            tier: Tier::Project(dir.path().to_path_buf()),
+            target: WatchTarget::Settings,
+        };
+        let mut rx = hub.changes();
+        let _token = hub.subscribe(key.clone(), &file);
+
+        let early = tokio::time::timeout(Duration::from_millis(1500), rx.recv()).await;
+        assert!(early.is_err(), "reported a change nobody made: {early:?}");
+
+        std::fs::write(&file, "{\"model\":\"b\"}").unwrap();
+        let got = tokio::time::timeout(settle(), rx.recv()).await;
+        assert_eq!(got.unwrap().unwrap(), key);
+    }
+
+    #[tokio::test]
+    async fn rewriting_a_file_with_what_it_already_holds_is_not_a_change() {
+        let hub = WatchHub::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        std::fs::write(&file, "{}").unwrap();
+
+        let key = WatchKey {
+            tier: Tier::Global,
+            target: WatchTarget::Settings,
+        };
+        let mut rx = hub.changes();
+        let _token = hub.subscribe(key, &file);
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        while rx.try_recv().is_ok() {}
+
+        std::fs::write(&file, "{}").unwrap();
+        let got = tokio::time::timeout(Duration::from_millis(1500), rx.recv()).await;
+        assert!(got.is_err(), "reported a change nobody made: {got:?}");
     }
 }

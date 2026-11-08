@@ -82,6 +82,25 @@ fn resume_failure(id: serde_json::Value, e: crate::session_pool::ResumeError) ->
     }
 }
 
+/// `SESSION_BUSY` for a change that needs the session rebuilt: a turn holds
+/// it, or background tasks run that a rebuild would stop, named in
+/// `running_task_ids`.
+fn rebuild_refused(
+    id: serde_json::Value,
+    session_id: &str,
+    current_turn_id: Option<String>,
+    running_task_ids: Vec<String>,
+) -> RpcResponse {
+    let mut data = serde_json::json!({
+        "session_id": session_id,
+        "current_turn_id": current_turn_id,
+    });
+    if !running_task_ids.is_empty() {
+        data["running_task_ids"] = serde_json::json!(running_task_ids);
+    }
+    RpcResponse::err_with_data(id, codes::SESSION_BUSY, "session is busy", data)
+}
+
 /// How many requests one connection may have in flight at once.
 ///
 /// A bound, not a queue: at the limit further requests are refused with
@@ -1993,17 +2012,10 @@ impl DaemonServer {
             .await
         {
             Ok(v) => RpcResponse::ok(id, v),
-            Err(crate::session_pool::SetModelError::Busy { current_turn_id }) => {
-                RpcResponse::err_with_data(
-                    id,
-                    codes::SESSION_BUSY,
-                    "session is busy",
-                    serde_json::json!({
-                        "session_id": session_id,
-                        "current_turn_id": current_turn_id,
-                    }),
-                )
-            }
+            Err(crate::session_pool::SetModelError::Busy {
+                current_turn_id,
+                running_task_ids,
+            }) => rebuild_refused(id, session_id, current_turn_id, running_task_ids),
             Err(crate::session_pool::SetModelError::Rpc((code, message))) => {
                 RpcResponse::err(id, code, message)
             }
@@ -2080,17 +2092,10 @@ impl DaemonServer {
         };
         match self.pool.set_session_prompt(session_id, change).await {
             Ok(v) => RpcResponse::ok(id, v),
-            Err(crate::session_pool::SetModelError::Busy { current_turn_id }) => {
-                RpcResponse::err_with_data(
-                    id,
-                    codes::SESSION_BUSY,
-                    "session is busy",
-                    serde_json::json!({
-                        "session_id": session_id,
-                        "current_turn_id": current_turn_id,
-                    }),
-                )
-            }
+            Err(crate::session_pool::SetModelError::Busy {
+                current_turn_id,
+                running_task_ids,
+            }) => rebuild_refused(id, session_id, current_turn_id, running_task_ids),
             Err(crate::session_pool::SetModelError::Rpc((code, message))) => {
                 RpcResponse::err(id, code, message)
             }

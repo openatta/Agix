@@ -1233,7 +1233,9 @@ client,会话在原地按新的规格重建(它是空闲的,不会腰斩什么),
 
 **有 turn 在跑时返回 `SESSION_BUSY`**,不排队。引擎跑 turn 的时候不读输入通道,
 排进去的命令会在某个没人宣布的时刻生效 —— 调用方被告知模型换了,却看着旧模型答完
-这一轮。要换就先 `session.interrupt`,或者等这一轮结束。
+这一轮。要换就先 `session.interrupt`,或者等这一轮结束。换厂商要重建会话,会话还有后台
+任务在跑(子 Agent、团队成员、后台程序、Monitor)时同样 `SESSION_BUSY`,`data` 多一个
+`running_task_ids` 列出它们 —— 重建会停掉它们;等它们结束,或先 `session.stopTask`。
 
 **只对内存里的会话有效**,冷会话返回 `SESSION_NOT_FOUND`(先 `session.resume`)。
 选择记在会话日志里(见 `session.create` 的 `options`):会话被驱逐后重建、
@@ -1259,7 +1261,7 @@ client,会话在原地按新的规格重建(它是空闲的,不会腰斩什么),
 重建、空闲回收后再用、daemon 重启后恢复都保留;settings 文件不被改动。只作用于这个会话
 自己的 agent,它派生的子 agent 用各自类型与场景的提示。
 
-有一轮正在跑时拒绝,`SESSION_BUSY`,`data` 同 `session.setModel`。`append` 与 `override`
+有一轮正在跑、或有后台任务在跑时拒绝,`SESSION_BUSY`,`data` 同 `session.setModel`。`append` 与 `override`
 都没给,或类型不对 → `INVALID_PARAMS`;会话不存在 → `SESSION_NOT_FOUND`。
 
 #### `session.history`
@@ -1806,10 +1808,12 @@ Shell 命令、监视器没有收件箱。会话不在内存里 → `SESSION_NOT
 (`config.get {tier: "project"}` 早就是这个答案)。传 `null` → `INVALID_PARAMS`。
 
 失效**惰性生效**:已有会话在下一次 `run_turn` 之前若空闲则原地重建,忙碌的跳过本轮
-下次再检查。**正在进行的 turn 不会被中断。**
+下次再检查。**正在进行的 turn 不会被中断**;还有后台任务在跑的会话也算忙,这一轮照旧用原来的
+配置,任务都结束之后才重建,所以后台任务不会因为配置变化被停掉。重建保留会话结束了的任务
+(`session.tasks` / `session.taskOutput` 照查)和模型还没读到的 `<task-notification>`。
 
 **多数情况下不需要显式调用**:daemon 监视每个项目的 `settings.json` /
-`settings.local.json`,改动落盘后自己重读(去抖 300ms)。监视触发的重读知道是哪一层变了,
+`settings.local.json`,改动落盘后自己重读(去抖 300ms);文件内容没变的写入不算改动。监视触发的重读知道是哪一层变了,
 只作废从那一层合出来的绑定:项目层只作废同一项目的会话,场景层只作废那个场景的,全局层
 作废全部。skills、agents 目录的改动不作废任何会话,新内容就地生效。这个方法留给两种情况——
 监视起不来(权限、内核 inotify 上限;`daemon.doctor` 会报),以及**改动前那个文件
@@ -2261,6 +2265,8 @@ disclosure 的 `wasm.runnable` 会如实报成 `false`。
 ```jsonc
 // SESSION_BUSY
 { "session_id": "S1", "current_turn_id": "t1" }
+// 需要重建的调用(setPrompt、换厂商的 setModel)被后台任务挡住时,多一项
+{ "session_id": "S1", "current_turn_id": null, "running_task_ids": [ "a1" ] }
 
 // SCENE_MISMATCH
 { "session_id": "S1", "recorded_scene": "harnix", "requested_scene": "code" }
