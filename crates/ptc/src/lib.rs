@@ -24,7 +24,7 @@ use serde_json::Value;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::{mpsc, Semaphore};
+use tokio::sync::{mpsc, oneshot, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 pub const TOOL_NAME: &str = "RunCode";
@@ -283,10 +283,13 @@ impl Tool for RunCodeTool {
 
         if input.background {
             let task_id = format!("code-{}", base::id::Id::new());
+            // The session ending cuts the run off; a TaskStop on its own
+            // token, a child of that, still gets the grace period.
+            let cancel = ctx.cancel.child_token();
             let task = ctx.session.register_task(
                 task_id.clone(),
                 TaskType::Code,
-                CancellationToken::new(),
+                cancel.child_token(),
                 serde_json::json!({
                     "description": description,
                     "background": true,
@@ -295,16 +298,8 @@ impl Tool for RunCodeTool {
             );
             let (session, limits) = (ctx.session.clone(), self.limits.clone());
             tokio::spawn(async move {
-                let outcome = execute(
-                    input,
-                    dispatch,
-                    &task,
-                    &session,
-                    &limits,
-                    CancellationToken::new(),
-                    true,
-                )
-                .await;
+                let outcome =
+                    execute(input, dispatch, &task, &session, &limits, cancel, true).await;
                 session.post_notice(Some(task.task_id.clone()), notification(&task, &outcome));
                 session.finish_task(
                     &task.task_id,
@@ -358,15 +353,53 @@ struct Outcome {
     is_error: bool,
 }
 
-/// The end of the program's log, for the result.
-fn log_tail(log: &str, max_chars: usize) -> String {
+/// What the program logged, keeping only as much of the end as the result
+/// can show.
+struct ProgramLog {
+    text: String,
+    dropped: bool,
+    keep_chars: usize,
+}
+
+impl ProgramLog {
+    fn new(keep_chars: usize) -> Self {
+        Self {
+            text: String::new(),
+            dropped: false,
+            keep_chars,
+        }
+    }
+
+    fn push(&mut self, line: &str) {
+        self.text.push_str(line);
+        self.text.push('\n');
+        let keep_bytes = self.keep_chars.saturating_mul(4).max(1);
+        if self.text.len() > keep_bytes.saturating_mul(2) {
+            let mut cut = self.text.len() - keep_bytes;
+            while !self.text.is_char_boundary(cut) {
+                cut += 1;
+            }
+            self.text.drain(..cut);
+            self.dropped = true;
+        }
+    }
+
+    /// The end of it, for the result.
+    fn tail(&self) -> String {
+        log_tail(&self.text, self.keep_chars, self.dropped)
+    }
+}
+
+fn log_tail(log: &str, max_chars: usize, dropped: bool) -> String {
     if log.trim().is_empty() {
         return String::new();
     }
     let total = log.chars().count();
-    let (tail, note) = if total > max_chars {
+    let (tail, note) = if total > max_chars || dropped {
         (
-            log.chars().skip(total - max_chars).collect::<String>(),
+            log.chars()
+                .skip(total.saturating_sub(max_chars))
+                .collect::<String>(),
             format!(" (last {max_chars} characters)"),
         )
     } else {
@@ -475,24 +508,29 @@ async fn execute(
 
     let (calls_tx, calls_rx) = mpsc::unbounded_channel();
     let log_task = task.clone();
-    let program_log = Arc::new(Mutex::new(String::new()));
-    let log_buffer = program_log.clone();
+    let program_log = Arc::new(Mutex::new(ProgramLog::new(limits.log_chars)));
+    let (log_buffer, notify_log) = (program_log.clone(), program_log.clone());
     let notices_left = Arc::new(AtomicU32::new(limits.notices));
     let (notify_task, notify_session) = (task.clone(), session.clone());
     let host = Host {
         calls: calls_tx,
         log: Arc::new(move |text: String| {
             log_task.append_output(&format!("{text}\n"));
-            let mut buffer = log_buffer.lock().unwrap_or_else(|e| e.into_inner());
-            buffer.push_str(&text);
-            buffer.push('\n');
+            log_buffer
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(&text);
         }),
         notify: Arc::new(move |text: String| {
             notify_task.append_output(&format!("[notify] {text}\n"));
-            if background
-                && notices_left
-                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-                    .is_ok()
+            if !background {
+                notify_log
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(&text);
+            } else if notices_left
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .is_ok()
             {
                 notify_session.post_notice(
                     None,
@@ -542,10 +580,7 @@ async fn execute(
     let failed = calls_log.failed.load(Ordering::SeqCst);
     let summary = format!(
         "({made} tool calls, {failed} failed){}",
-        log_tail(
-            &program_log.lock().unwrap_or_else(|e| e.into_inner()),
-            limits.log_chars
-        )
+        program_log.lock().unwrap_or_else(|e| e.into_inner()).tail()
     );
     let outcome = match ended {
         ScriptEnd::Returned(json) => {
@@ -564,8 +599,9 @@ async fn execute(
         }
         ScriptEnd::Threw(message) => Outcome {
             text: format!(
-                "The program threw:\n{message}\n{summary}{}\n\
+                "The program threw:\n{}\n{summary}{}\n\
                  The full guide to what a program can use: ToolSearch select:RunCode.",
+                cut_note(&message, limits.result_chars),
                 completed_calls(&calls_log)
             ),
             value: None,
@@ -695,7 +731,7 @@ async fn dispatch_calls(
     log: Arc<CallLog>,
 ) {
     let slots = Arc::new(Semaphore::new(limits.parallel.max(1)));
-    let serial = Arc::new(tokio::sync::Mutex::new(()));
+    let mut last_serial: Option<oneshot::Receiver<()>> = None;
     let agents = AtomicU32::new(0);
     let mut running = tokio::task::JoinSet::new();
     loop {
@@ -734,40 +770,42 @@ async fn dispatch_calls(
                 Ordering::SeqCst,
             );
         }
-        let concurrent = dispatch.concurrency_safe(&request.name, &input);
-        let (dispatch, task, slots, serial, log, cancel, max_chars) = (
+        // A call that is not concurrency-safe starts once the one submitted
+        // before it has finished, and only then takes a slot: waiting in
+        // line must not keep reads from running.
+        let (turn, after) = if dispatch.concurrency_safe(&request.name, &input) {
+            (None, None)
+        } else {
+            let (done, next) = oneshot::channel::<()>();
+            (Some(done), last_serial.replace(next))
+        };
+        let (dispatch, task, slots, log, cancel, max_chars) = (
             dispatch.clone(),
             task.clone(),
             slots.clone(),
-            serial.clone(),
             log.clone(),
             hard_stop.child_token(),
             limits.call_result_chars,
         );
         running.spawn(async move {
+            let _turn = turn;
+            if let Some(previous) = after {
+                let _ = previous.await;
+            }
             let _slot = slots.acquire_owned().await;
-            let _order = if concurrent {
-                None
-            } else {
-                Some(serial.lock_owned().await)
-            };
             let label = format!("{}({})", request.name, brief(&input));
             task.append_output(&format!("→ {label}\n"));
             let reply = match dispatch.call(&request.name, input, cancel).await {
                 Ok(answer) if !answer.reported_failure => {
                     task.append_output(&format!("← {label} ok\n"));
-                    let value = answer.structured.unwrap_or_else(|| {
-                        let (text, cut) = truncate(&answer.text, max_chars);
-                        Value::String(if cut {
-                            format!("{text}\n… (cut at {max_chars} characters)")
-                        } else {
-                            text
-                        })
-                    });
+                    let value = answer
+                        .structured
+                        .filter(|v| v.to_string().chars().count() <= max_chars)
+                        .unwrap_or_else(|| Value::String(cut_note(&answer.text, max_chars)));
                     serde_json::json!({"ok": true, "value": value}).to_string()
                 }
-                Ok(answer) => fail(&log, &task, &label, &answer.text),
-                Err(e) => fail(&log, &task, &label, &e),
+                Ok(answer) => fail(&log, &task, &label, &answer.text, max_chars),
+                Err(e) => fail(&log, &task, &label, &e, max_chars),
             };
             let _ = request.reply.send(reply);
         });
@@ -775,7 +813,7 @@ async fn dispatch_calls(
     while running.join_next().await.is_some() {}
 }
 
-fn fail(log: &CallLog, task: &RunningTask, label: &str, error: &str) -> String {
+fn fail(log: &CallLog, task: &RunningTask, label: &str, error: &str, max_chars: usize) -> String {
     log.failed.fetch_add(1, Ordering::SeqCst);
     let line = format!("← {label} error: {}", first_line(error));
     task.append_output(&format!("{line}\n"));
@@ -783,7 +821,7 @@ fn fail(log: &CallLog, task: &RunningTask, label: &str, error: &str) -> String {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .push(line);
-    answer_err(error)
+    answer_err(&cut_note(error, max_chars))
 }
 
 fn answer_err(error: &str) -> String {
@@ -826,6 +864,14 @@ fn brief(input: &Value) -> String {
         other => other.to_string(),
     };
     truncate(&text, 80).0
+}
+
+/// `text` cut at `max_chars`, saying so when it was.
+fn cut_note(text: &str, max_chars: usize) -> String {
+    match truncate(text, max_chars) {
+        (cut, true) => format!("{cut}\n… (cut at {max_chars} characters)"),
+        (whole, false) => whole,
+    }
 }
 
 fn truncate(text: &str, max_chars: usize) -> (String, bool) {

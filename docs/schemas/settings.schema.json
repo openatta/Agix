@@ -19,23 +19,27 @@
       "type": "object"
     },
     "CompactionConfig": {
-      "description": "Context compaction configuration.",
+      "description": "Context compaction, over what the scene asks for. A field left out keeps\nthe scene's own value (`Scene::token_budget`).",
       "properties": {
         "keep_recent": {
+          "description": "How many recent rounds compaction leaves as they are.",
           "format": "uint",
           "minimum": 0,
-          "type": "integer"
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "threshold_tokens": {
+          "description": "Compact once a request's context passes this many tokens. `0` turns\nautomatic compaction off.",
           "format": "uint",
           "minimum": 0,
-          "type": "integer"
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
-      "required": [
-        "threshold_tokens",
-        "keep_recent"
-      ],
       "type": "object"
     },
     "Divergence": {
@@ -779,10 +783,7 @@
     },
     "compaction": {
       "$ref": "#/$defs/CompactionConfig",
-      "default": {
-        "keep_recent": 20,
-        "threshold_tokens": 150000
-      }
+      "default": {}
     },
     "default_provider": {
       "description": "Provider id used for any task with no `task_models` entry, and as the\nfallback target when an entry's provider/model turns out invalid.",

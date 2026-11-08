@@ -478,20 +478,17 @@ impl Default for ExecutionSettings {
     }
 }
 
-/// Context compaction configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+/// Context compaction, over what the scene asks for. A field left out keeps
+/// the scene's own value (`Scene::token_budget`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CompactionConfig {
-    pub threshold_tokens: usize,
-    pub keep_recent: usize,
-}
-
-impl Default for CompactionConfig {
-    fn default() -> Self {
-        Self {
-            threshold_tokens: 150_000,
-            keep_recent: 20,
-        }
-    }
+    /// Compact once a request's context passes this many tokens. `0` turns
+    /// automatic compaction off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold_tokens: Option<usize>,
+    /// How many recent rounds compaction leaves as they are.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_recent: Option<usize>,
 }
 
 /// Runtime control over the plugin subsystem, for a build that has it

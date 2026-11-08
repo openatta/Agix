@@ -94,9 +94,6 @@ const NOT_OFFERED: &[&str] = &[
     "VerifyPlanExecution",
 ];
 
-/// Asked of the user only when someone answers.
-const NEEDS_A_USER: &[&str] = &["AskUserQuestion", "EnterPlanMode", "ExitPlanMode"];
-
 /// Built-in skills for coding work that runs to the end on its own.
 const CODING_SKILLS: &[&str] = &["skillify", "simplify", "verify", "debug", "security-review"];
 
@@ -164,16 +161,7 @@ impl Scene for CodeScene {
         vec![]
     }
     fn disallowed_tools(&self) -> Vec<String> {
-        let unattended: &[&str] = if self.interactive() {
-            &[]
-        } else {
-            NEEDS_A_USER
-        };
-        NOT_OFFERED
-            .iter()
-            .chain(unattended)
-            .map(|s| s.to_string())
-            .collect()
+        NOT_OFFERED.iter().map(|s| s.to_string()).collect()
     }
 
     fn interactive(&self) -> bool {
@@ -796,14 +784,10 @@ mod tests {
     }
 
     #[test]
-    fn unattended_leaves_out_what_waits_on_a_reply() {
+    fn an_unattended_prompt_does_not_count_on_a_reply() {
         let unattended = CodeScene::new(Interaction::Unattended);
         let interactive = CodeScene::default();
         assert!(interactive.interactive() && !unattended.interactive());
-        for tool in NEEDS_A_USER {
-            assert!(interactive.permits_tool(tool), "{tool}");
-            assert!(!unattended.permits_tool(tool), "{tool}");
-        }
 
         let prompt = text(&unattended.build_system_prompt(&ctx()));
         for line in ["Check with the user", "`! <command>`", "AskUserQuestion"] {

@@ -35,7 +35,7 @@
   define("messages", () => JSON.parse(host.messages()));
   define("args", JSON.parse(host.args()));
   for (const name of [
-    "require", "process", "Buffer", "fetch", "setTimeout", "setInterval", "clearTimeout",
+    "require", "fs", "process", "Buffer", "fetch", "setTimeout", "setInterval", "clearTimeout",
     "clearInterval", "setImmediate", "XMLHttpRequest", "WebSocket", "module", "exports",
     "__dirname", "__filename", "Deno", "Bun",
   ]) {

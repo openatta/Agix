@@ -85,12 +85,6 @@ pub(crate) fn spawn(run: Run) -> oneshot::Receiver<ScriptEnd> {
 }
 
 async fn execute(run: Run) -> ScriptEnd {
-    if let Some(line) = module_syntax(&run.code) {
-        return ScriptEnd::Threw(format!(
-            "line {line} uses import/export, but this runs as a script: there are no modules \
-             here. Drop it and use tools.* (or callTool) for any I/O."
-        ));
-    }
     let hard_stop = run.hard_stop.clone();
     let end = tokio::select! {
         biased;
@@ -104,18 +98,6 @@ async fn execute(run: Run) -> ScriptEnd {
     } else {
         end
     }
-}
-
-/// The first line that starts an `import` or `export` statement.
-fn module_syntax(code: &str) -> Option<usize> {
-    code.lines()
-        .position(|line| {
-            let t = line.trim_start();
-            ["import ", "import{", "export "]
-                .iter()
-                .any(|p| t.starts_with(p))
-        })
-        .map(|i| i + 1)
 }
 
 async fn evaluate(run: Run) -> ScriptEnd {
@@ -136,7 +118,8 @@ async fn evaluate(run: Run) -> ScriptEnd {
     };
 
     let host = run.host;
-    let source = wrap(&run.code);
+    let code = run.code;
+    let source = wrap(&code);
     let deadline = run.deadline_ms.clone();
     let stopped = run.hard_stop.clone();
     let end = context
@@ -148,11 +131,11 @@ async fn evaluate(run: Run) -> ScriptEnd {
                 ctx.eval_with_options(source, eval_options());
             let promise = match evaluated.catch(&ctx) {
                 Ok(p) => p,
-                Err(e) => return ScriptEnd::Threw(explain(e)),
+                Err(e) => return ScriptEnd::Threw(explain(e, &code)),
             };
             match promise.into_future::<String>().await.catch(&ctx) {
                 Ok(json) => ScriptEnd::Returned(json),
-                Err(e) => ScriptEnd::Threw(explain(e)),
+                Err(e) => ScriptEnd::Threw(explain(e, &code)),
             }
         })
         .await;
@@ -238,19 +221,55 @@ fn stopped_answer() -> String {
 
 /// An exception as the model should read it: the message, where, and what to
 /// do instead when it reached for something that is not here.
-fn explain(e: CaughtError<'_>) -> String {
-    let text = match e {
+fn explain(e: CaughtError<'_>, code: &str) -> String {
+    match e {
         CaughtError::Exception(ex) => {
             let message = ex.message().unwrap_or_default();
-            match ex.stack() {
-                Some(stack) if !stack.trim().is_empty() => {
-                    format!("{message}\n{}", stack.trim_end())
-                }
-                _ => message,
+            let stack = ex.stack().unwrap_or_default();
+            let syntax_error = ex
+                .get::<_, String>("name")
+                .is_ok_and(|n| n == "SyntaxError");
+            if let Some(line) = syntax_error
+                .then(|| module_statement_line(code, &stack))
+                .flatten()
+            {
+                return format!(
+                    "line {line} uses import/export, but this runs as a script: there are no \
+                     modules here. Drop it and use tools.* (or callTool) for any I/O."
+                );
+            }
+            if message.starts_with("could not load module") {
+                return format!(
+                    "{message}: there are no modules here — use tools.* (or callTool) for any I/O"
+                );
+            }
+            if stack.trim().is_empty() {
+                message
+            } else {
+                format!("{message}\n{}", stack.trim_end())
             }
         }
         CaughtError::Value(v) => format!("{v:?}"),
         CaughtError::Error(e) => e.to_string(),
-    };
-    text
+    }
+}
+
+/// The line a syntax error points at, when that line is an `import` or
+/// `export` statement.
+fn module_statement_line(code: &str, stack: &str) -> Option<usize> {
+    let at = stack.find("code.js:")? + "code.js:".len();
+    let line: usize = stack[at..]
+        .split(|c: char| !c.is_ascii_digit())
+        .next()?
+        .parse()
+        .ok()?;
+    let text = code.lines().nth(line.checked_sub(1)?)?.trim_start();
+    ["import", "export"]
+        .iter()
+        .any(|kw| {
+            text.strip_prefix(kw)
+                .and_then(|rest| rest.chars().next())
+                .is_some_and(|c| !(c.is_alphanumeric() || c == '_' || c == '$'))
+        })
+        .then_some(line)
 }

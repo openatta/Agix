@@ -96,10 +96,6 @@ pub struct EngineConfig {
     /// import path.
     pub file_limits: FileLimits,
 
-    // ---- compaction (grouped 2026-05-09; was 2 flat fields) ----
-    /// autoCompact configuration: when to fire + which model to summarize.
-    pub compact: CompactSettings,
-
     // ---- system-prompt assembly (grouped 2026-05-09; was 5 flat fields) ----
     /// system prompt overrides + extras (AGENTS.md walk, output styles,
     /// append/override). All affect what gets baked into block [1-5] of
@@ -143,29 +139,6 @@ impl Default for FileLimits {
             default_read_lines: 2000,
             max_line_chars: 2000,
             max_tool_result_chars: 50 * 1024,
-        }
-    }
-}
-
-/// **§5 (2026-05-09)**: autoCompact sub-config.
-#[derive(Debug, Clone)]
-pub struct CompactSettings {
-    /// 触发 autoCompact 的输入 token 阈值。0 = 禁用 autoCompact。
-    pub threshold_tokens: usize,
-    /// 执行压缩用的模型 id（比主模型便宜的 haiku 类）。空 → 复用 model
-    pub model: Option<String>,
-    /// **P2 **: collapse/micro compact 保留尾部多少条 messages verbatim。
-    /// 默认 6（≈3 个 user/assistant pair）。调大保留更多上下文但压缩收益减少。
-    pub micro_keep_recent: usize,
-}
-
-impl Default for CompactSettings {
-    fn default() -> Self {
-        Self {
-            // 由 main.rs 按模型 context window 再覆写；这里保底给一个中等值。
-            threshold_tokens: 150_000,
-            model: None,
-            micro_keep_recent: 6,
         }
     }
 }
@@ -313,7 +286,6 @@ impl EngineConfig {
     /// 合理默认值；具体使用方根据 CLI 与 settings 覆盖。
     pub fn defaults_for(model: impl Into<String>) -> Self {
         let model = model.into();
-        let compact_threshold = default_auto_compact_threshold(&model, 65535);
         Self {
             // model / runtime
             provider: None,
@@ -342,10 +314,6 @@ impl EngineConfig {
 
             // grouped sub-configs
             file_limits: FileLimits::default(),
-            compact: CompactSettings {
-                threshold_tokens: compact_threshold,
-                ..Default::default()
-            },
             system_prompt: SystemPromptSettings {
                 memory_walk_up: true,
                 todo_v2_enabled: true,
@@ -426,11 +394,6 @@ impl EngineConfig {
         c.path_style = settings.path_style.unwrap_or_default();
         c.subprocess_env = settings.sandbox.subprocess_env.clone();
 
-        c.compact = CompactSettings {
-            threshold_tokens: settings.compaction.threshold_tokens,
-            micro_keep_recent: settings.compaction.keep_recent,
-            ..c.compact
-        };
         c.system_prompt = SystemPromptSettings {
             append: settings.prompt_append.clone(),
             override_text: settings.prompt_override.clone(),
