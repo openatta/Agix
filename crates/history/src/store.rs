@@ -96,6 +96,19 @@ pub struct SessionStats {
     pub compact_count: u64,
 }
 
+/// A session and the sidechains under it, read as one piece.
+///
+/// `sessions` starts with the root and continues breadth-first through every
+/// sidechain at any depth, each with the entries its log held when the
+/// snapshot was taken. A child recorded as a fork (`session_kind: primary`)
+/// belongs to nobody's lineage but its own: it is named in `forks` and not
+/// walked into.
+#[derive(Debug, Clone, Default)]
+pub struct LineageSnapshot {
+    pub sessions: Vec<(SessionId, Vec<EnvelopedEntry>)>,
+    pub forks: Vec<SessionId>,
+}
+
 /// Where a session's log lives between runs.
 ///
 /// The engine writes an append-only sequence of [`LogEntry`] per session and
@@ -259,6 +272,48 @@ pub trait HistoryStore: Send + Sync {
             }
         }
         Ok(out)
+    }
+
+    /// `root` and every sidechain under it — see [`LineageSnapshot`].
+    ///
+    /// An entry appended after the snapshot is taken is in none of its logs,
+    /// and a child created after it is not among its sessions. The default
+    /// reads one session after another, so its logs are not cut at a single
+    /// instant: a sidechain still being written may come back with entries
+    /// appended after its parent was read. A backend that can hold its
+    /// writers off for the moment it takes to measure every log should
+    /// override this.
+    ///
+    /// A missing root is [`HistoryError::SessionNotFound`]; a sidechain that
+    /// disappears while it is being read is left out.
+    async fn snapshot_lineage(&self, root: SessionId) -> Result<LineageSnapshot, HistoryError> {
+        let mut snapshot = LineageSnapshot {
+            sessions: vec![(root, self.load(root).await?)],
+            forks: Vec::new(),
+        };
+        let mut seen = std::collections::HashSet::from([root]);
+        let mut next = 0;
+        while next < snapshot.sessions.len() {
+            let parent = snapshot.sessions[next].0.to_string();
+            next += 1;
+            let mut children = self.child_sessions(&parent).await?;
+            children.sort_by_key(SessionId::to_string);
+            for child in children {
+                if !seen.insert(child) {
+                    continue;
+                }
+                if self.session_facts(child).await?.session_kind != SessionKind::Sidechain {
+                    snapshot.forks.push(child);
+                    continue;
+                }
+                match self.load(child).await {
+                    Ok(entries) => snapshot.sessions.push((child, entries)),
+                    Err(HistoryError::SessionNotFound(_)) => {}
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+        Ok(snapshot)
     }
 
     /// Sessions matching a [`SessionQuery`], newest first.
@@ -514,6 +569,50 @@ impl JsonlHistoryStore {
 
     pub fn canonical_cwd(&self) -> &Path {
         &self.canonical_cwd
+    }
+
+    /// The second half of [`HistoryStore::snapshot_lineage`]: the logs in
+    /// `dir` read up to the lengths measured for them. Each length is the end
+    /// of a whole line, because an append writes its line in one go under the
+    /// lock the measuring held.
+    async fn read_lineage(
+        &self,
+        root: SessionId,
+        dir: &Path,
+        lengths: HashMap<SessionId, u64>,
+    ) -> Result<LineageSnapshot, HistoryError> {
+        if !lengths.contains_key(&root) {
+            return Err(HistoryError::SessionNotFound(root.to_string()));
+        }
+        let mut facts = HashMap::with_capacity(lengths.len());
+        for (&session, &len) in &lengths {
+            match head_facts(&session_file(dir, &session), len).await {
+                Ok(Some(found)) => {
+                    facts.insert(session, found);
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(%session, error = %e, "unreadable log left out of a lineage walk");
+                }
+            }
+        }
+        let (members, forks) = lineage_of(root, &facts);
+        let mut sessions = Vec::with_capacity(members.len());
+        for session in members {
+            let len = lengths.get(&session).copied().unwrap_or(0);
+            match read_prefix(&session_file(dir, &session), len).await? {
+                Some(content) => {
+                    sessions.push((session, parse_log(&content, self.blobs.as_deref())?));
+                }
+                None if session == root => {
+                    return Err(HistoryError::SessionNotFound(root.to_string()));
+                }
+                None => {
+                    tracing::warn!(%session, "a sidechain's log disappeared while it was being read");
+                }
+            }
+        }
+        Ok(LineageSnapshot { sessions, forks })
     }
 
     /// 列出当前 project 目录下最近 N 个 session 的 (id, last_modified) 元组。
@@ -912,6 +1011,128 @@ async fn load_entries_from_path(
     Ok(entries)
 }
 
+/// One log's entries, with references into `blobs` put back.
+fn parse_log(
+    content: &str,
+    blobs: Option<&dyn BlobStore>,
+) -> Result<Vec<EnvelopedEntry>, HistoryError> {
+    let mut entries = Vec::new();
+    for (i, line) in content.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let mut env = serde_json::from_str::<EnvelopedEntry>(line)
+            .map_err(|error| HistoryError::Parse { line: i + 1, error })?;
+        if let Some(blobs) = blobs {
+            hydrate(&mut env, blobs);
+        }
+        entries.push(env);
+    }
+    Ok(entries)
+}
+
+/// The length of every `<session>.jsonl` in `dir`.
+async fn transcript_lengths_in(dir: &Path) -> Result<HashMap<SessionId, u64>, HistoryError> {
+    let mut lengths = HashMap::new();
+    for session in session_ids_in(dir).await? {
+        match tokio::fs::metadata(session_file(dir, &session)).await {
+            Ok(meta) => {
+                lengths.insert(session, meta.len());
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(HistoryError::Io(e)),
+        }
+    }
+    Ok(lengths)
+}
+
+/// The first `len` bytes of a log, cut back to the last whole line, or `None`
+/// when the file is gone.
+async fn read_prefix(path: &Path, len: u64) -> Result<Option<String>, HistoryError> {
+    use tokio::io::AsyncReadExt;
+    let file = match tokio::fs::File::open(path).await {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(HistoryError::Io(e)),
+    };
+    let mut bytes = Vec::with_capacity(usize::try_from(len).unwrap_or(0));
+    file.take(len).read_to_end(&mut bytes).await?;
+    let whole_lines = bytes.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+    bytes.truncate(whole_lines);
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|e| HistoryError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
+}
+
+/// What the `Meta` line within a log's first `len` bytes says, read no
+/// further than that line. A log with no `Meta` has the empty facts; `None`
+/// is a log that is gone.
+async fn head_facts(path: &Path, len: u64) -> Result<Option<SessionFacts>, HistoryError> {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt};
+    let file = match tokio::fs::File::open(path).await {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(HistoryError::Io(e)),
+    };
+    let mut lines = tokio::io::BufReader::new(file.take(len));
+    let mut line = String::new();
+    let mut number = 0;
+    loop {
+        line.clear();
+        number += 1;
+        if lines.read_line(&mut line).await? == 0 || !line.ends_with('\n') {
+            return Ok(Some(SessionFacts::default()));
+        }
+        if line.trim().is_empty() {
+            continue;
+        }
+        let env =
+            serde_json::from_str::<EnvelopedEntry>(&line).map_err(|error| HistoryError::Parse {
+                line: number,
+                error,
+            })?;
+        if let Some(facts) = SessionFacts::of(&env.entry) {
+            return Ok(Some(facts));
+        }
+    }
+}
+
+/// `root`'s lineage over a known parent map: its sidechains breadth-first,
+/// and the forks met on the way.
+fn lineage_of(
+    root: SessionId,
+    facts: &HashMap<SessionId, SessionFacts>,
+) -> (Vec<SessionId>, Vec<SessionId>) {
+    let mut children: HashMap<&str, Vec<SessionId>> = HashMap::new();
+    for (session, f) in facts {
+        if let Some(parent) = f.parent_session_id.as_deref() {
+            children.entry(parent).or_default().push(*session);
+        }
+    }
+    for list in children.values_mut() {
+        list.sort_by_key(SessionId::to_string);
+    }
+    let mut members = vec![root];
+    let mut forks = Vec::new();
+    let mut seen = std::collections::HashSet::from([root]);
+    let mut next = 0;
+    while next < members.len() {
+        let parent = members[next].to_string();
+        next += 1;
+        for child in children.get(parent.as_str()).into_iter().flatten() {
+            if !seen.insert(*child) {
+                continue;
+            }
+            if facts.get(child).map(|f| f.session_kind) == Some(SessionKind::Sidechain) {
+                members.push(*child);
+            } else {
+                forks.push(*child);
+            }
+        }
+    }
+    (members, forks)
+}
+
 async fn load_session_metadata(
     sessions_root: &Path,
     session: SessionId,
@@ -1034,22 +1255,20 @@ impl HistoryStore for JsonlHistoryStore {
             }
             Err(e) => return Err(HistoryError::Io(e)),
         };
+        parse_log(&content, self.blobs.as_deref())
+    }
 
-        let mut entries = Vec::new();
-        for (i, line) in content.lines().enumerate() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            let mut env = serde_json::from_str::<EnvelopedEntry>(line)
-                .map_err(|error| HistoryError::Parse { line: i + 1, error })?;
-
-            if let Some(blobs) = &self.blobs {
-                hydrate(&mut env, blobs.as_ref());
-            }
-
-            entries.push(env);
-        }
-        Ok(entries)
+    /// Measures every log in the root's project directory while holding the
+    /// lock appends take, and reads each one up to what was measured once the
+    /// lock is released. A sidechain's transcript goes to its parent's
+    /// project, so one directory holds the whole lineage.
+    async fn snapshot_lineage(&self, root: SessionId) -> Result<LineageSnapshot, HistoryError> {
+        let dir = self.session_dir_of(root).await;
+        let lengths = {
+            let _guard = self.append_lock.lock().await;
+            transcript_lengths_in(&dir).await?
+        };
+        self.read_lineage(root, &dir, lengths).await
     }
 
     async fn delete(&self, session: SessionId) -> Result<(), HistoryError> {
@@ -1263,6 +1482,33 @@ impl HistoryStore for InMemoryHistoryStore {
             .unwrap_or_else(|e| e.into_inner())
             .remove(&session);
         Ok(())
+    }
+
+    /// Taken under the lock every append takes, so the logs are cut at one
+    /// instant.
+    async fn snapshot_lineage(&self, root: SessionId) -> Result<LineageSnapshot, HistoryError> {
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        if !sessions.contains_key(&root) {
+            return Err(HistoryError::SessionNotFound(root.to_string()));
+        }
+        let facts: HashMap<SessionId, SessionFacts> = sessions
+            .iter()
+            .map(|(session, entries)| {
+                let facts = entries
+                    .iter()
+                    .find_map(|env| SessionFacts::of(&env.entry))
+                    .unwrap_or_default();
+                (*session, facts)
+            })
+            .collect();
+        let (members, forks) = lineage_of(root, &facts);
+        Ok(LineageSnapshot {
+            sessions: members
+                .into_iter()
+                .filter_map(|s| sessions.get(&s).map(|entries| (s, entries.clone())))
+                .collect(),
+            forks,
+        })
     }
 
     async fn set_session_title(
@@ -2260,6 +2506,96 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_snapshot_puts_an_externalized_image_back() {
+        let (store, _cwd, _proj, _base) = make_store_with_blobs().await;
+        let s = SessionId::new();
+        store
+            .append(
+                s,
+                LogEntry::User {
+                    content: vec![text_block("look"), image_block()],
+                },
+            )
+            .await
+            .unwrap();
+
+        let snapshot = store.snapshot_lineage(s).await.unwrap();
+        let LogEntry::User { content } = &snapshot.sessions[0].1[0].entry else {
+            panic!(
+                "the reference was not hydrated: {:?}",
+                snapshot.sessions[0].1
+            );
+        };
+        assert!(content.iter().any(|b| matches!(
+            b,
+            ContentBlock::Image {
+                source: ImageSource::Base64 { data, .. }
+            } if data == "iVBORw0KGgo="
+        )));
+    }
+
+    fn said(text: &str) -> LogEntry {
+        LogEntry::User {
+            content: vec![text_block(text)],
+        }
+    }
+
+    fn sidechain_of(parent: SessionId) -> LogEntry {
+        LogEntry::Meta {
+            cwd: "/tmp".into(),
+            started_at: OffsetDateTime::now_utc(),
+            model: "m".into(),
+            permission_mode: "default".into(),
+            engine_version: "0".into(),
+            agix_version: "0".into(),
+            parent_session_id: Some(parent.to_string()),
+            scene: None,
+            project_root: None,
+            session_kind: SessionKind::Sidechain,
+            schema_version: entry::CURRENT_META_SCHEMA_VERSION,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_sidechain_deleted_between_measuring_and_reading_is_left_out() {
+        let (store, _cwd, _proj) = make_store().await;
+        let root = SessionId::new();
+        let kept = SessionId::new();
+        let gone = SessionId::new();
+        store.append(root, said("root")).await.unwrap();
+        store.append(kept, sidechain_of(root)).await.unwrap();
+        store.append(gone, sidechain_of(root)).await.unwrap();
+
+        let dir = store.session_dir_of(root).await;
+        let lengths = transcript_lengths_in(&dir).await.unwrap();
+        assert_eq!(lengths.len(), 3);
+        std::fs::remove_file(session_file(&dir, &gone)).unwrap();
+
+        let snapshot = store.read_lineage(root, &dir, lengths).await.unwrap();
+        let ids: Vec<SessionId> = snapshot.sessions.iter().map(|(s, _)| *s).collect();
+        assert_eq!(ids, [root, kept]);
+    }
+
+    #[tokio::test]
+    async fn a_snapshot_stops_at_the_last_whole_line_it_measured() {
+        let (store, _cwd, _proj) = make_store().await;
+        let root = SessionId::new();
+        store.append(root, said("first")).await.unwrap();
+        let dir = store.session_dir_of(root).await;
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(session_file(&dir, &root))
+            .unwrap()
+            .write_all(b"{\"half\": ")
+            .unwrap();
+        let lengths = transcript_lengths_in(&dir).await.unwrap();
+
+        let snapshot = store.read_lineage(root, &dir, lengths).await.unwrap();
+        assert_eq!(snapshot.sessions[0].1.len(), 1);
+    }
+
+    #[tokio::test]
     async fn load_messages_sees_hydrated_content() {
         let (store, _cwd, _proj, _base) = make_store_with_blobs().await;
         let s = SessionId::new();
@@ -2572,6 +2908,10 @@ impl HistoryStore for ObservedHistoryStore {
         parent_session_id: &str,
     ) -> Result<Vec<SessionId>, HistoryError> {
         self.inner.child_sessions(parent_session_id).await
+    }
+
+    async fn snapshot_lineage(&self, root: SessionId) -> Result<LineageSnapshot, HistoryError> {
+        self.inner.snapshot_lineage(root).await
     }
 
     async fn find_sessions(
@@ -2903,6 +3243,167 @@ mod contract_tests {
         let messages = store.load_messages(s).await.unwrap();
         assert_eq!(messages.len(), 1, "Meta must not reach the model");
     });
+
+    fn meta_of(kind: SessionKind, parent: SessionId) -> LogEntry {
+        match meta(Some(&parent.to_string())) {
+            LogEntry::Meta {
+                cwd,
+                started_at,
+                model,
+                permission_mode,
+                engine_version,
+                agix_version,
+                parent_session_id,
+                scene,
+                project_root,
+                schema_version,
+                ..
+            } => LogEntry::Meta {
+                cwd,
+                started_at,
+                model,
+                permission_mode,
+                engine_version,
+                agix_version,
+                parent_session_id,
+                scene,
+                project_root,
+                session_kind: kind,
+                schema_version,
+            },
+            other => other,
+        }
+    }
+
+    fn ids(snapshot: &LineageSnapshot) -> Vec<SessionId> {
+        snapshot.sessions.iter().map(|(s, _)| *s).collect()
+    }
+
+    async fn lineage_contract(store: &dyn HistoryStore) {
+        let root = SessionId::new();
+        let child = SessionId::new();
+        let grandchild = SessionId::new();
+        let fork = SessionId::new();
+        let under_fork = SessionId::new();
+        let stranger = SessionId::new();
+        store.append(root, meta(None)).await.unwrap();
+        store
+            .append(child, meta_of(SessionKind::Sidechain, root))
+            .await
+            .unwrap();
+        store
+            .append(grandchild, meta_of(SessionKind::Sidechain, child))
+            .await
+            .unwrap();
+        store
+            .append(fork, meta_of(SessionKind::Primary, root))
+            .await
+            .unwrap();
+        store
+            .append(under_fork, meta_of(SessionKind::Sidechain, fork))
+            .await
+            .unwrap();
+        store.append(stranger, meta(None)).await.unwrap();
+
+        let snapshot = store.snapshot_lineage(root).await.unwrap();
+        assert_eq!(ids(&snapshot), [root, child, grandchild]);
+        assert_eq!(snapshot.forks, [fork]);
+
+        let err = store.snapshot_lineage(SessionId::new()).await.unwrap_err();
+        assert!(matches!(err, HistoryError::SessionNotFound(_)), "{err:?}");
+    }
+
+    for_each_store!(
+        a_lineage_reaches_every_sidechain_and_names_forks_without_entering_them,
+        |store| {
+            lineage_contract(store).await;
+        }
+    );
+
+    for_each_store!(a_snapshot_holds_nothing_appended_after_it, |store| {
+        let root = SessionId::new();
+        let child = SessionId::new();
+        store.append(root, meta(None)).await.unwrap();
+        store.append(root, user("before")).await.unwrap();
+        store
+            .append(child, meta_of(SessionKind::Sidechain, root))
+            .await
+            .unwrap();
+
+        let snapshot = store.snapshot_lineage(root).await.unwrap();
+
+        store.append(root, user("after")).await.unwrap();
+        store.append(child, user("after")).await.unwrap();
+        let late = SessionId::new();
+        store
+            .append(late, meta_of(SessionKind::Sidechain, root))
+            .await
+            .unwrap();
+
+        assert_eq!(ids(&snapshot), [root, child]);
+        assert_eq!(snapshot.sessions[0].1.len(), 2);
+        assert_eq!(snapshot.sessions[1].1.len(), 1);
+        assert_eq!(
+            store.snapshot_lineage(root).await.unwrap().sessions.len(),
+            3
+        );
+    });
+
+    for_each_store!(
+        a_snapshot_taken_while_appends_run_is_a_prefix_of_the_log,
+        |store| {
+            let root = SessionId::new();
+            store.append(root, meta(None)).await.unwrap();
+            let writing = async {
+                for i in 0..40 {
+                    store.append(root, user(&format!("m{i}"))).await.unwrap();
+                    tokio::task::yield_now().await;
+                }
+            };
+            let reading = async {
+                let mut seen = Vec::new();
+                for _ in 0..20 {
+                    let snapshot = store.snapshot_lineage(root).await.unwrap();
+                    seen.push(snapshot.sessions[0].1.clone());
+                    tokio::task::yield_now().await;
+                }
+                seen
+            };
+            let ((), snapshots) = tokio::join!(writing, reading);
+            let full = store.load(root).await.unwrap();
+            for snapshot in snapshots {
+                assert!(snapshot.len() <= full.len());
+                for (taken, logged) in snapshot.iter().zip(&full) {
+                    assert_eq!(taken.id, logged.id);
+                }
+            }
+        }
+    );
+
+    /// A backend that implements only what it must, so the defaults are what
+    /// answers.
+    struct OnlyTheRequired(InMemoryHistoryStore);
+
+    #[async_trait]
+    impl HistoryStore for OnlyTheRequired {
+        async fn append(&self, session: SessionId, entry: LogEntry) -> Result<(), HistoryError> {
+            self.0.append(session, entry).await
+        }
+        async fn load(&self, session: SessionId) -> Result<Vec<EnvelopedEntry>, HistoryError> {
+            self.0.load(session).await
+        }
+        async fn list_sessions(&self) -> Result<Vec<SessionId>, HistoryError> {
+            self.0.list_sessions().await
+        }
+        async fn delete(&self, session: SessionId) -> Result<(), HistoryError> {
+            self.0.delete(session).await
+        }
+    }
+
+    #[tokio::test]
+    async fn the_default_lineage_walk_agrees_with_the_shipped_backends() {
+        lineage_contract(&OnlyTheRequired(InMemoryHistoryStore::new())).await;
+    }
 }
 
 #[cfg(test)]

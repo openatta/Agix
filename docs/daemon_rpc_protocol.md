@@ -630,6 +630,7 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 | `host_agents` | 有 `session.startAgent`,宿主不经模型在会话下起子 Agent;子 Agent 任务带 `usage`、`structured_output`、`detail.tag`(§6.3) |
 | `goals` | 有 `session.goal` / `session.setGoal` / `session.updateGoal`,目标变化推 `goal_changed`(§6.3、§7) |
 | `question_prompts` | `session.create` 接受 `options.prompt_types`;列了 `question` 的会话把模型的 `AskUserQuestion` 推成 `prompt_type:"question"` 的 `prompt` 帧,用 `session.respondToPrompt` 回答(§6.3、§7) |
+| `session_export` | 有 `session.export`,把会话连同侧链、附件打成一个归档写到宿主给的路径(§6.3) |
 | `ptc` | 这个构建带 `RunCode`,模型能写程序调本会话的工具(`docs/ptc.md`) |
 
 #### `daemon.status`
@@ -1381,6 +1382,99 @@ client,会话在原地按新的规格重建(它是空闲的,不会腰斩什么),
 调 `session.close` 或 `session.delete` 不会删它。`session.list {parent_session_id}` 会把它和
 源会话的侧链一起列出,`session_kind` 照实标成 `primary`。
 
+#### `session.export`
+
+把一个会话在引擎里能迁移的全部状态——它和它的侧链各自的转录、消息里的图片、扩展条目——
+在同一时刻打成一个归档,写到宿主给的路径。
+
+```jsonc
+// → params
+{ "session_id": "…",
+  "path": "/abs/dir/S1.agix.zip",            // daemon 所在机器上的绝对路径
+  "format": "zip",                            // 可选:zip(默认)| dir
+  "include": ["sidechains", "attachments"] }  // 可选,省略即这两项;录像只在列了 "recording" 时带
+// ← result
+{ "session_id": "…",
+  "path": "…",
+  "format": "zip",
+  "format_version": 1,      // 归档格式的版本,与 manifest.json 的相同
+  "bytes": "…",             // 归档在磁盘上的大小
+  "cut_at": "…",            // 快照时刻
+  "sessions": [ ],          // 每个会话一项:session_id、kind、parent_session_id、entry_count
+  "attachments": 0,         // attachments/ 下的文件数
+  "recording": false,       // 带没带录像
+  "warnings": [ ] }
+```
+
+**一致的快照。** 这个会话和它下面任意深度的侧链,在同一时刻截断:之后才写下的条目、之后才
+起的子会话都不在归档里。导出不占用会话——正在跑的一轮照常跑完,归档里有的是它到**最近一个
+跑完的步骤**为止写下的内容(一轮的每一步结束都会落盘),清单里这个会话的 `active` 为
+`true`、`turn_state` 为 `running`。导出不恢复、不创建会话,也不检查场景。
+
+**路径。** 必须是绝对路径;它所在的目录必须已经存在;目标本身必须不存在(那里有一个符号链接
+也算存在)——导出从不覆盖。归档先写到同目录下的一个临时名,写完才换到目标名上,失败时临时
+文件会被删掉,目标名上不会留下半个归档。目标不能落在会话历史目录(`projects/`、`sessions/`)
+之下。路径在 **daemon 所在的机器上**:经 TCP / WebSocket 连上来的客户端拿到的是那台机器上的
+文件。
+
+**归档的布局**(`format: "dir"` 时是同样结构的一个目录):
+
+```
+manifest.json
+sessions/<session_id>/meta.json          Meta 行,加上名字、标签、用量计数
+sessions/<session_id>/transcript.jsonl   原始日志,逐行照存(含 agix.* 条目与侧链条目)
+sessions/<session_id>/history.json       整段 session.history 的消息(同样的 seq / id / origin)
+sessions/<session_id>/entries.json       session.entries 的那些行
+sessions/<session_id>/session_memory.md  有才有
+sessions/<session_id>/runtime.json       会话在内存里时才有:权限模式、计划、todo、目标;"durable": false
+attachments/<sha256>.<扩展名>             消息里的 base64 图片解码后的本体,同样内容只存一份
+recordings/<name>/calls.jsonl, blobs/    只在 include 列了 "recording" 时
+```
+
+`history.json` 里的图片块,`source` 换成 `{"attachment": "attachments/<sha256>.png",
+"media_type": "image/png"}`;`transcript.jsonl` 保持原样(图片仍是内联 base64),所以同一张
+图在归档里有两份。`include` 不含 `"attachments"` 时没有 `attachments/`,转录和 `history.json`
+里的图片都换成一个写着媒体类型、大小与 sha256 的文本块,清单的 `importable` 为 `false`。
+
+**清单** `manifest.json`:
+
+```jsonc
+{ "format": "agix.session-export", "format_version": 1,
+  "engine_version": "…", "protocol_version": 3,
+  "cut_at": "…", "root_session_id": "…",
+  "include": ["sidechains", "attachments"],
+  "importable": true,
+  "sessions": [ { "session_id": "…", "kind": "primary", "parent_session_id": null, "depth": 0,
+                  "scene": "code", "project_root": "…", "title": null, "dir": "sessions/…",
+                  "entry_count": 12, "message_count": 4, "active": false, "turn_state": "idle",
+                  "terminal": null,               // 侧链跑完时是 "completed" / "failed"
+                  "transcript_sha256": "…" } ],
+  "id_map": { "<session_id>": "sessions/<session_id>" },
+  "attachments": [ { "file": "attachments/….png", "sha256": "…", "media_type": "image/png",
+                     "bytes": 1234, "refs": [ { "session_id": "…", "entry_id": "…", "seq": 0 } ] } ],
+  "url_images": [ ],        // 只有 URL 的图片:引擎手里没有本体
+  "unresolved_blobs": [ ],  // 外置内容的引用,而这个 daemon 没挂那个存储
+  "forks": [ ],             // 从这些会话分叉出去的会话 id,不进归档
+  "recordings": [ { "dir": "recordings/…", "sessions": ["…"], "calls": 3, "covers": "latest_run" } ],
+  "warnings": [ ] }
+```
+
+`refs` 的 `entry_id` 是转录行的 id,或 `history.json` 里那条消息的 `id`;`seq` 是那条消息在
+`history.json` 里的位置,只在转录里而不在投影视图里的为 `null`。`format_version` 只在布局或
+清单的含义变了时才加。
+
+**带什么、不带什么。** 带:`Meta`、整份原始转录(含引擎自己的 `agix.*` 条目和宿主的扩展条目)、
+任意深度的侧链、图片本体、会话记忆,以及会话在内存里时的那部分运行状态。不带:分叉出去的会话和
+它分叉自的会话(只记 id)、"本会话内允许"的授权、设置 / provider / API key / OAuth、输入历史、
+`prompt_state.json`、遥测、团队目录、调度、运行中的任务。录像只覆盖**最近一次运行**(每次
+录制会重写 `calls.jsonl`);会话的 `recorder` 不记进日志,daemon 重启后只找得到 daemon 自己的
+录像根下以会话 id 命名的那份。
+
+归档与转录一样敏感:它就是这些会话说过的全部内容。
+
+`include` 里有不认识的项、`format` 不是 `zip` / `dir`、路径不合上面的规则 → `INVALID_PARAMS`;
+会话不存在 → `SESSION_NOT_FOUND`;写盘失败 → `INTERNAL_ERROR`。
+
 #### `session.close`
 
 ```jsonc
@@ -1939,6 +2033,9 @@ disclosure 的 `wasm.runnable` 会如实报成 `false`。
 `METHOD_NOT_FOUND`。起子 Agent 走 `session.startAgent`;列举、读输出、发消息给、停止运行中的子 Agent、团队成员走 `session.tasks` /
 `session.taskOutput` / `session.messageTask` / `session.stopTask`(§6.3);要看一个子 Agent 干了什么,走它的侧链会话:`session.list
 {parent_session_id}` 拿 id,再 `session.history`。
+
+`session.import` 还没有:`session.export` 的归档带着版本化的清单,是将来导入要读的格式,但目前
+没有方法能把它装回一个 daemon。
 
 ### 6.7 `schedule.*`
 

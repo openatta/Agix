@@ -279,6 +279,8 @@ skill、web 工具、WebSocket、载体与包方案。
   dropped, closed}`;`output_dropped` 去掉了,`from_byte > 0` 就是前面有没给的。`report_progress()`
   不带参数;`finish_task` 关闭输出(`close_output`),之后写的不再记下。`cancel_running_task` 只记下
   停止,`task_finished` 由工作自己走到 `finish_task` 时发,至多等 15 秒。
+- **`HistoryStore::snapshot_lineage`**:一个会话连同任意深度的侧链,`session.export` 用它取快照。
+  有缺省实现,但缺省是逐个 `load`,不在同一时刻;自己实现 store 的,能挡一下写入就覆盖它。
 
 ### RPC 客户端
 
@@ -299,3 +301,6 @@ skill、web 工具、WebSocket、载体与包方案。
   在那一轮还没正式开始时为 `null`;被拒的改动不会记下。
 - 后台子 Agent 的询问不随前台一轮结束而从 `pending_prompts` 里消失,答了或任务结束才去掉。
 - 同一连接重复 `daemon.subscribeEvents` 不再重复投递。
+- **导出**:`session.export {session_id, path, format?, include?}`(能力位 `session_export`)把会话
+  连同侧链、图片本体在同一时刻打成 zip 或目录,写到 daemon 所在机器上的绝对路径,带
+  `manifest.json`(`format_version: 1`)。还没有 `session.import`。

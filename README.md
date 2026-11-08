@@ -323,7 +323,7 @@ echo '{"jsonrpc":"2.0","id":2,"method":"session.run_turn",
 While the turn runs, `session.event` frames stream back (text deltas, tool
 calls, tool results, prompts, task progress); the response arrives when the turn
 ends. A typical client subscribes to a session on one connection
-(`session.subscribe`) and drives it from another. Sixty-two methods are
+(`session.subscribe`) and drives it from another. Sixty-three methods are
 documented in [`docs/daemon_rpc_protocol.md`](docs/daemon_rpc_protocol.md) —
 sessions, history and context, tasks and sub-agents, scenes, configuration,
 MCP, plugins, scheduling — and every documented response shape is compared

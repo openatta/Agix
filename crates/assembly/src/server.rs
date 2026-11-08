@@ -827,6 +827,7 @@ impl DaemonServer {
             }
             "session.appendEntry" => self.method_session_append_entry(id, req.params).await,
             "session.entries" => self.method_session_entries(id, req.params).await,
+            "session.export" => self.method_session_export(id, req.params).await,
             "scene.reload" => RpcResponse::ok(id, self.pool.reload_scenes().await),
             "scene.register" => self.method_scene_register(id, req.params).await,
             "scene.unregister" => match req.params.get("scene").and_then(|v| v.as_str()) {
@@ -1903,6 +1904,57 @@ impl DaemonServer {
             .list_entries(session_id, namespaces.as_deref())
             .await
         {
+            Ok(v) => RpcResponse::ok(id, v),
+            Err((code, message)) => RpcResponse::err(id, code, message),
+        }
+    }
+
+    /// `session.export` params:
+    /// `{"session_id", "path", "format"?: "zip" | "dir", "include"?: [...]}`.
+    /// See `SessionPool::export_session`.
+    async fn method_session_export(
+        &self,
+        id: serde_json::Value,
+        params: serde_json::Value,
+    ) -> RpcResponse {
+        let text = |key: &str| params.get(key).and_then(|v| v.as_str());
+        let (Some(session_id), Some(path)) = (text("session_id"), text("path")) else {
+            return RpcResponse::err(
+                id,
+                codes::INVALID_PARAMS,
+                "session.export needs session_id and path",
+            );
+        };
+        let format = match params.get("format") {
+            None | Some(serde_json::Value::Null) => crate::export::ArchiveFormat::Zip,
+            Some(v) => match v.as_str().and_then(crate::export::ArchiveFormat::parse) {
+                Some(format) => format,
+                None => return RpcResponse::err(id, codes::INVALID_PARAMS, "format is zip or dir"),
+            },
+        };
+        let include = match params.get("include") {
+            None | Some(serde_json::Value::Null) => crate::export::Include::default(),
+            Some(v) => match serde_json::from_value::<Vec<String>>(v.clone()) {
+                Ok(names) => match crate::export::Include::parse(&names) {
+                    Ok(include) => include,
+                    Err(message) => return RpcResponse::err(id, codes::INVALID_PARAMS, message),
+                },
+                Err(_) => {
+                    return RpcResponse::err(
+                        id,
+                        codes::INVALID_PARAMS,
+                        "include is a list of strings",
+                    )
+                }
+            },
+        };
+        let request = crate::export::ExportRequest {
+            session_id: session_id.to_string(),
+            path: std::path::PathBuf::from(path),
+            format,
+            include,
+        };
+        match self.pool.export_session(request).await {
             Ok(v) => RpcResponse::ok(id, v),
             Err((code, message)) => RpcResponse::err(id, code, message),
         }
