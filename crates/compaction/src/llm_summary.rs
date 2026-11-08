@@ -96,7 +96,9 @@ editorialize, do not praise, do not speculate about what the user \"probably\" \
 wants.
 
 1. User intent — what the user asked for, in their own framing, including any \
-later corrections or changes of direction. Quote short decisive phrases.
+later corrections or changes of direction. Quote short decisive phrases. Any \
+value the user gave to be used or recalled later (a code, a name, an id, a \
+number) goes here verbatim.
 2. Key technical context — the concepts, architecture, constraints and \
 conventions established so far that the agent must not re-derive or contradict.
 3. Files and symbols — every file read, created or modified, with absolute paths \
@@ -116,6 +118,10 @@ running, working directory, branch, and any long-lived shell/process state.
 9. Current work and next step — what was happening at the moment of \
 compaction, and the single most immediate next action. If the next step is not \
 clearly implied by the user's request, say so rather than inventing one.
+
+When an earlier summary is given, it is the only record of turns that are \
+already gone: carry everything in it forward under the matching headings, \
+unless the conversation after it overturns it.
 
 Output only the summary. No preamble, no closing remarks.";
 
@@ -167,25 +173,34 @@ impl LlmSummarizer {
     /// Errors (transport failure, timeout, empty response) are the caller's cue
     /// to fall through to the non-LLM cascade — they are never fatal.
     pub async fn summarize(&self, messages: &[ModelMessage]) -> Result<String, CompactError> {
-        let transcript = render_transcript(messages);
-        if transcript.trim().is_empty() {
+        let Rendered {
+            earlier_summaries,
+            transcript,
+        } = render_transcript(messages);
+        if transcript.trim().is_empty() && earlier_summaries.is_empty() {
             return Err(CompactError::NotApplicable(
                 "no summarizable content in the rounds being dropped".into(),
             ));
         }
 
+        let mut content = vec![ModelContentBlock::Text {
+            text: SUMMARY_PROMPT.to_string(),
+        }];
+        content.extend(
+            earlier_summaries
+                .iter()
+                .map(|summary| ModelContentBlock::Text {
+                    text: format!("<earlier-summary>\n{summary}\n</earlier-summary>"),
+                }),
+        );
+        content.push(ModelContentBlock::Text {
+            text: format!(
+                "<conversation-to-summarize>\n{transcript}\n</conversation-to-summarize>"
+            ),
+        });
         let request = vec![ModelMessage {
             role: MessageRole::User,
-            content: vec![
-                ModelContentBlock::Text {
-                    text: SUMMARY_PROMPT.to_string(),
-                },
-                ModelContentBlock::Text {
-                    text: format!(
-                        "<conversation-to-summarize>\n{transcript}\n</conversation-to-summarize>"
-                    ),
-                },
-            ],
+            content,
         }];
         let params = StreamParams {
             model: self.model_name.clone(),
@@ -364,7 +379,16 @@ fn summary_message(summary: &str) -> ModelMessage {
 /// Per-block and overall caps keep a single huge tool result from displacing the
 /// conversational content; when the overall cap bites, the *oldest* rendered
 /// lines are dropped.
-fn render_transcript(messages: &[ModelMessage]) -> String {
+struct Rendered {
+    /// Summaries left by earlier compactions, whole: each is the only record
+    /// of the turns it replaced, so neither the per-block nor the overall cap
+    /// may cut into it.
+    earlier_summaries: Vec<String>,
+    transcript: String,
+}
+
+fn render_transcript(messages: &[ModelMessage]) -> Rendered {
+    let mut earlier_summaries: Vec<String> = Vec::new();
     let mut lines: Vec<String> = Vec::new();
     for msg in messages {
         let who = match msg.role {
@@ -376,6 +400,10 @@ fn render_transcript(messages: &[ModelMessage]) -> String {
             match block {
                 ModelContentBlock::Text { text } => {
                     if text.trim().is_empty() {
+                        continue;
+                    }
+                    if let Some(summary) = earlier_summary(text) {
+                        earlier_summaries.push(summary.to_string());
                         continue;
                     }
                     lines.push(format!("{who}: {}", cap(text)));
@@ -411,7 +439,17 @@ fn render_transcript(messages: &[ModelMessage]) -> String {
         total -= lines[start].len() + 1;
         start += 1;
     }
-    lines[start..].join("\n")
+    Rendered {
+        earlier_summaries,
+        transcript: lines[start..].join("\n"),
+    }
+}
+
+/// The summary inside a message [`summary_message`] wrote.
+fn earlier_summary(text: &str) -> Option<&str> {
+    let start = text.find(COMPACTED_CONTEXT_OPEN)? + COMPACTED_CONTEXT_OPEN.len();
+    let end = start + text[start..].find(COMPACTED_CONTEXT_CLOSE)?;
+    Some(text[start..end].trim())
 }
 
 /// Truncate a rendered block at a character boundary. Byte slicing here would
@@ -636,6 +674,29 @@ mod tests {
         }
         let kept = summary_text(&result[1..]);
         assert!(kept.contains("request 5:") && !kept.contains("request 4:"));
+    }
+
+    #[tokio::test]
+    async fn an_earlier_summary_reaches_the_next_one_whole() {
+        let fact = "the release codeword is OSPREY-7";
+        let earlier = format!("{}\n{fact}", "1. User intent — keep going. ".repeat(200));
+        let mut msgs = vec![summary_message(&earlier)];
+        msgs.extend(bulky_conversation(8));
+        let filler = "x".repeat(MAX_RENDERED_BLOCK_CHARS);
+        for i in 0..(MAX_RENDERED_TRANSCRIPT_CHARS / MAX_RENDERED_BLOCK_CHARS + 2) {
+            msgs.insert(1, user(&format!("old note {i}: {filler}")));
+        }
+        let model = FakeSummarizerModel::new("summary");
+        let summarizer = LlmSummarizer::new(model.clone(), "m");
+
+        full_compact(&summarizer, msgs, 500, 2).await.unwrap();
+
+        let prompt = model.prompt_text();
+        assert!(
+            prompt.contains(&format!("<earlier-summary>\n{earlier}\n</earlier-summary>")),
+            "neither the block cap nor the transcript cap cuts into an earlier summary"
+        );
+        assert!(prompt.contains(fact));
     }
 
     #[tokio::test]

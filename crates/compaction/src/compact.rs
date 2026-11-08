@@ -229,7 +229,7 @@ pub trait Compactor: Send + Sync {
         ReactiveOutcome::Compacted
     }
 
-    /// Tell the user compaction is coming, while there is still room to react
+    /// Tell the model compaction is coming, while there is still room to react
     /// to it. `None` once it has been said.
     fn context_warning(&self, state: &BudgetState) -> Option<String> {
         if state.threshold == 0 || state.warned_already {
@@ -241,9 +241,12 @@ pub trait Compactor: Send + Sync {
         }
         Some(format!(
             "<system-reminder>\n\
-             ⚠️ Context is at {:.0}% of the token budget ({}/{} tokens). \
-             The conversation will be compacted soon to make room. \
-             If you have pending work, wrap it up or ask the user what to preserve.\n\
+             Context is at {:.0}% of the token budget ({}/{} tokens). \
+             When it fills, older turns are replaced with a summary automatically and \
+             you carry on in this same turn — there is no need to stop or to cut work \
+             short. Write anything that must not be lost (values you were given, \
+             results so far, decisions) into your reply text, where the summary will \
+             pick it up.\n\
              </system-reminder>",
             (state.context_tokens as f64 / state.threshold as f64 * 100.0).min(99.0),
             state.context_tokens,
@@ -1281,9 +1284,13 @@ mod tests {
         assert!(DefaultCompactor
             .context_warning(&state(7_999, false))
             .is_none());
-        assert!(DefaultCompactor
+        let said = DefaultCompactor
             .context_warning(&state(8_001, false))
-            .is_some());
+            .expect("in the last fifth");
+        assert!(
+            said.contains("carry on in this same turn") && !said.contains("ask the user"),
+            "the warning keeps the work going rather than winding it down: {said}"
+        );
         assert!(
             DefaultCompactor
                 .context_warning(&state(8_001, true))
