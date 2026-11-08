@@ -1,5 +1,6 @@
 //! The single-agent surface with a real model: the file and shell tools, web
-//! search, a monitor whose events reach the model while it works, a session's
+//! search, a monitor whose events reach the model while it works and whose
+//! output a host follows by byte offset, a session's
 //! own prompt, a resume, plan mode, goals — one the model sets, one the host
 //! sets, one that cannot be reached and has to end blocked rather than loop —
 //! a question the model asks that the host answers, and a spawned `agixd`.
@@ -293,6 +294,65 @@ async fn a_monitors_events_reach_the_model_while_it_works() -> anyhow::Result<()
                     .is_some_and(|a| a.contains(&code))),
         "the host saw the error line as it came"
     );
+
+    let mut followed = String::new();
+    let mut at = 0u64;
+    for frame in watcher
+        .events("task_progress")
+        .iter()
+        .filter(|f| f["event"]["task_id"] == task_id)
+    {
+        let event = &frame["event"];
+        let (from, next) = (
+            event["from_byte"].as_u64().unwrap_or_default(),
+            event["next_byte"].as_u64().unwrap_or_default(),
+        );
+        assert!(
+            from <= at,
+            "no frame skipped ahead of what was followed: {event}"
+        );
+        if next > at {
+            let appended = event["appended"].as_str().unwrap_or_default();
+            followed.push_str(&appended[(at - from) as usize..]);
+            at = next;
+        }
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let rest = loop {
+        let read = run
+            .client
+            .call(
+                "session.taskOutput",
+                json!({ "session_id": session, "task_id": task_id, "from_byte": at }),
+            )
+            .await?;
+        let read = read.result.unwrap_or_default();
+        if read["final"] == true || std::time::Instant::now() > deadline {
+            break read;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    };
+    assert_eq!(
+        rest["final"], true,
+        "the stopped monitor's output closed: {rest}"
+    );
+    assert_eq!(rest["dropped"], 0, "{rest}");
+    followed.push_str(rest["output"].as_str().unwrap_or_default());
+    let whole = run
+        .client
+        .call(
+            "session.taskOutput",
+            json!({ "session_id": session, "task_id": task_id, "from_byte": 0 }),
+        )
+        .await?
+        .result
+        .unwrap_or_default();
+    assert_eq!(
+        whole["output"].as_str(),
+        Some(followed.as_str()),
+        "following frames and reading by offset gives the whole output"
+    );
+    assert!(followed.contains(&code), "{followed}");
     drop(watcher);
     run.finish().await;
     Ok(())
