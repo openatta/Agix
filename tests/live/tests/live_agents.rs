@@ -86,8 +86,8 @@ async fn a_background_agent_takes_a_message_and_reports_back() -> anyhow::Result
         &agent_type(
             "Waits for an operator message",
             run.config().model_at(0),
-            "Wait for a message from the operator: run `sleep 5` with Bash, again and \
-             again, up to 40 times, until a message arrives. The message contains a word in \
+            "Wait for a message from the operator: run `sleep 1` with Bash, again and \
+             again, up to 200 times, until a message arrives. The message contains a word in \
              capitals with a dash and digits. Write exactly that word to word.txt with the \
              Write tool, then answer with the word and stop.",
         ),
