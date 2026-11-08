@@ -1128,3 +1128,159 @@ async fn a_running_program_is_a_code_task_that_wraps_up_when_stopped() {
         "{last_progress}"
     );
 }
+
+fn ids_of(tasks: &serde_json::Value) -> Vec<serde_json::Value> {
+    tasks["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["task_id"].clone())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_finished_task_and_its_notice_outlast_a_rebuild() {
+    let model = Arc::new(MockAnthropicClient::new());
+    model.push_turn(text_round("the sub-agent's answer"));
+    model.push_turn(text_round("noted"));
+    let daemon = Daemon::start(model.clone()).await;
+    let session = daemon.ok("session.create", serde_json::json!({})).await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let started = daemon
+        .ok(
+            "session.startAgent",
+            serde_json::json!({"session_id": session, "prompt": "look into it"}),
+        )
+        .await;
+    let task_id = started["task_id"].clone();
+    eventually!("the sub-agent finish", {
+        let tasks = daemon
+            .ok("session.tasks", serde_json::json!({"session_id": session}))
+            .await;
+        tasks["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["task_id"] == task_id && t["status"] == "done")
+            .then_some(())
+    });
+
+    daemon.ok("config.reload", serde_json::json!({})).await;
+    daemon
+        .ok(
+            "session.run_turn",
+            serde_json::json!({"session_id": session, "message": "anything new?"}),
+        )
+        .await;
+
+    let task = task_id.as_str().unwrap();
+    let told = (0..model.calls()).any(|i| {
+        let request = serde_json::to_string(&model.nth_request(i).unwrap()).unwrap();
+        request.contains("<task-notification>")
+            && request.contains(task)
+            && request.contains("anything new?")
+    });
+    assert!(
+        told,
+        "the turn after the rebuild was not told the sub-agent ended"
+    );
+    let tasks = daemon
+        .ok("session.tasks", serde_json::json!({"session_id": session}))
+        .await;
+    assert!(ids_of(&tasks).contains(&task_id), "{tasks}");
+    let out = daemon
+        .ok(
+            "session.taskOutput",
+            serde_json::json!({"session_id": session, "task_id": task_id}),
+        )
+        .await;
+    assert_eq!(out["status"], "done");
+    assert_eq!(out["output"], "the sub-agent's answer");
+}
+
+/// Answers every call at once except those whose request holds `hold`,
+/// which talk forever; counts those given up on.
+struct HoldsOne {
+    hold: &'static str,
+    held: std::sync::atomic::AtomicUsize,
+    abandoned: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl AnthropicClient for HoldsOne {
+    fn stream_messages(&self, req: MessagesRequest) -> EventStream {
+        let request = serde_json::to_string(&req).unwrap_or_default();
+        if !request.contains(self.hold) {
+            return Box::pin(futures::stream::iter(text_round("ok").into_iter().map(Ok)));
+        }
+        self.held.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        NeverFinishes {
+            calls: Default::default(),
+            abandoned: self.abandoned.clone(),
+        }
+        .stream_messages(req)
+    }
+
+    fn count_tokens<'a>(&'a self, _req: &'a MessagesRequest) -> CountFuture<'a> {
+        Box::pin(async { Ok(0usize) })
+    }
+}
+
+#[tokio::test]
+async fn a_session_running_background_work_is_not_rebuilt_under_it() {
+    let model = Arc::new(HoldsOne {
+        hold: "keep thinking",
+        held: Default::default(),
+        abandoned: Default::default(),
+    });
+    let daemon = Daemon::start_with(model.clone()).await;
+    let session = daemon.ok("session.create", serde_json::json!({})).await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let task_id = daemon
+        .ok(
+            "session.startAgent",
+            serde_json::json!({"session_id": session, "prompt": "keep thinking"}),
+        )
+        .await["task_id"]
+        .clone();
+    eventually!(
+        "the sub-agent call the model",
+        (model.held.load(std::sync::atomic::Ordering::SeqCst) > 0).then_some(())
+    );
+
+    daemon.ok("config.reload", serde_json::json!({})).await;
+    daemon
+        .ok(
+            "session.run_turn",
+            serde_json::json!({"session_id": session, "message": "hello"}),
+        )
+        .await;
+    let refused = daemon
+        .call(
+            "session.setPrompt",
+            serde_json::json!({"session_id": session, "append": "Be brief."}),
+        )
+        .await;
+    assert_eq!(refused["error"]["code"], -32015, "{refused}");
+    assert_eq!(
+        refused["error"]["data"]["running_task_ids"],
+        serde_json::json!([task_id]),
+        "{refused}"
+    );
+
+    let tasks = daemon
+        .ok("session.tasks", serde_json::json!({"session_id": session}))
+        .await;
+    let task = tasks["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["task_id"] == task_id)
+        .cloned()
+        .unwrap_or_else(|| panic!("the sub-agent is gone: {tasks}"));
+    assert_eq!(task["status"], "running", "{task}");
+    assert_eq!(model.abandoned.load(std::sync::atomic::Ordering::SeqCst), 0);
+}

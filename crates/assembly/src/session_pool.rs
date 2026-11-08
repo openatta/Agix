@@ -71,9 +71,11 @@ pub enum ResumeError {
 /// `RpcError` — `(code, message)` — has no room for. Same shape and same
 /// reason as [`ResumeError`].
 pub enum SetModelError {
-    /// Running the turn named, if one has started yet.
+    /// Running the turn named, if one has started yet, or — idle but for
+    /// them — the background tasks named, which a rebuild would cut off.
     Busy {
         current_turn_id: Option<String>,
+        running_task_ids: Vec<String>,
     },
     Rpc(RpcError),
 }
@@ -2461,6 +2463,7 @@ impl SessionPool {
             let resume_result = agent.resume_session(&session_id).await;
             if let Some(previous) = &previous_state {
                 state.carry_goal_arming_from(previous);
+                state.carry_tasks_and_notices_from(previous);
             }
             let outcome = match &resume_result {
                 Ok(()) => telemetry::ResumeOutcome::Succeeded,
@@ -2933,6 +2936,7 @@ impl SessionPool {
             if let Some(current_turn_id) = live.current_turn.clone() {
                 return Err(SetModelError::Busy {
                     current_turn_id: Some(current_turn_id),
+                    running_task_ids: Vec::new(),
                 });
             }
             live.last_active = Instant::now();
@@ -3028,6 +3032,7 @@ impl SessionPool {
             {
                 return Err(SetModelError::Busy {
                     current_turn_id: Some(current_turn_id),
+                    running_task_ids: Vec::new(),
                 });
             }
         }
@@ -3565,10 +3570,11 @@ impl SessionPool {
                 // it is served on the new configuration.
                 //
                 // ③ only rebuilds an idle session. A rebuild replaces the
-                // Agent, and replacing one mid-turn would cut that turn off;
-                // a busy session is served on the old configuration this once
-                // and checked again next time — the flag stays set, so
-                // nothing is missed.
+                // Agent, and replacing one mid-turn would cut that turn off,
+                // as it would the background tasks running under it; a busy
+                // session is served on the old configuration this once and
+                // checked again next time — the flag stays set, so nothing
+                // is missed.
                 let stale = {
                     let sessions = self.sessions.lock().await;
                     sessions.get(sid).map(|live| {
@@ -3581,7 +3587,7 @@ impl SessionPool {
                     Some(false) => Ok(sid.clone()),
                     Some(true) => match self.rebuild_idle(sid, options.as_ref()).await {
                         Ok(sid) => Ok(sid),
-                        Err(Rebuild::Busy(_)) => Ok(sid.clone()),
+                        Err(Rebuild::Busy { .. }) => Ok(sid.clone()),
                         Err(Rebuild::NotLive) => self.ensure_live(sid, options.as_ref()).await,
                         Err(Rebuild::Failed(e)) => Err(e),
                     },
@@ -7030,7 +7036,7 @@ impl SessionPool {
     /// Rebuild a live, idle session in place from its spec and log. Its
     /// turn slot is held from before the old engine stops until the new one
     /// is in the map, so no turn can start on, or be cut off by, the
-    /// replacement; a session running a turn is refused.
+    /// replacement; a session running a turn or background tasks is refused.
     async fn rebuild_idle(
         &self,
         sid: &str,
@@ -7044,17 +7050,40 @@ impl SessionPool {
     }
 
     /// Take the turn slot of live, idle `sid`, so no turn starts until it
-    /// is given back or the session rebuilt. Callers hold `sid`'s session
-    /// lock.
+    /// is given back or the session rebuilt. A session whose background
+    /// tasks still run is not idle: they run under its engine and would be
+    /// stopped with it. Callers hold `sid`'s session lock.
     async fn take_idle_slot(&self, sid: &str) -> Result<HeldSlot, Rebuild> {
-        let (slot, current_turn) = {
+        let (slot, current_turn, state, idle) = {
             let sessions = self.sessions.lock().await;
             let live = sessions.get(sid).ok_or(Rebuild::NotLive)?;
-            (live.event_rx.clone(), live.current_turn.clone())
+            (
+                live.event_rx.clone(),
+                live.current_turn.clone(),
+                live.state.clone(),
+                live.idle.clone(),
+            )
         };
-        let Some(event_rx) = slot.lock().await.take() else {
-            return Err(Rebuild::Busy(current_turn));
+        let mut taken = slot.lock().await;
+        let Some(event_rx) = taken.take() else {
+            return Err(Rebuild::Busy {
+                current_turn,
+                running_tasks: Vec::new(),
+            });
         };
+        let running_tasks = state
+            .map(|state| state.running_background_task_ids())
+            .unwrap_or_default();
+        if !running_tasks.is_empty() {
+            *taken = Some(event_rx);
+            drop(taken);
+            idle.notify_waiters();
+            return Err(Rebuild::Busy {
+                current_turn: None,
+                running_tasks,
+            });
+        }
+        drop(taken);
         Ok(HeldSlot { slot, event_rx })
     }
 
@@ -7140,15 +7169,25 @@ struct HeldSlot {
 /// Why [`SessionPool::rebuild_idle`] did not rebuild.
 enum Rebuild {
     NotLive,
-    /// Running the turn named, if one has started yet.
-    Busy(Option<String>),
+    /// Running the turn named, if one has started yet, or the background
+    /// tasks named.
+    Busy {
+        current_turn: Option<String>,
+        running_tasks: Vec<String>,
+    },
     Failed(String),
 }
 
 impl From<Rebuild> for SetModelError {
     fn from(e: Rebuild) -> Self {
         match e {
-            Rebuild::Busy(current_turn_id) => SetModelError::Busy { current_turn_id },
+            Rebuild::Busy {
+                current_turn,
+                running_tasks,
+            } => SetModelError::Busy {
+                current_turn_id: current_turn,
+                running_task_ids: running_tasks,
+            },
             Rebuild::NotLive => SetModelError::Rpc((
                 codes::SESSION_NOT_FOUND,
                 "session is no longer running".to_string(),
@@ -8792,7 +8831,9 @@ mod set_model_tests {
             .set_session_model(&session_id, Some("claude-opus-4-6"), None)
             .await
         {
-            Err(SetModelError::Busy { current_turn_id }) => {
+            Err(SetModelError::Busy {
+                current_turn_id, ..
+            }) => {
                 assert_eq!(
                     current_turn_id.as_deref(),
                     Some("t1"),
@@ -9275,7 +9316,9 @@ mod rebuild_tests {
         let held = slot.lock().await.take().expect("an idle session");
 
         match pool.set_session_prompt(&sid, append).await {
-            Err(SetModelError::Busy { current_turn_id }) => assert_eq!(current_turn_id, None),
+            Err(SetModelError::Busy {
+                current_turn_id, ..
+            }) => assert_eq!(current_turn_id, None),
             Err(SetModelError::Rpc((code, message))) => panic!("{code}: {message}"),
             Ok(v) => panic!("a rebuild cut off a starting turn: {v}"),
         }

@@ -270,7 +270,8 @@ skill、web 工具、WebSocket、载体与包方案。
 - **`ModelError::NotRecorded`**:回放的录像里没有这次辅助调用时返回;自己穷举 `ModelError` 的补一支。
   会话自动起名走会话自己的模型与项目绑定,录制时记成 `purpose: "title"` 的辅助调用。
 - **`AgentEvent::PermissionPrompt` 带 `task_id`,新增 `AgentEvent::QuestionPrompt`**;穷举匹配
-  `AgentEvent` 的补上。`SetModelError::Busy.current_turn_id` 改成 `Option<String>`。
+  `AgentEvent` 的补上。`SetModelError::Busy.current_turn_id` 改成 `Option<String>`,并多了
+  `running_task_ids`(挡住重建的后台任务)。
 - **RunCode**:程序里的 `agent()` 超过子 Agent 并发上限时排队等空槽;程序起的子 Agent 需要询问时
   一律拒绝;`Agent` 的 `background` / `team_name` / `worktree` 从程序里调用被拒绝。`ToolContext`
   多了 `from_code`。
@@ -299,6 +300,9 @@ skill、web 工具、WebSocket、载体与包方案。
 - `session.run_turn` 的 `turn_id` 不能是目标轮的形式(`goal-<修订>-<轮次>-…`),也不能以 `schedule-`、`cron-` 开头(`INVALID_PARAMS`)。
 - 会话有一轮占着时 `setModel` / `setPrompt` 等需要重建的调用一律 `SESSION_BUSY`,`current_turn_id`
   在那一轮还没正式开始时为 `null`;被拒的改动不会记下。
+- 还有后台任务在跑的会话不重建:`setPrompt`、换厂商的 `setModel` 返回 `SESSION_BUSY`,`data`
+  多一项 `running_task_ids`;设置文件变化引起的重建推迟到任务都结束之后。重建之后会话结束了的
+  任务和还没投给模型的 `<task-notification>` 都还在。
 - 后台子 Agent 的询问不随前台一轮结束而从 `pending_prompts` 里消失,答了或任务结束才去掉。
 - 同一连接重复 `daemon.subscribeEvents` 不再重复投递。
 - **导出**:`session.export {session_id, path, format?, include?}`(能力位 `session_export`)把会话

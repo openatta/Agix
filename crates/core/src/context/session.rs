@@ -552,6 +552,28 @@ impl SessionState {
             .collect()
     }
 
+    /// Take over what `previous` — this session's state before its engine
+    /// was rebuilt in place — still knows of its tasks and still had to
+    /// tell its agent: the tasks it lists, and the notices not yet read.
+    pub fn carry_tasks_and_notices_from(&self, previous: &SessionState) {
+        let tasks: Vec<(String, std::sync::Arc<RunningTask>)> = previous
+            .running_tasks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|(id, task)| (id.clone(), task.clone()))
+            .collect();
+        self.running_tasks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .extend(tasks);
+        let unread =
+            std::mem::take(&mut *previous.notices.lock().unwrap_or_else(|e| e.into_inner()));
+        let mut notices = self.notices.lock().unwrap_or_else(|e| e.into_inner());
+        let posted_since = std::mem::replace(&mut *notices, unread);
+        notices.extend(posted_since);
+    }
+
     const FINISHED_TASKS_KEPT: usize = 20;
 
     fn forget_old_tasks(&self) {
