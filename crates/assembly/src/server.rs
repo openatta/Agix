@@ -30,6 +30,7 @@
 use crate::rpc::{codes, RpcRequest, RpcResponse};
 use crate::rpc::{send_frame, Client, FrameSink, Sink};
 use crate::session_pool::SessionPool;
+use crate::session_pool::TaskOutputRead;
 use base::context::RunningTask;
 use base::id::Id;
 use std::net::SocketAddr;
@@ -654,15 +655,35 @@ impl DaemonServer {
                         "session.taskOutput needs session_id and task_id",
                     );
                 };
-                let tail_bytes = match req.params.get("tail_bytes") {
-                    None | Some(serde_json::Value::Null) => DEFAULT_TASK_OUTPUT_TAIL,
-                    Some(v) => match v.as_u64() {
-                        Some(n) if n > 0 => (n as usize).min(RunningTask::OUTPUT_KEPT_BYTES),
+                let given = |key: &str| req.params.get(key).filter(|v| !v.is_null());
+                let read = match (given("tail_bytes"), given("from_byte")) {
+                    (Some(_), Some(_)) => {
+                        return RpcResponse::err(
+                            id,
+                            codes::INVALID_PARAMS,
+                            "session.taskOutput takes tail_bytes or from_byte, not both",
+                        )
+                    }
+                    (None, None) => TaskOutputRead::Tail(DEFAULT_TASK_OUTPUT_TAIL),
+                    (Some(v), None) => match v.as_u64() {
+                        Some(n) if n > 0 => {
+                            TaskOutputRead::Tail((n as usize).min(RunningTask::OUTPUT_KEPT_BYTES))
+                        }
                         _ => {
                             return RpcResponse::err(
                                 id,
                                 codes::INVALID_PARAMS,
                                 "tail_bytes must be a positive integer",
+                            )
+                        }
+                    },
+                    (None, Some(v)) => match v.as_u64() {
+                        Some(n) => TaskOutputRead::From(n),
+                        None => {
+                            return RpcResponse::err(
+                                id,
+                                codes::INVALID_PARAMS,
+                                "from_byte must be a non-negative integer",
                             )
                         }
                     },
@@ -674,8 +695,16 @@ impl DaemonServer {
                         format!("no session `{session_id}`"),
                     );
                 }
-                match self.pool.task_output(session_id, task_id, tail_bytes).await {
-                    Some(result) => RpcResponse::ok(id, result),
+                match self.pool.task_output(session_id, task_id, read).await {
+                    Some(Ok(result)) => RpcResponse::ok(id, result),
+                    Some(Err(next_byte)) => RpcResponse::err(
+                        id,
+                        codes::INVALID_PARAMS,
+                        format!(
+                            "from_byte is past the end of task `{task_id}`'s output; \
+                             next_byte is {next_byte}"
+                        ),
+                    ),
                     None => RpcResponse::err(
                         id,
                         codes::TASK_NOT_FOUND,

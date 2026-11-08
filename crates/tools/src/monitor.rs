@@ -619,7 +619,7 @@ mod tests {
             &*task.status.lock().unwrap(),
             RunningStatus::Failed(_)
         ));
-        assert_eq!(task.output_tail(1024).0, "a\nb\nc\n");
+        assert_eq!(task.output_tail(1024).text, "a\nb\nc\n");
     }
 
     #[tokio::test]
@@ -806,7 +806,7 @@ mod tests {
         let events: String = seen.concat();
         assert!(events.contains("<events>\ndone\n</events>"), "{events}");
         assert!(!events.contains("eeee"));
-        assert!(task.output_tail(16).0.ends_with("done\n"));
+        assert!(task.output_tail(16).text.ends_with("done\n"));
     }
 
     #[tokio::test]

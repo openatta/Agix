@@ -315,6 +315,15 @@ pub enum OnBusy {
     Steer,
 }
 
+/// Which part of a task's output `session.taskOutput` reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskOutputRead {
+    /// The last this many bytes.
+    Tail(usize),
+    /// From this byte of everything the work printed to the end.
+    From(u64),
+}
+
 /// What a rebuild of a session has to reproduce: the options it was created
 /// with and what has been changed on it since.
 ///
@@ -6421,15 +6430,16 @@ impl SessionPool {
         serde_json::json!({"active": state.is_some(), "tasks": tasks})
     }
 
-    /// `session.taskOutput`: the last `tail_bytes` of what one of
-    /// `session.tasks`' entries has produced — what the model's `TaskOutput`
-    /// reads. `None` if the session's engine does not know the task.
+    /// `session.taskOutput`: part of what one of `session.tasks`' entries has
+    /// produced — what the model's `TaskOutput` reads. `None` if the
+    /// session's engine does not know the task; `Some(Err(next_byte))` if
+    /// `read` starts past the end of the output.
     pub async fn task_output(
         &self,
         session_id: &str,
         task_id: &str,
-        tail_bytes: usize,
-    ) -> Option<serde_json::Value> {
+        read: TaskOutputRead,
+    ) -> Option<Result<serde_json::Value, u64>> {
         let state = self
             .sessions
             .lock()
@@ -6437,12 +6447,29 @@ impl SessionPool {
             .get(session_id)
             .and_then(|live| live.state.clone())?;
         let task = state.find_running_task(task_id)?;
-        let (output, truncated) = task.output_tail(tail_bytes);
-        Some(serde_json::json!({
-            "output": output,
+        let (slice, truncated) = match read {
+            TaskOutputRead::Tail(tail_bytes) => {
+                let slice = task.output_tail(tail_bytes);
+                let truncated = slice.from_byte > 0;
+                (slice, truncated)
+            }
+            TaskOutputRead::From(from_byte) => match task.output_from(from_byte) {
+                Ok(slice) => {
+                    let truncated = slice.dropped > 0;
+                    (slice, truncated)
+                }
+                Err(next_byte) => return Some(Err(next_byte)),
+            },
+        };
+        Some(Ok(serde_json::json!({
+            "output": slice.text,
             "truncated": truncated,
             "status": task.info()["status"],
-        }))
+            "from_byte": slice.from_byte,
+            "next_byte": slice.next_byte,
+            "dropped": slice.dropped,
+            "final": slice.closed,
+        })))
     }
 
     /// `session.stopTask`: stop one of `session.tasks`' entries. A scheduled

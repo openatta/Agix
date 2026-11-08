@@ -337,7 +337,7 @@ async fn a_run_is_a_code_task_with_a_call_log() {
     .await;
     let task = ctx.session.find_running_task("toolu_code").unwrap();
     assert_eq!(task.task_type, TaskType::Code);
-    let output = task.output.lock().unwrap().clone();
+    let output = task.output_text();
     assert!(output.contains("starting"), "{output}");
     assert!(output.contains("→ Echo(text: hi)"), "{output}");
     assert!(output.contains("← Echo(text: hi) ok"), "{output}");
@@ -420,17 +420,12 @@ async fn a_task_stop_on_a_background_run_still_gets_the_grace_period() {
     assert!(session.cancel_running_task(&task_id));
     let task = session.find_running_task(&task_id).unwrap();
     let wrapped_up = tokio::time::timeout(Duration::from_secs(5), async {
-        while !task
-            .output
-            .lock()
-            .unwrap()
-            .contains("{\"wrapped_up\":true}")
-        {
+        while !task.output_text().contains("{\"wrapped_up\":true}") {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await;
-    assert!(wrapped_up.is_ok(), "{}", task.output.lock().unwrap());
+    assert!(wrapped_up.is_ok(), "{}", task.output_text());
 }
 
 #[test]

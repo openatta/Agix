@@ -574,7 +574,7 @@ async fn execute(
     hard_stop.cancel();
     watchers.cancel();
     let _ = dispatcher.await;
-    task.report_progress(true);
+    task.report_progress();
 
     let made = calls_log.made.load(Ordering::SeqCst);
     let failed = calls_log.failed.load(Ordering::SeqCst);
@@ -711,7 +711,7 @@ fn spawn_watchers(
             loop {
                 tokio::select! {
                     _ = done.cancelled() => return,
-                    _ = tokio::time::sleep(Duration::from_secs(1)) => task.report_progress(false),
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => task.report_progress(),
                 }
             }
         });

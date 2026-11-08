@@ -582,6 +582,8 @@ impl StreamFrame {
                 "task_id": event.get("task_id")?,
                 "appended": event.get("appended")?,
                 "skipped_bytes": event.get("skipped_bytes")?,
+                "from_byte": event.get("from_byte")?,
+                "next_byte": event.get("next_byte")?,
             }),
             _ => return None,
         };

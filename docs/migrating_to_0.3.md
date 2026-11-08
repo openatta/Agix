@@ -274,13 +274,26 @@ skill、web 工具、WebSocket、载体与包方案。
 - **RunCode**:程序里的 `agent()` 超过子 Agent 并发上限时排队等空槽;程序起的子 Agent 需要询问时
   一律拒绝;`Agent` 的 `background` / `team_name` / `worktree` 从程序里调用被拒绝。`ToolContext`
   多了 `from_code`。
+- **`RunningTask` 的输出不再是公开字段。** 写用 `append_output`,读用 `output_text()`(全部保留的)、
+  `output_tail(n)` 或 `output_from(偏移)`,后两者返回 `OutputSlice {text, from_byte, next_byte,
+  dropped, closed}`;`output_dropped` 去掉了,`from_byte > 0` 就是前面有没给的。`report_progress()`
+  不带参数;`finish_task` 关闭输出(`close_output`),之后写的不再记下。`cancel_running_task` 只记下
+  停止,`task_finished` 由工作自己走到 `finish_task` 时发,至多等 15 秒。
 
 ### RPC 客户端
 
 - **提问**:`session.create` 的 `options.prompt_types` 加上 `"question"`(能力位 `question_prompts`)
   后,模型的 `AskUserQuestion` 以 `prompt_type: "question"` 的 `prompt` 帧到达,用
   `session.respondToPrompt` 的 `answer` 回答;没打开的会话里模型看不到这个工具。
-- **能力位**多了 `goals`、`ptc`(带这个特性构建时)、`question_prompts`。
+- **能力位**多了 `goals`、`ptc`(带这个特性构建时)、`question_prompts`、`task_output_offsets`。
+- **任务输出按字节偏移读**(能力位 `task_output_offsets`):`session.taskOutput` 接受 `from_byte`
+  (与 `tail_bytes` 二选一),应答多了 `from_byte` / `next_byte` / `dropped` / `final`;`task_progress`
+  帧多了 `from_byte` / `next_byte`。跟随输出的宿主按 `next_byte` 增量拼接,`dropped > 0` 时明示
+  中间丢了多少(做法见协议文档 §6.3 `session.taskOutput`)。老 daemon 不认 `from_byte`,会把它当成
+  只要尾部 —— 先看能力位。
+- **被停掉的任务,`task_finished` 晚到。** `session.stopTask` 之后 `session.tasks` 立刻是 `stopped`,
+  `task_finished` 却要等工作收完尾(至多 15 秒),之前还会有带收尾输出的 `task_progress`。拿
+  `task_finished` 当"停止已生效"的宿主,改看 `stopTask` 的应答或 `session.tasks`。
 - `session.run_turn` 的 `turn_id` 不能是目标轮的形式(`goal-<修订>-<轮次>-…`),也不能以 `schedule-`、`cron-` 开头(`INVALID_PARAMS`)。
 - 会话有一轮占着时 `setModel` / `setPrompt` 等需要重建的调用一律 `SESSION_BUSY`,`current_turn_id`
   在那一轮还没正式开始时为 `null`;被拒的改动不会记下。

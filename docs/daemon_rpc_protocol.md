@@ -576,6 +576,10 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 **没有"续接流"**:重连不会补发上一个 turn 已经推过的帧。已产生的内容都在 transcript
 里,用 `session.history` 取 —— 追赶靠历史,不靠重放。
 
+任务的输出不进 transcript,按字节偏移追赶:`task_progress` 帧带 `from_byte` / `next_byte`,
+断线或订阅被取消期间漏掉的,从手上的 `next_byte` 起用 `session.taskOutput {from_byte}` 补齐
+(§6.3 `session.taskOutput` 的跟随做法)。
+
 **心跳**:daemon 不主动发心跳。空闲连接靠 TCP keepalive 或客户端自己的
 `daemon.ping` 维持。WebSocket 传输会自动回应 ping 帧,但浏览器的 WebSocket API
 发不了 ping —— 网页端要保活就用 `daemon.ping`。
@@ -621,6 +625,7 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 | `extension_entries` | 有 `session.appendEntry` / `session.entries`,写入推 `extension_entry`(§6.3、§7) |
 | `task_output` | 有 `session.taskOutput`,Shell 命令与监视器的输出边跑边记(§6.3) |
 | `task_progress` | 任务边跑边推:`task_progress` 推 Shell 命令、监视器与 `RunCode` 程序新增的输出(程序的是 `log()` 行与每次子调用的一行),`task_updated` 推子 Agent 的用量与等待;`subagent_progress` 带 `task_id`(§7) |
+| `task_output_offsets` | 任务输出按字节偏移:`session.taskOutput` 接受 `from_byte`,应答带 `from_byte` / `next_byte` / `dropped` / `final`;`task_progress` 帧带 `from_byte` / `next_byte`;被停掉的任务等工作收尾才发 `task_finished`(§6.3、§7) |
 | `task_messages` | 有 `session.messageTask`,消息进运行中的后台子 Agent(§6.3) |
 | `host_agents` | 有 `session.startAgent`,宿主不经模型在会话下起子 Agent;子 Agent 任务带 `usage`、`structured_output`、`detail.tag`(§6.3) |
 | `goals` | 有 `session.goal` / `session.setGoal` / `session.updateGoal`,目标变化推 `goal_changed`(§6.3、§7) |
@@ -1510,17 +1515,51 @@ Shell 命令与监视器,以及安排给它的定时任务(§6.7)。和模型用
 ```jsonc
 // → params
 { "session_id": "…", "task_id": "…",
-  "tail_bytes": 8192 }      // 可选:要最后多少字节,默认 8 KiB,最多 256 KiB
+  "tail_bytes": 8192,       // 可选:要最后多少字节,默认 8 KiB,最多 256 KiB
+  "from_byte": 0 }          // 可选,与 tail_bytes 二选一:从这个偏移读到末尾
 // ← result
-{ "output": "…",            // 最后 tail_bytes 字节(在字符边界上截)
-  "truncated": false,       // 前面还有没给的,或者早已丢掉的
-  "status": "running" }     // 同 session.tasks 的 status
+{ "output": "…",            // tail_bytes:最后这么多字节(在字符边界上截);from_byte:从那里到末尾
+  "truncated": false,       // tail_bytes:前面还有没给的,或者早已丢掉的;from_byte:dropped > 0
+  "status": "running",      // 同 session.tasks 的 status
+  "from_byte": 0,           // output 第一个字节的偏移
+  "next_byte": 0,           // output 之后的偏移,下一次 from_byte 从这里接
+  "dropped": 0,             // 要的起点到 from_byte 之间已经不在了的字节数;tail_bytes 时为 0
+  "final": false }          // 输出已经结束,next_byte 不会再长
 ```
 
-Shell 命令与监视器的输出逐行记下(stdout 与 stderr 按到达的顺序交错;监视器只记 stdout),
-每件任务保留最后 256 KiB。子 Agent 与团队成员的 `output` 是它们每一轮结束时的回答文字,
+偏移是这件任务有史以来全部输出的字节数,从 0 起,只增不减;每件任务只保留最后 256 KiB,所以
+`from_byte` 读到的是从要的起点和仍保留的最早一个字节两者中靠后的那个开始、到末尾的全部(至多
+256 KiB)。要的起点落在一个字符中间时往后挪到字符边界,挪过的也算进 `dropped`。恒有
+`要的起点 + dropped == from_byte`、`from_byte + output 的字节长度 == next_byte`。
+`from_byte` 与 `tail_bytes` 同时给、不是非负整数、或者超过当前末尾 → `INVALID_PARAMS`,超过末尾时
+message 里写着此刻的 `next_byte`。
+
+`final` 在这件工作自己收尾之后才是 `true`:之后 `next_byte` 不再长,读它得到空的 `output`。
+`status` 已经是 `stopped` 而 `final` 还是 `false`,是工作被停掉、正在收尾 —— 还会写几行。
+
+Shell 命令的输出逐行记下,stdout 与 stderr 按到达的顺序交错;监视器的 stdout 逐行记下,
+stderr 按到达的块原样记下,两者交错。`RunCode` 程序记 `log()` / `notify()` 行、每次子调用的
+一行和最后的结果。子 Agent 与团队成员的 `output` 是它们每一轮结束时的回答文字,
 不是过程 —— 过程走它们的侧链会话。会话不存在 → `SESSION_NOT_FOUND`;引擎不知道这个任务
-→ `TASK_NOT_FOUND`;定时任务没有输出,也是 `TASK_NOT_FOUND`。
+→ `TASK_NOT_FOUND`;定时任务没有输出,也是 `TASK_NOT_FOUND`。引擎被回收出内存、或者任务结束得早
+已被忘掉(只保留最近 20 个结束的),之前读到一半的也会变成 `TASK_NOT_FOUND`。
+
+**跟随一件任务的输出**(宿主的"跟随"视图):
+
+```
+1. session.subscribe {session_id}
+2. session.taskOutput {task_id}(要从头就 from_byte: 0)  → 记下 next_byte,显示 output
+3. 每来一帧 task_progress(按 task_id):
+   - 帧的 next_byte <= 手上的        → 已经有了,丢掉
+   - 帧的 from_byte <= 手上的        → 接上 appended 里从 (手上的 - from_byte) 字节起的部分
+   - 帧的 from_byte >  手上的        → 中间漏了(skipped_bytes 或丢帧):
+                                      session.taskOutput {from_byte: 手上的} 补齐
+   手上的 = 处理完的 next_byte
+4. task_finished 之后读一次 from_byte: 手上的,final 为 true 就停
+```
+
+补读的 `dropped > 0` 表示那段已经被挤掉,明示"中间丢了 N 字节"即可。断线、订阅被取消
+(`subscription_dropped`)之后照 1、2 重来,第 2 步用手上的 `next_byte`。
 
 #### `session.stopTask`
 
@@ -1534,6 +1573,10 @@ Shell 命令与监视器的输出逐行记下(stdout 与 stderr 按到达的顺�
 和模型的 `TaskStop` 是同一个入口:取消这件工作所在的令牌 —— Shell 命令连同它的整个
 进程组一起结束,子 Agent 在下一个检查点停下;定时任务则是取消安排。被停掉的工具调用
 给模型回的是"已取消",这一轮照常继续。
+
+`session.tasks` 里它立刻是 `stopped`、带 `ended_ms`;`task_finished` 要等工作收完尾 —— 收尾时
+写的输出(进程退出前的几行、程序交回的结果)先随最后一帧 `task_progress` 出去。工作 15 秒内
+没收完尾的,到时照样发 `task_finished`,输出就此截止。
 
 #### `session.messageTask`
 
@@ -1979,8 +2022,8 @@ disclosure 的 `wasm.runnable` 会如实报成 `false`。
 | `error` | `{code,message}` | 本轮出错结束。只发给**发起这一轮之外**的订阅者 —— 发起者从 `run_turn` 的错误响应得知 |
 | `task_started` | `{task}` | 这个会话的一件任务开始了(`task` 同 `session.tasks` 的条目)。Shell 命令与监视器只在跑过 1 秒后才报,短命令不报;不属于任何一轮,`turn_id` 为 `null` |
 | `task_updated` | `{task}` | 一件报过开始、还没结束的任务变了:子 Agent 每调完一次模型(`task.usage`),有询问开始或结束等待(`task.status` 在 `waiting` 与 `running` 之间);`turn_id` 为 `null` |
-| `task_progress` | `{task_id,appended,skipped_bytes}` | 一件报过开始的 Shell 命令或监视器新打出来的输出。每件任务每秒至多一帧,结束时在 `task_finished` 之前补最后一帧;一帧至多 8 KiB,多出的只发结尾,`skipped_bytes` 是跳过的字节数,要全文用 `session.taskOutput`;`turn_id` 为 `null` |
-| `task_finished` | `{task}` | 一件报过开始的任务结束了,`task.status` 是结局;`turn_id` 为 `null` |
+| `task_progress` | `{task_id,appended,skipped_bytes,from_byte,next_byte}` | 一件报过开始的 Shell 命令、监视器或 `RunCode` 程序新打出来的输出,`appended` 是偏移 `from_byte..next_byte` 那段(偏移同 `session.taskOutput`)。每件任务每秒至多一帧,结束时在 `task_finished` 之前补最后一帧;一帧至多 8 KiB,多出的只发结尾,`skipped_bytes` 是跳过的字节数,恒等于本帧 `from_byte` 减上一帧 `next_byte`;漏帧或跳过的用 `session.taskOutput {from_byte}` 补;`turn_id` 为 `null` |
+| `task_finished` | `{task}` | 一件报过开始的任务结束了,`task.status` 是结局;此后没有它的 `task_progress`,输出不再长,`session.taskOutput` 的 `final` 为 `true`。被停掉的任务等工作收尾后才发(§6.3 `session.stopTask`);`turn_id` 为 `null` |
 | `goal_changed` | `{goal}` | 会话目标变了(`goal` 同 `session.goal`,清除后为 `null`);`turn_id` 为 `null` |
 | `extension_entry` | `{entry}` | 宿主经 `session.appendEntry` 写了一条扩展条目(`entry` 同 `session.entries` 的条目);`turn_id` 为 `null` |
 | `subscription_dropped` | `{reason}` | 这条连接对该会话的订阅被取消了(`reason` 目前只有 `"overflow"`,§5.4);不属于任何一轮,`turn_id` 为 `null`。重新 `session.subscribe` 并追平 |

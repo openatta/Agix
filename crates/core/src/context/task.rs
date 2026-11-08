@@ -66,16 +66,15 @@ impl std::fmt::Display for TaskId {
 }
 
 /// 一件属于会话、在会话里继续跑的工作：子 Agent、团队成员、执行中的 Shell……
-/// output / events_log / status 由跑它的那段代码追加；TaskOutput 工具与宿主的
-/// `session.taskOutput` 读快照；
+/// 输出（`append_output`）/ events_log / status 由跑它的那段代码追加；TaskOutput
+/// 工具与宿主的 `session.taskOutput` 读快照，或按字节偏移接着读；
 /// TaskStop 与宿主的 `session.stopTask` 触发 cancel token。
 #[derive(Debug)]
 pub struct RunningTask {
     pub task_id: String,
     pub typed_id: Option<TaskId>,
     pub task_type: TaskType,
-    /// 累积的 assistant 文本（流式 delta append）
-    pub output: std::sync::Mutex<String>,
+    output: std::sync::Mutex<TaskOutput>,
     /// 工具调用与结果的可读日志（每行一条）
     pub events_log: std::sync::Mutex<Vec<String>>,
     pub status: std::sync::Mutex<RunningStatus>,
@@ -90,8 +89,6 @@ pub struct RunningTask {
     pub detail: std::sync::Mutex<serde_json::Value>,
     /// Whether its start was announced; a task that never was ends silently.
     pub announced: std::sync::atomic::AtomicBool,
-    /// Whether `append_output` has let the head of `output` go.
-    pub output_dropped: std::sync::atomic::AtomicBool,
     /// Woken once `ended_ms` is set — see [`RunningTask::wait_ended`].
     pub ended: tokio::sync::Notify,
     /// Where messages for the work go while it runs; set by work that can
@@ -104,10 +101,7 @@ pub struct RunningTask {
     pub structured_output: std::sync::OnceLock<serde_json::Value>,
     /// The questions the work is waiting on the host to answer, by prompt id.
     pub waiting_for: std::sync::Mutex<Vec<String>>,
-    /// Everything `append_output` was ever given, in bytes — `output` keeps
-    /// only the tail, so its length cannot say what is new.
-    output_total: std::sync::atomic::AtomicU64,
-    /// How much of `output_total` has gone out as `task_progress`.
+    /// How much of the output has gone out as `task_progress`, in bytes.
     progress_sent: std::sync::Mutex<u64>,
     /// The session's task event channel, once the task is registered.
     events: std::sync::OnceLock<tokio::sync::broadcast::Sender<serde_json::Value>>,
@@ -139,7 +133,7 @@ impl RunningTask {
             task_id,
             typed_id: None,
             task_type,
-            output: std::sync::Mutex::new(String::new()),
+            output: std::sync::Mutex::new(TaskOutput::default()),
             events_log: std::sync::Mutex::new(Vec::new()),
             status: std::sync::Mutex::new(RunningStatus::Running),
             cancel,
@@ -147,7 +141,6 @@ impl RunningTask {
             ended_ms: std::sync::Mutex::new(None),
             detail: std::sync::Mutex::new(serde_json::Value::Null),
             announced: std::sync::atomic::AtomicBool::new(false),
-            output_dropped: std::sync::atomic::AtomicBool::new(false),
             ended: tokio::sync::Notify::new(),
             inbox: std::sync::OnceLock::new(),
             usage: std::sync::Mutex::new(
@@ -156,7 +149,6 @@ impl RunningTask {
             ),
             structured_output: std::sync::OnceLock::new(),
             waiting_for: std::sync::Mutex::new(Vec::new()),
-            output_total: std::sync::atomic::AtomicU64::new(0),
             progress_sent: std::sync::Mutex::new(0),
             events: std::sync::OnceLock::new(),
         }
@@ -224,37 +216,58 @@ impl RunningTask {
     pub const PROGRESS_FRAME_BYTES: usize = 8 * 1024;
 
     /// Send what the work printed since the last `task_progress`, if anything.
-    /// Only `last` — the one sent as the task ends, before `task_finished` —
-    /// goes out once the task has ended, so none can follow `task_finished`.
-    pub fn report_progress(&self, last: bool) {
+    /// Nothing goes out once the output is [closed](Self::close_output), so
+    /// none can follow `task_finished`.
+    pub fn report_progress(&self) {
         let mut sent = self.progress_sent.lock().unwrap_or_else(|e| e.into_inner());
+        let output = self.output.lock().unwrap_or_else(|e| e.into_inner());
+        if !output.closed {
+            self.send_progress(&output, &mut sent);
+        }
+    }
+
+    /// End the output: what the work printed since the last `task_progress`
+    /// goes out as the last one, and nothing is added after. `false` if it
+    /// was already closed.
+    pub fn close_output(&self) -> bool {
+        let mut sent = self.progress_sent.lock().unwrap_or_else(|e| e.into_inner());
+        let mut output = self.output.lock().unwrap_or_else(|e| e.into_inner());
+        if output.closed {
+            return false;
+        }
+        output.closed = true;
+        self.send_progress(&output, &mut sent);
+        true
+    }
+
+    pub fn output_closed(&self) -> bool {
+        self.output.lock().unwrap_or_else(|e| e.into_inner()).closed
+    }
+
+    fn send_progress(&self, output: &TaskOutput, sent: &mut u64) {
         if !self.streams_output()
             || !self.announced.load(std::sync::atomic::Ordering::SeqCst)
-            || (!last && self.has_ended())
+            || output.total == *sent
         {
             return;
         }
         let Some(events) = self.events.get() else {
             return;
         };
-        let (appended, new) = {
-            let output = self.output.lock().unwrap_or_else(|e| e.into_inner());
-            let total = self.output_total.load(std::sync::atomic::Ordering::SeqCst);
-            if total == *sent {
-                return;
-            }
-            let new = (total - *sent) as usize;
-            let shown = new.min(Self::PROGRESS_FRAME_BYTES).min(output.len());
-            let cut = ceil_char_boundary(&output, output.len() - shown);
-            *sent = total;
-            (output[cut..].to_string(), new)
-        };
+        let new = output.total - *sent;
+        let shown = (new.min(Self::PROGRESS_FRAME_BYTES as u64) as usize).min(output.kept.len());
+        let cut = ceil_char_boundary(&output.kept, output.kept.len() - shown);
+        let appended = &output.kept[cut..];
+        let from_byte = output.total - appended.len() as u64;
         let _ = events.send(serde_json::json!({
             "kind": "task_progress",
             "task_id": self.task_id,
-            "skipped_bytes": new - appended.len(),
+            "skipped_bytes": from_byte - *sent,
             "appended": appended,
+            "from_byte": from_byte,
+            "next_byte": output.total,
         }));
+        *sent = output.total;
     }
 
     pub fn has_ended(&self) -> bool {
@@ -279,33 +292,49 @@ impl RunningTask {
     /// keeps; beyond it the oldest goes.
     pub const OUTPUT_KEPT_BYTES: usize = 256 * 1024;
 
-    /// Add to `output` as the work produces it, keeping its last
-    /// [`Self::OUTPUT_KEPT_BYTES`].
+    /// Add to the output as the work produces it, keeping its last
+    /// [`Self::OUTPUT_KEPT_BYTES`]. Nothing is added once it is closed.
     pub fn append_output(&self, text: &str) {
         let mut output = self.output.lock().unwrap_or_else(|e| e.into_inner());
-        output.push_str(text);
-        self.output_total
-            .fetch_add(text.len() as u64, std::sync::atomic::Ordering::SeqCst);
-        if output.len() > Self::OUTPUT_KEPT_BYTES {
-            let cut = ceil_char_boundary(&output, output.len() - Self::OUTPUT_KEPT_BYTES);
-            output.drain(..cut);
-            self.output_dropped
-                .store(true, std::sync::atomic::Ordering::SeqCst);
+        if output.closed {
+            return;
+        }
+        output.kept.push_str(text);
+        output.total += text.len() as u64;
+        if output.kept.len() > Self::OUTPUT_KEPT_BYTES {
+            let cut = ceil_char_boundary(&output.kept, output.kept.len() - Self::OUTPUT_KEPT_BYTES);
+            output.kept.drain(..cut);
         }
     }
 
-    /// The last `max_bytes` of `output`, and whether anything before them is
-    /// missing.
-    pub fn output_tail(&self, max_bytes: usize) -> (String, bool) {
+    /// All of the output still kept.
+    pub fn output_text(&self) -> String {
+        self.output
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .kept
+            .clone()
+    }
+
+    /// The last `max_bytes` of the output.
+    pub fn output_tail(&self, max_bytes: usize) -> OutputSlice {
         let output = self.output.lock().unwrap_or_else(|e| e.into_inner());
-        let dropped = self
-            .output_dropped
-            .load(std::sync::atomic::Ordering::SeqCst);
-        if output.len() <= max_bytes {
-            return (output.clone(), dropped);
+        let cut = ceil_char_boundary(&output.kept, output.kept.len().saturating_sub(max_bytes));
+        output.slice(cut, 0)
+    }
+
+    /// The output from byte `from_byte` of everything ever appended to its
+    /// end, as much of it as is still kept. `Err` carries the end when
+    /// `from_byte` is past it.
+    pub fn output_from(&self, from_byte: u64) -> Result<OutputSlice, u64> {
+        let output = self.output.lock().unwrap_or_else(|e| e.into_inner());
+        if from_byte > output.total {
+            return Err(output.total);
         }
-        let cut = ceil_char_boundary(&output, output.len() - max_bytes);
-        (output[cut..].to_string(), true)
+        let earliest = output.earliest_kept();
+        let at = ceil_char_boundary(&output.kept, (from_byte.max(earliest) - earliest) as usize);
+        let dropped = earliest + at as u64 - from_byte;
+        Ok(output.slice(at, dropped))
     }
 
     /// The wire shape of this task (`session.tasks`, `task_*` events).
@@ -351,6 +380,47 @@ impl RunningTask {
     }
 }
 
+/// A task's output, as the offsets of everything ever appended count it.
+#[derive(Debug, Default)]
+struct TaskOutput {
+    /// The tail of it, at most [`RunningTask::OUTPUT_KEPT_BYTES`]. Every
+    /// append is whole text and the head is cut on a character boundary, so
+    /// every offset handed out is one too.
+    kept: String,
+    total: u64,
+    closed: bool,
+}
+
+impl TaskOutput {
+    fn earliest_kept(&self) -> u64 {
+        self.total - self.kept.len() as u64
+    }
+
+    fn slice(&self, at: usize, dropped: u64) -> OutputSlice {
+        OutputSlice {
+            text: self.kept[at..].to_string(),
+            from_byte: self.earliest_kept() + at as u64,
+            next_byte: self.total,
+            dropped,
+            closed: self.closed,
+        }
+    }
+}
+
+/// A stretch of a task's output: bytes `from_byte..next_byte` of everything
+/// the work ever printed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputSlice {
+    pub text: String,
+    pub from_byte: u64,
+    pub next_byte: u64,
+    /// Of what was asked for, the bytes no longer kept: the asked-for start
+    /// plus these is `from_byte`.
+    pub dropped: u64,
+    /// The work's output has ended; `next_byte` will not grow.
+    pub closed: bool,
+}
+
 fn ceil_char_boundary(text: &str, mut at: usize) -> usize {
     while !text.is_char_boundary(at) {
         at += 1;
@@ -373,9 +443,14 @@ mod tests {
     fn a_tail_is_cut_on_a_character_boundary() {
         let task = RunningTask::new("sh-1".into(), TaskType::Shell);
         task.append_output("ab\u{4e2d}\n");
-        assert_eq!(task.output_tail(64), ("ab\u{4e2d}\n".to_string(), false));
-        assert_eq!(task.output_tail(2), ("\n".to_string(), true));
-        assert_eq!(task.output_tail(4), ("\u{4e2d}\n".to_string(), true));
+        let tail = |max| {
+            let tail = task.output_tail(max);
+            (tail.text, tail.from_byte)
+        };
+        assert_eq!(tail(64), ("ab\u{4e2d}\n".to_string(), 0));
+        assert_eq!(tail(2), ("\n".to_string(), 5));
+        assert_eq!(tail(4), ("\u{4e2d}\n".to_string(), 2));
+        assert_eq!(task.output_tail(2).next_byte, 6);
     }
 
     #[test]
@@ -383,10 +458,76 @@ mod tests {
         let task = RunningTask::new("sh-2".into(), TaskType::Shell);
         task.append_output("head\n");
         task.append_output(&"x".repeat(RunningTask::OUTPUT_KEPT_BYTES));
-        let (whole, truncated) = task.output_tail(usize::MAX);
-        assert_eq!(whole.len(), RunningTask::OUTPUT_KEPT_BYTES);
-        assert!(!whole.contains("head"));
-        assert!(truncated, "what was dropped is reported");
+        let whole = task.output_tail(usize::MAX);
+        assert_eq!(whole.text.len(), RunningTask::OUTPUT_KEPT_BYTES);
+        assert!(!whole.text.contains("head"));
+        assert_eq!(whole.from_byte, 5, "what was dropped is reported");
+    }
+
+    #[test]
+    fn reads_from_each_next_byte_join_into_the_whole_output() {
+        let task = RunningTask::new("sh-3".into(), TaskType::Shell);
+        let mut joined = String::new();
+        let mut next = 0;
+        for chunk in ["one\n", "\u{4e2d}two\n", "three\n"] {
+            task.append_output(chunk);
+            let read = task.output_from(next).unwrap();
+            assert_eq!(read.from_byte, next);
+            assert_eq!(read.dropped, 0);
+            joined.push_str(&read.text);
+            next = read.next_byte;
+        }
+        assert_eq!(joined, "one\n\u{4e2d}two\nthree\n");
+        assert_eq!(next, joined.len() as u64);
+        let idle = task.output_from(next).unwrap();
+        assert_eq!((idle.text.as_str(), idle.next_byte), ("", next));
+    }
+
+    #[test]
+    fn a_read_after_more_than_is_kept_says_how_much_was_dropped() {
+        let task = RunningTask::new("sh-4".into(), TaskType::Shell);
+        task.append_output("start\n");
+        let first = task.output_from(0).unwrap();
+        task.append_output(&"x".repeat(RunningTask::OUTPUT_KEPT_BYTES + 100));
+        let second = task.output_from(first.next_byte).unwrap();
+        let earliest_kept = second.next_byte - RunningTask::OUTPUT_KEPT_BYTES as u64;
+        assert_eq!(second.from_byte, earliest_kept);
+        assert_eq!(second.dropped, earliest_kept - first.next_byte);
+        assert_eq!(second.text, task.output_text());
+        assert_eq!(
+            second.from_byte + second.text.len() as u64,
+            second.next_byte
+        );
+    }
+
+    #[test]
+    fn a_read_from_inside_a_character_starts_after_it() {
+        let task = RunningTask::new("sh-5".into(), TaskType::Shell);
+        task.append_output("a\u{4e2d}b");
+        let read = task.output_from(2).unwrap();
+        assert_eq!(read.text, "b");
+        assert_eq!((read.from_byte, read.dropped), (4, 2));
+    }
+
+    #[test]
+    fn a_read_past_the_end_is_refused_with_the_end() {
+        let task = RunningTask::new("sh-6".into(), TaskType::Shell);
+        task.append_output("abc");
+        assert_eq!(task.output_from(4), Err(3));
+        assert!(task.output_from(3).is_ok());
+    }
+
+    #[test]
+    fn a_closed_output_takes_nothing_more() {
+        let task = RunningTask::new("sh-7".into(), TaskType::Shell);
+        task.append_output("done\n");
+        assert!(!task.output_tail(64).closed);
+        assert!(task.close_output());
+        assert!(!task.close_output(), "only once");
+        task.append_output("late\n");
+        let read = task.output_from(0).unwrap();
+        assert_eq!(read.text, "done\n");
+        assert!(read.closed);
     }
 
     fn reporting(
@@ -408,18 +549,18 @@ mod tests {
     }
 
     #[test]
-    fn progress_goes_out_only_between_announcement_and_end() {
+    fn progress_goes_out_only_between_announcement_and_close() {
         let (task, mut rx) = reporting(TaskType::Shell);
         task.append_output("early\n");
-        task.report_progress(false);
+        task.report_progress();
         assert!(drain(&mut rx).is_empty(), "not announced yet");
 
         task.announced
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        task.report_progress(false);
+        task.report_progress();
         task.append_output("more\n");
-        task.report_progress(false);
-        task.report_progress(false);
+        task.report_progress();
+        task.report_progress();
         let sent: Vec<_> = drain(&mut rx)
             .into_iter()
             .map(|e| e["appended"].as_str().unwrap().to_string())
@@ -431,14 +572,40 @@ mod tests {
         );
 
         task.append_output("last\n");
-        *task.ended_ms.lock().unwrap() = Some(1);
-        task.report_progress(false);
-        assert!(
-            drain(&mut rx).is_empty(),
-            "only the closing report follows the end"
-        );
-        task.report_progress(true);
+        task.close_output();
         assert_eq!(drain(&mut rx)[0]["appended"], "last\n");
+        task.report_progress();
+        assert!(drain(&mut rx).is_empty(), "nothing follows the close");
+    }
+
+    #[test]
+    fn progress_frames_carry_offsets_that_account_for_every_byte() {
+        let (task, mut rx) = reporting(TaskType::Shell);
+        task.announced
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        for chunk in [
+            "a\n".to_string(),
+            "x".repeat(RunningTask::PROGRESS_FRAME_BYTES + 10),
+            "\u{4e2d}\n".to_string(),
+        ] {
+            task.append_output(&chunk);
+            task.report_progress();
+        }
+        let frames = drain(&mut rx);
+        assert_eq!(frames.len(), 3);
+        let mut previous = 0;
+        for frame in &frames {
+            let from = frame["from_byte"].as_u64().unwrap();
+            let next = frame["next_byte"].as_u64().unwrap();
+            assert_eq!(from - previous, frame["skipped_bytes"].as_u64().unwrap());
+            assert_eq!(
+                from + frame["appended"].as_str().unwrap().len() as u64,
+                next
+            );
+            previous = next;
+        }
+        assert_eq!(frames[1]["skipped_bytes"], 10);
+        assert_eq!(previous, task.output_tail(1).next_byte);
     }
 
     #[test]
@@ -448,7 +615,7 @@ mod tests {
             .store(true, std::sync::atomic::Ordering::SeqCst);
         let burst = "x".repeat(RunningTask::PROGRESS_FRAME_BYTES * 3);
         task.append_output(&burst);
-        task.report_progress(false);
+        task.report_progress();
         let frame = drain(&mut rx).remove(0);
         assert_eq!(frame["kind"], "task_progress");
         assert_eq!(frame["task_id"], "t-1");
@@ -469,7 +636,7 @@ mod tests {
         task.announced
             .store(true, std::sync::atomic::Ordering::SeqCst);
         task.append_output("the answer");
-        task.report_progress(true);
+        task.close_output();
         assert!(drain(&mut rx).is_empty());
     }
 

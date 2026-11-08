@@ -231,4 +231,64 @@ mod tests {
             _ => panic!(),
         }
     }
+
+    fn task_events(
+        rx: &mut tokio::sync::broadcast::Receiver<serde_json::Value>,
+    ) -> Vec<serde_json::Value> {
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    #[tokio::test]
+    async fn a_stopped_task_finishes_once_its_work_winds_down() {
+        let s = SessionState::new(PathBuf::from("/tmp"));
+        let mut rx = s.subscribe_tasks();
+        let task = s.register_task(
+            "cd-1",
+            TaskType::Code,
+            tokio_util::sync::CancellationToken::new(),
+            serde_json::Value::Null,
+        );
+        task.append_output("round 1\n");
+        assert!(s.cancel_running_task("cd-1"));
+        assert!(task.cancel.is_cancelled());
+        assert_eq!(task.info()["status"], "stopped");
+        assert!(!s.cancel_running_task("cd-1"), "already stopped");
+        let kinds: Vec<_> = task_events(&mut rx)
+            .iter()
+            .map(|e| e["kind"].clone())
+            .collect();
+        assert_eq!(kinds, ["task_started"], "not finished while it winds down");
+
+        task.append_output("wrapped up\n");
+        s.finish_task("cd-1", RunningStatus::Completed);
+        task.append_output("too late\n");
+        let events = task_events(&mut rx);
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert_eq!(events[0]["kind"], "task_progress");
+        assert_eq!(events[0]["appended"], "round 1\nwrapped up\n");
+        assert_eq!(events[1]["kind"], "task_finished");
+        assert_eq!(events[1]["task"]["status"], "stopped");
+        let read = task.output_from(0).unwrap();
+        assert_eq!(read.next_byte, events[0]["next_byte"].as_u64().unwrap());
+        assert!(read.closed);
+    }
+
+    #[test]
+    fn a_task_stopped_outside_a_runtime_finishes_at_once() {
+        let s = SessionState::new(PathBuf::from("/tmp"));
+        let mut rx = s.subscribe_tasks();
+        let task = s.register_task(
+            "ag-1",
+            TaskType::Agent,
+            tokio_util::sync::CancellationToken::new(),
+            serde_json::Value::Null,
+        );
+        assert!(s.cancel_running_task("ag-1"));
+        assert!(task.output_closed());
+        let kinds: Vec<_> = task_events(&mut rx)
+            .iter()
+            .map(|e| e["kind"].clone())
+            .collect();
+        assert_eq!(kinds, ["task_started", "task_finished"]);
+    }
 }

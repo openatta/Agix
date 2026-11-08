@@ -446,13 +446,20 @@ async fn output_is_only_for_a_task_the_engine_knows() {
         .await;
     assert_eq!(response["error"]["code"], SESSION_NOT_FOUND, "{response}");
 
-    let response = daemon
-        .call(
-            "session.taskOutput",
-            serde_json::json!({"session_id": session, "task_id": "sh-nope", "tail_bytes": 0}),
-        )
-        .await;
-    assert_eq!(response["error"]["code"], -32602, "{response}");
+    for bad in [
+        serde_json::json!({"tail_bytes": 0}),
+        serde_json::json!({"tail_bytes": 8, "from_byte": 0}),
+        serde_json::json!({"from_byte": -1}),
+        serde_json::json!({"from_byte": 1.5}),
+    ] {
+        let mut params = serde_json::json!({"session_id": session, "task_id": "sh-nope"});
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(bad.as_object().unwrap().clone());
+        let response = daemon.call("session.taskOutput", params).await;
+        assert_eq!(response["error"]["code"], -32602, "{bad}: {response}");
+    }
 }
 
 #[tokio::test]
@@ -655,6 +662,17 @@ async fn what_a_running_command_prints_streams_to_the_sessions_watchers() {
         streamed, "line-1\nline-2\nline-3\nline-4\nline-5\nline-6\n",
         "every line once, in order, the last before task_finished"
     );
+    let mut next = 0;
+    for frame in &progress {
+        assert_eq!(frame["event"]["from_byte"], next, "{frame}");
+        next = frame["event"]["next_byte"].as_u64().unwrap();
+        assert_eq!(
+            next - frame["event"]["from_byte"].as_u64().unwrap(),
+            frame["event"]["appended"].as_str().unwrap().len() as u64,
+            "{frame}"
+        );
+    }
+    assert_eq!(next, streamed.len() as u64);
 }
 
 #[tokio::test]
@@ -719,6 +737,176 @@ async fn a_flood_of_output_streams_as_its_tail_and_says_what_it_left_out() {
         40_001,
         "what a frame left out is still there to read"
     );
+}
+
+/// Start a turn that runs `command` with Bash, and hand back the shell
+/// task's id once it is listed, with the turn still running.
+async fn start_command(
+    command: &str,
+) -> (
+    Arc<Daemon>,
+    String,
+    serde_json::Value,
+    tokio::task::JoinHandle<serde_json::Value>,
+) {
+    let model = Arc::new(MockAnthropicClient::new());
+    model.push_turn(tool_round(
+        "Bash",
+        "toolu_cmd",
+        serde_json::json!({"command": command}),
+    ));
+    model.push_turn(text_round("ran"));
+    let daemon = Arc::new(Daemon::start(model).await);
+    let session = daemon.ok("session.create", serde_json::json!({})).await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let turn = {
+        let (daemon, session) = (daemon.clone(), session.clone());
+        tokio::spawn(async move {
+            daemon
+                .call(
+                    "session.run_turn",
+                    serde_json::json!({"session_id": session, "message": "run it"}),
+                )
+                .await
+        })
+    };
+    let task_id = eventually!("the shell command listed", {
+        daemon
+            .ok("session.tasks", serde_json::json!({"session_id": session}))
+            .await["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["kind"] == "shell")
+            .map(|t| t["task_id"].clone())
+    });
+    (daemon, session, task_id, turn)
+}
+
+async fn read_from(
+    daemon: &Daemon,
+    session: &str,
+    task_id: &serde_json::Value,
+    from_byte: u64,
+) -> serde_json::Value {
+    daemon
+        .ok(
+            "session.taskOutput",
+            serde_json::json!({"session_id": session, "task_id": task_id, "from_byte": from_byte}),
+        )
+        .await
+}
+
+#[tokio::test]
+async fn reads_from_each_next_byte_join_into_a_commands_whole_output() {
+    let (daemon, session, task_id, turn) =
+        start_command("for i in 1 2 3 4 5; do echo line-$i; sleep 0.5; done").await;
+
+    let mut joined = String::new();
+    let mut next = 0;
+    let first = eventually!("the first line", {
+        let out = read_from(&daemon, &session, &task_id, 0).await;
+        (!out["output"].as_str().unwrap().is_empty()).then_some(out)
+    });
+    let second = {
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        read_from(
+            &daemon,
+            &session,
+            &task_id,
+            first["next_byte"].as_u64().unwrap(),
+        )
+        .await
+    };
+    tokio::time::timeout(Duration::from_secs(10), turn)
+        .await
+        .expect("the command ends")
+        .unwrap();
+    let third = read_from(
+        &daemon,
+        &session,
+        &task_id,
+        second["next_byte"].as_u64().unwrap(),
+    )
+    .await;
+    for read in [&first, &second, &third] {
+        assert_eq!(read["from_byte"], next, "{read}");
+        assert_eq!(read["dropped"], 0, "{read}");
+        assert_eq!(read["truncated"], false, "{read}");
+        joined.push_str(read["output"].as_str().unwrap());
+        next = read["next_byte"].as_u64().unwrap();
+        assert_eq!(
+            read["from_byte"].as_u64().unwrap() + read["output"].as_str().unwrap().len() as u64,
+            next
+        );
+    }
+    assert_eq!(joined, "line-1\nline-2\nline-3\nline-4\nline-5\n");
+    assert_eq!(first["final"], false);
+    assert_eq!(third["final"], true);
+    assert_eq!(third["status"], "done");
+
+    let after = read_from(&daemon, &session, &task_id, next).await;
+    assert_eq!(after["output"], "");
+    assert_eq!(
+        after["next_byte"], next,
+        "an ended task's output does not grow"
+    );
+    assert_eq!(after["final"], true);
+
+    let past = daemon
+        .call(
+            "session.taskOutput",
+            serde_json::json!({"session_id": session, "task_id": task_id, "from_byte": next + 1}),
+        )
+        .await;
+    assert_eq!(past["error"]["code"], -32602, "{past}");
+    assert!(
+        past["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("next_byte is {next}")),
+        "{past}"
+    );
+
+    let tail = daemon
+        .ok(
+            "session.taskOutput",
+            serde_json::json!({"session_id": session, "task_id": task_id, "tail_bytes": 7}),
+        )
+        .await;
+    assert_eq!(tail["output"], "line-5\n");
+    assert_eq!(tail["from_byte"], next - 7);
+    assert_eq!(tail["next_byte"], next);
+    assert_eq!(tail["final"], true);
+}
+
+#[tokio::test]
+async fn a_read_after_more_than_is_kept_says_how_much_was_dropped() {
+    let (daemon, session, task_id, turn) =
+        start_command("echo start; sleep 1; yes x | head -c 600000; sleep 1").await;
+    let first = eventually!("the first line", {
+        let out = read_from(&daemon, &session, &task_id, 0).await;
+        (out["output"] == "start\n").then_some(out)
+    });
+    assert_eq!(first["next_byte"], 6);
+    tokio::time::timeout(Duration::from_secs(20), turn)
+        .await
+        .expect("the command ends")
+        .unwrap();
+
+    let second = read_from(&daemon, &session, &task_id, 6).await;
+    let (from, next) = (
+        second["from_byte"].as_u64().unwrap(),
+        second["next_byte"].as_u64().unwrap(),
+    );
+    assert_eq!(next, 6 + 600_000);
+    let kept = 256 * 1024;
+    assert_eq!(from, next - kept, "the output starts at what is still kept");
+    assert_eq!(second["dropped"], from - 6, "{}", second["dropped"]);
+    assert_eq!(second["truncated"], true);
+    assert_eq!(second["output"].as_str().unwrap().len() as u64, next - from);
 }
 
 #[tokio::test]
@@ -839,6 +1027,7 @@ async fn a_running_program_is_a_code_task_that_wraps_up_when_stopped() {
         .as_str()
         .unwrap()
         .to_string();
+    let frames = daemon.watch(&session).await;
     let turn = {
         let (daemon, session) = (daemon.clone(), session.clone());
         tokio::spawn(async move {
@@ -900,5 +1089,42 @@ async fn a_running_program_is_a_code_task_that_wraps_up_when_stopped() {
     assert!(
         output.contains("\"rounds\":"),
         "it returned what it had: {output}"
+    );
+    assert_eq!(out["status"], "stopped");
+    assert_eq!(out["final"], true, "{out}");
+
+    eventually!("task_finished", {
+        about(&frames, &program["task_id"])
+            .into_iter()
+            .find(|f| f["event"]["kind"] == "task_finished")
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let seen = about(&frames, &program["task_id"]);
+    let kinds: Vec<&str> = seen
+        .iter()
+        .map(|f| f["event"]["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        kinds.last(),
+        Some(&"task_finished"),
+        "nothing follows task_finished: {kinds:?}"
+    );
+    let finished = seen.last().unwrap();
+    assert_eq!(finished["event"]["task"]["status"], "stopped");
+    let last_progress = seen
+        .iter()
+        .rev()
+        .find(|f| f["event"]["kind"] == "task_progress")
+        .expect("what the program printed was streamed");
+    assert_eq!(
+        last_progress["event"]["next_byte"], out["next_byte"],
+        "the wrap-up went out before task_finished"
+    );
+    assert!(
+        last_progress["event"]["appended"]
+            .as_str()
+            .unwrap()
+            .contains("\"rounds\":"),
+        "{last_progress}"
     );
 }
