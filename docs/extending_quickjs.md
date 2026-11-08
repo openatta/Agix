@@ -11,6 +11,10 @@
 `docs/extension_points.md` 是引擎里所有可扩展之处的总目录,不限使用者、不限方式。
 本文只讲今天脚本能绑上去的那九个点。
 
+脚本和 `RunCode`(`ptc.md`)跑在同一套内嵌 QuickJS 里。内存、时间、每轮次数的限额限的
+是**开销**,不是对恶意代码的隔离边界——所以一个脚本能做什么由它从哪来决定(见「权限」),
+而它够不到任何 I/O,这一条不会因为哪个点需要而放开。
+
 要的是一整个场景——自己的系统提示、工具面、预算——不用写脚本:场景可以纯声明,
 一个 `scene.json` 加一个 `prompt.md`,宿主从 `~/.agix/scenes/<id>/` 这样的目录读,
 或者随插件包一起发(`[scene] dir`)。格式见 `docs/extension_points.md` 的「声明式场景」。
@@ -20,14 +24,9 @@
 脚本载体是 `daemon` crate 的 `scripts` feature,**默认开启**:
 
 ```sh
-cargo build -p daemon                                                       # QuickJS
-cargo build -p daemon --no-default-features --features full,plugin-compile
-cargo build -p daemon --no-default-features --features full                 # neither
+cargo build -p daemon                                          # QuickJS
+cargo build -p daemon --no-default-features --features full    # 不带
 ```
-
-一个构建只带**一个**扩展载体,或者一个都不带。`scripts` 和 `plugins` 互斥,同时
-开启编译不过——插件构建必须带 `--no-default-features`,否则 cargo 会把默认的
-`scripts` 并回来,`daemon/src/lib.rs` 里的守卫会拒绝。
 
 不开这个 feature,就没有任何 JavaScript 引擎被链接进来,`settings.json` 里出现
 `scripts` 段会被明确拒绝:
@@ -442,6 +441,23 @@ function onMessage(msg) {
 的东西。
 
 注意,改写一条消息影响的是模型在*下一次*请求里看到什么,不是正在飞的这一次。
+
+## 和 Rust 插件在同一个点上
+
+一个点上同时有 Rust 插件(`runtime::plugin::Plugin`)或宿主自己的 Rust 实现时,脚本
+**后执行**:串行的点上它读的是 Rust 处理过的东西;`tool.around` 上它是最外面的一环,
+先看到调用、最后看到结果;`prompt.block` / `prompt.context` / `prompt.variable` 上和
+Rust 撞了名字,项目里的脚本覆盖 Rust,包里的脚本的那一个被丢弃。完整的规则在
+`extension_points.md`「叠加顺序」。
+
+## 稳定性
+
+下面这些是对脚本作者的承诺,之后只做增量——加字段、加点——不改已有字段的含义:
+
+- 九个点各自的输入与返回值的 JSON 形状(上面「九个点」);
+- 绑定的字段(`path`、`point`、`entry`、`timeout_ms`、`calls_per_turn`),以及包里
+  `[[script]]` 的写法(`plugin_packages.md`);
+- 调用约定:顶层普通函数、一个参数、JSON 进 JSON 出、每次调用一个全新运行时、没有 I/O。
 
 ## 预算
 

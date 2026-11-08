@@ -349,6 +349,19 @@ WebAssembly 载体整个移除。
   `HookRunner::with_wasm_executor`、`PluginHost::hook_executor` 删除。
 - `SessionPool::load_plugin_components` 改名 `load_plugins`(现在只接管插件包的场景)。
 - `plugin::locate::locate_tool` 删除。
+- **Rust 插件接口定为 `runtime::plugin::Plugin`**:`Builder::plugin(..)` 可以加多个,
+  `Assembly { plugins, .. }` 加给池里每个会话;插件随会话一起交给子 Agent。
+  `PluginHost` / `Builder::plugin_host` 标为 deprecated,行为不变,下个版本删除。
+  只为加几个工具实现 `PluginHost` 的,改成一个只调 `Registrar::tool` 的 `Plugin`。
+- **同一个点上 Rust 与 QuickJS 的先后对调了。** 以前串行的点上(`tool.result`、
+  `model.request`、`model.message`、`memory.retrieval_hook`)脚本碰巧跑在 `SessionCustomizer`
+  加的 Rust 实现**之前**;现在 Rust 先、脚本后,与交给 `Builder` 的先后无关。`tool.around`
+  上脚本仍在外层。见 `extension_points.md`「叠加顺序」。
+- 在 `SessionCustomizer` 里设 `Builder::prompt_registry` 不再把脚本的块、变量、组装钩子
+  冲掉:脚本叠在宿主的注册表上。
+- `runtime::module::SessionContext` 的 `plugin_host` 字段换成 `plugin_agent_types` 与
+  `delegate_plugins`。
+- `BoundScripts::prompt_variables` 的元素多了第三项 `BlockOrigin`。
 
 ### RPC 客户端
 

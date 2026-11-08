@@ -1415,6 +1415,8 @@ struct Inner {
     /// the rings around tool and model calls, never the prompt contributions.
     /// See `BoundScripts::for_delegate` for where that line is drawn and why.
     delegate_scripts: Option<Arc<base::interface::script_adapters::BoundScripts>>,
+    /// The Rust plugins every delegate is built with, as its parent was.
+    delegate_plugins: Vec<Arc<dyn runtime::plugin::Plugin>>,
     process_groups: Option<Arc<base::interface::exec::local::GroupLedger>>,
     /// What every delegate is assembled with: the parent session's modules.
     modules: Vec<Arc<dyn runtime::module::Module>>,
@@ -1661,6 +1663,9 @@ impl Inner {
         // prompt contributions stay behind. See `BoundScripts::for_delegate`.
         if let Some(scripts) = &self.delegate_scripts {
             builder = builder.bound_scripts(scripts.for_delegate());
+        }
+        for plugin in &self.delegate_plugins {
+            builder = builder.plugin(plugin.clone());
         }
         // Its own session id keeps a delegate's transcript in a file of its
         // own rather than mixed into the parent's.
@@ -2181,6 +2186,7 @@ impl AgentTool {
                 parent_settings: None,
                 task_router: None,
                 delegate_scripts: None,
+                delegate_plugins: Vec::new(),
                 process_groups: None,
                 modules: Vec::new(),
                 skill_manager: Arc::new(std::sync::RwLock::new(None)),
@@ -2248,6 +2254,7 @@ impl AgentTool {
                 parent_settings: None,
                 task_router: None,
                 delegate_scripts: None,
+                delegate_plugins: Vec::new(),
                 process_groups: None,
                 modules: Vec::new(),
                 skill_manager: Arc::new(std::sync::RwLock::new(None)),
@@ -2312,6 +2319,14 @@ impl AgentTool {
     ) -> Self {
         let mut inner = (*self.inner).clone();
         inner.delegate_scripts = Some(scripts);
+        self.inner = Arc::new(inner);
+        self
+    }
+
+    /// The Rust plugins every agent this tool spawns is built with.
+    pub fn with_delegate_plugins(mut self, plugins: Vec<Arc<dyn runtime::plugin::Plugin>>) -> Self {
+        let mut inner = (*self.inner).clone();
+        inner.delegate_plugins = plugins;
         self.inner = Arc::new(inner);
         self
     }

@@ -99,6 +99,8 @@ pub struct Assembly {
     /// What a `bypassPermissions` session runs under in place of the rule
     /// gate. `None` keeps the gate, which in that mode only validates input.
     pub permission: Option<Arc<dyn Permission>>,
+    /// Rust plugins every session this pool builds is built with, in order.
+    pub plugins: Vec<Arc<dyn runtime::plugin::Plugin>>,
     /// The host's last word on every session engine — see
     /// [`SessionCustomizer`].
     pub customize_session: Option<SessionCustomizer>,
@@ -119,6 +121,7 @@ impl Default for Assembly {
             credentials: None,
             transcripts: Transcripts::default(),
             permission: None,
+            plugins: Vec::new(),
             customize_session: None,
             #[cfg(feature = "mcp")]
             mcp_oauth_resolver: None,
@@ -221,6 +224,7 @@ pub async fn pool(
     )
     .with_permission_prompt_timeout(assembly.permission_prompt_timeout)
     .with_credentials(credentials);
+    pool = pool.with_plugins(assembly.plugins);
     if let Some(customize) = assembly.customize_session {
         pool = pool.with_session_customizer(customize);
     }

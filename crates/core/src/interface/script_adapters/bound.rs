@@ -42,8 +42,12 @@ pub struct BoundScripts {
     /// Blocks the scripts contribute, each already carrying the name and
     /// the order its script asked for.
     pub prompt_blocks: Vec<crate::interface::prompt_registry::RegisteredBlock>,
-    /// What `{{name}}` expands to, by name.
-    pub prompt_variables: Vec<(String, crate::interface::prompt_registry::VariableProvider)>,
+    /// What `{{name}}` expands to, by name, with whose script answers it.
+    pub prompt_variables: Vec<(
+        String,
+        crate::interface::prompt_registry::VariableProvider,
+        crate::prompt::BlockOrigin,
+    )>,
     /// What a tool result may look like.
     pub tool_results: Vec<Arc<dyn crate::interface::tool_result::ToolResultTransformer>>,
     /// Both ends of memory recall.
@@ -138,8 +142,18 @@ impl BoundScripts {
         for block in &self.prompt_blocks {
             registry.register_block(block.clone());
         }
-        for (name, provider) in &self.prompt_variables {
+        for (name, provider, _) in &self.prompt_variables {
             registry.register_variable(name, provider.clone());
+        }
+    }
+
+    /// The prompt-side pieces, for a registry that layers them over the
+    /// session's Rust registrations.
+    pub fn prompt_contributions(&self) -> crate::interface::prompt_registry::ScriptContributions {
+        crate::interface::prompt_registry::ScriptContributions {
+            blocks: self.prompt_blocks.clone(),
+            variables: self.prompt_variables.clone(),
+            async_assembly_hooks: self.assembly_hooks.clone(),
         }
     }
 }

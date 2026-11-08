@@ -8,6 +8,7 @@ mod deterministic_log;
 mod fixture_smoke;
 mod mcp_toy_server_smoke;
 mod plugin_lifecycle_smoke;
+mod rust_and_quickjs_layering;
 mod script_boundaries;
 mod script_carrier;
 mod script_task_profiles;

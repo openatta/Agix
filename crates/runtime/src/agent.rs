@@ -1134,11 +1134,13 @@ pub struct Builder {
     /// `FrozenContext::collect()`. Essential for deterministic replay.
     frozen: Option<base::frozen::FrozenContext>,
     wake_rx: Option<tokio::sync::mpsc::UnboundedReceiver<()>>,
-    /// Everything installed plugins contribute to this session — see
-    /// [`crate::plugin_host::PluginHost`]. `None` (the default) means no
-    /// plugins, which is also what a build with the plugin subsystem
-    /// compiled out always sees.
+    /// The deprecated single-slot plugin seam — see [`Builder::plugin_host`].
     plugin_host: Option<Arc<dyn crate::plugin_host::PluginHost>>,
+    /// Rust plugins, in the order added — see [`Builder::plugin`].
+    plugins: Vec<Arc<dyn crate::plugin::Plugin>>,
+    /// The QuickJS layer, kept apart from the Rust contributions until
+    /// `build()` orders the two — see [`Builder::bound_scripts`].
+    scripts: Option<base::interface::script_adapters::BoundScripts>,
     /// Pre-built command registry shared across many sessions instead of
     /// re-scanning skill dirs per session — see `Builder::commands_override`.
     commands_override: Option<Arc<crate::commands::CommandRegistry>>,
@@ -1317,6 +1319,8 @@ impl Builder {
             frozen: None,
             wake_rx: None,
             plugin_host: None,
+            plugins: Vec::new(),
+            scripts: None,
             commands_override: None,
             task_router: None,
             scene_registry: None,
@@ -1604,39 +1608,28 @@ impl Builder {
         self
     }
 
-    /// Install everything a set of script bindings produced.
+    /// Install everything a set of script bindings produced: the QuickJS
+    /// layer of this session.
     ///
-    /// The adapters belong in three places — a prompt registry, this builder,
-    /// and the list a turn resets — and getting one of them wrong looks
-    /// exactly like a script that was never bound. So the knowledge of which
-    /// goes where lives here, once, rather than in every caller that has a
-    /// `BoundScripts` in hand.
-    ///
-    /// A registry is created only if something needs one: a session with no
-    /// prompt contributions should not acquire an empty registry that
-    /// overrides whatever else was going to provide it.
+    /// Held apart and placed in `build()`, so where a script runs relative to
+    /// the Rust contributions does not depend on which of the two the caller
+    /// handed over first. One set per session: a second call replaces the
+    /// first, so bind everything into one `BoundScripts`.
     pub fn bound_scripts(mut self, bound: base::interface::script_adapters::BoundScripts) -> Self {
-        if bound.registers_on_prompt_registry() {
-            let registry = base::interface::prompt_registry::InMemoryPromptRegistry::new();
-            bound.apply_to_registry(registry.as_ref());
-            self = self.prompt_registry(registry);
-        }
-        for t in &bound.tool_results {
-            self = self.tool_result_transformer(t.clone());
-        }
-        for h in &bound.retrieval_hooks {
-            self = self.retrieval_hook(h.clone());
-        }
-        for m in &bound.tool_middleware {
-            self = self.tool_middleware(m.clone());
-        }
-        for i in &bound.model_interceptors {
-            self = self.model_interceptor(i.clone());
-        }
         // Held so the `Agent` tool can hand it to whatever it spawns. A policy
         // that stops at the first delegation is not a policy.
         self.delegate_scripts = Some(Arc::new(bound.for_delegate()));
-        self.script_carriers(bound.carriers)
+        self.script_carriers = bound.carriers.clone();
+        self.scripts = Some(bound);
+        self
+    }
+
+    /// Add a Rust plugin. Plugins register in the order added, after this
+    /// builder's own setters, and are handed to every delegate this session
+    /// spawns.
+    pub fn plugin(mut self, plugin: Arc<dyn crate::plugin::Plugin>) -> Self {
+        self.plugins.push(plugin);
+        self
     }
 
     /// The script carriers bound in this session.
@@ -1850,6 +1843,10 @@ impl Builder {
     /// slash commands are *not* installed from this list — see
     /// `commands_override` — since daemon builds one shared command
     /// registry up front instead of per session.
+    #[deprecated(
+        since = "0.3.9",
+        note = "implement `runtime::plugin::Plugin` and add it with `Builder::plugin`"
+    )]
     pub fn plugin_host(mut self, h: Arc<dyn crate::plugin_host::PluginHost>) -> Self {
         self.plugin_host = Some(h);
         self
@@ -2075,6 +2072,25 @@ impl Builder {
             .compactor
             .unwrap_or_else(|| Arc::new(DefaultCompactor) as Arc<dyn Compactor>);
         let agent_depth = self.agent_depth;
+        let mut registered = crate::plugin::Registrar::default();
+        {
+            let project_root = settings.paths.project_root();
+            let plugin_session = crate::plugin::PluginSession {
+                session_id: session.session_id_str(),
+                project_root: &project_root,
+                scene: scene.id(),
+                depth: agent_depth,
+            };
+            for plugin in &self.plugins {
+                plugin.register(&plugin_session, &mut registered);
+            }
+        }
+        let plugin_agent_types: Vec<base::agent_type::AgentTypeDefinition> = self
+            .plugin_host
+            .iter()
+            .flat_map(|h| h.agent_types())
+            .chain(std::mem::take(&mut registered.agent_types))
+            .collect();
         let agent_spawner = crate::module::LateAgentSpawner::default();
         let hooks = self.hooks.unwrap_or_else(|| {
             build_hook_runner(
@@ -2237,7 +2253,8 @@ impl Builder {
                 task_router: self.task_router.as_ref(),
                 process_groups: self.process_groups.as_ref(),
                 delegate_scripts: self.delegate_scripts.as_ref(),
-                plugin_host: self.plugin_host.as_ref(),
+                delegate_plugins: &self.plugins,
+                plugin_agent_types: &plugin_agent_types,
                 mcp: &mut mcp_slot,
                 modules: &modules,
                 agent_spawner: &agent_spawner,
@@ -2306,28 +2323,25 @@ impl Builder {
             tools.register(t);
         }
 
-        // Tools installed plugins export.
-        //
-        // After the scene, because a plugin that owns a scene hands that scene
-        // its own tools (`PluginScene::from_plugin`) and they arrive here a
-        // second time, as the same `Arc`s. Identity is what separates that
-        // from a real collision: the same allocation means the scene already
-        // contributed this exact tool, and a different one under the same name
-        // means two things are claiming it, which is refused for the same
-        // reason a scene's collision is.
-        if let Some(host) = self.plugin_host.as_ref() {
-            for t in host.tools() {
-                match tools.get(t.name()) {
-                    Some(existing) if Arc::ptr_eq(&existing, &t) => continue,
-                    Some(_) => {
-                        return Err(EngineError::Internal(format!(
-                            "a plugin contributes a tool named {:?}, which is already                              registered by something else",
-                            t.name()
-                        )));
-                    }
-                    None => {
-                        tools.register(t);
-                    }
+        // After the scene's tools. The same `Arc` arriving twice is not a
+        // collision; a different tool under a taken name is.
+        let plugin_tools = self
+            .plugin_host
+            .iter()
+            .flat_map(|h| h.tools())
+            .chain(std::mem::take(&mut registered.tools));
+        for t in plugin_tools {
+            match tools.get(t.name()) {
+                Some(existing) if Arc::ptr_eq(&existing, &t) => continue,
+                Some(_) => {
+                    return Err(EngineError::Internal(format!(
+                        "a plugin contributes a tool named {:?}, which is already registered by \
+                         something else",
+                        t.name()
+                    )));
+                }
+                None => {
+                    tools.register(t);
                 }
             }
         }
@@ -2506,6 +2520,75 @@ impl Builder {
         // Capture feature flags before settings is moved into the Agent struct
         let cached_mc_enabled = settings.feature_flags.cached_microcompact;
 
+        let scripts = self.scripts.unwrap_or_default();
+        let prompt_registry: Arc<dyn base::interface::prompt_registry::PromptRegistry> = if scripts
+            .registers_on_prompt_registry()
+            || registered.registers_on_prompt_registry()
+        {
+            use base::interface::prompt_registry::PromptRegistry as _;
+            let own = base::interface::prompt_registry::InMemoryPromptRegistry::new();
+            for block in std::mem::take(&mut registered.prompt_blocks) {
+                own.register_block(block);
+            }
+            for (name, provider) in std::mem::take(&mut registered.prompt_variables) {
+                own.register_variable(&name, provider);
+            }
+            for hook in std::mem::take(&mut registered.assembly_hooks) {
+                own.register_assembly_hook(
+                    hook,
+                    base::interface::prompt_assembly::Authority::local(
+                        base::prompt::BlockOrigin::Kernel,
+                    ),
+                );
+            }
+            Arc::new(
+                base::interface::prompt_registry::LayeredPromptRegistry::new(
+                    self.prompt_registry,
+                    own,
+                    scripts.prompt_contributions(),
+                ),
+            )
+        } else {
+            self.prompt_registry
+                .unwrap_or_else(|| Arc::new(base::interface::prompt_registry::NoRegistrations))
+        };
+        // Rust first in a chain and innermost around a tool call; QuickJS
+        // after it and outside it.
+        let tool_middleware: Vec<_> = scripts
+            .tool_middleware
+            .into_iter()
+            .chain(self.tool_middleware)
+            .chain(registered.tool_middleware)
+            .collect();
+        let result_transformers: Vec<_> = self
+            .result_transformers
+            .into_iter()
+            .chain(registered.tool_results)
+            .chain(scripts.tool_results)
+            .collect();
+        let model_interceptors: Vec<_> = self
+            .model_interceptors
+            .into_iter()
+            .chain(registered.model_interceptors)
+            .chain(scripts.model_interceptors)
+            .collect();
+        let retrieval_hooks: Vec<_> = self
+            .retrieval_hooks
+            .into_iter()
+            .chain(registered.retrieval_hooks)
+            .chain(scripts.retrieval_hooks)
+            .collect();
+        let prompt_middleware: Vec<_> = self
+            .prompt_middleware
+            .into_iter()
+            .chain(registered.prompt_middleware)
+            .collect();
+        let health_checks: Vec<_> = self
+            .health_checks
+            .into_iter()
+            .chain(registered.health_checks)
+            .collect();
+
         Ok((
             Agent {
                 script_carriers: Arc::new(self.script_carriers),
@@ -2527,27 +2610,25 @@ impl Builder {
                         channel
                     })
                 }),
-                prompt_registry: self
-                    .prompt_registry
-                    .unwrap_or_else(|| Arc::new(base::interface::prompt_registry::NoRegistrations)),
+                prompt_registry,
                 prompt_assembler: self.prompt_assembler.unwrap_or_else(|| {
                     Arc::new(base::interface::prompt_assembler::DefaultAssembler)
                 }),
-                tool_middleware: Arc::new(self.tool_middleware),
-                prompt_middleware: Arc::new(self.prompt_middleware),
-                result_transformers: Arc::new(self.result_transformers),
+                tool_middleware: Arc::new(tool_middleware),
+                prompt_middleware: Arc::new(prompt_middleware),
+                result_transformers: Arc::new(result_transformers),
                 turn_policy,
                 budget_policy,
                 health: Arc::new(base::interface::health::HealthChecks::from_vec(
-                    self.health_checks,
+                    health_checks,
                 )),
                 environment,
                 recovery_policy,
-                model_interceptors: Arc::new(self.model_interceptors),
+                model_interceptors: Arc::new(model_interceptors),
                 memory_retriever: self
                     .memory_retriever
                     .unwrap_or_else(|| Arc::new(base::interface::memory_contracts::LlmRetriever)),
-                retrieval_hooks: Arc::new(self.retrieval_hooks),
+                retrieval_hooks: Arc::new(retrieval_hooks),
                 pending_permissions,
                 pending_questions,
                 current_turn_cancel: Arc::new(std::sync::Mutex::new(CancellationToken::new())),
@@ -3165,9 +3246,9 @@ mod tests {
         assert_eq!(narrow.tools.names(), vec!["Read".to_string()]);
     }
 
-    /// A plugin may ship tools without owning a scene; those must still reach
-    /// the session through `PluginHost::tools()`.
+    /// The deprecated seam keeps working until it is removed.
     #[tokio::test]
+    #[allow(deprecated)]
     async fn build_registers_the_tools_installed_plugins_export() {
         struct OnePluginTool(Arc<dyn base::tool::Tool>);
         impl crate::plugin_host::PluginHost for OnePluginTool {
@@ -3223,6 +3304,67 @@ mod tests {
              dispatches against, found: {:?}",
             agent.tools.names()
         );
+    }
+
+    #[tokio::test]
+    async fn build_registers_what_a_rust_plugin_registers() {
+        struct Exported;
+        #[async_trait::async_trait]
+        impl base::tool::Tool for Exported {
+            fn name(&self) -> &str {
+                "Exported"
+            }
+            fn input_schema(&self) -> serde_json::Value {
+                serde_json::json!({"type": "object"})
+            }
+            async fn call(
+                &self,
+                _: serde_json::Value,
+                _: base::tool::ToolContext,
+                _: base::tool::ProgressSender,
+            ) -> Result<base::tool::ToolResult, base::error::ToolError> {
+                Ok(base::tool::ToolResult::text("done"))
+            }
+        }
+        struct Check;
+        impl base::interface::health::HealthCheck for Check {
+            fn name(&self) -> &str {
+                "plugin.check"
+            }
+            fn check(&self) -> base::interface::health::CheckResult {
+                base::interface::health::CheckResult::ok("fine")
+            }
+        }
+        struct Ships;
+        impl crate::plugin::Plugin for Ships {
+            fn name(&self) -> &str {
+                "ships"
+            }
+            fn register(
+                &self,
+                session: &crate::plugin::PluginSession<'_>,
+                r: &mut crate::plugin::Registrar,
+            ) {
+                assert_eq!(session.depth, 0);
+                r.tool(Arc::new(Exported)).health_check(Arc::new(Check));
+            }
+        }
+
+        let (agent, _event_rx, _input_tx) = Builder::new()
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+            .model(Arc::new(DummyModel) as Arc<dyn Model>)
+            .settings(Arc::new(test_settings()))
+            .plugin(Arc::new(Ships))
+            .skip_warmup(true)
+            .build()
+            .expect("build should succeed");
+
+        assert!(
+            agent.tools.get("Exported").is_some(),
+            "{:?}",
+            agent.tools.names()
+        );
+        assert!(agent.health().report().find("plugin.check").is_some());
     }
 
     /// The instruction file is one implementation of a

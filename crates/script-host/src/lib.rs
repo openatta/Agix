@@ -741,7 +741,8 @@ pub mod bindings {
                     base::interface::script_adapters::prompt_variable_from_script(
                         carrier,
                         &binding.entry,
-                    ),
+                    )
+                    .map(|(name, provider)| (name, provider, authority.origin.clone())),
                 ),
                 "tool.around" => out.tool_middleware.push(Arc::new(
                     base::interface::script_adapters::ToolAroundScript::new(

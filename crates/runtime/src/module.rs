@@ -81,7 +81,11 @@ pub struct SessionContext<'a> {
     pub task_router: Option<&'a Arc<base::provider::TaskRouter>>,
     pub process_groups: Option<&'a Arc<base::interface::exec::local::GroupLedger>>,
     pub delegate_scripts: Option<&'a Arc<base::interface::script_adapters::BoundScripts>>,
-    pub plugin_host: Option<&'a Arc<dyn crate::plugin_host::PluginHost>>,
+    /// The Rust plugins this session was built with; a delegate is built
+    /// with them too.
+    pub delegate_plugins: &'a [Arc<dyn crate::plugin::Plugin>],
+    /// Agent types the session's plugins declare.
+    pub plugin_agent_types: &'a [base::agent_type::AgentTypeDefinition],
     /// Every module this session runs, this one included: the assembled
     /// list narrowed by the scene. What a module that spawns delegates
     /// assembles them with.

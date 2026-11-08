@@ -49,6 +49,17 @@ pub struct Session {
     hooks: Option<serde_json::Value>,
     #[allow(clippy::type_complexity)]
     between_turns: Option<Box<dyn Fn(usize, &Path) + Send>>,
+    rust: Option<(RustOrder, RustContributions)>,
+}
+
+type RustContributions = Box<dyn FnOnce(Builder) -> Builder + Send>;
+
+/// When a case's Rust contributions reach the builder, relative to the bound
+/// scripts. The outcome must not depend on it.
+#[derive(Clone, Copy, Debug)]
+pub enum RustOrder {
+    BeforeScripts,
+    AfterScripts,
 }
 
 impl Session {
@@ -66,6 +77,7 @@ impl Session {
             asking: false,
             hooks: None,
             between_turns: None,
+            rust: None,
         }
     }
 
@@ -189,6 +201,17 @@ impl Session {
     /// resolve against it.
     pub fn in_project(mut self, dir: impl Into<PathBuf>) -> Self {
         self.project = Some(dir.into());
+        self
+    }
+
+    /// Rust plugins and builder setters for this session, handed over at
+    /// `order`.
+    pub fn rust(
+        mut self,
+        order: RustOrder,
+        f: impl FnOnce(Builder) -> Builder + Send + 'static,
+    ) -> Self {
+        self.rust = Some((order, Box::new(f)));
         self
     }
 }
@@ -344,6 +367,15 @@ pub async fn drive(root: &Path, session: Session) -> Ran {
         ));
     }
 
+    let (rust_order, rust) = match session.rust {
+        Some((order, f)) => (Some(order), Some(f)),
+        None => (None, None),
+    };
+    let mut rust = rust;
+    if matches!(rust_order, Some(RustOrder::BeforeScripts)) {
+        builder = (rust.take().expect("set with its order"))(builder);
+    }
+
     // The same call the daemon makes. Installing the adapters is `Builder`'s
     // job precisely so a test cannot bind a point a session would not.
     let ledger = match script_host::bindings::bind_quickjs(&settings.scripts, &session.fixtures)
@@ -356,6 +388,10 @@ pub async fn drive(root: &Path, session: Session) -> Ran {
         }
         None => Arc::new(ScriptLedger::new()),
     };
+
+    if let Some(f) = rust {
+        builder = f(builder);
+    }
 
     let (mut agent, mut event_rx, input_tx) = builder.build().expect("agent builds");
 

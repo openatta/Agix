@@ -363,6 +363,159 @@ impl PromptRegistry for InMemoryPromptRegistry {
 /// exactly as written — a prompt that contains `{{` for its own reasons must
 /// come out unchanged, and a variable that failed to resolve should be visible
 /// rather than silently blank.
+/// What a session's QuickJS scripts contribute to the prompt, fixed when the
+/// session is built.
+#[derive(Default)]
+pub struct ScriptContributions {
+    pub blocks: Vec<RegisteredBlock>,
+    pub variables: Vec<(String, VariableProvider, BlockOrigin)>,
+    pub async_assembly_hooks: Vec<(
+        Arc<dyn crate::interface::prompt_assembly::AsyncAssemblyHook>,
+        Authority,
+    )>,
+}
+
+/// The Rust registrations with the QuickJS ones above them.
+///
+/// A name both layers claim goes to the script when the script's origin is
+/// local; a packaged script may only add, so its claim on a name a Rust
+/// registration holds is dropped. Assembly passes run Rust first. New
+/// registrations land in the Rust layer.
+pub struct LayeredPromptRegistry {
+    native: Vec<Arc<dyn PromptRegistry>>,
+    top: Arc<dyn PromptRegistry>,
+    script: ScriptContributions,
+}
+
+impl LayeredPromptRegistry {
+    /// The Rust layer is `host`, when there is one, read before `own`, which
+    /// is where registrations made through this registry go.
+    pub fn new(
+        host: Option<Arc<dyn PromptRegistry>>,
+        own: Arc<dyn PromptRegistry>,
+        script: ScriptContributions,
+    ) -> Self {
+        let native = host.into_iter().chain([own.clone()]).collect();
+        Self {
+            native,
+            top: own,
+            script,
+        }
+    }
+
+    fn top(&self) -> &Arc<dyn PromptRegistry> {
+        &self.top
+    }
+}
+
+impl PromptRegistry for LayeredPromptRegistry {
+    fn register_block(&self, block: RegisteredBlock) -> Disposer {
+        self.top().register_block(block)
+    }
+
+    fn register_variable(&self, name: &str, provider: VariableProvider) -> Disposer {
+        self.top().register_variable(name, provider)
+    }
+
+    fn register_assembly_hook(
+        &self,
+        hook: Arc<dyn AssemblyHook>,
+        authority: Authority,
+    ) -> Disposer {
+        self.top().register_assembly_hook(hook, authority)
+    }
+
+    fn register_async_assembly_hook(
+        &self,
+        hook: Arc<dyn crate::interface::prompt_assembly::AsyncAssemblyHook>,
+        authority: Authority,
+    ) -> Disposer {
+        self.top().register_async_assembly_hook(hook, authority)
+    }
+
+    fn blocks(&self) -> Vec<RegisteredBlock> {
+        let native: Vec<RegisteredBlock> = self.native.iter().flat_map(|r| r.blocks()).collect();
+        let taken_by_script: std::collections::HashSet<&str> = self
+            .script
+            .blocks
+            .iter()
+            .filter(|b| b.origin.is_local())
+            .map(|b| b.name.as_str())
+            .collect();
+        let native_names: std::collections::HashSet<String> =
+            native.iter().map(|b| b.name.clone()).collect();
+        let mut out: Vec<RegisteredBlock> = native
+            .into_iter()
+            .filter(|b| !taken_by_script.contains(b.name.as_str()))
+            .collect();
+        for block in &self.script.blocks {
+            if !block.origin.is_local() && native_names.contains(&block.name) {
+                tracing::warn!(
+                    block = %block.name,
+                    origin = ?block.origin,
+                    "a packaged script may only add to the prompt; a Rust plugin already \
+                     registers this block name, so the script's block is dropped"
+                );
+                continue;
+            }
+            out.push(block.clone());
+        }
+        out
+    }
+
+    fn variables(&self) -> Vec<(String, VariableProvider)> {
+        // `interpolate` takes the first provider for a name, so order is precedence.
+        let native: Vec<(String, VariableProvider)> =
+            self.native.iter().flat_map(|r| r.variables()).collect();
+        let mut out: Vec<(String, VariableProvider)> = self
+            .script
+            .variables
+            .iter()
+            .filter(|(_, _, origin)| origin.is_local())
+            .map(|(n, p, _)| (n.clone(), p.clone()))
+            .collect();
+        for (name, provider, origin) in &self.script.variables {
+            if origin.is_local() {
+                continue;
+            }
+            if native.iter().any(|(n, _)| n == name) {
+                tracing::warn!(
+                    variable = %name,
+                    origin = ?origin,
+                    "a packaged script may only add to the prompt; a Rust plugin already \
+                     provides this variable, so the script's is dropped"
+                );
+                continue;
+            }
+            out.push((name.clone(), provider.clone()));
+        }
+        out.extend(native);
+        out
+    }
+
+    fn assembly_hooks(&self) -> Vec<(Arc<dyn AssemblyHook>, Authority)> {
+        self.native
+            .iter()
+            .flat_map(|r| r.assembly_hooks())
+            .collect()
+    }
+
+    fn async_assembly_hooks(
+        &self,
+    ) -> Vec<(
+        Arc<dyn crate::interface::prompt_assembly::AsyncAssemblyHook>,
+        Authority,
+    )> {
+        let mut out: Vec<_> = self
+            .native
+            .iter()
+            .flat_map(|r| r.async_assembly_hooks())
+            .collect();
+        out.extend(self.script.async_assembly_hooks.iter().cloned());
+        out
+    }
+}
+
 pub fn interpolate(
     text: &str,
     variables: &[(String, VariableProvider)],
@@ -455,5 +608,72 @@ mod tests {
     #[test]
     fn nothing_registered_means_nothing_to_interpolate() {
         assert_eq!(interpolate("{{anything}}", &[], &ctx()), "{{anything}}");
+    }
+
+    fn layered(script: ScriptContributions) -> LayeredPromptRegistry {
+        let native = InMemoryPromptRegistry::new();
+        native.register_block(RegisteredBlock::system("shared", 10, "NATIVE"));
+        native.register_variable(
+            "who",
+            Arc::new(|_: &ScenePromptContext<'_>| Some("native".into())),
+        );
+        LayeredPromptRegistry::new(None, native, script)
+    }
+
+    fn texts(r: &LayeredPromptRegistry) -> Vec<String> {
+        r.blocks()
+            .into_iter()
+            .map(|b| match b.content {
+                PromptContent::Static(s) => s,
+                PromptContent::Provider(_) => String::new(),
+            })
+            .collect()
+    }
+
+    fn who(r: &LayeredPromptRegistry) -> String {
+        interpolate("{{who}}", &r.variables(), &ctx())
+    }
+
+    #[test]
+    fn a_local_script_takes_a_name_the_rust_layer_also_holds() {
+        let r = layered(ScriptContributions {
+            blocks: vec![RegisteredBlock::system("shared", 10, "SCRIPT")
+                .from_origin(BlockOrigin::Script("a.js".into()))],
+            variables: vec![(
+                "who".into(),
+                Arc::new(|_: &ScenePromptContext<'_>| Some("script".into())),
+                BlockOrigin::Script("a.js".into()),
+            )],
+            async_assembly_hooks: Vec::new(),
+        });
+        assert_eq!(texts(&r), ["SCRIPT"]);
+        assert_eq!(who(&r), "script");
+    }
+
+    #[test]
+    fn a_packaged_script_only_adds() {
+        let r = layered(ScriptContributions {
+            blocks: vec![
+                RegisteredBlock::system("shared", 10, "PACKAGED")
+                    .from_origin(BlockOrigin::Plugin("pkg".into())),
+                RegisteredBlock::system("its.own", 20, "ADDED")
+                    .from_origin(BlockOrigin::Plugin("pkg".into())),
+            ],
+            variables: vec![(
+                "who".into(),
+                Arc::new(|_: &ScenePromptContext<'_>| Some("packaged".into())),
+                BlockOrigin::Plugin("pkg".into()),
+            )],
+            async_assembly_hooks: Vec::new(),
+        });
+        assert_eq!(texts(&r), ["NATIVE", "ADDED"]);
+        assert_eq!(who(&r), "native");
+    }
+
+    #[test]
+    fn registering_through_the_layers_lands_in_the_rust_layer() {
+        let r = layered(ScriptContributions::default());
+        r.register_block(RegisteredBlock::system("later", 30, "LATER"));
+        assert_eq!(texts(&r), ["NATIVE", "LATER"]);
     }
 }

@@ -1,14 +1,9 @@
-//! `PluginHost` — the entire surface installed plugins present to the engine.
+//! `PluginHost` — the single-slot plugin seam, deprecated in favour of
+//! [`crate::plugin::Plugin`] and kept for one release.
 //!
-//! Everything a plugin can contribute arrives through this one trait, and the
-//! host holds it as an `Option`: with none set, every call site is an
-//! `if let Some(..)` that does nothing.
-//!
-//! There are five contribution points — tools, MCP servers, hook
-//! subscriptions, scenes, agent types — plus [`PluginHost::permission_rules`],
-//! data the host merges. Each contribution point is a seam the engine
-//! has to keep working across refactors, so adding a sixth is a decision to
-//! argue for, not a detail to slip in.
+//! A session reads three of its methods: `tools`, `agent_types` and
+//! `hook_configs`. The rest have no reader and remain only so existing
+//! implementations still compile.
 
 use base::interface::scene::Scene;
 use base::tool::Tool;

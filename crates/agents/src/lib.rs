@@ -94,7 +94,6 @@ impl Module for AgentsModule {
                 shared.clone(),
             ),
             None => {
-                let plugin_types = cx.plugin_host.map(|h| h.agent_types()).unwrap_or_default();
                 let project = settings.paths.project_root().join(".agix").join("agents");
                 let scene = settings.paths.user_data_dir.join("agents");
                 let global = settings.paths.global_data_dir.join("agents");
@@ -104,7 +103,7 @@ impl Module for AgentsModule {
                     cx.tools.clone(),
                     cx.tools.clone(),
                     &[&global, &scene, &project],
-                    &plugin_types,
+                    cx.plugin_agent_types,
                 )
             }
         }
@@ -117,6 +116,9 @@ impl Module for AgentsModule {
         }
         if let Some(scripts) = cx.delegate_scripts {
             tool = tool.with_delegate_scripts(scripts.clone());
+        }
+        if !cx.delegate_plugins.is_empty() {
+            tool = tool.with_delegate_plugins(cx.delegate_plugins.to_vec());
         }
         if let Some(ledger) = cx.process_groups {
             tool = tool.with_process_groups(ledger.clone());

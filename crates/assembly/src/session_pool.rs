@@ -757,6 +757,7 @@ pub struct SessionPool {
     permission_prompt_timeout: Duration,
     /// Where provider keys come from when a binding builds its router.
     credentials: Arc<dyn base::interface::credentials::CredentialSource>,
+    rust_plugins: Vec<Arc<dyn runtime::plugin::Plugin>>,
     customize: Option<SessionCustomizer>,
     /// Pool-level telemetry sink — for events that happen *before* any
     /// per-session `Agent`/handle exists (`session.resume` against a
@@ -1000,6 +1001,7 @@ impl SessionPool {
             served: std::sync::Mutex::new(Vec::new()),
             permission_prompt_timeout: DEFAULT_PERMISSION_PROMPT_TIMEOUT,
             credentials: Arc::new(base::interface::credentials::ConfigCredentials),
+            rust_plugins: Vec::new(),
             customize: None,
             pool_telemetry,
         }
@@ -1040,6 +1042,12 @@ impl SessionPool {
     /// Builder-style rather than another `new()` parameter: `new()` already
     /// takes eleven arguments, and every existing caller (tests included)
     /// wants the default.
+    /// Build every session engine with these Rust plugins.
+    pub fn with_plugins(mut self, plugins: Vec<Arc<dyn runtime::plugin::Plugin>>) -> Self {
+        self.rust_plugins = plugins;
+        self
+    }
+
     /// Hand every session engine this pool builds to `customize` last.
     pub fn with_session_customizer(mut self, customize: SessionCustomizer) -> Self {
         self.customize = Some(customize);
@@ -2336,6 +2344,9 @@ impl SessionPool {
         };
         if let Some(ledger) = &process_groups {
             builder = builder.process_groups(ledger.clone());
+        }
+        for plugin in &self.rust_plugins {
+            builder = builder.plugin(plugin.clone());
         }
         if let Some(customize) = &self.customize {
             builder = customize(

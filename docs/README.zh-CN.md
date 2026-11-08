@@ -365,7 +365,9 @@ let pool = daemon::assemble::pool(
   ([`extending_quickjs.md`](extending_quickjs.md))。
 - 打包一组能力——MCP 服务器、脚本、场景、agent 类型 → 做成插件包
   ([`extension_points.md`](extension_points.md))。
-- 在自己的构建里加工具或拦截 → 写 Rust 实现交给 builder。
+- 在自己的构建里加工具、拦截或提示词贡献 → 写 Rust 插件(`runtime::plugin::Plugin`),交给
+  builder,或经 `Assembly` 加给每个会话。同一个点上 Rust 插件和脚本都有时,Rust 先、脚本
+  说最后一句。
 - 换掉一个子系统 → 实现它的 trait([`extension_points.md`](extension_points.md) 列出了
   每一个,以及代价和谁能用)。
 

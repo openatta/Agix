@@ -439,8 +439,10 @@ build if anything in the workspace assembles a pool a second way.
   `settings.json` ([`docs/extending_quickjs.md`](docs/extending_quickjs.md)).
 - A packaged capability — MCP servers, scripts, a scene, agent types — → a
   plugin package ([`docs/extension_points.md`](docs/extension_points.md)).
-- Tools or interceptors in your own build → a Rust implementation handed to
-  the builder.
+- Tools, interceptors or prompt contributions in your own build → a Rust
+  plugin (`runtime::plugin::Plugin`), added to the builder or to every session
+  through `Assembly`. Where a Rust plugin and a script share a point, Rust runs
+  first and the script has the last word.
 - A different subsystem → implement its trait
   ([`docs/extension_points.md`](docs/extension_points.md) lists every one, with
   what it costs and who may use it).
