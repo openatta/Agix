@@ -359,8 +359,14 @@ WebAssembly 载体整个移除。
   上脚本仍在外层。见 `extension_points.md`「叠加顺序」。
 - 在 `SessionCustomizer` 里设 `Builder::prompt_registry` 不再把脚本的块、变量、组装钩子
   冲掉:脚本叠在宿主的注册表上。
-- `runtime::module::SessionContext` 的 `plugin_host` 字段换成 `plugin_agent_types` 与
-  `delegate_plugins`。
+- **QuickJS 也走 `Plugin`。** `Builder::bound_scripts`、`Builder::script_carriers` 删除,改成
+  `builder.plugin(Arc::new(script_host::ScriptPlugin::new(bound)))`;`AgentTool::with_delegate_scripts`
+  删除,子 Agent 随插件继承。
+- `Plugin` 有 `name`、`layer`(默认 `Layer::Rust`)、`register` 三个方法。插件名在会话里唯一;
+  工具名、agent 类型名跨插件唯一;提示块名与变量名同层唯一——撞了 `build()` 失败。
+  脚本之间撞名在绑定时报 `BindingError::NameTaken`。
+- `runtime::module::SessionContext` 的 `plugin_host`、`delegate_scripts` 字段删除,换成
+  `plugin_agent_types` 与 `delegate_plugins`。
 - `BoundScripts::prompt_variables` 的元素多了第三项 `BlockOrigin`。
 
 ### RPC 客户端

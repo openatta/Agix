@@ -383,7 +383,7 @@ pub async fn drive(root: &Path, session: Session) -> Ran {
     {
         Some(bound) => {
             let ledger = bound.ledger.clone();
-            builder = builder.bound_scripts(bound);
+            builder = builder.plugin(Arc::new(script_host::ScriptPlugin::new(bound)));
             ledger
         }
         None => Arc::new(ScriptLedger::new()),

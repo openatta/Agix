@@ -604,8 +604,8 @@ impl Agent {
         // per-session one wearing a per-turn name — and a script bound to a
         // point that fires per tool call goes quiet in the middle of a long
         // session with nothing to say why.
-        for carrier in self.script_carriers.iter() {
-            carrier.begin_turn();
+        for turn_start in self.turn_starts.iter() {
+            turn_start();
         }
 
         // UserPromptSubmit: where a hook sees the message that opens a turn,

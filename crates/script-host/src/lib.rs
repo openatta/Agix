@@ -211,6 +211,9 @@ impl base::interface::script::ScriptEngine for QuickJsEngine {
     }
 }
 
+pub mod plugin;
+pub use plugin::ScriptPlugin;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -449,9 +452,21 @@ pub mod bindings {
     /// ignored them.
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum BindingError {
-        Unreadable { path: String, reason: String },
-        UnknownPoint { point: String },
-        UnbindablePoint { point: String },
+        Unreadable {
+            path: String,
+            reason: String,
+        },
+        UnknownPoint {
+            point: String,
+        },
+        UnbindablePoint {
+            point: String,
+        },
+        NameTaken {
+            path: String,
+            kind: &'static str,
+            name: String,
+        },
     }
 
     impl std::fmt::Display for BindingError {
@@ -468,6 +483,11 @@ pub mod bindings {
                     f,
                     "`{point}` exists but scripts cannot be bound to it; today that is {}",
                     BINDABLE_POINTS.join(", ")
+                ),
+                Self::NameTaken { path, kind, name } => write!(
+                    f,
+                    "script `{path}` registers the {kind} `{name}`, which another script \
+                     already registers"
                 ),
             }
         }
@@ -706,69 +726,104 @@ pub mod bindings {
         ))
     }
 
+    /// Install `prepared` into `out`, all of it or none of it.
     fn install(
         out: &mut BoundScripts,
         engine: &Arc<dyn ScriptEngine>,
         prepared: Vec<Prepared>,
     ) -> Result<(), BindingError> {
+        let mut staged = BoundScripts {
+            ledger: out.ledger.clone(),
+            ..BoundScripts::default()
+        };
         for (binding, source, limits, authority) in prepared {
             let carrier = Arc::new(
                 ScriptCarrier::new(engine.clone(), source, &binding.point, limits)
                     .with_ledger(out.ledger.clone()),
             );
-            out.carriers.push(carrier.clone());
+            staged.carriers.push(carrier.clone());
+            let taken = |kind: &'static str, name: &str| BindingError::NameTaken {
+                path: binding.path.display().to_string(),
+                kind,
+                name: name.to_string(),
+            };
             match binding.point.as_str() {
-                "prompt.assemble" => out.assembly_hooks.push((
+                "prompt.assemble" => staged.assembly_hooks.push((
                     Arc::new(PromptAssemblyScript::new(carrier, &binding.entry)),
                     authority,
                 )),
                 // A contribution that could not say what it contributes is
                 // not registered, and that is the whole failure: the prompt is
                 // the one that would have been assembled with nothing bound.
-                "prompt.block" => out.prompt_blocks.extend(
-                    base::interface::script_adapters::prompt_block_from_script(
-                        carrier,
-                        &binding.entry,
-                    ),
-                ),
-                "prompt.context" => out.prompt_blocks.extend(
-                    base::interface::script_adapters::prompt_context_from_script(
-                        carrier,
-                        &binding.entry,
-                    ),
-                ),
-                "prompt.variable" => out.prompt_variables.extend(
-                    base::interface::script_adapters::prompt_variable_from_script(
-                        carrier,
-                        &binding.entry,
-                    )
-                    .map(|(name, provider)| (name, provider, authority.origin.clone())),
-                ),
-                "tool.around" => out.tool_middleware.push(Arc::new(
+                point @ ("prompt.block" | "prompt.context") => {
+                    let block = if point == "prompt.block" {
+                        base::interface::script_adapters::prompt_block_from_script(
+                            carrier,
+                            &binding.entry,
+                        )
+                    } else {
+                        base::interface::script_adapters::prompt_context_from_script(
+                            carrier,
+                            &binding.entry,
+                        )
+                    };
+                    if let Some(block) = block {
+                        if out
+                            .prompt_blocks
+                            .iter()
+                            .chain(&staged.prompt_blocks)
+                            .any(|b| b.name == block.name)
+                        {
+                            return Err(taken("prompt block", &block.name));
+                        }
+                        staged.prompt_blocks.push(block);
+                    }
+                }
+                "prompt.variable" => {
+                    if let Some((name, provider)) =
+                        base::interface::script_adapters::prompt_variable_from_script(
+                            carrier,
+                            &binding.entry,
+                        )
+                    {
+                        if out
+                            .prompt_variables
+                            .iter()
+                            .chain(&staged.prompt_variables)
+                            .any(|(n, _, _)| *n == name)
+                        {
+                            return Err(taken("prompt variable", &name));
+                        }
+                        staged
+                            .prompt_variables
+                            .push((name, provider, authority.origin.clone()));
+                    }
+                }
+                "tool.around" => staged.tool_middleware.push(Arc::new(
                     base::interface::script_adapters::ToolAroundScript::new(
                         carrier,
                         &binding.entry,
                     ),
                 )),
-                "model.request" => out.model_interceptors.push(Arc::new(
+                "model.request" => staged.model_interceptors.push(Arc::new(
                     base::interface::script_adapters::ModelRequestScript::new(
                         carrier,
                         &binding.entry,
                     ),
                 )),
-                "model.message" => out.model_interceptors.push(Arc::new(
+                "model.message" => staged.model_interceptors.push(Arc::new(
                     base::interface::script_adapters::ModelMessageScript::new(
                         carrier,
                         &binding.entry,
                     ),
                 )),
-                "memory.retrieval_hook" => out.retrieval_hooks.push(Arc::new(
+                "memory.retrieval_hook" => staged.retrieval_hooks.push(Arc::new(
                     base::interface::script_adapters::RetrievalHookScript::new(
                         carrier,
                         &binding.entry,
                     ),
                 )),
-                "tool.result" => out.tool_results.push(Arc::new(
+                "tool.result" => staged.tool_results.push(Arc::new(
                     base::interface::script_adapters::ToolResultScript::new(
                         carrier,
                         &binding.entry,
@@ -785,6 +840,14 @@ pub mod bindings {
                 }
             }
         }
+        out.carriers.extend(staged.carriers);
+        out.assembly_hooks.extend(staged.assembly_hooks);
+        out.prompt_blocks.extend(staged.prompt_blocks);
+        out.prompt_variables.extend(staged.prompt_variables);
+        out.tool_middleware.extend(staged.tool_middleware);
+        out.tool_results.extend(staged.tool_results);
+        out.model_interceptors.extend(staged.model_interceptors);
+        out.retrieval_hooks.extend(staged.retrieval_hooks);
         Ok(())
     }
 }
@@ -1645,6 +1708,65 @@ mod package_binding_tests {
         assert!(
             out.carriers.is_empty(),
             "a refused set leaves nothing behind"
+        );
+    }
+
+    fn block_script(dir: &Path, name: &str) {
+        std::fs::write(
+            dir.join(name),
+            "function onBlock(ctx) { return { name: \"team.conventions\", order: 250, content: \"x\" } }",
+        )
+        .unwrap();
+    }
+
+    fn block_binding(path: &str) -> ScriptBinding {
+        ScriptBinding {
+            path: path.into(),
+            point: "prompt.block".into(),
+            entry: "onBlock".into(),
+            timeout_ms: None,
+            calls_per_turn: None,
+        }
+    }
+
+    #[test]
+    fn a_block_name_two_scripts_claim_refuses_the_operators_set() {
+        let project = tempdir();
+        block_script(&project, "a.js");
+        block_script(&project, "b.js");
+        let e = bind(
+            engine(),
+            &[block_binding("a.js"), block_binding("b.js")],
+            &project,
+        )
+        .expect_err("refused");
+        assert!(
+            matches!(&e, BindingError::NameTaken { name, .. } if name == "team.conventions"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn a_block_name_two_packages_claim_costs_the_second_its_block() {
+        let pkg = tempdir();
+        block_script(&pkg, "a.js");
+        block_script(&pkg, "b.js");
+        let mut out = BoundScripts::default();
+        let errors = bind_lenient(
+            &mut out,
+            engine(),
+            &[block_binding("a.js"), block_binding("b.js")],
+            &BindingSource::Package {
+                name: "p",
+                root: &pkg,
+            },
+        );
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(out.prompt_blocks.len(), 1);
+        assert_eq!(
+            out.carriers.len(),
+            1,
+            "the refused binding leaves no carrier"
         );
     }
 }

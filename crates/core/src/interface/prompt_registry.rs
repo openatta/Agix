@@ -363,12 +363,13 @@ impl PromptRegistry for InMemoryPromptRegistry {
 /// exactly as written — a prompt that contains `{{` for its own reasons must
 /// come out unchanged, and a variable that failed to resolve should be visible
 /// rather than silently blank.
-/// What a session's QuickJS scripts contribute to the prompt, fixed when the
-/// session is built.
+/// What the QuickJS layer contributes to the prompt, fixed when the session
+/// is built.
 #[derive(Default)]
 pub struct ScriptContributions {
     pub blocks: Vec<RegisteredBlock>,
     pub variables: Vec<(String, VariableProvider, BlockOrigin)>,
+    pub assembly_hooks: Vec<(Arc<dyn AssemblyHook>, Authority)>,
     pub async_assembly_hooks: Vec<(
         Arc<dyn crate::interface::prompt_assembly::AsyncAssemblyHook>,
         Authority,
@@ -494,10 +495,13 @@ impl PromptRegistry for LayeredPromptRegistry {
     }
 
     fn assembly_hooks(&self) -> Vec<(Arc<dyn AssemblyHook>, Authority)> {
-        self.native
+        let mut out: Vec<_> = self
+            .native
             .iter()
             .flat_map(|r| r.assembly_hooks())
-            .collect()
+            .collect();
+        out.extend(self.script.assembly_hooks.iter().cloned());
+        out
     }
 
     fn async_assembly_hooks(
@@ -644,6 +648,7 @@ mod tests {
                 Arc::new(|_: &ScenePromptContext<'_>| Some("script".into())),
                 BlockOrigin::Script("a.js".into()),
             )],
+            assembly_hooks: Vec::new(),
             async_assembly_hooks: Vec::new(),
         });
         assert_eq!(texts(&r), ["SCRIPT"]);
@@ -664,6 +669,7 @@ mod tests {
                 Arc::new(|_: &ScenePromptContext<'_>| Some("packaged".into())),
                 BlockOrigin::Plugin("pkg".into()),
             )],
+            assembly_hooks: Vec::new(),
             async_assembly_hooks: Vec::new(),
         });
         assert_eq!(texts(&r), ["NATIVE", "ADDED"]);

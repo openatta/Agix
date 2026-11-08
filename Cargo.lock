@@ -2958,6 +2958,7 @@ dependencies = [
  "async-trait",
  "base",
  "rquickjs",
+ "runtime",
  "serde_json",
  "tokio",
  "tokio-util",

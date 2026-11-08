@@ -919,14 +919,31 @@ let store = Arc::new(ObservedHistoryStore::new(inner, vec![my_observer]));
 
 ---
 
-## Rust 插件 — `runtime::plugin::Plugin`
+## 插件 — `runtime::plugin::Plugin`
 
-一个 Rust 插件是编译进宿主的一组**注册**与**拦截**,有名字,每个会话构建时登记一次:
+插件是一组有名字的**注册**与**拦截**,每个会话构建时登记一次。Rust 插件编译进宿主;
+QuickJS 脚本走的也是这个接口——`script-host` 把一组绑定包成一个
+`script_host::ScriptPlugin`,层是 `Layer::QuickJs`。
+
+```rust
+pub trait Plugin: Send + Sync {
+    fn name(&self) -> &str;                      // 一个会话里唯一
+    fn layer(&self) -> Layer { Layer::Rust }     // Rust | QuickJs
+    fn register(&self, session: &PluginSession<'_>, r: &mut Registrar);
+}
+
+pub struct PluginSession<'a> {
+    pub session_id: &'a str,
+    pub project_root: &'a Path,
+    pub scene: &'a str,
+    pub depth: u32,                              // 0 是宿主建的会话,子 Agent 逐层 +1
+}
+```
 
 ```rust
 struct Tickets;
 
-impl runtime::plugin::Plugin for Tickets {
+impl Plugin for Tickets {
     fn name(&self) -> &str { "tickets" }
     fn register(&self, session: &PluginSession<'_>, r: &mut Registrar) {
         r.tool(Arc::new(FileTicketTool))
@@ -938,29 +955,40 @@ impl runtime::plugin::Plugin for Tickets {
     }
 }
 
-Builder::new().plugin(Arc::new(Tickets))                         // 单个会话
+Builder::new().plugin(Arc::new(Tickets))                             // 单个会话
 Assembly { plugins: vec![Arc::new(Tickets)], ..Default::default() }  // 池里每个会话,重建也算
 ```
 
 `Registrar` 收的就是这些:
 
-| 方法 | 扩展点 |
-|---|---|
-| `tool` | 往会话的工具表里加一个工具,和已有的同名是冲突,`build()` 失败 |
-| `agent_type` | `Agent` 工具可选的 agent 类型 |
-| `tool_middleware` | `tool.around` |
-| `tool_result` | `tool.result` |
-| `model_interceptor` | `model.request` / `model.message` |
-| `retrieval_hook` | `memory.retrieval_hook` |
-| `prompt_middleware` | `prompt.submit` |
-| `prompt_block` / `prompt_context` / `prompt_variable` / `assembly_hook` | `prompt.*` |
-| `health_check` | `health.check` |
+| 方法 | 扩展点 | 名字 |
+|---|---|---|
+| `tool` | 会话的工具表 | `Tool::name()` |
+| `agent_type` | `Agent` 工具可选的 agent 类型 | `AgentTypeDefinition::name` |
+| `tool_middleware` | `tool.around` | — |
+| `tool_result` | `tool.result` | — |
+| `model_interceptor` | `model.request` / `model.message` | — |
+| `retrieval_hook` | `memory.retrieval_hook` | — |
+| `prompt_middleware` | `prompt.submit` | — |
+| `prompt_block` / `prompt_context` | `prompt.block` / `prompt.context` | `RegisteredBlock::name` |
+| `prompt_variable` / `prompt_variable_from` | `prompt.variable`(后者带来源) | `{{name}}` 里的 name |
+| `assembly_hook` / `async_assembly_hook` | `prompt.assemble`(后者可 await、带权限) | — |
+| `health_check` | `health.check` | `HealthCheck::name()` |
+| `on_turn_start` | 每轮开始时回调(脚本的每轮配额就靠它清零) | — |
+
+**名字只取一次。** 插件名在一个会话里唯一;工具名、agent 类型名在所有插件之间唯一;提示块
+名与变量名在**同一层**里唯一,宿主经 `Builder::prompt_registry` 给的注册表也算 Rust 层。撞了
+`build()` 就失败,错误里点出是哪两个插件。QuickJS 层自己的撞名在绑定时就拒(运维者的
+`scripts` 整段拒,包里的只拒那一条)。跨层的同名不是冲突,按下一节「叠加顺序」取舍。
+
+agent 类型和磁盘上的定义之间仍按层级覆盖:内建 < 插件包与插件 < 全局 < 场景 < 项目目录。
 
 - **子 Agent 也会登记。** 一个会话委派出去的子会话、团队成员、后台任务都带着父会话的
-  插件构建,`PluginSession::depth` 告诉插件它在第几层,要不要加由插件自己定。
+  插件构建,`PluginSession::depth` 告诉插件它在第几层。`ScriptPlugin` 在子会话里只登记
+  工具与模型调用两侧的拦截,不带提示词贡献,也不重置配额——子会话的调用记在父会话这一轮。
 - **契约不在这里。** 换掉一个子系统(上面「契约」一节)仍然是 `Builder` 上的单槽 setter;
   场景仍是 `Assembly.scenes`;MCP 服务器与 hooks 仍走配置。
-- **稳定性。** `Plugin` trait 不再加方法;新的能力只会作为 `Registrar` 的新方法出现,
+- **稳定性。** `Plugin` 的三个方法不再变;新的能力只会作为 `Registrar` 的新方法出现,
   已有的插件不用改。
 
 和下一节的 `Module` 的区别:`Module` 拿到的是会话正在构建中的部件——工具表、事件总线、
@@ -969,18 +997,17 @@ Assembly { plugins: vec![Arc::new(Tickets)], ..Default::default() }  // 池里�
 
 ## 叠加顺序
 
-同一个点上 Rust 与 QuickJS 都有贡献时,先后由层决定,不由谁先交给 `Builder` 决定。
-Rust 是编译期就在的那层,QuickJS 是部署时定制的那层,所以 QuickJS 说最后一句:
+同一个点上两层都有贡献时,先后由层决定,不由谁先交给 `Builder` 决定。Rust 是编译期就在的
+那层,QuickJS 是部署时定制的那层,所以 QuickJS 说最后一句:
 
 | 形态 | 扩展点 | 规则 |
 |---|---|---|
-| 串行 | `tool.result`、`model.request`、`model.message`、`memory.retrieval_hook`、`prompt.assemble` | Rust 先,QuickJS 后——脚本看到的是 Rust 处理过的结果 |
+| 串行 | `tool.result`、`model.request`、`model.message`、`memory.retrieval_hook`、`prompt.assemble`、`prompt.submit` | Rust 先,QuickJS 后——脚本看到的是 Rust 处理过的结果 |
 | 包裹 | `tool.around` | Rust 在内,QuickJS 在外——脚本先看到调用,`deny` / `respond` 先由它定;结果也由它最后看到 |
-| 同名 | `prompt.block`、`prompt.context`、`prompt.variable` | 两层共存;同一个名字只能有一个时,运维者自己的脚本覆盖 Rust,包里的脚本"只能新增",它的同名贡献被丢弃并告警 |
+| 跨层同名 | `prompt.block`、`prompt.context`、`prompt.variable` | 来源在本地的脚本覆盖 Rust;包里的脚本"只能新增",它的那一个被丢弃并告警 |
 
 同一层内按添加顺序:Rust 层先是 `Builder` 自己的 setter,再是各插件按 `plugin()` 的顺序;
-QuickJS 层按绑定出现的顺序。宿主经 `Builder::prompt_registry` 给的注册表也在 Rust 层里,
-脚本的块、变量和组装钩子叠在它上面,不会被它替换掉。
+QuickJS 层按绑定出现的顺序。
 
 QuickJS 在拦截点上后执行,不等于它能越过 Rust:权限、预算、事件 sink 这些只开放给 Rust
 的契约在载体之后或之外,最终判定仍然在 Rust 手里。

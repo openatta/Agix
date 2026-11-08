@@ -153,6 +153,7 @@ impl BoundScripts {
         crate::interface::prompt_registry::ScriptContributions {
             blocks: self.prompt_blocks.clone(),
             variables: self.prompt_variables.clone(),
+            assembly_hooks: Vec::new(),
             async_assembly_hooks: self.assembly_hooks.clone(),
         }
     }

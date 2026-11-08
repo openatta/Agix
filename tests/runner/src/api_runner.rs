@@ -305,7 +305,9 @@ async fn build_agent(
     // is the failure the carrier refuses to make anywhere else, and it would
     // make a case about a script pass by proving nothing.
     match script_host::bindings::bind_quickjs(&settings.scripts, &tmp.join("workdir")) {
-        Ok(Some(bound)) => builder = builder.bound_scripts(bound),
+        Ok(Some(bound)) => {
+            builder = builder.plugin(std::sync::Arc::new(script_host::ScriptPlugin::new(bound)))
+        }
         Ok(None) => {}
         Err(e) => anyhow::bail!("a script binding in the fixture is invalid: {e}"),
     }

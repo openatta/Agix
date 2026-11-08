@@ -286,9 +286,8 @@ pub struct Agent {
     pub(crate) health: Arc<base::interface::health::HealthChecks>,
     /// Kept time and kept identifiers — see [`Builder::environment`].
     pub(crate) environment: Arc<dyn base::interface::environment::Environment>,
-    /// Every script carrier bound in this session, so a turn can reset the
-    /// per-turn quotas — see [`Builder::script_carriers`].
-    pub(crate) script_carriers: Arc<Vec<Arc<base::interface::script::ScriptCarrier>>>,
+    /// What plugins asked to be told as each turn begins.
+    pub(crate) turn_starts: Arc<Vec<crate::plugin::TurnStart>>,
     /// What to do when a model call goes wrong — see
     /// [`Builder::recovery_policy`].
     pub(crate) recovery_policy: Arc<dyn base::interface::recovery_policy::RecoveryPolicy>,
@@ -1136,9 +1135,6 @@ pub struct Builder {
     wake_rx: Option<tokio::sync::mpsc::UnboundedReceiver<()>>,
     /// Rust plugins, in the order added — see [`Builder::plugin`].
     plugins: Vec<Arc<dyn crate::plugin::Plugin>>,
-    /// The QuickJS layer, kept apart from the Rust contributions until
-    /// `build()` orders the two — see [`Builder::bound_scripts`].
-    scripts: Option<base::interface::script_adapters::BoundScripts>,
     /// Pre-built command registry shared across many sessions instead of
     /// re-scanning skill dirs per session — see `Builder::commands_override`.
     commands_override: Option<Arc<crate::commands::CommandRegistry>>,
@@ -1175,9 +1171,6 @@ pub struct Builder {
     health_checks: Vec<Arc<dyn base::interface::health::HealthCheck>>,
     /// Kept time and ids — see [`Builder::environment`].
     environment: Option<Arc<dyn base::interface::environment::Environment>>,
-    /// Script carriers whose quota resets each turn — see
-    /// [`Builder::script_carriers`].
-    script_carriers: Vec<Arc<base::interface::script::ScriptCarrier>>,
     /// Model-failure recovery — see [`Builder::recovery_policy`].
     recovery_policy: Option<Arc<dyn base::interface::recovery_policy::RecoveryPolicy>>,
     /// Model request/response interception — see [`Builder::model_interceptor`].
@@ -1185,9 +1178,6 @@ pub struct Builder {
     /// Recall — see [`Builder::memory_retriever`].
     memory_retriever: Option<Arc<dyn base::interface::memory_contracts::MemoryRetriever>>,
     retrieval_hooks: Vec<Arc<dyn base::interface::memory_contracts::RetrievalHook>>,
-    /// The scripts a delegated agent inherits — see
-    /// [`BoundScripts::for_delegate`](base::interface::script_adapters::BoundScripts::for_delegate).
-    delegate_scripts: Option<Arc<base::interface::script_adapters::BoundScripts>>,
     /// Extra destinations for this session's events, beyond the `event_rx`
     /// `build()` returns — see [`Builder::event_sink`].
     event_sinks: Vec<Arc<dyn base::interface::event_sink::EventSink>>,
@@ -1311,7 +1301,6 @@ impl Builder {
             frozen: None,
             wake_rx: None,
             plugins: Vec::new(),
-            scripts: None,
             commands_override: None,
             task_router: None,
             scene_registry: None,
@@ -1327,12 +1316,10 @@ impl Builder {
             budget_policy: None,
             health_checks: Vec::new(),
             environment: None,
-            script_carriers: Vec::new(),
             recovery_policy: None,
             model_interceptors: Vec::new(),
             memory_retriever: None,
             retrieval_hooks: Vec::new(),
-            delegate_scripts: None,
             event_sinks: Vec::new(),
             agent_depth: 0,
             cron_store: None,
@@ -1599,45 +1586,12 @@ impl Builder {
         self
     }
 
-    /// Install everything a set of script bindings produced: the QuickJS
-    /// layer of this session.
-    ///
-    /// Held apart and placed in `build()`, so where a script runs relative to
-    /// the Rust contributions does not depend on which of the two the caller
-    /// handed over first. One set per session: a second call replaces the
-    /// first, so bind everything into one `BoundScripts`.
-    pub fn bound_scripts(mut self, bound: base::interface::script_adapters::BoundScripts) -> Self {
-        // Held so the `Agent` tool can hand it to whatever it spawns. A policy
-        // that stops at the first delegation is not a policy.
-        self.delegate_scripts = Some(Arc::new(bound.for_delegate()));
-        self.script_carriers = bound.carriers.clone();
-        self.scripts = Some(bound);
-        self
-    }
-
-    /// Add a Rust plugin. Plugins register in the order added, after this
-    /// builder's own setters, and are handed to every delegate this session
-    /// spawns.
+    /// Add a plugin — Rust, or the QuickJS layer `script-host` provides.
+    /// Within a layer, plugins register in the order added, after this
+    /// builder's own setters; every delegate this session spawns is built
+    /// with them too.
     pub fn plugin(mut self, plugin: Arc<dyn crate::plugin::Plugin>) -> Self {
         self.plugins.push(plugin);
-        self
-    }
-
-    /// The script carriers bound in this session.
-    ///
-    /// A carrier counts calls against a *per-turn* quota, and a quota only
-    /// means that if something says when a turn began. Nothing did: the
-    /// carriers were moved into their adapters and never seen again, so the
-    /// budget was really per session — a script on a per-tool-call point would
-    /// go quiet partway through a long one and stay quiet, which is the least
-    /// debuggable failure a hook point has.
-    ///
-    /// [`ScriptCarrier`]: base::interface::script::ScriptCarrier
-    pub fn script_carriers(
-        mut self,
-        carriers: Vec<Arc<base::interface::script::ScriptCarrier>>,
-    ) -> Self {
-        self.script_carriers = carriers;
         self
     }
 
@@ -2047,8 +2001,10 @@ impl Builder {
             .compactor
             .unwrap_or_else(|| Arc::new(DefaultCompactor) as Arc<dyn Compactor>);
         let agent_depth = self.agent_depth;
-        let mut registered = crate::plugin::Registrar::default();
-        {
+        let crate::plugin::Layers {
+            rust: mut rust_layer,
+            quickjs: mut quickjs_layer,
+        } = {
             let project_root = settings.paths.project_root();
             let plugin_session = crate::plugin::PluginSession {
                 session_id: session.session_id_str(),
@@ -2056,11 +2012,18 @@ impl Builder {
                 scene: scene.id(),
                 depth: agent_depth,
             };
-            for plugin in &self.plugins {
-                plugin.register(&plugin_session, &mut registered);
-            }
-        }
-        let plugin_agent_types = std::mem::take(&mut registered.agent_types);
+            crate::plugin::register_all(
+                &self.plugins,
+                &plugin_session,
+                self.prompt_registry.as_deref(),
+            )
+            .map_err(EngineError::Internal)?
+        };
+        let plugin_agent_types: Vec<base::agent_type::AgentTypeDefinition> =
+            std::mem::take(&mut rust_layer.agent_types)
+                .into_iter()
+                .chain(std::mem::take(&mut quickjs_layer.agent_types))
+                .collect();
         let agent_spawner = crate::module::LateAgentSpawner::default();
         let hooks = self.hooks.unwrap_or_else(|| {
             build_hook_runner(
@@ -2221,7 +2184,6 @@ impl Builder {
                 depth: agent_depth,
                 task_router: self.task_router.as_ref(),
                 process_groups: self.process_groups.as_ref(),
-                delegate_scripts: self.delegate_scripts.as_ref(),
                 delegate_plugins: &self.plugins,
                 plugin_agent_types: &plugin_agent_types,
                 mcp: &mut mcp_slot,
@@ -2294,7 +2256,10 @@ impl Builder {
 
         // After the scene's tools. The same `Arc` arriving twice is not a
         // collision; a different tool under a taken name is.
-        for t in std::mem::take(&mut registered.tools) {
+        let plugin_tools = std::mem::take(&mut rust_layer.tools)
+            .into_iter()
+            .chain(std::mem::take(&mut quickjs_layer.tools));
+        for t in plugin_tools {
             match tools.get(t.name()) {
                 Some(existing) if Arc::ptr_eq(&existing, &t) => continue,
                 Some(_) => {
@@ -2484,78 +2449,89 @@ impl Builder {
         // Capture feature flags before settings is moved into the Agent struct
         let cached_mc_enabled = settings.feature_flags.cached_microcompact;
 
-        let scripts = self.scripts.unwrap_or_default();
-        let prompt_registry: Arc<dyn base::interface::prompt_registry::PromptRegistry> = if scripts
-            .registers_on_prompt_registry()
-            || registered.registers_on_prompt_registry()
-        {
-            use base::interface::prompt_registry::PromptRegistry as _;
-            let own = base::interface::prompt_registry::InMemoryPromptRegistry::new();
-            for block in std::mem::take(&mut registered.prompt_blocks) {
-                own.register_block(block);
-            }
-            for (name, provider) in std::mem::take(&mut registered.prompt_variables) {
-                own.register_variable(&name, provider);
-            }
-            for hook in std::mem::take(&mut registered.assembly_hooks) {
-                own.register_assembly_hook(
-                    hook,
-                    base::interface::prompt_assembly::Authority::local(
-                        base::prompt::BlockOrigin::Kernel,
+        let prompt_registry: Arc<dyn base::interface::prompt_registry::PromptRegistry> =
+            if rust_layer.registers_on_prompt_registry()
+                || quickjs_layer.registers_on_prompt_registry()
+            {
+                use base::interface::prompt_registry::PromptRegistry as _;
+                let own = base::interface::prompt_registry::InMemoryPromptRegistry::new();
+                for block in std::mem::take(&mut rust_layer.prompt_blocks) {
+                    own.register_block(block);
+                }
+                for (name, provider, _) in std::mem::take(&mut rust_layer.prompt_variables) {
+                    own.register_variable(&name, provider);
+                }
+                for (hook, authority) in std::mem::take(&mut rust_layer.assembly_hooks) {
+                    own.register_assembly_hook(hook, authority);
+                }
+                for (hook, authority) in std::mem::take(&mut rust_layer.async_assembly_hooks) {
+                    own.register_async_assembly_hook(hook, authority);
+                }
+                Arc::new(
+                    base::interface::prompt_registry::LayeredPromptRegistry::new(
+                        self.prompt_registry,
+                        own,
+                        base::interface::prompt_registry::ScriptContributions {
+                            blocks: std::mem::take(&mut quickjs_layer.prompt_blocks),
+                            variables: std::mem::take(&mut quickjs_layer.prompt_variables),
+                            assembly_hooks: std::mem::take(&mut quickjs_layer.assembly_hooks),
+                            async_assembly_hooks: std::mem::take(
+                                &mut quickjs_layer.async_assembly_hooks,
+                            ),
+                        },
                     ),
-                );
-            }
-            Arc::new(
-                base::interface::prompt_registry::LayeredPromptRegistry::new(
-                    self.prompt_registry,
-                    own,
-                    scripts.prompt_contributions(),
-                ),
-            )
-        } else {
-            self.prompt_registry
-                .unwrap_or_else(|| Arc::new(base::interface::prompt_registry::NoRegistrations))
-        };
+                )
+            } else {
+                self.prompt_registry
+                    .unwrap_or_else(|| Arc::new(base::interface::prompt_registry::NoRegistrations))
+            };
         // Rust first in a chain and innermost around a tool call; QuickJS
         // after it and outside it.
-        let tool_middleware: Vec<_> = scripts
+        let tool_middleware: Vec<_> = quickjs_layer
             .tool_middleware
             .into_iter()
             .chain(self.tool_middleware)
-            .chain(registered.tool_middleware)
+            .chain(rust_layer.tool_middleware)
             .collect();
         let result_transformers: Vec<_> = self
             .result_transformers
             .into_iter()
-            .chain(registered.tool_results)
-            .chain(scripts.tool_results)
+            .chain(rust_layer.tool_results)
+            .chain(quickjs_layer.tool_results)
             .collect();
         let model_interceptors: Vec<_> = self
             .model_interceptors
             .into_iter()
-            .chain(registered.model_interceptors)
-            .chain(scripts.model_interceptors)
+            .chain(rust_layer.model_interceptors)
+            .chain(quickjs_layer.model_interceptors)
             .collect();
         let retrieval_hooks: Vec<_> = self
             .retrieval_hooks
             .into_iter()
-            .chain(registered.retrieval_hooks)
-            .chain(scripts.retrieval_hooks)
+            .chain(rust_layer.retrieval_hooks)
+            .chain(quickjs_layer.retrieval_hooks)
             .collect();
         let prompt_middleware: Vec<_> = self
             .prompt_middleware
             .into_iter()
-            .chain(registered.prompt_middleware)
+            .chain(rust_layer.prompt_middleware)
+            .chain(quickjs_layer.prompt_middleware)
             .collect();
         let health_checks: Vec<_> = self
             .health_checks
             .into_iter()
-            .chain(registered.health_checks)
+            .chain(rust_layer.health_checks)
+            .chain(quickjs_layer.health_checks)
+            .collect();
+        let turn_starts: Vec<_> = rust_layer
+            .turn_starts
+            .into_iter()
+            .chain(quickjs_layer.turn_starts)
             .collect();
 
         Ok((
             Agent {
-                script_carriers: Arc::new(self.script_carriers),
+                turn_starts: Arc::new(turn_starts),
                 scene,
                 model,
                 tools,

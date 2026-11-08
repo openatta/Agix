@@ -1411,12 +1411,12 @@ struct Inner {
     /// default) means every sub-agent spawn inherits `model` unchanged,
     /// exactly matching behavior before multi-provider routing existed.
     task_router: Option<Arc<base::provider::TaskRouter>>,
-    /// The operator's scripts that follow a delegate into its own session —
-    /// the rings around tool and model calls, never the prompt contributions.
-    /// See `BoundScripts::for_delegate` for where that line is drawn and why.
-    delegate_scripts: Option<Arc<base::interface::script_adapters::BoundScripts>>,
-    /// The Rust plugins every delegate is built with, as its parent was.
+    /// The plugins every delegate is built with, as its parent was — the
+    /// QuickJS layer among them, which decides itself what follows a delegate.
     delegate_plugins: Vec<Arc<dyn runtime::plugin::Plugin>>,
+    /// Agent types this session's plugins declare, over the shared catalog:
+    /// above built-in and package types, below the ones on disk.
+    session_agent_types: Arc<std::collections::HashMap<String, AgentTypeDefinition>>,
     process_groups: Option<Arc<base::interface::exec::local::GroupLedger>>,
     /// What every delegate is assembled with: the parent session's modules.
     modules: Vec<Arc<dyn runtime::module::Module>>,
@@ -1659,11 +1659,7 @@ impl Inner {
     /// its model, its tool set, its depth, its own settings. Those differ per
     /// spawn site, which is why they stay at the call sites.
     fn inherited_by_a_delegate(&self, mut builder: Builder) -> Builder {
-        // A policy that stops at the first delegation is not a policy; the
-        // prompt contributions stay behind. See `BoundScripts::for_delegate`.
-        if let Some(scripts) = &self.delegate_scripts {
-            builder = builder.bound_scripts(scripts.for_delegate());
-        }
+        // A policy that stops at the first delegation is not a policy.
         for plugin in &self.delegate_plugins {
             builder = builder.plugin(plugin.clone());
         }
@@ -1698,11 +1694,17 @@ impl Inner {
     /// a handful of strings and a short tool-name list, not a hot-path
     /// concern at sub-agent-spawn frequency.
     fn agent_type_def(&self, name: &str) -> Option<AgentTypeDefinition> {
-        self.agent_types
+        let shared = self
+            .agent_types
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(name)
-            .cloned()
+            .cloned();
+        match (shared, self.session_agent_types.get(name)) {
+            (Some(on_disk), _) if on_disk.source == AgentTypeSource::LocalFile => Some(on_disk),
+            (_, Some(declared)) => Some(declared.clone()),
+            (shared, None) => shared,
+        }
     }
 
     fn skill_manager(&self) -> Option<Arc<dyn base::interface::skill_catalog::SkillCatalog>> {
@@ -2185,8 +2187,8 @@ impl AgentTool {
                 description,
                 parent_settings: None,
                 task_router: None,
-                delegate_scripts: None,
                 delegate_plugins: Vec::new(),
+                session_agent_types: Default::default(),
                 process_groups: None,
                 modules: Vec::new(),
                 skill_manager: Arc::new(std::sync::RwLock::new(None)),
@@ -2253,8 +2255,8 @@ impl AgentTool {
                 description,
                 parent_settings: None,
                 task_router: None,
-                delegate_scripts: None,
                 delegate_plugins: Vec::new(),
+                session_agent_types: Default::default(),
                 process_groups: None,
                 modules: Vec::new(),
                 skill_manager: Arc::new(std::sync::RwLock::new(None)),
@@ -2312,21 +2314,38 @@ impl AgentTool {
         self
     }
 
-    /// The scripts every agent this tool spawns inherits.
-    pub fn with_delegate_scripts(
-        mut self,
-        scripts: Arc<base::interface::script_adapters::BoundScripts>,
-    ) -> Self {
+    /// The plugins every agent this tool spawns is built with.
+    pub fn with_delegate_plugins(mut self, plugins: Vec<Arc<dyn runtime::plugin::Plugin>>) -> Self {
         let mut inner = (*self.inner).clone();
-        inner.delegate_scripts = Some(scripts);
+        inner.delegate_plugins = plugins;
         self.inner = Arc::new(inner);
         self
     }
 
-    /// The Rust plugins every agent this tool spawns is built with.
-    pub fn with_delegate_plugins(mut self, plugins: Vec<Arc<dyn runtime::plugin::Plugin>>) -> Self {
+    /// Agent types this session's plugins declare, on top of the catalog this
+    /// tool was built with. Only the types loaded from disk outrank them.
+    pub fn with_session_agent_types(mut self, types: &[AgentTypeDefinition]) -> Self {
+        if types.is_empty() {
+            return self;
+        }
         let mut inner = (*self.inner).clone();
-        inner.delegate_plugins = plugins;
+        inner.session_agent_types =
+            Arc::new(types.iter().map(|d| (d.name.clone(), d.clone())).collect());
+        let mut visible = inner
+            .agent_types
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .clone();
+        for (name, definition) in inner.session_agent_types.iter() {
+            if visible
+                .get(name)
+                .map_or(true, |d| d.source != AgentTypeSource::LocalFile)
+            {
+                visible.insert(name.clone(), definition.clone());
+            }
+        }
+        inner.description = describe_agent_types(&visible).into();
         self.inner = Arc::new(inner);
         self
     }
@@ -3173,9 +3192,9 @@ impl AgentTool {
             .settings(settings.clone())
             .agent_depth(child_depth)
             .permission(perm);
-        // The operator's policy scripts follow the delegate — see
-        // `BoundScripts::for_delegate`. Without this, spawning is a way
-        // around every rule they wrote, chosen by the model.
+        // The session's plugins follow the delegate, the operator's policy
+        // scripts among them. Without this, spawning is a way around every
+        // rule they wrote, chosen by the model.
         let history_store = self.inner.history_store();
         builder = self.inner.inherited_by_a_delegate(builder);
         let built = builder
@@ -3640,9 +3659,9 @@ impl AgentTool {
             .agent_depth(child_depth)
             .permission(perm)
             .history_store(history_store.clone());
-        // The operator's policy scripts follow the delegate — see
-        // `BoundScripts::for_delegate`. Without this, spawning is a way
-        // around every rule they wrote, chosen by the model.
+        // The session's plugins follow the delegate, the operator's policy
+        // scripts among them. Without this, spawning is a way around every
+        // rule they wrote, chosen by the model.
         builder = self.inner.inherited_by_a_delegate(builder);
         let (mut agent, event_rx, input_tx) = builder
             .build()
@@ -4624,6 +4643,42 @@ mod catalog_tests {
                 new_messages: None,
             })
         }
+    }
+
+    #[test]
+    fn a_session_plugins_agent_types_sit_between_the_shared_catalog_and_the_disk() {
+        let def = |name: &str, source: AgentTypeSource, prompt: &str| AgentTypeDefinition {
+            name: name.into(),
+            source,
+            system_prompt: prompt.into(),
+            ..Default::default()
+        };
+        let shared: std::collections::HashMap<String, AgentTypeDefinition> = [
+            def("builtin", AgentTypeSource::Builtin, "shared"),
+            def("on-disk", AgentTypeSource::LocalFile, "disk"),
+        ]
+        .into_iter()
+        .map(|d| (d.name.clone(), d))
+        .collect();
+        let tools = Arc::new(InMemoryToolRegistry::new());
+        let tool = AgentTool::with_shared_agent_types(
+            Arc::new(DummyModel),
+            Arc::new(EngineConfig::defaults_for("test-model")),
+            tools.clone(),
+            tools,
+            Arc::new(std::sync::RwLock::new(Arc::new(shared))),
+        )
+        .with_session_agent_types(&[
+            def("builtin", AgentTypeSource::Plugin, "plugin"),
+            def("on-disk", AgentTypeSource::Plugin, "plugin"),
+            def("new", AgentTypeSource::Plugin, "plugin"),
+        ]);
+
+        let prompt = |name: &str| tool.inner.agent_type_def(name).map(|d| d.system_prompt);
+        assert_eq!(prompt("builtin").as_deref(), Some("plugin"));
+        assert_eq!(prompt("on-disk").as_deref(), Some("disk"));
+        assert_eq!(prompt("new").as_deref(), Some("plugin"));
+        assert!(base::tool::Tool::description(&tool).contains("new"));
     }
 
     fn test_agent_tool() -> AgentTool {

@@ -80,7 +80,6 @@ pub struct SessionContext<'a> {
     pub depth: u32,
     pub task_router: Option<&'a Arc<base::provider::TaskRouter>>,
     pub process_groups: Option<&'a Arc<base::interface::exec::local::GroupLedger>>,
-    pub delegate_scripts: Option<&'a Arc<base::interface::script_adapters::BoundScripts>>,
     /// The Rust plugins this session was built with; a delegate is built
     /// with them too.
     pub delegate_plugins: &'a [Arc<dyn crate::plugin::Plugin>],

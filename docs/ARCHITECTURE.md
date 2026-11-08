@@ -675,7 +675,8 @@ sidecar 答得出**:`Meta` 在 transcript 里,而要读 transcript 先得知道�
 
 扩展只有两种:**Rust**——契约直接 `impl` 那个 trait 交给 `runtime::agent::Builder`,
 注册与拦截打包成一个 `runtime::plugin::Plugin`,全部扩展点可用;**QuickJS 脚本**——给不
-重新编译引擎的人,挂到其中九个点上。两者落在同一个点上时按层排:Rust 先(包裹时在内),
+重新编译引擎的人,挂到其中九个点上,本身也是一个 `Plugin`(`script_host::ScriptPlugin`,
+`Layer::QuickJs`)。两者落在同一个点上时按层排:Rust 先(包裹时在内),
 QuickJS 后(包裹时在外),与交给 `Builder` 的先后无关(`extension_points.md`「叠加顺序」)。脚本和 `RunCode`
 跑在同一套内嵌 QuickJS 里,限额限的是开销,不是对恶意代码的隔离,所以脚本能做什么按它
 从哪来定。引擎不带 WebAssembly 运行时;需要的上层在 Rust 接口上自己做。

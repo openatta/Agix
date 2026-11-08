@@ -92,7 +92,8 @@ impl Module for AgentsModule {
                 cx.tools.clone(),
                 cx.tools.clone(),
                 shared.clone(),
-            ),
+            )
+            .with_session_agent_types(cx.plugin_agent_types),
             None => {
                 let project = settings.paths.project_root().join(".agix").join("agents");
                 let scene = settings.paths.user_data_dir.join("agents");
@@ -113,9 +114,6 @@ impl Module for AgentsModule {
         .with_modules(self.for_delegates(cx.modules, &slots));
         if let Some(router) = cx.task_router {
             tool = tool.with_task_router(router.clone());
-        }
-        if let Some(scripts) = cx.delegate_scripts {
-            tool = tool.with_delegate_scripts(scripts.clone());
         }
         if !cx.delegate_plugins.is_empty() {
             tool = tool.with_delegate_plugins(cx.delegate_plugins.to_vec());

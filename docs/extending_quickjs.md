@@ -444,11 +444,13 @@ function onMessage(msg) {
 
 ## 和 Rust 插件在同一个点上
 
-一个点上同时有 Rust 插件(`runtime::plugin::Plugin`)或宿主自己的 Rust 实现时,脚本
-**后执行**:串行的点上它读的是 Rust 处理过的东西;`tool.around` 上它是最外面的一环,
+脚本走的是和 Rust 插件同一个接口:一组绑定被包成一个 `script_host::ScriptPlugin`
+(`runtime::plugin::Plugin`,层是 `Layer::QuickJs`)交给会话。一个点上同时有 Rust 插件或
+宿主自己的 Rust 实现时,脚本**后执行**:串行的点上它读的是 Rust 处理过的东西;`tool.around` 上它是最外面的一环,
 先看到调用、最后看到结果;`prompt.block` / `prompt.context` / `prompt.variable` 上和
-Rust 撞了名字,项目里的脚本覆盖 Rust,包里的脚本的那一个被丢弃。完整的规则在
-`extension_points.md`「叠加顺序」。
+Rust 撞了名字,项目里的脚本覆盖 Rust,包里的脚本的那一个被丢弃。两个脚本之间撞名在绑定
+时就拒:`settings.json` 里的 `scripts` 整段拒,包里的只拒后来的那一条。完整的规则在
+`extension_points.md`「插件」与「叠加顺序」。
 
 ## 稳定性
 

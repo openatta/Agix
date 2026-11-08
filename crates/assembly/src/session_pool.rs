@@ -2216,7 +2216,7 @@ impl SessionPool {
             match bound {
                 Some(bound) => {
                     let ledger = bound.ledger.clone();
-                    builder = builder.bound_scripts(bound);
+                    builder = builder.plugin(Arc::new(script_host::ScriptPlugin::new(bound)));
                     Some(ledger)
                 }
                 None => None,
