@@ -56,8 +56,10 @@ repository:
    offered, a permission question becomes a refusal that says how to grant
    it, writes stay inside the roots the instance was given, and `Bash` runs
    only when the OS sandbox (Seatbelt on macOS, bubblewrap on Linux) is fully
-   in force. Authority comes from settings, never from task text — so
-   injected content cannot grant itself permissions.
+   in force — with git hooks and config, settings, MCP and other agent config
+   read-only inside it, so nothing a command writes runs later outside it.
+   Authority comes from settings, never from task text — so injected content
+   cannot grant itself permissions.
 4. **A small, cache-friendly prompt.** About 5.8K tokens of fixed prefix with
    the tools included; per-session facts travel in the first message instead
    of the system prompt, so the provider's prefix cache is shared across

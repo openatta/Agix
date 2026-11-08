@@ -232,3 +232,52 @@ skill、web 工具、WebSocket、载体与包方案。
 - `session.tasks` 的 `kind` 多了 `code`(`RunCode` 的程序);不认识的 `kind` 照常显示即可。
 - `session.inspectContext` 的 `system` 各块带 `role`。
 - 场景 id `coding` 不再存在,`session.create` 带它会得到 `SCENE_NOT_FOUND`。
+
+## 0.3.6 之后:到 0.3.7
+
+### 嵌入方
+
+- **`bypassPermissions` 不看任何权限规则。** `PermissionGate` 在 `validate_input` 之后对 bypass
+  直接放行:deny / ask 规则、免 bypass 的路径、`.git` / `.agix` 的确认、工具自己的权限判定
+  一概跳过。`~`、`$(`、反引号、UNC 这类会被误读的路径属于输入校验,bypass 下照样拒。
+  `agixd` 的 bypass 会话也装规则 gate(这样输入校验、会话中途进计划模式都还在);只有宿主给了
+  `Assembly.permission` 才用宿主的。要 deny 仍然算数,用 `acceptEdits` 或 `dontAsk` 加 allow
+  规则。只想要"deny 规则挡在前面、其余照旧"的,用 `PermissionGate::deny_rules_only`。
+- **`acceptEdits` 只多放行只读调用。** 工具自己没放行的 `Edit` / `Write`(写到根外、写
+  `.git` / `.agix` 下)照样询问,无人值守的会话里就是拒绝。
+- **沙箱的可写范围收窄了。** 项目的 `.git`、`.agix` 本身,`.git/{config,config.worktree,commondir}`、
+  `.git/hooks/`,`.agix` 下的设置与 `mcp`、`hooks`、`agents`、`skills`、`plugins`、`rules`、`scenes`
+  等配置目录都只读;`~/.agix` 只有 `base::paths::STATE_ROOT_WORKING_DIRS`(`scratchpad`、`memory`)
+  可写;`/private/tmp` 等临时区不再整体放开,沙箱里的命令拿到会话自己的 `TMPDIR`。依赖在沙箱里
+  `git config`、`git remote add` 的流程要挪到沙箱外。引擎自己跑的 git 一律带
+  `base::frozen::git::ENGINE_GIT_OPTIONS`。
+- **`Monitor` 进沙箱**,与 `Bash` 共用包装与 `require_enforcement`。
+- **自己调度目标轮的**(`Builder::goal_rounds_from_owner()`):一轮开跑前调用
+  `SessionState::goal_claim_round(turn_id)`,返回 `false` 就不跑——目标已暂停、清除、改过,或
+  这一轮已经有人跑了。同一时刻只会发出一个待跑轮。
+- **`AgentSpawner::start_agent` 多一个取消令牌参数**,宿主起的子 Agent 随它取消;会话池传会话的
+  子令牌。
+- **`Builder::question_prompts(bool)`。** 有人值守的场景里,`AskUserQuestion` 只在打开它、或嵌入方
+  自己给了 `.elicitation(...)` 时注册。`base::interface::scene::NEEDS_A_USER` 里的工具由 Builder
+  在无人值守场景里统一摘掉,场景不必自己过滤。
+- **`settings.compaction.threshold_tokens` / `keep_recent` 生效了**(之前写了没人读),字段改成
+  可选,不写就用场景的 `token_budget()`。已经写了这两项的部署,升级后会按写的值压缩。
+- **`ModelError::NotRecorded`**:回放的录像里没有这次辅助调用时返回;自己穷举 `ModelError` 的补一支。
+  会话自动起名走会话自己的模型与项目绑定,录制时记成 `purpose: "title"` 的辅助调用。
+- **`AgentEvent::PermissionPrompt` 带 `task_id`,新增 `AgentEvent::QuestionPrompt`**;穷举匹配
+  `AgentEvent` 的补上。`SetModelError::Busy.current_turn_id` 改成 `Option<String>`。
+- **RunCode**:程序里的 `agent()` 超过子 Agent 并发上限时排队等空槽;程序起的子 Agent 需要询问时
+  一律拒绝;`Agent` 的 `background` / `team_name` / `worktree` 从程序里调用被拒绝。`ToolContext`
+  多了 `from_code`。
+
+### RPC 客户端
+
+- **提问**:`session.create` 的 `options.prompt_types` 加上 `"question"`(能力位 `question_prompts`)
+  后,模型的 `AskUserQuestion` 以 `prompt_type: "question"` 的 `prompt` 帧到达,用
+  `session.respondToPrompt` 的 `answer` 回答;没打开的会话里模型看不到这个工具。
+- **能力位**多了 `goals`、`ptc`(带这个特性构建时)、`question_prompts`。
+- `session.run_turn` 的 `turn_id` 不能以 `goal-`、`schedule-`、`cron-` 开头(`INVALID_PARAMS`)。
+- 会话有一轮占着时 `setModel` / `setPrompt` 等需要重建的调用一律 `SESSION_BUSY`,`current_turn_id`
+  在那一轮还没正式开始时为 `null`;被拒的改动不会记下。
+- 后台子 Agent 的询问不随前台一轮结束而从 `pending_prompts` 里消失,答了或任务结束才去掉。
+- 同一连接重复 `daemon.subscribeEvents` 不再重复投递。
