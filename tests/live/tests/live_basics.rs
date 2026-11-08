@@ -2,7 +2,7 @@
 //! search, a monitor whose events reach the model while it works, a session's
 //! own prompt, a resume, plan mode, goals — one the model sets, one the host
 //! sets, one that cannot be reached and has to end blocked rather than loop —
-//! and a spawned `agixd`.
+//! a question the model asks that the host answers, and a spawned `agixd`.
 
 use live::{LiveRun, Mode};
 use serde_json::{json, Value};
@@ -492,6 +492,81 @@ async fn one_program_does_a_search_the_model_would_otherwise_do_call_by_call() -
         .filter(|l| !l.is_empty())
         .collect();
     assert_eq!(found, ["f03.rs", "f07.rs", "f15.rs"]);
+    run.finish().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_question_the_model_asks_reaches_the_host_and_its_answer_steers_the_work(
+) -> anyhow::Result<()> {
+    let mut run = LiveRun::start("question", json!({}), Mode::InProcess).await?;
+    let session = run
+        .session_with(json!({ "options": { "prompt_types": ["permission", "question"] } }))
+        .await?;
+    let mut answerer = run.daemon.connect().await?;
+    let subscribed = answerer.session_subscribe(&session).await?;
+    anyhow::ensure!(subscribed.error.is_none(), "{subscribed:?}");
+    let sid = session.clone();
+    let answering = tokio::spawn(async move {
+        while let Ok(Some(frame)) = answerer.next_frame().await {
+            let event = &frame["params"]["event"];
+            if frame["method"] != "session.event"
+                || event["kind"] != "prompt"
+                || event["prompt_type"] != "question"
+            {
+                continue;
+            }
+            let pick = event["options"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|o| {
+                    o["label"]
+                        .as_str()
+                        .is_some_and(|l| l.to_lowercase().contains("green"))
+                })
+                .and_then(|o| o["key"].as_str())
+                .unwrap_or("green")
+                .to_string();
+            let answered = answerer
+                .call(
+                    "session.respondToPrompt",
+                    json!({
+                        "session_id": sid,
+                        "prompt_id": event["prompt_id"],
+                        "prompt_type": "question",
+                        "answer": { "type": "answer", "text": pick }
+                    }),
+                )
+                .await;
+            return Some((event.clone(), answered.map(|r| r.error.is_none())));
+        }
+        None
+    });
+
+    let events = run
+        .turn(
+            &session,
+            "Before doing anything else, ask me with the AskUserQuestion tool which colour the \
+             banner should be, offering the options red, green and blue. Then write banner.txt \
+             containing only the colour I chose, in lower case.",
+        )
+        .await?;
+    let (asked, answered) = answering
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("no question reached the host"))?;
+    eprintln!("[live question] {asked}");
+    assert!(matches!(answered, Ok(true)), "{answered:?}");
+    assert!(
+        events.tool_uses.iter().any(|(n, _)| n == "AskUserQuestion"),
+        "{:?}",
+        events.tool_uses
+    );
+    assert_eq!(
+        run.read_file("banner.txt").map(|s| s.trim().to_lowercase()),
+        Some("green".to_string()),
+        "the host's answer decided what was written"
+    );
     run.finish().await;
     Ok(())
 }

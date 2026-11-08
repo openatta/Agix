@@ -74,7 +74,7 @@ token 用量。改了 `tests/live` 后 lint 也要带上 feature：
 
 | 用例 | 用一遍什么 |
 |---|---|
-| `live_basics.rs` | Read / Write / Edit / Grep / Bash 改项目；`WebSearch` 是引擎的工具，经会话自己的模型让提供方搜索；`Monitor` 立即返回，日志里的 ERROR 在模型干活途中以通知送达、模型据此处理后用 `TaskStop` 停掉它，宿主边跑边看到那一行；会话提示词与 resume；Plan 模式不改文件；模型用 `GoalCreate` 设目标后，自动轮一轮推进一步，直到它自己标完成；宿主用 `session.setGoal` 设的目标不需要再发消息就跑完；达不成的目标以 `blocked` 结束、之后不再开轮；`RunCode` 一个程序做完逐文件检索；另起进程的 `agixd` |
+| `live_basics.rs` | Read / Write / Edit / Grep / Bash 改项目；`WebSearch` 是引擎的工具，经会话自己的模型让提供方搜索；`Monitor` 立即返回，日志里的 ERROR 在模型干活途中以通知送达、模型据此处理后用 `TaskStop` 停掉它，宿主边跑边看到那一行；会话提示词与 resume；Plan 模式不改文件；模型用 `GoalCreate` 设目标后，自动轮一轮推进一步，直到它自己标完成；宿主用 `session.setGoal` 设的目标不需要再发消息就跑完；达不成的目标以 `blocked` 结束、之后不再开轮；带 `prompt_types` 开了提问的会话里，模型用 `AskUserQuestion` 问的问题经 `prompt` 帧到达宿主，宿主选的选项决定了写进文件的内容；`RunCode` 一个程序做完逐文件检索；另起进程的 `agixd` |
 | `live_agents.rs` | 两个前台子 agent 各用自己类型指定的模型；前台子 agent 的询问在父会话这一轮里到达宿主（带这一轮的 `turn_id`），批准前它的任务是 `waiting`、批准后回到 `running`；后台子 agent 收宿主的消息、结束后通知父会话；`session.startAgent` 起的子 agent 交回满足 schema 的结构化输出，任务上的用量与代理记下的相等 |
 | `live_team.rs` | `TeamCreate` 两个阶段，后一阶段从团队记忆里拿前一阶段存的东西 |
 | `live_extensions.rs` | 项目 skill；MCP server 的工具；`PreToolUse` hook 看到工具调用 |
