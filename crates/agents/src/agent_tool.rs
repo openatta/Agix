@@ -567,11 +567,11 @@ impl SubRun {
         }
         Arc::new(DenyRulesFirst {
             rules: permissions::rule_set_permission::RuleSetPermission::new(
-                Arc::new(permissions::gate::PermissionGate::new(
+                Arc::new(permissions::gate::PermissionGate::deny_rules_only(
                     permissions::ruleset::RuleSet::new(self.deny_rules.clone()),
                 )),
                 Arc::new(InMemoryToolRegistry::new()),
-                base::permission::PermissionMode::BypassPermissions,
+                base::permission::PermissionMode::Default,
             ),
             inner: base,
         })
@@ -581,8 +581,8 @@ impl SubRun {
 /// A permission with a host's `deny` rules in front: what they refuse is
 /// refused, anything else is decided as it would have been.
 ///
-/// The rules sit in a bypass-mode rule set so that its only verdicts of its
-/// own are the denials; its mode never decides anything here.
+/// The rules sit in a deny-only gate, so its only verdicts of its own are
+/// the denials; its mode never decides anything here.
 struct DenyRulesFirst {
     rules: permissions::rule_set_permission::RuleSetPermission,
     inner: Arc<dyn Permission>,

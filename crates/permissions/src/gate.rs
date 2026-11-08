@@ -101,6 +101,7 @@ pub struct PermissionGate {
     /// and total denials to decide when to fall back from auto-mode to prompting.
     denial_count: std::sync::atomic::AtomicU64,
     total_denial_count: std::sync::atomic::AtomicU64,
+    deny_rules_only: bool,
 }
 
 impl PermissionGate {
@@ -111,6 +112,17 @@ impl PermissionGate {
             auto_classifier: None,
             denial_count: std::sync::atomic::AtomicU64::new(0),
             total_denial_count: std::sync::atomic::AtomicU64::new(0),
+            deny_rules_only: false,
+        }
+    }
+
+    /// A gate whose only verdict of its own is a matching `deny` rule: any
+    /// other call is allowed, whatever the session's mode, so it can sit in
+    /// front of another permission and refuse only what the rules refuse.
+    pub fn deny_rules_only(rules: RuleSet) -> Self {
+        Self {
+            deny_rules_only: true,
+            ..Self::new(rules)
         }
     }
 
@@ -267,6 +279,47 @@ impl PermissionGate {
         }
     }
 
+    /// The rule this call matches, and every string the rules were matched
+    /// against (the content and each resolved form of its path).
+    fn rule_hit(
+        &self,
+        tool: &dyn Tool,
+        input: &Value,
+        ctx: &ToolContext,
+    ) -> (RuleHit, Vec<String>) {
+        let content = tool.permission_match_content(input);
+        let kind = tool.permission_content_kind();
+        let path_group = path_rule_group(kind);
+        let resolved = path_group
+            .zip(content.as_deref())
+            .map(|(_, c)| ResolvedPath::new(c, &ctx.cwd));
+        let hit = {
+            let rules = self
+                .rules
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match (path_group, &resolved, content.as_deref()) {
+                (Some(group), Some(path), _) => {
+                    rules.evaluate_path(tool.name(), group, path, &ctx.cwd)
+                }
+                (_, _, Some(line)) if kind == PermissionContentKind::ShellCommand => {
+                    rules.evaluate_shell(tool.name(), line)
+                }
+                _ => rules.evaluate(tool.name(), content.as_deref()),
+            }
+        };
+        let checked = content
+            .iter()
+            .cloned()
+            .chain(
+                resolved
+                    .iter()
+                    .flat_map(|r| r.all().map(|p| p.to_string_lossy().into_owned())),
+            )
+            .collect();
+        (hit, checked)
+    }
+
     pub async fn check(
         &self,
         tool: &dyn Tool,
@@ -277,6 +330,19 @@ impl PermissionGate {
         if let base::tool::ValidationResult::Err(msg, code) = tool.validate_input(input, ctx).await
         {
             return Err(GateError::InvalidInput { message: msg, code });
+        }
+
+        if self.deny_rules_only {
+            return Ok(match self.rule_hit(tool, input, ctx).0 {
+                RuleHit::Deny(rule) => PermissionDecision::Deny {
+                    message: format!("denied by rule: {}", format_rule_string(&rule)),
+                    decision_reason: DecisionReason::Rule(rule),
+                },
+                _ => PermissionDecision::Allow {
+                    updated_input: None,
+                    decision_reason: None,
+                },
+            });
         }
 
         let mode = ctx.session.permission_mode();
@@ -311,36 +377,7 @@ impl PermissionGate {
         // 3. 通用规则引擎 —— Deny 短路（必须压过 pending 的工具自判 Allow）。
         //    Allow 先存着，等模式级硬拒绝（Plan / DontAsk）判完再用：DontAsk
         //    就是靠"有没有 allow 规则"决定放行还是拒绝的。
-        let content = tool.permission_match_content(input);
-        let kind = tool.permission_content_kind();
-        let path_group = path_rule_group(kind);
-        let resolved = path_group
-            .zip(content.as_deref())
-            .map(|(_, c)| ResolvedPath::new(c, &ctx.cwd));
-        let rule_hit = {
-            let rules = self
-                .rules
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            match (path_group, &resolved, content.as_deref()) {
-                (Some(group), Some(path), _) => {
-                    rules.evaluate_path(tool.name(), group, path, &ctx.cwd)
-                }
-                (_, _, Some(line)) if kind == PermissionContentKind::ShellCommand => {
-                    rules.evaluate_shell(tool.name(), line)
-                }
-                _ => rules.evaluate(tool.name(), content.as_deref()),
-            }
-        };
-        let checked_strings: Vec<String> = content
-            .iter()
-            .cloned()
-            .chain(
-                resolved
-                    .iter()
-                    .flat_map(|r| r.all().map(|p| p.to_string_lossy().into_owned())),
-            )
-            .collect();
+        let (rule_hit, checked_strings) = self.rule_hit(tool, input, ctx);
         let (rule_allow, rule_ask) = match rule_hit {
             RuleHit::Deny(rule) => {
                 return Ok(PermissionDecision::Deny {
@@ -886,6 +923,41 @@ mod tests {
                 ),
                 "{:?}: {d:?}",
                 tool.match_content
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_deny_rules_only_gate_refuses_what_a_rule_denies_in_any_mode_and_nothing_else() {
+        let deny_bash = || {
+            RuleSet::new(vec![PermissionRule {
+                source: base::permission::RuleSource::Session,
+                behavior: base::permission::RuleBehavior::Deny,
+                tool_name: "Bash".into(),
+                rule_content: None,
+            }])
+        };
+        for mode in [PermissionMode::BypassPermissions, PermissionMode::Default] {
+            let ctx = ctx_with_mode(mode);
+            let denied = PermissionGate::deny_rules_only(deny_bash())
+                .check(&FakeTool::new("Bash").matches("ls"), &json!({}), &ctx)
+                .await
+                .unwrap();
+            assert!(
+                matches!(denied, PermissionDecision::Deny { .. }),
+                "{mode:?}: {denied:?}"
+            );
+            let other = PermissionGate::deny_rules_only(deny_bash())
+                .check(
+                    &FakeTool::new("Write").matches("/repo/.agix/settings.json"),
+                    &json!({}),
+                    &ctx,
+                )
+                .await
+                .unwrap();
+            assert!(
+                matches!(other, PermissionDecision::Allow { .. }),
+                "{mode:?}: {other:?}"
             );
         }
     }

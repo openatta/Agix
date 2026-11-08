@@ -185,7 +185,12 @@ async fn a_turn_that_outgrows_the_threshold_compacts_on_its_own_and_carries_on(
         .collect();
     for (i, badge) in badges.iter().enumerate() {
         let mut body: String = (0..600)
-            .map(|l| format!("part {} line {l}: routine reading, all values nominal\n", i + 1))
+            .map(|l| {
+                format!(
+                    "part {} line {l}: routine reading, all values nominal\n",
+                    i + 1
+                )
+            })
             .collect();
         body.push_str(&format!("closing badge: {badge}\n"));
         run.write_file(&format!("part{}.log", i + 1), &body)?;
