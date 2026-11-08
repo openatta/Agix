@@ -10,11 +10,13 @@
 //! session working exactly as before. `crates/history` remains the sole
 //! authority on what a conversation is.
 //!
-//! Replay matches by **position**, not by hashing the request: the k-th live
-//! call replays the k-th recorded one. Hash-keyed lookup makes every
-//! environment-dependent byte in a prompt a correctness problem, and when it
-//! misses it can only report that it missed. Recording the whole request
-//! instead means a mismatch can name the field that moved.
+//! Replay matches by **position**, not by hashing the request: within a
+//! session, the k-th live conversation call replays the k-th recorded one,
+//! and the k-th auxiliary call of a purpose replays the k-th recorded call of
+//! that purpose. Hash-keyed lookup makes every environment-dependent byte in a
+//! prompt a correctness problem, and when it misses it can only report that it
+//! missed. Recording the whole request instead means a mismatch can name the
+//! field that moved.
 //!
 //! **A recording holds everything the model saw, in the clear.** System
 //! prompts, the whole conversation, tool arguments and results — verbatim, and
@@ -39,7 +41,7 @@ use base::interface::model::{
 use base::interface::prompt::PromptBlock;
 use base::interface::settings::{Divergence, RecorderConfig, RecorderMode};
 use base::provider::ApiType;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -68,8 +70,8 @@ fn recording_name_of(config: &RecorderConfig, params: &StreamParams) -> Option<S
     params.origin.as_ref().map(|o| o.session_id.clone())
 }
 
-/// Everything a set of recordings shares: the open writers and the replay
-/// cursors, keyed by recording name.
+/// Everything a set of recordings shares: the open writers and how far each
+/// replay has got, keyed by recording name.
 ///
 /// Held behind an `Arc` and shared by every [`RecorderModel`] that records into
 /// the same root. Multi-provider routing hands out one `Model` per provider,
@@ -95,8 +97,8 @@ impl Recorder {
     /// stopped doing part of the work. Overshooting is already an error at the
     /// call that overshoots; this is the other direction, and it can only be
     /// asked at the end. Returns one line per unfinished session, empty when
-    /// every cursor was drained — or stopped only short of calls a replay may
-    /// go without.
+    /// every recorded call was replayed — or the only ones left are calls a
+    /// replay may go without.
     pub fn unconsumed(&self) -> Vec<String> {
         let replays = self.replays.lock().unwrap_or_else(|e| e.into_inner());
         let mut out = Vec::new();
@@ -104,11 +106,12 @@ impl Recorder {
             for recorded in &state.recorded_sessions {
                 let calls = state.calls_of(recorded);
                 let total = calls.len();
-                let used = state.cursor(recorded);
-                let owed = calls
-                    .iter()
-                    .skip(used)
-                    .any(|c| !c.request.purpose.as_deref().is_some_and(may_go_unreplayed));
+                let replayed = state.replayed_of(recorded);
+                let used = replayed.len();
+                let owed = calls.iter().enumerate().any(|(at, c)| {
+                    !replayed.contains(&at)
+                        && !c.request.purpose.as_deref().is_some_and(may_go_unreplayed)
+                });
                 if owed {
                     out.push(format!(
                         "recording {name:?} session {recorded:?}: replayed {used} of {total} call(s)"
@@ -130,13 +133,21 @@ pub struct RecorderModel {
     shared: Arc<Recorder>,
 }
 
-/// One recording being replayed, sliced per session.
+/// One recording being replayed, sliced per session and, within a session,
+/// per purpose.
 ///
 /// A single cursor over the whole file works only when the file holds one
 /// session. When a parent and its sub-agents record under one name their calls
 /// interleave, and the order they interleave in is a scheduling detail that
 /// will not repeat — so each live session walks only the calls that were made
 /// by its counterpart, and the interleaving is allowed to differ.
+///
+/// The same holds inside a session. Its conversation calls come in an order
+/// the turn loop fixes, but auxiliary calls — memory extraction, naming —
+/// run in the background and land among them wherever they happened to
+/// finish. So a conversation call takes the session's next recorded
+/// conversation call, passing over auxiliary ones, and an auxiliary call
+/// takes the earliest recorded call of its purpose not yet replayed.
 struct ReplayState {
     recording: Recording,
     /// Recorded session ids in order of first appearance, which is the order
@@ -144,12 +155,13 @@ struct ReplayState {
     recorded_sessions: Vec<String>,
     /// Live session id → the recorded session it replays against.
     bound: HashMap<String, String>,
-    /// Recorded session id → how many of its calls have been handed out.
+    /// Recorded session id → which of its calls (indices into
+    /// [`Self::calls_of`]) have been handed out.
     ///
-    /// Kept apart from `bound` so advancing a cursor needs no second lookup
-    /// into `bound` — one that could only be written as an `unwrap()` resting
-    /// on an invariant held across two functions with nothing enforcing it.
-    consumed: HashMap<String, usize>,
+    /// Kept apart from `bound` so marking a call needs no second lookup into
+    /// `bound` — one that could only be written as an `unwrap()` resting on an
+    /// invariant held across two functions with nothing enforcing it.
+    replayed: HashMap<String, HashSet<usize>>,
 }
 
 impl ReplayState {
@@ -169,7 +181,7 @@ impl ReplayState {
             recording,
             recorded_sessions,
             bound: HashMap::new(),
-            consumed: HashMap::new(),
+            replayed: HashMap::new(),
         }
     }
 
@@ -197,12 +209,32 @@ impl ReplayState {
         Some(recorded)
     }
 
-    fn cursor(&self, recorded_session: &str) -> usize {
-        self.consumed.get(recorded_session).copied().unwrap_or(0)
+    fn replayed_of(&self, recorded_session: &str) -> HashSet<usize> {
+        self.replayed
+            .get(recorded_session)
+            .cloned()
+            .unwrap_or_default()
     }
 
-    fn move_cursor(&mut self, recorded_session: &str, to: usize) {
-        self.consumed.insert(recorded_session.to_string(), to);
+    /// The earliest call of `recorded_session` with `purpose` (`None` for a
+    /// conversation call) not yet handed out, as an index into
+    /// [`Self::calls_of`].
+    fn next_of(&self, recorded_session: &str, purpose: Option<&str>) -> Option<usize> {
+        let replayed = self.replayed.get(recorded_session);
+        self.calls_of(recorded_session)
+            .iter()
+            .enumerate()
+            .find(|(at, c)| {
+                c.request.purpose.as_deref() == purpose && !replayed.is_some_and(|r| r.contains(at))
+            })
+            .map(|(at, _)| at)
+    }
+
+    fn mark_replayed(&mut self, recorded_session: &str, at: usize) {
+        self.replayed
+            .entry(recorded_session.to_string())
+            .or_default()
+            .insert(at);
     }
 
     fn calls_of(&self, recorded_session: &str) -> Vec<&reader::RecordedCall> {
@@ -714,41 +746,37 @@ impl RecorderModel {
                  live run introduced another ({live_session:?})"
             )));
         };
-        let calls = state.calls_of(&recorded_session);
-        let mut cursor = state.cursor(&recorded_session);
-        let recorded_purpose = |at: usize| calls.get(at).and_then(|c| c.request.purpose.as_deref());
-        match purpose.filter(|p| may_go_unreplayed(p)) {
-            Some(wanted) if recorded_purpose(cursor) != Some(wanted) => {
-                return Err(ModelError::NotRecorded(format!(
-                    "recording {name:?} has no {wanted:?} call for session \
-                     {recorded_session:?} at #{}",
-                    cursor + 1
-                )));
-            }
-            Some(_) => {}
-            None => {
-                while recorded_purpose(cursor).is_some_and(may_go_unreplayed) {
-                    cursor += 1;
-                }
-            }
-        }
-        let Some(call) = calls.get(cursor).copied().cloned() else {
-            return Err(ModelError::Internal(format!(
-                "recorder: recording {:?} has {} call(s) for session {:?}, \
-                 live run asked for #{}",
-                name,
-                calls.len(),
-                recorded_session,
-                cursor + 1
-            )));
+        let Some(at) = state.next_of(&recorded_session, purpose) else {
+            let same_kind = state
+                .calls_of(&recorded_session)
+                .iter()
+                .filter(|c| c.request.purpose.as_deref() == purpose)
+                .count();
+            return Err(match purpose {
+                Some(wanted) if may_go_unreplayed(wanted) => ModelError::NotRecorded(format!(
+                    "recording {name:?} has no unreplayed {wanted:?} call for session \
+                     {recorded_session:?}"
+                )),
+                Some(wanted) => ModelError::Internal(format!(
+                    "recorder: recording {name:?} has {same_kind} {wanted:?} call(s) for \
+                     session {recorded_session:?}, live run asked for #{}",
+                    same_kind + 1
+                )),
+                None => ModelError::Internal(format!(
+                    "recorder: recording {name:?} has {same_kind} conversation call(s) for \
+                     session {recorded_session:?}, live run asked for #{}",
+                    same_kind + 1
+                )),
+            });
         };
-        state.move_cursor(&recorded_session, cursor + 1);
+        let call = state.calls_of(&recorded_session)[at].clone();
+        state.mark_replayed(&recorded_session, at);
 
         let differences = diverges(&call.request, &shape);
         if !differences.is_empty() {
             let report = format!(
                 "recorder: call #{} of session {:?} diverges from recording {:?}:\n  {}",
-                cursor + 1,
+                at + 1,
                 recorded_session,
                 name,
                 differences.join("\n  ")
@@ -776,8 +804,8 @@ impl RecorderModel {
 /// Naming a session is not part of its conversation: a recording made where
 /// the scene did not name, or before naming was recorded at all, still
 /// replays a run that does — the run just goes unnamed — and a recorded
-/// title call a run does not ask for is passed over instead of being served
-/// as the answer to the next call.
+/// title call a run does not ask for is left unreplayed without the run
+/// being reported as having stopped short.
 fn may_go_unreplayed(purpose: &str) -> bool {
     purpose == base::interface::model::call_purpose::TITLE
 }
@@ -900,7 +928,7 @@ impl Drop for RecordingStream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base::interface::model::CallOrigin;
+    use base::interface::model::{call_purpose, CallOrigin};
     use base::interface::prompt::BlockRole;
     use base::interface::settings::ThinkingMode;
     use futures::StreamExt;
@@ -1579,7 +1607,8 @@ mod tests {
             panic!("a third child call has nothing to replay against")
         };
         assert!(
-            err.to_string().contains("2 call(s) for session"),
+            err.to_string()
+                .contains("2 conversation call(s) for session"),
             "the error should name the session that ran out: {err}"
         );
     }
@@ -1929,8 +1958,19 @@ mod tests {
 
     /// Each call answered by a model of its own, all into one recording.
     async fn record_calls(root: &std::path::Path, calls: Vec<(StreamParams, &str)>) {
+        record_prompted_calls(
+            root,
+            calls
+                .into_iter()
+                .map(|(params, answer)| (params, "sys", answer))
+                .collect(),
+        )
+        .await;
+    }
+
+    async fn record_prompted_calls(root: &std::path::Path, calls: Vec<(StreamParams, &str, &str)>) {
         let shared = Recorder::new();
-        for (params, answer) in calls {
+        for (params, system, answer) in calls {
             let recorder = RecorderModel::shared(
                 ScriptedModel::ok(vec![ModelEvent::TextDelta {
                     text: answer.into(),
@@ -1942,7 +1982,7 @@ mod tests {
             drain(
                 recorder
                     .stream(
-                        prompt("sys"),
+                        prompt(system),
                         tools(),
                         vec![],
                         params,
@@ -2100,5 +2140,188 @@ mod tests {
         }
         assert_eq!(answers, ["answer", "second"]);
         assert!(shared.unconsumed().is_empty(), "{:?}", shared.unconsumed());
+    }
+
+    fn aux_params(session: &str, purpose: &str) -> StreamParams {
+        let mut p = params(session, 0);
+        p.origin = Some(CallOrigin::auxiliary(session, purpose));
+        p
+    }
+
+    /// A strict replayer whose inner model would answer `"live"` — a replay
+    /// that reaches it shows up in the answer.
+    fn strict_replayer(root: &std::path::Path, shared: Arc<Recorder>) -> RecorderModel {
+        RecorderModel::shared(
+            ScriptedModel::ok(vec![ModelEvent::TextDelta {
+                text: "live".into(),
+            }]),
+            Some(config(RecorderMode::Replay, root, Divergence::Strict)),
+            "test",
+            shared,
+        )
+    }
+
+    async fn ask(
+        replayer: &RecorderModel,
+        system: &str,
+        params: StreamParams,
+    ) -> Result<String, ModelError> {
+        let stream = replayer
+            .stream(
+                prompt(system),
+                tools(),
+                vec![],
+                params,
+                CancellationToken::new(),
+            )
+            .await?;
+        Ok(text(&drain(stream).await))
+    }
+
+    /// Memory extraction runs in the background, so its call can land between
+    /// a turn and that turn's naming call. The naming call still finds its
+    /// recording, and the next turn is not handed the extraction's answer.
+    #[tokio::test]
+    async fn a_title_call_recorded_after_a_memory_extraction_replays_from_the_recording() {
+        let root = tempfile::tempdir().unwrap();
+        record_calls(
+            root.path(),
+            vec![
+                (params("S1", 0), "answer"),
+                (aux_params("S1", call_purpose::MEMORY), "memories"),
+                (title_params("S1"), "a title"),
+                (params("S1", 1), "second"),
+            ],
+        )
+        .await;
+
+        let shared = Recorder::new();
+        let replayer = strict_replayer(root.path(), shared.clone());
+        let mut answers = Vec::new();
+        for params in [
+            params("S1", 0),
+            title_params("S1"),
+            params("S1", 1),
+            aux_params("S1", call_purpose::MEMORY),
+        ] {
+            answers.push(ask(&replayer, "sys", params).await.unwrap());
+        }
+        assert_eq!(answers, ["answer", "a title", "second", "memories"]);
+        assert!(shared.unconsumed().is_empty(), "{:?}", shared.unconsumed());
+    }
+
+    #[tokio::test]
+    async fn auxiliary_calls_replayed_in_another_order_each_get_their_own_response() {
+        let root = tempfile::tempdir().unwrap();
+        record_calls(
+            root.path(),
+            vec![
+                (aux_params("S1", call_purpose::MEMORY), "first memories"),
+                (params("S1", 0), "answer"),
+                (aux_params("S1", call_purpose::COMPACT), "summary"),
+                (aux_params("S1", call_purpose::MEMORY), "second memories"),
+                (title_params("S1"), "a title"),
+            ],
+        )
+        .await;
+
+        let shared = Recorder::new();
+        let replayer = strict_replayer(root.path(), shared.clone());
+        let mut answers = Vec::new();
+        for params in [
+            title_params("S1"),
+            aux_params("S1", call_purpose::COMPACT),
+            params("S1", 0),
+            aux_params("S1", call_purpose::MEMORY),
+            aux_params("S1", call_purpose::MEMORY),
+        ] {
+            answers.push(ask(&replayer, "sys", params).await.unwrap());
+        }
+        assert_eq!(
+            answers,
+            [
+                "a title",
+                "summary",
+                "answer",
+                "first memories",
+                "second memories"
+            ]
+        );
+        assert!(shared.unconsumed().is_empty(), "{:?}", shared.unconsumed());
+    }
+
+    #[tokio::test]
+    async fn conversation_calls_out_of_their_recorded_order_diverge_under_strict_replay() {
+        let root = tempfile::tempdir().unwrap();
+        record_prompted_calls(
+            root.path(),
+            vec![
+                (params("S1", 0), "first prompt", "first"),
+                (aux_params("S1", call_purpose::MEMORY), "sys", "memories"),
+                (params("S1", 1), "second prompt", "second"),
+            ],
+        )
+        .await;
+
+        let replayer = strict_replayer(root.path(), Recorder::new());
+        let err = ask(&replayer, "second prompt", params("S1", 1))
+            .await
+            .expect_err("a conversation call out of order must diverge");
+        assert!(
+            err.to_string().contains("diverges") && err.to_string().contains("system[0]"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_auxiliary_call_the_recording_lacks_fails_without_reaching_the_model() {
+        let root = tempfile::tempdir().unwrap();
+        record_calls(
+            root.path(),
+            vec![(params("S1", 0), "answer"), (params("S1", 1), "second")],
+        )
+        .await;
+
+        let replayer = strict_replayer(root.path(), Recorder::new());
+        assert_eq!(
+            ask(&replayer, "sys", params("S1", 0)).await.unwrap(),
+            "answer"
+        );
+        match ask(&replayer, "sys", aux_params("S1", call_purpose::MEMORY)).await {
+            Err(ModelError::Internal(m)) => assert!(m.contains("\"memory\""), "{m}"),
+            Err(e) => panic!("expected an internal error, got {e}"),
+            Ok(answer) => panic!("a memory call the recording lacks was answered: {answer:?}"),
+        }
+        assert_eq!(
+            ask(&replayer, "sys", params("S1", 1)).await.unwrap(),
+            "second",
+            "the failed auxiliary call must not take the next conversation call"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_recorded_memory_extraction_the_run_does_not_ask_for_is_reported_at_the_end() {
+        let root = tempfile::tempdir().unwrap();
+        record_calls(
+            root.path(),
+            vec![
+                (params("S1", 0), "answer"),
+                (aux_params("S1", call_purpose::MEMORY), "memories"),
+            ],
+        )
+        .await;
+
+        let shared = Recorder::new();
+        let replayer = strict_replayer(root.path(), shared.clone());
+        assert_eq!(
+            ask(&replayer, "sys", params("S1", 0)).await.unwrap(),
+            "answer"
+        );
+        let unconsumed = shared.unconsumed();
+        assert_eq!(unconsumed.len(), 1, "got {unconsumed:?}");
+        assert!(
+            unconsumed[0].contains("replayed 1 of 2"),
+            "got {unconsumed:?}"
+        );
     }
 }
