@@ -5,7 +5,7 @@
 //! can't construct a model itself without `base` depending on `model`,
 //! inverting the crate layering).
 //!
-//! Which protocols can be built is no longer decided here. This assembles a
+//! Which protocols can be built is not decided here. This assembles a
 //! router from whatever is in a
 //! [`ModelFactoryRegistry`](base::interface::model_factory::ModelFactoryRegistry);
 //! `model::factory::builtin_registry()` is the default contents, and a host
@@ -109,7 +109,7 @@ mod tests {
         assert!(builtins().build("anthropic", &cfg).is_ok());
     }
 
-    /// N-16: `openai_compatible` builds a real model now. It needs an
+    /// `openai_compatible` needs an
     /// explicit `base_url` (there is no sensible default host), and that
     /// requirement has to be reported clearly rather than as an auth failure
     /// on the first call.

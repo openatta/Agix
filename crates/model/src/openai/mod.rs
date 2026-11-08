@@ -2,13 +2,9 @@
 //! [`base::interface::model::Model`], speaking OpenAI **Chat Completions**
 //! (`POST <base>/v1/chat/completions`) instead of the Anthropic Messages API.
 //!
-//! Why this exists: `base::provider::ApiType::OpenAICompatible` has been a
-//! valid `settings.json` value since multi-provider config landed, but the
-//! only `impl Model` in the workspace spoke Anthropic, so
-//! `daemon::model_router` had to hard-error on it at startup. That meant the
-//! product could only talk to Anthropic or to Anthropic-protocol relays — not
-//! OpenAI, vLLM, Ollama, or any of the many gateways that only expose the
-//! OpenAI shape. (Audit finding N-16.)
+//! It is what `base::provider::ApiType::OpenAICompatible` in `settings.json`
+//! builds: OpenAI, vLLM, Ollama, and the many gateways that only expose the
+//! OpenAI shape, beside Anthropic and Anthropic-protocol relays.
 //!
 //! Layout mirrors the Anthropic side so the two are comparable file-for-file:
 //!

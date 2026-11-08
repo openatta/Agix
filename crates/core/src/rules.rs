@@ -3,10 +3,9 @@
 //! loading their content.
 //!
 //! Rules stay intentionally lazy (Read-tool-on-demand, not auto-injected in
-//! full). This module only
-//! closes the "orphaned rule file" gap: a `.md` file sitting in `.agix/rules/`
-//! that nobody referenced from `AGENTS.md` used to be invisible to the model.
-//! Discovery still only reads each file's first line, never full content.
+//! full). This module only makes sure a `.md` file sitting in `.agix/rules/`
+//! is visible to the model even when nothing in `AGENTS.md` references it.
+//! Discovery only reads each file's first line, never full content.
 //!
 //! Where the documents come from is the
 //! [`RuleProvider`](crate::interface::instruction_provider::RuleProvider)

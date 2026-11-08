@@ -268,9 +268,8 @@ pub async fn pool(
 
 /// Multi-provider routing, or `None` when the deployment configured none.
 ///
-/// Purely additive: with no `providers`, every session behaves exactly as it
-/// did before routing existed — sub-agent spawns inherit the one client built
-/// above. An invalid configuration fails the assembly instead of starting a
+/// Purely additive: with no `providers`, sub-agent spawns inherit the one
+/// client built above. An invalid configuration fails the assembly instead of starting a
 /// daemon that silently routes everything to the default.
 fn validate_task_router_config(
     config: &DaemonConfig,

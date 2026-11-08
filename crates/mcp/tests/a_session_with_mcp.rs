@@ -129,23 +129,19 @@ fn test_settings() -> Settings {
 
 // ── MCP prompts (slash commands) and resources (`@` refs) reach the model ──
 //
-// Regression suite for W-3: `McpManager::all_prompts` / `execute_prompt` /
-// `list_resources` / `read_resource` were fully implemented but had zero
-// call sites outside the `mcp` crate — only MCP *tools* were reachable.
+// `McpManager::all_prompts` / `execute_prompt` / `list_resources` /
+// `read_resource` must be reachable from a session, not only MCP *tools*.
 // These drive a whole turn through `run_turn`, so they cover the
 // registration in `Builder::build`, the slash-command interception, and
 // the pre-push `@`-reference resolution together.
 
 #[tokio::test]
 async fn build_registers_mcp_tool_adapters_into_the_executable_tool_registry() {
-    // Regression test: `build_tool_defs()` (turn.rs) advertises every
-    // `mcp.tool_adapters()` entry to the model as a callable tool, but
-    // `Builder::build()` previously only registered the 3 generic
-    // List/Read/Dispatch MCP tools into `self.tools` — never the
-    // individual per-tool adapters. The model would see
-    // `mcp__test-server__do-thing` in its tool list and calling it would
-    // always fail with "Tool not found" (`turn.rs::execute_tool_inner`
-    // looks up `ctx.tools`, a clone of this same registry).
+    // `build_tool_defs()` (turn.rs) advertises every `mcp.tool_adapters()`
+    // entry to the model as a callable tool, so `Builder::build()` must
+    // register each per-tool adapter, not just the 3 generic List/Read/Dispatch
+    // MCP tools — `turn.rs::execute_tool_inner` looks up `ctx.tools`, a clone
+    // of this same registry, and would answer "Tool not found".
     let settings = Arc::new(test_settings());
     let model: Arc<dyn Model> = Arc::new(DummyModel);
     let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene::default());
@@ -183,10 +179,8 @@ async fn build_registers_mcp_tool_adapters_into_the_executable_tool_registry() {
     );
 }
 
-/// Regression: `McpManager::set_elicitation_callback` existed with zero
-/// production callers — an MCP tool result containing an elicitation URL
-/// silently never reached the hook system no matter what hooks were
-/// configured. This exercises the real path end to end: an MCP tool call
+/// An MCP tool result containing an elicitation URL must reach the hook
+/// system. This exercises the real path end to end: an MCP tool call
 /// returns a result with an `elicitation://` URL in it, and a configured
 /// `Elicitation` hook must actually fire.
 #[tokio::test]

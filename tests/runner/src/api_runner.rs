@@ -195,13 +195,12 @@ pub async fn run_test_case_same_session(
 /// A running `Agent` task plus everything needed to drive it and to explain
 /// how it died.
 ///
-/// `join` used to be dropped on the floor: when the agent task *panicked*, the
-/// only externally visible effect was the event channel closing, which the
-/// harness reported identically to "the agent exited without a TurnComplete".
-/// A panic (a bug in the engine) and a clean turn error (a bug in the model
-/// interaction) are very different findings and must not read the same in a
-/// test report — keeping the handle lets `send_and_collect` say which one
-/// happened, and surface the panic message.
+/// `join` is kept because a panicked agent task is otherwise visible only as
+/// the event channel closing, indistinguishable from "the agent exited
+/// without a TurnComplete". A panic (a bug in the engine) and a clean turn
+/// error (a bug in the model interaction) are very different findings — the
+/// handle lets `send_and_collect` say which one happened, and surface the
+/// panic message.
 struct RunningAgent {
     input_tx: InputSender,
     event_rx: EventReceiver,
@@ -510,10 +509,8 @@ async fn describe_agent_exit(join: &mut tokio::task::JoinHandle<()>) -> String {
 }
 
 fn make_tools() -> Arc<InMemoryToolRegistry> {
-    // Was a hand-rolled duplicate of this exact list — now the single source
-    // of truth also used by `daemon` (see `tools::register_builtin_tools`'s
-    // doc comment for why that duplication used to matter: daemon had none
-    // of this registered at all).
+    // The same built-in list `daemon` registers (see
+    // `tools::register_builtin_tools`).
     let reg = Arc::new(InMemoryToolRegistry::new());
     tools::register_builtin_tools(&reg);
     reg

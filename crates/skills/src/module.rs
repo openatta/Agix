@@ -95,11 +95,7 @@ impl Module for SkillsModule {
 /// (project — external fact standard, also scanned by Codex).
 /// `load_dir_subdirs` (not the flat-only `load_dir`) so both `<name>.md` and
 /// the `<name>/SKILL.md` subdirectory convention (what
-/// `discover_for_paths`/`reload_skill` already supported) are
-/// picked up at startup — a project skill authored the SKILL.md way used to
-/// silently never load until its first live-reload edit. Found via the recording
-/// test suite: the fixture project's `code-review` skill (subdirectory
-/// format) was completely absent from every recorded system prompt.
+/// `discover_for_paths`/`reload_skill` support) are picked up at startup.
 ///
 /// Also starts this manager's own live-reload watcher (`notify` setup
 /// failing degrades to no live reload, logged, not a hard error — every

@@ -46,7 +46,6 @@ impl Tool for FileWriteTool {
         "Create or overwrite a file with given content."
     }
 
-    /// **P3f **: deferred -- only Bash/Read/Edit/ToolSearch 4 eager.
     fn input_schema(&self) -> Value {
         crate::input_schema::<FileWriteInput>()
     }
@@ -173,8 +172,6 @@ impl Tool for FileWriteTool {
         )
         .await;
 
-        // **P1 **: snapshot the file's current state before mutating, so
-        // /rewind can restore. New file → snapshot stores `None` (restore = unlink).
         if let Some(snapshot) = &ctx.snapshot_file {
             snapshot.record(&path, "Write");
         }

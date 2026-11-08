@@ -89,12 +89,9 @@ pub trait TurnPolicy: Send + Sync {
 
 /// The engine's own ceilings.
 ///
-/// Both numbers were constants in the loop; this is the same arithmetic with
-/// the values handed in. `max_api_calls` in particular is the *lower* of what
-/// settings allow and what the scene allows — a scene declaring a tighter
-/// ceiling used to be ignored entirely, which was a real bug, and taking the
-/// minimum is what fixed it. Constructing the policy is now the one place that
-/// rule lives.
+/// `max_api_calls` in particular is the *lower* of what settings allow and
+/// what the scene allows, so a scene declaring a tighter ceiling is honoured.
+/// Constructing the policy is the one place that rule lives.
 pub struct LimitsPolicy {
     pub max_api_calls: u32,
     pub max_structured_output_retries: u32,
@@ -183,8 +180,6 @@ mod tests {
         );
     }
 
-    /// The rule a bug fix put there: a scene's tighter ceiling used to be
-    /// ignored because only settings were read.
     #[test]
     fn the_tighter_of_the_two_ceilings_wins() {
         let scene_is_tighter = LimitsPolicy::new(25, 3, 5);

@@ -77,7 +77,7 @@ impl Model for AnthropicModel {
             .filter(|m| !m.content.is_empty())
             .collect();
 
-        // P1-2: Wire cache_edits into the API request.
+        // Wire cache_edits into the API request.
         // When the compaction system has cleared old tool results, we send their
         // tool_use_ids as `cache_edits` to the Anthropic API so the server can
         // delete those results from its cached prefix without invalidating the
@@ -165,7 +165,7 @@ impl Model for AnthropicModel {
             speed: None,
         };
 
-        // N-10: the request places prompt-cache breakpoints on the tool array
+        // The request places prompt-cache breakpoints on the tool array
         // and on the conversation prefix during serialization (see
         // `MessagesRequest`'s breakpoint helpers). Some of those use the
         // 1-hour TTL, as do the `system` blocks built from
@@ -215,40 +215,11 @@ struct PendingToolUse {
     json: String,
 }
 
-/// Maps one raw provider `StreamEvent` to zero or more `ModelEvent`s.
-///
-/// **Why this returns a `Vec` instead of one event directly (bug fix,
-/// 2026-08-06)**: a streamed `tool_use` content block starts empty
-/// (`ContentBlockStart` with `input: {}`) and its actual arguments arrive as
-/// a *sequence* of `BlockDelta::InputJsonDelta` fragments that must be
-/// concatenated before parsing as JSON — `BlockDelta::InputJsonDelta`'s own
-/// doc comment already said as much ("tool_use 块的输入 JSON 字符流（碎片，需
-/// concat 累积）"), but the accumulation was never actually implemented: the
-/// previous version of this function forwarded every `InputJsonDelta`
-/// fragment straight out as a `ModelEvent::TextDelta` and emitted
-/// `ModelEvent::ToolUse` immediately at `ContentBlockStart` with whatever
-/// `input` that start event carried — always `{}` for a genuinely streamed
-/// response. Net effect: every tool call whose arguments streamed via deltas
-/// (the normal case for any call with non-trivial input) reached the tool
-/// dispatcher with an empty `input` object, and the real JSON leaked into the
-/// assistant's visible text instead. Confirmed via real recordings
-/// against `deepseek-v4-pro[1m]` (Anthropic-compatible relay) while testing
-/// the chat/research scenes: 100% of recorded tool calls in both new
-/// cassettes, and (re-checked after the fact) 282/282 tool executions in the
-/// pre-existing `000.c_project` coding-scene cassette, hit this path — this
-/// bug has been present since the initial commit and silently broke every
-/// tool call with streamed arguments start to finish.
-///
-/// Fix: buffer each tool_use block's fragments in `acc` (keyed by content
-/// block index) as they arrive, and only emit the assembled
-/// `ModelEvent::ToolUse` once `ContentBlockStop` confirms the block is
-/// complete and its JSON is whole.
 /// Translate one protocol-agnostic message into its Anthropic wire form.
 ///
-/// Extracted from `stream()` (where it was an inline closure) so the block
+/// A free function rather than a closure inside `stream()` so the block
 /// mapping is directly testable — the thinking-block half of it is a
-/// correctness requirement, not a formatting detail, and had no coverage while
-/// it lived inside an `async fn`.
+/// correctness requirement, not a formatting detail.
 fn to_message_param(m: ModelMessage, provenance: Option<&str>) -> MessageParam {
     MessageParam {
         role: match m.role {
@@ -327,6 +298,15 @@ fn search_hits(content: &serde_json::Value) -> Vec<base::interface::model::Searc
         .collect()
 }
 
+/// Maps one raw provider `StreamEvent` to zero or more `ModelEvent`s.
+///
+/// Returns a `Vec` because a streamed `tool_use` content block starts empty
+/// (`ContentBlockStart` with `input: {}`) and its arguments arrive as a
+/// *sequence* of `BlockDelta::InputJsonDelta` fragments that must be
+/// concatenated before parsing as JSON. Each block's fragments are buffered
+/// in `acc` (keyed by content block index), and the assembled
+/// `ModelEvent::ToolUse` is emitted only once `ContentBlockStop` confirms the
+/// block is complete.
 fn map_stream_event(
     event: crate::stream::StreamEvent,
     acc: &mut StreamState,
@@ -893,17 +873,13 @@ mod map_stream_event_tests {
         assert_eq!(sent, ["mine", "unknown"]);
     }
 
-    /// Regression for the day-one bug: a streamed tool_use block starts with
-    /// empty `input` and its real arguments arrive as several
-    /// `InputJsonDelta` fragments — these must be concatenated and parsed as
-    /// one JSON value, emitted as a single `ModelEvent::ToolUse` at
-    /// `ContentBlockStop`, not leaked out as `TextDelta`s with an empty tool
-    /// input (what actually happened before this fix — confirmed against
-    /// real recordings, see this module's doc comment). Seeds with `{}`
-    /// (empty object), not `null` — that's what real providers actually send
-    /// as the placeholder (see the next test for why that distinction
-    /// mattered: an earlier version of this fix only special-cased `null`
-    /// and broke on `{}`).
+    /// A streamed tool_use block starts with empty `input` and its real
+    /// arguments arrive as several `InputJsonDelta` fragments — these must be
+    /// concatenated and parsed as one JSON value, emitted as a single
+    /// `ModelEvent::ToolUse` at `ContentBlockStop`, not leaked out as
+    /// `TextDelta`s with an empty tool input. Seeds with `{}` (empty object),
+    /// not `null` — that's what real providers actually send as the
+    /// placeholder.
     #[test]
     fn streamed_tool_use_input_is_assembled_from_fragments() {
         let events = vec![
@@ -954,16 +930,11 @@ mod map_stream_event_tests {
         }
     }
 
-    /// Regression, found live against a real relay while chasing the bug
-    /// above: an empty-object `{}` placeholder in `ContentBlockStart` must
-    /// NOT be serialized and prepended to the accumulator — doing so
-    /// produces `"{}" + "{\"pattern\": \"*.txt\"}"`, i.e. two JSON values
-    /// concatenated back to back, which fails to parse as one and silently
-    /// degrades to an empty input — functionally the exact same failure as
-    /// the original bug, just one seeding-condition bug away from it. Caught
-    /// via `AGIX_DEBUG_RAW_STREAM_EVENTS=1` against `deepseek-v4-pro[1m]`;
-    /// the first fix attempt only checked `input.is_null()`, which this
-    /// relay's `{}` placeholder never satisfies.
+    /// An empty-object `{}` placeholder in `ContentBlockStart` must NOT be
+    /// serialized and prepended to the accumulator — that produces
+    /// `"{}" + "{\"pattern\": \"*.txt\"}"`, two JSON values back to back,
+    /// which fails to parse as one and silently degrades to an empty input.
+    /// Checking only `input.is_null()` is not enough: relays send `{}`.
     #[test]
     fn empty_object_placeholder_in_content_block_start_does_not_corrupt_deltas() {
         let events = vec![

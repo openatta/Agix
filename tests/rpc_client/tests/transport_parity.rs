@@ -535,8 +535,7 @@ async fn an_oversized_frame_closes_the_connection_on_the_line_transports() {
 /// connection and the turn continues. This is the exchange WebSocket was
 /// chosen for — over server-sent events the answer needs a second channel
 /// and a correlation scheme — so "it works over WS too" is the claim that
-/// justified the transport, and it was previously only tested over the Unix
-/// socket.
+/// justified the transport.
 #[tokio::test]
 async fn a_prompt_is_answered_on_the_same_connection_on_every_transport() {
     let h = Harness::asking().await;

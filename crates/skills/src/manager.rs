@@ -637,20 +637,9 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    /// Regression test for a real production bug: every startup skill scan
-    /// (`runtime::agent::Builder::build()`'s three call sites,
-    /// `Agent::warmup()`'s three, and `daemon::session_pool::build_shared_commands`'s
-    /// three — nine call sites total) used to call `load_dir`, which only
-    /// recognizes flat `<name>.md` files. The `<name>/SKILL.md` subdirectory
-    /// convention — what this project's own template fixture and
-    /// `discover_for_paths`/`reload_skill` already supported — was silently
-    /// invisible at startup: such a skill only
-    /// became invocable after a live-reload watcher event fired for it once
-    /// (see `reload_skill`'s doc comment, which already handled both
-    /// formats). Found via replay of a real test case: the fixture
-    /// project's `code-review/SKILL.md` skill never appeared in any recorded
-    /// system prompt. `load_dir_subdirs` is the fix — it handles both
-    /// formats in one pass — and is now what every production call site uses.
+    /// Startup skill scans use `load_dir_subdirs`, which must pick up both
+    /// flat `<name>.md` files and the `<name>/SKILL.md` subdirectory
+    /// convention in one pass (`load_dir` only recognizes the flat form).
     #[test]
     fn load_dir_subdirs_finds_skill_md_in_a_named_subdirectory() {
         let dir = tempfile::tempdir().unwrap();
@@ -734,12 +723,8 @@ mod tests {
 
     #[test]
     fn get_skill_content_resolves_bundled_sentinel_path() {
-        // Regression test: a bundled skill's `path` is a `(bundled:name)`
-        // sentinel, not a real filesystem path. `get_skill_content` used to
-        // blindly `fs::read_to_string` it, which always failed — meaning
-        // the model-facing Skill tool could never actually invoke any
-        // bundled skill (e.g. "simplify"), even though it's explicitly
-        // allowlisted as model-invocable.
+        // A bundled skill's `path` is a `(bundled:name)` sentinel, not a real
+        // filesystem path, so `get_skill_content` must not read it from disk.
         let mgr = SkillManager::new();
         for bundled in crate::bundled::bundled_skills() {
             mgr.register_bundled(bundled);
@@ -861,17 +846,11 @@ mod tests {
         assert_eq!(mgr.get("test-skill").unwrap().description, "disk version");
     }
 
-    /// Regression: `list()` used to be `HashMap::values().collect()` — same
-    /// skill set, different (randomized, per-process) text order every run.
-    /// Since `turn.rs::build_skills_text` renders this straight into the
-    /// system prompt, that silently changed the request for the very
-    /// first turn of every replay. Register in
-    /// deliberately unsorted order and assert the output is alphabetical
-    /// regardless — a HashMap-order bug wouldn't reliably fail a single
-    /// `cargo test` run (order is only *unstable across* runs, not
-    /// necessarily "b before a" within one run), so this asserts the actual
-    /// contract (`list()` is sorted) rather than trying to catch
-    /// nondeterminism directly.
+    /// `turn.rs::build_skills_text` renders `list()` straight into the system
+    /// prompt, so its order must be stable across processes. Register in
+    /// deliberately unsorted order and assert the output is alphabetical —
+    /// HashMap order is only *unstable across* runs, so asserting the
+    /// contract (`list()` is sorted) is what catches it reliably.
     #[test]
     fn list_is_sorted_by_name_regardless_of_registration_order() {
         let mgr = SkillManager::new();
@@ -1014,12 +993,9 @@ mod tests {
         assert!(names.contains(&"md-helper"));
     }
 
-    /// Regression: `enable_watching`/`check_for_changes`/`SkillWatcher` were
-    /// all fully implemented but `enable_watching` had no caller anywhere in
-    /// production code, so a skill file edited after a session started was
-    /// never picked up without a full session rebuild. This exercises the
-    /// real `notify` watcher end to end — not just the reload logic in
-    /// isolation — since that's exactly the part that was silently inert.
+    /// A skill file edited after a session started is picked up without a
+    /// session rebuild. This exercises the real `notify` watcher end to end,
+    /// not just the reload logic in isolation.
     #[test]
     fn editing_a_watched_skill_file_is_picked_up_without_a_manual_reload() {
         let dir = tempfile::tempdir().unwrap();
@@ -1040,8 +1016,7 @@ mod tests {
         mgr.enable_watching(&[dir.path().to_path_buf()])
             .expect("watcher setup should succeed in a test tempdir");
 
-        // Edit the file after watching has started — this is the part that
-        // used to have no effect at all on a running session.
+        // Edit the file after watching has started.
         std::fs::write(
             &skill_path,
             "---\ndescription: updated description\n---\nUpdated body.",

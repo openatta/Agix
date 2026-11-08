@@ -798,7 +798,7 @@ impl TelemetryEvent {
 
     // ---- generic ----
 
-    /// 轻量 outcome 记录，用于尚未有专属 payload 的 P1 诊断点。
+    /// 轻量 outcome 记录，用于尚未有专属 payload 的诊断点。
     pub fn outcome_record(
         session_id: &str,
         turn_no: u32,

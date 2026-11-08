@@ -200,7 +200,7 @@ impl MemoryStore {
         }
         // Most recent first. `name` breaks ties so the order is stable —
         // `read_dir` order is not, and `last_seen` is frequently equal (or
-        // equally unparseable), which used to make truncation in `compact`
+        // equally unparseable), which would make truncation in `compact`
         // pick arbitrary victims between runs.
         out.sort_by(|(_, a), (_, b)| {
             b.last_seen
@@ -360,16 +360,6 @@ impl MemoryStore {
     pub fn compact(&self, max_entries: usize) -> Result<usize, MemoryError> {
         let mut all = self.load_all_with_home();
         // Drop low-confidence memories, then truncate by count.
-        //
-        // These used to be *counted* as removed while their files stayed on
-        // disk, so the returned number overstated what had happened and a
-        // store full of stale entries never actually shrank. The reason
-        // given was that `write_memory_file` did not round-trip
-        // `confidence`/`last_seen`, so everything read back from disk scored
-        // `effective_confidence() == 0` and a deleting filter would have
-        // emptied the whole store. That gap is closed — the frontmatter now
-        // carries `confidence`, `last_seen`, `source_session_id` and
-        // `recall_count` — so the filter can do what it says.
         let mut doomed: Vec<(PathBuf, String)> = Vec::new();
         // One instant for the whole pass. Reading the clock per entry would
         // let two memories of the same age score differently by where they
@@ -468,9 +458,8 @@ impl MemoryStore {
             String::new()
         };
 
-        // Metadata fields. Each falls back to the value this function used to
-        // return unconditionally, so a file written before these were
-        // serialized still parses and behaves exactly as it did before.
+        // Metadata fields. Each is optional and falls back to a default, so a
+        // file without them still parses.
         let meta_str = |key: &str| scalar(frontmatter, key);
 
         Some(DurableMemory {
@@ -491,24 +480,10 @@ impl MemoryStore {
 
     /// Write one memory as `<dir>/<name>.md`.
     ///
-    /// All of `DurableMemory`'s fields are serialized. They previously were
-    /// not: only `name`/`description`/`type` were written, so `confidence`,
-    /// `last_seen`, `source_session_id` and `recall_count` were silently
-    /// re-defaulted on every read. That made three separate mechanisms inert
-    /// without any of them failing visibly:
-    ///
-    /// * `staleness_penalty()` parses `last_seen`; an empty string fails to
-    ///   parse and scores the *maximum* penalty, so every memory on disk had
-    ///   `effective_confidence() == 0`;
-    /// * `compact()`'s low-confidence filter therefore matched everything,
-    ///   which in turn meant its count-cap branch was unreachable;
-    /// * `recall_count` — incremented on every recall and written back — reset
-    ///   to 0 on the next read, so cross-session recall tracking never
-    ///   accumulated.
-    ///
-    /// Files written by the old format are still readable: every field added
-    /// here is optional on the read side and falls back to the same default it
-    /// used to get unconditionally.
+    /// All of `DurableMemory`'s fields are serialized: `staleness_penalty()`,
+    /// `compact()`'s low-confidence filter and cross-session `recall_count`
+    /// all depend on the metadata surviving a write/read round trip. Every
+    /// metadata field is optional on the read side.
     fn write_memory_file(dir: &Path, mem: &DurableMemory) -> Result<(), MemoryError> {
         let md = Self::memory_dir(dir);
         std::fs::create_dir_all(&md).map_err(|e| MemoryError::Io(e.to_string()))?;
@@ -531,11 +506,9 @@ impl MemoryStore {
             yaml_quote(&mem.source_session_id),
             mem.recall_count,
         );
-        // The closing `---` must start its own line. It used to be appended
-        // straight onto the last field (`type: user---`), so `parse_memory_file`
-        // never found the closing delimiter and every memory read back from
-        // disk had an empty body — the frontmatter still parsed, which is why
-        // this went unnoticed.
+        // The closing `---` must start its own line: glued onto the last field
+        // (`type: user---`), `parse_memory_file` would not find it and every
+        // body would read back empty while the frontmatter still parsed.
         let frontmatter = format!("---\n{}\n---\n\n{}", frontmatter_fields, mem.content,);
         std::fs::write(&path, frontmatter).map_err(|e| MemoryError::Io(e.to_string()))?;
         Ok(())
@@ -1184,12 +1157,6 @@ This memory was written before the flat-format fix."#;
     // These cover the bug class where the read path merged `user_dir` and
     // `local_dir` but every write path collapsed to `user_dir`.
 
-    // ── Metadata round trip ──
-    //
-    // Only name/description/type used to be serialized, so confidence,
-    // last_seen, source_session_id and recall_count were re-defaulted on every
-    // read. Nothing failed visibly; three mechanisms just quietly did nothing.
-
     #[test]
     fn all_metadata_survives_a_write_read_round_trip() {
         let tmp = TempDir::new().unwrap();
@@ -1208,8 +1175,6 @@ This memory was written before the flat-format fix."#;
         assert_eq!(b.last_seen, "2026-06-14T00:00:00Z");
         assert_eq!(b.source_session_id, "sess-abc");
         assert_eq!(b.recall_count, 7);
-        // The body must still be there — the frontmatter delimiter used to be
-        // glued onto the last field, which emptied every body.
         assert_eq!(b.content, "body of meta");
     }
 
@@ -1262,8 +1227,7 @@ This memory was written before the flat-format fix."#;
         );
     }
 
-    /// Files written before these fields were serialized must still load, with
-    /// the same defaults they used to get unconditionally.
+    /// A file without the metadata fields must still load, with defaults.
     #[test]
     fn old_format_files_without_metadata_still_parse() {
         let tmp = TempDir::new().unwrap();
@@ -1447,8 +1411,6 @@ This memory was written before the flat-format fix."#;
 
     #[test]
     fn compaction_victims_keep_their_home_directory() {
-        // M-3: compaction used to delete the `.md` files out of both dirs and
-        // rewrite the survivors into `user_dir` only.
         let user = PathBuf::from("/u");
         let local = PathBuf::from("/l");
         let mut newer = mem("newer");
@@ -1465,15 +1427,13 @@ This memory was written before the flat-format fix."#;
 
     #[test]
     fn compaction_victim_order_is_stable_when_last_seen_is_missing() {
-        // Entries whose `last_seen` does not parse used to sort unpredictably,
-        // making truncation pick arbitrary victims between runs.
         let tmp = TempDir::new().unwrap();
         let (store, _user, _local) = split_store(&tmp);
         for name in ["c-fact", "a-fact", "b-fact"] {
             store.persist_batch(vec![mem(name)]).unwrap();
         }
-        // Read back from disk: `last_seen` is not round-tripped, so every entry
-        // ties and only the `name` tiebreak keeps the order deterministic.
+        // Every entry carries the same `last_seen`, so only the `name`
+        // tiebreak keeps the order deterministic.
         let first = compaction_victims(store.load_all_with_home(), 1);
         let second = compaction_victims(store.load_all_with_home(), 1);
         assert_eq!(first, second);

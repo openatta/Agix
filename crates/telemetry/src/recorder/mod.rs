@@ -57,11 +57,10 @@ use writer::RecordingWriter;
 
 /// The recording a call belongs to, or nothing.
 ///
-/// There used to be a shared `unattributed` name for calls with no session
-/// identity. It filed genuinely unrelated calls together, and since a writer
-/// truncates the file it opens, two concurrent sessions using it erased each
-/// other. A call that cannot name its session has no recording to belong to,
-/// and saying so is better than inventing one.
+/// A call that cannot name its session has no recording to belong to. A
+/// shared name for such calls would file unrelated calls together, and since
+/// a writer truncates the file it opens, concurrent sessions would erase
+/// each other.
 fn recording_name_of(config: &RecorderConfig, params: &StreamParams) -> Option<String> {
     if let Some(name) = &config.name {
         return Some(name.clone());

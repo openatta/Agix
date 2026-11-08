@@ -1,6 +1,6 @@
 //! 后台任务 + todo 条目类型。
 
-/// P1-4: Task type enum — categorises all background/async task kinds.
+/// Task type enum — categorises all background/async task kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskType {
@@ -43,7 +43,7 @@ impl TaskType {
     }
 }
 
-/// P1-4: Strongly-typed task identifier.
+/// Strongly-typed task identifier.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct TaskId(pub String);
 
@@ -72,9 +72,7 @@ impl std::fmt::Display for TaskId {
 #[derive(Debug)]
 pub struct RunningTask {
     pub task_id: String,
-    /// P1-4: Optional typed task identifier.
     pub typed_id: Option<TaskId>,
-    /// P1-4: Task category.
     pub task_type: TaskType,
     /// 累积的 assistant 文本（流式 delta append）
     pub output: std::sync::Mutex<String>,

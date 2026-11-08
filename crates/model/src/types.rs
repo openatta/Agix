@@ -507,12 +507,11 @@ pub enum ThinkingConfig {
     Adaptive,
     /// 显式 token 预算
     Enabled { budget_tokens: u32 },
-    /// **L1 **: explicit "no thinking". DeepSeek V4 (thinking model
+    /// Explicit "no thinking". DeepSeek V4 (thinking model
     /// by default) and some Anthropic-compat backends accept this to
     /// suppress reasoning_content emission. Important for multi-turn
     /// flows where the client doesn't echo thinking blocks back — DS V4
-    /// rejects with 400 in that case (see compare-vs-claude-ts/scripts/
-    /// llm_quality_diff_batch.py for historical use).
+    /// rejects with 400 in that case.
     Disabled,
 }
 
@@ -745,8 +744,6 @@ mod tests {
         assert_eq!(obj["tool_choice"]["type"], "auto");
     }
 
-    // ── N-10: automatic prompt-cache breakpoints ──
-    //
     // These assert on the *emitted JSON*, not on the Rust value, because the
     // messages breakpoint only exists in the serialized form (see the block
     // comment on `MessagesRequest`'s breakpoint helpers).
@@ -818,7 +815,7 @@ mod tests {
         }
     }
 
-    /// The core of N-10: the last tool gets a breakpoint so the whole
+    /// The last tool gets a breakpoint so the whole
     /// tool-definition prefix is cached, and the *second-to-last* user message
     /// gets the rolling conversation breakpoint. The last user message must
     /// NOT be marked — it is new this turn, so a breakpoint there could only

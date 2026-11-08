@@ -591,8 +591,8 @@ impl JsonlHistoryStore {
                 // The sidecar is a different matter and is read: it is one
                 // small JSON document per session, and it holds the things
                 // that exist nowhere else — the name a person gave this
-                // session, and the counters. Leaving it out is why a renamed
-                // session used to come back unnamed.
+                // session, and the counters. Leaving it out would bring a
+                // renamed session back unnamed.
                 crate::query::SummaryDetail::IdsOnly => {
                     let metadata = load_session_metadata(&self.sessions_root, session_id).await;
                     out.push(self.summary_from_parts(session_id, mtime, 0, &[], metadata))
@@ -2430,7 +2430,7 @@ mod tests {
         );
     }
 
-    /// The pre-`Blob` form is still read, and a missing paste no longer takes
+    /// The pre-`Blob` form is still read, and a missing paste does not take
     /// the session down with it.
     #[tokio::test]
     async fn an_old_paste_ref_line_still_hydrates_and_survives_its_paste_going_missing() {
@@ -2993,7 +2993,7 @@ mod append_observer_tests {
         );
     }
 
-    /// P3-8's acceptance: a store mounted with a different projection hands
+    /// A store mounted with a different projection hands
     /// back a different conversation, and every reader of that store — resume,
     /// fork, search — sees the same one, because they all come through here.
     #[tokio::test]

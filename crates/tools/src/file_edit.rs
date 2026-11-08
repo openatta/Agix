@@ -255,7 +255,6 @@ impl Tool for FileEditTool {
             crate::security::resolve_write_target(&file_path, &ctx.cwd, &*ctx.exec.filesystem)
                 .await;
 
-        // **P1 **: snapshot before mutate so /rewind can restore.
         if let Some(snapshot) = &ctx.snapshot_file {
             snapshot.record(&path, "Edit");
         }

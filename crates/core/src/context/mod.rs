@@ -51,8 +51,6 @@ mod tests {
         assert_eq!(ctx.config.model, "claude-sonnet-4-6");
     }
 
-    // ---- P1 : file-history snapshot ----
-
     #[test]
     fn bump_turn_monotonic() {
         let s = SessionState::new(PathBuf::from("/tmp"));

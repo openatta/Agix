@@ -91,7 +91,7 @@ pub trait McpClient: Send + Sync {
     fn server_name(&self) -> &str;
 
     /// transport 标签 —— "stdio" / "streamable_http"。给 /doctor /mcp 显示用。
-    /// 默认 "stdio" 兼容旧实现；新实现 override。
+    /// 默认 "stdio"；其他传输 override。
     fn transport_kind(&self) -> &'static str {
         "stdio"
     }

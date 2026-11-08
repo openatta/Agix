@@ -39,8 +39,7 @@ impl NotifyingHandler {
         }
     }
 
-    /// A handler that receives notifications and discards them — the
-    /// behavior callers had when this was the unit type.
+    /// A handler that receives notifications and discards them.
     pub fn silent(server: impl Into<String>) -> Self {
         Self::new(server, None)
     }

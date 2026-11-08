@@ -202,10 +202,6 @@ impl Tool for McpAuthTool {
     }
 }
 
-// **D1 **: DispatchMcpTool was moved to agix-mcp::tools::DispatchMcpTool
-// — it required McpClientHandle so it stayed coupled to the mcp crate; making
-// the move is what lets agix-tools drop its agix-mcp dependency.
-
 #[cfg(test)]
 mod tests {
     use super::*;

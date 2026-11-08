@@ -740,13 +740,11 @@ entry = "dist/index.js"
 
 /// The echo fixture's component, built if it is not there yet.
 ///
-/// Built rather than skipped when absent, which is what this used to do. The
-/// argument for skipping was that a unit test suite should not shell out to
-/// cargo, and what it bought was five tests that drive a real component
-/// reporting green in CI without running: `cargo test --workspace` reaches
-/// this crate long before `wasm-host`, whose integration test is what builds
-/// the fixture. Forty-two tests in two hundredths of a second is what that
-/// looks like from the outside, which is to say it looks like nothing.
+/// Built rather than skipped when absent, even though that shells out to
+/// cargo: `cargo test --workspace` reaches this crate long before
+/// `wasm-host`, whose integration test is what builds the fixture, so
+/// skipping would let the tests that drive a real component report green
+/// without running.
 #[cfg(test)]
 fn fixture_component() -> std::path::PathBuf {
     static BUILT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
@@ -969,10 +967,9 @@ component = "broken.wasm"
 #[cfg(test)]
 mod precompile_tests {
     /// A package with no components must install on a build that carries no
-    /// compiler. This used to go looking for `agix-plugin-compile` on behalf
-    /// of components the package never declared, and fail the install when it
-    /// was not there — which is what kept a script-only or MCP-only package
-    /// off every build but the one with the compiler linked in.
+    /// compiler: looking for `agix-plugin-compile` on behalf of components
+    /// the package never declared would keep a script-only or MCP-only
+    /// package off every build but the one with the compiler linked in.
     ///
     /// The claim is only load-bearing without the `compile` feature, so
     /// `cargo test -p plugin-host --no-default-features` is where it bites;

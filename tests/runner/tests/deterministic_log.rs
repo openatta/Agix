@@ -146,7 +146,7 @@ async fn the_same_session_replayed_leaves_the_same_log() {
 }
 
 /// And the check is not vacuous: on the machine's own clock and randomness the
-/// two runs disagree, which is the state this work order started from.
+/// two runs disagree.
 #[tokio::test(flavor = "multi_thread")]
 async fn on_the_machines_own_clock_the_two_runs_disagree() {
     let a = tempfile::tempdir().expect("tempdir");

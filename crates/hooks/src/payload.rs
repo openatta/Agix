@@ -138,7 +138,7 @@ pub struct HookResponse {
     #[serde(default)]
     pub suppress_output: Option<bool>,
 
-    /// P2: 异步唤醒。hook 返回 true 表示请求在后台工作完成时被重新执行。
+    /// 异步唤醒。hook 返回 true 表示请求在后台工作完成时被重新执行。
     /// 需要 hook 配置中 `async_rewake: true` 配合。
     #[serde(default)]
     pub rewake: Option<bool>,

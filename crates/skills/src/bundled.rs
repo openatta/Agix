@@ -125,7 +125,6 @@ pub fn bundled_skills() -> Vec<SkillEntry> {
             path: PathBuf::from("(bundled:updateConfig)"),
             ..Default::default()
         },
-        // -- Phase 4 additions: 4 more skills --
         SkillEntry {
             name: "init".into(),
             description: "Guide the user through initializing a new AGENTS.md file for a project.".into(),

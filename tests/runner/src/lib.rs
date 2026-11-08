@@ -1,8 +1,7 @@
 //! The harness the integration tests share.
 //!
-//! A library and no binary: what used to drive `.test` cases against a real
-//! provider is gone, and what is left is what `tests/*.rs` builds sessions
-//! with — a scripted model, a session driver, the fixture plumbing.
+//! A library and no binary: what `tests/*.rs` builds sessions with — a
+//! scripted model, a session driver, the fixture plumbing.
 
 pub mod api_runner;
 pub mod fixture;

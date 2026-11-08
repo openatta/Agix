@@ -120,7 +120,7 @@ async fn send_one(inner: &HttpInner, req: &MessagesRequest) -> Result<HttpStream
         .header("anthropic-version", inner.anthropic_version)
         .header("content-type", "application/json");
 
-    // **Q4-followup **: collect beta tags from BOTH the request (per-call
+    // Collect beta tags from BOTH the request (per-call
     // explicit) AND the auth mode (e.g. OAuth flows need
     // `anthropic-beta: oauth-2025-04-20` set unconditionally). De-dup before
     // joining.
@@ -231,7 +231,7 @@ pub enum AuthMode {
     ApiKey(String),
     /// `authorization: Bearer <token>`（OAuth / Anthropic session token，静态）
     OauthToken(String),
-    /// **P3 **: dynamic OAuth token. Each request consults the provider,
+    /// Dynamic OAuth token. Each request consults the provider,
     /// which may pre-emptively refresh if the token is about to expire and
     /// write the new token back to its underlying store.
     OauthRefreshing(Arc<dyn BearerTokenProvider>),
@@ -247,7 +247,7 @@ impl std::fmt::Debug for AuthMode {
     }
 }
 
-/// **P3 **: token-source abstraction. Implementors handle refresh +
+/// Token-source abstraction. Implementors handle refresh +
 /// store mutation behind the scenes; the client only ever asks for "the
 /// current valid bearer token".
 #[async_trait::async_trait]

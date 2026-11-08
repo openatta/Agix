@@ -1,6 +1,5 @@
-//! Plugin archive fetch + checksum verification + extraction — the real
-//! implementation behind what `cli.rs::install` used to leave as a
-//! placeholder (just `mkdir`, no actual download).
+//! Plugin archive fetch + checksum verification + extraction — what
+//! `cli.rs::install` runs.
 //!
 //! Supports two `download_url` schemes:
 //! - `https://`/`http://` — fetched through the execution layer's

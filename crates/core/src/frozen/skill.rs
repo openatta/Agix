@@ -61,11 +61,11 @@ pub struct SkillEntry {
     pub paths: Option<Vec<String>>,
     /// Version string for the skill
     pub version: Option<String>,
-    /// **P1 **: Reference files bundled with the skill. Each entry is a path
+    /// Reference files bundled with the skill. Each entry is a path
     /// relative to the skill directory. When the skill is invoked, these files
     /// are read and their content is injected into the skill context.
     pub files: Option<Vec<String>>,
-    /// **P2 **: Hook event names this skill subscribes to. When the skill is
+    /// Hook event names this skill subscribes to. When the skill is
     /// loaded, these hooks are registered with the HookRunner.
     pub hooks: Option<Vec<String>>,
 }
@@ -259,7 +259,7 @@ pub async fn load_session_skills_with_bundled(
     all
 }
 
-/// T2.1: Activate conditional skills whose `paths` globs match the given file paths.
+/// Activate conditional skills whose `paths` globs match the given file paths.
 ///
 /// Conditional skills are those with a `paths` frontmatter field listing glob
 /// patterns. When a tool touches files matching those patterns, the skill becomes
@@ -302,7 +302,7 @@ pub fn activate_conditional_skills(
 }
 
 /// Simple glob matching supporting `*` (single-segment) and `**` (multi-segment) wildcards.
-/// Used for conditional skill path matching (T2.1).
+/// Used for conditional skill path matching.
 fn simple_glob_match(pattern: &str, path: &str) -> bool {
     let pattern = pattern.trim();
     if pattern.is_empty() {
@@ -389,7 +389,7 @@ pub async fn try_expand_skill_command(
     Some(format_skill_invocation(skill, args).await)
 }
 
-/// **P6 **: expand skill variables in `body`. Equivalent to
+/// Expand skill variables in `body`. Equivalent to
 /// `expand_skill_vars_named(body, args, &[])` — no named-argument
 /// substitution, only positional/legacy forms. Kept as the simple entry
 /// point for the many call sites (and tests) that don't have a skill's
@@ -438,7 +438,7 @@ pub fn expand_skill_vars_named(body: &str, args: &str, arg_names: &[String]) -> 
         out = out.replace("$ARGUMENTS", args);
         substituted = true;
     }
-    // T2.3: $@ -- all arguments
+    // $@ -- all arguments
     if out.contains("$@") {
         out = out.replace("$@", args);
         substituted = true;
@@ -453,7 +453,7 @@ pub fn expand_skill_vars_named(body: &str, args: &str, arg_names: &[String]) -> 
         }
     }
 
-    // T2.3: ${AGIX_SKILL_DIR} and ${AGIX_SESSION_ID}
+    // ${AGIX_SKILL_DIR} and ${AGIX_SESSION_ID}
     if out.contains("${AGIX_SKILL_DIR}") {
         let skill_dir = std::env::current_dir()
             .map(|p| p.display().to_string())
@@ -479,7 +479,7 @@ pub async fn format_skill_invocation(
     args: &str,
 ) -> Result<String, std::io::Error> {
     let body = skill.read_body().await?;
-    // **P6 **: variable expansion supports:
+    // Variable expansion supports:
     //   - `{ARGS}` -- full args string (legacy; we keep it for backwards compat)
     //   - `$ARGUMENTS` -- same (alternative convention)
     //   - `$1`..`$9` -- positional args split on whitespace

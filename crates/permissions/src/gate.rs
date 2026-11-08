@@ -9,7 +9,7 @@
 //! 2. `tool.check_permissions` —— 工具自带的判定：
 //!    - `Deny` **直接返回**（工具拒绝自己是权威的：只有工具知道自己的输入
 //!      为什么不该跑）
-//!    - `Allow` **不再直接返回**，只记成一个"待生效的快速通道"（pending
+//!    - `Allow` **不直接返回**，只记成一个"待生效的快速通道"（pending
 //!      fast-path），要等下面 3–5 步都没否掉才兑现
 //!    - `Ask` = 工具没意见
 //! 3. 通用规则引擎（`RuleSet`，deny > ask > allow；路径类工具先规整路径，
@@ -172,7 +172,7 @@ impl PermissionGate {
             .to_vec()
     }
 
-    /// **P (2026-05-17)**: 运行时加规则。用于"允许此项目"流程 —— 用户选
+    /// 运行时加规则。用于"允许此项目"流程 —— 用户选
     /// "allow for this project" 后，Engine 构造 ProjectSettings 规则写入。
     pub fn add_rules(&self, additional: Vec<PermissionRule>) {
         self.rules
@@ -290,8 +290,8 @@ impl PermissionGate {
         // 2. tool.check_permissions —— 工具自带判定
         //
         // Deny 是权威的、立即返回：工具比 gate 更清楚自己的这组输入为什么不能跑
-        // （例如 Write 检测到路径逃出 cwd）。Allow 则**只是备选**：见模块级注释的
-        // N-2 说明 —— 直接 return 会让 deny 规则 / Plan / DontAsk / bypass-immune
+        // （例如 Write 检测到路径逃出 cwd）。Allow 则**只是备选**：见模块级注释
+        // —— 直接 return 会让 deny 规则 / Plan / DontAsk / bypass-immune
         // 名单对所有自判 Allow 的工具（Write/Edit/Read/Grep/Glob/只读 Bash）失效。
         // 这里把它记成 pending，等 3–5 步都放行后再在第 6 步兑现。
         let mut tool_self_allow = false;
@@ -413,8 +413,8 @@ impl PermissionGate {
         }
 
         // 6. 现在才兑现工具自判 Allow —— 没有 deny 规则、没踩 bypass-immune 路径、
-        //    也不在会硬拒的模式里。保住了原来的 UX：Default 模式下项目内的
-        //    Write/Edit 与只读 Bash 依旧静默通过。
+        //    也不在会硬拒的模式里。Default 模式下项目内的 Write/Edit 与只读
+        //    Bash 因此静默通过。
         //
         //    唯一的例外是 agent / 仓库配置目录（`.git` / `.claude` / `.agix`）：
         //    它们不是凭据（凭据在第 4 步就硬拒了），用户完全可能想让 agent 去
@@ -464,7 +464,7 @@ impl PermissionGate {
                 decision_reason: DecisionReason::Mode(mode),
             }),
 
-            // P2: Bubble mode — forward permission requests to parent agent
+            // Bubble mode — forward permission requests to parent agent
             // rather than prompting the user. The parent agent decides allow/deny.
             PermissionMode::Bubble => Ok(PermissionDecision::Ask {
                 message: "Bubble: forwarding permission request to parent agent".into(),
@@ -726,9 +726,7 @@ mod tests {
         }
     }
 
-    /// N-2: 用户在 settings.json 里写的 deny 规则必须压过工具的自判 Allow。
-    /// 老实现里 `Write`/`Edit`/`Read`/`Grep`/`Glob`/只读 `Bash` 全都自判 Allow，
-    /// 于是这类 deny 规则对它们**完全不可达**。
+    /// 用户在 settings.json 里写的 deny 规则必须压过工具的自判 Allow。
     #[tokio::test]
     async fn deny_rule_beats_self_allowing_tool() {
         let tool = FakeTool::new("Write")
@@ -751,8 +749,8 @@ mod tests {
         );
     }
 
-    /// N-2: Plan 模式必须拦住自判 Allow 的非只读工具（典型就是项目内的
-    /// `Write` / `Edit` —— 它们过去在 Plan 模式下照样落盘）。
+    /// Plan 模式必须拦住自判 Allow 的非只读工具（典型就是项目内的
+    /// `Write` / `Edit`）。
     #[tokio::test]
     async fn plan_mode_denies_self_allowing_non_readonly_tool() {
         let tool = FakeTool::new("Write").own(base::tool::PermissionDecision::allow());
@@ -767,7 +765,7 @@ mod tests {
         );
     }
 
-    /// N-2 + N-15: bypass-immune 路径必须压过工具自判 Allow —— 否则
+    /// bypass-immune 路径必须压过工具自判 Allow —— 否则
     /// `Read(~/.ssh/id_rsa)` 在第 2 步就返回了，第 4 步的检查永远跑不到。
     #[tokio::test]
     async fn bypass_immune_path_beats_self_allowing_tool() {
@@ -789,7 +787,7 @@ mod tests {
         }
     }
 
-    /// N-2: `DontAsk` 是"没有规则就拒绝"，自判 Allow 不该把它变成"什么都放行"。
+    /// `DontAsk` 是"没有规则就拒绝"，自判 Allow 不该把它变成"什么都放行"。
     #[tokio::test]
     async fn dontask_mode_denies_self_allowing_tool_without_rule() {
         let tool = FakeTool::new("Write").own(base::tool::PermissionDecision::allow());
@@ -1209,10 +1207,9 @@ const BYPASS_IMMUNE_COMPONENTS: &[&str] = &[".ssh", ".aws", ".gnupg"];
 /// which the user can legitimately approve: agent and repository
 /// configuration.
 ///
-/// These were originally in [`BYPASS_IMMUNE_COMPONENTS`], which made editing
-/// `.claude/settings.json` or `.agix/agents/*.md` impossible — not merely
-/// gated, but denied with no way to say yes, even though configuring the
-/// agent is a thing users routinely ask the agent to do. They are not
+/// They are not in [`BYPASS_IMMUNE_COMPONENTS`]: that would make editing
+/// `.claude/settings.json` or `.agix/agents/*.md` impossible, and configuring
+/// the agent is a thing users routinely ask the agent to do. They are not
 /// credentials; the actual risk is a tool quietly rewriting the rules it is
 /// judged by. So they get the weaker treatment that risk calls for: the
 /// tool's own `Allow` does not apply to them, and the call goes to the
@@ -1255,22 +1252,10 @@ fn is_path_confirmation_required(content: &str) -> bool {
 /// that every mode consulting rules refuses — neither the tool's own allow
 /// nor an allow rule reaches past it. `BypassPermissions` consults nothing.
 ///
-/// **Component matching (2026-08-11 审计 N-15)**: the old implementation did
-/// `lowered.find(sensitive)` and then checked whether the byte *before* the hit
-/// was `/`. That was wrong in both directions:
-///
-/// - **假阳性**：`.git` 命中 `.github` 的前四个字符，而它前面正好是 `/` →
-///   `/repo/.github/workflows/ci.yml`、`.gitignore`、`.gitmodules`、
-///   `.gitlab-ci.yml` 全被判成 bypass-immune。以前被工具自判 Allow 掩盖着
-///   （gate 第 2 步就 return 了，压根跑不到这里）；N-2 把那个短路去掉之后，
-///   它会立刻变成"agent 改不了 CI 配置"的日常故障。
-/// - **假阴性**：`find` 只看**第一次**出现的位置。`~/.ssh/id_rsa` 里 `.ssh`
-///   前面是 `~` 不是 `/`，第一次命中就判否，循环直接放弃这个模式 —— 于是
-///   `cat ~/.ssh/id_rsa` 完全不设防。
-///
-/// 现在按 `/` 切成组件、整段做相等比较，因此 `.github != .git`，而且每一个
-/// 组件都会被检查（不再只看第一次出现）。前导 `~` 自成一个组件，天然不影响
-/// 后面的 `.ssh` 被识别。
+/// **按组件匹配**，不做子串查找：按 `/` 切成组件、整段做相等比较，因此
+/// `.github` / `.gitignore` / `.gitlab-ci.yml` 不会撞上 `.git`（否则 agent 改不了
+/// CI 配置），而且每一个组件都会被检查，不只看第一次出现。前导 `~` 自成一个
+/// 组件，不影响后面的 `.ssh` 被识别。
 ///
 /// `/etc/passwd` 之类的绝对路径检查与破坏性命令模式检查保持原样 —— 它们是
 /// 另外两件事（子串匹配在那里就是想要的语义）。
@@ -1312,7 +1297,7 @@ fn is_path_bypass_immune(content: &str) -> bool {
 mod bypass_immune_tests {
     use super::{is_path_bypass_immune, is_path_confirmation_required};
 
-    /// N-15 假阳性：`.github` / `.gitignore` / `.gitlab-ci.yml` 只是**前缀**撞上
+    /// `.github` / `.gitignore` / `.gitlab-ci.yml` 只是**前缀**撞上
     /// `.git`，不是同一个路径组件。把它们判成 bypass-immune 会让 agent 改不了
     /// CI 配置。
     #[test]
@@ -1324,8 +1309,7 @@ mod bypass_immune_tests {
         assert!(!is_path_bypass_immune("repo/.github/dependabot.yml"));
     }
 
-    /// N-15 假阴性：`~/.ssh` 里 `.ssh` 前面是 `~`，老实现只看第一次出现 + 前一
-    /// 字符是否为 `/`，于是整个模式被放过。
+    /// `~/.ssh` 里 `.ssh` 前面是 `~`，嵌套在别的目录下的敏感目录也一样要拦。
     #[test]
     fn tilde_prefixed_and_nested_sensitive_dirs_are_immune() {
         assert!(is_path_bypass_immune("~/.ssh/id_rsa"));

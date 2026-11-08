@@ -1227,8 +1227,6 @@ mod tests {
         assert!(cmd.spec.args.iter().any(|a| a == "--unshare-net"));
     }
 
-    // ---- Phase 3-3: fault injection tests ----
-
     #[test]
     fn sandbox_escape_handles_special_whitespace() {
         // sandbox_escape only escapes `\` and `"`. Newlines/tabs pass through

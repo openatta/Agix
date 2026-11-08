@@ -41,10 +41,9 @@ pub struct TestCase {
 /// 新的 `session_id`，`cli_runner` 给每轮一个新的 daemon session），已录制的
 /// cassette 全部依赖它，不能改默认值。
 ///
-/// 但"默认隔离"意味着**没有任何用例真正跑过跨轮对话**：记忆召回、
+/// 但"默认隔离"意味着**用例默认不跑跨轮对话**：记忆召回、
 /// `already_surfaced` 去重、上下文压缩、session-memory 陈旧判定、压缩后恢复
-/// ——这些机制全都只在"轮与轮之间"才有行为可言。一次审计里发现的三个 P0 记忆
-/// bug 能在 1737 个测试全绿的情况下溜过去，根因就是这个空档。所以用例可以在
+/// ——这些机制全都只在"轮与轮之间"才有行为可言。所以用例可以在
 /// `.test` 文件的元信息区显式声明 `session: shared` 来打开共享会话，而不是只
 /// 能靠调用方记得加 `--same-session`（用例文件本身才知道它需不需要跨轮状态，
 /// 命令行不知道）。
@@ -188,12 +187,11 @@ pub fn parse_test_script(content: &str, source_path: &str) -> anyhow::Result<Tes
 
 /// A `key: value` line in the meta block, if the case declares one.
 ///
-/// Prerequisites used to live only in the prose header (`# 前置: --fixture …
-/// --scene mini`), which meant every runner invocation had to remember to pass
-/// them by hand — and `tests/run_api.sh` never did. A case that needs MCP, or a
-/// scene other than the default, was therefore recorded without them: the
-/// recording looked fine and exercised none of what the case was written for.
-/// Declaring it here makes the runner configure itself from the case.
+/// Prerequisites declared here (rather than only in the prose header, `# 前置:
+/// --fixture … --scene mini`) let the runner configure itself from the case,
+/// instead of every invocation having to remember to pass them by hand — a
+/// case that needs MCP, or a non-default scene, recorded without them looks
+/// fine and exercises none of what it was written for.
 fn parse_meta_field(meta: &str, key: &str) -> Option<String> {
     let prefix = format!("{key}:");
     meta.lines()

@@ -34,9 +34,9 @@ pub enum CompactStrategy {
     /// Nothing was done — the conversation was already within budget.
     ///
     /// Distinct from `Snip` with zero dropped rounds: this reports that no
-    /// strategy ran at all. The early-return path used to report `Snip`, which
-    /// made every under-budget turn emit a phantom Snip event to telemetry and
-    /// to the `CompactAction` stream, drowning real compactions in noise.
+    /// strategy ran at all. Reporting `Snip` here would make every
+    /// under-budget turn emit a phantom Snip event to telemetry and to the
+    /// `CompactAction` stream, drowning real compactions in noise.
     NoOp,
     /// Drop oldest rounds, keep recent N rounds (not messages).
     Snip,
@@ -439,8 +439,7 @@ impl DefaultCompactor {
                             .unwrap_or(false);
                         if is_compactable {
                             // Clear the *body* only. Replacing the whole block
-                            // (which is what this did before) blanked
-                            // `tool_use_id`, orphaning the result from its
+                            // would blank `tool_use_id`, orphaning the result from its
                             // `tool_use` — the API rejects a `tool_result`
                             // whose id doesn't match a preceding `tool_use`,
                             // and `extract_recent_reads` pairs on that id too.
@@ -590,8 +589,6 @@ impl Compactor for DefaultCompactor {
         ))
     }
 }
-
-// ── Post-compact recovery (T1.4) ──
 
 /// One skill invoked before compaction, with enough to re-attach its actual
 /// body (not just its name) afterward. Built by the caller (`runtime`,
@@ -896,8 +893,6 @@ const COMPACTABLE_TOOLS: &[&str] = &[
     "Write",
 ];
 
-// ── P2-1: Compact Analysis ──
-
 /// Token composition breakdown for a set of messages.
 /// Useful for debugging compaction behavior and understanding where token budget is spent.
 #[derive(Debug, Clone, Default)]
@@ -1108,11 +1103,7 @@ pub fn enforce_tool_result_budget(
     // "Oldest first" and "message order" coincide here because the transcript
     // is append-only (`SessionManager::push_message` only pushes; compaction
     // removes from the front and never reorders), so index order *is*
-    // chronological order. That was previously left implicit, with the
-    // termination condition split across a nested `break` plus an outer one.
-    // Making the traversal order explicit means a future caller that hands
-    // this an out-of-order slice gets a documented contract rather than a
-    // silent behavior change.
+    // chronological order.
     if total_size > max_total {
         const CLEARED: &str = "[Old tool result content cleared]";
         // Positions in chronological order.
@@ -1673,8 +1664,6 @@ mod tests {
         assert!(recovery.is_empty());
     }
 
-    // ── C-3: post-compact file recovery ──
-
     /// Build a Read tool result the way the real tool builds it:
     /// `crates/tools/src/file_read.rs::format_with_line_numbers` →
     /// `"{:>6}\t{}\n"` per line. Deliberately *not* a hand-made string that
@@ -1795,8 +1784,6 @@ mod tests {
         assert_eq!(ids, vec!["t1"], "cleared results keep their tool_use_id");
     }
 
-    // ── C-4: snip contract ──
-
     /// A round whose token cost is dominated by one text block, so budgets in
     /// these tests are easy to reason about.
     fn sized_round(tag: usize, words: usize) -> Vec<ModelMessage> {
@@ -1885,8 +1872,6 @@ mod tests {
         assert_eq!(saved, before - estimate_tokens(&result));
     }
 
-    // ── C-6: no-op reporting ──
-
     #[tokio::test]
     async fn compact_under_budget_reports_noop_not_snip() {
         let msgs = build_long_conversation(3);
@@ -1903,8 +1888,6 @@ mod tests {
         assert_eq!(meta.messages_before, meta.messages_after);
         assert!(meta.projection.is_none());
     }
-
-    // ── C-5: one token estimator ──
 
     #[test]
     fn the_two_former_estimators_now_agree() {
@@ -1960,8 +1943,6 @@ mod tests {
             analysis.total_estimated_tokens
         );
     }
-
-    // ── C-7: tool result budget ──
 
     #[test]
     fn tool_result_budget_clears_oldest_first() {

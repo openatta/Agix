@@ -81,7 +81,7 @@ pub enum NetworkMode {
 /// inside an LLM tool result. User can override via `sandbox.allow_read` in
 /// settings.json. Returned absolute (`HOME` resolved).
 ///
-/// 两个生产调用点（都在 `super`，2026-08-11 审计 N-4 / N-3 之后才接上）：
+/// 两个生产调用点：
 /// - `bash::to_sandbox_policy` —— 空 `deny_read` 回落到这里，作为真正的沙盒 profile；
 /// - `bash::classify` —— 命令分类时用同一份名单判断某个参数是不是在读凭据，
 ///   避免 `cat ~/.ssh/id_rsa` 被当成"只读命令"静默放行。

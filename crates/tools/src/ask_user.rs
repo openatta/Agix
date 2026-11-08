@@ -46,8 +46,6 @@ impl Tool for AskUserQuestionTool {
         "Ask the user a question with multiple-choice options."
     }
 
-    /// **P3f **: deferred -- only Bash/Read/Edit/ToolSearch 4 eager.
-    /// Other tools activated via ToolSearch, saving ~13KB tools schema.
     fn input_schema(&self) -> Value {
         crate::input_schema::<AskUserQuestionInput>()
     }
@@ -116,10 +114,8 @@ impl Tool for AskUserQuestionTool {
             ),
         };
 
-        // An unanswered question must not read as an answered one. Handing the
-        // model back its own question — which is what this did before anyone
-        // could answer it — invites it to treat the echo as a reply and carry
-        // on as though the user had spoken.
+        // An unanswered question must not read as an answered one: echoing the
+        // model's own question back invites it to treat the echo as a reply.
         let text = match &outcome {
             ElicitOutcome::Answered(v) => v
                 .as_str()

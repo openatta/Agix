@@ -21,7 +21,7 @@ use std::time::Duration;
 const MAX_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_OUTPUT_CHARS: usize = 50_000;
 const TIMEOUT: Duration = Duration::from_secs(15);
-/// **Q1 **: input cap fed to the secondary LLM. Aligns with
+/// Input cap fed to the secondary LLM. Aligns with
 /// `MAX_MARKDOWN_LENGTH`; truncation marker appended on overflow.
 const MAX_SECONDARY_INPUT_CHARS: usize = 80_000;
 
@@ -36,7 +36,7 @@ pub struct WebFetchInput {
     pub prompt: Option<String>,
 }
 
-/// **Q1 **: optional secondary-LLM extractor. When wired, after fetching
+/// Optional secondary-LLM extractor. When wired, after fetching
 /// the URL the tool calls the secondary LLM with `(prompt, content)` and
 /// returns the model's distillation instead of the raw 50KB page. CLI/TUI
 /// inject this from the same Anthropic client used by the engine, with the
@@ -73,7 +73,6 @@ impl Tool for WebFetchTool {
         "Fetch a URL and extract relevant content via sub-LLM."
     }
 
-    /// **P3f **: deferred -- only Bash/Read/Edit/ToolSearch 4 eager.
     fn input_schema(&self) -> Value {
         crate::input_schema::<WebFetchInput>()
     }
@@ -131,7 +130,7 @@ impl Tool for WebFetchTool {
         };
         match result {
             Ok((status, text)) => {
-                // **Q1 **: if a secondary LLM is wired AND the user
+                // If a secondary LLM is wired AND the user
                 // supplied a prompt, ask the cheap model to extract relevant
                 // bits. Otherwise return the raw fetched text (legacy path).
                 let body = match (&input.prompt, self.secondary.as_ref()) {

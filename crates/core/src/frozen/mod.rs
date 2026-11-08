@@ -73,13 +73,13 @@ pub struct FrozenContext {
     /// Memory file paths already surfaced in prior turns. Used to deduplicate
     /// and avoid re-injecting the same memories every turn.
     pub already_surfaced: std::collections::HashSet<String>,
-    /// **A-5 **: output style 已加载的内容（`name` 来自 EngineConfig，
+    /// output style 已加载的内容（`name` 来自 EngineConfig，
     /// 由 `collect_output_style` 从 user/project 级别 `output-styles/<name>.md`
     /// 读取）。None = 没指定或文件不存在。
     pub output_style: Option<OutputStyle>,
 }
 
-/// **A-5 **: 一个 output-style 文件的加载结果。注入 system prompt 时用。
+/// 一个 output-style 文件的加载结果。注入 system prompt 时用。
 #[derive(Debug, Clone)]
 pub struct OutputStyle {
     pub name: String,
@@ -102,7 +102,7 @@ pub struct CollectOptions {
     /// monorepo 子目录不想吃父级 monorepo 上下文时设为 false。
     pub walk_up_claude_md: bool,
 
-    /// **A-5 **: 启动时按名称加载 output style（先项目级再用户级）。
+    /// 启动时按名称加载 output style（先项目级再用户级）。
     /// None = 不加载。
     pub output_style: Option<String>,
 }
@@ -229,7 +229,7 @@ impl FrozenContext {
 
         let memory_blocks =
             collect_memory_files_with(&cwd, opts.walk_up_claude_md, &paths.global_data_dir).await;
-        // P3c : 用 load_session_skills 而非 collect_skills -- 前者把 bundled
+        // 用 load_session_skills 而非 collect_skills -- 前者把 bundled
         // skills (simplify/verify/debug/batch/stuck) 也并入。否则
         // disk 没装 SKILL.md 时 system prompt 不暴露 bundled，模型不知道有这些
         // skill，/stuck /simplify 等 case 失败。
@@ -238,7 +238,7 @@ impl FrozenContext {
         // memory_dir = <global_root>/memory/<sha256(canonical_cwd)[..16]>/（不分 scene）
         let (memory_dir, memory_index) = collect_memory(&cwd, &paths.global_data_dir).await;
 
-        // P1.5: Pre-load all memory files from the project memory dir so they
+        // Pre-load all memory files from the project memory dir so they
         // are available for injection into the system prompt. Files are capped
         // at 8KB each, up to 5 files.
         let relevant_memories = if memory_dir.exists() {
@@ -247,7 +247,7 @@ impl FrozenContext {
             Vec::new()
         };
 
-        // A-5 : output style -- load by name from project then user dir.
+        // Output style -- load by name from project then user dir.
         let output_style = match opts.output_style.as_deref() {
             Some(name) if !name.trim().is_empty() => collect_output_style(&cwd, name, paths).await,
             _ => None,
@@ -337,7 +337,7 @@ impl FrozenContext {
     }
 }
 
-/// **A-5 **: load `<cwd>/.agix/output-styles/<name>.md` if present,
+/// Load `<cwd>/.agix/output-styles/<name>.md` if present,
 /// else `~/.agix/scenes/<scope>/output-styles/<name>.md`. Trims whitespace and caps body
 /// at 8KB. Returns None if neither file is present or readable.
 async fn collect_output_style(cwd: &Path, name: &str, paths: &ConfigPaths) -> Option<OutputStyle> {
@@ -380,7 +380,7 @@ async fn collect_output_style(cwd: &Path, name: &str, paths: &ConfigPaths) -> Op
     None
 }
 
-/// **A-5 **: list all output style names from user + project dirs (no
+/// List all output style names from user + project dirs (no
 /// content read). Used by `/output-style` slash command.
 pub async fn list_output_style_names(cwd: &Path, paths: &ConfigPaths) -> Vec<String> {
     let mut all: Vec<(String, OutputStyleSource)> = Vec::new();
@@ -430,8 +430,7 @@ async fn scan_output_style_dir(dir: &Path) -> Vec<String> {
 mod tests {
     use super::*;
 
-    /// Roots under a tempdir. Tests never inherit the running user's home —
-    /// that is the property this whole module was changed to guarantee.
+    /// Roots under a tempdir. Tests never inherit the running user's home.
     fn test_paths(root: &Path) -> ConfigPaths {
         ConfigPaths::new(root.join(".agix"), root.join(".agix"), "code")
     }
@@ -470,13 +469,10 @@ mod tests {
 
     /// Runs a `git` command and fails loudly if it did not work.
     ///
-    /// The `.output().unwrap()` this replaces only caught a spawn failure. A
-    /// `git init` that ran and exited non-zero — which is what a machine out
-    /// of file descriptors or process slots produces — left a directory that
-    /// is not a repository, and the test then failed several lines later with
-    /// `left: None, right: Some("original-branch")`: a true statement about
-    /// the wrong thing, and nothing to act on. Checking here turns that into
-    /// git's own words about what it could not do.
+    /// Checks the exit status, not just the spawn: a `git init` that exits
+    /// non-zero (a machine out of file descriptors or process slots) leaves a
+    /// directory that is not a repository, and the test would otherwise fail
+    /// several lines later on an assertion with nothing to act on.
     fn run_git(cwd: &std::path::Path) -> impl Fn(&[&str]) + '_ {
         move |args: &[&str]| {
             let out = std::process::Command::new("git")
@@ -563,7 +559,7 @@ mod tests {
         );
     }
 
-    /// A-2: the per-turn `<system-reminder>` re-shows `gitStatus` on every
+    /// The per-turn `<system-reminder>` re-shows `gitStatus` on every
     /// turn, so a session-start snapshot of it is not merely stale, it is
     /// actively misleading — the model reads it as current fact and keeps
     /// citing files that are no longer dirty. Same shape as

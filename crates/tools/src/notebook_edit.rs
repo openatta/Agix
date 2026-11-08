@@ -65,8 +65,6 @@ impl Tool for NotebookEditTool {
         "NotebookEdit"
     }
 
-    /// **P3b **: 标 deferred —— 系统 prompt 仅暴露 name + 短描述，模型用
-    /// ToolSearch 激活后下一轮拉 full schema。减少静态 prompt 占用。
     fn input_schema(&self) -> Value {
         crate::input_schema::<NotebookEditInput>()
     }
@@ -149,7 +147,6 @@ impl Tool for NotebookEditTool {
         .await;
         let path = target.as_path();
 
-        // **P1 **: snapshot before mutating so /rewind can restore.
         if let Some(snapshot) = &ctx.snapshot_file {
             snapshot.record(path, "NotebookEdit");
         }

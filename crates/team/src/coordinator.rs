@@ -242,7 +242,7 @@ pub trait Coordinator: Send + Sync {
     async fn orchestrate(&self, request: OrchestrateRequest) -> Result<ToolResult, ToolError>;
 
     /// Attach the parent session's event channel so the coordinator can emit
-    /// `AgentEvent::TeamProgress` as stages start and finish (T-3), instead
+    /// `AgentEvent::TeamProgress` as stages start and finish, instead
     /// of the whole team run being one long silence followed by an enormous
     /// tool result. Default implementation is a no-op; coordinators that
     /// don't emit progress simply ignore it.
@@ -545,7 +545,7 @@ impl Coordinator for DefaultCoordinator {
         }
         let _ = tokio::fs::write(&sp_path, &scratch).await;
 
-        // P1-8: Teammate lifecycle tracking.
+        // Teammate lifecycle tracking.
         let mut lifecycles: std::collections::HashMap<String, TeammateLifecycle> = stages
             .iter()
             .flat_map(|s| s.agents.iter())
@@ -562,7 +562,7 @@ impl Coordinator for DefaultCoordinator {
             let mut sections: Vec<(String, String, bool)> = Vec::new();
             let stage_members: Vec<String> = stage.agents.iter().map(|a| a.label.clone()).collect();
 
-            // T-3: tell the host the stage is starting, so a large team
+            // Tell the host the stage is starting, so a large team
             // streams progress instead of going silent until the very end.
             self.emit_progress(
                 &name,
@@ -651,11 +651,9 @@ impl Coordinator for DefaultCoordinator {
                     let permits = permits.clone();
                     let spawner = spawner.clone();
                     let label = agent_spec.label.clone();
-                    // T-1: workers used to get `agent_spec.prompt` verbatim
-                    // with no idea they were in a team at all. Prepend a
-                    // short orientation block — team, stage, role, peers,
-                    // scratchpad — rather than leaning on the coordinator
-                    // prompt to nag the lead into repeating it every time.
+                    // Prepend a short orientation block — team, stage, role,
+                    // peers, scratchpad — rather than leaning on the
+                    // coordinator prompt to nag the lead into repeating it.
                     let peers: Vec<String> = stage_members
                         .iter()
                         .filter(|l| *l != &label)
@@ -714,9 +712,6 @@ impl Coordinator for DefaultCoordinator {
                                 extra_tools,
                                 cwd,
                                 cancel,
-                                // A member's `agent_type` used to be parsed off
-                                // the tool input and then dropped here, so a
-                                // team member never got the type it asked for.
                                 agent_type,
                                 Some(permission_mode),
                             )
@@ -813,7 +808,7 @@ impl Coordinator for DefaultCoordinator {
             scratch.push_str(&md);
             let _ = tokio::fs::write(&sp_path, &scratch).await;
 
-            // T-3: stage finished — report which members failed so the host
+            // Stage finished — report which members failed so the host
             // can surface a problem before the whole team run is over.
             let failed: Vec<String> = sections
                 .iter()
@@ -1015,11 +1010,9 @@ impl Coordinator for DefaultCoordinator {
              Continue coordinating the remaining stages."
         );
 
-        // This used to be `tracing::info!(target: "telemetry", ...)` — no
-        // subscriber anywhere in the workspace listens on that target, so it
-        // never actually reached the telemetry pipeline. Now that
-        // `set_telemetry_handle` gives this coordinator a real handle, record
-        // it properly.
+        // Through the handle from `set_telemetry_handle`, not
+        // `tracing::info!(target: "telemetry", ...)`: no subscriber in the
+        // workspace listens on that target.
         let latency_ms = start.elapsed().as_millis() as u64;
         if let Some(handle) = self.telemetry() {
             let _ = handle.record(telemetry::TelemetryEvent::resume_action(
@@ -1566,7 +1559,7 @@ mod tests {
         }
     }
 
-    /// (e) Phase-2 regression: team members must receive *working*
+    /// Team members must receive *working*
     /// `SendMessage`/`ReadMail`/`ListPeers` tools scoped to the team's own
     /// mailbox — not just have the plumbing exist unused. Each of the two
     /// members here calls `ListPeers` for real and returns the result as
@@ -1712,11 +1705,10 @@ mod tests {
         assert!(!team_dir.join("memory").exists());
     }
 
-    /// (f) Phase-1 regression: `orchestrate()` records the team in the
-    /// shared registry (so `TeamList` can see it), and `cleanup_team()`
-    /// actually removes both the registry entry and the on-disk
-    /// `.agix/teams/{id}/` directory — not the old no-op that claimed
-    /// success unconditionally. A second `cleanup_team()` call for the same
+    /// `orchestrate()` records the team in the shared registry (so
+    /// `TeamList` can see it), and `cleanup_team()` actually removes both the
+    /// registry entry and the on-disk `.agix/teams/{id}/` directory. A
+    /// second `cleanup_team()` call for the same
     /// name must error instead of silently "succeeding" again.
     #[tokio::test]
     async fn orchestrate_records_team_and_cleanup_team_removes_it() {
@@ -1849,11 +1841,9 @@ mod tests {
             ]
         );
     }
-    /// T-1: a worker used to receive its raw task text and nothing else —
-    /// no idea it was in a team, which stage, who else was running, or where
-    /// the scratchpad was. The coordinator prompt papered over that by
-    /// telling the lead to repeat it in every prompt; this asserts the
-    /// plumbing does it instead.
+    /// A worker's prompt tells it it is in a team, which stage, who else is
+    /// running, and where the scratchpad is — the plumbing does it, not the
+    /// lead repeating it in every prompt.
     #[tokio::test]
     async fn worker_prompt_carries_the_team_context_block() {
         let stages = vec![
@@ -1927,7 +1917,6 @@ mod tests {
         assert!(writer.contains("Stage 2/2: synthesis"));
         assert!(writer.contains("you are the only worker in this stage"));
 
-        // A member's declared `agent_type` used to be parsed and dropped.
         let types = spawner.agent_types.lock().unwrap().clone();
         assert!(
             types.contains(&Some("explore".to_string())),
@@ -1935,9 +1924,8 @@ mod tests {
         );
     }
 
-    /// T-3: `TeamCreate` used to return nothing until every member of every
-    /// stage had finished. Progress must now be observable while the run is
-    /// still going, and must arrive before the final tool result.
+    /// `TeamCreate` progress must be observable while the run is still going,
+    /// and must arrive before the final tool result.
     #[tokio::test]
     async fn team_progress_is_emitted_per_stage_before_the_final_result() {
         use base::interface::event::{AgentEvent, TeamStageStatus};

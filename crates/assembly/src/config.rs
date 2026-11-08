@@ -6,18 +6,11 @@
 //!
 //! [`load_daemon_config`] delegates all settings.json parsing/merging to
 //! `base::interface::settings::Settings::load()` — the single canonical
-//! loader (global → scene → project, generic recursive JSON merge). Before
-//! 2026-08-04's second round, `daemon` maintained its own parallel
-//! `SettingsFile` struct/parser with a narrower field set (only
-//! model/max_tokens/mcp_servers/providers/task_models/hooks were
-//! recognized) — every new setting had to be added in four places
-//! (`SettingsFile`, `merge_settings`, `DaemonConfig`, and the `Settings{}`
-//! literal `daemon/src/main.rs` hand-built from it) to actually take effect.
-//! That's exactly how `permission_rules`/`permission_mode` ended up parsed
-//! nowhere despite being real `Settings` fields. `DaemonConfig` now just
-//! wraps the one canonical `Settings` plus the handful of fields that are
-//! genuinely daemon-process-level, not settings.json content (socket/lock
-//! paths, session cap, TCP listener).
+//! loader (global → scene → project, generic recursive JSON merge).
+//! `DaemonConfig` just wraps that one `Settings` plus the handful of fields
+//! that are genuinely daemon-process-level, not settings.json content
+//! (socket/lock paths, session cap, TCP listener) — a daemon-side copy of the
+//! settings would have to learn every new field separately.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -61,13 +54,11 @@ pub trait DaemonPaths: Send + Sync {
 /// validated `--scene` CLI flag (`code`/`harnix`/`mini`; unsupported values
 /// fail startup) rather than accepting an arbitrary string.
 ///
-/// **2026-08-04**: `global_root` is stored explicitly rather than derived
-/// from `config_root`'s filesystem parent — `config_root` is now nested two
-/// levels under the global root (`.../scenes/<scope>/`), so a single
-/// `.parent()` call no longer reaches it. This also changes what
-/// `AGIX_CONFIG_HOME` overrides: it now sets the *global* root, with
-/// `config_root` derived as `{AGIX_CONFIG_HOME}/scenes/<scope>/` — previously
-/// it set `config_root` directly.
+/// `global_root` is stored explicitly rather than derived from
+/// `config_root`'s filesystem parent — `config_root` is nested two levels
+/// under the global root (`.../scenes/<scope>/`). `AGIX_CONFIG_HOME` sets the
+/// *global* root, with `config_root` derived as
+/// `{AGIX_CONFIG_HOME}/scenes/<scope>/`.
 #[derive(Debug, Clone)]
 pub struct DefaultDaemonPaths {
     global_root: PathBuf,
@@ -451,14 +442,10 @@ mod tests {
         assert_eq!(config.settings.model.model_name, "scene-model"); // scene overrides global
     }
 
-    /// Regression guard: `load_daemon_config` used to build its returned
-    /// `DaemonConfig.paths` via `StaticDaemonPaths::with_project` without
-    /// `.with_global(..)`, so `paths.global_root()` fell back to
-    /// `config_root` — collapsing the global and scene tiers into the same
-    /// directory for every downstream consumer of `DaemonConfig.paths`
-    /// (`daemon.doctor`, `config.reload`, plugin tier discovery). Only the
-    /// *first* `Settings::load` call (which takes `paths.global_root()` as a
-    /// plain fn argument, not through `DaemonConfig.paths`) was ever correct.
+    /// `DaemonConfig.paths.global_root()` must not fall back to
+    /// `config_root` — that would collapse the global and scene tiers into
+    /// one directory for every downstream consumer of `DaemonConfig.paths`
+    /// (`daemon.doctor`, `config.reload`, plugin tier discovery).
     #[test]
     fn load_daemon_config_paths_preserve_distinct_global_root() {
         let global_dir = tempfile::tempdir().unwrap();
@@ -586,10 +573,8 @@ mod tests {
     #[test]
     fn load_daemon_config_project_can_override_just_one_provider_field_and_permission_rules_flow_through(
     ) {
-        // Demonstrates the fix this round makes concrete: any `Settings`
-        // field (not just the handful `SettingsFile` used to special-case)
-        // now flows through settings.json automatically — permission_rules
-        // is a real example of a field that was previously parsed nowhere.
+        // Any `Settings` field flows through settings.json automatically;
+        // permission_rules is one example.
         let dir = tempfile::tempdir().unwrap();
         write_settings(
             dir.path(),

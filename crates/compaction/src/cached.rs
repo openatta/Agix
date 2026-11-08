@@ -104,7 +104,7 @@ impl CachedMicroCompact {
         self.pending_edits.clone()
     }
 
-    /// T5.1: Track tool_use IDs for cache_edits. Records which tool results were
+    /// Track tool_use IDs for cache_edits. Records which tool results were
     /// generated for each tool_use, so the Anthropic API can delete them from
     /// the server-side cached prefix without busting the cache.
     ///

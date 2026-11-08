@@ -1,15 +1,10 @@
 //! `RuleSetPermission` — the real `base::interface::permission::Permission`
 //! implementation, wrapping `PermissionGate`/`RuleSet`.
 //!
-//! Named to match the doc comment on the `Permission` trait itself
-//! ("Agix uses `RuleSetPermission`"), which described this exact shape
-//! before any implementation existed — every production caller
-//! (`daemon::main`, `Builder::build()`'s default) previously used a no-op
-//! `AllowAllPermission`/`AllowAll` instead, so `permission_rules` in
-//! `settings.json` and `PermissionMode` (`BypassPermissions`/`DontAsk`/
-//! `Plan`/...) had zero effect on any real tool call. This is what makes
-//! them real, plus gives `Skill.allowed_tools` (see `SkillTool`) somewhere
-//! to inject temporary Allow rules into via `add_rules`.
+//! This is what makes `permission_rules` in `settings.json` and
+//! `PermissionMode` (`BypassPermissions`/`DontAsk`/`Plan`/...) take effect on
+//! real tool calls, and gives `Skill.allowed_tools` (see `SkillTool`)
+//! somewhere to inject temporary Allow rules into via `add_rules`.
 
 use crate::gate::PermissionGate;
 use async_trait::async_trait;
@@ -32,7 +27,7 @@ pub struct RuleSetPermission {
     /// against — see `Permission::bind_tool_registry`, which swaps this to
     /// the real one once `Builder::build()` has finished populating it. A
     /// stale registry here is not a cosmetic problem: every tool missing from
-    /// it used to be waved straight through.
+    /// it falls into `check`'s unknown-tool branch.
     tools: RwLock<Arc<dyn ToolRegistry>>,
     /// The session's live state, once `bind_session_state` has supplied it.
     ///
@@ -135,19 +130,12 @@ impl Permission for RuleSetPermission {
     ) -> PermissionOutcome {
         // Unknown tool name — fail closed.
         //
-        // This used to `Permit`, on the reasoning that dispatch's own "Tool
-        // not found" error would surface right afterwards and a permission
-        // denial here would only mask it. That reasoning holds exactly as
-        // long as this registry *is* the dispatch registry. It was not: the
-        // handler was built over a daemon's pool-level template while
-        // dispatch ran against a per-session registry holding `Skill`,
-        // `Agent`, `Team*`, `WebSearch`, `EnterWorktree`, `Cron*`, `Task*`,
-        // `Import` and every `mcp__*` adapter — all of which landed here,
-        // matched nothing, and executed unchecked. `bind_tool_registry` fixes
-        // the binding; this branch stops the same class of bug from ever
-        // being silent again. A genuinely nonexistent tool now surfaces as a
-        // prompt whose message says so, and dispatch's own error follows if
-        // the host approves it.
+        // Not `Permit`, even though dispatch's own "Tool not found" error
+        // would follow: that only holds while this registry *is* the dispatch
+        // registry. If the binding is ever stale, permitting here would let
+        // every per-session tool (`Skill`, `Agent`, `mcp__*`, ...) run
+        // unchecked. A genuinely nonexistent tool surfaces as a prompt whose
+        // message says so, and dispatch's own error follows if approved.
         let Some(tool) = self.tools().get(tool_name) else {
             return PermissionOutcome::Prompt {
                 prompt_id: uuid::Uuid::new_v4().to_string(),
@@ -337,10 +325,7 @@ mod tests {
         reg
     }
 
-    /// N-1: an unresolvable tool name must **not** be waved through. This
-    /// used to `Permit`, which is what let every per-session tool
-    /// (`Skill`/`Agent`/`Team*`/`mcp__*`/...) execute unchecked while this
-    /// handler held only the daemon's pool-level built-in template.
+    /// An unresolvable tool name must **not** be waved through.
     #[tokio::test]
     async fn unknown_tool_name_fails_closed() {
         let perm = RuleSetPermission::new(
@@ -359,7 +344,7 @@ mod tests {
         }
     }
 
-    /// N-1: rebinding makes a tool registered *after* construction visible,
+    /// Rebinding makes a tool registered *after* construction visible,
     /// which is exactly the `Builder::build()` ordering — the handler is
     /// built from a template, the session registry is populated afterwards.
     #[tokio::test]
@@ -393,7 +378,7 @@ mod tests {
         );
     }
 
-    /// N-7: a bound `SessionState` is read live, so switching the mode at
+    /// A bound `SessionState` is read live, so switching the mode at
     /// runtime (what `EnterPlanMode`/`ExitPlanMode` do) moves the gate.
     #[tokio::test]
     async fn bound_session_state_supplies_the_live_permission_mode() {
@@ -436,9 +421,9 @@ mod tests {
         ));
     }
 
-    /// N-5: a temporary allow carrying `rule_content` must only match calls
-    /// whose content matches — a blanket grant is what made a project-supplied
-    /// skill's `allowed-tools` able to switch off confirmation wholesale.
+    /// A temporary allow carrying `rule_content` must only match calls whose
+    /// content matches — a blanket grant would let a project-supplied skill's
+    /// `allowed-tools` switch off confirmation wholesale.
     #[tokio::test]
     async fn temporary_allow_with_content_does_not_grant_everything() {
         let tools = registry_with_content_tool(ContentAwareFakeTool {

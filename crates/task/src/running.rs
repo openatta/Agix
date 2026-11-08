@@ -144,11 +144,6 @@ mod tests {
     use super::*;
 
     /// One scene root per test.
-    ///
-    /// These used to be a single `#[test]` walking a global `TEST_BASE`
-    /// mutex through six sections, because the directory was process-global
-    /// and two tests running at once would have stepped on each other.
-    /// Passing the root in is what makes them ordinary independent tests.
     fn scene_root() -> tempfile::TempDir {
         tempfile::tempdir().unwrap()
     }

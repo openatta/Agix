@@ -51,8 +51,6 @@ impl Tool for BriefTool {
         "SendUserMessage"
     }
 
-    /// **P3b **: 标 deferred —— 系统 prompt 仅暴露 name + 短描述，模型用
-    /// ToolSearch 激活后下一轮拉 full schema。减少静态 prompt 占用。
     fn input_schema(&self) -> Value {
         crate::input_schema::<BriefInput>()
     }
@@ -126,8 +124,6 @@ impl Tool for PowerShellTool {
         "PowerShell"
     }
 
-    /// **P3b **: 标 deferred —— 系统 prompt 仅暴露 name + 短描述，模型用
-    /// ToolSearch 激活后下一轮拉 full schema。减少静态 prompt 占用。
     fn input_schema(&self) -> Value {
         crate::input_schema::<PowerShellInput>()
     }
@@ -306,8 +302,6 @@ impl Tool for ReplTool {
         "REPL"
     }
 
-    /// **P3b **: 标 deferred —— 系统 prompt 仅暴露 name + 短描述，模型用
-    /// ToolSearch 激活后下一轮拉 full schema。减少静态 prompt 占用。
     fn input_schema(&self) -> Value {
         crate::input_schema::<ReplInput>()
     }

@@ -22,7 +22,7 @@ use time::OffsetDateTime;
 use super::frontmatter::{extract_yaml_field, split_frontmatter};
 
 /// Which external tool a detected import source came from. Single-select by
-/// design (2026-08-03 decision) — importing from more than one source at
+/// design — importing from more than one source at
 /// once is not supported, to avoid `AGENTS.md` append-ordering conflicts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]

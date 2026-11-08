@@ -2,10 +2,8 @@
 //! model routing, parsed from the `providers`/`default_provider`/
 //! `task_models` sections of `settings.json`.
 //!
-//! **2026-08-04, second round**: moved here from `daemon::model_routing` so
-//! `core::Settings` (not just `daemon`'s separate `SettingsFile`) can carry
-//! these fields directly, rather than keeping two representations of the
-//! same configuration in sync.
+//! Lives in `core` so `Settings` can carry these fields directly, rather
+//! than keeping a second representation of the same configuration in sync.
 //!
 //! This module resolves *which provider/model a task should use* from
 //! already-merged config (`resolve_task_models`) and, via [`TaskRouter`],

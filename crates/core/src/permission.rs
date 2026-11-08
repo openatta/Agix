@@ -16,7 +16,7 @@ pub enum PermissionMode {
     /// 启用 auto-mode 分类器才有意义
     Auto,
     DontAsk,
-    /// **P2 **: Bubble permission requests up to parent agent in team/coordinator
+    /// Bubble permission requests up to parent agent in team/coordinator
     /// mode. Instead of prompting the user directly, the permission request is
     /// forwarded to the parent agent for decision.
     Bubble,

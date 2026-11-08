@@ -1489,8 +1489,8 @@ mod package_binding_tests {
 
     /// The point of stating the source: a package's script is the package's
     /// wherever the package happens to be unpacked. Here it sits *inside* the
-    /// project root, which is the layout that used to hand it the operator's
-    /// own authority to rewrite the prompt.
+    /// project root, and must still not get the operator's own authority to
+    /// rewrite the prompt.
     #[test]
     fn a_packages_script_is_the_packages_even_when_it_sits_inside_the_project() {
         let project = tempdir();

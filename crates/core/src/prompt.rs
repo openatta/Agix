@@ -228,10 +228,9 @@ pub fn assemble_prompt_with(
 
     // 1. Scene skeleton — a scene names its own sections; only fill in for one
     // that doesn't, so a scene's own labels are never overwritten here.
-    // Sections a scene did not name are numbered after the first. They all
-    // used to get the same name, and a name is how everything downstream
-    // addresses a block — an edit or a removal aimed at one of them landed on
-    // whichever came first, which is not a thing anyone can mean.
+    // Sections a scene did not name are numbered after the first: a name is
+    // how everything downstream addresses a block, so identical names would
+    // send an edit or a removal aimed at one of them to whichever came first.
     let mut unnamed = 0usize;
     kernel.extend(
         scene
@@ -602,11 +601,6 @@ mod tests {
 
     /// Sections a scene leaves unnamed are numbered, because a name is the
     /// only handle anything downstream has on a block.
-    ///
-    /// They all used to be `scene.skeleton`. Everything that addresses a block
-    /// by name — a plugin's edit, a script's assembly pass, an operator's
-    /// override — found the first, so an edit meant for the third section
-    /// silently landed on the first, and a removal took the wrong one.
     #[test]
     fn unnamed_scene_sections_are_numbered_so_each_can_be_addressed() {
         struct ThreeSections;

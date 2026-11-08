@@ -88,11 +88,9 @@ fn test_settings() -> Settings {
 
 #[test]
 fn a_registry_over_the_manager_also_has_builtins() {
-    // Regression test: the skill-backed constructor previously started from
-    // `Self::new()` (empty), so the production registry (built via this
-    // constructor in `Builder::build()`) never actually contained the 5
-    // built-in local commands — `/help` et al. silently fell through to
-    // the LLM instead of executing.
+    // The skill-backed constructor is what `Builder::build()` uses, so it
+    // must carry the 5 built-in local commands too — otherwise `/help` et al.
+    // fall through to the LLM instead of executing.
     let skill_mgr = Arc::new(skills::manager::SkillManager::new());
     let registry = CommandRegistry::from_skill_catalog(skill_mgr);
     assert!(registry.resolve("help").is_some());
@@ -113,12 +111,9 @@ fn write_skill(dir: &std::path::Path, name: &str, description: &str) {
 }
 
 /// The registry must reflect skills added to its manager *after* it was
-/// built. It used to copy `skill_mgr.list()` into a `HashMap` once, so a
-/// session (or, worse, the daemon's pool-wide catalog, built at startup
-/// and shared by every session) kept resolving the skill set it saw at
-/// construction for the rest of its life — a skill file created during
-/// the session was reloaded into the `SkillManager` by the turn loop and
-/// still could not be invoked as a slash command.
+/// built: a skill file created during the session is reloaded into the
+/// `SkillManager` by the turn loop and must be invocable as a slash command,
+/// including through the daemon's pool-wide catalog built at startup.
 #[test]
 fn registry_sees_skills_added_after_construction() {
     let dir = tempfile::tempdir().unwrap();
@@ -299,7 +294,7 @@ async fn build_uses_the_injected_skill_catalog_instead_of_scanning_disk() {
     );
 }
 
-/// P3-12's acceptance: a fourth skill source, registered from outside the
+/// A fourth skill source, registered from outside the
 /// engine, is a source in full — its skills list *and* expand, without
 /// `SkillManager` learning anything about where they came from.
 #[tokio::test]

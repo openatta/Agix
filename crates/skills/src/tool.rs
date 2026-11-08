@@ -18,20 +18,17 @@ use std::sync::Arc;
 ///
 /// Any skill the `SkillManager` loaded is invocable — the only gate is each
 /// skill's own `disable_model_invocation` frontmatter flag (checked in
-/// `call()` below). There used to be a second, coarser gate here too: a
-/// scene-supplied allow-list (plus a hardcoded duplicate of it), which meant
-/// a project's own `.agents/skills/*.md` could never be invoked via this
-/// tool no matter what — `disable_model_invocation` already covers "should
-/// the model be allowed to call this," per-skill, which is the right
-/// granularity; the scene-level list was redundant with it and actively
-/// blocked legitimate project skills, so it's gone.
+/// `call()` below). There is deliberately no scene-level allow-list on top:
+/// `disable_model_invocation` already covers "should the model be allowed
+/// to call this," per-skill, which is the right granularity, and a coarser
+/// list would block a project's own `.agents/skills/*.md`.
 pub struct SkillTool {
     /// Reference to the skill manager for looking up and expanding skills.
     skill_manager: std::sync::Arc<crate::manager::SkillManager>,
     /// The built-in skills this session's scene lists; the others are not
     /// found here either.
     admission: crate::catalog::BundledAdmission,
-    /// P2-10: Agent spawner for forked skill execution (context: "fork").
+    /// Agent spawner for forked skill execution (context: "fork").
     spawner: Option<Arc<dyn AgentSpawner>>,
     /// Real permission checker — held here (not read off `ToolContext`,
     /// which has no `permission` field and would mean threading it through
@@ -68,7 +65,7 @@ impl SkillTool {
         self
     }
 
-    /// P2-10: Set the agent spawner for forked skill execution.
+    /// Set the agent spawner for forked skill execution.
     pub fn with_spawner(mut self, spawner: Arc<dyn AgentSpawner>) -> Self {
         self.spawner = Some(spawner);
         self
@@ -171,7 +168,7 @@ impl Tool for SkillTool {
             None => String::new(),
         };
 
-        // P2-10: Forked skill execution. When context="fork" and spawner is available,
+        // Forked skill execution. When context="fork" and spawner is available,
         // run the skill in a sub-agent with isolated context.
         if context_mode.as_deref() == Some("fork") {
             if let Some(ref spawner) = self.spawner {
@@ -324,7 +321,7 @@ impl Tool for SkillTool {
         // that is only safe when the skill came from somewhere the user
         // controls. `<project>/.agents/skills/` is repository content: on a
         // cloned repo it is attacker-supplied, and a `allowed-tools: [Bash]`
-        // line there used to silently switch off Bash confirmation for the
+        // line there would silently switch off Bash confirmation for the
         // rest of the turn, reachable through nothing more than a prompt
         // injection persuading the model to invoke the skill. Project skills
         // therefore only get grants that name a content pattern; a blanket
@@ -828,10 +825,8 @@ mod tests {
         }
     }
 
-    /// Regression: a project-defined skill (e.g. loaded from
-    /// `.agents/skills/`) used to be unconditionally denied by a hardcoded
-    /// scene-level allow-list, regardless of its own frontmatter — this is
-    /// exactly the case that was broken.
+    /// A project-defined skill (e.g. loaded from `.agents/skills/`) is
+    /// invocable unless its own frontmatter says otherwise.
     #[tokio::test]
     async fn project_skill_without_disable_flag_is_invocable() {
         let mgr = Arc::new(crate::manager::SkillManager::new());
@@ -862,7 +857,7 @@ mod tests {
     /// exactly that call come back `Permit`, via the real `PermissionGate`,
     /// not a test double.
     ///
-    /// N-5: the grant is *scoped*. A bare `Bash` from a project-supplied
+    /// The grant is *scoped*. A bare `Bash` from a project-supplied
     /// skill is refused outright — see
     /// `project_skill_blanket_allowed_tools_grant_is_refused` below.
     #[tokio::test]
@@ -968,11 +963,9 @@ mod tests {
         );
     }
 
-    /// N-5: `<project>/.agents/skills/` is repository content. On a cloned
-    /// repo it is attacker-supplied, so a bare `allowed-tools: [Bash]` there
-    /// must not switch off confirmation for every `Bash` call — which is
-    /// what it used to do, reachable through nothing more than persuading
-    /// the model to invoke the skill.
+    /// `<project>/.agents/skills/` is repository content. On a cloned repo
+    /// it is attacker-supplied, so a bare `allowed-tools: [Bash]` there must
+    /// not switch off confirmation for every `Bash` call.
     #[tokio::test]
     async fn project_skill_blanket_allowed_tools_grant_is_refused() {
         use base::interface::permission::{Permission, PermissionOutcome};
@@ -1510,9 +1503,8 @@ mod tests {
         );
     }
 
-    /// A skill with no `files` field at all must behave byte-identically to
-    /// before this change — no `## Bundled file:` section, exact same
-    /// `<command-name>`/`<command-args>`-wrapped message.
+    /// A skill with no `files` field at all gets no `## Bundled file:`
+    /// section — just the `<command-name>`/`<command-args>`-wrapped message.
     #[tokio::test]
     async fn skill_without_files_field_is_unaffected() {
         let mgr = Arc::new(crate::manager::SkillManager::new());
