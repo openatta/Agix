@@ -10,9 +10,8 @@
 //! 进去。模型用 cwd-relative 路径时仍指当前 cwd；要写 worktree 必须用绝对路径
 //! 或先 `Bash cd` 进去。
 //!
-//! TS 实装是 process-wide chdir —— 我们这边架构不同，做 minimal 版本：
-//! 创建 worktree + 把 path 注入 SessionState；ExitWorktree 调 cleanup 并从
-//! activated 移除。
+//! 做法是创建 worktree + 把 path 注入 SessionState；ExitWorktree 调 cleanup
+//! 并从 activated 移除。
 
 use crate::exec_capture::capture;
 use crate::worktree::WorktreeHandle;

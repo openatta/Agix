@@ -462,8 +462,6 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    // ----- slug validation -----
-
     #[test]
     fn validate_slug_accepts_simple() {
         assert!(validate_slug("foo").is_ok());
@@ -549,8 +547,6 @@ mod tests {
         assert_eq!(flatten_slug("user/feature"), "user+feature");
         assert_eq!(flatten_slug("a/b/c"), "a+b+c");
     }
-
-    // ----- end-to-end worktree create + cleanup -----
 
     fn exec() -> ExecProviders {
         ExecProviders::local()

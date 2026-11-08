@@ -185,7 +185,7 @@ pub trait HistoryStore: Send + Sync {
     /// Every field is optional in the same sense: a pre-v2 log has no
     /// `scene`/`project_root`, and the honest answer is `None` rather than a
     /// guess. Callers that need a scene for a *resume* infer it from the
-    /// request instead (§3.4 of the RPC protocol).
+    /// request instead (docs/daemon_rpc_protocol.md §3.4).
     async fn session_facts(&self, session: SessionId) -> Result<SessionFacts, HistoryError> {
         let entries = match self.load(session).await {
             Ok(e) => e,
@@ -1291,10 +1291,6 @@ impl HistoryStore for InMemoryHistoryStore {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Externalizing bulky content
-// ---------------------------------------------------------------------------
-
 /// Serialized content above this is worth a round trip to the blob store.
 const BULKY_CONTENT_BYTES: usize = 1024;
 
@@ -2026,10 +2022,6 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].session_id, session_in_repo);
     }
-
-    // -----------------------------------------------------------------------
-    // Externalized content
-    // -----------------------------------------------------------------------
 
     use crate::blob::{BlobStore, InMemoryBlobStore};
     use base::message::ImageSource;
@@ -2798,7 +2790,7 @@ mod contract_tests {
     // A pre-v2 log has no `scene`/`project_root` on its `Meta` line, and a
     // session that has not been written to has no `Meta` line at all. Both
     // answer `None` rather than an inferred value — inferring here is what
-    // §3.4's scene check exists to refuse.
+    // docs/daemon_rpc_protocol.md §3.4's scene check exists to refuse.
     for_each_store!(
         facts_a_log_does_not_record_are_absent_not_guessed,
         |store| {

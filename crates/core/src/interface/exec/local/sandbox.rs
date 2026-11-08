@@ -1076,8 +1076,6 @@ mod tests {
         assert_eq!(sandbox_escape("/tmp/back\\slash"), "/tmp/back\\\\slash");
     }
 
-    // ---- **Hardening **: policy tests ----
-
     #[test]
     fn default_deny_read_includes_credential_paths() {
         // Only meaningful when HOME is set; in CI it usually is. Skip if not.
@@ -1144,8 +1142,6 @@ mod tests {
             .unwrap();
         assert!(allow_idx > deny_idx);
     }
-
-    // ---- network policy ----
 
     #[cfg(target_os = "macos")]
     #[test]

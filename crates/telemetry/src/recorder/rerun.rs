@@ -687,8 +687,6 @@ mod tests {
         assert!(report.contains("Read"), "{report}");
     }
 
-    // ── the deterministic half: tool calls ──
-
     fn tool(name: &str, input: serde_json::Value) -> ModelEvent {
         ModelEvent::ToolUse {
             id: "t".into(),

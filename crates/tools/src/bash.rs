@@ -30,13 +30,9 @@ const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const MAX_TIMEOUT_MS: u64 = 600_000;
 /// 输出文本上限（防止一个 yes / cat /dev/random 把内存吃光）
 const MAX_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
-// Stall detection (ref `LocalShellTask.startStallWatchdog`) is intentionally NOT
-// ported here: the ref's foreground `BashTool` is non-interactive (stdin null —
-// see BashTool/prompt.ts "interactive input not supported") and has no stall
-// watchdog. That watchdog belongs to background `LocalShellTask` (output to a
-// file, polled for growth), which this foreground bash tool doesn't implement.
-// Commands can't block on interactive prompts (stdin is null → EOF), and any
-// genuine stall hits the per-command `timeout` below.
+// No stall watchdog: stdin is null, so a command can't block on an
+// interactive prompt (it reads EOF), and any genuine stall hits the
+// per-command `timeout`.
 
 /// `ToolContext.sandbox`（`base::tool::SandboxSettings`，跨 crate 的纯数据
 /// 视图，见其 doc comment）→ 这个 crate 真正用来生成沙盒 profile 的
@@ -1408,12 +1404,8 @@ const DESTRUCTIVE_PREFIXES: &[&str] = &[
     "cargo publish",
 ];
 
-// ── Tests ──────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
-
-    // ── the invariant this migration must not break ──
 
     use base::interface::exec::{Confined, Enforcement, ProcessSpec, Sandbox, SandboxMode};
 
@@ -1630,8 +1622,6 @@ mod tests {
         );
         std::fs::remove_dir_all(&tmp).unwrap();
     }
-
-    // ---- to_sandbox_policy ----
 
     #[test]
     fn to_sandbox_policy_maps_each_network_mode_variant() {
@@ -1901,8 +1891,6 @@ mod tests {
         assert!(read_only("timeout 5 ls"));
         assert!(read_only("ps aux | grep cargo"));
     }
-
-    // ---- safe-bash allow-list ----
 
     #[tokio::test]
     async fn echo_returns_text() {
