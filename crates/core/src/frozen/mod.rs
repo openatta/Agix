@@ -495,6 +495,43 @@ mod tests {
         }
     }
 
+    /// The engine's own git runs outside the sandbox, in a repository a
+    /// sandboxed command may have configured. A program that repository
+    /// names as its fsmonitor must not run.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_engines_git_does_not_run_the_repositorys_fsmonitor() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        let run = run_git(dir.path());
+        run(&["init", "-q"]);
+        let marker = dir.path().join("fsmonitor-ran");
+        let script = dir.path().join("fsmonitor.sh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        run(&["config", "core.fsmonitor", script.to_str().unwrap()]);
+
+        let mut ctx = FrozenContext::collect(
+            dir.path().to_path_buf(),
+            &test_paths(dir.path()),
+            &crate::interface::environment::SystemEnvironment,
+        )
+        .await;
+        assert!(ctx.is_git);
+        ctx.refresh_git_status().await;
+        ctx.refresh_git().await;
+        assert!(!marker.exists(), "the engine's git ran core.fsmonitor");
+
+        // A plain git in the same repository does run it, so the check above
+        // is looking at something that would happen.
+        run(&["status", "--short"]);
+        assert!(marker.exists());
+    }
+
     /// `refresh_git` exists precisely to relax the module's "not refreshed
     /// during a session" characteristic for the git-derived fields — this
     /// pins down that calling it after the branch actually changes on disk

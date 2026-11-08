@@ -11,11 +11,25 @@ use tokio::time::timeout;
 /// Git subcommand unified timeout.
 const GIT_TIMEOUT: Duration = Duration::from_millis(1500);
 
+/// Options every git the engine runs itself puts before its subcommand.
+///
+/// That git runs outside the sandbox, in a repository a sandboxed command may
+/// have written, so it must not start a program the repository names. Filter
+/// drivers cannot be switched off this way; what keeps them out is the
+/// sandbox refusing writes to `.git/config`.
+pub const ENGINE_GIT_OPTIONS: &[&str] = &[
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.hooksPath=/dev/null",
+];
+
 /// Check whether `cwd` is inside a git work tree.
 pub(crate) async fn run_git_check(cwd: &Path) -> bool {
     let out = timeout(
         GIT_TIMEOUT,
         Command::new("git")
+            .args(ENGINE_GIT_OPTIONS)
             .arg("rev-parse")
             .arg("--is-inside-work-tree")
             .current_dir(cwd)
@@ -32,6 +46,7 @@ pub(crate) async fn run_git_check(cwd: &Path) -> bool {
 /// on success; `None` on failure, timeout, empty output, or non-zero exit.
 pub(crate) async fn run_git_text(cwd: &Path, args: &[&str]) -> Option<String> {
     let mut cmd = Command::new("git");
+    cmd.args(ENGINE_GIT_OPTIONS);
     for a in args {
         cmd.arg(a);
     }

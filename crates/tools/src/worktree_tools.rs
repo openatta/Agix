@@ -317,7 +317,9 @@ async fn has_uncommitted_changes(
     path: &std::path::Path,
     cancel: tokio_util::sync::CancellationToken,
 ) -> bool {
-    let spec = ProcessSpec::new("git", path).args(["status", "--porcelain"]);
+    let spec = ProcessSpec::new("git", path)
+        .args(base::frozen::git::ENGINE_GIT_OPTIONS.iter().copied())
+        .args(["status", "--porcelain"]);
     capture(exec, spec, cancel)
         .await
         .map(|o| !o.stdout.is_empty())

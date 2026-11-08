@@ -2130,13 +2130,18 @@ impl Builder {
                 .additional_directories
                 .iter()
                 .map(resolve)
-                .chain([settings.paths.global_data_dir.clone()])
+                .chain(
+                    base::paths::STATE_ROOT_WORKING_DIRS
+                        .iter()
+                        .map(|dir| settings.paths.global_data_dir.join(dir)),
+                )
                 .collect();
             state.read_directories = settings
                 .sandbox
                 .read_directories
                 .iter()
                 .map(resolve)
+                .chain([settings.paths.global_data_dir.clone()])
                 .collect();
             state.read_anywhere = settings.sandbox.read_anywhere;
             state.cache_directories = settings.sandbox.cache_directories.paths(&project);

@@ -122,7 +122,9 @@ async fn run_git_diff(
     cwd: &std::path::Path,
     cancel: tokio_util::sync::CancellationToken,
 ) -> String {
-    let spec = ProcessSpec::new("git", cwd).args(["diff", "--no-color"]);
+    let spec = ProcessSpec::new("git", cwd)
+        .args(base::frozen::git::ENGINE_GIT_OPTIONS.iter().copied())
+        .args(["diff", "--no-color", "--no-ext-diff", "--no-textconv"]);
 
     match capture(exec, spec, cancel).await {
         Ok(o) if o.status.success => {

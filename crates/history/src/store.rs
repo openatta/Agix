@@ -849,6 +849,7 @@ async fn session_ids_in(dir: &Path) -> Result<Vec<SessionId>, HistoryError> {
 
 async fn repo_root_or_cwd(cwd: &Path) -> PathBuf {
     let output = tokio::process::Command::new("git")
+        .args(base::frozen::git::ENGINE_GIT_OPTIONS)
         .arg("rev-parse")
         .arg("--show-toplevel")
         .current_dir(cwd)

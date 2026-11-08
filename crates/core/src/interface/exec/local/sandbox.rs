@@ -13,6 +13,24 @@
 //!   failure goes toward the safer side, and says so through `Enforcement`.
 //! - **Windows**: no backend.
 //!
+//! # What a confined command may write
+//!
+//! The working directory, the policy's `additional_writable` (the caller puts
+//! the session's own `TMPDIR` there), `/dev`, and on macOS the user's
+//! `DARWIN_USER_TEMP_DIR`, which `mktemp(1)` uses whatever `TMPDIR` says. On
+//! Linux `/tmp` is a private tmpfs that goes away with the command. Every path
+//! is resolved through its symlinks before a rule is written for it.
+//!
+//! Inside those, what the engine or git later acts on outside the sandbox is
+//! read-only: the project's `.git` and `.agix` entries themselves,
+//! `.git/{config,config.worktree,commondir}` and `.git/hooks/`, the
+//! configuration under `.agix/` (settings, MCP, hooks, agents, skills,
+//! plugins, rules, scenes, policy, scripts, output styles), and the `.git`
+//! links of the engine's worktrees. Of the state root only `scratchpad/` and
+//! `memory/` stay writable. On Linux `.agix` is read-only as a whole and its
+//! existing working entries are opened again, so a new entry directly in it
+//! cannot be created either.
+//!
 //! **The whole file is behind the `sandbox` feature, off by default.** What it
 //! constrains is the commands the *model* runs, which is defence in depth on a
 //! machine whose owner is sitting at it and a boundary only where the agent
@@ -34,6 +52,12 @@
 //!    `/proc/self/{fd,root}`.
 //! 4. **Leaked fds**: `CLOEXEC` is not set, so a child can read inherited
 //!    descriptors — git repositories, sockets.
+//! 5. **Absent git files on Linux**: a mount cannot stand in for a file that
+//!    does not exist without leaving an empty one behind, which git refuses
+//!    to read. So a project with no `.git` yet can be given one, and a
+//!    repository with no `commondir` can be given one; the engine's own git
+//!    runs with fsmonitor and hooks turned off, but filter drivers it cannot
+//!    turn off. macOS denies both.
 
 pub use crate::interface::exec::{
     default_deny_read, Confined, Enforcement, NetworkMode, ProcessSpec, Sandbox, SandboxMode,
@@ -182,6 +206,147 @@ fn plain(command: &str, mode: SandboxMode) -> Confined {
     }
 }
 
+/// Entries directly under the project's `.agix/` that configure the engine,
+/// as against its working files (scratchpad, memory, sessions, worktrees).
+#[cfg(feature = "sandbox")]
+const PROJECT_CONFIG_FILES: &[&str] = &["settings.json", "settings.local.json", "mcp.local.json"];
+#[cfg(feature = "sandbox")]
+const PROJECT_CONFIG_DIRS: &[&str] = &[
+    "mcp",
+    "hooks",
+    "agents",
+    "skills",
+    "plugins",
+    "rules",
+    "scenes",
+    "policy",
+    "scripts",
+    "output-styles",
+];
+
+/// Files in a git directory that decide which programs git runs and where it
+/// reads its configuration from.
+#[cfg(feature = "sandbox")]
+const GIT_CONTROL_FILES: &[&str] = &["config", "config.worktree", "commondir"];
+
+#[cfg(feature = "sandbox")]
+use crate::paths::STATE_ROOT_WORKING_DIRS;
+
+/// The paths a policy is written against, each with its symlinks resolved.
+///
+/// The kernel checks a write against the path it resolves to: on macOS a rule
+/// for `/tmp/x` never matches, because the write lands on `/private/tmp/x`.
+#[cfg(feature = "sandbox")]
+struct Roots {
+    cwd: PathBuf,
+    writable: Vec<PathBuf>,
+    state_root: Option<PathBuf>,
+}
+
+#[cfg(feature = "sandbox")]
+impl Roots {
+    fn resolve(cwd: &Path, additional: &[PathBuf], policy: &SandboxPolicy) -> Self {
+        Self {
+            cwd: resolve_path(cwd),
+            writable: additional.iter().map(|p| resolve_path(p)).collect(),
+            state_root: state_root_of(policy).map(|p| resolve_path(&p)),
+        }
+    }
+
+    /// The state root to fence off — unless the project lives inside it, in
+    /// which case fencing the root would fence the project too.
+    fn fenced_state_root(&self) -> Option<&Path> {
+        self.state_root
+            .as_deref()
+            .filter(|root| !self.cwd.starts_with(root))
+    }
+}
+
+/// `path` with its existing prefix canonicalized and the rest appended as
+/// given, so a path that does not exist yet still resolves through the
+/// symlinks above it.
+#[cfg(feature = "sandbox")]
+fn resolve_path(path: &Path) -> PathBuf {
+    let mut missing = Vec::new();
+    let mut existing = path;
+    loop {
+        if let Ok(real) = existing.canonicalize() {
+            return missing.iter().rev().fold(real, |p, name| p.join(name));
+        }
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(name)) => {
+                missing.push(name.to_os_string());
+                existing = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
+}
+
+/// The real directories directly under `dir`.
+#[cfg(feature = "sandbox")]
+fn subdirs(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.path())
+        .collect()
+}
+
+/// What in the project a sandboxed command must not write, because the
+/// engine, or the user's own git, acts on it later outside the sandbox.
+#[cfg(feature = "sandbox")]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+struct ProjectGuard {
+    /// `.git` and `.agix` themselves: renaming one away, or replacing it with
+    /// a symlink, would put every rule below on a path nobody reads.
+    entries: Vec<PathBuf>,
+    files: Vec<PathBuf>,
+    trees: Vec<PathBuf>,
+}
+
+#[cfg(feature = "sandbox")]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn project_guard(cwd: &Path) -> ProjectGuard {
+    let git = cwd.join(".git");
+    let agix = cwd.join(".agix");
+    let git_dir = resolve_path(&git);
+    let agix_dir = resolve_path(&agix);
+
+    let mut files: Vec<PathBuf> = PROJECT_CONFIG_FILES
+        .iter()
+        .map(|f| agix_dir.join(f))
+        .collect();
+    files.extend(GIT_CONTROL_FILES.iter().map(|f| git_dir.join(f)));
+    for worktree in subdirs(&git_dir.join("worktrees")) {
+        files.extend(GIT_CONTROL_FILES.iter().map(|f| worktree.join(f)));
+    }
+    for worktree in subdirs(&agix_dir.join("worktrees")) {
+        files.push(worktree.join(".git"));
+    }
+
+    let mut trees: Vec<PathBuf> = PROJECT_CONFIG_DIRS
+        .iter()
+        .map(|d| agix_dir.join(d))
+        .collect();
+    trees.push(git_dir.join("hooks"));
+
+    let mut entries = vec![git.clone(), agix.clone()];
+    entries.extend(
+        [git_dir, agix_dir]
+            .into_iter()
+            .filter(|real| *real != git && *real != agix),
+    );
+    ProjectGuard {
+        entries,
+        files,
+        trees,
+    }
+}
+
 #[cfg(all(feature = "sandbox", target_os = "macos"))]
 fn mac_wrap(opts: SandboxOptions<'_>) -> Confined {
     let profile = build_macos_profile(opts.cwd, opts.additional_writable, &opts.policy);
@@ -198,82 +363,85 @@ fn mac_wrap(opts: SandboxOptions<'_>) -> Confined {
     }
 }
 
+/// This user's `DARWIN_USER_TEMP_DIR`, resolved.
+#[cfg(all(feature = "sandbox", target_os = "macos"))]
+fn darwin_user_temp_dir() -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut buf = vec![0u8; libc::PATH_MAX as usize];
+    let len = unsafe {
+        libc::confstr(
+            libc::_CS_DARWIN_USER_TEMP_DIR,
+            buf.as_mut_ptr().cast(),
+            buf.len(),
+        )
+    };
+    if len == 0 || len > buf.len() {
+        return None;
+    }
+    buf.truncate(len - 1);
+    Some(resolve_path(Path::new(std::ffi::OsStr::from_bytes(&buf))))
+}
+
 #[cfg(all(feature = "sandbox", target_os = "macos"))]
 fn build_macos_profile(cwd: &Path, additional: &[PathBuf], policy: &SandboxPolicy) -> String {
-    // 默认放行（所有 file-read / process / network / signal / mach 等），
-    // 然后单独 deny file-write*，再 allow 我们指定的几个 subpath。
-    //
-    // /private/tmp 与 /private/var/folders 是 macOS 临时区域；很多工具会写到那里。
-    // 不放它们，rm/build/git 之类的会被杀。
-    let mut s = String::with_capacity(1024);
+    let roots = Roots::resolve(cwd, additional, policy);
+    let path = |p: &Path| sandbox_escape(&p.display().to_string());
+    let mut s = String::with_capacity(4096);
     s.push_str("(version 1)\n");
     s.push_str("(allow default)\n");
 
-    // ---- write policy ----
+    // sandbox-exec evaluates the profile top to bottom and the last matching
+    // rule wins, so every deny below overrides the allows above it.
     s.push_str("(deny file-write*)\n");
     s.push_str("(allow file-write*\n");
-    s.push_str(&format!(
-        "  (subpath \"{}\")\n",
-        sandbox_escape(&cwd.display().to_string())
-    ));
-    s.push_str("  (subpath \"/private/tmp\")\n");
-    s.push_str("  (subpath \"/private/var/folders\")\n");
-    s.push_str("  (subpath \"/private/var/tmp\")\n");
+    s.push_str(&format!("  (subpath \"{}\")\n", path(&roots.cwd)));
+    // macOS mktemp(1) ignores TMPDIR and creates its file here; without this
+    // every script that calls a bare `mktemp` fails.
+    if let Some(tmp) = darwin_user_temp_dir() {
+        s.push_str(&format!("  (subpath \"{}\")\n", path(&tmp)));
+    }
     s.push_str("  (subpath \"/dev\")\n");
-    for p in additional {
-        s.push_str(&format!(
-            "  (subpath \"{}\")\n",
-            sandbox_escape(&p.display().to_string())
-        ));
+    for p in &roots.writable {
+        s.push_str(&format!("  (subpath \"{}\")\n", path(p)));
     }
     s.push_str(")\n");
-    // **Q4-followup **: re-deny writes to settings.json files even though
-    // they sit inside cwd. Stops Bash-driven sandbox escapes via agix
-    // overwriting its own permission rules. Aligns with TS sandbox-adapter.ts.
-    // Project-level settings.json is cwd-relative and flat (no scope
-    // segment).
-    let cwd_str = cwd.display().to_string();
-    s.push_str(&format!(
-        "(deny file-write* (literal \"{}/.agix/settings.json\"))\n",
-        sandbox_escape(&cwd_str)
-    ));
-    s.push_str(&format!(
-        "(deny file-write* (literal \"{}/.agix/settings.local.json\"))\n",
-        sandbox_escape(&cwd_str)
-    ));
-    if let Some(state_root) = state_root_of(policy) {
-        let root_str = state_root.display().to_string();
-        // Cross-scene global settings.json — flat, single file.
+
+    if let Some(root) = roots.fenced_state_root() {
         s.push_str(&format!(
-            "(deny file-write* (literal \"{}/settings.json\"))\n",
-            sandbox_escape(&root_str)
+            "(deny file-write* (subpath \"{}\"))\n",
+            path(root)
         ));
-        // Scene-specific settings.json lives at
-        // `<state root>/scenes/<scene>/settings.json`, where `<scene>` is one of
-        // the small, closed set of scenes this engine registers (see
-        // `daemon::resolve_scene` / `KNOWN_SCENES` below) — not an arbitrary
-        // string, so we can just enumerate all of them rather than needing
-        // to know which one the current session actually uses.
-        for p in protected_scene_files(policy, &state_root) {
-            s.push_str(&format!(
-                "(deny file-write* (literal \"{}\"))\n",
-                sandbox_escape(&p.display().to_string())
-            ));
+        s.push_str("(allow file-write*");
+        for dir in STATE_ROOT_WORKING_DIRS {
+            s.push_str(&format!(" (subpath \"{}\")", path(&root.join(dir))));
+        }
+        s.push_str(")\n");
+    }
+
+    let guard = project_guard(&roots.cwd);
+    for p in guard.entries.iter().chain(&guard.files) {
+        s.push_str(&format!("(deny file-write* (literal \"{}\"))\n", path(p)));
+    }
+    for p in &guard.trees {
+        s.push_str(&format!("(deny file-write* (subpath \"{}\"))\n", path(p)));
+    }
+    if let Some(state_root) = &roots.state_root {
+        s.push_str(&format!(
+            "(deny file-write* (literal \"{}\"))\n",
+            path(&state_root.join("settings.json"))
+        ));
+        for p in protected_scene_files(policy, state_root) {
+            s.push_str(&format!("(deny file-write* (literal \"{}\"))\n", path(&p)));
         }
     }
 
-    // ---- **Hardening **: deny-read for credential paths ----
     if !policy.deny_read.is_empty() {
         for p in &policy.deny_read {
-            // Use subpath so /aws/ children are also denied.
             s.push_str(&format!(
                 "(deny file-read* (subpath \"{}\"))\n",
                 sandbox_escape(&p.display().to_string())
             ));
         }
-        // Re-allow specific entries the user explicitly opted back in via
-        // sandbox.allow_read. macOS sandbox-exec evaluates rules top-to-bottom
-        // so allows AFTER denies win.
         for p in &policy.allow_read {
             s.push_str(&format!(
                 "(allow file-read* (subpath \"{}\"))\n",
@@ -282,13 +450,9 @@ fn build_macos_profile(cwd: &Path, additional: &[PathBuf], policy: &SandboxPolic
         }
     }
 
-    // ---- **Hardening **: network policy ----
-    // `(allow default)` at the top of the profile already covers unrestricted
-    // networking — Unrestricted needs no extra rules. DenyAll/Allowlist add a
-    // blanket `(deny network*)` (does not affect DNS: that's IPC to
-    // mDNSResponder on macOS, not covered by the `network*` filter category),
-    // then Allowlist re-allows outbound TCP to each configured domain —
-    // sandbox-exec's `remote tcp` filter matches by hostname, not just IP.
+    // DNS is IPC to mDNSResponder, which `network*` does not cover, so name
+    // resolution survives both restricted modes; `remote tcp` matches by
+    // hostname.
     match policy.network_mode {
         NetworkMode::Unrestricted => {}
         NetworkMode::DenyAll => {
@@ -319,18 +483,96 @@ fn sandbox_escape(s: &str) -> String {
 }
 
 #[cfg(all(feature = "sandbox", target_os = "linux"))]
+fn bind(args: &mut Vec<String>, how: &str, path: &Path) {
+    let p = path.display().to_string();
+    args.extend([how.to_string(), p.clone(), p]);
+}
+
+/// Mount `path` read-only. One that does not exist yet gets an empty
+/// read-only tmpfs instead, which is what keeps it from being created; bwrap
+/// leaves the empty mount point behind, so this happens only where the user
+/// could have created it anyway.
+#[cfg(all(feature = "sandbox", target_os = "linux"))]
+fn read_only(args: &mut Vec<String>, path: &Path) {
+    if path.symlink_metadata().is_ok() {
+        bind(args, "--ro-bind", path);
+    } else if path.parent().is_some_and(writable_by_us) {
+        let p = path.display().to_string();
+        args.extend(["--tmpfs".into(), p.clone(), "--remount-ro".into(), p]);
+    }
+}
+
+#[cfg(all(feature = "sandbox", target_os = "linux"))]
+fn writable_by_us(dir: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(c) = std::ffi::CString::new(dir.as_os_str().as_bytes()) else {
+        return false;
+    };
+    unsafe { libc::access(c.as_ptr(), libc::W_OK) == 0 }
+}
+
+/// The Linux shape of [`project_guard`].
+///
+/// bwrap has no deny rule, only mounts, and a read-only bind of a file that
+/// does not exist yet is skipped rather than refused. So `.agix` is mounted
+/// read-only as a whole and its working entries are opened again one by one;
+/// a configuration file that is not there yet cannot be created because its
+/// directory is read-only. `.git` cannot be treated that way — git creates
+/// its lock files directly in it — so it is bound onto itself, which makes it
+/// a mount point that cannot be renamed or removed, and its control files are
+/// mounted read-only where they exist.
+#[cfg(all(feature = "sandbox", target_os = "linux"))]
+fn guard_project(args: &mut Vec<String>, cwd: &Path) {
+    let git = cwd.join(".git");
+    if git.is_dir() {
+        bind(args, "--bind", &git);
+        for f in GIT_CONTROL_FILES {
+            bind(args, "--ro-bind-try", &git.join(f));
+        }
+        for worktree in subdirs(&git.join("worktrees")) {
+            for f in GIT_CONTROL_FILES {
+                bind(args, "--ro-bind-try", &worktree.join(f));
+            }
+        }
+        read_only(args, &git.join("hooks"));
+    } else if git.exists() {
+        bind(args, "--ro-bind", &git);
+    }
+
+    let agix = cwd.join(".agix");
+    read_only(args, &agix);
+    if let Ok(entries) = std::fs::read_dir(&agix) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let configures = name.to_str().is_some_and(|n| {
+                PROJECT_CONFIG_FILES.contains(&n) || PROJECT_CONFIG_DIRS.contains(&n)
+            });
+            if !configures && entry.file_type().is_ok_and(|t| !t.is_symlink()) {
+                bind(args, "--bind", &entry.path());
+            }
+        }
+    }
+    for worktree in subdirs(&agix.join("worktrees")) {
+        bind(args, "--ro-bind-try", &worktree.join(".git"));
+    }
+}
+
+#[cfg(all(feature = "sandbox", target_os = "linux"))]
 fn linux_wrap(opts: SandboxOptions<'_>) -> Confined {
     if !bwrap_available() {
         return plain(opts.command, SandboxMode::Unavailable);
     }
+    let roots = Roots::resolve(opts.cwd, opts.additional_writable, &opts.policy);
+    let cwd = roots.cwd.display().to_string();
+    // bwrap applies mounts in argument order, so each one below lands on top
+    // of the ones before it.
     let mut args: Vec<String> = vec![
-        // 文件系统：root 只读，cwd / tmp 可写
         "--ro-bind".into(),
         "/".into(),
         "/".into(),
         "--bind".into(),
-        opts.cwd.display().to_string(),
-        opts.cwd.display().to_string(),
+        cwd.clone(),
+        cwd,
         "--tmpfs".into(),
         "/tmp".into(),
         "--proc".into(),
@@ -340,62 +582,37 @@ fn linux_wrap(opts: SandboxOptions<'_>) -> Confined {
         "--unshare-pid".into(),
         "--die-with-parent".into(),
     ];
-    for p in opts.additional_writable {
-        args.push("--bind-try".into());
-        let s = p.display().to_string();
-        args.push(s.clone());
-        args.push(s);
+    for p in &roots.writable {
+        bind(&mut args, "--bind-try", p);
     }
-
-    // **Hardening **: re-deny writes to settings.json even though it sits
-    // inside `cwd`'s read-write bind — same rationale/paths as
-    // `build_macos_profile`'s deny-write rules (stops a sandboxed Bash
-    // command from overwriting its own permission rules, or injecting a
-    // malicious multi-provider LLM config with an attacker-controlled
-    // `base_url`/`api_key`). bwrap applies binds in argument order, so a
-    // `--ro-bind-try` here remounts just this one path read-only on top of
-    // the read-write `cwd` bind above — `--ro-bind-try` is a no-op (not an
-    // error) when the source doesn't exist yet.
-    let cwd_str = opts.cwd.display().to_string();
-    for name in ["settings.json", "settings.local.json"] {
-        let p = format!("{cwd_str}/.agix/{name}");
-        args.push("--ro-bind-try".into());
-        args.push(p.clone());
-        args.push(p);
+    if let Some(root) = roots.fenced_state_root() {
+        if root.is_dir() {
+            bind(&mut args, "--ro-bind", root);
+            for dir in STATE_ROOT_WORKING_DIRS {
+                bind(&mut args, "--bind-try", &root.join(dir));
+            }
+        }
     }
-    // Global/scene settings.json normally already sit outside any writable
-    // bind (the read-only `/` bind above covers all of `$HOME` unless `cwd`
-    // or an `additional_writable` entry happens to overlap it) — these are
-    // defense-in-depth for that overlap case, mirroring the macOS profile's
-    // unconditional deny rules for the same paths.
-    if let Some(state_root) = state_root_of(&opts.policy) {
-        let root_str = state_root.display().to_string();
-        let global_settings = format!("{root_str}/settings.json");
-        args.push("--ro-bind-try".into());
-        args.push(global_settings.clone());
-        args.push(global_settings);
-        for p in protected_scene_files(&opts.policy, &state_root) {
-            let p = p.display().to_string();
-            args.push("--ro-bind-try".into());
-            args.push(p.clone());
-            args.push(p);
+    guard_project(&mut args, &roots.cwd);
+    if let Some(state_root) = &roots.state_root {
+        bind(
+            &mut args,
+            "--ro-bind-try",
+            &state_root.join("settings.json"),
+        );
+        for p in protected_scene_files(&opts.policy, state_root) {
+            bind(&mut args, "--ro-bind-try", &p);
         }
     }
 
-    // **Hardening **: deny-read via tmpfs over the path. Each entry gets
-    // mounted as an empty tmpfs so reads return ENOENT-equivalent. Files are
-    // overlaid by binding /dev/null. allow_read entries skip overlay.
+    // Deny-read: an empty tmpfs over a directory, /dev/null over a file.
     let allow_set: std::collections::HashSet<PathBuf> =
         opts.policy.allow_read.iter().cloned().collect();
     for p in &opts.policy.deny_read {
-        if allow_set.contains(p) {
+        if allow_set.contains(p) || !p.exists() {
             continue;
         }
         let s = p.display().to_string();
-        // Best-effort: if the path doesn't exist, skip — bwrap would error.
-        if !p.exists() {
-            continue;
-        }
         if p.is_dir() {
             args.push("--tmpfs".into());
             args.push(s);
@@ -406,15 +623,8 @@ fn linux_wrap(opts: SandboxOptions<'_>) -> Confined {
         }
     }
 
-    // **Hardening **: network policy. bwrap has no domain/IP-level filter —
-    // its only lever is `--unshare-net` (new network namespace with nothing
-    // but loopback, i.e. total isolation). DenyAll maps onto that directly.
-    // Allowlist can't be honored precisely on this platform (no local proxy
-    // / iptables setup here), so it degrades to the same full isolation
-    // rather than silently falling back to Unrestricted — consistent with
-    // this crate's "safe by default, opt into less safety not more"
-    // principle (README §Design Principles): failing closed on an
-    // unsupported restriction is safer than failing open.
+    // bwrap's only network lever is `--unshare-net`. An allowlist it cannot
+    // honour fails closed to no network rather than open to all of it.
     match opts.policy.network_mode {
         NetworkMode::Unrestricted => {}
         NetworkMode::DenyAll => {
@@ -658,8 +868,9 @@ mod tests {
         assert_eq!(cmd.spec.program, "sandbox-exec");
         assert_eq!(cmd.spec.args[0], "-p");
         assert!(cmd.spec.args[1].contains("(deny file-write*)"));
-        assert!(cmd.spec.args[1].contains("(subpath \"/tmp/work\")"));
-        assert!(cmd.spec.args[1].contains("(subpath \"/private/tmp\")"));
+        assert!(cmd.spec.args[1].contains("(subpath \"/private/tmp/work\")"));
+        assert!(!cmd.spec.args[1].contains("(subpath \"/private/tmp\")"));
+        assert!(!cmd.spec.args[1].contains("(subpath \"/private/var/folders\")"));
         assert_eq!(cmd.spec.args[2], "bash");
         assert_eq!(cmd.spec.args[3], "-c");
         assert_eq!(cmd.spec.args[4], "ls");
@@ -715,28 +926,63 @@ mod tests {
         }
     }
 
+    /// A configuration file that does not exist yet is what a read-only bind
+    /// of the file itself cannot cover: bwrap skips that bind, and the file
+    /// can then be created. The directory around it is what is read-only.
     #[cfg(target_os = "linux")]
     #[test]
-    fn linux_wrap_re_denies_writes_to_project_settings_json() {
-        let cmd = wrap(opts("ls", Path::new("/tmp/work")));
+    fn an_absent_project_settings_file_cannot_be_created() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(project.path().join(".agix").join("scratchpad")).unwrap();
+        let cmd = wrap(opts(
+            "echo '{}' > .agix/settings.local.json",
+            project.path(),
+        ));
         if cmd.mode != SandboxMode::LinuxBwrap {
-            return; // bwrap not installed in this environment — nothing to assert
+            return;
         }
-        let needle = "/tmp/work/.agix/settings.json".to_string();
-        let pos = cmd
-            .spec
-            .args
-            .iter()
-            .position(|a| a == &needle)
-            .expect("expected a --ro-bind-try re-mount for the project settings.json");
-        assert_eq!(cmd.spec.args[pos - 1], "--ro-bind-try");
-        // Source == dest for a self-remount, and settings.local.json gets the same treatment.
-        assert_eq!(cmd.spec.args[pos + 1], needle);
-        assert!(cmd
-            .spec
-            .args
-            .iter()
-            .any(|a| a == "/tmp/work/.agix/settings.local.json"));
+        let agix = project
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join(".agix")
+            .display()
+            .to_string();
+        let args = &cmd.spec.args;
+        assert!(
+            args.windows(3)
+                .any(|w| w[0] == "--ro-bind" && w[1] == agix && w[2] == agix),
+            "{args:?}"
+        );
+        let scratchpad = format!("{agix}/scratchpad");
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "--bind" && w[1] == scratchpad),
+            "{args:?}"
+        );
+        assert!(
+            !args.iter().any(|a| a.ends_with("settings.local.json")),
+            "{args:?}"
+        );
+
+        let namespaces_work = std::process::Command::new("bwrap")
+            .args(["--ro-bind", "/", "/", "true"])
+            .status()
+            .is_ok_and(|s| s.success());
+        if !namespaces_work {
+            return;
+        }
+        let out = std::process::Command::new(&cmd.spec.program)
+            .args(&cmd.spec.args)
+            .current_dir(project.path())
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        assert!(!project
+            .path()
+            .join(".agix")
+            .join("settings.local.json")
+            .exists());
     }
 
     #[cfg(target_os = "linux")]
@@ -1108,7 +1354,8 @@ mod tests {
         let profile = &cmd.spec.args[1];
         // Must still deny writes to .agix/settings.json even when deny_read is empty
         assert!(
-            profile.contains("(deny file-write* (literal \"/tmp/work/.agix/settings.json\"))"),
+            profile
+                .contains("(deny file-write* (literal \"/private/tmp/work/.agix/settings.json\"))"),
             "settings.json denial must appear unconditionally"
         );
     }
@@ -1205,7 +1452,12 @@ mod tests {
             ..Default::default()
         };
         let profile = build_macos_profile(Path::new("/work/project"), &[], &policy);
-        let scene_dir = root.path().join("scenes").join("triage");
+        let scene_dir = root
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("scenes")
+            .join("triage");
         for file in ["settings.json", "scene.json", "prompt.md"] {
             let rule = format!(
                 "(deny file-write* (literal \"{}\"))",
@@ -1247,6 +1499,143 @@ mod tests {
                 "a redirected instance is still protecting the home-relative path"
             );
         }
+    }
+
+    /// A project and state root reached through `/tmp`, which macOS resolves
+    /// to `/private/tmp` — the alias a profile written against the given path
+    /// would never match — and a temp dir standing in for the session's.
+    #[cfg(target_os = "macos")]
+    struct UnderSandboxExec {
+        _dirs: Vec<tempfile::TempDir>,
+        project: PathBuf,
+        state_root: PathBuf,
+        tmp: PathBuf,
+        elsewhere: PathBuf,
+    }
+
+    #[cfg(target_os = "macos")]
+    #[allow(clippy::unwrap_used)]
+    impl UnderSandboxExec {
+        fn new() -> Option<Self> {
+            let works = std::process::Command::new("sandbox-exec")
+                .args(["-p", "(version 1)(allow default)", "true"])
+                .status()
+                .is_ok_and(|s| s.success());
+            if !works {
+                return None;
+            }
+            let dirs: Vec<tempfile::TempDir> = (0..4)
+                .map(|_| tempfile::Builder::new().tempdir_in("/tmp").unwrap())
+                .collect();
+            let [project, state_root, tmp, elsewhere] =
+                [0, 1, 2, 3].map(|i| dirs[i].path().to_path_buf());
+            assert!(project.starts_with("/tmp"));
+            std::fs::create_dir_all(project.join(".agix")).unwrap();
+            for dir in STATE_ROOT_WORKING_DIRS {
+                std::fs::create_dir_all(state_root.join(dir)).unwrap();
+            }
+            std::fs::write(project.join("a"), "a\n").unwrap();
+            let git = |args: &[&str]| {
+                let out = std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(&project)
+                    .output()
+                    .unwrap();
+                assert!(out.status.success(), "git {args:?}: {out:?}");
+            };
+            git(&["init", "-q"]);
+            git(&["config", "user.email", "t@example.com"]);
+            git(&["config", "user.name", "T"]);
+            Some(Self {
+                _dirs: dirs,
+                project,
+                state_root,
+                tmp,
+                elsewhere,
+            })
+        }
+
+        fn runs(&self, command: &str) -> bool {
+            let additional = vec![self.tmp.clone()];
+            let confined = wrap(SandboxOptions {
+                command,
+                cwd: &self.project,
+                additional_writable: &additional,
+                disable: false,
+                policy: SandboxPolicy {
+                    state_root: Some(self.state_root.clone()),
+                    ..Default::default()
+                },
+            });
+            std::process::Command::new(&confined.spec.program)
+                .args(&confined.spec.args)
+                .current_dir(&self.project)
+                .env("TMPDIR", &self.tmp)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        }
+    }
+
+    /// What a sandboxed command could leave for git or the engine to act on
+    /// outside the sandbox is refused, against the real `sandbox-exec`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_sandboxed_command_cannot_plant_what_runs_outside_the_sandbox() {
+        let Some(s) = UnderSandboxExec::new() else {
+            return;
+        };
+        let state = s.state_root.display().to_string();
+        let elsewhere = s.elsewhere.display().to_string();
+        for command in [
+            "git config x.y z".to_string(),
+            "echo /tmp > .git/commondir".to_string(),
+            "echo 'touch pwned' > .git/hooks/post-commit".to_string(),
+            "mv .agix .agix.old".to_string(),
+            "echo '{}' > .agix/mcp.local.json".to_string(),
+            "echo '{}' > .agix/settings.json".to_string(),
+            "mkdir .agix/mcp".to_string(),
+            format!("echo '{{}}' > '{state}/mcp.json'"),
+            format!("mkdir '{state}/hooks'"),
+            format!("echo x > '{elsewhere}/x'"),
+        ] {
+            assert!(!s.runs(&command), "`{command}` was allowed");
+        }
+        s.runs(&format!("rm -rf .agix; ln -s '{elsewhere}' .agix"));
+        let agix = s.project.join(".agix").symlink_metadata().unwrap();
+        assert!(agix.is_dir(), ".agix was replaced");
+
+        let config = std::fs::read_to_string(s.project.join(".git").join("config")).unwrap();
+        assert!(!config.contains("[x]"), "{config}");
+        assert!(!s.project.join(".git").join("commondir").exists());
+        assert!(!s.project.join(".agix").join("settings.json").exists());
+        assert!(!s.state_root.join("mcp.json").exists());
+    }
+
+    /// The same profile leaves ordinary work alone: git commits, files in the
+    /// project and under `.agix/`, the state root's scratchpad and memory,
+    /// and the session's TMPDIR.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn ordinary_work_still_runs_under_the_hardened_profile() {
+        let Some(s) = UnderSandboxExec::new() else {
+            return;
+        };
+        let state = s.state_root.display().to_string();
+        for command in [
+            "git add a && git commit -qm first".to_string(),
+            "git init -q nested && cd nested && echo b > b && git add b \
+             && git -c user.name=T -c user.email=t@example.com commit -qm nested"
+                .to_string(),
+            "echo x > notes.md && echo x > .agix/notes.txt".to_string(),
+            format!("echo x > '{state}/scratchpad/a' && echo x > '{state}/memory/a'"),
+            "test -n \"$TMPDIR\" && echo x > \"$TMPDIR/f\" && mktemp".to_string(),
+        ] {
+            assert!(s.runs(&command), "`{command}` was refused");
+        }
+        assert!(s.project.join(".agix").join("notes.txt").is_file());
+        assert!(s.tmp.join("f").is_file());
     }
 
     /// No root given: fall back to the conventional location rather than
