@@ -189,9 +189,7 @@ fn non_user_invocable_skills_are_not_commands() {
 }
 
 /// Precedence, highest first: explicitly registered (plugin/MCP) →
-/// skills → built-ins. This is the order the old single-map build
-/// sequence produced by insertion (`Default` → skills → plugins), and
-/// the split into tiers has to preserve it.
+/// skills → built-ins.
 #[test]
 fn registered_commands_shadow_skills_which_shadow_builtins() {
     let skill_mgr = Arc::new(skills::manager::SkillManager::new());
@@ -234,9 +232,8 @@ fn registered_commands_shadow_skills_which_shadow_builtins() {
     );
 }
 
-/// `arguments:` was silently dropped by the old skill → command copy
-/// (`..Default::default()` after listing only some fields), so `$name`
-/// substitution in a skill body never worked through a slash command.
+/// A skill's `arguments:` reach the command derived from it, so `$name`
+/// substitution in a skill body works through a slash command.
 #[test]
 fn skill_derived_commands_carry_named_arguments() {
     let skill_mgr = Arc::new(skills::manager::SkillManager::new());

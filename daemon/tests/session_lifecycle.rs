@@ -425,7 +425,7 @@ async fn history(sock: &std::path::Path, sid: &str) -> serde_json::Value {
         .clone()
 }
 
-/// `Settings` at defaults — notably `permission_mode` unset, which is now
+/// `Settings` at defaults — notably `permission_mode` unset, which is
 /// `Default` (= ask), the posture under test.
 fn ask_settings() -> Settings {
     Settings::defaults_for("claude-sonnet-4-6")
@@ -821,11 +821,10 @@ async fn an_automatic_name_survives_a_resume() {
 
 // ── session.subscribe ───────────────────────────────────────────────────
 
-/// Opening a session that is only on disk is the most ordinary thing a client
-/// does, and it used to be three calls with a failure in the middle: subscribe,
-/// recognize `SESSION_NOT_FOUND`, resume, subscribe again. Every client wrote
-/// that sequence, and the details it has to get right (which scene, which
-/// project) are the ones it is worst placed to know.
+/// Opening a session that is only on disk is one call, not subscribe,
+/// recognize `SESSION_NOT_FOUND`, resume, subscribe again: the details that
+/// sequence has to get right (which scene, which project) are the ones a
+/// client is worst placed to know.
 #[tokio::test]
 async fn subscribing_with_resume_opens_a_session_that_left_memory() {
     let (srv, _seen) =
@@ -1461,7 +1460,7 @@ async fn inject_session_in_scene(srv: &ScriptedServer, scene: &str) -> base::ses
     sid
 }
 
-/// P1 §3.4: a session recorded under a scene other than this daemon's must
+/// A session recorded under a scene other than this daemon's must
 /// be rejected, not silently resumed into the wrong scene.
 #[tokio::test]
 async fn session_resume_rejects_a_scene_mismatch() {
@@ -1485,8 +1484,7 @@ async fn session_resume_rejects_a_scene_mismatch() {
     srv.stop().await;
 }
 
-/// §3.4 binds every method that names a session, not the three that happened
-/// to have tests. A guard is added per method and the newest one is the
+/// §3.4 binds every method that names a session. A guard is added per method and the newest one is the
 /// easiest to forget — `session.rename` in particular reads like metadata
 /// rather than like reaching into a session, and naming a conversation that
 /// belongs to another scene is how it would end up labelled in a list it does
@@ -1536,7 +1534,7 @@ async fn the_newer_methods_reject_a_scene_mismatch_too() {
     srv.stop().await;
 }
 
-/// P5 §5.6/§9: a sidechain that already ran its one-shot task to
+/// A sidechain that already ran its one-shot task to
 /// conclusion (has a `SessionEnd` marker) must not be resumable — a stale
 /// `session.resume` against it is rejected with `SIDECHAIN_TERMINAL`
 /// instead of silently reattaching to a "finished" transcript.
@@ -1647,7 +1645,7 @@ async fn session_resume_allows_a_non_terminal_sidechain() {
     srv.stop().await;
 }
 
-/// P1 §3.4/§12.2: a pre-v2 `Meta` (no `scene` field) must resume normally
+/// A pre-v2 `Meta` (no `scene` field) must resume normally
 /// and report `scene_inferred: true` rather than being rejected.
 #[tokio::test]
 async fn session_resume_infers_scene_for_a_pre_v2_meta() {
@@ -1690,7 +1688,7 @@ async fn session_resume_infers_scene_for_a_pre_v2_meta() {
 
 // ── session.list sidechain filtering ────────────────────────────────────
 
-/// P1 §5.4: sidechains are hidden from the default list, and returned
+/// Sidechains are hidden from the default list, and returned
 /// exactly via `parent_session_id`.
 #[tokio::test]
 async fn session_list_excludes_sidechains_by_default_and_returns_them_via_parent_filter() {
@@ -1831,7 +1829,7 @@ async fn session_list_reports_resumable_and_flips_it_off_after_a_terminal_marker
     srv.stop().await;
 }
 
-// ── session.create (P3: multi-project) ──────────────────────────────────
+// ── session.create ──────────────────────────────────────────────────────
 
 /// A session bound to a project other than the pool's default must use
 /// *that* project's merged settings — proven functionally (the model name
@@ -1901,10 +1899,8 @@ async fn session_create_binds_to_a_different_project_with_its_own_settings() {
 ///
 /// This is the number a daemon client budgets on — the engine's `TurnOutcome`
 /// never crosses the socket. The frame is built by hand-copying two fields out
-/// of the event, which is exactly the shape of code that keeps forwarding the
-/// wrong one: it used to forward the last call's usage on an ordinary end and a
-/// hardcoded zero on every other, so a client watching a turn get cancelled was
-/// told it had cost nothing.
+/// of the event, which is exactly the shape of code that forwards the wrong
+/// one — the last call's usage, or a zero for a cancelled turn.
 ///
 /// Two calls with different costs, because equal ones would let a sum and a
 /// last value pass the same assertion.
@@ -2614,7 +2610,7 @@ async fn session_create_with_null_project_root_is_a_no_project_session() {
         start_scripted_server(vec![text_round("x")], ask_settings(), Duration::ZERO).await;
 
     // `harnix`, not the daemon's `code`: a no-project session is only
-    // meaningful in a scene that doesn't require one, and `code` now
+    // meaningful in a scene that doesn't require one, and `code`
     // refuses (see `Scene::requires_project`).
     let _ = rpc(
         &srv.sock,
@@ -2672,7 +2668,7 @@ async fn session_create_without_project_root_uses_the_pool_default() {
     srv.stop().await;
 }
 
-/// P3's whole point: a project-bound session must still use *its own*
+/// A project-bound session must still use *its own*
 /// project settings after being dropped from memory and reattached — not
 /// silently fall back to the pool default the moment it needs rebuilding.
 #[tokio::test]
@@ -2725,7 +2721,7 @@ async fn a_project_bound_session_keeps_its_own_settings_across_close_and_resume(
     srv.stop().await;
 }
 
-// ── session.close / session.delete cascade (P5) ─────────────────────────
+// ── session.close / session.delete cascade ──────────────────────────────
 
 async fn inject_sidechain(srv: &ScriptedServer, parent: &str) -> base::session::SessionId {
     let child_sid = base::session::SessionId::new();
@@ -2844,10 +2840,10 @@ async fn session_delete_dry_run_reports_without_deleting_anything() {
     srv.stop().await;
 }
 
-/// P6 review fix: `session.close`/`.delete` skipped the scene-isolation
-/// check `session.resume`/`.fork` already had, so a session recorded under
-/// a scene this daemon isn't even serving could still be closed/deleted
-/// through it. Mirrors `session_resume_rejects_a_scene_mismatch`'s setup —
+/// `session.close`/`.delete` apply the same scene-isolation check as
+/// `session.resume`/`.fork`: a session recorded under a scene this daemon
+/// isn't serving cannot be closed or deleted through it. Mirrors
+/// `session_resume_rejects_a_scene_mismatch`'s setup —
 /// a session recorded under `"harnix"`, which this daemon never activated.
 #[tokio::test]
 async fn session_close_rejects_a_scene_mismatch() {
@@ -2905,7 +2901,7 @@ async fn session_close_rejects_a_scene_mismatch() {
     srv.stop().await;
 }
 
-// ── scene.* (P4: multi-scene) ────────────────────────────────────────────
+// ── scene.* ──────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn scene_list_reports_the_default_scene_as_active() {
@@ -3670,7 +3666,7 @@ async fn settings_bypass_permissions_opt_out_restores_allow_all() {
 
 #[tokio::test]
 async fn per_session_bypass_option_is_clamped_to_the_configured_mode() {
-    // N-6: `settings.permission_mode` is a policy, not a default. A client
+    // `settings.permission_mode` is a policy, not a default. A client
     // asking for `bypassPermissions` against an `ask`-configured daemon is
     // clamped and still prompted — otherwise anyone who can reach the socket
     // opts themselves out, and `crates/assembly/src/server.rs` is explicit that there
@@ -3873,11 +3869,10 @@ async fn an_unanswered_prompt_is_denied_instead_of_hanging_forever() {
 /// A session runs one turn at a time, and the second caller is told so
 /// rather than being served an internal error.
 ///
-/// The ordering matters more than the code: the message used to be pushed
-/// into the agent's input queue *before* the exclusive event channel was
-/// claimed, so a rejected second `run_turn` had already handed the user's
-/// message to the turn that was still running. The caller saw a failure and
-/// the message was answered anyway, by the wrong turn.
+/// The ordering matters more than the code: the message must not reach the
+/// agent's input queue before the exclusive event channel is claimed, or a
+/// rejected second `run_turn` hands it to the turn still running — the caller
+/// sees a failure and the message is answered anyway, by the wrong turn.
 #[tokio::test]
 async fn a_second_turn_on_a_busy_session_is_refused_and_its_message_is_not_swallowed() {
     let (srv, seen) = start_scripted_server(
@@ -4032,7 +4027,7 @@ async fn scene_list_reports_the_capability_bits() {
     srv.stop().await;
 }
 
-// ── §6.1/§6.3 之前只存在于文档里的方法 ────────────────────────────────
+// ── §6.1/§6.3 其余方法 ──────────────────────────────────────────────────
 
 #[tokio::test]
 async fn ping_answers_without_a_session() {

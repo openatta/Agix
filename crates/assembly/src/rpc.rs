@@ -91,11 +91,8 @@ pub struct RpcError {
 /// and nothing above this line should have to know which one it is talking
 /// to.
 ///
-/// Having a single implementation of "write one frame" per transport is also
-/// what keeps flushing honest. It used to be written twice: the response
-/// path flushed after every frame, the event-streaming path never flushed at
-/// all, so a streamed token could sit in a buffer until the next one pushed
-/// it out.
+/// Responses and streamed events both go through this one implementation, so
+/// both flush after every frame; a streamed token never waits in a buffer.
 #[async_trait::async_trait]
 pub trait FrameSink: Send + Sync {
     /// Write one complete frame. `false` means the peer is gone and the
@@ -509,8 +506,7 @@ pub struct RecorderOptions {
     pub name: Option<String>,
     /// Absolute path to the recordings root. Omitted, the daemon's own root is
     /// used — `settings.recorder.root` if configured, else
-    /// `ConfigPaths::global_recordings_dir()`. A caller that just wants
-    /// recording on no longer has to know where recordings live.
+    /// `ConfigPaths::global_recordings_dir()`.
     #[serde(default)]
     pub dir: Option<String>,
     /// On replay, whether a live request that differs from the recorded one

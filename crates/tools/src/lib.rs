@@ -88,13 +88,6 @@ pub fn assemble_tool_pool_refs<'a>(
 /// state to construct (Skill, TaskStop, TaskOutput, Import, the "Agent" spawner,
 /// MCP adapters) — see `crates/runtime/src/agent.rs::Builder::build()`.
 ///
-/// Found via: `daemon` never called `Builder::tools()` at all (confirmed by its
-/// own startup log — `"startup: tools registered (noop)"`,
-/// `daemon/src/main.rs`), so every daemon session ran with only that
-/// engine-internal handful and nothing else — no Bash, no file edits, no search.
-/// `tests/runner/src/api_runner.rs` had independently hand-rolled a near-identical
-/// list for the same reason; this is now the single source of truth both use.
-///
 /// Deliberately excluded, because they need per-session host state this
 /// function has no access to. Each has its own registration helper below,
 /// called from `runtime::agent::Builder::build()` where that state exists:
@@ -431,9 +424,9 @@ mod register_builtin_tools_tests {
 
     #[test]
     fn tool_search_tool_sees_the_other_registered_tools() {
-        // ToolSearchTool needs the *same* registry Arc it searches over —
-        // regression for constructing it with a registry snapshotted before
-        // the rest were registered (would make it permanently blind).
+        // ToolSearchTool needs the *same* registry Arc it searches over; a
+        // registry snapshotted before the rest were registered would leave it
+        // permanently blind.
         let reg = Arc::new(base::tool::InMemoryToolRegistry::new());
         register_builtin_tools(&reg);
         let names: Vec<String> = reg

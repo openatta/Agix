@@ -18,7 +18,7 @@ use std::time::SystemTime;
 use super::prompt::{PromptRequest, PromptResponse, SystemMessage};
 use super::task::{RunningStatus, RunningTask, TaskType, TodoItem, TodoStatus};
 
-/// 单次会话的可变状态。M1 起始字段集；M2+ 加 messages / cost / file_state 等。
+/// 单次会话的可变状态。
 ///
 /// 多数字段是**裸的** —— 用 `Arc<SessionState>` 共享时不持有内部锁；可变状态
 /// （permission_mode / todos）走 `Mutex` 内部可变性。
@@ -49,14 +49,14 @@ pub struct SessionState {
     permission_mode: std::sync::Mutex<PermissionMode>,
     /// 模型自己维护的 todo 列表（TodoWrite 工具更新；/tasks 命令读取）。
     todos: std::sync::Mutex<Vec<TodoItem>>,
-    /// **M4 phase 4**：本会话已激活的 deferred 工具名集合。`Tool::is_deferred()`
+    /// 本会话已激活的 deferred 工具名集合。`Tool::is_deferred()`
     /// 为 true 的工具默认仅暴露 name + description；模型用 `ToolSearch` 命中后
     /// 会被加进这里，下一次 turn 的 build_request 把它升级到 full schema。
     activated_tools: std::sync::Mutex<HashSet<String>>,
-    /// **P2 (M31)**: 文件持久化 running task store。注入来自 `task` crate。
+    /// 文件持久化 running task store。注入来自 `task` crate。
     /// 通过 `RunningTaskPersist` trait 避免循环依赖。
     pub running_task_store: Option<std::sync::Arc<dyn RunningTaskPersist>>,
-    /// **M9**: 后台跑的 sub-agent 任务。AgentTool 在 background=true 时把每个
+    /// 后台跑的 sub-agent 任务。AgentTool 在 background=true 时把每个
     /// 任务塞进来；TaskOutput 工具按 id 查；TaskStop 触发 cancel。
     running_tasks: std::sync::Mutex<HashMap<String, std::sync::Arc<RunningTask>>>,
     /// Its tasks' events, for whoever shows this session's tasks — see
@@ -75,45 +75,45 @@ pub struct SessionState {
     /// each under the key it can be retracted by — see
     /// [`SessionState::post_notice`].
     notices: std::sync::Mutex<Vec<(Option<String>, String)>>,
-    /// **M11.2**: 本 turn 内的权限拒绝累积。Engine.run_turn 开头 reset，
+    /// 本 turn 内的权限拒绝累积。Engine.run_turn 开头 reset，
     /// turn_complete 时打包到事件里。
     permission_denials: std::sync::Mutex<Vec<PermissionDenial>>,
-    /// **P1 (M30)**: 文件历史快照。每次 FileWrite/FileEdit/NotebookEdit 改文件
+    /// 文件历史快照。每次 FileWrite/FileEdit/NotebookEdit 改文件
     /// 之前，先把"原内容"快照进来（按 turn 编号 + 文件路径分桶）。`/rewind`
     /// 命令展示并恢复。新文件首次写入时存 `None` 作为"原状态" → restore = 删除
     /// 文件。
     file_snapshots: std::sync::Mutex<FileSnapshotRegistry>,
-    /// **P1 (M30)**: 当前 turn 编号。Engine.run_turn 开头 +1；快照记录时取此值。
+    /// 当前 turn 编号。Engine.run_turn 开头 +1；快照记录时取此值。
     current_turn: std::sync::Mutex<u64>,
     /// Last turn number when TodoWrite was called. None if never called within
     /// this session. Used by engine to inject todo reminders if stale for 10+ turns.
     last_todo_write_turn: std::sync::Mutex<Option<u64>>,
-    /// **P1.2**: Completed-task count at which the last verification nudge was
+    /// Completed-task count at which the last verification nudge was
     /// injected. Used by engine to avoid re-nudging every turn — only nudge
     /// when the delta since last nudge >= 3.
     last_verification_nudge_count: std::sync::Mutex<u32>,
-    /// **P2**: Current active plan text (set by EnterPlanMode, cleared by
+    /// Current active plan text (set by EnterPlanMode, cleared by
     /// ExitPlanMode). Persisted to disk via plan_store for resume support.
     /// Engine injects this into the system reminder on follow-up turns.
     plan_text: std::sync::Mutex<Option<String>>,
-    /// **P3**: Current active plan slug (derived from plan text, usable as
+    /// Current active plan slug (derived from plan text, usable as
     /// filename base). Set/cleared alongside plan_text.
     plan_slug: std::sync::Mutex<Option<String>>,
-    /// **P (2026-05-17)**: 项目级授权积累的沙盒放行路径。用户在 Ask 对话框选
+    /// 项目级授权积累的沙盒放行路径。用户在 Ask 对话框选
     /// "allow for this project" 后，Engine 向此列表添加路径。Bash 工具读取并
     /// 注入 sandbox profile 的 additional_writable。
     sandbox_allow_writes: std::sync::Mutex<Vec<PathBuf>>,
-    /// **P (read-before-edit)**: 已读取文件缓存。`FileRead` 成功后记录文件路径
+    /// 已读取文件缓存。`FileRead` 成功后记录文件路径
     /// 与当时的 mtime；`FileEdit` / `FileWrite` 的 `validate_input` 用它做
     /// staleness 检测。
     read_cache: std::sync::Mutex<HashMap<PathBuf, FileReadEntry>>,
-    /// **P (read dedup)**: 最近一次读取的文件路径，用于连续重复读取检测。
+    /// 最近一次读取的文件路径，用于连续重复读取检测。
     last_read_path: std::sync::Mutex<Option<PathBuf>>,
     /// What `StructuredOutput` last accepted in the current turn.
     structured_output: std::sync::Mutex<Option<serde_json::Value>>,
 }
 
-/// **P1 (M30)**: 一条文件快照。把"工具改之前"的状态存下来，用于 `/rewind`。
+/// 一条文件快照。把"工具改之前"的状态存下来，用于 `/rewind`。
 #[derive(Debug, Clone)]
 pub struct FileSnapshot {
     /// 单调递增 id（把不同 turn / 同一 turn 内多次修改区分开）
@@ -191,7 +191,7 @@ impl FileSnapshotRegistry {
     }
 }
 
-/// **P (read-before-edit)**: 一次文件读取记录，包含读取时的 mtime。
+/// 一次文件读取记录，包含读取时的 mtime。
 /// `FileEdit` / `FileWrite` 的 `validate_input` 用它做 staleness 检测。
 #[derive(Debug, Clone)]
 pub struct FileReadEntry {
@@ -209,7 +209,7 @@ pub struct FileReadEntry {
     pub written: bool,
 }
 
-/// 权限拒绝记录（M11.2）。一次工具调用因权限被拒时记一行。
+/// 权限拒绝记录。一次工具调用因权限被拒时记一行。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PermissionDenial {
     pub tool_name: String,
@@ -253,8 +253,6 @@ impl SessionState {
             structured_output: std::sync::Mutex::new(None),
         }
     }
-
-    // ---- P1 (M30): file-history snapshot ----
 
     /// Increment + return the new turn number. Engine.run_turn calls this once
     /// per turn (right at the start) so subsequent snapshots tag with the
@@ -358,8 +356,7 @@ impl SessionState {
         Ok(restored)
     }
 
-    // ---- M11.2: permission denials per turn ----
-    /// Append a snapshot row (called by FileEdit/FileWrite before mutation).
+    /// Record that a tool call was denied in this turn.
     pub fn record_denial(
         &self,
         tool_name: impl Into<String>,
@@ -385,7 +382,7 @@ impl SessionState {
         )
     }
 
-    /// P2: Check if any tool has been denied 3+ times in this session.
+    /// Check if any tool has been denied 3+ times in this session.
     /// Returns the tool name and count if the escalation threshold is met.
     pub fn check_denial_escalation(&self) -> Option<(String, usize)> {
         let denials = self
@@ -398,8 +395,6 @@ impl SessionState {
         }
         counts.into_iter().find(|(_, c)| *c >= 3)
     }
-
-    // ---- M9: running tasks (background sub-agent tracking) ----
 
     /// 注册一个新的后台子 Agent task；返回 Arc 让 caller 持着写 output。
     pub fn register_running_task(&self, task_id: impl Into<String>) -> std::sync::Arc<RunningTask> {
@@ -913,7 +908,7 @@ impl SessionState {
             .clone()
     }
 
-    /// **P (2026-05-17)**: 添加一个沙盒放写路径（项目级授权时调用）。
+    /// 添加一个沙盒放写路径（项目级授权时调用）。
     pub fn add_sandbox_allow_write(&self, path: PathBuf) {
         self.sandbox_allow_writes
             .lock()
@@ -929,7 +924,7 @@ impl SessionState {
             .clone()
     }
 
-    /// **P (read-before-edit)**: 记录一次文件读取。`FileRead` 工具成功后调用。
+    /// 记录一次文件读取。`FileRead` 工具成功后调用。
     /// 存入读取时的 mtime 与偏移范围，供后续去重（相同范围 + 不变 mtime）与
     /// Edit/Write staleness 检测。
     pub fn record_read(&self, path: &Path) {
@@ -978,7 +973,7 @@ impl SessionState {
         true
     }
 
-    /// **P (read-before-edit)**: 检查文件是否已读且未过期。
+    /// 检查文件是否已读且未过期。
     ///
     /// - 文件不存在于磁盘 → 跳过检查（返回 None）
     /// - 文件已读且 mtime 一致 → 返回 None（通过）
@@ -1003,7 +998,7 @@ impl SessionState {
         }
     }
 
-    /// **P (read dedup)**: 文件是否已读且未变化。用于 Read 工具跳过重复读取。
+    /// 文件是否已读且未变化。用于 Read 工具跳过重复读取。
     /// 与 `check_read_staleness` 不同——后者给 Edit/Write 用，返回错误信息；
     /// 这个给 Read 自己用，只回答 bool。
     pub fn check_read_dedup(&self, path: &Path) -> bool {
@@ -1035,7 +1030,7 @@ impl SessionState {
         })
     }
 
-    /// **P (read dedup)**: 给定路径是否与最近一次读取的文件一致。
+    /// 给定路径是否与最近一次读取的文件一致。
     /// 仅检查路径相等；mtime 一致性由调用方通过 `check_read_dedup` 保证。
     pub fn is_consecutive_read(&self, path: &Path) -> bool {
         let last = self

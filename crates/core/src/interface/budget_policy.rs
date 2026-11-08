@@ -192,10 +192,9 @@ impl BudgetPolicy for EngineBudget {
         let Some(budget) = self.max_total_tokens else {
             return Spending::WithinBudget;
         };
-        // `total_tokens()`, not `all_tokens()`: this ceiling is configured by
-        // deployments that set it against the old reading, and widening what
-        // it counts would silently lower every one of them — on a provider
-        // with prompt caching, by roughly the cache hit rate.
+        // `total_tokens()`, not `all_tokens()`: deployments set this ceiling
+        // against that reading, and counting cache reads too would silently
+        // lower every one of them by roughly the cache hit rate.
         let spent = spend.total_tokens();
         if spent >= budget {
             return Spending::Exhausted { limit: budget };
@@ -212,8 +211,7 @@ impl BudgetPolicy for EngineBudget {
     }
 
     fn on_output_target(&self, p: &OutputProgress) -> OutputTarget {
-        // Three numbers with no configuration entry, now at least in one
-        // place: 90% of the target counts as met, and three consecutive
+        // 90% of the target counts as met, and three consecutive
         // sub-500-token calls count as the model having run out of things to
         // say rather than needing another nudge.
         let met = (p.target as f64 * 0.9) as u64;

@@ -40,10 +40,6 @@ use std::sync::Arc;
 use telemetry::TelemetryHandle;
 use tools::worktree::create_worktree;
 
-// ═══════════════════════════════════════════════════════════
-// Agent type registry
-// ═══════════════════════════════════════════════════════════
-
 pub use base::agent_type::{parse_permission_mode, AgentTypeDefinition, AgentTypeSource};
 
 /// Return the five built-in agent types shipped with Agix.
@@ -423,10 +419,6 @@ fn builtin_scene_by_id(id: &str) -> Option<Arc<dyn Scene>> {
     }
 }
 
-// ═══════════════════════════════════════════════════════
-// Input
-// ═══════════════════════════════════════════════════════
-
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AgentInput {
     pub prompt: String,
@@ -468,10 +460,6 @@ pub struct AgentInput {
     #[serde(default)]
     pub permission_mode: Option<base::interface::settings::PermissionMode>,
 }
-
-// ═══════════════════════════════════════════════════════
-// Type-specific prompts
-// ═══════════════════════════════════════════════════════
 
 const EXPLORE_PROMPT: &str = "\
 You are a read-only file search specialist. Your job is to explore, find, and \
@@ -707,14 +695,11 @@ fn task_notification(
 /// from `session.list` by default. See docs/ARCHITECTURE.md §3.3.
 ///
 /// `project_root` is left `None` here: this crate has no per-session project
-/// identity yet (single-project daemon, P3's job), so there is nothing
-/// correct to stamp — the design's §5.3 pinning rule only starts to matter
-/// once one exists.
+/// identity, so there is nothing correct to stamp.
 ///
 /// Best-effort: a failure here does not fail the spawn. The sub-agent still
 /// runs and its `User`/`Assistant` entries still persist via
-/// `SessionManager::persist` — it just isn't linkable back to its parent
-/// (the same "no Meta at all" state every session was in before this).
+/// `SessionManager::persist` — it just isn't linkable back to its parent.
 async fn write_sidechain_meta(
     store: &Arc<dyn HistoryStore>,
     session_id: &str,
@@ -803,7 +788,7 @@ async fn run_one_turn(
     cancel: tokio_util::sync::CancellationToken,
     // When set, every event this sub-agent emits is also mirrored onto the
     // parent session's channel wrapped in `AgentEvent::SubagentProgress`, so
-    // the host can render sub-agent activity live (S-1). Purely additive: the
+    // the host can render sub-agent activity live. Purely additive: the
     // text return value is identical either way.
     tag: Option<SubagentTag>,
     task: Option<&base::context::RunningTask>,
@@ -1216,9 +1201,7 @@ fn settings_from_parent(
     settings.model.model_name = model_name;
     settings.model.max_tokens = max_tokens;
     settings.model.fallback_model = fallback_model;
-    // S-2: the sub-agent must see the project's AGENTS.md / CLAUDE.md, or its
-    // output style diverges from the main agent's for no reason the user can
-    // see. Cloning the parent already carries `Settings.instruction_file`;
+    // Cloning the parent already carries `Settings.instruction_file`;
     // `instruction_file` here additionally covers the case where the parent
     // got its instruction file from `Builder::instruction_file(..)` rather
     // than from settings.json — a `Builder`-level value that is invisible in
@@ -1234,12 +1217,9 @@ fn settings_from_parent(
 /// `AgentSpawner` bridge which doesn't carry one). Scope is a fixed
 /// `"code"` stand-in since there's no real one to thread through.
 ///
-/// The user-level roots hang off `local_data_dir`, which means a
-/// parentless sub-agent keeps its state beside the project. They used to be
-/// derived from `$HOME`: with no instance configuration in hand, the
-/// fallback would pick the invoking user's home and write there — the one
-/// directory it has no grounds to assume it owns. Project-local is the
-/// honest answer to "nobody told me where this instance's state lives".
+/// The user-level roots hang off `local_data_dir`, not `$HOME`: with no
+/// instance configuration in hand, the invoking user's home is the one
+/// directory this has no grounds to assume it owns.
 fn fallback_settings(
     model_name: String,
     max_tokens: u32,
@@ -1268,8 +1248,6 @@ fn fallback_settings(
         compaction: Default::default(),
         sandbox: SandboxConfig::default(),
         plugins: Default::default(),
-        // S-2: no parent `Settings` to inherit from here, but the caller may
-        // still know the instruction file (`AgentTool::set_instruction_file`).
         instruction_file: instruction_file.cloned(),
         prompt_append: None,
         prompt_override: None,
@@ -1298,10 +1276,6 @@ fn fallback_settings(
         scripts: Vec::new(),
     }
 }
-
-// ═══════════════════════════════════════════════════════
-// Inner state
-// ═══════════════════════════════════════════════════════
 
 /// Excluded from the tool set a sub-agent inherits, so a "full access" type
 /// (general-purpose/claude/any custom type with an empty `allowed_tools`)
@@ -1510,10 +1484,9 @@ struct Inner {
     /// The **parent session's** event channel. Every event a sub-agent emits
     /// is re-emitted here wrapped in `AgentEvent::SubagentProgress`, so the
     /// host can render sub-agent activity live instead of seeing a long
-    /// pause followed by a wall of text (S-1). `None` (tests, embedders that
-    /// never call `set_event_sender`) degrades to the previous behavior:
-    /// events are still collected internally into the returned text, they
-    /// just aren't mirrored anywhere.
+    /// pause followed by a wall of text. `None` (tests, embedders that
+    /// never call `set_event_sender`): events are still collected internally
+    /// into the returned text, they just aren't mirrored anywhere.
     ///
     /// Same interior-mutability, set-after-construction pattern as
     /// `skill_manager` — `Builder::build()` creates the `AgentTool` before it
@@ -1526,32 +1499,27 @@ struct Inner {
     /// fires nothing.
     hooks: Arc<std::sync::RwLock<Option<Arc<hooks::HookRunner>>>>,
     /// The parent session's history store, so a sub-agent's transcript is
-    /// persisted and a failed sub-agent can be inspected afterwards (S-4).
+    /// persisted and a failed sub-agent can be inspected afterwards.
     /// The sub-agent gets its own fresh session id, so it lands in its own
     /// JSONL file — the parent's transcript is never written to.
     history_store: Arc<std::sync::RwLock<Option<Arc<dyn HistoryStore>>>>,
     /// The **parent agent's** `Permission` impl. Sub-agent permission checks
-    /// are routed here (S-3) instead of being hard-permitted, so a session
+    /// are routed here instead of being hard-permitted, so a session
     /// that opts into a real permission handler can't be bypassed just by
-    /// spawning a sub-agent. `None` keeps the historical `AlwaysPermit`
-    /// behavior for `AgentTool`s built without wiring (tests).
+    /// spawning a sub-agent. `None` means `AlwaysPermit`, for `AgentTool`s
+    /// built without wiring (tests).
     parent_permission: Arc<std::sync::RwLock<Option<Arc<dyn Permission>>>>,
     /// The **parent agent's** pending-permission registry, so a sub-agent's
     /// `Prompt` outcome can be turned into a real, answerable question
-    /// instead of an automatic refusal (N-8).
+    /// instead of an automatic refusal.
     ///
-    /// A sub-agent has no channel of its own to a human, so `ParentPermission`
-    /// used to convert every `Prompt` into a `Deny`. Once the default mode
-    /// became *ask*, that meant a sub-agent could not run a test suite, a
-    /// build, or a commit — anything not covered by a rule was refused
-    /// outright, which is most of what a sub-agent is spawned to do. The
-    /// parent, though, does have a channel: registering the prompt here and
-    /// emitting it on `event_tx` puts it in front of the same host that
-    /// answers the parent's own prompts, via the same
-    /// `session.respondToPrompt` RPC. `None` (unwired embedders) keeps the
-    /// refuse-with-an-explanation behavior.
+    /// A sub-agent has no channel of its own to a human; the parent does.
+    /// Registering the prompt here and emitting it on `event_tx` puts it in
+    /// front of the same host that answers the parent's own prompts, via the
+    /// same `session.respondToPrompt` RPC. `None` (unwired embedders) refuses
+    /// with an explanation.
     parent_pending_permissions: Arc<std::sync::RwLock<Option<runtime::agent::PendingPermissions>>>,
-    /// The parent agent's scene. Sub-agents inherit it (S-5) rather than
+    /// The parent agent's scene. Sub-agents inherit it rather than
     /// always being built as `CodeScene`. `None` falls
     /// back to resolving `Settings.paths.scope` via `resolve_scene_id`, then to
     /// `CodeScene`.
@@ -1559,7 +1527,7 @@ struct Inner {
     /// Every scene this process knows about, for resolving an agent type's
     /// `scene:` id. `None` falls back to [`builtin_scene_by_id`], which is
     /// what an embedder that never wires a registry (tests, library callers)
-    /// gets — the built-in four, exactly as before. A host that registers
+    /// gets — the built-in four. A host that registers
     /// scenes beyond those (the daemon, which also registers plugin scenes)
     /// wires its registry here so those ids resolve too.
     scene_registry: Arc<std::sync::RwLock<Option<Arc<scene::SceneRegistry>>>>,
@@ -1584,7 +1552,7 @@ struct Inner {
     /// after-construction pattern as the other parent-state fields on this
     /// struct. `None` (tests, embedders that never call
     /// `set_telemetry_handle`) means spawned sub-agents get `Builder`'s
-    /// usual noop fallback — unchanged from before this field existed.
+    /// usual noop fallback.
     telemetry_handle: Arc<std::sync::RwLock<Option<TelemetryHandle>>>,
 }
 
@@ -1722,8 +1690,8 @@ impl Inner {
 
     /// Look up one agent type by name, cloning it out from behind the
     /// `agent_types` lock. Always returns an owned value (never a borrow
-    /// tied to the read guard) — required now that `agent_types` can be
-    /// swapped in place by the watcher; a borrow into the old map would
+    /// tied to the read guard) — `agent_types` can be swapped in place by
+    /// the watcher, and a borrow into the replaced map would
     /// dangle the instant a reload swaps it out. The clone itself is cheap:
     /// a handful of strings and a short tool-name list, not a hot-path
     /// concern at sub-agent-spawn frequency.
@@ -1785,8 +1753,7 @@ impl Inner {
     }
 
     /// See `AgentTool::permission_handler` — same resolution, reachable from
-    /// the static `run_sub_inner` path (background spawns), which used to
-    /// hardcode `AlwaysPermit` and so silently escaped the parent's rules.
+    /// the static `run_sub_inner` path (background spawns).
     fn permission_handler(&self) -> Arc<dyn Permission> {
         self.permission_handler_for(None)
     }
@@ -1920,8 +1887,7 @@ impl Inner {
         if let Some(name) = def.and_then(|d| d.scene.as_deref()) {
             match self.resolve_scene_id(name) {
                 Some(requested) => {
-                    // An agent type may *narrow* the scene, never widen it
-                    // (N-17).
+                    // An agent type may *narrow* the scene, never widen it.
                     //
                     // Agent types are loaded from `.agix/agents/*.md`, which
                     // is repository content — on a cloned repo it is
@@ -2255,8 +2221,8 @@ impl AgentTool {
     /// is `None`. `description` is computed from a one-time read of
     /// `shared_agent_types`'s *current* contents at construction time — same
     /// documented "functional reload without cosmetic reload" boundary as
-    /// `with_parent_tools` already has, just now shared across sessions
-    /// rather than reset per session.
+    /// `with_parent_tools` has, but shared across sessions rather than reset
+    /// per session.
     pub fn with_shared_agent_types(
         model: Arc<dyn Model>,
         config: Arc<EngineConfig>,
@@ -2411,7 +2377,7 @@ impl AgentTool {
     }
 
     /// Attach the parent session's event channel so sub-agent activity is
-    /// mirrored onto it (S-1) — see `Inner::event_tx`. Set-after-construction
+    /// mirrored onto it — see `Inner::event_tx`. Set-after-construction
     /// (`&self`, not the `with_X(self) -> Self` builder form) because
     /// `Builder::build()` creates this `AgentTool` before it creates the
     /// session's event channel.
@@ -2469,7 +2435,7 @@ impl AgentTool {
     }
 
     /// Attach the parent session's history store so sub-agent transcripts are
-    /// persisted (S-4) — see `Inner::history_store`.
+    /// persisted — see `Inner::history_store`.
     pub fn set_history_store(&self, store: Arc<dyn HistoryStore>) {
         *self
             .inner
@@ -2501,7 +2467,7 @@ impl AgentTool {
     }
 
     /// Route sub-agent permission checks to the parent agent's `Permission`
-    /// impl (S-3) — see `Inner::parent_permission`.
+    /// impl — see `Inner::parent_permission`.
     pub fn set_parent_permission(&self, permission: Arc<dyn Permission>) {
         *self
             .inner
@@ -2511,7 +2477,7 @@ impl AgentTool {
     }
 
     /// Route sub-agent permission *prompts* to the parent session's host
-    /// (N-8) — see `Inner::parent_pending_permissions`. Without this a
+    /// — see `Inner::parent_pending_permissions`. Without this a
     /// sub-agent still inherits the parent's rules, but anything those rules
     /// leave undecided is refused rather than asked about.
     pub fn set_parent_pending_permissions(
@@ -2532,7 +2498,7 @@ impl AgentTool {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(pending);
     }
 
-    /// Let sub-agents inherit the parent's scene (S-5) — see
+    /// Let sub-agents inherit the parent's scene — see
     /// `Inner::parent_scene`.
     pub fn set_scene(&self, scene: Arc<dyn Scene>) {
         *self
@@ -2553,7 +2519,7 @@ impl AgentTool {
     }
 
     /// Let sub-agents inherit an instruction file that the parent got from
-    /// `Builder::instruction_file(..)` rather than from settings.json (S-2)
+    /// `Builder::instruction_file(..)` rather than from settings.json
     /// — see `settings_from_parent`.
     pub fn set_instruction_file(&self, path: Option<std::path::PathBuf>) {
         *self
@@ -2701,8 +2667,8 @@ impl AgentTool {
     /// 2. the parent agent's own `Permission` impl, when wired via
     ///    [`AgentTool::set_parent_permission`] — so a session using
     ///    `RuleSetPermission` (or any other real handler) can't have its rules
-    ///    bypassed by spawning a sub-agent (S-3);
-    /// 3. [`AlwaysPermit`], the historical behavior, for `AgentTool`s built
+    ///    bypassed by spawning a sub-agent;
+    /// 3. [`AlwaysPermit`], for `AgentTool`s built
     ///    without any wiring (tests, embedders).
     pub(crate) fn permission_handler(&self) -> Arc<dyn Permission> {
         self.inner.permission_handler()
@@ -2714,7 +2680,7 @@ impl AgentTool {
     /// or `.agix/agents/*.md`) that declares a `model` override, that model
     /// is used instead of the parent's. `None` (or an unknown/type-less
     /// call, e.g. from the generic `AgentSpawner` bridge used by team/skill-fork)
-    /// keeps the parent's model, matching prior behavior.
+    /// keeps the parent's model.
     pub(crate) async fn run_sub(
         &self,
         prompt: String,
@@ -2825,8 +2791,6 @@ impl AgentTool {
         if let Some(d) = &def {
             apply_agent_type_overrides(&mut sub_settings, d);
         }
-        // S-5: inherit the parent's scene instead of always CodeScene, with
-        // the agent type's own `scene:` winning over the inherited one.
         let scene = self.inner.scene_for_subagent(def.as_ref(), &sub_settings);
         let scene_id = scene.id().to_string();
         let settings = Arc::new(sub_settings);
@@ -2865,8 +2829,6 @@ impl AgentTool {
         if let Some(schema) = &run.output_schema {
             builder = builder.output_schema(schema.clone());
         }
-        // S-4: persist the sub-agent's transcript. Its own fresh session id
-        // keeps it in a separate JSONL file from the parent's.
         let history_store = self.inner.history_store();
         builder = self.inner.inherited_by_a_delegate(builder);
         let (agent, event_rx, input_tx) = builder
@@ -2914,9 +2876,8 @@ impl AgentTool {
             Some(if result.is_ok() { "end_turn" } else { "error" }),
         )
         .await;
-        // §5.6: the one-shot task has now run to conclusion either way —
-        // mark it terminal so a stale `session.resume` against it is
-        // rejected instead of silently continuing a "finished" sub-agent.
+        // Marked terminal on failure too, so a stale `session.resume` against
+        // it is rejected instead of silently continuing a "finished" sub-agent.
         mark_sidechain_terminal(history_store.as_ref(), &sid_for_hook, &result, cancelled).await;
         result
     }
@@ -3171,7 +3132,6 @@ impl AgentTool {
         if let Some(d) = &def {
             apply_agent_type_overrides(&mut sub_settings, d);
         }
-        // S-5: inherit the parent's scene, same as `run_sub_tagged`/`run_sub_inner`.
         let scene = self.inner.scene_for_subagent(def.as_ref(), &sub_settings);
         let scene_id = scene.id().to_string();
         let settings = Arc::new(sub_settings);
@@ -3229,7 +3189,7 @@ impl AgentTool {
     /// `AgentInput::permission_mode`'s doc comment for "one team, one
     /// authorization". Only consulted when actually spawning a *new*
     /// member; a message to an already-alive member reuses whatever grant
-    /// it was originally built with, it can't be changed mid-lifetime.
+    /// it was built with, it can't be changed mid-lifetime.
     ///
     /// Holds `Inner::team_spawn_lock` for its entire body — see that
     /// field's doc comment for why the find-or-create decision needs to be
@@ -3483,8 +3443,6 @@ impl AgentTool {
             depth: child_depth,
             _slot,
         } = admission;
-        // S-3: same resolution as the foreground path — a background spawn
-        // used to hardcode `AlwaysPermit`, escaping the parent's rules.
         let perm: Arc<dyn Permission> =
             run.permission(inner.permission_handler_for(run.task.clone()));
         let cwd_for_meta = cwd.clone();
@@ -3556,12 +3514,9 @@ impl AgentTool {
         )
         .await;
         drop(input_tx);
-        // §5.6: see the matching comment in `run_sub_tagged`.
         mark_sidechain_terminal(history_store.as_ref(), &sid_for_meta, &result, cancelled).await;
         result
     }
-
-    // ── Feature #27: Resume agent — continue a previous session ──
 
     /// Resume a sub-agent from a previous session's transcript.
     ///
@@ -3585,7 +3540,6 @@ impl AgentTool {
         } = self.inner.admit().map_err(base::error::ToolError::Denied)?;
         let start = std::time::Instant::now();
 
-        // 1. Load transcript from history store
         let sid = base::session::SessionId::parse(session_id)
             .map_err(|e| base::error::ToolError::Execution(anyhow!("invalid session id: {e}")))?;
         let entries = history_store
@@ -3601,7 +3555,6 @@ impl AgentTool {
         let projected = history::transcript::project_messages_with(&entries, projection);
         let report = history::transcript::resume_projection_report_with(&entries, projection);
 
-        // 2. Convert projected history messages to ModelMessages
         let mut model_messages: Vec<ModelMessage> = Vec::with_capacity(projected.len());
         for msg in &projected {
             match msg {
@@ -3623,7 +3576,6 @@ impl AgentTool {
             }
         }
 
-        // 3. Inject resume context as a system-reminder user message
         let resume_context = format!(
             "<system-reminder>\n\
              This is a **resumed** session (previous session: `{session_id}`).\n\
@@ -3639,7 +3591,6 @@ impl AgentTool {
             }],
         });
 
-        // 4. Build and run sub-agent with pre-loaded messages
         let cwd_for_meta = cwd.clone();
         let sub_settings = self.sub_settings(None, cwd);
         let scene = self.inner.scene_for_subagent(None, &sub_settings);
@@ -3687,7 +3638,6 @@ impl AgentTool {
         )
         .await;
 
-        // Pre-load historical messages into the new agent's session
         agent.seed_history(model_messages, projected.len() as u32);
 
         let (result, cancelled) = run_one_turn_detached(
@@ -3695,7 +3645,6 @@ impl AgentTool {
         )
         .await;
 
-        // 6. Emit resume telemetry via structured tracing
         let latency_ms = start.elapsed().as_millis() as u64;
         let warning_str: Option<String> = report.warning.map(|w| format!("{:?}", w));
         tracing::info!(
@@ -3713,41 +3662,18 @@ impl AgentTool {
             "resume agent completed"
         );
 
-        // §5.6: a resumed sidechain is a one-shot task exactly like
-        // `run_sub_tagged`/`run_sub_inner`'s — mark it terminal so a stale
-        // resume against *this* new session is rejected in turn, unless it
-        // never ran to conclusion (see `mark_sidechain_terminal`).
         mark_sidechain_terminal(Some(&history_store), &new_sid_for_meta, &result, cancelled).await;
         result
     }
 }
 
-/// Routes a sub-agent's permission checks to the parent session's own
-/// `Permission` impl (S-3), with one adaptation: a `Prompt` outcome is
-/// turned into a `Deny`.
-///
-/// A sub-agent has no channel to ask a human anything — `AgentEvent::
-/// PermissionPrompt` from a sub-agent goes out on the *sub-agent's* event
-/// channel, and the answer would have to come back as an
-/// `InputMessage::PermissionResponse` on the sub-agent's input channel,
-/// which no host has a handle on. Passing `Prompt` through unchanged would
-/// therefore stall the sub-agent until its cancellation token fired. Denying
-/// with an actionable reason keeps the parent's rules authoritative (the
-/// point of this wrapper) while failing fast and legibly: the model sees the
-/// denial as a tool error and can report it, and the user can pre-approve
-/// the rule at the parent session level and retry.
 /// A sub-agent's `Permission`: the parent's rules, plus the parent's channel
 /// to a human.
 ///
-/// Delegating the *decision* to the parent (S-3) is what stops a session from
+/// Delegating the *decision* to the parent is what stops a session from
 /// having its rules bypassed by spawning a sub-agent. But an `Ask` verdict
-/// then has nowhere to go — a sub-agent has no host attached to it. This used
-/// to be resolved by refusing: every `Prompt` became a `Deny` with an
-/// explanation. Under the old `bypassPermissions` default that was nearly
-/// invisible; once the default became *ask*, it meant a sub-agent could not
-/// run a build, a test suite, or a commit, because none of those match a rule
-/// by default. `Agent`/`Team` were the features it broke, and running work in
-/// parallel is most of what they exist for.
+/// then has nowhere to go — a sub-agent has no host attached to it, and a
+/// prompt on the sub-agent's own channel would stall until cancellation.
 ///
 /// The parent does have a host. So forward the question to it: register the
 /// prompt in the parent's own pending-permission registry and emit it on the
@@ -3759,8 +3685,8 @@ impl AgentTool {
 /// tool call that spawned us.
 ///
 /// With no channel wired (`event_tx`/`pending` are `None` — tests, embedders
-/// that never call the setters), it falls back to the previous
-/// refuse-with-an-explanation behavior rather than blocking forever.
+/// that never call the setters), it refuses with an explanation rather than
+/// blocking forever.
 struct ParentPermission {
     inner: Arc<dyn Permission>,
     event_tx: Option<runtime::agent::EventSender>,
@@ -4052,10 +3978,6 @@ fn bg_result(task_id: &str, status: &str) -> base::tool::ToolResult {
         new_messages: None,
     }
 }
-
-// ═══════════════════════════════════════════════════════
-// Core Tool impl
-// ═══════════════════════════════════════════════════════
 
 #[async_trait]
 impl base::tool::Tool for AgentTool {
@@ -4595,12 +4517,10 @@ mod catalog_tests {
         assert!(claude_pos < explore_pos);
     }
 
-    /// The defect in its original, concrete form. `AgentTool` implements
-    /// `Tool::prompt()` with the whole of `agent_tool.prompt.md`, and the
-    /// model had never seen a word of it — `grep` found no production caller.
-    /// Pins that the real tool is now classified as documented (so
-    /// `build_tool_defs` points at it) and that what `ToolSearch` would hand
-    /// back is the actual file, not a paraphrase of its description.
+    /// `AgentTool` implements `Tool::prompt()` with the whole of
+    /// `agent_tool.prompt.md`. The real tool is classified as documented (so
+    /// `build_tool_defs` points at it) and what `ToolSearch` would hand back
+    /// is the actual file, not a paraphrase of its description.
     #[tokio::test]
     async fn the_real_agent_tools_guide_is_now_reachable() {
         use base::tool::Tool;
@@ -4694,8 +4614,6 @@ mod catalog_tests {
         // recursion guard has something to actually filter out.
         agent_tool
     }
-
-    // ---- model_for_subagent / multi-provider routing ----
 
     #[test]
     fn model_for_subagent_uses_parent_model_when_no_router_configured() {
@@ -5165,10 +5083,8 @@ mod catalog_tests {
         ));
     }
 
-    /// Regression: `agent_types` used to be a build-time-only snapshot — a
-    /// `.agix/agents/*.md` file edited after `with_parent_tools()` had no
-    /// effect on a running `AgentTool` at all, not even a partial one; the
-    /// only way to pick it up was rebuilding the whole `Agent`. This
+    /// A `.agix/agents/*.md` file edited after `with_parent_tools()` takes
+    /// effect on the running `AgentTool` without rebuilding the `Agent`. This
     /// exercises the real `notify` watcher end to end (not just the merge
     /// logic in isolation), the same way
     /// `skills::manager::editing_a_watched_skill_file_is_picked_up_without_a_manual_reload`
@@ -5206,8 +5122,6 @@ mod catalog_tests {
             "sanity check on the initial build-time load"
         );
 
-        // Edit the file after the `AgentTool` (and its watcher) already exist
-        // — this is the part that used to have zero effect.
         write_agent_md(
             &dir,
             "watched-reviewer.md",
@@ -5253,54 +5167,9 @@ mod catalog_tests {
         assert!(settings.paths.user_data_dir.starts_with(&cwd));
     }
 
-    // NOTE: a true end-to-end regression test for the worktree-cleanup fix
-    // (create a real git worktree via `AgentTool::call`, let the sub-agent
-    // turn run, assert the directory is gone) was attempted here and
-    // removed. It reliably hung: `run_sub`/`run_sub_inner` both spawn a
-    // `t_handle` task that loops on `event_rx.recv()` until it sees
-    // `AgentEvent::TurnComplete`, then `.await` that handle before
-    // returning — but `TurnComplete` is only sent from the fully-successful
-    // tail of `run_user_turn` (turn.rs); every early return (a plain model
-    // error, `cancel.is_cancelled()`, the max-turns guard, etc.) skips it.
-    // Against `DummyModel` (which always errors) or a pre-cancelled token,
-    // `run_turn` returns via one of those early paths, `t_handle` never
-    // sees a `TurnComplete` and never sees its sender drop (the `Agent`
-    // holding it is kept alive by the very call that's waiting on
-    // `t_handle`), and the wait never resolves — a real deadlock, not an
-    // artifact of the worktree fix. It reproduces on unmodified `turn.rs`
-    // too (confirmed by reverting this session's other uncommitted edits
-    // there and rerunning), so it predates this change and is out of scope
-    // for it; flagged separately rather than fixed here.
-    //
-    // The fix above was instead verified by: (1) reading both call sites —
-    // the handle is now held in a `let mut` bound outside the spawned
-    // task/match and `.cleanup().await` is called on it after `run_sub`/
-    // `run_sub_inner` resolves, on both the success and error arms; (2) the
-    // existing suite in this module (32 tests, including
-    // `spawn_background_returns_immediately_with_a_registered_task`) still
-    // passes unchanged; (3) `tools::worktree`'s own tests independently
-    // cover that `create_worktree`/`WorktreeHandle::cleanup` themselves
-    // work correctly — what was missing was purely that the caller here
-    // never invoked `cleanup()` at all.
-    //
-    // UPDATE: the deadlock described above is now fixed (`run_one_turn`'s
-    // doc comment) — `run_sub`/`run_sub_inner` no longer wait unconditionally
-    // on `AgentEvent::TurnComplete`. The regression test right below proves
-    // that fix directly; a real end-to-end worktree-cleanup test through
-    // `AgentTool::call` would now be possible where it wasn't before, but
-    // hasn't been added (this module's existing coverage — `resolve_tools`,
-    // `sub_settings`, agent-type overrides — already exercises `run_sub`'s
-    // surrounding plumbing without needing a real turn to complete; adding
-    // one is a reasonable follow-up, not done here to keep this change
-    // scoped to the deadlock fix itself).
-
-    /// Regression: `run_sub` used to hang **indefinitely** (not just
-    /// slowly) whenever the sub-agent's model call errored — `DummyModel`
-    /// always errors, so this is the simplest reproduction. Wrapped in a
-    /// generous but bounded timeout so a reintroduced regression fails
-    /// this test in 10s instead of hanging the whole test binary the way
-    /// the original bug did (confirmed by hand during debugging: the old
-    /// code ran for 13+ minutes before being killed).
+    /// `run_sub` must return when the sub-agent's model call errors —
+    /// `DummyModel` always errors. Wrapped in a bounded timeout so a hang
+    /// fails this test in 10s instead of hanging the whole test binary.
     #[tokio::test]
     async fn run_sub_returns_promptly_on_a_plain_model_error_instead_of_hanging() {
         let agent_tool = test_agent_tool();
@@ -5789,8 +5658,6 @@ mod catalog_tests {
         assert_eq!(slots.running(), 0, "an ended sub-agent gives its slot back");
     }
 
-    // ── Persistent team members (phase 3) ──
-
     fn team_key(team: &str, member: &str) -> (String, String) {
         (team.to_string(), member.to_string())
     }
@@ -6126,12 +5993,10 @@ mod catalog_tests {
         assert!(members.contains_key(&team_key("team", "b")));
     }
 
-    /// Regression test for a fix where a reclaim sweep run just before
-    /// looking up an existing member could evict that exact member (if it
-    /// happened to be the oldest-idle one and the pool was already over the
-    /// cap), silently spawning a fresh replacement instead of reaching the
-    /// one the caller meant to message. `reclaim_idle_team_members` now
-    /// takes a `protect` key that's excluded from eviction candidates.
+    /// The reclaim sweep run just before looking up an existing member must
+    /// not evict that exact member (the oldest-idle one, with the pool over
+    /// the cap) and spawn a fresh replacement instead of reaching the one the
+    /// caller meant to message.
     #[tokio::test]
     async fn spawn_or_message_team_member_never_reclaims_the_member_it_is_about_to_message() {
         let mut config = EngineConfig::defaults_for("test");
@@ -6222,12 +6087,9 @@ mod catalog_tests {
         );
     }
 
-    /// Regression test for a TOCTOU race where two concurrent calls for the
-    /// same never-before-seen `(team_name, member_name)` key could both
-    /// observe "doesn't exist yet" and both spawn a member, with the second
-    /// insert silently overwriting the first's map entry while its loop
-    /// kept running orphaned. `team_spawn_lock` now serializes the whole
-    /// find-or-create decision.
+    /// Two concurrent calls for the same never-before-seen
+    /// `(team_name, member_name)` key must not both observe "doesn't exist
+    /// yet" and both spawn a member, orphaning the first.
     #[tokio::test]
     async fn concurrent_first_calls_for_a_new_key_spawn_exactly_one_member() {
         let agent_tool = Arc::new(team_enabled_agent_tool());
@@ -6339,8 +6201,6 @@ mod catalog_tests {
              not just clean up the registry entry"
         );
     }
-
-    // ── Persistent member permission grants ──
 
     #[tokio::test]
     async fn call_rejects_auto_permission_mode_for_persistent_members() {
@@ -6513,21 +6373,8 @@ mod catalog_tests {
     /// unconditionally, and `PermissionGate::check()`'s step 2 consults the
     /// tool's own `check_permissions()` *before* falling through to mode
     /// dispatch — so the real answer depends on call-path order, not just
-    /// the mode-dispatch snippet alone.
-    ///
-    /// Confirmed here directly, in code — this test caught a real mistake
-    /// during review: an earlier pass over this file flagged "`Plan`
-    /// defaulting the team's permission grant silently breaks `SendMessage`"
-    /// as an Important bug purely by reading the mode-dispatch branch in
-    /// isolation, without tracing that `check_permissions()` runs first and
-    /// short-circuits for `SendMessage`/`ReadMail`/`ListPeers` specifically
-    /// (they all return `Allow` unconditionally from their own
-    /// `check_permissions()`, exempting them from mode-based restriction by
-    /// design — the same pattern the now-dead `PermissionBridge`'s
-    /// `safe_tools` whitelist used to hand-implement for a different,
-    /// unreachable code path). Writing this test to confirm it *before*
-    /// "fixing" it caught the mistake instead of shipping an unnecessary
-    /// change.
+    /// the mode-dispatch snippet alone. `SendMessage`/`ReadMail`/`ListPeers`
+    /// are exempt from mode-based restriction by design.
     #[tokio::test]
     async fn plan_mode_permits_send_message_despite_not_being_read_only() {
         let mailbox = std::sync::Arc::new(team::mailbox::MailboxStore::new(vec![
@@ -6584,10 +6431,6 @@ mod catalog_tests {
             "an ordinary non-read-only tool must still be denied under Plan mode — got {write_outcome:?}"
         );
     }
-
-    // ═══════════════════════════════════════════════════════
-    // S-1 / S-2 / S-3 / S-5 — sub-agent visibility + inheritance
-    // ═══════════════════════════════════════════════════════
 
     /// Parent `Settings` for a sub-agent spawn, pointed at a throwaway temp
     /// directory so `Builder::build()`'s skill/agent/plugin scans have
@@ -6750,7 +6593,7 @@ mod catalog_tests {
         (agent_tool, tools, runs, dir)
     }
 
-    /// P1: a sub-agent spawned with a history store and a parent session id
+    /// A sub-agent spawned with a history store and a parent session id
     /// must persist its own transcript as a sidechain linked back to the
     /// parent — this is what makes `HistoryStore::child_sessions` (and thus
     /// `session.list {parent_session_id}`) find it.
@@ -6871,7 +6714,7 @@ mod catalog_tests {
         let _ = std::fs::remove_dir_all(&history_dir);
     }
 
-    /// P5 §5.6: a one-shot sub-agent's transcript must end with a
+    /// A one-shot sub-agent's transcript must end with a
     /// `SessionEnd` marker once its single turn concludes — that marker is
     /// what lets `session.resume` reject a stale resume against a
     /// "finished" sidechain with `SIDECHAIN_TERMINAL` instead of silently
@@ -6929,7 +6772,7 @@ mod catalog_tests {
         let _ = std::fs::remove_dir_all(&history_dir);
     }
 
-    /// P5 §5.5: a sub-agent must inherit the parent's telemetry handle
+    /// A sub-agent must inherit the parent's telemetry handle
     /// instead of `Builder::build()`'s noop default (a channel whose
     /// receiver is dropped immediately) — otherwise every event the
     /// sub-agent produces (tool timings, permission decisions, cost) is
@@ -6963,7 +6806,7 @@ mod catalog_tests {
         );
     }
 
-    /// S-1: a sub-agent's events must reach the *parent's* channel, tagged
+    /// A sub-agent's events must reach the *parent's* channel, tagged
     /// with a stable label, and the text return value the model sees must be
     /// unchanged by that forwarding.
     #[tokio::test]
@@ -7090,7 +6933,7 @@ mod catalog_tests {
         );
     }
 
-    /// S-3: a sub-agent's permission checks must reach the parent's
+    /// A sub-agent's permission checks must reach the parent's
     /// `Permission` impl, and a `Deny` there must actually stop the tool.
     #[tokio::test]
     async fn subagent_permission_check_routes_to_parent_and_deny_blocks_the_tool() {
@@ -7432,7 +7275,7 @@ mod catalog_tests {
         );
     }
 
-    /// Without wiring, behavior is unchanged: allow-all, as before.
+    /// Without wiring, a sub-agent's permission is allow-all.
     #[test]
     fn permission_handler_falls_back_to_always_permit_when_no_parent_is_wired() {
         let agent_tool = test_agent_tool();
@@ -7449,7 +7292,7 @@ mod catalog_tests {
         ));
     }
 
-    /// S-5: the sub-agent inherits the parent's scene rather than always
+    /// The sub-agent inherits the parent's scene rather than always
     /// being handed `CodeScene`, and an agent type's own `scene:` wins.
     #[test]
     fn subagent_scene_inherits_parent_and_agent_type_override_wins() {
@@ -7464,7 +7307,7 @@ mod catalog_tests {
             "a harnix-scene parent must not hand its sub-agent the code scene"
         );
 
-        // N-17: an agent type may *narrow* the scene, never widen it.
+        // An agent type may *narrow* the scene, never widen it.
         // `.agix/agents/*.md` is repository content; letting it name
         // `scene: code` (whose empty allow-list means "every registered
         // tool") would let a file in the repo hand a harnix session tools its
@@ -7619,7 +7462,7 @@ mod catalog_tests {
         );
     }
 
-    /// S-2: a sub-agent must be able to see AGENTS.md / CLAUDE.md, both when
+    /// A sub-agent must be able to see AGENTS.md / CLAUDE.md, both when
     /// the parent got it from settings.json and when it came from
     /// `Builder::instruction_file(..)` (invisible in `Settings`).
     #[test]
@@ -7733,9 +7576,7 @@ mod catalog_tests {
     /// `run_sub_tagged`/`run_sub_inner` — it must write that new session's
     /// terminal marker too once its turn concludes, or a stale
     /// `session.resume` against *it* would silently reattach instead of
-    /// being rejected. Regression test for the bug where `resume_agent`
-    /// wrote `write_sidechain_meta` but never called
-    /// `write_sidechain_terminal_marker`.
+    /// being rejected.
     #[tokio::test]
     async fn resume_agent_writes_a_terminal_marker_when_its_task_concludes() {
         let (agent_tool, tools, _runs, dir) = wired_agent_tool("code");

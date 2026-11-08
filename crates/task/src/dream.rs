@@ -102,8 +102,7 @@ impl DreamTask {
 
                 turn_counter_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-                // Simulate a thinking turn — in a full implementation, this would
-                // make a lightweight model call. For now, write a structured thought.
+                // A placeholder thought; no model call is made here.
                 let thought = format!(
                     "## Thinking Turn {turn}\n\n\
                      Analyzing the prompt from different angles...\n\n\

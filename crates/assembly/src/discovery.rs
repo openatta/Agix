@@ -35,9 +35,8 @@ pub struct DaemonLock {
     /// The OS-reported start time of `pid`, in seconds — see
     /// [`ProcessIdentity`]'s doc comment for why a bare `pid` alone isn't
     /// enough to tell "still the same process" from "pid got recycled".
-    /// `#[serde(default)]` so a lock file written before this field existed
-    /// still deserializes — it just can't benefit from the reuse check
-    /// (falls back to the old pid-only liveness test for that one file).
+    /// `#[serde(default)]` so a lock file without this field still
+    /// deserializes; such a file gets only the pid liveness test.
     #[serde(default)]
     pub pid_start_time: i64,
     /// Absolute path of the unix socket the daemon is listening on.
@@ -417,8 +416,7 @@ mod tests {
         );
     }
 
-    /// The regression this whole change exists for: a lock file recording a
-    /// pid that's alive again — but under a *different* process than the
+    /// A lock file recording a pid that's alive again — but under a *different* process than the
     /// one that wrote it (start time doesn't match) — must be reclaimed,
     /// not treated as "another daemon is still running" forever.
     #[test]

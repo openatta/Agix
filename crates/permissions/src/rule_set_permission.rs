@@ -32,7 +32,7 @@ pub struct RuleSetPermission {
     /// The session's live state, once `bind_session_state` has supplied it.
     ///
     /// `None` (embedders that never bind) falls back to a throwaway
-    /// `SessionState` carrying `permission_mode` below — the old behavior.
+    /// `SessionState` carrying `permission_mode` below.
     /// When bound, `check` reads the *live* permission mode, so
     /// `EnterPlanMode`/`ExitPlanMode` actually move the gate.
     session: RwLock<Option<Arc<SessionState>>>,
@@ -565,8 +565,7 @@ mod tests {
 
     #[tokio::test]
     async fn add_persistent_allow_survives_clear_temporary_allows() {
-        // Regression guard for the priority/source choice: a Session-sourced
-        // persistent allow must NOT be wiped by `clear_temporary_allows`
+        // A Session-sourced persistent allow must NOT be wiped by `clear_temporary_allows`
         // (which only removes `Command`-sourced rules — see
         // `RuleSetPermission::clear_temporary_allows` and the skill
         // deactivation cleanup in `turn.rs` that calls it).

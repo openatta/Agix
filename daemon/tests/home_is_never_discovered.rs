@@ -3,12 +3,11 @@
 //! Where an instance keeps its state is decided once, by the process entry
 //! point, and passed down. A module that reads `$HOME` instead has quietly
 //! opted out: it writes to the invoking user's home no matter what the
-//! instance was configured with, which breaks redirected deployments and is
-//! why test runs used to leave files in a real `~/.agix`.
+//! instance was configured with, which breaks redirected deployments and
+//! leaves test runs writing to a real `~/.agix`.
 //!
-//! Injecting the roots fixed the readers that existed. This test is what
-//! keeps the next one from being added — the failure mode is not a bug
-//! anyone notices, it is a file appearing somewhere nobody looks.
+//! This test keeps such a reader from being added — the failure mode is not a
+//! bug anyone notices, it is a file appearing somewhere nobody looks.
 //!
 //! Source-text scanning, not real analysis: it greps for the env lookups
 //! that resolve a home directory. That is enough, because the point is to

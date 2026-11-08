@@ -947,11 +947,8 @@ fn build_script_plugin_zip(dir: &std::path::Path, plugin_name: &str) -> (PathBuf
     (archive_path, hex::encode(hasher.finalize()))
 }
 
-/// The point of splitting the package layer off the carrier: a package that
-/// only ships a script installs in the default build, which carries no
-/// WebAssembly at all. This used to answer `PLUGINS_DISABLED` — and on a
-/// `plugins` build without the compiler it installed and was then rolled
-/// back, for want of a compiler the package gave it nothing to do.
+/// A package that only ships a script installs in the default build, which
+/// carries no WebAssembly at all.
 #[cfg(feature = "plugin-packages")]
 #[tokio::test]
 async fn a_script_only_package_installs_and_discloses_what_it_will_run() {
@@ -1185,14 +1182,9 @@ async fn plugin_lifecycle_install_list_disable_enable_uninstall() {
     let _ = handle.await;
 }
 
-// ── resume_or_create panic-avoidance (malformed session_id + real history_store) ──
-//
-// `SessionPool::resume_or_create` used to `unwrap()` a `SessionId::parse()`
-// call and `panic!()` on a second failed retry — both only reachable when a
-// real `HistoryStore` is configured (the `start_server()` helper above uses
-// `history_store: None`, which never exercises that code path). Production
-// `daemon/src/main.rs` does wire up a real store, so this needs its own
-// server variant.
+// A malformed session id reaches `SessionPool::resume_or_create`'s parsing
+// only when a real `HistoryStore` is configured; `start_server()` uses
+// `history_store: None`, so these tests need their own server variant.
 
 async fn start_server_with_history(
     cap: usize,
@@ -1262,11 +1254,9 @@ async fn start_server_with_history(
 async fn run_turn_with_malformed_session_id_and_history_store_does_not_panic() {
     let (_server, sock, _dir, handle) = start_server_with_history(8).await;
 
-    // Not a valid BASE58(UUID) — used to `unwrap()`-panic inside
-    // `resume_or_create` when a real `HistoryStore` is configured. A
-    // panicking `tokio::spawn`'d connection task just drops the socket
-    // silently, so the regression signature here is "no response at all
-    // (empty read)", not a catchable Rust panic in the test process itself.
+    // Not a valid BASE58(UUID). A panicking `tokio::spawn`'d connection task
+    // just drops the socket silently, so a panic would show here as "no
+    // response at all (empty read)", not a catchable Rust panic in the test.
     let resp = rpc_call(
         &sock,
         r#"{"jsonrpc":"2.0","method":"session.run_turn","params":{"session_id":"not-a-valid-id!!","message":"hi"},"id":1}"#,
@@ -1537,22 +1527,11 @@ async fn config_reload_picks_up_a_hand_edited_settings_file() {
 
 #[tokio::test]
 async fn config_reload_attempts_to_connect_a_hand_edited_mcp_server() {
-    // Regression: `config.reload` used to re-read `mcp_servers` into the new
-    // `Settings` (so `doctor`/`get_providers`-style inspection would show it)
-    // but never actually connect it — `apply_reloaded_settings` never
-    // touched `self.mcp` at all. A hand-edited `mcp_servers` entry was
-    // invisible to every session (including ones later rebuilt via
-    // a stale binding, since `create()` sources MCP from the untouched
-    // central cache, not from `Settings` directly) — the only way to
-    // actually connect it was `mcp.addServer` or a full daemon restart.
-    //
     // Uses the same "definitely not a real binary" pattern as
     // `mcp_add_server_writes_settings_and_reports_connect_failure` — the
     // point isn't a successful connection (that needs a real MCP server
-    // process), it's proving `config.reload` now genuinely *attempts* one
-    // and reports the outcome. Before this fix, `mcp_failed` didn't exist as
-    // a field at all: the server would never appear in the response either
-    // way, connect attempted or not, so its mere presence here is the proof.
+    // process), it's proving `config.reload` attempts one and reports the
+    // outcome in `mcp_failed`.
     let (_server, sock, dir, handle) = start_server().await;
 
     let settings_path = dir.path().join(".agix").join("settings.json");
@@ -1603,10 +1582,9 @@ async fn config_reload_attempts_to_connect_a_hand_edited_mcp_server() {
 
 #[tokio::test]
 async fn set_provider_with_openai_compatible_rebuilds_the_router() {
-    // N-16: `openai_compatible` now has a runtime `Model` impl
+    // `openai_compatible` has a runtime `Model` impl
     // (`model::OpenAICompatibleModel`), so configuring a DeepSeek-shaped
-    // provider builds and swaps the live router instead of resolving and then
-    // failing. This used to be the "valid config, no implementation" case.
+    // provider builds and swaps the live router.
     let (_server, sock, _dir, handle) = start_server().await;
 
     let resp = rpc_call(
@@ -1630,7 +1608,7 @@ async fn set_provider_with_openai_compatible_rebuilds_the_router() {
 async fn set_provider_with_openai_compatible_missing_base_url_reports_a_router_error() {
     // The one thing an `openai_compatible` provider cannot do without: there
     // is no default host to fall back to, and guessing one would surface as a
-    // confusing auth failure on the first call instead of a config error now.
+    // confusing auth failure on the first call instead of a config error.
     let (_server, sock, _dir, handle) = start_server().await;
 
     let resp = rpc_call(
@@ -1734,11 +1712,9 @@ async fn existing_session_survives_a_config_reload_between_turns() {
 
 #[tokio::test]
 async fn recreating_a_stale_session_at_capacity_does_not_evict_an_unrelated_session() {
-    // Regression test: `create()`'s capacity check used to run unconditionally
-    // before `insert`, not accounting for the config-generation recreate path
-    // replacing an *existing* map entry under the same sid rather than adding
-    // a new one. At capacity, that spuriously evicted an unrelated session
-    // even though the total session count wasn't actually growing.
+    // The config-generation recreate path replaces an *existing* map entry
+    // under the same sid rather than adding one, so at capacity it must not
+    // evict an unrelated session.
     let (_server, sock, _dir, handle) = start_server_with_history(2).await;
 
     async fn session_ids(sock: &std::path::Path) -> std::collections::HashSet<String> {

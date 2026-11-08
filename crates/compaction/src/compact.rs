@@ -255,7 +255,7 @@ pub trait Compactor: Send + Sync {
         ))
     }
 
-    /// Whether the budget now forces a compaction.
+    /// Whether the budget forces a compaction.
     fn should_compact(&self, state: &BudgetState) -> bool {
         state.threshold > 0 && state.context_tokens > state.threshold
     }
@@ -640,9 +640,7 @@ const MAX_CHARS_PER_SKILL: usize = 20_000;
 const MAX_CHARS_SKILLS_TOTAL: usize = 100_000;
 
 /// Truncate `s` to at most `max_bytes` bytes without splitting a multi-byte
-/// UTF-8 character. Kept as a crate-local alias so existing call sites read
-/// unchanged; the implementation now lives in `base::text` so that all
-/// truncation sites share one (tested) definition.
+/// UTF-8 character. A crate-local alias for `base::text`'s shared definition.
 pub(crate) fn truncate_str_at_char_boundary(s: &str, max_bytes: usize) -> &str {
     truncate_at_char_boundary(s, max_bytes)
 }
@@ -1421,14 +1419,10 @@ mod tests {
         );
     }
 
-    // ── UTF-8 safety regressions ──
-    //
     // Every truncation in this module is expressed as a *byte* budget while the
-    // content is arbitrary UTF-8. Before these tests, `collapse_context` and
-    // `enforce_tool_result_budget` sliced raw bytes, so a Chinese conversation
-    // long enough to reach either of them panicked the whole turn. The
-    // conversations below are built so the cut necessarily lands inside a
-    // multi-byte character (3 bytes per Chinese char vs. budgets of 200/1000).
+    // content is arbitrary UTF-8. The conversations below are built so the cut
+    // necessarily lands inside a multi-byte character (3 bytes per Chinese
+    // char vs. budgets of 200/1000).
 
     /// Text long enough to force truncation, made of 3-byte characters so that
     /// no round byte budget is ever a character boundary.
@@ -1667,9 +1661,7 @@ mod tests {
     /// Build a Read tool result the way the real tool builds it:
     /// `crates/tools/src/file_read.rs::format_with_line_numbers` →
     /// `"{:>6}\t{}\n"` per line. Deliberately *not* a hand-made string that
-    /// happens to start with a path — the old heuristic ("first line starts
-    /// with `/` or `./`") matched only such hand-made strings and never a real
-    /// Read result.
+    /// happens to start with a path: a real Read result never does.
     fn cat_n_output(body: &str) -> String {
         body.lines()
             .enumerate()
@@ -1680,7 +1672,6 @@ mod tests {
     #[test]
     fn extract_recent_reads_recovers_files_from_real_read_output() {
         let content = cat_n_output("fn main() {\n    println!(\"hi\");\n}");
-        // Sanity: this is exactly the shape the old heuristic could not see.
         assert!(
             !content.lines().next().unwrap().starts_with('/'),
             "real Read output starts with padded line numbers, not a path"
@@ -1891,11 +1882,8 @@ mod tests {
 
     #[test]
     fn the_two_former_estimators_now_agree() {
-        // `grouping::estimate_tokens` and `session::token_count` were separate
-        // `len() / 4` variants that disagreed with each other. Both now route
-        // through `model::tokens::estimate_message_tokens`; this asserts the
-        // shared function is what `estimate_tokens` returns, so a future
-        // divergence has to be deliberate.
+        // `estimate_tokens` is `model::tokens::estimate_message_tokens`, so a
+        // divergence between the two has to be deliberate.
         let msgs = vec![
             text_user("hello world"),
             tool_use("t1", "Read", r#"{"file_path":"/repo/x.rs"}"#),

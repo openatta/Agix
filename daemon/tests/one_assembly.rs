@@ -1,14 +1,12 @@
 //! There is one place that knows how a daemon is put together.
 //!
 //! `SessionPool`'s constructor takes eleven positional arguments and is
-//! followed by
-//! four startup steps a session is silently worse without. That knowledge was
-//! copied into `main.rs`, into the test harness, and into eight test files,
-//! and a copy is not merely duplication: when the assembly changes, nothing
-//! tells the copies, because there is no compile error for a step nobody
-//! performs. `daemon::assemble::pool` is now the single copy — and this test
-//! is what keeps it single, since the next hand-assembled pool would compile,
-//! pass, and quietly skip whatever gets added next.
+//! followed by four startup steps a session is silently worse without. A copy
+//! of that knowledge is not merely duplication: when the assembly changes,
+//! nothing tells the copy, because there is no compile error for a step nobody
+//! performs. `daemon::assemble::pool` is the single copy, and this test keeps
+//! it single, since a hand-assembled pool would compile, pass, and quietly
+//! skip whatever gets added next.
 //!
 //! Source-text scanning, like `protocol_doc_matches_dispatch`. It cannot tell
 //! a good reason from a bad one; it can only say that a second assembly

@@ -1,10 +1,10 @@
 //! Compaction reaches the client as a `session.event` frame.
 //!
-//! The engine has always known when it compacted — `AgentEvent::CompactAction`
-//! carries the strategy and both message counts, telemetry records it, and the
-//! transcript gets a `LogEntry::Compact` marker. None of that is reachable from
-//! a client, and the consequence (the model no longer remembers something) is
-//! visible to the user while the cause is not.
+//! `AgentEvent::CompactAction` carries the strategy and both message counts,
+//! telemetry records it, and the transcript gets a `LogEntry::Compact` marker,
+//! but none of that reaches a client by itself — and the consequence (the
+//! model no longer remembers something) is visible to the user while the cause
+//! is not.
 //!
 //! Driven through the socket rather than by calling the forwarding loop,
 //! because the loop is a whitelist: a variant that is emitted and not listed

@@ -1,5 +1,4 @@
-//! Tool trait — v7 unified. All tools implement this single trait.
-//! Types moved here from tools/src/legacy.rs. legacy.rs is now a pure re-export.
+//! Tool trait. All tools implement this single trait.
 
 use crate::context::config::NetworkModeConfig;
 use crate::error::ToolError;
@@ -409,33 +408,14 @@ pub trait Tool: Send + Sync + 'static {
     fn prompt_fragment(&self) -> String {
         self.description().to_string()
     }
-    /// This tool's detailed usage guide, when it has one that says more than
-    /// `description()` already does — `None` when it doesn't.
-    ///
-    /// `prompt()` has always existed and ~35 tools implement it with a
-    /// multi-KB markdown guide (`agent_tool.prompt.md`, `team/tool.prompt.md`,
-    /// `prompts/coding/*.prompt.md`), but until now nothing put those guides
-    /// in front of the model at all: `build_tool_defs` builds every `ToolDef`
-    /// from `description()`, so `prompt()` had zero production call sites.
-    /// Inlining them is not an option either — they total ~85 KB (~21k tokens)
-    /// across the built-in set, paid on *every* API call. They are instead
-    /// fetched on demand via `ToolSearch{query: "select:<name>"}`, and this
-    /// method is the predicate deciding which tools have anything to fetch.
-    ///
-    /// The default implementation *derives* the answer rather than making
-    /// every tool declare it (which would mean editing 35 files and leaving
-    /// the next tool author a flag to forget): `prompt()` falls back to
-    /// `prompt_fragment()`, which falls back to `description()`, so a tool
-    /// overriding neither necessarily produces text equal to its description
-    /// and is correctly reported as undocumented.
     /// Does this tool's own `Allow` from [`Tool::check_permissions`] survive a
     /// *mode-level* denial (`Plan`, `DontAsk`)?
     ///
     /// Default `false`, which is what makes plan mode mean anything: `Write`
     /// and `Edit` allow themselves for any in-project path, and that verdict
     /// is a statement about *path safety*, not a claim that writing files is
-    /// fine while the user asked for a plan. Letting it outrank the mode is
-    /// how plan mode came to be decorative.
+    /// fine while the user asked for a plan. Letting it outrank the mode
+    /// would make plan mode decorative.
     ///
     /// A tool returns `true` only when its self-`Allow` is a statement about
     /// the tool's own nature rather than about its arguments — a coordination
@@ -452,6 +432,16 @@ pub trait Tool: Send + Sync + 'static {
         false
     }
 
+    /// This tool's detailed usage guide, when it has one that says more than
+    /// `description()` already does — `None` when it doesn't.
+    ///
+    /// `ToolDef`s carry only `description()`; the full guides total ~85 KB
+    /// across the built-in set, too much to pay on every API call, so the model
+    /// fetches them on demand via `ToolSearch{query: "select:<name>"}`. This
+    /// method decides which tools have anything to fetch. The default derives
+    /// the answer: `prompt()` falls back to `prompt_fragment()`, which falls
+    /// back to `description()`, so a tool overriding neither produces text
+    /// equal to its description and is reported as undocumented.
     async fn detailed_prompt(&self, ctx: &PromptContext) -> Option<String> {
         let body = self.prompt(ctx).await;
         let trimmed = body.trim();

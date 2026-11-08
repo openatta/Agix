@@ -1,7 +1,6 @@
 //! Turn loop — user message → streaming events → TurnOutcome.
 //!
-//! Core processing logic. Ported from agix-engine/src/engine/turn/mod.rs
-//! and adapted to use the agent's protocol-agnostic types.
+//! Core processing logic, over the agent's protocol-agnostic types.
 
 use crate::agent::{Agent, EngineCommand, InputMessage};
 use base::interface::event::AgentEvent;
@@ -116,7 +115,6 @@ impl Agent {
                 let _ = self.event_tx.send(AgentEvent::TurnStart {
                     turn_id: self.current_turn_id.clone(),
                 });
-                // ── Slash command interception ──
                 if let Some(sc) = crate::commands::parse_slash_command(&content) {
                     // `/mcp__<server>__<prompt>` → `prompts/get` on the owning
                     // server; the returned messages become this turn's
@@ -310,9 +308,7 @@ impl Agent {
                     // `content` is the model name. Each turn re-reads
                     // `settings.model.model_name` into its `effective_model`,
                     // so swapping it here is what makes a host's `/model`
-                    // actually change the model the next turn calls — the
-                    // command used to fall through the catch-all arm below
-                    // and change nothing at all.
+                    // change the model the next turn calls.
                     EngineCommand::UpdateModel => {
                         let mut settings = (*self.settings).clone();
                         settings.model.model_name = content.clone();
@@ -614,10 +610,7 @@ impl Agent {
 
         // UserPromptSubmit: where a hook sees the message that opens a turn,
         // before any turn setup (skills rescan, FrozenContext,
-        // CLAUDE.md injection, ...) has touched anything. Previously in the
-        // `HookEvent` enum but never triggered anywhere — CodeScene's
-        // system prompt used to (wrongly) tell the model to expect it, see
-        // the fixed copy in `coding.rs`'s `system_info` section.
+        // CLAUDE.md injection, ...) has touched anything.
         //
         // Reuses the same `HookResponse` fields `PreToolUse`/`PostToolUse`
         // already use, same soft-fail philosophy (a hook that errors/times
@@ -687,15 +680,9 @@ impl Agent {
         let mut max_tokens_recovery: u32 = 0;
         let mut effective_max_tokens = self.settings.model.max_tokens;
         let mut effective_model = self.settings.model.model_name.clone();
-        // A-5: the scene's declared ceiling actually binds now. `grep` used to
-        // find `execution_params()` only at its trait definition and the scene
-        // impls — this was read straight off `settings.execution`, so a scene
-        // could declare any limit it liked and nothing enforced it. Lower of
-        // the two wins; that rule now lives in `LimitsPolicy::new`, which is
-        // built once per session — see `Builder::turn_policy`.
         // What the turn has spent, kept once. The budget reads it through
         // `Spend` and a caller reads it whole; a second accumulator beside it
-        // is how the two came to disagree about the cache.
+        // would let the two disagree about the cache.
         let mut turn_usage = Usage::default();
         let start = std::time::Instant::now();
 
@@ -767,7 +754,7 @@ impl Agent {
                 Some(base::frozen::FrozenContext::collect(cwd, &paths, &*self.environment).await);
         }
 
-        // A-2: `FrozenContext` is a session snapshot on purpose — but the
+        // `FrozenContext` is a session snapshot on purpose — but the
         // reminder below re-injects `gitStatus` on *every* turn, and a stale
         // status is read by the model as current fact, not as a stale hint.
         // Commit between two turns and it keeps citing files that are no
@@ -816,16 +803,6 @@ impl Agent {
         }
 
         // Memory prefetch: fire LLM-based relevant memory selection as a background task.
-        //
-        // Gated on `memory_enabled` (previously wasn't — only the static system-prompt
-        // injection in `prompt.rs` checked the flag, this per-turn recall didn't). That gap
-        // meant `memory_enabled: false` was silently a partial opt-out: this background task
-        // still read `self.memory_store` and injected a `<system-reminder>` mid-conversation
-        // regardless. Surfaced by 录制回放测试 for a fixture-based multi-turn case: the
-        // prefetch (fires 一次真实的、被录制覆盖的 LLM 调用) and the extraction spawn below race
-        // against the harness's turn boundary in a way that isn't deterministic between
-        // record and replay, producing a different injected memory set each run even with
-        // identical cassette content.
         let mut prefetch_handle: Option<tokio::task::JoinHandle<Vec<String>>> =
             if !self.settings.memory_enabled {
                 None
@@ -958,21 +935,10 @@ impl Agent {
             }
         }
 
-        // ── Memory recall: collect the prefetch and inject it into this turn ──
-        //
-        // Injection used to happen after tool execution, gated on the round
-        // having produced tool calls — the reasoning being that only then is
-        // there another API call left to show the memories in. The consequence
-        // was that memory was dead on exactly the turns that dominate chat and
-        // research use: a short question answered directly, with no tools. The
-        // recall ran, the model never saw it, the result was dropped.
-        //
-        // Collecting here instead puts the memories in front of the model on
-        // every turn. The cost is that the recall now sits in front of the
-        // first API call rather than overlapping it, so it is bounded by a
-        // *latency* budget, not the old 30s collection timeout: this wait is
-        // now dead air before the user's first token, and no recall is worth
-        // 30s of it. In the common case there is no wait at all —
+        // Collected before the first API call, not after tool execution, so a
+        // turn the model answers without tools still sees its memories. The
+        // wait is dead air before the user's first token, hence the short
+        // latency budget. In the common case there is no wait at all —
         // `select_memories_with_llm` returns without a model call when the
         // store holds no more candidates than the requested maximum.
         //
@@ -1028,10 +994,7 @@ impl Agent {
                         frozen.already_surfaced.insert(m.name.clone());
                     }
                 }
-                // P2-1: Increment recall counts on the persisted memory files.
-                // Fire-and-forget — failure is non-blocking. Only the recalled
-                // entries are rewritten; handing the whole store back to
-                // `persist_batch` rewrote every memory file on every recall.
+                // Fire-and-forget; only the recalled entries are rewritten.
                 //
                 // This is currently inert across sessions: `recall_count` is
                 // not part of the on-disk frontmatter, so it reads back as 0
@@ -1262,16 +1225,9 @@ impl Agent {
                                     "failed to persist LogEntry::Compact marker (PTL recovery)"
                                 );
                             }
-                            // A-4: this recovery path used to rebuild the
-                            // prompt with `None, None` for skills text and
-                            // MCP instructions, silently stripping the skill
-                            // inventory and MCP guidance from exactly the
-                            // call that is already going badly — the model
-                            // would forget what skills exist right when it
-                            // most needs a cheap way out. They cost a few
-                            // KB, which is not what blew the context budget
-                            // (the message history is), and the compaction
-                            // that just ran freed far more than they take.
+                            // The retry keeps skills and MCP instructions:
+                            // they cost a few KB, the history is what blew
+                            // the budget, and the compaction freed far more.
                             let retry = self
                                 .prepare_retry(
                                     &effective_model,
@@ -1439,10 +1395,7 @@ impl Agent {
             turn_usage = turn_usage.plus(usage);
 
             // `PostSampling`: one model response has been fully streamed and
-            // is now in the transcript. Declared since the hook system was
-            // written and never fired, which left real-time audit of model
-            // output — the use case its own doc comment names — impossible.
-            // Purely observational: like the other lifecycle hooks, the
+            // is in the transcript. Purely observational: like the other lifecycle hooks, the
             // response is not modifiable from here (there is no defined
             // recovery path for a veto at this point).
             {
@@ -1633,7 +1586,7 @@ impl Agent {
                     }
                 }
 
-                // P2: Activate conditional skills whose `paths` patterns match
+                // Activate conditional skills whose `paths` patterns match
                 // files accessed by Read/Write/Edit tool operations this turn.
                 {
                     let file_paths = Self::extract_tool_file_paths(self.session.messages());
@@ -1857,8 +1810,7 @@ impl Agent {
                 // conversation — same TaskRouter mechanism already proven
                 // for the "subagent" task type (see
                 // `AgentTool::Inner::model_for_subagent`). No override
-                // configured → falls back to the main model, unchanged from
-                // prior behavior.
+                // configured → falls back to the main model.
                 let (model, model_name) = match &self.task_router {
                     Some(router) => (
                         self.accounted(router.model_for("memory")),
@@ -2177,18 +2129,6 @@ or project context that should survive across sessions.
         defs
     }
 
-    /// Build the summarizer used by compaction's FullCompact layer.
-    ///
-    /// Routed through the task-model router under the `"compact"` task type —
-    /// the same mechanism `AgentTool::Inner::model_for_subagent` uses for
-    /// `"subagent"` and post-turn memory extraction uses for `"memory"` — so a
-    /// `task_models.compact` entry can point summarization at a cheaper/faster
-    /// model than the conversation.
-    ///
-    /// With no router configured this falls back to the conversation's own
-    /// model *and its own model name*. (The memory path instead hardcodes a
-    /// Haiku model id in that case, which silently breaks if the default
-    /// provider isn't Anthropic; not repeating that here.)
     /// A model this session did not build, made to account for itself.
     ///
     /// `Builder::build` wraps the session's own model once, so everything
@@ -2208,6 +2148,12 @@ or project context that should survive across sessions.
         ))
     }
 
+    /// Build the summarizer used by compaction's FullCompact layer.
+    ///
+    /// Routed through the task-model router under the `"compact"` task type,
+    /// so a `task_models.compact` entry can point summarization at a
+    /// cheaper/faster model than the conversation. With no router configured
+    /// it uses the conversation's own model and model name.
     fn compaction_summarizer(&self) -> Option<compaction::llm_summary::LlmSummarizer> {
         let (model, model_name) = match &self.task_router {
             Some(router) => (
@@ -2400,7 +2346,7 @@ or project context that should survive across sessions.
                     },
                 )
                 .await;
-            // P0-3: Respect hook decisions — discontinue or block compaction.
+            // Respect hook decisions — discontinue or block compaction.
             if hook_result.discontinued() {
                 tracing::info!("PreCompact hook discontinued — skipping compaction");
                 return None;
@@ -2418,7 +2364,7 @@ or project context that should survive across sessions.
         // `extract_recent_reads` call).
         let pre_compact = self.session.messages().to_vec();
 
-        // ── Layer 0: FullCompact — LLM summary, before anything is dropped ──
+        // Layer 0: FullCompact — LLM summary, before anything is dropped.
         //
         // Placed ahead of the DefaultCompactor cascade because every layer
         // in that cascade destroys information: Snip drops whole rounds,
@@ -2483,14 +2429,9 @@ or project context that should survive across sessions.
                 if result.strategy == compaction::compact::CompactStrategy::MicroCompact {
                     self.tool_results_ever_cleared = true;
                 }
-                // T1.4: Post-compact recovery — re-inject critical context.
-                //
-                // Extracted from the PRE-compaction transcript: the files
-                // worth re-attaching are precisely the ones whose Read
-                // results just got dropped. Reading them out of `compacted`
-                // (which is what this did) could only ever surface files
-                // that are still in context, i.e. the ones that need no
-                // recovery at all.
+                // Post-compact recovery. Extracted from the pre-compaction
+                // transcript: the files worth re-attaching are precisely the
+                // ones whose Read results just got dropped.
                 let recent_files = compaction::compact::extract_recent_reads(&pre_compact);
                 // Resolve each invoked skill's *current* content + recency
                 // here (not in the `compaction` crate, which deliberately
@@ -2590,13 +2531,11 @@ or project context that should survive across sessions.
                             latency_ms: compact_start.elapsed().as_millis() as u64,
                         },
                     ));
-                // P1-2: Reset compact warning after successful compaction —
+                // Reset compact warning after successful compaction —
                 // the warning can fire again if the budget is exhausted again later.
                 self.compact_warning_issued = false;
 
-                // ── Re-establish what compaction just destroyed (N-9) ──
-                //
-                // Two pieces of context are injected exactly once per
+                // Re-establish what compaction just destroyed. Two pieces of context are injected exactly once per
                 // session, as `<system-reminder>` *user messages* in the
                 // transcript, and are therefore ordinary compaction
                 // victims:
@@ -2608,14 +2547,7 @@ or project context that should survive across sessions.
                 //   `frozen.already_surfaced` so they are not re-injected
                 //   turn after turn.
                 //
-                // Neither is part of `build_post_compact_recovery`. So the
-                // first compaction of a long session silently dropped the
-                // project's own conventions and every memory recalled so
-                // far, permanently and with no signal — which is what
-                // makes an agent appear to "forget the rules" the longer
-                // it runs.
-                //
-                // Clearing both flags does not re-inject anything here; it
+                // Neither is part of `build_post_compact_recovery`. Clearing both flags does not re-inject anything here; it
                 // makes the *next* turn's existing injection paths
                 // eligible again, which puts the instructions back at the
                 // head of the fresh context and lets a still-relevant
@@ -2800,18 +2732,13 @@ or project context that should survive across sessions.
         text
     }
 
-    /// Build prompt blocks, tool definitions, and clone messages for the model call.
     /// Build the instruction-file context injected once per session as a
     /// `<system-reminder>` (the `# claudeMd` block).
     ///
-    /// A-3: `FrozenContext::collect` walks the directory tree upward and
-    /// gathers every `AGENTS.md` it finds into `memory_blocks`
-    /// (`collect_memory_files_with`), but that field had no consumer anywhere
-    /// — `build_prompt_context` reads six other fields and nothing read this
-    /// one. The practical effect was that a session rooted in a sub-package
-    /// of a monorepo never saw the repository-root conventions at all, only
-    /// whatever `instruction_file` pointed at. Nested projects should see
-    /// repository-root conventions too; this closes that gap.
+    /// `FrozenContext::collect` walks the directory tree upward and gathers
+    /// every `AGENTS.md` it finds into `memory_blocks`
+    /// (`collect_memory_files_with`), so a session rooted in a sub-package of
+    /// a monorepo also sees the repository-root conventions.
     ///
     /// **Precedence: root-first, nearest-last, nearest wins.** Files are
     /// emitted farthest-ancestor first and the most specific file last
@@ -2919,18 +2846,11 @@ or project context that should survive across sessions.
 
     /// Assemble the system-prompt blocks for one API call.
     ///
-    /// A-4: shared by the normal path *and* both recovery paths (overloaded →
-    /// fallback model, prompt-too-long → compact and retry). Those two used to
-    /// inline their own cut-down copy of this that passed `None, None` for
-    /// skills text and MCP instructions, so the model silently lost its skill
-    /// inventory and every MCP server's usage guidance on exactly the calls
-    /// already going badly — the moment a cheap, well-documented escape hatch
-    /// matters most. Neither omission was ever a size fix: skills text is
-    /// budgeted to ~1% of the compact threshold and MCP instructions are a few
-    /// KB, while what actually overflows the window is the message history the
-    /// PTL path had just compacted anyway. Funnelling all three call sites
-    /// through one function makes the drift structurally impossible rather
-    /// than merely repaired.
+    /// Shared by the normal path *and* both recovery paths (overloaded →
+    /// fallback model, prompt-too-long → compact and retry), so a recovery
+    /// call keeps the skill inventory and MCP guidance. Dropping them would
+    /// not help a prompt-too-long: skills text is budgeted to ~1% of the
+    /// compact threshold and MCP instructions are a few KB.
     async fn build_prompt_blocks(&self, effective_model: &str) -> Vec<PromptBlock> {
         let mcp_instructions = self.build_mcp_instructions();
         let mcp_ref: Option<&str> = if mcp_instructions.is_empty() {
@@ -3467,7 +3387,7 @@ pub(crate) struct ToolExecCtx {
     pub discontinued: Arc<std::sync::atomic::AtomicBool>,
     /// Real `EngineConfig` derived from `Settings` — see `Agent.config`'s doc
     /// comment. Cloned into `ToolContext.config` instead of the
-    /// `defaults_for("unknown")` placeholder every tool call used to see.
+    /// `defaults_for("unknown")` placeholder.
     pub config: Arc<base::context::EngineConfig>,
     /// Real permission checker — see `Agent.permission`. Consulted once per
     /// tool call in `execute_tool_inner`, after the `PreToolUse` hook step.
@@ -3934,11 +3854,8 @@ async fn execute_tool_inner(
                     .with_reason(message.clone())
             })
             .await;
-            // `Notification` is documented as "fired when user attention is
-            // required (typically a permission prompt is pending)" and had no
-            // trigger anywhere — which mattered little while the default mode
-            // was `bypassPermissions` and prompts were rare, and matters a
-            // great deal now that the default is *ask*. A host that wants to
+            // `Notification` is "fired when user attention is required
+            // (typically a permission prompt is pending)". A host that wants to
             // ring a bell, raise a desktop notification or ping a channel
             // when the agent is blocked on a human hooks it here.
             fire_ctx_lifecycle_hook(ctx, hooks::HookEvent::Notification, |i| {
@@ -4263,11 +4180,8 @@ async fn execute_tool_inner(
         }
     }
 
-    // Tool-shaped lifecycle events (N-14).
-    //
-    // `WorktreeCreate` and `WorktreeRemove` were declared in
-    // `HookEvent` and fired nowhere. They describe things a *tool* does, but
-    // tools have no access to the `HookRunner` — `ToolContext` deliberately
+    // Tool-shaped lifecycle events. `WorktreeCreate` and `WorktreeRemove`
+    // describe things a *tool* does, but tools have no access to the `HookRunner` — `ToolContext` deliberately
     // carries no hooks handle, and threading one through every tool for this
     // would be a large change for a small feature. Dispatch is the natural
     // single site: it knows the tool name, the input, and whether the call
@@ -4493,8 +4407,7 @@ fn build_prompt_context<'a>(
         is_worktree,
         language: settings.language.clone().map(Cow::Owned),
         // `local_data_dir` is already the `.agix/` dir (flat, no scope
-        // segment) — no need to prepend another `.agix/` (previously double-
-        // nested to `.agix/.agix/scratchpad`).
+        // segment) — no need to prepend another `.agix/`.
         scratchpad_dir: settings
             .paths
             .local_data_dir
@@ -4686,9 +4599,8 @@ async fn resolve_attachments(attachments: &[crate::agent::Attachment]) -> Vec<Mo
 }
 
 /// Truncate `s` to at most `max_bytes` bytes without splitting a multi-byte
-/// UTF-8 character. Kept as a module-local alias so existing call sites read
-/// unchanged; the implementation now lives in `base::text` so that all
-/// truncation sites share one (tested) definition.
+/// UTF-8 character. A module-local alias for `base::text`'s, which all
+/// truncation sites share.
 fn truncate_at_char_boundary(s: &str, max_bytes: usize) -> &str {
     base::text::truncate_at_char_boundary(s, max_bytes)
 }
@@ -4957,10 +4869,8 @@ mod sandbox_settings_tests {
     use base::context::config::NetworkModeConfig;
     use std::path::PathBuf;
 
-    /// Regression: this used to be a `Default::default()` struct literal, so
-    /// every `settings.json` sandbox knob was inert — `BashTool` ran with an
-    /// empty deny-read list and an unrestricted network no matter what the
-    /// user configured.
+    /// The `settings.json` sandbox knobs reach `BashTool` through the tool
+    /// context.
     #[test]
     fn tool_context_sandbox_is_taken_from_the_engine_config() {
         let mut config = base::context::EngineConfig::defaults_for("test-model");
@@ -5167,14 +5077,6 @@ mod tests {
             "ls -la && cat README.md"
         )]));
     }
-
-    // ── PreToolUse / PostToolUse hook wiring (regression) ──
-    //
-    // Prior to this fix, `ToolExecCtx`/`execute_tool_inner` never consulted
-    // `HookRunner` at all — a configured PreToolUse/PostToolUse hook had
-    // zero effect on real tool calls, despite the engine (HookRunner::run,
-    // block/updated_input decisions) being fully implemented and tested in
-    // `crates/hooks` in isolation.
 
     /// A probe tool that records the input it was actually called with.
     struct ProbeTool {
@@ -5437,10 +5339,9 @@ mod tests {
         test_exec_ctx(tools, Arc::new(hooks::HookRunner::new(settings)))
     }
 
-    /// O-1: `PostToolUseFailure` is the error-only sibling of `PostToolUse`,
-    /// so a hook that only cares about failures does not have to subscribe to
-    /// every tool call and filter on `is_error`. Previously defined in the
-    /// `HookEvent` enum with no firing site anywhere.
+    /// `PostToolUseFailure` is the error-only sibling of `PostToolUse`, so a
+    /// hook that only cares about failures does not have to subscribe to
+    /// every tool call and filter on `is_error`.
     #[tokio::test]
     async fn post_tool_use_failure_fires_only_when_the_tool_errors() {
         let dir = tempfile::tempdir().unwrap();
@@ -5474,8 +5375,7 @@ mod tests {
         );
     }
 
-    /// O-1: `PermissionDenied` had no firing site, so a host could not observe
-    /// refusals at all. Fires for a rule-engine `Deny` (this test) and for a
+    /// `PermissionDenied` fires for a rule-engine `Deny` (this test) and for a
     /// host answering a prompt with a denial (the other branch in
     /// `execute_tool_inner`).
     #[tokio::test]
@@ -5563,13 +5463,10 @@ mod tests {
         );
     }
 
-    /// Regression test: a `PostToolUse` hook returning `decision: "block"`
-    /// used to have no effect at all — the tool had already run, and the
-    /// only lever PostToolUse had was `continue: false` (end the whole
-    /// turn). It should now deny *this call's* result specifically
-    /// (`execute_tool_inner`'s return value becomes an `Err`, which is what
-    /// ends up as the tool_result the model sees), without ending the turn
-    /// unless the hook *also* sets `continue: false`.
+    /// A `PostToolUse` hook returning `decision: "block"` denies *this call's*
+    /// result specifically (`execute_tool_inner`'s return value becomes an
+    /// `Err`, which is what ends up as the tool_result the model sees),
+    /// without ending the turn unless the hook *also* sets `continue: false`.
     #[tokio::test]
     async fn post_tool_use_hook_block_denies_only_this_result() {
         let tools = Arc::new(base::tool::InMemoryToolRegistry::new());
@@ -5605,8 +5502,6 @@ mod tests {
              only deny this one call's result"
         );
     }
-
-    // ── Permission::check wiring (Permit / Deny / Prompt) ──
 
     struct DenyAllTestPermission;
     #[async_trait::async_trait]
@@ -5673,8 +5568,7 @@ mod tests {
         // unblock it without one is the session's own cancellation token
         // (`session.close` / client disconnect on the daemon side) — and
         // when that happens, the call must NOT proceed (nobody approved
-        // it), unlike the old timeout-defaults-to-Permit behavior this
-        // replaces.
+        // it).
         let called = std::sync::Arc::new(std::sync::Mutex::new(None));
         let tools = Arc::new(base::tool::InMemoryToolRegistry::new());
         tools.register(std::sync::Arc::new(ProbeTool {
@@ -6252,12 +6146,9 @@ mod tests {
         );
         assert_eq!(ctx.os, std::env::consts::OS);
 
-        // Regression: `ctx.shell` used to be hardcoded to "/bin/bash"
-        // regardless of `FrozenContext.shell` (which `FrozenContext::collect`
-        // populates from the real `$SHELL`), and `ctx.model_name` used to
-        // read `settings.model.model_name` instead of the caller-supplied
-        // effective model — so after an overloaded-fallback switch, the
-        // prompt kept describing the pre-fallback model.
+        // `ctx.shell` comes from `FrozenContext.shell`, and `ctx.model_name`
+        // from the caller-supplied effective model, so after an
+        // overloaded-fallback switch the prompt describes the fallback model.
         let frozen = base::frozen::FrozenContext {
             shell: Some("/usr/bin/zsh".into()),
             ..Default::default()
@@ -6275,8 +6166,6 @@ mod tests {
         assert_eq!(ctx_with_frozen.model_name, "fallback-model");
         assert_ne!(ctx_with_frozen.model_name, settings.model.model_name);
     }
-
-    // ── Memory recall reaches the model on a no-tool turn ──
 
     /// Answers directly (no tool calls) and records every message it was sent,
     /// so the test can check what the model actually saw.
@@ -6353,11 +6242,8 @@ mod tests {
     /// A policy is handed every figure the provider reported, cache included.
     ///
     /// What counts as spent is the policy's judgement, and it cannot make one
-    /// on figures it never receives. The engine used to keep a second `u64`
-    /// beside `turn_usage` that summed input and output only, so the two
-    /// cache fields stopped at the accumulator no matter what a policy wanted
-    /// to do with them — and on a provider with the cache warm, that is most
-    /// of what the turn read.
+    /// on figures it never receives — and on a provider with the cache warm,
+    /// the cache fields are most of what the turn read.
     #[tokio::test]
     async fn a_policy_is_told_what_the_cache_cost() {
         use std::sync::Mutex;
@@ -6498,11 +6384,8 @@ mod tests {
         );
     }
 
-    /// Recall used to be gated on the round having produced tool calls — the
-    /// reasoning being that only then is there another API call to show the
-    /// memories in. The effect was that memory did nothing at all on short
-    /// conversational turns, which is most of them. The recalled memories must
-    /// reach the model in the *current* turn, and must carry their content, not
+    /// Short conversational turns without tool calls are most turns. The
+    /// recalled memories must reach the model in the *current* turn, and must carry their content, not
     /// just the one-line description that exists to rank them.
     #[tokio::test]
     async fn recall_reaches_the_model_on_a_turn_with_no_tool_calls() {
@@ -6614,10 +6497,8 @@ mod tests {
     }
 }
 
-// ── Post-turn memory extraction ──
-
 /// Extract durable memories from recent conversation messages using a lightweight
-/// Haiku call, then persist them to the MemoryStore. Runs asynchronously after
+/// model call, then persist them to the MemoryStore. Runs asynchronously after
 /// each complete turn — failures are silently logged, never block the user.
 ///
 /// `model`/`model_name` are resolved by the caller — normally via
@@ -7341,15 +7222,6 @@ mod tool_result_content_tests {
 }
 
 /// Per-turn prompt assembly: what actually reaches the model each request.
-///
-/// Covers four defects fixed together here, all of which shared one shape —
-/// machinery that existed, looked wired, and reached the model on exactly
-/// zero requests:
-///
-/// - **A-1** `Tool::prompt()` had no production call site at all.
-/// - **A-3** `FrozenContext.memory_blocks` (parent `AGENTS.md`) had no consumer.
-/// - **A-4** the two recovery paths rebuilt the prompt without skills or MCP.
-/// - **A-5** `Scene::execution_params()` had no caller.
 #[cfg(test)]
 mod prompt_assembly_tests {
     use super::*;
@@ -7361,8 +7233,6 @@ mod prompt_assembly_tests {
         ToolResult,
     };
     use serde_json::{json, Value};
-
-    // ── fixtures ────────────────────────────────────────────────────────
 
     const GUIDE_BODY: &str = "# Sub-agent usage guide\n\nDispatch a sub-agent when \
                               the search space is wide and only the conclusion matters.";
@@ -7552,8 +7422,6 @@ mod prompt_assembly_tests {
         agent
     }
 
-    // ── A-1: the guide is pointed at, never inlined ──────────────────────
-
     /// The whole point of the progressive-disclosure design: `build_tool_defs`
     /// advertises that a guide exists without paying for its body. If this
     /// ever inverts, every request grows by ~85 KB across the real tool set.
@@ -7617,8 +7485,6 @@ mod prompt_assembly_tests {
         let guided = defs.iter().find(|d| d.name == "Guided").unwrap();
         assert_eq!(guided.description, "Launch a sub-agent.");
     }
-
-    // ── sync_mcp_adapters ──
 
     use crate::module::fakes::{mcp_module, mcp_tool, FakeMcp};
 
@@ -7704,11 +7570,9 @@ mod prompt_assembly_tests {
             "the dispatch copy of an MCP adapter is not a builtin shadowing it"
         );
     }
-    // ── A-3: parent AGENTS.md reaches the prompt ─────────────────────────
 
     /// A session rooted in a monorepo sub-package must still see the
-    /// repository-root conventions. `memory_blocks` was collected and then
-    /// dropped on the floor, so it never did.
+    /// repository-root conventions.
     #[tokio::test]
     async fn parent_agents_md_reaches_the_prompt_with_nearest_last() {
         let dir = tempfile::tempdir().unwrap();
@@ -7787,13 +7651,9 @@ mod prompt_assembly_tests {
         assert_eq!(agent.build_instruction_context(), "ONLY-CONVENTION");
     }
 
-    // ── A-4: recovery paths keep skills and MCP instructions ─────────────
-
     /// Both recovery paths (overloaded → fallback model, prompt-too-long →
-    /// compact and retry) used to rebuild the prompt with `None, None`,
-    /// stripping the skill inventory off exactly the calls already going
-    /// badly. They now share `build_prompt_blocks` with the normal path — and
-    /// that function is the only remaining `assemble_prompt` call site — so
+    /// compact and retry) share `build_prompt_blocks` with the normal path —
+    /// and that function is the only `assemble_prompt` call site — so
     /// asserting the shared builder carries skills asserts all three paths.
     #[tokio::test]
     async fn rebuilt_prompt_still_carries_skills_and_scene_skeleton() {
@@ -7849,10 +7709,7 @@ mod prompt_assembly_tests {
         assert!(joined.contains("skeleton"), "scene skeleton missing");
     }
 
-    // ── A-5: the scene's execution ceiling actually binds ────────────────
-
-    /// `execution_params()` had no caller at all, so a scene could declare
-    /// any ceiling and nothing enforced it. Resolution is `min(settings,
+    /// A scene's declared ceiling binds. Resolution is `min(settings,
     /// scene)` — whichever is stricter wins — and `run_user_turn` reads
     /// exactly this expression into `max_calls`.
     #[test]
@@ -7879,8 +7736,6 @@ mod prompt_assembly_tests {
             "a scene cannot widen past the deployment-wide setting"
         );
     }
-
-    // ── input_map: locating the turn's user message in the outgoing request ──
 
     mod input_map {
         use super::super::{resolve_input_map, user_text_fingerprint};
