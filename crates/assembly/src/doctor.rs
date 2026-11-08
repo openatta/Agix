@@ -159,7 +159,7 @@ impl HealthCheck for ProviderRoutingCheck {
 
 /// The hooks section, parsed the same tolerant way the engine parses it — so
 /// this reports what will actually load rather than a whole-map verdict the
-/// engine no longer shares.
+/// engine does not share.
 pub struct HooksCheck(Arc<Settings>);
 
 impl HooksCheck {
@@ -389,7 +389,7 @@ mod tests {
         }
     }
 
-    /// P3-15's acceptance from the daemon's side: the diagnostics an embedder
+    /// The diagnostics an embedder
     /// registers appear beside the engine's own, and a verdict of theirs
     /// decides the overall status.
     #[test]

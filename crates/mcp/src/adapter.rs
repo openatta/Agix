@@ -224,7 +224,7 @@ impl Tool for McpToolAdapter {
             cache.put(&self.server_name, &self.tool_name, &args, result.clone());
         }
 
-        // P2-4: Check for elicitation URLs in the result. If found, fire
+        // Check for elicitation URLs in the result. If found, fire
         // the elicitation callback to notify the hook system. Locked and
         // cloned rather than held across the `if` so a callback registered
         // after this adapter was built (see the field doc comment) is
@@ -249,13 +249,10 @@ impl Tool for McpToolAdapter {
 /// 单个 **文本** 内容块 → `Text`；其它一律 → `Blocks` 逐块保留。
 /// `is_error` 一并传播。
 ///
-/// A lone image block used to collapse to the literal string `"[image]"` here,
-/// which threw the pixels away before anything downstream could see them — a
-/// single-image result is the *common* shape for screenshot/diagram MCP servers,
-/// so that fast path silently defeated image support for exactly the servers
-/// that need it. Only a lone text block still takes the `Text` shortcut; any
-/// result containing an image goes through `Blocks` so the runtime can lift it
-/// into a real `ModelContentBlock::Image`.
+/// Only a lone text block takes the `Text` shortcut; any result containing an
+/// image goes through `Blocks` so the runtime can lift it into a real
+/// `ModelContentBlock::Image` — a single-image result is the *common* shape
+/// for screenshot/diagram MCP servers.
 fn into_tool_result(result: McpCallResult) -> ToolResult {
     let is_error = result.is_error;
     let has_image = result
@@ -559,11 +556,7 @@ mod tests {
             .call(json!({}), ctx(), ProgressSender::noop("t"))
             .await
             .unwrap();
-        // A lone image block must survive as a real image block. This used to
-        // assert the opposite (the whole image collapsing to the placeholder
-        // string `[image]`), which is precisely the data loss that made a
-        // single-image MCP result — the common screenshot/diagram shape —
-        // invisible to the model.
+        // A lone image block must survive as a real image block.
         match r.content {
             ToolResultContent::Blocks(blocks) => {
                 assert_eq!(blocks.len(), 1);
@@ -578,8 +571,8 @@ mod tests {
     #[tokio::test]
     async fn cancel_aborts() {
         let client = Arc::new(MockMcpClient::new("test", vec![meta("hang")]));
-        // 故意不 push_response → call_tool 永不返回？不对，mock 是 sync 直接返回错误
-        // 所以我们改成：cancel 已触发后 select! biased 命中 cancel 分支
+        // mock 不会挂起（没有 push_response 时同步返回错误），所以先触发 cancel，
+        // 让 select! biased 命中 cancel 分支。
         let adapter = McpToolAdapter::new(client, meta("hang"));
         let ctx = ToolContext::for_test(std::path::PathBuf::from("/tmp"));
         ctx.cancel.cancel();

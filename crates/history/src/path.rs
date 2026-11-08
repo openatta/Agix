@@ -23,12 +23,9 @@ pub fn sanitize_path(name: &str) -> String {
 ///
 /// `projects` 与 `sessions` 是两个维度，不是两层：sidecar 只按 session id 索引
 /// （`session_sidecar_paths` 拿不到项目信息），所以它进不了 `projects/<cwd>/`。
-/// 这两个目录以前都叫 `sessions` 且都在用，导致 `<global>/sessions/` 下同时躺着
-/// `<sanitized-cwd>/` 和 `<session-id>/` 两种命名的目录。
 ///
-/// 从同一个 `global_root` 派生这件事本身是重点：这两个根曾经一个走
-/// `AGIX_CONFIG_HOME`、一个走 `AGIX_DATA_DIR`，默认值相同但可以被配成不同的
-/// 目录——session memory 因此写去过没人会读的地方。现在只有一个来源。
+/// 从同一个 `global_root` 派生这件事本身是重点：两个根若各读各的 env 变量，
+/// 默认值相同但可以被配成不同的目录，session memory 就会写去没人会读的地方。
 #[derive(Debug, Clone)]
 pub struct HistoryRoots {
     /// 按项目分的状态（transcript）。
@@ -232,8 +229,8 @@ mod tests {
         assert_eq!(c, p);
     }
 
-    /// 两个根同源——它们曾经各读各的 env 变量，默认相同但可以被配散，
-    /// session memory 因此写去过没人会读的地方。
+    /// 两个根同源——各读各的 env 变量就可能被配散，session memory 会写去
+    /// 没人会读的地方。
     #[test]
     fn both_roots_come_from_the_one_global_root() {
         let roots = HistoryRoots::under(Path::new("/state/.agix"));

@@ -1,4 +1,4 @@
-//! **Q1 **: concrete `SecondaryLlm` implementation backed by an
+//! Concrete `SecondaryLlm` implementation backed by an
 //! AnthropicClient. Used by `WebFetchTool` to route per-fetch extraction
 //! through a cheap (haiku-tier) model so the main turn doesn't have to
 //! ingest a full HTML page.

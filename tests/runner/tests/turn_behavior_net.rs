@@ -516,8 +516,7 @@ async fn repeated_calls_are_noticed() {
 /// model must see a denial rather than a result.
 ///
 /// This one shells out, because the only hook backend that can answer a
-/// decision without a subprocess or a model call does not exist yet — that
-/// missing in-process backend is the gap `P2-7` is about. It is a `printf` of
+/// decision without a subprocess or a model call does not exist yet. It is a `printf` of
 /// a fixed string, so the content is deterministic even though the mechanism
 /// is heavier than the rest of this file.
 #[tokio::test]
@@ -593,21 +592,14 @@ async fn subagent_spawn() {
     .await;
 }
 
-// ── Phase 3 decisions ───────────────────────────────────────────────────
-//
-// The four decisions Phase 3's first six work orders move, each of which had
-// no case before. Written *before* the code moves, so the trace they pin is
-// the behavior as it is today rather than as it came out.
-
-/// **D2 — stop on the per-turn call ceiling.**
+/// **Stop on the per-turn call ceiling.**
 ///
 /// The model asks for a tool forever; the loop must stop itself. What the
 /// trace pins is both halves: which reason it stops with (`max_turns`, not
 /// `end_turn`), and how many model calls it made before deciding — a
 /// ceiling that is off by one is a real change and an invisible one.
 ///
-/// The ceiling comes from `min(settings, scene)`. This case sets the scene's,
-/// which is the half that used to be ignored entirely.
+/// The ceiling comes from `min(settings, scene)`. This case sets the scene's.
 #[tokio::test]
 async fn stops_at_the_per_turn_call_ceiling() {
     let mut case = Case::new(
@@ -636,7 +628,7 @@ async fn stops_at_the_per_turn_call_ceiling() {
     check(case).await;
 }
 
-/// **D13 — the tool-result budget truncates an oversized result.**
+/// **The tool-result budget truncates an oversized result.**
 ///
 /// `GoldenFlood` returns 60_000 bytes, past the 50_000-byte per-result cap.
 /// The decision is invisible in every other case because every other tool
@@ -659,7 +651,7 @@ async fn an_oversized_tool_result_is_truncated_by_the_budget() {
     .await;
 }
 
-/// **D11 — an output-token target keeps the turn going.**
+/// **An output-token target keeps the turn going.**
 ///
 /// `+50k` in the user message sets a target; the loop then injects a nudge
 /// and continues rather than ending on the model's `end_turn`. Three things
@@ -689,7 +681,7 @@ async fn an_output_token_target_continues_then_gives_up_on_diminishing_returns()
     .await;
 }
 
-/// **D14 — reactive compaction that fires and clears nothing.**
+/// **Reactive compaction that fires and clears nothing.**
 ///
 /// The flag is on and the trigger fires: with a 20k context limit the
 /// reactive check's `trigger = 50_000` remaining-token threshold is satisfied
@@ -730,7 +722,7 @@ async fn reactive_compaction_fires_but_clears_nothing() {
     check(case).await;
 }
 
-/// **D14 — reactive compaction with a consequence.**
+/// **Reactive compaction with a consequence.**
 ///
 /// Seven `Read` rounds in one turn, well under the 20k threshold, so the
 /// budget never forces anything: everything this case shows is the predictive
@@ -739,13 +731,10 @@ async fn reactive_compaction_fires_but_clears_nothing() {
 /// oldest results are blanked and `content_bytes` in the model-call column
 /// stops climbing.
 ///
-/// The pass used to be unobservable — it adopted its result only when the
-/// message *count* dropped, and blanking a body in place never drops the
-/// count, so the work was done and thrown away on every round. This case
-/// exists because that is now fixed, and it is what would notice if it broke
-/// again. Reverse-verified two ways: turning the feature flag off for this
-/// case, and putting the message-count criterion back, each leave
-/// `content_bytes` climbing and fail here.
+/// Blanking a body in place never drops the message *count*, so the pass
+/// must adopt its result on content, not on count — turning the feature
+/// flag off, or judging by message count, leaves `content_bytes` climbing
+/// and fails here.
 #[tokio::test]
 async fn reactive_compaction_clears_old_tool_results() {
     fn read(id: &'static str) -> Reply {

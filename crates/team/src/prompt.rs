@@ -54,12 +54,10 @@ pub struct WorkerContext<'a> {
 
 /// Prepend a minimal team-context block to a worker's task prompt.
 ///
-/// Workers used to receive `agent_spec.prompt` verbatim, with no idea they
-/// were part of a team, which stage they were in, or where the shared
-/// scratchpad lived — the coordinator prompt compensated by repeatedly
-/// telling the lead that "every worker prompt must be self-contained".
-/// That is prompt engineering standing in for a missing piece of plumbing;
-/// this is the piece.
+/// Without it a worker gets `agent_spec.prompt` verbatim, with no idea it is
+/// part of a team, which stage it is in, or where the shared scratchpad
+/// lives — and the coordinator prompt would have to keep telling the lead
+/// that "every worker prompt must be self-contained".
 ///
 /// Deliberately short: orientation facts only, no instructions, no second
 /// system prompt. The worker's own system prompt (its scene + agent type)

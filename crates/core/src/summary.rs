@@ -1,8 +1,8 @@
 //! Sub-agent summary — `AgentSummary` + `build_agent_summary`.
 //!
-//! **D2 **: split out of `agent_tool.rs` — the summary is a pure data
-//! structure derived from the sub-agent's final message history; nothing
-//! about it depends on the AgentTool runtime, so it lives in its own file.
+//! The summary is a pure data structure derived from the sub-agent's final
+//! message history; nothing about it depends on the AgentTool runtime, so it
+//! lives in its own file.
 //!
 //! Used by:
 //! - `AgentTool` to render the markdown back to the parent agent

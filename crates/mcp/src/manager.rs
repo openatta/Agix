@@ -98,11 +98,11 @@ pub struct McpManager {
     /// `crate::notify::NotificationQueue`. Shared with every connected
     /// client, since the reaction (re-asking for tools) is manager-wide.
     notifications: Arc<crate::notify::NotificationQueue>,
-    /// P2-2: MCP notification channel allowlist — only notifications from
+    /// MCP notification channel allowlist — only notifications from
     /// servers whose names appear in this set are dispatched to handlers.
     /// Empty = allow all.
     pub notification_allowlist: Option<std::collections::HashSet<String>>,
-    /// P2-2: Per-server tool permission overrides. Maps server_name → allowed_tool_names.
+    /// Per-server tool permission overrides. Maps server_name → allowed_tool_names.
     /// If a server has an entry, only listed tools are callable. Empty vec = allow all.
     pub tool_permissions: std::collections::HashMap<String, Vec<String>>,
     /// Shared MCP output cache.
@@ -151,7 +151,7 @@ impl McpManager {
     /// notification allowlist. Servers not in the allowlist are silently skipped.
     /// Handlers that panic are caught and skipped.
     pub async fn dispatch_notification(&self, notification: McpNotification) {
-        // P2-2: Check notification allowlist
+        // Check notification allowlist
         let server = match &notification {
             McpNotification::ToolListChanged { server }
             | McpNotification::ResourceListChanged { server }
@@ -172,7 +172,7 @@ impl McpManager {
         }
     }
 
-    /// P2-2: Check whether a specific MCP tool is allowed based on tool_permissions.
+    /// Check whether a specific MCP tool is allowed based on tool_permissions.
     /// Returns true if the tool is allowed, false if blocked by per-server rules.
     pub fn is_tool_allowed(&self, server: &str, tool_name: &str) -> bool {
         match self.tool_permissions.get(server) {
@@ -182,12 +182,12 @@ impl McpManager {
         }
     }
 
-    /// P2-2: Set the notification allowlist. Pass None to allow all servers.
+    /// Set the notification allowlist. Pass None to allow all servers.
     pub fn set_notification_allowlist(&mut self, servers: Option<Vec<String>>) {
         self.notification_allowlist = servers.map(|v| v.into_iter().collect());
     }
 
-    /// P2-2: Set tool permissions for a specific server. Pass empty vec to allow all.
+    /// Set tool permissions for a specific server. Pass empty vec to allow all.
     pub fn set_tool_permissions(&mut self, server: &str, allowed: Vec<String>) {
         self.tool_permissions.insert(server.to_string(), allowed);
     }
@@ -773,7 +773,7 @@ impl McpManager {
     ///
     /// The caller (`runtime`'s `build_mcp_instructions`) concatenates these
     /// straight into the system prompt with no further limit, so the bound has
-    /// to live here: a single chatty server used to be able to push the actual
+    /// to live here: otherwise a single chatty server could push the actual
     /// system prompt out of the model's attention, and N of them could do it
     /// even while each stayed under the per-connection clamp in `connect.rs`.
     pub fn server_instructions(&self) -> Vec<McpServerInstruction> {
@@ -1013,14 +1013,10 @@ mod tests {
         assert_eq!(names, vec!["mcp__docs__read", "mcp__api__new_tool"]);
     }
 
-    /// Regression: `elicitation_callback` used to be a plain
-    /// `Option<ElicitationCallback>` snapshotted into each `McpToolAdapter`
-    /// at construction time. `refresh_tools()` — which every real embedder
-    /// calls before it gets a chance to call `set_elicitation_callback`
-    /// (see `runtime::agent::Builder::build()`) — built adapters holding
-    /// `None` forever, so a callback set afterward silently never reached
-    /// them. Now it's a shared cell: setting the callback *after*
-    /// `refresh_tools()` already ran must still reach the adapters it built.
+    /// Every real embedder calls `refresh_tools()` before it gets a chance to
+    /// call `set_elicitation_callback` (see `runtime::agent::Builder::build()`),
+    /// so setting the callback *after* `refresh_tools()` already ran must
+    /// still reach the adapters it built.
     #[tokio::test]
     async fn elicitation_callback_set_after_refresh_tools_still_reaches_existing_adapters() {
         let client = Arc::new(crate::client::MockMcpClient::new(
@@ -1380,10 +1376,8 @@ mod tests {
 mod notification_wiring_tests {
     use super::*;
 
-    /// Regression: `McpNotification` existed, `dispatch_notification`
-    /// existed, and nothing in the process ever constructed one — a server
-    /// announcing new tools was talking to a wall. This pins the queue that
-    /// closes the gap.
+    /// A server announcing new tools must reach `dispatch_notification`;
+    /// this pins the queue that carries the `McpNotification` there.
     #[tokio::test]
     async fn a_manager_starts_with_nothing_announced() {
         let mut m = McpManager::empty();

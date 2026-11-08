@@ -202,16 +202,10 @@ impl DeferredTool {
 /// register is not an error, the same way a `tools()` whitelist entry with no
 /// matching tool isn't.
 ///
-/// `Tool::is_deferred()` is deliberately **not** consulted. It used to skip
-/// wrapping anything already reporting `true`, on the reasoning that
-/// double-wrapping adds a pointless indirection. That reasoning inverted the
-/// dependency: `is_deferred()` is what `ToolSearchTool` filters on, but the
-/// wrapper is the only thing that collapses `input_schema()`. A tool
-/// declaring `is_deferred()` on itself therefore ended up in the worst of
-/// both states — reported as deferred, so the model was told to fetch it via
-/// `ToolSearch`, while still shipping its full schema on every request. Two
-/// dozen built-in tools declare it, so the skip silently voided most of any
-/// scene's policy.
+/// `Tool::is_deferred()` is deliberately **not** consulted: it is what
+/// `ToolSearchTool` filters on, but only the wrapper collapses
+/// `input_schema()`. Skipping tools that already report `true` would leave
+/// them advertised as deferred while still shipping their full schema.
 ///
 /// Wrapping is idempotent in the way that matters — a wrapped tool's schema
 /// is already the stub and every other method delegates — but nesting is

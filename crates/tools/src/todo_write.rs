@@ -41,7 +41,6 @@ impl Tool for TodoWriteTool {
         "Maintain a structured task list for the current turn."
     }
 
-    /// **P3f **: deferred -- only Bash/Read/Edit/ToolSearch 4 eager.
     fn input_schema(&self) -> Value {
         crate::input_schema::<TodoWriteInput>()
     }

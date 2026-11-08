@@ -111,14 +111,12 @@ pub struct Settings {
     /// `permission_mode` above.
     ///
     /// The daemon's `session.create` takes an optional `permission_mode` in
-    /// its options. That used to override `permission_mode` outright in
-    /// either direction, which made this setting a default rather than a
-    /// policy: any client that could authenticate could open a
-    /// `bypassPermissions` session no matter how the daemon was configured
-    /// (and `crates/assembly/src/server.rs` notes there is no per-method
-    /// authorization on that socket). With this `false` — the default — a
-    /// client can still *tighten* the mode for its own session, but a
-    /// request to loosen it is clamped to what is configured here.
+    /// its options. With this `false` — the default — a client can *tighten*
+    /// the mode for its own session, but a request to loosen it is clamped to
+    /// what is configured here. Otherwise any client that could authenticate
+    /// could open a `bypassPermissions` session no matter how the daemon was
+    /// configured (`crates/assembly/src/server.rs` notes there is no
+    /// per-method authorization on that socket).
     ///
     /// Set it to `true` only when every client of this daemon is as trusted
     /// as the daemon itself.
@@ -129,11 +127,7 @@ pub struct Settings {
     ///
     /// Defaults to **on**: a session writes one JSONL file per session under
     /// `<local_data_dir>/telemetry/`, which is what makes a run debuggable
-    /// after the fact (tool calls, permission decisions, turn costs). This
-    /// used to be effectively off — the daemon attached a recorder only when
-    /// a caller passed an explicit output path, and the no-recorder fallback
-    /// dropped every event on the floor — so nothing was ever recorded
-    /// unless someone had planned for it in advance.
+    /// after the fact (tool calls, permission decisions, turn costs).
     #[serde(default = "default_true")]
     pub telemetry_enabled: bool,
 
@@ -332,11 +326,10 @@ fn default_scope() -> String {
 impl PathSettings {
     /// The actual project working directory — **not** `local_data_dir`
     /// itself, which is `<project_root>/.agix` (flat, no scope segment; see
-    /// `base::paths::ConfigPaths`). Several call sites used to pass
-    /// `local_data_dir` straight to `FrozenContext::collect` as if it were
-    /// the project root, which meant `AGENTS.md`/git-status discovery was
-    /// scanning the `.agix/` directory instead of the real project — this is
-    /// the fixed, single place that derives it correctly (falls back to
+    /// `base::paths::ConfigPaths`). Passing `local_data_dir` to
+    /// `FrozenContext::collect` as the project root would make
+    /// `AGENTS.md`/git-status discovery scan `.agix/` instead of the real
+    /// project; this is the single place that derives it (falls back to
     /// `local_data_dir` itself if it has no parent, e.g. `.agix` sitting at
     /// filesystem root — not expected in practice).
     pub fn project_root(&self) -> PathBuf {
@@ -394,9 +387,8 @@ pub struct ExecutionSettings {
     /// cancellation interrupts it).
     ///
     /// The wait itself lives in the engine (`execute_tool_inner`), so the
-    /// bound has to be reachable from `EngineConfig` — it previously existed
-    /// only as a daemon-side flag, which meant any host driving the engine
-    /// directly had no timeout at all.
+    /// bound has to be reachable from `EngineConfig`, not only from a
+    /// daemon-side flag — a host driving the engine directly needs it too.
     ///
     /// Failing closed (deny, not permit) on expiry is deliberate: a prompt
     /// that went unanswered is not consent.
@@ -555,11 +547,10 @@ pub struct SandboxConfig {
     /// Paths to re-allow reading, on top of the built-in credential deny
     /// defaults (`~/.ssh`, `~/.aws`, `~/.npmrc`, ...). Most specific wins.
     ///
-    /// Exists because those defaults are now actually applied to `Bash` (they
-    /// used to be defined and never reached production), and some of them
+    /// Exists because those defaults are applied to `Bash`, and some of them
     /// sit on legitimate workflows — `npm install` against a private registry
     /// reads `~/.npmrc`, `docker build` reads `~/.docker/config.json`.
-    /// Without this there was no way to say "yes, that one is fine here".
+    /// This is the way to say "yes, that one is fine here".
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allow_read: Vec<PathBuf>,
     /// Extra filename segments a tool may never write, on top of the built-in
@@ -1368,7 +1359,7 @@ mod tests {
         assert_eq!(settings.model.model_name, "scene-model");
     }
 
-    /// P3-14's acceptance: the same configuration, once from six files and
+    /// The same configuration, once from six files and
     /// once from a source that never touches a disk, has to produce the same
     /// `Settings` — including the two rules that are not part of the generic
     /// merge (an overlay's `permission_rules` held apart, `paths` ignored).

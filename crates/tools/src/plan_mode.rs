@@ -7,18 +7,10 @@
 //! - mode 走 `SessionState::{permission_mode, set_permission_mode}`
 //! - plan_text 走 `SessionState::{plan_text, set_plan_text, clear_plan_text}`
 //!
-//! 这两样以前都存在 process-wide static 里，有两个后果：
-//!
-//! 1. **权限层看不到**。`PermissionGate` 分派读的是
-//!    `ctx.session.permission_mode()`，从来没有人读那个 static——所以
-//!    `EnterPlanMode` 只是打印了一段文字，非只读工具照跑不误，plan 模式
-//!    完全是装饰品。
-//! 2. **daemon 是多会话的**。一个 static 被所有会话共享，A 会话进 plan
-//!    模式会让 B 会话的 `ExitPlanMode` 校验通过。
-//!
-//! 现在两者都落在 `ToolContext.session` 上（引擎为整个会话持有同一个
-//! `Arc<SessionState>`，见 `runtime::agent::Builder::build()`），于是
-//! `PermissionGate` 立刻就能看到模式切换，会话之间也互不干扰。
+//! 两者都落在 `ToolContext.session` 上（引擎为整个会话持有同一个
+//! `Arc<SessionState>`，见 `runtime::agent::Builder::build()`）：`PermissionGate`
+//! 分派读的就是 `ctx.session.permission_mode()`，所以立刻能看到模式切换；daemon
+//! 是多会话的，状态挂在会话上，A 会话进 plan 模式不会影响 B 会话。
 //!
 //! [`SessionState`]: base::context::SessionState
 
@@ -74,7 +66,6 @@ impl Tool for EnterPlanModeTool {
         "EnterPlanMode"
     }
 
-    /// **P3b **: 标 deferred —— 系统 prompt 仅暴露 name + 短描述，模型用
     fn input_schema(&self) -> Value {
         crate::input_schema::<EnterPlanModeInput>()
     }
@@ -177,7 +168,6 @@ impl Tool for ExitPlanModeTool {
         "ExitPlanMode"
     }
 
-    /// **P3b **: 标 deferred —— 系统 prompt 仅暴露 name + 短描述，模型用
     fn input_schema(&self) -> Value {
         crate::input_schema::<ExitPlanModeInput>()
     }
@@ -228,10 +218,7 @@ impl Tool for ExitPlanModeTool {
             ctx.session.clear_plan_slug();
             // `allowed_prompts` are the permission grants the model is asking
             // for as part of leaving plan mode ("I will need to run the test
-            // suite"). They used to be parsed and then dropped on the floor —
-            // recorded in the transcript, enforced nowhere — so the model
-            // asked, the user approved a plan containing the request, and the
-            // very next `Bash` call prompted again anyway.
+            // suite").
             //
             // They are *requests*, not grants: this tool itself requires
             // confirmation (`check_permissions` → Ask), so a host that
@@ -277,13 +264,8 @@ mod tests {
     /// A `ToolContext` whose `session` is shared between the calls a test
     /// makes — the engine hands every tool call in a session the same
     /// `Arc<SessionState>` (see `runtime::agent::Builder::build()`), and
-    /// plan mode is only meaningful across calls.
-    ///
-    /// Note these tests no longer need to serialize against each other:
-    /// plan state is per-session now, so two tests running concurrently on
-    /// different threads own different `SessionState`s and cannot collide.
-    /// The previous `PLAN_TEST_SERIAL` mutex existed purely to work around
-    /// the process-wide static this replaced.
+    /// plan mode is only meaningful across calls. Plan state is per-session,
+    /// so concurrent tests own different `SessionState`s and cannot collide.
     fn session_ctx() -> ToolContext {
         ToolContext::for_test(PathBuf::from("/tmp"))
     }
@@ -402,8 +384,8 @@ mod tests {
         ));
     }
 
-    /// `allowed_prompts` used to be parsed and dropped. They must at least
-    /// reach the transcript, so the approval is visible and auditable.
+    /// `allowed_prompts` must at least reach the transcript, so the approval
+    /// is visible and auditable.
     #[tokio::test]
     async fn exit_plan_mode_reports_the_prompts_it_was_approved_with() {
         let c = session_ctx();

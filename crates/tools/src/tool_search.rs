@@ -729,11 +729,9 @@ mod tests {
         );
     }
 
-    /// A-1's payoff: `select:` on a documented tool returns the *body* of
-    /// `Tool::prompt()`, which before this reached the model on exactly zero
-    /// requests. `Documented` is deliberately **not** deferred — the tools
-    /// this defect was really about (`Agent`, `TeamCreate`) ship full schemas
-    /// and were still undiscoverable here.
+    /// `select:` on a documented tool returns the *body* of `Tool::prompt()`.
+    /// `Documented` is deliberately **not** deferred — tools like `Agent` and
+    /// `TeamCreate` ship full schemas and must still be discoverable here.
     #[tokio::test]
     async fn select_returns_the_tools_usage_guide() {
         const GUIDE: &str = "# Agent tool\n\nSpawn a sub-agent when the search is wide.";

@@ -92,7 +92,6 @@ impl Tool for EnterWorktreeTool {
     fn name(&self) -> &str {
         "EnterWorktree"
     }
-    /// **P3b **: 标 deferred —— 系统 prompt 仅暴露 name + 短描述。
     fn input_schema(&self) -> Value {
         crate::input_schema::<EnterWorktreeInput>()
     }
@@ -199,7 +198,6 @@ impl Tool for ExitWorktreeTool {
     fn name(&self) -> &str {
         "ExitWorktree"
     }
-    /// **P3b **: 标 deferred —— 系统 prompt 仅暴露 name + 短描述。
     fn input_schema(&self) -> Value {
         crate::input_schema::<ExitWorktreeInput>()
     }

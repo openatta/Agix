@@ -1,4 +1,4 @@
-//! **D **：用户 prompt 的轻量意图分类，按类别注入条件 system prompt 片段。
+//! 用户 prompt 的轻量意图分类，按类别注入条件 system prompt 片段。
 //!
 //! 触发点：每一轮 turn 开始时取最后一条 User Message 的文本，分类后把对应
 //! fragment 作为新 system block 追加（不进 cache，因为每 turn 可能不同）。

@@ -58,9 +58,9 @@ impl ProcessIdentity {
     ///   itself was never captured — `started_at == 0`). Distinct from
     ///   `Reused` on purpose: "can't tell" and "confirmed a different
     ///   process" call for different caller behavior (see
-    ///   [`decide_stale_lock`]) — collapsing them used to mean an
-    ///   unverifiable lock got silently reclaimed out from under a holder
-    ///   that was, for all anyone could tell, still alive.
+    ///   [`decide_stale_lock`]) — collapsing them would mean an
+    ///   unverifiable lock gets silently reclaimed out from under a holder
+    ///   that may well still be alive.
     pub fn check(recorded: &ProcessIdentity) -> ProcessLiveness {
         match pid_alive(recorded.pid) {
             Some(false) => return ProcessLiveness::Dead,
@@ -94,7 +94,7 @@ pub enum ProcessLiveness {
 /// What a caller weighing whether to reclaim a stale lock/discovery file
 /// should do, given a [`ProcessLiveness`] — shared by `daemon::discovery`
 /// and `team::lock` so their accept/reclaim decisions and log messages
-/// (previously duplicated verbatim in both) can't drift apart.
+/// can't drift apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StaleLockDecision {
     /// The recorded holder might still be there — confirmed alive, or

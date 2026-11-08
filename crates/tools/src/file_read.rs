@@ -146,7 +146,7 @@ impl Tool for FileReadTool {
 
         let path = resolve_path(&input.file_path, &ctx.cwd);
 
-        // **P (read dedup)**: 文件未变化且相同范围时跳过重新读取。
+        // 文件未变化且相同范围时跳过重新读取。
         if ctx
             .session
             .check_read_dedup_with_range(&path, input.offset, input.limit)
@@ -175,7 +175,7 @@ impl Tool for FileReadTool {
 
         match result {
             Ok(tool_result) => {
-                // **P (read-before-edit)**: 记录本次读取(含偏移范围)，供去重与 Edit/Write 做 staleness 检测。
+                // 记录本次读取(含偏移范围)，供去重与 Edit/Write 做 staleness 检测。
                 ctx.session
                     .record_read_with_range(&path, input.offset, input.limit);
                 Ok(tool_result)
@@ -245,7 +245,6 @@ async fn read_file_to_text(
         )));
     }
 
-    // T1.1: Multimedia detection — check extension before reading as text
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -312,23 +311,14 @@ async fn read_file_to_text(
     )))
 }
 
-// ── T1.1: Multimedia readers ──
-
-/// Read an image file and return base64-encoded content with MIME type info.
 /// Read an image as a real image block plus a cheap human-readable header.
 ///
-/// This used to return a single `String` containing the whole base64 payload
-/// inline. That was strictly worse than not supporting images at all: a 1 MB PNG
-/// became ~1.4 MB of base64 *text* in the message history — roughly 350k tokens
-/// by a chars/4 estimate — and the model still could not see the image, because
-/// text is text. (`enforce_tool_result_budget` then truncated it to 50 KB, i.e.
-/// ~12k tokens of meaningless base64 noise plus a mutilated payload.)
-///
-/// Now the payload rides in a `ToolResultBlock::image`, which the runtime lifts
+/// The payload rides in a `ToolResultBlock::image`, which the runtime lifts
 /// into a `ModelContentBlock::Image` — a real image on the wire, billed at the
-/// flat per-image rate rather than by base64 length. The header line stays as a
-/// text block: name/mime/size/dimensions are genuinely useful to the model and
-/// cost a handful of tokens.
+/// flat per-image rate rather than by base64 length. Base64 as *text* would
+/// cost ~350k tokens for a 1 MB PNG and the model still could not see it. The
+/// header line stays as a text block: name/mime/size/dimensions are genuinely
+/// useful to the model and cost a handful of tokens.
 async fn read_image(
     fs: &dyn FileSystem,
     path: &Path,
@@ -421,11 +411,9 @@ async fn read_pdf_text(
             ))
         }
         _ => {
-            // No probe read here. It used to open the file so that an
-            // unreadable PDF reported that rather than a cheerful "install
-            // poppler" — but the contract reads whole values, so the probe
-            // meant pulling up to fifty megabytes into memory and dropping
-            // them to sharpen one error message. `metadata` above already
+            // No probe read here: the contract reads whole values, so probing
+            // an unreadable PDF would pull up to fifty megabytes into memory
+            // to sharpen one error message. `metadata` above already
             // establishes the file is there.
             Ok(format!(
                 "[PDF: {} — {} bytes. Install pdftotext (poppler-utils) for text extraction.]",
@@ -1000,7 +988,7 @@ mod tests {
         0x15, 0xC4, 0x89,
     ];
 
-    /// W-4: `Read` on an image returns a real image block plus a small text
+    /// `Read` on an image returns a real image block plus a small text
     /// header — not a `String` with the whole base64 payload inlined.
     #[tokio::test]
     async fn reading_an_image_returns_an_image_block_not_inlined_base64() {
@@ -1047,8 +1035,7 @@ mod tests {
         assert_eq!(media_type, "image/png");
         assert_eq!(data, base64_encode(TINY_PNG));
 
-        // Regression guard for the actual defect: no text block may carry the
-        // base64 run. A 1 MB PNG used to put ~1.4 MB of it into the transcript.
+        // No text block may carry the base64 run.
         for block in &blocks {
             if let Some(text) = block.text.as_deref() {
                 assert!(
@@ -1060,7 +1047,7 @@ mod tests {
     }
 
     /// `read_pdf_text` shells out to `pdftotext`, so it returns real extracted
-    /// text and never had W-4's inlined-base64 problem. Its no-`pdftotext`
+    /// text, not inlined base64. Its no-`pdftotext`
     /// fallback returns a one-line notice, also text. Either way: plain `Text`,
     /// no binary payload.
     #[tokio::test]

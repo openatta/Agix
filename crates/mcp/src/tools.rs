@@ -1,7 +1,6 @@
 //! MCP 协议特性的工具包装：`ListMcpResources` / `ReadMcpResource`。
 //!
-//! **D1 **：原 `agix-tools/src/mcp_tools.rs`，搬到这里以解除 tools →
-//! mcp 的反向依赖。CLI 直接从 `agix_mcp::tools::{...}` 装配。
+//! 放在 mcp crate 里，tools 就不必依赖 mcp。CLI 直接从 `agix_mcp::tools::{...}` 装配。
 //!
 //! 设计取舍：
 //! - **不绑定具体 server name**：列资源时枚举所有 connected server 并合并
@@ -43,8 +42,6 @@ impl Tool for ListMcpResourcesTool {
         "ListMcpResources"
     }
 
-    /// **P3b **: 标 deferred —— 系统 prompt 仅暴露 name + 短描述，模型用
-    /// ToolSearch 激活后下一轮拉 full schema。减少静态 prompt 占用。
     fn is_deferred(&self) -> bool {
         false
     }
@@ -155,8 +152,6 @@ impl Tool for ReadMcpResourceTool {
         "ReadMcpResource"
     }
 
-    /// **P3b **: 标 deferred —— 系统 prompt 仅暴露 name + 短描述，模型用
-    /// ToolSearch 激活后下一轮拉 full schema。减少静态 prompt 占用。
     fn is_deferred(&self) -> bool {
         false
     }
@@ -288,11 +283,7 @@ pub fn make_mcp_tools(
     )
 }
 
-// ============ DispatchMcpTool ============
-//
-// **D1 **: moved from `agix-tools/src/saas_stubs.rs`.
-//
-// Introspection tool: lists which MCP servers have registered which tools.
+// DispatchMcpTool — introspection tool: lists which MCP servers have registered which tools.
 // Because Agix flat-mounts each server's tools under `mcp__<server>__<tool>`
 // names, this tool is used for discovery rather than dispatching calls.
 
@@ -550,8 +541,6 @@ mod tests {
         assert!(!matches!(r, ValidationResult::Ok));
     }
 
-    /// **D1 **: DispatchMcpTool migrated here from `agix-tools/src/saas_stubs.rs`;
-    /// keep the no-servers smoke test alongside the implementation.
     #[tokio::test]
     async fn mcp_dispatch_lists_zero_when_no_servers() {
         let tool = DispatchMcpTool::new(vec![]);

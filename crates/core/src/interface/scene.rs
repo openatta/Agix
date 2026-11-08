@@ -68,20 +68,12 @@ pub struct TokenBudget {
 
 /// Execution limits a scene imposes on its own turns.
 ///
-/// This type used to carry `max_parallelism` and `max_agent_depth` as well.
-/// Both were removed rather than left as decoration, because a limit that
-/// constrains nothing is worse than an absent one — it reads like a guarantee:
+/// Tool-call fan-out (`max_parallelism`) and delegation depth
+/// (`max_agent_depth`) are deliberately not here: both are bounded by
+/// `EngineConfig`, which is derived from `Settings`, not from the scene, and a
+/// scene that wants a different bound changes that config.
 ///
-/// - `max_parallelism`: tool-call fan-out is bounded by `EngineConfig`, which
-///   is derived from `Settings`, not from the scene; there is no scene-level
-///   consumer to route it to without inverting that ownership.
-/// - `max_agent_depth`: delegation depth *is* enforced now, by
-///   `AgentTool::Inner::spawn_guard` counting against
-///   `EngineConfig::max_agent_depth` on every spawn path. It stays on
-///   `EngineConfig` rather than moving here — the bound belongs to the
-///   engine, and a scene that wants a different one changes that config.
-///
-/// What remains is honoured — see `runtime::turn`'s `max_calls`.
+/// What is here is honoured — see `runtime::turn`'s `max_calls`.
 #[derive(Debug, Clone)]
 pub struct ExecutionParams {
     /// Ceiling on LLM round trips within a single turn for this scene.
@@ -93,10 +85,9 @@ pub struct ExecutionParams {
     /// wants to be stricter than the scene still gets its way.
     ///
     /// Defaults to no ceiling, so a scene that says nothing lets the setting
-    /// decide. It used to default to the same number the setting did, which
-    /// made the `min` a no-op in one direction and a silent clamp in the
-    /// other: an operator raising the setting for a long-running task got
-    /// the scene's number back with nothing to indicate why.
+    /// decide. Defaulting to the setting's own number would turn the `min`
+    /// into a silent clamp: an operator raising the setting for a
+    /// long-running task would get the scene's number back.
     pub max_api_calls_per_turn: u32,
 }
 

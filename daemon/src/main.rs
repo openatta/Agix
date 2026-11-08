@@ -279,10 +279,7 @@ async fn main() -> anyhow::Result<()> {
     // ── Resolve paths + load settings ────────────────────────────────────
     // `load_daemon_config` delegates all settings.json parsing/merging to
     // `Settings::load()` — the single canonical loader (global → scene →
-    // project). See `daemon::config` module docs for why this replaced a
-    // separate hand-rolled `Settings{}` literal that used to live in this
-    // function (that duplication is exactly how `permission_rules` ended up
-    // parsed nowhere despite being a real `Settings` field).
+    // project).
     let paths = DefaultDaemonPaths::from_env(&scope);
     let mut daemon_config = load_daemon_config(
         &cli.model,

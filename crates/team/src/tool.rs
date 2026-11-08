@@ -147,7 +147,7 @@ impl TeamCreateTool {
     }
 
     /// Attach the parent session's event channel so team-stage progress is
-    /// emitted as stages start/finish (T-3) rather than only at the very end.
+    /// emitted as stages start/finish rather than only at the very end.
     /// Takes `&self` — the tool is registered before the session's event
     /// channel exists; see `Coordinator::set_event_sender`.
     pub fn set_event_sender(&self, tx: crate::coordinator::TeamEventSender) {

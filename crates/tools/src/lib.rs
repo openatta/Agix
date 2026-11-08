@@ -331,7 +331,7 @@ mod register_builtin_tools_tests {
         }
     }
 
-    /// W-2 bridge 1: cron tools registered against a shared store actually
+    /// Cron tools registered against a shared store actually
     /// mutate that store — create → list → delete round-trips.
     #[tokio::test]
     async fn registered_cron_tools_round_trip_through_the_store() {
@@ -386,7 +386,7 @@ mod register_builtin_tools_tests {
         assert!(store.list().is_empty(), "CronDelete must reach the store");
     }
 
-    /// W-2 bridge 2: worktree tools share one registry, so `ExitWorktree`
+    /// Worktree tools share one registry, so `ExitWorktree`
     /// sees what `EnterWorktree` created. Nothing is active here, so the
     /// observable contract is the "no active worktree" path — the one that
     /// proves the two tools were wired to the *same* registry rather than

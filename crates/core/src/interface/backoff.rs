@@ -1,14 +1,9 @@
 //! `BackoffPolicy` — whether a failed request is tried again, and how long the
 //! caller waits first.
 //!
-//! Every wire protocol the engine speaks needs this decision, and each one had
-//! been answering it separately. The Anthropic client walked a six-step ladder
-//! with ±25% jitter and deferred to a `retry-after` header when the provider
-//! sent one; the OpenAI-compatible client walked a ladder with the same six
-//! numbers, no jitter, and no notion of a server hint. Nothing held the two
-//! together — the second was written to match the first and had already
-//! drifted, silently, in the direction that matters most under load: without
-//! jitter, every client that hits the same rate limit retries in lockstep.
+//! Every wire protocol the engine speaks needs this decision, and answers kept
+//! per client drift apart — most damagingly on jitter: without it, every
+//! client that hits the same rate limit retries in lockstep.
 //!
 //! # What is protocol-specific and what is not
 //!
@@ -22,9 +17,9 @@
 //!
 //! # The attempt budget is the policy's, not the caller's
 //!
-//! Both loops used to bound themselves by comparing an attempt counter against
-//! the ladder's length, which put "how many times" in the caller and "how
-//! long" in the table. They are one decision. The policy is asked after every
+//! Bounding a retry loop by comparing an attempt counter against the ladder's
+//! length would put "how many times" in the caller and "how long" in the
+//! table. They are one decision. The policy is asked after every
 //! failure and answers [`Backoff::GiveUp`] when it is done, so a deployment
 //! that wants four retries, or none, changes one thing rather than two.
 

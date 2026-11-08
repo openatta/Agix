@@ -1,6 +1,5 @@
 //! 类型化 daemon JSON-RPC 客户端 — 供集成测试复用，避免每处测试各自手写
-//! JSON 拼接/逐行解析（这曾经导致 `cli_runner.rs` 里调用了一个根本不存在的
-//! `"session.delete"` 方法而没人发现）。
+//! JSON 拼接/逐行解析（手写的方法名拼错了也不会有人发现）。
 //!
 //! 复用 `daemon::rpc` 里的 wire 类型（`RpcRequest`/`RpcResponse`/`SessionOptions` 等），
 //! 不重复定义，daemon 侧协议变了这里能在编译期感知到。
@@ -17,8 +16,7 @@
 //! - [`DaemonRpcClient::begin_turn`] 一帧一帧地拿，问「这一帧**什么时候**到」。
 //!
 //! 后者不是锦上添花。聚合式的读法看不出 token 是边生成边到达、还是憋到最后一次性
-//! 吐出来——两者聚合结果完全一样。daemon 曾经有 8 个写点一个都没 flush，正是这类
-//! bug，而当时的客户端结构上就测不出来。
+//! 吐出来——两者聚合结果完全一样，daemon 写点漏了 flush 这类 bug 只有逐帧读才测得出来。
 
 pub mod transport;
 

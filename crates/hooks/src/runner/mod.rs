@@ -119,7 +119,7 @@ pub trait PromptHookExecutor: Send + Sync {
     ) -> Result<String, String>;
 }
 
-/// P1-10: Agent hook executor trait. Consumers (CLI/daemon) implement this to
+/// Agent hook executor trait. Consumers (CLI/daemon) implement this to
 /// provide sub-agent execution for Agent-type hooks. The executor receives the
 /// hook prompt + payload and returns structured JSON: `{"ok": bool, "reason": "..."}`.
 #[async_trait::async_trait]
@@ -157,7 +157,7 @@ pub struct HookRunner {
     default_timeout: Duration,
     /// Prompt hook 执行器；None 时 Prompt hook 报"no executor"
     prompt_executor: Option<Arc<dyn PromptHookExecutor>>,
-    /// P1-10: Agent hook 执行器；None 时 Agent hook 报"no executor"
+    /// Agent hook 执行器；None 时 Agent hook 报"no executor"
     agent_executor: Option<Arc<dyn AgentHookExecutor>>,
     wasm_executor: Option<Arc<dyn WasmHookExecutor>>,
     /// HTTP hook 的出口；按需 lazy 初始化（绝大多数 session 不用 http hook）
@@ -168,10 +168,10 @@ pub struct HookRunner {
     /// Optional file watcher for `FileChanged` hooks.
     /// Kept alive so the underlying notify watcher continues to receive events.
     file_watcher: std::sync::Mutex<Option<crate::watcher::FileWatcher>>,
-    /// P2: Pending async rewake hooks — (event, config_index) pairs awaiting a
+    /// Pending async rewake hooks — (event, config_index) pairs awaiting a
     /// wake signal. When the wake channel fires, these hooks are re-executed.
     pending_rewakes: std::sync::Mutex<std::collections::HashSet<(HookEvent, usize)>>,
-    /// P2: Optional wake channel receiver. Something sends `()` via the
+    /// Optional wake channel receiver. Something sends `()` via the
     /// associated sender to signal that background work has completed,
     /// triggering re-execution of pending rewake hooks.
     wake_receiver: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<()>>>,
@@ -249,7 +249,6 @@ impl HookRunner {
         self
     }
 
-    /// P1-10: 注入 Agent hook 执行器。CLI 用 AgentSpawner 包一层注入。
     /// Wire the backend that runs plugin-provided hooks. Absent in a build
     /// without the plugin subsystem, where `HookConfig::Wasm` entries are
     /// skipped with an explanation rather than silently ignored.
@@ -258,12 +257,13 @@ impl HookRunner {
         self
     }
 
+    /// 注入 Agent hook 执行器。CLI 用 AgentSpawner 包一层注入。
     pub fn with_agent_executor(mut self, executor: Arc<dyn AgentHookExecutor>) -> Self {
         self.agent_executor = Some(executor);
         self
     }
 
-    /// P2: Builder-style setter for the wake channel receiver.
+    /// Builder-style setter for the wake channel receiver.
     /// The receiver is used by `check_rewakes()` to detect when background
     /// async work has completed and pending rewake hooks should be re-executed.
     pub fn with_wake_receiver(mut self, rx: tokio::sync::mpsc::UnboundedReceiver<()>) -> Self {
@@ -271,7 +271,7 @@ impl HookRunner {
         self
     }
 
-    /// P2: Post-construction setter for the wake channel receiver.
+    /// Post-construction setter for the wake channel receiver.
     /// Works on `&self` (uses interior mutability) so it can be called on
     /// an `Arc<HookRunner>`.
     pub fn set_wake_receiver(&self, rx: tokio::sync::mpsc::UnboundedReceiver<()>) {
@@ -485,7 +485,7 @@ impl HookRunner {
         }
         indexed.sort_by_key(|(i, _)| *i);
 
-        // P2: Check for rewake signals in hook responses.
+        // Check for rewake signals in hook responses.
         // If a hook has `async_rewake: true` in its config AND returns
         // `rewake: true` in its response, add it to the pending rewake set
         // for later re-execution when a wake signal fires.
@@ -610,7 +610,7 @@ impl HookRunner {
         }
     }
 
-    /// P1-10: Execute an Agent-type hook. Delegates to the injected AgentHookExecutor.
+    /// Execute an Agent-type hook. Delegates to the injected AgentHookExecutor.
     /// If no executor is available, returns Skipped with an explanation.
     async fn exec_agent(
         &self,
@@ -661,7 +661,7 @@ impl HookRunner {
         }
     }
 
-    /// P2: Check for wake signals and re-execute any pending rewake hooks.
+    /// Check for wake signals and re-execute any pending rewake hooks.
     ///
     /// Drains the wake receiver; if a wake signal (or channel close) is
     /// detected, re-runs all hooks in `pending_rewakes` with a minimal
@@ -1205,12 +1205,9 @@ mod tests {
         }
     }
 
-    /// Regression: `FileWatcher`/`enable_file_watching` existed fully
-    /// implemented (debounced `notify` watcher → dispatches `FileChanged` on
-    /// this runner) with zero production callers — `Builder::build()` never
-    /// called it, so a configured `FileChanged` hook silently never fired.
-    /// This exercises the real watcher end-to-end: modify a watched file,
-    /// confirm the hook actually runs.
+    /// A configured `FileChanged` hook fires through the real watcher
+    /// (debounced `notify` watcher → dispatches `FileChanged` on this
+    /// runner): modify a watched file, confirm the hook actually runs.
     #[tokio::test]
     async fn file_changed_hook_fires_on_watched_file_modification() {
         use std::io::Write;

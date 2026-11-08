@@ -1093,8 +1093,8 @@ mod extension_entry_tests {
         );
     }
 
-    /// P3-8's acceptance: whether an extension's state reaches the model is
-    /// now a question with somewhere to be answered, and both answers work.
+    /// Whether an extension's state reaches the model has somewhere to be
+    /// answered, and both answers work.
     #[test]
     fn an_extension_entry_can_be_projected_as_something_the_model_reads() {
         let s = SessionId::new();
@@ -1168,7 +1168,7 @@ mod extension_entry_tests {
         }
     }
 
-    /// The invariant P1-5 left open: model-visible content must be
+    /// Model-visible content must be
     /// reconstructible from the log alone.
     #[test]
     fn both_shipped_projections_survive_the_trip_through_the_log() {

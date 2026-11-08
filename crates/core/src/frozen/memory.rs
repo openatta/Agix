@@ -22,8 +22,8 @@ pub struct MemoryFileEntry {
 
 /// 跨会话 memory 目录 ＋ MEMORY.md 加载。
 ///
-/// 路径：`~/.agix/memory/<sha256(canonical_cwd)[..16]>/`——**2026-08-04 起不再
-/// 挂 scope**：memory 跟 sessions/recordings 一样，只分"项目级"与"全局级"，不分
+/// 路径：`~/.agix/memory/<sha256(canonical_cwd)[..16]>/`——**不挂 scope**：
+/// memory 跟 sessions/recordings 一样，只分"项目级"与"全局级"，不分
 /// scene（不同 scene 的工具配置跟这份 memory 属于哪个项目无关）。
 ///
 /// 行为：
@@ -57,7 +57,7 @@ pub(crate) async fn collect_memory(cwd: &Path, global_root: &Path) -> (PathBuf, 
 /// 项目级 memdir：`~/.agix/memory/<sanitize(cwd)>/*.md`，跨 session 持久知识
 /// （如"项目 X 常用命令"、"曾经的设计决策"）。只是文件加载；
 /// auto-extract / save tools 推迟。返回路径列表按文件名排序，让加载顺序稳定。
-/// **2026-08-04 起不再挂 scope**，理由同 [`collect_memory`]。
+/// **不挂 scope**，理由同 [`collect_memory`]。
 pub(crate) async fn collect_memdir_files(global_root: &Path, cwd: &Path) -> Vec<PathBuf> {
     // Cap the count of memory files loaded, keeping the newest by mtime.
     const MAX_MEMORY_FILES: usize = 200;
@@ -98,8 +98,7 @@ pub(crate) async fn collect_memdir_files(global_root: &Path, cwd: &Path) -> Vec<
 /// `walk_up=false` 时只读 cwd 级 `AGENTS.md`，跳过中间所有父目录。给 monorepo
 /// 子目录想隔离父级上下文用。
 ///
-/// **不再读取** `.agix/AGIX.md`（旧的双轨指令文件）——`AGENTS.md` 是唯一权威
-/// 指令文件。
+/// `AGENTS.md` 是唯一权威指令文件，**不读** `.agix/AGIX.md`。
 pub(crate) async fn collect_memory_files_with(
     cwd: &Path,
     do_walk_up: bool,
@@ -374,14 +373,10 @@ fn expand_synonyms(terms: &[String]) -> Vec<String> {
 ///
 /// This runs at session start only (not on compact rebuilds).
 ///
-/// **Not currently called anywhere in this codebase** — verified by
-/// full-repo grep during the 2026-08-03 AGENTS.md/.agents migration. This is
-/// meant as the foundation for the future user-confirmed import feature
-/// (migration doc Phase 3), which will supersede the automatic/silent
-/// behavior described above with an explicit user-confirmation step and
-/// retarget the output to `AGENTS.md` instead of `AGIX.md`. Left as-is (not
-/// deleted, not wired up) so that future work can reuse the merge-marker
-/// logic.
+/// **Not called anywhere in this codebase.** Kept as the foundation for a
+/// user-confirmed import, which would replace the automatic behavior above
+/// with an explicit confirmation step and target `AGENTS.md` instead of
+/// `AGIX.md`, reusing the merge-marker logic.
 pub async fn maybe_migrate_claude_to_agix(cwd: &Path) {
     // Walk up from cwd to root (same pattern as collect_memory_files_with)
     let mut dirs: Vec<PathBuf> = Vec::new();

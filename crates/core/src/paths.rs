@@ -20,9 +20,7 @@
 //! project is assumed to be worked on by one product instance at a time, so
 //! there's no collision to avoid the way there is under a shared `$HOME`.
 //!
-//! **2026-08-04 restructuring**: the user-level tree used to be entirely
-//! scene-scoped (`~/.agix/scenes/<scope>/{memory,sessions,recordings,skills,...}`). It is
-//! now split by resource type:
+//! The user-level tree is split by resource type:
 //!
 //! - **Global + scene override** (config-shaped, keyed by name): `settings.json`,
 //!   `skills/`, `plugins/`, `agents/`, `rules/`, `hooks/`. Present at both
@@ -38,8 +36,6 @@
 //!   scenes would be a correctness hazard (e.g. resuming a session recorded
 //!   under a different scene's tool set, or a recording replaying against the
 //!   wrong tool config).
-//! - **Removed**: `workflows/` — the named-workflow feature was dropped
-//!   before it had a loader; there is no replacement path.
 //!
 //! Project-level skills are **not** under `ConfigPaths` at all — they live in
 //! `.agents/skills/`, a sibling of `.agix/`, because that's the path Codex

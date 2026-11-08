@@ -83,15 +83,12 @@ pub fn count_text(s: &str) -> usize {
 /// Estimate input tokens for a slice of [`ModelMessage`]s — the protocol-agnostic
 /// message type that `session` and `compaction` operate on.
 ///
-/// This is the **single** estimator for the context-budget path. It previously
-/// had three independent implementations that disagreed with each other and with
-/// this module's real tokenizer:
-/// `session::SessionManager::token_count` (`len() / 4`, flat 50 for every
-/// non-text block), `compaction::grouping::estimate_tokens` (`len() / 4` plus
-/// per-block overheads), and `compaction::compact::analyze_context`. All three
-/// now delegate here, so the number that trips compaction, the number that
-/// decides which rounds to drop, and the number reported in telemetry are the
-/// same number.
+/// This is the **single** estimator for the context-budget path:
+/// `session::SessionManager::token_count`,
+/// `compaction::grouping::estimate_tokens` and
+/// `compaction::compact::analyze_context` all delegate here, so the number
+/// that trips compaction, the number that decides which rounds to drop, and
+/// the number reported in telemetry are the same number.
 ///
 /// Counts message *content* only. Per-message API framing (role, JSON
 /// punctuation) is a handful of tokens per message and is deliberately not

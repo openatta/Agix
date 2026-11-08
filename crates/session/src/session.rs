@@ -194,11 +194,6 @@ impl SessionManager {
     /// `token_budget().compact_threshold`, so it must agree with the estimate
     /// the compaction strategies use to decide what to drop. It therefore
     /// delegates to the workspace's single estimator rather than keeping its own.
-    ///
-    /// It used to be `text.len() / 4` with a flat 50 tokens charged to every
-    /// non-text block — which valued a 40 KB tool result and an empty one
-    /// identically at 50 tokens, i.e. exactly the blocks that fill a context
-    /// window were the ones it could not see.
     pub fn token_count(&self) -> usize {
         match &self.token_counter {
             Some(counter) => counter.count_messages(&self.messages),
@@ -885,10 +880,8 @@ mod tests {
         assert!(sessions.is_empty());
     }
 
-    /// A caller that supplies no id must still get one `persist()` accepts.
-    /// The generated default used to be a hyphenated UUID, which
-    /// `SessionId::parse` rejects — so every `persist()` bailed before
-    /// writing a byte and the only trace was a per-turn `warn!`.
+    /// A caller that supplies no id must still get one `persist()` accepts
+    /// (a hyphenated UUID, for one, is rejected by `SessionId::parse`).
     #[tokio::test]
     async fn default_session_id_is_one_persist_accepts() {
         let tmp = tempfile::tempdir().unwrap();

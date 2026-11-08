@@ -29,7 +29,7 @@ pub enum HookConfig {
         /// 一次性 hook：跑过一次后从 settings 摘掉
         #[serde(default)]
         once: Option<bool>,
-        /// P2: 异步唤醒机制。若为 true，hook 可返回 `{rewake: true}`
+        /// 异步唤醒机制。若为 true，hook 可返回 `{rewake: true}`
         /// 请求在后台工作完成时被重新执行。
         #[serde(default)]
         async_rewake: Option<bool>,
@@ -99,11 +99,11 @@ pub enum HookEvent {
     PermissionDenied,
     /// Fired during setup / initialization.
     Setup,
-    /// **B-4 **: fired when user attention is required (typically a
+    /// Fired when user attention is required (typically a
     /// permission prompt is pending). Hook can play a sound, send a desktop
     /// notification, or buzz a chat channel — output is ignored.
     Notification,
-    /// **B-4 **: fired when a sub-agent (`AgentTool`) finishes (success
+    /// Fired when a sub-agent (`AgentTool`) finishes (success
     /// or error). Lets parent context react — e.g. log the summary to a tracking
     /// system, or alert the user that long-running work is done.
     SubagentStop,
@@ -141,7 +141,7 @@ pub enum HookEvent {
     /// session from the pool, or giving the pool a hook runner of its own
     /// with no session to attach it to.
     ///
-    /// A further wrinkle found while auditing this: the pool's own
+    /// A further wrinkle: the pool's own
     /// propagation mechanism does not offer a free firing site either. A
     /// reconfigured pool bumps `config_generation`, and a stale-but-idle
     /// session is then *destroyed and rebuilt* before its next turn — so the
@@ -166,7 +166,7 @@ pub enum HookEvent {
     CwdChanged,
     /// File change detected (watch mode).
     FileChanged,
-    /// **P1 **: Fired after each model API sampling completes (streaming
+    /// Fired after each model API sampling completes (streaming
     /// response fully consumed). Hook receives model output for real-time
     /// audit, logging, or modification.
     PostSampling,
@@ -348,8 +348,7 @@ mod tolerant_parse_tests {
     use super::*;
     use serde_json::json;
 
-    /// The regression this function exists for: one bad name used to take
-    /// every other hook down with it.
+    /// One bad name must not take every other hook down with it.
     #[test]
     fn an_unknown_event_name_does_not_disable_the_other_hooks() {
         let cfg = json!({

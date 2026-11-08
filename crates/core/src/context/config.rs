@@ -16,7 +16,7 @@ pub struct EngineConfig {
     /// `ExecutionSettings::permission_prompt_timeout_secs`.
     pub permission_prompt_timeout_secs: u64,
     /// Maximum number of concurrency-safe tools to run in parallel
-    /// within a single batch. 0 = unlimited. Default 8.
+    /// within a single batch. 0 = unlimited. Default 10.
     pub max_parallelism: usize,
     /// +** — per-turn API call budget. Default **200**.
     ///   When exceeded, engine returns gracefully with
@@ -37,7 +37,7 @@ pub struct EngineConfig {
     pub team_max_persistent_members: usize,
     /// See `ExecutionSettings::team_member_idle_timeout_secs`.
     pub team_member_idle_timeout_secs: u64,
-    /// + §3 — auto-routing**: optional "strong" tier model. When set,
+    /// Auto-routing: optional "strong" tier model. When set,
     ///   the engine starts each turn at `model` (cheap/fast tier, e.g.
     ///   `ds-v4-flash`) and **escalates to `strong_model`** mid-turn on any
     ///   of these signals:
@@ -50,7 +50,7 @@ pub struct EngineConfig {
     /// User-facing API: surface as `--strong-model` CLI flag, or in
     /// `~/.agix/scenes/<scope>/settings.json`.
     pub strong_model: Option<String>,
-    /// **P2 (Phase 2)**: optional fallback model for retry on overloaded /
+    /// Optional fallback model for retry on overloaded /
     /// transport errors. When the primary model returns 503/529/transport
     /// error, the engine falls back to this model for the remaining turns.
     /// Once activated, stays active for the rest of the session to avoid
@@ -58,7 +58,7 @@ pub struct EngineConfig {
     /// `None` = no fallback (propagate the error immediately).
     /// User-facing API: surface as `--fallback-model` CLI flag.
     pub fallback_model: Option<String>,
-    /// **L1 **: thinking-mode policy.
+    /// Thinking-mode policy.
     /// - `Auto` — current default; engine picks based on model id (DS V4
     ///   gets `Disabled` to avoid the multi-turn 400 reasoning_content
     ///   protocol mismatch; everyone else gets `None` = let model decide).
@@ -90,13 +90,11 @@ pub struct EngineConfig {
     /// `None` keeps no record.
     pub process_groups: Option<std::sync::Arc<crate::interface::exec::local::GroupLedger>>,
 
-    // ---- file-op limits (grouped 2026-05-09; was 3 flat fields) ----
     /// File read/write byte/line limits. Sub-config keeps related field
     /// values together so cross-tool tuning (Read/Write/Edit) is one
     /// import path.
     pub file_limits: FileLimits,
 
-    // ---- system-prompt assembly (grouped 2026-05-09; was 5 flat fields) ----
     /// system prompt overrides + extras (AGENTS.md walk, output styles,
     /// append/override). All affect what gets baked into block [1-5] of
     /// the system prompt.
@@ -108,16 +106,15 @@ pub struct EngineConfig {
     pub max_agent_depth: u32,
 
     // ---- misc behavior ----
-    /// **RC-23**: 是否保留完整工具结果文本。默认 false —— 工具结果会被截断到
+    /// 是否保留完整工具结果文本。默认 false —— 工具结果会被截断到
     /// 2KB 再送回给模型。设 true 时原样透传（长输出场景可能显著消耗 context）。
     pub verbose_tool_results: bool,
     /// See [`PathStyle`]; mirrors `Settings.path_style`.
     pub path_style: PathStyle,
 }
 
-/// **§5 (2026-05-09)**: file-op limits sub-config. Was 3 flat fields on
-/// `EngineConfig`; grouping them surfaces the "tuning the FileRead/Write
-/// envelope" cluster as one knob.
+/// File-op limits sub-config: the "tuning the FileRead/Write envelope"
+/// cluster as one knob.
 #[derive(Debug, Clone)]
 pub struct FileLimits {
     /// 文件读 / 写的字节上限。FileRead 检查 metadata.len() 用。
@@ -143,7 +140,7 @@ impl Default for FileLimits {
     }
 }
 
-/// **§5 (2026-05-09)**: system-prompt assembly knobs sub-config.
+/// System-prompt assembly knobs sub-config.
 #[derive(Debug, Clone, Default)]
 pub struct SystemPromptSettings {
     pub append: Option<String>,
@@ -163,7 +160,7 @@ pub struct SystemPromptSettings {
     /// 是否在 cwd 之上向上爬找 AGENTS.md。默认 true。
     /// monorepo 子目录不想吃父级 monorepo 上下文时设 false。
     pub memory_walk_up: bool,
-    /// **A-5 **: 选中的 output style 名称（user/project 级别均可）。
+    /// 选中的 output style 名称（user/project 级别均可）。
     /// 引擎在 collect FrozenContext 时按此名称从
     /// `~/.agix/scenes/<scope>/output-styles/<name>.md` 或 `<cwd>/.agix/output-styles/<name>.md`
     /// 读取内容，注入 system prompt 末段。None = 不注入额外 style。
@@ -292,9 +289,6 @@ impl EngineConfig {
             model,
             max_tokens: 16384,
             permission_prompt_timeout_secs: 300,
-            // **P7 **: 4 → 8 to align closer to TS reference (which defaults
-            // to 10). 8 leaves a 2-slot safety margin for tokio scheduler under
-            // heavy parallel Read/Glob/Grep batches.
             max_parallelism: 10,
             max_api_calls_per_turn: 25,
             team_stage_concurrency: 6,
@@ -328,15 +322,11 @@ impl EngineConfig {
         }
     }
 
-    /// Derive a real `EngineConfig` from a loaded `Settings` — the
-    /// production tool-dispatch call site (`runtime::turn::execute_tool_inner`)
-    /// previously hardcoded `defaults_for("unknown")` here, silently discarding whatever the user
-    /// actually configured in `settings.json` (permission mode, sandbox
-    /// policy, `disable_skill_shell_execution`, etc.) for every single tool
-    /// call. Starts from `defaults_for()`'s baseline and overlays every field
-    /// `Settings` actually carries; fields `Settings` has no equivalent for
-    /// (e.g. `strong_model`, `file_limits`, `max_agent_depth`) are left at
-    /// their `defaults_for()` value, same as before this existed.
+    /// Derive a real `EngineConfig` from a loaded `Settings`. Starts from
+    /// `defaults_for()`'s baseline and overlays every field `Settings`
+    /// actually carries; fields `Settings` has no equivalent for (e.g.
+    /// `strong_model`, `file_limits`, `max_agent_depth`) are left at their
+    /// `defaults_for()` value.
     pub fn from_settings(settings: &crate::settings::Settings) -> Self {
         let mut c = Self::defaults_for(settings.model.model_name.clone());
         c.max_tokens = settings.model.max_tokens;

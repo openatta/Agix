@@ -20,11 +20,10 @@ use crate::interface::prompt_registry::PromptRegistry;
 /// What a set of bindings produced, sorted by where each piece has to be
 /// installed.
 ///
-/// The carrier used to hand back a `PromptRegistry` because the one point
-/// it supported lived there. Most points do not: a tool-result transformer
-/// and a model interceptor go on the session builder, and a prompt hook
-/// goes on the registry. So this is the shape of the answer — the caller
-/// owns those three places and puts each pile where it belongs.
+/// The pieces go to different places: a tool-result transformer and a model
+/// interceptor go on the session builder, and a prompt hook goes on the
+/// registry. The caller owns those three places and puts each pile where it
+/// belongs.
 #[derive(Default)]
 pub struct BoundScripts {
     /// What every script call did, in the order the points made them.

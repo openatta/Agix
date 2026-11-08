@@ -6,10 +6,9 @@
 //! run a package's WebAssembly components?* is the `plugins` feature, which
 //! pulls in wasmtime and is exclusive with the script carrier.
 //!
-//! They used to be one feature, and the cost was that the default build could
-//! not install a package at all: a package whose whole content was an MCP
-//! server or a script — nothing to run in-process — was refused for want of a
-//! WebAssembly engine it never needed.
+//! They are separate features so the default build can install a package
+//! whose whole content is an MCP server or a script — nothing to run
+//! in-process — without a WebAssembly engine it never needs.
 //!
 //! So there are three implementations of the same API here, selected by
 //! feature: packages with a carrier, packages without one, and neither. The

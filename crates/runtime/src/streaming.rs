@@ -670,18 +670,13 @@ mod tests {
         );
     }
 
-    /// Regression for the bug that produced a real API 400 during a live
-    /// recording run: `unexpected tool_use_id found in tool_result blocks —
-    /// Each tool_result block must have a corresponding tool_use block in the
-    /// previous message`. Root cause: when the model emits the same
-    /// (name, input) tool call twice in one response, the duplicate-skip
-    /// branch pushed a synthetic `ToolResult` for the duplicate's
-    /// `tool_use_id` but never pushed a matching `ToolUse` block (that push
-    /// happened *after* the dedup check, which `continue`d past it) — so the
-    /// session ended up with a `tool_result` whose `tool_use_id` had no
-    /// preceding `tool_use`, which every real provider rejects on the next
-    /// request. Every `ToolUse` the model emits — duplicate or not — must
-    /// now be recorded before any matching `ToolResult`.
+    /// When the model emits the same (name, input) tool call twice in one
+    /// response, the duplicate-skip branch still answers the duplicate's
+    /// `tool_use_id`, so its `ToolUse` must be recorded too: a `tool_result`
+    /// with no preceding `tool_use` is rejected by every real provider
+    /// (`unexpected tool_use_id found in tool_result blocks`). Every
+    /// `ToolUse` the model emits — duplicate or not — must be recorded
+    /// before any matching `ToolResult`.
     #[tokio::test]
     async fn duplicate_tool_call_still_gets_a_paired_tool_use_block() {
         let events: Vec<Result<ModelEvent, ModelError>> = vec![
@@ -741,14 +736,13 @@ mod tests {
         assert!(seen_tool_use_ids.contains("call_2"));
     }
 
-    /// Regression for the real API 400 hit during a live recording run:
-    /// `tool_use ids were found without tool_result blocks immediately
-    /// after`. One response emits a concurrency-safe tool (Glob) then a
+    /// One response emits a concurrency-safe tool (Glob) then a
     /// non-concurrency-safe one (Bash) — the mix that forces the "drain
-    /// batch then execute sequential" path. Before the grouping fix, each
-    /// tool_use/tool_result pair was its own session message, so the second
-    /// tool's ToolUse message landed before the first tool's ToolResult
-    /// message — exactly what the API rejects.
+    /// batch then execute sequential" path. The tool_use blocks must be
+    /// grouped: if each tool_use/tool_result pair were its own session
+    /// message, the second tool's ToolUse would land before the first tool's
+    /// ToolResult — the API rejects that (`tool_use ids were found without
+    /// tool_result blocks immediately after`).
     #[tokio::test]
     async fn mixed_concurrent_and_sequential_tool_calls_keep_strict_adjacency() {
         let events: Vec<Result<ModelEvent, ModelError>> = vec![
@@ -836,20 +830,14 @@ mod tests {
         assert_eq!(session.messages().len(), 2);
     }
 
-    /// Regression for a real replay-determinism bug: three
-    /// concurrency-safe tools submitted in order A, B, C but made to
+    /// Three concurrency-safe tools submitted in order A, B, C but made to
     /// *finish* in the reverse order C, B, A (artificial per-call delays,
     /// simulating real-world scheduling where a fast `Glob` beats a slower
-    /// one). Before the fix, `pending_result_blocks` was pushed to in
-    /// `FuturesUnordered` completion order, so the flushed `ToolResult`
-    /// message came out C, B, A — same *set* of ids (the API doesn't care),
-    /// but a different exact message, so every request after this point
-    /// differed between two runs of the same conversation. Found via a real
-    /// recorded turn (3 parallel `Glob` calls) that diverged on replay for no
-    /// code-level reason — the model's own request was identical, only the
-    /// tool completion timing differed between record and replay. The fix
-    /// (`idx`-sorting at flush time, mirroring `dispatch.rs`) must produce
-    /// A, B, C regardless of completion order.
+    /// one). The flushed `ToolResult` message must come out A, B, C
+    /// (`idx`-sorted at flush time, mirroring `dispatch.rs`): the API doesn't
+    /// care about the order, but replay does — a different exact message
+    /// makes every later request differ between two runs of the same
+    /// conversation.
     #[tokio::test]
     async fn concurrent_tool_results_flush_in_submission_order_not_completion_order() {
         let events: Vec<Result<ModelEvent, ModelError>> = vec![
@@ -923,17 +911,14 @@ mod tests {
         );
     }
 
-    /// Regression test: the final concurrent batch of a turn — the common
-    /// case, since most turns simply end after their last round of tool
-    /// calls — used to drain (the loop right after "Phase 1" stream
-    /// consumption ends) without ever calling `batch_abort.cancel()` on an
-    /// error, unlike the mid-stream non-concurrency-safe-barrier drain,
-    /// which does. So this module's own doc comment ("any tool error
-    /// cancels all siblings in the same batch") was only true for the less
-    /// common barrier-interrupted case. Here: a fast-erroring tool and a
-    /// slow tool submitted in the same batch — the slow one must observe
-    /// cancellation (and return quickly) rather than running to completion,
-    /// proving `batch_abort` actually fires from this drain path now.
+    /// The final concurrent batch of a turn — the common case, since most
+    /// turns simply end after their last round of tool calls — is drained
+    /// after stream consumption ends, not at a mid-stream barrier, and that
+    /// drain must also call `batch_abort.cancel()` on an error ("any tool
+    /// error cancels all siblings in the same batch"). Here: a fast-erroring
+    /// tool and a slow tool submitted in the same batch — the slow one must
+    /// observe cancellation (and return quickly) rather than running to
+    /// completion.
     #[tokio::test]
     async fn end_of_stream_drain_cancels_slow_sibling_after_a_fast_error() {
         let events: Vec<Result<ModelEvent, ModelError>> = vec![

@@ -1,11 +1,8 @@
 //! The two protocols this crate implements, as registrable factories.
 //!
-//! The composition root used to match on `api_type` and build these inline,
-//! which put "which protocols exist" in the daemon rather than in the crate
-//! that implements them, and made a third protocol impossible to add without
-//! editing that match. These are the same two constructions, moved next to
-//! the models they construct and behind
-//! [`ModelFactory`](base::interface::model_factory::ModelFactory) so a host
+//! They live next to the models they construct, behind
+//! [`ModelFactory`](base::interface::model_factory::ModelFactory), so "which
+//! protocols exist" is decided by the crate that implements them, and a host
 //! can add a third — or replace one of these — without touching the kernel.
 
 use std::sync::Arc;

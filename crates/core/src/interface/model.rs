@@ -119,11 +119,10 @@ pub mod input_source {
 
 /// Which session issued a call, and what the call is doing there.
 ///
-/// Every model call has one. It used to be optional, with `None` standing for
-/// "not turn work" — which also erased the session id, so those calls could
-/// only be filed under a shared `unattributed` name that concurrent sessions
-/// then overwrote. Naming the *kind* instead keeps the session known while
-/// still refusing to give an auxiliary call turn coordinates it does not have.
+/// Every model call has one, auxiliary calls included: naming the *kind* of
+/// call keeps the session known (so concurrent sessions' auxiliary calls are
+/// not filed under one shared name) while still refusing to give an
+/// auxiliary call turn coordinates it does not have.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallOrigin {
     pub session_id: String,
@@ -406,8 +405,8 @@ pub struct Usage {
     /// Tokens written into the prompt cache by this call, and tokens read
     /// back from it. Both are priced differently from ordinary input — a
     /// cache read costs a fraction of one — so a report that folded them
-    /// into `input_tokens` would overcharge and one that dropped them, as
-    /// this type used to force, undercharges by whatever the cache covered.
+    /// into `input_tokens` would overcharge and one that dropped them
+    /// undercharges by whatever the cache covered.
     ///
     /// `#[serde(default)]` because recordings written before these existed
     /// must still read back.

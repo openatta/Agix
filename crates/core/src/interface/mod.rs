@@ -2,13 +2,11 @@
 //! engine.
 //!
 //! The entry requirement is narrow on purpose: **every module here defines at
-//! least one trait the engine holds as a `dyn` object.** It used to say
-//! "traits and types", which is how modules defining no contract at all ended
-//! up here — a directory named for extension that a reader could not use to
-//! find the extension points. Data types, configuration and concrete stores
-//! live at the crate root instead (`base::settings`, `base::event`,
-//! `base::prompt`, `base::memory`, `base::rules`); the old
-//! `base::interface::*` paths still resolve via the re-exports below.
+//! least one trait the engine holds as a `dyn` object.** Data types,
+//! configuration and concrete stores live at the crate root instead
+//! (`base::settings`, `base::event`, `base::prompt`, `base::memory`,
+//! `base::rules`); their `base::interface::*` paths still resolve via the
+//! re-exports below.
 //!
 //! # What is reachable from here, and what is not
 //!

@@ -931,14 +931,8 @@ async fn a_build_with_no_script_carrier_honors_no_scripts_section() -> anyhow::R
 ///
 /// `Bash` with a non-zero exit is the most common instance of a thing nine
 /// tools in this workspace do: return `Ok` with `ToolResult::is_error` set —
-/// the tool ran, the work did not go well. That flag used to be read by
-/// nobody. The model saw a failed command as an answer, `session.event`
-/// carried `is_error: false` to every client, and the telemetry counted it
-/// as a success, because the dispatch chain's shape had no room for it.
-///
-/// Three consumers, one flag, so all three are asserted here — a fix that
-/// reached the wire and left the telemetry disagreeing would be a different
-/// bug wearing this one's clothes.
+/// the tool ran, the work did not go well. The model, `session.event` and
+/// the telemetry all read that one flag, so all three are asserted here.
 async fn a_failing_tool_says_so_everywhere(mode: Mode) -> anyhow::Result<()> {
     let world = World::new()?;
     let project = world.project("failing")?;

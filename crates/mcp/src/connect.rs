@@ -39,8 +39,8 @@ const MAX_MCP_DESCRIPTION_LENGTH: usize = 10_000;
 ///
 /// `String::truncate` **panics** when the byte offset lands inside a
 /// multi-byte character, which is exactly what a >10 KB non-ASCII instruction
-/// string does ~2/3 of the time — so this used to be a server-controlled panic
-/// on the connect path. `truncate_at_char_boundary` is the canonical
+/// string does ~2/3 of the time — a server-controlled panic on the connect
+/// path. `truncate_at_char_boundary` is the canonical
 /// UTF-8-safe helper. Note this is only the per-connection clamp; the
 /// system-prompt assembly is bounded separately in `manager.rs`.
 fn truncate_mcp_instructions(instructions: String) -> String {
@@ -55,7 +55,7 @@ fn truncate_mcp_instructions(instructions: String) -> String {
 ///
 /// 内部存 rmcp 的 `RunningService` —— 真正干活的 RPC 引擎。ClientHandler 用
 /// [`crate::notify::NotifyingHandler`]：除了我们会处理的几条 notification，
-/// 其余全部保持 trait 的默认行为（也就是这里原先用 `()` 时的行为）。
+/// 其余全部保持 trait 的默认行为。
 pub struct StdioMcpClient {
     server_name: String,
     config: McpServerConfig,
@@ -992,7 +992,7 @@ async fn spawn_websocket_service(
 }
 
 // ── SSE (Server-Sent Events) transport ──
-// P2-7: Pure SSE transport. Delegates to streamable HTTP as fallback.
+// Pure SSE transport. Delegates to streamable HTTP as fallback.
 async fn spawn_sse_service(
     server_name: &str,
     url: &str,
@@ -1269,8 +1269,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_prompt_errors_not_connected_when_no_session() {
-        // 之前的实现无视连接状态，永远返回一句硬编码占位文案——这个测试确保
-        // `get_prompt` 现在和其他真实方法（`list_prompts`/`read_resource`）一样，
+        // `get_prompt` 和其他真实方法（`list_prompts`/`read_resource`）一样，
         // 未连接时报 `NotConnected`，而不是伪装成功。
         let client = StdioMcpClient {
             server_name: "x".into(),
@@ -1566,4 +1565,4 @@ mod tests {
 }
 
 // ── SSE (Server-Sent Events) transport ──
-// P2-7: Pure SSE transport. Currently delegates to streamable HTTP as fallback.
+// Pure SSE transport. Currently delegates to streamable HTTP as fallback.

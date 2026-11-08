@@ -3,13 +3,9 @@
 //! The daemon serves connections, not owners. A conversation open in three
 //! tabs is one session with three watchers, and every property here follows
 //! from that: they all see the same stream, any of them can answer a
-//! permission ask, and closing one changes nothing for the others.
-//!
-//! This used to be false in a specific and destructive way. Stream frames
-//! went only to the connection that started the turn, so a second tab saw a
-//! session that looked frozen; and a broken writer tore the session down,
-//! cascading into deleting its sidechain transcripts — so closing one tab
-//! deleted another tab's sub-agent records mid-conversation.
+//! permission ask, and closing one changes nothing for the others — in
+//! particular, a broken writer must not tear the session down and take its
+//! sidechain transcripts with it.
 
 use std::sync::Arc;
 use std::time::Duration;

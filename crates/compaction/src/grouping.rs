@@ -85,12 +85,10 @@ fn finish_round(messages: &[ModelMessage], start: usize) -> ApiRound {
 /// Estimate tokens for a slice of messages.
 ///
 /// Delegates to the workspace's one estimator
-/// ([`model::tokens::estimate_message_tokens`]). This
-/// used to be a hand-rolled `len() / 4` variant with invented per-block
-/// overheads (20 for a tool result, 30 for a tool use), which disagreed with
-/// `session::SessionManager::token_count`'s *different* `len() / 4` variant —
-/// so the number that decided *whether* to compact and the number that decided
-/// *how much* to drop were never the same number. Both now delegate here.
+/// ([`model::tokens::estimate_message_tokens`]), the same one
+/// `session::SessionManager::token_count` falls back to, so the number that
+/// decides *whether* to compact and the number that decides *how much* to
+/// drop are the same number.
 ///
 /// Note this is additive per message and per block, which
 /// `DefaultCompactor::snip` relies on: the token cost of a concatenation of
