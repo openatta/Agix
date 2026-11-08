@@ -196,6 +196,7 @@ pub enum RecordedError {
     Cancelled,
     Internal { message: String },
     Unsupported { message: String },
+    NotRecorded { message: String },
 }
 
 impl From<&ModelError> for RecordedError {
@@ -212,6 +213,7 @@ impl From<&ModelError> for RecordedError {
             ModelError::Cancelled => Self::Cancelled,
             ModelError::Internal(m) => Self::Internal { message: m.clone() },
             ModelError::Unsupported(m) => Self::Unsupported { message: m.clone() },
+            ModelError::NotRecorded(m) => Self::NotRecorded { message: m.clone() },
         }
     }
 }
@@ -227,6 +229,7 @@ impl RecordedError {
             Self::Cancelled => ModelError::Cancelled,
             Self::Internal { message } => ModelError::Internal(message),
             Self::Unsupported { message } => ModelError::Unsupported(message),
+            Self::NotRecorded { message } => ModelError::NotRecorded(message),
         }
     }
 }
@@ -301,6 +304,7 @@ mod tests {
             ModelError::Network("timeout".into()),
             ModelError::Cancelled,
             ModelError::Internal("boom".into()),
+            ModelError::NotRecorded("no title call".into()),
         ];
         for error in &errors {
             let recorded = RecordedError::from(error);
