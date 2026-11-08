@@ -100,7 +100,7 @@
         },
         "permission_prompt_timeout_secs": {
           "default": 300,
-          "description": "How long a tool call waits for a host to answer a permission prompt\nbefore the call is denied. `0` waits indefinitely (only session\ncancellation interrupts it).\n\nThe wait itself lives in the engine (`execute_tool_inner`), so the\nbound has to be reachable from `EngineConfig` — it previously existed\nonly as a daemon-side flag, which meant any host driving the engine\ndirectly had no timeout at all.\n\nFailing closed (deny, not permit) on expiry is deliberate: a prompt\nthat went unanswered is not consent.",
+          "description": "How long a tool call waits for a host to answer a permission prompt\nbefore the call is denied. `0` waits indefinitely (only session\ncancellation interrupts it).\n\nThe wait itself lives in the engine (`execute_tool_inner`), so the\nbound has to be reachable from `EngineConfig`, not only from a\ndaemon-side flag — a host driving the engine directly needs it too.\n\nFailing closed (deny, not permit) on expiry is deliberate: a prompt\nthat went unanswered is not consent.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
@@ -126,7 +126,7 @@
         },
         "team_stage_concurrency": {
           "default": 6,
-          "description": "Maximum number of `TeamCreate` sub-agents dispatched concurrently\nwithin a single stage. Was a hardcoded constant in\n`crates/team/src/coordinator.rs`; default 6 matches the old value.",
+          "description": "Maximum number of `TeamCreate` sub-agents dispatched concurrently\nwithin a single stage.",
           "format": "uint",
           "minimum": 0,
           "type": "integer"
@@ -498,7 +498,7 @@
           "type": "array"
         },
         "allow_read": {
-          "description": "Paths to re-allow reading, on top of the built-in credential deny\ndefaults (`~/.ssh`, `~/.aws`, `~/.npmrc`, ...). Most specific wins.\n\nExists because those defaults are now actually applied to `Bash` (they\nused to be defined and never reached production), and some of them\nsit on legitimate workflows — `npm install` against a private registry\nreads `~/.npmrc`, `docker build` reads `~/.docker/config.json`.\nWithout this there was no way to say \"yes, that one is fine here\".",
+          "description": "Paths to re-allow reading, on top of the built-in credential deny\ndefaults (`~/.ssh`, `~/.aws`, `~/.npmrc`, ...). Most specific wins.\n\nExists because those defaults are applied to `Bash`, and some of them\nsit on legitimate workflows — `npm install` against a private registry\nreads `~/.npmrc`, `docker build` reads `~/.docker/config.json`.\nThis is the way to say \"yes, that one is fine here\".",
           "items": {
             "type": "string"
           },
@@ -778,7 +778,7 @@
   "properties": {
     "allow_client_permission_override": {
       "default": false,
-      "description": "Whether an RPC client may request a *more permissive* mode than\n`permission_mode` above.\n\nThe daemon's `session.create` takes an optional `permission_mode` in\nits options. That used to override `permission_mode` outright in\neither direction, which made this setting a default rather than a\npolicy: any client that could authenticate could open a\n`bypassPermissions` session no matter how the daemon was configured\n(and `crates/assembly/src/server.rs` notes there is no per-method\nauthorization on that socket). With this `false` — the default — a\nclient can still *tighten* the mode for its own session, but a\nrequest to loosen it is clamped to what is configured here.\n\nSet it to `true` only when every client of this daemon is as trusted\nas the daemon itself.",
+      "description": "Whether an RPC client may request a *more permissive* mode than\n`permission_mode` above.\n\nThe daemon's `session.create` takes an optional `permission_mode` in\nits options. With this `false` — the default — a client can *tighten*\nthe mode for its own session, but a request to loosen it is clamped to\nwhat is configured here. Otherwise any client that could authenticate\ncould open a `bypassPermissions` session no matter how the daemon was\nconfigured (`crates/assembly/src/server.rs` notes there is no\nper-method authorization on that socket).\n\nSet it to `true` only when every client of this daemon is as trusted\nas the daemon itself.",
       "type": "boolean"
     },
     "compaction": {
@@ -1009,7 +1009,7 @@
     },
     "telemetry_enabled": {
       "default": true,
-      "description": "Whether sessions record a telemetry transcript.\n\nDefaults to **on**: a session writes one JSONL file per session under\n`<local_data_dir>/telemetry/`, which is what makes a run debuggable\nafter the fact (tool calls, permission decisions, turn costs). This\nused to be effectively off — the daemon attached a recorder only when\na caller passed an explicit output path, and the no-recorder fallback\ndropped every event on the floor — so nothing was ever recorded\nunless someone had planned for it in advance.",
+      "description": "Whether sessions record a telemetry transcript.\n\nDefaults to **on**: a session writes one JSONL file per session under\n`<local_data_dir>/telemetry/`, which is what makes a run debuggable\nafter the fact (tool calls, permission decisions, turn costs).",
       "type": "boolean"
     },
     "telemetry_url": {
