@@ -1,12 +1,9 @@
 //! The same conversation, run twice, must leave the same log.
 //!
-//! Two things made that impossible: every entry stamped a wall-clock
-//! timestamp and every entry took a fresh UUID, both read straight from the
-//! machine. A recorded session could be replayed, and the replay would agree
-//! about everything a person cares about while disagreeing on every line at
-//! the byte level — which is exactly the level a regression net compares at.
-//!
-//! Both now come from `Environment`. This is the check that they do.
+//! Every entry's timestamp and id come from `Environment`, not straight from
+//! the machine; otherwise a replay would agree about everything a person cares
+//! about while disagreeing on every line at the byte level — which is exactly
+//! the level a regression net compares at. This is the check that they do.
 
 use base::id::Id;
 use base::interface::environment::FixedEnvironment;

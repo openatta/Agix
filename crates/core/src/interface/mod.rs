@@ -114,11 +114,9 @@ pub mod turn_policy;
 #[deprecated(note = "moved to `base::settings` — declarative configuration types")]
 pub use crate::settings;
 
-/// The re-exports above are the compatibility half of moving these modules;
-/// nothing in this repo imports through them any more, so only a check like
-/// this notices if one is dropped. `use` resolves at compile time, which is
-/// the whole assertion — an external embedder still on the old path keeps
-/// building.
+/// Nothing in this repo imports through the deprecated re-exports above, so
+/// only a check like this notices if one is dropped. `use` resolves at compile
+/// time, which is the whole assertion.
 #[cfg(test)]
 #[allow(deprecated, unused_imports)]
 mod old_paths_still_resolve {

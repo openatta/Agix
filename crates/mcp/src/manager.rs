@@ -1124,8 +1124,7 @@ mod tests {
 
     #[test]
     fn server_instructions_never_split_a_multibyte_character() {
-        // The regression `truncate_at_char_boundary` exists for: a byte-slice
-        // cut here would panic, since every character is 3 bytes.
+        // A byte-slice cut here would panic, since every character is 3 bytes.
         let long = "中".repeat(MAX_SERVER_INSTRUCTION_BYTES);
         let client =
             Arc::new(crate::client::MockMcpClient::new("cn", Vec::new()).with_instructions(long));

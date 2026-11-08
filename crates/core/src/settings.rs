@@ -395,8 +395,7 @@ pub struct ExecutionSettings {
     #[serde(default = "default_permission_prompt_timeout_secs")]
     pub permission_prompt_timeout_secs: u64,
     /// Maximum number of `TeamCreate` sub-agents dispatched concurrently
-    /// within a single stage. Was a hardcoded constant in
-    /// `crates/team/src/coordinator.rs`; default 6 matches the old value.
+    /// within a single stage.
     #[serde(default = "default_team_stage_concurrency")]
     pub team_stage_concurrency: usize,
     /// Gates whether `TeamCreate`/`TeamDelete` are registered at all for a

@@ -176,7 +176,7 @@ impl Model for AnthropicModel {
 
         let stream = self.inner.stream_messages(req);
         // `scan` carries the per-block tool_use JSON accumulator across raw
-        // events (needed because one incoming `StreamEvent` can now produce
+        // events (needed because one incoming `StreamEvent` can produce
         // zero or several `ModelEvent`s — see `map_stream_event`'s doc
         // comment); `flat_map` then flattens each step's `Vec` back into a
         // flat event stream.

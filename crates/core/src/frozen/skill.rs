@@ -108,9 +108,8 @@ impl SkillEntry {
             .strip_prefix("(bundled:")
             .and_then(|s| s.strip_suffix(")"))
         {
-            // TODO: bundled skill resolution -- needs injection from skills crate
-            // (core cannot depend on skills). For now, bundled prefixes always
-            // fall through to the NotFound path below.
+            // Bundled skill bodies need a resolver from the skills crate, which
+            // core cannot depend on, so a bundled prefix is reported NotFound.
             if path_str.starts_with("(bundled:") {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::NotFound,

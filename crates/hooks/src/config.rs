@@ -363,9 +363,7 @@ mod tolerant_parse_tests {
         assert_eq!(parsed.len(), 2);
         assert_eq!(report.unknown_events, vec!["NoSuchEvent".to_string()]);
 
-        // And the whole-map parse still fails on the same input — which is
-        // what makes the two behaviors different rather than the old one
-        // having been fine all along.
+        // The whole-map parse still fails on the same input.
         assert!(serde_json::from_value::<HooksSettings>(cfg).is_err());
     }
 

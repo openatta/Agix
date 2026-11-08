@@ -575,8 +575,6 @@ mod tests {
 
     /// The guarded list is not about secrets: these are generated or curated
     /// files a model editing directly is usually doing the wrong way round.
-    /// They were denied by a list inside `FileWrite`; they are denied here
-    /// now, which is the same answer from somewhere a deployment can reach.
     #[test]
     fn guarded_files_are_denied_but_a_deployment_can_say_otherwise() {
         let p = policy("/tmp/work");

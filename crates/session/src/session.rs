@@ -525,7 +525,6 @@ impl SessionManager {
             .list_sessions()
             .await
             .map_err(|e| SessionError::Store(e.to_string()))?;
-        // For each session, load a summary — simplified for now
         let mut out = Vec::new();
         for sid in sids {
             out.push(SessionSummary {
@@ -947,8 +946,7 @@ mod tests {
         }
     }
 
-    /// Regression guard for the `persisted_up_to` desync bug: after
-    /// `replace_messages_after_compact` shrinks `messages`, the cursor must
+    /// After `replace_messages_after_compact` shrinks `messages`, the cursor must
     /// track the *new* (shorter) length, and a `LogEntry::Compact` marker
     /// must land on disk immediately — not wait for the next `persist()`.
     #[tokio::test]

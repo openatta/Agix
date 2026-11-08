@@ -22,13 +22,10 @@
 //! attacker-controlled `base_url`/`api_key` — treat socket/token exposure
 //! with the same care as exposing the LLM credentials themselves.
 //!
-//! What that boundary does *not* cover any more is tool execution.
-//! `session.run_turn` used to run every session under an unconditional
-//! allow-all `Permission` ("IDE plugins manage their own sandbox"); it now
-//! defaults to `ask` and raises `session.event{kind:"prompt"}` frames that
-//! `session.respondToPrompt` answers. See `daemon/src/main.rs`'s
-//! `AllowAllPermission` doc comment for why the boundary moved, and
-//! `docs/daemon_rpc_protocol.md` for the opt-out.
+//! That boundary does not cover tool execution: `session.run_turn` defaults
+//! to `ask` and raises `session.event{kind:"prompt"}` frames that
+//! `session.respondToPrompt` answers. See `crate::assemble::AllowAllPermission`
+//! and `docs/daemon_rpc_protocol.md` for the opt-out.
 
 use crate::rpc::{codes, RpcRequest, RpcResponse};
 use crate::rpc::{send_frame, Client, FrameSink, Sink};
@@ -1311,12 +1308,10 @@ impl DaemonServer {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        // Every other method that reattaches to a recorded session refuses to
-        // cross a scene boundary; this one used to be the exception, and the
-        // gap was not visible as an error — the session simply came back
-        // under whichever scene this daemon defaults to. An unknown id still
-        // creates a session, because `check_scene` reads a transcript that
-        // isn't there as `Inferred`.
+        // Like every method that reattaches to a recorded session, this one
+        // refuses to cross a scene boundary. An unknown id still creates a
+        // session, because `check_scene` reads a transcript that isn't there
+        // as `Inferred`.
         if let Some(ref sid) = session_id {
             if let Some(err) = self.scene_mismatch_response(&id, sid).await {
                 return err;
@@ -2192,15 +2187,11 @@ impl DaemonServer {
             crate::session_pool::SceneCheck::Matches => false,
         };
 
-        // §5.6/§9: a sidechain that already reached a terminal state has no
-        // continuation semantics. This check (and the actual resume) now
-        // happen inside `resume_session` itself, under its own
-        // per-`session_id` lock — see `SessionPool::with_session_lock` and
-        // `ResumeError` for why: doing it out here, unconditionally and
-        // before ever calling in, both raced a concurrent cascade delete of
-        // the same id (TOCTOU) and defeated `resume_session`'s
-        // already-active fast path (paying for a full transcript read even
-        // when the session never left memory).
+        // A sidechain that already reached a terminal state has no
+        // continuation semantics. That check happens inside `resume_session`,
+        // under its per-`session_id` lock: checked out here it would race a
+        // concurrent cascade delete of the same id and skip the
+        // already-active fast path.
         match self
             .pool
             .resume_session(&session_id, create_if_missing, options.as_ref())

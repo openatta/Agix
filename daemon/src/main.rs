@@ -112,8 +112,7 @@ struct Cli {
     /// Seconds a permission prompt may go unanswered before the daemon
     /// denies it on the client's behalf (0 = wait forever).
     ///
-    /// Only reachable now that the default permission mode is `ask`: the
-    /// engine itself waits indefinitely for `session.respondToPrompt`, so a
+    /// The engine itself waits indefinitely for `session.respondToPrompt`, so a
     /// client that never implements it would otherwise hang its
     /// `session.run_turn` call forever. The timeout fails *closed* — it
     /// denies the tool call, never approves it — and the turn then continues

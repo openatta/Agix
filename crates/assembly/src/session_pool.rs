@@ -54,12 +54,9 @@ pub enum SceneCheck {
 /// most cases, plus a `SidechainTerminal` variant carrying the extra
 /// `parent_session_id`/`final_state` fields `server.rs` needs to build the
 /// `SIDECHAIN_TERMINAL` error's structured `data` (an `RpcError` is just
-/// `(code, message)`, with no room for that). Both the terminal-state check
-/// and the actual resume now happen inside `resume_session`'s own
-/// `with_session_lock` critical section — see that method's doc comment —
-/// so this needed to travel back out through `resume_session`'s return type
-/// rather than being decided by a separate, unlocked check in `server.rs`
-/// before it was ever called.
+/// `(code, message)`, with no room for that). The terminal-state check runs
+/// inside `resume_session`'s `with_session_lock` critical section, so its
+/// outcome travels back through the return type.
 pub enum ResumeError {
     SidechainTerminal {
         session_id: String,
@@ -109,21 +106,15 @@ fn tier_covers(tier: &crate::watch_hub::Tier, key: &ProjectSceneKey) -> bool {
 /// merged settings, and the skills, agent types and commands that live in the
 /// directories those settings name.
 ///
-/// One per pair, shared by every session on it. Before this existed each of
-/// these was a single pool-wide value built once from the daemon's *own*
-/// project — so a session created with a `project_root` of its own read that
-/// project's settings while running the daemon project's skills and
-/// sub-agents. They are here together because they are the same fact stated
-/// four times: a binding is built from one `Settings`, and rebuilding it is
-/// how any of them changes.
+/// One per pair, shared by every session on it. They are here together
+/// because they are the same fact stated four times: a binding is built from
+/// one `Settings`, and rebuilding it is how any of them changes.
 struct ProjectBinding {
     settings: Arc<Settings>,
     /// The conversation's model for a session on this pair, and the
     /// per-task-type routing behind it. `providers` and `task_models` are
-    /// settings fields like any other, so they are decided by the pair —
-    /// before this, one router was built from the daemon's own project and
-    /// handed to every session, and a project that configured its own
-    /// provider was quietly served by another project's.
+    /// settings fields like any other, so they are decided by the pair: a
+    /// project that configures its own provider is served by it.
     model: Arc<dyn base::interface::model::Model>,
     task_router: Option<Arc<base::provider::TaskRouter>>,
     /// What building `task_router` had to say — reported by `config.reload`
@@ -240,8 +231,7 @@ impl ProjectBinding {
 }
 
 pub enum ProjectSelector {
-    /// `project_root` omitted — this pool's default project (`self.cwd`),
-    /// unchanged pre-P3 behavior.
+    /// `project_root` omitted — this pool's default project (`self.cwd`).
     Default,
     /// `project_root: null` — a genuine no-project session (global tier).
     NoProject,
@@ -493,8 +483,6 @@ impl SessionNamer {
     }
 }
 
-// ── LiveSession ─────────────────────────────────────────────────────────
-
 struct LiveSession {
     input_tx: InputSender,
     event_rx: Arc<AsyncMutex<Option<EventReceiver>>>,
@@ -545,9 +533,9 @@ struct LiveSession {
     /// What this session's bound scripts did, if it bound any.
     ///
     /// Kept because a script that quietly does nothing is the failure mode of
-    /// this whole tier, and until now the only account of it was a log line on
-    /// the daemon's stderr — which the person asking "why is my script not
-    /// working" does not have. `session.get` reads it.
+    /// this whole tier, and a log line on the daemon's stderr is not something
+    /// the person asking "why is my script not working" has. `session.get`
+    /// reads it.
     scripts: Option<Arc<base::interface::script::ScriptLedger>>,
     /// Connections watching this session.
     ///
@@ -600,8 +588,6 @@ struct PendingPrompt {
     task_id: Option<String>,
 }
 
-// ── SessionPool ─────────────────────────────────────────────────────────
-
 pub struct SessionPool {
     sessions: AsyncMutex<HashMap<String, LiveSession>>,
     /// Per-`session_id` mutexes serializing a session's own disk-mutating
@@ -621,12 +607,9 @@ pub struct SessionPool {
     settings: AsyncRwLock<Arc<Settings>>,
     /// This daemon instance's *default* scene (resolved + validated from
     /// `--scene` at startup — see `main.rs::resolve_scene`). Every session
-    /// created without an explicit `scene` — which today means every
-    /// session, since this predates `session.create`'s `scene` param —
-    /// uses this one. Left completely alone by P4: every existing call site
-    /// that reads `self.scene` keeps meaning exactly what it always has.
+    /// created without an explicit `scene` uses this one.
     scene: Arc<dyn Scene>,
-    /// P4: every scene this daemon instance currently serves, keyed by id —
+    /// Every scene this daemon instance currently serves, keyed by id —
     /// always at least `{self.scene.id(): self.scene}`, plus whatever
     /// `--scenes` added at startup or `scene.activate` added at runtime.
     /// `session.create`'s optional `scene` param resolves against this, not
@@ -656,13 +639,10 @@ pub struct SessionPool {
     permission: Option<Arc<dyn Permission>>,
     /// Built-in tool registry (Bash/Read/Write/Edit/Grep/Glob/...), shared
     /// (cheap `Arc` clone) by every session `Builder`. Built once here via
-    /// `tools::register_builtin_tools` — before this field existed,
-    /// `Builder::tools()` was never called anywhere in this file, so every
-    /// daemon session ran with only the handful of tools `Builder::build()`
-    /// registers internally (Skill/TaskStop/TaskOutput/Import/Agent/MCP) and
-    /// nothing else — no Bash, no file edits, no web fetch. See
-    /// `tools::register_builtin_tools`'s doc comment for the full story and
-    /// what's deliberately excluded.
+    /// `tools::register_builtin_tools`; `Builder::build()` on its own registers
+    /// only Skill/TaskStop/TaskOutput/Import/Agent/MCP. See
+    /// `tools::register_builtin_tools`'s doc comment for what's deliberately
+    /// excluded.
     tools: Arc<base::tool::InMemoryToolRegistry>,
     cwd: PathBuf,
     history_store: Option<Arc<dyn history::store::HistoryStore>>,
@@ -1354,15 +1334,10 @@ impl SessionPool {
 
     /// Reconnect MCP servers to match `mcp_servers` (from freshly-reloaded
     /// `Settings`) — the `config.reload`/`config.setProvider` counterpart to
-    /// `connect_mcp_servers_in_background`, which only ever ran once at
-    /// daemon startup. Before this, `apply_reloaded_settings` re-read
-    /// `mcp_servers` into the new `Settings` (so it was visible to
-    /// `doctor`/`get_providers`) but never actually reconnected anything —
-    /// a hand-edited `mcp_servers` entry picked up via `config.reload` was
-    /// invisible to every session, including ones rebuilt afterward from a
-    /// stale binding (`create()` sources MCP from the same
-    /// `mcp_by_project` cache, not from `Settings` directly) — only
-    /// `mcp.addServer` or a full daemon restart actually connected it.
+    /// `connect_mcp_servers_in_background`, which runs once at daemon
+    /// startup. `create()` sources MCP from the `mcp_by_project` cache, not
+    /// from `Settings`, so a reloaded `mcp_servers` reaches sessions only
+    /// through this.
     ///
     /// Runs a full `connect_all` over the *complete* new config rather than
     /// an incremental diff against the old one — simpler and still correct:
@@ -1911,11 +1886,8 @@ impl SessionPool {
     /// "whatever's on disk right now").
     ///
     /// Never fails outright — misconfiguration degrades to "keep the
-    /// previous `task_router`, report why in the returned `ReloadReport`",
-    /// matching the pre-existing `resolve_task_models`-is-advisory
-    /// philosophy this function's callers already had (`set_provider`
-    /// used to write settings.json unconditionally even when the routing
-    /// preview it computed was invalid).
+    /// previous `task_router`, report why in the returned `ReloadReport`";
+    /// `resolve_task_models` is advisory.
     async fn apply_reloaded_settings(
         &self,
         project_root: Option<&Path>,
@@ -1962,15 +1934,14 @@ impl SessionPool {
         (binding.settings.clone(), report)
     }
 
-    /// `session.create` — P3's explicit multi-project entry point, extended
-    /// in P4 with an optional `scene` (resolved against `active_scenes` —
-    /// see `resolve_scene`; omitted keeps the pre-P4 behavior of always
-    /// using the pool's default scene exactly as before). Builds and starts
-    /// a new primary session bound to `project_root`, or this pool's
+    /// `session.create` — the explicit multi-project entry point, with an
+    /// optional `scene` (resolved against `active_scenes` — see
+    /// `resolve_scene`; omitted means the pool's default scene). Builds and
+    /// starts a new primary session bound to `project_root`, or this pool's
     /// default project for `ProjectSelector::Default`. Unlike the implicit
     /// `run_turn(session_id: None)` path, this is the one place a caller
-    /// can ask for a session bound to a project (P3) or scene (P4) other
-    /// than the pool's own.
+    /// can ask for a session bound to a project or scene other than the
+    /// pool's own.
     pub async fn create_session(
         &self,
         scene_id: Option<&str>,
@@ -2073,8 +2044,8 @@ impl SessionPool {
     /// settings for whichever project this session belongs to (see
     /// `settings_for_project`) and the value to stamp on `Meta.project_root`
     /// (`None` = no-project session) — callers that just want "this pool's
-    /// default project, unchanged" pass `self.settings.read().await.clone()`
-    /// / `Some(self.cwd.clone())`, preserving pre-P3 behavior exactly.
+    /// default project" pass `self.settings.read().await.clone()` /
+    /// `Some(self.cwd.clone())`.
     async fn create(
         &self,
         session_id: String,
@@ -2277,16 +2248,10 @@ impl SessionPool {
         // delegate; skills after agents, so forked skills can fork.
         builder = builder.modules(binding.modules.session_modules());
 
-        // ── Telemetry ──
-        //
-        // On by default. This used to attach a recorder *only* when a caller
-        // passed `options.telemetry.output`, and `Builder::build()`'s
-        // fallback constructs a handle whose receiver is dropped on the spot
-        // — so with nothing passed, every event a session produced was
-        // silently discarded and there was no transcript of tool calls,
-        // permission decisions or turn costs to debug from. A session now
-        // always gets a JSONL recorder; the caller's `output` only chooses
-        // *where*, and `telemetry.mode: disabled` in settings.json opts out.
+        // On by default: `Builder::build()`'s fallback handle drops its
+        // receiver on the spot, so without a recorder every event is lost.
+        // The caller's `output` only chooses *where*, and
+        // `telemetry.mode: disabled` in settings.json opts out.
         //
         // `TELEMETRY_DIR/<session-id>.jsonl` under the local data dir keeps
         // one file per session, next to the transcripts, so a recording is
@@ -2490,9 +2455,8 @@ impl SessionPool {
             }
             let outcome = match &resume_result {
                 Ok(()) => telemetry::ResumeOutcome::Succeeded,
-                // Doesn't fail session creation — degrades to the same
-                // "id reused, empty context" behavior as before this was
-                // wired up (see the warn! below), which is exactly what
+                // Doesn't fail session creation — degrades to "id reused,
+                // empty context" (see the warn! below), which is what
                 // `Degraded` (not `Failed`) means here.
                 Err(_) => telemetry::ResumeOutcome::Degraded,
             };
@@ -3194,11 +3158,9 @@ impl SessionPool {
 
     /// A connection went away: forget it everywhere.
     ///
-    /// This is the whole of what a disconnect means now. It used to cancel
-    /// the turn and tear the session down — right when one CLI owned one
-    /// socket, wrong the moment a second tab can be watching, and
-    /// destructive besides (the teardown cascades into deleting the
-    /// session's sidechain transcripts).
+    /// That is all a disconnect means: the turn keeps running, because
+    /// another connection may be watching and a teardown would cascade into
+    /// deleting the session's sidechain transcripts.
     pub async fn drop_connection(&self, connection: crate::rpc::ConnectionId) {
         let mut sessions = self.sessions.lock().await;
         for live in sessions.values_mut() {
@@ -3586,7 +3548,6 @@ impl SessionPool {
         on_busy: OnBusy,
         initiator: &'static str,
     ) -> RpcResponse {
-        // ── 解析或创建 session ──
         let sid = match session_id {
             Some(ref sid) => {
                 // ① Not in memory: resume or create. ② In memory on a binding
@@ -3642,8 +3603,6 @@ impl SessionPool {
             }
         };
 
-        // ── 拿到这个 session 的 turn 槽位 ──
-        //
         // 取走 `event_rx` 就是"一个会话同一时刻只能有一个 turn"的实现，而且
         // 必须**在发消息之前**取：消息一旦 send 进去就归正在跑的那个 Agent
         // 消费了，先发后取的话，调用方看到忙，消息却已经被别的 turn 吃掉。
@@ -4094,13 +4053,9 @@ impl SessionPool {
 
         // The turn is over. A client that vanished mid-stream is not part of
         // this: the turn ran to completion and landed in the transcript, and
-        // whoever comes back reads it there.
-        //
-        // This used to cancel the session on a broken writer — correct when
-        // one CLI owned one socket, wrong once a second tab can be watching,
-        // and destructive besides: the teardown cascades into deleting the
-        // session's sidechain transcripts, so closing one tab would delete
-        // another tab's sub-agent records.
+        // whoever comes back reads it there. Cancelling on a broken writer
+        // would cascade into deleting sidechain transcripts another tab is
+        // still watching.
 
         let next_round = match &turn_state {
             Some(state) => self.goal_round_after(&sid, state, &ended_with).await,
@@ -4113,8 +4068,6 @@ impl SessionPool {
             self.start_goal_round(&sid, round);
         }
 
-        // ── 首轮自动命名 ──
-        //
         // Whether a session names itself is its *own* scene's call, not this
         // pool's default scene's: a `harnix` session created on a `--scene
         // code` daemon is still a harnix session, and the two scenes disagree
@@ -4191,10 +4144,8 @@ impl SessionPool {
 
     /// A session's recorded `session_kind`/`parent_session_id`/`resumable`,
     /// read off its `Meta` line (and terminal marker, for `resumable`).
-    /// Sessions with no `Meta` at all (pre-fix files predating this daemon
-    /// writing one — see `create()`) default to `(Primary, None, true)`,
-    /// matching what they always were before sidechains existed as a
-    /// concept. `resumable` is `false` only for a sidechain that has a
+    /// Sessions with no `Meta` at all (files written before the daemon wrote
+    /// one — see `create()`) default to `(Primary, None, true)`. `resumable` is `false` only for a sidechain that has a
     /// `LogEntry::SessionEnd` marker —
     /// primary sessions and still-running/externally-cut-off sidechains are
     /// always `true`. One `load_entries` scan covers both, since listing
@@ -4747,13 +4698,13 @@ impl SessionPool {
     /// `session_locks` field doc comment. Closes the race between a
     /// sidechain's cascade delete (`delete_sidechain_list`, `delete_session`)
     /// and a concurrent `session.resume(that_same_id, create_if_missing:
-    /// true)`: whichever side gets here first now runs to completion before
+    /// true)`: whichever side gets here first runs to completion before
     /// the other starts, so a resume can't observe the id mid-cascade (files
     /// half gone) and a completed cascade can't delete out from under a
     /// resume that just finished recreating the id. It does *not* stop the
     /// id from being reused afterward — recreating a just-deleted sidechain
-    /// as a fresh orphan session is still possible, just no longer racy: the
-    /// two operations fully serialize instead of interleaving.
+    /// as a fresh orphan session is still possible; the two operations
+    /// serialize instead of interleaving.
     async fn with_session_lock<T>(
         &self,
         session_id: &str,
@@ -4955,9 +4906,8 @@ impl SessionPool {
 
         // One scan shared by both the (possibly dry-run) report below and
         // the actual cascade delete — `shutdown_session_with_children`
-        // takes this same `Vec` instead of re-scanning, which used to mean
-        // a second full `child_sessions` pass (and a window where the two
-        // scans could disagree) on every non-dry-run delete.
+        // takes this same `Vec` instead of re-scanning, so the two can't
+        // disagree.
         let children = self.fetch_child_sidechains(session_id).await;
         let sidechain_ids: Vec<String> = children.iter().map(|id| id.to_string()).collect();
 
@@ -5050,8 +5000,6 @@ impl SessionPool {
         self.forget_prompt(session_id, &prompt_id).await;
         Ok(())
     }
-
-    // ── Session read / branch surface (`session.history` / `.fork` / `.resume`) ──
 
     /// The `HistoryStore` these three methods read and write, or a ready-made
     /// RPC error explaining that this daemon has no session persistence at
@@ -5211,11 +5159,9 @@ impl SessionPool {
 
         let new_sid = base::session::SessionId::new();
         // Fork inherits the source session's own recorded scene and project
-        // when known (pre-v2 sources have neither) rather than always
-        // stamping the pool's defaults — the two already coincide for a
-        // single-scene, single-default-project pool, but this keeps the
-        // fork correct once a source session lives under a different
-        // project (P3) or scene (P4).
+        // when known (pre-v2 sources have neither) rather than the pool's
+        // defaults, since a source session may live under a different
+        // project or scene.
         let (source_scene, source_project_root, source_schema_version) = entries
             .iter()
             .find_map(|env| match &env.entry {
@@ -6696,12 +6642,10 @@ impl SessionPool {
 
     pub fn start_janitor(self: &Arc<Self>) {
         let pool = self.clone();
-        // Sweep interval scales with `idle_timeout` instead of a flat 300s:
-        // a short-configured `session_idle_timeout_secs` (e.g. 60s for a
-        // high-churn deployment) used to still wait up to ~5 minutes before
-        // the janitor actually looked, silently defeating the configured
-        // value. Clamped to [30s, 300s] so a very short timeout doesn't spin
-        // the loop and a very long one doesn't sweep needlessly often.
+        // Sweep interval scales with `idle_timeout` so a short configured
+        // timeout is actually honored. Clamped to [30s, 300s] so a very short
+        // timeout doesn't spin the loop and a very long one doesn't sweep
+        // needlessly often.
         let sweep_interval =
             (pool.idle_timeout / 4).clamp(Duration::from_secs(30), Duration::from_secs(300));
         tokio::spawn(async move {
@@ -6731,8 +6675,6 @@ impl SessionPool {
             }
         });
     }
-
-    // ── 内部方法 ──
 
     /// 从 HistoryStore 恢复 session 或创建新的。
     /// Resume a session referenced by `sid` (loading history first, if a
@@ -6766,7 +6708,7 @@ impl SessionPool {
             false
         };
 
-        // P3: rebuild against *this session's own* recorded project, not
+        // Rebuild against *this session's own* recorded project, not
         // always the pool default — otherwise a session created under
         // `session.create {project_root: X}` would silently come back with
         // project Y's settings the moment it needed reattaching (idle
@@ -7232,10 +7174,8 @@ fn build_pool_telemetry(settings: &Settings) -> telemetry::TelemetryHandle {
 /// configured, else the conventional user-level directory.
 ///
 /// The per-call override stays because a test harness points recordings at a
-/// fixture directory, but it is no longer the only source — a host that simply
-/// wants recording on should not have to invent a path. `settings.recorder` has
-/// existed and been deserializable all along with nothing in the daemon reading
-/// it; this is where it starts meaning something.
+/// fixture directory; a host that simply wants recording on should not have to
+/// invent a path, so `settings.recorder` is consulted next.
 fn recordings_root(settings: &Settings, requested: Option<&str>) -> PathBuf {
     if let Some(dir) = requested {
         return PathBuf::from(dir);
@@ -7343,15 +7283,12 @@ fn session_clock(
 ///
 /// The caller's `options.permission_mode` is honored, but **clamped** to the
 /// daemon's configured `settings.permission_mode`: a client may tighten the
-/// mode for its own session and may not loosen it. Without the clamp,
-/// `settings.permission_mode` was only a default — any client that could
-/// authenticate could ask for `bypassPermissions` and get it, regardless of
-/// how the daemon was configured, and `crates/assembly/src/server.rs` is explicit
-/// that there is no per-method authorization on this socket.
+/// mode for its own session and may not loosen it, since there is no
+/// per-method authorization on this socket (see `server.rs`).
 ///
-/// `settings.allow_client_permission_override` (default `false`) restores
-/// the old "client wins outright" behavior for deployments where every
-/// client is as trusted as the daemon.
+/// `settings.allow_client_permission_override` (default `false`) lets the
+/// client win outright, for deployments where every client is as trusted as
+/// the daemon.
 ///
 /// With nothing configured anywhere the result is `PermissionMode::Default`
 /// — i.e. *ask*.
@@ -7380,19 +7317,16 @@ fn effective_permission_mode(
 
 /// Which `Permission` a new session gets.
 ///
-/// **This is where the daemon's trust boundary moved.** It used to return
-/// the pool's shared allow-all `Arc` for every session that didn't pass an
-/// explicit `options.permission_mode`, making "no permission checks at all"
-/// the daemon default. It now resolves a real mode
-/// (`effective_permission_mode`) and builds a `RuleSetPermission` for it;
-/// with nothing configured that mode is `Default`, so an unlisted tool call
-/// raises a `kind:"prompt"` event and waits for `session.respondToPrompt`.
+/// Resolves a mode (`effective_permission_mode`) and builds a
+/// `RuleSetPermission` for it; with nothing configured that mode is
+/// `Default`, so an unlisted tool call raises a `kind:"prompt"` event and
+/// waits for `session.respondToPrompt`.
 ///
 /// `bypassPermissions` — from settings.json (daemon-wide) or
 /// `options.permission_mode` (one session) — is the explicit opt-out, and it
 /// returns the *literal same* shared `Arc` the pool was built with, not an
-/// equivalent instance: a host that sandboxes the daemon itself gets exactly
-/// the old zero-overhead path back, and the `Arc::ptr_eq` assertion in the
+/// equivalent instance: a host that sandboxes the daemon itself gets a
+/// zero-overhead path, and the `Arc::ptr_eq` assertion in the
 /// unit test below keeps it that way.
 ///
 /// Rules come from every tier, settings first — `settings.permission_rules`
@@ -7811,8 +7745,8 @@ mod resolve_session_permission_tests {
         (host, resolved)
     }
 
-    /// The behavior change this round is *about*: with nothing configured,
-    /// a session no longer gets the allow-all instance.
+    /// With nothing configured, a session does not get the allow-all
+    /// instance.
     #[test]
     fn nothing_configured_now_builds_a_real_asking_permission() {
         let (bypass, resolved) = resolve(&defaults(), None);
@@ -7866,10 +7800,6 @@ mod resolve_session_permission_tests {
         );
     }
 
-    /// N-6: a client asking for a *more permissive* mode than the daemon is
-    /// configured with gets clamped, not obeyed. Before this, `settings.json`'s
-    /// `permission_mode` was only a default: anyone who could authenticate to
-    /// the socket could open a `bypassPermissions` session regardless of it.
     #[test]
     fn a_session_clock_is_the_hosts_start_else_the_recordings_else_the_machines() {
         let date = |env: Option<Arc<dyn base::interface::environment::Environment>>| {
@@ -7929,6 +7859,8 @@ mod resolve_session_permission_tests {
         assert!(session_clock(Some(&garbled), None, "s").is_none());
     }
 
+    /// A client asking for a *more permissive* mode than the daemon is
+    /// configured with gets clamped, not obeyed.
     #[test]
     fn session_options_cannot_loosen_an_asking_settings_default() {
         let opts = SessionOptions {
@@ -8256,8 +8188,8 @@ mod mcp_for_project_tests {
     ///
     /// What this pins is the sharing: the tiers several projects have in
     /// common are registered once, so a binding only ever costs the paths
-    /// that are its own. That a binding no longer brings `notify` streams of
-    /// its own besides the hub's is not visible from here — the backend
+    /// that are its own. That a binding brings no `notify` streams of its
+    /// own besides the hub's is not visible from here — the backend
     /// offers no count — and is held by construction instead: the catalogs a
     /// binding builds are the `unwatched` ones.
     #[tokio::test]
@@ -8458,12 +8390,9 @@ mod multi_scene_tests {
     use super::mcp_for_project_tests::test_pool;
     use super::*;
 
-    /// Two scenes on one daemon must each read their own settings tier.
-    ///
-    /// `settings_for_project` used to key on project alone and take `scope`
-    /// from the pool's own settings, so whichever scene built an entry first
-    /// answered for every scene afterwards: a `harnix` session on a daemon
-    /// started as `--scene code` silently ran on code's tier.
+    /// Two scenes on one daemon must each read their own settings tier: a
+    /// `harnix` session on a daemon started as `--scene code` runs on
+    /// harnix's tier, not code's.
     #[tokio::test]
     async fn each_scene_resolves_its_own_settings_tier() {
         let (pool, dir) = test_pool().await;
@@ -8682,11 +8611,10 @@ mod with_session_lock_tests {
         (pool, dir)
     }
 
-    /// The regression this closes: `session.close`'s cascade delete and a
-    /// concurrent `session.resume(..., create_if_missing: true)` on the same
-    /// sidechain id used to run with no shared lock at all, so they could
-    /// interleave arbitrarily. This drives many concurrent critical sections
-    /// for the *same* id and asserts they never overlap.
+    /// `session.close`'s cascade delete and a concurrent
+    /// `session.resume(..., create_if_missing: true)` on the same sidechain id
+    /// must not interleave. This drives many concurrent critical sections for
+    /// the *same* id and asserts they never overlap.
     #[tokio::test]
     async fn concurrent_calls_for_the_same_id_never_overlap() {
         let (pool, _dir) = test_pool().await;

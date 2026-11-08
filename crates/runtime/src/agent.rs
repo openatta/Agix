@@ -27,8 +27,6 @@ const WEB_SEARCH_TASK: &str = "web_search";
 /// see [`Builder::question_prompts`].
 const ASK_USER_QUESTION: &str = "AskUserQuestion";
 
-// ── Channel types ──
-
 #[derive(Debug)]
 pub enum InputMessage {
     User {
@@ -100,10 +98,8 @@ pub enum ContextRequest {
 /// Something the user attached to their message — a pasted screenshot, a
 /// dragged-in file, an editor selection.
 ///
-/// This type existed before but was never consumed: `run_user_turn` built the
-/// user message from `content` alone, and every producer passed `vec![]`. The
-/// variants below are the three shapes hosts actually have, so that a host can
-/// hand over whichever it already holds instead of being forced to pre-read
+/// The variants below are the three shapes hosts actually have, so that a host
+/// can hand over whichever it already holds instead of being forced to pre-read
 /// (or pre-decode) on the runtime's behalf.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -234,22 +230,17 @@ pub type PendingPermissions = Arc<
     >,
 >;
 
-// ── Engine ──
-
 pub struct Agent {
     pub(crate) scene: Arc<dyn Scene>,
     pub(crate) model: Arc<dyn Model>,
     pub(crate) tools: Arc<dyn base::tool::ToolRegistry>,
     pub(crate) settings: Arc<Settings>,
-    /// Real `EngineConfig` derived from `settings` via `EngineConfig::from_settings`
-    /// — the tool-dispatch closure (`ToolExecCtx.config`) clones this instead of
-    /// the `defaults_for("unknown")` placeholder it used to hardcode, so every
-    /// tool call sees the actual configured sandbox/permission/shell-execution
-    /// settings, not silent defaults.
+    /// Derived from `settings`; every tool call's `ToolExecCtx.config` is a
+    /// clone of this, so tools see the configured sandbox/permission/shell
+    /// settings rather than defaults.
     pub(crate) config: Arc<base::context::EngineConfig>,
     /// This session's own position in the delegation chain — see
-    /// [`Builder::agent_depth`]. Reaches tools as `ToolContext::agent_depth`,
-    /// which was hardcoded to `0` before there was a real depth to report.
+    /// [`Builder::agent_depth`]. Reaches tools as `ToolContext::agent_depth`.
     pub(crate) agent_depth: u32,
     pub(crate) permission: Arc<dyn Permission>,
     /// Permission requests currently awaiting a host response, keyed by
@@ -331,7 +322,7 @@ pub struct Agent {
     /// (messages, token accounting, persistence), this owns everything tools
     /// read and write across calls (permission mode, read cache, file
     /// snapshots, todos, tasks). See `Builder::build()` for why sharing one
-    /// instance matters — dispatch used to mint a fresh one per tool call.
+    /// instance matters.
     pub(crate) session_state: Arc<base::context::SessionState>,
     /// Whether [`Agent::run`] starts the goal's automatic rounds — see
     /// [`Builder::goal_rounds_from_owner`].
@@ -357,7 +348,7 @@ pub struct Agent {
     /// Whether the opening context message (session facts, CLAUDE.md, date)
     /// is in the conversation. Cleared by `/clear` and by compaction.
     pub(crate) session_context_injected: bool,
-    /// Track invoked skill names during the turn (for post-compact recovery T1.4).
+    /// Skills invoked so far, re-injected after compaction.
     pub(crate) invoked_skills: Vec<String>,
     /// This turn's user message: a fingerprint of its text and what the text is
     /// made of, for `StreamParams::input_map`.
@@ -365,8 +356,8 @@ pub struct Agent {
     /// The message is identified by content rather than by the index it had
     /// when it was pushed, because compaction rewrites the message list before
     /// the request is assembled. A message compaction dropped simply fails to
-    /// resolve, which is the honest outcome — better than an index that now
-    /// names a different message.
+    /// resolve, which is the honest outcome — better than an index that has
+    /// come to name a different message.
     pub(crate) pending_input: Option<(u64, Vec<base::interface::model::InputSpan>)>,
     /// Which agent type this session runs, for a sub-agent spawned as one.
     /// `None` for a top-level session. Travels onto every `CallOrigin` so a
@@ -387,9 +378,8 @@ pub struct Agent {
     pub(crate) last_had_tool_uses: bool,
     /// The current turn's most recent model call, `None` before it makes one.
     pub(crate) last_call_usage: Option<base::interface::model::Usage>,
-    /// Whether the agent is currently in plan mode (for post-compact recovery T1.4).
     pub(crate) in_plan_mode: bool,
-    /// Plan file content when in plan mode (for post-compact recovery T1.4).
+    /// Re-injected after compaction while in plan mode.
     pub(crate) plan_content: Option<String>,
     /// Running background task summaries: (task_id, status). Populated by AgentTool.
     pub(crate) running_task_summaries: Vec<(String, String)>,
@@ -405,17 +395,14 @@ pub struct Agent {
     /// Whether any tool result has actually been cleared (time-based
     /// micro-compact, cached micro-compact, or the per-message tool-result
     /// budget) at any point in this session. Gates the `function_result_clearing`
-    /// prompt section — without this, that section was injected unconditionally
-    /// every turn, telling the model "results have been cleared" even on turn 1
-    /// when nothing had been, which could push it to needlessly re-read/re-run
-    /// things it still actually has.
+    /// prompt section, so the model is not told results were cleared when none
+    /// were and does not re-run things it still has.
     pub(crate) tool_results_ever_cleared: bool,
     /// Tool names for which `build_tool_defs` has already logged a
     /// built-in/MCP name-collision warning this session — dedups the log so
     /// a persistent collision doesn't warn on every single API call.
     pub(crate) mcp_shadow_warned: std::collections::HashSet<String>,
-    /// P2-3: Time-based micro-compact configuration. Controls when old tool
-    /// results are cleared based on wall-clock age. Default: 15 minutes.
+    /// When old tool results are cleared by wall-clock age. Default: 15 minutes.
     pub(crate) time_based_mc_config: compaction::time_based_mc::TimeBasedMcConfig,
     /// Cached micro-compact state: time-driven cache edit generation.
     /// When enabled, clears old tool results and records their tool_use_ids
@@ -530,8 +517,7 @@ impl Agent {
         // constructed but never run is not a session. This is the first point
         // at which the session is genuinely live.
         //
-        // `Setup` is documented as "fired during setup / initialization" and
-        // had no trigger at all. It runs *before* `SessionStart` and carries
+        // `Setup` runs *before* `SessionStart` and carries
         // the resolved environment, so a hook can validate or prepare the
         // workspace (fetch credentials, warm a cache, refuse to start on a
         // dirty tree) while there is still nothing to undo.
@@ -547,10 +533,8 @@ impl Agent {
             .await;
 
         // `CwdChanged`: the session's working directory as resolved at
-        // startup. Also never fired before. A single event at session start
-        // is the honest scope of it today — nothing in the engine relocates a
-        // live session's cwd, so this reports where work will happen rather
-        // than pretending to track a change that cannot occur yet.
+        // startup. Nothing in the engine relocates a live session's cwd, so a
+        // single event here reports where work will happen.
         {
             let cwd = self.settings.paths.project_root().display().to_string();
             self.fire_lifecycle_hook(hooks::HookEvent::CwdChanged, |i| {
@@ -559,7 +543,6 @@ impl Agent {
             .await;
         }
 
-        // P1: Orphaned permission recovery.
         // If the previous session was interrupted while a permission prompt was
         // pending, re-inject the stored decision so the agent can continue.
         if let Some(decision) = self.orphaned_permission.take() {
@@ -582,14 +565,10 @@ impl Agent {
         }
         self.has_handled_orphaned_permission = true;
 
-        // P2: Startup warmup — pre-compute frozen context, re-scan skills, pre-connect API.
-        // Runs after SystemInit but before the main input loop. Gate on skip_warmup for tests.
         if !self.skip_warmup {
             self.warmup().await;
         }
 
-        // ── Input demultiplexer ──
-        //
         // The loop below `await`s `process_turn` inline, so while a turn is
         // running it is not reading input. Some messages only mean something
         // *during* a turn and would deadlock or arrive too late there: a
@@ -685,9 +664,6 @@ impl Agent {
         let run_started = std::time::Instant::now();
         let exit_reason: &'static str;
         loop {
-            // P2: Between turns, check for wake signals and re-execute any
-            // pending async rewake hooks (ones that returned `{rewake: true}`
-            // and whose config has `async_rewake: true`).
             self.hooks.check_rewakes().await;
 
             tokio::select! {
@@ -832,19 +808,9 @@ impl Agent {
                 }
             },
         );
-        // Skills directories are *not* rescanned here anymore. That rescan
-        // used to be the only way a session ever noticed new skill files —
-        // back before `SkillManager::enable_watching` had a caller (see the
-        // `Builder::build()` comment on `enable_watching`, a few lines above
-        // where this same `self.skills` gets its live watcher). Now that the
-        // watcher is live *before* `warmup()` runs (it's wired synchronously
-        // inside `Builder::build()`, which always completes before `run()` —
-        // and therefore `warmup()` — starts), re-scanning here was pure
-        // redundant disk I/O: the exact same three directories `build()` had
-        // just finished scanning milliseconds earlier, on every single
-        // session creation, for no observable benefit — anything that
-        // could've changed in that window is already covered by the watcher
-        // going forward.
+        // Skills directories are deliberately not rescanned here: the watcher
+        // `Builder::build()` attaches to `self.skills` is already live, and
+        // `build()` scanned the same directories moments ago.
         self.frozen = Some(frozen);
         tracing::debug!("Startup warmup complete");
     }
@@ -1056,8 +1022,6 @@ impl Agent {
         self.hooks.run(event, input).await
     }
 
-    // ── Slash command handlers ──
-
     /// `/help` — list all available slash commands.
     pub(crate) fn handle_help_command(&self) -> String {
         let commands = self.commands.list();
@@ -1129,8 +1093,6 @@ pub enum EngineError {
     #[error("{0}")]
     Internal(String),
 }
-
-// ── Builder ──
 
 /// Whether a tool, by name, is let through.
 pub type ToolFilter = Arc<dyn Fn(&str) -> bool + Send + Sync>;
@@ -1249,9 +1211,7 @@ pub struct Builder {
 /// script name — see `hooks::HookRunner::with_hooks_search_dirs` docs.
 ///
 /// `model`/`agent_tool` back the `"type": "prompt"` / `"type": "agent"`
-/// hook executors (`crate::hook_executors`) — previously neither was ever
-/// injected anywhere in the app, so those two hook types always fell
-/// through to `HookOutcome::Skipped` with "no executor configured".
+/// hook executors (`crate::hook_executors`).
 fn build_hook_runner(
     settings: &Settings,
     model: Arc<dyn Model>,
@@ -1260,9 +1220,8 @@ fn build_hook_runner(
     session_id: Option<String>,
 ) -> Arc<HookRunner> {
     // Key by key, not whole-map. `HooksSettings` is keyed by `HookEvent`,
-    // which has no serde fallback, so a single unrecognized event name used to
-    // fail the entire map and drop the caller into an empty runner — every
-    // hook the user configured, silently off, because of one typo.
+    // which has no serde fallback, so one unrecognized event name would
+    // otherwise fail the entire map and silently turn off every hook.
     let parsed: hooks::HooksSettings = match &settings.hooks_config {
         Some(v) => {
             let (parsed, report) = hooks::parse_hooks_settings(v);
@@ -1487,8 +1446,8 @@ impl Builder {
     ///
     /// Registered blocks are merged with the kernel's stages and sorted with
     /// them, so a contribution can sit before the skills inventory rather than
-    /// only after everything. Registering nothing assembles exactly the prompt
-    /// the engine assembled before this existed.
+    /// only after everything. Registering nothing leaves the kernel's prompt
+    /// unchanged.
     ///
     /// [`PromptRegistry`]: base::interface::prompt_registry::PromptRegistry
     pub fn prompt_registry(
@@ -1818,7 +1777,6 @@ impl Builder {
         self.history_store = Some(store);
         self
     }
-    /// P2: Inject a wake channel receiver for async rewake support.
     /// When background work completes, something sends `()` on the
     /// associated sender; the hooks runner picks up the signal and
     /// re-executes any pending rewake hooks.
@@ -2012,7 +1970,7 @@ impl Builder {
             let (tx, _rx) = tokio::sync::mpsc::channel(1);
             TelemetryHandle::new(tx)
         });
-        // Every call this session makes is now accounted for, including the
+        // Every call this session makes is accounted for, including the
         // ones no turn asked for — see `telemetry::model::TelemetryModel`.
         // Wrapped here rather than further down because the sub-agent spawner
         // built below takes its own copy of the model, and a sub-agent's
@@ -2077,7 +2035,7 @@ impl Builder {
         });
         // Session: `self.history_store` (set via `Builder::history_store(...)`)
         // makes this incrementally persisted to disk once per turn; `None`
-        // (the default) keeps it in-memory only, matching prior behavior.
+        // (the default) keeps it in-memory only.
         let mut session = SessionManager::new(
             self.history_store.clone(),
             self.session_id,
@@ -2093,9 +2051,7 @@ impl Builder {
         // A caller-supplied id that doesn't parse fails the build outright
         // rather than degrading: `SessionManager::persist` parses the same id
         // before writing anything, so an unparseable one means transcript
-        // persistence and the sidecar are both dead for the whole session —
-        // previously visible only as a per-turn `warn!` (and, here, as
-        // nothing at all).
+        // persistence and the sidecar are both dead for the whole session.
         if self.history_store.is_some() {
             let sid = base::session::SessionId::parse(session.session_id_str()).map_err(|e| {
                 EngineError::Internal(format!(
@@ -2106,11 +2062,8 @@ impl Builder {
                 ))
             })?;
             // Every other session sidecar (metadata, input history, prompt
-            // state) resolves through `history::path`, so this has to as
-            // well — building the root separately is how the memory file
-            // ended up somewhere nothing would look for it. Both now derive
-            // from the one `global_data_dir` this instance was given, so
-            // there is no second root to disagree with.
+            // state) resolves through `history::path`, so this has to as well,
+            // or the memory file lands somewhere nothing looks for it.
             let roots = history::path::HistoryRoots::under(&settings.paths.global_data_dir);
             let path = history::path::session_memory_file(&roots.sessions, &sid);
             session = session.with_session_memory(SessionMemory::new(path));
@@ -2129,7 +2082,6 @@ impl Builder {
                 Some(session.session_id_str().to_string()),
             )
         });
-        // P2: Wire the wake receiver into hooks for async rewake support.
         if let Some(rx) = self.wake_rx {
             hooks.set_wake_receiver(rx);
         }
@@ -2163,23 +2115,14 @@ impl Builder {
             c
         });
 
-        // ── One `SessionState` for the whole session ──
-        //
-        // `SessionState` is the session's mutable side: permission mode
+        // One `SessionState` for the whole session. It is the session's mutable side: permission mode
         // (which `EnterPlanMode`/`ExitPlanMode` flip), the read cache that
         // `Edit`/`Write` consult for read-before-edit staleness, the read
         // dedup marker, file snapshots backing `/rewind`, todos, the task
         // list, running sub-agent tasks, and the accumulated
-        // "allow writes here for this project" paths.
-        //
-        // The tool-dispatch path used to build a **brand new** one for every
-        // single tool call (`turn.rs`'s `ToolContext { session: Arc::new(
-        // SessionState::new(cwd))     dispatch: None,
-        // SessionState::new(cwd)) }`), so none of that state survived from
-        // one call to the next: plan mode never took effect, read-before-edit
-        // staleness detection never fired, read dedup never deduped, and
-        // `/rewind` had nothing recorded. Own exactly one here and hand the
-        // same `Arc` to every call.
+        // "allow writes here for this project" paths. Every tool call gets
+        // the same `Arc`; none of that state works if it does not survive
+        // from one call to the next.
         prepare_scratchpad(&settings.paths.local_data_dir.join("scratchpad"));
         let session_state = Arc::new({
             let project = settings.paths.project_root();
@@ -2313,7 +2256,7 @@ impl Builder {
             // the same way skills become slash commands above. `all_prompts()`
             // is already populated — `McpManager::connect_all` runs
             // `prompts/list` on every server it connects (see
-            // `collect_prompts`), it just had no consumer until now.
+            // `collect_prompts`).
             //
             // Only the registry *this* builder owns can be extended; a
             // `commands_override` is shared across sessions, so the turn loop
@@ -2330,7 +2273,7 @@ impl Builder {
             std::sync::Arc::new(registry)
         });
 
-        // ── Registration is complete; everything below reads the final set ──
+        // Registration is complete; everything below reads the final set.
 
         // Scene-contributed tools (`Scene::extra_tools`, default empty).
         //
@@ -2513,18 +2456,14 @@ impl Builder {
                 );
             }
         }
-        // ── Permission binding ──
-        //
         // The `Permission` this builder was handed was constructed before
         // the session registry above existed — in a daemon it was built over
         // `SessionPool.tools`, the pool-level template of self-contained
-        // built-ins. Everything registered into `tools` in this function
-        // (`Skill`, `Agent`, `Team*`, `WebSearch`, `EnterWorktree`/
-        // `ExitWorktree`, `Cron*`, `TaskStop`/`TaskOutput`, `Import`, the MCP
-        // resource tools and every `mcp__*` adapter) was therefore invisible
-        // to it, and its "unknown tool" branch let all of them run with no
-        // check at all — the entire MCP surface included. Bind it to the
-        // registry dispatch actually uses, now that it is fully populated.
+        // built-ins. Unbound, everything registered into `tools` in this
+        // function (`Skill`, `Agent`, `Team*`, `WebSearch`, worktree, cron and
+        // task tools, `Import`, every `mcp__*` adapter) would be invisible to
+        // it and pass its "unknown tool" branch unchecked. Bind it to the
+        // registry dispatch actually uses, which is complete at this point.
         permission.bind_tool_registry(tools.clone());
         // And to the session's live state, so `EnterPlanMode`/`ExitPlanMode`
         // (which flip `SessionState.permission_mode`) actually move the gate
@@ -3084,13 +3023,9 @@ mod tests {
         }
     }
 
-    /// A turn that fails still has to leave the user's message on disk.
-    ///
-    /// Persistence used to run only at the successful tail of
-    /// `run_user_turn`, so a session whose turns all failed wrote no file at
-    /// all — `HistoryStore::append` creates it lazily — and `--continue`
-    /// could not find it afterwards. That is exactly the session a user
-    /// wants back: the one that just broke.
+    /// A turn that fails still has to leave the user's message on disk:
+    /// `HistoryStore::append` creates the file lazily, and the session whose
+    /// turns all failed is exactly the one a user wants `--continue` to find.
     #[tokio::test]
     async fn a_failed_turn_still_persists_the_users_message() {
         let cwd_tmp = tempfile::tempdir().unwrap();
@@ -3140,11 +3075,9 @@ mod tests {
         );
     }
 
-    /// `/model` has to reach the engine. `UpdateModel` fell through a
-    /// catch-all `_ =>` arm in `process_turn`'s command match and did
-    /// nothing, so a host could send the command, see no error, and keep
-    /// talking to the old model. The match is exhaustive now, so a new
-    /// `EngineCommand` fails the build instead of being swallowed.
+    /// `/model` has to reach the engine. `process_turn`'s command match is
+    /// exhaustive, so a new `EngineCommand` fails the build instead of being
+    /// swallowed.
     #[tokio::test]
     async fn update_model_command_changes_the_model_the_next_turn_uses() {
         let (mut agent, _event_rx, _input_tx) = Builder::new()
@@ -3231,11 +3164,8 @@ mod tests {
         assert_eq!(narrow.tools.names(), vec!["Read".to_string()]);
     }
 
-    /// Regression: `PluginHost::tools()` had no production caller at all.
-    /// Plugin tools reached a session only through `PluginScene::extra_tools`,
-    /// so a plugin that shipped tools without owning a scene — which the
-    /// manifest fully allows — registered them nowhere and the model never
-    /// saw them.
+    /// A plugin may ship tools without owning a scene; those must still reach
+    /// the session through `PluginHost::tools()`.
     #[tokio::test]
     async fn build_registers_the_tools_installed_plugins_export() {
         struct OnePluginTool(Arc<dyn base::tool::Tool>);
@@ -3294,7 +3224,7 @@ mod tests {
         );
     }
 
-    /// P3-12's other half: the instruction file is one implementation of a
+    /// The instruction file is one implementation of a
     /// contract, so a host that already holds its conventions needs no file.
     #[tokio::test]
     async fn a_host_can_supply_the_standing_instructions_without_a_file() {
@@ -3318,20 +3248,6 @@ mod tests {
         );
     }
 
-    /// The code scene's deferred policy has to reach the tools registered
-    /// *after* the seeding copy is built, and has to actually collapse their
-    /// schemas.
-    ///
-    /// Two separate defects made the policy a near-no-op before, and this
-    /// asserts the outcome rather than either mechanism:
-    ///
-    /// - `apply_deferred_policy` skipped any tool whose own `is_deferred()`
-    ///   already reported `true`. Two dozen built-ins declare it, and the
-    ///   wrapper is the only thing that collapses a schema — so those tools
-    ///   were announced as deferred while still shipping full schemas.
-    /// - The policy ran once, on the seeding registry, before `Agent`,
-    ///   `Skill`, `Cron*`, `Worktree*`, `WebSearch` and `Team*` were
-    ///   registered, exempting exactly the tools a scene most wants deferred.
     #[test]
     fn an_unattended_scene_gets_no_tools_that_wait_on_a_reply() {
         let (unattended, attended) = (
@@ -3390,6 +3306,10 @@ mod tests {
         assert!(tools.iter().any(|t| t == ASK_USER_QUESTION), "{tools:?}");
     }
 
+    /// The code scene's deferred policy has to reach the tools registered
+    /// *after* the seeding copy is built, and has to actually collapse their
+    /// schemas — including tools whose own `is_deferred()` already reports
+    /// `true`, since the wrapper is the only thing that collapses a schema.
     #[tokio::test]
     async fn coding_scene_defers_everything_outside_its_resident_set() {
         let (agent, _rx, _tx) = Builder::new()
@@ -3432,8 +3352,7 @@ mod tests {
             "resident set drifted from CodeScene::RESIDENT_TOOLS"
         );
 
-        // Registered after the seeding copy — the set the old single-pass
-        // policy could not reach.
+        // Registered after the seeding copy.
         for late in ["CronCreate", "WebSearch"] {
             let t = agent.tools.get(late).expect(late);
             assert!(t.is_deferred(), "{late} must be deferred");
@@ -3625,11 +3544,9 @@ mod tests {
     /// whatever registry the caller seeded.
     ///
     /// `Agent`, `Skill`, `WebSearch`, `Cron*` and `Worktree*` are registered
-    /// by `build()` itself. While the check ran before them, a scene could
-    /// claim one of those names, pass against an empty slot, and then win
-    /// every lookup regardless — `get` returns the first match and the
-    /// engine's own instance is appended afterwards. The check ran, and the
-    /// exact shadowing it exists to prevent happened anyway.
+    /// by `build()` itself; a check that ran before them would let a scene
+    /// claim one of those names and win every lookup, since `get` returns the
+    /// first match.
     #[tokio::test]
     async fn scene_extra_tool_cannot_claim_an_engine_state_tool_name() {
         struct ClaimsTaskStop;
@@ -3741,7 +3658,7 @@ mod tests {
         );
     }
 
-    /// W-5: a scene's `deferred_tools()` must strip the schema from the
+    /// A scene's `deferred_tools()` must strip the schema from the
     /// advertised entry while leaving the tool named, discoverable via
     /// `ToolSearch`, and callable.
     #[tokio::test]
@@ -3817,19 +3734,11 @@ mod tests {
         }
     }
 
-    /// Regression test for the shared-registry duplicate/stale bug: two
-    /// sessions built from the *same* shared `Arc<InMemoryToolRegistry>`
+    /// Two sessions built from the *same* shared `Arc<InMemoryToolRegistry>`
     /// (the daemon `SessionPool.tools` scenario) must each end up with
     /// their own independent registry — not both mutating the one they were
-    /// handed. Before the fix, `Builder::build()` pushed `Skill`/`Agent`/
-    /// `TeamCreate`/etc. straight into the caller-supplied `Arc`, so a
-    /// second session's build would silently accumulate duplicate entries
-    /// in the *first* session's (and the pool's) registry too —
-    /// `InMemoryToolRegistry::get` returns the *first* match, so the
-    /// oldest session would keep dispatching to its own original tool
-    /// instance forever while newer sessions' `build_tool_defs` (which
-    /// dedups via a `BTreeMap`, keeping the *last* entry) advertised a
-    /// different instance's description to the model.
+    /// handed, which would accumulate duplicates that `get` (first match) and
+    /// `build_tool_defs` (last match) resolve to different instances.
     #[tokio::test]
     async fn each_session_gets_an_independent_tool_registry_not_a_shared_mutated_one() {
         let settings = Arc::new(test_settings());
@@ -3887,10 +3796,6 @@ mod tests {
         );
     }
 
-    /// Regression test: `SessionManager.session_memory` was fully
-    /// implemented (`crates/session/src/session_memory.rs`) but
-    /// `Builder::build()` never called `with_session_memory` — the sidecar
-    /// was dead code, and `turn.rs`'s staleness-reminder branch never ran.
     /// A session with a `HistoryStore` should get a sidecar handle whose
     /// path lives under `global_data_dir/sessions/<id>/session_memory.md`.
     #[tokio::test]
@@ -3928,9 +3833,6 @@ mod tests {
             .expect("session_memory should be wired when a history_store is set");
         // Must land in the same sidecar directory the rest of the history
         // crate reads and writes (metadata, input history, prompt state).
-        // Both derive from the settings' `global_data_dir` now; when they
-        // came from different roots the memory file was written where
-        // nothing would ever look for it.
         let expected = history::path::session_memory_file(
             &history::path::HistoryRoots::under(projects_tmp.path()).sessions,
             &base::session::SessionId::parse(&sid).unwrap(),
@@ -3938,21 +3840,12 @@ mod tests {
         assert_eq!(sm.path(), expected);
     }
 
-    /// **N-1 regression, and the most important test in this file.**
-    ///
-    /// Every tool the model can actually call must be resolvable by the
-    /// session's `Permission` handler. It was not: the handler is built from
-    /// whatever registry the caller passes (in a daemon, the pool's template
-    /// of self-contained built-ins), while `build()` creates a *fresh*
-    /// per-session registry and registers `Skill`, `Agent`, `Team*`,
-    /// `WebSearch`, `EnterWorktree`/`ExitWorktree`, `Cron*`, `TaskStop`/
-    /// `TaskOutput`, `Import` and every `mcp__*` adapter into that one. Every
-    /// name in that list hit `RuleSetPermission`'s "unknown tool" branch and
-    /// was permitted unchecked — the whole MCP surface included.
-    ///
-    /// This asserts the invariant directly rather than the fix: whatever the
-    /// registry ends up holding, the permission handler can see it. A future
-    /// tool registered in `build()` is covered automatically.
+    /// The most important test in this file: every tool the model can
+    /// actually call must be resolvable by the session's `Permission` handler.
+    /// The handler is built from whatever registry the caller passes, while
+    /// `build()` registers more tools into a fresh per-session registry; an
+    /// unresolvable name would pass `RuleSetPermission`'s "unknown tool"
+    /// branch unchecked. Asserting the invariant covers future tools too.
     #[tokio::test]
     async fn every_registered_tool_is_visible_to_the_permission_handler() {
         use base::interface::permission::{Permission, PermissionOutcome};
@@ -4001,8 +3894,7 @@ mod tests {
         );
 
         // Put the *session* into `DontAsk` — the handler reads the live
-        // session state, not its construction-time fallback (that is N-7's
-        // fix, and relying on it here keeps the two bindings honest).
+        // session state, not its construction-time fallback.
         agent
             .session_state
             .set_permission_mode(base::permission::PermissionMode::DontAsk);
@@ -4027,10 +3919,8 @@ mod tests {
         }
     }
 
-    /// N-7 regression: the permission handler must read the session's *live*
-    /// mode, so `EnterPlanMode` moves the gate. It used to construct a
-    /// throwaway `SessionState` per check, which froze the mode at session
-    /// construction and made plan mode decorative.
+    /// The permission handler must read the session's *live* mode, so
+    /// `EnterPlanMode` moves the gate.
     #[tokio::test]
     async fn entering_plan_mode_moves_the_permission_gate() {
         use base::interface::permission::{Permission, PermissionOutcome};
@@ -4591,8 +4481,7 @@ mod tests {
 
     #[tokio::test]
     async fn post_tool_use_hook_discontinue_ends_the_turn_early() {
-        // End-to-end regression test for the PostToolUse -> discontinue
-        // wiring: a PostToolUse hook returning `continue: false` must stop
+        // A PostToolUse hook returning `continue: false` must stop
         // the turn right after the tool that triggered it, instead of
         // looping back to the model for another round. Proven two ways:
         // stop_reason == "stopped_by_hook", and the model is called exactly
@@ -4695,15 +4584,10 @@ mod tests {
         }
     }
 
-    /// Regression test: a turn that answers directly (no tool calls) used
-    /// to unconditionally `.await` the memory-prefetch background task
-    /// (with only a 30s timeout as an upper bound) before it could
-    /// complete — even though the result, once collected, would only ever
-    /// be injected when `has_tool_uses` is true. A slow/stuck prefetch call
-    /// therefore held up the user's response for no reason. It should now
-    /// be aborted rather than awaited when this round has no tool calls, so
-    /// the turn finishes promptly regardless of how long the prefetch would
-    /// have taken.
+    /// A turn that answers directly (no tool calls) aborts the memory
+    /// prefetch rather than awaiting it — the result would only be injected
+    /// when `has_tool_uses` is true — so a slow prefetch cannot hold up the
+    /// response.
     #[tokio::test]
     async fn turn_without_tool_use_does_not_wait_on_a_slow_memory_prefetch() {
         let mut settings = test_settings();
@@ -4784,19 +4668,9 @@ mod tests {
         }
     }
 
-    /// The regression that motivated the input demultiplexer.
-    ///
-    /// `Agent::run` was the only reader of `input_rx` and `await`ed
-    /// `process_turn` inline, while the `PermissionResponse` arm that wakes a
-    /// blocked tool call lives *inside* `process_turn`. So a turn waiting on a
-    /// permission prompt could never dequeue its own answer — both halves
-    /// deadlocked and `session.respondToPrompt` had never once worked. It went
-    /// unnoticed because the daemon defaulted to allow-all (so the prompt path
-    /// never ran) and because the only test covering it *simulated* the
-    /// message instead of driving the real loop.
-    ///
-    /// This test drives the real loop. Before the fix it hangs until the
-    /// timeout; after it, the answer gets through and the turn completes.
+    /// A turn blocked on a permission prompt must receive its answer while
+    /// `Agent::run` is `await`ing it — the reason the input demultiplexer
+    /// exists. This drives the real loop rather than simulating the message.
     #[tokio::test]
     async fn a_permission_answer_reaches_a_turn_that_is_blocked_waiting_for_it() {
         // Local rather than reusing turn.rs's ProbeTool — that lives in a
@@ -4870,7 +4744,7 @@ mod tests {
             })
             .unwrap();
 
-        // The turn must now finish. This is the assertion that used to hang.
+        // Without the demultiplexer this deadlocks until the timeout.
         let completed = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
                 match event_rx.recv().await {
@@ -5052,11 +4926,8 @@ mod tests {
             .expect("engine task panicked");
     }
 
-    /// Regression test: `UserPromptSubmit` was defined in the `HookEvent`
-    /// enum but had zero trigger points anywhere — CodeScene's system
-    /// prompt told the model to expect `<user-prompt-submit-hook>` feedback
-    /// even though it could never fire. `decision: "block"` should now
-    /// refuse to process the message at all: the turn ends immediately with
+    /// A `UserPromptSubmit` hook's `decision: "block"` refuses to process
+    /// the message at all: the turn ends immediately with
     /// `stopped_by_hook`, and the model must never be called.
     #[tokio::test]
     async fn user_prompt_submit_hook_block_ends_the_turn_before_any_model_call() {
@@ -5243,20 +5114,16 @@ mod tests {
         assert!(runner.is_empty());
     }
 
-    /// Regression: `hooks::watcher::FileWatcher` was fully implemented
-    /// (`HookRunner::enable_file_watching`) but `Builder::build()` never
-    /// called it, so a configured `FileChanged` hook could never fire in a
-    /// real session no matter how it was set up. This exercises the actual
+    /// `Builder::build()` enables file watching, so a configured
+    /// `FileChanged` hook fires in a real session. This exercises the actual
     /// wiring: build an `Agent` with a `FileChanged` hook configured and an
     /// instruction file, edit that file, and confirm the hook really runs.
     #[tokio::test]
     async fn build_starts_file_watching_for_the_instruction_file_when_a_hook_wants_it() {
-        // Two guesses about machine speed used to stand between this test and
-        // its assertion: 200ms for the OS watcher to register, then 1500ms for
-        // the debounce, the dispatch and a shell to run. Both are gone. The
-        // hook is observed in this process through an injected executor, and
-        // the file is rewritten until the notification arrives — so a watcher
-        // that registers late costs another loop rather than a failure.
+        // No sleeps guessing at machine speed: the hook is observed in this
+        // process through an injected executor, and the file is rewritten
+        // until the notification arrives — so a watcher that registers late
+        // costs another loop rather than a failure.
         struct RecordingPromptExecutor {
             fired: tokio::sync::mpsc::Sender<()>,
         }
@@ -5328,7 +5195,7 @@ mod tests {
         );
     }
 
-    /// P2-4's acceptance: a wrapper gives one tool a deadline, and the tool
+    /// A wrapper gives one tool a deadline, and the tool
     /// actually feels it. Without the wrapper `Hang` waits for the session's
     /// own cancellation, which this test never sends.
     #[tokio::test(flavor = "multi_thread")]
@@ -5422,7 +5289,7 @@ mod tests {
         let _ = tokio::time::timeout(std::time::Duration::from_secs(5), engine).await;
     }
 
-    /// P2-5's point: a deployment can guarantee a string never reaches the
+    /// A deployment can guarantee a string never reaches the
     /// model, and the guarantee holds through the path a tool result actually
     /// takes — including when the tool failed.
     #[tokio::test(flavor = "multi_thread")]
@@ -5504,7 +5371,7 @@ mod tests {
         let _ = tokio::time::timeout(std::time::Duration::from_secs(5), engine).await;
     }
 
-    /// P2-9: recall goes through the contract, so a host can replace the
+    /// Recall goes through the contract, so a host can replace the
     /// judgement with something deterministic — and a hook can see both ends
     /// of it — without touching the engine.
     #[tokio::test(flavor = "multi_thread")]
@@ -5622,7 +5489,7 @@ mod tests {
         }
     }
 
-    /// P2-10's acceptance: the interceptor sees the request and the finished
+    /// The interceptor sees the request and the finished
     /// message, and is *not* called per chunk. Sixty-four deltas produce one
     /// message, and the counts say so.
     #[tokio::test(flavor = "multi_thread")]
@@ -5696,7 +5563,7 @@ mod tests {
         let _ = tokio::time::timeout(std::time::Duration::from_secs(5), engine).await;
     }
 
-    /// P3-2's acceptance: a host changes "how many steps before stopping"
+    /// A host changes "how many steps before stopping"
     /// with a policy, and the loop is not touched.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_turn_policy_decides_when_the_loop_stops() {
@@ -5782,10 +5649,9 @@ mod tests {
         );
     }
 
-    /// P3-6's acceptance: a deployment configures a ceiling on request size
-    /// and the engine honours it. There was no such configuration before —
-    /// `TokenBudget` said when to start compacting and nothing said how large
-    /// was too large.
+    /// A deployment configures a ceiling on request size and the engine
+    /// honours it — distinct from `TokenBudget`, which only says when to start
+    /// compacting.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_context_hard_cap_ends_a_turn_the_scene_would_have_allowed() {
         use base::interface::budget_policy::{Capped, EngineBudget};
@@ -5839,14 +5705,9 @@ mod tests {
         let _ = tokio::time::timeout(std::time::Duration::from_secs(5), engine).await;
     }
 
-    /// P4-4's other half: the policy is computed correctly *and* it reaches a
-    /// tool.
-    ///
-    /// The work order existed because `allowed_domains` was configured, read,
-    /// and never arrived where the model could feel it. Testing the
-    /// computation alone would have left exactly that gap open a second time,
-    /// so this one goes through a real turn and asks a tool what its own
-    /// provider says.
+    /// The egress policy is computed correctly *and* it reaches a tool, so
+    /// this goes through a real turn and asks a tool what its own provider
+    /// says rather than testing the computation alone.
     #[tokio::test(flavor = "multi_thread")]
     async fn the_egress_policy_reaches_the_tool_that_has_to_obey_it() {
         use base::interface::exec::Origin;
@@ -5931,7 +5792,7 @@ mod tests {
         let _ = tokio::time::timeout(std::time::Duration::from_secs(5), engine).await;
     }
 
-    /// P3-15's acceptance: an embedder registers a diagnostic of its own and
+    /// An embedder registers a diagnostic of its own and
     /// reads the engine's health back — after handing the agent off to its
     /// own task, which is when a supervisor actually asks.
     #[tokio::test(flavor = "multi_thread")]
@@ -5987,7 +5848,7 @@ mod tests {
         engine.abort();
     }
 
-    /// P3-3's acceptance: a policy turns an overload from "switch to the
+    /// A policy turns an overload from "switch to the
     /// fallback" into "fail", without the loop knowing anything about it.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_recovery_policy_can_refuse_the_fallback_the_engine_would_take() {
@@ -6137,7 +5998,7 @@ mod tests {
         blocks
     }
 
-    /// P3-11's acceptance: the assembler is replaceable outright, not merely
+    /// The assembler is replaceable outright, not merely
     /// contributed to. Nothing the kernel would have assembled survives.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_host_can_replace_prompt_assembly_outright() {
@@ -6274,7 +6135,7 @@ mod tests {
         observed
     }
 
-    /// P1-2: a host can take the event stream in-process, without standing a
+    /// A host can take the event stream in-process, without standing a
     /// forwarding task between the engine's channel and its own world.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_registered_sink_sees_the_same_stream_as_the_returned_channel() {
@@ -6302,7 +6163,7 @@ mod tests {
         );
     }
 
-    /// P1-2: registering a sink is observation, not control.
+    /// Registering a sink is observation, not control.
     ///
     /// The sink here blocks forever rather than merely being slow, so the
     /// test needs no timing threshold to be meaningful: if the turn were

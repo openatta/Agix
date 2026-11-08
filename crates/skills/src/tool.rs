@@ -1361,9 +1361,7 @@ mod tests {
 
     /// A skill body itself (not a bundled file) that's multi-byte UTF-8 and
     /// exceeds the 8000-char cap must be truncated without panicking, at a
-    /// valid char boundary — regression test for the same byte-index-slice
-    /// bug as `bundled_file_truncation_does_not_panic_on_multibyte_content`,
-    /// in the main body-truncation path this time.
+    /// valid char boundary.
     #[tokio::test]
     async fn skill_body_truncation_does_not_panic_on_multibyte_content() {
         let mgr = Arc::new(crate::manager::SkillManager::new());
@@ -1395,8 +1393,7 @@ mod tests {
 
     /// A bundled file whose content is multi-byte UTF-8 (Chinese) and
     /// exceeds `BUNDLED_FILE_CHAR_CAP` must be truncated without panicking,
-    /// at a valid char boundary — regression test for slicing by raw byte
-    /// index instead of char count.
+    /// at a valid char boundary.
     #[tokio::test]
     async fn bundled_file_truncation_does_not_panic_on_multibyte_content() {
         let dir = tempfile::tempdir().unwrap();

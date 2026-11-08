@@ -175,12 +175,8 @@ pub struct DaemonConfig {
     /// framing.
     pub ws_addr: Option<SocketAddr>,
     pub tcp_token: Option<String>,
-    /// Not yet sourced from `settings.permission_rules` — daemon has always
-    /// hardcoded `AllowAllPermission` + `BypassPermissions` regardless (see
-    /// `daemon/src/main.rs`, "IDE plugins manage their own sandbox"). Kept
-    /// as a separate field rather than silently wired to
-    /// `settings.permission_rules` because doing so would be a behavior
-    /// change beyond this round's scope, not just a plumbing fix.
+    /// Always empty: sessions take their rules from `settings.permission_rules`
+    /// (see `session_pool::resolve_session_permission`), not from here.
     pub permission_rules: RuleSet,
     /// Session 空闲超时秒数，超时后自动回收（默认 3600 = 1 小时）。
     pub session_idle_timeout_secs: u64,

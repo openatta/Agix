@@ -455,9 +455,8 @@ impl Coordinator for DefaultCoordinator {
             let _ = tokio::fs::create_dir_all(p).await;
         }
 
-        // §6.2/§6.3: team.json (write-once declaration) + events.jsonl
-        // (team_created) supersede the old config.json — same discoverable
-        // metadata, in the shape a future project-level `TeamStore` reads.
+        // team.json (write-once declaration) + events.jsonl (team_created),
+        // in the shape a project-level `TeamStore` reads.
         let declaration = crate::persist::TeamDeclaration {
             schema_version: crate::persist::CURRENT_TEAM_SCHEMA_VERSION,
             team_id: team_id.clone(),
@@ -1291,7 +1290,7 @@ mod tests {
         }
     }
 
-    /// The coordinator now prepends a `<team-context>` block, so the task
+    /// The coordinator prepends a `<team-context>` block, so the task
     /// text a test encoded is the last line of what the spawner receives.
     fn task_text(prompt: &str) -> String {
         prompt
@@ -1769,7 +1768,7 @@ mod tests {
         );
     }
 
-    /// §6.2/§6.3: `orchestrate()` must land `team.json`/`state.json`/
+    /// `orchestrate()` must land `team.json`/`state.json`/
     /// `events.jsonl` in the shapes `crate::persist` defines, not just the
     /// in-memory `TeamRegistry` entry — a future project-level `TeamStore`
     /// reads these files, not the per-session registry.

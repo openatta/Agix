@@ -1,11 +1,7 @@
 //! Guards against the "library capability exists, composition root never
-//! calls it" bug pattern found repeatedly across this codebase during a
-//! 2026-08-12 audit — `tools::register_builtin_tools` never called by
-//! `daemon`, `hooks::HookRunner::enable_file_watching` never called by
-//! `runtime::agent::Builder::build()`, `mcp::McpManager::set_elicitation_callback`
-//! likewise. Each of those compiled cleanly and had passing unit tests in
-//! isolation; the only thing that would have caught them earlier is asking
-//! "does the production entry point actually call this?"
+//! calls it" bug pattern: such a function compiles cleanly and passes its unit
+//! tests in isolation; only asking "does the production entry point actually
+//! call this?" catches it.
 //!
 //! This is a source-text reachability check, not real call-graph analysis —
 //! it greps for whether a function name string appears anywhere in the two
@@ -29,10 +25,8 @@
 //! cannot see the other place sessions are built: `AgentTool` and its
 //! neighbours spawn sub-agents, team members and background tasks, each with a
 //! `Builder` of their own. A capability wired into the main session and not
-//! into those is invisible to the check and to everything else — which is how
-//! the operator's scripts came to stop at the first delegation, and how
-//! transcripts and telemetry each came to be missing from a delegate before
-//! that. The second test here is about that root.
+//! into those is invisible to the check and to everything else, so a delegate
+//! silently runs without it. The second test here is about that root.
 
 use std::path::{Path, PathBuf};
 
@@ -188,7 +182,7 @@ fn count_occurrences(haystack: &str, needle: &str) -> usize {
     haystack.matches(needle).count()
 }
 
-/// The check itself must be able to catch a real regression — exercise it
+/// The check itself must be able to catch a missing call — exercise it
 /// against a name that genuinely appears nowhere, so a future edit that
 /// breaks the scan logic (e.g. an accidental early return) fails loudly
 /// instead of the check silently always passing.

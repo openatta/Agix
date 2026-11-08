@@ -317,7 +317,6 @@ mod tests {
         tokio::fs::write(&p, empty_notebook_json()).await.unwrap();
         let tool = NotebookEditTool;
         let ctx = ToolContext::for_test(dir.path().to_path_buf());
-        // session state now managed by static stores
         let r = tool
             .call(
                 json!({
@@ -368,7 +367,6 @@ mod tests {
         tokio::fs::write(&p, one_code_cell_json()).await.unwrap();
         let tool = NotebookEditTool;
         let ctx = ToolContext::for_test(dir.path().to_path_buf());
-        // session state now managed by static stores
         let r = tool
             .call(
                 json!({
@@ -396,7 +394,6 @@ mod tests {
         tokio::fs::write(&p, one_code_cell_json()).await.unwrap();
         let tool = NotebookEditTool;
         let ctx = ToolContext::for_test(dir.path().to_path_buf());
-        // session state now managed by static stores
         let r = tool
             .call(
                 json!({
@@ -421,7 +418,6 @@ mod tests {
         tokio::fs::write(&p, empty_notebook_json()).await.unwrap();
         let tool = NotebookEditTool;
         let ctx = ToolContext::for_test(dir.path().to_path_buf());
-        // session state now managed by static stores
         let r = tool
             .call(
                 json!({
