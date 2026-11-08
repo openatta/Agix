@@ -6,11 +6,9 @@
 //! finishing a stage) is frequent and must not force rewriting the immutable
 //! declaration (stage list, prompts) every time.
 //!
-//! Not yet the *only* place a team's state lives — `registry::TeamRegistry`
-//! remains the live, per-session, in-memory source of truth read by
-//! `TeamList`/`TeamDelete` (project-level promotion is deferred). What's here
-//! is the write path that lands these three files next to it, so a future
-//! `TeamStore` has correctly-shaped data to read without a migration step.
+//! These files are written alongside `registry::TeamRegistry`, which stays
+//! the per-session, in-memory source of truth that `TeamList`/`TeamDelete`
+//! read; nothing reads the files back yet.
 
 use serde::{Deserialize, Serialize};
 use std::fs;

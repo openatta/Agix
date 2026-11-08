@@ -487,10 +487,6 @@ async fn main() -> anyhow::Result<()> {
 
     info!(total_ms = total_startup_ms, ?timing, "startup complete");
 
-    // If telemetry is available, emit the startup timing event.
-    // (The daemon currently does not wire up the full telemetry pipeline
-    //  at startup, but this demonstrates the pattern.)
-
     let cancel = CancellationToken::new();
 
     // Ctrl-C, and the SIGTERM a supervisor stops a service with, shut down

@@ -9,12 +9,8 @@
 //! same [`base::process_identity::ProcessIdentity`] reuse-safe check) rather
 //! than introducing a second locking mechanism.
 //!
-//! Not yet called from the team-creation/orchestration path: that only
-//! becomes contended once `TeamStore` is promoted from per-session to
-//! project-level (deferred). Today, every
-//! `TeamCreate` call gets its own freshly-generated `team_id` subdirectory,
-//! so there is no concurrent write to the *same* file for this lock to
-//! protect yet.
+//! The team-creation path doesn't take it: every `TeamCreate` gets its own
+//! freshly generated `team_id` subdirectory, so no two writers share a file.
 
 use base::process_identity::{decide_stale_lock, ProcessIdentity, StaleLockDecision};
 use serde::{Deserialize, Serialize};
