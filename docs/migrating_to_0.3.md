@@ -193,3 +193,42 @@ skill、web 工具、WebSocket、载体与包方案。
   新增的输出)与 `task_updated`(子 Agent 的用量、等待宿主回答);`subagent_progress`
   多了 `task_id`。子 Agent 有询问在等时,任务的 `status` 是 `waiting`,不认识这个值的
   客户端把它当 `running` 即可。
+
+## 0.3.0 之后:到 0.3.6
+
+0.3.x 之间不改协议版本,下面这些是嵌入方和客户端升级时要看的。
+
+### 嵌入方
+
+- **内置场景只剩 `code`、`harnix`、`mini`。** `coding` 改名 `code`,不留别名,状态目录随之是
+  `~/.agix/scenes/code/`;`chat`、`research`、`demo` 删掉,用过它们的改用 `harnix`、`mini`
+  或写一个声明式场景。`CodeScene::default()` 是有人值守的,`CodeScene::new(Interaction::Unattended)`
+  是无人值守的那一版。
+- **`Scene` 新增几个有缺省实现的方法**:`interactive()`(缺省 `false`,即无人值守)、
+  `build_session_context()`、`bundled_skills()`、`path_style()`,含义见 `extension_points.md`
+  「一个 agent 怎么呈现自己」。**自己写的 Rust 场景升级后缺省就是无人值守**:有人在场的,
+  要覆盖 `interactive()` 返回 `true`,否则需要批准的调用会被直接拒绝。声明式场景对应
+  `scene.json` 的 `"interactive"`。
+- **会话事实不在系统提示里了。** 工作目录、平台、草稿目录由 `build_session_context()` 在会话
+  开头作为一条上下文消息注入一次;技能清单(`skills.catalog`)是 `User` 块,每次调用作为对话
+  开头的一条消息送出。从系统提示里读这些、或在组装拦截器里按位置找它们的,改成按块名找。
+- **`TaskCreate` / `TaskGet` / `TaskList` / `TaskUpdate` 删掉。** "Task"只指运行中的任务
+  (子 Agent、Shell 命令、监视器、程序);记账用 `TodoWrite`。`TaskCreated` hook 改在运行任务
+  开始时触发。
+- **会话目标**:新工具 `GoalCreate` / `GoalGet` / `GoalUpdate`;自己调度 turn 的嵌入方用
+  `Builder::goal_rounds_from_owner()` 接管下一轮的开启,见 `extension_points.md`「会话目标」。
+- **`RunCode`**:新 crate `ptc`、特性 `ptc`(`coding` 档及以上默认开)。`Tool` 新增
+  `callable_from_code()` 与 `code_result()`,缺省不可从程序调;自己的工具要让程序用,覆盖它们。
+- **`StructuredOutput`** 在 `code` 场景里只在宿主给了 `output_schema` 时注册;参数就是结果本身,一个字符串字段
+  里装着整份符合 schema 的结果时会被拒绝。
+- **模型缺省**:thinking 开、`ModelSettings::effort` 缺省 `High`、`max_tokens` 缺省 32000
+  (`base::settings::DEFAULT_MAX_TOKENS`)。`StreamParams` 新增 `effort`,结构体字面量补上。
+  按 token 计费敏感的部署,在设置里显式写回自己要的值。
+
+### RPC 客户端
+
+- `session.goal` / `session.setGoal` / `session.updateGoal` 与 `goal_changed` 帧;`turn_started`
+  的 `initiator` 多了 `goal`。
+- `session.tasks` 的 `kind` 多了 `code`(`RunCode` 的程序);不认识的 `kind` 照常显示即可。
+- `session.inspectContext` 的 `system` 各块带 `role`。
+- 场景 id `coding` 不再存在,`session.create` 带它会得到 `SCENE_NOT_FOUND`。

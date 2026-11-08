@@ -299,11 +299,22 @@ pub async fn full_compact(
     let count_before = messages.len();
 
     let rounds = group_by_api_round(&messages);
-    let keep = keep_rounds.clamp(1, rounds.len().max(1));
+    let tokens_from = |first: usize| -> usize {
+        rounds[first..]
+            .iter()
+            .map(|r| estimate_tokens(&r.messages))
+            .sum()
+    };
+    // How many recent rounds stay is settled before summarizing, never after:
+    // a round shed once the summary is written would be covered by neither.
+    let mut keep = keep_rounds.clamp(1, rounds.len().max(1));
     if rounds.len() <= keep {
         return Err(CompactError::NotApplicable(
             "fewer rounds than the keep floor — nothing to summarize".into(),
         ));
+    }
+    while keep > 1 && tokens_from(rounds.len() - keep) > max_tokens {
+        keep -= 1;
     }
     let split = rounds.len() - keep;
 
@@ -320,19 +331,6 @@ pub async fn full_compact(
         result.extend(round.messages.iter().cloned());
     }
 
-    // If the summary plus the kept rounds is still over budget, shed kept
-    // rounds from the oldest end — never the summary, and never the newest
-    // round. This is Snip's rule, applied to a list whose head is now the
-    // handoff rather than raw history.
-    let mut kept_rounds = keep;
-    while kept_rounds > 1 && estimate_tokens(&result) > max_tokens {
-        kept_rounds -= 1;
-        result.truncate(1);
-        for round in &rounds[rounds.len() - kept_rounds..] {
-            result.extend(round.messages.iter().cloned());
-        }
-    }
-
     let tokens_after = estimate_tokens(&result);
     let messages_after = result.len();
     let meta = CompactResult {
@@ -342,7 +340,7 @@ pub async fn full_compact(
         tokens_before,
         tokens_after,
         projection: Some(SnipProjection {
-            dropped_rounds: rounds.len() - kept_rounds,
+            dropped_rounds: split,
             dropped_messages: count_before.saturating_sub(messages_after),
             estimated_tokens_saved: tokens_before.saturating_sub(tokens_after),
         }),
@@ -629,6 +627,25 @@ mod tests {
         assert!(prompt.contains("User intent"));
         assert!(prompt.contains("Errors and fixes"));
         assert!(prompt.contains("Current work and next step"));
+    }
+
+    #[tokio::test]
+    async fn a_round_the_budget_will_not_keep_is_summarized_not_dropped() {
+        let msgs = bulky_conversation(6);
+        let model = FakeSummarizerModel::new("summary");
+        let summarizer = LlmSummarizer::new(model.clone(), "m");
+
+        let (result, _) = full_compact(&summarizer, msgs, 500, 3).await.unwrap();
+
+        let prompt = model.prompt_text();
+        for i in 0..5 {
+            assert!(
+                prompt.contains(&format!("request {i}:")),
+                "round {i} does not fit the budget, so the summary must cover it"
+            );
+        }
+        let kept = summary_text(&result[1..]);
+        assert!(kept.contains("request 5:") && !kept.contains("request 4:"));
     }
 
     #[tokio::test]

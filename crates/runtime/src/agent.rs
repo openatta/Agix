@@ -963,10 +963,16 @@ impl Agent {
     /// compact or a `PreCompact` hook declined.
     pub async fn compact_now(&mut self) -> Option<crate::turn::CompactSummary> {
         let target = (compaction::grouping::estimate_tokens(self.session.messages()) / 2).max(1);
+        // Asked for, so it must compact something: a keep floor of every
+        // round there is would leave the summary nothing to cover, and the
+        // cascade would then drop those rounds unsummarized.
+        let rounds = compaction::grouping::group_by_api_round(self.session.messages()).len();
         let keep = self
             .budget_policy
             .context_budget(&self.scene.token_budget())
-            .compact_keep_recent;
+            .compact_keep_recent
+            .min(rounds.saturating_sub(1))
+            .max(1);
         self.run_compaction(target, keep, crate::turn::CompactTrigger::Manual)
             .await
     }

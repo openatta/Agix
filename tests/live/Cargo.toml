@@ -57,5 +57,17 @@ name = "live_host"
 required-features = ["real-model"]
 
 [[test]]
+name = "live_programs"
+required-features = ["real-model"]
+
+[[test]]
+name = "live_unattended"
+required-features = ["real-model"]
+
+[[test]]
+name = "live_context"
+required-features = ["real-model"]
+
+[[test]]
 name = "compare_dsh"
 required-features = ["real-model"]

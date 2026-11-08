@@ -101,6 +101,36 @@ let (agent, events, input) = Builder::new().tools(tools).model(model).build()?;
 就被取回来,模型也就看不见它了。`base::tool::LayeredToolRegistry` 是一个做好的
 范例——它包住另一个 registry,在不改动对方的前提下把工具藏起来。
 
+#### 让模型写的程序也能调你的工具
+
+`RunCode`(`ptc.md`)里的程序经 `tools.<Name>(input)` 调本会话的工具。一个工具能不能
+这样被调,由它自己声明:
+
+```rust
+impl Tool for FileTicketTool {
+    fn callable_from_code(&self) -> bool { true }
+    fn code_result(&self) -> Option<&'static str> {
+        Some("{id: string, status: string}")   // 程序拿到的结构化结果的形状
+    }
+    fn is_concurrency_safe(&self, _: &Value) -> bool { true }   // 程序里可并行
+    // …
+}
+```
+
+- **干活、返回数据的说是;和对话或人打交道的说否**(缺省否)。改会话本身状态的
+  (计划模式、目标、待办)、要等人回答的、再起一层程序的都不该开。
+- `code_result` 写给模型看:它出现在 `RunCode` 使用指南里那行签名的 `→` 后面。工具的
+  `ToolResult::structured_content` 有值时程序拿到的是那个对象,否则是和模型直接调用时
+  同一段文本;给了 `code_result` 就要真的给 `structured_content`。
+- `is_concurrency_safe` 在程序里的含义和模型一次发多个调用时相同:是的同时至多 8 个,
+  不是的按提交顺序一个个跑。
+- 程序里的每次调用和直接调用走同一条派发路径:参数校验、`PreToolUse` / `PostToolUse`、
+  中间件、遥测、权限。权限判定为"询问"时这次调用直接失败——程序跑到一半不弹询问。
+  所以工具自己的 `check_permissions` 不用为程序另写一套。
+- `RunCode` 只注册在根会话上(子 Agent 已经是委派了一层),排在所有工具之后,所以它
+  描述里列出的就是这个会话最终可调的那些。场景白名单里没有 `RunCode` 的、构建没开 `ptc`
+  特性的,没有它;部署方要关也可以写一条 `{"tool": "RunCode", "action": "deny"}`。
+
 ### LLM 后端 — `model`、`model.factory`、`credentials`
 
 `base::interface::model::Model` 是一个协议。要让一个协议变得*可配置*——也就是在
@@ -187,6 +217,12 @@ Builder::new().permission(Arc::new(MyGate));
 它那条"未知工具"的分支就成了一个洞),`bind_session_state` 让它持续看得见会话中途
 的模式切换。两者对不需要它们的 handler 都默认是空实现。
 
+`agixd` 的会话池对 `bypassPermissions` 模式的会话不装规则引擎,而是用
+`Assembly.permission`(缺省放行一切):这样的会话里 deny 规则、凭据与 `.agix` 设置文件的
+免 bypass 名单、"改文件前先读过"都不生效,直接调用和程序里的调用一样。要规则仍然算数又
+不想被询问,用 `acceptEdits` 或 `dontAsk` 加 allow 规则。直接用 `Builder` 嵌入、交的是
+`PermissionGate` 的,`BypassPermissions` 下 deny 规则照样压过模式(`ARCHITECTURE.md` §6.1)。
+
 ### 一个 agent 怎么呈现自己 — `scene`
 
 `base::interface::scene::Scene` 持有系统提示骨架、工具白名单和预算:
@@ -195,9 +231,25 @@ Builder::new().permission(Arc::new(MyGate));
 Builder::new().scene(Arc::new(MyScene));
 ```
 
-引擎自带四个 scene,其中三个写成了照着抄的阶梯:一个完整参考、一个精简的、一个最
-小骨架。自己给提示分节命名的 scene 保住那些名字,收在 `scene.` 前缀下——见下面的
-块名。
+引擎自带三个 scene,正好是照着抄的阶梯:
+
+| scene | 是什么 | 值守 |
+|---|---|---|
+| `scene::code::CodeScene` | 完整参考:几乎全部工具,不常用的延迟加载,分节提示词 | `CodeScene::new(Interaction::Interactive)`(`default()`)或 `Interaction::Unattended` |
+| `scene::harnix::HarnixScene` | 精简版:宿主会话的缺省场景,常用工具集,短提示词,文件工具用相对路径 | 无人值守 |
+| `scene::mini::MiniScene` | 最小骨架:九个工具全部常驻,几行提示词,没有 `RunCode` | 无人值守 |
+
+自己给提示分节命名的 scene 保住那些名字,收在 `scene.` 前缀下——见下面的块名。
+
+写自己的 scene 时,除了提示词、工具白名单和预算,下面几项决定它在实际运行中的样子:
+
+| 方法 | 缺省 | 决定什么 |
+|---|---|---|
+| `interactive()` | `false` | 有没有人在场。`false` 时权限询问直接变成写明怎么授权的拒绝、只在实例授权的根内读写、`Bash` 只在 OS 沙箱完整生效时放行(`ARCHITECTURE.md` §3.2.3、§6.3)。**要等人回答的工具(`AskUserQuestion`、`EnterPlanMode` / `ExitPlanMode`)由场景自己从白名单里拿掉**——`CodeScene` 无人值守时就是这样做的 |
+| `build_session_context()` | 空 | 本会话的事实(工作目录、平台、草稿目录),由内核在会话开头连同项目说明作为一条上下文消息注入一次,压缩与 `/clear` 之后重新注入。**随会话而变的东西放这里,不要放进系统提示**:系统提示逐字节相同,厂商的前缀缓存才能跨会话命中 |
+| `bundled_skills()` | `["skillify"]` | 列出哪些内置技能;依赖的工具不被允许的自动不列 |
+| `path_style()` | 绝对路径 | 文件工具给模型看的路径;`harnix` 用相对路径,省掉每次都重复的项目前缀。设置里写了 `path_style` 以设置为准 |
+| `token_budget()` | — | 压缩阈值与保留轮数 |
 
 daemon 的嵌入方把自己的 scene 交给 `Assembly { scenes: vec![Arc::new(MyScene)], .. }`
 (或运行中调 `SessionPool::register_scene`):登记之后 `scene.list` 看得到它,
@@ -267,7 +319,7 @@ for refused in registry.register_declarative_dir(&global_root.join("scenes")) {
 | `modules` | string[] 或缺省 | 缺省 = 全部 | 这个场景的会话跑哪些模块,见下 |
 | `disabled_modules` | string[] | `[]` | 即使 `modules` 放行也不跑的模块 |
 | `reminders` | `"git_status"` / `"memory"` 的数组 | `[]` | 每轮 `<system-reminder>` 带什么,按列出的顺序 |
-| `interactive` | bool | `false` | 有没有人应答提示;`false` 时需要批准的调用直接拒绝,见 `ARCHITECTURE.md` §3.2.1 |
+| `interactive` | bool | `false` | 有没有人应答提示;`false` 时需要批准的调用直接拒绝,见 `ARCHITECTURE.md` §3.2.3 |
 | `bundled_skills` | string[] 或缺省 | 缺省 = `["skillify"]` | 列出哪些内置技能;依赖的工具不被允许的不列 |
 
 校验从严:未知字段、缺了必填字段、id 不合规、同一列表里重复、一个名字同时在
@@ -890,6 +942,45 @@ Builder::new().module(Arc::new(agents::AgentsModule::new())).module(Arc::new(Tic
   `on_session`;只能给一个会话的东西(如 `McpModule` 持有的连接)要自己处理。
 - 自带的三个:`agents::AgentsModule`、`mcp::McpModule`、`skills::SkillsModule`,
   装配顺序 mcp → agents → skills。`agixd` 的会话池按档位装配它们(`ARCHITECTURE.md` §1.2)。
+
+---
+
+## 引擎自带、宿主要接上的两项能力
+
+它们不是扩展点,但嵌入方要决定怎么接。
+
+### 会话目标
+
+目标让一个会话一轮轮自己推进,直到模型标完成或受阻、或者轮数用完(`ARCHITECTURE.md`
+§3.4.1)。下一轮由谁来开,取决于谁拥有这个会话的输入循环:
+
+- **直接用 `Agent::run` 驱动的**:什么都不用做,它自己在一轮正常结束后开下一轮。
+- **自己调度 turn 的**(会话池、自己的队列):`Builder::goal_rounds_from_owner()`,每轮结束
+  后问 `Agent::goal_round_after`,拿到的那一轮像普通 turn 一样排进去。`agixd` 就是这样,
+  自动轮在 `turn_started` 里是 `initiator:"goal"`。
+
+宿主那一侧经 `session.goal` / `session.setGoal` / `session.updateGoal` 读、设、暂停、恢复、
+清除,变化推 `goal_changed`(`daemon_rpc_protocol.md`)。几条宿主要知道的约束:
+
+- 宿主的操作按"用户亲自发起"对待;模型在自动轮里只能标完成或受阻,不能改目标、不能
+  扩大授权。
+- **武装状态不落盘**:目标每次变化记成 `ns:"agix.goal"` 的扩展条目,但恢复出来的目标一律
+  不武装,要宿主 `resume` 才继续。无人值守的宿主若希望重启后接着跑,自己在恢复后调一次。
+- 一轮以取消、hook 中止、预算耗尽、出错结束,目标解除武装,等人决定。
+- 子 Agent 碰不到目标。
+
+### `RunCode`(PTC)
+
+模型写一段 JavaScript 调本会话的工具、只把返回值交回对话(`ptc.md`)。嵌入方要管的:
+
+- **开关**:`ptc` 特性(`coding` 档及以上默认开)、场景白名单、或者一条 deny 规则。与
+  `scripts` / `plugins` 载体不互斥——这里跑的是模型写的一次性代码,和运维者装的扩展是两条
+  信任边界。
+- **哪些工具可调**:各工具自己声明,见上面 `tool.registry` 一节;自己写的工具默认不可调。
+- **宿主看得见**:每次运行登记成一件 `kind:"code"` 的任务,`task_progress` 推 `log()` 的行
+  与每次子调用的摘要,`session.stopTask` 停得掉;后台运行结束时以通知回到会话。
+- **权限**:不为 `RunCode` 另立放行规则。用户选了"改文件前先问我",程序里的写入就失败,
+  而不是绕过去。
 
 ---
 

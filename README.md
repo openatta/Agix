@@ -27,22 +27,83 @@ It is meant for people who build on it:
   language — runs `agixd`, the reference host in this repository, and speaks
   JSON-RPC to it over a Unix socket, TCP or WebSocket.
 
-Both are the same engine. What makes it worth building on:
+Both are the same engine.
 
-- **Every decision is a seam.** 45 extension points in a published catalog —
-  replace a subsystem, contribute to a collection, or intercept something in
-  flight — reachable from Rust, from a script, or from a WebAssembly plugin.
-- **An extension that fails costs its own contribution and nothing else.** A
-  script that throws or times out leaves its point exactly as it found it.
-- **Policy follows delegation.** Permissions, hooks and budgets apply to
-  sub-agents, team members and background tasks the same way they apply to the
-  session that started them.
-- **The host sees and steers what runs.** Tasks, sub-agents, prompts, the
-  context the next call will carry — all inspectable, stoppable and editable
-  over the same protocol.
-- **Nothing is claimed that is not checked.** The protocol reference, the
-  extension catalog, the settings schema and this file's numbers are compared
-  against the code by tests.
+---
+
+## Why Agix
+
+Seven things that set it apart, each backed by code and tests in this
+repository:
+
+1. **Programs, not call-by-call.** `RunCode` lets the model write one
+   JavaScript program that calls the session's own tools — in parallel, in
+   loops, in stages — and fans out to sub-agents whose results are validated
+   against a JSON Schema. Only the return value enters the conversation, so
+   a 30-file migration or a 4-way parallel audit is one tool call instead of
+   dozens of round trips. It *is* the workflow engine: there is no separate
+   workflow DSL to learn, and every call inside the program goes through the
+   same permission rules, hooks and telemetry as a direct one
+   ([`docs/ptc.md`](docs/ptc.md)).
+2. **Goals that finish themselves.** Give a session a goal and it keeps
+   working, round after round, until the model marks it complete or blocked,
+   or the round cap runs out — without anyone sending another message. What
+   an automatic round may do is decided by who started it, not by what the
+   model says: it can finish or give up, never widen its own mandate, and a
+   restarted engine never resumes a goal on its own.
+3. **Built to run unattended.** A scene declares whether a person is there.
+   Unattended, nothing waits on a reply: the tools that would ask are not
+   offered, a permission question becomes a refusal that says how to grant
+   it, writes stay inside the roots the instance was given, and `Bash` runs
+   only when the OS sandbox (Seatbelt on macOS, bubblewrap on Linux) is fully
+   in force. Authority comes from settings, never from task text — so
+   injected content cannot grant itself permissions.
+4. **A small, cache-friendly prompt.** About 5.8K tokens of fixed prefix with
+   the tools included; per-session facts travel in the first message instead
+   of the system prompt, so the provider's prefix cache is shared across
+   sessions; rarely used tools are advertised by name and fetched on demand.
+   Measured against another harness on the same model, below.
+5. **Every decision is a seam.** 45 extension points in a published catalog
+   — replace a subsystem, contribute to a collection, or intercept something
+   in flight — reachable from Rust, a script or a WebAssembly plugin. An
+   extension that fails costs its own contribution and nothing else.
+6. **The host sees and steers what runs.** Tasks, sub-agents, goals,
+   prompts, the context the next call will carry — all inspectable,
+   stoppable and editable over one JSON-RPC protocol. Policy follows
+   delegation: permissions, hooks and budgets bind sub-agents, team members
+   and background programs exactly as they bind the session that started
+   them.
+7. **History is a log, and nothing is claimed unchecked.** A session is an
+   append-only transcript: resume it, fork it, rebuild it after a crash,
+   replay a recording byte for byte with no network. The protocol reference,
+   the extension catalog, the settings schema and this file's numbers are
+   compared against the code by tests, and a live tier drives every major
+   feature against a real model.
+
+### Measured
+
+Six tasks, the same model (DeepSeek Flash, thinking on, effort high), each
+harness behind the same recording proxy, both unattended under their default
+permission policy; every product is checked by running it on inputs the model
+never saw. Agix runs the `harnix` scene. The latest full round, on
+0.3.6-2026110701:
+
+| Task | What it asks | Prompt tokens, Agix / DSH | Wall time, Agix / DSH |
+|---|---|---|---|
+| stats | write a small program to a spec | 29.6K / 65.7K | 15 s / 35 s |
+| inventory | fix three bugs across a package until its tests pass, then add a CLI | 62.0K / 144.4K | 21 s / 57 s |
+| biglog | answer questions about a 1.4 MB log | 42.1K / 49.1K | 13 s / 14 s |
+| shop | two turns in an unfamiliar project: fix a bug, add a feature | 116.9K / 132.7K | 27 s / 31 s |
+| audit | four sub-agents audit 24 modules in parallel and fix six | 1.16M / 0.98M | 150 s / 114 s |
+| migrate | move 58 call sites in 30 modules off a deprecated API | 146.2K / 156.4K | 26 s / 37 s |
+
+The fixed prefix is the same size on both sides (5.8K / 5.7K tokens on the
+first tool-carrying request). Agix spent fewer prompt tokens and less time on
+five of the six. Read these as one round: a single run swings by ±30% on
+either side. In that round DSH's products all passed and one of Agix's
+(`stats`) did not. The harness, the fixtures and the checks are in
+[`tests/live/tests/compare_dsh.rs`](tests/live/tests/compare_dsh.rs);
+`AGIX_COMPARE_REPEAT=3` gives medians.
 
 ---
 
@@ -355,7 +416,7 @@ when the host sets an output schema. A scene is interactive (someone answers
 prompts) or unattended: `harnix` and `mini` are unattended, `code` is created
 either way. An unattended session has no `AskUserQuestion` or plan mode, refuses
 what would need approval instead of asking, and runs `Bash` only inside the OS
-sandbox — see `docs/ARCHITECTURE.md` §3.2.1 and §6.3.
+sandbox — see `docs/ARCHITECTURE.md` §3.2.3 and §6.3.
 
 ### Model routing
 
@@ -447,6 +508,7 @@ works and how to run it: [`tests/README.md`](tests/README.md).
 | [docs/daemon_rpc_protocol.md](docs/daemon_rpc_protocol.md) | the JSON-RPC reference — methods, events, error codes, auth |
 | [docs/extending_quickjs.md](docs/extending_quickjs.md) | writing script extensions |
 | [docs/extending_wasm.md](docs/extending_wasm.md) | writing WebAssembly plugins |
+| [docs/ptc.md](docs/ptc.md) | `RunCode`: what a model's program can call, its permissions, limits and prompt |
 | [docs/migrating_to_0.3.md](docs/migrating_to_0.3.md) | upgrading an embedder or client from 0.2.x |
 | [docs/schemas/settings.schema.json](docs/schemas/settings.schema.json) | the generated schema of `settings.json` |
 | [tests/README.md](tests/README.md) | the test layers and the live tier |

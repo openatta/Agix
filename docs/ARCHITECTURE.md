@@ -255,7 +255,7 @@ recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着
 等其余路由任务仍按绑定的路由走。宿主可以经 `Assembly.customize_session` 在每个会话的
 `Builder` 建成之前改它,新建、恢复、重建都经过这一处。
 
-### 3.2.1 有人值守与无人值守
+### 3.2.3 有人值守与无人值守
 
 `Scene::interactive()` 回答"会话进行中有没有人回答问题、批准计划、应答权限提示"。缺省
 `false`;只有交互版 `code` 是 `true`(声明式场景在 `scene.json` 里写 `"interactive": true`)。
@@ -500,6 +500,10 @@ Agent 的上下文,本来就该在一处。
 
 场景的工具白名单不在这里:它在会话注册表上就把工具拿掉了(§3.5),被拿掉的工具根本
 到不了权限这一步。
+
+例外是 `agixd` 的 `bypassPermissions` 会话:会话池不给它装 `PermissionGate`,而是用
+`Assembly.permission`(缺省放行一切),上面这些规则、§6.2 的拒写名单都不经过。要 deny 规则
+仍然算数,用 `acceptEdits`,或 `dontAsk` 加 allow 规则。
 
 ### 6.2 写路径的管控
 

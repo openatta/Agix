@@ -19,7 +19,7 @@ async fn a_later_stage_works_from_what_an_earlier_stage_remembered() -> anyhow::
             .as_nanos()
             % 0xffff_ffff
     );
-    run.write_file("vault/secret.txt", &format!("{secret}\n"))?;
+    run.write_file("notes/relay-word.txt", &format!("{secret}\n"))?;
 
     let session = run.session().await?;
     let events = run
@@ -27,13 +27,13 @@ async fn a_later_stage_works_from_what_an_earlier_stage_remembered() -> anyhow::
             &session,
             "Use the TeamCreate tool (load it with ToolSearch if needed) to run a team named \
              relay, with permission_mode bypassPermissions and two stages:\n\
-             - stage 1, one agent labelled scout: \"Read vault/secret.txt and save its \
+             - stage 1, one agent labelled scout: \"Read notes/relay-word.txt and save its \
              content to team memory with the TeamMemorySave tool, name secret-word, type \
-             project, description 'the vault word'. Do not write any file.\"\n\
+             project, description 'the relay word'. Do not write any file.\"\n\
              - stage 2, one agent labelled scribe: \"Read the team memory named secret-word \
              with the TeamMemoryRead tool and write the word it holds to relay.txt. Do not \
-             read anything under vault/.\"\n\
-             Do not read vault/ or write relay.txt yourself. When the team returns, reply \
+             read anything under notes/.\"\n\
+             Do not read notes/ or write relay.txt yourself. When the team returns, reply \
              DONE.",
         )
         .await?;

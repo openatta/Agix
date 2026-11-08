@@ -74,12 +74,19 @@ token 用量。改了 `tests/live` 后 lint 也要带上 feature：
 
 | 用例 | 用一遍什么 |
 |---|---|
-| `live_basics.rs` | Read / Write / Edit / Grep / Bash 改项目；`WebSearch` 是引擎的工具，经会话自己的模型让提供方搜索；`Monitor` 立即返回，日志里的 ERROR 在模型干活途中以通知送达、模型据此处理后用 `TaskStop` 停掉它，宿主边跑边看到那一行；会话提示词与 resume；Plan 模式不改文件；模型用 `GoalCreate` 设目标后，自动轮一轮推进一步，直到它自己标完成；另起进程的 `agixd` |
+| `live_basics.rs` | Read / Write / Edit / Grep / Bash 改项目；`WebSearch` 是引擎的工具，经会话自己的模型让提供方搜索；`Monitor` 立即返回，日志里的 ERROR 在模型干活途中以通知送达、模型据此处理后用 `TaskStop` 停掉它，宿主边跑边看到那一行；会话提示词与 resume；Plan 模式不改文件；模型用 `GoalCreate` 设目标后，自动轮一轮推进一步，直到它自己标完成；宿主用 `session.setGoal` 设的目标不需要再发消息就跑完；达不成的目标以 `blocked` 结束、之后不再开轮；`RunCode` 一个程序做完逐文件检索；另起进程的 `agixd` |
 | `live_agents.rs` | 两个前台子 agent 各用自己类型指定的模型；前台子 agent 的询问在父会话这一轮里到达宿主（带这一轮的 `turn_id`），批准前它的任务是 `waiting`、批准后回到 `running`；后台子 agent 收宿主的消息、结束后通知父会话；`session.startAgent` 起的子 agent 交回满足 schema 的结构化输出，任务上的用量与代理记下的相等 |
 | `live_team.rs` | `TeamCreate` 两个阶段，后一阶段从团队记忆里拿前一阶段存的东西 |
 | `live_extensions.rs` | 项目 skill；MCP server 的工具；`PreToolUse` hook 看到工具调用 |
 | `live_multi_agent.rs` | 主控 + 三个不同模型的后台 worker，每个 worker 里多个后台任务；人为制造一个任务失败、一个 worker 故障，修复后重跑，主控汇总 |
 | `live_host.rs` | 宿主那一侧：父会话空闲时 `session.startAgent` 起修复子 agent，宿主边看边答它的询问（询问期间任务是 `waiting`）、有 deny 规则护着的测试脚本保持原样、用量与代理记下的相等，父会话正在跑一轮时再起一个评审子 agent（`notify_parent: false`）；旁观连接跟着一次构建收 `task_progress`，`daemon.event` 看见每一轮，重启引擎后同一项目两种路径写法的会话各列一次；宿主停掉跑飞的命令、这一轮照常收尾；宿主场景的 `extra_tools` 在前台和后台子 agent 里都能用；宿主改写用户消息、去掉工具结果、写扩展条目，`inspectContext` 报的工具与随后真实请求带的逐个同名 |
+| `live_programs.rs` | `RunCode` 的三种用法：一个程序经 `agent()` 并行起四个子 Agent、按 schema 收回结果再合并写盘（只有输入文件里有的封签一路传上来）；后台运行的程序边跑边推 `log()` 行，结束时以通知回到会话，模型据此交回结果；`acceptEdits` 下 deny 规则在程序里照样拦住写入，程序看得见拒绝 |
+| `live_unattended.rs` | `harnix` 场景、缺省权限、无人值守：项目内 Edit 与沙箱里的 Bash 照常做完，往实例授权的根之外写被拒绝且没有任何询问发给宿主；`AskUserQuestion` 与计划模式连名字都不出现 |
+| `live_context.rs` | 手动压缩由模型写摘要（`FullCompact`），压缩前给的事实之后还答得出；`session.fork` 的分叉记得分叉前的、不知道源会话之后的；带 `output_schema` 建的会话一轮以符合 schema 的 `structured_output` 结束 |
+
+**权限模式。** `LiveRun` 缺省用 `bypassPermissions`。daemon 在这个模式下不装规则引擎，deny
+规则也不生效，所以要验证规则的用例得换成 `acceptEdits` 或 `default`（`live_programs`、
+`live_unattended` 就是这样）。
 
 **断言只看结果，不看措辞。** 真实模型每次说法不同，能断言的是：盘上的文件、任务状态、
 代理记下的请求，以及只有真跑过才拿得到的值——用例里的随机令牌由脚本在运行时从输入文件

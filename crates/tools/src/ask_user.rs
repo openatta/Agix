@@ -111,7 +111,8 @@ impl Tool for AskUserQuestionTool {
                     .await
             }
             None => ElicitOutcome::declined(
-                "this engine was built with no way to reach the user, so the question                  was not asked",
+                "this engine was built with no way to reach the user, so the question \
+                 was not asked",
             ),
         };
 
