@@ -143,6 +143,7 @@ pub struct Client {
     tx: tokio::sync::mpsc::Sender<Outgoing>,
     enqueued: std::sync::Arc<std::sync::atomic::AtomicU64>,
     dropped: std::sync::Arc<std::sync::Mutex<Vec<DroppedSubscription>>>,
+    daemon_events: std::sync::atomic::AtomicBool,
 }
 
 /// A session this connection was unsubscribed from because its queue was
@@ -205,11 +206,20 @@ impl Client {
             tx,
             enqueued: std::sync::Arc::default(),
             dropped,
+            daemon_events: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
     pub fn id(&self) -> ConnectionId {
         self.id
+    }
+
+    /// Mark this connection as receiving `daemon.event`; `false` if it
+    /// already was.
+    pub fn start_daemon_events(&self) -> bool {
+        !self
+            .daemon_events
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
     }
 
     /// Enqueue and wait until the frame has reached the sink.

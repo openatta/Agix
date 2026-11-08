@@ -56,9 +56,26 @@ pub struct CompactSummary {
 const ENDS_A_GOAL_ROUND_NORMALLY: &[&str] = &[
     "end_turn",
     "stop_sequence",
+    "max_tokens",
     "command_executed",
     "tool_result_received",
 ];
+
+/// Turn endings after which an armed goal starts its next round.
+pub const CONTINUES_A_GOAL: &[&str] = &["end_turn", "stop_sequence", "max_tokens"];
+
+pub(crate) const SESSION_CONTEXT_OPENING: &str =
+    "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n";
+
+/// Whether `messages` still hold the conversation's opening context message.
+pub(crate) fn holds_session_context(messages: &[ModelMessage]) -> bool {
+    messages.iter().any(|m| {
+        m.role == MessageRole::User
+            && m.content.iter().any(|block| {
+                matches!(block, ModelContentBlock::Text { text } if text.starts_with(SESSION_CONTEXT_OPENING))
+            })
+    })
+}
 
 impl Agent {
     /// Write the goal changes the session log does not have yet.
@@ -2590,8 +2607,9 @@ or project context that should survive across sessions.
                 // makes the *next* turn's existing injection paths
                 // eligible again, which puts the instructions back at the
                 // head of the fresh context and lets a still-relevant
-                // memory surface a second time.
-                self.session_context_injected = false;
+                // memory surface a second time. A strategy that kept the
+                // opening message keeps the flag.
+                self.session_context_injected = holds_session_context(&self.session.messages);
                 if let Some(ref mut frozen) = self.frozen {
                     frozen.already_surfaced.clear();
                 }
@@ -2857,9 +2875,7 @@ or project context that should survive across sessions.
         let instructions = self.build_instruction_context();
         let today = chrono_now(&*self.environment);
 
-        let mut text = String::from(
-            "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n",
-        );
+        let mut text = String::from(SESSION_CONTEXT_OPENING);
         if !facts.is_empty() {
             text.push_str(&format!("# environment\n{facts}\n\n"));
         }

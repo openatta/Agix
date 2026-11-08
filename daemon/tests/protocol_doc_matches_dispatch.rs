@@ -449,3 +449,31 @@ fn test_sources(root: &Path) -> Vec<(String, String)> {
     assert!(out.len() > 5, "the test corpus scan found almost nothing");
     out
 }
+
+/// Capability names from §6.1's table: the rows between its `| 能力 |` header
+/// and the first line that is not a row.
+fn documented_capabilities(doc: &str) -> Vec<String> {
+    let table = doc
+        .split_once("| 能力 | 意思 |")
+        .expect("§6.1 still has the capability table")
+        .1;
+    table
+        .lines()
+        .skip(2)
+        .take_while(|line| line.starts_with('|'))
+        .filter_map(|line| line.split('`').nth(1).map(str::to_string))
+        .collect()
+}
+
+#[test]
+fn the_capability_table_lists_what_the_daemon_reports() {
+    let doc = std::fs::read_to_string(repo_root().join("docs/daemon_rpc_protocol.md")).unwrap();
+    let mut documented = documented_capabilities(&doc);
+    let mut reported: Vec<String> = daemon::discovery::capabilities()
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    documented.sort();
+    reported.sort();
+    assert_eq!(documented, reported);
+}

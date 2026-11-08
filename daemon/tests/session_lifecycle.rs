@@ -3759,6 +3759,166 @@ async fn ping_answers_without_a_session() {
             .is_some_and(|c| c.iter().any(|c| c == "subscription_dropped_notice")),
         "{resp}"
     );
+    assert!(
+        resp["result"]["capabilities"]
+            .as_array()
+            .is_some_and(|c| c.iter().any(|c| c == "goals")),
+        "{resp}"
+    );
+
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn a_client_may_not_borrow_the_turn_id_of_a_turn_the_daemon_starts_itself() {
+    let (srv, _seen) = start_scripted_server(
+        vec![text_round("x")],
+        ask_settings_no_memory(),
+        Duration::ZERO,
+    )
+    .await;
+    for turn_id in ["goal-1-1-abc", "schedule-job-1", "cron-1"] {
+        let resp = rpc(
+            &srv.sock,
+            &format!(
+                r#"{{"jsonrpc":"2.0","method":"session.run_turn","params":{{"message":"hi","turn_id":"{turn_id}"}},"id":1}}"#
+            ),
+        )
+        .await;
+        assert_eq!(resp["error"]["code"], codes::INVALID_PARAMS, "{resp}");
+    }
+    srv.stop().await;
+}
+
+/// How many opening context messages `request` shows the model.
+fn opening_reminders(request: &MessagesRequest) -> usize {
+    format!("{:?}", request.messages)
+        .matches("As you answer the user's questions")
+        .count()
+}
+
+#[tokio::test]
+async fn a_resumed_session_is_shown_its_opening_context_once() {
+    let (srv, seen) = start_scripted_server(
+        vec![text_round("first"), text_round("second")],
+        ask_settings_no_memory(),
+        Duration::ZERO,
+    )
+    .await;
+    let sid = run_turn(&srv.sock, None, "hello").await;
+    assert_eq!(opening_reminders(seen.lock().unwrap().last().unwrap()), 1);
+
+    rpc(
+        &srv.sock,
+        &format!(r#"{{"jsonrpc":"2.0","method":"session.close","params":{{"session_id":"{sid}"}},"id":2}}"#),
+    )
+    .await;
+    run_turn(&srv.sock, Some(&sid), "again").await;
+    assert_eq!(opening_reminders(seen.lock().unwrap().last().unwrap()), 1);
+
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn a_watcher_keeps_watching_a_session_rebuilt_for_a_new_prompt() {
+    let (srv, _seen) = start_scripted_server(
+        vec![text_round("first"), text_round("second")],
+        ask_settings_no_memory(),
+        Duration::ZERO,
+    )
+    .await;
+    let sid = run_turn(&srv.sock, None, "hello").await;
+
+    let mut watcher = UnixStream::connect(&srv.sock).await.unwrap();
+    watcher
+        .write_all(
+            format!(
+                r#"{{"jsonrpc":"2.0","method":"session.subscribe","id":7,"params":{{"session_id":"{sid}"}}}}"#
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    watcher.write_all(b"\n").await.unwrap();
+    let (r, _w) = watcher.split();
+    let mut watched = BufReader::new(r);
+    let mut line = String::new();
+    watched.read_line(&mut line).await.unwrap();
+
+    let set = rpc(
+        &srv.sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.setPrompt","params":{{"session_id":"{sid}","append":"Answer briefly."}},"id":3}}"#
+        ),
+    )
+    .await;
+    assert!(set["result"].is_object(), "{set}");
+    run_turn(&srv.sock, Some(&sid), "again").await;
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let mut line = String::new();
+            assert!(
+                watched.read_line(&mut line).await.unwrap() > 0,
+                "watcher closed"
+            );
+            let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+            if v["params"]["event"]["kind"] == "turn_complete" {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("the watcher stopped hearing from the session after the rebuild");
+
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn subscribing_to_daemon_events_twice_delivers_each_event_once() {
+    let (srv, _seen) = start_scripted_server(
+        vec![text_round("x")],
+        ask_settings_no_memory(),
+        Duration::ZERO,
+    )
+    .await;
+    let mut events = UnixStream::connect(&srv.sock).await.unwrap();
+    events
+        .write_all(
+            b"{\"jsonrpc\":\"2.0\",\"method\":\"daemon.subscribeEvents\",\"id\":1}\n\
+              {\"jsonrpc\":\"2.0\",\"method\":\"daemon.subscribeEvents\",\"id\":2}\n",
+        )
+        .await
+        .unwrap();
+    let (r, _w) = events.split();
+    let mut reader = BufReader::new(r);
+    let mut acks = 0;
+    while acks < 2 {
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        if v.get("id").is_some() {
+            assert_eq!(v["result"]["subscribed"], true, "{v}");
+            acks += 1;
+        }
+    }
+
+    run_turn(&srv.sock, None, "hello").await;
+    let mut started = 0;
+    let _ = tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).await.unwrap_or(0) == 0 {
+                return;
+            }
+            let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+            if v["params"]["kind"] == "turn_started" {
+                started += 1;
+            }
+        }
+    })
+    .await;
+    assert_eq!(started, 1);
 
     srv.stop().await;
 }

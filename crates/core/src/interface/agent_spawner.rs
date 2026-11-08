@@ -117,13 +117,15 @@ pub trait AgentSpawner: Send + Sync {
 
     /// Start a sub-agent a host asked for, in the background, as a task of
     /// `session` — the way the model's `Agent` call with `background: true`
-    /// starts one, but with nobody's turn behind it.
+    /// starts one, but with nobody's turn behind it. It stops when `cancel`
+    /// does, which the host ties to the session's own lifetime.
     async fn start_agent(
         &self,
         request: AgentRequest,
         session: Arc<crate::context::SessionState>,
+        cancel: CancellationToken,
     ) -> Result<StartedAgent, StartAgentError> {
-        let _ = (request, session);
+        let _ = (request, session, cancel);
         Err(StartAgentError::Unsupported(
             "this session cannot start sub-agents".into(),
         ))

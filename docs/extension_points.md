@@ -956,7 +956,9 @@ Builder::new().module(Arc::new(agents::AgentsModule::new())).module(Arc::new(Tic
 
 - **直接用 `Agent::run` 驱动的**:什么都不用做,它自己在一轮正常结束后开下一轮。
 - **自己调度 turn 的**(会话池、自己的队列):`Builder::goal_rounds_from_owner()`,每轮结束
-  后问 `Agent::goal_round_after`,拿到的那一轮像普通 turn 一样排进去。`agixd` 就是这样,
+  后问 `Agent::goal_round_after`,拿到的那一轮像普通 turn 一样排进去;轮到它开始时先调
+  `SessionState::goal_claim_round(turn_id)`,返回 `false` 就丢掉它不跑。没认领的那一轮一直
+  算待开始,在它之前不会交出下一轮;决定不跑它时调 `goal_abandon_round`。`agixd` 就是这样,
   自动轮在 `turn_started` 里是 `initiator:"goal"`。
 
 宿主那一侧经 `session.goal` / `session.setGoal` / `session.updateGoal` 读、设、暂停、恢复、
@@ -966,7 +968,8 @@ Builder::new().module(Arc::new(agents::AgentsModule::new())).module(Arc::new(Tic
   扩大授权。
 - **武装状态不落盘**:目标每次变化记成 `ns:"agix.goal"` 的扩展条目,但恢复出来的目标一律
   不武装,要宿主 `resume` 才继续。无人值守的宿主若希望重启后接着跑,自己在恢复后调一次。
-- 一轮以取消、hook 中止、预算耗尽、出错结束,目标解除武装,等人决定。
+- 一轮以取消、hook 中止、预算耗尽、出错结束,目标解除武装,等人决定;以 `max_tokens`
+  结束的照常续下一轮。
 - 子 Agent 碰不到目标。
 
 ### `RunCode`(PTC)

@@ -48,6 +48,11 @@ use tracing::{debug, info, warn};
 /// What `session.taskOutput` returns when the caller does not say.
 const DEFAULT_TASK_OUTPUT_TAIL: usize = 8 * 1024;
 
+/// The turn id prefixes of turns the daemon starts on its own — goal rounds
+/// and scheduled jobs. A turn's origin is read from its id, so a client may
+/// not borrow one.
+const RESERVED_TURN_ID_PREFIXES: &[&str] = &["goal-", "schedule-", "cron-"];
+
 type Reader = Box<dyn AsyncRead + Send + Unpin + 'static>;
 
 /// A resume that could not happen, as the wire sees it.
@@ -856,12 +861,16 @@ impl DaemonServer {
     /// same connection as a `StreamFrame` — indefinitely, until the
     /// connection closes. Does not replay past events; subscribe before the
     /// event you care about can happen (e.g. right after startup, before
-    /// relying on `mcp_connected`/`import_detected`).
+    /// relying on `mcp_connected`/`import_detected`). Subscribing again on
+    /// the same connection changes nothing.
     async fn method_daemon_subscribe_events(
         &self,
         id: serde_json::Value,
         client: Arc<Client>,
     ) -> RpcResponse {
+        if !client.start_daemon_events() {
+            return RpcResponse::ok(id, serde_json::json!({"subscribed": true}));
+        }
         let mut rx = self.pool.subscribe_events();
         let forward = client;
         tokio::spawn(async move {
@@ -1324,6 +1333,18 @@ impl DaemonServer {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .unwrap_or_else(|| Id::new().to_string());
+        if let Some(prefix) = RESERVED_TURN_ID_PREFIXES
+            .iter()
+            .find(|prefix| turn_id.starts_with(**prefix))
+        {
+            return RpcResponse::err(
+                id,
+                codes::INVALID_PARAMS,
+                format!(
+                    "turn_id may not start with `{prefix}`: the daemon starts those turns itself"
+                ),
+            );
+        }
 
         let options: Option<crate::rpc::SessionOptions> = params
             .get("options")

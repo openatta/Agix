@@ -632,7 +632,7 @@ impl SessionState {
         }
     }
 
-    /// The next automatic round, counted as started — see
+    /// The next automatic round — see
     /// [`super::goal::GoalSlot::next_round`].
     pub fn goal_next_round(&self) -> Option<super::goal::GoalRound> {
         let mut slot = lock(&self.goal);
@@ -643,9 +643,32 @@ impl SessionState {
         round
     }
 
+    /// Start the outstanding round `turn_id` — see
+    /// [`super::goal::GoalSlot::claim_round`].
+    pub fn goal_claim_round(&self, turn_id: &str) -> bool {
+        let mut slot = lock(&self.goal);
+        let claimed = slot.claim_round(turn_id);
+        if claimed {
+            self.goal_changed(&slot, true);
+        }
+        claimed
+    }
+
+    /// Give up the outstanding round `turn_id` without running it.
+    pub fn goal_abandon_round(&self, turn_id: &str) {
+        lock(&self.goal).abandon_round(turn_id);
+    }
+
     /// Put back the goal a session log recorded, disarmed.
     pub fn restore_goal(&self, goal: Option<super::goal::Goal>) {
         *lock(&self.goal) = super::goal::GoalSlot::restored(goal);
+    }
+
+    /// Keep the arming `previous` — this session's state before its engine
+    /// was rebuilt in place — had for the goal both hold.
+    pub fn carry_goal_arming_from(&self, previous: &SessionState) {
+        let before = lock(&previous.goal).clone();
+        lock(&self.goal).carry_arming_from(&before);
     }
 
     /// Goal changes the session log does not have yet, oldest first; whoever

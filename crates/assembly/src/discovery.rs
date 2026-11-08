@@ -172,6 +172,7 @@ pub const CAPABILITIES: &[&str] = &[
     "task_messages",
     "context_edits",
     "extension_entries",
+    "goals",
 ];
 
 /// [`CAPABILITIES`], plus those of the modules this build carries.
@@ -179,6 +180,9 @@ pub fn capabilities() -> Vec<&'static str> {
     let mut out = CAPABILITIES.to_vec();
     if cfg!(feature = "agents") {
         out.push("host_agents");
+    }
+    if runtime::PTC_ENABLED {
+        out.push("ptc");
     }
     out
 }
