@@ -246,9 +246,10 @@ mod packages {
                 .map_err(|e| e.to_string())
         }
 
-        pub fn commands_for(&self, scope: &str) -> Result<plugin::cli::PluginCommands, String> {
-            let cache = plugin::cache::PluginCache::new(self.tier_root(scope)?.join("cache"));
-            Ok(plugin::cli::PluginCommands::new(cache, None))
+        pub fn cache_for(&self, scope: &str) -> Result<plugin::cache::PluginCache, String> {
+            Ok(plugin::cache::PluginCache::new(
+                self.tier_root(scope)?.join("cache"),
+            ))
         }
 
         pub fn set_enabled(&self, name: &str, enabled: bool, scope: &str) -> Result<(), String> {
@@ -317,7 +318,6 @@ mod imp {
     impl PluginSubsystem {
         pub fn new(
             paths: Arc<dyn DaemonPaths>,
-            _workspace: std::path::PathBuf,
             policy: base::interface::settings::PluginsConfig,
         ) -> Self {
             Self {
@@ -377,27 +377,34 @@ mod imp {
             checksum: Option<&str>,
             scope: &str,
         ) -> Result<serde_json::Value, String> {
-            let commands = self.packages.commands_for(scope)?;
-            let source = plugin::marketplace::PluginSource {
+            let cache = self.packages.cache_for(scope)?;
+            let source = plugin::install::PluginSource {
                 download_url: download_url.to_string(),
                 checksum: checksum.map(str::to_string),
                 version: version.to_string(),
             };
-            let result = commands
-                .install_source(name, &source)
+            let message = match plugin::install::install(&cache, name, &source)
                 .await
-                .map_err(|e| e.to_string())?;
-            if let Err(e) = self.packages.load_back(name, version, scope) {
-                let _ = commands.uninstall(name, Some(version)).await;
-                return Err(format!(
-                    "installed but could not be loaded back, so it was removed: {e}"
-                ));
-            }
+                .map_err(|e| e.to_string())?
+            {
+                plugin::install::Installed::AlreadyPresent => {
+                    format!("plugin '{name}' v{version} is already installed")
+                }
+                plugin::install::Installed::Into(_) => {
+                    if let Err(e) = self.packages.load_back(name, version, scope) {
+                        let _ = plugin::install::uninstall(&cache, name, Some(version));
+                        return Err(format!(
+                            "installed but could not be loaded back, so it was removed: {e}"
+                        ));
+                    }
+                    format!("installed plugin '{name}' v{version} from {download_url}")
+                }
+            };
 
             self.refresh().await;
             Ok(serde_json::json!({
-                "success": result.success,
-                "message": result.message,
+                "success": true,
+                "message": message,
                 "disclosure": self.disclosure(name),
             }))
         }
@@ -408,15 +415,17 @@ mod imp {
             version: Option<&str>,
             scope: &str,
         ) -> Result<serde_json::Value, String> {
-            let commands = self.packages.commands_for(scope)?;
-            let result = commands
-                .uninstall(name, version)
-                .await
-                .map_err(|e| e.to_string())?;
+            let cache = self.packages.cache_for(scope)?;
+            let removed =
+                plugin::install::uninstall(&cache, name, version).map_err(|e| e.to_string())?;
+            let message = match version {
+                Some(version) => format!("removed plugin '{name}' v{version}"),
+                None => format!("removed plugin '{name}' ({removed} versions)"),
+            };
             self.refresh().await;
             Ok(serde_json::json!({
-                "success": result.success,
-                "message": result.message,
+                "success": true,
+                "message": message,
             }))
         }
 
@@ -447,7 +456,6 @@ mod imp {
     impl PluginSubsystem {
         pub fn new(
             _paths: Arc<dyn DaemonPaths>,
-            _workspace: std::path::PathBuf,
             _policy: base::interface::settings::PluginsConfig,
         ) -> Self {
             Self

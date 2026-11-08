@@ -169,8 +169,8 @@ pub enum PluginError {
     Toml(#[from] toml::de::Error),
     #[error("plugin schema: {0}")]
     Schema(String),
-    #[error("homograph: {0}")]
-    Homograph(String),
+    #[error("blocked: {0}")]
+    Blocked(String),
     #[error("checksum: {0}")]
     Checksum(String),
     #[error("unsupported api_version `{found}` (this build supports {supported})")]

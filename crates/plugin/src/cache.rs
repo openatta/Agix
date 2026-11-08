@@ -12,10 +12,7 @@
 //! ├── {name}/
 //! │   ├── {version}/
 //! │   │   ├── plugin.toml
-//! │   │   ├── SKILL.md (or skills/)
 //! │   │   └── ... (extracted archive contents)
-//! │   └── latest -> {version}/  (symlink)
-//! └── registry.json  (cached index)
 //! ```
 
 use crate::manifest::PluginError;
@@ -23,7 +20,7 @@ use std::path::PathBuf;
 
 /// Manages the plugin cache directory.
 pub struct PluginCache {
-    pub(crate) root: PathBuf,
+    root: PathBuf,
 }
 
 impl PluginCache {
@@ -32,6 +29,10 @@ impl PluginCache {
     /// itself — see module docs).
     pub fn new(root: PathBuf) -> Self {
         Self { root }
+    }
+
+    pub fn root_path(&self) -> &std::path::Path {
+        &self.root
     }
 
     /// Ensure the cache directory exists.
@@ -74,9 +75,7 @@ impl PluginCache {
                 let path = entry.path();
                 if path.is_dir() {
                     if let Some(v) = path.file_name().and_then(|s| s.to_str()) {
-                        if v != "latest" {
-                            versions.push(v.to_string());
-                        }
+                        versions.push(v.to_string());
                     }
                 }
             }
@@ -125,43 +124,6 @@ impl PluginCache {
         }
         Ok(())
     }
-
-    /// Store cached registry index.
-    pub fn cache_registry_index(&self, index_json: &str) -> Result<(), PluginError> {
-        let path = self.root.join("registry.json");
-        std::fs::write(&path, index_json).map_err(|e| {
-            PluginError::Io(std::io::Error::other(format!(
-                "failed to cache registry index: {e}"
-            )))
-        })?;
-        Ok(())
-    }
-
-    /// Load cached registry index.
-    pub fn load_registry_index(&self) -> Option<String> {
-        let path = self.root.join("registry.json");
-        std::fs::read_to_string(&path).ok()
-    }
-
-    /// Total number of cached plugin versions.
-    pub fn total_cached(&self) -> usize {
-        let mut count = 0;
-        if let Ok(entries) = std::fs::read_dir(&self.root) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() && path.file_name() != Some(std::ffi::OsStr::new("registry.json"))
-                {
-                    if let Ok(versions) = std::fs::read_dir(&path) {
-                        count += versions
-                            .flatten()
-                            .filter(|e| e.path().is_dir() && e.file_name() != "latest")
-                            .count();
-                    }
-                }
-            }
-        }
-        count
-    }
 }
 
 #[cfg(test)]
@@ -201,18 +163,10 @@ mod tests {
     }
 
     #[test]
-    fn latest_symlink_name_is_excluded() {
-        let tmp = TempDir::new().unwrap();
-        let cache = cache_with_versions(&tmp, "p", &["1.0.0", "latest"]);
-        assert_eq!(cache.list_versions("p"), ["1.0.0"]);
-    }
-
-    #[test]
     fn empty_cache_has_no_versions() {
         let tmp = TempDir::new().unwrap();
         let cache = PluginCache::new(tmp.path().join("plugins").join("cache"));
         assert_eq!(cache.list_versions("test-plugin"), Vec::<String>::new());
-        assert_eq!(cache.total_cached(), 0);
     }
 
     #[test]

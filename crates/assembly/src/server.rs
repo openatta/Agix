@@ -1091,7 +1091,7 @@ impl DaemonServer {
     /// }
     /// ```
     /// No marketplace lookup — installs directly from the given source (see
-    /// `plugin::cli::PluginCommands::install_source`). Verifies the
+    /// `plugin::install::install`). Verifies the
     /// checksum before extracting; a network (`http(s)://`) source without
     /// a `checksum` is rejected outright.
     /// Is the plugin subsystem present and switched on? When it isn't, the

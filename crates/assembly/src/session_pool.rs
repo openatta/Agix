@@ -548,6 +548,8 @@ struct LiveSession {
     /// the person asking "why is my script not working" has. `session.get`
     /// reads it.
     scripts: Option<Arc<base::interface::script::ScriptLedger>>,
+    /// The checks this session's plugins registered, for `session.get`.
+    health: Arc<base::interface::health::HealthChecks>,
     /// Connections watching this session.
     ///
     /// Every frame the session produces goes to all of them. A turn is not
@@ -943,11 +945,7 @@ impl SessionPool {
             settings.paths.user_data_dir.join("scheduled_tasks.json"),
         )));
 
-        let plugins = crate::plugins::PluginSubsystem::new(
-            paths.clone(),
-            cwd.clone(),
-            settings.plugins.clone(),
-        );
+        let plugins = crate::plugins::PluginSubsystem::new(paths.clone(), settings.plugins.clone());
         let tools = Arc::new(base::tool::InMemoryToolRegistry::new());
         tools::register_builtin_tools(&tools);
 
@@ -2365,6 +2363,7 @@ impl SessionPool {
             .map_err(|e| format!("build agent: {e}"))?;
         let state = agent.session_state();
         let spawner = agent.agent_spawner();
+        let health = agent.health();
         self.forward_task_events(&session_id, &state);
         self.forward_goal_events(&session_id, &state);
 
@@ -2558,6 +2557,7 @@ impl SessionPool {
             spawner: Some(spawner),
             idle: Arc::new(tokio::sync::Notify::new()),
             scripts: script_ledger,
+            health,
             subscribers: HashMap::new(),
             pending_prompts: HashMap::new(),
             process_groups,
@@ -4379,6 +4379,16 @@ impl SessionPool {
                 .and_then(|live| live.context);
             if let Some(context) = context {
                 obj.insert("context".into(), serde_json::json!(context));
+            }
+            let health = self
+                .sessions
+                .lock()
+                .await
+                .get(session_id)
+                .map(|live| live.health.clone())
+                .filter(|health| !health.is_empty());
+            if let Some(health) = health {
+                obj.insert("health".into(), health.report().to_json());
             }
             if let Some(scripts) = self.script_report(session_id).await {
                 obj.insert("scripts".into(), scripts);
@@ -8273,6 +8283,7 @@ mod eviction_tests {
             spawner: None,
             idle: Arc::new(tokio::sync::Notify::new()),
             scripts: None,
+            health: Default::default(),
             subscribers: HashMap::new(),
             pending_prompts: HashMap::new(),
             process_groups: None,

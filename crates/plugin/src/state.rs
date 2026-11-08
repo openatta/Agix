@@ -70,16 +70,10 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn defaults_to_enabled_when_never_set() {
-        let dir = TempDir::new().unwrap();
-        let state = EnableState::new(dir.path().to_path_buf());
-        assert_eq!(state.get("my-plugin"), None);
-    }
-
-    #[test]
     fn set_and_get_round_trips() {
         let dir = TempDir::new().unwrap();
         let state = EnableState::new(dir.path().to_path_buf());
+        assert_eq!(state.get("my-plugin"), None);
         state.set_enabled("my-plugin", false).unwrap();
         assert_eq!(state.get("my-plugin"), Some(false));
         state.set_enabled("my-plugin", true).unwrap();

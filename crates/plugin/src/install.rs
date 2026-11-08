@@ -1,36 +1,47 @@
-//! Plugin archive fetch + checksum verification + extraction — what
-//! `cli.rs::install` runs.
+//! Installing a package into a cache tier and taking it out again.
 //!
-//! Supports two `download_url` schemes:
-//! - `https://`/`http://` — fetched through the execution layer's
-//!   `Network`, like every other outbound request. A `checksum` is
-//!   **required** for network sources — installing unverified bytes from
-//!   the network is exactly the supply-chain risk `homograph.rs` already
-//!   guards the *name* side of; this guards the *content* side.
-//! - `file://` — a local absolute path, read straight off disk. Meant for
-//!   local development/sideloading (e.g. a marketplace-less demo install).
-//!   `checksum` is optional here since the source is already a trusted
-//!   local path, not something that travelled over the network.
+//! An archive comes from one of two kinds of `download_url`:
+//! - `https://` / `http://`, fetched through the execution layer's `Network`
+//!   like every other outbound request. A checksum is required, and its
+//!   absence is refused before anything is fetched.
+//! - `file://`, a local absolute path read off disk, for development and
+//!   sideloading; the checksum is optional.
+//!
+//! Zip entries with `..` or an absolute path are skipped, not extracted.
 
 use crate::cache::PluginCache;
 use crate::manifest::PluginError;
-use crate::marketplace::PluginSource;
 use sha2::{Digest, Sha256};
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
-/// Fetch `source`'s archive, verify its checksum (if required — see module
-/// docs), extract it into `cache`'s versioned directory for `name`, and
-/// return that directory.
-pub async fn install_from_source(
+#[derive(Debug, Clone)]
+pub struct PluginSource {
+    pub download_url: String,
+    /// SHA-256 of the archive, hex.
+    pub checksum: Option<String>,
+    pub version: String,
+}
+
+#[derive(Debug)]
+pub enum Installed {
+    Into(PathBuf),
+    AlreadyPresent,
+}
+
+pub async fn install(
     cache: &PluginCache,
     name: &str,
     source: &PluginSource,
-) -> Result<PathBuf, PluginError> {
-    // Reject a checksum-less network source *before* fetching anything —
-    // no point spending a real network round-trip (which, for an
-    // unreachable/bogus host, can hang for the full DNS/connect timeout)
-    // on bytes we're going to refuse to install anyway.
+) -> Result<Installed, PluginError> {
+    if let Some(blocked) = crate::blocklist::check_blocklist(name) {
+        return Err(PluginError::Blocked(format!(
+            "plugin name '{name}' is blocked (matches blocklist entry '{blocked}')"
+        )));
+    }
+    if cache.is_cached(name, &source.version) {
+        return Ok(Installed::AlreadyPresent);
+    }
     let is_local = source.download_url.starts_with("file://");
     if source.checksum.is_none() && !is_local {
         return Err(PluginError::Checksum(format!(
@@ -40,7 +51,6 @@ pub async fn install_from_source(
     }
 
     let bytes = fetch_bytes(&source.download_url).await?;
-
     if let Some(expected) = &source.checksum {
         verify_checksum(&bytes, expected)?;
     }
@@ -48,7 +58,24 @@ pub async fn install_from_source(
     cache.ensure_dirs()?;
     let dest = cache.version_dir(name, &source.version);
     extract_zip(&bytes, &dest)?;
-    Ok(dest)
+    Ok(Installed::Into(dest))
+}
+
+/// Remove one version, or every version when `version` is `None`. Returns
+/// how many were removed.
+pub fn uninstall(
+    cache: &PluginCache,
+    name: &str,
+    version: Option<&str>,
+) -> Result<usize, PluginError> {
+    let versions = match version {
+        Some(v) => vec![v.to_string()],
+        None => cache.list_versions(name),
+    };
+    for v in &versions {
+        cache.remove_version(name, v)?;
+    }
+    Ok(versions.len())
 }
 
 async fn fetch_bytes(download_url: &str) -> Result<Vec<u8>, PluginError> {
@@ -86,10 +113,6 @@ fn verify_checksum(bytes: &[u8], expected_hex: &str) -> Result<(), PluginError> 
     Ok(())
 }
 
-/// Extract a zip archive's bytes into `dest`. Rejects entries whose path
-/// would escape `dest` (zip-slip) — `zip`'s `enclosed_name()` returns
-/// `None` for any entry containing `..` or an absolute path, and those
-/// entries are skipped with a warning rather than extracted.
 fn extract_zip(bytes: &[u8], dest: &Path) -> Result<(), PluginError> {
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
         .map_err(|e| PluginError::Schema(format!("invalid plugin archive: {e}")))?;
@@ -153,7 +176,9 @@ mod tests {
             checksum: None,
             version: "1.0.0".into(),
         };
-        let dest = install_from_source(&cache, "demo", &source).await.unwrap();
+        let Installed::Into(dest) = install(&cache, "demo", &source).await.unwrap() else {
+            panic!("an empty cache already had the package");
+        };
         assert!(dest.join("plugin.toml").is_file());
     }
 
@@ -177,7 +202,9 @@ mod tests {
             checksum: Some(checksum),
             version: "1.0.0".into(),
         };
-        let dest = install_from_source(&cache, "demo", &source).await.unwrap();
+        let Installed::Into(dest) = install(&cache, "demo", &source).await.unwrap() else {
+            panic!("an empty cache already had the package");
+        };
         assert!(dest.join("plugin.toml").is_file());
     }
 
@@ -198,9 +225,7 @@ mod tests {
             checksum: Some("0".repeat(64)),
             version: "1.0.0".into(),
         };
-        let err = install_from_source(&cache, "demo", &source)
-            .await
-            .unwrap_err();
+        let err = install(&cache, "demo", &source).await.unwrap_err();
         assert!(matches!(err, PluginError::Checksum(_)));
     }
 
@@ -213,9 +238,7 @@ mod tests {
             checksum: None,
             version: "1.0.0".into(),
         };
-        let err = install_from_source(&cache, "demo", &source)
-            .await
-            .unwrap_err();
+        let err = install(&cache, "demo", &source).await.unwrap_err();
         assert!(matches!(err, PluginError::Checksum(_)));
     }
 
@@ -233,6 +256,34 @@ mod tests {
             let _ = entry;
         }
         assert!(!found_any_file, "no files should have been extracted");
+    }
+
+    #[test]
+    fn uninstall_without_a_version_removes_every_version() {
+        let tmp = TempDir::new().unwrap();
+        let cache = PluginCache::new(tmp.path().join("cache"));
+        for v in ["1.0.0", "2.0.0"] {
+            let dir = cache.version_dir("p", v);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("plugin.toml"), "").unwrap();
+        }
+        assert_eq!(uninstall(&cache, "p", None).unwrap(), 2);
+        assert!(cache.list_versions("p").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_blocked_name_is_refused_before_anything_is_fetched() {
+        let cache_dir = TempDir::new().unwrap();
+        let cache = PluginCache::new(cache_dir.path().to_path_buf());
+        let source = PluginSource {
+            download_url: "https://example.invalid/x.zip".into(),
+            checksum: Some("0".repeat(64)),
+            version: "1.0.0".into(),
+        };
+        let err = install(&cache, "\u{0435}vil-plugin", &source)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PluginError::Blocked(_)));
     }
 
     fn walkdir_files(dir: &Path) -> Vec<PathBuf> {

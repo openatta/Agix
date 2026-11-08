@@ -1,18 +1,16 @@
-//! Agix — plugin manifest loader, marketplace integration, dependency
-//! resolution, versioned cache, and the plugin lifecycle CLI commands.
+//! Agix — plugin packages: the manifest format, finding installed packages,
+//! the versioned cache, installing and enabling, what a package declares
+//! (agent types, scenes, MCP servers), and the disclosure an installer shows.
 
 pub mod agents;
+pub mod blocklist;
 pub mod cache;
-pub mod cli;
 pub mod disclosure;
 pub mod discovery;
-pub mod fetch;
-pub mod homograph;
+pub mod install;
 pub mod locate;
 pub mod manifest;
-pub mod marketplace;
 pub mod mcp;
-pub mod resolver;
 pub mod scenes;
 pub mod state;
 

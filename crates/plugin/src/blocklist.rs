@@ -1,17 +1,6 @@
-//! Unicode homograph attack protection for plugin names.
-//!
-//! Prevents plugin names that impersonate official names using confusable Unicode
-//! characters (e.g., Cyrillic, Greek, Armenian lookalikes that are visually
-//! identical to ASCII letters).
-//!
-//! ## How it works
-//!
-//! 1. **Blocklist**: Plugin names that are known-malicious (or their confusable
-//!    variants) are rejected outright.
-//! 2. **Confusable normalization**: Each plugin name is normalized by replacing
-//!    known confusable Unicode codepoints with their ASCII equivalents, then
-//!    checked against the set of official plugin names. If the normalized form
-//!    matches an official name but the original differs, it is a homograph attack.
+//! The names an installer refuses, compared after folding Unicode lookalikes
+//! (Cyrillic, Greek, Armenian letters that render as ASCII) to the letters
+//! they imitate, so a confusable spelling of a blocked name is blocked too.
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -155,30 +144,6 @@ fn normalize(name: &str) -> String {
     result
 }
 
-/// Check if a plugin name is a homograph attack impersonating an official name.
-///
-/// Returns `Some(error_message)` if the name is a homograph of an official name,
-/// or `None` if the name passes inspection.
-///
-/// A name is considered a homograph if:
-/// 1. Its confusable-normalized form matches an official name, AND
-/// 2. The original name text differs from the official name (exact character match)
-///
-/// This means legitimate installations of official plugins are not flagged.
-pub fn check_homograph_name(name: &str, official_names: &[&str]) -> Option<String> {
-    let normalized = normalize(name);
-
-    for &official in official_names {
-        if normalized == *official && name != official {
-            return Some(format!(
-                "name '{name}' is a homograph of official '{official}'"
-            ));
-        }
-    }
-
-    None
-}
-
 /// Check if a name matches the blocklist (after confusable normalization).
 ///
 /// Returns the blocklist entry that matched, or `None` if the name is not blocked.
@@ -194,83 +159,6 @@ pub fn check_blocklist(name: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn detect_cyrillic_a_homograph() {
-        // "аgixplugin" with Cyrillic 'а' (U+0430) replacing Latin 'a'
-        let name = "\u{0430}gixplugin";
-        let official = &["agixplugin"];
-        let msg = check_homograph_name(name, official);
-        assert!(msg.is_some(), "should detect Cyrillic а homograph");
-        assert!(msg.as_ref().unwrap().contains(name));
-        assert!(msg.unwrap().contains("agixplugin"));
-    }
-
-    #[test]
-    fn pass_legitimate_name() {
-        let name = "agixplugin";
-        let official = &["agixplugin"];
-        let msg = check_homograph_name(name, official);
-        assert!(msg.is_none(), "exact match should not be flagged");
-    }
-
-    #[test]
-    fn detect_cyrillic_o_homograph() {
-        // "cоde-review" with Cyrillic 'о' (U+043E) instead of Latin 'o'
-        let name = "c\u{043E}de-review";
-        let official = &["code-review"];
-        let msg = check_homograph_name(name, official);
-        assert!(
-            msg.is_some(),
-            "should detect Cyrillic о homograph in 'cоde-review'"
-        );
-    }
-
-    #[test]
-    fn detect_mixed_confusables_in_word() {
-        // "mуplugin" with Cyrillic 'у' (U+0443) masking as Latin 'y'
-        let name = "m\u{0443}plugin";
-        let official = &["myplugin"];
-        let msg = check_homograph_name(name, official);
-        assert!(msg.is_some(), "should detect mixed confusables");
-    }
-
-    #[test]
-    fn multiple_official_names_no_false_positive() {
-        let name = "safe-tool";
-        let official = &["agixsafe", "atool"];
-        let msg = check_homograph_name(name, official);
-        assert!(msg.is_none());
-    }
-
-    #[test]
-    fn empty_name_does_not_panic() {
-        let msg = check_homograph_name("", &["plugin"]);
-        assert!(msg.is_none());
-    }
-
-    #[test]
-    fn empty_official_list_does_not_panic() {
-        let msg = check_homograph_name("test", &[]);
-        assert!(msg.is_none());
-    }
-
-    #[test]
-    fn same_name_different_case_not_confusable() {
-        // Uppercase vs lowercase is not a confusable issue — exact matching
-        // means "AgixPlugin" vs "agixplugin" will not match (expected).
-        let msg = check_homograph_name("AgixPlugin", &["agixplugin"]);
-        assert!(msg.is_none(), "case difference is not a confusable attack");
-    }
-
-    #[test]
-    fn greek_omicron_homograph() {
-        // "prоject" with Greek omicron (U+03BF) instead of 'o'
-        let name = "pr\u{03BF}ject";
-        let official = &["project"];
-        let msg = check_homograph_name(name, official);
-        assert!(msg.is_some(), "should detect Greek omicron homograph");
-    }
 
     #[test]
     fn blocklist_matches_exact() {
