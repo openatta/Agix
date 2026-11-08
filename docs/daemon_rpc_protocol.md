@@ -606,7 +606,8 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 ```
 
 `modules` 列出这个构建编入的模块,按装配顺序:`mcp`、`agents`、`skills`,以及载体与包
-方案(`scripts`、`plugin-packages`、`plugins`)。只含内核的构建(`minimal` 档)为空。
+方案(`scripts`、`plugin-packages`)。上面是默认构建的;少编一个模块的构建就不列它,只含
+内核的构建(`minimal` 档)为空。
 属于某个模块的方法在没编入它的构建里返回 `METHOD_NOT_FOUND`,`error.data` 为
 `{"module": "<id>"}`;目前这样的方法是 `mcp.*`(模块 `mcp`)。`plugin.*` 在没有包方案
 时仍返回 `PLUGINS_DISABLED`。

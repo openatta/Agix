@@ -27,8 +27,11 @@ echo "==> building daemon without the script carrier or the package layer"
 cargo build -p daemon --no-default-features --features full
 
 echo "==> asserting no extension machinery is in the locked dependency graph"
+# QuickJS itself stays: `RunCode` (`ptc`, part of `full`) runs the model's own
+# programs in it, which is not an extension. A deployment that wants no
+# JavaScript engine at all builds without `ptc`.
 leaked=$(cargo tree -p daemon --no-default-features --features full -e normal \
-  | grep -Eo '\b(plugin|script-host|rquickjs-core|rquickjs-sys) v' || true)
+  | grep -Eo '\b(plugin|script-host) v' || true)
 if [ -n "$leaked" ]; then
   echo "FAIL: extension machinery is still linked into the locked build:" >&2
   echo "$leaked" >&2

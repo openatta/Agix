@@ -342,6 +342,17 @@ async fn verify(
     actual
 }
 
+fn compiled_in(module: &str) -> bool {
+    match module {
+        "mcp" => cfg!(feature = "mcp"),
+        "agents" => cfg!(feature = "agents"),
+        "skills" => cfg!(feature = "skills"),
+        "scripts" => cfg!(feature = "scripts"),
+        "plugin-packages" => cfg!(feature = "plugin-packages"),
+        _ => true,
+    }
+}
+
 /// Everything a client can reach without a session, in the order §11 walks
 /// them. `daemon.status`'s documented `"sessions": 0` is why this runs
 /// before anything is created.
@@ -350,7 +361,14 @@ async fn documented_daemon_scene_and_config_results_are_real() {
     let doc = protocol_doc();
     let daemon = start_daemon().await;
 
-    verify(&doc, &daemon, "daemon.ping", serde_json::json!({})).await;
+    // The example is the default build's; a build without one of those
+    // modules does not list it, and that is the documented behaviour.
+    let mut ping = documented_result(&doc, "daemon.ping");
+    if let Some(modules) = ping.get_mut("modules").and_then(|m| m.as_array_mut()) {
+        modules.retain(|m| compiled_in(m.as_str().unwrap_or_default()));
+    }
+    let actual = daemon.call("daemon.ping", serde_json::json!({})).await;
+    assert_documented("daemon.ping", &ping, &actual);
     verify(&doc, &daemon, "daemon.status", serde_json::json!({})).await;
     verify(
         &doc,
