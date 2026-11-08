@@ -1,6 +1,7 @@
 //! What a session carries from one turn to the next, with a real model:
 //! a compaction written by the model keeps the facts the conversation needs,
-//! a fork shares the history before it and nothing after, and a session
+//! whether asked for or started on its own when a turn outgrows the
+//! configured threshold, a fork shares the history before it and nothing after, and a session
 //! created with an output schema ends its turn with a result that fits it.
 
 use std::time::Duration;
@@ -164,6 +165,74 @@ async fn a_session_with_an_output_schema_ends_with_a_result_that_fits_it() -> an
         "{:?}",
         events.tool_uses
     );
+    run.finish().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_that_outgrows_the_threshold_compacts_on_its_own_and_carries_on(
+) -> anyhow::Result<()> {
+    let mut run = LiveRun::start(
+        "autocompact",
+        json!({ "compaction": { "threshold_tokens": 22000, "keep_recent": 2 } }),
+        Mode::InProcess,
+    )
+    .await?;
+    let codeword = format!("OSPREY-{}", nonce());
+    let badges: Vec<String> = ["ALDER", "BIRCH", "CEDAR", "DOGWOOD"]
+        .iter()
+        .map(|w| format!("{w}-{}", nonce()))
+        .collect();
+    for (i, badge) in badges.iter().enumerate() {
+        let mut body: String = (0..600)
+            .map(|l| format!("part {} line {l}: routine reading, all values nominal\n", i + 1))
+            .collect();
+        body.push_str(&format!("closing badge: {badge}\n"));
+        run.write_file(&format!("part{}.log", i + 1), &body)?;
+    }
+    let session = run.session().await?;
+    let watcher = run.watch(&session, false).await?;
+
+    run.turn(
+        &session,
+        &format!("The release codeword is {codeword}; I will ask for it later. Reply only OK."),
+    )
+    .await?;
+    let events = run
+        .turn(
+            &session,
+            "Read part1.log, part2.log, part3.log and part4.log with the Read tool, one at a \
+             time and in that order. Each ends with a line `closing badge: ...`. After reading \
+             each file, write its badge in your reply before reading the next one. Finish with \
+             the four badges, one per line.",
+        )
+        .await?;
+    let compactions = watcher.events("compact");
+    eprintln!(
+        "[live autocompact] {:?}",
+        compactions
+            .iter()
+            .map(|f| f["event"]["strategy"].clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        compactions
+            .iter()
+            .any(|f| f["event"]["strategy"] == "FullCompact"),
+        "the turn compacted with a model-written summary on its own: {compactions:?}"
+    );
+    for badge in &badges {
+        assert!(events.text.contains(badge), "{badge} in {}", events.text);
+    }
+
+    let recalled = run
+        .turn(
+            &session,
+            "What is the release codeword? Answer with it alone, without using any tool.",
+        )
+        .await?;
+    assert!(recalled.text.contains(&codeword), "{}", recalled.text);
+    drop(watcher);
     run.finish().await;
     Ok(())
 }
