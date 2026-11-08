@@ -33,79 +33,87 @@ Both are the same engine.
 
 ## Why Agix
 
-Seven things that set it apart, each backed by code and tests in this
-repository:
+**Ship the agent, not the plumbing.** The hard part of an agent product is
+not the model call — it is the loop around it: keeping a model productive for
+hours, inside the limits you set, at a cost you can predict, with every step
+on the record. That loop is Agix.
 
-1. **Programs, not call-by-call.** `RunCode` lets the model write one
-   JavaScript program that calls the session's own tools — in parallel, in
-   loops, in stages — and fans out to sub-agents whose results are validated
-   against a JSON Schema. Only the return value enters the conversation, so
-   a 30-file migration or a 4-way parallel audit is one tool call instead of
-   dozens of round trips. It *is* the workflow engine: there is no separate
-   workflow DSL to learn, and every call inside the program goes through the
+> On six real engineering tasks, same model, same proxy, every result checked
+> by running it: **Agix finished every task faster than DeepSeek Harness —
+> 34% less wall time overall, 13% fewer prompt tokens, 25% fewer output
+> tokens — and all 36 runs on both sides came out correct.** [How it was measured ↓](#measured)
+
+1. **One tool call where others need thirty.** With `RunCode` the model
+   writes a short JavaScript program that drives the session's own tools — in
+   parallel, in loops, in stages — and fans work out to sub-agents whose
+   answers are validated against a JSON Schema. Only the result comes back
+   into the conversation. A 30-file migration or a four-way parallel audit
+   becomes a single step instead of dozens of round trips. No workflow DSL to
+   learn: the program *is* the workflow, and every call inside it passes the
    same permission rules, hooks and telemetry as a direct one
    ([`docs/ptc.md`](docs/ptc.md)).
-2. **Goals that finish themselves.** Give a session a goal and it keeps
-   working, round after round, until the model marks it complete or blocked,
-   or the round cap runs out — without anyone sending another message. What
-   an automatic round may do is decided by who started it, not by what the
-   model says: it can finish or give up, never widen its own mandate, and a
-   restarted engine never resumes a goal on its own.
-3. **Built to run unattended.** A scene declares whether a person is there.
-   Unattended, nothing waits on a reply: the tools that would ask are not
-   offered, a permission question becomes a refusal that says how to grant
-   it, writes stay inside the roots the instance was given, and `Bash` runs
-   only when the OS sandbox (Seatbelt on macOS, bubblewrap on Linux) is fully
-   in force — with git hooks and config, settings, MCP and other agent config
-   read-only inside it, so nothing a command writes runs later outside it.
-   Authority comes from settings, never from task text — so injected content
-   cannot grant itself permissions.
-4. **A small, cache-friendly prompt.** About 5.8K tokens of fixed prefix with
-   the tools included; per-session facts travel in the first message instead
-   of the system prompt, so the provider's prefix cache is shared across
-   sessions; rarely used tools are advertised by name and fetched on demand.
-   Measured against another harness on the same model, below.
-5. **Every decision is a seam.** 45 extension points in a published catalog
-   — replace a subsystem, contribute to a collection, or intercept something
-   in flight — reachable from Rust, a script or a WebAssembly plugin. An
-   extension that fails costs its own contribution and nothing else.
-6. **The host sees and steers what runs.** Tasks, sub-agents, goals,
-   prompts, the context the next call will carry — all inspectable,
-   stoppable and editable over one JSON-RPC protocol. Policy follows
-   delegation: permissions, hooks and budgets bind sub-agents, team members
-   and background programs exactly as they bind the session that started
-   them.
-7. **History is a log, and nothing is claimed unchecked.** A session is an
-   append-only transcript: resume it, fork it, rebuild it after a crash,
-   replay a recording byte for byte with no network. The protocol reference,
-   the extension catalog, the settings schema and this file's numbers are
-   compared against the code by tests, and a live tier drives every major
-   feature against a real model.
+2. **Hand it a goal and walk away.** Set a goal and the session keeps going,
+   round after round, until the work is done, the model reports it blocked,
+   or the round budget runs out — no one has to send another message. An
+   automatic round can finish or give up, never widen its own mandate, and a
+   restarted engine never quietly picks a goal back up.
+3. **Safe to leave alone.** Mark a scene unattended and nothing ever waits on
+   a human: questions turn into refusals that say how to grant them, writes
+   stay inside the roots you gave the instance, and `Bash` runs only inside
+   the OS sandbox (Seatbelt on macOS, bubblewrap on Linux). Git hooks and
+   config, settings, MCP and agent definitions are read-only in there, and
+   the engine's own git runs in the same sandbox — so nothing a command plants
+   can run later outside it. Authority comes from settings, never from task
+   text: injected content cannot grant itself permissions.
+4. **Pay for the work, not the preamble.** About 5.8K tokens of fixed prefix,
+   tools included. Per-session facts ride in the first message, not the
+   system prompt, so the provider's prefix cache is shared across sessions;
+   rarely used tools are listed by name and loaded on demand. Long sessions
+   compact themselves with a model-written summary and carry on in the same
+   turn.
+5. **Change anything without forking.** 45 extension points in a published
+   catalog — replace a subsystem, add to a collection, or intercept something
+   in flight — from Rust, a script or a WebAssembly plugin. A failing
+   extension loses its own contribution, never the session.
+6. **Your product stays in charge.** Every task, sub-agent, goal, question
+   and the exact context of the next model call is visible, stoppable and
+   editable over one JSON-RPC protocol — down to following a running
+   command's output byte by byte or exporting a whole session with its
+   sub-agents as one archive. Policy follows delegation: permissions, hooks
+   and budgets bind sub-agents, team members and background programs exactly
+   as they bind the session that started them.
+7. **Trust you can check.** A session is an append-only log: resume it, fork
+   it, rebuild it after a crash, replay a recording byte for byte with no
+   network. The protocol reference, the extension catalog, the settings
+   schema and the numbers in this file are checked against the code by
+   tests, and a live tier drives every major feature against a real model on
+   each release.
 
 ### Measured
 
-Six tasks, the same model (DeepSeek Flash, thinking on, effort high), each
-harness behind the same recording proxy, both unattended under their default
-permission policy; every product is checked by running it on inputs the model
-never saw. Agix runs the `harnix` scene. The latest full round, on
-0.3.6-2026110701:
+Six tasks, one model (DeepSeek Flash, thinking on, effort high), each harness
+behind the same recording proxy, both unattended under their default
+permission policy. Every product is verified by running it on inputs the
+model never saw. Agix 0.3.7-2026110703 runs the `harnix` scene; DSH is
+0.2.2-rc.1 in headless mode. Medians of three runs per task:
 
-| Task | What it asks | Prompt tokens, Agix / DSH | Wall time, Agix / DSH |
-|---|---|---|---|
-| stats | write a small program to a spec | 29.6K / 65.7K | 15 s / 35 s |
-| inventory | fix three bugs across a package until its tests pass, then add a CLI | 62.0K / 144.4K | 21 s / 57 s |
-| biglog | answer questions about a 1.4 MB log | 42.1K / 49.1K | 13 s / 14 s |
-| shop | two turns in an unfamiliar project: fix a bug, add a feature | 116.9K / 132.7K | 27 s / 31 s |
-| audit | four sub-agents audit 24 modules in parallel and fix six | 1.16M / 0.98M | 150 s / 114 s |
-| migrate | move 58 call sites in 30 modules off a deprecated API | 146.2K / 156.4K | 26 s / 37 s |
+| Task | What it asks | Prompt tokens, Agix / DSH | Wall time, Agix / DSH | Correct |
+|---|---|---|---|---|
+| stats | write a small program to a spec | **30.6K** / 58.0K | **19 s** / 28 s | 3/3 · 3/3 |
+| inventory | fix three bugs across a package until its tests pass, then add a CLI | 83.2K / **73.2K** | **31 s** / 55 s | 3/3 · 3/3 |
+| biglog | answer questions about a 1.4 MB log | **50.2K** / 51.2K | **17 s** / 19 s | 3/3 · 3/3 |
+| shop | two turns in an unfamiliar project: fix a bug, add a feature | **118K** / 134K | **23 s** / 32 s | 3/3 · 3/3 |
+| audit | four sub-agents audit 24 modules in parallel and fix six | **935K** / 1.03M | **121 s** / 161 s | 3/3 · 3/3 |
+| migrate | move 58 call sites in 30 modules off a deprecated API | **150K** / 226K | **30 s** / 69 s | 3/3 · 3/3 |
+| **all six** | | **1.37M** / 1.57M (−13%) | **240 s** / 362 s (−34%) | 18/18 · 18/18 |
 
-The fixed prefix is the same size on both sides (5.8K / 5.7K tokens on the
-first tool-carrying request). Agix spent fewer prompt tokens and less time on
-five of the six. Read these as one round: a single run swings by ±30% on
-either side. In that round DSH's products all passed and one of Agix's
-(`stats`) did not. The harness, the fixtures and the checks are in
-[`tests/live/tests/compare_dsh.rs`](tests/live/tests/compare_dsh.rs);
-`AGIX_COMPARE_REPEAT=3` gives medians.
+Faster on all six, fewer prompt tokens on five (`inventory` is the
+exception), and 60K / 80K output tokens in total. Both sides send the same
+size of fixed prefix (5.8K / 5.7K tokens on the first tool-carrying request),
+so the difference is in how the work gets done. Single runs swing by ±30% on
+either side, which is why these are medians. The harness, fixtures and checks
+are in [`tests/live/tests/compare_dsh.rs`](tests/live/tests/compare_dsh.rs);
+`AGIX_COMPARE_REPEAT=3` reproduces them.
 
 ---
 
