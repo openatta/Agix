@@ -96,15 +96,21 @@ impl Recorder {
     /// stopped doing part of the work. Overshooting is already an error at the
     /// call that overshoots; this is the other direction, and it can only be
     /// asked at the end. Returns one line per unfinished session, empty when
-    /// every cursor was drained.
+    /// every cursor was drained — or stopped only short of calls a replay may
+    /// go without.
     pub fn unconsumed(&self) -> Vec<String> {
         let replays = self.replays.lock().unwrap_or_else(|e| e.into_inner());
         let mut out = Vec::new();
         for (name, state) in replays.iter() {
             for recorded in &state.recorded_sessions {
-                let total = state.calls_of(recorded).len();
+                let calls = state.calls_of(recorded);
+                let total = calls.len();
                 let used = state.cursor(recorded);
-                if used < total {
+                let owed = calls
+                    .iter()
+                    .skip(used)
+                    .any(|c| !c.request.purpose.as_deref().is_some_and(may_go_unreplayed));
+                if owed {
                     out.push(format!(
                         "recording {name:?} session {recorded:?}: replayed {used} of {total} call(s)"
                     ));
@@ -196,11 +202,8 @@ impl ReplayState {
         self.consumed.get(recorded_session).copied().unwrap_or(0)
     }
 
-    fn advance(&mut self, recorded_session: &str) {
-        *self
-            .consumed
-            .entry(recorded_session.to_string())
-            .or_insert(0) += 1;
+    fn move_cursor(&mut self, recorded_session: &str, to: usize) {
+        self.consumed.insert(recorded_session.to_string(), to);
     }
 
     fn calls_of(&self, recorded_session: &str) -> Vec<&reader::RecordedCall> {
@@ -505,7 +508,8 @@ impl Model for RecorderModel {
                     .as_ref()
                     .map(|o| o.session_id.as_str())
                     .unwrap_or_default();
-                self.replay(&config, &name, live_session, shape)
+                let purpose = params.origin.as_ref().and_then(|o| o.purpose());
+                self.replay(&config, &name, live_session, purpose, shape)
             }
             RecorderMode::Record => {
                 let writer = self.writer_for(&config, &name, &params);
@@ -661,6 +665,7 @@ impl RecorderModel {
         config: &RecorderConfig,
         name: &str,
         live_session: &str,
+        purpose: Option<&str>,
         shape: RequestShape,
     ) -> Result<ModelStream, ModelError> {
         let mut replays = self
@@ -710,9 +715,24 @@ impl RecorderModel {
                  live run introduced another ({live_session:?})"
             )));
         };
-        let cursor = state.cursor(&recorded_session);
-
         let calls = state.calls_of(&recorded_session);
+        let mut cursor = state.cursor(&recorded_session);
+        let recorded_purpose = |at: usize| calls.get(at).and_then(|c| c.request.purpose.as_deref());
+        match purpose.filter(|p| may_go_unreplayed(p)) {
+            Some(wanted) if recorded_purpose(cursor) != Some(wanted) => {
+                return Err(ModelError::NotRecorded(format!(
+                    "recording {name:?} has no {wanted:?} call for session \
+                     {recorded_session:?} at #{}",
+                    cursor + 1
+                )));
+            }
+            Some(_) => {}
+            None => {
+                while recorded_purpose(cursor).is_some_and(may_go_unreplayed) {
+                    cursor += 1;
+                }
+            }
+        }
         let Some(call) = calls.get(cursor).copied().cloned() else {
             return Err(ModelError::Internal(format!(
                 "recorder: recording {:?} has {} call(s) for session {:?}, \
@@ -723,7 +743,7 @@ impl RecorderModel {
                 cursor + 1
             )));
         };
-        state.advance(&recorded_session);
+        state.move_cursor(&recorded_session, cursor + 1);
 
         let differences = diverges(&call.request, &shape);
         if !differences.is_empty() {
@@ -750,6 +770,17 @@ impl RecorderModel {
             call.response.iter().cloned().map(Ok).collect();
         Ok(Box::new(futures::stream::iter(events)))
     }
+}
+
+/// Whether a call of this purpose may be missing on either side of a replay.
+///
+/// Naming a session is not part of its conversation: a recording made where
+/// the scene did not name, or before naming was recorded at all, still
+/// replays a run that does — the run just goes unnamed — and a recorded
+/// title call a run does not ask for is passed over instead of being served
+/// as the answer to the next call.
+fn may_go_unreplayed(purpose: &str) -> bool {
+    purpose == base::interface::model::call_purpose::TITLE
 }
 
 fn write_end(
@@ -1876,5 +1907,199 @@ mod tests {
             .err()
             .expect("expected an error");
         assert!(err.to_string().contains("asked for #2"), "{err}");
+    }
+
+    fn title_params(session: &str) -> StreamParams {
+        let mut p = params(session, 0);
+        p.origin = Some(CallOrigin::auxiliary(
+            session,
+            base::interface::model::call_purpose::TITLE,
+        ));
+        p
+    }
+
+    fn text(events: &[ModelEvent]) -> String {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                ModelEvent::TextDelta { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Each call answered by a model of its own, all into one recording.
+    async fn record_calls(root: &std::path::Path, calls: Vec<(StreamParams, &str)>) {
+        let shared = Recorder::new();
+        for (params, answer) in calls {
+            let recorder = RecorderModel::shared(
+                ScriptedModel::ok(vec![ModelEvent::TextDelta {
+                    text: answer.into(),
+                }]),
+                Some(config(RecorderMode::Record, root, Divergence::Strict)),
+                "test",
+                shared.clone(),
+            );
+            drain(
+                recorder
+                    .stream(
+                        prompt("sys"),
+                        tools(),
+                        vec![],
+                        params,
+                        CancellationToken::new(),
+                    )
+                    .await
+                    .unwrap(),
+            )
+            .await;
+        }
+    }
+
+    /// Naming is not part of the conversation: a recording made without it
+    /// replays a run that names, and even a strict replay only reports the
+    /// naming call as absent instead of as a divergence or an overshoot.
+    #[tokio::test]
+    async fn a_title_call_the_recording_lacks_is_not_recorded_even_under_strict_replay() {
+        let root = tempfile::tempdir().unwrap();
+        record_calls(root.path(), vec![(params("S1", 0), "answer")]).await;
+
+        let shared = Recorder::new();
+        let replayer = RecorderModel::shared(
+            ScriptedModel::overloaded(),
+            Some(config(
+                RecorderMode::Replay,
+                root.path(),
+                Divergence::Strict,
+            )),
+            "test",
+            shared.clone(),
+        );
+        let turn = drain(
+            replayer
+                .stream(
+                    prompt("sys"),
+                    tools(),
+                    vec![],
+                    params("S1", 0),
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(text(&turn), "answer");
+
+        match replayer
+            .stream(
+                prompt("sys"),
+                tools(),
+                vec![],
+                title_params("S1"),
+                CancellationToken::new(),
+            )
+            .await
+        {
+            Err(ModelError::NotRecorded(_)) => {}
+            Err(e) => panic!("expected NotRecorded, got {e}"),
+            Ok(_) => panic!("a title call the recording lacks was answered"),
+        }
+        assert!(shared.unconsumed().is_empty(), "{:?}", shared.unconsumed());
+    }
+
+    #[tokio::test]
+    async fn a_recorded_title_call_replays_in_its_place() {
+        let root = tempfile::tempdir().unwrap();
+        record_calls(
+            root.path(),
+            vec![
+                (params("S1", 0), "answer"),
+                (title_params("S1"), "a title"),
+                (params("S1", 1), "second"),
+            ],
+        )
+        .await;
+        let calls = reader::load(&root.path().join("run")).unwrap().calls;
+        assert_eq!(calls[1].request.purpose.as_deref(), Some("title"));
+
+        let shared = Recorder::new();
+        let replayer = RecorderModel::shared(
+            ScriptedModel::overloaded(),
+            Some(config(
+                RecorderMode::Replay,
+                root.path(),
+                Divergence::Strict,
+            )),
+            "test",
+            shared.clone(),
+        );
+        let mut answers = Vec::new();
+        for params in [params("S1", 0), title_params("S1"), params("S1", 1)] {
+            let events = drain(
+                replayer
+                    .stream(
+                        prompt("sys"),
+                        tools(),
+                        vec![],
+                        params,
+                        CancellationToken::new(),
+                    )
+                    .await
+                    .unwrap(),
+            )
+            .await;
+            answers.push(text(&events));
+        }
+        assert_eq!(answers, ["answer", "a title", "second"]);
+        assert!(shared.unconsumed().is_empty(), "{:?}", shared.unconsumed());
+    }
+
+    /// The other direction: a run that does not name is not handed the
+    /// recorded title as the answer to its next call, and is not reported as
+    /// having stopped short for leaving it unasked.
+    #[tokio::test]
+    async fn a_recorded_title_call_the_run_does_not_ask_for_is_passed_over() {
+        let root = tempfile::tempdir().unwrap();
+        record_calls(
+            root.path(),
+            vec![
+                (params("S1", 0), "answer"),
+                (title_params("S1"), "a title"),
+                (params("S1", 1), "second"),
+                (title_params("S1"), "a late title"),
+            ],
+        )
+        .await;
+
+        let shared = Recorder::new();
+        let replayer = RecorderModel::shared(
+            ScriptedModel::overloaded(),
+            Some(config(
+                RecorderMode::Replay,
+                root.path(),
+                Divergence::Strict,
+            )),
+            "test",
+            shared.clone(),
+        );
+        let mut answers = Vec::new();
+        for step in [0, 1] {
+            let events = drain(
+                replayer
+                    .stream(
+                        prompt("sys"),
+                        tools(),
+                        vec![],
+                        params("S1", step),
+                        CancellationToken::new(),
+                    )
+                    .await
+                    .unwrap(),
+            )
+            .await;
+            answers.push(text(&events));
+        }
+        assert_eq!(answers, ["answer", "second"]);
+        assert!(shared.unconsumed().is_empty(), "{:?}", shared.unconsumed());
     }
 }

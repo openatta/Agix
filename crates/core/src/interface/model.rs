@@ -458,4 +458,9 @@ pub enum ModelError {
     /// The provider cannot do what the call asked of it.
     #[error("unsupported: {0}")]
     Unsupported(String),
+    /// A replay was asked for a call its recording does not hold, and the
+    /// call is one a replay is allowed to go without — the caller skips it
+    /// rather than reporting a failure.
+    #[error("not in the recording: {0}")]
+    NotRecorded(String),
 }

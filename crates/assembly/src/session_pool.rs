@@ -389,6 +389,110 @@ const SPEC_NS: &str = "agix.session";
 const ENGINE_NS_PREFIX: &str = "agix.";
 const SPEC_EVENT: &str = "spec";
 
+/// Where a session's first-turn naming call goes: the session's own `title`
+/// route when its project has one, else its conversation model.
+///
+/// Taken from the clients the session was built with, so a recorded session
+/// records the call and a replayed one is answered from the recording.
+#[derive(Clone)]
+struct SessionNamer {
+    session_id: String,
+    model: Arc<dyn base::interface::model::Model>,
+    model_name: String,
+}
+
+impl SessionNamer {
+    fn of(
+        session_id: &str,
+        task_router: Option<&base::provider::TaskRouter>,
+        model: &Arc<dyn base::interface::model::Model>,
+        model_name: &str,
+    ) -> Self {
+        let title = base::interface::model::call_purpose::TITLE;
+        let routed = task_router.and_then(|router| {
+            Some((
+                router.model_for(title),
+                router.model_name_for(title)?.to_string(),
+            ))
+        });
+        let (model, model_name) = routed.unwrap_or_else(|| (model.clone(), model_name.to_string()));
+        Self {
+            session_id: session_id.to_string(),
+            model,
+            model_name,
+        }
+    }
+
+    /// `Ok(None)` when a replay holds no naming call: the session stays
+    /// unnamed rather than the call going anywhere else.
+    async fn name(&self, prompt: &str) -> Result<Option<String>, String> {
+        use base::interface::model::{
+            CallOrigin, MessageRole, ModelContentBlock, ModelError, ModelEvent, ModelMessage,
+            StreamParams,
+        };
+        use base::interface::prompt::PromptBlock;
+        use futures::StreamExt;
+
+        let system = PromptBlock::system(
+            "你是一个简洁的标题生成器。只输出 3-5 个词的中文标题，不要任何解释。",
+        );
+        let messages = vec![ModelMessage {
+            role: MessageRole::User,
+            content: vec![ModelContentBlock::Text {
+                text: prompt.to_string(),
+            }],
+        }];
+        let params = StreamParams {
+            model: self.model_name.clone(),
+            max_tokens: 50,
+            thinking_mode: base::interface::settings::ThinkingMode::Off,
+            effort: None,
+            fallback_model: None,
+            cache_edits: vec![],
+            origin: Some(CallOrigin::auxiliary(
+                self.session_id.clone(),
+                base::interface::model::call_purpose::TITLE,
+            )),
+            input_map: None,
+            provider_search: None,
+        };
+
+        let stream = match self
+            .model
+            .stream(
+                vec![system],
+                vec![],
+                messages,
+                params,
+                CancellationToken::new(),
+            )
+            .await
+        {
+            Ok(stream) => stream,
+            Err(ModelError::NotRecorded(_)) => return Ok(None),
+            Err(e) => return Err(format!("LLM name error: {e}")),
+        };
+
+        tokio::pin!(stream);
+        let mut name = String::new();
+        while let Some(event) = stream.next().await {
+            match event {
+                Ok(ModelEvent::TextDelta { text }) => name.push_str(&text),
+                Ok(ModelEvent::EndTurn { .. }) => break,
+                Err(e) => return Err(format!("LLM name stream error: {e}")),
+                _ => {}
+            }
+        }
+
+        let name = name.trim().trim_matches('"').trim().to_string();
+        if name.is_empty() {
+            Err("empty name generated".into())
+        } else {
+            Ok(Some(name))
+        }
+    }
+}
+
 // ── LiveSession ─────────────────────────────────────────────────────────
 
 struct LiveSession {
@@ -416,6 +520,7 @@ struct LiveSession {
     /// that has one: a name somebody typed outranks a name a model guessed,
     /// and the guess arrives later.
     named_by_user: bool,
+    namer: SessionNamer,
     /// The `stale` flag of the binding this Agent was built from. `run_turn`
     /// rebuilds the session before its next turn once it is set — lazily,
     /// so an invalidation never has to walk the sessions.
@@ -2059,6 +2164,12 @@ impl SessionPool {
             }
             Arc::new(snap)
         };
+        let namer = SessionNamer::of(
+            &session_id,
+            task_router.as_deref(),
+            &model,
+            &settings_snapshot.model.model_name,
+        );
         let permission = resolve_session_permission(
             self.permission.as_ref(),
             &self.tools,
@@ -2445,6 +2556,7 @@ impl SessionPool {
             created_at: Instant::now(),
             last_active: Instant::now(),
             is_first_turn: !has_user_turn,
+            namer,
             binding_stale: binding.stale.clone(),
             current_turn: None,
             turn_initiator: None,
@@ -3994,7 +4106,7 @@ impl SessionPool {
         // outside it — it is a model call, and the sessions map is the
         // pool's hottest mutex.
         let mut session_name = None;
-        let name_prompt = {
+        let naming = {
             let mut sessions = self.sessions.lock().await;
             match sessions.get_mut(&sid) {
                 // A slash command is not what the conversation is about.
@@ -4003,6 +4115,7 @@ impl SessionPool {
                     (live.scene.auto_name_session() && !live.named_by_user)
                         .then(|| live.scene.session_name_prompt(&message))
                         .flatten()
+                        .map(|prompt| (prompt, live.namer.clone()))
                 }
                 Some(live) => {
                     session_name = live.name.clone();
@@ -4011,11 +4124,12 @@ impl SessionPool {
                 None => None,
             }
         };
-        if let Some(prompt) = name_prompt {
-            match self.generate_session_name(&prompt).await {
-                Ok(name) => {
+        if let Some((prompt, namer)) = naming {
+            match namer.name(&prompt).await {
+                Ok(Some(name)) => {
                     session_name = self.adopt_generated_name(&sid, name).await;
                 }
+                Ok(None) => {}
                 Err(e) => {
                     warn!(%sid, error=%e, "session name generation failed");
                 }
@@ -6753,82 +6867,6 @@ impl SessionPool {
         }
         rebuilt.map_err(Rebuild::Failed)
     }
-
-    /// LRU 驱逐：移除最久未活跃的 session。
-    /// 调用 LLM 生成 session 名称。
-    /// Names a session through the daemon's own project: its `title` task
-    /// route when it has one, else its conversation model — a model name the
-    /// project's provider actually serves.
-    async fn generate_session_name(&self, prompt: &str) -> Result<String, String> {
-        let binding = self.default_binding().await;
-        let title = base::interface::model::call_purpose::TITLE;
-        let routed = binding.task_router.as_ref().and_then(|router| {
-            Some((
-                router.model_for(title),
-                router.model_name_for(title)?.to_string(),
-            ))
-        });
-        let (model, model_name) = routed.unwrap_or_else(|| {
-            (
-                binding.model.clone(),
-                binding.settings.model.model_name.clone(),
-            )
-        });
-        use base::interface::model::{MessageRole, ModelContentBlock, ModelMessage, StreamParams};
-        use base::interface::prompt::PromptBlock;
-        use futures::StreamExt;
-
-        let system = PromptBlock::system(
-            "你是一个简洁的标题生成器。只输出 3-5 个词的中文标题，不要任何解释。",
-        );
-        let messages = vec![ModelMessage {
-            role: MessageRole::User,
-            content: vec![ModelContentBlock::Text {
-                text: prompt.to_string(),
-            }],
-        }];
-
-        let stream = model
-            .stream(
-                vec![system],
-                vec![],
-                messages,
-                StreamParams {
-                    model: model_name,
-                    max_tokens: 50,
-                    thinking_mode: base::interface::settings::ThinkingMode::Off,
-                    effort: None,
-                    fallback_model: None,
-                    cache_edits: vec![],
-                    origin: None,
-                    input_map: None,
-                    provider_search: None,
-                },
-                CancellationToken::new(),
-            )
-            .await
-            .map_err(|e| format!("LLM name error: {e}"))?;
-
-        tokio::pin!(stream);
-        let mut name = String::new();
-        while let Some(event) = stream.next().await {
-            match event {
-                Ok(base::interface::model::ModelEvent::TextDelta { text }) => {
-                    name.push_str(&text);
-                }
-                Ok(base::interface::model::ModelEvent::EndTurn { .. }) => break,
-                Err(e) => return Err(format!("LLM name stream error: {e}")),
-                _ => {}
-            }
-        }
-
-        let name = name.trim().trim_matches('"').trim().to_string();
-        if name.is_empty() {
-            Err("empty name generated".into())
-        } else {
-            Ok(name)
-        }
-    }
 }
 
 /// LRU 驱逐：从 `sessions` 里移除最久未活跃的一个（若非空）。不依赖 `SessionPool`
@@ -7943,6 +7981,14 @@ mod eviction_tests {
             last_active,
             is_first_turn: true,
             named_by_user: false,
+            namer: SessionNamer::of(
+                "dummy",
+                None,
+                &(Arc::new(AnthropicModel::new(Arc::new(
+                    model::mock::MockAnthropicClient::new(),
+                ))) as Arc<dyn base::interface::model::Model>),
+                "claude-sonnet-4-6",
+            ),
             binding_stale: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             current_turn: None,
             turn_initiator: None,
@@ -9115,5 +9161,289 @@ mod rebuild_tests {
     async fn pending_ids(pool: &SessionPool, sid: &str) -> Vec<String> {
         let sessions = pool.sessions.lock().await;
         sessions[sid].pending_prompts.keys().cloned().collect()
+    }
+}
+
+#[cfg(test)]
+mod auto_name_tests {
+    use super::mcp_for_project_tests::test_pool;
+    use super::*;
+    use base::interface::model::{
+        call_purpose, Model, ModelError, ModelEvent, ModelMessage, ModelStream, StreamParams,
+        ToolDef, Usage,
+    };
+    use base::interface::prompt::PromptBlock;
+    use base::provider::{ApiType, ResolvedModel, TaskRouter};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Answers every call: a naming call with `title`, anything else with a
+    /// line of text. Remembers what each call was for and which model it
+    /// asked for.
+    struct Answering {
+        title: &'static str,
+        calls: std::sync::Mutex<Vec<(Option<String>, String)>>,
+    }
+
+    impl Answering {
+        fn new(title: &'static str) -> Arc<Self> {
+            Arc::new(Self {
+                title,
+                calls: Default::default(),
+            })
+        }
+
+        fn naming_calls(&self) -> Vec<String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(purpose, _)| purpose.as_deref() == Some(call_purpose::TITLE))
+                .map(|(_, model)| model.clone())
+                .collect()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Model for Answering {
+        fn api_type(&self) -> ApiType {
+            ApiType::Anthropic
+        }
+
+        async fn stream(
+            &self,
+            _: Vec<PromptBlock>,
+            _: Vec<ToolDef>,
+            _: Vec<ModelMessage>,
+            params: StreamParams,
+            _: CancellationToken,
+        ) -> Result<ModelStream, ModelError> {
+            let purpose = params
+                .origin
+                .as_ref()
+                .and_then(|o| o.purpose())
+                .map(str::to_string);
+            let text = if purpose.as_deref() == Some(call_purpose::TITLE) {
+                self.title
+            } else {
+                "好的，这就整理。"
+            };
+            self.calls.lock().unwrap().push((purpose, params.model));
+            let events = vec![
+                Ok(ModelEvent::TextDelta { text: text.into() }),
+                Ok(ModelEvent::EndTurn {
+                    stop_reason: "end_turn".into(),
+                    usage: Usage::default(),
+                }),
+            ];
+            Ok(Box::new(futures::stream::iter(events)))
+        }
+    }
+
+    /// What a replay must never reach: fails every call, and counts them.
+    #[derive(Default)]
+    struct Unreachable {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl Model for Unreachable {
+        fn api_type(&self) -> ApiType {
+            ApiType::Anthropic
+        }
+
+        async fn stream(
+            &self,
+            _: Vec<PromptBlock>,
+            _: Vec<ToolDef>,
+            _: Vec<ModelMessage>,
+            _: StreamParams,
+            _: CancellationToken,
+        ) -> Result<ModelStream, ModelError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(ModelError::Auth("invalid x-api-key".into()))
+        }
+    }
+
+    /// Serve `project` on `scene` with `model`, and `task_router` when given,
+    /// in place of what its settings would build.
+    async fn bind(
+        pool: &SessionPool,
+        project: &Path,
+        scene: &str,
+        model: Arc<dyn Model>,
+        task_router: Option<TaskRouter>,
+    ) {
+        let mut settings = (**pool.settings.read().await).clone();
+        settings.memory_enabled = false;
+        let mut binding = ProjectBinding::build(
+            Arc::new(settings),
+            &[],
+            vec![],
+            &pool.client,
+            None,
+            &pool.credentials,
+        );
+        binding.model = model;
+        binding.task_router = task_router.map(Arc::new);
+        pool.bindings.lock().await.insert(
+            (Some(project.to_path_buf()), scene.to_string()),
+            Arc::new(binding),
+        );
+    }
+
+    fn recorder(mode: &str, root: &Path) -> Option<crate::rpc::RecorderOptions> {
+        Some(crate::rpc::RecorderOptions {
+            mode: mode.into(),
+            name: Some("naming".into()),
+            dir: Some(root.display().to_string()),
+            strict: mode == "replay",
+        })
+    }
+
+    async fn harnix_session(
+        pool: &SessionPool,
+        project: &Path,
+        recorder: Option<crate::rpc::RecorderOptions>,
+    ) -> String {
+        pool.activate_scene("harnix")
+            .await
+            .expect("harnix is built in");
+        let options = SessionOptions {
+            recorder,
+            ..Default::default()
+        };
+        pool.create_session(
+            Some("harnix"),
+            ProjectSelector::Path(project.to_path_buf()),
+            Some(&options),
+        )
+        .await
+        .expect("a harnix session")["session_id"]
+            .as_str()
+            .expect("a session id")
+            .to_string()
+    }
+
+    /// The first turn's `session.send` result.
+    async fn first_turn(pool: &SessionPool, sid: &str) -> serde_json::Value {
+        let client = Arc::new(crate::rpc::Client::new(
+            crate::rpc::ConnectionId(u64::MAX - 11),
+            Arc::new(Discard),
+        ));
+        let response = pool
+            .run_turn(
+                Some(sid.to_string()),
+                "把发布流程整理成一份清单".into(),
+                vec![],
+                "t-1".into(),
+                client,
+                serde_json::json!(1),
+                None,
+                OnBusy::Reject,
+                "client",
+            )
+            .await;
+        response
+            .result
+            .unwrap_or_else(|| panic!("the turn failed: {:?}", response.error))
+    }
+
+    fn naming_calls_in(root: &Path) -> Vec<String> {
+        telemetry::recorder::reader::load(&root.join("naming"))
+            .expect("a recording")
+            .calls
+            .into_iter()
+            .filter(|c| c.request.purpose.as_deref() == Some(call_purpose::TITLE))
+            .map(|c| c.request.params.model)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_replay_whose_recording_never_named_leaves_the_session_unnamed_without_calling_out() {
+        let (pool, dir) = test_pool().await;
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let recordings = dir.path().join("recordings");
+
+        bind(&pool, &project, "harnix", Answering::new("发布清单"), None).await;
+        let recorded = harnix_session(&pool, &project, recorder("record", &recordings)).await;
+        pool.sessions
+            .lock()
+            .await
+            .get_mut(&recorded)
+            .unwrap()
+            .named_by_user = true;
+        first_turn(&pool, &recorded).await;
+        assert!(naming_calls_in(&recordings).is_empty());
+
+        let unreachable = Arc::new(Unreachable::default());
+        bind(&pool, &project, "harnix", unreachable.clone(), None).await;
+        bind(&pool, pool.cwd(), "code", unreachable.clone(), None).await;
+        let replayed = harnix_session(&pool, &project, recorder("replay", &recordings)).await;
+        let result = first_turn(&pool, &replayed).await;
+
+        assert_eq!(result["name"], serde_json::Value::Null, "{result}");
+        assert_eq!(unreachable.calls.load(Ordering::SeqCst), 0);
+        let namer = pool.sessions.lock().await[&replayed].namer.clone();
+        assert_eq!(
+            namer.name("把发布流程整理成一份清单").await,
+            Ok(None),
+            "a naming call the recording lacks is skipped, not reported as a failure"
+        );
+        assert_eq!(unreachable.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_recorded_name_comes_back_on_replay_without_calling_out() {
+        let (pool, dir) = test_pool().await;
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let recordings = dir.path().join("recordings");
+
+        bind(&pool, &project, "harnix", Answering::new("发布清单"), None).await;
+        let recorded = harnix_session(&pool, &project, recorder("record", &recordings)).await;
+        let result = first_turn(&pool, &recorded).await;
+        assert_eq!(result["name"], "发布清单", "{result}");
+        assert_eq!(naming_calls_in(&recordings).len(), 1);
+
+        let unreachable = Arc::new(Unreachable::default());
+        bind(&pool, &project, "harnix", unreachable.clone(), None).await;
+        bind(&pool, pool.cwd(), "code", unreachable.clone(), None).await;
+        let replayed = harnix_session(&pool, &project, recorder("replay", &recordings)).await;
+        let result = first_turn(&pool, &replayed).await;
+
+        assert_eq!(result["name"], "发布清单", "{result}");
+        assert_eq!(unreachable.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_session_is_named_through_its_own_projects_title_route() {
+        let (pool, dir) = test_pool().await;
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+
+        let main = Answering::new("不该用这个");
+        let titler = Answering::new("发布清单");
+        let router = TaskRouter::new(
+            HashMap::from([
+                ("main".to_string(), main.clone() as Arc<dyn Model>),
+                ("titler".to_string(), titler.clone() as Arc<dyn Model>),
+            ]),
+            HashMap::from([(
+                call_purpose::TITLE.to_string(),
+                ResolvedModel {
+                    provider_id: "titler".into(),
+                    model: "title-model".into(),
+                },
+            )]),
+            main.clone(),
+        );
+        bind(&pool, &project, "harnix", main.clone(), Some(router)).await;
+        let sid = harnix_session(&pool, &project, None).await;
+        let result = first_turn(&pool, &sid).await;
+
+        assert_eq!(result["name"], "发布清单", "{result}");
+        assert_eq!(titler.naming_calls(), ["title-model"]);
+        assert!(main.naming_calls().is_empty());
     }
 }
