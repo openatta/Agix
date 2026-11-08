@@ -80,6 +80,7 @@ fn to_sandbox_policy(settings: &base::tool::SandboxSettings) -> sandbox::Sandbox
         // Filled in by the caller, which is the only place that knows what
         // this turn opened up.
         additional_writable: Vec::new(),
+        only_additional_writable: false,
     }
 }
 
@@ -541,7 +542,7 @@ fn sandbox_policy(ctx: &ToolContext) -> sandbox::SandboxPolicy {
         .iter()
         .cloned()
         .chain(caches)
-        .chain([session_temp_dir(ctx)])
+        .chain([session_temp_dir(&ctx.session_id)])
         .collect();
     policy
 }
@@ -549,9 +550,8 @@ fn sandbox_policy(ctx: &ToolContext) -> sandbox::SandboxPolicy {
 /// The session's own temporary directory: a sandboxed command's `TMPDIR`,
 /// and the only temporary directory it may write besides the one macOS
 /// `mktemp` insists on.
-fn session_temp_dir(ctx: &ToolContext) -> std::path::PathBuf {
-    let id: String = ctx
-        .session_id
+fn session_temp_dir(session_id: &str) -> std::path::PathBuf {
+    let id: String = session_id
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
         .collect();
@@ -559,8 +559,8 @@ fn session_temp_dir(ctx: &ToolContext) -> std::path::PathBuf {
 }
 
 /// [`session_temp_dir`], created private to this user if it is not there yet.
-fn prepared_session_temp_dir(ctx: &ToolContext) -> Option<std::path::PathBuf> {
-    let dir = session_temp_dir(ctx);
+fn prepared_session_temp_dir(session_id: &str) -> Option<std::path::PathBuf> {
+    let dir = session_temp_dir(session_id);
     let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
@@ -595,7 +595,7 @@ pub(crate) fn confine_shell(
     }
     let mut confined = ctx.exec.sandbox.confine(intent, &sandbox_policy(ctx));
     if confined.enforcement != Enforcement::None {
-        if let Some(tmp) = prepared_session_temp_dir(ctx) {
+        if let Some(tmp) = prepared_session_temp_dir(&ctx.session_id) {
             confined
                 .spec
                 .env
@@ -662,6 +662,37 @@ fn sandbox_holds(ctx: &ToolContext) -> bool {
     let policy = sandbox_policy(ctx);
     let probe = base::interface::exec::ProcessSpec::new("bash", &ctx.cwd).args(["-c", "true"]);
     ctx.exec.sandbox.confine(probe, &policy).enforcement == base::interface::exec::Enforcement::Full
+}
+
+/// How the engine starts its own git in the session `ctx` belongs to.
+pub fn engine_git(ctx: &ToolContext) -> base::frozen::git::EngineGit {
+    engine_git_for(
+        &ctx.sandbox,
+        ctx.exec.sandbox.clone(),
+        ctx.dangerously_disable_sandbox,
+        &ctx.session_id,
+    )
+}
+
+/// Inside the session's sandbox whenever the session's shell commands are,
+/// so what a repository such a command configured makes git start is held
+/// to the same roots. Run by the engine, outside it, git would carry that out
+/// unconfined.
+pub fn engine_git_for(
+    settings: &base::tool::SandboxSettings,
+    sandbox: std::sync::Arc<dyn base::interface::exec::Sandbox>,
+    sandbox_disabled: bool,
+    session_id: &str,
+) -> base::frozen::git::EngineGit {
+    if sandbox_disabled {
+        return base::frozen::git::EngineGit::Direct;
+    }
+    base::frozen::git::EngineGit::sandboxed(
+        sandbox,
+        to_sandbox_policy(settings),
+        settings.require_enforcement,
+        prepared_session_temp_dir(session_id),
+    )
 }
 
 /// Whether every path-looking argument of every command in `line` resolves
@@ -1549,6 +1580,55 @@ mod tests {
             tmpdir_of(&confine_shell("Bash", "true", &ctx).unwrap()),
             None
         );
+    }
+
+    /// The engine's own git goes into the sandbox exactly when the session's
+    /// shell commands do, may write only the session's TMPDIR and what the
+    /// command names, and reaches no network.
+    #[test]
+    fn the_engines_git_is_sandboxed_exactly_when_the_sessions_commands_are() {
+        #[derive(Default)]
+        struct Records(std::sync::Mutex<Option<base::interface::exec::SandboxPolicy>>);
+        impl Sandbox for Records {
+            fn confine(
+                &self,
+                spec: ProcessSpec,
+                policy: &base::interface::exec::SandboxPolicy,
+            ) -> Confined {
+                *self.0.lock().unwrap() = Some(policy.clone());
+                Confined {
+                    spec: ProcessSpec::new("wrapper", &spec.cwd).arg(spec.program),
+                    mode: SandboxMode::MacOSSandboxExec,
+                    enforcement: Enforcement::Full,
+                    unmet: Vec::new(),
+                }
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = ctx_in(dir.path());
+        ctx.session_id = uuid::Uuid::new_v4().to_string();
+        let records = std::sync::Arc::new(Records::default());
+        ctx.exec.sandbox = records.clone();
+
+        ctx.dangerously_disable_sandbox = true;
+        assert!(!engine_git(&ctx).is_sandboxed());
+
+        ctx.dangerously_disable_sandbox = false;
+        let bookkeeping = dir.path().join(".git");
+        let spec = engine_git(&ctx)
+            .command(dir.path(), &["status"], std::slice::from_ref(&bookkeeping))
+            .unwrap();
+        assert_eq!(spec.program, "wrapper");
+        let tmp = tmpdir_of(&spec).expect("TMPDIR is set");
+        let policy = records.0.lock().unwrap().clone().unwrap();
+        assert!(policy.only_additional_writable);
+        assert_eq!(policy.additional_writable, vec![tmp.clone(), bookkeeping]);
+        assert_eq!(
+            policy.network_mode,
+            base::interface::exec::NetworkMode::DenyAll
+        );
+        std::fs::remove_dir_all(&tmp).unwrap();
     }
 
     // ---- to_sandbox_policy ----

@@ -747,11 +747,14 @@ impl Agent {
         // Compute frozen context lazily on first turn. Includes git status,
         // branch, platform, etc.
         let collected_this_turn = self.frozen.is_none();
+        let engine_git = engine_git_from(&self.config, &self.session.session_id);
         if collected_this_turn {
             let cwd = self.settings.paths.project_root();
             let paths = base::paths::ConfigPaths::from_settings(&self.settings.paths);
-            self.frozen =
-                Some(base::frozen::FrozenContext::collect(cwd, &paths, &*self.environment).await);
+            self.frozen = Some(
+                base::frozen::FrozenContext::collect(cwd, &paths, &*self.environment, &engine_git)
+                    .await,
+            );
         }
 
         // `FrozenContext` is a session snapshot on purpose — but the
@@ -764,7 +767,7 @@ impl Agent {
         // that snapshot is seconds old.
         if !collected_this_turn {
             if let Some(ref mut frozen) = self.frozen {
-                frozen.refresh_git_status().await;
+                frozen.refresh_git_status(&engine_git).await;
             }
         }
 
@@ -1416,7 +1419,9 @@ impl Agent {
             if has_tool_uses && Self::turn_included_git_mutating_bash_call(self.session.messages())
             {
                 if let Some(ref mut frozen) = self.frozen {
-                    frozen.refresh_git().await;
+                    frozen
+                        .refresh_git(&engine_git_from(&self.config, &self.session.session_id))
+                        .await;
                 }
             }
             if has_tool_uses {
@@ -3642,6 +3647,20 @@ fn sandbox_settings_from(config: &base::context::EngineConfig) -> base::tool::Sa
         state_root: config.sandbox_policy.state_root.clone(),
         require_enforcement: config.sandbox_policy.require_enforcement,
     }
+}
+
+/// How the engine starts its own git for this session: in the sandbox
+/// [`exec_providers_from`] gives its tool calls, whenever it confines them.
+pub(crate) fn engine_git_from(
+    config: &base::context::EngineConfig,
+    session_id: &str,
+) -> base::frozen::git::EngineGit {
+    tools::bash::engine_git_for(
+        &sandbox_settings_from(config),
+        Arc::new(base::interface::exec::local::PlatformSandbox),
+        config.dangerously_disable_sandbox,
+        session_id,
+    )
 }
 
 /// The execution providers a tool call reaches the machine through.
@@ -7644,6 +7663,7 @@ mod prompt_assembly_tests {
             child.clone(),
             &base::paths::ConfigPaths::new(child.join(".state"), child.join(".agix"), "code"),
             &base::interface::environment::SystemEnvironment,
+            &base::frozen::git::EngineGit::Direct,
         )
         .await;
         let mut settings = test_settings(dir.path());
@@ -7692,6 +7712,7 @@ mod prompt_assembly_tests {
             root.clone(),
             &base::paths::ConfigPaths::new(root.join(".state"), root.join(".agix"), "code"),
             &base::interface::environment::SystemEnvironment,
+            &base::frozen::git::EngineGit::Direct,
         )
         .await;
         let mut settings = test_settings(dir.path());

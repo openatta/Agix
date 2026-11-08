@@ -473,8 +473,8 @@ Agent 的上下文,本来就该在一处。
    服务取的是声明它的那份设置(daemon 按项目、scene 建连),再叠各服务自己的 `env`。这和沙箱无关——沙箱关着,模型一句 `printenv` 读到什么也由它决定。
 
 沙箱是**轻量写限制,不是安全隔离**。已知逃逸路径写在
-`crates/core/src/interface/exec/local/sandbox.rs` 的模块头里,五条,都还没收口。
-它限住的写入范围见 §6.3。
+`crates/core/src/interface/exec/local/sandbox.rs` 的模块头里,五条;第 5 条对引擎自己的
+git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git。它限住的写入范围见 §6.3。
 
 ---
 
@@ -576,11 +576,19 @@ Agent 的上下文,本来就该在一处。
 `scratchpad` 与 `memory` 外整个不可写。`git add` / `git commit`、在 `.agix` 下写草稿照常可用;
 `git config`、`git remote add` 这类改仓库配置的命令在沙箱里会失败。Linux 上 `.agix` 整个只读、
 已有的工作目录逐个重新打开,所以 `.agix` 下直接新建条目也会失败;没有 `.git` 的项目、没有
-`commondir` 的仓库在 Linux 上补不上这一道(见 `sandbox.rs` 模块头第 5 条)。
+`commondir` 的仓库在 Linux 上补不上这一道(见 `sandbox.rs` 模块头第 5 条),所以有下一段。
 
-引擎自己在沙箱外跑的 git(每轮的 `git status`、worktree 的创建与清理、`VerifyPlanExecution`
-的 `git diff`)都带 `-c core.fsmonitor=false -c core.hooksPath=/dev/null`,不跑仓库指定的
-fsmonitor 与 hook。filter driver 这样关不掉,挡住它的是上面对 `.git/config` 的拒写。
+引擎自己跑的 git(每轮的 `git status`、worktree 的创建与清理、`VerifyPlanExecution` 的
+`git diff`)经 `base::frozen::git::EngineGit` 起:会话的命令进沙箱(没有
+`dangerously_disable_sandbox`)时,它也进同一个沙箱,不论有人值守与否——仓库配置让 git 去
+跑的 filter driver 之类因此同样受约束。这时它只能写会话的 `TMPDIR`,创建 worktree 时再加
+git 目录与 `.agix/worktrees/`,工作目录本身不可写,网络不通。沙箱兑现不了时照
+`sandbox.require_enforcement` 办:要求就不跑,当作没有 git 信息(状态不显示,worktree 创建报错),
+不要求就和 `Bash` 一样在沙箱外跑。删除 worktree 时目录与 `.git/worktrees/` 下的那一项由
+引擎直接删,不交给 git——沙箱不许写已有 worktree 的 `.git` 链接与 `commondir`。沙箱的 git
+只给 git 目录就在项目根下 `.git` 的仓库建 worktree,别处的 git 目录沙箱护不住它的配置。
+不论进不进沙箱,这些 git 都带 `-c core.fsmonitor=false -c core.hooksPath=/dev/null`。
+`/resume @repo` 找仓库根不跑 git,只向上找 `.git`。
 
 包管理与构建工具要写自己的缓存(`pip`、`npm`、`cargo`、`go` …),所以沙箱里的 `Bash`
 另外可写 `sandbox.cache_directories`:按工具链分组的缓存目录,缺省列好了 python / node /

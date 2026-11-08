@@ -250,7 +250,12 @@ skill、web 工具、WebSocket、载体与包方案。
   等配置目录都只读;`~/.agix` 只有 `base::paths::STATE_ROOT_WORKING_DIRS`(`scratchpad`、`memory`)
   可写;`/private/tmp` 等临时区不再整体放开,沙箱里的命令拿到会话自己的 `TMPDIR`。依赖在沙箱里
   `git config`、`git remote add` 的流程要挪到沙箱外。引擎自己跑的 git 一律带
-  `base::frozen::git::ENGINE_GIT_OPTIONS`。
+  `base::frozen::git::ENGINE_GIT_OPTIONS`,会话的命令进沙箱时它也进同一个沙箱,由
+  `base::frozen::git::EngineGit` 决定怎么起(`tools::bash::engine_git` / `engine_git_for` 给出
+  会话的那一个):`FrozenContext::collect` / `collect_with_options` / `refresh_git` /
+  `refresh_git_status` 与 `tools::worktree::create_worktree` / `prune_orphan_worktrees` 多一个
+  `&EngineGit` 参数,不想进沙箱的传 `EngineGit::Direct`。`SandboxPolicy` 多了
+  `only_additional_writable`;`PlatformSandbox::confine` 包得住任何程序,不再只认 `bash -c`。
 - **`Monitor` 进沙箱**,与 `Bash` 共用包装与 `require_enforcement`。
 - **自己调度目标轮的**(`Builder::goal_rounds_from_owner()`):一轮开跑前调用
   `SessionState::goal_claim_round(turn_id)`,返回 `false` 就不跑——目标已暂停、清除、改过,或

@@ -569,7 +569,7 @@ impl JsonlHistoryStore {
         query: &str,
         max: usize,
     ) -> Result<Vec<SessionSummary>, HistoryError> {
-        let root = repo_root_or_cwd(&self.canonical_cwd).await;
+        let root = repo_root_or_cwd(&self.canonical_cwd);
         self.find_sessions(&SessionQuery::matching(query, max).within(SessionScope::Under(root)))
             .await
     }
@@ -847,25 +847,15 @@ async fn session_ids_in(dir: &Path) -> Result<Vec<SessionId>, HistoryError> {
     Ok(out)
 }
 
-async fn repo_root_or_cwd(cwd: &Path) -> PathBuf {
-    let output = tokio::process::Command::new("git")
-        .args(base::frozen::git::ENGINE_GIT_OPTIONS)
-        .arg("rev-parse")
-        .arg("--show-toplevel")
-        .current_dir(cwd)
-        .output()
-        .await;
-    match output {
-        Ok(out) if out.status.success() => {
-            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if s.is_empty() {
-                cwd.to_path_buf()
-            } else {
-                PathBuf::from(s)
-            }
-        }
-        _ => cwd.to_path_buf(),
-    }
+/// The nearest directory at or above `cwd` holding a `.git` entry — the work
+/// tree's top, found by looking rather than by running git, which would read
+/// the repository's configuration on behalf of a query that has no session
+/// and so no sandbox to run it in.
+fn repo_root_or_cwd(cwd: &Path) -> PathBuf {
+    cwd.ancestors()
+        .find(|dir| dir.join(".git").symlink_metadata().is_ok())
+        .unwrap_or(cwd)
+        .to_path_buf()
 }
 
 async fn collect_session_files(
