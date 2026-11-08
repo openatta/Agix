@@ -23,8 +23,6 @@ use opentelemetry::KeyValue;
 use opentelemetry_otlp::WithExportConfig;
 use url::Url;
 
-// ── Protocol detection ──────────────────────────────────────────────────────
-
 /// OTLP transport protocol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OtelProtocol {
@@ -49,8 +47,6 @@ pub fn detect_protocol(endpoint: &str) -> OtelProtocol {
     }
 }
 
-// ── Error type ──────────────────────────────────────────────────────────────
-
 /// Errors that can occur during OTLP exporter initialisation.
 #[derive(Debug, thiserror::Error)]
 pub enum OtelError {
@@ -59,8 +55,6 @@ pub enum OtelError {
     #[error("OTLP exporter initialisation failed: {0}")]
     InitFailed(String),
 }
-
-// ── Exporter ────────────────────────────────────────────────────────────────
 
 /// Holds the OTLP meter- and tracer-provider so they are kept alive for the
 /// lifetime of the application. Dropping the exporter triggers a graceful
@@ -138,8 +132,6 @@ impl telemetry::TelemetryRecorder for OtelExporter {
     }
 }
 
-// ── Initialisation ──────────────────────────────────────────────────────────
-
 /// Initialise an OTLP exporter against `endpoint`.
 ///
 /// Protocol is auto-detected from the endpoint URL (see [`detect_protocol`]).
@@ -164,7 +156,6 @@ pub fn start_otel(endpoint: &str) -> Result<OtelExporter, OtelError> {
 
     let resource = opentelemetry_sdk::Resource::new(vec![KeyValue::new("service.name", "agix")]);
 
-    // ── Trace exporter ──────────────────────────────────────────────────
     let trace_exporter = match protocol {
         OtelProtocol::Grpc => opentelemetry_otlp::SpanExporter::builder()
             .with_tonic()
@@ -187,7 +178,6 @@ pub fn start_otel(endpoint: &str) -> Result<OtelExporter, OtelError> {
 
     opentelemetry::global::set_tracer_provider(tracer_provider.clone());
 
-    // ── Metric exporter ─────────────────────────────────────────────────
     let metric_exporter = match protocol {
         OtelProtocol::Grpc => opentelemetry_otlp::MetricExporter::builder()
             .with_tonic()
@@ -249,8 +239,6 @@ pub fn start_otel(endpoint: &str) -> Result<OtelExporter, OtelError> {
         tracer_provider: Some(tracer_provider),
     })
 }
-
-// ── Instrument helpers ──────────────────────────────────────────────────────
 
 /// Record a turn duration via the global meter provider.
 ///

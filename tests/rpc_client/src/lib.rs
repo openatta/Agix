@@ -296,8 +296,6 @@ impl DaemonRpcClient {
         }
     }
 
-    // ── daemon.* ──
-
     pub async fn daemon_status(&mut self) -> anyhow::Result<RpcResponse> {
         self.call("daemon.status", Value::Null).await
     }
@@ -309,8 +307,6 @@ impl DaemonRpcClient {
     pub async fn daemon_shutdown(&mut self) -> anyhow::Result<RpcResponse> {
         self.call("daemon.shutdown", Value::Null).await
     }
-
-    // ── session.* ──
 
     /// 建一个会话，返回它的 id。
     ///
@@ -508,8 +504,6 @@ impl DaemonRpcClient {
         Ok(out)
     }
 
-    // ── config.* ──
-
     /// `config.get` — one settings tier of `target` as the daemon sees it.
     /// Unlike the methods below, the scene here is not optional on the wire,
     /// so `target` must name one.
@@ -546,8 +540,6 @@ impl DaemonRpcClient {
             .await
     }
 
-    // ── mcp.* ──
-
     pub async fn mcp_status(&mut self) -> anyhow::Result<RpcResponse> {
         self.call("mcp.status", Value::Null).await
     }
@@ -565,8 +557,6 @@ impl DaemonRpcClient {
         .await
     }
 
-    // ── import.* ──
-
     pub async fn import_list(&mut self, target: &Target) -> anyhow::Result<RpcResponse> {
         self.call("import.list", target.with(serde_json::json!({})))
             .await
@@ -583,8 +573,6 @@ impl DaemonRpcClient {
         )
         .await
     }
-
-    // ── commands.* / plugin.* ──
 
     pub async fn commands_list(&mut self) -> anyhow::Result<RpcResponse> {
         self.call("commands.list", Value::Null).await

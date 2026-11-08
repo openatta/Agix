@@ -78,8 +78,6 @@ pub fn count_text(s: &str) -> usize {
     n
 }
 
-// ── Interface-level estimation (the compaction/session path) ──
-
 /// Estimate input tokens for a slice of [`ModelMessage`]s — the protocol-agnostic
 /// message type that `session` and `compaction` operate on.
 ///
@@ -327,8 +325,6 @@ mod tests {
         let n = estimate_input_tokens(&req);
         assert!(n >= 1500, "image should cost ≈1500 tokens; got {n}");
     }
-
-    // ── Interface-level estimator (`estimate_message_tokens`) ──
 
     use base::interface::model::MessageRole;
 

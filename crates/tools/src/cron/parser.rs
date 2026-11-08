@@ -6,8 +6,6 @@
 //! - Ranges (including name-based like MON-FRI)
 //! - Step notation (*/5, 3-59/10)
 
-// ---- cron expression matching ----
-
 pub(crate) fn cron_matches(expr: &str, now: &time::OffsetDateTime) -> bool {
     let parts: Vec<&str> = expr.split_whitespace().collect();
     if parts.len() != 5 {
@@ -165,8 +163,6 @@ fn day_name_to_num(s: &str) -> Option<u8> {
     }
     None
 }
-
-// ---- validation ----
 
 /// Validate a 5-field cron expression has the right structure.
 /// Accepts numeric values, three-letter names (MON, JAN, etc.),

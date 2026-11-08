@@ -20,10 +20,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-// ---------------------------------------------------------------------------
-// FlagValue
-// ---------------------------------------------------------------------------
-
 /// The evaluated value of a feature flag.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -61,10 +57,6 @@ impl From<String> for FlagValue {
         FlagValue::String(v)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Targeting rule types
-// ---------------------------------------------------------------------------
 
 /// A single targeting rule for feature flag evaluation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,10 +120,6 @@ impl RemoteFlagsResponse {
     }
 }
 
-// ---------------------------------------------------------------------------
-// FlagContext
-// ---------------------------------------------------------------------------
-
 /// Context provided to targeting rule evaluation.
 ///
 /// Passed to `is_enabled()`, `get_value()`, and `log_experiment()`
@@ -159,10 +147,6 @@ impl FlagContext {
     }
 }
 
-// ---------------------------------------------------------------------------
-// FeatureFlagClient
-// ---------------------------------------------------------------------------
-
 /// Client for evaluating GrowthBook-style feature flags.
 ///
 /// Thread-safe via `Arc<Mutex<FeatureFlagClient>>`. Synchronous `is_enabled()`
@@ -170,27 +154,22 @@ impl FlagContext {
 /// the remote endpoint. A periodic background task drives `refresh()`.
 #[derive(Debug)]
 pub struct FeatureFlagClient {
-    // ── Configuration (seldom changes) ──
     endpoint: String,
     api_key: String,
     refresh_interval: Duration,
     disk_cache_path: Option<PathBuf>,
     sticky: bool,
 
-    // ── Evaluated cache (what callers read) ──
     cache: HashMap<String, FlagValue>,
     killswitches: HashMap<String, bool>,
     cache_timestamp: Instant,
 
-    // ── Raw definitions (for disk persistence) ──
     flags_raw: HashMap<String, FeatureFlagDefinition>,
 }
 
 impl FeatureFlagClient {
     /// Killswitch prefix convention: `tengu_frond_boric_<target_flag>`.
     const KILLSWITCH_PREFIX: &'static str = "tengu_frond_boric";
-
-    // ── Construction ──
 
     /// Create a new feature flag client with the given endpoint and API key.
     pub fn new(endpoint: String, api_key: String) -> Self {
@@ -225,8 +204,6 @@ impl FeatureFlagClient {
         self.sticky = sticky;
         self
     }
-
-    // ── Public API ──
 
     /// Check if a named feature flag is enabled (true) or disabled (false).
     ///
@@ -416,8 +393,6 @@ impl FeatureFlagClient {
     pub fn is_cache_stale(&self) -> bool {
         self.cache_timestamp.elapsed() >= self.refresh_interval
     }
-
-    // ── Internal helpers ──
 
     /// Check whether a killswitch is active for the given flag.
     fn is_killswitched(&self, flag_name: &str) -> bool {
@@ -644,10 +619,6 @@ impl FeatureFlagClient {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Simple hash
-// ---------------------------------------------------------------------------
-
 /// A simple, deterministic hash for stable rollout assignment.
 /// Not cryptographically secure — only used for percentage rollouts.
 fn simple_hash(s: &str) -> u64 {
@@ -657,10 +628,6 @@ fn simple_hash(s: &str) -> u64 {
     }
     hash
 }
-
-// ---------------------------------------------------------------------------
-// FeatureFlagError
-// ---------------------------------------------------------------------------
 
 /// Errors that can occur during feature flag operations.
 #[derive(Debug, Clone, thiserror::Error)]
@@ -681,10 +648,6 @@ pub enum FeatureFlagError {
     #[error("I/O error: {0}")]
     Io(String),
 }
-
-// ---------------------------------------------------------------------------
-// Background refresh
-// ---------------------------------------------------------------------------
 
 /// Spawn a periodic background task that refreshes feature flags.
 ///
@@ -813,10 +776,6 @@ async fn fetch_remote_flags(
         .map_err(|e| FeatureFlagError::Parse(format!("failed to parse response: {e}")))
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 fn default_refresh_interval() -> Duration {
     if cfg!(debug_assertions) {
         Duration::from_secs(20 * 60) // 20 minutes in debug
@@ -824,10 +783,6 @@ fn default_refresh_interval() -> Duration {
         Duration::from_secs(6 * 3600) // 6 hours in release
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

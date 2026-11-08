@@ -6,7 +6,6 @@ use std::path::PathBuf;
 /// 引擎只读配置。从 settings.json + CLI flags 合并出来后，整个会话不再变。
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
-    // ---- model / runtime ----
     /// Provider id (e.g. "anthropic", "deepseek", "xai").
     pub provider: Option<String>,
     pub model: String,
@@ -67,7 +66,6 @@ pub struct EngineConfig {
     /// - `OnBudget(N)` — explicit `thinking: Enabled{budget_tokens=N}`.
     pub thinking_mode: ThinkingModeConfig,
 
-    // ---- permission / sandbox ----
     pub permission_mode: PermissionMode,
     /// 是否禁用 BashTool 沙盒（才有效；占位）
     pub dangerously_disable_sandbox: bool,
@@ -105,7 +103,6 @@ pub struct EngineConfig {
     /// 导致无限递归）。默认 3。设 0 禁用 AgentTool。
     pub max_agent_depth: u32,
 
-    // ---- misc behavior ----
     /// 是否保留完整工具结果文本。默认 false —— 工具结果会被截断到
     /// 2KB 再送回给模型。设 true 时原样透传（长输出场景可能显著消耗 context）。
     pub verbose_tool_results: bool,
@@ -166,11 +163,10 @@ pub struct SystemPromptSettings {
     /// 读取内容，注入 system prompt 末段。None = 不注入额外 style。
     pub output_style: Option<String>,
     /// When true (default), use TaskCreate/Update/List/Get/Stop instead of
-    /// TodoWrite for task tracking. Mirrors TS's `isTodoV2Enabled()` gating.
-    /// When false, TodoWrite is used and the V2 Task tools are hidden.
+    /// TodoWrite for task tracking. When false, TodoWrite is used and the V2 Task tools are hidden.
     pub todo_v2_enabled: bool,
     /// When true, register TeamCreate/TeamDelete for multi-agent orchestration.
-    /// Mirrors TS's `isAgentSwarmsEnabled()` gating. Default false.
+    /// Default false.
     pub agent_teams_enabled: bool,
 }
 

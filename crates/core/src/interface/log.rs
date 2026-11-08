@@ -6,8 +6,6 @@
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-// ── 日志级别 ──
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LogLevel {
     Trace = 0,
@@ -29,8 +27,6 @@ impl fmt::Display for LogLevel {
     }
 }
 
-// ── Logger trait ──
-
 /// 日志后端 trait。应用程序层实现，注入到 [`LogRouter`]。
 ///
 /// 默认实现是 noop（零开销）。
@@ -47,8 +43,6 @@ pub struct NoopLogger;
 impl Logger for NoopLogger {
     fn log(&self, _target: &str, _level: LogLevel, _args: fmt::Arguments<'_>) {}
 }
-
-// ── 全局日志路由 ──
 
 static LOG_ENABLED: AtomicBool = AtomicBool::new(true);
 // Future: per-level filtering. For now, enabled/disabled is the only toggle.

@@ -704,8 +704,6 @@ mod tests {
         assert!(acc.finish().is_empty());
     }
 
-    // ── End-to-end SSE contract ──
-    //
     // Everything above tests the chunk→event mapping with already-parsed
     // fixtures. These drive the full byte path, the way `crate::parser`'s
     // contract test does for the Anthropic wire format.

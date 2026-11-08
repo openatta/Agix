@@ -679,10 +679,6 @@ mod tests {
         assert!(parent_idx < child_idx, "parent must come before child");
     }
 
-    // -----------------------------------------------------------------------
-    // output_style
-    // -----------------------------------------------------------------------
-
     #[tokio::test]
     async fn output_style_project_takes_precedence_over_user() {
         let home = TempDir::new().unwrap();

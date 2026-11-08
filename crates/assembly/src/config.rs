@@ -19,8 +19,6 @@ use std::sync::Arc;
 use base::interface::settings::Settings;
 use permissions::ruleset::RuleSet;
 
-// ── Path abstraction ────────────────────────────────────────────────────
-
 /// Controls where the daemon reads its configuration and writes its runtime
 /// files (socket, lock, etc.).
 pub trait DaemonPaths: Send + Sync {
@@ -157,8 +155,6 @@ impl DaemonPaths for StaticDaemonPaths {
     }
 }
 
-// ── Config struct ────────────────────────────────────────────────────────
-
 /// Fully resolved daemon configuration. `settings` is the one canonical
 /// settings.json projection (see module docs); the remaining fields are
 /// process-level concerns that were never settings.json content in the
@@ -234,8 +230,6 @@ impl DaemonConfig {
         }
     }
 }
-
-// ── Loading ──────────────────────────────────────────────────────────────
 
 /// Priority (low → high): global (`global_root()/settings.json`, shared by
 /// every scene) → scene (`config_root()/settings.json`) → project

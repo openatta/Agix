@@ -262,8 +262,6 @@ mod tests {
         );
     }
 
-    // ── The false-positive suite: none of these may trigger a fetch. ──
-
     #[test]
     fn email_addresses_do_not_match() {
         assert!(refs("mail me at xbitshans@gmail.com").is_empty());

@@ -24,8 +24,6 @@ import { Semaphore, DEFAULT_MAX_IN_FLIGHT, maxInFlight } from '../src/limit.js';
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = (n) => join(here, 'fixtures', n);
 
-// ── Loading: all three shapes Cordis accepts ──
-
 test('a module exporting apply is a plugin', async () => {
   const { registry } = await loadPlugin(fixture('greet-plugin.js'));
   assert.deepEqual(
@@ -58,8 +56,6 @@ test('resolvePlugin rejects a module with no recognisable entry point', () => {
   assert.throws(() => resolvePlugin({ something: 1 }), /not a DeepSeek Harness plugin/);
 });
 
-// ── The support boundary ──
-
 // Refusing at load rather than at first use is the point: a plugin that
 // registers three tools and only then reaches for ctx.llm has already
 // half-configured the server.
@@ -87,8 +83,6 @@ test('optional services are not required', () => {
   assert.deepEqual(normaliseInject({ required: ['tools'], optional: ['llm'] }), ['tools']);
   assert.doesNotThrow(() => assertInjectable({ required: ['tools'], optional: ['llm'] }));
 });
-
-// ── The context shim ──
 
 test('registering returns a disposer that really unregisters', () => {
   const r = new ToolRegistry();
@@ -137,8 +131,6 @@ test('a cleanup that throws does not prevent the others', () => {
   assert.equal(errors.length, 1);
 });
 
-// ── Parameters → JSON Schema ──
-
 test('flat parameters become a JSON Schema object', () => {
   const schema = parametersToSchema({
     name: { type: 'string', required: true, description: 'who' },
@@ -182,8 +174,6 @@ test('a tool becomes an MCP listing with its schema', () => {
   assert.deepEqual(mcp.inputSchema.required, ['name']);
 });
 
-// ── Rendering ──
-
 test("the tool's own render wins", () => {
   const tool = { output: { render: (_a, v) => [{ type: 'text', text: `<${v}>` }] } };
   assert.deepEqual(renderOutput(tool, {}, 'hi'), [{ type: 'text', text: '<hi>' }]);
@@ -209,8 +199,6 @@ test('a well-formed content block is left alone', () => {
   assert.deepEqual(normaliseContent([block]), [block]);
 });
 
-// ── Calling ──
-
 test('a call renders through the tool and reports success', async () => {
   const { registry } = await loadPlugin(fixture('greet-plugin.js'));
   const out = await callTool(registry.get('greet'), { name: 'Ada' });
@@ -232,8 +220,6 @@ test('a throwing tool becomes an error result, not a transport failure', async (
   assert.equal(out.isError, true);
   assert.match(out.content[0].text, /explode failed: as promised/);
 });
-
-// ── The MCP surface ──
 
 async function deps() {
   const { registry } = await loadPlugin(fixture('greet-plugin.js'));
@@ -287,8 +273,6 @@ test('an unknown method is a method-not-found', async () => {
   );
 });
 
-// ── The wire ──
-
 test('a request gets a response carrying its id', async () => {
   const written = [];
   await serveLine(
@@ -335,11 +319,8 @@ test('a failing request becomes a JSON-RPC error with its id', async () => {
   assert.equal(written[0].error.code, -32601);
 });
 
-// Regression: every function inherits Function.prototype.apply, so a
-// default-exported class satisfies `typeof d.apply === 'function'`. Checking
-// the object shape first found that inherited method and called the
-// constructor through it — a failure whose message pointed nowhere near the
-// cause.
+// Every function inherits Function.prototype.apply, so a default-exported
+// class also satisfies `typeof d.apply === 'function'`.
 test('a class is not mistaken for an object with an apply method', () => {
   class Service {
     constructor(ctx) {
@@ -351,8 +332,6 @@ test('a class is not mistaken for an object with an apply method', () => {
   plugin.apply(createContext({ registry }));
   assert.ok(registry.get('x'));
 });
-
-// ── The process, over real stdio ──
 
 test('the bridge serves a plugin over stdio end to end', async () => {
   const { spawn } = await import('node:child_process');
@@ -439,8 +418,6 @@ test('an unsupported plugin makes the process refuse to start', async () => {
   assert.equal(code, 1);
   assert.match(err, /llm, sessions/);
 });
-
-// ── Concurrency and deadlines ──
 
 // DSH's contract has no timeout and no abort signal, so without this a tool
 // that never returns is indistinguishable from a hung server.
@@ -551,8 +528,6 @@ test('every response is written as one whole line', async () => {
     assert.doesNotThrow(() => JSON.parse(line), `not a whole JSON line: ${line}`);
   }
 });
-
-// ── The in-flight bound ──
 
 test('a semaphore never runs more than its limit at once', async () => {
   const gate = new Semaphore(3);

@@ -1,7 +1,7 @@
 //! 工具调用时透传的上下文：`ToolCtx` + `EngineConfig` + `SessionState` +
 //! `ToolEffects`（注入回调） + `PromptCtx`（拼工具描述时用）。
 //!
-//! 拆分思路（与 TS 端"上帝对象 ToolUseContext"不同）：
+//! 按读写性质拆开，而不是一个什么都装的上下文对象：
 //! - **只读配置** → `Arc<EngineConfig>`
 //! - **可变运行期** → `Arc<SessionState>`（内部按需 split lock）
 //! - **副作用注入** → `Arc<dyn ToolEffects>`

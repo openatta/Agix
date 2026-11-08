@@ -175,7 +175,7 @@ impl PromptBlock {
 /// 6. [if set] settings.prompt_override → replaces all of the above
 ///
 /// Note: CLAUDE.md / instruction file is NOT in the system prompt — it is injected
-/// as a synthetic `<system-reminder>` user message (TS userContext parity).
+/// as a synthetic `<system-reminder>` user message.
 pub fn assemble_prompt(
     scene: &dyn Scene,
     settings: &Settings,

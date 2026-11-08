@@ -55,8 +55,8 @@ mod tests {
         assert_eq!(t("hello world", 5), "hello");
     }
 
-    /// The regression this module exists for: every byte offset inside a
-    /// multi-byte string must be safe, not just the boundaries.
+    /// Every byte offset inside a multi-byte string must be safe, not just the
+    /// boundaries.
     #[test]
     fn every_byte_offset_of_a_multibyte_string_is_safe() {
         let s = "中文测试abc混合デ";

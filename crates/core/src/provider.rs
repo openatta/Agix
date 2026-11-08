@@ -504,8 +504,6 @@ mod tests {
         assert!(err.contains("ghost"));
     }
 
-    // ---- TaskRouter ----
-
     /// Minimal `Model` stub — `stream()` is never called by these tests
     /// (they only exercise routing, not actual requests). Instances are
     /// told apart via `Arc::ptr_eq`, not any field on this type.

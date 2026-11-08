@@ -41,8 +41,6 @@ pub trait PluginResolver: Send + Sync {
     async fn resolve(&self, name: &str, version: &str) -> Result<PluginSource, PluginError>;
 }
 
-// ── RegistryResolver (generic HTTP registry) ──
-
 /// A plugin resolver that fetches from an HTTP registry endpoint.
 ///
 /// The registry should expose:
@@ -99,8 +97,6 @@ impl PluginResolver for RegistryResolver {
         })
     }
 }
-
-// ── Stub resolver (for when marketplace is not configured) ──
 
 /// A no-op resolver for when no marketplace is configured.
 pub struct NoopResolver;

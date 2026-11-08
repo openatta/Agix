@@ -186,13 +186,9 @@ async fn a_project_reached_through_a_symlink_is_still_the_project() {
     );
 }
 
-// ── the layer above: the gate that actually asks the tool ──
-//
 // Everything above builds its own `ToolContext`. Production does not: the
-// permission gate builds one, and for a long time it built a bare one — so a
-// control list configured in settings was read, carried, and dropped one call
-// short of the decision it governs. Which is the same shape as the defect
-// this whole file exists for, one layer up.
+// permission gate builds one, and the control list configured in settings
+// has to reach it, not stop one call short of the decision it governs.
 
 use base::interface::permission::{Permission, PermissionOutcome};
 
@@ -257,8 +253,6 @@ async fn the_gate_honours_a_configured_exemption() {
         "a setting that never reaches the gate is a setting that does nothing: {outcome:?}"
     );
 }
-
-// ── the two review findings that broke real work ──
 
 /// A sub-agent's worktree lives at `<repo>/.agix/worktrees/<slug>` and is its
 /// cwd. Guarding the `.agix` directory by name denied every write the

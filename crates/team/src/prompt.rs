@@ -100,8 +100,6 @@ pub fn build_worker_prompt(ctx: &WorkerContext<'_>, task: &str) -> String {
     block
 }
 
-// ── Prompt sections ──
-
 const COORDINATOR_ROLE: &str = r#"## Your Role
 
 You are a coordinator orchestrating a team of AI agents to accomplish complex tasks. You receive the user's request, break it into parallelizable work, spawn worker agents, synthesize their results, and communicate findings back to the user.

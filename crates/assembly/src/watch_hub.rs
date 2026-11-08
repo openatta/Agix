@@ -45,8 +45,7 @@ pub struct WatchKey {
 /// Debounce window: collapses the burst of events one "save" produces
 /// (editors writing a temp file then renaming it over the target, `vim`'s
 /// `.swp` noise) into a single `changes()` notification. 300ms is chosen to
-/// cover that burst without feeling laggy after a settings-panel save — see
-/// §4.4's "去抖" note.
+/// cover that burst without feeling laggy after a settings-panel save.
 const DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(300);
 
 struct Inner {
@@ -102,7 +101,8 @@ pub struct WatchHub {
 impl WatchHub {
     /// Construct the hub and start its one background `notify` watcher
     /// thread. Failure here (permissions, kernel inotify-instance limits,
-    /// ...) is the caller's decision to treat as fatal or not — per §4.4,
+    /// ...) is the caller's decision to treat as fatal or not — per
+    /// `docs/daemon_rpc_protocol.md` §6.4 (`config.reload`),
     /// the documented degrade is "warn and fall back to explicit
     /// `config.reload` only", matching the existing `SkillWatcher::
     /// enable_watching` failure mode, so this returns `Result` rather than
@@ -201,7 +201,7 @@ impl WatchHub {
     }
 
     /// Number of distinct paths currently registered with `notify` — the
-    /// quantity §7.5's performance budget bounds at `1 + M + P`. Exposed for
+    /// quantity docs/ARCHITECTURE.md §3.2.1 bounds at `1 + M + P`. Exposed for
     /// tests to assert the O(1+M+P) invariant directly rather than only
     /// indirectly through behavior.
     pub fn watched_path_count(&self) -> usize {

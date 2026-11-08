@@ -125,8 +125,6 @@ impl MessagesRequest {
         }
     }
 
-    // ── Prompt-cache breakpoint placement ──
-    //
     // **Why this lives on the request (and is applied during `Serialize`)
     // rather than in `adapter.rs`.**
     //
@@ -685,12 +683,10 @@ mod tests {
         let v = serde_json::to_value(&req).unwrap();
         let obj = v.as_object().unwrap();
 
-        // --- Top-level fields ---
         assert_eq!(obj["model"], "claude-sonnet-4-6");
         assert_eq!(obj["max_tokens"], 4096);
         assert_eq!(obj["stream"], true);
 
-        // --- System blocks (two, first with cache_control) ---
         let sys = obj["system"].as_array().unwrap();
         assert_eq!(sys.len(), 2);
         assert_eq!(sys[0]["type"], "text");
@@ -702,14 +698,12 @@ mod tests {
         // Second block has no cache_control
         assert!(sys[1].get("cache_control").is_none());
 
-        // --- Messages ---
         let msgs = obj["messages"].as_array().unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0]["role"], "user");
         assert_eq!(msgs[0]["content"][0]["type"], "text");
         assert_eq!(msgs[0]["content"][0]["text"], "hello");
 
-        // --- Tools (function tool + built-in web search) ---
         let tools = obj["tools"].as_array().unwrap();
         assert_eq!(
             tools.len(),
@@ -726,12 +720,10 @@ mod tests {
         assert_eq!(tools[1]["max_uses"], 8);
         assert!(tools[1].get("input_schema").is_none());
 
-        // --- Thinking ---
         assert_eq!(obj["thinking"]["type"], "enabled");
         assert_eq!(obj["thinking"]["budget_tokens"], 8000);
         assert_eq!(obj["output_config"], json!({"effort": "high"}));
 
-        // --- Optional fields omitted ---
         assert!(obj.get("temperature").is_none());
         assert!(obj.get("top_p").is_none());
         assert!(obj.get("metadata").is_none());
@@ -740,7 +732,6 @@ mod tests {
         // empty stop_sequences is omitted
         assert!(obj.get("stop_sequences").is_none());
 
-        // --- tool_choice ---
         assert_eq!(obj["tool_choice"]["type"], "auto");
     }
 

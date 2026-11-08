@@ -21,8 +21,6 @@ use std::sync::Arc;
 
 use auth::{CallbackListener, OAuth2Client, PkceMethod, PkceVerifier, ProviderConfig};
 
-// ── OAuth Resolver ──
-
 /// Resolves OAuth bearer tokens for MCP servers.
 ///
 /// The host implements this, typically with the `auth` crate (`TokenStore`,
@@ -39,8 +37,6 @@ pub trait McpOAuthResolver: Send + Sync {
     /// Returns `Ok(token)` or `Err(message)` on failure.
     async fn resolve_bearer(&self, provider_name: &str) -> Result<String, String>;
 }
-
-// ── OAuth Store (disk-persisted token cache) ──
 
 /// Serialized form of a stored token on disk.
 #[derive(Debug, Clone, Serialize, Deserialize)]

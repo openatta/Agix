@@ -23,7 +23,6 @@ use std::sync::LazyLock;
 static CONFUSABLE_MAP: LazyLock<HashMap<char, Vec<char>>> = LazyLock::new(|| {
     let mut m = HashMap::new();
 
-    // ── Latin lowercase confusables ──
     m.insert(
         'a',
         vec![
@@ -68,7 +67,6 @@ static CONFUSABLE_MAP: LazyLock<HashMap<char, Vec<char>>> = LazyLock::new(|| {
     m.insert('x', vec!['\u{0445}']); // Cyrillic small letter ha
     m.insert('y', vec!['\u{0443}']); // Cyrillic small letter u
 
-    // ── Latin uppercase confusables ──
     m.insert(
         'A',
         vec![
@@ -197,8 +195,6 @@ pub fn check_blocklist(name: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
 
-    // ── check_homograph_name tests ──
-
     #[test]
     fn detect_cyrillic_a_homograph() {
         // "аgixplugin" with Cyrillic 'а' (U+0430) replacing Latin 'a'
@@ -275,8 +271,6 @@ mod tests {
         let msg = check_homograph_name(name, official);
         assert!(msg.is_some(), "should detect Greek omicron homograph");
     }
-
-    // ── check_blocklist tests ──
 
     #[test]
     fn blocklist_matches_exact() {

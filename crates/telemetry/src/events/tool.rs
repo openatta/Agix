@@ -85,8 +85,6 @@ pub enum PermissionDecisionOutcome {
     Remembered,
 }
 
-// ---- redact impls ----
-
 impl ToolDecisionPayload {
     pub(crate) fn redact(mut self, _policy: &RedactionPolicy) -> Self {
         self.rule_text = self.rule_text.map(|_| "[REDACTED]".to_string());

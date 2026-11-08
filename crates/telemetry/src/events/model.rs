@@ -113,8 +113,6 @@ pub enum BudgetEnforcedAction {
     TurnStopped,
 }
 
-// ---- redact impls ----
-
 impl ApiErrorPayload {
     pub(crate) fn redact(mut self, _policy: &RedactionPolicy) -> Self {
         self.error_message = crate::events::redact_string(&self.error_message);

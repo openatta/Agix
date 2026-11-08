@@ -127,8 +127,6 @@ fn test_settings() -> Settings {
     recall_test_settings(&std::env::temp_dir().join("agix-mcp-module-tests"))
 }
 
-// ── MCP prompts (slash commands) and resources (`@` refs) reach the model ──
-//
 // `McpManager::all_prompts` / `execute_prompt` / `list_resources` /
 // `read_resource` must be reachable from a session, not only MCP *tools*.
 // These drive a whole turn through `run_turn`, so they cover the

@@ -159,8 +159,6 @@ impl MailboxStore {
     }
 }
 
-// ---- SendMessage tool ----
-
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SendMessageInput {
     /// Target agent label (must be a peer in the current team)
@@ -269,8 +267,6 @@ impl base::tool::Tool for SendMessageTool {
         })
     }
 }
-
-// ---- ReadMail tool ----
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReadMailInput {
@@ -382,8 +378,6 @@ impl base::tool::Tool for ReadMailTool {
         })
     }
 }
-
-// ---- ListPeers tool ----
 
 pub struct ListPeersTool {
     mailbox: std::sync::Arc<MailboxStore>,
@@ -640,8 +634,6 @@ mod tests {
         );
         assert!(!matches!(r, ValidationResult::Ok));
     }
-
-    // ---- persistence round-trip tests ----
 
     #[test]
     fn mailbox_persistence_send_and_reload() {

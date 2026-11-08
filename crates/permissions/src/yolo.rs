@@ -35,17 +35,14 @@ impl AutoClassifier for YoloClassifier {
         input: &Value,
     ) -> ClassifyDecision {
         match tool_name {
-            // ── Read-only operations: always allow ──
             "Read" | "Grep" | "Glob" | "ListFiles" | "Search" => ClassifyDecision::Allow {
                 reason: "yolo: read-only operation".into(),
             },
 
-            // ── Web access: always allow ──
             "WebSearch" | "WebFetch" | "Fetch" | "Http" => ClassifyDecision::Allow {
                 reason: "yolo: network fetch always allowed".into(),
             },
 
-            // ── Bash: allow safe commands, defer destructive ones ──
             "Bash" | "PowerShell" | "Shell" => {
                 let cmd = input
                     .get("command")
@@ -141,7 +138,6 @@ impl AutoClassifier for YoloClassifier {
                 }
             }
 
-            // ── File operations: allow within project directory ──
             "Edit" | "Write" | "NotebookEdit" | "FileWrite" | "FileEdit" => {
                 let path = input
                     .get("file_path")
@@ -167,7 +163,6 @@ impl AutoClassifier for YoloClassifier {
                 ClassifyDecision::Defer
             }
 
-            // ── Everything else: defer to user ──
             _ => ClassifyDecision::Defer,
         }
     }

@@ -35,10 +35,6 @@ pub enum Permissiveness {
     Lenient,
 }
 
-// ---------------------------------------------------------------------------
-// ProtocolMessage
-// ---------------------------------------------------------------------------
-
 /// Structured messages that agents exchange through the team mailbox.
 ///
 /// Each variant is serialised as a JSON object with a `"type"` tag so that
@@ -62,7 +58,6 @@ pub enum Permissiveness {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ProtocolMessage {
-    // -- Existing permission messages ---------------------------------------
     /// A sub-agent requests permission to call a tool.
     PermissionRequest {
         /// Name of the tool the sub-agent wants to call.
@@ -86,7 +81,6 @@ pub enum ProtocolMessage {
         tool_use_id: Option<String>,
     },
 
-    // -- NEW: idle notification ---------------------------------------------
     /// A sub-agent reports that it has been idle for a while, allowing the
     /// coordinator to make scheduling decisions.
     IdleNotification {
@@ -99,7 +93,6 @@ pub enum ProtocolMessage {
         reason: Option<String>,
     },
 
-    // -- NEW: shutdown request ----------------------------------------------
     /// A coordinator or agent requests that a sub-agent be shut down.
     ShutdownRequest {
         /// Why the shutdown was requested.
@@ -112,7 +105,6 @@ pub enum ProtocolMessage {
         target_agent_id: Option<String>,
     },
 
-    // -- NEW: plan approval -------------------------------------------------
     /// A sub-agent presents a plan for the coordinator to review before
     /// executing it.
     PlanApprovalRequest {
@@ -135,7 +127,6 @@ pub enum ProtocolMessage {
         request_id: Option<String>,
     },
 
-    // -- NEW: heartbeat -----------------------------------------------------
     /// Periodic liveness signal sent by an agent to the coordinator.
     Heartbeat {
         /// ID of the agent sending the heartbeat.
@@ -147,10 +138,6 @@ pub enum ProtocolMessage {
         status: Option<String>,
     },
 }
-
-// ---------------------------------------------------------------------------
-// Serialisation helpers
-// ---------------------------------------------------------------------------
 
 impl ProtocolMessage {
     /// Serialise this message to a JSON string.
@@ -192,10 +179,6 @@ fn static_from_type(s: &str) -> String {
     s.to_string()
 }
 
-// ===========================================================================
-// Production-level conversion helpers
-// ===========================================================================
-
 /// Convert a `base::permission::PermissionDecision` to a protocol-level
 /// [`ProtocolDecision`] so the mailbox layer does not leak the base crate's
 /// internal permission model into the wire format.
@@ -214,17 +197,9 @@ impl From<&base::permission::PermissionDecision> for ProtocolDecision {
     }
 }
 
-// ===========================================================================
-// Tests
-// ===========================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // -----------------------------------------------------------------------
-    // Round-trip serialisation
-    // -----------------------------------------------------------------------
 
     #[test]
     fn roundtrip_permission_request() {
@@ -312,10 +287,6 @@ mod tests {
         assert_eq!(msg, back);
     }
 
-    // -----------------------------------------------------------------------
-    // Tag dispatch
-    // -----------------------------------------------------------------------
-
     #[test]
     fn message_type_returns_correct_tag() {
         let msg = ProtocolMessage::PermissionRequest {
@@ -347,10 +318,6 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // Forward-compat: unknown type is preserved
-    // -----------------------------------------------------------------------
-
     #[test]
     fn message_type_preserves_unknown() {
         let s = r#"{"type":"future_message","data":"x"}"#;
@@ -360,18 +327,10 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // invalid JSON
-    // -----------------------------------------------------------------------
-
     #[test]
     fn message_type_bad_json_none() {
         assert_eq!(ProtocolMessage::message_type("not-json"), None);
     }
-
-    // -----------------------------------------------------------------------
-    // PermissionDecision conversion
-    // -----------------------------------------------------------------------
 
     #[test]
     fn from_base_allow() {

@@ -31,7 +31,6 @@ pub struct QueuedUserMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AgentEvent {
-    // ── Streaming ──
     /// Model text delta (high frequency).
     TextDelta { text: String, turn_id: String },
 
@@ -75,7 +74,6 @@ pub enum AgentEvent {
         turn_id: String,
     },
 
-    // ── Permission ──
     /// Permission check requires upper-layer decision.
     PermissionPrompt {
         prompt_id: String,
@@ -109,7 +107,6 @@ pub enum AgentEvent {
         task_id: Option<String>,
     },
 
-    // ── Turn lifecycle ──
     /// A turn has started. Every `TurnStart` is followed by exactly one
     /// `TurnComplete` or `Error` with the same `turn_id`.
     TurnStart { turn_id: String },
@@ -188,7 +185,6 @@ pub enum AgentEvent {
         turn_id: String,
     },
 
-    // ── System ──
     /// System initialization completed.
     SystemInit {
         scene: String,
@@ -244,7 +240,6 @@ pub enum AgentEvent {
         turn_id: String,
     },
 
-    // ── Sub-agent ──
     /// A sub-agent was spawned.
     AgentSpawned {
         agent_id: String,
@@ -298,7 +293,6 @@ pub enum AgentEvent {
         event: Box<AgentEvent>,
     },
 
-    // ── Team ──
     /// Team orchestration progress, emitted as each stage of a `TeamCreate`
     /// run starts and finishes — so a large team streams incremental
     /// progress instead of going silent until the whole scratchpad is
@@ -323,7 +317,6 @@ pub enum AgentEvent {
         failed: Vec<String>,
     },
 
-    // ── Error ──
     /// An error occurred.
     Error {
         code: String,

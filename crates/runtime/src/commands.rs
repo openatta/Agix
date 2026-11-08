@@ -18,8 +18,6 @@ use base::interface::skill_catalog::SkillCatalog;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-// ── Parsed slash command ──
-
 /// Result of parsing a `/name args` string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlashCommand {
@@ -50,8 +48,6 @@ pub fn parse_slash_command(input: &str) -> Option<SlashCommand> {
     }
     Some(SlashCommand { name, args })
 }
-
-// ── Command types ──
 
 /// The result of executing a local command.
 #[derive(Debug, Clone)]
@@ -104,8 +100,6 @@ impl Command {
         matches!(self, Command::Prompt { .. } | Command::McpPrompt { .. })
     }
 }
-
-// ── Command registry ──
 
 /// Registry of all available slash commands.
 ///
@@ -408,8 +402,6 @@ impl Default for CommandRegistry {
         registry
     }
 }
-
-// ── Skill expansion ──
 
 /// Expand a skill entry for a slash command invocation: substitute `{args}`
 /// into `body` (see [`CommandRegistry::skill_body`]) and wrap it in the

@@ -28,8 +28,6 @@ use std::sync::Mutex;
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-// ── Constants ──
-
 /// System prompt for the classifier model. Instructs it to output
 /// structured JSON with no extra text.
 const CLASSIFIER_SYSTEM_PROMPT: &str = "\
@@ -77,14 +75,10 @@ const CACHE_TTL_SECS: u64 = 300;
 /// Maximum number of cache entries before oldest (expired) entries are evicted.
 const MAX_CACHE_ENTRIES: usize = 1000;
 
-// ── Cache types ──
-
 struct CacheEntry {
     decision: ClassifyDecision,
     expires_at: Instant,
 }
-
-// ── LlmClassifier ──
 
 /// LLM-based permission classifier.
 ///

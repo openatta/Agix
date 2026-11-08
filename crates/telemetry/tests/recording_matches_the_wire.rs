@@ -281,7 +281,6 @@ async fn every_recorded_call_matches_what_crossed_the_boundary() {
     );
 
     for (i, (recorded, actual)) in recording.calls.iter().zip(&observed).enumerate() {
-        // ── request: system blocks, per block, in order ──
         let recorded_system: Vec<PromptBlock> = recorded
             .request
             .system
@@ -298,7 +297,6 @@ async fn every_recorded_call_matches_what_crossed_the_boundary() {
             "call {i}: recorded system blocks differ from what was sent"
         );
 
-        // ── request: the tool table ──
         let recorded_tools: Vec<ToolDef> = blobs
             .get(&recorded.request.tools)
             .expect("blob readable")
@@ -309,7 +307,6 @@ async fn every_recorded_call_matches_what_crossed_the_boundary() {
             "call {i}: recorded tool table differs from what was sent"
         );
 
-        // ── request: every message, in order ──
         let recorded_messages: Vec<ModelMessage> = recorded
             .request
             .messages
@@ -327,7 +324,6 @@ async fn every_recorded_call_matches_what_crossed_the_boundary() {
             "call {i}: recorded messages differ from what was sent"
         );
 
-        // ── request: call configuration ──
         assert_eq!(recorded.request.params.model, actual.params.model);
         assert_eq!(recorded.request.params.max_tokens, actual.params.max_tokens);
         assert_eq!(
@@ -341,7 +337,6 @@ async fn every_recorded_call_matches_what_crossed_the_boundary() {
         );
         assert_eq!(recorded.request.purpose.as_deref(), origin.purpose());
 
-        // ── response: every event, in order, verbatim ──
         assert_eq!(
             format!("{:?}", recorded.response),
             format!("{:?}", actual.emitted),

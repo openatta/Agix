@@ -99,9 +99,6 @@ impl ConfigPaths {
         }
     }
 
-    // ── Scene-tier convenience methods (override; falls back to the
-    //    matching `global_*` method when the caller finds nothing here) ──
-
     pub fn user_settings_path(&self) -> PathBuf {
         self.user_data_dir.join("settings.json")
     }
@@ -132,8 +129,6 @@ impl ConfigPaths {
     pub fn user_hooks_dir(&self) -> PathBuf {
         self.user_data_dir.join("hooks")
     }
-
-    // ── Global-tier convenience methods (flat, cross-scene) ──
 
     pub fn global_settings_path(&self) -> PathBuf {
         self.global_data_dir.join("settings.json")
@@ -177,8 +172,6 @@ impl ConfigPaths {
     pub fn global_recordings_dir(&self) -> PathBuf {
         self.global_data_dir.join("recordings")
     }
-
-    // ── Local/project-tier convenience methods ──
 
     pub fn local_settings_path(&self) -> PathBuf {
         self.local_data_dir.join("settings.json")

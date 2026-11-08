@@ -88,8 +88,6 @@ async fn stage(
     Ok((world, provider, daemon, project))
 }
 
-// ── The cases, each written once and run in both modes ───────────────────
-
 async fn a_turn_crosses_http_and_comes_back(mode: Mode) -> anyhow::Result<()> {
     let (_world, provider, daemon, _project) = stage("plain", mode).await?;
     provider.script([Reply::text("STUB-ANSWERED-THE-TURN")]);
@@ -281,8 +279,6 @@ async fn a_session_reports_itself_and_its_transcript(mode: Mode) -> anyhow::Resu
     Ok(())
 }
 
-// ── In this process ──────────────────────────────────────────────────────
-
 #[tokio::test(flavor = "multi_thread")]
 async fn a_turn_crosses_http_and_comes_back_here() -> anyhow::Result<()> {
     a_turn_crosses_http_and_comes_back(Mode::InProcess).await
@@ -312,8 +308,6 @@ async fn a_session_writes_the_telemetry_it_was_asked_for_here() -> anyhow::Resul
 async fn a_session_reports_itself_and_its_transcript_here() -> anyhow::Result<()> {
     a_session_reports_itself_and_its_transcript(Mode::InProcess).await
 }
-
-// ── Against a spawned daemon ─────────────────────────────────────────────
 
 /// A named case, already started. Boxed because the six have different
 /// concrete future types and this list holds them together.
@@ -362,8 +356,6 @@ async fn every_case_holds_against_a_spawned_daemon() {
         }
     }
 }
-
-// ── Only a separate process can answer these ─────────────────────────────
 
 /// A daemon announces itself while it runs and takes the announcement back
 /// when it stops. A stale entry is worse than none: a client that finds one
@@ -514,8 +506,6 @@ async fn a_spawned_run_leaves_nothing_outside_the_world_it_was_given() -> anyhow
     Ok(())
 }
 
-// ── The carrier matrix ───────────────────────────────────────────────────
-//
 // A build carries one extension carrier or none, decided at compile time.
 // That makes the interesting question — what does a build *without* a
 // carrier do with a settings file that asks for one — unanswerable from
@@ -1015,8 +1005,6 @@ async fn a_failing_tool_says_so_everywhere_here() -> anyhow::Result<()> {
 async fn a_failing_tool_says_so_everywhere_in_a_spawned_daemon() -> anyhow::Result<()> {
     a_failing_tool_says_so_everywhere(Mode::Spawned).await
 }
-
-// ── The other carrier ────────────────────────────────────────────────────
 
 const PLUGIN_DAEMON_HOWTO: &str =
     "CARGO_TARGET_DIR=$PWD/target/plugins cargo build -p daemon --no-default-features --features full \
@@ -1718,8 +1706,6 @@ async fn a_build_with_no_plugin_carrier_installs_but_does_not_run_in_a_spawned_d
 ) -> anyhow::Result<()> {
     a_build_with_no_plugin_carrier_installs_but_does_not_run(Mode::Spawned).await
 }
-
-// ── Telemetry, reload, and state that outlives a process ─────────────────
 
 /// Telemetry is a report about a turn, so it is checked against an
 /// independent witness of that turn rather than against itself: the stub

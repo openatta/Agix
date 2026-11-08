@@ -802,8 +802,6 @@ fn rmcp_content_to_ours(c: &rmcp::model::ContentBlock) -> McpContent {
     }
 }
 
-// ── WebSocket transport ──
-
 /// Type alias for the tokio_tungstenite WebSocket stream (with optional TLS).
 type WsStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -991,7 +989,6 @@ async fn spawn_websocket_service(
     spawn_streamable_http_service(server_name, &http_url, headers, None, None, sink).await
 }
 
-// ── SSE (Server-Sent Events) transport ──
 // Pure SSE transport. Delegates to streamable HTTP as fallback.
 async fn spawn_sse_service(
     server_name: &str,
@@ -1007,8 +1004,6 @@ async fn spawn_sse_service(
     tracing::info!(server = %server_name, url = %url, "SSE transport: delegating to streamable HTTP");
     spawn_streamable_http_service(server_name, url, headers, oauth_provider, oauth, sink).await
 }
-
-// ── WebSocketMcpClient ──
 
 /// MCP client connected via WebSocket transport (with StreamableHTTP fallback).
 ///
@@ -1171,8 +1166,6 @@ mod tests {
         assert!(!is_transport_error(&e));
     }
 
-    // ---- is_auth_error tests ----
-
     #[test]
     fn is_auth_error_for_401() {
         let e = McpError::RmcpService("HTTP 401 Unauthorized".into());
@@ -1264,8 +1257,6 @@ mod tests {
         };
         assert_eq!(client.transport_kind(), "streamable_http");
     }
-
-    // ---- get_prompt ----
 
     #[tokio::test]
     async fn get_prompt_errors_not_connected_when_no_session() {
@@ -1369,8 +1360,6 @@ mod tests {
             MAX_CONSECUTIVE_FAILURES
         );
     }
-
-    // ── WebSocket tests ──
 
     #[test]
     fn ws_url_to_http_converts_ws_to_http() {
@@ -1563,6 +1552,3 @@ mod tests {
         assert!(head.contains("x-tenant: acme\r\n"), "{head}");
     }
 }
-
-// ── SSE (Server-Sent Events) transport ──
-// Pure SSE transport. Currently delegates to streamable HTTP as fallback.

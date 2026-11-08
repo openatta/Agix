@@ -265,8 +265,6 @@ async fn init_reports_a_configuration_the_plugin_refuses() {
     }
 }
 
-// ── The adapter: the same component, seen as an ordinary engine tool ──
-
 mod as_a_tool {
     use super::*;
     use base::tool::{Tool, ToolContext, ToolResultContent};
@@ -413,8 +411,6 @@ mod as_a_tool {
     }
 }
 
-// ── The event surface ──
-
 mod as_an_event_subscriber {
     use super::*;
     use wasm_host::bindings::agix::plugin::types::HookDecision;
@@ -473,8 +469,6 @@ mod as_an_event_subscriber {
         assert_eq!(err, CallFailure::Cancelled);
     }
 }
-
-// ── Health: when to stop asking ──
 
 mod health {
     use super::*;

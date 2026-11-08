@@ -92,8 +92,6 @@ impl SessionManager {
         self
     }
 
-    // ── In-memory state (Engine uses these directly) ──
-
     /// A user-role message pushed this way is recorded as engine-injected
     /// unless it only answers tool calls; see [`Self::push_message_from`].
     pub fn push_message(&mut self, msg: ModelMessage) {
@@ -237,8 +235,6 @@ impl SessionManager {
             })
             .collect()
     }
-
-    // ── Persistence (delegated to history store) ──
 
     /// Persist messages pushed since the last `persist()` call via the
     /// history store — incremental append, not a full snapshot. Called once
@@ -475,8 +471,6 @@ impl SessionManager {
         self.replace_messages_after_compact(Vec::new(), 0, 0).await
     }
 
-    // ── Parent session tracking ──
-
     /// Set the session ID of the parent session that spawned this one.
     pub fn set_parent_session(&mut self, parent_id: String) {
         self.parent_session_id = Some(parent_id);
@@ -558,8 +552,6 @@ impl SessionManager {
     }
 }
 
-// ── ModelMessage <-> history::LogEntry/Message conversion ──
-//
 // Two independent, block-level conversions (write direction and read
 // direction) rather than a single bidirectional mapping — the storage format
 // `base::message::ContentBlock` covers shapes a live `ModelMessage` cannot
@@ -1076,10 +1068,7 @@ mod tests {
     /// If the `LogEntry::Compact` marker fails to write, the compacted
     /// content must not be permanently lost: the cursor falls back to `0`
     /// (instead of jumping to the full length) so the *next* successful
-    /// `persist()` call writes it out as ordinary entries. Guards against
-    /// the failure-path bug the design review flagged: unconditionally
-    /// setting `persisted_up_to = messages.len()` regardless of write
-    /// outcome would silently and permanently drop these messages from disk.
+    /// `persist()` call writes it out as ordinary entries.
     #[tokio::test]
     async fn replace_messages_after_compact_disk_failure_falls_back_to_next_persist() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1113,10 +1102,8 @@ mod tests {
             other => panic!("expected SessionNotFound (nothing persisted yet), got {other:?}"),
         }
 
-        // Disk recovers. The stale-content-loss bug this test guards
-        // against would leave `persisted_up_to` at 1 (== messages.len()),
-        // making this `persist()` a permanent no-op; the fix leaves it at
-        // 0, so this call must write the compacted message out.
+        // Disk recovers. `persisted_up_to` is still 0, so this call must
+        // write the compacted message out.
         flaky
             .fail_appends
             .store(false, std::sync::atomic::Ordering::SeqCst);

@@ -348,10 +348,6 @@ fn expand_synonyms(terms: &[String]) -> Vec<String> {
     out
 }
 
-// ---------------------------------------------------------------------------
-// AGIX.md migration from CLAUDE.md
-// ---------------------------------------------------------------------------
-
 /// Walk up from `cwd` to root, find `CLAUDE.md` at each level, and
 /// create/update the sibling `AGIX.md` if `CLAUDE.md` has changed since the
 /// last migration. Records per-path mtime in `<cwd>/.agix/migration.json`.
@@ -538,10 +534,6 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    // -----------------------------------------------------------------------
-    // collect_memory_files_with / walk_up
-    // -----------------------------------------------------------------------
-
     #[tokio::test]
     async fn walk_up_false_skips_parent_claude_md() {
         // parent 有 AGENTS.md / cwd 有 AGENTS.md；walk_up=false 应只读 cwd
@@ -570,10 +562,6 @@ mod tests {
             .any(|e| e.content.contains("PARENT-MONOREPO")));
         assert!(no_walk.iter().any(|e| e.content.contains("CHILD-LOCAL")));
     }
-
-    // -----------------------------------------------------------------------
-    // memdir
-    // -----------------------------------------------------------------------
 
     #[tokio::test]
     async fn memdir_loads_md_files_for_project() {
@@ -613,10 +601,6 @@ mod tests {
         let files = collect_memdir_files(&home.path().join(".agix"), cwd.path()).await;
         assert!(files.is_empty());
     }
-
-    // -----------------------------------------------------------------------
-    // find_relevant_memories
-    // -----------------------------------------------------------------------
 
     #[tokio::test]
     async fn find_relevant_memories_scores_and_ranks_by_query_match() {
@@ -730,10 +714,6 @@ mod tests {
             .contains("delete-records"));
     }
 
-    // -----------------------------------------------------------------------
-    // query_terms & expand_synonyms
-    // -----------------------------------------------------------------------
-
     #[test]
     fn query_terms_splits_and_filters_short_tokens() {
         let terms = query_terms("fix the auth bug in login");
@@ -793,10 +773,6 @@ mod tests {
         // "delete" -> "remove" but "remove" is already in input
         assert!(!expanded.contains(&"remove".to_string()));
     }
-
-    // -----------------------------------------------------------------------
-    // merge_agix_content
-    // -----------------------------------------------------------------------
 
     #[test]
     fn merge_agix_empty_creates_wrapped_content() {

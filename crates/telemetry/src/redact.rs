@@ -4,8 +4,6 @@
 use regex::Regex;
 use std::sync::LazyLock;
 
-// ── Compiled regex patterns (lazy, one-time initialisation) ─────────────────
-
 /// Match common email addresses.
 #[allow(clippy::unwrap_used)]
 static EMAIL_RE: LazyLock<Regex> =
@@ -43,8 +41,6 @@ static IPV6_RE: LazyLock<Regex> = LazyLock::new(|| {
 static HOME_PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)(/Users/[^/\s]+|/home/[^/\s]+|C:\\Users\\[^\\\s]+)").unwrap()
 });
-
-// ── Known sensitive env-var names (lowercased for comparison) ────────────────
 
 const SENSITIVE_ENV_NAMES: &[&str] = &[
     "api_key",
@@ -123,8 +119,6 @@ const SENSITIVE_ENV_SUFFIXES: &[&str] = &[
     "_credential",
     "_cert",
 ];
-
-// ── RedactionPolicy ─────────────────────────────────────────────────────────
 
 /// Redaction policy: controls which fields and patterns are replaced with
 /// `[REDACTED]` before telemetry events leave the process.
@@ -253,8 +247,6 @@ impl Default for RedactionPolicy {
     }
 }
 
-// ── Helper: env-var value redaction ─────────────────────────────────────────
-
 /// Scan a string for `KEY=VALUE` patterns where the key matches a known
 /// sensitive variable name, and replace the value portion with `[REDACTED]`.
 fn redact_env_var_values(input: &str) -> String {
@@ -308,8 +300,6 @@ fn is_sensitive_env_name(name: &str) -> bool {
     false
 }
 
-// ── Helper: path sanitisation ───────────────────────────────────────────────
-
 /// Replace home directory paths with `~`.
 ///
 /// - `/Users/xbits/project/file.rs` → `~/project/file.rs`
@@ -356,13 +346,9 @@ pub fn sanitize_path(path: &str) -> String {
     path.to_string()
 }
 
-// ── Tests ───────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── Email redaction ─────────────────────────────────────────────────
 
     #[test]
     fn redact_email_simple() {
@@ -403,8 +389,6 @@ mod tests {
         let result = policy.apply("contact alice@example.com");
         assert_eq!(result, "contact alice@example.com");
     }
-
-    // ── IP redaction ────────────────────────────────────────────────────
 
     #[test]
     fn redact_ipv4() {
@@ -453,8 +437,6 @@ mod tests {
         assert_eq!(result, "ip: 192.168.1.1");
     }
 
-    // ── Path redaction ──────────────────────────────────────────────────
-
     #[test]
     fn redact_users_path_unix() {
         let policy = RedactionPolicy {
@@ -481,8 +463,6 @@ mod tests {
         let result = policy.apply("path: /Users/bob/file.txt");
         assert_eq!(result, "path: /Users/bob/file.txt");
     }
-
-    // ── Env-var redaction ───────────────────────────────────────────────
 
     #[test]
     fn redact_env_var_api_key() {
@@ -544,8 +524,6 @@ mod tests {
         assert_eq!(result, "MY_VAR=hello");
     }
 
-    // ── Composite redaction ─────────────────────────────────────────────
-
     #[test]
     fn multiple_rules_apply_together() {
         let policy = RedactionPolicy {
@@ -574,8 +552,6 @@ mod tests {
         assert!(!r.redact_ip_addresses);
         assert!(r.redact_env_vars);
     }
-
-    // ── sanitize_path ───────────────────────────────────────────────────
 
     #[test]
     fn sanitize_users_path() {
@@ -624,8 +600,6 @@ mod tests {
     fn sanitize_empty_string_unchanged() {
         assert_eq!(sanitize_path(""), "");
     }
-
-    // ── has_content_redaction ───────────────────────────────────────────
 
     #[test]
     fn content_redation_true_when_prompts_enabled() {

@@ -43,8 +43,6 @@ pub struct McpConnectionErrorPayload {
     pub transport: String,
 }
 
-// ---- redact impls ----
-
 impl McpToolCallPayload {
     pub(crate) fn redact(mut self, _policy: &RedactionPolicy) -> Self {
         self.error_message = self.error_message.map(|_| "[REDACTED]".to_string());

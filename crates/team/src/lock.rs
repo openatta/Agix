@@ -11,7 +11,7 @@
 //!
 //! Not yet called from the team-creation/orchestration path: that only
 //! becomes contended once `TeamStore` is promoted from per-session to
-//! project-level (deferred — see the design doc's §6.6). Today, every
+//! project-level (deferred). Today, every
 //! `TeamCreate` call gets its own freshly-generated `team_id` subdirectory,
 //! so there is no concurrent write to the *same* file for this lock to
 //! protect yet.

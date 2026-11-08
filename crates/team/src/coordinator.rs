@@ -21,10 +21,6 @@ use std::sync::Arc;
 
 use crate::tool::{AggregateMode, TeamStage};
 
-// ═══════════════════════════════════════════════════════════
-// Permission bridge — Bubble mode
-// ═══════════════════════════════════════════════════════════
-
 /// A permission prompt forwarded from a sub-agent to the parent agent.
 #[derive(Debug, Clone)]
 pub struct PermissionPrompt {
@@ -228,10 +224,6 @@ pub fn create_permission_bridges(
     }
     bridges
 }
-
-// ═══════════════════════════════════════════════════════════
-// Coordinator trait + DefaultCoordinator
-// ═══════════════════════════════════════════════════════════
 
 /// The parent session's event channel, when the composition root wired one
 /// in — see [`Coordinator::set_event_sender`].
@@ -1041,10 +1033,6 @@ impl Coordinator for DefaultCoordinator {
     }
 }
 
-// ═══════════════════════════════════════════════════════════
-// Aggregation helpers
-// ═══════════════════════════════════════════════════════════
-
 pub async fn aggregate(
     model: &dyn Model,
     model_name: &str,
@@ -1233,10 +1221,6 @@ fn chrono_id() -> String {
         .unwrap_or(0);
     format!("{n:x}")
 }
-
-// ═══════════════════════════════════════════════════════════
-// Tests — stage concurrency (bounded parallel dispatch)
-// ═══════════════════════════════════════════════════════════
 
 #[cfg(test)]
 mod tests {

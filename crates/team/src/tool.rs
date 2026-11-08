@@ -243,8 +243,6 @@ impl base::tool::Tool for TeamCreateTool {
     }
 }
 
-// ── TeamDelete ──
-
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TeamDeleteInput {
     /// Name of the team to delete.
@@ -306,8 +304,6 @@ impl base::tool::Tool for TeamDeleteTool {
         Ok(ToolResult::text(format!("Team '{}' deleted.", inp.name)))
     }
 }
-
-// ── TeamList ──
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TeamListInput {}

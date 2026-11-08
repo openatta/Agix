@@ -11,8 +11,6 @@ use std::sync::Mutex;
 
 use super::parser::cron_matches;
 
-// ---- Cron types ----
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CronJob {
     pub id: String,
@@ -233,8 +231,6 @@ impl Default for CronStore {
         Self::new()
     }
 }
-
-// ---- helpers ----
 
 fn now_ms() -> i64 {
     std::time::SystemTime::now()

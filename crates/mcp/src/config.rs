@@ -94,7 +94,7 @@ impl McpServerConfig {
 /// Expand environment variables in a config string.
 ///
 /// Supports `$VAR`, `${VAR}`, `${VAR:-default}` (default when unset/empty),
-/// and `$$` (literal `$`). Unknown vars expand to empty (matching TS).
+/// and `$$` (literal `$`). Unknown vars expand to empty.
 pub fn expand_env_vars(input: &str) -> String {
     let chars: Vec<char> = input.chars().collect();
     let mut out = String::with_capacity(input.len());
@@ -176,8 +176,6 @@ pub fn expand_env_vars(input: &str) -> String {
     }
     out
 }
-
-// ── Scope / multi-source loading ──
 
 /// MCP config scope with priority ordering.
 /// Higher-priority scopes override lower-priority ones.
@@ -365,8 +363,6 @@ pub fn load_mcp_configs(paths: &ConfigPaths) -> HashMap<String, McpServerConfig>
 
     merged
 }
-
-// ── Private helpers ──
 
 /// Compute the enterprise policy file path: `{global_data_dir}/policy/mcp.json`
 /// (e.g. `$HOME/.agix/policy/mcp.json`). Uses `global_data_dir` directly —
@@ -638,8 +634,6 @@ mod tests {
         }
     }
 
-    // ── expand_env tests ──
-
     #[test]
     fn expand_env_simple_var() {
         let val = expand_env("hello $USER");
@@ -688,8 +682,6 @@ mod tests {
         let val = expand_env("${UNSET_VAR_XYZ");
         assert_eq!(val, "${UNSET_VAR_XYZ");
     }
-
-    // ── McpServerPattern tests ──
 
     #[test]
     fn mcppattern_name_exact_match() {
@@ -763,8 +755,6 @@ mod tests {
         };
         assert!(!pattern.matches("any-name", &cfg));
     }
-
-    // ── apply_policy tests ──
 
     #[test]
     fn apply_policy_no_restrictions_passes_all() {
@@ -893,8 +883,6 @@ mod tests {
         assert!(servers.is_empty());
     }
 
-    // ── McpConfigScope tests ──
-
     #[test]
     fn config_scope_priorities_are_correct() {
         assert_eq!(McpConfigScope::Enterprise.priority(), 0);
@@ -902,8 +890,6 @@ mod tests {
         assert_eq!(McpConfigScope::Project.priority(), 2);
         assert_eq!(McpConfigScope::Local.priority(), 3);
     }
-
-    // ── McpPolicy serde tests ──
 
     #[test]
     fn mcp_policy_deserializes_with_optional_fields() {
@@ -934,8 +920,6 @@ mod tests {
         assert!(policy.plugin_only);
     }
 
-    // ── enterprise_policy_path tests ──
-
     #[test]
     fn enterprise_policy_path_uses_global_data_dir() {
         let paths = ConfigPaths {
@@ -963,8 +947,6 @@ mod tests {
         assert!(result.is_some());
         assert!(result.unwrap().plugin_only);
     }
-
-    // ── load_scoped_servers_file tests ──
 
     #[test]
     fn load_scoped_servers_file_applies_env_expansion() {
@@ -1032,8 +1014,6 @@ mod tests {
             _ => panic!("expected stdio"),
         }
     }
-
-    // ── url method tests ──
 
     #[test]
     fn url_method_returns_correct_variants() {

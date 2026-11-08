@@ -27,8 +27,6 @@ fn not_in_scope(tool: &str, alt: &str) -> ToolResult {
     }
 }
 
-// ============ McpAuth ============
-
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct McpAuthInput {
     /// MCP server name. If omitted or empty, the first unauthenticated server

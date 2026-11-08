@@ -4756,9 +4756,9 @@ impl SessionPool {
         // load-and-parse per file — see its doc comment); there's no cheap
         // index to check "does this session have sidechains" first, so
         // every `session.close`/`.delete` pays this once regardless of
-        // whether the session actually has any. Accepted as-is: `delete_session`
-        // (this function's other caller) shares this one scan rather than
-        // running it twice, which was the fixable half of the cost.
+        // whether the session actually has any. `delete_session` (this
+        // function's other caller) shares this one scan rather than running
+        // it twice.
         let children = match store.child_sessions(parent_session_id).await {
             Ok(children) => children,
             Err(e) => {
@@ -4868,8 +4868,8 @@ impl SessionPool {
     /// **cascades**: every sidechain of this session (sub-agent / team
     /// member) is deleted too — a closed parent has no path left to reach
     /// them (`session.list {parent_session_id}` only makes sense while the
-    /// parent might still resume that context; once it's gone, so are they,
-    /// per §5.6's "保留结果，不保留过程"). Returns how many sidechains were
+    /// parent might still resume that context; once it's gone, so are they).
+    /// Returns how many sidechains were
     /// actually deleted.
     ///
     /// A sidechain still mid-run (background / team member) is cancelled
@@ -5503,7 +5503,7 @@ impl SessionPool {
     /// reject a nonexistent project outright (`session.create`) check that
     /// separately, since resume callers deliberately do **not**: a project
     /// directory that moved after the session was created should still
-    /// resume (`docs/daemon_rpc_protocol.md` §6.3's `project_root_changed`), not fail.
+    /// resume (`docs/daemon_rpc_protocol.md` §3.4), not fail.
     async fn settings_for_project(
         &self,
         project_root: Option<&Path>,
@@ -5947,7 +5947,7 @@ impl SessionPool {
         // run as one atomic step relative to `delete_sidechain_list`/
         // `delete_session`, not race them.
         self.with_session_lock(session_id, async {
-            // §5.6/§9: a sidechain that already reached a terminal state has
+            // `docs/daemon_rpc_protocol.md` §3.3: a sidechain that already reached a terminal state has
             // no continuation semantics — reject before touching engine
             // state.
             if let Some((parent_session_id, state)) =

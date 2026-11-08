@@ -2,17 +2,15 @@
 //! rewrite on every lifecycle change), `events.jsonl` (append-only, the
 //! authoritative record a future index rebuild replays).
 //!
-//! `team.json`/`state.json` are split for exactly the reason the design doc
-//! gives: a lifecycle change (a member finishing a stage) is frequent and
-//! must not force rewriting the immutable declaration (stage list, prompts)
-//! every time.
+//! `team.json`/`state.json` are split because a lifecycle change (a member
+//! finishing a stage) is frequent and must not force rewriting the immutable
+//! declaration (stage list, prompts) every time.
 //!
 //! Not yet the *only* place a team's state lives — `registry::TeamRegistry`
 //! remains the live, per-session, in-memory source of truth read by
-//! `TeamList`/`TeamDelete` today (project-level promotion, §6.6, is
-//! deferred). What's here is the write path that lands these three files
-//! next to it, so a future `TeamStore` has correctly-shaped data to read
-//! without a migration step.
+//! `TeamList`/`TeamDelete` (project-level promotion is deferred). What's here
+//! is the write path that lands these three files next to it, so a future
+//! `TeamStore` has correctly-shaped data to read without a migration step.
 
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -22,8 +20,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const CURRENT_TEAM_SCHEMA_VERSION: u32 = 1;
 pub const CURRENT_STATE_SCHEMA_VERSION: u32 = 1;
-
-// ── team.json — write once ──────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -91,8 +87,6 @@ pub fn read_team_declaration(team_dir: &Path) -> io::Result<Option<TeamDeclarati
     read_json_if_exists(&team_dir.join("team.json"))
 }
 
-// ── state.json — atomic rewrite on every lifecycle change ──────────────
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TeamStatus {
@@ -153,8 +147,6 @@ pub fn read_team_state(team_dir: &Path) -> io::Result<Option<TeamStateFile>> {
     read_json_if_exists(&team_dir.join("state.json"))
 }
 
-// ── events.jsonl — append-only ──────────────────────────────────────────
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TeamEvent {
@@ -207,18 +199,16 @@ pub struct EventsRetention {
 }
 
 impl Default for EventsRetention {
-    /// `settings.execution.team_retention.events_max_entries`'s default —
-    /// see the design doc §6.4.
+    /// `settings.execution.team_retention.events_max_entries`'s default.
     fn default() -> Self {
         Self { max_entries: 5000 }
     }
 }
 
-/// Append one event to `events.jsonl`, then apply retention. The design
-/// doc's §6.4 calls for checking every *N* writes rather than every write
-/// (to avoid a full-file line count on the hot path); this checks every
-/// write instead — simpler and still correct, at the cost of doing that
-/// line count more often than strictly necessary. Once a truncation fires,
+/// Append one event to `events.jsonl`, then apply retention. Retention is
+/// checked on every write rather than every *N* writes — simpler and still
+/// correct, at the cost of doing a full-file line count more often than
+/// strictly necessary. Once a truncation fires,
 /// [`maybe_truncate_events`] cuts well below `max_entries` rather than
 /// exactly down to it, so this per-write line count is cheap (short file)
 /// far more often than it is expensive (full read + rewrite) — see that
@@ -324,8 +314,6 @@ pub fn read_events(team_dir: &Path) -> io::Result<Vec<EventEnvelope>> {
     }
     Ok(out)
 }
-
-// ── shared helpers ───────────────────────────────────────────────────────
 
 /// Write `body` to `dir/filename` via temp-file-then-rename so a concurrent
 /// reader never observes a partially-written file.
@@ -568,7 +556,7 @@ mod tests {
         }
     }
 
-    /// §6.4's cost model: truncating down to 80% of `max_entries` (rather
+    /// Truncating down to 80% of `max_entries` (rather
     /// than exactly `max_entries`) must leave enough headroom that the very
     /// next append doesn't immediately trigger another full read+rewrite.
     #[tokio::test]

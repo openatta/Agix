@@ -443,8 +443,6 @@ async fn a_script_that_throws_leaves_its_point_alone_and_the_turn_finishes() {
     }
 }
 
-// ── crossings ───────────────────────────────────────────────────────────
-//
 // The table above proves each adapter works on its own. These are about what
 // two of them do to each other, which is where a refactor breaks something no
 // single-point case can see. A case belongs here only if taking one of its two

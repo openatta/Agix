@@ -338,12 +338,10 @@ impl DaemonServer {
     ///
     /// **Each request is served in its own task, and the read loop never
     /// waits for one.** `session.run_turn` runs for as long as the turn does;
-    /// serving it inline meant the connection read nothing else meanwhile, so
-    /// a client could not answer a permission prompt or interrupt the turn on
-    /// the connection that was running it — the prompt deadlocked until its
-    /// timeout denied it, and `session.interrupt` was unreachable from the
-    /// one place that most needs it. §5.2 of the protocol has always
-    /// promised concurrent in-flight requests; this is what delivers it.
+    /// served inline, the connection would read nothing else meanwhile, so a
+    /// client could not answer a permission prompt or interrupt the turn on
+    /// the connection that is running it. `docs/daemon_rpc_protocol.md` §5.2
+    /// promises concurrent in-flight requests.
     ///
     /// Responses may therefore come back out of order, which is what §5.2
     /// says and why clients match on `id`.
@@ -1693,7 +1691,7 @@ impl DaemonServer {
         {
             Ok(v) => Some(v),
             Err((code, _)) if resume && code == codes::SESSION_NOT_FOUND => {
-                // §3.4 still applies: the mismatch check above ran first, and
+                // `docs/daemon_rpc_protocol.md` §3.4 still applies: the mismatch check above ran first, and
                 // this records the pre-v2 case the same way `session.resume`
                 // reports it.
                 let inferred = matches!(
@@ -2125,7 +2123,7 @@ impl DaemonServer {
             },
         };
 
-        // Same §3.4 rejection `session.resume` applies — forking a session
+        // Same `docs/daemon_rpc_protocol.md` §3.4 rejection `session.resume` applies — forking a session
         // recorded under a different scene would hand back a "primary"
         // session that starts life already scene-mismatched.
         if let Some(err) = self.scene_mismatch_response(&id, &session_id).await {
@@ -2163,7 +2161,7 @@ impl DaemonServer {
             .get("options")
             .and_then(|v| serde_json::from_value(v.clone()).ok());
 
-        // §3.4: a session recorded under a different scene than this
+        // `docs/daemon_rpc_protocol.md` §3.4: a session recorded under a different scene than this
         // daemon's must not be silently resumed into it — that's exactly
         // the "conversation ends up hanging off the wrong scene" failure
         // mode the design calls out as the one worth actively catching.

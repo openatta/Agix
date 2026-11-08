@@ -268,8 +268,6 @@ async fn check(case: Case) {
     GoldenFile::new(name).assert_eq(&actual);
 }
 
-// ── the cases ───────────────────────────────────────────────────────────
-
 /// Plain conversation: one call, text out, done. The floor of the net — if
 /// this moves, everything moved.
 #[tokio::test]

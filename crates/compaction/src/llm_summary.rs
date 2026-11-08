@@ -46,8 +46,6 @@ use tokio_util::sync::CancellationToken;
 use crate::compact::{CompactError, CompactResult, CompactStrategy, SnipProjection};
 use crate::grouping::{estimate_tokens, group_by_api_round};
 
-// ── Tuning ──
-
 /// Output cap for the summary itself. The prompt asks for prose under nine
 /// headings; ~4k tokens is generous for that and bounds what re-enters context.
 pub const DEFAULT_SUMMARY_MAX_TOKENS: u32 = 4_096;
@@ -78,14 +76,12 @@ const MAX_RENDERED_TRANSCRIPT_CHARS: usize = 120_000;
 pub const COMPACTED_CONTEXT_OPEN: &str = "<compacted-context>";
 pub const COMPACTED_CONTEXT_CLOSE: &str = "</compacted-context>";
 
-// ── Prompt ──
-
 /// The structured summary prompt.
 ///
 /// A fixed set of headings the model must fill in, rather than a free-form
 /// "summarize this" — a fixed shape is what makes the output usable as a
-/// handoff instead of a paraphrase. The headings are adapted to this codebase: §8 covers the
-/// skill / deferred-tool / background-task state that Agix's post-compact
+/// handoff instead of a paraphrase. Heading 8 covers the skill /
+/// deferred-tool / background-task state that Agix's post-compact
 /// recovery also re-attaches, so the summary and the recovery attachments
 /// describe the same world.
 const SUMMARY_PROMPT: &str = "\
@@ -122,8 +118,6 @@ compaction, and the single most immediate next action. If the next step is not \
 clearly implied by the user's request, say so rather than inventing one.
 
 Output only the summary. No preamble, no closing remarks.";
-
-// ── Summarizer ──
 
 /// Wraps a [`Model`] with the summarization prompt, output cap and timeout.
 ///
@@ -257,8 +251,6 @@ impl LlmSummarizer {
     }
 }
 
-// ── Gating ──
-
 /// Whether an LLM summarization call is worth making for this compaction.
 ///
 /// True only when compaction is genuinely about to *destroy* history:
@@ -281,8 +273,6 @@ pub fn should_summarize(messages: &[ModelMessage], max_tokens: usize, keep_round
         .sum();
     dropped >= MIN_SUMMARIZED_TOKENS
 }
-
-// ── FullCompact ──
 
 /// Summarize the rounds that are about to be dropped, then drop them —
 /// replacing them with the summary.
@@ -733,8 +723,7 @@ mod tests {
 
     #[tokio::test]
     async fn multibyte_conversation_does_not_panic() {
-        // Same regression class as `collapse_context_survives_multibyte_text`:
-        // every cap in the renderer is a byte budget over arbitrary UTF-8.
+        // Every cap in the renderer is a byte budget over arbitrary UTF-8.
         let zh: String = "这是一段用于测试的中文内容".repeat(400);
         let mut msgs = Vec::new();
         for i in 0..8 {

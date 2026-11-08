@@ -428,8 +428,6 @@ impl StartAgentParams {
     }
 }
 
-// ── Session options (extensible, passed via session.run_turn params) ──
-
 /// Optional per-session configuration passed via `session.create` or
 /// `session.run_turn` params.
 ///

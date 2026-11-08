@@ -452,8 +452,6 @@ impl SkillManager {
         Some(SkillInfo::from(entry))
     }
 
-    // ── File-watching support ──
-
     /// Enable file watching on the given directories.
     ///
     /// Starts a background [`SkillWatcher`](crate::watcher::SkillWatcher) that

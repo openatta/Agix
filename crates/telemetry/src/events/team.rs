@@ -45,8 +45,6 @@ pub struct AgentMessagePayload {
     pub error_message: Option<String>,
 }
 
-// ---- redact impls ----
-
 impl AgentMessagePayload {
     pub(crate) fn redact(mut self, _policy: &RedactionPolicy) -> Self {
         self.error_message = self.error_message.map(|_| "[REDACTED]".to_string());

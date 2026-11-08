@@ -176,8 +176,6 @@ impl From<UsageAccumulator> for CostTracker {
     }
 }
 
-// ── Helpers ──
-
 /// Prefix-match pricing. E.g. `"claude-sonnet-4-20250514"` matches `"claude-sonnet-4"`.
 fn price_for(model: &str) -> (f64, f64, f64, f64) {
     for (prefix, inp, outp, cw, cr) in PRICING {
@@ -233,8 +231,6 @@ mod tests {
             model: model.into(),
         }
     }
-
-    // ── CostTracker tests ──
 
     #[test]
     fn empty_tracker_zero_cost() {
@@ -384,8 +380,6 @@ mod tests {
         let tracker = CostTracker::new(u);
         assert_eq!(tracker.usage().api_calls, 1);
     }
-
-    // ── format_cost_value edge cases ──
 
     #[test]
     fn format_cost_edge_cases() {

@@ -19,7 +19,7 @@
 //! ways that only the loop can sequence correctly. What was missing is the
 //! choice between them. So this contract answers "what should happen", in a
 //! vocabulary the loop already implements, and nothing else. That is what
-//! keeps the skeleton closed (design §5 item 7) while the decision opens.
+//! keeps the skeleton closed while the decision opens.
 //!
 //! # Attempt counts are the policy's memory
 //!

@@ -28,8 +28,6 @@
 //!
 //! 一个 session 列出哪些由它的 scene 决定（`Scene::bundled_skills`），还要
 //! [`required_tools`] 里的工具在这个 scene 都允许——见 `catalog::BundledAdmission`。
-//!
-//! 架构照搬自参考实现，prompt 文本重写以贴 agix 工具命名 + 不依赖 TS 特定能力。
 
 use base::frozen::{SkillEntry, SkillSource};
 use std::path::PathBuf;
