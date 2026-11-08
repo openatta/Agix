@@ -33,87 +33,134 @@ Both are the same engine.
 
 ## Why Agix
 
-**Ship the agent, not the plumbing.** The hard part of an agent product is
-not the model call — it is the loop around it: keeping a model productive for
-hours, inside the limits you set, at a cost you can predict, with every step
-on the record. That loop is Agix.
+**One engine for a rack of servers and a board on the shelf.** Agix is built
+to be deployed by the hundred and embedded where every megabyte counts: a
+single small binary, a predictable footprint, and a loop that keeps working
+when no one is watching.
 
-> On six real engineering tasks, same model, same proxy, every result checked
-> by running it: **Agix finished every task faster than DeepSeek Harness —
-> 34% less wall time overall, 13% fewer prompt tokens, 25% fewer output
-> tokens — and all 36 runs on both sides came out correct.** [How it was measured ↓](#measured)
-
-1. **One tool call where others need thirty.** With `RunCode` the model
-   writes a short JavaScript program that drives the session's own tools — in
-   parallel, in loops, in stages — and fans work out to sub-agents whose
-   answers are validated against a JSON Schema. Only the result comes back
-   into the conversation. A 30-file migration or a four-way parallel audit
-   becomes a single step instead of dozens of round trips. No workflow DSL to
-   learn: the program *is* the workflow, and every call inside it passes the
-   same permission rules, hooks and telemetry as a direct one
-   ([`docs/ptc.md`](docs/ptc.md)).
-2. **Hand it a goal and walk away.** Set a goal and the session keeps going,
-   round after round, until the work is done, the model reports it blocked,
-   or the round budget runs out — no one has to send another message. An
-   automatic round can finish or give up, never widen its own mandate, and a
-   restarted engine never quietly picks a goal back up.
+1. **Small enough to run anywhere.** `agixd` is one 11 MB binary with no
+   runtime to install. It idles at about 10 MB of memory and starts in about
+   30 ms. A real task — four sub-agents in parallel plus a program, 91 model
+   calls over six minutes — peaked under 30 MB and used about 8 s of CPU (measured
+   on an M2 Max, `release` build). Size the async workers to the hardware
+   with `--worker-threads` — one is enough on a small board — and leave out
+   whole modules at build time with the build tiers.
+2. **Many sessions, one process.** A daemon serves dozens of sessions across
+   projects and scenes, over a Unix socket, TCP or WebSocket. Idle sessions
+   are evicted and come back from disk on demand. A crash is recorded,
+   leftover commands are cleaned up on the next start, and the daemon runs
+   under systemd or launchd like any other service.
 3. **Safe to leave alone.** Mark a scene unattended and nothing ever waits on
-   a human: questions turn into refusals that say how to grant them, writes
-   stay inside the roots you gave the instance, and `Bash` runs only inside
-   the OS sandbox (Seatbelt on macOS, bubblewrap on Linux). Git hooks and
-   config, settings, MCP and agent definitions are read-only in there, and
-   the engine's own git runs in the same sandbox — so nothing a command plants
-   can run later outside it. Authority comes from settings, never from task
-   text: injected content cannot grant itself permissions.
-4. **Pay for the work, not the preamble.** About 5.8K tokens of fixed prefix,
-   tools included. Per-session facts ride in the first message, not the
-   system prompt, so the provider's prefix cache is shared across sessions;
-   rarely used tools are listed by name and loaded on demand. Long sessions
-   compact themselves with a model-written summary and carry on in the same
-   turn.
-5. **Change anything without forking.** 45 extension points in a published
-   catalog — replace a subsystem, add to a collection, or intercept something
-   in flight — from Rust, a script or a WebAssembly plugin. A failing
-   extension loses its own contribution, never the session.
-6. **Your product stays in charge.** Every task, sub-agent, goal, question
-   and the exact context of the next model call is visible, stoppable and
-   editable over one JSON-RPC protocol — down to following a running
-   command's output byte by byte or exporting a whole session with its
-   sub-agents as one archive. Policy follows delegation: permissions, hooks
-   and budgets bind sub-agents, team members and background programs exactly
-   as they bind the session that started them.
-7. **Trust you can check.** A session is an append-only log: resume it, fork
-   it, rebuild it after a crash, replay a recording byte for byte with no
-   network. The protocol reference, the extension catalog, the settings
-   schema and the numbers in this file are checked against the code by
-   tests, and a live tier drives every major feature against a real model on
-   each release.
+   a human: what would need approval is refused with a reason, writes stay
+   inside the roots you gave it, and `Bash` runs only inside the OS sandbox
+   (Seatbelt on macOS, bubblewrap on Linux). Authority comes from settings,
+   never from task text, so injected content cannot grant itself anything.
+4. **More work per token.** With `RunCode` the model drives tools from a
+   short program — in parallel, in loops, across sub-agents whose answers
+   are checked against a JSON Schema — and only the result comes back. Goals
+   keep a session going round after round until the work is done. The fixed
+   prompt prefix is about 5.8K tokens, shared across sessions by the
+   provider's cache, and long sessions compact themselves and carry on. On
+   six engineering tasks, against another open agent harness on the same
+   model, that came to **34% less wall time and 13% fewer prompt tokens, with
+   every run correct** ([how it was measured](tests/live/tests/compare_dsh.rs)).
+5. **Your product stays in charge.** Every session, task, sub-agent, goal and
+   prompt is visible, stoppable and editable over one JSON-RPC protocol.
+   45 extension points let you replace or intercept any subsystem from Rust,
+   a script or a WebAssembly plugin without forking. Every session is an
+   append-only log you can resume, fork, export or replay byte for byte
+   with no network.
 
-### Measured
+---
 
-Six tasks, one model (DeepSeek Flash, thinking on, effort high), each harness
-behind the same recording proxy, both unattended under their default
-permission policy. Every product is verified by running it on inputs the
-model never saw. Agix 0.3.7-2026110703 runs the `harnix` scene; DSH is
-0.2.2-rc.1 in headless mode. Medians of three runs per task:
+## Features
 
-| Task | What it asks | Prompt tokens, Agix / DSH | Wall time, Agix / DSH | Correct |
-|---|---|---|---|---|
-| stats | write a small program to a spec | **30.6K** / 58.0K | **19 s** / 28 s | 3/3 · 3/3 |
-| inventory | fix three bugs across a package until its tests pass, then add a CLI | 83.2K / **73.2K** | **31 s** / 55 s | 3/3 · 3/3 |
-| biglog | answer questions about a 1.4 MB log | **50.2K** / 51.2K | **17 s** / 19 s | 3/3 · 3/3 |
-| shop | two turns in an unfamiliar project: fix a bug, add a feature | **118K** / 134K | **23 s** / 32 s | 3/3 · 3/3 |
-| audit | four sub-agents audit 24 modules in parallel and fix six | **935K** / 1.03M | **121 s** / 161 s | 3/3 · 3/3 |
-| migrate | move 58 call sites in 30 modules off a deprecated API | **150K** / 226K | **30 s** / 69 s | 3/3 · 3/3 |
-| **all six** | | **1.37M** / 1.57M (−13%) | **240 s** / 362 s (−34%) | 18/18 · 18/18 |
+**Deployment**
+- `agixd`: a daemon speaking JSON-RPC 2.0 (NDJSON) over a Unix socket, TCP
+  or WebSocket, with token authentication off the local socket.
+- Or embed the engine: one `Agent` from the builder, or the daemon's whole
+  session pool in your own process.
+- `release` builds an 11 MB binary; `release-fast` trades twice the size for
+  a little speed and unwinding on panic.
+- Build tiers (`minimal`, `coding`, `full`) and per-module features: MCP,
+  sub-agents, skills, web tools, structured output, `RunCode`, WebSocket,
+  scripts, plugins, the sandbox, OpenTelemetry.
+- `--worker-threads` / `AGIX_WORKER_THREADS`; session cap with least-recently-used
+  eviction; idle timeout; several scenes per process.
+- Discovery files, so clients find a daemon by scene. Clean shutdown on
+  SIGTERM, crash records, and process-group cleanup after a hard kill.
 
-Faster on all six, fewer prompt tokens on five (`inventory` is the
-exception), and 60K / 80K output tokens in total. Both sides send the same
-size of fixed prefix (5.8K / 5.7K tokens on the first tool-carrying request),
-so the difference is in how the work gets done. Single runs swing by ±30% on
-either side, which is why these are medians. The harness, fixtures and checks
-are in [`tests/live/tests/compare_dsh.rs`](tests/live/tests/compare_dsh.rs);
-`AGIX_COMPARE_REPEAT=3` reproduces them.
+**Models**
+- Anthropic and OpenAI-compatible APIs, so hosted and local models
+  (llama.cpp, Ollama, vLLM, …) both work.
+- Per-task routing (`main`, `subagent`, `compact`, `memory`, `web_search`),
+  per-session providers, and model switching mid-session.
+- Retry with backoff, plus recovery: switch model, compact and retry, or
+  raise `max_tokens`.
+- A cache-friendly prompt: per-session facts ride in the first message,
+  rarely used tools are loaded on demand with `ToolSearch`, and compaction
+  emits cache edits.
+
+**Autonomy**
+- Goals that run automatic rounds until done, blocked or out of budget.
+- Cron-style schedules, plan mode with verification, and todo lists.
+- Background shell commands, monitors, sub-agents and programs, each
+  reporting back with a notification.
+- `RunCode`: a JavaScript program (embedded QuickJS) that calls the
+  session's tools, sub-agents included.
+
+**Multi-agent**
+- The `Agent` tool with typed agents: foreground or background, with their
+  own models and tools, and results validated against a JSON Schema.
+- Teams with a mailbox and shared memory.
+- Sub-agents run in sidechain sessions linked to their parent.
+- Concurrency and depth limits, and permissions, hooks and budgets that
+  follow delegation.
+
+**Tools** — 41 built in: files, shell, web, tasks, planning, goals,
+scheduling, git worktrees, skills, teams, MCP, questions, notifications,
+monitors and structured output ([table below](#tools--41-built-in)).
+
+**Context**
+- An LLM summary first, then cheaper fallbacks, behind a predictive
+  trigger, a circuit breaker and a configurable threshold.
+- Session memory with recall.
+- A skill catalog.
+- Token and output budgets.
+
+**Safety**
+- A fixed permission order: the tool's own check, then rules (a deny always
+  wins), then path safety, then the mode.
+- Modes `default`, `acceptEdits`, `plan`, `dontAsk` and `bypassPermissions`.
+- An OS sandbox for shell commands, with git hooks, git config and agent
+  settings read-only inside it; the engine's own git runs there too.
+- Unattended scenes that refuse instead of asking.
+- Permission prompts that time out closed.
+- Worktree isolation.
+
+**Host control**
+- Sixty-odd RPC methods: create, resume, fork, rebuild and export sessions;
+  read history and the exact context of the next model call; answer
+  permission and question prompts.
+- Start, message, stop and follow tasks, reading their output by byte offset.
+- Switch the model or prompt; manage scenes, MCP servers, plugins and
+  schedules.
+
+**Extensibility**
+- 45 published extension points: 30 contracts, 9 interceptions and 6
+  registrations.
+- QuickJS scripts, and WebAssembly plugins with declared capabilities.
+- Hooks at thirty moments, with command, prompt, HTTP, agent and WASM
+  backends.
+- An MCP client (stdio, SSE, streamable HTTP, OAuth 2.0 PKCE), declarative
+  scenes, and custom agent types.
+
+**Records**
+- An append-only JSONL history that can be resumed, forked or rebuilt after
+  a crash.
+- 37 telemetry event types, with OpenTelemetry export.
+- A recorder for byte-exact offline replay.
+- Session export as a zip archive or a directory, sub-agents included.
 
 ---
 
@@ -339,7 +386,7 @@ against a real daemon's answer by a test.
 
 Useful flags: `--scene` / `--scenes` (which scenes to serve), `--listen` /
 `--listen-ws` with `--token` (TCP / WebSocket, authenticated), `--session-cap`,
-`--permission-prompt-timeout`. Each running daemon writes a discovery file
+`--worker-threads`, `--permission-prompt-timeout`. Each running daemon writes a discovery file
 under `~/.agix/daemon/instances.d/`, so a client finds it by scene instead of
 by path.
 
@@ -464,8 +511,8 @@ through the session's own model (the provider's built-in search) unless
 
 | profile | command | on panic |
 |---|---|---|
-| `release` | `cargo build --release -p daemon --bin agixd` | unwinds; a panic inside a task ends that task |
-| `release-small` | `cargo build --profile release-small -p daemon --bin agixd` | aborts the process; about half the size |
+| `release` (the default) | `cargo build --release -p daemon --bin agixd` | aborts the process; about 11 MB |
+| `release-fast` | `cargo build --profile release-fast -p daemon --bin agixd` | unwinds; a panic inside a task ends that task; twice the size, a little faster |
 
 Commands the agent runs live in their own process groups and outlive a crashed
 daemon, so the daemon cleans up twice: its panic hook stops them before

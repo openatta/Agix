@@ -308,3 +308,15 @@ skill、web 工具、WebSocket、载体与包方案。
 - **导出**:`session.export {session_id, path, format?, include?}`(能力位 `session_export`)把会话
   连同侧链、图片本体在同一时刻打成 zip 或目录,写到 daemon 所在机器上的绝对路径,带
   `manifest.json`(`format_version: 1`)。还没有 `session.import`。
+
+## 0.3.7 之后:到 0.3.8
+
+### 部署 `agixd` 的
+
+- **`release` 就是小体积构建**:fat LTO、`opt-level = "s"`、`panic = "abort"`,`agixd` 约 11 MB。
+  `release-small` profile 没有了,原来用它的改成 `--release`。要 panic 时展开、任务里的 panic
+  只结束那个任务的,用 `--profile release-fast`(`opt-level = 3`,体积翻倍)。按 `--release`
+  构建的部署现在 panic 会中止进程,需要 supervisor 拉起(`ARCHITECTURE.md` §1.3)。
+- **工作线程数可配**:`--worker-threads <N>` 或环境变量 `AGIX_WORKER_THREADS`(命令行优先),
+  不配时等于 CPU 核数。只管异步工作线程;文件读写、搜索、脚本走各自的阻塞线程池,不受影响。
+  嵌入式板子上 `--worker-threads 1` 即可。

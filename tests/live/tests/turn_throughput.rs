@@ -3,7 +3,7 @@
 //!
 //! A benchmark, not a check: it prints timings and asserts only that the turns
 //! ran. It exists to compare builds of the same code — `release` against
-//! `release-small`, one `opt-level` against another — so it runs against
+//! `release-fast`, one `opt-level` against another — so it runs against
 //! whichever `agixd` `AGIX_TEST_DAEMON_BIN` names:
 //!
 //! ```sh

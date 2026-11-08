@@ -104,8 +104,9 @@ fork 型 skill 要 agents 提供的 spawner。委派出去的子会话用父会�
 
 ### 1.3 失败策略
 
-`release` profile 在 panic 时展开;`release-small`(fat LTO、`opt-level = "s"`、
-`panic = "abort"`)在 panic 时中止进程,由 supervisor 拉起。中止前 panic hook 停掉
+`release` profile(fat LTO、`opt-level = "s"`、`panic = "abort"`)在 panic 时中止进程,
+由 supervisor 拉起;只有明确要 `release-fast`(`opt-level = 3`、`panic = "unwind"`)时
+才展开,任务里的 panic 只结束那个任务。中止前 panic hook 停掉
 命令所在的进程组并写崩溃记录(`~/.agix/daemon/crashes/`);来不及跑 hook 的(SIGKILL、
 OOM)由同名实例下次启动、拿到锁之后按落盘的进程组记录(`~/.agix/daemon/groups/`)
 清理:先 `SIGTERM`,500 ms 后 `SIGKILL`。会话历史每次写入都落盘,重启后照常恢复;

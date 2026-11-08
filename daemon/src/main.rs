@@ -43,6 +43,8 @@ Options:
       --permission-prompt-timeout <SECS>
                                    Seconds a permission prompt may go unanswered before it is
                                    denied (0 = wait forever) [default: 300]
+      --worker-threads <N>         Async worker threads [env: AGIX_WORKER_THREADS]
+                                   [default: the number of CPU cores]
   -h, --help                       Print help
   -V, --version                    Print version
 ";
@@ -118,6 +120,11 @@ struct Cli {
     /// denies the tool call, never approves it — and the turn then continues
     /// normally with an error `tool_result`.
     permission_prompt_timeout: u64,
+
+    /// Async worker threads; `None` leaves tokio's default of one per CPU
+    /// core. Blocking work (file I/O, searches, scripts) runs on its own pool
+    /// whatever this is.
+    worker_threads: Option<usize>,
 }
 
 fn number<T: std::str::FromStr>(parser: &mut lexopt::Parser, flag: &str) -> Result<T, lexopt::Error>
@@ -139,7 +146,18 @@ enum Invocation {
 
 impl Cli {
     fn parse() -> Self {
-        match Self::parse_from(std::env::args_os().skip(1)) {
+        let parsed = Self::parse_from(std::env::args_os().skip(1)).and_then(|invocation| {
+            let Invocation::Run(mut cli) = invocation else {
+                return Ok(invocation);
+            };
+            if cli.worker_threads.is_none() {
+                if let Some(value) = std::env::var_os("AGIX_WORKER_THREADS") {
+                    cli.worker_threads = Some(worker_threads(&value.to_string_lossy())?);
+                }
+            }
+            Ok(Invocation::Run(cli))
+        });
+        match parsed {
             Ok(Invocation::Run(cli)) => *cli,
             Ok(Invocation::Help) => {
                 print!("{HELP}");
@@ -173,6 +191,7 @@ impl Cli {
             scenes: Vec::new(),
             instance: None,
             permission_prompt_timeout: 300,
+            worker_threads: None,
         };
         let mut parser = lexopt::Parser::from_args(args);
         while let Some(arg) = parser.next()? {
@@ -201,6 +220,9 @@ impl Cli {
                     cli.permission_prompt_timeout =
                         number(&mut parser, "permission-prompt-timeout")?
                 }
+                Long("worker-threads") => {
+                    cli.worker_threads = Some(worker_threads(&parser.value()?.string()?)?)
+                }
                 Short('h') | Long("help") => return Ok(Invocation::Help),
                 Short('V') | Long("version") => return Ok(Invocation::Version),
                 _ => return Err(arg.unexpected()),
@@ -208,6 +230,24 @@ impl Cli {
         }
         Ok(Invocation::Run(Box::new(cli)))
     }
+}
+
+fn worker_threads(value: &str) -> Result<usize, lexopt::Error> {
+    match value.parse::<usize>() {
+        Ok(n) if n > 0 => Ok(n),
+        _ => Err(format!(
+            "invalid worker thread count '{value}': expected an integer of at least 1"
+        )
+        .into()),
+    }
+}
+
+fn runtime(worker_threads: Option<usize>) -> std::io::Result<tokio::runtime::Runtime> {
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    if let Some(n) = worker_threads {
+        builder.worker_threads(n);
+    }
+    builder.enable_all().build()
 }
 
 /// The scene `--scene` names: a built-in, or a declarative scene under
@@ -252,8 +292,12 @@ fn default_instance_name(scene: &str, scenes: &[String]) -> String {
     active_scenes(scene, scenes).join(",")
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+    runtime(cli.worker_threads)?.block_on(serve(cli))
+}
+
+async fn serve(cli: Cli) -> anyhow::Result<()> {
     let perf = PerfCollector::new();
 
     tracing_subscriber::fmt()
@@ -262,8 +306,6 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
-
-    let cli = Cli::parse();
 
     let scene = resolve_scene(
         &cli.scene,
@@ -656,6 +698,23 @@ mod tests {
         assert_eq!(cli.scene, "code");
         assert_eq!(cli.permission_prompt_timeout, 300);
         assert!(cli.socket.is_none() && cli.instance.is_none() && cli.scenes.is_empty());
+        assert_eq!(cli.worker_threads, None);
+    }
+
+    #[test]
+    fn worker_threads_take_a_positive_count_and_size_the_runtime() {
+        assert_eq!(parse(&["--worker-threads", "1"]).worker_threads, Some(1));
+        assert_eq!(parse(&["--worker-threads=6"]).worker_threads, Some(6));
+        let parse_err =
+            |args: &[&str]| Cli::parse_from(args.iter().map(std::ffi::OsString::from)).is_err();
+        assert!(parse_err(&["--worker-threads", "0"]));
+        assert!(parse_err(&["--worker-threads", "-2"]));
+        assert!(parse_err(&["--worker-threads", "all"]));
+
+        let rt = runtime(Some(1)).unwrap();
+        assert_eq!(rt.metrics().num_workers(), 1);
+        let rt = runtime(Some(3)).unwrap();
+        assert_eq!(rt.metrics().num_workers(), 3);
     }
 
     #[test]
