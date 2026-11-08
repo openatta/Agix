@@ -275,11 +275,12 @@ let (mut agent, events, input) = runtime::agent::Builder::new()
 | 模块 | `skills` | skill 目录与 `Skill` 工具 |
 | 模块 | `script-host` | QuickJS 载体 |
 | 内核 | `ptc` | `RunCode`:模型写的程序,在内嵌的 QuickJS 里跑([`ptc.md`](ptc.md)) |
-| 模块 | `plugin` | 插件包:manifest、获取、缓存、披露 |
+| 模块 | `plugin` | 插件包:manifest、安装、缓存、披露 |
 | 装配 | `assembly` | 会话池、配置、provider 路由、JSON-RPC 服务 |
 | 外壳 | `daemon` | `agixd` 二进制 |
 
-`crates/` 下 21 个 crate,加上 `daemon/` 与四个测试成员,工作区共 26 个成员。完整的
+`crates/` 下 21 个 crate,加上 `daemon/`、四个测试成员与 `examples/plugins/rust` 的示例插件,
+工作区共 27 个成员。完整的
 图景——会话与场景、历史日志、执行层、锁、磁盘布局——在 [`ARCHITECTURE.md`](ARCHITECTURE.md)。
 
 ---
@@ -364,10 +365,11 @@ let pool = daemon::assemble::pool(
 - 给某一个点换个做法 → 写脚本:一个 `.js` 文件加 `settings.json` 里一行
   ([`extending_quickjs.md`](extending_quickjs.md))。
 - 打包一组能力——MCP 服务器、脚本、场景、agent 类型 → 做成插件包
-  ([`extension_points.md`](extension_points.md))。
+  ([`plugin_packages.md`](plugin_packages.md))。
 - 在自己的构建里加工具、拦截或提示词贡献 → 写 Rust 插件(`runtime::plugin::Plugin`),交给
   builder,或经 `Assembly` 加给每个会话。同一个点上 Rust 插件和脚本都有时,Rust 先、脚本
-  说最后一句。
+  说最后一句。两种插件怎么写见 [`plugin_development.md`](plugin_development.md),
+  `examples/plugins/` 下各有一个能跑的样例。
 - 换掉一个子系统 → 实现它的 trait([`extension_points.md`](extension_points.md) 列出了
   每一个,以及代价和谁能用)。
 
@@ -479,7 +481,9 @@ cargo test  -p live --features real-model --test real_model  # LIVE 层,对真�
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 引擎怎么拼起来——分层、模块、一轮、会话与场景、历史、执行、并发、磁盘布局 |
 | [extension_points.md](extension_points.md) | 每个接缝:能换什么、能往哪里贡献、能拦截什么,代价与谁能用 |
 | [daemon_rpc_protocol.md](daemon_rpc_protocol.md) | JSON-RPC 参考——方法、事件、错误码、认证 |
+| [plugin_development.md](plugin_development.md) | 写 Rust 插件与 QuickJS 插件,样例在 `examples/plugins/` |
 | [extending_quickjs.md](extending_quickjs.md) | 写脚本扩展 |
+| [plugin_packages.md](plugin_packages.md) | 插件包的格式、安装与信任 |
 | [ptc.md](ptc.md) | `RunCode`:模型写的程序能调什么、权限、限额与提示词 |
 | [migrating_to_0.3.md](migrating_to_0.3.md) | 嵌入方与客户端从 0.2.x 升级 |
 | [schemas/settings.schema.json](schemas/settings.schema.json) | 生成的 `settings.json` schema |

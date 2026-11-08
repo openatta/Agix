@@ -923,7 +923,8 @@ let store = Arc::new(ObservedHistoryStore::new(inner, vec![my_observer]));
 
 插件是一组有名字的**注册**与**拦截**,每个会话构建时登记一次。Rust 插件编译进宿主;
 QuickJS 脚本走的也是这个接口——`script-host` 把一组绑定包成一个
-`script_host::ScriptPlugin`,层是 `Layer::QuickJs`。
+`script_host::ScriptPlugin`,层是 `Layer::QuickJs`。怎么写插件见 `plugin_development.md`;
+`examples/plugins/` 下两个样例把下表每一项都用了一遍。
 
 ```rust
 pub trait Plugin: Send + Sync {
@@ -984,8 +985,12 @@ Assembly { plugins: vec![Arc::new(Tickets)], ..Default::default() }  // 池里�
 agent 类型和磁盘上的定义之间仍按层级覆盖:内建 < 插件包与插件 < 全局 < 场景 < 项目目录。
 
 - **子 Agent 也会登记。** 一个会话委派出去的子会话、团队成员、后台任务都带着父会话的
-  插件构建,`PluginSession::depth` 告诉插件它在第几层。`ScriptPlugin` 在子会话里只登记
-  工具与模型调用两侧的拦截,不带提示词贡献,也不重置配额——子会话的调用记在父会话这一轮。
+  插件构建,`PluginSession::depth` 告诉插件它在第几层。插件登记的工具不从父会话抄过去,
+  由子会话自己那次登记给出,再按 agent 类型的工具白名单收窄——和场景自带的工具一样
+  (`Builder::contributed_tool_filter`)。`ScriptPlugin` 在子会话里只登记工具与模型调用
+  两侧的拦截,不带提示词贡献,也不重置配额——子会话的调用记在父会话这一轮。
+- **宿主看得见的。** 插件的 `health_check` 在 daemon 的 `session.get` 里以 `health` 报出,
+  直接嵌引擎时从 `Agent::health()` 取。
 - **契约不在这里。** 换掉一个子系统(上面「契约」一节)仍然是 `Builder` 上的单槽 setter;
   场景仍是 `Assembly.scenes`;MCP 服务器与 hooks 仍走配置。
 - **稳定性。** `Plugin` 的三个方法不再变;新的能力只会作为 `Registrar` 的新方法出现,

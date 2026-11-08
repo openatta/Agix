@@ -697,6 +697,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
 
 [[package]]
+name = "demo-rust-plugin"
+version = "0.3.8-2026110802"
+dependencies = [
+ "async-trait",
+ "base",
+ "runtime",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "deranged"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1744,10 +1755,12 @@ dependencies = [
  "async-trait",
  "base",
  "daemon",
+ "demo-rust-plugin",
  "history",
  "model",
  "reqwest",
  "rpc-client",
+ "runtime",
  "scene",
  "serde",
  "serde_json",
@@ -2316,7 +2329,6 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 name = "plugin"
 version = "0.3.8-2026110802"
 dependencies = [
- "async-trait",
  "base",
  "hex",
  "scene",

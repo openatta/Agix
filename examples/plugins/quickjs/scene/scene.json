@@ -1,0 +1,9 @@
+{
+  "id": "plugin:demo-quickjs",
+  "name": "Demo review",
+  "description": "Reads a project and reports on it; never edits",
+  "tools": ["Read", "Glob", "Grep", "Agent"],
+  "disallowed_tools": ["Bash", "Write", "Edit"],
+  "requires_project": true,
+  "modules": ["agents"]
+}

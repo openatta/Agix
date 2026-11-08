@@ -550,6 +550,8 @@ declare that capability at install
 
 ## 接下来看哪儿
 
+- `examples/plugins/quickjs/` —— 示例插件包 `demo-quickjs`:九个点各绑一个做实事的脚本,
+  打包、安装、调试见 `plugin_development.md`。
 - `tests/testing_scripts.md` —— 这九个点怎么被测,以及一条用例要满足什么才算数。
 - `tests/fixtures/scripts/` —— 每个点一个能跑的 fixture,每一个都留下一处引擎里
   别的地方绝不会产生的痕迹;`broken/` 下面是各种坏法。

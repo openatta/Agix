@@ -342,12 +342,12 @@ does not carry answers `METHOD_NOT_FOUND` naming the module.
 | module | `skills` | skill catalog and the `Skill` tool |
 | module | `script-host` | the QuickJS carrier |
 | kernel | `ptc` | `RunCode`: the model's programs, run in an embedded QuickJS ([`docs/ptc.md`](docs/ptc.md)) |
-| module | `plugin` | plugin packages: manifest, fetch, cache, disclosure |
+| module | `plugin` | plugin packages: manifest, install, cache, disclosure |
 | assembly | `assembly` | session pool, configuration, provider routing, the JSON-RPC server |
 | shell | `daemon` | the `agixd` binary |
 
-21 crates under `crates/`, plus `daemon/` and the four test members — 26
-workspace members in total. The full picture — sessions and scenes, the history
+21 crates under `crates/`, plus `daemon/`, the four test members and the
+example plugin in `examples/plugins/rust` — 27 workspace members in total. The full picture — sessions and scenes, the history
 log, execution, locks, disk layout — is in
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
@@ -438,11 +438,13 @@ build if anything in the workspace assembles a pool a second way.
 - A new behavior for one point → a script: a `.js` file and one line in
   `settings.json` ([`docs/extending_quickjs.md`](docs/extending_quickjs.md)).
 - A packaged capability — MCP servers, scripts, a scene, agent types — → a
-  plugin package ([`docs/extension_points.md`](docs/extension_points.md)).
+  plugin package ([`docs/plugin_packages.md`](docs/plugin_packages.md)).
 - Tools, interceptors or prompt contributions in your own build → a Rust
   plugin (`runtime::plugin::Plugin`), added to the builder or to every session
   through `Assembly`. Where a Rust plugin and a script share a point, Rust runs
   first and the script has the last word.
+  [`docs/plugin_development.md`](docs/plugin_development.md) walks through both
+  kinds, with a working example of each in `examples/plugins/`.
 - A different subsystem → implement its trait
   ([`docs/extension_points.md`](docs/extension_points.md) lists every one, with
   what it costs and who may use it).
@@ -568,7 +570,9 @@ works and how to run it: [`tests/README.md`](tests/README.md).
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | how the engine is put together — layers, modules, the turn, sessions and scenes, history, execution, concurrency, disk layout |
 | [docs/extension_points.md](docs/extension_points.md) | every seam: what you can replace, contribute to or intercept, what it costs, who may |
 | [docs/daemon_rpc_protocol.md](docs/daemon_rpc_protocol.md) | the JSON-RPC reference — methods, events, error codes, auth |
+| [docs/plugin_development.md](docs/plugin_development.md) | writing Rust and QuickJS plugins, with the examples in `examples/plugins/` |
 | [docs/extending_quickjs.md](docs/extending_quickjs.md) | writing script extensions |
+| [docs/plugin_packages.md](docs/plugin_packages.md) | the plugin package format, install and trust |
 | [docs/ptc.md](docs/ptc.md) | `RunCode`: what a model's program can call, its permissions, limits and prompt |
 | [docs/migrating_to_0.3.md](docs/migrating_to_0.3.md) | upgrading an embedder or client from 0.2.x |
 | [docs/schemas/settings.schema.json](docs/schemas/settings.schema.json) | the generated schema of `settings.json` |

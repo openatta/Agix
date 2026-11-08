@@ -1007,7 +1007,15 @@ mod binding_tests {
             matches!(err, BindingError::UnbindablePoint { .. }),
             "{err:?}"
         );
-        assert!(err.to_string().contains("prompt.assemble"), "{err}");
+        let message = err.to_string();
+        assert!(
+            message.contains("event.sink"),
+            "names the binding: {message}"
+        );
+        assert!(
+            message.contains("prompt.assemble"),
+            "and what may be used: {message}"
+        );
     }
 
     /// A synchronous point, end to end. `tool.result` hands the script the
@@ -1221,28 +1229,6 @@ mod binding_tests {
             is_git: true,
             ..ctx()
         }
-    }
-
-    /// All or nothing. A configuration half of which was applied is a
-    /// configuration nobody wrote.
-    #[test]
-    fn one_bad_binding_registers_none_of_them() {
-        let project = tempdir();
-        std::fs::write(
-            project.join("good.js"),
-            "function onAssemble(b) { return b; }",
-        )
-        .unwrap();
-        let engine: Arc<dyn ScriptEngine> = Arc::new(QuickJsEngine::new());
-        let err = bind(
-            engine,
-            &[binding("good.js"), binding("missing.js")],
-            &project,
-        )
-        .unwrap_err();
-        assert!(matches!(err, BindingError::Unreadable { .. }), "{err:?}");
-        // Nothing came back at all, so the good one was not bound either — the
-        // point of returning a set rather than registering as it goes.
     }
 
     /// A fresh directory per call. The counter is load-bearing: two calls in
@@ -1687,7 +1673,7 @@ mod package_binding_tests {
     }
 
     /// The strict half is still strict: half an operator's `scripts` section
-    /// is a section nobody wrote.
+    /// is a section nobody wrote, whether a point or a file is what's wrong.
     #[test]
     fn a_projects_set_is_still_all_or_nothing() {
         let project = tempdir();
@@ -1705,6 +1691,26 @@ mod package_binding_tests {
         )
         .expect_err("an unknown point fails the set");
         assert!(matches!(err, BindingError::UnknownPoint { .. }), "{err:?}");
+        assert!(
+            out.carriers.is_empty(),
+            "a refused set leaves nothing behind"
+        );
+
+        let err = bind_into(
+            &mut out,
+            engine(),
+            &[
+                binding("p.js", "tool.result"),
+                binding("missing.js", "tool.result"),
+            ],
+            &BindingSource::Project { root: &project },
+        )
+        .expect_err("a missing file fails the set");
+        assert!(matches!(err, BindingError::Unreadable { .. }), "{err:?}");
+        assert!(
+            err.to_string().contains("missing.js"),
+            "names the file: {err}"
+        );
         assert!(
             out.carriers.is_empty(),
             "a refused set leaves nothing behind"

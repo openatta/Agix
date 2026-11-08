@@ -27,6 +27,7 @@ members = [
     "tests/live",
     "tests/runner",
     "tests/fixtures/mcp_toy_server",
+    "examples/plugins/rust",
 ]
 
 [workspace.package]
@@ -102,6 +103,7 @@ notify = "6"
 
 # Internal crate dependencies
 base     = { path = "crates/core" }
+demo-rust-plugin = { path = "examples/plugins/rust" }
 model    = { path = "crates/model" }
 auth     = { path = "crates/auth" }
 hooks    = { path = "crates/hooks" }

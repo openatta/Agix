@@ -366,11 +366,25 @@ WebAssembly 载体整个移除。
   工具名、agent 类型名跨插件唯一;提示块名与变量名同层唯一——撞了 `build()` 失败。
   脚本之间撞名在绑定时报 `BindingError::NameTaken`。
 - `runtime::module::SessionContext` 的 `plugin_host`、`delegate_scripts` 字段删除,换成
-  `plugin_agent_types` 与 `delegate_plugins`。
+  `plugin_agent_types`、`delegate_plugins` 与 `plugin_tools`。
 - `BoundScripts::prompt_variables` 的元素多了第三项 `BlockOrigin`。
+- `Builder::scene_tool_filter` 改名 `contributed_tool_filter`,现在也收窄插件登记的工具。
+  子 Agent 不再从父会话抄插件的工具,由它自己那次登记给出;`AgentTool::with_delegate_plugins`
+  多一个参数,是这些插件在父会话登记的工具名。
+- `plugin` crate 收拢成包的格式、发现、缓存、安装与披露:
+  - `plugin::cli`、`plugin::marketplace`、`plugin::resolver` 删除(按名字从市场安装、`update`、
+    依赖解析,daemon 从未接上);
+  - `plugin::fetch` 改名 `plugin::install`,`install(cache, name, source)` 与
+    `uninstall(cache, name, version)` 是函数,`PluginSource` 也挪到这里;
+  - `plugin::homograph` 改名 `plugin::blocklist`,只留 `check_blocklist`;
+    `PluginError::Homograph` 改名 `PluginError::Blocked`;
+  - `PluginCache` 去掉 `cache_registry_index`、`load_registry_index`、`total_cached`。
+- `assembly::plugins::PluginSubsystem::new` 去掉没用的工作区参数。
+- 两种插件的开发指南是新的 `plugin_development.md`,样例在 `examples/plugins/`。
 
 ### RPC 客户端
 
 - `plugin.install` 的 `disclosure` 去掉 `wasm`(`components` / `runnable`)与 `events`。
 - `plugin.list` 的条目去掉 `component_faults`。
 - `daemon.doctor` 的 `plugins.status` 不再出现 `packages-only`;带插件包的构建报 `enabled`。
+- `session.get` 多一个 `health`:会话的插件注册了健康检查时才有。

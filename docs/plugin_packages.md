@@ -6,7 +6,8 @@
 
 包方案是 `daemon` 的 `plugin-packages` feature,默认开启。不开时 `plugin.*` 这些 RPC 返回
 `PLUGINS_DISABLED`(`-32016`)。脚本怎么写见 `extending_quickjs.md`;引擎的全部扩展点见
-`extension_points.md`。
+`extension_points.md`。一个完整的包在 `examples/plugins/quickjs/`,开发流程见
+`plugin_development.md`。
 
 ## `plugin.toml`
 
@@ -85,7 +86,7 @@ manifest 里出现引擎不认识的顶级段,不拒,但打一条 WARN 说它"�
 ## 打包与安装
 
 压缩包就是插件目录的一个普通 zip,`plugin.toml` 在根上;`tests/runner/src/plugin_fixture.rs`
-是完整的打包步骤。
+是完整的打包步骤,测试就用它打包 `examples/plugins/quickjs/`。
 
 ```bash
 cd my-plugin && zip -r ../my-plugin.zip . && shasum -a 256 ../my-plugin.zip
@@ -157,4 +158,4 @@ cd my-plugin && zip -r ../my-plugin.zip . && shasum -a 256 ../my-plugin.zip
 - `settings.json` 的 `plugins` 段是部署级开关:`{"plugins": {"enabled": false}}` 一个都不
   加载;非空的 `{"plugins": {"allow": ["a", "b"]}}` 是白名单。完全不要插件的部署优先用
   构建 flag,那样没有东西可以再打开。
-- 插件名安装时对照黑名单检查;配了市场索引时还检查与官方名字的同形混淆。
+- 插件名安装时对照黑名单检查,比较前先把形似 ASCII 的西里尔、希腊字母折回原字母。

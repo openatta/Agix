@@ -1363,7 +1363,7 @@ async fn an_installed_package_outlives_the_daemon_that_installed_it() -> anyhow:
     let world = World::new()?;
     let project = world.project("packaged")?;
     let provider = ProviderStub::start().await?;
-    let (archive, checksum) = test_runner::plugin_fixture::package_demo_plugin(world.root())?;
+    let (archive, checksum) = test_runner::plugin_fixture::package_demo(world.root())?;
 
     let first = Daemon::start(
         &world,
@@ -1376,8 +1376,8 @@ async fn an_installed_package_outlives_the_daemon_that_installed_it() -> anyhow:
         .call(
             "plugin.install",
             json!({
-                "name": "demo-plugin",
-                "version": "1.0.0",
+                "name": test_runner::plugin_fixture::DEMO_PACKAGE,
+                "version": test_runner::plugin_fixture::DEMO_PACKAGE_VERSION,
                 "download_url": format!("file://{}", archive.display()),
                 "checksum": checksum,
             }),
@@ -1406,7 +1406,7 @@ async fn an_installed_package_outlives_the_daemon_that_installed_it() -> anyhow:
         .unwrap_or_default();
     let demo = plugins
         .iter()
-        .find(|p| p["name"] == "demo-plugin")
+        .find(|p| p["name"] == test_runner::plugin_fixture::DEMO_PACKAGE)
         .ok_or_else(|| {
             anyhow::anyhow!("a package installed by the previous daemon is gone: {plugins:?}")
         })?;

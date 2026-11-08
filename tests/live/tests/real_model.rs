@@ -9,6 +9,7 @@ mod live_context;
 mod live_extensions;
 mod live_host;
 mod live_multi_agent;
+mod live_plugins;
 mod live_programs;
 mod live_team;
 mod live_unattended;

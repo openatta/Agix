@@ -11,6 +11,7 @@ Agix 是一个**库**,不是一个应用。它提供的是"跑一个 agent 会�
 - `daemon_rpc_protocol.md` —— 通过 RPC 使用它
 - `extension_points.md` —— 能扩展什么(总揽)
 - `extending_quickjs.md` —— 怎么用脚本扩展;`extension_points.md` —— 全部扩展点
+- `plugin_development.md` —— 怎么写 Rust 插件与 QuickJS 插件,样例在 `examples/plugins/`
 - `migrating_to_0.3.md` —— 从 0.2.x 迁移
 
 ---
@@ -689,4 +690,5 @@ cargo build -p daemon                                          # QuickJS + 插�
 cargo build -p daemon --no-default-features --features full    # 两者皆无
 ```
 
-怎么写脚本见 `extending_quickjs.md`;插件包的格式见 `extension_points.md`。
+怎么写脚本见 `extending_quickjs.md`;插件包的格式见 `plugin_packages.md`;两种插件的开发
+指南与样例见 `plugin_development.md`。

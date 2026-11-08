@@ -1,0 +1,72 @@
+# demo-quickjs — an example plugin package: one QuickJS script on each of the
+# nine points a script can bind to, an agent type, and a scene of its own.
+# `docs/plugin_development.md` walks through it; `docs/plugin_packages.md` is
+# the manifest reference.
+#
+# Each script runs in well under a millisecond; `timeout_ms` is raised above
+# the 100 ms default only because that budget is wall clock, and a machine busy
+# with something else can miss it.
+
+[plugin]
+name = "demo-quickjs"
+version = "1.0.0"
+api_version = "0.1"
+description = "Example package: house rules in the prompt, an offline tool list, a guard on generated/, and a reviewer agent"
+author = "Agix examples"
+
+[[script]]
+point = "prompt.block"
+entry = "scripts/prompt_block.js:onBlock"
+timeout_ms = 1000
+
+[[script]]
+point = "prompt.variable"
+entry = "scripts/prompt_variable.js:onVariable"
+timeout_ms = 1000
+
+[[script]]
+point = "prompt.context"
+entry = "scripts/prompt_context.js:onContext"
+timeout_ms = 1000
+
+[[script]]
+point = "prompt.assemble"
+entry = "scripts/prompt_assemble.js:onAssemble"
+timeout_ms = 1000
+
+[[script]]
+point = "tool.around"
+entry = "scripts/tool_around.js:onAround"
+timeout_ms = 1000
+
+[[script]]
+point = "tool.result"
+entry = "scripts/tool_result.js:onResult"
+timeout_ms = 1000
+
+[[script]]
+point = "memory.retrieval_hook"
+entry = "scripts/memory_retrieval.js:onRetrieval"
+timeout_ms = 1000
+
+[[script]]
+point = "model.request"
+entry = "scripts/model_request.js:onRequest"
+timeout_ms = 1000
+
+[[script]]
+point = "model.message"
+entry = "scripts/model_message.js:onMessage"
+timeout_ms = 1000
+
+[[agent]]
+name = "demo-js-reviewer"
+description = "Reviews the files it is pointed at and lists problems; never edits"
+prompt = "agents/reviewer.md"
+allowed_tools = ["Read", "Grep", "Glob"]
+permission_mode = "plan"
+max_turns = 15
+scene = "plugin:demo-quickjs"
+
+[scene]
+dir = "scene"

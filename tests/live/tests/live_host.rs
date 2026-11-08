@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use base::interface::prompt::PromptBlock;
 use base::interface::scene::{Scene, ScenePromptContext, TokenBudget};
 use base::tool::{ProgressSender, Tool, ToolContext, ToolResult, ToolResultContent};
-use live::{LiveRun, Mode, Watcher};
+use live::{Host, LiveRun, Mode, Watcher};
 use serde_json::{json, Value};
 
 fn nonce() -> String {
@@ -554,7 +554,15 @@ async fn sub_agents_in_a_host_scene_use_the_scenes_own_tool() -> anyhow::Result<
         incident: incident.clone(),
         asked_by: asked_by.clone(),
     });
-    let mut run = LiveRun::start_with_scenes("oncall", json!({}), vec![scene]).await?;
+    let mut run = LiveRun::start_with_host(
+        "oncall",
+        json!({}),
+        Host {
+            scenes: vec![scene],
+            ..Default::default()
+        },
+    )
+    .await?;
     let session = run.session_with(json!({ "scene": "oncall" })).await?;
 
     let answer = run

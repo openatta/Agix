@@ -1,5 +1,5 @@
-//! 把 `tests/fixtures/plugins/demo-plugin/`（提交进仓库的、未打包的插件源码）
-//! 打成 zip，给 `plugin.install` RPC 用。
+//! 把 `examples/plugins/quickjs/`（示例插件包 `demo-quickjs` 的源码）或用例现造的
+//! 插件目录打成 zip，给 `plugin.install` RPC 用。
 //!
 //! 为什么不直接提交一个 .zip：未打包的目录 diff 可读、可 review；打包是纯机械
 //! 操作，测试运行时现打现用，没必要把二进制 blob 放进 git history。
@@ -7,22 +7,21 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// `tests/fixtures/plugins/demo-plugin/` 的绝对路径。
-pub fn demo_plugin_source_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/plugins/demo-plugin")
+pub const DEMO_PACKAGE: &str = "demo-quickjs";
+pub const DEMO_PACKAGE_VERSION: &str = "1.0.0";
+
+pub fn demo_package_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/plugins/quickjs")
 }
 
-/// 打包 `demo_plugin_source_dir()` 到 `out_dir/demo-plugin-<n>.zip`（`<n>` 自增，
-/// 避免并发测试互相覆盖），返回 `(zip 绝对路径, sha256 hex 校验和)`。
-pub fn package_demo_plugin(out_dir: &Path) -> anyhow::Result<(PathBuf, String)> {
-    package_dir(&demo_plugin_source_dir(), out_dir, "demo-plugin")
+/// 打包 `demo_package_dir()`，返回 `(zip 绝对路径, sha256 hex 校验和)`。
+pub fn package_demo(out_dir: &Path) -> anyhow::Result<(PathBuf, String)> {
+    package_dir(&demo_package_dir(), out_dir, DEMO_PACKAGE)
 }
 
-/// 打包任意一个插件源码目录，给 `plugin.install` 用。
-///
-/// 提交进仓库的 fixture 走 [`package_demo_plugin`]；用例现造的包（比如一个只带
-/// `[[script]]` 的包，JS 本身就是被测的东西，放在用例里比放在 fixture 目录里更
-/// 好读）走这里。两条路共用同一个打包器。
+/// 打包任意一个插件源码目录到 `out_dir/<name>-<n>.zip`（`<n>` 自增，避免并发测试
+/// 互相覆盖）。用例现造的包（JS 本身就是被测的东西，放在用例里比放在目录里好读）
+/// 直接走这里。
 pub fn package_dir(src: &Path, out_dir: &Path, name: &str) -> anyhow::Result<(PathBuf, String)> {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -77,10 +76,9 @@ fn add_dir_to_zip<W: std::io::Write + std::io::Seek>(
     Ok(())
 }
 
-/// `file://` URL for `plugin.install`'s `download_url` param — this scheme
-/// doesn't require a checksum (see `crates/plugin/src/fetch.rs`), but we pass
-/// one anyway since `package_demo_plugin` computes it for free and it's the
-/// more realistic shape of what a real install would send.
+/// `file://` URL for `plugin.install`'s `download_url` param. This scheme
+/// doesn't require a checksum (`crates/plugin/src/install.rs`), but the
+/// packers compute one anyway and a real install sends one.
 pub fn file_url(path: &Path) -> String {
     format!("file://{}", path.display())
 }

@@ -6,6 +6,7 @@
 mod background_agents;
 mod crash_recovery;
 mod daemon_surface;
+mod demo_plugins;
 mod four_project_pipeline;
 mod host_agents;
 mod minimal_tier;

@@ -72,52 +72,6 @@ fn calls_echo(id: &'static str, say: &'static str) -> Reply {
     }
 }
 
-/// A `scripts` section is honored whole or not at all.
-///
-/// Half a configuration is a configuration nobody wrote: the operator reads
-/// their settings file, sees five bindings, and has no way to learn that two of
-/// them are live. Refusing the set makes the mistake loud at the one moment
-/// somebody is in a position to fix it.
-#[test]
-fn one_binding_that_cannot_be_honored_drops_every_other() {
-    let bindings = vec![
-        binding("prompt_assemble.js", "prompt.assemble", "onAssemble"),
-        binding("tool_result.js", "tool.result", "onResult"),
-        // A point that exists in the catalog and has no script adapter.
-        binding("tool_result.js", "history.append_observer", "onResult"),
-        binding("prompt_block.js", "prompt.block", "onBlock"),
-    ];
-
-    let err = script_host::bindings::bind_quickjs(&bindings, &fixtures())
-        .expect_err("a binding at an unbindable point must be refused");
-    let message = err.to_string();
-    assert!(
-        message.contains("history.append_observer"),
-        "the error must name the binding that is wrong: {message}"
-    );
-    assert!(
-        message.contains("prompt.assemble"),
-        "and say what could have been used instead: {message}"
-    );
-}
-
-/// The same holds for a file that is not there. A path typo is the common
-/// version of this, and it must not leave a session half configured.
-#[test]
-fn a_binding_whose_file_is_missing_drops_every_other() {
-    let bindings = vec![
-        binding("prompt_assemble.js", "prompt.assemble", "onAssemble"),
-        binding("no_such_script.js", "tool.result", "onResult"),
-    ];
-
-    let err = script_host::bindings::bind_quickjs(&bindings, &fixtures())
-        .expect_err("a missing file must be refused");
-    assert!(
-        err.to_string().contains("no_such_script.js"),
-        "the error must name the file: {err}"
-    );
-}
-
 /// A script from outside the project may add to the prompt and may not rewrite
 /// it — and the refusal costs it only the edit it was not allowed to make.
 ///

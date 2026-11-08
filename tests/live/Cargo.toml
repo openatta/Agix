@@ -12,6 +12,7 @@ rpc-client  = { workspace = true }
 base        = { workspace = true }
 model       = { workspace = true }
 scene       = { workspace = true }
+runtime     = { workspace = true }
 history     = { workspace = true }
 tokio       = { workspace = true, features = ["full"] }
 tokio-util  = { workspace = true }
@@ -27,6 +28,7 @@ reqwest     = { workspace = true }
 # For the demo package's zip: one packer, shared, rather than a second copy
 # of "walk a directory into an archive and hash it".
 test-runner = { path = "../runner" }
+demo-rust-plugin = { workspace = true }
 
 [features]
 # The live tier: cases that talk to a real model, with the credentials in the

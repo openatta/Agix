@@ -34,9 +34,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 
 use crate::provider::{http_response, read_request, RawRequest, SeenRequest};
-use crate::{Daemon, DaemonOptions, Mode, ModelEndpoint, World};
-
-type HostScenes = Vec<Arc<dyn base::interface::scene::Scene>>;
+use crate::{Daemon, DaemonOptions, Host, Mode, ModelEndpoint, World};
 
 const DEFAULT_MAX_CALLS: usize = 400;
 const DEFAULT_TURN_TIMEOUT_SECS: u64 = 900;
@@ -474,7 +472,7 @@ pub struct LiveRun {
     name: String,
     turns: usize,
     mode: Mode,
-    scenes: HostScenes,
+    host: Host,
 }
 
 impl LiveRun {
@@ -491,24 +489,20 @@ impl LiveRun {
     /// `settings` is merged over [`base_settings`](Self::base_settings), one
     /// level deep.
     pub async fn start(name: &str, settings: Value, mode: Mode) -> anyhow::Result<Self> {
-        Self::start_with(name, settings, mode, Vec::new()).await
+        Self::start_with(name, settings, mode, Host::default()).await
     }
 
-    /// [`start`](Self::start) on a daemon in this process that also serves
-    /// `scenes`, as an embedder's does.
-    pub async fn start_with_scenes(
-        name: &str,
-        settings: Value,
-        scenes: HostScenes,
-    ) -> anyhow::Result<Self> {
-        Self::start_with(name, settings, Mode::InProcess, scenes).await
+    /// [`start`](Self::start) on a daemon in this process built with `host`'s
+    /// scenes and plugins, as an embedder's is.
+    pub async fn start_with_host(name: &str, settings: Value, host: Host) -> anyhow::Result<Self> {
+        Self::start_with(name, settings, Mode::InProcess, host).await
     }
 
     async fn start_with(
         name: &str,
         settings: Value,
         mode: Mode,
-        scenes: HostScenes,
+        host: Host,
     ) -> anyhow::Result<Self> {
         let config = LiveConfig::load()?;
         let world = World::new()?;
@@ -533,7 +527,7 @@ impl LiveRun {
             &provider,
             DaemonOptions::new(project.clone())
                 .mode(mode)
-                .scenes(scenes.clone()),
+                .host(host.clone()),
         )
         .await?;
         let client = daemon.connect().await?;
@@ -551,7 +545,7 @@ impl LiveRun {
             name: name.to_string(),
             turns: 0,
             mode,
-            scenes,
+            host,
         })
     }
 
@@ -564,7 +558,7 @@ impl LiveRun {
             &self.provider,
             DaemonOptions::new(self.project.clone())
                 .mode(self.mode)
-                .scenes(self.scenes.clone()),
+                .host(self.host.clone()),
         )
         .await?;
         self.client = self.daemon.connect().await?;
