@@ -6,6 +6,7 @@ rust-version = { workspace = true }
 license      = { workspace = true }
 publish      = false
 description  = "Agix — built-in tool implementations"
+autotests    = false
 
 [dependencies]
 base          = { workspace = true }
@@ -49,3 +50,7 @@ libc = { workspace = true }
 [lints.clippy]
 unwrap_used = "warn"
 expect_used = "warn"
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

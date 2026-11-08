@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 publish = false
 description = "Runs a scenario against a daemon — in this process or a spawned one — over the real RPC surface, with a scripted or a real model"
+autotests = false
 
 [dependencies]
 daemon      = { workspace = true }
@@ -33,41 +34,17 @@ test-runner = { path = "../runner" }
 real-model = []
 
 [[test]]
-name = "live_multi_agent"
-required-features = ["real-model"]
+name = "integration"
+path = "tests/integration.rs"
 
 [[test]]
-name = "live_basics"
+name = "real_model"
+path = "tests/real_model.rs"
 required-features = ["real-model"]
 
-[[test]]
-name = "live_agents"
-required-features = ["real-model"]
-
-[[test]]
-name = "live_team"
-required-features = ["real-model"]
-
-[[test]]
-name = "live_extensions"
-required-features = ["real-model"]
-
-[[test]]
-name = "live_host"
-required-features = ["real-model"]
-
-[[test]]
-name = "live_programs"
-required-features = ["real-model"]
-
-[[test]]
-name = "live_unattended"
-required-features = ["real-model"]
-
-[[test]]
-name = "live_context"
-required-features = ["real-model"]
-
+# Its own binary: a benchmark against a second harness, run on its own with
+# its own environment (`AGIX_DSH_BIN`, `AGIX_COMPARE_CASES`).
 [[test]]
 name = "compare_dsh"
+path = "tests/compare_dsh.rs"
 required-features = ["real-model"]

@@ -33,8 +33,7 @@ use std::sync::Arc;
 use test_runner::scripted_model::{Reply, ScriptedModel};
 use tokio_util::sync::CancellationToken;
 
-mod support;
-use support::{
+use crate::support::{
     compactable_tool, fake_tools, normalize_events, normalize_log, BudgetScene, GoldenFile,
 };
 

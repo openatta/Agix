@@ -496,8 +496,8 @@ Rust 1.80+. The test suite needs no network and no key.
 
 ```sh
 cargo build --workspace
-cargo test  --workspace                                   # everything offline
-cargo test  -p live --features real-model --test 'live_*' # the live tier, against a real model
+cargo test  --workspace                                      # everything offline
+cargo test  -p live --features real-model --test real_model  # the live tier, against a real model
 ```
 
 Six layers, from unit tests to the assembled product: crate tests, a behavior
