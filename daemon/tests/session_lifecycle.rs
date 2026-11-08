@@ -5045,7 +5045,7 @@ async fn start_server_running_a_background_sleep(reap: bool) -> ScriptedServer {
             tool_round(
                 "Bash",
                 "tool-1",
-                serde_json::json!({"command": "sleep 300 >/dev/null 2>&1 & echo \"PID=$!\""}),
+                serde_json::json!({"command": "tail -f /dev/null >/dev/null 2>&1 & echo \"PID=$!\""}),
             ),
             text_round("started"),
         ],

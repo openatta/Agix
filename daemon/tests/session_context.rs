@@ -286,7 +286,7 @@ async fn a_session_mid_turn_is_too_busy_to_change() {
     model.push_turn(tool_round(
         "Bash",
         "toolu_sleep",
-        serde_json::json!({"command": "sleep 30"}),
+        serde_json::json!({"command": "tail -f /dev/null"}),
     ));
     model.push_turn(text_round("stopped"));
     let daemon = Arc::new(Daemon::start(model).await);

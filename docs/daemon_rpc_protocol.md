@@ -327,10 +327,10 @@ daemon 按**单轮**如实上报,不做跨轮/跨会话聚合。
 | `plan` | 只允许只读工具 |
 | `default` | 未显式放行的工具调用都发 `prompt` 询问(**默认**) |
 | `bubble` | 把询问上抛给父 Agent —— 程序专用,写进 settings.json 会被退回 `default` |
-| `acceptEdits` | 自动放行文件写入,其余询问 |
+| `acceptEdits` | 自动放行项目内的文件写入与只读调用,其余询问(项目外的写入照样询问) |
 | `auto` | 依赖会话分类器 —— 程序专用,同上 |
 | `yolo` | 激进自动放行 |
-| `bypassPermissions` | 不询问、全部放行 —— 规则里的 `deny`、`.ssh` / `.aws` / `.gnupg` 与 `/etc/passwd` 一类路径、`rm -rf /` 一类命令照样拒绝 |
+| `bypassPermissions` | 不询问、不看任何规则 —— 规则里的 `deny`、`.ssh` / `.aws` / `.gnupg` 与 `/etc/passwd` 一类路径、`rm -rf /` 一类命令都放行;只有不合法的输入(没读过就改、超出上限、会被读错的路径)被拒,`Bash` 仍在 OS 沙箱里 |
 
 表格是按**宽松程度从严到宽**排的,这个顺序就是会话级取值被夹紧的依据:会话只能
 比 settings 更严,不能更宽,除非 settings 里开了 `allow_client_permission_override`。

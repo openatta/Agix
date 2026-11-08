@@ -510,18 +510,12 @@ pub struct SessionPool {
     host_scenes: std::sync::RwLock<Vec<Arc<dyn Scene>>>,
     /// Scenes `scene.register` added, held in memory only.
     registered_scenes: std::sync::RwLock<Vec<Arc<dyn Scene>>>,
-    /// The **opt-out** permission instance: an allow-everything
-    /// `Permission` handed to a session only when its effective permission
-    /// mode is `bypassPermissions` (see `resolve_session_permission`).
-    ///
-    /// This used to be the pool's unconditional default — every daemon
-    /// session ran allow-all unless it explicitly asked otherwise. That
-    /// trust boundary moved deliberately (see `daemon/src/main.rs`'s
-    /// `AllowAllPermission` doc comment and `docs/daemon_rpc_protocol.md`): the
-    /// default is now a real `RuleSetPermission` in `ask` mode, and this
-    /// `Arc` is what a host that genuinely sandboxes the daemon itself
-    /// opts back into.
-    permission: Arc<dyn Permission>,
+    /// The host's own `Permission`, handed to a session whose effective mode
+    /// is `bypassPermissions` in place of the rule gate (see
+    /// `resolve_session_permission`). `None` when the host supplied none:
+    /// such a session gets the gate too, which under bypass consults no rule
+    /// but still validates input and still follows a later `EnterPlanMode`.
+    permission: Option<Arc<dyn Permission>>,
     /// Built-in tool registry (Bash/Read/Write/Edit/Grep/Glob/...), shared
     /// (cheap `Arc` clone) by every session `Builder`. Built once here via
     /// `tools::register_builtin_tools` — before this field existed,
@@ -804,7 +798,7 @@ impl SessionPool {
         client: Arc<dyn AnthropicClient>,
         settings: Arc<Settings>,
         scene: Arc<dyn Scene>,
-        permission: Arc<dyn Permission>,
+        permission: Option<Arc<dyn Permission>>,
         cwd: PathBuf,
         history_store: Option<Arc<dyn history::store::HistoryStore>>,
         paths: Arc<dyn crate::config::DaemonPaths>,
@@ -2050,7 +2044,7 @@ impl SessionPool {
             Arc::new(snap)
         };
         let permission = resolve_session_permission(
-            &self.permission,
+            self.permission.as_ref(),
             &self.tools,
             &settings_snapshot,
             permission_mode,
@@ -7134,17 +7128,15 @@ fn bind_scripts(
 }
 
 fn resolve_session_permission(
-    bypass_instance: &Arc<dyn Permission>,
+    host: Option<&Arc<dyn Permission>>,
     tools: &Arc<base::tool::InMemoryToolRegistry>,
     settings: &Settings,
     mode: base::interface::settings::PermissionMode,
     options: Option<&SessionOptions>,
 ) -> Arc<dyn Permission> {
-    if matches!(
-        mode,
-        base::interface::settings::PermissionMode::BypassPermissions
-    ) {
-        return bypass_instance.clone();
+    if let (Some(host), base::interface::settings::PermissionMode::BypassPermissions) = (host, mode)
+    {
+        return host.clone();
     }
 
     let extra = options
@@ -7416,16 +7408,17 @@ mod resolve_session_permission_tests {
         Settings::defaults_for("claude-sonnet-4-6")
     }
 
-    /// Everything the resolver needs beyond the settings/options under test.
+    /// Everything the resolver needs beyond the settings/options under test,
+    /// with the host having supplied its own `Permission`.
     fn resolve(
         settings: &Settings,
         options: Option<&SessionOptions>,
     ) -> (Arc<dyn Permission>, Arc<dyn Permission>) {
-        let bypass: Arc<dyn Permission> = Arc::new(AllowAllTestPermission);
+        let host: Arc<dyn Permission> = Arc::new(AllowAllTestPermission);
         let tools = Arc::new(base::tool::InMemoryToolRegistry::new());
         let mode = effective_permission_mode(settings, options);
-        let resolved = resolve_session_permission(&bypass, &tools, settings, mode, options);
-        (bypass, resolved)
+        let resolved = resolve_session_permission(Some(&host), &tools, settings, mode, options);
+        (host, resolved)
     }
 
     /// The behavior change this round is *about*: with nothing configured,
@@ -7446,15 +7439,40 @@ mod resolve_session_permission_tests {
         );
     }
 
-    #[test]
-    fn settings_bypass_mode_is_the_opt_out_and_restores_the_shared_instance() {
+    #[tokio::test]
+    async fn a_bypass_session_gets_the_hosts_permission_or_else_a_gate_that_only_validates() {
+        use base::interface::permission::PermissionOutcome;
         let mut settings = defaults();
         settings.permission_mode = base::interface::settings::PermissionMode::BypassPermissions;
+        settings.permission_rules = vec![base::interface::settings::PermissionRule {
+            tool: "Bash".into(),
+            action: base::interface::settings::PermissionAction::Deny,
+            tier: None,
+        }];
 
-        let (bypass, resolved) = resolve(&settings, None);
+        let (host, resolved) = resolve(&settings, None);
         assert!(
-            Arc::ptr_eq(&bypass, &resolved),
-            "opting out must hand back the literal same shared instance, not an equivalent one"
+            Arc::ptr_eq(&host, &resolved),
+            "a host that supplied its own permission gets that very instance"
+        );
+
+        let tools = Arc::new(base::tool::InMemoryToolRegistry::new());
+        tools::register_builtin_tools(&tools);
+        let mode = effective_permission_mode(&settings, None);
+        let gate = resolve_session_permission(None, &tools, &settings, mode, None);
+        let cwd = std::env::temp_dir();
+        assert!(matches!(
+            gate.check("Bash", &serde_json::json!({"command": "ls"}), &cwd, "s")
+                .await,
+            PermissionOutcome::Permit
+        ));
+        assert!(
+            matches!(
+                gate.check("Bash", &serde_json::json!({"command": "  "}), &cwd, "s")
+                    .await,
+                PermissionOutcome::Deny { .. }
+            ),
+            "input validation still runs under bypass"
         );
     }
 
@@ -7780,7 +7798,7 @@ mod mcp_for_project_tests {
         let cwd = dir.path().join("work");
         std::fs::create_dir_all(&cwd).unwrap();
         let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene::default());
-        let permission: Arc<dyn Permission> = Arc::new(AllowAllTestPermission);
+        let permission: Option<Arc<dyn Permission>> = Some(Arc::new(AllowAllTestPermission));
         let paths: Arc<dyn crate::config::DaemonPaths> = Arc::new(
             crate::config::StaticDaemonPaths::new(dir.path().to_path_buf()),
         );
@@ -8211,7 +8229,7 @@ mod with_session_lock_tests {
         let cwd = dir.path().join("work");
         std::fs::create_dir_all(&cwd).unwrap();
         let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene::default());
-        let permission: Arc<dyn Permission> = Arc::new(AllowAllTestPermission);
+        let permission: Option<Arc<dyn Permission>> = Some(Arc::new(AllowAllTestPermission));
         let paths: Arc<dyn crate::config::DaemonPaths> = Arc::new(
             crate::config::StaticDaemonPaths::new(dir.path().to_path_buf()),
         );

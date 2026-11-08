@@ -99,7 +99,12 @@ impl Tool for NotebookEditTool {
             {
                 ValidationResult::err("new_source is required for insert/edit modes", 2)
             }
-            Ok(_) => ValidationResult::Ok,
+            Ok(p) => match permissions::path_safety::check_requested_path(std::path::Path::new(
+                &p.file_path,
+            )) {
+                Ok(()) => ValidationResult::Ok,
+                Err(e) => ValidationResult::err(e.to_string(), 4),
+            },
             Err(e) => ValidationResult::err(format!("invalid input: {e}"), 3),
         }
     }
@@ -110,16 +115,10 @@ impl Tool for NotebookEditTool {
             return PermissionDecision::allow();
         };
         let requested = std::path::PathBuf::from(&p.file_path);
-        let path = {
-            let raw = requested.clone();
-            let resolved = if raw.is_absolute() {
-                raw
-            } else {
-                ctx.cwd.join(raw)
-            };
-            crate::security::normalize_path_lexically(&resolved)
-        };
-        let path = ctx.exec.filesystem.canonicalize_best_effort(&path).await;
+        let target =
+            crate::security::resolve_write_target(&p.file_path, &ctx.cwd, &*ctx.exec.filesystem)
+                .await;
+        let path = ctx.exec.filesystem.canonicalize_best_effort(&target).await;
         let policy = crate::security::write_policy(ctx).await;
         match permissions::path_safety::check_write_for(&requested, &path, &policy) {
             Ok(_) => PermissionDecision::allow(),
@@ -142,7 +141,13 @@ impl Tool for NotebookEditTool {
         _: ProgressSender,
     ) -> Result<ToolResult, ToolError> {
         let input: NotebookEditInput = serde_json::from_value(input)?;
-        let path = std::path::Path::new(&input.file_path);
+        let target = crate::security::resolve_write_target(
+            &input.file_path,
+            &ctx.cwd,
+            &*ctx.exec.filesystem,
+        )
+        .await;
+        let path = target.as_path();
 
         // **P1 **: snapshot before mutating so /rewind can restore.
         if let Some(snapshot) = &ctx.snapshot_file {
@@ -334,6 +339,29 @@ mod tests {
         let nb: Value = serde_json::from_str(&after).unwrap();
         assert_eq!(nb["cells"].as_array().unwrap().len(), 1);
         assert_eq!(nb["cells"][0]["cell_type"], "code");
+    }
+
+    #[tokio::test]
+    async fn a_relative_path_resolves_against_the_session_cwd() {
+        let dir = TempDir::new().unwrap();
+        let p = dir.path().join("rel.ipynb");
+        tokio::fs::write(&p, empty_notebook_json()).await.unwrap();
+        let ctx = ToolContext::for_test(dir.path().to_path_buf());
+        NotebookEditTool
+            .call(
+                json!({
+                    "file_path": "rel.ipynb",
+                    "mode": "insert",
+                    "cell_index": 0,
+                    "new_source": "x = 1"}),
+                ctx,
+                ProgressSender::noop("t"),
+            )
+            .await
+            .unwrap();
+        let nb: Value =
+            serde_json::from_str(&tokio::fs::read_to_string(&p).await.unwrap()).unwrap();
+        assert_eq!(nb["cells"].as_array().unwrap().len(), 1);
     }
 
     #[tokio::test]

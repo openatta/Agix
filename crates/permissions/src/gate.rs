@@ -3,7 +3,9 @@
 //! 决策顺序（`PreToolUse` hook 不在此处——由调用方 `runtime::turn` 在进入
 //! 本 gate 之前执行，见 `execute_tool_inner`）：
 //!
-//! 1. `tool.validate_input` —— 输入合法性
+//! 1. `tool.validate_input` —— 输入合法性。`BypassPermissions` 到此为止：
+//!    输入合法即 allow，下面的规则、受保护路径、`.git` / `.agix` 确认和工具
+//!    自己的判定一概不看
 //! 2. `tool.check_permissions` —— 工具自带的判定：
 //!    - `Deny` **直接返回**（工具拒绝自己是权威的：只有工具知道自己的输入
 //!      为什么不该跑）
@@ -17,12 +19,12 @@
 //!    - `Plan` 且非只读工具 → deny
 //!    - `DontAsk` 且没有 allow 规则命中 → deny
 //!
-//!    之后第 3 步的 `Ask` 命中 → ask（`DontAsk` 下 deny，`BypassPermissions` 下略过）
+//!    之后第 3 步的 `Ask` 命中 → ask（`DontAsk` 下 deny）
 //! 6. 兑现第 2 步记下的工具自判 `Allow` → allow
 //! 7. 规则引擎的 `Allow` → allow
 //! 8. 其余 PermissionMode 分派：
-//!    - `BypassPermissions` → allow
-//!    - `AcceptEdits` 且工具是 Edit / Write（或只读）→ allow
+//!    - `AcceptEdits` 且工具只读 → allow；Edit / Write 走到这里说明工具自己
+//!      没放行（写项目外）或要确认（`.git` / `.agix`），照样 ask
 //!    - `Auto` / `Yolo` → classifier，Defer 则落到 ask
 //!    - 其余（含只读工具下的 `Plan`）→ ask / allow
 //!
@@ -32,8 +34,10 @@
 //! 名单对这批工具都不可达。挪到 3–5 步之后，Default 模式下项目内编辑、只读命令
 //! 照样不弹窗（3–5 步不会否掉它们），而这些约束仍凌驾于工具自身的意见之上。
 //!
-//! 注意 `BypassPermissions` 依旧要被规则 `Deny` 与 bypass-immune 路径压制
-//! （见测试 `rule_engine_deny_short_circuits`）：这两项检查排在模式分派之前。
+//! 输入校验不属于权限，所以 bypass 下照样生效：读后再写的过期检查、大小
+//! 上限、`~` / `$(` / UNC 这类会被误读的路径，都在各工具的 `validate_input`
+//! 里。Bash 另由 OS 沙箱约束（`dangerously_disable_sandbox` 除外），与权限
+//! 模式无关。
 //!
 //! 关键：gate **不**直接调 `effects.ask_user`。它返回 `PermissionDecision::Ask`，
 //! 由调用方（engine）决定怎么把它升级成 allow / deny。
@@ -275,6 +279,14 @@ impl PermissionGate {
             return Err(GateError::InvalidInput { message: msg, code });
         }
 
+        let mode = ctx.session.permission_mode();
+        if mode == PermissionMode::BypassPermissions {
+            return Ok(PermissionDecision::Allow {
+                updated_input: None,
+                decision_reason: Some(DecisionReason::Mode(mode)),
+            });
+        }
+
         // 2. tool.check_permissions —— 工具自带判定
         //
         // Deny 是权威的、立即返回：工具比 gate 更清楚自己的这组输入为什么不能跑
@@ -296,10 +308,9 @@ impl PermissionGate {
             base::tool::PermissionDecision::Ask { .. } => { /* 工具没意见 */ }
         }
 
-        // 3. 通用规则引擎 —— Deny 短路（必须压过 pending 的工具自判 Allow，
-        //    也必须压过后面的 BypassPermissions）。Allow 先存着，等模式级硬拒绝
-        //    （Plan / DontAsk）判完再用：DontAsk 就是靠"有没有 allow 规则"决定
-        //    放行还是拒绝的。
+        // 3. 通用规则引擎 —— Deny 短路（必须压过 pending 的工具自判 Allow）。
+        //    Allow 先存着，等模式级硬拒绝（Plan / DontAsk）判完再用：DontAsk
+        //    就是靠"有没有 allow 规则"决定放行还是拒绝的。
         let content = tool.permission_match_content(input);
         let kind = tool.permission_content_kind();
         let path_group = path_rule_group(kind);
@@ -342,10 +353,7 @@ impl PermissionGate {
             RuleHit::None => (None, None),
         };
 
-        // 4. Bypass-immune safety: even in BypassPermissions mode — and even when
-        //    the tool allowed itself in step 2 — block access to sensitive paths
-        //    that should never be touched without explicit user confirmation.
-        //    Equivalent to TS step 1g (safety checks).
+        // 4. Sensitive paths — even when the tool allowed itself in step 2.
         if let Some(content) = checked_strings.iter().find(|s| is_path_bypass_immune(s)) {
             return Ok(PermissionDecision::Deny {
                 message: format!(
@@ -364,7 +372,6 @@ impl PermissionGate {
         // `Tool::self_allow_overrides_mode`. Deliberately narrow: it does not
         // affect the rule engine or the bypass-immune list above, both of
         // which have already had their say.
-        let mode = ctx.session.permission_mode();
         let mode_denials_apply = !(tool_self_allow && tool.self_allow_overrides_mode());
         if mode_denials_apply && matches!(mode, PermissionMode::Plan) && !tool.is_read_only(input) {
             return Ok(PermissionDecision::Deny {
@@ -380,10 +387,9 @@ impl PermissionGate {
         }
 
         // An ask rule outranks the tool's own allow: it prompts in every mode
-        // that prompts at all, denies under dontAsk, and is moot under bypass.
+        // that prompts at all and denies under dontAsk.
         if let Some(rule) = rule_ask {
             match mode {
-                PermissionMode::BypassPermissions => {}
                 PermissionMode::DontAsk => {
                     return Ok(PermissionDecision::Deny {
                         message: format!(
@@ -436,21 +442,13 @@ impl PermissionGate {
 
         // 8. 其余模式分派
         match mode {
-            PermissionMode::BypassPermissions => Ok(PermissionDecision::Allow {
-                updated_input: None,
-                decision_reason: Some(DecisionReason::Mode(mode)),
-            }),
-
             PermissionMode::AcceptEdits => {
-                let read_only = tool.is_read_only(input);
-                let is_edit_or_write = tool.name() == "Edit" || tool.name() == "Write";
-                if read_only || is_edit_or_write {
+                if tool.is_read_only(input) {
                     Ok(PermissionDecision::Allow {
                         updated_input: None,
                         decision_reason: Some(DecisionReason::Mode(mode)),
                     })
                 } else {
-                    // acceptEdits 不适用 → 走默认 ask
                     Ok(PermissionDecision::Ask {
                         message: format!("Allow {}?", tool.name()),
                         decision_reason: Some(DecisionReason::Mode(mode)),
@@ -476,7 +474,9 @@ impl PermissionGate {
             PermissionMode::Default
             | PermissionMode::Plan
             | PermissionMode::Auto
-            | PermissionMode::Yolo => {
+            | PermissionMode::Yolo
+            // Bypass 在第 1 步之后就返回了；列在这里只为 match 穷尽。
+            | PermissionMode::BypassPermissions => {
                 // Plan 命中此处说明 tool 是 read_only（非只读的在第 5 步已经
                 // deny 了）—— 默认 allow
                 if matches!(mode, PermissionMode::Plan) && tool.is_read_only(input) {
@@ -621,6 +621,7 @@ mod tests {
         read_only: bool,
         own_decision: Option<base::tool::PermissionDecision>,
         match_content: Option<String>,
+        invalid: bool,
     }
 
     impl FakeTool {
@@ -630,7 +631,12 @@ mod tests {
                 read_only: false,
                 own_decision: None,
                 match_content: None,
+                invalid: false,
             }
+        }
+        fn invalid(mut self) -> Self {
+            self.invalid = true;
+            self
         }
         fn read_only(mut self) -> Self {
             self.read_only = true;
@@ -659,6 +665,17 @@ mod tests {
         }
         fn is_read_only(&self, _: &Value) -> bool {
             self.read_only
+        }
+        async fn validate_input(
+            &self,
+            _: &Value,
+            _: &base::tool::ToolContext,
+        ) -> base::tool::ValidationResult {
+            if self.invalid {
+                base::tool::ValidationResult::err("bad input", 1)
+            } else {
+                base::tool::ValidationResult::Ok
+            }
         }
         async fn check_permissions(
             &self,
@@ -826,15 +843,66 @@ mod tests {
         }]);
         let gate = PermissionGate::new(rules);
         let d = gate
+            .check(&tool, &json!({}), &ctx_with_mode(PermissionMode::Default))
+            .await
+            .unwrap();
+        assert!(matches!(d, PermissionDecision::Deny { .. }));
+    }
+
+    #[tokio::test]
+    async fn bypass_mode_consults_no_rule_no_protected_path_and_no_tool_verdict() {
+        let deny_bash = || {
+            RuleSet::new(vec![PermissionRule {
+                source: base::permission::RuleSource::PolicySettings,
+                behavior: base::permission::RuleBehavior::Deny,
+                tool_name: "Bash".into(),
+                rule_content: None,
+            }])
+        };
+        let ctx = ctx_with_mode(PermissionMode::BypassPermissions);
+        let cases = [
+            FakeTool::new("Bash").matches("rm -rf build"),
+            FakeTool::new("Read").read_only().matches("~/.ssh/id_rsa"),
+            FakeTool::new("Bash").matches("rm -rf /"),
+            FakeTool::new("Write")
+                .matches("/repo/.agix/settings.json")
+                .own(base::tool::PermissionDecision::Deny {
+                    reason: Some("guarded".into()),
+                    decision_reason: None,
+                }),
+        ];
+        for tool in cases {
+            let d = PermissionGate::new(deny_bash())
+                .check(&tool, &json!({}), &ctx)
+                .await
+                .unwrap();
+            assert!(
+                matches!(
+                    d,
+                    PermissionDecision::Allow {
+                        decision_reason: Some(DecisionReason::Mode(
+                            PermissionMode::BypassPermissions
+                        )),
+                        ..
+                    }
+                ),
+                "{:?}: {d:?}",
+                tool.match_content
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn bypass_mode_still_rejects_invalid_input() {
+        let tool = FakeTool::new("Write").invalid();
+        let r = PermissionGate::empty()
             .check(
                 &tool,
                 &json!({}),
                 &ctx_with_mode(PermissionMode::BypassPermissions),
             )
-            .await
-            .unwrap();
-        // 即便 Bypass 模式，更早的 rule deny 已生效
-        assert!(matches!(d, PermissionDecision::Deny { .. }));
+            .await;
+        assert!(matches!(r, Err(GateError::InvalidInput { .. })), "{r:?}");
     }
 
     #[tokio::test]
@@ -875,10 +943,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn accept_edits_allows_write_tool() {
-        let tool = FakeTool::new("Write");
-        let gate = PermissionGate::empty();
-        let d = gate
+    async fn accept_edits_allows_a_write_the_tool_allowed_and_asks_for_one_it_did_not() {
+        let ctx = ctx_with_mode(PermissionMode::AcceptEdits);
+        let inside = FakeTool::new("Write")
+            .matches("/tmp/a.txt")
+            .own(base::tool::PermissionDecision::allow());
+        let d = PermissionGate::empty()
+            .check(&inside, &json!({}), &ctx)
+            .await
+            .unwrap();
+        assert!(matches!(d, PermissionDecision::Allow { .. }), "{d:?}");
+
+        for tool in [
+            FakeTool::new("Write").matches("/elsewhere/a.txt"),
+            FakeTool::new("Edit").matches("/elsewhere/a.txt"),
+            FakeTool::new("Write")
+                .matches("/tmp/.agix/hooks/x.sh")
+                .own(base::tool::PermissionDecision::allow()),
+        ] {
+            let d = PermissionGate::empty()
+                .check(&tool, &json!({}), &ctx)
+                .await
+                .unwrap();
+            assert!(
+                matches!(d, PermissionDecision::Ask { .. }),
+                "{:?}: {d:?}",
+                tool.match_content
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn accept_edits_allows_a_read_only_tool() {
+        let tool = FakeTool::new("Read")
+            .read_only()
+            .matches("/elsewhere/a.txt");
+        let d = PermissionGate::empty()
             .check(
                 &tool,
                 &json!({}),
@@ -886,7 +986,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(matches!(d, PermissionDecision::Allow { .. }));
+        assert!(matches!(d, PermissionDecision::Allow { .. }), "{d:?}");
     }
 
     #[tokio::test]
@@ -1151,9 +1251,9 @@ fn is_path_confirmation_required(content: &str) -> bool {
         })
 }
 
-/// Check whether a path (or command argument) references a bypass-immune
-/// sensitive path. Even in BypassPermissions mode, these paths should never
-/// be accessed without explicit user awareness.
+/// Check whether a path (or command argument) references a sensitive path
+/// that every mode consulting rules refuses — neither the tool's own allow
+/// nor an allow rule reaches past it. `BypassPermissions` consults nothing.
 ///
 /// **Component matching (2026-08-11 审计 N-15)**: the old implementation did
 /// `lowered.find(sensitive)` and then checked whether the byte *before* the hit

@@ -621,7 +621,7 @@ mod tests {
                 name: "Bash",
                 content: Some("git status"),
             }),
-            PermissionMode::BypassPermissions,
+            PermissionMode::Default,
         );
         perm.add_persistent_allow("Bash", Some("git status"));
 

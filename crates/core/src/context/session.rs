@@ -729,6 +729,27 @@ impl SessionState {
             .collect()
     }
 
+    /// Ids of the background work still running — sub-agents, teammates,
+    /// programs, monitors; not a foreground shell command — sorted.
+    pub fn running_background_task_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .running_tasks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|(_, task)| {
+                !matches!(task.task_type, TaskType::Shell)
+                    && matches!(
+                        *task.status.lock().unwrap_or_else(|e| e.into_inner()),
+                        RunningStatus::Running
+                    )
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.sort();
+        ids
+    }
+
     /// Stop a running task: cancel what it runs under and record it as
     /// stopped. `false` if there is no such task or it had already ended.
     pub fn cancel_running_task(&self, task_id: &str) -> bool {

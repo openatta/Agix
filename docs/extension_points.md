@@ -217,11 +217,12 @@ Builder::new().permission(Arc::new(MyGate));
 它那条"未知工具"的分支就成了一个洞),`bind_session_state` 让它持续看得见会话中途
 的模式切换。两者对不需要它们的 handler 都默认是空实现。
 
-`agixd` 的会话池对 `bypassPermissions` 模式的会话不装规则引擎,而是用
-`Assembly.permission`(缺省放行一切):这样的会话里 deny 规则、凭据与 `.agix` 设置文件的
-免 bypass 名单、"改文件前先读过"都不生效,直接调用和程序里的调用一样。要规则仍然算数又
-不想被询问,用 `acceptEdits` 或 `dontAsk` 加 allow 规则。直接用 `Builder` 嵌入、交的是
-`PermissionGate` 的,`BypassPermissions` 下 deny 规则照样压过模式(`ARCHITECTURE.md` §6.1)。
+`BypassPermissions` 下 `PermissionGate` 一条规则都不看:deny 规则、凭据与 `.agix` 设置
+文件的免 bypass 名单、ask 规则、工具自己的判定都跳过,只剩输入校验("改文件前先读过"、
+大小上限、会被读错的路径)照样拒绝,直接调用和程序里的调用一样(`ARCHITECTURE.md` §6.1)。
+`agixd` 的会话池对 `bypassPermissions` 会话也装这道 gate;宿主给了 `Assembly.permission`
+的,这样的会话改用宿主的 handler。要规则仍然算数又不想被询问,用 `acceptEdits` 或
+`dontAsk` 加 allow 规则。
 
 ### 一个 agent 怎么呈现自己 — `scene`
 

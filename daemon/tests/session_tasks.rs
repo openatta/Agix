@@ -196,7 +196,7 @@ async fn a_running_shell_command_is_listed_announced_and_stopped() {
     model.push_turn(tool_round(
         "Bash",
         "toolu_sleep",
-        serde_json::json!({"command": "sleep 30"}),
+        serde_json::json!({"command": "tail -f /dev/null"}),
     ));
     model.push_turn(text_round("stopped"));
     let daemon = Arc::new(Daemon::start(model).await);
@@ -230,7 +230,7 @@ async fn a_running_shell_command_is_listed_announced_and_stopped() {
             .find(|t| t["kind"] == "shell" && t["status"] == "running")
             .cloned()
     });
-    assert_eq!(shell["detail"]["command"], "sleep 30");
+    assert_eq!(shell["detail"]["command"], "tail -f /dev/null");
 
     let started = eventually!("task_started, a second into the command", {
         frames

@@ -100,15 +100,18 @@ impl Tool for FileWriteTool {
                 3,
             ),
             Ok(p) => {
-                // **P (read-before-edit)**: staleness check — existing files must
-                // have been Read before they can be overwritten. New files skip.
-                let resolved = if Path::new(&p.file_path).is_absolute() {
-                    PathBuf::from(&p.file_path)
-                } else {
-                    ctx.cwd.join(&p.file_path)
-                };
-                let resolved = crate::security::normalize_path_lexically(&resolved);
-                if let Some(msg) = ctx.session.check_read_staleness(&resolved) {
+                if let Err(e) =
+                    permissions::path_safety::check_requested_path(Path::new(&p.file_path))
+                {
+                    return ValidationResult::err(e.to_string(), 5);
+                }
+                let target = crate::security::resolve_write_target(
+                    &p.file_path,
+                    &ctx.cwd,
+                    &*ctx.exec.filesystem,
+                )
+                .await;
+                if let Some(msg) = ctx.session.check_read_staleness(&target) {
                     return ValidationResult::err(msg, 4);
                 }
                 ValidationResult::Ok
@@ -120,13 +123,14 @@ impl Tool for FileWriteTool {
     async fn check_permissions(&self, input: &Value, ctx: &ToolContext) -> PermissionDecision {
         // 1. 路径安全：cwd 子树 / additional 之外、`.env*` / 系统目录 → 拒
         if let Ok(parsed) = serde_json::from_value::<FileWriteInput>(input.clone()) {
-            let requested = std::path::PathBuf::from(&parsed.file_path);
-            let path = match requested.is_absolute() {
-                true => std::path::PathBuf::from(parsed.file_path),
-                false => ctx.cwd.join(parsed.file_path),
-            };
-            let path = crate::security::normalize_path_lexically(&path);
-            let path = ctx.exec.filesystem.canonicalize_best_effort(&path).await;
+            let requested = PathBuf::from(&parsed.file_path);
+            let target = crate::security::resolve_write_target(
+                &parsed.file_path,
+                &ctx.cwd,
+                &*ctx.exec.filesystem,
+            )
+            .await;
+            let path = ctx.exec.filesystem.canonicalize_best_effort(&target).await;
             let policy = crate::security::write_policy(ctx).await;
             match permissions::path_safety::check_write_for(&requested, &path, &policy) {
                 Ok(()) => {
@@ -162,7 +166,12 @@ impl Tool for FileWriteTool {
         _progress: ProgressSender,
     ) -> Result<ToolResult, ToolError> {
         let input: FileWriteInput = serde_json::from_value(input)?;
-        let path = resolve_path(&input.file_path, &ctx.cwd);
+        let path = crate::security::resolve_write_target(
+            &input.file_path,
+            &ctx.cwd,
+            &*ctx.exec.filesystem,
+        )
+        .await;
 
         // **P1 **: snapshot the file's current state before mutating, so
         // /rewind can restore. New file → snapshot stores `None` (restore = unlink).
@@ -187,15 +196,6 @@ impl Tool for FileWriteTool {
                 ctx.config.path_style.render(&path, &ctx.cwd)
             ))
         })
-    }
-}
-
-fn resolve_path(s: &str, cwd: &Path) -> PathBuf {
-    let p = PathBuf::from(s);
-    if p.is_absolute() {
-        p
-    } else {
-        cwd.join(p)
     }
 }
 
@@ -324,6 +324,48 @@ mod tests {
             )
             .await;
         assert!(!matches!(res, ValidationResult::Ok));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_dotdot_after_a_symlink_is_judged_where_the_write_really_lands() {
+        let dir = TempDir::new().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let (proj, outside) = (root.join("proj"), root.join("outside"));
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::create_dir_all(outside.join("sub")).unwrap();
+        std::os::unix::fs::symlink(outside.join("sub"), proj.join("link")).unwrap();
+        let input = json!({"file_path": "link/../x", "content": "x"});
+
+        let decision = FileWriteTool
+            .check_permissions(&input, &ctx_in(&proj))
+            .await;
+        assert!(
+            matches!(decision, PermissionDecision::Ask { .. }),
+            "{decision:?}"
+        );
+        if matches!(decision, PermissionDecision::Allow { .. }) {
+            FileWriteTool
+                .call(input, ctx_in(&proj), ProgressSender::noop("t"))
+                .await
+                .unwrap();
+        }
+        assert!(!outside.join("x").exists());
+        assert!(!proj.join("x").exists());
+    }
+
+    #[tokio::test]
+    async fn a_path_the_shell_would_have_expanded_is_invalid_input() {
+        let dir = TempDir::new().unwrap();
+        for raw in ["~/notes.txt", "$(whoami).txt", "\\\\server\\share\\a.txt"] {
+            let res = FileWriteTool
+                .validate_input(
+                    &json!({"file_path": raw, "content": "x"}),
+                    &ctx_in(dir.path()),
+                )
+                .await;
+            assert!(!matches!(res, ValidationResult::Ok), "{raw}");
+        }
     }
 
     #[tokio::test]
