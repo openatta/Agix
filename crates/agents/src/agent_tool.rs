@@ -4522,7 +4522,7 @@ mod catalog_tests {
     /// `build_tool_defs` points at it) and what `ToolSearch` would hand back
     /// is the actual file, not a paraphrase of its description.
     #[tokio::test]
-    async fn the_real_agent_tools_guide_is_now_reachable() {
+    async fn the_real_agent_tools_guide_is_reachable() {
         use base::tool::Tool;
         let agent_tool = AgentTool::new(
             Arc::new(DummyModel),

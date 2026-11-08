@@ -1881,7 +1881,7 @@ mod tests {
     }
 
     #[test]
-    fn the_two_former_estimators_now_agree() {
+    fn compaction_and_the_model_layer_estimate_tokens_alike() {
         // `estimate_tokens` is `model::tokens::estimate_message_tokens`, so a
         // divergence between the two has to be deliberate.
         let msgs = vec![

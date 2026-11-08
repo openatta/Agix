@@ -7748,7 +7748,7 @@ mod resolve_session_permission_tests {
     /// With nothing configured, a session does not get the allow-all
     /// instance.
     #[test]
-    fn nothing_configured_now_builds_a_real_asking_permission() {
+    fn nothing_configured_builds_a_real_asking_permission() {
         let (bypass, resolved) = resolve(&defaults(), None);
         assert!(
             !Arc::ptr_eq(&bypass, &resolved),
