@@ -276,7 +276,7 @@ skill、web 工具、WebSocket、载体与包方案。
   后,模型的 `AskUserQuestion` 以 `prompt_type: "question"` 的 `prompt` 帧到达,用
   `session.respondToPrompt` 的 `answer` 回答;没打开的会话里模型看不到这个工具。
 - **能力位**多了 `goals`、`ptc`(带这个特性构建时)、`question_prompts`。
-- `session.run_turn` 的 `turn_id` 不能以 `goal-`、`schedule-`、`cron-` 开头(`INVALID_PARAMS`)。
+- `session.run_turn` 的 `turn_id` 不能是目标轮的形式(`goal-<修订>-<轮次>-…`),也不能以 `schedule-`、`cron-` 开头(`INVALID_PARAMS`)。
 - 会话有一轮占着时 `setModel` / `setPrompt` 等需要重建的调用一律 `SESSION_BUSY`,`current_turn_id`
   在那一轮还没正式开始时为 `null`;被拒的改动不会记下。
 - 后台子 Agent 的询问不随前台一轮结束而从 `pending_prompts` 里消失,答了或任务结束才去掉。

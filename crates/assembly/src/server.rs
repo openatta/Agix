@@ -48,11 +48,6 @@ use tracing::{debug, info, warn};
 /// What `session.taskOutput` returns when the caller does not say.
 const DEFAULT_TASK_OUTPUT_TAIL: usize = 8 * 1024;
 
-/// The turn id prefixes of turns the daemon starts on its own — goal rounds
-/// and scheduled jobs. A turn's origin is read from its id, so a client may
-/// not borrow one.
-const RESERVED_TURN_ID_PREFIXES: &[&str] = &["goal-", "schedule-", "cron-"];
-
 type Reader = Box<dyn AsyncRead + Send + Unpin + 'static>;
 
 /// A resume that could not happen, as the wire sees it.
@@ -1333,15 +1328,17 @@ impl DaemonServer {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .unwrap_or_else(|| Id::new().to_string());
-        if let Some(prefix) = RESERVED_TURN_ID_PREFIXES
-            .iter()
-            .find(|prefix| turn_id.starts_with(**prefix))
+        // A turn's origin is read from its id, so a client may not use the
+        // form of a goal round or a scheduled job, which the daemon starts itself.
+        if base::context::goal::TurnOrigin::from_turn_id(&turn_id)
+            != base::context::goal::TurnOrigin::Human
         {
             return RpcResponse::err(
                 id,
                 codes::INVALID_PARAMS,
                 format!(
-                    "turn_id may not start with `{prefix}`: the daemon starts those turns itself"
+                    "turn_id `{turn_id}` has the form of a turn the daemon starts itself \
+                     (a goal round or a scheduled job)"
                 ),
             );
         }

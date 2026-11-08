@@ -894,7 +894,7 @@ daemon 重启后恢复)都按同一份 `options` 重建,之后的调用里再传
 // → params
 { "session_id": "…",              // 可选!省略则自动新建一个会话
   "message": "把权限层重构一下",     // 必填
-  "turn_id": "t-1",               // 可选,省略则服务端生成;不能以 goal- / schedule- / cron- 开头
+  "turn_id": "t-1",               // 可选,省略则服务端生成;不能是目标轮(goal-<修订>-<轮次>-…)或定时任务(schedule- / cron- 开头)的形式
   "attachments": [ ],             // 可选,见 §4.4
   "options": { },                 // 可选,同 session.create,仅新建时生效
   "on_busy": "reject" }           // 可选,reject | queue | steer,见 §5.3

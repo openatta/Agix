@@ -4084,6 +4084,15 @@ async fn a_client_may_not_borrow_the_turn_id_of_a_turn_the_daemon_starts_itself(
         .await;
         assert_eq!(resp["error"]["code"], codes::INVALID_PARAMS, "{resp}");
     }
+    let resp = rpc(
+        &srv.sock,
+        r#"{"jsonrpc":"2.0","method":"session.run_turn","params":{"message":"hi","turn_id":"goal-check-t1"},"id":1}"#,
+    )
+    .await;
+    assert!(
+        resp["error"].is_null(),
+        "an id that only begins like one is the client's: {resp}"
+    );
     srv.stop().await;
 }
 
