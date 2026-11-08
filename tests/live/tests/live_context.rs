@@ -179,20 +179,22 @@ async fn a_turn_that_outgrows_the_threshold_compacts_on_its_own_and_carries_on(
     )
     .await?;
     let codeword = format!("OSPREY-{}", nonce());
+    let stem = nonce();
     let badges: Vec<String> = ["ALDER", "BIRCH", "CEDAR", "DOGWOOD"]
         .iter()
-        .map(|w| format!("{w}-{}", nonce()))
+        .enumerate()
+        .map(|(i, w)| format!("{w}-{}{stem}", i * 37 + 11))
         .collect();
     for (i, badge) in badges.iter().enumerate() {
-        let mut body: String = (0..600)
-            .map(|l| {
-                format!(
-                    "part {} line {l}: routine reading, all values nominal\n",
-                    i + 1
-                )
-            })
-            .collect();
-        body.push_str(&format!("closing badge: {badge}\n"));
+        let line = |l: usize| {
+            format!(
+                "part {} line {l}: routine reading, all values nominal\n",
+                i + 1
+            )
+        };
+        let mut body: String = (0..300).map(line).collect();
+        body.push_str(&format!("badge: {badge}\n"));
+        body.extend((300..600).map(line));
         run.write_file(&format!("part{}.log", i + 1), &body)?;
     }
     let session = run.session().await?;
@@ -207,9 +209,10 @@ async fn a_turn_that_outgrows_the_threshold_compacts_on_its_own_and_carries_on(
         .turn(
             &session,
             "Read part1.log, part2.log, part3.log and part4.log with the Read tool, one at a \
-             time and in that order. Each ends with a line `closing badge: ...`. After reading \
-             each file, write its badge in your reply before reading the next one. Finish with \
-             the four badges, one per line.",
+             time and in that order, each one whole: no offset, no limit, and no other tool \
+             to search them. Somewhere in each file is a line `badge: ...`. After reading each \
+             file, write its badge in your reply before reading the next one. Finish with the \
+             four badges, one per line.",
         )
         .await?;
     let compactions = watcher.events("compact");
