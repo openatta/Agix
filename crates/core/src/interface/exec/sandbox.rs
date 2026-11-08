@@ -53,6 +53,11 @@ pub struct SandboxPolicy {
     /// backend that received it separately could be handed a policy that
     /// looks complete and is not.
     pub additional_writable: Vec<PathBuf>,
+    /// Nothing is writable but `additional_writable` and `/dev`: not `cwd`,
+    /// not the state root's working directories, not the per-user temporary
+    /// directory. For the engine's own git, which reads the project and
+    /// writes only where its bookkeeping lives.
+    pub only_additional_writable: bool,
     /// This instance's global state root. `None` falls back to `$HOME/.agix`,
     /// which is where an instance usually lives but not where it must: a
     /// redirected instance whose sandbox protected `$HOME/.agix` would be

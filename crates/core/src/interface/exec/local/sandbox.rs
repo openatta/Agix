@@ -31,6 +31,15 @@
 //! existing working entries are opened again, so a new entry directly in it
 //! cannot be created either.
 //!
+//! A policy with `only_additional_writable` leaves out the working directory,
+//! the state root's working entries and `DARWIN_USER_TEMP_DIR`: only
+//! `additional_writable` and `/dev` are writable, the read-only entries above
+//! still apply inside them. The engine's own git runs under such a policy in
+//! every session whose commands are sandboxed (`frozen::git::EngineGit`), so a
+//! filter driver or other program a repository's configuration names runs
+//! confined, writing at most the git directory and `.agix/worktrees/` when it
+//! creates a worktree, and only the session's `TMPDIR` otherwise.
+//!
 //! **The whole file is behind the `sandbox` feature, off by default.** What it
 //! constrains is the commands the *model* runs, which is defence in depth on a
 //! machine whose owner is sitting at it and a boundary only where the agent
@@ -42,7 +51,7 @@
 //! # Known escape paths
 //!
 //! This is a lightweight write restriction, not a security boundary. Known
-//! ways out, none of them closed:
+//! ways out:
 //!
 //! 1. **Writable `/dev`**: the macOS profile allows `file-write*` to `/dev`,
 //!    so a process can `mknod` a raw disk device and bypass file ACLs.
@@ -52,12 +61,14 @@
 //!    `/proc/self/{fd,root}`.
 //! 4. **Leaked fds**: `CLOEXEC` is not set, so a child can read inherited
 //!    descriptors — git repositories, sockets.
-//! 5. **Absent git files on Linux**: a mount cannot stand in for a file that
-//!    does not exist without leaving an empty one behind, which git refuses
-//!    to read. So a project with no `.git` yet can be given one, and a
-//!    repository with no `commondir` can be given one; the engine's own git
-//!    runs with fsmonitor and hooks turned off, but filter drivers it cannot
-//!    turn off. macOS denies both.
+//! 5. **Absent git files on Linux, for a git outside the sandbox**: a mount
+//!    cannot stand in for a file that does not exist without leaving an empty
+//!    one behind, which git refuses to read. So a project with no `.git` yet
+//!    can be given one, and a repository with no `commondir` can be given one,
+//!    with whatever configuration and filter drivers the command likes. The
+//!    engine's own git runs inside the sandbox, so it carries none of that out
+//!    unconfined; a git the user runs in the project afterwards does. macOS
+//!    denies both.
 
 pub use crate::interface::exec::{
     default_deny_read, Confined, Enforcement, NetworkMode, ProcessSpec, Sandbox, SandboxMode,
@@ -151,14 +162,28 @@ pub struct SandboxOptions<'a> {
 /// unconstrained run is acceptable is the caller's decision, not this
 /// function's.
 pub fn wrap(opts: SandboxOptions<'_>) -> Confined {
+    let inner = bash_spec(opts.command);
     if opts.disable {
-        return plain(opts.command, SandboxMode::Disabled);
+        return plain(inner, SandboxMode::Disabled);
     }
+    wrap_program(inner, opts.cwd, opts.additional_writable, &opts.policy)
+}
 
+/// [`wrap`] for any program, not only a shell command.
+#[cfg_attr(
+    not(all(feature = "sandbox", any(target_os = "macos", target_os = "linux"))),
+    allow(unused_variables)
+)]
+fn wrap_program(
+    inner: ProcessSpec,
+    cwd: &Path,
+    additional_writable: &[PathBuf],
+    policy: &SandboxPolicy,
+) -> Confined {
     #[cfg(not(feature = "sandbox"))]
     {
         unavailable(
-            opts.command,
+            inner,
             "this build has no sandbox backend; rebuild with `--features sandbox`",
         )
     }
@@ -167,36 +192,36 @@ pub fn wrap(opts: SandboxOptions<'_>) -> Confined {
     {
         #[cfg(target_os = "macos")]
         {
-            mac_wrap(opts)
+            mac_wrap(inner, cwd, additional_writable, policy)
         }
 
         #[cfg(target_os = "linux")]
         {
-            linux_wrap(opts)
+            linux_wrap(inner, cwd, additional_writable, policy)
         }
 
         // Windows / other unsupported platforms
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         {
-            plain(opts.command, SandboxMode::Unavailable)
+            plain(inner, SandboxMode::Unavailable)
         }
     }
 }
 
 /// A command nothing wrapped, and the reason in words the operator can act on.
 #[cfg(not(feature = "sandbox"))]
-fn unavailable(command: &str, why: &str) -> Confined {
+fn unavailable(inner: ProcessSpec, why: &str) -> Confined {
     Confined {
-        spec: bash_spec(command),
+        spec: inner,
         unmet: vec![why.to_string()],
         mode: SandboxMode::Unavailable,
         enforcement: Enforcement::None,
     }
 }
 
-fn plain(command: &str, mode: SandboxMode) -> Confined {
+fn plain(inner: ProcessSpec, mode: SandboxMode) -> Confined {
     Confined {
-        spec: bash_spec(command),
+        spec: inner,
         unmet: vec!["nothing is constrained".into()],
         mode,
         // Nothing wraps this command, so nothing constrains it — true whether
@@ -239,6 +264,7 @@ use crate::paths::STATE_ROOT_WORKING_DIRS;
 #[cfg(feature = "sandbox")]
 struct Roots {
     cwd: PathBuf,
+    only_additional: bool,
     writable: Vec<PathBuf>,
     state_root: Option<PathBuf>,
 }
@@ -248,17 +274,27 @@ impl Roots {
     fn resolve(cwd: &Path, additional: &[PathBuf], policy: &SandboxPolicy) -> Self {
         Self {
             cwd: resolve_path(cwd),
+            only_additional: policy.only_additional_writable,
             writable: additional.iter().map(|p| resolve_path(p)).collect(),
             state_root: state_root_of(policy).map(|p| resolve_path(&p)),
         }
     }
 
-    /// The state root to fence off — unless the project lives inside it, in
-    /// which case fencing the root would fence the project too.
+    /// Whether a write to `path` falls inside one of the writable roots.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn opens(&self, path: &Path) -> bool {
+        (!self.only_additional && path.starts_with(&self.cwd))
+            || self.writable.iter().any(|root| path.starts_with(root))
+    }
+
+    /// The state root to fence off, its working directories left open —
+    /// unless the project lives inside it, in which case fencing the root
+    /// would fence the project too, or nothing but the named roots is
+    /// writable, in which case it is shut already.
     fn fenced_state_root(&self) -> Option<&Path> {
         self.state_root
             .as_deref()
-            .filter(|root| !self.cwd.starts_with(root))
+            .filter(|root| !self.only_additional && !self.cwd.starts_with(root))
     }
 }
 
@@ -348,9 +384,13 @@ fn project_guard(cwd: &Path) -> ProjectGuard {
 }
 
 #[cfg(all(feature = "sandbox", target_os = "macos"))]
-fn mac_wrap(opts: SandboxOptions<'_>) -> Confined {
-    let profile = build_macos_profile(opts.cwd, opts.additional_writable, &opts.policy);
-    let inner = bash_spec(opts.command);
+fn mac_wrap(
+    inner: ProcessSpec,
+    cwd: &Path,
+    additional_writable: &[PathBuf],
+    policy: &SandboxPolicy,
+) -> Confined {
+    let profile = build_macos_profile(cwd, additional_writable, policy);
     Confined {
         enforcement: Enforcement::Full,
         unmet: Vec::new(),
@@ -394,11 +434,13 @@ fn build_macos_profile(cwd: &Path, additional: &[PathBuf], policy: &SandboxPolic
     // rule wins, so every deny below overrides the allows above it.
     s.push_str("(deny file-write*)\n");
     s.push_str("(allow file-write*\n");
-    s.push_str(&format!("  (subpath \"{}\")\n", path(&roots.cwd)));
-    // macOS mktemp(1) ignores TMPDIR and creates its file here; without this
-    // every script that calls a bare `mktemp` fails.
-    if let Some(tmp) = darwin_user_temp_dir() {
-        s.push_str(&format!("  (subpath \"{}\")\n", path(&tmp)));
+    if !roots.only_additional {
+        s.push_str(&format!("  (subpath \"{}\")\n", path(&roots.cwd)));
+        // macOS mktemp(1) ignores TMPDIR and creates its file here; without
+        // this every script that calls a bare `mktemp` fails.
+        if let Some(tmp) = darwin_user_temp_dir() {
+            s.push_str(&format!("  (subpath \"{}\")\n", path(&tmp)));
+        }
     }
     s.push_str("  (subpath \"/dev\")\n");
     for p in &roots.writable {
@@ -521,11 +563,18 @@ fn writable_by_us(dir: &Path) -> bool {
 /// its lock files directly in it — so it is bound onto itself, which makes it
 /// a mount point that cannot be renamed or removed, and its control files are
 /// mounted read-only where they exist.
+///
+/// A `.git` or `.agix` no writable root reaches is read-only already, and is
+/// left alone: binding it writable would open it, and a mount point for an
+/// absent entry cannot be made on a read-only parent.
 #[cfg(all(feature = "sandbox", target_os = "linux"))]
-fn guard_project(args: &mut Vec<String>, cwd: &Path) {
-    let git = cwd.join(".git");
+fn guard_project(args: &mut Vec<String>, roots: &Roots) {
+    let git = roots.cwd.join(".git");
     if git.is_dir() {
-        bind(args, "--bind", &git);
+        let open = roots.opens(&git);
+        if open {
+            bind(args, "--bind", &git);
+        }
         for f in GIT_CONTROL_FILES {
             bind(args, "--ro-bind-try", &git.join(f));
         }
@@ -534,21 +583,27 @@ fn guard_project(args: &mut Vec<String>, cwd: &Path) {
                 bind(args, "--ro-bind-try", &worktree.join(f));
             }
         }
-        read_only(args, &git.join("hooks"));
+        if open {
+            read_only(args, &git.join("hooks"));
+        } else {
+            bind(args, "--ro-bind-try", &git.join("hooks"));
+        }
     } else if git.exists() {
         bind(args, "--ro-bind", &git);
     }
 
-    let agix = cwd.join(".agix");
-    read_only(args, &agix);
-    if let Ok(entries) = std::fs::read_dir(&agix) {
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let configures = name.to_str().is_some_and(|n| {
-                PROJECT_CONFIG_FILES.contains(&n) || PROJECT_CONFIG_DIRS.contains(&n)
-            });
-            if !configures && entry.file_type().is_ok_and(|t| !t.is_symlink()) {
-                bind(args, "--bind", &entry.path());
+    let agix = roots.cwd.join(".agix");
+    if roots.opens(&agix) {
+        read_only(args, &agix);
+        if let Ok(entries) = std::fs::read_dir(&agix) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let configures = name.to_str().is_some_and(|n| {
+                    PROJECT_CONFIG_FILES.contains(&n) || PROJECT_CONFIG_DIRS.contains(&n)
+                });
+                if !configures && entry.file_type().is_ok_and(|t| !t.is_symlink()) {
+                    bind(args, "--bind", &entry.path());
+                }
             }
         }
     }
@@ -558,30 +613,35 @@ fn guard_project(args: &mut Vec<String>, cwd: &Path) {
 }
 
 #[cfg(all(feature = "sandbox", target_os = "linux"))]
-fn linux_wrap(opts: SandboxOptions<'_>) -> Confined {
+fn linux_wrap(
+    inner: ProcessSpec,
+    cwd: &Path,
+    additional_writable: &[PathBuf],
+    policy: &SandboxPolicy,
+) -> Confined {
     if !bwrap_available() {
-        return plain(opts.command, SandboxMode::Unavailable);
+        return plain(inner, SandboxMode::Unavailable);
     }
-    let roots = Roots::resolve(opts.cwd, opts.additional_writable, &opts.policy);
-    let cwd = roots.cwd.display().to_string();
+    let roots = Roots::resolve(cwd, additional_writable, policy);
     // bwrap applies mounts in argument order, so each one below lands on top
     // of the ones before it.
-    let mut args: Vec<String> = vec![
-        "--ro-bind".into(),
-        "/".into(),
-        "/".into(),
-        "--bind".into(),
-        cwd.clone(),
-        cwd,
-        "--tmpfs".into(),
-        "/tmp".into(),
-        "--proc".into(),
-        "/proc".into(),
-        "--dev".into(),
-        "/dev".into(),
-        "--unshare-pid".into(),
-        "--die-with-parent".into(),
-    ];
+    let mut args: Vec<String> = vec!["--ro-bind".into(), "/".into(), "/".into()];
+    if !roots.only_additional {
+        bind(&mut args, "--bind", &roots.cwd);
+    }
+    args.extend(
+        [
+            "--tmpfs",
+            "/tmp",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--unshare-pid",
+            "--die-with-parent",
+        ]
+        .map(String::from),
+    );
     for p in &roots.writable {
         bind(&mut args, "--bind-try", p);
     }
@@ -593,22 +653,21 @@ fn linux_wrap(opts: SandboxOptions<'_>) -> Confined {
             }
         }
     }
-    guard_project(&mut args, &roots.cwd);
+    guard_project(&mut args, &roots);
     if let Some(state_root) = &roots.state_root {
         bind(
             &mut args,
             "--ro-bind-try",
             &state_root.join("settings.json"),
         );
-        for p in protected_scene_files(&opts.policy, state_root) {
+        for p in protected_scene_files(policy, state_root) {
             bind(&mut args, "--ro-bind-try", &p);
         }
     }
 
     // Deny-read: an empty tmpfs over a directory, /dev/null over a file.
-    let allow_set: std::collections::HashSet<PathBuf> =
-        opts.policy.allow_read.iter().cloned().collect();
-    for p in &opts.policy.deny_read {
+    let allow_set: std::collections::HashSet<PathBuf> = policy.allow_read.iter().cloned().collect();
+    for p in &policy.deny_read {
         if allow_set.contains(p) || !p.exists() {
             continue;
         }
@@ -625,14 +684,14 @@ fn linux_wrap(opts: SandboxOptions<'_>) -> Confined {
 
     // bwrap's only network lever is `--unshare-net`. An allowlist it cannot
     // honour fails closed to no network rather than open to all of it.
-    match opts.policy.network_mode {
+    match policy.network_mode {
         NetworkMode::Unrestricted => {}
         NetworkMode::DenyAll => {
             args.push("--unshare-net".into());
         }
         NetworkMode::Allowlist => {
             tracing::warn!(
-                domains = ?opts.policy.allowed_domains,
+                domains = ?policy.allowed_domains,
                 "sandbox: NetworkMode::Allowlist has no bwrap equivalent (no domain/IP \
                  filtering primitive) — falling back to full network isolation \
                  (--unshare-net) rather than allowing unrestricted access"
@@ -647,12 +706,11 @@ fn linux_wrap(opts: SandboxOptions<'_>) -> Confined {
     // as the same whole-network cut `DenyAll` gets. Stricter than asked for in
     // one direction and not what was asked for in the other, which is what
     // `Partial` is for.
-    let unmet = if opts.policy.network_mode == NetworkMode::Allowlist {
+    let unmet = if policy.network_mode == NetworkMode::Allowlist {
         vec!["domain allowlist: bwrap can only cut the network entirely".into()]
     } else {
         Vec::new()
     };
-    let inner = bash_spec(opts.command);
     args.push(inner.program);
     args.extend(inner.args);
     Confined {
@@ -682,32 +740,18 @@ pub struct PlatformSandbox;
 
 impl Sandbox for PlatformSandbox {
     fn confine(&self, spec: ProcessSpec, policy: &SandboxPolicy) -> Confined {
-        // Today every caller arrives as `bash -c <command>`; the backends
-        // build their own wrapper around that pair. A spec that is not a
-        // shell command is passed through unconstrained rather than
-        // silently mis-wrapped — and says so, which is the whole point of
-        // `unmet`.
-        let command = match (spec.program.as_str(), spec.args.as_slice()) {
-            ("bash", [flag, command]) if flag == "-c" => command.clone(),
-            _ => {
-                return Confined {
-                    spec,
-                    mode: SandboxMode::Unavailable,
-                    enforcement: Enforcement::None,
-                    unmet: vec!["this backend only confines shell commands (`bash -c …`)".into()],
-                }
-            }
-        };
-        let mut confined = wrap(SandboxOptions {
-            command: &command,
-            cwd: &spec.cwd,
-            additional_writable: &policy.additional_writable,
-            disable: false,
-            policy: policy.clone(),
-        });
-        confined.spec.cwd = spec.cwd;
-        confined.spec.env = spec.env;
-        confined.spec.stdin = spec.stdin;
+        let ProcessSpec {
+            program,
+            args,
+            cwd,
+            env,
+            stdin,
+        } = spec;
+        let inner = ProcessSpec::new(program, Path::new(".")).args(args);
+        let mut confined = wrap_program(inner, &cwd, &policy.additional_writable, policy);
+        confined.spec.cwd = cwd;
+        confined.spec.env = env;
+        confined.spec.stdin = stdin;
         confined
     }
 }
@@ -1065,6 +1109,7 @@ mod tests {
             known_scenes: Vec::new(),
             state_root: None,
             additional_writable: Vec::new(),
+            only_additional_writable: false,
         };
         let cmd = wrap(o);
         let profile = &cmd.spec.args[1];
@@ -1085,6 +1130,7 @@ mod tests {
             known_scenes: Vec::new(),
             state_root: None,
             additional_writable: Vec::new(),
+            only_additional_writable: false,
         };
         let cmd = wrap(o);
         let profile = &cmd.spec.args[1];
@@ -1311,6 +1357,7 @@ mod tests {
                 known_scenes: Vec::new(),
                 state_root: None,
                 additional_writable: Vec::new(),
+                only_additional_writable: false,
             },
         };
         let cmd = wrap(o);
@@ -1346,6 +1393,7 @@ mod tests {
                 known_scenes: Vec::new(),
                 state_root: None,
                 additional_writable: Vec::new(),
+                only_additional_writable: false,
             },
         };
         let cmd = wrap(o);
@@ -1427,6 +1475,7 @@ mod tests {
                 known_scenes: Vec::new(),
                 state_root: None,
                 additional_writable: Vec::new(),
+                only_additional_writable: false,
             },
         };
         let cmd = wrap(o);
@@ -1634,6 +1683,53 @@ mod tests {
         }
         assert!(s.project.join(".agix").join("notes.txt").is_file());
         assert!(s.tmp.join("f").is_file());
+    }
+
+    /// A policy that names its writable roots leaves nothing else writable:
+    /// not the project, the state root's working directories, or the
+    /// per-user temporary directory `mktemp` uses. And the backend confines
+    /// a program that is not a shell the same way.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn only_the_named_roots_are_writable_when_the_policy_says_so() {
+        let Some(s) = UnderSandboxExec::new() else {
+            return;
+        };
+        let policy = SandboxPolicy {
+            state_root: Some(s.state_root.clone()),
+            additional_writable: vec![s.tmp.clone()],
+            only_additional_writable: true,
+            ..Default::default()
+        };
+        let runs = |program: &str, args: &[&str]| {
+            let confined = PlatformSandbox.confine(
+                ProcessSpec::new(program, &s.project).args(args.iter().copied()),
+                &policy,
+            );
+            assert_eq!(confined.enforcement, Enforcement::Full);
+            std::process::Command::new(&confined.spec.program)
+                .args(&confined.spec.args)
+                .current_dir(&s.project)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        };
+        let state = s.state_root.display().to_string();
+        let tmp = s.tmp.display().to_string();
+
+        assert!(runs("bash", &["-c", &format!("echo x > '{tmp}/f'")]));
+        assert!(runs("git", &["status", "--short"]));
+        for command in [
+            "echo x > a".to_string(),
+            "echo x > .agix/notes.txt".to_string(),
+            format!("echo x > '{state}/scratchpad/a'"),
+            "mktemp".to_string(),
+        ] {
+            assert!(!runs("bash", &["-c", &command]), "`{command}` was allowed");
+        }
+        assert!(!runs("git", &["add", "a"]));
+        assert!(!s.project.join(".git").join("index").exists());
     }
 
     /// No root given: fall back to the conventional location rather than

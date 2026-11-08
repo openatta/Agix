@@ -782,10 +782,16 @@ impl Agent {
         let paths = base::paths::ConfigPaths::from_settings(&self.settings.paths);
         let base_url = self.settings.model.base_url.clone();
         let session_memory = self.session.session_memory.clone();
+        let engine_git = crate::turn::engine_git_from(&self.config, &self.session.session_id);
 
         let (frozen, _, _) = tokio::join!(
             // 1. Pre-compute the frozen environment snapshot (git status, branch, platform, etc.)
-            base::frozen::FrozenContext::collect(cwd.clone(), &paths, &*self.environment),
+            base::frozen::FrozenContext::collect(
+                cwd.clone(),
+                &paths,
+                &*self.environment,
+                &engine_git
+            ),
             // 2. Fire-and-forget pre-connect GET to the API base URL (warms TCP/TLS)
             async move {
                 if !base_url.is_empty() {

@@ -2961,7 +2961,14 @@ impl AgentTool {
             }),
         );
         let mut worktree_handle = match &input.worktree {
-            Some(s) => match create_worktree(&ctx.exec, &ctx.session.cwd, s).await {
+            Some(s) => match create_worktree(
+                &ctx.exec,
+                &tools::bash::engine_git(ctx),
+                &ctx.session.cwd,
+                s,
+            )
+            .await
+            {
                 Ok(h) => Some(h),
                 Err(e) => {
                     ctx.session.finish_task(
@@ -4103,7 +4110,14 @@ impl base::tool::Tool for AgentTool {
 
         // Sync
         let mut worktree_handle = match &inp.worktree {
-            Some(s) => match create_worktree(&ctx.exec, &ctx.session.cwd, s).await {
+            Some(s) => match create_worktree(
+                &ctx.exec,
+                &tools::bash::engine_git(&ctx),
+                &ctx.session.cwd,
+                s,
+            )
+            .await
+            {
                 Ok(h) => Some(h),
                 Err(e) => return Err(base::error::ToolError::Execution(anyhow!("worktree: {e}"))),
             },

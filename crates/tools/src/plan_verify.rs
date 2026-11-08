@@ -14,7 +14,7 @@
 use crate::exec_capture::capture;
 use async_trait::async_trait;
 use base::error::ToolError;
-use base::interface::exec::{ExecError, ExecProviders, ProcessSpec};
+use base::interface::exec::ExecError;
 use base::tool::{
     PermissionDecision, ProgressSender, Tool, ToolContext, ToolResult, ValidationResult,
 };
@@ -91,7 +91,7 @@ impl Tool for VerifyPlanExecutionTool {
         })?;
 
         // 2. Run `git diff` in the session cwd to get working-tree changes.
-        let diff_output = run_git_diff(&ctx.exec, &ctx.cwd, ctx.cancel.clone()).await;
+        let diff_output = run_git_diff(&ctx).await;
 
         // 3. Build verification report.
         let focus_note = input
@@ -117,16 +117,17 @@ impl Tool for VerifyPlanExecutionTool {
     }
 }
 
-async fn run_git_diff(
-    exec: &ExecProviders,
-    cwd: &std::path::Path,
-    cancel: tokio_util::sync::CancellationToken,
-) -> String {
-    let spec = ProcessSpec::new("git", cwd)
-        .args(base::frozen::git::ENGINE_GIT_OPTIONS.iter().copied())
-        .args(["diff", "--no-color", "--no-ext-diff", "--no-textconv"]);
+async fn run_git_diff(ctx: &ToolContext) -> String {
+    let spec = match crate::bash::engine_git(ctx).command(
+        &ctx.cwd,
+        &["diff", "--no-color", "--no-ext-diff", "--no-textconv"],
+        &[],
+    ) {
+        Ok(spec) => spec,
+        Err(refused) => return format!("(git diff not run: {refused})"),
+    };
 
-    match capture(exec, spec, cancel).await {
+    match capture(&ctx.exec, spec, ctx.cancel.clone()).await {
         Ok(o) if o.status.success => {
             let stdout = o.stdout_lossy().into_owned();
             if stdout.trim().is_empty() {

@@ -18,7 +18,6 @@ use crate::exec_capture::capture;
 use crate::worktree::WorktreeHandle;
 use async_trait::async_trait;
 use base::error::ToolError;
-use base::interface::exec::{ExecProviders, ProcessSpec};
 use base::tool::{
     PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
     ValidationResult,
@@ -136,7 +135,14 @@ impl Tool for EnterWorktreeTool {
                 new_messages: Some(vec![]),
             });
         }
-        match crate::worktree::create_worktree(&ctx.exec, &ctx.cwd, &input.slug).await {
+        match crate::worktree::create_worktree(
+            &ctx.exec,
+            &crate::bash::engine_git(&ctx),
+            &ctx.cwd,
+            &input.slug,
+        )
+        .await
+        {
             Ok(handle) => {
                 let path = handle.path().to_path_buf();
                 let branch = handle.branch().to_string();
@@ -271,7 +277,7 @@ impl Tool for ExitWorktreeTool {
 
         // "remove" or unknown — handle is owned, lock is dropped, safe to await
         {
-            if !discard && has_uncommitted_changes(&ctx.exec, &path, ctx.cancel.clone()).await {
+            if !discard && has_uncommitted_changes(&ctx, &path).await {
                 return Ok(ToolResult {
                     content: base::tool::ToolResultContent::Text(
                         "Worktree has uncommitted changes. Use discard_changes: true to force removal.".into(),
@@ -310,15 +316,12 @@ impl Tool for ExitWorktreeTool {
 /// A `git` that could not be run at all answers "no changes", because the
 /// caller's only use for the answer is whether to refuse a removal the user
 /// asked for, and refusing on an unanswerable question strands the worktree.
-async fn has_uncommitted_changes(
-    exec: &ExecProviders,
-    path: &std::path::Path,
-    cancel: tokio_util::sync::CancellationToken,
-) -> bool {
-    let spec = ProcessSpec::new("git", path)
-        .args(base::frozen::git::ENGINE_GIT_OPTIONS.iter().copied())
-        .args(["status", "--porcelain"]);
-    capture(exec, spec, cancel)
+async fn has_uncommitted_changes(ctx: &ToolContext, path: &std::path::Path) -> bool {
+    let Ok(spec) = crate::bash::engine_git(ctx).command(path, &["status", "--porcelain"], &[])
+    else {
+        return false;
+    };
+    capture(&ctx.exec, spec, ctx.cancel.clone())
         .await
         .map(|o| !o.stdout.is_empty())
         .unwrap_or(false)
