@@ -135,6 +135,16 @@ daemon     = { path = "daemon" }
 rpc-client = { path = "tests/rpc_client" }
 live = { path = "tests/live" }
 
+# Debug builds keep line tables for the workspace and no debug info for
+# dependencies: backtraces still name file and line, and with well over a
+# hundred test binaries each linking the whole dependency graph, full debug
+# info is most of what `target/` holds.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 # The release artifact was 54 MB of which 14 MB was symbols nobody ships and
 # reads, and the rest was compiled without any cross-crate inlining. Three
 # lines take it to 33 MB and cost about fifteen seconds of build time.
