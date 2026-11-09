@@ -95,7 +95,9 @@ impl CachedMicroCompact {
 }
 
 /// Blank every tool result but the `keep_recent` newest, and report the
-/// `tool_use_id`s that were blanked.
+/// `tool_use_id`s that were blanked. A result keeps its `tool_use_id`: the
+/// API refuses a `tool_result` that answers no `tool_use`. One an earlier pass
+/// already blanked is neither counted nor reported again.
 ///
 /// The pass itself, with no state: the interval that decides *when* it runs
 /// and the buffer holding the ids until the next request are the caller's.
@@ -117,27 +119,33 @@ pub fn clear_stale_tool_results(
     }
 
     let to_keep = keep_recent.min(result_positions.len());
-    let to_clear = result_positions.len().saturating_sub(to_keep);
-
+    let mut cleared = 0;
     for &(msg_idx, block_idx) in &result_positions[to_keep..] {
-        if let Some(msg) = messages.get_mut(msg_idx) {
-            if let Some(block) = msg.content.get_mut(block_idx) {
-                if let ModelContentBlock::ToolResult { tool_use_id, .. } = &block {
-                    if !tool_use_id.is_empty() {
-                        cleared_ids.push(tool_use_id.clone());
-                    }
-                }
-                *block = ModelContentBlock::ToolResult {
-                    tool_use_id: String::new(),
-                    content: "[Old tool result content cleared]".to_string(),
-                    is_error: Some(false),
-                };
-            }
+        let Some(ModelContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+        }) = messages
+            .get_mut(msg_idx)
+            .and_then(|msg| msg.content.get_mut(block_idx))
+        else {
+            continue;
+        };
+        if content == CLEARED {
+            continue;
+        }
+        *content = CLEARED.to_string();
+        *is_error = Some(false);
+        cleared += 1;
+        if !tool_use_id.is_empty() {
+            cleared_ids.push(tool_use_id.clone());
         }
     }
 
-    (to_clear, cleared_ids)
+    (cleared, cleared_ids)
 }
+
+const CLEARED: &str = "[Old tool result content cleared]";
 
 #[cfg(test)]
 mod tests {
@@ -194,15 +202,22 @@ mod tests {
         ];
         let cleared = mc.run(&mut msgs);
         assert_eq!(cleared, 1);
-        // First (old) result should be cleared
         assert_eq!(
             msgs[0].content[0],
             ModelContentBlock::ToolResult {
-                tool_use_id: String::new(),
+                tool_use_id: "t1".into(),
                 content: "[Old tool result content cleared]".into(),
                 is_error: Some(false),
-            }
+            },
+            "the body goes, the id that pairs it with its tool_use stays"
         );
+        assert_eq!(mc.consume_pending_edits(), vec!["t1".to_string()]);
+        assert_eq!(
+            mc.run(&mut msgs),
+            0,
+            "a blanked result is not blanked again"
+        );
+        assert!(mc.consume_pending_edits().is_empty());
         // Second (recent) result should be intact
         assert_eq!(
             msgs[1].content[0],

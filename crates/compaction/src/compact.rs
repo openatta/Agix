@@ -29,7 +29,8 @@ use crate::time_based_mc::{TimeBasedMcConfig, TimeBasedMcResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompactStrategy {
-    /// Nothing was done — the conversation was already within budget.
+    /// Nothing was done — the conversation was already within budget, or
+    /// nothing the cascade could do to it made it any smaller.
     ///
     /// Distinct from `Snip` with zero dropped rounds: this reports that no
     /// strategy ran at all. Reporting `Snip` here would make every
@@ -82,8 +83,6 @@ pub struct SnipProjection {
 
 #[derive(Debug, thiserror::Error)]
 pub enum CompactError {
-    #[error("all strategies exhausted")]
-    Exhausted,
     /// This strategy declined — not a failure. The caller should fall through
     /// to the next strategy in the cascade without logging an error.
     #[error("strategy not applicable: {0}")]
@@ -334,6 +333,10 @@ impl<C: Compactor> Compactor for OnlyAtThreshold<C> {
 
 pub struct DefaultCompactor;
 
+fn holds_a_summary(round: &ApiRound) -> bool {
+    round.messages.iter().any(crate::llm_summary::is_summary)
+}
+
 impl DefaultCompactor {
     fn tokens(msgs: &[ModelMessage]) -> usize {
         estimate_tokens(msgs)
@@ -342,25 +345,16 @@ impl DefaultCompactor {
     /// Snip: keep the most recent `keep_rounds` API rounds; if that is still
     /// over budget, keep fewer — down to a floor of 1 round, which is always
     /// kept even when it alone exceeds the budget (dropping it would leave the
-    /// model with no conversation at all).
+    /// model with no conversation at all). A round holding an earlier
+    /// compaction's summary is kept wherever it sits — it is the only record
+    /// of the turns it replaced — and its cost comes off the budget first.
     ///
     /// Returns (messages, strategy, dropped_rounds, dropped_messages, tokens_saved) so the
     /// caller can build a SnipProjection for telemetry/UI.
     ///
-    /// The previous implementation initialized `drop = rounds.len() - keep` and
-    /// *decremented* it in the loop body, so `start = len - (keep + drop)`
-    /// moved earlier on each iteration — i.e. the loop added older rounds back
-    /// instead of dropping more, jumping straight to `rounds[1..]` (nearly the
-    /// whole history) on the first iteration and converging back down from
-    /// there. It never dropped below `keep_rounds`, contradicting its own
-    /// comment, and every iteration deep-cloned every kept message. It arrived
-    /// at the right answer only because the convergence happened to terminate
-    /// at the same place a correct loop would start.
-    ///
-    /// This version decides the cut from the per-round token totals that
-    /// `group_by_api_round` already computed (`estimate_tokens` is additive, so
-    /// the cost of a concatenation of rounds is the sum of theirs) and
-    /// materializes the message list exactly once.
+    /// The cut is decided from the per-round token totals `group_by_api_round`
+    /// already computed: `estimate_tokens` is additive, so the cost of a set of
+    /// rounds is the sum of theirs.
     fn snip(
         &self,
         messages: Vec<ModelMessage>,
@@ -375,27 +369,37 @@ impl DefaultCompactor {
         }
         let tokens_before = Self::tokens(&messages);
 
-        // Walk back from the newest round, accumulating cost. Stop at the
-        // configured `keep_rounds`, or earlier if the budget runs out first.
+        let mut kept: Vec<bool> = rounds.iter().map(holds_a_summary).collect();
+        let mut tokens: usize = rounds
+            .iter()
+            .zip(&kept)
+            .filter(|(_, pinned)| **pinned)
+            .map(|(round, _)| round.estimated_tokens)
+            .sum();
         let target_keep = keep_rounds.clamp(1, total_rounds);
         let mut keep = 0usize;
-        let mut tokens = 0usize;
-        for round in rounds.iter().rev() {
+        for (i, round) in rounds.iter().enumerate().rev() {
+            if kept[i] {
+                continue;
+            }
             let next = tokens + round.estimated_tokens;
             // The newest round is unconditional; beyond it, take a round only
             // if it fits and we still owe rounds toward `target_keep`.
             if keep > 0 && (next > max_tokens || keep >= target_keep) {
                 break;
             }
+            kept[i] = true;
             keep += 1;
             tokens = next;
         }
 
-        let result: Vec<ModelMessage> = rounds[total_rounds - keep..]
+        let result: Vec<ModelMessage> = rounds
             .iter()
-            .flat_map(|r| r.messages.iter().cloned())
+            .zip(&kept)
+            .filter(|(_, kept)| **kept)
+            .flat_map(|(round, _)| round.messages.iter().cloned())
             .collect();
-        let dropped_rounds = total_rounds - keep;
+        let dropped_rounds = kept.iter().filter(|kept| !**kept).count();
         let dropped_messages = total_messages.saturating_sub(result.len());
         let tokens_saved = tokens_before.saturating_sub(tokens);
         (
@@ -462,7 +466,8 @@ impl DefaultCompactor {
     }
 
     /// CollapseContext: fold old rounds into a single summary message (no LLM).
-    /// Keeps the structure but truncates text to a fixed summary length.
+    /// Keeps the structure but truncates text to a fixed summary length. An
+    /// earlier compaction's summary is carried over whole, ahead of the fold.
     fn collapse_context(
         &self,
         messages: Vec<ModelMessage>,
@@ -476,10 +481,14 @@ impl DefaultCompactor {
         let to_collapse = &rounds[..keep_start];
         let to_keep = &rounds[keep_start..];
 
-        // Build a synthetic summary of collapsed rounds
+        let mut result: Vec<ModelMessage> = Vec::new();
         let mut summary_parts: Vec<String> = Vec::new();
         for round in to_collapse {
             for msg in &round.messages {
+                if crate::llm_summary::is_summary(msg) {
+                    result.push(msg.clone());
+                    continue;
+                }
                 for block in &msg.content {
                     if let ModelContentBlock::Text { text } = block {
                         let truncated = if text.len() > 200 {
@@ -501,22 +510,23 @@ impl DefaultCompactor {
                 }
             }
         }
-        let summary = summary_parts.join(" | ");
-
-        let boundary = ModelMessage {
-            role: MessageRole::User,
-            content: vec![ModelContentBlock::Text {
-                text: "[Earlier conversation collapsed for context]".to_string(),
-            }],
-        };
-        let summary_msg = ModelMessage {
-            role: MessageRole::User,
-            content: vec![ModelContentBlock::Text {
-                text: format!("[Summary of earlier conversation]: {summary}"),
-            }],
-        };
-
-        let mut result = vec![boundary, summary_msg];
+        if !summary_parts.is_empty() {
+            result.push(ModelMessage {
+                role: MessageRole::User,
+                content: vec![ModelContentBlock::Text {
+                    text: "[Earlier conversation collapsed for context]".to_string(),
+                }],
+            });
+            result.push(ModelMessage {
+                role: MessageRole::User,
+                content: vec![ModelContentBlock::Text {
+                    text: format!(
+                        "[Summary of earlier conversation]: {}",
+                        summary_parts.join(" | ")
+                    ),
+                }],
+            });
+        }
         for round in to_keep {
             result.extend(round.messages.clone());
         }
@@ -570,6 +580,19 @@ impl Compactor for DefaultCompactor {
         };
 
         let tokens_after = Self::tokens(&result);
+        if tokens_after >= tokens_before {
+            return Ok((
+                messages,
+                CompactResult {
+                    strategy: CompactStrategy::NoOp,
+                    messages_before: count_before,
+                    messages_after: count_before,
+                    tokens_before,
+                    tokens_after: tokens_before,
+                    projection: None,
+                },
+            ));
+        }
         let messages_after = result.len();
         let projection = if strategy == CompactStrategy::Snip && dropped_rounds > 0 {
             Some(SnipProjection {
@@ -1457,6 +1480,67 @@ mod tests {
         // split one — a split would have panicked above, so reaching here with
         // valid content is the assertion.
         assert!(content.len() < 60_000);
+    }
+
+    fn summary_message(text: &str) -> ModelMessage {
+        text_user(&format!(
+            "<system-reminder>\nThe earlier part of this conversation was removed.\n\n\
+             {}\n{text}\n{}\n</system-reminder>",
+            crate::llm_summary::COMPACTED_CONTEXT_OPEN,
+            crate::llm_summary::COMPACTED_CONTEXT_CLOSE
+        ))
+    }
+
+    fn texts(msgs: &[ModelMessage]) -> String {
+        msgs.iter()
+            .flat_map(|m| &m.content)
+            .filter_map(|b| match b {
+                ModelContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// A summary an earlier FullCompact left is the only record of what it
+    /// replaced. A later compaction without a model must carry it forward,
+    /// however old its round is.
+    #[tokio::test]
+    async fn snip_keeps_an_earlier_summary_however_old_it_is() {
+        let mut msgs = vec![summary_message("SUMMARY-OF-THE-START")];
+        msgs.extend(build_long_conversation(30));
+        let (out, meta) = DefaultCompactor.compact(msgs, 60, 2).await.unwrap();
+        assert_eq!(meta.strategy, CompactStrategy::Snip);
+        assert!(texts(&out).contains("SUMMARY-OF-THE-START"), "{out:?}");
+        assert!(texts(&out).contains("response 29"));
+        assert!(!texts(&out).contains("response 0\n"));
+        assert!(crate::llm_summary::is_summary(&out[0]));
+    }
+
+    #[tokio::test]
+    async fn collapse_keeps_an_earlier_summary_whole() {
+        let summary = format!("SUMMARY-HEAD {} SUMMARY-TAIL", "word ".repeat(200));
+        let mut msgs = vec![summary_message(&summary)];
+        for i in 0..10 {
+            msgs.push(text_user(&format!("{i}{}", chinese_text(100))));
+            msgs.push(assistant_text(&chinese_text(100)));
+        }
+        let (out, meta) = DefaultCompactor.compact(msgs, 1, 2).await.unwrap();
+        assert_eq!(meta.strategy, CompactStrategy::CollapseContext);
+        assert!(texts(&out).contains("SUMMARY-TAIL"), "{out:?}");
+        assert!(crate::llm_summary::is_summary(&out[0]));
+    }
+
+    /// Over budget, Snip unable to get under it, and every round within the
+    /// keep floor so the last resort folds nothing: nothing was done, and the
+    /// result says so rather than naming a strategy.
+    #[tokio::test]
+    async fn a_cascade_whose_last_resort_changes_nothing_reports_noop() {
+        let msgs = build_long_conversation(3);
+        let (out, meta) = DefaultCompactor.compact(msgs.clone(), 1, 10).await.unwrap();
+        assert_eq!(meta.strategy, CompactStrategy::NoOp);
+        assert_eq!(out.len(), msgs.len());
+        assert_eq!(meta.tokens_after, meta.tokens_before);
     }
 
     #[tokio::test]

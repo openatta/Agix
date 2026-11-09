@@ -445,6 +445,15 @@ fn render_transcript(messages: &[ModelMessage]) -> Rendered {
     }
 }
 
+/// Whether `message` is one [`full_compact`] left in place of the rounds it
+/// summarized — the only record of them, which no later compaction may drop.
+pub fn is_summary(message: &ModelMessage) -> bool {
+    message.role == MessageRole::User
+        && message.content.iter().any(|block| {
+            matches!(block, ModelContentBlock::Text { text } if earlier_summary(text).is_some())
+        })
+}
+
 /// The summary inside a message [`summary_message`] wrote.
 fn earlier_summary(text: &str) -> Option<&str> {
     let start = text.find(COMPACTED_CONTEXT_OPEN)? + COMPACTED_CONTEXT_OPEN.len();
