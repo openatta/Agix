@@ -1,4 +1,4 @@
-Use this tool ONLY when the user explicitly asks to work in a worktree. This tool creates an isolated git worktree and switches the current session into it.
+Use this tool ONLY when the user explicitly asks to work in a worktree. This tool creates an isolated git worktree for the current session to work in.
 
 ## When to Use
 
@@ -12,12 +12,11 @@ Use this tool ONLY when the user explicitly asks to work in a worktree. This too
 
 ## Requirements
 
-- Must be in a git repository, OR have WorktreeCreate/WorktreeRemove hooks configured in settings.json
-- Must not already be in a worktree session when creating a new worktree (`name`); switching into another existing worktree via `path` is allowed
+- Must be in a git repository; outside one the tool fails
+- Must not already be in a worktree session — call ExitWorktree first
 
 ## Behavior
 
-- In a git repository: creates a new git worktree inside `.agix/worktrees/` on a new branch. The base ref is governed by the `worktree.baseRef` setting: `fresh` (default) branches from origin/<default-branch>; `head` branches from your current local HEAD
-- Outside a git repository: delegates to WorktreeCreate/WorktreeRemove hooks for VCS-agnostic isolation
-- Switches the session's working directory to the new worktree
-- Use ExitWorktree to leave the worktree mid-session (keep or remove). On session exit, if still in the worktree, the user will be prompted to keep or remove it
+- Creates a new git worktree at `.agix/worktrees/<slug>` in the repository root, on a new branch `agix/worktree-<slug>` that starts from your current local HEAD (uncommitted changes in the main checkout are not carried over)
+- The session's working directory does NOT change: relative paths and new shell commands still resolve against the original directory. Use the absolute worktree path the tool returns for file operations, and `cd` into it in Bash commands
+- Use ExitWorktree to end the worktree session (keep or remove). A worktree still active when the session ends is left on disk

@@ -2,7 +2,7 @@
 //! `EnterWorktree` / `ExitWorktree` on a git project (changes land in the
 //! worktree and nowhere else, a removal with changes needs `discard_changes`,
 //! a kept worktree stays on disk), `NotebookEdit` on an `.ipynb`, and `Glob` /
-//! `Grep` on unicode names, a binary file and a file past Grep's size cap.
+//! `Grep` on unicode names, a binary file and a file of several MiB.
 
 use std::path::Path;
 
@@ -152,7 +152,6 @@ async fn a_worktree_takes_the_changes_and_leaves_the_main_checkout_alone() -> an
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: ExitWorktree takes the handle out of the registry before checking for changes (tools/src/worktree_tools.rs:238) and its uncommitted-changes refusal returns without putting it back (worktree_tools.rs:280), so the retry with discard_changes finds \"No active worktree to exit\" and the worktree is left on disk, orphaned"]
 async fn removing_a_worktree_with_changes_is_refused_until_discard_is_given() -> anyhow::Result<()>
 {
     let (mut run, session) = start("worktree-dirty", true).await?;
@@ -183,7 +182,6 @@ async fn removing_a_worktree_with_changes_is_refused_until_discard_is_given() ->
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: ExitWorktree with action keep puts the handle back in the registry (tools/src/worktree_tools.rs:258), so the session never leaves the worktree and the next EnterWorktree is refused with \"An active worktree already exists\" (worktree_tools.rs:120) — the tool's prompt says keep exits and returns to the original directory"]
 async fn keeping_a_worktree_leaves_it_on_disk_and_the_session_can_enter_another(
 ) -> anyhow::Result<()> {
     let (mut run, session) = start("worktree-keep", true).await?;
@@ -379,7 +377,6 @@ async fn glob_and_grep_find_unicode_names_and_leave_binary_files_out() -> anyhow
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: Grep silently skips any file over 4 MiB (tools/src/grep.rs:238), so a match in a large log comes back as no matches and the model is not told the file was left out"]
 async fn grep_finds_a_match_at_the_end_of_a_large_file() -> anyhow::Result<()> {
     let (mut run, session) = start("search-big", false).await?;
     let deep = format!("DEEP-{}", nonce());

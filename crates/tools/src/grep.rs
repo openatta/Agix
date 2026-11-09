@@ -1,11 +1,9 @@
 //! GrepTool —— "Grep"。
 //!
-//! 重写**：原生 Rust 实现 —— `regex` + `ignore::WalkBuilder` + `globset`。
-//! 不再依赖系统 `rg`（ripgrep）。这让没装 ripgrep 的环境也能正常工作（解 PR
-//! tier 测试中 06/07/23 的"rg 缺失"假阴性）。
-//!
-//! 性能 vs ripgrep：略慢（rg 有 SIMD 优化 + parallel 文件 IO），但语义完全一致。
-//! 大仓库（10k+ 文件）下差异可能 2-5x；中小仓库实测无可感知差距。
+//! 原生 Rust 实现 —— `regex` + `ignore::WalkBuilder` + `globset`，不依赖系统
+//! `rg`。文件内容经会话的 `FileSystem` 读；超过 [`MAX_FILE_BYTES`] 的文件不读，
+//! 在结果里点名。收集的行按排序保留最前面的、受行数与字节上限约束，所以
+//! 大目录树上内存不随匹配数增长；walk 每个文件前看一次 cancel。
 
 use async_trait::async_trait;
 use base::error::ToolError;
@@ -25,6 +23,10 @@ use std::sync::{Arc, Mutex};
 const DEFAULT_HEAD_LIMIT: usize = 250;
 /// 输出字节硬上限。
 const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
+/// Files larger than this are not searched, and the result names them.
+const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
+/// How many of the files left out for size the result lists by name.
+const LISTED_SKIPPED_FILES: usize = 10;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GrepInput {
@@ -160,10 +162,11 @@ impl Tool for GrepTool {
         };
 
         // 构造 regex
+        let multiline = input.multiline.unwrap_or(false);
         let mut regex_builder = regex::RegexBuilder::new(&input.pattern);
         regex_builder.case_insensitive(input.case_insensitive.unwrap_or(false));
-        if input.multiline.unwrap_or(false) {
-            regex_builder.multi_line(true);
+        if multiline {
+            regex_builder.multi_line(true).dot_matches_new_line(true);
         }
         let re = match regex_builder.build() {
             Ok(r) => r,
@@ -199,21 +202,30 @@ impl Tool for GrepTool {
             return Err(ToolError::Cancelled);
         }
 
+        let cap = if head_limit > 0 {
+            head_limit
+        } else {
+            usize::MAX
+        };
+        let walk_cancel = cancel.clone();
         let result = tokio::task::spawn_blocking(move || {
-            let lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let found = Arc::new(Mutex::new(Collected::new(cap)));
 
             // 用 ignore::WalkBuilder 自动遵守 .gitignore + 排除 .git/
             let mut wb = WalkBuilder::new(&root_owned);
             wb.standard_filters(true).hidden(false);
-            // 用并行 walker 提速
             wb.build_parallel().run(|| {
-                let lines = lines.clone();
+                let found = found.clone();
                 let pat = pattern_arc.clone();
                 let glob = glob_arc.clone();
                 let filesystem: Arc<dyn FileSystem> = filesystem.clone();
                 let runtime = runtime.clone();
                 let cwd = cwd.clone();
+                let cancel = walk_cancel.clone();
                 Box::new(move |entry| {
+                    if cancel.is_cancelled() {
+                        return WalkState::Quit;
+                    }
                     let entry = match entry {
                         Ok(e) => e,
                         Err(_) => return WalkState::Continue,
@@ -230,14 +242,22 @@ impl Tool for GrepTool {
                             return WalkState::Continue;
                         }
                     }
-                    // 读 + 跳大文件 / 二进制
+                    let shown = style.render(path, &cwd);
+                    if runtime
+                        .block_on(filesystem.metadata(path))
+                        .is_ok_and(|m| m.len > MAX_FILE_BYTES)
+                    {
+                        found
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .too_large
+                            .push(shown);
+                        return WalkState::Continue;
+                    }
                     let bytes = match runtime.block_on(filesystem.read(path)) {
                         Ok(b) => b,
                         Err(_) => return WalkState::Continue,
                     };
-                    if bytes.len() > 4 * 1024 * 1024 {
-                        return WalkState::Continue;
-                    }
                     if is_binary(&bytes) {
                         return WalkState::Continue;
                     }
@@ -245,64 +265,27 @@ impl Tool for GrepTool {
                         Ok(s) => s,
                         Err(_) => return WalkState::Continue,
                     };
-
-                    match mode {
-                        GrepMode::FilesWithMatches => {
-                            if pat.is_match(content) {
-                                let mut g = lines
-                                    .lock()
-                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                                g.push(format!("{}\n", style.render(path, &cwd)));
-                            }
-                        }
-                        GrepMode::Count => {
-                            let n = pat.find_iter(content).count();
-                            if n > 0 {
-                                let mut g = lines
-                                    .lock()
-                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                                g.push(format!("{}:{}\n", style.render(path, &cwd), n));
-                            }
-                        }
-                        GrepMode::Content => {
-                            for (idx, line) in content.lines().enumerate() {
-                                if pat.is_match(line) {
-                                    let s = if line_numbers {
-                                        format!(
-                                            "{}:{}:{}\n",
-                                            style.render(path, &cwd),
-                                            idx + 1,
-                                            line
-                                        )
-                                    } else {
-                                        format!("{}:{}\n", style.render(path, &cwd), line)
-                                    };
-                                    let mut g = lines
-                                        .lock()
-                                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                                    g.push(s);
-                                }
-                            }
+                    let lines = match_lines(&pat, content, mode, multiline, line_numbers, &shown);
+                    if !lines.is_empty() {
+                        let mut g = found
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        for line in lines {
+                            g.push(line);
                         }
                     }
                     WalkState::Continue
                 })
             });
 
-            let lines = Arc::try_unwrap(lines)
-                .map(|m| {
-                    m.into_inner()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                })
-                .unwrap_or_else(|arc| {
-                    arc.lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .clone()
-                });
-            // 排序结果，让输出 deterministic
-            let mut lines = lines;
-            lines.sort();
-            lines
+            let mut found = std::mem::replace(
+                &mut *found
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                Collected::new(cap),
+            );
+            found.too_large.sort();
+            found
         })
         .await;
 
@@ -311,7 +294,11 @@ impl Tool for GrepTool {
             return Err(ToolError::Cancelled);
         }
 
-        let mut lines = result.map_err(|e| ToolError::exec(format!("grep walk panicked: {e}")))?;
+        let found = result.map_err(|e| ToolError::exec(format!("grep walk panicked: {e}")))?;
+        let total_lines = found.total;
+        let dropped_for_size = found.dropped_for_size;
+        let too_large = found.too_large.clone();
+        let mut lines = found.into_sorted();
 
         let structured = match mode {
             GrepMode::FilesWithMatches => Some(serde_json::json!({
@@ -329,10 +316,7 @@ impl Tool for GrepTool {
             GrepMode::Content => None,
         };
 
-        // 截断输出
-        let total_lines = lines.len();
-        if head_limit > 0 && total_lines > head_limit {
-            lines.truncate(head_limit);
+        if head_limit > 0 && total_lines > head_limit && !dropped_for_size {
             lines.push(format!(
                 "\n[output truncated to first {} of {} lines]\n",
                 head_limit, total_lines
@@ -344,9 +328,30 @@ impl Tool for GrepTool {
             let kept = base::text::truncate_at_char_boundary(&text, MAX_OUTPUT_BYTES).len();
             text.truncate(kept);
             text.push_str("\n[output truncated]\n");
+        } else if dropped_for_size {
+            text.push_str("\n[output truncated]\n");
         }
         if text.is_empty() {
             text.push_str("(no matches)\n");
+        }
+        if !too_large.is_empty() {
+            let listed = too_large
+                .iter()
+                .take(LISTED_SKIPPED_FILES)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ");
+            let more = too_large.len().saturating_sub(LISTED_SKIPPED_FILES);
+            text.push_str(&format!(
+                "\n[{} file(s) larger than {} MiB were not searched: {listed}{}]\n",
+                too_large.len(),
+                MAX_FILE_BYTES / (1024 * 1024),
+                if more > 0 {
+                    format!(" and {more} more")
+                } else {
+                    String::new()
+                }
+            ));
         }
 
         let mut result = ToolResult::text(text);
@@ -372,6 +377,107 @@ impl GrepMode {
                 "invalid output_mode '{other}' (expected content / files_with_matches / count)"
             ))),
         }
+    }
+}
+
+/// The output lines one file contributes.
+fn match_lines(
+    pat: &regex::Regex,
+    content: &str,
+    mode: GrepMode,
+    multiline: bool,
+    line_numbers: bool,
+    shown: &str,
+) -> Vec<String> {
+    let line = |no: usize, text: &str| {
+        if line_numbers {
+            format!("{shown}:{no}:{text}\n")
+        } else {
+            format!("{shown}:{text}\n")
+        }
+    };
+    match mode {
+        GrepMode::FilesWithMatches if pat.is_match(content) => vec![format!("{shown}\n")],
+        GrepMode::FilesWithMatches => vec![],
+        GrepMode::Count => match pat.find_iter(content).count() {
+            0 => vec![],
+            n => vec![format!("{shown}:{n}\n")],
+        },
+        GrepMode::Content if multiline => {
+            let mut out = Vec::new();
+            let mut last_line = 0;
+            let (mut counted_to, mut newlines_before) = (0, 0);
+            for m in pat.find_iter(content) {
+                let start = content[..m.start()].rfind('\n').map_or(0, |i| i + 1);
+                let tail = if content[m.start()..m.end()].ends_with('\n') {
+                    m.end() - 1
+                } else {
+                    m.end()
+                };
+                let end = content[tail..]
+                    .find('\n')
+                    .map_or(content.len(), |i| tail + i);
+                newlines_before += content[counted_to..start].matches('\n').count();
+                counted_to = start;
+                let first = newlines_before + 1;
+                for (i, text) in content[start..end].lines().enumerate() {
+                    if first + i > last_line {
+                        out.push(line(first + i, text));
+                        last_line = first + i;
+                    }
+                }
+            }
+            out
+        }
+        GrepMode::Content => content
+            .lines()
+            .enumerate()
+            .filter(|(_, text)| pat.is_match(text))
+            .map(|(idx, text)| line(idx + 1, text))
+            .collect(),
+    }
+}
+
+/// The smallest output lines in sort order, bounded by a line cap and by the
+/// output byte budget, so a walk over a huge tree holds no more than it can
+/// return; `total` still counts every line found.
+struct Collected {
+    kept: std::collections::BinaryHeap<String>,
+    bytes: usize,
+    cap: usize,
+    total: usize,
+    dropped_for_size: bool,
+    too_large: Vec<String>,
+}
+
+impl Collected {
+    fn new(cap: usize) -> Self {
+        Self {
+            kept: std::collections::BinaryHeap::new(),
+            bytes: 0,
+            cap,
+            total: 0,
+            dropped_for_size: false,
+            too_large: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, line: String) {
+        self.total += 1;
+        self.bytes += line.len();
+        self.kept.push(line);
+        while self.kept.len() > self.cap || (self.bytes > MAX_OUTPUT_BYTES && self.kept.len() > 1) {
+            let over_bytes = self.kept.len() <= self.cap;
+            let Some(largest) = self.kept.pop() else {
+                break;
+            };
+            self.bytes -= largest.len();
+            self.dropped_for_size |= over_bytes;
+        }
+    }
+
+    fn into_sorted(self) -> Vec<String> {
+        self.kept.into_sorted_vec()
     }
 }
 
@@ -639,6 +745,149 @@ mod tests {
             assert!(text.ends_with("[output truncated]\n"), "shift {shift}");
             assert!(text.len() <= MAX_OUTPUT_BYTES + "\n[output truncated]\n".len());
         }
+    }
+
+    fn text_of(r: ToolResult) -> String {
+        match r.content {
+            ToolResultContent::Text(t) => t,
+            other => panic!("text result, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_file_of_several_mib_is_searched_and_one_past_the_cap_is_named() {
+        let dir = TempDir::new().unwrap();
+        let mut log = "routine reading, all values nominal\n".repeat(150_000);
+        log.push_str("DEEP-NEEDLE\n");
+        assert!(log.len() > 5 * 1024 * 1024);
+        tokio::fs::write(dir.path().join("big.log"), &log)
+            .await
+            .unwrap();
+        let huge = std::fs::File::create(dir.path().join("huge.log")).unwrap();
+        huge.set_len(MAX_FILE_BYTES + 1).unwrap();
+
+        let text = text_of(
+            GrepTool
+                .call(
+                    json!({"pattern": "DEEP-NEEDLE"}),
+                    ctx_in(dir.path()),
+                    ProgressSender::noop("t"),
+                )
+                .await
+                .unwrap(),
+        );
+        assert!(text.contains("big.log"), "{text}");
+        assert!(
+            text.contains("1 file(s) larger than 32 MiB were not searched")
+                && text.contains("huge.log"),
+            "{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_lines_kept_under_a_head_limit_are_the_first_in_sort_order() {
+        let dir = TempDir::new().unwrap();
+        for name in ["c.txt", "a.txt", "d.txt", "b.txt"] {
+            tokio::fs::write(dir.path().join(name), "hit\nhit\n")
+                .await
+                .unwrap();
+        }
+        let text = text_of(
+            GrepTool
+                .call(
+                    json!({"pattern": "hit", "output_mode": "content", "head_limit": 3, "line_numbers": true}),
+                    ctx_in(dir.path()),
+                    ProgressSender::noop("t"),
+                )
+                .await
+                .unwrap(),
+        );
+        let lines: Vec<&str> = text.lines().filter(|l| l.contains(":hit")).collect();
+        assert_eq!(lines.len(), 3, "{text}");
+        assert!(lines[0].ends_with("a.txt:1:hit"), "{text}");
+        assert!(lines[2].ends_with("b.txt:1:hit"), "{text}");
+        assert!(text.contains("first 3 of 8 lines"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_multiline_match_in_content_mode_shows_the_lines_it_spans() {
+        let dir = TempDir::new().unwrap();
+        tokio::fs::write(
+            dir.path().join("a.rs"),
+            "fn x() {}\nstruct S {\n    a: u8,\n    field: u8,\n}\n",
+        )
+        .await
+        .unwrap();
+        let text = text_of(
+            GrepTool
+                .call(
+                    json!({"pattern": "struct S \\{.*?field", "output_mode": "content",
+                           "multiline": true, "line_numbers": true}),
+                    ctx_in(dir.path()),
+                    ProgressSender::noop("t"),
+                )
+                .await
+                .unwrap(),
+        );
+        assert!(text.contains("a.rs:2:struct S {"), "{text}");
+        assert!(text.contains("a.rs:4:    field: u8,"), "{text}");
+        assert!(!text.contains("fn x"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn cancel_mid_walk_stops() {
+        struct CancelOnFirstRead {
+            cancel: tokio_util::sync::CancellationToken,
+            reads: std::sync::atomic::AtomicUsize,
+        }
+
+        #[async_trait]
+        impl FileSystem for CancelOnFirstRead {
+            async fn read(&self, path: &Path) -> Result<Vec<u8>, ExecError> {
+                self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.cancel.cancel();
+                LocalFileSystem.read(path).await
+            }
+            async fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), ExecError> {
+                LocalFileSystem.write(path, bytes).await
+            }
+            async fn create_dir_all(&self, path: &Path) -> Result<(), ExecError> {
+                LocalFileSystem.create_dir_all(path).await
+            }
+            async fn read_dir(&self, path: &Path) -> Result<Vec<DirEntry>, ExecError> {
+                LocalFileSystem.read_dir(path).await
+            }
+            async fn remove_dir_all(&self, path: &Path) -> Result<(), ExecError> {
+                LocalFileSystem.remove_dir_all(path).await
+            }
+            async fn metadata(&self, path: &Path) -> Result<Metadata, ExecError> {
+                LocalFileSystem.metadata(path).await
+            }
+            async fn canonicalize(&self, path: &Path) -> Result<PathBuf, ExecError> {
+                LocalFileSystem.canonicalize(path).await
+            }
+        }
+
+        let dir = TempDir::new().unwrap();
+        let files = 2000;
+        for i in 0..files {
+            std::fs::write(dir.path().join(format!("f{i}.txt")), "x\n").unwrap();
+        }
+        let mut ctx = ctx_in(dir.path());
+        let fs = Arc::new(CancelOnFirstRead {
+            cancel: ctx.cancel.clone(),
+            reads: Default::default(),
+        });
+        ctx.exec.filesystem = fs.clone();
+        let r = GrepTool
+            .call(json!({"pattern": "x"}), ctx, ProgressSender::noop("t"))
+            .await;
+        assert!(matches!(r, Err(ToolError::Cancelled)), "{r:?}");
+        let reads = fs.reads.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            reads < files / 10,
+            "{reads} of {files} files read after cancel"
+        );
     }
 
     /// The walk stays on this machine — it is not part of the contract — but
