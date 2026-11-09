@@ -309,11 +309,8 @@ impl Coordinator for DefaultCoordinator {
         ));
         let memory = Arc::new(crate::team_memory::TeamMemoryStore::for_team_dir(&team_dir));
 
-        // Inject coordinator system prompt.
-        let stage_names: Vec<String> = stages.iter().map(|s| s.name.clone()).collect();
-        let coordinator_prompt = crate::prompt::build_coordinator_prompt(&name, &stage_names);
         let mut scratch = format!(
-            "# Team `{name}`\n\nTeam id: `{team_id}`\nStages: {}\n\n{coordinator_prompt}\n",
+            "# Team `{name}`\n\nTeam id: `{team_id}`\nStages: {}\n",
             stages.len()
         );
         if let Some(s) = scratchpad {
@@ -452,9 +449,6 @@ impl Coordinator for DefaultCoordinator {
                         },
                         &agent_spec.prompt,
                     );
-                    // A member's `agent_type` was parsed off the tool input
-                    // and then thrown away here; pass it through so the
-                    // runtime's agent catalog can actually apply it.
                     let agent_type = agent_spec.agent_type.clone();
                     let cwd = ctx.cwd.clone();
                     let cancel = ctx.cancel.child_token();
@@ -1210,6 +1204,32 @@ mod tests {
             positions, sorted,
             "expected output sections in declaration order agent0..agent3, got positions {positions:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn the_result_is_the_members_output_without_orchestration_instructions() {
+        let stages = vec![TeamStage {
+            name: "stage0".into(),
+            agents: vec![TeamAgentSpec {
+                label: "only".into(),
+                prompt: "10".into(),
+                agent_type: None,
+            }],
+            aggregate: None,
+        }];
+        let (_dir, ctx) = make_ctx();
+        let coordinator = DefaultCoordinator::with_agent_spawner(Arc::new(FakeSpawner::new()));
+        let result = coordinator
+            .orchestrate(make_request(ctx, stages))
+            .await
+            .expect("orchestrate ok");
+        let ToolResultContent::Text(text) = &result.content else {
+            panic!("expected text content");
+        };
+        assert!(text.contains("### only"), "{text}");
+        for leaked in ["## Your Role", "## Your Tools", "## Workers", "SendMessage"] {
+            assert!(!text.contains(leaked), "{leaked} in:\n{text}");
+        }
     }
 
     /// (c) With more agents than the semaphore has permits, the observed

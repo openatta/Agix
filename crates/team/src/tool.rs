@@ -61,16 +61,9 @@ pub struct TeamCreateInput {
     pub agents: Vec<TeamAgentSpec>,
     #[serde(default)]
     pub scratchpad: Option<String>,
-    /// The permission grant every agent in this call runs under — chosen
-    /// once, for the whole team, not negotiated per tool call. Omit for the
-    /// safe default (`Plan`: read-only tools only). Use `BypassPermissions`
-    /// to let the team actually make changes, `DontAsk` to allow nothing
-    /// beyond structurally-safe read-only tools, etc. — the same
-    /// `PermissionMode` values `settings.json`'s own `permission_mode`
-    /// uses. `Bubble` isn't accepted here (rejected at validation) — it
-    /// needs a lead that's actually available to answer mid-call, which
-    /// isn't true for `TeamCreate`'s synchronous batch mode (see this tool's
-    /// own prompt for why).
+    /// The permission mode every agent in this call runs under, for the
+    /// whole team (default `plan`, read-only). It can only make the team
+    /// stricter than this session, never looser. `bubble` is rejected.
     #[serde(default)]
     pub permission_mode: Option<base::interface::settings::PermissionMode>,
 }

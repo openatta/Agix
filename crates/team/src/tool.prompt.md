@@ -27,9 +27,8 @@ When in doubt about whether a task warrants a team, prefer spawning a team over 
 - `agents`: each needs a `label` (used in the output headings and in inter-agent messages) and a `prompt` written the same way you'd write one for a standalone `Agent` call — self-contained, no delegated understanding, no "based on what part-a found" (part-a hasn't run yet when you write this).
 - `stages` (optional): group `agents` into ordered stages instead of one flat list, when a later group's work genuinely depends on an earlier group finishing (e.g. plan → implement). Agents within a stage run concurrently with each other; stages run one after another.
 - `scratchpad` (optional): extra context written into the team's own working notes before any agent runs.
-- `permission_mode` (optional): the permission grant every agent in this call runs under — one grant for the whole team, not something you set per agent. Omit for the safe default (`"plan"`: read-only tools only); use `"bypassPermissions"` if the team actually needs to make changes. `"bubble"` is rejected — it needs you to be available to answer mid-call, which you aren't (see "Coordinating between teammates" below for why).
-
-Choose each teammate's work based on what a plain, general-purpose agent can do with the tools it has — there's no agent-type specialization for team members today (every teammate runs with the same tool access, regardless of what you write for the task).
+- `permission_mode` (optional): the permission mode every agent in this call runs under — one for the whole team, not something you set per agent. Omit for the safe default (`"plan"`: read-only tools only). Teammates follow this session's permission rules, and the mode you give can only make them stricter than this session, never looser: `"bypassPermissions"` in a session that asks before edits still asks. Whatever a teammate needs approved is asked of this session's user. `"bubble"` is rejected.
+- `agent_type` (optional, per agent): one of the agent types the `Agent` tool's `subagent_type` accepts; the teammate then gets that type's instructions, tools and model. Omit it for a general-purpose teammate.
 
 ## Coordinating between teammates while they run
 
@@ -40,7 +39,7 @@ Teammates in the same stage run concurrently and can talk to each other in real 
 ## Checking on and cleaning up teams
 
 - **`TeamList`** — lists teams that have run and haven't been cleaned up yet, with each member's label and last-known status. Call this before `TeamDelete` if you're not sure of the exact name you used — don't guess a name or create a placeholder team instead of looking one up.
-- **`TeamDelete`** — takes the same `name` you gave `TeamCreate` and removes the team's tracked state and on-disk directory. It now actually errors if the name doesn't match a team `TeamList` would show, instead of silently claiming success — treat that error as a real signal to run `TeamList` and check what actually exists.
+- **`TeamDelete`** — takes the same `name` you gave `TeamCreate` and removes the team's tracked state and on-disk directory. It errors if the name doesn't match a team `TeamList` would show — treat that error as a signal to run `TeamList` and check what actually exists.
 
 Clean up a team once its work is reported and you don't expect to reference it again — `TeamDelete` also stops any still-running persistent members under that name (see below), not just this batch mode's tracked state — there is no automatic expiry beyond the idle/count-based reclaim persistent members get on their own.
 

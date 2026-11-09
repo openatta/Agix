@@ -432,8 +432,6 @@ pub struct AgentInput {
     pub background: bool,
     #[serde(default)]
     pub model: Option<String>,
-    #[serde(default)]
-    pub auto_background_after_secs: Option<u64>,
     /// A JSON Schema the sub-agent's final answer must satisfy; the answer is
     /// then also returned as structured content.
     #[serde(default)]
@@ -875,7 +873,8 @@ async fn run_one_turn(
 
     let cancelled = matches!(&outcome, Ok(o) if o.stop_reason == "cancelled");
     let result = match outcome {
-        Ok(_) | Err(runtime::turn::TurnError::Shutdown) => Ok(text),
+        Ok(o) => Ok(with_stop_note(text, &o.stop_reason)),
+        Err(runtime::turn::TurnError::Shutdown) => Ok(text),
         Err(e) => Err(base::error::ToolError::Execution(anyhow!("sub: {e}"))),
     };
     if let Some(tag) = &tag {
@@ -886,6 +885,26 @@ async fn run_one_turn(
         });
     }
     (result, cancelled)
+}
+
+/// A sub-agent's answer, with a line saying so when its turn was cut off by
+/// a limit rather than finished — without it the parent reads a partial or
+/// empty answer as the whole one.
+fn with_stop_note(text: String, stop_reason: &str) -> String {
+    let note = match stop_reason {
+        "max_turns" | "host_ceiling" => {
+            "The sub-agent reached its limit of model calls (max_turns) before it finished"
+        }
+        "max_structured_output_retries" => {
+            "The sub-agent stopped after too many attempts at its structured output"
+        }
+        _ => return text,
+    };
+    if text.trim().is_empty() {
+        format!("[{note}; it gave no answer.]")
+    } else {
+        format!("{text}\n\n[{note}; the answer above may be incomplete.]")
+    }
 }
 
 /// [`run_one_turn`] on a task of its own, so a foreground sub-agent is
@@ -4777,6 +4796,42 @@ mod catalog_tests {
             "the guide must be distinguishable from the short description — \
              that difference is exactly what the default derivation keys on"
         );
+    }
+
+    #[test]
+    fn the_guide_says_what_the_tool_does() {
+        let guide = include_str!("agent_tool.prompt.md");
+        assert!(
+            guide.contains("you receive a `<task-notification>`"),
+            "a finished background agent notifies its parent"
+        );
+        for stale in [
+            "no automatic push",
+            "no push notification",
+            "FleetView",
+            "code-reviewer:",
+            "\"bypassPermissions\"` to let it",
+        ] {
+            assert!(!guide.contains(stale), "{stale}");
+        }
+        assert!(guide.contains("listed in this tool's description"));
+        assert!(guide.contains("max_turns"));
+
+        let schema = serde_json::to_value(schemars::schema_for!(AgentInput)).unwrap();
+        assert!(
+            schema["properties"]
+                .get("auto_background_after_secs")
+                .is_none(),
+            "{schema}"
+        );
+    }
+
+    #[test]
+    fn a_sub_agent_cut_off_by_a_limit_says_so() {
+        assert_eq!(with_stop_note("done".into(), "end_turn"), "done");
+        assert!(with_stop_note(String::new(), "max_turns").contains("gave no answer"));
+        let partial = with_stop_note("half".into(), "max_turns");
+        assert!(partial.starts_with("half") && partial.contains("may be incomplete"));
     }
 
     struct DummyModel;

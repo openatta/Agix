@@ -4,7 +4,7 @@
 //! - [`tool::TeamTool`] — exposes team orchestration as a tool
 //! - [`mailbox`] — inter-agent message passing
 //! - [`registry`] — shared team state (`TeamList`/`TeamDelete` see what `TeamCreate` made)
-//! - [`prompt`] — coordinator system prompt
+//! - [`prompt`] — the team-context block a member's task opens with
 //! - [`persist`] — on-disk team.json/state.json/events.jsonl
 //! - [`lock`] — `<project>/.agix/teams/.lock`
 

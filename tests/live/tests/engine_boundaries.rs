@@ -227,6 +227,34 @@ async fn a_sub_agent_shows_in_its_sessions_telemetry() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sub_agent_cut_off_by_max_turns_says_so_to_its_parent() -> anyhow::Result<()> {
+    let stub = ProviderStub::start().await?;
+    let mut run = stubbed("max-turns-note", &stub).start().await?;
+    run.write_file(
+        ".agix/agents/brief.md",
+        "---\ndescription: Short on calls\nmax_turns: 1\n---\nBRIEF-ROLE.\n",
+    )?;
+    let session = run.session().await?;
+    stub.script([
+        Reply::calls(
+            "a1",
+            "Agent",
+            json!({ "description": "brief", "prompt": "Go.", "subagent_type": "brief" }),
+        ),
+        Reply::calls("g1", "Glob", json!({ "pattern": "*.nothing" })),
+        Reply::text("parent done"),
+    ]);
+    let events = run.turn(&session, "delegate it").await?;
+    let agent = result_of(&events, "Agent").expect("an Agent result");
+    assert!(
+        agent.1.contains("reached its limit of model calls") && agent.1.contains("no answer"),
+        "{agent:?}"
+    );
+    run.finish().await;
+    Ok(())
+}
+
 /// The model asks for a fetch, then keeps the stream open for a while
 /// before it asks for anything else.
 fn fetch_then_stall(url: &str, stall: Duration) -> Reply {
