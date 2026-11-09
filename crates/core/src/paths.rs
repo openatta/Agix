@@ -49,6 +49,33 @@ use std::path::PathBuf;
 /// sandboxed commands may write.
 pub const STATE_ROOT_WORKING_DIRS: &[&str] = &["scratchpad", "memory"];
 
+/// The directories an agent's configuration lives in: `.agix` in a project
+/// and as the state root, and `.claude`, which the engine imports from.
+/// What may be written in one is decided by [`ENGINE_CONFIG_FILES`] and
+/// [`ENGINE_CONFIG_DIRS`]; the rest (scratchpad, memory, sessions,
+/// worktrees) is working space.
+pub const ENGINE_CONFIG_ROOTS: &[&str] = &[".agix", ".claude"];
+
+/// Files directly in an [`ENGINE_CONFIG_ROOTS`] directory that configure the
+/// engine. Neither the write tools nor a sandboxed command may write them.
+pub const ENGINE_CONFIG_FILES: &[&str] =
+    &["settings.json", "settings.local.json", "mcp.local.json"];
+
+/// Directories directly in an [`ENGINE_CONFIG_ROOTS`] directory that
+/// configure the engine, guarded with everything under them.
+pub const ENGINE_CONFIG_DIRS: &[&str] = &[
+    "mcp",
+    "hooks",
+    "agents",
+    "skills",
+    "plugins",
+    "rules",
+    "scenes",
+    "policy",
+    "scripts",
+    "output-styles",
+];
+
 /// Under the state root, one temporary directory per session,
 /// `<state root>/tmp/<session>`: the session's sandboxed commands may write
 /// their own and no other.

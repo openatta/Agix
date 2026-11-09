@@ -3,6 +3,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
+use base::paths::{ENGINE_CONFIG_FILES, ENGINE_CONFIG_ROOTS};
 use unicode_normalization::UnicodeNormalization;
 
 /// 默认黑名单（路径任意位置含这些段则拒）。可被 `WritePolicy::with_extra_blacklist` 扩展。
@@ -27,18 +28,7 @@ const DEFAULT_FILENAME_BLACKLIST: &[&str] = &[
 /// doing it the wrong way round. Denied like the credential list, and
 /// exempted the same way: a deployment whose agent is supposed to maintain a
 /// `.gitignore` says so in `sandbox.allow_write`.
-const GUARDED_FILENAMES: &[&str] = &[".gitignore", "package-lock.json", "Cargo.lock"];
-
-/// The engine's own configuration, wherever it lives.
-///
-/// A tool that can rewrite these can rewrite the rules it is judged by, so
-/// they are guarded — but by *name and location*, not by directory. `.agix`
-/// is also where a sub-agent's git worktree lives, and denying the directory
-/// denies every write the sub-agent was created to make.
-const SETTINGS_FILENAMES: &[&str] = &["settings.json", "settings.local.json"];
-
-/// Directories those settings files live in.
-const SETTINGS_DIRS: &[&str] = &[".agix", ".claude"];
+const GUARDED_FILENAMES: &[&str] = &[".gitignore", "package-lock.json", "Cargo.lock", ".envrc"];
 
 /// 不论 cwd 在哪，下面这些系统目录都拒写。
 const ABSOLUTE_DENY_PREFIXES: &[&str] = &[
@@ -295,12 +285,15 @@ pub fn check_write_for(
             }
         }
 
-        // 7a. The engine's own settings, by name and location.
+        // 7a. The engine's own settings, by name and location — not by
+        // directory: `.agix` also holds a sub-agent's worktree, and the
+        // configuration directories in it are asked about rather than refused
+        // (the gate's `.agix` confirmation), since a person can say yes there.
         if let Some(name) = target.file_name().and_then(|n| n.to_str()) {
-            let under_settings_dir = target.components().any(
-                |c| matches!(c, Component::Normal(d) if SETTINGS_DIRS.iter().any(|s| d == *s)),
-            );
-            if under_settings_dir && SETTINGS_FILENAMES.contains(&name) {
+            let under_config_root = target.components().any(|c| {
+                matches!(c, Component::Normal(d) if ENGINE_CONFIG_ROOTS.iter().any(|s| d == *s))
+            });
+            if under_config_root && ENGINE_CONFIG_FILES.contains(&name) {
                 return Err(PathSafetyError::BlacklistedFilename {
                     path: target.to_path_buf(),
                     matched: format!("{name} under an engine settings directory"),

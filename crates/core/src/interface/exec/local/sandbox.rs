@@ -22,15 +22,16 @@
 //! is resolved through its symlinks before a rule is written for it.
 //!
 //! Inside those, what the engine or git later acts on outside the sandbox is
-//! read-only: the project's `.git` and `.agix` entries themselves,
+//! read-only: the project's `.git`, `.agix` and `.claude` entries themselves,
 //! `.git/{config,config.worktree,commondir}` and `.git/hooks/`, the
-//! configuration under `.agix/` (settings, MCP, hooks, agents, skills,
-//! plugins, rules, scenes, policy, scripts, output styles), and the `.git`
-//! links of the engine's worktrees. Of the state root only `scratchpad/`,
-//! `memory/` and those of `additional_writable` under `tmp/` (a session's
-//! own `TMPDIR`) stay writable. On Linux `.agix` is read-only as a whole and its
-//! existing working entries are opened again, so a new entry directly in it
-//! cannot be created either.
+//! configuration under `.agix/` and `.claude/` (`base::paths::ENGINE_CONFIG_*`:
+//! settings, MCP, hooks, agents, skills, plugins, rules, scenes, policy,
+//! scripts, output styles), and the `.git` links of the engine's worktrees.
+//! Of the state root only `scratchpad/`, `memory/` and those of
+//! `additional_writable` under `tmp/` (a session's own `TMPDIR`) stay
+//! writable. On Linux `.agix`, and `.claude` where it exists, is read-only as
+//! a whole and its existing working entries are opened again, so a new entry
+//! directly in it cannot be created either.
 //!
 //! A policy with `only_additional_writable` leaves out the working directory,
 //! the state root's working entries and `DARWIN_USER_TEMP_DIR`: only
@@ -249,31 +250,16 @@ fn plain(inner: ProcessSpec, mode: SandboxMode) -> Confined {
     }
 }
 
-/// Entries directly under the project's `.agix/` that configure the engine,
-/// as against its working files (scratchpad, memory, sessions, worktrees).
-#[cfg(feature = "sandbox")]
-const PROJECT_CONFIG_FILES: &[&str] = &["settings.json", "settings.local.json", "mcp.local.json"];
-#[cfg(feature = "sandbox")]
-const PROJECT_CONFIG_DIRS: &[&str] = &[
-    "mcp",
-    "hooks",
-    "agents",
-    "skills",
-    "plugins",
-    "rules",
-    "scenes",
-    "policy",
-    "scripts",
-    "output-styles",
-];
-
 /// Files in a git directory that decide which programs git runs and where it
 /// reads its configuration from.
 #[cfg(feature = "sandbox")]
 const GIT_CONTROL_FILES: &[&str] = &["config", "config.worktree", "commondir"];
 
 #[cfg(feature = "sandbox")]
-use crate::paths::{STATE_ROOT_SESSION_TMP, STATE_ROOT_WORKING_DIRS};
+use crate::paths::{
+    ENGINE_CONFIG_DIRS, ENGINE_CONFIG_FILES, ENGINE_CONFIG_ROOTS, STATE_ROOT_SESSION_TMP,
+    STATE_ROOT_WORKING_DIRS,
+};
 
 /// The paths a policy is written against, each with its symlinks resolved.
 ///
@@ -365,8 +351,9 @@ fn subdirs(dir: &Path) -> Vec<PathBuf> {
 #[cfg(feature = "sandbox")]
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 struct ProjectGuard {
-    /// `.git` and `.agix` themselves: renaming one away, or replacing it with
-    /// a symlink, would put every rule below on a path nobody reads.
+    /// `.git` and the configuration roots themselves: renaming one away, or
+    /// replacing it with a symlink, would put every rule below on a path
+    /// nobody reads.
     entries: Vec<PathBuf>,
     files: Vec<PathBuf>,
     trees: Vec<PathBuf>,
@@ -376,34 +363,32 @@ struct ProjectGuard {
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn project_guard(cwd: &Path) -> ProjectGuard {
     let git = cwd.join(".git");
-    let agix = cwd.join(".agix");
     let git_dir = resolve_path(&git);
-    let agix_dir = resolve_path(&agix);
+    let agix_dir = resolve_path(&cwd.join(".agix"));
 
-    let mut files: Vec<PathBuf> = PROJECT_CONFIG_FILES
-        .iter()
-        .map(|f| agix_dir.join(f))
-        .collect();
-    files.extend(GIT_CONTROL_FILES.iter().map(|f| git_dir.join(f)));
+    let mut entries = vec![git.clone()];
+    if git_dir != git {
+        entries.push(git_dir.clone());
+    }
+    let mut files: Vec<PathBuf> = GIT_CONTROL_FILES.iter().map(|f| git_dir.join(f)).collect();
+    let mut trees = vec![git_dir.join("hooks")];
+    for name in ENGINE_CONFIG_ROOTS {
+        let root = cwd.join(name);
+        let real = resolve_path(&root);
+        files.extend(ENGINE_CONFIG_FILES.iter().map(|f| real.join(f)));
+        trees.extend(ENGINE_CONFIG_DIRS.iter().map(|d| real.join(d)));
+        if real != root {
+            entries.push(real);
+        }
+        entries.push(root);
+    }
+
     for worktree in subdirs(&git_dir.join("worktrees")) {
         files.extend(GIT_CONTROL_FILES.iter().map(|f| worktree.join(f)));
     }
     for worktree in subdirs(&agix_dir.join("worktrees")) {
         files.push(worktree.join(".git"));
     }
-
-    let mut trees: Vec<PathBuf> = PROJECT_CONFIG_DIRS
-        .iter()
-        .map(|d| agix_dir.join(d))
-        .collect();
-    trees.push(git_dir.join("hooks"));
-
-    let mut entries = vec![git.clone(), agix.clone()];
-    entries.extend(
-        [git_dir, agix_dir]
-            .into_iter()
-            .filter(|real| *real != git && *real != agix),
-    );
     ProjectGuard {
         entries,
         files,
@@ -595,8 +580,9 @@ fn writable_by_us(dir: &Path) -> bool {
 /// The Linux shape of [`project_guard`].
 ///
 /// bwrap has no deny rule, only mounts, and a read-only bind of a file that
-/// does not exist yet is skipped rather than refused. So `.agix` is mounted
-/// read-only as a whole and its working entries are opened again one by one;
+/// does not exist yet is skipped rather than refused. So `.agix` — and
+/// `.claude` where it exists — is mounted read-only as a whole and its
+/// working entries are opened again one by one;
 /// a configuration file that is not there yet cannot be created because its
 /// directory is read-only. `.git` cannot be treated that way — git creates
 /// its lock files directly in it — so it is bound onto itself, which makes it
@@ -631,14 +617,21 @@ fn guard_project(args: &mut Vec<String>, roots: &Roots) {
         bind(args, "--ro-bind", &git);
     }
 
-    let agix = roots.cwd.join(".agix");
-    if roots.opens(&agix) {
-        read_only(args, &agix);
-        if let Ok(entries) = std::fs::read_dir(&agix) {
+    for name in ENGINE_CONFIG_ROOTS {
+        let root = roots.cwd.join(name);
+        // Holding an absent root leaves an empty mount point behind in the
+        // project, which for `.agix` is the engine's own and for `.claude`
+        // would be litter in every project.
+        let held = *name == ".agix" || root.symlink_metadata().is_ok();
+        if !held || !roots.opens(&root) {
+            continue;
+        }
+        read_only(args, &root);
+        if let Ok(entries) = std::fs::read_dir(&root) {
             for entry in entries.flatten() {
                 let name = entry.file_name();
                 let configures = name.to_str().is_some_and(|n| {
-                    PROJECT_CONFIG_FILES.contains(&n) || PROJECT_CONFIG_DIRS.contains(&n)
+                    ENGINE_CONFIG_FILES.contains(&n) || ENGINE_CONFIG_DIRS.contains(&n)
                 });
                 if !configures && entry.file_type().is_ok_and(|t| !t.is_symlink()) {
                     bind(args, "--bind", &entry.path());
@@ -646,6 +639,7 @@ fn guard_project(args: &mut Vec<String>, roots: &Roots) {
             }
         }
     }
+    let agix = roots.cwd.join(".agix");
     for worktree in subdirs(&agix.join("worktrees")) {
         bind(args, "--ro-bind-try", &worktree.join(".git"));
     }
@@ -1704,6 +1698,7 @@ mod tests {
                 [0, 1, 2, 3].map(|i| dirs[i].path().to_path_buf());
             assert!(project.starts_with("/tmp"));
             std::fs::create_dir_all(project.join(".agix")).unwrap();
+            std::fs::create_dir_all(project.join(".claude")).unwrap();
             for dir in STATE_ROOT_WORKING_DIRS {
                 std::fs::create_dir_all(state_root.join(dir)).unwrap();
             }
@@ -1870,6 +1865,9 @@ mod tests {
             "echo '{}' > .agix/mcp.local.json".to_string(),
             "echo '{}' > .agix/settings.json".to_string(),
             "mkdir .agix/mcp".to_string(),
+            "echo '{}' > .claude/settings.json".to_string(),
+            "mkdir .claude/hooks".to_string(),
+            "mv .claude .claude.old".to_string(),
             format!("echo '{{}}' > '{state}/mcp.json'"),
             format!("mkdir '{state}/hooks'"),
             format!("echo x > '{elsewhere}/x'"),
@@ -1902,7 +1900,8 @@ mod tests {
             "git init -q nested && cd nested && echo b > b && git add b \
              && git -c user.name=T -c user.email=t@example.com commit -qm nested"
                 .to_string(),
-            "echo x > notes.md && echo x > .agix/notes.txt".to_string(),
+            "echo x > notes.md && echo x > .agix/notes.txt && echo x > .claude/notes.txt"
+                .to_string(),
             format!("echo x > '{state}/scratchpad/a' && echo x > '{state}/memory/a'"),
             "test -n \"$TMPDIR\" && echo x > \"$TMPDIR/f\" && mktemp".to_string(),
         ] {

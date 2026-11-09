@@ -630,11 +630,16 @@ skill 自己的 `allowed-tools` 这时还没生效,不能给自己的命令开�
    路径里有 `..` 而且跟在符号链接后面时,取文件系统解析出的真实位置,检查、读后再写的
    比对和真正的写入用的是同一个路径:
    - 凭据(`.env*` / `id_rsa` / `.ssh` / `.aws` / `.netrc` …)
-   - 不该被随手改的生成物(`.gitignore` / `Cargo.lock` / `package-lock.json`)
-   - 引擎自己的配置(`settings.json` / `settings.local.json`,且在 `.agix` / `.claude` 下)
+   - 不该被随手改的生成物与会被别的工具照着执行的文件(`.gitignore` / `Cargo.lock` /
+     `package-lock.json` / `.envrc`)
+   - 引擎自己的配置(`settings.json` / `settings.local.json` / `mcp.local.json`,且在 `.agix` /
+     `.claude` 下)
 
    最后一条**按"文件名 + 所在目录"匹配,不按目录**。`.agix` 同时是子代理 git worktree
-   的落脚点,把整个目录设为拒写会否掉子代理被创建出来要做的每一次写入。
+   的落脚点,把整个目录设为拒写会否掉子代理被创建出来要做的每一次写入。`.agix` / `.claude`
+   下的配置目录(`hooks`、`agents`、`skills` …)对写工具是"要确认",不是"拒写";沙箱里的
+   命令没法逐次确认,所以对它们是拒写(§6.3)。两边用同一份名单
+   (`base::paths::ENGINE_CONFIG_{ROOTS,FILES,DIRS}`)。
 
 `sandbox.allow_write` 给拒绝规则开例外,`sandbox.deny_write` 加自己的名字,
 与读侧的 `allow_read` / `deny_read` 对称。**例外只解除拒绝规则,不解除项目边界**——
@@ -670,14 +675,16 @@ bubblewrap)就和别的未授权调用一样被拒。沙箱只限写不限网,�
 `/tmp` 是每条命令私有、用完即弃的 tmpfs。写规则之前每个路径都先解析符号链接(macOS 的
 `/tmp` 实为 `/private/tmp`),否则规则落不到内核检查的那个路径上。
 
-可写范围之内,引擎或 git 之后会在沙箱外照着执行的东西不可写:项目的 `.git`、`.agix`
-这两个目录项本身(不能改名挪走或换成符号链接)、`.git/config`、`.git/config.worktree`、
-`.git/commondir`、`.git/hooks/`、`.agix` 下的配置(`settings.json`、`settings.local.json`、
-`mcp.local.json`,以及 `mcp`、`hooks`、`agents`、`skills`、`plugins`、`rules`、`scenes`、
-`policy`、`scripts`、`output-styles` 目录)、引擎 worktree 的 `.git` 链接;状态目录除
+可写范围之内,引擎或 git 之后会在沙箱外照着执行的东西不可写:项目的 `.git`、`.agix`、
+`.claude` 这几个目录项本身(不能改名挪走或换成符号链接,不存在时也建不出来)、`.git/config`、
+`.git/config.worktree`、`.git/commondir`、`.git/hooks/`、`.agix` 与 `.claude` 下的配置
+(`settings.json`、`settings.local.json`、`mcp.local.json`,以及 `mcp`、`hooks`、`agents`、
+`skills`、`plugins`、`rules`、`scenes`、`policy`、`scripts`、`output-styles` 目录)、引擎
+worktree 的 `.git` 链接;状态目录除
 `scratchpad`、`memory` 与本会话的 `tmp/<会话 id>` 外整个不可写。`git add` / `git commit`、在 `.agix` 下写草稿照常可用;
-`git config`、`git remote add` 这类改仓库配置的命令在沙箱里会失败。Linux 上 `.agix` 整个只读、
-已有的工作目录逐个重新打开,所以 `.agix` 下直接新建条目也会失败;没有 `.git` 的项目、没有
+`git config`、`git remote add` 这类改仓库配置的命令在沙箱里会失败。Linux 上 `.agix`(以及已经
+存在的 `.claude`)整个只读、已有的工作目录逐个重新打开,所以其下直接新建条目也会失败;Linux
+上不存在的 `.claude` 不加挡(挡它会在每个项目里留下一个空挂载点);没有 `.git` 的项目、没有
 `commondir` 的仓库在 Linux 上补不上这一道(见 `sandbox.rs` 模块头第 5 条),所以有下一段。
 
 引擎自己跑的 git(每轮的 `git status`、worktree 的创建与清理)经 `base::frozen::git::EngineGit` 起:会话的命令进沙箱(没有

@@ -277,7 +277,13 @@ async fn a_sub_agent_can_write_inside_its_worktree() {
 async fn the_engines_own_settings_stay_guarded() {
     let repo = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(repo.path().join(".agix")).unwrap();
-    for name in [".agix/settings.json", ".agix/settings.local.json"] {
+    for name in [
+        ".agix/settings.json",
+        ".agix/settings.local.json",
+        ".agix/mcp.local.json",
+        ".claude/settings.json",
+        ".claude/settings.local.json",
+    ] {
         let d = write_decision(&ctx_in(repo.path()), &repo.path().join(name)).await;
         assert!(denied(&d), "{name}: {d:?}");
     }
@@ -286,6 +292,17 @@ async fn the_engines_own_settings_stay_guarded() {
         write_decision(&ctx_in(repo.path()), &repo.path().join(".agix/notes.md")).await,
         PermissionDecision::Allow { .. }
     ));
+}
+
+/// direnv runs `.envrc` in the user's own shell, outside any sandbox, once
+/// they allow it; asked to allow a changed one again, few read it first.
+#[tokio::test]
+async fn a_direnv_file_is_not_rewritten() {
+    let dir = tempfile::tempdir().unwrap();
+    for name in [".envrc", "sub/.envrc"] {
+        let d = write_decision(&ctx_in(dir.path()), &dir.path().join(name)).await;
+        assert!(denied(&d), "{name}: {d:?}");
+    }
 }
 
 /// macOS hands back the name as the filesystem stores it, and anything
