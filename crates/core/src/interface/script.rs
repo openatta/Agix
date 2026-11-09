@@ -368,6 +368,10 @@ impl ScriptCarrier {
         &self.script.origin
     }
 
+    pub fn limits(&self) -> &ScriptLimits {
+        &self.limits
+    }
+
     /// A new turn has started; the quota resets.
     pub fn begin_turn(&self) {
         self.calls_this_turn.store(0, Ordering::Relaxed);
@@ -411,6 +415,10 @@ impl ScriptCarrier {
     /// synchronous and an asynchronous point shares one budget rather than
     /// getting two. The clock is the engine's, for the reason given on
     /// [`ScriptEngine::eval_blocking`]: there is no future here to time out.
+    ///
+    /// Called from a runtime worker, the worker is handed off for the length
+    /// of the call, so a slow script holds one thread rather than every task
+    /// queued behind it on that worker.
     pub fn call_blocking(
         &self,
         entry: &str,
@@ -422,8 +430,17 @@ impl ScriptCarrier {
                 calls_per_turn: self.limits.calls_per_turn,
             });
         }
-        self.engine
-            .eval_blocking(&self.script, entry, input, &self.limits)
+        let run = || {
+            self.engine
+                .eval_blocking(&self.script, entry, input, &self.limits)
+        };
+        let on_worker = tokio::runtime::Handle::try_current()
+            .is_ok_and(|h| h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread);
+        if on_worker {
+            tokio::task::block_in_place(run)
+        } else {
+            run()
+        }
     }
 }
 

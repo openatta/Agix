@@ -632,6 +632,12 @@ WebAssembly 载体整个移除。
   检查。写入改为临时文件加改名。
 - 插件名黑名单删除(14 个写死的名字,只查 RPC 的 `name`)。要限定能装什么,用
   `settings.json` 的 `plugins.allow`,它按 manifest 名在发现时检查。
+- 脚本绑定的预算有了封顶:`settings.json` 里的 `timeout_ms` 至多 10 000、`calls_per_turn`
+  至多 100 000;插件包的 `timeout_ms` 至多 1000、`calls_per_turn` 至多 1000。写得更大的被压到
+  上限并打 WARN。
+- `RunCode`:主对话直接起的程序进程内同时至多 2×CPU 个(子 Agent 里的不算),多出来的等
+  空位;程序结束后不理会取消的子调用最多再等 `stop_grace`(10 秒)就丢下,不再让结果一直
+  挂着;时限改用单调时钟。
 
 - **MCP 策略里 `allowed_servers` 的 `name` 规则不再放行任何 server**,`name` 只在
   `denied_servers` 里起作用。只靠 `{"name": …}` 放行的策略现在拒绝这些 server(拒绝原因会说
@@ -821,3 +827,7 @@ WebAssembly 载体整个移除。
   `plugin::install::{MAX_ARCHIVE_BYTES, UnpackLimits}`、`EnableState::{path, fault}`。
 - `assembly::plugins::PluginSubsystem::disclosure` 删除(只给 `plugin.install` 用,结果在它的
   响应里),新增 `health_check()`。
+- `ScriptCarrier` 多了 `limits()`;`call_blocking` 在多线程运行时的工作线程上经
+  `tokio::task::block_in_place` 跑脚本。新增 `script_host::bindings::{MAX_LIMITS,
+  PACKAGE_MAX_LIMITS}`。
+- 新增 `ptc::default_run_slots()` 与 `RunCodeTool::with_run_slots`。

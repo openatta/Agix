@@ -39,17 +39,21 @@ impl ToolDispatch for Fake {
             let w = self.writes.fetch_add(1, Ordering::SeqCst) + 1;
             self.write_peak.fetch_max(w, Ordering::SeqCst);
         }
-        let delay = input["delay_ms"].as_u64().unwrap_or(0);
-        tokio::select! {
-            _ = tokio::time::sleep(Duration::from_millis(delay)) => {}
-            _ = cancel.cancelled() => {}
+        let delay = Duration::from_millis(input["delay_ms"].as_u64().unwrap_or(0));
+        if name == "Stubborn" {
+            tokio::time::sleep(delay).await;
+        } else {
+            tokio::select! {
+                _ = tokio::time::sleep(delay) => {}
+                _ = cancel.cancelled() => {}
+            }
         }
         if name == "Write" {
             self.writes.fetch_sub(1, Ordering::SeqCst);
         }
         self.running.fetch_sub(1, Ordering::SeqCst);
         match name {
-            "Echo" | "Write" => Ok(SubCallAnswer {
+            "Echo" | "Write" | "Stubborn" => Ok(SubCallAnswer {
                 text: input["text"].as_str().unwrap_or_default().to_string(),
                 structured: None,
                 reported_failure: false,
@@ -251,6 +255,105 @@ async fn a_slow_call_is_cut_off_at_the_time_limit_too() {
     .await;
     assert!(r.is_error);
     assert!(text(&r).contains("ran out of time"), "{}", text(&r));
+}
+
+/// A sub-call that ignores its cancel token must not keep the result from
+/// coming back once the program is over.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_call_that_ignores_cancel_does_not_hold_the_result() {
+    let begun = std::time::Instant::now();
+    let (r, fake, _) = run_with(
+        "tools.Stubborn({text: 'late', delay_ms: 60000});
+         await tools.Echo({text: 'x', delay_ms: 100});
+         return 'done';",
+        json!({}),
+        Limits {
+            stop_grace: Duration::from_millis(200),
+            ..limits()
+        },
+    )
+    .await;
+    assert!(!r.is_error, "{}", text(&r));
+    assert_eq!(r.structured_content, Some(json!("done")));
+    assert!(
+        fake.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(n, _)| n == "Stubborn"),
+        "the stubborn call was running when the program ended"
+    );
+    assert!(
+        begun.elapsed() < Duration::from_secs(20),
+        "the result waited {:?} for a call nobody was waiting on",
+        begun.elapsed()
+    );
+}
+
+/// Each program is a thread; past the cap a run waits for one to free up
+/// rather than starting another.
+#[tokio::test(flavor = "multi_thread")]
+async fn runs_beyond_the_thread_cap_wait_for_a_slot() {
+    let fake = Arc::new(Fake::default());
+    let slots = Arc::new(Semaphore::new(1));
+    let start = |id: &str| {
+        let mut ctx = ToolContext::for_test("/tmp".into());
+        ctx.tool_use_id = id.into();
+        ctx.dispatch = Some(fake.clone());
+        let tool = RunCodeTool::new(&[], limits()).with_run_slots(slots.clone());
+        async move {
+            tool.call(
+                json!({"code": "await tools.Echo({text: 'x', delay_ms: 300}); return 1;"}),
+                ctx,
+                ProgressSender::noop("t"),
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let (a, b) = tokio::join!(start("toolu_a"), start("toolu_b"));
+    assert!(!a.is_error && !b.is_error, "{} / {}", text(&a), text(&b));
+    assert_eq!(fake.calls.lock().unwrap().len(), 2);
+    assert_eq!(
+        fake.peak.load(Ordering::SeqCst),
+        1,
+        "with one slot the two programs never ran at the same time"
+    );
+    assert_eq!(slots.available_permits(), 1, "both slots came back");
+}
+
+/// A run inside a sub-agent does not wait for a slot: the run that started
+/// the sub-agent may be holding the last one.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_inside_a_sub_agent_does_not_wait_for_a_slot() {
+    let mut ctx = ToolContext::for_test("/tmp".into());
+    ctx.tool_use_id = "toolu_nested".into();
+    ctx.agent_depth = 1;
+    ctx.dispatch = Some(Arc::new(Fake::default()));
+    let tool = RunCodeTool::new(&[], limits()).with_run_slots(Arc::new(Semaphore::new(0)));
+    let r = tokio::time::timeout(
+        Duration::from_secs(20),
+        tool.call(json!({"code": "return 1;"}), ctx, ProgressSender::noop("t")),
+    )
+    .await
+    .expect("a nested run waited for a slot")
+    .unwrap();
+    assert!(!r.is_error, "{}", text(&r));
+}
+
+#[test]
+fn the_run_clock_is_monotonic_not_the_wall_clock() {
+    let unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let first = engine::now_ms();
+    let second = engine::now_ms();
+    assert!(second >= first);
+    assert!(
+        first < unix_ms / 2,
+        "{first} looks like a wall-clock reading, which a clock step would move"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

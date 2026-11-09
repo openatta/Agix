@@ -702,7 +702,7 @@ pub mod bindings {
             path: path.display().to_string(),
             reason: e.to_string(),
         })?;
-        let defaults = ScriptLimits::default();
+        let limits = limits_for(binding, source);
         Ok((
             binding.clone(),
             ScriptSource {
@@ -710,15 +710,56 @@ pub mod bindings {
                 origin: origin.clone(),
                 code,
             },
-            ScriptLimits {
-                timeout: binding
-                    .timeout_ms
-                    .map(std::time::Duration::from_millis)
-                    .unwrap_or(defaults.timeout),
-                calls_per_turn: binding.calls_per_turn.unwrap_or(defaults.calls_per_turn),
-            },
+            limits,
             authority_for(&origin),
         ))
+    }
+
+    /// The most any binding may ask for. A synchronous point runs its script
+    /// on the thread that reached it, so the timeout is also how long that
+    /// thread can be held.
+    pub const MAX_LIMITS: ScriptLimits = ScriptLimits {
+        timeout: std::time::Duration::from_secs(10),
+        calls_per_turn: 100_000,
+    };
+
+    /// The most a package's binding may ask for: it can shorten its budget
+    /// but not lengthen it past what the operator's own scripts get by
+    /// default, give or take a second of wall clock.
+    pub const PACKAGE_MAX_LIMITS: ScriptLimits = ScriptLimits {
+        timeout: std::time::Duration::from_secs(1),
+        calls_per_turn: 1_000,
+    };
+
+    fn limits_for(binding: &ScriptBinding, source: &BindingSource<'_>) -> ScriptLimits {
+        let defaults = ScriptLimits::default();
+        let cap = match source {
+            BindingSource::Project { .. } => MAX_LIMITS,
+            BindingSource::Package { .. } => PACKAGE_MAX_LIMITS,
+        };
+        let asked = ScriptLimits {
+            timeout: binding
+                .timeout_ms
+                .map(std::time::Duration::from_millis)
+                .unwrap_or(defaults.timeout),
+            calls_per_turn: binding.calls_per_turn.unwrap_or(defaults.calls_per_turn),
+        };
+        let granted = ScriptLimits {
+            timeout: asked.timeout.min(cap.timeout),
+            calls_per_turn: asked.calls_per_turn.min(cap.calls_per_turn),
+        };
+        if granted.timeout != asked.timeout || granted.calls_per_turn != asked.calls_per_turn {
+            tracing::warn!(
+                path = %binding.path.display(),
+                point = %binding.point,
+                asked_timeout_ms = asked.timeout.as_millis() as u64,
+                asked_calls_per_turn = asked.calls_per_turn,
+                timeout_ms = granted.timeout.as_millis() as u64,
+                calls_per_turn = granted.calls_per_turn,
+                "script binding asks for more than it may have; capped"
+            );
+        }
+        granted
     }
 
     /// Install `prepared` into `out`, all of it or none of it.
@@ -1558,6 +1599,50 @@ mod package_binding_tests {
             &BlockOrigin::Plugin("annotate".to_string()),
             "the origin is the package's name, not the path it was unpacked to"
         );
+    }
+
+    /// A sync point runs the script on the caller's thread, so a package
+    /// asking for a minute of wall clock is asking to hold that thread for a
+    /// minute.
+    #[test]
+    fn a_package_binding_cannot_raise_its_budget_past_the_cap() {
+        let pkg = tempdir();
+        script(&pkg, "a.js");
+        script(&pkg, "b.js");
+        let greedy = |path: &str| ScriptBinding {
+            timeout_ms: Some(60_000),
+            calls_per_turn: Some(u32::MAX),
+            ..binding(path, "tool.result")
+        };
+        let modest = ScriptBinding {
+            timeout_ms: Some(20),
+            calls_per_turn: Some(5),
+            ..binding("b.js", "tool.result")
+        };
+
+        let mut out = BoundScripts::default();
+        let errors = bind_lenient(
+            &mut out,
+            engine(),
+            &[greedy("a.js"), modest],
+            &BindingSource::Package {
+                name: "p",
+                root: &pkg,
+            },
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+        let limits: Vec<_> = out.carriers.iter().map(|c| *c.limits()).collect();
+        assert_eq!(limits[0].timeout, PACKAGE_MAX_LIMITS.timeout);
+        assert_eq!(limits[0].calls_per_turn, PACKAGE_MAX_LIMITS.calls_per_turn);
+        assert_eq!(limits[1].timeout, std::time::Duration::from_millis(20));
+        assert_eq!(limits[1].calls_per_turn, 5);
+
+        let project = tempdir();
+        script(&project, "a.js");
+        let bound = bind(engine(), &[greedy("a.js")], &project).unwrap();
+        let limits = *bound.carriers[0].limits();
+        assert_eq!(limits.timeout, MAX_LIMITS.timeout);
+        assert_eq!(limits.calls_per_turn, MAX_LIMITS.calls_per_turn);
     }
 
     /// A path that leaves the package through a symlink is one the manifest

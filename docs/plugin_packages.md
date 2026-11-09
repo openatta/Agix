@@ -25,8 +25,8 @@ homepage = ""
 [[script]]
 point = "tool.result"                   # 扩展点 id
 entry = "scripts/annotate.js:onResult"  # <文件>:<函数>,文件相对插件根目录
-timeout_ms = 100                        # 可选;默认取载体自己的预算
-calls_per_turn = 1000                   # 可选;同上
+timeout_ms = 100                        # 可选;默认 100,来自包的封顶 1000
+calls_per_turn = 1000                   # 可选;默认 1000,来自包的不能更高
 
 # ── MCP 服务器 ──
 [[mcp]]

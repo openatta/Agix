@@ -46,17 +46,18 @@ pub(crate) struct Run {
     pub code: String,
     pub host: Host,
     pub memory_limit: usize,
-    /// Unix millis after which the script is interrupted; moved later when it
+    /// [`now_ms`] after which the script is interrupted; moved later when it
     /// starts a sub-agent.
     pub deadline_ms: Arc<AtomicU64>,
     pub hard_stop: CancellationToken,
 }
 
+/// Milliseconds on a monotonic clock, so a wall-clock step neither cuts a
+/// run short nor lets it run past its limit.
 pub(crate) fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or_default()
+    static ORIGIN: std::sync::LazyLock<std::time::Instant> =
+        std::sync::LazyLock::new(std::time::Instant::now);
+    ORIGIN.elapsed().as_millis() as u64
 }
 
 /// Start the script on its own thread; the receiver resolves when it ends.

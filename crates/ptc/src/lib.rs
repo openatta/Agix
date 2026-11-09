@@ -89,6 +89,17 @@ pub struct RunCodeTool {
     description: String,
     guide: String,
     limits: Limits,
+    run_slots: Arc<Semaphore>,
+}
+
+/// How many programs may run at once in this process, foreground and
+/// background together: each one is a thread of its own.
+pub fn default_run_slots() -> Arc<Semaphore> {
+    static SLOTS: std::sync::LazyLock<Arc<Semaphore>> = std::sync::LazyLock::new(|| {
+        let cpus = std::thread::available_parallelism().map_or(4, |n| n.get());
+        Arc::new(Semaphore::new(cpus * 2))
+    });
+    SLOTS.clone()
 }
 
 impl RunCodeTool {
@@ -117,7 +128,22 @@ impl RunCodeTool {
             description: describe(callable),
             guide: guide(callable),
             limits,
+            run_slots: default_run_slots(),
         }
+    }
+
+    /// Share `slots` instead of the process-wide [`default_run_slots`]: a
+    /// program waits for one before it starts and holds it until it ends.
+    pub fn with_run_slots(mut self, slots: Arc<Semaphore>) -> Self {
+        self.run_slots = slots;
+        self
+    }
+
+    /// Only a run the top-level conversation starts takes a slot. One inside
+    /// a sub-agent is already bounded by the run that started that sub-agent,
+    /// and making it wait for a slot its ancestors hold would deadlock them.
+    fn slots_for(&self, ctx: &ToolContext) -> Option<Arc<Semaphore>> {
+        (ctx.agent_depth == 0).then(|| self.run_slots.clone())
     }
 }
 
@@ -296,10 +322,23 @@ impl Tool for RunCodeTool {
                     "tool_use_id": ctx.tool_use_id,
                 }),
             );
-            let (session, limits) = (ctx.session.clone(), self.limits.clone());
+            let (session, limits, slots) = (
+                ctx.session.clone(),
+                self.limits.clone(),
+                self.slots_for(&ctx),
+            );
             tokio::spawn(async move {
-                let outcome =
-                    execute(input, dispatch, &task, &session, &limits, cancel, true).await;
+                let outcome = execute(
+                    input,
+                    dispatch,
+                    &task,
+                    &session,
+                    &limits,
+                    slots.as_ref(),
+                    cancel,
+                    true,
+                )
+                .await;
                 session.post_notice(Some(task.task_id.clone()), notification(&task, &outcome));
                 session.finish_task(
                     &task.task_id,
@@ -333,6 +372,7 @@ impl Tool for RunCodeTool {
             scope.task(),
             &ctx.session,
             &self.limits,
+            self.slots_for(&ctx).as_ref(),
             ctx.cancel.clone(),
             false,
         )
@@ -472,15 +512,33 @@ struct CallLog {
     made: AtomicU32,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute(
     input: RunCodeInput,
     dispatch: Arc<dyn ToolDispatch>,
     task: &Arc<RunningTask>,
     session: &Arc<SessionState>,
     limits: &Limits,
+    run_slots: Option<&Arc<Semaphore>>,
     turn_cancel: CancellationToken,
     background: bool,
 ) -> Outcome {
+    let not_started = |why: &str| Outcome {
+        text: format!("The program did not start: {why}."),
+        value: None,
+        is_error: true,
+    };
+    let _slot = match run_slots {
+        None => None,
+        Some(slots) => tokio::select! {
+            slot = slots.clone().acquire_owned() => match slot {
+                Ok(slot) => Some(slot),
+                Err(_) => return not_started("no program can run in this process any more"),
+            },
+            _ = turn_cancel.cancelled() => return not_started("the turn was interrupted"),
+            _ = task.cancel.cancelled() => return not_started("it was stopped"),
+        },
+    };
     let started = engine::now_ms();
     let deadline = Arc::new(AtomicU64::new(started + limits.time.as_millis() as u64));
     let hard_stop = CancellationToken::new();
@@ -573,7 +631,18 @@ async fn execute(
     .unwrap_or(ScriptEnd::Stopped);
     hard_stop.cancel();
     watchers.cancel();
-    let _ = dispatcher.await;
+    let mut dispatcher = dispatcher;
+    if tokio::time::timeout(limits.stop_grace, &mut dispatcher)
+        .await
+        .is_err()
+    {
+        // Dropping the dispatcher's JoinSet aborts every sub-call still in it.
+        dispatcher.abort();
+        task.append_output(&format!(
+            "(sub-calls still running {}s after the program ended were abandoned)\n",
+            limits.stop_grace.as_secs()
+        ));
+    }
     task.report_progress();
 
     let made = calls_log.made.load(Ordering::SeqCst);
