@@ -56,8 +56,9 @@ pub const STATE_ROOT_WORKING_DIRS: &[&str] = &["scratchpad", "memory"];
 /// worktrees) is working space.
 pub const ENGINE_CONFIG_ROOTS: &[&str] = &[".agix", ".claude"];
 
-/// Files directly in an [`ENGINE_CONFIG_ROOTS`] directory that configure the
-/// engine. Neither the write tools nor a sandboxed command may write them.
+/// Files in an [`ENGINE_CONFIG_ROOTS`] directory that configure the engine.
+/// The write tools refuse them anywhere under such a directory, a sandboxed
+/// command directly in it.
 pub const ENGINE_CONFIG_FILES: &[&str] =
     &["settings.json", "settings.local.json", "mcp.local.json"];
 

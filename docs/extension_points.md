@@ -487,7 +487,9 @@ provider——模型、OAuth、遥测和 registry 的 client 各造各的。所�
 `ExecProviders::local_with` 收的那份 `SubprocessEnv` 决定——缺省是宿主环境去掉
 引擎自己的凭据,设置里对应 `sandbox.subprocess_env`。自己写 `Process` 的,这两条
 也该守住:"停掉一个命令"指的是它起的全部进程,模型 `printenv` 能读到什么也该是一个
-明确的决定。
+明确的决定。哪些变量算引擎的凭据问 `local::env::is_engine_credential`:除了固定的几个,
+还有设置里 provider 的 `api_key_env` 指向的、`EnvCredentials` 读过的;自己的凭据来源也读环境
+变量的,用 `local::env::hold_back_credential` 把名字报上来。
 
 命令自己先退出、留在后台的进程(`nohup … &`、`npm run dev &`)不随句柄停。要在会话结束时
 收掉它们,给会话一份 `local::GroupLedger`:`Builder::process_groups(ledger)` 让这个会话
@@ -499,7 +501,9 @@ provider——模型、OAuth、遥测和 registry 的 client 各造各的。所�
 沙箱有一条不变量是引擎强制而不是请求的:**要求过约束的策略,绝不会悄悄变成一次不
 受约束的运行。** 后端报告 `Full`、`Partial` 或 `None`,并说清自己没能兑现什么;
 `sandbox.require_enforcement` 决定不到 `Full` 要不要拒。约束什么、要不要约束,始终
-是内核的事——provider 只回答*怎么*约束。
+是内核的事——provider 只回答*怎么*约束。无人值守会话的命令带着
+`SandboxPolicy::deny_ipc_escapes`:除了写,还要挡住命令请别的进程在沙箱外代办的路(本机后端
+在 macOS 上挡 Apple event、LaunchServices、偏好写入,在 Linux 上隔开 IPC 命名空间、遮住会话总线)。
 
 ### 压缩 — `compaction`
 
