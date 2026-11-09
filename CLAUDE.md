@@ -54,7 +54,7 @@
 
 下游项目提的需求不进 `docs/`，走 GitHub Issues（`openatta/Agix`），见 §5。
 
-文档被代码注释引用是常态，删除或重命名前先 `grep` 一遍引用点，别留悬空链接。（曾经有 9 处指向不存在文档的引用，其中 `docs/RUST_ARCHITECTURE.md` 被 `crates/permissions/src/gate.rs` 当作权威依据引用了 9 次——现已清干净，`.rs` 与 `docs/` 里现在没有悬空引用。）
+文档被代码注释引用是常态，删除或重命名前先 `grep` 一遍引用点，别留悬空链接。
 
 ## 4. 版本与发布
 
