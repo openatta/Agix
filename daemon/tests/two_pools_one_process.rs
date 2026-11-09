@@ -230,7 +230,7 @@ fn the_engine_keeps_no_new_process_wide_state() {
         ("crates/core/src/interface/exec/local/sandbox.rs", "AVAILABLE", "whether this machine can sandbox at all"),
         ("crates/core/src/interface/exec/local/env.rs", "NAMED_CREDENTIALS", "variables holding a provider key, kept out of every child's environment: the environment children inherit is the process's, which every pool shares"),
         ("crates/core/src/interface/exec/local/orphans.rs", "ORPHANS", "the process groups this process leads: an OS resource of the process, which an aborting panic hook must reach in full"),
-        ("crates/permissions/src/settings_patch.rs", "WRITE_LOCK", "serialises writes to settings files, which pools may share"),
+        ("crates/core/src/settings_file.rs", "LOCKS", "serialises writes to a settings directory, which every pool may share"),
         ("crates/assembly/src/telemetry_otel.rs", "PROCESS_EXPORTER", "the OpenTelemetry exporter installs process-wide providers; see assemble::pool"),
         ("crates/history/src/lock.rs", "HELD", "the session-log locks this process holds: an flock belongs to an open file, so every pool writing one state directory must share the one open file per log"),
     ];

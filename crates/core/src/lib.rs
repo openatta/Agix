@@ -10,6 +10,7 @@ pub mod permission;
 pub mod rules;
 pub mod session;
 pub mod settings;
+pub mod settings_file;
 pub use interface::tool;
 pub mod context;
 pub mod crash;

@@ -1,28 +1,15 @@
 //! Append a permission rule to a settings.json /
-//! settings.local.json file atomically, preserving unknown fields. Used by
-//! the interactive ask dialog's "always allow" shortcut.
+//! settings.local.json file, preserving unknown fields. Used by the
+//! interactive ask dialog's "always allow" shortcut.
 //!
-//! Atomicity: write to `<path>.tmp-<pid>` then rename. If the target dir
-//! doesn't exist, it's created.
+//! The read-modify-write goes through `base::settings_file`, the same lock
+//! and atomic replace every other settings writer uses — so it neither races
+//! `config.setProvider` / `mcp.addServer` on the same file nor widens a
+//! private `settings.local.json`.
 
-use std::fs;
-use std::io;
 use std::path::Path;
-use std::sync::Mutex;
 
-/// Serializes concurrent callers of [`append_permission_rule`] within this
-/// process. The function itself is read-modify-write (read whole file,
-/// mutate in memory, write via tmp+rename) with no cross-call atomicity —
-/// two calls racing on the *same* settings file (e.g. two tool calls in one
-/// turn both answered with an "always allow" decision concurrently, see
-/// `crates/runtime/src/turn.rs`'s `PermitAlways` handling) can otherwise
-/// silently lose one of the two appended rules. A single global lock is
-/// enough: this path is a rare, user-interactive event, not a hot loop, so
-/// serializing it process-wide costs nothing measurable. Does not protect
-/// against a *different process* writing the same file concurrently — that
-/// remains an accepted, documented limitation (see `settings_patch`'s
-/// design notes).
-static WRITE_LOCK: Mutex<()> = Mutex::new(());
+use base::settings_file::{SettingsDir, SettingsFileError};
 
 /// Which behavior bucket to append to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,12 +31,12 @@ impl AppendTarget {
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppendError {
-    #[error("io: {0}")]
-    Io(#[from] io::Error),
-    #[error("settings.json malformed: {0}")]
-    BadJson(#[from] serde_json::Error),
-    #[error("settings.json root must be an object")]
-    NotObject,
+    #[error(transparent)]
+    File(#[from] SettingsFileError),
+    #[error("{} has no file name", .0.display())]
+    NoFileName(std::path::PathBuf),
+    #[error("permission_rules in the settings file is not a list")]
+    NotAList,
 }
 
 /// Append `rule_string` to `permission_rules` in the given settings.json
@@ -68,32 +55,21 @@ pub fn append_permission_rule(
     target: AppendTarget,
     rule_string: &str,
 ) -> Result<bool, AppendError> {
-    let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-
-    if let Some(parent) = settings_path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)?;
-        }
-    }
-
-    // Load or initialize
-    let mut value: serde_json::Value = if settings_path.exists() {
-        let bytes = fs::read(settings_path)?;
-        if bytes.iter().all(|b| b.is_ascii_whitespace()) {
-            serde_json::json!({})
-        } else {
-            serde_json::from_slice(&bytes)?
-        }
-    } else {
-        serde_json::json!({})
+    let file = settings_path
+        .file_name()
+        .and_then(|f| f.to_str())
+        .ok_or_else(|| AppendError::NoFileName(settings_path.to_path_buf()))?;
+    let dir = match settings_path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
     };
+    let tier = SettingsDir::lock(dir)?;
+    let mut value = tier.read(file)?;
 
-    let root = value.as_object_mut().ok_or(AppendError::NotObject)?;
-
-    let arr = root
+    let arr = value
         .entry("permission_rules".to_string())
         .or_insert_with(|| serde_json::Value::Array(Vec::new()));
-    let arr = arr.as_array_mut().ok_or(AppendError::NotObject)?;
+    let arr = arr.as_array_mut().ok_or(AppendError::NotAList)?;
 
     let action = target.action();
     let already = arr.iter().any(|v| {
@@ -105,11 +81,7 @@ pub fn append_permission_rule(
     }
     arr.push(serde_json::json!({ "tool": rule_string, "action": action }));
 
-    // Atomic write
-    let tmp = settings_path.with_extension(format!("tmp-{}", std::process::id()));
-    let body = serde_json::to_string_pretty(&value)?;
-    fs::write(&tmp, body)?;
-    fs::rename(&tmp, settings_path)?;
+    tier.write(file, &value)?;
     Ok(true)
 }
 
@@ -126,12 +98,13 @@ pub fn build_rule_string(tool_name: &str, match_content: Option<&str>) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use tempfile::TempDir;
 
     /// N threads appending distinct rules to the *same* settings file
-    /// concurrently must all survive — without `WRITE_LOCK` serializing them,
-    /// a thread reads the file before an earlier thread's rename lands, then
-    /// overwrites it on its own write.
+    /// concurrently must all survive: unserialized, a thread reads the file
+    /// before an earlier thread's rename lands, then overwrites it on its own
+    /// write.
     #[test]
     fn concurrent_appends_to_the_same_file_do_not_lose_updates() {
         let dir = TempDir::new().unwrap();
@@ -277,6 +250,49 @@ mod tests {
             v["permission_rules"][1],
             serde_json::json!({"tool":"Bash(git push:*)","action":"ask"})
         );
+    }
+
+    /// `settings.local.json` holds provider keys and MCP headers; answering
+    /// "always allow" must not leave it readable by everyone.
+    #[cfg(unix)]
+    #[test]
+    fn the_local_settings_file_stays_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        let p = dir
+            .path()
+            .join(base::interface::settings::SETTINGS_LOCAL_FILE);
+        fs::write(&p, r#"{"providers":{"x":{"api_key":"sk"}}}"#).unwrap();
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o600)).unwrap();
+
+        append_permission_rule(&p, AppendTarget::Allow, "Bash(ls)").unwrap();
+
+        assert_eq!(
+            fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let fresh = dir
+            .path()
+            .join("fresh")
+            .join(base::interface::settings::SETTINGS_LOCAL_FILE);
+        append_permission_rule(&fresh, AppendTarget::Allow, "Bash(ls)").unwrap();
+        assert_eq!(
+            fs::metadata(&fresh).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_settings_file_is_not_written_through() {
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("dotfiles.json");
+        fs::write(&target, "{}").unwrap();
+        let p = dir.path().join("settings.local.json");
+        std::os::unix::fs::symlink(&target, &p).unwrap();
+
+        assert!(append_permission_rule(&p, AppendTarget::Allow, "Bash(ls)").is_err());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "{}");
     }
 
     #[test]
