@@ -54,7 +54,6 @@ fn bash(id: &str, command: &str) -> Reply {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: the gate's plan-mode denial refuses ExitPlanMode itself, so plan mode can never be left"]
 async fn exit_plan_mode_returns_to_the_mode_it_was_entered_from() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let mut run = stubbed("plan-exit", &stub)
@@ -324,7 +323,6 @@ async fn permit_always_local_holds_for_a_session_opened_after_a_reload() -> anyh
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: a rule permit_always writes to settings.local.json does not reach the next session until config.reload"]
 async fn permit_always_local_holds_for_the_next_session() -> anyhow::Result<()> {
     assert_eq!(permit_always_local_then_a_new_session(false).await?, 0);
     Ok(())
@@ -429,25 +427,21 @@ async fn a_bash_deny_rule_refuses_the_plain_command_and_one_inside_a_compound() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: Bash deny rules are prefix-matched on the raw segment, so a quoted command name escapes them"]
 async fn a_bash_deny_rule_refuses_a_quoted_command_name() -> anyhow::Result<()> {
     denied_rm_spelled("\"rm\" victim.txt").await
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: Bash deny rules are prefix-matched on the raw segment, so a backslash-escaped command name escapes them"]
 async fn a_bash_deny_rule_refuses_a_backslashed_command_name() -> anyhow::Result<()> {
     denied_rm_spelled("\\rm victim.txt").await
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: Bash deny rules do not see the command a brace expansion produces"]
 async fn a_bash_deny_rule_refuses_a_brace_expansion() -> anyhow::Result<()> {
     denied_rm_spelled("{rm,victim.txt}").await
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: the `command` wrapper is stripped but its `-p` is not, so `command -p rm` escapes a deny rule"]
 async fn a_bash_deny_rule_refuses_a_command_dash_p_wrapper() -> anyhow::Result<()> {
     denied_rm_spelled("command -p rm victim.txt").await
 }
@@ -487,13 +481,11 @@ async fn a_read_outside_the_project_is_asked_about() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: the read-only fast path takes `$VAR/...` for a path inside the project"]
 async fn a_read_through_a_variable_is_asked_about() -> anyhow::Result<()> {
     outside_read(|dir| format!("HOME={}; cat $HOME/secret.txt", dir.display())).await
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: the read-only fast path does not follow `cd $VAR`, so a relative read after it counts as inside the project"]
 async fn a_read_after_cd_to_a_variable_is_asked_about() -> anyhow::Result<()> {
     outside_read(|dir| format!("D={}; cd $D && cat secret.txt", dir.display())).await
 }
@@ -511,7 +503,6 @@ fn team_of_one(prompt: &str, mode: &str) -> Reply {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: team members are given an empty rule set, so the parent's deny rules do not reach them"]
 async fn a_team_member_is_held_to_the_parents_deny_rules() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let mut run = stubbed("team-rules", &stub)
@@ -579,7 +570,6 @@ async fn a_team_member_is_no_freer_than_its_parent() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: a skill's inline `!cmd` runs through BashTool::call directly, past the permission gate"]
 async fn a_skills_inline_command_is_held_to_the_bash_rules() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let mut run = stubbed("skill-cmd", &stub)
@@ -663,8 +653,162 @@ async fn a_sub_agent_is_held_to_the_parents_deny_rules() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: an agent type's `permission_mode: plan` reaches the sub-agent's settings but not the permission it is checked with"]
 async fn a_plan_mode_agent_type_cannot_write() -> anyhow::Result<()> {
     assert!(!sub_agent_writes(Some("planner"), "planned.txt").await?);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sub_agent_edits_a_file_it_has_read() -> anyhow::Result<()> {
+    let stub = ProviderStub::start().await?;
+    let mut run = stubbed("sub-edit", &stub)
+        .settings(json!({
+            "permission_mode": "acceptEdits",
+            "permission_rules": [{ "tool": "Agent", "action": "allow" }]
+        }))
+        .start()
+        .await?;
+    run.write_file("notes.txt", "old\n")?;
+    let path = run.project.join("notes.txt").to_string_lossy().into_owned();
+    let session = run.session().await?;
+    let _watcher = run
+        .watch_with(&session, |_| Some(Answer::deny("NOBODY")))
+        .await?;
+    stub.script_when(
+        "PARENT-MARK",
+        [
+            Reply::calls(
+                "a1",
+                "Agent",
+                json!({ "prompt": "edit it", "description": "editor" }),
+            ),
+            Reply::text("done"),
+        ],
+    );
+    stub.script([
+        Reply::calls("s1", "Read", json!({ "file_path": path })),
+        Reply::calls(
+            "s2",
+            "Edit",
+            json!({ "file_path": path, "old_string": "old", "new_string": "new" }),
+        ),
+        Reply::text("edited"),
+    ]);
+    run.turn(&session, "PARENT-MARK delegate").await?;
+    assert_eq!(run.read_file("notes.txt").as_deref(), Some("new\n"));
+    run.finish().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_created_in_plan_mode_leaves_it_only_when_the_host_permits() -> anyhow::Result<()>
+{
+    for permit in [true, false] {
+        let stub = ProviderStub::start().await?;
+        let mut run = stubbed("plan-created", &stub)
+            .settings(json!({ "permission_mode": "acceptEdits" }))
+            .start()
+            .await?;
+        let session = run
+            .session_with(json!({ "options": { "permission_mode": "plan" } }))
+            .await?;
+        let watcher = run
+            .watch_with(&session, move |e| {
+                (e["tool_name"] == "ExitPlanMode").then(|| {
+                    if permit {
+                        Answer::permit()
+                    } else {
+                        Answer::deny("KEEP-PLANNING")
+                    }
+                })
+            })
+            .await?;
+        stub.script([
+            Reply::calls("p1", "ExitPlanMode", json!({ "note": "the plan is ready" })),
+            Reply::text("planned"),
+        ]);
+        let events = run.turn(&session, "plan").await?;
+        assert_eq!(prompted_tools(&watcher), ["ExitPlanMode"]);
+        assert_eq!(
+            events.tool_results[0].2, !permit,
+            "{:?}",
+            events.tool_results
+        );
+        assert_eq!(
+            resumed_mode(&mut run, &session).await?,
+            json!(if permit { "default" } else { "plan" })
+        );
+
+        stub.script([write("w1", "after.txt", "y"), Reply::text("done")]);
+        let events = run.turn(&session, "write it").await?;
+        assert_eq!(run.read_file("after.txt").is_some(), permit);
+        if !permit {
+            assert!(
+                events.tool_results[0]
+                    .1
+                    .contains("plan mode forbids non-readonly tools"),
+                "{:?}",
+                events.tool_results
+            );
+        }
+        run.finish().await;
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_types_stricter_mode_asks_and_its_question_waits_only_the_sessions_timeout(
+) -> anyhow::Result<()> {
+    let stub = ProviderStub::start().await?;
+    let mut run = stubbed("sub-timeout", &stub)
+        .settings(json!({
+            "permission_mode": "acceptEdits",
+            "permission_rules": [{ "tool": "Agent", "action": "allow" }]
+        }))
+        .options(|o| o.prompt_timeout(Duration::from_secs(2)))
+        .start()
+        .await?;
+    run.write_file(
+        ".agix/agents/careful.md",
+        "---\ndescription: Asks first\npermission_mode: default\n---\nCareful.\n",
+    )?;
+    let outside = run.world.root().join("outside");
+    std::fs::create_dir_all(&outside)?;
+    std::fs::write(outside.join("notes.txt"), "OUTSIDE-NOTES-7731\n")?;
+    let session = run.session().await?;
+    let watcher = run.watch(&session, false).await?;
+    stub.script_when(
+        "PARENT-MARK",
+        [
+            Reply::calls(
+                "a1",
+                "Agent",
+                json!({ "prompt": "read it", "description": "reader", "subagent_type": "careful" }),
+            ),
+            Reply::text("done"),
+        ],
+    );
+    stub.script([
+        Reply::calls(
+            "s1",
+            "Read",
+            json!({ "file_path": outside.join("notes.txt").to_string_lossy() }),
+        ),
+        Reply::text("could not read it"),
+    ]);
+    let started = std::time::Instant::now();
+    let events = run.turn(&session, "PARENT-MARK delegate").await?;
+    assert!(events.turn_complete);
+    assert_eq!(
+        prompted_tools(&watcher),
+        ["Read"],
+        "an acceptEdits parent reads anywhere unasked; its `default` sub-agent asks"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(60),
+        "the sub-agent's unanswered question waited {:?}",
+        started.elapsed()
+    );
+    run.finish().await;
     Ok(())
 }

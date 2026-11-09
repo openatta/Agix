@@ -401,6 +401,34 @@ WebAssembly 载体整个移除。
 - Agent 工具(团队成员)和 `TeamCreate` 的 `permission_mode` 不再拒收 `auto`,按
   `bypassPermissions` 处理;`bubble` 照旧拒收。
 - `ExitPlanMode` 回到 `EnterPlanMode` 之前的模式,不再一律回 `default`。
+- 计划模式里的 `ExitPlanMode` 不再被"plan mode forbids non-readonly tools"拒掉,而是照常询问
+  (`prompt`,`tool_name: "ExitPlanMode"`):`permit` 退出,`deny` 留在计划模式。以前计划模式
+  经 RPC 退不出来。
+- `session.resume` 对活着的会话报它此刻的 `permission.mode`(进了、退了计划模式之后的),
+  不再报建会话时的。
+- `Bash` 的 deny / ask 规则按实际启动的程序再比一次(`"rm"`、`\rm`、`{rm,x}`、`/bin/rm`、
+  `command -p rm`、`env` / `exec` / `sudo` / `nice` / `time` / `timeout` / `xargs` 包着的、
+  `sh -c` / `eval` / `find -exec` 里的都算 `rm`);程序名读不出来的命令(`$CMD x`)在有带
+  内容的 deny / ask 规则时改为询问(`dontAsk` 下拒绝)。以前它们按原文前缀匹配,都绕得过去。
+  allow 规则不变。带引号的受保护路径(`~/".ssh"/id_rsa`)同样按受保护路径拒绝。
+- 只读 `Bash` 命令的免询问更窄:参数里有 `$VAR`、`~`、替换的,`cd` / `pushd` 到不是项目内
+  字面路径之后再读的,现在要询问。`echo $HOME` 这类也在其中。
+- agent 类型 frontmatter 的 `permission_mode` 真正作用到子 Agent 的权限判定上,但只能比父会话
+  严:以前写 `plan` 不起作用;项目或用户目录里写 `bypassPermissions` 的类型,以前会被当成放开,
+  现在按父会话的模式。团队成员(`TeamCreate`、`Agent` 的 `team_name`)同样:继承父会话的全部
+  规则,`permission_mode` 只能收紧,询问到父会话的宿主那里问。以前成员没有任何规则,
+  `bypassPermissions` 整队免确认。
+- 子 Agent 的询问等待上限跟会话的 `--permission-prompt-timeout`,不再固定 300 秒;在子 Agent 的
+  询问上答 `permit_always`,记下的是那一条命令或路径,不再是整个工具。
+- 子 Agent 能改它自己读过的已有文件了:以前读后再写的检查查的是父会话的读取记录,子 Agent 的
+  `Edit` / `Write` 改已有文件总被"File must be read before editing"拒掉。
+- skill 正文里的 `` !`cmd` `` 先过会话权限(按一次 `Bash` 调用):被 deny 规则拒的、要询问的
+  不再执行,替换成写明原因的一行文字。要它照跑,给那条命令写 allow 规则;项目内的只读命令照旧
+  直接执行。skill 自己的 `allowed-tools` 不覆盖它自己的 `` !`cmd` ``。
+- 运行中新建或改动的 `<project>/.agents/skills/` 下的 skill 按项目 skill 对待(不带内容的
+  `allowed-tools` 授权不生效),即使用户层有同名的 skill。以前热重载把它记成用户 skill。
+- `permit_always` 的 `local` 第一次建出 `settings.local.json` 后,之后新建的会话不用
+  `config.reload` 就能看到那条规则。
 - `feature_flags` 只剩 `cached_microcompact` 与 `reactive_compact`。`team_mode`、
   `plugin_marketplace`、`extended_memory`、`experimental_agent`、`recorder_auto_detect`、
   `dream_task` 从来没有生效,删除;配置里留着照样能加载,只是被忽略。`AGIX_FEATURE_*`
@@ -480,6 +508,17 @@ WebAssembly 载体整个移除。
   should_fallback_to_prompting}`。
 - `SessionState` 多了 `enter_plan_mode()` / `exit_plan_mode()`;`set_permission_mode` 会忘掉
   进入计划模式前记下的模式。
+- `Tool` 多了 `leaves_plan_mode()`(缺省 `false`),`Permission` 多了 `check_for_delegate()`
+  (按子 Agent 自己的 `SessionState` 判;缺省忽略它、照 `check` 判),都有缺省实现,已有实现
+  不用改。自己包一层 `Permission` 的,转发 `check_for_delegate`,子 Agent 的模式和它读过的
+  文件才传得到里层。
+- `PermissionGate::check` 的模式取 `ctx.permission_mode`,不再读 `ctx.session`;直接调 gate 的
+  要把它填成会话当前的模式(`RuleSetPermission` 已经这么做)。
+- `permissions::ruleset::RuleHit` 多了 `Unclear`(按 ask 处理),穷举匹配要补一支。
+  新增 `permissions::invocation`、`permissions::shell::{segments, Segment, lex, Word}`。
+- `AgentTypeSource::may_loosen` 只管 `max_turns`;`permission_mode` 一律钳到父会话。
+- `base::permission::PermissionMode` 多了 `min_permissive`,并能 `into()` 成
+  `base::settings::PermissionMode`。
 - `base` 的 cargo feature `team-mode`、`plugin-marketplace`、`experimental-agent` 删除
   (什么也不控制)。`FeatureFlags::is_enabled`、`enabled_flags`、`apply_env_overrides` 删除。
 - `SessionState` 去掉 `plan_text` / `set_plan_text` / `clear_plan_text` 与 `plan_slug` 那三个;

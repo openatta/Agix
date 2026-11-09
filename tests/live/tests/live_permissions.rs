@@ -102,8 +102,6 @@ async fn a_refusal_from_the_host_sends_the_model_another_way() -> anyhow::Result
     Ok(())
 }
 
-/// The next session is opened after a `config.reload`: without one it does
-/// not see the rule yet (`permission_bounds.rs` pins that as a product bug).
 #[tokio::test(flavor = "multi_thread")]
 async fn an_approval_remembered_locally_is_not_asked_again() -> anyhow::Result<()> {
     let mut run = LiveRun::start(
@@ -143,7 +141,6 @@ async fn an_approval_remembered_locally_is_not_asked_again() -> anyhow::Result<(
         "the approved command is written down: {local}"
     );
 
-    run.client.call("config.reload", json!({})).await?;
     let second = run.session().await?;
     let fresh = run
         .watch_with(&second, |_| Some(Answer::deny("SHOULD-NOT-BE-ASKED")))
@@ -201,7 +198,6 @@ async fn an_unanswered_prompt_times_out_into_a_refusal_and_the_turn_goes_on() ->
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: the gate's plan-mode denial refuses ExitPlanMode itself, so plan mode can never be left"]
 async fn leaving_plan_mode_returns_to_the_mode_it_was_entered_from() -> anyhow::Result<()> {
     let mut run = LiveRun::start(
         "perm-plan",
@@ -417,7 +413,6 @@ async fn a_sub_agent_is_held_to_the_parents_rules() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: an agent type's `permission_mode: plan` reaches the sub-agent's settings but not the permission it is checked with"]
 async fn a_plan_mode_agent_type_cannot_write() -> anyhow::Result<()> {
     let mut run = LiveRun::start(
         "perm-sub-plan",

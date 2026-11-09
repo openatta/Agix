@@ -451,54 +451,68 @@ async fn an_agent_types_allowed_tools_and_max_turns_bound_its_sub_agent() -> any
     Ok(())
 }
 
+/// An agent type's mode can make its sub-agent stricter than the parent,
+/// never freer: under an `acceptEdits` parent, which reads anywhere unasked,
+/// a `default` type is asked about a read outside the project — and its
+/// question waits the session's prompt timeout, not a fixed one.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: a sub-agent's permission is the parent's handler (agents/src/agent_tool.rs:1783, ParentPermission::check at :3803 asks the parent's rule set in the parent's mode), so an agent type's `permission_mode` never changes what is asked; and the sub-agent's prompts wait EngineConfig's default 300 s (agents/src/lib.rs:76 uses defaults_for, not from_settings; agent_tool.rs:1795) whatever the session's prompt timeout"]
 async fn an_agent_types_permission_mode_governs_what_its_sub_agent_is_asked() -> anyhow::Result<()>
 {
     let mut run = LiveRun::builder("typed-mode")
         .settings(json!({
-            "permission_mode": "default",
+            "permission_mode": "acceptEdits",
             "permission_rules": [{ "tool": "Agent", "action": "allow" }]
         }))
         .options(|o| o.prompt_timeout(Duration::from_secs(3)))
         .start()
         .await?;
     let model = run.config().model_at(0).to_string();
-    let stamp = format!("BOLD-{}", nonce());
+    let outside = run.world.root().join("outside");
+    std::fs::create_dir_all(&outside)?;
+    let notes = outside.join("notes.txt");
+    std::fs::write(&notes, format!("NOTES-{}\n", nonce()))?;
     run.write_file(
-        "bold.sh",
-        &format!("echo {stamp} > bold.txt\necho {stamp}\n"),
-    )?;
-    run.write_file(
-        ".agix/agents/bold.md",
+        ".agix/agents/careful.md",
         &typed(
+            &format!("description: Reads one file\nmodel: {model}\npermission_mode: default"),
             &format!(
-                "description: Runs a script\nmodel: {model}\npermission_mode: bypassPermissions"
+                "CAREFUL-ROLE. Read {} with the Read tool and answer with its contents. If \
+                 the read is refused, answer REFUSED and stop; do not try another way.",
+                notes.display()
             ),
-            "BOLD-ROLE. Run `sh bold.sh` with the Bash tool and answer with what it printed.",
         ),
     )?;
     let session = run.session().await?;
-    let watcher = run
-        .watch_with(&session, |e| {
-            (e["prompt_type"] == "permission").then(|| live::Answer::deny("not asked for"))
-        })
-        .await?;
+    let watcher = run.watch(&session, false).await?;
+    let started = std::time::Instant::now();
     run.turn(
         &session,
-        "Call the Agent tool once in the foreground with subagent_type bold and prompt \
+        "Call the Agent tool once in the foreground with subagent_type careful and prompt \
          \"Go.\". Do nothing else yourself; reply with what it reported.",
     )
     .await?;
-    let asked = watcher.asked();
-    eprintln!("[live typed-mode] asked {}", asked.len());
-    assert!(
-        asked.is_empty(),
-        "a bypassPermissions sub-agent asked: {asked:?}"
+    let asked: Vec<String> = watcher
+        .asked()
+        .iter()
+        .map(|a| {
+            a.prompt["event"]["tool_name"]
+                .as_str()
+                .unwrap_or("?")
+                .to_string()
+        })
+        .collect();
+    eprintln!(
+        "[live typed-mode] asked {asked:?} in {:?}",
+        started.elapsed()
     );
-    assert_eq!(
-        run.read_file("bold.txt").map(|s| s.trim().to_string()),
-        Some(stamp)
+    assert!(
+        asked.iter().any(|t| t == "Read"),
+        "the `default` sub-agent was not asked about its read: {asked:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(200),
+        "an unanswered sub-agent question waited past the session's 3 s: {:?}",
+        started.elapsed()
     );
     drop(watcher);
     run.finish().await;

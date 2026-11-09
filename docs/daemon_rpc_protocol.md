@@ -336,8 +336,11 @@ agent 类型的 frontmatter 里都收,解析出来就是 `bypassPermissions`,夹
 表格是按**宽松程度从严到宽**排的,这个顺序就是会话级取值被夹紧的依据:会话只能
 比 settings 更严,不能更宽,除非 settings 里开了 `allow_client_permission_override`。
 
-会话中途 `EnterPlanMode` 进了 `plan`,`ExitPlanMode` 获准后回到进入前的那个模式;会话
-一开始就是 `plan` 的,退出后是 `default`。
+`plan` 模式里调 `ExitPlanMode` 照常询问(`prompt_type: "permission"`、`tool_name:
+"ExitPlanMode"`,有命中的规则时按规则),是 `plan` 不拒的唯一一个非只读工具:`permit` 后
+退出,`deny` 留在 `plan`。会话中途 `EnterPlanMode` 进的 `plan`,退出后回到进入前的那个
+模式;会话一开始就是 `plan` 的,退出后是 `default`。活着的会话,`session.resume` 的
+`permission.mode` 报的是它此刻所在的模式。
 
 **越界不报错。** 经 RPC 传进来的 `permission_mode` 无论是什么,都不会被拒绝:比
 settings 宽的被**静默夹到 settings 允许的最宽处**并记一条 warn 日志,程序专用的 `bubble`
@@ -360,7 +363,13 @@ settings 宽的被**静默夹到 settings 允许的最宽处**并记一条 warn 
 - `Bash`(以及 `Monitor`)用命令前缀模式(`"git push:*"`),对命令行里的**每一条简单
   命令**分别匹配:`&&` `||` `;` `|` `&`、换行、`$(...)`、反引号里的命令各算一段,引号
   里的不切。任一段命中 `deny` 就拒;`allow` 要每一段都被放行,或者整行原样等于一条
-  不带通配的 `allow`。
+  不带通配的 `allow`。`deny` / `ask` 还按每段实际启动的程序再比一次:引号与转义去掉、
+  花括号展开、程序路径取名字(`/bin/rm` 即 `rm`)、`env` / `command` / `exec` / `sudo` /
+  `nice` / `time` / `timeout` / `xargs` 这类 wrapper 连同选项剥掉、`sh -c` / `eval` /
+  `find -exec` 里的命令也算;程序名读不出来的(`$CMD x`)在有带内容的 `deny` / `ask`
+  时按 `ask` 处理。`allow` 只认原文。
+- `Bash` 的只读命令在路径参数都落在项目内时不询问;参数里有 `$VAR`、`~` 或替换的,
+  `cd` 到不是项目内字面路径之后再读的,照常询问。
 - 文件类工具用 glob(`"/etc/**"`)。匹配前两边都规整成绝对路径:相对路径按会话的
   工作目录解析,`.` / `..` 去掉,`~` 展开;符号链接解析后的路径上命中 `deny` / `ask`
   也算。`*` 不跨 `/`,`**` 跨。`Read(...)` 同样约束 `Grep` / `Glob`,`Edit(...)` 同样
@@ -392,7 +401,7 @@ settings 宽的被**静默夹到 settings 允许的最宽处**并记一条 warn 
 { "type": "permit" }
 { "type": "deny", "reason": "…" }
 { "type": "permit_always", "scope": "session" }   // 本会话内一直允许
-{ "type": "permit_always", "scope": "local" }     // 另外写进 .agix/settings.local.json
+{ "type": "permit_always", "scope": "local" }     // 另外写进 .agix/settings.local.json,之后新建的会话即可见
 ```
 
 `prompt_type` 为 `question` 时,`session.respondToPrompt` 的 `answer`,两种形态:
@@ -1734,7 +1743,7 @@ Shell 命令、监视器没有收件箱。会话不在内存里 → `SESSION_NOT
 { "session_id": "…",                 // 父会话
   "prompt": "…",
   "description": "…",                // 可选,进 task.detail
-  "subagent_type": "reviewer",       // 可选,按 agent 目录取模型、工具、skills、scene、permission_mode
+  "subagent_type": "reviewer",       // 可选,按 agent 目录取模型、工具、skills、scene、permission_mode(只能更严)
   "model": "…",                      // 可选,压过 agent 类型的 model;不接受 provider,子 Agent 用父会话的 provider
   "allowed_tools": [ ], "disallowed_tools": [ ],  // 可选,在 agent 类型之上再收窄,只会更少
   "permission_rules": [ ],           // 可选,同 options.permission_rules 的写法;只有 deny 生效
@@ -1849,10 +1858,11 @@ Shell 命令、监视器没有收件箱。会话不在内存里 → `SESSION_NOT
 **多数情况下不需要显式调用**:daemon 监视每个项目的 `settings.json` /
 `settings.local.json`,改动落盘后自己重读(去抖 300ms);文件内容没变的写入不算改动。监视触发的重读知道是哪一层变了,
 只作废从那一层合出来的绑定:项目层只作废同一项目的会话,场景层只作废那个场景的,全局层
-作废全部。skills、agents 目录的改动不作废任何会话,新内容就地生效。这个方法留给两种情况——
-监视起不来(权限、内核 inotify 上限;`daemon.doctor` 会报),以及**改动前那个文件
-还不存在**:不存在的文件监视不了,新建出来的那一份要等到下一次绑定重建或者这里
-被显式调用。
+作废全部。skills、agents 目录的改动不作废任何会话,新内容就地生效。不存在的设置文件
+监视不了;它被建出来之后(比如 `permit_always` 的 `local` 第一次写出 `settings.local.json`),
+下一个在那一对 scene / 项目上新建的会话会发现并重读,已经在跑的会话要等到那时才作废。这个
+方法留给监视起不来的时候(权限、内核 inotify 上限;`daemon.doctor` 会报),以及要已有会话
+立刻看到一个新建文件的时候。
 
 #### `config.getProvider` / `config.setProvider`
 
@@ -2445,7 +2455,10 @@ daemon 会话的默认权限模式是 **`default`(ask)**,不是放行一切。
 §7 `task_updated`)。超时与关闭的规则同上。
 
 `permission_mode: "bubble"` 不是另一条路:子 Agent 的询问无论它是什么模式,到宿主的都是
-上面这条父会话的 `prompt` 帧。团队成员例外,它们的询问交给团队的协调者。
+上面这条父会话的 `prompt` 帧,团队成员也一样。判的模式是子 Agent 自己的与父会话的两者
+中更严的那个:agent 类型的 `permission_mode`、团队的 `permission_mode` 能让它更严,不能
+让它更宽。它的询问等多久同父会话的(`--permission-prompt-timeout`);答 `permit_always`
+记下的是这一条命令或路径。
 
 宿主自己已做沙箱、不需要第二层权限时显式声明放行:任意层 settings.json 的
 `"permission_mode": "bypassPermissions"`(daemon 范围),或 `options.permission_mode:
