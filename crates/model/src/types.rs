@@ -27,8 +27,7 @@ pub const EXTENDED_CACHE_TTL_BETA: &str = "extended-cache-ttl-2025-04-11";
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 pub enum BuiltinTool {
-    /// Server-side web search (requires beta header
-    /// `anthropic-beta: web-search-20250305-2025-03-05`).
+    /// Server-side web search. Generally available; no beta header.
     #[serde(rename = "web_search_20250305")]
     WebSearch {
         name: String,

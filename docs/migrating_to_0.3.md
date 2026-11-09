@@ -509,6 +509,8 @@ WebAssembly 载体整个移除。
 - OpenAI 兼容 provider 报回的 `input_tokens` 不再含已缓存的那部分(那部分在
   `cache_read_input_tokens`),和 Anthropic 的含义一致;以前缓存命中的部分算了两遍,
   `context.tokens` 与按 token 估的花费都偏大。
+- Anthropic 原生搜索不再带 `anthropic-beta: web-search-20250305-2025-03-05`(`web_search_20250305`
+  不需要 beta)。
 
 ### 嵌入方
 

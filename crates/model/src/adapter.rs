@@ -112,9 +112,6 @@ impl Model for AnthropicModel {
             .into_iter()
             .collect();
         let mut betas: Vec<String> = Vec::new();
-        if params.provider_search.is_some() {
-            betas.push("web-search-20250305-2025-03-05".into());
-        }
         if has_cache_edits {
             betas.push("context-management-2025-06-27".into());
         }
@@ -1275,9 +1272,11 @@ mod provider_search_tests {
             req.anthropic_tools.as_slice(),
             [BuiltinTool::WebSearch { name, max_uses: Some(3), .. }] if name == PROVIDER_SEARCH_TOOL
         ));
-        assert!(req
-            .betas
-            .contains(&"web-search-20250305-2025-03-05".to_string()));
+        assert!(
+            req.betas.iter().all(|b| !b.starts_with("web-search")),
+            "web_search_20250305 is generally available and needs no beta: {:?}",
+            req.betas
+        );
         assert!(matches!(
             req.tool_choice,
             Some(crate::types::ToolChoice::Tool { ref name }) if name == PROVIDER_SEARCH_TOOL
