@@ -139,41 +139,15 @@
       "type": "object"
     },
     "FeatureFlags": {
-      "description": "Runtime-configurable feature flags (loaded from settings JSON or CLI args).",
       "properties": {
         "cached_microcompact": {
           "default": false,
           "description": "Enable microcompact caching (time-based tool result clearing).",
           "type": "boolean"
         },
-        "experimental_agent": {
-          "default": false,
-          "description": "Enable experimental agent routing (model selection by task type).",
-          "type": "boolean"
-        },
-        "extended_memory": {
-          "default": false,
-          "description": "Enable extended memory features (LLM-based relevance selection, team memory sync).",
-          "type": "boolean"
-        },
-        "plugin_marketplace": {
-          "default": false,
-          "description": "Enable plugin marketplace (remote registry + dependency resolution).",
-          "type": "boolean"
-        },
         "reactive_compact": {
           "default": false,
           "description": "Enable reactive compaction — proactive context compression triggered\nbefore the budget is fully exhausted, based on token usage velocity.",
-          "type": "boolean"
-        },
-        "recorder_auto_detect": {
-          "default": false,
-          "description": "Enable recorder auto-detection in test environments.",
-          "type": "boolean"
-        },
-        "team_mode": {
-          "default": false,
-          "description": "Enable multi-agent team coordination mode.",
           "type": "boolean"
         }
       },
@@ -810,14 +784,9 @@
       "$ref": "#/$defs/FeatureFlags",
       "default": {
         "cached_microcompact": false,
-        "experimental_agent": false,
-        "extended_memory": false,
-        "plugin_marketplace": false,
-        "reactive_compact": false,
-        "recorder_auto_detect": false,
-        "team_mode": false
+        "reactive_compact": false
       },
-      "description": "Feature flags — compile-time + runtime gate for experimental features."
+      "description": "Behaviour that is off unless switched on here."
     },
     "hooks_config": {
       "description": "Hooks configuration (merged from global/scene/project layers)."

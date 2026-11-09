@@ -942,7 +942,7 @@ impl Agent {
         // turn the model answers without tools still sees its memories. The
         // wait is dead air before the user's first token, hence the short
         // latency budget. In the common case there is no wait at all —
-        // `select_memories_with_llm` returns without a model call when the
+        // `select_memories_from` returns without a model call when the
         // store holds no more candidates than the requested maximum.
         //
         // `already_surfaced` / `recall_count` are updated here and only here,
@@ -2455,30 +2455,33 @@ or project context that should survive across sessions.
                         last_seq: self.skills.last_invoked_seq(name),
                     })
                     .collect();
+                let drops_history = result.strategy.drops_history();
                 let recovery_ctx = compaction::compact::PostCompactContext {
                     recent_files,
                     invoked_skills: invoked_skill_records,
-                    in_plan_mode: self.in_plan_mode,
-                    plan_content: self.plan_content.clone(),
+                    in_plan_mode: drops_history
+                        && self.session_state.permission_mode()
+                            == base::permission::PermissionMode::Plan,
                     activated_tools: {
                         let mut names: Vec<String> =
                             self.session_state.activated_tools().into_iter().collect();
                         names.sort();
                         names
                     },
-                    running_tasks: self.running_task_summaries.clone(),
+                    running_tasks: if drops_history {
+                        self.session_state
+                            .running_background_tasks()
+                            .iter()
+                            .map(|task| (task.task_id.clone(), running_task_summary(task)))
+                            .collect()
+                    } else {
+                        Vec::new()
+                    },
                 };
-                if recovery_ctx.recent_files.is_empty()
-                    && recovery_ctx.invoked_skills.is_empty()
-                    && recovery_ctx.activated_tools.is_empty()
-                    && !recovery_ctx.in_plan_mode
-                {
-                    // Skip recovery if nothing to inject
-                } else {
-                    let recovery_msgs =
-                        compaction::compact::build_post_compact_recovery(&recovery_ctx);
-                    compacted.splice(0..0, recovery_msgs);
-                }
+                compacted.splice(
+                    0..0,
+                    compaction::compact::build_post_compact_recovery(&recovery_ctx),
+                );
                 let messages_after = compacted.len();
                 if let Err(e) = self
                     .session
@@ -4782,6 +4785,15 @@ enum PromptScreen {
     Blocked(Option<String>),
 }
 
+fn running_task_summary(task: &base::context::RunningTask) -> String {
+    let kind = task.task_type.as_str();
+    let detail = task.detail.lock().unwrap_or_else(|e| e.into_inner());
+    match detail.get("description").and_then(|d| d.as_str()) {
+        Some(description) if !description.is_empty() => format!("{kind}: {description}"),
+        _ => kind.to_string(),
+    }
+}
+
 fn hook_permission_mode(mode: base::permission::PermissionMode) -> String {
     serde_json::to_value(mode)
         .ok()
@@ -6464,7 +6476,7 @@ mod tests {
             tmp.path().join("user"),
             tmp.path().join("local"),
         ));
-        // One entry: `select_memories_with_llm` short-circuits below its
+        // One entry: `select_memories_from` short-circuits below its
         // max_results and selects it without a model call.
         store
             .persist_batch(vec![DurableMemory {

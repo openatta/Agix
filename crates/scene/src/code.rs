@@ -91,7 +91,6 @@ const NOT_OFFERED: &[&str] = &[
     "Ping",
     "PushNotification",
     "Sleep",
-    "VerifyPlanExecution",
 ];
 
 /// Built-in skills for coding work that runs to the end on its own.

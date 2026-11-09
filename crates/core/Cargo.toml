@@ -53,12 +53,6 @@ http = ["dep:reqwest", "dep:rustls"]
 # way; the last of those is a data-exfiltration guard the command classifier
 # uses whether or not anything is sandboxed.
 sandbox = []
-# Enable multi-agent team coordination mode
-team-mode = []
-# Enable plugin marketplace (remote registry + dependency resolution)
-plugin-marketplace = []
-# Enable experimental agent routing (model selection by task type)
-experimental-agent = []
 
 [dev-dependencies]
 tempfile = { workspace = true }

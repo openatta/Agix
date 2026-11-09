@@ -3,11 +3,9 @@
 //! plan 模式：只允许只读工具运行（FileEdit / FileWrite / Bash 等被 PermissionGate
 //! 直接 deny）。模型在这个模式下"想"清楚再退出，避免误改文件。
 //!
-//! 状态存储在 **每个会话自己的 [`SessionState`]** 上：
-//! - mode 走 `SessionState::{permission_mode, set_permission_mode}`
-//! - plan_text 走 `SessionState::{plan_text, set_plan_text, clear_plan_text}`
-//!
-//! 两者都落在 `ToolContext.session` 上（引擎为整个会话持有同一个
+//! 模式存储在 **每个会话自己的 [`SessionState`]** 上
+//! （`SessionState::{permission_mode, set_permission_mode}`），落在
+//! `ToolContext.session` 上（引擎为整个会话持有同一个
 //! `Arc<SessionState>`，见 `runtime::agent::Builder::build()`）：`PermissionGate`
 //! 分派读的就是 `ctx.session.permission_mode()`，所以立刻能看到模式切换；daemon
 //! 是多会话的，状态挂在会话上，A 会话进 plan 模式不会影响 B 会话。
@@ -37,20 +35,7 @@ pub fn plan_mode_active(ctx: &ToolContext) -> bool {
     matches!(ctx.session.permission_mode(), PermissionMode::Plan)
 }
 
-/// The session's current plan text, if any.
-pub fn plan_text(ctx: &ToolContext) -> Option<String> {
-    ctx.session.plan_text()
-}
-
-/// Test helper: put a session into plan mode with the given plan text.
-#[doc(hidden)]
-pub fn plan_state_for_test(ctx: &ToolContext, text: String) {
-    ctx.session.set_permission_mode(PermissionMode::Plan);
-    ctx.session.set_plan_text(text);
-}
-
-/// The plan content is communicated through the model's response and the
-/// plan file it writes to disk, not through the tool call input.
+/// The plan is what the model presents in its reply, not tool input.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct EnterPlanModeInput {}
 
@@ -113,8 +98,6 @@ impl Tool for EnterPlanModeTool {
         // onwards, non-read-only tools are actually denied rather than
         // merely discouraged by the text below.
         ctx.session.set_permission_mode(PermissionMode::Plan);
-        // Clear any stale plan text from a previous plan session.
-        ctx.session.clear_plan_text();
 
         Ok(ToolResult::text(
             "Entered plan mode. You should now focus on exploring the codebase \
@@ -179,7 +162,7 @@ impl Tool for ExitPlanModeTool {
         true
     }
 
-    /// Writes the plan to disk — not read-only.
+    /// Moves the session out of plan mode — not read-only.
     fn is_read_only(&self, _: &Value) -> bool {
         false
     }
@@ -213,7 +196,6 @@ impl Tool for ExitPlanModeTool {
         let input: ExitPlanModeInput = serde_json::from_value(input)?;
         if plan_mode_active(&ctx) {
             ctx.session.set_permission_mode(PermissionMode::Default);
-            ctx.session.clear_plan_text();
             // `allowed_prompts` are the permission grants the model is asking
             // for as part of leaving plan mode ("I will need to run the test
             // suite").

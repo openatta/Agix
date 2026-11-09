@@ -595,8 +595,7 @@ git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git
 已有的工作目录逐个重新打开,所以 `.agix` 下直接新建条目也会失败;没有 `.git` 的项目、没有
 `commondir` 的仓库在 Linux 上补不上这一道(见 `sandbox.rs` 模块头第 5 条),所以有下一段。
 
-引擎自己跑的 git(每轮的 `git status`、worktree 的创建与清理、`VerifyPlanExecution` 的
-`git diff`)经 `base::frozen::git::EngineGit` 起:会话的命令进沙箱(没有
+引擎自己跑的 git(每轮的 `git status`、worktree 的创建与清理)经 `base::frozen::git::EngineGit` 起:会话的命令进沙箱(没有
 `dangerously_disable_sandbox`)时,它也进同一个沙箱,不论有人值守与否——仓库配置让 git 去
 跑的 filter driver 之类因此同样受约束。这时它只能写会话的 `TMPDIR`,创建 worktree 时再加
 git 目录与 `.agix/worktrees/`,工作目录本身不可写,网络不通。沙箱兑现不了时照

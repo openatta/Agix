@@ -1433,7 +1433,7 @@ sessions/<session_id>/transcript.jsonl   原始日志,逐行照存(含 agix.* �
 sessions/<session_id>/history.json       整段 session.history 的消息(同样的 seq / id / origin)
 sessions/<session_id>/entries.json       session.entries 的那些行
 sessions/<session_id>/session_memory.md  有才有
-sessions/<session_id>/runtime.json       会话在内存里时才有:权限模式、计划、todo、目标;"durable": false
+sessions/<session_id>/runtime.json       会话在内存里时才有:权限模式、todo、目标;"durable": false
 attachments/<sha256>.<扩展名>             消息里的 base64 图片解码后的本体,同样内容只存一份
 recordings/<name>/calls.jsonl, blobs/    只在 include 列了 "recording" 时
 ```

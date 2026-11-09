@@ -158,7 +158,7 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
 
-    /// Feature flags — compile-time + runtime gate for experimental features.
+    /// Behaviour that is off unless switched on here.
     #[serde(default)]
     pub feature_flags: crate::features::FeatureFlags,
 }

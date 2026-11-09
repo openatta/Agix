@@ -51,11 +51,6 @@ impl<'a> OAuth2Client<'a> {
         }
     }
 
-    /// Builder: set the egress this client's token requests go out through.
-    pub fn with_network(provider: &'a ProviderConfig, net: Arc<dyn Network>) -> Self {
-        Self { provider, net }
-    }
-
     /// Build the URL the user's browser visits to start auth. Returns the URL
     /// and the `state` value the caller should later verify in the callback.
     pub fn build_authorize_url(

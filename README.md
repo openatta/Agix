@@ -117,9 +117,9 @@ when no one is watching.
 - Concurrency and depth limits, and permissions, hooks and budgets that
   follow delegation.
 
-**Tools** — 41 built in: files, shell, web, tasks, planning, goals,
+**Tools** — 40 built in: files, shell, web, tasks, planning, goals,
 scheduling, git worktrees, skills, teams, MCP, questions, notifications,
-monitors and structured output ([table below](#tools--41-built-in)).
+monitors and structured output ([table below](#tools--40-built-in)).
 
 **Context**
 - An LLM summary first, then cheaper fallbacks, behind a predictive
@@ -452,7 +452,7 @@ build if anything in the workspace assembles a pool a second way.
 
 ## Capabilities
 
-### Tools — 41 built in
+### Tools — 40 built in
 
 | Category | Tools |
 |---|---|
@@ -460,7 +460,7 @@ build if anything in the workspace assembles a pool a second way.
 | **Shell** | `Bash` (sandboxed, path-safe, timeout-controlled) |
 | **Web** | `WebFetch` `WebSearch` |
 | **Task** (running sub-agents, shell commands, monitors) | `TaskOutput` `TaskWait` `TaskStop` `TaskMessage` |
-| **Planning** | `EnterPlanMode` `ExitPlanMode` `VerifyPlanExecution` `TodoWrite` |
+| **Planning** | `EnterPlanMode` `ExitPlanMode` `TodoWrite` |
 | **Goals** | `GoalCreate` `GoalGet` `GoalUpdate` (a goal keeps the session working across automatic rounds) |
 | **Scheduling** | `CronCreate` `CronDelete` `CronList` |
 | **Workspace** | `EnterWorktree` `ExitWorktree` (isolated git worktree per session) |
@@ -470,11 +470,11 @@ build if anything in the workspace assembles a pool a second way.
 | **Programs** | `RunCode` (a JavaScript program that calls the session's tools; only its return value comes back) |
 | **Editor / Meta / Diagnostics** | `NotebookEdit` · `ToolSearch` · `Ping` `Sleep` |
 
-`tools::register_builtin_tools` installs the 22 self-contained ones; the rest
+`tools::register_builtin_tools` installs the 21 self-contained ones; the rest
 need per-session state and are registered by the builder or by a module.
 Deferred tools are advertised by name and fetched with `ToolSearch` when needed.
-The `code` scene leaves out `NotebookEdit`, the worktree tools, `Ping`, `Sleep`,
-`PushNotification` and `VerifyPlanExecution`; `StructuredOutput` is there only
+The `code` scene leaves out `NotebookEdit`, the worktree tools, `Ping`, `Sleep`
+and `PushNotification`; `StructuredOutput` is there only
 when the host sets an output schema. A scene is interactive (someone answers
 prompts) or unattended: `harnix` and `mini` are unattended, `code` is created
 either way. An unattended session has no `AskUserQuestion` or plan mode, refuses

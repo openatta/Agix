@@ -377,11 +377,6 @@ pub struct Agent {
     pub(crate) last_had_tool_uses: bool,
     /// The current turn's most recent model call, `None` before it makes one.
     pub(crate) last_call_usage: Option<base::interface::model::Usage>,
-    pub(crate) in_plan_mode: bool,
-    /// Re-injected after compaction while in plan mode.
-    pub(crate) plan_content: Option<String>,
-    /// Running background task summaries: (task_id, status). Populated by AgentTool.
-    pub(crate) running_task_summaries: Vec<(String, String)>,
     /// Permission denials this session, for telemetry.
     ///
     /// Atomic and `Arc`-shared rather than a plain `u32` because the input
@@ -941,22 +936,6 @@ impl Agent {
     /// Access the MCP manager (read-only).
     pub fn mcp(&self) -> &dyn base::interface::mcp_servers::McpServers {
         self.mcp.as_ref()
-    }
-
-    /// Set plan mode state and optional plan content (for post-compact recovery).
-    pub fn set_plan_mode(&mut self, active: bool, content: Option<String>) {
-        self.in_plan_mode = active;
-        self.plan_content = content;
-    }
-
-    /// Register a running background task summary (for post-compact recovery).
-    pub fn register_running_task(&mut self, task_id: String, status: String) {
-        self.running_task_summaries.push((task_id, status));
-    }
-
-    /// Clear completed/cancelled running task summaries.
-    pub fn clear_running_tasks(&mut self) {
-        self.running_task_summaries.clear();
     }
 
     /// Compact the conversation now, whatever the budget says — the same
@@ -2579,9 +2558,6 @@ impl Builder {
                 request_overhead_tokens: 0,
                 last_had_tool_uses: true, // true → first turn scans for skills
                 last_call_usage: None,
-                in_plan_mode: false,
-                plan_content: None,
-                running_task_summaries: Vec::new(),
                 permission_denial_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
                 compact_warning_issued: false,
                 tool_results_ever_cleared: false,
@@ -4539,7 +4515,7 @@ mod tests {
 
     /// Returns `EndTurn` with no `ToolUse` on the very first call whose
     /// first message text contains `"You are selecting memories"` — that's
-    /// `select_memories_with_llm`'s fixed system-prompt opener, the one
+    /// `select_memories_from`'s fixed system-prompt opener, the one
     /// reliable way to tell "this is the memory-prefetch call" apart from
     /// the turn's own main model call using only the `Model` trait's public
     /// interface. The prefetch branch returns a stream that never yields
@@ -4601,7 +4577,7 @@ mod tests {
         let model: Arc<dyn Model> = Arc::new(AnswersDirectlySlowPrefetchModel);
         let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene::default());
 
-        // >5 entries so `select_memories_with_llm` doesn't short-circuit
+        // >5 entries so `select_memories_from` doesn't short-circuit
         // (skip the model call entirely) before ever reaching our mock's
         // prefetch branch — see its own "headers.len() <= max_results"
         // early return.
@@ -7347,9 +7323,10 @@ mod tests {
     }
 
     /// Compacts by keeping the messages for which `keep` holds, reported as
-    /// the in-place strategy that blanks tool results.
+    /// `strategy`.
     struct KeepingCompactor {
         keep: fn(&base::interface::model::ModelMessage) -> bool,
+        strategy: compaction::compact::CompactStrategy,
     }
 
     #[async_trait::async_trait]
@@ -7369,7 +7346,7 @@ mod tests {
             let before = messages.len();
             let kept: Vec<_> = messages.into_iter().filter(|m| (self.keep)(m)).collect();
             let result = compaction::compact::CompactResult {
-                strategy: compaction::compact::CompactStrategy::MicroCompact,
+                strategy: self.strategy,
                 messages_before: before,
                 messages_after: kept.len(),
                 tokens_before: 0,
@@ -7403,13 +7380,16 @@ mod tests {
         crate::turn::holds_session_context(std::slice::from_ref(m))
     }
 
-    async fn compacted_with(keep: fn(&base::interface::model::ModelMessage) -> bool) -> bool {
+    fn compacting_agent(
+        keep: fn(&base::interface::model::ModelMessage) -> bool,
+        strategy: compaction::compact::CompactStrategy,
+    ) -> Agent {
         use base::interface::model::MessageRole;
         let (mut agent, _rx, _tx) = Builder::new()
             .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
             .model(Arc::new(DummyModel))
             .settings(Arc::new(test_settings()))
-            .compactor(Arc::new(KeepingCompactor { keep }))
+            .compactor(Arc::new(KeepingCompactor { keep, strategy }))
             .skip_warmup(true)
             .build()
             .expect("build should succeed");
@@ -7428,10 +7408,61 @@ mod tests {
             .push_message(text_message(MessageRole::Assistant, "hi"));
         agent.session_context_injected = true;
         agent
+    }
+
+    async fn compacted_with(keep: fn(&base::interface::model::ModelMessage) -> bool) -> bool {
+        let mut agent = compacting_agent(keep, compaction::compact::CompactStrategy::MicroCompact);
+        agent
             .run_compaction(1, 1, crate::turn::CompactTrigger::Auto)
             .await
             .expect("a compaction");
         agent.session_context_injected
+    }
+
+    async fn reminders_after_compaction(strategy: compaction::compact::CompactStrategy) -> String {
+        let mut agent = compacting_agent(|m| !is_opening(m), strategy);
+        agent
+            .session_state
+            .set_permission_mode(base::permission::PermissionMode::Plan);
+        agent.session_state.register_task(
+            "ag-7",
+            base::context::TaskType::Agent,
+            CancellationToken::new(),
+            serde_json::json!({"description": "survey the parser"}),
+        );
+        agent
+            .run_compaction(1, 1, crate::turn::CompactTrigger::Auto)
+            .await
+            .expect("a compaction");
+        agent
+            .session
+            .messages()
+            .iter()
+            .flat_map(|m| &m.content)
+            .filter_map(|b| match b {
+                base::interface::model::ModelContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[tokio::test]
+    async fn a_compaction_that_drops_turns_restates_plan_mode_and_running_tasks() {
+        let text = reminders_after_compaction(compaction::compact::CompactStrategy::Snip).await;
+        assert!(text.contains("Plan mode is still active"), "{text}");
+        assert!(
+            text.contains("task:ag-7 — agent: survey the parser"),
+            "{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_compaction_that_keeps_every_turn_leaves_plan_mode_and_tasks_unsaid() {
+        let text =
+            reminders_after_compaction(compaction::compact::CompactStrategy::MicroCompact).await;
+        assert!(!text.contains("Plan mode is still active"), "{text}");
+        assert!(!text.contains("task:ag-7"), "{text}");
     }
 
     #[tokio::test]

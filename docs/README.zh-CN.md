@@ -81,7 +81,7 @@ Agix 是 agent 产品底下的那台引擎:它运行一个**会话**——装配
 - 子 Agent 跑在挂在父会话下的侧链会话里。
 - 并发和深度上限;权限、hook、预算随委派传下去。
 
-**工具**——41 个内建:文件、shell、web、任务、计划、目标、定时、git worktree、skill、团队、
+**工具**——40 个内建:文件、shell、web、任务、计划、目标、定时、git worktree、skill、团队、
 MCP、询问、通知、监视、结构化输出(见下文[能力](#能力))。
 
 **上下文**
@@ -376,7 +376,7 @@ let pool = daemon::assemble::pool(
 
 ## 能力
 
-### 工具——41 个内建
+### 工具——40 个内建
 
 | 类别 | 工具 |
 |---|---|
@@ -384,7 +384,7 @@ let pool = daemon::assemble::pool(
 | **Shell** | `Bash`(沙箱、路径安全、可控超时) |
 | **Web** | `WebFetch` `WebSearch` |
 | **任务**（运行中的子 Agent、Shell 命令、监视器） | `TaskOutput` `TaskWait` `TaskStop` `TaskMessage` |
-| **规划** | `EnterPlanMode` `ExitPlanMode` `VerifyPlanExecution` `TodoWrite` |
+| **规划** | `EnterPlanMode` `ExitPlanMode` `TodoWrite` |
 | **目标** | `GoalCreate` `GoalGet` `GoalUpdate`(目标让会话一轮轮自动推进下去) |
 | **定时** | `CronCreate` `CronDelete` `CronList` |
 | **工作区** | `EnterWorktree` `ExitWorktree`(每个会话独立的 git worktree) |
@@ -394,10 +394,10 @@ let pool = daemon::assemble::pool(
 | **程序** | `RunCode`(一段调用本会话工具的 JavaScript 程序,只把返回值交回) |
 | **编辑 / 元 / 诊断** | `NotebookEdit` · `ToolSearch` · `Ping` `Sleep` |
 
-`tools::register_builtin_tools` 装上其中 22 个自给自足的;其余需要会话状态,由 builder
+`tools::register_builtin_tools` 装上其中 21 个自给自足的;其余需要会话状态,由 builder
 或模块注册。延迟加载的工具只报名字,要用时经 `ToolSearch` 取 schema。`code` 场景不提供
-`NotebookEdit`、worktree 两个工具、`Ping`、`Sleep`、`PushNotification` 和
-`VerifyPlanExecution`;`StructuredOutput` 只在宿主给了输出 schema 时才有。场景分有人值守
+`NotebookEdit`、worktree 两个工具、`Ping`、`Sleep` 和 `PushNotification`;
+`StructuredOutput` 只在宿主给了输出 schema 时才有。场景分有人值守
 (有人应答提示)和无人值守:`harnix`、`mini` 无人值守,`code` 创建时二选一。无人值守的会话
 没有 `AskUserQuestion` 和计划模式,需要批准的调用直接拒绝而不是去问,`Bash` 只在 OS 沙箱里跑——
 见 `docs/ARCHITECTURE.md` §3.2.3、§6.3。

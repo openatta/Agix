@@ -742,46 +742,6 @@ const TRUSTING_RECALL_SECTION: &str = r#"## Before recommending from memory
 
 A memory naming a file, function or flag says it existed *when written*; it may have been renamed, removed or never merged. Check a path exists or grep for the name before recommending it, and always verify first when the user is about to act on it. A memory summarizing repo state is a snapshot: for *recent* or *current* state, prefer `git log` or the code."#;
 
-/// Select the most relevant memories using an LLM (Sonnet-tier), picking up
-/// to 5 most relevant memories from the MEMORY.md index.
-///
-/// Parameters:
-/// - `already_surfaced`: memory names already shown in prior turns — filtered out
-///   to avoid re-injecting the same memories.
-/// - `recent_tools`: tool names used recently; memories whose slug matches a tool
-///   name are excluded (ambiguous-name guard).
-/// - `model_name`: the model identifier to use for the LLM call (e.g. the caller's
-///   primary or compact model).
-///
-/// Falls back to substring `search()` if the model call fails.
-///
-/// Returns a list of memory names (slugs) that are most relevant to the query.
-/// - `session_id`: the session this recall belongs to, so the model call it may
-///   make is attributed to that session rather than to nothing.
-#[allow(clippy::too_many_arguments)]
-pub async fn select_memories_with_llm(
-    store: &MemoryStore,
-    query: &str,
-    model: &dyn crate::interface::model::Model,
-    max_results: usize,
-    already_surfaced: &std::collections::HashSet<String>,
-    recent_tools: &[String],
-    model_name: &str,
-    session_id: Option<&str>,
-) -> Vec<String> {
-    select_memories_from(
-        &store.load_all(),
-        query,
-        model,
-        max_results,
-        already_surfaced,
-        recent_tools,
-        model_name,
-        session_id,
-    )
-    .await
-}
-
 /// The substring fallback the LLM path drops to.
 ///
 /// Identical to what `MemoryStore::search` does, applied to memories already
@@ -797,11 +757,12 @@ fn substring_matches(memories: &[DurableMemory], query: &str) -> Vec<DurableMemo
         .collect()
 }
 
-/// [`select_memories_with_llm`] over memories already read.
+/// The names of the memories relevant to `query`, picked by a model call
+/// unless there are no more candidates than `max_results`.
 ///
-/// Split out so a [`MemoryStorage`](crate::interface::memory_contracts::MemoryStorage)
-/// backend that is not this store can use the same selection — the judgement
-/// about relevance has nothing to do with where the memories were kept.
+/// Takes memories already read rather than a [`MemoryStore`], so a
+/// [`MemoryStorage`](crate::interface::memory_contracts::MemoryStorage)
+/// backend that is not this store gets the same selection.
 #[allow(clippy::too_many_arguments)]
 pub async fn select_memories_from(
     memories: &[DurableMemory],

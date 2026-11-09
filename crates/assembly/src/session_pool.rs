@@ -5215,7 +5215,6 @@ impl SessionPool {
                 serde_json::json!({
                     "durable": false,
                     "permission_mode": state.permission_mode(),
-                    "plan_text": state.plan_text(),
                     "todos": state.todos(),
                     "goal": state.goal_view(),
                 })

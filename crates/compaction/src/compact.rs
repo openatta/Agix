@@ -46,6 +46,15 @@ pub enum CompactStrategy {
     FullCompact,
 }
 
+impl CompactStrategy {
+    /// Whether earlier turns are gone from the transcript afterwards — dropped
+    /// or folded into a summary — rather than kept with their tool results
+    /// blanked.
+    pub fn drops_history(self) -> bool {
+        matches!(self, Self::Snip | Self::CollapseContext | Self::FullCompact)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CompactResult {
     pub strategy: CompactStrategy,
@@ -613,13 +622,10 @@ pub struct PostCompactContext {
     /// priority decided by `last_seq` (the caller doesn't need to
     /// pre-sort — `build_post_compact_recovery` does it).
     pub invoked_skills: Vec<InvokedSkillRecord>,
-    /// Whether plan mode was active
     pub in_plan_mode: bool,
-    /// Plan file content (if plan mode was active)
-    pub plan_content: Option<String>,
     /// Recently activated deferred tools
     pub activated_tools: Vec<String>,
-    /// Background task statuses: (task_id, status_description)
+    /// Background tasks still running: (task_id, what it is)
     pub running_tasks: Vec<(String, String)>,
 }
 
@@ -731,31 +737,14 @@ pub fn build_post_compact_recovery(ctx: &PostCompactContext) -> Vec<ModelMessage
         });
     }
 
-    // 3. Plan mode — inject plan content if available
+    // 3. Plan mode
     if ctx.in_plan_mode {
-        if let Some(ref plan) = ctx.plan_content {
-            let truncated = if plan.len() > MAX_CHARS_PER_FILE {
-                format!(
-                    "{}...\n[plan content truncated]",
-                    truncate_str_at_char_boundary(plan, MAX_CHARS_PER_FILE)
-                )
-            } else {
-                plan.clone()
-            };
-            recovery.push(ModelMessage {
-                role: MessageRole::User,
-                content: vec![ModelContentBlock::Text {
-                    text: format!("<system-reminder>\nPlan mode is still active. The current plan:\n\n{truncated}\n</system-reminder>"),
-                }],
-            });
-        } else {
-            recovery.push(ModelMessage {
-                role: MessageRole::User,
-                content: vec![ModelContentBlock::Text {
-                    text: "<system-reminder>\nPlan mode is still active. Continue operating in plan mode.\n</system-reminder>".to_string(),
-                }],
-            });
-        }
+        recovery.push(ModelMessage {
+            role: MessageRole::User,
+            content: vec![ModelContentBlock::Text {
+                text: "<system-reminder>\nPlan mode is still active: only read-only tools will run. When your plan is ready, present it and call ExitPlanMode.\n</system-reminder>".to_string(),
+            }],
+        });
     }
 
     // 4. Background running tasks
@@ -1634,6 +1623,50 @@ mod tests {
             !text.contains("## skill-1"),
             "dropped skill must not have a full-content section"
         );
+    }
+
+    #[test]
+    fn post_compact_recovery_says_plan_mode_is_still_active() {
+        let ctx = PostCompactContext {
+            in_plan_mode: true,
+            ..Default::default()
+        };
+        let text = recovery_text(&build_post_compact_recovery(&ctx));
+        assert!(text.contains("Plan mode is still active"), "{text}");
+        assert!(text.contains("ExitPlanMode"), "{text}");
+    }
+
+    #[test]
+    fn post_compact_recovery_lists_running_tasks_on_their_own() {
+        let ctx = PostCompactContext {
+            running_tasks: vec![
+                ("ag-1".into(), "agent: survey the parser".into()),
+                ("mo-2".into(), "monitor".into()),
+            ],
+            ..Default::default()
+        };
+        let recovery = build_post_compact_recovery(&ctx);
+        assert_eq!(recovery.len(), 1);
+        let text = recovery_text(&recovery);
+        assert!(
+            text.contains("background tasks are still running"),
+            "{text}"
+        );
+        assert!(
+            text.contains("task:ag-1 — agent: survey the parser"),
+            "{text}"
+        );
+        assert!(text.contains("task:mo-2 — monitor"), "{text}");
+        assert!(!text.contains("Plan mode"), "{text}");
+    }
+
+    #[test]
+    fn only_strategies_that_lose_turns_drop_history() {
+        assert!(CompactStrategy::Snip.drops_history());
+        assert!(CompactStrategy::CollapseContext.drops_history());
+        assert!(CompactStrategy::FullCompact.drops_history());
+        assert!(!CompactStrategy::MicroCompact.drops_history());
+        assert!(!CompactStrategy::NoOp.drops_history());
     }
 
     #[test]

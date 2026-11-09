@@ -17,7 +17,6 @@ pub mod monitor;
 pub mod notebook_edit;
 pub mod ping;
 pub mod plan_mode;
-pub mod plan_verify;
 pub mod push_notification;
 pub mod security;
 pub mod sleep;
@@ -81,7 +80,6 @@ pub fn register_builtin_tools(reg: &std::sync::Arc<base::tool::InMemoryToolRegis
         Arc::new(crate::ping::PingTool),
         Arc::new(crate::plan_mode::EnterPlanModeTool),
         Arc::new(crate::plan_mode::ExitPlanModeTool),
-        Arc::new(crate::plan_verify::VerifyPlanExecutionTool),
         Arc::new(crate::push_notification::PushNotificationTool),
         Arc::new(crate::ask_user::AskUserQuestionTool),
         Arc::new(crate::goal::GoalCreateTool),

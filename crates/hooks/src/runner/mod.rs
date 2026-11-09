@@ -136,8 +136,8 @@ pub struct HookRunner {
     prompt_executor: Option<Arc<dyn PromptHookExecutor>>,
     /// Agent hook 执行器；None 时 Agent hook 报"no executor"
     agent_executor: Option<Arc<dyn AgentHookExecutor>>,
-    /// HTTP hook 的出口；按需 lazy 初始化（绝大多数 session 不用 http hook）
-    net: std::sync::OnceLock<std::sync::Arc<dyn base::interface::exec::Network>>,
+    /// HTTP hook 的出口
+    net: Arc<dyn base::interface::exec::Network>,
     /// Track executed `once` hooks: set of (HookEvent, config_index) that have
     /// already fired and must not fire again in this session.
     once_executed: std::sync::Mutex<std::collections::HashSet<(HookEvent, usize)>>,
@@ -169,7 +169,7 @@ impl HookRunner {
             default_timeout: Duration::from_millis(DEFAULT_HOOK_TIMEOUT_MS),
             prompt_executor: None,
             agent_executor: None,
-            net: std::sync::OnceLock::new(),
+            net: Arc::new(base::interface::exec::local::LocalNetwork::default()),
             once_executed: std::sync::Mutex::new(std::collections::HashSet::new()),
             file_watcher: std::sync::Mutex::new(None),
             pending_rewakes: std::sync::Mutex::new(std::collections::HashSet::new()),
@@ -261,27 +261,7 @@ impl HookRunner {
     }
 
     fn net(&self) -> &dyn base::interface::exec::Network {
-        &**self.net.get_or_init(|| {
-            std::sync::Arc::new(base::interface::exec::local::LocalNetwork::default())
-        })
-    }
-
-    /// Send this runner's HTTP hooks out through a given egress.
-    ///
-    /// Returns whether it took. The cell fills itself with the default egress
-    /// the first time a hook fires, so a host that installs its own after that
-    /// keeps the default — and a deployment that thinks it configured its
-    /// egress and did not should hear about it rather than find out from a
-    /// request that should not have left.
-    #[must_use = "an egress that did not take is a policy that is not applied"]
-    pub fn set_network(&self, net: std::sync::Arc<dyn base::interface::exec::Network>) -> bool {
-        if self.net.set(net).is_err() {
-            tracing::error!(
-                "the hook runner's egress was already in use; the one just supplied is ignored"
-            );
-            return false;
-        }
-        true
+        &*self.net
     }
 
     /// True if hooks for event are present.

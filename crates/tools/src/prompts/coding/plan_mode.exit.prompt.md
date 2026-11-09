@@ -1,10 +1,9 @@
-Use this tool when you are in plan mode and have finished writing your plan to the plan file and are ready for user approval.
+Use this tool when you are in plan mode, have finished your plan, and are ready for user approval.
 
 ## How This Tool Works
-- You should have already written your plan to the plan file specified in the plan mode system message
-- This tool does NOT take the plan content as a parameter - it will read the plan from the file you wrote
+- Present the complete plan in your reply before calling this tool - that reply is what the user reviews
+- This tool does NOT take the plan content as a parameter
 - This tool simply signals that you're done planning and ready for the user to review and approve
-- The user will see the contents of your plan file when they review it
 
 ## When to Use This Tool
 IMPORTANT: Only use this tool when the task requires planning the implementation steps of a task that requires writing code. For research tasks where you're gathering information, searching files, reading files or in general trying to understand the codebase - do NOT use this tool.

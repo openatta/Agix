@@ -388,3 +388,34 @@ WebAssembly 载体整个移除。
 - `plugin.list` 的条目去掉 `component_faults`。
 - `daemon.doctor` 的 `plugins.status` 不再出现 `packages-only`;带插件包的构建报 `enabled`。
 - `session.get` 多一个 `health`:会话的插件注册了健康检查时才有。
+
+## 0.3.9 之后
+
+### 部署 `agixd` 的
+
+- `feature_flags` 只剩 `cached_microcompact` 与 `reactive_compact`。`team_mode`、
+  `plugin_marketplace`、`extended_memory`、`experimental_agent`、`recorder_auto_detect`、
+  `dream_task` 从来没有生效,删除;配置里留着照样能加载,只是被忽略。`AGIX_FEATURE_*`
+  环境变量同样从未生效。
+- 工具 `VerifyPlanExecution` 删除:它要读的计划正文从没有地方写入,调用总是报
+  "No active plan found"。
+
+### 嵌入方
+
+- `base` 的 cargo feature `team-mode`、`plugin-marketplace`、`experimental-agent` 删除
+  (什么也不控制)。`FeatureFlags::is_enabled`、`enabled_flags`、`apply_env_overrides` 删除。
+- `SessionState` 去掉 `plan_text` / `set_plan_text` / `clear_plan_text` 与 `plan_slug` 那三个;
+  `compaction::compact::PostCompactContext` 去掉 `plan_content`。
+- `runtime::agent::Agent` 去掉 `set_plan_mode`、`register_running_task`、`clear_running_tasks`:
+  压缩后的提醒现在直接读会话状态——处于 plan 模式、还在跑的后台任务,在丢掉或总结了历史的
+  压缩(不含只清工具结果的 MicroCompact)之后各补一条。
+- `tools::plan_verify` 模块与 `tools::plan_mode::{plan_text, plan_state_for_test}` 删除。
+- `base::frozen::find_relevant_memories`、`base::memory::select_memories_with_llm`、
+  `MemoryStore::scan_memory_headers` 删除;按相关性挑记忆用 `base::memory::select_memories_from`
+  (生产路径 `MemoryRetriever` 一直走它)。
+- `hooks::HookRunner::set_network`、`auth::OAuth2Client::with_network` 删除;后者要换出口直接设
+  `net` 字段。
+
+### RPC 客户端
+
+- `session.export` 的 `runtime.json` 去掉 `plan_text`(一直是 `null`)。

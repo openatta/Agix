@@ -72,10 +72,6 @@ pub struct SessionState {
     file_snapshots: std::sync::Mutex<FileSnapshotRegistry>,
     /// 当前 turn 编号。Engine.run_turn 开头 +1；快照记录时取此值。
     current_turn: std::sync::Mutex<u64>,
-    /// Current active plan text (set by EnterPlanMode, cleared by
-    /// ExitPlanMode). Persisted to disk via plan_store for resume support.
-    /// Engine injects this into the system reminder on follow-up turns.
-    plan_text: std::sync::Mutex<Option<String>>,
     /// 已读取文件缓存。`FileRead` 成功后记录文件路径
     /// 与当时的 mtime；`FileEdit` / `FileWrite` 的 `validate_input` 用它做
     /// staleness 检测。
@@ -206,7 +202,6 @@ impl SessionState {
             turn_origin: std::sync::Mutex::new(super::goal::TurnOrigin::default()),
             file_snapshots: std::sync::Mutex::new(FileSnapshotRegistry::default()),
             current_turn: std::sync::Mutex::new(0),
-            plan_text: std::sync::Mutex::new(None),
             read_cache: std::sync::Mutex::new(HashMap::new()),
             last_read_path: std::sync::Mutex::new(None),
             structured_output: std::sync::Mutex::new(None),
@@ -668,22 +663,32 @@ impl SessionState {
     /// Ids of the background work still running — sub-agents, teammates,
     /// programs, monitors; not a foreground shell command — sorted.
     pub fn running_background_task_ids(&self) -> Vec<String> {
-        let mut ids: Vec<String> = self
+        self.running_background_tasks()
+            .iter()
+            .map(|task| task.task_id.clone())
+            .collect()
+    }
+
+    /// The background work still running, as
+    /// [`running_background_task_ids`](Self::running_background_task_ids)
+    /// picks it, sorted by id.
+    pub fn running_background_tasks(&self) -> Vec<std::sync::Arc<RunningTask>> {
+        let mut tasks: Vec<std::sync::Arc<RunningTask>> = self
             .running_tasks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-            .filter(|(_, task)| {
+            .values()
+            .filter(|task| {
                 !matches!(task.task_type, TaskType::Shell)
                     && matches!(
                         *task.status.lock().unwrap_or_else(|e| e.into_inner()),
                         RunningStatus::Running
                     )
             })
-            .map(|(id, _)| id.clone())
+            .cloned()
             .collect();
-        ids.sort();
-        ids
+        tasks.sort_by(|a, b| a.task_id.cmp(&b.task_id));
+        tasks
     }
 
     /// Stop a running task: cancel what it runs under and record it as
@@ -754,24 +759,6 @@ impl SessionState {
         } else {
             *self.todos.lock().unwrap_or_else(|e| e.into_inner()) = items;
         }
-    }
-
-    /// Set the active plan text (called by EnterPlanMode tool).
-    pub fn set_plan_text(&self, plan: String) {
-        *self.plan_text.lock().unwrap_or_else(|e| e.into_inner()) = Some(plan);
-    }
-
-    /// Clear the active plan text (called by ExitPlanMode tool).
-    pub fn clear_plan_text(&self) {
-        *self.plan_text.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    }
-
-    /// Read the current plan text, if any.
-    pub fn plan_text(&self) -> Option<String> {
-        self.plan_text
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
     }
 
     /// 记录一次文件读取。`FileRead` 工具成功后调用。

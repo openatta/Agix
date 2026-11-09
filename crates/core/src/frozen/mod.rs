@@ -18,7 +18,7 @@ pub use self::import::{
     already_decided as import_already_decided, detect_import_sources, execute_import,
     mark_imported, mark_skipped, ImportError, ImportSource, ImportSourceKind, ImportSummary,
 };
-pub use self::memory::{find_relevant_memories, maybe_migrate_claude_to_agix, MemoryFileEntry};
+pub use self::memory::{maybe_migrate_claude_to_agix, MemoryFileEntry};
 pub use self::skill::{
     activate_conditional_skills, expand_skill_vars, load_session_skills,
     load_session_skills_with_bundled, load_skill_from_path, try_expand_skill_command, SkillEntry,
