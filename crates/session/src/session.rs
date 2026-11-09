@@ -44,6 +44,17 @@ pub struct SessionManager {
     /// What the pusher knew about a not-yet-persisted message, by its index
     /// in `messages`.
     notes: std::collections::HashMap<usize, MessageNote>,
+    /// The last compaction's marker, while it is not yet known to be on disk.
+    /// Everything `persist()` writes goes after it.
+    pending_marker: Option<PendingMarker>,
+}
+
+#[derive(Debug, Clone)]
+enum PendingMarker {
+    /// Not appended.
+    Append(Box<history::entry::LogEntry>, history::entry::EntryTags),
+    /// Appended, not synced.
+    Sync,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -77,6 +88,7 @@ impl SessionManager {
             token_counter: None,
             turn_id: None,
             notes: std::collections::HashMap::new(),
+            pending_marker: None,
         }
     }
 
@@ -246,12 +258,16 @@ impl SessionManager {
     /// ever carries this role — the system prompt is assembled separately
     /// per-turn, not stored as a session message — but this keeps `persist()`
     /// total rather than panicking if one ever does appear).
+    ///
+    /// A compaction marker that failed to land is written first; until it
+    /// has, nothing after it is.
     pub async fn persist(&mut self) -> Result<(), SessionError> {
         let Some(store) = self.history_store.clone() else {
             return Ok(());
         };
         let sid =
             SessionId::parse(&self.session_id).map_err(|e| SessionError::Id(e.to_string()))?;
+        self.write_pending_marker(&store, sid).await?;
         let mut appended = false;
         while self.persisted_up_to < self.messages.len() {
             let msg = &self.messages[self.persisted_up_to];
@@ -297,32 +313,20 @@ impl SessionManager {
     /// Replace `self.messages` wholesale with a post-compaction list, and
     /// keep persistence consistent with that replacement.
     ///
-    /// `persist()`'s incremental scan (`messages[persisted_up_to..]`) assumes
-    /// `messages` only ever grows by appending — compaction breaks that
-    /// assumption by replacing the whole vec with a shorter one. Left alone,
-    /// `persisted_up_to` would stay at its pre-compaction (larger) value and
-    /// `persist()`'s `while persisted_up_to < messages.len()` would go
-    /// permanently false, silently stopping all further persistence for the
-    /// rest of the session (until the message count organically grew back
-    /// past the stale cursor). This method resets the cursor to match the
-    /// new, shorter list, and — since a `LogEntry::Compact` marker isn't
-    /// itself an entry in `messages` and so would never be picked up by
-    /// `persist()`'s scan — appends it immediately rather than waiting for
-    /// the next `persist()` call.
+    /// The list on disk is not rewritten: a `LogEntry::Compact` marker
+    /// carrying the whole new list is appended right away, and replaying the
+    /// log replaces everything before it with that list. The cursor moves to
+    /// the end of the new list, so `persist()` carries on appending only what
+    /// comes after.
     ///
-    /// If writing that marker fails (disk error, bad session id, ...), the
-    /// cursor is left at `0` instead of `messages.len()` — jumping it to the
-    /// full length regardless of outcome would permanently hide these
-    /// messages from `persist()`'s scan (they'd never be picked up, since
-    /// the *only* record of them, the `LogEntry::Compact` entry, didn't
-    /// land). Leaving it at `0` means the very next `persist()` call writes
-    /// them out as ordinary `User`/`Assistant` entries instead — losing the
-    /// "this was a compaction boundary" framing on disk, but not the
-    /// content itself.
+    /// A marker that fails to land is kept and written by the next
+    /// `persist()`, ahead of anything newer; one that was appended but not
+    /// synced is only synced again, never appended twice. Writing the
+    /// compacted messages out as ordinary entries instead would put them on
+    /// disk a second time after the originals.
     ///
-    /// No-op on the persistence side (still replaces `self.messages` and
-    /// sets the cursor to the full length, since there's nothing to persist
-    /// either way) when no `history_store` is configured.
+    /// Each message keeps its timestamp if it survived the compaction
+    /// unchanged at the tail; the rest are new as of now.
     pub async fn replace_messages_after_compact(
         &mut self,
         new_messages: Vec<ModelMessage>,
@@ -334,46 +338,56 @@ impl SessionManager {
             .filter_map(model_message_to_message)
             .collect();
 
+        self.message_timestamps =
+            carried_timestamps(&self.messages, &self.message_timestamps, &new_messages);
         self.messages = new_messages;
         self.notes.clear();
+        self.persisted_up_to = self.messages.len();
 
         let Some(store) = self.history_store.clone() else {
-            self.persisted_up_to = self.messages.len();
             return Ok(());
         };
-
-        let result: Result<(), SessionError> = async {
-            let sid =
-                SessionId::parse(&self.session_id).map_err(|e| SessionError::Id(e.to_string()))?;
-            let entry = history::entry::LogEntry::Compact {
+        self.pending_marker = Some(PendingMarker::Append(
+            Box::new(history::entry::LogEntry::Compact {
                 before_tokens,
                 after_tokens,
                 summary_block_id: None,
                 replacement_history: Some(replacement_history),
                 summary: None,
                 snip_removed_uuids: None,
-            };
-            let tags = history::entry::EntryTags {
+            }),
+            history::entry::EntryTags {
                 turn_id: self.turn_id.clone(),
                 origin: None,
-            };
-            store
-                .append_tagged(sid, entry, tags)
-                .await
-                .map_err(|e| SessionError::Store(e.to_string()))?;
-            store
-                .sync(sid)
-                .await
-                .map_err(|e| SessionError::Store(e.to_string()))
-        }
-        .await;
+            },
+        ));
+        let sid =
+            SessionId::parse(&self.session_id).map_err(|e| SessionError::Id(e.to_string()))?;
+        self.write_pending_marker(&store, sid).await
+    }
 
-        self.persisted_up_to = if result.is_ok() {
-            self.messages.len()
-        } else {
-            0
+    async fn write_pending_marker(
+        &mut self,
+        store: &Arc<dyn HistoryStore>,
+        sid: SessionId,
+    ) -> Result<(), SessionError> {
+        let Some(pending) = self.pending_marker.take() else {
+            return Ok(());
         };
-        result
+        if let PendingMarker::Append(entry, tags) = &pending {
+            if let Err(e) = store
+                .append_tagged(sid, (**entry).clone(), tags.clone())
+                .await
+            {
+                self.pending_marker = Some(pending);
+                return Err(SessionError::Store(e.to_string()));
+            }
+        }
+        if let Err(e) = store.sync(sid).await {
+            self.pending_marker = Some(PendingMarker::Sync);
+            return Err(SessionError::Store(e.to_string()));
+        }
+        Ok(())
     }
 
     /// Resume a session by loading messages from the history store and
@@ -397,7 +411,8 @@ impl SessionManager {
             return Err(SessionError::NotFound(id.to_string()));
         }
         self.session_id = id.to_string();
-        self.turn_count = entries.len() as u32;
+        self.turn_count = entries.iter().filter(|e| starts_a_turn(e)).count() as u32;
+        self.pending_marker = None;
 
         // Extract parent_session_id from the Meta entry if present.
         for entry in &entries {
@@ -609,6 +624,50 @@ fn model_content_block_to_content_block(
             content: base::message::ToolResultContent::Text(content.clone()),
             is_error: is_error.unwrap_or(false),
         },
+    }
+}
+
+/// Timestamps for `new`, the list a compaction made of `old`: the messages
+/// both end with are the ones kept, and keep their times; whatever precedes
+/// them in `new` was written by the compaction.
+fn carried_timestamps(
+    old: &[ModelMessage],
+    old_ts: &[Instant],
+    new: &[ModelMessage],
+) -> Vec<Instant> {
+    let now = Instant::now();
+    let kept = old
+        .iter()
+        .rev()
+        .zip(new.iter().rev())
+        .take_while(|(a, b)| a.role == b.role && a.content == b.content)
+        .count();
+    let mut out = vec![now; new.len() - kept];
+    out.extend((old.len() - kept..old.len()).map(|i| old_ts.get(i).copied().unwrap_or(now)));
+    out
+}
+
+/// Whether a log line is the message a turn was started with. Lines from
+/// before origins were recorded count when they are plain text the engine
+/// did not wrap in a reminder.
+fn starts_a_turn(entry: &history::entry::EnvelopedEntry) -> bool {
+    use history::entry::MessageOrigin;
+    let history::entry::LogEntry::User { content } = &entry.entry else {
+        return false;
+    };
+    match entry.origin {
+        Some(MessageOrigin::User | MessageOrigin::Command) => true,
+        Some(_) => false,
+        None => {
+            let mut texts = content.iter().filter_map(|b| match b {
+                base::message::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            });
+            !content
+                .iter()
+                .any(|b| matches!(b, base::message::ContentBlock::ToolResult { .. }))
+                && texts.any(|t| !t.trim_start().starts_with("<system-reminder>"))
+        }
     }
 }
 
@@ -1129,55 +1188,214 @@ mod tests {
         assert_eq!(mgr.messages.len(), 1);
     }
 
-    /// If the `LogEntry::Compact` marker fails to write, the compacted
-    /// content must not be permanently lost: the cursor falls back to `0`
-    /// (instead of jumping to the full length) so the *next* successful
-    /// `persist()` call writes it out as ordinary entries.
+    fn kinds(entries: &[history::entry::EnvelopedEntry]) -> Vec<&'static str> {
+        entries
+            .iter()
+            .map(|e| match &e.entry {
+                history::entry::LogEntry::User { .. } => "user",
+                history::entry::LogEntry::Compact { .. } => "compact",
+                _ => "other",
+            })
+            .collect()
+    }
+
+    async fn resumed_texts(store: &Arc<dyn HistoryStore>, sid: SessionId) -> Vec<String> {
+        let mut reader = SessionManager::new(Some(store.clone()), None, None);
+        reader.resume(&sid.to_string()).await.unwrap();
+        reader
+            .messages()
+            .iter()
+            .map(|m| match &m.content[0] {
+                ModelContentBlock::Text { text } => text.clone(),
+                other => panic!("unexpected block {other:?}"),
+            })
+            .collect()
+    }
+
+    /// A marker that did not land is written by the next `persist()`, ahead
+    /// of what came after it — never replaced by the compacted messages
+    /// themselves, which would sit on disk after the originals they replaced.
     #[tokio::test]
-    async fn replace_messages_after_compact_disk_failure_falls_back_to_next_persist() {
+    async fn a_compact_marker_that_failed_to_land_is_written_by_the_next_persist() {
         let tmp = tempfile::tempdir().unwrap();
         let inner = real_store(tmp.path()).await;
         let flaky = Arc::new(FlakyAppendStore {
             inner: inner.clone(),
-            fail_appends: std::sync::atomic::AtomicBool::new(true),
+            fail_appends: std::sync::atomic::AtomicBool::new(false),
         });
         let sid = SessionId::new();
-        let mut mgr: SessionManager = SessionManager::new(
+        let mut mgr = SessionManager::new(
             Some(flaky.clone() as Arc<dyn HistoryStore>),
             Some(sid.to_string()),
             None,
         );
+        for i in 0..3 {
+            mgr.push_message(make_text_msg(&format!("original {i}")));
+        }
+        mgr.persist().await.unwrap();
 
-        let compacted = vec![make_text_msg("compacted while disk is down")];
+        flaky
+            .fail_appends
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let r = mgr
-            .replace_messages_after_compact(compacted, 1000, 100)
+            .replace_messages_after_compact(vec![make_text_msg("summary")], 1000, 100)
             .await;
         assert!(r.is_err(), "disk failure must surface as an error");
-        assert_eq!(
-            mgr.messages.len(),
-            1,
-            "in-memory state still reflects the compaction despite the write failure"
-        );
-        // Nothing was ever successfully appended, so the session file was
-        // never created — `load()` reports that as `SessionNotFound`, not
-        // `Ok(vec![])`.
-        match inner.load(sid).await {
-            Err(history::error::HistoryError::SessionNotFound(_)) => {}
-            other => panic!("expected SessionNotFound (nothing persisted yet), got {other:?}"),
-        }
+        assert_eq!(mgr.messages.len(), 1);
+        mgr.push_message(make_text_msg("after the compaction"));
+        assert!(mgr.persist().await.is_err(), "still down");
 
-        // Disk recovers. `persisted_up_to` is still 0, so this call must
-        // write the compacted message out.
         flaky
             .fail_appends
             .store(false, std::sync::atomic::Ordering::SeqCst);
         mgr.persist().await.unwrap();
         let entries = inner.load(sid).await.unwrap();
         assert_eq!(
-            entries.len(),
-            1,
-            "the compacted message must be recoverable once persist() succeeds again"
+            kinds(&entries),
+            ["user", "user", "user", "compact", "user"],
+            "the originals, the marker, then what came after it — once each"
         );
+        assert_eq!(
+            resumed_texts(&inner, sid).await,
+            ["summary", "after the compaction"]
+        );
+        mgr.persist().await.unwrap();
+        assert_eq!(inner.load(sid).await.unwrap().len(), 5);
+    }
+
+    /// Appends, but `sync` fails once.
+    struct FlakySyncStore {
+        inner: Arc<dyn HistoryStore>,
+        fail_next_sync: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl HistoryStore for FlakySyncStore {
+        async fn append(
+            &self,
+            session: SessionId,
+            entry: history::entry::LogEntry,
+        ) -> Result<(), history::error::HistoryError> {
+            self.inner.append(session, entry).await
+        }
+        async fn sync(&self, session: SessionId) -> Result<(), history::error::HistoryError> {
+            if self
+                .fail_next_sync
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(history::error::HistoryError::Path(
+                    "simulated fsync failure".to_string(),
+                ));
+            }
+            self.inner.sync(session).await
+        }
+        async fn load(
+            &self,
+            session: SessionId,
+        ) -> Result<Vec<history::entry::EnvelopedEntry>, history::error::HistoryError> {
+            self.inner.load(session).await
+        }
+        async fn list_sessions(&self) -> Result<Vec<SessionId>, history::error::HistoryError> {
+            self.inner.list_sessions().await
+        }
+        async fn delete(&self, session: SessionId) -> Result<(), history::error::HistoryError> {
+            self.inner.delete(session).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_compact_marker_appended_but_not_synced_is_not_appended_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let inner = real_store(tmp.path()).await;
+        let flaky = Arc::new(FlakySyncStore {
+            inner: inner.clone(),
+            fail_next_sync: std::sync::atomic::AtomicBool::new(false),
+        });
+        let sid = SessionId::new();
+        let mut mgr = SessionManager::new(
+            Some(flaky.clone() as Arc<dyn HistoryStore>),
+            Some(sid.to_string()),
+            None,
+        );
+        mgr.push_message(make_text_msg("original"));
+        mgr.persist().await.unwrap();
+
+        flaky
+            .fail_next_sync
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(mgr
+            .replace_messages_after_compact(vec![make_text_msg("summary")], 10, 1)
+            .await
+            .is_err());
+        mgr.push_message(make_text_msg("after"));
+        mgr.persist().await.unwrap();
+        assert_eq!(
+            kinds(&inner.load(sid).await.unwrap()),
+            ["user", "compact", "user"]
+        );
+        assert_eq!(resumed_texts(&inner, sid).await, ["summary", "after"]);
+    }
+
+    /// The tail a compaction kept is as old as it was; what the compaction
+    /// put in front of it is new.
+    #[tokio::test]
+    async fn the_messages_a_compaction_keeps_keep_their_age() {
+        let mut mgr = SessionManager::in_memory(None);
+        let mut old = Vec::new();
+        for i in 0..6 {
+            mgr.push_message(make_text_msg(&format!("m{i}")));
+            old.push(*mgr.message_timestamps.last().unwrap());
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let compacted = vec![
+            make_text_msg("recovered files"),
+            make_text_msg("summary"),
+            make_text_msg("m4"),
+            make_text_msg("m5"),
+        ];
+        mgr.replace_messages_after_compact(compacted, 10, 5)
+            .await
+            .unwrap();
+        let ages = mgr.message_ages();
+        assert_eq!(ages.len(), 4);
+        assert_eq!(ages[2].1, old[4]);
+        assert_eq!(ages[3].1, old[5]);
+        assert!(
+            ages[0].1 > old[5] && ages[1].1 > old[5],
+            "written by the compaction"
+        );
+    }
+
+    /// A resumed session has run as many turns as it was given prompts —
+    /// not one per log line.
+    #[tokio::test]
+    async fn resume_counts_the_turns_not_the_lines() {
+        use history::entry::MessageOrigin;
+        let tmp = tempfile::tempdir().unwrap();
+        let store = real_store(tmp.path()).await;
+        let sid = SessionId::new();
+        let mut writer = SessionManager::new(Some(store.clone()), Some(sid.to_string()), None);
+        writer.push_message_from(make_text_msg("first"), MessageOrigin::User);
+        writer.push_message(make_text_msg("<system-reminder>recalled</system-reminder>"));
+        writer.push_message(ModelMessage {
+            role: MessageRole::Assistant,
+            content: vec![ModelContentBlock::Text { text: "ok".into() }],
+        });
+        writer.push_message_from(make_text_msg("/review expanded"), MessageOrigin::Command);
+        writer.push_message_from(make_text_msg("meanwhile"), MessageOrigin::Steer);
+        writer.push_message(ModelMessage {
+            role: MessageRole::User,
+            content: vec![ModelContentBlock::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "done".into(),
+                is_error: Some(false),
+            }],
+        });
+        writer.persist().await.unwrap();
+
+        let mut reader = SessionManager::new(Some(store.clone()), None, None);
+        reader.resume(&sid.to_string()).await.unwrap();
+        assert_eq!(reader.turn_count, 2);
     }
 
     /// Two compactions back to back — each one's `replace_messages_after_compact`

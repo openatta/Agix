@@ -519,6 +519,9 @@ WebAssembly 载体整个移除。
   process"(以前要么两边交错写进同一份日志,要么 resume 失败后换一个新 id 建会话)。
 - 会话日志最后一行写到一半(崩溃、断电)时,读的时候略过那一行而不是整份会话读不回来,
   下一次追加前把它截掉。
+- 压缩标记(`compact` 行)写盘失败时,下一次落盘先补写它,之后的行跟在它后面;写进去了
+  只是 fsync 失败的,只重试 fsync。以前会把压缩后的消息当普通行再写一遍,日志里同样的内容
+  出现两次,恢复出来的会话前面多出一段已经被压掉的历史。
 - `config.setProvider` 不再把 `api_key` 写进项目的 `.agix/settings.json`(按约定要提交的那个):
   它进同目录的 `settings.local.json`(0600),settings.json 里这个 provider 已有的 `api_key` 在下次
   写入时挪过去;响应多了 `secrets_written_to`。直接读 settings.json 找 key 的,改读合并后的
@@ -732,6 +735,9 @@ WebAssembly 载体整个移除。
   should_fallback_to_prompting}`。
 - `SessionState` 多了 `enter_plan_mode()` / `exit_plan_mode()`;`set_permission_mode` 会忘掉
   进入计划模式前记下的模式。
+- `SessionManager::replace_messages_after_compact` 自己重排 `message_timestamps`(压缩留下的
+  尾部保留原来的时间,前面新插入的记为现在),调用方不要再 `truncate` 它;`resume` 之后的
+  `turn_count` 是用户发起的轮数(用户消息与斜杠命令展开),不再是日志行数。
 - `Tool` 多了 `leaves_plan_mode()`(缺省 `false`),`Permission` 多了 `check_for_delegate()`
   (按子 Agent 自己的 `SessionState` 判;缺省忽略它、照 `check` 判),都有缺省实现,已有实现
   不用改。自己包一层 `Permission` 的,转发 `check_for_delegate`,子 Agent 的模式和它读过的
