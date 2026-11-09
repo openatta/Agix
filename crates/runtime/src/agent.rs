@@ -352,6 +352,9 @@ pub struct Agent {
     pub(crate) session_context_injected: bool,
     /// Skills invoked so far, re-injected after compaction.
     pub(crate) invoked_skills: Vec<String>,
+    /// The skill names this session was last shown — `None` until its first
+    /// turn, whose prompt lists them all.
+    pub(crate) announced_skills: Option<std::collections::HashSet<String>>,
     /// This turn's user message: a fingerprint of its text and what the text is
     /// made of, for `StreamParams::input_map`.
     ///
@@ -1017,6 +1020,7 @@ impl Agent {
         }
         self.session_context_injected = false;
         self.invoked_skills.clear();
+        self.announced_skills = None;
         self.permission_denial_count
             .store(0, std::sync::atomic::Ordering::Relaxed);
         self.output_token_target = None;
@@ -2571,6 +2575,7 @@ impl Builder {
                 pending_input: None,
                 agent_type: self.agent_type,
                 invoked_skills: Vec::new(),
+                announced_skills: None,
                 request_overhead_tokens: 0,
                 last_had_tool_uses: true, // true → first turn scans for skills
                 last_call_usage: None,

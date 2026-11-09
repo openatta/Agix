@@ -2266,7 +2266,7 @@ WebAssembly 组件,场景改用 `[scene] dir`。
 | `prompt` | `permission`:`{prompt_type,prompt_id,tool_name,message,paths[],tool_use_id?}`;`question`:`{prompt_type,prompt_id,tool_use_id,question,header,options:[{key,label}]}` | 需宿主回答,用 `session.respondToPrompt`;`tool_use_id` 是被问的那次 `tool_use`(`question` 的 `prompt_id` 就是它)。`question` 的 `header` 可为 `null`,`options` 为空表示自由回答 |
 | `subagent_progress` | `{agent_label,agent_session_id,agent_type,parent_turn,parent_tool_use_id,task_id,event}` | 子 Agent 事件镜像,`event` 是嵌套的本表结构;`parent_tool_use_id` 是父会话里发起它的那次 `Agent` 调用,不知道时为 `null`;`task_id` 是它在 `session.tasks` 里的任务 |
 | `team_progress` | `{team,team_id,stage,stage_index,stage_count,status,members,failed}` | 团队阶段生命周期 |
-| `skills_changed` | `{added,removed}` | 会话下的 skill 文件变了,缓存了 `commands.list` 的客户端该重取 |
+| `skills_changed` | `{added,removed}` | 会话可用的 skill 与它上次看到的不同:skill 文件在两轮之间增删后,下一轮开始时发一次(同一份 skill 目录上的每个会话各发各的)。缓存了 `commands.list` 的客户端该重取 |
 | `compact` | `{strategy,messages_before,messages_after,tokens_before,tokens_after,dropped_rounds?,dropped_messages?,estimated_tokens_saved?}` | 上下文被压缩了(§7.1) |
 | `user_message_delivered` | `{message_id,content}` | 运行中送来的消息(`on_busy:"steer"`)已加进对话,模型下一次调用会读到 |
 | `user_message_refused` | `{message_id,content,message}` | 运行中送来的消息被 `UserPromptSubmit` 拒收,不在 transcript 里;`message` 是 hook 给的理由,可为 `null` |

@@ -686,12 +686,17 @@ impl Agent {
         let mut turn_usage = Usage::default();
         let start = std::time::Instant::now();
 
-        // Check for externally modified skill files and reload them.
-        let skills_before: std::collections::HashSet<String> =
-            self.skills.list().iter().map(|s| s.name.clone()).collect();
+        // The catalog may be shared with other sessions and swapped in place
+        // by whoever watches the skill directories, so the diff is against
+        // what this session was last shown, not against the catalog as it
+        // stood a moment ago.
         let changed = self.skills.reload_changed();
         if changed > 0 {
             tracing::debug!(count = changed, "Skills reloaded from file changes");
+        }
+        let skills_now: std::collections::HashSet<String> =
+            self.skills.list().iter().map(|s| s.name.clone()).collect();
+        if let Some(skills_before) = self.announced_skills.replace(skills_now.clone()) {
             // Surface the diff as a system-reminder in the conversation itself,
             // not just a rebuilt static "## Available Skills" list — a model
             // mid-session tends to trust what it already said over a change
@@ -702,10 +707,8 @@ impl Agent {
             // right above the list; a pointed system-reminder about exactly
             // what changed is a much stronger, harder-to-ignore signal, the
             // same pattern already used for git-status/memory reminders).
-            let skills_after: std::collections::HashSet<String> =
-                self.skills.list().iter().map(|s| s.name.clone()).collect();
-            let mut removed: Vec<&String> = skills_before.difference(&skills_after).collect();
-            let mut added: Vec<&String> = skills_after.difference(&skills_before).collect();
+            let mut removed: Vec<&String> = skills_before.difference(&skills_now).collect();
+            let mut added: Vec<&String> = skills_now.difference(&skills_before).collect();
             removed.sort();
             added.sort();
             if !removed.is_empty() || !added.is_empty() {
@@ -6562,6 +6565,95 @@ mod tests {
             transcript.contains("Deploys only on Tuesdays"),
             "recall carried only the description, not the memory content: {transcript}"
         );
+    }
+
+    /// A catalog another owner swaps in place: the next turn's
+    /// `reload_changed` finds nothing to do, and the change is announced
+    /// anyway because this session was shown the old list.
+    #[tokio::test]
+    async fn a_skill_swapped_into_a_shared_catalog_is_announced() {
+        struct Swappable(std::sync::Mutex<Vec<&'static str>>);
+        impl base::interface::skill_catalog::SkillCatalog for Swappable {
+            fn list(&self) -> Vec<base::frozen::SkillEntry> {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|n| base::frozen::SkillEntry {
+                        name: (*n).into(),
+                        description: "d".into(),
+                        user_invocable: true,
+                        ..Default::default()
+                    })
+                    .collect()
+            }
+            fn get(&self, name: &str) -> Option<base::frozen::SkillEntry> {
+                self.list().into_iter().find(|e| e.name == name)
+            }
+            fn body(&self, _: &str) -> Option<String> {
+                None
+            }
+            fn reload_changed(&self) -> usize {
+                0
+            }
+            fn discover_for_paths(&self, _: &[PathBuf]) -> Vec<base::frozen::SkillEntry> {
+                Vec::new()
+            }
+            fn activate_for_paths(&self, _: &[PathBuf]) -> Vec<base::frozen::SkillEntry> {
+                Vec::new()
+            }
+            fn invocation_count(&self, _: &str) -> u32 {
+                0
+            }
+            fn last_invoked_seq(&self, _: &str) -> u64 {
+                0
+            }
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (mut agent, mut event_rx, _input_tx) = crate::agent::Builder::new()
+            .scene(Arc::new(scene::code::CodeScene::default()))
+            .model(Arc::new(RecordingAnswerModel { seen: seen.clone() }))
+            .settings(Arc::new(recall_test_settings(tmp.path())))
+            .skip_warmup(true)
+            .build()
+            .expect("build should succeed");
+        let catalog = Arc::new(Swappable(std::sync::Mutex::new(vec!["early", "gone"])));
+        agent.skills = catalog.clone();
+
+        let turn = |id: &str| InputMessage::User {
+            content: "hello".into(),
+            attachments: vec![],
+            turn_id: id.into(),
+        };
+        let changes = |rx: &mut crate::agent::EventReceiver| {
+            let mut out = Vec::new();
+            while let Ok(event) = rx.try_recv() {
+                if let AgentEvent::SkillsChanged { added, removed, .. } = event {
+                    out.push((added, removed));
+                }
+            }
+            out
+        };
+        let cancel = tokio_util::sync::CancellationToken::new;
+        agent.process_turn(turn("t1"), cancel()).await.unwrap();
+        assert!(changes(&mut event_rx).is_empty(), "the first turn lists them all");
+
+        *catalog.0.lock().unwrap() = vec!["early", "latecomer"];
+        agent.process_turn(turn("t2"), cancel()).await.unwrap();
+        assert_eq!(
+            changes(&mut event_rx),
+            vec![(vec!["latecomer".to_string()], vec!["gone".to_string()])]
+        );
+        assert!(seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|t| t.contains("\"latecomer\" was just added")));
+
+        agent.process_turn(turn("t3"), cancel()).await.unwrap();
+        assert!(changes(&mut event_rx).is_empty(), "announced once");
     }
 
     fn recall_test_settings(root: &std::path::Path) -> base::interface::settings::Settings {

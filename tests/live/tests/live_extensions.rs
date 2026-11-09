@@ -377,7 +377,6 @@ async fn the_first_skill_a_project_gets_mid_session_is_used() -> anyhow::Result<
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: the daemon swaps a binding's skill catalog in place when the watch hub sees a change (assembly/src/modules.rs:105), so the turn's before/after diff (runtime/src/turn.rs:690) is always empty — no skills_changed frame reaches the host and no reminder reaches the model"]
 async fn a_skill_added_mid_session_is_announced() -> anyhow::Result<()> {
     let (changed, ran) = a_late_skill("late-skill", true).await?;
     assert!(ran, "the new skill's body was followed");
