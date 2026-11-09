@@ -106,9 +106,11 @@ token 用量。改了 `tests/live` 后 lint 也要带上 feature：
 | `live_autonomy.rs` | `TodoWrite` 的列表随多步任务更新，`session.export` 的 `runtime.json` 里是做完两项、剩一项待办；模型用 `CronCreate` 建的每分钟任务按时以 `initiator:"schedule"` 的一轮跑起来，`CronDelete` 之后再过两次检查也不再跑；宿主 `schedule.create` 的一次性任务无人连接也跑、跑一次就没了，非法表达式被拒；`max_rounds` 用完的目标以 `blocked`（`round limit`）结束，`execution.max_budget_tokens` 耗尽的一轮以 `budget_exceeded` 结束、目标解除武装；两个后台子 agent，一个只经 `TaskMessage` 拿到要写的词、`TaskWait` / `TaskOutput` 收回，另一个被 `TaskStop` 停成 `stopped`；声明式场景里的 `Sleep` 真等了要的时长、超过 30 秒的被拒、被中断时立即收尾，`Ping` 对页面报出 200 和 404。`PushNotification` 到不了宿主是已知缺陷，`#[ignore]` |
 | `live_workspace.rs` | 声明式场景提供的工作区工具：`git_project` 上 `EnterWorktree` 后写的文件只在 `.agix/worktrees/<slug>` 里，主工作区 `git status` 看不见，`ExitWorktree` 带 `discard_changes` 删掉目录与分支；非 git 目录里 `EnterWorktree` 失败；`NotebookEdit` 改、插、删 cell 后笔记本仍合法，越界的 `cell_index` 报错且不改文件；`Glob` / `Grep` 原样交回中文与带音标的文件名，二进制文件不进 `Grep` 的结果。有改动时先拒后删、`keep` 之后再进另一个、`Grep` 跳过 4 MiB 以上的文件，是已知缺陷，`#[ignore]` |
 
-**权限模式。** `LiveRun` 缺省用 `bypassPermissions`。这个模式下一条规则都不看，deny
-规则也不生效（只剩输入校验与 `Bash` 的 OS 沙箱），所以要验证规则的用例得换成 `acceptEdits`
-或 `default`（`live_programs`、`live_unattended` 就是这样）。
+**权限模式：新用例不用 `bypassPermissions`。** bypass 下一条规则都不看，deny 规则也不生效
+（只剩输入校验与 `Bash` 的 OS 沙箱）——用例全跑在 bypass 上，权限面就等于没被端到端走过。
+新用例用 `default` 或 `acceptEdits`，询问由 `Watcher` 作答；只有用例要验证的恰恰是 bypass
+本身时才用它，并在用例里写明为什么。`LiveRun` 现在的缺省仍是 `bypassPermissions`，是历史
+用例的遗留，会改成 `default`。
 
 **断言只看结果，不看措辞。** 真实模型每次说法不同，能断言的是：盘上的文件、任务状态、
 代理记下的请求，以及只有真跑过才拿得到的值——用例里的随机令牌由脚本在运行时从输入文件
@@ -243,6 +245,12 @@ OAuth 请求）不走 shell 的 `HTTP(S)_PROXY`，不用另设 `NO_PROXY`。
 当 needle，每个会话就有自己的脚本。
 
 ## 几个约定
+
+**一个特性以黑盒用例跑通为完成。** 单元测试证明零件对，证明不了零件接上了：桩模型按测试
+期望的方式报错、测试直接调 `call()` 绕过权限闸门、直接构造 `McpManager` 绕过建会话的路径，
+都出过"测试绿着、从 RPC 进去是坏的"。所以一个特性要有一条从 JSON-RPC 进去、只看外部结果的
+用例跑通（`tests/live` 桩层；用法依赖模型的，再加一条 `live_*`），才算做完。只有单元测试的
+特性算"写了"，不算"接通了"。
 
 **模型那一端总是假的，但假法有四种，各答一个问题。**
 
