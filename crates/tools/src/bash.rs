@@ -218,7 +218,7 @@ impl Tool for BashTool {
         }
         // Nobody can answer the question below, and the OS sandbox already
         // holds the command to the directories it may write.
-        if ctx.session.unattended && sandbox_holds(ctx) {
+        if ctx.session.unattended && unattended_sandbox_allows(ctx) {
             return PermissionDecision::Allow {
                 decision_reason: Some("sandboxed".into()),
             };
@@ -275,7 +275,10 @@ impl Tool for BashTool {
         };
         let mut drain = tokio::spawn(drain_output(output, sink, stop_reading.clone()));
 
-        let wait_result = tokio::select! {
+        // A timeout is a result the model can read, not an error that throws
+        // the output away: the command is killed and whatever it printed before
+        // the deadline is still drained and returned, marked `[timed out …]`.
+        let status = tokio::select! {
         biased;
         _ = run_cancel.cancelled() => {
             child.kill().await;
@@ -284,11 +287,9 @@ impl Tool for BashTool {
         }
         _ = tokio::time::sleep(timeout) => {
             child.kill().await;
-            stop_reading.cancel();
-            return Err(ToolError::Timeout(timeout));
+            None
         }
-        r = child.wait() => r};
-        let status = wait_result.map_err(exec_error)?;
+        r = child.wait() => Some(r.map_err(exec_error)?)};
 
         let (drained, left_running) = tokio::select! {
             biased;
@@ -308,7 +309,8 @@ impl Tool for BashTool {
         let structured = serde_json::json!({
             "stdout": stdout_text,
             "stderr": stderr_text,
-            "exit_code": status.code,
+            "exit_code": status.as_ref().and_then(|s| s.code),
+            "timed_out": status.is_none(),
         });
         let mut combined = stdout_text;
         if !stderr_text.is_empty() {
@@ -328,13 +330,14 @@ impl Tool for BashTool {
                  process with the Monitor tool instead]",
             );
         }
-        let is_error = !status.success;
-        if is_error {
-            if let Some(code) = status.code {
-                combined.push_str(&format!("\n[exit code: {code}]"));
-            } else {
-                combined.push_str("\n[killed by signal]");
-            }
+        let is_error = status.as_ref().map_or(true, |s| !s.success);
+        match &status {
+            None => combined.push_str(&format!("\n[timed out after {}ms]", timeout.as_millis())),
+            Some(s) if !s.success => match s.code {
+                Some(code) => combined.push_str(&format!("\n[exit code: {code}]")),
+                None => combined.push_str("\n[killed by signal]"),
+            },
+            Some(_) => {}
         }
 
         let mut result = if is_error {
@@ -351,39 +354,66 @@ impl Tool for BashTool {
 ///
 /// The output of a command is bytes; where the lines are is the reader's
 /// question, which is why the contract does not answer it. This is that
-/// answer for a shell command: split on `\n`, drop a `\r` before it, and treat
-/// a line longer than the cap as the end of usable output — the same shape
-/// the framed reader had.
+/// answer for a shell command: split on `\n`, drop a `\r` before it. A line
+/// longer than the cap is cut at the cap, marked `…[line truncated]`, and the
+/// rest of it discarded — reading goes on with the next line rather than
+/// stopping, so output after one runaway line is not lost.
 #[derive(Default)]
 struct Lines {
     pending: Vec<u8>,
     buf: String,
-    stopped: bool,
+    /// Past the cap on the current, still-unterminated line: its truncation
+    /// marker already went out, so bytes are dropped until the next newline.
+    skipping_rest_of_line: bool,
 }
 
 const MAX_LINE_BYTES: usize = 64 * 1024;
 
+/// The largest index `<= i` that does not fall inside a UTF-8 character, so a
+/// cut there never splits one.
+fn floor_char_boundary(bytes: &[u8], i: usize) -> usize {
+    let mut i = i.min(bytes.len());
+    while i > 0 && (bytes[i] & 0b1100_0000) == 0b1000_0000 {
+        i -= 1;
+    }
+    i
+}
+
 impl Lines {
     fn feed(&mut self, bytes: &[u8], sink: &Sink) {
-        if self.stopped {
-            return;
-        }
         self.pending.extend_from_slice(bytes);
-        while let Some(nl) = self.pending.iter().position(|b| *b == b'\n') {
-            let mut line = self.pending.drain(..=nl).collect::<Vec<u8>>();
-            line.pop();
-            if line.last() == Some(&b'\r') {
-                line.pop();
+        loop {
+            match self.pending.iter().position(|b| *b == b'\n') {
+                Some(nl) => {
+                    let mut line = self.pending.drain(..=nl).collect::<Vec<u8>>();
+                    line.pop();
+                    if line.last() == Some(&b'\r') {
+                        line.pop();
+                    }
+                    if self.skipping_rest_of_line {
+                        self.skipping_rest_of_line = false;
+                    } else {
+                        self.push(String::from_utf8_lossy(&line).into_owned(), sink);
+                    }
+                }
+                None => {
+                    if self.skipping_rest_of_line {
+                        self.pending.clear();
+                    } else if self.pending.len() > MAX_LINE_BYTES {
+                        let cut = floor_char_boundary(&self.pending, MAX_LINE_BYTES);
+                        let head = String::from_utf8_lossy(&self.pending[..cut]).into_owned();
+                        self.push(format!("{head}…[line truncated]"), sink);
+                        self.pending.clear();
+                        self.skipping_rest_of_line = true;
+                    }
+                    break;
+                }
             }
-            self.push(String::from_utf8_lossy(&line).into_owned(), sink);
-        }
-        if self.pending.len() > MAX_LINE_BYTES {
-            self.stopped = true;
         }
     }
 
     fn finish(mut self, sink: &Sink) -> String {
-        if !self.stopped && !self.pending.is_empty() {
+        if !self.skipping_rest_of_line && !self.pending.is_empty() {
             let line = String::from_utf8_lossy(&std::mem::take(&mut self.pending)).into_owned();
             self.push(line, sink);
         }
@@ -645,6 +675,16 @@ pub(crate) fn confine_shell(
         );
     }
     Ok(confined.spec)
+}
+
+/// Whether an unattended shell-running tool may run a command nobody can be
+/// asked about: the OS sandbox fully confines its writes **and** the network
+/// is closed. An open network is a hole the write sandbox does not cover —
+/// a command confined to the project's files can still reach out — so with
+/// nobody to answer, it is left to the normal allow rules instead.
+pub(crate) fn unattended_sandbox_allows(ctx: &ToolContext) -> bool {
+    use base::context::config::NetworkModeConfig;
+    !matches!(ctx.sandbox.network_mode, NetworkModeConfig::Unrestricted) && sandbox_holds(ctx)
 }
 
 /// Whether a command run now would be fully confined by the OS sandbox.
@@ -1830,6 +1870,76 @@ mod tests {
         assert!(!writable.iter().any(|p| p.starts_with("~")));
     }
 
+    fn unattended_in_a_holding_sandbox(
+        cwd: &std::path::Path,
+        network: base::context::config::NetworkModeConfig,
+    ) -> ToolContext {
+        let mut ctx = ctx_in(cwd);
+        let mut session = base::context::SessionState::new(cwd.to_path_buf());
+        session.unattended = true;
+        ctx.session = std::sync::Arc::new(session);
+        ctx.dangerously_disable_sandbox = false;
+        ctx.sandbox.network_mode = network;
+        ctx.exec.sandbox =
+            std::sync::Arc::new(Reports(Enforcement::Full, SandboxMode::MacOSSandboxExec));
+        ctx
+    }
+
+    #[tokio::test]
+    async fn unattended_bash_with_open_network_is_not_auto_allowed() {
+        use base::context::config::NetworkModeConfig;
+        let dir = tempfile::tempdir().unwrap();
+        let input = json!({"command": "sh build.sh"});
+        let open = unattended_in_a_holding_sandbox(dir.path(), NetworkModeConfig::Unrestricted);
+        assert!(matches!(
+            BashTool.check_permissions(&input, &open).await,
+            PermissionDecision::Ask { .. }
+        ));
+        for closed in [NetworkModeConfig::DenyAll, NetworkModeConfig::Allowlist] {
+            let ctx = unattended_in_a_holding_sandbox(dir.path(), closed);
+            assert!(
+                matches!(
+                    BashTool.check_permissions(&input, &ctx).await,
+                    PermissionDecision::Allow { .. }
+                ),
+                "{closed:?}"
+            );
+        }
+    }
+
+    /// Bypass skips every rule; the sandbox is not a rule.
+    #[tokio::test]
+    async fn a_bypass_session_still_runs_bash_through_the_sandbox() {
+        #[derive(Default)]
+        struct Counts(std::sync::atomic::AtomicUsize);
+        impl Sandbox for Counts {
+            fn confine(
+                &self,
+                spec: ProcessSpec,
+                _policy: &base::interface::exec::SandboxPolicy,
+            ) -> Confined {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Confined {
+                    spec,
+                    mode: SandboxMode::MacOSSandboxExec,
+                    enforcement: Enforcement::Full,
+                    unmet: Vec::new(),
+                }
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = ctx_in(dir.path());
+        ctx.permission_mode = base::permission::PermissionMode::BypassPermissions;
+        ctx.dangerously_disable_sandbox = false;
+        let counts = std::sync::Arc::new(Counts::default());
+        ctx.exec.sandbox = counts.clone();
+        BashTool
+            .call(json!({"command": "true"}), ctx, ProgressSender::noop("t"))
+            .await
+            .unwrap();
+        assert_eq!(counts.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
     fn tmpdir_of(spec: &ProcessSpec) -> Option<PathBuf> {
         spec.env
             .iter()
@@ -2539,19 +2649,74 @@ mod tests {
         );
     }
 
+    fn text_of(r: &ToolResult) -> &str {
+        match &r.content {
+            ToolResultContent::Text(t) => t,
+            _ => panic!("expected text"),
+        }
+    }
+
     #[tokio::test]
-    async fn timeout_fires() {
+    async fn a_timed_out_command_still_returns_what_it_printed() {
         let dir = TempDir::new().unwrap();
-        let tool = BashTool;
-        let r = tool
+        let started = std::time::Instant::now();
+        let r = BashTool
             .call(
-                json!({"command": "sleep 5", "timeout_ms": 200}),
+                json!({"command": "echo before-the-wait; sleep 30", "timeout_ms": 500}),
                 ctx_in(dir.path()),
                 ProgressSender::noop("t"),
             )
             .await
-            .unwrap_err();
-        assert!(matches!(r, ToolError::Timeout(_)));
+            .expect("a timeout is a result the model can read");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(r.is_error);
+        let text = text_of(&r);
+        assert!(text.contains("before-the-wait"), "{text}");
+        assert!(text.contains("[timed out after 500ms]"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_line_over_the_cap_is_cut_and_reading_goes_on() {
+        let dir = TempDir::new().unwrap();
+        let r = BashTool
+            .call(
+                json!({"command": "head -c 200000 /dev/zero | tr '\\0' a; echo; echo after-the-long-line"}),
+                ctx_in(dir.path()),
+                ProgressSender::noop("t"),
+            )
+            .await
+            .unwrap();
+        let text = text_of(&r);
+        assert!(
+            text.contains("…[line truncated]"),
+            "{}",
+            &text[text.len().saturating_sub(200)..]
+        );
+        assert!(
+            text.contains("after-the-long-line"),
+            "{}",
+            &text[text.len().saturating_sub(200)..]
+        );
+        assert!(text.len() < 100_000, "{}", text.len());
+    }
+
+    #[test]
+    fn a_cut_line_ends_on_a_character_boundary() {
+        let sink = Sink {
+            progress: ProgressSender::noop("t"),
+            task: std::sync::Arc::new(base::context::RunningTask::new(
+                "t".into(),
+                base::context::TaskType::Shell,
+            )),
+        };
+        let mut lines = Lines::default();
+        lines.feed("é".repeat(MAX_LINE_BYTES).as_bytes(), &sink);
+        lines.feed(b"\nnext\n", &sink);
+        let out = lines.finish(&sink);
+        let first = out.lines().next().unwrap();
+        assert!(first.ends_with("…[line truncated]"));
+        assert!(!first.contains('\u{fffd}'), "a character was split");
+        assert!(out.contains("\nnext\n"));
     }
 
     #[tokio::test]

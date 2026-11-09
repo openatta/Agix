@@ -134,7 +134,14 @@ impl Tool for MonitorTool {
         }
     }
 
-    async fn check_permissions(&self, _input: &Value, _ctx: &ToolContext) -> PermissionDecision {
+    async fn check_permissions(&self, _input: &Value, ctx: &ToolContext) -> PermissionDecision {
+        // Unattended, nobody can answer; the OS sandbox holds the script the
+        // same way it holds a `Bash` command, under the same network condition.
+        if ctx.session.unattended && crate::bash::unattended_sandbox_allows(ctx) {
+            return PermissionDecision::Allow {
+                decision_reason: Some("sandboxed".into()),
+            };
+        }
         PermissionDecision::ask("Monitor command requires confirmation")
     }
 
@@ -428,6 +435,58 @@ mod tests {
 
     fn ctx_in(cwd: &std::path::Path) -> ToolContext {
         ToolContext::for_test(cwd.to_path_buf())
+    }
+
+    struct Holds;
+
+    impl base::interface::exec::Sandbox for Holds {
+        fn confine(
+            &self,
+            spec: base::interface::exec::ProcessSpec,
+            _policy: &base::interface::exec::SandboxPolicy,
+        ) -> base::interface::exec::Confined {
+            base::interface::exec::Confined {
+                spec,
+                mode: base::interface::exec::SandboxMode::MacOSSandboxExec,
+                enforcement: base::interface::exec::Enforcement::Full,
+                unmet: Vec::new(),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn unattended_monitor_runs_when_the_sandbox_holds() {
+        use base::context::config::NetworkModeConfig;
+        let dir = TempDir::new().unwrap();
+        let input = json!({"command": "npm run dev", "description": "dev server"});
+        let unattended = |network| {
+            let mut ctx = ctx_in(dir.path());
+            let mut session = SessionState::new(dir.path().to_path_buf());
+            session.unattended = true;
+            ctx.session = Arc::new(session);
+            ctx.dangerously_disable_sandbox = false;
+            ctx.sandbox.network_mode = network;
+            ctx.exec.sandbox = Arc::new(Holds);
+            ctx
+        };
+        assert!(matches!(
+            MonitorTool
+                .check_permissions(&input, &unattended(NetworkModeConfig::DenyAll))
+                .await,
+            PermissionDecision::Allow { .. }
+        ));
+        assert!(matches!(
+            MonitorTool
+                .check_permissions(&input, &unattended(NetworkModeConfig::Unrestricted))
+                .await,
+            PermissionDecision::Ask { .. }
+        ));
+        assert!(matches!(
+            MonitorTool
+                .check_permissions(&input, &ctx_in(dir.path()))
+                .await,
+            PermissionDecision::Ask { .. }
+        ));
     }
 
     #[tokio::test]
