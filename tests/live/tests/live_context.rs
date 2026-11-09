@@ -315,7 +315,6 @@ async fn after_a_compaction_the_model_is_reminded_of_plan_mode_and_a_running_tas
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: an automatic compaction whose cascade returns NoOp (context over the threshold, nothing old enough to drop) still splices the post-compact recovery in and reports a compact frame (runtime/src/turn.rs:2426 only short-circuits NoOp for a manual trigger), so every step re-attaches the files read and the context grows"]
 async fn a_compaction_with_nothing_to_drop_does_not_grow_the_context() -> anyhow::Result<()> {
     let mut run = LiveRun::start(
         "noop-compact",
@@ -457,7 +456,6 @@ async fn reactive_compaction_clears_the_oldest_reads_in_a_long_turn() -> anyhow:
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: a reactive micro-compaction emits no compact frame (runtime/src/turn.rs:2270 only logs it), so the host cannot see why earlier tool results vanished — the protocol says the compact frame is the only place the reason is told (daemon_rpc_protocol.md §7.1)"]
 async fn reactive_compaction_tells_the_host_it_happened() -> anyhow::Result<()> {
     let (run, compactions, _) = reactive_turn("reactive-frame").await?;
     assert!(!compactions.is_empty(), "no compact frame");

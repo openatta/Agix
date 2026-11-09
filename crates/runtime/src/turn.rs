@@ -29,13 +29,39 @@ pub(crate) enum CompactTrigger {
     /// Somebody asked: `/compact`, `EngineCommand::CompactNow`,
     /// [`Agent::compact_now`].
     Manual,
+    /// The provider refused the request for its size.
+    Recovery,
 }
 
 impl CompactTrigger {
+    /// What `PreCompact` hooks are told. A size refusal is an automatic
+    /// compaction as far as a hook is concerned; the two values are the ones
+    /// hooks written for Claude Code match on.
     fn as_str(self) -> &'static str {
         match self {
-            Self::Auto => "auto",
+            Self::Auto | Self::Recovery => "auto",
             Self::Manual => "manual",
+        }
+    }
+}
+
+/// Why a compaction left the conversation as it was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum NotCompacted {
+    /// A `PreCompact` hook declined it.
+    Declined,
+    /// Nothing could be dropped, or recovery would have cost what was.
+    NothingToDrop,
+    /// The compactor failed.
+    Failed(String),
+}
+
+impl std::fmt::Display for NotCompacted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Declined => f.write_str("was declined by a PreCompact hook"),
+            Self::NothingToDrop => f.write_str("saved nothing"),
+            Self::Failed(e) => write!(f, "failed: {e}"),
         }
     }
 }
@@ -2249,7 +2275,7 @@ or project context that should survive across sessions.
     }
 
     /// Compact session messages if token budget is exceeded.
-    async fn compact_if_needed(&mut self) {
+    pub(crate) async fn compact_if_needed(&mut self) {
         // Every judgement below belongs to the compactor: what has gone stale,
         // whether to compact early, when to warn, and when the budget forces
         // it. The order they are asked in is the loop's.
@@ -2294,6 +2320,8 @@ or project context that should survive across sessions.
 
         let budget = self.context_budget();
         let context_tokens = self.context_tokens();
+        let reactive_start = std::time::Instant::now();
+        let reactive_from = compaction::grouping::estimate_tokens(&self.session.messages);
         match compactor.reactive(
             &mut self.session.messages,
             &compaction::compact::ReactiveInput {
@@ -2305,11 +2333,23 @@ or project context that should survive across sessions.
             },
         ) {
             compaction::compact::ReactiveOutcome::Compacted => {
-                self.session
-                    .message_timestamps
-                    .truncate(self.session.messages.len());
                 self.tool_results_ever_cleared = true;
                 self.compaction_state.record_success();
+                let messages = self.session.messages.len();
+                self.report_compaction(
+                    &CompactSummary {
+                        strategy: format!(
+                            "{:?}",
+                            compaction::compact::CompactStrategy::MicroCompact
+                        ),
+                        messages_before: messages,
+                        messages_after: messages,
+                        tokens_before: reactive_from,
+                        tokens_after: compaction::grouping::estimate_tokens(&self.session.messages),
+                    },
+                    None,
+                    reactive_start,
+                );
                 tracing::info!(context_tokens, "reactive micro-compact completed");
             }
             compaction::compact::ReactiveOutcome::NoEffect => {
@@ -2337,73 +2377,49 @@ or project context that should survive across sessions.
         // Asked again after the reminder, not before it: the reminder is
         // itself context, and a conversation one message short of the
         // threshold crosses it here rather than a turn later.
-        if compactor.should_compact(&compaction::compact::BudgetState {
+        if !compactor.should_compact(&compaction::compact::BudgetState {
             context_tokens: self.context_tokens(),
             threshold,
             warned_already: self.compact_warning_issued,
         }) {
-            let keep = budget.compact_keep_recent;
-            self.run_compaction(threshold, keep, CompactTrigger::Auto)
-                .await;
+            return;
         }
+        // The threshold is on the whole request, so the conversation gets what
+        // the fixed part of it leaves. Where that is nothing, no conversation
+        // could fit, and the threshold bounds the conversation by itself.
+        let room = match threshold.checked_sub(self.request_overhead_tokens) {
+            Some(room) if room > 0 => room,
+            _ if self.session.token_count() > threshold => threshold,
+            _ => return,
+        };
+        let target = room.saturating_sub(self.recovery_reserve());
+        let _ = self
+            .run_compaction(target, budget.compact_keep_recent, CompactTrigger::Auto)
+            .await;
     }
 
     /// One compaction, start to finish: the `PreCompact` hook, an LLM summary
     /// when one is wanted, the compactor's own cascade otherwise, recovery of
     /// what the summary cannot carry, the transcript marker, the event and
-    /// `PostCompact`. `None` when nothing was compacted.
+    /// `PostCompact`. Every trigger takes this path, so what a compaction has
+    /// to put right afterwards is put right whichever one ran.
+    ///
+    /// `target` is what the conversation is cut to before recovery goes back
+    /// in front of it. A compaction that leaves the conversation no smaller —
+    /// nothing to drop, or recovery costing what was dropped — is not applied.
     pub(crate) async fn run_compaction(
         &mut self,
-        threshold: usize,
+        target: usize,
         keep: usize,
         trigger: CompactTrigger,
-    ) -> Option<CompactSummary> {
-        let compactor = self.compactor.clone();
-        // Fire PreCompact hook.
-        if self
-            .hooks
-            .has_hooks_for(hooks::config::HookEvent::PreCompact)
-        {
-            let hook_result = self
-                .hooks
-                .run(
-                    hooks::config::HookEvent::PreCompact,
-                    &hooks::HookInput {
-                        hook_event_name: "PreCompact".into(),
-                        session_id: self.session.session_id.clone(),
-                        cwd: self.settings.paths.project_root().display().to_string(),
-                        permission_mode: hook_permission_mode(self.session_state.permission_mode()),
-                        tool_input: Some(serde_json::json!({
-                            "messages_before": self.session.messages.len(),
-                            "token_count": self.context_tokens(),
-                            "threshold": threshold,
-                            "trigger": trigger.as_str(),
-                        })),
-                        tool_name: None,
-                        tool_use_id: None,
-                        tool_result: None,
-                        is_error: None,
-                        user_prompt: None,
-                        ..Default::default()
-                    },
-                )
-                .await;
-            // Respect hook decisions — discontinue or block compaction.
-            if hook_result.discontinued() {
-                tracing::info!("PreCompact hook discontinued — skipping compaction");
-                return None;
-            }
-            if hook_result.blocked().is_some() {
-                tracing::info!("PreCompact hook blocked — skipping compaction");
-                return None;
-            }
+    ) -> Result<CompactSummary, NotCompacted> {
+        if !self.pre_compact_hooks_allow(target, trigger).await {
+            return Err(NotCompacted::Declined);
         }
-
+        let compactor = self.compactor.clone();
         let messages_before = self.session.messages.len();
-        // Snapshot the conversation *before* compaction. Two things below
-        // need it: the LLM summarizer (which must see what is about to be
-        // destroyed) and post-compact file recovery (see the
-        // `extract_recent_reads` call).
+        // The summarizer must see what is about to be destroyed, and recovery
+        // re-attaches files from reads that are about to be dropped.
         let pre_compact = self.session.messages().to_vec();
 
         // Layer 0: FullCompact — LLM summary, before anything is dropped.
@@ -2425,12 +2441,12 @@ or project context that should survive across sessions.
         let llm_outcome = match self.compaction_summarizer() {
             Some(summarizer)
                 if trigger == CompactTrigger::Manual
-                    || compactor.wants_llm_summary(&pre_compact, threshold, keep) =>
+                    || compactor.wants_llm_summary(&pre_compact, target, keep) =>
             {
                 match compaction::llm_summary::full_compact(
                     &summarizer,
                     pre_compact.clone(),
-                    threshold,
+                    target,
                     keep,
                 )
                 .await
@@ -2451,237 +2467,276 @@ or project context that should survive across sessions.
             _ => None,
         };
 
-        let compact_outcome = match llm_outcome {
-            Some(ok) => Ok(ok),
-            None => {
-                self.compactor
-                    .compact(pre_compact.clone(), threshold, keep)
-                    .await
-            }
+        let (mut compacted, result) = match llm_outcome {
+            Some(ok) => ok,
+            None => match compactor.compact(pre_compact.clone(), target, keep).await {
+                Ok(ok) => ok,
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to compact messages, continuing with full context");
+                    let tokens = self.context_tokens() as u64;
+                    let _ =
+                        self.telemetry_handle
+                            .record(telemetry::TelemetryEvent::compact_action(
+                                &self.session.session_id,
+                                self.session.turn_count,
+                                Some(self.current_turn_id.clone()),
+                                telemetry::CompactActionPayload {
+                                    strategy: "error".into(),
+                                    before_tokens: tokens,
+                                    after_tokens: tokens,
+                                    before_message_count: messages_before,
+                                    after_message_count: messages_before,
+                                    success: false,
+                                    latency_ms: compact_start.elapsed().as_millis() as u64,
+                                },
+                            ));
+                    return Err(NotCompacted::Failed(e.to_string()));
+                }
+            },
         };
-
-        match compact_outcome {
-            Ok((_, result))
-                if trigger == CompactTrigger::Manual
-                    && result.strategy == compaction::compact::CompactStrategy::NoOp =>
-            {
-                None
-            }
-            Ok((mut compacted, result)) => {
-                if result.strategy == compaction::compact::CompactStrategy::MicroCompact {
-                    self.tool_results_ever_cleared = true;
-                }
-                // Post-compact recovery. Extracted from the pre-compaction
-                // transcript: the files worth re-attaching are precisely the
-                // ones whose Read results just got dropped.
-                let recent_files = compaction::compact::extract_recent_reads(&pre_compact);
-                // Resolve each invoked skill's *current* content + recency
-                // here (not in the `compaction` crate, which deliberately
-                // doesn't depend on `skills` to avoid the coupling) — a
-                // name with no resolvable content (deleted/renamed since
-                // it was invoked) still gets a record, just with
-                // `content: None`, so the reattachment logic can fall
-                // back to a name-only mention instead of silently
-                // dropping it.
-                let invoked_skill_records: Vec<compaction::compact::InvokedSkillRecord> = self
-                    .invoked_skills
-                    .iter()
-                    .map(|name| compaction::compact::InvokedSkillRecord {
-                        name: name.clone(),
-                        content: self.skills.body(name),
-                        last_seq: self.skills.last_invoked_seq(name),
-                    })
-                    .collect();
-                let drops_history = result.strategy.drops_history();
-                let recovery_ctx = compaction::compact::PostCompactContext {
-                    recent_files,
-                    invoked_skills: invoked_skill_records,
-                    in_plan_mode: drops_history
-                        && self.session_state.permission_mode()
-                            == base::permission::PermissionMode::Plan,
-                    activated_tools: {
-                        let mut names: Vec<String> =
-                            self.session_state.activated_tools().into_iter().collect();
-                        names.sort();
-                        names
-                    },
-                    running_tasks: if drops_history {
-                        self.session_state
-                            .running_background_tasks()
-                            .iter()
-                            .map(|task| (task.task_id.clone(), running_task_summary(task)))
-                            .collect()
-                    } else {
-                        Vec::new()
-                    },
-                };
-                compacted.splice(
-                    0..0,
-                    compaction::compact::build_post_compact_recovery(&recovery_ctx),
-                );
-                let messages_after = compacted.len();
-                if let Err(e) = self
-                    .session
-                    .replace_messages_after_compact(
-                        compacted,
-                        result.tokens_before as u64,
-                        result.tokens_after as u64,
-                    )
-                    .await
-                {
-                    // The in-memory swap inside `replace_messages_after_compact`
-                    // always happens before the fallible disk write, so
-                    // `self.session.messages` is already the compacted list
-                    // regardless of this error — only the on-disk
-                    // `LogEntry::Compact` marker failed to land. Warn and
-                    // continue; this session's transcript will just be
-                    // missing that one audit entry.
-                    tracing::warn!(error = %e, "failed to persist LogEntry::Compact marker");
-                }
-                self.session.message_timestamps.truncate(messages_after);
-                let (dropped_rounds, dropped_messages, estimated_tokens_saved) =
-                    if let Some(ref proj) = result.projection {
-                        (
-                            Some(proj.dropped_rounds),
-                            Some(proj.dropped_messages),
-                            Some(proj.estimated_tokens_saved),
-                        )
-                    } else {
-                        (None, None, None)
-                    };
-                let _ = self.event_tx.send(AgentEvent::CompactAction {
-                    strategy: format!("{:?}", result.strategy),
-                    messages_before,
-                    messages_after,
-                    turn_id: self.current_turn_id.clone(),
-                    dropped_rounds,
-                    dropped_messages,
-                    estimated_tokens_saved,
-                    tokens_before: result.tokens_before,
-                    tokens_after: result.tokens_after,
-                });
-                let _ = self
-                    .telemetry_handle
-                    .record(telemetry::TelemetryEvent::compact_action(
-                        &self.session.session_id,
-                        self.session.turn_count,
-                        Some(self.current_turn_id.clone()),
-                        telemetry::CompactActionPayload {
-                            strategy: format!("{:?}", result.strategy),
-                            before_tokens: result.tokens_before as u64,
-                            after_tokens: result.tokens_after as u64,
-                            before_message_count: messages_before,
-                            after_message_count: messages_after,
-                            success: true,
-                            latency_ms: compact_start.elapsed().as_millis() as u64,
-                        },
-                    ));
-                // Reset compact warning after successful compaction —
-                // the warning can fire again if the budget is exhausted again later.
-                self.compact_warning_issued = false;
-
-                // Re-establish what compaction just destroyed. Two pieces of context are injected exactly once per
-                // session, as `<system-reminder>` *user messages* in the
-                // transcript, and are therefore ordinary compaction
-                // victims:
-                //
-                // * the opening context message — session facts and the
-                //   project instructions (`AGENTS.md`/`CLAUDE.md`) — gated
-                //   by `session_context_injected`;
-                // * recalled memories, whose names go into
-                //   `frozen.already_surfaced` so they are not re-injected
-                //   turn after turn.
-                //
-                // Neither is part of `build_post_compact_recovery`. Clearing both flags does not re-inject anything here; it
-                // makes the *next* turn's existing injection paths
-                // eligible again, which puts the instructions back at the
-                // head of the fresh context and lets a still-relevant
-                // memory surface a second time. A strategy that kept the
-                // opening message keeps the flag.
-                self.session_context_injected = holds_session_context(&self.session.messages);
-                if let Some(ref mut frozen) = self.frozen {
-                    frozen.already_surfaced.clear();
-                }
-
-                // Compact analysis — log token composition after compaction.
-                {
-                    let analysis = compaction::compact::analyze_context(&self.session.messages);
-                    tracing::info!(
-                        strategy = ?result.strategy,
-                        messages_before,
-                        messages_after,
-                        tokens_before = result.tokens_before,
-                        tokens_after = result.tokens_after,
-                        "compaction completed"
-                    );
-                    tracing::debug!(
-                        "{}",
-                        compaction::compact::format_context_analysis(&analysis)
-                    );
-                }
-
-                // Fire PostCompact hook.
-                if self
-                    .hooks
-                    .has_hooks_for(hooks::config::HookEvent::PostCompact)
-                {
-                    let _ = self
-                        .hooks
-                        .run(
-                            hooks::config::HookEvent::PostCompact,
-                            &hooks::HookInput {
-                                hook_event_name: "PostCompact".into(),
-                                session_id: self.session.session_id.clone(),
-                                cwd: self.settings.paths.project_root().display().to_string(),
-                                permission_mode: hook_permission_mode(
-                                    self.session_state.permission_mode(),
-                                ),
-                                tool_input: Some(serde_json::json!({
-                                    "strategy": format!("{:?}", result.strategy),
-                                    "messages_before": messages_before,
-                                    "messages_after": messages_after,
-                                    "tokens_before": result.tokens_before,
-                                    "tokens_after": result.tokens_after,
-                                })),
-                                tool_name: None,
-                                tool_use_id: None,
-                                tool_result: None,
-                                is_error: None,
-                                user_prompt: None,
-                                ..Default::default()
-                            },
-                        )
-                        .await;
-                }
-                Some(CompactSummary {
-                    strategy: format!("{:?}", result.strategy),
-                    messages_before,
-                    messages_after,
-                    tokens_before: result.tokens_before,
-                    tokens_after: result.tokens_after,
-                })
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to compact messages, continuing with full context");
-                let _ = self
-                    .telemetry_handle
-                    .record(telemetry::TelemetryEvent::compact_action(
-                        &self.session.session_id,
-                        self.session.turn_count,
-                        Some(self.current_turn_id.clone()),
-                        telemetry::CompactActionPayload {
-                            strategy: "error".into(),
-                            before_tokens: self.context_tokens() as u64,
-                            after_tokens: self.context_tokens() as u64,
-                            before_message_count: messages_before,
-                            after_message_count: messages_before,
-                            success: false,
-                            latency_ms: compact_start.elapsed().as_millis() as u64,
-                        },
-                    ));
-                None
-            }
+        if result.strategy == compaction::compact::CompactStrategy::NoOp {
+            return Err(NotCompacted::NothingToDrop);
         }
+
+        let recovery =
+            self.post_compact_recovery(&pre_compact, &compacted, result.strategy.drops_history());
+        compacted.splice(0..0, recovery);
+        let tokens_before = compaction::grouping::estimate_tokens(&pre_compact);
+        let tokens_after = compaction::grouping::estimate_tokens(&compacted);
+        if tokens_after >= tokens_before {
+            tracing::info!(
+                strategy = ?result.strategy,
+                tokens_before,
+                tokens_after,
+                "compaction would not have shrunk the conversation; left as it was"
+            );
+            return Err(NotCompacted::NothingToDrop);
+        }
+        if result.strategy == compaction::compact::CompactStrategy::MicroCompact {
+            self.tool_results_ever_cleared = true;
+        }
+        let messages_after = compacted.len();
+        if let Err(e) = self
+            .session
+            .replace_messages_after_compact(compacted, tokens_before as u64, tokens_after as u64)
+            .await
+        {
+            tracing::warn!(
+                error = %e,
+                "the compaction marker is not on disk yet; the next persist writes it"
+            );
+        }
+        let summary = CompactSummary {
+            strategy: format!("{:?}", result.strategy),
+            messages_before,
+            messages_after,
+            tokens_before,
+            tokens_after,
+        };
+        self.report_compaction(&summary, result.projection.as_ref(), compact_start);
+        // The warning can fire again once the budget fills up again.
+        self.compact_warning_issued = false;
+
+        // Two pieces of context are injected once per session, as
+        // `<system-reminder>` user messages, and are therefore ordinary
+        // compaction victims: the opening context message — session facts and
+        // the project instructions — gated by `session_context_injected`, and
+        // recalled memories, whose names go into `frozen.already_surfaced` so
+        // they are not re-injected turn after turn. Neither is part of the
+        // recovery above. Resetting both re-injects nothing here; it makes the
+        // next turn's injection paths eligible again. A strategy that kept the
+        // opening message keeps the flag.
+        self.session_context_injected = holds_session_context(&self.session.messages);
+        if let Some(ref mut frozen) = self.frozen {
+            frozen.already_surfaced.clear();
+        }
+
+        tracing::info!(
+            strategy = ?result.strategy,
+            messages_before,
+            messages_after,
+            tokens_before,
+            tokens_after,
+            trigger = ?trigger,
+            "compaction completed"
+        );
+        tracing::debug!(
+            "{}",
+            compaction::compact::format_context_analysis(&compaction::compact::analyze_context(
+                &self.session.messages
+            ))
+        );
+
+        if self
+            .hooks
+            .has_hooks_for(hooks::config::HookEvent::PostCompact)
+        {
+            let _ = self
+                .hooks
+                .run(
+                    hooks::config::HookEvent::PostCompact,
+                    &hooks::HookInput {
+                        hook_event_name: "PostCompact".into(),
+                        session_id: self.session.session_id.clone(),
+                        cwd: self.settings.paths.project_root().display().to_string(),
+                        permission_mode: hook_permission_mode(self.session_state.permission_mode()),
+                        tool_input: Some(serde_json::json!({
+                            "strategy": summary.strategy,
+                            "messages_before": messages_before,
+                            "messages_after": messages_after,
+                            "tokens_before": tokens_before,
+                            "tokens_after": tokens_after,
+                        })),
+                        tool_name: None,
+                        tool_use_id: None,
+                        tool_result: None,
+                        is_error: None,
+                        user_prompt: None,
+                        ..Default::default()
+                    },
+                )
+                .await;
+        }
+        Ok(summary)
+    }
+
+    /// Whether the `PreCompact` hooks let a compaction aimed at `target` run.
+    async fn pre_compact_hooks_allow(&self, target: usize, trigger: CompactTrigger) -> bool {
+        if !self
+            .hooks
+            .has_hooks_for(hooks::config::HookEvent::PreCompact)
+        {
+            return true;
+        }
+        let hook_result = self
+            .hooks
+            .run(
+                hooks::config::HookEvent::PreCompact,
+                &hooks::HookInput {
+                    hook_event_name: "PreCompact".into(),
+                    session_id: self.session.session_id.clone(),
+                    cwd: self.settings.paths.project_root().display().to_string(),
+                    permission_mode: hook_permission_mode(self.session_state.permission_mode()),
+                    tool_input: Some(serde_json::json!({
+                        "messages_before": self.session.messages.len(),
+                        "token_count": self.context_tokens(),
+                        "threshold": target,
+                        "trigger": trigger.as_str(),
+                    })),
+                    tool_name: None,
+                    tool_use_id: None,
+                    tool_result: None,
+                    is_error: None,
+                    user_prompt: None,
+                    ..Default::default()
+                },
+            )
+            .await;
+        if hook_result.discontinued() {
+            tracing::info!("PreCompact hook discontinued — skipping compaction");
+            return false;
+        }
+        if hook_result.blocked().is_some() {
+            tracing::info!("PreCompact hook blocked — skipping compaction");
+            return false;
+        }
+        true
+    }
+
+    /// What goes back in front of what a compaction `kept` of `pre_compact`:
+    /// the files whose reads it dropped, the skills invoked, the deferred
+    /// tools loaded, and — when it dropped turns — plan mode and the
+    /// background tasks still running.
+    fn post_compact_recovery(
+        &self,
+        pre_compact: &[ModelMessage],
+        kept: &[ModelMessage],
+        drops_history: bool,
+    ) -> Vec<ModelMessage> {
+        let still_there: HashSet<(String, String)> =
+            compaction::compact::extract_recent_reads(kept)
+                .into_iter()
+                .collect();
+        let recent_files = compaction::compact::extract_recent_reads(pre_compact)
+            .into_iter()
+            .filter(|read| !still_there.contains(read))
+            .collect();
+        // Each invoked skill's *current* content is resolved here because the
+        // `compaction` crate does not depend on `skills`. A name that no
+        // longer resolves still gets a record, so it is mentioned by name.
+        let invoked_skills = self
+            .invoked_skills
+            .iter()
+            .map(|name| compaction::compact::InvokedSkillRecord {
+                name: name.clone(),
+                content: self.skills.body(name),
+                last_seq: self.skills.last_invoked_seq(name),
+            })
+            .collect();
+        let mut activated_tools: Vec<String> =
+            self.session_state.activated_tools().into_iter().collect();
+        activated_tools.sort();
+        compaction::compact::build_post_compact_recovery(&compaction::compact::PostCompactContext {
+            recent_files,
+            invoked_skills,
+            in_plan_mode: drops_history
+                && self.session_state.permission_mode() == base::permission::PermissionMode::Plan,
+            activated_tools,
+            running_tasks: if drops_history {
+                self.session_state
+                    .running_background_tasks()
+                    .iter()
+                    .map(|task| (task.task_id.clone(), running_task_summary(task)))
+                    .collect()
+            } else {
+                Vec::new()
+            },
+        })
+    }
+
+    /// What any compaction puts back whatever it drops — skills, plan mode,
+    /// tasks, loaded tools. Taken off the target, so that the recovery does
+    /// not carry the conversation straight back over the threshold. Files are
+    /// left out: one is re-attached only when its read was dropped, and the
+    /// read cost at least as much.
+    fn recovery_reserve(&self) -> usize {
+        compaction::grouping::estimate_tokens(&self.post_compact_recovery(&[], &[], true))
+    }
+
+    /// The `compact` event and its telemetry.
+    fn report_compaction(
+        &self,
+        summary: &CompactSummary,
+        projection: Option<&compaction::compact::SnipProjection>,
+        started: std::time::Instant,
+    ) {
+        let _ = self.event_tx.send(AgentEvent::CompactAction {
+            strategy: summary.strategy.clone(),
+            messages_before: summary.messages_before,
+            messages_after: summary.messages_after,
+            turn_id: self.current_turn_id.clone(),
+            dropped_rounds: projection.map(|p| p.dropped_rounds),
+            dropped_messages: projection.map(|p| p.dropped_messages),
+            estimated_tokens_saved: projection.map(|p| p.estimated_tokens_saved),
+            tokens_before: summary.tokens_before,
+            tokens_after: summary.tokens_after,
+        });
+        let _ = self
+            .telemetry_handle
+            .record(telemetry::TelemetryEvent::compact_action(
+                &self.session.session_id,
+                self.session.turn_count,
+                Some(self.current_turn_id.clone()),
+                telemetry::CompactActionPayload {
+                    strategy: summary.strategy.clone(),
+                    before_tokens: summary.tokens_before as u64,
+                    after_tokens: summary.tokens_after as u64,
+                    before_message_count: summary.messages_before,
+                    after_message_count: summary.messages_after,
+                    success: true,
+                    latency_ms: started.elapsed().as_millis() as u64,
+                },
+            ));
     }
 
     /// Build MCP server instructions text for system prompt injection.
@@ -3238,65 +3293,26 @@ or project context that should survive across sessions.
     /// The refusal is the measurement here, not the budget: the conversation
     /// that went out was too big whatever the estimate made of it, so the
     /// target is half of what was sent rather than the configured threshold,
-    /// which it may well not have reached. Success is judged by tokens, since a
-    /// strategy that blanks old tool results shortens the conversation without
-    /// dropping a message.
-    async fn compact_for_retry(
+    /// which it may well not have reached.
+    pub(crate) async fn compact_for_retry(
         &mut self,
         refusal: &base::interface::model::ModelError,
     ) -> Result<(), TurnError> {
         tracing::warn!(error = %refusal, "refused for size; compacting, then retrying");
         let budget = self.context_budget();
-        let messages = self.session.messages().to_vec();
-        let messages_before = messages.len();
-        let target =
-            (compaction::grouping::estimate_tokens(&messages) / 2).min(budget.compact_threshold);
+        let sent = compaction::grouping::estimate_tokens(self.session.messages());
+        let target = (sent / 2)
+            .min(budget.compact_threshold)
+            .saturating_sub(self.recovery_reserve());
         let keep = budget.compact_keep_recent.min(5);
-        let (compacted, result) = self
-            .compactor
-            .compact(messages, target, keep)
+        self.run_compaction(target, keep, CompactTrigger::Recovery)
             .await
-            .map_err(|e| {
+            .map(|_| ())
+            .map_err(|why| {
                 TurnError::Model(format!(
-                    "{refusal}; compacting the conversation to retry failed: {e}"
+                    "{refusal}; compacting the conversation to retry {why}"
                 ))
-            })?;
-        if result.tokens_after >= result.tokens_before {
-            return Err(TurnError::Model(format!(
-                "{refusal}; compacting the conversation to retry saved nothing"
-            )));
-        }
-        if result.strategy == compaction::compact::CompactStrategy::MicroCompact {
-            self.tool_results_ever_cleared = true;
-        }
-        let messages_after = compacted.len();
-        let _ = self.event_tx.send(AgentEvent::CompactAction {
-            strategy: format!("{:?}", result.strategy),
-            messages_before,
-            messages_after,
-            turn_id: self.current_turn_id.clone(),
-            dropped_rounds: result.projection.as_ref().map(|p| p.dropped_rounds),
-            dropped_messages: result.projection.as_ref().map(|p| p.dropped_messages),
-            estimated_tokens_saved: result.projection.as_ref().map(|p| p.estimated_tokens_saved),
-            tokens_before: result.tokens_before,
-            tokens_after: result.tokens_after,
-        });
-        if let Err(e) = self
-            .session
-            .replace_messages_after_compact(
-                compacted,
-                result.tokens_before as u64,
-                result.tokens_after as u64,
-            )
-            .await
-        {
-            tracing::warn!(
-                error = %e,
-                "failed to persist LogEntry::Compact marker (size-refusal recovery)"
-            );
-        }
-        self.session.message_timestamps.truncate(messages_after);
-        Ok(())
+            })
     }
 
     /// Ask the recovery policy what a stopped-early response calls for, and

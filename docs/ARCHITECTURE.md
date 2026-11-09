@@ -166,6 +166,13 @@ systemd(`Restart=on-failure`)。systemd 下要设 `KillMode=process`:`daemon.shu
 transcript 不变,恢复策略重发的就是失败的那个请求;每次调用至多恢复一次。工具已经跑过的,
 回复连同结果照写,这一轮以错误结束——再发一遍会让工具再跑一遍。
 
+**压缩只有一条路径。** 阈值逼出来的(第 2 步)、`/compact` 要的、请求因体积被拒后
+恢复策略要的(第 5 步),都走 `run_compaction`:`PreCompact` hook、需要时先让模型写摘要、
+否则走 compactor 的级联、把丢掉的读文件结果与 skill / 计划模式 / 后台任务的提醒补回前面、
+写 transcript 标记、发 `compact` 帧、`PostCompact`,并让下一轮重新注入被压掉的开场上下文
+(AGENTS.md 等)和召回过的记忆。阈值量的是整个请求,所以自动压缩把对话压到阈值减去系统
+提示词与工具定义、再减去必然补回的提醒之后剩下的大小;压完比压之前还大的不生效。
+
 **一轮只有一个出口。** 循环里有十几处提前结束(hook 截停、预算耗尽、取消、出错),
 落盘和宣布结束都只在 `finish_turn` 做一次,所以哪条路都跳不过。顺序本身是契约:宿主
 把 `TurnComplete` 读作"会话空闲、它的 transcript 已经在盘上"——daemon 收到它就把会话

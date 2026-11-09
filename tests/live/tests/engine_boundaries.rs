@@ -448,13 +448,47 @@ async fn a_few_rounds(run: &mut LiveRun, stub: &ProviderStub, session: &str) -> 
 
 const TOO_LONG: &str = r#"{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 212034 tokens > 200000 maximum"}}"#;
 
+const SESSION_CONTEXT: &str = "you can use the following context";
+
+/// The compaction a size refusal sets off is the same one the budget sets
+/// off: `PreCompact` runs, and the opening context it dropped (the project's
+/// AGENTS.md among it) is back on the next turn.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_refusal_for_size_compacts_and_retries() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
-    let mut run = stubbed("too-long", &stub).start().await?;
+    let hooks = tempfile::tempdir()?;
+    let ledger = hooks.path().join("pre-compact.jsonl");
+    let script = hooks.path().join("pre-compact.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\ncat >> '{}'\necho >> '{}'\necho '{{}}'\n",
+            ledger.display(),
+            ledger.display()
+        ),
+    )?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;
+    }
+    let mut run = stubbed("too-long", &stub)
+        .settings(json!({ "hooks_config": { "PreCompact": [
+            { "type": "command", "command": script, "timeout": 30_000 }
+        ] } }))
+        .before_start(|_, project| {
+            std::fs::write(project.join("AGENTS.md"), "# Rules\nPROJECT-RULE-MARK\n")?;
+            Ok(())
+        })
+        .start()
+        .await?;
     let session = run.session().await?;
     a_few_rounds(&mut run, &stub, &session).await?;
     let watcher = run.watch(&session, false).await?;
+    stub.script_when(
+        "You are compacting an AI coding agent's conversation",
+        [Reply::text("1. User intent — read four files.")],
+    );
     stub.inject_failures(1, Reply::status(400, TOO_LONG));
     stub.script([Reply::text("ANSWERED-AFTER-COMPACTING")]);
     let events = run.turn(&session, "and now?").await?;
@@ -466,6 +500,32 @@ async fn a_refusal_for_size_compacts_and_retries() -> anyhow::Result<()> {
     assert!(
         !watcher.events("compact").is_empty(),
         "nothing was compacted"
+    );
+    let pre_compact: Vec<Value> = std::fs::read_to_string(&ledger)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
+    assert_eq!(pre_compact.len(), 1, "{pre_compact:?}");
+    assert_eq!(pre_compact[0]["tool_input"]["trigger"], "auto");
+
+    let retried = turn_calls(&stub)
+        .into_iter()
+        .rfind(|c| c.purpose() == Purpose::Turn)
+        .expect("the retry");
+    assert!(
+        !retried.messages_contain(SESSION_CONTEXT),
+        "this case needs a compaction that drops the opening context"
+    );
+    stub.script([Reply::text("NEXT-TURN")]);
+    run.turn(&session, "one more").await?;
+    let next = turn_calls(&stub)
+        .into_iter()
+        .rfind(|c| c.purpose() == Purpose::Turn)
+        .expect("the next turn's call");
+    assert!(
+        next.messages_contain(SESSION_CONTEXT) && next.messages_contain("PROJECT-RULE-MARK"),
+        "the opening context did not come back after the compaction dropped it"
     );
     drop(watcher);
     run.finish().await;
@@ -497,6 +557,87 @@ async fn a_refusal_for_size_inside_the_stream_compacts_and_retries() -> anyhow::
     assert!(
         !watcher.events("compact").is_empty(),
         "nothing was compacted"
+    );
+    drop(watcher);
+    run.finish().await;
+    Ok(())
+}
+
+const FILES_REMINDER: &str = "The following files were read before context compaction";
+
+/// A threshold below what every request carries anyway, and a keep floor
+/// that leaves nothing old enough to drop: there is nothing a compaction can
+/// do, so none happens — no `compact` frame, and the file read is not
+/// re-attached step after step.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_compaction_with_nothing_to_drop_does_not_happen() -> anyhow::Result<()> {
+    let stub = ProviderStub::start().await?;
+    let mut run = stubbed("noop-compact", &stub)
+        .settings(json!({ "compaction": { "threshold_tokens": 2000, "keep_recent": 50 } }))
+        .start()
+        .await?;
+    let notes = run.write_file("notes.txt", "build: green\nowner: ops\n")?;
+    let session = run.session().await?;
+    let watcher = run.watch(&session, false).await?;
+    stub.script([
+        Reply::calls(
+            "n1",
+            "Read",
+            json!({ "file_path": notes.to_string_lossy() }),
+        ),
+        Reply::calls("n2", "Glob", json!({ "pattern": "*.txt" })),
+        Reply::calls("n3", "Glob", json!({ "pattern": "*.md" })),
+        Reply::calls("n4", "Glob", json!({ "pattern": "*.rs" })),
+        Reply::text("DONE"),
+    ]);
+    run.turn(&session, "read the notes, then look around")
+        .await?;
+    assert_eq!(watcher.events("compact"), Vec::<Value>::new());
+    let last = turn_calls(&stub).pop().expect("a call");
+    assert_eq!(last.messages_text().matches(FILES_REMINDER).count(), 0);
+    drop(watcher);
+    run.finish().await;
+    Ok(())
+}
+
+/// The predictive pass blanks old tool results in the middle of a turn; the
+/// host is told, on the one frame that says why results vanished.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reactive_compaction_says_so_on_the_wire() -> anyhow::Result<()> {
+    let stub = ProviderStub::start().await?;
+    let mut run = stubbed("reactive-frame", &stub)
+        .settings(json!({
+            "feature_flags": { "reactive_compact": true },
+            "compaction": { "threshold_tokens": 60000, "keep_recent": 2 }
+        }))
+        .start()
+        .await?;
+    let body: String = (0..80)
+        .map(|l| format!("line {l}: all values nominal\n"))
+        .collect();
+    let mut script = Vec::new();
+    for i in 0..8 {
+        let path = run.write_file(&format!("part{i}.log"), &body)?;
+        script.push(Reply::calls(
+            &format!("p{i}"),
+            "Read",
+            json!({ "file_path": path.to_string_lossy() }),
+        ));
+    }
+    script.push(Reply::text("read them all"));
+    stub.script(script);
+    let session = run.session().await?;
+    let watcher = run.watch(&session, false).await?;
+    run.turn(&session, "read the parts").await?;
+    let frames = watcher.events("compact");
+    let frame = &frames
+        .iter()
+        .find(|f| f["event"]["strategy"] == "MicroCompact")
+        .unwrap_or_else(|| panic!("no MicroCompact frame: {frames:?}"))["event"];
+    assert_eq!(frame["messages_before"], frame["messages_after"], "{frame}");
+    assert!(
+        frame["tokens_after"].as_u64() < frame["tokens_before"].as_u64(),
+        "{frame}"
     );
     drop(watcher);
     run.finish().await;

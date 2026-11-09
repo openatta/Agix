@@ -499,6 +499,19 @@ WebAssembly 载体整个移除。
 - 模型调用的恢复对真实厂商生效了:过载(重试用尽的 529,或流里的 `overloaded_error`)配了
   `model.fallback_model` 就换它重发;尺寸被拒(400「prompt is too long」、413、流里的同类错误)
   压缩后重发。以前这些都直接以 `ENGINE_ERROR` 结束。
+- 尺寸被拒之后的压缩和别的压缩是同一次压缩:跑 `PreCompact` / `PostCompact` hook
+  (`trigger` 为 `"auto"`,hook 拦下就不重发、这一轮以 `ENGINE_ERROR` 结束)、配了摘要模型时
+  先写摘要、补回读过的文件等提醒;被压掉的开场上下文(AGENTS.md / CLAUDE.md)下一轮重新注入。
+  以前这条路径跳过了这些,开场上下文被压掉后整个会话再也不注入。
+- 自动压缩把对话压到阈值减去系统提示词与工具定义之后剩下的大小。以前压到阈值本身,压完
+  整个请求仍在阈值之上,之后每一步都再"压"一次:什么都丢不掉,却照样补回读过的文件、发
+  `strategy: "NoOp"` 的 `compact` 帧,上下文越压越大。现在没有可丢的就什么都不做、不发帧;
+  压完反而更大的(补回的提醒比丢掉的多)也不生效。`compact` 帧的 `tokens_after` 含补回的
+  恢复消息。
+- 开了 `feature_flags.reactive_compact` 时,轮中提前清掉旧工具结果的那一趟发 `compact` 帧
+  (`MicroCompact`,消息条数不变)。以前只记日志。
+- 压缩不再丢掉之前的摘要:没有摘要模型时(或摘要失败)的第二次压缩保留第一次留下的摘要,
+  不再把它当作最旧的一轮删掉、或截成 200 字节。
 - 一次调用在回复要工具之前失败,它推过的 `text_delta` 不进 transcript;重发前会再发一次同
   `step` 的 `step_start`(协议 §7)。流在消息结尾之前断开,以前当作一个空回答正常结束
   (`stop_reason` 为空、用量为 0),现在是 `ENGINE_ERROR`。
@@ -735,6 +748,15 @@ WebAssembly 载体整个移除。
   should_fallback_to_prompting}`。
 - `SessionState` 多了 `enter_plan_mode()` / `exit_plan_mode()`;`set_permission_mode` 会忘掉
   进入计划模式前记下的模式。
+- 自己实现 `Compactor` 的:引擎传给 `compact` 的 `max_tokens` 在自动压缩时是阈值减去
+  请求的固定开销与必然补回的提醒;返回的策略不是 `NoOp`、对话却没有变小(连同补回的提醒
+  一起算)的,引擎不采用。`DefaultCompactor` 的兜底一条都折不掉时返回 `NoOp`。
+- `CompactError::Exhausted` 删除(从没有构造过);`compaction::reactive` 删掉零调用的
+  `ReactiveCompactConfig`、`CompactionLevel`、`calculate_thresholds`、`compaction_level`、
+  `should_compact_with_state` 与 `CompactionState::last_compact_turn`。新增
+  `compaction::llm_summary::is_summary`。
+- `compaction::cached::clear_stale_tool_results` 保留 `tool_use_id`(以前置空,请求会被拒),
+  已经清过的不再计数、不再报进 `cache_edits`。
 - `SessionManager::replace_messages_after_compact` 自己重排 `message_timestamps`(压缩留下的
   尾部保留原来的时间,前面新插入的记为现在),调用方不要再 `truncate` 它;`resume` 之后的
   `turn_count` 是用户发起的轮数(用户消息与斜杠命令展开),不再是日志行数。

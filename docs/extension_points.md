@@ -509,6 +509,11 @@ provider——模型、OAuth、遥测和 registry 的 client 各造各的。所�
 想法的纯数字版:改累积的工具结果最多能占一个请求的多少,不必把"占满了怎么办"重新
 实现一遍。
 
+`compact` 拿到的 `max_tokens` 是对话本身该压到的大小:自动压缩时是阈值减去系统提示词、
+工具定义和压缩后必然补回的提醒。已经在这个数以内、或者什么都丢不掉,就返回
+`CompactStrategy::NoOp`——引擎见到它什么都不做;返回别的策略而对话没有变小,引擎同样
+不采用。
+
 ```rust
 Builder::new().compactor(Arc::new(OnlyAtThreshold(DefaultCompactor)))
 ```
