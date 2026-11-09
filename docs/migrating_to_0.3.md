@@ -429,6 +429,11 @@ WebAssembly 载体整个移除。
   `--edit` / `set`)、`git branch -d/-D/-m/-f/-u/<新名>`、`git tag -d/<新名>`、
   `git remote add/remove/set-url/rename/prune`、`git diff/log/show --output`。`git config key`
   (读)、`git branch` / `git tag` / `git remote` 的列示形式仍是只读。
+- `mcp.addServer` / `mcp.updateServer` 不再把密钥写进要提交的 settings.json:`config` 的
+  `headers` 与 `env` 写进同目录的 `settings.local.json`(0600),其余照旧写 settings.json,响应多了
+  `secrets_written_to`(改了 settings.local.json 时才有)。settings.json 里这个 server 早先写进去的
+  `headers` / `env` 在下次写它时被替换掉;已经提交过的,记得轮换。`mcp.updateServer` 认只在
+  settings.local.json 里声明的 server。
 - `turn_complete` 多了可选的 `truncated: true`:OpenAI 兼容的流既没有 `[DONE]` 也没有
   `finish_reason` 就关了时出现(仍当作回复结束,daemon 另记一条 warn),回复可能不完整;遥测
   `api_request` 上同样标 `truncated: true`。其余情况没有这个键。

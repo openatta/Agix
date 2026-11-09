@@ -852,7 +852,7 @@ HTTP;规则里写的 `ws://` / `wss://` 同样换过来):`https://*.corp.example
 
 **项目层的 `$VAR` 只从 server 自己的 `env` 块取。** 项目 `.agix/settings.json`(以及
 `settings.local.json`)里声明或改写过的 server——`mcp.addServer` / `mcp.updateServer` 写的
-就是这一层——`command` / `args` / `url` / `headers` 里的 `$VAR` 只用它自己 `env` 块里的值
+就是这一层,其中 `headers` 与 `env` 落在 `settings.local.json`——`command` / `args` / `url` / `headers` 里的 `$VAR` 只用它自己 `env` 块里的值
 展开,`env` 块的值本身不展开,一律不读 daemon 的进程环境;它的 `oauth` 也不能用
 `client_secret_env` / `private_key_jwt.key_env`(读的是 daemon 的环境),写了就以
 `mcp_connect_failed` 拒绝连接。全局层、场景层和插件声明的 server 照旧用 daemon 的环境展开。

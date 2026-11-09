@@ -747,6 +747,91 @@ async fn mcp_update_server_replaces_a_declared_server_and_refuses_an_unknown_one
     let _ = handle.await;
 }
 
+/// A server's `headers` and `env` are credentials: they go to the
+/// uncommitted `settings.local.json` (0600), the rest to `settings.json`. A
+/// later write moves what an earlier version left in `settings.json`, and
+/// drops what the replacement no longer has.
+#[tokio::test]
+async fn mcp_add_server_keeps_headers_and_env_out_of_the_committed_settings() {
+    let (_server, sock, dir, handle) = start_server().await;
+    let agix = dir.path().join(".agix");
+    std::fs::create_dir_all(&agix).unwrap();
+    std::fs::write(
+        agix.join("settings.json"),
+        r#"{"mcp_servers":{"svc":{"type":"stdio","command":"old-binary","env":{"TOKEN":"old-secret"}}}}"#,
+    )
+    .unwrap();
+    let read = |file: &str| -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(agix.join(file)).unwrap()).unwrap()
+    };
+
+    let resp = rpc_call(
+        &sock,
+        r#"{"jsonrpc":"2.0","method":"mcp.updateServer","params":{"name":"svc","config":{"type":"stdio","command":"missing-binary-xyz","env":{"TOKEN":"new-secret"}}},"id":1}"#,
+    )
+    .await;
+    let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    assert_eq!(
+        v["result"]["secrets_written_to"],
+        agix.join("settings.local.json").display().to_string(),
+        "{v}"
+    );
+    let committed = read("settings.json");
+    assert_eq!(
+        committed["mcp_servers"]["svc"]["command"],
+        "missing-binary-xyz"
+    );
+    assert!(
+        committed["mcp_servers"]["svc"].get("env").is_none(),
+        "the committed settings.json carries the env: {committed}"
+    );
+    assert_eq!(
+        read("settings.local.json")["mcp_servers"]["svc"]["env"]["TOKEN"],
+        "new-secret"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(agix.join("settings.local.json"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "settings.local.json is {mode:o}");
+    }
+
+    rpc_call(
+        &sock,
+        r#"{"jsonrpc":"2.0","method":"mcp.addServer","params":{"name":"svc","config":{"type":"streamable_http","url":"http://127.0.0.1:9/mcp","headers":{"Authorization":"Bearer t"}}},"id":3}"#,
+    )
+    .await;
+    let committed = read("settings.json");
+    assert_eq!(
+        committed["mcp_servers"]["svc"]["url"],
+        "http://127.0.0.1:9/mcp"
+    );
+    assert!(
+        committed["mcp_servers"]["svc"].get("headers").is_none(),
+        "{committed}"
+    );
+    let local = read("settings.local.json");
+    assert_eq!(
+        local["mcp_servers"]["svc"],
+        serde_json::json!({"headers": {"Authorization": "Bearer t"}}),
+        "the replaced server's env stayed behind: {local}"
+    );
+
+    rpc_call(
+        &sock,
+        r#"{"jsonrpc":"2.0","method":"mcp.addServer","params":{"name":"svc","config":{"type":"stdio","command":"plain-binary-xyz"}},"id":4}"#,
+    )
+    .await;
+    let local = read("settings.local.json");
+    assert!(local["mcp_servers"].get("svc").is_none(), "{local}");
+
+    _server.shutdown_token().cancel();
+    let _ = handle.await;
+}
+
 /// Where `cargo` put the toy MCP server, having built it.
 ///
 /// Asked rather than reconstructed: a path built from `CARGO_MANIFEST_DIR`

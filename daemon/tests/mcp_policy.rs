@@ -528,6 +528,33 @@ async fn a_projects_own_server_does_not_expand_the_daemons_environment() {
     assert_eq!(wait_for_line(&d, "user:").await, "user:[s3cret]");
 }
 
+/// The `env` of a server added over RPC is written to `settings.local.json`;
+/// a reload connects it again from the merged settings, which still expand
+/// its `$VAR`s from that block.
+#[tokio::test]
+async fn an_added_servers_env_is_kept_locally_and_still_expands_after_a_reload() {
+    let d = Daemon::new();
+    let pool = d.start(None).await;
+    let mut server = d.logging("local", r#"echo "local:[${OWN}]""#);
+    server["env"] = serde_json::json!({"OWN": "mine"});
+    pool.add_mcp_server(None, "code", "local", server)
+        .await
+        .unwrap();
+    assert_eq!(wait_for_line(&d, "local:").await, "local:[mine]");
+    let committed: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(d.root().join(".agix").join("settings.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        committed["mcp_servers"]["local"].get("env").is_none(),
+        "{committed}"
+    );
+
+    std::fs::remove_file(&d.log).unwrap();
+    pool.reload_settings(None, "code").await;
+    assert_eq!(wait_for_line(&d, "local:").await, "local:[mine]");
+}
+
 #[tokio::test]
 async fn a_server_added_over_rpc_is_the_projects_own() {
     std::env::set_var("AGIX_E2E_ADDED_SECRET", "s3cret");

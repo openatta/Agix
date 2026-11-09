@@ -1773,10 +1773,10 @@ impl SessionPool {
         (connected, failed, connecting)
     }
 
-    /// Merge an MCP server config patch into the project-tier settings.json
-    /// (same partial-patch semantics as `set_provider` — see its doc
-    /// comment for why raw JSON, not a typed struct), then connect it live
-    /// so it's usable immediately without a daemon restart.
+    /// Write an MCP server's configuration into the project tier — its
+    /// `headers` and `env` into the uncommitted `settings.local.json`, the
+    /// rest into settings.json — then connect it live so it's usable
+    /// immediately without a daemon restart.
     #[cfg(feature = "mcp")]
     pub async fn add_mcp_server(
         &self,
@@ -1852,55 +1852,43 @@ impl SessionPool {
         must_exist: bool,
     ) -> Result<serde_json::Value, String> {
         let settings_path = self.settings_path_of(project_root);
-        let mut project_json: serde_json::Value = if settings_path.exists() {
-            let text = tokio::fs::read_to_string(&settings_path)
-                .await
-                .map_err(|e| format!("read {}: {e}", settings_path.display()))?;
-            let parsed: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
-                format!(
-                    "existing {} is not valid JSON, refusing to overwrite it: {e}",
-                    settings_path.display()
-                )
-            })?;
-            if !parsed.is_object() {
-                return Err(format!(
-                    "existing {} is not a JSON object at the top level, refusing to overwrite it",
-                    settings_path.display()
-                ));
-            }
-            parsed
-        } else {
-            serde_json::json!({})
-        };
-        let obj = project_json
-            .as_object_mut()
-            .expect("verified to be an object above");
-        let mcp_servers = obj
-            .entry("mcp_servers")
-            .or_insert_with(|| serde_json::json!({}));
-        if !mcp_servers.is_object() {
-            *mcp_servers = serde_json::json!({});
-        }
-        if must_exist && mcp_servers.get(name).is_none() {
+        let local_path =
+            settings_path.with_file_name(base::interface::settings::SETTINGS_LOCAL_FILE);
+        let mut project_json = read_settings_object(&settings_path).await?;
+        let mut local_json = read_settings_object(&local_path).await?;
+        let local_before = local_json.clone();
+        let declared = [&project_json, &local_json]
+            .iter()
+            .any(|tier| tier["mcp_servers"].get(name).is_some());
+        if must_exist && !declared {
             return Err(format!(
                 "no mcp server `{name}` in {}",
                 settings_path.display()
             ));
         }
-        mcp_servers
-            .as_object_mut()
-            .expect("just normalized to object above")
-            .insert(name.to_string(), config);
 
-        if let Some(parent) = settings_path.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+        let mut config = config;
+        let secrets = take_mcp_server_secrets(&mut config);
+        mcp_servers_of(&mut project_json).insert(name.to_string(), config);
+        // The server is replaced whole: what the local file held for it
+        // would otherwise merge over the new configuration.
+        let local_servers = mcp_servers_of(&mut local_json);
+        if secrets.is_empty() {
+            local_servers.remove(name);
+        } else {
+            local_servers.insert(
+                name.to_string(),
+                serde_json::Value::Object(secrets.into_iter().collect()),
+            );
         }
-        let pretty = serde_json::to_string_pretty(&project_json).map_err(|e| e.to_string())?;
-        tokio::fs::write(&settings_path, pretty)
-            .await
-            .map_err(|e| format!("write {}: {e}", settings_path.display()))?;
+
+        write_settings_file(&settings_path, &project_json, false).await?;
+        let secrets_written_to = if local_json != local_before {
+            write_settings_file(&local_path, &local_json, true).await?;
+            Some(local_path.display().to_string())
+        } else {
+            None
+        };
 
         // The written file and the cache entry are the same pair: a server
         // added to one project's settings connects for that project.
@@ -1959,10 +1947,14 @@ impl SessionPool {
             None => self.emit_event(failure),
         }
 
-        Ok(serde_json::json!({
+        let mut result = serde_json::json!({
             "written_to": settings_path.display().to_string(),
             "servers": entries,
-        }))
+        });
+        if let Some(path) = secrets_written_to {
+            result["secrets_written_to"] = serde_json::Value::String(path);
+        }
+        Ok(result)
     }
 
     /// Report this pool's MCP authorization transitions as `daemon.event`s,
@@ -8614,6 +8606,42 @@ fn take_provider_secrets(provider: &mut serde_json::Value) -> Vec<(String, serde
         .iter()
         .filter_map(|key| fields.remove(*key).map(|value| (key.to_string(), value)))
         .collect()
+}
+
+/// The MCP server fields that carry credentials — request headers, the
+/// process environment — which `mcp.addServer` / `mcp.updateServer` keep out
+/// of the committed `settings.json`.
+#[cfg(feature = "mcp")]
+const MCP_SERVER_SECRET_KEYS: &[&str] = &["headers", "env"];
+
+#[cfg(feature = "mcp")]
+fn take_mcp_server_secrets(server: &mut serde_json::Value) -> Vec<(String, serde_json::Value)> {
+    let Some(fields) = server.as_object_mut() else {
+        return Vec::new();
+    };
+    MCP_SERVER_SECRET_KEYS
+        .iter()
+        .filter_map(|key| fields.remove(*key).map(|value| (key.to_string(), value)))
+        .collect()
+}
+
+/// `mcp_servers` of a settings object, created as `{}` when it is missing or
+/// not an object.
+#[cfg(feature = "mcp")]
+fn mcp_servers_of(
+    settings: &mut serde_json::Value,
+) -> &mut serde_json::Map<String, serde_json::Value> {
+    let servers = settings
+        .as_object_mut()
+        .expect("read_settings_object returns an object")
+        .entry("mcp_servers")
+        .or_insert_with(|| serde_json::json!({}));
+    if !servers.is_object() {
+        *servers = serde_json::json!({});
+    }
+    servers
+        .as_object_mut()
+        .expect("just normalized to an object")
 }
 
 /// `providers.<id>` of a settings object, created as `{}` when it is missing

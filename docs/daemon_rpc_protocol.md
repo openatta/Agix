@@ -2012,18 +2012,25 @@ scope(403 `insufficient_scope`),现有令牌对别的请求仍然有效。
 `mcp_connected` / `mcp_connect_failed` 的 `daemon.event`;要求登录的 server 发
 `mcp_auth_required`,在响应的 `servers` 里是 `state: "auth_required"`。
 
-响应:`{ "written_to": "<路径>", "servers": [ <同 mcp.status 的元素> ] }`。
-配置解析不了、名字为空、已有的 settings.json 不是合法 JSON → `INVALID_PARAMS`。
+**密钥不进 settings.json。** `config` 里的 `headers` 与 `env` 写进同目录的
+`settings.local.json`(按约定不提交,unix 上以 0600 创建),其余字段写 settings.json;两份合并
+之后才是这个 server 的配置,`$VAR` 照样从 `env` 块展开。settings.json 里这个 server 已有的
+`headers` / `env`(早先版本写进去的)在这次写入时一并替换掉。
+
+响应:`{ "written_to": "<路径>", "secrets_written_to": "<路径>", "servers": [ <同 mcp.status 的元素> ] }`,
+`secrets_written_to` 只在改了 settings.local.json 时才有。
+配置解析不了、名字为空、已有的 settings.json / settings.local.json 不是 JSON 对象 → `INVALID_PARAMS`。
 MCP 策略拒绝这个 server → `MCP_SERVER_DENIED`,**什么都不写、不连接、不发通知**,`message`
 写明是哪份策略、哪条规则。
 
-同名的服务已经存在时是替换,不是再加一份。这个项目上正在跑的会话在下一轮之前按新连接
-重建,进行中的调用不受影响。
+同名的服务已经存在时是替换,不是再加一份——settings.local.json 里它原有的那部分也一起换掉,
+新配置没有 `headers` / `env` 就删掉。这个项目上正在跑的会话在下一轮之前按新连接重建,进行中的
+调用不受影响。
 
 #### `mcp.updateServer`
 
-参数、响应与 `mcp.addServer` 相同。区别只在于服务必须已经在那份 settings.json 里声明过,
-否则 `INVALID_PARAMS` —— 用来换令牌、换请求头这类"改一个已有的",不会因为名字拼错而
+参数、响应与 `mcp.addServer` 相同。区别只在于服务必须已经在那份 settings.json(或同目录的
+settings.local.json)里声明过,否则 `INVALID_PARAMS` —— 用来换令牌、换请求头这类"改一个已有的",不会因为名字拼错而
 悄悄多出一个服务。连接立刻重建,这个项目上的会话下一轮拿到新连接。
 
 #### `mcp.auth.start`
