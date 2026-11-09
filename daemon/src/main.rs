@@ -45,6 +45,9 @@ Options:
                                    denied (0 = wait forever) [default: 300]
       --worker-threads <N>         Async worker threads [env: AGIX_WORKER_THREADS]
                                    [default: the number of CPU cores]
+      --mcp-policy <PATH>          MCP policy file to enforce instead of the managed one
+                                   [default: /Library/Application Support/Agix/mcp-policy.json
+                                   on macOS, /etc/agix/mcp-policy.json elsewhere]
   -h, --help                       Print help
   -V, --version                    Print version
 ";
@@ -125,6 +128,11 @@ struct Cli {
     /// core. Blocking work (file I/O, searches, scripts) runs on its own pool
     /// whatever this is.
     worker_threads: Option<usize>,
+
+    /// The MCP policy file, in place of the platform's managed path. Unlike
+    /// that one it must exist: a policy someone named and that is not there
+    /// denies every MCP server rather than none.
+    mcp_policy: Option<PathBuf>,
 }
 
 fn number<T: std::str::FromStr>(parser: &mut lexopt::Parser, flag: &str) -> Result<T, lexopt::Error>
@@ -192,6 +200,7 @@ impl Cli {
             instance: None,
             permission_prompt_timeout: 300,
             worker_threads: None,
+            mcp_policy: None,
         };
         let mut parser = lexopt::Parser::from_args(args);
         while let Some(arg) = parser.next()? {
@@ -223,6 +232,7 @@ impl Cli {
                 Long("worker-threads") => {
                     cli.worker_threads = Some(worker_threads(&parser.value()?.string()?)?)
                 }
+                Long("mcp-policy") => cli.mcp_policy = Some(parser.value()?.into()),
                 Short('h') | Long("help") => return Ok(Invocation::Help),
                 Short('V') | Long("version") => return Ok(Invocation::Version),
                 _ => return Err(arg.unexpected()),
@@ -328,6 +338,11 @@ async fn serve(cli: Cli) -> anyhow::Result<()> {
     );
     daemon_config.session_cap = cli.session_cap;
     daemon_config.session_idle_timeout_secs = cli.session_idle_timeout;
+    #[cfg(not(feature = "mcp"))]
+    if cli.mcp_policy.is_some() {
+        anyhow::bail!("--mcp-policy: this build has no MCP module (feature `mcp`)");
+    }
+    daemon_config.mcp_policy_path = cli.mcp_policy.clone();
     daemon_config.settings.session_dir = Some(daemon_config.settings.paths.local_data_dir.clone());
     let daemon_root = daemon_config.paths.global_root().join("daemon");
     base::crash::install(
@@ -699,6 +714,7 @@ mod tests {
         assert_eq!(cli.permission_prompt_timeout, 300);
         assert!(cli.socket.is_none() && cli.instance.is_none() && cli.scenes.is_empty());
         assert_eq!(cli.worker_threads, None);
+        assert_eq!(cli.mcp_policy, None);
     }
 
     #[test]
@@ -731,6 +747,8 @@ mod tests {
             "--listen",
             "127.0.0.1:7878",
             "--token=s",
+            "--mcp-policy",
+            "/etc/corp/mcp.json",
         ]);
         assert_eq!(
             cli.socket.as_deref(),
@@ -741,6 +759,10 @@ mod tests {
         assert_eq!(cli.scenes, ["harnix", "triage", "code"]);
         assert_eq!(cli.listen.as_deref(), Some("127.0.0.1:7878"));
         assert_eq!(cli.token.as_deref(), Some("s"));
+        assert_eq!(
+            cli.mcp_policy.as_deref(),
+            Some(std::path::Path::new("/etc/corp/mcp.json"))
+        );
     }
 
     #[test]

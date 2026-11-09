@@ -87,6 +87,8 @@ pub struct McpManager {
     subprocess_env: base::interface::exec::local::SubprocessEnv,
     /// The owning pool's OAuth state, handed to every connection.
     oauth: Option<Arc<crate::oauth::McpOAuth>>,
+    /// Configured servers the MCP policy kept from connecting.
+    denied: Vec<DeniedServer>,
 }
 
 impl McpManager {
@@ -101,6 +103,7 @@ impl McpManager {
             elicitation_callback: Arc::new(Mutex::new(None)),
             subprocess_env: base::interface::exec::local::SubprocessEnv::default(),
             oauth: None,
+            denied: Vec::new(),
         }
     }
 
@@ -239,6 +242,7 @@ impl McpManager {
             elicitation_callback: elicitation_cell,
             subprocess_env,
             oauth,
+            denied: Vec::new(),
         };
         // Collect MCP prompts from connected servers (non-blocking: fail silently)
         manager.collect_prompts().await
@@ -432,6 +436,7 @@ impl McpManager {
             elicitation_callback: Arc::new(Mutex::new(None)),
             subprocess_env: base::interface::exec::local::SubprocessEnv::default(),
             oauth: None,
+            denied: Vec::new(),
         }
     }
 
@@ -442,6 +447,15 @@ impl McpManager {
 
     pub fn clients(&self) -> &[McpClientHandle] {
         &self.clients
+    }
+
+    pub fn with_denied(mut self, denied: Vec<DeniedServer>) -> Self {
+        self.denied = denied;
+        self
+    }
+
+    pub fn denied(&self) -> &[DeniedServer] {
+        &self.denied
     }
 
     /// Number of registered servers.
@@ -755,6 +769,13 @@ pub struct ServerStatus {
     pub name: String,
     pub transport: &'static str,
     pub tool_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct DeniedServer {
+    pub name: String,
+    pub transport: &'static str,
+    pub reason: String,
 }
 
 impl Default for McpManager {

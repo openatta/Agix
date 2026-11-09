@@ -176,6 +176,10 @@ pub struct DaemonConfig {
     pub permission_rules: RuleSet,
     /// Session 空闲超时秒数，超时后自动回收（默认 3600 = 1 小时）。
     pub session_idle_timeout_secs: u64,
+    /// Where to read the MCP policy instead of the platform's managed path
+    /// (`mcp::policy::managed_policy_path`). A file named here must exist.
+    /// Ignored when the host passes `Assembly::mcp_policy`.
+    pub mcp_policy_path: Option<PathBuf>,
     pub settings: Settings,
 }
 
@@ -226,6 +230,7 @@ impl DaemonConfig {
             tcp_token: None,
             permission_rules: RuleSet::empty(),
             session_idle_timeout_secs: 3600,
+            mcp_policy_path: None,
             settings: Settings::defaults_for("claude-sonnet-4-6"),
         }
     }
@@ -277,6 +282,7 @@ pub fn load_daemon_config(
         tcp_token: None,
         permission_rules: RuleSet::empty(),
         session_idle_timeout_secs: 3600,
+        mcp_policy_path: None,
         settings,
     }
 }

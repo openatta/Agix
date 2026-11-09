@@ -678,6 +678,10 @@ pub struct SessionPool {
     /// tokens under its own scene root, and whatever resolver the host gave.
     #[cfg(feature = "mcp")]
     mcp_oauth: Arc<mcp::oauth::McpOAuth>,
+    /// What every MCP server this pool connects is admitted by — see
+    /// `admit_mcp`.
+    #[cfg(feature = "mcp")]
+    mcp_policy: Arc<mcp::policy::McpPolicyGate>,
     /// Every session's scheduled jobs, fired by this pool's scheduler (see
     /// `start_scheduler`) whether or not the session is in memory.
     schedule: Arc<tools::cron::CronStore>,
@@ -861,6 +865,35 @@ impl ReloadReport {
     }
 }
 
+/// What `SessionPool::admit_mcp_servers` lets through, and what it does not:
+/// `refused` names every entry not connected (invalid or denied), `denied`
+/// the policy's share of them, kept for `mcp.status`.
+#[cfg(feature = "mcp")]
+#[derive(Default)]
+struct AdmittedMcp {
+    servers: HashMap<String, mcp::config::McpServerConfig>,
+    denied: Vec<mcp::manager::DeniedServer>,
+    refused: Vec<String>,
+}
+
+/// `mcp.status`'s entries: the connected servers, then the denied ones.
+#[cfg(feature = "mcp")]
+fn mcp_status_entries(manager: &McpManager) -> Vec<serde_json::Value> {
+    let connected = manager.server_statuses().into_iter().map(|s| {
+        serde_json::json!({
+            "name": s.name, "transport": s.transport, "tool_count": s.tool_count,
+            "state": "connected",
+        })
+    });
+    let denied = manager.denied().iter().map(|d| {
+        serde_json::json!({
+            "name": d.name, "transport": d.transport, "tool_count": 0,
+            "state": "denied", "error": d.reason,
+        })
+    });
+    connected.chain(denied).collect()
+}
+
 /// Build the router a settings tier's `providers`/`task_models` describe.
 ///
 /// `last_good` is what this pair was already being served by. A config that
@@ -979,6 +1012,8 @@ impl SessionPool {
             mcp_by_project: AsyncMutex::new(HashMap::new()),
             #[cfg(feature = "mcp")]
             mcp_oauth,
+            #[cfg(feature = "mcp")]
+            mcp_policy: Arc::new(mcp::policy::McpPolicyGate::open()),
             schedule,
             internal_connections: std::sync::atomic::AtomicU64::new(u64::MAX),
             this: std::sync::OnceLock::new(),
@@ -1031,6 +1066,12 @@ impl SessionPool {
     #[cfg(feature = "mcp")]
     pub fn mcp_oauth(&self) -> Arc<mcp::oauth::McpOAuth> {
         self.mcp_oauth.clone()
+    }
+
+    #[cfg(feature = "mcp")]
+    pub fn with_mcp_policy(mut self, policy: mcp::policy::McpPolicyGate) -> Self {
+        self.mcp_policy = Arc::new(policy);
+        self
     }
 
     /// Override how long an unanswered permission prompt may block a turn
@@ -1094,13 +1135,57 @@ impl SessionPool {
         self.default_binding().await.commands.list_detailed()
     }
 
-    /// MCP server configs declared by *active* installed plugins. Callers
-    /// merge this into `settings.mcp_servers` before the single startup
-    /// `connect_mcp_servers_in_background` call, so plugin-declared servers
-    /// get the exact same centrally-connected/shared-across-sessions
-    /// treatment as user-configured ones.
-    pub async fn plugin_mcp_servers(&self) -> HashMap<String, serde_json::Value> {
-        self.plugins.mcp_servers()
+    /// The MCP servers a `(project, scene)` with these settings connects:
+    /// its `mcp_servers` and every active plugin's `[[mcp]]` declarations.
+    #[cfg(feature = "mcp")]
+    fn configured_mcp_servers(&self, settings: &Settings) -> HashMap<String, serde_json::Value> {
+        let mut servers = settings.mcp_servers.clone();
+        servers.extend(self.plugins.mcp_servers());
+        servers
+    }
+
+    /// The one gate every MCP server passes before this pool connects it.
+    #[cfg(feature = "mcp")]
+    fn admit_mcp(&self, name: &str, cfg: &mcp::config::McpServerConfig) -> Result<(), String> {
+        self.mcp_policy.admit(name, cfg).inspect_err(|reason| {
+            tracing::warn!(server = %name, %reason, "MCP server not connected");
+        })
+    }
+
+    /// Parse `servers` and pass each through `admit_mcp`. Every entry that
+    /// will not be connected gets a `mcp_connect_failed` event here.
+    #[cfg(feature = "mcp")]
+    fn admit_mcp_servers(&self, servers: &HashMap<String, serde_json::Value>) -> AdmittedMcp {
+        let mut admitted = AdmittedMcp::default();
+        for (name, v) in servers {
+            let refusal = match serde_json::from_value::<mcp::config::McpServerConfig>(v.clone()) {
+                Ok(cfg) => match self.admit_mcp(name, &cfg) {
+                    Ok(()) => {
+                        admitted.servers.insert(name.clone(), cfg);
+                        continue;
+                    }
+                    Err(reason) => {
+                        admitted.denied.push(mcp::manager::DeniedServer {
+                            name: name.clone(),
+                            transport: cfg.transport_kind(),
+                            reason: reason.clone(),
+                        });
+                        reason
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!(server = %name, error = %e, "invalid mcp_servers config, skipping");
+                    format!("invalid config: {e}")
+                }
+            };
+            self.emit_event(serde_json::json!({
+                "kind": "mcp_connect_failed",
+                "server": name,
+                "error": refusal,
+            }));
+            admitted.refused.push(name.clone());
+        }
+        admitted
     }
 
     fn scene_registry(&self) -> Arc<scene::SceneRegistry> {
@@ -1250,65 +1335,47 @@ impl SessionPool {
     #[cfg(feature = "mcp")]
     pub async fn mcp_status(&self) -> Vec<serde_json::Value> {
         let startup_scene = self.settings.read().await.paths.scope.clone();
-        self.mcp_by_project
+        let manager = self
+            .mcp_by_project
             .lock()
             .await
             .get(&(Some(self.cwd.clone()), startup_scene))
             .cloned()
-            .unwrap_or_else(|| Arc::new(McpManager::empty()))
-            .server_statuses()
-            .into_iter()
-            .map(|s| serde_json::json!({"name": s.name, "transport": s.transport, "tool_count": s.tool_count}))
-            .collect()
+            .unwrap_or_else(|| Arc::new(McpManager::empty()));
+        mcp_status_entries(&manager)
     }
 
-    /// Connect the MCP servers configured in `settings.mcp_servers`
-    /// (`HashMap<String, serde_json::Value>`, one entry per server) in the
-    /// background — never blocks the caller. Each entry is parsed into an
-    /// `mcp::config::McpServerConfig`; entries that fail to parse, or
-    /// servers `McpManager::connect_all` can't connect to, are skipped with
-    /// a `tracing::warn!` (already logged inside `connect_all` itself for
-    /// the connect-failure case) *and* a `mcp_connect_failed`
-    /// `daemon.event` notification — see `crate::rpc::StreamFrame::daemon_event`.
-    /// Successfully connected servers get a `mcp_connected` notification.
-    /// Once connection attempts finish, the pool's default-project cache
-    /// entry (`mcp_by_project[Some(cwd)]`) is replaced — new sessions
-    /// created for the default project after that point see the connected
-    /// servers; sessions already running, and every other project's cache
-    /// entry, are unaffected.
+    /// Connect the default project's MCP servers (`configured_mcp_servers`)
+    /// in the background — never blocks the caller. Each outcome is a
+    /// `daemon.event`: `mcp_connected`, or `mcp_connect_failed` for a config
+    /// that does not parse, a server the policy denies, or one
+    /// `McpManager::connect_all` could not reach (the specific reason for
+    /// that last one is in its own `tracing::warn!`). Once attempts finish,
+    /// the default project's cache entry is replaced — new sessions created
+    /// for it after that point see the connected servers; sessions already
+    /// running, and every other project's cache entry, are unaffected.
     #[cfg(feature = "mcp")]
-    pub fn connect_mcp_servers_in_background(
-        self: &Arc<Self>,
-        servers: HashMap<String, serde_json::Value>,
-    ) {
-        if servers.is_empty() {
-            return;
-        }
+    pub fn connect_mcp_servers_in_background(self: &Arc<Self>) {
         let pool = self.clone();
         tokio::spawn(async move {
-            let mut parsed = HashMap::new();
-            for (name, v) in servers {
-                match serde_json::from_value::<mcp::config::McpServerConfig>(v) {
-                    Ok(cfg) => {
-                        parsed.insert(name, cfg);
-                    }
-                    Err(e) => {
-                        tracing::warn!(server = %name, error = %e, "invalid mcp_servers config, skipping");
-                        pool.emit_event(serde_json::json!({
-                            "kind": "mcp_connect_failed",
-                            "server": name,
-                            "error": format!("invalid config: {e}"),
-                        }));
-                    }
-                }
-            }
-            if parsed.is_empty() {
+            let settings = pool.settings.read().await.clone();
+            let servers = pool.configured_mcp_servers(&settings);
+            if servers.is_empty() {
                 return;
             }
-            let requested: std::collections::HashSet<String> = parsed.keys().cloned().collect();
-            let env = pool.settings.read().await.sandbox.subprocess_env.clone();
-            let mut manager =
-                McpManager::connect_all_with_oauth(parsed, env, pool.mcp_oauth.clone()).await;
+            let AdmittedMcp {
+                servers: admitted,
+                denied,
+                ..
+            } = pool.admit_mcp_servers(&servers);
+            let requested: std::collections::HashSet<String> = admitted.keys().cloned().collect();
+            let mut manager = McpManager::connect_all_with_oauth(
+                admitted,
+                settings.sandbox.subprocess_env.clone(),
+                pool.mcp_oauth.clone(),
+            )
+            .await
+            .with_denied(denied);
             // A server may have announced a tool change while this project's
             // manager was being built or reused. Acting on it here is what
             // keeps the announcement from being one more thing nobody reads.
@@ -1325,19 +1392,16 @@ impl SessionPool {
                 }));
             }
             for name in requested.difference(&connected) {
-                // `connect_all` already logged the specific reason via its own
-                // `tracing::warn!` — not re-derived here, see its doc comment.
                 pool.emit_event(serde_json::json!({
                     "kind": "mcp_connect_failed",
                     "server": name,
                     "error": "connect failed — see daemon log for the specific reason",
                 }));
             }
-            let startup_scene = pool.settings.read().await.paths.scope.clone();
-            pool.mcp_by_project
-                .lock()
-                .await
-                .insert((Some(pool.cwd.clone()), startup_scene), Arc::new(manager));
+            pool.mcp_by_project.lock().await.insert(
+                (Some(pool.cwd.clone()), settings.paths.scope.clone()),
+                Arc::new(manager),
+            );
         });
     }
 
@@ -1367,35 +1431,25 @@ impl SessionPool {
         &self,
         project_root: Option<&Path>,
         scene_id: &str,
-        mcp_servers: &HashMap<String, serde_json::Value>,
+        settings: &Settings,
     ) -> (Vec<String>, Vec<String>) {
-        let mut parsed = HashMap::new();
-        let mut invalid = Vec::new();
-        for (name, v) in mcp_servers {
-            match serde_json::from_value::<mcp::config::McpServerConfig>(v.clone()) {
-                Ok(cfg) => {
-                    parsed.insert(name.clone(), cfg);
-                }
-                Err(e) => {
-                    tracing::warn!(server = %name, error = %e, "invalid mcp_servers config, skipping");
-                    invalid.push(name.clone());
-                }
-            }
-        }
-
-        let requested: std::collections::HashSet<String> = parsed.keys().cloned().collect();
-        let env = self
-            .settings_for_project(project_root, scene_id)
-            .await
-            .sandbox
-            .subprocess_env
-            .clone();
-        let manager = McpManager::connect_all_with_oauth(parsed, env, self.mcp_oauth.clone()).await;
+        let AdmittedMcp {
+            servers: admitted,
+            denied,
+            refused,
+        } = self.admit_mcp_servers(&self.configured_mcp_servers(settings));
+        let requested: std::collections::HashSet<String> = admitted.keys().cloned().collect();
+        let manager = McpManager::connect_all_with_oauth(
+            admitted,
+            settings.sandbox.subprocess_env.clone(),
+            self.mcp_oauth.clone(),
+        )
+        .await
+        .with_denied(denied);
         let statuses = manager.server_statuses();
         let connected: Vec<String> = statuses.iter().map(|s| s.name.clone()).collect();
         let connected_set: std::collections::HashSet<String> = connected.iter().cloned().collect();
-        let mut failed: Vec<String> = requested.difference(&connected_set).cloned().collect();
-        failed.extend(invalid);
+        let unreachable: Vec<String> = requested.difference(&connected_set).cloned().collect();
 
         for status in &statuses {
             self.emit_event(serde_json::json!({
@@ -1405,13 +1459,15 @@ impl SessionPool {
                 "tool_count": status.tool_count,
             }));
         }
-        for name in &failed {
+        for name in &unreachable {
             self.emit_event(serde_json::json!({
                 "kind": "mcp_connect_failed",
                 "server": name,
                 "error": "connect failed — see daemon log for the specific reason",
             }));
         }
+        let mut failed = unreachable;
+        failed.extend(refused);
 
         self.mcp_by_project.lock().await.insert(
             (project_root.map(Path::to_path_buf), scene_id.to_string()),
@@ -1431,7 +1487,7 @@ impl SessionPool {
         scene_id: &str,
         name: &str,
         config: serde_json::Value,
-    ) -> Result<serde_json::Value, String> {
+    ) -> Result<serde_json::Value, RpcError> {
         self.put_mcp_server(project_root, scene_id, name, config, false)
             .await
     }
@@ -1447,11 +1503,13 @@ impl SessionPool {
         scene_id: &str,
         name: &str,
         config: serde_json::Value,
-    ) -> Result<serde_json::Value, String> {
+    ) -> Result<serde_json::Value, RpcError> {
         self.put_mcp_server(project_root, scene_id, name, config, true)
             .await
     }
 
+    /// Refused before anything is written when the MCP policy denies it:
+    /// a settings entry the pool would only ever deny is no use to anyone.
     #[cfg(feature = "mcp")]
     async fn put_mcp_server(
         &self,
@@ -1460,16 +1518,33 @@ impl SessionPool {
         name: &str,
         config: serde_json::Value,
         must_exist: bool,
-    ) -> Result<serde_json::Value, String> {
+    ) -> Result<serde_json::Value, RpcError> {
+        let invalid = |message: String| (crate::rpc::codes::INVALID_PARAMS, message);
         if name.trim().is_empty() {
-            return Err("name must not be empty".into());
+            return Err(invalid("name must not be empty".into()));
         }
         if !config.is_object() {
-            return Err("config must be a JSON object".into());
+            return Err(invalid("config must be a JSON object".into()));
         }
         let cfg: mcp::config::McpServerConfig = serde_json::from_value(config.clone())
-            .map_err(|e| format!("invalid mcp server config: {e}"))?;
+            .map_err(|e| invalid(format!("invalid mcp server config: {e}")))?;
+        self.admit_mcp(name, &cfg)
+            .map_err(|reason| (crate::rpc::codes::MCP_SERVER_DENIED, reason))?;
+        self.write_mcp_server(project_root, scene_id, name, &cfg, config, must_exist)
+            .await
+            .map_err(invalid)
+    }
 
+    #[cfg(feature = "mcp")]
+    async fn write_mcp_server(
+        &self,
+        project_root: Option<&Path>,
+        scene_id: &str,
+        name: &str,
+        cfg: &mcp::config::McpServerConfig,
+        config: serde_json::Value,
+        must_exist: bool,
+    ) -> Result<serde_json::Value, String> {
         let settings_path = self.settings_path_of(project_root);
         let mut project_json: serde_json::Value = if settings_path.exists() {
             let text = tokio::fs::read_to_string(&settings_path)
@@ -1533,19 +1608,27 @@ impl SessionPool {
             .sandbox
             .subprocess_env
             .clone();
-        let statuses = {
+        let (statuses, entries) = {
             let mut cache = self.mcp_by_project.lock().await;
             let current = cache
                 .get(&target)
                 .cloned()
                 .unwrap_or_else(|| Arc::new(McpManager::empty()));
+            let still_denied = current
+                .denied()
+                .iter()
+                .filter(|d| d.name != name)
+                .cloned()
+                .collect();
             let mut updated = McpManager::from_clients(current.clients().to_vec())
-                .with_subprocess_env(env.clone());
+                .with_subprocess_env(env.clone())
+                .with_denied(still_denied);
             updated.refresh_tools().await;
-            updated.add_server(name, &cfg).await;
+            updated.add_server(name, cfg).await;
             let statuses = updated.server_statuses();
+            let entries = mcp_status_entries(&updated);
             cache.insert(target.clone(), Arc::new(updated));
-            statuses
+            (statuses, entries)
         };
         // A running session holds its own manager, cloned from the cache when
         // its engine was built. Marking its binding stale rebuilds it on the
@@ -1573,9 +1656,7 @@ impl SessionPool {
 
         Ok(serde_json::json!({
             "written_to": settings_path.display().to_string(),
-            "servers": statuses.into_iter().map(|s| serde_json::json!({
-                "name": s.name, "transport": s.transport, "tool_count": s.tool_count,
-            })).collect::<Vec<_>>(),
+            "servers": entries,
         }))
     }
 
@@ -1673,14 +1754,25 @@ impl SessionPool {
     /// Read-only config/wiring diagnostics — see `crate::doctor`.
     pub async fn doctor_report(&self) -> serde_json::Value {
         let settings = self.settings.read().await.clone();
-        let health = self.health.read().unwrap_or_else(|e| e.into_inner());
+        #[cfg_attr(not(feature = "mcp"), allow(unused_mut))]
+        let mut checks: Vec<Arc<dyn base::interface::health::HealthCheck>> = Vec::new();
+        #[cfg(feature = "mcp")]
+        checks.push(self.mcp_policy.clone());
+        checks.extend(
+            self.health
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .checks()
+                .iter()
+                .cloned(),
+        );
         crate::doctor::run_doctor(
             self.paths.as_ref(),
             self.scene.id(),
             settings,
             self.history_store.is_some(),
             self.plugins.status(),
-            &health,
+            &base::interface::health::HealthChecks::from_vec(checks),
         )
     }
 
@@ -1927,7 +2019,7 @@ impl SessionPool {
         #[cfg(feature = "mcp")]
         {
             let (mcp_connected, mcp_failed) = self
-                .reconcile_mcp_servers(Some(project_root), scene_id, &binding.settings.mcp_servers)
+                .reconcile_mcp_servers(Some(project_root), scene_id, &binding.settings)
                 .await;
             report.mcp_connected = mcp_connected;
             report.mcp_failed = mcp_failed;
@@ -5970,24 +6062,19 @@ impl SessionPool {
         }
 
         let settings = self.settings_for_project(project_root, scene_id).await;
-        let mut parsed = HashMap::new();
-        for (name, v) in &settings.mcp_servers {
-            match serde_json::from_value::<mcp::config::McpServerConfig>(v.clone()) {
-                Ok(cfg) => {
-                    parsed.insert(name.clone(), cfg);
-                }
-                Err(e) => {
-                    tracing::warn!(server = %name, error = %e, "invalid mcp_servers config, skipping");
-                }
-            }
-        }
+        let AdmittedMcp {
+            servers: admitted,
+            denied,
+            ..
+        } = self.admit_mcp_servers(&self.configured_mcp_servers(&settings));
         let manager = Arc::new(
             McpManager::connect_all_with_oauth(
-                parsed,
+                admitted,
                 settings.sandbox.subprocess_env.clone(),
                 self.mcp_oauth.clone(),
             )
-            .await,
+            .await
+            .with_denied(denied),
         );
         self.mcp_by_project
             .lock()

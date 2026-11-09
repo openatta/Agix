@@ -615,6 +615,79 @@ rust / go / java / ruby / dotnet / swift 的常见位置,开箱即用。设置�
 `.agix` 下的路径缺省要人确认(它是 agent 的配置),只有 `scratchpad` 与 `memory` 两处除外:
 那是提示词让模型去写的工作区。
 
+### 6.4 MCP 策略
+
+`mcp_servers` 是用户和项目自己写的,插件包也会带(`<插件>-mcp-<名字>`)。企业部署要的是
+另一回事:不管这些配置写了什么,只有管理员认可的 MCP server 才连得上。这由 MCP 策略决定,
+它只看部署方控制的来源,**从不读用户数据目录或项目里的文件**。
+
+**来源**,只取一个,先到先得:
+
+1. 宿主传入 `Assembly { mcp_policy: Some(policy), .. }`(`mcp::policy::McpPolicy`)。
+   这时不读任何文件。
+2. `agixd --mcp-policy <路径>`(嵌入方:`DaemonConfig::mcp_policy_path`)指定的文件。
+   这个文件**必须存在**:写了路径而文件不在,按读不了处理。
+3. 系统管理路径:macOS `/Library/Application Support/Agix/mcp-policy.json`,Linux 等
+   `/etc/agix/mcp-policy.json`,Windows `%ProgramData%\Agix\mcp-policy.json`。不存在 =
+   没有策略,一切照旧。
+
+策略在装配时读一次,改了要重启 daemon。
+
+**读不了就全拒。** 文件读不了、不是合法 JSON、有不认识的键(`allow_servers` 这样的拼写
+错误不会被当成"没写"而放行一切)、一条规则写了两个键、glob 写错——一律当作策略在、但
+拒绝所有 MCP server,并在 `daemon.doctor` 的 `mcp.policy` 检查里报 `failing`。
+
+**格式**:
+
+```jsonc
+{
+  "allowed_servers": [              // 可省;省略 = 没被拒的都放行;[] = 全部拒绝
+    { "name": "github" },
+    { "command": "/opt/mcp/bin/*" },
+    { "url": "https://*.corp.example/**" }
+  ],
+  "denied_servers": [               // 可省
+    { "command": "/tmp/**" },
+    { "name": "shell" }
+  ]
+}
+```
+
+每条规则恰好一个键,按它匹配:
+
+| 键 | 匹配对象 | 规则 |
+|---|---|---|
+| `name` | server 的名字(`mcp_servers` 的键;插件的是 `<插件>-mcp-<名字>`) | 完全相等 |
+| `command` | stdio server 的 `command`,`$VAR` / `${VAR}` / `${VAR:-默认}` 展开之后 | glob;不带通配就是完全相等 |
+| `url` | 远端 server 的 `url`,同样先展开,再规整成 `scheme://host[:port]/path` | glob |
+
+glob 按 §6.1 的约定:`*` 不跨 `/`,`**` 跨。所以 `{"command": "npx"}` 只放行写成 `npx`
+的命令,不放行 `/tmp/evil-npx`,也不放行 `/usr/local/bin/npx`;`/opt/mcp/bin/*` 不放行
+`/opt/mcp/bin/sub/x`。`command` 规则不匹配远端 server,`url` 规则不匹配 stdio server。
+规则不看 `args`:放行一个解释器(`/usr/bin/python3`、`node`)就放行了它能跑的任何脚本。
+不带 `/` 的命令名在起进程时按 `PATH` 找,而 `PATH` 用户改得了(daemon 的环境、server 配置
+的 `env`),所以要钉死一个二进制,放行它的绝对路径。
+
+URL 规整去掉了 userinfo、query、fragment,主机名小写、默认端口省略:`https://*.corp.example/**`
+不会被 `https://evil.example?.corp.example/` 或 `https://evil.example/.corp.example/` 骗过,
+也不匹配显式写了非默认端口的 `https://mcp.corp.example:8443/`(要放行就写进模式里)。路径要
+用 `/**`:`https://h/*` 只匹配一层路径。
+
+**裁决**:命中任一条 `denied_servers` 就拒;否则有 `allowed_servers` 时必须命中其中一条;
+都没写就放行。deny 永远优先,和 §6.1 一样。
+
+**作用在哪里**:会话池连 MCP 的四个入口都先过同一道 `SessionPool::admit_mcp`——启动时的
+连接、`config.reload`(以及设置文件变化触发的重载)后的重连、另一个项目第一次起会话时的
+连接、`mcp.addServer` / `mcp.updateServer`。插件声明的 server 在这四处都和 `mcp_servers`
+合在一起、一视同仁。被拒的 server **不起进程、不发请求**;启动与重连时发一条
+`mcp_connect_failed`(`error` 写明是哪份策略、哪条规则),在 `mcp.status` 里以
+`"state": "denied"` 列出;`mcp.addServer` / `mcp.updateServer` 在写 settings.json **之前**
+就以 `MCP_SERVER_DENIED` 拒绝。见 `daemon_rpc_protocol.md` §6.5、§8、§9。
+
+**不受管的**:宿主 Rust 代码自己接上的 MCP——`type: "in_process"` 的 server(指向宿主在
+进程内注册的服务),以及宿主经 `customize_session` 或自己的 `Builder` 装进会话的
+`McpModule`。它们是宿主的代码,不是用户能改指向的配置;要管,宿主自己管。
+
 ---
 
 ## 7. 锁

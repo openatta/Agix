@@ -110,6 +110,8 @@ MCP、询问、通知、监视、结构化输出(见下文[能力](#能力))。
 - 编译进宿主的 Rust 插件,与 QuickJS 脚本;可以打成插件包安装,安装时强制披露。
 - 三十个时机的 hook,后端有 command、prompt、HTTP、agent 四种。
 - MCP 客户端(stdio、SSE、streamable HTTP、OAuth 2.0 PKCE);声明式场景;自定义 Agent 类型。
+- 企业 MCP 策略:按 server 名、命令、URL 的允许与拒绝列表,从用户写不了的系统路径读
+  (或 `--mcp-policy`);策略读不了就拒绝所有 server([ARCHITECTURE.md](ARCHITECTURE.md) §6.4)。
 
 **记录**
 - 只追加的 JSONL 历史:可恢复、可分叉,崩溃后可重建。
@@ -314,7 +316,7 @@ echo '{"jsonrpc":"2.0","id":2,"method":"session.run_turn",
 ——每个文档里写的响应形状都有测试拿真实 daemon 的回答对照。
 
 常用参数:`--scene` / `--scenes`(服务哪些场景)、`--listen` / `--listen-ws` 加
-`--token`(带认证的 TCP / WebSocket)、`--session-cap`、`--worker-threads`、`--permission-prompt-timeout`。
+`--token`(带认证的 TCP / WebSocket)、`--session-cap`、`--worker-threads`、`--permission-prompt-timeout`、`--mcp-policy`。
 每个运行中的 daemon 在 `~/.agix/daemon/instances.d/` 下写一个发现文件,客户端按场景
 找到它,不用拼路径。
 

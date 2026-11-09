@@ -27,7 +27,7 @@
 //!   `~/.agix/<resource>/` (base) and `~/.agix/scenes/<scope>/<resource>/`
 //!   (override) — a scene-specific entry with the same name wins.
 //! - **Global + project only, no scene tier** (history/state-shaped):
-//!   `memory/`, `sessions/`, `recordings/`, `mcp/`. Present at `~/.agix/<resource>/`
+//!   `memory/`, `sessions/`, `recordings/`. Present at `~/.agix/<resource>/`
 //!   (used when there's no specific project — reserved for a future
 //!   no-project/desktop mode, not yet exercised by `daemon`) and
 //!   `<cwd>/.agix/<resource>/` (project, used today). Deliberately **not**
@@ -153,10 +153,6 @@ impl ConfigPaths {
         self.global_data_dir.join("sessions")
     }
 
-    pub fn global_mcp_dir(&self) -> PathBuf {
-        self.global_data_dir.join("mcp")
-    }
-
     pub fn global_recordings_dir(&self) -> PathBuf {
         self.global_data_dir.join("recordings")
     }
@@ -171,10 +167,6 @@ impl ConfigPaths {
 
     pub fn local_sessions_dir(&self) -> PathBuf {
         self.local_data_dir.join("sessions")
-    }
-
-    pub fn local_mcp_dir(&self) -> PathBuf {
-        self.local_data_dir.join("mcp")
     }
 
     pub fn local_recordings_dir(&self) -> PathBuf {
@@ -262,13 +254,11 @@ mod tests {
             p.global_recordings_dir(),
             p.global_data_dir.join("recordings")
         );
-        assert_eq!(p.global_mcp_dir(), p.global_data_dir.join("mcp"));
         assert_eq!(p.local_memory_dir(), p.local_data_dir.join("memory"));
         assert_eq!(p.local_sessions_dir(), p.local_data_dir.join("sessions"));
         assert_eq!(
             p.local_recordings_dir(),
             p.local_data_dir.join("recordings")
         );
-        assert_eq!(p.local_mcp_dir(), p.local_data_dir.join("mcp"));
     }
 }

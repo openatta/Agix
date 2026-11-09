@@ -698,6 +698,23 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 `plugins.status` 是这个二进制**能不能加载插件**:`enabled`、`disabled-by-policy`
 (编进来了但配置关掉了)、`compiled-out`(根本没编进来)。
 
+编入了 mcp 模块的构建,`health.checks` 里还有一项 `mcp.policy`(排在最前),说明在执行
+哪一份 MCP 策略(`ARCHITECTURE.md` §6.4):
+
+```jsonc
+{ "name":"mcp.policy", "status":"ok", "summary":"no MCP policy",
+  "details": { "source":"none",         // none | host | file
+               "path":null,             // source 是 file 时为那个文件
+               "in_force":false,        // 有策略在执行(读不了也算:那时全部拒绝)
+               "allowed_servers":null,  // 规则条数;null = 没写 allowed_servers
+               "denied_servers":null,
+               "error":null } }         // 读不了时的原因
+```
+
+`source` 为 `file` 而文件不存在时(系统管理路径上没放策略)是 `ok`、`in_force: false`。
+策略文件读不了或解析不了时这项是 `failing`,`health.status` 随之是 `failing`:这时所有
+MCP server 都被拒绝。
+
 #### `daemon.subscribeEvents`
 
 无参。把当前连接标记为异步通知订阅者,此后推送 §8 的 `daemon.event` 帧,直到连接
@@ -1882,8 +1899,12 @@ daemon 自己那一对,给路径 = 它服务的另一个项目,`null` → `INVAL
 
 ```jsonc
 // ← result
-{ "servers": [ ] }    // 元素:{ "name":"…", "transport":"…", "tool_count": 0 }
+{ "servers": [ ] }    // 元素:{ "name":"…", "transport":"…", "tool_count": 0, "state":"connected" }
 ```
+
+`state` 为 `connected` 的是连上了的;MCP 策略(`ARCHITECTURE.md` §6.4)拒绝的也列出来,
+`state` 为 `denied`,`tool_count` 为 0,另带 `error` 说明是哪份策略、哪条规则。没连上的
+其他原因(进程起不来、握手失败)不在这里,看 `mcp_connect_failed` 通知和 daemon 日志。
 
 #### `mcp.addServer`
 
@@ -1899,6 +1920,8 @@ daemon 自己那一对,给路径 = 它服务的另一个项目,`null` → `INVAL
 
 响应:`{ "written_to": "<路径>", "servers": [ <同 mcp.status 的元素> ] }`。
 配置解析不了、名字为空、已有的 settings.json 不是合法 JSON → `INVALID_PARAMS`。
+MCP 策略拒绝这个 server → `MCP_SERVER_DENIED`,**什么都不写、不连接、不发通知**,`message`
+写明是哪份策略、哪条规则。
 
 同名的服务已经存在时是替换,不是再加一份。这个项目上正在跑的会话在下一轮之前按新连接
 重建,进行中的调用不受影响。
@@ -2211,7 +2234,7 @@ WebAssembly 组件,场景改用 `[scene] dir`。
 | `kind` | 载荷 | 什么时候 |
 |---|---|---|
 | `mcp_connected` | `{server, transport, tool_count}` | 启动连接、`config.reload` 重连、`mcp.addServer` / `mcp.updateServer` 成功 |
-| `mcp_connect_failed` | `{server, error}` | 同上,失败时。具体原因在 daemon 日志里 |
+| `mcp_connect_failed` | `{server, error}` | 同上,失败时。另外,启动、重连、另一个项目第一次起会话时要连的 server 里,配置解析不了的、被 MCP 策略拒绝的(`ARCHITECTURE.md` §6.4)各发一条,`error` 就是原因;连接失败的具体原因在 daemon 日志里 |
 | `import_detected` | `{sources:[{source,description}]}` | 启动时探测到还没处理过的可导入配置 |
 | `session_created` | `{session_id, scene, project_root}` | 一个新会话进了内存 |
 | `session_resumed` | `{session_id, scene, project_root}` | 一个已有的会话被恢复进内存 |
@@ -2251,6 +2274,7 @@ WebAssembly 组件,场景改用 `[scene] dir`。
 | -32017 | TOO_MANY_IN_FLIGHT | 这条连接同时在途的请求已达上限(§5.2) |
 | -32018 | TASK_NOT_FOUND | `session.taskOutput`:引擎不知道这个任务(没跑过、结束得早已被忘掉,或引擎不在内存里) |
 | -32019 | TASK_LIMIT | `session.startAgent`:会话的子 Agent 已到 `execution.max_concurrent_subagents`,或委派已到最深 |
+| -32020 | MCP_SERVER_DENIED | `mcp.addServer` / `mcp.updateServer`:MCP 策略拒绝这个 server,没有写入任何东西 |
 
 还有两个常量在代码里定义了但**没有任何路径会发出**,客户端不必为它们写分支:
 `PARSE_ERROR (-32700)` / `INVALID_REQUEST (-32600)`(解析不了的帧被静默丢弃,见

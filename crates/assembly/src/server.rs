@@ -1234,7 +1234,7 @@ impl DaemonServer {
         };
         match put {
             Ok(result) => RpcResponse::ok(id, result),
-            Err(e) => RpcResponse::err(id, codes::INVALID_PARAMS, e),
+            Err((code, message)) => RpcResponse::err(id, code, message),
         }
     }
 

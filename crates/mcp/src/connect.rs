@@ -275,13 +275,7 @@ impl McpClient for StdioMcpClient {
     }
 
     fn transport_kind(&self) -> &'static str {
-        match &self.config {
-            McpServerConfig::Stdio { .. } => "stdio",
-            McpServerConfig::StreamableHttp { .. } => "streamable_http",
-            McpServerConfig::Sse { .. } => "sse",
-            McpServerConfig::InProcess { .. } => "in_process",
-            McpServerConfig::WebSocket { .. } => "web_socket",
-        }
+        self.config.transport_kind()
     }
 
     fn instructions(&self) -> Option<&str> {

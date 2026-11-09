@@ -376,6 +376,10 @@ pub mod codes {
     /// delegation goes. Refused rather than queued, as the model's own
     /// `Agent` call is.
     pub const TASK_LIMIT: i32 = -32019;
+
+    /// `mcp.addServer`/`mcp.updateServer`: the MCP policy denies this server,
+    /// so nothing was written. `message` names the policy and the rule.
+    pub const MCP_SERVER_DENIED: i32 = -32020;
 }
 
 /// `session.startAgent`'s params.

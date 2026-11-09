@@ -108,6 +108,11 @@ pub struct Assembly {
     /// when this pool's token store has none. `None`: stored tokens only.
     #[cfg(feature = "mcp")]
     pub mcp_oauth_resolver: Option<Arc<dyn mcp::oauth::McpOAuthResolver>>,
+    /// Which configured MCP servers may connect. `None` reads the policy file
+    /// (`DaemonConfig::mcp_policy_path`, else the platform's managed path);
+    /// a host that passes one is the only source, and no file is read.
+    #[cfg(feature = "mcp")]
+    pub mcp_policy: Option<mcp::policy::McpPolicy>,
 }
 
 impl Default for Assembly {
@@ -125,6 +130,8 @@ impl Default for Assembly {
             customize_session: None,
             #[cfg(feature = "mcp")]
             mcp_oauth_resolver: None,
+            #[cfg(feature = "mcp")]
+            mcp_policy: None,
         }
     }
 }
@@ -232,6 +239,17 @@ pub async fn pool(
     if let Some(resolver) = assembly.mcp_oauth_resolver {
         pool = pool.with_mcp_oauth_resolver(resolver);
     }
+    #[cfg(feature = "mcp")]
+    {
+        let policy = mcp_policy(config, assembly.mcp_policy);
+        if let Some(error) = policy.error() {
+            warn!(
+                error,
+                "the MCP policy is unreadable; every MCP server is denied"
+            );
+        }
+        pool = pool.with_mcp_policy(policy);
+    }
     let pool = Arc::new(pool);
 
     for scene in assembly.scenes {
@@ -251,23 +269,29 @@ pub async fn pool(
     // indicate why.
     pool.load_plugins().await;
 
-    // Plugin-declared MCP servers (`plugin.toml`'s `[mcp] servers`) merge in
-    // here so they take the same centrally-connected, shared-across-sessions
-    // path user-configured ones do. Connecting is deliberately backgrounded:
-    // a slow or unreachable server can never delay startup, and a failure
-    // warns and emits `mcp_connect_failed` rather than aborting.
+    // Backgrounded: a slow or unreachable server can never delay startup, and
+    // a failure warns and emits `mcp_connect_failed` rather than aborting.
     #[cfg(feature = "mcp")]
-    {
-        let mut mcp_servers = config.settings.mcp_servers.clone();
-        mcp_servers.extend(pool.plugin_mcp_servers().await);
-        pool.connect_mcp_servers_in_background(mcp_servers);
-    }
+    pool.connect_mcp_servers_in_background();
 
     pool.start_janitor();
     pool.start_config_watcher();
     pool.start_scheduler();
 
     Ok(pool)
+}
+
+#[cfg(feature = "mcp")]
+fn mcp_policy(
+    config: &DaemonConfig,
+    host: Option<mcp::policy::McpPolicy>,
+) -> mcp::policy::McpPolicyGate {
+    use mcp::policy::{managed_policy_path, McpPolicyGate};
+    match (host, &config.mcp_policy_path) {
+        (Some(policy), _) => McpPolicyGate::from_host(policy),
+        (None, Some(path)) => McpPolicyGate::load(path, true),
+        (None, None) => McpPolicyGate::load(&managed_policy_path(), false),
+    }
 }
 
 /// Multi-provider routing, or `None` when the deployment configured none.

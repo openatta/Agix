@@ -1,0 +1,490 @@
+//! 企业 MCP 策略：一个进程能连哪些 MCP server。
+//!
+//! 策略来自宿主（`Assembly::mcp_policy`）或系统管理路径上的
+//! `mcp-policy.json`（[`managed_policy_path`]），从不来自用户可写的数据目录。
+//! [`McpPolicyGate`] 是会话池实际执行的那一份：每个要连的 server 先过
+//! [`McpPolicyGate::admit`]，被拒的不会起进程、不会发请求。策略文件读不了、
+//! 解析不了，一律按"全部拒绝"处理并在 `daemon.doctor` 里报出来。
+//!
+//! 规则格式与匹配语义见 `docs/ARCHITECTURE.md` §6.4。
+
+use std::path::{Path, PathBuf};
+
+use base::interface::health::{CheckResult, HealthCheck};
+use globset::{GlobBuilder, GlobMatcher};
+use serde::{Deserialize, Serialize};
+
+use crate::config::{expand_env_vars, McpServerConfig};
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpPolicy {
+    /// `None`: everything not denied is allowed. `Some(vec![])`: nothing is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_servers: Option<Vec<McpServerRule>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub denied_servers: Vec<McpServerRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpServerRule {
+    Name(String),
+    Command(String),
+    Url(String),
+}
+
+impl std::fmt::Display for McpServerRule {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            McpServerRule::Name(v) => write!(f, "{{\"name\": {v:?}}}"),
+            McpServerRule::Command(v) => write!(f, "{{\"command\": {v:?}}}"),
+            McpServerRule::Url(v) => write!(f, "{{\"url\": {v:?}}}"),
+        }
+    }
+}
+
+pub fn managed_policy_path() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        PathBuf::from("/Library/Application Support/Agix/mcp-policy.json")
+    }
+    #[cfg(windows)]
+    {
+        let root = std::env::var_os("ProgramData")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
+        root.join("Agix").join("mcp-policy.json")
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        PathBuf::from("/etc/agix/mcp-policy.json")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PolicyOrigin {
+    None,
+    Host,
+    File(PathBuf),
+}
+
+enum Matcher {
+    Name(String),
+    Command(GlobMatcher),
+    Url(GlobMatcher),
+}
+
+struct CompiledRule {
+    rule: McpServerRule,
+    matcher: Matcher,
+}
+
+impl CompiledRule {
+    fn compile(rule: McpServerRule) -> Result<Self, String> {
+        let glob = |pattern: &str| {
+            GlobBuilder::new(pattern)
+                .literal_separator(true)
+                .build()
+                .map(|g| g.compile_matcher())
+                .map_err(|e| format!("rule {rule}: invalid glob: {e}"))
+        };
+        let matcher = match &rule {
+            McpServerRule::Name(n) => Matcher::Name(n.clone()),
+            McpServerRule::Command(pattern) => Matcher::Command(glob(pattern)?),
+            McpServerRule::Url(pattern) => Matcher::Url(glob(pattern)?),
+        };
+        Ok(Self { rule, matcher })
+    }
+
+    fn matches(&self, name: &str, cfg: &McpServerConfig) -> bool {
+        match &self.matcher {
+            Matcher::Name(n) => n == name,
+            Matcher::Command(m) => match cfg {
+                McpServerConfig::Stdio { command, .. } => m.is_match(expand_env_vars(command)),
+                _ => false,
+            },
+            Matcher::Url(m) => cfg
+                .url()
+                .and_then(|url| normalized_url(&expand_env_vars(url)))
+                .is_some_and(|url| m.is_match(url)),
+        }
+    }
+}
+
+/// `scheme://host[:port]/path`, without userinfo, query or fragment, so a
+/// `?` or `#` in the URL cannot carry text a host-matching `*` would accept.
+fn normalized_url(raw: &str) -> Option<String> {
+    let url = url::Url::parse(raw).ok()?;
+    let host = url.host_str()?;
+    let port = url.port().map(|p| format!(":{p}")).unwrap_or_default();
+    Some(format!("{}://{host}{port}{}", url.scheme(), url.path()))
+}
+
+enum Rules {
+    Absent,
+    Active {
+        allowed: Option<Vec<CompiledRule>>,
+        denied: Vec<CompiledRule>,
+    },
+    Unreadable(String),
+}
+
+pub struct McpPolicyGate {
+    origin: PolicyOrigin,
+    rules: Rules,
+}
+
+impl McpPolicyGate {
+    pub fn open() -> Self {
+        Self {
+            origin: PolicyOrigin::None,
+            rules: Rules::Absent,
+        }
+    }
+
+    pub fn from_host(policy: McpPolicy) -> Self {
+        Self {
+            origin: PolicyOrigin::Host,
+            rules: compile(policy),
+        }
+    }
+
+    /// Read the policy at `path`. A missing file means no policy unless
+    /// `required` (the path was named explicitly); anything else that keeps
+    /// the file from being read as a policy denies every server.
+    pub fn load(path: &Path, required: bool) -> Self {
+        let rules = match std::fs::read_to_string(path) {
+            Ok(text) => match serde_json::from_str::<McpPolicy>(&text) {
+                Ok(policy) => compile(policy),
+                Err(e) => Rules::Unreadable(format!("invalid policy: {e}")),
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && !required => Rules::Absent,
+            Err(e) => Rules::Unreadable(format!("cannot read: {e}")),
+        };
+        Self {
+            origin: PolicyOrigin::File(path.to_path_buf()),
+            rules,
+        }
+    }
+
+    pub fn origin(&self) -> &PolicyOrigin {
+        &self.origin
+    }
+
+    pub fn error(&self) -> Option<&str> {
+        match &self.rules {
+            Rules::Unreadable(e) => Some(e),
+            _ => None,
+        }
+    }
+
+    /// May `name`, configured as `cfg`, be connected? `Err` says why not,
+    /// naming the policy. In-process servers are host code, not configuration
+    /// a user could point elsewhere, and are always admitted.
+    pub fn admit(&self, name: &str, cfg: &McpServerConfig) -> Result<(), String> {
+        if matches!(cfg, McpServerConfig::InProcess { .. }) {
+            return Ok(());
+        }
+        match &self.rules {
+            Rules::Absent => Ok(()),
+            Rules::Unreadable(e) => Err(format!(
+                "denied: {} is unreadable ({e}), so every MCP server is denied",
+                self.describe_origin()
+            )),
+            Rules::Active { allowed, denied } => {
+                if let Some(rule) = denied.iter().find(|r| r.matches(name, cfg)) {
+                    return Err(format!(
+                        "denied by {}: matches denied_servers rule {}",
+                        self.describe_origin(),
+                        rule.rule
+                    ));
+                }
+                match allowed {
+                    Some(allowed) if !allowed.iter().any(|r| r.matches(name, cfg)) => Err(format!(
+                        "denied by {}: matches no allowed_servers rule",
+                        self.describe_origin()
+                    )),
+                    _ => Ok(()),
+                }
+            }
+        }
+    }
+
+    fn describe_origin(&self) -> String {
+        match &self.origin {
+            PolicyOrigin::None => "MCP policy".into(),
+            PolicyOrigin::Host => "the host's MCP policy".into(),
+            PolicyOrigin::File(path) => format!("MCP policy {}", path.display()),
+        }
+    }
+}
+
+fn compile(policy: McpPolicy) -> Rules {
+    let compile_all = |rules: Vec<McpServerRule>| -> Result<Vec<CompiledRule>, String> {
+        rules.into_iter().map(CompiledRule::compile).collect()
+    };
+    let allowed = match policy.allowed_servers.map(compile_all).transpose() {
+        Ok(allowed) => allowed,
+        Err(e) => return Rules::Unreadable(e),
+    };
+    match compile_all(policy.denied_servers) {
+        Ok(denied) => Rules::Active { allowed, denied },
+        Err(e) => Rules::Unreadable(e),
+    }
+}
+
+impl HealthCheck for McpPolicyGate {
+    fn name(&self) -> &str {
+        "mcp.policy"
+    }
+
+    fn check(&self) -> CheckResult {
+        let (source, path) = match &self.origin {
+            PolicyOrigin::None => ("none", None),
+            PolicyOrigin::Host => ("host", None),
+            PolicyOrigin::File(path) => ("file", Some(path.display().to_string())),
+        };
+        let (allowed, denied) = match &self.rules {
+            Rules::Active { allowed, denied } => {
+                (allowed.as_ref().map(Vec::len), Some(denied.len()))
+            }
+            _ => (None, None),
+        };
+        let details = serde_json::json!({
+            "source": source,
+            "path": path,
+            "in_force": matches!(self.rules, Rules::Active { .. } | Rules::Unreadable(_)),
+            "allowed_servers": allowed,
+            "denied_servers": denied,
+            "error": self.error(),
+        });
+        match &self.rules {
+            Rules::Absent => CheckResult::ok("no MCP policy").with_details(details),
+            Rules::Active { .. } => CheckResult::ok(format!("{} in force", self.describe_origin()))
+                .with_details(details),
+            Rules::Unreadable(e) => CheckResult::failing(format!(
+                "{} is unreadable ({e}); every MCP server is denied",
+                self.describe_origin()
+            ))
+            .with_details(details),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base::interface::health::HealthStatus;
+    use std::collections::HashMap;
+
+    fn stdio(command: &str) -> McpServerConfig {
+        McpServerConfig::Stdio {
+            command: command.into(),
+            args: vec![],
+            env: HashMap::new(),
+            scope: None,
+        }
+    }
+
+    fn http(url: &str) -> McpServerConfig {
+        McpServerConfig::StreamableHttp {
+            url: url.into(),
+            headers: HashMap::new(),
+            oauth_provider: None,
+            scope: None,
+        }
+    }
+
+    fn gate(json: &str) -> McpPolicyGate {
+        McpPolicyGate::from_host(serde_json::from_str(json).expect("policy parses"))
+    }
+
+    #[test]
+    fn no_policy_admits_everything() {
+        assert!(McpPolicyGate::open().admit("any", &stdio("x")).is_ok());
+        assert!(gate("{}").admit("any", &stdio("x")).is_ok());
+    }
+
+    #[test]
+    fn a_denied_name_is_refused_and_the_reason_names_the_rule() {
+        let g = gate(r#"{"denied_servers": [{"name": "shell"}]}"#);
+        let err = g.admit("shell", &stdio("sh")).unwrap_err();
+        assert!(err.contains("the host's MCP policy"), "{err}");
+        assert!(err.contains(r#"{"name": "shell"}"#), "{err}");
+        assert!(g.admit("shell2", &stdio("sh")).is_ok());
+    }
+
+    #[test]
+    fn an_allow_list_admits_only_what_it_matches() {
+        let g = gate(r#"{"allowed_servers": [{"name": "github"}]}"#);
+        assert!(g.admit("github", &stdio("x")).is_ok());
+        let err = g.admit("other", &stdio("x")).unwrap_err();
+        assert!(err.contains("no allowed_servers rule"), "{err}");
+    }
+
+    #[test]
+    fn an_empty_allow_list_admits_nothing() {
+        let g = gate(r#"{"allowed_servers": []}"#);
+        assert!(g.admit("github", &stdio("x")).is_err());
+        assert!(g.admit("web", &http("https://a.example/")).is_err());
+    }
+
+    #[test]
+    fn deny_wins_over_allow() {
+        let g = gate(
+            r#"{"allowed_servers": [{"name": "github"}, {"command": "npx"}],
+                "denied_servers": [{"name": "github"}]}"#,
+        );
+        assert!(g.admit("github", &stdio("npx")).is_err());
+        assert!(g.admit("other", &stdio("npx")).is_ok());
+    }
+
+    #[test]
+    fn a_command_rule_is_an_exact_path_or_glob_never_a_substring() {
+        let g = gate(r#"{"allowed_servers": [{"command": "npx"}, {"command": "/opt/mcp/bin/*"}]}"#);
+        assert!(g.admit("a", &stdio("npx")).is_ok());
+        assert!(g.admit("a", &stdio("/tmp/evil-npx")).is_err());
+        assert!(g.admit("a", &stdio("/usr/local/bin/npx")).is_err());
+        assert!(g.admit("a", &stdio("/opt/mcp/bin/fs")).is_ok());
+        assert!(
+            g.admit("a", &stdio("/opt/mcp/bin/sub/fs")).is_err(),
+            "`*` does not cross a `/`"
+        );
+    }
+
+    #[test]
+    fn a_command_rule_matches_the_expanded_command() {
+        std::env::set_var("AGIX_POLICY_TEST_BIN", "/opt/mcp/bin");
+        let g = gate(r#"{"allowed_servers": [{"command": "/opt/mcp/bin/fs"}]}"#);
+        assert!(g.admit("a", &stdio("$AGIX_POLICY_TEST_BIN/fs")).is_ok());
+        let d = gate(r#"{"denied_servers": [{"command": "/opt/mcp/bin/*"}]}"#);
+        assert!(d.admit("a", &stdio("${AGIX_POLICY_TEST_BIN}/fs")).is_err());
+        std::env::remove_var("AGIX_POLICY_TEST_BIN");
+    }
+
+    #[test]
+    fn a_command_rule_does_not_match_a_remote_server_nor_a_url_rule_a_stdio_one() {
+        let g = gate(r#"{"allowed_servers": [{"command": "*"}]}"#);
+        assert!(g.admit("a", &http("https://x.example/")).is_err());
+        let g = gate(r#"{"allowed_servers": [{"url": "**"}]}"#);
+        assert!(g.admit("a", &stdio("npx")).is_err());
+    }
+
+    #[test]
+    fn a_url_rule_matches_host_and_path_only() {
+        let g = gate(r#"{"allowed_servers": [{"url": "https://*.corp.example/**"}]}"#);
+        let admits = |url: &str| g.admit("a", &http(url)).is_ok();
+        for url in [
+            "https://mcp.corp.example/v1/mcp",
+            "https://mcp.corp.example/",
+            "https://MCP.corp.example/v1",
+            "https://mcp.corp.example:443/v1",
+            "https://mcp.corp.example/v1?x=1#f",
+        ] {
+            assert!(admits(url), "{url}");
+        }
+        for url in [
+            "http://mcp.corp.example/v1",
+            "https://evil.example/.corp.example/x",
+            "https://evil.example?.corp.example/x",
+            "https://evil.example#.corp.example/x",
+            "https://mcp.corp.example.evil/x",
+            "https://mcp.corp.example:8443/x",
+            "not a url",
+        ] {
+            assert!(!admits(url), "{url}");
+        }
+
+        let one_level = gate(r#"{"allowed_servers": [{"url": "https://h.example/*"}]}"#);
+        assert!(one_level.admit("a", &http("https://h.example/mcp")).is_ok());
+        assert!(one_level
+            .admit("a", &http("https://h.example/v1/mcp"))
+            .is_err());
+    }
+
+    #[test]
+    fn in_process_servers_are_exempt() {
+        let cfg = McpServerConfig::InProcess {
+            name: "host".into(),
+            scope: None,
+        };
+        assert!(gate(r#"{"allowed_servers": []}"#).admit("x", &cfg).is_ok());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp-policy.json");
+        std::fs::write(&path, "not json").unwrap();
+        assert!(McpPolicyGate::load(&path, true).admit("x", &cfg).is_ok());
+    }
+
+    #[test]
+    fn a_missing_managed_file_is_no_policy_but_a_named_one_denies_everything() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp-policy.json");
+        assert!(McpPolicyGate::load(&path, false)
+            .admit("a", &stdio("x"))
+            .is_ok());
+        let named = McpPolicyGate::load(&path, true);
+        assert!(named.admit("a", &stdio("x")).is_err());
+        assert_eq!(named.check().status, HealthStatus::Failing);
+    }
+
+    #[test]
+    fn a_policy_file_that_does_not_parse_denies_everything() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp-policy.json");
+        for broken in [
+            "{",
+            r#"{"allow_servers": [{"name": "a"}]}"#,
+            r#"{"allowed_servers": [{"name": "a", "url": "b"}]}"#,
+            r#"{"allowed_servers": [{"host": "a"}]}"#,
+            r#"{"denied_servers": [{"command": "[unclosed"}]}"#,
+            r#"{"servers": {}}"#,
+        ] {
+            std::fs::write(&path, broken).unwrap();
+            let g = McpPolicyGate::load(&path, false);
+            let err = g.admit("a", &stdio("x")).unwrap_err();
+            assert!(err.contains(&path.display().to_string()), "{broken}: {err}");
+            assert!(err.contains("unreadable"), "{broken}: {err}");
+            assert_eq!(g.check().status, HealthStatus::Failing, "{broken}");
+            assert!(g.error().is_some(), "{broken}");
+        }
+    }
+
+    #[test]
+    fn a_host_policy_with_an_invalid_glob_denies_everything() {
+        let g = McpPolicyGate::from_host(McpPolicy {
+            allowed_servers: None,
+            denied_servers: vec![McpServerRule::Url("[".into())],
+        });
+        assert!(g.admit("a", &stdio("x")).is_err());
+    }
+
+    #[test]
+    fn the_check_reports_where_the_policy_came_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp-policy.json");
+        std::fs::write(
+            &path,
+            r#"{"allowed_servers": [{"name": "a"}], "denied_servers": [{"name": "b"}, {"name": "c"}]}"#,
+        )
+        .unwrap();
+        let result = McpPolicyGate::load(&path, false).check();
+        assert_eq!(result.status, HealthStatus::Ok);
+        assert_eq!(result.details["source"], "file");
+        assert_eq!(result.details["path"], path.display().to_string());
+        assert_eq!(result.details["in_force"], true);
+        assert_eq!(result.details["allowed_servers"], 1);
+        assert_eq!(result.details["denied_servers"], 2);
+
+        let none = McpPolicyGate::open().check();
+        assert_eq!(none.details["source"], "none");
+        assert_eq!(none.details["in_force"], false);
+    }
+
+    #[test]
+    fn the_managed_path_is_a_system_location() {
+        let path = managed_policy_path();
+        assert!(path.is_absolute(), "{}", path.display());
+        assert!(path.ends_with("mcp-policy.json"));
+    }
+}

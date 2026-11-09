@@ -155,6 +155,10 @@ monitors and structured output ([table below](#tools--40-built-in)).
 - Hooks at thirty moments, with command, prompt, HTTP and agent backends.
 - An MCP client (stdio, SSE, streamable HTTP, OAuth 2.0 PKCE), declarative
   scenes, and custom agent types.
+- An enterprise MCP policy: allow and deny lists by server name, command or
+  URL, read from a system path users cannot write (or `--mcp-policy`); an
+  unreadable policy denies every server
+  ([ARCHITECTURE.md](docs/ARCHITECTURE.md) §6.4).
 
 **Records**
 - An append-only JSONL history that can be resumed, forked or rebuilt after
@@ -387,7 +391,7 @@ against a real daemon's answer by a test.
 
 Useful flags: `--scene` / `--scenes` (which scenes to serve), `--listen` /
 `--listen-ws` with `--token` (TCP / WebSocket, authenticated), `--session-cap`,
-`--worker-threads`, `--permission-prompt-timeout`. Each running daemon writes a discovery file
+`--worker-threads`, `--permission-prompt-timeout`, `--mcp-policy`. Each running daemon writes a discovery file
 under `~/.agix/daemon/instances.d/`, so a client finds it by scene instead of
 by path.
 
