@@ -855,7 +855,9 @@ HashMap),客户端要按 `scene` 找条目,不要按下标。
 哪层。要看某一层的原样内容用 `config.get` 的 `tier`。
 
 `include_secrets` 默认 `false`:`api_key` / `auth_token` / `token` / `secret` /
-`password` 这些键名的值一律脱敏为末 4 位(任意嵌套深度)。
+`password` / `authorization`,以及以 `_token` / `_secret` / `_password` 结尾的键(键名不分
+大小写),值一律脱敏为末 4 位(任意嵌套深度);`headers` 与 `env` 对象(MCP server 的请求头
+与 stdio 环境变量)里的值不论键名全部脱敏。
 
 ### 6.3 `session.*`
 
@@ -1869,7 +1871,7 @@ Shell 命令、监视器没有收件箱。会话不在内存里 → `SESSION_NOT
 两者都接受 `scene` / `project_root` 定位参数,语义与 `config.reload` 一致:省略 = 这个
 daemon 自己那一对,给路径 = 它服务的另一个项目,`null` → `INVALID_PARAMS`。
 `setProvider` 写的是**被指定项目**的 `{project_root}/.agix/settings.json`,
-`written_to` 回的就是那个路径。`mcp.addServer` 与 `mcp.updateServer` 同样接受这两个参数。
+`written_to` 回的就是那个路径;`api_key` 写进同目录的 `settings.local.json`(0600)。`mcp.addServer` 与 `mcp.updateServer` 同样接受这两个参数。
 
 **provider 路由是按 `(项目, 场景)` 解析的**:一个项目在自己的 settings 里配了
 `providers` / `task_models`,它的会话就走它自己的路由,不是 daemon 那个项目的。
@@ -1897,11 +1899,16 @@ daemon 自己那一对,给路径 = 它服务的另一个项目,`null` → `INVAL
   "delete": false }                                    // 可选;true = 删掉这个 provider
 ```
 
-响应是 `config.reload` 的结果再加一个 `written_to`(实际写入的文件路径)。
+响应是 `config.reload` 的结果再加 `written_to`(写入的 settings.json)和
+`secrets_written_to`(写了密钥时才有,即那个 settings.local.json)。
 
-**总是写项目层的 settings.json**(daemon 默认项目下的 `.agix/settings.json`),
-没有选层的参数。`config` / `task_models` 是部分补丁:只提到的键被覆盖,没提到的
-保持原样。
+**总是写项目层**(daemon 默认项目下的 `.agix/`),没有选层的参数。`config` /
+`task_models` 是部分补丁:只提到的键被覆盖,没提到的保持原样。
+
+**密钥不进 settings.json。** `config.api_key` 写进项目层的 `settings.local.json` —— 这个
+文件按约定不提交,在 unix 上以 0600 创建;其余字段照旧写 settings.json。settings.json 里
+这个 provider 已有的 `api_key`(早先版本写进去的)在这次写入时挪进 settings.local.json。
+`delete: true` 从两个文件里都删掉这个 provider。
 
 ### 6.5 `mcp.*` / `plugin.*` / `import.*` / `commands.*`
 

@@ -486,6 +486,13 @@ WebAssembly 载体整个移除。
 - 团队的 `SendMessage` 只投给团队声明过的成员,`peer` 不在其中时报错并列出成员;提示词改成与
   schema 一致的 `{"peer", "message"}`(以前教的 `to` / `summary` / `"*"` 广播从来不被接受)。
   不是纯 ASCII 文件名的成员标签,邮箱文件改名为 `mailbox/~<hash>.jsonl`。
+- `config.setProvider` 不再把 `api_key` 写进项目的 `.agix/settings.json`(按约定要提交的那个):
+  它进同目录的 `settings.local.json`(0600),settings.json 里这个 provider 已有的 `api_key` 在下次
+  写入时挪过去;响应多了 `secrets_written_to`。直接读 settings.json 找 key 的,改读合并后的
+  `config.getProvider`。
+- `config.get` / `scene.describe` 的脱敏键名不分大小写,多了 `authorization` 与 `*_token` /
+  `*_secret` / `*_password`;`headers`、`env` 对象里的值一律脱敏(以前 MCP 的
+  `Authorization` 头与 stdio `env` 原样返回)。
 - skill 文件热重载时按文件所在的层定来源:项目层 `.agents/skills/` 里新出现或改动的 skill
   一律是 project 来源(以前不认识的名字一律当 user,项目里的 `allowed-tools: [Bash]` 因此免确认);
   不在任何扫描层下的文件同样按 project;后面的层占着同名 skill 时,前面层的改动不再顶替它;

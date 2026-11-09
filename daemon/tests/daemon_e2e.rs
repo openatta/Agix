@@ -270,10 +270,34 @@ async fn set_provider_writes_project_settings_and_doctor_sees_it() {
     assert_eq!(v["result"]["routing"]["ok"], true, "resp: {v}");
     assert_eq!(v["result"]["default_provider"], "deepseek");
 
-    // Written to disk at the project tier.
-    let written = std::fs::read_to_string(dir.path().join(".agix").join("settings.json")).unwrap();
+    // Written to disk at the project tier, the key to the machine-local file.
+    let agix = dir.path().join(".agix");
+    let written = std::fs::read_to_string(agix.join("settings.json")).unwrap();
     let written: serde_json::Value = serde_json::from_str(&written).unwrap();
-    assert_eq!(written["providers"]["deepseek"]["api_key"], "k");
+    assert_eq!(
+        written["providers"]["deepseek"]["default_model"],
+        "deepseek-pro"
+    );
+    assert!(
+        written["providers"]["deepseek"].get("api_key").is_none(),
+        "the committed settings.json carries the key: {written}"
+    );
+    let local = std::fs::read_to_string(agix.join("settings.local.json")).unwrap();
+    let local: serde_json::Value = serde_json::from_str(&local).unwrap();
+    assert_eq!(local["providers"]["deepseek"]["api_key"], "k");
+    assert_eq!(
+        v["result"]["secrets_written_to"],
+        agix.join("settings.local.json").display().to_string()
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(agix.join("settings.local.json"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "settings.local.json is {mode:o}");
+    }
 
     // Doctor now reflects the newly-written provider.
     let resp = rpc_call(
@@ -315,9 +339,9 @@ async fn set_provider_can_target_another_project_this_daemon_serves() {
         "{v}"
     );
 
-    let written = std::fs::read_to_string(other.join(".agix").join("settings.json")).unwrap();
-    let written: serde_json::Value = serde_json::from_str(&written).unwrap();
-    assert_eq!(written["providers"]["deepseek"]["api_key"], "k");
+    let local = std::fs::read_to_string(other.join(".agix").join("settings.local.json")).unwrap();
+    let local: serde_json::Value = serde_json::from_str(&local).unwrap();
+    assert_eq!(local["providers"]["deepseek"]["api_key"], "k");
     assert!(
         !dir.path().join(".agix").join("settings.json").exists(),
         "the daemon's own project must not be written when another one was named"
@@ -356,7 +380,10 @@ async fn set_provider_partial_patch_does_not_clobber_untouched_fields() {
 
     let written = std::fs::read_to_string(dir.path().join(".agix").join("settings.json")).unwrap();
     let written: serde_json::Value = serde_json::from_str(&written).unwrap();
-    assert_eq!(written["providers"]["deepseek"]["api_key"], "new-key");
+    let local =
+        std::fs::read_to_string(dir.path().join(".agix").join("settings.local.json")).unwrap();
+    let local: serde_json::Value = serde_json::from_str(&local).unwrap();
+    assert_eq!(local["providers"]["deepseek"]["api_key"], "new-key");
     assert_eq!(
         written["providers"]["deepseek"]["base_url"],
         "https://api.deepseek.com/v1"
@@ -365,6 +392,67 @@ async fn set_provider_partial_patch_does_not_clobber_untouched_fields() {
         written["providers"]["deepseek"]["default_model"],
         "deepseek-pro"
     );
+
+    _server.shutdown_token().cancel();
+    let _ = handle.await;
+}
+
+/// A key that an earlier write left in the committed file moves out the next
+/// time that provider is written, and a delete clears it from both files.
+#[tokio::test]
+async fn set_provider_moves_a_committed_key_to_the_local_file() {
+    let (_server, sock, dir, handle) = start_server().await;
+    let agix = dir.path().join(".agix");
+    std::fs::create_dir_all(&agix).unwrap();
+    std::fs::write(
+        agix.join("settings.json"),
+        r#"{"providers":{"deepseek":{"api_key":"old-key","base_url":"https://x/v1"}},"prompt_append":"kept"}"#,
+    )
+    .unwrap();
+
+    rpc_call(
+        &sock,
+        r#"{"jsonrpc":"2.0","method":"config.setProvider","params":{"provider_id":"deepseek","config":{"default_model":"m"}},"id":1}"#,
+    )
+    .await;
+    let read = |name: &str| -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(agix.join(name)).unwrap()).unwrap()
+    };
+    let committed = read("settings.json");
+    assert!(
+        committed["providers"]["deepseek"].get("api_key").is_none(),
+        "{committed}"
+    );
+    assert_eq!(
+        committed["providers"]["deepseek"]["base_url"],
+        "https://x/v1"
+    );
+    assert_eq!(committed["prompt_append"], "kept");
+    assert_eq!(
+        read("settings.local.json")["providers"]["deepseek"]["api_key"],
+        "old-key"
+    );
+
+    let resp = rpc_call(
+        &sock,
+        r#"{"jsonrpc":"2.0","method":"config.getProvider","params":{"include_secrets":true},"id":2}"#,
+    )
+    .await;
+    let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    assert_eq!(
+        v["result"]["providers"]["deepseek"]["api_key"], "old-key",
+        "{v}"
+    );
+
+    rpc_call(
+        &sock,
+        r#"{"jsonrpc":"2.0","method":"config.setProvider","params":{"provider_id":"deepseek","delete":true},"id":3}"#,
+    )
+    .await;
+    assert!(read("settings.json")["providers"].get("deepseek").is_none());
+    assert!(read("settings.local.json")["providers"]
+        .get("deepseek")
+        .is_none());
 
     _server.shutdown_token().cancel();
     let _ = handle.await;

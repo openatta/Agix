@@ -2251,7 +2251,8 @@ impl SessionPool {
     }
 
     /// Merge a provider config patch (and/or `default_provider` /
-    /// `task_models` patches) into the project-tier settings.json, then
+    /// `task_models` patches) into the project-tier settings.json — its
+    /// credential fields into the uncommitted `settings.local.json` — then
     /// reload the full effective `Settings` (global → scene → project) so
     /// validation and any session created after this call see the change —
     /// see `crate::doctor` module docs for the same tri-tier layout.
@@ -2298,53 +2299,36 @@ impl SessionPool {
         }
 
         let settings_path = self.settings_path_of(project_root);
-        let mut project_json: serde_json::Value = if settings_path.exists() {
-            let text = tokio::fs::read_to_string(&settings_path)
-                .await
-                .map_err(|e| format!("read {}: {e}", settings_path.display()))?;
-            // Refuse to touch the file if it's not currently valid — falling
-            // back to `{}` here would silently discard every other field the
-            // user has configured (sandbox/prompt_append/permission_rules/...),
-            // not just providers, the moment this RPC writes back to disk.
-            let parsed: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
-                format!(
-                    "existing {} is not valid JSON, refusing to overwrite it: {e}",
-                    settings_path.display()
-                )
-            })?;
-            if !parsed.is_object() {
-                return Err(format!(
-                    "existing {} is not a JSON object at the top level, refusing to overwrite it",
-                    settings_path.display()
-                ));
-            }
-            parsed
-        } else {
-            serde_json::json!({})
-        };
+        let local_path =
+            settings_path.with_file_name(base::interface::settings::SETTINGS_LOCAL_FILE);
+        let mut project_json = read_settings_object(&settings_path).await?;
+        let mut local_json = read_settings_object(&local_path).await?;
+        let local_before = local_json.clone();
         let obj = project_json
+            .as_object_mut()
+            .expect("verified to be an object above");
+        let local = local_json
             .as_object_mut()
             .expect("verified to be an object above");
 
         if delete {
-            if let Some(providers) = obj.get_mut("providers").and_then(|v| v.as_object_mut()) {
-                providers.remove(provider_id);
+            for tier in [&mut *obj, &mut *local] {
+                if let Some(providers) = tier.get_mut("providers").and_then(|v| v.as_object_mut()) {
+                    providers.remove(provider_id);
+                }
             }
-        } else if let Some(cfg) = config_patch {
-            let providers = obj
-                .entry("providers")
-                .or_insert_with(|| serde_json::json!({}));
-            if !providers.is_object() {
-                *providers = serde_json::json!({});
+        } else if let Some(mut cfg) = config_patch {
+            let secrets = take_provider_secrets(&mut cfg);
+            let existing = provider_entry(obj, provider_id);
+            base::interface::settings::merge_json_values(existing, cfg);
+            let mut moved = take_provider_secrets(existing);
+            moved.extend(secrets);
+            if !moved.is_empty() {
+                let local_entry = provider_entry(local, provider_id);
+                for (key, value) in moved {
+                    local_entry[key] = value;
+                }
             }
-            let providers_obj = providers
-                .as_object_mut()
-                .expect("just normalized to object above");
-            let mut existing = providers_obj
-                .remove(provider_id)
-                .unwrap_or_else(|| serde_json::json!({}));
-            base::interface::settings::merge_json_values(&mut existing, cfg);
-            providers_obj.insert(provider_id.to_string(), existing);
         }
 
         if let Some(dp) = default_provider {
@@ -2364,26 +2348,27 @@ impl SessionPool {
             base::interface::settings::merge_json_values(task_models, tm);
         }
 
-        if let Some(parent) = settings_path.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
-        }
-        let pretty = serde_json::to_string_pretty(&project_json).map_err(|e| e.to_string())?;
-        tokio::fs::write(&settings_path, pretty)
-            .await
-            .map_err(|e| format!("write {}: {e}", settings_path.display()))?;
+        write_settings_file(&settings_path, &project_json, false).await?;
+        let secrets_written_to = if local_json != local_before {
+            write_settings_file(&local_path, &local_json, true).await?;
+            Some(local_path.display().to_string())
+        } else {
+            None
+        };
 
         let (reloaded, report) = self
             .apply_reloaded_settings(project_root, scene_id, None)
             .await;
-        let result = serde_json::json!({
+        let mut result = serde_json::json!({
             "written_to": settings_path.display().to_string(),
             "providers": reloaded.providers.keys().collect::<Vec<_>>(),
             "default_provider": reloaded.default_provider,
             "task_models": reloaded.task_models.keys().collect::<Vec<_>>(),
             "routing": report.to_json(),
         });
+        if let Some(path) = secrets_written_to {
+            result["secrets_written_to"] = serde_json::Value::String(path);
+        }
 
         Ok(result)
     }
@@ -8272,23 +8257,126 @@ fn resolve_session_permission(
     rule_set
 }
 
-/// Redact a secret to `***<last 4 chars>` (char-boundary safe — slices by
-/// `char`, not byte, so this never panics on non-ASCII input); too-short
-/// secrets (≤4 chars) redact to a bare `***` rather than revealing the
-/// whole thing.
+/// The provider fields that are credentials, which `config.setProvider` keeps
+/// out of the committed `settings.json`.
+const PROVIDER_SECRET_KEYS: &[&str] = &["api_key"];
+
+/// Remove the credential fields from one provider's JSON, returning them.
+fn take_provider_secrets(provider: &mut serde_json::Value) -> Vec<(String, serde_json::Value)> {
+    let Some(fields) = provider.as_object_mut() else {
+        return Vec::new();
+    };
+    PROVIDER_SECRET_KEYS
+        .iter()
+        .filter_map(|key| fields.remove(*key).map(|value| (key.to_string(), value)))
+        .collect()
+}
+
+/// `providers.<id>` of a settings object, created as `{}` when it is missing
+/// or not an object.
+fn provider_entry<'a>(
+    settings: &'a mut serde_json::Map<String, serde_json::Value>,
+    provider_id: &str,
+) -> &'a mut serde_json::Value {
+    let providers = settings
+        .entry("providers")
+        .or_insert_with(|| serde_json::json!({}));
+    if !providers.is_object() {
+        *providers = serde_json::json!({});
+    }
+    let entry = providers
+        .as_object_mut()
+        .expect("just normalized to an object")
+        .entry(provider_id.to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !entry.is_object() {
+        *entry = serde_json::json!({});
+    }
+    entry
+}
+
+/// A settings file's top-level object, `{}` when it does not exist. One that
+/// is not a JSON object is refused rather than replaced: writing back over it
+/// would discard every other field configured there.
+async fn read_settings_object(path: &Path) -> Result<serde_json::Value, String> {
+    let text = match tokio::fs::read_to_string(path).await {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(serde_json::json!({})),
+        Err(e) => return Err(format!("read {}: {e}", path.display())),
+    };
+    let parsed: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+        format!(
+            "existing {} is not valid JSON, refusing to overwrite it: {e}",
+            path.display()
+        )
+    })?;
+    if !parsed.is_object() {
+        return Err(format!(
+            "existing {} is not a JSON object at the top level, refusing to overwrite it",
+            path.display()
+        ));
+    }
+    Ok(parsed)
+}
+
+/// Write `value` to `path`, readable by this user alone when `private`.
+async fn write_settings_file(
+    path: &Path,
+    value: &serde_json::Value,
+    private: bool,
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+    }
+    let pretty = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
+    let mut options = tokio::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    if private {
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .await
+        .map_err(|e| format!("write {}: {e}", path.display()))?;
+    #[cfg(unix)]
+    if private {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .await
+            .map_err(|e| format!("chmod {}: {e}", path.display()))?;
+    }
+    use tokio::io::AsyncWriteExt;
+    file.write_all(pretty.as_bytes())
+        .await
+        .map_err(|e| format!("write {}: {e}", path.display()))?;
+    file.flush()
+        .await
+        .map_err(|e| format!("write {}: {e}", path.display()))
+}
+
 /// Redact every credential-shaped field in a settings blob.
 ///
 /// Walks by key name rather than by type, because the same secrets appear at
 /// several depths (`providers.<id>.api_key`, `model.auth_token`) and a
 /// settings shape that grows a new provider field should not silently start
-/// returning it in the clear.
+/// returning it in the clear. Key names match case-insensitively, and every
+/// string under a `headers` or `env` object is redacted whatever its key: an
+/// MCP server's `Authorization` header and the variables a stdio server is
+/// started with are credentials as often as not, under names nobody can list.
 fn redact_settings_secrets(value: &mut serde_json::Value) {
-    const SECRET_KEYS: &[&str] = &["api_key", "auth_token", "token", "secret", "password"];
     match value {
         serde_json::Value::Object(map) => {
             for (k, v) in map.iter_mut() {
+                let key = k.to_ascii_lowercase();
+                if matches!(key.as_str(), "headers" | "env") && v.is_object() {
+                    redact_every_string(v);
+                    continue;
+                }
                 match v {
-                    serde_json::Value::String(s) if SECRET_KEYS.contains(&k.as_str()) => {
+                    serde_json::Value::String(s) if is_secret_key(&key) => {
                         if !s.is_empty() {
                             *v = serde_json::Value::String(redact_secret(s));
                         }
@@ -8306,6 +8394,36 @@ fn redact_settings_secrets(value: &mut serde_json::Value) {
     }
 }
 
+fn is_secret_key(lowercase_key: &str) -> bool {
+    const SECRET_KEYS: &[&str] = &[
+        "api_key",
+        "auth_token",
+        "token",
+        "secret",
+        "password",
+        "authorization",
+    ];
+    SECRET_KEYS.contains(&lowercase_key)
+        || ["_token", "_secret", "_password"]
+            .iter()
+            .any(|suffix| lowercase_key.ends_with(suffix))
+}
+
+fn redact_every_string(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(s) if !s.is_empty() => {
+            *value = serde_json::Value::String(redact_secret(s));
+        }
+        serde_json::Value::Object(map) => map.values_mut().for_each(redact_every_string),
+        serde_json::Value::Array(items) => items.iter_mut().for_each(redact_every_string),
+        _ => {}
+    }
+}
+
+/// Redact a secret to `***<last 4 chars>` (char-boundary safe — slices by
+/// `char`, not byte, so this never panics on non-ASCII input); too-short
+/// secrets (≤4 chars) redact to a bare `***` rather than revealing the
+/// whole thing.
 fn redact_secret(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     if chars.len() <= 4 {
@@ -8505,7 +8623,28 @@ mod pool_telemetry_tests {
 
 #[cfg(test)]
 mod redact_tests {
-    use super::redact_secret;
+    use super::{redact_secret, redact_settings_secrets};
+
+    #[test]
+    fn mcp_headers_and_env_are_redacted_whatever_their_keys() {
+        let mut settings = serde_json::json!({
+            "mcp_servers": {
+                "remote": {"type": "http", "url": "https://x",
+                           "headers": {"Authorization": "Bearer sk-live-9999", "X-Trace": "on-1234"}},
+                "local": {"type": "stdio", "command": "srv", "env": {"GITHUB_PAT": "ghp_abcd5678"}}
+            },
+            "providers": {"p": {"API_KEY": "sk-upper-4321", "Client_Secret": "cs-0000"}},
+            "model": {"model_name": "keep-me"}
+        });
+        redact_settings_secrets(&mut settings);
+        let dumped = settings.to_string();
+        for leaked in ["sk-live", "on-1", "ghp_", "sk-upper", "cs-"] {
+            assert!(!dumped.contains(leaked), "{leaked} in {dumped}");
+        }
+        assert_eq!(settings["model"]["model_name"], "keep-me");
+        assert_eq!(settings["mcp_servers"]["remote"]["url"], "https://x");
+        assert_eq!(settings["mcp_servers"]["local"]["command"], "srv");
+    }
 
     #[test]
     fn redacts_long_secret_keeping_last_four() {

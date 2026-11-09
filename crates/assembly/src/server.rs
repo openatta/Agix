@@ -1462,8 +1462,8 @@ impl DaemonServer {
     /// ```
     /// `config`/`task_models` are partial patches (see `SessionPool::set_provider`
     /// doc comment for why they're raw JSON, not typed structs). Writes to the
-    /// project-tier `settings.json` and returns the reloaded effective config
-    /// plus routing validation.
+    /// project-tier `settings.json` — the key to `settings.local.json` beside it —
+    /// and returns the reloaded effective config plus routing validation.
     async fn method_config_set_provider(
         &self,
         id: serde_json::Value,
