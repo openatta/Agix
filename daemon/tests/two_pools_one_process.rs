@@ -228,6 +228,7 @@ fn the_engine_keeps_no_new_process_wide_state() {
         ("crates/core/src/interface/exec/local/network.rs", "DIRECT", "an HTTP client with no per-pool configuration"),
         ("crates/core/src/interface/exec/local/network.rs", "PUBLIC_ONLY", "an HTTP client whose resolver refuses internal addresses; the only thing it reads is the process environment's proxy"),
         ("crates/core/src/interface/exec/local/sandbox.rs", "AVAILABLE", "whether this machine can sandbox at all"),
+        ("crates/core/src/interface/exec/local/sandbox.rs", "SERVED", "the sockets and ports this process serves clients on, which no sandboxed child of any pool may reach"),
         ("crates/core/src/interface/exec/local/env.rs", "NAMED_CREDENTIALS", "variables holding a provider key, kept out of every child's environment: the environment children inherit is the process's, which every pool shares"),
         ("crates/core/src/interface/exec/local/orphans.rs", "ORPHANS", "the process groups this process leads: an OS resource of the process, which an aborting panic hook must reach in full"),
         ("crates/core/src/settings_file.rs", "LOCKS", "serialises writes to a settings directory, which every pool may share"),
