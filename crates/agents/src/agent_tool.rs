@@ -6579,7 +6579,7 @@ mod catalog_tests {
         let send_outcome = perm
             .check(
                 "SendMessage",
-                &serde_json::json!({"peer": "x", "message": "y"}),
+                &serde_json::json!({"peer": "peer", "message": "y"}),
                 std::path::Path::new("/tmp"),
                 "test-session",
             )
