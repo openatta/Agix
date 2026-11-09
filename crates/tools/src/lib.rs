@@ -67,9 +67,6 @@ use std::sync::Arc;
 /// `WebFetchTool` is registered here without page extraction;
 /// [`register_web_fetch`] swaps in the extracting one when a session routes
 /// `task_models.web_fetch` to a model.
-///
-/// Still excluded with no helper: `mcp::auth_tool::McpAuthTool` (needs SaaS auth
-/// infrastructure that does not exist here).
 pub fn register_builtin_tools(reg: &std::sync::Arc<base::tool::InMemoryToolRegistry>) {
     let simple: Vec<Arc<dyn Tool>> = vec![
         Arc::new(crate::bash::BashTool),

@@ -1,7 +1,7 @@
-//! MCP (Model Context Protocol) client — server connection, tool adaptation.
+//! MCP (Model Context Protocol) client — server connection, tool adaptation,
+//! and the OAuth authorization remote servers ask for.
 
 pub mod adapter;
-pub mod auth_tool;
 pub mod client;
 pub mod config;
 pub mod connect;

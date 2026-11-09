@@ -603,6 +603,55 @@ impl DaemonRpcClient {
         .await
     }
 
+    /// `mcp.auth.start`. `redirect_uri` given means an external redirect;
+    /// `None` lets the daemon listen on loopback.
+    pub async fn mcp_auth_start(
+        &mut self,
+        target: &Target,
+        server: &str,
+        redirect_uri: Option<&str>,
+        scopes: Option<&[&str]>,
+    ) -> anyhow::Result<RpcResponse> {
+        let mut params = serde_json::json!({ "server": server });
+        if let Some(uri) = redirect_uri {
+            params["redirect"] = "external".into();
+            params["redirect_uri"] = uri.into();
+        }
+        if let Some(scopes) = scopes {
+            params["scopes"] = serde_json::json!(scopes);
+        }
+        self.call("mcp.auth.start", target.with(params)).await
+    }
+
+    pub async fn mcp_auth_complete(
+        &mut self,
+        flow_id: &str,
+        callback_url: &str,
+    ) -> anyhow::Result<RpcResponse> {
+        self.call(
+            "mcp.auth.complete",
+            serde_json::json!({ "flow_id": flow_id, "callback_url": callback_url }),
+        )
+        .await
+    }
+
+    pub async fn mcp_auth_cancel(&mut self, flow_id: &str) -> anyhow::Result<RpcResponse> {
+        self.call("mcp.auth.cancel", serde_json::json!({ "flow_id": flow_id }))
+            .await
+    }
+
+    pub async fn mcp_auth_logout(
+        &mut self,
+        target: &Target,
+        server: &str,
+    ) -> anyhow::Result<RpcResponse> {
+        self.call(
+            "mcp.auth.logout",
+            target.with(serde_json::json!({ "server": server })),
+        )
+        .await
+    }
+
     pub async fn import_list(&mut self, target: &Target) -> anyhow::Result<RpcResponse> {
         self.call("import.list", target.with(serde_json::json!({})))
             .await

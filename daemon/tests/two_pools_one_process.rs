@@ -205,8 +205,8 @@ async fn two_pools_in_one_process_see_nothing_of_each_other() {
     assert!(scenes_b.iter().any(|s| s == BETA_ONLY_SCENE));
 
     assert_ne!(
-        a.pool.mcp_oauth().store_dir(),
-        b.pool.mcp_oauth().store_dir(),
+        a.pool.mcp_auth().credential_dir(),
+        b.pool.mcp_auth().credential_dir(),
         "MCP OAuth tokens persist under each pool's own root"
     );
 }

@@ -291,7 +291,7 @@ mod tests {
         McpServerConfig::StreamableHttp {
             url: url.into(),
             headers: HashMap::new(),
-            oauth_provider: None,
+            oauth: None,
             scope: None,
         }
     }

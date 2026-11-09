@@ -380,6 +380,12 @@ pub mod codes {
     /// `mcp.addServer`/`mcp.updateServer`: the MCP policy denies this server,
     /// so nothing was written. `message` names the policy and the rule.
     pub const MCP_SERVER_DENIED: i32 = -32020;
+
+    /// `mcp.auth.start` / `mcp.auth.complete` / `mcp.auth.logout`: the
+    /// authorization server, or the sign-in itself, failed — discovery,
+    /// registration, a refused or mismatched callback, the code exchange.
+    /// `message` is meant for the user.
+    pub const MCP_AUTH_FAILED: i32 = -32021;
 }
 
 /// `session.startAgent`'s params.

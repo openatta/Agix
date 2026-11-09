@@ -73,8 +73,12 @@ pub struct StdioMcpClient {
     /// The environment policy a stdio server's process starts under, kept
     /// for the same reason: a reconnect must not start it under another.
     env_policy: base::interface::exec::local::SubprocessEnv,
-    /// The owning pool's OAuth state, for servers with an `oauth_provider`.
-    oauth: Option<Arc<crate::oauth::McpOAuth>>,
+    /// The owning pool's authorization state, for remote servers that use
+    /// OAuth.
+    auth: Option<Arc<crate::oauth::McpAuth>>,
+    /// Whether the connection carries an OAuth token, so a 401 means that
+    /// token was refused rather than that there never was one.
+    authorized: std::sync::atomic::AtomicBool,
 }
 
 impl StdioMcpClient {
@@ -107,23 +111,24 @@ impl StdioMcpClient {
 
     /// Connect, starting a stdio server's process under `env_policy` — the
     /// `sandbox.subprocess_env` of the settings the server was declared in —
-    /// and taking bearer tokens for an `oauth_provider` from `oauth`.
+    /// and authorizing a remote server through `auth`.
     pub async fn connect_with_env(
         server_name: &str,
         config: &McpServerConfig,
         sink: Option<crate::notify::NotificationSink>,
         env_policy: base::interface::exec::local::SubprocessEnv,
-        oauth: Option<Arc<crate::oauth::McpOAuth>>,
+        auth: Option<Arc<crate::oauth::McpAuth>>,
     ) -> Result<Arc<Self>, McpError> {
-        let service = spawn_service(
+        let spawned = spawn_service(
             server_name,
             config,
             sink.clone(),
             &env_policy,
-            oauth.as_deref(),
+            auth.as_deref(),
         )
         .await?;
-        let instructions = service
+        let instructions = spawned
+            .service
             .peer_info()
             .and_then(|info| info.instructions.clone())
             .map(truncate_mcp_instructions);
@@ -131,13 +136,18 @@ impl StdioMcpClient {
             server_name: server_name.into(),
             config: config.clone(),
             instructions,
-            inner: Mutex::new(Some(service)),
+            inner: Mutex::new(Some(spawned.service)),
             last_reconnect_at: Mutex::new(None),
             consecutive_failures: AtomicU32::new(0),
             sink,
             env_policy,
-            oauth,
+            auth,
+            authorized: spawned.authorized.into(),
         }))
+    }
+
+    pub fn config(&self) -> &McpServerConfig {
+        &self.config
     }
 
     /// 主动关连接 —— shutdown 子进程。
@@ -149,9 +159,6 @@ impl StdioMcpClient {
 
     /// 把 inner 里残留的死 service 丢掉，用原 config 重 spawn 一份。
     /// 节流 + 失败计数；超阈值返回 NotConnected。
-    ///
-    /// 如果 config 有 oauth_provider，先清除缓存的 OAuth token 以确保
-    /// 重连时重新走 OAuth 流程（适用 401 / token 过期场景）。
     async fn try_reconnect(&self) -> Result<(), McpError> {
         let fails = self.consecutive_failures.load(Ordering::SeqCst);
         if fails >= MAX_CONSECUTIVE_FAILURES {
@@ -172,12 +179,6 @@ impl StdioMcpClient {
             *last = Some(Instant::now());
         }
 
-        // 如果 config 有 oauth_provider，清除缓存的 OAuth token 以确保
-        // 重连时重新 resolve 一次（处理 401 / token 过期）。
-        if let (Some(provider), Some(oauth)) = (self.config.oauth_provider(), &self.oauth) {
-            oauth.clear_token(provider).await;
-        }
-
         // 先把旧 service 清掉（cancel 会 kill 子进程）
         if let Some(old) = self.inner.lock().await.take() {
             let _ = old.cancel().await;
@@ -188,12 +189,13 @@ impl StdioMcpClient {
             &self.config,
             self.sink.clone(),
             &self.env_policy,
-            self.oauth.as_deref(),
+            self.auth.as_deref(),
         )
         .await
         {
-            Ok(new_svc) => {
-                *self.inner.lock().await = Some(new_svc);
+            Ok(spawned) => {
+                *self.inner.lock().await = Some(spawned.service);
+                self.authorized.store(spawned.authorized, Ordering::SeqCst);
                 self.consecutive_failures.store(0, Ordering::SeqCst);
                 debug!(server = %self.server_name, "MCP server reconnected");
                 Ok(())
@@ -211,6 +213,32 @@ impl StdioMcpClient {
         }
     }
 
+    /// Report an authorization refusal to the pool's authorization state —
+    /// a 401 takes the server's tokens away, a 403 asks for more scope.
+    async fn noted<T>(&self, result: Result<T, McpError>) -> Result<T, McpError> {
+        let Err(e) = result else {
+            return result;
+        };
+        if let (Some(auth), Some(url)) = (&self.auth, crate::oauth::server_url(&self.config)) {
+            match &e {
+                McpError::AuthRequired { challenge, .. } => {
+                    auth.note_unauthorized(
+                        &self.server_name,
+                        &url,
+                        challenge.as_deref(),
+                        self.authorized.load(Ordering::SeqCst),
+                    )
+                    .await
+                }
+                McpError::InsufficientScope { challenge, .. } => {
+                    auth.note_insufficient_scope(&self.server_name, &url, challenge)
+                }
+                _ => {}
+            }
+        }
+        Err(e)
+    }
+
     async fn list_tools_inner(&self) -> Result<Vec<McpToolMeta>, McpError> {
         let guard = self.inner.lock().await;
         let svc = guard.as_ref().ok_or_else(|| McpError::NotConnected {
@@ -219,7 +247,7 @@ impl StdioMcpClient {
         let list = svc
             .list_tools(Default::default())
             .await
-            .map_err(|e| McpError::RmcpService(format!("list_tools: {e}")))?;
+            .map_err(|e| service_error(&self.server_name, "list_tools", e))?;
         Ok(list
             .tools
             .into_iter()
@@ -253,7 +281,7 @@ impl StdioMcpClient {
         let result = svc
             .call_tool(req)
             .await
-            .map_err(|e| McpError::RmcpService(format!("call_tool: {e}")))?;
+            .map_err(|e| service_error(&self.server_name, "call_tool", e))?;
 
         let mut content_blocks = Vec::new();
         for c in result.content.iter() {
@@ -266,79 +294,8 @@ impl StdioMcpClient {
             meta: None,
         })
     }
-}
 
-#[async_trait]
-impl McpClient for StdioMcpClient {
-    fn server_name(&self) -> &str {
-        &self.server_name
-    }
-
-    fn transport_kind(&self) -> &'static str {
-        self.config.transport_kind()
-    }
-
-    fn instructions(&self) -> Option<&str> {
-        self.instructions.as_deref()
-    }
-
-    async fn list_tools(&self) -> Result<Vec<McpToolMeta>, McpError> {
-        match self.list_tools_inner().await {
-            Ok(r) => Ok(r),
-            Err(e) if is_auth_error(&e) => {
-                warn!(
-                    server = %self.server_name,
-                    error = %e,
-                    "MCP list_tools auth error; attempting reconnect with fresh token"
-                );
-                self.try_reconnect().await?;
-                self.list_tools_inner().await
-            }
-            Err(e) if is_transport_error(&e) => {
-                warn!(
-                    server = %self.server_name,
-                    error = %e,
-                    "MCP list_tools transport error; attempting reconnect"
-                );
-                self.try_reconnect().await?;
-                self.list_tools_inner().await
-            }
-            Err(e) => Err(e),
-        }
-    }
-
-    async fn call_tool(
-        &self,
-        tool_name: &str,
-        args: serde_json::Map<String, serde_json::Value>,
-    ) -> Result<McpCallResult, McpError> {
-        match self.call_tool_inner(tool_name, args.clone()).await {
-            Ok(r) => Ok(r),
-            Err(e) if is_auth_error(&e) => {
-                warn!(
-                    server = %self.server_name,
-                    tool = tool_name,
-                    error = %e,
-                    "MCP call_tool auth error; attempting reconnect with fresh token"
-                );
-                self.try_reconnect().await?;
-                self.call_tool_inner(tool_name, args).await
-            }
-            Err(e) if is_transport_error(&e) => {
-                warn!(
-                    server = %self.server_name,
-                    tool = tool_name,
-                    error = %e,
-                    "MCP call_tool transport error; attempting reconnect"
-                );
-                self.try_reconnect().await?;
-                self.call_tool_inner(tool_name, args).await
-            }
-            Err(e) => Err(e),
-        }
-    }
-
-    async fn list_resources(&self) -> Result<Vec<McpResourceMeta>, McpError> {
+    async fn list_resources_inner(&self) -> Result<Vec<McpResourceMeta>, McpError> {
         let guard = self.inner.lock().await;
         let svc = guard.as_ref().ok_or_else(|| McpError::NotConnected {
             name: self.server_name.clone(),
@@ -347,7 +304,7 @@ impl McpClient for StdioMcpClient {
         let resources = svc
             .list_all_resources()
             .await
-            .map_err(|e| McpError::RmcpService(format!("list_resources: {e}")))?;
+            .map_err(|e| service_error(&self.server_name, "list_resources", e))?;
         Ok(resources
             .into_iter()
             .map(|r| McpResourceMeta {
@@ -359,7 +316,7 @@ impl McpClient for StdioMcpClient {
             .collect())
     }
 
-    async fn read_resource(&self, uri: &str) -> Result<Vec<McpContent>, McpError> {
+    async fn read_resource_inner(&self, uri: &str) -> Result<Vec<McpContent>, McpError> {
         use rmcp::model::ReadResourceRequestParams;
         let guard = self.inner.lock().await;
         let svc = guard.as_ref().ok_or_else(|| McpError::NotConnected {
@@ -368,7 +325,7 @@ impl McpClient for StdioMcpClient {
         let result = svc
             .read_resource(ReadResourceRequestParams::new(uri))
             .await
-            .map_err(|e| McpError::RmcpService(format!("read_resource: {e}")))?;
+            .map_err(|e| service_error(&self.server_name, "read_resource", e))?;
         // rmcp ReadResourceResult.contents 是 Vec<ResourceContents>；转成我们的 McpContent
         let mut out = Vec::new();
         for c in result.contents {
@@ -392,7 +349,7 @@ impl McpClient for StdioMcpClient {
         Ok(out)
     }
 
-    async fn list_prompts(&self) -> Result<Vec<McpPromptMeta>, McpError> {
+    async fn list_prompts_inner(&self) -> Result<Vec<McpPromptMeta>, McpError> {
         let guard = self.inner.lock().await;
         let svc = guard.as_ref().ok_or_else(|| McpError::NotConnected {
             name: self.server_name.clone(),
@@ -400,7 +357,7 @@ impl McpClient for StdioMcpClient {
         let prompts = svc
             .list_all_prompts()
             .await
-            .map_err(|e| McpError::RmcpService(format!("list_prompts: {e}")))?;
+            .map_err(|e| service_error(&self.server_name, "list_prompts", e))?;
         Ok(prompts
             .into_iter()
             .map(|p| McpPromptMeta {
@@ -420,7 +377,7 @@ impl McpClient for StdioMcpClient {
             .collect())
     }
 
-    async fn get_prompt(
+    async fn get_prompt_inner(
         &self,
         prompt_name: &str,
         args: &std::collections::HashMap<String, String>,
@@ -444,9 +401,81 @@ impl McpClient for StdioMcpClient {
         let result = svc
             .get_prompt(params)
             .await
-            .map_err(|e| McpError::RmcpService(format!("get_prompt: {e}")))?;
+            .map_err(|e| service_error(&self.server_name, "get_prompt", e))?;
 
         Ok(render_prompt_result(result))
+    }
+}
+
+#[async_trait]
+impl McpClient for StdioMcpClient {
+    fn server_name(&self) -> &str {
+        &self.server_name
+    }
+
+    fn transport_kind(&self) -> &'static str {
+        self.config.transport_kind()
+    }
+
+    fn instructions(&self) -> Option<&str> {
+        self.instructions.as_deref()
+    }
+
+    async fn list_tools(&self) -> Result<Vec<McpToolMeta>, McpError> {
+        match self.list_tools_inner().await {
+            Err(e) if is_transport_error(&e) => {
+                warn!(
+                    server = %self.server_name,
+                    error = %e,
+                    "MCP list_tools transport error; attempting reconnect"
+                );
+                self.try_reconnect().await?;
+                self.noted(self.list_tools_inner().await).await
+            }
+            other => self.noted(other).await,
+        }
+    }
+
+    async fn call_tool(
+        &self,
+        tool_name: &str,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<McpCallResult, McpError> {
+        match self.call_tool_inner(tool_name, args.clone()).await {
+            Err(e) if is_transport_error(&e) => {
+                warn!(
+                    server = %self.server_name,
+                    tool = tool_name,
+                    error = %e,
+                    "MCP call_tool transport error; attempting reconnect"
+                );
+                self.try_reconnect().await?;
+                self.noted(self.call_tool_inner(tool_name, args).await)
+                    .await
+            }
+            other => self.noted(other).await,
+        }
+    }
+
+    async fn list_resources(&self) -> Result<Vec<McpResourceMeta>, McpError> {
+        self.noted(self.list_resources_inner().await).await
+    }
+
+    async fn read_resource(&self, uri: &str) -> Result<Vec<McpContent>, McpError> {
+        self.noted(self.read_resource_inner(uri).await).await
+    }
+
+    async fn list_prompts(&self) -> Result<Vec<McpPromptMeta>, McpError> {
+        self.noted(self.list_prompts_inner().await).await
+    }
+
+    async fn get_prompt(
+        &self,
+        prompt_name: &str,
+        args: &std::collections::HashMap<String, String>,
+    ) -> Result<String, McpError> {
+        self.noted(self.get_prompt_inner(prompt_name, args).await)
+            .await
     }
 }
 
@@ -478,17 +507,31 @@ fn render_prompt_result(result: rmcp::model::GetPromptResult) -> String {
     }
 }
 
+type Service = rmcp::service::RunningService<rmcp::RoleClient, crate::notify::NotifyingHandler>;
+
+struct Spawned {
+    service: Service,
+    /// The connection sends an OAuth token.
+    authorized: bool,
+}
+
+impl From<Service> for Spawned {
+    fn from(service: Service) -> Self {
+        Self {
+            service,
+            authorized: false,
+        }
+    }
+}
+
 /// 根据 server config 起一个新 rmcp service（连过 + 握手完成）。
 async fn spawn_service(
     server_name: &str,
     config: &McpServerConfig,
     sink: Option<crate::notify::NotificationSink>,
     env_policy: &base::interface::exec::local::SubprocessEnv,
-    oauth: Option<&crate::oauth::McpOAuth>,
-) -> Result<
-    rmcp::service::RunningService<rmcp::RoleClient, crate::notify::NotifyingHandler>,
-    McpError,
-> {
+    auth: Option<&crate::oauth::McpAuth>,
+) -> Result<Spawned, McpError> {
     match config {
         McpServerConfig::Stdio {
             command, args, env, ..
@@ -504,54 +547,21 @@ async fn spawn_service(
                 .iter()
                 .map(|(k, v)| (k.clone(), crate::config::expand_env_vars(v)))
                 .collect();
-            spawn_stdio_service(server_name, &command, &args, &env, sink, env_policy).await
+            spawn_stdio_service(server_name, &command, &args, &env, sink, env_policy)
+                .await
+                .map(Spawned::from)
         }
-        McpServerConfig::StreamableHttp {
-            url,
-            headers,
-            oauth_provider,
-            ..
-        } => {
+        McpServerConfig::StreamableHttp { url, headers, .. }
+        | McpServerConfig::Sse { url, headers, .. } => {
             let url = crate::config::expand_env_vars(url);
             let headers: std::collections::HashMap<String, String> = headers
                 .iter()
                 .map(|(k, v)| (k.clone(), crate::config::expand_env_vars(v)))
                 .collect();
-            spawn_streamable_http_service(
-                server_name,
-                &url,
-                &headers,
-                oauth_provider.as_deref(),
-                oauth,
-                sink,
-            )
-            .await
-        }
-        McpServerConfig::Sse {
-            url,
-            headers,
-            oauth_provider,
-            ..
-        } => {
-            let url = crate::config::expand_env_vars(url);
-            let headers: std::collections::HashMap<String, String> = headers
-                .iter()
-                .map(|(k, v)| (k.clone(), crate::config::expand_env_vars(v)))
-                .collect();
-            tracing::info!(
-                server = %server_name,
-                url = %url,
-                "connecting to MCP server via SSE transport"
-            );
-            spawn_sse_service(
-                server_name,
-                &url,
-                &headers,
-                oauth_provider.as_deref(),
-                oauth,
-                sink,
-            )
-            .await
+            let auth = auth
+                .filter(|_| config.oauth_capable())
+                .map(|auth| (auth, config.oauth()));
+            spawn_streamable_http_service(server_name, &url, &headers, auth, sink).await
         }
         McpServerConfig::InProcess { name, .. } => {
             // In-process servers are handled by InProcessMcpClient via
@@ -571,7 +581,9 @@ async fn spawn_service(
                 .iter()
                 .map(|(k, v)| (k.clone(), crate::config::expand_env_vars(v)))
                 .collect();
-            spawn_websocket_service(server_name, &url, &headers, sink).await
+            spawn_websocket_service(server_name, &url, &headers, sink)
+                .await
+                .map(Spawned::from)
         }
     }
 }
@@ -665,65 +677,128 @@ fn http_transport_config(
     server_name: &str,
     url: &str,
     headers: &std::collections::HashMap<String, String>,
-    oauth_authorization: Option<String>,
 ) -> rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig {
-    let mut headers = headers.clone();
-    if let Some(a) = oauth_authorization {
-        headers.retain(|k, _| !k.eq_ignore_ascii_case("authorization"));
-        headers.insert("Authorization".into(), a);
-    }
     rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig::with_uri(url)
-        .custom_headers(wire_headers(server_name, &headers))
+        .custom_headers(wire_headers(server_name, headers))
 }
 
-/// StreamableHttp transport (rmcp's reqwest client). Configured headers go on
-/// every request; with `oauth_provider`, a stored (refreshed if needed) token
-/// replaces any configured `Authorization`. Headers are fixed when the
-/// transport is built, so a changed token takes a reconnect.
+/// StreamableHttp transport over rmcp's reqwest client; configured headers go
+/// on every request. A server that can use OAuth goes through rmcp's
+/// `AuthClient`, which attaches the stored token, refreshes it when it
+/// expires and retries a 401 once after a refresh. Without a token the
+/// request goes out bare, so a server that does not ask for authorization
+/// works as before, and one that does surfaces as [`McpError::AuthRequired`].
 async fn spawn_streamable_http_service(
     server_name: &str,
     url: &str,
     headers: &std::collections::HashMap<String, String>,
-    oauth_provider: Option<&str>,
-    oauth: Option<&crate::oauth::McpOAuth>,
+    auth: Option<(
+        &crate::oauth::McpAuth,
+        Option<&crate::config::McpOAuthConfig>,
+    )>,
     sink: Option<crate::notify::NotificationSink>,
-) -> Result<
-    rmcp::service::RunningService<rmcp::RoleClient, crate::notify::NotifyingHandler>,
-    McpError,
-> {
+) -> Result<Spawned, McpError> {
     use rmcp::transport::StreamableHttpClientTransport;
 
-    let resolved_auth: Option<String> = if let Some(provider) = oauth_provider {
-        let resolved = match oauth {
-            Some(oauth) => oauth.resolve_bearer(provider).await,
-            None => Err("this connection has no OAuth state".to_string()),
-        };
-        match resolved {
-            Ok(tok) => Some(format!("Bearer {tok}")),
-            Err(e) => {
-                warn!(
-                    server = %server_name,
-                    provider = %provider,
-                    error = %e,
-                    "OAuth provider lookup failed; falling back to static headers"
-                );
-                None
-            }
-        }
-    } else {
-        None
+    let http = crate::oauth::http::transport_client(url);
+    let transport_config = http_transport_config(server_name, url, headers);
+    let handler = crate::notify::NotifyingHandler::new(server_name, sink);
+    let Some((auth, oauth)) = auth else {
+        let transport = StreamableHttpClientTransport::with_client(http, transport_config);
+        return handler
+            .serve(transport)
+            .await
+            .map(Spawned::from)
+            .map_err(|e| init_error(server_name, e));
     };
-    let config = http_transport_config(server_name, url, headers, resolved_auth);
-    base::interface::exec::local::install_tls_provider();
-    let transport = StreamableHttpClientTransport::from_config(config);
 
-    crate::notify::NotifyingHandler::new(server_name, sink)
-        .serve(transport)
-        .await
-        .map_err(|e| McpError::ConnectFailed {
+    let (manager, authorized) = auth.transport_manager(server_name, url, oauth).await?;
+    let client = rmcp::transport::AuthClient::new(http, manager);
+    let transport = StreamableHttpClientTransport::with_client(client, transport_config);
+    match handler.serve(transport).await {
+        Ok(service) => {
+            auth.connected(server_name, url, authorized);
+            Ok(Spawned {
+                service,
+                authorized,
+            })
+        }
+        Err(e) => {
+            let e = init_error(server_name, e);
+            match &e {
+                McpError::AuthRequired { challenge, .. } => {
+                    auth.note_unauthorized(server_name, url, challenge.as_deref(), authorized)
+                        .await
+                }
+                McpError::InsufficientScope { challenge, .. } => {
+                    auth.note_insufficient_scope(server_name, url, challenge)
+                }
+                _ => {}
+            }
+            Err(e)
+        }
+    }
+}
+
+/// The 401 / 403 `insufficient_scope` somewhere in an rmcp error's chain.
+fn auth_failure(server_name: &str, top: &(dyn std::error::Error + 'static)) -> Option<McpError> {
+    use rmcp::transport::auth::AuthError;
+    use rmcp::transport::streamable_http_client::{AuthRequiredError, InsufficientScopeError};
+    let mut source = Some(top);
+    while let Some(e) = source {
+        if let Some(required) = e.downcast_ref::<AuthRequiredError>() {
+            return Some(McpError::AuthRequired {
+                name: server_name.into(),
+                challenge: Some(required.www_authenticate_header.clone()),
+            });
+        }
+        if let Some(scope) = e.downcast_ref::<InsufficientScopeError>() {
+            return Some(McpError::InsufficientScope {
+                name: server_name.into(),
+                challenge: scope.www_authenticate_header.clone(),
+                scope: scope.required_scope.clone(),
+            });
+        }
+        if matches!(
+            e.downcast_ref::<AuthError>(),
+            Some(AuthError::AuthorizationRequired)
+        ) {
+            return Some(McpError::AuthRequired {
+                name: server_name.into(),
+                challenge: None,
+            });
+        }
+        source = e.source();
+    }
+    None
+}
+
+fn init_error(server_name: &str, e: rmcp::service::ClientInitializeError) -> McpError {
+    use rmcp::service::ClientInitializeError;
+    if let ClientInitializeError::TransportError { error, .. } = &e {
+        if let Some(auth) = auth_failure(server_name, error.error.as_ref()) {
+            return auth;
+        }
+    }
+    if e.is_authorization_required() {
+        return McpError::AuthRequired {
             name: server_name.into(),
-            source: anyhow::anyhow!("{e}"),
-        })
+            challenge: e.auth_challenge().map(str::to_string),
+        };
+    }
+    McpError::ConnectFailed {
+        name: server_name.into(),
+        source: anyhow::anyhow!("{e}"),
+    }
+}
+
+fn service_error(server_name: &str, op: &str, e: rmcp::ServiceError) -> McpError {
+    if let rmcp::ServiceError::TransportSend(transport) = &e {
+        if let Some(auth) = auth_failure(server_name, transport.error.as_ref()) {
+            return auth;
+        }
+    }
+    McpError::RmcpService(format!("{op}: {e}"))
 }
 
 /// 启发式判断：错误是不是 transport / connectivity 类（值得重连）vs
@@ -748,34 +823,6 @@ pub(crate) fn is_transport_error(e: &McpError) -> bool {
             .any(|k| m.contains(k))
         }
         McpError::Transport(_) => true,
-        _ => false,
-    }
-}
-
-/// 启发式判断：错误是不是 auth / 401 / token 过期类（值得重连 + 重新 resolve OAuth token）
-/// vs 真正不可恢复的授权错。
-///
-/// 与 is_transport_error 的关系：auth 错也会触发 reconnect，区别在于 reconnect 前
-/// 会重新 resolve OAuth bearer token（StreamableHttp transport 场景）。Stdio transport
-/// 不存在 auth 错。
-pub(crate) fn is_auth_error(e: &McpError) -> bool {
-    match e {
-        McpError::NotConnected { .. } => false,
-        McpError::RmcpService(msg) => {
-            let m = msg.to_ascii_lowercase();
-            [
-                "401",
-                "403",
-                "unauthorized",
-                "forbidden",
-                "token expired",
-                "access denied",
-                "auth failure",
-                "authentication",
-            ]
-            .iter()
-            .any(|k| m.contains(k))
-        }
         _ => false,
     }
 }
@@ -980,23 +1027,9 @@ async fn spawn_websocket_service(
         http_url = %http_url,
         "WebSocket unavailable; falling back to StreamableHTTP transport"
     );
-    spawn_streamable_http_service(server_name, &http_url, headers, None, None, sink).await
-}
-
-// Pure SSE transport. Delegates to streamable HTTP as fallback.
-async fn spawn_sse_service(
-    server_name: &str,
-    url: &str,
-    headers: &std::collections::HashMap<String, String>,
-    oauth_provider: Option<&str>,
-    oauth: Option<&crate::oauth::McpOAuth>,
-    sink: Option<crate::notify::NotificationSink>,
-) -> Result<
-    rmcp::service::RunningService<rmcp::RoleClient, crate::notify::NotifyingHandler>,
-    McpError,
-> {
-    tracing::info!(server = %server_name, url = %url, "SSE transport: delegating to streamable HTTP");
-    spawn_streamable_http_service(server_name, url, headers, oauth_provider, oauth, sink).await
+    spawn_streamable_http_service(server_name, &http_url, headers, None, sink)
+        .await
+        .map(|spawned| spawned.service)
 }
 
 /// MCP client connected via WebSocket transport (with StreamableHTTP fallback).
@@ -1161,56 +1194,6 @@ mod tests {
     }
 
     #[test]
-    fn is_auth_error_for_401() {
-        let e = McpError::RmcpService("HTTP 401 Unauthorized".into());
-        assert!(is_auth_error(&e));
-    }
-
-    #[test]
-    fn is_auth_error_for_forbidden() {
-        let e = McpError::RmcpService("403 Forbidden: access denied".into());
-        assert!(is_auth_error(&e));
-    }
-
-    #[test]
-    fn is_auth_error_for_token_expired() {
-        let e = McpError::RmcpService("token expired, please re-authenticate".into());
-        assert!(is_auth_error(&e));
-    }
-
-    #[test]
-    fn is_auth_error_skips_transport_errors() {
-        // transport 错不该被误判为 auth
-        let e = McpError::RmcpService("connection closed by peer".into());
-        assert!(!is_auth_error(&e));
-        let e = McpError::RmcpService("broken pipe".into());
-        assert!(!is_auth_error(&e));
-    }
-
-    #[test]
-    fn is_auth_error_skips_unknown_tool_and_not_connected() {
-        let e = McpError::UnknownTool {
-            name: "x".into(),
-            tool: "y".into(),
-        };
-        assert!(!is_auth_error(&e));
-        let e = McpError::NotConnected { name: "x".into() };
-        assert!(!is_auth_error(&e));
-    }
-
-    #[test]
-    fn is_auth_error_for_rmcp_auth_failure_message() {
-        let e = McpError::RmcpService("authentication failure: invalid token".into());
-        assert!(is_auth_error(&e));
-    }
-
-    #[test]
-    fn is_auth_error_for_rmcp_access_denied() {
-        let e = McpError::RmcpService("access denied: insufficient permissions".into());
-        assert!(is_auth_error(&e));
-    }
-
-    #[test]
     fn transport_kind_reports_stdio_for_stdio_config() {
         let client = StdioMcpClient {
             server_name: "x".into(),
@@ -1226,7 +1209,8 @@ mod tests {
             consecutive_failures: AtomicU32::new(0),
             sink: None,
             env_policy: Default::default(),
-            oauth: None,
+            auth: None,
+            authorized: false.into(),
         };
         assert_eq!(client.transport_kind(), "stdio");
     }
@@ -1238,7 +1222,7 @@ mod tests {
             config: McpServerConfig::StreamableHttp {
                 url: "http://example.com/mcp".into(),
                 headers: HashMap::new(),
-                oauth_provider: None,
+                oauth: None,
                 scope: None,
             },
             instructions: None,
@@ -1247,7 +1231,8 @@ mod tests {
             consecutive_failures: AtomicU32::new(0),
             sink: None,
             env_policy: Default::default(),
-            oauth: None,
+            auth: None,
+            authorized: false.into(),
         };
         assert_eq!(client.transport_kind(), "streamable_http");
     }
@@ -1270,7 +1255,8 @@ mod tests {
             consecutive_failures: AtomicU32::new(0),
             sink: None,
             env_policy: Default::default(),
-            oauth: None,
+            auth: None,
+            authorized: false.into(),
         };
         let err = client
             .get_prompt("some-prompt", &HashMap::new())
@@ -1339,7 +1325,8 @@ mod tests {
             consecutive_failures: AtomicU32::new(0),
             sink: None,
             env_policy: Default::default(),
-            oauth: None,
+            auth: None,
+            authorized: false.into(),
         };
         // 三次失败后 try_reconnect 应当 short-circuit NotConnected，不再 spawn
         let mut last_err = None;
@@ -1393,7 +1380,8 @@ mod tests {
             consecutive_failures: AtomicU32::new(0),
             sink: None,
             env_policy: Default::default(),
-            oauth: None,
+            auth: None,
+            authorized: false.into(),
         };
         assert_eq!(client.transport_kind(), "web_socket");
     }
@@ -1414,7 +1402,8 @@ mod tests {
                 consecutive_failures: AtomicU32::new(0),
                 sink: None,
                 env_policy: Default::default(),
-                oauth: None,
+                auth: None,
+                authorized: false.into(),
             }),
         };
         assert_eq!(client.transport_kind(), "web_socket");
@@ -1440,7 +1429,8 @@ mod tests {
                 consecutive_failures: AtomicU32::new(0),
                 sink: None,
                 env_policy: Default::default(),
-                oauth: None,
+                auth: None,
+                authorized: false.into(),
             }),
         };
         // The inner StdioMcpClient would report "stdio",
@@ -1514,7 +1504,7 @@ mod tests {
             ("Authorization".to_string(), "Bearer static".to_string()),
             ("X-Tenant".to_string(), "acme".to_string()),
         ]);
-        let config = http_transport_config("s", "http://h/mcp", &headers, None);
+        let config = http_transport_config("s", "http://h/mcp", &headers);
         assert_eq!(
             header(&config.custom_headers, "authorization"),
             "Bearer static"
@@ -1524,14 +1514,6 @@ mod tests {
             config.auth_header.is_none(),
             "rmcp would prefix it with Bearer again"
         );
-
-        let oauth =
-            http_transport_config("s", "http://h/mcp", &headers, Some("Bearer fresh".into()));
-        assert_eq!(
-            header(&oauth.custom_headers, "authorization"),
-            "Bearer fresh"
-        );
-        assert_eq!(header(&oauth.custom_headers, "x-tenant"), "acme");
     }
 
     #[tokio::test]

@@ -11,6 +11,8 @@ mod extension_points_doc;
 mod home_is_never_discovered;
 mod hook_event_wiring;
 mod host_scenes;
+mod mcp_oauth;
+mod mcp_oauth_mock;
 mod mcp_policy;
 mod one_assembly;
 mod protocol_doc_examples;

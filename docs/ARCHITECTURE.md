@@ -688,6 +688,23 @@ URL 规整去掉了 userinfo、query、fragment,主机名小写、默认端口�
 进程内注册的服务),以及宿主经 `customize_session` 或自己的 `Builder` 装进会话的
 `McpModule`。它们是宿主的代码,不是用户能改指向的配置;要管,宿主自己管。
 
+### 6.5 MCP 授权
+
+远端 MCP server 要求 OAuth 时(MCP Authorization 规范 2025-11-25),登录由宿主驱动,令牌由
+daemon 管。设计与用法在 [`mcp_auth.md`](mcp_auth.md);这里只记它在整体里的位置:
+
+- **每个会话池一个 `mcp::oauth::McpAuth`**:各 server 的授权状态、进行中的登录、凭据存储
+  (默认 `scenes/<id>/mcp/oauth/`,一个 server 一个 0600 文件;宿主可经
+  `Assembly::mcp_credential_store` 换成自己的)。同一进程里的两个池互不相见。
+- **连接时**,能用 OAuth 的 server(`streamable_http` / `sse`,没配固定 `Authorization` 头)
+  经 rmcp 的 `AuthClient` 发请求:有令牌就带上,快到期先刷新,被 401 拒了先刷新再重试一次;
+  没有令牌就裸发——不要求授权的 server 照旧能用。
+- **要求登录的 server 不算连接失败**:它不重试,以 `auth_required` 留在这个项目的 MCP 管理器
+  里,不提供工具;模型在系统提示里看到一句"这个 server 要用户先登录"。
+- **状态变化回到会话池**:`McpAuth` 的监听器发 `mcp_auth_*` 通知;令牌失效时会话池把这个
+  server 从所有缓存的连接里摘下,登录完成后只重连它,受影响的会话在下一轮之前重建。
+- **MCP 策略在授权之前**:被 §6.4 拒绝的 server 不连接,也就走不到 OAuth。
+
 ---
 
 ## 7. 锁
@@ -718,6 +735,7 @@ daemon 实例锁与 team 目录锁共用 `base::process_identity::decide_stale_l
 | `sessions/<session-id>/` | 会话 | 会话记忆、metadata、输入历史 |
 | `memory/` | 全局 | 跨会话记忆(项目级的在 `<项目>/.agix/memory/`) |
 | `scenes/<id>/` | 场景 | 该场景的设置层(`settings.json`、skills、agents);声明式场景在这里放 `scene.json` + `prompt.md` |
+| `scenes/<id>/mcp/oauth/` | MCP server URL | 远端 MCP server 的 OAuth 凭据,一个 server 一个 0600 文件(§6.5) |
 | `daemon/groups/<instance>.json` | 实例 | 在跑命令的进程组,供崩溃后下次启动清理 |
 | `daemon/crashes/` | 进程 | 崩溃记录 |
 

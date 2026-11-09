@@ -153,8 +153,12 @@ monitors and structured output ([table below](#tools--40-built-in)).
 - Rust plugins compiled into the host, and QuickJS scripts, installable as
   packages with install-time disclosure.
 - Hooks at thirty moments, with command, prompt, HTTP and agent backends.
-- An MCP client (stdio, SSE, streamable HTTP, OAuth 2.0 PKCE), declarative
-  scenes, and custom agent types.
+- An MCP client (stdio, SSE, streamable HTTP, WebSocket), declarative scenes,
+  and custom agent types.
+- MCP authorization (the 2025-11-25 spec, OAuth 2.1): discovery, dynamic
+  client registration, PKCE, refresh; sign-in driven by the host over RPC with
+  a loopback or host-owned redirect; tokens in 0600 files or the host's own
+  store ([`docs/mcp_auth.md`](docs/mcp_auth.md)).
 - An enterprise MCP policy: allow and deny lists by server name, command or
   URL, read from a system path users cannot write (or `--mcp-policy`); an
   unreadable policy denies every server
@@ -342,7 +346,7 @@ does not carry answers `METHOD_NOT_FOUND` naming the module.
 | kernel | `history` · `session` · `compaction` | transcript log, session state, context compaction |
 | kernel | `permissions` · `hooks` · `telemetry` | rule engine, lifecycle hooks, telemetry and the recorder |
 | module | `agents` · `team` | the `Agent` tool, agent types, teams |
-| module | `mcp` · `auth` | MCP client and tool adapters, OAuth 2.0 PKCE |
+| module | `mcp` | MCP client and tool adapters, MCP OAuth authorization |
 | module | `skills` | skill catalog and the `Skill` tool |
 | module | `script-host` | the QuickJS carrier |
 | kernel | `ptc` | `RunCode`: the model's programs, run in an embedded QuickJS ([`docs/ptc.md`](docs/ptc.md)) |
@@ -350,8 +354,8 @@ does not carry answers `METHOD_NOT_FOUND` naming the module.
 | assembly | `assembly` | session pool, configuration, provider routing, the JSON-RPC server |
 | shell | `daemon` | the `agixd` binary |
 
-20 crates under `crates/`, plus `daemon/`, the four test members and the
-example plugin in `examples/plugins/rust` — 26 workspace members in total. The full picture — sessions and scenes, the history
+19 crates under `crates/`, plus `daemon/`, the four test members and the
+example plugin in `examples/plugins/rust` — 25 workspace members in total. The full picture — sessions and scenes, the history
 log, execution, locks, disk layout — is in
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
@@ -383,7 +387,7 @@ echo '{"jsonrpc":"2.0","id":2,"method":"session.run_turn",
 While the turn runs, `session.event` frames stream back (text deltas, tool
 calls, tool results, prompts, task progress); the response arrives when the turn
 ends. A typical client subscribes to a session on one connection
-(`session.subscribe`) and drives it from another. Sixty-three methods are
+(`session.subscribe`) and drives it from another. Sixty-seven methods are
 documented in [`docs/daemon_rpc_protocol.md`](docs/daemon_rpc_protocol.md) —
 sessions, history and context, tasks and sub-agents, scenes, configuration,
 MCP, plugins, scheduling — and every documented response shape is compared
@@ -581,6 +585,7 @@ works and how to run it: [`tests/README.md`](tests/README.md).
 | [docs/extending_quickjs.md](docs/extending_quickjs.md) | writing script extensions |
 | [docs/plugin_packages.md](docs/plugin_packages.md) | the plugin package format, install and trust |
 | [docs/ptc.md](docs/ptc.md) | `RunCode`: what a model's program can call, its permissions, limits and prompt |
+| [docs/mcp_auth.md](docs/mcp_auth.md) | OAuth for remote MCP servers: configuration, sign-in flows, RPCs and events, credential storage, security |
 | [docs/migrating_to_0.3.md](docs/migrating_to_0.3.md) | upgrading an embedder or client from 0.2.x |
 | [docs/schemas/settings.schema.json](docs/schemas/settings.schema.json) | the generated schema of `settings.json` |
 | [tests/README.md](tests/README.md) | the test layers and the live tier |

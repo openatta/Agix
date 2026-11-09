@@ -1889,9 +1889,10 @@ daemon 自己那一对,给路径 = 它服务的另一个项目,`null` → `INVAL
 ### 6.5 `mcp.*` / `plugin.*` / `import.*` / `commands.*`
 
 `mcp.status` / `plugin.*` / `commands.list` **只作用于 daemon 自己的默认项目和默认场景**,
-不接受定位参数。`mcp.addServer` / `mcp.updateServer` / `import.*` 接受 §6.4 的 `scene` /
-`project_root`:省略 = 这个 daemon 自己那一对,给路径 = 它服务的另一个项目,`null` →
-`INVALID_PARAMS`。
+不接受定位参数。`mcp.addServer` / `mcp.updateServer` / `mcp.auth.start` / `mcp.auth.logout` /
+`import.*` 接受 §6.4 的 `scene` / `project_root`:省略 = 这个 daemon 自己那一对,给路径 = 它
+服务的另一个项目,`null` → `INVALID_PARAMS`。`mcp.auth.complete` / `mcp.auth.cancel` 按
+`flow_id` 找到登录,不需要定位。
 
 #### `mcp.status`
 
@@ -1899,12 +1900,27 @@ daemon 自己那一对,给路径 = 它服务的另一个项目,`null` → `INVAL
 
 ```jsonc
 // ← result
-{ "servers": [ ] }    // 元素:{ "name":"…", "transport":"…", "tool_count": 0, "state":"connected" }
+{ "servers": [ ] }
+// 元素:{ "name":"…", "transport":"…", "tool_count": 0, "state":"connected",
+//         "auth": { "state":"authorized", "issuer":"https://…", "scopes":["…"],
+//                   "expires_at":"2026-11-08T10:00:00Z" } }
 ```
 
-`state` 为 `connected` 的是连上了的;MCP 策略(`ARCHITECTURE.md` §6.4)拒绝的也列出来,
-`state` 为 `denied`,`tool_count` 为 0,另带 `error` 说明是哪份策略、哪条规则。没连上的
-其他原因(进程起不来、握手失败)不在这里,看 `mcp_connect_failed` 通知和 daemon 日志。
+`state`:
+
+| `state` | 意思 |
+|---|---|
+| `connected` | 连上了 |
+| `auth_required` | 远端 server 要求 OAuth 登录(回了 401),还没登录或令牌已失效;没有工具,`tool_count` 为 0。用 `mcp.auth.start` 登录 |
+| `denied` | MCP 策略(`ARCHITECTURE.md` §6.4)拒绝了它,`tool_count` 为 0,另带 `error` 说明是哪份策略、哪条规则 |
+
+没连上的其他原因(进程起不来、握手失败)不在这里,看 `mcp_connect_failed` 通知和 daemon 日志。
+
+`auth` 每个元素都有,是这个 server 的授权状态(`mcp_auth.md` §2):`state` 为
+`none` / `required` / `authorizing` / `authorized` / `failed`;按需带 `issuer`、`scopes`
+(已授予的;`required` 时是需要的)、`expires_at`(RFC 3339)、`error`(`failed` 时的原因)。
+**从不带令牌。** 一个 `connected` 的 server 也可能是 `auth.state: "required"`:它要求更多
+scope(403 `insufficient_scope`),现有令牌对别的请求仍然有效。
 
 #### `mcp.addServer`
 
@@ -1915,8 +1931,11 @@ daemon 自己那一对,给路径 = 它服务的另一个项目,`null` → `INVAL
 ```
 
 `config` 是一个 `McpServerConfig`,按 `type` 标签联合:`stdio` / `streamable_http` /
-`sse` / `websocket` / `in_process`。写进项目层 settings.json 并**立刻尝试连接**,
-成功与否都会发一条 `mcp_connected` / `mcp_connect_failed` 的 `daemon.event`。
+`sse` / `websocket` / `in_process`;`streamable_http` / `sse` 可以带 `oauth` 块
+(`mcp_auth.md` §1),带 `oauth_provider` 的配置被拒绝(`INVALID_PARAMS`,message 给出 `oauth`
+的写法)。写进项目层 settings.json 并**立刻尝试连接**,成功与否都会发一条
+`mcp_connected` / `mcp_connect_failed` 的 `daemon.event`;要求登录的 server 发
+`mcp_auth_required`,在响应的 `servers` 里是 `state: "auth_required"`。
 
 响应:`{ "written_to": "<路径>", "servers": [ <同 mcp.status 的元素> ] }`。
 配置解析不了、名字为空、已有的 settings.json 不是合法 JSON → `INVALID_PARAMS`。
@@ -1931,6 +1950,62 @@ MCP 策略拒绝这个 server → `MCP_SERVER_DENIED`,**什么都不写、不连
 参数、响应与 `mcp.addServer` 相同。区别只在于服务必须已经在那份 settings.json 里声明过,
 否则 `INVALID_PARAMS` —— 用来换令牌、换请求头这类"改一个已有的",不会因为名字拼错而
 悄悄多出一个服务。连接立刻重建,这个项目上的会话下一轮拿到新连接。
+
+#### `mcp.auth.start`
+
+发起对一个 MCP server 的 OAuth 登录(`mcp_auth.md` §3)。
+
+```jsonc
+// → params
+{ "server": "docs",
+  "redirect": "loopback",          // 可省,默认 loopback;或 "external"
+  "redirect_uri": "https://…",     // 只给 external,且必须给:https、回环上的 http、带 "." 的私有 scheme
+  "scopes": [ "files:read" ] }     // 可省;省略按 挑战 > 配置的 oauth.scopes > 资源元数据 取
+```
+
+```jsonc
+// ← result
+{ "flow_id": "…", "authorize_url": "https://as.example/authorize?…",
+  "redirect_uri": "http://127.0.0.1:53817/callback", "expires_in": 600 }
+```
+
+把用户送去 `authorize_url`。`loopback` 时 daemon 在 `redirect_uri` 上等浏览器回来,自己完成
+登录并发 `mcp_auth_completed`、`mcp_connected`(失败发 `mcp_auth_failed`);`external` 时宿主
+接住回调,调 `mcp.auth.complete`。`expires_in` 秒内没完成,登录过期(`mcp_auth_failed`)。
+同一个 server 再发起一次会取消前一次;不同 server 的登录可以同时进行。
+
+没有这个 server、它不用 OAuth(stdio、websocket、配了固定 `Authorization` 头的)、redirect
+不合法 → `INVALID_PARAMS`;MCP 策略拒绝它 → `MCP_SERVER_DENIED`;发现失败、授权服务器不支持
+PKCE S256、无法注册客户端 → `MCP_AUTH_FAILED`。
+
+#### `mcp.auth.complete`
+
+```jsonc
+// → params
+{ "flow_id": "…", "callback_url": "https://app.example/oauth/done?code=…&state=…&iss=…" }
+```
+
+```jsonc
+// ← result
+{ "server": "docs", "scopes": [ "files:read" ] }
+```
+
+校验 `state`(以及授权服务器给了的 `iss`),用 PKCE 校验码和 `resource` 换令牌,存下,只重连
+这一个 server,随后发 `mcp_connected`。`callback_url` 不是回到这次登录的 `redirect_uri` →
+`INVALID_PARAMS`;`state` 不符 → `MCP_AUTH_FAILED`,**登录继续等**真正的回调;授权服务器在回调里
+报错或换令牌失败 → `MCP_AUTH_FAILED`,登录结束,状态 `failed`。`flow_id` 不存在(已完成、已
+取消、已过期)→ `INVALID_PARAMS`。
+
+#### `mcp.auth.cancel`
+
+`{ "flow_id": "…" }` → `{ "server": "docs" }`。放弃这次登录,server 的 `auth.state` 回到发起之前
+(还没登录过就是 `required`)。`flow_id` 不存在 → `INVALID_PARAMS`。
+
+#### `mcp.auth.logout`
+
+`{ "server": "docs" }` → `{ "server": "docs" }`。授权服务器提供吊销端点时吊销令牌
+(RFC 7009),删除令牌(保留客户端注册),断开 server;它回到 `state: "auth_required"`、
+`auth.state: "required"`。不发通知。
 
 #### `plugin.list`
 
@@ -2235,6 +2310,9 @@ WebAssembly 组件,场景改用 `[scene] dir`。
 |---|---|---|
 | `mcp_connected` | `{server, transport, tool_count}` | 启动连接、`config.reload` 重连、`mcp.addServer` / `mcp.updateServer` 成功 |
 | `mcp_connect_failed` | `{server, error}` | 同上,失败时。另外,启动、重连、另一个项目第一次起会话时要连的 server 里,配置解析不了的、被 MCP 策略拒绝的(`ARCHITECTURE.md` §6.4)各发一条,`error` 就是原因;连接失败的具体原因在 daemon 日志里 |
+| `mcp_auth_required` | `{server, scopes}` | 远端 server 要求登录:没有令牌、令牌被拒且刷新不了,或要求更多 scope(这时 server 保持连接)。`scopes` 是要请求的(可能为空)。同一个 server 从已登录/未涉及变成需要登录时发一次 |
+| `mcp_auth_completed` | `{server}` | 登录完成,令牌已存;随后是这个 server 的 `mcp_connected` / `mcp_connect_failed` |
+| `mcp_auth_failed` | `{server, error}` | 登录失败:授权服务器在回调里报错、换令牌失败,或 10 分钟内没完成 |
 | `import_detected` | `{sources:[{source,description}]}` | 启动时探测到还没处理过的可导入配置 |
 | `session_created` | `{session_id, scene, project_root}` | 一个新会话进了内存 |
 | `session_resumed` | `{session_id, scene, project_root}` | 一个已有的会话被恢复进内存 |
@@ -2274,7 +2352,8 @@ WebAssembly 组件,场景改用 `[scene] dir`。
 | -32017 | TOO_MANY_IN_FLIGHT | 这条连接同时在途的请求已达上限(§5.2) |
 | -32018 | TASK_NOT_FOUND | `session.taskOutput`:引擎不知道这个任务(没跑过、结束得早已被忘掉,或引擎不在内存里) |
 | -32019 | TASK_LIMIT | `session.startAgent`:会话的子 Agent 已到 `execution.max_concurrent_subagents`,或委派已到最深 |
-| -32020 | MCP_SERVER_DENIED | `mcp.addServer` / `mcp.updateServer`:MCP 策略拒绝这个 server,没有写入任何东西 |
+| -32020 | MCP_SERVER_DENIED | `mcp.addServer` / `mcp.updateServer`:MCP 策略拒绝这个 server,没有写入任何东西;`mcp.auth.start` / `mcp.auth.logout`:这个 server 被策略拒绝 |
+| -32021 | MCP_AUTH_FAILED | `mcp.auth.*`:授权服务器或登录本身失败——发现、注册、PKCE、回调 `state` 不符、换令牌;`message` 可以直接给用户看 |
 
 还有两个常量在代码里定义了但**没有任何路径会发出**,客户端不必为它们写分支:
 `PARSE_ERROR (-32700)` / `INVALID_REQUEST (-32600)`(解析不了的帧被静默丢弃,见

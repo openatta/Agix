@@ -6,8 +6,6 @@
 //! - **不绑定具体 server name**：列资源时枚举所有 connected server 并合并
 //! - **uri 是全局 key**：read 时直接按 uri 匹配；多 server 同名 uri → 第一个赢
 //! - **不缓存**：每次 list 实时调 server（list_resources 通常很快）
-//!
-//! 不实装：McpAuthTool（需要 OAuth client 基础设施，不在 范围）
 
 use crate::client::{McpClientHandle, McpContent};
 use async_trait::async_trait;

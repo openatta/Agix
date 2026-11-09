@@ -5,20 +5,20 @@ edition      = { workspace = true }
 rust-version = { workspace = true }
 license      = { workspace = true }
 publish      = false
-description  = "Agix — MCP client (server connection, tool adaptation)"
+description  = "Agix — MCP client (server connection, tool adaptation, OAuth authorization)"
 
 [dependencies]
 base          = { workspace = true }
 tools         = { workspace = true }
 runtime       = { workspace = true }
-auth          = { workspace = true }
 rmcp          = { workspace = true }
 process-wrap  = { workspace = true }
 tokio         = { workspace = true }
 tokio-util    = { workspace = true }
 futures       = { workspace = true }
 async-trait   = { workspace = true }
-reqwest       = { workspace = true }
+reqwest       = { workspace = true, features = ["form"] }
+http          = "1"
 serde         = { workspace = true }
 serde_json    = { workspace = true }
 schemars      = { workspace = true }
@@ -28,6 +28,10 @@ tracing       = { workspace = true }
 url           = { workspace = true }
 globset       = { workspace = true }
 tokio-tungstenite = { workspace = true }
+sha2          = { workspace = true }
+hex           = { workspace = true }
+uuid          = { workspace = true }
+time          = { workspace = true }
 
 [dev-dependencies]
 scene = { workspace = true }

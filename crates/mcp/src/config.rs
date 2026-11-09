@@ -1,9 +1,12 @@
-//! MCP server 配置。`type` 字段做 enum tag。
+//! MCP server 配置。`type` 字段做 enum tag；远端 server 的 `oauth` 块描述它的访问令牌
+//! 从哪来，语义见 `docs/mcp_auth.md`。
 
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(remote = "Self")]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum McpServerConfig {
     /// 通过 stdin/stdout 与 server 子进程通信（典型）
@@ -18,28 +21,22 @@ pub enum McpServerConfig {
         #[serde(default)]
         scope: Option<Vec<String>>,
     },
-    /// HTTP streamable transport（rmcp 1.6 起的现代远端 transport）
     StreamableHttp {
         url: String,
         #[serde(default)]
         headers: HashMap<String, String>,
-        /// **v2-4 **: when set, name of an `oauth_providers.<name>`
-        /// entry in settings.json.
-        #[serde(default)]
-        oauth_provider: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        oauth: Option<McpOAuthConfig>,
         #[serde(default)]
         scope: Option<Vec<String>>,
     },
-    /// SSE (Server-Sent Events) transport — URL-based connection with
-    /// optional headers. Forward-compatible: SSE server connection is
-    /// implemented via rmcp when available, with fallback to streamable
-    /// HTTP if SSE fails.
+    /// Served by the streamable HTTP transport, which accepts the same servers.
     Sse {
         url: String,
         #[serde(default)]
         headers: HashMap<String, String>,
-        #[serde(default)]
-        oauth_provider: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        oauth: Option<McpOAuthConfig>,
         #[serde(default)]
         scope: Option<Vec<String>>,
     },
@@ -61,16 +58,95 @@ pub enum McpServerConfig {
     },
 }
 
+const OAUTH_PROVIDER_REMOVED: &str = "`oauth_provider` is no longer supported. Describe how the \
+     server is authorized with an `oauth` block instead: \
+     \"oauth\": {\"client_id\": \"…\", \"client_secret_env\": \"ENV_VAR_NAME\", \
+     \"scopes\": [\"…\"], \"callback_port\": 8765} — every key is optional, and a server with \
+     no `oauth` block that asks for authorization is still offered to the user to sign in to \
+     (docs/mcp_auth.md)";
+
+impl<'de> Deserialize<'de> for McpServerConfig {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        if value.get("oauth_provider").is_some() {
+            return Err(D::Error::custom(OAUTH_PROVIDER_REMOVED));
+        }
+        let config = McpServerConfig::deserialize(value).map_err(D::Error::custom)?;
+        if let Some(oauth) = config.oauth() {
+            oauth.validate().map_err(D::Error::custom)?;
+        }
+        Ok(config)
+    }
+}
+
+impl Serialize for McpServerConfig {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        McpServerConfig::serialize(self, serializer)
+    }
+}
+
+/// How a remote server's access token is obtained. Secrets are never written
+/// here: `client_secret_env` names an environment variable.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpOAuthConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub callback_port: Option<u16>,
+}
+
+impl McpOAuthConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        let blank = |v: &Option<String>| v.as_deref().is_some_and(|s| s.trim().is_empty());
+        if blank(&self.client_id) || blank(&self.client_secret_env) {
+            return Err("oauth: `client_id` and `client_secret_env` must not be empty".into());
+        }
+        if self.client_secret_env.is_some() && self.client_id.is_none() {
+            return Err("oauth: `client_secret_env` needs the `client_id` it belongs to".into());
+        }
+        Ok(())
+    }
+
+    /// The configured client secret, read from the environment variable
+    /// `client_secret_env` names.
+    pub fn client_secret(&self) -> Result<Option<String>, String> {
+        let Some(var) = &self.client_secret_env else {
+            return Ok(None);
+        };
+        match std::env::var(var) {
+            Ok(v) if !v.is_empty() => Ok(Some(v)),
+            _ => Err(format!(
+                "oauth.client_secret_env names `{var}`, which is not set"
+            )),
+        }
+    }
+}
+
 impl McpServerConfig {
-    /// Extract the OAuth provider name from any config variant that supports it.
-    /// Returns `None` for Stdio or variants without an `oauth_provider` field.
-    pub fn oauth_provider(&self) -> Option<&str> {
+    /// The `oauth` block of a remote server.
+    pub fn oauth(&self) -> Option<&McpOAuthConfig> {
         match self {
-            McpServerConfig::Stdio { .. } => None,
-            McpServerConfig::StreamableHttp { oauth_provider, .. } => oauth_provider.as_deref(),
-            McpServerConfig::Sse { oauth_provider, .. } => oauth_provider.as_deref(),
-            McpServerConfig::InProcess { .. } => None,
-            McpServerConfig::WebSocket { .. } => None,
+            McpServerConfig::StreamableHttp { oauth, .. } | McpServerConfig::Sse { oauth, .. } => {
+                oauth.as_ref()
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether this server's token can come from OAuth: a streamable HTTP or
+    /// SSE server that sends no fixed `Authorization` header.
+    pub fn oauth_capable(&self) -> bool {
+        match self {
+            McpServerConfig::StreamableHttp { headers, .. }
+            | McpServerConfig::Sse { headers, .. } => !headers
+                .keys()
+                .any(|k| k.eq_ignore_ascii_case("authorization")),
+            _ => false,
         }
     }
 
@@ -220,24 +296,75 @@ mod tests {
     }
 
     #[test]
-    fn streamable_http_with_oauth_provider() {
+    fn an_oauth_block_is_parsed() {
+        let v = json!({
+            "type": "streamable_http",
+            "url": "https://api.example/mcp",
+            "oauth": {"client_id": "agix", "client_secret_env": "X", "scopes": ["a"], "callback_port": 8765},
+        });
+        let cfg: McpServerConfig = serde_json::from_value(v).unwrap();
+        let oauth = cfg.oauth().expect("oauth block");
+        assert_eq!(oauth.client_id.as_deref(), Some("agix"));
+        assert_eq!(oauth.client_secret_env.as_deref(), Some("X"));
+        assert_eq!(oauth.scopes, vec!["a".to_string()]);
+        assert_eq!(oauth.callback_port, Some(8765));
+        assert!(cfg.oauth_capable());
+    }
+
+    #[test]
+    fn oauth_provider_is_refused_with_the_new_shape() {
         let v = json!({
             "type": "streamable_http",
             "url": "https://api.example/mcp",
             "oauth_provider": "github",
         });
+        let err = serde_json::from_value::<McpServerConfig>(v)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("`oauth_provider` is no longer supported"),
+            "{err}"
+        );
+        assert!(err.contains("\"oauth\": {\"client_id\""), "{err}");
+    }
+
+    #[test]
+    fn a_misspelled_oauth_key_is_refused() {
+        let v =
+            json!({"type": "sse", "url": "https://h/mcp", "oauth": {"client_secret": "literal"}});
+        let err = serde_json::from_value::<McpServerConfig>(v)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("client_secret"), "{err}");
+    }
+
+    #[test]
+    fn a_client_secret_needs_its_client_id() {
+        let v = json!({"type": "streamable_http", "url": "https://h/mcp", "oauth": {"client_secret_env": "S"}});
+        assert!(serde_json::from_value::<McpServerConfig>(v).is_err());
+    }
+
+    #[test]
+    fn a_fixed_authorization_header_turns_oauth_off() {
+        let v = json!({
+            "type": "streamable_http", "url": "https://h/mcp",
+            "headers": {"authorization": "Bearer t"}
+        });
         let cfg: McpServerConfig = serde_json::from_value(v).unwrap();
-        match cfg {
-            McpServerConfig::StreamableHttp {
-                url,
-                oauth_provider,
-                ..
-            } => {
-                assert_eq!(url, "https://api.example/mcp");
-                assert_eq!(oauth_provider.as_deref(), Some("github"));
-            }
-            _ => panic!(),
-        }
+        assert!(!cfg.oauth_capable());
+    }
+
+    #[test]
+    fn a_config_round_trips_through_serialization() {
+        let v = json!({
+            "type": "streamable_http", "url": "https://h/mcp",
+            "oauth": {"scopes": ["read"]}
+        });
+        let cfg: McpServerConfig = serde_json::from_value(v).unwrap();
+        let back: McpServerConfig =
+            serde_json::from_value(serde_json::to_value(&cfg).unwrap()).unwrap();
+        assert_eq!(back.oauth(), cfg.oauth());
+        assert_eq!(back.transport_kind(), "streamable_http");
     }
 
     #[test]
@@ -271,22 +398,18 @@ mod tests {
     }
 
     #[test]
-    fn in_process_oauth_provider_is_none() {
+    fn only_remote_http_servers_take_oauth() {
         let cfg = McpServerConfig::InProcess {
             name: "x".into(),
             scope: None,
         };
-        assert!(cfg.oauth_provider().is_none());
-    }
-
-    #[test]
-    fn websocket_oauth_provider_is_none() {
+        assert!(cfg.oauth().is_none() && !cfg.oauth_capable());
         let cfg = McpServerConfig::WebSocket {
             url: "ws://localhost/mcp".into(),
             headers: HashMap::new(),
             scope: None,
         };
-        assert!(cfg.oauth_provider().is_none());
+        assert!(cfg.oauth().is_none() && !cfg.oauth_capable());
     }
 
     #[test]
@@ -315,7 +438,7 @@ mod tests {
         let http = McpServerConfig::StreamableHttp {
             url: "https://example.com".into(),
             headers: HashMap::new(),
-            oauth_provider: None,
+            oauth: None,
             scope: None,
         };
         assert_eq!(http.url(), Some("https://example.com"));

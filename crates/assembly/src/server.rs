@@ -584,8 +584,17 @@ impl DaemonServer {
             "mcp.addServer" => self.method_mcp_put_server(id, req.params, false).await,
             #[cfg(feature = "mcp")]
             "mcp.updateServer" => self.method_mcp_put_server(id, req.params, true).await,
+            #[cfg(feature = "mcp")]
+            "mcp.auth.start" => self.method_mcp_auth_start(id, req.params).await,
+            #[cfg(feature = "mcp")]
+            "mcp.auth.complete" => self.method_mcp_auth_complete(id, req.params).await,
+            #[cfg(feature = "mcp")]
+            "mcp.auth.cancel" => self.method_mcp_auth_cancel(id, req.params).await,
+            #[cfg(feature = "mcp")]
+            "mcp.auth.logout" => self.method_mcp_auth_logout(id, req.params).await,
             #[cfg(not(feature = "mcp"))]
-            "mcp.status" | "mcp.addServer" | "mcp.updateServer" => {
+            "mcp.status" | "mcp.addServer" | "mcp.updateServer" | "mcp.auth.start"
+            | "mcp.auth.complete" | "mcp.auth.cancel" | "mcp.auth.logout" => {
                 module_not_compiled(id, &req.method, "mcp")
             }
             "commands.list" => RpcResponse::ok(
@@ -1233,6 +1242,133 @@ impl DaemonServer {
                 .await
         };
         match put {
+            Ok(result) => RpcResponse::ok(id, result),
+            Err((code, message)) => RpcResponse::err(id, code, message),
+        }
+    }
+
+    /// `mcp.auth.start` params: `{"server", "redirect"?: "loopback" |
+    /// "external", "redirect_uri"? (external only), "scopes"?}` plus the
+    /// `config_target` locators.
+    #[cfg(feature = "mcp")]
+    async fn method_mcp_auth_start(
+        &self,
+        id: serde_json::Value,
+        params: serde_json::Value,
+    ) -> RpcResponse {
+        let Some(server) = params.get("server").and_then(|v| v.as_str()) else {
+            return RpcResponse::err(id, codes::INVALID_PARAMS, "missing server");
+        };
+        let (project_root, scene) = match self.config_target(&params) {
+            Ok(target) => target,
+            Err(message) => return RpcResponse::err(id, codes::INVALID_PARAMS, message),
+        };
+        let redirect_uri = params.get("redirect_uri").and_then(|v| v.as_str());
+        let redirect = match params.get("redirect").and_then(|v| v.as_str()) {
+            None | Some("loopback") if redirect_uri.is_none() => mcp::oauth::Redirect::Loopback,
+            None | Some("loopback") => {
+                return RpcResponse::err(
+                    id,
+                    codes::INVALID_PARAMS,
+                    "redirect_uri is only for \"redirect\": \"external\"",
+                )
+            }
+            Some("external") => match redirect_uri {
+                Some(uri) => mcp::oauth::Redirect::External(uri.to_string()),
+                None => {
+                    return RpcResponse::err(
+                        id,
+                        codes::INVALID_PARAMS,
+                        "\"redirect\": \"external\" needs redirect_uri",
+                    )
+                }
+            },
+            Some(other) => {
+                return RpcResponse::err(
+                    id,
+                    codes::INVALID_PARAMS,
+                    format!("redirect must be \"loopback\" or \"external\", not {other:?}"),
+                )
+            }
+        };
+        let scopes = match params.get("scopes") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(v) => match serde_json::from_value::<Vec<String>>(v.clone()) {
+                Ok(scopes) => Some(scopes),
+                Err(_) => {
+                    return RpcResponse::err(
+                        id,
+                        codes::INVALID_PARAMS,
+                        "scopes must be an array of strings",
+                    )
+                }
+            },
+        };
+        match self
+            .pool
+            .mcp_auth_start(project_root.as_deref(), &scene, server, redirect, scopes)
+            .await
+        {
+            Ok(result) => RpcResponse::ok(id, result),
+            Err((code, message)) => RpcResponse::err(id, code, message),
+        }
+    }
+
+    /// `mcp.auth.complete` params: `{"flow_id", "callback_url"}`.
+    #[cfg(feature = "mcp")]
+    async fn method_mcp_auth_complete(
+        &self,
+        id: serde_json::Value,
+        params: serde_json::Value,
+    ) -> RpcResponse {
+        let (Some(flow_id), Some(callback_url)) = (
+            params.get("flow_id").and_then(|v| v.as_str()),
+            params.get("callback_url").and_then(|v| v.as_str()),
+        ) else {
+            return RpcResponse::err(id, codes::INVALID_PARAMS, "needs flow_id and callback_url");
+        };
+        match self.pool.mcp_auth_complete(flow_id, callback_url).await {
+            Ok(result) => RpcResponse::ok(id, result),
+            Err((code, message)) => RpcResponse::err(id, code, message),
+        }
+    }
+
+    /// `mcp.auth.cancel` params: `{"flow_id"}`.
+    #[cfg(feature = "mcp")]
+    async fn method_mcp_auth_cancel(
+        &self,
+        id: serde_json::Value,
+        params: serde_json::Value,
+    ) -> RpcResponse {
+        let Some(flow_id) = params.get("flow_id").and_then(|v| v.as_str()) else {
+            return RpcResponse::err(id, codes::INVALID_PARAMS, "missing flow_id");
+        };
+        match self.pool.mcp_auth_cancel(flow_id).await {
+            Ok(result) => RpcResponse::ok(id, result),
+            Err((code, message)) => RpcResponse::err(id, code, message),
+        }
+    }
+
+    /// `mcp.auth.logout` params: `{"server"}` plus the `config_target`
+    /// locators.
+    #[cfg(feature = "mcp")]
+    async fn method_mcp_auth_logout(
+        &self,
+        id: serde_json::Value,
+        params: serde_json::Value,
+    ) -> RpcResponse {
+        let Some(server) = params.get("server").and_then(|v| v.as_str()) else {
+            return RpcResponse::err(id, codes::INVALID_PARAMS, "missing server");
+        };
+        let (project_root, scene) = match self.config_target(&params) {
+            Ok(target) => target,
+            Err(message) => return RpcResponse::err(id, codes::INVALID_PARAMS, message),
+        };
+        match self
+            .pool
+            .mcp_auth_logout(project_root.as_deref(), &scene, server)
+            .await
+        {
             Ok(result) => RpcResponse::ok(id, result),
             Err((code, message)) => RpcResponse::err(id, code, message),
         }

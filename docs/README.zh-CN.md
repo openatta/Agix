@@ -109,7 +109,9 @@ MCP、询问、通知、监视、结构化输出(见下文[能力](#能力))。
 - 公开的 45 个扩展点:30 个契约、9 个拦截点、6 个注册点。
 - 编译进宿主的 Rust 插件,与 QuickJS 脚本;可以打成插件包安装,安装时强制披露。
 - 三十个时机的 hook,后端有 command、prompt、HTTP、agent 四种。
-- MCP 客户端(stdio、SSE、streamable HTTP、OAuth 2.0 PKCE);声明式场景;自定义 Agent 类型。
+- MCP 客户端(stdio、SSE、streamable HTTP、WebSocket);声明式场景;自定义 Agent 类型。
+- MCP 授权(2025-11-25 规范,OAuth 2.1):发现、动态客户端注册、PKCE、刷新;登录由宿主经 RPC
+  驱动,回调走回环或宿主自己的地址;令牌存在 0600 文件或宿主自己的存储里([mcp_auth.md](mcp_auth.md))。
 - 企业 MCP 策略:按 server 名、命令、URL 的允许与拒绝列表,从用户写不了的系统路径读
   (或 `--mcp-policy`);策略读不了就拒绝所有 server([ARCHITECTURE.md](ARCHITECTURE.md) §6.4)。
 
@@ -272,7 +274,7 @@ let (mut agent, events, input) = runtime::agent::Builder::new()
 | 内核 | `history` · `session` · `compaction` | transcript 日志、会话状态、上下文压缩 |
 | 内核 | `permissions` · `hooks` · `telemetry` | 规则引擎、生命周期 hooks、遥测与录制 |
 | 模块 | `agents` · `team` | `Agent` 工具、agent 类型、团队 |
-| 模块 | `mcp` · `auth` | MCP 客户端与工具适配、OAuth 2.0 PKCE |
+| 模块 | `mcp` | MCP 客户端与工具适配、MCP OAuth 授权 |
 | 模块 | `skills` | skill 目录与 `Skill` 工具 |
 | 模块 | `script-host` | QuickJS 载体 |
 | 内核 | `ptc` | `RunCode`:模型写的程序,在内嵌的 QuickJS 里跑([`ptc.md`](ptc.md)) |
@@ -280,8 +282,8 @@ let (mut agent, events, input) = runtime::agent::Builder::new()
 | 装配 | `assembly` | 会话池、配置、provider 路由、JSON-RPC 服务 |
 | 外壳 | `daemon` | `agixd` 二进制 |
 
-`crates/` 下 20 个 crate,加上 `daemon/`、四个测试成员与 `examples/plugins/rust` 的示例插件,
-工作区共 26 个成员。完整的
+`crates/` 下 19 个 crate,加上 `daemon/`、四个测试成员与 `examples/plugins/rust` 的示例插件,
+工作区共 25 个成员。完整的
 图景——会话与场景、历史日志、执行层、锁、磁盘布局——在 [`ARCHITECTURE.md`](ARCHITECTURE.md)。
 
 ---
@@ -312,7 +314,7 @@ echo '{"jsonrpc":"2.0","id":2,"method":"session.run_turn",
 一轮在跑时,`session.event` 帧不断推回来(文字增量、工具调用、工具结果、询问、任务
 进度);这一轮结束时响应到达。常见的客户端用一条连接订阅会话(`session.subscribe`),
 用另一条驱动它。协议参考 [`daemon_rpc_protocol.md`](daemon_rpc_protocol.md) 里记了
-六十二个方法——会话、历史与上下文、任务与子 Agent、场景、配置、MCP、插件、定时任务
+六十七个方法——会话、历史与上下文、任务与子 Agent、场景、配置、MCP、插件、定时任务
 ——每个文档里写的响应形状都有测试拿真实 daemon 的回答对照。
 
 常用参数:`--scene` / `--scenes`(服务哪些场景)、`--listen` / `--listen-ws` 加
@@ -488,6 +490,7 @@ cargo test  -p live --features real-model --test real_model  # LIVE 层,对真�
 | [extending_quickjs.md](extending_quickjs.md) | 写脚本扩展 |
 | [plugin_packages.md](plugin_packages.md) | 插件包的格式、安装与信任 |
 | [ptc.md](ptc.md) | `RunCode`:模型写的程序能调什么、权限、限额与提示词 |
+| [mcp_auth.md](mcp_auth.md) | 远端 MCP server 的 OAuth:配置、登录流程、RPC 与通知、凭据存储、安全 |
 | [migrating_to_0.3.md](migrating_to_0.3.md) | 嵌入方与客户端从 0.2.x 升级 |
 | [schemas/settings.schema.json](schemas/settings.schema.json) | 生成的 `settings.json` schema |
 | [tests/README.md](../tests/README.md) | 测试分层与 LIVE 层 |

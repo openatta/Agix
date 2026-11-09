@@ -104,10 +104,16 @@ pub struct Assembly {
     /// The host's last word on every session engine — see
     /// [`SessionCustomizer`].
     pub customize_session: Option<SessionCustomizer>,
-    /// Resolves OAuth bearer tokens for MCP servers with an `oauth_provider`
-    /// when this pool's token store has none. `None`: stored tokens only.
+    /// Where MCP servers' OAuth sign-ins are kept — a keychain, say. `None`:
+    /// 0600 files under the user data directory's `mcp/oauth/`.
     #[cfg(feature = "mcp")]
-    pub mcp_oauth_resolver: Option<Arc<dyn mcp::oauth::McpOAuthResolver>>,
+    pub mcp_credential_store: Option<Arc<dyn mcp::oauth::McpCredentialStore>>,
+    /// The client this host presents to MCP authorization servers it has no
+    /// registration with: the name shown on their consent page, and its
+    /// client metadata document URL if it publishes one. `None`: "Agix",
+    /// dynamic registration only.
+    #[cfg(feature = "mcp")]
+    pub mcp_oauth_client: Option<mcp::oauth::McpOAuthClient>,
     /// Which configured MCP servers may connect. `None` reads the policy file
     /// (`DaemonConfig::mcp_policy_path`, else the platform's managed path);
     /// a host that passes one is the only source, and no file is read.
@@ -129,7 +135,9 @@ impl Default for Assembly {
             plugins: Vec::new(),
             customize_session: None,
             #[cfg(feature = "mcp")]
-            mcp_oauth_resolver: None,
+            mcp_credential_store: None,
+            #[cfg(feature = "mcp")]
+            mcp_oauth_client: None,
             #[cfg(feature = "mcp")]
             mcp_policy: None,
         }
@@ -236,8 +244,8 @@ pub async fn pool(
         pool = pool.with_session_customizer(customize);
     }
     #[cfg(feature = "mcp")]
-    if let Some(resolver) = assembly.mcp_oauth_resolver {
-        pool = pool.with_mcp_oauth_resolver(resolver);
+    if assembly.mcp_credential_store.is_some() || assembly.mcp_oauth_client.is_some() {
+        pool = pool.with_mcp_auth(assembly.mcp_credential_store, assembly.mcp_oauth_client);
     }
     #[cfg(feature = "mcp")]
     {

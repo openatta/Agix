@@ -18,7 +18,7 @@ cargo feature 构建的、部署 `agixd` 的。
 | `runtime::agent_tool::{AgentTypeDefinition, AgentTypeSource, parse_permission_mode}` | `base::agent_type::*`(`agents::agent_tool` 也重新导出) |
 | `runtime::agent::{build_default_skill_manager, build_skill_manager_unwatched}` | `skills::module::*` |
 | `tools::skill_tool::*`、`tools::register_skill_tool` | `skills::tool::*`、`skills::tool::register` |
-| `tools::saas_stubs::McpAuthTool` | `mcp::auth_tool::McpAuthTool` |
+| `tools::saas_stubs::McpAuthTool` | 删除(0.3.10 起;OAuth 见 `mcp_auth.md`) |
 | `runtime::commands::CommandRegistry::from_skill_manager` | `from_skill_catalog`(收 `Arc<dyn SkillCatalog>`,`Arc<SkillManager>` 直接可传) |
 | `agents::agent_tool::AgentTool::set_skill_manager` | `set_skill_catalog` |
 | `model::tokens::TiktokenCounter` | `HeuristicCounter`;`estimate_input_tokens` / `estimate_block_tokens` 不再收 BPE 参数 |
@@ -408,6 +408,17 @@ WebAssembly 载体整个移除。
 - 工具 `VerifyPlanExecution` 删除:它要读的计划正文从没有地方写入,调用总是报
   "No active plan found"。
 - `session.export` 的 `runtime.json` 去掉 `plan_text`(一直是 `null`)。
+- **MCP 的 OAuth 换了一套**(`mcp_auth.md`)。`mcp_servers` 里的 `oauth_provider` 删除:写了它
+  的 server 配置整条被拒绝(启动与重载时发 `mcp_connect_failed`,`mcp.addServer` 报
+  `INVALID_PARAMS`),报错里给出新写法。改成 `"oauth": {"client_id", "client_secret_env",
+  "scopes", "callback_port"}`(都可省);只是想让要求登录的 server 能登录,什么都不用写。
+  以前 `oauth_providers` 里的密钥字面量没有对应写法:放进环境变量,`client_secret_env` 写变量名。
+  以前存在 `scenes/<id>/mcp/oauth/<provider>.json` 的令牌不再读取,要重新登录一次。
+- 新方法 `mcp.auth.start` / `mcp.auth.complete` / `mcp.auth.cancel` / `mcp.auth.logout`,新通知
+  `mcp_auth_required` / `mcp_auth_completed` / `mcp_auth_failed`,新错误码 `MCP_AUTH_FAILED`
+  (-32021)。`mcp.status` 的元素多了 `auth`,`state` 多了 `auth_required`。
+- 传输错误不再清掉 OAuth 令牌(以前任何一次重连都会清);`mcp.addServer` / `mcp.updateServer`
+  加进来的 server 和启动时连的一样走 OAuth。
 
 ### 嵌入方
 
@@ -433,3 +444,18 @@ WebAssembly 载体整个移除。
   (生产路径 `MemoryRetriever` 一直走它)。
 - `hooks::HookRunner::set_network`、`auth::OAuth2Client::with_network` 删除;后者要换出口直接设
   `net` 字段。
+- `auth` crate 整个删除(`OAuth2Client`、`TokenStore`、`CallbackListener`、`PkceVerifier`、
+  `ProviderConfig`……),它只有 MCP 在用;OAuth 现在是 `mcp::oauth`,协议部分用 rmcp。
+- `mcp::oauth::{McpOAuth, McpOAuthStore, McpOAuthResolver}` 删除,`McpAuth` 取代 `McpOAuth`;
+  `mcp::auth_tool::McpAuthTool`(从未注册)删除。
+- `Assembly::mcp_oauth_resolver` 删除,换成 `mcp_credential_store: Option<Arc<dyn
+  mcp::oauth::McpCredentialStore>>`(令牌存哪,默认 0600 文件)与 `mcp_oauth_client:
+  Option<mcp::oauth::McpOAuthClient>`(动态注册时的客户端名、CIMD 地址)。
+  `SessionPool::with_mcp_oauth_resolver` / `mcp_oauth()` 换成 `with_mcp_auth(store, client)` /
+  `mcp_auth()`。
+- `McpServerConfig::{StreamableHttp, Sse}` 的 `oauth_provider: Option<String>` 换成
+  `oauth: Option<McpOAuthConfig>`;`oauth_provider()` 删除,有 `oauth()` 与 `oauth_capable()`。
+- `McpManager::connect_all_with_oauth` 换成 `connect_all_with(servers, env, auth: Option<Arc<McpAuth>>)`;
+  新增 `share()`(会话用的、共享连接的那一份)、`pending()`(等登录的 server)。
+  `McpError` 多了 `AuthRequired` / `InsufficientScope`。
+- rmcp 升到 3.9,开了 `auth`、`auth-client-credentials-jwt`、`auth-enterprise-managed`。
