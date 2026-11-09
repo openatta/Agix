@@ -228,7 +228,8 @@ fn the_engine_keeps_no_new_process_wide_state() {
         ("crates/core/src/interface/exec/local/sandbox.rs", "AVAILABLE", "whether this machine can sandbox at all"),
         ("crates/core/src/interface/exec/local/orphans.rs", "ORPHANS", "the process groups this process leads: an OS resource of the process, which an aborting panic hook must reach in full"),
         ("crates/permissions/src/settings_patch.rs", "WRITE_LOCK", "serialises writes to settings files, which pools may share"),
-        ("crates/assembly/src/session_pool.rs", "OTEL", "the OpenTelemetry exporter installs process-wide providers; see assemble::pool"),
+        ("crates/assembly/src/telemetry_otel.rs", "PROCESS_EXPORTER", "the OpenTelemetry exporter installs process-wide providers; see assemble::pool"),
+        ("crates/history/src/lock.rs", "HELD", "the session-log locks this process holds: an flock belongs to an open file, so every pool writing one state directory must share the one open file per log"),
     ];
 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");

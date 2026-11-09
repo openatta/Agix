@@ -758,6 +758,19 @@ fn lock_elsewhere(path: &std::path::Path) -> Option<std::fs::File> {
     (rc == 0).then_some(file)
 }
 
+/// [`lock_elsewhere`], allowing a moment for a child process another test
+/// forked to exec and let go of its inherited copy of the descriptor.
+#[cfg(unix)]
+async fn lock_elsewhere_soon(path: &std::path::Path) -> Option<std::fs::File> {
+    for _ in 0..100 {
+        if let Some(file) = lock_elsewhere(path) {
+            return Some(file);
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    None
+}
+
 /// A session open in this daemon cannot be written by another one, a session
 /// another one holds is refused rather than handed back under a fresh id, and
 /// a log whose last line a crash cut short still resumes with its history.
@@ -787,7 +800,9 @@ async fn a_session_log_has_one_writer_and_survives_a_cut_last_line() {
         &format!(r#"{{"jsonrpc":"2.0","method":"session.close","id":2,"params":{{"session_id":"{sid}"}}}}"#),
     )
     .await;
-    let other = lock_elsewhere(&lock).expect("closing the session let go of its log");
+    let other = lock_elsewhere_soon(&lock)
+        .await
+        .expect("closing the session let go of its log");
     for method in ["session.resume", "session.run_turn"] {
         let resp = rpc(
             &srv.sock,

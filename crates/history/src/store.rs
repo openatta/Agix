@@ -576,11 +576,28 @@ impl JsonlHistoryStore {
         session_file(&self.session_dir_of(session).await, &session)
     }
 
-    fn writer_lock(&self, session: SessionId) -> Result<crate::lock::WriterLock, HistoryError> {
-        crate::lock::hold(
-            &session_sidecar_dir(&self.sessions_root, &session),
-            &session.to_string(),
-        )
+    async fn writer_lock(
+        &self,
+        session: SessionId,
+    ) -> Result<crate::lock::WriterLock, HistoryError> {
+        const PATIENCE: std::time::Duration = std::time::Duration::from_secs(1);
+        const STEP: std::time::Duration = std::time::Duration::from_millis(10);
+        let dir = session_sidecar_dir(&self.sessions_root, &session);
+        let id = session.to_string();
+        let mut waited = std::time::Duration::ZERO;
+        loop {
+            match crate::lock::hold(&dir, &id) {
+                // A child this process forks inherits the lock file's open
+                // descriptor until it execs, so a lock this process just let
+                // go of can still read as held for a moment; a lock another
+                // daemon holds stays held.
+                Err(HistoryError::Locked(_)) if waited < PATIENCE => {
+                    tokio::time::sleep(STEP).await;
+                    waited += STEP;
+                }
+                held => return held,
+            }
+        }
     }
 
     /// The project a session is about to be created under, read off the
@@ -1310,7 +1327,7 @@ impl HistoryStore for JsonlHistoryStore {
         entry: LogEntry,
         tags: crate::entry::EntryTags,
     ) -> Result<(), HistoryError> {
-        let _writer = self.writer_lock(session)?;
+        let _writer = self.writer_lock(session).await?;
         let _guard = self.append_lock.lock().await;
 
         // A `Meta` line is where a session says which project it belongs to,
@@ -1409,7 +1426,7 @@ impl HistoryStore for JsonlHistoryStore {
     }
 
     async fn claim(&self, session: SessionId) -> Result<SessionClaim, HistoryError> {
-        Ok(SessionClaim::new(self.writer_lock(session)?))
+        Ok(SessionClaim::new(self.writer_lock(session).await?))
     }
 
     /// Measures every log in the root's project directory while holding the
@@ -1426,7 +1443,7 @@ impl HistoryStore for JsonlHistoryStore {
     }
 
     async fn delete(&self, session: SessionId) -> Result<(), HistoryError> {
-        let _writer = self.writer_lock(session)?;
+        let _writer = self.writer_lock(session).await?;
         let jsonl_path = self.session_path_of(session).await;
         match tokio::fs::remove_file(&jsonl_path).await {
             Ok(()) => {}
