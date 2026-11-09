@@ -2275,7 +2275,7 @@ MCP 策略拒绝这个 server → `MCP_SERVER_DENIED`,**什么都不写、不连
 // → params(可选)
 { "session_id": "…" }        // 只列这个会话的;不给就列全部
 // ← result
-{ "jobs": [ /* 同上 job */ ] }
+{ "jobs": [ { "id": "…", "cron": "…", "prompt": "…" } ] }   // 元素同 schedule.create 的 job
 ```
 
 #### `schedule.delete`

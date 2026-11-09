@@ -294,10 +294,10 @@ OAuth 请求）不走 shell 的 `HTTP(S)_PROXY`，不用另设 `NO_PROXY`。
 | 测试 | 盯住什么 |
 |---|---|
 | `daemon/tests/protocol_doc_matches_dispatch.rs` | `daemon_rpc_protocol.md` §6 与 `dispatch` 的方法集合一致 |
-| `daemon/tests/protocol_doc_examples.rs` | 文档里每个响应示例都和真 daemon 的回答逐字段一致 |
+| `daemon/tests/protocol_doc_examples.rs` | 文档里的响应示例和真 daemon 的回答逐字段一致;比对不了的方法(示例是各种状态的字段并集、要外部授权服务器等)列在 `NOT_COMPARED` / `NO_EXAMPLE` 里并写明原因,两张表与文档、与比对代码对不上就挂 |
 | `daemon/tests/extension_points_doc.rs` | `extension_points.md` 的表由 `catalog` 生成 |
 | `crates/core` 的 `settings_schema_matches_committed_file` | `docs/schemas/settings.schema.json` 由 `Settings` 类型生成（`#[ignore]`，CI 的 ignored 那一步跑） |
-| `daemon/tests/readme_matches_the_code.rs` | `README.md` 里可数的那些声称——workspace 成员数、RPC 方法数、扩展点数、hook 事件数、遥测事件类型数、内建工具数，以及工具表里每个名字都还实装着 |
+| `daemon/tests/readme_matches_the_code.rs` | `README.md` 与 `docs/README.zh-CN.md` 里可数的那些声称——workspace 成员数、RPC 方法数、扩展点数、hook 事件数、遥测事件类型数、内建工具数，以及工具表里每个名字都还实装着 |
 
 **每个 RPC 方法都得有人调。** 上面那两条盯的是「文档和 dispatch 说的是同一批方法」，
 都答不了「这个方法有没有被跑过」。`protocol_doc_matches_dispatch.rs` 的

@@ -1,15 +1,10 @@
-//! The README's countable claims are counted from the code.
+//! The countable claims of both READMEs (`README.md` and
+//! `docs/README.zh-CN.md`) are counted from the code.
 //!
-//! Four documents in this repository are already compared against the code by
-//! a test, and the README — the one document every reader starts at — was not
-//! one of them. It says "nothing is claimed that is not checked, including by
-//! these documents" while being the exception, and it had drifted in exactly
-//! the way that invites: a method count from before two methods were added, a
-//! workspace member count from before the harness crate, a builder argument
-//! described as concrete a week after it became a trait object.
-//!
-//! Only the numbers a reader would act on are here. Prose is not checkable and
-//! pretending otherwise would make this test a formatting gate.
+//! The README is the one document every reader starts at, and a count in it
+//! goes stale the moment a method, crate or tool is added. Only the numbers a
+//! reader would act on are here, plus the tool table's names. Prose is not
+//! checkable and pretending otherwise would make this test a formatting gate.
 //!
 //! Source-text scanning where a runtime value is not reachable from `daemon`'s
 //! dependency graph, same as the sibling doc tests.
@@ -28,19 +23,27 @@ fn read(rel: &str) -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{} is readable: {e}", path.display()))
 }
 
-/// The README with every run of whitespace collapsed, so a claim can be
+const README: &str = "README.md";
+const README_ZH: &str = "docs/README.zh-CN.md";
+
+/// A README with every run of whitespace collapsed, so a claim can be
 /// asserted without knowing where the paragraph happened to wrap.
+fn collapsed(rel: &str) -> String {
+    read(rel).split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 fn readme() -> String {
-    read("README.md")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    collapsed(README)
+}
+
+fn readme_zh() -> String {
+    collapsed(README_ZH)
 }
 
 fn claims(text: &str, claim: &str, derived_from: &str) {
     assert!(
         text.contains(claim),
-        "the README does not say \"{claim}\".\n\
+        "a README does not say \"{claim}\".\n\
          That number comes from {derived_from} — either the README is stale or \
          this test's source is."
     );
@@ -90,6 +93,13 @@ fn spelled(n: usize) -> String {
     }
 }
 
+/// The same numbers in Chinese numerals, for the zh-CN README's prose.
+fn spelled_zh(n: usize) -> String {
+    const DIGITS: [&str; 10] = ["", "一", "二", "三", "四", "五", "六", "七", "八", "九"];
+    assert!((20..100).contains(&n), "no spelling for {n}");
+    format!("{}十{}", DIGITS[n / 10], DIGITS[n % 10])
+}
+
 #[test]
 fn the_workspace_is_the_size_the_readme_says() {
     let manifest = read("Cargo.toml");
@@ -116,6 +126,18 @@ fn the_workspace_is_the_size_the_readme_says() {
     claims(
         &readme,
         &format!("{} workspace members in total", members.len()),
+        "the workspace member list",
+    );
+
+    let zh = readme_zh();
+    claims(
+        &zh,
+        &format!("`crates/` 下 {crates} 个 crate"),
+        "the workspace member list",
+    );
+    claims(
+        &zh,
+        &format!("工作区共 {} 个成员", members.len()),
         "the workspace member list",
     );
 }
@@ -147,13 +169,24 @@ fn the_method_count_is_the_documented_method_count() {
         &format!("{} methods are documented", spelled(methods.len())),
         "the method headings in docs/daemon_rpc_protocol.md §6",
     );
+    claims(
+        &readme_zh(),
+        &format!("{}个方法", spelled_zh(methods.len())),
+        "the method headings in docs/daemon_rpc_protocol.md §6",
+    );
 }
 
 #[test]
 fn the_extension_surface_is_the_size_the_readme_says() {
+    let points = base::interface::catalog::all().len();
     claims(
         &readme(),
-        &format!("{} extension points", base::interface::catalog::all().len()),
+        &format!("{points} extension points"),
+        "base::interface::catalog",
+    );
+    claims(
+        &readme_zh(),
+        &format!("{points} 个扩展点"),
         "base::interface::catalog",
     );
 }
@@ -184,6 +217,18 @@ fn the_hook_and_telemetry_counts_are_the_enums() {
         &format!("{event_types} structured event types"),
         "telemetry::EventPayload",
     );
+
+    let zh = readme_zh();
+    claims(
+        &zh,
+        &format!("{}个时点", spelled_zh(hook_events)),
+        "hooks::HookEvent",
+    );
+    claims(
+        &zh,
+        &format!("{event_types} 种结构化事件"),
+        "telemetry::EventPayload",
+    );
 }
 
 #[test]
@@ -196,47 +241,57 @@ fn the_self_contained_tool_count_is_what_registration_installs() {
         &format!("installs the {} self-contained ones", reg.all().len()),
         "tools::register_builtin_tools",
     );
+    claims(
+        &readme_zh(),
+        &format!("装上其中 {} 个自给自足的", reg.all().len()),
+        "tools::register_builtin_tools",
+    );
 }
 
-/// Every tool the README's table names is a tool that exists.
+/// Every tool a README's table names is a tool that exists.
 ///
 /// The table is the README's longest list of claims and the one most likely to
 /// outlive a rename, which a count alone would not catch.
 #[test]
 fn every_tool_in_the_table_exists() {
-    let readme_src = read("README.md");
-    let table = readme_src
-        .split_once("| Category | Tools |")
-        .expect("the tool table still has its header")
-        .1
-        .split_once("\n\n")
-        .expect("the tool table ends at a blank line")
-        .0;
-
-    let named: Vec<&str> = table
-        .split('`')
-        .skip(1)
-        .step_by(2)
-        // `mcp__<server>__<tool>` is a shape, not a name.
-        .filter(|n| !n.contains('<'))
-        .collect();
-
     let real = tool_names_in_source();
-    let missing: Vec<&&str> = named
-        .iter()
-        .filter(|n| !real.contains(&n.to_string()))
-        .collect();
-    assert!(
-        missing.is_empty(),
-        "the README's tool table names tools nothing implements: {missing:?}\n\
-         A tool a reader cannot call is worse than one that was never advertised."
-    );
+    for (rel, header, count_claim) in [
+        (README, "| Category | Tools |", "Tools — {} built in"),
+        (README_ZH, "| 类别 | 工具 |", "工具——{} 个内建"),
+    ] {
+        let source = read(rel);
+        let table = source
+            .split_once(header)
+            .unwrap_or_else(|| panic!("{rel}'s tool table still has its header"))
+            .1
+            .split_once("\n\n")
+            .expect("the tool table ends at a blank line")
+            .0;
 
-    claims(
-        &readme(),
-        &format!("Tools — {} built in", named.len()),
-        "the rows of the README's own tool table",
-    );
+        let named: Vec<&str> = table
+            .split('`')
+            .skip(1)
+            .step_by(2)
+            // `mcp__<server>__<tool>` is a shape, not a name.
+            .filter(|n| !n.contains('<'))
+            .collect();
+
+        let missing: Vec<&&str> = named
+            .iter()
+            .filter(|n| !real.contains(&n.to_string()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "{rel}'s tool table names tools nothing implements: {missing:?}\n\
+             A tool a reader cannot call is worse than one that was never advertised."
+        );
+
+        claims(
+            &collapsed(rel),
+            &count_claim.replace("{}", &named.len().to_string()),
+            "the rows of that README's own tool table",
+        );
+    }
 }
 
 /// Names from every `fn name(&self) -> &str { "…" }` in the workspace.
