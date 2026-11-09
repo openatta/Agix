@@ -447,9 +447,9 @@ pub struct JsonlHistoryStore {
     /// the session's own sidecar; this is the cache in front of it, and the
     /// reason an append doesn't read a file to find out where to write.
     homes: Mutex<HashMap<SessionId, Option<PathBuf>>>,
-    /// 序列化 append 调用，避免并发 partial-line 写。
-    /// 不是 RwLock —— append 是写操作，读不互让有意义。
-    append_lock: Arc<Mutex<()>>,
+    /// One per session: serializes that session's appends and sidecar
+    /// read-modify-writes, and nobody else's.
+    logs: std::sync::Mutex<HashMap<SessionId, Arc<Mutex<LogState>>>>,
     /// Sessions whose log's directory entry this process has already synced.
     synced_dirs: Mutex<std::collections::HashSet<SessionId>>,
     /// Where content too big to keep inline goes. Without one, everything
@@ -471,7 +471,7 @@ impl JsonlHistoryStore {
             sessions_root: roots.sessions,
             canonical_cwd: canonical,
             homes: Mutex::new(HashMap::new()),
-            append_lock: Arc::new(Mutex::new(())),
+            logs: std::sync::Mutex::new(HashMap::new()),
             synced_dirs: Mutex::new(std::collections::HashSet::new()),
             blobs: None,
             projection: None,
@@ -576,6 +576,15 @@ impl JsonlHistoryStore {
         session_file(&self.session_dir_of(session).await, &session)
     }
 
+    fn log_of(&self, session: SessionId) -> Arc<Mutex<LogState>> {
+        self.logs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(session)
+            .or_default()
+            .clone()
+    }
+
     async fn writer_lock(
         &self,
         session: SessionId,
@@ -586,7 +595,8 @@ impl JsonlHistoryStore {
         let id = session.to_string();
         let mut waited = std::time::Duration::ZERO;
         loop {
-            match crate::lock::hold(&dir, &id) {
+            let (dir, id) = (dir.clone(), id.clone());
+            match blocking(move || crate::lock::hold(&dir, &id)).await {
                 // A child this process forks inherits the lock file's open
                 // descriptor until it execs, so a lock this process just let
                 // go of can still read as held for a moment; a lock another
@@ -642,9 +652,8 @@ impl JsonlHistoryStore {
     }
 
     /// The second half of [`HistoryStore::snapshot_lineage`]: the logs in
-    /// `dir` read up to the lengths measured for them. Each length is the end
-    /// of a whole line, because an append writes its line in one go under the
-    /// lock the measuring held.
+    /// `dir` read up to the lengths measured for them, each cut back to the
+    /// last whole line — a length can land inside a line being appended.
     async fn read_lineage(
         &self,
         root: SessionId,
@@ -1170,6 +1179,43 @@ fn sync_log(path: &Path, dir_done: bool) -> Result<(), HistoryError> {
     Ok(())
 }
 
+/// What this process knows about one session's log.
+#[derive(Debug, Default)]
+struct LogState {
+    /// The log's length right after this process last appended to it. A log
+    /// still that long ends on the line break that append wrote, and the next
+    /// append need not look.
+    len_after_last_append: Option<u64>,
+}
+
+/// Append one line to the log at `path` and return the log's new length.
+fn write_line(path: &Path, line: &[u8], known_len: Option<u64>) -> Result<u64, HistoryError> {
+    use std::io::Write;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut f = std::fs::OpenOptions::new()
+        .read(true)
+        .append(true)
+        .create(true)
+        .open(path)?;
+    if Some(f.metadata()?.len()) != known_len {
+        end_on_a_line_break(&mut f, path)?;
+    }
+    f.write_all(line)?;
+    f.flush()?;
+    Ok(f.metadata()?.len())
+}
+
+/// Run blocking file work off the async worker threads.
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, HistoryError> + Send + 'static,
+) -> Result<T, HistoryError> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|e| HistoryError::Io(std::io::Error::other(e)))?
+}
+
 /// One log's entries, with references into `blobs` put back.
 fn parse_log(
     content: &str,
@@ -1329,7 +1375,8 @@ impl HistoryStore for JsonlHistoryStore {
         tags: crate::entry::EntryTags,
     ) -> Result<(), HistoryError> {
         let _writer = self.writer_lock(session).await?;
-        let _guard = self.append_lock.lock().await;
+        let log = self.log_of(session);
+        let mut log = log.lock().await;
 
         // A `Meta` line is where a session says which project it belongs to,
         // so it is also where that gets recorded — in the map for this
@@ -1358,42 +1405,29 @@ impl HistoryStore for JsonlHistoryStore {
         let project_history_dir = project_dir_for(&self.projects_root, home.as_deref());
         let path = session_file(&project_history_dir, &session);
 
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
         // Read before the entry can be externalized: an assistant message big
         // enough to move out to a blob would take its usage with it, and the
         // totals would quietly stop counting anything over the threshold.
         let counters = crate::project::CounterDelta::of(&entry);
 
-        let entry = match &self.blobs {
-            Some(blobs) => externalize_if_bulky(entry, blobs.as_ref())?,
+        let entry = match self.blobs.clone() {
+            Some(blobs) => blocking(move || externalize_if_bulky(entry, blobs.as_ref())).await?,
             None => entry,
         };
 
-        let mut f = std::fs::OpenOptions::new()
-            .read(true)
-            .append(true)
-            .create(true)
-            .open(&path)?;
-        end_on_a_line_break(&mut f, &path)?;
-
         let enveloped = EnvelopedEntry::new_in(self.environment(), session, entry).with_tags(tags);
-        let line = serde_json::to_string(&enveloped)?;
+        let mut line = serde_json::to_vec(&enveloped)?;
+        line.push(b'\n');
 
-        // 一次 write_all 把 line + '\n' 一起出，减少 partial line 风险。
-        use std::io::Write;
-        let mut buf = line.into_bytes();
-        buf.push(b'\n');
-        f.write_all(&buf)?;
-        f.flush()?;
+        let known_len = log.len_after_last_append.take();
+        log.len_after_last_append =
+            Some(blocking(move || write_line(&path, &line, known_len)).await?);
 
         // After the log, and never in front of it. The transcript is the
         // record; these are a convenience computed from it, so a sidecar that
-        // cannot be written costs a count and not the entry — still inside
-        // `append_lock`, which is what keeps two appends from reading the
-        // same total and writing back the same sum.
+        // cannot be written costs a count and not the entry — still under
+        // this session's log lock, which is what keeps two appends from
+        // reading the same total and writing back the same sum.
         if let Err(e) = crate::project::add_counters_in(
             &self.sessions_root,
             home.as_deref().unwrap_or_else(|| Path::new("")),
@@ -1430,30 +1464,34 @@ impl HistoryStore for JsonlHistoryStore {
         Ok(SessionClaim::new(self.writer_lock(session).await?))
     }
 
-    /// Measures every log in the root's project directory while holding the
-    /// lock appends take, and reads each one up to what was measured once the
-    /// lock is released. A sidechain's transcript goes to its parent's
-    /// project, so one directory holds the whole lineage.
+    /// Measures every log in the root's project directory and reads each one
+    /// up to what was measured, taking no lock: a session whose append is
+    /// slow does not hold up a snapshot of another. A sidechain's transcript
+    /// goes to its parent's project, so one directory holds the whole
+    /// lineage.
     async fn snapshot_lineage(&self, root: SessionId) -> Result<LineageSnapshot, HistoryError> {
         let dir = self.session_dir_of(root).await;
-        let lengths = {
-            let _guard = self.append_lock.lock().await;
-            transcript_lengths_in(&dir).await?
-        };
+        let lengths = transcript_lengths_in(&dir).await?;
         self.read_lineage(root, &dir, lengths).await
     }
 
+    /// The transcript goes, then the whole sidecar. The writer lock is held
+    /// throughout so no other process can start writing in between.
     async fn delete(&self, session: SessionId) -> Result<(), HistoryError> {
-        let _writer = self.writer_lock(session).await?;
+        let writer = self.writer_lock(session).await?;
+        let log = self.log_of(session);
+        let mut log = log.lock().await;
         let jsonl_path = self.session_path_of(session).await;
         match tokio::fs::remove_file(&jsonl_path).await {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(HistoryError::Io(e)),
         }
-        let meta_path = session_metadata_file(&self.sessions_root, &session);
-        let _ = tokio::fs::remove_file(meta_path).await;
+        log.len_after_last_append = None;
+        let sidecar = session_sidecar_dir(&self.sessions_root, &session);
+        blocking(move || writer.remove_sidecar(&sidecar).map_err(HistoryError::Io)).await?;
         self.homes.lock().await.remove(&session);
+        self.synced_dirs.lock().await.remove(&session);
         Ok(())
     }
 
@@ -1462,6 +1500,9 @@ impl HistoryStore for JsonlHistoryStore {
         session: SessionId,
         title: Option<String>,
     ) -> Result<(), HistoryError> {
+        let _writer = self.writer_lock(session).await?;
+        let log = self.log_of(session);
+        let _log = log.lock().await;
         let home = self.home_of(session).await;
         crate::project::set_session_title_in(
             &self.sessions_root,
@@ -4182,6 +4223,168 @@ mod crash_tests {
                 [good]
             );
         }
+    }
+
+    fn sidecar_of(root: &TempDir, session: SessionId) -> PathBuf {
+        session_sidecar_dir(&root.path().join("state").join("sessions"), &session)
+    }
+
+    fn compacted() -> LogEntry {
+        LogEntry::Compact {
+            before_tokens: 10,
+            after_tokens: 5,
+            summary_block_id: None,
+            replacement_history: None,
+            summary: None,
+            snip_removed_uuids: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_takes_the_whole_sidecar_with_it() {
+        let root = TempDir::new().unwrap();
+        let store = store_in(&root).await;
+        let s = SessionId::new();
+        store.append(s, user("one")).await.unwrap();
+        store.append(s, compacted()).await.unwrap();
+        store
+            .set_session_title(s, Some("named".into()))
+            .await
+            .unwrap();
+        let sidecar = sidecar_of(&root, s);
+        std::fs::write(sidecar.join("session_memory.md"), "what was said").unwrap();
+        std::fs::create_dir_all(sidecar.join("nested")).unwrap();
+        std::fs::write(sidecar.join("nested/x"), "x").unwrap();
+
+        store.delete(s).await.unwrap();
+
+        assert!(!store.session_path_of(s).await.exists());
+        assert!(!sidecar.exists());
+        store.delete(s).await.unwrap();
+        store.append(s, user("again")).await.unwrap();
+        assert_eq!(
+            store.session_stats(s).await.unwrap(),
+            SessionStats::default()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn delete_under_a_live_claim_keeps_only_the_lock_file() {
+        let root = TempDir::new().unwrap();
+        let store = store_in(&root).await;
+        let s = SessionId::new();
+        store.append(s, user("one")).await.unwrap();
+        let claim = store.claim(s).await.unwrap();
+        let sidecar = sidecar_of(&root, s);
+        std::fs::write(sidecar.join("session_memory.md"), "what was said").unwrap();
+
+        store.delete(s).await.unwrap();
+
+        let left: Vec<_> = std::fs::read_dir(&sidecar)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(left, [std::ffi::OsString::from("writer.lock")]);
+        assert!(
+            lock_elsewhere(&sidecar.join("writer.lock")).is_none(),
+            "the claim still keeps other processes out"
+        );
+        drop(claim);
+        assert!(lock_elsewhere(&sidecar.join("writer.lock")).is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn renaming_while_compacting_loses_neither_the_name_nor_a_count() {
+        let root = TempDir::new().unwrap();
+        let store = Arc::new(store_in(&root).await);
+        let s = SessionId::new();
+        store.append(s, user("one")).await.unwrap();
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..100 {
+            let renaming = store.clone();
+            tasks.spawn(async move { renaming.set_session_title(s, Some("named".into())).await });
+            let compacting = store.clone();
+            tasks.spawn(async move { compacting.append(s, compacted()).await });
+        }
+        while let Some(done) = tasks.join_next().await {
+            done.unwrap().unwrap();
+        }
+
+        let stats = store.session_stats(s).await.unwrap();
+        assert_eq!(stats.title.as_deref(), Some("named"));
+        assert_eq!(stats.compact_count, 100);
+        assert_eq!(store.load(s).await.unwrap().len(), 101);
+    }
+
+    /// A blob store standing in for a disk that has stopped answering for
+    /// one session's writes.
+    struct StuckDisk {
+        entered: std::sync::mpsc::SyncSender<()>,
+        release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl BlobStore for StuckDisk {
+        fn name(&self) -> &str {
+            "stuck"
+        }
+
+        fn put(&self, _bytes: &[u8]) -> Result<String, std::io::Error> {
+            self.entered.send(()).unwrap();
+            self.release.lock().unwrap().recv().unwrap();
+            Ok("0123456789abcdef".into())
+        }
+
+        fn get(&self, _id: &str) -> Result<Option<Vec<u8>>, std::io::Error> {
+            Ok(None)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_session_whose_write_is_stuck_does_not_hold_up_another() {
+        let root = TempDir::new().unwrap();
+        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let store = Arc::new(store_in(&root).await.with_blob_store(Arc::new(StuckDisk {
+            entered: entered_tx,
+            release: std::sync::Mutex::new(release_rx),
+        })));
+        let stuck = SessionId::new();
+        let free = SessionId::new();
+        store.append(stuck, user("before")).await.unwrap();
+
+        let writing = store.clone();
+        let stuck_append = tokio::spawn(async move {
+            writing
+                .append(
+                    stuck,
+                    LogEntry::User {
+                        content: vec![base::message::ContentBlock::Image {
+                            source: base::message::ImageSource::Base64 {
+                                media_type: "image/png".into(),
+                                data: "iVBORw0KGgo=".into(),
+                            },
+                        }],
+                    },
+                )
+                .await
+        });
+        tokio::task::spawn_blocking(move || entered_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            store.append(free, user("not waiting")).await.unwrap();
+            store.load(free).await.unwrap();
+            store.snapshot_lineage(free).await.unwrap();
+        })
+        .await
+        .expect("another session's append went through while this one is stuck");
+
+        release_tx.send(()).unwrap();
+        stuck_append.await.unwrap().unwrap();
+        assert_eq!(store.load(stuck).await.unwrap().len(), 2);
     }
 
     #[tokio::test]

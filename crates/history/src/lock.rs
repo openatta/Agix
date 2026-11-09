@@ -35,6 +35,37 @@ pub(crate) struct WriterLock {
     path: PathBuf,
 }
 
+impl WriterLock {
+    /// Empty the sidecar directory this lock lives in, and remove it.
+    ///
+    /// The lock file and the directory stay while another holder in this
+    /// process still has them: a hold taken out on the cached open file of a
+    /// lock file that is gone would lock nothing, and another process could
+    /// then start writing alongside it.
+    pub(crate) fn remove_sidecar(self, sidecar_dir: &Path) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(sidecar_dir)? {
+            let entry = entry?;
+            if entry.file_name() == LOCK_FILE {
+                continue;
+            }
+            if entry.file_type()?.is_dir() {
+                std::fs::remove_dir_all(entry.path())?;
+            } else {
+                std::fs::remove_file(entry.path())?;
+            }
+        }
+        let held = held();
+        if held.get(&self.path).is_some_and(|entry| entry.holders == 1) {
+            std::fs::remove_file(&self.path)?;
+            if let Err(error) = std::fs::remove_dir(sidecar_dir) {
+                tracing::warn!(dir = %sidecar_dir.display(), %error, "the session's sidecar directory was not removed");
+            }
+        }
+        drop(held);
+        Ok(())
+    }
+}
+
 impl Drop for WriterLock {
     fn drop(&mut self) {
         let mut held = held();

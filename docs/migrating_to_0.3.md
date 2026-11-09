@@ -534,6 +534,9 @@ WebAssembly 载体整个移除。
   `context.tokens` 与按 token 估的花费都偏大。
 - Anthropic 原生搜索不再带 `anthropic-beta: web-search-20250305-2025-03-05`(`web_search_20250305`
   不需要 beta)。
+- `session.delete`,以及 `session.close` / `session.delete` 级联删掉的会话,连同
+  `sessions/<id>/` 整个目录一起删(会话记忆、metadata、输入历史);以前只删 `metadata.json`。
+  会话还在本 daemon 里活着时只留下空的 `writer.lock`。
 
 ### 嵌入方
 
@@ -632,6 +635,12 @@ WebAssembly 载体整个移除。
   `JsonlHistoryStore` 的 `append` 不再承诺立即持久,`sync` 才是;`delete` 在会话被别的进程
   占着时报 `Locked`。`SessionManager::persist` 写了东西就 `sync` 一次。包装别的 store 的
   实现要把这两个方法转发下去,否则拿到的是什么都不做的缺省。
+- `history::blob::PasteStore::cleanup` 删除(按 mtime 删,不管还有没有日志引用)。
+  `JsonlHistoryStore` 的写锁按会话分开,一个会话的 IO 卡住不再挡别的会话;
+  `set_session_title` 与 append 拿同一把锁,另一个进程占着这个会话时同样报 `Locked`。
+- `transcript::ExtensionsAreVisible` 对它不覆盖的扩展条目照引擎的规矩处理(`agix.context` 的
+  drop / edit 照样生效);`LogEntry::ToolResult` 只并进全是工具结果的末尾 User,同一个
+  `tool_use_id` 只并一次。
 - `team::mailbox::MailboxStore::send` 返回 `Result<(), UnknownPeer>`,不是成员的收件人被拒;
   新增 `MailboxStore::check_peer` 与 `team::mailbox::mailbox_file`(标签到文件名)。
 - `plugin::cache::check_component` 新增;`plugin::install::{install, uninstall}` 与

@@ -1549,8 +1549,8 @@ recordings/<name>/calls.jsonl, blobs/    只在 include 列了 "recording" 时
   "sidechains_deleted": 0, "sidechain_ids": [ ] }
 ```
 
-**真正删除磁盘 transcript,并级联删除记着它作父会话的全部会话(侧链,以及它的
-分叉)。不可逆。**
+**真正删除磁盘 transcript 与 `sessions/<id>/` 整个目录(会话记忆、metadata、输入历史),
+并级联删除记着它作父会话的全部会话(侧链,以及它的分叉)。不可逆。**
 
 `dry_run: true` 只返回将要删除的清单(`deleted` 为 `false`),不实际删除 —— 供宿主
 做二次确认。
