@@ -285,7 +285,6 @@ async fn a_skills_allowed_tools_pre_approve_what_it_names_and_project_blankets_a
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: a bare `allowed-tools: Bash(sh build.sh)` is split on whitespace into `Bash(sh` and `build.sh)` (core/src/frozen/frontmatter.rs:98), so any scoped grant with a space in it — `Bash(cargo test:*)` — is lost unless written as a [list]"]
 async fn a_scoped_grant_written_bare_is_honored() -> anyhow::Result<()> {
     let mut run = LiveRun::builder("granted-bare")
         .settings(json!({

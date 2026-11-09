@@ -80,29 +80,43 @@ fn strip_quotes(s: &str) -> &str {
 
 /// Parse a YAML inline list value: `[a, b, c]`, comma-separated `a, b, c`, or
 /// space-separated `a b c` — frontmatter fields like `allowed-tools`/
-/// `arguments`/`skills` all accept any of the three forms.
+/// `arguments`/`skills` all accept any of the three forms. Separators inside
+/// parentheses do not split, so `Bash(cargo test:*)` stays one entry.
 pub fn parse_yaml_list(raw: &str) -> Vec<String> {
     let s = raw.trim();
-    if s.starts_with('[') && s.ends_with(']') {
-        let inner = &s[1..s.len() - 1];
-        inner
-            .split(',')
-            .map(|item| strip_quotes(item.trim()).to_string())
-            .filter(|item| !item.is_empty())
-            .collect()
-    } else if s.contains(',') {
-        s.split(',')
-            .map(|item| strip_quotes(item.trim()).to_string())
-            .filter(|item| !item.is_empty())
-            .collect()
-    } else if s.split_whitespace().count() > 1 {
-        s.split_whitespace()
-            .map(|item| strip_quotes(item).to_string())
-            .filter(|item| !item.is_empty())
-            .collect()
+    let (inner, by_comma) = match s.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
+        Some(inner) => (inner, true),
+        None => (s, split_outside_parens(s, |c| c == ',').len() > 1),
+    };
+    let items = if by_comma {
+        split_outside_parens(inner, |c| c == ',')
     } else {
-        vec![s.to_string()]
+        split_outside_parens(inner, char::is_whitespace)
+    };
+    items
+        .into_iter()
+        .map(|item| strip_quotes(item.trim()).to_string())
+        .filter(|item| !item.is_empty())
+        .collect()
+}
+
+fn split_outside_parens(s: &str, is_separator: impl Fn(char) -> bool) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0;
+    for (i, c) in s.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            c if depth == 0 && is_separator(c) => {
+                out.push(&s[start..i]);
+                start = i + c.len_utf8();
+            }
+            _ => {}
+        }
     }
+    out.push(&s[start..]);
+    out
 }
 
 /// Parse SKILL.md: extract YAML frontmatter (`---` delimited `key: value` lines),
@@ -477,6 +491,25 @@ mod tests {
                 "Glob".to_string()
             ])
         );
+    }
+
+    #[test]
+    fn a_scoped_grant_with_spaces_stays_one_entry() {
+        let list = |raw: &str| parse_yaml_list(raw);
+        assert_eq!(list("Bash(sh build.sh)"), vec!["Bash(sh build.sh)"]);
+        assert_eq!(
+            list("Bash(cargo test:*) Read"),
+            vec!["Bash(cargo test:*)", "Read"]
+        );
+        assert_eq!(
+            list("Bash(git add, commit), Read"),
+            vec!["Bash(git add, commit)", "Read"]
+        );
+        assert_eq!(
+            list("[Bash(npm run build), \"Edit\"]"),
+            vec!["Bash(npm run build)", "Edit"]
+        );
+        assert_eq!(list("issue, branch"), vec!["issue", "branch"]);
     }
 
     #[test]
