@@ -502,6 +502,10 @@ WebAssembly 载体整个移除。
   一律是 project 来源(以前不认识的名字一律当 user,项目里的 `allowed-tools: [Bash]` 因此免确认);
   不在任何扫描层下的文件同样按 project;后面的层占着同名 skill 时,前面层的改动不再顶替它;
   `skills/<name>/` 下 `SKILL.md` 以外的 `.md` 不再被注册成 skill。
+- 模型请求在开始回答之前收到 500 / 502 / 504 / 408 的,按退避再发(两个协议都是),和 429、
+  503、529 一样;以前直接失败。
+- Anthropic 的 `base_url` / `ANTHROPIC_BASE_URL` 写到 `…/v1` 或写全 `…/v1/messages` 都可以,
+  不再拼成 `…/v1/v1/messages`。
 
 ### 嵌入方
 
@@ -520,6 +524,10 @@ WebAssembly 载体整个移除。
   `Result<_, TurnError>`);`StreamResult` 多了 `cancelled`。
 - `StopRecovery` 多了 `Continue`,`DefaultRecovery` 对 `pause_turn` 返回它;穷举匹配
   `StopRecovery` 的要补一支。
+- `HttpAnthropicClient::with_base` 自己把 base 归成 `…/v1/messages`(新增
+  `model::client::messages_url`),调用方不用再补结尾的 `/`(以前不补,`https://relay/anthropic`
+  的 `anthropic` 会被换掉);不能带路径的 URL(`data:`)在这里报 `AnthropicError::ParseError`,
+  不再等到第一次请求。
 
 - `PermissionMode::Auto`、`PermissionMode::Yolo` 删除(`base::permission` 与
   `base::settings` 两份都删),用 `BypassPermissions`。`permissiveness()` 的取值跟着变了。

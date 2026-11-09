@@ -217,3 +217,114 @@ async fn a_policy_that_refuses_to_wait_stops_both_protocols_after_one_attempt() 
     assert_eq!(run_anthropic(Arc::new(NoBackoff)).await, 1);
     assert_eq!(run_openai(Arc::new(NoBackoff)).await, 1);
 }
+
+/// A server that answers its first request with a bare 502, as a gateway does
+/// when it cannot reach the provider, and every later one with `ok`.
+async fn bad_gateway_once(ok: &'static [u8]) -> (u16, Arc<AtomicUsize>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    const BAD_GATEWAY: &[u8] = b"HTTP/1.1 502 Bad Gateway\r\n\
+content-type: text/html\r\n\
+content-length: 12\r\n\
+connection: close\r\n\
+\r\n\
+<h1>502</h1>";
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let served = Arc::new(AtomicUsize::new(0));
+    let counter = served.clone();
+    tokio::spawn(async move {
+        while let Ok((mut sock, _)) = listener.accept().await {
+            let n = counter.fetch_add(1, Ordering::SeqCst);
+            let mut buf = vec![0u8; 8192];
+            let _ = sock.read(&mut buf).await;
+            let _ = sock.write_all(if n == 0 { BAD_GATEWAY } else { ok }).await;
+            let _ = sock.shutdown().await;
+        }
+    });
+    (port, served)
+}
+
+#[tokio::test]
+async fn a_bad_gateway_before_the_stream_is_tried_again_on_both_protocols() {
+    const ANTHROPIC_OK: &[u8] = b"HTTP/1.1 200 OK\r\n\
+content-type: text/event-stream\r\n\
+connection: close\r\n\
+\r\n\
+event: message_start\n\
+data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"m\",\"role\":\"assistant\",\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}\n\
+\n\
+event: message_stop\n\
+data: {\"type\":\"message_stop\"}\n\
+\n";
+    const OPENAI_OK: &[u8] = b"HTTP/1.1 200 OK\r\n\
+content-type: text/event-stream\r\n\
+connection: close\r\n\
+\r\n\
+data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"recovered\"},\"finish_reason\":\"stop\"}]}\n\
+\n\
+data: [DONE]\n\
+\n";
+
+    let (port, served) = bad_gateway_once(ANTHROPIC_OK).await;
+    let policy = Recorder::new(2);
+    let client = HttpAnthropicClient::with_base(
+        AuthMode::ApiKey("k".into()),
+        url::Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap(),
+    )
+    .unwrap()
+    .with_backoff_policy(policy.clone());
+    let events: Vec<_> = client
+        .stream_messages(MessagesRequest::minimal("m", "hi"))
+        .collect()
+        .await;
+    assert!(
+        matches!(
+            events.last(),
+            Some(Ok(model::stream::StreamEvent::MessageStop))
+        ) && events.iter().all(Result::is_ok),
+        "the retry after the 502 should have streamed cleanly: {events:?}"
+    );
+    assert_eq!(served.load(Ordering::SeqCst), 2);
+    assert_eq!(policy.recorded()[0].failure, RequestFailure::Overloaded);
+
+    let (port, served) = bad_gateway_once(OPENAI_OK).await;
+    let policy = Recorder::new(2);
+    let m = OpenAICompatibleModel::new(&format!("http://127.0.0.1:{port}"), "k", "gpt-4o")
+        .unwrap()
+        .with_backoff_policy(policy.clone());
+    let params = StreamParams {
+        model: String::new(),
+        max_tokens: 256,
+        thinking_mode: ThinkingMode::Off,
+        effort: None,
+        fallback_model: None,
+        cache_edits: Vec::new(),
+        origin: None,
+        input_map: None,
+        provider_search: None,
+    };
+    let stream = m
+        .stream(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            params,
+            CancellationToken::new(),
+        )
+        .await
+        .expect("the retry after the 502 should have been accepted");
+    let events: Vec<_> = stream.collect().await;
+    let text: String = events
+        .iter()
+        .filter_map(|e| match e {
+            Ok(base::interface::model::ModelEvent::TextDelta { text }) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(text, "recovered", "{events:?}");
+    assert_eq!(served.load(Ordering::SeqCst), 2);
+    assert_eq!(policy.recorded()[0].failure, RequestFailure::Overloaded);
+}

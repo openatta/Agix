@@ -35,11 +35,7 @@ impl ModelFactory for AnthropicFactory {
         let auth = AuthMode::ApiKey(api_key.expose().to_string());
         let client: Arc<dyn AnthropicClient> = match cfg.base_url.as_deref() {
             Some(url) if !url.is_empty() => {
-                let mut url = url.to_string();
-                if !url.ends_with('/') {
-                    url.push('/');
-                }
-                let base = url::Url::parse(&url).map_err(|e| {
+                let base = url::Url::parse(url).map_err(|e| {
                     format!("provider '{provider_id}': invalid base_url '{url}': {e}")
                 })?;
                 Arc::new(

@@ -20,7 +20,7 @@ pub enum AnthropicError {
     #[error("overloaded (HTTP {status})")]
     Overloaded { status: u16 },
 
-    /// 其他 4xx / 5xx —— 不重试，向上抛
+    /// 其他 4xx / 5xx。只有 [`is_transient_status`] 认的那几个在首字节前重试
     #[error("server error {status}: {body}")]
     Server { status: u16, body: String },
 
@@ -61,6 +61,12 @@ pub enum AnthropicError {
 }
 
 impl AnthropicError {}
+
+/// 服务端那一侧临时出了错、请求本身没问题的状态码：内部错误、网关拿不到或等不到
+/// 上游、请求超时。两个协议都用它决定首字节前要不要再发一次。
+pub(crate) fn is_transient_status(status: u16) -> bool {
+    matches!(status, 408 | 500 | 502 | 504)
+}
 
 impl From<base::interface::exec::ExecError> for AnthropicError {
     fn from(e: base::interface::exec::ExecError) -> Self {

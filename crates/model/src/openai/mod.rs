@@ -247,6 +247,9 @@ fn failure_kind(e: &ModelError) -> RequestFailure {
         ModelError::Network(_) => RequestFailure::Transport,
         ModelError::RateLimited => RequestFailure::RateLimited,
         ModelError::Overloaded => RequestFailure::Overloaded,
+        ModelError::Api { status, .. } if crate::error::is_transient_status(*status) => {
+            RequestFailure::Overloaded
+        }
         _ => RequestFailure::Other,
     }
 }
@@ -532,11 +535,25 @@ mod tests {
             failure_kind(&ModelError::Network("reset".into())),
             RequestFailure::Transport
         );
+        for status in [408, 500, 502, 504] {
+            assert_eq!(
+                failure_kind(&ModelError::Api {
+                    status,
+                    message: String::new(),
+                }),
+                RequestFailure::Overloaded,
+                "{status}"
+            );
+        }
         for fatal in [
             ModelError::Auth("bad key".into()),
             ModelError::Api {
                 status: 400,
                 message: "bad request".into(),
+            },
+            ModelError::Api {
+                status: 501,
+                message: "not implemented".into(),
             },
             ModelError::Internal("boom".into()),
         ] {

@@ -3,7 +3,7 @@
 //! 重试 / beta header / 多 provider 都在 HttpAnthropicClient 内部；
 //! Engine 只看 trait。
 
-use crate::error::AnthropicError;
+use crate::error::{is_transient_status, AnthropicError};
 use crate::parser::parse_sse;
 use crate::stream::StreamEvent;
 use crate::types::MessagesRequest;
@@ -119,14 +119,9 @@ fn parse_retry_after(headers: &BTreeMap<String, String>) -> Option<Duration> {
 
 /// 一次 HTTP send + classify。失败时按 AnthropicError 分类返回。
 async fn send_one(inner: &HttpInner, req: &MessagesRequest) -> Result<HttpStream, AnthropicError> {
-    let url = inner
-        .base
-        .join("v1/messages")
-        .map_err(|e| AnthropicError::Transport(anyhow::Error::new(e)))?;
-
     let body = serde_json::to_vec(req)?;
 
-    let mut builder = HttpRequest::post(url.as_str())
+    let mut builder = HttpRequest::post(inner.endpoint.as_str())
         .header("anthropic-version", inner.anthropic_version)
         .header("content-type", "application/json");
 
@@ -172,6 +167,9 @@ fn failure_kind(e: &AnthropicError) -> RequestFailure {
         AnthropicError::Transport(_) => RequestFailure::Transport,
         AnthropicError::RateLimited { .. } => RequestFailure::RateLimited,
         AnthropicError::Overloaded { .. } => RequestFailure::Overloaded,
+        AnthropicError::Server { status, .. } if is_transient_status(*status) => {
+            RequestFailure::Overloaded
+        }
         _ => RequestFailure::Other,
     }
 }
@@ -272,10 +270,32 @@ pub struct HttpAnthropicClient {
 
 struct HttpInner {
     net: Arc<dyn Network>,
-    base: Url,
+    endpoint: Url,
     auth: AuthMode,
     anthropic_version: &'static str,
     backoff: Arc<dyn BackoffPolicy>,
+}
+
+/// Messages API 的完整地址。配置里有人写到主机为止，有人照着文档写到 `/v1`，
+/// 也有人写全了端点，三种都落到同一个 `…/v1/messages` 上；主机后面的前缀（中转
+/// 站常见的 `/anthropic`）原样保留。
+pub fn messages_url(base: &Url) -> Result<Url, AnthropicError> {
+    if base.cannot_be_a_base() {
+        return Err(AnthropicError::ParseError(format!(
+            "base url '{base}' cannot carry a path"
+        )));
+    }
+    let path = base.path().trim_end_matches('/');
+    let path = if path.ends_with("/v1/messages") {
+        path.to_string()
+    } else if path.ends_with("/v1") {
+        format!("{path}/messages")
+    } else {
+        format!("{path}/v1/messages")
+    };
+    let mut url = base.clone();
+    url.set_path(&path);
+    Ok(url)
 }
 
 impl HttpAnthropicClient {
@@ -286,12 +306,14 @@ impl HttpAnthropicClient {
         Self::with_base(auth, base)
     }
 
-    /// 自定义 base URL（用于本地 mock server / Bedrock relay 等）。
+    /// 自定义 base URL（用于本地 mock server / Bedrock relay 等）。写成
+    /// `https://host`、`https://host/v1` 还是 `https://host/v1/messages` 都行，
+    /// 见 [`messages_url`]。
     pub fn with_base(auth: AuthMode, base: Url) -> Result<Self, AnthropicError> {
         Ok(Self {
             inner: Arc::new(HttpInner {
                 net: Arc::new(LocalNetwork::default()),
-                base,
+                endpoint: messages_url(&base)?,
                 auth,
                 anthropic_version: "2023-06-01",
                 backoff: Arc::new(LadderBackoff::new()),
@@ -324,7 +346,7 @@ impl HttpInner {
     fn clone_with_backoff(&self, backoff: Arc<dyn BackoffPolicy>) -> Self {
         Self {
             net: self.net.clone(),
-            base: self.base.clone(),
+            endpoint: self.endpoint.clone(),
             auth: self.auth.clone(),
             anthropic_version: self.anthropic_version,
             backoff,
@@ -426,9 +448,23 @@ mod tests {
             failure_kind(&AnthropicError::Overloaded { status: 529 }),
             RequestFailure::Overloaded
         );
+        for status in [408, 500, 502, 504] {
+            assert_eq!(
+                failure_kind(&AnthropicError::Server {
+                    status,
+                    body: String::new(),
+                }),
+                RequestFailure::Overloaded,
+                "{status}"
+            );
+        }
         for fatal in [
             AnthropicError::Server {
-                status: 500,
+                status: 400,
+                body: String::new(),
+            },
+            AnthropicError::Server {
+                status: 501,
                 body: String::new(),
             },
             AnthropicError::Auth("bad key".into()),
@@ -438,6 +474,37 @@ mod tests {
         ] {
             assert_eq!(failure_kind(&fatal), RequestFailure::Other, "{fatal}");
         }
+    }
+
+    #[test]
+    fn every_way_of_writing_the_base_reaches_the_same_endpoint() {
+        for base in [
+            "https://api.anthropic.com",
+            "https://api.anthropic.com/",
+            "https://api.anthropic.com/v1",
+            "https://api.anthropic.com/v1/",
+            "https://api.anthropic.com/v1/messages",
+            "https://api.anthropic.com/v1/messages/",
+        ] {
+            let url = messages_url(&Url::parse(base).unwrap()).unwrap();
+            assert_eq!(
+                url.as_str(),
+                "https://api.anthropic.com/v1/messages",
+                "{base}"
+            );
+        }
+        for base in [
+            "https://relay.test/anthropic",
+            "https://relay.test/anthropic/v1",
+        ] {
+            let url = messages_url(&Url::parse(base).unwrap()).unwrap();
+            assert_eq!(
+                url.as_str(),
+                "https://relay.test/anthropic/v1/messages",
+                "{base}"
+            );
+        }
+        assert!(messages_url(&Url::parse("data:text/plain,x").unwrap()).is_err());
     }
 
     /// 没有 ANTHROPIC_API_KEY / 没有网络也不能 panic。仅检查 URL 拼写 +
