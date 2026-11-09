@@ -8,7 +8,9 @@
 //! dropped, known wrappers (`env`, `exec`, `sudo`, `timeout`, `xargs`, ...)
 //! unwrapped with their options, `sh -c` / `eval` / `find -exec` looked into —
 //! so the rule engine can hold deny and ask rules to what runs rather than to
-//! how it was typed.
+//! how it was typed. The Bash tool's read-only fast path reads a line the
+//! same way, through [`traced_invocations`], which also says which wrappers
+//! and assignments each program came through.
 //!
 //! Where the program cannot be told from the text — a command name that is
 //! a variable, a glob or a substitution, a wrapper option this does not
@@ -29,11 +31,47 @@ pub enum Invocation {
     Unknown,
 }
 
+/// One [`Invocation`], with what the command line put around it on the way.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Traced {
+    pub invocation: Invocation,
+    /// The wrappers it was unwrapped from, outermost first, each as the words
+    /// it took: `env -u X` and `nice -n 5` in `env -u X nice -n 5 ls`.
+    pub wrappers: Vec<Vec<String>>,
+    /// The `NAME=value` words it runs under: its own leading ones and those a
+    /// wrapper (`env`, `sudo`) passes on.
+    pub assignments: Vec<String>,
+}
+
 /// Everything the simple command `source` starts.
 pub fn invocations(source: &str) -> Vec<Invocation> {
+    traced_invocations(source)
+        .into_iter()
+        .map(|t| t.invocation)
+        .collect()
+}
+
+/// [`invocations`], each with the wrappers and assignments it was found under.
+pub fn traced_invocations(source: &str) -> Vec<Traced> {
     let mut out = Vec::new();
     resolve(shell::lex(source), 0, &mut out);
     out
+}
+
+#[derive(Debug, Clone, Default)]
+struct Trail {
+    wrappers: Vec<Vec<String>>,
+    assignments: Vec<String>,
+}
+
+impl Trail {
+    fn found(&self, invocation: Invocation) -> Traced {
+        Traced {
+            invocation,
+            wrappers: self.wrappers.clone(),
+            assignments: self.assignments.clone(),
+        }
+    }
 }
 
 /// How deep `sh -c` / `eval` strings are followed before giving up.
@@ -41,7 +79,7 @@ const MAX_DEPTH: usize = 4;
 /// Brace expansion beyond this many words is not followed.
 const MAX_BRACE_WORDS: usize = 64;
 
-fn resolve(words: Vec<Word>, depth: usize, out: &mut Vec<Invocation>) {
+fn resolve(words: Vec<Word>, depth: usize, out: &mut Vec<Traced>) {
     let mut argv = without_redirections(words);
     let leading = argv
         .iter()
@@ -51,8 +89,15 @@ fn resolve(words: Vec<Word>, depth: usize, out: &mut Vec<Invocation>) {
                     || shell::is_assignment(&w.text))
         })
         .count();
-    argv.drain(..leading);
-    resolve_command(argv, depth, out);
+    let trail = Trail {
+        wrappers: Vec::new(),
+        assignments: argv
+            .drain(..leading)
+            .filter(|w| shell::is_assignment(&w.text))
+            .map(|w| w.text)
+            .collect(),
+    };
+    resolve_command(argv, trail, depth, out);
 }
 
 fn without_redirections(words: Vec<Word>) -> Vec<Word> {
@@ -70,13 +115,13 @@ fn without_redirections(words: Vec<Word>) -> Vec<Word> {
     out
 }
 
-fn resolve_command(mut argv: Vec<Word>, depth: usize, out: &mut Vec<Invocation>) {
+fn resolve_command(mut argv: Vec<Word>, mut trail: Trail, depth: usize, out: &mut Vec<Traced>) {
     for _ in 0..16 {
         let Some(first) = argv.first() else {
             return;
         };
         if first.substitutes || first.globs || first.parens {
-            out.push(Invocation::Unknown);
+            out.push(trail.found(Invocation::Unknown));
             return;
         }
         if first.braces {
@@ -86,7 +131,7 @@ fn resolve_command(mut argv: Vec<Word>, depth: usize, out: &mut Vec<Invocation>)
                     continue;
                 }
                 None => {
-                    out.push(Invocation::Unknown);
+                    out.push(trail.found(Invocation::Unknown));
                     return;
                 }
             }
@@ -99,19 +144,28 @@ fn resolve_command(mut argv: Vec<Word>, depth: usize, out: &mut Vec<Invocation>)
         // follow it in. Reading the program off the first word here would hand
         // a deny `case x in *) rm;; esac` on the strength of its spelling.
         if !first.quoted && matches!(name.as_str(), "case" | "function" | "select") {
-            out.push(Invocation::Unknown);
+            out.push(trail.found(Invocation::Unknown));
             return;
         }
 
         if let Some(wrapper) = WRAPPERS.iter().find(|w| w.names.contains(&name.as_str())) {
             match wrapper.command_in(args) {
                 Wrapped::At(n) => {
-                    argv.drain(..=n);
+                    let taken: Vec<String> = argv.drain(..=n).map(|w| w.text).collect();
+                    if wrapper.assignments {
+                        trail.assignments.extend(
+                            taken[1..]
+                                .iter()
+                                .filter(|w| passes_on_assignment(w))
+                                .cloned(),
+                        );
+                    }
+                    trail.wrappers.push(taken);
                     continue;
                 }
                 Wrapped::Nothing => {}
                 Wrapped::Unreadable => {
-                    out.push(Invocation::Unknown);
+                    out.push(trail.found(Invocation::Unknown));
                     return;
                 }
             }
@@ -123,7 +177,9 @@ fn resolve_command(mut argv: Vec<Word>, depth: usize, out: &mut Vec<Invocation>)
                 // A `-c` whose string the line builds, or a shell that reads
                 // its script from stdin / a here-string: what it runs cannot be
                 // told from the text, so a deny must not be waved past it.
-                ShellTarget::Command(_) | ShellTarget::Stdin => out.push(Invocation::Unknown),
+                ShellTarget::Command(_) | ShellTarget::Stdin => {
+                    out.push(trail.found(Invocation::Unknown));
+                }
                 // A script file argument — recorded as the shell itself below,
                 // the same as a program whose source this cannot read.
                 ShellTarget::File => {}
@@ -133,10 +189,10 @@ fn resolve_command(mut argv: Vec<Word>, depth: usize, out: &mut Vec<Invocation>)
                 Some(Some(script)) if script.is_literal() => {
                     resolve_line(&script.text, depth, out);
                 }
-                Some(_) => out.push(Invocation::Unknown),
+                Some(_) => out.push(trail.found(Invocation::Unknown)),
                 None => match after_double_dash(args) {
-                    Some(command) => resolve_command(command, depth, out),
-                    None => out.push(Invocation::Unknown),
+                    Some(command) => resolve_command(command, Trail::default(), depth, out),
+                    None => out.push(trail.found(Invocation::Unknown)),
                 },
             }
         } else if name == "eval" {
@@ -144,22 +200,22 @@ fn resolve_command(mut argv: Vec<Word>, depth: usize, out: &mut Vec<Invocation>)
                 let script: Vec<&str> = args.iter().map(|w| w.text.as_str()).collect();
                 resolve_line(&script.join(" "), depth, out);
             } else {
-                out.push(Invocation::Unknown);
+                out.push(trail.found(Invocation::Unknown));
             }
         } else if matches!(name.as_str(), "find" | "gfind") {
             for command in find_exec_commands(args) {
-                resolve_command(command, depth, out);
+                resolve_command(command, Trail::default(), depth, out);
             }
         }
-        out.push(Invocation::Runs(argv.into_iter().map(|w| w.text).collect()));
+        out.push(trail.found(Invocation::Runs(argv.into_iter().map(|w| w.text).collect())));
         return;
     }
-    out.push(Invocation::Unknown);
+    out.push(trail.found(Invocation::Unknown));
 }
 
-fn resolve_line(line: &str, depth: usize, out: &mut Vec<Invocation>) {
+fn resolve_line(line: &str, depth: usize, out: &mut Vec<Traced>) {
     if depth >= MAX_DEPTH {
-        out.push(Invocation::Unknown);
+        out.push(Trail::default().found(Invocation::Unknown));
         return;
     }
     for segment in shell::segments(line) {
@@ -554,6 +610,13 @@ const WRAPPERS: &[Wrapper] = &[
     },
 ];
 
+/// A word `env` / `sudo` take as `NAME=value` rather than as the command:
+/// any word with an `=` in it, quoted or not, whether or not the shell would
+/// call `NAME` a variable name.
+fn passes_on_assignment(word: &str) -> bool {
+    word.contains('=') && !word.starts_with('-')
+}
+
 enum Wrapped {
     /// The wrapped command starts at this index of the wrapper's arguments.
     At(usize),
@@ -626,10 +689,7 @@ impl Wrapper {
         }
         i += self.operands;
         if self.assignments {
-            while args
-                .get(i)
-                .is_some_and(|w| !w.quoted && shell::is_assignment(&w.text))
-            {
+            while args.get(i).is_some_and(|w| passes_on_assignment(&w.text)) {
                 i += 1;
             }
         }
@@ -703,6 +763,27 @@ mod tests {
         }
         assert_eq!(runs("xargs rm"), ["rm"]);
         assert_eq!(runs("xargs -0 -n 1 rm"), ["rm"]);
+    }
+
+    #[test]
+    fn env_takes_any_word_with_an_equals_sign_as_an_assignment() {
+        assert_eq!(runs("env 'A=1' rm x"), ["rm x"]);
+        assert_eq!(runs("env ./x=1 rm x"), ["rm x"]);
+        assert_eq!(runs("sudo 1=2 rm x"), ["rm x"]);
+    }
+
+    #[test]
+    fn each_invocation_carries_the_wrappers_and_assignments_it_came_through() {
+        let found = traced_invocations("A=1 env -u X B=2 nice -n 5 ls");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].invocation, Invocation::Runs(vec!["ls".into()]));
+        assert_eq!(
+            found[0].wrappers,
+            [vec!["env", "-u", "X", "B=2"], vec!["nice", "-n", "5"]]
+        );
+        assert_eq!(found[0].assignments, ["A=1", "B=2"]);
+        let found = traced_invocations("ls");
+        assert!(found[0].wrappers.is_empty() && found[0].assignments.is_empty());
     }
 
     #[test]

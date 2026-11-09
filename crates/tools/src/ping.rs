@@ -58,6 +58,11 @@ impl Tool for PingTool {
         true
     }
 
+    fn accept_edits_allows(&self, input: &Value, ctx: &ToolContext) -> bool {
+        serde_json::from_value::<PingInput>(input.clone())
+            .is_ok_and(|i| crate::security::allowed_domains_name(&i.url, ctx))
+    }
+
     fn permission_match_content(&self, input: &Value) -> Option<String> {
         serde_json::from_value::<PingInput>(input.clone())
             .ok()

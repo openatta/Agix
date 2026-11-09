@@ -24,8 +24,10 @@
 //! 6. 兑现第 2 步记下的工具自判 `Allow` → allow
 //! 7. 规则引擎的 `Allow` → allow
 //! 8. 其余 PermissionMode 分派：
-//!    - `AcceptEdits` 且工具只读 → allow；Edit / Write 走到这里说明工具自己
-//!      没放行（写项目外）或要确认（`.git` / `.agix`），照样 ask
+//!    - `AcceptEdits` 且工具认可（`Tool::accept_edits_allows`，缺省即只读）→
+//!      allow；Edit / Write 走到这里说明工具自己没放行（写项目外）或要确认
+//!      （`.git` / `.agix`），照样 ask。向模型选的主机发请求的只读工具
+//!      （`WebFetch`、`Ping`）只在 `sandbox.allowed_domains` 列出该主机时认可
 //!    - 其余（`Default`，以及只读工具下的 `Plan`）→ ask
 //!
 //! **为什么 2 的 Allow 要等到第 6 步才兑现**：`Write` / `Edit` / `Read` /
@@ -349,7 +351,7 @@ impl PermissionGate {
         // 8. 其余模式分派
         match mode {
             PermissionMode::AcceptEdits => {
-                if tool.is_read_only(input) {
+                if tool.accept_edits_allows(input, ctx) {
                     Ok(PermissionDecision::Allow {
                         updated_input: None,
                         decision_reason: Some(DecisionReason::Mode(mode)),

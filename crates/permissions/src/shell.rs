@@ -444,9 +444,15 @@ pub fn assignments(line: &str) -> Vec<(String, String)> {
         for word in words(&seg) {
             if let Some(pair) = leading_assignment(&word) {
                 out.push(pair);
-            } else if WRAPPERS.contains(&word.as_str()) || word.starts_with('-') {
+            } else if WRAPPERS.contains(&word.as_str())
+                || PREFIX_KEYWORDS.contains(&word.as_str())
+                || word == "{"
+                || word.starts_with('-')
+            {
                 // `env`/`command`/… and their options sit before the
-                // assignments they pass on (`env PATH=. ls`); step over them.
+                // assignments they pass on (`env PATH=. ls`), and a keyword
+                // before the assignments of the command it opens
+                // (`if PATH=. ls`); step over them.
                 continue;
             } else {
                 break;
@@ -716,6 +722,20 @@ mod tests {
     fn a_bare_wrapper_is_still_a_command() {
         assert_eq!(split("ls; env"), vec!["ls", "env"]);
         assert_eq!(split("FOO=1 env"), vec!["env"]);
+    }
+
+    #[test]
+    fn an_assignment_after_a_keyword_is_still_an_assignment() {
+        for line in [
+            "if PATH=. ls; then ls; fi",
+            "if PATH=.; then ls; fi",
+            "! PATH=. ls",
+        ] {
+            assert!(
+                assignments(line).iter().any(|(name, _)| name == "PATH"),
+                "{line}"
+            );
+        }
     }
 
     #[test]

@@ -96,6 +96,13 @@ impl Tool for MonitorTool {
             .is_ok_and(|p| crate::bash::classify::is_read_only(&p.command))
     }
 
+    fn accept_edits_allows(&self, input: &Value, ctx: &ToolContext) -> bool {
+        serde_json::from_value::<MonitorInput>(input.clone()).is_ok_and(|p| {
+            crate::bash::classify::is_read_only(&p.command)
+                && crate::bash::git_stays_in_the_sessions_repository(&p.command, ctx)
+        })
+    }
+
     fn is_concurrency_safe(&self, _: &Value) -> bool {
         true
     }

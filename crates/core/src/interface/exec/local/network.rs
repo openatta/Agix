@@ -16,8 +16,10 @@ use std::time::Duration;
 use futures::StreamExt;
 
 use crate::context::config::NetworkModeConfig;
+use crate::interface::exec::network::domain_key;
 use crate::interface::exec::{
-    is_internal_address, ExecError, HttpRequest, HttpResponse, HttpStream, Network, Origin,
+    domains_name_host, is_internal_address, ExecError, HttpRequest, HttpResponse, HttpStream,
+    Network, Origin,
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -100,7 +102,7 @@ impl LocalNetwork {
         let is_name = matches!(url.host(), Some(url::Host::Domain(_)));
         self.vouched
             .iter()
-            .map(|d| entry_key(d))
+            .map(|d| domain_key(d))
             .any(|d| host == d || (is_name && host.ends_with(&format!(".{d}"))))
     }
 
@@ -177,18 +179,6 @@ fn host_key(url: &url::Url) -> Option<String> {
         url::Host::Ipv4(ip) => ip.to_string(),
         url::Host::Ipv6(ip) => ip.to_string(),
     })
-}
-
-fn entry_key(entry: &str) -> String {
-    let bare = entry
-        .trim()
-        .trim_start_matches('[')
-        .trim_end_matches(']')
-        .trim_end_matches('.');
-    match bare.parse::<IpAddr>() {
-        Ok(ip) => ip.to_string(),
-        Err(_) => bare.to_ascii_lowercase(),
-    }
 }
 
 fn internal_refusal(host: &str, ip: IpAddr, origin: Origin) -> ExecError {
@@ -514,7 +504,7 @@ impl Network for LocalNetwork {
         if !self.listed(host, origin) {
             return false;
         }
-        let literal = entry_key(host).parse::<IpAddr>().ok();
+        let literal = domain_key(host).parse::<IpAddr>().ok();
         match (origin, literal) {
             (Origin::Agent, Some(ip)) if is_internal_address(ip) => {
                 let as_url = match ip {
@@ -541,12 +531,7 @@ impl LocalNetwork {
                 // `Example.com` is an allowlist that matches nothing, and the
                 // deployment gets every request refused with no sign that its
                 // configuration is what refused them.
-                let host = entry_key(host);
-                self.allowed_domains.is_empty()
-                    || self.allowed_domains.iter().any(|d| {
-                        let d = entry_key(d);
-                        host == d || host.ends_with(&format!(".{d}"))
-                    })
+                self.allowed_domains.is_empty() || domains_name_host(&self.allowed_domains, host)
             }
         }
     }

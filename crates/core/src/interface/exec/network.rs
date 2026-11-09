@@ -187,6 +187,29 @@ pub trait Network: Send + Sync {
 /// address that carries one of those IPv4 ones (mapped, compatible, NAT64,
 /// 6to4).
 ///
+/// Whether `domains` — `sandbox.allowed_domains`, as written in settings —
+/// names `host`, itself or as a subdomain. Case, a trailing dot and the
+/// brackets around an IPv6 address do not matter.
+pub fn domains_name_host(domains: &[String], host: &str) -> bool {
+    let host = domain_key(host);
+    domains.iter().any(|d| {
+        let d = domain_key(d);
+        !d.is_empty() && (host == d || host.ends_with(&format!(".{d}")))
+    })
+}
+
+pub(crate) fn domain_key(entry: &str) -> String {
+    let bare = entry
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim_end_matches('.');
+    match bare.parse::<std::net::IpAddr>() {
+        Ok(ip) => ip.to_string(),
+        Err(_) => bare.to_ascii_lowercase(),
+    }
+}
+
 /// The one answer to "may a destination chosen from outside reach this", for
 /// a model-directed fetch and an HTTP hook alike.
 pub fn is_internal_address(ip: std::net::IpAddr) -> bool {

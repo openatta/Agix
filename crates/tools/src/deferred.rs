@@ -152,6 +152,10 @@ impl Tool for DeferredTool {
         self.inner.leaves_plan_mode()
     }
 
+    fn accept_edits_allows(&self, input: &Value, ctx: &ToolContext) -> bool {
+        self.inner.accept_edits_allows(input, ctx)
+    }
+
     fn affected_paths(&self, input: &Value) -> Vec<PathBuf> {
         self.inner.affected_paths(input)
     }

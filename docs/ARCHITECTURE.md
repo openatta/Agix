@@ -593,15 +593,29 @@ git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git
    被放行。allow 只认原文——规整只让裁决更严。这些 `Bash(...)` 的 deny / ask 同样管住别的
    跑 shell 的工具(`Monitor`),allow 不跨工具。但 shell 上的 deny 规则不是沙箱
    (`python3 -c 'os.remove(...)'` 里没有 `rm`),边界是 OS 沙箱。
-   只读命令的自动放行只限路径参数都落在 cwd 与附加目录之内的;指向外面的,和 `Read`
+   只读命令(`Bash` 免询问的那一类)用同一套调用解析判:行里启动的每个程序都要按名字(不带
+   路径——`./ls` 跑的是那个文件)在只读名单里,读不出程序的段不算只读;包在外面的 wrapper
+   只能是不改变跑什么、在哪跑的那几个(`nice`、`timeout`、`nohup`、`stdbuf`、`command`、
+   `builtin`、`exec`、不写报告文件的 `time`、只清除或传递变量的 `env`),`xargs`、`sudo`、
+   `flock`、`env -C` / `-P` 都不算。只读名单只收"不管带什么参数都不会写文件、不会执行别的
+   程序"的命令:`rg --pre`、`fd -x`、`git grep -O`、`man -P`、`sort --compress-program`、
+   `cargo build/check`(跑 build.rs)这类会拉起程序的,`sort -o`、`uniq IN OUT`、`yq -i`、
+   `git config k v`、`git branch -D`、`printf -v` 这类会写文件 / 改仓库 / 设变量的,写文件的
+   重定向(含 `>&file`),以及设 `PATH` / `LD_PRELOAD` / `CDPATH`、任何 `*PAGER`、`GIT_*`、
+   `XDG_*`、`*_CONFIG_PATH` 等变量的,都不免询问;长选项按 GNU 与 git 的缩写规则认
+   (`sort --outp=f` 就是 `--output`)。项目自己的文件能把程序换掉的也不在名单里:
+   `cargo metadata` / `cargo tree` 要问 rustc(`.cargo/config.toml` 的
+   `build.rustc-wrapper`),`cargo` / `rustc --version` 与 `rustup show` 跑
+   `rust-toolchain.toml` 指定的工具链(可以是一个路径)。`git` 只以 `git <子命令>` 的形式、
+   只在会话自己所在的仓库里只读:`cd` 进项目带来的裸仓库(`fixtures/x.git`)或嵌套的 `.git`
+   再跑,那个仓库的配置(`core.fsmonitor`、`diff.external`)由项目作者写,git 会照着拉起
+   程序。会向参数里的主机发请求的 `dig`、`ping`、`nslookup`、`traceroute` 也不在名单里
+   (主机名本身就能经 DNS 带出数据)。
+   只读命令的自动放行还只限路径参数都落在 cwd 与附加目录之内的;指向外面的,和 `Read`
    读项目外的文件一样交给模式分派。参数里有 shell 还要展开的东西(`$VAR`、`~`、替换)
    的,`cd` / `pushd` 到不是项目内字面路径的地方(或 `cd -` / `popd` / `pushd +N` 落到
-   命令没写出的目录)之后再按相对路径读的,都不算在内。只读名单只收"不管带什么参数都
-   不会写文件、不会执行别的程序"的命令:`rg --pre`、`fd -x`、`git grep -O`、`man -P`、
-   `sort --compress-program`、`git -c …`、`cargo build/check`(跑 build.rs)这类会拉起程序的,
-   `sort -o`、`uniq IN OUT`、`yq -i`、`git config k v`、`git branch -D` 这类会写文件 / 改仓库的,
-   以及设 `PATH` / `LD_PRELOAD` / `PAGER` / `CDPATH` 等变量的,都不免询问。会向参数里的主机
-   发请求的 `dig`、`ping` 也不在名单里(主机名本身就能经 DNS 带出数据)。
+   命令没写出的目录)之后再按相对路径读的,都不算在内;glob 按它此刻在磁盘上匹配到的
+   路径查(`.*/x` 在 macOS 的 bash 3.2 下能匹配到 `../x`)。
 
 场景的工具白名单不在这里:它在会话注册表上就把工具拿掉了(§3.5),被拿掉的工具根本
 到不了权限这一步。
@@ -622,6 +636,10 @@ git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git
 
 `acceptEdits` 只多放行只读调用:项目内的 `Edit` / `Write` 本来就由工具自己放行,项目外
 的、`.git` / `.agix` 下要确认的,在 `acceptEdits` 下照样询问——无人值守的会话里就是拒绝。
+只读调用里够得比"读"更远的也不放行(`Tool::accept_edits_allows`):`WebFetch` / `Ping`
+只放行 `sandbox.allowed_domains` 列出的主机(含子域),URL 本身就能把数据带到主机那里;
+进了会话所在仓库之外的仓库的只读 `git`(`Bash` / `Monitor`)照样询问。读项目外的文件仍然
+放行。
 
 `plan` 拒绝一切非只读工具,唯独离开计划模式的那一个(`ExitPlanMode`,
 `Tool::leaves_plan_mode`)照常走规则与询问:宿主批准才退出,回到进入前的模式。除此之外

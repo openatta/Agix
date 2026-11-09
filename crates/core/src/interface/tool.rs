@@ -443,6 +443,15 @@ pub trait Tool: Send + Sync + 'static {
         false
     }
 
+    /// Whether `acceptEdits` lets this call through when neither the tool
+    /// itself nor a rule did. A read does, by default. A tool whose read
+    /// reaches further than reading — a request to a host the model chose, a
+    /// program a repository's configuration names — says no here, and the
+    /// call is asked about as under `default`.
+    fn accept_edits_allows(&self, input: &Value, _: &ToolContext) -> bool {
+        self.is_read_only(input)
+    }
+
     /// This tool's detailed usage guide, when it has one that says more than
     /// `description()` already does — `None` when it doesn't.
     ///
