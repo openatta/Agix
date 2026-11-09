@@ -8,7 +8,9 @@
 //! resolved through the same filter. A loopback MCP server's authorization
 //! bypasses `HTTP(S)_PROXY`, as the rest of the daemon's loopback egress
 //! does; through a proxy only the host name can be checked, since the proxy
-//! resolves it.
+//! resolves it. Everything goes over https, except to a loopback address; for
+//! a server off loopback the client itself refuses plain http, so metadata
+//! cannot be swapped in transit.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -92,6 +94,21 @@ pub(crate) fn is_loopback(url: &Url) -> bool {
     host_class(url) == Some(AddressClass::Loopback)
 }
 
+/// OAuth 2.1 §1.5: codes, verifiers, secrets and tokens only travel over
+/// TLS. Plain http is left to an authorization server on this machine.
+pub(crate) fn require_https_off_loopback(url: &Url) -> Result<(), String> {
+    match url.scheme() {
+        "https" => Ok(()),
+        "http" if is_loopback(url) => Ok(()),
+        "http" => Err(format!(
+            "`{url}`: OAuth uses https; plain http only to an authorization server on this machine"
+        )),
+        _ => Err(format!(
+            "`{url}`: only https (or http on loopback) is used for OAuth"
+        )),
+    }
+}
+
 /// Which addresses the authorization of one MCP server may reach: public
 /// ones, plus the class of the server's own host when that is loopback or
 /// private. Reserved addresses (link-local — cloud metadata lives there —
@@ -136,9 +153,7 @@ impl AddressPolicy {
     }
 
     pub fn check_url(&self, url: &Url) -> Result<(), String> {
-        if !matches!(url.scheme(), "http" | "https") {
-            return Err(format!("`{url}`: only http and https are used for OAuth"));
-        }
+        require_https_off_loopback(url)?;
         match host_class(url) {
             Some(class) if self.allows_class(class) => Ok(()),
             Some(_) => Err(format!(
@@ -201,9 +216,11 @@ impl OAuthHttp {
             .timeout(TIMEOUT)
             .redirect(reqwest::redirect::Policy::none())
             .dns_resolver(Arc::new(FilteringResolver { policy }));
-        if is_loopback(server) {
-            builder = builder.no_proxy();
-        }
+        builder = if is_loopback(server) {
+            builder.no_proxy()
+        } else {
+            builder.https_only(true)
+        };
         let client = builder
             .build()
             .map_err(|e| format!("could not build the OAuth HTTP client: {e}"))?;
@@ -360,9 +377,45 @@ mod tests {
         assert!(local.check_url(&url("http://10.0.0.9/")).is_err());
         assert!(local.check_url(&url("http://169.254.169.254/")).is_err());
 
+        let corp = AddressPolicy::for_server(&url("https://10.1.2.3/mcp"));
+        assert!(corp.check_url(&url("https://10.0.0.9/")).is_ok());
+        assert!(corp.check_url(&url("https://127.0.0.1/")).is_err());
+    }
+
+    #[test]
+    fn plain_http_reaches_only_loopback() {
         let corp = AddressPolicy::for_server(&url("http://10.1.2.3/mcp"));
-        assert!(corp.check_url(&url("http://10.0.0.9/")).is_ok());
-        assert!(corp.check_url(&url("http://127.0.0.1/")).is_err());
+        assert!(corp.check_url(&url("http://10.0.0.9/")).is_err());
+        let public = AddressPolicy::for_server(&url("https://mcp.example.com/mcp"));
+        assert!(public
+            .check_url(&url("http://as.example.com/token"))
+            .is_err());
+        let configured = AddressPolicy::configured();
+        assert!(configured
+            .check_url(&url("http://idp.example.com/token"))
+            .is_err());
+        assert!(configured
+            .check_url(&url("https://idp.example.com/token"))
+            .is_ok());
+        assert!(configured
+            .check_url(&url("http://127.0.0.1:9/token"))
+            .is_ok());
+        let local = AddressPolicy::for_server(&url("http://127.0.0.1:9000/mcp"));
+        assert!(local.check_url(&url("http://[::1]:9001/token")).is_ok());
+    }
+
+    #[tokio::test]
+    async fn discovery_for_a_server_off_loopback_never_goes_out_over_plain_http() {
+        let http = OAuthHttp::for_server(&url("https://mcp.example.com/mcp")).unwrap();
+        let sent = tokio::time::timeout(
+            Duration::from_secs(2),
+            http.client()
+                .get("http://192.0.2.1/.well-known/oauth-authorization-server")
+                .send(),
+        )
+        .await
+        .expect("refused before any connection was tried");
+        assert!(sent.is_err());
     }
 
     #[tokio::test]

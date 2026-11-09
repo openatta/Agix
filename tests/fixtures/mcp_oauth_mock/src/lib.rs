@@ -209,6 +209,8 @@ pub struct AsState {
     pub issuer: String,
     pub resource: String,
     pub advertise_s256: bool,
+    /// Advertised in place of this server's own `/authorize`.
+    pub authorization_endpoint: Option<String>,
     pub dynamic_registration: bool,
     pub revocation: bool,
     pub token_ttl: u64,
@@ -335,6 +337,7 @@ impl AuthServer {
             issuer: String::new(),
             resource: resource.to_string(),
             advertise_s256: true,
+            authorization_endpoint: None,
             dynamic_registration: true,
             revocation: true,
             token_ttl: 3600,
@@ -392,7 +395,8 @@ impl AuthServer {
             ("GET", "/.well-known/oauth-authorization-server") => {
                 let mut metadata = serde_json::json!({
                     "issuer": s.issuer,
-                    "authorization_endpoint": format!("{}/authorize", s.issuer),
+                    "authorization_endpoint": s.authorization_endpoint.clone()
+                        .unwrap_or_else(|| format!("{}/authorize", s.issuer)),
                     "token_endpoint": format!("{}/token", s.issuer),
                     "response_types_supported": ["code"],
                     "grant_types_supported": ["authorization_code", "refresh_token", "client_credentials", JWT_BEARER],

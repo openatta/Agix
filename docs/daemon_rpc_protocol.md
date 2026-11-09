@@ -2128,13 +2128,15 @@ settings.local.json)里声明过,否则 `INVALID_PARAMS` —— 用来换令牌�
 把用户送去 `authorize_url`。`loopback` 时 daemon 在 `redirect_uri` 上等浏览器回来,自己完成
 登录并发 `mcp_auth_completed`、`mcp_connected`(失败发 `mcp_auth_failed`);`external` 时宿主
 接住回调,调 `mcp.auth.complete`。`expires_in` 秒内没完成,登录过期(`mcp_auth_failed`)。
-同一个 server 再发起一次会取消前一次;不同 server 的登录可以同时进行。
+同一个 server 再发起一次会取消前一次(并先释放它占着的回环端口,固定 `callback_port` 也能重来);
+不同 server 的登录可以同时进行。
 
 没有这个 server、它不用 OAuth(stdio、websocket、配了固定 `Authorization` 头的)、它是不需要
 登录的 `client_credentials` / `enterprise` server、redirect 不合法 → `INVALID_PARAMS`;MCP 策略
 拒绝它,或它的授权服务器不在策略的 `allowed_authorization_servers` 里 → `MCP_SERVER_DENIED`
-(这时用户还没被送去任何地方);发现失败、授权服务器不支持 PKCE S256、无法注册客户端 →
-`MCP_AUTH_FAILED`。
+(这时用户还没被送去任何地方);发现失败、授权服务器不支持 PKCE S256、它或它的端点不是 `https`
+(回环地址上的除外)、授权端点不是网页(`file:`、`javascript:`、别的应用协议)、无法注册客户端 →
+`MCP_AUTH_FAILED`,`authorize_url` 不会交出来。
 
 #### `mcp.auth.complete`
 

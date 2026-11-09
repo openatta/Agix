@@ -11,6 +11,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
@@ -69,15 +70,16 @@ pub async fn bind_loopback(port: Option<u16>) -> Result<(TcpListener, String), S
     Ok((listener, format!("http://127.0.0.1:{port}{CALLBACK_PATH}")))
 }
 
-/// Serve the callback until `stop` fires or a callback was accepted.
+/// Serve the callback until `stop` fires or a callback was accepted. The
+/// listener is closed when the returned task ends.
 pub fn serve_loopback(
     listener: TcpListener,
     redirect_uri: String,
     server: String,
     stop: CancellationToken,
-) -> mpsc::Receiver<LoopbackCallback> {
+) -> (mpsc::Receiver<LoopbackCallback>, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel(4);
-    tokio::spawn(async move {
+    let serving = tokio::spawn(async move {
         loop {
             let accepted = tokio::select! {
                 _ = stop.cancelled() => return,
@@ -91,7 +93,7 @@ pub fn serve_loopback(
             }
         }
     });
-    rx
+    (rx, serving)
 }
 
 /// Answer one connection; `true` once a callback completed the flow.
@@ -243,7 +245,8 @@ mod tests {
         use tokio::io::AsyncReadExt;
         let (listener, redirect) = bind_loopback(None).await.unwrap();
         let stop = CancellationToken::new();
-        let mut rx = serve_loopback(listener, redirect.clone(), "docs".into(), stop.clone());
+        let (mut rx, _serving) =
+            serve_loopback(listener, redirect.clone(), "docs".into(), stop.clone());
         let addr = redirect
             .trim_start_matches("http://")
             .trim_end_matches(CALLBACK_PATH)

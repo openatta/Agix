@@ -552,6 +552,8 @@ WebAssembly 载体整个移除。
   "scopes", "callback_port"}`(都可省);只是想让要求登录的 server 能登录,什么都不用写。
   以前 `oauth_providers` 里的密钥字面量没有对应写法:放进环境变量,`client_secret_env` 写变量名。
   以前存在 `scenes/<id>/mcp/oauth/<provider>.json` 的令牌不再读取,要重新登录一次。
+  授权服务器(元数据、issuer、注册、令牌、吊销端点)必须是 `https`,只有回环地址上的可以用
+  `http`;私网里明文 `http` 的 MCP server 或授权服务器不再能走 OAuth。
 - 传输错误不再清掉 OAuth 令牌(以前任何一次重连都会清);`mcp.addServer` / `mcp.updateServer`
   加进来的 server 和启动时连的一样走 OAuth。
 - 无人值守的 MCP server:`oauth.grant` 为 `client_credentials`(`client_secret_env` 或

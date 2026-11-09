@@ -110,7 +110,8 @@ discovery 取授权服务器元数据。server 没有发布任何 OAuth 元数�
   scheme,如 `com.example.app:/oauth`),自己接住回调,把完整的回调 URL 经
   `mcp.auth.complete` 交回。
 
-可以同时有多个登录在进行;同一个 server 再发起一次会取消它前一次。登录 10 分钟内没完成就
+可以同时有多个登录在进行;同一个 server 再发起一次会取消它前一次,并先关掉前一次的回环监听,
+所以固定的 `callback_port` 可以反复发起;取消、过期、登出同样立刻释放端口。登录 10 分钟内没完成就
 过期,发 `mcp_auth_failed`,状态变 `failed`。
 
 ### 令牌的生命周期
@@ -262,6 +263,13 @@ let pool = assembly::assemble::pool(&config, scene, Assembly {
   在回环上,授权服务器也可以在回环上;server 在私网,也可以在私网。链路本地(含云元数据
   `169.254.169.254`)、组播、未指定地址永远不行。IP 字面量和 DNS 解析结果都检查。配了
   `HTTP(S)_PROXY` 时由代理解析域名,只能按主机名检查;回环上的 server 的 OAuth 请求不走代理。
+- **只走 HTTPS。** 元数据发现、issuer、注册、令牌、吊销端点必须是 `https`;只有在回环地址上的
+  授权服务器可以用 `http`(OAuth 2.1 §1.5)。私网的 `http` 授权服务器同样拒绝,企业 IdP 的端点也一样。
+  例外只有一处:MCP server 本身在回环上(本地开发)时,发现请求不强制 `https`,但取回的 issuer
+  与各端点仍按上面检查。
+- **交给宿主打开的 `authorize_url`** 只会是 `https`,或回环地址上的 `http`;授权服务器给出
+  `file:`、`javascript:` 或别的应用协议的授权端点时,`mcp.auth.start` 以 `MCP_AUTH_FAILED` 失败,
+  不注册客户端、不交出 URL。
 - **redirect URI** 只有 daemon 自己的 `127.0.0.1` 回环地址,或宿主给的(见 §3)。
 - **令牌只出现在凭据存储里**:不进日志、遥测、会话录像与 transcript、`daemon.event`、任何 RPC
   响应。只以 `Authorization: Bearer` 头发送。

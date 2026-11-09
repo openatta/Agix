@@ -541,6 +541,93 @@ async fn an_authorization_server_without_s256_is_refused() {
 }
 
 #[tokio::test]
+async fn an_authorization_endpoint_that_is_not_a_web_page_is_never_handed_to_the_host() {
+    let (mcp, auth) = McpServer::start().await;
+    let d = Daemon::start(serde_json::json!({"docs": http_server(&mcp.url)})).await;
+    let mut conn = d.connect().await;
+    conn.wait_state("docs", "auth_required").await;
+    for endpoint in [
+        "file:///etc/passwd",
+        "javascript:alert(1)",
+        "x-apple.systempreferences:com.apple.preference.security",
+        "http://as.example.com/authorize",
+    ] {
+        auth.state.lock().unwrap().authorization_endpoint = Some(endpoint.into());
+        let (code, message) = conn
+            .err("mcp.auth.start", serde_json::json!({"server": "docs"}))
+            .await;
+        assert_eq!(code, codes::MCP_AUTH_FAILED as i64, "{endpoint}: {message}");
+        assert!(message.contains("https"), "{endpoint}: {message}");
+    }
+    let requests = auth.state.lock().unwrap().requests.clone();
+    assert!(
+        !requests.iter().any(|r| r.contains("/register")),
+        "nothing was registered: {requests:?}"
+    );
+    assert_eq!(conn.status("docs").await["auth"]["state"], "required");
+}
+
+#[tokio::test]
+async fn a_sign_in_on_a_fixed_callback_port_can_be_started_again() {
+    let (mcp, _auth) = McpServer::start().await;
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let d = Daemon::start(serde_json::json!({"docs": {
+        "type": "streamable_http",
+        "url": mcp.url,
+        "oauth": {"callback_port": port},
+    }}))
+    .await;
+    let mut conn = d.connect().await;
+    conn.wait_state("docs", "auth_required").await;
+    let redirect = format!("http://127.0.0.1:{port}/callback");
+
+    let first = conn
+        .ok("mcp.auth.start", serde_json::json!({"server": "docs"}))
+        .await;
+    assert_eq!(first["redirect_uri"], redirect.as_str());
+    let replaced = conn
+        .ok("mcp.auth.start", serde_json::json!({"server": "docs"}))
+        .await;
+    assert_eq!(replaced["redirect_uri"], redirect.as_str());
+    let (code, _) = conn
+        .err(
+            "mcp.auth.cancel",
+            serde_json::json!({"flow_id": first["flow_id"]}),
+        )
+        .await;
+    assert_eq!(code, codes::INVALID_PARAMS as i64, "the first was replaced");
+
+    conn.ok(
+        "mcp.auth.cancel",
+        serde_json::json!({"flow_id": replaced["flow_id"]}),
+    )
+    .await;
+    let after_cancel = conn
+        .ok("mcp.auth.start", serde_json::json!({"server": "docs"}))
+        .await;
+
+    d.pool.mcp_auth().set_flow_ttl(Duration::from_millis(300));
+    conn.ok("mcp.auth.start", serde_json::json!({"server": "docs"}))
+        .await;
+    conn.event("mcp_auth_failed", "docs").await;
+    d.pool.mcp_auth().set_flow_ttl(Duration::from_secs(600));
+    let last = conn
+        .ok("mcp.auth.start", serde_json::json!({"server": "docs"}))
+        .await;
+    assert_ne!(last["flow_id"], after_cancel["flow_id"]);
+
+    let location = consent(last["authorize_url"].as_str().unwrap()).await;
+    assert!(location.starts_with(&redirect), "{location}");
+    let (code, page) = follow(&location).await;
+    assert_eq!(code, 200, "{page}");
+    conn.event("mcp_connected", "docs").await;
+}
+
+#[tokio::test]
 async fn tokens_refresh_rotate_and_survive_a_transient_failure() {
     let (mcp, auth) = McpServer::start().await;
     let d = Daemon::start(serde_json::json!({"docs": http_server(&mcp.url)})).await;

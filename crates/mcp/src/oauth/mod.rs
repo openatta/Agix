@@ -204,8 +204,23 @@ struct Flow {
     state: String,
     redirect_uri: Url,
     stop: CancellationToken,
+    /// The loopback listener's task, which owns the bound port.
+    listening: Option<tokio::task::JoinHandle<()>>,
     /// What a cancel returns the server to.
     before: AuthState,
+}
+
+impl Flow {
+    /// End a flow nobody will complete, returning once its callback port is
+    /// free for the next sign-in.
+    async fn release(mut self) -> Self {
+        self.stop.cancel();
+        if let Some(task) = self.listening.take() {
+            task.abort();
+            let _ = task.await;
+        }
+        self
+    }
 }
 
 pub(crate) struct Shared {
@@ -325,12 +340,31 @@ impl Shared {
         let Some(flow) = self.flows.lock().await.remove(flow_id) else {
             return;
         };
-        flow.stop.cancel();
+        let flow = flow.release().await;
         self.fail(
             &flow.server,
             &flow.key,
             "the sign-in was not completed in time".into(),
         );
+    }
+
+    /// End every sign-in in progress for `key`; the first one's `before`
+    /// is what the server was in when they began.
+    async fn release_flows_for(&self, key: &str) -> Option<AuthState> {
+        let ended: Vec<Flow> = {
+            let mut flows = self.flows.lock().await;
+            let ids: Vec<String> = flows
+                .iter()
+                .filter(|(_, f)| f.key == key)
+                .map(|(id, _)| id.clone())
+                .collect();
+            ids.iter().filter_map(|id| flows.remove(id)).collect()
+        };
+        let mut before = None;
+        for flow in ended {
+            before.get_or_insert(flow.release().await.before);
+        }
+        before
     }
 }
 
@@ -398,10 +432,19 @@ fn redirect_registered(registered: &[String], wanted: &Url) -> bool {
 
 /// The endpoints the daemon itself calls must pass the server's address
 /// policy too: names are filtered when resolved, but a literal IP is
-/// connected to directly.
+/// connected to directly. The authorization endpoint is opened by the host,
+/// not called, so it is held to the scheme alone.
 fn check_endpoints(server_url: &str, metadata: &AuthorizationMetadata) -> Result<(), String> {
     let server = Url::parse(server_url).map_err(|e| e.to_string())?;
     let policy = http::AddressPolicy::for_server(&server);
+    if let Some(issuer) = &metadata.issuer {
+        let url = Url::parse(issuer)
+            .map_err(|e| format!("the authorization server's issuer `{issuer}`: {e}"))?;
+        http::require_https_off_loopback(&url)?;
+    }
+    if !metadata.authorization_endpoint.is_empty() {
+        check_authorize_url(&metadata.authorization_endpoint)?;
+    }
     let revocation = metadata
         .additional_fields
         .get("revocation_endpoint")
@@ -419,6 +462,15 @@ fn check_endpoints(server_url: &str, metadata: &AuthorizationMetadata) -> Result
         policy.check_url(&url)?;
     }
     Ok(())
+}
+
+/// What the host is asked to open in a browser: a web page, never a file or
+/// another application's URL scheme.
+fn check_authorize_url(raw: &str) -> Result<(), String> {
+    let url = Url::parse(raw)
+        .map_err(|e| format!("the authorization endpoint `{raw}` is not a URL: {e}"))?;
+    http::require_https_off_loopback(&url)
+        .map_err(|e| format!("the authorization endpoint is not handed to the host: {e}"))
 }
 
 fn require_pkce(metadata: &AuthorizationMetadata) -> Result<(), AuthFlowError> {
@@ -615,6 +667,12 @@ impl McpAuth {
             )));
         }
 
+        // Before binding: the sign-in being replaced may hold a fixed
+        // `callback_port`.
+        if let Some(before) = self.shared.release_flows_for(&key).await {
+            self.shared.with_entry(&key, |e| e.state = before);
+        }
+
         let (listener, redirect_uri) = match redirect {
             Redirect::Loopback => {
                 let (listener, uri) = callback::bind_loopback(oauth.callback_port)
@@ -747,6 +805,7 @@ impl McpAuth {
             .await
             .map_err(|(_, e)| failed(describe(&e)))?;
         let authorize_url = session.get_authorization_url().to_string();
+        check_authorize_url(&authorize_url).map_err(failed)?;
         let state = Url::parse(&authorize_url)
             .ok()
             .and_then(|u| {
@@ -766,9 +825,11 @@ impl McpAuth {
 
         let flow_id = uuid::Uuid::new_v4().simple().to_string();
         let stop = CancellationToken::new();
-        let callbacks = listener.map(|l| {
-            callback::serve_loopback(l, redirect_uri.clone(), server.to_string(), stop.clone())
-        });
+        let (callbacks, listening) = listener
+            .map(|l| {
+                callback::serve_loopback(l, redirect_uri.clone(), server.to_string(), stop.clone())
+            })
+            .unzip();
         let ttl = *self
             .shared
             .flow_ttl
@@ -778,28 +839,20 @@ impl McpAuth {
             AuthState::Authorizing | AuthState::Failed => AuthState::Required,
             other => other,
         };
-        {
-            let mut flows = self.shared.flows.lock().await;
-            flows.retain(|_, f| {
-                let same = f.key == key;
-                if same {
-                    f.stop.cancel();
-                }
-                !same
-            });
-            flows.insert(
-                flow_id.clone(),
-                Flow {
-                    server: server.to_string(),
-                    key: key.clone(),
-                    session,
-                    state,
-                    redirect_uri: redirect_url,
-                    stop,
-                    before,
-                },
-            );
-        }
+        self.shared.release_flows_for(&key).await;
+        self.shared.flows.lock().await.insert(
+            flow_id.clone(),
+            Flow {
+                server: server.to_string(),
+                key: key.clone(),
+                session,
+                state,
+                redirect_uri: redirect_url,
+                stop,
+                listening,
+                before,
+            },
+        );
         self.shared.with_entry(&key, |e| {
             e.names.insert(server.to_string());
             e.state = AuthState::Authorizing;
@@ -913,7 +966,7 @@ impl McpAuth {
             .ok_or_else(|| {
                 AuthFlowError::Invalid(format!("no sign-in `{flow_id}` is in progress"))
             })?;
-        flow.stop.cancel();
+        let flow = flow.release().await;
         self.shared.with_entry(&flow.key, |e| {
             e.state = flow.before;
             e.error = None;
@@ -940,16 +993,7 @@ impl McpAuth {
             .update(&key, |r| r.tokens = None)
             .await
             .map_err(|e| failed(format!("cannot forget the tokens: {e}")))?;
-        {
-            let mut flows = self.shared.flows.lock().await;
-            flows.retain(|_, f| {
-                let same = f.key == key;
-                if same {
-                    f.stop.cancel();
-                }
-                !same
-            });
-        }
+        self.shared.release_flows_for(&key).await;
         self.shared.with_entry(&key, |e| {
             e.names.insert(server.to_string());
             e.state = AuthState::Required;
@@ -1277,9 +1321,44 @@ mod tests {
         metadata.token_endpoint = "http://169.254.169.254/token".into();
         assert!(check_endpoints("https://mcp.example.com/mcp", &metadata).is_err());
         metadata.token_endpoint = "https://as.example.com/token".into();
-        metadata.registration_endpoint = Some("http://10.0.0.1/register".into());
+        metadata.registration_endpoint = Some("https://10.0.0.1/register".into());
         assert!(check_endpoints("https://mcp.example.com/mcp", &metadata).is_err());
-        assert!(check_endpoints("http://10.0.0.2/mcp", &metadata).is_ok());
+        assert!(check_endpoints("https://10.0.0.2/mcp", &metadata).is_ok());
+    }
+
+    #[test]
+    fn an_authorization_server_off_loopback_is_https_only() {
+        let mut metadata = AuthorizationMetadata::default();
+        metadata.issuer = Some("https://as.example.com".into());
+        metadata.authorization_endpoint = "https://as.example.com/authorize".into();
+        metadata.token_endpoint = "https://as.example.com/token".into();
+        assert!(check_endpoints("https://mcp.example.com/mcp", &metadata).is_ok());
+
+        let mut plain = metadata.clone();
+        plain.token_endpoint = "http://as.example.com/token".into();
+        assert!(check_endpoints("https://mcp.example.com/mcp", &plain).is_err());
+        let mut plain = metadata.clone();
+        plain.issuer = Some("http://as.example.com".into());
+        assert!(check_endpoints("https://mcp.example.com/mcp", &plain).is_err());
+        for authorize in [
+            "http://as.example.com/authorize",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "com.example.app:/authorize",
+        ] {
+            let mut odd = metadata.clone();
+            odd.authorization_endpoint = authorize.into();
+            assert!(
+                check_endpoints("https://mcp.example.com/mcp", &odd).is_err(),
+                "{authorize}"
+            );
+        }
+
+        let mut local = AuthorizationMetadata::default();
+        local.issuer = Some("http://127.0.0.1:9001".into());
+        local.authorization_endpoint = "http://127.0.0.1:9001/authorize".into();
+        local.token_endpoint = "http://localhost:9001/token".into();
+        assert!(check_endpoints("http://127.0.0.1:9000/mcp", &local).is_ok());
     }
 
     #[test]
