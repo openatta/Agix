@@ -517,8 +517,11 @@ names a provider does that provider's model read the page and answer the call's
 ### Context, telemetry, recording
 
 - **Compaction**: an LLM summary first, then cheaper fallbacks (snip,
-  micro-compact, collapse), behind a predictive trigger and a circuit breaker,
-  emitting cache edits so compaction does not throw away the prompt cache.
+  micro-compact, collapse), aimed at what the threshold leaves beside the
+  system prompt and tool definitions. Opt-in in the `compaction` settings: a
+  predictive pass with a circuit breaker (`reactive`), and hourly clearing that
+  emits cache edits so the prompt cache is not thrown away
+  (`cached_microcompact`).
 - **Telemetry**: 22 structured event types (`EventPayload` (22)) with
   OpenTelemetry export, four token counts per call, and the calls no turn asked
   for — compaction, memory, hooks, search — counted too.

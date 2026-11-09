@@ -1278,7 +1278,6 @@ fn fallback_settings(
         default_provider: None,
         task_models: Default::default(),
         language: None,
-        feature_flags: Default::default(),
         // A sub-agent inherits no script bindings: a script bound in the
         // parent's configuration applies to the parent's prompt, and quietly
         // running it against every spawned agent's prompt too would be a

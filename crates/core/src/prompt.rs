@@ -457,7 +457,6 @@ mod tests {
             default_provider: None,
             task_models: Default::default(),
             language: None,
-            feature_flags: Default::default(),
             session_dir: None,
         }
     }

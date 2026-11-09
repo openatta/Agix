@@ -607,8 +607,7 @@ async fn a_reactive_compaction_says_so_on_the_wire() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let mut run = stubbed("reactive-frame", &stub)
         .settings(json!({
-            "feature_flags": { "reactive_compact": true },
-            "compaction": { "threshold_tokens": 60000, "keep_recent": 2 }
+            "compaction": { "reactive": true, "threshold_tokens": 60000, "keep_recent": 2 }
         }))
         .start()
         .await?;

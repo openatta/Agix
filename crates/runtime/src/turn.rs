@@ -2328,7 +2328,7 @@ or project context that should survive across sessions.
                 context_tokens,
                 context_limit: budget.compact_threshold,
                 keep_recent: budget.compact_keep_recent,
-                enabled: self.settings.feature_flags.reactive_compact,
+                enabled: self.settings.compaction.reactive,
                 circuit_open: self.compaction_state.circuit_open,
             },
         ) {
@@ -6514,7 +6514,6 @@ mod tests {
             default_provider: None,
             task_models: Default::default(),
             language: None,
-            feature_flags: Default::default(),
             session_dir: None,
             scripts: Vec::new(),
         };
@@ -7175,7 +7174,6 @@ mod tests {
             default_provider: None,
             task_models: Default::default(),
             language: None,
-            feature_flags: Default::default(),
             session_dir: None,
             scripts: Vec::new(),
         }
@@ -8190,7 +8188,6 @@ mod prompt_assembly_tests {
             default_provider: None,
             task_models: Default::default(),
             language: None,
-            feature_flags: Default::default(),
             scripts: Vec::new(),
         }
     }

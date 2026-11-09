@@ -107,7 +107,7 @@ async fn trace(case: Case) -> String {
     settings.memory_enabled = false;
     settings.permission_mode = case.permission_mode;
     settings.hooks_config = case.hooks_config.clone();
-    settings.feature_flags.reactive_compact = case.reactive_compact;
+    settings.compaction.reactive = case.reactive_compact;
     let settings = Arc::new(settings);
 
     let registry = Arc::new(InMemoryToolRegistry::new());

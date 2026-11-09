@@ -2431,7 +2431,7 @@ impl Builder {
         };
 
         // Capture feature flags before settings is moved into the Agent struct
-        let cached_mc_enabled = settings.feature_flags.cached_microcompact;
+        let cached_mc_enabled = settings.compaction.cached_microcompact;
 
         let prompt_registry: Arc<dyn base::interface::prompt_registry::PromptRegistry> =
             if rust_layer.registers_on_prompt_registry()
@@ -2679,7 +2679,6 @@ mod tests {
             default_provider: None,
             task_models: Default::default(),
             language: None,
-            feature_flags: Default::default(),
             scripts: Vec::new(),
         }
     }

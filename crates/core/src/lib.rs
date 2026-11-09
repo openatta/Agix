@@ -13,7 +13,6 @@ pub mod settings;
 pub use interface::tool;
 pub mod context;
 pub mod crash;
-pub mod features;
 pub mod frozen;
 pub mod interface;
 pub use interface::log;

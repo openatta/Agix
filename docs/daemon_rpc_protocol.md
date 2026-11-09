@@ -2370,7 +2370,7 @@ transcript,这一轮以 `ENGINE_ERROR` 结束,不会重发。
 `turn_complete`。
 
 每一次真正改了对话的压缩都发这一帧:上下文过了阈值、`/compact`、请求因体积被厂商拒绝
-后的压缩重发,以及开了 `feature_flags.reactive_compact` 时轮中提前清掉旧工具结果的那一趟(`MicroCompact`,
+后的压缩重发,以及开了 `compaction.reactive` 时轮中提前清掉旧工具结果的那一趟(`MicroCompact`,
 消息条数不变,`tokens_after` 变小)。没有可丢的、或者丢掉的还不如压缩后补回去的提醒多
 时,什么都不改,也不发这一帧。`tokens_after` 算的是压缩后的整段对话,包括补回来的
 恢复消息(压缩前读过的文件、调用过的 skill、计划模式与后台任务的提醒)。

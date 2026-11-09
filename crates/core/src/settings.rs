@@ -162,10 +162,6 @@ pub struct Settings {
     /// User language preference (e.g. "zh-CN", "ja").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
-
-    /// Behaviour that is off unless switched on here.
-    #[serde(default)]
-    pub feature_flags: crate::features::FeatureFlags,
 }
 
 fn default_memory_enabled() -> bool {
@@ -489,6 +485,20 @@ pub struct CompactionConfig {
     /// How many recent rounds compaction leaves as they are.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_recent: Option<usize>,
+    /// Clear old tool results early, in the middle of a turn: once fewer than
+    /// 50,000 tokens are left below the threshold, or the context grows fast
+    /// enough to reach it within three model calls, the results of file,
+    /// shell and search tools older than the last `keep_recent` rounds (at
+    /// least five) are blanked — a `MicroCompact`, reported as a `compact`
+    /// event. Stops for the session after three passes in a row that freed
+    /// nothing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reactive: bool,
+    /// Once an hour — the lifetime of the provider's prompt cache — blank all
+    /// but the 20 newest tool results and send the provider `cache_edits`
+    /// for the ones it still holds.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cached_microcompact: bool,
 }
 
 /// Runtime control over the plugin subsystem, for a build that has it
@@ -1039,7 +1049,6 @@ impl Settings {
             default_provider: None,
             task_models: HashMap::new(),
             language: None,
-            feature_flags: crate::features::FeatureFlags::default(),
         }
     }
 }

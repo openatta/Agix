@@ -117,7 +117,6 @@ fn recall_test_settings(root: &std::path::Path) -> Settings {
         default_provider: None,
         task_models: Default::default(),
         language: None,
-        feature_flags: Default::default(),
         session_dir: None,
         scripts: Vec::new(),
     }

@@ -385,8 +385,7 @@ async fn reactive_turn(
     let mut run = LiveRun::start(
         name,
         json!({
-            "feature_flags": { "reactive_compact": true },
-            "compaction": { "threshold_tokens": 60000, "keep_recent": 2 }
+            "compaction": { "reactive": true, "threshold_tokens": 60000, "keep_recent": 2 }
         }),
         Mode::InProcess,
     )

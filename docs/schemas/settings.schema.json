@@ -21,6 +21,10 @@
     "CompactionConfig": {
       "description": "Context compaction, over what the scene asks for. A field left out keeps\nthe scene's own value (`Scene::token_budget`).",
       "properties": {
+        "cached_microcompact": {
+          "description": "Once an hour — the lifetime of the provider's prompt cache — blank all\nbut the 20 newest tool results and send the provider `cache_edits`\nfor the ones it still holds.",
+          "type": "boolean"
+        },
         "keep_recent": {
           "description": "How many recent rounds compaction leaves as they are.",
           "format": "uint",
@@ -29,6 +33,10 @@
             "integer",
             "null"
           ]
+        },
+        "reactive": {
+          "description": "Clear old tool results early, in the middle of a turn: once fewer than\n50,000 tokens are left below the threshold, or the context grows fast\nenough to reach it within three model calls, the results of file,\nshell and search tools older than the last `keep_recent` rounds (at\nleast five) are blanked — a `MicroCompact`, reported as a `compact`\nevent. Stops for the session after three passes in a row that freed\nnothing.",
+          "type": "boolean"
         },
         "threshold_tokens": {
           "description": "Compact once a request's context passes this many tokens. `0` turns\nautomatic compaction off.",
@@ -136,21 +144,6 @@
         "max_parallelism",
         "max_api_calls_per_turn"
       ],
-      "type": "object"
-    },
-    "FeatureFlags": {
-      "properties": {
-        "cached_microcompact": {
-          "default": false,
-          "description": "Enable microcompact caching (time-based tool result clearing).",
-          "type": "boolean"
-        },
-        "reactive_compact": {
-          "default": false,
-          "description": "Enable reactive compaction — proactive context compression triggered\nbefore the budget is fully exhausted, based on token usage velocity.",
-          "type": "boolean"
-        }
-      },
       "type": "object"
     },
     "ModelSettings": {
@@ -769,14 +762,6 @@
         "team_member_idle_timeout_secs": 1800,
         "team_stage_concurrency": 6
       }
-    },
-    "feature_flags": {
-      "$ref": "#/$defs/FeatureFlags",
-      "default": {
-        "cached_microcompact": false,
-        "reactive_compact": false
-      },
-      "description": "Behaviour that is off unless switched on here."
     },
     "hooks_config": {
       "description": "Hooks configuration (merged from global/scene/project layers)."

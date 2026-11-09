@@ -457,10 +457,11 @@ WebAssembly 载体整个移除。
   `allowed-tools` 授权不生效),即使用户层有同名的 skill。以前热重载把它记成用户 skill。
 - `permit_always` 的 `local` 第一次建出 `settings.local.json` 后,之后新建的会话不用
   `config.reload` 就能看到那条规则。
-- `feature_flags` 只剩 `cached_microcompact` 与 `reactive_compact`。`team_mode`、
-  `plugin_marketplace`、`extended_memory`、`experimental_agent`、`recorder_auto_detect`、
-  `dream_task` 从来没有生效,删除;配置里留着照样能加载,只是被忽略。`AGIX_FEATURE_*`
-  环境变量同样从未生效。
+- **`feature_flags` 整段删除。** 还在起作用的两项挪进 `compaction`:`reactive_compact` 改成
+  `compaction.reactive`,`cached_microcompact` 改成 `compaction.cached_microcompact`,含义不变、
+  默认都关。`feature_flags` 留在配置里照样能加载,但整段被忽略——开着这两项的要搬过去。
+  `team_mode`、`plugin_marketplace`、`extended_memory`、`experimental_agent`、
+  `recorder_auto_detect`、`dream_task` 从来没有生效;`AGIX_FEATURE_*` 环境变量同样从未生效。
 - 工具 `VerifyPlanExecution` 删除:它要读的计划正文从没有地方写入,调用总是报
   "No active plan found"。
 - `session.export` 的 `runtime.json` 去掉 `plan_text`(一直是 `null`)。
@@ -508,7 +509,7 @@ WebAssembly 载体整个移除。
   `strategy: "NoOp"` 的 `compact` 帧,上下文越压越大。现在没有可丢的就什么都不做、不发帧;
   压完反而更大的(补回的提醒比丢掉的多)也不生效。`compact` 帧的 `tokens_after` 含补回的
   恢复消息。
-- 开了 `feature_flags.reactive_compact` 时,轮中提前清掉旧工具结果的那一趟发 `compact` 帧
+- 开了 `compaction.reactive` 时,轮中提前清掉旧工具结果的那一趟发 `compact` 帧
   (`MicroCompact`,消息条数不变)。以前只记日志。
 - 压缩不再丢掉之前的摘要:没有摘要模型时(或摘要失败)的第二次压缩保留第一次留下的摘要,
   不再把它当作最旧的一轮删掉、或截成 200 字节。
@@ -791,7 +792,8 @@ WebAssembly 载体整个移除。
 - `base::permission::PermissionMode` 多了 `min_permissive`,并能 `into()` 成
   `base::settings::PermissionMode`。
 - `base` 的 cargo feature `team-mode`、`plugin-marketplace`、`experimental-agent` 删除
-  (什么也不控制)。`FeatureFlags::is_enabled`、`enabled_flags`、`apply_env_overrides` 删除。
+  (什么也不控制)。`base::features` 整个删除,`Settings::feature_flags` 随之去掉;
+  `CompactionConfig` 多了 `reactive` 与 `cached_microcompact`。
 - `SessionState` 去掉 `plan_text` / `set_plan_text` / `clear_plan_text` 与 `plan_slug` 那三个;
   `compaction::compact::PostCompactContext` 去掉 `plan_content`。
 - `runtime::agent::Agent` 去掉 `set_plan_mode`、`register_running_task`、`clear_running_tasks`:

@@ -78,7 +78,6 @@ fn settings() -> Settings {
         default_provider: None,
         task_models: Default::default(),
         language: None,
-        feature_flags: Default::default(),
         scripts: Vec::new(),
     }
 }
