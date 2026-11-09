@@ -1235,8 +1235,9 @@ fn build_hook_runner(
     // An untrusted project's hooks config is already gone from `settings`;
     // its `hooks/` directory goes too, or a user hook naming a script would
     // run the project's file of that name.
-    let project_hooks = (!settings.project_layer.trust.is_untrusted())
-        .then(|| settings.paths.project_root().join(".agix").join("hooks"));
+    let project_untrusted = settings.project_layer.trust.is_untrusted();
+    let project_hooks =
+        (!project_untrusted).then(|| settings.paths.project_root().join(".agix").join("hooks"));
     let hooks_search_dirs: Vec<_> = project_hooks
         .into_iter()
         .chain([
@@ -1256,6 +1257,7 @@ fn build_hook_runner(
     ));
     let runner = HookRunner::new(parsed)
         .with_hooks_search_dirs(hooks_search_dirs)
+        .with_project_untrusted(project_untrusted)
         .with_subprocess_env(settings.sandbox.subprocess_env.clone())
         .with_prompt_executor(prompt_executor)
         .with_agent_executor(agent_executor);

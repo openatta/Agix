@@ -171,6 +171,7 @@ pub struct HookRunner {
     /// without inventing a second hook-script resolution scheme — `command`
     /// is still just a shell string, only the search path changes.
     hooks_search_dirs: Vec<std::path::PathBuf>,
+    project_untrusted: bool,
     process: base::interface::exec::local::LocalProcess,
 }
 
@@ -188,6 +189,7 @@ impl HookRunner {
             pending_rewakes: std::sync::Mutex::new(std::collections::HashSet::new()),
             wake_receiver: std::sync::Mutex::new(None),
             hooks_search_dirs: Vec::new(),
+            project_untrusted: false,
             process: Default::default(),
         }
     }
@@ -202,6 +204,14 @@ impl HookRunner {
     /// first) when resolving a bare script name in a `Command` hook's `PATH`.
     pub fn with_hooks_search_dirs(mut self, dirs: Vec<std::path::PathBuf>) -> Self {
         self.hooks_search_dirs = dirs;
+        self
+    }
+
+    /// Builder: the session's project is not trusted (ARCHITECTURE §6.6), so
+    /// every hook here came from the user's own tiers and none may start a
+    /// program the project supplies under a relative path.
+    pub fn with_project_untrusted(mut self, untrusted: bool) -> Self {
+        self.project_untrusted = untrusted;
         self
     }
 
@@ -1005,6 +1015,95 @@ mod tests {
             HookOutcome::Ran { stdout, .. } => assert!(stdout.contains("hi from greet.sh")),
             other => panic!("expected the bare script name to resolve via PATH, got {other:?}"),
         }
+    }
+
+    /// In a project nobody trusted, a hook written in the user's own settings
+    /// must not start a program the repository put under a relative path.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_untrusted_project_does_not_supply_a_hooks_relative_program() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile_dir();
+        let project = root.join("project");
+        let marker = project.join("ran");
+        std::fs::create_dir_all(project.join("scripts")).unwrap();
+        let script = project.join("scripts").join("check.sh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let hooks_dir = root.join("hooks");
+        std::fs::create_dir_all(&hooks_dir).unwrap();
+        let own = hooks_dir.join("own.sh");
+        std::fs::write(&own, "#!/bin/sh\necho '{\"message\":\"own\"}'\n").unwrap();
+        std::fs::set_permissions(&own, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut input = input_for_bash("ls");
+        input.cwd = project.display().to_string();
+        let runner = |command: &str, on_error: OnError, untrusted: bool| {
+            let mut s: HooksSettings = HashMap::new();
+            s.insert(
+                HookEvent::PreToolUse,
+                vec![HookConfig::Command {
+                    command: command.into(),
+                    shell: None,
+                    timeout: None,
+                    if_pattern: None,
+                    only_on_error: None,
+                    once: None,
+                    async_rewake: None,
+                    on_error,
+                }],
+            );
+            HookRunner::new(s)
+                .with_hooks_search_dirs(vec![hooks_dir.clone()])
+                .with_project_untrusted(untrusted)
+        };
+
+        for command in [
+            "./scripts/check.sh",
+            "scripts/check.sh",
+            "true && cd scripts && ./check.sh",
+            "env X=1 scripts/check.sh",
+            "bash scripts/check.sh",
+            "sh -e ./scripts/check.sh",
+            "bash -c './scripts/check.sh'",
+            ". scripts/check.sh",
+        ] {
+            let result = runner(command, OnError::Allow, true)
+                .run(HookEvent::PreToolUse, &input)
+                .await;
+            assert!(!marker.exists(), "`{command}` ran the project's script");
+            match &result.outcomes[0] {
+                HookOutcome::Error(e) => assert!(e.contains("not trusted"), "`{command}`: {e}"),
+                other => panic!("`{command}`: expected a hook failure, got {other:?}"),
+            }
+        }
+
+        let blocked = runner("./scripts/check.sh", OnError::Block, true)
+            .run(HookEvent::PreToolUse, &input)
+            .await;
+        assert!(blocked.blocked().is_some(), "{:?}", blocked.outcomes);
+
+        for command in ["own.sh", "/bin/echo '{}'", "echo scripts/check.sh", "true"] {
+            let result = runner(command, OnError::Allow, true)
+                .run(HookEvent::PreToolUse, &input)
+                .await;
+            assert!(
+                matches!(result.outcomes[0], HookOutcome::Ran { .. }),
+                "`{command}`: {:?}",
+                result.outcomes
+            );
+        }
+
+        runner("./scripts/check.sh", OnError::Allow, false)
+            .run(HookEvent::PreToolUse, &input)
+            .await;
+        assert!(marker.exists(), "a trusted project's script runs as before");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     fn one_command_hook(command: &str, timeout_ms: u64) -> HookRunner {

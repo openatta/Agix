@@ -62,6 +62,14 @@ hook 是写在设置里的外部回调:引擎走到一个具名时刻(调工具�
 - `PATH` 前面依次加上项目的 `.agix/hooks/`(项目未被信任时没有这一项)、
   `~/.agix/scenes/<scene>/hooks/`、`~/.agix/hooks/`,所以 `command` 可以直接写放在那里的脚本名。环境与 Bash 工具同一套
   (`sandbox.subprocess_env`)。command hook **不进 OS 沙箱**,以 daemon 的身份运行。
+- **未信任的项目里不跑项目给的程序。** 工作目录照旧是项目里的 `cwd`,所以 `./scripts/check.sh`、
+  `scripts/x.sh` 这类相对路径落到的是仓库放在那里的文件。项目未被信任时(ARCHITECTURE §6.6),
+  在场的 hook 都来自全局层、场景层,它们若以相对路径起程序——`command` 里任何一段启动的程序
+  (`cd` 之后、`sh -c` 里、`env` / `sudo` 等 wrapper 后面的都算)、`sh` / `bash` 等 shell 或
+  `.` / `source` 读的脚本、`shell` 本身——就不跑,算这个 hook 失败(按 `on_error` 处理,缺省
+  记 warn、放行),失败原因里写着是哪个词。继承来的 `PATH` 里的相对条目(`.`、空条目)同时去掉,
+  裸程序名只在 hooks 目录与绝对路径的目录里找。自己的脚本写绝对路径(`~/` 也算)或放进
+  `~/.agix/hooks/` 写裸名;`$VAR/…` 这种拼出来的路径不在检查之列。项目信任之后照旧。
 - stdin 收到一行 JSON payload(见下)。
 - **退出码只认 0 和 2。**
   - `0`:stdout 是 JSON 回答;stdout 为空等于什么都不说;不是 JSON 的记 warn,当作没说。

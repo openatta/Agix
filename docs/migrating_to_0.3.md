@@ -533,6 +533,11 @@ WebAssembly 载体整个移除。
   `"ok": true`,以前在 `PreToolUse` 上等于替人答应了权限询问(无人值守也一样);现在什么都不说,
   询问照常发给宿主。要它照旧算数的,在那条 hook 上写 `"may_approve": true`。它们说 `block` /
   `ok: false` 照旧拦下;`command` 与 `http` hook 的 `approve` 不变。
+- **未信任的项目里,command hook 不以相对路径起程序。** 全局层、场景层的 hook 写
+  `./scripts/check.sh`、`scripts/x.sh`、`bash x.sh`、`. ./env.sh` 的,在未信任的项目里不跑,算
+  hook 失败(`on_error` 照旧);继承的 `PATH` 里的 `.` 与空条目也不给它们用。以前它们在项目目录里
+  执行,跑的是仓库放在那个路径上的文件。自己的脚本改写绝对路径或放进 `~/.agix/hooks/` 写裸名;
+  信任的项目不变(0.3.x 缺省信任)。
 - agent 类型 frontmatter 的 `permission_mode` 真正作用到子 Agent 的权限判定上(以前写 `plan`
   不起作用),可以比父会话宽也可以严;父会话在 `plan` 时取两者中更严的那个,父会话是
   `bypassPermissions` 时随父会话,插件带来的类型只能收紧。团队成员(`TeamCreate`、`Agent` 的

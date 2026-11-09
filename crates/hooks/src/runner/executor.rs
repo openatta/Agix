@@ -116,6 +116,15 @@ impl HookRunner {
         input: &HookInput,
         timeout: Duration,
     ) -> HookOutcome {
+        if self.project_untrusted {
+            if let Some(word) = relative_program(shell, command) {
+                return HookOutcome::Error(format!(
+                    "hook program `{word}` is a relative path and the project is not trusted: \
+                     it would run the project's file of that name; write an absolute path, \
+                     or trust the project"
+                ));
+            }
+        }
         let cwd = Some(std::path::Path::new(&input.cwd))
             .filter(|dir| !input.cwd.is_empty() && dir.is_dir())
             .unwrap_or(std::path::Path::new("."));
@@ -125,10 +134,13 @@ impl HookRunner {
         // lives in `.agix/hooks/` by prepending the configured search dirs
         // to this subprocess's PATH — normal shell command lookup does the
         // rest, no custom resolution syntax needed.
-        if !self.hooks_search_dirs.is_empty() {
+        if !self.hooks_search_dirs.is_empty() || self.project_untrusted {
             let existing = std::env::var_os("PATH").unwrap_or_default();
             let mut search: Vec<std::path::PathBuf> = self.hooks_search_dirs.clone();
-            search.extend(std::env::split_paths(&existing));
+            search.extend(
+                std::env::split_paths(&existing)
+                    .filter(|dir| !self.project_untrusted || dir.is_absolute()),
+            );
             if let Ok(joined) = std::env::join_paths(search) {
                 spec.env
                     .push(("PATH".into(), joined.to_string_lossy().into_owned()));
@@ -188,6 +200,75 @@ impl HookRunner {
             failure,
         }
     }
+}
+
+/// The word that names a program by a path relative to where the hook runs:
+/// `shell` itself, a command's program (`./x`, `bin/x`, after `cd`, inside
+/// `sh -c`, behind `env` and the other wrappers), or the script a shell or
+/// `.` / `source` reads (`bash x.sh`). Read as the hook `if` reads a command.
+/// A program spelled through a variable is not judged here.
+fn relative_program(shell: &str, command: &str) -> Option<String> {
+    use permissions::invocation::{invocations, Invocation};
+    if shell.contains('/') && is_relative(shell) {
+        return Some(shell.to_string());
+    }
+    permissions::shell::segments(command)
+        .iter()
+        .flat_map(|segment| invocations(&segment.source))
+        .find_map(|invocation| match invocation {
+            Invocation::Runs(argv) => relative_word_in(&argv).map(str::to_string),
+            Invocation::Unknown => None,
+        })
+}
+
+const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "fish"];
+
+fn relative_word_in(argv: &[String]) -> Option<&str> {
+    let program = argv.first()?;
+    if program.contains('/') && is_relative(program) {
+        return Some(program);
+    }
+    let name = permissions::invocation::program_name(program);
+    let script = if SHELLS.contains(&name) {
+        shell_script_operand(&argv[1..])
+    } else if matches!(name, "." | "source") {
+        argv.get(1).map(String::as_str)
+    } else {
+        None
+    };
+    script.filter(|word| is_relative(word))
+}
+
+/// The script file a shell started with `args` reads; `None` when it runs a
+/// `-c` string or reads stdin.
+fn shell_script_operand(args: &[String]) -> Option<&str> {
+    let mut args = args.iter().map(String::as_str);
+    while let Some(arg) = args.next() {
+        if matches!(arg, "--" | "-") {
+            return args.next();
+        }
+        if let Some(long) = arg.strip_prefix("--") {
+            if matches!(long, "rcfile" | "init-file") {
+                args.next();
+            }
+            continue;
+        }
+        if let Some(flags) = arg.strip_prefix('-').or_else(|| arg.strip_prefix('+')) {
+            if flags.contains(['c', 's']) {
+                return None;
+            }
+            if flags.contains(['o', 'O']) {
+                args.next();
+            }
+            continue;
+        }
+        return Some(arg);
+    }
+    None
+}
+
+fn is_relative(word: &str) -> bool {
+    !word.starts_with('/') && !word.starts_with('~')
 }
 
 /// The exit code a command hook blocks with, whatever it printed.
@@ -316,6 +397,40 @@ pub(super) fn truncate(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relative_programs_are_told_apart_from_absolute_and_looked_up_ones() {
+        for (shell, command, word) in [
+            ("bash", "./x.sh", "./x.sh"),
+            ("bash", "ls && bin/x", "bin/x"),
+            ("bash", "exec ../x", "../x"),
+            ("bash", "sudo -u me ./x", "./x"),
+            ("bash", "zsh -o pipefail x.sh", "x.sh"),
+            ("bash", "sh -- x.sh", "x.sh"),
+            ("bash", "source env.sh", "env.sh"),
+            ("bash", "sh -c 'cd sub; ./y'", "./y"),
+            ("./my-shell", "true", "./my-shell"),
+        ] {
+            assert_eq!(
+                relative_program(shell, command).as_deref(),
+                Some(word),
+                "`{command}`"
+            );
+        }
+        for command in [
+            "/opt/x.sh",
+            "~/bin/x.sh",
+            "check.sh",
+            "echo ./x",
+            "bash -c 'echo hi'",
+            "bash -s < /dev/null",
+            "sh /etc/x.sh",
+            "$HOME/bin/x.sh",
+            "python3 -m pytest",
+        ] {
+            assert_eq!(relative_program("bash", command), None, "`{command}`");
+        }
+    }
 
     #[test]
     fn parse_hook_response_handles_plain_json() {

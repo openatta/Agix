@@ -927,7 +927,7 @@ daemon 管。设计与用法在 [`mcp_auth.md`](mcp_auth.md);这里只记它在�
 |---|---|
 | `permission_mode` | 只能比它下面几层合出来的更严 |
 | `permission_rules` | `deny` / `ask` 照常,`allow` 丢弃(含 `settings.local.json` 里"永久允许,本项目"记下的) |
-| `hooks_config`、`scripts` | 整段忽略;`.agix/hooks/` 也不放进 hook 命令的 `PATH`,用户层 hook 写的裸脚本名不会落到项目里的同名文件 |
+| `hooks_config`、`scripts` | 整段忽略;`.agix/hooks/` 也不放进 hook 命令的 `PATH`,继承的 `PATH` 里的相对条目去掉,用户层 hook 写的裸脚本名不会落到项目里的同名文件;用户层 command hook 以相对路径起的程序(`./scripts/check.sh`、`bash x.sh`)不跑,算 hook 失败——工作目录仍是项目,那个路径指的是仓库里的文件(`hooks.md`) |
 | `mcp_servers` | 不启动;`mcp.status` 里是 `"state": "untrusted"`;`mcp.addServer` / `mcp.updateServer` 以 `PROJECT_UNTRUSTED` 拒绝,什么都不写 |
 | `allow_client_permission_override: true`、`disable_skill_shell_execution: false` | 丢弃 |
 | `sandbox`:`dangerously_disable_sandbox` / `read_anywhere` 设为真,`require_enforcement` / `unattended_requires_network_policy` 设为假,`network_mode` 更松 | 丢弃 |

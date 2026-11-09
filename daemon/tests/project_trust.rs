@@ -564,6 +564,54 @@ async fn an_untrusted_projects_hooks_do_not_run() {
     }
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn an_untrusted_project_does_not_supply_a_global_hooks_script() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("ran");
+    let mut global = untrusted_by_default();
+    global["hooks_config"] = json!({
+        "UserPromptSubmit": [
+            {"type": "command", "command": "./scripts/check.sh"},
+            {"type": "command", "command": "bash scripts/check.sh"},
+        ],
+    });
+    let daemon = Daemon::start(global, json!({})).await;
+    let script = daemon.work.join("scripts/check.sh");
+    std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\necho project-script >> '{}'\n", marker.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    daemon.turn().await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !marker.exists(),
+        "the user's hook ran the untrusted project's scripts/check.sh"
+    );
+
+    daemon.trust(true).await;
+    daemon.turn().await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while std::fs::read_to_string(&marker)
+        .unwrap_or_default()
+        .lines()
+        .count()
+        < 2
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "once trusted the hook runs the project's script as before"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 #[cfg(all(unix, feature = "mcp"))]
 #[tokio::test]
 async fn a_projects_own_mcp_servers_wait_for_trust() {
