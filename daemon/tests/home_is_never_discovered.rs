@@ -67,10 +67,18 @@ const ALLOWED: &[(&str, &str)] = &[
          about the machine, never a place Agix writes.",
     ),
     (
-        "crates/tools/src/bash.rs",
+        "crates/tools/src/bash/classify/mod.rs",
         "same deny-list, reused by the command classifier so `cat ~/.ssh/id_rsa` \
-         is not waved through as a read-only command; and the `~/` of \
-         `sandbox.cache_directories`, where pip and npm keep their caches.",
+         is not waved through as a read-only command.",
+    ),
+    (
+        "crates/tools/src/bash/sandbox.rs",
+        "the `~/` of `sandbox.cache_directories`, where pip and npm keep their \
+         caches.",
+    ),
+    (
+        "crates/tools/src/bash/tests.rs",
+        "the tests check both of the above against this machine's home.",
     ),
 ];
 

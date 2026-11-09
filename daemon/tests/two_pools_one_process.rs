@@ -222,7 +222,7 @@ fn the_engine_keeps_no_new_process_wide_state() {
         ("crates/scene/src/code.rs", "SECTION_CACHE", "prompt sections keyed by a fingerprint of their inputs"),
         ("crates/core/src/memory.rs", "PATTERNS", "compiled regexes"),
         ("crates/core/src/memory.rs", "LOCKS", "serialises writes to memory directories, which every session of every pool may share"),
-        ("crates/tools/src/bash.rs", "SUFFIXES", "a constant table"),
+        ("crates/tools/src/bash/classify/mod.rs", "SUFFIXES", "a constant table"),
         ("crates/mcp/src/manager.rs", "REGISTRY", "the official MCP registry: a constant"),
         ("crates/core/src/interface/exec/local/network.rs", "PROXIED", "an HTTP client; it reads the process environment's proxy, which every pool shares anyway"),
         ("crates/core/src/interface/exec/local/network.rs", "DIRECT", "an HTTP client with no per-pool configuration"),

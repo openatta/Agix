@@ -1180,7 +1180,7 @@ mod bypass_immune_tests {
     #[test]
     fn ordinary_paths_are_not_immune() {
         assert!(!is_path_bypass_immune("/repo/src/main.rs"));
-        assert!(!is_path_bypass_immune("crates/tools/src/bash.rs"));
+        assert!(!is_path_bypass_immune("crates/tools/src/bash/mod.rs"));
         // 无 `/` 的裸文件名不是路径，不参与组件判定
         assert!(!is_path_bypass_immune(".gitignore"));
     }
