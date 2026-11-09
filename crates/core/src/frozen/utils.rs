@@ -60,12 +60,6 @@ pub(crate) fn truncate_memory_entrypoint(raw: &str) -> String {
     out
 }
 
-/// Convert an arbitrary string into a cross-platform safe directory name:
-/// `[^a-zA-Z0-9]` -> `-`, truncate + djb2 hash suffix when over 200 bytes.
-pub(crate) fn sanitize_for_dir(s: &str) -> String {
-    crate::path::sanitize_for_fs(s)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,13 +96,5 @@ mod tests {
         let t = truncate_memory_entrypoint(&raw);
         assert!(t.contains("WARNING: MEMORY.md"));
         assert!(t.len() < raw.len());
-    }
-
-    #[test]
-    fn sanitize_for_dir_replaces_non_alnum() {
-        assert_eq!(
-            sanitize_for_dir("/Users/foo/my-project"),
-            "-Users-foo-my-project"
-        );
     }
 }

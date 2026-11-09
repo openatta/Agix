@@ -707,6 +707,16 @@ mod tests {
     }
 
     #[test]
+    fn reminder_leaves_the_memory_index_to_the_prompt() {
+        let rctx = ReminderContext {
+            cwd: Cow::Borrowed("/tmp"),
+            git_status: None,
+            memory_summary: Some(Cow::Borrowed("- [deploy](deploy.md)")),
+        };
+        assert_eq!(CodeScene::default().build_system_reminder(&rctx), "");
+    }
+
+    #[test]
     fn section_cache_is_reusable() {
         let b1 = CodeScene::default().build_system_prompt(&ctx());
         let b2 = CodeScene::default().build_system_prompt(&ctx());

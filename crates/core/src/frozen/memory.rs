@@ -7,8 +7,6 @@ use serde::{Deserialize, Serialize};
 use time::format_description::well_known::Iso8601;
 use time::OffsetDateTime;
 
-use super::utils::{sanitize_for_dir, truncate_memory_entrypoint};
-
 /// AGIX.md total length cap.
 const MAX_CLAUDE_MD_CHARS: usize = 20_000;
 
@@ -17,77 +15,6 @@ const MAX_CLAUDE_MD_CHARS: usize = 20_000;
 pub struct MemoryFileEntry {
     pub path: PathBuf,
     pub content: String,
-}
-
-/// 跨会话 memory 目录 ＋ MEMORY.md 加载。
-///
-/// 路径：`~/.agix/memory/<sha256(canonical_cwd)[..16]>/`——**不挂 scope**：
-/// memory 跟 sessions/recordings 一样，只分"项目级"与"全局级"，不分
-/// scene（不同 scene 的工具配置跟这份 memory 属于哪个项目无关）。
-///
-/// 行为：
-/// - 目录不存在不主动创建（避免到处冒目录）；模型用 FileWrite 写时它会自动创建
-/// - 目录里 `MEMORY.md` 存在则读出来注入 system prompt（同 AGENTS.md 玩法）
-/// - MEMORY.md 长度截 8KB -- 它本就该是索引而非详情
-///
-/// 失败时返回 (默认 Path, None) -- 不阻塞 session 启动。
-pub(crate) async fn collect_memory(cwd: &Path, global_root: &Path) -> (PathBuf, Option<String>) {
-    use sha2::{Digest, Sha256};
-    let canonical = tokio::fs::canonicalize(cwd)
-        .await
-        .unwrap_or_else(|_| cwd.to_path_buf());
-    let mut hasher = Sha256::new();
-    hasher.update(canonical.to_string_lossy().as_bytes());
-    let hash = hasher.finalize();
-    // 16 hex chars = 64 bits 命名空间，碰撞率 < 2^-32 即便 50k 项目也安全
-    let hash_hex: String = hash[..8].iter().map(|b| format!("{:02x}", b)).collect();
-
-    let dir = global_root.join("memory").join(&hash_hex);
-
-    let index_path = dir.join("MEMORY.md");
-    let index = tokio::fs::read_to_string(&index_path)
-        .await
-        .ok()
-        .map(|s| truncate_memory_entrypoint(&s));
-
-    (dir, index)
-}
-
-/// 项目级 memdir：`~/.agix/memory/<sanitize(cwd)>/*.md`，跨 session 持久知识
-/// （如"项目 X 常用命令"、"曾经的设计决策"）。只是文件加载；
-/// auto-extract / save tools 推迟。返回路径列表按文件名排序，让加载顺序稳定。
-/// **不挂 scope**，理由同 [`collect_memory`]。
-pub(crate) async fn collect_memdir_files(global_root: &Path, cwd: &Path) -> Vec<PathBuf> {
-    // Cap the count of memory files loaded, keeping the newest by mtime.
-    const MAX_MEMORY_FILES: usize = 200;
-    let sanitized = sanitize_for_dir(&cwd.display().to_string());
-    let dir = global_root.join("memory").join(&sanitized);
-    let mut files: Vec<PathBuf> = Vec::new();
-    let mut entries = match tokio::fs::read_dir(&dir).await {
-        Ok(e) => e,
-        Err(_) => return files,
-    };
-    while let Ok(Some(e)) = entries.next_entry().await {
-        let path = e.path();
-        if path.extension().and_then(|s| s.to_str()) == Some("md") {
-            files.push(path);
-        }
-    }
-    // Sort newest-first by mtime (un-statable files sort oldest), then cap.
-    let mut keyed: Vec<(std::time::SystemTime, PathBuf)> = Vec::with_capacity(files.len());
-    for f in files {
-        let mtime = tokio::fs::metadata(&f)
-            .await
-            .and_then(|m| m.modified())
-            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        keyed.push((mtime, f));
-    }
-    keyed.sort_by_key(|(mt, _)| std::cmp::Reverse(*mt));
-    keyed
-        .into_iter()
-        .take(MAX_MEMORY_FILES)
-        .map(|(_, p)| p)
-        .collect()
 }
 
 /// 简版 AGENTS.md 加载：从 cwd 向上找到 git root（或 $HOME），每一层看
@@ -101,7 +28,6 @@ pub(crate) async fn collect_memdir_files(global_root: &Path, cwd: &Path) -> Vec<
 pub(crate) async fn collect_memory_files_with(
     cwd: &Path,
     do_walk_up: bool,
-    global_root: &Path,
 ) -> Vec<MemoryFileEntry> {
     let mut visited = std::collections::HashSet::new();
     let mut walk_up: Vec<PathBuf> = Vec::new();
@@ -130,17 +56,10 @@ pub(crate) async fn collect_memory_files_with(
     // 远到近：顶层 repo → cwd → 子（这里 walk_up 是 cwd 向上，所以反转）
     walk_up.reverse();
 
-    // memdir：在 repo 顶层之前插入
-    // <global_root>/memory/<sanitized-cwd>/*.md
-    let memdir_files = collect_memdir_files(global_root, cwd).await;
-    let mut combined: Vec<PathBuf> = Vec::with_capacity(walk_up.len() + memdir_files.len());
-    combined.extend(memdir_files);
-    combined.extend(walk_up);
-
     let mut entries: Vec<MemoryFileEntry> = Vec::new();
     let mut total_len = 0usize;
 
-    for path in combined {
+    for path in walk_up {
         let canonical = tokio::fs::canonicalize(&path).await.unwrap_or(path.clone());
         if !visited.insert(canonical.clone()) {
             continue;
@@ -367,57 +286,18 @@ mod tests {
             .unwrap();
 
         // walk_up = true（默认）-- parent 应该出现
-        let with_walk = collect_memory_files_with(&child, true, &dir.path().join("state")).await;
+        let with_walk = collect_memory_files_with(&child, true).await;
         assert!(with_walk
             .iter()
             .any(|e| e.content.contains("PARENT-MONOREPO")));
         assert!(with_walk.iter().any(|e| e.content.contains("CHILD-LOCAL")));
 
         // walk_up = false -- 只 child
-        let no_walk = collect_memory_files_with(&child, false, &dir.path().join("state")).await;
+        let no_walk = collect_memory_files_with(&child, false).await;
         assert!(!no_walk
             .iter()
             .any(|e| e.content.contains("PARENT-MONOREPO")));
         assert!(no_walk.iter().any(|e| e.content.contains("CHILD-LOCAL")));
-    }
-
-    #[tokio::test]
-    async fn memdir_loads_md_files_for_project() {
-        // 假装的状态根 + cwd
-        let home = TempDir::new().unwrap();
-        let cwd = TempDir::new().unwrap();
-        let sanitized = sanitize_for_dir(&cwd.path().display().to_string());
-        let memdir = home.path().join(".agix").join("memory").join(&sanitized);
-        tokio::fs::create_dir_all(&memdir).await.unwrap();
-        tokio::fs::write(memdir.join("commands.md"), "# Common commands\nfoo\nbar")
-            .await
-            .unwrap();
-        tokio::fs::write(memdir.join("decisions.md"), "# Past decisions")
-            .await
-            .unwrap();
-        // 非 md 应当不收
-        tokio::fs::write(memdir.join("note.txt"), "ignore me")
-            .await
-            .unwrap();
-
-        let files = collect_memdir_files(&home.path().join(".agix"), cwd.path()).await;
-        assert_eq!(files.len(), 2);
-        // Order is mtime-newest-first; assert by membership, not position.
-        let names: Vec<String> = files
-            .iter()
-            .map(|f| f.file_name().unwrap().to_string_lossy().into_owned())
-            .collect();
-        assert!(names.iter().any(|n| n.contains("commands")));
-        assert!(names.iter().any(|n| n.contains("decisions")));
-        assert!(!names.iter().any(|n| n.contains("note.txt")));
-    }
-
-    #[tokio::test]
-    async fn memdir_returns_empty_when_dir_missing() {
-        let home = TempDir::new().unwrap();
-        let cwd = TempDir::new().unwrap();
-        let files = collect_memdir_files(&home.path().join(".agix"), cwd.path()).await;
-        assert!(files.is_empty());
     }
 
     #[test]
@@ -448,22 +328,5 @@ mod tests {
         assert!(result.contains("<!-- CLAUDE_MIGRATED_BEGIN -->"));
         assert!(result.contains("CLAUDE content"));
         assert!(result.contains("# My AGIX"));
-    }
-
-    #[tokio::test]
-    async fn memdir_files_capped_at_200() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let global_root = tmp.path().join(".agix");
-        let cwd = std::path::Path::new("/fake/project/abc");
-        let sanitized = sanitize_for_dir(&cwd.display().to_string());
-        let dir = global_root.join("memory").join(&sanitized);
-        tokio::fs::create_dir_all(&dir).await.unwrap();
-        for i in 0..250u32 {
-            tokio::fs::write(dir.join(format!("m{i}.md")), format!("body {i}"))
-                .await
-                .unwrap();
-        }
-        let got = collect_memdir_files(&global_root, cwd).await;
-        assert_eq!(got.len(), 200);
     }
 }

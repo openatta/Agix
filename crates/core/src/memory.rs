@@ -1,16 +1,25 @@
 //! Durable memory — cross-session persistent knowledge, file-based.
 //!
-//! - Directory: `<user_dir>/memory/` or `<local_dir>/memory/`
+//! - Directories: the global `<global_data_dir>/memory/` and the project's
+//!   `<local_data_dir>/memory/`, both from [`ConfigPaths`] — see
+//!   [`MemoryStore::for_paths`], the one place they are derived
 //! - Each memory is a `.md` file with YAML frontmatter
 //! - `MEMORY.md` is the index (one line per memory entry)
 //! - 4 types: user | feedback | project | reference
 //! - [[wikilink]] internal linking for cross-references
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use crate::interface::environment::{Environment, SystemEnvironment};
+use crate::paths::ConfigPaths;
+
+/// How many memories the store keeps once extraction has added to it: the
+/// most the index shows, and past it the recall selection call carries every
+/// header there is.
+pub const MAX_MEMORIES: usize = 200;
 
 /// A single durable memory entry — stored as a .md file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,6 +166,18 @@ impl MemoryStore {
         }
     }
 
+    /// The store a session uses: the global memory directory and the
+    /// project's, as `paths` names them.
+    pub fn for_paths(paths: &ConfigPaths) -> Self {
+        Self::new(paths.global_memory_dir(), paths.local_memory_dir())
+    }
+
+    /// Where a memory with no other home is written — the directory the
+    /// model is told to write to.
+    pub fn user_dir(&self) -> &Path {
+        &self.user_dir
+    }
+
     /// Score ageing against `environment` instead of the machine's clock.
     pub fn with_environment(mut self, environment: Arc<dyn Environment>) -> Self {
         self.environment = environment;
@@ -274,28 +295,51 @@ impl MemoryStore {
     /// project-local directory.
     pub fn persist_batch_scoped(&self, memories: Vec<ScopedMemory>) -> Result<usize, MemoryError> {
         let mut saved = 0usize;
-        let mut touched: Vec<PathBuf> = Vec::new();
-        for sm in &memories {
-            if sm.memory.confidence < 0.3 {
+        for (dir, scope) in [
+            (&self.user_dir, MemoryScope::User),
+            (&self.local_dir, MemoryScope::Local),
+        ] {
+            let batch: Vec<&DurableMemory> = memories
+                .iter()
+                .filter(|sm| sm.scope == scope && sm.memory.confidence >= 0.3)
+                .map(|sm| &sm.memory)
+                .collect();
+            if batch.is_empty() {
                 continue;
             }
-            let dir = match sm.scope {
-                MemoryScope::User => &self.user_dir,
-                MemoryScope::Local => &self.local_dir,
-            };
-            Self::write_memory_file(dir, &sm.memory)?;
-            saved += 1;
-            if !touched.contains(dir) {
-                touched.push(dir.clone());
+            let _writing = lock_dir(dir);
+            for memory in &batch {
+                Self::write_memory_file(dir, memory)?;
             }
-        }
-        // Rebuild each touched index from that directory's files rather than
-        // from `memories` — an index built from the incoming batch alone drops
-        // every memory the batch didn't mention.
-        for dir in &touched {
+            saved += batch.len();
+            // Rebuilt from the directory's files rather than from the batch —
+            // an index of the batch alone drops every memory it didn't mention.
             Self::rebuild_index_from_disk(dir)?;
         }
         Ok(saved)
+    }
+
+    /// Count one more recall of each of `names`, in the directory each lives in.
+    ///
+    /// Each file is re-read under its directory's lock, so two sessions
+    /// recalling the same memory at once both count.
+    pub fn record_recalled(&self, names: &[String]) -> Result<(), MemoryError> {
+        for (dir, memory) in self.load_all_with_home() {
+            if !names.contains(&memory.name) {
+                continue;
+            }
+            let _writing = lock_dir(&dir);
+            let path = dir.join(format!("{}.md", sanitize_filename(&memory.name)));
+            let Some(mut current) = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|raw| Self::parse_memory_file(&raw))
+            else {
+                continue;
+            };
+            current.recall_count += 1;
+            Self::write_memory_file(&dir, &current)?;
+        }
+        Ok(())
     }
 
     /// The directory a memory with this name currently lives in, or `user_dir`
@@ -328,6 +372,7 @@ impl MemoryStore {
         let mut removed = false;
         for dir in self.dirs() {
             let path = dir.join(&file);
+            let _writing = lock_dir(dir);
             if path.exists() {
                 std::fs::remove_file(&path).map_err(|e| MemoryError::Io(e.to_string()))?;
                 Self::rebuild_index_from_disk(dir)?;
@@ -372,15 +417,19 @@ impl MemoryStore {
     /// loaded from is the whole point — a delete-everywhere-then-rewrite-to-
     /// `user_dir` pass silently migrates project memories to global.
     fn delete_entries(entries: &[(PathBuf, String)]) -> Result<(), MemoryError> {
-        let mut touched: Vec<PathBuf> = Vec::new();
-        for (dir, name) in entries {
-            let path = dir.join(format!("{}.md", sanitize_filename(name)));
-            if std::fs::remove_file(&path).is_ok() && !touched.contains(dir) {
-                touched.push(dir.clone());
+        let mut dirs: Vec<&PathBuf> = entries.iter().map(|(dir, _)| dir).collect();
+        dirs.sort();
+        dirs.dedup();
+        for dir in dirs {
+            let _writing = lock_dir(dir);
+            let mut removed_any = false;
+            for (_, name) in entries.iter().filter(|(d, _)| d == dir) {
+                let path = dir.join(format!("{}.md", sanitize_filename(name)));
+                removed_any |= std::fs::remove_file(&path).is_ok();
             }
-        }
-        for dir in &touched {
-            Self::rebuild_index_from_disk(dir)?;
+            if removed_any {
+                Self::rebuild_index_from_disk(dir)?;
+            }
         }
         Ok(())
     }
@@ -497,8 +546,7 @@ impl MemoryStore {
         // (`type: user---`), `parse_memory_file` would not find it and every
         // body would read back empty while the frontmatter still parsed.
         let frontmatter = format!("---\n{}\n---\n\n{}", frontmatter_fields, mem.content,);
-        std::fs::write(&path, frontmatter).map_err(|e| MemoryError::Io(e.to_string()))?;
-        Ok(())
+        write_replacing(&path, &frontmatter)
     }
 
     fn rebuild_index(dir: &Path, memories: &[DurableMemory]) -> Result<(), MemoryError> {
@@ -511,8 +559,7 @@ impl MemoryStore {
                 mem.name, mem.name, mem.description
             ));
         }
-        std::fs::write(md.join(INDEX_FILE), index).map_err(|e| MemoryError::Io(e.to_string()))?;
-        Ok(())
+        write_replacing(&md.join(INDEX_FILE), &index)
     }
 
     /// Regenerate a directory's `MEMORY.md` from the `.md` files in it.
@@ -528,6 +575,168 @@ impl MemoryStore {
         memories.sort_by(|a, b| a.name.cmp(&b.name));
         Self::rebuild_index(dir, &memories)
     }
+}
+
+/// A detected secret pattern in a memory.
+#[derive(Debug, Clone)]
+pub struct SecretPattern {
+    /// The kind of secret detected (e.g., "API key", "token").
+    pub kind: &'static str,
+    /// A truncated snippet of the matched content (first 20 chars).
+    pub snippet: String,
+    /// The name of the memory file containing the match.
+    pub filename: Option<String>,
+}
+
+#[allow(clippy::unwrap_used)]
+fn secret_patterns() -> &'static [(&'static str, regex::Regex)] {
+    static PATTERNS: OnceLock<Vec<(&'static str, regex::Regex)>> = OnceLock::new();
+    PATTERNS.get_or_init(|| {
+        vec![
+            // OpenAI / Anthropic / generic API keys starting with sk-
+            (
+                "API key (sk-...)",
+                regex::Regex::new(r"(?i)\bsk-[A-Za-z0-9]{20,}\b").unwrap(),
+            ),
+            // Generic api_key / apikey assignment
+            (
+                "API key (generic)",
+                regex::Regex::new(r#"(?i)(api[_-]?key|apikey)\s*[:=]\s*['"]?[A-Za-z0-9_\-]{16,}"#)
+                    .unwrap(),
+            ),
+            // Bearer / auth tokens
+            (
+                "Bearer token",
+                regex::Regex::new(r"(?i)\bbearer\s+[A-Za-z0-9\-._~+/]{20,}").unwrap(),
+            ),
+            // GitHub tokens (ghp_, gho_, ghu_, ghs_, ghf_)
+            (
+                "GitHub token",
+                regex::Regex::new(r"(?i)\bgh[pousf]_[A-Za-z0-9_]{30,}\b").unwrap(),
+            ),
+            // AWS access keys (AKIA...)
+            (
+                "AWS access key",
+                regex::Regex::new(r"\bAKIA[0-9A-Z]{16}\b").unwrap(),
+            ),
+            // JWT tokens
+            (
+                "JWT token",
+                regex::Regex::new(
+                    r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b",
+                )
+                .unwrap(),
+            ),
+            // Generic token/password/secret variable assignment
+            (
+                "Token/secret variable",
+                regex::Regex::new(
+                    r#"(?i)(token|secret|password)\s*[:=]\s*['"][A-Za-z0-9_\-\.]{8,}['"]"#,
+                )
+                .unwrap(),
+            ),
+            // SSH private key marker
+            (
+                "SSH private key",
+                regex::Regex::new(r"-----BEGIN\s+(RSA|DSA|EC|OPENSSH)\s+PRIVATE\s+KEY-----")
+                    .unwrap(),
+            ),
+            // Slack tokens (xoxb-, xoxp-, xapp-)
+            (
+                "Slack token",
+                regex::Regex::new(r"\b[xX][oO][xX][baprs]-[A-Za-z0-9_-]{20,}\b").unwrap(),
+            ),
+        ]
+    })
+}
+
+/// Scan a single memory for sensitive data patterns.
+///
+/// Checks the name, description, and content fields against a set of regex
+/// patterns for API keys, tokens, and other secrets.
+///
+/// Returns a list of [`SecretPattern`] matches. **Does not block** — warns and
+/// proceeds.
+pub fn scan_for_secrets(memory: &DurableMemory) -> Vec<SecretPattern> {
+    let mut findings = Vec::new();
+
+    let search_fields: Vec<(&str, &str)> = vec![
+        ("name", &memory.name),
+        ("description", &memory.description),
+        ("content", &memory.content),
+    ];
+
+    let patterns = secret_patterns();
+
+    for (_field_name, text) in &search_fields {
+        if text.is_empty() {
+            continue;
+        }
+        for (kind, re) in patterns {
+            if re.is_match(text) {
+                // Extract a short snippet for reporting
+                let snippet = if let Some(cap) = re.find(text) {
+                    let matched = cap.as_str();
+                    if matched.len() > 40 {
+                        // Character-boundary aware: `matched` is a regex hit
+                        // against arbitrary conversation text, so byte 40 can
+                        // land mid-character.
+                        format!("{}...", crate::text::truncate_at_char_boundary(matched, 40))
+                    } else {
+                        matched.to_string()
+                    }
+                } else {
+                    continue;
+                };
+
+                findings.push(SecretPattern {
+                    kind,
+                    snippet,
+                    filename: Some(memory.name.clone()),
+                });
+                // Report each pattern once per field per memory to avoid noise
+                break;
+            }
+        }
+    }
+
+    findings
+}
+
+/// Serializes writers to `dir` across every store in the process that
+/// points at it — each session builds its own store over the same two
+/// directories, so a lock held by the store would serialize nothing.
+fn lock_dir(dir: &Path) -> std::sync::MutexGuard<'static, ()> {
+    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, &'static Mutex<()>>>> = OnceLock::new();
+    let mut locks = LOCKS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let lock: &'static Mutex<()> = match locks.get(dir) {
+        Some(lock) => lock,
+        None => {
+            let lock = Box::leak(Box::default());
+            locks.insert(dir.to_path_buf(), lock);
+            lock
+        }
+    };
+    drop(locks);
+    lock.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Write `contents` to `path` so a reader sees the old file or the new one,
+/// never a truncated one. The temporary name does not end in `.md`, so a
+/// directory scan never mistakes it for a memory.
+fn write_replacing(path: &Path, contents: &str) -> Result<(), MemoryError> {
+    let io = |e: std::io::Error| MemoryError::Io(e.to_string());
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(format!(".tmp-{}", std::process::id()));
+    let tmp = PathBuf::from(tmp);
+    std::fs::write(&tmp, contents).map_err(io)?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        io(e)
+    })
 }
 
 /// Decide which entries a count-capped compaction has to drop.
@@ -590,6 +799,20 @@ fn sanitize_filename(name: &str) -> String {
 /// Build the memory system prompt: how to write and use memories, followed by
 /// the `MEMORY.md` index read from disk (truncated to 200 lines / 25KB).
 pub fn build_memory_prompt(memory_dir: &Path) -> String {
+    memory_prompt_with_index(
+        memory_dir,
+        std::fs::read_to_string(memory_dir.join(INDEX_FILE)).ok(),
+    )
+}
+
+/// The memory system prompt for a session's store: the model writes to its
+/// global directory, and the index shown is both directories' together, so a
+/// memory extraction filed under the project is listed too.
+pub fn memory_prompt(store: &MemoryStore) -> String {
+    memory_prompt_with_index(store.user_dir(), Some(store.load_index()))
+}
+
+fn memory_prompt_with_index(memory_dir: &Path, index: Option<String>) -> String {
     let dir_str = memory_dir.display().to_string();
     let mut sections = vec![
         MEMORY_HEADER.replace("{dir}", &dir_str),
@@ -599,9 +822,7 @@ pub fn build_memory_prompt(memory_dir: &Path) -> String {
         TRUSTING_RECALL_SECTION.to_string(),
     ];
 
-    // Read and append MEMORY.md index content.
-    let entrypoint_path = memory_dir.join(INDEX_FILE);
-    if let Ok(raw) = std::fs::read_to_string(&entrypoint_path) {
+    if let Some(raw) = index {
         let truncated = truncate_entrypoint_content(&raw);
         if !truncated.content.is_empty() {
             sections.push(format!(
@@ -1502,5 +1723,93 @@ This memory was written before the flat-format fix."#;
             assert!(index.trim().starts_with(kept));
             assert!(cut.content.contains("Only part of it was loaded"));
         }
+    }
+
+    #[test]
+    fn a_session_store_lives_where_config_paths_say() {
+        let tmp = TempDir::new().unwrap();
+        let paths = ConfigPaths::new(tmp.path().join("g"), tmp.path().join("p/.agix"), "code");
+        let store = MemoryStore::for_paths(&paths);
+        assert_eq!(store.user_dir(), paths.global_memory_dir());
+        store
+            .persist_batch_scoped(vec![
+                ScopedMemory {
+                    memory: mem("global-fact"),
+                    scope: MemoryScope::User,
+                },
+                ScopedMemory {
+                    memory: mem("project-fact"),
+                    scope: MemoryScope::Local,
+                },
+            ])
+            .unwrap();
+        assert!(paths.global_memory_dir().join("global-fact.md").exists());
+        assert!(paths.local_memory_dir().join("project-fact.md").exists());
+
+        let prompt = memory_prompt(&store);
+        assert!(prompt.contains(&paths.global_memory_dir().display().to_string()));
+        assert!(prompt.contains("global-fact") && prompt.contains("project-fact"));
+    }
+
+    #[test]
+    fn concurrent_writers_from_separate_stores_lose_nothing() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("memory");
+        let writers: Vec<_> = (0..8)
+            .map(|w| {
+                let dir = dir.clone();
+                std::thread::spawn(move || {
+                    let store = MemoryStore::new(dir.clone(), dir);
+                    for i in 0..10 {
+                        store
+                            .persist_batch(vec![mem(&format!("w{w}-m{i}"))])
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for w in writers {
+            w.join().unwrap();
+        }
+        let store = MemoryStore::new(dir.clone(), dir.clone());
+        assert_eq!(store.load_all().len(), 80);
+        let index = index_of(&dir);
+        assert_eq!(index.lines().count(), 80, "{index}");
+        let stray: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp-"))
+            .collect();
+        assert!(stray.is_empty(), "{stray:?}");
+    }
+
+    #[test]
+    fn concurrent_recalls_of_one_memory_all_count() {
+        let tmp = TempDir::new().unwrap();
+        let (store, _, _) = split_store(&tmp);
+        store.persist_batch(vec![mem("hot")]).unwrap();
+        let store = Arc::new(store);
+        let recallers: Vec<_> = (0..8)
+            .map(|_| {
+                let store = store.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..5 {
+                        store.record_recalled(&["hot".to_string()]).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for r in recallers {
+            r.join().unwrap();
+        }
+        assert_eq!(store.load_all()[0].recall_count, 40);
+    }
+
+    #[test]
+    fn a_key_in_a_memory_is_found() {
+        let mut leaky = mem("leaky");
+        leaky.content = "the deploy token is sk-abcdefghijklmnopqrstuvwx".into();
+        assert_eq!(scan_for_secrets(&leaky)[0].kind, "API key (sk-...)");
+        assert!(scan_for_secrets(&mem("clean")).is_empty());
     }
 }

@@ -25,7 +25,7 @@ pub use self::skill::{
     SkillSource,
 };
 
-use self::memory::{collect_memory, collect_memory_files_with};
+use self::memory::collect_memory_files_with;
 use self::utils::truncate_chars;
 use crate::paths::ConfigPaths;
 use std::path::{Path, PathBuf};
@@ -62,10 +62,10 @@ pub struct FrozenContext {
     /// （name/description/when_to_use）+ 不嵌入 body / 不做参数代换 / 不做 slash
     /// 调用。模型能"知道"skills 存在 + 在合适时主动引用。
     pub skills: Vec<SkillEntry>,
-    /// 跨会话 memory 目录（每个 cwd 一个）。位于
-    /// `~/.agix/scenes/<scope>/memory/<sha256(canonical_cwd)[..16]>/`。
+    /// 模型写记忆的目录，即 [`crate::memory::MemoryStore::for_paths`] 的全局一层。
     pub memory_dir: PathBuf,
-    /// 上面目录里 MEMORY.md 的内容（仅当存在时加载）。注入 system prompt。
+    /// 全局与项目两层 `MEMORY.md` 合起来的索引（截到 8 KB），场景的 `memory`
+    /// 提醒带的就是它。
     pub memory_index: Option<String>,
     /// Memory file paths already surfaced in prior turns. Used to deduplicate
     /// and avoid re-injecting the same memories every turn.
@@ -241,16 +241,24 @@ impl FrozenContext {
             git.git_log,
         );
 
-        let memory_blocks =
-            collect_memory_files_with(&cwd, opts.walk_up_claude_md, &paths.global_data_dir).await;
+        let memory_blocks = collect_memory_files_with(&cwd, opts.walk_up_claude_md).await;
         // 用 load_session_skills 而非 collect_skills -- 前者把 bundled
         // skills (simplify/verify/debug/batch/stuck) 也并入。否则
         // disk 没装 SKILL.md 时 system prompt 不暴露 bundled，模型不知道有这些
         // skill，/stuck /simplify 等 case 失败。
         let skills = load_session_skills(&cwd, paths).await;
 
-        // memory_dir = <global_root>/memory/<sha256(canonical_cwd)[..16]>/（不分 scene）
-        let (memory_dir, memory_index) = collect_memory(&cwd, &paths.global_data_dir).await;
+        let memory_dir = paths.global_memory_dir();
+        let memory_index = {
+            let paths = paths.clone();
+            tokio::task::spawn_blocking(move || {
+                crate::memory::MemoryStore::for_paths(&paths).load_index()
+            })
+            .await
+            .ok()
+            .filter(|index| !index.trim().is_empty())
+            .map(|index| utils::truncate_memory_entrypoint(&index))
+        };
 
         // Output style -- load by name from project then user dir.
         let output_style = match opts.output_style.as_deref() {
@@ -758,6 +766,42 @@ mod tests {
         ctx.refresh_git_status(&git::EngineGit::Direct).await;
         assert!(ctx.git_status.is_none());
         assert!(ctx.git_branch.is_none());
+    }
+
+    #[tokio::test]
+    async fn the_memory_index_comes_from_the_sessions_store() {
+        let dir = TempDir::new().unwrap();
+        let paths = test_paths(dir.path());
+        crate::memory::MemoryStore::for_paths(&paths)
+            .persist_batch_scoped(vec![crate::memory::ScopedMemory {
+                memory: crate::memory::DurableMemory {
+                    name: "deploy-day".into(),
+                    description: "deploys go out on Tuesdays".into(),
+                    memory_type: crate::memory::MemoryType::Project,
+                    content: String::new(),
+                    source_session_id: String::new(),
+                    confidence: 0.9,
+                    last_seen: String::new(),
+                    recall_count: 0,
+                },
+                scope: crate::memory::MemoryScope::Local,
+            }])
+            .unwrap();
+        let ctx = FrozenContext::collect(
+            dir.path().to_path_buf(),
+            &paths,
+            &crate::interface::environment::SystemEnvironment,
+            &git::EngineGit::Direct,
+        )
+        .await;
+        assert_eq!(ctx.memory_dir, paths.global_memory_dir());
+        assert!(ctx
+            .memory_index
+            .is_some_and(|index| index.contains("deploy-day")));
+        assert!(
+            ctx.memory_blocks.is_empty(),
+            "memories are not instructions"
+        );
     }
 
     #[tokio::test]

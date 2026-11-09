@@ -1,7 +1,7 @@
 //! Prompt assembly — pure function that stitches together multi-source content.
 
 use crate::interface::scene::{Scene, ScenePromptContext};
-use crate::memory::{build_memory_prompt, MemoryStore};
+use crate::memory::{memory_prompt, MemoryStore};
 use crate::rules::build_rules_prompt;
 use crate::settings::Settings;
 use serde::{Deserialize, Serialize};
@@ -210,7 +210,7 @@ pub fn assemble_prompt_with(
     registry: &dyn crate::interface::prompt_registry::PromptRegistry,
     scene: &dyn Scene,
     settings: &Settings,
-    _memory_store: &MemoryStore,
+    memory_store: &MemoryStore,
     ctx: &ScenePromptContext,
     skills_text: Option<&str>,
     mcp_instructions: Option<&str>,
@@ -266,15 +266,11 @@ pub fn assemble_prompt_with(
         }
     }
 
-    // 3. Memory — inject memory system prompt instructions.
-    // The memory prompt tells the model how to use the file-based memory system.
-    // Actual memory content is loaded via MEMORY.md by the system reminder mechanism.
-    // Gated by settings.memory_enabled (default: true).
+    // 3. Memory — how to write memories, and the session store's index.
     if settings.memory_enabled {
-        let mem_dir = &settings.paths.global_data_dir.join("memory");
         kernel.push((
             orders::MEMORY_SESSION,
-            PromptBlock::system(build_memory_prompt(mem_dir)).named(names::MEMORY_SESSION),
+            PromptBlock::system(memory_prompt(memory_store)).named(names::MEMORY_SESSION),
         ));
     }
 

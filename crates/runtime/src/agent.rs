@@ -1919,14 +1919,9 @@ impl Builder {
             .clone()
             .unwrap_or_else(|| Arc::new(base::interface::environment::SystemEnvironment));
         let memory_store = self.memory_store.unwrap_or_else(|| {
-            let p = &settings.paths;
-            // memory 不分 scene，只分全局/项目——见 base::paths 模块文档。
             Arc::new(
-                MemoryStore::new(
-                    p.global_data_dir.join("memory"),
-                    p.local_data_dir.join("memory"),
-                )
-                .with_environment(environment.clone()),
+                MemoryStore::for_paths(&base::paths::ConfigPaths::from_settings(&settings.paths))
+                    .with_environment(environment.clone()),
             )
         });
         // Session: `self.history_store` (set via `Builder::history_store(...)`)

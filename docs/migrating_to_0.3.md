@@ -512,6 +512,19 @@ WebAssembly 载体整个移除。
   不再带 frontmatter(以前磁盘上的 skill 连 `---` 头一起交给模型)。
 - 插件包带来的 skill 与项目 skill 一样,只写工具名的整类 `allowed-tools` 授权不生效,要写成
   `Tool(内容)`。
+- **记忆目录只有两处**:全局 `<状态目录>/memory/`(模型照提示词写的地方)与项目的
+  `<项目>/.agix/memory/`(抽取出的 `type: project`)。以前另外读的
+  `<状态目录>/memory/<cwd 的哈希>/MEMORY.md` 与 `<状态目录>/memory/<改写过的 cwd>/*.md`
+  不再读——引擎从不往那里写;手放过文件的,挪进 `<项目>/.agix/memory/`(带 frontmatter
+  的记忆格式)或项目的 `AGENTS.md`。
+- 提示词 `# Memory` 一节的索引是两处 `MEMORY.md` 合起来的,项目级的记忆也列得出来;
+  `memory_enabled: false` 时声明式场景的 `memory` 提醒也不再带索引。内置场景的每轮提醒
+  不再重复带索引(提示词里已经有)。
+- 记忆写入不再写出半截文件:按目录串行、先写临时文件再改名;召回计数在同时召回时不丢。
+- 轮末抽取的记忆里认出密钥(`sk-…`、`ghp_…`、`AKIA…`、Bearer、JWT、私钥头……)的,那一条
+  不保存。抽取之后总数超过 200 条时按 `MemoryStore::compact(200)` 清理:有效置信度低于 0.3
+  的(两个月以上没更新、也没怎么被召回过的)先删,仍超出的删最久没更新的。
+- 召回超出 2 秒预算时,在途的选择调用被中止,不再在后台继续花 token。
 - 模型请求在开始回答之前收到 500 / 502 / 504 / 408 的,按退避再发(两个协议都是),和 429、
   503、529 一样;以前直接失败。
 - Anthropic 的 `base_url` / `ANTHROPIC_BASE_URL` 写到 `…/v1` 或写全 `…/v1/messages` 都可以,
@@ -581,6 +594,11 @@ WebAssembly 载体整个移除。
   要把它转发下去,否则 `/name` 拿到的是缺省展开。新增 `skills::expand_for_invocation` /
   `skills::ExpandError` 与 `CommandRegistry::run_prompt_command`(斜杠命令在轮里走的就是它)。
   `SkillManager::get_skill_content` 对磁盘 skill 返回去掉 frontmatter 的正文。
+- 新增 `MemoryStore::for_paths`(会话用的记忆目录唯一的推导处)、`user_dir`、`record_recalled`,
+  `base::memory::{memory_prompt, MAX_MEMORIES}`;`scan_for_secrets` / `SecretPattern` 挪到
+  `base::memory`(`team::team_memory` 里照旧可用)。`assemble_prompt` 的 `memory_store` 参数
+  现在真的被用来出 `# Memory` 一节,传进去的应是会话的那个 store。`FrozenContext::memory_dir`
+  是全局记忆目录,`memory_index` 是两处合并的索引。
 - `hooks::HookRunner::set_network`、`auth::OAuth2Client::with_network` 删除;后者要换出口直接设
   `net` 字段。
 - `auth` crate 整个删除(`OAuth2Client`、`TokenStore`、`CallbackListener`、`PkceVerifier`、

@@ -96,15 +96,13 @@ pub(crate) fn scratchpad_section(dir: Option<&str>) -> String {
     )
 }
 
+/// The built-in scenes' per-turn reminder. No memory index: the system
+/// prompt's memory section already carries it.
 pub(crate) fn reminder(ctx: &ReminderContext) -> String {
-    let mut r = String::new();
-    if let Some(ref git) = ctx.git_status {
-        r.push_str(&format!("\n<system-reminder>\n{git}\n</system-reminder>"));
+    match ctx.git_status {
+        Some(ref git) => format!("\n<system-reminder>\n{git}\n</system-reminder>"),
+        None => String::new(),
     }
-    if let Some(ref mem) = ctx.memory_summary {
-        r.push_str(&format!("\n<system-reminder>\n{mem}\n</system-reminder>"));
-    }
-    r
 }
 
 /// The built-in scenes' session context: the `<env>` facts and where the

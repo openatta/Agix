@@ -804,7 +804,7 @@ impl Agent {
                 memory_summary: frozen
                     .memory_index
                     .as_deref()
-                    .filter(|m| !m.is_empty())
+                    .filter(|m| self.settings.memory_enabled && !m.is_empty())
                     .map(std::borrow::Cow::Borrowed),
             };
             let reminder = self.scene.build_system_reminder(&ctx);
@@ -816,8 +816,11 @@ impl Agent {
             }
         }
 
-        // Memory prefetch: fire LLM-based relevant memory selection as a background task.
-        let mut prefetch_handle: Option<tokio::task::JoinHandle<Vec<String>>> =
+        // Memory prefetch: fire LLM-based relevant memory selection as a
+        // background task. The handle aborts it when dropped, so a recall that
+        // misses its budget stops spending on the selection call.
+        type Recall = (Vec<String>, Vec<base::interface::memory::DurableMemory>);
+        let mut prefetch_handle: Option<tokio_util::task::AbortOnDropHandle<Recall>> =
             if !self.settings.memory_enabled {
                 None
             } else {
@@ -834,23 +837,34 @@ impl Agent {
                 let session_id = self.session.session_id.clone();
                 let retriever = Arc::clone(&self.memory_retriever);
                 let hooks = Arc::clone(&self.retrieval_hooks);
-                Some(tokio::spawn(async move {
-                    base::interface::memory_contracts::retrieve_with_hooks(
-                        retriever.as_ref(),
-                        &hooks,
-                        store.as_ref(),
-                        model.as_ref(),
-                        base::interface::memory_contracts::RetrievalRequest {
-                            query,
-                            limit: 5,
-                            already_surfaced,
-                            recent_tools,
-                            model_name,
-                            session_id: Some(session_id),
-                        },
-                    )
-                    .await
-                }))
+                Some(tokio_util::task::AbortOnDropHandle::new(tokio::spawn(
+                    async move {
+                        let memories = tokio::task::spawn_blocking(move || store.load_all())
+                            .await
+                            .unwrap_or_default();
+                        // The retriever reads what was just loaded rather than
+                        // the store, whose reads block.
+                        let snapshot = base::interface::memory_contracts::InMemoryStorage::new(
+                            memories.clone(),
+                        );
+                        let names = base::interface::memory_contracts::retrieve_with_hooks(
+                            retriever.as_ref(),
+                            &hooks,
+                            &snapshot,
+                            model.as_ref(),
+                            base::interface::memory_contracts::RetrievalRequest {
+                                query,
+                                limit: 5,
+                                already_surfaced,
+                                recent_tools,
+                                model_name,
+                                session_id: Some(session_id),
+                            },
+                        )
+                        .await;
+                        (names, memories)
+                    },
+                )))
             };
         let prefetch_started_at: std::time::Instant = std::time::Instant::now();
 
@@ -859,7 +873,7 @@ impl Agent {
         // execute; the result is consumed post-tool-execution alongside the
         // memory prefetch.
         let mut skill_prefetch: Option<
-            tokio::task::JoinHandle<(Vec<base::frozen::SkillEntry>, Vec<String>)>,
+            tokio_util::task::AbortOnDropHandle<(Vec<base::frozen::SkillEntry>, Vec<String>)>,
         > = {
             let skills = self.skills.clone();
             let local_dir = self.settings.paths.local_data_dir.clone();
@@ -870,16 +884,17 @@ impl Agent {
             // starts `true`).
             let should_run = self.last_had_tool_uses;
             if should_run {
-                Some(tokio::spawn(async move {
-                    let paths = vec![local_dir];
-                    let discovered = skills.discover_for_paths(&paths);
-                    let new_names: Vec<String> = discovered
-                        .iter()
-                        .filter(|s| !invoked_skills.contains(&s.name))
-                        .map(|s| s.name.clone())
-                        .collect();
-                    (discovered, new_names)
-                }))
+                Some(tokio_util::task::AbortOnDropHandle::new(
+                    tokio::task::spawn_blocking(move || {
+                        let discovered = skills.discover_for_paths(&[local_dir]);
+                        let new_names: Vec<String> = discovered
+                            .iter()
+                            .filter(|s| !invoked_skills.contains(&s.name))
+                            .map(|s| s.name.clone())
+                            .collect();
+                        (discovered, new_names)
+                    }),
+                ))
             } else {
                 None
             }
@@ -966,29 +981,29 @@ impl Agent {
         /// so one oversized memory cannot dominate the turn.
         const MEMORY_RECALL_CONTENT_CAP: usize = 1024;
         if let Some(prefetch) = prefetch_handle.take() {
-            let prefetch_names = match tokio::time::timeout(MEMORY_RECALL_BUDGET, prefetch).await {
-                Ok(Ok(names)) => {
-                    tracing::debug!(
-                        count = names.len(),
-                        latency_ms = prefetch_started_at.elapsed().as_millis(),
-                        "memory recall completed"
-                    );
-                    names
-                }
-                Ok(Err(e)) => {
-                    tracing::warn!(error = %e, "memory recall task failed");
-                    Vec::new()
-                }
-                Err(_) => {
-                    tracing::warn!(
-                        budget_ms = MEMORY_RECALL_BUDGET.as_millis(),
-                        "memory recall exceeded its latency budget"
-                    );
-                    Vec::new()
-                }
-            };
+            let (prefetch_names, all) =
+                match tokio::time::timeout(MEMORY_RECALL_BUDGET, prefetch).await {
+                    Ok(Ok(recall)) => {
+                        tracing::debug!(
+                            count = recall.0.len(),
+                            latency_ms = prefetch_started_at.elapsed().as_millis(),
+                            "memory recall completed"
+                        );
+                        recall
+                    }
+                    Ok(Err(e)) => {
+                        tracing::warn!(error = %e, "memory recall task failed");
+                        Default::default()
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            budget_ms = MEMORY_RECALL_BUDGET.as_millis(),
+                            "memory recall exceeded its latency budget"
+                        );
+                        Default::default()
+                    }
+                };
             let relevant: Vec<base::interface::memory::DurableMemory> = {
-                let all = self.memory_store.load_all();
                 let surfaced: &std::collections::HashSet<String> = self
                     .frozen
                     .as_ref()
@@ -1008,27 +1023,13 @@ impl Agent {
                         frozen.already_surfaced.insert(m.name.clone());
                     }
                 }
-                // Fire-and-forget; only the recalled entries are rewritten.
-                //
-                // This is currently inert across sessions: `recall_count` is
-                // not part of the on-disk frontmatter, so it reads back as 0
-                // (see the KNOWN GAP on `MemoryStore::write_memory_file`).
-                // In-session dedup does not depend on it — that is
-                // `already_surfaced` above.
                 {
                     let store = self.memory_store.clone();
                     let names: Vec<String> = relevant.iter().map(|m| m.name.clone()).collect();
-                    tokio::spawn(async move {
-                        let bumped: Vec<base::interface::memory::DurableMemory> = store
-                            .load_all()
-                            .into_iter()
-                            .filter(|m| names.contains(&m.name))
-                            .map(|mut m| {
-                                m.recall_count += 1;
-                                m
-                            })
-                            .collect();
-                        let _ = store.persist_batch(bumped);
+                    tokio::task::spawn_blocking(move || {
+                        if let Err(e) = store.record_recalled(&names) {
+                            tracing::debug!(error = %e, "recording a memory recall failed");
+                        }
                     });
                 }
 
@@ -1803,7 +1804,7 @@ impl Agent {
                 let session_id = self.session.session_id.clone();
                 tokio::spawn(async move {
                     extract_memories_after_turn(
-                        &store,
+                        store,
                         &session_messages,
                         model.as_ref(),
                         &model_name,
@@ -4431,7 +4432,7 @@ fn build_prompt_context<'a>(
                 f.git_branch.clone(),
                 f.is_worktree,
                 f.git_status.clone(),
-                f.memory_index.clone(),
+                f.memory_index.clone().filter(|_| settings.memory_enabled),
                 f.output_style.as_ref().map(|os| os.content.clone()),
                 f.shell.clone(),
                 f.home_dir.clone(),
@@ -6542,6 +6543,100 @@ mod tests {
         );
     }
 
+    /// A selection call still running when recall's budget runs out is
+    /// stopped, not left spending in the background.
+    #[tokio::test]
+    async fn a_recall_past_its_budget_is_stopped() {
+        struct Probe(Arc<tokio::sync::Notify>);
+        impl Drop for Probe {
+            fn drop(&mut self) {
+                self.0.notify_one();
+            }
+        }
+        struct SlowSelection {
+            dropped: Arc<tokio::sync::Notify>,
+            answer: RecordingAnswerModel,
+        }
+        #[async_trait::async_trait]
+        impl base::interface::model::Model for SlowSelection {
+            fn api_type(&self) -> base::provider::ApiType {
+                base::provider::ApiType::Anthropic
+            }
+            async fn stream(
+                &self,
+                prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+                tools: Vec<base::interface::model::ToolDef>,
+                messages: Vec<ModelMessage>,
+                params: base::interface::model::StreamParams,
+                cancel: tokio_util::sync::CancellationToken,
+            ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError>
+            {
+                let selecting = params.origin.as_ref().and_then(|o| o.purpose())
+                    == Some(base::interface::model::call_purpose::MEMORY);
+                if selecting {
+                    let _probe = Probe(self.dropped.clone());
+                    futures::future::pending::<()>().await;
+                }
+                self.answer
+                    .stream(prompt_blocks, tools, messages, params, cancel)
+                    .await
+            }
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(MemoryStore::new(
+            tmp.path().join("user"),
+            tmp.path().join("local"),
+        ));
+        store
+            .persist_batch(
+                (0..6)
+                    .map(|i| DurableMemory {
+                        name: format!("m{i}"),
+                        description: format!("memory {i}"),
+                        memory_type: MemoryType::Project,
+                        content: String::new(),
+                        source_session_id: String::new(),
+                        confidence: 0.9,
+                        last_seen: "2026-08-01T00:00:00Z".into(),
+                        recall_count: 0,
+                    })
+                    .collect(),
+            )
+            .unwrap();
+        let dropped = Arc::new(tokio::sync::Notify::new());
+        let model = SlowSelection {
+            dropped: dropped.clone(),
+            answer: RecordingAnswerModel {
+                seen: Default::default(),
+            },
+        };
+        let (mut agent, _event_rx, _input_tx) = crate::agent::Builder::new()
+            .scene(Arc::new(scene::code::CodeScene::default()))
+            .model(Arc::new(model))
+            .settings(Arc::new(recall_test_settings(tmp.path())))
+            .memory_store(store)
+            .skip_warmup(true)
+            .build()
+            .expect("build should succeed");
+
+        let outcome = agent
+            .process_turn(
+                InputMessage::User {
+                    content: "anything".into(),
+                    attachments: vec![],
+                    turn_id: "t1".into(),
+                },
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome.stop_reason, "end_turn");
+        tokio::time::timeout(std::time::Duration::from_secs(30), dropped.notified())
+            .await
+            .expect("the selection call outlived its turn's recall budget");
+    }
+
     /// Short conversational turns without tool calls are most turns. The
     /// recalled memories must reach the model in the *current* turn, and must carry their content, not
     /// just the one-line description that exists to rank them.
@@ -6875,7 +6970,7 @@ mod tests {
 /// task type. `prompt_intro` is the scene's `memory_extraction_prompt()`
 /// override, if any — see `Scene::memory_extraction_prompt`.
 pub(crate) async fn extract_memories_after_turn(
-    store: &MemoryStore,
+    store: Arc<MemoryStore>,
     messages: &[ModelMessage],
     model: &dyn base::interface::model::Model,
     model_name: &str,
@@ -7023,27 +7118,51 @@ Return only a JSON array of memories. If nothing is worth saving, return []."
             Vec::new()
         };
 
-    if !memories.is_empty() {
-        // Route by the type the model was asked to classify each memory with.
-        // `project` memories are about *this* working directory ("the merge
-        // freeze starts Thursday", "the auth rewrite is compliance-driven") and
-        // belong in the project-local directory; everything else describes the
-        // user or external resources and is global. Persisting the whole batch
-        // globally — which is what the unscoped `persist_batch` does for new
-        // names — leaked one project's context into every other project.
-        let scoped: Vec<base::interface::memory::ScopedMemory> = memories
-            .into_iter()
-            .map(|memory| {
-                let scope = match memory.memory_type {
-                    MemoryType::Project => base::interface::memory::MemoryScope::Local,
-                    _ => base::interface::memory::MemoryScope::User,
-                };
-                base::interface::memory::ScopedMemory { memory, scope }
-            })
-            .collect();
-        if let Err(e) = store.persist_batch_scoped(scoped) {
-            tracing::debug!(error = %e, "auto memory extraction: persist failed");
+    // A conversation that quoted a key is no reason to keep the key.
+    let memories: Vec<DurableMemory> = memories
+        .into_iter()
+        .filter(|memory| {
+            let found = base::interface::memory::scan_for_secrets(memory);
+            if !found.is_empty() {
+                let kinds: Vec<&str> = found.iter().map(|f| f.kind).collect();
+                tracing::warn!(memory = %memory.name, ?kinds, "not saving an extracted memory that holds a secret");
+            }
+            found.is_empty()
+        })
+        .collect();
+    if memories.is_empty() {
+        return;
+    }
+
+    // Route by the type the model was asked to classify each memory with.
+    // `project` memories are about *this* working directory ("the merge
+    // freeze starts Thursday", "the auth rewrite is compliance-driven") and
+    // belong in the project-local directory; everything else describes the
+    // user or external resources and is global. Persisting the whole batch
+    // globally — which is what the unscoped `persist_batch` does for new
+    // names — leaked one project's context into every other project.
+    let scoped: Vec<base::interface::memory::ScopedMemory> = memories
+        .into_iter()
+        .map(|memory| {
+            let scope = match memory.memory_type {
+                MemoryType::Project => base::interface::memory::MemoryScope::Local,
+                _ => base::interface::memory::MemoryScope::User,
+            };
+            base::interface::memory::ScopedMemory { memory, scope }
+        })
+        .collect();
+    let persisted = tokio::task::spawn_blocking(move || {
+        store.persist_batch_scoped(scoped)?;
+        if store.load_all().len() > base::interface::memory::MAX_MEMORIES {
+            store.compact(base::interface::memory::MAX_MEMORIES)?;
         }
+        Ok::<_, base::interface::memory::MemoryError>(())
+    })
+    .await;
+    match persisted {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => tracing::debug!(error = %e, "auto memory extraction: persist failed"),
+        Err(e) => tracing::debug!(error = %e, "auto memory extraction: persist task failed"),
     }
 }
 
@@ -7215,10 +7334,10 @@ mod extract_memories_tests {
         }
     }
 
-    fn tmp_memory_store() -> MemoryStore {
+    fn tmp_memory_store() -> Arc<MemoryStore> {
         let base =
             std::env::temp_dir().join(format!("agix-test-memstore-{}", uuid::Uuid::new_v4()));
-        MemoryStore::new(base.join("user"), base.join("local"))
+        Arc::new(MemoryStore::new(base.join("user"), base.join("local")))
     }
 
     #[tokio::test]
@@ -7228,7 +7347,7 @@ mod extract_memories_tests {
         let model = CapturingModel::new();
 
         extract_memories_after_turn(
-            &store,
+            store.clone(),
             &messages,
             &model,
             "custom-vendor-model",
@@ -7254,7 +7373,7 @@ mod extract_memories_tests {
         let model = CapturingModel::new();
 
         extract_memories_after_turn(
-            &store,
+            store.clone(),
             &messages,
             &model,
             "m",
@@ -7280,7 +7399,7 @@ mod extract_memories_tests {
         let model = CapturingModel::new();
 
         extract_memories_after_turn(
-            &store,
+            store.clone(),
             &messages,
             &model,
             "m",
@@ -7340,11 +7459,11 @@ mod extract_memories_tests {
         let tmp = tempfile::tempdir().unwrap();
         let user_dir = tmp.path().join("user");
         let local_dir = tmp.path().join("local");
-        let store = MemoryStore::new(user_dir.clone(), local_dir.clone());
+        let store = Arc::new(MemoryStore::new(user_dir.clone(), local_dir.clone()));
         let messages = vec![user_msg("hello"), user_msg("world")];
 
         extract_memories_after_turn(
-            &store,
+            store.clone(),
             &messages,
             &ExtractingModel,
             "m",
@@ -7372,6 +7491,91 @@ mod extract_memories_tests {
             std::fs::read_to_string(local_dir.join(base::interface::memory::INDEX_FILE)).unwrap();
         assert!(local_index.contains("release-freeze"));
         assert!(!local_index.contains("user-is-a-go-dev"));
+    }
+
+    /// Hands back `self.0` as the extraction call's answer.
+    struct Answering(&'static str);
+
+    #[async_trait::async_trait]
+    impl base::interface::model::Model for Answering {
+        fn api_type(&self) -> base::provider::ApiType {
+            base::provider::ApiType::Anthropic
+        }
+        async fn stream(
+            &self,
+            _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+            _tools: Vec<base::interface::model::ToolDef>,
+            _messages: Vec<ModelMessage>,
+            _params: base::interface::model::StreamParams,
+            _cancel: tokio_util::sync::CancellationToken,
+        ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError>
+        {
+            let events = vec![Ok(base::interface::model::ModelEvent::TextDelta {
+                text: self.0.to_string(),
+            })];
+            Ok(Box::new(futures::stream::iter(events)))
+        }
+    }
+
+    async fn extract_with(store: &Arc<MemoryStore>, answer: &'static str) {
+        extract_memories_after_turn(
+            store.clone(),
+            &[user_msg("hello"), user_msg("world")],
+            &Answering(answer),
+            "m",
+            None,
+            &base::interface::environment::SystemEnvironment,
+            "test-session",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn an_extracted_memory_holding_a_key_is_not_saved() {
+        let store = tmp_memory_store();
+        extract_with(
+            &store,
+            r#"[
+              {"name":"deploy-key","description":"how to deploy","content":"use token sk-abcdefghijklmnopqrstuvwx","type":"project"},
+              {"name":"deploy-day","description":"when to deploy","content":"Tuesdays.","type":"project"}
+            ]"#,
+        )
+        .await;
+        let names: Vec<String> = store.load_all().into_iter().map(|m| m.name).collect();
+        assert_eq!(names, vec!["deploy-day".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn extraction_keeps_the_store_within_its_cap() {
+        let store = tmp_memory_store();
+        let now = time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Iso8601::DEFAULT)
+            .unwrap();
+        store
+            .persist_batch(
+                (0..base::interface::memory::MAX_MEMORIES)
+                    .map(|i| DurableMemory {
+                        name: format!("m{i}"),
+                        description: String::new(),
+                        memory_type: MemoryType::User,
+                        content: String::new(),
+                        source_session_id: String::new(),
+                        confidence: 0.9,
+                        last_seen: now.clone(),
+                        recall_count: 0,
+                    })
+                    .collect(),
+            )
+            .unwrap();
+        extract_with(
+            &store,
+            r#"[{"name":"one-more","description":"d","content":"c","type":"user"}]"#,
+        )
+        .await;
+        assert_eq!(
+            store.load_all().len(),
+            base::interface::memory::MAX_MEMORIES
+        );
     }
 }
 

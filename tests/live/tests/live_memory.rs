@@ -1,8 +1,10 @@
 //! Memory with a real model: one session writes a memory the way the
 //! `# Memory` prompt section says and the next session gets it back before
 //! its first call; an index past five entries sends recall through a
-//! selection call; a `MEMORY.md` of Chinese text past the 25 000-byte cap is
-//! loaded cut, not fatal; with memory off nothing is recalled or extracted.
+//! selection call; a memory filed under the project is indexed and recalled
+//! with the global ones; a `MEMORY.md` of Chinese text past the 25 000-byte
+//! cap is loaded cut, not fatal; with memory off nothing is recalled or
+//! extracted.
 
 use std::path::Path;
 
@@ -193,6 +195,59 @@ async fn more_than_five_memories_go_through_a_selection_call() -> anyhow::Result
     } else {
         eprintln!("[live memory-select] the selection missed the 2 s recall budget");
     }
+    run.finish().await;
+    Ok(())
+}
+
+/// A memory filed under the project — where extraction puts `type: project`
+/// — is in the prompt's index next to the global ones, and is recalled.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_project_memory_is_indexed_and_recalled_with_the_global_ones() -> anyhow::Result<()> {
+    let token = format!("BRANCH-{}", nonce());
+    let seeded = token.clone();
+    let mut run = LiveRun::builder("memory-project")
+        .settings(json!({ "memory_enabled": true }))
+        .before_start(move |world, project| {
+            let global = world.global_memory_dir();
+            write_memory(
+                &global,
+                "review-style",
+                "How the user wants reviews written",
+                "Reviews are a list of findings.",
+            )?;
+            std::fs::write(
+                global.join("MEMORY.md"),
+                "- [review-style](review-style.md) — How the user wants reviews written\n",
+            )?;
+            let local = world.memory_dir(project);
+            write_memory(
+                &local,
+                "release-branch",
+                "Which branch this project releases from",
+                &format!("Releases are cut from the branch named {seeded}."),
+            )?;
+            std::fs::write(
+                local.join("MEMORY.md"),
+                "- [release-branch](release-branch.md) — Which branch this project releases from\n",
+            )?;
+            Ok(())
+        })
+        .start()
+        .await?;
+    let session = run.session().await?;
+    run.turn(
+        &session,
+        "Which branch does this project release from? Answer with the branch name only.",
+    )
+    .await?;
+    let calls = run.provider.calls();
+    let first = first_turn_after(&calls, 0).expect("a turn call");
+    assert!(first.system_contains("release-branch"), "the project index");
+    assert!(first.system_contains("review-style"), "the global index");
+    assert!(
+        first.messages_contain(RECALLED) && first.messages_contain(&token),
+        "the project memory was not recalled into the first call"
+    );
     run.finish().await;
     Ok(())
 }
