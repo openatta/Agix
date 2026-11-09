@@ -14,8 +14,9 @@ use crate::payload::{HookDecision, HookInput, HookResponse};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// 默认 hook 超时（10 分钟）。
-pub const DEFAULT_HOOK_TIMEOUT_MS: u64 = 600_000;
+/// 没写 `timeout` 的 hook 最多跑多久（60 秒），四种后端都一样。到时它什么都不拦、
+/// 不改。
+pub const DEFAULT_HOOK_TIMEOUT_MS: u64 = 60_000;
 
 #[derive(Debug, Clone)]
 pub enum HookOutcome {
@@ -369,8 +370,7 @@ impl HookRunner {
             None => return HookRunResult::default(),
         };
 
-        // Filter out already-executed `once` hooks so they don't fire again.
-        let once_done = {
+        let pending = {
             let once_set = self
                 .once_executed
                 .lock()
@@ -378,36 +378,38 @@ impl HookRunner {
             configs
                 .iter()
                 .enumerate()
-                .filter(|(idx, cfg)| {
-                    let is_once = matches!(
-                        cfg,
-                        HookConfig::Command {
-                            once: Some(true),
-                            ..
-                        }
-                    );
-                    !is_once || !once_set.contains(&(event, *idx))
-                })
+                .filter(|(idx, cfg)| !cfg.is_once() || !once_set.contains(&(event, *idx)))
                 .map(|(idx, _)| idx)
                 .collect::<Vec<usize>>()
-        }; // MutexGuard dropped here
+        };
 
         // Spawn each hook as an indexed future; collect into a Vec keyed by
         // registration index so the order in HookRunResult.outcomes is stable
         // regardless of completion order.
         let mut futures = futures::stream::FuturesUnordered::new();
-        for &idx in &once_done {
+        for &idx in &pending {
             let cfg = configs[idx].clone();
             let input = input.clone();
             futures.push(async move { (idx, self.run_one(&cfg, &input).await) });
         }
 
-        let mut indexed: Vec<(usize, HookOutcome)> = Vec::with_capacity(once_done.len());
+        let mut indexed: Vec<(usize, HookOutcome)> = Vec::with_capacity(pending.len());
         use futures::StreamExt;
         while let Some(item) = futures.next().await {
             indexed.push(item);
         }
         indexed.sort_by_key(|(i, _)| *i);
+
+        for (idx, outcome) in &indexed {
+            if let HookOutcome::Error(error) = outcome {
+                tracing::warn!(
+                    event = ?event,
+                    hook = %configs[*idx].describe(),
+                    %error,
+                    "hook failed; it neither blocks nor rewrites anything"
+                );
+            }
+        }
 
         // Check for rewake signals in hook responses.
         // If a hook has `async_rewake: true` in its config AND returns
@@ -435,14 +437,16 @@ impl HookRunner {
             }
         }
 
-        // Mark executed `once` hooks so they don't fire on subsequent run() calls.
         let mut once_set = self
             .once_executed
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for &idx in &once_done {
-            once_set.insert((event, idx));
+        for (idx, outcome) in &indexed {
+            if configs[*idx].is_once() && matches!(outcome, HookOutcome::Ran { .. }) {
+                once_set.insert((event, *idx));
+            }
         }
+        drop(once_set);
 
         HookRunResult {
             outcomes: indexed.into_iter().map(|(_, o)| o).collect(),
@@ -452,51 +456,54 @@ impl HookRunner {
     /// Run a single hook config, dispatching to the appropriate executor.
     /// `pub(super)` so that tests in submodules can call this directly if needed.
     pub(super) async fn run_one(&self, cfg: &HookConfig, input: &HookInput) -> HookOutcome {
+        if let Err(why) = cfg.applies_to(input) {
+            return HookOutcome::Skipped(why);
+        }
         match cfg {
             HookConfig::Command {
                 command,
                 shell,
                 timeout,
-                if_pattern,
-                only_on_error,
                 ..
             } => {
-                if let Some(pattern) = if_pattern {
-                    if !matcher::if_matches(pattern, input) {
-                        return HookOutcome::Skipped("if pattern did not match");
-                    }
-                }
-                if only_on_error.unwrap_or(false) && input.is_error != Some(true) {
-                    return HookOutcome::Skipped("only_on_error=true but tool was not in error");
-                }
-                let timeout_dur = timeout
-                    .map(Duration::from_millis)
-                    .unwrap_or(self.default_timeout);
                 let shell = shell.as_deref().unwrap_or("bash");
-                self.exec_command(shell, command, input, timeout_dur).await
+                self.exec_command(shell, command, input, self.timeout_of(*timeout))
+                    .await
             }
             HookConfig::Prompt {
                 prompt,
                 timeout,
                 model,
+                ..
             } => {
-                self.exec_prompt(prompt, model.as_deref(), input, *timeout)
+                self.exec_prompt(prompt, model.as_deref(), input, self.timeout_of(*timeout))
                     .await
             }
             HookConfig::Http {
                 url,
                 headers,
                 timeout,
-            } => self.exec_http(url, headers, input, *timeout).await,
+                ..
+            } => {
+                self.exec_http(url, headers, input, self.timeout_of(*timeout))
+                    .await
+            }
             HookConfig::Agent {
                 prompt,
                 timeout,
                 model,
+                ..
             } => {
-                self.exec_agent(prompt, model.as_deref(), input, *timeout)
+                self.exec_agent(prompt, model.as_deref(), input, self.timeout_of(*timeout))
                     .await
             }
         }
+    }
+
+    fn timeout_of(&self, configured_ms: Option<u64>) -> Duration {
+        configured_ms
+            .map(Duration::from_millis)
+            .unwrap_or(self.default_timeout)
     }
 
     /// Execute an Agent-type hook. Delegates to the injected AgentHookExecutor.
@@ -506,14 +513,24 @@ impl HookRunner {
         prompt: &str,
         model: Option<&str>,
         input: &HookInput,
-        _timeout_ms: Option<u64>,
+        timeout: Duration,
     ) -> HookOutcome {
         let Some(ref executor) = self.agent_executor else {
             return HookOutcome::Skipped(
                 "agent hook: no AgentHookExecutor configured — wire one at CLI/daemon startup",
             );
         };
-        match executor.execute(prompt, model, input).await {
+        let answered =
+            match tokio::time::timeout(timeout, executor.execute(prompt, model, input)).await {
+                Ok(answered) => answered,
+                Err(_) => {
+                    return HookOutcome::Error(format!(
+                        "agent hook timed out after {}ms",
+                        timeout.as_millis()
+                    ))
+                }
+            };
+        match answered {
             Ok(response) => {
                 // Parse JSON response: {"ok": bool, "reason": "..."}
                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&response) {
@@ -725,6 +742,7 @@ mod tests {
                 prompt: "is this safe?".into(),
                 timeout: None,
                 model: None,
+                if_pattern: None,
             }],
         );
         let r = HookRunner::new(s);
@@ -1078,6 +1096,7 @@ mod tests {
                 url: "http://127.0.0.1:1/no-such".into(),
                 headers: HashMap::new(),
                 timeout: Some(500),
+                if_pattern: None,
             }],
         );
         let r = HookRunner::new(s);
@@ -1091,6 +1110,220 @@ mod tests {
                 );
             }
             other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    fn command(command: &str) -> HookConfig {
+        HookConfig::Command {
+            command: command.into(),
+            shell: None,
+            timeout: Some(10_000),
+            if_pattern: None,
+            only_on_error: None,
+            once: None,
+            async_rewake: None,
+        }
+    }
+
+    fn on_pre_tool_use(hooks: Vec<HookConfig>) -> HookRunner {
+        HookRunner::new(HashMap::from([(HookEvent::PreToolUse, hooks)]))
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_exit_code_decides_whatever_stdout_holds() {
+        let blocked = on_pre_tool_use(vec![command("echo 'not json {{'; echo NO-RM >&2; exit 2")])
+            .run(HookEvent::PreToolUse, &input_for_bash("rm x"))
+            .await;
+        assert_eq!(
+            blocked.blocked().and_then(|r| r.message.as_deref()),
+            Some("NO-RM"),
+            "{:?}",
+            blocked.outcomes
+        );
+
+        let failed = on_pre_tool_use(vec![command("echo boom >&2; exit 1")])
+            .run(HookEvent::PreToolUse, &input_for_bash("ls"))
+            .await;
+        assert!(failed.blocked().is_none(), "{:?}", failed.outcomes);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_once_hook_is_not_used_up_by_the_calls_its_if_skips() {
+        let dir = tempfile_dir();
+        let marker = dir.join("ran");
+        let hook = HookConfig::Command {
+            command: format!("echo x >> '{}'", marker.display()),
+            shell: None,
+            timeout: Some(10_000),
+            if_pattern: Some("Bash(git push:*)".into()),
+            only_on_error: None,
+            once: Some(true),
+            async_rewake: None,
+        };
+        let r = on_pre_tool_use(vec![hook]);
+        for cmd in ["ls", "git push origin", "git push origin", "ls"] {
+            r.run(HookEvent::PreToolUse, &input_for_bash(cmd)).await;
+        }
+        let ran = std::fs::read_to_string(&marker).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(ran.lines().count(), 1, "{ran:?}");
+    }
+
+    struct Answering(&'static str);
+
+    #[async_trait::async_trait]
+    impl PromptHookExecutor for Answering {
+        async fn execute(&self, _: &str, _: Option<&str>, _: &HookInput) -> Result<String, String> {
+            Ok(self.0.to_string())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl AgentHookExecutor for Answering {
+        async fn execute(&self, _: &str, _: Option<&str>, _: &HookInput) -> Result<String, String> {
+            Ok(self.0.to_string())
+        }
+    }
+
+    #[tokio::test]
+    async fn every_backend_honors_its_if() {
+        let r = on_pre_tool_use(vec![
+            HookConfig::Prompt {
+                prompt: "judge".into(),
+                timeout: None,
+                model: None,
+                if_pattern: Some("Write|Edit".into()),
+            },
+            HookConfig::Agent {
+                prompt: "judge".into(),
+                timeout: None,
+                model: None,
+                if_pattern: Some("Write".into()),
+            },
+            HookConfig::Http {
+                url: "http://203.0.113.1/hook".into(),
+                headers: HashMap::new(),
+                timeout: Some(100),
+                if_pattern: Some("Write".into()),
+            },
+        ])
+        .with_prompt_executor(Arc::new(Answering(r#"{"decision":"block"}"#)))
+        .with_agent_executor(Arc::new(Answering(r#"{"ok":false}"#)));
+
+        let bash = r.run(HookEvent::PreToolUse, &input_for_bash("ls")).await;
+        assert!(
+            bash.outcomes
+                .iter()
+                .all(|o| matches!(o, HookOutcome::Skipped(_))),
+            "{:?}",
+            bash.outcomes
+        );
+
+        let mut write = input_for_bash("ls");
+        write.tool_name = Some("Write".into());
+        let written = r.run(HookEvent::PreToolUse, &write).await;
+        assert!(written.blocked().is_some(), "{:?}", written.outcomes);
+    }
+
+    struct Slow;
+
+    #[async_trait::async_trait]
+    impl AgentHookExecutor for Slow {
+        async fn execute(&self, _: &str, _: Option<&str>, _: &HookInput) -> Result<String, String> {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            Ok(r#"{"ok":false}"#.into())
+        }
+    }
+
+    #[tokio::test]
+    async fn an_agent_hook_is_held_to_its_timeout() {
+        let r = on_pre_tool_use(vec![HookConfig::Agent {
+            prompt: "judge".into(),
+            timeout: Some(200),
+            model: None,
+            if_pattern: None,
+        }])
+        .with_agent_executor(Arc::new(Slow));
+        let started = std::time::Instant::now();
+        let result = r.run(HookEvent::PreToolUse, &input_for_bash("ls")).await;
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(result.outcomes[0].is_error(), "{:?}", result.outcomes);
+        assert!(result.blocked().is_none());
+    }
+
+    #[test]
+    fn a_hook_without_a_timeout_gets_a_minute() {
+        assert_eq!(
+            HookRunner::empty().timeout_of(None),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            HookRunner::empty().timeout_of(Some(1500)),
+            Duration::from_millis(1500)
+        );
+    }
+
+    #[derive(Clone, Default)]
+    struct Captured(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Captured {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_hook_that_errors_says_so_in_the_log() {
+        let logs = Captured::default();
+        let writer = logs.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let r = on_pre_tool_use(vec![HookConfig::Agent {
+            prompt: "judge".into(),
+            timeout: None,
+            model: None,
+            if_pattern: None,
+        }])
+        .with_agent_executor(Arc::new(Failing));
+        let result = r.run(HookEvent::PreToolUse, &input_for_bash("ls")).await;
+        assert!(result.outcomes[0].is_error());
+
+        let logged = String::from_utf8_lossy(
+            &logs
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+        .into_owned();
+        assert!(
+            logged.contains("WARN")
+                && logged.contains("PreToolUse")
+                && logged.contains("agent hook")
+                && logged.contains("JUDGE-UNAVAILABLE"),
+            "{logged}"
+        );
+    }
+
+    struct Failing;
+
+    #[async_trait::async_trait]
+    impl AgentHookExecutor for Failing {
+        async fn execute(&self, _: &str, _: Option<&str>, _: &HookInput) -> Result<String, String> {
+            Err("JUDGE-UNAVAILABLE".into())
         }
     }
 

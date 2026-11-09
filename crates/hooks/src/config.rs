@@ -3,6 +3,8 @@
 //! 四种变体都会执行（`HookRunner::run_one` 逐一分发）：`command` 与 `http`
 //! 自足；`prompt` 与 `agent` 需要宿主注入 `PromptHookExecutor` /
 //! `AgentHookExecutor`，没注入时该 hook 被 Skip 并附原因，不是静默失败。
+//! 四种都认 `if`（见 `runner::matcher`）；`only_on_error`、`once`、
+//! `async_rewake` 只有 `command` 有。
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -17,7 +19,7 @@ pub enum HookConfig {
         /// 默认 bash；Windows 上可指定 powershell
         #[serde(default)]
         shell: Option<String>,
-        /// 毫秒；不填用 HookRunner 的 default_timeout_ms
+        /// 毫秒；不填用 `DEFAULT_HOOK_TIMEOUT_MS`
         #[serde(default)]
         timeout: Option<u64>,
         /// 权限规则风格的过滤模式，例如 "Bash(git push:*)"。命中才跑。
@@ -26,7 +28,8 @@ pub enum HookConfig {
         /// 仅当工具结果 is_error=true 时才跑（PostToolUse 用）
         #[serde(default)]
         only_on_error: Option<bool>,
-        /// 一次性 hook：跑过一次后从 settings 摘掉
+        /// 一次性 hook：在这个会话里真正跑过一次后不再跑；
+        /// `if`、`only_on_error` 没放行的那几次不算
         #[serde(default)]
         once: Option<bool>,
         /// 异步唤醒机制。若为 true，hook 可返回 `{rewake: true}`
@@ -41,6 +44,8 @@ pub enum HookConfig {
         timeout: Option<u64>,
         #[serde(default)]
         model: Option<String>,
+        #[serde(default, rename = "if")]
+        if_pattern: Option<String>,
     },
     /// HTTP webhook
     Http {
@@ -49,6 +54,8 @@ pub enum HookConfig {
         headers: HashMap<String, String>,
         #[serde(default)]
         timeout: Option<u64>,
+        #[serde(default, rename = "if")]
+        if_pattern: Option<String>,
     },
     /// 跑子 agent
     Agent {
@@ -57,7 +64,60 @@ pub enum HookConfig {
         model: Option<String>,
         #[serde(default)]
         timeout: Option<u64>,
+        #[serde(default, rename = "if")]
+        if_pattern: Option<String>,
     },
+}
+
+impl HookConfig {
+    fn if_pattern(&self) -> Option<&str> {
+        match self {
+            HookConfig::Command { if_pattern, .. }
+            | HookConfig::Prompt { if_pattern, .. }
+            | HookConfig::Http { if_pattern, .. }
+            | HookConfig::Agent { if_pattern, .. } => if_pattern.as_deref(),
+        }
+    }
+
+    /// Whether this hook applies to `input` at all: its `if` matches, and a
+    /// `command` hook's `only_on_error` holds.
+    pub(crate) fn applies_to(&self, input: &crate::payload::HookInput) -> Result<(), &'static str> {
+        if let Some(pattern) = self.if_pattern() {
+            if !crate::runner::matcher::if_matches(pattern, input) {
+                return Err("if pattern did not match");
+            }
+        }
+        if let HookConfig::Command {
+            only_on_error: Some(true),
+            ..
+        } = self
+        {
+            if input.is_error != Some(true) {
+                return Err("only_on_error=true but tool was not in error");
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn is_once(&self) -> bool {
+        matches!(
+            self,
+            HookConfig::Command {
+                once: Some(true),
+                ..
+            }
+        )
+    }
+
+    /// What a log line names the hook by.
+    pub(crate) fn describe(&self) -> String {
+        match self {
+            HookConfig::Command { command, .. } => format!("command `{command}`"),
+            HookConfig::Http { url, .. } => format!("http `{url}`"),
+            HookConfig::Prompt { .. } => "prompt hook".into(),
+            HookConfig::Agent { .. } => "agent hook".into(),
+        }
+    }
 }
 
 /// Hook 事件枚举。命名使用 PascalCase。

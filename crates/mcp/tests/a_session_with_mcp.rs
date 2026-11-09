@@ -216,6 +216,7 @@ async fn build_wires_mcp_elicitation_urls_to_the_elicitation_hook() {
             prompt: "an elicitation happened".into(),
             timeout: None,
             model: None,
+            if_pattern: None,
         }],
     );
     let runner = Arc::new(

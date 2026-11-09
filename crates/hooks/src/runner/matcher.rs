@@ -1,15 +1,49 @@
 //! Hook `if` pattern matching utilities.
 //!
 //! Supports:
+//! - `""` or `*` — every call, and events that carry no tool at all
 //! - `Bash` — exact tool name match
 //! - `Bash(<content>)` — tool name + content (prefix:*, glob, exact)
 //! - Other tool names (Read, Edit, mcp__*) — same rules
+//! - `Edit|Write`, `Bash(git push:*)|Write` — any of the alternatives; a `|`
+//!   inside parentheses belongs to the content, not the alternation
 
 use crate::payload::HookInput;
 
 /// Check whether a hook's `if` pattern matches the given input.
-pub(super) fn if_matches(pattern: &str, input: &HookInput) -> bool {
+pub(crate) fn if_matches(pattern: &str, input: &HookInput) -> bool {
     let pat = pattern.trim();
+    if pat.is_empty() || pat == "*" {
+        return true;
+    }
+    alternatives(pat)
+        .into_iter()
+        .any(|alt| alternative_matches(alt.trim(), input))
+}
+
+fn alternatives(pattern: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0;
+    for (i, c) in pattern.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            '|' if depth == 0 => {
+                out.push(&pattern[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&pattern[start..]);
+    out
+}
+
+fn alternative_matches(pat: &str, input: &HookInput) -> bool {
+    if pat == "*" {
+        return true;
+    }
     let Some(tool_name) = input.tool_name.as_deref() else {
         return false;
     };
@@ -167,5 +201,48 @@ mod tests {
     fn if_matches_mcp_tool() {
         let input = make_input("mcp__github__list_issues", None);
         assert!(if_matches("mcp__github", &input));
+    }
+
+    #[test]
+    fn an_empty_or_star_pattern_matches_everything() {
+        let bash = make_input("Bash", Some("ls"));
+        let no_tool = HookInput {
+            tool_name: None,
+            ..make_input("Bash", None)
+        };
+        for pattern in ["", "  ", "*"] {
+            assert!(if_matches(pattern, &bash), "{pattern:?}");
+            assert!(
+                if_matches(pattern, &no_tool),
+                "{pattern:?} on a tool-less event"
+            );
+        }
+    }
+
+    #[test]
+    fn alternatives_match_any_of_them() {
+        let write = make_input("Write", None);
+        let edit = make_input("Edit", None);
+        let read = make_input("Read", None);
+        assert!(if_matches("Edit|Write", &write));
+        assert!(if_matches("Edit | Write", &edit));
+        assert!(!if_matches("Edit|Write", &read));
+
+        let push = make_input("Bash", Some("git push origin"));
+        let ls = make_input("Bash", Some("ls"));
+        assert!(if_matches("Bash(git push:*)|Write", &push));
+        assert!(!if_matches("Bash(git push:*)|Write", &ls));
+        assert!(if_matches("Bash(git push:*)|Write", &write));
+    }
+
+    #[test]
+    fn a_bar_inside_parentheses_is_content_not_an_alternative() {
+        let piped = make_input("Bash", Some("ls | wc -l"));
+        assert!(if_matches("Bash(ls | wc -l)", &piped));
+        assert!(!if_matches(
+            "Bash(ls | wc -l)",
+            &make_input("Bash", Some("ls"))
+        ));
+        assert!(!if_matches("Bash(ls | wc -l)", &make_input("wc -l)", None)));
     }
 }

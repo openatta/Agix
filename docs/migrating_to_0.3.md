@@ -701,6 +701,16 @@ WebAssembly 载体整个移除。
 - MCP stdio server 的进程组记进孤儿登记:daemon 被 `SIGKILL` 之后,下次启动会把它们清掉。
 - 只读且幂等的 MCP 工具结果超过 256 KB 的不再缓存。
 - 登录之后重连失败的 `mcp_connect_failed` 的 `error` 带上失败原因。
+- **command hook 的退出码按 0 / 2 / 其他来读**(`extension_points.md` 生命周期 hook 一节)。
+  `exit 2` 一律拦下,理由取 stderr(为空取 stdout),stdout 不再当 JSON 读——以前 `exit 2`
+  同时往 stdout 打了不是 JSON 的东西就被放行。`exit 1` 等其他非零放行并记 warn——以前
+  非零退出、stdout 为空就拦下。靠 `exit 1` 拦的 hook 改成 `exit 2`。
+- 没写 `timeout` 的 hook 最多跑 60 秒(以前 10 分钟);agent 型 hook 的 `timeout` 以前不生效,
+  现在生效。要更久的写明 `timeout`。
+- `if` 的 `""` 与 `"*"` 命中一切(以前什么都不命中,hook 从不跑);`Edit|Write` 几选一;prompt、
+  http、agent 三种 hook 也认 `if`(以前被忽略,对所有调用都跑)。
+- `once` 只在 hook 真正跑了之后才算用掉;以前 `if` 没命中的那次调用就把它用掉了。
+- 超时、出错的 hook 在日志里记一条 warn(以前除了 command 超时都没有痕迹)。
 
 ### 嵌入方
 
@@ -875,3 +885,5 @@ WebAssembly 载体整个移除。
   `tokio::task::block_in_place` 跑脚本。新增 `script_host::bindings::{MAX_LIMITS,
   PACKAGE_MAX_LIMITS}`。
 - 新增 `ptc::default_run_slots()` 与 `RunCodeTool::with_run_slots`。
+- `hooks::HookConfig::{Prompt, Http, Agent}` 多了 `if_pattern: Option<String>`(结构体字面量
+  要补)。`hooks::runner::DEFAULT_HOOK_TIMEOUT_MS` 是 `60_000`。

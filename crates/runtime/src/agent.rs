@@ -5155,6 +5155,7 @@ mod tests {
                 prompt: "the instruction file changed".into(),
                 timeout: None,
                 model: None,
+                if_pattern: None,
             }],
         );
         let runner = Arc::new(

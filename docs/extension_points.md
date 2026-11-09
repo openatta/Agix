@@ -931,6 +931,17 @@ let store = Arc::new(ObservedHistoryStore::new(inner, vec![my_observer]));
 是那份清单,配到这类事件时引擎会告警,而 `daemon/tests/hook_event_wiring.rs` 从两个
 方向盯着这份清单不许说谎。
 
+- **command 的退出码。** `0`:stdout 是 JSON 回答(空 stdout 等于什么都不说;不是 JSON 的
+  记一条 warn,当作没说);`2`:拦下,理由取 stderr,stderr 为空取 stdout,stdout 不当
+  JSON 读;其他非零(含被信号杀掉):这个 hook 坏了,记 warn,放行。
+- **超时。** 不写 `timeout`(毫秒)的,四种后端都是 60 秒。超时、出错的 hook 记 warn,
+  不拦也不改。
+- **`if`。** 四种后端都认。`""` 与 `*` 命中一切,连不带工具的事件也算;`Bash`、
+  `Bash(git push:*)`、`mcp__github` 按权限规则的写法比;`Edit|Write` 是几选一,括号里的
+  `|` 属于内容。没命中就不跑。
+- **`once`。** 只有 command 有:这个 hook 在会话里真正跑过一次后不再跑,
+  `if`、`only_on_error` 没放行的那几次不算。
+
 ---
 
 ## 插件 — `runtime::plugin::Plugin`

@@ -702,14 +702,14 @@ async fn every_payload_names_the_sessions_cwd_and_permission_mode() -> anyhow::R
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_pre_tool_use_hook_that_exits_non_zero_without_output_blocks_the_call(
-) -> anyhow::Result<()> {
+async fn a_pre_tool_use_hook_that_exits_2_blocks_the_call_whatever_it_printed() -> anyhow::Result<()>
+{
     let stub = ProviderStub::start().await?;
     let ledger = Ledger::new()?;
     let refuse = ledger.path("refuse.sh");
     executable(
         &refuse,
-        "#!/bin/sh\ncat > /dev/null\necho NO-BASH-TODAY >&2\nexit 2\n",
+        "#!/bin/sh\ncat > /dev/null\necho 'not json {{'\necho NO-BASH-TODAY >&2\nexit 2\n",
     )?;
     let mut run = stubbed("exit-code", &stub)
         .settings(json!({ "hooks_config": { "PreToolUse": [command_hook(&refuse, 30_000)] } }))
@@ -740,6 +740,11 @@ async fn a_hook_that_fails_hangs_or_prints_garbage_changes_nothing() -> anyhow::
     executable(&garbage, "#!/bin/sh\ncat > /dev/null\necho 'not json {{'\n")?;
     let failing = ledger.path("failing.sh");
     executable(&failing, "#!/bin/sh\ncat > /dev/null\necho oops\nexit 1\n")?;
+    let silent = ledger.path("silent.sh");
+    executable(
+        &silent,
+        "#!/bin/sh\ncat > /dev/null\necho went-wrong >&2\nexit 3\n",
+    )?;
     let pid = ledger.path("hang.pid");
     let hang = ledger.path("hang.sh");
     executable(
@@ -755,6 +760,7 @@ async fn a_hook_that_fails_hangs_or_prints_garbage_changes_nothing() -> anyhow::
                 "PreToolUse": [
                     command_hook(&garbage, 30_000),
                     command_hook(&failing, 30_000),
+                    command_hook(&silent, 30_000),
                     command_hook(&hang, 3000),
                     ledger.hook()
                 ]

@@ -23,14 +23,11 @@ impl HookRunner {
         prompt: &str,
         model: Option<&str>,
         input: &HookInput,
-        timeout_ms: Option<u64>,
+        timeout_dur: Duration,
     ) -> HookOutcome {
         let Some(executor) = &self.prompt_executor else {
             return HookOutcome::Skipped("prompt-type hook needs a PromptHookExecutor injected");
         };
-        let timeout_dur = timeout_ms
-            .map(Duration::from_millis)
-            .unwrap_or(self.default_timeout);
         let result =
             match tokio::time::timeout(timeout_dur, executor.execute(prompt, model, input)).await {
                 Ok(Ok(text)) => text,
@@ -64,16 +61,13 @@ impl HookRunner {
         url: &str,
         headers: &std::collections::HashMap<String, String>,
         input: &HookInput,
-        timeout_ms: Option<u64>,
+        timeout_dur: Duration,
     ) -> HookOutcome {
         // SSRF guard: block private/reserved IPs before connecting
         if let Err(e) = ssrf_check_url(url).await {
             return HookOutcome::Error(e.to_string());
         }
 
-        let timeout_dur = timeout_ms
-            .map(Duration::from_millis)
-            .unwrap_or(self.default_timeout);
         let payload = match serde_json::to_vec(input) {
             Ok(p) => p,
             Err(e) => return HookOutcome::Error(format!("http hook payload: {e}")),
@@ -163,7 +157,6 @@ impl HookRunner {
             _ = tokio::time::sleep(timeout) => {
                 child.kill().await;
                 stop_reading.cancel();
-                warn!(command, ?timeout, "command hook timed out; it does not block or rewrite anything");
                 return HookOutcome::Error(format!("hook timed out after {:?}", timeout));
             }
             r = child.wait() => match r {
@@ -183,43 +176,59 @@ impl HookRunner {
             }
         };
         let exit_code = status.code;
-
-        // 解析 stdout
-        let response = if stdout.trim().is_empty() {
-            // exit != 0 + 空 stdout → 视为 block，message 用 stderr
-            if !status.success {
-                debug!(
-                    ?exit_code,
-                    %stderr,
-                    "hook exited non-zero with empty stdout; treating as block"
-                );
-                HookResponse {
-                    decision: Some(HookDecision::Block),
-                    message: Some(if stderr.is_empty() {
-                        format!("hook exited {exit_code:?}")
-                    } else {
-                        stderr.trim().to_string()
-                    }),
-                    ..Default::default()
-                }
-            } else {
-                HookResponse::default()
-            }
-        } else {
-            match serde_json::from_str::<HookResponse>(stdout.trim()) {
-                Ok(r) => r,
-                Err(e) => {
-                    warn!(stdout = %stdout, error = %e, "hook stdout not valid JSON; default response");
-                    HookResponse::default()
-                }
-            }
-        };
+        let response = response_for_exit(command, exit_code, &stdout, &stderr);
 
         HookOutcome::Ran {
             response,
             stdout,
             stderr,
             exit_code,
+        }
+    }
+}
+
+/// The exit code a command hook blocks with, whatever it printed.
+const BLOCKING_EXIT: i32 = 2;
+
+/// What a command hook's exit says.
+///
+/// `2` blocks, with stderr as the reason (stdout when stderr is empty); its
+/// stdout is not read as JSON. `0` hands stdout over as the JSON answer. Any
+/// other exit, a signal included, is the hook failing: it lets the call
+/// through, as a hook that crashed or timed out does.
+fn response_for_exit(
+    command: &str,
+    exit_code: Option<i32>,
+    stdout: &str,
+    stderr: &str,
+) -> HookResponse {
+    match exit_code {
+        Some(0) if stdout.trim().is_empty() => HookResponse::default(),
+        Some(0) => serde_json::from_str::<HookResponse>(stdout.trim()).unwrap_or_else(|e| {
+            warn!(command, stdout = %stdout, error = %e, "hook stdout is not a JSON answer; it is ignored");
+            HookResponse::default()
+        }),
+        Some(BLOCKING_EXIT) => {
+            let reason = [stderr.trim(), stdout.trim()]
+                .into_iter()
+                .find(|s| !s.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("hook exited {BLOCKING_EXIT}"));
+            debug!(command, %reason, "hook exited 2; blocking");
+            HookResponse {
+                decision: Some(HookDecision::Block),
+                message: Some(reason),
+                ..Default::default()
+            }
+        }
+        other => {
+            warn!(
+                command,
+                exit_code = ?other,
+                stderr = %stderr.trim(),
+                "hook exited neither 0 nor 2; it neither blocks nor rewrites anything"
+            );
+            HookResponse::default()
         }
     }
 }
@@ -321,5 +330,45 @@ mod tests {
     fn parse_hook_response_whitespace_only() {
         let r = parse_hook_response_lenient("   \n  ");
         assert_eq!(r.decision, None);
+    }
+
+    #[test]
+    fn exit_2_blocks_whatever_stdout_says() {
+        for stdout in ["", "not json {{", r#"{"decision":"approve"}"#] {
+            let r = response_for_exit("h", Some(2), stdout, "NO-RM\n");
+            assert_eq!(r.decision, Some(HookDecision::Block), "stdout {stdout:?}");
+            assert_eq!(r.message.as_deref(), Some("NO-RM"));
+        }
+    }
+
+    #[test]
+    fn exit_2_without_stderr_gives_stdout_as_the_reason() {
+        let r = response_for_exit("h", Some(2), "plain words\n", "");
+        assert_eq!(r.decision, Some(HookDecision::Block));
+        assert_eq!(r.message.as_deref(), Some("plain words"));
+        let r = response_for_exit("h", Some(2), "", "");
+        assert_eq!(r.message.as_deref(), Some("hook exited 2"));
+    }
+
+    #[test]
+    fn any_other_failure_lets_the_call_through() {
+        for code in [Some(1), Some(127), None] {
+            for stdout in ["", "oops", r#"{"decision":"block"}"#] {
+                let r = response_for_exit("h", code, stdout, "boom");
+                assert_eq!(r.decision, None, "{code:?} {stdout:?}");
+                assert_eq!(r.r#continue, None);
+            }
+        }
+    }
+
+    #[test]
+    fn exit_0_reads_stdout_as_the_answer() {
+        let r = response_for_exit("h", Some(0), r#"{"decision":"block","message":"m"}"#, "");
+        assert_eq!(r.decision, Some(HookDecision::Block));
+        assert_eq!(response_for_exit("h", Some(0), "", "x").decision, None);
+        assert_eq!(
+            response_for_exit("h", Some(0), "garbage", "").decision,
+            None
+        );
     }
 }
