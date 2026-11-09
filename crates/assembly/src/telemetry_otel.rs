@@ -81,6 +81,22 @@ impl OtelExporter {
     }
 }
 
+fn flush(
+    meter_provider: Option<&opentelemetry_sdk::metrics::SdkMeterProvider>,
+    tracer_provider: Option<&opentelemetry_sdk::trace::TracerProvider>,
+) {
+    if let Some(mp) = meter_provider {
+        if let Err(e) = mp.force_flush() {
+            tracing::warn!(error = %e, "otel meter provider flush failed");
+        }
+    }
+    if let Some(tp) = tracer_provider {
+        for e in tp.force_flush().into_iter().filter_map(Result::err) {
+            tracing::warn!(error = %e, "otel tracer provider flush failed");
+        }
+    }
+}
+
 impl Drop for OtelExporter {
     fn drop(&mut self) {
         self.shutdown();
@@ -123,12 +139,67 @@ impl telemetry::TelemetryRecorder for OtelExporter {
         Ok(())
     }
 
+    /// Flushes and nothing more: one exporter serves every session's pipeline
+    /// (see [`process_exporter`]), and this is called each time one of those
+    /// pipelines ends. The SDK's flush blocks on its own Tokio tasks, hence the
+    /// blocking thread.
     fn shutdown(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
-        // `OtelExporter::shutdown` is synchronous (it drives the SDK's own
-        // flush), so there is nothing to await — but the trait is async
-        // because other recorders do need to await a drain.
-        OtelExporter::shutdown(self);
-        Box::pin(std::future::ready(()))
+        let meter_provider = self.meter_provider.clone();
+        let tracer_provider = self.tracer_provider.clone();
+        Box::pin(async move {
+            let flushed = tokio::task::spawn_blocking(move || {
+                flush(meter_provider.as_ref(), tracer_provider.as_ref())
+            })
+            .await;
+            if let Err(e) = flushed {
+                tracing::warn!(error = %e, "otel flush did not finish");
+            }
+        })
+    }
+}
+
+type ProcessExporter = (String, Option<std::sync::Arc<OtelExporter>>);
+
+static PROCESS_EXPORTER: std::sync::OnceLock<ProcessExporter> = std::sync::OnceLock::new();
+
+/// The exporter this process sends to `endpoint`, started on first use.
+///
+/// `start_otel` installs *global* meter and tracer providers, so it runs at
+/// most once per process however many sessions and pools ask; a later
+/// `endpoint` that differs from the first is ignored (and said so once). The
+/// exporter lives until [`shutdown_process_exporter`].
+pub fn process_exporter(endpoint: &str) -> Option<std::sync::Arc<OtelExporter>> {
+    static TOLD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let (started_on, exporter) = PROCESS_EXPORTER.get_or_init(|| {
+        let exporter = match start_otel(endpoint) {
+            Ok(e) => {
+                tracing::info!(%endpoint, "OpenTelemetry exporter started");
+                Some(std::sync::Arc::new(e))
+            }
+            Err(e) => {
+                tracing::warn!(%endpoint, error = %e, "could not start the OpenTelemetry exporter; \
+                               telemetry still records to file");
+                None
+            }
+        };
+        (endpoint.to_string(), exporter)
+    });
+    if started_on != endpoint && !TOLD.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        tracing::warn!(
+            used = %started_on,
+            ignored = %endpoint,
+            "the OpenTelemetry exporter is process-wide and was started on another endpoint; \
+             this pool's endpoint is ignored"
+        );
+    }
+    exporter.clone()
+}
+
+/// Flush and stop the process's exporter, if one was started. For the end of
+/// the process: nothing is exported after it.
+pub fn shutdown_process_exporter() {
+    if let Some((_, Some(exporter))) = PROCESS_EXPORTER.get() {
+        exporter.shutdown();
     }
 }
 
@@ -383,5 +454,35 @@ mod tests {
     fn start_otel_returns_error_on_empty_endpoint() {
         let result = start_otel("");
         assert!(result.is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_session_pipeline_ending_leaves_the_shared_exporter_running() {
+        use opentelemetry::trace::{Span as _, Tracer as _, TracerProvider as _};
+
+        let exporter = std::sync::Arc::new(start_otel("http://127.0.0.1:4317").unwrap());
+        let config = telemetry::TelemetryConfig {
+            enabled: true,
+            mode: telemetry::TelemetryMode::Enabled,
+            default_event_enabled: true,
+            ..Default::default()
+        };
+        for _session in 0..2 {
+            let recorders: Vec<std::sync::Arc<dyn telemetry::TelemetryRecorder>> =
+                vec![exporter.clone()];
+            let (handle, consumer) = telemetry::spawn(config.clone(), recorders).unwrap();
+            drop(handle);
+            consumer.await;
+        }
+
+        let tracer = exporter
+            .tracer_provider
+            .as_ref()
+            .expect("started with a tracer")
+            .tracer("agix-test");
+        assert!(
+            tracer.start("after-two-sessions").is_recording(),
+            "a session ending shut the process-wide tracer provider down"
+        );
     }
 }

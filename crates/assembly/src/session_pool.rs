@@ -8014,11 +8014,9 @@ fn recordings_root(settings: &Settings, requested: Option<&str>) -> PathBuf {
 /// A `TelemetryRecorder` that forwards turn/tool events to OpenTelemetry, or
 /// `None` when no OTLP endpoint is configured.
 ///
-/// `crate::telemetry_otel::start_otel` installs *global* meter and tracer
-/// providers, so it must run at most once per process however many sessions
-/// are created — hence the `OnceLock`. The exporter itself is kept alive for
-/// the process's lifetime (dropping it would tear the global providers down
-/// under any session still recording).
+/// Every session gets the same process-wide exporter
+/// (`crate::telemetry_otel::process_exporter`); a session's pipeline ending
+/// flushes it, and only the process's own shutdown stops it.
 ///
 /// The `telemetry` crate itself never talks to the network — this recorder
 /// is how the daemon opts in to sending data anywhere. Compiled out unless
@@ -8031,37 +8029,7 @@ fn otel_sink(endpoint: Option<&str>) -> Option<std::sync::Arc<dyn telemetry::Tel
         .map(str::to_string)
         .or_else(|| std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok())
         .filter(|e| !e.trim().is_empty())?;
-
-    type Started = (
-        String,
-        Option<std::sync::Arc<crate::telemetry_otel::OtelExporter>>,
-    );
-    static OTEL: std::sync::OnceLock<Started> = std::sync::OnceLock::new();
-    static TOLD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    let (started_on, exporter) = OTEL.get_or_init(|| {
-        let exporter = match crate::telemetry_otel::start_otel(&endpoint) {
-            Ok(e) => {
-                info!(%endpoint, "OpenTelemetry exporter started");
-                Some(std::sync::Arc::new(e))
-            }
-            Err(e) => {
-                warn!(%endpoint, error = %e, "could not start the OpenTelemetry exporter; \
-                          telemetry still records to file");
-                None
-            }
-        };
-        (endpoint.clone(), exporter)
-    });
-    if *started_on != endpoint && !TOLD.swap(true, std::sync::atomic::Ordering::Relaxed) {
-        warn!(
-            used = %started_on,
-            ignored = %endpoint,
-            "the OpenTelemetry exporter is process-wide and was started on another endpoint; \
-             this pool's endpoint is ignored"
-        );
-    }
-    exporter
-        .clone()
+    crate::telemetry_otel::process_exporter(&endpoint)
         .map(|e| e as std::sync::Arc<dyn telemetry::TelemetryRecorder>)
 }
 

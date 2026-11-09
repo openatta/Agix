@@ -603,6 +603,8 @@ async fn serve(cli: Cli) -> anyhow::Result<()> {
 
     server.serve_unix_listener(unix).await?;
 
+    #[cfg(feature = "otel")]
+    let _ = tokio::task::spawn_blocking(assembly::telemetry_otel::shutdown_process_exporter).await;
     let _ = std::fs::remove_file(&lock_path);
     let _ = std::fs::remove_file(&groups_file);
     daemon::discovery::remove_instance_file(&instances_dir, &instance_name);
