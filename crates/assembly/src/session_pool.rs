@@ -3760,25 +3760,29 @@ impl SessionPool {
             change(&mut prompt);
             spec.prompt = Some(prompt);
         });
-        self.with_session_lock(session_id, async {
-            let held = match self.take_idle_slot(session_id).await {
-                Ok(held) => Some(held),
-                Err(Rebuild::NotLive) => None,
-                Err(busy) => return Err(busy),
-            };
-            record.await;
-            match held {
-                Some(held) => self.rebuild_holding(session_id, held, None).await.map(drop),
-                None => Ok(()),
-            }
-        })
-        .await
-        .map_err(SetModelError::from)?;
         let prompt = self
-            .lock_specs()
-            .get(session_id)
-            .and_then(SessionSpec::prompt)
-            .unwrap_or_default();
+            .with_session_lock(session_id, async {
+                let held = match self.take_idle_slot(session_id).await {
+                    Ok(held) => Some(held),
+                    Err(Rebuild::NotLive) => None,
+                    Err(busy) => return Err(busy),
+                };
+                record.await;
+                let prompt = self
+                    .lock_specs()
+                    .get(session_id)
+                    .and_then(SessionSpec::prompt)
+                    .unwrap_or_default();
+                match held {
+                    Some(held) => {
+                        self.rebuild_holding(session_id, held, None).await?;
+                    }
+                    None => self.release_spec(session_id),
+                }
+                Ok(prompt)
+            })
+            .await
+            .map_err(SetModelError::from)?;
         Ok(serde_json::json!({
             "session_id": session_id,
             "append": prompt.append,
@@ -10399,6 +10403,27 @@ mod rebuild_tests {
             .unwrap_or_else(|_| panic!("an idle session takes the change"));
         let (rebuilt, _) = slot_and_state(&pool, &sid).await;
         assert!(!Arc::ptr_eq(&slot, &rebuilt), "an idle session is rebuilt");
+    }
+
+    #[tokio::test]
+    async fn a_prompt_set_on_a_session_out_of_memory_leaves_no_spec_behind() {
+        let (pool, _dir, _store) = pool_with_history().await;
+        let sid = new_session(&pool).await;
+        let live = pool.sessions.lock().await.remove(&sid).unwrap();
+        pool.evict(&sid, &live);
+        assert!(!pool.lock_specs().contains_key(&sid));
+
+        let answer = pool
+            .set_session_prompt(&sid, append)
+            .await
+            .unwrap_or_else(|_| panic!("a session out of memory takes the change"));
+        assert_eq!(answer["append"], "Answer briefly.");
+        assert!(!pool.lock_specs().contains_key(&sid));
+        assert_eq!(
+            pool.recorded_spec(&sid).await.prompt.and_then(|p| p.append),
+            Some("Answer briefly.".to_string()),
+            "the log gives the change back"
+        );
     }
 
     #[tokio::test]

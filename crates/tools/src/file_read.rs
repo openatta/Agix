@@ -25,8 +25,7 @@ pub struct FileReadInput {
     #[serde(default)]
     pub offset: Option<usize>,
 
-    /// Maximum number of lines to read. Default 2000 (configurable via
-    /// EngineConfig::default_read_lines).
+    /// Maximum number of lines to read. Default 2000.
     #[serde(default)]
     pub limit: Option<usize>,
 
@@ -169,8 +168,8 @@ impl Tool for FileReadTool {
             &path,
             &input,
             max_bytes as u64,
-            2000,  // default_read_lines
-            2000,  // max_line_chars
+            ctx.config.file_limits.default_read_lines,
+            ctx.config.file_limits.max_line_chars,
         ) => r};
 
         match result {
@@ -351,10 +350,11 @@ async fn read_image(
     metadata: &Metadata,
     max_bytes: u64,
 ) -> Result<ToolResult, ToolError> {
-    if metadata.len > max_bytes {
+    let cap = max_bytes.min(base::tool::MAX_IMAGE_BYTES);
+    if metadata.len > cap {
         return Err(ToolError::Validation(format!(
-            "image too large ({} bytes); cap is {} bytes",
-            metadata.len, max_bytes
+            "image too large ({} bytes); cap is {cap} bytes for one image",
+            metadata.len
         )));
     }
     let bytes = fs.read(path).await?;
@@ -1119,6 +1119,27 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn an_image_over_the_one_image_limit_is_refused_whatever_the_read_cap() {
+        let dir = TempDir::new().unwrap();
+        let p = dir.path().join("huge.png");
+        let mut bytes = TINY_PNG.to_vec();
+        bytes.resize(base::tool::MAX_IMAGE_BYTES as usize + 1, 0);
+        tokio::fs::write(&p, &bytes).await.unwrap();
+        let mut ctx = ctx_in(dir.path());
+        ctx.max_file_read_bytes = 10 * 1024 * 1024;
+
+        let err = FileReadTool
+            .call(
+                json!({"file_path": p.to_string_lossy()}),
+                ctx,
+                ProgressSender::noop("t"),
+            )
+            .await
+            .expect_err("an image the API would refuse is not sent");
+        assert!(err.to_string().contains("for one image"), "{err}");
     }
 
     /// `read_pdf_text` shells out to `pdftotext`, so it returns real extracted

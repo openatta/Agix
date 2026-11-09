@@ -2314,6 +2314,8 @@ or project context that should survive across sessions.
         let cached_keep_recent = self.cached_mc.keep_recent();
         let ages = self.session.message_ages();
         let time_based = self.time_based_mc_config.clone();
+        let aging_start = std::time::Instant::now();
+        let aging_from = compaction::grouping::estimate_tokens(&self.session.messages);
         let aging = compactor.age(
             &mut self.session.messages,
             &compaction::compact::AgingInput {
@@ -2331,6 +2333,18 @@ or project context that should survive across sessions.
                 cleared = aging.time_based.cleared,
                 skipped = aging.time_based.skipped,
                 "time-based micro-compact applied"
+            );
+            let messages = self.session.messages.len();
+            self.report_compaction(
+                &CompactSummary {
+                    strategy: format!("{:?}", compaction::compact::CompactStrategy::MicroCompact),
+                    messages_before: messages,
+                    messages_after: messages,
+                    tokens_before: aging_from,
+                    tokens_after: compaction::grouping::estimate_tokens(&self.session.messages),
+                },
+                None,
+                aging_start,
             );
         }
         if let Some(ids) = aging.cache_edits {
@@ -4765,12 +4779,7 @@ fn image_media_type(path: &std::path::Path) -> Option<&'static str> {
     }
 }
 
-/// Largest attachment image we will inline, in bytes *before* base64.
-///
-/// The API's own per-image ceiling is 5 MB of base64, and base64 inflates by
-/// 4/3 — so 3.75 MB of raw bytes is the real limit. Rounded down to leave room
-/// for the rest of the request.
-const MAX_ATTACHMENT_IMAGE_BYTES: u64 = 3_500_000;
+const MAX_ATTACHMENT_IMAGE_BYTES: u64 = base::tool::MAX_IMAGE_BYTES;
 
 /// What a prompt middleware is shown of the attachments.
 async fn describe_attachments(
@@ -5374,6 +5383,59 @@ mod tests {
         };
         let paths = Agent::extract_tool_file_paths(&[msg]);
         assert!(!paths.contains(&sidecar));
+    }
+
+    #[tokio::test]
+    async fn clearing_old_tool_results_by_age_is_reported_as_a_compaction() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut agent, mut event_rx, _input_tx) = crate::agent::Builder::new()
+            .scene(Arc::new(scene::code::CodeScene::default()))
+            .model(Arc::new(FixedUsageModel {
+                usage: Default::default(),
+            }))
+            .settings(Arc::new(recall_test_settings(tmp.path())))
+            .skip_warmup(true)
+            .build()
+            .expect("build should succeed");
+        agent.time_based_mc_config = compaction::time_based_mc::TimeBasedMcConfig {
+            max_age: Some(std::time::Duration::from_millis(1)),
+            min_messages: 0,
+        };
+        agent.session.push_message(ModelMessage {
+            role: MessageRole::Assistant,
+            content: vec![ModelContentBlock::ToolUse {
+                id: "r1".into(),
+                name: "Read".into(),
+                input: serde_json::json!({"file_path": "/x"}),
+            }],
+        });
+        agent.session.push_message(ModelMessage {
+            role: MessageRole::User,
+            content: vec![ModelContentBlock::ToolResult {
+                tool_use_id: "r1".into(),
+                content: "old contents ".repeat(200),
+                is_error: None,
+            }],
+        });
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        agent.compact_if_needed().await;
+
+        let mut frames = Vec::new();
+        while let Ok(event) = event_rx.try_recv() {
+            if let AgentEvent::CompactAction {
+                strategy,
+                tokens_before,
+                tokens_after,
+                ..
+            } = event
+            {
+                frames.push((strategy, tokens_before, tokens_after));
+            }
+        }
+        assert_eq!(frames.len(), 1, "{frames:?}");
+        assert_eq!(frames[0].0, "MicroCompact");
+        assert!(frames[0].2 < frames[0].1, "{frames:?}");
     }
 
     #[tokio::test]

@@ -533,7 +533,8 @@ WebAssembly 载体整个移除。
   压完反而更大的(补回的提醒比丢掉的多)也不生效。`compact` 帧的 `tokens_after` 含补回的
   恢复消息。
 - 开了 `compaction.reactive` 时,轮中提前清掉旧工具结果的那一趟发 `compact` 帧
-  (`MicroCompact`,消息条数不变)。以前只记日志。
+  (`MicroCompact`,消息条数不变)。以前只记日志。按时间清掉旧工具结果(默认开:会话不少于
+  100 条消息时清 15 分钟以前的)同样发这一帧,以前也只记日志。
 - 压缩不再丢掉之前的摘要:没有摘要模型时(或摘要失败)的第二次压缩保留第一次留下的摘要,
   不再把它当作最旧的一轮删掉、或截成 200 字节。
 - 工具结果预算按字符计:单条过 50,000 字符的保留前 1,000 字符,截断说明改为
@@ -547,7 +548,8 @@ WebAssembly 载体整个移除。
   包起来;脚本里调用的 `Read` 不包。按结果前缀匹配的(`[HTTP 200`、行号)不受影响,按结尾
   匹配的要改。
 - MCP server 返回的单张图片解码后超过 3.5 MB 的,换成一行 `[image omitted: …]`,不再原样
-  转给模型(超过 API 的单图上限,这一请求和之后每一个带着它的请求都会被拒)。
+  转给模型(超过 API 的单图上限,这一请求和之后每一个带着它的请求都会被拒)。`Read` 读超过
+  3.5 MB 的图片同样报错,不再按 10 MB 的读文件上限放行。
 - 一次调用在回复要工具之前失败,它推过的 `text_delta` 不进 transcript;重发前会再发一次同
   `step` 的 `step_start`(协议 §7)。流在消息结尾之前断开,以前当作一个空回答正常结束
   (`stop_reason` 为空、用量为 0),现在是 `ENGINE_ERROR`。
@@ -817,6 +819,9 @@ WebAssembly 载体整个移除。
   `process_turn` 返回 `TurnError::Internal`、transcript 不变。发往模型的请求里,不对应前一条
   回复里任何 `tool_use` 的 `tool_result` 被去掉。
 - `runtime::context`(`AgentContext`)删除,从来没有调用方。
+- `EngineConfig::file_limits` 的 `max_tool_result_chars` 删除(从没有地方读它;单条工具结果的
+  上限是压缩器的 50,000 字符);`default_read_lines`、`max_line_chars` 现在真的决定 `Read` 的
+  默认行数与单行上限(以前写死 2000)。新增 `base::tool::MAX_IMAGE_BYTES`。
 - `ToolExec::with_timeout` 起的计时任务随这次调用结束,不再睡到超时。
 - `runtime::streaming::execute_stream` 返回 `Result<StreamResult, StreamFailure>`(原为
   `Result<_, TurnError>`);`StreamResult` 多了 `cancelled`。

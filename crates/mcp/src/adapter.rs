@@ -331,11 +331,7 @@ fn find_elicitation_url(result: &McpCallResult) -> Option<String> {
     None
 }
 
-/// Largest image a server may hand back, decoded. The API refuses an image
-/// over 5 MB of base64, and the refused request would carry it again on every
-/// later turn; base64 is 4/3 of the bytes, rounded down for headroom — the
-/// same cap attachments have.
-const MAX_IMAGE_BYTES: usize = 3_500_000;
+const MAX_IMAGE_BYTES: usize = base::tool::MAX_IMAGE_BYTES as usize;
 
 fn into_tool_result_blocks(blocks: Vec<McpContent>) -> Vec<ToolResultBlock> {
     blocks

@@ -194,6 +194,12 @@ pub struct ToolResultBlock {
     pub source: Option<Value>,
 }
 
+/// Largest image, decoded, that goes to the model as one image block. The API
+/// refuses an image over 5 MB of base64 — 3.75 MB decoded — and the refused
+/// request would carry it again on every later turn; rounded down to leave
+/// room for the rest of the request.
+pub const MAX_IMAGE_BYTES: u64 = 3_500_000;
+
 /// Constructors/accessors for the two block shapes the model layer understands.
 ///
 /// The `source` object of an image block is the Anthropic `image.source` shape

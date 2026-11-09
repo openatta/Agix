@@ -120,10 +120,6 @@ pub struct FileLimits {
     pub default_read_lines: usize,
     /// 单行字符数上限（超了截断 + `[truncated]` 标记）
     pub max_line_chars: usize,
-    /// Tool result 文本内容字符数上限。超长的 result text 在回灌 messages 前
-    /// 截断为 `[Output truncated to N chars]`，防止撑爆 context。
-    /// 0 = 不截断。默认 50KB。
-    pub max_tool_result_chars: usize,
 }
 
 impl Default for FileLimits {
@@ -132,7 +128,6 @@ impl Default for FileLimits {
             max_file_read_bytes: 10 * 1024 * 1024,
             default_read_lines: 2000,
             max_line_chars: 2000,
-            max_tool_result_chars: 50 * 1024,
         }
     }
 }
