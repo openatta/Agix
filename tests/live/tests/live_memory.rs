@@ -198,7 +198,6 @@ async fn more_than_five_memories_go_through_a_selection_call() -> anyhow::Result
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: a MEMORY.md over 25 000 bytes whose byte 25 000 falls inside a multi-byte character panics the prompt build — `truncated[..MAX_BYTES]` slices a str at a byte offset (crates/core/src/memory.rs:655, truncate_entrypoint_content); the first turn never ends (a release build, panic = abort, loses the whole daemon)"]
 async fn a_chinese_memory_index_past_the_byte_cap_is_loaded_cut() -> anyhow::Result<()> {
     let mut index = String::new();
     let mut n = 0;

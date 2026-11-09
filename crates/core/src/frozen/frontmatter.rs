@@ -310,13 +310,10 @@ fn block_scalar(following: &[&str], folded: bool) -> String {
     let indent = body
         .iter()
         .filter(|l| !l.trim().is_empty())
-        .map(|l| l.len() - l.trim_start().len())
+        .map(|l| l.len() - l.trim_start_matches([' ', '\t']).len())
         .min()
         .unwrap_or(0);
-    let lines: Vec<&str> = body
-        .iter()
-        .map(|l| if l.len() >= indent { &l[indent..] } else { "" })
-        .collect();
+    let lines: Vec<&str> = body.iter().map(|l| l.get(indent..).unwrap_or("")).collect();
     let joined = if folded {
         lines.join(" ")
     } else {
@@ -355,6 +352,12 @@ mod tests {
             Some("feedback")
         );
         assert_eq!(scalar(fm, "missing"), None);
+    }
+
+    #[test]
+    fn a_block_indented_with_wide_whitespace_does_not_split_a_character() {
+        let fm = "description: |\n  \u{3000}x\n   y\n    \u{3000}\n";
+        assert_eq!(scalar(fm, "description").as_deref(), Some("\u{3000}x\n y"));
     }
 
     use super::*;

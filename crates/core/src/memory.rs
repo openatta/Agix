@@ -652,11 +652,9 @@ fn truncate_entrypoint_content(raw: &str) -> TruncatedEntry {
     };
 
     if truncated.len() > MAX_BYTES {
-        if let Some(cut_at) = truncated[..MAX_BYTES].rfind('\n') {
-            truncated.truncate(cut_at);
-        } else {
-            truncated.truncate(MAX_BYTES);
-        }
+        let head = crate::text::truncate_at_char_boundary(&truncated, MAX_BYTES);
+        let cut_at = head.rfind('\n').unwrap_or(head.len());
+        truncated.truncate(cut_at);
     }
 
     let reason = if was_byte_truncated && !was_line_truncated {
@@ -1483,5 +1481,26 @@ This memory was written before the flat-format fix."#;
             0,
             "three memories of equal age must share one verdict"
         );
+    }
+
+    #[test]
+    fn an_index_cut_inside_a_multibyte_character_is_cut_before_it() {
+        let line = format!("- [记忆](m.md) — {}\n", "部署流程与回滚步骤".repeat(8));
+        let mut raw = String::new();
+        while raw.len() < 30_000 {
+            raw.push_str(&line);
+        }
+        let one_line = raw.replace('\n', " ");
+        for index in [raw, one_line] {
+            let mut index = index;
+            while index.trim().is_char_boundary(25_000) {
+                index.insert(0, 'x');
+            }
+            let cut = truncate_entrypoint_content(&index);
+            let kept = cut.content.split("\n\n> WARNING").next().unwrap();
+            assert!(kept.len() <= 25_000);
+            assert!(index.trim().starts_with(kept));
+            assert!(cut.content.contains("Only part of it was loaded"));
+        }
     }
 }
