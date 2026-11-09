@@ -26,7 +26,7 @@ use std::time::Duration;
 
 use base::interface::permission::{Permission, PermissionOutcome};
 use daemon::config::{load_daemon_config, DaemonPaths, StaticDaemonPaths};
-use daemon::DaemonServer;
+use daemon::{DaemonServer, SessionPool};
 use model::client::{AnthropicClient, AuthMode, HttpAnthropicClient};
 use rpc_client::DaemonRpcClient;
 use tokio::task::JoinHandle;
@@ -62,9 +62,8 @@ pub struct DaemonOptions {
     /// has no command line to put them on.
     pub extra_args: Vec<String>,
     /// Environment variables set for a spawned daemon, over the ones it
-    /// inherits — `NO_PROXY` for a case that reaches a server on this
-    /// machine over HTTP. Ignored in this process, whose environment is
-    /// every test's.
+    /// inherits — a secret an `mcp_servers` entry names by its variable,
+    /// say. Ignored in this process, whose environment is every test's.
     pub env: Vec<(String, String)>,
     /// The MCP policy file to enforce in place of the machine's managed one:
     /// `--mcp-policy` for a spawned daemon, the same config field `main.rs`
@@ -160,6 +159,7 @@ pub struct Daemon {
 
 enum Running {
     InProcess {
+        pool: Option<Arc<SessionPool>>,
         cancel: CancellationToken,
         tasks: Vec<JoinHandle<()>>,
     },
@@ -242,7 +242,7 @@ impl Daemon {
         .await?;
 
         let cancel = CancellationToken::new();
-        let server = Arc::new(DaemonServer::new(pool, cancel.clone()));
+        let server = Arc::new(DaemonServer::new(pool.clone(), cancel.clone()));
 
         let mut tasks = Vec::new();
         {
@@ -255,7 +255,11 @@ impl Daemon {
 
         let mut daemon = Self {
             socket,
-            running: Running::InProcess { cancel, tasks },
+            running: Running::InProcess {
+                pool: Some(pool),
+                cancel,
+                tasks,
+            },
         };
         daemon.wait_until_answering().await?;
         Ok(daemon)
@@ -324,6 +328,15 @@ impl Daemon {
         }
     }
 
+    /// The session pool of a daemon in this process, for the knobs only an
+    /// embedder has (how long a sign-in may take, say); `None` when spawned.
+    pub fn pool(&self) -> Option<&Arc<SessionPool>> {
+        match &self.running {
+            Running::InProcess { pool, .. } => pool.as_ref(),
+            Running::Spawned { .. } => None,
+        }
+    }
+
     pub async fn connect(&self) -> anyhow::Result<DaemonRpcClient> {
         DaemonRpcClient::connect(&self.socket).await
     }
@@ -356,7 +369,14 @@ impl Daemon {
     /// [`stop`](Self::stop), for a holder that starts another in its place.
     pub async fn halt(&mut self) {
         match &mut self.running {
-            Running::InProcess { cancel, tasks } => {
+            Running::InProcess {
+                pool,
+                cancel,
+                tasks,
+            } => {
+                // The pool goes with the server: a restart in the same world
+                // must not find the old one still holding its sessions.
+                pool.take();
                 cancel.cancel();
                 for task in tasks.drain(..) {
                     task.abort();

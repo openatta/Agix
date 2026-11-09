@@ -23,6 +23,7 @@ async-trait = { workspace = true }
 url         = { workspace = true }
 tempfile    = { workspace = true }
 reqwest     = { workspace = true }
+mcp-oauth-mock = { workspace = true }
 
 [dev-dependencies]
 # For the demo package's zip: one packer, shared, rather than a second copy

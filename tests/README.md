@@ -91,7 +91,8 @@ token 用量。改了 `tests/live` 后 lint 也要带上 feature：
 | `live_plugins.rs` | `examples/plugins` 的两个样例：`demo-rust` 编进 daemon、`demo-quickjs` 经 `plugin.install` 装上。`!stamp` 快捷方式展开成 `DemoStamp` 调用；报告里有只有异步提示词钩子读得到的通知、只有工具算得出的指纹，没有被结果改写遮掉的密钥；`generated/` 下的写入被脚本拒绝；`demo-auditor` 子 Agent 用插件的工具交回指纹；`session.get` 的 `health` 报出插件的计数，脚本零失败；`demo-quickjs` 停用、启用、重扫、卸载之后新建的会话各自有或没有它的提示块与 `generated/` 守卫，它的场景跟着进出 `scene.list`，停用前建的会话保持原样 |
 | `live_programs.rs` | `RunCode` 的三种用法：一个程序经 `agent()` 并行起四个子 Agent、按 schema 收回结果再合并写盘（只有输入文件里有的封签一路传上来）；后台运行的程序边跑边推 `log()` 行，结束时以通知回到会话，模型据此交回结果；`acceptEdits` 下 deny 规则在程序里照样拦住写入，程序看得见拒绝 |
 | `live_unattended.rs` | `harnix` 场景、缺省权限、无人值守：项目内 Edit 与沙箱里的 Bash 照常做完，往实例授权的根之外写被拒绝且没有任何询问发给宿主；`AskUserQuestion` 与计划模式连名字都不出现；Bash 的重定向与 `cp` 往授权根之外（不在本机临时目录下）写，被 OS 沙箱挡住，同样没有询问 |
-| `live_mcp.rs` | toy MCP server 那一套：宿主打断一轮时进行中的 `slow` 在 server 那头被取消；一个 server 中途 `crash`，调用报错、另一个 server 照常、它自己下一次调用又连回来；超过 50 000 字节的 `big` 结果只有截断后的头到达模型，4 万字节的整段到达；`ListMcpResources` / `ReadMcpResource` 读到运行时写进资源的令牌、unicode 资源原样、20 万字节的资源不整段进模型，`@toy:<uri>` 引用把资源内联进那条消息（大资源带截断标记）而不调工具；`mcp.addServer` 后同一会话下一轮就能用、`mcp.updateServer` 后调用落到新进程；streamable HTTP 与 SSE 两种传输（另起的 daemon，`NO_PROXY` 放过本机）；`--mcp-policy` 拒绝的 server（含插件声明的 `<插件>-mcp-<名字>`）在 `mcp.status` 里是 `denied`、工具从未出现在请求里、进程从未起过、`mcp.addServer` 它得 `-32020` 且 settings.json 不变；插件声明的 server 在 `config.reload` 之后新会话照样能用；工具结果里的 `elicitation://` URL 触发 `Elicitation` hook。MCP prompt 作斜杠命令那一条是已知缺陷，`#[ignore]` |
+| `live_mcp.rs` | toy MCP server 那一套：宿主打断一轮时进行中的 `slow` 在 server 那头被取消；一个 server 中途 `crash`，调用报错、另一个 server 照常、它自己下一次调用又连回来；超过 50 000 字节的 `big` 结果只有截断后的头到达模型，4 万字节的整段到达；`ListMcpResources` / `ReadMcpResource` 读到运行时写进资源的令牌、unicode 资源原样、20 万字节的资源不整段进模型，`@toy:<uri>` 引用把资源内联进那条消息（大资源带截断标记）而不调工具；`mcp.addServer` 后同一会话下一轮就能用、`mcp.updateServer` 后调用落到新进程；streamable HTTP 与 SSE 两种传输（另起的 daemon，shell 设了代理也直连本机）；`--mcp-policy` 拒绝的 server（含插件声明的 `<插件>-mcp-<名字>`）在 `mcp.status` 里是 `denied`、工具从未出现在请求里、进程从未起过、`mcp.addServer` 它得 `-32020` 且 settings.json 不变；插件声明的 server 在 `config.reload` 之后新会话照样能用；工具结果里的 `elicitation://` URL 触发 `Elicitation` hook。MCP prompt 作斜杠命令那一条是已知缺陷，`#[ignore]` |
+| `live_mcp_oauth.rs` | `OAuthWorld` 上要登录的 MCP server：没登录时 `mcp.status` 是 `auth_required`，模型的请求里没有它的工具、系统提示写明要用户登录；宿主 `mcp.auth.start`、浏览器 GET `authorize_url` 回到回环监听后 `mcp_auth_completed` / `mcp_connected`，同一会话下一轮模型直接调到它，结果里有只有带有效令牌才拿得到的标记；external redirect 经 `mcp.auth.complete` 交回；访问令牌中途过期，模型的调用底下自动刷新照常成功；刷新被 `invalid_grant` 拒绝后 `mcp_auth_required`、工具从下一轮的请求里消失，再登录又回来；`insufficient_scope` 之后按并集 scope 再登录，`write` 能用；登出后工具消失；`client_credentials`（另起的 daemon，密钥经环境变量）无人值守就能用、`mcp.auth.start` 得 `-32602`；`mcp.auth.setIdentity` 交出企业身份后连上；伪造 `state` 的回调得 400、流程继续等真的那个；过期的登录发 `mcp_auth_failed`、`mcp.auth.complete` 得 `-32602`；授权服务器不在 `allowed_authorization_servers` 里时 `mcp.auth.start` 得 `-32020`、授权服务器只被读过元数据。签发过令牌的每条都核对：令牌（及企业身份、客户端密钥）不在任何发给模型的请求、`session.export`、遥测文件、转录与另起 daemon 的 stderr 里，只在凭据存储 `mcp/oauth/` 下 |
 | `live_web.rs` | `PageServer` 上的页面：普通页（实体解码、中文）取回成文本，没配 `task_models.web_fetch` 时即使给了 `prompt` 也没有抽取调用；7 万字符的页在 5 万字符处截断、截断点之后的标记不进模型；404 / 500 以错误返回，重定向交回目标 URL 而不跟随（目标只在模型自己再取时被命中），JSON 原样；宿主打断一轮时等着慢页的 `WebFetch` 立刻收尾；`task_models.web_fetch` 指向第二个 Flash 名字时恰有一次抽取请求落在那个模型上、读的是整页，会话模型的请求里没有整页，抽取请求被注入 400 时退回页面文本；`task_models.web_search` 把搜索请求路由到第三个名字 |
 | `live_permissions.rs` | 权限面，宿主经 `Watcher` 作答：`ask` 规则下的写被宿主拒绝，模型照拒绝理由换路写；`permit_always(local)` 落进 `settings.local.json`，同一会话里同样的命令不再问，`config.reload` 后的新会话也不问；无人作答的询问按 `prompt_timeout` 超时成拒绝、这一轮照常收尾；进计划模式后压缩，写仍被拒，压缩后第一次请求里有计划模式仍在的提醒；`dontAsk` 只放行规则允许的，复合命令里夹带的 `rm` 整条拒绝、不询问；global / project / local 三层规则一起生效，任何一层的 deny 都胜过别处与会话 `options` 里的 allow；父会话的 deny 规则管住子 Agent；`yolo` 按 `bypassPermissions` 报回。退出计划模式回到进入前模式、计划模式的 agent 类型不能写两条是产品缺陷，`#[ignore]` 着 |
 | `live_hooks.rs` | 项目的 hook 用在真实模型上：`PreToolUse` 以退出码 2 拒掉 `rm`，模型照 stderr 里的理由改用 `mv`；`PreToolUse` 的 `updated_input` 把写入改到 `drafts/`；`UserPromptSubmit` 给消息补上的上下文被模型用上，`SessionStart` 与 `PostToolUse`（看得到 Read 的结果）都记到；`prompt` 后端由模型逐次判定、拦下删除；`agent` 后端起一个子 Agent 判定、拦下写入后模型改写别处。`Stop` hook 以 `decision: block` 让模型接着干是产品缺口，`#[ignore]` 着 |
@@ -182,13 +183,24 @@ let mut run = LiveRun::builder("perm")
 `global_memory_dir()` 是提示词让模型写记忆、`MEMORY.md` 索引从那里载入的目录，
 `memory_dir(project)` 是项目那一层（自动抽取的项目记忆落在这里）。
 
-**外面的世界：`PageServer` 与 `McpToy`。** `PageServer::start()` 起一个本机站点，
+**外面的世界：`PageServer`、`McpToy` 与 `OAuthWorld`。** `PageServer::start()` 起一个本机站点，
 `route(path, Page::html(..) | text | json | status(code, ..) | redirect(to) | huge(chars, &[(at, mark)]) | slow(d, page))`，
 `hits(path)` 证明真的取过。`McpToy::stdio_config(&args)` 给 `mcp_servers.<name>` 一项，
 `McpToy::spawn_http(&args)` 起 streamable HTTP 版，`.config("streamable_http" | "sse")` 指向它；
 toy server 的工具、资源、提示词和参数（`--calls` 记调用、`--resources` 把目录变成资源）写在
-`tests/fixtures/mcp_toy_server/src/main.rs` 的文件头。shell 里设了 `HTTP_PROXY` 而
-`NO_PROXY` 没有排除 127.0.0.1 时，daemon 的 MCP HTTP 客户端连不上本机的 server。
+`tests/fixtures/mcp_toy_server/src/main.rs` 的文件头。daemon 连回环地址上的 MCP server（以及它的
+OAuth 请求）不走 shell 的 `HTTP(S)_PROXY`，不用另设 `NO_PROXY`。
+`OAuthWorld::start()` 起一个只认自己授权服务器所发令牌的 streamable HTTP MCP server（工具 `echo`，
+要 `mcp:write` 的 `write`）和那个授权服务器（RFC 9728 / 8414 元数据、动态注册、PKCE、刷新轮换、
+吊销、client credentials），`with_enterprise_idp(..)` 再加一个企业 IdP；`config()` /
+`config_with(oauth)` 给 `mcp_servers` 一项，`enterprise_idp_policy(..)` 给策略文件。`click(authorize_url)`
+是用户的浏览器：同意并跟着 302 回到 daemon 的回环监听，返回结果页；`consent` 只同意、交回回调 URL
+（external redirect 用）。`auth.state` 能直接改（`reject_refresh`、`token_ttl`），
+`auth.expire_access_tokens()` 让已发的访问令牌过期，`tokens()` / `auth_requests()` / `marker()`
+是它们发过什么、收过什么、工具结果里那个只有登录后才拿得到的值。它们是 `tests/fixtures/mcp_oauth_mock`
+这个 crate，`daemon/tests/mcp_oauth.rs` 用同一份配脚本化的模型。`LiveRun::daemon_events()` 开一条订阅
+`daemon.event` 的连接，`next(kind, server, timeout)` 依次取 `mcp_auth_required` / `mcp_connected` 这类通知；
+`Daemon::pool()` 拿本进程 daemon 的会话池，给只有嵌入方才有的旋钮（如 `mcp_auth().set_flow_ttl`）。
 
 **模型那端的花样。** `ProviderStub` 的 `Reply::ended(blocks, "max_tokens" | "pause_turn")`、
 `Block::thinking(..)`、`Reply::delayed(d, reply)`（期间请求一直挂着）、`Reply::cut(bytes, reply)`

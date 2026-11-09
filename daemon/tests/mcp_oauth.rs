@@ -20,7 +20,7 @@ use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::UnixStream;
 use tokio_util::sync::CancellationToken;
 
-use crate::mcp_oauth_mock::{consent, follow, McpServer};
+use mcp_oauth_mock::{consent, follow, McpServer};
 
 struct Daemon {
     dir: tempfile::TempDir,
@@ -919,7 +919,7 @@ async fn client_credentials_can_authenticate_with_a_signed_assertion() {
 async fn an_enterprise_identity_is_exchanged_for_the_server_token() {
     let (mcp, auth) = McpServer::start().await;
     auth.preregister("ema-client", None);
-    let idp = crate::mcp_oauth_mock::AuthServer::start(&mcp.url).await;
+    let idp = mcp_oauth_mock::AuthServer::start(&mcp.url).await;
     idp.preregister("agix-at-idp", Some("idp-secret"));
     {
         let mut s = idp.state.lock().unwrap();
@@ -980,14 +980,11 @@ async fn an_enterprise_identity_is_exchanged_for_the_server_token() {
         idp.state
             .lock()
             .unwrap()
-            .count(crate::mcp_oauth_mock::TOKEN_EXCHANGE)
+            .count(mcp_oauth_mock::TOKEN_EXCHANGE)
             >= 2
     );
     assert_eq!(
-        auth.state
-            .lock()
-            .unwrap()
-            .count(crate::mcp_oauth_mock::JWT_BEARER),
+        auth.state.lock().unwrap().count(mcp_oauth_mock::JWT_BEARER),
         1
     );
     assert!(use_tool(&d, &mut conn, "mcp__docs__echo")
@@ -1050,4 +1047,167 @@ async fn the_policy_refuses_an_authorization_server_before_the_user_is_sent_anyw
     let mut conn = d.connect().await;
     conn.wait_state("docs", "auth_required").await;
     conn.sign_in("docs", serde_json::json!({})).await;
+}
+
+async fn turn_on(conn: &mut Conn, session: &str, message: &str) {
+    conn.ok(
+        "session.run_turn",
+        serde_json::json!({"session_id": session, "message": message}),
+    )
+    .await;
+}
+
+async fn new_session(conn: &mut Conn, params: serde_json::Value) -> String {
+    conn.ok("session.create", params).await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+fn last_request(d: &Daemon) -> model::types::MessagesRequest {
+    d.model.nth_request(d.model.calls() - 1).unwrap()
+}
+
+fn offers_the_server(request: &model::types::MessagesRequest) -> bool {
+    request
+        .tools
+        .iter()
+        .any(|t| t.name.starts_with("mcp__docs__"))
+}
+
+#[tokio::test]
+async fn an_access_token_that_expires_mid_session_is_refreshed_under_the_call() {
+    let (mcp, auth) = McpServer::start().await;
+    let d = Daemon::start(serde_json::json!({"docs": http_server(&mcp.url)})).await;
+    let mut conn = d.connect().await;
+    conn.wait_state("docs", "auth_required").await;
+    conn.sign_in("docs", serde_json::json!({})).await;
+    conn.events.clear();
+    let telemetry = d.dir.path().join("telemetry.jsonl");
+    let session = new_session(
+        &mut conn,
+        serde_json::json!({"options": {"telemetry": {"output": telemetry}}}),
+    )
+    .await;
+
+    let refreshed = auth.state.lock().unwrap().refreshes;
+    auth.expire_access_tokens();
+    d.model.push_turn(tool_round("mcp__docs__echo", "t1"));
+    d.model.push_turn(text_round("done"));
+    turn_on(&mut conn, &session, "use docs").await;
+    let after = serde_json::to_string(&last_request(&d)).unwrap();
+    assert!(after.contains("echo: ok"), "{after}");
+    assert!(auth.state.lock().unwrap().refreshes > refreshed);
+    assert_eq!(conn.status("docs").await["auth"]["state"], "authorized");
+    assert!(
+        !conn.events.iter().any(|e| e["kind"] == "mcp_auth_required"),
+        "{:?}",
+        conn.events
+    );
+
+    let export = d.dir.path().join("export");
+    conn.ok(
+        "session.export",
+        serde_json::json!({"session_id": session, "path": export, "format": "dir"}),
+    )
+    .await;
+    assert!(telemetry.exists() && export.exists());
+    let store = d.credential_files();
+    for token in auth.issued() {
+        for file in every_file_under(d.dir.path()) {
+            if store.contains(&file) {
+                continue;
+            }
+            let text = String::from_utf8_lossy(&std::fs::read(&file).unwrap()).to_string();
+            assert!(
+                !text.contains(token.as_str()),
+                "a token reached {}",
+                file.display()
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_refresh_refused_under_a_call_takes_the_server_off_the_sessions_next_request() {
+    let (mcp, auth) = McpServer::start().await;
+    let d = Daemon::start(serde_json::json!({"docs": http_server(&mcp.url)})).await;
+    let mut conn = d.connect().await;
+    conn.wait_state("docs", "auth_required").await;
+    conn.sign_in("docs", serde_json::json!({})).await;
+    conn.events.clear();
+    let session = new_session(&mut conn, serde_json::json!({})).await;
+    d.model.push_turn(text_round("ready"));
+    turn_on(&mut conn, &session, "hello").await;
+    assert!(offers_the_server(&last_request(&d)));
+
+    auth.state.lock().unwrap().reject_refresh = true;
+    auth.expire_access_tokens();
+    d.model.push_turn(tool_round("mcp__docs__echo", "t1"));
+    d.model.push_turn(text_round("it failed"));
+    turn_on(&mut conn, &session, "use docs").await;
+    conn.event("mcp_auth_required", "docs").await;
+    conn.wait_state("docs", "auth_required").await;
+
+    d.model.push_turn(text_round("noted"));
+    turn_on(&mut conn, &session, "again").await;
+    let next = last_request(&d);
+    assert!(
+        !offers_the_server(&next),
+        "the dropped server is still offered"
+    );
+    let system = serde_json::to_string(&next.system).unwrap();
+    assert!(system.contains("requires the user to sign in"), "{system}");
+}
+
+#[tokio::test]
+async fn after_logout_a_live_sessions_next_request_offers_none_of_the_servers_tools() {
+    let (mcp, _auth) = McpServer::start().await;
+    let d = Daemon::start(serde_json::json!({"docs": http_server(&mcp.url)})).await;
+    let mut conn = d.connect().await;
+    conn.wait_state("docs", "auth_required").await;
+    conn.sign_in("docs", serde_json::json!({})).await;
+    let session = new_session(&mut conn, serde_json::json!({})).await;
+    d.model.push_turn(text_round("ready"));
+    turn_on(&mut conn, &session, "hello").await;
+    assert!(offers_the_server(&last_request(&d)));
+
+    conn.ok("mcp.auth.logout", serde_json::json!({"server": "docs"}))
+        .await;
+    d.model.push_turn(text_round("noted"));
+    turn_on(&mut conn, &session, "again").await;
+    assert!(!offers_the_server(&last_request(&d)));
+}
+
+#[tokio::test]
+async fn a_forged_loopback_callback_is_refused_and_the_sign_in_keeps_waiting() {
+    let (mcp, _auth) = McpServer::start().await;
+    let d = Daemon::start(serde_json::json!({"docs": http_server(&mcp.url)})).await;
+    let mut conn = d.connect().await;
+    conn.wait_state("docs", "auth_required").await;
+    let start = conn
+        .ok("mcp.auth.start", serde_json::json!({"server": "docs"}))
+        .await;
+    let location = consent(start["authorize_url"].as_str().unwrap()).await;
+    let mut forged = url::Url::parse(&location).unwrap();
+    let pairs: Vec<(String, String)> = forged
+        .query_pairs()
+        .map(|(k, v)| {
+            let v = if k == "state" {
+                "forged".into()
+            } else {
+                v.into_owned()
+            };
+            (k.into_owned(), v)
+        })
+        .collect();
+    forged.query_pairs_mut().clear().extend_pairs(pairs);
+
+    let (code, page) = follow(forged.as_str()).await;
+    assert_eq!(code, 400, "{page}");
+    assert!(page.contains("did not complete"), "{page}");
+    assert_eq!(conn.status("docs").await["auth"]["state"], "authorizing");
+    let (code, page) = follow(&location).await;
+    assert_eq!(code, 200, "{page}");
+    conn.event("mcp_connected", "docs").await;
 }

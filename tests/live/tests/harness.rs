@@ -20,19 +20,6 @@ fn stubbed(name: &str, stub: &ProviderStub) -> LiveRunBuilder {
     ))
 }
 
-fn loopback_goes_through_a_proxy() -> bool {
-    let var = |k: &str| std::env::var(k).unwrap_or_default();
-    let proxied = ["HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"]
-        .iter()
-        .any(|k| !var(k).is_empty());
-    let exempt = ["NO_PROXY", "no_proxy"].iter().any(|k| {
-        var(k)
-            .split(',')
-            .any(|h| matches!(h.trim(), "127.0.0.1" | "localhost" | "*"))
-    });
-    proxied && !exempt
-}
-
 /// A client for this machine's servers, past the shell's proxy.
 fn direct_http() -> anyhow::Result<reqwest::Client> {
     base::interface::exec::local::install_tls_provider();
@@ -439,23 +426,18 @@ async fn the_toy_mcp_server_answers_over_stdio_and_http() -> anyhow::Result<()> 
         .await?;
     assert!(initialize.contains("\"prompts\""), "{initialize}");
 
-    // The daemon's MCP HTTP client takes the shell's proxy even for
-    // 127.0.0.1, so behind one it cannot reach a local server at all.
-    let over_http = !loopback_goes_through_a_proxy();
-    let mut servers = json!({ "local": stdio });
-    if over_http {
-        servers["web"] = http.config("streamable_http");
-        servers["legacy"] = http.config("sse");
-    } else {
-        eprintln!("HTTP_PROXY covers 127.0.0.1: the daemon-side HTTP/SSE half is skipped");
-    }
+    let servers = json!({
+        "local": stdio,
+        "web": http.config("streamable_http"),
+        "legacy": http.config("sse"),
+    });
     let mut run = stubbed("mcp", &stub)
         .settings(json!({ "mcp_servers": servers }))
         .start()
         .await?;
 
     let session = run.session().await?;
-    let mut script = vec![
+    stub.script([
         Reply::calls("m1", "mcp__local__echo", json!({ "text": "统一码 🦀" })),
         Reply::calls(
             "m2",
@@ -468,21 +450,10 @@ async fn the_toy_mcp_server_answers_over_stdio_and_http() -> anyhow::Result<()> 
             json!({ "bytes": 5000, "tail": "BIG-TAIL" }),
         ),
         Reply::calls("m4", "mcp__local__elicit", json!({})),
-    ];
-    if over_http {
-        script.push(Reply::calls(
-            "m5",
-            "mcp__web__ping",
-            json!({ "message": "over-http" }),
-        ));
-        script.push(Reply::calls(
-            "m6",
-            "mcp__legacy__ping",
-            json!({ "message": "over-sse" }),
-        ));
-    }
-    script.push(Reply::text("done"));
-    stub.script(script);
+        Reply::calls("m5", "mcp__web__ping", json!({ "message": "over-http" })),
+        Reply::calls("m6", "mcp__legacy__ping", json!({ "message": "over-sse" })),
+        Reply::text("done"),
+    ]);
     let events = run.turn(&session, "use the toy").await?;
     let content = |i: usize| events.tool_results.get(i).cloned().unwrap_or_default();
     assert_eq!(content(0).1, "统一码 🦀", "{:?}", events.tool_results);
@@ -497,14 +468,10 @@ async fn the_toy_mcp_server_answers_over_stdio_and_http() -> anyhow::Result<()> 
         "{:?}",
         content(3)
     );
-    let mut expected = vec![("local", "echo"), ("local", "big")];
-    if over_http {
-        assert!(content(4).1.contains("toy: over-http"), "{:?}", content(4));
-        assert!(content(5).1.contains("toy: over-sse"), "{:?}", content(5));
-        expected.push(("web", "ping"));
-    }
+    assert!(content(4).1.contains("toy: over-http"), "{:?}", content(4));
+    assert!(content(5).1.contains("toy: over-sse"), "{:?}", content(5));
     let logged = McpToy::calls(&calls);
-    for (server, tool) in expected {
+    for (server, tool) in [("local", "echo"), ("local", "big"), ("web", "ping")] {
         assert!(
             logged.contains(&(server.to_string(), tool.to_string())),
             "{server}/{tool} not in {logged:?}"

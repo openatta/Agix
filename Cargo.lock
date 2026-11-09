@@ -684,7 +684,6 @@ dependencies = [
  "assembly",
  "async-trait",
  "base",
- "base64 0.22.1",
  "compaction",
  "futures",
  "hex",
@@ -693,6 +692,7 @@ dependencies = [
  "lexopt",
  "libc",
  "mcp",
+ "mcp-oauth-mock",
  "model",
  "notify",
  "permissions",
@@ -1884,6 +1884,7 @@ dependencies = [
  "daemon",
  "demo-rust-plugin",
  "history",
+ "mcp-oauth-mock",
  "model",
  "reqwest",
  "rpc-client",
@@ -1979,6 +1980,19 @@ dependencies = [
  "tokio-util",
  "tools",
  "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "mcp-oauth-mock"
+version = "0.3.9-2026110803"
+dependencies = [
+ "base64 0.22.1",
+ "reqwest",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
  "url",
  "uuid",
 ]

@@ -752,6 +752,11 @@ impl LiveRun {
         Watcher::start_with(&self.daemon, session, respond).await
     }
 
+    /// A connection collecting `daemon.event` from now on.
+    pub async fn daemon_events(&self) -> anyhow::Result<crate::DaemonEvents> {
+        crate::DaemonEvents::start(&self.daemon).await
+    }
+
     pub fn config(&self) -> &LiveConfig {
         self.provider.config()
     }

@@ -518,18 +518,12 @@ async fn the_http_and_sse_transports_carry_tool_calls() -> anyhow::Result<()> {
     let calls_arg = calls.to_string_lossy().into_owned();
     let web = McpToy::spawn_http(&["--calls", &calls_arg, "--name", "web"]).await?;
     let legacy = McpToy::spawn_http(&["--calls", &calls_arg, "--name", "legacy"]).await?;
-    // The daemon's MCP HTTP client honours the shell's proxy even for
-    // 127.0.0.1; a spawned daemon can be told not to.
     let mut run = LiveRun::builder("mcp-http")
         .settings(json!({ "mcp_servers": {
             "web": web.config("streamable_http"),
             "legacy": legacy.config("sse"),
         } }))
         .mode(Mode::Spawned)
-        .options(|o| {
-            o.env("NO_PROXY", "127.0.0.1,localhost")
-                .env("no_proxy", "127.0.0.1,localhost")
-        })
         .start()
         .await?;
     let status = mcp_status_until(&mut run, "both connected", |s| {

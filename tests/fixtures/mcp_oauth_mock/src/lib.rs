@@ -7,8 +7,9 @@
 //! Each server is a bare HTTP/1.1 loop on 127.0.0.1 answering one request per
 //! connection; everything they saw and issued is in shared state the tests
 //! read and steer.
-
-#![cfg(feature = "mcp")]
+//!
+//! `daemon/tests` drives it with a scripted model, `tests/live` (as
+//! `live::OAuthWorld`) with a real one.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -362,6 +363,19 @@ impl AuthServer {
         Self { url, state }
     }
 
+    /// Make every access token issued so far expired, as the clock would:
+    /// the MCP server refuses them, refresh tokens still work.
+    pub fn expire_access_tokens(&self) {
+        for token in self.state.lock().unwrap().tokens.values_mut() {
+            token.expires_at = 0;
+        }
+    }
+
+    /// Every access and refresh token this server has issued.
+    pub fn issued(&self) -> Vec<String> {
+        self.state.lock().unwrap().issued.clone()
+    }
+
     pub fn preregister(&self, id: &str, secret: Option<&str>) {
         self.state.lock().unwrap().clients.insert(
             id.into(),
@@ -597,6 +611,9 @@ pub struct McpState {
     pub resource_metadata: bool,
     /// The `scope` a 401 challenge names.
     pub challenge_scope: Option<String>,
+    /// In every tool result: a value only this server, reached with a valid
+    /// token, can give out.
+    pub marker: String,
 }
 
 pub struct McpServer {
@@ -622,6 +639,7 @@ impl McpServer {
             tokens_seen: Vec::new(),
             resource_metadata: true,
             challenge_scope: Some("mcp:read".into()),
+            marker: format!("MCP-{}", uuid::Uuid::new_v4().simple()),
         }));
         let (mcp, tokens, issuer) = (state.clone(), auth.state.clone(), auth.url.clone());
         let handler: Handler = Arc::new(move |req| {
@@ -720,8 +738,8 @@ impl McpServer {
                 "instructions": "Docs server.",
             }),
             "tools/list" => serde_json::json!({"tools": [
-                {"name": "echo", "description": "Echo", "inputSchema": {"type": "object"}},
-                {"name": "write", "description": "Write", "inputSchema": {"type": "object"}},
+                {"name": "echo", "description": "Echo", "inputSchema": {"type": "object", "properties": {}}},
+                {"name": "write", "description": "Write", "inputSchema": {"type": "object", "properties": {}}},
             ]}),
             "tools/call" => {
                 let tool = msg["params"]["name"].as_str().unwrap_or_default();
@@ -735,7 +753,7 @@ impl McpServer {
                         );
                     }
                 }
-                serde_json::json!({"content": [{"type": "text", "text": format!("{tool}: ok")}]})
+                serde_json::json!({"content": [{"type": "text", "text": format!("{tool}: ok {}", s.marker)}]})
             }
             _ => {
                 return Response::json(
@@ -769,6 +787,13 @@ pub async fn consent(authorize_url: &str) -> String {
         response.text().await.unwrap_or_default()
     );
     response.headers()["location"].to_str().unwrap().to_string()
+}
+
+/// The user's browser signing in from `authorize_url` to the end: accept,
+/// follow the redirect to the daemon's loopback listener, and return the
+/// page it shows.
+pub async fn click(authorize_url: &str) -> (u16, String) {
+    follow(&consent(authorize_url).await).await
 }
 
 /// The browser following the redirect to the daemon's loopback listener;

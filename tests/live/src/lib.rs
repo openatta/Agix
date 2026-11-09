@@ -27,8 +27,9 @@
 //! - [`handle::Daemon`] is the daemon itself and the connection to it.
 //! - [`live::LiveRun`] is the scaffolding a live case repeats, and
 //!   [`live::Watcher`] the host answering a session's prompts.
-//! - [`page::PageServer`] and [`mcp::McpToy`] are the outside world a case
-//!   points the product at: web pages, and an MCP server over stdio or HTTP.
+//! - [`page::PageServer`], [`mcp::McpToy`] and [`oauth::OAuthWorld`] are the
+//!   outside world a case points the product at: web pages, an MCP server
+//!   over stdio or HTTP, and one behind an OAuth authorization server.
 //!
 //! The five surfaces a case can assert on: the RPC response, the
 //! `session.event` frames, what reached the model, what is on disk (the
@@ -40,6 +41,7 @@
 pub mod handle;
 pub mod live;
 pub mod mcp;
+pub mod oauth;
 pub mod page;
 pub mod provider;
 pub mod telemetry;
@@ -51,6 +53,7 @@ pub use live::{
     Tokens, Watcher,
 };
 pub use mcp::{McpToy, McpToyHttp};
+pub use oauth::{DaemonEvents, OAuthWorld};
 pub use page::{Page, PageServer};
 pub use provider::{Block, ProviderStub, Purpose, Reply, SeenRequest};
 pub use telemetry::{telemetry_kinds, telemetry_until};

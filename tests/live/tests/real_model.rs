@@ -12,6 +12,7 @@ mod live_extensions;
 mod live_hooks;
 mod live_host;
 mod live_mcp;
+mod live_mcp_oauth;
 mod live_memory;
 mod live_multi_agent;
 mod live_permissions;

@@ -9,10 +9,6 @@
 
 #![cfg(all(unix, feature = "mcp"))]
 
-#[path = "mcp_oauth_mock.rs"]
-#[allow(dead_code)]
-mod mcp_oauth_mock;
-
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
