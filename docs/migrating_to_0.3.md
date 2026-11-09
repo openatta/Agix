@@ -816,6 +816,8 @@ WebAssembly 载体整个移除。
 - hook 新增 `on_error`(四种后端都认):缺省 `"allow"`,失败照旧放行;写 `"block"` 的,超时、
   出错、command 退出码不是 0 或 2、回答不是 JSON,都等于它回答了 `decision: "block"`,理由写明
   是哪个 hook、怎么失败的(`hooks.md`"失败"一节)。
+- HTTP hook 新增 `allow_local`(缺省 `false`):写 `true` 的可以指向本机或内网,只放开 url 里的
+  主机与端口,重定向到别的内部目标照旧被拒。
 - 无人值守的 MCP server(`client_credentials`、`enterprise`)拿到的令牌寿命短于 30 秒左右时,
   调用不再间歇地以"需要授权"失败:令牌何时重新取由 daemon 决定,底层的 OAuth 客户端不再因为
   它"快到期"而拒绝使用刚取到的令牌。
@@ -1054,3 +1056,7 @@ WebAssembly 载体整个移除。
 - `hooks::HookConfig` 的四个变体都多了 `on_error: hooks::OnError`(结构体字面量要补,
   `OnError::Allow` 是原来的行为)。`HookOutcome::Ran` 多了 `failure: Option<String>`:跑了但
   回答不能用(退出码不是 0 或 2、不是 JSON)时写明原因。
+- `hooks::HookConfig::Http` 多了 `allow_local: bool`。`base::interface::exec::HttpRequest` 多了
+  `internal_target: bool`(结构体字面量要补;`public_only_but_target()` 连同 `public_only` 一起
+  置位):`Origin::Operator` 的请求去 url 自己的主机与端口时不查内部地址。自己实现 `Network`
+  的要照做。

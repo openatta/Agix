@@ -59,6 +59,10 @@ pub struct HttpRequest {
     /// outside — an HTTP hook is a URL in a settings file a repository can
     /// ship. `Origin::Agent` requests get the same refusal without asking.
     pub public_only: bool,
+    /// With `public_only`, the host and port `url` names may be internal:
+    /// a hop to exactly that target is let through, every other hop is still
+    /// held to `public_only`. An `Origin::Agent` request gains nothing from it.
+    pub internal_target: bool,
 }
 
 impl HttpRequest {
@@ -71,11 +75,19 @@ impl HttpRequest {
             max_bytes: None,
             max_redirects: DEFAULT_MAX_REDIRECTS,
             public_only: false,
+            internal_target: false,
         }
     }
 
     pub fn public_only(mut self) -> Self {
         self.public_only = true;
+        self
+    }
+
+    /// `public_only`, except that the target `url` names may be internal.
+    pub fn public_only_but_target(mut self) -> Self {
+        self.public_only = true;
+        self.internal_target = true;
         self
     }
 

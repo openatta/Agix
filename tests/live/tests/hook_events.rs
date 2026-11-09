@@ -1418,3 +1418,64 @@ async fn an_http_hook_cannot_reach_this_machine_by_another_spelling() -> anyhow:
     }
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_http_hook_that_allows_local_reaches_this_machine_and_its_verdict_counts(
+) -> anyhow::Result<()> {
+    let stub = ProviderStub::start().await?;
+    let pages = PageServer::start().await?;
+    pages.route(
+        "/hook",
+        Page::json(&json!({ "decision": "block", "message": "HTTP-HOOK-SAYS-NO" })),
+    );
+    let url = pages.url("/hook").replacen("127.0.0.1", "localhost", 1);
+    let mut run = stubbed("http-hook-local", &stub)
+        .settings(json!({
+            "hooks_config": { "PreToolUse": [
+                { "type": "http", "url": url, "timeout": 3000, "allow_local": true }
+            ] }
+        }))
+        .start()
+        .await?;
+    let session = run.session().await?;
+    stub.script([
+        Reply::calls("b1", "Bash", json!({ "command": "echo x > ran.txt" })),
+        Reply::text("done"),
+    ]);
+    let events = run.turn(&session, "go").await?;
+    assert_eq!(pages.hits("/hook"), 1);
+    assert!(run.read_file("ran.txt").is_none());
+    let (_, out, is_error) = &events.tool_results[0];
+    assert!(*is_error && out.contains("HTTP-HOOK-SAYS-NO"), "{out}");
+    run.finish().await;
+
+    let elsewhere = PageServer::start().await?;
+    elsewhere.route(
+        "/hook",
+        Page::json(&json!({ "decision": "block", "message": "HTTP-HOOK-SAYS-NO" })),
+    );
+    pages.route("/bounce", Page::redirect(elsewhere.url("/hook")));
+    let mut run = stubbed("http-hook-bounce", &stub)
+        .settings(json!({
+            "hooks_config": { "PreToolUse": [
+                { "type": "http", "url": pages.url("/bounce"), "timeout": 3000, "allow_local": true }
+            ] }
+        }))
+        .start()
+        .await?;
+    let session = run.session().await?;
+    stub.script([
+        Reply::calls("b2", "Bash", json!({ "command": "echo x > ran.txt" })),
+        Reply::text("done"),
+    ]);
+    run.turn(&session, "go").await?;
+    assert_eq!(pages.hits("/bounce"), 1);
+    assert_eq!(
+        elsewhere.hits("/hook"),
+        0,
+        "a redirect to another local target is still refused"
+    );
+    assert_eq!(run.read_file("ran.txt").as_deref(), Some("x\n"));
+    run.finish().await;
+    Ok(())
+}

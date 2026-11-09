@@ -56,6 +56,9 @@ pub enum HookConfig {
         url: String,
         #[serde(default)]
         headers: HashMap<String, String>,
+        /// 允许 `url` 指向本机或内网；重定向到别的内网目标仍被拒
+        #[serde(default)]
+        allow_local: bool,
         #[serde(default)]
         timeout: Option<u64>,
         #[serde(default, rename = "if")]

@@ -89,7 +89,7 @@ hook 是写在设置里的外部回调:引擎走到一个具名时刻(调工具�
 
 ```json
 { "type": "http", "url": "https://hooks.example.com/agix",
-  "headers": { "authorization": "Bearer …" }, "timeout": 10000, "if": "*" }
+  "headers": { "authorization": "Bearer …" }, "timeout": 10000, "if": "*", "allow_local": false }
 ```
 
 - `POST` payload 的 JSON(`content-type: application/json`),加上配置的 `headers`。
@@ -102,6 +102,10 @@ hook 是写在设置里的外部回调:引擎走到一个具名时刻(调工具�
   一次,第二次解析到内网同样拒绝。`sandbox.allowed_domains` 管不到它(它管的是模型选的
   目标),也放不开这条。重定向换了主机或协议时,`authorization`、`cookie`、
   `proxy-authorization` 不跟过去。
+- **`allow_local: true` 放开 url 自己。** 写了它的 hook 可以指向本机或内网
+  (`http://localhost:9000/hook`),放开的只是 url 里的那个主机与端口:重定向回到这个主机与端口
+  的照样能去,重定向去别的内部地址(同一台机器的另一个端口也算)照旧被拒,去公网的照旧按上面
+  检查。缺省 `false`。只写在自己管的设置文件里:仓库带来的设置同样能写它。
 
 ### `agent`
 

@@ -4,7 +4,8 @@
 //! redirect chain: the deployment's allowlist, and staying off internal
 //! addresses (`is_internal_address`) unless the allowlist names the host. A
 //! request that asks for it (`HttpRequest::public_only`) gets the second
-//! whoever chose it. A name is checked when the hop is sent and again by the
+//! whoever chose it, except on hops to the target it was sent to when it also
+//! says `internal_target`. A name is checked when the hop is sent and again by the
 //! resolver the connection itself uses, so a name that answers differently
 //! the second time still cannot reach inside.
 
@@ -80,6 +81,16 @@ impl LocalNetwork {
 
     fn keeps_off_internal(&self, url: &url::Url, origin: Origin, public_only: bool) -> bool {
         public_only || (origin == Origin::Agent && !self.vouches(url))
+    }
+
+    /// Whether this hop may reach an internal address: an operator's request
+    /// that named its own target as allowed, going back to that target.
+    fn may_reach_internal(&self, policy: &HopPolicy, url: &url::Url, origin: Origin) -> bool {
+        origin == Origin::Operator
+            && policy.internal_target.as_ref().is_some_and(|target| {
+                target.host_str() == url.host_str()
+                    && target.port_or_known_default() == url.port_or_known_default()
+            })
     }
 
     fn vouches(&self, url: &url::Url) -> bool {
@@ -193,6 +204,12 @@ fn internal_refusal(host: &str, ip: IpAddr, origin: Origin) -> ExecError {
         ),
         Origin::Operator => format!("{place}, which this request may not reach"),
     })
+}
+
+/// What a request carries from hop to hop of its redirect chain.
+struct HopPolicy {
+    /// The url it was sent to, when that target may be internal.
+    internal_target: Option<url::Url>,
 }
 
 /// What the `PublicOnly` client's resolver refuses with, found again in the
@@ -423,13 +440,17 @@ impl Network for LocalNetwork {
     async fn open(&self, req: HttpRequest, origin: Origin) -> Result<HttpStream, ExecError> {
         let mut url = url::Url::parse(&req.url)
             .map_err(|e| ExecError::failed(format!("not a url: {} ({e})", req.url)))?;
+        let policy = HopPolicy {
+            internal_target: req.internal_target.then(|| url.clone()),
+        };
         let mut method = req.method;
         let mut body = req.body;
         let mut headers = req.headers;
 
         for hop in 0..=req.max_redirects {
             self.refuse(&url, origin)?;
-            let guarded = self.keeps_off_internal(&url, origin, req.public_only);
+            let guarded = self.keeps_off_internal(&url, origin, req.public_only)
+                && !self.may_reach_internal(&policy, &url, origin);
             if guarded {
                 self.refuse_internal(&url, origin).await?;
             }
@@ -784,6 +805,53 @@ mod tests {
             .await
             .expect("without the flag an operator endpoint is reached");
         assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn an_internal_target_is_reached_and_only_that_target() {
+        let (port, hits) = a_counting_server(ok_response).await;
+        let n = LocalNetwork::default();
+        let url = format!("http://127.0.0.1:{port}/");
+        n.send(
+            HttpRequest::post(&url).public_only_but_target(),
+            Origin::Operator,
+        )
+        .await
+        .expect("the named target is reachable");
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        let err = n
+            .send(
+                HttpRequest::post(format!("http://localhost:{port}/")).public_only_but_target(),
+                Origin::Agent,
+            )
+            .await
+            .expect_err("a model-directed request gains nothing from it");
+        assert!(matches!(err, ExecError::Denied(_)), "{err:?}");
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn an_internal_target_cannot_redirect_to_another_internal_host() {
+        let (inner_port, inner_hits) = a_counting_server(ok_response).await;
+        let (outer_port, outer_hits) = a_counting_server(move |_| {
+            format!(
+                "HTTP/1.1 307 Temporary Redirect\r\nlocation: http://127.0.0.1:{inner_port}/\r\ncontent-length: 0\r\n\r\n"
+            )
+        })
+        .await;
+        let n = LocalNetwork::default();
+        let err = n
+            .send(
+                HttpRequest::post(format!("http://127.0.0.1:{outer_port}/"))
+                    .public_only_but_target(),
+                Origin::Operator,
+            )
+            .await
+            .expect_err("the second hop is another internal target");
+        assert!(matches!(err, ExecError::Denied(_)), "{err:?}");
+        assert_eq!(outer_hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(inner_hits.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     /// The connection resolves the name again; what it gets is checked there

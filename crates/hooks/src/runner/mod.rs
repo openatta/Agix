@@ -493,10 +493,11 @@ impl HookRunner {
             HookConfig::Http {
                 url,
                 headers,
+                allow_local,
                 timeout,
                 ..
             } => {
-                self.exec_http(url, headers, input, self.timeout_of(*timeout))
+                self.exec_http(url, headers, *allow_local, input, self.timeout_of(*timeout))
                     .await
             }
             HookConfig::Agent {
@@ -1165,6 +1166,7 @@ mod tests {
                 timeout: Some(500),
                 if_pattern: None,
                 on_error: OnError::Allow,
+                allow_local: false,
             }],
         );
         let r = HookRunner::new(s);
@@ -1280,6 +1282,7 @@ mod tests {
                 timeout: Some(100),
                 if_pattern: Some("Write".into()),
                 on_error: OnError::Allow,
+                allow_local: false,
             },
         ])
         .with_prompt_executor(Arc::new(Answering(r#"{"decision":"block"}"#)))
@@ -1424,6 +1427,7 @@ mod tests {
             timeout: Some(500),
             if_pattern: None,
             on_error: OnError::Block,
+            allow_local: false,
         }])
         .run(HookEvent::PreToolUse, &input_for_bash("ls"))
         .await;

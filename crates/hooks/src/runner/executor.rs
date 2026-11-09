@@ -54,11 +54,13 @@ impl HookRunner {
     /// 自定义 headers 加进 request；status >= 400 → Error；body 解析失败 → 默认空 response。
     ///
     /// 每一跳都不许落到本机或内网地址（`HttpRequest::public_only`）：url 写在
-    /// 一份仓库也能带来的 settings.json 里。
+    /// 一份仓库也能带来的 settings.json 里。`allow_local` 只放开 url 自己那个
+    /// 主机与端口。
     pub(super) async fn exec_http(
         &self,
         url: &str,
         headers: &std::collections::HashMap<String, String>,
+        allow_local: bool,
         input: &HookInput,
         timeout_dur: Duration,
     ) -> HookOutcome {
@@ -66,10 +68,14 @@ impl HookRunner {
             Ok(p) => p,
             Err(e) => return HookOutcome::Error(format!("http hook payload: {e}")),
         };
-        let mut req = base::interface::exec::HttpRequest::post(url)
+        let req = base::interface::exec::HttpRequest::post(url)
             .header("content-type", "application/json")
-            .body(payload)
-            .public_only();
+            .body(payload);
+        let mut req = if allow_local {
+            req.public_only_but_target()
+        } else {
+            req.public_only()
+        };
         for (k, v) in headers {
             req = req.header(k, v);
         }
