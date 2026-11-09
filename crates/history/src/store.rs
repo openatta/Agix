@@ -7,14 +7,16 @@
 //! cwd the store was built with is only the default for a session that never
 //! said. Many sessions share one store, and writes within a session are
 //! serialized by a mutex so two appends cannot interleave into a partial
-//! line.
+//! line. Across processes a session's log has one writer, held by a file lock
+//! (`crate::lock`). A last line cut short by a crash is left out when
+//! the log is read and cut off before the next append.
 
 use crate::blob::{BlobRef, BlobStore, PasteStore};
 use crate::entry::{EnvelopedEntry, LogEntry, SessionKind};
 use crate::error::HistoryError;
 use crate::path::{
     canonicalize_cwd, project_dir, project_dir_for, session_file, session_metadata_file,
-    HistoryRoots,
+    session_sidecar_dir, HistoryRoots,
 };
 use crate::project::SessionMetadata;
 use crate::query::{SessionQuery, SessionScope};
@@ -109,6 +111,26 @@ pub struct LineageSnapshot {
     pub forks: Vec<SessionId>,
 }
 
+/// A hold on one session's log, from [`HistoryStore::claim`]; released when
+/// dropped.
+#[derive(Default)]
+pub struct SessionClaim(Option<Box<dyn std::any::Any + Send + Sync>>);
+
+impl SessionClaim {
+    /// A claim kept by `guard`, for a backend's own implementation.
+    pub fn new(guard: impl std::any::Any + Send + Sync) -> Self {
+        Self(Some(Box::new(guard)))
+    }
+}
+
+impl std::fmt::Debug for SessionClaim {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("SessionClaim")
+            .field(&self.0.is_some())
+            .finish()
+    }
+}
+
 /// Where a session's log lives between runs.
 ///
 /// The engine writes an append-only sequence of [`LogEntry`] per session and
@@ -126,7 +148,9 @@ pub struct LineageSnapshot {
 ///   log. "Never existed" and "exists and is empty" are different answers and
 ///   callers act on the difference.
 /// * **Durability is the backend's promise, not the caller's.** `append`
-///   returning `Ok` means the entry survives whatever that backend survives.
+///   returning `Ok` means the entry is in the log; [`sync`](Self::sync)
+///   returning `Ok` means everything appended before it survives whatever
+///   that backend survives.
 #[async_trait]
 pub trait HistoryStore: Send + Sync {
     async fn append(&self, session: SessionId, entry: LogEntry) -> Result<(), HistoryError>;
@@ -142,6 +166,25 @@ pub trait HistoryStore: Send + Sync {
     ) -> Result<(), HistoryError> {
         let _ = tags;
         self.append(session, entry).await
+    }
+
+    /// Make everything appended to `session` so far durable.
+    ///
+    /// Separate from `append` because durability costs a disk flush: the
+    /// engine appends entry by entry and syncs once per step. The default does
+    /// nothing, which is right for a backend that is durable on append or not
+    /// durable at all.
+    async fn sync(&self, _session: SessionId) -> Result<(), HistoryError> {
+        Ok(())
+    }
+
+    /// Keep other processes from writing `session` until the claim is
+    /// dropped — [`HistoryError::Locked`] when one already is. Appends take
+    /// the same hold for as long as they run, so a claim is for keeping it
+    /// between them: a session open in this process is held by it. The
+    /// default claims nothing, for a backend no other process can reach.
+    async fn claim(&self, _session: SessionId) -> Result<SessionClaim, HistoryError> {
+        Ok(SessionClaim::default())
     }
 
     async fn load(&self, session: SessionId) -> Result<Vec<EnvelopedEntry>, HistoryError>;
@@ -407,6 +450,8 @@ pub struct JsonlHistoryStore {
     /// 序列化 append 调用，避免并发 partial-line 写。
     /// 不是 RwLock —— append 是写操作，读不互让有意义。
     append_lock: Arc<Mutex<()>>,
+    /// Sessions whose log's directory entry this process has already synced.
+    synced_dirs: Mutex<std::collections::HashSet<SessionId>>,
     /// Where content too big to keep inline goes. Without one, everything
     /// stays in the JSONL.
     blobs: Option<Arc<dyn BlobStore>>,
@@ -427,6 +472,7 @@ impl JsonlHistoryStore {
             canonical_cwd: canonical,
             homes: Mutex::new(HashMap::new()),
             append_lock: Arc::new(Mutex::new(())),
+            synced_dirs: Mutex::new(std::collections::HashSet::new()),
             blobs: None,
             projection: None,
             environment: None,
@@ -528,6 +574,13 @@ impl JsonlHistoryStore {
     /// The path of this session's transcript.
     async fn session_path_of(&self, session: SessionId) -> PathBuf {
         session_file(&self.session_dir_of(session).await, &session)
+    }
+
+    fn writer_lock(&self, session: SessionId) -> Result<crate::lock::WriterLock, HistoryError> {
+        crate::lock::hold(
+            &session_sidecar_dir(&self.sessions_root, &session),
+            &session.to_string(),
+        )
     }
 
     /// The project a session is about to be created under, read off the
@@ -992,13 +1045,9 @@ async fn load_entries_from_path(
     path: &Path,
     session: SessionId,
 ) -> Result<Vec<EnvelopedEntry>, HistoryError> {
-    let content = match tokio::fs::read_to_string(path).await {
-        Ok(c) => c,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(HistoryError::SessionNotFound(session.to_string()));
-        }
-        Err(e) => return Err(HistoryError::Io(e)),
-    };
+    let content = read_log(path)
+        .await?
+        .ok_or_else(|| HistoryError::SessionNotFound(session.to_string()))?;
     let mut entries = Vec::new();
     for (i, line) in content.lines().enumerate() {
         if line.trim().is_empty() {
@@ -1009,6 +1058,98 @@ async fn load_entries_from_path(
         entries.push(env);
     }
     Ok(entries)
+}
+
+/// A log's text, without a last line that a crash cut short — or `None` when
+/// the log is not there. A last line that is whole but lacks only its newline
+/// is kept.
+async fn read_log(path: &Path) -> Result<Option<String>, HistoryError> {
+    let mut bytes = match tokio::fs::read(path).await {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(HistoryError::Io(e)),
+    };
+    let last_line = bytes.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+    let tail = &bytes[last_line..];
+    if !tail.iter().all(u8::is_ascii_whitespace) && !is_whole_entry(tail) {
+        tracing::warn!(
+            path = %path.display(),
+            dropped_bytes = tail.len(),
+            "the log's last line was cut short; reading it without that line"
+        );
+        bytes.truncate(last_line);
+    }
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|e| HistoryError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
+}
+
+fn is_whole_entry(line: &[u8]) -> bool {
+    std::str::from_utf8(line)
+        .is_ok_and(|text| serde_json::from_str::<EnvelopedEntry>(text.trim()).is_ok())
+}
+
+/// Make the log end at a line break before anything is appended to it.
+///
+/// A process that died mid-write leaves the last line cut short, and an
+/// append after it would weld the next entry onto the fragment — a broken
+/// line in the middle of the log, which no reader can tell from corruption.
+/// The fragment is cut off; a last line that is whole and lacks only its
+/// newline gets one.
+fn end_on_a_line_break(file: &mut std::fs::File, path: &Path) -> std::io::Result<()> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    const CHUNK: u64 = 64 * 1024;
+    let len = file.metadata()?.len();
+    if len == 0 {
+        return Ok(());
+    }
+    let mut last = [0u8; 1];
+    file.seek(SeekFrom::Start(len - 1))?;
+    file.read_exact(&mut last)?;
+    if last[0] == b'\n' {
+        return Ok(());
+    }
+    let mut start = 0;
+    let mut pos = len;
+    let mut chunk = Vec::new();
+    while pos > 0 {
+        let n = pos.min(CHUNK);
+        pos -= n;
+        chunk.resize(n as usize, 0);
+        file.seek(SeekFrom::Start(pos))?;
+        file.read_exact(&mut chunk)?;
+        if let Some(i) = chunk.iter().rposition(|&b| b == b'\n') {
+            start = pos + i as u64 + 1;
+            break;
+        }
+    }
+    let mut tail = Vec::new();
+    file.seek(SeekFrom::Start(start))?;
+    file.read_to_end(&mut tail)?;
+    if is_whole_entry(&tail) {
+        return file.write_all(b"\n");
+    }
+    tracing::warn!(
+        path = %path.display(),
+        dropped_bytes = tail.len(),
+        "cutting off a last line that was cut short before appending"
+    );
+    file.set_len(start)
+}
+
+/// fsync `path`, and its directory too unless `dir_done`.
+fn sync_log(path: &Path, dir_done: bool) -> Result<(), HistoryError> {
+    match std::fs::File::open(path) {
+        Ok(file) => file.sync_data()?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(HistoryError::Io(e)),
+    }
+    if !dir_done {
+        if let Some(dir) = path.parent() {
+            std::fs::File::open(dir)?.sync_all()?;
+        }
+    }
+    Ok(())
 }
 
 /// One log's entries, with references into `blobs` put back.
@@ -1169,6 +1310,7 @@ impl HistoryStore for JsonlHistoryStore {
         entry: LogEntry,
         tags: crate::entry::EntryTags,
     ) -> Result<(), HistoryError> {
+        let _writer = self.writer_lock(session)?;
         let _guard = self.append_lock.lock().await;
 
         // A `Meta` line is where a session says which project it belongs to,
@@ -1213,9 +1355,11 @@ impl HistoryStore for JsonlHistoryStore {
         };
 
         let mut f = std::fs::OpenOptions::new()
+            .read(true)
             .append(true)
             .create(true)
             .open(&path)?;
+        end_on_a_line_break(&mut f, &path)?;
 
         let enveloped = EnvelopedEntry::new_in(self.environment(), session, entry).with_tags(tags);
         let line = serde_json::to_string(&enveloped)?;
@@ -1248,14 +1392,24 @@ impl HistoryStore for JsonlHistoryStore {
 
     async fn load(&self, session: SessionId) -> Result<Vec<EnvelopedEntry>, HistoryError> {
         let path = self.session_path_of(session).await;
-        let content = match tokio::fs::read_to_string(&path).await {
-            Ok(c) => c,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err(HistoryError::SessionNotFound(session.to_string()));
-            }
-            Err(e) => return Err(HistoryError::Io(e)),
-        };
+        let content = read_log(&path)
+            .await?
+            .ok_or_else(|| HistoryError::SessionNotFound(session.to_string()))?;
         parse_log(&content, self.blobs.as_deref())
+    }
+
+    async fn sync(&self, session: SessionId) -> Result<(), HistoryError> {
+        let path = self.session_path_of(session).await;
+        let dir_done = self.synced_dirs.lock().await.contains(&session);
+        tokio::task::spawn_blocking(move || sync_log(&path, dir_done))
+            .await
+            .map_err(|e| HistoryError::Io(std::io::Error::other(e)))??;
+        self.synced_dirs.lock().await.insert(session);
+        Ok(())
+    }
+
+    async fn claim(&self, session: SessionId) -> Result<SessionClaim, HistoryError> {
+        Ok(SessionClaim::new(self.writer_lock(session)?))
     }
 
     /// Measures every log in the root's project directory while holding the
@@ -1272,6 +1426,7 @@ impl HistoryStore for JsonlHistoryStore {
     }
 
     async fn delete(&self, session: SessionId) -> Result<(), HistoryError> {
+        let _writer = self.writer_lock(session)?;
         let jsonl_path = self.session_path_of(session).await;
         match tokio::fs::remove_file(&jsonl_path).await {
             Ok(()) => {}
@@ -1309,12 +1464,8 @@ impl HistoryStore for JsonlHistoryStore {
     /// transcript to reach the fields on its first line.
     async fn session_facts(&self, session: SessionId) -> Result<SessionFacts, HistoryError> {
         let path = self.session_path_of(session).await;
-        let content = match tokio::fs::read_to_string(&path).await {
-            Ok(c) => c,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(SessionFacts::default())
-            }
-            Err(e) => return Err(HistoryError::Io(e)),
+        let Some(content) = read_log(&path).await? else {
+            return Ok(SessionFacts::default());
         };
         for (i, line) in content.lines().enumerate() {
             if line.trim().is_empty() {
@@ -1351,9 +1502,15 @@ impl HistoryStore for JsonlHistoryStore {
         };
         let mut out = Vec::new();
         for sid in session_ids_in(&dir).await? {
-            if self.session_facts(sid).await?.parent_session_id.as_deref()
-                == Some(parent_session_id)
-            {
+            let facts = match self.session_facts(sid).await {
+                Ok(facts) => facts,
+                Err(e @ HistoryError::Parse { .. }) => {
+                    tracing::warn!(%sid, error = %e, "unreadable log left out of a child lookup");
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
+            if facts.parent_session_id.as_deref() == Some(parent_session_id) {
                 out.push(sid);
             }
         }
@@ -2807,7 +2964,7 @@ mod tests {
 /// a record of what something decided to record rather than of what happened.
 ///
 /// Observers run *after* the append has succeeded, so the entry they are shown
-/// is already durable. An observer that panics still takes its caller down —
+/// is already in the log. An observer that panics still takes its caller down —
 /// it just cannot un-write anything first.
 pub trait AppendObserver: Send + Sync {
     fn observed(&self, session: SessionId, entry: &LogEntry);
@@ -2854,6 +3011,14 @@ impl HistoryStore for ObservedHistoryStore {
             observer.observed(session, &entry);
         }
         Ok(())
+    }
+
+    async fn sync(&self, session: SessionId) -> Result<(), HistoryError> {
+        self.inner.sync(session).await
+    }
+
+    async fn claim(&self, session: SessionId) -> Result<SessionClaim, HistoryError> {
+        self.inner.claim(session).await
     }
 
     async fn load(&self, session: SessionId) -> Result<Vec<EnvelopedEntry>, HistoryError> {
@@ -3857,5 +4022,175 @@ mod query_contract_tests {
                 "the shipped backends disagree on {query:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod crash_tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::TempDir;
+
+    fn user(text: &str) -> LogEntry {
+        LogEntry::User {
+            content: vec![base::message::ContentBlock::Text {
+                text: text.to_string(),
+                cache_control: None,
+            }],
+        }
+    }
+
+    fn text_of(entry: &EnvelopedEntry) -> String {
+        match &entry.entry {
+            LogEntry::User { content } => match &content[0] {
+                base::message::ContentBlock::Text { text, .. } => text.clone(),
+                other => panic!("{other:?}"),
+            },
+            other => panic!("{other:?}"),
+        }
+    }
+
+    async fn store_in(root: &TempDir) -> JsonlHistoryStore {
+        JsonlHistoryStore::with_roots(root.path(), HistoryRoots::under(&root.path().join("state")))
+            .await
+            .unwrap()
+    }
+
+    fn append_raw(path: &Path, bytes: &[u8]) {
+        let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+        file.write_all(bytes).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_last_line_cut_short_is_dropped_on_read_and_cut_off_before_the_next_append() {
+        let cut_in_a_character = "{\"text\":\"中".as_bytes();
+        for fragment in [
+            &br#"{"uuid":"x","session_id":"#[..],
+            &cut_in_a_character[..cut_in_a_character.len() - 1],
+            b"\0\0\0\0",
+        ] {
+            let root = TempDir::new().unwrap();
+            let store = store_in(&root).await;
+            let s = SessionId::new();
+            store.append(s, user("one")).await.unwrap();
+            store.append(s, user("two")).await.unwrap();
+            let path = store.session_path_of(s).await;
+            append_raw(&path, fragment);
+
+            let loaded = store
+                .load(s)
+                .await
+                .expect("a cut last line is not a broken log");
+            assert_eq!(
+                loaded.iter().map(text_of).collect::<Vec<_>>(),
+                ["one", "two"]
+            );
+            assert_eq!(
+                store.session_facts(s).await.unwrap(),
+                SessionFacts::default()
+            );
+
+            store.append(s, user("three")).await.unwrap();
+            let loaded = store.load(s).await.unwrap();
+            assert_eq!(
+                loaded.iter().map(text_of).collect::<Vec<_>>(),
+                ["one", "two", "three"]
+            );
+            assert!(std::fs::read_to_string(&path).unwrap().ends_with('\n'));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_whole_last_line_missing_only_its_newline_is_kept() {
+        let root = TempDir::new().unwrap();
+        let store = store_in(&root).await;
+        let s = SessionId::new();
+        store.append(s, user("one")).await.unwrap();
+        let path = store.session_path_of(s).await;
+        let whole = std::fs::read(&path).unwrap();
+        std::fs::write(&path, &whole[..whole.len() - 1]).unwrap();
+
+        assert_eq!(store.load(s).await.unwrap().len(), 1);
+        store.append(s, user("two")).await.unwrap();
+        let loaded = store.load(s).await.unwrap();
+        assert_eq!(
+            loaded.iter().map(text_of).collect::<Vec<_>>(),
+            ["one", "two"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_with_a_broken_log_does_not_hide_another_ones_children() {
+        let root = TempDir::new().unwrap();
+        let store = store_in(&root).await;
+        let parent = SessionId::new();
+        let broken = SessionId::new();
+        store.append(parent, user("p")).await.unwrap();
+        store.append(broken, user("b")).await.unwrap();
+        let path = store.session_path_of(broken).await;
+        std::fs::write(&path, "not json\n{}\n").unwrap();
+        assert!(store
+            .child_sessions(&parent.to_string())
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn sync_flushes_an_existing_log_and_ignores_a_missing_one() {
+        let root = TempDir::new().unwrap();
+        let store = store_in(&root).await;
+        let s = SessionId::new();
+        store.sync(s).await.unwrap();
+        store.append(s, user("one")).await.unwrap();
+        store.sync(s).await.unwrap();
+        store.sync(s).await.unwrap();
+    }
+
+    #[cfg(unix)]
+    fn lock_elsewhere(path: &Path) -> Option<std::fs::File> {
+        use std::os::fd::AsRawFd;
+        let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        // SAFETY: `flock` only reads the descriptor, which `file` keeps open.
+        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        (rc == 0).then_some(file)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_session_another_process_is_writing_is_refused() {
+        let root = TempDir::new().unwrap();
+        let store = store_in(&root).await;
+        let s = SessionId::new();
+        store.append(s, user("one")).await.unwrap();
+
+        let lock_path = session_sidecar_dir(&root.path().join("state").join("sessions"), &s)
+            .join("writer.lock");
+        let other = lock_elsewhere(&lock_path).expect("nobody holds it between appends");
+
+        assert!(matches!(
+            store.append(s, user("two")).await,
+            Err(HistoryError::Locked(_))
+        ));
+        assert!(matches!(store.claim(s).await, Err(HistoryError::Locked(_))));
+        assert!(matches!(
+            store.delete(s).await,
+            Err(HistoryError::Locked(_))
+        ));
+        assert_eq!(
+            store.load(s).await.unwrap().len(),
+            1,
+            "reading is not writing"
+        );
+
+        drop(other);
+        let claim = store.claim(s).await.unwrap();
+        store.append(s, user("two")).await.unwrap();
+        assert!(
+            lock_elsewhere(&lock_path).is_none(),
+            "a claim keeps other processes out between appends"
+        );
+        drop(claim);
+        assert!(lock_elsewhere(&lock_path).is_some());
     }
 }

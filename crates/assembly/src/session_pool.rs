@@ -2586,6 +2586,7 @@ impl SessionPool {
         options: Option<&SessionOptions>,
         resume: bool,
     ) -> Result<String, String> {
+        let claim = self.claim_log(&session_id).await?;
         let spec = self.spec_for(&session_id, resume, options).await;
         let options = spec.options.as_ref();
         self.note_served(project_root_for_meta.as_deref());
@@ -3035,6 +3036,7 @@ impl SessionPool {
 
         tokio::spawn(async move {
             let _exited_on_drop = exited_on_drop;
+            let _claim = claim;
             let mut agent = agent;
             let _ = agent.run(cancel_clone).await;
         });
@@ -3370,6 +3372,9 @@ impl SessionPool {
             .append(sid, entry)
             .await
             .map_err(|e| (codes::INTERNAL_ERROR, format!("could not append: {e}")))?;
+        if let Err(e) = store.sync(sid).await {
+            warn!(%session_id, error = %e, "an appended entry was not synced");
+        }
 
         let entries = self.load_entries(session_id).await?;
         let lengths = history::transcript::projected_lengths_with(&entries, store.projection());
@@ -7453,6 +7458,29 @@ impl SessionPool {
         });
     }
 
+    /// Hold `session_id`'s log against other processes for as long as the
+    /// returned claim lives — `Err` when another daemon has it open. An id
+    /// that is not a session id has no log to hold.
+    async fn claim_log(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<history::store::SessionClaim>, String> {
+        let (Some(store), Ok(sid)) = (
+            self.history_store.as_ref(),
+            base::session::SessionId::parse(session_id),
+        ) else {
+            return Ok(None);
+        };
+        match store.claim(sid).await {
+            Ok(claim) => Ok(Some(claim)),
+            Err(e @ history::error::HistoryError::Locked(_)) => Err(e.to_string()),
+            Err(e) => {
+                warn!(%session_id, error = %e, "could not take the session log's writer lock");
+                Ok(None)
+            }
+        }
+    }
+
     /// 从 HistoryStore 恢复 session 或创建新的。
     /// Resume a session referenced by `sid` (loading history first, if a
     /// `history_store` is configured) or create it fresh under a new id if
@@ -7469,6 +7497,9 @@ impl SessionPool {
         sid: String,
         options: Option<&SessionOptions>,
     ) -> Result<String, String> {
+        // Another daemon writing this session is not a failure a fresh id
+        // should paper over, so it is answered before anything is retried.
+        let _claim = self.claim_log(&sid).await?;
         // 尝试从 HistoryStore 加载历史消息。`sid` 来自 RPC 调用方（`session.run_turn`
         // 的 `session_id` 参数），不保证是合法的 BASE58 ID——解析失败当作"没有历史"
         // 处理（等价于查不到），而不是 unwrap 崩溃：一个格式错误的 session_id 不该

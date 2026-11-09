@@ -1391,6 +1391,9 @@ client,会话在原地按新的规格重建(它是空闲的,不会腰斩什么),
 - 场景不符 → `SCENE_MISMATCH`;老文件没记场景 → 按当前场景恢复,`scene_inferred`
   为 `true`(§3.4)。
 - 目标是已终态的侧链 → `SIDECHAIN_TERMINAL`(§3.3)。
+- 会话正在共用同一状态目录的另一个 daemon 里 → `INTERNAL_ERROR`,消息含
+  "being written by another process";不会换 id 新建。`session.run_turn` 指名这样的会话
+  同样如此。
 
 `permission.prompts` 为 `false` 意味着这个会话跑在 `bypassPermissions` 下,不会有
 任何 `kind:"prompt"` 事件。

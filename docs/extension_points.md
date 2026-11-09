@@ -362,6 +362,11 @@ for refused in registry.register_declarative_dir(&global_root.join("scenes")) {
 文件)和 `InMemoryHistoryStore`。契约的保证写在它的文档注释里;
 `store::contract_tests` 拿同样六条性质同时压这两个实现,第三个后端也该指到这里来。
 
+`append` 返回 `Ok` 是条目已进日志;持久要等 `sync`——引擎每一步、每一轮结束各调一次,
+不是每条都调。别的进程也能写到的后端实现 `claim`:返回的 `SessionClaim` 活着期间别的
+进程写不进这个会话,已被别人占着时报 `HistoryError::Locked`。两者都有缺省实现(什么都
+不做),只在内存里的后端不用管。
+
 ### 找会话 — `history.query`
 
 `HistoryStore::find_sessions` 收一个 `history::query::SessionQuery`——一根针、一个

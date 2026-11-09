@@ -486,6 +486,11 @@ WebAssembly 载体整个移除。
 - 团队的 `SendMessage` 只投给团队声明过的成员,`peer` 不在其中时报错并列出成员;提示词改成与
   schema 一致的 `{"peer", "message"}`(以前教的 `to` / `summary` / `"*"` 广播从来不被接受)。
   不是纯 ASCII 文件名的成员标签,邮箱文件改名为 `mailbox/~<hash>.jsonl`。
+- 同一状态目录下的两个 daemon 不能同时写一个会话:会话在一个 daemon 里活着时,另一个对它
+  `session.resume` / `session.run_turn` 报 `INTERNAL_ERROR`,消息含 "being written by another
+  process"(以前要么两边交错写进同一份日志,要么 resume 失败后换一个新 id 建会话)。
+- 会话日志最后一行写到一半(崩溃、断电)时,读的时候略过那一行而不是整份会话读不回来,
+  下一次追加前把它截掉。
 - `config.setProvider` 不再把 `api_key` 写进项目的 `.agix/settings.json`(按约定要提交的那个):
   它进同目录的 `settings.local.json`(0600),settings.json 里这个 provider 已有的 `api_key` 在下次
   写入时挪过去;响应多了 `secrets_written_to`。直接读 settings.json 找 key 的,改读合并后的
@@ -575,6 +580,11 @@ WebAssembly 载体整个移除。
 - `Assembly` 多了 `mcp_enterprise_idp: Option<mcp::config::EnterpriseIdp>`;`McpPolicy` 多了
   `allowed_authorization_servers`、`enterprise_idp` 两个字段(结构体字面量要补,或用
   `..Default::default()`)。`McpOAuthConfig` 多了 `grant`、`private_key_jwt`。
+- `history::store::HistoryStore` 多了 `sync` 与 `claim`(都有缺省实现),新类型
+  `history::store::SessionClaim`;`HistoryError` 多了 `Locked`(穷举匹配的要补一支)。
+  `JsonlHistoryStore` 的 `append` 不再承诺立即持久,`sync` 才是;`delete` 在会话被别的进程
+  占着时报 `Locked`。`SessionManager::persist` 写了东西就 `sync` 一次。包装别的 store 的
+  实现要把这两个方法转发下去,否则拿到的是什么都不做的缺省。
 - `team::mailbox::MailboxStore::send` 返回 `Result<(), UnknownPeer>`,不是成员的收件人被拒;
   新增 `MailboxStore::check_peer` 与 `team::mailbox::mailbox_file`(标签到文件名)。
 - `plugin::cache::check_component` 新增;`plugin::install::{install, uninstall}` 与

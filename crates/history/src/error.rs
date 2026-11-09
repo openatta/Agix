@@ -21,4 +21,8 @@ pub enum HistoryError {
 
     #[error("session {0} not found")]
     SessionNotFound(String),
+
+    /// Another process is writing this session's log.
+    #[error("session {0} is being written by another process")]
+    Locked(String),
 }

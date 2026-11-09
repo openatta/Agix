@@ -237,9 +237,10 @@ impl SessionManager {
     }
 
     /// Persist messages pushed since the last `persist()` call via the
-    /// history store — incremental append, not a full snapshot. Called once
-    /// per turn (see `runtime::turn::run_user_turn`). No-op when no store is
-    /// configured, or when nothing new has been pushed since the last call.
+    /// history store — incremental append, not a full snapshot, then one
+    /// `sync` so what was appended is durable. Called at every step and at the
+    /// end of a turn (see `runtime::turn::run_user_turn`). No-op when no store
+    /// is configured, or when nothing new has been pushed since the last call.
     ///
     /// `MessageRole::System` entries are skipped (`ModelMessage` rarely if
     /// ever carries this role — the system prompt is assembled separately
@@ -251,6 +252,7 @@ impl SessionManager {
         };
         let sid =
             SessionId::parse(&self.session_id).map_err(|e| SessionError::Id(e.to_string()))?;
+        let mut appended = false;
         while self.persisted_up_to < self.messages.len() {
             let msg = &self.messages[self.persisted_up_to];
             let note = self
@@ -278,9 +280,16 @@ impl SessionManager {
                     .append_tagged(sid, entry, tags)
                     .await
                     .map_err(|e| SessionError::Store(e.to_string()))?;
+                appended = true;
             }
             self.notes.remove(&self.persisted_up_to);
             self.persisted_up_to += 1;
+        }
+        if appended {
+            store
+                .sync(sid)
+                .await
+                .map_err(|e| SessionError::Store(e.to_string()))?;
         }
         Ok(())
     }
@@ -350,6 +359,10 @@ impl SessionManager {
             };
             store
                 .append_tagged(sid, entry, tags)
+                .await
+                .map_err(|e| SessionError::Store(e.to_string()))?;
+            store
+                .sync(sid)
                 .await
                 .map_err(|e| SessionError::Store(e.to_string()))
         }
@@ -931,6 +944,62 @@ mod tests {
         async fn delete(&self, session: SessionId) -> Result<(), history::error::HistoryError> {
             self.inner.delete(session).await
         }
+    }
+
+    #[derive(Default)]
+    struct CountingSyncStore {
+        inner: history::store::InMemoryHistoryStore,
+        appends: std::sync::atomic::AtomicUsize,
+        syncs: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl HistoryStore for CountingSyncStore {
+        async fn append(
+            &self,
+            session: SessionId,
+            entry: history::entry::LogEntry,
+        ) -> Result<(), history::error::HistoryError> {
+            self.appends
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.append(session, entry).await
+        }
+        async fn sync(&self, _: SessionId) -> Result<(), history::error::HistoryError> {
+            self.syncs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        async fn load(
+            &self,
+            session: SessionId,
+        ) -> Result<Vec<history::entry::EnvelopedEntry>, history::error::HistoryError> {
+            self.inner.load(session).await
+        }
+        async fn list_sessions(&self) -> Result<Vec<SessionId>, history::error::HistoryError> {
+            self.inner.list_sessions().await
+        }
+        async fn delete(&self, session: SessionId) -> Result<(), history::error::HistoryError> {
+            self.inner.delete(session).await
+        }
+    }
+
+    /// One sync per persist that wrote anything, not one per entry.
+    #[tokio::test]
+    async fn persist_syncs_once_after_writing_and_not_at_all_otherwise() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let store = Arc::new(CountingSyncStore::default());
+        let sid = SessionId::new();
+        let mut mgr = SessionManager::new(Some(store.clone()), Some(sid.to_string()), None);
+        mgr.push_message(make_text_msg("a"));
+        mgr.push_message(make_text_msg("b"));
+        mgr.persist().await.unwrap();
+        assert_eq!(store.appends.load(SeqCst), 2);
+        assert_eq!(store.syncs.load(SeqCst), 1);
+        mgr.persist().await.unwrap();
+        assert_eq!(store.syncs.load(SeqCst), 1, "nothing new, nothing to sync");
+        mgr.replace_messages_after_compact(vec![make_text_msg("summary")], 10, 1)
+            .await
+            .unwrap();
+        assert_eq!(store.syncs.load(SeqCst), 2, "the compact marker is synced");
     }
 
     /// After `replace_messages_after_compact` shrinks `messages`, the cursor must

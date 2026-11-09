@@ -115,8 +115,13 @@ fork 型 skill 要 agents 提供的 spawner。委派出去的子会话用父会�
 才展开,任务里的 panic 只结束那个任务。中止前 panic hook 停掉
 命令所在的进程组并写崩溃记录(`~/.agix/daemon/crashes/`);来不及跑 hook 的(SIGKILL、
 OOM)由同名实例下次启动、拿到锁之后按落盘的进程组记录(`~/.agix/daemon/groups/`)
-清理:先 `SIGTERM`,500 ms 后 `SIGKILL`。会话历史每次写入都落盘,重启后照常恢复;
-崩溃时正在进行的那一轮不续跑。
+清理:先 `SIGTERM`,500 ms 后 `SIGKILL`。会话历史每个条目整行写进日志,每一步结束和
+一轮结束时 fsync 一次,重启后照常恢复;崩溃时正在进行的那一轮不续跑。写到一半被打断的
+最后一行在读时略过(记一条 warn),下一次追加前截掉——不会让整份会话读不回来。
+
+一份会话日志同一时刻只有一个写者:写日志的进程对 `sessions/<id>/writer.lock` 持
+`flock`,会话在某个 daemon 里活着就一直持有,进程无论怎么退出内核都会释放。另一个
+共用同一状态目录的 daemon 要 resume 或给它跑 turn 时直接报错,不换 id 新建。
 
 daemon 不自己重启自己,交给 launchd(`KeepAlive` 设 `SuccessfulExit = false`)或
 systemd(`Restart=on-failure`)。systemd 下要设 `KillMode=process`:`daemon.shutdown` 与
@@ -793,7 +798,7 @@ daemon 实例锁与 team 目录锁共用 `base::process_identity::decide_stale_l
 |---|---|---|
 | `projects/<sanitized-cwd>/` | 项目 | `<session-id>.jsonl` transcript |
 | `projects/_no-project/` | ——(保留) | 无项目会话的 transcript |
-| `sessions/<session-id>/` | 会话 | 会话记忆、metadata、输入历史 |
+| `sessions/<session-id>/` | 会话 | 会话记忆、metadata、输入历史、`writer.lock`(§1.3) |
 | `memory/` | 全局 | 跨会话记忆(项目级的在 `<项目>/.agix/memory/`) |
 | `scenes/<id>/` | 场景 | 该场景的设置层(`settings.json`、skills、agents);声明式场景在这里放 `scene.json` + `prompt.md` |
 | `scenes/<id>/mcp/oauth/` | MCP server URL | 远端 MCP server 的 OAuth 凭据,一个 server 一个 0600 文件(§6.5) |

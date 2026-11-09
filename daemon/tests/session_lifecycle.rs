@@ -747,6 +747,109 @@ async fn close_and_resume(sock: &std::path::Path, sid: &str) {
     assert_eq!(resumed["result"]["status"], "resumed", "{resumed}");
 }
 
+/// `flock` the file from an open file of the test's own — as another process
+/// would — or `None` when somebody already holds it.
+#[cfg(unix)]
+fn lock_elsewhere(path: &std::path::Path) -> Option<std::fs::File> {
+    use std::os::fd::AsRawFd;
+    let file = std::fs::OpenOptions::new().write(true).open(path).ok()?;
+    // SAFETY: `flock` only reads the descriptor, which `file` keeps open.
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    (rc == 0).then_some(file)
+}
+
+/// A session open in this daemon cannot be written by another one, a session
+/// another one holds is refused rather than handed back under a fresh id, and
+/// a log whose last line a crash cut short still resumes with its history.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_session_log_has_one_writer_and_survives_a_cut_last_line() {
+    let (srv, seen) = start_scripted_server(
+        vec![text_round("noted"), text_round("ostrich")],
+        ask_settings_no_memory(),
+        Duration::ZERO,
+    )
+    .await;
+    let sid = run_turn(&srv.sock, None, "the word is ostrich").await;
+    let lock = srv
+        ._dir
+        .path()
+        .join("sessions")
+        .join(&sid)
+        .join("writer.lock");
+    assert!(
+        lock_elsewhere(&lock).is_none(),
+        "a live session's log is held by its daemon"
+    );
+
+    rpc(
+        &srv.sock,
+        &format!(r#"{{"jsonrpc":"2.0","method":"session.close","id":2,"params":{{"session_id":"{sid}"}}}}"#),
+    )
+    .await;
+    let other = lock_elsewhere(&lock).expect("closing the session let go of its log");
+    for method in ["session.resume", "session.run_turn"] {
+        let resp = rpc(
+            &srv.sock,
+            &format!(
+                r#"{{"jsonrpc":"2.0","method":"{method}","id":3,"params":{{"session_id":"{sid}","message":"x"}}}}"#
+            ),
+        )
+        .await;
+        assert!(
+            resp["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("another process"),
+            "{method}: {resp}"
+        );
+    }
+    drop(other);
+
+    let projects = srv._dir.path().join("projects");
+    let log = std::fs::read_dir(&projects)
+        .unwrap()
+        .flatten()
+        .map(|dir| dir.path().join(format!("{sid}.jsonl")))
+        .find(|path| path.is_file())
+        .expect("the session's log");
+    {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+        file.write_all(br#"{"uuid":"cut","session_id":"#).unwrap();
+    }
+
+    seen.lock().unwrap().clear();
+    let resumed = rpc(
+        &srv.sock,
+        &format!(r#"{{"jsonrpc":"2.0","method":"session.resume","id":4,"params":{{"session_id":"{sid}"}}}}"#),
+    )
+    .await;
+    assert_eq!(resumed["result"]["status"], "resumed", "{resumed}");
+    assert_eq!(
+        run_turn(&srv.sock, Some(&sid), "what was the word").await,
+        sid
+    );
+    let sent = {
+        let requests = seen.lock().unwrap();
+        format!("{:?}", requests.last().expect("a model call").messages)
+    };
+    assert!(
+        sent.contains("the word is ostrich"),
+        "the history was lost: {sent}"
+    );
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        !text.contains(r#""uuid":"cut""#),
+        "the fragment is still in the log"
+    );
+    assert!(text
+        .lines()
+        .all(|line| serde_json::from_str::<serde_json::Value>(line).is_ok()));
+
+    srv.stop().await;
+}
+
 #[tokio::test]
 async fn a_resumed_session_keeps_the_name_somebody_typed() {
     let (srv, _seen) = start_scripted_server_in(
