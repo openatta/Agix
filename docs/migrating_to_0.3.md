@@ -434,6 +434,10 @@ WebAssembly 载体整个移除。
   `secrets_written_to`(改了 settings.local.json 时才有)。settings.json 里这个 server 早先写进去的
   `headers` / `env` 在下次写它时被替换掉;已经提交过的,记得轮换。`mcp.updateServer` 认只在
   settings.local.json 里声明的 server。
+- `--features otel` 构建的 OTLP/HTTP 导出(端口不是 4317 的端点)以前什么也没发出去——没有
+  HTTP 客户端,建导出器时就失败了,只记一条 warn。现在照常发送,端点按 collector 的根地址处理:
+  trace 发到 `<端点>/v1/traces`,指标发到 `<端点>/v1/metrics`。原来写成
+  `http://collector:4318/v1/traces` 这种带信号路径的,改成根地址。
 - `turn_complete` 多了可选的 `truncated: true`:OpenAI 兼容的流既没有 `[DONE]` 也没有
   `finish_reason` 就关了时出现(仍当作回复结束,daemon 另记一条 warn),回复可能不完整;遥测
   `api_request` 上同样标 `truncated: true`。其余情况没有这个键。

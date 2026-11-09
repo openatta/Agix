@@ -8,7 +8,9 @@
 //!
 //! When the `otel` feature is enabled, this module provides an [`OtelExporter`]
 //! that initialises an OTLP pipeline (trace + metrics) against the configured
-//! endpoint. Protocol auto-detection: port 4317 → gRPC, port 4318 → HTTP/protobuf.
+//! endpoint. Protocol auto-detection: port 4317 → gRPC, anything else →
+//! HTTP/protobuf, sent with the workspace's `reqwest` to `<endpoint>/v1/traces`
+//! and `<endpoint>/v1/metrics`.
 //!
 //! # Metrics & spans exported
 //!
@@ -20,7 +22,7 @@
 use std::time::Duration;
 
 use opentelemetry::KeyValue;
-use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_otlp::{WithExportConfig, WithHttpConfig};
 use url::Url;
 
 /// OTLP transport protocol.
@@ -44,6 +46,52 @@ pub fn detect_protocol(endpoint: &str) -> OtelProtocol {
         Some(4317) => OtelProtocol::Grpc,
         Some(4318) => OtelProtocol::HttpProtobuf,
         _ => OtelProtocol::HttpProtobuf,
+    }
+}
+
+/// The OTLP/HTTP exporter's client: `opentelemetry-otlp` ships none unless one
+/// of its own reqwest features is on, and builds nothing without it.
+#[derive(Debug, Clone)]
+struct OtlpHttpClient(reqwest::Client);
+
+#[async_trait::async_trait]
+impl opentelemetry_http::HttpClient for OtlpHttpClient {
+    async fn send(
+        &self,
+        request: opentelemetry_http::Request<Vec<u8>>,
+    ) -> Result<
+        opentelemetry_http::Response<opentelemetry_http::Bytes>,
+        opentelemetry_http::HttpError,
+    > {
+        let response = self
+            .0
+            .execute(reqwest::Request::try_from(request)?)
+            .await?
+            .error_for_status()?;
+        let status = response.status();
+        let headers = response.headers().clone();
+        let mut out = opentelemetry_http::Response::builder()
+            .status(status)
+            .body(response.bytes().await?)?;
+        *out.headers_mut() = headers;
+        Ok(out)
+    }
+}
+
+/// Where one signal goes on an OTLP/HTTP collector: the configured endpoint is
+/// the collector's base, as `OTEL_EXPORTER_OTLP_ENDPOINT` is.
+fn http_signal_endpoint(endpoint: &str, signal: &str) -> String {
+    format!("{}/v1/{signal}", endpoint.trim_end_matches('/'))
+}
+
+/// A collector on this machine is reached directly: reqwest would otherwise
+/// send loopback traffic through an ambient `HTTP(S)_PROXY` too.
+fn is_loopback(endpoint: &str) -> bool {
+    match Url::parse(endpoint).ok().as_ref().and_then(Url::host) {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        Some(url::Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
+        None => false,
     }
 }
 
@@ -224,6 +272,16 @@ pub fn start_otel(endpoint: &str) -> Result<OtelExporter, OtelError> {
     }
 
     let protocol = detect_protocol(endpoint);
+    base::interface::exec::local::install_tls_provider();
+    let mut client = reqwest::Client::builder();
+    if is_loopback(endpoint) {
+        client = client.no_proxy();
+    }
+    let http_client = OtlpHttpClient(
+        client
+            .build()
+            .map_err(|e| OtelError::InitFailed(e.to_string()))?,
+    );
 
     let resource = opentelemetry_sdk::Resource::new(vec![KeyValue::new("service.name", "agix")]);
 
@@ -236,7 +294,8 @@ pub fn start_otel(endpoint: &str) -> Result<OtelExporter, OtelError> {
             .map_err(|e| OtelError::InitFailed(e.to_string()))?,
         OtelProtocol::HttpProtobuf => opentelemetry_otlp::SpanExporter::builder()
             .with_http()
-            .with_endpoint(endpoint)
+            .with_http_client(http_client.clone())
+            .with_endpoint(http_signal_endpoint(endpoint, "traces"))
             .with_timeout(Duration::from_secs(10))
             .build()
             .map_err(|e| OtelError::InitFailed(e.to_string()))?,
@@ -258,7 +317,8 @@ pub fn start_otel(endpoint: &str) -> Result<OtelExporter, OtelError> {
             .map_err(|e| OtelError::InitFailed(e.to_string()))?,
         OtelProtocol::HttpProtobuf => opentelemetry_otlp::MetricExporter::builder()
             .with_http()
-            .with_endpoint(endpoint)
+            .with_http_client(http_client)
+            .with_endpoint(http_signal_endpoint(endpoint, "metrics"))
             .with_timeout(Duration::from_secs(10))
             .build()
             .map_err(|e| OtelError::InitFailed(e.to_string()))?,
@@ -447,6 +507,90 @@ mod tests {
         assert_eq!(
             detect_protocol("https://collector.example.com/v1/traces"),
             OtelProtocol::HttpProtobuf
+        );
+    }
+
+    /// A collector that answers every request with 200 and keeps the path
+    /// each one was sent to.
+    async fn http_collector() -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let paths = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = paths.clone();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let seen = seen.clone();
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    let head_end = loop {
+                        if let Some(at) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                            break at + 4;
+                        }
+                        match sock.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    };
+                    let head = String::from_utf8_lossy(&buf[..head_end]).to_lowercase();
+                    let length: usize = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:"))
+                        .and_then(|v| v.trim().parse().ok())
+                        .unwrap_or(0);
+                    while buf.len() < head_end + length {
+                        match sock.read(&mut chunk).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    let path = head.split_whitespace().nth(1).unwrap_or("").to_string();
+                    seen.lock().unwrap().push(path);
+                    let _ = sock
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                        )
+                        .await;
+                });
+            }
+        });
+        (endpoint, paths)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn spans_and_metrics_reach_an_http_collector() {
+        use opentelemetry::metrics::MeterProvider as _;
+        use opentelemetry::trace::{Span as _, Tracer as _, TracerProvider as _};
+
+        let (endpoint, paths) = http_collector().await;
+        let exporter = start_otel(&endpoint).expect("an HTTP exporter starts");
+        let tracer_provider = exporter.tracer_provider.clone().expect("a tracer");
+        let meter_provider = exporter.meter_provider.clone().expect("a meter");
+        tracer_provider.tracer("agix-test").start("a-span").end();
+        meter_provider
+            .meter("agix-test")
+            .u64_counter("agix.test.count")
+            .build()
+            .add(1, &[]);
+        tokio::task::spawn_blocking(move || flush(Some(&meter_provider), Some(&tracer_provider)))
+            .await
+            .unwrap();
+
+        let paths = paths.lock().unwrap().clone();
+        assert!(paths.iter().any(|p| p == "/v1/traces"), "{paths:?}");
+        assert!(paths.iter().any(|p| p == "/v1/metrics"), "{paths:?}");
+    }
+
+    #[test]
+    fn a_signal_goes_under_the_collector_base() {
+        assert_eq!(
+            http_signal_endpoint("http://c:4318/", "traces"),
+            "http://c:4318/v1/traces"
+        );
+        assert_eq!(
+            http_signal_endpoint("https://c.example/otlp", "metrics"),
+            "https://c.example/otlp/v1/metrics"
         );
     }
 

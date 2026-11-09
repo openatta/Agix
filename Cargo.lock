@@ -161,6 +161,7 @@ dependencies = [
  "model",
  "notify",
  "opentelemetry",
+ "opentelemetry-http",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "permissions",

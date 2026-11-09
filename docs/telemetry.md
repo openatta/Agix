@@ -34,6 +34,12 @@ daemon 用 `--features otel` 编译、配了 `telemetry_url`(或环境变量
 `api_request`(延迟与四项 token,按模型)。其余只在 JSONL 里。没编 `otel` 却配了端点的,
 启动时记一条 warn。
 
+端口是 4317 的走 gRPC,其余走 HTTP/protobuf。HTTP 时端点写 collector 的根地址(如
+`http://collector:4318`),trace 发到 `<端点>/v1/traces`、指标发到 `<端点>/v1/metrics`,与
+`OTEL_EXPORTER_OTLP_ENDPOINT` 的约定相同;`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` /
+`OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` 设了的,按它们原样发。HTTP 导出遵从
+`HTTP(S)_PROXY` / `NO_PROXY`,端点在本机(loopback、`localhost`)时直连。
+
 ### 嵌入方
 
 `telemetry` crate 自己不碰文件也不碰网络:`telemetry::spawn(config, recorders)` 返回一个
