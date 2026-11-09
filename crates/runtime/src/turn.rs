@@ -116,6 +116,7 @@ impl Agent {
                     turn_id: self.current_turn_id.clone(),
                 });
                 if let Some(sc) = crate::commands::parse_slash_command(&content) {
+                    self.record_slash_command(&sc);
                     // `/mcp__<server>__<prompt>` → `prompts/get` on the owning
                     // server; the returned messages become this turn's
                     // content.
@@ -568,6 +569,9 @@ impl Agent {
         }
         self.record_goal_changes().await;
         if let Ok(o) = &outcome {
+            self.spent.usage = self.spent.usage.plus(o.total_usage);
+            self.spent.api_calls = self.spent.api_calls.saturating_add(o.api_calls);
+            self.spent.tool_calls = self.spent.tool_calls.saturating_add(o.tool_calls);
             let _ = self.event_tx.send(AgentEvent::TurnComplete {
                 stop_reason: o.stop_reason.clone(),
                 api_calls: o.api_calls,
@@ -662,10 +666,19 @@ impl Agent {
                 self.session.turn_count,
                 Some(self.current_turn_id.clone()),
                 telemetry::TurnStartPayload {
-                    turn_no: self.session.turn_count,
-                    turn_id: Some(self.current_turn_id.clone()),
                     resumed: false,
                     is_retry: false,
+                },
+            ));
+        let _ = self
+            .telemetry_handle
+            .record(telemetry::TelemetryEvent::user_prompt_submit(
+                &self.session.session_id,
+                self.session.turn_count,
+                Some(self.current_turn_id.clone()),
+                telemetry::UserPromptSubmitPayload {
+                    char_count: u32::try_from(content.chars().count()).unwrap_or(u32::MAX),
+                    attachment_count: u32::try_from(attachments.len()).unwrap_or(u32::MAX),
                 },
             ));
 
@@ -1246,6 +1259,7 @@ impl Agent {
                     Ok(result) => break (result, messages_before_step),
                     Err(failure) => failure,
                 };
+                self.record_api_error(&effective_model, &failure.error, call_started);
                 if cancel.is_cancelled() {
                     break (
                         crate::streaming::StreamResult::cancelled(),
@@ -1419,8 +1433,6 @@ impl Agent {
                         self.session.turn_count,
                         Some(tid),
                         telemetry::TurnCompletePayload {
-                            turn_no: self.session.turn_count,
-                            turn_id: Some(self.current_turn_id.clone()),
                             stop_reason: "stopped_by_hook".into(),
                             api_calls,
                             tool_calls,
@@ -1651,8 +1663,6 @@ impl Agent {
                             self.session.turn_count,
                             Some(tid.clone()),
                             telemetry::TurnCompletePayload {
-                                turn_no: self.session.turn_count,
-                                turn_id: Some(tid),
                                 stop_reason: "stopped_by_hook".into(),
                                 api_calls,
                                 tool_calls,
@@ -1755,8 +1765,6 @@ impl Agent {
                     turn_no,
                     Some(tid.clone()),
                     telemetry::TurnCompletePayload {
-                        turn_no,
-                        turn_id: Some(tid.clone()),
                         stop_reason: stop_reason.clone(),
                         api_calls,
                         tool_calls,
@@ -2171,8 +2179,6 @@ or project context that should survive across sessions.
                 self.session.turn_count,
                 Some(tid.clone()),
                 telemetry::TurnCompletePayload {
-                    turn_no: self.session.turn_count,
-                    turn_id: Some(tid),
                     stop_reason: stop_reason.to_string(),
                     api_calls,
                     tool_calls,
@@ -2182,6 +2188,62 @@ or project context that should survive across sessions.
                     last_tool_name: None,
                     last_tool_was_error: false,
                     turn_duration_ms: start.elapsed().as_millis() as u64,
+                },
+            ));
+    }
+
+    fn record_api_error(
+        &self,
+        model: &str,
+        error: &base::interface::model::ModelError,
+        started: std::time::Instant,
+    ) {
+        use base::interface::model::ModelError;
+        let (error_kind, http_status) = match error {
+            ModelError::Cancelled | ModelError::NotRecorded(_) => return,
+            ModelError::Api { status, .. } => ("api", Some(*status)),
+            ModelError::Auth(_) => ("auth", None),
+            ModelError::RateLimited => ("rate_limited", None),
+            ModelError::Overloaded => ("overloaded", None),
+            ModelError::Network(_) => ("network", None),
+            ModelError::Internal(_) => ("internal", None),
+            ModelError::Unsupported(_) => ("unsupported", None),
+        };
+        let _ = self
+            .telemetry_handle
+            .record(telemetry::TelemetryEvent::api_error(
+                &self.session.session_id,
+                self.session.turn_count,
+                Some(self.current_turn_id.clone()),
+                telemetry::ApiErrorPayload {
+                    model: model.to_string(),
+                    error_kind: error_kind.to_string(),
+                    http_status,
+                    error_message: error.to_string(),
+                    latency_ms: started.elapsed().as_millis() as u64,
+                },
+            ));
+    }
+
+    fn record_slash_command(&self, command: &crate::commands::SlashCommand) {
+        use crate::commands::Command;
+        let kind = match self.commands.resolve(&command.name) {
+            Some(Command::Local { .. }) => "local",
+            Some(Command::Prompt { .. }) => "prompt",
+            Some(Command::McpPrompt { .. }) => "mcp_prompt",
+            None if self.mcp.has_prompt_command(&command.name) => "mcp_prompt",
+            None => "unknown",
+        };
+        let _ = self
+            .telemetry_handle
+            .record(telemetry::TelemetryEvent::slash_command_used(
+                &self.session.session_id,
+                self.session.turn_count,
+                Some(self.current_turn_id.clone()),
+                telemetry::SlashCommandUsedPayload {
+                    command: command.name.clone(),
+                    kind: kind.to_string(),
+                    has_arg: !command.args.trim().is_empty(),
                 },
             ));
     }
@@ -3596,6 +3658,36 @@ async fn fire_ctx_lifecycle_hook(
     let _ = ctx.hooks.run(event, &input).await;
 }
 
+fn record_permission_decision(
+    ctx: &ToolExecCtx,
+    tool: &Arc<dyn base::tool::Tool>,
+    name: &str,
+    input: &serde_json::Value,
+    checked: &base::interface::permission::PermissionOutcome,
+    started: std::time::Instant,
+) {
+    use base::interface::permission::PermissionOutcome;
+    let outcome = match checked {
+        PermissionOutcome::Permit => telemetry::PermissionDecisionOutcome::AutoAllow,
+        PermissionOutcome::Deny { .. } => telemetry::PermissionDecisionOutcome::Deny,
+        PermissionOutcome::Prompt { .. } => telemetry::PermissionDecisionOutcome::Ask,
+    };
+    let _ = ctx
+        .telemetry_handle
+        .record(telemetry::TelemetryEvent::permission_decision(
+            &ctx.session_id,
+            ctx.turn_no,
+            Some(ctx.turn_id.clone()),
+            telemetry::PermissionDecisionPayload {
+                tool_name: name.to_string(),
+                outcome,
+                permission_mode: hook_permission_mode(ctx.session_state.permission_mode()),
+                destructive: tool.is_destructive(input),
+                latency_ms: started.elapsed().as_millis() as u64,
+            },
+        ));
+}
+
 /// A `PushNotification` reaches the host as a `notification` frame and the
 /// `Notification` hook, which is the same hook a pending permission prompt
 /// rings.
@@ -3943,11 +4035,13 @@ async fn execute_tool_inner(
     }
 
     use base::interface::permission::PermissionOutcome;
-    match ctx
+    let check_started = std::time::Instant::now();
+    let checked = ctx
         .permission
         .check(name, &input, &ctx.cwd, &ctx.session_id)
-        .await
-    {
+        .await;
+    record_permission_decision(ctx, &tool, name, &input, &checked, check_started);
+    match checked {
         PermissionOutcome::Permit => {}
         PermissionOutcome::Deny { reason } => {
             fire_ctx_lifecycle_hook(ctx, hooks::HookEvent::PermissionDenied, |i| {

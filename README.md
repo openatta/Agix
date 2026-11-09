@@ -168,7 +168,7 @@ monitors and structured output ([table below](#tools--40-built-in)).
 **Records**
 - An append-only JSONL history that can be resumed, forked or rebuilt after
   a crash.
-- 37 telemetry event types, with OpenTelemetry export.
+- 22 telemetry event types, with OpenTelemetry export.
 - A recorder for byte-exact offline replay.
 - Session export as a zip archive or a directory, sub-agents included.
 
@@ -519,7 +519,7 @@ names a provider does that provider's model read the page and answer the call's
 - **Compaction**: an LLM summary first, then cheaper fallbacks (snip,
   micro-compact, collapse), behind a predictive trigger and a circuit breaker,
   emitting cache edits so compaction does not throw away the prompt cache.
-- **Telemetry**: 37 structured event types (`EventPayload` (37)) with
+- **Telemetry**: 22 structured event types (`EventPayload` (22)) with
   OpenTelemetry export, four token counts per call, and the calls no turn asked
   for — compaction, memory, hooks, search — counted too.
 - **Recorder**: wrap any `Model` and a session becomes a self-contained

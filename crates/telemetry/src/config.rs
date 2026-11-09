@@ -2,10 +2,10 @@
 //!
 //! This crate never talks to the network itself: `enabled`/`mode` gate the
 //! whole pipeline, `event_toggles`/`default_event_enabled` gate individual
-//! event kinds (see `EventPayload::kind`), and `redact_prompts`/
-//! `redact_tool_content` control what gets scrubbed before events reach the
-//! caller-supplied `TelemetryRecorder` callbacks. Where those events end up
-//! (file, HTTP, OTLP, …) is entirely the caller's decision.
+//! event kinds (see `EventPayload::kind`). Error messages are scrubbed before
+//! events reach the caller-supplied `TelemetryRecorder` callbacks (see
+//! `spawn`). Where those events end up (file, HTTP, OTLP, …) is entirely the
+//! caller's decision.
 
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -13,8 +13,7 @@ use std::collections::HashMap;
 /// Telemetry configuration.
 ///
 /// `Default` is implemented by hand rather than derived: a derived `Default`
-/// would give every `bool` field `false` (including `redact_prompts` and
-/// `default_event_enabled`), silently diverging from what `serde` produces
+/// would give every `bool` field `false` (including `default_event_enabled`), silently diverging from what `serde` produces
 /// for an absent/empty `telemetry` block in settings.json (`default_true`).
 /// Callers building a config in Rust via `..Default::default()` need the two
 /// to agree, or a struct-update literal quietly disables redaction and every
@@ -24,14 +23,10 @@ use std::collections::HashMap;
 pub struct TelemetryConfig {
     pub enabled: bool,
     pub mode: TelemetryMode,
-    #[serde(default = "default_true")]
-    pub redact_prompts: bool,
-    #[serde(default = "default_true")]
-    pub redact_tool_content: bool,
     #[serde(skip)]
     pub queue_size: usize,
     /// Per-event-kind enable switch, keyed by `EventPayload::kind()` (e.g.
-    /// `"tool_execution"`, `"mcp_tool_call"`). Kinds absent from this map
+    /// `"tool_execution"`, `"api_request"`). Kinds absent from this map
     /// fall back to `default_event_enabled`.
     #[serde(default)]
     pub event_toggles: HashMap<String, bool>,
@@ -45,8 +40,6 @@ impl Default for TelemetryConfig {
         Self {
             enabled: false,
             mode: TelemetryMode::default(),
-            redact_prompts: true,
-            redact_tool_content: true,
             queue_size: 0,
             event_toggles: HashMap::new(),
             default_event_enabled: true,

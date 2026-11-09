@@ -12,7 +12,6 @@
 //! blocks the agent.
 
 pub mod config;
-pub mod cost;
 pub mod events;
 pub mod file_recorder;
 pub mod handle;
@@ -21,22 +20,16 @@ pub mod perf;
 pub mod recorder;
 pub mod redact;
 pub mod spawn;
-pub mod stats;
 
 pub use config::{TelemetryConfig, TelemetryMode};
 pub use events::{
-    AgentCompletedPayload, AgentMessagePayload, AgentSpawnedPayload, ApiErrorPayload,
-    ApiRequestPayload, BudgetEnforcedAction, BudgetEnforcedPayload, CompactActionPayload,
-    CompactOutcome, ConfigLoadedPayload, ContextWindowReportPayload, ErrorRecordPayload,
-    EventPayload, FileOperationPayload, HookExecutionPayload, IntentClassifiedPayload,
-    InterruptSignalPayload, McpConnectionErrorPayload, McpServerConnectedPayload,
-    McpServerDisconnectedPayload, McpToolCallPayload, MemorySnapshotPayload, ModelRoutePayload,
-    OutcomeRecordPayload, PermissionDecisionOutcome, PermissionDecisionPayload,
-    ResumeActionPayload, ResumeOutcome, SessionEndPayload, SessionStartPayload,
-    ShutdownSignalPayload, SlashCommandUsedPayload, StartupTimingPayload, TeamStageCompletePayload,
-    TelemetryEvent, ToolCancelledPayload, ToolDecisionPayload, ToolExecutionPayload, ToolOutcome,
-    ToolStartPayload, TuiActionPayload, TurnCompletePayload, TurnStartPayload,
-    UserPromptSubmitPayload,
+    AgentCompletedPayload, AgentSpawnedPayload, ApiErrorPayload, ApiRequestPayload,
+    BudgetEnforcedAction, BudgetEnforcedPayload, CompactActionPayload, EventPayload,
+    McpConnectionErrorPayload, McpServerConnectedPayload, PermissionDecisionOutcome,
+    PermissionDecisionPayload, ResumeActionPayload, ResumeOutcome, SessionEndPayload,
+    SessionStartPayload, ShutdownSignalPayload, SlashCommandUsedPayload, StartupTimingPayload,
+    TeamStageCompletePayload, TelemetryEvent, ToolCancelledPayload, ToolExecutionPayload,
+    ToolOutcome, ToolStartPayload, TurnCompletePayload, TurnStartPayload, UserPromptSubmitPayload,
 };
 pub use file_recorder::FileRecorder;
 pub use handle::{

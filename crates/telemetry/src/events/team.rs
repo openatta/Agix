@@ -2,25 +2,28 @@
 
 use serde::Serialize;
 
-use crate::RedactionPolicy;
-
-/// Agent 创建事件的载荷（Team 模式）。
+/// A sub-agent started: one the `Agent` tool runs, or a team member.
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentSpawnedPayload {
+    /// The sub-agent's label (`<type>#<id>`) or the team member's label.
     pub agent_id: String,
+    /// Its agent type; `default` when none was asked for.
     pub role: String,
-    pub model: String,
-    pub parent_agent_id: Option<String>,
-    pub stage_name: String,
+    /// The model it runs on, when the spawn site knows it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The team stage it belongs to; `None` outside a team.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage_name: Option<String>,
+    /// Whether it runs in the background (`run_in_background`).
+    pub background: bool,
 }
 
-/// Agent 完成事件的载荷（Team 模式）。
+/// A sub-agent finished.
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentCompletedPayload {
     pub agent_id: String,
     pub role: String,
-    pub turn_count: u32,
-    pub tool_call_count: u32,
     pub had_error: bool,
     pub duration_ms: u64,
 }
@@ -35,28 +38,10 @@ pub struct TeamStageCompletePayload {
     pub agents_with_errors: usize,
 }
 
-/// Agent 间消息事件的载荷。
-#[derive(Debug, Clone, Serialize)]
-pub struct AgentMessagePayload {
-    pub sender_id: String,
-    pub receiver_id: String,
-    pub content_size: u64,
-    pub is_command: bool,
-    pub error_message: Option<String>,
-}
-
-impl AgentMessagePayload {
-    pub(crate) fn redact(mut self, _policy: &RedactionPolicy) -> Self {
-        self.error_message = self.error_message.map(|_| "[REDACTED]".to_string());
-        self
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::events::TelemetryEvent;
-    use crate::redact::RedactionPolicy;
 
     #[test]
     fn agent_spawned_serializes() {
@@ -67,9 +52,9 @@ mod tests {
             AgentSpawnedPayload {
                 agent_id: "agent_02".into(),
                 role: "researcher".into(),
-                model: "claude-sonnet-4-6".into(),
-                parent_agent_id: Some("agent_01".into()),
-                stage_name: "research".into(),
+                model: Some("claude-sonnet-4-6".into()),
+                stage_name: Some("research".into()),
+                background: false,
             },
         );
         assert_eq!(event.kind(), "agent_spawned");
@@ -88,8 +73,6 @@ mod tests {
             AgentCompletedPayload {
                 agent_id: "agent_02".into(),
                 role: "researcher".into(),
-                turn_count: 5,
-                tool_call_count: 12,
                 had_error: false,
                 duration_ms: 45000,
             },
@@ -98,7 +81,7 @@ mod tests {
         let v =
             serde_json::to_value(event).expect("serialization of telemetry event should not fail");
         assert_eq!(v["type"], "agent_completed");
-        assert_eq!(v["turn_count"], 5);
+        assert_eq!(v["duration_ms"], 45000);
     }
 
     #[test]
@@ -120,29 +103,5 @@ mod tests {
             serde_json::to_value(event).expect("serialization of telemetry event should not fail");
         assert_eq!(v["type"], "team_stage_complete");
         assert_eq!(v["agent_count"], 3);
-    }
-
-    #[test]
-    fn agent_message_serializes_and_redacts() {
-        let policy = RedactionPolicy::all();
-        let event = TelemetryEvent::agent_message(
-            "sess",
-            6,
-            None,
-            AgentMessagePayload {
-                sender_id: "agent_01".into(),
-                receiver_id: "agent_02".into(),
-                content_size: 2048,
-                is_command: true,
-                error_message: Some("timeout".into()),
-            },
-        )
-        .redact(&policy);
-        assert_eq!(event.kind(), "agent_message");
-        let v =
-            serde_json::to_value(event).expect("serialization of telemetry event should not fail");
-        assert_eq!(v["type"], "agent_message");
-        assert_eq!(v["sender_id"], "agent_01");
-        assert_eq!(v["error_message"], "[REDACTED]");
     }
 }

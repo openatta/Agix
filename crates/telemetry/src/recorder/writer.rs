@@ -91,12 +91,8 @@ impl RecordingWriter {
     /// unreferenced one costs disk and nothing else, and a re-record of similar
     /// content reuses them.
     fn open(&self) -> std::io::Result<BufWriter<std::fs::File>> {
-        std::fs::create_dir_all(&self.dir)?;
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(self.dir.join("calls.jsonl"))?;
+        super::private_dir(&self.dir)?;
+        let file = super::private_file(&self.dir.join("calls.jsonl"))?;
         let mut writer = BufWriter::new(file);
         let header = serde_json::to_string(&Record::Recording(self.header.clone()))
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -229,5 +225,22 @@ mod tests {
         let writer = RecordingWriter::create(root.path(), header("run"));
         writer.blobs().put(&"content").unwrap();
         assert!(root.path().join("run").join("blobs").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_recording_is_readable_by_its_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let writer = RecordingWriter::create(root.path(), header("run"));
+        writer.append(&chunk(0)).unwrap();
+        let id = writer.blobs().put(&"content").unwrap();
+        let mode =
+            |p: std::path::PathBuf| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let run = root.path().join("run");
+        assert_eq!(mode(run.clone()), 0o700);
+        assert_eq!(mode(run.join("calls.jsonl")), 0o600);
+        assert_eq!(mode(run.join("blobs")), 0o700);
+        assert_eq!(mode(run.join("blobs").join(&id.0)), 0o600);
     }
 }

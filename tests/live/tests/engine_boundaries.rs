@@ -145,6 +145,8 @@ async fn a_turns_telemetry_names_its_calls_and_its_tools() -> anyhow::Result<()>
     for expected in [
         "session_start",
         "turn_start",
+        "user_prompt_submit",
+        "permission_decision",
         "tool_start",
         "tool_execution",
         "turn_complete",
@@ -167,7 +169,36 @@ async fn a_turns_telemetry_names_its_calls_and_its_tools() -> anyhow::Result<()>
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: a sub-agent the Agent tool runs records no agent_spawned / agent_completed — only the team coordinator emits them (team/src/coordinator.rs:389; agents/src/agent_tool.rs never does)"]
+async fn cost_reports_what_the_provider_counted_and_telemetry_names_the_command(
+) -> anyhow::Result<()> {
+    let stub = ProviderStub::start().await?;
+    let mut run = stubbed("telemetry-cost", &stub).start().await?;
+    let output = run.world.telemetry_file("cost.jsonl");
+    let session = run
+        .session_with(json!({ "options": { "telemetry": { "output": output.to_string_lossy() } } }))
+        .await?;
+    stub.script([Reply::text("hello")]);
+    run.turn(&session, "say hello").await?;
+    let cost = run.turn(&session, "/cost").await?;
+    assert!(
+        cost.text
+            .starts_with("Since this session was loaded: 1 model calls, 0 tool calls;"),
+        "{}",
+        cost.text
+    );
+    let events = telemetry_until(&output, |e| kinds(e).contains(&"slash_command_used")).await;
+    let used = events
+        .iter()
+        .find(|e| e["type"] == "slash_command_used")
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(used["command"], "cost", "{used}");
+    assert_eq!(used["kind"], "local", "{used}");
+    run.finish().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_sub_agent_shows_in_its_sessions_telemetry() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let mut run = stubbed("telemetry-agent", &stub).start().await?;

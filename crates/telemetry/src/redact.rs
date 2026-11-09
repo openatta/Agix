@@ -124,14 +124,9 @@ const SENSITIVE_ENV_SUFFIXES: &[&str] = &[
 /// `[REDACTED]` before telemetry events leave the process.
 #[derive(Debug, Clone, Copy)]
 pub struct RedactionPolicy {
-    /// Whether to replace prompt/user text content.
-    pub redact_prompts: bool,
-    /// Whether to replace tool input/result content.
-    pub redact_tool_content: bool,
-    /// Whether to replace error message content (may contain paths/PII).
+    /// Whether to replace an error message whole. When off, the pattern
+    /// rules below scrub it instead.
     pub redact_error_messages: bool,
-    /// Whether to replace auth/secret/key related fields.
-    pub redact_secrets: bool,
     /// Whether to replace file paths containing usernames
     /// (e.g. `/Users/xbits/` -> `[REDACTED_PATH]`).
     pub redact_paths: bool,
@@ -148,10 +143,7 @@ impl RedactionPolicy {
     /// All redactions disabled — no PII scrubbing.
     pub fn none() -> Self {
         Self {
-            redact_prompts: false,
-            redact_tool_content: false,
             redact_error_messages: false,
-            redact_secrets: false,
             redact_paths: false,
             redact_emails: false,
             redact_ip_addresses: false,
@@ -162,10 +154,7 @@ impl RedactionPolicy {
     /// All redactions enabled — strictest policy.
     pub fn all() -> Self {
         Self {
-            redact_prompts: true,
-            redact_tool_content: true,
             redact_error_messages: true,
-            redact_secrets: true,
             redact_paths: true,
             redact_emails: true,
             redact_ip_addresses: true,
@@ -180,10 +169,7 @@ impl RedactionPolicy {
     /// a broad pattern that may match non-PII paths).
     pub fn recommended() -> Self {
         Self {
-            redact_prompts: true,
-            redact_tool_content: true,
             redact_error_messages: true,
-            redact_secrets: true,
             redact_paths: false,
             redact_emails: true,
             redact_ip_addresses: false,
@@ -226,19 +212,22 @@ impl RedactionPolicy {
         result
     }
 
-    /// Check if any content-level redaction is active.
-    pub fn has_content_redaction(&self) -> bool {
-        self.redact_prompts || self.redact_tool_content
+    /// An error message as this policy lets it leave the process: replaced
+    /// whole under `redact_error_messages`, otherwise put through
+    /// [`Self::apply`].
+    pub fn scrub_message(&self, message: &str) -> String {
+        match (self.redact_error_messages, message.is_empty()) {
+            (_, true) => String::new(),
+            (true, false) => "[REDACTED]".to_string(),
+            (false, false) => self.apply(message),
+        }
     }
 }
 
 impl Default for RedactionPolicy {
     fn default() -> Self {
         Self {
-            redact_prompts: true,
-            redact_tool_content: true,
             redact_error_messages: true,
-            redact_secrets: true,
             redact_paths: false,
             redact_emails: true,
             redact_ip_addresses: false,
@@ -543,10 +532,7 @@ mod tests {
     #[test]
     fn recommended_policy_has_expected_flags() {
         let r = RedactionPolicy::recommended();
-        assert!(r.redact_prompts);
-        assert!(r.redact_tool_content);
         assert!(r.redact_error_messages);
-        assert!(r.redact_secrets);
         assert!(!r.redact_paths);
         assert!(r.redact_emails);
         assert!(!r.redact_ip_addresses);
@@ -602,17 +588,18 @@ mod tests {
     }
 
     #[test]
-    fn content_redation_true_when_prompts_enabled() {
-        let policy = RedactionPolicy {
-            redact_prompts: true,
-            ..RedactionPolicy::none()
+    fn a_message_is_replaced_whole_or_scrubbed_by_pattern() {
+        let message = "mail ops@example.com about /Users/me/x";
+        assert_eq!(RedactionPolicy::all().scrub_message(message), "[REDACTED]");
+        let patterns = RedactionPolicy {
+            redact_error_messages: false,
+            ..RedactionPolicy::all()
         };
-        assert!(policy.has_content_redaction());
-    }
-
-    #[test]
-    fn content_redation_false_when_disabled() {
-        let policy = RedactionPolicy::none();
-        assert!(!policy.has_content_redaction());
+        assert_eq!(
+            patterns.scrub_message(message),
+            "mail [REDACTED_EMAIL] about [REDACTED_PATH]/x"
+        );
+        assert_eq!(RedactionPolicy::none().scrub_message(message), message);
+        assert_eq!(RedactionPolicy::all().scrub_message(""), "");
     }
 }

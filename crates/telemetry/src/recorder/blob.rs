@@ -15,7 +15,9 @@
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 /// A blob's identity: the first 16 hex characters of the SHA-256 of its
 /// canonical JSON encoding.
@@ -54,12 +56,16 @@ impl std::fmt::Display for BlobId {
 #[derive(Debug, Clone)]
 pub struct BlobStore {
     dir: PathBuf,
+    /// The blobs this store has written or checked, which a recording puts
+    /// again on every call (each call's history is mostly the last call's).
+    known: Arc<Mutex<HashSet<BlobId>>>,
 }
 
 impl BlobStore {
     pub fn new(recording_dir: &Path) -> Self {
         Self {
             dir: recording_dir.join("blobs"),
+            known: Arc::default(),
         }
     }
 
@@ -79,9 +85,20 @@ impl BlobStore {
     /// reported and the correct content restored.
     pub fn put_raw(&self, json: &str) -> Result<BlobId, std::io::Error> {
         let id = BlobId::of(json);
+        if self.is_known(&id) {
+            return Ok(id);
+        }
         let path = self.dir.join(&id.0);
-        match std::fs::read_to_string(&path) {
-            Ok(existing) if existing == json => return Ok(id),
+        let on_disk = match std::fs::metadata(&path) {
+            Ok(meta) if meta.len() == json.len() as u64 => std::fs::read_to_string(&path),
+            Ok(_) => Ok(String::new()),
+            Err(e) => Err(e),
+        };
+        match on_disk {
+            Ok(existing) if existing == json => {
+                self.remember(id.clone());
+                return Ok(id);
+            }
             Ok(_) => {
                 tracing::warn!(
                     blob = %id,
@@ -93,9 +110,24 @@ impl BlobStore {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e),
         }
-        std::fs::create_dir_all(&self.dir)?;
-        std::fs::write(&path, json)?;
+        super::private_dir(&self.dir)?;
+        std::io::Write::write_all(&mut super::private_file(&path)?, json.as_bytes())?;
+        self.remember(id.clone());
         Ok(id)
+    }
+
+    fn is_known(&self, id: &BlobId) -> bool {
+        self.known
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(id)
+    }
+
+    fn remember(&self, id: BlobId) {
+        self.known
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id);
     }
 
     pub fn get<T: DeserializeOwned>(&self, id: &BlobId) -> Result<Option<T>, std::io::Error> {
@@ -176,12 +208,23 @@ mod tests {
         std::fs::write(&path, "tampered").unwrap();
         assert_eq!(store.get_raw(&id).unwrap().as_deref(), Some("tampered"));
 
-        let again = store.put(&"original").unwrap();
+        let later = BlobStore::new(dir.path());
+        let again = later.put(&"original").unwrap();
         assert_eq!(again, id);
         assert_eq!(
             store.get::<String>(&id).unwrap().as_deref(),
             Some("original"),
             "re-recording must not leave a blob whose content contradicts its id"
         );
+    }
+
+    #[test]
+    fn a_blob_put_again_is_not_read_back() {
+        let (store, dir) = store();
+        let id = store.put(&"original").unwrap();
+        let path = dir.path().join("blobs").join(&id.0);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(store.put(&"original").unwrap(), id);
+        assert!(!path.exists(), "the second put went to disk");
     }
 }

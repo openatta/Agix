@@ -386,6 +386,8 @@ pub struct Agent {
     pub(crate) last_had_tool_uses: bool,
     /// The current turn's most recent model call, `None` before it makes one.
     pub(crate) last_call_usage: Option<base::interface::model::Usage>,
+    /// What this session's turns have spent since it was loaded.
+    pub(crate) spent: SessionSpend,
     /// Permission denials this session, for telemetry.
     ///
     /// Atomic and `Arc`-shared rather than a plain `u32` because the input
@@ -727,9 +729,6 @@ impl Agent {
         self.fire_lifecycle_hook(hooks::HookEvent::SessionEnd, |i| i)
             .await;
 
-        // Token/cost/api-call/tool-call/error totals aren't accumulated
-        // anywhere on `Agent` today (see `/cost`'s own char-count estimate,
-        // which is explicitly rough) — left at 0 rather than fabricated.
         let duration_ms = run_started.elapsed().as_millis() as i64;
         let _ = self
             .telemetry_handle
@@ -740,17 +739,15 @@ impl Agent {
                 telemetry::SessionEndPayload {
                     duration_ms,
                     total_turns: self.session.turn_count,
-                    total_api_calls: 0,
-                    total_tool_calls: 0,
+                    total_api_calls: self.spent.api_calls,
+                    total_tool_calls: self.spent.tool_calls,
                     total_permission_denials: self
                         .permission_denial_count
                         .load(std::sync::atomic::Ordering::Relaxed),
-                    total_errors: 0,
-                    total_input_tokens: 0,
-                    total_output_tokens: 0,
-                    total_cache_creation: 0,
-                    total_cache_read: 0,
-                    total_cost_usd: 0.0,
+                    total_input_tokens: self.spent.usage.input_tokens.into(),
+                    total_output_tokens: self.spent.usage.output_tokens.into(),
+                    total_cache_creation: self.spent.usage.cache_creation_input_tokens.into(),
+                    total_cache_read: self.spent.usage.cache_read_input_tokens.into(),
                     stop_reason: exit_reason.to_string(),
                 },
             ));
@@ -1033,24 +1030,29 @@ impl Agent {
 
     /// `/cost` — show estimated session API cost.
     pub(crate) fn handle_cost_command(&self) -> String {
-        let messages = self.session.messages();
-        let total_chars: usize = messages
-            .iter()
-            .flat_map(|m| m.content.iter())
-            .map(|b| match b {
-                base::interface::model::ModelContentBlock::Text { text } => text.len(),
-                _ => 100, // rough estimate for tool blocks
-            })
-            .sum();
-        let est_tokens = total_chars / 4;
-        let est_cost = est_tokens as f64 * 3.0 / 1_000_000.0; // input cost estimate
+        let SessionSpend {
+            usage,
+            api_calls,
+            tool_calls,
+        } = self.spent;
         format!(
-            "Session: {} messages, ~{} tokens, est. cost ${:.4}",
-            messages.len(),
-            est_tokens,
-            est_cost
+            "Since this session was loaded: {api_calls} model calls, {tool_calls} tool calls; \
+             {} input tokens, {} output tokens, {} written to and {} read from the prompt \
+             cache, as the provider reported them. Sub-agents' spending is on their own tasks.",
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cache_creation_input_tokens,
+            usage.cache_read_input_tokens,
         )
     }
+}
+
+/// A session's model calls and tool calls, summed over its turns.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct SessionSpend {
+    pub usage: base::interface::model::Usage,
+    pub api_calls: u32,
+    pub tool_calls: u32,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -2578,6 +2580,7 @@ impl Builder {
                 request_overhead_tokens: 0,
                 last_had_tool_uses: true, // true → first turn scans for skills
                 last_call_usage: None,
+                spent: SessionSpend::default(),
                 permission_denial_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
                 compact_warning_issued: false,
                 tool_results_ever_cleared: false,

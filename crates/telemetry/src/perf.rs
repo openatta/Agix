@@ -121,7 +121,7 @@ impl PerfCollector {
         let len = sorted.len() as f64;
         let max = sorted[sorted.len() - 1];
         Some(MetricStats {
-            last: max,
+            last: values[values.len() - 1],
             avg: sorted.iter().sum::<f64>() / len,
             min: sorted[0],
             max,
@@ -191,5 +191,17 @@ mod tests {
         assert!(perf.stats("test", "a").is_some());
         perf.reset();
         assert!(perf.stats("test", "a").is_none());
+    }
+
+    #[test]
+    fn last_is_the_most_recent_value_not_the_largest() {
+        let perf = PerfCollector::new();
+        for v in [5.0, 9.0, 2.0] {
+            perf.record("turn", "total", v);
+        }
+        let stats = perf.stats("turn", "total").unwrap();
+        assert_eq!(stats.last, 2.0);
+        assert_eq!(stats.max, 9.0);
+        assert_eq!(stats.min, 2.0);
     }
 }

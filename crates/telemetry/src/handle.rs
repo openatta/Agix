@@ -66,6 +66,9 @@ pub enum TelemetryHandleError {
     /// 遥测未启用（handle 是 Noop）。
     #[error("telemetry not enabled")]
     NotEnabled,
+    /// A recorder could not write the event.
+    #[error("telemetry recorder could not write: {0}")]
+    Io(String),
 }
 
 impl TelemetryHandle {
@@ -204,8 +207,6 @@ mod tests {
             1,
             None,
             TurnStartPayload {
-                turn_no: 1,
-                turn_id: None,
                 resumed: false,
                 is_retry: false,
             },

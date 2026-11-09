@@ -539,6 +539,9 @@ pub(crate) struct SubRun {
     output_schema: Option<Value>,
     /// A mode the caller asked for (a team's), held to the parent's.
     permission_mode: Option<base::interface::settings::PermissionMode>,
+    /// A `TeamCreate` member, whose spawn and completion the team
+    /// coordinator records with its stage.
+    team_member: bool,
 }
 
 impl SubRun {
@@ -1967,6 +1970,72 @@ fn scene_is_narrower_or_equal(candidate: &dyn Scene, parent: &dyn Scene) -> bool
         .all(|t| !parent_deny.contains(t) && (parent_allow.is_empty() || parent_allow.contains(t)))
 }
 
+/// The `agent_spawned` / `agent_completed` pair for one sub-agent run, in
+/// the telemetry of the session that spawned it. The sub-agent's own events
+/// go to the same handle under its own session id, which is `agent_id`.
+struct SpawnTelemetry {
+    handle: TelemetryHandle,
+    parent_session_id: String,
+    parent_turn: u32,
+    agent_id: String,
+    role: String,
+    started: std::time::Instant,
+}
+
+impl SpawnTelemetry {
+    fn start(
+        inner: &Inner,
+        parent: Option<(&str, u32, &str)>,
+        agent_session_id: &str,
+        agent_type: Option<&str>,
+        model: &str,
+        background: bool,
+    ) -> Option<Self> {
+        let handle = inner.telemetry_handle()?;
+        let (parent_session_id, parent_turn) = match parent {
+            Some((sid, turn, _)) => (sid.to_string(), turn),
+            None => (inner.parent_session_id().unwrap_or_default(), 0),
+        };
+        let role = agent_type.unwrap_or("default").to_string();
+        let _ = handle.record(telemetry::TelemetryEvent::agent_spawned(
+            &parent_session_id,
+            parent_turn,
+            None,
+            telemetry::AgentSpawnedPayload {
+                agent_id: agent_session_id.to_string(),
+                role: role.clone(),
+                model: (!model.is_empty()).then(|| model.to_string()),
+                stage_name: None,
+                background,
+            },
+        ));
+        Some(Self {
+            handle,
+            parent_session_id,
+            parent_turn,
+            agent_id: agent_session_id.to_string(),
+            role,
+            started: std::time::Instant::now(),
+        })
+    }
+
+    fn finish(self, result: &Result<String, base::error::ToolError>) {
+        let _ = self
+            .handle
+            .record(telemetry::TelemetryEvent::agent_completed(
+                &self.parent_session_id,
+                self.parent_turn,
+                None,
+                telemetry::AgentCompletedPayload {
+                    agent_id: self.agent_id,
+                    role: self.role,
+                    had_error: result.is_err(),
+                    duration_ms: self.started.elapsed().as_millis() as u64,
+                },
+            ));
+    }
+}
+
 /// Everything needed to re-emit one sub-agent's events on the parent's
 /// channel. Built once per spawn; cloned into the collector task.
 #[derive(Clone)]
@@ -2788,6 +2857,7 @@ impl AgentTool {
             None,
             SubRun {
                 permission_mode,
+                team_member: true,
                 ..SubRun::default()
             },
         )
@@ -2891,6 +2961,16 @@ impl AgentTool {
             None,
         )
         .await;
+        let spawned = (!run.team_member).then(|| {
+            SpawnTelemetry::start(
+                &self.inner,
+                parent,
+                &sid_for_hook,
+                subagent_type,
+                &settings.model.model_name,
+                false,
+            )
+        });
         let (result, cancelled) = run_one_turn_detached(
             &sid_for_hook,
             agent,
@@ -2902,6 +2982,9 @@ impl AgentTool {
             run.task.clone(),
         )
         .await;
+        if let Some(spawned) = spawned.flatten() {
+            spawned.finish(&result);
+        }
         self.fire_subagent_hook(
             hooks::HookEvent::SubagentStop,
             &sid_for_hook,
@@ -3530,6 +3613,14 @@ impl AgentTool {
         }
 
         open_inbox(run.task.as_deref(), &agent);
+        let spawned = SpawnTelemetry::start(
+            inner,
+            None,
+            &sid_for_meta,
+            subagent_type,
+            &settings.model.model_name,
+            true,
+        );
         let (result, cancelled) = run_one_turn(
             &mut agent,
             &mut event_rx,
@@ -3540,6 +3631,9 @@ impl AgentTool {
             run.task.as_deref(),
         )
         .await;
+        if let Some(spawned) = spawned {
+            spawned.finish(&result);
+        }
         drop(input_tx);
         mark_sidechain_terminal(history_store.as_ref(), &sid_for_meta, &result, cancelled).await;
         result

@@ -10,22 +10,9 @@ use crate::RedactionPolicy;
 /// from — a turn is several calls, and every other number the engine reports is
 /// per turn.
 ///
-/// # What is not on it
-///
-/// It had four more fields and no producer at all. Each of them was a number
-/// nothing could have filled truthfully, and a telemetry field that is always
-/// zero is worse than an absent one: it reads as a measurement.
-///
-/// - `cache_creation` / `cache_read` — the cross-provider [`Usage`] carries
-///   input and output and nothing else. Cache accounting is Anthropic's shape;
-///   OpenAI's chunk usage has no equivalent, so putting it on the shared type
-///   would make every provider answer a question one of them asks.
-/// - `ttfb_ms` — time to first token is measured where the stream is consumed,
-///   which is not where a call is accounted for.
-/// - `retry_count` — retries happen inside the client, under the model
-///   contract, and do not surface through it.
-///
-/// [`Usage`]: base::interface::model::Usage
+/// No time-to-first-token and no retry count: the first is measured where the
+/// stream is consumed, not where a call is accounted for, and retries happen
+/// inside the client, under the model contract.
 #[derive(Debug, Clone, Serialize)]
 pub struct ApiRequestPayload {
     pub model: String,
@@ -33,9 +20,7 @@ pub struct ApiRequestPayload {
     pub output_tokens: u64,
     /// Tokens this call wrote into the prompt cache, and tokens it read back
     /// from it. Separate fields because they are separate prices — a read is
-    /// a fraction of ordinary input and a write is a premium on it — and
-    /// `crate::cost` has priced all four since it was written, with nothing
-    /// feeding it the last two.
+    /// a fraction of ordinary input and a write is a premium on it.
     pub cache_creation_tokens: u64,
     pub cache_read_tokens: u64,
     /// Wall clock for the whole call, request to last event.
@@ -54,45 +39,20 @@ pub struct ApiRequestPayload {
     pub purpose: Option<String>,
 }
 
-/// API 请求失败事件的载荷。
+/// A model call that failed: the provider refused it, or its stream broke
+/// before the reply was complete. Emitted once per failed attempt, whether
+/// or not the turn then recovers.
 #[derive(Debug, Clone, Serialize)]
 pub struct ApiErrorPayload {
     pub model: String,
+    /// `api`, `auth`, `rate_limited`, `overloaded`, `network`, `internal`,
+    /// `unsupported`.
     pub error_kind: String,
-    pub http_status: u16,
+    /// The HTTP status, for an `api` error.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
     pub error_message: String,
     pub latency_ms: u64,
-    pub retry_count: u32,
-}
-
-/// 模型路由决策事件的载荷（含 fallback）。
-#[derive(Debug, Clone, Serialize)]
-pub struct ModelRoutePayload {
-    pub requested_model: String,
-    pub resolved_model: String,
-    pub reason: String,
-    pub is_fallback: bool,
-    pub is_escalated: bool,
-}
-
-/// 意图分类事件的载荷。
-#[derive(Debug, Clone, Serialize)]
-pub struct IntentClassifiedPayload {
-    pub heuristic_class: Option<String>,
-    pub llm_class: Option<String>,
-    pub llm_latency_ms: u64,
-    pub cache_hit: bool,
-}
-
-/// 上下文窗口状态报告事件的载荷（压缩决策前）。
-#[derive(Debug, Clone, Serialize)]
-pub struct ContextWindowReportPayload {
-    pub total_tokens: u64,
-    pub message_count: usize,
-    pub tool_result_tokens: u64,
-    pub compact_eligible: bool,
-    pub exceeded_threshold: bool,
-    pub threshold_pct: f64,
 }
 
 /// 会话 token 预算强制执行事件的载荷——`max_budget_tokens` 90% 提醒注入
@@ -114,8 +74,8 @@ pub enum BudgetEnforcedAction {
 }
 
 impl ApiErrorPayload {
-    pub(crate) fn redact(mut self, _policy: &RedactionPolicy) -> Self {
-        self.error_message = crate::events::redact_string(&self.error_message);
+    pub(crate) fn redact(mut self, policy: &RedactionPolicy) -> Self {
+        self.error_message = policy.scrub_message(&self.error_message);
         self
     }
 }
@@ -135,11 +95,10 @@ mod tests {
             None,
             ApiErrorPayload {
                 model: "claude".into(),
-                error_kind: "rate_limited".into(),
-                http_status: 429,
+                error_kind: "api".into(),
+                http_status: Some(429),
                 error_message: "You have exceeded your rate limit".into(),
                 latency_ms: 500,
-                retry_count: 0,
             },
         )
         .redact(&policy);
@@ -147,7 +106,7 @@ mod tests {
         let v =
             serde_json::to_value(event).expect("serialization of telemetry event should not fail");
         assert_eq!(v["error_message"], "[REDACTED]");
-        assert_eq!(v["error_kind"], "rate_limited");
+        assert_eq!(v["error_kind"], "api");
         assert_eq!(v["http_status"], 429);
     }
 
@@ -180,49 +139,6 @@ mod tests {
     }
 
     #[test]
-    fn intent_classified_serializes() {
-        let event = TelemetryEvent::intent_classified(
-            "sess",
-            1,
-            None,
-            IntentClassifiedPayload {
-                heuristic_class: Some("coding".into()),
-                llm_class: None,
-                llm_latency_ms: 0,
-                cache_hit: true,
-            },
-        );
-        assert_eq!(event.kind(), "intent_classified");
-        let v =
-            serde_json::to_value(event).expect("serialization of telemetry event should not fail");
-        assert_eq!(v["type"], "intent_classified");
-        assert_eq!(v["heuristic_class"], "coding");
-    }
-
-    #[test]
-    fn context_window_report_serializes() {
-        let event = TelemetryEvent::context_window_report(
-            "sess",
-            5,
-            None,
-            ContextWindowReportPayload {
-                total_tokens: 45000,
-                message_count: 12,
-                tool_result_tokens: 20000,
-                compact_eligible: true,
-                exceeded_threshold: true,
-                threshold_pct: 80.0,
-            },
-        );
-        assert_eq!(event.kind(), "context_window_report");
-        let v =
-            serde_json::to_value(event).expect("serialization of telemetry event should not fail");
-        assert_eq!(v["type"], "context_window_report");
-        assert_eq!(v["total_tokens"], 45000);
-        assert_eq!(v["exceeded_threshold"], true);
-    }
-
-    #[test]
     fn budget_enforced_serializes_both_actions() {
         for (action, expected) in [
             (BudgetEnforcedAction::WarningInjected, "warning_injected"),
@@ -245,27 +161,5 @@ mod tests {
             assert_eq!(v["action"], expected);
             assert_eq!(v["budget"], 1000);
         }
-    }
-
-    #[test]
-    fn model_route_serializes() {
-        let event = TelemetryEvent::model_route(
-            "sess",
-            1,
-            None,
-            ModelRoutePayload {
-                requested_model: "claude-sonnet-4-6".into(),
-                resolved_model: "claude-opus-4-6".into(),
-                reason: "rate_limited".into(),
-                is_fallback: true,
-                is_escalated: false,
-            },
-        );
-        assert_eq!(event.kind(), "model_route");
-        let v =
-            serde_json::to_value(event).expect("serialization of telemetry event should not fail");
-        assert_eq!(v["type"], "model_route");
-        assert_eq!(v["resolved_model"], "claude-opus-4-6");
-        assert_eq!(v["is_fallback"], true);
     }
 }

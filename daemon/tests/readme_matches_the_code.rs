@@ -161,7 +161,7 @@ fn the_extension_surface_is_the_size_the_readme_says() {
 #[test]
 fn the_hook_and_telemetry_counts_are_the_enums() {
     let hook_events = variants(&read("crates/hooks/src/config.rs"), "HookEvent").len();
-    let event_types = variants(&read("crates/telemetry/src/events/mod.rs"), "EventPayload").len();
+    let event_types = telemetry::EventPayload::KINDS.len();
     let readme = readme();
 
     claims(

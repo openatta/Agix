@@ -1212,7 +1212,48 @@ impl SessionPool {
     /// `send` error just means nobody's listening right now — not a real
     /// failure, so this is intentionally infallible from the caller's side.
     pub fn emit_event(&self, event: serde_json::Value) {
+        self.record_daemon_event(&event);
         let _ = self.events_tx.send(event);
+    }
+
+    /// The `daemon.event`s that are also pool-level telemetry. Read off the
+    /// event rather than recorded at each emission site, of which there are
+    /// several per kind.
+    fn record_daemon_event(&self, event: &serde_json::Value) {
+        let text = |key: &str| event[key].as_str().unwrap_or_default().to_string();
+        let recorded = match event["kind"].as_str() {
+            Some("mcp_connected") => telemetry::TelemetryEvent::mcp_server_connected(
+                "",
+                0,
+                None,
+                telemetry::McpServerConnectedPayload {
+                    server_name: text("server"),
+                    transport: text("transport"),
+                    tool_count: event["tool_count"].as_u64().unwrap_or(0) as usize,
+                },
+            ),
+            Some("mcp_connect_failed") => telemetry::TelemetryEvent::mcp_connection_error(
+                "",
+                0,
+                None,
+                telemetry::McpConnectionErrorPayload {
+                    server_name: text("server"),
+                    error_message: text("error"),
+                },
+            ),
+            _ => return,
+        };
+        let _ = self.pool_telemetry.record(recorded);
+    }
+
+    /// Record how long the daemon took to start, in the pool-level
+    /// telemetry.
+    pub fn record_startup(&self, timing: telemetry::StartupTimingPayload) {
+        let _ = self
+            .pool_telemetry
+            .record(telemetry::TelemetryEvent::startup_timing(
+                "", 0, None, timing,
+            ));
     }
 
     /// A session came into or left memory, or was deleted — a `daemon.event`
@@ -2819,8 +2860,6 @@ impl SessionPool {
                     let telemetry_config = telemetry::TelemetryConfig {
                         enabled: true,
                         mode: telemetry::TelemetryMode::Enabled,
-                        redact_prompts: true,
-                        redact_tool_content: true,
                         default_event_enabled: true,
                         ..Default::default()
                     };
@@ -8000,8 +8039,6 @@ fn build_pool_telemetry(settings: &Settings) -> telemetry::TelemetryHandle {
     let config = telemetry::TelemetryConfig {
         enabled: true,
         mode: telemetry::TelemetryMode::Enabled,
-        redact_prompts: true,
-        redact_tool_content: true,
         default_event_enabled: true,
         ..Default::default()
     };

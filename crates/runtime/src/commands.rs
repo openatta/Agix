@@ -377,7 +377,7 @@ impl Default for CommandRegistry {
         registry.insert_local("skills", "List all available skills");
         registry.insert_local("clear", "Clear the current session context");
         registry.insert_local("compact", "Trigger context compaction now");
-        registry.insert_local("cost", "Show session API cost");
+        registry.insert_local("cost", "Show the tokens and calls this session has spent");
         registry
     }
 }

@@ -73,10 +73,7 @@ pub fn spawn(
     }
 
     let policy = RedactionPolicy {
-        redact_prompts: config.redact_prompts,
-        redact_tool_content: config.redact_tool_content,
         redact_error_messages: true,
-        redact_secrets: true,
         redact_paths: false,
         redact_emails: true,
         redact_ip_addresses: false,
@@ -90,6 +87,9 @@ pub fn spawn(
     Ok((handle, consumer))
 }
 
+/// How often a recorder that keeps failing is reported.
+const WARN_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Drain `rx`, redact each event once, and forward it to every recorder.
 /// Returns when the channel is closed (all handles dropped), after giving
 /// every recorder a chance to flush via `shutdown()`.
@@ -98,10 +98,20 @@ async fn fan_out(
     recorders: Vec<Arc<dyn TelemetryRecorder>>,
     policy: RedactionPolicy,
 ) {
+    let mut last_warned: Option<std::time::Instant> = None;
+    let mut failed_since_warning = 0u64;
     while let Some(event) = rx.recv().await {
         let event = event.redact(&policy);
         for recorder in &recorders {
-            let _ = recorder.record(event.clone());
+            let Err(error) = recorder.record(event.clone()) else {
+                continue;
+            };
+            failed_since_warning += 1;
+            if last_warned.map_or(true, |at| at.elapsed() >= WARN_EVERY) {
+                tracing::warn!(%error, failed = failed_since_warning, "a telemetry recorder is failing; events are being lost");
+                last_warned = Some(std::time::Instant::now());
+                failed_since_warning = 0;
+            }
         }
     }
     for recorder in &recorders {
@@ -122,8 +132,6 @@ mod tests {
             1,
             None,
             TurnStartPayload {
-                turn_no: 1,
-                turn_id: None,
                 resumed: kind_marker,
                 is_retry: false,
             },

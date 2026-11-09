@@ -24,7 +24,9 @@
 //! telemetry events and would defeat the point here: a recording is worth
 //! keeping only if it says what was actually sent. So a recording carries
 //! whatever secrets the prompt carried, and its directory deserves the same
-//! handling as the transcript it came from. Recording is off unless configured.
+//! handling as the transcript it came from: the recorder creates its
+//! directories and files readable by their owner only. Recording is off
+//! unless configured.
 
 pub mod blob;
 pub mod format;
@@ -56,6 +58,24 @@ use format::{
 use pack::RunPacker;
 use reader::Recording;
 use writer::RecordingWriter;
+
+/// A recording directory, created readable by its owner only.
+pub(crate) fn private_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(dir)
+}
+
+/// A recording file, created readable by its owner only.
+pub(crate) fn private_file(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path)
+}
 
 /// The recording a call belongs to, or nothing.
 ///

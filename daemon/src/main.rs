@@ -5,9 +5,9 @@
 //!
 //! # Startup profiling
 //!
-//! A [`PerfCollector`] tracks elapsed time at each startup phase. After all
-//! phases complete, a [`StartupTimingPayload`] telemetry event is emitted
-//! (if telemetry is enabled).
+//! A [`PerfCollector`] marks when the configuration is read and when the pool
+//! is assembled; once the daemon is ready a [`StartupTimingPayload`] goes to the
+//! pool-level telemetry (if telemetry is enabled).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -474,17 +474,11 @@ async fn serve(cli: Cli) -> anyhow::Result<()> {
     )
     .await?;
 
-    // Phases the assembly performs in one call; the markers stay because the
-    // startup-timing telemetry below is keyed by them.
-    for phase in [
-        "memory_loaded",
-        "skills_scanned",
-        "mcp_connected",
-        "tools_registered",
-    ] {
-        let elapsed = perf.checkpoint(phase);
-        info!(elapsed_ms = elapsed, phase, "startup phase complete");
-    }
+    let pool_built_ms = perf.checkpoint("pool_built");
+    info!(
+        elapsed_ms = pool_built_ms,
+        "startup: session pool assembled"
+    );
 
     // `daemon` is headless — no client is connected yet at this point in
     // startup, so there's nobody to synchronously ask "import from X?" the
@@ -525,24 +519,13 @@ async fn serve(cli: Cli) -> anyhow::Result<()> {
     info!(elapsed_ms = _pool_ready_ms, "startup: session pool ready");
 
     let total_startup_ms = perf.elapsed_ms() as u64;
-    let checkpoints: std::collections::HashMap<String, u64> = perf
-        .checkpoint_snapshot()
-        .into_iter()
-        .map(|(k, v)| (k, v as u64))
-        .collect();
-
     let timing = StartupTimingPayload {
         total_startup_ms,
-        config_load_ms: checkpoints.get("config_loaded").copied().unwrap_or(0),
-        tool_registration_ms: checkpoints.get("tools_registered").copied().unwrap_or(0),
-        mcp_connect_ms: checkpoints.get("mcp_connected").copied().unwrap_or(0),
-        plugin_load_ms: 0,
-        skill_load_ms: checkpoints.get("skills_scanned").copied().unwrap_or(0),
-        history_resume_ms: 0,
-        first_api_call_ms: 0,
+        config_load_ms: _config_load_ms as u64,
+        pool_build_ms: (pool_built_ms - _config_load_ms).max(0.0) as u64,
     };
-
     info!(total_ms = total_startup_ms, ?timing, "startup complete");
+    pool.record_startup(timing);
 
     let cancel = CancellationToken::new();
 

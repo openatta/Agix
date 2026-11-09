@@ -396,9 +396,9 @@ impl Coordinator for DefaultCoordinator {
                                     .agent_type
                                     .clone()
                                     .unwrap_or_else(|| "default".to_string()),
-                                model: String::new(),
-                                parent_agent_id: None,
-                                stage_name: stage.name.clone(),
+                                model: None,
+                                stage_name: Some(stage.name.clone()),
+                                background: false,
                             },
                         ));
                     }
@@ -533,8 +533,6 @@ impl Coordinator for DefaultCoordinator {
                             telemetry::AgentCompletedPayload {
                                 agent_id: label.clone(),
                                 role,
-                                turn_count: 0,
-                                tool_call_count: 0,
                                 had_error: is_error,
                                 duration_ms,
                             },

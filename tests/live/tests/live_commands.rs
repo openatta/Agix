@@ -78,12 +78,22 @@ async fn local_commands_answer_without_a_conversation_call() -> anyhow::Result<(
         "{}",
         skills.text
     );
-    let messages = history_total(&mut run, &session).await?;
+    let turn_calls = run
+        .provider
+        .calls()
+        .iter()
+        .filter(|c| c.purpose() == Purpose::Turn)
+        .count();
     let cost = run.turn(&session, "/cost").await?;
+    let reported: usize = cost
+        .text
+        .strip_prefix("Since this session was loaded: ")
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0);
     assert!(
-        cost.text
-            .starts_with(&format!("Session: {messages} messages, ~")),
-        "{} (history has {messages})",
+        (1..=turn_calls).contains(&reported) && cost.text.contains("input tokens"),
+        "{} (the provider saw {turn_calls} turn calls)",
         cost.text
     );
     for events in [&help, &skills, &cost] {

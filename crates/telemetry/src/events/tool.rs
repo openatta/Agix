@@ -38,28 +38,14 @@ pub struct ToolCancelledPayload {
     pub elapsed_ms: u64,
 }
 
-/// 工具权限决策事件的载荷（engine 内部权限层）。
-#[derive(Debug, Clone, Serialize)]
-pub struct ToolDecisionPayload {
-    pub tool_name: String,
-    pub decision: String,
-    pub decision_reason: String,
-    pub rule_source: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rule_text: Option<String>,
-    pub permission_mode: String,
-    pub destructive: bool,
-    pub decision_latency_ms: f64,
-    pub input_json_size: u64,
-}
-
-/// 权限决策的统一 taxonomy（用户面）。
+/// What the session's permission check said about one tool call, before
+/// anyone was asked. Whether an asked call then ran is `tool_execution`'s
+/// `user_approved`.
 #[derive(Debug, Clone, Serialize)]
 pub struct PermissionDecisionPayload {
     pub tool_name: String,
     pub outcome: PermissionDecisionOutcome,
     pub permission_mode: String,
-    pub rule_source: Option<String>,
     pub destructive: bool,
     pub latency_ms: u64,
 }
@@ -81,26 +67,11 @@ pub enum PermissionDecisionOutcome {
     AutoAllow,
     Ask,
     Deny,
-    Escalated,
-    Remembered,
-}
-
-impl ToolDecisionPayload {
-    pub(crate) fn redact(mut self, _policy: &RedactionPolicy) -> Self {
-        self.rule_text = self.rule_text.map(|_| "[REDACTED]".to_string());
-        self
-    }
 }
 
 impl ToolExecutionPayload {
-    pub(crate) fn redact(mut self, _policy: &RedactionPolicy) -> Self {
-        self.error_message = self.error_message.map(|_| "[REDACTED]".to_string());
-        self
-    }
-}
-
-impl PermissionDecisionPayload {
-    pub(crate) fn redact(self, _policy: &RedactionPolicy) -> Self {
+    pub(crate) fn redact(mut self, policy: &RedactionPolicy) -> Self {
+        self.error_message = self.error_message.map(|m| policy.scrub_message(&m));
         self
     }
 }
@@ -120,9 +91,8 @@ mod tests {
             None,
             PermissionDecisionPayload {
                 tool_name: "bash".into(),
-                outcome: PermissionDecisionOutcome::Escalated,
-                permission_mode: "workspace".into(),
-                rule_source: Some("profile".into()),
+                outcome: PermissionDecisionOutcome::Ask,
+                permission_mode: "default".into(),
                 destructive: true,
                 latency_ms: 4,
             },
@@ -132,35 +102,10 @@ mod tests {
         let value =
             serde_json::to_value(event).expect("serialization of telemetry event should not fail");
         assert_eq!(value["type"], "permission_decision");
-        assert_eq!(value["outcome"], "escalated");
+        assert_eq!(value["outcome"], "ask");
         assert_eq!(value["tool_name"], "bash");
         assert_eq!(value.get("input").unwrap_or(&json!(null)), &json!(null));
         assert_eq!(value.get("prompt").unwrap_or(&json!(null)), &json!(null));
-    }
-
-    #[test]
-    fn tool_decision_serializes() {
-        let event = TelemetryEvent::tool_decision(
-            "sess",
-            1,
-            None,
-            ToolDecisionPayload {
-                tool_name: "Bash".into(),
-                decision: "allow".into(),
-                decision_reason: "rule_match".into(),
-                rule_source: Some("project".into()),
-                rule_text: Some("Bash(git *)".into()),
-                permission_mode: "default".into(),
-                destructive: false,
-                decision_latency_ms: 1.5,
-                input_json_size: 20,
-            },
-        );
-        assert_eq!(event.kind(), "tool_decision");
-        let v =
-            serde_json::to_value(event).expect("serialization of telemetry event should not fail");
-        assert_eq!(v["type"], "tool_decision");
-        assert_eq!(v["decision"], "allow");
     }
 
     #[test]
@@ -200,14 +145,11 @@ mod tests {
             (PermissionDecisionOutcome::AutoAllow, "auto_allow"),
             (PermissionDecisionOutcome::Ask, "ask"),
             (PermissionDecisionOutcome::Deny, "deny"),
-            (PermissionDecisionOutcome::Escalated, "escalated"),
-            (PermissionDecisionOutcome::Remembered, "remembered"),
         ] {
             let payload = PermissionDecisionPayload {
                 tool_name: "Read".into(),
                 outcome,
                 permission_mode: "default".into(),
-                rule_source: None,
                 destructive: false,
                 latency_ms: 3,
             };
