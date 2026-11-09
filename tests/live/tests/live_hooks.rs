@@ -339,7 +339,8 @@ async fn an_agent_hook_runs_a_sub_agent_that_blocks_a_call() -> anyhow::Result<(
                                starts with frozen, answer with exactly {\"ok\": false, \"reason\": \
                                \"frozen files are read-only\"}; otherwise answer with exactly \
                                {\"ok\": true, \"reason\": \"fine\"}. Answer with the JSON only.",
-                    "timeout": 180000
+                    "timeout": 180000,
+                    "may_approve": true
                 }]
             }
         }),

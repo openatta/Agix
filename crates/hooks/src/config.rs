@@ -4,7 +4,7 @@
 //! 自足；`prompt` 与 `agent` 需要宿主注入 `PromptHookExecutor` /
 //! `AgentHookExecutor`，没注入时该 hook 被 Skip 并附原因，不是静默失败。
 //! 四种都认 `if`（见 `runner::matcher`）与 `on_error`；`only_on_error`、`once`、
-//! `async_rewake` 只有 `command` 有。
+//! `async_rewake` 只有 `command` 有，`may_approve` 只有 `prompt` 与 `agent` 有。
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -50,6 +50,9 @@ pub enum HookConfig {
         if_pattern: Option<String>,
         #[serde(default)]
         on_error: OnError,
+        /// 模型答 `approve` 时算替人答应权限询问；不写只能拦，不能批
+        #[serde(default)]
+        may_approve: bool,
     },
     /// HTTP webhook
     Http {
@@ -77,6 +80,9 @@ pub enum HookConfig {
         if_pattern: Option<String>,
         #[serde(default)]
         on_error: OnError,
+        /// 子 Agent 答 `ok: true` 时算替人答应权限询问；不写只能拦，不能批
+        #[serde(default)]
+        may_approve: bool,
     },
 }
 

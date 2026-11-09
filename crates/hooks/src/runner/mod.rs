@@ -47,6 +47,18 @@ impl HookOutcome {
     }
 }
 
+/// What a prompt or agent hook's answer amounts to: a model's approval is not
+/// the user's, unless the hook says it may stand for it. It read the tool
+/// input, which whoever wrote that input can aim at it.
+fn judged(mut outcome: HookOutcome, may_approve: bool) -> HookOutcome {
+    if let HookOutcome::Ran { response, .. } = &mut outcome {
+        if !may_approve && response.decision == Some(HookDecision::Approve) {
+            response.decision = None;
+        }
+    }
+    outcome
+}
+
 /// 一次 `run` 的聚合结果。便于上层短路 / 统计。
 #[derive(Debug, Clone, Default)]
 pub struct HookRunResult {
@@ -485,11 +497,13 @@ impl HookRunner {
                 prompt,
                 timeout,
                 model,
+                may_approve,
                 ..
-            } => {
+            } => judged(
                 self.exec_prompt(prompt, model.as_deref(), input, self.timeout_of(*timeout))
-                    .await
-            }
+                    .await,
+                *may_approve,
+            ),
             HookConfig::Http {
                 url,
                 headers,
@@ -504,11 +518,13 @@ impl HookRunner {
                 prompt,
                 timeout,
                 model,
+                may_approve,
                 ..
-            } => {
+            } => judged(
                 self.exec_agent(prompt, model.as_deref(), input, self.timeout_of(*timeout))
-                    .await
-            }
+                    .await,
+                *may_approve,
+            ),
         }
     }
 
@@ -802,6 +818,7 @@ mod tests {
                 model: None,
                 if_pattern: None,
                 on_error: OnError::Allow,
+                may_approve: false,
             }],
         );
         let r = HookRunner::new(s);
@@ -1259,6 +1276,45 @@ mod tests {
         }
     }
 
+    /// A judge model reads the tool input, which whoever wrote it can aim at
+    /// the judge; its "fine" is not the user's. Only a hook that says so may
+    /// answer the permission prompt with it. A refusal stands either way.
+    #[tokio::test]
+    async fn a_judge_models_approval_counts_only_where_the_hook_allows_it() {
+        let run = |config: serde_json::Value| async move {
+            let config: HookConfig = serde_json::from_value(config).unwrap();
+            on_pre_tool_use(vec![config])
+                .with_prompt_executor(Arc::new(Answering(r#"{"decision":"approve"}"#)))
+                .with_agent_executor(Arc::new(Answering(r#"{"ok":true}"#)))
+                .run(HookEvent::PreToolUse, &input_for_bash("ls"))
+                .await
+        };
+        for kind in ["prompt", "agent"] {
+            let unsaid = run(serde_json::json!({"type": kind, "prompt": "judge"})).await;
+            assert!(unsaid.approved().is_none(), "{kind}: {:?}", unsaid.outcomes);
+            assert!(unsaid.blocked().is_none(), "{kind}: {:?}", unsaid.outcomes);
+
+            let allowed = run(serde_json::json!({
+                "type": kind, "prompt": "judge", "may_approve": true
+            }))
+            .await;
+            assert!(
+                allowed.approved().is_some(),
+                "{kind}: {:?}",
+                allowed.outcomes
+            );
+        }
+
+        let refused = on_pre_tool_use(vec![serde_json::from_value(serde_json::json!({
+            "type": "agent", "prompt": "judge"
+        }))
+        .unwrap()])
+        .with_agent_executor(Arc::new(Answering(r#"{"ok":false,"reason":"no"}"#)))
+        .run(HookEvent::PreToolUse, &input_for_bash("ls"))
+        .await;
+        assert!(refused.blocked().is_some(), "{:?}", refused.outcomes);
+    }
+
     #[tokio::test]
     async fn every_backend_honors_its_if() {
         let r = on_pre_tool_use(vec![
@@ -1268,6 +1324,7 @@ mod tests {
                 model: None,
                 if_pattern: Some("Write|Edit".into()),
                 on_error: OnError::Allow,
+                may_approve: false,
             },
             HookConfig::Agent {
                 prompt: "judge".into(),
@@ -1275,6 +1332,7 @@ mod tests {
                 model: None,
                 if_pattern: Some("Write".into()),
                 on_error: OnError::Allow,
+                may_approve: false,
             },
             HookConfig::Http {
                 url: "http://203.0.113.1/hook".into(),
@@ -1321,6 +1379,7 @@ mod tests {
             model: None,
             if_pattern: None,
             on_error: OnError::Allow,
+            may_approve: false,
         }])
         .with_agent_executor(Arc::new(Slow));
         let started = std::time::Instant::now();
@@ -1401,6 +1460,7 @@ mod tests {
             model: None,
             if_pattern: None,
             on_error: OnError::Block,
+            may_approve: false,
         };
         let agent = |timeout| HookConfig::Agent {
             prompt: "judge".into(),
@@ -1408,6 +1468,7 @@ mod tests {
             model: None,
             if_pattern: None,
             on_error: OnError::Block,
+            may_approve: false,
         };
 
         let unparsable = on_pre_tool_use(vec![prompt()])
@@ -1503,6 +1564,7 @@ mod tests {
             model: None,
             if_pattern: None,
             on_error: OnError::Allow,
+            may_approve: false,
         }])
         .with_agent_executor(Arc::new(Failing));
         let result = r.run(HookEvent::PreToolUse, &input_for_bash("ls")).await;

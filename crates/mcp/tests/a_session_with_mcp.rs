@@ -221,6 +221,7 @@ async fn build_wires_mcp_elicitation_urls_to_the_elicitation_hook() {
             model: None,
             if_pattern: None,
             on_error: hooks::OnError::Allow,
+            may_approve: false,
         }],
     );
     let runner = Arc::new(

@@ -496,6 +496,10 @@ WebAssembly 载体整个移除。
   规则同一套读法:`Bash(rm:*)` 现在也命中 `cd . && rm x`、`"rm" x`、`/bin/rm x`、`env rm x`、
   `bash -c 'rm x'`,以及程序名读不出来的命令(`$CMD x`)。以前只比整行原文的前缀,这些都绕得过;
   配了这类 `if` 的 hook 会比以前跑得多。
+- **`prompt` / `agent` hook 的批准缺省不再算数。** 模型回 `"decision": "approve"`、子 Agent 回
+  `"ok": true`,以前在 `PreToolUse` 上等于替人答应了权限询问(无人值守也一样);现在什么都不说,
+  询问照常发给宿主。要它照旧算数的,在那条 hook 上写 `"may_approve": true`。它们说 `block` /
+  `ok: false` 照旧拦下;`command` 与 `http` hook 的 `approve` 不变。
 - agent 类型 frontmatter 的 `permission_mode` 真正作用到子 Agent 的权限判定上(以前写 `plan`
   不起作用),可以比父会话宽也可以严;父会话在 `plan` 时取两者中更严的那个,父会话是
   `bypassPermissions` 时随父会话,插件带来的类型只能收紧。团队成员(`TeamCreate`、`Agent` 的
@@ -902,6 +906,8 @@ WebAssembly 载体整个移除。
   `AgentTool::with_parent_tools` 的目录参数换成 `&[(PathBuf, AgentTypeSource)]`
   (`load_agent_types_from_dir` 多一个 `source`);新增 `agent_type_dirs(&Settings)` 按设置给出这三层。
 
+- `hooks::config::HookConfig::{Prompt, Agent}` 多了 `may_approve: bool`(结构体字面量要补;
+  `false` 即它的批准不算)。
 - `DaemonServer::bind_unix` 把 socket 登记给沙箱(`base::interface::exec::local::sandbox::
   fence_socket`),`serve_tcp_listener` / `serve_ws_listener` 登记端口(`fence_port`);
   `serve_unix_listener` 拒绝本进程起的进程(`base::interface::exec::local::lineage::started_here`)。

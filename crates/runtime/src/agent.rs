@@ -5509,6 +5509,7 @@ mod tests {
                 model: None,
                 if_pattern: None,
                 on_error: hooks::OnError::Allow,
+                may_approve: false,
             }],
         );
         let runner = Arc::new(
