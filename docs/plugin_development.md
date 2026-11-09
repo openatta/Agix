@@ -215,8 +215,10 @@ cd examples/plugins/quickjs && zip -r ../demo-quickjs.zip . && shasum -a 256 ../
 
 ## 稳定性
 
-从 0.3.9 起,下面这些只做增量,不改已有的含义:`Plugin`、`PluginSession`、`Registrar` 的方法,
-九个脚本点的 JSON 形状,脚本绑定的字段,以及 `plugin.toml` 的写法(`api_version = "0.1"`)。
+`Plugin`、`PluginSession`、`Registrar` 的方法,九个脚本点的 JSON 形状,脚本绑定的字段,以及 `plugin.toml` 的写法(`api_version = "0.1"`),原则上只做增量,不改已有的含义;但 `api_version` 还是 `0.1`,这条原则不是保证。破坏兼容的改动不会静默发生,每次都列在发布对应的迁移文档(`migrating_to_0.3.md`)里,升级前先读那一节。
+
+0.3.10 就有这样的改动:`[[mcp]] kind = "dsh"` 被拒(引擎不再带 DSH 桥);披露里超限的文本从警告变成拒装;`[[agent]] prompt` 与 `[[mcp]] config` 必须在包内,与 `[[script]]` 一样;`[[mcp]] config` 里写 `oauth_provider` 的被拒,改用 `oauth`;`plugin.install` 的 `name`、`version` 只收 1–128 个 ASCII 字母、数字与 `.`、`_`、`-`、`+`。
+
 各个点背后的 trait(`ToolMiddleware`、`ModelInterceptor`……)按 `extension_points.md` 里各自的说明。
 
 ## 自己跑一遍

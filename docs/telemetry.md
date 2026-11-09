@@ -40,6 +40,10 @@ daemon 用 `--features otel` 编译、配了 `telemetry_url`(或环境变量
 `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` 设了的,按它们原样发。HTTP 导出遵从
 `HTTP(S)_PROXY` / `NO_PROXY`,端点在本机(loopback、`localhost`)时直连。
 
+导出器是进程级的:一个 daemon 只起一个,会话结束只 flush;第二个 pool 配了不同端点时以先
+起的为准。嵌 daemon 的进程退出前调 `assembly::telemetry_otel::shutdown_process_exporter()`,
+否则丢最后一批数据。
+
 ### 嵌入方
 
 `telemetry` crate 自己不碰文件也不碰网络:`telemetry::spawn(config, recorders)` 返回一个

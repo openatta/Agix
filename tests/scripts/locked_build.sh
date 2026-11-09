@@ -55,12 +55,4 @@ fi
 echo "==> running the daemon test suite in the locked configuration"
 cargo test -p daemon --no-default-features --features full
 
-echo "==> the DSH bridge is a separate process and has its own suite"
-if command -v node >/dev/null 2>&1; then
-  (cd bridges/agix-dsh-bridge && node --test 'test/**/*.test.js' >/dev/null)
-  echo "    bridge tests pass"
-else
-  echo "    skipped: node is not installed"
-fi
-
 echo "OK: the locked build contains no extension machinery, and no build any WebAssembly"
