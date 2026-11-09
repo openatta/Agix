@@ -383,7 +383,6 @@ fn announced(changed: &[Value], skill: &str) -> bool {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: a skills directory missing at startup is never watched, so a skill written into it later is not picked up"]
 async fn the_first_skill_a_project_gets_mid_session_is_used() -> anyhow::Result<()> {
     let (_, ran) = a_late_skill("first-skill", false).await?;
     assert!(ran, "the new skill's body was followed");

@@ -129,8 +129,9 @@ struct ProjectBinding {
     /// releases its share of the watch (`WatchHub` refcounts, so the tiers
     /// several projects have in common are watched once).
     _watch: Vec<crate::watch_hub::WatchToken>,
-    /// The settings files of this binding's tiers that did not exist when it
-    /// was built, so are not watched — see [`ProjectBinding::appeared`].
+    /// The settings files and skill directories of this binding's tiers that
+    /// did not exist when it was built, so are not watched — see
+    /// [`ProjectBinding::appeared`].
     unwatched_settings: Vec<(crate::watch_hub::Tier, PathBuf)>,
     /// Set once a tier this binding was merged from changed. Every session
     /// built on it holds the same flag and rebuilds before its next turn.
@@ -173,11 +174,12 @@ impl ProjectBinding {
         self.stale.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// The tier of a settings file that has been created since this binding
-    /// was built. Nothing watched it — a missing file is not subscribed, see
-    /// `SessionPool::watch_tiers_of` — so this is the only way its first
-    /// contents (a rule `permit_always` wrote to a new `settings.local.json`,
-    /// say) reach the next session without a `config.reload`.
+    /// The tier of a settings file or skill directory that has been created
+    /// since this binding was built. Nothing watched it — a missing path is
+    /// not subscribed, see `SessionPool::watch_tiers_of` — so this is the
+    /// only way its first contents (a rule `permit_always` wrote to a new
+    /// `settings.local.json`, a project's first skill) reach the sessions
+    /// without a `config.reload`.
     fn appeared(&self) -> Option<&crate::watch_hub::Tier> {
         self.unwatched_settings
             .iter()
@@ -6540,7 +6542,7 @@ impl SessionPool {
             let Some(tier) = existing.appeared().cloned() else {
                 return existing;
             };
-            info!(tier = ?tier, "a settings file was created; reloading");
+            info!(tier = ?tier, "a settings file or skill directory was created; reloading");
             if is_default_pair {
                 Box::pin(self.reload_settings_from(None, scene_id, Some(&tier))).await;
             } else {
@@ -6628,11 +6630,11 @@ impl SessionPool {
     /// ancestor of `~/.agix/settings.json` is `~/.agix` — which also holds
     /// every transcript this daemon writes. Watching that would turn each
     /// turn's own log writes into a settings-change notification. The
-    /// settings files left out are returned alongside the subscriptions: one
-    /// created later is noticed the next time the binding is asked for
-    /// (`ProjectBinding::appeared`). A skill or agent directory created later
-    /// is picked up the next time this binding is built, or by an explicit
-    /// `config.reload`.
+    /// settings files and skill directories left out are returned alongside
+    /// the subscriptions: one created later is noticed the next time the
+    /// binding is asked for (`ProjectBinding::appeared`). An agent directory
+    /// created later is picked up the next time this binding is built, or by
+    /// an explicit `config.reload`.
     #[allow(clippy::type_complexity)]
     fn watch_tiers_of(
         &self,
@@ -6679,7 +6681,7 @@ impl SessionPool {
                     },
                     &path,
                 ));
-            } else if target == WatchTarget::Settings {
+            } else if matches!(target, WatchTarget::Settings | WatchTarget::Skills) {
                 unwatched.push((tier.clone(), path));
             }
         };
@@ -9747,8 +9749,10 @@ mod mcp_for_project_tests {
         let (pool, _dir) = test_pool().await;
         // Not the pool's startup scene: `test_pool`'s startup scene tier is
         // the tempdir root, which also holds the project.
+        let skills = pool.cwd().join(".agents").join("skills");
+        std::fs::create_dir_all(&skills).unwrap();
         let binding = pool.binding_for(Some(pool.cwd()), "mini").await;
-        let skill_dir = pool.cwd().join(".agents").join("skills").join("late");
+        let skill_dir = skills.join("late");
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(
             skill_dir.join("SKILL.md"),
@@ -9767,6 +9771,34 @@ mod mcp_for_project_tests {
         assert!(!is_stale(&binding));
         assert!(Arc::ptr_eq(
             &binding,
+            &pool.binding_for(Some(pool.cwd()), "mini").await
+        ));
+    }
+
+    /// A project with no skills directory when its binding was built gets its
+    /// first skill the next time the binding is asked for, and the directory
+    /// is watched from then on.
+    #[cfg(feature = "skills")]
+    #[tokio::test]
+    async fn a_skills_directory_created_later_is_picked_up_and_watched() {
+        let (pool, _dir) = test_pool().await;
+        let skills = pool.cwd().join(".agents").join("skills");
+        assert!(!skills.exists());
+        let before = pool.binding_for(Some(pool.cwd()), "mini").await;
+
+        std::fs::create_dir_all(skills.join("first")).unwrap();
+        std::fs::write(
+            skills.join("first").join("SKILL.md"),
+            "---\nname: first\ndescription: the project's first skill\n---\nbody\n",
+        )
+        .unwrap();
+
+        let after = pool.binding_for(Some(pool.cwd()), "mini").await;
+        assert!(is_stale(&before));
+        assert!(after.modules.skills().get("first").is_some());
+        assert!(after.appeared().is_none());
+        assert!(Arc::ptr_eq(
+            &after,
             &pool.binding_for(Some(pool.cwd()), "mini").await
         ));
     }

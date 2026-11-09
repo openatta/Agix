@@ -1911,9 +1911,11 @@ Shell 命令、监视器没有收件箱。会话不在内存里 → `SESSION_NOT
 **多数情况下不需要显式调用**:daemon 监视每个项目的 `settings.json` /
 `settings.local.json`,改动落盘后自己重读(去抖 300ms);文件内容没变的写入不算改动。监视触发的重读知道是哪一层变了,
 只作废从那一层合出来的绑定:项目层只作废同一项目的会话,场景层只作废那个场景的,全局层
-作废全部。skills、agents 目录的改动不作废任何会话,新内容就地生效。不存在的设置文件
-监视不了;它被建出来之后(比如 `permit_always` 的 `local` 第一次写出 `settings.local.json`),
-下一个在那一对 scene / 项目上新建的会话会发现并重读,已经在跑的会话要等到那时才作废。这个
+作废全部。skills、agents 目录的改动不作废任何会话,新内容就地生效。不存在的设置文件与
+skills 目录监视不了;它被建出来之后(比如 `permit_always` 的 `local` 第一次写出
+`settings.local.json`,项目第一次建出 `.agents/skills/`),下一次用到那一对 scene / 项目的
+配置时(在上面新建会话,daemon 自己那一对还有 `commands.list` 等)会发现并重读,已经在跑的
+会话要等到那时才作废。这个
 方法留给监视起不来的时候(权限、内核 inotify 上限;`daemon.doctor` 会报),以及要已有会话
 立刻看到一个新建文件的时候。
 
