@@ -219,7 +219,9 @@ OAuth 请求）不走 shell 的 `HTTP(S)_PROXY`，不用另设 `NO_PROXY`。
 `<用例名>-t<n>`，而 daemon 按这几种形式认出自己开的轮，客户端用这种 id 会被拒（`INVALID_PARAMS`）。
 
 引擎自己的几道缝——录像回放、遥测、流式执行、策略否决、恢复策略——在 `engine_boundaries.rs`
-里用桩写成确定性的用例，跑在 `integration` 里。
+里用桩写成确定性的用例，跑在 `integration` 里。`skills_and_memory.rs` 同样用桩钉住
+`/name` 展开项目 skill(执行 `` !`cmd` ``、不带 frontmatter)、两轮之间新加的 skill 在下一轮
+发 `skills_changed`、项目 `.agix/memory/` 的索引与全局的一起进提示词。
 
 **提示词写成操作步骤。** 用例要验证的是产品能力，不是模型的规划能力，所以让模型做什么、
 用哪个工具、失败了怎么办都写明。用例里的「操作员」是测试代码：它盯着 `runs.log` 和

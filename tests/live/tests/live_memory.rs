@@ -206,7 +206,7 @@ async fn a_project_memory_is_indexed_and_recalled_with_the_global_ones() -> anyh
     let token = format!("BRANCH-{}", nonce());
     let seeded = token.clone();
     let mut run = LiveRun::builder("memory-project")
-        .settings(json!({ "memory_enabled": true }))
+        .settings(json!({ "memory_enabled": true, "permission_mode": "default" }))
         .before_start(move |world, project| {
             let global = world.global_memory_dir();
             write_memory(

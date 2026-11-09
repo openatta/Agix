@@ -17,4 +17,5 @@ mod minimal_tier;
 mod permission_bounds;
 mod session_boundaries;
 mod session_prompt;
+mod skills_and_memory;
 mod turn_throughput;
