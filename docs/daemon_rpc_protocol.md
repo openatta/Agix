@@ -35,7 +35,7 @@ daemon 的真实响应逐字段比对;`daemon.doctor` 的例子由 `crates/assem
 
 | 传输 | 怎么开 | 认证 |
 |---|---|---|
-| Unix socket | 默认开(`--socket <path>` 可改) | 文件权限 |
+| Unix socket | 默认开(`--socket <path>` 可改) | 文件权限:socket 为 `0600`,daemon 为它新建的目录为 `0700` |
 | TCP | `--listen <addr>` | `daemon.auth` 握手,见 §5.1 |
 | WebSocket | `--listen-ws <addr>` | `daemon.auth` 握手 + Origin 校验,见 §5.1 |
 
@@ -59,7 +59,8 @@ TCP 与 WebSocket 都要求 `--token` 或 `AGIX_DAEMON_TOKEN`;没有 token 时�
 { "jsonrpc": "2.0", "method": "session.create", "params": { }, "id": 1 }
 ```
 
-`id` 省略 = 通知,服务端不回响应。`params` 省略等价于 `{}`。
+`id` 省略 = 通知,服务端不回响应,出错(包括 `TOO_MANY_IN_FLIGHT`)也不回;流式帧照发。
+`params` 省略等价于 `{}`。
 
 **响应**:
 
@@ -112,7 +113,8 @@ read-modify-write 同一个索引文件而丢更新。读取方 `read_dir` 汇�
 
 daemon 另外还写一份 `~/.agix/scenes/<scene>/daemon.lock`(`{pid, pid_start_time,
 socket_path, version, started_at, protocol_version}`)。它早于多场景支持,只描述
-一个场景,新客户端用 `instances.d/`。
+一个场景,新客户端用 `instances.d/`。daemon 运行期间对它持有 `flock`,同一场景的第二个
+daemon 拿不到就拒绝启动;退出时删掉它。
 
 **socket 路径**(daemon 自己启动时的推导规则,列出仅供排查):
 
@@ -456,7 +458,7 @@ daemon 的全部场景与会话,而且**没有任何逐方法的授权**。特�
 `config.setProvider` 能把后续所有模型流量指向调用方给的 `base_url`/`api_key`;
 把 socket 或 token 暴露出去,等同于暴露模型凭据本身。
 
-Unix socket 靠文件系统权限,不握手,一样是"能连上就全权"。
+Unix socket 靠文件系统权限(只有 daemon 的用户能连),不握手,一样是"能连上就全权"。
 
 #### WebSocket 的 Origin 校验
 
@@ -681,9 +683,9 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
       { "name":"settings.providers", "status":"ok", "summary":"provider routing resolves" },
       { "name":"settings.hooks",     "status":"ok", "summary":"hooks configuration parses" } ] },
   "settings_tiers": [
-    { "tier":"global",  "path":"…/settings.json",       "exists":false, "parses":true, "error":null },
-    { "tier":"scene",   "path":"…/settings.json",       "exists":false, "parses":true, "error":null },
-    { "tier":"project", "path":"…/.agix/settings.json", "exists":false, "parses":true, "error":null } ],
+    { "tier":"global",  "path":"…/settings.json",       "exists":false, "parses":true, "error":null, "unknown_keys":[] },
+    { "tier":"scene",   "path":"…/settings.json",       "exists":false, "parses":true, "error":null, "unknown_keys":[] },
+    { "tier":"project", "path":"…/.agix/settings.json", "exists":false, "parses":true, "error":null, "unknown_keys":[] } ],
   "providers": { "ok":true, "default_provider":null, "configured":[], "task_models":[],
                  "warnings":[], "error":null },
   "hooks": { "configured":false, "ok":true, "error":null },
@@ -699,6 +701,10 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 
 `settings_tiers` / `providers` / `hooks` 是 `health.checks` 里同名检查 `details`
 的副本,放在顶层是因为现有客户端读的是它们。
+
+`settings_tiers[].unknown_keys` 是那份文件里没有任何设置读的顶层键(拼错的、别的工具的),
+加载时被忽略,daemon 日志里各有一条 warn。有这样的键时 `settings.tiers` 仍是 `ok`,
+`summary` 里写明是哪几层。
 
 `providers.ok` 只说明配置**形状**解析得通(每个 `task_models` 条目都指向一个存在
 的 provider),不说明真能建出客户端,更不说明那个端点能连上 —— 缺凭据、`base_url`
@@ -740,7 +746,8 @@ MCP server 都被拒绝。
 
 #### `daemon.shutdown`
 
-无参(传什么都一样)。关掉所有会话的运行体并让进程退出。
+无参(传什么都一样)。先停止接受新连接,再关掉所有会话的运行体,等它们停下(最多几秒)
+后回响应,进程随后退出。
 
 ```jsonc
 // ← result
@@ -748,7 +755,9 @@ MCP server 都被拒绝。
 ```
 
 **不删除任何 transcript,包括侧链的**(§3.3)。也没有"优雅等待"选项:正在跑的 turn
-被直接取消。
+被直接取消。关停开始后,已经连着的连接上要新建或带回内存的会话(`session.create`、
+`session.run_turn`、`session.resume` 等)一律报错 `the daemon is shutting down`。
+SIGINT / SIGTERM 走同一条路。
 
 ### 6.2 `scene.*`
 
@@ -891,8 +900,21 @@ HashMap),客户端要按 `scene` 找条目,不要按下标。
 daemon 重启后恢复)都按同一份 `options` 重建,之后的调用里再传的 `options` 被忽略。
 会话日志里没有记录过 `options` 的旧会话例外:恢复时采用这次调用带的那份。
 `options` 记在会话日志里一条 `ns` 为 `agix.session`、`event` 为 `spec` 的扩展条目上,
-`session.setModel` 选的模型也记在那里,所以同样跨重启保留。**形状不认识的 `options`
-会被整体当成"没传"**,不报错 —— 拼错字段名不会有任何提示。
+`session.setModel` 选的模型也记在那里,所以同样跨重启保留。
+
+`options` 逐字段读:不认识的字段、值读不出来的字段(如 `"permission_mode": "plann"`)
+被**忽略**,其余字段照常生效;`options` 本身不是对象时整个忽略。被忽略的列在响应
+`result.ignored_options` 里(没有被忽略的就没有这个字段),daemon 日志里也各记一条 warn:
+
+```jsonc
+"ignored_options": [
+  { "field": "permission_mode", "error": "unknown variant `plann`, expected one of …" },
+  { "field": "permision_rules", "error": "unknown field" } ]
+```
+
+`field` 为 `null` 表示整个 `options` 读不出来。`session.create`、`session.run_turn`、
+`session.resume` 都这样。**以后的版本会改为拒绝**(`INVALID_PARAMS`),宿主现在就应当把
+`ignored_options` 当作错误处理。
 
 `recorder` 不落盘:同一进程里的重建接着原来的回放进度,不从头重放;daemon 重启之后,
 把会话带回内存的那次调用(`session.resume`、带 `resume:true` 的 `session.subscribe`、
@@ -1394,6 +1416,8 @@ client,会话在原地按新的规格重建(它是空闲的,不会腰斩什么),
 - 会话正在共用同一状态目录的另一个 daemon 里 → `INTERNAL_ERROR`,消息含
   "being written by another process";不会换 id 新建。`session.run_turn` 指名这样的会话
   同样如此。
+- 会话因别的原因建不回来(例如它记录的 `provider` 已经不在配置里)→ `INTERNAL_ERROR`,
+  消息写明原因。同样不会换一个新 id 建会话顶替,`session.run_turn` 也一样。
 
 `permission.prompts` 为 `false` 意味着这个会话跑在 `bypassPermissions` 下,不会有
 任何 `kind:"prompt"` 事件。
@@ -2382,7 +2406,7 @@ transcript,这一轮以 `ENGINE_ERROR` 结束,不会重发。
 | `import_detected` | `{sources:[{source,description}]}` | 启动时探测到还没处理过的可导入配置 |
 | `session_created` | `{session_id, scene, project_root}` | 一个新会话进了内存 |
 | `session_resumed` | `{session_id, scene, project_root}` | 一个已有的会话被恢复进内存 |
-| `session_evicted` | `{session_id, reason}` | 会话被移出内存,transcript 还在,可以恢复。`reason`:`idle`(空闲超时)、`capacity`(池子满了,挤掉最久没动的)。正在跑一轮、或还有后台任务在跑的会话不会被驱逐;池子满了而个个都忙时,新会话照样建,池子暂时超出上限 |
+| `session_evicted` | `{session_id, reason}` | 会话被移出内存,transcript 还在,可以恢复。`reason`:`idle`(空闲超时)、`capacity`(池子满了,挤掉最久没动的)。正在跑一轮、或还有后台任务在跑的会话不会被驱逐;池子满了而个个都忙时,新会话照样建,池子暂时超出上限。再用被驱逐的会话时,先等它旧的运行体停下(`SessionEnd` hook 跑完,最多 5 秒)再重建,两者不会同时在跑 |
 | `session_closed` | `{session_id, reason}` | 会话被关闭。`reason`:`closed`(`session.close` / `session.delete`)、`engine_stopped`(引擎在一轮中途退出) |
 | `session_deleted` | `{session_id, parent_session_id?}` | 会话连同 transcript 被删除;级联删除的侧链带 `parent_session_id` |
 | `turn_started` | `{session_id, turn_id, initiator}` | 一轮开始。`initiator`:`client`(某条连接的 `run_turn`)、`schedule`(定时任务,§6.7)、`goal`(目标的自动轮) |

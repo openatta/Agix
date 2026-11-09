@@ -926,6 +926,9 @@ impl Settings {
         let mut local_permission_rules: Vec<PermissionRule> = Vec::new();
 
         for layer in source.layers() {
+            for key in unknown_settings_keys(&layer.value) {
+                tracing::warn!(layer = layer.tier.name(), origin = %layer.origin, key, "settings key not recognised, ignoring it");
+            }
             let mut layer_json = layer.value;
             if let Some(obj) = layer_json.as_object_mut() {
                 // `paths` is resolved from this function's own arguments,
@@ -1052,6 +1055,26 @@ impl Settings {
 /// write-back invocation).
 pub fn settings_json_schema() -> serde_json::Value {
     serde_json::to_value(schemars::schema_for!(Settings)).unwrap_or(serde_json::Value::Null)
+}
+
+/// The top-level keys of one settings file that no setting reads — a typo,
+/// or a key from another tool's settings. `$schema` is the editor's, and is
+/// not reported.
+pub fn unknown_settings_keys(layer: &serde_json::Value) -> Vec<String> {
+    static KNOWN: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
+        settings_json_schema()["properties"]
+            .as_object()
+            .map(|properties| properties.keys().cloned().collect())
+            .unwrap_or_default()
+    });
+    let Some(fields) = layer.as_object() else {
+        return Vec::new();
+    };
+    fields
+        .keys()
+        .filter(|key| key.as_str() != "$schema" && !KNOWN.contains(key))
+        .cloned()
+        .collect()
 }
 
 /// Recursively merge `over` into `base` in place: objects merge key-by-key
@@ -1512,6 +1535,21 @@ mod tests {
             "fallback-model",
         );
         assert_eq!(settings.model.model_name, "fallback-model");
+    }
+
+    #[test]
+    fn a_key_no_setting_reads_is_reported() {
+        let layer = serde_json::json!({
+            "$schema": "../schemas/settings.schema.json",
+            "model": {},
+            "permission_mode": "plan",
+            "permision_mode": "plan",
+            "hooks": {},
+        });
+        let mut unknown = unknown_settings_keys(&layer);
+        unknown.sort();
+        assert_eq!(unknown, ["hooks", "permision_mode"]);
+        assert!(unknown_settings_keys(&serde_json::json!([1])).is_empty());
     }
 
     #[test]

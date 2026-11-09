@@ -361,6 +361,13 @@ async fn serve(cli: Cli) -> anyhow::Result<()> {
             .clone()
             .or_else(|| std::env::var("AGIX_DAEMON_TOKEN").ok())
             .ok_or_else(|| anyhow::anyhow!("--listen requires --token or env AGIX_DAEMON_TOKEN"))?;
+        if !addr.ip().is_loopback() {
+            tracing::warn!(
+                %addr,
+                "--listen binds an address reachable from the network; the connection is not \
+                 encrypted, so the token and everything after it travel in the clear"
+            );
+        }
         daemon_config.tcp_addr = Some(addr);
         daemon_config.tcp_token = Some(token);
     }
@@ -396,14 +403,15 @@ async fn serve(cli: Cli) -> anyhow::Result<()> {
     let socket = daemon_config.socket_path.clone();
     let lock_path = daemon_config.lock_path.clone();
     if let Some(parent) = socket.parent() {
-        std::fs::create_dir_all(parent)?;
+        daemon::discovery::create_private_dir(parent)?;
     }
 
-    // Write discovery lock
-    match write_lock_file(&lock_path, &socket) {
-        Ok(lock) => info!(pid = lock.pid, "wrote discovery lock"),
+    // Held until this function returns, which removes the file.
+    let lock = match write_lock_file(&lock_path, &socket) {
+        Ok(lock) => lock,
         Err(e) => anyhow::bail!("could not claim daemon lock: {e}"),
-    }
+    };
+    info!(pid = lock.pid, "wrote discovery lock");
 
     // Write the multi-scene instances.d discovery entry alongside the
     // legacy single-scene `daemon.lock` above — additive, see
@@ -528,20 +536,17 @@ async fn serve(cli: Cli) -> anyhow::Result<()> {
     pool.record_startup(timing);
 
     let cancel = CancellationToken::new();
+    let server = Arc::new(DaemonServer::new(pool.clone(), cancel.clone()));
 
     // Ctrl-C, and the SIGTERM a supervisor stops a service with, shut down
     // gracefully.
     {
-        let cancel = cancel.clone();
-        let pool = pool.clone();
+        let server = server.clone();
         tokio::spawn(async move {
             shutdown_signal().await;
-            pool.shutdown_all().await;
-            cancel.cancel();
+            server.shutdown().await;
         });
     }
-
-    let server = Arc::new(DaemonServer::new(pool, cancel.clone()));
 
     // One token covers both network transports; either flag alone sets it.
     if let Some(token) = daemon_config.tcp_token.clone() {
@@ -584,11 +589,13 @@ async fn serve(cli: Cli) -> anyhow::Result<()> {
         ),
     }
 
-    server.serve_unix_listener(unix).await?;
+    server.clone().serve_unix_listener(unix).await?;
+    // Whoever stopped the listener is stopping the sessions; this waits for it.
+    pool.shutdown_all().await;
 
     #[cfg(feature = "otel")]
     let _ = tokio::task::spawn_blocking(assembly::telemetry_otel::shutdown_process_exporter).await;
-    let _ = std::fs::remove_file(&lock_path);
+    drop(lock);
     let _ = std::fs::remove_file(&groups_file);
     daemon::discovery::remove_instance_file(&instances_dir, &instance_name);
     info!("daemon stopped");

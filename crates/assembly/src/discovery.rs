@@ -7,8 +7,10 @@
 //! plugins read this file to find a running daemon — no env var hunting, no
 //! port scan.
 //!
-//! On graceful shutdown the file is removed. On crash, the next daemon
-//! startup detects the stale file (pid no longer alive) and overwrites.
+//! The daemon holds the file with an advisory `flock` for as long as it
+//! runs, so two daemons starting together cannot both claim it; the kernel
+//! drops the lock however the process ends. On graceful shutdown the file is
+//! removed; after a crash the next daemon takes the lock and overwrites it.
 //!
 //! `daemon.lock` predates `--scenes` (plural) — a client reading it only
 //! ever learns about the one scene it's colocated with, not the full set a
@@ -49,56 +51,84 @@ pub struct DaemonLock {
     pub protocol_version: String,
 }
 
-/// Write the lock file with `0600` perms on Unix.
-///
-/// Staleness check (docs/ARCHITECTURE.md §7 — shared verbatim with the
-/// team-directory lock this daemon-instance lock predates):
-/// ```text
-/// 文件不存在                    → 写入，获得锁
-/// 文件存在
-///   ├─ pid 是自己                → 重入
-///   ├─ pid 存活 且 启动时间匹配  → 拒绝，AnotherDaemonRunning
-///   ├─ pid 存活 但 启动时间不匹配 → pid 已被复用，视为陈旧，接管
-///   └─ pid 不存在                → 陈旧，接管并覆写（记 warn）
-/// ```
-pub fn write_lock_file(lock_path: &Path, socket_path: &Path) -> Result<DaemonLock, LockFileError> {
-    if let Some(parent) = lock_path.parent() {
-        fs::create_dir_all(parent).map_err(LockFileError::Io)?;
+/// `daemon.lock`, held by this process until dropped; dropping it removes
+/// the file.
+#[derive(Debug)]
+pub struct DaemonLockGuard {
+    lock: DaemonLock,
+    path: PathBuf,
+    file: fs::File,
+}
+
+impl std::ops::Deref for DaemonLockGuard {
+    type Target = DaemonLock;
+    fn deref(&self) -> &DaemonLock {
+        &self.lock
     }
-    let my_pid = std::process::id();
-    if lock_path.exists() {
-        match fs::read(lock_path) {
-            Ok(bytes) => match serde_json::from_slice::<DaemonLock>(&bytes) {
-                Ok(prev) if prev.pid != my_pid => {
-                    let recorded = ProcessIdentity {
-                        pid: prev.pid,
-                        started_at: prev.pid_start_time,
-                    };
-                    match decide_stale_lock(&recorded, "daemon.lock", lock_path) {
-                        StaleLockDecision::KeepExisting => {
-                            return Err(LockFileError::AnotherDaemonRunning {
-                                pid: prev.pid,
-                                socket_path: prev.socket_path,
-                            });
-                        }
-                        StaleLockDecision::Reclaim => {}
-                    }
-                }
-                Ok(_) => { /* reentry — same pid, fall through and overwrite */ }
-                Err(e) => {
-                    tracing::warn!(
-                        lock_path = %lock_path.display(),
-                        error = %e,
-                        "daemon.lock content could not be parsed as JSON; treating as stale and overwriting"
-                    );
-                }
-            },
-            Err(e) => {
-                tracing::warn!(
-                    lock_path = %lock_path.display(),
-                    error = %e,
-                    "daemon.lock could not be read; treating as stale and overwriting"
-                );
+}
+
+impl Drop for DaemonLockGuard {
+    fn drop(&mut self) {
+        if names_open_file(&self.path, &self.file) {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// Claim `lock_path` for this daemon and write it, mode `0600`.
+///
+/// The claim is the `flock`: one held by another process refuses it. A lock
+/// taken, the recorded holder is checked too, since a daemon from before the
+/// file was locked never took one (docs/ARCHITECTURE.md §7 — the same
+/// staleness rules as the team-directory lock):
+/// ```text
+/// flock 被别的进程持有              → 拒绝，AnotherDaemonRunning
+/// 拿到 flock，文件里记录的
+///   ├─ 无记录 / 读不出 / pid 是自己 → 写入，获得锁
+///   ├─ pid 存活 且 启动时间匹配    → 拒绝，AnotherDaemonRunning
+///   ├─ pid 存活 但 启动时间不匹配  → pid 已被复用，视为陈旧，接管
+///   └─ pid 不存在                  → 陈旧，接管并覆写（记 warn）
+/// ```
+pub fn write_lock_file(
+    lock_path: &Path,
+    socket_path: &Path,
+) -> Result<DaemonLockGuard, LockFileError> {
+    if let Some(parent) = lock_path.parent() {
+        create_private_dir(parent).map_err(LockFileError::Io)?;
+    }
+    let mut file = loop {
+        let file = open_private(lock_path).map_err(LockFileError::Io)?;
+        match try_lock_exclusive(&file) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                let prev = read_recorded(&file);
+                return Err(LockFileError::AnotherDaemonRunning {
+                    pid: prev.as_ref().map_or(0, |p| p.pid),
+                    socket_path: prev.map(|p| p.socket_path).unwrap_or_default(),
+                });
+            }
+            Err(e) => return Err(LockFileError::Io(e)),
+        }
+        // A daemon stopping removes the file while it still holds it; the
+        // lock on a file no longer at `lock_path` keeps nobody out.
+        if names_open_file(lock_path, &file) {
+            break file;
+        }
+    };
+
+    if let Some(prev) = read_recorded(&file) {
+        if prev.pid != std::process::id() {
+            let recorded = ProcessIdentity {
+                pid: prev.pid,
+                started_at: prev.pid_start_time,
+            };
+            if let StaleLockDecision::KeepExisting =
+                decide_stale_lock(&recorded, "daemon.lock", lock_path)
+            {
+                return Err(LockFileError::AnotherDaemonRunning {
+                    pid: prev.pid,
+                    socket_path: prev.socket_path,
+                });
             }
         }
     }
@@ -116,17 +146,97 @@ pub fn write_lock_file(lock_path: &Path, socket_path: &Path) -> Result<DaemonLoc
         protocol_version: "1".into(),
     };
     let body = serde_json::to_string_pretty(&lock).map_err(LockFileError::Json)?;
-    let tmp = lock_path.with_extension(format!("tmp-{}", std::process::id()));
-    fs::write(&tmp, body).map_err(LockFileError::Io)?;
+    {
+        use std::io::{Seek, Write};
+        file.set_len(0).map_err(LockFileError::Io)?;
+        file.seek(io::SeekFrom::Start(0))
+            .map_err(LockFileError::Io)?;
+        file.write_all(body.as_bytes()).map_err(LockFileError::Io)?;
+    }
+    Ok(DaemonLockGuard {
+        lock,
+        path: lock_path.to_path_buf(),
+        file,
+    })
+}
+
+/// Create `dir` and any missing parents, each one this user's only.
+/// Directories already there are left as they are.
+pub fn create_private_dir(dir: &Path) -> io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(dir)
+}
+
+fn open_private(path: &Path) -> io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(path)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&tmp).map_err(LockFileError::Io)?.permissions();
-        perms.set_mode(0o600);
-        fs::set_permissions(&tmp, perms).map_err(LockFileError::Io)?;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
     }
-    fs::rename(&tmp, lock_path).map_err(LockFileError::Io)?;
-    Ok(lock)
+    Ok(file)
+}
+
+fn read_recorded(file: &fs::File) -> Option<DaemonLock> {
+    use std::io::{Read, Seek};
+    let mut file = file;
+    let mut bytes = Vec::new();
+    file.seek(io::SeekFrom::Start(0)).ok()?;
+    file.read_to_end(&mut bytes).ok()?;
+    if bytes.is_empty() {
+        return None;
+    }
+    match serde_json::from_slice::<DaemonLock>(&bytes) {
+        Ok(prev) => Some(prev),
+        Err(e) => {
+            tracing::warn!(error = %e, "daemon.lock content could not be parsed as JSON; treating as stale and overwriting");
+            None
+        }
+    }
+}
+
+#[cfg(unix)]
+fn names_open_file(path: &Path, file: &fs::File) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (fs::metadata(path), file.metadata()) {
+        (Ok(at_path), Ok(open)) => at_path.dev() == open.dev() && at_path.ino() == open.ino(),
+        _ => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn names_open_file(path: &Path, _file: &fs::File) -> bool {
+    path.exists()
+}
+
+#[cfg(unix)]
+fn try_lock_exclusive(file: &fs::File) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: `flock` only reads the descriptor, which `file` keeps open.
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(unix))]
+fn try_lock_exclusive(_file: &fs::File) -> io::Result<()> {
+    Ok(())
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -438,17 +548,64 @@ mod tests {
         assert_eq!(written.socket_path, sock);
     }
 
+    /// What a container restart leaves: a lock nobody holds, recording the pid
+    /// this process happens to have been given again.
     #[test]
-    fn write_reenters_when_the_recorded_pid_is_its_own() {
+    fn a_lock_nobody_holds_that_records_this_pid_is_taken_over() {
         let dir = TempDir::new().unwrap();
         let lock_path = dir.path().join("daemon.lock");
-        write_lock_file(&lock_path, &dir.path().join("first.sock")).unwrap();
+        let left = DaemonLock {
+            pid: std::process::id(),
+            pid_start_time: 1,
+            socket_path: dir.path().join("first.sock"),
+            version: "0.0.0".into(),
+            started_at: 0,
+            protocol_version: "1".into(),
+        };
+        std::fs::write(&lock_path, serde_json::to_vec(&left).unwrap()).unwrap();
 
         let sock2 = dir.path().join("second.sock");
-        let written = write_lock_file(&lock_path, &sock2)
-            .expect("re-writing under the same pid must be a reentry, not a rejection");
+        let written = write_lock_file(&lock_path, &sock2).unwrap();
         assert_eq!(written.pid, std::process::id());
-        assert_eq!(written.socket_path, sock2);
+        assert_eq!(
+            read_lock_file(&lock_path).unwrap().unwrap().socket_path,
+            sock2
+        );
+    }
+
+    #[test]
+    fn a_held_lock_refuses_every_other_claim_and_goes_with_its_holder() {
+        let dir = TempDir::new().unwrap();
+        let lock_path = dir.path().join("daemon.lock");
+        let claims: Vec<_> = std::thread::scope(|scope| {
+            let attempts: Vec<_> = (0..8)
+                .map(|i| {
+                    let (lock_path, sock) = (&lock_path, dir.path().join(format!("{i}.sock")));
+                    scope.spawn(move || write_lock_file(lock_path, &sock))
+                })
+                .collect();
+            attempts.into_iter().map(|t| t.join().unwrap()).collect()
+        });
+        let held: Vec<_> = claims.iter().filter_map(|c| c.as_ref().ok()).collect();
+        assert_eq!(held.len(), 1, "{claims:?}");
+        let holder = held[0];
+        for refused in claims.iter().filter_map(|c| c.as_ref().err()) {
+            match refused {
+                LockFileError::AnotherDaemonRunning { pid, .. } => {
+                    assert!(*pid == 0 || *pid == holder.pid, "{refused:?}");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        assert_eq!(
+            read_lock_file(&lock_path).unwrap().unwrap().socket_path,
+            holder.socket_path
+        );
+
+        drop(claims);
+        assert!(!lock_path.exists(), "the holder removes its lock");
+        write_lock_file(&lock_path, &dir.path().join("next.sock"))
+            .expect("free once the holder is gone");
     }
 
     // `ProcessIdentity`/`ProcessLiveness`/`parse_elapsed` behavior itself is

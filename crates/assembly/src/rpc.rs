@@ -491,10 +491,87 @@ pub struct SessionOptions {
 }
 
 impl SessionOptions {
+    /// Every field `options` may carry.
+    pub const FIELDS: &'static [&'static str] = &[
+        "recorder",
+        "clock",
+        "telemetry",
+        "permission_mode",
+        "permission_rules",
+        "output_schema",
+        "provider",
+        "model",
+        "prompt",
+        "prompt_types",
+    ];
+
+    /// `params.options` as far as it can be read, and what in it could not
+    /// be: a field this daemon does not know, or one whose value does not
+    /// parse. Each field is read on its own, so one bad field leaves the rest
+    /// in force.
+    pub fn from_params(params: &Value) -> (Option<Self>, Vec<IgnoredOption>) {
+        let fields = match params.get("options") {
+            None | Some(Value::Null) => return (None, Vec::new()),
+            Some(Value::Object(fields)) => fields,
+            Some(_) => {
+                return (
+                    None,
+                    vec![IgnoredOption {
+                        field: None,
+                        error: "options must be an object".to_string(),
+                    }],
+                )
+            }
+        };
+        let mut ignored = Vec::new();
+        let mut readable = serde_json::Map::new();
+        for (name, value) in fields {
+            if !Self::FIELDS.contains(&name.as_str()) {
+                ignored.push(IgnoredOption {
+                    field: Some(name.clone()),
+                    error: "unknown field".to_string(),
+                });
+                continue;
+            }
+            let alone = Value::Object([(name.clone(), value.clone())].into_iter().collect());
+            match serde_json::from_value::<Self>(alone) {
+                Ok(_) => {
+                    readable.insert(name.clone(), value.clone());
+                }
+                Err(e) => ignored.push(IgnoredOption {
+                    field: Some(name.clone()),
+                    error: e.to_string(),
+                }),
+            }
+        }
+        if readable.is_empty() {
+            return (None, ignored);
+        }
+        match serde_json::from_value(Value::Object(readable)) {
+            Ok(options) => (Some(options), ignored),
+            Err(e) => {
+                ignored.push(IgnoredOption {
+                    field: None,
+                    error: e.to_string(),
+                });
+                (None, ignored)
+            }
+        }
+    }
+
     /// Whether the host answers the model's questions (`AskUserQuestion`).
     pub fn answers_questions(&self) -> bool {
         self.prompt_types.iter().any(|t| t == PROMPT_TYPE_QUESTION)
     }
+}
+
+/// A field of `options` the daemon left out, as the response's
+/// `ignored_options` reports it. `field` is `None` when `options` as a whole
+/// could not be read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct IgnoredOption {
+    pub field: Option<String>,
+    pub error: String,
 }
 
 /// `prompt_type` of a `prompt` frame that asks whether a tool call may run.
@@ -694,6 +771,62 @@ mod tests {
         assert_eq!(notice["method"], "session.event");
         assert_eq!(notice["params"]["session_id"], "s1");
         assert_eq!(notice["params"]["event"]["kind"], "subscription_dropped");
+    }
+
+    #[test]
+    fn the_listed_option_fields_are_exactly_the_struct_s() {
+        let every_field = SessionOptions {
+            recorder: Some(serde_json::from_value(serde_json::json!({"mode": "record"})).unwrap()),
+            clock: Some(ClockOptions {
+                start: "2026-10-28T09:00:00Z".into(),
+            }),
+            telemetry: Some(TelemetryOptions {
+                output: "/tmp/t.jsonl".into(),
+            }),
+            permission_mode: Some(base::interface::settings::PermissionMode::Plan),
+            permission_rules: vec![serde_json::from_value(serde_json::json!({
+                "source": "session", "behavior": "allow", "tool_name": "Read"
+            }))
+            .unwrap()],
+            output_schema: Some(serde_json::json!({})),
+            provider: Some("p".into()),
+            model: Some("m".into()),
+            prompt: Some(Default::default()),
+            prompt_types: vec![PROMPT_TYPE_QUESTION.into()],
+        };
+        let serialized = serde_json::to_value(&every_field).unwrap();
+        let mut names: Vec<&str> = serialized
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        let mut listed = SessionOptions::FIELDS.to_vec();
+        names.sort_unstable();
+        listed.sort_unstable();
+        assert_eq!(names, listed);
+    }
+
+    #[test]
+    fn a_bad_option_field_is_reported_and_the_rest_still_apply() {
+        let params = serde_json::json!({"options": {
+            "permission_mode": "plann",
+            "model": "m",
+            "permision_rules": [],
+        }});
+        let (options, mut ignored) = SessionOptions::from_params(&params);
+        assert_eq!(options.unwrap().model.as_deref(), Some("m"));
+        ignored.sort_by(|a, b| a.field.cmp(&b.field));
+        let fields: Vec<_> = ignored.iter().map(|i| i.field.as_deref()).collect();
+        assert_eq!(fields, [Some("permision_rules"), Some("permission_mode")]);
+        assert_eq!(ignored[0].error, "unknown field");
+        assert!(ignored[1].error.contains("plann"), "{:?}", ignored[1]);
+
+        let (options, ignored) = SessionOptions::from_params(&serde_json::json!({}));
+        assert!(options.is_none() && ignored.is_empty());
+        let (options, ignored) = SessionOptions::from_params(&serde_json::json!({"options": 3}));
+        assert!(options.is_none());
+        assert_eq!(ignored[0].field, None);
     }
 
     #[test]

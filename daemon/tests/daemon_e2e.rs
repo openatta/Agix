@@ -236,6 +236,134 @@ async fn unknown_method_returns_error() {
     let _ = handle.await;
 }
 
+/// A request without an `id` is a notification: whatever it does, no
+/// response comes back for it — not a result, not an error.
+#[tokio::test]
+async fn a_notification_gets_no_response() {
+    let (_server, sock, _dir, handle) = start_server().await;
+    let mut client = UnixStream::connect(&sock).await.unwrap();
+    client
+        .write_all(
+            b"{\"jsonrpc\":\"2.0\",\"method\":\"daemon.status\"}\n\
+              {\"jsonrpc\":\"2.0\",\"method\":\"nonexistent\"}\n",
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    client
+        .write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"daemon.status\",\"id\":7}\n")
+        .await
+        .unwrap();
+    let (r, _w) = client.split();
+    let mut line = String::new();
+    BufReader::new(r).read_line(&mut line).await.unwrap();
+    let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(v["id"], 7, "the first line back answers the request: {v}");
+
+    _server.shutdown_token().cancel();
+    let _ = handle.await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn unix_socket_is_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("new").join("dir").join("agixd.sock");
+    let _listener = DaemonServer::bind_unix(&sock).unwrap();
+    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&sock), 0o600);
+    assert_eq!(mode(sock.parent().unwrap()), 0o700);
+    assert_eq!(mode(&dir.path().join("new")), 0o700);
+}
+
+/// `daemon.shutdown` answers once the sessions are stopped; a connection
+/// still open after that cannot start another one.
+#[tokio::test]
+async fn no_session_is_created_after_shutdown_starts() {
+    let (_server, sock, _dir, handle) = start_server().await;
+    let mut client = UnixStream::connect(&sock).await.unwrap();
+    let (r, mut w) = client.split();
+    let mut lines = BufReader::new(r).lines();
+    w.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"daemon.shutdown\",\"id\":1}\n")
+        .await
+        .unwrap();
+    let down: serde_json::Value =
+        serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+    assert_eq!(down["result"]["shutting_down"], true, "{down}");
+
+    w.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"session.create\",\"id\":2}\n")
+        .await
+        .unwrap();
+    let created: serde_json::Value =
+        serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+    assert!(created["result"].is_null(), "{created}");
+    assert!(
+        created["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("shutting down"),
+        "{created}"
+    );
+    tokio::time::timeout(Duration::from_secs(5), handle)
+        .await
+        .expect("the listener stopped")
+        .unwrap();
+}
+
+/// `options` that do not read are reported field by field, and the fields
+/// that do read still apply.
+#[tokio::test]
+async fn malformed_options_are_reported() {
+    let (_server, sock, _dir, handle) = start_server().await;
+    let resp = rpc_call(
+        &sock,
+        r#"{"jsonrpc":"2.0","method":"session.create","id":1,"params":{"options":{"permission_mode":"plan","model":3,"permision_rules":[]}}}"#,
+    )
+    .await;
+    let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    let sid = v["result"]["session_id"]
+        .as_str()
+        .expect("created")
+        .to_string();
+    let mut ignored: Vec<(String, String)> = v["result"]["ignored_options"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{v}"))
+        .iter()
+        .map(|i| {
+            (
+                i["field"].as_str().unwrap().to_string(),
+                i["error"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    ignored.sort();
+    assert_eq!(ignored.len(), 2, "{v}");
+    assert_eq!(ignored[0].0, "model");
+    assert!(ignored[0].1.contains("invalid type"), "{v}");
+    assert_eq!(ignored[1].0, "permision_rules");
+    assert_eq!(ignored[1].1, "unknown field");
+
+    let resumed = rpc_call(
+        &sock,
+        &format!(r#"{{"jsonrpc":"2.0","method":"session.resume","id":2,"params":{{"session_id":"{sid}"}}}}"#),
+    )
+    .await;
+    let resumed: serde_json::Value = serde_json::from_str(&resumed).unwrap();
+    assert_eq!(resumed["result"]["permission"]["mode"], "plan", "{resumed}");
+
+    let clean = rpc_call(
+        &sock,
+        r#"{"jsonrpc":"2.0","method":"session.create","id":3,"params":{"options":{"model":"claude-haiku-4-5"}}}"#,
+    )
+    .await;
+    let v: serde_json::Value = serde_json::from_str(&clean).unwrap();
+    assert!(v["result"].get("ignored_options").is_none(), "{v}");
+
+    _server.shutdown_token().cancel();
+    let _ = handle.await;
+}
+
 #[tokio::test]
 async fn doctor_reports_no_providers_configured_as_ok() {
     let (_server, sock, _dir, handle) = start_server().await;

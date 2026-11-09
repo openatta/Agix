@@ -594,6 +594,27 @@ WebAssembly 载体整个移除。
 - `Agent` 工具的 schema 去掉从未生效的 `auto_background_after_secs`。子 Agent 因 `max_turns`
   停下时,交回父会话的结果里写明这一点(以前可能是一个空结果)。`TeamCreate` 的结果不再带
   协调者的 ROLE/TOOLS 说明段。
+- **`options` 逐字段读,被忽略的报在响应里。** `session.create` / `session.run_turn` /
+  `session.resume` 的 `options` 里不认识的字段、值读不出来的字段(`"permission_mode": "plann"`)
+  被忽略、其余照常生效,列在 `result.ignored_options`(`[{field, error}]`)里并记 warn。以前一个
+  字段错了整份 `options` 悄悄当没传,`permission_mode`、`permission_rules` 一起丢掉。**下一个版本
+  起改为拒绝**(`INVALID_PARAMS`),现在就该把 `ignored_options` 当错误处理。
+- 会话建不回来时(例如它记录的 `provider` 已不在配置里),`session.run_turn` / `session.resume`
+  报 `INTERNAL_ERROR`,不再换一个新 id、在默认项目和默认场景里建会话顶替(以前 `run_turn`
+  会在那个新会话里照常跑完这一轮,结果的 `session_id` 不是请求里的那个)。
+- 没有 `id` 的请求(通知)不再收到响应帧,出错和 `TOO_MANY_IN_FLIGHT` 也不回。靠无 `id` 请求
+  拿结果的客户端要带上 `id`。
+- `daemon.shutdown`、SIGINT / SIGTERM 先停止接受新连接再关会话;关停期间已连着的连接上新建或
+  带回内存会话报错 `the daemon is shutting down`。以前关停的那几秒里还能建出会话来。
+- Unix socket 建好后改成 `0600`,daemon 为它新建的目录是 `0700`;以前随 umask(通常 `0755`)。
+  别的用户本来就连不上(没有写权限),放宽了 umask 的部署才受影响。
+- `daemon.lock` 在 daemon 运行期间持有 `flock`:两个 daemon 同时启动只有一个能起来,另一个报
+  "another daemon is already running"。以前两个可能都起来,后起的删掉先起的那个的 socket。
+- 被驱逐的会话再用时,先等它旧的运行体停下(`SessionEnd` hook 跑完,最多 5 秒)再重建;以前
+  旧的 `SessionEnd` hook 可能和重建出来的会话的 `SessionStart` 同时在跑。
+- `--listen` 绑定非回环地址时启动打一条 warn:TCP 不加密,token 明文传输。
+- settings.json 里没有任何设置读的顶层键(拼错的、别的工具的,如 `hooks`)在加载时各记一条
+  warn,`daemon.doctor` 的 `settings_tiers[]` 多了 `unknown_keys`。行为不变,仍被忽略。
 
 ### 嵌入方
 
@@ -723,3 +744,11 @@ WebAssembly 载体整个移除。
 - `plugin::cache::check_component` 新增;`plugin::install::{install, uninstall}` 与
   `PluginCache::remove_version` 对不合规的 `name` / `version` 返回 `PluginError::Schema`,
   `remove_version` 还拒绝解析到 cache 之外的插件目录。
+- `daemon::write_lock_file` 返回 `DaemonLockGuard`(`Deref` 到 `DaemonLock`),持有期间占着
+  `flock`,drop 时删掉锁文件;不要再自己删。新增 `discovery::create_private_dir`。
+- `SessionPool::shutdown_all` 一开始就拒绝再建会话,重复调用等第一次做完。新增
+  `DaemonServer::shutdown()`:先停监听再 `shutdown_all`,自己先 `shutdown_all` 再取消
+  `shutdown_token` 的嵌入方改用它。
+- `DaemonServer::bind_unix` 把 socket 设为 `0600`(自己 chmod 的可以去掉)。
+- `rpc::SessionOptions::from_params` 与 `rpc::IgnoredOption` 新增,`SessionOptions::FIELDS`
+  列出全部字段名。`base::settings::unknown_settings_keys` 新增。

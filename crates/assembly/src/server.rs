@@ -258,6 +258,14 @@ impl DaemonServer {
         self.shutdown_token.clone()
     }
 
+    /// Stop accepting connections, then stop every session and wait for
+    /// them. Connections already open stay open meanwhile, and a session they
+    /// ask for is refused.
+    pub async fn shutdown(&self) {
+        self.shutdown_token.cancel();
+        self.pool.shutdown_all().await;
+    }
+
     pub async fn serve_tcp(self: Arc<Self>, addr: SocketAddr) -> anyhow::Result<()> {
         if self.tcp_token.read().await.is_none() {
             anyhow::bail!("TCP requires token");
@@ -313,14 +321,24 @@ impl DaemonServer {
         self.serve_unix_listener(listener).await
     }
 
-    /// Bind the unix socket, replacing a stale one. Split from
-    /// [`Self::serve_unix_listener`] so a caller can bind every listener before
-    /// announcing the daemon — a client that finds it must be able to connect.
+    /// Bind the unix socket, replacing a stale one, readable and writable by
+    /// this user only; a directory it creates for it is this user's only
+    /// too. Split from [`Self::serve_unix_listener`] so a caller can bind
+    /// every listener before announcing the daemon — a client that finds it
+    /// must be able to connect.
     pub fn bind_unix(socket_path: &Path) -> anyhow::Result<UnixListener> {
+        if let Some(parent) = socket_path.parent() {
+            crate::discovery::create_private_dir(parent)?;
+        }
         if socket_path.exists() {
             std::fs::remove_file(socket_path)?;
         }
         let listener = UnixListener::bind(socket_path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))?;
+        }
         info!(path=%socket_path.display());
         Ok(listener)
     }
@@ -408,9 +426,13 @@ impl DaemonServer {
         client: &Arc<Client>,
         in_flight: &Arc<tokio::sync::Semaphore>,
     ) {
+        let notification = req.id.is_none();
         let id = req.id.clone().unwrap_or(serde_json::Value::Null);
         let client = client.clone();
         let Ok(permit) = in_flight.clone().try_acquire_owned() else {
+            if notification {
+                return;
+            }
             let refusal = RpcResponse::err(
                 id,
                 codes::TOO_MANY_IN_FLIGHT,
@@ -425,7 +447,9 @@ impl DaemonServer {
         };
         tokio::spawn(async move {
             let resp = self.dispatch(req, client.clone()).await;
-            send_frame(&client, &resp).await;
+            if !notification {
+                send_frame(&client, &resp).await;
+            }
             drop(permit);
         });
     }
@@ -626,8 +650,7 @@ impl DaemonServer {
             "import.list" => self.method_import_list(id, req.params).await,
             "import.run" => self.method_import_run(id, req.params).await,
             "daemon.shutdown" => {
-                self.pool.shutdown_all().await;
-                self.shutdown_token.cancel();
+                self.shutdown().await;
                 RpcResponse::ok(id, serde_json::json!({"shutting_down":true}))
             }
             "session.list" => {
@@ -1553,9 +1576,7 @@ impl DaemonServer {
             );
         }
 
-        let options: Option<crate::rpc::SessionOptions> = params
-            .get("options")
-            .and_then(|v| serde_json::from_value(v.clone()).ok());
+        let (options, ignored_options) = read_options("session.run_turn", &params);
 
         // Optional and backwards-compatible: a client that never sends
         // `attachments` behaves exactly as before. A malformed entry is
@@ -1598,7 +1619,8 @@ impl DaemonServer {
             },
         };
 
-        self.pool
+        let resp = self
+            .pool
             .run_turn(
                 session_id,
                 user_msg,
@@ -1610,7 +1632,8 @@ impl DaemonServer {
                 on_busy,
                 "client",
             )
-            .await
+            .await;
+        reporting_ignored(resp, ignored_options)
     }
 
     /// `session.inspectContext {session_id}`, `session.dropMessages
@@ -1844,18 +1867,17 @@ impl DaemonServer {
             },
         };
         let scene = params.get("scene").and_then(|v| v.as_str());
-        let options: Option<crate::rpc::SessionOptions> = params
-            .get("options")
-            .and_then(|v| serde_json::from_value(v.clone()).ok());
+        let (options, ignored_options) = read_options("session.create", &params);
 
-        match self
+        let resp = match self
             .pool
             .create_session(scene, project_root, options.as_ref())
             .await
         {
             Ok(result) => RpcResponse::ok(id, result),
             Err((code, message)) => RpcResponse::err(id, code, message),
-        }
+        };
+        reporting_ignored(resp, ignored_options)
     }
 
     /// `session.get` params: `{"session_id": "..."}`.
@@ -2415,12 +2437,7 @@ impl DaemonServer {
             .get("create_if_missing")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        // Same lenient parse `session.run_turn` uses for `options` — an
-        // unrecognized shape degrades to "no options", it doesn't fail the
-        // call.
-        let options: Option<crate::rpc::SessionOptions> = params
-            .get("options")
-            .and_then(|v| serde_json::from_value(v.clone()).ok());
+        let (options, ignored_options) = read_options("session.resume", &params);
 
         // `docs/daemon_rpc_protocol.md` §3.4: a session recorded under a different scene than this
         // daemon's must not be silently resumed into it — that's exactly
@@ -2460,7 +2477,7 @@ impl DaemonServer {
                         serde_json::json!(scene_inferred),
                     );
                 }
-                RpcResponse::ok(id, result)
+                reporting_ignored(RpcResponse::ok(id, result), ignored_options)
             }
             Err(e) => resume_failure(id, e),
         }
@@ -2538,6 +2555,45 @@ fn module_not_compiled(id: serde_json::Value, method: &str, module: &str) -> Rpc
         format!("`{method}` belongs to the `{module}` module, which this build does not include"),
         serde_json::json!({ "module": module }),
     )
+}
+
+/// `params.options` as [`crate::rpc::SessionOptions::from_params`] reads it,
+/// with a warning for each field it left out.
+fn read_options(
+    method: &str,
+    params: &serde_json::Value,
+) -> (
+    Option<crate::rpc::SessionOptions>,
+    Vec<crate::rpc::IgnoredOption>,
+) {
+    let (options, ignored) = crate::rpc::SessionOptions::from_params(params);
+    for left_out in &ignored {
+        warn!(
+            method,
+            field = left_out.field.as_deref().unwrap_or("options"),
+            error = %left_out.error,
+            "ignored part of `options`"
+        );
+    }
+    (options, ignored)
+}
+
+/// `resp` with what `options` left out listed in its result as
+/// `ignored_options`.
+fn reporting_ignored(
+    mut resp: RpcResponse,
+    ignored: Vec<crate::rpc::IgnoredOption>,
+) -> RpcResponse {
+    if ignored.is_empty() {
+        return resp;
+    }
+    if let Some(result) = resp.result.as_mut().and_then(|r| r.as_object_mut()) {
+        result.insert(
+            "ignored_options".to_string(),
+            serde_json::to_value(ignored).unwrap_or_default(),
+        );
+    }
+    resp
 }
 
 #[cfg(test)]

@@ -25,6 +25,8 @@ struct TierStatus {
     exists: bool,
     parses: bool,
     error: Option<String>,
+    /// Top-level keys no setting reads; they are ignored.
+    unknown_keys: Vec<String>,
 }
 
 fn inspect_tier(tier: &'static str, dir: &Path) -> TierStatus {
@@ -37,16 +39,18 @@ fn inspect_tier(tier: &'static str, dir: &Path) -> TierStatus {
             exists: false,
             parses: true,
             error: None,
+            unknown_keys: Vec::new(),
         };
     }
     match std::fs::read_to_string(&path) {
         Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
-            Ok(_) => TierStatus {
+            Ok(value) => TierStatus {
                 tier,
                 path: path_str,
                 exists: true,
                 parses: true,
                 error: None,
+                unknown_keys: base::settings::unknown_settings_keys(&value),
             },
             Err(e) => TierStatus {
                 tier,
@@ -54,6 +58,7 @@ fn inspect_tier(tier: &'static str, dir: &Path) -> TierStatus {
                 exists: true,
                 parses: false,
                 error: Some(format!("invalid JSON: {e}")),
+                unknown_keys: Vec::new(),
             },
         },
         Err(e) => TierStatus {
@@ -62,6 +67,7 @@ fn inspect_tier(tier: &'static str, dir: &Path) -> TierStatus {
             exists: true,
             parses: false,
             error: Some(format!("read error: {e}")),
+            unknown_keys: Vec::new(),
         },
     }
 }
@@ -95,12 +101,23 @@ impl HealthCheck for SettingsTiersCheck {
             inspect_tier("project", &self.project),
         ];
         let broken: Vec<&str> = tiers.iter().filter(|t| !t.parses).map(|t| t.tier).collect();
+        let with_unknown: Vec<&str> = tiers
+            .iter()
+            .filter(|t| !t.unknown_keys.is_empty())
+            .map(|t| t.tier)
+            .collect();
         let details = serde_json::to_value(&tiers).unwrap_or(serde_json::Value::Null);
 
         // A tier that is simply absent is the normal case, not a fault: most
         // deployments write one file and leave the other two alone.
-        if broken.is_empty() {
+        if broken.is_empty() && with_unknown.is_empty() {
             CheckResult::ok("every settings.json present parses").with_details(details)
+        } else if broken.is_empty() {
+            CheckResult::ok(format!(
+                "every settings.json present parses; keys no setting reads, ignored, in: {}",
+                with_unknown.join(", ")
+            ))
+            .with_details(details)
         } else {
             CheckResult::degraded(format!("unreadable settings.json: {}", broken.join(", ")))
                 .with_details(details)
@@ -314,6 +331,39 @@ mod tests {
         assert!(tiers
             .iter()
             .any(|t| t["exists"] == true && t["parses"] == false));
+    }
+
+    #[test]
+    fn reports_the_keys_no_setting_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("settings.json"),
+            r#"{"permision_mode": "plan", "language": "en"}"#,
+        )
+        .unwrap();
+        let paths = StaticDaemonPaths::new(dir.path().to_path_buf());
+        let report = run_doctor(
+            &paths,
+            "code",
+            base_settings(),
+            false,
+            crate::plugins::PluginStatus::Enabled,
+            &no_extra_checks(),
+        );
+        let tier = report["settings_tiers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["exists"] == true)
+            .unwrap()
+            .clone();
+        assert_eq!(tier["unknown_keys"], serde_json::json!(["permision_mode"]));
+        let check = &report["health"]["checks"][0];
+        assert_eq!(check["status"], "ok", "{check}");
+        assert!(
+            check["summary"].as_str().unwrap().contains("ignored"),
+            "{check}"
+        );
     }
 
     #[test]

@@ -14,6 +14,7 @@ agents        = { workspace = true, optional = true }
 model         = { workspace = true }
 mcp           = { workspace = true, optional = true }
 permissions   = { workspace = true }
+libc          = { workspace = true }
 scene         = { workspace = true }
 history       = { workspace = true }
 hooks         = { workspace = true }
@@ -53,7 +54,6 @@ tokio-tungstenite = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-libc = { workspace = true }
 compaction = { workspace = true }
 
 [features]
