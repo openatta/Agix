@@ -1055,7 +1055,7 @@ impl DaemonServer {
             .await
         {
             Ok(result) => RpcResponse::ok(id, result),
-            Err(e) => RpcResponse::err(id, codes::INTERNAL_ERROR, e),
+            Err((code, message)) => RpcResponse::err(id, code, message),
         }
     }
 
@@ -1566,7 +1566,7 @@ impl DaemonServer {
             .await
         {
             Ok(result) => RpcResponse::ok(id, result),
-            Err(e) => RpcResponse::err(id, codes::INVALID_PARAMS, e),
+            Err((code, message)) => RpcResponse::err(id, code, message),
         }
     }
 

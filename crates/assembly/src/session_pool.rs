@@ -1848,27 +1848,15 @@ impl SessionPool {
         }
         let mut cfg: mcp::config::McpServerConfig = serde_json::from_value(config.clone())
             .map_err(|e| invalid(format!("invalid mcp server config: {e}")))?;
-        let startup_scene = self.settings.read().await.paths.scope.clone();
-        let written_to = self.settings_path_of(project_root);
-        if base::project_trust::is_own_project_dir(
-            written_to.parent().unwrap_or(&written_to),
-            &self.paths.global_root(),
-            &self.scene_root(scene_id, &startup_scene),
-        ) {
-            let target = project_root.unwrap_or(self.cwd.as_path());
-            let (trust, _) =
-                base::project_trust::ProjectTrustSettings::read_global(&self.paths.global_root())
-                    .decide(target);
-            if trust.is_untrusted() {
-                return Err((
-                    crate::rpc::codes::PROJECT_UNTRUSTED,
-                    format!(
-                        "{} is not trusted, so a server declared in its settings would not start; \
-                         trust it first (project.trust) or declare the server in the global tier",
-                        target.display()
-                    ),
-                ));
-            }
+        if self
+            .trusted_project_tier(
+                project_root,
+                scene_id,
+                "a server declared in its settings would not start",
+                "declare the server in the global tier",
+            )
+            .await?
+        {
             cfg = cfg.confined_to_own_env().map_err(invalid)?;
         }
         self.admit_mcp(name, &cfg)
@@ -1888,44 +1876,50 @@ impl SessionPool {
         config: serde_json::Value,
         must_exist: bool,
     ) -> Result<serde_json::Value, String> {
+        use base::interface::settings::{SETTINGS_FILE, SETTINGS_LOCAL_FILE};
         let settings_path = self.settings_path_of(project_root);
-        let local_path =
-            settings_path.with_file_name(base::interface::settings::SETTINGS_LOCAL_FILE);
-        let mut project_json = read_settings_object(&settings_path).await?;
-        let mut local_json = read_settings_object(&local_path).await?;
-        let local_before = local_json.clone();
-        let declared = [&project_json, &local_json]
-            .iter()
-            .any(|tier| tier["mcp_servers"].get(name).is_some());
-        if must_exist && !declared {
-            return Err(format!(
-                "no mcp server `{name}` in {}",
-                settings_path.display()
-            ));
-        }
+        let local_path = settings_path.with_file_name(SETTINGS_LOCAL_FILE);
+        let shown = settings_path.display().to_string();
+        let server = name.to_string();
+        let local_changed = edit_settings_dir(&settings_path, move |tier| {
+            let mut project_json = tier.read(SETTINGS_FILE).map_err(|e| e.to_string())?;
+            let mut local_json = tier.read(SETTINGS_LOCAL_FILE).map_err(|e| e.to_string())?;
+            let local_before = local_json.clone();
+            let declared = [&project_json, &local_json].iter().any(|tier| {
+                tier.get("mcp_servers")
+                    .and_then(|servers| servers.get(&server))
+                    .is_some()
+            });
+            if must_exist && !declared {
+                return Err(format!("no mcp server `{server}` in {shown}"));
+            }
 
-        let mut config = config;
-        let secrets = take_mcp_server_secrets(&mut config);
-        mcp_servers_of(&mut project_json).insert(name.to_string(), config);
-        // The server is replaced whole: what the local file held for it
-        // would otherwise merge over the new configuration.
-        let local_servers = mcp_servers_of(&mut local_json);
-        if secrets.is_empty() {
-            local_servers.remove(name);
-        } else {
-            local_servers.insert(
-                name.to_string(),
-                serde_json::Value::Object(secrets.into_iter().collect()),
-            );
-        }
+            let mut config = config;
+            let secrets = take_mcp_server_secrets(&mut config);
+            mcp_servers_of(&mut project_json).insert(server.clone(), config);
+            // The server is replaced whole: what the local file held for it
+            // would otherwise merge over the new configuration.
+            let local_servers = mcp_servers_of(&mut local_json);
+            if secrets.is_empty() {
+                local_servers.remove(&server);
+            } else {
+                local_servers.insert(
+                    server.clone(),
+                    serde_json::Value::Object(secrets.into_iter().collect()),
+                );
+            }
 
-        write_settings_file(&settings_path, &project_json, false).await?;
-        let secrets_written_to = if local_json != local_before {
-            write_settings_file(&local_path, &local_json, true).await?;
-            Some(local_path.display().to_string())
-        } else {
-            None
-        };
+            let local_changed = local_json != local_before;
+            if local_changed {
+                tier.write(SETTINGS_LOCAL_FILE, &local_json)
+                    .map_err(|e| e.to_string())?;
+            }
+            tier.write(SETTINGS_FILE, &project_json)
+                .map_err(|e| e.to_string())?;
+            Ok(local_changed)
+        })
+        .await?;
+        let secrets_written_to = local_changed.then(|| local_path.display().to_string());
 
         // The written file and the cache entry are the same pair: a server
         // added to one project's settings connects for that project.
@@ -2435,6 +2429,43 @@ impl SessionPool {
         self.settings.read().await.clone()
     }
 
+    /// Whether a write to `project_root`'s settings lands in a project's own
+    /// tier (rather than the global or scene directory it may resolve to).
+    /// When it does and that project is not trusted, the write is refused
+    /// with `PROJECT_UNTRUSTED`: `what` would not take effect, and `instead`
+    /// is where it would.
+    async fn trusted_project_tier(
+        &self,
+        project_root: Option<&Path>,
+        scene_id: &str,
+        what: &str,
+        instead: &str,
+    ) -> Result<bool, RpcError> {
+        let startup_scene = self.settings.read().await.paths.scope.clone();
+        let written_to = self.settings_path_of(project_root);
+        if !base::project_trust::is_own_project_dir(
+            written_to.parent().unwrap_or(&written_to),
+            &self.paths.global_root(),
+            &self.scene_root(scene_id, &startup_scene),
+        ) {
+            return Ok(false);
+        }
+        let target = project_root.unwrap_or(self.cwd.as_path());
+        let (trust, _) =
+            base::project_trust::ProjectTrustSettings::read_global(&self.paths.global_root())
+                .decide(target);
+        if trust.is_untrusted() {
+            return Err((
+                codes::PROJECT_UNTRUSTED,
+                format!(
+                    "{} is not trusted, so {what}; trust it first (project.trust) or {instead}",
+                    target.display()
+                ),
+            ));
+        }
+        Ok(true)
+    }
+
     /// The project-tier `settings.json` of `project_root`, or of this
     /// daemon's own project when none is named.
     fn settings_path_of(&self, project_root: Option<&Path>) -> PathBuf {
@@ -2463,6 +2494,10 @@ impl SessionPool {
     /// `default_provider` automatically the next time routing is resolved
     /// (see `base::provider::resolve_task_models`'s soft-fallback) — no
     /// separate "downgrade" write is needed.
+    ///
+    /// Refused with `PROJECT_UNTRUSTED`, writing nothing, when the target is
+    /// a project's own tier and that project is not trusted: a provider there
+    /// would not be used.
     #[allow(clippy::too_many_arguments)]
     pub async fn set_provider(
         &self,
@@ -2473,83 +2508,100 @@ impl SessionPool {
         config_patch: Option<serde_json::Value>,
         default_provider: Option<String>,
         task_models_patch: Option<serde_json::Value>,
-    ) -> Result<serde_json::Value, String> {
+    ) -> Result<serde_json::Value, RpcError> {
+        use base::interface::settings::{SETTINGS_FILE, SETTINGS_LOCAL_FILE};
+        let invalid = |message: String| (codes::INVALID_PARAMS, message);
         if provider_id.trim().is_empty() {
-            return Err("provider_id must not be empty".into());
+            return Err(invalid("provider_id must not be empty".into()));
         }
 
         if let Some(ref cfg) = config_patch {
             if !cfg.is_object() {
-                return Err("config must be a JSON object".into());
+                return Err(invalid("config must be a JSON object".into()));
             }
             serde_json::from_value::<base::provider::ProviderConfig>(cfg.clone())
-                .map_err(|e| format!("invalid provider config: {e}"))?;
+                .map_err(|e| invalid(format!("invalid provider config: {e}")))?;
         }
         if let Some(ref tm) = task_models_patch {
-            let obj = tm.as_object().ok_or("task_models must be a JSON object")?;
+            let obj = tm
+                .as_object()
+                .ok_or_else(|| invalid("task_models must be a JSON object".into()))?;
             for (task, ov) in obj {
                 serde_json::from_value::<base::provider::TaskModelOverride>(ov.clone())
-                    .map_err(|e| format!("invalid task_models.{task}: {e}"))?;
+                    .map_err(|e| invalid(format!("invalid task_models.{task}: {e}")))?;
             }
         }
+        self.trusted_project_tier(
+            project_root,
+            scene_id,
+            "a provider configured in its settings would not be used",
+            "configure the provider in the global tier",
+        )
+        .await?;
 
         let settings_path = self.settings_path_of(project_root);
-        let local_path =
-            settings_path.with_file_name(base::interface::settings::SETTINGS_LOCAL_FILE);
-        let mut project_json = read_settings_object(&settings_path).await?;
-        let mut local_json = read_settings_object(&local_path).await?;
-        let local_before = local_json.clone();
-        let obj = project_json
-            .as_object_mut()
-            .expect("verified to be an object above");
-        let local = local_json
-            .as_object_mut()
-            .expect("verified to be an object above");
+        let local_path = settings_path.with_file_name(SETTINGS_LOCAL_FILE);
+        let provider_id = provider_id.to_string();
+        let local_changed = edit_settings_dir(&settings_path, move |tier| {
+            let mut project_json = tier.read(SETTINGS_FILE).map_err(|e| e.to_string())?;
+            let mut local_json = tier.read(SETTINGS_LOCAL_FILE).map_err(|e| e.to_string())?;
+            let local_before = local_json.clone();
+            let obj = &mut project_json;
+            let local = &mut local_json;
 
-        if delete {
-            for tier in [&mut *obj, &mut *local] {
-                if let Some(providers) = tier.get_mut("providers").and_then(|v| v.as_object_mut()) {
-                    providers.remove(provider_id);
+            if delete {
+                for tier in [&mut *obj, &mut *local] {
+                    if let Some(providers) =
+                        tier.get_mut("providers").and_then(|v| v.as_object_mut())
+                    {
+                        providers.remove(&provider_id);
+                    }
+                }
+            } else if let Some(mut cfg) = config_patch {
+                let secrets = take_provider_secrets(&mut cfg);
+                let existing = provider_entry(obj, &provider_id);
+                base::interface::settings::merge_json_values(existing, cfg);
+                let mut moved = take_provider_secrets(existing);
+                moved.extend(secrets);
+                if !moved.is_empty() {
+                    let local_entry = provider_entry(local, &provider_id);
+                    for (key, value) in moved {
+                        local_entry[key] = value;
+                    }
                 }
             }
-        } else if let Some(mut cfg) = config_patch {
-            let secrets = take_provider_secrets(&mut cfg);
-            let existing = provider_entry(obj, provider_id);
-            base::interface::settings::merge_json_values(existing, cfg);
-            let mut moved = take_provider_secrets(existing);
-            moved.extend(secrets);
-            if !moved.is_empty() {
-                let local_entry = provider_entry(local, provider_id);
-                for (key, value) in moved {
-                    local_entry[key] = value;
+
+            if let Some(dp) = default_provider {
+                obj.insert(
+                    "default_provider".to_string(),
+                    serde_json::Value::String(dp),
+                );
+            }
+
+            if let Some(tm) = task_models_patch {
+                let task_models = obj
+                    .entry("task_models")
+                    .or_insert_with(|| serde_json::json!({}));
+                if !task_models.is_object() {
+                    *task_models = serde_json::json!({});
                 }
+                base::interface::settings::merge_json_values(task_models, tm);
             }
-        }
 
-        if let Some(dp) = default_provider {
-            obj.insert(
-                "default_provider".to_string(),
-                serde_json::Value::String(dp),
-            );
-        }
-
-        if let Some(tm) = task_models_patch {
-            let task_models = obj
-                .entry("task_models")
-                .or_insert_with(|| serde_json::json!({}));
-            if !task_models.is_object() {
-                *task_models = serde_json::json!({});
+            // The key first: a failure after it leaves a key nothing uses yet,
+            // where the other order would leave a provider without its key.
+            let local_changed = local_json != local_before;
+            if local_changed {
+                tier.write(SETTINGS_LOCAL_FILE, &local_json)
+                    .map_err(|e| e.to_string())?;
             }
-            base::interface::settings::merge_json_values(task_models, tm);
-        }
-
-        write_settings_file(&settings_path, &project_json, false).await?;
-        let secrets_written_to = if local_json != local_before {
-            write_settings_file(&local_path, &local_json, true).await?;
-            Some(local_path.display().to_string())
-        } else {
-            None
-        };
+            tier.write(SETTINGS_FILE, &project_json)
+                .map_err(|e| e.to_string())?;
+            Ok(local_changed)
+        })
+        .await
+        .map_err(invalid)?;
+        let secrets_written_to = local_changed.then(|| local_path.display().to_string());
 
         let (reloaded, report) = self
             .apply_reloaded_settings(project_root, scene_id, None)
@@ -2587,50 +2639,74 @@ impl SessionPool {
     /// built from. Taking it off removes only that exact entry: a glob or
     /// `project_trust.default` may still trust the project, and the status
     /// returned says so.
+    ///
+    /// The entry is the directory the path resolves to (`..` and symlinks
+    /// followed), with glob metacharacters escaped — it names that directory
+    /// and no other. A relative path is refused: it would be read against
+    /// the daemon's working directory, not the caller's.
     pub async fn set_project_trust(
         &self,
         project_root: Option<&Path>,
         scene_id: &str,
         trusted: bool,
-    ) -> Result<serde_json::Value, String> {
+    ) -> Result<serde_json::Value, RpcError> {
         use crate::watch_hub::Tier;
+        use base::interface::settings::SETTINGS_LOCAL_FILE;
         let root = project_root.unwrap_or(self.cwd.as_path()).to_path_buf();
-        let entry = root.display().to_string();
-        let path = self
-            .paths
-            .global_root()
-            .join(base::interface::settings::SETTINGS_LOCAL_FILE);
-        let mut local = read_settings_object(&path).await?;
-        let obj = local
-            .as_object_mut()
-            .expect("verified to be an object above");
-        let section = obj
-            .entry("project_trust")
-            .or_insert_with(|| serde_json::json!({}));
-        if !section.is_object() {
-            *section = serde_json::json!({});
+        if !root.is_absolute() {
+            return Err((
+                codes::INVALID_PARAMS,
+                format!("project_root must be an absolute path: {}", root.display()),
+            ));
         }
-        let list = section
-            .as_object_mut()
-            .expect("made an object above")
-            .entry("trusted")
-            .or_insert_with(|| serde_json::json!([]));
-        if !list.is_array() {
-            *list = serde_json::json!([]);
-        }
-        let list = list.as_array_mut().expect("made an array above");
-        let listed = |v: &serde_json::Value| {
-            v.as_str()
-                .is_some_and(|p| base::project_trust::same_dir(Path::new(p), &root))
-        };
-        if trusted {
-            if !list.iter().any(listed) {
-                list.push(serde_json::Value::String(entry));
+        let resolved = match root.canonicalize() {
+            Ok(resolved) => resolved,
+            Err(_) if !trusted => root.clone(),
+            Err(e) => {
+                return Err((
+                    codes::INVALID_PARAMS,
+                    format!("project_root {}: {e}", root.display()),
+                ))
             }
-        } else {
-            list.retain(|v| !listed(v));
-        }
-        write_settings_file(&path, &local, true).await?;
+        };
+        let entry = base::project_trust::exact_pattern(&resolved);
+        let path = self.paths.global_root().join(SETTINGS_LOCAL_FILE);
+        edit_settings_dir(&path, move |tier| {
+            let mut local = tier.read(SETTINGS_LOCAL_FILE).map_err(|e| e.to_string())?;
+            let section = local
+                .entry("project_trust")
+                .or_insert_with(|| serde_json::json!({}));
+            if !section.is_object() {
+                *section = serde_json::json!({});
+            }
+            let list = section
+                .as_object_mut()
+                .expect("made an object above")
+                .entry("trusted")
+                .or_insert_with(|| serde_json::json!([]));
+            if !list.is_array() {
+                *list = serde_json::json!([]);
+            }
+            let list = list.as_array_mut().expect("made an array above");
+            let names_root = |v: &serde_json::Value| {
+                v.as_str().is_some_and(|p| {
+                    p == entry
+                        || (!p.contains(['*', '?', '['])
+                            && base::project_trust::pattern_matches(p, &resolved))
+                })
+            };
+            if trusted {
+                if !list.iter().any(names_root) {
+                    list.push(serde_json::Value::String(entry.clone()));
+                }
+            } else {
+                list.retain(|v| !names_root(v));
+            }
+            tier.write(SETTINGS_LOCAL_FILE, &local)
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| (codes::INTERNAL_ERROR, e))?;
 
         let tier = Tier::Project(root.clone());
         #[cfg(feature = "mcp")]
@@ -2821,6 +2897,7 @@ impl SessionPool {
             .map_err(|e| (codes::INVALID_PARAMS, e))?;
 
         let scene_id_for_result = scene.id().to_string();
+        let project_trust = binding.settings.project_layer.trust;
         let sid = Id::new().to_string();
         let created_id = self
             .create(
@@ -2847,6 +2924,7 @@ impl SessionPool {
             "scene": scene_id_for_result,
             "session_kind": "primary",
             "project_root": project_root_for_meta.map(|p| p.display().to_string()),
+            "project_trust": project_trust.as_str(),
             "created_at": created_at,
         }))
     }
@@ -7243,13 +7321,24 @@ impl SessionPool {
         last_active: String,
         mode: base::interface::settings::PermissionMode,
     ) -> serde_json::Value {
-        let mode = self
-            .sessions
-            .lock()
-            .await
-            .get(session_id)
-            .and_then(|live| live.state.as_ref())
-            .map_or(mode, |state| state.permission_mode().into());
+        let (mode, project) = {
+            let sessions = self.sessions.lock().await;
+            let live = sessions.get(session_id);
+            (
+                live.and_then(|live| live.state.as_ref())
+                    .map_or(mode, |state| state.permission_mode().into()),
+                live.map(|live| (live.project.clone(), live.scene.id().to_string())),
+            )
+        };
+        let project_trust = match project {
+            Some((project, scene)) => {
+                self.settings_for_project(project.as_deref(), &scene)
+                    .await
+                    .project_layer
+                    .trust
+            }
+            None => base::project_trust::ProjectTrust::NoProject,
+        };
         let prompts_enabled = !matches!(
             mode,
             base::interface::settings::PermissionMode::BypassPermissions
@@ -7264,6 +7353,7 @@ impl SessionPool {
             "created_at": created_at,
             "last_active": last_active,
             "scene": self.scene.id(),
+            "project_trust": project_trust.as_str(),
             "permission": {
                 "mode": serde_json::to_value(mode).unwrap_or(serde_json::Value::Null),
                 "prompts": prompts_enabled,
@@ -8619,7 +8709,7 @@ fn bind_scripts(
     if let Err(e) = bind_into(
         &mut bound,
         engine.clone(),
-        &settings.scripts,
+        &operator_script_bindings(settings),
         &BindingSource::Project { root: project_root },
     ) {
         // All-or-nothing, and `bind_into` already left `bound` untouched.
@@ -8656,6 +8746,35 @@ fn bind_scripts(
         "bound scripts to extension points"
     );
     (Some(bound), faults)
+}
+
+/// `settings.scripts`, less — while the project is not trusted — each binding
+/// with a relative path. The project's own bindings are already withheld, so
+/// these come from the global or scene tier, and a relative path there would
+/// load whatever file the repository puts at it, with the authority of a
+/// script inside the project.
+#[cfg_attr(not(feature = "scripts"), allow(dead_code))]
+fn operator_script_bindings(settings: &Settings) -> Vec<base::interface::settings::ScriptBinding> {
+    if !settings.project_layer.trust.is_untrusted() {
+        return settings.scripts.clone();
+    }
+    settings
+        .scripts
+        .iter()
+        .filter(|binding| {
+            let absolute = binding.path.is_absolute();
+            if !absolute {
+                warn!(
+                    path = %binding.path.display(),
+                    point = %binding.point,
+                    "the project is not trusted; a script binding with a relative path, which \
+                     would load a file from it, is not bound until it is"
+                );
+            }
+            absolute
+        })
+        .cloned()
+        .collect()
 }
 
 /// Without the script carrier compiled in, a `scripts` section is refused
@@ -8756,11 +8875,9 @@ fn take_mcp_server_secrets(server: &mut serde_json::Value) -> Vec<(String, serde
 /// not an object.
 #[cfg(feature = "mcp")]
 fn mcp_servers_of(
-    settings: &mut serde_json::Value,
+    settings: &mut serde_json::Map<String, serde_json::Value>,
 ) -> &mut serde_json::Map<String, serde_json::Value> {
     let servers = settings
-        .as_object_mut()
-        .expect("read_settings_object returns an object")
         .entry("mcp_servers")
         .or_insert_with(|| serde_json::json!({}));
     if !servers.is_object() {
@@ -8794,66 +8911,23 @@ fn provider_entry<'a>(
     entry
 }
 
-/// A settings file's top-level object, `{}` when it does not exist. One that
-/// is not a JSON object is refused rather than replaced: writing back over it
-/// would discard every other field configured there.
-async fn read_settings_object(path: &Path) -> Result<serde_json::Value, String> {
-    let text = match tokio::fs::read_to_string(path).await {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(serde_json::json!({})),
-        Err(e) => return Err(format!("read {}: {e}", path.display())),
-    };
-    let parsed: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
-        format!(
-            "existing {} is not valid JSON, refusing to overwrite it: {e}",
-            path.display()
-        )
-    })?;
-    if !parsed.is_object() {
-        return Err(format!(
-            "existing {} is not a JSON object at the top level, refusing to overwrite it",
-            path.display()
-        ));
-    }
-    Ok(parsed)
-}
-
-/// Write `value` to `path`, readable by this user alone when `private`.
-async fn write_settings_file(
-    path: &Path,
-    value: &serde_json::Value,
-    private: bool,
-) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
-    }
-    let pretty = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
-    let mut options = tokio::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    if private {
-        options.mode(0o600);
-    }
-    let mut file = options
-        .open(path)
-        .await
-        .map_err(|e| format!("write {}: {e}", path.display()))?;
-    #[cfg(unix)]
-    if private {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))
-            .await
-            .map_err(|e| format!("chmod {}: {e}", path.display()))?;
-    }
-    use tokio::io::AsyncWriteExt;
-    file.write_all(pretty.as_bytes())
-        .await
-        .map_err(|e| format!("write {}: {e}", path.display()))?;
-    file.flush()
-        .await
-        .map_err(|e| format!("write {}: {e}", path.display()))
+/// Run `edit` holding the settings directory `settings_file` is in — see
+/// `base::settings_file` — on a blocking thread, since the lock can wait on
+/// another process.
+async fn edit_settings_dir<R: Send + 'static>(
+    settings_file: &Path,
+    edit: impl FnOnce(&base::settings_file::SettingsDir) -> Result<R, String> + Send + 'static,
+) -> Result<R, String> {
+    let dir = settings_file
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    tokio::task::spawn_blocking(move || {
+        let tier = base::settings_file::SettingsDir::lock(&dir).map_err(|e| e.to_string())?;
+        edit(&tier)
+    })
+    .await
+    .map_err(|e| format!("writing settings did not finish: {e}"))?
 }
 
 /// Redact every credential-shaped field in a settings blob.
@@ -9117,6 +9191,39 @@ mod pool_telemetry_tests {
 
         assert!(content.contains("resume_action"));
         assert!(content.contains("not_found"));
+    }
+}
+
+#[cfg(test)]
+mod script_binding_tests {
+    use super::*;
+    use base::interface::settings::ScriptBinding;
+    use base::project_trust::ProjectTrust;
+
+    #[test]
+    fn a_relative_binding_does_not_reach_into_an_untrusted_project() {
+        let binding = |path: &str| ScriptBinding {
+            path: path.into(),
+            point: "prompt.block".into(),
+            entry: "block".into(),
+            timeout_ms: None,
+            calls_per_turn: None,
+        };
+        let mut settings = Settings::defaults_for("m");
+        settings.scripts = vec![binding("scripts/x.js"), binding("/opt/agix/y.js")];
+        let paths = |settings: &Settings| {
+            operator_script_bindings(settings)
+                .into_iter()
+                .map(|b| b.path)
+                .collect::<Vec<_>>()
+        };
+
+        settings.project_layer.trust = ProjectTrust::Untrusted;
+        assert_eq!(paths(&settings), [PathBuf::from("/opt/agix/y.js")]);
+        for trust in [ProjectTrust::Trusted, ProjectTrust::NoProject] {
+            settings.project_layer.trust = trust;
+            assert_eq!(paths(&settings).len(), 2);
+        }
     }
 }
 

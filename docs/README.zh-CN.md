@@ -99,7 +99,8 @@ MCP、询问、通知、监视、结构化输出(见下文[能力](#能力))。
 - 权限询问超时一律按拒绝处理。
 - worktree 隔离。
 - 工作区信任:用户没信任的项目按插件级权限对待——它自己的设置只能收紧,它的 hook、MCP
-  server、skill 命令和更宽的 agent 类型都等信任之后才生效(在全局层或经 RPC 确认;0.4 之前
+  server、skill 命令与授权、更宽的 agent 类型,以及决定数据送到哪里的设置(provider、端点、
+  instruction_file)都等信任之后才生效(在全局层或经 RPC 确认;0.4 之前
   缺省信任,[ARCHITECTURE.md](ARCHITECTURE.md) §6.6)。
 
 **宿主控制**

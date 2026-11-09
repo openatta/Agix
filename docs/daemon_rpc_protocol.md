@@ -250,8 +250,10 @@ daemon 按**单轮**如实上报,不做跨轮/跨会话聚合。
 一个项目自己的配置(`<项目>/.agix/` 下的设置、agent 类型、hook 脚本,`.agents/skills/`)
 是仓库内容。**没被信任的项目按插件级信任处理**:它的设置只能收紧,不能放宽;它的
 `hooks_config`、`mcp_servers`、`scripts` 不生效,`.agix/hooks/` 不进 hook 命令的 `PATH`;
-它的 agent 类型只能收紧、不替换同名类型;它的 skill 里的 `` !`cmd` `` 不执行。完整的表在
-`ARCHITECTURE.md` §6.6。
+决定对话、凭据、遥测送到哪里的键(`providers`、指向项目自己 provider 的 `default_provider` /
+`task_models`、`model.base_url`、`telemetry_url`、`recorder`)和 `instruction_file` 不生效;
+它的 agent 类型只能收紧、不替换同名类型;它的 skill 里的 `` !`cmd` `` 不执行,`allowed-tools`
+不授予任何东西。完整的表在 `ARCHITECTURE.md` §6.6。
 
 信任是**项目根**的属性,只能写在全局层的 `project_trust` 里(`default` 加 `trusted` 路径 /
 glob 清单),项目自己写的忽略。三态:
@@ -265,6 +267,7 @@ glob 清单),项目自己写的忽略。三态:
 **0.3.x 缺省 `default: "trusted"`**,行为与之前完全一样;**0.4 缺省改为 `untrusted`**。
 宿主用 `project.status`(§6.8)拿到状态和"信任之后才生效的东西"来画确认对话框,用
 `project.trust` 记下用户的选择;无人值守的部署在全局设置里写 `trusted` glob 预先信任。
+`session.create` / `session.resume` 的结果里有 `project_trust`(同上表的三个值)。
 
 ---
 
@@ -949,7 +952,9 @@ HashMap),客户端要按 `scene` 找条目,不要按下标。
     "prompt_types": ["permission", "question"] } }  // 可选,宿主能回答的提问,默认只有 permission
 // ← result
 { "session_id": "…", "scene": "code", "session_kind": "primary",
-  "project_root": "…", "created_at": "…" }
+  "project_root": "…",
+  "project_trust": "trusted",           // trusted | untrusted | none,§3.6
+  "created_at": "…" }
 ```
 
 `scene` 必须是**当前激活**的场景,否则 `SCENE_NOT_FOUND`。场景的 `requires_project`
@@ -1466,6 +1471,7 @@ client,会话在原地按新的规格重建(它是空闲的,不会腰斩什么),
   "name": null,
   "created_at": "…", "last_active": "…",
   "scene": "code",
+  "project_trust": "trusted",   // trusted | untrusted | none,§3.6
   "permission": { "mode": "default", "prompts": true, "prompt_timeout_secs": "…" },
   "scene_inferred": false }
 ```
@@ -2003,9 +2009,16 @@ daemon 自己那一对,给路径 = 它服务的另一个项目,`null` → `INVAL
 `task_models` 是部分补丁:只提到的键被覆盖,没提到的保持原样。
 
 **密钥不进 settings.json。** `config.api_key` 写进项目层的 `settings.local.json` —— 这个
-文件按约定不提交,在 unix 上以 0600 创建;其余字段照旧写 settings.json。settings.json 里
+文件按约定不提交,在 unix 上每次写都是 0600;其余字段照旧写 settings.json。settings.json 里
 这个 provider 已有的 `api_key`(早先版本写进去的)在这次写入时挪进 settings.local.json。
 `delete: true` 从两个文件里都删掉这个 provider。
+
+目标项目未被信任(§3.6)→ `PROJECT_UNTRUSTED`,什么都不写:项目层的 `providers` 在未信任时
+不生效。要给它配 provider,先 `project.trust`,或者配在全局层。
+
+两个文件在同一把锁下读改写(与 `mcp.addServer`、`project.trust`、权限询问里的"永久允许"
+是同一把,跨进程也互斥),各自写临时文件再改名替换,先写 `settings.local.json`。设置文件是
+符号链接的,不顺着写也不替换,以 `INVALID_PARAMS` 拒绝,消息里写明是哪个文件。
 
 ### 6.5 `mcp.*` / `plugin.*` / `import.*` / `commands.*`
 
@@ -2380,8 +2393,13 @@ settings.local.json)里声明过,否则 `INVALID_PARAMS` —— 用来换令牌�
 | `permission_mode`、`allow_client_permission_override`、`disable_skill_shell_execution` | 比下面几层更松的值 |
 | `permission_rules.allow(<规则>)` | 项目设置里的一条 allow 规则 |
 | `sandbox.<键>`(含 `sandbox.cache_directories.<组>`、`sandbox.subprocess_env.allow`) | 放宽沙箱的值 |
+| `providers.<id>` | 项目设置里的一个 provider(新加的,或改写已有的) |
+| `default_provider`、`task_models.<任务>` | 指向项目自己的 provider(下面几层没有的) |
+| `model.base_url`、`model.auth_token` | 项目设置里的模型端点与令牌 |
+| `telemetry_url`、`recorder`、`instruction_file` | 遥测送到哪里、录像写到哪里、读进提示词的文件 |
+| `plugins.enabled`、`plugins.allow` | 比下面几层放进更多插件的值 |
 | `agents/<名字>` | 替换同名类型、或要求比会话更松的模式 / 更高的调用上限的项目 agent 类型 |
-| `skills/<名字>` | 正文里有 `` !`cmd` `` / ` ```! ` 的项目 skill |
+| `skills/<名字>` | 正文里有 `` !`cmd` `` / ` ```! ` 的,或 `allowed-tools` 不空的项目 skill |
 
 #### `project.trust`
 
@@ -2395,11 +2413,14 @@ settings.local.json)里声明过,否则 `INVALID_PARAMS` —— 用来换令牌�
   "written_to": "…/settings.local.json" }
 ```
 
-`trusted: true` 把这个项目根(原样)加进全局层 `settings.local.json`(0600)的
-`project_trust.trusted`;`false` 把指向同一目录的条目删掉。结果是写完之后的
+`trusted: true` 把这个项目根加进全局层 `settings.local.json`(0600)的
+`project_trust.trusted`;`false` 把指向同一目录的条目删掉。记下的是**解析之后的真实目录**
+(`..`、符号链接都展开),其中的 glob 元字符(`*`、`?`、`[`、`]`、`{`、`}`)用 `[…]` 转义——
+`/x/Project [v2]` 记成 `/x/Project [[]v2[]]`,只命中它自己。结果是写完之后的
 `project.status`,外加 `written_to`。**`false` 只删这一条**:另一条 glob 或
 `default: "trusted"` 仍然信任它时,结果里照样是 `trusted`(`matched` 说明是哪一条),
-要改就改全局设置。缺 `trusted` → `INVALID_PARAMS`。
+要改就改全局设置。缺 `trusted`、`project_root` 是相对路径、`trusted: true` 而目录不存在 →
+`INVALID_PARAMS`。
 
 写完之后这个项目的会话在下一轮之前按新的信任状态重建,它的 MCP 连接重连,并发一条
 `project_trust_changed`(§8)。
@@ -2598,7 +2619,7 @@ transcript,这一轮以 `ENGINE_ERROR` 结束,不会重发。
 | -32019 | TASK_LIMIT | `session.startAgent`:会话的子 Agent 已到 `execution.max_concurrent_subagents`,或委派已到最深 |
 | -32020 | MCP_SERVER_DENIED | `mcp.addServer` / `mcp.updateServer`:MCP 策略拒绝这个 server,没有写入任何东西;`mcp.auth.start` / `mcp.auth.logout`:这个 server 被策略拒绝,或(`start`)它的授权服务器不在 `allowed_authorization_servers` 里 |
 | -32021 | MCP_AUTH_FAILED | `mcp.auth.*`:授权服务器或登录本身失败——发现、注册、PKCE、回调 `state` 不符、换令牌;`message` 可以直接给用户看 |
-| -32022 | PROJECT_UNTRUSTED | `mcp.addServer` / `mcp.updateServer`:目标项目未被信任(§3.6),它自己声明的 server 不会启动,所以什么都没写 |
+| -32022 | PROJECT_UNTRUSTED | `mcp.addServer` / `mcp.updateServer` / `config.setProvider`:目标项目未被信任(§3.6),写进它项目层的 server / provider 不会生效,所以什么都没写 |
 
 还有两个常量在代码里定义了但**没有任何路径会发出**,客户端不必为它们写分支:
 `PARSE_ERROR (-32700)` / `INVALID_REQUEST (-32600)`(解析不了的帧被静默丢弃,见

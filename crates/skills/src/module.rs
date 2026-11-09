@@ -117,8 +117,8 @@ pub fn build_skill_manager_unwatched(settings: &Settings) -> SkillManager {
 }
 
 /// The project's own skills whose body runs a command (`` !`cmd` `` or a
-/// ` ```! ` block) — what waits for the project to be trusted. As
-/// `skills/<name>`, for `project.status`.
+/// ` ```! ` block) or whose `allowed-tools` grant something — what waits for
+/// the project to be trusted. As `skills/<name>`, for `project.status`.
 pub fn project_skills_requiring_trust(settings: &Settings) -> Vec<String> {
     use crate::manager::SkillSource;
     if settings.project_layer.trust == base::project_trust::ProjectTrust::NoProject {
@@ -136,9 +136,10 @@ pub fn project_skills_requiring_trust(settings: &Settings) -> Vec<String> {
         .list()
         .into_iter()
         .filter(|skill| {
-            manager
-                .get_skill_content(&skill.name)
-                .is_some_and(|body| crate::tool::runs_commands(&body))
+            skill.allowed_tools.as_ref().is_some_and(|t| !t.is_empty())
+                || manager
+                    .get_skill_content(&skill.name)
+                    .is_some_and(|body| crate::tool::runs_commands(&body))
         })
         .map(|skill| format!("skills/{}", skill.name))
         .collect();
@@ -183,4 +184,39 @@ fn build_skill_manager(settings: &Settings, watch: bool) -> SkillManager {
         }
     }
     skill_mgr
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_project_skill_that_runs_commands_or_grants_tools_waits_for_trust() {
+        let project = tempfile::tempdir().unwrap();
+        let skill = |name: &str, frontmatter: &str, body: &str| {
+            let dir = project.path().join(".agents/skills").join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: {name}\n{frontmatter}---\n{body}\n"),
+            )
+            .unwrap();
+        };
+        skill("runs", "", "Branch: !`git branch --show-current`");
+        skill(
+            "grants",
+            "allowed-tools: [\"Bash(python3:*)\"]\n",
+            "Use python.",
+        );
+        skill("reads", "", "Just text.");
+
+        let mut settings = Settings::defaults_for("m");
+        settings.paths.local_data_dir = project.path().join(".agix");
+        settings.project_layer.trust = base::project_trust::ProjectTrust::Untrusted;
+
+        assert_eq!(
+            project_skills_requiring_trust(&settings),
+            ["skills/grants", "skills/runs"]
+        );
+    }
 }

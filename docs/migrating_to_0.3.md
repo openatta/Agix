@@ -842,13 +842,30 @@ WebAssembly 载体整个移除。
   **0.3.10 缺省 `default: "trusted"`,什么都不变**;`daemon.doctor` 多了一项 `project.trust`,
   项目里有要信任才生效的东西而只靠缺省被信任时报 `degraded`,把它们列出来。
   `project_trust` 只从全局层读,场景层、项目层里写的忽略。
+- 未信任的项目同样扣下决定东西送到哪里的键:`providers`(整段)、指向项目自己 provider 的
+  `default_provider` / `task_models` 条目、`model.base_url` / `model.auth_token`、`telemetry_url`、
+  `recorder`、`instruction_file`,以及放进更多插件的 `plugins` 值;它的 skill 的 `allowed-tools`
+  不授予任何东西;全局层、场景层里相对路径的脚本绑定在未信任的项目里不绑定。这些都列进
+  `requires_trust`,所以只改了 `providers.*.base_url` 的仓库也会让宿主弹出信任对话框。
+  **自己往项目层写 provider、模型端点的部署**(在项目的 `.agix/settings.json` 里写 `model`、
+  `providers` 的宿主)在 0.4 之前要把这些项目目录写进 `trusted`,否则翻缺省之后它们不生效。
+- 新方法 `project.status`、`project.trust`(协议 §6.8),新通知 `project_trust_changed`,新错误码
+  `PROJECT_UNTRUSTED`(-32022,`mcp.addServer` / `mcp.updateServer` / `config.setProvider`
+  写进未信任的项目时),`mcp.status` 多了 `state: "untrusted"`,`session.create` /
+  `session.resume` 的结果多了 `project_trust`。
+- `project.trust` 只收绝对路径(相对路径、`trusted: true` 而目录不存在 → `INVALID_PARAMS`),
+  记下的是解析之后的真实目录(`..`、符号链接展开),glob 元字符转义;`matched` 报的因此是这个
+  真实路径,不是调用时写的那个。匹配 `trusted` 条目时,带 `.` / `..` 的项目根只按解析之后的
+  目录比。
 - 设置文件里一个值类型不对(`"language": 5`)不再让整份合并结果退回内建缺省(连全局层的 hook、
   沙箱设置一起丢掉):只丢这个值,warn 一条,`daemon.doctor` 的 `settings.tiers` 报 `degraded`,
   `settings_tiers[].ignored_values` 列出它。以前靠"写错一个值就等于什么都没配"的,现在其余的
   值都生效。
-- 新方法 `project.status`、`project.trust`(协议 §6.8),新通知 `project_trust_changed`,新错误码
-  `PROJECT_UNTRUSTED`(-32022,`mcp.addServer` / `mcp.updateServer` 写进未信任的项目时),
-  `mcp.status` 多了 `state: "untrusted"`。
+- `config.setProvider`、`mcp.addServer` / `updateServer`、`project.trust` 与权限询问里的"永久
+  允许"改设置文件时上锁(跨进程也互斥)、写临时文件再改名替换;`settings.local.json` 每次写都是
+  0600(以前"永久允许,本项目"会把它改成 umask 权限,通常是 0644)。设置文件是符号链接的,
+  这些写入都拒绝(`INVALID_PARAMS` / 报错),不再顺着链接写目标文件;用 dotfile 链接管理
+  `~/.agix/settings*.json` 的,要么改目标文件,要么换成普通文件。
 - **0.4 会把 `project_trust.default` 改成 `untrusted`。** 现在就该做的:桌面宿主在打开项目时
   调 `project.status`,`requires_trust` 不空就问用户、用 `project.trust` 记下回答;自己创建项目
   目录的无人值守部署(写项目层 `mcp_servers` / `permission_mode` 的那种)在全局
@@ -861,7 +878,10 @@ WebAssembly 载体整个移除。
   信任判定与 `requires_trust`,不读不写文件)与 `ignored_values`(加载时因类型不对丢掉的值,
   `base::settings::IgnoredValue`);用结构体字面量构造的要补这三项(`Default::default()` /
   `Vec::new()`)。代码里造的 `Settings` 的 `project_layer` 缺省是"没有项目层",什么都不扣。
-  `base::context::EngineConfig` 多了 `project_untrusted`。新模块 `base::project_trust`。
+  `base::context::EngineConfig` 多了 `project_untrusted`。新模块 `base::project_trust`(含
+  `exact_pattern`)与 `base::settings_file`(设置文件的加锁读改写)。
+- `permissions::settings_patch::AppendError` 改为 `File(base::settings_file::SettingsFileError)`、
+  `NoFileName`、`NotAList` 三支;去掉 `Io` / `BadJson` / `NotObject`。穷举匹配它的要跟着改。
 - `assembly::doctor::SettingsTiersCheck::new` 多一个 `&Settings` 参数(报它加载时丢掉的值)。
 - `base::agent_type::AgentTypeSource::LocalFile` 拆成 `User`(全局 / 场景的 `agents/`)与
   `Project { trusted }`,多了 `may_shadow()`。`agents::agent_tool::{merge_agent_types,

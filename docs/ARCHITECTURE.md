@@ -651,7 +651,7 @@ skill 自己的 `allowed-tools` 这时还没生效,不能给自己的命令开�
 去掉 frontmatter 的正文 → `` !`cmd` `` → 参数替换 → 正文截到 8000 字符 → 接上 `files:`
 声明的参考文件。`allowed-tools` 授权到这一轮结束(fork 的子 Agent 有自己的 `Permission`,
 不受它影响);只写工具名的整类授权只认用户层 skill,项目层与插件包带来的 skill 必须写成
-`Tool(内容)`。
+`Tool(内容)`;未信任项目自己的 skill 什么都不授予(§6.6)。
 
 ### 6.2 写路径的管控
 
@@ -902,12 +902,21 @@ daemon 管。设计与用法在 [`mcp_auth.md`](mcp_auth.md);这里只记它在�
 | `sandbox`:`dangerously_disable_sandbox` / `read_anywhere` 设为真,`require_enforcement` / `unattended_requires_network_policy` 设为假,`network_mode` 更松 | 丢弃 |
 | `sandbox`:`additional_directories` / `read_directories` / `allow_read` / `allow_write` / `allowed_domains`,`cache_directories` 的某一组,`subprocess_env.allow` | 只要多出下面几层没有的条目就整项丢弃;只删不加的保留 |
 | `sandbox`:`deny_read` / `deny_write`、`subprocess_env.mode` | 少了下面几层有的条目(或从 `allowlist` 改回 `inherit`)就丢弃;`deny_read` 非空会替换内建的凭据清单,所以下面几层没写时项目也只能不写 |
+| `providers` | 整段不要:改一个已有 provider 的 `base_url`,用户全局层的 `api_key` 就会跟着发过去;新 provider 的 `api_key_env` 能把 daemon 的任意环境变量当 key 发出去 |
+| `default_provider`、`task_models.<任务>` | 指向项目自己的 provider(下面几层没有的)时丢弃;选下面几层已有的照常 |
+| `model.base_url`、`model.auth_token` | 丢弃 |
+| `telemetry_url`、`recorder` | 丢弃:一个把遥测送到项目指定的地址,一个把宿主请求的录像写到项目指定的目录 |
+| `instruction_file` | 丢弃:它按路径直接读进系统提示词,不过沙箱也不过 Read 的 `deny_read` |
+| `plugins` | `enabled: true`(下面几层是 `false`)丢弃;`allow` 放进下面几层没有的名字、或清空下面几层的清单,丢弃;只收窄的保留 |
 | `.agix/agents/*.md` | 来源是 `AgentTypeSource::Project { trusted: false }`:`permission_mode` / `max_turns` 只能收紧,与内建、插件、用户层同名的不替换它们 |
 | `.agents/skills/` 里的 `` !`cmd` `` | 不执行,换成一行说明(与 `disable_skill_shell_execution` 同一条路) |
-| 其余(`instruction_file`、提示词、`rules`、记忆、模型与 provider 选择……) | 照常 |
+| `.agents/skills/` 里的 `allowed-tools` | 什么都不授予:模型调用这个 skill 之后,它列的工具照常询问 |
+| 其余(提示词、`rules`、记忆、在下面几层已有的 provider 与模型之间选择……) | 照常 |
 
-文本到达模型本来就要靠人读(插件同一判断),所以提示词一类照常;provider、`telemetry_url`、
-`recorder` 这类"把东西送到别处"的键现在不在表里。信任之后项目层恢复全部行为。
+文本到达模型本来就要靠人读(插件同一判断),所以提示词一类照常;决定对话、凭据、遥测送到哪里,
+或者把用户的哪个文件读进提示词的键,按上表扣下。全局层、场景层里写的脚本绑定若是相对路径,
+在未信任的项目里不绑定——它会按项目根解析,读到仓库放在那里的文件。信任之后项目层恢复全部
+行为。
 
 一个值类型不对(`"language": 5`、`"network_mode": 42`)时,`Settings::load` 只丢掉这个值并
 warn,`daemon.doctor` 的 `settings.tiers` 报 `degraded`、在那一层的 `ignored_values` 里列出;
@@ -925,20 +934,33 @@ warn,`daemon.doctor` 的 `settings.tiers` 报 `degraded`、在那一层的 `igno
 
 判定:没有自己的项目层(无项目会话,或项目的 `.agix` 就是全局 / 场景目录)→ 不涉及信任;
 `trusted` 里有一条命中项目根(路径相等,或 glob:`*` 不跨 `/`,`**` 跨,`~/` 是家目录;
-符号链接两种写法都认)→ 信任;否则取 `default`。`project_trust` 只从全局层读,场景层、
-项目层里写的忽略并记一条 warn。全局层 `settings.json` 与 `settings.local.json` 的
+符号链接两种写法都认)→ 信任;否则取 `default`。比的是项目根解析之后的真实目录,原样给出的
+写法只在不含 `.` / `..` 时也拿来比,所以 `/home/u/work/**` 不会命中
+`/home/u/work/../../tmp/x`。`project_trust` 只从全局层读,场景层、项目层里写的忽略并记一条
+warn。全局层 `settings.json` 与 `settings.local.json` 的
 `trusted` 清单相加,不是后者盖前者。合并时的判定结果在 `Settings::project_layer`:
 信任状态、命中的那条、以及项目层里哪些东西要信任才生效(`requires_trust`)。
 
 宿主经 `project.status` 读状态与 `requires_trust`(用来画"信任这个项目吗"的对话框),经
 `project.trust` 把项目根加进或移出全局 `settings.local.json` 的 `trusted`,之后这个项目的
-绑定与 MCP 连接重建,发 `project_trust_changed` 通知。`daemon.doctor` 的 `project.trust`
-检查报 daemon 自己的项目:未信任且有东西被扣下,或只靠 `default: trusted` 才信任而有东西
-要信任才生效,都是 `degraded`。确认对话框是宿主的事;无人值守部署用 `trusted` glob 预先信任
+绑定与 MCP 连接重建,发 `project_trust_changed` 通知。`project.trust` 只收绝对路径,记下的是
+解析之后的真实目录,其中的 glob 元字符(`*`、`?`、`[` 等)转义掉——`Project [v2]` 这一条只
+命中它自己。往未信任项目的项目层里写配置的方法(`mcp.addServer` / `mcp.updateServer`、
+`config.setProvider`)以 `PROJECT_UNTRUSTED` 拒绝,什么都不写:写进去也不会生效。
+`session.create` / `session.resume` 的结果带 `project_trust`,宿主不必另查。
+`daemon.doctor` 的 `project.trust` 检查报 daemon 自己的项目:未信任且有东西被扣下,或只靠
+`default: trusted` 才信任而有东西要信任才生效,都是 `degraded`。确认对话框是宿主的事;无人值守部署用 `trusted` glob 预先信任
 它们自己创建的项目目录。
 
 **0.3.x 缺省 `trusted`**,行为与之前完全一样,`daemon.doctor` 提示哪些内容在 0.4 会停用;
 **0.4 把缺省改成 `untrusted`**。
+
+引擎自己改设置文件的地方——`project.trust`、`config.setProvider`、`mcp.addServer` /
+`updateServer`、权限询问里的"永久允许"——都走 `base::settings_file`:读改写期间锁住那一层
+的目录(进程内一把锁,unix 上跨进程靠目录上的 `flock`),写进同目录的临时文件、落盘之后改名替换,
+读的一方只会看到旧文件或新文件。`settings.local.json` 每次写都是 0600,别的文件保留原来的
+权限。设置文件是符号链接的,读写都拒绝:项目层里的链接是仓库内容,顺着它写等于让仓库挑一个
+用户的文件来改写,把链接换成普通文件又会悄悄拆掉用户自己的 dotfile 链接。
 
 ---
 

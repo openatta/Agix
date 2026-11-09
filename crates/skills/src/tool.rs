@@ -294,7 +294,8 @@ const SKILL_BODY_CHAR_CAP: usize = 8000;
 /// only safe from a skill the user put there. `<project>/.agents/skills/` is
 /// repository content — attacker-supplied on a cloned repo — and a plugin
 /// package is someone else's, so those only get grants that name a content
-/// pattern (`Bash(cargo test:*)`).
+/// pattern (`Bash(cargo test:*)`). A project skill gets none at all while
+/// the project is not trusted (`ctx.config.project_untrusted`).
 pub async fn expand_for_invocation(
     manager: &crate::manager::SkillManager,
     info: &crate::manager::SkillInfo,
@@ -326,9 +327,18 @@ pub async fn expand_for_invocation(
         info.source,
         crate::manager::SkillSource::Project | crate::manager::SkillSource::Plugin
     );
+    let withheld =
+        info.source == crate::manager::SkillSource::Project && ctx.config.project_untrusted;
+    if withheld && info.allowed_tools.as_ref().is_some_and(|t| !t.is_empty()) {
+        tracing::warn!(
+            skill = %info.name,
+            "the project is not trusted; its skill's `allowed-tools` grant nothing until it is"
+        );
+    }
     let grants = info
         .allowed_tools
         .iter()
+        .filter(|_| !withheld)
         .flatten()
         .filter_map(|entry| {
             let (tool_name, rule_content) = split_allowed_tool_entry(entry);
@@ -1213,6 +1223,47 @@ mod tests {
                 base::interface::permission::PermissionOutcome::Prompt { .. }
             ),
             "a project skill's blanket grant must not silence the Bash prompt"
+        );
+    }
+
+    /// Until the project is trusted, its skills grant nothing — not even a
+    /// scoped `Bash(python3:*)`, which would otherwise wave through every
+    /// `python3 -c …` once the model invoked the skill.
+    #[tokio::test]
+    async fn an_untrusted_projects_skills_grant_nothing() {
+        let grants = |source: FrozenSkillSource, untrusted: bool| async move {
+            let mgr = crate::manager::SkillManager::new();
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("py.md");
+            std::fs::write(&path, "Use python.").unwrap();
+            mgr.register_bundled(SkillEntry {
+                name: "py".into(),
+                description: "py".into(),
+                source,
+                path,
+                allowed_tools: Some(vec!["Bash(python3:*)".into()]),
+                ..Default::default()
+            });
+            let info = mgr.list().into_iter().find(|s| s.name == "py").unwrap();
+            let mut ctx = ToolContext::for_test(dir.path().to_path_buf());
+            ctx.config = Arc::new({
+                let mut c = base::context::EngineConfig::defaults_for("test-model");
+                c.project_untrusted = untrusted;
+                c
+            });
+            expand_for_invocation(&mgr, &info, "", &ctx, None)
+                .await
+                .unwrap()
+                .grants
+        };
+        let scoped = vec![("Bash".to_string(), Some("python3:*".to_string()))];
+
+        assert!(grants(FrozenSkillSource::Project, true).await.is_empty());
+        assert_eq!(grants(FrozenSkillSource::Project, false).await, scoped);
+        assert_eq!(
+            grants(FrozenSkillSource::User, true).await,
+            scoped,
+            "only the project's own skills wait for trust"
         );
     }
 
