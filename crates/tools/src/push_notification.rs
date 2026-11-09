@@ -1,12 +1,13 @@
 //! PushNotificationTool —— "PushNotification"。
 //!
-//! 向用户发送桌面通知。在 macOS 上通过 osascript 的 `display notification` 实
-//! 现；其他平台回退到 stderr 输出。如果 Remote Control 连接，也推送到手机。
+//! 提醒用户回来看。通知本身由派发层送出（`notification` 帧和 `Notification`
+//! hook，见 `runtime::turn` 的 `notify_host`），工具只校验输入；在 macOS 上顺带
+//! 用 osascript 在引擎所在的机器上弹一条桌面通知，失败不算错。
 
 use async_trait::async_trait;
 use base::error::ToolError;
-// Only the macOS path runs a program; elsewhere the notification goes to
-// stderr, and importing these unconditionally makes them unused there.
+// Only the macOS path runs a program, and importing these unconditionally
+// makes them unused elsewhere.
 #[cfg(target_os = "macos")]
 use crate::exec_capture::capture;
 #[cfg(target_os = "macos")]
@@ -39,7 +40,7 @@ impl Tool for PushNotificationTool {
     }
 
     fn description(&self) -> &str {
-        "Send a desktop notification to the user's terminal. If Remote Control is connected, also pushes to their phone."
+        "Notify the user: the host that runs this session shows it (and any Notification hook gets it)."
     }
 
     fn input_schema(&self) -> Value {
@@ -84,55 +85,38 @@ impl Tool for PushNotificationTool {
     ) -> Result<ToolResult, ToolError> {
         let input: PushNotificationInput = serde_json::from_value(input)?;
         let msg = input.message.trim();
-
-        let is_proactive = input
-            .status
-            .as_deref()
-            .map(|s| s == "proactive")
-            .unwrap_or(false);
-
-        #[cfg(target_os = "macos")]
-        {
-            let escaped = msg.replace('"', "\\\"");
-            let spec = ProcessSpec::new("osascript", &ctx.cwd).args([
-                "-e".to_string(),
-                format!(r#"display notification "{escaped}" with title "Agix""#),
-            ]);
-
-            match capture(&ctx.exec, spec, ctx.cancel.clone()).await {
-                Ok(output) if output.status.success => {
-                    let suffix = if is_proactive { " (proactive)" } else { "" };
-                    Ok(ToolResult::text(format!(
-                        "Notification sent: {msg}{suffix}"
-                    )))
-                }
-                Ok(output) => {
-                    let stderr = output.stderr_lossy();
-                    eprintln!("osascript failed: {stderr}");
-                    Ok(ToolResult::error_text(format!(
-                        "Failed to send notification: {stderr}"
-                    )))
-                }
-                Err(e) => {
-                    eprintln!("osascript error: {e}");
-                    Ok(ToolResult::error_text(format!(
-                        "Failed to send notification: {e}"
-                    )))
-                }
-            }
-        }
-
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = ctx;
-            eprintln!("[PushNotification] {msg}");
-            let suffix = if is_proactive { " (proactive)" } else { "" };
-            Ok(ToolResult::text(format!(
-                "Notification logged to terminal: {msg}{suffix}"
-            )))
-        }
+        let suffix = if input.status.as_deref() == Some("proactive") {
+            " (proactive)"
+        } else {
+            ""
+        };
+        desktop_notification(&ctx, msg).await;
+        Ok(ToolResult::text(format!(
+            "Notification sent: {msg}{suffix}"
+        )))
     }
 }
+
+/// A desktop notification on the machine the engine runs on, as well as the
+/// host's. Best effort: the host's copy is the one that counts.
+#[cfg(target_os = "macos")]
+async fn desktop_notification(ctx: &ToolContext, msg: &str) {
+    let escaped = msg.replace('\\', "\\\\").replace('"', "\\\"");
+    let spec = ProcessSpec::new("osascript", &ctx.cwd).args([
+        "-e".to_string(),
+        format!(r#"display notification "{escaped}" with title "Agix""#),
+    ]);
+    match capture(&ctx.exec, spec, ctx.cancel.clone()).await {
+        Ok(output) if output.status.success => {}
+        Ok(output) => {
+            tracing::debug!(stderr = %output.stderr_lossy(), "osascript could not show the notification")
+        }
+        Err(e) => tracing::debug!(error = %e, "osascript could not be run"),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn desktop_notification(_: &ToolContext, _: &str) {}
 
 #[cfg(test)]
 mod tests {

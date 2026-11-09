@@ -1178,6 +1178,7 @@ impl Agent {
             let hooks_for_exec = Arc::clone(&self.hooks);
             let discontinued = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let discontinued_for_exec = Arc::clone(&discontinued);
+            let events_for_exec = self.event_tx.clone();
             let config_for_exec = Arc::clone(&self.config);
             let permission_for_exec = Arc::clone(&self.permission);
             let session_state_for_exec = Arc::clone(&self.session_state);
@@ -1210,6 +1211,7 @@ impl Agent {
                         discontinued: Arc::clone(&discontinued_for_exec),
                         images: Arc::clone(&tool_images_for_exec),
                         from_code: false,
+                        events: Some(events_for_exec.clone()),
                     };
                     async move { execute_tool_with_telemetry(&exec_ctx, &name, input).await }
                 };
@@ -3429,6 +3431,9 @@ pub(crate) struct ToolExecCtx {
     /// Set on the calls a `RunCode` program makes — see
     /// `ToolContext::from_code`.
     pub from_code: bool,
+    /// The session's event stream, for what dispatch reports on a tool's
+    /// behalf (a `PushNotification`). `None` where nobody is listening.
+    pub events: Option<crate::agent::EventSender>,
 }
 
 /// A base64 image a tool returned, waiting to be attached to this round's
@@ -3589,6 +3594,31 @@ async fn fire_ctx_lifecycle_hook(
         .with_turn_id(ctx.turn_id.clone()),
     );
     let _ = ctx.hooks.run(event, &input).await;
+}
+
+/// A `PushNotification` reaches the host as a `notification` frame and the
+/// `Notification` hook, which is the same hook a pending permission prompt
+/// rings.
+async fn notify_host(ctx: &ToolExecCtx, input: &serde_json::Value) {
+    let Some(message) = input.get("message").and_then(|m| m.as_str()).map(str::trim) else {
+        return;
+    };
+    let status = input
+        .get("status")
+        .and_then(|s| s.as_str())
+        .map(str::to_string);
+    if let Some(events) = &ctx.events {
+        let _ = events.send(AgentEvent::Notification {
+            message: message.to_string(),
+            status,
+            turn_id: ctx.turn_id.clone(),
+        });
+    }
+    fire_ctx_lifecycle_hook(ctx, hooks::HookEvent::Notification, |i| {
+        i.with_tool("PushNotification", input.clone())
+            .with_reason(message)
+    })
+    .await;
 }
 
 /// Execute a single tool and record telemetry. Free function for streaming executor.
@@ -4259,6 +4289,9 @@ async fn execute_tool_inner(
             // itself was moved into `Tool::call`.
             let inp = input_for_post_hook.clone();
             fire_ctx_lifecycle_hook(ctx, event, |i| i.with_tool(name, inp)).await;
+        }
+        if name == "PushNotification" && !outcome.as_ref().is_ok_and(|a| a.reported_failure) {
+            notify_host(ctx, &input_for_post_hook).await;
         }
     }
 
@@ -5332,6 +5365,7 @@ mod tests {
             result_transformers: Arc::new(Vec::new()),
             images: Arc::new(std::sync::Mutex::new(Vec::new())),
             from_code: false,
+            events: None,
         }
     }
 
@@ -5441,6 +5475,75 @@ mod tests {
             "expected the (rewritten) call to succeed: {result:?}"
         );
         assert_eq!(*called.lock().unwrap(), Some(serde_json::json!({"x": 99})));
+    }
+
+    struct FakePushNotification;
+    #[async_trait::async_trait]
+    impl base::tool::Tool for FakePushNotification {
+        fn name(&self) -> &str {
+            "PushNotification"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        async fn call(
+            &self,
+            _input: serde_json::Value,
+            _ctx: base::tool::ToolContext,
+            _progress: base::tool::ProgressSender,
+        ) -> Result<base::tool::ToolResult, base::error::ToolError> {
+            Ok(base::tool::ToolResult::text("Notification sent"))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_push_notification_reaches_the_event_stream_and_the_notification_hook() {
+        let tools = Arc::new(base::tool::InMemoryToolRegistry::new());
+        tools.register(Arc::new(FakePushNotification));
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("hook.json");
+        let mut settings: hooks::config::HooksSettings = std::collections::HashMap::new();
+        settings.insert(
+            hooks::HookEvent::Notification,
+            vec![hooks::config::HookConfig::Command {
+                command: format!("cat > '{}'", log.display()),
+                shell: None,
+                timeout: None,
+                if_pattern: None,
+                only_on_error: None,
+                once: None,
+                async_rewake: None,
+            }],
+        );
+        let mut ctx = test_exec_ctx(tools, Arc::new(hooks::HookRunner::new(settings)));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        ctx.events = Some(crate::event_bus::EventBus::new(tx));
+
+        let result = execute_tool_with_telemetry(
+            &ctx,
+            "PushNotification",
+            serde_json::json!({"message": " build done ", "status": "proactive"}),
+        )
+        .await;
+        assert!(result.is_ok(), "{result:?}");
+
+        let mut notified = None;
+        while let Ok(event) = rx.try_recv() {
+            if let AgentEvent::Notification {
+                message, status, ..
+            } = event
+            {
+                notified = Some((message, status));
+            }
+        }
+        assert_eq!(
+            notified,
+            Some(("build done".to_string(), Some("proactive".to_string())))
+        );
+        let hooked: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&log).unwrap()).unwrap();
+        assert_eq!(hooked["hook_event_name"], "Notification");
+        assert_eq!(hooked["reason"], "build done");
     }
 
     #[tokio::test]
@@ -5933,6 +6036,7 @@ mod tests {
             ),
             images: Arc::new(std::sync::Mutex::new(Vec::new())),
             from_code: false,
+            events: None,
         };
 
         let result = execute_tool_with_telemetry(&ctx, "Probe", serde_json::json!({})).await;

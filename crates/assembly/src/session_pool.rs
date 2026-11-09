@@ -7909,6 +7909,12 @@ fn background_frame(
             serde_json::json!({"kind":"skills_changed","added":added,"removed":removed}),
             None,
         ),
+        AgentEvent::Notification {
+            message, status, ..
+        } => (
+            serde_json::json!({"kind":"notification","message":message,"status":status}),
+            None,
+        ),
         AgentEvent::TeamProgress {
             team,
             team_id,

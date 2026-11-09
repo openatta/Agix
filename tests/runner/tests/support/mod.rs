@@ -364,6 +364,7 @@ pub fn normalize_events(events: &[AgentEvent]) -> String {
             AgentEvent::SessionChanged { .. } => "SessionChanged".to_string(),
             AgentEvent::SessionPersisted { .. } => "SessionPersisted".to_string(),
             AgentEvent::SkillsChanged { .. } => "SkillsChanged".to_string(),
+            AgentEvent::Notification { message, .. } => format!("Notification {message}"),
             AgentEvent::AgentSpawned { parent_turn, .. } => {
                 format!("AgentSpawned parent_turn={parent_turn}")
             }

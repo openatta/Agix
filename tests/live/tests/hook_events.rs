@@ -500,6 +500,54 @@ async fn worktree_events_bracket_a_worktree() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_push_notification_is_a_frame_and_a_notification_hook() -> anyhow::Result<()> {
+    let stub = ProviderStub::start().await?;
+    let ledger = Ledger::new()?;
+    let mut run = stubbed("push", &stub)
+        .settings(json!({ "hooks_config": ledger.on_every_event() }))
+        .before_start(|world, _| {
+            world.write_declarative_scene("push", &["PushNotification"], "Push scene.\n")?;
+            Ok(())
+        })
+        .start()
+        .await?;
+    let session = run.scene_session("push", json!({})).await?;
+    let watcher = run.watch(&session, false).await?;
+    stub.script([
+        Reply::calls(
+            "p1",
+            "PushNotification",
+            json!({ "message": "PUSHED-7 build finished", "status": "proactive" }),
+        ),
+        Reply::text("done"),
+    ]);
+    let events = run.turn(&session, "notify").await?;
+    assert!(!events.tool_results[0].2, "{:?}", events.tool_results);
+
+    let frames = watcher.frames();
+    let notified: Vec<&Value> = frames
+        .iter()
+        .filter(|f| f["event"]["kind"] == "notification")
+        .collect();
+    assert_eq!(notified.len(), 1, "{frames:?}");
+    assert_eq!(notified[0]["event"]["message"], "PUSHED-7 build finished");
+    assert_eq!(notified[0]["event"]["status"], "proactive");
+    assert!(notified[0]["turn_id"].is_string());
+
+    let entries = ledger.entries();
+    let hooked: Vec<&Value> = entries
+        .iter()
+        .filter(|e| e["hook_event_name"] == "Notification")
+        .collect();
+    assert_eq!(hooked.len(), 1, "{:?}", names_of(&entries));
+    assert_eq!(hooked[0]["reason"], "PUSHED-7 build finished");
+    assert_eq!(hooked[0]["tool_name"], "PushNotification");
+    drop(watcher);
+    run.finish().await;
+    Ok(())
+}
+
 /// The OS file watcher can lag well behind a write on a loaded machine, so
 /// the file is edited again each second until the event shows up.
 async fn edit_until_file_changed(ledger: &Ledger, file: &Path) -> anyhow::Result<()> {

@@ -628,7 +628,6 @@ async fn ping_reaches_a_page_and_reports_its_status() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: PushNotification only runs osascript (or prints to stderr) on the daemon's machine — no frame and no Notification hook reaches the host (tools/src/push_notification.rs:93; the hook fires only for permission prompts, runtime/src/turn.rs:3928)"]
 async fn a_push_notification_reaches_the_host() -> anyhow::Result<()> {
     let scratch = tempfile::tempdir()?;
     let log = scratch.path().join("notified.jsonl");

@@ -240,6 +240,14 @@ pub enum AgentEvent {
         turn_id: String,
     },
 
+    /// The model asked for the user's attention with `PushNotification`.
+    Notification {
+        message: String,
+        /// `"proactive"` when the model sent it unprompted; `None` otherwise.
+        status: Option<String>,
+        turn_id: String,
+    },
+
     /// A sub-agent was spawned.
     AgentSpawned {
         agent_id: String,
