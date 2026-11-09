@@ -24,11 +24,12 @@ async fn a_later_stage_works_from_what_an_earlier_stage_remembered() -> anyhow::
     run.write_file("notes/relay-word.txt", &format!("{secret}\n"))?;
 
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     let events = run
         .turn(
             &session,
             "Use the TeamCreate tool (load it with ToolSearch if needed) to run a team named \
-             relay, with permission_mode bypassPermissions and two stages:\n\
+             relay, with permission_mode default and two stages:\n\
              - stage 1, one agent labelled scout: \"Read notes/relay-word.txt and save its \
              content to team memory with the TeamMemorySave tool, name secret-word, type \
              project, description 'the relay word'. Do not write any file.\"\n\
@@ -104,12 +105,12 @@ async fn members_of_a_stage_pass_a_message_and_the_team_is_listed_then_deleted(
     );
     run.write_file("notes/parcel.txt", &format!("{token}\n"))?;
     let session = run.session().await?;
-    let watcher = run.watch(&session, false).await?;
+    let watcher = run.watch(&session, true).await?;
     let events = run
         .turn(
             &session,
             "Load TeamCreate, TeamList and TeamDelete with ToolSearch if needed. Use TeamCreate \
-             to run a team named mail, with permission_mode bypassPermissions and one stage \
+             to run a team named mail, with permission_mode default and one stage \
              named swap with two agents:\n\
              - label sender: \"Read notes/parcel.txt. Call ListPeers, then call SendMessage \
              with peer receiver and the file's content as the message. Then answer SENT.\"\n\

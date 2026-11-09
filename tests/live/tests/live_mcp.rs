@@ -141,6 +141,7 @@ async fn a_slow_mcp_call_is_cancelled_on_the_server_when_the_turn_is_interrupted
         .start()
         .await?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     let handle = run
         .spawn_turn(
             &session,
@@ -192,6 +193,7 @@ async fn a_server_that_dies_is_reported_and_the_rest_keeps_working() -> anyhow::
         .start()
         .await?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     let events = run
         .turn(
             &session,
@@ -255,13 +257,15 @@ async fn a_big_mcp_result_is_cut_to_the_result_budget_before_the_model_sees_it(
         .start()
         .await?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     let events = run
         .turn(
             &session,
             &format!(
                 "Call mcp__toy__big with bytes 40000 and tail {small_tail}. After it answers, \
-                 call mcp__toy__big with bytes 60000 and tail {big_tail}. Then reply with the \
-                 last line of each result, or NOT-SHOWN for one whose end you cannot see."
+                 call mcp__toy__big with bytes 60000 and tail {big_tail}. Call no other tool — \
+                 no RunCode, no second try. Then reply with the last line of each result, or \
+                 NOT-SHOWN for one whose end you cannot see."
             ),
         )
         .await?;
@@ -315,6 +319,7 @@ async fn resources_reach_the_model_by_tool_and_by_reference() -> anyhow::Result<
         .start()
         .await?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     let events = run
         .turn(
             &session,
@@ -394,6 +399,7 @@ async fn an_mcp_prompt_runs_as_a_slash_command() -> anyhow::Result<()> {
         .start()
         .await?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     let name = format!("Zed{}", nonce());
     run.turn(
         &session,
@@ -424,6 +430,7 @@ async fn a_server_added_at_runtime_is_used_and_an_update_takes_effect() -> anyho
     let calls_arg = calls.to_string_lossy().into_owned();
     let mut run = LiveRun::builder("mcp-runtime").start().await?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
 
     let added = run
         .client
@@ -542,6 +549,7 @@ async fn the_http_and_sse_transports_carry_tool_calls() -> anyhow::Result<()> {
     assert_eq!(transport("legacy"), "sse", "{status:?}");
 
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     let (a, b) = (format!("H-{}", nonce()), format!("S-{}", nonce()));
     let events = run
         .turn(
@@ -617,6 +625,7 @@ async fn the_mcp_policy_keeps_denied_servers_out_of_reach() -> anyhow::Result<()
     );
 
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     let probe = format!("P-{}", nonce());
     let events = run
         .turn(
@@ -680,6 +689,7 @@ async fn a_plugins_mcp_server_survives_a_config_reload() -> anyhow::Result<()> {
         .start()
         .await?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     let probe = format!("K1-{}", nonce());
     let ask = |probe: &str| {
         format!(
@@ -705,6 +715,7 @@ async fn a_plugins_mcp_server_survives_a_config_reload() -> anyhow::Result<()> {
     assert!(!status.is_empty());
 
     let fresh = run.session().await?;
+    let _host = run.watch(&fresh, true).await?;
     let probe = format!("K2-{}", nonce());
     let events = run.turn(&fresh, &ask(&probe)).await?;
     assert!(
@@ -753,6 +764,7 @@ async fn an_elicitation_url_in_a_tool_result_reaches_the_elicitation_hook() -> a
         .start()
         .await?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     let events = run
         .turn(
             &session,

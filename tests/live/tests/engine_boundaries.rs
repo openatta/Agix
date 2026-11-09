@@ -279,6 +279,7 @@ async fn a_concurrency_safe_tool_starts_while_its_stream_is_still_arriving() -> 
         .start()
         .await?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     let stall = Duration::from_secs(4);
     stub.script([
         fetch_then_stall(&pages.url("/early"), stall),

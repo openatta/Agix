@@ -256,7 +256,7 @@ async fn after_a_compaction_the_model_is_reminded_of_plan_mode_and_a_running_tas
 ) -> anyhow::Result<()> {
     let mut run = LiveRun::start("reminded", json!({}), Mode::InProcess).await?;
     let session = run.session().await?;
-    let watcher = run.watch(&session, false).await?;
+    let watcher = run.watch(&session, true).await?;
     run.turn(
         &session,
         "Start a Monitor (load it with ToolSearch if needed) with command `sleep 600` and \

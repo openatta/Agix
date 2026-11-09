@@ -102,6 +102,7 @@ async fn a_memory_written_in_one_session_is_recalled_in_the_next() -> anyhow::Re
     let dir = run.world.global_memory_dir();
     let token = format!("CODENAME-{}", nonce());
     let writer = run.session().await?;
+    let _host = run.watch(&writer, true).await?;
     run.turn(
         &writer,
         &format!(
@@ -124,6 +125,7 @@ async fn a_memory_written_in_one_session_is_recalled_in_the_next() -> anyhow::Re
 
     let before = run.provider.calls().len();
     let reader = run.session().await?;
+    let _host = run.watch(&reader, true).await?;
     run.turn(
         &reader,
         "What is the codename of the next billing release? Write it to p.txt with the Write \
@@ -235,6 +237,7 @@ async fn a_project_memory_is_indexed_and_recalled_with_the_global_ones() -> anyh
         .start()
         .await?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     run.turn(
         &session,
         "Which branch does this project release from? Answer with the branch name only.",

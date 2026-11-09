@@ -169,6 +169,7 @@ async fn a_coordinator_sees_every_worker_through_planted_faults() -> anyhow::Res
     )?;
 
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     let assignment: BTreeMap<&str, Vec<&str>> = jobs.iter().fold(BTreeMap::new(), |mut m, j| {
         m.entry(j.worker).or_default().push(j.id);
         m

@@ -475,7 +475,13 @@ async fn worktree_events_bracket_a_worktree() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let ledger = Ledger::new()?;
     let mut run = stubbed("wt", &stub)
-        .settings(json!({ "hooks_config": ledger.on_every_event() }))
+        .settings(json!({
+            "hooks_config": ledger.on_every_event(),
+            "permission_rules": [
+                { "tool": "EnterWorktree", "action": "allow" },
+                { "tool": "ExitWorktree", "action": "allow" }
+            ]
+        }))
         .before_start(|world, _| {
             world.git_project("wt")?;
             world.write_declarative_scene(
@@ -939,6 +945,7 @@ async fn a_hook_that_fails_hangs_or_prints_garbage_changes_nothing() -> anyhow::
         .start()
         .await?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     stub.script([
         Reply::calls("b1", "Bash", json!({ "command": "echo ran > ran.txt" })),
         Reply::text("carried on"),
@@ -1127,6 +1134,7 @@ async fn a_post_tool_use_hook_withholds_a_result_or_ends_the_turn() -> anyhow::R
         .await?;
     run.write_file("secret.txt", "SECRET-IN-FILE-881\n")?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     stub.script([
         Reply::calls("r1", "Read", json!({ "file_path": "secret.txt" })),
         Reply::calls("b1", "Bash", json!({ "command": "echo ran > ran.txt" })),
@@ -1327,6 +1335,7 @@ async fn http_hook_hits(host: &str) -> anyhow::Result<usize> {
         .start()
         .await?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     stub.script([
         Reply::calls("b1", "Bash", json!({ "command": "echo x > ran.txt" })),
         Reply::text("done"),

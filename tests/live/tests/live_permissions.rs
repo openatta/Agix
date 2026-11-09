@@ -250,6 +250,16 @@ async fn plan_mode_holds_across_a_compaction() -> anyhow::Result<()> {
     let watcher = run
         .watch_with(&session, |_| Some(Answer::deny("stay in plan mode")))
         .await?;
+    // History in the conversation itself: a file read would be re-attached
+    // after the compaction and leave nothing to gain from it.
+    run.turn(
+        &session,
+        &format!(
+            "Here are this week's notes; just reply OK.\n{}",
+            "a line of notes for the record\n".repeat(200)
+        ),
+    )
+    .await?;
     run.turn(&session, "Call the EnterPlanMode tool now, then reply OK.")
         .await?;
     run.turn(&session, "/compact").await?;

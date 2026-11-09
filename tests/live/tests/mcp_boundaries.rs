@@ -141,6 +141,7 @@ async fn a_server_that_never_answers_initialize_does_not_hold_up_a_session() -> 
     let session = tokio::time::timeout(Duration::from_secs(20), run.session())
         .await
         .map_err(|_| anyhow::anyhow!("session.create still waiting on the mute server"))??;
+    let _host = run.watch(&session, true).await?;
     stub.script([
         Reply::calls(
             "p1",
@@ -176,6 +177,7 @@ async fn a_server_that_answers_garbage_is_left_out_and_the_others_still_work() -
     let session = tokio::time::timeout(Duration::from_secs(20), run.session())
         .await
         .map_err(|_| anyhow::anyhow!("session.create still waiting on the garbage server"))??;
+    let _host = run.watch(&session, true).await?;
     let status = mcp_status_until(&mut run, "the toy server connected", |s| {
         names_in_state(s, "connected").contains(&"toy".to_string())
     })
@@ -223,6 +225,7 @@ async fn a_server_with_hundreds_of_tools_is_listed_whole_and_its_last_tool_answe
         .start()
         .await?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     let status = mcp_status_until(&mut run, "the many server connected", |s| {
         s.iter()
             .any(|s| s["name"] == "many" && s["state"] == "connected")
@@ -299,6 +302,7 @@ async fn the_same_tool_on_two_servers_reaches_the_server_it_was_called_on() -> a
         .start()
         .await?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     stub.script([
         Reply::calls("e1", "mcp__right__echo", json!({ "text": "to-the-right" })),
         Reply::calls("e2", "mcp__left__echo", json!({ "text": "to-the-left" })),
@@ -364,6 +368,7 @@ async fn a_call_whose_server_died_is_reported_not_replayed() -> anyhow::Result<(
         .start()
         .await?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     stub.script([
         Reply::calls("c1", "mcp__toy__crash", json!({})),
         Reply::calls(
@@ -396,6 +401,7 @@ async fn a_server_that_died_comes_back_for_the_next_call() -> anyhow::Result<()>
         .start()
         .await?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     stub.script([
         Reply::calls("c1", "mcp__toy__crash", json!({})),
         Reply::calls(
@@ -439,6 +445,7 @@ async fn an_interrupted_mcp_call_is_cancelled_on_the_server() -> anyhow::Result<
         .start()
         .await?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     stub.script([
         Reply::calls("s1", "mcp__toy__slow", json!({ "ms": 60_000 })),
         Reply::text("never reached"),
@@ -577,6 +584,7 @@ async fn the_policys_globs_hold_end_to_end(mode: Mode) -> anyhow::Result<()> {
     );
 
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     stub.script([
         Reply::calls("p1", "mcp__globbed__ping", json!({ "message": "inside" })),
         Reply::text("done"),
@@ -738,6 +746,7 @@ async fn webfetch_answers_odd_pages_and_refuses_odd_urls() -> anyhow::Result<()>
         .start()
         .await?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     let fetch = |id: &str, url: &str| Reply::calls(id, "WebFetch", json!({ "url": url }));
     stub.script([
         fetch("f1", &pages.url("/empty")),
@@ -799,6 +808,7 @@ async fn a_network_allowlist_keeps_webfetch_off_this_machine() -> anyhow::Result
             .start()
             .await?;
         let session = run.session().await?;
+        let _host = run.watch(&session, true).await?;
         stub.script([
             Reply::calls("f1", "WebFetch", json!({ "url": pages.url("/doc") })),
             Reply::text("done"),
@@ -832,6 +842,7 @@ async fn the_part_of_a_page_webfetch_keeps_reaches_the_model() -> anyhow::Result
         .start()
         .await?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     stub.script([
         Reply::calls("f1", "WebFetch", json!({ "url": pages.url("/big") })),
         Reply::calls("f2", "WebFetch", json!({ "url": pages.url("/wide") })),

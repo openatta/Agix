@@ -81,6 +81,7 @@ async fn webfetch_brings_a_page_back_as_text_without_an_extraction_call() -> any
         .start()
         .await?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     let events = run
         .turn(
             &session,
@@ -130,6 +131,7 @@ async fn webfetch_cuts_a_huge_page_at_fifty_thousand_characters() -> anyhow::Res
         .start()
         .await?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     let events = run
         .turn(
             &session,
@@ -190,6 +192,7 @@ async fn webfetch_reports_error_statuses_and_hands_redirects_back() -> anyhow::R
         .start()
         .await?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     let events = run
         .turn(
             &session,
@@ -258,6 +261,7 @@ async fn an_interrupt_ends_a_turn_that_waits_on_a_slow_page() -> anyhow::Result<
         .start()
         .await?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     let handle = run
         .spawn_turn(
             &session,
@@ -345,6 +349,7 @@ async fn task_models_web_fetch_extracts_on_its_own_model_and_falls_back_to_the_p
     });
     reload_with(&mut run, "web-extract", settings).await?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     let ask = |url: &str, file: &str| {
         format!(
             "Call WebFetch on {url} with the prompt \"What is the build id? Answer with the id \

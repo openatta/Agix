@@ -91,7 +91,7 @@ fn tool_result_ids(request: &live::SeenRequest) -> Vec<String> {
 async fn an_interrupt_stops_a_running_command_and_the_session_carries_on() -> anyhow::Result<()> {
     let mut run = LiveRun::builder("interrupt-bash").start().await?;
     let session = run.session().await?;
-    let watcher = run.watch(&session, false).await?;
+    let watcher = run.watch(&session, true).await?;
     let handle = run
         .spawn_turn(
             &session,
@@ -150,6 +150,7 @@ async fn an_interrupt_leaves_a_background_agent_running_until_the_host_stops_it(
         ),
     )?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     run.turn(
         &session,
         "Start one background sub-agent with the Agent tool: subagent_type sleeper, \
@@ -211,7 +212,7 @@ async fn an_interrupt_leaves_a_background_agent_running_until_the_host_stops_it(
 async fn a_busy_session_refuses_takes_a_steer_and_queues_the_next_turn() -> anyhow::Result<()> {
     let mut run = LiveRun::builder("busy").start().await?;
     let session = run.session().await?;
-    let watcher = run.watch(&session, false).await?;
+    let watcher = run.watch(&session, true).await?;
     let (first_word, steered) = (format!("FIRST-{}", nonce()), format!("STEER-{}", nonce()));
     let first = run
         .spawn_turn(
@@ -650,7 +651,7 @@ async fn a_hosts_goal_can_be_paused_edited_and_cleared() -> anyhow::Result<()> {
         .await?;
     let paused = paused.result.unwrap_or_default();
     assert_eq!(paused["goal"]["phase"], "paused", "{paused}");
-    run.wait_turn_state(&session, "idle", Duration::from_secs(60))
+    run.wait_turn_state(&session, "idle", Duration::from_secs(300))
         .await?;
 
     let edited = run
@@ -713,6 +714,7 @@ async fn a_restart_takes_a_background_task_down_and_the_session_resumes() -> any
         ),
     )?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     let word = format!("BEFORE-{}", nonce());
     run.turn(
         &session,

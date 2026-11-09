@@ -98,6 +98,7 @@ async fn a_pre_tool_use_hook_refuses_rm_and_the_model_follows_its_reason() -> an
     let token = format!("TOKEN-{}", nonce());
     run.write_file("old.log", &format!("{token}\n"))?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     let events = run
         .turn(
             &session,
@@ -280,6 +281,7 @@ async fn a_prompt_hook_judges_a_call_with_a_model_and_blocks_it() -> anyhow::Res
     let token = format!("TOKEN-{}", nonce());
     run.write_file("precious.txt", &format!("{token}\n"))?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     let events = run
         .turn(
             &session,

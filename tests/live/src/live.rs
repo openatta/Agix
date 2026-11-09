@@ -16,8 +16,8 @@
 //! instead of spending, so a case that loops costs a bounded amount.
 //!
 //! [`LiveRun`] is the scaffolding every live case repeats: a world, one
-//! project with permissive settings, the proxy, a daemon, a client, and turns
-//! bounded by a timeout. [`Watcher`] is the host's second pair of eyes — a
+//! project in the `default` permission mode, the proxy, a daemon, a client,
+//! and turns bounded by a timeout. [`Watcher`] is the host's second pair of eyes — a
 //! connection that only watches a session, and answers its questions when
 //! told to. Assertions belong to the cases, and they should be about
 //! outcomes — files, task states, frames, values only a real run can
@@ -387,6 +387,44 @@ impl LiveProvider {
         (exchanges.len(), input, output)
     }
 
+    /// The tools refused because nobody answered their permission prompt —
+    /// no [`Watcher`], or an unattended scene with no rule granting them —
+    /// one entry per call: what a case can lose without failing.
+    pub fn unanswered_prompts(&self) -> Vec<String> {
+        let mut names = std::collections::HashMap::new();
+        let mut unanswered = std::collections::BTreeSet::new();
+        for call in self.calls() {
+            let messages = call.body["messages"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            for block in messages
+                .iter()
+                .filter_map(|m| m["content"].as_array())
+                .flatten()
+            {
+                let id = block["tool_use_id"].as_str().or(block["id"].as_str());
+                let Some(id) = id else { continue };
+                if block["type"] == "tool_use" {
+                    names.insert(
+                        id.to_string(),
+                        block["name"].as_str().unwrap_or("?").to_string(),
+                    );
+                } else if block["type"] == "tool_result"
+                    && ["no answer to the permission prompt", "nobody is attending"]
+                        .iter()
+                        .any(|refusal| block["content"].to_string().contains(refusal))
+                {
+                    unanswered.insert(id.to_string());
+                }
+            }
+        }
+        unanswered
+            .iter()
+            .map(|id| names.get(id).cloned().unwrap_or_else(|| "?".into()))
+            .collect()
+    }
+
     async fn forward_one(
         &self,
         mut sock: tokio::net::TcpStream,
@@ -679,12 +717,13 @@ impl LiveRunBuilder {
 
 impl LiveRun {
     /// Settings every live project starts from: no memory (it would make one
-    /// run's answers depend on the last), no permission prompts (nobody is
-    /// there to answer them).
+    /// run's answers depend on the last), and the `default` permission mode —
+    /// a case that writes outside the project or runs a command that is not
+    /// read-only answers the prompts with a [`Watcher`].
     pub fn base_settings() -> Value {
         json!({
             "memory_enabled": false,
-            "permission_mode": "bypassPermissions"
+            "permission_mode": "default"
         })
     }
 
@@ -951,6 +990,13 @@ impl LiveRun {
             "[live {}] {calls} model calls, {input} input tokens, {output} output tokens",
             self.name
         );
+        let unanswered = self.provider.unanswered_prompts();
+        if !unanswered.is_empty() {
+            eprintln!(
+                "[live {}] refused, nobody answered the prompt: {unanswered:?}",
+                self.name
+            );
+        }
         self.daemon.stop().await;
     }
 }

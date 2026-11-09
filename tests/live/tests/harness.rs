@@ -382,6 +382,7 @@ async fn the_page_server_serves_what_it_was_given_and_counts_the_hits() -> anyho
         .start()
         .await?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     stub.script([
         Reply::calls("f1", "WebFetch", json!({ "url": pages.url("/data") })),
         Reply::text("fetched"),
@@ -440,6 +441,7 @@ async fn the_toy_mcp_server_answers_over_stdio_and_http() -> anyhow::Result<()> 
         .await?;
 
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     stub.script([
         Reply::calls("m1", "mcp__local__echo", json!({ "text": "统一码 🦀" })),
         Reply::calls(

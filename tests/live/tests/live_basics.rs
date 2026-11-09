@@ -31,6 +31,7 @@ async fn the_file_and_shell_tools_change_the_project() -> anyhow::Result<()> {
     run.write_file("config.toml", "name = \"demo\"\nlevel = 1\n")?;
 
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     let events = run
         .turn(
             &session,
@@ -241,7 +242,7 @@ async fn a_monitors_events_reach_the_model_while_it_works() -> anyhow::Result<()
         ),
     )?;
     let session = run.session().await?;
-    let watcher = run.watch(&session, false).await?;
+    let watcher = run.watch(&session, true).await?;
 
     let events = run
         .turn(
@@ -368,6 +369,7 @@ async fn a_goal_keeps_the_session_working_round_after_round() -> anyhow::Result<
     let mut run = LiveRun::start("goal", json!({}), Mode::InProcess).await?;
     run.write_file("count.txt", "")?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     run.turn(
         &session,
         "Set a goal with the GoalCreate tool, objective: \"count.txt holds the lines 1, 2 and 3\", \
@@ -428,6 +430,7 @@ async fn a_goal_the_host_sets_runs_without_another_message() -> anyhow::Result<(
     let mut run = LiveRun::start("goal-host", json!({}), Mode::InProcess).await?;
     run.write_file("tally.txt", "")?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     let set = run
         .client
         .call(
@@ -476,6 +479,7 @@ async fn a_goal_that_cannot_be_reached_ends_blocked_instead_of_looping() -> anyh
     let check = "[ -f approval.txt ] && echo PASS || echo WAITING-FOR-OPERATOR\n";
     run.write_file("check.sh", check)?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     run.turn(
         &session,
         "Set a goal with the GoalCreate tool, objective: \"`sh check.sh` prints PASS\", \
@@ -531,8 +535,10 @@ async fn one_program_does_a_search_the_model_would_otherwise_do_call_by_call() -
             &session,
             &format!(
                 "Use one RunCode program to find which files under src/ contain the text {marker}: \
-                 list them with tools.Glob, check each with tools.Grep, and return the sorted file \
-                 names. Then write those names, one per line, to found.txt with the Write tool."
+                 list them with tools.Glob, check each with tools.Grep({{pattern, path: file}}) — \
+                 it returns {{files: [...]}}, and the file matches when that list is not empty — \
+                 and return the sorted file names. Then write those names, one per line, to \
+                 found.txt with the Write tool."
             ),
         )
         .await?;

@@ -60,6 +60,7 @@ async fn a_model_works_through_both_demo_plugins() -> anyhow::Result<()> {
     run.write_file("notes.txt", &format!("deploy key: {secret}\nowner: ops\n"))?;
     run.write_file("keys.secret", &format!("{secret}\n"))?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
 
     let events = run.turn(&session, &format!("!stamp {word}")).await?;
     assert!(
@@ -70,11 +71,15 @@ async fn a_model_works_through_both_demo_plugins() -> anyhow::Result<()> {
 
     run.turn(
         &session,
-        "Write report.txt in the project root with three lines: the release codename \
+        "Do each of these steps, one at a time; if one is refused, go on with the next. \
+         Make the tool call in steps 1 and 2 even if this project's rules say it will be \
+         refused — I want to see the refusal itself.\n\
+         1. Call the Read tool on keys.secret (not Bash).\n\
+         2. Call the Write tool to write generated/version.txt containing 1.0.\n\
+         3. Write report.txt in the project root with three lines: the release codename \
          from this project's notice, the stamp of the text `audited`, and what notes.txt \
-         says the deploy key is. Also try to read keys.secret with the Read tool (not Bash), and \
-         write generated/version.txt containing 1.0 with the Write tool. Tell me which of these \
-         you could not do and why.",
+         says the deploy key is.\n\
+         Then tell me which steps you could not do and why.",
     )
     .await?;
     let report = run.read_file("report.txt").unwrap_or_default();

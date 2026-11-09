@@ -318,7 +318,7 @@ async fn a_monitoring_view_follows_a_build_and_the_list_survives_a_restart() -> 
     let by_alias = run
         .session_with(json!({ "project_root": alias.to_string_lossy() }))
         .await?;
-    let watcher = run.watch(&by_alias, false).await?;
+    let watcher = run.watch(&by_alias, true).await?;
     let built = run
         .turn(
             &by_alias,
@@ -615,7 +615,7 @@ async fn a_host_stops_a_runaway_command_and_the_turn_carries_on() -> anyhow::Res
         "echo $$ > serve.pid\nwhile true; do echo \"heartbeat $(date +%s)\"; sleep 0.5; done\n",
     )?;
     let session = run.session().await?;
-    let watcher = run.watch(&session, false).await?;
+    let watcher = run.watch(&session, true).await?;
     let mut host = run.daemon.connect().await?;
 
     let (turn, stopped) = tokio::join!(

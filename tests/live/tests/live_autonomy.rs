@@ -202,7 +202,11 @@ async fn a_todo_list_is_kept_through_a_multi_step_task() -> anyhow::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_job_the_model_schedules_fires_as_a_turn_until_it_deletes_it() -> anyhow::Result<()> {
-    let mut run = LiveRun::builder("model-cron").start().await?;
+    let mut run = LiveRun::builder("model-cron")
+        // The job's turns run with nobody there to answer a prompt.
+        .settings(json!({ "permission_rules": [{ "tool": "Bash(echo:*)", "action": "allow" }] }))
+        .start()
+        .await?;
     let session = run.session().await?;
     let (seen, reader) = daemon_events(&run).await?;
     let events = run
@@ -260,7 +264,11 @@ async fn a_job_the_model_schedules_fires_as_a_turn_until_it_deletes_it() -> anyh
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_one_shot_job_the_host_schedules_runs_once_with_nobody_connected() -> anyhow::Result<()> {
-    let mut run = LiveRun::builder("schedule").start().await?;
+    let mut run = LiveRun::builder("schedule")
+        // The job's turns run with nobody there to answer a prompt.
+        .settings(json!({ "permission_rules": [{ "tool": "Bash(echo:*)", "action": "allow" }] }))
+        .start()
+        .await?;
     let session = run.session().await?;
     let bad = run
         .client
@@ -339,6 +347,7 @@ async fn a_goal_out_of_rounds_ends_blocked_and_starts_no_more() -> anyhow::Resul
     let mut run = LiveRun::builder("goal-rounds").start().await?;
     run.write_file("rounds.txt", "")?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     let set = run
         .client
         .call(
@@ -380,7 +389,7 @@ async fn a_goal_round_that_runs_out_of_token_budget_disarms_the_goal() -> anyhow
         .await?;
     run.write_file("tally.txt", "")?;
     let session = run.session().await?;
-    let watcher = run.watch(&session, false).await?;
+    let watcher = run.watch(&session, true).await?;
     let set = run
         .client
         .call(
@@ -445,6 +454,7 @@ async fn background_agents_are_steered_waited_on_read_and_stopped() -> anyhow::R
         ),
     )?;
     let session = run.session().await?;
+    let _host = run.watch(&session, true).await?;
     let events = run
         .turn(
             &session,
@@ -593,7 +603,10 @@ async fn ping_reaches_a_page_and_reports_its_status() -> anyhow::Result<()> {
     pages.route("/health", Page::text("ok"));
     pages.route("/gone", Page::status(404, "gone"));
     let mut run = LiveRun::builder("ping")
-        .settings(json!({ "sandbox": PageServer::reachable() }))
+        .settings(json!({
+            "sandbox": PageServer::reachable(),
+            "permission_rules": [{ "tool": "Ping", "action": "allow" }]
+        }))
         .before_start(|world, _| paced_scene(world))
         .start()
         .await?;

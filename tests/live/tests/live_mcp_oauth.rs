@@ -12,7 +12,7 @@
 use std::time::Duration;
 
 use live::oauth::{click, consent, follow};
-use live::{DaemonEvents, LiveRun, Mode, OAuthWorld, Purpose, SeenRequest};
+use live::{DaemonEvents, LiveRun, Mode, OAuthWorld, Purpose, SeenRequest, Watcher};
 use rpc_client::{Target, TurnEvents};
 use serde_json::{json, Value};
 
@@ -27,12 +27,16 @@ const TRY_ECHO: &str = "Call the MCP tool mcp__docs__echo once, with no argument
      in your tool list, run one ToolSearch for it; if that finds nothing, reply UNAVAILABLE. If \
      the call fails, reply FAILED. Do not try any other way and do not call it twice.";
 
-async fn session(run: &mut LiveRun) -> anyhow::Result<String> {
+/// A session, and the host watching it who approves the MCP calls.
+async fn session(run: &mut LiveRun) -> anyhow::Result<(String, Watcher)> {
     let telemetry = run.world.telemetry_file("session.jsonl");
-    run.session_with(json!({
-        "options": { "telemetry": { "output": telemetry.to_string_lossy() } }
-    }))
-    .await
+    let session = run
+        .session_with(json!({
+            "options": { "telemetry": { "output": telemetry.to_string_lossy() } }
+        }))
+        .await?;
+    let host = run.watch(&session, true).await?;
+    Ok((session, host))
 }
 
 async fn status(run: &mut LiveRun) -> anyhow::Result<Value> {
@@ -129,7 +133,12 @@ async fn assert_tool_works(
         USE_ECHO.replace("mcp__docs__echo", tool)
     };
     let from = run.provider.calls().len();
-    let events = run.turn(session, &prompt).await?;
+    let mut events = run.turn(session, &prompt).await?;
+    if result_of(&events, tool).is_empty() {
+        // An earlier answer in the session said the tool was missing, and a
+        // model sometimes repeats it without looking at its tool list again.
+        events = run.turn(session, &prompt).await?;
+    }
     let offered = turn_requests(run, from)
         .first()
         .map(SeenRequest::tool_names)
@@ -250,7 +259,7 @@ async fn a_server_that_needs_a_sign_in_is_used_once_the_host_signs_the_user_in(
     assert_eq!(waiting["tool_count"], 0, "{waiting}");
     assert_eq!(waiting["auth"]["state"], "required", "{waiting}");
 
-    let session = session(&mut run).await?;
+    let (session, _host) = session(&mut run).await?;
     assert_server_out_of_reach(&mut run, &world, &session).await?;
 
     let start = run
@@ -305,7 +314,7 @@ async fn an_external_redirect_is_handed_back_by_the_host_and_signs_the_user_in(
         .await?;
     let events = run.daemon_events().await?;
     wait_state(&mut run, "auth_required").await?;
-    let session = session(&mut run).await?;
+    let (session, _host) = session(&mut run).await?;
 
     let back_to = "https://app.example/oauth/done";
     let start = run
@@ -348,7 +357,7 @@ async fn a_token_that_expires_mid_session_is_refreshed_under_the_models_call() -
     let events = run.daemon_events().await?;
     wait_state(&mut run, "auth_required").await?;
     sign_in(&mut run, &events, None).await?;
-    let session = session(&mut run).await?;
+    let (session, _host) = session(&mut run).await?;
     assert_tool_works(&mut run, &world, &session, "mcp__docs__echo").await?;
 
     let refreshed = world.auth.state.lock().unwrap().refreshes;
@@ -378,7 +387,7 @@ async fn a_refused_refresh_takes_the_server_away_until_the_user_signs_in_again(
     let events = run.daemon_events().await?;
     wait_state(&mut run, "auth_required").await?;
     sign_in(&mut run, &events, None).await?;
-    let session = session(&mut run).await?;
+    let (session, _host) = session(&mut run).await?;
     assert_tool_works(&mut run, &world, &session, "mcp__docs__echo").await?;
 
     world.auth.state.lock().unwrap().reject_refresh = true;
@@ -412,7 +421,7 @@ async fn a_tool_that_needs_more_scope_works_after_a_step_up() -> anyhow::Result<
     let events = run.daemon_events().await?;
     wait_state(&mut run, "auth_required").await?;
     sign_in(&mut run, &events, Some(&["mcp:read"])).await?;
-    let session = session(&mut run).await?;
+    let (session, _host) = session(&mut run).await?;
 
     let refused = run
         .turn(
@@ -456,7 +465,7 @@ async fn after_a_logout_the_servers_tools_are_gone() -> anyhow::Result<()> {
     let events = run.daemon_events().await?;
     wait_state(&mut run, "auth_required").await?;
     sign_in(&mut run, &events, None).await?;
-    let session = session(&mut run).await?;
+    let (session, _host) = session(&mut run).await?;
     assert_tool_works(&mut run, &world, &session, "mcp__docs__echo").await?;
 
     let out = run.client.mcp_auth_logout(&Target::own(), SERVER).await?;
@@ -501,7 +510,7 @@ async fn a_client_credentials_server_is_used_with_nobody_signing_in() -> anyhow:
         "there is nothing to sign in to"
     );
 
-    let session = session(&mut run).await?;
+    let (session, _host) = session(&mut run).await?;
     assert_tool_works(&mut run, &world, &session, "mcp__docs__echo").await?;
     let requests = world.auth_requests();
     assert!(
@@ -543,7 +552,7 @@ async fn an_enterprise_identity_from_the_host_connects_the_server() -> anyhow::R
             .contains("mcp.auth.setIdentity"),
         "{waiting}"
     );
-    let session = session(&mut run).await?;
+    let (session, _host) = session(&mut run).await?;
     assert_server_out_of_reach(&mut run, &world, &session).await?;
 
     let set = run.client.mcp_auth_set_identity(&identity).await?;
@@ -573,7 +582,7 @@ async fn a_forged_callback_is_turned_away_and_the_real_one_still_signs_in() -> a
     let mut run = start("oauth-forged", &world).await?;
     let events = run.daemon_events().await?;
     wait_state(&mut run, "auth_required").await?;
-    let session = session(&mut run).await?;
+    let (session, _host) = session(&mut run).await?;
 
     let start = run
         .client
@@ -643,7 +652,7 @@ async fn a_sign_in_left_too_long_expires_and_cannot_be_completed() -> anyhow::Re
         .mcp_auth_complete(start["flow_id"].as_str().unwrap_or_default(), &callback)
         .await?;
     assert_eq!(late.error.map(|e| e.code), Some(-32602));
-    let session = session(&mut run).await?;
+    let (session, _host) = session(&mut run).await?;
     assert_server_out_of_reach(&mut run, &world, &session).await?;
 
     auth.set_flow_ttl(Duration::from_secs(600));
@@ -685,7 +694,7 @@ async fn an_authorization_server_outside_the_policy_is_never_sent_the_user() -> 
         requests.iter().all(|r| r.contains("/.well-known/")),
         "the authorization server was sent more than a metadata read: {requests:?}"
     );
-    let session = session(&mut run).await?;
+    let (session, _host) = session(&mut run).await?;
     assert_server_out_of_reach(&mut run, &world, &session).await?;
     assert!(world.tokens().is_empty(), "a token was issued");
     run.finish().await;

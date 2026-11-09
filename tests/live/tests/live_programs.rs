@@ -106,7 +106,14 @@ async fn a_program_fans_out_to_sub_agents_and_merges_their_results() -> anyhow::
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_background_program_reports_back_when_it_ends() -> anyhow::Result<()> {
-    let mut run = LiveRun::start("ptc-background", json!({}), Mode::InProcess).await?;
+    // A program cannot ask: a call that would need approval fails, so what
+    // it runs is granted by a rule.
+    let mut run = LiveRun::start(
+        "ptc-background",
+        json!({ "permission_rules": [{ "tool": "Bash(sh:*)", "action": "allow" }] }),
+        Mode::InProcess,
+    )
+    .await?;
     let tag = format!("BATCH-{}", nonce());
     for i in 1..=5 {
         run.write_file(
