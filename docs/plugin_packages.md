@@ -31,14 +31,8 @@ calls_per_turn = 1000                   # 可选;同上
 # ── MCP 服务器 ──
 [[mcp]]
 name = "github"
-kind = "native"                # native 必须给 `config`
+kind = "native"                # 必须给 `config`
 config = "mcp/github.json"
-
-[[mcp]]
-name = "pr-helper"
-kind = "dsh"                   # dsh 必须给 `entry`,由 agix-dsh-bridge 进程代为说 MCP
-entry = "dist/index.js"
-env = ["GITHUB_TOKEN"]         # 只透传这里点名的环境变量
 
 # ── 插件自己拥有的场景 ──
 # 一个声明式场景目录(scene.json + prompt.md),格式见 extension_points.md「声明式场景」;
@@ -69,8 +63,9 @@ panel = "ui/panel.js"
 支持的版本集合。
 
 manifest 里出现引擎不认识的顶级段,不拒,但打一条 WARN 说它"什么也不贡献"——`[[scripts]]`
-这种拼错,那是唯一的信号。有两类段是**拒装**的,因为它们是写给已经移除的东西的:
-`[[wasm]]`(引擎不跑 WebAssembly 组件)和 `[scene.own]`(改用 `[scene] dir`)。
+这种拼错,那是唯一的信号。有三类写法是**拒装**的,因为它们是写给已经移除的东西的:
+`[[wasm]]`(引擎不跑 WebAssembly 组件)、`[scene.own]`(改用 `[scene] dir`)和
+`[[mcp]] kind = "dsh"`(引擎不带 DSH 桥,把插件做成 stdio MCP 服务器、用 `kind = "native"` 声明)。
 
 校验规则:
 
@@ -103,7 +98,7 @@ cd my-plugin && zip -r ../my-plugin.zip . && shasum -a 256 ../my-plugin.zip
 - `download_url` 接受 `https://`/`http://` 和 `file://`。**网络来源必须带 checksum**,没有就
   在下载前拒掉;`file://` 可以不带。
 - `scope` 是 `"global"`(默认)或 `"scene"`,决定落进哪一层的 cache。
-- 解压后立刻按发现时的方式把 manifest 读回来;读不回来(包括上面那两类拒装的段)就整个
+- 解压后立刻按发现时的方式把 manifest 读回来;读不回来(包括上面那几类拒装的写法)就整个
   删掉并报错。
 - zip 里带 `..` 或绝对路径的条目跳过,不解压。
 
@@ -132,7 +127,7 @@ cd my-plugin && zip -r ../my-plugin.zip . && shasum -a 256 ../my-plugin.zip
 {"plugin":"github-tools","version":"1.2.0",
  "capabilities":["run its own JavaScript at the `tool.result` extension point"],
  "scene":"plugin:github-tools",
- "mcp_servers":["github (native)","pr-helper (dsh)"],
+ "mcp_servers":["github (native)"],
  "model_visible":[{"origin":"plugin description","text":"GitHub tools"},
                   {"origin":"agent `pr-reviewer` system prompt","text":"…"}],
  "inert":false}

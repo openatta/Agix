@@ -79,7 +79,6 @@ impl Disclosure {
         for server in &m.mcp {
             let kind = match server.kind {
                 crate::manifest::McpKind::Native => "native",
-                crate::manifest::McpKind::Dsh => "dsh",
             };
             d.mcp_servers.push(format!("{} ({kind})", server.name));
         }
@@ -300,13 +299,9 @@ name = "github"
 kind = "native"
 config = "s.json"
 
-[[mcp]]
-name = "helper"
-kind = "dsh"
-entry = "index.js"
 "#,
         );
         let d = Disclosure::from_plugin(&p).unwrap();
-        assert_eq!(d.mcp_servers, ["github (native)", "helper (dsh)"]);
+        assert_eq!(d.mcp_servers, ["github (native)"]);
     }
 }

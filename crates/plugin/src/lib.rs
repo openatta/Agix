@@ -8,7 +8,6 @@ pub mod cache;
 pub mod disclosure;
 pub mod discovery;
 pub mod install;
-pub mod locate;
 pub mod manifest;
 pub mod mcp;
 pub mod scenes;

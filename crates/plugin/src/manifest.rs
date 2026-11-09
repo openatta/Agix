@@ -35,7 +35,7 @@ pub const HOST_SECTION_PREFIX: &str = "x-";
 #[derive(Debug, Deserialize, Clone)]
 pub struct PluginManifest {
     pub plugin: PluginMeta,
-    /// MCP server payloads, native or DSH-bridged.
+    /// MCP server payloads.
     #[serde(default)]
     pub mcp: Vec<McpPayload>,
     /// Scripts this package binds to extension points.
@@ -104,24 +104,15 @@ impl ScriptPayload {
 pub enum McpKind {
     /// A standard MCP server; `config` points at its server config JSON.
     Native,
-    /// A DeepSeek-Harness plugin; `entry` points at its JS entry, loaded by
-    /// the `agix-dsh-bridge` process which speaks MCP on its behalf.
-    Dsh,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct McpPayload {
     pub name: String,
     pub kind: McpKind,
-    /// `kind = "native"`: server config JSON, relative to the plugin root.
+    /// Server config JSON, relative to the plugin root.
     #[serde(default)]
     pub config: Option<PathBuf>,
-    /// `kind = "dsh"`: JS entry module, relative to the plugin root.
-    #[serde(default)]
-    pub entry: Option<PathBuf>,
-    /// Environment variable names to pass through to the server process.
-    #[serde(default)]
-    pub env: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
@@ -267,6 +258,21 @@ fn refuse_retired_sections(raw: &str) -> Result<(), PluginError> {
         ));
     }
     if table
+        .get("mcp")
+        .and_then(toml::Value::as_array)
+        .is_some_and(|servers| {
+            servers
+                .iter()
+                .any(|s| s.get("kind").and_then(toml::Value::as_str) == Some("dsh"))
+        })
+    {
+        return Err(PluginError::Schema(
+            "`[[mcp]] kind = \"dsh\"` is not supported: Agix runs no DSH bridge. Ship the \
+             plugin as a stdio MCP server and declare it with `kind = \"native\"`"
+                .into(),
+        ));
+    }
+    if table
         .get("scene")
         .and_then(toml::Value::as_table)
         .is_some_and(|scene| scene.contains_key("own"))
@@ -331,22 +337,11 @@ fn validate(m: &PluginManifest) -> Result<(), PluginError> {
         }
     }
 
-    for s in &m.mcp {
-        match s.kind {
-            McpKind::Native if s.config.is_none() => {
-                return Err(PluginError::Schema(format!(
-                    "mcp `{}` is native but declares no `config`",
-                    s.name
-                )));
-            }
-            McpKind::Dsh if s.entry.is_none() => {
-                return Err(PluginError::Schema(format!(
-                    "mcp `{}` is dsh but declares no `entry`",
-                    s.name
-                )));
-            }
-            _ => {}
-        }
+    if let Some(s) = m.mcp.iter().find(|s| s.config.is_none()) {
+        return Err(PluginError::Schema(format!(
+            "mcp `{}` declares no `config`",
+            s.name
+        )));
     }
     Ok(())
 }
@@ -427,11 +422,6 @@ name = "github"
 kind = "native"
 config = "mcp/github.json"
 
-[[mcp]]
-name = "pr-helper"
-kind = "dsh"
-entry = "dist/index.js"
-
 [[script]]
 point = "tool.result"
 entry = "scripts/annotate.js:onResult"
@@ -451,9 +441,8 @@ scene = "plugin:github-tools"
         )
         .unwrap();
 
-        assert_eq!(m.mcp.len(), 2);
+        assert_eq!(m.mcp.len(), 1);
         assert_eq!(m.mcp[0].kind, McpKind::Native);
-        assert_eq!(m.mcp[1].kind, McpKind::Dsh);
         assert_eq!(m.script[0].point, "tool.result");
         assert_eq!(m.scene.dir.as_deref(), Some(Path::new("scene")));
         assert_eq!(m.agent[0].scene.as_deref(), Some("plugin:github-tools"));
@@ -585,28 +574,22 @@ version = "1.0.0"
     }
 
     #[test]
-    fn each_mcp_kind_requires_its_own_path_field() {
-        for (body, missing) in [
-            (
-                r#"
-[[mcp]]
-name = "s"
-kind = "native"
-"#,
-                "config",
-            ),
-            (
-                r#"
-[[mcp]]
-name = "s"
-kind = "dsh"
-"#,
-                "entry",
-            ),
-        ] {
-            let err = load_str(&format!("{MINIMAL}{body}")).unwrap_err();
-            assert!(err.to_string().contains(missing), "{err}");
-        }
+    fn a_native_mcp_server_requires_a_config() {
+        let err = load_str(&format!(
+            "{MINIMAL}\n[[mcp]]\nname = \"s\"\nkind = \"native\"\n"
+        ))
+        .unwrap_err();
+        assert!(err.to_string().contains("config"), "{err}");
+    }
+
+    #[test]
+    fn a_dsh_mcp_server_is_refused_with_where_to_go_instead() {
+        let err = load_str(&format!(
+            "{MINIMAL}\n[[mcp]]\nname = \"s\"\nkind = \"dsh\"\nentry = \"dist/index.js\"\n"
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("kind = \"native\""), "{err}");
     }
 
     #[test]
