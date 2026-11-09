@@ -39,8 +39,8 @@ Assistant
 
 == model calls ==
 golden-model max_tokens=1024 messages=3 content_bytes=602 truncated_results=0
-golden-model max_tokens=1024 messages=5 content_bytes=1682 truncated_results=1
-golden-model max_tokens=1024 messages=7 content_bytes=1690 truncated_results=1
-golden-model max_tokens=1024 messages=9 content_bytes=2770 truncated_results=2
-golden-model max_tokens=1024 messages=11 content_bytes=2781 truncated_results=2
+golden-model max_tokens=1024 messages=5 content_bytes=1692 truncated_results=1
+golden-model max_tokens=1024 messages=7 content_bytes=1700 truncated_results=1
+golden-model max_tokens=1024 messages=9 content_bytes=2790 truncated_results=2
+golden-model max_tokens=1024 messages=11 content_bytes=2801 truncated_results=2
 unconsumed_replies=0

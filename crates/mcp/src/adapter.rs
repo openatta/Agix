@@ -331,11 +331,24 @@ fn find_elicitation_url(result: &McpCallResult) -> Option<String> {
     None
 }
 
+/// Largest image a server may hand back, decoded. The API refuses an image
+/// over 5 MB of base64, and the refused request would carry it again on every
+/// later turn; base64 is 4/3 of the bytes, rounded down for headroom — the
+/// same cap attachments have.
+const MAX_IMAGE_BYTES: usize = 3_500_000;
+
 fn into_tool_result_blocks(blocks: Vec<McpContent>) -> Vec<ToolResultBlock> {
     blocks
         .into_iter()
         .map(|b| match b {
             McpContent::Text(t) => ToolResultBlock::text(t),
+            McpContent::Image { data, media_type } if data.len() / 4 * 3 > MAX_IMAGE_BYTES => {
+                ToolResultBlock::text(format!(
+                    "[image omitted: {media_type}, about {} bytes, over the {MAX_IMAGE_BYTES}-byte \
+                     limit for one image]",
+                    data.len() / 4 * 3
+                ))
+            }
             McpContent::Image { data, media_type } => ToolResultBlock::image(media_type, data),
             McpContent::Other(v) => ToolResultBlock::text(format!("[mcp content: {v}]")),
         })
@@ -618,6 +631,48 @@ mod tests {
             }
             other => panic!("expected Blocks, got {other:?}"),
         }
+    }
+
+    /// An image the API would refuse is not passed on: it would sink this
+    /// request and every one after it that still carries it.
+    #[tokio::test]
+    async fn an_image_over_the_api_limit_is_replaced_by_a_note() {
+        let client = Arc::new(MockMcpClient::new("test", vec![meta("shot")]));
+        client.push_response(
+            "shot",
+            McpCallResult {
+                content: vec![
+                    McpContent::Image {
+                        data: "A".repeat(6_000_000),
+                        media_type: "image/png".into(),
+                    },
+                    McpContent::Image {
+                        data: "A".repeat(4_000_000),
+                        media_type: "image/png".into(),
+                    },
+                ],
+                is_error: false,
+                meta: None,
+            },
+        );
+        let adapter = McpToolAdapter::new(client, meta("shot"));
+        let r = adapter
+            .call(json!({}), ctx(), ProgressSender::noop("t"))
+            .await
+            .unwrap();
+        let ToolResultContent::Blocks(blocks) = r.content else {
+            panic!("expected Blocks");
+        };
+        assert!(blocks[0].as_image().is_none());
+        assert!(
+            blocks[0]
+                .text
+                .as_deref()
+                .is_some_and(|t| t.starts_with("[image omitted: image/png, about 4500000 bytes")),
+            "{:?}",
+            blocks[0].text
+        );
+        assert!(blocks[1].as_image().is_some(), "one under the limit stays");
     }
 
     #[tokio::test]

@@ -105,7 +105,7 @@ impl Tool for GoldenFlood {
         _ctx: ToolContext,
         _p: ProgressSender,
     ) -> Result<ToolResult, base::error::ToolError> {
-        // Past `enforce_tool_result_budget`'s 50_000-byte per-result cap.
+        // Past `enforce_tool_result_budget`'s 50_000-character per-result cap.
         Ok(ToolResult::text("x".repeat(60_000)))
     }
 }

@@ -1030,14 +1030,26 @@ pub fn format_context_analysis(analysis: &ContextAnalysis) -> String {
 /// result looks like as it comes back. This is about the share of the whole
 /// history that results occupy after a hundred individually reasonable ones
 /// have piled up.
+///
+/// Both numbers are characters, the unit every tool states its own output cap
+/// in: a tool that keeps its result to 50,000 characters is not cut here
+/// because those characters happen to be three bytes each.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ToolResultBudget {
     /// Truncate any single result past this.
     pub max_per_result: usize,
     /// Once the results together pass this, clear them oldest-first until
-    /// they don't.
+    /// they don't. An image a tool returned weighs [`TOOL_IMAGE_CHARS`].
     pub max_total: usize,
 }
+
+/// What an image riding with a tool result weighs against the budget: as much
+/// text as costs the same tokens.
+pub const TOOL_IMAGE_CHARS: usize = base::interface::model::IMAGE_TOKEN_ESTIMATE * 4;
+
+const CLEARED_RESULT: &str = "[Old tool result content cleared]";
+const CLEARED_IMAGE: &str = "[Old tool result image cleared]";
+const PRESERVED_HEAD_CHARS: usize = 1000;
 
 impl Default for ToolResultBudget {
     fn default() -> Self {
@@ -1050,9 +1062,10 @@ impl Default for ToolResultBudget {
 
 /// Enforce per-message tool result budget, truncating oversized tool results.
 ///
-/// Runs BEFORE microcompact for clean composition:
-/// - 50KB per individual tool result (truncate with preserved header)
-/// - 500KB total across all tool results (clear oldest first)
+/// Runs BEFORE microcompact for clean composition: a result past
+/// `max_per_result` keeps its first 1000 characters under a note saying so;
+/// past `max_total`, results and the images that came with them are cleared
+/// oldest first.
 ///
 /// Returns the number of tool results that were modified.
 pub fn enforce_tool_result_budget(
@@ -1067,44 +1080,49 @@ pub fn enforce_tool_result_budget(
     let mut modified = 0;
     let mut total_size: usize = 0;
 
-    // Pass 1: truncate oversized individual results
     for msg in messages.iter_mut() {
+        let answers_tools = msg
+            .content
+            .iter()
+            .any(|b| matches!(b, ModelContentBlock::ToolResult { .. }));
         for block in &mut msg.content {
-            if let ModelContentBlock::ToolResult { content, .. } = block {
-                if content.len() > max_per_result {
-                    // Character-boundary aware — see the note in
-                    // `collapse_context`. A tool result is arbitrary bytes
-                    // (file contents, command output), so byte 1000 landing
-                    // mid-character is routine.
-                    let truncated = format!(
-                        "[Tool result truncated: {} bytes > {} max; first 1000 bytes preserved]\n{}...",
-                        content.len(),
-                        max_per_result,
-                        truncate_at_char_boundary(content, 1000)
-                    );
-                    *content = truncated;
-                    modified += 1;
+            match block {
+                ModelContentBlock::ToolResult { content, .. } => {
+                    let chars = content.chars().count();
+                    if chars > max_per_result {
+                        *content = format!(
+                            "[Tool result truncated: {chars} characters > {max_per_result} max; \
+                             first {PRESERVED_HEAD_CHARS} characters preserved]\n{}...",
+                            head_chars(content, PRESERVED_HEAD_CHARS)
+                        );
+                        modified += 1;
+                    }
+                    total_size += content.chars().count();
                 }
-                total_size += content.len();
+                ModelContentBlock::Image { .. } if answers_tools => {
+                    total_size += TOOL_IMAGE_CHARS;
+                }
+                _ => {}
             }
         }
     }
 
-    // Pass 2: if the total still exceeds budget, clear tool results
-    // strictly oldest-first.
-    //
-    // "Oldest first" and "message order" coincide here because the transcript
-    // is append-only (`SessionManager::push_message` only pushes; compaction
-    // removes from the front and never reorders), so index order *is*
-    // chronological order.
+    // Index order *is* chronological order: the transcript is append-only and
+    // compaction removes from the front without reordering.
     if total_size > max_total {
-        const CLEARED: &str = "[Old tool result content cleared]";
-        // Positions in chronological order.
         let mut positions: Vec<(usize, usize)> = Vec::new();
         for (mi, msg) in messages.iter().enumerate() {
+            let answers_tools = msg
+                .content
+                .iter()
+                .any(|b| matches!(b, ModelContentBlock::ToolResult { .. }));
             for (bi, block) in msg.content.iter().enumerate() {
-                if matches!(block, ModelContentBlock::ToolResult { .. }) {
-                    positions.push((mi, bi));
+                match block {
+                    ModelContentBlock::ToolResult { content, .. } if content != CLEARED_RESULT => {
+                        positions.push((mi, bi))
+                    }
+                    ModelContentBlock::Image { .. } if answers_tools => positions.push((mi, bi)),
+                    _ => {}
                 }
             }
         }
@@ -1112,20 +1130,35 @@ pub fn enforce_tool_result_budget(
             if total_size <= max_total {
                 break;
             }
-            let ModelContentBlock::ToolResult { content, .. } = &mut messages[mi].content[bi]
-            else {
-                continue;
-            };
-            if content == CLEARED {
-                continue; // already cleared by an earlier pass; clearing again frees nothing
+            let block = &mut messages[mi].content[bi];
+            match block {
+                ModelContentBlock::ToolResult { content, .. } => {
+                    if content.len() <= CLEARED_RESULT.len() {
+                        continue;
+                    }
+                    total_size =
+                        total_size.saturating_sub(content.chars().count()) + CLEARED_RESULT.len();
+                    *content = CLEARED_RESULT.to_string();
+                }
+                _ => {
+                    total_size = total_size.saturating_sub(TOOL_IMAGE_CHARS);
+                    *block = ModelContentBlock::Text {
+                        text: CLEARED_IMAGE.to_string(),
+                    };
+                }
             }
-            total_size = total_size.saturating_sub(content.len()) + CLEARED.len();
-            *content = CLEARED.to_string();
             modified += 1;
         }
     }
 
     modified
+}
+
+fn head_chars(s: &str, n: usize) -> &str {
+    match s.char_indices().nth(n) {
+        Some((at, _)) => &s[..at],
+        None => s,
+    }
 }
 
 #[cfg(test)]
@@ -1388,7 +1421,7 @@ mod tests {
         assert_eq!(
             DefaultCompactor.trim_tool_results(&mut messages.clone()),
             0,
-            "5 KB is nothing against the engine's 50 KB"
+            "5 000 characters is nothing against the engine's 50 000"
         );
         assert_eq!(Frugal.trim_tool_results(&mut messages), 1);
         assert!(result_bodies(&messages)[0].starts_with("[Tool result truncated:"));
@@ -1466,20 +1499,81 @@ mod tests {
 
     #[test]
     fn tool_result_budget_survives_multibyte_content() {
-        // Per-result cap is 50_000 bytes and the preserved head is 1000 bytes.
-        // 20_000 Chinese chars = 60_000 bytes > cap, and byte 1000 is inside
-        // the 334th character.
-        let mut msgs = vec![tool_result("t1", &chinese_text(20_000))];
+        let mut msgs = vec![tool_result("t1", &chinese_text(60_000))];
         let modified = enforce_tool_result_budget(&mut msgs, &ToolResultBudget::default());
         assert_eq!(modified, 1, "oversized result should have been truncated");
         let ModelContentBlock::ToolResult { content, .. } = &msgs[0].content[0] else {
             panic!("expected a tool result");
         };
-        assert!(content.contains("[Tool result truncated"));
-        // The preserved head must be a whole number of characters, never a
-        // split one — a split would have panicked above, so reaching here with
-        // valid content is the assertion.
-        assert!(content.len() < 60_000);
+        assert!(content.starts_with("[Tool result truncated: 60000 characters"));
+        assert!(content.contains(&chinese_text(1_000)), "{content}");
+        assert!(!content.contains(&chinese_text(1_001)), "{content}");
+    }
+
+    /// Every tool states its cap in characters; the budget counts the same
+    /// unit, so 20 000 three-byte characters are 20 000, not 60 000.
+    #[test]
+    fn the_per_result_budget_counts_characters_not_bytes() {
+        let wide = chinese_text(20_000);
+        let mut msgs = vec![tool_result("t1", &wide)];
+        assert_eq!(
+            enforce_tool_result_budget(&mut msgs, &ToolResultBudget::default()),
+            0
+        );
+        assert_eq!(result_bodies(&msgs), vec![wide]);
+    }
+
+    fn with_image(mut message: ModelMessage) -> ModelMessage {
+        message.content.push(ModelContentBlock::Image {
+            media_type: "image/png".into(),
+            data: "A".repeat(4_000_000),
+        });
+        message
+    }
+
+    /// An image that came back with a tool result is part of what the
+    /// results hold, at its token cost — not ignored, and not counted by its
+    /// megabytes of base64 either.
+    #[test]
+    fn images_a_tool_returned_count_toward_the_total_and_are_cleared_oldest_first() {
+        let budget = ToolResultBudget {
+            max_per_result: 50_000,
+            max_total: 3 * TOOL_IMAGE_CHARS + 100,
+        };
+        let mut msgs: Vec<ModelMessage> = (0..5)
+            .map(|i| with_image(tool_result(&format!("t{i}"), "shot")))
+            .collect();
+        let pasted = ModelMessage {
+            role: MessageRole::User,
+            content: vec![ModelContentBlock::Image {
+                media_type: "image/png".into(),
+                data: "A".repeat(4_000_000),
+            }],
+        };
+        msgs.insert(0, pasted.clone());
+
+        let modified = enforce_tool_result_budget(&mut msgs, &budget);
+        assert_eq!(
+            modified, 2,
+            "the two oldest images go; results shorter than the placeholder stay"
+        );
+        let images: Vec<bool> = msgs[1..]
+            .iter()
+            .map(|m| {
+                m.content
+                    .iter()
+                    .any(|b| matches!(b, ModelContentBlock::Image { .. }))
+            })
+            .collect();
+        assert_eq!(images, vec![false, false, true, true, true]);
+        assert!(
+            matches!(&msgs[0].content[0], ModelContentBlock::Image { .. }),
+            "an image the user attached is not a tool result"
+        );
+        assert!(matches!(
+            &msgs[1].content[1],
+            ModelContentBlock::Text { text } if text == CLEARED_IMAGE
+        ));
     }
 
     fn summary_message(text: &str) -> ModelMessage {

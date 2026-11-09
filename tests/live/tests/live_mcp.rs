@@ -277,18 +277,18 @@ async fn a_big_mcp_result_is_cut_to_the_result_budget_before_the_model_sees_it(
         requests
             .iter()
             .any(|r| tool_results_sent(r).contains(&small_tail)),
-        "a 40 000-byte result reaches the model whole"
+        "a 40 000-character result reaches the model whole"
     );
     assert!(
         requests
             .iter()
             .all(|r| !tool_results_sent(r).contains(&big_tail)),
-        "a 60 000-byte result reached the model past the 50 000-byte budget"
+        "a 60 000-character result reached the model past the 50 000-character budget"
     );
     assert!(
         requests
             .iter()
-            .any(|r| tool_results_sent(r).contains("[Tool result truncated: 60000 bytes")),
+            .any(|r| tool_results_sent(r).contains("[Tool result truncated: 60000 characters")),
         "the cut is marked"
     );
     run.finish().await;

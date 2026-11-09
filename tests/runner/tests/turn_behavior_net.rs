@@ -623,7 +623,7 @@ async fn stops_at_the_per_turn_call_ceiling() {
 
 /// **The tool-result budget truncates an oversized result.**
 ///
-/// `GoldenFlood` returns 60_000 bytes, past the 50_000-byte per-result cap.
+/// `GoldenFlood` returns 60_000 characters, past the 50_000-character per-result cap.
 /// The decision is invisible in every other case because every other tool
 /// returns a few bytes, so this is the only thing standing between that cap
 /// and a silent change to it.

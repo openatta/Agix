@@ -7,6 +7,7 @@ pub mod cancel;
 pub mod cron;
 pub mod deferred;
 mod exec_capture;
+mod external_content;
 pub mod file_edit;
 pub mod file_read;
 pub mod file_write;

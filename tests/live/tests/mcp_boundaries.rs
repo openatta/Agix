@@ -813,7 +813,6 @@ async fn a_network_allowlist_keeps_webfetch_off_this_machine() -> anyhow::Result
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: WebFetch caps a page at 50 000 characters but the tool-result budget cuts any result over 50 000 bytes to its first 1000, so a capped page — or a shorter non-ASCII one — reaches the model as 1000 bytes (tools/src/web_fetch.rs:26 vs compaction/src/compact.rs:1022)"]
 async fn the_part_of_a_page_webfetch_keeps_reaches_the_model() -> anyhow::Result<()> {
     let pages = PageServer::start().await?;
     pages.route(

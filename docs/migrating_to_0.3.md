@@ -512,6 +512,18 @@ WebAssembly 载体整个移除。
   (`MicroCompact`,消息条数不变)。以前只记日志。
 - 压缩不再丢掉之前的摘要:没有摘要模型时(或摘要失败)的第二次压缩保留第一次留下的摘要,
   不再把它当作最旧的一轮删掉、或截成 200 字节。
+- 工具结果预算按字符计:单条过 50,000 字符的保留前 1,000 字符,截断说明改为
+  `[Tool result truncated: N characters > 50000 max; first 1000 characters preserved]`。以前按
+  字节计,两万个汉字(60 KB)的结果就被截成 1,000 字节;`WebFetch` 截到 50,000 字符的页面
+  同样被截。工具带回的图片也算进累计的 500,000(每张按 6,400 字符),超了从最旧的清起,
+  清掉的图片换成一行 `[Old tool result image cleared]`。
+- `WebFetch` 的正文放在 `<external-content source="…">…</external-content>` 里,后面一句
+  说明它来自网页、不是用户的话;整个结果(头、定界、正文)至多 50,000 字符,截断时注明页面
+  原长。`Read` 读项目外(不在项目、可写目录、`sandbox.read_directories` 之下)的文件同样这样
+  包起来;脚本里调用的 `Read` 不包。按结果前缀匹配的(`[HTTP 200`、行号)不受影响,按结尾
+  匹配的要改。
+- MCP server 返回的单张图片解码后超过 3.5 MB 的,换成一行 `[image omitted: …]`,不再原样
+  转给模型(超过 API 的单图上限,这一请求和之后每一个带着它的请求都会被拒)。
 - 一次调用在回复要工具之前失败,它推过的 `text_delta` 不进 transcript;重发前会再发一次同
   `step` 的 `step_start`(协议 §7)。流在消息结尾之前断开,以前当作一个空回答正常结束
   (`stop_reason` 为空、用量为 0),现在是 `ENGINE_ERROR`。
@@ -755,6 +767,8 @@ WebAssembly 载体整个移除。
   `ReactiveCompactConfig`、`CompactionLevel`、`calculate_thresholds`、`compaction_level`、
   `should_compact_with_state` 与 `CompactionState::last_compact_turn`。新增
   `compaction::llm_summary::is_summary`。
+- `ToolResultBudget` 的 `max_per_result` / `max_total` 改按字符计(以前是字节);新增
+  `compaction::compact::TOOL_IMAGE_CHARS`。
 - `compaction::cached::clear_stale_tool_results` 保留 `tool_use_id`(以前置空,请求会被拒),
   已经清过的不再计数、不再报进 `cache_edits`。
 - `SessionManager::replace_messages_after_compact` 自己重排 `message_timestamps`(压缩留下的
