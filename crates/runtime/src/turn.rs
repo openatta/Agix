@@ -54,6 +54,8 @@ pub(crate) enum NotCompacted {
     NothingToDrop,
     /// The compactor failed.
     Failed(String),
+    /// The turn was interrupted while the summary was being written.
+    Cancelled,
 }
 
 impl std::fmt::Display for NotCompacted {
@@ -62,6 +64,7 @@ impl std::fmt::Display for NotCompacted {
             Self::Declined => f.write_str("was declined by a PreCompact hook"),
             Self::NothingToDrop => f.write_str("saved nothing"),
             Self::Failed(e) => write!(f, "failed: {e}"),
+            Self::Cancelled => f.write_str("was interrupted"),
         }
     }
 }
@@ -1169,7 +1172,10 @@ impl Agent {
             }
 
             // 1. Compact if token budget exceeded
-            self.compact_if_needed().await;
+            self.compact_if_needed(&cancel).await;
+            if cancel.is_cancelled() {
+                continue;
+            }
 
             // A ceiling compaction was unable to get under. Ending the turn is
             // the only honest answer left: the request that would go out next
@@ -1349,7 +1355,7 @@ impl Agent {
                         .await
                     }
                     base::interface::recovery_policy::Recovery::CompactAndRetry => {
-                        self.compact_for_retry(&failure.error).await?;
+                        self.compact_for_retry(&failure.error, &cancel).await?;
                         // The retry keeps skills and MCP instructions: they
                         // cost a few KB, the history is what blew the budget,
                         // and the compaction freed far more.
@@ -2309,7 +2315,7 @@ or project context that should survive across sessions.
     }
 
     /// Compact session messages if token budget is exceeded.
-    pub(crate) async fn compact_if_needed(&mut self) {
+    pub(crate) async fn compact_if_needed(&mut self, cancel: &CancellationToken) {
         // Every judgement below belongs to the compactor: what has gone stale,
         // whether to compact early, when to warn, and when the budget forces
         // it. The order they are asked in is the loop's.
@@ -2442,7 +2448,12 @@ or project context that should survive across sessions.
         };
         let target = room.saturating_sub(self.recovery_reserve());
         let _ = self
-            .run_compaction(target, budget.compact_keep_recent, CompactTrigger::Auto)
+            .run_compaction(
+                target,
+                budget.compact_keep_recent,
+                CompactTrigger::Auto,
+                cancel,
+            )
             .await;
     }
 
@@ -2460,6 +2471,7 @@ or project context that should survive across sessions.
         target: usize,
         keep: usize,
         trigger: CompactTrigger,
+        cancel: &CancellationToken,
     ) -> Result<CompactSummary, NotCompacted> {
         if !self.pre_compact_hooks_allow(target, trigger).await {
             return Err(NotCompacted::Declined);
@@ -2496,12 +2508,17 @@ or project context that should survive across sessions.
                     pre_compact.clone(),
                     target,
                     keep,
+                    cancel,
                 )
                 .await
                 {
                     Ok(ok) => {
                         tracing::info!("compaction: LLM summary produced (FullCompact)");
                         Some(ok)
+                    }
+                    Err(compaction::compact::CompactError::Cancelled) => {
+                        tracing::info!("compaction: interrupted while summarizing; left as it was");
+                        return Err(NotCompacted::Cancelled);
                     }
                     Err(e) => {
                         tracing::warn!(
@@ -3355,6 +3372,7 @@ or project context that should survive across sessions.
     pub(crate) async fn compact_for_retry(
         &mut self,
         refusal: &base::interface::model::ModelError,
+        cancel: &CancellationToken,
     ) -> Result<(), TurnError> {
         tracing::warn!(error = %refusal, "refused for size; compacting, then retrying");
         let budget = self.context_budget();
@@ -3363,7 +3381,7 @@ or project context that should survive across sessions.
             .min(budget.compact_threshold)
             .saturating_sub(self.recovery_reserve());
         let keep = budget.compact_keep_recent.min(5);
-        self.run_compaction(target, keep, CompactTrigger::Recovery)
+        self.run_compaction(target, keep, CompactTrigger::Recovery, cancel)
             .await
             .map(|_| ())
             .map_err(|why| {
@@ -5445,7 +5463,9 @@ mod tests {
         });
         std::thread::sleep(std::time::Duration::from_millis(5));
 
-        agent.compact_if_needed().await;
+        agent
+            .compact_if_needed(&tokio_util::sync::CancellationToken::new())
+            .await;
 
         let mut frames = Vec::new();
         while let Ok(event) = event_rx.try_recv() {

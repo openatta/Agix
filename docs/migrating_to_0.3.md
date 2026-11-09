@@ -1126,6 +1126,9 @@ WebAssembly 载体整个移除。
 - 自己实现 `Compactor` 的:引擎传给 `compact` 的 `max_tokens` 在自动压缩时是阈值减去
   请求的固定开销与必然补回的提醒;返回的策略不是 `NoOp`、对话却没有变小(连同补回的提醒
   一起算)的,引擎不采用。`DefaultCompactor` 的兜底一条都折不掉时返回 `NoOp`。
+- `compaction::llm_summary::LlmSummarizer::summarize` 与 `full_compact` 多一个
+  `&CancellationToken` 参数(回合的取消令牌;不需要取消的传 `&CancellationToken::new()`),它触发时
+  立即放弃这次摘要并返回新增的 `CompactError::Cancelled`;穷举匹配 `CompactError` 的要补一支。
 - `CompactError::Exhausted` 删除(从没有构造过);`compaction::reactive` 删掉零调用的
   `ReactiveCompactConfig`、`CompactionLevel`、`calculate_thresholds`、`compaction_level`、
   `should_compact_with_state` 与 `CompactionState::last_compact_turn`。新增

@@ -968,9 +968,14 @@ impl Agent {
             .compact_keep_recent
             .min(rounds.saturating_sub(1))
             .max(1);
-        self.run_compaction(target, keep, crate::turn::CompactTrigger::Manual)
-            .await
-            .ok()
+        self.run_compaction(
+            target,
+            keep,
+            crate::turn::CompactTrigger::Manual,
+            &CancellationToken::new(),
+        )
+        .await
+        .ok()
     }
 
     /// Convenience: run a single turn from a user message string.
@@ -7997,7 +8002,12 @@ the whole page";
     async fn compacted_with(keep: fn(&base::interface::model::ModelMessage) -> bool) -> bool {
         let mut agent = compacting_agent(keep, compaction::compact::CompactStrategy::MicroCompact);
         agent
-            .run_compaction(1, 1, crate::turn::CompactTrigger::Auto)
+            .run_compaction(
+                1,
+                1,
+                crate::turn::CompactTrigger::Auto,
+                &tokio_util::sync::CancellationToken::new(),
+            )
             .await
             .expect("a compaction");
         agent.session_context_injected
@@ -8033,7 +8043,12 @@ the whole page";
         let mut agent = compacting_agent(|m| !is_opening(m) && !is_filler(m), strategy);
         in_plan_mode_with_a_task(&agent);
         agent
-            .run_compaction(1, 1, crate::turn::CompactTrigger::Auto)
+            .run_compaction(
+                1,
+                1,
+                crate::turn::CompactTrigger::Auto,
+                &tokio_util::sync::CancellationToken::new(),
+            )
             .await
             .expect("a compaction");
         transcript_text(&agent)
@@ -8078,7 +8093,12 @@ the whole page";
         in_plan_mode_with_a_task(&agent);
         let before = transcript_text(&agent);
         let outcome = agent
-            .run_compaction(1, 1, crate::turn::CompactTrigger::Auto)
+            .run_compaction(
+                1,
+                1,
+                crate::turn::CompactTrigger::Auto,
+                &tokio_util::sync::CancellationToken::new(),
+            )
             .await;
         assert_eq!(outcome, Err(crate::turn::NotCompacted::NothingToDrop));
         assert_eq!(transcript_text(&agent), before);
@@ -8097,7 +8117,12 @@ the whole page";
         in_plan_mode_with_a_task(&agent);
         let before = agent.session.messages().len();
         let outcome = agent
-            .run_compaction(1, 1, crate::turn::CompactTrigger::Auto)
+            .run_compaction(
+                1,
+                1,
+                crate::turn::CompactTrigger::Auto,
+                &tokio_util::sync::CancellationToken::new(),
+            )
             .await;
         assert_eq!(outcome, Err(crate::turn::NotCompacted::NothingToDrop));
         assert_eq!(agent.session.messages().len(), before);
@@ -8115,9 +8140,10 @@ the whole page";
             compaction::compact::CompactStrategy::Snip,
         );
         agent
-            .compact_for_retry(&base::interface::model::ModelError::Internal(
-                "prompt is too long".into(),
-            ))
+            .compact_for_retry(
+                &base::interface::model::ModelError::Internal("prompt is too long".into()),
+                &CancellationToken::new(),
+            )
             .await
             .expect("compacted");
         assert!(!agent.session_context_injected);
@@ -8185,7 +8211,9 @@ the whole page";
         }
         agent.request_overhead_tokens = 2_000;
         assert!(agent.context_tokens() > 6_000);
-        agent.compact_if_needed().await;
+        agent
+            .compact_if_needed(&tokio_util::sync::CancellationToken::new())
+            .await;
         assert!(
             agent.context_tokens() <= 6_000,
             "{} tokens after compacting to a 6000-token threshold",

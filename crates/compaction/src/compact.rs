@@ -89,6 +89,9 @@ pub enum CompactError {
     NotApplicable(String),
     #[error("{0}")]
     Internal(String),
+    /// The turn it ran for was interrupted; nothing was changed.
+    #[error("cancelled")]
+    Cancelled,
 }
 
 /// What the aging passes may look at.

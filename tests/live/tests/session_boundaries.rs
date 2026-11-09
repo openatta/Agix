@@ -4,7 +4,8 @@
 //! lagged), retries on an overloaded endpoint, the endings the engine
 //! recovers from (`max_tokens`, `pause_turn`), thinking that streams apart
 //! from the answer and goes back with its signature, a stream cut short, and
-//! an interrupt while the model has not answered at all.
+//! an interrupt while the model has not answered at all or a compaction
+//! summary is still being written.
 //!
 //! The live tier cannot ask for any of these on demand; here the model's side
 //! is held fixed so the product's side is all that varies.
@@ -12,7 +13,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use live::{Block, LiveConfig, LiveRun, LiveRunBuilder, Mode, ProviderStub, Reply};
+use live::{Block, LiveConfig, LiveRun, LiveRunBuilder, Mode, ProviderStub, Purpose, Reply};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -582,6 +583,85 @@ async fn an_interrupt_ends_a_turn_whose_model_has_not_answered_yet() -> anyhow::
         interrupted_at.elapsed()
     );
     assert!(!events.text.contains("TOO-LATE"));
+    run.finish().await;
+    Ok(())
+}
+
+/// The turn outgrows the threshold and compacts with a model-written summary
+/// that is slow to come; an interrupt then ends the turn without waiting for
+/// it, and the conversation is left as it was.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_interrupt_ends_a_turn_whose_compaction_summary_has_not_come_back() -> anyhow::Result<()>
+{
+    const SUMMARY: &str = "You are compacting an AI coding agent's conversation";
+    let stub = ProviderStub::start().await?;
+    let mut run = stubbed("slow-summary", &stub)
+        .settings(json!({ "compaction": { "threshold_tokens": 22000, "keep_recent": 2 } }))
+        .start()
+        .await?;
+    let mut script = Vec::new();
+    for i in 1..=4 {
+        let body: String = (0..600)
+            .map(|l| format!("part {i} line {l}: routine reading, all values nominal\n"))
+            .collect();
+        let path = run.write_file(&format!("part{i}.log"), &body)?;
+        script.push(Reply::calls(
+            &format!("p{i}"),
+            "Read",
+            json!({ "file_path": path.to_string_lossy() }),
+        ));
+    }
+    script.push(Reply::text("DONE"));
+    stub.script(script);
+    stub.script_when(
+        SUMMARY,
+        [Reply::delayed(
+            Duration::from_secs(60),
+            Reply::text("SUMMARY-TOO-LATE"),
+        )],
+    );
+    let session = run.session().await?;
+    let watcher = run.watch(&session, false).await?;
+    let handle = run
+        .spawn_turn(&session, "read the four parts", json!({}))
+        .await?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !stub.calls().iter().any(|c| c.purpose() == Purpose::Compact) {
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "the turn never asked for a summary"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let interrupted_at = Instant::now();
+    let resp = run
+        .client
+        .call("session.interrupt", json!({ "session_id": session }))
+        .await?;
+    assert_eq!(resp.result.unwrap_or_default()["interrupted"], json!(true));
+    tokio::time::timeout(Duration::from_secs(70), handle).await???;
+    assert!(
+        interrupted_at.elapsed() < Duration::from_secs(5),
+        "the turn waited out the summary: {:?}",
+        interrupted_at.elapsed()
+    );
+    assert_eq!(watcher.events("compact"), Vec::<Value>::new());
+    let history = run
+        .client
+        .call(
+            "session.history",
+            json!({ "session_id": session, "limit": 100 }),
+        )
+        .await?
+        .result
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        history.contains("part 1 line 0:") && !history.contains("SUMMARY-TOO-LATE"),
+        "the conversation was changed: {}",
+        &history[..history.len().min(2000)]
+    );
+    drop(watcher);
     run.finish().await;
     Ok(())
 }
