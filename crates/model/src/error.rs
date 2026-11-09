@@ -60,28 +60,7 @@ pub enum AnthropicError {
     Denied(String),
 }
 
-impl AnthropicError {
-    /// 是否像“上下文过长 / prompt too long / 413”这类可通过压缩缓解的错误。
-    pub fn is_context_limit_error(&self) -> bool {
-        match self {
-            Self::Server { status, body } => {
-                if matches!(*status, 400 | 413 | 422) {
-                    let body = body.to_ascii_lowercase();
-                    body.contains("context")
-                        || body.contains("token")
-                        || body.contains("prompt")
-                        || body.contains("too long")
-                        || body.contains("exceed")
-                        || body.contains("maximum")
-                } else {
-                    false
-                }
-            }
-            Self::StreamInterrupted => true,
-            _ => false,
-        }
-    }
-}
+impl AnthropicError {}
 
 impl From<base::interface::exec::ExecError> for AnthropicError {
     fn from(e: base::interface::exec::ExecError) -> Self {

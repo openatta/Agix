@@ -336,7 +336,6 @@ does not carry answers `METHOD_NOT_FOUND` naming the module.
 | kernel | `scene` | built-in scenes, `SceneRegistry`, declarative scenes |
 | kernel | `history` · `session` · `compaction` | transcript log, session state, context compaction |
 | kernel | `permissions` · `hooks` · `telemetry` | rule engine, lifecycle hooks, telemetry and the recorder |
-| kernel | `task` | background task lifecycle |
 | module | `agents` · `team` | the `Agent` tool, agent types, teams |
 | module | `mcp` · `auth` | MCP client and tool adapters, OAuth 2.0 PKCE |
 | module | `skills` | skill catalog and the `Skill` tool |
@@ -346,8 +345,8 @@ does not carry answers `METHOD_NOT_FOUND` naming the module.
 | assembly | `assembly` | session pool, configuration, provider routing, the JSON-RPC server |
 | shell | `daemon` | the `agixd` binary |
 
-21 crates under `crates/`, plus `daemon/`, the four test members and the
-example plugin in `examples/plugins/rust` — 27 workspace members in total. The full picture — sessions and scenes, the history
+20 crates under `crates/`, plus `daemon/`, the four test members and the
+example plugin in `examples/plugins/rust` — 26 workspace members in total. The full picture — sessions and scenes, the history
 log, execution, locks, disk layout — is in
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 

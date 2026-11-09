@@ -12,7 +12,6 @@ pub mod notify;
 pub mod oauth;
 pub mod output_cache;
 pub mod prompts;
-pub mod registry;
 pub mod resources;
 pub mod tools;
 

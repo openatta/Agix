@@ -364,8 +364,7 @@ impl LiveProvider {
             })
             .to_string();
             self.record(seen, 400, body.clone(), at);
-            sock.write_all(http_response(400, &[], &body).as_bytes())
-                .await?;
+            sock.write_all(http_response(400, &body).as_bytes()).await?;
             return Ok(());
         }
 
@@ -380,8 +379,7 @@ impl LiveProvider {
             })
             .to_string();
             self.record(seen, 400, body.clone(), at);
-            sock.write_all(http_response(400, &[], &body).as_bytes())
-                .await?;
+            sock.write_all(http_response(400, &body).as_bytes()).await?;
             return Ok(());
         }
 
@@ -407,8 +405,7 @@ impl LiveProvider {
             Err(e) => {
                 let body = format!("live proxy could not reach the endpoint: {e}");
                 self.record(seen, 502, body.clone(), at);
-                sock.write_all(http_response(502, &[], &body).as_bytes())
-                    .await?;
+                sock.write_all(http_response(502, &body).as_bytes()).await?;
                 return Ok(());
             }
         };

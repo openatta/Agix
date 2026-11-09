@@ -3785,14 +3785,7 @@ impl base::interface::elicitation::Elicitation for NoAsking {
 /// The context a call to `tool` runs with: the same for validating its input
 /// as for running it.
 fn tool_context_for(ctx: &ToolExecCtx, tool: &Arc<dyn base::tool::Tool>) -> ToolContext {
-    // Writable roots: the user's configured extras plus whatever the host
-    // accumulated by answering "allow writes here for this project" —
-    // both live on the shared `SessionState`.
-    let additional_writable_dirs = {
-        let mut dirs = ctx.session_state.additional_writable_dirs.clone();
-        dirs.extend(ctx.session_state.sandbox_allow_writes());
-        dirs
-    };
+    let additional_writable_dirs = ctx.session_state.additional_writable_dirs.clone();
     ToolContext {
         cwd: ctx.cwd.clone(),
         session_id: ctx.session_id.clone(),

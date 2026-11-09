@@ -26,18 +26,6 @@ pub struct StreamResult {
     pub tool_calls: u32,
 }
 
-/// A tool invocation queued for execution.
-#[derive(Debug)]
-struct QueuedTool {
-    #[allow(dead_code)]
-    id: String,
-    name: String,
-    #[allow(dead_code)]
-    input: serde_json::Value,
-    #[allow(dead_code)]
-    concurrency_safe: bool,
-}
-
 /// Process a model stream with streaming tool execution.
 ///
 /// Concurrency-safe tools start as soon as their `ToolUse` arrives and run
@@ -82,7 +70,7 @@ where
     // block by sending its signature; providers that never sign close it by
     // moving on to anything else, so every other event closes it unsigned.
     let mut pending_thinking = String::new();
-    let mut queued_tools: Vec<QueuedTool> = Vec::new();
+    let mut queued_tool_names: Vec<String> = Vec::new();
     let mut tool_index: usize = 0;
     // Key = "(tool_name, serialized_input)".
     let mut seen_tool_calls: HashSet<String> = HashSet::new();
@@ -176,12 +164,7 @@ where
                 let idx = tool_index;
                 tool_index += 1;
                 let safe = is_concurrency_safe(&name, &input);
-                queued_tools.push(QueuedTool {
-                    id: id.clone(),
-                    name: name.clone(),
-                    input: input.clone(),
-                    concurrency_safe: safe,
-                });
+                queued_tool_names.push(name.clone());
 
                 let dedup_key = format!("({name},{input})");
                 if !seen_tool_calls.insert(dedup_key.clone()) {
@@ -217,7 +200,7 @@ where
                     drain_batch(
                         &mut batch_futures,
                         &batch_abort,
-                        &queued_tools,
+                        &queued_tool_names,
                         event_tx,
                         &turn_id,
                         &mut pending_result_blocks,
@@ -261,7 +244,7 @@ where
     drain_batch(
         &mut batch_futures,
         &batch_abort,
-        &queued_tools,
+        &queued_tool_names,
         event_tx,
         &turn_id,
         &mut pending_result_blocks,
@@ -295,7 +278,7 @@ where
 async fn drain_batch<S>(
     batch_futures: &mut S,
     batch_abort: &CancellationToken,
-    queued_tools: &[QueuedTool],
+    queued_tool_names: &[String],
     event_tx: &EventSender,
     turn_id: &str,
     pending_result_blocks: &mut Vec<(usize, ModelContentBlock)>,
@@ -310,10 +293,7 @@ async fn drain_batch<S>(
             batch_abort.cancel();
         }
         let (content, new_msgs, failed) = read_outcome(&result);
-        let tname = queued_tools
-            .get(idx)
-            .map(|t| t.name.clone())
-            .unwrap_or_default();
+        let tname = queued_tool_names.get(idx).cloned().unwrap_or_default();
         buffer_result(
             event_tx,
             turn_id,

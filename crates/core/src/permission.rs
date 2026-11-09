@@ -48,11 +48,6 @@ impl From<crate::settings::PermissionMode> for PermissionMode {
 }
 
 impl PermissionMode {
-    /// True for read-only / non-mutating permission modes (Default, Plan).
-    pub fn is_safe_default(self) -> bool {
-        matches!(self, Self::Default)
-    }
-
     /// Whether the user can set this mode via settings.json / CLI.
     /// `Auto` and `Bubble` are program-only — they are set by the runtime
     /// (classifier activation, team coordinator) and rejected from user config.

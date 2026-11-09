@@ -2,7 +2,7 @@
 //!
 //! Supports two command types:
 //! - **Prompt**: expand skill content, replace user message, continue to LLM
-//! - **Local**: execute handler, return result directly, skip LLM
+//! - **Local**: answered by the agent itself, skip LLM
 //!
 //! Architecture:
 //! ```text
@@ -49,15 +49,6 @@ pub fn parse_slash_command(input: &str) -> Option<SlashCommand> {
     Some(SlashCommand { name, args })
 }
 
-/// The result of executing a local command.
-#[derive(Debug, Clone)]
-pub struct CommandResult {
-    /// Text to display to the user (goes via AgentEvent).
-    pub text: String,
-    /// Whether to continue to the LLM after this command.
-    pub should_query: bool,
-}
-
 /// A registered slash command.
 #[derive(Clone)]
 pub enum Command {
@@ -80,11 +71,8 @@ pub enum Command {
         /// declared arguments.
         argument_hint: String,
     },
-    /// Local command: execute handler, return result, skip LLM.
-    Local {
-        description: String,
-        handler: Arc<dyn Fn(&SlashCommand) -> CommandResult + Send + Sync>,
-    },
+    /// Local command: answered by the agent itself, skip LLM.
+    Local { description: String },
 }
 
 impl Command {
@@ -194,18 +182,11 @@ impl CommandRegistry {
         );
     }
 
-    /// Insert a local command with a handler.
-    pub fn insert_local(
-        &mut self,
-        name: &str,
-        description: &str,
-        handler: Arc<dyn Fn(&SlashCommand) -> CommandResult + Send + Sync>,
-    ) {
+    pub fn insert_local(&mut self, name: &str, description: &str) {
         self.builtin.insert(
             name.to_string(),
             Command::Local {
                 description: description.to_string(),
-                handler,
             },
         );
     }
@@ -355,50 +336,11 @@ pub struct CommandInfo {
 impl Default for CommandRegistry {
     fn default() -> Self {
         let mut registry = Self::new();
-        // Register built-in local commands
-        registry.insert_local(
-            "help",
-            "List all available slash commands",
-            Arc::new(|_cmd| {
-                // Handler is filled by the caller with registry reference
-                CommandResult {
-                    text: "Use /help to see available commands".into(),
-                    should_query: false,
-                }
-            }),
-        );
-        registry.insert_local(
-            "skills",
-            "List all available skills",
-            Arc::new(|_cmd| CommandResult {
-                text: "Use /skills to see available skills".into(),
-                should_query: false,
-            }),
-        );
-        registry.insert_local(
-            "clear",
-            "Clear the current session context",
-            Arc::new(|_cmd| CommandResult {
-                text: "Session cleared. All messages have been removed.".into(),
-                should_query: false,
-            }),
-        );
-        registry.insert_local(
-            "compact",
-            "Trigger context compaction now",
-            Arc::new(|_cmd| CommandResult {
-                text: "Compaction triggered. Context has been summarized.".into(),
-                should_query: true,
-            }),
-        );
-        registry.insert_local(
-            "cost",
-            "Show session API cost",
-            Arc::new(|_cmd| CommandResult {
-                text: "Cost tracking: use /cost for details".into(),
-                should_query: false,
-            }),
-        );
+        registry.insert_local("help", "List all available slash commands");
+        registry.insert_local("skills", "List all available skills");
+        registry.insert_local("clear", "Clear the current session context");
+        registry.insert_local("compact", "Trigger context compaction now");
+        registry.insert_local("cost", "Show session API cost");
         registry
     }
 }
@@ -429,17 +371,6 @@ pub fn expand_skill_for_command(entry: &SkillEntry, body: Option<String>, args: 
             format!(" {}", args)
         },
     )
-}
-
-/// Handle a local command: execute the handler and return the result.
-pub fn handle_local_command(cmd: &Command, sc: &SlashCommand) -> CommandResult {
-    match cmd {
-        Command::Local { handler, .. } => handler(sc),
-        _ => CommandResult {
-            text: "Internal error: expected local command".into(),
-            should_query: false,
-        },
-    }
 }
 
 #[cfg(test)]

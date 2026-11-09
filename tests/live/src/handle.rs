@@ -19,7 +19,6 @@
 //! its own — which is also why it is the only mode that can answer anything
 //! about startup, discovery, exit, or a binary built with other features.
 
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -30,14 +29,11 @@ use daemon::config::{load_daemon_config, DaemonPaths, StaticDaemonPaths};
 use daemon::DaemonServer;
 use model::client::{AnthropicClient, AuthMode, HttpAnthropicClient};
 use rpc_client::DaemonRpcClient;
-use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::world::World;
 use crate::ModelEndpoint;
-
-pub const TOKEN: &str = "harness-token";
 
 /// Where the daemon under test lives.
 ///
@@ -49,16 +45,6 @@ pub enum Mode {
     Spawned,
 }
 
-/// Which transport a connection uses. The daemon claims everything above
-/// framing is identical on all three; a scenario that runs on each is how
-/// that claim gets checked.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Wire {
-    Unix,
-    Tcp,
-    Ws,
-}
-
 pub struct DaemonOptions {
     pub mode: Mode,
     pub scene: String,
@@ -67,9 +53,6 @@ pub struct DaemonOptions {
     pub project: PathBuf,
     pub session_cap: usize,
     pub prompt_timeout: Duration,
-    /// Bind TCP and WebSocket listeners too. Off unless a scenario asks,
-    /// because two extra listeners per daemon is two extra things to leak.
-    pub extra_wires: bool,
     /// The discovery entry this daemon writes, in the modes that write one.
     pub instance: String,
     /// Which `agixd` to spawn. `None` takes the one built beside this
@@ -101,7 +84,6 @@ impl DaemonOptions {
             project,
             session_cap: 8,
             prompt_timeout: Duration::from_secs(10),
-            extra_wires: false,
             instance: "harness".to_string(),
             binary: None,
             extra_args: Vec::new(),
@@ -128,11 +110,6 @@ impl DaemonOptions {
         self
     }
 
-    pub fn with_extra_wires(mut self) -> Self {
-        self.extra_wires = true;
-        self
-    }
-
     pub fn arg(mut self, arg: impl Into<String>) -> Self {
         self.extra_args.push(arg.into());
         self
@@ -146,8 +123,6 @@ impl DaemonOptions {
 
 pub struct Daemon {
     socket: PathBuf,
-    tcp: Option<SocketAddr>,
-    ws: Option<SocketAddr>,
     running: Running,
 }
 
@@ -235,7 +210,6 @@ impl Daemon {
 
         let cancel = CancellationToken::new();
         let server = Arc::new(DaemonServer::new(pool, cancel.clone()));
-        server.set_tcp_token(TOKEN.to_string()).await;
 
         let mut tasks = Vec::new();
         {
@@ -246,32 +220,8 @@ impl Daemon {
             }));
         }
 
-        let (tcp, ws) = if opts.extra_wires {
-            let tcp_listener = TcpListener::bind("127.0.0.1:0").await?;
-            let tcp = tcp_listener.local_addr()?;
-            {
-                let server = server.clone();
-                tasks.push(tokio::spawn(async move {
-                    let _ = server.serve_tcp_listener(tcp_listener).await;
-                }));
-            }
-            let ws_listener = TcpListener::bind("127.0.0.1:0").await?;
-            let ws = ws_listener.local_addr()?;
-            {
-                let server = server.clone();
-                tasks.push(tokio::spawn(async move {
-                    let _ = daemon::ws::serve_ws_listener(server, ws_listener).await;
-                }));
-            }
-            (Some(tcp), Some(ws))
-        } else {
-            (None, None)
-        };
-
         let mut daemon = Self {
             socket,
-            tcp,
-            ws,
             running: Running::InProcess { cancel, tasks },
         };
         daemon.wait_until_answering().await?;
@@ -287,12 +237,10 @@ impl Daemon {
             opts.host.scenes.is_empty() && opts.host.plugins.is_empty(),
             "a host's own scenes and plugins reach only a daemon built in this process"
         );
-        let (mut cmd, socket, stderr_path, tcp, ws) = spawn_command(world, provider, &opts).await?;
+        let (mut cmd, socket, stderr_path) = spawn_command(world, provider, &opts).await?;
         let child = cmd.spawn()?;
         let mut daemon = Self {
             socket,
-            tcp,
-            ws,
             running: Running::Spawned {
                 child,
                 stderr: stderr_path,
@@ -313,8 +261,7 @@ impl Daemon {
         opts: DaemonOptions,
         timeout: Duration,
     ) -> anyhow::Result<(std::process::ExitStatus, String)> {
-        let (mut cmd, _socket, stderr_path, _tcp, _ws) =
-            spawn_command(world, provider, &opts).await?;
+        let (mut cmd, _socket, stderr_path) = spawn_command(world, provider, &opts).await?;
         let mut child = cmd.spawn()?;
         let status = match tokio::time::timeout(timeout, child.wait()).await {
             Ok(status) => status?,
@@ -345,25 +292,7 @@ impl Daemon {
     }
 
     pub async fn connect(&self) -> anyhow::Result<DaemonRpcClient> {
-        self.connect_via(Wire::Unix).await
-    }
-
-    pub async fn connect_via(&self, wire: Wire) -> anyhow::Result<DaemonRpcClient> {
-        match wire {
-            Wire::Unix => DaemonRpcClient::connect(&self.socket).await,
-            Wire::Tcp => {
-                let addr = self
-                    .tcp
-                    .ok_or_else(|| anyhow::anyhow!("daemon has no TCP listener"))?;
-                DaemonRpcClient::connect_tcp(addr, TOKEN).await
-            }
-            Wire::Ws => {
-                let addr = self
-                    .ws
-                    .ok_or_else(|| anyhow::anyhow!("daemon has no WebSocket listener"))?;
-                DaemonRpcClient::connect_ws(addr, TOKEN, None).await
-            }
-        }
+        DaemonRpcClient::connect(&self.socket).await
     }
 
     /// Wait for the daemon to exit on its own — after `daemon.shutdown`, say.
@@ -450,13 +379,7 @@ impl Daemon {
     }
 }
 
-type SpawnPlan = (
-    tokio::process::Command,
-    PathBuf,
-    PathBuf,
-    Option<SocketAddr>,
-    Option<SocketAddr>,
-);
+type SpawnPlan = (tokio::process::Command, PathBuf, PathBuf);
 
 /// The command line and environment a spawned daemon gets. Everything the
 /// in-process build receives as an argument is passed here instead, which is
@@ -470,12 +393,6 @@ async fn spawn_command(
     let socket = world.socket();
     let stderr_path = world.root().join(format!("{}.stderr", opts.instance));
     let stderr = std::fs::File::create(&stderr_path)?;
-
-    let (tcp, ws) = if opts.extra_wires {
-        (Some(free_addr().await?), Some(free_addr().await?))
-    } else {
-        (None, None)
-    };
 
     let binary = match &opts.binary {
         Some(path) => path.clone(),
@@ -494,14 +411,6 @@ async fn spawn_command(
         .arg(opts.session_cap.to_string())
         .arg("--permission-prompt-timeout")
         .arg(opts.prompt_timeout.as_secs().to_string());
-    if let (Some(tcp), Some(ws)) = (tcp, ws) {
-        cmd.arg("--listen")
-            .arg(tcp.to_string())
-            .arg("--listen-ws")
-            .arg(ws.to_string())
-            .arg("--token")
-            .arg(TOKEN);
-    }
     cmd.args(&opts.extra_args)
         .current_dir(&opts.project)
         .env("HOME", world.home())
@@ -517,7 +426,7 @@ async fn spawn_command(
         // the next one will try to bind.
         .kill_on_drop(true);
 
-    Ok((cmd, socket, stderr_path, tcp, ws))
+    Ok((cmd, socket, stderr_path))
 }
 
 /// The `agixd` to spawn.
@@ -576,16 +485,6 @@ pub fn alternate_daemon_binary(var: &str, how_to_build: &str) -> anyhow::Result<
         path.display()
     );
     Ok(path)
-}
-
-/// A port nothing is listening on. Racy by construction — the listener is
-/// closed before the daemon binds it — but a spawned daemon has to be told an
-/// address before it starts, and `:0` gives an address only it would know.
-async fn free_addr() -> anyhow::Result<SocketAddr> {
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let addr = listener.local_addr()?;
-    drop(listener);
-    Ok(addr)
 }
 
 /// The pool's permission of last resort, matching what `main.rs` hands it.

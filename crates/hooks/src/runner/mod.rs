@@ -212,12 +212,6 @@ impl HookRunner {
         self.settings.is_empty()
     }
 
-    /// Builder: set default timeout.
-    pub fn with_default_timeout(mut self, timeout: Duration) -> Self {
-        self.default_timeout = timeout;
-        self
-    }
-
     /// 注入 Prompt hook 执行器。CLI 用 AnthropicClient 包一层注入。
     pub fn with_prompt_executor(mut self, executor: Arc<dyn PromptHookExecutor>) -> Self {
         self.prompt_executor = Some(executor);
@@ -230,14 +224,6 @@ impl HookRunner {
         self
     }
 
-    /// Builder-style setter for the wake channel receiver.
-    /// The receiver is used by `check_rewakes()` to detect when background
-    /// async work has completed and pending rewake hooks should be re-executed.
-    pub fn with_wake_receiver(mut self, rx: tokio::sync::mpsc::UnboundedReceiver<()>) -> Self {
-        self.wake_receiver = std::sync::Mutex::new(Some(rx));
-        self
-    }
-
     /// Post-construction setter for the wake channel receiver.
     /// Works on `&self` (uses interior mutability) so it can be called on
     /// an `Arc<HookRunner>`.
@@ -246,13 +232,6 @@ impl HookRunner {
             .wake_receiver
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(rx);
-    }
-
-    /// Register a hook config at runtime (e.g. from plugin install).
-    /// Uses `Arc::make_mut` to clone-on-write the inner settings.
-    pub fn register_hook(&mut self, event: HookEvent, config: HookConfig) {
-        let settings = Arc::make_mut(&mut self.settings);
-        settings.entry(event).or_default().push(config);
     }
 
     /// Start watching filesystem paths and fire `HookEvent::FileChanged` hooks

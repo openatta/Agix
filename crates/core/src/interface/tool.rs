@@ -101,7 +101,6 @@ impl ProgressSender {
             cb.on_progress(&self.tool_use_id, data);
         }
     }
-    pub fn send_blob(&self, _: &[u8]) {}
     pub fn tool_use_id(&self) -> &str {
         &self.tool_use_id
     }
@@ -762,9 +761,6 @@ impl Default for InMemoryToolRegistry {
     fn default() -> Self {
         Self::new()
     }
-}
-pub fn extract_tool_name(i: &Value) -> Option<&str> {
-    i.get("tool").and_then(|v| v.as_str())
 }
 
 /// `schema` as sent to the model: the same parameters, without what schema

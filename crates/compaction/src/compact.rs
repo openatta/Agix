@@ -44,8 +44,6 @@ pub enum CompactStrategy {
     CollapseContext,
     /// LLM-driven full summary of the conversation.
     FullCompact,
-    /// Extract durable memories during compaction (writes to MemoryStore).
-    SessionMemory,
 }
 
 #[derive(Debug, Clone)]
@@ -857,25 +855,6 @@ pub fn extract_recent_reads(messages: &[ModelMessage]) -> Vec<(String, String)> 
     files
 }
 
-/// Enforce per-message tool result budget, truncating oversized tool results.
-///
-/// Runs BEFORE microcompact for clean composition:
-/// - 50KB per individual tool result (truncate with preserved header)
-/// - 500KB total across all tool results (clear oldest first)
-///
-/// Returns the number of tool results that were modified.
-/// Replace image blocks with `[image]` text markers before LLM compaction.
-/// Note: Agix's `ModelContentBlock` currently has no `Image` variant — this
-/// function is a forward-compat stub. When image support is added, it will
-/// strip them before compaction.
-pub fn strip_images_from_messages(messages: &mut [ModelMessage]) {
-    // Walk through and strip any image-like content.
-    // Currently a no-op — ModelContentBlock has no Image variant.
-    // Forward-compat: when Text blocks contain base64 image data URIs,
-    // they can be detected and replaced here.
-    let _ = messages;
-}
-
 /// Tool names that MicroCompact may clear.
 const COMPACTABLE_TOOLS: &[&str] = &[
     "Read",
@@ -1057,6 +1036,13 @@ impl Default for ToolResultBudget {
     }
 }
 
+/// Enforce per-message tool result budget, truncating oversized tool results.
+///
+/// Runs BEFORE microcompact for clean composition:
+/// - 50KB per individual tool result (truncate with preserved header)
+/// - 500KB total across all tool results (clear oldest first)
+///
+/// Returns the number of tool results that were modified.
 pub fn enforce_tool_result_budget(
     messages: &mut [ModelMessage],
     budget: &ToolResultBudget,

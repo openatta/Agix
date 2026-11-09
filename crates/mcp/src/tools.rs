@@ -270,19 +270,6 @@ impl Default for ReadMcpResourceTool {
     }
 }
 
-// 让 mcp clients 字段可以被 cli 看到（虽然是给构造用的，所以这里不暴露 getter）
-// 但为了让 ListMcpResources / ReadMcpResource 都共享同一份 clients，
-// CLI 用 `Arc<Vec<McpClientHandle>>`（避免重复 .clone() 列表）
-/// Build the MCP tool wrappers for the engine's tool registry.
-pub fn make_mcp_tools(
-    clients: Vec<McpClientHandle>,
-) -> (ListMcpResourcesTool, ReadMcpResourceTool) {
-    (
-        ListMcpResourcesTool::new(clients.clone()),
-        ReadMcpResourceTool::new(clients),
-    )
-}
-
 // DispatchMcpTool — introspection tool: lists which MCP servers have registered which tools.
 // Because Agix flat-mounts each server's tools under `mcp__<server>__<tool>`
 // names, this tool is used for discovery rather than dispatching calls.

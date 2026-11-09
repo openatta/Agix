@@ -214,13 +214,6 @@ impl MemoryStore {
             .collect()
     }
 
-    /// Scan all memory headers without loading full content.
-    /// Returns DurableMemory entries with only metadata populated.
-    /// Used by `select_memories_with_llm` for efficient batch filtering.
-    pub fn scan_memory_headers(&self) -> Vec<DurableMemory> {
-        self.load_all()
-    }
-
     /// Load MEMORY.md index content across both directories.
     ///
     /// Entries are deduplicated by the memory they point at: a name present in

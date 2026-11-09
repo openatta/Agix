@@ -92,65 +92,6 @@ impl CachedMicroCompact {
     pub fn consume_pending_edits(&mut self) -> Vec<String> {
         std::mem::take(&mut self.pending_edits)
     }
-
-    /// Alias: consume pending edits after they've been sent to the API.
-    pub fn mark_tools_sent_to_api(&mut self) -> Vec<String> {
-        self.consume_pending_edits()
-    }
-
-    /// Get a clone of the current pending edits without consuming them.
-    /// Used for the edit-pinning pattern (re-inject edits across model calls).
-    pub fn get_pinned_cache_edits(&self) -> Vec<String> {
-        self.pending_edits.clone()
-    }
-
-    /// Track tool_use IDs for cache_edits. Records which tool results were
-    /// generated for each tool_use, so the Anthropic API can delete them from
-    /// the server-side cached prefix without busting the cache.
-    ///
-    /// Returns a list of tool_use_ids whose results should be deleted via cache_edits.
-    pub fn build_cache_edits(&self, messages: &[ModelMessage], keep_recent: usize) -> Vec<String> {
-        let mut tool_use_ids: Vec<String> = Vec::new();
-        let mut result_count = 0usize;
-
-        // Scan from newest to oldest, collecting tool_use IDs with results
-        for msg in messages.iter().rev() {
-            if msg.role == MessageRole::User {
-                for block in &msg.content {
-                    if let ModelContentBlock::ToolResult { tool_use_id, .. } = block {
-                        result_count += 1;
-                        if result_count > keep_recent
-                            && !tool_use_id.is_empty()
-                            && !tool_use_ids.contains(tool_use_id)
-                        {
-                            tool_use_ids.push(tool_use_id.clone());
-                        }
-                    }
-                }
-            }
-        }
-        tool_use_ids
-    }
-}
-
-impl CachedMicroCompact {
-    /// Helper: build a `cache_edit` specification suitable for the Anthropic API.
-    /// The caller appends this to the next API request to delete cached tool result
-    /// content without invalidating the global cache prefix.
-    pub fn format_cache_edit(tool_use_ids: &[String]) -> Option<serde_json::Value> {
-        if tool_use_ids.is_empty() {
-            return None;
-        }
-        Some(serde_json::json!({
-            "type": "cache_edits",
-            "cache_edits": tool_use_ids.iter().map(|id| {
-                serde_json::json!({
-                    "type": "delete_tool_result",
-                    "tool_use_id": id
-                })
-            }).collect::<Vec<_>>()
-        }))
-    }
 }
 
 /// Blank every tool result but the `keep_recent` newest, and report the

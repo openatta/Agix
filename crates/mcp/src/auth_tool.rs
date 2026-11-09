@@ -12,21 +12,6 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-/// 公共 helper：返回固定的 not-in-scope 错误。
-#[allow(dead_code)]
-fn not_in_scope(tool: &str, alt: &str) -> ToolResult {
-    ToolResult {
-        content: base::tool::ToolResultContent::Text(format!(
-            "{tool} is not part of agix's local-only scope (Anthropic SaaS / IDE \
-             integration required). Alternative for this use case: {alt}"
-        )),
-        is_error: true,
-        structured_content: Some(json!({"tool": tool, "scope": "out_of_scope"})),
-        mcp_meta: None,
-        new_messages: Some(vec![]),
-    }
-}
-
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct McpAuthInput {
     /// MCP server name. If omitted or empty, the first unauthenticated server

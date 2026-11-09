@@ -1,7 +1,6 @@
 //! Agix — context compaction strategies (snip, micro-compact, collapse, LLM summarize).
 
 pub mod cached;
-pub mod cleanup;
 pub mod compact;
 pub mod grouping;
 pub mod llm_summary;

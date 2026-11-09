@@ -167,8 +167,6 @@ impl Permission for RuleSetPermission {
         };
         ctx.permission_mode = ctx.session.permission_mode();
         ctx.additional_writable_dirs = ctx.session.additional_writable_dirs.clone();
-        ctx.additional_writable_dirs
-            .extend(ctx.session.sandbox_allow_writes());
         ctx.dangerously_disable_sandbox = ctx.session.sandbox_disabled;
 
         match self.gate.check(tool.as_ref(), tool_input, &ctx).await {

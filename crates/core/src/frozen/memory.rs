@@ -167,38 +167,6 @@ pub(crate) async fn collect_memory_files_with(
     entries
 }
 
-/// Pre-load all `.md` memory files from a project memory directory.
-/// Capped at `max_files`, each truncated to 8KB.
-pub(crate) async fn load_all_memory_files(
-    memory_dir: &Path,
-    max_files: usize,
-) -> Vec<MemoryFileEntry> {
-    let mut entries = match tokio::fs::read_dir(memory_dir).await {
-        Ok(e) => e,
-        Err(_) => return Vec::new(),
-    };
-    let mut files: Vec<MemoryFileEntry> = Vec::new();
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        if files.len() >= max_files {
-            break;
-        }
-        let path = entry.path();
-        if path.file_name().and_then(|s| s.to_str()) == Some("MEMORY.md")
-            || path.extension().and_then(|s| s.to_str()) != Some("md")
-        {
-            continue;
-        }
-        if let Ok(content) = tokio::fs::read_to_string(&path).await {
-            let truncated = truncate_chars(content.trim(), 8_000, "\n... (memory truncated)");
-            files.push(MemoryFileEntry {
-                path,
-                content: truncated,
-            });
-        }
-    }
-    files
-}
-
 pub async fn find_relevant_memories(
     memory_dir: &Path,
     query: &str,

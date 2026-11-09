@@ -39,26 +39,6 @@ pub fn contains_path_traversal(path: &Path) -> bool {
     path.components().any(|c| matches!(c, Component::ParentDir))
 }
 
-/// Check if the current platform supports sandbox execution.
-/// macOS: sandbox-exec available; Linux: bwrap available.
-pub fn platform_sandbox_available() -> bool {
-    if cfg!(target_os = "macos") {
-        std::process::Command::new("which")
-            .arg("sandbox-exec")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    } else if cfg!(target_os = "linux") {
-        std::process::Command::new("which")
-            .arg("bwrap")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    } else {
-        false
-    }
-}
-
 /// Canonicalize a path, falling back to the input path on error.
 pub fn canonicalize_best_effort(p: &Path) -> PathBuf {
     p.canonicalize().unwrap_or_else(|_| {

@@ -58,11 +58,6 @@ impl QuickJsEngine {
     pub fn new() -> Self {
         Self::default()
     }
-
-    pub fn with_memory_limit(mut self, bytes: usize) -> Self {
-        self.memory_limit_bytes = bytes;
-        self
-    }
 }
 
 /// Wrap the operator's code so the whole exchange is one call with strings on

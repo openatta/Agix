@@ -51,19 +51,6 @@ pub type ElicitationCallback = Arc<dyn Fn(String, String) + Send + Sync>;
 /// already look for it.
 pub use crate::prompts::McpPromptEntry;
 
-/// MCP server connection state (`Connected`, `Failed`, `NeedsAuth`, etc.).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum McpServerState {
-    Connected,
-    Failed,
-    NeedsAuth,
-    Pending {
-        reconnect_attempt: u32,
-        max_reconnect_attempts: u32,
-    },
-    Disabled,
-}
-
 /// MCP notification from a server (`notifications/tools/list_changed` etc.).
 #[derive(Debug, Clone)]
 pub enum McpNotification {
@@ -77,34 +64,14 @@ pub enum McpNotification {
     Custom { server: String, method: String },
 }
 
-/// Handler for MCP server notifications.
-/// Register with [`McpManager::register_notification_handler`].
-#[async_trait::async_trait]
-pub trait McpNotificationHandler: Send + Sync {
-    /// Called when an MCP server sends a notification.
-    async fn on_mcp_notification(&self, notification: McpNotification);
-}
-
 pub struct McpManager {
     clients: Vec<McpClientHandle>,
     adapters: Vec<Arc<dyn Tool>>,
     prompts: Vec<McpPromptEntry>,
-    /// Per-server connection states (index-aligned with clients).
-    #[allow(dead_code)]
-    server_states: Vec<(String, McpServerState)>,
-    /// Registered notification handlers.
-    notification_handlers: Vec<Box<dyn McpNotificationHandler>>,
     /// Notifications servers have sent that nothing has acted on yet — see
     /// `crate::notify::NotificationQueue`. Shared with every connected
     /// client, since the reaction (re-asking for tools) is manager-wide.
     notifications: Arc<crate::notify::NotificationQueue>,
-    /// MCP notification channel allowlist — only notifications from
-    /// servers whose names appear in this set are dispatched to handlers.
-    /// Empty = allow all.
-    pub notification_allowlist: Option<std::collections::HashSet<String>>,
-    /// Per-server tool permission overrides. Maps server_name → allowed_tool_names.
-    /// If a server has an entry, only listed tools are callable. Empty vec = allow all.
-    pub tool_permissions: std::collections::HashMap<String, Vec<String>>,
     /// Shared MCP output cache.
     output_cache: Arc<Mutex<McpOutputCache>>,
     /// Callback invoked when an MCP tool result contains an elicitation URL.
@@ -129,67 +96,12 @@ impl McpManager {
             clients: Vec::new(),
             adapters: Vec::new(),
             prompts: Vec::new(),
-            server_states: Vec::new(),
-            notification_handlers: Vec::new(),
             notifications: crate::notify::NotificationQueue::new(),
-            notification_allowlist: None,
-            tool_permissions: std::collections::HashMap::new(),
             output_cache: Arc::new(Mutex::new(McpOutputCache::new())),
             elicitation_callback: Arc::new(Mutex::new(None)),
             subprocess_env: base::interface::exec::local::SubprocessEnv::default(),
             oauth: None,
         }
-    }
-
-    /// Register a notification handler. Handlers are called in registration order
-    /// when any MCP server sends a notification.
-    pub fn register_notification_handler(&mut self, handler: Box<dyn McpNotificationHandler>) {
-        self.notification_handlers.push(handler);
-    }
-
-    /// Dispatch a notification to all registered handlers, respecting the
-    /// notification allowlist. Servers not in the allowlist are silently skipped.
-    /// Handlers that panic are caught and skipped.
-    pub async fn dispatch_notification(&self, notification: McpNotification) {
-        // Check notification allowlist
-        let server = match &notification {
-            McpNotification::ToolListChanged { server }
-            | McpNotification::ResourceListChanged { server }
-            | McpNotification::PromptListChanged { server }
-            | McpNotification::Custom { server, .. } => server,
-        };
-        if let Some(ref allowlist) = self.notification_allowlist {
-            if !allowlist.contains(server) {
-                tracing::debug!(
-                    server = %server,
-                    "MCP notification blocked: server not in allowlist"
-                );
-                return;
-            }
-        }
-        for handler in &self.notification_handlers {
-            handler.on_mcp_notification(notification.clone()).await;
-        }
-    }
-
-    /// Check whether a specific MCP tool is allowed based on tool_permissions.
-    /// Returns true if the tool is allowed, false if blocked by per-server rules.
-    pub fn is_tool_allowed(&self, server: &str, tool_name: &str) -> bool {
-        match self.tool_permissions.get(server) {
-            None => true,                                // No rules → allow all
-            Some(allowed) if allowed.is_empty() => true, // Empty list → allow all
-            Some(allowed) => allowed.iter().any(|t| t == tool_name),
-        }
-    }
-
-    /// Set the notification allowlist. Pass None to allow all servers.
-    pub fn set_notification_allowlist(&mut self, servers: Option<Vec<String>>) {
-        self.notification_allowlist = servers.map(|v| v.into_iter().collect());
-    }
-
-    /// Set tool permissions for a specific server. Pass empty vec to allow all.
-    pub fn set_tool_permissions(&mut self, server: &str, allowed: Vec<String>) {
-        self.tool_permissions.insert(server.to_string(), allowed);
     }
 
     /// Register an elicitation callback. When an MCP tool result contains an
@@ -205,52 +117,29 @@ impl McpManager {
             .unwrap_or_else(|e| e.into_inner()) = Some(cb);
     }
 
-    /// Fire the Elicitation hook event. Called when an MCP tool returns an
-    /// elicitation URL. This notifies the hook system (and any registered
-    /// hooks) that user attention is needed.
-    pub fn on_elicitation(&self, server_name: &str, url: &str) {
-        let cb = self
-            .elicitation_callback
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        if let Some(cb) = cb {
-            cb(server_name.to_string(), url.to_string());
-        }
-    }
-
     /// 连所有 server，list_tools 完成后构造 adapters。
     /// 使用并发连接——最多 3 个本地 stdio server 同时启动，远程 server 可更多。
     /// 单个 server 失败不整体失败 —— warn + skip。
     pub async fn connect_all(servers: HashMap<String, McpServerConfig>) -> Self {
         Self::connect_all_impl(
             servers,
-            None,
             base::interface::exec::local::SubprocessEnv::default(),
             None,
         )
         .await
     }
 
-    /// `connect_all`, with stdio servers started under `env` — the
-    /// `sandbox.subprocess_env` of the settings they were declared in.
-    pub async fn connect_all_with_env(
-        servers: HashMap<String, McpServerConfig>,
-        env: base::interface::exec::local::SubprocessEnv,
-    ) -> Self {
-        Self::connect_all_impl(servers, None, env, None).await
-    }
-
-    /// `connect_all_with_env`, taking bearer tokens for servers with an
-    /// `oauth_provider` from `oauth` — the owning pool's, so pools in one
-    /// process never share tokens.
+    /// `connect_all`, with stdio servers started under `env` (the
+    /// `sandbox.subprocess_env` of the settings they were declared in) and
+    /// bearer tokens for servers with an `oauth_provider` taken from `oauth`
+    /// — the owning pool's, so pools in one process never share tokens.
     pub async fn connect_all_with_oauth(
         servers: HashMap<String, McpServerConfig>,
         env: base::interface::exec::local::SubprocessEnv,
         oauth: Arc<crate::oauth::McpOAuth>,
     ) -> Self {
         oauth.remember_servers(&servers);
-        Self::connect_all_impl(servers, None, env, Some(oauth)).await
+        Self::connect_all_impl(servers, env, Some(oauth)).await
     }
 
     /// Start every stdio server this manager adds later under `env`.
@@ -259,26 +148,8 @@ impl McpManager {
         self
     }
 
-    /// 连所有 server，并传入一个 Optional 的 elicitation callback。
-    /// 当 MCP tool 返回 elicitation URL 时，adapter 会调用此 callback。
-    pub async fn connect_all_with_callback(
-        servers: HashMap<String, McpServerConfig>,
-        callback: ElicitationCallback,
-    ) -> Self {
-        Self::connect_all_impl(
-            servers,
-            Some(callback),
-            base::interface::exec::local::SubprocessEnv::default(),
-            None,
-        )
-        .await
-    }
-
-    /// Internal implementation shared by `connect_all` and
-    /// `connect_all_with_callback`.
     async fn connect_all_impl(
         servers: HashMap<String, McpServerConfig>,
-        elicitation_cb: Option<ElicitationCallback>,
         subprocess_env: base::interface::exec::local::SubprocessEnv,
         oauth: Option<Arc<crate::oauth::McpOAuth>>,
     ) -> Self {
@@ -286,7 +157,7 @@ impl McpManager {
         // threaded through every spawned connect task and every adapter it
         // builds, then reused as-is for this manager's own field — so a
         // later `set_elicitation_callback` call reaches adapters built here.
-        let elicitation_cell = Arc::new(Mutex::new(elicitation_cb));
+        let elicitation_cell: Arc<Mutex<Option<ElicitationCallback>>> = Arc::new(Mutex::new(None));
         let cache = Arc::new(Mutex::new(McpOutputCache::new()));
         // Shared with every client this builds, and kept as this manager's
         // own field, so a server that announces a tool change reaches the
@@ -364,10 +235,6 @@ impl McpManager {
             adapters,
             notifications,
             prompts: Vec::new(),
-            server_states: Vec::new(),
-            notification_handlers: Vec::new(),
-            notification_allowlist: None,
-            tool_permissions: std::collections::HashMap::new(),
             output_cache: cache,
             elicitation_callback: elicitation_cell,
             subprocess_env,
@@ -560,11 +427,7 @@ impl McpManager {
             clients,
             adapters: Vec::new(),
             prompts: Vec::new(),
-            server_states: Vec::new(),
-            notification_handlers: Vec::new(),
             notifications: crate::notify::NotificationQueue::new(),
-            notification_allowlist: None,
-            tool_permissions: std::collections::HashMap::new(),
             output_cache: Arc::new(Mutex::new(McpOutputCache::new())),
             elicitation_callback: Arc::new(Mutex::new(None)),
             subprocess_env: base::interface::exec::local::SubprocessEnv::default(),
@@ -603,15 +466,6 @@ impl McpManager {
     #[doc(hidden)]
     pub fn set_prompts_for_test(&mut self, prompts: Vec<McpPromptEntry>) {
         self.prompts = prompts;
-    }
-
-    /// Return a reference to the official MCP server registry.
-    /// The registry provides a curated list of well-known MCP servers
-    /// that users can discover and add to their configuration.
-    pub fn official_registry() -> &'static crate::registry::OfficialRegistry {
-        static REGISTRY: std::sync::OnceLock<crate::registry::OfficialRegistry> =
-            std::sync::OnceLock::new();
-        REGISTRY.get_or_init(crate::registry::OfficialRegistry::new)
     }
 
     /// Execute a named MCP prompt on the specified server. Returns the
@@ -810,22 +664,6 @@ impl McpManager {
         out
     }
 
-    /// 异步取所有 server 的 resources + prompts 摘要 —— /mcp 详细模式用。
-    /// 失败的 server 跳过（warn 而非整体 fail）；rmcp 服务器不一定支持这两个能力。
-    pub async fn server_inventory(&self) -> Vec<ServerInventory> {
-        let mut out = Vec::with_capacity(self.clients.len());
-        for c in &self.clients {
-            let resources = c.list_resources().await.unwrap_or_default();
-            let prompts = c.list_prompts().await.unwrap_or_default();
-            out.push(ServerInventory {
-                name: c.server_name().to_string(),
-                resource_count: resources.len(),
-                prompt_count: prompts.len(),
-            });
-        }
-        out
-    }
-
     /// Refresh tools from connected MCP servers. Used between turns to pick up
     /// newly connected servers.
     /// Re-fetches tool lists from all connected clients and updates adapters.
@@ -917,15 +755,6 @@ pub struct ServerStatus {
     pub name: String,
     pub transport: &'static str,
     pub tool_count: usize,
-}
-
-/// resources + prompts 数量摘要（不在 ServerStatus 里因为要异步取，
-/// 而 server_statuses 是 sync 快路径）。
-#[derive(Debug, Clone)]
-pub struct ServerInventory {
-    pub name: String,
-    pub resource_count: usize,
-    pub prompt_count: usize,
 }
 
 impl Default for McpManager {

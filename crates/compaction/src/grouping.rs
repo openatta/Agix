@@ -94,20 +94,6 @@ pub fn estimate_tokens(msgs: &[ModelMessage]) -> usize {
     model::tokens::estimate_message_tokens(msgs)
 }
 
-/// [`estimate_tokens`] against a counter the caller chose.
-///
-/// The additivity note above is a requirement on whatever is passed here, not
-/// a property of the default: `snip` adds the per-round estimates of the
-/// rounds it keeps and compares the sum against a budget, so a counter whose
-/// answer for a concatenation differs from the sum of its parts makes that
-/// comparison wrong rather than merely imprecise.
-pub fn estimate_tokens_with(
-    counter: &dyn base::interface::token_counter::TokenCounter,
-    msgs: &[ModelMessage],
-) -> usize {
-    counter.count_messages(msgs)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

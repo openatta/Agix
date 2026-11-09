@@ -46,39 +46,6 @@ pub mod secondary_llm;
 use base::tool::Tool;
 use std::sync::Arc;
 
-/// Assemble the final tool pool: deduplicate built-in and MCP tools by name.
-/// Built-in tools take priority on name conflict.
-pub fn assemble_tool_pool(
-    builtin: Vec<Arc<dyn Tool>>,
-    mcp: Vec<Arc<dyn Tool>>,
-) -> Vec<Arc<dyn Tool>> {
-    use std::collections::BTreeMap;
-    let mut pool: BTreeMap<String, Arc<dyn Tool>> = BTreeMap::new();
-    for t in mcp {
-        pool.insert(t.name().to_string(), t);
-    }
-    for t in builtin {
-        pool.insert(t.name().to_string(), t);
-    }
-    pool.into_values().collect()
-}
-
-/// Reference-based variant — used in `build_tool_defs()` where tools are behind Arc.
-pub fn assemble_tool_pool_refs<'a>(
-    builtin: Vec<&'a dyn Tool>,
-    mcp: Vec<&'a dyn Tool>,
-) -> Vec<&'a dyn Tool> {
-    use std::collections::BTreeMap;
-    let mut pool: BTreeMap<String, &dyn Tool> = BTreeMap::new();
-    for t in mcp {
-        pool.insert(t.name().to_string(), t);
-    }
-    for t in builtin {
-        pool.insert(t.name().to_string(), t);
-    }
-    pool.into_values().collect()
-}
-
 /// Register the standard set of self-contained built-in tools — no host-specific
 /// wiring (bridges, external providers, registries) required to construct any of
 /// them. Every embedder (daemon, test harness, ...) that wants a working

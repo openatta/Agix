@@ -1696,13 +1696,6 @@ impl SessionPool {
         self.settings.read().await.clone()
     }
 
-    /// Where this pool's project-tier settings.json lives
-    /// (`{project_root}/.agix/settings.json`) — the tier `config.setProvider`
-    /// writes to.
-    pub fn project_settings_path(&self) -> PathBuf {
-        self.settings_path_of(None)
-    }
-
     /// The project-tier `settings.json` of `project_root`, or of this
     /// daemon's own project when none is named.
     fn settings_path_of(&self, project_root: Option<&Path>) -> PathBuf {

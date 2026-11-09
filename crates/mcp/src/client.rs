@@ -212,12 +212,6 @@ impl MockMcpClient {
         self
     }
 
-    /// Same as [`Self::with_resource_text`] but with arbitrary content blocks.
-    pub fn with_resource_content(mut self, uri: &str, content: Vec<McpContent>) -> Self {
-        self.resource_bodies.insert(uri.into(), content);
-        self
-    }
-
     /// Simulate an unreachable server: every protocol call fails with
     /// `NotConnected`.
     pub fn down(mut self) -> Self {

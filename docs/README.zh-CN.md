@@ -269,7 +269,6 @@ let (mut agent, events, input) = runtime::agent::Builder::new()
 | 内核 | `scene` | 内建场景、`SceneRegistry`、声明式场景 |
 | 内核 | `history` · `session` · `compaction` | transcript 日志、会话状态、上下文压缩 |
 | 内核 | `permissions` · `hooks` · `telemetry` | 规则引擎、生命周期 hooks、遥测与录制 |
-| 内核 | `task` | 后台任务生命周期 |
 | 模块 | `agents` · `team` | `Agent` 工具、agent 类型、团队 |
 | 模块 | `mcp` · `auth` | MCP 客户端与工具适配、OAuth 2.0 PKCE |
 | 模块 | `skills` | skill 目录与 `Skill` 工具 |
@@ -279,8 +278,8 @@ let (mut agent, events, input) = runtime::agent::Builder::new()
 | 装配 | `assembly` | 会话池、配置、provider 路由、JSON-RPC 服务 |
 | 外壳 | `daemon` | `agixd` 二进制 |
 
-`crates/` 下 21 个 crate,加上 `daemon/`、四个测试成员与 `examples/plugins/rust` 的示例插件,
-工作区共 27 个成员。完整的
+`crates/` 下 20 个 crate,加上 `daemon/`、四个测试成员与 `examples/plugins/rust` 的示例插件,
+工作区共 26 个成员。完整的
 图景——会话与场景、历史日志、执行层、锁、磁盘布局——在 [`ARCHITECTURE.md`](ARCHITECTURE.md)。
 
 ---

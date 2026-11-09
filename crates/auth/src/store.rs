@@ -35,15 +35,6 @@ impl StoredToken {
             None => false,
         }
     }
-
-    /// Will the token be expired within `secs` from now? Used to refresh
-    /// pre-emptively rather than mid-request.
-    pub fn expires_within(&self, now: OffsetDateTime, secs: i64) -> bool {
-        match self.expires_at {
-            Some(exp) => now.unix_timestamp() + secs >= exp,
-            None => false,
-        }
-    }
 }
 
 pub struct TokenStore {

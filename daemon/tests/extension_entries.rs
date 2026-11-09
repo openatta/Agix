@@ -42,34 +42,6 @@ fn text_round(text: &str) -> Vec<StreamEvent> {
     ]
 }
 
-#[allow(dead_code)]
-fn tool_round(tool: &str, id: &str, input: serde_json::Value) -> Vec<StreamEvent> {
-    vec![
-        StreamEvent::ContentBlockStart {
-            index: 0,
-            content_block: ContentBlockStart::ToolUse {
-                id: id.to_string(),
-                name: tool.to_string(),
-                input: serde_json::Value::Null,
-            },
-        },
-        StreamEvent::ContentBlockDelta {
-            index: 0,
-            delta: BlockDelta::InputJsonDelta {
-                partial_json: input.to_string(),
-            },
-        },
-        StreamEvent::ContentBlockStop { index: 0 },
-        StreamEvent::MessageDelta {
-            delta: MessageDeltaPayload {
-                stop_reason: Some(base::message::StopReason::ToolUse),
-                stop_sequence: None,
-            },
-            usage: Some(Usage::default()),
-        },
-    ]
-}
-
 struct Daemon {
     sock: std::path::PathBuf,
     model: Arc<MockAnthropicClient>,

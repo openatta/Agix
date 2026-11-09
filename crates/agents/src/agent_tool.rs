@@ -648,8 +648,6 @@ fn conclude_background_task(
         session.post_notice(Some(task.task_id.clone()), task_notification(task, result));
     }
     session.finish_task(&task.task_id, finished(result));
-    session.persist_running_task(task);
-    session.remove_running_task_persistence(&task.task_id);
 }
 
 fn task_notification(
@@ -1371,7 +1369,6 @@ struct Inner {
     /// Sub-agents running anywhere under the root session; shared by every
     /// delegate's `AgentTool` (see `AgentsModule::for_delegates`).
     subagent_slots: SubagentSlots,
-    mailbox: Option<(std::sync::Arc<team::mailbox::MailboxStore>, String)>,
     /// Built-in types merged with any disk-loaded custom types (see
     /// `merge_agent_types`). Keyed by `subagent_type` name. `RwLock<Arc<..>>`
     /// (not a plain `Arc<..>`) so `agent_type_watcher::AgentTypeWatcher` can
@@ -1440,8 +1437,7 @@ struct Inner {
     /// mutability / set-after-construction pattern as `skill_manager` and
     /// for the same reason (`Builder::build()` connects MCP after
     /// `AgentTool` exists) — but a `Vec` snapshot rather than a live
-    /// `Arc<McpManager>` reference: `McpManager` isn't `Clone` (it holds a
-    /// `Vec<Box<dyn McpNotificationHandler>>`) and `refresh_tools()` needs
+    /// `Arc<McpManager>` reference: `McpManager` isn't `Clone` and `refresh_tools()` needs
     /// `&mut self`, which would conflict with `AgentTool` also holding a
     /// shared reference to the same live instance. A subagent therefore
     /// sees the MCP tools connected *as of when this was set* — a later
@@ -1781,14 +1777,6 @@ impl Inner {
         task: Option<Arc<base::context::RunningTask>>,
         can_ask: bool,
     ) -> Arc<dyn Permission> {
-        if let Some((ref mailbox, ref label)) = self.mailbox {
-            // Team member: bubble the prompt up to the coordinator's mailbox.
-            return Arc::new(team::coordinator::PermissionBridge::new(
-                mailbox.clone(),
-                label.clone(),
-                "coordinator",
-            ));
-        }
         if let Some(parent) = self
             .parent_permission
             .read()
@@ -2187,7 +2175,6 @@ impl AgentTool {
                 parent_tools,
                 depth: 0,
                 subagent_slots: SubagentSlots::new(DEFAULT_MAX_CONCURRENT_SUBAGENTS),
-                mailbox: None,
                 agent_types,
                 _agent_type_watcher,
                 description,
@@ -2256,7 +2243,6 @@ impl AgentTool {
                 parent_tools,
                 depth: 0,
                 subagent_slots: SubagentSlots::new(DEFAULT_MAX_CONCURRENT_SUBAGENTS),
-                mailbox: None,
                 agent_types: shared_agent_types,
                 _agent_type_watcher: None,
                 description,
@@ -2574,30 +2560,6 @@ impl AgentTool {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = path;
     }
 
-    /// Run this `AgentTool`'s sub-agents as team members whose permission
-    /// prompts bubble up to the coordinator's mailbox
-    /// (`team::coordinator::PermissionBridge`).
-    ///
-    /// Deliberately **not** wired at the composition root today: the bridge
-    /// blocks the sub-agent until someone calls
-    /// `PermissionBridge::receive_decision`, and the only thing that would
-    /// (`team::polling::MailboxPoller`) has no production caller either — so
-    /// enabling it would turn every non-safe worker tool call into a 120s
-    /// stall followed by a timeout denial. Sub-agent permission checks route
-    /// to the parent's real `Permission` impl instead (see
-    /// `permission_handler`); this stays available for an embedder that runs
-    /// its own poller.
-    pub fn with_mailbox(
-        mut self,
-        store: std::sync::Arc<team::mailbox::MailboxStore>,
-        label: impl Into<String>,
-    ) -> Self {
-        let mut inner = (*self.inner).clone();
-        inner.mailbox = Some((store, label.into()));
-        self.inner = Arc::new(inner);
-        self
-    }
-
     /// Returns the fallback tool registry for sub-agent creation.
     pub(crate) fn sub_tools(&self) -> Arc<InMemoryToolRegistry> {
         let registry = InMemoryToolRegistry::new();
@@ -2707,13 +2669,11 @@ impl AgentTool {
     /// Create a permission handler appropriate for this sub-agent's context.
     ///
     /// Resolution order:
-    /// 1. mailbox configured (running as a team member) → [`PermissionBridge`],
-    ///    which forwards the prompt to the coordinator and waits for a decision;
-    /// 2. the parent agent's own `Permission` impl, when wired via
+    /// 1. the parent agent's own `Permission` impl, when wired via
     ///    [`AgentTool::set_parent_permission`] — so a session using
     ///    `RuleSetPermission` (or any other real handler) can't have its rules
     ///    bypassed by spawning a sub-agent;
-    /// 3. [`AlwaysPermit`], for `AgentTool`s built
+    /// 2. [`AlwaysPermit`], for `AgentTool`s built
     ///    without any wiring (tests, embedders).
     pub(crate) fn permission_handler(&self) -> Arc<dyn Permission> {
         self.inner.permission_handler()
@@ -3158,14 +3118,8 @@ impl AgentTool {
     /// under for its entire lifetime (resolution — explicit override vs.
     /// the team's established grant vs. the safe default — happens in
     /// `spawn_or_message_team_member`, once, not here) — built into a real
-    /// `permissions::RuleSetPermission`, not the `AlwaysPermit`/
-    /// `PermissionBridge` `self.permission_handler()` would otherwise
-    /// return (`PermissionBridge` specifically doesn't work for a
-    /// persistent member: it forwards to the lead via mailbox and blocks up
-    /// to 120s for a reply, but the lead only runs code during its own
-    /// `run_turn()` calls — it has no code path listening for that message
-    /// while idle between user turns, so every non-whitelisted tool call
-    /// would just time out and get denied).
+    /// `permissions::RuleSetPermission`, not the `AlwaysPermit`
+    /// `self.permission_handler()` would otherwise return.
     async fn build_team_member_agent(
         &self,
         tools: Arc<InMemoryToolRegistry>,
@@ -5131,7 +5085,7 @@ mod catalog_tests {
     /// true` skill path, via `RuntimeAgentSpawner::spawn_agent_background`)
     /// must return a task id immediately — without waiting for the spawned
     /// sub-agent turn to finish — and that id must already be registered on
-    /// the *caller's* session (the real `session.register_running_task` /
+    /// the *caller's* session (the real `session.register_task` /
     /// `find_running_task` machinery `TaskOutput`/`TaskStop` also use), in
     /// `Running` status. Driving a full turn to actual completion needs a
     /// working mock `Model` (`DummyModel` only covers settings-derivation

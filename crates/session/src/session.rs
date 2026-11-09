@@ -471,11 +471,6 @@ impl SessionManager {
         self.replace_messages_after_compact(Vec::new(), 0, 0).await
     }
 
-    /// Set the session ID of the parent session that spawned this one.
-    pub fn set_parent_session(&mut self, parent_id: String) {
-        self.parent_session_id = Some(parent_id);
-    }
-
     /// Return the parent session ID, if set.
     pub fn parent_session_id(&self) -> Option<&str> {
         self.parent_session_id.as_deref()

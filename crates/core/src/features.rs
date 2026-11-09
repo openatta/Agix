@@ -41,11 +41,6 @@ pub struct FeatureFlags {
     /// before the budget is fully exhausted, based on token usage velocity.
     #[serde(default)]
     pub reactive_compact: bool,
-
-    /// Enable dream task — background thinking sub-agent that runs without
-    /// blocking the user, writing thoughts to disk for later inspection.
-    #[serde(default)]
-    pub dream_task: bool,
 }
 
 impl FeatureFlags {
@@ -61,7 +56,6 @@ impl FeatureFlags {
             "recorder_auto_detect" => self.recorder_auto_detect,
             "cached_microcompact" => self.cached_microcompact,
             "reactive_compact" => self.reactive_compact,
-            "dream_task" => self.dream_task,
             _ => false,
         }
     }
@@ -83,9 +77,6 @@ impl FeatureFlags {
         if std::env::var("AGIX_FEATURE_REACTIVE_COMPACT").is_ok() {
             self.reactive_compact = true;
         }
-        if std::env::var("AGIX_FEATURE_DREAM_TASK").is_ok() {
-            self.dream_task = true;
-        }
     }
 
     /// List all enabled flags.
@@ -98,7 +89,6 @@ impl FeatureFlags {
             "recorder_auto_detect",
             "cached_microcompact",
             "reactive_compact",
-            "dream_task",
         ];
         all.into_iter().filter(|&f| self.is_enabled(f)).collect()
     }

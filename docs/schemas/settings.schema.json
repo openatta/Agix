@@ -146,11 +146,6 @@
           "description": "Enable microcompact caching (time-based tool result clearing).",
           "type": "boolean"
         },
-        "dream_task": {
-          "default": false,
-          "description": "Enable dream task — background thinking sub-agent that runs without\nblocking the user, writing thoughts to disk for later inspection.",
-          "type": "boolean"
-        },
         "experimental_agent": {
           "default": false,
           "description": "Enable experimental agent routing (model selection by task type).",
@@ -815,7 +810,6 @@
       "$ref": "#/$defs/FeatureFlags",
       "default": {
         "cached_microcompact": false,
-        "dream_task": false,
         "experimental_agent": false,
         "extended_memory": false,
         "plugin_marketplace": false,

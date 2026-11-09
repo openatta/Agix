@@ -2247,9 +2247,9 @@ WebAssembly 组件,场景改用 `[scene] dir`。
 | -32018 | TASK_NOT_FOUND | `session.taskOutput`:引擎不知道这个任务(没跑过、结束得早已被忘掉,或引擎不在内存里) |
 | -32019 | TASK_LIMIT | `session.startAgent`:会话的子 Agent 已到 `execution.max_concurrent_subagents`,或委派已到最深 |
 
-还有三个常量在代码里定义了但**没有任何路径会发出**,客户端不必为它们写分支:
+还有两个常量在代码里定义了但**没有任何路径会发出**,客户端不必为它们写分支:
 `PARSE_ERROR (-32700)` / `INVALID_REQUEST (-32600)`(解析不了的帧被静默丢弃,见
-§1)、`SESSION_CAP_REACHED (-32001)`(会话数到顶时驱逐最久未用的空闲会话,不拒绝新建)。
+§1)。`-32001` 保留不用:会话数到顶时驱逐最久未用的空闲会话,不拒绝新建。
 
 ### 9.1 `error.data` 的形状
 

@@ -142,18 +142,6 @@ impl ConfigPaths {
         self.global_data_dir.join("plugins")
     }
 
-    pub fn global_agents_dir(&self) -> PathBuf {
-        self.global_data_dir.join("agents")
-    }
-
-    pub fn global_rules_dir(&self) -> PathBuf {
-        self.global_data_dir.join("rules")
-    }
-
-    pub fn global_hooks_dir(&self) -> PathBuf {
-        self.global_data_dir.join("hooks")
-    }
-
     /// Cross-scene memory root — used when there's no specific project open
     /// (reserved for future no-project/desktop use; today sessions always
     /// have a project, so `local_memory_dir()` is what's actually read).

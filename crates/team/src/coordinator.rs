@@ -1,14 +1,10 @@
 //! Team coordinator using `dyn Model` trait.
-//!
-//! Also provides [`PermissionBridge`] — intercepts sub-agent permission prompts
-//! and forwards them to the parent agent via the team mailbox (Bubble mode).
 
 use async_trait::async_trait;
 use base::context::EngineConfig;
 use base::error::ToolError;
 use base::interface::agent_spawner::AgentSpawner;
 use base::interface::model::{Model, ModelEvent, StreamParams};
-use base::interface::permission::{Permission, PermissionOutcome};
 use base::interface::prompt::{BlockRole, PromptBlock};
 use base::interface::settings::ThinkingMode;
 use base::tool::InMemoryToolRegistry;
@@ -20,210 +16,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::tool::{AggregateMode, TeamStage};
-
-/// A permission prompt forwarded from a sub-agent to the parent agent.
-#[derive(Debug, Clone)]
-pub struct PermissionPrompt {
-    /// The tool_use_id of the original tool call (used as correlation key).
-    pub tool_use_id: String,
-    /// Name of the tool requesting permission.
-    pub tool_name: String,
-    /// Human-readable explanation of the permission request.
-    pub message: String,
-    /// File paths affected by the tool call, if any.
-    pub paths: Vec<std::path::PathBuf>,
-    /// The turn_id from the sub-agent's context.
-    pub turn_id: String,
-}
-
-/// Bridges permission requests from sub-agents to the parent agent
-/// via the team mailbox system. Implements the `Permission` trait
-/// so it can be injected as the permission handler for sub-agents.
-///
-/// When a tool call requires permission, the bridge:
-/// 1. For read-only / safe tools — auto-permits
-/// 2. For other tools — creates a [`PermissionPrompt`], forwards it
-///    to the parent agent via the mailbox, then blocks until the parent
-///    responds (or a 120-second timeout elapses).
-pub struct PermissionBridge {
-    /// Team mailbox for forwarding requests to the parent.
-    mailbox: Arc<crate::mailbox::MailboxStore>,
-    /// This agent's label in the team.
-    my_label: String,
-    /// The parent agent's label (receives permission requests).
-    parent_label: String,
-    /// Pending permissions keyed by tool_use_id → prompt.
-    pending_permissions: std::sync::Arc<std::sync::Mutex<HashMap<String, PermissionPrompt>>>,
-    /// Oneshot channels for awaiting parent decisions.
-    /// Each sender is consumed by `send()` when the parent responds.
-    response_channels:
-        std::sync::Arc<std::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>>,
-}
-
-impl PermissionBridge {
-    /// Create a new bridge that forwards permission requests from `my_label`
-    /// to `parent_label` via the shared team mailbox.
-    pub fn new(
-        mailbox: Arc<crate::mailbox::MailboxStore>,
-        my_label: impl Into<String>,
-        parent_label: impl Into<String>,
-    ) -> Self {
-        Self {
-            mailbox,
-            my_label: my_label.into(),
-            parent_label: parent_label.into(),
-            pending_permissions: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
-            response_channels: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
-        }
-    }
-
-    /// Returns a snapshot of currently pending permission prompts.
-    pub fn pending(&self) -> Vec<PermissionPrompt> {
-        let guard = self.pending_permissions.lock().unwrap();
-        guard.values().cloned().collect()
-    }
-
-    /// Forward a permission prompt to the parent agent via the team mailbox.
-    ///
-    /// The prompt is stored in `pending_permissions` keyed by `tool_use_id`
-    /// so that [`receive_decision`] can correlate the parent's response.
-    pub fn forward_to_parent(&self, prompt: PermissionPrompt) {
-        let tool_use_id = prompt.tool_use_id.clone();
-
-        let message = serde_json::json!({
-            "type": "permission_request",
-            "tool_use_id": tool_use_id,
-            "tool_name": prompt.tool_name,
-            "message": prompt.message,
-            "paths": prompt.paths,
-            "turn_id": prompt.turn_id,
-        });
-
-        {
-            let mut pending = self.pending_permissions.lock().unwrap();
-            pending.insert(tool_use_id, prompt);
-        }
-        self.mailbox
-            .send(&self.my_label, &self.parent_label, &message.to_string());
-    }
-
-    /// Receive a parent's decision for a pending permission request.
-    ///
-    /// The decision is applied by completing the oneshot channel that the
-    /// sub-agent is blocked on. If `allowed` is true the tool call proceeds;
-    /// otherwise the sub-agent receives a denial.
-    pub fn receive_decision(&self, tool_use_id: &str, allowed: bool) {
-        {
-            let mut pending = self.pending_permissions.lock().unwrap();
-            pending.remove(tool_use_id);
-        }
-        let sender = {
-            let mut channels = self.response_channels.lock().unwrap();
-            channels.remove(tool_use_id)
-        };
-        if let Some(tx) = sender {
-            let _ = tx.send(allowed);
-        }
-    }
-}
-
-#[async_trait]
-impl Permission for PermissionBridge {
-    async fn check(
-        &self,
-        tool_name: &str,
-        _tool_input: &serde_json::Value,
-        _cwd: &std::path::Path,
-        _session_id: &str,
-    ) -> PermissionOutcome {
-        // Auto-permit read-only / safe tools to avoid unnecessary parent
-        // interaction for tools that cannot cause side effects.
-        let safe_tools: &[&str] = &[
-            "Read",
-            "Grep",
-            "Glob",
-            "WebSearch",
-            "WebFetch",
-            "ListPeers",
-            "ReadMail",
-            "SendMessage",
-            "Agent",
-        ];
-        if safe_tools.contains(&tool_name) {
-            return PermissionOutcome::Permit;
-        }
-
-        // Generate a unique ID for this permission request.
-        let prompt_id = format!(
-            "{:x}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        );
-
-        let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
-
-        // Store the oneshot sender so receive_decision can complete it.
-        {
-            let mut channels = self.response_channels.lock().unwrap();
-            channels.insert(prompt_id.clone(), tx);
-        }
-
-        // Forward the permission prompt to the parent.
-        let prompt = PermissionPrompt {
-            tool_use_id: prompt_id.clone(),
-            tool_name: tool_name.to_string(),
-            message: format!(
-                "Sub-agent '{}' requests permission to use tool '{}'",
-                self.my_label, tool_name
-            ),
-            paths: vec![],
-            turn_id: String::new(),
-        };
-        self.forward_to_parent(prompt);
-
-        // Wait for the parent's decision (with timeout).
-        match tokio::time::timeout(std::time::Duration::from_secs(120), rx).await {
-            Ok(Ok(true)) => PermissionOutcome::Permit,
-            Ok(Ok(false)) => PermissionOutcome::Deny {
-                reason: "Parent denied permission".into(),
-            },
-            Ok(Err(_)) => PermissionOutcome::Deny {
-                reason: "Permission response channel closed unexpectedly".into(),
-            },
-            Err(_) => PermissionOutcome::Deny {
-                reason: "Permission request timed out after 120s".into(),
-            },
-        }
-    }
-}
-
-/// Create [`PermissionBridge`] instances for every agent in a team's stages.
-///
-/// Each bridge maps the agent's label → agent so callers can look up the
-/// bridge for a given label when spawning team members.
-pub fn create_permission_bridges(
-    mailbox: Arc<crate::mailbox::MailboxStore>,
-    stages: &[TeamStage],
-    team_name: &str,
-) -> HashMap<String, Arc<PermissionBridge>> {
-    let mut bridges = HashMap::new();
-    for stage in stages {
-        for agent in &stage.agents {
-            if bridges.contains_key(&agent.label) {
-                continue;
-            }
-            let bridge = Arc::new(PermissionBridge::new(
-                mailbox.clone(),
-                agent.label.clone(),
-                team_name,
-            ));
-            bridges.insert(agent.label.clone(), bridge);
-        }
-    }
-    bridges
-}
 
 /// The parent session's event channel, when the composition root wired one
 /// in — see [`Coordinator::set_event_sender`].
@@ -516,11 +308,6 @@ impl Coordinator for DefaultCoordinator {
             team_dir.join("mailbox"),
         ));
         let memory = Arc::new(crate::team_memory::TeamMemoryStore::for_team_dir(&team_dir));
-
-        // Create permission bridges for each agent in the team.
-        // These bridges are used when spawning team members to bubble
-        // permission decisions up to the coordinator.
-        let _permission_bridges = create_permission_bridges(mailbox.clone(), &stages, &name);
 
         // Inject coordinator system prompt.
         let stage_names: Vec<String> = stages.iter().map(|s| s.name.clone()).collect();
@@ -1069,17 +856,6 @@ pub async fn aggregate(
             vec![("(aggregated)".into(), text, false)]
         }
     }
-}
-
-pub async fn aggregate_stage_results(
-    model: &dyn Model,
-    model_name: &str,
-    mode: AggregateMode,
-    stage_name: &str,
-    sections: &[(String, String, bool)],
-    session_id: Option<&str>,
-) -> Vec<(String, String, bool)> {
-    aggregate(model, model_name, mode, stage_name, sections, session_id).await
 }
 
 async fn pick_best(

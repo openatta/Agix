@@ -364,14 +364,6 @@ impl SkillManager {
         std::fs::read_to_string(&info.path).ok()
     }
 
-    /// Generate a prompt for a skill invocation with arguments.
-    /// Substitutes `{args}` placeholder in the skill content.
-    pub fn expand_skill(&self, name: &str, args: &str) -> Option<String> {
-        let content = self.get_skill_content(name)?;
-        let expanded = content.replace("{args}", args);
-        Some(expanded)
-    }
-
     /// Activate skills whose `paths` patterns match any of the given `file_paths`.
     ///
     /// For each loaded skill with a non-empty `paths` field, checks whether any
@@ -425,19 +417,6 @@ impl SkillManager {
         }
 
         activated
-    }
-
-    /// Build a prompt block listing all loaded skills with their descriptions.
-    pub fn build_skills_prompt(&self) -> Option<String> {
-        let skills = self.list();
-        if skills.is_empty() {
-            return None;
-        }
-        let mut prompt = String::from("## Available Skills\n\n");
-        for s in &skills {
-            prompt.push_str(&format!("- **{}**: {}\n", s.name, s.description));
-        }
-        Some(prompt)
     }
 
     /// Parse a SKILL.md file at the given path, using the core frontmatter parser.

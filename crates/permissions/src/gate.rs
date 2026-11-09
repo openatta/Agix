@@ -97,10 +97,6 @@ pub struct PermissionGate {
     rules: Arc<RwLock<RuleSet>>,
     /// `Auto` 模式生效时的 classifier。`None` 时 Auto 行为同 Default（fall to ask）。
     auto_classifier: Option<Arc<dyn AutoClassifier>>,
-    /// Denial counter for tracking and circuit-breaking: tracks consecutive
-    /// and total denials to decide when to fall back from auto-mode to prompting.
-    denial_count: std::sync::atomic::AtomicU64,
-    total_denial_count: std::sync::atomic::AtomicU64,
     deny_rules_only: bool,
 }
 
@@ -110,8 +106,6 @@ impl PermissionGate {
         Self {
             rules: Arc::new(RwLock::new(rules)),
             auto_classifier: None,
-            denial_count: std::sync::atomic::AtomicU64::new(0),
-            total_denial_count: std::sync::atomic::AtomicU64::new(0),
             deny_rules_only: false,
         }
     }
@@ -131,46 +125,9 @@ impl PermissionGate {
         Self::new(RuleSet::empty())
     }
 
-    /// Record a permission denial for tracking.
-    pub fn record_denial(&self) {
-        self.denial_count
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.total_denial_count
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// Record a success — resets the consecutive denial counter.
-    pub fn record_success(&self) {
-        self.denial_count
-            .store(0, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// Number of consecutive denials (reset on success).
-    pub fn consecutive_denials(&self) -> u64 {
-        self.denial_count.load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    /// Total denials since gate creation.
-    pub fn total_denials(&self) -> u64 {
-        self.total_denial_count
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    /// Check if the denial threshold has been exceeded (consecutive denials >= max).
-    pub fn should_fallback_to_prompting(&self) -> bool {
-        self.consecutive_denials() >= 3 || self.total_denials() >= 20
-    }
-
     /// 注入 Auto mode classifier。CLI 在 permission_mode == Auto 时构造 LLM-based
     /// 实现；测试可以注入 mock。
     pub fn with_auto_classifier(mut self, classifier: Arc<dyn AutoClassifier>) -> Self {
-        self.auto_classifier = Some(classifier);
-        self
-    }
-
-    /// 注入 YOLO classifier 用于 Yolo 权限模式。与 with_auto_classifier 互不干扰；
-    /// Yolo 模式使用 YoloClassifier 的特定规则，Auto 模式使用通用 LLM-based classifier。
-    pub fn with_yolo_classifier(mut self, classifier: Arc<dyn AutoClassifier>) -> Self {
         self.auto_classifier = Some(classifier);
         self
     }

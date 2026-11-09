@@ -310,9 +310,8 @@ impl Tool for SkillTool {
         // — no-op on `Permission` implementations without a backing rule
         // engine (see `Permission::add_temporary_allow`'s doc comment).
         // Only meaningful for this inline path: a `context: fork` skill's
-        // sub-agent gets its own `Permission` instance (`AlwaysPermit` or a
-        // team `PermissionBridge`, never the parent's), so injecting a rule
-        // into `ctx.permission` here wouldn't reach it — see
+        // sub-agent gets its own `Permission` instance, never the parent's,
+        // so injecting a rule into `ctx.permission` here wouldn't reach it — see
         // `AgentTool::permission_handler`.
         //
         // Each entry is parsed as a permission rule string, so both `Bash`

@@ -413,9 +413,6 @@ pub struct Agent {
     pub(crate) orphaned_permission: Option<crate::agent::PermissionDecision>,
     /// Whether we've already handled the orphaned permission this session.
     pub(crate) has_handled_orphaned_permission: bool,
-    /// Message replay / acknowledgement state.
-    #[allow(dead_code)]
-    pub(crate) messages_to_ack: Vec<String>,
     /// Output token budget target (e.g., 500k, 2M). `None` = no budget active.
     pub(crate) output_token_target: Option<u64>,
     /// A target was set by the message being handled and the model has not
@@ -820,11 +817,6 @@ impl Agent {
         tracing::debug!("Startup warmup complete");
     }
 
-    /// Get current session summary. External interface (read-only).
-    pub fn session_info(&self) -> session::session::SessionSummary {
-        self.session.summary()
-    }
-
     /// List persisted sessions. External interface (read-only, from HistoryStore).
     pub async fn list_sessions(
         &self,
@@ -917,11 +909,6 @@ impl Agent {
         &self.settings
     }
 
-    /// Switch the model at runtime (for `/model` slash command).
-    pub fn set_model(&mut self, model_name: String) {
-        Arc::make_mut(&mut self.settings).model.model_name = model_name;
-    }
-
     /// Access telemetry recorder for external event recording.
     pub fn telemetry(&self) -> &dyn TelemetryRecorder {
         &self.telemetry_handle
@@ -944,10 +931,6 @@ impl Agent {
 
     pub fn skills(&self) -> &dyn base::interface::skill_catalog::SkillCatalog {
         self.skills.as_ref()
-    }
-
-    pub fn skills_arc(&self) -> Arc<dyn base::interface::skill_catalog::SkillCatalog> {
-        self.skills.clone()
     }
 
     /// Access the hooks runner (read-only).
@@ -1015,16 +998,6 @@ impl Agent {
             cancel,
         )
         .await
-    }
-
-    /// Run hooks for a lifecycle event.
-    /// Returns hook outputs that may block actions or inject text.
-    pub async fn run_hooks(
-        &self,
-        event: hooks::HookEvent,
-        input: &hooks::HookInput,
-    ) -> hooks::runner::HookRunResult {
-        self.hooks.run(event, input).await
     }
 
     /// `/help` — list all available slash commands.
@@ -2622,7 +2595,6 @@ impl Builder {
                 team_id: None,
                 orphaned_permission: None,
                 has_handled_orphaned_permission: false,
-                messages_to_ack: Vec::new(),
                 output_token_target: None,
                 output_token_target_unannounced: false,
                 repeat_guard: Default::default(),

@@ -124,12 +124,6 @@ impl Turn {
     }
 }
 
-/// 解析 `.test` 文件。
-pub fn parse_test_file(path: &std::path::Path) -> anyhow::Result<TestCase> {
-    let content = std::fs::read_to_string(path)?;
-    parse_test_script(&content, &path.display().to_string())
-}
-
 /// 解析 `.test` 脚本内容。
 pub fn parse_test_script(content: &str, source_path: &str) -> anyhow::Result<TestCase> {
     let content = content.trim();

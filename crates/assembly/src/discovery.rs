@@ -129,17 +129,6 @@ pub fn write_lock_file(lock_path: &Path, socket_path: &Path) -> Result<DaemonLoc
     Ok(lock)
 }
 
-/// Read an existing lock file.
-#[allow(dead_code)]
-pub fn read_lock_file(lock_path: &Path) -> Result<Option<DaemonLock>, LockFileError> {
-    if !lock_path.exists() {
-        return Ok(None);
-    }
-    let bytes = fs::read(lock_path).map_err(LockFileError::Io)?;
-    let lock: DaemonLock = serde_json::from_slice(&bytes).map_err(LockFileError::Json)?;
-    Ok(Some(lock))
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum LockFileError {
     #[error("io: {0}")]
@@ -324,6 +313,15 @@ mod tests {
     use super::*;
     use base::process_identity::process_start_time;
     use tempfile::TempDir;
+
+    fn read_lock_file(lock_path: &Path) -> Result<Option<DaemonLock>, LockFileError> {
+        if !lock_path.exists() {
+            return Ok(None);
+        }
+        let bytes = fs::read(lock_path).map_err(LockFileError::Io)?;
+        let lock: DaemonLock = serde_json::from_slice(&bytes).map_err(LockFileError::Json)?;
+        Ok(Some(lock))
+    }
 
     /// A short-lived child process — gives tests a real, distinct, live pid
     /// (with its own real start time) instead of reusing the test's own,

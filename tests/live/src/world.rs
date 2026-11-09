@@ -58,14 +58,6 @@ impl World {
         write_json(&self.global_root().join("settings.json"), settings)
     }
 
-    pub fn write_scene_settings(
-        &self,
-        scene: &str,
-        settings: &serde_json::Value,
-    ) -> anyhow::Result<()> {
-        write_json(&self.config_root(scene).join("settings.json"), settings)
-    }
-
     pub fn write_project_settings(
         &self,
         project: &str,

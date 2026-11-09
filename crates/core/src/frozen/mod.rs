@@ -25,7 +25,7 @@ pub use self::skill::{
     SkillSource,
 };
 
-use self::memory::{collect_memory, collect_memory_files_with, load_all_memory_files};
+use self::memory::{collect_memory, collect_memory_files_with};
 use self::utils::truncate_chars;
 use crate::paths::ConfigPaths;
 use std::path::{Path, PathBuf};
@@ -67,9 +67,6 @@ pub struct FrozenContext {
     pub memory_dir: PathBuf,
     /// 上面目录里 MEMORY.md 的内容（仅当存在时加载）。注入 system prompt。
     pub memory_index: Option<String>,
-    /// Topic memory files selected for the current user prompt. MEMORY.md is
-    /// only an index; these files provide the matched details.
-    pub relevant_memories: Vec<MemoryFileEntry>,
     /// Memory file paths already surfaced in prior turns. Used to deduplicate
     /// and avoid re-injecting the same memories every turn.
     pub already_surfaced: std::collections::HashSet<String>,
@@ -255,15 +252,6 @@ impl FrozenContext {
         // memory_dir = <global_root>/memory/<sha256(canonical_cwd)[..16]>/（不分 scene）
         let (memory_dir, memory_index) = collect_memory(&cwd, &paths.global_data_dir).await;
 
-        // Pre-load all memory files from the project memory dir so they
-        // are available for injection into the system prompt. Files are capped
-        // at 8KB each, up to 5 files.
-        let relevant_memories = if memory_dir.exists() {
-            load_all_memory_files(&memory_dir, 5).await
-        } else {
-            Vec::new()
-        };
-
         // Output style -- load by name from project then user dir.
         let output_style = match opts.output_style.as_deref() {
             Some(name) if !name.trim().is_empty() => collect_output_style(&cwd, name, paths).await,
@@ -288,7 +276,6 @@ impl FrozenContext {
             skills,
             memory_dir,
             memory_index,
-            relevant_memories,
             already_surfaced: std::collections::HashSet::new(),
             output_style,
         }
@@ -296,11 +283,6 @@ impl FrozenContext {
 }
 
 impl FrozenContext {
-    pub fn with_relevant_memories(mut self, memories: Vec<MemoryFileEntry>) -> Self {
-        self.relevant_memories = memories;
-        self
-    }
-
     /// Re-run just the git-derived fields (branch/status/log/worktree-ness),
     /// leaving memory/skills/output-style untouched. Exists to partially
     /// relax this module's "not refreshed during a session" characteristic

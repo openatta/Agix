@@ -73,11 +73,7 @@ pub enum Reply {
     Blocks(Vec<Block>),
     /// An HTTP failure — the shape the engine's retry and fallback paths key
     /// on, and one no real provider can be asked for on demand.
-    Status {
-        code: u16,
-        body: String,
-        headers: Vec<(String, String)>,
-    },
+    Status { code: u16, body: String },
 }
 
 impl Reply {
@@ -93,15 +89,7 @@ impl Reply {
         Self::Status {
             code,
             body: body.into(),
-            headers: Vec::new(),
         }
-    }
-
-    pub fn with_header(mut self, name: &str, value: &str) -> Self {
-        if let Self::Status { headers, .. } = &mut self {
-            headers.push((name.to_string(), value.to_string()));
-        }
-        self
     }
 }
 
@@ -303,11 +291,7 @@ impl ProviderStub {
 
         let reply = self.next_reply_for(&body);
         let response = match reply {
-            Some(Reply::Status {
-                code,
-                body,
-                headers,
-            }) => http_response(code, &headers, &body),
+            Some(Reply::Status { code, body }) => http_response(code, &body),
             Some(Reply::Blocks(blocks)) => sse_response(&blocks),
             // A turn that outran its script is a real failure, and the mark
             // says so in whatever the test was going to assert on anyway.
@@ -392,11 +376,8 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
 }
 
-pub(crate) fn http_response(code: u16, headers: &[(String, String)], body: &str) -> String {
+pub(crate) fn http_response(code: u16, body: &str) -> String {
     let mut out = format!("HTTP/1.1 {code} X\r\n");
-    for (name, value) in headers {
-        out.push_str(&format!("{name}: {value}\r\n"));
-    }
     out.push_str("content-type: text/plain\r\n");
     out.push_str(&format!("content-length: {}\r\n", body.len()));
     out.push_str("connection: close\r\n\r\n");

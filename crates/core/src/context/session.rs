@@ -1,12 +1,5 @@
 //! 会话可变状态 + 文件快照 + 副作用注入接口。
 
-/// Trait for persistent running-task storage — implemented by the `task` crate.
-pub trait RunningTaskPersist: Send + Sync + std::fmt::Debug {
-    fn persist_task(&self, task_data: serde_json::Value) -> Result<(), String>;
-    fn remove_task(&self, task_id: &str) -> Result<(), String>;
-    fn load_stale_tasks(&self) -> Vec<serde_json::Value>;
-}
-
 use crate::error::EffectError;
 use crate::permission::PermissionMode;
 use crate::session::SessionId;
@@ -53,9 +46,6 @@ pub struct SessionState {
     /// 为 true 的工具默认仅暴露 name + description；模型用 `ToolSearch` 命中后
     /// 会被加进这里，下一次 turn 的 build_request 把它升级到 full schema。
     activated_tools: std::sync::Mutex<HashSet<String>>,
-    /// 文件持久化 running task store。注入来自 `task` crate。
-    /// 通过 `RunningTaskPersist` trait 避免循环依赖。
-    pub running_task_store: Option<std::sync::Arc<dyn RunningTaskPersist>>,
     /// 后台跑的 sub-agent 任务。AgentTool 在 background=true 时把每个
     /// 任务塞进来；TaskOutput 工具按 id 查；TaskStop 触发 cancel。
     running_tasks: std::sync::Mutex<HashMap<String, std::sync::Arc<RunningTask>>>,
@@ -75,9 +65,6 @@ pub struct SessionState {
     /// each under the key it can be retracted by — see
     /// [`SessionState::post_notice`].
     notices: std::sync::Mutex<Vec<(Option<String>, String)>>,
-    /// 本 turn 内的权限拒绝累积。Engine.run_turn 开头 reset，
-    /// turn_complete 时打包到事件里。
-    permission_denials: std::sync::Mutex<Vec<PermissionDenial>>,
     /// 文件历史快照。每次 FileWrite/FileEdit/NotebookEdit 改文件
     /// 之前，先把"原内容"快照进来（按 turn 编号 + 文件路径分桶）。`/rewind`
     /// 命令展示并恢复。新文件首次写入时存 `None` 作为"原状态" → restore = 删除
@@ -85,24 +72,10 @@ pub struct SessionState {
     file_snapshots: std::sync::Mutex<FileSnapshotRegistry>,
     /// 当前 turn 编号。Engine.run_turn 开头 +1；快照记录时取此值。
     current_turn: std::sync::Mutex<u64>,
-    /// Last turn number when TodoWrite was called. None if never called within
-    /// this session. Used by engine to inject todo reminders if stale for 10+ turns.
-    last_todo_write_turn: std::sync::Mutex<Option<u64>>,
-    /// Completed-task count at which the last verification nudge was
-    /// injected. Used by engine to avoid re-nudging every turn — only nudge
-    /// when the delta since last nudge >= 3.
-    last_verification_nudge_count: std::sync::Mutex<u32>,
     /// Current active plan text (set by EnterPlanMode, cleared by
     /// ExitPlanMode). Persisted to disk via plan_store for resume support.
     /// Engine injects this into the system reminder on follow-up turns.
     plan_text: std::sync::Mutex<Option<String>>,
-    /// Current active plan slug (derived from plan text, usable as
-    /// filename base). Set/cleared alongside plan_text.
-    plan_slug: std::sync::Mutex<Option<String>>,
-    /// 项目级授权积累的沙盒放行路径。用户在 Ask 对话框选
-    /// "allow for this project" 后，Engine 向此列表添加路径。Bash 工具读取并
-    /// 注入 sandbox profile 的 additional_writable。
-    sandbox_allow_writes: std::sync::Mutex<Vec<PathBuf>>,
     /// 已读取文件缓存。`FileRead` 成功后记录文件路径
     /// 与当时的 mtime；`FileEdit` / `FileWrite` 的 `validate_input` 用它做
     /// staleness 检测。
@@ -209,14 +182,6 @@ pub struct FileReadEntry {
     pub written: bool,
 }
 
-/// 权限拒绝记录。一次工具调用因权限被拒时记一行。
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct PermissionDenial {
-    pub tool_name: String,
-    pub tool_use_id: String,
-    pub reason: String,
-}
-
 impl SessionState {
     pub fn new(cwd: PathBuf) -> Self {
         Self {
@@ -232,7 +197,6 @@ impl SessionState {
             permission_mode: std::sync::Mutex::new(PermissionMode::Default),
             todos: std::sync::Mutex::new(Vec::new()),
             activated_tools: std::sync::Mutex::new(HashSet::new()),
-            running_task_store: None,
             running_tasks: std::sync::Mutex::new(HashMap::new()),
             task_events: tokio::sync::broadcast::channel(256).0,
             notices: std::sync::Mutex::new(Vec::new()),
@@ -240,14 +204,9 @@ impl SessionState {
             unrecorded_goal_changes: std::sync::Mutex::new(Vec::new()),
             goal_events: tokio::sync::broadcast::channel(64).0,
             turn_origin: std::sync::Mutex::new(super::goal::TurnOrigin::default()),
-            permission_denials: std::sync::Mutex::new(Vec::new()),
             file_snapshots: std::sync::Mutex::new(FileSnapshotRegistry::default()),
             current_turn: std::sync::Mutex::new(0),
-            last_todo_write_turn: std::sync::Mutex::new(None),
-            last_verification_nudge_count: std::sync::Mutex::new(0),
             plan_text: std::sync::Mutex::new(None),
-            plan_slug: std::sync::Mutex::new(None),
-            sandbox_allow_writes: std::sync::Mutex::new(Vec::new()),
             read_cache: std::sync::Mutex::new(HashMap::new()),
             last_read_path: std::sync::Mutex::new(None),
             structured_output: std::sync::Mutex::new(None),
@@ -354,56 +313,6 @@ impl SessionState {
             }
         }
         Ok(restored)
-    }
-
-    /// Record that a tool call was denied in this turn.
-    pub fn record_denial(
-        &self,
-        tool_name: impl Into<String>,
-        tool_use_id: impl Into<String>,
-        reason: impl Into<String>,
-    ) {
-        self.permission_denials
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(PermissionDenial {
-                tool_name: tool_name.into(),
-                tool_use_id: tool_use_id.into(),
-                reason: reason.into(),
-            });
-    }
-
-    pub fn drain_denials(&self) -> Vec<PermissionDenial> {
-        std::mem::take(
-            &mut *self
-                .permission_denials
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()),
-        )
-    }
-
-    /// Check if any tool has been denied 3+ times in this session.
-    /// Returns the tool name and count if the escalation threshold is met.
-    pub fn check_denial_escalation(&self) -> Option<(String, usize)> {
-        let denials = self
-            .permission_denials
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-        for d in denials.iter() {
-            *counts.entry(d.tool_name.clone()).or_insert(0) += 1;
-        }
-        counts.into_iter().find(|(_, c)| *c >= 3)
-    }
-
-    /// 注册一个新的后台子 Agent task；返回 Arc 让 caller 持着写 output。
-    pub fn register_running_task(&self, task_id: impl Into<String>) -> std::sync::Arc<RunningTask> {
-        self.register_task(
-            task_id,
-            TaskType::Agent,
-            tokio_util::sync::CancellationToken::new(),
-            serde_json::Value::Null,
-        )
     }
 
     /// Register work this session is running, under `cancel` — the token the
@@ -732,43 +641,6 @@ impl SessionState {
         view
     }
 
-    /// Persist a running task's current state to disk (fire-and-forget).
-    /// TODO: running_task_store persistence — downcast in task crate layer
-    pub fn persist_running_task(&self, _task: &RunningTask) {
-        // Stub: task crate injects concrete store and handles this.
-    }
-
-    /// Remove a running task's persisted file (fire-and-forget).
-    /// TODO: running_task_store persistence — downcast in task crate layer
-    pub fn remove_running_task_persistence(&self, _task_id: &str) {
-        // Stub: task crate injects concrete store and handles this.
-    }
-
-    /// Load stale running tasks from disk (crash recovery).
-    /// Returns tasks that survived a process restart, with status set to
-    /// `Failed("process restarted")`.
-    /// TODO: Load stale running tasks from disk (crash recovery).
-    /// Needs concrete RunningTaskStore type from `task` crate.
-    /// The store is injected via `with_running_task_store` as `Arc<dyn Any>`.
-    /// Downcast to the concrete type in the `task` crate's integration layer.
-    pub fn load_stale_running_tasks(&self) -> Vec<serde_json::Value> {
-        // Stub: task crate injects concrete store and handles this.
-        Vec::new()
-    }
-
-    /// Rehydrate a stale `RunningTask` from disk data and register it.
-    /// Tasks flagged `Failed("process restarted")` are injected into
-    /// `self.running_tasks` so `TaskOutput` can report the outcome.
-    /// Rehydrate a stale `RunningTask` from disk data and register it.
-    /// TODO: Needs concrete RunningTaskData from `task` crate.
-    /// Caller (in task crate) should handle this via the public fields.
-    pub fn insert_running_task(&self, task_id: String, task: std::sync::Arc<RunningTask>) {
-        self.running_tasks
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(task_id, task);
-    }
-
     /// 找一个 running task。返回 Arc 让 caller 读快照（output / status）。
     pub fn find_running_task(&self, task_id: &str) -> Option<std::sync::Arc<RunningTask>> {
         self.running_tasks
@@ -843,15 +715,6 @@ impl SessionState {
         true
     }
 
-    /// Inject a file-backed running task store for crash recovery (implements [`RunningTaskPersist`]).
-    pub fn with_running_task_store(
-        mut self,
-        store: std::sync::Arc<dyn RunningTaskPersist>,
-    ) -> Self {
-        self.running_task_store = Some(store);
-        self
-    }
-
     /// Builder：设初始权限模式（CLI 启动时从 settings/CLI 注入）。
     pub fn with_permission_mode(self, mode: PermissionMode) -> Self {
         *self
@@ -893,41 +756,6 @@ impl SessionState {
         }
     }
 
-    /// Record that TodoWrite was called on the current turn. Called by engine
-    /// when it processes TodoWrite tool results.
-    pub fn record_todo_write_turn(&self, turn: u64) {
-        *self
-            .last_todo_write_turn
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(turn);
-    }
-
-    /// Returns the turn number since last TodoWrite, or None if never called
-    /// or current_turn is not advanced enough to compute.
-    pub fn turns_since_todo_write(&self) -> Option<u64> {
-        let guard = self
-            .last_todo_write_turn
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let last = (*guard)?;
-        let current = *self.current_turn.lock().unwrap_or_else(|e| e.into_inner());
-        Some(current.saturating_sub(last))
-    }
-
-    /// Read + update the verification nudge counter atomically. Returns the
-    /// difference between current and last-nudged completed-task count.
-    pub fn check_verification_nudge(&self, completed_count: u32) -> u32 {
-        let mut last = self
-            .last_verification_nudge_count
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let delta = completed_count.saturating_sub(*last);
-        if delta >= 3 {
-            *last = completed_count;
-        }
-        delta
-    }
-
     /// Set the active plan text (called by EnterPlanMode tool).
     pub fn set_plan_text(&self, plan: String) {
         *self.plan_text.lock().unwrap_or_else(|e| e.into_inner()) = Some(plan);
@@ -941,40 +769,6 @@ impl SessionState {
     /// Read the current plan text, if any.
     pub fn plan_text(&self) -> Option<String> {
         self.plan_text
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-    }
-
-    /// Set the active plan slug (called by EnterPlanMode tool).
-    pub fn set_plan_slug(&self, slug: String) {
-        *self.plan_slug.lock().unwrap_or_else(|e| e.into_inner()) = Some(slug);
-    }
-
-    /// Clear the active plan slug (called by ExitPlanMode tool).
-    pub fn clear_plan_slug(&self) {
-        *self.plan_slug.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    }
-
-    /// Read the current plan slug, if any.
-    pub fn plan_slug(&self) -> Option<String> {
-        self.plan_slug
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-    }
-
-    /// 添加一个沙盒放写路径（项目级授权时调用）。
-    pub fn add_sandbox_allow_write(&self, path: PathBuf) {
-        self.sandbox_allow_writes
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(path);
-    }
-
-    /// 读取所有沙盒放写路径。
-    pub fn sandbox_allow_writes(&self) -> Vec<PathBuf> {
-        self.sandbox_allow_writes
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
@@ -1131,22 +925,6 @@ impl SessionState {
         for name in names {
             set.insert(name);
         }
-    }
-
-    /// 状态汇总：(总数, pending, in_progress, completed)
-    pub fn todos_summary(&self) -> (usize, usize, usize, usize) {
-        let v = self.todos.lock().unwrap_or_else(|e| e.into_inner());
-        let mut p = 0;
-        let mut i = 0;
-        let mut c = 0;
-        for t in v.iter() {
-            match t.status {
-                TodoStatus::Pending => p += 1,
-                TodoStatus::InProgress => i += 1,
-                TodoStatus::Completed => c += 1,
-            }
-        }
-        (v.len(), p, i, c)
     }
 }
 

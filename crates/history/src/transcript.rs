@@ -6,7 +6,7 @@
 
 use crate::entry::{EnvelopedEntry, LogEntry};
 use base::id::Id;
-use base::message::{ContentBlock, Message, StopReason, ToolResultContent};
+use base::message::{ContentBlock, Message, ToolResultContent};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResumeProjectionReport {
@@ -330,29 +330,6 @@ pub fn resume_projection_report_with(
     report
 }
 
-/// Extract a compact summary payload from a projected message list.
-///
-/// Current compactor emits a single user message containing the summary marker
-/// and markdown body. We persist that payload verbatim in the transcript log
-/// so later replays can reconstruct the same API view.
-pub fn compact_summary_from_messages(messages: &[Message]) -> Option<Vec<ContentBlock>> {
-    let Message::User { content } = messages.first()? else {
-        return None;
-    };
-    if content.is_empty() {
-        return None;
-    }
-    Some(content.clone())
-}
-
-/// Recover the latest assistant stop reason from projected messages.
-pub fn latest_stop_reason(messages: &[Message]) -> Option<StopReason> {
-    messages.iter().rev().find_map(|m| match m {
-        Message::Assistant { stop_reason, .. } => *stop_reason,
-        _ => None,
-    })
-}
-
 /// Count projected API messages through the entry with `target_id`.
 ///
 /// This lets session-memory compaction use a stable transcript entry id while
@@ -654,6 +631,7 @@ mod tests {
     use super::*;
     use crate::entry::EnvelopedEntry;
     use base::id::Id;
+    use base::message::StopReason;
 
     #[test]
     fn compact_resets_view_and_keeps_later_turns() {

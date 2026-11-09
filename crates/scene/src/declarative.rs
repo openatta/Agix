@@ -21,10 +21,8 @@ use base::interface::prompt::PromptBlock;
 use base::interface::scene::{
     ExecutionParams, ReminderContext, Scene, ScenePromptContext, TokenBudget,
 };
-use base::tool::Tool;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 pub const SCENE_FILE: &str = "scene.json";
 pub const PROMPT_FILE: &str = "prompt.md";
@@ -259,7 +257,6 @@ pub struct DeclarativeScene {
     reminders: Vec<Reminder>,
     interactive: bool,
     bundled_skills: Option<Vec<String>>,
-    extra_tools: Vec<Arc<dyn Tool>>,
 }
 
 impl std::fmt::Debug for DeclarativeScene {
@@ -294,13 +291,6 @@ impl DeclarativeScene {
         prompt_md: &str,
     ) -> Result<Self, SceneLoadError> {
         Self::parse(dir, scene_json, prompt_md, IdRule::DirSafe)
-    }
-
-    /// Tools this scene registers into its sessions — a plugin's own
-    /// exports, so its scene can name them. See [`Scene::extra_tools`].
-    pub fn with_extra_tools(mut self, tools: Vec<Arc<dyn Tool>>) -> Self {
-        self.extra_tools = tools;
-        self
     }
 
     pub fn dir(&self) -> &Path {
@@ -414,7 +404,6 @@ impl DeclarativeScene {
             reminders: file.reminders,
             interactive: file.interactive,
             bundled_skills: file.bundled_skills,
-            extra_tools: Vec::new(),
         })
     }
 }
@@ -591,10 +580,6 @@ impl Scene for DeclarativeScene {
 
     fn deferred_tools(&self) -> Vec<String> {
         self.deferred_tools.clone()
-    }
-
-    fn extra_tools(&self) -> Vec<Arc<dyn Tool>> {
-        self.extra_tools.clone()
     }
 
     fn token_budget(&self) -> TokenBudget {

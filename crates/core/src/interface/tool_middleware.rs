@@ -131,11 +131,6 @@ impl ToolExec {
         });
         self.cancel = child;
     }
-
-    /// Replace the signal outright, for a wrapper that has its own.
-    pub fn set_cancel(&mut self, cancel: CancellationToken) {
-        self.cancel = cancel;
-    }
 }
 
 type Terminal<'a> = dyn Fn(CancellationToken) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>>

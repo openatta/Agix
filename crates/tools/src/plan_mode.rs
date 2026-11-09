@@ -115,7 +115,6 @@ impl Tool for EnterPlanModeTool {
         ctx.session.set_permission_mode(PermissionMode::Plan);
         // Clear any stale plan text from a previous plan session.
         ctx.session.clear_plan_text();
-        ctx.session.clear_plan_slug();
 
         Ok(ToolResult::text(
             "Entered plan mode. You should now focus on exploring the codebase \
@@ -215,7 +214,6 @@ impl Tool for ExitPlanModeTool {
         if plan_mode_active(&ctx) {
             ctx.session.set_permission_mode(PermissionMode::Default);
             ctx.session.clear_plan_text();
-            ctx.session.clear_plan_slug();
             // `allowed_prompts` are the permission grants the model is asking
             // for as part of leaving plan mode ("I will need to run the test
             // suite").
