@@ -10,7 +10,7 @@ use notify::{recommended_watcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Receiver;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use tracing;
 
 /// Append-only log of changed-skill-file events, tagged with the generation
@@ -57,7 +57,10 @@ impl SkillWatcher {
     /// value, not `0`: their `SkillManager` was just built from a fresh disk
     /// scan, so it doesn't need to replay history that predates it.
     pub fn current_generation(&self) -> u64 {
-        self.log.lock().unwrap().generation
+        self.log
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .generation
     }
 
     /// Start watching the given directories for skill-file changes.
@@ -122,22 +125,19 @@ impl SkillWatcher {
     /// here never consumes entries out from under another reader.
     pub fn check_and_reload_since(&self, manager: &SkillManager, last_seen: &AtomicU64) -> usize {
         let (paths, new_generation) = {
-            let log = self.log.lock().unwrap();
+            let log = self.log.lock().unwrap_or_else(PoisonError::into_inner);
             let since = last_seen.load(Ordering::Acquire);
             if since >= log.generation {
                 return 0;
             }
-            let mut paths: Vec<&PathBuf> = log
+            let mut seen = std::collections::HashSet::new();
+            let paths: Vec<PathBuf> = log
                 .entries
                 .iter()
-                .filter(|(gen, _)| *gen > since)
-                .map(|(_, p)| p)
+                .filter(|(gen, p)| *gen > since && seen.insert(p))
+                .map(|(_, p)| p.clone())
                 .collect();
-            paths.dedup();
-            (
-                paths.into_iter().cloned().collect::<Vec<_>>(),
-                log.generation,
-            )
+            (paths, log.generation)
         };
         if paths.is_empty() {
             last_seen.store(new_generation, Ordering::Release);
@@ -209,4 +209,22 @@ fn is_skill_file(path: &Path) -> bool {
         .and_then(|e| e.to_str())
         .map(|e| e == "md")
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_file_changed_several_times_is_reloaded_once() {
+        let watcher = SkillWatcher::new();
+        {
+            let mut log = watcher.log.lock().unwrap();
+            for (generation, name) in [(1, "a.md"), (2, "b.md"), (3, "a.md"), (4, "a.md")] {
+                log.generation = generation;
+                log.entries.push((generation, PathBuf::from(name)));
+            }
+        }
+        assert_eq!(watcher.check_and_reload(&SkillManager::new()), 2);
+    }
 }

@@ -10,3 +10,4 @@ pub mod tool;
 pub mod watcher;
 
 pub use module::SkillsModule;
+pub use tool::{expand_for_invocation, ExpandError};

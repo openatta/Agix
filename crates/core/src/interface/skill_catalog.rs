@@ -6,7 +6,20 @@
 
 use std::path::PathBuf;
 
+use futures::future::BoxFuture;
+
 use crate::frozen::SkillEntry;
+use crate::interface::permission::Permission;
+use crate::interface::tool::ToolContext;
+
+/// One invocation's worth of a skill: the text the conversation receives,
+/// and the `(tool, pattern)` grants its `allowed-tools` makes for the rest of
+/// the turn — already narrowed to what its source may grant.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SkillExpansion {
+    pub text: String,
+    pub grants: Vec<(String, Option<String>)>,
+}
 
 pub trait SkillCatalog: Send + Sync {
     /// Sorted by name, so the listing a prompt carries is stable.
@@ -14,6 +27,32 @@ pub trait SkillCatalog: Send + Sync {
     fn get(&self, name: &str) -> Option<SkillEntry>;
     /// The body a skill expands to when invoked.
     fn body(&self, name: &str) -> Option<String>;
+    /// Expand `name` for an invocation with `args`, running what its body
+    /// asks to run under `ctx` and `permission`. `None` when the catalog does
+    /// not hold it; `Err` is a message for the model, such as a bundled file
+    /// that escapes the skill's folder.
+    fn expand<'a>(
+        &'a self,
+        name: &'a str,
+        args: &'a str,
+        ctx: &'a ToolContext,
+        permission: &'a dyn Permission,
+    ) -> BoxFuture<'a, Option<Result<SkillExpansion, String>>> {
+        let _ = (ctx, permission);
+        Box::pin(async move {
+            let entry = self.get(name)?;
+            let body = self.body(name)?;
+            let text = crate::frozen::skill::expand_skill_vars_named(
+                &body,
+                args,
+                entry.arguments.as_deref().unwrap_or(&[]),
+            );
+            Some(Ok(SkillExpansion {
+                text,
+                grants: Vec::new(),
+            }))
+        })
+    }
     /// Reloads skills whose files changed since the last call; how many did.
     fn reload_changed(&self) -> usize;
     /// Skills found under `paths` that the catalog did not hold yet.

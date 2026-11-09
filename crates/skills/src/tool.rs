@@ -7,6 +7,7 @@
 use async_trait::async_trait;
 use base::error::ToolError;
 use base::interface::agent_spawner::AgentSpawner;
+use base::interface::skill_catalog::SkillExpansion;
 use base::tool::{ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolResultContent};
 use serde_json::Value;
 use std::sync::Arc;
@@ -123,85 +124,50 @@ impl Tool for SkillTool {
             .as_str()
             .ok_or_else(|| ToolError::Validation("skill name required".into()))?;
         let args = input["args"].as_str().unwrap_or("");
+        let not_found = || ToolError::NotFound(format!("Skill '{skill_name}' not found."));
 
-        // Look up the skill info to check disable_model_invocation
-        let skills = self.skill_manager.list();
-        let skill_info = skills.iter().find(|s| s.name == skill_name);
-        if skill_info.is_some_and(|s| !self.admission.admits(&s.name, &s.path)) {
-            return Err(ToolError::NotFound(format!(
-                "Skill '{skill_name}' not found."
+        let info = self
+            .skill_manager
+            .get(skill_name)
+            .filter(|s| self.admission.admits(&s.name, &s.path))
+            .ok_or_else(not_found)?;
+        if info.disable_model_invocation {
+            return Err(ToolError::Denied(format!(
+                "Skill '{skill_name}' has disable_model_invocation set. \
+                 It can only be invoked by the user via slash command."
             )));
         }
 
-        // Check disable_model_invocation: if true, model cannot invoke this skill
-        let context_mode = skill_info.and_then(|s| s.context.clone());
-        if let Some(info) = skill_info {
-            if info.disable_model_invocation {
-                return Err(ToolError::Denied(format!(
-                    "Skill '{skill_name}' has disable_model_invocation set. \
-                     It can only be invoked by the user via slash command."
-                )));
+        let expansion = match expand_for_invocation(
+            &self.skill_manager,
+            &info,
+            args,
+            &ctx,
+            self.permission.as_deref(),
+        )
+        .await
+        {
+            Ok(expansion) => expansion,
+            Err(ExpandError::NotFound) => return Err(not_found()),
+            Err(ExpandError::Rejected(msg)) => {
+                return Ok(ToolResult {
+                    content: ToolResultContent::Text(msg),
+                    is_error: true,
+                    ..Default::default()
+                });
             }
-        }
-
-        // Bundled reference files (`files:` frontmatter): resolved, safety-
-        // validated (must stay inside the skill's own folder), read, and
-        // budget-capped once here — shared by both the fork and inline paths
-        // below, since neither should silently skip a declared file that
-        // escapes its folder or can't be read (see
-        // `build_bundled_files_injection`'s doc comment).
-        let bundled_files_text = match skill_info {
-            Some(info) => {
-                match build_bundled_files_injection(&info.path, skill_name, &*ctx.exec.filesystem)
-                    .await
-                {
-                    Ok(text) => text,
-                    Err(msg) => {
-                        return Ok(ToolResult {
-                            content: ToolResultContent::Text(msg),
-                            is_error: true,
-                            ..Default::default()
-                        });
-                    }
-                }
-            }
-            None => String::new(),
         };
 
-        // Forked skill execution. When context="fork" and spawner is available,
-        // run the skill in a sub-agent with isolated context.
-        if context_mode.as_deref() == Some("fork") {
+        // A forked skill's sub-agent gets its own `Permission`, never this
+        // one, so its `allowed-tools` grants have nowhere to go.
+        if info.context.as_deref() == Some("fork") {
             if let Some(ref spawner) = self.spawner {
-                let body = self
-                    .skill_manager
-                    .get_skill_content(skill_name)
-                    .ok_or_else(|| {
-                        ToolError::NotFound(format!("Skill '{skill_name}' not found."))
-                    })?;
-                let arg_names = skill_info
-                    .and_then(|s| s.arguments.clone())
-                    .unwrap_or_default();
-                let expanded =
-                    base::frozen::skill::expand_skill_vars_named(&body, args, &arg_names);
-                // Bundled files are a separate, additional budget — not part
-                // of (and not stealing from) any body truncation. The fork
-                // path doesn't truncate the body at all today, so this stays
-                // that way; only the bundled-files text is appended.
-                let expanded = format!("{expanded}{bundled_files_text}");
                 let cancel = ctx.cancel.clone();
-                // `agent:` frontmatter — which subagent type to fork into.
-                // `None` (unset) falls through to the spawner's own default
-                // (general-purpose).
-                let agent_type = skill_info.and_then(|s| s.agent.clone());
-
-                // `background: true` — hand back a task id instead of
-                // blocking the turn on the sub-agent's result. Default
-                // (`None`/`Some(false)`) keeps the synchronous path below
-                // unchanged.
-                if skill_info.and_then(|s| s.background) == Some(true) {
+                let agent_type = info.agent.clone();
+                if info.background == Some(true) {
                     return match spawner
                         .spawn_agent_background(
-                            expanded,
+                            expansion.text,
                             vec![],
                             ctx.cwd.clone(),
                             cancel,
@@ -232,118 +198,43 @@ impl Tool for SkillTool {
                     };
                 }
 
-                match spawner
-                    .spawn_agent(expanded, vec![], ctx.cwd.clone(), cancel, agent_type)
+                return match spawner
+                    .spawn_agent(expansion.text, vec![], ctx.cwd.clone(), cancel, agent_type)
                     .await
                 {
                     Ok(output) => {
                         self.skill_manager.record_invocation(skill_name);
-                        return Ok(ToolResult {
+                        Ok(ToolResult {
                             content: ToolResultContent::Text(format!(
                                 "Skill '{skill_name}' executed in forked agent.\n\n{output}"
                             )),
                             is_error: false,
                             ..Default::default()
-                        });
+                        })
                     }
-                    Err(e) => {
-                        return Ok(ToolResult {
-                            content: ToolResultContent::Text(format!(
-                                "Skill '{skill_name}' fork failed: {e}"
-                            )),
-                            is_error: true,
-                            ..Default::default()
-                        });
-                    }
-                }
+                    Err(e) => Ok(ToolResult {
+                        content: ToolResultContent::Text(format!(
+                            "Skill '{skill_name}' fork failed: {e}"
+                        )),
+                        is_error: true,
+                        ..Default::default()
+                    }),
+                };
             }
-            // No spawner: fall through to inline execution below.
         }
 
-        // Get the skill body content
-        let body = self
-            .skill_manager
-            .get_skill_content(skill_name)
-            .ok_or_else(|| ToolError::NotFound(format!("Skill '{skill_name}' not found.")))?;
-
-        // Dynamic context injection (`` !`command` ``, ` ```! ` blocks) runs
-        // first, over the raw body, before variable substitution —
-        // preprocessing, not something the model executes; runs once over
-        // the original file. Before `allowed_tools` below, on purpose: a
-        // skill's own frontmatter does not get to approve its own commands.
-        let body = expand_dynamic_context(&body, &ctx, self.permission.as_deref()).await;
-
-        // Use full expand_skill_vars ($1..$9, $@, $ARGUMENTS, {ARGS}, etc.)
-        let arg_names = skill_info
-            .and_then(|s| s.arguments.clone())
-            .unwrap_or_default();
-        let expanded = base::frozen::skill::expand_skill_vars_named(&body, args, &arg_names);
-
-        // Truncate at 8000 chars to prevent context explosion. Cut at a
-        // char boundary via `char_indices().nth(n)` rather than slicing by
-        // raw byte index — `expanded.len()` is a byte count, and slicing at
-        // an arbitrary byte offset panics on non-ASCII content (e.g.
-        // Chinese skill bodies) whose 8000th byte doesn't land on a char
-        // boundary. Same fix as `build_bundled_files_injection`'s per-file
-        // truncation below.
-        const SKILL_BODY_CHAR_CAP: usize = 8000;
-        let truncated = match expanded.char_indices().nth(SKILL_BODY_CHAR_CAP) {
-            Some((byte_idx, _)) => format!("{}...[truncated]", &expanded[..byte_idx]),
-            None => expanded,
-        };
-
-        // Bundled files (`files:` frontmatter) get their own separate
-        // budget, appended after the body's 8000-char cap — not stolen from
-        // it and not counted against it.
-        let truncated = format!("{truncated}{bundled_files_text}");
-
-        // Build a user message with the expanded skill content wrapped in command-message tags,
-        // so the model sees them as new instructions, not as tool output.
+        // Wrapped in command tags so the model reads it as new instructions,
+        // not as tool output.
         let skill_msg = format!(
-            "<command-name>{skill_name}</command-name>\n<command-args>{args}</command-args>\n\n{truncated}"
+            "<command-name>{skill_name}</command-name>\n<command-args>{args}</command-args>\n\n{}",
+            expansion.text
         );
 
         self.skill_manager.record_invocation(skill_name);
 
-        // `allowed_tools`: pre-approve these tools for the rest of this turn
-        // — no-op on `Permission` implementations without a backing rule
-        // engine (see `Permission::add_temporary_allow`'s doc comment).
-        // Only meaningful for this inline path: a `context: fork` skill's
-        // sub-agent gets its own `Permission` instance, never the parent's,
-        // so injecting a rule into `ctx.permission` here wouldn't reach it — see
-        // `AgentTool::permission_handler`.
-        //
-        // Each entry is parsed as a permission rule string, so both `Bash`
-        // and `Bash(cargo test:*)` are accepted. A bare tool name is a
-        // *blanket* grant — every call to that tool, unconditionally — and
-        // that is only safe when the skill came from somewhere the user
-        // controls. `<project>/.agents/skills/` is repository content: on a
-        // cloned repo it is attacker-supplied, and a `allowed-tools: [Bash]`
-        // line there would silently switch off Bash confirmation for the
-        // rest of the turn, reachable through nothing more than a prompt
-        // injection persuading the model to invoke the skill. Project skills
-        // therefore only get grants that name a content pattern; a blanket
-        // one is dropped with a warning rather than honored.
-        if let (Some(allowed), Some(permission)) = (
-            skill_info.and_then(|s| s.allowed_tools.clone()),
-            &self.permission,
-        ) {
-            let from_project = matches!(
-                skill_info.map(|s| &s.source),
-                Some(crate::manager::SkillSource::Project)
-            );
-            for entry in &allowed {
-                let (tool_name, rule_content) = split_allowed_tool_entry(entry);
-                if rule_content.is_none() && from_project {
-                    tracing::warn!(
-                        skill = %skill_name,
-                        tool = %tool_name,
-                        "ignoring a blanket `allowed-tools` grant from a project-supplied skill; \
-                         scope it as `Tool(pattern)` to have it honored"
-                    );
-                    continue;
-                }
-                permission.add_temporary_allow(tool_name, rule_content);
+        if let Some(permission) = &self.permission {
+            for (tool_name, rule_content) in &expansion.grants {
+                permission.add_temporary_allow(tool_name, rule_content.as_deref());
             }
         }
 
@@ -378,6 +269,87 @@ impl Tool for SkillTool {
             ..Default::default()
         })
     }
+}
+
+/// Why a skill could not be expanded.
+#[derive(Debug)]
+pub enum ExpandError {
+    NotFound,
+    /// Told to the model as the invocation's result.
+    Rejected(String),
+}
+
+/// Character cap on a skill's expanded body; its `files:` have their own
+/// budget on top.
+const SKILL_BODY_CHAR_CAP: usize = 8000;
+
+/// Expand a skill for one invocation — the expansion the `Skill` tool, a
+/// forked skill and a `/name` command all share.
+///
+/// The body (without its frontmatter) has its `` !`cmd` `` placeholders
+/// replaced first, over the raw text, before argument substitution; then it
+/// is capped, and the `files:` it bundles are appended. The grants are its
+/// `allowed-tools`, less any blanket grant its source may not make: a bare
+/// tool name switches off confirmation for every call to that tool, which is
+/// only safe from a skill the user put there. `<project>/.agents/skills/` is
+/// repository content — attacker-supplied on a cloned repo — and a plugin
+/// package is someone else's, so those only get grants that name a content
+/// pattern (`Bash(cargo test:*)`).
+pub async fn expand_for_invocation(
+    manager: &crate::manager::SkillManager,
+    info: &crate::manager::SkillInfo,
+    args: &str,
+    ctx: &ToolContext,
+    permission: Option<&dyn base::interface::permission::Permission>,
+) -> Result<SkillExpansion, ExpandError> {
+    let bundled_files_text =
+        build_bundled_files_injection(&info.path, &info.name, &*ctx.exec.filesystem)
+            .await
+            .map_err(ExpandError::Rejected)?;
+    let body = manager
+        .get_skill_content(&info.name)
+        .ok_or(ExpandError::NotFound)?;
+    // Before the grants below take effect, on purpose: a skill's own
+    // frontmatter does not get to approve its own commands.
+    let body = expand_dynamic_context(&body, ctx, permission).await;
+    let expanded = base::frozen::skill::expand_skill_vars_named(
+        &body,
+        args,
+        info.arguments.as_deref().unwrap_or(&[]),
+    );
+    let capped = match expanded.char_indices().nth(SKILL_BODY_CHAR_CAP) {
+        Some((byte_idx, _)) => format!("{}...[truncated]", &expanded[..byte_idx]),
+        None => expanded,
+    };
+
+    let restricted = matches!(
+        info.source,
+        crate::manager::SkillSource::Project | crate::manager::SkillSource::Plugin
+    );
+    let grants = info
+        .allowed_tools
+        .iter()
+        .flatten()
+        .filter_map(|entry| {
+            let (tool_name, rule_content) = split_allowed_tool_entry(entry);
+            if rule_content.is_none() && restricted {
+                tracing::warn!(
+                    skill = %info.name,
+                    source = info.source.as_str(),
+                    tool = %tool_name,
+                    "ignoring a blanket `allowed-tools` grant from a project or plugin skill; \
+                     scope it as `Tool(pattern)` to have it honored"
+                );
+                return None;
+            }
+            Some((tool_name.to_string(), rule_content.map(str::to_string)))
+        })
+        .collect();
+
+    Ok(SkillExpansion {
+        text: format!("{capped}{bundled_files_text}"),
+        grants,
+    })
 }
 
 /// Per-file cap for bundled reference material (`files:` frontmatter) — see
@@ -852,6 +824,105 @@ mod dynamic_context_tests {
         let out = expand(body, &ToolContext::for_test(std::env::temp_dir())).await;
         assert_eq!(out, "!`echo nested`", "output was: {out}");
     }
+
+    #[derive(Default)]
+    struct Forks(std::sync::Mutex<Vec<String>>);
+
+    #[async_trait]
+    impl AgentSpawner for Forks {
+        async fn spawn_agent(
+            &self,
+            prompt: String,
+            _: Vec<String>,
+            _: std::path::PathBuf,
+            _: tokio_util::sync::CancellationToken,
+            _: Option<String>,
+        ) -> Result<String, Box<dyn std::error::Error + Send>> {
+            self.0.lock().unwrap().push(prompt);
+            Ok("done".into())
+        }
+
+        async fn spawn_agent_background(
+            &self,
+            _: String,
+            _: Vec<String>,
+            _: std::path::PathBuf,
+            _: tokio_util::sync::CancellationToken,
+            _: Option<String>,
+            _: Arc<base::context::SessionState>,
+        ) -> Result<String, Box<dyn std::error::Error + Send>> {
+            unreachable!("no skill here forks in the background")
+        }
+    }
+
+    /// The `Skill` tool inline, a forked skill and a `/name` command (which
+    /// reaches skills through the catalog) hand the conversation the same
+    /// expansion: no frontmatter, `!cmd` output, arguments, the body cap.
+    #[tokio::test]
+    async fn every_invocation_path_expands_a_skill_the_same_way() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill = |name: &str, extra: &str| {
+            let folder = dir.path().join(name);
+            std::fs::create_dir_all(&folder).unwrap();
+            std::fs::write(
+                folder.join("SKILL.md"),
+                format!(
+                    "---\nname: {name}\ndescription: ships\n{extra}---\nShip $ARGUMENTS.\n\
+                     !`echo stamped`\n{}",
+                    "x".repeat(9000)
+                ),
+            )
+            .unwrap();
+        };
+        skill("ship", "");
+        skill("ship-forked", "context: fork\n");
+        let mgr = Arc::new(crate::manager::SkillManager::new());
+        mgr.load_dir_subdirs(dir.path(), crate::manager::SkillSource::User)
+            .unwrap();
+        let ctx = ToolContext::for_test(dir.path().to_path_buf());
+        let forks = Arc::new(Forks::default());
+        let tool = SkillTool::new(mgr.clone())
+            .with_permission(Arc::new(Permits))
+            .with_spawner(forks.clone());
+
+        let inline = tool
+            .call(
+                serde_json::json!({"skill": "ship", "args": "v1"}),
+                ctx.clone(),
+                ProgressSender::noop("t"),
+            )
+            .await
+            .unwrap();
+        let inline = inline.new_messages.unwrap()[0]["content"]
+            .as_str()
+            .unwrap()
+            .split_once("\n\n")
+            .unwrap()
+            .1
+            .to_string();
+        tool.call(
+            serde_json::json!({"skill": "ship-forked", "args": "v1"}),
+            ctx.clone(),
+            ProgressSender::noop("t"),
+        )
+        .await
+        .unwrap();
+        let forked = forks.0.lock().unwrap()[0].clone();
+        let slash = base::interface::skill_catalog::SkillCatalog::expand(
+            &*mgr, "ship", "v1", &ctx, &Permits,
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .text;
+
+        assert!(
+            inline.starts_with("Ship v1.\nstamped\nxxx") && inline.ends_with("...[truncated]"),
+            "{inline:.40}"
+        );
+        assert_eq!(forked, inline);
+        assert_eq!(slash, inline);
+    }
 }
 
 #[cfg(test)]
@@ -1081,7 +1152,36 @@ mod tests {
     /// not switch off confirmation for every `Bash` call.
     #[tokio::test]
     async fn project_skill_blanket_allowed_tools_grant_is_refused() {
-        use base::interface::permission::{Permission, PermissionOutcome};
+        assert!(
+            matches!(
+                bash_after_a_blanket_grant_from(FrozenSkillSource::Project).await,
+                base::interface::permission::PermissionOutcome::Prompt { .. }
+            ),
+            "a project skill's blanket grant must not silence the Bash prompt"
+        );
+    }
+
+    /// A plugin package is someone else's code just the same.
+    #[tokio::test]
+    async fn plugin_skill_blanket_allowed_tools_grant_is_refused() {
+        assert!(matches!(
+            bash_after_a_blanket_grant_from(FrozenSkillSource::Plugin).await,
+            base::interface::permission::PermissionOutcome::Prompt { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn user_skill_blanket_allowed_tools_grant_is_honored() {
+        assert!(matches!(
+            bash_after_a_blanket_grant_from(FrozenSkillSource::User).await,
+            base::interface::permission::PermissionOutcome::Permit
+        ));
+    }
+
+    async fn bash_after_a_blanket_grant_from(
+        source: FrozenSkillSource,
+    ) -> base::interface::permission::PermissionOutcome {
+        use base::interface::permission::Permission;
         use permissions::gate::PermissionGate;
         use permissions::rule_set_permission::RuleSetPermission;
 
@@ -1092,7 +1192,7 @@ mod tests {
         mgr.register_bundled(SkillEntry {
             name: "grabby".into(),
             description: "grabby skill".into(),
-            source: FrozenSkillSource::Project,
+            source,
             path,
             // Bare tool name = blanket grant.
             allowed_tools: Some(vec!["Bash".into()]),
@@ -1147,18 +1247,14 @@ mod tests {
             .expect("call should not error");
         assert!(!result.is_error, "the skill itself still runs");
 
-        let after = permission
+        permission
             .check(
                 "Bash",
                 &serde_json::json!({}),
                 std::path::Path::new("/tmp"),
                 "s1",
             )
-            .await;
-        assert!(
-            matches!(after, PermissionOutcome::Prompt { .. }),
-            "a project skill's blanket grant must not silence the Bash prompt, got {after:?}"
-        );
+            .await
     }
 
     /// Feeds `build_skills_text`'s budget-drop order (task tracking

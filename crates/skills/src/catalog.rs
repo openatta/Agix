@@ -6,8 +6,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use base::frozen::SkillEntry;
+use base::interface::permission::Permission;
 use base::interface::scene::Scene;
-use base::interface::skill_catalog::SkillCatalog;
+use base::interface::skill_catalog::{SkillCatalog, SkillExpansion};
+use base::tool::ToolContext;
+type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
 use crate::manager::{SkillInfo, SkillManager, SkillSource};
 
@@ -55,6 +58,26 @@ impl SkillCatalog for SkillManager {
     }
     fn body(&self, name: &str) -> Option<String> {
         self.get_skill_content(name)
+    }
+    fn expand<'a>(
+        &'a self,
+        name: &'a str,
+        args: &'a str,
+        ctx: &'a ToolContext,
+        permission: &'a dyn Permission,
+    ) -> BoxFuture<'a, Option<Result<SkillExpansion, String>>> {
+        Box::pin(async move {
+            let info = SkillManager::get(self, name)?;
+            match crate::tool::expand_for_invocation(self, &info, args, ctx, Some(permission)).await
+            {
+                Ok(expansion) => {
+                    self.record_invocation(name);
+                    Some(Ok(expansion))
+                }
+                Err(crate::tool::ExpandError::NotFound) => None,
+                Err(crate::tool::ExpandError::Rejected(msg)) => Some(Err(msg)),
+            }
+        })
     }
     fn reload_changed(&self) -> usize {
         self.check_for_changes()
@@ -137,6 +160,18 @@ impl SkillCatalog for SceneSkills {
     fn body(&self, name: &str) -> Option<String> {
         SkillCatalog::get(self, name)?;
         self.manager.get_skill_content(name)
+    }
+    fn expand<'a>(
+        &'a self,
+        name: &'a str,
+        args: &'a str,
+        ctx: &'a ToolContext,
+        permission: &'a dyn Permission,
+    ) -> BoxFuture<'a, Option<Result<SkillExpansion, String>>> {
+        Box::pin(async move {
+            SkillCatalog::get(self, name)?;
+            self.manager.expand(name, args, ctx, permission).await
+        })
     }
     fn reload_changed(&self) -> usize {
         self.manager.check_for_changes()

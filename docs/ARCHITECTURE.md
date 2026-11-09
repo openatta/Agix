@@ -588,6 +588,13 @@ skill 正文里的 `` !`cmd` `` 在送给模型之前执行,同样先过会话�
 放行的、或 `Bash` 自己静默放行的(项目内的只读命令)才执行,替换成一行写明原因的文字。
 skill 自己的 `allowed-tools` 这时还没生效,不能给自己的命令开门。
 
+模型调 `Skill`、`context: fork` 的 skill 交给子 Agent、用户打 `/name`,三条路径展开 skill
+用的是同一个函数(`skills::expand_for_invocation`,内核经 `SkillCatalog::expand` 调到):
+去掉 frontmatter 的正文 → `` !`cmd` `` → 参数替换 → 正文截到 8000 字符 → 接上 `files:`
+声明的参考文件。`allowed-tools` 授权到这一轮结束(fork 的子 Agent 有自己的 `Permission`,
+不受它影响);只写工具名的整类授权只认用户层 skill,项目层与插件包带来的 skill 必须写成
+`Tool(内容)`。
+
 ### 6.2 写路径的管控
 
 写文件走两道:

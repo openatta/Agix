@@ -355,6 +355,9 @@ pub struct Agent {
     /// The skill names this session was last shown — `None` until its first
     /// turn, whose prompt lists them all.
     pub(crate) announced_skills: Option<std::collections::HashSet<String>>,
+    /// What the `/name` command that started this turn grants, applied once
+    /// the turn has cleared the previous turn's grants.
+    pub(crate) slash_skill_grants: Vec<(String, Option<String>)>,
     /// This turn's user message: a fingerprint of its text and what the text is
     /// made of, for `StreamParams::input_map`.
     ///
@@ -2576,6 +2579,7 @@ impl Builder {
                 agent_type: self.agent_type,
                 invoked_skills: Vec::new(),
                 announced_skills: None,
+                slash_skill_grants: Vec::new(),
                 request_overhead_tokens: 0,
                 last_had_tool_uses: true, // true → first turn scans for skills
                 last_call_usage: None,

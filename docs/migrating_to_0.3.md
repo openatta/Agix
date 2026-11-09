@@ -502,6 +502,16 @@ WebAssembly 载体整个移除。
   一律是 project 来源(以前不认识的名字一律当 user,项目里的 `allowed-tools: [Bash]` 因此免确认);
   不在任何扫描层下的文件同样按 project;后面的层占着同名 skill 时,前面层的改动不再顶替它;
   `skills/<name>/` 下 `SKILL.md` 以外的 `.md` 不再被注册成 skill。
+- `skills_changed` 真的会发了:skill 文件在两轮之间增删后,下一轮开始时每个受影响的会话发一次,
+  模型同时收到一条提醒。以前 daemon 就地换了 skill 目录,这个帧从来不发。
+- skill frontmatter 的列表不在括号里切分:`allowed-tools: Bash(sh build.sh)` 不写成 `[列表]`
+  也是一条授权(以前切成 `Bash(sh` 与 `build.sh)`,授权失效)。
+- `/name` 斜杠命令展开 skill 与 `Skill` 工具完全一样:执行 `` !`cmd` ``(同样先过会话权限)、
+  正文截到 8000 字符、接上 `files:`、`allowed-tools` 授权到这一轮结束、计入调用次数。
+  `context: fork` 的 skill 交给子 Agent 的正文也执行 `` !`cmd` ``、同样截断。展开出的正文
+  不再带 frontmatter(以前磁盘上的 skill 连 `---` 头一起交给模型)。
+- 插件包带来的 skill 与项目 skill 一样,只写工具名的整类 `allowed-tools` 授权不生效,要写成
+  `Tool(内容)`。
 - 模型请求在开始回答之前收到 500 / 502 / 504 / 408 的,按退避再发(两个协议都是),和 429、
   503、529 一样;以前直接失败。
 - Anthropic 的 `base_url` / `ANTHROPIC_BASE_URL` 写到 `…/v1` 或写全 `…/v1/messages` 都可以,
@@ -566,6 +576,11 @@ WebAssembly 载体整个移除。
 - `base::frozen::find_relevant_memories`、`base::memory::select_memories_with_llm`、
   `MemoryStore::scan_memory_headers` 删除;按相关性挑记忆用 `base::memory::select_memories_from`
   (生产路径 `MemoryRetriever` 一直走它)。
+- `SkillCatalog` 多了 `expand`(有缺省实现:正文加参数替换,不执行、不授权),返回新类型
+  `base::interface::skill_catalog::SkillExpansion { text, grants }`;包一层 `SkillCatalog` 的
+  要把它转发下去,否则 `/name` 拿到的是缺省展开。新增 `skills::expand_for_invocation` /
+  `skills::ExpandError` 与 `CommandRegistry::run_prompt_command`(斜杠命令在轮里走的就是它)。
+  `SkillManager::get_skill_content` 对磁盘 skill 返回去掉 frontmatter 的正文。
 - `hooks::HookRunner::set_network`、`auth::OAuth2Client::with_network` 删除;后者要换出口直接设
   `net` 字段。
 - `auth` crate 整个删除(`OAuth2Client`、`TokenStore`、`CallbackListener`、`PkceVerifier`、

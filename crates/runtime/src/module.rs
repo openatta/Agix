@@ -161,6 +161,18 @@ impl SkillCatalog for LateSkillCatalog {
     fn body(&self, name: &str) -> Option<String> {
         self.inner().body(name)
     }
+    fn expand<'a>(
+        &'a self,
+        name: &'a str,
+        args: &'a str,
+        ctx: &'a base::tool::ToolContext,
+        permission: &'a dyn base::interface::permission::Permission,
+    ) -> futures::future::BoxFuture<
+        'a,
+        Option<Result<base::interface::skill_catalog::SkillExpansion, String>>,
+    > {
+        self.inner().expand(name, args, ctx, permission)
+    }
     fn reload_changed(&self) -> usize {
         self.inner().reload_changed()
     }

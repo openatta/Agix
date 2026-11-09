@@ -164,11 +164,15 @@ impl Agent {
                     if let Some(cmd) = self.commands.resolve(&sc.name) {
                         match cmd {
                             crate::commands::Command::Prompt { entry } => {
-                                // Expand skill body → replace content → continue to LLM
-                                let expanded = self.commands.handle_prompt_command(&entry, &sc);
+                                let ctx = self.skill_invocation_context(cancel.clone());
+                                let expansion = self
+                                    .commands
+                                    .run_prompt_command(&entry, &sc, &ctx, self.permission.as_ref())
+                                    .await;
+                                self.slash_skill_grants = expansion.grants;
                                 return self
                                     .run_user_turn(
-                                        expanded,
+                                        expansion.text,
                                         attachments,
                                         cancel,
                                         history::entry::MessageOrigin::Command,
@@ -671,6 +675,10 @@ impl Agent {
         // message starts a fresh one. No-op if nothing was injected, or on
         // `Permission` implementations without a backing rule engine.
         self.permission.clear_temporary_allows();
+        for (tool, pattern) in std::mem::take(&mut self.slash_skill_grants) {
+            self.permission
+                .add_temporary_allow(&tool, pattern.as_deref());
+        }
 
         let _timer = self.perf.start_timer("turn", "total");
         let mut api_calls: u32 = 0;
@@ -3809,6 +3817,38 @@ fn tool_context_for(ctx: &ToolExecCtx, tool: &Arc<dyn base::tool::Tool>) -> Tool
     }
 }
 
+impl Agent {
+    /// What a skill's `` !`cmd` `` runs with when a `/name` command expands
+    /// it outside any tool call: the context a `Bash` call this turn would get.
+    fn skill_invocation_context(&self, cancel: CancellationToken) -> ToolContext {
+        ToolContext {
+            cwd: self.settings.paths.project_root(),
+            session_id: self.session.session_id.clone(),
+            turn_no: self.session.turn_count,
+            sandbox: sandbox_settings_from(&self.config),
+            cancel,
+            additional_writable_dirs: self.session_state.additional_writable_dirs.clone(),
+            snapshot_file: None,
+            effects: None,
+            running_tasks: Some(self.session_state.clone()),
+            dangerously_disable_sandbox: self.config.dangerously_disable_sandbox,
+            max_file_read_bytes: self.config.file_limits.max_file_read_bytes as usize,
+            permission_mode: self.session_state.permission_mode(),
+            config: self.config.clone(),
+            session: self.session_state.clone(),
+            tool_use_id: String::new(),
+            agent: None,
+            parent_messages: None,
+            agent_depth: self.agent_depth,
+            events_tx: None,
+            elicitation: Some(Arc::clone(&self.elicitation)),
+            exec: exec_providers_from(&self.config),
+            dispatch: None,
+            from_code: false,
+        }
+    }
+}
+
 async fn execute_tool_inner(
     ctx: &ToolExecCtx,
     name: &str,
@@ -6638,7 +6678,10 @@ mod tests {
         };
         let cancel = tokio_util::sync::CancellationToken::new;
         agent.process_turn(turn("t1"), cancel()).await.unwrap();
-        assert!(changes(&mut event_rx).is_empty(), "the first turn lists them all");
+        assert!(
+            changes(&mut event_rx).is_empty(),
+            "the first turn lists them all"
+        );
 
         *catalog.0.lock().unwrap() = vec!["early", "latecomer"];
         agent.process_turn(turn("t2"), cancel()).await.unwrap();
@@ -6654,6 +6697,122 @@ mod tests {
 
         agent.process_turn(turn("t3"), cancel()).await.unwrap();
         assert!(changes(&mut event_rx).is_empty(), "announced once");
+    }
+
+    /// `/name` expands through the catalog — the expansion the `Skill` tool
+    /// uses — and its grants hold for the turn it starts, not just until
+    /// that turn clears the previous one's.
+    #[tokio::test]
+    async fn a_slash_command_expands_through_the_catalog_and_grants_for_its_turn() {
+        struct Expanding;
+        impl base::interface::skill_catalog::SkillCatalog for Expanding {
+            fn list(&self) -> Vec<base::frozen::SkillEntry> {
+                vec![base::frozen::SkillEntry {
+                    name: "build".into(),
+                    description: "d".into(),
+                    user_invocable: true,
+                    ..Default::default()
+                }]
+            }
+            fn get(&self, name: &str) -> Option<base::frozen::SkillEntry> {
+                self.list().into_iter().find(|e| e.name == name)
+            }
+            fn body(&self, _: &str) -> Option<String> {
+                Some("the raw body".into())
+            }
+            fn expand<'a>(
+                &'a self,
+                _: &'a str,
+                args: &'a str,
+                _: &'a ToolContext,
+                _: &'a dyn base::interface::permission::Permission,
+            ) -> futures::future::BoxFuture<
+                'a,
+                Option<Result<base::interface::skill_catalog::SkillExpansion, String>>,
+            > {
+                Box::pin(async move {
+                    Some(Ok(base::interface::skill_catalog::SkillExpansion {
+                        text: format!("EXPANDED for {args}"),
+                        grants: vec![("Bash".into(), Some("make".into()))],
+                    }))
+                })
+            }
+            fn reload_changed(&self) -> usize {
+                0
+            }
+            fn discover_for_paths(&self, _: &[PathBuf]) -> Vec<base::frozen::SkillEntry> {
+                Vec::new()
+            }
+            fn activate_for_paths(&self, _: &[PathBuf]) -> Vec<base::frozen::SkillEntry> {
+                Vec::new()
+            }
+            fn invocation_count(&self, _: &str) -> u32 {
+                0
+            }
+            fn last_invoked_seq(&self, _: &str) -> u64 {
+                0
+            }
+        }
+
+        #[derive(Default)]
+        struct Grants(std::sync::Mutex<Vec<String>>);
+        #[async_trait::async_trait]
+        impl base::interface::permission::Permission for Grants {
+            async fn check(
+                &self,
+                _: &str,
+                _: &serde_json::Value,
+                _: &std::path::Path,
+                _: &str,
+            ) -> base::interface::permission::PermissionOutcome {
+                base::interface::permission::PermissionOutcome::Permit
+            }
+            fn add_temporary_allow(&self, tool: &str, pattern: Option<&str>) {
+                self.0.lock().unwrap().push(format!("{tool}({pattern:?})"));
+            }
+            fn clear_temporary_allows(&self) {
+                self.0.lock().unwrap().push("clear".into());
+            }
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (mut agent, _event_rx, _input_tx) = crate::agent::Builder::new()
+            .scene(Arc::new(scene::code::CodeScene::default()))
+            .model(Arc::new(RecordingAnswerModel { seen: seen.clone() }))
+            .settings(Arc::new(recall_test_settings(tmp.path())))
+            .skip_warmup(true)
+            .build()
+            .expect("build should succeed");
+        let catalog: Arc<dyn base::interface::skill_catalog::SkillCatalog> = Arc::new(Expanding);
+        agent.skills = catalog.clone();
+        agent.commands = Arc::new(crate::commands::CommandRegistry::from_skill_catalog(
+            catalog,
+        ));
+        let grants = Arc::new(Grants::default());
+        agent.permission = grants.clone();
+
+        agent
+            .process_turn(
+                InputMessage::User {
+                    content: "/build release".into(),
+                    attachments: vec![],
+                    turn_id: "t1".into(),
+                },
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert!(seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|t| t.contains("EXPANDED for release") && !t.contains("the raw body")));
+        assert_eq!(
+            *grants.0.lock().unwrap(),
+            vec!["clear".to_string(), "Bash(Some(\"make\"))".to_string()]
+        );
     }
 
     fn recall_test_settings(root: &std::path::Path) -> base::interface::settings::Settings {

@@ -9,7 +9,7 @@ use base::frozen::skill::{SkillEntry, SkillSource as FrozenSkillSource};
 use base::interface::skill_provider::{SkillPrecedence, SkillProvider};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::{PoisonError, RwLock};
 
 /// Metadata for a loaded skill at runtime.
 #[derive(Debug, Clone)]
@@ -184,7 +184,10 @@ impl SkillManager {
             .invocation_seq
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             + 1;
-        let mut stats = self.invocation_stats.write().unwrap();
+        let mut stats = self
+            .invocation_stats
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
         let entry = stats.entry(name.to_string()).or_default();
         entry.count += 1;
         entry.last_seq = seq;
@@ -199,7 +202,7 @@ impl SkillManager {
     pub fn invocation_count(&self, name: &str) -> u32 {
         self.invocation_stats
             .read()
-            .unwrap()
+            .unwrap_or_else(PoisonError::into_inner)
             .get(name)
             .map(|s| s.count)
             .unwrap_or(0)
@@ -213,7 +216,7 @@ impl SkillManager {
     pub fn last_invoked_seq(&self, name: &str) -> u64 {
         self.invocation_stats
             .read()
-            .unwrap()
+            .unwrap_or_else(PoisonError::into_inner)
             .get(name)
             .map(|s| s.last_seq)
             .unwrap_or(0)
@@ -227,7 +230,7 @@ impl SkillManager {
         let overrides = provider.precedence() == SkillPrecedence::Override;
         let mut count = 0;
         {
-            let mut skills = self.skills.write().unwrap();
+            let mut skills = self.skills.write().unwrap_or_else(PoisonError::into_inner);
             for entry in entries {
                 let name = entry.name.clone();
                 match skills.entry(name) {
@@ -243,7 +246,10 @@ impl SkillManager {
                 }
             }
         }
-        self.providers.write().unwrap().push(provider);
+        self.providers
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(provider);
         count
     }
 
@@ -271,16 +277,19 @@ impl SkillManager {
     }
 
     fn note_tier(&self, dir: &Path, source: SkillSource, nested: bool) {
-        self.tiers.write().unwrap().push(Tier {
-            root: canonicalize_lossy(dir),
-            source,
-            nested,
-        });
+        self.tiers
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Tier {
+                root: canonicalize_lossy(dir),
+                source,
+                nested,
+            });
     }
 
     fn locate(&self, path: &Path) -> Located {
         let path = canonicalize_lossy(path);
-        let tiers = self.tiers.read().unwrap();
+        let tiers = self.tiers.read().unwrap_or_else(PoisonError::into_inner);
         let mut inside = false;
         for (index, tier) in tiers.iter().enumerate().rev() {
             let Ok(relative) = path.strip_prefix(&tier.root) else {
@@ -318,15 +327,22 @@ impl SkillManager {
             providers,
             ..
         } = fresh;
-        *self.skills.write().unwrap() = skills.into_inner().unwrap();
-        *self.tiers.write().unwrap() = tiers.into_inner().unwrap();
-        *self.providers.write().unwrap() = providers.into_inner().unwrap();
+        *self.skills.write().unwrap_or_else(PoisonError::into_inner) =
+            skills.into_inner().unwrap_or_else(PoisonError::into_inner);
+        *self.tiers.write().unwrap_or_else(PoisonError::into_inner) =
+            tiers.into_inner().unwrap_or_else(PoisonError::into_inner);
+        *self
+            .providers
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = providers
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner);
     }
 
     /// Register a bundled (in-memory) skill. Used for built-in skills.
     /// Disk-loaded skills with the same name take priority (skip).
     pub fn register_bundled(&self, entry: SkillEntry) {
-        let mut skills = self.skills.write().unwrap();
+        let mut skills = self.skills.write().unwrap_or_else(PoisonError::into_inner);
         let name = entry.name.clone();
         // Disk skills take priority — only register if not already loaded
         skills.entry(name).or_insert_with(|| SkillInfo::from(entry));
@@ -402,14 +418,24 @@ impl SkillManager {
     /// prompt caching (most APIs cache by exact prefix match) would have the
     /// same problem in production, independent of testing.
     pub fn list(&self) -> Vec<SkillInfo> {
-        let mut skills: Vec<SkillInfo> = self.skills.read().unwrap().values().cloned().collect();
+        let mut skills: Vec<SkillInfo> = self
+            .skills
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect();
         skills.sort_by(|a, b| a.name.cmp(&b.name));
         skills
     }
 
     /// Get a skill by name.
     pub fn get(&self, name: &str) -> Option<SkillInfo> {
-        self.skills.read().unwrap().get(name).cloned()
+        self.skills
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(name)
+            .cloned()
     }
 
     /// Get the full content of a skill file (for prompt expansion at invocation time).
@@ -427,12 +453,23 @@ impl SkillManager {
         }
         // Newest source first: a source registered later is the one whose
         // entry is in the catalog if two of them claimed the same name.
-        for provider in self.providers.read().unwrap().iter().rev() {
+        for provider in self
+            .providers
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .rev()
+        {
             if let Some(body) = provider.body(name) {
                 return Some(body);
             }
         }
-        std::fs::read_to_string(&info.path).ok()
+        let content = std::fs::read_to_string(&info.path).ok()?;
+        Some(
+            base::frozen::frontmatter::split_frontmatter(&content)
+                .1
+                .to_string(),
+        )
     }
 
     /// Activate skills whose `paths` patterns match any of the given `file_paths`.
@@ -452,7 +489,7 @@ impl SkillManager {
             return Vec::new();
         }
 
-        let skills = self.skills.read().unwrap();
+        let skills = self.skills.read().unwrap_or_else(PoisonError::into_inner);
         let mut activated = Vec::new();
 
         'skill: for info in skills.values() {
@@ -524,7 +561,8 @@ impl SkillManager {
         watcher.watch_skills(paths)?;
         self.watcher_last_seen
             .store(0, std::sync::atomic::Ordering::Release);
-        *self.watcher.write().unwrap() = Some(std::sync::Arc::new(watcher));
+        *self.watcher.write().unwrap_or_else(PoisonError::into_inner) =
+            Some(std::sync::Arc::new(watcher));
         Ok(())
     }
 
@@ -539,7 +577,7 @@ impl SkillManager {
             watcher.current_generation(),
             std::sync::atomic::Ordering::Release,
         );
-        *self.watcher.write().unwrap() = Some(watcher);
+        *self.watcher.write().unwrap_or_else(PoisonError::into_inner) = Some(watcher);
     }
 
     /// Poll the file watcher and reload any skills whose files have changed.
@@ -547,7 +585,7 @@ impl SkillManager {
     /// This is a lightweight call (essentially a Mutex lock + iteration) safe
     /// to run at the start of each turn. Returns the number of skills reloaded.
     pub fn check_for_changes(&self) -> usize {
-        let guard = self.watcher.read().unwrap();
+        let guard = self.watcher.read().unwrap_or_else(PoisonError::into_inner);
         match guard.as_ref() {
             Some(w) => w.check_and_reload_since(self, &self.watcher_last_seen),
             None => 0,
@@ -590,7 +628,7 @@ impl SkillManager {
     pub fn reload_skill(&self, path: &Path) -> Result<(), String> {
         if !path.exists() {
             let target = canonicalize_lossy(path);
-            let mut skills = self.skills.write().unwrap();
+            let mut skills = self.skills.write().unwrap_or_else(PoisonError::into_inner);
             skills.retain(|_, info| canonicalize_lossy(&info.path) != target);
             return Ok(());
         }
@@ -622,7 +660,7 @@ impl SkillManager {
         let entry = parse_skill_file(&content, name.clone(), path, frozen_source)
             .ok_or_else(|| format!("Failed to parse skill file: {}", path.display()))?;
 
-        let mut skills = self.skills.write().unwrap();
+        let mut skills = self.skills.write().unwrap_or_else(PoisonError::into_inner);
         skills.insert(name, SkillInfo::from(entry));
         Ok(())
     }
@@ -829,6 +867,15 @@ mod tests {
         );
         let expected = crate::bundled::bundled_body("simplify").unwrap();
         assert_eq!(content.unwrap(), expected);
+    }
+
+    #[test]
+    fn a_disk_skill_expands_to_its_body_without_the_frontmatter() {
+        let dir = tempfile::tempdir().unwrap();
+        write_skill(dir.path(), "deploy", "Deploys");
+        let mgr = SkillManager::new();
+        mgr.load_dir_subdirs(dir.path(), SkillSource::User).unwrap();
+        assert_eq!(mgr.get_skill_content("deploy").as_deref(), Some("body"));
     }
 
     #[test]

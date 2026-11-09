@@ -14,7 +14,7 @@
 //! ```
 
 use base::frozen::SkillEntry;
-use base::interface::skill_catalog::SkillCatalog;
+use base::interface::skill_catalog::{SkillCatalog, SkillExpansion};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -219,13 +219,50 @@ impl CommandRegistry {
         if let Some(body) = self.skills.as_ref().and_then(|s| s.body(&entry.name)) {
             return Some(body);
         }
-        std::fs::read_to_string(&entry.path).ok()
+        let content = std::fs::read_to_string(&entry.path).ok()?;
+        Some(
+            base::frozen::frontmatter::split_frontmatter(&content)
+                .1
+                .to_string(),
+        )
     }
 
     /// Handle a prompt command: expand the skill body and return the
     /// replacement content.
     pub fn handle_prompt_command(&self, entry: &SkillEntry, cmd: &SlashCommand) -> String {
         expand_skill_for_command(entry, self.skill_body(entry), &cmd.args)
+    }
+
+    /// A prompt command as the turn runs it: a skill in the catalog expands
+    /// the way the `Skill` tool expands it — `!cmd` output under
+    /// `permission`, the body cap, its `files:` — and comes back with the
+    /// grants its `allowed-tools` makes. Anything else expands as
+    /// [`Self::handle_prompt_command`] does, granting nothing.
+    pub async fn run_prompt_command(
+        &self,
+        entry: &SkillEntry,
+        cmd: &SlashCommand,
+        ctx: &base::tool::ToolContext,
+        permission: &dyn base::interface::permission::Permission,
+    ) -> SkillExpansion {
+        let expanded = match self.skills.as_ref() {
+            Some(skills) => skills.expand(&entry.name, &cmd.args, ctx, permission).await,
+            None => None,
+        };
+        match expanded {
+            Some(Ok(expansion)) => SkillExpansion {
+                text: command_message(&entry.name, &cmd.args, &expansion.text),
+                grants: expansion.grants,
+            },
+            Some(Err(message)) => SkillExpansion {
+                text: message,
+                grants: Vec::new(),
+            },
+            None => SkillExpansion {
+                text: self.handle_prompt_command(entry, cmd),
+                grants: Vec::new(),
+            },
+        }
     }
 
     /// The `argument_hint` to display next to a command in `/help`, if any.
@@ -359,17 +396,19 @@ pub fn expand_skill_for_command(entry: &SkillEntry, body: Option<String>, args: 
         entry.arguments.as_deref().unwrap_or(&[]),
     );
 
-    // Wrap with invocation header (command-message/command-name XML tags).
+    command_message(&entry.name, args, &expanded)
+}
+
+fn command_message(name: &str, args: &str, expanded: &str) -> String {
+    let args_suffix = if args.is_empty() {
+        String::new()
+    } else {
+        format!(" {args}")
+    };
     format!(
         "\n<command-message>{name} is running...</command-message>\n\
          <command-name>{name}{args_suffix}</command-name>\n\
-         {expanded}",
-        name = entry.name,
-        args_suffix = if args.is_empty() {
-            String::new()
-        } else {
-            format!(" {}", args)
-        },
+         {expanded}"
     )
 }
 
