@@ -129,6 +129,9 @@ struct ProjectBinding {
     /// releases its share of the watch (`WatchHub` refcounts, so the tiers
     /// several projects have in common are watched once).
     _watch: Vec<crate::watch_hub::WatchToken>,
+    /// The settings files of this binding's tiers that did not exist when it
+    /// was built, so are not watched — see [`ProjectBinding::appeared`].
+    unwatched_settings: Vec<(crate::watch_hub::Tier, PathBuf)>,
     /// Set once a tier this binding was merged from changed. Every session
     /// built on it holds the same flag and rebuilds before its next turn.
     stale: Arc<std::sync::atomic::AtomicBool>,
@@ -161,12 +164,25 @@ impl ProjectBinding {
             modules,
             commands,
             _watch: watch,
+            unwatched_settings: Vec::new(),
             stale: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
     fn mark_stale(&self) {
         self.stale.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The tier of a settings file that has been created since this binding
+    /// was built. Nothing watched it — a missing file is not subscribed, see
+    /// `SessionPool::watch_tiers_of` — so this is the only way its first
+    /// contents (a rule `permit_always` wrote to a new `settings.local.json`,
+    /// say) reach the next session without a `config.reload`.
+    fn appeared(&self) -> Option<&crate::watch_hub::Tier> {
+        self.unwatched_settings
+            .iter()
+            .find(|(_, path)| path.exists())
+            .map(|(tier, _)| tier)
     }
 
     /// The client for provider `id`, when the settings configure one that
@@ -6271,12 +6287,24 @@ impl SessionPool {
     ) -> Arc<ProjectBinding> {
         let startup_scene = self.settings.read().await.paths.scope.clone();
         let key = (project_root.map(Path::to_path_buf), scene_id.to_string());
-        if let Some(existing) = self.bindings.lock().await.get(&key) {
-            return existing.clone();
-        }
-
         let is_default_pair =
             key.0.as_deref() == Some(self.cwd.as_path()) && scene_id == startup_scene;
+        let cached = self.bindings.lock().await.get(&key).cloned();
+        if let Some(existing) = cached {
+            let Some(tier) = existing.appeared().cloned() else {
+                return existing;
+            };
+            info!(tier = ?tier, "a settings file was created; reloading");
+            if is_default_pair {
+                Box::pin(self.reload_settings_from(None, scene_id, Some(&tier))).await;
+            } else {
+                self.invalidate_bindings(Some(&tier)).await;
+            }
+            if let Some(rebuilt) = self.bindings.lock().await.get(&key) {
+                return rebuilt.clone();
+            }
+        }
+
         let settings = if is_default_pair {
             self.settings.read().await.clone()
         } else {
@@ -6294,16 +6322,19 @@ impl SessionPool {
             ))
         };
 
-        let watch = self.watch_tiers_of(&settings, &key);
+        let (watch, unwatched_settings) = self.watch_tiers_of(&settings, &key);
         let last_good = self.last_good_routers.lock().await.get(&key).cloned();
-        let built = Arc::new(ProjectBinding::build(
-            settings,
-            &self.plugins.agent_types(),
-            watch,
-            &self.client,
-            last_good,
-            &self.credentials,
-        ));
+        let built = Arc::new(ProjectBinding {
+            unwatched_settings,
+            ..ProjectBinding::build(
+                settings,
+                &self.plugins.agent_types(),
+                watch,
+                &self.client,
+                last_good,
+                &self.credentials,
+            )
+        });
         if let Some(router) = built.task_router.clone() {
             self.last_good_routers
                 .lock()
@@ -6332,17 +6363,24 @@ impl SessionPool {
     /// to the nearest existing ancestor of a path that isn't there, and the
     /// ancestor of `~/.agix/settings.json` is `~/.agix` — which also holds
     /// every transcript this daemon writes. Watching that would turn each
-    /// turn's own log writes into a settings-change notification. A file or
-    /// directory created later is picked up the next time this binding is
-    /// built, or by an explicit `config.reload`.
+    /// turn's own log writes into a settings-change notification. The
+    /// settings files left out are returned alongside the subscriptions: one
+    /// created later is noticed the next time the binding is asked for
+    /// (`ProjectBinding::appeared`). A skill or agent directory created later
+    /// is picked up the next time this binding is built, or by an explicit
+    /// `config.reload`.
+    #[allow(clippy::type_complexity)]
     fn watch_tiers_of(
         &self,
         settings: &Settings,
         key: &ProjectSceneKey,
-    ) -> Vec<crate::watch_hub::WatchToken> {
+    ) -> (
+        Vec<crate::watch_hub::WatchToken>,
+        Vec<(crate::watch_hub::Tier, PathBuf)>,
+    ) {
         use crate::watch_hub::{Tier, WatchKey, WatchTarget};
         let Some(hub) = self.watch.as_ref() else {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         };
         // The project tier's skills sit beside the project (`.agents/skills`)
         // rather than under `.agix`, which is why this is two paths and the
@@ -6367,6 +6405,7 @@ impl SessionPool {
         }
 
         let mut tokens = Vec::new();
+        let mut unwatched = Vec::new();
         let mut subscribe = |tier: &Tier, target: WatchTarget, path: PathBuf| {
             if path.exists() {
                 tokens.push(hub.subscribe(
@@ -6376,6 +6415,8 @@ impl SessionPool {
                     },
                     &path,
                 ));
+            } else if target == WatchTarget::Settings {
+                unwatched.push((tier.clone(), path));
             }
         };
         for (tier, config_dir, skills_dir) in tiers {
@@ -6388,7 +6429,7 @@ impl SessionPool {
             subscribe(&tier, WatchTarget::Skills, skills_dir);
             subscribe(&tier, WatchTarget::Agents, config_dir.join("agents"));
         }
-        tokens
+        (tokens, unwatched)
     }
 
     /// Drop the cached bindings merged from `changed` — every binding when
@@ -6647,16 +6688,18 @@ impl SessionPool {
                         latency_ms: resume_start.elapsed().as_millis() as u64,
                     },
                 ));
-            return Ok(self.resume_report(
-                session_id,
-                "already_active",
-                message_count,
-                entry_count,
-                name,
-                created_at,
-                last_active,
-                mode,
-            ));
+            return Ok(self
+                .resume_report(
+                    session_id,
+                    "already_active",
+                    message_count,
+                    entry_count,
+                    name,
+                    created_at,
+                    last_active,
+                    mode,
+                )
+                .await);
         }
 
         // Not already active — serialize against a concurrent cascade
@@ -6732,16 +6775,18 @@ impl SessionPool {
                 )
             });
             if let Some((name, created_at, last_active)) = raced {
-                return Ok(self.resume_report(
-                    session_id,
-                    "already_active",
-                    message_count,
-                    entry_count,
-                    name,
-                    created_at,
-                    last_active,
-                    mode,
-                ));
+                return Ok(self
+                    .resume_report(
+                        session_id,
+                        "already_active",
+                        message_count,
+                        entry_count,
+                        name,
+                        created_at,
+                        last_active,
+                        mode,
+                    )
+                    .await);
             }
             let sid = self
                 .resume_or_create(session_id.to_string(), options)
@@ -6773,16 +6818,18 @@ impl SessionPool {
                 (0, 0)
             };
 
-            Ok(self.resume_report(
-                &sid,
-                status,
-                message_count,
-                entry_count,
-                None,
-                created_at,
-                last_active,
-                mode,
-            ))
+            Ok(self
+                .resume_report(
+                    &sid,
+                    status,
+                    message_count,
+                    entry_count,
+                    None,
+                    created_at,
+                    last_active,
+                    mode,
+                )
+                .await)
         })
         .await
     }
@@ -6804,8 +6851,10 @@ impl SessionPool {
         }
     }
 
+    /// `mode` is what the session was created under; a live session reports
+    /// the mode it is in now, which `EnterPlanMode` / `ExitPlanMode` move.
     #[allow(clippy::too_many_arguments)]
-    fn resume_report(
+    async fn resume_report(
         &self,
         session_id: &str,
         status: &str,
@@ -6816,6 +6865,13 @@ impl SessionPool {
         last_active: String,
         mode: base::interface::settings::PermissionMode,
     ) -> serde_json::Value {
+        let mode = self
+            .sessions
+            .lock()
+            .await
+            .get(session_id)
+            .and_then(|live| live.state.as_ref())
+            .map_or(mode, |state| state.permission_mode().into());
         let prompts_enabled = !matches!(
             mode,
             base::interface::settings::PermissionMode::BypassPermissions
@@ -6905,7 +6961,7 @@ impl SessionPool {
             {
                 let settings = pool.settings.read().await.clone();
                 let own = (Some(pool.cwd.clone()), settings.paths.scope.clone());
-                let tokens = pool.watch_tiers_of(&settings, &own);
+                let (tokens, _) = pool.watch_tiers_of(&settings, &own);
                 *pool
                     .pool_watch
                     .lock()
