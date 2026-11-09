@@ -44,6 +44,10 @@ TCP 与 WebSocket 都要求 `--token` 或 `AGIX_DAEMON_TOKEN`;没有 token 时�
 别的用户也看得见。daemon 起子进程(模型调用的 Bash、stdio MCP 服务器)时会把这个变量
 剥掉,不会传下去。
 
+**TCP 与 WebSocket 都是明文,daemon 不做 TLS。** token 和之后的每一帧(提示、工具结果、
+`config.setProvider` 的 `api_key`)都按原样过网,所以只把它们开在回环地址、可信网络上,
+或者经 SSH 隧道 / 自己的 TLS 终结代理转出去。
+
 所有监听器都 bind 好之后,daemon 才写 `instances.d` 里自己的那一项(§2):宿主看到这个
 文件出现,就可以马上连上。
 
@@ -456,7 +460,8 @@ TCP 与 WebSocket 需要,两者用**同一个 token、同一段校验代码**。
 认证粒度是 **daemon 级**,不按场景或会话签发 —— 一条通过认证的连接可以访问这个
 daemon 的全部场景与会话,而且**没有任何逐方法的授权**。特别地,
 `config.setProvider` 能把后续所有模型流量指向调用方给的 `base_url`/`api_key`;
-把 socket 或 token 暴露出去,等同于暴露模型凭据本身。
+把 socket 或 token 暴露出去,等同于暴露模型凭据本身。连接不加密(§1),token 在不可信的
+网络上一过就算泄露了。
 
 Unix socket 靠文件系统权限(只有 daemon 的用户能连),不握手,一样是"能连上就全权"。
 
@@ -626,7 +631,8 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 方案(`scripts`、`plugin-packages`)。上面是默认构建的;少编一个模块的构建就不列它,只含
 内核的构建(`minimal` 档)为空。
 属于某个模块的方法在没编入它的构建里返回 `METHOD_NOT_FOUND`,`error.data` 为
-`{"module": "<id>"}`;目前这样的方法是 `mcp.*`(模块 `mcp`)。`plugin.*` 在没有包方案
+`{"module": "<id>"}`;目前这样的方法是 `mcp.*`(模块 `mcp`)与 `session.startAgent`(模块
+`agents`)。`plugin.*` 在没有包方案
 时仍返回 `PLUGINS_DISABLED`。
 
 `capabilities` 列出协议版本之外、可以单独检查的能力。只会增加;客户端忽略不认识的项。
@@ -927,6 +933,10 @@ daemon 重启后恢复)都按同一份 `options` 重建,之后的调用里再传
 
 `recorder.mode` 取 `record` / `replay` / `rerun`;`dir` 省略时用 daemon 自己的
 录制根目录。
+
+**录像不脱敏。** 系统提示、整段对话、工具参数与结果按发出去的原样记下,不经过遥测的脱敏
+策略——录像要的就是"实际发了什么"。所以提示里带着的密钥录像里也有;录像目录与文件只对
+属主可读,保管标准与它所录的 transcript 相同。
 
 回放在每个会话里分两路对录像:对话调用按顺序对录像里的对话调用,跳过夹在中间的辅助调用,
 严格回放查的顺序就是这一路;带 `purpose` 的辅助调用(压缩、记忆提取、起名……)取录像里同一

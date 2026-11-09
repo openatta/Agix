@@ -933,8 +933,9 @@ let store = Arc::new(ObservedHistoryStore::new(inner, vec![my_observer]));
 
 ### 生命周期 hook — `hooks`
 
-三十个具名事件,四种后端(command、prompt、HTTP、agent),在 `settings.json`
-里配。有些事件能解析、能接受配置,但还没有任何地方触发它们;`hooks::UNWIRED_EVENTS`
+三十个具名事件,四种后端(command、prompt、HTTP、agent),在 `settings.json` 的
+`hooks_config` 里配:事件名 → 一组 hook。各层按事件合并,上层写了某个事件就整组替换下层
+的那一组。有些事件能解析、能接受配置,但还没有任何地方触发它们;`hooks::UNWIRED_EVENTS`
 是那份清单,配到这类事件时引擎会告警,而 `daemon/tests/hook_event_wiring.rs` 从两个
 方向盯着这份清单不许说谎。
 
@@ -1181,10 +1182,11 @@ function onAssemble(blocks) {
 都改不了这一点,因为"声明"恰恰是一个外来脚本会在上面撒谎的东西。
 
 一条绑定点名了一个不存在的点、或者一个脚本不许绑的点,会在启动时被拒绝并点名——而且
-一条坏绑定会让整组绑定全部作废,而不是应用一半。一个悄悄不跑的脚本,会让它的作者跑
+`settings.json` 里一条坏绑定会让 settings 的整组绑定全部作废,而不是应用一半(插件包的
+绑定逐条处理,见 [plugin_packages.md](plugin_packages.md))。一个悄悄不跑的脚本,会让它的作者跑
 去自己的 JavaScript 里找一个不存在的 bug。
 
-今天能绑的点是 `prompt.assemble`,再没别的。这份清单短是故意的:每一条都是一个脚本
+能绑的点列在[下一节](#一个脚本能绑到哪些点上),一共九个。这份清单短是故意的:每一条都是一个脚本
 的代价有界、权限有定义的地方,所以要加一条,得把这两个问题都回答了,而不是往数组里
 追加一个字符串。
 

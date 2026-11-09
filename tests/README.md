@@ -23,7 +23,9 @@
 
 有几条要的不是同一个 daemon：「没有脚本引擎的构建拿到 `scripts` 段怎么办」只能由
 另一个构建回答。用例会说清楚怎么建、往哪个环境变量里塞：`AGIX_TEST_DAEMON_BIN_NO_CARRIER`
-（以及最小档的 `AGIX_TEST_DAEMON_BIN_MINIMAL`）。CI 都建。
+（以及最小档的 `AGIX_TEST_DAEMON_BIN_MINIMAL`）。CI 都建。`tests/live` 跨进程那半起的
+`agixd` 缺省是测试程序旁边那一个，`AGIX_TEST_DAEMON_BIN` 指向别的二进制时改用它——
+载体矩阵就是这么换被测构建的。
 
 > **手工建别的构建时务必带上自己的 `CARGO_TARGET_DIR`。** 每种构建建出来的都叫
 > `agixd`，而跨进程用例默认捡的就是 `target/debug/agixd` —— 往默认目录建一个
@@ -276,7 +278,11 @@ OAuth 请求）不走 shell 的 `HTTP(S)_PROXY`，不用另设 `NO_PROXY`。
 
 **黄金轨迹要读 diff 再提交。** `turn_behavior_net.rs` 把事件流和会话日志归一化后比
 对黄金文件，`AGIX_UPDATE_GOLDEN=1` 重新生成——反射式重生成的黄金文件是一种更慢的
-「没有测试」。
+「没有测试」。`extension_points.md` 的生成表同理：`AGIX_UPDATE_DOCS=1` 跑
+`extension_points_doc` 按 `catalog` 重写，读过 diff 再提交。
+
+**行为网一轮有时限。** `tests/runner` 驱动的每一轮缺省 180 秒没结束就取消并报错，而
+不是安静地挂着；一轮确实要更久时用 `AGIX_TEST_TURN_TIMEOUT_SECS` 放宽。
 
 **测试进程不碰你的 `~/.agix`。** 每个测试自己拿 tempdir 当状态根；
 `daemon/tests/home_is_never_discovered.rs` 保证没有哪个 crate 会自己去找 `$HOME`。
@@ -327,7 +333,7 @@ MCP）、`.agents/skills/`、`AGENTS.md`。用例跑之前会整个拷贝到临�
 | **改完 workspace 版本号** | `cargo clean` |
 | 每周 | `cargo sweep --time 7`（`cargo install cargo-sweep`） |
 
-第一条是硬性的：版本号一变，23 个 crate 的指纹全变，整套重编而旧的一份不会被删——
+第一条是硬性的：版本号一变，workspace 里每个 crate 的指纹全变，整套重编而旧的一份不会被删——
 这就是本仓库反复出现「几十 GB 突然爆掉」的直接原因。全量重建约 1 分 10 秒，比排查磁盘
 满便宜得多。
 

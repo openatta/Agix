@@ -81,7 +81,7 @@ Agix 是 agent 产品底下的那台引擎:它运行一个**会话**——装配
 - 子 Agent 跑在挂在父会话下的侧链会话里。
 - 并发和深度上限;权限、hook、预算随委派传下去。
 
-**工具**——40 个内建:文件、shell、web、任务、计划、目标、定时、git worktree、skill、团队、
+**工具**——45 个内建:文件、shell、web、任务、计划、目标、定时、git worktree、skill、团队、
 MCP、询问、通知、监视、结构化输出(见下文[能力](#能力))。
 
 **上下文**
@@ -258,8 +258,8 @@ let (mut agent, events, input) = runtime::agent::Builder::new()
 | 档 | 装配什么 |
 |---|---|
 | `minimal`(`--no-default-features`) | 只有内核:模型、turn loop、场景、会话、遥测、hooks、文件与 shell 工具 |
-| `coding` | + MCP、子 Agent 与团队、skills、web 工具、structured output |
-| `full`(默认,另带 `scripts` 与 `plugin-packages`) | + WebSocket 监听 |
+| `coding` | + MCP、子 Agent 与团队、skills、web 工具、structured output、程序化工具调用(`RunCode`) |
+| `full`(默认,另带 `scripts`、`plugin-packages` 与 `sandbox`) | + WebSocket 监听 |
 
 `daemon.ping` 报出构建带了哪些模块;属于没编入的模块的方法回 `METHOD_NOT_FOUND`,并
 指明是哪个模块。
@@ -382,7 +382,7 @@ let pool = daemon::assemble::pool(
 
 ## 能力
 
-### 工具——40 个内建
+### 工具——45 个内建
 
 | 类别 | 工具 |
 |---|---|
@@ -395,6 +395,7 @@ let pool = daemon::assemble::pool(
 | **定时** | `CronCreate` `CronDelete` `CronList` |
 | **工作区** | `EnterWorktree` `ExitWorktree`(每个会话独立的 git worktree) |
 | **协作** | `Skill` `Agent` `TeamCreate` `TeamList` `TeamDelete` |
+| **团队成员**(只发给团队成员) | `SendMessage` `ReadMail` `ListPeers` `TeamMemorySave` `TeamMemoryRead` |
 | **协议** | `MCP` `ListMcpResources` `ReadMcpResource`,另外每个发现的 MCP 工具一个 `mcp__<server>__<tool>` |
 | **交互** | `AskUserQuestion` `PushNotification` `Monitor` `StructuredOutput` |
 | **程序** | `RunCode`(一段调用本会话工具的 JavaScript 程序,只把返回值交回) |
@@ -455,7 +456,24 @@ agent 跑的命令各有自己的进程组,daemon 崩了它们还活着,所以 d
 配置按层叠加,优先级从低到高:内建默认 → `~/.agix/settings.json` →
 `~/.agix/scenes/<scene>/settings.json` → `<项目>/.agix/settings.json`,每层可再带一个
 `settings.local.json`;各层的 `permission_rules` 并列生效。完整的配置面是生成的
-[JSON Schema](schemas/settings.schema.json)。
+[JSON Schema](schemas/settings.schema.json)。值按字面取:`$VAR` / `${VAR}` / `${VAR:-默认}`
+只在 MCP server 的 `command`、`args`、`env`、`url`、`headers` 里展开。
+
+几个本文别处没提到的开关:
+
+| 设置 | 缺省 | 作用 |
+|---|---|---|
+| `model.fallback_model` | 无 | 主模型一直过载(529)时改用这个模型重试 |
+| `memory_enabled` | `true` | 文件记忆:记忆提示、每轮提醒里的索引、召回 |
+| `telemetry_enabled` | `true` | 每个会话在状态目录的 `telemetry/` 下写一份遥测 JSONL |
+| `telemetry_url` | 无 | OTLP 端点(不设看 `OTEL_EXPORTER_OTLP_ENDPOINT`);只在带 `otel` feature 的构建里生效 |
+| `instruction_file` | 无 | 再加一份指令文件,会话构建时读入,与 `AGENTS.md` 一样交给模型 |
+| `hooks_config` | 无 | 生命周期 hook:事件名 → hook 列表([extension_points.md](extension_points.md)) |
+| `disable_skill_shell_execution` | `false` | skill 正文里的 `` !`cmd` `` 换成一行说明,不执行 |
+| `execution.team_enabled` | `false` | 给场景支持团队(`code`、`harnix`)的会话注册 `TeamCreate` / `TeamList` / `TeamDelete` |
+| `execution.team_member_idle_timeout_secs` | `1800` | 团队成员空闲这么久就停掉 |
+| `sandbox.network_mode` | `unrestricted` | 沙箱里命令的出网:`unrestricted`、`deny_all` 或 `allowlist`(`sandbox.allowed_domains`) |
+| `session_dir` | — | 不读;transcript 总在状态目录下 |
 
 | 变量 | 作用 |
 |---|---|

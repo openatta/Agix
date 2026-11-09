@@ -28,8 +28,8 @@ cargo build -p daemon                                          # QuickJS
 cargo build -p daemon --no-default-features --features full    # 不带
 ```
 
-不开这个 feature,就没有任何 JavaScript 引擎被链接进来,`settings.json` 里出现
-`scripts` 段会被明确拒绝:
+不开这个 feature,就没有任何 JavaScript 引擎被链接进来。`settings.json` 里出现
+`scripts` 段时,daemon 记一条 error,会话照常起来,只是不带任何脚本:
 
 ```
 this build carries no script engine, so a `scripts` section cannot be honored;
@@ -77,14 +77,16 @@ bound scripts to extension points  scripts=1
 从此这个会话里每一次回复都以那行 house-style 结尾。
 
 第 3 步有两件事要知道。文件是**在会话构建时**读的,所以改了脚本,不新起一个会话
-就什么都不会变。还有,一条兑现不了的绑定——文件读不出来、点不存在、点不给脚本用
-——会让**整组**绑定作废:daemon 打出
+就什么都不会变。还有,`settings.json` 里一条兑现不了的绑定——文件读不出来、点不存在、
+点不给脚本用——会让 settings 的**整组**绑定作废:daemon 打出
 
 ```
-a script binding is invalid; no scripts were bound
+a script binding is invalid; no scripts from settings were bound
 ```
 
-然后这个会话一个脚本都不带地跑,而不是带着其中一半跑。
+然后这个会话不带 settings 里的任何脚本,而不是带着其中一半跑。插件包带来的绑定不受
+牵连,它们逐条绑定:坏掉的那一条记在它所属的包名下(`plugin.list` 里能看到),同一个
+包和别的包的其余绑定照常生效。
 
 绑定检查的是点和文件,**不求值**。所以语法错的文件绑得干干净净,会话照常起来,每个
 点在第一次被调用时各自失败——和路径打错是两种不同的坏日子:那一种什么都不带地跑,

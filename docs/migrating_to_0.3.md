@@ -18,6 +18,8 @@ cargo feature 构建的、部署 `agixd` 的。
 | `runtime::agent_tool::{AgentTypeDefinition, AgentTypeSource, parse_permission_mode}` | `base::agent_type::*`(`agents::agent_tool` 也重新导出) |
 | `runtime::agent::{build_default_skill_manager, build_skill_manager_unwatched}` | `skills::module::*` |
 | `tools::skill_tool::*`、`tools::register_skill_tool` | `skills::tool::*`、`skills::tool::register` |
+
+`CodingScene` 在 0.3.6 改名 `CodeScene`(见「0.3.0 之后:到 0.3.6」)。
 | `tools::saas_stubs::McpAuthTool` | 删除(0.3.10 起;OAuth 见 `mcp_auth.md`) |
 | `runtime::commands::CommandRegistry::from_skill_manager` | `from_skill_catalog`(收 `Arc<dyn SkillCatalog>`,`Arc<SkillManager>` 直接可传) |
 | `agents::agent_tool::AgentTool::set_skill_manager` | `set_skill_catalog` |
@@ -87,8 +89,8 @@ skill 命令。
 - `base::context::RunningTask` 新增 `ended`(配 `wait_ended()`)与 `inbox`
   (`TaskInbox`);`runtime::agent::Agent::steer_handle()` 把一个不经 `Agent::run` 驱动
   的 Agent 的 steering 队列交出来。
-- 新工具 `TaskWait`、`TaskMessage`,在 `CodingScene` 里延迟加载;`TeamCreate` 成员另有
-  `TeamMemorySave`、`TeamMemoryRead`。
+- 新工具 `TaskWait`、`TaskMessage`,在 `CodingScene`(0.3.6 起叫 `CodeScene`)里延迟
+  加载;`TeamCreate` 成员另有 `TeamMemorySave`、`TeamMemoryRead`。
 - `team::prompt::WorkerContext` 新增 `team_memory` 字段,结构体字面量要补上(空串即可)。
 - `Agent` 工具的 `model` 参数以前被忽略,现在生效,压过 agent 类型的 `model`。
 - 子 Agent 的工具输入按它自己的工具校验(带 `output_schema` 的 `StructuredOutput` 以前
@@ -150,17 +152,19 @@ skill 命令。
 | `--no-default-features --features plugin-packages` | `--no-default-features --features full,plugin-packages` |
 | `--no-default-features`(两个载体都不带) | `--no-default-features --features full` |
 
+`plugins`、`plugin-compile` 两个 feature 在 0.3.9 删除(见「0.3.8 之后:到 0.3.9」)。
+
 单独 `--no-default-features` 现在是 **minimal** 档:只有内核,没有 MCP、子 agent、
 skill、web 工具、WebSocket、载体与包方案。
 
 `release-small` profile(fat LTO、`opt-level = "s"`、`panic = "abort"`)是新增的,
-`release` 不变。
+`release` 不变。0.3.8 起 `release-small` 删除,这套配置成了 `release` 本身(见「0.3.7 之后:到 0.3.8」)。
 
 ## 部署 `agixd` 的
 
 - `agixd` 处理 SIGTERM,与 Ctrl-C 走同一条正常关闭路径。systemd 单元请用
   `KillMode=process`,让 daemon 自己决定哪些后台命令停、哪些留。
-- 用 `release-small` 构建的,panic 会中止进程,需要 supervisor 拉起;配置示例、
+- 用 `release-small`(0.3.8 起是 `--release`)构建的,panic 会中止进程,需要 supervisor 拉起;配置示例、
   崩溃记录(`~/.agix/daemon/crashes/`)与进程组记录(`~/.agix/daemon/groups/`)
   见 `ARCHITECTURE.md` §1.3 与 README 的「Running `agixd`」。
 - `--help` 的文字改为简短说明;`--version` 输出 `agixd <版本>`(原先是 `daemon <版本>`)。
@@ -174,7 +178,7 @@ skill、web 工具、WebSocket、载体与包方案。
 协议只增不改:
 
 - `daemon.ping` / `daemon.status` 增加 `modules`:这个构建编入的模块。
-- 在没编入某个模块的构建里,属于它的方法(目前是 `mcp.*`)返回 `METHOD_NOT_FOUND`,
+- 在没编入某个模块的构建里,属于它的方法(目前是 `mcp.*` 与 `session.startAgent`)返回 `METHOD_NOT_FOUND`,
   `error.data.module` 指明模块。默认构建不受影响。
 - `session.create` 的 `options.prompt` 与 `session.setPrompt`:会话自己的系统提示词,
   从下一轮起生效,重建与重启后保留。

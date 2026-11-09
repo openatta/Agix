@@ -57,7 +57,7 @@ tokio、rmcp),分在两个 crate 时各编一份,release 的 `agixd` 因此大�
 | `scene` | 内核 | 内建场景、`SceneRegistry`、声明式场景(§3.7) |
 | `history` / `session` / `compaction` / `telemetry` / `hooks` / `permissions` | 内核 | 日志、会话状态、上下文压缩、遥测与录制回放、hooks、权限 |
 | `agents` | 模块 | 子 agent(`Agent` 工具)、agent 类型目录、团队工具;依赖 `team` |
-| `mcp` | 模块 | MCP 连接、工具适配器、资源工具、prompt 命令;依赖 `auth` |
+| `mcp` | 模块 | MCP 连接、工具适配器、资源工具、prompt 命令、OAuth 授权 |
 | `skills` | 模块 | skill 目录与 `Skill` 工具 |
 | `script-host` | 模块 | QuickJS 脚本载体 |
 | `ptc` | 内核 | `RunCode`:模型写的一次性程序,在内嵌的 QuickJS 里跑,经 `ToolContext::dispatch` 调本会话的工具(`docs/ptc.md`);`ptc` feature,与脚本载体用同一套 QuickJS,两者各自独立开关 |
@@ -95,18 +95,21 @@ fork 型 skill 要 agents 提供的 spawner。委派出去的子会话用父会�
 
 ### 1.2 档位
 
-`daemon` 的 feature 按档位组织,脚本载体(`scripts`)与
-包方案(`plugin-packages`)另选:
+`daemon` 的 feature 按档位组织,脚本载体(`scripts`)、包方案(`plugin-packages`)与
+`Bash` 的进程沙箱(`sandbox`)另选:
 
 | 档 | 装配的模块 |
 |---|---|
 | `minimal`(`--no-default-features`) | 只有内核:模型、turn loop、场景、会话、遥测、hooks、文件与 shell 工具 |
-| `coding` | + mcp、agents、skills、web 工具、structured-output |
+| `coding` | + mcp、agents、skills、web 工具、structured-output、ptc(`RunCode`) |
 | `full` | + WebSocket 监听 |
 
-默认 `full + scripts + plugin-packages`。`daemon.ping` / `daemon.status` 的 `modules`
+默认 `full + scripts + plugin-packages + sandbox`。`daemon.ping` / `daemon.status` 的 `modules`
 列出编入的模块;属于未编入模块的方法返回 `METHOD_NOT_FOUND`,`data.module` 指明模块;
-配置了未编入模块的设置段(如 minimal 下的 `mcp_servers`)启动时警告并忽略。
+配置了未编入模块的设置段(如 minimal 下的 `mcp_servers`)启动时警告并忽略;没编入
+`scripts` 时出现 `scripts` 段记 error,会话同样照常起来、不带脚本。两者都不阻止启动,
+级别不同是因为缺了 MCP 服务器或团队工具,模型和宿主看得见(工具不在);脚本没生效却
+只是输出悄悄变了样,作者会先去 JavaScript 里找 bug。
 
 ### 1.3 失败策略
 
@@ -268,7 +271,15 @@ MCP 连接、脚本绑定的 root、记忆目录、transcript 目录。
 | `WatchHub` | 一个 `notify` 线程,按 tier 分键去重,watched 目录是 `1 + M + P` |
 
 **加一样按项目索引的东西,就把它放进 `ProjectBinding`**,不要在池上再挂一个
-`HashMap<ProjectSceneKey, _>` —— 那正是这条不变量曾经在四个地方同时不成立的原因。
+`HashMap<ProjectSceneKey, _>`。
+
+有两张表是有意的例外,同样按 `(project, scene)` 取键,所以不会读到别的项目,只是寿命
+比绑定长、放不进去:
+
+| 池上的表 | 为什么不在绑定里 |
+|---|---|
+| `mcp_by_project` | 默认项目的连接在启动时就开始,那时还没有任何绑定;`config.reload` 在原处重连、只换掉这一项,不用等绑定重建 |
+| `last_good_routers` | 新的 provider 配置解析不出或建不出 client 时退回它;绑定一失效就跟着没了,就退不回去 |
 
 **绑定按层失效。** 每个绑定带一个失效标记,用它建出的会话持有同一个标记。设置文件变化
 只作废从那一层合出来的绑定:项目层作废同一项目根的,scene 层作废那个 scene 的,全局层
@@ -478,7 +489,9 @@ Agent 的上下文,本来就该在一处。
   要让模型读到某个扩展的条目,按 `ns` 列名单
 - **模型可见即可从日志重建**。一个靠询问活着的插件来渲染条目的投影,会产出一个
   重新打开就不一样的会话。`model_visible_content_is_reconstructible` 把这条变成可检查的
-- 大内容外置到 `BlobStore`,日志里只留引用;**引用解析不了时条目保持惰性,不是报错**
+- 大内容可以外置到 `BlobStore`,日志里只留引用;**引用解析不了时条目保持惰性,不是报错**。
+  store 要由嵌入方自己装(`JsonlHistoryStore::with_blob_store` / `with_paste_store`);
+  daemon 默认不装,大内容照样写在日志行里
 
 **一个会话连同它的侧链可以在同一时刻截下来**(`HistoryStore::snapshot_lineage`)。
 `JsonlHistoryStore` 在 append 共用的那把锁下量一遍父会话项目目录里每份日志的长度,放锁后
@@ -489,7 +502,10 @@ stat 的时间,读盘不挡写入。走的是 `Meta` 里的父子关系,只沿 `
 一个归档,这份布局也是将来 `session.import` 要读的格式(`daemon_rpc_protocol.md` 的
 `session.export`)。
 
-**留存的时间戳与标识符走 `Environment` 契约**,所以同一段录制能重放出逐位相同的日志。
+**留存的时间戳与标识符走 `Environment` 契约**,所以在 `FixedEnvironment` 下同一段对话
+能重放出逐位相同的日志。daemon 不用它:会话的时钟是 `ShiftedEnvironment`(从
+`clock.start` 或录像开录的时刻起按墙上时钟走),标识符每次新生成,所以 daemon 的回放
+得到的是内容一致、时间戳与 id 不同的日志(`daemon_rpc_protocol.md` 的 `options.recorder`)。
 纯测量用的 `Instant` 不走契约——那正是它该做的事。
 
 ---
@@ -597,6 +613,11 @@ git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git
 `bypassPermissions` 会话同样走这道 gate,运行中进了计划模式也照样只读;只有宿主自己给了
 `Assembly.permission` 时,才换成宿主的那一个。要 deny 规则仍然算数,用 `acceptEdits`,
 或 `dontAsk` 加 allow 规则。
+
+这样设计是因为 bypass 是给"边界在引擎之外"的部署用的——一次性容器、VM、CI 机器,
+真正挡东西的是那一层与 OS 沙箱。一个"跳过大部分规则"的模式会让人以为规则还守着,
+其实 deny 本来就不是沙箱(§6.1 第 4 条),它在 bypass 下留下的只是错觉;所以 bypass
+要么全跳,要么不用,中间态交给 `dontAsk`。
 
 `acceptEdits` 只多放行只读调用:项目内的 `Edit` / `Write` 本来就由工具自己放行,项目外
 的、`.git` / `.agix` 下要确认的,在 `acceptEdits` 下照样询问——无人值守的会话里就是拒绝。
@@ -861,8 +882,13 @@ daemon 管。设计与用法在 [`mcp_auth.md`](mcp_auth.md);这里只记它在�
 
 ## 7. 锁
 
-daemon 实例锁的陈旧判定在 `base::process_identity::decide_stale_lock`。
-判定依据是 **pid + 进程启动时间**,不是文件 mtime,也不是超时:
+两把锁,都靠 `flock`,进程无论怎么退出内核都会释放:
+
+- **daemon 实例锁** `daemon.lock`:拿到 `flock` 之后,再看文件里记的上一个持有者——不持
+  `flock` 的旧版本 daemon 也挡得住。这一步由 `base::process_identity::decide_stale_lock` 判。
+- **会话日志的单写者锁** `sessions/<id>/writer.lock`(§1.3):只有 `flock`,不记持有者。
+
+`decide_stale_lock` 的判定依据是 **pid + 进程启动时间**,不是文件 mtime,也不是超时:
 
 | 存活性 | 决策 | 理由 |
 |---|---|---|

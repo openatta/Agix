@@ -118,9 +118,9 @@ when no one is watching.
 - Concurrency and depth limits, and permissions, hooks and budgets that
   follow delegation.
 
-**Tools** — 40 built in: files, shell, web, tasks, planning, goals,
+**Tools** — 45 built in: files, shell, web, tasks, planning, goals,
 scheduling, git worktrees, skills, teams, MCP, questions, notifications,
-monitors and structured output ([table below](#tools--40-built-in)).
+monitors and structured output ([table below](#tools--45-built-in)).
 
 **Context**
 - An LLM summary first, then cheaper fallbacks, behind a predictive
@@ -330,8 +330,8 @@ WebAssembly runtime; a host that wants one builds it on the Rust interfaces.
 | tier | what it assembles |
 |---|---|
 | `minimal` (`--no-default-features`) | the kernel only: models, the turn loop, scenes, sessions, telemetry, hooks, file and shell tools |
-| `coding` | + MCP, sub-agents and teams, skills, the web tools, structured output |
-| `full` (default, with `scripts` and `plugin-packages`) | + the WebSocket listener |
+| `coding` | + MCP, sub-agents and teams, skills, the web tools, structured output, programmatic tool calling (`RunCode`) |
+| `full` (default, with `scripts`, `plugin-packages` and `sandbox`) | + the WebSocket listener |
 
 `daemon.ping` reports the modules a build carries; a method belonging to one it
 does not carry answers `METHOD_NOT_FOUND` naming the module.
@@ -463,7 +463,7 @@ build if anything in the workspace assembles a pool a second way.
 
 ## Capabilities
 
-### Tools — 40 built in
+### Tools — 45 built in
 
 | Category | Tools |
 |---|---|
@@ -476,6 +476,7 @@ build if anything in the workspace assembles a pool a second way.
 | **Scheduling** | `CronCreate` `CronDelete` `CronList` |
 | **Workspace** | `EnterWorktree` `ExitWorktree` (isolated git worktree per session) |
 | **Collaboration** | `Skill` `Agent` `TeamCreate` `TeamList` `TeamDelete` |
+| **Team members** (given only to a team's members) | `SendMessage` `ReadMail` `ListPeers` `TeamMemorySave` `TeamMemoryRead` |
 | **Protocol** | `MCP` `ListMcpResources` `ReadMcpResource`, plus one `mcp__<server>__<tool>` per discovered MCP tool |
 | **Interaction** | `AskUserQuestion` `PushNotification` `Monitor` `StructuredOutput` |
 | **Programs** | `RunCode` (a JavaScript program that calls the session's tools; only its return value comes back) |
@@ -526,7 +527,9 @@ names a provider does that provider's model read the page and answer the call's
   OpenTelemetry export, four token counts per call, and the calls no turn asked
   for — compaction, memory, hooks, search — counted too.
 - **Recorder**: wrap any `Model` and a session becomes a self-contained
-  directory; replay is byte-exact and needs no network.
+  directory; replay is byte-exact and needs no network. A recording is not
+  redacted — it holds the prompts, tool arguments and results as sent — so keep
+  it the way you keep the transcript.
 
 ---
 
@@ -549,7 +552,25 @@ Configuration is layered, lowest priority first: built-in defaults →
 `~/.agix/settings.json` → `~/.agix/scenes/<scene>/settings.json` →
 `<project>/.agix/settings.json`, each with an optional `settings.local.json`;
 `permission_rules` from every tier apply side by side. The full surface is the
-generated [JSON Schema](docs/schemas/settings.schema.json).
+generated [JSON Schema](docs/schemas/settings.schema.json). Values are taken
+literally: `$VAR` / `${VAR}` / `${VAR:-default}` are expanded only inside an
+MCP server's `command`, `args`, `env`, `url` and `headers`.
+
+A few switches whose effect the rest of this README does not mention:
+
+| Setting | Default | Effect |
+|---|---|---|
+| `model.fallback_model` | none | the model a call is retried on when the main one stays overloaded (529) |
+| `memory_enabled` | `true` | file-based memory: the memory prompt, the index in each turn's reminder, recall |
+| `telemetry_enabled` | `true` | one telemetry JSONL file per session under the state directory's `telemetry/` |
+| `telemetry_url` | none | OTLP endpoint (else `OTEL_EXPORTER_OTLP_ENDPOINT`); only in a build with the `otel` feature |
+| `instruction_file` | none | one more instruction file, read when the session is built and given to the model like `AGENTS.md` |
+| `hooks_config` | none | lifecycle hooks: event name → list of hooks ([docs/extension_points.md](docs/extension_points.md)) |
+| `disable_skill_shell_execution` | `false` | a skill body's `` !`cmd` `` is replaced by a notice instead of run |
+| `execution.team_enabled` | `false` | gives `TeamCreate` / `TeamList` / `TeamDelete` to sessions whose scene supports teams (`code`, `harnix`) |
+| `execution.team_member_idle_timeout_secs` | `1800` | a team member idle this long is stopped |
+| `sandbox.network_mode` | `unrestricted` | outbound network of sandboxed commands: `unrestricted`, `deny_all`, or `allowlist` (`sandbox.allowed_domains`) |
+| `session_dir` | — | not read; transcripts always go under the state directory |
 
 | Variable | Purpose |
 |---|---|
