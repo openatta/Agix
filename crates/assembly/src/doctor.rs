@@ -6,8 +6,8 @@
 //! plugin) asking "why isn't my provider config taking effect?" without
 //! grepping daemon logs.
 //!
-//! Its three verdicts — the tiers, provider routing, hooks configuration —
-//! are [`HealthCheck`]s, so the same answers reach an embedder that never
+//! Its verdicts — the tiers, provider routing, hooks configuration, how full
+//! the memory store is — are [`HealthCheck`]s, so the same answers reach an embedder that never
 //! runs a daemon, and so a host's own checks can stand beside them in one
 //! report rather than in a second endpoint.
 
@@ -224,6 +224,44 @@ impl HealthCheck for HooksCheck {
     }
 }
 
+/// How full the durable memory store is. At the cap, turn-end extraction
+/// stops adding memories, and only removing some makes room again.
+pub struct MemoryCheck(Arc<Settings>);
+
+impl MemoryCheck {
+    pub fn new(settings: Arc<Settings>) -> Self {
+        Self(settings)
+    }
+}
+
+impl HealthCheck for MemoryCheck {
+    fn name(&self) -> &str {
+        "memory"
+    }
+
+    fn check(&self) -> CheckResult {
+        let cap = base::interface::memory::MAX_MEMORIES;
+        if !self.0.memory_enabled {
+            return CheckResult::ok("memory is off")
+                .with_details(serde_json::json!({ "enabled": false, "cap": cap }));
+        }
+        let store = base::interface::memory::MemoryStore::for_paths(
+            &base::paths::ConfigPaths::from_settings(&self.0.paths),
+        );
+        let count = store.load_all().len();
+        let details = serde_json::json!({ "enabled": true, "count": count, "cap": cap });
+        if count >= cap {
+            CheckResult::degraded(format!(
+                "{count}/{cap} memories: the store is full and no new memories are \
+                 extracted until some are removed"
+            ))
+            .with_details(details)
+        } else {
+            CheckResult::ok(format!("{count}/{cap} memories")).with_details(details)
+        }
+    }
+}
+
 /// Build the full diagnostic report as a JSON value (the RPC result body).
 ///
 /// `extra` is whatever the process wired in beside the engine's own checks —
@@ -239,7 +277,8 @@ pub fn run_doctor(
     let mut checks = HealthChecks::new()
         .with(Arc::new(SettingsTiersCheck::new(paths)))
         .with(Arc::new(ProviderRoutingCheck::new(settings.clone())))
-        .with(Arc::new(HooksCheck::new(settings.clone())));
+        .with(Arc::new(HooksCheck::new(settings.clone())))
+        .with(Arc::new(MemoryCheck::new(settings.clone())));
     for check in extra.checks() {
         checks = checks.with(check.clone());
     }
@@ -283,7 +322,9 @@ mod tests {
     use crate::config::StaticDaemonPaths;
 
     fn base_settings() -> Arc<Settings> {
-        Arc::new(Settings::defaults_for("test-model"))
+        let mut settings = Settings::defaults_for("test-model");
+        settings.memory_enabled = false;
+        Arc::new(settings)
     }
 
     fn no_extra_checks() -> HealthChecks {
@@ -438,6 +479,66 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_full_memory_store_is_reported_degraded() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut settings = Settings::defaults_for("test-model");
+        settings.paths.global_data_dir = dir.path().join("global");
+        settings.paths.user_data_dir = dir.path().join("global/scenes/code");
+        settings.paths.local_data_dir = dir.path().join("project");
+        let settings = Arc::new(settings);
+        let store = base::interface::memory::MemoryStore::for_paths(
+            &base::paths::ConfigPaths::from_settings(&settings.paths),
+        );
+        let fill = |from: usize, to: usize| {
+            store
+                .persist_batch(
+                    (from..to)
+                        .map(|i| base::interface::memory::DurableMemory {
+                            name: format!("m{i}"),
+                            description: String::new(),
+                            memory_type: Default::default(),
+                            content: String::new(),
+                            source_session_id: String::new(),
+                            confidence: 0.9,
+                            last_seen: String::new(),
+                            recall_count: 0,
+                        })
+                        .collect(),
+                )
+                .unwrap();
+        };
+        let cap = base::interface::memory::MAX_MEMORIES;
+        let memory_check = |settings: &Arc<Settings>| {
+            let report = run_doctor(
+                &StaticDaemonPaths::new(dir.path().to_path_buf()),
+                "code",
+                settings.clone(),
+                false,
+                crate::plugins::PluginStatus::Enabled,
+                &no_extra_checks(),
+            );
+            report["health"]["checks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["name"] == "memory")
+                .cloned()
+                .unwrap()
+        };
+
+        fill(0, cap - 1);
+        let below = memory_check(&settings);
+        assert_eq!(below["status"], "ok", "{below}");
+        assert_eq!(below["details"]["count"], cap - 1);
+
+        fill(cap - 1, cap);
+        let full = memory_check(&settings);
+        assert_eq!(full["status"], "degraded", "{full}");
+        assert_eq!(full["details"]["count"], cap);
+        assert_eq!(full["details"]["cap"], cap);
+    }
+
     /// The diagnostics an embedder
     /// registers appear beside the engine's own, and a verdict of theirs
     /// decides the overall status.
@@ -478,11 +579,12 @@ mod tests {
                 "settings.tiers",
                 "settings.providers",
                 "settings.hooks",
+                "memory",
                 "acme.licence"
             ]
         );
         assert_eq!(
-            report["health"]["checks"][3]["details"]["last_ok"],
+            report["health"]["checks"][4]["details"]["last_ok"],
             "2026-08-30T11:00:00Z"
         );
     }
@@ -531,10 +633,14 @@ mod documented_shape_tests {
     /// The doc's example is written for a fresh install with no settings.json
     /// anywhere; `run_doctor` has to be called under exactly that to compare.
     fn report_the_example_describes(dir: &Path) -> serde_json::Value {
+        let mut settings = Settings::defaults_for("claude-sonnet-4-6");
+        settings.paths.global_data_dir = dir.join("global");
+        settings.paths.user_data_dir = dir.join("global/scenes/code");
+        settings.paths.local_data_dir = dir.join("project");
         run_doctor(
             &StaticDaemonPaths::new(dir.to_path_buf()),
             "code",
-            Arc::new(Settings::defaults_for("claude-sonnet-4-6")),
+            Arc::new(settings),
             true,
             crate::plugins::PluginStatus::Enabled,
             &HealthChecks::new(),

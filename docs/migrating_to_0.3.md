@@ -623,8 +623,8 @@ WebAssembly 载体整个移除。
   不再重复带索引(提示词里已经有)。
 - 记忆写入不再写出半截文件:按目录串行、先写临时文件再改名;召回计数在同时召回时不丢。
 - 轮末抽取的记忆里认出密钥(`sk-…`、`ghp_…`、`AKIA…`、Bearer、JWT、私钥头……)的,那一条
-  不保存。抽取之后总数超过 200 条时按 `MemoryStore::compact(200)` 清理:有效置信度低于 0.3
-  的(两个月以上没更新、也没怎么被召回过的)先删,仍超出的删最久没更新的。
+  不保存。记忆存到 200 条就不再抽取新的(已有的照常更新),记一条 warn,`daemon.doctor` 的
+  `memory` 检查报 `degraded`(`count` / `cap`);引擎从不自动删记忆,腾地方要有人删掉一些。
 - 召回超出 2 秒预算时,在途的选择调用被中止,不再在后台继续花 token。
 - 模型请求在开始回答之前收到 500 / 502 / 504 / 408 的,按退避再发(两个协议都是),和 429、
   503、529 一样;以前直接失败。
@@ -1056,6 +1056,9 @@ WebAssembly 载体整个移除。
 - `hooks::HookConfig` 的四个变体都多了 `on_error: hooks::OnError`(结构体字面量要补,
   `OnError::Allow` 是原来的行为)。`HookOutcome::Ran` 多了 `failure: Option<String>`:跑了但
   回答不能用(退出码不是 0 或 2、不是 JSON)时写明原因。
+- `base::interface::memory::MemoryStore::{compact, with_environment}`、
+  `DurableMemory::{staleness_penalty, effective_confidence}`、`team::TeamMemoryStore::compact`
+  删除:记忆不再按年龄与置信度自动清理。新增 `assembly::doctor::MemoryCheck`。
 - `hooks::HookConfig::Http` 多了 `allow_local: bool`。`base::interface::exec::HttpRequest` 多了
   `internal_target: bool`(结构体字面量要补;`public_only_but_target()` 连同 `public_only` 一起
   置位):`Origin::Operator` 的请求去 url 自己的主机与端口时不查内部地址。自己实现 `Network`

@@ -7608,6 +7608,20 @@ pub(crate) async fn extract_memories_after_turn(
         return;
     }
 
+    const CAP: usize = base::interface::memory::MAX_MEMORIES;
+    let counting = store.clone();
+    let held = tokio::task::spawn_blocking(move || counting.load_all().len())
+        .await
+        .unwrap_or(0);
+    if held >= CAP {
+        tracing::warn!(
+            held,
+            cap = CAP,
+            "the memory store is full; no new memories are extracted until some are removed"
+        );
+        return;
+    }
+
     // Build a lightweight prompt asking the model to extract memories
     let recent: Vec<&ModelMessage> = messages.iter().rev().take(20).collect();
     let messages_text: String = recent
@@ -7777,10 +7791,24 @@ Return only a JSON array of memories. If nothing is worth saving, return []."
         })
         .collect();
     let persisted = tokio::task::spawn_blocking(move || {
-        store.persist_batch_scoped(scoped)?;
-        if store.load_all().len() > base::interface::memory::MAX_MEMORIES {
-            store.compact(base::interface::memory::MAX_MEMORIES)?;
+        let held: std::collections::HashSet<String> =
+            store.load_all().into_iter().map(|m| m.name).collect();
+        let mut room = CAP.saturating_sub(held.len());
+        let (admitted, refused): (Vec<_>, Vec<_>) = scoped.into_iter().partition(|sm| {
+            held.contains(&sm.memory.name)
+                || (room > 0 && {
+                    room -= 1;
+                    true
+                })
+        });
+        if !refused.is_empty() {
+            tracing::warn!(
+                refused = refused.len(),
+                cap = CAP,
+                "the memory store is full; new memories past the cap are not saved"
+            );
         }
+        store.persist_batch_scoped(admitted)?;
         Ok::<_, base::interface::memory::MemoryError>(())
     })
     .await;
@@ -8170,36 +8198,64 @@ mod extract_memories_tests {
         assert_eq!(names, vec!["deploy-day".to_string()]);
     }
 
+    fn old_memories(count: usize) -> Vec<DurableMemory> {
+        (0..count)
+            .map(|i| DurableMemory {
+                name: format!("m{i}"),
+                description: String::new(),
+                memory_type: MemoryType::User,
+                content: String::new(),
+                source_session_id: String::new(),
+                confidence: 0.9,
+                last_seen: "2020-01-01T00:00:00Z".into(),
+                recall_count: 0,
+            })
+            .collect()
+    }
+
+    fn names_in(store: &MemoryStore) -> std::collections::BTreeSet<String> {
+        store.load_all().into_iter().map(|m| m.name).collect()
+    }
+
     #[tokio::test]
-    async fn extraction_keeps_the_store_within_its_cap() {
+    async fn a_full_store_stops_extraction_and_loses_nothing() {
+        const CAP: usize = base::interface::memory::MAX_MEMORIES;
         let store = tmp_memory_store();
-        let now = time::OffsetDateTime::now_utc()
-            .format(&time::format_description::well_known::Iso8601::DEFAULT)
-            .unwrap();
-        store
-            .persist_batch(
-                (0..base::interface::memory::MAX_MEMORIES)
-                    .map(|i| DurableMemory {
-                        name: format!("m{i}"),
-                        description: String::new(),
-                        memory_type: MemoryType::User,
-                        content: String::new(),
-                        source_session_id: String::new(),
-                        confidence: 0.9,
-                        last_seen: now.clone(),
-                        recall_count: 0,
-                    })
-                    .collect(),
-            )
-            .unwrap();
+        store.persist_batch(old_memories(CAP)).unwrap();
+        let before = names_in(&store);
         extract_with(
             &store,
             r#"[{"name":"one-more","description":"d","content":"c","type":"user"}]"#,
         )
         .await;
+        assert_eq!(names_in(&store), before);
+    }
+
+    #[tokio::test]
+    async fn extraction_fills_the_store_up_to_its_cap_and_no_further() {
+        const CAP: usize = base::interface::memory::MAX_MEMORIES;
+        let store = tmp_memory_store();
+        store.persist_batch(old_memories(CAP - 1)).unwrap();
+        extract_with(
+            &store,
+            r#"[
+              {"name":"m0","description":"d","content":"updated","type":"user"},
+              {"name":"first-new","description":"d","content":"c","type":"user"},
+              {"name":"second-new","description":"d","content":"c","type":"user"}
+            ]"#,
+        )
+        .await;
+        let names = names_in(&store);
+        assert_eq!(names.len(), CAP);
+        assert!(names.contains("first-new") && !names.contains("second-new"));
+        let m0 = store
+            .load_all()
+            .into_iter()
+            .find(|m| m.name == "m0")
+            .unwrap();
         assert_eq!(
-            store.load_all().len(),
-            base::interface::memory::MAX_MEMORIES
+            m0.content, "updated",
+            "a memory already held is still updated"
         );
     }
 }

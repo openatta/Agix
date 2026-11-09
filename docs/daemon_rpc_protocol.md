@@ -673,8 +673,8 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 
 #### `daemon.doctor`
 
-只读自检:三份 settings.json 各自的状态、provider 路由的解析结果、hooks 配置,
-外加这个进程的几项装配事实。不做任何修复,也不发起任何网络探测 —— `HealthCheck`
+只读自检:三份 settings.json 各自的状态、provider 路由的解析结果、hooks 配置、
+记忆存了多少,外加这个进程的几项装配事实。不做任何修复,也不发起任何网络探测 —— `HealthCheck`
 契约要求每项检查从已经握着的状态立刻回答。
 
 下面是一个全新装配、三份 settings.json 都还不存在时的完整响应,逐字段为真
@@ -687,7 +687,9 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
     "checks": [                       // 每项的 details 与下面同名的顶层字段是同一份数据
       { "name":"settings.tiers",     "status":"ok", "summary":"every settings.json present parses" },
       { "name":"settings.providers", "status":"ok", "summary":"provider routing resolves" },
-      { "name":"settings.hooks",     "status":"ok", "summary":"hooks configuration parses" } ] },
+      { "name":"settings.hooks",     "status":"ok", "summary":"hooks configuration parses" },
+      { "name":"memory",             "status":"ok", "summary":"0/200 memories",
+        "details": { "enabled":true, "count":0, "cap":200 } } ] },
   "settings_tiers": [
     { "tier":"global",  "path":"…/settings.json",       "exists":false, "parses":true, "error":null, "unknown_keys":[] },
     { "tier":"scene",   "path":"…/settings.json",       "exists":false, "parses":true, "error":null, "unknown_keys":[] },
@@ -702,11 +704,15 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 ```
 
 `health` 是 `HealthCheck` 契约(`docs/extension_points.md`)的报告:宿主注册的检查
-与引擎自带的三项并排出现在同一个 `checks` 里。状态是三值而不是布尔 ——
+与引擎自带的四项并排出现在同一个 `checks` 里。状态是三值而不是布尔 ——
 `degraded`("还能用,但有人该知道")与 `failing`("这块不能指望了")是两件事。
 
 `settings_tiers` / `providers` / `hooks` 是 `health.checks` 里同名检查 `details`
 的副本,放在顶层是因为现有客户端读的是它们。
+
+`memory` 数的是会话用的记忆(全局与项目两个目录合起来)。到了上限(200 条)是 `degraded`:
+轮末的记忆抽取不再添新的,已有的一条不删,要腾地方得有人删掉一些。`memory_enabled` 为
+`false` 时是 `ok`,`details.enabled` 为 `false`。
 
 `settings_tiers[].unknown_keys` 是那份文件里没有任何设置读的顶层键(拼错的、别的工具的),
 加载时被忽略,daemon 日志里各有一条 warn。有这样的键时 `settings.tiers` 仍是 `ok`,

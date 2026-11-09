@@ -1946,10 +1946,9 @@ impl Builder {
             .clone()
             .unwrap_or_else(|| Arc::new(base::interface::environment::SystemEnvironment));
         let memory_store = self.memory_store.unwrap_or_else(|| {
-            Arc::new(
-                MemoryStore::for_paths(&base::paths::ConfigPaths::from_settings(&settings.paths))
-                    .with_environment(environment.clone()),
-            )
+            Arc::new(MemoryStore::for_paths(
+                &base::paths::ConfigPaths::from_settings(&settings.paths),
+            ))
         });
         // Session: `self.history_store` (set via `Builder::history_store(...)`)
         // makes this incrementally persisted to disk once per turn; `None`

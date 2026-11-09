@@ -11,14 +11,14 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Mutex, OnceLock, PoisonError};
 
-use crate::interface::environment::{Environment, SystemEnvironment};
 use crate::paths::ConfigPaths;
 
-/// How many memories the store keeps once extraction has added to it: the
-/// most the index shows, and past it the recall selection call carries every
-/// header there is.
+/// How many memories extraction fills the store to: the most the index
+/// shows, and past it the recall selection call carries every header there
+/// is. A store at the cap gets no new memories; nothing is deleted to make
+/// room, that is the user's call.
 pub const MAX_MEMORIES: usize = 200;
 
 /// A single durable memory entry — stored as a .md file.
@@ -36,56 +36,19 @@ pub struct DurableMemory {
     /// Session that produced this memory.
     #[serde(default)]
     pub source_session_id: String,
-    /// Confidence score 0.0–1.0. Entries below 0.3 are discarded on compaction.
+    /// Confidence score 0.0–1.0. Entries below 0.3 are not saved.
     #[serde(default = "default_confidence")]
     pub confidence: f64,
     /// ISO-8601 timestamp of last write.
     #[serde(default)]
     pub last_seen: String,
     /// Number of times this memory has been surfaced to the model (recall count).
-    /// Higher values indicate well-established memories that age more gracefully.
     #[serde(default)]
     pub recall_count: u32,
 }
 
 fn default_confidence() -> f64 {
     0.8
-}
-
-impl DurableMemory {
-    /// Compute a staleness penalty (0.0–1.0) based on time since last update.
-    /// Memories older than 30 days get a ≥0.5 penalty; memories updated within
-    /// 7 days get no penalty. `recall_count` slows decay (well-established
-    /// memories age more gracefully).
-    ///
-    /// `now` is passed in rather than read: this score decides which memories
-    /// reach the model, so it belongs to the kept category
-    /// [`Environment`](crate::interface::environment::Environment) exists for.
-    pub fn staleness_penalty(&self, now: time::OffsetDateTime) -> f64 {
-        let last = time::OffsetDateTime::parse(
-            &self.last_seen,
-            &time::format_description::well_known::Iso8601::DEFAULT,
-        )
-        .ok();
-        let Some(last) = last else { return 1.0 };
-        let age_days = (now - last).whole_days().max(0) as f64;
-
-        if age_days <= 7.0 {
-            return 0.0; // Fresh — no penalty
-        }
-
-        // Base penalty: linear decay from 7 to 90 days, capped at 1.0
-        let base_penalty = ((age_days - 7.0) / 83.0).min(1.0);
-
-        // Recall bonus: each recall reduces penalty by 5%, max 50% reduction
-        let recall_bonus = (self.recall_count as f64 * 0.05).min(0.5);
-        (base_penalty - recall_bonus).max(0.0)
-    }
-
-    /// Effective confidence after applying staleness penalty.
-    pub fn effective_confidence(&self, now: time::OffsetDateTime) -> f64 {
-        (self.confidence * (1.0 - self.staleness_penalty(now))).max(0.0)
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -151,7 +114,6 @@ pub enum MemoryScope {
 pub struct MemoryStore {
     user_dir: PathBuf,
     local_dir: PathBuf,
-    environment: Arc<dyn Environment>,
 }
 
 /// File name for the index.
@@ -162,7 +124,6 @@ impl MemoryStore {
         Self {
             user_dir,
             local_dir,
-            environment: Arc::new(SystemEnvironment),
         }
     }
 
@@ -176,12 +137,6 @@ impl MemoryStore {
     /// model is told to write to.
     pub fn user_dir(&self) -> &Path {
         &self.user_dir
-    }
-
-    /// Score ageing against `environment` instead of the machine's clock.
-    pub fn with_environment(mut self, environment: Arc<dyn Environment>) -> Self {
-        self.environment = environment;
-        self
     }
 
     /// The distinct directories this store owns, most specific first.
@@ -216,9 +171,7 @@ impl MemoryStore {
             }
         }
         // Most recent first. `name` breaks ties so the order is stable —
-        // `read_dir` order is not, and `last_seen` is frequently equal (or
-        // equally unparseable), which would make truncation in `compact`
-        // pick arbitrary victims between runs.
+        // `read_dir` order is not, and `last_seen` is frequently equal.
         out.sort_by(|(_, a), (_, b)| {
             b.last_seen
                 .cmp(&a.last_seen)
@@ -382,56 +335,6 @@ impl MemoryStore {
         Ok(removed)
     }
 
-    /// Compact: keep N most recent memories, discard older files and
-    /// low-confidence entries (< 0.3 effective confidence).
-    ///
-    /// Compaction never *moves* a memory: each victim is deleted from the
-    /// directory it was loaded from, and only the directories that actually
-    /// changed get their index rebuilt. Rewriting the survivors into one
-    /// directory would move project memories into the user's.
-    pub fn compact(&self, max_entries: usize) -> Result<usize, MemoryError> {
-        let mut all = self.load_all_with_home();
-        // Drop low-confidence memories, then truncate by count.
-        let mut doomed: Vec<(PathBuf, String)> = Vec::new();
-        // One instant for the whole pass. Reading the clock per entry would
-        // let two memories of the same age score differently by where they
-        // happen to sit in the list.
-        let now = self.environment.now();
-        all.retain(|(dir, m)| {
-            let keep = m.effective_confidence(now) >= 0.3;
-            if !keep {
-                doomed.push((dir.clone(), m.name.clone()));
-            }
-            keep
-        });
-        doomed.extend(compaction_victims(all, max_entries));
-        let count = doomed.len();
-        Self::delete_entries(&doomed)?;
-        Ok(count)
-    }
-
-    /// Delete `(home dir, name)` entries and rebuild the index of every
-    /// directory that lost a file. Deleting a memory from the directory it was
-    /// loaded from is the whole point — a delete-everywhere-then-rewrite-to-
-    /// `user_dir` pass silently migrates project memories to global.
-    fn delete_entries(entries: &[(PathBuf, String)]) -> Result<(), MemoryError> {
-        let mut dirs: Vec<&PathBuf> = entries.iter().map(|(dir, _)| dir).collect();
-        dirs.sort();
-        dirs.dedup();
-        for dir in dirs {
-            let _writing = lock_dir(dir);
-            let mut removed_any = false;
-            for (_, name) in entries.iter().filter(|(d, _)| d == dir) {
-                let path = dir.join(format!("{}.md", sanitize_filename(name)));
-                removed_any |= std::fs::remove_file(&path).is_ok();
-            }
-            if removed_any {
-                Self::rebuild_index_from_disk(dir)?;
-            }
-        }
-        Ok(())
-    }
-
     fn memory_dir(dir: &Path) -> PathBuf {
         dir.to_path_buf()
     }
@@ -514,10 +417,9 @@ impl MemoryStore {
 
     /// Write one memory as `<dir>/<name>.md`.
     ///
-    /// All of `DurableMemory`'s fields are serialized: `staleness_penalty()`,
-    /// `compact()`'s low-confidence filter and cross-session `recall_count`
-    /// all depend on the metadata surviving a write/read round trip. Every
-    /// metadata field is optional on the read side.
+    /// All of `DurableMemory`'s fields are serialized, so `confidence`,
+    /// `last_seen` and the cross-session `recall_count` survive a write/read
+    /// round trip. Every metadata field is optional on the read side.
     fn write_memory_file(dir: &Path, mem: &DurableMemory) -> Result<(), MemoryError> {
         let md = Self::memory_dir(dir);
         std::fs::create_dir_all(&md).map_err(|e| MemoryError::Io(e.to_string()))?;
@@ -735,26 +637,6 @@ fn write_replacing(path: &Path, contents: &str) -> Result<(), MemoryError> {
         let _ = std::fs::remove_file(&tmp);
         io(e)
     })
-}
-
-/// Decide which entries a count-capped compaction has to drop.
-///
-/// `entries` must arrive most-recent-first (that is what `load_all_with_home`
-/// guarantees, with a `name` tiebreak so the choice is reproducible rather than
-/// dependent on `read_dir` order). Each victim keeps the directory it was
-/// loaded from so the caller deletes it in place.
-fn compaction_victims(
-    mut entries: Vec<(PathBuf, DurableMemory)>,
-    max_entries: usize,
-) -> Vec<(PathBuf, String)> {
-    if entries.len() <= max_entries {
-        return Vec::new();
-    }
-    entries
-        .split_off(max_entries)
-        .into_iter()
-        .map(|(dir, mem)| (dir, mem.name))
-        .collect()
 }
 
 /// Extract the memory name from an index line (`- [name](name.md) — desc`).
@@ -1340,37 +1222,6 @@ This memory was written before the flat-format fix."#;
         assert_eq!(b.content, "body of meta");
     }
 
-    /// The consequence that made this worth fixing: `staleness_penalty()`
-    /// parses `last_seen`, and an empty string fails to parse and scores the
-    /// *maximum* penalty — so every memory read back from disk had
-    /// `effective_confidence() == 0`, which silently disabled the whole
-    /// confidence/decay system.
-    #[test]
-    fn staleness_scoring_is_live_after_a_round_trip() {
-        let tmp = TempDir::new().unwrap();
-        let (store, user_dir, _) = split_store(&tmp);
-        let mut fresh = mem("fresh");
-        fresh.confidence = 0.9;
-        fresh.last_seen = time::OffsetDateTime::now_utc()
-            .format(&time::format_description::well_known::Iso8601::DEFAULT)
-            .unwrap();
-        store.persist_batch(vec![fresh]).unwrap();
-
-        let back = MemoryStore::load_from_dir(&user_dir);
-        let b = &back[0];
-        let now = time::OffsetDateTime::now_utc();
-        assert_eq!(
-            b.staleness_penalty(now),
-            0.0,
-            "a just-written memory is fresh"
-        );
-        assert!(
-            b.effective_confidence(now) > 0.8,
-            "effective confidence collapsed to {} — staleness scoring is inert again",
-            b.effective_confidence(now)
-        );
-    }
-
     /// Free-form prose and ISO timestamps both contain `:`; unquoted they
     /// would parse as nested mappings and corrupt the frontmatter.
     #[test]
@@ -1572,137 +1423,6 @@ This memory was written before the flat-format fix."#;
     }
 
     #[test]
-    fn compaction_victims_keep_their_home_directory() {
-        let user = PathBuf::from("/u");
-        let local = PathBuf::from("/l");
-        let mut newer = mem("newer");
-        newer.last_seen = "2026-08-05T00:00:00Z".into();
-        let mut older = mem("older");
-        older.last_seen = "2026-01-01T00:00:00Z".into();
-
-        let victims = compaction_victims(vec![(local.clone(), newer), (local.clone(), older)], 1);
-        assert_eq!(victims, vec![(local.clone(), "older".to_string())]);
-
-        // Nothing is dropped when the store is under the cap.
-        assert!(compaction_victims(vec![(user, mem("only"))], 5).is_empty());
-    }
-
-    #[test]
-    fn compaction_victim_order_is_stable_when_last_seen_is_missing() {
-        let tmp = TempDir::new().unwrap();
-        let (store, _user, _local) = split_store(&tmp);
-        for name in ["c-fact", "a-fact", "b-fact"] {
-            store.persist_batch(vec![mem(name)]).unwrap();
-        }
-        // Every entry carries the same `last_seen`, so only the `name`
-        // tiebreak keeps the order deterministic.
-        let first = compaction_victims(store.load_all_with_home(), 1);
-        let second = compaction_victims(store.load_all_with_home(), 1);
-        assert_eq!(first, second);
-        assert_eq!(
-            first.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>(),
-            vec!["b-fact", "c-fact"]
-        );
-    }
-
-    #[test]
-    fn delete_entries_rebuilds_only_the_touched_index() {
-        let tmp = TempDir::new().unwrap();
-        let (store, user, local) = split_store(&tmp);
-        store.persist_batch(vec![mem("global-fact")]).unwrap();
-        store
-            .persist_batch_scoped(vec![
-                ScopedMemory {
-                    memory: mem("project-a"),
-                    scope: MemoryScope::Local,
-                },
-                ScopedMemory {
-                    memory: mem("project-b"),
-                    scope: MemoryScope::Local,
-                },
-            ])
-            .unwrap();
-
-        MemoryStore::delete_entries(&[(local.clone(), "project-b".to_string())]).unwrap();
-
-        assert!(local.join("project-a.md").exists());
-        assert!(!local.join("project-b.md").exists());
-        assert!(index_of(&local).contains("project-a"));
-        assert!(!index_of(&local).contains("project-b"));
-        // The global dir was untouched — files and index both intact.
-        assert!(user.join("global-fact.md").exists());
-        assert!(index_of(&user).contains("global-fact"));
-    }
-
-    /// 2020-01-01, far enough in the past that a memory dated a day before it
-    /// is ancient by the machine's clock and fresh by this one.
-    fn fixed_instant() -> time::OffsetDateTime {
-        time::OffsetDateTime::UNIX_EPOCH + time::Duration::days(18_262)
-    }
-
-    fn iso(t: time::OffsetDateTime) -> String {
-        t.format(&time::format_description::well_known::Iso8601::DEFAULT)
-            .unwrap()
-    }
-
-    fn store_at(dir: &Path, clock: time::OffsetDateTime, step: time::Duration) -> MemoryStore {
-        MemoryStore::new(dir.to_path_buf(), dir.join("local")).with_environment(Arc::new(
-            crate::interface::environment::FixedEnvironment::new(clock, step),
-        ))
-    }
-
-    /// Which memories survive to be offered to the model is decided against
-    /// the environment's clock. Under a fixed one the answer is the same
-    /// whenever the test runs — which it would not be if the score still read
-    /// the machine, since both entries are years old by that measure.
-    #[test]
-    fn ageing_is_scored_against_the_environment_not_the_machine() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join("memory");
-        let clock = fixed_instant();
-        let store = store_at(&dir, clock, time::Duration::ZERO);
-
-        let mut recent = mem("recent");
-        recent.last_seen = iso(clock - time::Duration::days(1));
-        let mut ancient = mem("ancient");
-        ancient.last_seen = iso(clock - time::Duration::days(200));
-        store.persist_batch(vec![recent, ancient]).unwrap();
-
-        assert_eq!(store.compact(10).unwrap(), 1);
-        assert!(
-            dir.join("recent.md").exists(),
-            "a memory a day old under the fixed clock must not age out"
-        );
-        assert!(
-            !dir.join("ancient.md").exists(),
-            "the formula still decays — 200 days is past the cap"
-        );
-    }
-
-    /// Every entry in one compaction is scored against one instant. A clock
-    /// read per entry would make a memory's fate depend on its position in the
-    /// list, which is the ordering instability this contract is for.
-    #[test]
-    fn a_compaction_scores_every_entry_against_the_same_instant() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join("memory");
-        let clock = fixed_instant();
-        let store = store_at(&dir, clock, time::Duration::days(30));
-
-        for name in ["a-fact", "b-fact", "c-fact"] {
-            let mut m = mem(name);
-            m.last_seen = iso(clock - time::Duration::days(8));
-            store.persist_batch(vec![m]).unwrap();
-        }
-
-        assert_eq!(
-            store.compact(10).unwrap(),
-            0,
-            "three memories of equal age must share one verdict"
-        );
-    }
-
-    #[test]
     fn an_index_cut_inside_a_multibyte_character_is_cut_before_it() {
         let line = format!("- [记忆](m.md) — {}\n", "部署流程与回滚步骤".repeat(8));
         let mut raw = String::new();
@@ -1786,7 +1506,7 @@ This memory was written before the flat-format fix."#;
         let tmp = TempDir::new().unwrap();
         let (store, _, _) = split_store(&tmp);
         store.persist_batch(vec![mem("hot")]).unwrap();
-        let store = Arc::new(store);
+        let store = std::sync::Arc::new(store);
         let recallers: Vec<_> = (0..8)
             .map(|_| {
                 let store = store.clone();

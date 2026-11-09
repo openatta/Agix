@@ -107,12 +107,6 @@ impl TeamMemoryStore {
         self.store.search(query)
     }
 
-    /// Compact team memories, keeping at most `max_entries` of the most recent.
-    /// Discards low-confidence entries (< 0.3 effective confidence) first.
-    pub fn compact(&self, max_entries: usize) -> Result<usize, MemoryError> {
-        self.store.compact(max_entries)
-    }
-
     /// Delete the entire team memory directory (called on team deletion).
     pub fn delete_all(&self) -> Result<(), std::io::Error> {
         if self.team_memory_dir.exists() {
@@ -775,49 +769,6 @@ mod tests {
             !prompt.contains("Team config"),
             "team memory with same name should be hidden"
         );
-    }
-
-    #[test]
-    fn compact_discards_low_confidence() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join("teams").join("test-team").join("memory");
-        let store = TeamMemoryStore::with_dir(dir);
-        store.ensure_dir().unwrap();
-
-        // A fresh memory and one stale enough to score below the 0.3 floor.
-        store
-            .write_team_memory(DurableMemory {
-                name: "good".into(),
-                description: "useful memory".into(),
-                memory_type: MemoryType::Project,
-                content: "Important.".into(),
-                source_session_id: "s1".into(),
-                confidence: 0.9,
-                last_seen: time::OffsetDateTime::now_utc()
-                    .format(&time::format_description::well_known::Iso8601::DEFAULT)
-                    .unwrap(),
-                recall_count: 0,
-            })
-            .unwrap();
-
-        store
-            .write_team_memory(DurableMemory {
-                name: "trash".into(),
-                description: "useless".into(),
-                memory_type: MemoryType::User,
-                content: "Junk.".into(),
-                source_session_id: "s1".into(),
-                confidence: 0.9,
-                last_seen: "2020-01-01T00:00:00Z".into(),
-                recall_count: 0,
-            })
-            .unwrap();
-
-        let removed = store.compact(10).unwrap();
-        assert_eq!(removed, 1);
-        let loaded = store.load_team_memories();
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].name, "good");
     }
 
     #[test]
