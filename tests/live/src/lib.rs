@@ -25,7 +25,10 @@
 //!   every request they were sent — the only place the effect of a prompt
 //!   block or a bound script is visible from outside.
 //! - [`handle::Daemon`] is the daemon itself and the connection to it.
-//! - [`live::LiveRun`] is the scaffolding a live case repeats.
+//! - [`live::LiveRun`] is the scaffolding a live case repeats, and
+//!   [`live::Watcher`] the host answering a session's prompts.
+//! - [`page::PageServer`] and [`mcp::McpToy`] are the outside world a case
+//!   points the product at: web pages, and an MCP server over stdio or HTTP.
 //!
 //! The five surfaces a case can assert on: the RPC response, the
 //! `session.event` frames, what reached the model, what is on disk (the
@@ -36,12 +39,21 @@
 
 pub mod handle;
 pub mod live;
+pub mod mcp;
+pub mod page;
 pub mod provider;
+pub mod telemetry;
 pub mod world;
 
 pub use handle::{alternate_daemon_binary, Daemon, DaemonOptions, Host, Mode};
-pub use live::{is_pro_model, Asked, Exchange, LiveConfig, LiveProvider, LiveRun, Tokens, Watcher};
-pub use provider::{Block, ProviderStub, Reply, SeenRequest};
+pub use live::{
+    is_pro_model, Answer, Asked, Exchange, LiveConfig, LiveProvider, LiveRun, LiveRunBuilder,
+    Tokens, Watcher,
+};
+pub use mcp::{McpToy, McpToyHttp};
+pub use page::{Page, PageServer};
+pub use provider::{Block, ProviderStub, Purpose, Reply, SeenRequest};
+pub use telemetry::{telemetry_kinds, telemetry_until};
 pub use world::World;
 
 /// What a daemon is pointed at for its model: an Anthropic Messages endpoint

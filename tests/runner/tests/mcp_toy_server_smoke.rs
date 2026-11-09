@@ -90,4 +90,20 @@ async fn mcp_toy_server_connects_and_ping_round_trips() {
         text.contains("toy: hello"),
         "expected echoed message, got: {text}"
     );
+
+    let greeted = manager
+        .invoke_prompt_command("mcp__demo__greet", "name=Ada style=formal")
+        .await;
+    assert!(
+        !greeted.is_error && greeted.text.contains("Greet Ada in a formal style."),
+        "{}",
+        greeted.text
+    );
+    let missing = manager.invoke_prompt_command("mcp__demo__greet", "").await;
+    assert!(missing.is_error, "a missing required argument is refused");
+    let unicode = manager.read_resource_text("demo", "toy://unicode").await;
+    assert!(
+        unicode.as_deref().is_ok_and(|t| t.contains("🦀")),
+        "{unicode:?}"
+    );
 }

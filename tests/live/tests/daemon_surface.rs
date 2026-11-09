@@ -20,40 +20,12 @@
 //! and an environment, and every one of those is a step the in-process build
 //! is handed rather than takes.
 
-use live::{Block, Daemon, DaemonOptions, Mode, ProviderStub, Reply, World};
+use live::{
+    telemetry_kinds as kinds, telemetry_until, Block, Daemon, DaemonOptions, Mode, ProviderStub,
+    Reply, World,
+};
 use serde_json::json;
 use std::time::Duration;
-
-/// The events a session has written so far, waited for rather than read once.
-///
-/// Telemetry leaves the engine on a channel and is written by another task,
-/// so a turn's last events land some time after the RPC that produced them
-/// has already answered. Reading the file the moment a turn returns is a race
-/// that only loses under load — which is to say, in CI.
-async fn telemetry_until(
-    path: &std::path::Path,
-    enough: impl Fn(&[serde_json::Value]) -> bool,
-) -> Vec<serde_json::Value> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        let events: Vec<serde_json::Value> = std::fs::read_to_string(path)
-            .unwrap_or_default()
-            .lines()
-            .filter_map(|l| serde_json::from_str(l).ok())
-            .collect();
-        if enough(&events) || std::time::Instant::now() > deadline {
-            return events;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-}
-
-fn kinds(events: &[serde_json::Value]) -> Vec<&str> {
-    events
-        .iter()
-        .filter_map(|e| e.get("type").and_then(|t| t.as_str()))
-        .collect()
-}
 
 /// A daemon, a stub, and a project — the three every case starts with.
 /// How many model calls this turn made.

@@ -129,6 +129,27 @@ impl TurnStream<'_> {
             }
         }
     }
+
+    /// The rest of the turn, gathered.
+    pub async fn collect(mut self) -> anyhow::Result<TurnEvents> {
+        let mut out = TurnEvents::default();
+        while let Some(item) = self.next().await? {
+            match item {
+                TurnItem::Event(event) => {
+                    out.absorb(&event);
+                    out.events.push(event);
+                }
+                TurnItem::Response(resp) => {
+                    out.response = Some(resp);
+                    // The response can race ahead of `turn_complete` on the
+                    // wire; the stream ends here either way, and the caller
+                    // reads `turn_complete` to tell which happened.
+                    break;
+                }
+            }
+        }
+        Ok(out)
+    }
 }
 
 /// 一次 `session.run_turn` 收集到的完整结果：所有 `session.event` StreamFrame
@@ -152,6 +173,45 @@ pub struct TurnEvents {
     /// to the protocol has to read the JSON.
     pub turn_complete_event: Option<Value>,
     pub response: Option<RpcResponse>,
+    /// Every event of the turn, in arrival order — the kinds the fields
+    /// above do not gather (`thinking_delta`, `step_end`, `compact`, ...).
+    pub events: Vec<Value>,
+}
+
+impl TurnEvents {
+    fn absorb(&mut self, event: &Value) {
+        let str_of = |key: &str| {
+            event
+                .get(key)
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string()
+        };
+        match event.get("kind").and_then(|k| k.as_str()) {
+            Some("text_delta") => self.text.push_str(&str_of("text")),
+            Some("tool_use") => {
+                let name = event.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                self.tool_uses.push((
+                    name.to_string(),
+                    event.get("input").cloned().unwrap_or_default(),
+                ));
+            }
+            Some("tool_result") => {
+                let name = event.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                let is_error = event
+                    .get("is_error")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                self.tool_results
+                    .push((name.to_string(), str_of("content"), is_error));
+            }
+            Some("turn_complete") => {
+                self.turn_complete = true;
+                self.turn_complete_event = Some(event.clone());
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Which `(project, scene)` a project-tier method acts on.
@@ -408,7 +468,6 @@ impl DaemonRpcClient {
         turn_id: &str,
         options: Option<RunTurnOptions>,
     ) -> anyhow::Result<TurnStream<'_>> {
-        let id = self.next_id();
         let mut params = serde_json::json!({
             "message": message,
             "turn_id": turn_id,
@@ -419,12 +478,22 @@ impl DaemonRpcClient {
         if let Some(opts) = options {
             params["options"] = serde_json::to_value(opts)?;
         }
+        self.begin_turn_with(params).await
+    }
+
+    /// [`Self::begin_turn`] with the params written out whole.
+    pub async fn begin_turn_with(&mut self, params: Value) -> anyhow::Result<TurnStream<'_>> {
+        let id = self.next_id();
+        let session_id = params
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
         self.write_request("session.run_turn", params, id).await?;
         Ok(TurnStream {
             client: self,
             id,
             finished: false,
-            session_id: session_id.map(str::to_string),
+            session_id,
         })
     }
 
@@ -468,61 +537,17 @@ impl DaemonRpcClient {
         turn_id: &str,
         options: Option<RunTurnOptions>,
     ) -> anyhow::Result<TurnEvents> {
-        let mut stream = self
-            .begin_turn(Some(session_id), message, turn_id, options)
-            .await?;
+        self.begin_turn(Some(session_id), message, turn_id, options)
+            .await?
+            .collect()
+            .await
+    }
 
-        let mut out = TurnEvents::default();
-        while let Some(item) = stream.next().await? {
-            match item {
-                TurnItem::Event(event) => match event.get("kind").and_then(|k| k.as_str()) {
-                    Some("text_delta") => {
-                        if let Some(t) = event.get("text").and_then(|v| v.as_str()) {
-                            out.text.push_str(t);
-                        }
-                    }
-                    Some("tool_use") => {
-                        let name = event
-                            .get("name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("?")
-                            .to_string();
-                        out.tool_uses
-                            .push((name, event.get("input").cloned().unwrap_or_default()));
-                    }
-                    Some("tool_result") => {
-                        let name = event
-                            .get("name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("?")
-                            .to_string();
-                        let content = event
-                            .get("content")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default()
-                            .to_string();
-                        let is_error = event
-                            .get("is_error")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false);
-                        out.tool_results.push((name, content, is_error));
-                    }
-                    Some("turn_complete") => {
-                        out.turn_complete = true;
-                        out.turn_complete_event = Some(event.clone());
-                    }
-                    _ => {}
-                },
-                TurnItem::Response(resp) => {
-                    out.response = Some(resp);
-                    // The response can race ahead of `turn_complete` on the
-                    // wire; the stream ends here either way, and the caller
-                    // reads `turn_complete` to tell which happened.
-                    break;
-                }
-            }
-        }
-        Ok(out)
+    /// [`Self::session_run_turn`] with the `session.run_turn` params written
+    /// out whole — `attachments`, `on_busy`, whatever the typed form has no
+    /// field for.
+    pub async fn run_turn_with(&mut self, params: Value) -> anyhow::Result<TurnEvents> {
+        self.begin_turn_with(params).await?.collect().await
     }
 
     /// `config.get` — one settings tier of `target` as the daemon sees it.

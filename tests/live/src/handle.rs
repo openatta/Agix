@@ -61,6 +61,10 @@ pub struct DaemonOptions {
     /// Extra arguments for a spawned daemon. Ignored in this process, which
     /// has no command line to put them on.
     pub extra_args: Vec<String>,
+    /// The MCP policy file to enforce in place of the machine's managed one:
+    /// `--mcp-policy` for a spawned daemon, the same config field `main.rs`
+    /// sets from it for one in this process.
+    pub mcp_policy: Option<PathBuf>,
     /// What an embedder hands `daemon::Assembly` in Rust: its own scenes and
     /// plugins. Only in this process: a spawned daemon has no way to be given
     /// Rust code.
@@ -87,8 +91,25 @@ impl DaemonOptions {
             instance: "harness".to_string(),
             binary: None,
             extra_args: Vec::new(),
+            mcp_policy: None,
             host: Host::default(),
         }
+    }
+
+    pub fn session_cap(mut self, cap: usize) -> Self {
+        self.session_cap = cap;
+        self
+    }
+
+    /// Whole seconds for a spawned daemon, which takes it on the command line.
+    pub fn prompt_timeout(mut self, timeout: Duration) -> Self {
+        self.prompt_timeout = timeout;
+        self
+    }
+
+    pub fn mcp_policy(mut self, path: PathBuf) -> Self {
+        self.mcp_policy = Some(path);
+        self
     }
 
     /// Spawn this binary instead of the one beside the test. The carriers
@@ -181,6 +202,7 @@ impl Daemon {
 
         let mut config = config;
         config.session_cap = opts.session_cap;
+        config.mcp_policy_path = opts.mcp_policy.clone();
 
         // The same entry point `main.rs` uses, for the same reason a scenario
         // exists: a harness that assembled its own pool would be testing its
@@ -411,6 +433,9 @@ async fn spawn_command(
         .arg(opts.session_cap.to_string())
         .arg("--permission-prompt-timeout")
         .arg(opts.prompt_timeout.as_secs().to_string());
+    if let Some(policy) = &opts.mcp_policy {
+        cmd.arg("--mcp-policy").arg(policy);
+    }
     cmd.args(&opts.extra_args)
         .current_dir(&opts.project)
         .env("HOME", world.home())

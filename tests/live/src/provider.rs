@@ -30,6 +30,7 @@
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -42,8 +43,12 @@ pub const CACHE_CREATION_TOKENS: u64 = 5;
 pub const CACHE_READ_TOKENS: u64 = 23;
 
 /// One content block of a scripted answer.
+#[derive(Clone, Debug)]
 pub enum Block {
     Text(String),
+    /// Streamed as `thinking_delta`s and a `signature_delta`, the way a
+    /// provider with extended thinking on streams it.
+    Thinking(String),
     ToolUse {
         id: String,
         name: String,
@@ -56,6 +61,10 @@ impl Block {
         Self::Text(s.into())
     }
 
+    pub fn thinking(s: impl Into<String>) -> Self {
+        Self::Thinking(s.into())
+    }
+
     pub fn tool(id: impl Into<String>, name: impl Into<String>, input: serde_json::Value) -> Self {
         Self::ToolUse {
             id: id.into(),
@@ -66,14 +75,28 @@ impl Block {
 }
 
 /// What the stub does with the next request it receives.
+#[derive(Clone, Debug)]
 pub enum Reply {
     /// A successful stream of these blocks. `stop_reason` follows from the
     /// blocks: a tool call ends the message with `tool_use`, anything else
     /// with `end_turn`.
     Blocks(Vec<Block>),
+    /// [`Blocks`](Self::Blocks) ending with this `stop_reason` instead —
+    /// `max_tokens`, `pause_turn`, the endings the engine recovers from.
+    Ended {
+        blocks: Vec<Block>,
+        stop_reason: String,
+    },
     /// An HTTP failure — the shape the engine's retry and fallback paths key
     /// on, and one no real provider can be asked for on demand.
     Status { code: u16, body: String },
+    /// This reply, sent only after the wait. Nothing is written before it,
+    /// so the request is in flight for the whole of it — long enough to
+    /// interrupt, or to outlast a timeout.
+    Delay(Duration, Box<Reply>),
+    /// This reply's bytes up to `after_bytes`, then the connection closes: a
+    /// stream that broke off mid-message.
+    Cut(usize, Box<Reply>),
 }
 
 impl Reply {
@@ -91,6 +114,106 @@ impl Reply {
             body: body.into(),
         }
     }
+
+    pub fn ended(blocks: Vec<Block>, stop_reason: impl Into<String>) -> Self {
+        Self::Ended {
+            blocks,
+            stop_reason: stop_reason.into(),
+        }
+    }
+
+    pub fn delayed(wait: Duration, reply: Reply) -> Self {
+        Self::Delay(wait, Box::new(reply))
+    }
+
+    pub fn cut(after_bytes: usize, reply: Reply) -> Self {
+        Self::Cut(after_bytes, Box::new(reply))
+    }
+
+    /// The response bytes, and how long to hold them back.
+    fn render(&self) -> (Duration, Vec<u8>) {
+        match self {
+            Self::Blocks(blocks) => (Duration::ZERO, sse_response(blocks, None).into_bytes()),
+            Self::Ended {
+                blocks,
+                stop_reason,
+            } => (
+                Duration::ZERO,
+                sse_response(blocks, Some(stop_reason)).into_bytes(),
+            ),
+            Self::Status { code, body } => {
+                (Duration::ZERO, http_response(*code, body).into_bytes())
+            }
+            Self::Delay(wait, inner) => {
+                let (more, bytes) = inner.render();
+                (*wait + more, bytes)
+            }
+            Self::Cut(after, inner) => {
+                let (wait, mut bytes) = inner.render();
+                bytes.truncate(*after);
+                (wait, bytes)
+            }
+        }
+    }
+
+    /// Write this reply to `sock`, then close it.
+    pub(crate) async fn send(&self, sock: &mut tokio::net::TcpStream) -> anyhow::Result<()> {
+        let (wait, bytes) = self.render();
+        if !wait.is_zero() {
+            tokio::time::sleep(wait).await;
+        }
+        sock.write_all(&bytes).await?;
+        sock.flush().await?;
+        let _ = sock.shutdown().await;
+        Ok(())
+    }
+}
+
+/// The next `remaining` conversation requests get `reply` in place of
+/// whatever they would have had.
+pub(crate) struct Failures {
+    remaining: usize,
+    reply: Option<Reply>,
+}
+
+impl Failures {
+    pub(crate) fn none() -> Self {
+        Self {
+            remaining: 0,
+            reply: None,
+        }
+    }
+
+    pub(crate) fn set(&mut self, n: usize, reply: Reply) {
+        self.remaining = n;
+        self.reply = Some(reply);
+    }
+
+    pub(crate) fn take(&mut self, path: &str) -> Option<Reply> {
+        if self.remaining == 0 || !is_conversation(path) {
+            return None;
+        }
+        self.remaining -= 1;
+        self.reply.clone()
+    }
+}
+
+pub(crate) fn is_conversation(path: &str) -> bool {
+    path.ends_with("/v1/messages")
+}
+
+/// What a request was for, as far as its body tells. The engine's calls
+/// outside a turn carry no tools and a fixed instruction, so the instruction
+/// says which one it is; a turn's call is the one with a tool table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Purpose {
+    Turn,
+    Compact,
+    MemoryRecall,
+    MemoryExtract,
+    WebFetch,
+    Title,
+    Other,
 }
 
 /// A reply queue and the text a request must carry to draw on it.
@@ -118,17 +241,19 @@ impl SeenRequest {
     /// The system prompt as one string. Blocks are joined so a case can ask
     /// whether a mark is in the prompt without caring which block carries it.
     pub fn system_text(&self) -> String {
-        self.body
-            .get("system")
-            .and_then(|v| v.as_array())
-            .map(|blocks| {
-                blocks
-                    .iter()
-                    .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            })
-            .unwrap_or_default()
+        match self.body.get("system") {
+            Some(serde_json::Value::String(s)) => s.clone(),
+            Some(serde_json::Value::Array(blocks)) => blocks
+                .iter()
+                .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => String::new(),
+        }
+    }
+
+    pub fn system_contains(&self, needle: &str) -> bool {
+        self.system_text().contains(needle)
     }
 
     pub fn tool_names(&self) -> Vec<String> {
@@ -143,6 +268,13 @@ impl SeenRequest {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    pub fn has_tools(&self) -> bool {
+        self.body
+            .get("tools")
+            .and_then(|v| v.as_array())
+            .is_some_and(|tools| !tools.is_empty())
     }
 
     pub fn message_count(&self) -> usize {
@@ -164,6 +296,35 @@ impl SeenRequest {
             &mut out,
         );
         out
+    }
+
+    pub fn messages_contain(&self, needle: &str) -> bool {
+        self.messages_text().contains(needle)
+    }
+
+    /// Matched against phrases in the engine's own fixed instructions
+    /// (`compaction::llm_summary`, `base::memory`, `tools::page_extract`, the
+    /// session namer). An edit there that drops the phrase turns those calls
+    /// into [`Purpose::Other`].
+    pub fn purpose(&self) -> Purpose {
+        if self.has_tools() {
+            return Purpose::Turn;
+        }
+        let text = format!("{}\n{}", self.system_text(), self.messages_text());
+        let marked = |mark: &str| text.contains(mark);
+        if marked("You are compacting an AI coding agent's conversation") {
+            Purpose::Compact
+        } else if marked("You are selecting memories") {
+            Purpose::MemoryRecall
+        } else if marked("Return only a JSON array of memories") {
+            Purpose::MemoryExtract
+        } else if marked("You are an information-extraction assistant") {
+            Purpose::WebFetch
+        } else if marked("标题生成器") {
+            Purpose::Title
+        } else {
+            Purpose::Other
+        }
     }
 }
 
@@ -187,6 +348,7 @@ pub struct ProviderStub {
     /// [`ProviderStub::script_when`]. Ordered, and searched before the
     /// unconditional queue.
     routed: Arc<Mutex<Vec<RoutedQueue>>>,
+    failures: Arc<Mutex<Failures>>,
     seen: Arc<Mutex<Vec<SeenRequest>>>,
 }
 
@@ -198,6 +360,7 @@ impl ProviderStub {
             base_url: url::Url::parse(&format!("http://127.0.0.1:{port}/"))?,
             script: Arc::new(Mutex::new(VecDeque::new())),
             routed: Arc::new(Mutex::new(Vec::new())),
+            failures: Arc::new(Mutex::new(Failures::none())),
             seen: Arc::new(Mutex::new(Vec::new())),
         };
 
@@ -249,6 +412,13 @@ impl ProviderStub {
         }
     }
 
+    /// Answer the next `n` conversation requests with `reply` — a 529, say —
+    /// and only then go back to the script, which they leave untouched.
+    /// Replaces whatever an earlier call still owed.
+    pub fn inject_failures(&self, n: usize, reply: Reply) {
+        self.failures.lock().unwrap().set(n, reply);
+    }
+
     pub fn seen(&self) -> Vec<SeenRequest> {
         self.seen.lock().unwrap().clone()
     }
@@ -258,7 +428,7 @@ impl ProviderStub {
     pub fn calls(&self) -> Vec<SeenRequest> {
         self.seen()
             .into_iter()
-            .filter(|r| r.path.ends_with("/v1/messages"))
+            .filter(|r| is_conversation(&r.path))
             .collect()
     }
 
@@ -284,28 +454,24 @@ impl ProviderStub {
         let Some(RawRequest { path, body, .. }) = read_request(&mut sock).await? else {
             return Ok(());
         };
+        let injected = self.failures.lock().unwrap().take(&path);
         self.seen.lock().unwrap().push(SeenRequest {
             path,
             body: serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null),
         });
 
-        let reply = self.next_reply_for(&body);
-        let response = match reply {
-            Some(Reply::Status { code, body }) => http_response(code, &body),
-            Some(Reply::Blocks(blocks)) => sse_response(&blocks),
+        let reply = injected
+            .or_else(|| self.next_reply_for(&body))
             // A turn that outran its script is a real failure, and the mark
             // says so in whatever the test was going to assert on anyway.
-            None => sse_response(&[Block::text("PROVIDER-STUB-SCRIPT-EXHAUSTED")]),
-        };
-        sock.write_all(response.as_bytes()).await?;
-        sock.flush().await?;
-        let _ = sock.shutdown().await;
-        Ok(())
+            .unwrap_or_else(|| Reply::text("PROVIDER-STUB-SCRIPT-EXHAUSTED"));
+        reply.send(&mut sock).await
     }
 }
 
 /// One HTTP request as it came off the socket.
 pub(crate) struct RawRequest {
+    pub method: String,
     pub path: String,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
@@ -340,11 +506,9 @@ pub(crate) async fn read_request(
 
     let head = String::from_utf8_lossy(&buf[..head_end]).into_owned();
     let mut lines = head.lines();
-    let path = lines
-        .next()
-        .and_then(|l| l.split_whitespace().nth(1))
-        .unwrap_or("/")
-        .to_string();
+    let mut request_line = lines.next().unwrap_or_default().split_whitespace();
+    let method = request_line.next().unwrap_or("GET").to_string();
+    let path = request_line.next().unwrap_or("/").to_string();
     let headers: Vec<(String, String)> = lines
         .filter_map(|l| l.split_once(':'))
         .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
@@ -366,6 +530,7 @@ pub(crate) async fn read_request(
     }
     body.truncate(len);
     Ok(Some(RawRequest {
+        method,
         path,
         headers,
         body,
@@ -388,7 +553,7 @@ pub(crate) fn http_response(code: u16, body: &str) -> String {
 /// No content-length: the body ends when the connection does, which is how a
 /// streaming response is framed and what lets the deltas below be a stream
 /// rather than one blob the client sees all at once.
-fn sse_response(blocks: &[Block]) -> String {
+fn sse_response(blocks: &[Block], stop_reason: Option<&str>) -> String {
     let mut out = String::from(
         "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\nconnection: close\r\n\r\n",
     );
@@ -429,6 +594,25 @@ fn sse_response(blocks: &[Block]) -> String {
                     })));
                 }
             }
+            Block::Thinking(text) => {
+                out.push_str(&event(&serde_json::json!({
+                    "type": "content_block_start",
+                    "index": index,
+                    "content_block": { "type": "thinking", "thinking": "" }
+                })));
+                for piece in halves(text) {
+                    out.push_str(&event(&serde_json::json!({
+                        "type": "content_block_delta",
+                        "index": index,
+                        "delta": { "type": "thinking_delta", "thinking": piece }
+                    })));
+                }
+                out.push_str(&event(&serde_json::json!({
+                    "type": "content_block_delta",
+                    "index": index,
+                    "delta": { "type": "signature_delta", "signature": "stub-signature" }
+                })));
+            }
             Block::ToolUse { id, name, input } => {
                 calls_a_tool = true;
                 out.push_str(&event(&serde_json::json!({
@@ -452,9 +636,10 @@ fn sse_response(blocks: &[Block]) -> String {
         })));
     }
 
+    let stop_reason = stop_reason.unwrap_or(if calls_a_tool { "tool_use" } else { "end_turn" });
     out.push_str(&event(&serde_json::json!({
         "type": "message_delta",
-        "delta": { "stop_reason": if calls_a_tool { "tool_use" } else { "end_turn" } },
+        "delta": { "stop_reason": stop_reason },
         "usage": { "output_tokens": OUTPUT_TOKENS }
     })));
     out.push_str(&event(&serde_json::json!({ "type": "message_stop" })));

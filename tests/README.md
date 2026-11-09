@@ -132,9 +132,60 @@ AGIX_DSH_BIN=/some/dir/node_modules/.bin/dsh \
 缺省权限策略——和 DSH headless 一样无人值守，权限检查不绕过。
 
 **宿主的那一侧用 `Watcher` 看。** `LiveRun::watch` 开第二条连接只订阅会话，按到达顺序
-留下每一帧，可以让它照批准回答每个询问（回答前先读一次 `session.tasks`，留下当时的任务
-状态）——和宿主的监控视图是同一种用法。`LiveRun::start_with_scenes` 让本进程的 daemon
-带上宿主自己的场景；`LiveRun::restart` 换一个 daemon 接着用同一个世界。
+留下每一帧，每个询问连同当时的 `session.tasks` 记进 `asked()`；`approve` 为真时批准每个
+权限询问——和宿主的监控视图是同一种用法。要别的答法用 `LiveRun::watch_with(session, |event| ..)`：
+拿到 `prompt` 事件（框架补上了被问那次 `tool_use` 的 `input`），返回 `Answer::permit()` /
+`deny(reason)` / `permit_always("session"|"local")`、问题的 `Answer::choose(key)` /
+`decline(reason)`，或 `None` 不答（让它超时）。`LiveRun::start_with_host` 让本进程的 daemon
+带上宿主自己的场景与插件；`LiveRun::restart` 换一个 daemon 接着用同一个世界。
+
+**搭一个用例：`LiveRun::builder`。** `start` / `start_with_host` 是它的两种简写。
+
+```rust
+let mut run = LiveRun::builder("perm")
+    .settings(json!({ "permission_mode": "default" }))      // 项目层，盖在 base_settings 上
+    .mode(Mode::Spawned)
+    .options(|o| o.prompt_timeout(Duration::from_secs(3)).arg("--listen").arg("127.0.0.1:0"))
+    .before_start(|world, project| world.write_global_settings(&json!({ "language": "中文" })))
+    .start()
+    .await?;
+```
+
+- `options` 改 `DaemonOptions`（`scene`、`arg`、`session_cap`、`prompt_timeout`、`mcp_policy`），
+  `restart` 时再套一遍；`before_start` 在项目设置写完、daemon 起来之前跑，写 daemon 起来时
+  要在盘上读到的东西（global / scene 层设置、记忆、策略文件、声明式场景、fixture）。
+- `config(LiveConfig::for_endpoint(&stub.base_url(), model))` 把真实端点换成一个桩——框架自己的
+  测试（`harness.rs`）就是这样不花 token 跑 `LiveRun` 的。
+- `turn_with(session, msg, json!({ "attachments": [..], "on_busy": "queue" }))` 带上
+  `session.run_turn` 的其余参数；`spawn_turn(..)` 在自己的连接上起一轮、请求发出即返回
+  `JoinHandle<Result<TurnEvents>>`（RPC 错误留在 `response` 里，不当失败），配合
+  `wait_turn_state(session, "running", ..)` 与 `session.interrupt` 测中断、`SESSION_BUSY`。
+  `TurnEvents.events` 留着这一轮的全部帧。
+- `scene_session(scene, extra)` 激活场景再建会话。
+
+**盘上的 fixture 在 `World`。** `git_project(name)`：一个只有一次提交的 git 仓库（git 用这个
+世界的 `HOME`，不读本机配置）；`write_declarative_scene(id, &tools, prompt)`：
+`<global>/scenes/<id>/` 下的 `scene.json` + `prompt.md`，daemon 启动时读到，`scene_session`
+用它——code/harnix 不给的工具（`EnterWorktree`、`NotebookEdit`、`Sleep`、`Cron*`……）靠它暴露；
+`global_memory_dir()` 是提示词让模型写记忆、`MEMORY.md` 索引从那里载入的目录，
+`memory_dir(project)` 是项目那一层（自动抽取的项目记忆落在这里）。
+
+**外面的世界：`PageServer` 与 `McpToy`。** `PageServer::start()` 起一个本机站点，
+`route(path, Page::html(..) | text | json | status(code, ..) | redirect(to) | huge(chars, &[(at, mark)]) | slow(d, page))`，
+`hits(path)` 证明真的取过。`McpToy::stdio_config(&args)` 给 `mcp_servers.<name>` 一项，
+`McpToy::spawn_http(&args)` 起 streamable HTTP 版，`.config("streamable_http" | "sse")` 指向它；
+toy server 的工具、资源、提示词和参数（`--calls` 记调用、`--resources` 把目录变成资源）写在
+`tests/fixtures/mcp_toy_server/src/main.rs` 的文件头。shell 里设了 `HTTP_PROXY` 而
+`NO_PROXY` 没有排除 127.0.0.1 时，daemon 的 MCP HTTP 客户端连不上本机的 server。
+
+**模型那端的花样。** `ProviderStub` 的 `Reply::ended(blocks, "max_tokens" | "pause_turn")`、
+`Block::thinking(..)`、`Reply::delayed(d, reply)`（期间请求一直挂着）、`Reply::cut(bytes, reply)`
+（流断在半截）；`inject_failures(n, Reply::status(529, ..))` 让接下来 n 次对话请求先失败
+（不消耗脚本），`LiveProvider` 也有同名方法（不转发、不计预算），`LiveProvider::route(prefix, upstream)`
+把某个路径（如 `/v1/chat/completions`）转到另一个端点。`SeenRequest::purpose()` 按引擎自己的
+固定指令分出 `Turn` / `Compact` / `MemoryRecall` / `MemoryExtract` / `WebFetch` / `Title`，
+另有 `model()`、`has_tools()`、`system_contains()`、`messages_contain()`。遥测文件用
+`telemetry_until(path, |events| ..)` 等到要的事件写出来再读。
 
 **提示词写成操作步骤。** 用例要验证的是产品能力，不是模型的规划能力，所以让模型做什么、
 用哪个工具、失败了怎么办都写明。用例里的「操作员」是测试代码：它盯着 `runs.log` 和

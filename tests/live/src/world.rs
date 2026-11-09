@@ -122,6 +122,94 @@ impl World {
         history::path::project_dir(&self.global_root().join("projects"), &canonical)
     }
 
+    /// `project`'s own memory tier, `<project>/.agix/memory`: the memory
+    /// store reads it beside the global one (a name here shadows the same
+    /// name there) and automatic extraction files project-scoped memories in
+    /// it. Not the directory the prompt sends the model to — that is
+    /// [`global_memory_dir`](Self::global_memory_dir).
+    pub fn memory_dir(&self, project: &Path) -> PathBuf {
+        project.join(".agix").join("memory")
+    }
+
+    /// `<global>/memory`, the directory the system prompt's `# Memory`
+    /// section names: the model writes its memories and `MEMORY.md` here, and
+    /// that `MEMORY.md` is the index loaded into every session of every
+    /// project in this world. Memory has no scene tier.
+    pub fn global_memory_dir(&self) -> PathBuf {
+        self.global_root().join("memory")
+    }
+
+    /// A project that is a git repository with one commit (`README.md`) on
+    /// `main`. Git runs with this world's `HOME` and no system config, so
+    /// the machine's own git settings — signing, hooks, templates — stay out
+    /// of it.
+    pub fn git_project(&self, name: &str) -> anyhow::Result<PathBuf> {
+        let root = self.project(name)?;
+        std::fs::write(root.join("README.md"), format!("# {name}\n"))?;
+        let git = |args: &[&str]| -> anyhow::Result<()> {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .env("HOME", self.home())
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .output()
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "World::git_project needs `git` on PATH, and running it failed: {e}"
+                    )
+                })?;
+            anyhow::ensure!(
+                out.status.success(),
+                "git {} failed in {}:\n{}",
+                args.join(" "),
+                root.display(),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            Ok(())
+        };
+        git(&["init", "-q", "-b", "main"])?;
+        git(&["add", "README.md"])?;
+        git(&[
+            "-c",
+            "user.name=Agix Live",
+            "-c",
+            "user.email=live@agix.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            "initial",
+        ])?;
+        Ok(root)
+    }
+
+    /// A declarative scene the daemon reads from its state root at startup
+    /// (`<global>/scenes/<id>/scene.json` + `prompt.md`), offering exactly
+    /// `tools`. Written before the daemon starts, it is there to
+    /// `scene.activate`; afterwards, `scene.reload` picks it up.
+    pub fn write_declarative_scene(
+        &self,
+        id: &str,
+        tools: &[&str],
+        prompt: &str,
+    ) -> anyhow::Result<PathBuf> {
+        let dir = self.config_root(id);
+        write_json(
+            &dir.join("scene.json"),
+            &serde_json::json!({
+                "id": id,
+                "name": id,
+                "tools": tools,
+                "requires_project": true
+            }),
+        )?;
+        std::fs::write(dir.join("prompt.md"), prompt)?;
+        Ok(dir)
+    }
+
     /// Where a session that belongs to no project at all writes instead.
     pub fn no_project_transcript_dir(&self) -> PathBuf {
         history::path::project_dir_for(&self.global_root().join("projects"), None)

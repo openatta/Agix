@@ -33,7 +33,7 @@ use serde_json::{json, Value};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 
-use crate::provider::{http_response, read_request, RawRequest, SeenRequest};
+use crate::provider::{http_response, read_request, Failures, RawRequest, Reply, SeenRequest};
 use crate::{Daemon, DaemonOptions, Host, Mode, ModelEndpoint, World};
 
 const DEFAULT_MAX_CALLS: usize = 400;
@@ -128,6 +128,20 @@ impl LiveConfig {
             max_calls,
             turn_timeout,
         })
+    }
+
+    /// A config for an endpoint the test runs itself — a
+    /// [`ProviderStub`](crate::ProviderStub), say — which is how the stub
+    /// tier exercises the live scaffolding without a model or credentials.
+    pub fn for_endpoint(base_url: &url::Url, model: &str) -> Self {
+        Self {
+            base_url: base_url.to_string(),
+            token: "harness".into(),
+            model: model.into(),
+            models: vec![model.into()],
+            max_calls: DEFAULT_MAX_CALLS,
+            turn_timeout: Duration::from_secs(120),
+        }
     }
 
     /// The `i`-th model, wrapping — a case that wants "a different model per
@@ -267,6 +281,10 @@ pub struct LiveProvider {
     started: Instant,
     exchanges: Arc<Mutex<Vec<Exchange>>>,
     calls: Arc<AtomicUsize>,
+    failures: Arc<Mutex<Failures>>,
+    /// `(path prefix, upstream base)`, longest prefix first; a request
+    /// matching none goes to `config.base_url`.
+    routes: Arc<Mutex<Vec<(String, String)>>>,
 }
 
 impl ModelEndpoint for LiveProvider {
@@ -285,6 +303,12 @@ impl LiveProvider {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(600))
             .build()?;
+        // The shell's proxy is for the real endpoint; a stub or route on this
+        // machine is reached directly, as the daemon reaches the proxy.
+        let local = reqwest::Client::builder()
+            .timeout(Duration::from_secs(600))
+            .no_proxy()
+            .build()?;
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let port = listener.local_addr()?.port();
         let provider = Self {
@@ -293,15 +317,17 @@ impl LiveProvider {
             started: Instant::now(),
             exchanges: Arc::new(Mutex::new(Vec::new())),
             calls: Arc::new(AtomicUsize::new(0)),
+            failures: Arc::new(Mutex::new(Failures::none())),
+            routes: Arc::default(),
         };
 
         let serving = provider.clone();
         tokio::spawn(async move {
             while let Ok((sock, _)) = listener.accept().await {
                 let provider = serving.clone();
-                let http = http.clone();
+                let (http, local) = (http.clone(), local.clone());
                 tokio::spawn(async move {
-                    let _ = provider.forward_one(sock, &http).await;
+                    let _ = provider.forward_one(sock, &http, &local).await;
                 });
             }
         });
@@ -310,6 +336,25 @@ impl LiveProvider {
 
     pub fn config(&self) -> &LiveConfig {
         &self.config
+    }
+
+    /// Answer the next `n` conversation requests with `reply` instead of
+    /// forwarding them — a 529 the endpoint would never send on request.
+    /// They are recorded as exchanges and do not count against the budget.
+    pub fn inject_failures(&self, n: usize, reply: Reply) {
+        lock(&self.failures).set(n, reply);
+    }
+
+    /// Forward requests whose path starts with `prefix` to `upstream`
+    /// instead (`"/v1/chat/completions"` → an OpenAI-compatible endpoint),
+    /// with the same credential, also as a bearer token.
+    pub fn route(&self, prefix: &str, upstream: &str) {
+        let mut routes = lock(&self.routes);
+        routes.push((
+            prefix.to_string(),
+            upstream.trim_end_matches('/').to_string(),
+        ));
+        routes.sort_by_key(|(p, _)| std::cmp::Reverse(p.len()));
     }
 
     pub fn exchanges(&self) -> Vec<Exchange> {
@@ -339,11 +384,13 @@ impl LiveProvider {
         &self,
         mut sock: tokio::net::TcpStream,
         http: &reqwest::Client,
+        local: &reqwest::Client,
     ) -> anyhow::Result<()> {
         let Some(RawRequest {
             path,
             headers,
             body,
+            ..
         }) = read_request(&mut sock).await?
         else {
             return Ok(());
@@ -353,6 +400,17 @@ impl LiveProvider {
             path: path.clone(),
             body: serde_json::from_slice(&body).unwrap_or(Value::Null),
         };
+
+        let injected = lock(&self.failures).take(&path);
+        if let Some(reply) = injected {
+            let status = match &reply {
+                Reply::Status { code, .. } => *code,
+                _ => 200,
+            };
+            reply.send(&mut sock).await?;
+            self.record(seen, status, format!("{reply:?}"), at);
+            return Ok(());
+        }
 
         if let Some(model) = seen.body["model"].as_str().filter(|m| is_pro_model(m)) {
             let body = json!({
@@ -383,8 +441,26 @@ impl LiveProvider {
             return Ok(());
         }
 
-        let url = format!("{}{}", self.config.base_url.trim_end_matches('/'), path);
-        let mut request = http.post(url).body(body);
+        let routed = lock(&self.routes)
+            .iter()
+            .find(|(prefix, _)| path.starts_with(prefix.as_str()))
+            .map(|(_, upstream)| upstream.clone());
+        let url = format!(
+            "{}{}",
+            routed
+                .as_deref()
+                .unwrap_or_else(|| self.config.base_url.trim_end_matches('/')),
+            path
+        );
+        let on_this_machine = url::Url::parse(&url)
+            .ok()
+            .and_then(|u| u.host_str().map(|h| h == "127.0.0.1" || h == "localhost"))
+            .unwrap_or(false);
+        let client = if on_this_machine { local } else { http };
+        let mut request = client.post(url).body(body);
+        if routed.is_some() {
+            request = request.bearer_auth(&self.config.token);
+        }
         for (name, value) in &headers {
             if !matches!(
                 name.as_str(),
@@ -468,8 +544,130 @@ pub struct LiveRun {
     pub client: DaemonRpcClient,
     name: String,
     turns: usize,
+    daemon_options: OptionsFn,
+}
+
+type OptionsFn = Arc<dyn Fn(DaemonOptions) -> DaemonOptions + Send + Sync>;
+type BeforeStart = Box<dyn FnOnce(&World, &Path) -> anyhow::Result<()> + Send>;
+
+/// How a [`LiveRun`] is set up: [`LiveRun::builder`], then
+/// [`start`](Self::start).
+pub struct LiveRunBuilder {
+    name: String,
+    settings: Value,
     mode: Mode,
     host: Host,
+    config: Option<LiveConfig>,
+    options: Option<OptionsFn>,
+    before_start: Vec<BeforeStart>,
+}
+
+impl LiveRunBuilder {
+    /// Project settings, merged over [`LiveRun::base_settings`] one level
+    /// deep.
+    pub fn settings(mut self, settings: Value) -> Self {
+        self.settings = settings;
+        self
+    }
+
+    pub fn mode(mut self, mode: Mode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// A daemon in this process built with `host`'s scenes and plugins.
+    pub fn host(mut self, host: Host) -> Self {
+        self.host = host;
+        self
+    }
+
+    /// The model endpoint, in place of [`LiveConfig::load`] —
+    /// [`LiveConfig::for_endpoint`] on a stub, for the harness's own tests.
+    pub fn config(mut self, config: LiveConfig) -> Self {
+        self.config = Some(config);
+        self
+    }
+
+    /// Adjust the daemon's options — scene, `--listen` and other extra
+    /// arguments, `prompt_timeout`, `session_cap`, `mcp_policy`. Applied
+    /// again on every [`LiveRun::restart`].
+    pub fn options(
+        mut self,
+        adjust: impl Fn(DaemonOptions) -> DaemonOptions + Send + Sync + 'static,
+    ) -> Self {
+        self.options = Some(Arc::new(adjust));
+        self
+    }
+
+    /// Run once the world and the project exist and the project's settings
+    /// are written, before the daemon starts: what the daemon has to find on
+    /// disk when it does — global or scene settings, memories, a policy
+    /// file, a declarative scene, fixtures. Hooks run in the order added.
+    pub fn before_start(
+        mut self,
+        hook: impl FnOnce(&World, &Path) -> anyhow::Result<()> + Send + 'static,
+    ) -> Self {
+        self.before_start.push(Box::new(hook));
+        self
+    }
+
+    pub async fn start(self) -> anyhow::Result<LiveRun> {
+        let config = match self.config {
+            Some(config) => config,
+            None => LiveConfig::load()?,
+        };
+        let world = World::new()?;
+        let project = world.project(&self.name)?;
+        let mut merged = LiveRun::base_settings();
+        if let (Some(base), Some(extra)) = (merged.as_object_mut(), self.settings.as_object()) {
+            for (k, v) in extra {
+                match (base.get_mut(k), v) {
+                    (Some(Value::Object(b)), Value::Object(e)) => {
+                        b.extend(e.iter().map(|(k, v)| (k.clone(), v.clone())));
+                    }
+                    _ => {
+                        base.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+        }
+        world.write_project_settings(&self.name, &merged)?;
+        for hook in self.before_start {
+            hook(&world, &project)?;
+        }
+        let (mode, host, adjust) = (self.mode, self.host, self.options);
+        let daemon_options: OptionsFn = Arc::new(move |o: DaemonOptions| {
+            let o = o.mode(mode).host(host.clone());
+            match &adjust {
+                Some(adjust) => adjust(o),
+                None => o,
+            }
+        });
+        let provider = LiveProvider::start(config).await?;
+        let daemon = Daemon::start(
+            &world,
+            &provider,
+            daemon_options(DaemonOptions::new(project.clone())),
+        )
+        .await?;
+        let client = daemon.connect().await?;
+        eprintln!(
+            "[live {}] {mode:?} daemon, model {}, models {:?}",
+            self.name,
+            provider.config().model,
+            provider.config().models
+        );
+        Ok(LiveRun {
+            world,
+            project,
+            provider,
+            daemon,
+            client,
+            name: self.name,
+            turns: 0,
+            daemon_options,
+        })
+    }
 }
 
 impl LiveRun {
@@ -483,67 +681,38 @@ impl LiveRun {
         })
     }
 
+    /// A run on a project called `name`, a daemon in this process, and the
+    /// model [`LiveConfig::load`] finds, unless the builder says otherwise.
+    pub fn builder(name: &str) -> LiveRunBuilder {
+        LiveRunBuilder {
+            name: name.to_string(),
+            settings: json!({}),
+            mode: Mode::InProcess,
+            host: Host::default(),
+            config: None,
+            options: None,
+            before_start: Vec::new(),
+        }
+    }
+
     /// `settings` is merged over [`base_settings`](Self::base_settings), one
     /// level deep.
     pub async fn start(name: &str, settings: Value, mode: Mode) -> anyhow::Result<Self> {
-        Self::start_with(name, settings, mode, Host::default()).await
+        Self::builder(name)
+            .settings(settings)
+            .mode(mode)
+            .start()
+            .await
     }
 
     /// [`start`](Self::start) on a daemon in this process built with `host`'s
     /// scenes and plugins, as an embedder's is.
     pub async fn start_with_host(name: &str, settings: Value, host: Host) -> anyhow::Result<Self> {
-        Self::start_with(name, settings, Mode::InProcess, host).await
-    }
-
-    async fn start_with(
-        name: &str,
-        settings: Value,
-        mode: Mode,
-        host: Host,
-    ) -> anyhow::Result<Self> {
-        let config = LiveConfig::load()?;
-        let world = World::new()?;
-        let project = world.project(name)?;
-        let mut merged = Self::base_settings();
-        if let (Some(base), Some(extra)) = (merged.as_object_mut(), settings.as_object()) {
-            for (k, v) in extra {
-                match (base.get_mut(k), v) {
-                    (Some(Value::Object(b)), Value::Object(e)) => {
-                        b.extend(e.iter().map(|(k, v)| (k.clone(), v.clone())));
-                    }
-                    _ => {
-                        base.insert(k.clone(), v.clone());
-                    }
-                }
-            }
-        }
-        world.write_project_settings(name, &merged)?;
-        let provider = LiveProvider::start(config).await?;
-        let daemon = Daemon::start(
-            &world,
-            &provider,
-            DaemonOptions::new(project.clone())
-                .mode(mode)
-                .host(host.clone()),
-        )
-        .await?;
-        let client = daemon.connect().await?;
-        eprintln!(
-            "[live {name}] {mode:?} daemon, model {}, models {:?}",
-            provider.config().model,
-            provider.config().models
-        );
-        Ok(Self {
-            world,
-            project,
-            provider,
-            daemon,
-            client,
-            name: name.to_string(),
-            turns: 0,
-            mode,
-            host,
-        })
+        Self::builder(name)
+            .settings(settings)
+            .host(host)
+            .start()
+            .await
     }
 
     /// Stop the daemon and start another on the same world and model, as a
@@ -553,9 +722,7 @@ impl LiveRun {
         self.daemon = Daemon::start(
             &self.world,
             &self.provider,
-            DaemonOptions::new(self.project.clone())
-                .mode(self.mode)
-                .host(self.host.clone()),
+            (self.daemon_options)(DaemonOptions::new(self.project.clone())),
         )
         .await?;
         self.client = self.daemon.connect().await?;
@@ -563,9 +730,19 @@ impl LiveRun {
     }
 
     /// A second connection watching `session`; with `approve`, it answers
-    /// every question with a permit.
+    /// every permission prompt with a permit.
     pub async fn watch(&self, session: &str, approve: bool) -> anyhow::Result<Watcher> {
         Watcher::start(&self.daemon, session, approve).await
+    }
+
+    /// A second connection watching `session` that answers each prompt as
+    /// `respond` says — see [`Watcher::start_with`].
+    pub async fn watch_with(
+        &self,
+        session: &str,
+        respond: impl Fn(&Value) -> Option<Value> + Send + Sync + 'static,
+    ) -> anyhow::Result<Watcher> {
+        Watcher::start_with(&self.daemon, session, respond).await
     }
 
     pub fn config(&self) -> &LiveConfig {
@@ -595,21 +772,47 @@ impl LiveRun {
         self.client.session_create(params).await
     }
 
+    /// A session on this run's project in `scene`, which is activated first.
+    /// For a declarative scene written with
+    /// [`World::write_declarative_scene`] before the run started.
+    pub async fn scene_session(&mut self, scene: &str, extra: Value) -> anyhow::Result<String> {
+        let resp = self
+            .client
+            .call("scene.activate", json!({ "scene": scene }))
+            .await?;
+        anyhow::ensure!(
+            resp.error.is_none(),
+            "scene.activate {scene}: {:?}",
+            resp.error
+        );
+        let mut extra = extra;
+        if let Some(obj) = extra.as_object_mut() {
+            obj.insert("scene".into(), json!(scene));
+        }
+        self.session_with(extra).await
+    }
+
     /// One turn, bounded by `AGIX_LIVE_TURN_TIMEOUT_SECS`. An RPC error is
     /// returned as an error, so a case cannot mistake a failed turn for an
     /// answer.
     pub async fn turn(&mut self, session: &str, message: &str) -> anyhow::Result<TurnEvents> {
-        self.turns += 1;
-        let turn_id = format!("{}-t{}", self.name, self.turns);
+        self.turn_with(session, message, json!({})).await
+    }
+
+    /// [`turn`](Self::turn) with more `session.run_turn` params — `extra` is
+    /// merged in at the top level: `attachments`, `on_busy`, `options`.
+    pub async fn turn_with(
+        &mut self,
+        session: &str,
+        message: &str,
+        extra: Value,
+    ) -> anyhow::Result<TurnEvents> {
+        let (turn_id, params) = self.turn_params(session, message, extra);
         let timeout = self.config().turn_timeout;
         let started = Instant::now();
-        let events = tokio::time::timeout(
-            timeout,
-            self.client
-                .session_run_turn(session, message, &turn_id, None),
-        )
-        .await
-        .map_err(|_| anyhow::anyhow!("turn {turn_id} still running after {timeout:?}"))??;
+        let events = tokio::time::timeout(timeout, self.client.run_turn_with(params))
+            .await
+            .map_err(|_| anyhow::anyhow!("turn {turn_id} still running after {timeout:?}"))??;
         if let Some(error) = events.response.as_ref().and_then(|r| r.error.as_ref()) {
             anyhow::bail!("turn {turn_id} failed: {} {}", error.code, error.message);
         }
@@ -621,6 +824,79 @@ impl LiveRun {
             events.text.trim().replace('\n', "\n    ")
         );
         Ok(events)
+    }
+
+    /// A turn on a connection of its own, left running: what a case needs to
+    /// interrupt one, or to send a second while the first is busy. Returns
+    /// once the request is on the wire — the turn may not have started; wait
+    /// for that with [`wait_turn_state`](Self::wait_turn_state) or a
+    /// [`Watcher`]. Unlike [`turn_with`](Self::turn_with) the handle hands
+    /// back an RPC error in `response` rather than failing, because an
+    /// interrupted or refused turn is what such a case is about.
+    pub async fn spawn_turn(
+        &mut self,
+        session: &str,
+        message: &str,
+        extra: Value,
+    ) -> anyhow::Result<tokio::task::JoinHandle<anyhow::Result<TurnEvents>>> {
+        let (turn_id, params) = self.turn_params(session, message, extra);
+        let timeout = self.config().turn_timeout;
+        let mut client = self.daemon.connect().await?;
+        let (sent, on_the_wire) = tokio::sync::oneshot::channel();
+        let handle = tokio::spawn(async move {
+            let run = async {
+                let stream = client.begin_turn_with(params).await;
+                let _ = sent.send(());
+                stream?.collect().await
+            };
+            tokio::time::timeout(timeout, run)
+                .await
+                .map_err(|_| anyhow::anyhow!("turn {turn_id} still running after {timeout:?}"))?
+        });
+        let _ = on_the_wire.await;
+        Ok(handle)
+    }
+
+    /// Poll `session.get` until its `turn_state` is `state` (`running` or
+    /// `idle`).
+    pub async fn wait_turn_state(
+        &mut self,
+        session: &str,
+        state: &str,
+        timeout: Duration,
+    ) -> anyhow::Result<()> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let resp = self.client.session_get(session).await?;
+            let now = resp
+                .result
+                .as_ref()
+                .and_then(|r| r["turn_state"].as_str())
+                .unwrap_or_default()
+                .to_string();
+            if now == state {
+                return Ok(());
+            }
+            anyhow::ensure!(
+                Instant::now() < deadline,
+                "session {session} still `{now}` after {timeout:?}, not `{state}`"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+
+    fn turn_params(&mut self, session: &str, message: &str, extra: Value) -> (String, Value) {
+        self.turns += 1;
+        let turn_id = format!("{}-t{}", self.name, self.turns);
+        let mut params = json!({
+            "session_id": session,
+            "message": message,
+            "turn_id": turn_id,
+        });
+        if let (Some(p), Some(e)) = (params.as_object_mut(), extra.as_object()) {
+            p.extend(e.iter().map(|(k, v)| (k.clone(), v.clone())));
+        }
+        (turn_id, params)
     }
 
     /// `session.tasks`, as the list.
@@ -676,10 +952,47 @@ pub struct Asked {
     pub tasks: Vec<Value>,
 }
 
+/// What a host answers a `prompt` frame with, for a [`Watcher`] responder to
+/// return: a `decision` for a permission prompt, an `answer` for a question
+/// (protocol §4.7).
+pub struct Answer;
+
+impl Answer {
+    pub fn permit() -> Value {
+        json!({ "type": "permit" })
+    }
+
+    pub fn deny(reason: &str) -> Value {
+        json!({ "type": "deny", "reason": reason })
+    }
+
+    /// `scope` is `session`, or `local` to also write the rule into
+    /// `.agix/settings.local.json`.
+    pub fn permit_always(scope: &str) -> Value {
+        json!({ "type": "permit_always", "scope": scope })
+    }
+
+    /// An option's `key`, or free text for a question with no options.
+    pub fn choose(text: &str) -> Value {
+        json!({ "type": "answer", "text": text })
+    }
+
+    pub fn decline(reason: &str) -> Value {
+        json!({ "type": "decline", "reason": reason })
+    }
+
+    /// The responder [`Watcher::start`] uses when told to approve: permit
+    /// every permission prompt, leave questions unanswered.
+    pub fn permit_all(event: &Value) -> Option<Value> {
+        (event["prompt_type"] == "permission").then(Self::permit)
+    }
+}
+
 /// A connection that only watches a session — what a host's monitoring view
-/// is. It keeps every `session.event` it is sent, in order; one that approves
-/// answers each `prompt` with a permit, after reading `session.tasks` over a
-/// connection of its own.
+/// is. It keeps every `session.event` it is sent, in order. Each `prompt` is
+/// recorded with the task list read over a connection of its own, then put
+/// to the responder; what that returns is sent as the answer, and `None`
+/// leaves the prompt to time out.
 pub struct Watcher {
     seen: Arc<Mutex<Vec<Value>>>,
     asked: Arc<Mutex<Vec<Asked>>>,
@@ -687,7 +1000,26 @@ pub struct Watcher {
 }
 
 impl Watcher {
+    /// With `approve`, every permission prompt is permitted
+    /// ([`Answer::permit_all`]); without, nothing is answered.
     pub async fn start(daemon: &Daemon, session: &str, approve: bool) -> anyhow::Result<Self> {
+        if approve {
+            Self::start_with(daemon, session, Answer::permit_all).await
+        } else {
+            Self::start_with(daemon, session, |_| None).await
+        }
+    }
+
+    /// `respond` gets the `prompt` event (`prompt_type`, `prompt_id`,
+    /// `tool_name`, `options`, ...) with `input` added — the arguments of the
+    /// `tool_use` it is about, which the frame itself does not carry — and
+    /// returns the decision or answer ([`Answer`] has the shapes), or `None`
+    /// to leave it unanswered.
+    pub async fn start_with(
+        daemon: &Daemon,
+        session: &str,
+        respond: impl Fn(&Value) -> Option<Value> + Send + Sync + 'static,
+    ) -> anyhow::Result<Self> {
         let mut watcher = daemon.connect().await?;
         let subscribed = watcher.session_subscribe(session).await?;
         anyhow::ensure!(subscribed.error.is_none(), "{subscribed:?}");
@@ -704,7 +1036,8 @@ impl Watcher {
                 }
                 let params = frame["params"].clone();
                 lock(&into_seen).push(params.clone());
-                if !approve || params["event"]["kind"] != "prompt" {
+                let event = &params["event"];
+                if event["kind"] != "prompt" {
                     continue;
                 }
                 let tasks = answerer
@@ -718,16 +1051,26 @@ impl Watcher {
                     prompt: params.clone(),
                     tasks,
                 });
-                let _ = answerer
-                    .call(
-                        "session.respondToPrompt",
-                        json!({
-                            "session_id": session,
-                            "prompt_id": params["event"]["prompt_id"],
-                            "decision": { "type": "permit" }
-                        }),
-                    )
-                    .await;
+                let mut asking = event.clone();
+                if let Some(input) = input_of(&lock(&into_seen), &event["tool_use_id"]) {
+                    asking["input"] = input;
+                }
+                let Some(reply) = respond(&asking) else {
+                    continue;
+                };
+                let prompt_type = event["prompt_type"].as_str().unwrap_or("permission");
+                let key = if prompt_type == "question" {
+                    "answer"
+                } else {
+                    "decision"
+                };
+                let mut params = json!({
+                    "session_id": session,
+                    "prompt_id": event["prompt_id"],
+                    "prompt_type": prompt_type,
+                });
+                params[key] = reply;
+                let _ = answerer.call("session.respondToPrompt", params).await;
             }
         });
         Ok(Self {
@@ -778,6 +1121,24 @@ impl Drop for Watcher {
     fn drop(&mut self) {
         self.reader.abort();
     }
+}
+
+/// The input of the `tool_use` a permission prompt is about — the prompt
+/// itself names only the tool. A sub-agent's call arrives wrapped in
+/// `subagent_progress`.
+fn input_of(frames: &[Value], tool_use_id: &Value) -> Option<Value> {
+    if tool_use_id.is_null() {
+        return None;
+    }
+    frames.iter().rev().find_map(|f| {
+        let event = &f["event"];
+        let event = if event["kind"] == "subagent_progress" {
+            &event["event"]
+        } else {
+            event
+        };
+        (event["kind"] == "tool_use" && &event["id"] == tool_use_id).then(|| event["input"].clone())
+    })
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
