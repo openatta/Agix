@@ -70,8 +70,9 @@ async fn a_model_works_through_both_demo_plugins() -> anyhow::Result<()> {
         &session,
         "Write report.txt in the project root with three lines: the release codename \
          from this project's notice, the stamp of the text `audited`, and what notes.txt \
-         says the deploy key is. Also try to read keys.secret, and write generated/version.txt \
-         containing 1.0. Tell me which of these you could not do and why.",
+         says the deploy key is. Also try to read keys.secret with the Read tool (not Bash), and \
+         write generated/version.txt containing 1.0 with the Write tool. Tell me which of these \
+         you could not do and why.",
     )
     .await?;
     let report = run.read_file("report.txt").unwrap_or_default();

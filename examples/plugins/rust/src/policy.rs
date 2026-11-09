@@ -43,8 +43,14 @@ fn names_a_secret_file(input: &serde_json::Value) -> bool {
         .iter()
         .filter_map(|field| input.get(field).and_then(|v| v.as_str()))
         .any(|s| {
-            s.split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '`' | '>' | '<'))
-                .any(|word| word.ends_with(SECRET_SUFFIX))
+            s.split(|c: char| {
+                c.is_whitespace()
+                    || matches!(
+                        c,
+                        '"' | '\'' | '`' | '>' | '<' | ';' | '|' | '&' | '(' | ')' | '$' | '='
+                    )
+            })
+            .any(|word| word.ends_with(SECRET_SUFFIX))
         })
 }
 
@@ -205,6 +211,18 @@ mod tests {
         assert!(names_a_secret_file(
             &serde_json::json!({"command": "cat 'keys.secret' | head"})
         ));
+        for command in [
+            "cat keys.secret;",
+            "cat keys.secret|head",
+            "cat keys.secret&&ls",
+            "echo $(cat keys.secret)",
+            "X=keys.secret",
+        ] {
+            assert!(
+                names_a_secret_file(&serde_json::json!({ "command": command })),
+                "{command}"
+            );
+        }
         assert!(!names_a_secret_file(
             &serde_json::json!({"file_path": "/p/secret.txt"})
         ));

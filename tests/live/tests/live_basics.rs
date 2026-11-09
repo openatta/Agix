@@ -144,13 +144,16 @@ async fn plan_mode_leaves_the_project_untouched() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_spawned_agixd_works_with_the_real_model() -> anyhow::Result<()> {
     let mut run = LiveRun::start("spawned", json!({}), Mode::Spawned).await?;
-    let secret = format!("PEBBLE-{}", nonce());
-    run.write_file("secret.txt", &format!("{secret}\n"))?;
+    let label = format!("PEBBLE-{}", nonce());
+    run.write_file("label.txt", &format!("{label}\n"))?;
     let session = run.session().await?;
     let events = run
-        .turn(&session, "Read secret.txt and reply with its content only.")
+        .turn(
+            &session,
+            "Read label.txt with the Read tool and reply with its content only.",
+        )
         .await?;
-    assert!(events.text.contains(&secret), "{}", events.text);
+    assert!(events.text.contains(&label), "{}", events.text);
     assert!(
         run.provider
             .calls()
