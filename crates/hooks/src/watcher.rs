@@ -4,21 +4,23 @@
 //! creations, and deletions. Each change is debounced (300ms window) and then
 //! fanned out as a `HookEvent::FileChanged` hook call on the [`HookRunner`].
 //!
-//! The hook payload (`tool_input`) contains:
+//! The hook payload carries the session's ambient fields, and in `tool_input`:
 //! - `file_path`: the absolute path of the changed file
 //! - `change_type`: one of `"created"`, `"modified"`, `"deleted"`
+//!
+//! The watcher thread holds the runner weakly: the runner owns the watcher,
+//! so a strong reference would keep both alive after the session is gone.
 
 use crate::config::HookEvent;
-use crate::payload::HookInput;
+use crate::payload::{Ambient, HookInput};
 use crate::runner::HookRunner;
 use notify::event::{Event, EventKind};
 use notify::{recommended_watcher, RecursiveMode, Watcher};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
-use tracing;
 
 /// File system change watcher that fires `HookEvent::FileChanged` hooks.
 ///
@@ -26,80 +28,64 @@ use tracing;
 /// (300ms default), and dispatches `HookEvent::FileChanged` on the provided
 /// [`HookRunner`] for each distinct change.
 pub struct FileWatcher {
-    /// Kept alive to keep file-system events flowing.
-    #[allow(dead_code)]
-    watcher_handle: Option<notify::RecommendedWatcher>,
+    watcher: notify::RecommendedWatcher,
+    watched: HashSet<PathBuf>,
 }
 
 impl FileWatcher {
-    pub fn new() -> Self {
-        Self {
-            watcher_handle: None,
-        }
-    }
-
-    /// Watch the given paths and fire `HookEvent::FileChanged` on the provided
-    /// [`HookRunner`] when files are modified, created, or deleted.
-    ///
-    /// Each distinct file generates a hook call debounced to `debounce_ms`
-    /// (300ms default) — rapid successive changes to the same file cause at
-    /// most one hook invocation.
+    /// Start watching nothing yet; [`add`](Self::add) names the files.
     ///
     /// Background thread captures the current Tokio runtime handle so that
     /// hook execution is dispatched asynchronously. If no Tokio runtime is
-    /// active, the background thread will log a warning and skip hook dispatch.
-    ///
-    /// Returns an error if filesystem watching cannot be initialised.
-    pub fn watch_paths(
-        &mut self,
-        paths: &[PathBuf],
-        hook_runner: Arc<HookRunner>,
+    /// active, it logs a warning and dispatches nothing.
+    pub fn start(
+        hook_runner: &Arc<HookRunner>,
         debounce_ms: u64,
-    ) -> Result<(), String> {
+        ambient: Ambient,
+    ) -> Result<Self, String> {
         let (tx, rx) = std::sync::mpsc::channel();
-
-        let mut w = recommended_watcher(move |res: notify::Result<Event>| {
+        let watcher = recommended_watcher(move |res: notify::Result<Event>| {
             let _ = tx.send(res);
         })
         .map_err(|e| format!("notify watcher creation failed: {e}"))?;
 
-        for path in paths {
-            if path.exists() {
-                w.watch(path, RecursiveMode::NonRecursive)
-                    .map_err(|e| format!("failed to watch '{}': {e}", path.display()))?;
-            } else {
-                tracing::warn!(?path, "FileWatcher path does not exist, skipping");
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                let runner = Arc::downgrade(hook_runner);
+                std::thread::Builder::new()
+                    .name("file-watcher".into())
+                    .spawn(move || run_watcher_loop(rx, runner, handle, debounce_ms, ambient))
+                    .map_err(|e| format!("could not start the file-watcher thread: {e}"))?;
             }
-        }
-
-        // Capture the current tokio runtime handle so we can spawn tasks from
-        // the background thread.
-        let handle = match tokio::runtime::Handle::try_current() {
-            Ok(h) => h,
             Err(_) => {
                 tracing::warn!(
                     "FileWatcher: no Tokio runtime active — hook dispatch will be skipped"
                 );
-                self.watcher_handle = Some(w);
-                return Ok(());
             }
-        };
-
-        std::thread::Builder::new()
-            .name("file-watcher".into())
-            .spawn(move || {
-                run_watcher_loop(rx, &hook_runner, &handle, debounce_ms);
-            })
-            .map_err(|e| format!("could not start the file-watcher thread: {e}"))?;
-
-        self.watcher_handle = Some(w);
-        Ok(())
+        }
+        Ok(Self {
+            watcher,
+            watched: HashSet::new(),
+        })
     }
-}
 
-impl Default for FileWatcher {
-    fn default() -> Self {
-        Self::new()
+    /// Watch `paths` too. A path already watched, or one that does not exist,
+    /// is skipped.
+    pub fn add(&mut self, paths: &[PathBuf]) -> Result<(), String> {
+        for path in paths {
+            if self.watched.contains(path) {
+                continue;
+            }
+            if !path.exists() {
+                tracing::warn!(?path, "FileWatcher path does not exist, skipping");
+                continue;
+            }
+            self.watcher
+                .watch(path, RecursiveMode::NonRecursive)
+                .map_err(|e| format!("failed to watch '{}': {e}", path.display()))?;
+            self.watched.insert(path.clone());
+        }
+        Ok(())
     }
 }
 
@@ -110,9 +96,10 @@ impl Default for FileWatcher {
 /// all ready events (older than `debounce_ms`) are flushed and hooks fired.
 fn run_watcher_loop(
     rx: Receiver<notify::Result<Event>>,
-    hook_runner: &Arc<HookRunner>,
-    handle: &tokio::runtime::Handle,
+    hook_runner: Weak<HookRunner>,
+    handle: tokio::runtime::Handle,
     debounce_ms: u64,
+    ambient: Ambient,
 ) {
     let debounce = Duration::from_millis(debounce_ms);
     // Use the debounce duration as the channel timeout — if nothing new arrives
@@ -139,29 +126,21 @@ fn run_watcher_loop(
                     .filter(|(_, (time, _))| now.duration_since(*time) >= debounce)
                     .map(|(path, (_, change_type))| (path, change_type))
                     .collect();
-
+                if ready.is_empty() {
+                    continue;
+                }
+                let Some(runner) = hook_runner.upgrade() else {
+                    break;
+                };
                 for (path, change_type) in ready {
-                    let input = HookInput {
-                        hook_event_name: "FileChanged".into(),
-                        session_id: String::new(),
-                        cwd: std::env::current_dir()
-                            .unwrap_or_default()
-                            .display()
-                            .to_string(),
-                        permission_mode: "default".into(),
-                        tool_input: Some(serde_json::json!({
+                    let input = HookInput::from_ambient(&ambient, "FileChanged").with_tool(
+                        "FileWatcher",
+                        serde_json::json!({
                             "file_path": path.display().to_string(),
                             "change_type": &change_type,
-                        })),
-                        tool_name: Some("FileWatcher".into()),
-                        tool_use_id: None,
-                        tool_result: None,
-                        is_error: None,
-                        user_prompt: None,
-                        ..Default::default()
-                    };
-
-                    let runner = hook_runner.clone();
+                        }),
+                    );
+                    let runner = runner.clone();
                     handle.spawn(async move {
                         runner.run(HookEvent::FileChanged, &input).await;
                     });

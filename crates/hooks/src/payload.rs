@@ -55,7 +55,23 @@ pub struct HookInput {
     /// reason a permission check denied a call.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+
+    /// `Stop`: this turn was already sent back once by a `Stop` hook — a hook
+    /// that blocks unconditionally reads it to let the turn end the second time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_hook_active: Option<bool>,
+    /// `TaskCompleted` / `TeammateIdle`: the team the member belongs to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team_name: Option<String>,
+    /// `TaskCompleted` / `TeammateIdle`: the member's own name in it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub teammate_name: Option<String>,
 }
+
+/// The fields every payload of a session carries, read when the hook fires:
+/// a session's permission mode changes under it, so a snapshot taken when a
+/// watcher started would go stale.
+pub type Ambient = std::sync::Arc<dyn Fn() -> HookInput + Send + Sync>;
 
 impl HookInput {
     /// Build the payload for a lifecycle event.
@@ -107,6 +123,22 @@ impl HookInput {
     pub fn with_reason(mut self, reason: impl Into<String>) -> Self {
         self.reason = Some(reason.into());
         self
+    }
+
+    pub fn with_team(
+        mut self,
+        team_name: impl Into<String>,
+        teammate_name: impl Into<String>,
+    ) -> Self {
+        self.team_name = Some(team_name.into());
+        self.teammate_name = Some(teammate_name.into());
+        self
+    }
+
+    /// `ambient`'s session, cwd and permission mode under another event name.
+    pub fn from_ambient(ambient: &Ambient, event: impl Into<String>) -> Self {
+        let base = ambient();
+        Self::lifecycle(event, base.session_id, base.cwd, base.permission_mode)
     }
 }
 

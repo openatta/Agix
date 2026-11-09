@@ -151,9 +151,10 @@ systemd(`Restart=on-failure`)。systemd 下要设 `KillMode=process`:`daemon.shu
   ├─ 7. 记账        BudgetPolicy::on_usage          ← 继续 / 警告 / 耗尽
   ├─ 8. 有工具调用:送达这一轮运行期间收到的用户消息与通知,再来一轮
   └─ 9. 没有:RecoveryPolicy::on_early_stop       ← 抬 max_tokens 重发 / pause_turn 发回去续上
-         Stop hook;BudgetPolicy::on_output_target 决定是否续写
+         Stop hook(结束这一轮 / 拦下:把理由交给模型再来一轮);
+         BudgetPolicy::on_output_target 决定是否续写
          (收尾时还有没送达的用户消息,再调一次模型回答它们)
-出口:finish_turn —— 先落盘,再发 TurnComplete
+出口:finish_turn —— 先落盘;团队成员再发 TaskCompleted / TeammateIdle;最后发 TurnComplete
 ```
 
 **工具在第 5 步里跑,不等回复写完。** 并发安全的 `tool_use` 一到齐就开始,模型接着往下写;

@@ -413,8 +413,9 @@ pub struct Agent {
     /// When enabled, clears old tool results and records their tool_use_ids
     /// as `cache_edits` to send to the Anthropic API, avoiding cache invalidation.
     pub(crate) cached_mc: CachedMicroCompact,
-    /// Team ID if this agent is a worker in a team (teammate lifecycle hooks).
-    pub(crate) team_id: Option<String>,
+    /// The team this agent works in, if it is a member of one: its turns end
+    /// with `TaskCompleted` and `TeammateIdle`.
+    pub(crate) team_seat: Option<base::interface::agent_spawner::TeamSeat>,
     /// Orphaned permission from a previous session (for resume recovery).
     pub(crate) orphaned_permission: Option<crate::agent::PermissionDecision>,
     /// Whether we've already handled the orphaned permission this session.
@@ -666,7 +667,14 @@ impl Agent {
         let run_started = std::time::Instant::now();
         let exit_reason: &'static str;
         loop {
-            self.hooks.check_rewakes().await;
+            self.hooks
+                .check_rewakes(hooks::HookInput::lifecycle(
+                    String::new(),
+                    self.session.session_id.clone(),
+                    self.settings.paths.project_root().display().to_string(),
+                    crate::turn::hook_permission_mode(self.session_state.permission_mode()),
+                ))
+                .await;
 
             tokio::select! {
                 _ = cancel.cancelled() => {
@@ -1153,6 +1161,8 @@ pub struct Builder {
     /// How many delegation hops separate this agent from the root session —
     /// see [`Builder::agent_depth`].
     agent_depth: u32,
+    /// See [`Builder::team_seat`].
+    team_seat: Option<base::interface::agent_spawner::TeamSeat>,
     /// Scheduled jobs, kept and fired by whoever owns this store — see
     /// [`Builder::cron_store`].
     cron_store: Option<Arc<tools::cron::CronStore>>,
@@ -1246,6 +1256,24 @@ fn build_hook_runner(
     Arc::new(runner)
 }
 
+/// The session's id, cwd and permission mode, read each time a payload is
+/// built. Holds the state weakly: the closure lives in tasks and watchers that
+/// must not keep the session alive.
+fn hook_ambient(
+    session_id: String,
+    cwd: String,
+    state: Arc<base::context::SessionState>,
+) -> hooks::payload::Ambient {
+    let state = Arc::downgrade(&state);
+    Arc::new(move || {
+        let mode = state
+            .upgrade()
+            .map(|s| crate::turn::hook_permission_mode(s.permission_mode()))
+            .unwrap_or_else(|| "default".into());
+        hooks::HookInput::lifecycle(String::new(), session_id.clone(), cwd.clone(), mode)
+    })
+}
+
 impl Builder {
     pub fn new() -> Self {
         Self {
@@ -1291,6 +1319,7 @@ impl Builder {
             retrieval_hooks: Vec::new(),
             event_sinks: Vec::new(),
             agent_depth: 0,
+            team_seat: None,
             cron_store: None,
             goal_rounds_from_owner: false,
             process_groups: None,
@@ -1639,6 +1668,12 @@ impl Builder {
     /// per-session registry it creates.
     pub fn agent_depth(mut self, depth: u32) -> Self {
         self.agent_depth = depth;
+        self
+    }
+
+    /// The team this agent is a member of, and its name there.
+    pub fn team_seat(mut self, seat: base::interface::agent_spawner::TeamSeat) -> Self {
+        self.team_seat = Some(seat);
         self
     }
 
@@ -2007,21 +2042,6 @@ impl Builder {
         if let Some(rx) = self.wake_rx {
             hooks.set_wake_receiver(rx);
         }
-        // `FileWatcher`/`HookEvent::FileChanged` (crates/hooks/src/watcher.rs)
-        // has existed fully implemented with no caller — only start the
-        // background watcher thread when a `FileChanged` hook is actually
-        // configured, since it isn't free (one OS-level watch + a dedicated
-        // thread). The instruction file is the one file this engine already
-        // treats as "loaded once into the session and never re-read" (see
-        // `session_context_injected` above) — a user editing it mid-session is
-        // exactly the case a `FileChanged` hook exists to let a host react to.
-        if hooks.has_hooks_for(hooks::HookEvent::FileChanged) {
-            if let Some(ref path) = instruction_file {
-                if let Err(e) = hooks.enable_file_watching(std::slice::from_ref(path), 300) {
-                    tracing::warn!(error = %e, "failed to start FileChanged watcher");
-                }
-            }
-        }
         let skill_catalog = crate::module::LateSkillCatalog::default();
         // Register TaskStopTool — stop running background tasks by ID
         tools.register(std::sync::Arc::new(tools::task_stop::TaskStopTool));
@@ -2075,6 +2095,26 @@ impl Builder {
             state.sandbox_disabled = settings.sandbox.dangerously_disable_sandbox;
             state
         });
+        let hook_ambient = hook_ambient(
+            session.session_id_str().to_string(),
+            settings.paths.project_root().display().to_string(),
+            session_state.clone(),
+        );
+
+        // One watcher per session tree, started by its root: a delegate shares
+        // the root's runner, and a watcher of its own would fire every
+        // `FileChanged` once more for each sub-agent ever spawned. The files a
+        // session loads as instructions are added when it loads them
+        // (`inject_session_context`); the instruction file is known now.
+        if agent_depth == 0 && hooks.has_hooks_for(hooks::HookEvent::FileChanged) {
+            if let Err(e) = hooks.enable_file_watching(
+                &instruction_file.iter().cloned().collect::<Vec<_>>(),
+                300,
+                hook_ambient.clone(),
+            ) {
+                tracing::warn!(error = %e, "failed to start FileChanged watcher");
+            }
+        }
 
         // WebSearch searches through the session's own model unless
         // `task_models.web_search` routes it elsewhere.
@@ -2159,6 +2199,7 @@ impl Builder {
                 permission: &permission,
                 pending_permissions: &pending_permissions,
                 hooks: &hooks,
+                hook_ambient: &hook_ambient,
                 events: &event_tx,
                 telemetry: &telemetry_handle,
                 session_id: &session_id,
@@ -2321,20 +2362,14 @@ impl Builder {
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let hooks = hooks.clone();
             let mut events = session_state.subscribe_tasks();
-            let session_id = session.session_id.clone();
-            let cwd = settings.paths.project_root().display().to_string();
+            let ambient = hook_ambient.clone();
             handle.spawn(async move {
                 loop {
                     match events.recv().await {
                         Ok(event) if event["kind"] == "task_started" => {
                             if hooks.has_hooks_for(hooks::HookEvent::TaskCreated) {
-                                let input = hooks::HookInput::lifecycle(
-                                    "TaskCreated",
-                                    session_id.clone(),
-                                    cwd.clone(),
-                                    String::new(),
-                                )
-                                .with_reason(event["task"].to_string());
+                                let input = hooks::HookInput::from_ambient(&ambient, "TaskCreated")
+                                    .with_reason(event["task"].to_string());
                                 let _ = hooks.run(hooks::HookEvent::TaskCreated, &input).await;
                             }
                         }
@@ -2592,7 +2627,7 @@ impl Builder {
                     ..Default::default()
                 }),
                 compaction_state: compaction::reactive::CompactionState::default(),
-                team_id: None,
+                team_seat: self.team_seat,
                 orphaned_permission: None,
                 has_handled_orphaned_permission: false,
                 output_token_target: None,

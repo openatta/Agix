@@ -594,7 +594,6 @@ async fn file_changed_fires_when_the_configured_instruction_file_is_edited() -> 
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: FileChanged watches only an explicit `instruction_file`, not the AGENTS.md a session loaded"]
 async fn file_changed_fires_when_the_agents_md_a_session_loaded_is_edited() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let ledger = Ledger::new()?;
@@ -618,7 +617,6 @@ async fn file_changed_fires_when_the_agents_md_a_session_loaded_is_edited() -> a
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: TaskCompleted/TeammateIdle are gated on Agent.team_id, which nothing ever sets, and on a Stop hook being configured"]
 async fn a_team_member_finishing_fires_task_completed_and_teammate_idle() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let ledger = Ledger::new()?;
@@ -646,18 +644,158 @@ async fn a_team_member_finishing_fires_task_completed_and_teammate_idle() -> any
     );
     stub.script_when("MEMBER-MARK", [Reply::text("hi from the member")]);
     run.turn(&session, "PARENT-MARK run the team").await?;
-    ledger
-        .wait_for("TaskCompleted", Duration::from_secs(5))
-        .await?;
-    ledger
-        .wait_for("TeammateIdle", Duration::from_secs(5))
-        .await?;
+    for event in ["TaskCompleted", "TeammateIdle"] {
+        let fired = ledger.wait_for(event, Duration::from_secs(5)).await?;
+        assert_eq!(fired["team_name"], "crew", "{fired}");
+        assert_eq!(fired["teammate_name"], "solo", "{fired}");
+        assert_ne!(
+            fired["session_id"],
+            session.as_str(),
+            "the member's own session: {fired}"
+        );
+    }
+    let names = ledger.names();
+    assert_eq!(
+        names,
+        ["TaskCompleted", "TeammateIdle"],
+        "the lead is not a member: {names:?}"
+    );
     run.finish().await;
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: lifecycle hooks fired from tool dispatch and the Agent tool send an empty permission_mode, and SubagentStart/Stop an empty cwd"]
+async fn every_way_of_starting_a_sub_agent_is_bracketed_by_subagent_hooks() -> anyhow::Result<()> {
+    let stub = ProviderStub::start().await?;
+    let ledger = Ledger::new()?;
+    let mut run = stubbed("bracketed", &stub)
+        .settings(json!({
+            "execution": { "team_enabled": true },
+            "permission_rules": [{ "tool": "Agent", "action": "allow" }],
+            "hooks_config": {
+                "SubagentStart": [ledger.hook()],
+                "SubagentStop": [ledger.hook()],
+            },
+        }))
+        .start()
+        .await?;
+    let session = run.session().await?;
+    stub.script_when(
+        "PARENT-MARK",
+        [
+            Reply::calls(
+                "a1",
+                "Agent",
+                json!({ "prompt": "BACKGROUND-MARK say hi", "description": "bg", "background": true }),
+            ),
+            Reply::calls(
+                "a2",
+                "Agent",
+                json!({ "prompt": "MEMBER-MARK say hi", "description": "member",
+                        "team_name": "crew", "name": "solo" }),
+            ),
+            Reply::text("done"),
+        ],
+    );
+    stub.script_when("BACKGROUND-MARK", [Reply::text("hi from the background")]);
+    stub.script_when("MEMBER-MARK", [Reply::text("hi from the member")]);
+    run.turn(&session, "PARENT-MARK go").await?;
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let entries = loop {
+        let entries = ledger.entries();
+        let starts = entries
+            .iter()
+            .filter(|e| e["hook_event_name"] == "SubagentStart")
+            .count();
+        let stops = entries
+            .iter()
+            .filter(|e| e["hook_event_name"] == "SubagentStop")
+            .count();
+        if starts >= 2 && stops >= 1 {
+            break entries;
+        }
+        anyhow::ensure!(Instant::now() < deadline, "{:?}", names_of(&entries));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let started: Vec<&Value> = entries
+        .iter()
+        .filter(|e| e["hook_event_name"] == "SubagentStart")
+        .collect();
+    assert_eq!(started.len(), 2, "{:?}", names_of(&entries));
+    for e in &started {
+        assert_ne!(e["session_id"], session.as_str(), "{e}");
+        assert_ne!(e["cwd"], "", "{e}");
+        assert_ne!(e["permission_mode"], "", "{e}");
+    }
+    let background = entries
+        .iter()
+        .find(|e| e["hook_event_name"] == "SubagentStop")
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(background["stop_reason"], "end_turn", "{background}");
+    assert!(
+        started
+            .iter()
+            .any(|e| e["session_id"] == background["session_id"]),
+        "the background run's start and stop name the same sub-agent: {entries:?}"
+    );
+    run.finish().await;
+    Ok(())
+}
+
+/// A sub-agent shares its parent's hooks rather than building its own, so
+/// the instruction file is watched once however many sub-agents ran.
+#[tokio::test(flavor = "multi_thread")]
+async fn one_edit_fires_file_changed_once_after_sub_agents_have_run() -> anyhow::Result<()> {
+    let stub = ProviderStub::start().await?;
+    let ledger = Ledger::new()?;
+    let notes = ledger.path("RULES.md");
+    std::fs::write(&notes, "# Rules\nBe brief.\n")?;
+    let mut run = stubbed("watched-once", &stub)
+        .settings(json!({
+            "instruction_file": notes,
+            "permission_rules": [{ "tool": "Agent", "action": "allow" }],
+            "hooks_config": { "FileChanged": [ledger.hook()] },
+        }))
+        .start()
+        .await?;
+    let session = run.session().await?;
+    stub.script_when(
+        "PARENT-MARK",
+        [
+            Reply::calls(
+                "a1",
+                "Agent",
+                json!({ "prompt": "SUB-MARK one", "description": "one" }),
+            ),
+            Reply::calls(
+                "a2",
+                "Agent",
+                json!({ "prompt": "SUB-MARK two", "description": "two" }),
+            ),
+            Reply::text("done"),
+        ],
+    );
+    stub.script_when(
+        "SUB-MARK",
+        [Reply::text("sub done"), Reply::text("sub done")],
+    );
+    run.turn(&session, "PARENT-MARK go").await?;
+    assert!(ledger.entries().is_empty(), "{:?}", ledger.names());
+
+    std::fs::write(&notes, "# Rules\nBe very brief.\n")?;
+    let changed = ledger
+        .wait_for("FileChanged", Duration::from_secs(30))
+        .await?;
+    assert_eq!(changed["session_id"], session.as_str(), "{changed}");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(ledger.names(), ["FileChanged"], "one edit, one event");
+    run.finish().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn every_payload_names_the_sessions_cwd_and_permission_mode() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let ledger = Ledger::new()?;
@@ -1017,7 +1155,6 @@ async fn a_once_hook_runs_once_per_session() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product gap: a Stop hook can only end the turn; `decision: block` is ignored instead of sending the model back to work"]
 async fn a_stop_hook_that_blocks_sends_the_model_back_once() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let ledger = Ledger::new()?;

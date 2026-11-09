@@ -589,11 +589,31 @@ impl Agent {
         if let Err(e) = self.session.persist().await {
             tracing::warn!(error = %e, "failed to persist session");
         }
-        if !matches!(&outcome, Ok(o) if ENDS_A_GOAL_ROUND_NORMALLY.contains(&o.stop_reason.as_str()))
-        {
+        let ended_normally = matches!(&outcome, Ok(o) if ENDS_A_GOAL_ROUND_NORMALLY.contains(&o.stop_reason.as_str()));
+        if !ended_normally {
             self.session_state.goal_disarm();
         }
         self.record_goal_changes().await;
+        if let Some(seat) = self.team_seat.clone() {
+            let stop_reason = match &outcome {
+                Ok(o) => o.stop_reason.clone(),
+                Err(_) => "error".into(),
+            };
+            if ended_normally {
+                self.fire_lifecycle_hook(hooks::HookEvent::TaskCompleted, |i| {
+                    i.with_team(&seat.team, &seat.member)
+                        .with_turn_id(self.current_turn_id.clone())
+                        .with_stop_reason(stop_reason.clone())
+                })
+                .await;
+            }
+            self.fire_lifecycle_hook(hooks::HookEvent::TeammateIdle, |i| {
+                i.with_team(&seat.team, &seat.member)
+                    .with_turn_id(self.current_turn_id.clone())
+                    .with_stop_reason(stop_reason.clone())
+            })
+            .await;
+        }
         if let Ok(o) = &outcome {
             self.spent.usage = self.spent.usage.plus(o.total_usage);
             self.spent.api_calls = self.spent.api_calls.saturating_add(o.api_calls);
@@ -1103,6 +1123,7 @@ impl Agent {
         }
 
         let mut had_tool_uses_this_turn = false;
+        let mut sent_back_by_stop_hook = false;
 
         loop {
             // Every step starts from a transcript that is on disk, so a
@@ -1651,19 +1672,14 @@ impl Agent {
                 continue;
             }
 
-            // 7. Stop hooks + teammate lifecycle hooks
+            // 7. Stop hooks: end the turn, send the model back, or let it stop.
             if self.hooks.has_hooks_for(hooks::HookEvent::Stop) {
                 let stop_hook_input = hooks::HookInput {
                     hook_event_name: "Stop".into(),
                     session_id: self.session.session_id.to_string(),
                     cwd: self.settings.paths.project_root().display().to_string(),
                     permission_mode: hook_permission_mode(self.session_state.permission_mode()),
-                    tool_name: None,
-                    tool_input: None,
-                    tool_use_id: None,
-                    tool_result: None,
-                    is_error: None,
-                    user_prompt: None,
+                    stop_hook_active: Some(sent_back_by_stop_hook),
                     ..Default::default()
                 };
                 let hook_result = self
@@ -1710,17 +1726,24 @@ impl Agent {
                         message: hook_result.discontinue_message().map(str::to_string),
                     });
                 }
-                // Teammate lifecycle hooks (TaskCompleted + TeammateIdle).
-                // Only run if agent is part of a team.
-                if self.team_id.is_some() {
-                    let _ = self
-                        .hooks
-                        .run(hooks::HookEvent::TaskCompleted, &stop_hook_input)
-                        .await;
-                    let _ = self
-                        .hooks
-                        .run(hooks::HookEvent::TeammateIdle, &stop_hook_input)
-                        .await;
+                if let Some(blocked) = hook_result.blocked() {
+                    let reason = blocked
+                        .message
+                        .as_deref()
+                        .filter(|m| !m.trim().is_empty())
+                        .unwrap_or("a Stop hook asked for more work before this turn ends");
+                    tracing::info!(reason, "Stop hook sent the model back to work");
+                    self.session.push_message(ModelMessage {
+                        role: MessageRole::User,
+                        content: vec![ModelContentBlock::Text {
+                            text: format!(
+                                "<system-reminder>\nA Stop hook did not let this turn end yet:\n\
+                                 {reason}\n</system-reminder>"
+                            ),
+                        }],
+                    });
+                    sent_back_by_stop_hook = true;
+                    continue;
                 }
             }
 
@@ -2942,6 +2965,16 @@ or project context that should survive across sessions.
             })
             .await;
         }
+        if self.agent_depth == 0 {
+            let loaded: Vec<std::path::PathBuf> = self
+                .frozen
+                .iter()
+                .flat_map(|f| f.memory_blocks.iter().map(|e| e.path.clone()))
+                .collect();
+            if let Err(e) = self.hooks.watch_files(&loaded) {
+                tracing::warn!(error = %e, "could not watch the instruction files for FileChanged");
+            }
+        }
     }
 
     /// Assemble the system-prompt blocks for one API call.
@@ -3667,7 +3700,7 @@ async fn fire_ctx_lifecycle_hook(
             format!("{event:?}"),
             ctx.session_id.clone(),
             ctx.cwd.display().to_string(),
-            String::new(),
+            hook_permission_mode(ctx.session_state.permission_mode()),
         )
         .with_turn_id(ctx.turn_id.clone()),
     );
@@ -4966,7 +4999,7 @@ fn running_task_summary(task: &base::context::RunningTask) -> String {
     }
 }
 
-fn hook_permission_mode(mode: base::permission::PermissionMode) -> String {
+pub(crate) fn hook_permission_mode(mode: base::permission::PermissionMode) -> String {
     serde_json::to_value(mode)
         .ok()
         .and_then(|v| v.as_str().map(str::to_string))

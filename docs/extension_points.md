@@ -942,8 +942,20 @@ let store = Arc::new(ObservedHistoryStore::new(inner, vec![my_observer]));
 - **`if`。** 四种后端都认。`""` 与 `*` 命中一切,连不带工具的事件也算;`Bash`、
   `Bash(git push:*)`、`mcp__github` 按权限规则的写法比;`Edit|Write` 是几选一,括号里的
   `|` 属于内容。没命中就不跑。
-- **`once`。** 只有 command 有:这个 hook 在会话里真正跑过一次后不再跑,
+- **`once`。** 只有 command 有:这个 hook 在会话里(连同它的子 Agent)真正跑过一次后不再跑,
   `if`、`only_on_error` 没放行的那几次不算。
+- **子 Agent 用父会话的 hooks。** 整棵会话树一个 runner:子 Agent 的工具调用、轮次照样触发
+  配置的 hook(payload 是子 Agent 自己的 `session_id`、`cwd`、`permission_mode`),`once` 全树
+  算一次。`SubagentStart` / `SubagentStop` 包住每一种起子 Agent 的方式(前台、后台、宿主
+  `session.startAgent`、`TeamCreate` 成员、`Agent` 的 `team_name` 常驻成员);常驻成员的
+  `SubagentStop` 在它被停掉时发,`stop_reason` 为 `shutdown`。
+- **`Stop`。** `continue: false` 结束这一轮(`stopped_by_hook`);`decision: "block"`(或
+  command `exit 2`)不让这一轮结束,`message` 作为提醒交给模型接着做,下一次停下时 `Stop`
+  再问一遍,payload 的 `stop_hook_active` 为 `true`。一直拦的 hook 由每轮的调用上限截住。
+- **`TaskCompleted` / `TeammateIdle`。** 团队成员(`TeamCreate` 的、常驻的)的一轮结束时发,
+  payload 带 `team_name`、`teammate_name`;`TaskCompleted` 只在那一轮正常结束时发。只通知。
+- **`FileChanged`。** 根会话监视 `instruction_file` 与它载入的每一份 `AGENTS.md`;一次修改
+  一个事件,不随子 Agent 增加。
 
 ---
 

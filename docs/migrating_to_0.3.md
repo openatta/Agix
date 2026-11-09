@@ -718,6 +718,23 @@ WebAssembly 载体整个移除。
   `unrestricted` 时这份列表不限制别的主机,只起放行内部地址的作用。
 - HTTP hook 防内网的检查补全:`0.0.0.0`、`[::ffff:127.0.0.1]`、`127.1`、十进制写法、带
   `user@` 的 url、IPv6 私有段与 CGNAT 都拒;重定向的每一跳都查。
+- **`Stop` hook 的 `decision: "block"`(或 command `exit 2`)不再被忽略**:这一轮不结束,
+  `message` 作为提醒交给模型接着做;再停下时 `Stop` 再问一遍,payload 带 `stop_hook_active: true`。
+  只想记录的 `Stop` hook 若回了 `block`,现在会让模型多跑一轮。
+- `TaskCompleted` / `TeammateIdle` 现在会发:团队成员(`TeamCreate` 的、`Agent` 带 `team_name`
+  的)一轮结束时,payload 带 `team_name`、`teammate_name`;`TaskCompleted` 只在正常结束时发。
+  不再要求配了 `Stop` hook。
+- 子 Agent 用父会话的 hooks:`once` 在整棵会话树里只算一次(以前每个子 Agent 各算一次),
+  `FileChanged` 一次修改只触发一次(以前每起过一个子 Agent 就多触发一次)。`SubagentStart` /
+  `SubagentStop` 在后台 `Agent`、`context: fork` 的 skill、`session.startAgent`、常驻团队成员上
+  也会发(以前只有前台 `Agent` 与 `TeamCreate`);常驻成员的 `SubagentStop` 在它被停掉时发,
+  `stop_reason` 为 `shutdown`;取消的子 Agent 报 `cancelled`。
+- `FileChanged` 也监视会话载入的 `AGENTS.md`(以前只看显式的 `instruction_file`)。
+- hook payload 的 `permission_mode`、`cwd` 不再为空:工具分发里发的 `PostToolUseFailure`、
+  `PermissionRequested`、`PermissionDenied`、`Notification`、`WorktreeCreate/Remove` 以及
+  `TaskCreated` 带上会话当前的模式;`SubagentStart/Stop` 带子 Agent 自己的 cwd 与模式;
+  `FileChanged`、`Elicitation` 与 rewake 的 `WakeEvent` 带上会话 id、项目根与模式(以前
+  `session_id` 为空、`cwd` 是 daemon 进程的工作目录或空、模式写死 `default`)。
 
 ### 嵌入方
 
@@ -898,3 +915,16 @@ WebAssembly 载体整个移除。
   缺省 `false`,`public_only()` 置位),新增 `base::interface::exec::is_internal_address`。
   `LocalNetwork` 对 `Origin::Agent` 的请求与 `public_only` 的请求在每一跳上拒绝内部地址;
   自己实现 `Network` 的要照做。`hooks::runner::ssrf` 模块删除。
+- `hooks::HookRunner::enable_file_watching` 多了 `ambient: hooks::payload::Ambient`(payload 的
+  会话 id、cwd、模式,触发时现取),第二次调用往同一个 watcher 里加文件而不是替换它;新增
+  `watch_files`。`run_elicitation` / `run_elicitation_result` 第一个参数是 `&Ambient`,
+  `check_rewakes` 收一个 `HookInput` 作底。`hooks::watcher::FileWatcher` 的 `new` /
+  `watch_paths` 换成 `start` / `add`。`HookInput` 多了 `stop_hook_active`、`team_name`、
+  `teammate_name`(结构体字面量要补或用 `..Default::default()`),新增 `with_team`、
+  `from_ambient`。
+- `runtime::module::SessionContext` 多了 `hook_ambient`。`runtime::agent::Builder` 多了
+  `team_seat(TeamSeat)`;只在 `agent_depth` 为 0 的会话上启动 `FileChanged` 监视。
+- `AgentSpawner::spawn_agent_with_tools` 多了最后一个参数 `seat: Option<TeamSeat>`(新类型
+  `base::interface::agent_spawner::TeamSeat { team, member }`);自己实现这个方法的要加上。
+- `agents::agent_tool::AgentTool` 起的子 Agent 用 `set_hooks` 给的那个 runner(经
+  `Builder::hooks`),不再从 settings 另建。

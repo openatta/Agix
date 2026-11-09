@@ -241,22 +241,47 @@ impl HookRunner {
     /// (`"created"`, `"modified"`, or `"deleted"`).
     ///
     /// The watcher runs in a background thread and dispatches hook execution
-    /// on the current Tokio runtime. Calling this multiple times replaces the
-    /// previous watcher — only the latest set of watched paths is active.
+    /// on the current Tokio runtime; each payload starts from `ambient`. A
+    /// second call adds `paths` to the running watcher, whose `debounce_ms`
+    /// and `ambient` stay what the first call gave — one runner, one watcher,
+    /// one `FileChanged` per change however many callers asked.
     ///
     /// Returns an error if the underlying filesystem watcher cannot be started.
     pub fn enable_file_watching(
         self: &Arc<Self>,
         paths: &[std::path::PathBuf],
         debounce_ms: u64,
+        ambient: crate::payload::Ambient,
     ) -> Result<(), String> {
-        let mut watcher = crate::watcher::FileWatcher::new();
-        watcher.watch_paths(paths, Arc::clone(self), debounce_ms)?;
-        *self
+        let mut slot = self
             .file_watcher
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(watcher);
-        Ok(())
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if slot.is_none() {
+            *slot = Some(crate::watcher::FileWatcher::start(
+                self,
+                debounce_ms,
+                ambient,
+            )?);
+        }
+        match slot.as_mut() {
+            Some(watcher) => watcher.add(paths),
+            None => Ok(()),
+        }
+    }
+
+    /// Add `paths` to the watcher [`enable_file_watching`](Self::enable_file_watching)
+    /// started; nothing when it was never started.
+    pub fn watch_files(&self, paths: &[std::path::PathBuf]) -> Result<(), String> {
+        match self
+            .file_watcher
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_mut()
+        {
+            Some(watcher) => watcher.add(paths),
+            None => Ok(()),
+        }
     }
 
     fn net(&self) -> &dyn base::interface::exec::Network {
@@ -277,28 +302,19 @@ impl HookRunner {
     /// authorization link). This is the request/notification half of the
     /// pair; see [`Self::run_elicitation_result`] for the response half.
     ///
+    /// `ambient` is the session's payload (its id, cwd and permission mode);
     /// `server_name` identifies the MCP server that raised the elicitation.
     /// `url` is the elicitation URL found in its tool result.
-    pub async fn run_elicitation(&self, server_name: &str, url: &str) -> HookRunResult {
-        let mut tool_input = serde_json::Map::new();
-        tool_input.insert(
-            "server_name".into(),
-            serde_json::Value::String(server_name.into()),
+    pub async fn run_elicitation(
+        &self,
+        ambient: &crate::payload::Ambient,
+        server_name: &str,
+        url: &str,
+    ) -> HookRunResult {
+        let input = HookInput::from_ambient(ambient, "Elicitation").with_tool(
+            format!("mcp_elicitation_{server_name}"),
+            serde_json::json!({ "server_name": server_name, "url": url }),
         );
-        tool_input.insert("url".into(), serde_json::Value::String(url.into()));
-        let input = crate::payload::HookInput {
-            hook_event_name: "Elicitation".into(),
-            session_id: String::new(),
-            cwd: String::new(),
-            permission_mode: "default".into(),
-            tool_name: Some(format!("mcp_elicitation_{server_name}")),
-            tool_input: Some(serde_json::Value::Object(tool_input)),
-            tool_use_id: None,
-            tool_result: None,
-            is_error: None,
-            user_prompt: None,
-            ..Default::default()
-        };
         self.run(HookEvent::Elicitation, &input).await
     }
 
@@ -315,37 +331,24 @@ impl HookRunner {
     /// and a host that does implement that round-trip has a real method to
     /// call; same rationale as `HookEvent::ConfigChange`'s doc comment.
     ///
+    /// `ambient` is the session's payload, as for [`Self::run_elicitation`].
     /// `server_name` identifies the MCP server that initiated the elicitation.
     /// `url` is the elicitation URL the user responded to.
     /// `response` is the user's response data (optional).
     pub async fn run_elicitation_result(
         &self,
+        ambient: &crate::payload::Ambient,
         server_name: &str,
         url: &str,
         response: Option<&serde_json::Value>,
     ) -> HookRunResult {
-        let mut tool_input = serde_json::Map::new();
-        tool_input.insert(
-            "server_name".into(),
-            serde_json::Value::String(server_name.into()),
-        );
-        tool_input.insert("url".into(), serde_json::Value::String(url.into()));
+        let mut tool_input = serde_json::json!({ "server_name": server_name, "url": url });
         if let Some(r) = response {
-            tool_input.insert("response".into(), r.clone());
+            tool_input["response"] = r.clone();
         }
-        let input = crate::payload::HookInput {
-            hook_event_name: "ElicitationResult".into(),
-            session_id: String::new(),
-            cwd: String::new(),
-            permission_mode: "default".into(),
-            tool_name: Some(format!("mcp_elicitation_{server_name}")),
-            tool_input: Some(serde_json::Value::Object(tool_input)),
-            tool_use_id: None,
-            tool_result: response.cloned(),
-            is_error: None,
-            user_prompt: None,
-            ..Default::default()
-        };
+        let mut input = HookInput::from_ambient(ambient, "ElicitationResult")
+            .with_tool(format!("mcp_elicitation_{server_name}"), tool_input);
+        input.tool_result = response.cloned();
         self.run(HookEvent::ElicitationResult, &input).await
     }
 
@@ -568,12 +571,13 @@ impl HookRunner {
     /// Check for wake signals and re-execute any pending rewake hooks.
     ///
     /// Drains the wake receiver; if a wake signal (or channel close) is
-    /// detected, re-runs all hooks in `pending_rewakes` with a minimal
-    /// `WakeEvent` input and returns their responses.
+    /// detected, re-runs all hooks in `pending_rewakes` with a `WakeEvent`
+    /// input built on `ambient` (the session's id, cwd and permission mode)
+    /// and returns their responses.
     ///
     /// If no wake signal is available, the pending set is preserved so the
     /// hooks can be re-executed on a later call.
-    pub async fn check_rewakes(&self) -> Vec<HookResponse> {
+    pub async fn check_rewakes(&self, ambient: HookInput) -> Vec<HookResponse> {
         // Drain the pending set under lock
         let pending: Vec<(HookEvent, usize)> = {
             let mut set = self
@@ -616,20 +620,12 @@ impl HookRunner {
             return Vec::new();
         }
 
-        // Build a minimal WakeEvent input for hook re-execution
-        let wake_input = HookInput {
-            hook_event_name: "WakeEvent".into(),
-            session_id: String::new(),
-            cwd: String::new(),
-            permission_mode: "default".into(),
-            tool_name: None,
-            tool_input: None,
-            tool_use_id: None,
-            tool_result: None,
-            is_error: None,
-            user_prompt: None,
-            ..Default::default()
-        };
+        let wake_input = HookInput::lifecycle(
+            "WakeEvent",
+            ambient.session_id,
+            ambient.cwd,
+            ambient.permission_mode,
+        );
 
         // Re-execute each pending hook with the wake input
         let mut responses = Vec::new();
@@ -1325,61 +1321,99 @@ mod tests {
         }
     }
 
-    /// A configured `FileChanged` hook fires through the real watcher
-    /// (debounced `notify` watcher → dispatches `FileChanged` on this
-    /// runner): modify a watched file, confirm the hook actually runs.
-    #[tokio::test]
-    async fn file_changed_hook_fires_on_watched_file_modification() {
-        use std::io::Write;
+    /// Rewrites `file` until the hook writing to `marker` has run: the OS
+    /// watcher registers on its own schedule, so one early write can be lost.
+    async fn edit_until_seen(file: &std::path::Path, marker: &std::path::Path) -> String {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let mut edits = 0;
+        loop {
+            edits += 1;
+            std::fs::write(file, format!("edit {edits}")).unwrap();
+            let waited = std::time::Instant::now();
+            while waited.elapsed() < Duration::from_secs(1) {
+                if let Ok(seen) = std::fs::read_to_string(marker) {
+                    if !seen.is_empty() {
+                        return seen;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no FileChanged after {edits} edits of {}",
+                file.display()
+            );
+        }
+    }
 
-        let unique = format!(
-            "{}_{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        );
-        let path = std::env::temp_dir().join(format!("agix_hooks_watch_test_{unique}.txt"));
-        let marker = std::env::temp_dir().join(format!("agix_hooks_watch_test_{unique}.marker"));
-        std::fs::write(&path, "initial").unwrap();
-        let _ = std::fs::remove_file(&marker);
-
-        let mut s: HooksSettings = HashMap::new();
-        s.insert(
+    fn recording_file_changed(marker: &std::path::Path) -> Arc<HookRunner> {
+        Arc::new(HookRunner::new(HashMap::from([(
             HookEvent::FileChanged,
-            vec![HookConfig::Command {
-                command: format!("echo fired >> {}", marker.display()),
-                shell: None,
-                timeout: None,
-                if_pattern: None,
-                only_on_error: None,
-                once: None,
-                async_rewake: None,
-            }],
-        );
-        let r = Arc::new(HookRunner::new(s));
-        r.enable_file_watching(std::slice::from_ref(&path), 50)
+            vec![command(&format!("cat >> '{}'", marker.display()))],
+        )])))
+    }
+
+    fn ambient_of(session: &'static str) -> crate::payload::Ambient {
+        Arc::new(move || HookInput::lifecycle("", session, "/the/project", "plan"))
+    }
+
+    /// A configured `FileChanged` hook fires through the real watcher, and its
+    /// payload is the session's.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn file_changed_hook_fires_on_watched_file_modification() {
+        let dir = tempfile_dir();
+        let path = dir.join("watched.txt");
+        let marker = dir.join("seen.jsonl");
+        std::fs::write(&path, "initial").unwrap();
+
+        let r = recording_file_changed(&marker);
+        r.enable_file_watching(std::slice::from_ref(&path), 50, ambient_of("root-sess"))
             .expect("watcher starts");
 
-        // Let the watcher thread register with the OS before mutating the file.
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        {
-            let mut f = std::fs::OpenOptions::new()
-                .append(true)
-                .open(&path)
-                .unwrap();
-            writeln!(f, "changed").unwrap();
-        }
-        // Debounce window (50ms) + async hook dispatch + shell exec.
-        tokio::time::sleep(Duration::from_millis(1500)).await;
-
-        assert!(
-            marker.exists(),
-            "FileChanged hook should have fired and written the marker file"
+        let seen = edit_until_seen(&path, &marker).await;
+        let first: serde_json::Value =
+            serde_json::from_str(seen.lines().next().unwrap_or_default()).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(first["hook_event_name"], "FileChanged");
+        assert_eq!(first["session_id"], "root-sess");
+        assert_eq!(first["cwd"], "/the/project");
+        assert_eq!(first["permission_mode"], "plan");
+        assert_eq!(
+            std::path::Path::new(first["tool_input"]["file_path"].as_str().unwrap())
+                .file_name()
+                .unwrap(),
+            "watched.txt"
         );
+    }
 
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(&marker);
+    /// A second caller adds to the one watcher rather than starting another,
+    /// so one change still fires one hook.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_second_watch_request_adds_files_to_the_same_watcher() {
+        let dir = tempfile_dir();
+        let first = dir.join("first.md");
+        let second = dir.join("second.md");
+        let marker = dir.join("seen.jsonl");
+        std::fs::write(&first, "a").unwrap();
+        std::fs::write(&second, "b").unwrap();
+
+        let r = recording_file_changed(&marker);
+        r.watch_files(std::slice::from_ref(&second))
+            .expect("nothing to add to before the watcher starts");
+        r.enable_file_watching(std::slice::from_ref(&first), 50, ambient_of("s"))
+            .expect("watcher starts");
+        r.enable_file_watching(std::slice::from_ref(&first), 50, ambient_of("other"))
+            .expect("same file again");
+        r.watch_files(std::slice::from_ref(&second))
+            .expect("second file");
+
+        let seen = edit_until_seen(&second, &marker).await;
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            seen.lines().all(|l| l.contains("\"session_id\":\"s\"")),
+            "the first caller's ambient is the watcher's: {seen}"
+        );
     }
 }

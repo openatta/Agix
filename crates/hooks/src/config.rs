@@ -28,7 +28,7 @@ pub enum HookConfig {
         /// 仅当工具结果 is_error=true 时才跑（PostToolUse 用）
         #[serde(default)]
         only_on_error: Option<bool>,
-        /// 一次性 hook：在这个会话里真正跑过一次后不再跑；
+        /// 一次性 hook：在这个会话（连同它的子 Agent）里真正跑过一次后不再跑；
         /// `if`、`only_on_error` 没放行的那几次不算
         #[serde(default)]
         once: Option<bool>,
@@ -152,11 +152,15 @@ pub enum HookEvent {
     /// Fired when a sub-agent (`AgentTool`) starts. Hook can log, notify, or
     /// inject context before the sub-agent begins work.
     SubagentStart,
-    /// Team member idle notification.
+    /// A team member's turn ended, however it ended, and it goes idle;
+    /// `team_name` / `teammate_name` say which.
     TeammateIdle,
     /// A running task started (a sub-agent, shell command, monitor, team
     /// member); `reason` carries the task as `session.tasks` lists it.
     TaskCreated,
+    /// A team member's turn ended normally — the work it was given is done;
+    /// `team_name` / `teammate_name` say which. Fires just before
+    /// `TeammateIdle`.
     TaskCompleted,
     /// An MCP server's tool result contains an elicitation URL (`mcp://` or
     /// `elicitation://`) — the server is asking for user attention (e.g. an
@@ -206,7 +210,8 @@ pub enum HookEvent {
     InstructionsLoaded,
     /// Working directory changed.
     CwdChanged,
-    /// File change detected (watch mode).
+    /// An instruction file the root session watches changed: its
+    /// `instruction_file` and every `AGENTS.md` it loaded.
     FileChanged,
     /// Fired after each model API sampling completes (streaming
     /// response fully consumed). Hook receives model output for real-time

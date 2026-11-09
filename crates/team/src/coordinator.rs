@@ -474,6 +474,10 @@ impl Coordinator for DefaultCoordinator {
                         Arc::new(crate::team_memory::TeamMemoryReadTool::new(memory.clone())),
                     ];
                     let role = agent_type.clone().unwrap_or_else(|| "default".to_string());
+                    let seat = base::interface::agent_spawner::TeamSeat {
+                        team: name.clone(),
+                        member: label.clone(),
+                    };
                     async move {
                         let member_start = std::time::Instant::now();
                         let _permit = permits.acquire_owned().await.expect("semaphore closed");
@@ -486,6 +490,7 @@ impl Coordinator for DefaultCoordinator {
                                 cancel,
                                 agent_type,
                                 Some(permission_mode),
+                                Some(seat),
                             )
                             .await;
                         drop(_permit);
@@ -1315,6 +1320,7 @@ mod tests {
             _cancel: tokio_util::sync::CancellationToken,
             _agent_type: Option<String>,
             _permission_mode: Option<base::interface::settings::PermissionMode>,
+            _seat: Option<base::interface::agent_spawner::TeamSeat>,
         ) -> Result<String, Box<dyn std::error::Error + Send>> {
             let list_peers = extra_tools
                 .iter()
@@ -1420,6 +1426,7 @@ mod tests {
             _cancel: tokio_util::sync::CancellationToken,
             _agent_type: Option<String>,
             _permission_mode: Option<base::interface::settings::PermissionMode>,
+            _seat: Option<base::interface::agent_spawner::TeamSeat>,
         ) -> Result<String, Box<dyn std::error::Error + Send>> {
             if !prompt.contains("remember") {
                 return Ok(prompt);

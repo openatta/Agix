@@ -226,7 +226,6 @@ async fn hooks_see_the_session_start_add_context_to_a_prompt_and_see_results() -
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product gap: a Stop hook can only end the turn; `decision: block` is ignored instead of sending the model back to work"]
 async fn a_stop_hook_sends_the_model_back_to_finish_the_job() -> anyhow::Result<()> {
     let hooks = Hooks::new()?;
     let marker = hooks.dir.path().join("sent-back");

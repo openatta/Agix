@@ -70,6 +70,9 @@ pub struct SessionContext<'a> {
     pub permission: &'a Arc<dyn Permission>,
     pub pending_permissions: &'a PendingPermissions,
     pub hooks: &'a Arc<hooks::HookRunner>,
+    /// What a hook payload this module fires starts from: the session's id,
+    /// cwd and current permission mode.
+    pub hook_ambient: &'a hooks::payload::Ambient,
     pub events: &'a crate::event_bus::EventBus,
     pub telemetry: &'a telemetry::TelemetryHandle,
     pub session_id: &'a str,
@@ -272,6 +275,7 @@ impl AgentSpawner for LateAgentSpawner {
         cancel: CancellationToken,
         agent_type: Option<String>,
         permission_mode: Option<base::interface::settings::PermissionMode>,
+        seat: Option<base::interface::agent_spawner::TeamSeat>,
     ) -> Result<String, Box<dyn std::error::Error + Send>> {
         self.require()?
             .spawn_agent_with_tools(
@@ -282,6 +286,7 @@ impl AgentSpawner for LateAgentSpawner {
                 cancel,
                 agent_type,
                 permission_mode,
+                seat,
             )
             .await
     }

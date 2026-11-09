@@ -68,6 +68,7 @@ impl AgentSpawner for RuntimeAgentSpawner {
         cancel: CancellationToken,
         agent_type: Option<String>,
         permission_mode: Option<base::interface::settings::PermissionMode>,
+        seat: Option<base::interface::agent_spawner::TeamSeat>,
     ) -> Result<String, Box<dyn std::error::Error + Send>> {
         // Same "fresh per-call registry" pattern as `Builder::build()` uses
         // for the per-session registry — cloning into a new
@@ -97,6 +98,7 @@ impl AgentSpawner for RuntimeAgentSpawner {
                 perm,
                 agent_type.as_deref(),
                 permission_mode,
+                seat,
             )
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send>)

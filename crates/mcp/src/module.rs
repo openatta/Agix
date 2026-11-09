@@ -91,10 +91,12 @@ impl Module for McpModule {
         // An elicitation URL a server embeds in a tool result reaches the
         // session's hooks; the callback is sync, the hook is not.
         let hooks = cx.hooks.clone();
+        let ambient = cx.hook_ambient.clone();
         manager.set_elicitation_callback(Arc::new(move |server_name, url| {
             let hooks = hooks.clone();
+            let ambient = ambient.clone();
             tokio::spawn(async move {
-                hooks.run_elicitation(&server_name, &url).await;
+                hooks.run_elicitation(&ambient, &server_name, &url).await;
             });
         }));
         if !manager.clients().is_empty() {

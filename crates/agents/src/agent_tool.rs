@@ -540,6 +540,8 @@ pub(crate) struct SubRun {
     /// A `TeamCreate` member, whose spawn and completion the team
     /// coordinator records with its stage.
     team_member: bool,
+    /// The team the run is a member of.
+    seat: Option<base::interface::agent_spawner::TeamSeat>,
 }
 
 impl SubRun {
@@ -1058,6 +1060,7 @@ async fn run_persistent_member_loop(
     idle_seq: Arc<std::sync::atomic::AtomicU64>,
     idle_seq_counter: Arc<std::sync::atomic::AtomicU64>,
     session: Arc<base::context::SessionState>,
+    stopped: Option<(std::sync::Weak<hooks::HookRunner>, SubagentPayload)>,
 ) {
     loop {
         let msg = tokio::select! {
@@ -1123,6 +1126,14 @@ async fn run_persistent_member_loop(
             team::coordinator::TeammateLifecycle::Shutdown,
             None,
         );
+    }
+    if let Some((runner, payload)) = stopped {
+        if let Some(runner) = runner.upgrade() {
+            payload
+                .stopped("shutdown")
+                .fire(&runner, hooks::HookEvent::SubagentStop)
+                .await;
+        }
     }
 }
 
@@ -1689,7 +1700,25 @@ impl Inner {
         if let Some(ledger) = &self.process_groups {
             builder = builder.process_groups(ledger.clone());
         }
+        // One runner for the whole tree: `once` holds across it, and the
+        // root's file watcher is the only one.
+        if let Some(runner) = self.hooks() {
+            builder = builder.hooks(runner);
+        }
         builder.modules(self.modules.iter().cloned())
+    }
+
+    fn hooks(&self) -> Option<Arc<hooks::HookRunner>> {
+        self.hooks
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    async fn fire_subagent_hook(&self, event: hooks::HookEvent, sub: &SubagentPayload) {
+        if let Some(runner) = self.hooks() {
+            sub.fire(&runner, event).await;
+        }
     }
 
     fn model_for_subagent(&self) -> Arc<dyn Model> {
@@ -2051,6 +2080,73 @@ impl SpawnTelemetry {
                     duration_ms: self.started.elapsed().as_millis() as u64,
                 },
             ));
+    }
+}
+
+/// What a sub-agent's `SubagentStart` / `SubagentStop` payload says about it.
+#[derive(Clone)]
+struct SubagentPayload {
+    session_id: String,
+    cwd: std::path::PathBuf,
+    permission_mode: base::interface::settings::PermissionMode,
+    agent_type: Option<String>,
+    stop_reason: Option<String>,
+}
+
+impl SubagentPayload {
+    fn of(
+        session_id: &str,
+        cwd: &std::path::Path,
+        settings: &Settings,
+        agent_type: Option<&str>,
+    ) -> Self {
+        Self {
+            session_id: session_id.to_string(),
+            cwd: cwd.to_path_buf(),
+            permission_mode: settings.permission_mode,
+            agent_type: agent_type.map(str::to_string),
+            stop_reason: None,
+        }
+    }
+
+    fn stopped(mut self, reason: &str) -> Self {
+        self.stop_reason = Some(reason.to_string());
+        self
+    }
+
+    /// Fire one sub-agent lifecycle hook about this sub-agent. Notification
+    /// only — the response is discarded, so a hook cannot veto a spawn or a
+    /// completion.
+    async fn fire(&self, runner: &hooks::HookRunner, event: hooks::HookEvent) {
+        if !runner.has_hooks_for(event) {
+            return;
+        }
+        let mut input = hooks::HookInput::lifecycle(
+            format!("{event:?}"),
+            self.session_id.clone(),
+            self.cwd.display().to_string(),
+            serde_json::to_value(self.permission_mode)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_else(|| "default".into()),
+        )
+        .with_agent_type(self.agent_type.clone());
+        if let (hooks::HookEvent::SubagentStop, Some(reason)) = (event, &self.stop_reason) {
+            input = input.with_stop_reason(reason.clone());
+        }
+        let _ = runner.run(event, &input).await;
+    }
+}
+
+/// How a one-shot sub-agent's run ended, as `SubagentStop` reports it.
+fn stop_reason_of(
+    result: &Result<String, base::error::ToolError>,
+    cancelled: bool,
+) -> &'static str {
+    match (result, cancelled) {
+        (_, true) => "cancelled",
+        (Ok(_), _) => "end_turn",
+        (Err(_), _) => "error",
     }
 }
 
@@ -2500,49 +2596,15 @@ impl AgentTool {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tx);
     }
 
-    /// Attach the parent session's hook runner so sub-agent spawns fire
-    /// `SubagentStart`/`SubagentStop` — see `Inner::hooks`.
+    /// Attach the parent session's hook runner: every delegate runs its hooks
+    /// on it, and sub-agent spawns fire `SubagentStart`/`SubagentStop` there
+    /// — see `Inner::hooks`.
     pub fn set_hooks(&self, runner: Arc<hooks::HookRunner>) {
         *self
             .inner
             .hooks
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(runner);
-    }
-
-    /// Fire one sub-agent lifecycle hook. Notification only — the response is
-    /// discarded, so a hook cannot veto a spawn or a completion. No-op when no
-    /// runner was wired, or when nothing subscribes to the event.
-    async fn fire_subagent_hook(
-        &self,
-        event: hooks::HookEvent,
-        agent_session_id: &str,
-        agent_type: &Option<String>,
-        stop_reason: Option<&str>,
-    ) {
-        let Some(runner) = self
-            .inner
-            .hooks
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-        else {
-            return;
-        };
-        if !runner.has_hooks_for(event) {
-            return;
-        }
-        let mut input = hooks::HookInput::lifecycle(
-            format!("{event:?}"),
-            agent_session_id.to_string(),
-            String::new(),
-            String::new(),
-        )
-        .with_agent_type(agent_type.clone());
-        if let Some(r) = stop_reason {
-            input = input.with_stop_reason(r);
-        }
-        let _ = runner.run(event, &input).await;
     }
 
     /// Attach the parent session's history store so sub-agent transcripts are
@@ -2859,6 +2921,7 @@ impl AgentTool {
         perm: Arc<dyn Permission>,
         subagent_type: Option<&str>,
         permission_mode: Option<base::interface::settings::PermissionMode>,
+        seat: Option<base::interface::agent_spawner::TeamSeat>,
     ) -> Result<String, base::error::ToolError> {
         let admission = self
             .inner
@@ -2876,6 +2939,7 @@ impl AgentTool {
             SubRun {
                 permission_mode,
                 team_member: true,
+                seat,
                 ..SubRun::default()
             },
         )
@@ -2950,6 +3014,9 @@ impl AgentTool {
         if let Some(schema) = &run.output_schema {
             builder = builder.output_schema(schema.clone());
         }
+        if let Some(seat) = run.seat.clone() {
+            builder = builder.team_seat(seat);
+        }
         let history_store = self.inner.history_store();
         builder = self.inner.inherited_by_a_delegate(builder);
         let (agent, event_rx, input_tx) = builder
@@ -2971,14 +3038,10 @@ impl AgentTool {
         // `Stop` fires on both success and failure — a hook that cleans up
         // after a sub-agent must not be skipped just because it errored — with
         // the outcome carried in `stop_reason`.
-        let sub_type = subagent_type.map(|s| s.to_string());
-        self.fire_subagent_hook(
-            hooks::HookEvent::SubagentStart,
-            &sid_for_hook,
-            &sub_type,
-            None,
-        )
-        .await;
+        let payload = SubagentPayload::of(&sid_for_hook, &cwd_for_meta, &settings, subagent_type);
+        self.inner
+            .fire_subagent_hook(hooks::HookEvent::SubagentStart, &payload)
+            .await;
         let spawned = (!run.team_member).then(|| {
             SpawnTelemetry::start(
                 &self.inner,
@@ -3003,13 +3066,12 @@ impl AgentTool {
         if let Some(spawned) = spawned.flatten() {
             spawned.finish(&result);
         }
-        self.fire_subagent_hook(
-            hooks::HookEvent::SubagentStop,
-            &sid_for_hook,
-            &sub_type,
-            Some(if result.is_ok() { "end_turn" } else { "error" }),
-        )
-        .await;
+        self.inner
+            .fire_subagent_hook(
+                hooks::HookEvent::SubagentStop,
+                &payload.stopped(stop_reason_of(&result, cancelled)),
+            )
+            .await;
         // Marked terminal on failure too, so a stale `session.resume` against
         // it is rejected instead of silently continuing a "finished" sub-agent.
         mark_sidechain_terminal(history_store.as_ref(), &sid_for_hook, &result, cancelled).await;
@@ -3254,7 +3316,8 @@ impl AgentTool {
         cwd: std::path::PathBuf,
         subagent_type: Option<&str>,
         permission_mode: base::interface::settings::PermissionMode,
-    ) -> Result<(Agent, EventReceiver, InputSender), base::error::ToolError> {
+        seat: Option<base::interface::agent_spawner::TeamSeat>,
+    ) -> Result<(Agent, EventReceiver, InputSender, SubagentPayload), base::error::ToolError> {
         let child_depth = self
             .inner
             .spawn_guard()
@@ -3282,12 +3345,15 @@ impl AgentTool {
             .settings(settings.clone())
             .agent_depth(child_depth)
             .permission(perm);
+        if let Some(seat) = seat {
+            builder = builder.team_seat(seat);
+        }
         // The session's plugins follow the delegate, the operator's policy
         // scripts among them. Without this, spawning is a way around every
         // rule they wrote, chosen by the model.
         let history_store = self.inner.history_store();
         builder = self.inner.inherited_by_a_delegate(builder);
-        let built = builder
+        let (agent, event_rx, input_tx) = builder
             .build()
             .map_err(|e| base::error::ToolError::Execution(anyhow!("build: {e}")))?;
         if let Some(store) = history_store {
@@ -3301,7 +3367,8 @@ impl AgentTool {
             )
             .await;
         }
-        Ok(built)
+        let payload = SubagentPayload::of(&sid_for_meta, &cwd_for_meta, &settings, subagent_type);
+        Ok((agent, event_rx, input_tx, payload))
     }
 
     /// Persistent-member counterpart to `run_sub`/`launch_bg`: routes
@@ -3404,14 +3471,21 @@ impl AgentTool {
         }
 
         let tools = self.resolve_tools(subagent_type.as_deref());
-        let (agent, event_rx, input_tx) = self
+        let (agent, event_rx, input_tx, payload) = self
             .build_team_member_agent(
                 tools,
                 cwd,
                 subagent_type.as_deref(),
                 resolved_permission_mode,
+                Some(base::interface::agent_spawner::TeamSeat {
+                    team: team_name.clone(),
+                    member: member_name.clone(),
+                }),
             )
             .await?;
+        self.inner
+            .fire_subagent_hook(hooks::HookEvent::SubagentStart, &payload)
+            .await;
 
         let member_id = format!("member-{}", bg_task_id());
         tracing::debug!(
@@ -3455,6 +3529,9 @@ impl AgentTool {
             idle_seq,
             self.inner.idle_seq_counter.clone(),
             session,
+            self.inner
+                .hooks()
+                .map(|runner| (Arc::downgrade(&runner), payload)),
         ));
 
         Ok(tid)
@@ -3630,6 +3707,10 @@ impl AgentTool {
             .await;
         }
 
+        let payload = SubagentPayload::of(&sid_for_meta, &cwd_for_meta, &settings, subagent_type);
+        inner
+            .fire_subagent_hook(hooks::HookEvent::SubagentStart, &payload)
+            .await;
         open_inbox(run.task.as_deref(), &agent);
         let spawned = SpawnTelemetry::start(
             inner,
@@ -3653,6 +3734,12 @@ impl AgentTool {
             spawned.finish(&result);
         }
         drop(input_tx);
+        inner
+            .fire_subagent_hook(
+                hooks::HookEvent::SubagentStop,
+                &payload.stopped(stop_reason_of(&result, cancelled)),
+            )
+            .await;
         mark_sidechain_terminal(history_store.as_ref(), &sid_for_meta, &result, cancelled).await;
         result
     }
@@ -6010,6 +6097,7 @@ mod catalog_tests {
             Arc::new(AlwaysPermit),
             None,
             None,
+            None,
         );
         tokio::select! {
             _ = member => panic!("the model never answers"),
@@ -6038,16 +6126,39 @@ mod catalog_tests {
         let agent_tool = team_enabled_agent_tool();
         agent_tool.set_scene(Arc::new(scene::harnix::HarnixScene));
 
-        let (agent, _event_rx, _input_tx) = agent_tool
+        let (agent, _event_rx, _input_tx, _) = agent_tool
             .build_team_member_agent(
                 Arc::new(InMemoryToolRegistry::new()),
                 std::path::PathBuf::from("/tmp"),
                 None,
                 base::interface::settings::PermissionMode::Plan,
+                None,
             )
             .await
             .expect("build should succeed");
         assert_eq!(agent.scene().id(), "harnix");
+    }
+
+    /// A delegate runs its hooks on its parent's runner rather than one it
+    /// builds from the same settings: `once` holds across the tree, and the
+    /// parent's file watcher is the only one.
+    #[tokio::test]
+    async fn a_delegate_runs_its_hooks_on_the_parents_runner() {
+        let agent_tool = team_enabled_agent_tool();
+        let runner = Arc::new(hooks::HookRunner::empty());
+        agent_tool.set_hooks(runner.clone());
+
+        let (agent, _event_rx, _input_tx, _) = agent_tool
+            .build_team_member_agent(
+                Arc::new(InMemoryToolRegistry::new()),
+                std::path::PathBuf::from("/tmp"),
+                None,
+                base::interface::settings::PermissionMode::Plan,
+                None,
+            )
+            .await
+            .expect("build should succeed");
+        assert!(std::ptr::eq(agent.hooks(), Arc::as_ptr(&runner)));
     }
 
     fn agent_tool_with_config(config: EngineConfig) -> AgentTool {

@@ -81,6 +81,8 @@ pub trait AgentSpawner: Send + Sync {
     /// mode: it can make the member stricter, never freer, and the session's
     /// rules apply to the member as to any sub-agent. `None` — like
     /// `extra_tools` being empty — delegates to `spawn_agent`'s behavior.
+    /// `seat` names the team and the member's place in it, which the
+    /// member's `TaskCompleted` / `TeammateIdle` hooks report.
     #[allow(clippy::too_many_arguments)]
     async fn spawn_agent_with_tools(
         &self,
@@ -91,8 +93,9 @@ pub trait AgentSpawner: Send + Sync {
         cancel: CancellationToken,
         agent_type: Option<String>,
         permission_mode: Option<crate::settings::PermissionMode>,
+        seat: Option<TeamSeat>,
     ) -> Result<String, Box<dyn std::error::Error + Send>> {
-        let _ = (extra_tools, permission_mode);
+        let _ = (extra_tools, permission_mode, seat);
         self.spawn_agent(prompt, allowed_tools, cwd, cancel, agent_type)
             .await
     }
@@ -127,6 +130,13 @@ pub trait AgentSpawner: Send + Sync {
             "this session cannot start sub-agents".into(),
         ))
     }
+}
+
+/// Which team a member works in, and its name there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TeamSeat {
+    pub team: String,
+    pub member: String,
 }
 
 /// A sub-agent a host starts under a session (`session.startAgent`).
