@@ -124,7 +124,7 @@ impl TranscriptProjection for ExtensionsAreVisible {
             return DefaultProjection.apply(entry, messages);
         };
         if !self.covers(ns) {
-            return;
+            return DefaultProjection.apply(entry, messages);
         }
         messages.push(Message::User {
             content: vec![ContentBlock::Text {
@@ -467,7 +467,18 @@ fn apply_entry_to_messages(entry: &LogEntry, messages: &mut Vec<Message>) {
                 is_error: *is_error,
             };
             match messages.last_mut() {
-                Some(Message::User { content }) => content.push(block),
+                Some(Message::User { content })
+                    if content
+                        .iter()
+                        .all(|b| matches!(b, ContentBlock::ToolResult { .. })) =>
+                {
+                    let already_answered = content.iter().any(|b| {
+                        matches!(b, ContentBlock::ToolResult { tool_use_id: id, .. } if id == tool_use_id)
+                    });
+                    if !already_answered {
+                        content.push(block);
+                    }
+                }
                 _ => messages.push(Message::User {
                     content: vec![block],
                 }),
@@ -1034,6 +1045,84 @@ mod extension_entry_tests {
             event: "checkpoint".into(),
             payload: serde_json::json!({"step": 3}),
         }
+    }
+
+    fn tool_result(id: &str) -> LogEntry {
+        LogEntry::ToolResult {
+            tool_use_id: id.into(),
+            content: ToolResultContent::Text(format!("result of {id}")),
+            is_error: false,
+        }
+    }
+
+    fn user_content(message: &Message) -> &[ContentBlock] {
+        let Message::User { content } = message else {
+            panic!("expected a user message, got {message:?}");
+        };
+        content
+    }
+
+    #[test]
+    fn a_host_edit_to_the_context_applies_whatever_namespaces_are_opened() {
+        let s = SessionId::new();
+        let entries: Vec<EnvelopedEntry> = [
+            text("keep"),
+            text("secret"),
+            LogEntry::Extension {
+                ns: CONTEXT_NS.into(),
+                event: "drop".into(),
+                payload: serde_json::json!({"at": 1}),
+            },
+        ]
+        .into_iter()
+        .map(|e| EnvelopedEntry::new(s, e))
+        .collect();
+        let named = ExtensionsAreVisible {
+            namespaces: vec!["com.acme.deploy".into()],
+        };
+        for projection in [ExtensionsAreVisible::all(), named] {
+            let projected = project_messages_with(&entries, &projection);
+            assert_eq!(projected, project_messages(&entries));
+            assert!(
+                matches!(&user_content(&projected[1])[0], ContentBlock::Text { text, .. } if text == DROPPED)
+            );
+        }
+    }
+
+    #[test]
+    fn a_tool_result_entry_does_not_join_a_user_message_with_text_in_it() {
+        let s = SessionId::new();
+        let entries: Vec<EnvelopedEntry> = [text("a question"), tool_result("t1")]
+            .into_iter()
+            .map(|e| EnvelopedEntry::new(s, e))
+            .collect();
+        let projected = project_messages(&entries);
+        assert_eq!(projected.len(), 2);
+        assert_eq!(user_content(&projected[0]).len(), 1);
+        assert!(matches!(
+            user_content(&projected[1]),
+            [ContentBlock::ToolResult { tool_use_id, .. }] if tool_use_id == "t1"
+        ));
+    }
+
+    #[test]
+    fn tool_result_entries_gather_in_one_message_once_per_call() {
+        let s = SessionId::new();
+        let entries: Vec<EnvelopedEntry> =
+            [tool_result("t1"), tool_result("t2"), tool_result("t1")]
+                .into_iter()
+                .map(|e| EnvelopedEntry::new(s, e))
+                .collect();
+        let projected = project_messages(&entries);
+        assert_eq!(projected.len(), 1);
+        let ids: Vec<&str> = user_content(&projected[0])
+            .iter()
+            .map(|b| match b {
+                ContentBlock::ToolResult { tool_use_id, .. } => tool_use_id.as_str(),
+                other => panic!("unexpected block {other:?}"),
+            })
+            .collect();
+        assert_eq!(ids, ["t1", "t2"]);
     }
 
     /// The invariant that makes uninstalling a plugin safe: its entries are
