@@ -37,8 +37,12 @@ pub struct MailboxMessage {
 /// Supports optional file-based persistence for cross-turn communication.
 pub struct MailboxStore {
     inner: Mutex<MailboxInner>,
-    /// When Some, messages are also appended to JSONL files in this dir.
+    /// When Some, each peer's mailbox is also kept in a JSONL file here.
     persist_dir: Option<PathBuf>,
+    /// The version of each peer's mailbox last written to its file. Files
+    /// are written outside `inner`; a writer that arrives with an older
+    /// snapshot than the one already on disk leaves the file alone.
+    written: Mutex<HashMap<String, u64>>,
 }
 
 struct MailboxInner {
@@ -46,6 +50,36 @@ struct MailboxInner {
     mailboxes: HashMap<String, Vec<MailboxMessage>>,
     /// known peer labels
     peers: Vec<String>,
+    /// Bumped on every change to a peer's mailbox.
+    versions: HashMap<String, u64>,
+}
+
+/// A peer's mailbox as it stood at one version, to be written to its file.
+struct Snapshot {
+    peer: String,
+    version: u64,
+    lines: Vec<String>,
+}
+
+impl MailboxInner {
+    fn snapshot(&mut self, peer: &str) -> Snapshot {
+        let version = self.versions.entry(peer.to_string()).or_default();
+        *version += 1;
+        let lines = self
+            .mailboxes
+            .get(peer)
+            .map(|msgs| {
+                msgs.iter()
+                    .filter_map(|m| serde_json::to_string(m).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+        Snapshot {
+            peer: peer.to_string(),
+            version: *version,
+            lines,
+        }
+    }
 }
 
 impl MailboxStore {
@@ -55,14 +89,15 @@ impl MailboxStore {
             inner: Mutex::new(MailboxInner {
                 mailboxes: HashMap::new(),
                 peers,
+                versions: HashMap::new(),
             }),
             persist_dir: None,
+            written: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Create a mailbox store with file persistence. Messages are appended
-    /// to one JSONL file per peer (see [`mailbox_file`]) for cross-turn
-    /// survival.
+    /// Create a mailbox store with file persistence. Each peer's messages are
+    /// kept in one JSONL file (see [`mailbox_file`]) for cross-turn survival.
     pub fn with_persistence(peers: Vec<String>, persist_dir: PathBuf) -> Self {
         let _ = std::fs::create_dir_all(&persist_dir);
         // Load existing messages from disk into the in-memory store
@@ -82,13 +117,19 @@ impl MailboxStore {
             }
         }
         Self {
-            inner: Mutex::new(MailboxInner { mailboxes, peers }),
+            inner: Mutex::new(MailboxInner {
+                mailboxes,
+                peers,
+                versions: HashMap::new(),
+            }),
             persist_dir: Some(persist_dir),
+            written: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Send a message to a peer's mailbox (locked; persists to file under same lock).
-    /// A `to` that is not one of the team's peers is refused.
+    /// Send a message to a peer's mailbox. A `to` that is not one of the
+    /// team's peers is refused. Blocks on file IO when persistence is on —
+    /// an async caller runs it on a blocking thread.
     pub fn send(&self, from: &str, to: &str, content: &str) -> Result<(), UnknownPeer> {
         self.check_peer(to)?;
         let msg = MailboxMessage {
@@ -99,32 +140,44 @@ impl MailboxStore {
                 .unwrap_or(0),
             content: content.to_string(),
         };
-        // Serialize outside the lock so the lock region is tight.
-        let serialized = self.persist_dir.as_ref().map(|dir| {
-            let file_path = mailbox_file(dir, to);
-            let json = serde_json::to_string(&msg);
-            (file_path, json)
-        });
-        let mut inner = self.inner.lock().expect("mailbox lock poisoned");
-        inner.mailboxes.entry(to.to_string()).or_default().push(msg);
-        // Persist to file under the same lock so drain() always sees a consistent
-        // view: either both in-memory + on-disk, or neither.
-        if let Some((file_path, Ok(json))) = serialized {
-            if let Err(e) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&file_path)
-                .and_then(|mut f| {
-                    use std::io::Write;
-                    writeln!(f, "{json}")
-                })
-            {
-                tracing::warn!(peer = %to, path = %file_path.display(), error = %e, "mailbox: failed to persist message");
-            }
-        } else if let Some((_, Err(e))) = serialized {
-            tracing::warn!(peer = %to, error = %e, "mailbox: failed to serialize message");
+        let snapshot = {
+            let mut inner = self.inner.lock().expect("mailbox lock poisoned");
+            inner.mailboxes.entry(to.to_string()).or_default().push(msg);
+            self.persist_dir.is_some().then(|| inner.snapshot(to))
+        };
+        if let Some(snapshot) = snapshot {
+            self.persist(snapshot);
         }
         Ok(())
+    }
+
+    /// Writes `snapshot` to its peer's file unless a newer one is already
+    /// there. `written` is held across the write so two writers for the same
+    /// peer cannot land out of order.
+    fn persist(&self, snapshot: Snapshot) {
+        let Some(dir) = &self.persist_dir else {
+            return;
+        };
+        let mut written = self.written.lock().expect("mailbox lock poisoned");
+        let last = written.entry(snapshot.peer.clone()).or_default();
+        if *last >= snapshot.version {
+            return;
+        }
+        *last = snapshot.version;
+        let file_path = mailbox_file(dir, &snapshot.peer);
+        let result = if snapshot.lines.is_empty() {
+            match std::fs::remove_file(&file_path) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+                _ => Ok(()),
+            }
+        } else {
+            let tmp = file_path.with_extension("jsonl.tmp");
+            std::fs::write(&tmp, snapshot.lines.join("\n") + "\n")
+                .and_then(|()| std::fs::rename(&tmp, &file_path))
+        };
+        if let Err(e) = result {
+            tracing::warn!(peer = %snapshot.peer, path = %file_path.display(), error = %e, "mailbox: failed to persist");
+        }
     }
 
     /// `Err` naming the team's peers when `peer` is not one of them.
@@ -142,30 +195,22 @@ impl MailboxStore {
     /// Drain up to `max` messages from a peer's mailbox (FIFO, oldest first).
     /// When persistence is enabled, the peer's JSONL file is rewritten to
     /// reflect remaining messages (or deleted if empty) so that a reload via
-    /// `with_persistence` does not resurrect already-drained messages.
+    /// `with_persistence` does not resurrect already-drained messages. Blocks
+    /// on that file IO, like [`Self::send`].
     pub fn drain(&self, peer: &str, max: usize) -> Option<Vec<MailboxMessage>> {
-        let mut inner = self.inner.lock().expect("mailbox lock poisoned");
-        let msgs = inner.mailboxes.get_mut(peer)?;
-        let drain_end = max.min(msgs.len());
-        let drained: Vec<_> = msgs.drain(..drain_end).collect();
-        let is_empty = msgs.is_empty();
-        if is_empty {
-            inner.mailboxes.remove(peer);
-        }
-        // Sync persisted JSONL file with remaining mailbox contents.
-        if let Some(ref dir) = self.persist_dir {
-            let file_path = mailbox_file(dir, peer);
-            if is_empty {
-                let _ = std::fs::remove_file(&file_path);
-            } else if let Some(msgs) = inner.mailboxes.get(peer) {
-                let lines: Vec<String> = msgs
-                    .iter()
-                    .filter_map(|m| serde_json::to_string(m).ok())
-                    .collect();
-                if let Err(e) = std::fs::write(&file_path, lines.join("\n") + "\n") {
-                    tracing::warn!(peer = %peer, path = %file_path.display(), error = %e, "mailbox: failed to sync after drain");
-                }
+        let (drained, snapshot) = {
+            let mut inner = self.inner.lock().expect("mailbox lock poisoned");
+            let msgs = inner.mailboxes.get_mut(peer)?;
+            let drain_end = max.min(msgs.len());
+            let drained: Vec<_> = msgs.drain(..drain_end).collect();
+            if msgs.is_empty() {
+                inner.mailboxes.remove(peer);
             }
+            let snapshot = self.persist_dir.is_some().then(|| inner.snapshot(peer));
+            (drained, snapshot)
+        };
+        if let Some(snapshot) = snapshot {
+            self.persist(snapshot);
         }
         Some(drained)
     }
@@ -317,10 +362,12 @@ impl base::tool::Tool for SendMessageTool {
         _: ProgressSender,
     ) -> Result<ToolResult, ToolError> {
         let input: SendMessageInput = serde_json::from_value(input)?;
-        if let Err(unknown) = self
-            .mailbox
-            .send(&self.from_label, &input.peer, &input.message)
-        {
+        let (mailbox, from) = (self.mailbox.clone(), self.from_label.clone());
+        let (peer, message) = (input.peer.clone(), input.message);
+        let sent = tokio::task::spawn_blocking(move || mailbox.send(&from, &peer, &message))
+            .await
+            .map_err(|e| ToolError::exec(format!("sending the message failed: {e}")))?;
+        if let Err(unknown) = sent {
             return Ok(ToolResult::error_text(unknown.to_string()));
         }
         Ok(ToolResult {
@@ -414,7 +461,10 @@ impl base::tool::Tool for ReadMailTool {
         _: ProgressSender,
     ) -> Result<ToolResult, ToolError> {
         let input: ReadMailInput = serde_json::from_value(input)?;
-        let msgs = self.mailbox.drain(&self.my_label, input.max);
+        let (mailbox, me) = (self.mailbox.clone(), self.my_label.clone());
+        let msgs = tokio::task::spawn_blocking(move || mailbox.drain(&me, input.max))
+            .await
+            .map_err(|e| ToolError::exec(format!("reading the mailbox failed: {e}")))?;
         let msgs = match msgs {
             Some(v) => v,
             None => {
@@ -716,6 +766,46 @@ mod tests {
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0].content, "msg1");
         assert_eq!(msgs[1].content, "msg2");
+    }
+
+    #[test]
+    fn concurrent_sends_and_drains_leave_the_file_matching_the_mailbox() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let persist = dir.path().to_path_buf();
+        let peers = vec!["a".to_string(), "b".to_string()];
+        let mb = Arc::new(MailboxStore::with_persistence(
+            peers.clone(),
+            persist.clone(),
+        ));
+
+        let workers: Vec<_> = (0..8)
+            .map(|t| {
+                let mb = mb.clone();
+                std::thread::spawn(move || {
+                    for i in 0..25 {
+                        mb.send("a", "b", &format!("{t}-{i}")).unwrap();
+                        if i % 5 == 0 {
+                            mb.drain("b", 1);
+                        }
+                    }
+                })
+            })
+            .collect();
+        for w in workers {
+            w.join().unwrap();
+        }
+
+        let contents = |mb: &MailboxStore| -> Vec<String> {
+            mb.drain("b", usize::MAX)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|m| m.content)
+                .collect()
+        };
+        let on_disk = contents(&MailboxStore::with_persistence(peers, persist));
+        let in_memory = contents(&mb);
+        assert_eq!(in_memory.len(), 8 * 25 - 8 * 5);
+        assert_eq!(on_disk, in_memory);
     }
 
     #[test]

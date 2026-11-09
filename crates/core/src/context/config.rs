@@ -318,7 +318,7 @@ impl EngineConfig {
     /// Derive a real `EngineConfig` from a loaded `Settings`. Starts from
     /// `defaults_for()`'s baseline and overlays every field `Settings`
     /// actually carries; fields `Settings` has no equivalent for (e.g.
-    /// `strong_model`, `file_limits`, `max_agent_depth`) are left at their
+    /// `strong_model`, `file_limits`) are left at their
     /// `defaults_for()` value.
     pub fn from_settings(settings: &crate::settings::Settings) -> Self {
         let mut c = Self::defaults_for(settings.model.model_name.clone());
@@ -337,6 +337,7 @@ impl EngineConfig {
         c.team_stage_concurrency = settings.execution.team_stage_concurrency;
         c.team_max_persistent_members = settings.execution.team_max_persistent_members;
         c.team_member_idle_timeout_secs = settings.execution.team_member_idle_timeout_secs;
+        c.max_agent_depth = settings.execution.max_agent_depth;
 
         // `Settings.permission_mode` (`interface::settings::PermissionMode`,
         // serde/JSON-schema-facing) and `EngineConfig.permission_mode`
@@ -441,6 +442,14 @@ mod sandbox_wiring_tests {
             EngineConfig::from_settings(&s).path_style,
             PathStyle::WorkspaceRelative
         );
+    }
+
+    #[test]
+    fn the_delegation_depth_is_read_from_settings() {
+        let mut s = Settings::defaults_for("test-model");
+        assert_eq!(EngineConfig::from_settings(&s).max_agent_depth, 3);
+        s.execution.max_agent_depth = 1;
+        assert_eq!(EngineConfig::from_settings(&s).max_agent_depth, 1);
     }
 
     #[test]

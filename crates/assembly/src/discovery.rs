@@ -327,7 +327,7 @@ pub struct InstanceFile {
 }
 
 /// Atomically write `<dir>/<instance>.json` (tmp + rename, `0600` on Unix —
-/// same pattern as [`write_lock_file`] and `team::lock::write_lock_file`).
+/// same pattern as [`write_lock_file`]).
 pub fn write_instance_file(dir: &Path, instance: &str, file: &InstanceFile) -> io::Result<()> {
     fs::create_dir_all(dir)?;
     let path = dir.join(format!("{instance}.json"));

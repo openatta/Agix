@@ -403,8 +403,9 @@ pub struct ExecutionSettings {
     /// within a single stage.
     #[serde(default = "default_team_stage_concurrency")]
     pub team_stage_concurrency: usize,
-    /// Gates whether `TeamCreate`/`TeamDelete` are registered at all for a
-    /// session (`runtime::agent::Builder::build()`). Default `false`: most
+    /// Gates whether `TeamCreate`/`TeamList`/`TeamDelete` are registered at
+    /// all for a session (`agents::AgentsModule::on_session`, and only when
+    /// the scene supports teams). Default `false`: most
     /// deployments never use multi-agent team coordination, and an
     /// always-registered tool means its `tool.prompt.md` "When to Use"
     /// section is always in the system prompt and its `team`/`name` input
@@ -436,6 +437,15 @@ pub struct ExecutionSettings {
     /// members have their own limits above and do not count.
     #[serde(default = "default_max_concurrent_subagents")]
     pub max_concurrent_subagents: usize,
+    /// How many delegations deep a chain of sub-agents may go: a session a
+    /// host created is depth 0, and an agent at this depth is not offered
+    /// the `Agent` tool. Applies to team members too.
+    #[serde(default = "default_max_agent_depth")]
+    pub max_agent_depth: u32,
+}
+
+fn default_max_agent_depth() -> u32 {
+    3
 }
 
 fn default_permission_prompt_timeout_secs() -> u64 {
@@ -470,6 +480,7 @@ impl Default for ExecutionSettings {
             team_max_persistent_members: default_team_max_persistent_members(),
             team_member_idle_timeout_secs: default_team_member_idle_timeout_secs(),
             max_concurrent_subagents: default_max_concurrent_subagents(),
+            max_agent_depth: default_max_agent_depth(),
         }
     }
 }

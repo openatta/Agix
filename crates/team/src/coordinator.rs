@@ -165,7 +165,10 @@ impl DefaultCoordinator {
     /// was ever called — `None` returns a noop handle's worth of nothing
     /// rather than every call site checking `Option` separately.
     fn telemetry(&self) -> Option<telemetry::TelemetryHandle> {
-        self.telemetry.read().unwrap().clone()
+        self.telemetry
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Emit one `TeamProgress` event, if a channel was wired in.
@@ -181,7 +184,12 @@ impl DefaultCoordinator {
         members: Vec<String>,
         failed: Vec<String>,
     ) {
-        let Some(tx) = self.events.read().unwrap().clone() else {
+        let Some(tx) = self
+            .events
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        else {
             return;
         };
         let _ = tx.send(base::interface::event::AgentEvent::TeamProgress {
@@ -206,11 +214,17 @@ impl Default for DefaultCoordinator {
 #[async_trait]
 impl Coordinator for DefaultCoordinator {
     fn set_event_sender(&self, tx: TeamEventSender) {
-        *self.events.write().unwrap() = Some(tx);
+        *self
+            .events
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tx);
     }
 
     fn set_telemetry_handle(&self, handle: telemetry::TelemetryHandle) {
-        *self.telemetry.write().unwrap() = Some(handle);
+        *self
+            .telemetry
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handle);
     }
 
     async fn orchestrate(&self, req: OrchestrateRequest) -> Result<ToolResult, ToolError> {
@@ -1086,6 +1100,21 @@ mod tests {
 
             self.in_flight.fetch_sub(1, Ordering::SeqCst);
             Ok(format!("done-{task}"))
+        }
+
+        async fn spawn_agent_with_tools(
+            &self,
+            prompt: String,
+            allowed_tools: Vec<String>,
+            _extra_tools: Vec<Arc<dyn base::tool::Tool>>,
+            cwd: std::path::PathBuf,
+            cancel: tokio_util::sync::CancellationToken,
+            agent_type: Option<String>,
+            _permission_mode: Option<base::interface::settings::PermissionMode>,
+            _seat: Option<base::interface::agent_spawner::TeamSeat>,
+        ) -> Result<String, Box<dyn std::error::Error + Send>> {
+            self.spawn_agent(prompt, allowed_tools, cwd, cancel, agent_type)
+                .await
         }
 
         async fn spawn_agent_background(

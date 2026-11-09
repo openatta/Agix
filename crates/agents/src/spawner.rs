@@ -2,6 +2,7 @@
 //!
 //! Wraps AgentTool::run_sub from this crate to provide sub-agent spawning
 //! to consumers (e.g., the team coordinator) without creating a circular dependency.
+//! `allowed_tools`, when not empty, narrows what the sub-agent inherits.
 
 use async_trait::async_trait;
 use base::interface::agent_spawner::AgentSpawner;
@@ -27,14 +28,12 @@ impl AgentSpawner for RuntimeAgentSpawner {
     async fn spawn_agent(
         &self,
         prompt: String,
-        _allowed_tools: Vec<String>,
+        allowed_tools: Vec<String>,
         cwd: PathBuf,
         cancel: CancellationToken,
         agent_type: Option<String>,
     ) -> Result<String, Box<dyn std::error::Error + Send>> {
-        // allowed_tools filtering is not implemented — the sub-agent gets
-        // the same tool pool as the parent.
-        let tools = self.agent_tool.sub_tools();
+        let tools = self.agent_tool.sub_tools(&allowed_tools);
         let perm = self.agent_tool.sub_permission();
 
         self.agent_tool
@@ -46,13 +45,13 @@ impl AgentSpawner for RuntimeAgentSpawner {
     async fn spawn_agent_background(
         &self,
         prompt: String,
-        _allowed_tools: Vec<String>,
+        allowed_tools: Vec<String>,
         cwd: PathBuf,
         cancel: CancellationToken,
         agent_type: Option<String>,
         session: Arc<base::context::SessionState>,
     ) -> Result<String, Box<dyn std::error::Error + Send>> {
-        let tools = self.agent_tool.sub_tools();
+        let tools = self.agent_tool.sub_tools(&allowed_tools);
         self.agent_tool
             .spawn_background(prompt, tools, cwd, cancel, agent_type.as_deref(), session)
             .await
@@ -62,7 +61,7 @@ impl AgentSpawner for RuntimeAgentSpawner {
     async fn spawn_agent_with_tools(
         &self,
         prompt: String,
-        _allowed_tools: Vec<String>,
+        allowed_tools: Vec<String>,
         extra_tools: Vec<Arc<dyn base::tool::Tool>>,
         cwd: PathBuf,
         cancel: CancellationToken,
@@ -70,17 +69,9 @@ impl AgentSpawner for RuntimeAgentSpawner {
         permission_mode: Option<base::interface::settings::PermissionMode>,
         seat: Option<base::interface::agent_spawner::TeamSeat>,
     ) -> Result<String, Box<dyn std::error::Error + Send>> {
-        // Same "fresh per-call registry" pattern as `Builder::build()` uses
-        // for the per-session registry — cloning into a new
-        // `InMemoryToolRegistry` instead of mutating the shared
-        // `sub_tools()` Arc, so `extra_tools` (mailbox tools scoped to one
-        // team member's label) don't leak into every other caller sharing
-        // that same base registry.
-        let base_tools = self.agent_tool.sub_tools();
-        let tools = Arc::new(base::tool::InMemoryToolRegistry::new());
-        for t in base_tools.list() {
-            tools.register(t);
-        }
+        // A fresh registry per call, so one member's mailbox tools reach
+        // only that member.
+        let tools = self.agent_tool.sub_tools(&allowed_tools);
         for t in extra_tools {
             tools.register(t);
         }

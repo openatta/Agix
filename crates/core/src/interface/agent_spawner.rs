@@ -68,11 +68,11 @@ pub trait AgentSpawner: Send + Sync {
     /// but which itself must not depend on `team` (see this module's own
     /// doc comment on why) — never needs to know what's inside them.
     ///
-    /// Default implementation ignores `extra_tools` and delegates to
-    /// `spawn_agent` — every existing spawner (Skill's `context: fork`,
-    /// hook-triggered spawns, test fakes) keeps working unchanged without
-    /// needing to know this method exists. Only `RuntimeAgentSpawner`
-    /// overrides it for real.
+    /// The default implementation delegates to `spawn_agent` when there is
+    /// nothing beyond it to honor — no `extra_tools`, no `permission_mode` —
+    /// and refuses otherwise, rather than run a member without the tools or
+    /// the mode it was promised. `seat` only names the member for its hooks.
+    /// Only `RuntimeAgentSpawner` overrides it for real.
     /// `permission_mode`, when `Some`, is the mode this spawn runs under
     /// (`base::interface::settings::PermissionMode`), chosen once by the
     /// caller at spawn time — see
@@ -95,7 +95,13 @@ pub trait AgentSpawner: Send + Sync {
         permission_mode: Option<crate::settings::PermissionMode>,
         seat: Option<TeamSeat>,
     ) -> Result<String, Box<dyn std::error::Error + Send>> {
-        let _ = (extra_tools, permission_mode, seat);
+        let _ = seat;
+        if !extra_tools.is_empty() || permission_mode.is_some() {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "this spawner cannot give a sub-agent extra tools or its own permission mode",
+            )));
+        }
         self.spawn_agent(prompt, allowed_tools, cwd, cancel, agent_type)
             .await
     }
@@ -175,4 +181,61 @@ pub enum StartAgentError {
     Limit(String),
     #[error("{0}")]
     Unsupported(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Plain;
+
+    #[async_trait]
+    impl AgentSpawner for Plain {
+        async fn spawn_agent(
+            &self,
+            _: String,
+            _: Vec<String>,
+            _: PathBuf,
+            _: CancellationToken,
+            _: Option<String>,
+        ) -> Result<String, Box<dyn std::error::Error + Send>> {
+            Ok("ran".into())
+        }
+
+        async fn spawn_agent_background(
+            &self,
+            _: String,
+            _: Vec<String>,
+            _: PathBuf,
+            _: CancellationToken,
+            _: Option<String>,
+            _: Arc<crate::context::SessionState>,
+        ) -> Result<String, Box<dyn std::error::Error + Send>> {
+            Ok("task".into())
+        }
+    }
+
+    async fn with(mode: Option<crate::settings::PermissionMode>) -> Result<String, String> {
+        Plain
+            .spawn_agent_with_tools(
+                "go".into(),
+                vec![],
+                vec![],
+                PathBuf::from("/tmp"),
+                CancellationToken::new(),
+                None,
+                mode,
+                None,
+            )
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    #[tokio::test]
+    async fn a_spawner_without_team_support_refuses_what_it_cannot_honor() {
+        assert_eq!(with(None).await, Ok("ran".into()));
+        assert!(with(Some(crate::settings::PermissionMode::Plan))
+            .await
+            .is_err());
+    }
 }

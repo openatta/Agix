@@ -707,6 +707,14 @@ impl InMemoryToolRegistry {
         self.disposer_for(id)
     }
 
+    /// Withdraw every registration.
+    pub fn clear(&self) {
+        self.tools
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+    }
+
     /// Withdraw every registration under `name`; returns how many went.
     pub fn remove(&self, name: &str) -> usize {
         let mut w = self.tools.write().unwrap_or_else(|e| e.into_inner());

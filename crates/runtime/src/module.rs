@@ -98,6 +98,7 @@ pub struct SessionContext<'a> {
     pub(crate) mcp: &'a mut Option<Box<dyn McpServers>>,
     pub(crate) agent_spawner: &'a LateAgentSpawner,
     pub(crate) skill_catalog: &'a LateSkillCatalog,
+    pub(crate) session_ended: &'a CancellationToken,
 }
 
 impl SessionContext<'_> {
@@ -105,6 +106,12 @@ impl SessionContext<'_> {
     /// hooks, forked skills, and any module after this one.
     pub fn provide_agent_spawner(&mut self, spawner: Arc<dyn AgentSpawner>) {
         self.agent_spawner.set(spawner);
+    }
+
+    /// Cancelled when the session ends: what a module keeps running past a
+    /// turn on the session's behalf stops on it.
+    pub fn session_ended(&self) -> CancellationToken {
+        self.session_ended.clone()
     }
 
     /// The session's spawner if a module earlier in the list provided one.

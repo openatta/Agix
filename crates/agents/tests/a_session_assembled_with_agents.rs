@@ -157,3 +157,25 @@ async fn team_tools_are_registered_only_when_the_operator_turns_them_on() {
         );
     }
 }
+
+/// Nothing the module wires into a session may keep that session's `Agent`
+/// tool alive once the session is gone.
+#[tokio::test]
+async fn the_agent_tool_goes_when_its_session_does() {
+    let mut with_teams = settings();
+    with_teams.execution.team_enabled = true;
+    with_teams.hooks_config = Some(serde_json::json!({
+        "Stop": [{ "type": "agent", "prompt": "check" }]
+    }));
+    let agent = build(with_teams, 0, true);
+    let tool = Arc::downgrade(&agent.tools().get("Agent").expect("registered"));
+    drop(agent);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while tool.upgrade().is_some() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the Agent tool outlived its session"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}

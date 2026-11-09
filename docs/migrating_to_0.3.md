@@ -767,6 +767,14 @@ WebAssembly 载体整个移除。
   不读,长时间运行的工具让厂商那边的连接空等。
 - 工具调用里的 panic(只在 `panic = "unwind"` 的构建,如 `release-fast` 与 dev)变成这次调用的
   错误结果,这一轮照常往下走;以前它让整轮失败。`release` 构建照旧中止进程。
+- 常驻团队成员(`Agent` 带 `team_name` + `name`)的上限 `execution.team_max_persistent_members`
+  是硬的:要新建成员时先回收最久空闲的,腾出一个位置;全都在忙就拒绝(`Denied`,"team member
+  limit reached"),给已有成员发消息不受影响。以前全忙时照样新建,稳态比上限多一个。
+- 新设置 `execution.max_agent_depth`(默认 3):委派链最深几层,到这一层的 Agent 拿不到 `Agent`
+  工具,团队成员同样受限。以前写死 3。
+- 父会话结束时(关闭、删除、被驱逐、daemon 停止),它的常驻团队成员随之停下,正在跑的那一轮
+  也被取消。以前成员不受会话结束影响,在途的一轮照跑完,空闲的一直留着。
+- 常驻团队成员也记 `agent_spawned`(`background: true`)/ `agent_completed`(成员停下时)遥测。
 
 ### 嵌入方
 
@@ -823,6 +831,17 @@ WebAssembly 载体整个移除。
   上限是压缩器的 50,000 字符);`default_read_lines`、`max_line_chars` 现在真的决定 `Read` 的
   默认行数与单行上限(以前写死 2000)。新增 `base::tool::MAX_IMAGE_BYTES`。
 - `ToolExec::with_timeout` 起的计时任务随这次调用结束,不再睡到超时。
+- `AgentSpawner::spawn_agent_with_tools` 的默认实现在收到非空 `extra_tools` 或 `permission_mode`
+  时返回错误,不再悄悄丢掉它们去调 `spawn_agent`;支持团队的 spawner 要自己实现它。
+  `RuntimeAgentSpawner` 按 `allowed_tools`(非空时)收窄子 Agent 的工具,以前忽略。
+- `team::lock` 删除(没有调用方)。`AgentTool::resume_agent`、`Agent::seed_history` 删除(只有
+  测试调用)。
+- `Agent` 被丢弃时清空它的会话工具注册表(`InMemoryToolRegistry::clear`,新增),并取消
+  `SessionContext::session_ended()`(新增)给出的令牌;模块里活得比一轮长的东西(常驻成员)
+  挂在它上面。会话的工具彼此引用(`Agent` 工具在它所在的注册表里、团队工具经 spawner 回到
+  `Agent` 工具),不清空的话整套都不会被释放。`AgentTool::set_hooks` 只弱持 runner;新增
+  `AgentTool::set_session_ended`。
+- `ExecutionSettings` 多了 `max_agent_depth`。
 - `runtime::streaming::execute_stream` 返回 `Result<StreamResult, StreamFailure>`(原为
   `Result<_, TurnError>`);`StreamResult` 多了 `cancelled`。
 - `StopRecovery` 多了 `Continue`,`DefaultRecovery` 对 `pause_turn` 返回它;穷举匹配

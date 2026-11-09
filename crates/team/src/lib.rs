@@ -6,10 +6,8 @@
 //! - [`registry`] — shared team state (`TeamList`/`TeamDelete` see what `TeamCreate` made)
 //! - [`prompt`] — the team-context block a member's task opens with
 //! - [`persist`] — on-disk team.json/state.json/events.jsonl
-//! - [`lock`] — `<project>/.agix/teams/.lock`
 
 pub mod coordinator;
-pub mod lock;
 pub mod mailbox;
 pub mod persist;
 pub mod prompt;

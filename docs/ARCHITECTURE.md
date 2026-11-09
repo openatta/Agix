@@ -341,7 +341,8 @@ recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着
 
 ### 3.4 委派深度
 
-委派链由 `EngineConfig::max_agent_depth` **计数**约束,不靠从工具集里摘掉 `Agent`。
+委派链由 `execution.max_agent_depth`(默认 3,即 `EngineConfig::max_agent_depth`)**计数**约束,
+不靠从工具集里摘掉 `Agent`。
 `Inner::spawn_guard` 在每一条 spawn 路径上检查;到顶时返回普通工具错误,模型看得见,
 可以改为自己做。同时在跑的个数另有上限,见 §3.8。
 
@@ -447,9 +448,11 @@ Agent 的上下文,本来就该在一处。
    短暂的快照读写,不跨 `.await` 持有。
 3. 超过约 1 ms 的同步工作(扫目录、解析大文件、全量正则)放 `spawn_blocking`。独占线程
    只留给需要线程亲和的东西(`notify` 的 watcher 那类)。
-4. 资源上限都在一处可配:委派深度 `max_agent_depth`(§3.4);同时在跑的子 Agent
+4. 资源上限都在一处可配:委派深度 `execution.max_agent_depth`(§3.4);同时在跑的子 Agent
    `execution.max_concurrent_subagents`(默认 6,整棵会话树共用一份);`TeamCreate`
-   每阶段 `team_stage_concurrency`;常驻成员 `team_max_persistent_members`。
+   每阶段 `team_stage_concurrency`;常驻成员 `team_max_persistent_members`(满了先回收最久
+   空闲的,全在忙就拒绝新成员)。常驻成员的取消令牌是父会话结束令牌的子令牌:会话结束时,
+   空闲的和正在跑一轮的成员都停下。
 
 **并发上限超出时拒绝,不排队。** 持有名额的子 Agent 再为自己的子 Agent 等名额,整棵树
 的名额可能全被这样的等待者占着。拒绝是一个模型看得见的工具错误,它可以等(`TaskWait`)
@@ -858,7 +861,7 @@ daemon 管。设计与用法在 [`mcp_auth.md`](mcp_auth.md);这里只记它在�
 
 ## 7. 锁
 
-daemon 实例锁与 team 目录锁共用 `base::process_identity::decide_stale_lock`。
+daemon 实例锁的陈旧判定在 `base::process_identity::decide_stale_lock`。
 判定依据是 **pid + 进程启动时间**,不是文件 mtime,也不是超时:
 
 | 存活性 | 决策 | 理由 |

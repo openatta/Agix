@@ -30,6 +30,23 @@ const WEB_FETCH_TASK: &str = "web_fetch";
 /// see [`Builder::question_prompts`].
 const ASK_USER_QUESTION: &str = "AskUserQuestion";
 
+/// What a session's end sets off. Its tools close over the session — the
+/// `Agent` tool over the registry it sits in, the team tools over the spawner
+/// that reaches it — so the registry is emptied here, or none of it would ever
+/// be freed; and whatever outlives a turn on the session's behalf (team
+/// members) watches `ended`.
+struct SessionEnd {
+    ended: CancellationToken,
+    tools: Arc<InMemoryToolRegistry>,
+}
+
+impl Drop for SessionEnd {
+    fn drop(&mut self) {
+        self.ended.cancel();
+        self.tools.clear();
+    }
+}
+
 #[derive(Debug)]
 pub enum InputMessage {
     User {
@@ -330,6 +347,7 @@ pub struct Agent {
     /// [`Builder::goal_rounds_from_owner`].
     drive_goals: bool,
     agent_spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner>,
+    _session_end: SessionEnd,
     pub(crate) perf: Arc<PerfCollector>,
 
     pub(crate) compactor: Arc<dyn Compactor>,
@@ -894,17 +912,6 @@ impl Agent {
     /// Access the performance collector.
     pub fn perf(&self) -> &PerfCollector {
         &self.perf
-    }
-
-    /// Starts this session from `messages`, as if it had already run
-    /// `turn_count` turns — how a resumed delegate picks up its transcript.
-    pub fn seed_history(
-        &mut self,
-        messages: Vec<base::interface::model::ModelMessage>,
-        turn_count: u32,
-    ) {
-        self.session.messages = messages;
-        self.session.turn_count = turn_count;
     }
 
     /// Access the tool registry (read-only).
@@ -2022,6 +2029,7 @@ impl Builder {
                 .chain(std::mem::take(&mut quickjs_layer.agent_types))
                 .collect();
         let agent_spawner = crate::module::LateAgentSpawner::default();
+        let session_ended = CancellationToken::new();
         let hooks = self.hooks.unwrap_or_else(|| {
             build_hook_runner(
                 &settings,
@@ -2207,6 +2215,7 @@ impl Builder {
                 modules: &modules,
                 agent_spawner: &agent_spawner,
                 skill_catalog: &skill_catalog,
+                session_ended: &session_ended,
             };
             for module in &modules {
                 module
@@ -2354,9 +2363,14 @@ impl Builder {
             let hooks = hooks.clone();
             let mut events = session_state.subscribe_tasks();
             let ambient = hook_ambient.clone();
+            let ended = session_ended.clone();
             handle.spawn(async move {
                 loop {
-                    match events.recv().await {
+                    let event = tokio::select! {
+                        _ = ended.cancelled() => return,
+                        event = events.recv() => event,
+                    };
+                    match event {
                         Ok(event) if event["kind"] == "task_started" => {
                             if hooks.has_hooks_for(hooks::HookEvent::TaskCreated) {
                                 let input = hooks::HookInput::from_ambient(&ambient, "TaskCreated")
@@ -2538,6 +2552,10 @@ impl Builder {
             .into_iter()
             .chain(quickjs_layer.turn_starts)
             .collect();
+        let session_end = SessionEnd {
+            ended: session_ended,
+            tools: tools.clone(),
+        };
 
         Ok((
             Agent {
@@ -2588,6 +2606,7 @@ impl Builder {
                 session_state,
                 drive_goals: !self.goal_rounds_from_owner,
                 agent_spawner: Arc::new(agent_spawner),
+                _session_end: session_end,
                 perf: Arc::new(PerfCollector::new()),
                 compactor,
                 hooks,

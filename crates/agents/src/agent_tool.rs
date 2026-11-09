@@ -1,11 +1,8 @@
 //! `AgentTool` — spawn sub-agents using the agent's own `Agent` engine.
 //!
 //! Implements `base::tool::Tool` for the `Agent` invocable by the model.
-//! Also provides `resume_agent()` to continue a previous session's transcript.
-//!
-//! Uses `Builder::build()` + `Agent::run_turn()` instead of the legacy
-//! `Engine::new()` path. The sub-agent inherits the parent's authenticated
-//! Anthropic client but gets a restricted tool set.
+//! Each sub-agent is a session of its own built with `Builder::build()`; it
+//! inherits the parent's model client but gets a restricted tool set.
 //!
 //! # Agent type registry
 //!
@@ -19,7 +16,7 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use base::context::EngineConfig;
 use base::interface::event::AgentEvent;
-use base::interface::model::{MessageRole, Model, ModelContentBlock, ModelMessage};
+use base::interface::model::Model;
 use base::interface::permission::Permission;
 use base::interface::scene::Scene;
 use base::interface::settings::{
@@ -519,9 +516,6 @@ fn open_inbox(task: Option<&base::context::RunningTask>, agent: &Agent) {
 
 const NOTIFIED_RESULT_BYTES: usize = 4 * 1024;
 
-/// Record how a background sub-agent's task ended and tell the agent that
-/// started it. A task stopped on purpose ends without a notice: whoever
-/// stopped it already knows.
 /// What a caller fixes about one sub-agent run besides its prompt and tools.
 #[derive(Default)]
 pub(crate) struct SubRun {
@@ -659,6 +653,9 @@ fn note_on_task(task: Option<&base::context::RunningTask>, event: &AgentEvent) {
     }
 }
 
+/// Record how a background sub-agent's task ended and tell the agent that
+/// started it. A task stopped on purpose ends without a notice: whoever
+/// stopped it already knows.
 fn conclude_background_task(
     session: &base::context::SessionState,
     task: &base::context::RunningTask,
@@ -756,7 +753,7 @@ async fn write_sidechain_meta(
 /// Marks a one-shot sub-agent session as having run its task to conclusion
 /// (`SIDECHAIN_TERMINAL` in `docs/daemon_rpc_protocol.md`). Called only
 /// through `mark_sidechain_terminal`
-/// (from `run_sub_inner`/`run_sub_tagged`/`resume_agent`) once their turn has
+/// (from `run_sub_inner`/`run_sub_tagged`) once their turn has
 /// returned — a session with no such marker was either never a sidechain, is
 /// still running, was cancelled mid-flight, or was cut off from outside
 /// (process exit, a future `agent.stop`, parent crash), all of which must
@@ -997,10 +994,9 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
 
 /// After a one-shot sidechain's turn has finished — successfully, with an
 /// error, or because `cancel` fired — writes the matching `SessionEnd`
-/// terminal marker. The single place `run_sub_tagged`, `run_sub_inner`, and
-/// `resume_agent` all route through instead of each hand-rolling the same
-/// Completed/Failed mapping (and each risking forgetting the call, as
-/// `resume_agent` once did).
+/// terminal marker. The single place `run_sub_tagged` and `run_sub_inner`
+/// route through instead of each hand-rolling the same Completed/Failed
+/// mapping.
 ///
 /// A cancelled turn is deliberately left unmarked: cancellation means the
 /// work was interrupted, not that the conversation reached a real endpoint,
@@ -1061,7 +1057,9 @@ async fn run_persistent_member_loop(
     idle_seq_counter: Arc<std::sync::atomic::AtomicU64>,
     session: Arc<base::context::SessionState>,
     stopped: Option<(std::sync::Weak<hooks::HookRunner>, SubagentPayload)>,
+    spawned: Option<SpawnTelemetry>,
 ) {
+    let mut last_failed = false;
     loop {
         let msg = tokio::select! {
             _ = cancel.cancelled() => break,
@@ -1102,6 +1100,7 @@ async fn run_persistent_member_loop(
         )
         .await;
 
+        last_failed = result.is_err();
         conclude_background_task(&session, &task, &result, true);
 
         let now = now_secs();
@@ -1127,6 +1126,9 @@ async fn run_persistent_member_loop(
             None,
         );
     }
+    if let Some(spawned) = spawned {
+        spawned.finish(last_failed);
+    }
     if let Some((runner, payload)) = stopped {
         if let Some(runner) = runner.upgrade() {
             payload
@@ -1137,10 +1139,6 @@ async fn run_persistent_member_loop(
     }
 }
 
-/// Build a sub-agent's `Settings` by cloning the parent's real settings and
-/// overriding only the model-selection fields — the sub-agent inherits the
-/// parent's actual scope/paths (skills/hooks/agents/memory all resolve
-/// correctly), auth, sandbox policy, etc.
 fn parse_effort(effort: &str) -> Option<Effort> {
     serde_json::from_value(serde_json::Value::String(effort.to_string())).ok()
 }
@@ -1211,6 +1209,10 @@ fn apply_agent_type_overrides(settings: &mut Settings, def: &AgentTypeDefinition
     }
 }
 
+/// Build a sub-agent's `Settings` by cloning the parent's real settings and
+/// overriding only the model-selection fields — the sub-agent inherits the
+/// parent's actual scope/paths (skills/hooks/agents/memory all resolve
+/// correctly), auth, sandbox policy, etc.
 fn settings_from_parent(
     parent: &Settings,
     model_name: String,
@@ -1448,9 +1450,9 @@ struct Inner {
     /// The parent session's `SkillManager`, when known — used to resolve
     /// the `skills:` preload field on `AgentTypeDefinition`. Set via
     /// `AgentTool::set_skill_catalog` *after* construction (interior
-    /// mutability, `RwLock` not a plain field) because `Builder::build()`
-    /// constructs `AgentTool` before it loads skills — see the call site in
-    /// `agent.rs` for why reordering wasn't the simpler fix. `None` (tests,
+    /// mutability, `RwLock` not a plain field) because the catalog is set
+    /// later in the same assembly (`AgentsModule::on_session` in
+    /// `agents/src/lib.rs`). `None` (tests,
     /// the generic `AgentSpawner` bridge) means `skills:` preload is
     /// silently skipped, matching how `parent_settings`/`task_router`
     /// absence degrades elsewhere in this struct.
@@ -1470,7 +1472,7 @@ struct Inner {
     /// update it, an accepted scope boundary (matches `description`'s own
     /// "not kept live" doc comment on this same struct).
     mcp_tool_adapters: Arc<std::sync::RwLock<Vec<Arc<dyn base::tool::Tool>>>>,
-    /// The shared `TeamRegistry` `Builder::build()` also hands to
+    /// The shared `TeamRegistry` `AgentsModule::on_session` also hands to
     /// `TeamCreate`/`TeamList`/`TeamDelete` — so persistent team members
     /// (spawned here, not through those tools) update the same state
     /// `TeamList` reads. Same interior-mutability / set-after-construction
@@ -1519,8 +1521,12 @@ struct Inner {
     /// `SubagentStart`/`SubagentStop`. Same set-after-construction pattern as
     /// `event_tx` — `Builder::build()` constructs the `AgentTool` before the
     /// `HookRunner` exists. `None` (tests, embedders that never wire it)
-    /// fires nothing.
-    hooks: Arc<std::sync::RwLock<Option<Arc<hooks::HookRunner>>>>,
+    /// fires nothing. Weak: the runner's `"agent"` hooks spawn through this
+    /// tool, and a strong edge back would keep both alive past the session.
+    hooks: Arc<std::sync::RwLock<Option<std::sync::Weak<hooks::HookRunner>>>>,
+    /// Cancelled when the parent session ends; every persistent team
+    /// member's token is a child of it.
+    session_ended: Arc<std::sync::RwLock<tokio_util::sync::CancellationToken>>,
     /// The parent session's history store, so a sub-agent's transcript is
     /// persisted and a failed sub-agent can be inspected afterwards.
     /// The sub-agent gets its own fresh session id, so it lands in its own
@@ -1662,14 +1668,6 @@ impl Inner {
         Ok(self.depth + 1)
     }
 
-    /// The model instance a sub-agent spawn should use. All three spawn
-    /// points (`run_sub`, `run_sub_inner`, resume) are the same task type —
-    /// `task_models` in settings.json is keyed by a small fixed taxonomy
-    /// (`main`/`subagent`/`compact`/`memory`/`web_search`), not
-    /// by `subagent_type` (which agent *kind* — "general-purpose",
-    /// "code-reviewer", etc. — a different axis entirely), so the lookup
-    /// key here is always the literal `"subagent"` task type regardless of
-    /// which `subagent_type` was requested.
     /// Everything a delegated session inherits from the one that spawned it.
     ///
     /// Written once because the list is not derivable from anything: each item
@@ -1712,6 +1710,14 @@ impl Inner {
         self.hooks
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+    }
+
+    fn session_ended(&self) -> tokio_util::sync::CancellationToken {
+        self.session_ended
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
@@ -1721,6 +1727,13 @@ impl Inner {
         }
     }
 
+    /// The model instance a sub-agent spawn should use. Every spawn point is
+    /// the same task type — `task_models` in settings.json is keyed by a
+    /// small fixed taxonomy (`main`/`subagent`/`compact`/`memory`/
+    /// `web_search`), not by `subagent_type` (which agent *kind* — "general-purpose",
+    /// "code-reviewer", etc. — a different axis entirely), so the lookup
+    /// key here is always the literal `"subagent"` task type regardless of
+    /// which `subagent_type` was requested.
     fn model_for_subagent(&self) -> Arc<dyn Model> {
         match &self.task_router {
             Some(router) => router.model_for("subagent"),
@@ -1847,15 +1860,8 @@ impl Inner {
         Arc::new(AlwaysPermit)
     }
 
-    /// The scene a sub-agent should run in.
-    ///
-    /// Precedence: the agent type's own `scene:` override > the parent's
-    /// scene (wired via `AgentTool::set_scene`) > the scene named by
-    /// `Settings.paths.scope` > `CodeScene`. The last two steps mean a
-    /// daemon session inherits correctly even without explicit wiring: the
-    /// daemon sets `scope` to `scene.id()`.
     /// Build a sub-agent's `Settings`, inheriting the parent's when known.
-    /// Shared by the `&self` (`run_sub`, resume) and static (`run_sub_inner`,
+    /// Shared by the `&self` (`run_sub`) and static (`run_sub_inner`,
     /// background) paths so both apply exactly the same inheritance.
     fn sub_settings(inner: &Inner, model_name: Option<&str>, cwd: std::path::PathBuf) -> Settings {
         let c = &inner.config;
@@ -1915,6 +1921,13 @@ impl Inner {
         out
     }
 
+    /// The scene a sub-agent should run in.
+    ///
+    /// Precedence: the agent type's own `scene:` override > the parent's
+    /// scene (wired via `AgentTool::set_scene`) > the scene named by
+    /// `Settings.paths.scope` > `CodeScene`. The last two steps mean a
+    /// daemon session inherits correctly even without explicit wiring: the
+    /// daemon sets `scope` to `scene.id()`.
     fn scene_for_subagent(
         &self,
         def: Option<&AgentTypeDefinition>,
@@ -2066,7 +2079,7 @@ impl SpawnTelemetry {
         })
     }
 
-    fn finish(self, result: &Result<String, base::error::ToolError>) {
+    fn finish(self, had_error: bool) {
         let _ = self
             .handle
             .record(telemetry::TelemetryEvent::agent_completed(
@@ -2076,7 +2089,7 @@ impl SpawnTelemetry {
                 telemetry::AgentCompletedPayload {
                     agent_id: self.agent_id,
                     role: self.role,
-                    had_error: result.is_err(),
+                    had_error,
                     duration_ms: self.started.elapsed().as_millis() as u64,
                 },
             ));
@@ -2369,6 +2382,7 @@ impl AgentTool {
                 team_spawn_lock: Arc::new(tokio::sync::Mutex::new(())),
                 event_tx: Arc::new(std::sync::RwLock::new(None)),
                 hooks: Arc::new(std::sync::RwLock::new(None)),
+                session_ended: Default::default(),
                 history_store: Arc::new(std::sync::RwLock::new(None)),
                 parent_permission: Arc::new(std::sync::RwLock::new(None)),
                 parent_pending_permissions: Arc::new(std::sync::RwLock::new(None)),
@@ -2437,6 +2451,7 @@ impl AgentTool {
                 team_spawn_lock: Arc::new(tokio::sync::Mutex::new(())),
                 event_tx: Arc::new(std::sync::RwLock::new(None)),
                 hooks: Arc::new(std::sync::RwLock::new(None)),
+                session_ended: Default::default(),
                 history_store: Arc::new(std::sync::RwLock::new(None)),
                 parent_permission: Arc::new(std::sync::RwLock::new(None)),
                 parent_pending_permissions: Arc::new(std::sync::RwLock::new(None)),
@@ -2568,13 +2583,14 @@ impl AgentTool {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = adapters;
     }
 
-    /// Attach the same shared `TeamRegistry` `Builder::build()` hands to
-    /// `TeamCreate`/`TeamList`/`TeamDelete`, so persistent team members
+    /// Attach the same shared `TeamRegistry` `AgentsModule::on_session` hands
+    /// to `TeamCreate`/`TeamList`/`TeamDelete`, so persistent team members
     /// spawned through this `AgentTool` (see `spawn_or_message_team_member`)
     /// update state those tools can see. Same interior-mutability,
     /// set-after-construction pattern as `set_skill_catalog`/
     /// `set_mcp_tool_adapters` — only called when `settings.execution.
-    /// team_enabled` is true (see the call site in `agent.rs`).
+    /// team_enabled` is true and the scene supports teams (see
+    /// `AgentsModule::on_session` in `agents/src/lib.rs`).
     pub fn set_team_registry(&self, registry: Arc<team::registry::TeamRegistry>) {
         *self
             .inner
@@ -2604,7 +2620,17 @@ impl AgentTool {
             .inner
             .hooks
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(runner);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::downgrade(&runner));
+    }
+
+    /// The token the parent session cancels when it ends: persistent team
+    /// members stop on it, mid-turn or idle.
+    pub fn set_session_ended(&self, ended: tokio_util::sync::CancellationToken) {
+        *self
+            .inner
+            .session_ended
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = ended;
     }
 
     /// Attach the parent session's history store so sub-agent transcripts are
@@ -2703,10 +2729,14 @@ impl AgentTool {
     }
 
     /// Returns the fallback tool registry for sub-agent creation.
-    pub(crate) fn sub_tools(&self) -> Arc<InMemoryToolRegistry> {
+    /// The parent's tools a delegate inherits, narrowed to `allowed`; empty
+    /// allows them all.
+    pub(crate) fn sub_tools(&self, allowed: &[String]) -> Arc<InMemoryToolRegistry> {
         let registry = InMemoryToolRegistry::new();
         for tool in self.inner.inherited_tools() {
-            registry.register(tool);
+            if lists_admit_tool(allowed, &[], tool.name()) {
+                registry.register(tool);
+            }
         }
         Arc::new(registry)
     }
@@ -3064,7 +3094,7 @@ impl AgentTool {
         )
         .await;
         if let Some(spawned) = spawned.flatten() {
-            spawned.finish(&result);
+            spawned.finish(result.is_err());
         }
         self.inner
             .fire_subagent_hook(
@@ -3411,31 +3441,37 @@ impl AgentTool {
         self.reclaim_idle_team_members(Some(&key)).await;
 
         let tid = bg_task_id();
-        let task = session.register_task(
-            tid.clone(),
-            base::context::TaskType::Teammate,
-            tokio_util::sync::CancellationToken::new(),
-            serde_json::json!({"team": team_name, "member": member_name}),
-        );
+        let register = |member_cancel: &tokio_util::sync::CancellationToken| {
+            session.register_task(
+                tid.clone(),
+                base::context::TaskType::Teammate,
+                member_cancel.child_token(),
+                serde_json::json!({"team": team_name, "member": member_name}),
+            )
+        };
 
-        let existing_tx = self
+        let existing = self
             .inner
             .team_members
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .get(&key)
-            .map(|m| m.message_tx.clone());
+            .map(|m| (m.message_tx.clone(), m.cancel.clone()));
+        let existing_entry_is_stale = existing.is_some();
 
-        if let Some(tx) = existing_tx {
+        if let Some((tx, member_cancel)) = existing.filter(|(tx, _)| !tx.is_closed()) {
+            let task = register(&member_cancel);
             if tx
                 .send(PersistentMessage {
                     prompt: prompt.clone(),
-                    task: task.clone(),
+                    task,
                 })
                 .is_ok()
             {
                 return Ok(tid);
             }
+        }
+        if existing_entry_is_stale {
             // The loop already exited (crashed, or stopped concurrently by
             // TeamDelete/reclaim right after the read above) — its map
             // entry is stale. Drop it and fall through to spawn fresh under
@@ -3445,6 +3481,20 @@ impl AgentTool {
                 .write()
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(&key);
+        }
+        let max_total = self.inner.config.team_max_persistent_members.max(1);
+        let alive = self
+            .inner
+            .team_members
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .len();
+        if alive >= max_total {
+            return Err(base::error::ToolError::Denied(format!(
+                "team member limit reached: {alive} persistent members are busy, the most \
+                 this session keeps (execution.team_max_persistent_members). Message one of \
+                 them, wait for one to go idle, or stop one with TaskStop or TeamDelete."
+            )));
         }
 
         // Resolution order: explicit override on this call > this team's
@@ -3486,6 +3536,14 @@ impl AgentTool {
         self.inner
             .fire_subagent_hook(hooks::HookEvent::SubagentStart, &payload)
             .await;
+        let spawned = SpawnTelemetry::start(
+            &self.inner,
+            None,
+            &payload.session_id,
+            subagent_type.as_deref(),
+            &agent.settings().model.model_name,
+            true,
+        );
 
         let member_id = format!("member-{}", bg_task_id());
         tracing::debug!(
@@ -3495,7 +3553,8 @@ impl AgentTool {
             "spawning new persistent team member"
         );
         let (message_tx, message_rx) = tokio::sync::mpsc::unbounded_channel::<PersistentMessage>();
-        let member_cancel = tokio_util::sync::CancellationToken::new();
+        let member_cancel = self.inner.session_ended().child_token();
+        let task = register(&member_cancel);
         let idle_since = Arc::new(std::sync::atomic::AtomicI64::new(i64::MAX));
         let idle_seq = Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
 
@@ -3532,6 +3591,7 @@ impl AgentTool {
             self.inner
                 .hooks()
                 .map(|runner| (Arc::downgrade(&runner), payload)),
+            spawned,
         ));
 
         Ok(tid)
@@ -3563,7 +3623,8 @@ impl AgentTool {
 
     /// Reclaim policy: (a) any single member idle longer than
     /// `team_member_idle_timeout_secs`, and (b) total pool size over
-    /// `team_max_persistent_members` (oldest-idle evicted first, just
+    /// `team_max_persistent_members`, counting the member `protect` is about
+    /// to add when it is not there yet (oldest-idle evicted first, just
     /// enough to get back under the cap) — either condition alone triggers
     /// a sweep; they're independent, not combined. Never touches a
     /// currently-`Active` member (its `idle_since` sentinel makes it
@@ -3613,9 +3674,12 @@ impl AgentTool {
                 .map(|(k, _, _)| k.clone())
                 .collect();
 
+            // A member about to be added needs a place of its own.
+            let joining = protect.is_some_and(|k| !members.contains_key(k));
+            let keep = if joining { max_total - 1 } else { max_total };
             let mut remaining = members.len();
             for (k, _, _) in &idle_entries {
-                if remaining <= max_total {
+                if remaining <= keep {
                     break;
                 }
                 remaining -= 1;
@@ -3731,7 +3795,7 @@ impl AgentTool {
         )
         .await;
         if let Some(spawned) = spawned {
-            spawned.finish(&result);
+            spawned.finish(result.is_err());
         }
         drop(input_tx);
         inner
@@ -3741,154 +3805,6 @@ impl AgentTool {
             )
             .await;
         mark_sidechain_terminal(history_store.as_ref(), &sid_for_meta, &result, cancelled).await;
-        result
-    }
-
-    /// Resume a sub-agent from a previous session's transcript.
-    ///
-    /// Loads the transcript entries from `history_store`, projects them into
-    /// model messages, creates a new agent pre-populated with those messages,
-    /// and runs the given `prompt` as the resumed task.
-    ///
-    /// Emits a `resume_action` telemetry event via structured tracing.
-    pub async fn resume_agent(
-        &self,
-        session_id: &str,
-        history_store: Arc<dyn HistoryStore>,
-        prompt: String,
-        tools: Arc<InMemoryToolRegistry>,
-        cwd: std::path::PathBuf,
-        cancel: tokio_util::sync::CancellationToken,
-    ) -> Result<String, base::error::ToolError> {
-        let Admission {
-            depth: child_depth,
-            _slot,
-        } = self.inner.admit().map_err(base::error::ToolError::Denied)?;
-        let start = std::time::Instant::now();
-
-        let sid = base::session::SessionId::parse(session_id)
-            .map_err(|e| base::error::ToolError::Execution(anyhow!("invalid session id: {e}")))?;
-        let entries = history_store
-            .load(sid)
-            .await
-            .map_err(|e| base::error::ToolError::Execution(anyhow!("load transcript: {e}")))?;
-        if entries.is_empty() {
-            return Err(base::error::ToolError::Execution(anyhow!(
-                "no entries found for session {session_id}"
-            )));
-        }
-        let projection = history_store.projection();
-        let projected = history::transcript::project_messages_with(&entries, projection);
-        let report = history::transcript::resume_projection_report_with(&entries, projection);
-
-        let mut model_messages: Vec<ModelMessage> = Vec::with_capacity(projected.len());
-        for msg in &projected {
-            match msg {
-                base::message::Message::User { content } => {
-                    model_messages.push(ModelMessage {
-                        role: MessageRole::User,
-                        content: convert_content_blocks(content),
-                    });
-                }
-                base::message::Message::Assistant { content, .. } => {
-                    model_messages.push(ModelMessage {
-                        role: MessageRole::Assistant,
-                        content: convert_content_blocks(content),
-                    });
-                }
-                base::message::Message::System { .. } => {
-                    // UI-only notifications, skip for API
-                }
-            }
-        }
-
-        let resume_context = format!(
-            "<system-reminder>\n\
-             This is a **resumed** session (previous session: `{session_id}`).\n\
-             The following transcript has been loaded into context. \
-             Continue from where you left off.\n\n\
-             New task: {prompt}\n\
-             </system-reminder>"
-        );
-        model_messages.push(ModelMessage {
-            role: MessageRole::User,
-            content: vec![ModelContentBlock::Text {
-                text: resume_context,
-            }],
-        });
-
-        let cwd_for_meta = cwd.clone();
-        let sub_settings = self.sub_settings(None, cwd);
-        let scene = self.inner.scene_for_subagent(None, &sub_settings);
-        let scene_id = scene.id().to_string();
-        let settings = Arc::new(sub_settings);
-        let perm: Arc<dyn Permission> = self.permission_handler();
-
-        // The resumed-from session's own recorded parent (if any) — this
-        // new session continues the same lineage under a fresh id, so it
-        // should still be findable via `HistoryStore::child_sessions` off
-        // the *original* parent, not orphaned.
-        let original_parent = entries.iter().find_map(|env| match &env.entry {
-            history::entry::LogEntry::Meta {
-                parent_session_id, ..
-            } => parent_session_id.clone(),
-            _ => None,
-        });
-
-        let new_sid = base::id::Id::new().to_string();
-        let new_sid_for_meta = new_sid.clone();
-        let tag = SubagentTag::new(&self.inner, &new_sid, None, None);
-        let mut builder = Builder::new()
-            .session_id(new_sid.clone())
-            .scene(scene)
-            .model(self.inner.model_for_subagent())
-            .tools(tools)
-            .settings(settings.clone())
-            .agent_depth(child_depth)
-            .permission(perm)
-            .history_store(history_store.clone());
-        // The session's plugins follow the delegate, the operator's policy
-        // scripts among them. Without this, spawning is a way around every
-        // rule they wrote, chosen by the model.
-        builder = self.inner.inherited_by_a_delegate(builder);
-        let (mut agent, event_rx, input_tx) = builder
-            .build()
-            .map_err(|e| base::error::ToolError::Execution(anyhow!("build: {e}")))?;
-        write_sidechain_meta(
-            &history_store,
-            &new_sid_for_meta,
-            original_parent.or_else(|| self.inner.parent_session_id()),
-            &scene_id,
-            &cwd_for_meta,
-            &settings,
-        )
-        .await;
-
-        agent.seed_history(model_messages, projected.len() as u32);
-
-        let (result, cancelled) = run_one_turn_detached(
-            &new_sid, agent, event_rx, input_tx, prompt, cancel, tag, None,
-        )
-        .await;
-
-        let latency_ms = start.elapsed().as_millis() as u64;
-        let warning_str: Option<String> = report.warning.map(|w| format!("{:?}", w));
-        tracing::info!(
-            target: "telemetry",
-            event_type = "resume_action",
-            session_id = %session_id,
-            new_session_id = %new_sid,
-            source = "jsonl",
-            entry_count = report.entry_count,
-            projected_message_count = report.projected_message_count,
-            compact_boundary_count = report.compact_boundary_count,
-            sidechain_entry_count = report.sidechain_entry_count,
-            warning = %warning_str.unwrap_or_default(),
-            latency_ms,
-            "resume agent completed"
-        );
-
-        mark_sidechain_terminal(Some(&history_store), &new_sid_for_meta, &result, cancelled).await;
         result
     }
 }
@@ -4265,45 +4181,6 @@ impl Permission for AlwaysPermit {
     }
 }
 
-/// Convert from history/content-block format into the model-runtime format.
-/// Skips image, thinking, and redacted-thinking blocks (not supported by model API).
-fn convert_content_blocks(blocks: &[base::message::ContentBlock]) -> Vec<ModelContentBlock> {
-    blocks
-        .iter()
-        .filter_map(|block| match block {
-            base::message::ContentBlock::Text { text, .. } => {
-                Some(ModelContentBlock::Text { text: text.clone() })
-            }
-            base::message::ContentBlock::ToolUse { id, name, input } => {
-                Some(ModelContentBlock::ToolUse {
-                    id: id.clone(),
-                    name: name.clone(),
-                    input: input.clone(),
-                })
-            }
-            base::message::ContentBlock::ToolResult {
-                tool_use_id,
-                content,
-                is_error,
-            } => {
-                let content_str = match content {
-                    base::message::ToolResultContent::Text(s) => s.clone(),
-                    base::message::ToolResultContent::Blocks(blocks) => {
-                        serde_json::to_string(blocks).unwrap_or_default()
-                    }
-                };
-                Some(ModelContentBlock::ToolResult {
-                    tool_use_id: tool_use_id.clone(),
-                    content: content_str,
-                    is_error: Some(*is_error),
-                })
-            }
-            // Skip Image, Thinking, RedactedThinking — not supported by model API
-            _ => None,
-        })
-        .collect()
-}
-
 fn bg_result(task_id: &str, status: &str) -> base::tool::ToolResult {
     base::tool::ToolResult {
         content: ToolResultContent::Text(format!(
@@ -4375,7 +4252,8 @@ impl base::tool::Tool for AgentTool {
         // (e.g. the model meant to join a team but dropped a field), not a
         // meaningful partial state to silently fall through on. Gated on
         // `team_registry` being set (`set_team_registry`, only called when
-        // `settings.execution.team_enabled` is true — see `agent.rs`):
+        // `settings.execution.team_enabled` is true — see
+        // `AgentsModule::on_session` in `agents/src/lib.rs`):
         // `AgentInput`'s schema is generated once, unconditionally, so the
         // model can technically *set* `team_name`/`name` even when team
         // coordination is off for this session; without this check it would
@@ -4537,11 +4415,10 @@ impl base::tool::Tool for AgentTool {
     }
 }
 
-// Only base::tool::Tool impl — legacy bridge removed.
-
 #[cfg(test)]
 mod catalog_tests {
     use super::*;
+    use base::interface::model::{MessageRole, ModelMessage};
     use std::io::Write;
 
     /// A directory of agent-type `.md` files that outlives the assertions
@@ -5710,6 +5587,154 @@ mod catalog_tests {
         }
     }
 
+    /// Never answers, and gives up only when its call is cancelled.
+    struct AnswersOnlyCancellation {
+        started: Arc<tokio::sync::Notify>,
+        dropped: Arc<std::sync::atomic::AtomicBool>,
+    }
+    #[async_trait]
+    impl Model for AnswersOnlyCancellation {
+        fn api_type(&self) -> base::provider::ApiType {
+            base::provider::ApiType::Anthropic
+        }
+        async fn stream(
+            &self,
+            _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+            _tools: Vec<base::interface::model::ToolDef>,
+            _messages: Vec<ModelMessage>,
+            _params: base::interface::model::StreamParams,
+            cancel: tokio_util::sync::CancellationToken,
+        ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError>
+        {
+            let _guard = SetOnDrop(self.dropped.clone());
+            self.started.notify_one();
+            cancel.cancelled().await;
+            Err(base::interface::model::ModelError::Cancelled)
+        }
+    }
+
+    fn hanging_team_tool(
+        cap: usize,
+    ) -> (
+        AgentTool,
+        Arc<tokio::sync::Notify>,
+        Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let tools = Arc::new(InMemoryToolRegistry::new());
+        let mut config = EngineConfig::defaults_for("test-model");
+        config.team_max_persistent_members = cap;
+        let agent_tool = AgentTool::with_parent_tools(
+            Arc::new(AnswersOnlyCancellation {
+                started: started.clone(),
+                dropped: dropped.clone(),
+            }),
+            Arc::new(config),
+            tools.clone(),
+            tools,
+            &[],
+            &[],
+        );
+        agent_tool.set_team_registry(Arc::new(team::registry::TeamRegistry::new()));
+        (agent_tool, started, dropped)
+    }
+
+    async fn message_member(
+        agent_tool: &AgentTool,
+        session: &Arc<base::context::SessionState>,
+        name: &str,
+    ) -> Result<String, base::error::ToolError> {
+        agent_tool
+            .spawn_or_message_team_member(
+                "team".into(),
+                name.into(),
+                "work".into(),
+                None,
+                std::path::PathBuf::from("/tmp"),
+                session.clone(),
+                None,
+            )
+            .await
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_new_member_past_the_cap_is_refused_while_every_member_is_busy() {
+        let (agent_tool, started, _) = hanging_team_tool(1);
+        let session = Arc::new(base::context::SessionState::new(std::path::PathBuf::from(
+            "/tmp",
+        )));
+        message_member(&agent_tool, &session, "a").await.unwrap();
+        started.notified().await;
+
+        let refused = message_member(&agent_tool, &session, "b")
+            .await
+            .expect_err("the only place is taken by a busy member");
+        assert!(
+            refused.to_string().contains("team member limit reached"),
+            "{refused}"
+        );
+        assert_eq!(
+            agent_tool
+                .inner
+                .team_members
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .len(),
+            1
+        );
+        message_member(&agent_tool, &session, "a")
+            .await
+            .expect("a member already there can still be messaged");
+    }
+
+    #[tokio::test]
+    async fn a_persistent_member_is_in_its_sessions_telemetry_from_start_to_stop() {
+        let agent_tool = team_enabled_agent_tool();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        agent_tool.set_telemetry_handle(TelemetryHandle::new(tx));
+        let session = Arc::new(base::context::SessionState::new(std::path::PathBuf::from(
+            "/tmp",
+        )));
+        message_member(&agent_tool, &session, "a").await.unwrap();
+        wait_until_idle(&agent_tool, &team_key("team", "a")).await;
+        agent_tool.stop_team_member("team", "a").await;
+
+        let mut kinds = Vec::new();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !kinds.contains(&"agent_completed".to_string()) {
+            let event = tokio::time::timeout_at(deadline, rx.recv())
+                .await
+                .expect("agent_completed within 5s")
+                .expect("the handle is still open");
+            kinds.push(event.kind().to_string());
+        }
+        let spawned = kinds.iter().position(|k| k == "agent_spawned");
+        assert!(spawned.is_some_and(|i| i < kinds.len() - 1), "{kinds:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_end_of_the_parent_session_stops_a_member_mid_turn() {
+        let (agent_tool, started, dropped) = hanging_team_tool(4);
+        let ended = tokio_util::sync::CancellationToken::new();
+        agent_tool.set_session_ended(ended.clone());
+        let session = Arc::new(base::context::SessionState::new(std::path::PathBuf::from(
+            "/tmp",
+        )));
+        message_member(&agent_tool, &session, "a").await.unwrap();
+        started.notified().await;
+
+        ended.cancel();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !dropped.load(std::sync::atomic::Ordering::SeqCst) {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the member kept its turn running after the session ended"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dropping_the_parent_call_aborts_the_foreground_sub_agent() {
         let started = Arc::new(tokio::sync::Notify::new());
@@ -6362,8 +6387,8 @@ mod catalog_tests {
         );
     }
 
-    /// Reclaim rule (a): total pool over the cap evicts oldest-idle first,
-    /// just enough to get back under it — not everything.
+    /// Reclaim rule (a): a pool at the cap makes room for a newcomer by
+    /// evicting the oldest-idle member — just one, not everything.
     #[tokio::test]
     async fn reclaim_evicts_oldest_idle_members_once_total_exceeds_the_cap() {
         let mut config = EngineConfig::defaults_for("test");
@@ -6397,16 +6422,17 @@ mod catalog_tests {
             .unwrap_or_else(|e| e.into_inner());
         assert_eq!(
             members.len(),
-            3,
-            "cap is 2 but a newly-spawned member always lands before the next sweep, \
-             so 3 remain (2 kept + 1 just added): {:?}",
+            2,
+            "the pool stays at its cap: {:?}",
             members.keys().collect::<Vec<_>>()
         );
-        assert!(
-            !members.contains_key(&team_key("team", "a")),
-            "oldest-idle member 'a' should have been reclaimed"
-        );
-        for name in ["b", "c", "d"] {
+        for name in ["a", "b"] {
+            assert!(
+                !members.contains_key(&team_key("team", name)),
+                "oldest-idle member '{name}' should have been reclaimed"
+            );
+        }
+        for name in ["c", "d"] {
             assert!(
                 members.contains_key(&team_key("team", name)),
                 "{name} should remain"
@@ -6468,27 +6494,19 @@ mod catalog_tests {
     }
 
     /// The reclaim sweep run just before looking up an existing member must
-    /// not evict that exact member (the oldest-idle one, with the pool over
-    /// the cap) and spawn a fresh replacement instead of reaching the one the
-    /// caller meant to message.
+    /// not evict that exact member — here one idle past the timeout, which
+    /// any other member would be reclaimed for — and spawn a fresh
+    /// replacement instead of reaching the one the caller meant to message.
     #[tokio::test]
     async fn spawn_or_message_team_member_never_reclaims_the_member_it_is_about_to_message() {
         let mut config = EngineConfig::defaults_for("test");
-        config.team_max_persistent_members = 1;
-        config.team_member_idle_timeout_secs = 1_000_000; // only the count rule fires here
+        config.team_member_idle_timeout_secs = 0;
         let agent_tool = agent_tool_with_config(config);
         let session = Arc::new(base::context::SessionState::new(std::path::PathBuf::from(
             "/tmp",
         )));
         let key_a = team_key("team", "a");
-        let key_b = team_key("team", "b");
 
-        // Spawns "a" (pool at cap, no eviction yet), then "b" (the sweep
-        // before it runs while the pool is still at cap, so nothing is
-        // evicted and the pool ends up one over the cap) — mirroring
-        // `reclaim_evicts_oldest_idle_members_once_total_exceeds_the_cap`'s
-        // documented "newly-spawned member always lands before the next
-        // sweep" behavior.
         agent_tool
             .spawn_or_message_team_member(
                 "team".into(),
@@ -6502,34 +6520,16 @@ mod catalog_tests {
             .await
             .unwrap();
         wait_until_idle(&agent_tool, &key_a).await;
-
-        agent_tool
-            .spawn_or_message_team_member(
-                "team".into(),
-                "b".into(),
-                "hi".into(),
-                None,
-                std::path::PathBuf::from("/tmp"),
-                session.clone(),
-                None,
-            )
-            .await
-            .unwrap();
-        wait_until_idle(&agent_tool, &key_b).await;
-
         let id_a_before = agent_tool
             .inner
             .team_members
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .get(&key_a)
-            .expect("a should still be present before the next sweep")
+            .expect("a is in the pool")
             .id
             .clone();
 
-        // Pool is now 2-over-a-cap-of-1, with "a" the oldest-idle (and thus
-        // the default eviction candidate). Messaging "a" again must reach
-        // the same member, not have it swept out from under this call.
         agent_tool
             .spawn_or_message_team_member(
                 "team".into(),
@@ -6553,11 +6553,6 @@ mod catalog_tests {
             members.get(&key_a).map(|m| m.id.clone()),
             Some(id_a_before),
             "the call's own target member must survive its own reclaim sweep"
-        );
-        assert!(
-            !members.contains_key(&key_b),
-            "the reclaim sweep still had to evict someone to get back under the cap — \
-             it should have picked 'b' since 'a' was protected"
         );
     }
 
@@ -6616,8 +6611,7 @@ mod catalog_tests {
     /// End-to-end across the `runtime`/`team` boundary: `TeamDelete`'s
     /// `cleanup_team` (via `AgentSpawner::stop_team_member`) must actually
     /// stop a still-alive persistent member, not just remove its registry
-    /// bookkeeping — this was the whole point of giving `TeamDeleteTool` a
-    /// spawner reference in `agent.rs`.
+    /// bookkeeping — what `TeamDeleteTool` holds a spawner for.
     #[tokio::test]
     async fn team_delete_cleanup_stops_a_persistent_member() {
         let agent_tool = Arc::new(team_enabled_agent_tool());
@@ -8179,163 +8173,6 @@ mod catalog_tests {
             subagent_label(Some("explore"), sid),
             "the label must not change between events of the same run"
         );
-    }
-
-    /// `resume_agent` builds and runs a fresh sidechain session exactly like
-    /// `run_sub_tagged`/`run_sub_inner` — it must write that new session's
-    /// terminal marker too once its turn concludes, or a stale
-    /// `session.resume` against *it* would silently reattach instead of
-    /// being rejected.
-    #[tokio::test]
-    async fn resume_agent_writes_a_terminal_marker_when_its_task_concludes() {
-        let (agent_tool, tools, _runs, dir) = wired_agent_tool("code");
-        let history_dir = std::env::temp_dir().join(format!(
-            "agix-resume-terminal-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let store: Arc<dyn HistoryStore> = Arc::new(
-            history::store::JsonlHistoryStore::with_roots(
-                &dir,
-                history::path::HistoryRoots::under(&history_dir),
-            )
-            .await
-            .unwrap(),
-        );
-        agent_tool.set_history_store(store.clone());
-        agent_tool.set_parent_session_id("parent-session-1".to_string());
-
-        // Seed a source session to resume from.
-        let _text = agent_tool
-            .run_sub_tagged(
-                "go".into(),
-                tools.clone(),
-                dir.clone(),
-                tokio_util::sync::CancellationToken::new(),
-                Arc::new(AlwaysPermit),
-                Some("explore"),
-                Some(("parent-session-1", 1, "")),
-                SubRun::default(),
-            )
-            .await
-            .expect("sub-agent turn should complete");
-        let source_sid = store
-            .child_sessions("parent-session-1")
-            .await
-            .unwrap()
-            .remove(0);
-
-        let _text = agent_tool
-            .resume_agent(
-                &source_sid.to_string(),
-                store.clone(),
-                "continue".into(),
-                tools,
-                dir.clone(),
-                tokio_util::sync::CancellationToken::new(),
-            )
-            .await
-            .expect("resumed turn should complete");
-
-        // The resumed run is a fresh sidechain of its own, also linked to
-        // the parent — it's the *other* child besides `source_sid`.
-        let children = store.child_sessions("parent-session-1").await.unwrap();
-        let resumed_sid = children
-            .into_iter()
-            .find(|sid| *sid != source_sid)
-            .expect("resume_agent must have created a second, distinct sidechain session");
-        let entries = store.load(resumed_sid).await.unwrap();
-        match &entries
-            .last()
-            .expect("transcript should not be empty")
-            .entry
-        {
-            history::entry::LogEntry::SessionEnd { state } => {
-                assert_eq!(*state, history::entry::SessionEndState::Completed);
-            }
-            other => panic!("expected LogEntry::SessionEnd as the last entry, got {other:?}"),
-        }
-
-        let _ = std::fs::remove_dir_all(&dir);
-        let _ = std::fs::remove_dir_all(&history_dir);
-    }
-
-    /// Mirrors `cancelled_subagent_run_writes_no_terminal_marker` for the
-    /// `resume_agent` path: a resumed session cancelled mid-turn must stay
-    /// resumable, not get nailed down as `Completed`.
-    #[tokio::test]
-    async fn cancelled_resume_agent_writes_no_terminal_marker() {
-        let (agent_tool, tools, _runs, dir) = wired_agent_tool("code");
-        let history_dir = std::env::temp_dir().join(format!(
-            "agix-resume-cancelled-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let store: Arc<dyn HistoryStore> = Arc::new(
-            history::store::JsonlHistoryStore::with_roots(
-                &dir,
-                history::path::HistoryRoots::under(&history_dir),
-            )
-            .await
-            .unwrap(),
-        );
-        agent_tool.set_history_store(store.clone());
-        agent_tool.set_parent_session_id("parent-session-1".to_string());
-
-        let _text = agent_tool
-            .run_sub_tagged(
-                "go".into(),
-                tools.clone(),
-                dir.clone(),
-                tokio_util::sync::CancellationToken::new(),
-                Arc::new(AlwaysPermit),
-                Some("explore"),
-                Some(("parent-session-1", 1, "")),
-                SubRun::default(),
-            )
-            .await
-            .expect("sub-agent turn should complete");
-        let source_sid = store
-            .child_sessions("parent-session-1")
-            .await
-            .unwrap()
-            .remove(0);
-
-        let cancel = tokio_util::sync::CancellationToken::new();
-        cancel.cancel();
-        let _text = agent_tool
-            .resume_agent(
-                &source_sid.to_string(),
-                store.clone(),
-                "continue".into(),
-                tools,
-                dir.clone(),
-                cancel,
-            )
-            .await
-            .expect("a cancelled resume still resolves Ok — cancellation isn't an error");
-
-        let children = store.child_sessions("parent-session-1").await.unwrap();
-        let resumed_sid = children
-            .into_iter()
-            .find(|sid| *sid != source_sid)
-            .expect("resume_agent must have created a second, distinct sidechain session");
-        let entries = store.load(resumed_sid).await.unwrap();
-        assert!(
-            !entries
-                .iter()
-                .any(|env| matches!(env.entry, history::entry::LogEntry::SessionEnd { .. })),
-            "a cancelled resume must not be marked terminal, entries: {entries:?}"
-        );
-
-        let _ = std::fs::remove_dir_all(&dir);
-        let _ = std::fs::remove_dir_all(&history_dir);
     }
 
     #[test]

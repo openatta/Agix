@@ -1,10 +1,8 @@
 //! Pid-reuse-safe process liveness.
 //!
-//! Shared by `daemon::discovery` (the daemon singleton lock) and
-//! `team::lock` (the team-directory lock) — both need the same "is the
-//! recorded holder of this pid still the process that wrote it, or did the
-//! pid get recycled by something unrelated" check, so it lives here instead
-//! of being duplicated.
+//! What `assembly::discovery` (the daemon singleton lock) asks of a recorded
+//! holder: is this pid still the process that wrote it, or did the pid get
+//! recycled by something unrelated.
 
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -92,9 +90,7 @@ pub enum ProcessLiveness {
 }
 
 /// What a caller weighing whether to reclaim a stale lock/discovery file
-/// should do, given a [`ProcessLiveness`] — shared by `daemon::discovery`
-/// and `team::lock` so their accept/reclaim decisions and log messages
-/// can't drift apart.
+/// should do, given a [`ProcessLiveness`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StaleLockDecision {
     /// The recorded holder might still be there — confirmed alive, or
