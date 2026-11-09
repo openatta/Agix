@@ -13,6 +13,7 @@
 //! crate needs to know which protocol is in use.
 
 pub mod adapter;
+mod cancel;
 pub mod client;
 pub mod error;
 pub mod factory;

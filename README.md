@@ -250,12 +250,13 @@ loop:
   3. hard cap        ContextBudget::hard_cap
   4. prompt          PromptAssembler · registered blocks · assembly interceptors
   5. model call      Model + ModelInterceptor + BackoffPolicy
-                     └─ on error: RecoveryPolicy — switch model / compact and retry / raise max_tokens / fail
+                     ├─ tools run as the reply streams: Permission → ToolMiddleware → Tool → ToolResultTransformer
+                     └─ on error: RecoveryPolicy — switch model / compact and retry / fail
   6. review          TurnPolicy::after_model_call
   7. account         BudgetPolicy::on_usage
-  8. tools           Permission → ToolMiddleware → Tool → ToolResultTransformer
-                     └─ then deliver messages and notices that arrived during the step
-  9. more tool calls → loop; otherwise BudgetPolicy::on_output_target decides whether to continue
+  8. tool calls      deliver messages and notices that arrived during the step, then loop
+  9. otherwise       RecoveryPolicy::on_early_stop — raise max_tokens / continue a pause_turn;
+                     BudgetPolicy::on_output_target decides whether to continue
 exit: finish_turn — persist, then announce TurnComplete
 ```
 

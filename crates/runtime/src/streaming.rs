@@ -1,21 +1,29 @@
-//! Streaming executor — consume model stream, execute tools concurrently.
+//! Streaming executor — consume one model call's stream, running its tools
+//! while it is still arriving.
 //!
-//! Concurrency-safe tools start executing during stream consumption — they run
-//! while the model continues streaming text and more tool_use blocks. Sequential
-//! (non-concurrency-safe) tools still wait until their batch completes.
-//! Sibling abort on error (any tool error cancels all siblings in the same batch).
-//! Each model reply reaches the session as one assistant message plus the one
-//! user message answering its tool calls.
+//! A concurrency-safe tool starts the moment its `tool_use` is complete and
+//! runs while the model goes on writing; a non-concurrency-safe one is a
+//! barrier that waits for the batch in flight, then runs alone. Any tool error
+//! cancels its batch's siblings. Each model reply reaches the session as one
+//! assistant message plus the one user message answering its tool calls.
+//!
+//! A call that fails — an error from the provider, a stream that ends before
+//! the message does — before its reply asked for a tool leaves nothing behind,
+//! so the turn can put the failure to its recovery policy and send the same
+//! request again.
 
 use crate::agent::EventSender;
 use base::interface::event::AgentEvent;
 use base::interface::model::{
-    MessageRole, ModelContentBlock, ModelEvent, ModelMessage, ModelStream, Usage,
+    MessageRole, ModelContentBlock, ModelError, ModelEvent, ModelMessage, ModelStream, Usage,
 };
 use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
+
+/// What a stream that ended without its message's end is reported as.
+pub const INCOMPLETE_STREAM: &str = "the response ended before the model finished it";
 
 /// Result of processing a single model stream.
 #[derive(Debug, Clone)]
@@ -24,6 +32,41 @@ pub struct StreamResult {
     pub usage: Usage,
     pub has_tool_uses: bool,
     pub tool_calls: u32,
+    /// The turn's token fired before the reply was whole. What had arrived is
+    /// in the session, every `tool_use` of it answered.
+    pub cancelled: bool,
+}
+
+impl StreamResult {
+    /// A call cancelled before anything of it arrived.
+    pub fn cancelled() -> Self {
+        Self {
+            stop_reason: "cancelled".into(),
+            usage: Usage::default(),
+            has_tool_uses: false,
+            tool_calls: 0,
+            cancelled: true,
+        }
+    }
+}
+
+/// A model call that failed partway.
+#[derive(Debug)]
+pub struct StreamFailure {
+    pub error: ModelError,
+    /// Nothing of the call reached the session and no tool ran, so the
+    /// request that failed can be sent again as it was.
+    pub resendable: bool,
+}
+
+impl StreamFailure {
+    /// A call refused before its stream opened.
+    pub fn refused(error: ModelError) -> Self {
+        Self {
+            error,
+            resendable: true,
+        }
+    }
 }
 
 /// Process a model stream with streaming tool execution.
@@ -39,6 +82,10 @@ pub struct StreamResult {
 /// the session until the reply is whole: writing a tool's result between two
 /// `tool_use` blocks of the same reply would record a history in which the
 /// model saw that result before asking for the next tool, which it did not.
+///
+/// A reply that fails before it asked for a tool is dropped whole (see
+/// [`StreamFailure::resendable`]); one that fails after is written with its
+/// results, since those tools have run.
 #[allow(clippy::too_many_arguments)]
 pub async fn execute_stream<F, Fut, G>(
     stream: ModelStream,
@@ -50,19 +97,19 @@ pub async fn execute_stream<F, Fut, G>(
     cancel: CancellationToken,
     interceptors: &[Arc<dyn base::interface::model_interceptor::ModelInterceptor>],
     provenance: Option<&str>,
-) -> Result<StreamResult, crate::turn::TurnError>
+) -> Result<StreamResult, StreamFailure>
 where
     F: Fn(String, String, serde_json::Value) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = base::interface::tool_middleware::ToolOutcome> + Send,
     G: Fn(&str, &serde_json::Value) -> bool + Send + Sync,
 {
     use futures::StreamExt;
-    tokio::pin!(stream);
-    let mut stop_reason = String::new();
-    let mut usage = Usage::default();
+    let mut stream = stream;
+    let mut ended: Option<(String, Usage)> = None;
     let mut has_tool_uses = false;
     let mut tool_calls: u32 = 0;
-    let mut stream_error: Option<crate::turn::TurnError> = None;
+    let mut failure: Option<ModelError> = None;
+    let mut cancelled = false;
     // The reply's closed blocks, in arrival order.
     let mut reply: Vec<ModelContentBlock> = Vec::new();
     let mut pending_text = String::new();
@@ -76,7 +123,7 @@ where
     let mut seen_tool_calls: HashSet<String> = HashSet::new();
 
     let mut batch_abort = CancellationToken::new();
-    let mut batch_futures = futures::stream::FuturesUnordered::new();
+    let mut batch = futures::stream::FuturesUnordered::new();
 
     // `(submission index, block)`: concurrency-safe tools finish in completion
     // order, and the result message is part of the next request, so replay
@@ -84,17 +131,38 @@ where
     let mut pending_result_blocks: Vec<(usize, ModelContentBlock)> = Vec::new();
     let mut pending_new_msgs: Vec<Vec<serde_json::Value>> = Vec::new();
 
-    while let Some(event) = stream.next().await {
-        if cancel.is_cancelled() {
-            break;
-        }
-        let event = match event {
-            Ok(e) => e,
-            Err(e) => {
-                stream_error = Some(crate::turn::TurnError::Model(e.to_string()));
-                batch_abort.cancel();
+    loop {
+        // The batch is polled here, beside the stream, or nothing would run
+        // it until the stream ended.
+        let event = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                cancelled = true;
                 break;
             }
+            Some(done) = batch.next(), if !batch.is_empty() => {
+                let (idx, id, result): (usize, String, _) = done;
+                finish_tool(
+                    idx,
+                    &id,
+                    &result,
+                    &batch_abort,
+                    &queued_tool_names,
+                    event_tx,
+                    &turn_id,
+                    &mut pending_result_blocks,
+                    &mut pending_new_msgs,
+                );
+                continue;
+            }
+            next = stream.next() => match next {
+                Some(Ok(event)) => event,
+                Some(Err(e)) => {
+                    failure = Some(e);
+                    break;
+                }
+                None => break,
+            },
         };
         match event {
             ModelEvent::TextDelta { text } => {
@@ -189,7 +257,7 @@ where
                 if safe {
                     let exec = execute_tool(id.clone(), name.clone(), input);
                     let abort = batch_abort.clone();
-                    batch_futures.push(async move {
+                    batch.push(async move {
                         let result = tokio::select! {
                             _ = abort.cancelled() => Err("cancelled by sibling error".to_string()),
                             r = exec => r,
@@ -198,7 +266,7 @@ where
                     });
                 } else {
                     drain_batch(
-                        &mut batch_futures,
+                        &mut batch,
                         &batch_abort,
                         &queued_tool_names,
                         event_tx,
@@ -223,7 +291,6 @@ where
                         pending_new_msgs.push(msgs);
                     }
                     batch_abort = CancellationToken::new();
-                    batch_futures = futures::stream::FuturesUnordered::new();
                 }
 
                 tool_calls += 1;
@@ -232,17 +299,37 @@ where
                 stop_reason: sr,
                 usage: u,
             } => {
-                stop_reason = sr;
-                usage = u;
+                ended = Some((sr, u));
             }
             _ => {}
+        }
+    }
+
+    match (&failure, &ended) {
+        // The message had ended; what broke was only the tail of the
+        // connection after it.
+        (Some(e), Some(_)) => {
+            tracing::warn!(error = %e, "the model's stream failed after its message ended");
+            failure = None;
+        }
+        (None, None) if !cancelled => {
+            failure = Some(ModelError::Network(INCOMPLETE_STREAM.into()));
+        }
+        _ => {}
+    }
+    if !has_tool_uses {
+        if let Some(error) = failure.take() {
+            return Err(StreamFailure {
+                error,
+                resendable: true,
+            });
         }
     }
 
     close_thinking(&mut pending_thinking, &mut reply, None, provenance);
     close_text(&mut pending_text, &mut reply);
     drain_batch(
-        &mut batch_futures,
+        &mut batch,
         &batch_abort,
         &queued_tool_names,
         event_tx,
@@ -251,6 +338,11 @@ where
         &mut pending_new_msgs,
     )
     .await;
+    let (stop_reason, usage) = match ended {
+        Some(ended) => ended,
+        None if cancelled => ("cancelled".to_string(), Usage::default()),
+        None => (String::new(), Usage::default()),
+    };
     write_reply(
         session,
         reply,
@@ -260,23 +352,59 @@ where
         interceptors,
     );
 
-    if let Some(e) = stream_error {
-        return Err(e);
+    if let Some(error) = failure {
+        return Err(StreamFailure {
+            error,
+            resendable: false,
+        });
     }
     Ok(StreamResult {
         stop_reason,
         usage,
         has_tool_uses,
         tool_calls,
+        cancelled,
     })
 }
 
-/// Wait for every tool in the current concurrent batch and buffer its
-/// result. An `Err` (as opposed to a tool reporting its own failure) cancels
-/// the siblings still running.
+/// Buffer one finished tool's result. An `Err` (as opposed to a tool
+/// reporting its own failure) cancels the siblings still running.
+#[allow(clippy::too_many_arguments)]
+fn finish_tool(
+    idx: usize,
+    tool_use_id: &str,
+    result: &base::interface::tool_middleware::ToolOutcome,
+    batch_abort: &CancellationToken,
+    queued_tool_names: &[String],
+    event_tx: &EventSender,
+    turn_id: &str,
+    pending_result_blocks: &mut Vec<(usize, ModelContentBlock)>,
+    pending_new_msgs: &mut Vec<Vec<serde_json::Value>>,
+) {
+    if result.is_err() {
+        batch_abort.cancel();
+    }
+    let (content, new_msgs, failed) = read_outcome(result);
+    let tname = queued_tool_names.get(idx).cloned().unwrap_or_default();
+    buffer_result(
+        event_tx,
+        turn_id,
+        pending_result_blocks,
+        idx,
+        tool_use_id,
+        &tname,
+        &content,
+        failed,
+    );
+    if let Some(msgs) = new_msgs {
+        pending_new_msgs.push(msgs);
+    }
+}
+
+/// Wait for every tool in the current concurrent batch and buffer its result.
 #[allow(clippy::too_many_arguments)]
 async fn drain_batch<S>(
-    batch_futures: &mut S,
+    batch: &mut S,
     batch_abort: &CancellationToken,
     queued_tool_names: &[String],
     event_tx: &EventSender,
@@ -288,25 +416,18 @@ async fn drain_batch<S>(
         + Unpin,
 {
     use futures::StreamExt;
-    while let Some((idx, tid, result)) = batch_futures.next().await {
-        if result.is_err() {
-            batch_abort.cancel();
-        }
-        let (content, new_msgs, failed) = read_outcome(&result);
-        let tname = queued_tool_names.get(idx).cloned().unwrap_or_default();
-        buffer_result(
+    while let Some((idx, id, result)) = batch.next().await {
+        finish_tool(
+            idx,
+            &id,
+            &result,
+            batch_abort,
+            queued_tool_names,
             event_tx,
             turn_id,
             pending_result_blocks,
-            idx,
-            &tid,
-            &tname,
-            &content,
-            failed,
+            pending_new_msgs,
         );
-        if let Some(msgs) = new_msgs {
-            pending_new_msgs.push(msgs);
-        }
     }
 }
 
@@ -1150,6 +1271,197 @@ mod tests {
             vec!["text:Running.", "tool_use:a"]
         );
         assert_adjacent_tool_pairing(messages);
+    }
+
+    async fn run_plain(
+        stream: base::interface::model::ModelStream,
+        session: &mut session::session::SessionManager,
+        cancel: CancellationToken,
+    ) -> Result<StreamResult, StreamFailure> {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let tx = crate::event_bus::EventBus::new(tx);
+        execute_stream(
+            stream,
+            session,
+            &tx,
+            "test-turn".into(),
+            |_id, _name, _input| async move { Ok(ToolAnswer::text("ok")) },
+            |_name, _input| true,
+            cancel,
+            &[],
+            None,
+        )
+        .await
+    }
+
+    /// A reply that breaks off before it asked for a tool has nothing worth
+    /// keeping, and keeping half of it would make the retry send it back.
+    #[tokio::test]
+    async fn a_reply_that_fails_before_asking_for_a_tool_leaves_nothing_behind() {
+        let events: Vec<Result<ModelEvent, ModelError>> = vec![
+            Ok(ModelEvent::TextDelta {
+                text: "half an ans".into(),
+            }),
+            Err(ModelError::Overloaded),
+        ];
+        let mut session = session::session::SessionManager::in_memory(None);
+        let failure = run_plain(
+            Box::new(futures::stream::iter(events)),
+            &mut session,
+            CancellationToken::new(),
+        )
+        .await
+        .expect_err("an error event is a failure");
+        assert!(failure.resendable);
+        assert!(matches!(failure.error, ModelError::Overloaded));
+        assert!(session.messages().is_empty(), "{:#?}", session.messages());
+    }
+
+    /// No `EndTurn` means the message never ended: whatever arrived is a
+    /// fragment, with no stop reason and no usage, not an answer.
+    #[tokio::test]
+    async fn a_stream_that_ends_before_its_message_does_is_a_failure() {
+        let mut session = session::session::SessionManager::in_memory(None);
+        let failure = run_plain(
+            Box::new(futures::stream::iter(vec![Ok(ModelEvent::TextDelta {
+                text: "NEVER-WHOLE".into(),
+            })])),
+            &mut session,
+            CancellationToken::new(),
+        )
+        .await
+        .expect_err("a cut stream is a failure");
+        assert!(failure.resendable);
+        assert!(
+            matches!(&failure.error, ModelError::Network(m) if m == INCOMPLETE_STREAM),
+            "{:?}",
+            failure.error
+        );
+        assert!(session.messages().is_empty(), "{:#?}", session.messages());
+
+        let failure = run_plain(
+            Box::new(futures::stream::iter(vec![Ok(ModelEvent::ToolUse {
+                id: "g".into(),
+                name: "Glob".into(),
+                input: serde_json::json!({"pattern": "*"}),
+            })])),
+            &mut session,
+            CancellationToken::new(),
+        )
+        .await
+        .expect_err("a cut stream is a failure");
+        assert!(!failure.resendable, "the tool ran");
+        assert_eq!(session.messages().len(), 2, "{:#?}", session.messages());
+        assert_adjacent_tool_pairing(session.messages());
+    }
+
+    /// The message's end is what makes it whole; a connection that breaks
+    /// after it has lost nothing.
+    #[tokio::test]
+    async fn a_failure_after_the_message_ended_is_not_one() {
+        let events: Vec<Result<ModelEvent, ModelError>> = vec![
+            Ok(ModelEvent::TextDelta {
+                text: "whole".into(),
+            }),
+            Ok(ModelEvent::EndTurn {
+                stop_reason: "end_turn".into(),
+                usage: Usage::default(),
+            }),
+            Err(ModelError::Network("stream interrupted".into())),
+        ];
+        let mut session = session::session::SessionManager::in_memory(None);
+        let done = run_plain(
+            Box::new(futures::stream::iter(events)),
+            &mut session,
+            CancellationToken::new(),
+        )
+        .await
+        .expect("the message had ended");
+        assert_eq!(done.stop_reason, "end_turn");
+        assert_eq!(session.messages().len(), 1);
+    }
+
+    /// The stream below cannot end until the tool has started. If the tool
+    /// only ran once the stream ended, this would never finish.
+    #[tokio::test]
+    async fn a_concurrency_safe_tool_runs_while_the_stream_is_still_arriving() {
+        use futures::StreamExt;
+        let started = Arc::new(tokio::sync::Notify::new());
+        let waits = Arc::clone(&started);
+        let head = futures::stream::iter(vec![Ok::<_, ModelError>(ModelEvent::ToolUse {
+            id: "g".into(),
+            name: "Glob".into(),
+            input: serde_json::json!({"pattern": "*"}),
+        })]);
+        let tail = futures::stream::once(async move {
+            waits.notified().await;
+            Ok(ModelEvent::EndTurn {
+                stop_reason: "tool_use".into(),
+                usage: Usage::default(),
+            })
+        });
+        let stream: base::interface::model::ModelStream = Box::new(Box::pin(head.chain(tail)));
+
+        let mut session = session::session::SessionManager::in_memory(None);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let tx = crate::event_bus::EventBus::new(tx);
+        let done = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            execute_stream(
+                stream,
+                &mut session,
+                &tx,
+                "test-turn".into(),
+                move |_id, _name, _input| {
+                    let started = Arc::clone(&started);
+                    async move {
+                        started.notify_one();
+                        Ok(ToolAnswer::text("found"))
+                    }
+                },
+                |_name, _input| true,
+                CancellationToken::new(),
+                &[],
+                None,
+            ),
+        )
+        .await
+        .expect("the tool waited for the stream to end")
+        .expect("the call succeeds");
+        assert!(done.has_tool_uses);
+        assert_adjacent_tool_pairing(session.messages());
+    }
+
+    /// A model that has gone quiet holds nothing up once the turn is
+    /// cancelled.
+    #[tokio::test]
+    async fn a_silent_stream_ends_as_soon_as_its_turn_is_cancelled() {
+        use futures::StreamExt;
+        let cancel = CancellationToken::new();
+        let trigger = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            trigger.cancel();
+        });
+        let head = futures::stream::iter(vec![Ok::<_, ModelError>(ModelEvent::TextDelta {
+            text: "so far".into(),
+        })]);
+        let stream: base::interface::model::ModelStream =
+            Box::new(head.chain(futures::stream::pending()));
+        let mut session = session::session::SessionManager::in_memory(None);
+        let done = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            run_plain(stream, &mut session, cancel),
+        )
+        .await
+        .expect("the cancel was not honoured")
+        .expect("a cancelled call is not a failure");
+        assert!(done.cancelled);
+        assert_eq!(
+            block_kinds(&session.messages()[0]),
+            vec!["text:so far"],
+            "what the host was shown stays"
+        );
     }
 
     /// Every assistant message with ToolUse block(s) must be immediately

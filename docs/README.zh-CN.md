@@ -190,12 +190,13 @@ let (mut agent, events, input) = runtime::agent::Builder::new()
   3. 硬顶            ContextBudget::hard_cap
   4. 提示词          PromptAssembler · 注册的块 · 装配拦截
   5. 调模型          Model + ModelInterceptor + BackoffPolicy
-                     └─ 出错:RecoveryPolicy —— 换模型 / 压缩重试 / 抬 max_tokens / 失败
+                     ├─ 工具边流边跑:Permission → ToolMiddleware → Tool → ToolResultTransformer
+                     └─ 出错:RecoveryPolicy —— 换模型 / 压缩重试 / 失败
   6. 复查            TurnPolicy::after_model_call
   7. 记账            BudgetPolicy::on_usage
-  8. 工具            Permission → ToolMiddleware → Tool → ToolResultTransformer
-                     └─ 然后送达这一步期间到的消息与通知
-  9. 还有工具调用 → 再来一轮;否则 BudgetPolicy::on_output_target 决定是否续写
+  8. 有工具调用      送达这一步期间到的消息与通知,再来一轮
+  9. 没有            RecoveryPolicy::on_early_stop —— 抬 max_tokens / 续上 pause_turn;
+                     BudgetPolicy::on_output_target 决定是否续写
 出口:finish_turn —— 先落盘,再宣布 TurnComplete
 ```
 

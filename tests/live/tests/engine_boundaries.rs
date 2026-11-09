@@ -210,7 +210,6 @@ fn fetch_then_stall(url: &str, stall: Duration) -> Reply {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: a concurrency-safe call is pushed onto a FuturesUnordered that nothing polls until drain_batch after the stream ends (runtime/src/streaming.rs:192, :244), so it starts only once the whole response is in"]
 async fn a_concurrency_safe_tool_starts_while_its_stream_is_still_arriving() -> anyhow::Result<()> {
     let pages = PageServer::start().await?;
     pages.route("/early", Page::text("EARLY-PAGE"));
@@ -313,7 +312,6 @@ async fn a_tool_the_policy_refuses_never_runs() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: an error event inside an open stream is mapped to Api{500} whatever its type (model/src/adapter.rs:494) and execute_stream's Err leaves the turn by `?` (runtime/src/turn.rs:1338), so the fallback model is never tried"]
 async fn an_overload_reported_inside_the_stream_moves_to_the_fallback_model() -> anyhow::Result<()>
 {
     let stub = ProviderStub::start().await?;
@@ -340,7 +338,6 @@ async fn an_overload_reported_inside_the_stream_moves_to_the_fallback_model() ->
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: the adapter hands back Ok(stream) before the request is sent (model/src/adapter.rs:176; the request goes out on first poll, model/src/client.rs:332), so a 529 surfaces inside execute_stream and leaves by `?` (runtime/src/turn.rs:1338) — the recovery match at turn.rs:1157 never sees it and the fallback model is never tried"]
 async fn an_overload_refused_before_the_stream_moves_to_the_fallback_model() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let mut run = stubbed("open-overload", &stub)
@@ -393,7 +390,6 @@ async fn a_few_rounds(run: &mut LiveRun, stub: &ProviderStub, session: &str) -> 
 const TOO_LONG: &str = r#"{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 212034 tokens > 200000 maximum"}}"#;
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: the 400 surfaces inside execute_stream and leaves by `?` (runtime/src/turn.rs:1338, the request is only sent on first poll: model/src/client.rs:332); were it seen, it is ModelError::Api and classify_failure only takes ModelError::Internal containing `prompt too long` (runtime/src/turn.rs:3204), not the provider's `prompt is too long`"]
 async fn a_refusal_for_size_compacts_and_retries() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let mut run = stubbed("too-long", &stub).start().await?;
@@ -418,7 +414,6 @@ async fn a_refusal_for_size_compacts_and_retries() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: an error event inside an open stream is mapped to Api{500} whatever it says (model/src/adapter.rs:494) and execute_stream's Err leaves the turn by `?` (runtime/src/turn.rs:1338), so a size refusal there never compacts"]
 async fn a_refusal_for_size_inside_the_stream_compacts_and_retries() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let mut run = stubbed("too-long-in-stream", &stub).start().await?;

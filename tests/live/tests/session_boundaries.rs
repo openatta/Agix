@@ -412,7 +412,6 @@ async fn a_max_tokens_stop_is_retried_with_a_higher_limit_then_nudged() -> anyho
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: a `pause_turn` stop ends the turn instead of sending the paused response back to continue it (crates/runtime/src/turn.rs has no case for StopReason::PauseTurn; recovery_policy.rs on_early_stop only knows max_tokens)"]
 async fn a_pause_turn_stop_is_continued_in_the_same_turn() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let mut run = stubbed("pause-turn", &stub).start().await?;
@@ -503,7 +502,6 @@ async fn cut_turn(
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: a stream that ends before message_delta is taken as a finished, empty answer (stop_reason \"\", zero usage) instead of an error or a retry (crates/runtime/src/streaming.rs consume_stream returns Ok when no EndTurn arrived)"]
 async fn a_stream_cut_short_fails_the_turn() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let mut run = stubbed("cut-fails", &stub).start().await?;
@@ -555,7 +553,6 @@ async fn the_session_carries_on_after_a_stream_cut_short() -> anyhow::Result<()>
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: session.interrupt does not cancel a model request still waiting for response headers (crates/model/src/adapter.rs stream() ignores its `_cancel` token)"]
 async fn an_interrupt_ends_a_turn_whose_model_has_not_answered_yet() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let mut run = stubbed("slow-model", &stub).start().await?;

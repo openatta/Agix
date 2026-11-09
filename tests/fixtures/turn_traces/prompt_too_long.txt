@@ -7,15 +7,22 @@ StepEnd step=0 stop_reason=end_turn tool_calls=0
 TurnComplete stop_reason=end_turn
 TurnStart
 StepStart step=0
-Error code=turn_error
+CompactAction CollapseContext
+StepStart step=0
+TextDelta "recovered after compaction"
+StepEnd step=0 stop_reason=end_turn tool_calls=0
+TurnComplete stop_reason=end_turn
 
 == session log ==
 User blocks=1
 User blocks=1
 Assistant
 User blocks=1
+Compact
+Assistant
 
 == model calls ==
 golden-model max_tokens=1024 messages=3 content_bytes=620 truncated_results=0
 golden-model max_tokens=1024 messages=5 content_bytes=685 truncated_results=0
-unconsumed_replies=1
+golden-model max_tokens=1024 messages=6 content_bytes=669 truncated_results=0
+unconsumed_replies=0

@@ -298,7 +298,8 @@ async fn single_tool_call() {
 }
 
 /// Two concurrency-safe tools in one assistant message. What the trace pins is
-/// that both run and both results come back before the next model call — the
+/// that each runs as soon as its call is complete, while the reply is still
+/// arriving, and that both results come back before the next model call — the
 /// dispatch batching decision.
 #[tokio::test]
 async fn parallel_tool_calls() {
@@ -539,15 +540,10 @@ async fn pre_tool_use_hook_blocks_the_call() {
     check(case).await;
 }
 
-/// Prompt-too-long recovery.
-///
-/// **This golden currently records the recovery failing.** The path compacts
-/// with a threshold of `max(scene_threshold, 50_000)` and only retries if the
-/// message count actually dropped; a two-message conversation cannot shrink,
-/// so the turn ends in `Error` and the scripted retry is never consumed
-/// (`unconsumed_replies=1` says so). That is the behavior today, recorded as
-/// found rather than as wished for — if someone makes this path work, this
-/// case fails and the diff is the proof.
+/// Prompt-too-long recovery: the refused request is compacted, a `compact`
+/// event says so, the step starts again and the retry answers. A conversation
+/// this short has nothing old enough to drop, so it is the compactor's last
+/// strategy that shortens it — the retry going out is what the case pins.
 #[tokio::test]
 async fn prompt_too_long_compacts_and_retries() {
     check(Case::new(

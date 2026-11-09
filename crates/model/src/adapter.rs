@@ -56,7 +56,7 @@ impl Model for AnthropicModel {
         tools: Vec<ToolDef>,
         messages: Vec<ModelMessage>,
         params: StreamParams,
-        _cancel: CancellationToken,
+        cancel: CancellationToken,
     ) -> Result<ModelStream, ModelError> {
         let system: Vec<SystemBlock> = prompt_blocks
             .into_iter()
@@ -174,13 +174,32 @@ impl Model for AnthropicModel {
         // `betas` vec is being built.
         req.ensure_cache_ttl_beta();
 
-        let stream = self.inner.stream_messages(req);
+        // The client sends the request on the first read, so this is where a
+        // refusal — a status, a connection that never opened — is waited
+        // for, and returned from here, where a caller's recovery looks.
+        let mut raw = self.inner.stream_messages(req);
+        let first = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(ModelError::Cancelled),
+            first = raw.next() => first,
+        };
+        let first = match first {
+            Some(Ok(crate::stream::StreamEvent::Error { error })) => return Err(api_error(error)),
+            Some(Ok(event)) => event,
+            Some(Err(e)) => return Err(map_error(e)),
+            None => {
+                return Err(ModelError::Network(
+                    "the provider closed the response without sending anything".into(),
+                ))
+            }
+        };
         // `scan` carries the per-block tool_use JSON accumulator across raw
         // events (needed because one incoming `StreamEvent` can produce
         // zero or several `ModelEvent`s — see `map_stream_event`'s doc
         // comment); `flat_map` then flattens each step's `Vec` back into a
         // flat event stream.
-        let mapped = stream
+        let mapped = futures::stream::once(futures::future::ready(Ok(first)))
+            .chain(raw)
             .scan(StreamState::default(), |acc, result| {
                 let events = match result {
                     Ok(event) => map_stream_event(event, acc),
@@ -189,7 +208,9 @@ impl Model for AnthropicModel {
                 futures::future::ready(Some(events))
             })
             .flat_map(futures::stream::iter);
-        Ok(Box::new(mapped))
+        Ok(Box::new(Box::pin(crate::cancel::until_cancelled(
+            mapped, cancel,
+        ))))
     }
 }
 
@@ -375,6 +396,7 @@ fn map_stream_event(
             ContentBlockStart::RedactedThinking { data } => {
                 vec![Ok(ModelEvent::RedactedThinking { data })]
             }
+            ContentBlockStart::Unknown => vec![],
         },
         StreamEvent::ContentBlockDelta { index, delta } => match delta {
             BlockDelta::TextDelta { text } => vec![Ok(ModelEvent::TextDelta { text })],
@@ -491,11 +513,28 @@ fn map_stream_event(
                 },
             })]
         }
-        StreamEvent::Error { error } => vec![Err(ModelError::Api {
-            status: 500,
-            message: error.message,
-        })],
+        StreamEvent::Error { error } => vec![Err(api_error(error))],
         _ => vec![],
+    }
+}
+
+/// An `error` event, classified as the same error arriving as an HTTP status
+/// would be: its `type` names the status.
+fn api_error(error: crate::stream::ApiErrorPayload) -> ModelError {
+    let status = match error.kind.as_str() {
+        "overloaded_error" => return ModelError::Overloaded,
+        "rate_limit_error" => return ModelError::RateLimited,
+        "authentication_error" | "permission_error" => return ModelError::Auth(error.message),
+        "invalid_request_error" => 400,
+        "billing_error" => 402,
+        "not_found_error" => 404,
+        "request_too_large" => 413,
+        "timeout_error" => 504,
+        _ => 500,
+    };
+    ModelError::Api {
+        status,
+        message: error.message,
     }
 }
 
@@ -506,6 +545,7 @@ fn map_error(e: crate::error::AnthropicError) -> ModelError {
         AnthropicError::RateLimited { .. } => ModelError::RateLimited,
         AnthropicError::Overloaded { .. } => ModelError::Overloaded,
         AnthropicError::Transport(e) => ModelError::Network(e.to_string()),
+        e @ AnthropicError::StreamInterrupted => ModelError::Network(e.to_string()),
         AnthropicError::Server { status, body } => ModelError::Api {
             status,
             message: body,
@@ -1196,7 +1236,7 @@ mod provider_search_tests {
         provider_search: Option<base::interface::model::ProviderSearch>,
     ) -> MessagesRequest {
         let client = Arc::new(MockAnthropicClient::new());
-        client.push_turn(vec![]);
+        client.push_turn(vec![StreamEvent::MessageStop]);
         let model = AnthropicModel::new(client.clone());
         let _ = model
             .stream(
@@ -1298,5 +1338,141 @@ mod provider_search_tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod call_failure_tests {
+    use super::*;
+    use crate::client::{CountFuture, EventStream};
+    use crate::error::AnthropicError;
+    use crate::mock::MockAnthropicClient;
+    use crate::stream::{ApiErrorPayload, StreamEvent};
+    use std::time::Duration;
+
+    fn params() -> StreamParams {
+        StreamParams {
+            model: "m".into(),
+            max_tokens: 100,
+            thinking_mode: ThinkingMode::Off,
+            effort: None,
+            fallback_model: None,
+            cache_edits: Vec::new(),
+            origin: None,
+            input_map: None,
+            provider_search: None,
+        }
+    }
+
+    async fn call(
+        model: &AnthropicModel,
+        cancel: CancellationToken,
+    ) -> Result<ModelStream, ModelError> {
+        model.stream(vec![], vec![], vec![], params(), cancel).await
+    }
+
+    fn opening() -> StreamEvent {
+        StreamEvent::MessageStart {
+            message: crate::stream::MessageStartPayload {
+                id: "msg".into(),
+                model: "m".into(),
+                role: "assistant".into(),
+                usage: crate::stream::Usage::default(),
+                stop_reason: None,
+            },
+        }
+    }
+
+    fn errored(kind: &str, message: &str) -> StreamEvent {
+        StreamEvent::Error {
+            error: ApiErrorPayload {
+                kind: kind.into(),
+                message: message.into(),
+            },
+        }
+    }
+
+    /// The client sends on the first read, so a refusal only exists once
+    /// something has read; `stream()` is that reader, and the refusal is its
+    /// answer rather than the first item of a stream that looked fine.
+    #[tokio::test]
+    async fn a_refused_request_is_the_calls_error() {
+        let client = Arc::new(MockAnthropicClient::new());
+        client.push_turn_with_errors(vec![Err(AnthropicError::Overloaded { status: 529 })]);
+        client.push_turn_with_errors(vec![Err(AnthropicError::Server {
+            status: 400,
+            body: "prompt is too long".into(),
+        })]);
+        let model = AnthropicModel::new(client);
+        assert!(matches!(
+            call(&model, CancellationToken::new()).await,
+            Err(ModelError::Overloaded)
+        ));
+        assert!(matches!(
+            call(&model, CancellationToken::new()).await,
+            Err(ModelError::Api { status: 400, .. })
+        ));
+    }
+
+    /// An `error` event says what kind of failure it is, as a status would
+    /// have; flattening every one to a 500 loses the overload a fallback model
+    /// is for and the size refusal compaction is for.
+    #[tokio::test]
+    async fn an_error_event_keeps_its_kind() {
+        let client = Arc::new(MockAnthropicClient::new());
+        client.push_turn(vec![opening(), errored("overloaded_error", "busy")]);
+        client.push_turn(vec![
+            opening(),
+            errored("invalid_request_error", "prompt is too long: 212034 tokens"),
+        ]);
+        client.push_turn(vec![errored("rate_limit_error", "slow down")]);
+        let model = AnthropicModel::new(client);
+
+        let mut first = call(&model, CancellationToken::new())
+            .await
+            .expect("opened");
+        assert!(matches!(
+            first.next().await,
+            Some(Err(ModelError::Overloaded))
+        ));
+        let mut second = call(&model, CancellationToken::new())
+            .await
+            .expect("opened");
+        assert!(matches!(
+            second.next().await,
+            Some(Err(ModelError::Api { status: 400, message })) if message.contains("prompt is too long")
+        ));
+        assert!(matches!(
+            call(&model, CancellationToken::new()).await,
+            Err(ModelError::RateLimited)
+        ));
+    }
+
+    /// A provider that never answers.
+    struct Silent;
+
+    impl crate::client::AnthropicClient for Silent {
+        fn stream_messages(&self, _req: MessagesRequest) -> EventStream {
+            Box::pin(futures::stream::pending())
+        }
+
+        fn count_tokens<'a>(&'a self, _: &'a MessagesRequest) -> CountFuture<'a> {
+            Box::pin(async { Ok(0) })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_call_still_waiting_for_its_answer_ends_when_cancelled() {
+        let model = AnthropicModel::new(Arc::new(Silent));
+        let cancel = CancellationToken::new();
+        let trigger = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            trigger.cancel();
+        });
+        let answer = tokio::time::timeout(Duration::from_secs(5), call(&model, cancel))
+            .await
+            .expect("the cancel was not honoured");
+        assert!(matches!(answer, Err(ModelError::Cancelled)));
     }
 }

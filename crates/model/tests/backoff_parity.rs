@@ -12,7 +12,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use base::interface::backoff::{Backoff, BackoffPolicy, FailedAttempt, NoBackoff, RequestFailure};
-use base::interface::model::{Model, StreamParams};
+use base::interface::model::{Model, ModelError, StreamParams};
 use base::settings::ThinkingMode;
 use futures::StreamExt;
 use model::client::{AnthropicClient, AuthMode, HttpAnthropicClient};
@@ -123,7 +123,7 @@ async fn run_openai(policy: Arc<dyn BackoffPolicy>) -> usize {
         input_map: None,
         provider_search: None,
     };
-    let mut stream = m
+    let answer = m
         .stream(
             Vec::new(),
             Vec::new(),
@@ -131,12 +131,11 @@ async fn run_openai(policy: Arc<dyn BackoffPolicy>) -> usize {
             params,
             CancellationToken::new(),
         )
-        .await
-        .expect("the request is built before it is sent");
-    let first = stream.next().await;
+        .await;
     assert!(
-        matches!(first, Some(Err(_))),
-        "a server that only rate-limits must end in an error, got {first:?}"
+        matches!(answer, Err(ModelError::RateLimited)),
+        "a server that only rate-limits must end in an error, got {:?}",
+        answer.err()
     );
     served.load(Ordering::SeqCst)
 }

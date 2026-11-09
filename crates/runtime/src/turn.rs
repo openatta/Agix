@@ -1147,130 +1147,12 @@ impl Agent {
             let sent_message_count = messages.len();
             let sent_tool_count = tool_defs.len();
 
-            // 3. Call model
+            // 3. Call the model and 5. stream its reply, running tools as they
+            //    arrive. 4. A call that fails before anything of it was kept
+            //    goes to the recovery policy, once; the doing stays here,
+            //    because compacting, rebuilding a request and sending it are
+            //    things only this loop can sequence.
             let call_started = std::time::Instant::now();
-            let stream_result = self.send(request, cancel.clone()).await;
-
-            // 4. The policy classifies the failure and says what to do; the
-            //    doing stays here, because compacting, rebuilding a request
-            //    and sending it are things only this loop can sequence.
-            let stream = match stream_result {
-                Ok(s) => s,
-                Err(ref e)
-                    if matches!(
-                        self.classify_failure(e),
-                        base::interface::recovery_policy::Recovery::RetryWith { .. }
-                    ) =>
-                {
-                    let base::interface::recovery_policy::Recovery::RetryWith { model } =
-                        self.classify_failure(e)
-                    else {
-                        unreachable!("guarded by the match arm above")
-                    };
-                    self.retry_with_model(
-                        model,
-                        tool_defs,
-                        messages,
-                        effective_max_tokens,
-                        &mut effective_model,
-                        cancel.clone(),
-                        origin.clone(),
-                    )
-                    .await?
-                }
-                Err(ref e)
-                    if matches!(
-                        self.classify_failure(e),
-                        base::interface::recovery_policy::Recovery::CompactAndRetry
-                    ) =>
-                {
-                    let msg = e.to_string();
-                    tracing::warn!("recovering by compacting, then retrying");
-                    let budget = self.context_budget();
-                    let threshold = budget.compact_threshold.max(50000);
-                    let keep = budget.compact_keep_recent.min(5);
-                    let messages_before = self.session.messages.len();
-                    if let Ok((compacted, result)) =
-                        self.compactor.compact(messages, threshold, keep).await
-                    {
-                        if compacted.len() < messages_before {
-                            let _ = self.event_tx.send(AgentEvent::CompactAction {
-                                strategy: format!("{:?}", result.strategy),
-                                messages_before,
-                                messages_after: compacted.len(),
-                                turn_id: self.current_turn_id.clone(),
-                                dropped_rounds: result
-                                    .projection
-                                    .as_ref()
-                                    .map(|p| p.dropped_rounds),
-                                dropped_messages: result
-                                    .projection
-                                    .as_ref()
-                                    .map(|p| p.dropped_messages),
-                                estimated_tokens_saved: result
-                                    .projection
-                                    .as_ref()
-                                    .map(|p| p.estimated_tokens_saved),
-                                tokens_before: result.tokens_before,
-                                tokens_after: result.tokens_after,
-                            });
-                            if let Err(e) = self
-                                .session
-                                .replace_messages_after_compact(
-                                    compacted,
-                                    result.tokens_before as u64,
-                                    result.tokens_after as u64,
-                                )
-                                .await
-                            {
-                                tracing::warn!(
-                                    error = %e,
-                                    "failed to persist LogEntry::Compact marker (PTL recovery)"
-                                );
-                            }
-                            // The retry keeps skills and MCP instructions:
-                            // they cost a few KB, the history is what blew
-                            // the budget, and the compaction freed far more.
-                            let retry = self
-                                .prepare_retry(
-                                    &effective_model,
-                                    effective_max_tokens,
-                                    tool_defs.clone(),
-                                    self.session.messages().to_vec(),
-                                    self.settings.model.fallback_model.clone(),
-                                    origin.clone(),
-                                )
-                                .await;
-                            match self.send(retry, cancel.clone()).await {
-                                Ok(s) => s,
-                                Err(e2) => {
-                                    return Err(TurnError::Model(format!(
-                                        "failed to stream model response: {}",
-                                        e2
-                                    )))
-                                }
-                            }
-                        } else {
-                            return Err(TurnError::Model(
-                                "prompt too long and compaction could not reduce message count"
-                                    .to_string(),
-                            ));
-                        }
-                    } else {
-                        return Err(TurnError::Model(format!(
-                            "prompt too long and compaction failed: {msg}"
-                        )));
-                    }
-                }
-                Err(e) => {
-                    return Err(TurnError::Model(format!(
-                        "failed to stream model response: {}",
-                        e
-                    )))
-                }
-            };
-
-            // 5. Process streaming response — execute tools as they arrive
             let tools = Arc::clone(&self.tools);
             let tools_for_safety = Arc::clone(&self.tools);
             let cwd = self.settings.paths.project_root();
@@ -1293,13 +1175,8 @@ impl Agent {
             let tool_images: Arc<std::sync::Mutex<Vec<PendingToolImage>>> =
                 Arc::new(std::sync::Mutex::new(Vec::new()));
             let tool_images_for_exec = Arc::clone(&tool_images);
-            let messages_before_step = self.session.messages.len();
-            let stream_result = crate::streaming::execute_stream(
-                stream,
-                &mut self.session,
-                &self.event_tx,
-                tid.clone(),
-                move |tool_use_id, name, input| {
+            let execute_tool =
+                move |tool_use_id: String, name: String, input: serde_json::Value| {
                     let exec_ctx = ToolExecCtx {
                         tool_use_id,
                         tools: Arc::clone(&tools),
@@ -1323,18 +1200,98 @@ impl Agent {
                         from_code: false,
                     };
                     async move { execute_tool_with_telemetry(&exec_ctx, &name, input).await }
-                },
-                move |name: &str, input: &serde_json::Value| {
-                    tools_for_safety
-                        .get(name)
-                        .map(|t| t.is_concurrency_safe(input))
-                        .unwrap_or(false)
-                },
-                cancel.clone(),
-                &self.model_interceptors,
-                self.model.provenance(),
-            )
-            .await?;
+                };
+            let is_concurrency_safe = move |name: &str, input: &serde_json::Value| {
+                tools_for_safety
+                    .get(name)
+                    .map(|t| t.is_concurrency_safe(input))
+                    .unwrap_or(false)
+            };
+            let mut request = request;
+            let mut recovered = false;
+            let (stream_result, messages_before_step) = loop {
+                let messages_before_step = self.session.messages.len();
+                let attempt = match self.send(request, cancel.clone()).await {
+                    Ok(stream) => {
+                        crate::streaming::execute_stream(
+                            stream,
+                            &mut self.session,
+                            &self.event_tx,
+                            self.current_turn_id.clone(),
+                            execute_tool.clone(),
+                            is_concurrency_safe.clone(),
+                            cancel.clone(),
+                            &self.model_interceptors,
+                            self.model.provenance(),
+                        )
+                        .await
+                    }
+                    Err(error) => Err(crate::streaming::StreamFailure::refused(error)),
+                };
+                let failure = match attempt {
+                    Ok(result) => break (result, messages_before_step),
+                    Err(failure) => failure,
+                };
+                if cancel.is_cancelled() {
+                    break (
+                        crate::streaming::StreamResult::cancelled(),
+                        messages_before_step,
+                    );
+                }
+                let recovery = if recovered || !failure.resendable {
+                    base::interface::recovery_policy::Recovery::Fail
+                } else {
+                    self.classify_failure(&failure.error)
+                };
+                recovered = true;
+                request = match recovery {
+                    base::interface::recovery_policy::Recovery::Fail => {
+                        return Err(TurnError::Model(format!(
+                            "failed to stream model response: {}",
+                            failure.error
+                        )))
+                    }
+                    base::interface::recovery_policy::Recovery::RetryWith { model } => {
+                        tracing::warn!(
+                            from = %effective_model,
+                            to = %model,
+                            error = %failure.error,
+                            "retrying against a different model"
+                        );
+                        effective_model = model;
+                        // `fallback_model: None` — this retry *is* the
+                        // fallback, so there is nothing further to fall back to.
+                        self.prepare_retry(
+                            &effective_model,
+                            effective_max_tokens,
+                            tool_defs.clone(),
+                            messages.clone(),
+                            None,
+                            origin.clone(),
+                        )
+                        .await
+                    }
+                    base::interface::recovery_policy::Recovery::CompactAndRetry => {
+                        self.compact_for_retry(&failure.error).await?;
+                        // The retry keeps skills and MCP instructions: they
+                        // cost a few KB, the history is what blew the budget,
+                        // and the compaction freed far more.
+                        self.prepare_retry(
+                            &effective_model,
+                            effective_max_tokens,
+                            tool_defs.clone(),
+                            pair_dangling_tool_uses(self.session.messages().to_vec()),
+                            self.settings.model.fallback_model.clone(),
+                            origin.clone(),
+                        )
+                        .await
+                    }
+                };
+                let _ = self.event_tx.send(AgentEvent::StepStart {
+                    step,
+                    turn_id: self.current_turn_id.clone(),
+                });
+            };
 
             // Any images the round's tools returned ride out-of-band (see
             // `ToolExecCtx::images`) and get appended to the tool-result message
@@ -1396,6 +1353,9 @@ impl Agent {
             // has to be counted whether or not the turn went on to check a
             // budget.
             turn_usage = turn_usage.plus(usage);
+            if stream_result.cancelled {
+                continue;
+            }
 
             // `PostSampling`: one model response has been fully streamed and
             // is in the transcript. Purely observational: like the other lifecycle hooks, the
@@ -1629,8 +1589,9 @@ impl Agent {
                 continue;
             }
 
-            // 6. max_output_tokens recovery: escalate and retry
-            if self.handle_max_tokens_recovery(
+            // 6. A reply that stopped early: escalate the output limit, or
+            //    send a paused one back to be continued.
+            if self.handle_early_stop(
                 &stop_reason,
                 &mut max_tokens_recovery,
                 &mut effective_max_tokens,
@@ -3182,7 +3143,6 @@ or project context that should survive across sessions.
             .context_budget(&self.scene.token_budget())
     }
 
-    /// Handle model Overloaded error by switching to fallback model and retrying.
     /// Put a model error to the recovery policy.
     ///
     /// The classification is the engine's — which errors *are* an overload and
@@ -3192,75 +3152,93 @@ or project context that should survive across sessions.
         &self,
         e: &base::interface::model::ModelError,
     ) -> base::interface::recovery_policy::Recovery {
-        use base::interface::recovery_policy::ModelFailure;
-        // Rendered once so the `Other` arm can borrow it; the two specific
-        // arms borrow from `e` itself.
-        let text = e.to_string();
-        let failure = match e {
-            base::interface::model::ModelError::Overloaded => ModelFailure::Overloaded,
-            // The provider reports this as a generic error with a recognizable
-            // message; the substring match is the protocol's shape, not a
-            // heuristic this code chose.
-            base::interface::model::ModelError::Internal(msg)
-                if msg.contains("prompt too long") || msg.contains("413") =>
-            {
-                ModelFailure::ContextTooLong { message: msg }
-            }
-            _ => ModelFailure::Other { message: &text },
-        };
-        self.recovery_policy.on_failure(&failure)
+        let rendered = e.to_string();
+        self.recovery_policy
+            .on_failure(&model_failure(e, &rendered))
     }
 
-    /// Send the same conversation to a different model.
-    #[allow(clippy::too_many_arguments)]
-    async fn retry_with_model(
+    /// Shorten the conversation after the provider refused it for size.
+    ///
+    /// The refusal is the measurement here, not the budget: the conversation
+    /// that went out was too big whatever the estimate made of it, so the
+    /// target is half of what was sent rather than the configured threshold,
+    /// which it may well not have reached. Success is judged by tokens, since a
+    /// strategy that blanks old tool results shortens the conversation without
+    /// dropping a message.
+    async fn compact_for_retry(
         &mut self,
-        model: String,
-        tool_defs: Vec<ToolDef>,
-        messages: Vec<ModelMessage>,
-        effective_max_tokens: u32,
-        effective_model: &mut String,
-        cancel: CancellationToken,
-        origin: Option<base::interface::model::CallOrigin>,
-    ) -> Result<ModelStream, TurnError> {
+        refusal: &base::interface::model::ModelError,
+    ) -> Result<(), TurnError> {
+        tracing::warn!(error = %refusal, "refused for size; compacting, then retrying");
+        let budget = self.context_budget();
+        let messages = self.session.messages().to_vec();
+        let messages_before = messages.len();
+        let target =
+            (compaction::grouping::estimate_tokens(&messages) / 2).min(budget.compact_threshold);
+        let keep = budget.compact_keep_recent.min(5);
+        let (compacted, result) = self
+            .compactor
+            .compact(messages, target, keep)
+            .await
+            .map_err(|e| {
+                TurnError::Model(format!(
+                    "{refusal}; compacting the conversation to retry failed: {e}"
+                ))
+            })?;
+        if result.tokens_after >= result.tokens_before {
+            return Err(TurnError::Model(format!(
+                "{refusal}; compacting the conversation to retry saved nothing"
+            )));
+        }
+        if result.strategy == compaction::compact::CompactStrategy::MicroCompact {
+            self.tool_results_ever_cleared = true;
+        }
+        let messages_after = compacted.len();
+        let _ = self.event_tx.send(AgentEvent::CompactAction {
+            strategy: format!("{:?}", result.strategy),
+            messages_before,
+            messages_after,
+            turn_id: self.current_turn_id.clone(),
+            dropped_rounds: result.projection.as_ref().map(|p| p.dropped_rounds),
+            dropped_messages: result.projection.as_ref().map(|p| p.dropped_messages),
+            estimated_tokens_saved: result.projection.as_ref().map(|p| p.estimated_tokens_saved),
+            tokens_before: result.tokens_before,
+            tokens_after: result.tokens_after,
+        });
+        if let Err(e) = self
+            .session
+            .replace_messages_after_compact(
+                compacted,
+                result.tokens_before as u64,
+                result.tokens_after as u64,
+            )
+            .await
         {
             tracing::warn!(
-                from = %*effective_model,
-                to = %model,
-                "retrying against a different model"
+                error = %e,
+                "failed to persist LogEntry::Compact marker (size-refusal recovery)"
             );
-            *effective_model = model;
-            // `fallback_model: None` — this retry *is* the fallback, so there
-            // is nothing further to fall back to.
-            let retry = self
-                .prepare_retry(
-                    effective_model.as_str(),
-                    effective_max_tokens,
-                    tool_defs,
-                    messages,
-                    None,
-                    origin,
-                )
-                .await;
-            self.send(retry, cancel)
-                .await
-                .map_err(|e| TurnError::Model(format!("failed to stream model response: {}", e)))
         }
+        self.session.message_timestamps.truncate(messages_after);
+        Ok(())
     }
 
-    /// Ask the recovery policy whether a stopped-early response should be
-    /// retried with a bigger output limit, and act on the answer.
+    /// Ask the recovery policy what a stopped-early response calls for, and
+    /// act on the answer.
     ///
     /// Returns true when the caller should run another round. The ladder
-    /// itself — 64K first, 8K after, three attempts, the nudge — moved into
-    /// `DefaultRecovery`; what stays here is applying the answer to the loop's
-    /// own state, which is the part that has to happen in this order.
-    fn handle_max_tokens_recovery(
+    /// itself — 64K first, 8K after, three attempts, the nudge — is
+    /// `DefaultRecovery`'s; what stays here is applying the answer to the
+    /// loop's own state, which is the part that has to happen in this order.
+    /// A continuation adds nothing: the stopped reply is already the
+    /// conversation's last message, which is what the provider continues from.
+    fn handle_early_stop(
         &mut self,
         stop_reason: &str,
         max_tokens_recovery: &mut u32,
         effective_max_tokens: &mut u32,
     ) -> bool {
+        use base::interface::recovery_policy::StopRecovery;
         let decision = self.recovery_policy.on_early_stop(
             stop_reason,
             &base::interface::recovery_policy::RecoveryAttempt {
@@ -3268,25 +3246,32 @@ or project context that should survive across sessions.
                 current_max_tokens: *effective_max_tokens,
             },
         );
-        let base::interface::recovery_policy::StopRecovery::RaiseOutputLimit { max_tokens, nudge } =
-            decision
-        else {
-            return false;
-        };
-        *max_tokens_recovery += 1;
-        *effective_max_tokens = max_tokens;
-        if let Some(nudge) = nudge {
-            self.session.push_message(ModelMessage {
-                role: MessageRole::User,
-                content: vec![ModelContentBlock::Text { text: nudge }],
-            });
+        match decision {
+            StopRecovery::Accept => false,
+            StopRecovery::Continue => {
+                tracing::info!(
+                    stop_reason,
+                    "the reply stopped early; sending it back to continue"
+                );
+                true
+            }
+            StopRecovery::RaiseOutputLimit { max_tokens, nudge } => {
+                *max_tokens_recovery += 1;
+                *effective_max_tokens = max_tokens;
+                if let Some(nudge) = nudge {
+                    self.session.push_message(ModelMessage {
+                        role: MessageRole::User,
+                        content: vec![ModelContentBlock::Text { text: nudge }],
+                    });
+                }
+                tracing::info!(
+                    recovery = *max_tokens_recovery,
+                    max_tokens = *effective_max_tokens,
+                    "output limit raised and the call retried"
+                );
+                true
+            }
         }
-        tracing::info!(
-            recovery = *max_tokens_recovery,
-            max_tokens = *effective_max_tokens,
-            "output limit raised and the call retried"
-        );
-        true
     }
 }
 
@@ -4799,6 +4784,54 @@ fn hook_permission_mode(mode: base::permission::PermissionMode) -> String {
         .ok()
         .and_then(|v| v.as_str().map(str::to_string))
         .unwrap_or_else(|| "default".into())
+}
+
+/// Which of the recovery policy's failures a model error is. `rendered` is
+/// the error's own text, which `Other` carries.
+fn model_failure<'a>(
+    e: &'a base::interface::model::ModelError,
+    rendered: &'a str,
+) -> base::interface::recovery_policy::ModelFailure<'a> {
+    use base::interface::model::ModelError;
+    use base::interface::recovery_policy::ModelFailure;
+    match e {
+        ModelError::Overloaded => ModelFailure::Overloaded,
+        ModelError::Api {
+            status: 413,
+            message,
+        } => ModelFailure::ContextTooLong { message },
+        ModelError::Api { status, message }
+            if (400..500).contains(status) && says_context_too_long(message) =>
+        {
+            ModelFailure::ContextTooLong { message }
+        }
+        ModelError::Internal(message) if says_context_too_long(message) => {
+            ModelFailure::ContextTooLong { message }
+        }
+        _ => ModelFailure::Other { message: rendered },
+    }
+}
+
+/// Whether a refusal's text says the request was too large for the model.
+///
+/// No provider gives this a status of its own — Anthropic, OpenAI and the
+/// relays in front of them all answer 400 with a type that covers every bad
+/// request — so the wording is the signal.
+fn says_context_too_long(message: &str) -> bool {
+    const WORDINGS: &[&str] = &[
+        "prompt is too long",
+        "prompt too long",
+        "input is too long",
+        "context_length_exceeded",
+        "maximum context length",
+        "context length exceeded",
+        "exceeds the context window",
+        "exceeds the maximum number of tokens",
+        "too many tokens",
+        "request_too_large",
+    ];
+    let message = message.to_ascii_lowercase();
+    WORDINGS.iter().any(|w| message.contains(w))
 }
 
 /// Gives every `tool_use` a `tool_result` in the message right after it.
@@ -8006,5 +8039,65 @@ mod dangling_tool_use_tests {
         ];
         let out = pair_dangling_tool_uses(input.clone());
         assert_eq!(format!("{out:?}"), format!("{input:?}"));
+    }
+}
+
+#[cfg(test)]
+mod model_failure_tests {
+    use super::*;
+    use base::interface::model::ModelError;
+    use base::interface::recovery_policy::ModelFailure;
+
+    fn classify(e: &ModelError) -> ModelFailure<'_> {
+        // Rendered text is only carried by `Other`; the tests below never
+        // look inside it.
+        model_failure(e, "")
+    }
+
+    /// What real providers answer a request too big for the model with.
+    #[test]
+    fn the_providers_size_refusals_are_context_too_long() {
+        for refusal in [
+            ModelError::Api {
+                status: 400,
+                message: r#"{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 212034 tokens > 200000 maximum"}}"#.into(),
+            },
+            ModelError::Api {
+                status: 400,
+                message: "This model's maximum context length is 65536 tokens. However, you requested 70000 tokens".into(),
+            },
+            ModelError::Api {
+                status: 413,
+                message: "request entity too large".into(),
+            },
+            ModelError::Internal("prompt too long".into()),
+        ] {
+            assert!(
+                matches!(classify(&refusal), ModelFailure::ContextTooLong { .. }),
+                "{refusal:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn other_bad_requests_and_server_errors_are_not() {
+        for other in [
+            ModelError::Api {
+                status: 400,
+                message: "max_tokens: must be a positive integer".into(),
+            },
+            ModelError::Api {
+                status: 500,
+                message: "prompt is too long".into(),
+            },
+            ModelError::Network("the response ended before the model finished it".into()),
+            ModelError::RateLimited,
+        ] {
+            assert!(
+                matches!(classify(&other), ModelFailure::Other { .. }),
+                "{other:?}"
+            );
+        }
+        assert_eq!(classify(&ModelError::Overloaded), ModelFailure::Overloaded);
     }
 }

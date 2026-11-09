@@ -40,6 +40,41 @@ pub struct ChatCompletionChunk {
     /// via `stream_options.include_usage`.
     #[serde(default)]
     pub usage: Option<ChunkUsage>,
+    /// A provider that fails after the 200 says so in a chunk of its own,
+    /// `{"error": {"message", "type", "code"}}`, in place of choices.
+    #[serde(default)]
+    pub error: Option<serde_json::Value>,
+}
+
+/// An `error` chunk, in the vocabulary an HTTP status would have given it.
+fn chunk_error(error: &serde_json::Value) -> ModelError {
+    let field = |key: &str| {
+        error
+            .get(key)
+            .map(|v| match v {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            })
+            .unwrap_or_default()
+    };
+    let message = match error.get("message").and_then(|m| m.as_str()) {
+        Some(m) => m.to_string(),
+        None => error.to_string(),
+    };
+    let kind = format!("{} {}", field("type"), field("code"));
+    let status = field("code").parse::<u16>().ok();
+    if kind.contains("rate_limit") || status == Some(429) {
+        ModelError::RateLimited
+    } else if kind.contains("overloaded") || matches!(status, Some(503 | 529)) {
+        ModelError::Overloaded
+    } else {
+        let status = match status {
+            Some(s) if (400..600).contains(&s) => s,
+            _ if kind.contains("invalid_request") || kind.contains("context_length") => 400,
+            _ => 500,
+        };
+        ModelError::Api { status, message }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -351,6 +386,10 @@ where
                         break;
                     }
                     match serde_json::from_str::<ChatCompletionChunk>(data) {
+                        Ok(ChatCompletionChunk { error: Some(error), .. }) => {
+                            yield Err(chunk_error(&error));
+                            return;
+                        }
                         Ok(chunk) => {
                             for e in acc.push(chunk) {
                                 yield Ok(e);
@@ -803,6 +842,44 @@ data: [DONE]\n\
         let events: Vec<ModelEvent> = events.into_iter().map(Result::unwrap).collect();
         assert_eq!(collected_text(&events), "hi");
         assert!(matches!(events.last(), Some(ModelEvent::EndTurn { .. })));
+    }
+
+    /// An error chunk ends the stream as a failure of its kind; parsed as an
+    /// ordinary chunk it has no choices and the answer would just stop short.
+    #[tokio::test]
+    async fn an_error_chunk_fails_the_stream_with_its_kind() {
+        const BUSY: &[u8] = b"\
+data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"half\"}}]}\n\
+\n\
+data: {\"error\":{\"message\":\"busy\",\"type\":\"overloaded_error\"}}\n\
+\n\
+";
+        const TOO_LONG: &[u8] = b"\
+data: {\"error\":{\"message\":\"This model's maximum context length is 65536 tokens\",\"code\":\"context_length_exceeded\"}}\n\
+\n\
+";
+        let busy: Vec<Result<ModelEvent, ModelError>> =
+            events_from_bytes(chunked(BUSY, 11), Duration::from_secs(90))
+                .collect()
+                .await;
+        assert!(
+            matches!(
+                busy.as_slice(),
+                [
+                    Ok(ModelEvent::TextDelta { .. }),
+                    Err(ModelError::Overloaded)
+                ]
+            ),
+            "{busy:?}"
+        );
+        let too_long: Vec<Result<ModelEvent, ModelError>> =
+            events_from_bytes(chunked(TOO_LONG, 11), Duration::from_secs(90))
+                .collect()
+                .await;
+        assert!(
+            matches!(too_long.as_slice(), [Err(ModelError::Api { status: 400, message })] if message.contains("maximum context length")),
+            "{too_long:?}"
+        );
     }
 
     /// A connection that goes silent after some output must surface a

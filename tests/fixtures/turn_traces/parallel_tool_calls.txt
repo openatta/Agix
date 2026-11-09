@@ -3,8 +3,8 @@ SystemInit
 TurnStart
 StepStart step=0
 ToolUse GoldenEcho {"say":"first"}
-ToolUse GoldenEcho {"say":"second"}
 ToolResult GoldenEcho is_error=Some(false) content="echo: first"
+ToolUse GoldenEcho {"say":"second"}
 ToolResult GoldenEcho is_error=Some(false) content="echo: second"
 StepEnd step=0 stop_reason=tool_use tool_calls=2
 StepStart step=1

@@ -990,7 +990,6 @@ async fn an_empty_message_is_refused_without_calling_the_model() -> anyhow::Resu
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: session.interrupt does not cancel a model request still waiting for response headers (crates/model/src/adapter.rs stream() ignores its `_cancel` token)"]
 async fn an_interrupt_ends_a_turn_still_waiting_for_the_model() -> anyhow::Result<()> {
     let mut run = LiveRun::builder("interrupt-headers").start().await?;
     let session = run.session().await?;

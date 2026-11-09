@@ -336,7 +336,7 @@ impl Model for OpenAICompatibleModel {
         tools: Vec<ToolDef>,
         messages: Vec<ModelMessage>,
         params: StreamParams,
-        _cancel: CancellationToken,
+        cancel: CancellationToken,
     ) -> Result<ModelStream, ModelError> {
         // Ignored, with reasons:
         // - `thinking_mode`, unless the provider names a `thinking_toggle`:
@@ -346,8 +346,6 @@ impl Model for OpenAICompatibleModel {
         //   already removed the content locally.
         // - `fallback_model`: model fallback is the caller's policy, and the
         //   Anthropic adapter does not act on it either.
-        // - `_cancel`: dropping the returned stream ends the request, which is
-        //   what the engine does on cancel (same as the Anthropic path).
         if params.provider_search.is_some() {
             return Err(ModelError::Unsupported(
                 "this provider has no web search of its own; route `task_models.web_search` \
@@ -378,28 +376,23 @@ impl Model for OpenAICompatibleModel {
             params.effort,
         );
 
-        let inner = self.inner.clone();
-        let s = async_stream::stream! {
-            let resp = match send_with_retry(&inner, &req).await {
-                Ok(r) => r,
-                Err(e) => {
-                    yield Err(e);
-                    return;
-                }
-            };
-            let bytes = resp
-                .body
-                .map(|c| c.map(bytes::Bytes::from).map_err(exec_error));
-
-            let mut events = Box::pin(stream::events_from_bytes(bytes, STREAM_IDLE_TIMEOUT));
-            while let Some(event) = futures::StreamExt::next(&mut events).await {
-                yield event;
-            }
+        // Sent here rather than on the first read, so a refusal comes back
+        // from this call, where a caller's recovery looks for it.
+        let resp = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(ModelError::Cancelled),
+            resp = send_with_retry(&self.inner, &req) => resp?,
         };
+        let bytes = resp
+            .body
+            .map(|c| c.map(bytes::Bytes::from).map_err(exec_error));
+        let events = stream::events_from_bytes(bytes, STREAM_IDLE_TIMEOUT);
 
         // `ModelStream` requires `Unpin`; `async_stream`'s generator is not,
         // so it is pinned first and the pin is what gets boxed.
-        Ok(Box::new(Box::pin(s)))
+        Ok(Box::new(Box::pin(crate::cancel::until_cancelled(
+            events, cancel,
+        ))))
     }
 }
 

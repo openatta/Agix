@@ -103,7 +103,7 @@ async fn chat_completions_is_reachable_from_behind_an_allowlist() {
         input_map: None,
         provider_search: None,
     };
-    let mut stream = m
+    let answer = m
         .stream(
             Vec::new(),
             Vec::new(),
@@ -111,17 +111,17 @@ async fn chat_completions_is_reachable_from_behind_an_allowlist() {
             params,
             CancellationToken::new(),
         )
-        .await
-        .expect("the request is built before it is sent");
+        .await;
 
-    match stream.next().await {
-        Some(Err(ModelError::Auth(body))) => assert!(
+    match answer {
+        Err(ModelError::Auth(body)) => assert!(
             body.contains("served-and-denied"),
             "the server's own answer came back: {body}"
         ),
         other => panic!(
             "the request never reached the endpoint — an operator-configured \
-             model API must not be subject to the model's allowlist: {other:?}"
+             model API must not be subject to the model's allowlist: {:?}",
+            other.err()
         ),
     }
 }

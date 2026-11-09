@@ -414,7 +414,8 @@ settings 宽的被**静默夹到 settings 允许的最宽处**并记一条 warn 
 | `max_tokens` | 触到单次输出上限 |
 | `tool_use` | 模型请求工具(轮内中间态) |
 | `stop_sequence` | 命中停止序列 |
-| `pause_turn` | 模型请求暂停 |
+| `pause_turn` | 模型请求暂停。引擎把这条回复原样发回去让它接着写,所以一轮通常不以它结束;只有恢复策略不续(如 `NeverRecover`)时才会 |
+| `cancelled` | 这一轮被 `session.interrupt` 取消;已经推过的那段回复留在 transcript 里 |
 | `max_turns_reached` | 触到本轮 API 调用次数上限(引擎自己发的,不来自 API) |
 | `unknown` | 反序列化兜底,遇到未知取值时的落点 |
 
@@ -1112,7 +1113,8 @@ turn 期间的引擎错误不是事件,是**这次调用的错误响应**:`ENGIN
 ```
 
 取消当前 turn,**保留会话**。没有进行中的 turn 时 `interrupted` 是 `false`,不是
-错误 —— 调用方要的是会话空闲,而它确实空闲。
+错误 —— 调用方要的是会话空闲,而它确实空闲。模型还没开始回答(请求还在等响应、在退避
+重试之间)也立即生效,不等它答;这一轮以 `stop_reason: "cancelled"` 结束。
 
 #### `session.compact`
 
@@ -2228,7 +2230,7 @@ WebAssembly 组件,场景改用 `[scene] dir`。
 | `kind` | 载荷 | 说明 |
 |---|---|---|
 | `turn_start` | `{}` | 本轮开始,是本轮的第一帧 |
-| `step_start` | `{step}` | 本轮要调一次模型;`step` 从 0 计 |
+| `step_start` | `{step}` | 本轮要调一次模型;`step` 从 0 计。同一个 `step` 再来一次,说明上一次调用失败、被恢复策略重发(§7 表下):这一步此前推过的 `text_delta` / `thinking_delta` 作废 |
 | `step_end` | `{step,stop_reason,tool_calls,usage,seq}` | 这次调用结束,它的回复和它要的工具结果都已落盘;`usage` 只是这一次调用的;`seq` 是此刻 transcript 的消息数(§5.6) |
 | `text_delta` | `{text}` | 模型输出增量 |
 | `thinking_delta` | `{text}` | 模型思考过程的增量,与正文分开,宿主可以折叠或不显示 |
@@ -2269,6 +2271,15 @@ WebAssembly 组件,场景改用 `[scene] dir`。
 的 `text_delta` / `thinking_delta` / `tool_use` / `tool_result` / `prompt` 都落在这一组
 里,最后是 `turn_complete`(或 `error`)。本地命令(`/clear` 之类)不调用模型,只有
 `turn_start` 和 `turn_complete`。
+
+并发安全的工具(读文件、搜索、抓网页……)在它的 `tool_use` 到齐时就开始跑,模型还在接着
+写,所以它的 `tool_result` 可以夹在同一步后面的 `text_delta` / `tool_use` 之间到达。
+
+**一次调用在回复要工具之前失败**(过载、尺寸被拒、流中途的 `error` 事件、连接在消息结尾
+之前断开),它这一步推过的文本不会写进 transcript;恢复策略决定重发(换备用模型、压缩后
+重试)时,先再发一次同 `step` 的 `step_start`,宿主应丢掉这一步已经画出来的文本。不重发,
+这一轮就以 `ENGINE_ERROR` 结束。回复已经要过工具的,工具已经跑了,回复连同结果写进
+transcript,这一轮以 `ENGINE_ERROR` 结束,不会重发。
 
 `prompt_type` 有两种:`"permission"` 问一次工具调用能不能跑;`"question"` 是模型用
 `AskUserQuestion` 问用户的,只发给在 `session.create` 的 `options.prompt_types` 里列了

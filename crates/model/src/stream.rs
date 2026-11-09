@@ -76,6 +76,9 @@ pub enum ContentBlockStart {
     RedactedThinking {
         data: String,
     },
+    /// 新增的块类型 —— 跳过这一块，不打断整条流
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -99,6 +102,9 @@ pub enum BlockDelta {
     CitationsDelta {
         citation: serde_json::Value,
     },
+    /// 新增的增量类型
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -236,6 +242,34 @@ mod tests {
         let v = json!({ "type": "some_future_event_2030" });
         let ev: StreamEvent = serde_json::from_value(v).unwrap();
         assert_eq!(ev, StreamEvent::Unknown);
+    }
+
+    #[test]
+    fn unknown_block_and_delta_types_do_not_break() {
+        let start: StreamEvent = serde_json::from_value(json!({
+            "type": "content_block_start", "index": 2,
+            "content_block": { "type": "mcp_tool_use", "id": "x", "name": "y", "input": {} }
+        }))
+        .unwrap();
+        assert_eq!(
+            start,
+            StreamEvent::ContentBlockStart {
+                index: 2,
+                content_block: ContentBlockStart::Unknown
+            }
+        );
+        let delta: StreamEvent = serde_json::from_value(json!({
+            "type": "content_block_delta", "index": 2,
+            "delta": { "type": "some_future_delta", "payload": 1 }
+        }))
+        .unwrap();
+        assert_eq!(
+            delta,
+            StreamEvent::ContentBlockDelta {
+                index: 2,
+                delta: BlockDelta::Unknown
+            }
+        );
     }
 
     #[test]

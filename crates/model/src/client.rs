@@ -72,15 +72,25 @@ async fn classify_response(resp: HttpStream) -> Result<HttpStream, AnthropicErro
     } else {
         body
     };
-    Err(match code {
-        401 | 403 => AnthropicError::Auth(body),
-        429 => AnthropicError::RateLimited {
+    // A relay in front of the API does not always keep the status, but it
+    // passes the body on, and the body's `error.type` says the same thing.
+    Err(match (code, error_type(&body).as_deref()) {
+        (401 | 403, _) => AnthropicError::Auth(body),
+        (429, _) | (_, Some("rate_limit_error")) => AnthropicError::RateLimited {
             retry_after,
             headers: anthropic_headers,
         },
-        503 | 529 => AnthropicError::Overloaded { status: code },
+        (503 | 529, _) | (_, Some("overloaded_error")) => {
+            AnthropicError::Overloaded { status: code }
+        }
         _ => AnthropicError::Server { status: code, body },
     })
+}
+
+/// `error.type` of an error body shaped `{"type":"error","error":{"type":…}}`.
+fn error_type(body: &str) -> Option<String> {
+    let body: serde_json::Value = serde_json::from_str(body).ok()?;
+    Some(body.get("error")?.get("type")?.as_str()?.to_string())
 }
 
 /// 把一个还没读的响应体读成字符串。错误当作提前结束——这里只用于错误 body，

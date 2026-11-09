@@ -1,16 +1,28 @@
 //! `RecoveryPolicy` — what to do when a model call goes wrong.
 //!
-//! Three failures had three hardcoded answers. A provider reporting overload
-//! switched to the configured fallback model, or failed if there was none. A
-//! request refused for size triggered one compaction and one retry, or failed.
-//! A response cut off at the output limit escalated the limit — to 64K the
-//! first time, 8K after that, three attempts, with a fixed nudge appended.
+//! The engine's own answers ([`DefaultRecovery`]): a provider reporting
+//! overload is retried on the configured fallback model, or fails if there is
+//! none. A request refused for size is compacted and retried once, or fails. A
+//! response cut off at the output limit escalates the limit — to 64K the first
+//! time, 8K after that, three attempts, with a fixed nudge appended. A
+//! response the provider paused is sent back to be continued.
 //!
 //! Every one of those is a reasonable answer and none of them is the only
 //! one. A deployment on a single model has no fallback to switch to and would
 //! rather wait. One paying per token would rather fail than escalate to 64K.
 //! One with a cheap second provider would rather switch on *any* error, not
 //! only overload.
+//!
+//! # Which failures reach it
+//!
+//! A failure is put to the policy when nothing of the call has been kept: the
+//! provider refused the request, or its stream broke off — an error event, or
+//! an end before the message's — before the reply asked for a tool. The
+//! partial reply is dropped, so what a recovery retries is the request that
+//! failed. Once a tool has run, the reply stays in the transcript with its
+//! results and the turn ends with the error: sending it again would run the
+//! tool again. Each call is recovered at most once; a retry that fails is
+//! final.
 //!
 //! # The policy decides; the loop acts
 //!
@@ -62,6 +74,11 @@ pub enum Recovery {
 pub enum StopRecovery {
     /// Accept the response as it is.
     Accept,
+    /// Send the conversation again as it stands, the response included, so
+    /// the model picks up where it stopped — what a provider asks for with
+    /// `pause_turn`. Each continuation is another call of the turn, bounded
+    /// by the turn policy's ceiling on calls.
+    Continue,
     /// Raise the output limit and ask again.
     RaiseOutputLimit {
         max_tokens: u32,
@@ -136,6 +153,9 @@ impl RecoveryPolicy for DefaultRecovery {
     }
 
     fn on_early_stop(&self, reason: &str, attempt: &RecoveryAttempt) -> StopRecovery {
+        if reason == "pause_turn" {
+            return StopRecovery::Continue;
+        }
         if reason != "max_tokens" || attempt.output_limit_escalations >= self.max_output_escalations
         {
             return StopRecovery::Accept;
@@ -247,6 +267,21 @@ mod tests {
             p.on_early_stop("max_tokens", &attempt(3, 64_000)),
             StopRecovery::Accept,
             "three escalations is the bound"
+        );
+    }
+
+    #[test]
+    fn a_paused_response_is_continued_whatever_the_escalations() {
+        let p = DefaultRecovery::new(None);
+        for escalations in [0, 3] {
+            assert_eq!(
+                p.on_early_stop("pause_turn", &attempt(escalations, 2000)),
+                StopRecovery::Continue
+            );
+        }
+        assert_eq!(
+            NeverRecover.on_early_stop("pause_turn", &attempt(0, 2000)),
+            StopRecovery::Accept
         );
     }
 

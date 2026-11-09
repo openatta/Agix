@@ -140,15 +140,26 @@ systemd(`Restart=on-failure`)。systemd 下要设 `KillMode=process`:`daemon.shu
   ├─ 3. 硬顶        ContextBudget::hard_cap
   ├─ 4. 装配提示词  PromptAssembler / 注册的块 / 装配钩子
   ├─ 5. 调模型      Model + ModelInterceptor + BackoffPolicy
-  │     └─ 出错 → RecoveryPolicy:换模型 / 压缩重试 / 抬 max_tokens / 失败
-  ├─ 6. 复查        TurnPolicy::after_model_call
+  │     ├─ 边流边跑工具 Permission → ToolMiddleware → Tool → ToolResultTransformer
+  │     └─ 出错 → RecoveryPolicy:换模型 / 压缩重试 / 失败
+  ├─ 6. 复查        TurnPolicy::after_model_call    ← 这一轮还走不走下一步
   ├─ 7. 记账        BudgetPolicy::on_usage          ← 继续 / 警告 / 耗尽
-  ├─ 8. 执行工具    Permission → ToolMiddleware → Tool → ToolResultTransformer
-  │     └─ 这批结果写进对话之后:送达这一轮运行期间收到的用户消息与通知
-  └─ 9. 有工具调用则再来一轮;否则 BudgetPolicy::on_output_target 决定是否续写
+  ├─ 8. 有工具调用:送达这一轮运行期间收到的用户消息与通知,再来一轮
+  └─ 9. 没有:RecoveryPolicy::on_early_stop       ← 抬 max_tokens 重发 / pause_turn 发回去续上
+         Stop hook;BudgetPolicy::on_output_target 决定是否续写
          (收尾时还有没送达的用户消息,再调一次模型回答它们)
 出口:finish_turn —— 先落盘,再发 TurnComplete
 ```
+
+**工具在第 5 步里跑,不等回复写完。** 并发安全的 `tool_use` 一到齐就开始,模型接着往下写;
+不并发安全的是屏障,等前面那批跑完再单独跑。所以第 6、7 步拦不住这一条回复要的工具——
+它们决定的是还走不走下一步。要在工具跑之前拦,用权限、`PreToolUse` hook 或
+`ToolMiddleware`。
+
+**出错时什么都没留下,才交给 RecoveryPolicy。** 请求被拒(状态码、连不上),或者流在回复
+要工具之前断了(流里的 `error` 事件、没等到消息结尾就结束),这次调用的半截回复整个丢掉,
+transcript 不变,恢复策略重发的就是失败的那个请求;每次调用至多恢复一次。工具已经跑过的,
+回复连同结果照写,这一轮以错误结束——再发一遍会让工具再跑一遍。
 
 **一轮只有一个出口。** 循环里有十几处提前结束(hook 截停、预算耗尽、取消、出错),
 落盘和宣布结束都只在 `finish_turn` 做一次,所以哪条路都跳不过。顺序本身是契约:宿主

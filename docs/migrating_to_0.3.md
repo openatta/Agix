@@ -440,8 +440,36 @@ WebAssembly 载体整个移除。
   `mcp_connect_failed` 的 `error` 写明原因,不再是"看 daemon 日志"。
 - `session.run_turn` 的 `message` 为空或只有空白、又没有附件,报 `INVALID_PARAMS`,不再当作
   一轮发给模型。
+- 模型调用的恢复对真实厂商生效了:过载(重试用尽的 529,或流里的 `overloaded_error`)配了
+  `model.fallback_model` 就换它重发;尺寸被拒(400「prompt is too long」、413、流里的同类错误)
+  压缩后重发。以前这些都直接以 `ENGINE_ERROR` 结束。
+- 一次调用在回复要工具之前失败,它推过的 `text_delta` 不进 transcript;重发前会再发一次同
+  `step` 的 `step_start`(协议 §7)。流在消息结尾之前断开,以前当作一个空回答正常结束
+  (`stop_reason` 为空、用量为 0),现在是 `ENGINE_ERROR`。
+- `pause_turn` 不再结束一轮:引擎把那条回复发回去让模型接着写。
+- `session.interrupt` 在模型还没开始回答时(等响应、退避重试之间)也立即生效。回复写到一半被
+  打断的一轮以 `stop_reason: "cancelled"` 结束,不再走正常收尾(`stop_reason` 为空、照跑 Stop
+  hook、送达排队消息)。
+- 并发安全的工具在它的 `tool_use` 到齐时就开始跑,`tool_result` 与权限询问可能夹在同一步后面的
+  `text_delta` 之间到达。
 
 ### 嵌入方
+
+- `AnthropicModel::stream` / `OpenAICompatibleModel::stream` 在返回前等到厂商开始回答:请求被拒
+  (状态码、连不上、重试用尽)从 `stream()` 返回 `Err`,不再是流的第一项;两者都认传进来的
+  `CancellationToken`,取消时 `stream()` 返回 `ModelError::Cancelled`,流里出 `Err(Cancelled)` 后结束。
+  一个什么都没发就结束的 Anthropic 响应是 `ModelError::Network`。
+- 流里的 `error` 事件按它的 `type` 分类(`overloaded_error` → `Overloaded`、`rate_limit_error` →
+  `RateLimited`、`invalid_request_error` → `Api{400}`……),不再一律 `Api{500}`;Chat Completions
+  流里的 `{"error":…}` 块同样成为 `Err`(`ChatCompletionChunk` 多了 `error` 字段)。
+  `AnthropicError::StreamInterrupted` 映射为 `ModelError::Network`(原为 `Internal`)。
+- `model::stream::ContentBlockStart` 与 `BlockDelta` 多了 `Unknown`:不认识的块类型、增量类型
+  跳过这一块,不再让整条流解析失败;穷举匹配它们的要补一支。
+- 自己实现 `Model` 的:流必须以 `ModelEvent::EndTurn` 收尾,没有它的流被当作中途断开。
+- `runtime::streaming::execute_stream` 返回 `Result<StreamResult, StreamFailure>`(原为
+  `Result<_, TurnError>`);`StreamResult` 多了 `cancelled`。
+- `StopRecovery` 多了 `Continue`,`DefaultRecovery` 对 `pause_turn` 返回它;穷举匹配
+  `StopRecovery` 的要补一支。
 
 - `PermissionMode::Auto`、`PermissionMode::Yolo` 删除(`base::permission` 与
   `base::settings` 两份都删),用 `BypassPermissions`。`permissiveness()` 的取值跟着变了。
