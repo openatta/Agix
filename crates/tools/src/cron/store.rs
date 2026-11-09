@@ -6,7 +6,7 @@
 //! loop. Either way a session sees and changes only its own jobs.
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use super::parser::cron_matches;
@@ -54,6 +54,9 @@ pub const MODEL_JOB_LIFETIME_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 pub struct CronStore {
     inner: Mutex<Vec<CronJob>>,
     file_path: Option<PathBuf>,
+    /// Held across a save's snapshot and write, so two saves cannot land on
+    /// disk in the opposite order to the changes they carry.
+    saving: Mutex<()>,
 }
 
 impl CronStore {
@@ -62,18 +65,22 @@ impl CronStore {
         Self {
             inner: Mutex::new(Vec::new()),
             file_path: None,
+            saving: Mutex::new(()),
         }
     }
 
-    /// Create or load from a file path. If the file exists, loads jobs from it.
+    /// Create or load from a file path. If the file exists, loads jobs from it;
+    /// one that cannot be read as a job list is moved aside to
+    /// `<file>.corrupt` rather than overwritten by the next save.
     pub fn load_or_default(file_path: Option<PathBuf>) -> Self {
         let jobs = file_path
-            .as_ref()
-            .and_then(|p| Self::load_from_disk(p).ok())
+            .as_deref()
+            .map(Self::load_from_disk)
             .unwrap_or_default();
         Self {
             inner: Mutex::new(jobs),
             file_path,
+            saving: Mutex::new(()),
         }
     }
 
@@ -198,7 +205,9 @@ impl CronStore {
 
         *inner = keep;
         drop(inner); // release lock before save (std::sync::Mutex is not reentrant)
-        self.save();
+        if !due.is_empty() {
+            self.save();
+        }
         due
     }
 
@@ -206,6 +215,7 @@ impl CronStore {
         let Some(ref path) = self.file_path else {
             return;
         };
+        let _saving = self.saving.lock().unwrap_or_else(|e| e.into_inner());
         let jobs: Vec<CronJob> = self
             .inner
             .lock()
@@ -214,16 +224,56 @@ impl CronStore {
             .filter(|j| j.durable)
             .cloned()
             .collect();
-        if let Ok(json) = serde_json::to_string(&jobs) {
-            let _ = std::fs::write(path, &json);
+        let written = serde_json::to_string(&jobs)
+            .map_err(std::io::Error::other)
+            .and_then(|json| write_atomic(path, &json));
+        if let Err(e) = written {
+            tracing::warn!(path = %path.display(), error = %e, "could not save the cron jobs");
         }
     }
 
-    fn load_from_disk(path: &std::path::Path) -> std::io::Result<Vec<CronJob>> {
-        let data = std::fs::read_to_string(path)?;
-        serde_json::from_str(&data)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    fn load_from_disk(path: &Path) -> Vec<CronJob> {
+        let data = match std::fs::read_to_string(path) {
+            Ok(data) => data,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "could not read the cron jobs");
+                return Vec::new();
+            }
+        };
+        match serde_json::from_str(&data) {
+            Ok(jobs) => jobs,
+            Err(e) => {
+                let aside = sibling(path, ".corrupt");
+                let moved = std::fs::rename(path, &aside);
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    kept_at = %aside.display(),
+                    moved = moved.is_ok(),
+                    "the cron jobs file is not a job list; starting with none"
+                );
+                Vec::new()
+            }
+        }
     }
+}
+
+fn sibling(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+fn write_atomic(path: &Path, body: &str) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = sibling(path, &format!(".tmp-{}", std::process::id()));
+    std::fs::write(&tmp, body)?;
+    std::fs::rename(&tmp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
 }
 
 impl Default for CronStore {
@@ -381,5 +431,56 @@ mod tests {
         assert_eq!(store.list().len(), 1);
         assert_eq!(store.pop_due_at(at("2026-10-26T11:00:00Z")).len(), 1);
         assert!(store.list().is_empty());
+    }
+
+    #[test]
+    fn a_truncated_store_is_kept_aside_not_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cron.json");
+        let truncated = r#"[{"id":"abc","cron":"0 9 * * *","prompt":"dail"#;
+        std::fs::write(&path, truncated).unwrap();
+
+        let store = CronStore::load_or_default(Some(path.clone()));
+        assert!(store.list().is_empty());
+        store.add("0 9 * * *".into(), "new".into(), true, true);
+
+        let aside = dir.path().join("cron.json.corrupt");
+        assert_eq!(std::fs::read_to_string(aside).unwrap(), truncated);
+        let reloaded = CronStore::load_or_default(Some(path));
+        assert_eq!(reloaded.list().len(), 1);
+    }
+
+    #[test]
+    fn a_save_leaves_no_temporary_file_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cron.json");
+        let store = CronStore::load_or_default(Some(path.clone()));
+        store.add("0 9 * * *".into(), "durable".into(), true, true);
+        let names: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["cron.json".to_string()]);
+    }
+
+    #[test]
+    fn concurrent_changes_all_reach_the_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cron.json");
+        let store = std::sync::Arc::new(CronStore::load_or_default(Some(path.clone())));
+        let threads: Vec<_> = (0..8)
+            .map(|i| {
+                let store = store.clone();
+                std::thread::spawn(move || {
+                    for j in 0..10 {
+                        store.add("0 9 * * *".into(), format!("{i}-{j}"), true, true);
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(CronStore::load_or_default(Some(path)).list().len(), 80);
     }
 }

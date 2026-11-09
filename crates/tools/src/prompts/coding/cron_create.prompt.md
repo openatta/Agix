@@ -1,18 +1,18 @@
 Schedule a prompt to be enqueued at a future time. Use for both recurring schedules and one-shot reminders.
 
-Uses standard 5-field cron in the user's local timezone: minute hour day-of-month month day-of-week. "0 9 * * *" means 9am local — no timezone conversion needed.
+Uses standard 5-field cron, evaluated in **UTC**: minute hour day-of-month month day-of-week. "0 9 * * *" means 09:00 UTC. When the user names a local time, convert it to UTC first; if you do not know the user's timezone, ask, or check it with `date` when the user's machine is the one running the tools. The result tells you the current UTC time.
 
 ## One-shot tasks (recurring: false)
 
 For "remind me at X" or "at <time>, do Y" requests — fire once then auto-delete.
-Pin minute/hour/day-of-month/month to specific values:
-  "remind me at 2:30pm today to check the deploy" → cron: "30 14 <today_dom> <today_month> *", recurring: false
-  "tomorrow morning, run the smoke test" → cron: "57 8 <tomorrow_dom> <tomorrow_month> *", recurring: false
+Pin minute/hour/day-of-month/month to specific values, in UTC (the day and month can change in the conversion):
+  "remind me at 2:30pm today to check the deploy" (user in UTC+2) → cron: "30 12 <today_dom> <today_month> *", recurring: false
+  "tomorrow morning, run the smoke test" (user in UTC) → cron: "57 8 <tomorrow_dom> <tomorrow_month> *", recurring: false
 
 ## Recurring jobs (recurring: true, the default)
 
 For "every N minutes" / "every hour" / "weekdays at 9am" requests:
-  "*/5 * * * *" (every 5 min), "0 * * * *" (hourly), "0 9 * * 1-5" (weekdays at 9am local)
+  "*/5 * * * *" (every 5 min), "0 * * * *" (hourly), "0 9 * * 1-5" (weekdays at 09:00 UTC)
 
 ## Avoid the :00 and :30 minute marks when the task allows it
 
@@ -33,7 +33,7 @@ CronCreate re-runs a prompt at fixed wall-clock intervals. To watch a log file, 
 
 ## Runtime behavior
 
-Jobs only fire while the REPL is idle (not mid-query). The scheduler adds a small deterministic jitter on top of whatever you pick: recurring tasks fire up to 10% of their period late (max 15 min); one-shot tasks landing on :00 or :30 fire up to 90 s early. Picking an off-minute is still the bigger lever.
+The scheduler checks once a minute. A job that comes due while the session is in the middle of a turn is queued and runs after that turn ends.
 
 Recurring tasks auto-expire after 7 days — they fire one final time, then are deleted. This bounds session lifetime. Tell the user about the 7-day limit when scheduling recurring jobs.
 

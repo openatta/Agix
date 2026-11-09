@@ -16,9 +16,9 @@ use base::tool::{
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CronCreateInput {
-    /// Standard 5-field cron expression in local time:
+    /// Standard 5-field cron expression, evaluated in UTC:
     /// "M H DoM Mon DoW" (e.g. "*/5 * * * *" = every 5 minutes,
-    /// "30 14 28 2 *" = Feb 28 at 2:30pm local once).
+    /// "30 14 28 2 *" = Feb 28 at 14:30 UTC once).
     pub cron: String,
     /// The prompt to enqueue at each fire time.
     pub prompt: String,
@@ -142,9 +142,19 @@ impl Tool for CronCreateTool {
         } else {
             ""
         };
+        let now = time::OffsetDateTime::now_utc();
+        let now_utc = format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}",
+            now.year(),
+            u8::from(now.month()),
+            now.day(),
+            now.hour(),
+            now.minute()
+        );
         Ok(ToolResult {
             content: base::tool::ToolResultContent::Text(format!(
-                "Scheduled {kind} {id}. {where_str}.{expiry} Use CronDelete to cancel sooner."
+                "Scheduled {kind} {id}. {where_str}.{expiry} Use CronDelete to cancel sooner. \
+                 The schedule is in UTC; it is now {now_utc} UTC."
             )),
             is_error: false,
             structured_content: Some(json!({
