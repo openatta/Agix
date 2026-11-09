@@ -2369,10 +2369,10 @@ impl SessionPool {
     /// Read-only config/wiring diagnostics — see `crate::doctor`.
     pub async fn doctor_report(&self) -> serde_json::Value {
         let settings = self.settings.read().await.clone();
-        #[cfg_attr(not(feature = "mcp"), allow(unused_mut))]
         let mut checks: Vec<Arc<dyn base::interface::health::HealthCheck>> = Vec::new();
         #[cfg(feature = "mcp")]
         checks.push(self.mcp_policy.clone());
+        checks.extend(self.plugins.health_check());
         checks.extend(
             self.health
                 .read()

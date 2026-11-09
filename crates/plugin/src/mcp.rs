@@ -22,7 +22,18 @@ pub fn servers_for(plugin: &Plugin) -> Vec<(String, serde_json::Value)> {
 }
 
 fn native_config(plugin: &Plugin, server: &McpPayload) -> Option<serde_json::Value> {
-    let path = plugin.path(server.config.as_ref()?);
+    let rel = server.config.as_ref()?;
+    let path = match plugin.path(rel) {
+        Ok(path) => path,
+        Err(e) => {
+            tracing::warn!(
+                plugin = %plugin.name(),
+                error = %e,
+                "plugin MCP server config cannot be used, skipping"
+            );
+            return None;
+        }
+    };
     match std::fs::read_to_string(&path) {
         Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
             Ok(v) => Some(v),

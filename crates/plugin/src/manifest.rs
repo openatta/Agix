@@ -160,8 +160,6 @@ pub enum PluginError {
     Toml(#[from] toml::de::Error),
     #[error("plugin schema: {0}")]
     Schema(String),
-    #[error("blocked: {0}")]
-    Blocked(String),
     #[error("checksum: {0}")]
     Checksum(String),
     #[error("unsupported api_version `{found}` (this build supports {supported})")]
@@ -200,10 +198,30 @@ impl Plugin {
             .then(|| format!("plugin:{}", self.name()))
     }
 
-    /// Resolve a manifest-relative path against this plugin's root.
-    pub fn path(&self, rel: &Path) -> PathBuf {
-        self.root.join(rel)
+    /// Resolve a manifest-relative path against this plugin's root, refusing
+    /// one that is missing or that resolves — through a symlink — outside it.
+    pub fn path(&self, rel: &Path) -> Result<PathBuf, PluginError> {
+        let joined = self.root.join(rel);
+        let resolved = joined.canonicalize().map_err(|e| {
+            PluginError::Io(std::io::Error::new(
+                e.kind(),
+                format!("{}: {e}", joined.display()),
+            ))
+        })?;
+        let root = self.root.canonicalize()?;
+        if !resolved.starts_with(&root) {
+            return Err(PluginError::Schema(format!(
+                "`{}` resolves outside the package, to {}",
+                rel.display(),
+                resolved.display()
+            )));
+        }
+        Ok(resolved)
     }
+}
+
+fn inside_package(path: &Path) -> bool {
+    !path.is_absolute() && !path.components().any(|c| c.as_os_str() == "..")
 }
 
 /// Say so when a manifest carries a section this build does not read.
@@ -319,8 +337,7 @@ fn validate(m: &PluginManifest) -> Result<(), PluginError> {
         // being caught later — the later check is in a different crate, and a
         // package that reaches outside itself is the one case where "it
         // probably fails anyway" is not good enough.
-        let path = Path::new(file);
-        if path.is_absolute() || path.components().any(|c| c.as_os_str() == "..") {
+        if !inside_package(Path::new(file)) {
             return Err(PluginError::Schema(format!(
                 "script entry `{}` must name a file inside the package",
                 s.entry
@@ -329,7 +346,7 @@ fn validate(m: &PluginManifest) -> Result<(), PluginError> {
     }
 
     if let Some(dir) = &m.scene.dir {
-        if dir.is_absolute() || dir.components().any(|c| c.as_os_str() == "..") {
+        if !inside_package(dir) {
             return Err(PluginError::Schema(format!(
                 "`[scene] dir` `{}` must name a directory inside the package",
                 dir.display()
@@ -337,11 +354,30 @@ fn validate(m: &PluginManifest) -> Result<(), PluginError> {
         }
     }
 
-    if let Some(s) = m.mcp.iter().find(|s| s.config.is_none()) {
-        return Err(PluginError::Schema(format!(
-            "mcp `{}` declares no `config`",
-            s.name
-        )));
+    for a in &m.agent {
+        if !inside_package(&a.prompt) {
+            return Err(PluginError::Schema(format!(
+                "agent `{}` prompt `{}` must name a file inside the package",
+                a.name,
+                a.prompt.display()
+            )));
+        }
+    }
+
+    for s in &m.mcp {
+        let Some(config) = &s.config else {
+            return Err(PluginError::Schema(format!(
+                "mcp `{}` declares no `config`",
+                s.name
+            )));
+        };
+        if !inside_package(config) {
+            return Err(PluginError::Schema(format!(
+                "mcp `{}` config `{}` must name a file inside the package",
+                s.name,
+                config.display()
+            )));
+        }
     }
     Ok(())
 }
@@ -571,6 +607,43 @@ version = "1.0.0"
         .unwrap_err()
         .to_string();
         assert!(err.contains("[scene] dir"), "{err}");
+    }
+
+    #[test]
+    fn an_agent_prompt_or_mcp_config_outside_the_package_is_refused() {
+        for outside in ["../../etc/passwd", "/etc/passwd"] {
+            let agent = load_str(&format!(
+                "{MINIMAL}\n[[agent]]\nname = \"a\"\ndescription = \"d\"\nprompt = \"{outside}\"\n"
+            ))
+            .unwrap_err()
+            .to_string();
+            assert!(agent.contains("inside the package"), "{outside}: {agent}");
+            let mcp = load_str(&format!(
+                "{MINIMAL}\n[[mcp]]\nname = \"s\"\nkind = \"native\"\nconfig = \"{outside}\"\n"
+            ))
+            .unwrap_err()
+            .to_string();
+            assert!(mcp.contains("inside the package"), "{outside}: {mcp}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_path_that_links_out_of_the_package_does_not_resolve() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.md"), "not the package's").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("plugin.toml"), MINIMAL).unwrap();
+        std::fs::write(dir.path().join("own.md"), "the package's").unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.md"),
+            dir.path().join("linked.md"),
+        )
+        .unwrap();
+        let p = Plugin::load(dir.path(), &dir.path().join("plugin.toml")).unwrap();
+        assert!(p.path(Path::new("own.md")).is_ok());
+        let err = p.path(Path::new("linked.md")).unwrap_err().to_string();
+        assert!(err.contains("outside the package"), "{err}");
     }
 
     #[test]

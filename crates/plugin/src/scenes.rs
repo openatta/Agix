@@ -13,10 +13,11 @@ use std::sync::Arc;
 /// declares none.
 pub fn declared_scene(plugin: &Plugin) -> Option<Result<DeclarativeScene, SceneLoadError>> {
     let dir = plugin.manifest.scene.dir.as_ref()?;
-    Some(DeclarativeScene::load_for_plugin(
-        &plugin.path(dir),
-        plugin.name(),
-    ))
+    let resolved = plugin.path(dir).map_err(|e| SceneLoadError::Invalid {
+        path: plugin.root.join(dir),
+        message: e.to_string(),
+    });
+    Some(resolved.and_then(|dir| DeclarativeScene::load_for_plugin(&dir, plugin.name())))
 }
 
 /// Every declared scene among `plugins` that loads. One that does not is

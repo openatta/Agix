@@ -733,6 +733,10 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 策略文件读不了或解析不了时这项是 `failing`,`health.status` 随之是 `failing`:这时所有
 MCP server 都被拒绝。
 
+插件包开着(`plugins.status` 是 `enabled`)时还有一项 `plugins.enable_state`:两层
+`enabled.json` 都读得了(或不存在)是 `ok`;有一层读不了是 `degraded`,`details` 是
+`{"tiers": [{"tier": "global", "fault": "…"}]}`——那一层的包这时全部按禁用算。
+
 #### `daemon.subscribeEvents`
 
 无参。把当前连接标记为异步通知订阅者,此后推送 §8 的 `daemon.event` 帧,直到连接
@@ -2129,12 +2133,15 @@ MCP 策略拒绝这个 server → `MCP_SERVER_DENIED`,**什么都不写、不连
 `name`,否则按读不回来处理。
 
 **`checksum` 对 `http(s)://` 源是必填的**,缺了会在发起请求之前就拒绝;`file://`
-源可以省略。流程:取包 → 校验 → 解包 → 按发现时的方式把 manifest 读回来;读不回来就把
-这次安装**回滚**并报错。带 `[[wasm]]` 或 `[scene.own]` 段的包在这一步被拒——引擎不跑
-WebAssembly 组件,场景改用 `[scene] dir`。
+源可以省略。流程:取包(最大 128 MiB)→ 校验 → 解包到临时目录(有总量、条目数、压缩比
+上限)→ 改名就位 → 按发现时的方式把 manifest 读回来并生成披露;读不回来、或披露里有超限的
+文本,就把这次安装**回滚**并报 `INVALID_PARAMS`。带 `[[wasm]]` 或 `[scene.own]` 段的包在这
+一步被拒——引擎不跑 WebAssembly 组件,场景改用 `[scene] dir`。同一版本已经装过时同样读回、
+同样披露,不过就报错,但不删它。
 
 响应:`{ "success": true, "message": "…", "disclosure": … }`。`disclosure` 是这个
-插件会往模型上下文里塞的文本,让调用方在依赖它之前先看见;字段见 `plugin_packages.md`。
+插件会往模型上下文里塞的文本和它要起的 MCP 服务器(命令行或地址),让调用方在依赖它之前
+先看见;字段见 `plugin_packages.md`。
 
 #### `plugin.uninstall`
 
@@ -2153,7 +2160,8 @@ WebAssembly 组件,场景改用 `[scene] dir`。
 ```
 
 响应 `{ "name": "…", "enabled": true, "scope": "global" }`。启用状态按层记录,
-不改动已安装的文件。
+不改动已安装的文件。那一层的 `enabled.json` 读不了或解析不了时报错、不覆盖它——这时这一层
+的包全部按禁用算,见 `plugin_packages.md`。
 
 #### `plugin.reload`
 

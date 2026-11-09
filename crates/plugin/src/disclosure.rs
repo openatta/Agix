@@ -37,7 +37,9 @@ pub struct Disclosure {
     pub capabilities: Vec<String>,
     /// Scene id this plugin registers, if any.
     pub scene: Option<String>,
-    /// MCP servers it will start, by declared name and kind.
+    /// MCP servers it will start: declared name and kind, then the command
+    /// line or URL it resolves to. Environment variables and headers are
+    /// listed by name only, since their values are typically credentials.
     pub mcp_servers: Vec<String>,
 }
 
@@ -80,7 +82,19 @@ impl Disclosure {
             let kind = match server.kind {
                 crate::manifest::McpKind::Native => "native",
             };
-            d.mcp_servers.push(format!("{} ({kind})", server.name));
+            let config = match &server.config {
+                Some(rel) => describe_mcp_config(&std::fs::read_to_string(plugin.path(rel)?)?)
+                    .map_err(|e| {
+                        PluginError::Schema(format!(
+                            "mcp `{}` config `{}`: {e}",
+                            server.name,
+                            rel.display()
+                        ))
+                    })?,
+                None => String::new(),
+            };
+            d.mcp_servers
+                .push(format!("{} ({kind}): {config}", server.name));
         }
 
         for agent in &m.agent {
@@ -89,14 +103,12 @@ impl Disclosure {
                 &agent.description,
                 MAX_DESCRIPTION_CHARS,
             )?;
-            let path = plugin.path(&agent.prompt);
-            if let Ok(body) = std::fs::read_to_string(&path) {
-                d.push_text(
-                    &format!("agent `{}` system prompt", agent.name),
-                    &body,
-                    MAX_PROMPT_CHARS,
-                )?;
-            }
+            let body = std::fs::read_to_string(plugin.path(&agent.prompt)?)?;
+            d.push_text(
+                &format!("agent `{}` system prompt", agent.name),
+                &body,
+                MAX_PROMPT_CHARS,
+            )?;
         }
 
         if let Some(loaded) = crate::scenes::declared_scene(plugin) {
@@ -135,6 +147,49 @@ impl Disclosure {
         });
         Ok(())
     }
+}
+
+/// What an MCP server config will start or connect to, in one line.
+fn describe_mcp_config(raw: &str) -> Result<String, String> {
+    let v: serde_json::Value = serde_json::from_str(raw).map_err(|e| e.to_string())?;
+    let str_of = |key: &str| v.get(key).and_then(serde_json::Value::as_str);
+    let keys_of = |key: &str| -> Vec<String> {
+        let mut keys: Vec<String> = v
+            .get(key)
+            .and_then(serde_json::Value::as_object)
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default();
+        keys.sort();
+        keys
+    };
+    let mut line = if let Some(command) = str_of("command") {
+        let args = v
+            .get("args")
+            .and_then(serde_json::Value::as_array)
+            .map(|a| {
+                a.iter().map(|x| match x.as_str() {
+                    Some(s) => s.to_string(),
+                    None => x.to_string(),
+                })
+            })
+            .into_iter()
+            .flatten();
+        let argv: Vec<String> = std::iter::once(command.to_string()).chain(args).collect();
+        format!("runs `{}`", argv.join(" "))
+    } else if let Some(url) = str_of("url") {
+        format!("connects to {url} ({})", str_of("type").unwrap_or("http"))
+    } else if let Some(name) = str_of("name") {
+        format!("in-process service `{name}`")
+    } else {
+        return Err("names neither a `command` nor a `url`".into());
+    };
+    for (label, key) in [("env", "env"), ("headers", "headers")] {
+        let keys = keys_of(key);
+        if !keys.is_empty() {
+            line.push_str(&format!("; {label}: {}", keys.join(", ")));
+        }
+    }
+    Ok(line)
 }
 
 #[cfg(test)]
@@ -287,10 +342,21 @@ prompt = "agent.md"
         assert!(Disclosure::from_plugin(&p).is_err());
     }
 
+    /// The name a package gives a server says nothing about what it runs;
+    /// the command line or URL is what a reviewer has to see.
     #[test]
-    fn mcp_servers_are_listed_with_their_kind() {
+    fn an_mcp_server_is_disclosed_with_its_command() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("s.json"), "{}").unwrap();
+        std::fs::write(
+            dir.path().join("s.json"),
+            r#"{"command": "npx", "args": ["-y", "gh-mcp"], "env": {"GH_TOKEN": "secret-value"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("r.json"),
+            r#"{"type": "streamable_http", "url": "https://mcp.example/x", "headers": {"Authorization": "Bearer t"}}"#,
+        )
+        .unwrap();
         let p = load(
             dir.path(),
             r#"
@@ -299,9 +365,39 @@ name = "github"
 kind = "native"
 config = "s.json"
 
+[[mcp]]
+name = "remote"
+kind = "native"
+config = "r.json"
 "#,
         );
         let d = Disclosure::from_plugin(&p).unwrap();
-        assert_eq!(d.mcp_servers, ["github (native)"]);
+        assert_eq!(
+            d.mcp_servers,
+            [
+                "github (native): runs `npx -y gh-mcp`; env: GH_TOKEN",
+                "remote (native): connects to https://mcp.example/x (streamable_http); headers: Authorization",
+            ]
+        );
+        assert!(
+            !d.mcp_servers
+                .iter()
+                .any(|s| s.contains("secret-value") || s.contains("Bearer")),
+            "values are not disclosed: {:?}",
+            d.mcp_servers
+        );
+    }
+
+    #[test]
+    fn an_mcp_config_that_cannot_be_read_refuses_the_install() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("s.json"), "{}").unwrap();
+        let p = load(
+            dir.path(),
+            "\n[[mcp]]\nname = \"s\"\nkind = \"native\"\nconfig = \"s.json\"\n",
+        );
+        assert!(Disclosure::from_plugin(&p).is_err());
+        std::fs::remove_file(dir.path().join("s.json")).unwrap();
+        assert!(Disclosure::from_plugin(&p).is_err());
     }
 }

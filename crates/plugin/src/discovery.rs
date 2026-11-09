@@ -54,7 +54,7 @@ fn load_installed_tier(tier_dir: &Path) -> Vec<Plugin> {
         let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
-        if name == "registry.json" {
+        if name.starts_with('.') {
             continue;
         }
         let versions = cache.list_versions(name);

@@ -17,10 +17,23 @@
 //!
 //! `{name}` and `{version}` come from whoever calls `plugin.install` /
 //! `plugin.uninstall`, so each must pass [`check_component`] before it is
-//! joined onto the root.
+//! joined onto the root. Neither may start with `.`, which leaves dot names
+//! free for the cache's own bookkeeping: the `.lock` file every change to the
+//! cache holds, and the `{name}/.tmp-*` staging directories an install
+//! unpacks into before renaming one into place with [`INSTALLED_MARKER`] in
+//! it.
 
 use crate::manifest::PluginError;
 use std::path::PathBuf;
+
+/// Written into a version directory as the last step of an install. A
+/// directory without it is not a finished install, whatever else it holds.
+pub const INSTALLED_MARKER: &str = ".agix-installed";
+
+/// Held for the length of one change to a cache; dropping it releases it.
+pub struct CacheLock {
+    _file: std::fs::File,
+}
 
 /// `Ok` when `value` can name one directory of the cache: 1 to 128 ASCII
 /// letters, digits, `.`, `_`, `-` or `+`, not starting with `.`. `what` names
@@ -74,10 +87,40 @@ impl PluginCache {
         self.root.join(name).join(version)
     }
 
-    /// Check if a plugin version is already cached.
+    /// Whether this version was installed to completion.
     pub fn is_cached(&self, name: &str, version: &str) -> bool {
         let dir = self.version_dir(name, version);
-        dir.join("plugin.toml").is_file()
+        dir.join("plugin.toml").is_file() && dir.join(INSTALLED_MARKER).is_file()
+    }
+
+    /// Take this cache's lock, waiting for whoever holds it — another install
+    /// or uninstall in this process or in another daemon sharing the
+    /// directory.
+    pub fn lock(&self) -> Result<CacheLock, PluginError> {
+        self.ensure_dirs()?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.root.join(".lock"))?;
+        lock_exclusive(&file)?;
+        Ok(CacheLock { _file: file })
+    }
+
+    /// `{root}/{name}`, refused when it resolves anywhere but directly
+    /// inside this cache.
+    pub fn plugin_dir(&self, name: &str) -> Result<PathBuf, PluginError> {
+        check_component("name", name)?;
+        let plugin_dir = self.root.join(name);
+        if let (Ok(root), Ok(resolved)) = (self.root.canonicalize(), plugin_dir.canonicalize()) {
+            if resolved.parent() != Some(root.as_path()) {
+                return Err(PluginError::Io(std::io::Error::other(format!(
+                    "{} resolves outside the plugin cache",
+                    plugin_dir.display()
+                ))));
+            }
+        }
+        Ok(plugin_dir)
     }
 
     /// Cached versions of a plugin, newest first.
@@ -99,7 +142,9 @@ impl PluginCache {
                 let path = entry.path();
                 if path.is_dir() {
                     if let Some(v) = path.file_name().and_then(|s| s.to_str()) {
-                        versions.push(v.to_string());
+                        if !v.starts_with('.') {
+                            versions.push(v.to_string());
+                        }
                     }
                 }
             }
@@ -130,17 +175,8 @@ impl PluginCache {
     /// Remove a cached plugin version. Refuses anything that would not be a
     /// directory inside this cache.
     pub fn remove_version(&self, name: &str, version: &str) -> Result<(), PluginError> {
-        check_component("name", name)?;
         check_component("version", version)?;
-        let plugin_dir = self.root.join(name);
-        if let (Ok(root), Ok(resolved)) = (self.root.canonicalize(), plugin_dir.canonicalize()) {
-            if resolved.parent() != Some(root.as_path()) {
-                return Err(PluginError::Io(std::io::Error::other(format!(
-                    "{} resolves outside the plugin cache, not removing it",
-                    plugin_dir.display()
-                ))));
-            }
-        }
+        let plugin_dir = self.plugin_dir(name)?;
         let dir = self.version_dir(name, version);
         if dir.is_dir() {
             std::fs::remove_dir_all(&dir).map_err(|e| {
@@ -159,6 +195,26 @@ impl PluginCache {
         }
         Ok(())
     }
+}
+
+#[cfg(unix)]
+fn lock_exclusive(file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    loop {
+        // SAFETY: `flock` only reads the descriptor, which `file` keeps open.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+            return Ok(());
+        }
+        let e = std::io::Error::last_os_error();
+        if e.kind() != std::io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn lock_exclusive(_file: &std::fs::File) -> std::io::Result<()> {
+    Ok(())
 }
 
 #[cfg(test)]
@@ -263,7 +319,19 @@ mod tests {
             "[plugin]\nname = \"my-plugin\"\nversion = \"1.0.0\"",
         )
         .unwrap();
+        assert!(
+            !cache.is_cached("my-plugin", "1.0.0"),
+            "a manifest alone may be an install that stopped half way"
+        );
+        std::fs::write(dir.join(INSTALLED_MARKER), "").unwrap();
         assert!(cache.is_cached("my-plugin", "1.0.0"));
         assert!(!cache.is_cached("my-plugin", "2.0.0"));
+    }
+
+    #[test]
+    fn staging_directories_are_not_versions() {
+        let tmp = TempDir::new().unwrap();
+        let cache = cache_with_versions(&tmp, "p", &["1.0.0", ".tmp-abc"]);
+        assert_eq!(cache.list_versions("p"), ["1.0.0"]);
     }
 }

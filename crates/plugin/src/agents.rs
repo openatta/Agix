@@ -20,14 +20,16 @@ pub fn agent_types(plugin: &Plugin) -> Vec<AgentTypeDefinition> {
 }
 
 fn agent_type(plugin: &Plugin, def: &AgentDef) -> Option<AgentTypeDefinition> {
-    let prompt_path = plugin.path(&def.prompt);
-    let system_prompt = match std::fs::read_to_string(&prompt_path) {
+    let prompt = plugin
+        .path(&def.prompt)
+        .and_then(|path| std::fs::read_to_string(path).map_err(Into::into));
+    let system_prompt = match prompt {
         Ok(body) => body,
         Err(e) => {
             tracing::warn!(
                 plugin = %plugin.name(),
                 agent = %def.name,
-                path = %prompt_path.display(),
+                path = %def.prompt.display(),
                 error = %e,
                 "plugin agent type: failed to read system prompt, skipping"
             );

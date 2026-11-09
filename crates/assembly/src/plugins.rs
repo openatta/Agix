@@ -201,17 +201,6 @@ mod packages {
                 .collect()
         }
 
-        pub fn disclosure(&self, name: &str) -> serde_json::Value {
-            let active = self.active();
-            let Some(p) = active.iter().find(|p| p.name() == name) else {
-                return serde_json::Value::Null;
-            };
-            match plugin::Disclosure::from_plugin(p) {
-                Err(e) => serde_json::json!({"error": e.to_string()}),
-                Ok(d) => super::disclosure_json(&d),
-            }
-        }
-
         pub fn tier_dirs(&self) -> (PathBuf, PathBuf) {
             tier_dirs(self.paths.as_ref())
         }
@@ -227,7 +216,8 @@ mod packages {
             }
         }
 
-        /// Load back what was just installed, the way discovery will.
+        /// Load back what was just installed, the way discovery will, and
+        /// produce the disclosure an installer shows.
         ///
         /// Unpacking and being found are two different pieces of code and
         /// only the second one reads the manifest, so a package can unpack
@@ -235,8 +225,15 @@ mod packages {
         /// installed in no sense a caller cares about: absent from `list`,
         /// contributing nothing, with the reason in a log line nobody is
         /// reading. Asking here is what turns that into an answer at the
-        /// moment somebody is standing in front of it.
-        pub fn load_back(&self, name: &str, version: &str, scope: &str) -> Result<(), String> {
+        /// moment somebody is standing in front of it. A disclosure over its
+        /// limits is the same kind of answer: the package is refused, not
+        /// installed with a note attached.
+        pub fn load_back(
+            &self,
+            name: &str,
+            version: &str,
+            scope: &str,
+        ) -> Result<plugin::Disclosure, String> {
             let cache = plugin::cache::PluginCache::new(self.tier_root(scope)?.join("cache"));
             let manifest = cache
                 .cached_manifest(name, version)
@@ -250,7 +247,7 @@ mod packages {
                     loaded.manifest.plugin.name
                 ));
             }
-            Ok(())
+            plugin::Disclosure::from_plugin(&loaded).map_err(|e| e.to_string())
         }
 
         pub fn cache_for(&self, scope: &str) -> Result<plugin::cache::PluginCache, String> {
@@ -317,6 +314,38 @@ fn disclosure_json(d: &plugin::Disclosure) -> serde_json::Value {
 mod imp {
     use super::*;
     use base::agent_type::AgentTypeDefinition;
+    use base::interface::health::{CheckResult, HealthCheck};
+
+    /// `daemon.doctor`'s view of the two `enabled.json` files: a tier whose
+    /// file cannot be read holds every package in it disabled, and nothing
+    /// else would say why.
+    struct EnableStateCheck((std::path::PathBuf, std::path::PathBuf));
+
+    impl HealthCheck for EnableStateCheck {
+        fn name(&self) -> &str {
+            "plugins.enable_state"
+        }
+
+        fn check(&self) -> CheckResult {
+            let (global, scene) = &self.0;
+            let faults: Vec<serde_json::Value> = [("global", global), ("scene", scene)]
+                .into_iter()
+                .filter_map(|(tier, root)| {
+                    plugin::state::EnableState::new(root.clone())
+                        .fault()
+                        .map(|fault| serde_json::json!({"tier": tier, "fault": fault}))
+                })
+                .collect();
+            if faults.is_empty() {
+                CheckResult::ok("plugin enable state reads")
+            } else {
+                CheckResult::degraded(
+                    "an unreadable enabled.json holds every plugin in its tier disabled",
+                )
+                .with_details(serde_json::json!({"tiers": faults}))
+            }
+        }
+    }
 
     pub struct PluginSubsystem {
         packages: super::packages::Packages,
@@ -372,8 +401,10 @@ mod imp {
             self.packages.list()
         }
 
-        pub fn disclosure(&self, name: &str) -> serde_json::Value {
-            self.packages.disclosure(name)
+        pub fn health_check(&self) -> Option<Arc<dyn base::interface::health::HealthCheck>> {
+            self.packages
+                .is_enabled()
+                .then(|| Arc::new(EnableStateCheck(self.packages.tier_dirs())) as _)
         }
 
         pub async fn install(
@@ -390,21 +421,30 @@ mod imp {
                 checksum: checksum.map(str::to_string),
                 version: version.to_string(),
             };
-            let message = match plugin::install::install(&cache, name, &source)
+            let installed = plugin::install::install(&cache, name, &source)
                 .await
-                .map_err(|e| e.to_string())?
-            {
-                plugin::install::Installed::AlreadyPresent => {
-                    format!("plugin '{name}' v{version} is already installed")
+                .map_err(|e| e.to_string())?;
+            let loaded = self.packages.load_back(name, version, scope);
+            let (message, disclosure) = match (installed, loaded) {
+                (plugin::install::Installed::AlreadyPresent, Ok(d)) => (
+                    format!("plugin '{name}' v{version} is already installed"),
+                    d,
+                ),
+                (plugin::install::Installed::AlreadyPresent, Err(e)) => {
+                    return Err(format!(
+                        "plugin '{name}' v{version} is already installed but is refused on \
+                         loading it back: {e}; uninstall it before installing it again"
+                    ));
                 }
-                plugin::install::Installed::Into(_) => {
-                    if let Err(e) = self.packages.load_back(name, version, scope) {
-                        let _ = plugin::install::uninstall(&cache, name, Some(version));
-                        return Err(format!(
-                            "installed but could not be loaded back, so it was removed: {e}"
-                        ));
-                    }
-                    format!("installed plugin '{name}' v{version} from {download_url}")
+                (plugin::install::Installed::Into(_), Ok(d)) => (
+                    format!("installed plugin '{name}' v{version} from {download_url}"),
+                    d,
+                ),
+                (plugin::install::Installed::Into(_), Err(e)) => {
+                    let _ = plugin::install::uninstall(&cache, name, Some(version));
+                    return Err(format!(
+                        "installed but refused on loading it back, so it was removed: {e}"
+                    ));
                 }
             };
 
@@ -412,7 +452,7 @@ mod imp {
             Ok(serde_json::json!({
                 "success": true,
                 "message": message,
-                "disclosure": self.disclosure(name),
+                "disclosure": super::disclosure_json(&disclosure),
             }))
         }
 
@@ -489,8 +529,8 @@ mod imp {
         pub fn list(&self) -> Vec<serde_json::Value> {
             Vec::new()
         }
-        pub fn disclosure(&self, _name: &str) -> serde_json::Value {
-            serde_json::Value::Null
+        pub fn health_check(&self) -> Option<Arc<dyn base::interface::health::HealthCheck>> {
+            None
         }
         pub async fn install(
             &self,

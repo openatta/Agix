@@ -615,6 +615,23 @@ WebAssembly 载体整个移除。
 - `--listen` 绑定非回环地址时启动打一条 warn:TCP 不加密,token 明文传输。
 - settings.json 里没有任何设置读的顶层键(拼错的、别的工具的,如 `hooks`)在加载时各记一条
   warn,`daemon.doctor` 的 `settings_tiers[]` 多了 `unknown_keys`。行为不变,仍被忽略。
+- `plugin.install` 披露里有超限文本(描述 > 500 字符、提示词 > 40 000 字符)的包被拒
+  (`INVALID_PARAMS`)并删掉,不再是 `success: true` 加 `disclosure: {"error": …}`;agent 的
+  `prompt` 读不到、MCP 的 `config` 读不到或不是 JSON 的包同样装不上。同一版本已经装过的也
+  照样读回、照样披露,不过就报错。
+- 披露的 `mcp_servers` 每项从 `"<名字> (native)"` 变成 `"<名字> (native): runs `<命令行>`"` /
+  `"…: connects to <url> (<type>)"`,后面跟 `; env: A, B` / `; headers: …`(只有键名)。按字符串
+  全等比对的要改。
+- `[[agent]] prompt`、`[[mcp]] config` 和 `[[script]]` 一样必须在包里面(绝对路径、`..`、
+  指到包外的符号链接都拒)。
+- 安装有了上限:压缩包 128 MiB,解开后 512 MiB、10 000 个条目、单条压缩比 200 倍(> 1 MiB
+  的条目)。安装先解到临时目录再改名就位,并写完成标记 `.agix-installed`;没有它的版本目录
+  不算装过,再装同一版本会替换它。
+- `enabled.json` 读不了或解析不了时,那一层的包全部按禁用算(以前当作空表,全部启用),
+  `plugin.enable` / `plugin.disable` 拒绝覆盖它;`daemon.doctor` 多了 `plugins.enable_state`
+  检查。写入改为临时文件加改名。
+- 插件名黑名单删除(14 个写死的名字,只查 RPC 的 `name`)。要限定能装什么,用
+  `settings.json` 的 `plugins.allow`,它按 manifest 名在发现时检查。
 
 - **MCP 策略里 `allowed_servers` 的 `name` 规则不再放行任何 server**,`name` 只在
   `denied_servers` 里起作用。只靠 `{"name": …}` 放行的策略现在拒绝这些 server(拒绝原因会说
@@ -798,3 +815,9 @@ WebAssembly 载体整个移除。
 - `DaemonServer::bind_unix` 把 socket 设为 `0600`(自己 chmod 的可以去掉)。
 - `rpc::SessionOptions::from_params` 与 `rpc::IgnoredOption` 新增,`SessionOptions::FIELDS`
   列出全部字段名。`base::settings::unknown_settings_keys` 新增。
+- `plugin::blocklist` 模块与 `PluginError::Blocked` 删除。`plugin::manifest::Plugin::path`
+  返回 `Result<PathBuf, PluginError>`(解析符号链接后不在包里就报错)。`PluginCache::is_cached`
+  要求有 `plugin::cache::INSTALLED_MARKER`;新增 `PluginCache::{lock, plugin_dir}`、
+  `plugin::install::{MAX_ARCHIVE_BYTES, UnpackLimits}`、`EnableState::{path, fault}`。
+- `assembly::plugins::PluginSubsystem::disclosure` 删除(只给 `plugin.install` 用,结果在它的
+  响应里),新增 `health_check()`。

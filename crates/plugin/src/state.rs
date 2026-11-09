@@ -1,15 +1,17 @@
 //! Plugin enable/disable state — persisted per plugins tier (global/scene),
 //! same override precedence as everything else: scene explicit setting wins
-//! over global explicit setting, and an
-//! absent entry defaults to enabled (matches the pre-existing implicit
-//! behavior where "installed" == "active").
+//! over global explicit setting, and an absent entry defaults to enabled.
 //!
 //! Stored as `<tier_root>/enabled.json` — a flat `{"plugin-name": bool}`
-//! map, sibling to `<tier_root>/cache/`.
+//! map, sibling to `<tier_root>/cache/`. This file is the only off switch a
+//! package has, so a tier whose file exists but cannot be read or parsed
+//! counts as disabling everything rather than as having no entries, and is
+//! never overwritten by [`EnableState::set_enabled`].
 
 use crate::manifest::PluginError;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Enable/disable state for one plugins tier (global or scene).
 pub struct EnableState {
@@ -25,41 +27,82 @@ impl EnableState {
         }
     }
 
-    fn load(&self) -> HashMap<String, bool> {
-        std::fs::read_to_string(&self.path)
-            .ok()
-            .and_then(|raw| serde_json::from_str(&raw).ok())
-            .unwrap_or_default()
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn load(&self) -> Result<HashMap<String, bool>, PluginError> {
+        let raw = match std::fs::read_to_string(&self.path) {
+            Ok(raw) => raw,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
+            Err(e) => {
+                return Err(PluginError::Io(std::io::Error::new(
+                    e.kind(),
+                    format!("cannot read {}: {e}", self.path.display()),
+                )))
+            }
+        };
+        serde_json::from_str(&raw).map_err(|e| {
+            PluginError::Schema(format!(
+                "{} is not a {{\"name\": bool}} map: {e}",
+                self.path.display()
+            ))
+        })
     }
 
     fn save(&self, map: &HashMap<String, bool>) -> Result<(), PluginError> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let parent = self.path.parent().unwrap_or(Path::new("."));
+        std::fs::create_dir_all(parent)?;
         let json = serde_json::to_string_pretty(map).map_err(|e| {
             PluginError::Schema(format!("failed to serialize plugin enable state: {e}"))
         })?;
-        std::fs::write(&self.path, json)?;
-        Ok(())
+        let tmp = parent.join(format!(
+            ".enabled.json.{}-{}.tmp",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let written = std::fs::write(&tmp, json)
+            .and_then(|()| std::fs::File::open(&tmp)?.sync_all())
+            .and_then(|()| std::fs::rename(&tmp, &self.path));
+        if written.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        Ok(written?)
+    }
+
+    /// Why this tier's file cannot be trusted, or `None` when it is absent
+    /// or well-formed.
+    pub fn fault(&self) -> Option<String> {
+        self.load().err().map(|e| e.to_string())
     }
 
     /// Explicit setting for `name` in this tier, or `None` if never set
-    /// (caller decides the default — see `resolve_enabled`).
+    /// (caller decides the default — see `resolve_enabled`). A file that
+    /// cannot be read answers `Some(false)` for every name.
     pub fn get(&self, name: &str) -> Option<bool> {
-        self.load().get(name).copied()
+        match self.load() {
+            Ok(map) => map.get(name).copied(),
+            Err(_) => Some(false),
+        }
     }
 
+    /// Refuses, rather than starting a fresh map, when the existing file
+    /// cannot be read: the entries in it are what keeps other packages off.
     pub fn set_enabled(&self, name: &str, enabled: bool) -> Result<(), PluginError> {
-        let mut map = self.load();
+        let mut map = self.load().map_err(|e| {
+            PluginError::Schema(format!(
+                "not changing the plugin enable state: {e}. Fix or remove the file by hand; \
+                 until then every plugin in this tier stays disabled"
+            ))
+        })?;
         map.insert(name.to_string(), enabled);
         self.save(&map)
     }
 }
 
 /// Resolve whether `name` is active: scene explicit setting wins, else
-/// global explicit setting, else default enabled (installed == active,
-/// matching prior implicit behavior for anyone who never touches
-/// enable/disable at all).
+/// global explicit setting, else enabled.
 pub fn resolve_enabled(name: &str, global: &EnableState, scene: &EnableState) -> bool {
     scene.get(name).or_else(|| global.get(name)).unwrap_or(true)
 }
@@ -78,6 +121,7 @@ mod tests {
         assert_eq!(state.get("my-plugin"), Some(false));
         state.set_enabled("my-plugin", true).unwrap();
         assert_eq!(state.get("my-plugin"), Some(true));
+        assert_eq!(state.fault(), None);
     }
 
     #[test]
@@ -105,5 +149,46 @@ mod tests {
         let scene = EnableState::new(scene_dir.path().to_path_buf());
         scene.set_enabled("p", true).unwrap();
         assert!(resolve_enabled("p", &global, &scene));
+    }
+
+    #[test]
+    fn an_unreadable_enable_state_does_not_enable_what_it_disabled() {
+        let global_dir = TempDir::new().unwrap();
+        let global = EnableState::new(global_dir.path().to_path_buf());
+        global.set_enabled("off", false).unwrap();
+        let scene = EnableState::new(TempDir::new().unwrap().keep());
+
+        let path = global.path().to_path_buf();
+        let mut raw = std::fs::read_to_string(&path).unwrap();
+        raw.truncate(raw.len() / 2);
+        std::fs::write(&path, &raw).unwrap();
+
+        assert!(!resolve_enabled("off", &global, &scene));
+        assert!(
+            !resolve_enabled("never-mentioned", &global, &scene),
+            "a tier that cannot be read keeps everything in it off"
+        );
+        assert!(global.fault().is_some_and(|f| f.contains("enabled.json")));
+
+        let err = global.set_enabled("other", true).unwrap_err().to_string();
+        assert!(err.contains("Fix or remove"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            raw,
+            "the damaged file is left for a person to look at, not overwritten"
+        );
+    }
+
+    #[test]
+    fn a_save_leaves_no_temporary_file_behind() {
+        let dir = TempDir::new().unwrap();
+        let state = EnableState::new(dir.path().to_path_buf());
+        state.set_enabled("p", false).unwrap();
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["enabled.json"]);
     }
 }

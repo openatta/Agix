@@ -1453,6 +1453,128 @@ async fn plugin_lifecycle_install_list_disable_enable_uninstall() {
     let _ = handle.await;
 }
 
+/// The disclosure limits are a refusal: a package whose description is over
+/// them does not install, and nothing of it is left in the cache.
+#[cfg(feature = "plugin-packages")]
+#[tokio::test]
+async fn an_install_whose_disclosure_is_over_the_limit_is_refused_and_removed() {
+    let (_server, sock, dir, handle) = start_server().await;
+    let (archive_path, checksum) = build_plugin_zip(
+        dir.path(),
+        "wordy",
+        &format!(
+            "[plugin]\nname = \"wordy\"\nversion = \"1.0.0\"\napi_version = \"0.1\"\n\
+             description = \"{}\"\n",
+            "x".repeat(501)
+        ),
+    );
+    let resp = rpc_call(
+        &sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"plugin.install","id":1,"params":{{"name":"wordy","version":"1.0.0","download_url":"file://{}","checksum":"{}"}}}}"#,
+            archive_path.display(),
+            checksum,
+        ),
+    )
+    .await;
+    let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    assert_eq!(v["error"]["code"], codes::INVALID_PARAMS, "resp: {v}");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("reaches the model"),
+        "the refusal names the limit: {v}"
+    );
+    assert!(!dir
+        .path()
+        .join("plugins")
+        .join("cache")
+        .join("wordy")
+        .join("1.0.0")
+        .exists());
+
+    let resp = rpc_call(&sock, r#"{"jsonrpc":"2.0","method":"plugin.list","id":2}"#).await;
+    let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    assert!(
+        !v["result"]["plugins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["name"] == "wordy"),
+        "{v}"
+    );
+
+    _server.shutdown_token().cancel();
+    let _ = handle.await;
+}
+
+/// `enabled.json` is the only off switch a package has. Damaged, it keeps
+/// everything in its tier off, refuses to be overwritten (which would turn
+/// back on whatever it had turned off), and `daemon.doctor` says why.
+#[cfg(feature = "plugin-packages")]
+#[tokio::test]
+async fn a_damaged_enable_state_keeps_plugins_off_and_doctor_says_so() {
+    let (_server, sock, dir, handle) = start_server().await;
+    let (archive_path, checksum) = build_demo_plugin_zip(dir.path(), "demo-plugin");
+    let resp = rpc_call(
+        &sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"plugin.install","id":1,"params":{{"name":"demo-plugin","version":"1.0.0","download_url":"file://{}","checksum":"{}"}}}}"#,
+            archive_path.display(),
+            checksum,
+        ),
+    )
+    .await;
+    let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    assert_eq!(v["result"]["success"], true, "install resp: {v}");
+
+    let enabled_json = dir.path().join("plugins").join("enabled.json");
+    std::fs::write(&enabled_json, r#"{"demo-plugin": fal"#).unwrap();
+
+    let resp = rpc_call(&sock, r#"{"jsonrpc":"2.0","method":"plugin.list","id":2}"#).await;
+    let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    let demo = v["result"]["plugins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "demo-plugin")
+        .cloned()
+        .unwrap();
+    assert_eq!(demo["enabled"], false, "{demo}");
+
+    let resp = rpc_call(
+        &sock,
+        r#"{"jsonrpc":"2.0","method":"plugin.enable","id":3,"params":{"name":"demo-plugin"}}"#,
+    )
+    .await;
+    let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    assert!(v["error"].is_object(), "resp: {v}");
+    assert_eq!(
+        std::fs::read_to_string(&enabled_json).unwrap(),
+        r#"{"demo-plugin": fal"#
+    );
+
+    let resp = rpc_call(
+        &sock,
+        r#"{"jsonrpc":"2.0","method":"daemon.doctor","id":4}"#,
+    )
+    .await;
+    let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    let check = v["result"]["health"]["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "plugins.enable_state")
+        .cloned()
+        .unwrap_or_else(|| panic!("doctor has no enable-state check: {v}"));
+    assert_eq!(check["status"], "degraded", "{check}");
+    assert_eq!(check["details"]["tiers"][0]["tier"], "global", "{check}");
+
+    _server.shutdown_token().cancel();
+    let _ = handle.await;
+}
+
 // A malformed session id reaches `SessionPool::resume_or_create`'s parsing
 // only when a real `HistoryStore` is configured; `start_server()` uses
 // `history_store: None`, so these tests need their own server variant.

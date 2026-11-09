@@ -3,7 +3,6 @@
 //! (agent types, scenes, MCP servers), and the disclosure an installer shows.
 
 pub mod agents;
-pub mod blocklist;
 pub mod cache;
 pub mod disclosure;
 pub mod discovery;
