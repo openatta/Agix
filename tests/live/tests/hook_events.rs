@@ -1185,13 +1185,18 @@ async fn an_http_hook_pointed_at_this_machine_is_refused_and_the_turn_goes_on() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: the HTTP hook SSRF guard misses 0.0.0.0 and IPv4-mapped IPv6 loopback"]
 async fn an_http_hook_cannot_reach_this_machine_by_another_spelling() -> anyhow::Result<()> {
-    assert_eq!(http_hook_hits("0.0.0.0").await?, 0, "0.0.0.0");
-    assert_eq!(
-        http_hook_hits("[::ffff:127.0.0.1]").await?,
-        0,
-        "::ffff:127.0.0.1"
-    );
+    for host in [
+        "0.0.0.0",
+        "[::ffff:127.0.0.1]",
+        "[::ffff:7f00:1]",
+        "127.1",
+        "2130706433",
+        "LOCALHOST.",
+        "hook@127.0.0.1",
+        "user:pass@localhost",
+    ] {
+        assert_eq!(http_hook_hits(host).await?, 0, "{host}");
+    }
     Ok(())
 }

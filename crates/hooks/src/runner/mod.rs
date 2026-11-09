@@ -2,12 +2,10 @@
 //!
 //! Submodules split the implementation:
 //! - `executor` — command, prompt, and HTTP hook execution
-//! - `ssrf` — SSRF guard for HTTP hooks
 //! - `matcher` — hook `if` pattern matching utilities
 
 pub mod executor;
 pub mod matcher;
-pub mod ssrf;
 
 use crate::config::{HookConfig, HookEvent, HooksSettings};
 use crate::payload::{HookDecision, HookInput, HookResponse};

@@ -7422,13 +7422,20 @@ the whole page";
     }
 
     async fn fetch_once(agent: &Agent, url: &str) -> String {
+        let mut ctx = base::tool::ToolContext::for_test(std::env::temp_dir());
+        ctx.exec = base::interface::exec::ExecProviders::local().with_network(Arc::new(
+            base::interface::exec::local::LocalNetwork::for_agent_policy(
+                base::context::config::NetworkModeConfig::Unrestricted,
+                vec!["127.0.0.1".into()],
+            ),
+        ));
         let result = agent
             .tools
             .get("WebFetch")
             .expect("WebFetch is registered")
             .call(
                 serde_json::json!({"url": url, "prompt": "what does it say?"}),
-                base::tool::ToolContext::for_test(std::env::temp_dir()),
+                ctx,
                 base::tool::ProgressSender::noop("t"),
             )
             .await

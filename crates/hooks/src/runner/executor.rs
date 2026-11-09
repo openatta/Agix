@@ -3,7 +3,6 @@
 //! These are `impl HookRunner` blocks extending the runner with execution logic.
 //! Separated from `mod.rs` to keep the struct definition and dispatch clean.
 
-use super::ssrf::ssrf_check_url;
 use super::{HookOutcome, HookRunner};
 use crate::payload::{HookDecision, HookInput, HookResponse};
 
@@ -54,8 +53,8 @@ impl HookRunner {
     /// HTTP hook：POST JSON payload 到 url，期望返回 JSON HookResponse。
     /// 自定义 headers 加进 request；status >= 400 → Error；body 解析失败 → 默认空 response。
     ///
-    /// **SSRF guard**: rejects requests to private/reserved IP ranges (127.0.0.0/8,
-    /// 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, ::1) before connecting.
+    /// 每一跳都不许落到本机或内网地址（`HttpRequest::public_only`）：url 写在
+    /// 一份仓库也能带来的 settings.json 里。
     pub(super) async fn exec_http(
         &self,
         url: &str,
@@ -63,18 +62,14 @@ impl HookRunner {
         input: &HookInput,
         timeout_dur: Duration,
     ) -> HookOutcome {
-        // SSRF guard: block private/reserved IPs before connecting
-        if let Err(e) = ssrf_check_url(url).await {
-            return HookOutcome::Error(e.to_string());
-        }
-
         let payload = match serde_json::to_vec(input) {
             Ok(p) => p,
             Err(e) => return HookOutcome::Error(format!("http hook payload: {e}")),
         };
         let mut req = base::interface::exec::HttpRequest::post(url)
             .header("content-type", "application/json")
-            .body(payload);
+            .body(payload)
+            .public_only();
         for (k, v) in headers {
             req = req.header(k, v);
         }

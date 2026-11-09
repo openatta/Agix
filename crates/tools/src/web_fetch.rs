@@ -287,8 +287,38 @@ mod tests {
     use serde_json::json;
     use std::path::Path;
 
+    /// The pages these tests serve are on this machine, which a model-directed
+    /// fetch reaches only when the deployment names the host.
     fn ctx_in(cwd: &Path) -> ToolContext {
-        ToolContext::for_test(cwd.to_path_buf())
+        let mut ctx = ToolContext::for_test(cwd.to_path_buf());
+        ctx.exec = base::interface::exec::ExecProviders::local().with_network(Arc::new(
+            base::interface::exec::local::LocalNetwork::for_agent_policy(
+                base::context::config::NetworkModeConfig::Unrestricted,
+                vec!["127.0.0.1".into()],
+            ),
+        ));
+        ctx
+    }
+
+    #[tokio::test]
+    async fn a_page_on_this_machine_is_refused_unless_the_deployment_names_it() {
+        use std::sync::atomic::Ordering;
+
+        let (port, seen) = a_server_that_would_answer().await;
+        for host in ["127.0.0.1", "localhost", "0.0.0.0", "[::ffff:127.0.0.1]"] {
+            let refused = WebFetchTool::new()
+                .call(
+                    json!({ "url": format!("http://{host}:{port}/") }),
+                    ToolContext::for_test("/tmp".into()),
+                    ProgressSender::noop("t"),
+                )
+                .await;
+            assert!(
+                matches!(&refused, Err(ToolError::Denied(m)) if m.contains("allowed_domains")),
+                "{host}: {refused:?}"
+            );
+        }
+        assert_eq!(seen.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

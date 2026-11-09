@@ -733,7 +733,10 @@ async fn webfetch_answers_odd_pages_and_refuses_odd_urls() -> anyhow::Result<()>
     );
     pages.route("/loop", Page::redirect("/loop"));
     let stub = ProviderStub::start().await?;
-    let mut run = stubbed("odd-pages", &stub).start().await?;
+    let mut run = stubbed("odd-pages", &stub)
+        .settings(json!({ "sandbox": PageServer::reachable() }))
+        .start()
+        .await?;
     let session = run.session().await?;
     let fetch = |id: &str, url: &str| Reply::calls(id, "WebFetch", json!({ "url": url }));
     stub.script([
@@ -824,7 +827,10 @@ async fn the_part_of_a_page_webfetch_keeps_reaches_the_model() -> anyhow::Result
         Page::text(format!("{}WIDE-END-MARK", "中".repeat(20_000))),
     );
     let stub = ProviderStub::start().await?;
-    let mut run = stubbed("page-budget", &stub).start().await?;
+    let mut run = stubbed("page-budget", &stub)
+        .settings(json!({ "sandbox": PageServer::reachable() }))
+        .start()
+        .await?;
     let session = run.session().await?;
     stub.script([
         Reply::calls("f1", "WebFetch", json!({ "url": pages.url("/big") })),

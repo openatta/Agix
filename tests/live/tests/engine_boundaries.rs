@@ -273,7 +273,10 @@ async fn a_concurrency_safe_tool_starts_while_its_stream_is_still_arriving() -> 
     let pages = PageServer::start().await?;
     pages.route("/early", Page::text("EARLY-PAGE"));
     let stub = ProviderStub::start().await?;
-    let mut run = stubbed("streaming-exec", &stub).start().await?;
+    let mut run = stubbed("streaming-exec", &stub)
+        .settings(json!({ "sandbox": PageServer::reachable() }))
+        .start()
+        .await?;
     let session = run.session().await?;
     let stall = Duration::from_secs(4);
     stub.script([
@@ -317,6 +320,7 @@ async fn a_tool_the_policy_refuses_never_runs() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let mut run = stubbed("deny-rule", &stub)
         .settings(json!({
+            "sandbox": PageServer::reachable(),
             "permission_mode": "default",
             "permission_rules": [{ "tool": "WebFetch", "action": "deny" }]
         }))
@@ -347,6 +351,7 @@ async fn a_tool_the_policy_refuses_never_runs() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let mut run = stubbed("deny-hook", &stub)
         .settings(json!({
+            "sandbox": PageServer::reachable(),
             "hooks_config": {
                 "PreToolUse": [{ "type": "command", "command": hook, "timeout": 5000 }]
             }

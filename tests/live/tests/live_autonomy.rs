@@ -593,6 +593,7 @@ async fn ping_reaches_a_page_and_reports_its_status() -> anyhow::Result<()> {
     pages.route("/health", Page::text("ok"));
     pages.route("/gone", Page::status(404, "gone"));
     let mut run = LiveRun::builder("ping")
+        .settings(json!({ "sandbox": PageServer::reachable() }))
         .before_start(|world, _| paced_scene(world))
         .start()
         .await?;

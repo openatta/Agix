@@ -20,7 +20,9 @@ use super::ExecError;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Origin {
     /// The model picked the destination: a `WebFetch` url, a `Ping` host,
-    /// `curl` inside a Bash command. Subject to `allowed_domains`.
+    /// `curl` inside a Bash command. Subject to `allowed_domains`, and kept
+    /// off [internal addresses](is_internal_address) unless `allowed_domains`
+    /// names the host.
     Agent,
     /// An operator configured the endpoint: the model API, an MCP server,
     /// telemetry, the plugin marketplace, an OAuth provider. Not subject to
@@ -50,6 +52,13 @@ pub struct HttpRequest {
     /// redirect target is itself a decision — `WebFetch` returns it to the
     /// model rather than chasing it.
     pub max_redirects: u8,
+    /// Refuse every hop whose destination is an
+    /// [internal address](is_internal_address), whoever chose it.
+    ///
+    /// For an endpoint an operator wrote down whose content still comes from
+    /// outside — an HTTP hook is a URL in a settings file a repository can
+    /// ship. `Origin::Agent` requests get the same refusal without asking.
+    pub public_only: bool,
 }
 
 impl HttpRequest {
@@ -61,7 +70,13 @@ impl HttpRequest {
             body: None,
             max_bytes: None,
             max_redirects: DEFAULT_MAX_REDIRECTS,
+            public_only: false,
         }
+    }
+
+    pub fn public_only(mut self) -> Self {
+        self.public_only = true;
+        self
     }
 
     pub fn get(url: impl Into<String>) -> Self {
@@ -124,7 +139,9 @@ pub struct HttpStream {
 /// A provider follows redirects up to [`HttpRequest::max_redirects`] and must
 /// re-apply its policy to each hop: a destination the model was allowed to
 /// name could otherwise redirect to one it was not, and the allowlist would
-/// hold only for the first request of a chain.
+/// hold only for the first request of a chain. The same goes for refusing
+/// internal addresses, which also has to hold for the address it connects to,
+/// not only the one a name resolved to when it was checked.
 #[async_trait::async_trait]
 pub trait Network: Send + Sync {
     /// Send, and read the whole body.
@@ -150,4 +167,127 @@ pub trait Network: Send + Sync {
     /// `Ping`, and building a sandbox profile that names the hosts a
     /// subprocess may reach.
     fn permits(&self, host: &str, origin: Origin) -> bool;
+}
+
+/// Whether `ip` is this machine or a network behind it rather than the public
+/// internet: unspecified, loopback, private, link-local, carrier-grade NAT,
+/// unique-local, site-local, multicast and the reserved blocks, and an IPv6
+/// address that carries one of those IPv4 ones (mapped, compatible, NAT64,
+/// 6to4).
+///
+/// The one answer to "may a destination chosen from outside reach this", for
+/// a model-directed fetch and an HTTP hook alike.
+pub fn is_internal_address(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => internal_v4(v4),
+        std::net::IpAddr::V6(v6) => internal_v6(v6),
+    }
+}
+
+fn internal_v4(ip: std::net::Ipv4Addr) -> bool {
+    let [a, b, c, _] = ip.octets();
+    a == 0
+        || ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || (a == 100 && (64..128).contains(&b))
+        || (a == 192 && b == 0 && c == 0)
+        || (a == 198 && (b == 18 || b == 19))
+        || ip.is_multicast()
+        || a >= 240
+}
+
+fn internal_v6(ip: std::net::Ipv6Addr) -> bool {
+    let first = ip.segments()[0];
+    ip.is_unspecified()
+        || ip.is_loopback()
+        || (first & 0xfe00) == 0xfc00
+        || (first & 0xffc0) == 0xfe80
+        || (first & 0xffc0) == 0xfec0
+        || ip.is_multicast()
+        || carried_v4(ip).is_some_and(internal_v4)
+}
+
+fn carried_v4(ip: std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr> {
+    if let Some(v4) = ip.to_ipv4_mapped() {
+        return Some(v4);
+    }
+    let from = |hi: u16, lo: u16| {
+        let [a, b] = hi.to_be_bytes();
+        let [c, d] = lo.to_be_bytes();
+        std::net::Ipv4Addr::new(a, b, c, d)
+    };
+    match ip.segments() {
+        [0, 0, 0, 0, 0, 0, hi, lo] => Some(from(hi, lo)),
+        [0x64, 0xff9b, 0, 0, 0, 0, hi, lo] => Some(from(hi, lo)),
+        [0x2002, hi, lo, ..] => Some(from(hi, lo)),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_internal_address;
+
+    #[test]
+    fn every_spelling_of_this_machine_and_the_networks_behind_it_is_internal() {
+        for ip in [
+            "0.0.0.0",
+            "0.1.2.3",
+            "127.0.0.1",
+            "127.255.0.9",
+            "10.0.0.5",
+            "172.16.0.1",
+            "172.31.255.255",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "100.127.255.255",
+            "192.0.0.8",
+            "198.18.0.1",
+            "224.0.0.1",
+            "240.0.0.1",
+            "255.255.255.255",
+            "::",
+            "::1",
+            "::ffff:127.0.0.1",
+            "::ffff:10.0.0.1",
+            "::ffff:169.254.169.254",
+            "::127.0.0.1",
+            "64:ff9b::7f00:1",
+            "2002:7f00:1::",
+            "2002:c0a8:101::1",
+            "fc00::1",
+            "fd12:3456::1",
+            "fe80::1",
+            "febf::1",
+            "fec0::1",
+            "ff02::1",
+        ] {
+            assert!(is_internal_address(ip.parse().expect("an address")), "{ip}");
+        }
+    }
+
+    #[test]
+    fn the_public_internet_is_not() {
+        for ip in [
+            "8.8.8.8",
+            "1.1.1.1",
+            "100.63.255.255",
+            "100.128.0.1",
+            "172.15.255.255",
+            "172.32.0.1",
+            "93.184.216.34",
+            "2001:4860:4860::8888",
+            "2606:4700::1111",
+            "::ffff:8.8.8.8",
+            "64:ff9b::808:808",
+            "2002:808:808::1",
+        ] {
+            assert!(
+                !is_internal_address(ip.parse().expect("an address")),
+                "{ip}"
+            );
+        }
+    }
 }

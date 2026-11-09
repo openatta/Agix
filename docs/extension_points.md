@@ -473,7 +473,10 @@ ctx.exec = ExecProviders::in_process();   // switching is this call
 **出网策略问的是*模型*能够到哪。** 每个请求都带着"是谁选的目的地"。
 `allowed_domains` 约束 `Origin::Agent`——一个 WebFetch 的 url、一个 Ping 的主机
 ——而不约束 `Origin::Operator`,也就是模型端点、MCP server、遥测。把它套到所有东西
-上,agent 就连自己的模型都够不着了。
+上,agent 就连自己的模型都够不着了。`Origin::Agent` 的请求另外不许落到
+`is_internal_address` 判为内部的地址上,`allowed_domains` 点名的主机除外;一个运维者写下、
+内容却来自外面的端点(HTTP hook)用 `HttpRequest::public_only` 要同样的待遇。自己实现
+`Network` 的,这两条也要在重定向的每一跳上查。
 
 运维者自己的流量也是经同一套契约建起来的,但宿主目前还换不掉那些 client 用的
 provider——模型、OAuth、遥测和 registry 的 client 各造各的。所以换掉这个点管得住

@@ -377,7 +377,10 @@ async fn the_page_server_serves_what_it_was_given_and_counts_the_hits() -> anyho
     assert_eq!(pages.hits("/slow"), 1);
 
     let stub = ProviderStub::start().await?;
-    let mut run = stubbed("pages", &stub).start().await?;
+    let mut run = stubbed("pages", &stub)
+        .settings(json!({ "sandbox": PageServer::reachable() }))
+        .start()
+        .await?;
     let session = run.session().await?;
     stub.script([
         Reply::calls("f1", "WebFetch", json!({ "url": pages.url("/data") })),

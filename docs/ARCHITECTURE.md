@@ -506,7 +506,11 @@ stat 的时间,读盘不挡写入。走的是 `Meta` 里的父子关系,只沿 `
    `provider.canonicalize` → `check_write(已解析的路径)` → `provider.write`。
 2. **出网策略问的是"模型能够到哪里"**,不是"这个进程能连出去哪里"。请求带着
    `Origin`:模型选的目标受 `allowed_domains` 约束,运维配的端点(模型 API、MCP、遥测)不受。
-   把它作用到模型 API 上会让 agent 连自己的大脑都够不着。
+   把它作用到模型 API 上会让 agent 连自己的大脑都够不着。模型选的目标还不许落到本机或
+   内网地址(`is_internal_address`:回环、私网、链路本地、CGNAT、`0.0.0.0`、带着这些 IPv4
+   的 IPv6……),除非 `allowed_domains` 点名了那个主机;HTTP hook 的 url 带
+   `HttpRequest::public_only`,同样不许。重定向的每一跳都查;名字在发出前解析查一次,
+   连接时用的解析器再查一次,中间换了答案的名字也进不去。
 3. **受约束的策略绝不静默降级为无约束执行。** 后端报告 `Full` / `Partial` / `None`
    并列出兑现不了的部分;`sandbox.require_enforcement` 决定不足 `Full` 时是否拒绝。
 4. **一个命令是它起的整个进程组。** 本机 provider 让每个子进程领一个进程组,停的时候

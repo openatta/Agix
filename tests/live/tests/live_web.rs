@@ -76,7 +76,10 @@ async fn webfetch_brings_a_page_back_as_text_without_an_extraction_call() -> any
              <p>Build token: {token} &amp; 中文说明</p></body></html>"
         )),
     );
-    let mut run = LiveRun::builder("web-plain").start().await?;
+    let mut run = LiveRun::builder("web-plain")
+        .settings(json!({ "sandbox": PageServer::reachable() }))
+        .start()
+        .await?;
     let session = run.session().await?;
     let events = run
         .turn(
@@ -122,7 +125,10 @@ async fn webfetch_cuts_a_huge_page_at_fifty_thousand_characters() -> anyhow::Res
         "/big",
         Page::huge(70_000, &[(200, &early), (49_000, &edge), (51_000, &past)]),
     );
-    let mut run = LiveRun::builder("web-huge").start().await?;
+    let mut run = LiveRun::builder("web-huge")
+        .settings(json!({ "sandbox": PageServer::reachable() }))
+        .start()
+        .await?;
     let session = run.session().await?;
     let events = run
         .turn(
@@ -179,7 +185,10 @@ async fn webfetch_reports_error_statuses_and_hands_redirects_back() -> anyhow::R
         "/data.json",
         Page::json(&json!({ "service": "pages", "build": build })),
     );
-    let mut run = LiveRun::builder("web-statuses").start().await?;
+    let mut run = LiveRun::builder("web-statuses")
+        .settings(json!({ "sandbox": PageServer::reachable() }))
+        .start()
+        .await?;
     let session = run.session().await?;
     let events = run
         .turn(
@@ -244,7 +253,10 @@ async fn an_interrupt_ends_a_turn_that_waits_on_a_slow_page() -> anyhow::Result<
         "/slow",
         Page::slow(Duration::from_secs(12), Page::text("SLOW-PAGE-BODY")),
     );
-    let mut run = LiveRun::builder("web-slow").start().await?;
+    let mut run = LiveRun::builder("web-slow")
+        .settings(json!({ "sandbox": PageServer::reachable() }))
+        .start()
+        .await?;
     let session = run.session().await?;
     let handle = run
         .spawn_turn(
@@ -310,7 +322,10 @@ async fn task_models_web_fetch_extracts_on_its_own_model_and_falls_back_to_the_p
         format!("FOOTER-NOISE-{}", nonce()),
     );
     pages.route("/doc", long_page(&build, &noise));
-    let mut run = LiveRun::builder("web-extract").start().await?;
+    let mut run = LiveRun::builder("web-extract")
+        .settings(json!({ "sandbox": PageServer::reachable() }))
+        .start()
+        .await?;
     let (main, extractor) = (
         run.config().model.clone(),
         run.config().model_at(1).to_string(),
@@ -326,6 +341,7 @@ async fn task_models_web_fetch_extracts_on_its_own_model_and_falls_back_to_the_p
         },
         "default_provider": "main",
         "task_models": { "web_fetch": "extract" },
+        "sandbox": PageServer::reachable(),
     });
     reload_with(&mut run, "web-extract", settings).await?;
     let session = run.session().await?;

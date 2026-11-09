@@ -711,6 +711,13 @@ WebAssembly 载体整个移除。
   http、agent 三种 hook 也认 `if`(以前被忽略,对所有调用都跑)。
 - `once` 只在 hook 真正跑了之后才算用掉;以前 `if` 没命中的那次调用就把它用掉了。
 - 超时、出错的 hook 在日志里记一条 warn(以前除了 command 超时都没有痕迹)。
+- **`WebFetch`、`Ping` 不再能连本机与内网**:回环、私网、链路本地(含云元数据
+  `169.254.169.254`)、CGNAT、`0.0.0.0`、IPv4 映射的 IPv6 等地址,写成 IP 的、名字解析到的、
+  重定向过去的,都报 `Denied`。要让它们够到本机或内网的某个主机,把主机写进
+  `sandbox.allowed_domains`(如 `"127.0.0.1"`、`"intranet.corp"`);`network_mode` 是缺省的
+  `unrestricted` 时这份列表不限制别的主机,只起放行内部地址的作用。
+- HTTP hook 防内网的检查补全:`0.0.0.0`、`[::ffff:127.0.0.1]`、`127.1`、十进制写法、带
+  `user@` 的 url、IPv6 私有段与 CGNAT 都拒;重定向的每一跳都查。
 
 ### 嵌入方
 
@@ -887,3 +894,7 @@ WebAssembly 载体整个移除。
 - 新增 `ptc::default_run_slots()` 与 `RunCodeTool::with_run_slots`。
 - `hooks::HookConfig::{Prompt, Http, Agent}` 多了 `if_pattern: Option<String>`(结构体字面量
   要补)。`hooks::runner::DEFAULT_HOOK_TIMEOUT_MS` 是 `60_000`。
+- `base::interface::exec::HttpRequest` 多了 `public_only: bool`(结构体字面量要补;`new()`
+  缺省 `false`,`public_only()` 置位),新增 `base::interface::exec::is_internal_address`。
+  `LocalNetwork` 对 `Origin::Agent` 的请求与 `public_only` 的请求在每一跳上拒绝内部地址;
+  自己实现 `Network` 的要照做。`hooks::runner::ssrf` 模块删除。

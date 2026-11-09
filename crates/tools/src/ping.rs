@@ -200,12 +200,28 @@ mod tests {
         });
 
         let tool = PingTool;
-        let r = tool
+        let url = format!("http://127.0.0.1:{port}/");
+        let refused = tool
             .call(
-                json!({"url": format!("http://127.0.0.1:{port}/")}),
+                json!({ "url": url }),
                 ctx_in(Path::new("/tmp")),
                 ProgressSender::noop("t"),
             )
+            .await;
+        assert!(
+            matches!(refused, Err(ToolError::Denied(_))),
+            "a model-directed ping stays off this machine: {refused:?}"
+        );
+
+        let mut ctx = ctx_in(Path::new("/tmp"));
+        ctx.exec = base::interface::exec::ExecProviders::local().with_network(std::sync::Arc::new(
+            base::interface::exec::local::LocalNetwork::for_agent_policy(
+                base::context::config::NetworkModeConfig::Unrestricted,
+                vec!["127.0.0.1".into()],
+            ),
+        ));
+        let r = tool
+            .call(json!({ "url": url }), ctx, ProgressSender::noop("t"))
             .await
             .unwrap();
         assert!(!r.is_error);
