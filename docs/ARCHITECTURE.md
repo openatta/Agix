@@ -600,7 +600,8 @@ git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git
    不会写文件、不会执行别的程序"的命令:`rg --pre`、`fd -x`、`git grep -O`、`man -P`、
    `sort --compress-program`、`git -c …`、`cargo build/check`(跑 build.rs)这类会拉起程序的,
    `sort -o`、`uniq IN OUT`、`yq -i`、`git config k v`、`git branch -D` 这类会写文件 / 改仓库的,
-   以及设 `PATH` / `LD_PRELOAD` / `PAGER` / `CDPATH` 等变量的,都不免询问。
+   以及设 `PATH` / `LD_PRELOAD` / `PAGER` / `CDPATH` 等变量的,都不免询问。会向参数里的主机
+   发请求的 `dig`、`ping` 也不在名单里(主机名本身就能经 DNS 带出数据)。
 
 场景的工具白名单不在这里:它在会话注册表上就把工具拿掉了(§3.5),被拿掉的工具根本
 到不了权限这一步。
