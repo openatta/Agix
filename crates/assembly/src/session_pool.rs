@@ -4761,6 +4761,7 @@ impl SessionPool {
                     context,
                     structured_output,
                     seq,
+                    truncated,
                     ..
                 }) => {
                     api_calls = ac;
@@ -4787,6 +4788,9 @@ impl SessionPool {
                     }
                     if let Some(output) = structured_output {
                         event["structured_output"] = output;
+                    }
+                    if truncated {
+                        event["truncated"] = serde_json::json!(true);
                     }
                     let f = StreamFrame::event(&sid, &turn_id, event);
                     self.broadcast_to_session(&sid, &f).await;

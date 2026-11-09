@@ -2,8 +2,9 @@
 //! with no model behind it (a sub-agent's calls included), the telemetry a
 //! turn writes, a concurrency-safe tool started while the stream that asked
 //! for it is still arriving, a tool the policy refuses never reaching the
-//! outside world, and the recovery policy on failures a provider reports
-//! inside an open stream or as a refusal for size.
+//! outside world, the recovery policy on failures a provider reports
+//! inside an open stream or as a refusal for size, and an OpenAI-compatible
+//! stream that closes without saying it is done.
 //!
 //! Each needs the model's side held fixed — a stall at a chosen block, an
 //! error event after a 200 — which no real endpoint produces on demand.
@@ -426,6 +427,61 @@ async fn an_overload_refused_before_the_stream_moves_to_the_fallback_model() -> 
     );
     let last = turn_calls(&stub).pop().expect("a call");
     assert_eq!(last.model(), "fallback-stub-model");
+    run.finish().await;
+    Ok(())
+}
+
+fn chat_text(text: &str, finish_reason: Option<&str>) -> Value {
+    json!({ "choices": [{ "index": 0, "delta": { "content": text }, "finish_reason": finish_reason }] })
+}
+
+/// A chat stream that closes with neither `[DONE]` nor a `finish_reason`
+/// still ends the turn with what arrived — many gateways send neither — but
+/// a dropped connection looks the same, so the turn says it may be cut
+/// short. A `finish_reason` alone is a normal end.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_chat_stream_closed_without_an_end_marker_marks_the_turn_truncated() -> anyhow::Result<()>
+{
+    let stub = ProviderStub::start().await?;
+    let mut run = stubbed("chat-truncated", &stub)
+        .settings(json!({
+            "providers": { "chat": {
+                "api_type": "openai_compatible",
+                "base_url": stub.base_url().as_str(),
+                "api_key": "stub-key",
+                "default_model": "chat-stub-model"
+            }},
+            "default_provider": "chat"
+        }))
+        .start()
+        .await?;
+    stub.script_when(
+        "标题生成器",
+        (0..4).map(|_| Reply::chat(vec![chat_text("title", Some("stop"))], true)),
+    );
+    let session = run.session().await?;
+    stub.script([
+        Reply::chat(vec![chat_text("HALF-AN-ANSWER", None)], false),
+        Reply::chat(vec![chat_text("WHOLE-ANSWER", Some("stop"))], false),
+    ]);
+
+    let cut = run.turn(&session, "first").await?;
+    assert!(cut.text.contains("HALF-AN-ANSWER"), "{}", cut.text);
+    let done = cut.turn_complete_event.expect("turn_complete");
+    assert_eq!(done["truncated"], true, "{done}");
+    assert_eq!(done["stop_reason"], "end_turn", "{done}");
+
+    let whole = run.turn(&session, "second").await?;
+    assert!(whole.text.contains("WHOLE-ANSWER"), "{}", whole.text);
+    let done = whole.turn_complete_event.expect("turn_complete");
+    assert!(done.get("truncated").is_none(), "{done}");
+
+    assert!(
+        stub.seen()
+            .iter()
+            .any(|r| r.path.ends_with("/chat/completions")),
+        "the turns never reached the chat endpoint"
+    );
     run.finish().await;
     Ok(())
 }

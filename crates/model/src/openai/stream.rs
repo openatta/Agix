@@ -15,6 +15,10 @@
 //! `finish_reason` on the choice, which closes *all* in-flight calls at once.
 //! Hence [`ChunkAccumulator`]: buffer per index, flush on `finish_reason`, and
 //! flush again at end-of-stream for servers that omit it.
+//!
+//! A stream that closes with neither `[DONE]` nor a `finish_reason` still
+//! ends the reply — gateways that drop both are common — but is reported as
+//! [`ModelEvent::Truncated`], since a dropped connection looks the same.
 
 use base::interface::model::{ModelError, ModelEvent, Usage};
 use bytes::Bytes;
@@ -287,6 +291,11 @@ impl ChunkAccumulator {
         out
     }
 
+    /// The provider said why the reply ended.
+    pub fn saw_finish_reason(&self) -> bool {
+        self.stop_reason.is_some()
+    }
+
     fn drain_tool_calls(&mut self) -> Vec<ModelEvent> {
         std::mem::take(&mut self.pending)
             .into_values()
@@ -336,6 +345,7 @@ where
     async_stream::stream! {
         let mut events = Box::pin(byte_stream.eventsource());
         let mut acc = ChunkAccumulator::default();
+        let mut saw_done = false;
 
         loop {
             let next = match tokio::time::timeout(idle_timeout, events.next()).await {
@@ -360,6 +370,7 @@ where
                         continue;
                     }
                     if data == DONE_SENTINEL {
+                        saw_done = true;
                         break;
                     }
                     match serde_json::from_str::<ChatCompletionChunk>(data) {
@@ -382,6 +393,13 @@ where
             }
         }
 
+        if !saw_done && !acc.saw_finish_reason() {
+            tracing::warn!(
+                "chat completion stream closed without [DONE] or a finish_reason; \
+                 taking what arrived as the whole reply"
+            );
+            yield Ok(ModelEvent::Truncated);
+        }
         for e in acc.finish() {
             yield Ok(e);
         }
@@ -828,6 +846,39 @@ data: [DONE]\n\
         let events: Vec<ModelEvent> = events.into_iter().map(Result::unwrap).collect();
         assert_eq!(collected_text(&events), "hi");
         assert!(matches!(events.last(), Some(ModelEvent::EndTurn { .. })));
+    }
+
+    /// Either end marker is enough; only a stream with neither is reported as
+    /// truncated, and it still ends the reply with what arrived.
+    #[tokio::test]
+    async fn a_stream_with_no_end_marker_is_reported_as_truncated() {
+        const CUT: &[u8] =
+            b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hal\"}}]}\n\n";
+        const FINISHED: &[u8] = b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hal\"},\"finish_reason\":\"stop\"}]}\n\n";
+        const DONE: &[u8] =
+            b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hal\"}}]}\n\ndata: [DONE]\n\n";
+
+        async fn events(blob: &'static [u8]) -> Vec<ModelEvent> {
+            events_from_bytes(chunked(blob, 9), Duration::from_secs(90))
+                .map(|r| r.expect("no errors in this fixture"))
+                .collect()
+                .await
+        }
+        let truncated =
+            |events: &[ModelEvent]| events.iter().any(|e| matches!(e, ModelEvent::Truncated));
+
+        let cut = events(CUT).await;
+        assert!(truncated(&cut), "{cut:?}");
+        assert_eq!(collected_text(&cut), "hal");
+        assert!(
+            matches!(cut.last(), Some(ModelEvent::EndTurn { stop_reason, .. }) if stop_reason == "end_turn"),
+            "{cut:?}"
+        );
+
+        let finished = events(FINISHED).await;
+        assert!(!truncated(&finished), "{finished:?}");
+        let done = events(DONE).await;
+        assert!(!truncated(&done), "{done:?}");
     }
 
     /// An error chunk ends the stream as a failure of its kind; parsed as an

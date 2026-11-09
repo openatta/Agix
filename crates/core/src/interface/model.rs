@@ -402,6 +402,11 @@ pub enum ModelEvent {
     SearchResults {
         hits: Vec<SearchHit>,
     },
+    /// The stream stopped without the provider saying the reply was done —
+    /// no end marker, no finish reason. What arrived is taken as the whole
+    /// reply; the [`ModelEvent::EndTurn`] that follows is the adapter's, not
+    /// the provider's.
+    Truncated,
     EndTurn {
         stop_reason: String,
         usage: Usage,

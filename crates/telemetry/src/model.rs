@@ -106,7 +106,11 @@ impl Model for TelemetryModel {
         // abandons the stream early never gets one — the same call would then
         // be reported by the turn loop as having spent nothing either.
         let handle = self.handle.clone();
+        let mut truncated = false;
         let observed = stream.map(move |item| {
+            if let Ok(ModelEvent::Truncated) = &item {
+                truncated = true;
+            }
             if let Ok(ModelEvent::EndTurn { stop_reason, usage }) = &item {
                 let _ = handle.record(TelemetryEvent::api_request(
                     &session_id,
@@ -124,6 +128,7 @@ impl Model for TelemetryModel {
                         tool_count,
                         default_model,
                         purpose: Some(purpose.clone()),
+                        truncated,
                     },
                 ));
             }

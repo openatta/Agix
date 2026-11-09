@@ -155,6 +155,11 @@ pub enum AgentEvent {
         /// The transcript position the turn ended at; see `StepEnd::seq`.
         #[serde(default)]
         seq: u64,
+        /// A model call of this turn ended without the provider marking the
+        /// end of its reply ([`crate::interface::model::ModelEvent::Truncated`]),
+        /// so the reply may be cut short.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        truncated: bool,
     },
 
     /// A message the user sent while this turn was running is now part of

@@ -37,6 +37,10 @@ pub struct ApiRequestPayload {
     /// summing a turn's cost wants on its own.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub purpose: Option<String>,
+    /// The provider closed the stream without marking the reply's end; what
+    /// arrived was taken as the whole reply.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
 }
 
 /// A model call that failed: the provider refused it, or its stream broke
@@ -128,6 +132,7 @@ mod tests {
                 tool_count: 12,
                 default_model: true,
                 purpose: None,
+                truncated: false,
             },
         );
         assert_eq!(event.kind(), "api_request");
@@ -136,6 +141,7 @@ mod tests {
         assert_eq!(v["type"], "api_request");
         assert_eq!(v["input_tokens"], 1200);
         assert_eq!(v["cache_read_tokens"], 900);
+        assert!(v.get("truncated").is_none(), "{v}");
     }
 
     #[test]

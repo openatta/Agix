@@ -407,6 +407,9 @@ pub struct Agent {
     pub(crate) last_had_tool_uses: bool,
     /// The current turn's most recent model call, `None` before it makes one.
     pub(crate) last_call_usage: Option<base::interface::model::Usage>,
+    /// A model call of the current turn ended without the provider marking
+    /// the end of its reply.
+    pub(crate) turn_truncated: bool,
     /// What this session's turns have spent since it was loaded.
     pub(crate) spent: SessionSpend,
     /// Permission denials this session, for telemetry.
@@ -2627,6 +2630,7 @@ impl Builder {
                 request_overhead_tokens: 0,
                 last_had_tool_uses: true, // true → first turn scans for skills
                 last_call_usage: None,
+                turn_truncated: false,
                 spent: SessionSpend::default(),
                 permission_denial_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
                 compact_warning_issued: false,

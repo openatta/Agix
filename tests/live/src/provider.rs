@@ -112,6 +112,13 @@ pub enum Reply {
         kind: String,
         message: String,
     },
+    /// An OpenAI-compatible chat-completions stream: these chunks as `data:`
+    /// events, then `[DONE]` when `done`. For a project whose provider is
+    /// `openai_compatible` with this stub as its `base_url`.
+    Chat {
+        chunks: Vec<serde_json::Value>,
+        done: bool,
+    },
 }
 
 impl Reply {
@@ -151,6 +158,10 @@ impl Reply {
             wait,
             reply: Box::new(reply),
         }
+    }
+
+    pub fn chat(chunks: Vec<serde_json::Value>, done: bool) -> Self {
+        Self::Chat { chunks, done }
     }
 
     /// `kind` is the provider's error type — `overloaded_error`,
@@ -200,6 +211,18 @@ impl Reply {
                     "type": "error",
                     "error": { "type": kind, "message": message }
                 })));
+                (Duration::ZERO, text.into_bytes())
+            }
+            Self::Chat { chunks, done } => {
+                let mut text = String::from(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\nconnection: close\r\n\r\n",
+                );
+                for chunk in chunks {
+                    text.push_str(&format!("data: {chunk}\n\n"));
+                }
+                if *done {
+                    text.push_str("data: [DONE]\n\n");
+                }
                 (Duration::ZERO, text.into_bytes())
             }
         }

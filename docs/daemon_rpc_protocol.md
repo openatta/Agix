@@ -2321,7 +2321,7 @@ MCP 策略拒绝这个 server → `MCP_SERVER_DENIED`,**什么都不写、不连
 | `user_message_delivered` | `{message_id,content}` | 运行中送来的消息(`on_busy:"steer"`)已加进对话,模型下一次调用会读到 |
 | `user_message_refused` | `{message_id,content,message}` | 运行中送来的消息被 `UserPromptSubmit` 拒收,不在 transcript 里;`message` 是 hook 给的理由,可为 `null` |
 | `user_messages_returned` | `{messages:[{message_id,content}]}` | 运行中送来、但本轮结束前没读到的消息,不在 transcript 里,交还客户端 |
-| `turn_complete` | `{stop_reason,api_calls,tool_calls,seq,usage,last_call_usage,context?,structured_output?,message?}` | 本轮结束,transcript 已落盘,`seq` 是此刻的消息数;最终响应随后到达 |
+| `turn_complete` | `{stop_reason,api_calls,tool_calls,seq,usage,last_call_usage,context?,structured_output?,message?,truncated?}` | 本轮结束,transcript 已落盘,`seq` 是此刻的消息数;最终响应随后到达 |
 | `error` | `{code,message}` | 本轮出错结束。只发给**发起这一轮之外**的订阅者 —— 发起者从 `run_turn` 的错误响应得知 |
 | `task_started` | `{task}` | 这个会话的一件任务开始了(`task` 同 `session.tasks` 的条目)。Shell 命令与监视器只在跑过 1 秒后才报,短命令不报;不属于任何一轮,`turn_id` 为 `null` |
 | `task_updated` | `{task}` | 一件报过开始、还没结束的任务变了:子 Agent 每调完一次模型(`task.usage`),有询问开始或结束等待(`task.status` 在 `waiting` 与 `running` 之间);`turn_id` 为 `null` |
@@ -2396,7 +2396,8 @@ transcript,这一轮以 `ENGINE_ERROR` 结束,不会重发。
   "last_call_usage":{…},       // 本轮最后一次调用
   "context":{ "tokens":120000, "compact_threshold":150000, "window":200000 },
   "structured_output":{…},     // 可选
-  "message":"…" }              // 可选
+  "message":"…",               // 可选
+  "truncated":true }           // 可选,只在为 true 时出现
 ```
 
 `context.tokens` 是最后一次调用发出去的上下文大小,按厂商的计数(输入加两项缓存),不是
@@ -2415,6 +2416,11 @@ transcript,这一轮以 `ENGINE_ERROR` 结束,不会重发。
 `output_schema` 时它一定满足那份 schema;本轮没有调用这个工具就没有这个键。
 
 `message` 只在截停这一轮的一方给了理由时出现 —— 比如 hook 返回的 `message`;`stop_reason` 此时是 `stopped_by_hook`。
+
+`truncated: true` 表示本轮有一次模型调用的流在厂商标明结束之前就关了:OpenAI 兼容的流
+既没有 `[DONE]` 也没有 `finish_reason`。不少网关两样都不发,所以这种流照常当作回复结束,
+收到的内容就是整个回复,`stop_reason` 按 `end_turn` 报;但连接中途断开看起来一模一样,
+回复可能不完整,宿主可以据此提示或重发。其余情况没有这个键。
 
 **`stop_reason` 和 `usage` 只在这里出现**,`run_turn` 的最终响应里没有。
 

@@ -37,6 +37,8 @@ pub struct StreamResult {
     /// The turn's token fired before the reply was whole. What had arrived is
     /// in the session, every `tool_use` of it answered.
     pub cancelled: bool,
+    /// The provider never marked the reply's end ([`ModelEvent::Truncated`]).
+    pub truncated: bool,
 }
 
 impl StreamResult {
@@ -48,6 +50,7 @@ impl StreamResult {
             has_tool_uses: false,
             tool_calls: 0,
             cancelled: true,
+            truncated: false,
         }
     }
 }
@@ -112,6 +115,7 @@ where
     let mut tool_calls: u32 = 0;
     let mut failure: Option<ModelError> = None;
     let mut cancelled = false;
+    let mut truncated = false;
     // The reply's closed blocks, in arrival order.
     let mut reply: Vec<ModelContentBlock> = Vec::new();
     let mut pending_text = String::new();
@@ -345,6 +349,7 @@ where
                     true,
                 );
             }
+            ModelEvent::Truncated => truncated = true,
             ModelEvent::EndTurn {
                 stop_reason: sr,
                 usage: u,
@@ -414,6 +419,7 @@ where
         has_tool_uses,
         tool_calls,
         cancelled,
+        truncated,
     })
 }
 

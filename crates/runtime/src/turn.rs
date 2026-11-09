@@ -404,6 +404,7 @@ impl Agent {
         origin: history::entry::MessageOrigin,
     ) -> Result<TurnOutcome, TurnError> {
         self.last_call_usage = None;
+        self.turn_truncated = false;
         self.session_state.take_structured_output();
         crate::steering::lock(&self.steering).open();
         let outcome = self
@@ -628,6 +629,7 @@ impl Agent {
                 context: self.last_call_usage.map(|u| self.context_usage(u)),
                 structured_output: self.session_state.take_structured_output(),
                 seq: self.session.messages.len() as u64,
+                truncated: self.turn_truncated,
             });
         }
         outcome
@@ -1384,6 +1386,7 @@ impl Agent {
             let stop_reason = stream_result.stop_reason;
             let usage = stream_result.usage;
             self.last_call_usage = Some(usage);
+            self.turn_truncated |= stream_result.truncated;
             if let Err(e) = self.session.persist().await {
                 tracing::warn!(error = %e, "failed to persist session");
             }
@@ -1421,6 +1424,7 @@ impl Agent {
                         // by `telemetry::model::TelemetryModel`, which is
                         // where they are visible at all.
                         purpose: None,
+                        truncated: stream_result.truncated,
                     },
                 ));
             // Added here rather than beside the budget's own counter further
