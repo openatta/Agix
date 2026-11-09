@@ -218,6 +218,11 @@ pub struct AsState {
     refresh: HashMap<String, (String, Vec<String>, String)>,
     pub registrations: usize,
     pub refreshes: usize,
+    pub grants: Vec<String>,
+    /// As an enterprise IdP: the subject tokens it accepts, and the client
+    /// the identity assertions it issues are for.
+    pub identities: Vec<String>,
+    pub jag_client_id: String,
     pub issued: Vec<String>,
     pub revoked: Vec<String>,
     pub requests: Vec<String>,
@@ -265,6 +270,29 @@ impl AsState {
         })
     }
 
+    fn issue_access(&mut self, scopes: Vec<String>, resource: String) -> serde_json::Value {
+        let access = self.next("at");
+        self.tokens.insert(
+            access.clone(),
+            Token {
+                scopes: scopes.clone(),
+                expires_at: now() + self.token_ttl,
+                resource,
+            },
+        );
+        self.issued.push(access.clone());
+        serde_json::json!({
+            "access_token": access,
+            "token_type": "Bearer",
+            "expires_in": self.token_ttl,
+            "scope": scopes.join(" "),
+        })
+    }
+
+    pub fn count(&self, grant: &str) -> usize {
+        self.grants.iter().filter(|g| *g == grant).count()
+    }
+
     fn client_auth(&self, req: &Request, form: &HashMap<String, String>) -> Option<String> {
         if let Some((id, secret)) = req.basic() {
             let client = self.clients.get(&id)?;
@@ -288,6 +316,18 @@ fn error(status: u16, code: &str) -> Response {
     Response::json(status, serde_json::json!({"error": code}))
 }
 
+pub const JWT_BEARER: &str = "urn:ietf:params:oauth:grant-type:jwt-bearer";
+pub const TOKEN_EXCHANGE: &str = "urn:ietf:params:oauth:grant-type:token-exchange";
+
+/// The claims of a compact JWT, unverified.
+fn jwt_claims(jwt: Option<&String>) -> Option<serde_json::Value> {
+    let payload = jwt?.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
 impl AuthServer {
     pub async fn start(resource: &str) -> Self {
         let state = Arc::new(Mutex::new(AsState {
@@ -304,6 +344,9 @@ impl AuthServer {
             refresh: HashMap::new(),
             registrations: 0,
             refreshes: 0,
+            grants: Vec::new(),
+            identities: Vec::new(),
+            jag_client_id: String::new(),
             issued: Vec::new(),
             revoked: Vec::new(),
             requests: Vec::new(),
@@ -338,8 +381,9 @@ impl AuthServer {
                     "authorization_endpoint": format!("{}/authorize", s.issuer),
                     "token_endpoint": format!("{}/token", s.issuer),
                     "response_types_supported": ["code"],
-                    "grant_types_supported": ["authorization_code", "refresh_token"],
-                    "token_endpoint_auth_methods_supported": ["none", "client_secret_basic", "client_secret_post"],
+                    "grant_types_supported": ["authorization_code", "refresh_token", "client_credentials", JWT_BEARER],
+                    "token_endpoint_auth_methods_supported": ["none", "client_secret_basic", "client_secret_post", "private_key_jwt"],
+                    "token_endpoint_auth_signing_alg_values_supported": ["ES256", "RS256"],
                     "scopes_supported": ["mcp:read", "mcp:write"],
                     "code_challenge_methods_supported":
                         if s.advertise_s256 { serde_json::json!(["S256"]) } else { serde_json::json!(["plain"]) },
@@ -420,14 +464,83 @@ impl AuthServer {
             }
             ("POST", "/token") => {
                 let form = req.form();
-                let Some(client_id) = s.client_auth(&req, &form) else {
+                let grant = form.get("grant_type").cloned().unwrap_or_default();
+                s.grants.push(grant.clone());
+                let assertion = form.get("client_assertion_type").map(String::as_str)
+                    == Some("urn:ietf:params:oauth:client-assertion-type:jwt-bearer");
+                let client_id = if assertion {
+                    jwt_claims(form.get("client_assertion")).and_then(|c| {
+                        let sub = c["sub"].as_str()?.to_string();
+                        (c["iss"] == sub.as_str()
+                            && c["aud"] == s.issuer.as_str()
+                            && s.clients.contains_key(&sub))
+                        .then_some(sub)
+                    })
+                } else {
+                    s.client_auth(&req, &form)
+                };
+                let Some(client_id) = client_id else {
                     return error(401, "invalid_client");
                 };
-                if form.get("resource") != Some(&s.resource) {
+                if grant != JWT_BEARER && form.get("resource") != Some(&s.resource) {
                     return error(400, "invalid_target");
                 }
-                match form.get("grant_type").map(String::as_str) {
-                    Some("authorization_code") => {
+                let scopes = |v: Option<&String>| -> Vec<String> {
+                    v.map(|s| s.split_whitespace().map(str::to_string).collect())
+                        .unwrap_or_default()
+                };
+                match grant.as_str() {
+                    "client_credentials" => {
+                        let resource = s.resource.clone();
+                        Response::json(200, s.issue_access(scopes(form.get("scope")), resource))
+                    }
+                    JWT_BEARER => {
+                        let Some(claims) = jwt_claims(form.get("assertion")) else {
+                            return error(400, "invalid_grant");
+                        };
+                        if claims["aud"] != s.issuer.as_str()
+                            || claims["client_id"] != client_id.as_str()
+                            || claims["resource"] != s.resource.as_str()
+                        {
+                            return error(400, "invalid_grant");
+                        }
+                        let granted = scopes(claims["scope"].as_str().map(str::to_string).as_ref());
+                        let resource = s.resource.clone();
+                        Response::json(200, s.issue_access(granted, resource))
+                    }
+                    TOKEN_EXCHANGE => {
+                        let subject = form.get("subject_token").cloned().unwrap_or_default();
+                        if !s.identities.contains(&subject)
+                            || form.get("requested_token_type").map(String::as_str)
+                                != Some("urn:ietf:params:oauth:token-type:id-jag")
+                        {
+                            return error(400, "invalid_grant");
+                        }
+                        let scope = form.get("scope").cloned();
+                        let encode = |v: serde_json::Value| {
+                            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(v.to_string())
+                        };
+                        let jag = format!(
+                            "{}.{}.{}",
+                            encode(serde_json::json!({"alg": "RS256", "typ": "oauth-id-jag+jwt"})),
+                            encode(serde_json::json!({
+                                "iss": s.issuer, "sub": "user-1", "aud": form.get("audience"),
+                                "client_id": s.jag_client_id, "jti": s.next("jti"),
+                                "exp": now() + 300, "iat": now(), "resource": form.get("resource"),
+                                "scope": scope,
+                            })),
+                            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode("signature"),
+                        );
+                        Response::json(
+                            200,
+                            serde_json::json!({
+                                "access_token": jag,
+                                "issued_token_type": "urn:ietf:params:oauth:token-type:id-jag",
+                                "token_type": "N_A", "scope": scope, "expires_in": 300,
+                            }),
+                        )
+                    }
+                    "authorization_code" => {
                         let Some(code) = form.get("code").and_then(|c| s.codes.remove(c)) else {
                             return error(400, "invalid_grant");
                         };
@@ -444,7 +557,7 @@ impl AuthServer {
                         let resource = s.resource.clone();
                         Response::json(200, s.issue(&client_id, code.scopes, resource))
                     }
-                    Some("refresh_token") => {
+                    "refresh_token" => {
                         s.refreshes += 1;
                         let presented = form.get("refresh_token").cloned().unwrap_or_default();
                         if s.reject_refresh {

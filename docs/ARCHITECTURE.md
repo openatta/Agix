@@ -649,9 +649,24 @@ rust / go / java / ruby / dotnet / swift 的常见位置,开箱即用。设置�
   "denied_servers": [               // 可省
     { "command": "/tmp/**" },
     { "name": "shell" }
-  ]
+  ],
+  "allowed_authorization_servers": [ // 可省;省略 = 任何授权服务器;[] = 全部拒绝
+    "https://login.corp.example",
+    "https://*.okta.com/oauth2/**"
+  ],
+  "enterprise_idp": {               // 可省;企业托管授权换身份的 IdP(mcp_auth.md §4)
+    "issuer": "https://login.corp.example",
+    "token_endpoint": "https://login.corp.example/oauth2/token",
+    "client_id": "agix"
+  }
 }
 ```
+
+`allowed_authorization_servers` 管 OAuth(§6.5):远端 server 的授权服务器 issuer 规整成
+`scheme://host[:port][/path]`(末尾不带 `/`)后按 glob 匹配,不匹配的在任何跳转、注册、令牌
+请求之前被拒绝,`mcp.auth.start` 报 `MCP_SERVER_DENIED`。`enterprise_idp` 给出
+`"grant": "enterprise"` 的 server 用来交换用户身份的 IdP;宿主经 `Assembly::mcp_enterprise_idp`
+给了的话以宿主的为准。策略读不了时两者都不生效:没有授权服务器被允许,也没有 IdP。
 
 每条规则恰好一个键,按它匹配:
 
@@ -703,7 +718,10 @@ daemon 管。设计与用法在 [`mcp_auth.md`](mcp_auth.md);这里只记它在�
   里,不提供工具;模型在系统提示里看到一句"这个 server 要用户先登录"。
 - **状态变化回到会话池**:`McpAuth` 的监听器发 `mcp_auth_*` 通知;令牌失效时会话池把这个
   server 从所有缓存的连接里摘下,登录完成后只重连它,受影响的会话在下一轮之前重建。
-- **MCP 策略在授权之前**:被 §6.4 拒绝的 server 不连接,也就走不到 OAuth。
+- **MCP 策略在授权之前**:被 §6.4 拒绝的 server 不连接,也就走不到 OAuth;授权服务器在任何
+  跳转之前对照 `allowed_authorization_servers`。
+- **无人值守的 server**(`client_credentials`、企业托管授权)不经过登录:令牌在每次请求之前
+  检查,快到期或被拒时重新取。企业身份由宿主经 `mcp.auth.setIdentity` 交来,只在内存里。
 
 ---
 

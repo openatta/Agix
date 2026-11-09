@@ -36,6 +36,8 @@
   连接失败。
 - `oauth_provider` 已删除。配置里出现它,整条 server 配置被拒绝,错误信息给出 `oauth` 的写法。
 - WebSocket 与 stdio server 没有 OAuth。
+- `grant` 选令牌从哪来:`authorization_code`(默认,用户在浏览器里登录,§3)、
+  `client_credentials`、`enterprise`(无人值守,§4)。
 
 ## 2. 状态
 
@@ -44,10 +46,10 @@
 | `auth.state` | 意思 |
 |---|---|
 | `none` | 没有涉及 OAuth:server 没要求,或不是远端 server |
-| `required` | 需要登录:server 回了 401(没有令牌,或令牌已失效),或要求更多 scope |
+| `required` | 需要登录:server 回了 401(没有令牌,或令牌已失效),或要求更多 scope;`enterprise` server 在等企业身份(§4) |
 | `authorizing` | 一次登录已发起,等浏览器回来 |
 | `authorized` | 有令牌,连接带着它 |
-| `failed` | 上一次登录失败或超时,`error` 写明原因;可以再发起 |
+| `failed` | 上一次登录失败或超时,或无人值守的 server 取不到令牌;`error` 写明原因 |
 
 `auth` 还可能带 `issuer`(授权服务器)、`scopes`(已授予的;`required` 时是需要的)、
 `expires_at`(RFC 3339)、`error`。**从不带令牌。**
@@ -123,7 +125,65 @@ discovery 取授权服务器元数据。server 没有发布任何 OAuth 元数�
 (RFC 7009),然后删除令牌、断开 server,状态回到 `required`。客户端注册保留,下次登录不必
 重新注册。
 
-## 4. RPC 与通知
+## 4. 无人值守:client credentials 与企业托管授权
+
+没人坐在浏览器前的 server(定时任务、服务端部署)用这两种 `grant`。令牌在用之前检查:剩不到
+60 秒就重新取;server 以 401 拒绝时重新取一次并重试那次调用。都不需要 `mcp.auth.start`
+(对它们调会得到 `INVALID_PARAMS`)。
+
+### `client_credentials`
+
+daemon 以自己的身份取令牌(OAuth 2.0 client credentials,MCP 的 SEP-1046),请求带
+`resource` 与配置的 `scopes`:
+
+```jsonc
+"oauth": { "grant": "client_credentials", "client_id": "agix-batch",
+           "client_secret_env": "BATCH_MCP_SECRET" }      // client_secret_basic / _post,按授权服务器支持的
+"oauth": { "grant": "client_credentials", "client_id": "agix-batch",
+           "private_key_jwt": { "key_file": "/etc/agix/mcp-client.pem",   // 或 "key_env": "VAR"
+                                "alg": "ES256" } }        // RS256(默认) RS384 RS512 ES256 ES384
+```
+
+`client_id` 必填,`client_secret_env` 与 `private_key_jwt` 恰好一个。`private_key_jwt`
+(RFC 7523)每次请求现签一个 5 分钟有效的断言(`iss` = `sub` = `client_id`,`aud` = 授权服务器
+issuer);令牌端点必须是 HTTPS,只有 server 与授权服务器都在回环上时才允许 HTTP。
+
+### `enterprise`:企业托管授权(ID-JAG)
+
+用户已经登录了企业 IdP,宿主手里有他的 ID token(或 IdP 的刷新令牌)。daemon 拿它到 IdP 做
+token exchange(RFC 8693),换一个发给 MCP server 的授权服务器、绑定这个 server 的身份断言
+授权(ID-JAG),再到那个授权服务器以 JWT bearer 授权(RFC 7523)换访问令牌。用户不必为每个
+MCP server 各登录一次,企业 IdP 决定谁能用哪个 server。
+
+**企业 IdP** 由部署方给,不在用户的 settings 里——宿主经 `Assembly::mcp_enterprise_idp`,
+或 MCP 策略文件的 `enterprise_idp`(两者都有时以宿主的为准):
+
+```jsonc
+"enterprise_idp": {
+  "issuer": "https://login.corp.example",
+  "token_endpoint": "https://login.corp.example/oauth2/token",
+  "client_id": "agix",                         // 这个客户端在 IdP 上的注册
+  "client_secret_env": "AGIX_IDP_SECRET",      // 可省:公共客户端
+  "client_auth": "client_secret_basic"         // 可省:有密钥就 basic,没有就 none;或 client_secret_post
+}
+```
+
+**每个 server:**
+
+```jsonc
+"oauth": { "grant": "enterprise",
+           "client_id": "agix-mcp",              // 这个客户端在 server 的授权服务器上的注册
+           "client_secret_env": "DOCS_AS_SECRET", // 可省
+           "scopes": ["files:read"] }
+```
+
+**身份**由宿主经 `mcp.auth.setIdentity {id_token}` 或 `{refresh_token}` 交给 daemon,只放在
+内存里,daemon 重启要再给一次。在拿到身份之前,这些 server 处于 `auth_required`,`auth.error`
+说明在等身份,并发 `mcp_auth_required`;拿到后它们随即换令牌、连接。令牌到期时用同一个身份
+再换。IdP 拒绝这个身份(`invalid_grant`,如 ID token 过期)时,server 回到 `auth_required`,
+宿主要换一个新的身份。
+
+## 5. RPC 与通知
 
 方法(参数与返回见 `daemon_rpc_protocol.md` §6.5):
 
@@ -133,20 +193,22 @@ discovery 取授权服务器元数据。server 没有发布任何 OAuth 元数�
 | `mcp.auth.complete` | external 流程:交回回调 URL,换令牌、重连,返回 `{server, scopes}` |
 | `mcp.auth.cancel` | 放弃一次登录,server 回到发起前的状态 |
 | `mcp.auth.logout` | 吊销、删除令牌、断开 |
+| `mcp.auth.setIdentity` | 给出企业身份,重连等着它的 `enterprise` server |
 
 `daemon.event`:
 
 | `kind` | 载荷 | 什么时候 |
 |---|---|---|
-| `mcp_auth_required` | `{server, scopes}` | server 需要登录(含需要更多 scope) |
+| `mcp_auth_required` | `{server, scopes}` | server 需要登录(含需要更多 scope、`enterprise` server 在等身份) |
 | `mcp_auth_completed` | `{server}` | 登录完成,随后是这个 server 的 `mcp_connected` |
 | `mcp_auth_failed` | `{server, error}` | 登录失败或过期 |
 
 错误码:请求本身不对(没有这个 server、server 不用 OAuth、流程不存在或已结束、redirect
 不合法)是 `INVALID_PARAMS`;授权服务器或登录本身失败是 `MCP_AUTH_FAILED`(-32021);MCP
-策略拒绝的 server 是 `MCP_SERVER_DENIED`——被拒的 server 根本走不到 OAuth。
+策略拒绝的 server、不在 `allowed_authorization_servers` 里的授权服务器是
+`MCP_SERVER_DENIED`——被拒的 server 根本走不到 OAuth。
 
-## 5. 凭据存储
+## 6. 凭据存储
 
 默认存在用户数据目录的 `mcp/oauth/` 下:每个 server 一个文件,文件名是规范化 server URL 的
 SHA-256,权限 0600(目录 0700),写入走临时文件 + 原子改名。存的是一条
@@ -187,7 +249,7 @@ let pool = assembly::assemble::pool(&config, scene, Assembly {
 - `mcp_oauth_client` 决定动态注册时报给授权服务器的名字(用户在同意页上看到),以及 CIMD
   用的元数据文档 URL;省略时名字是 `Agix`,只用动态注册。
 
-## 6. 安全
+## 7. 安全
 
 - **SSRF。** 发现与授权服务器的请求只能到公网地址,外加 MCP server 自己那一类地址:server
   在回环上,授权服务器也可以在回环上;server 在私网,也可以在私网。链路本地(含云元数据
@@ -196,12 +258,25 @@ let pool = assembly::assemble::pool(&config, scene, Assembly {
 - **redirect URI** 只有 daemon 自己的 `127.0.0.1` 回环地址,或宿主给的(见 §3)。
 - **令牌只出现在凭据存储里**:不进日志、遥测、会话录像与 transcript、`daemon.event`、任何 RPC
   响应。只以 `Authorization: Bearer` 头发送。
-- 机密客户端的密钥只从环境变量读;动态注册得到的密钥存在凭据记录里。
+- 机密客户端的密钥只从环境变量读;动态注册得到的密钥存在凭据记录里;签断言的私钥从文件或
+  环境变量读,不进凭据记录。
+- **授权服务器白名单。** MCP 策略(`ARCHITECTURE.md` §6.4)可以写
+  `"allowed_authorization_servers": ["https://login.corp.example", "https://*.okta.com/oauth2/**"]`:
+  对 issuer(规整成 `scheme://host[:port][/path]`、末尾不带 `/`)做 glob,`*` 不跨 `/`。不匹配的
+  授权服务器在**任何跳转、注册、令牌请求之前**被拒绝;写了这一项而授权服务器元数据没有
+  `issuer`,同样拒绝。不写 = 任何授权服务器都行。
+- 企业 IdP 的端点是部署方配置的,不受上面"只能到公网"的地址限制;server 的授权服务器仍然受。
 
-## 7. 限制
+## 8. 限制
 
 - 不支持 DPoP 与 mTLS 绑定的令牌;只发 Bearer。
 - 不做 RFC 9207 之外的回调来源校验;回环监听只接受 `GET /callback`。
 - 刷新的跨进程协调不在这里:多个 daemon 共享同一份存储且授权服务器轮换刷新令牌时,可能有一个
   刷新失败并要求重新登录。
 - WebSocket server 连不上退回 streamable HTTP 时不带 OAuth。
+- 企业托管授权:只检查 ID-JAG 的结构与绑定(issuer、audience、client、resource、scope、有效期),
+  **不验签**——它直接来自受信的 IdP 令牌端点,签名由 server 的授权服务器验证;不支持 Rich
+  Authorization Requests(`authorization_details`);ID token 的新鲜度归宿主,daemon 不替它刷新;
+  身份只在内存里。
+- `client_credentials` 的令牌请求在一个自己的线程与运行时上完成(rmcp 的这段 future 不是
+  `Send`);一个令牌有效期里只发生一次,不影响别的连接。

@@ -419,6 +419,10 @@ WebAssembly 载体整个移除。
   (-32021)。`mcp.status` 的元素多了 `auth`,`state` 多了 `auth_required`。
 - 传输错误不再清掉 OAuth 令牌(以前任何一次重连都会清);`mcp.addServer` / `mcp.updateServer`
   加进来的 server 和启动时连的一样走 OAuth。
+- 无人值守的 MCP server:`oauth.grant` 为 `client_credentials`(`client_secret_env` 或
+  `private_key_jwt`)或 `enterprise`(企业托管授权;身份经新方法 `mcp.auth.setIdentity` 给)。
+- MCP 策略文件多了两个可选键:`allowed_authorization_servers`(授权服务器 issuer 的 glob)与
+  `enterprise_idp`。`daemon.doctor` 的 `mcp.policy` 详情相应多了这两项。
 
 ### 嵌入方
 
@@ -459,3 +463,6 @@ WebAssembly 载体整个移除。
   新增 `share()`(会话用的、共享连接的那一份)、`pending()`(等登录的 server)。
   `McpError` 多了 `AuthRequired` / `InsufficientScope`。
 - rmcp 升到 3.9,开了 `auth`、`auth-client-credentials-jwt`、`auth-enterprise-managed`。
+- `Assembly` 多了 `mcp_enterprise_idp: Option<mcp::config::EnterpriseIdp>`;`McpPolicy` 多了
+  `allowed_authorization_servers`、`enterprise_idp` 两个字段(结构体字面量要补,或用
+  `..Default::default()`)。`McpOAuthConfig` 多了 `grant`、`private_key_jwt`。

@@ -114,6 +114,12 @@ pub struct Assembly {
     /// dynamic registration only.
     #[cfg(feature = "mcp")]
     pub mcp_oauth_client: Option<mcp::oauth::McpOAuthClient>,
+    /// The enterprise IdP whose users' identities `"grant": "enterprise"`
+    /// MCP servers are authorized from (the host then supplies an identity
+    /// with `mcp.auth.setIdentity`). `None`: the MCP policy's
+    /// `enterprise_idp`, if it names one.
+    #[cfg(feature = "mcp")]
+    pub mcp_enterprise_idp: Option<mcp::config::EnterpriseIdp>,
     /// Which configured MCP servers may connect. `None` reads the policy file
     /// (`DaemonConfig::mcp_policy_path`, else the platform's managed path);
     /// a host that passes one is the only source, and no file is read.
@@ -138,6 +144,8 @@ impl Default for Assembly {
             mcp_credential_store: None,
             #[cfg(feature = "mcp")]
             mcp_oauth_client: None,
+            #[cfg(feature = "mcp")]
+            mcp_enterprise_idp: None,
             #[cfg(feature = "mcp")]
             mcp_policy: None,
         }
@@ -256,7 +264,17 @@ pub async fn pool(
                 "the MCP policy is unreadable; every MCP server is denied"
             );
         }
-        pool = pool.with_mcp_policy(policy);
+        if let Some(Err(e)) = assembly
+            .mcp_enterprise_idp
+            .as_ref()
+            .map(mcp::config::EnterpriseIdp::validate)
+        {
+            anyhow::bail!("Assembly::mcp_enterprise_idp: {e}");
+        }
+        let idp = assembly
+            .mcp_enterprise_idp
+            .or_else(|| policy.enterprise_idp().cloned());
+        pool = pool.with_mcp_policy(policy).with_mcp_enterprise_idp(idp);
     }
     let pool = Arc::new(pool);
 

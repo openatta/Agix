@@ -32,6 +32,13 @@ struct Daemon {
 
 impl Daemon {
     async fn start(servers: serde_json::Value) -> Self {
+        Self::start_with_policy(servers, None).await
+    }
+
+    async fn start_with_policy(
+        servers: serde_json::Value,
+        policy: Option<serde_json::Value>,
+    ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_path_buf();
         std::fs::create_dir_all(root.join(".agix")).unwrap();
@@ -58,6 +65,7 @@ impl Daemon {
             daemon::Assembly {
                 cwd: Some(root.clone()),
                 model_client: Some(model.clone() as Arc<dyn AnthropicClient>),
+                mcp_policy: policy.map(|p| serde_json::from_value(p).expect("a valid policy")),
                 ..Default::default()
             },
         )
@@ -806,4 +814,240 @@ async fn a_server_added_over_rpc_gets_the_same_sign_in() {
         renamed["tool_count"], 2,
         "a server renamed in settings keeps its sign-in"
     );
+}
+
+/// An EC P-256 key generated for these tests only.
+const TEST_SIGNING_KEY: &str = "-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg/ZPFSfCUF/GrtLOT
+H09ol9nY5GBMrfhEuil1uXnGJiahRANCAATszeKXDDXvOCL7jv1JTGw6SiWjeN9s
+kHMPWaT8lk0SezP/Tc/Vwvu3RMB3rqHok9mE7RViyh/MFhFYFD7eSL6c
+-----END PRIVATE KEY-----
+";
+
+fn env_var(name: &str, value: &str) -> String {
+    let var = format!("AGIX_TEST_{name}_{}", uuid::Uuid::new_v4().simple());
+    std::env::set_var(&var, value);
+    var
+}
+
+async fn use_tool(d: &Daemon, conn: &mut Conn, tool: &str) -> String {
+    d.model.push_turn(tool_round(tool, "t"));
+    d.model.push_turn(text_round("ok"));
+    run_turn(conn, "go").await;
+    serde_json::to_string(&d.model.nth_request(d.model.calls() - 1).unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn client_credentials_connect_unattended_and_are_fetched_again_when_refused_or_expiring() {
+    let (mcp, auth) = McpServer::start().await;
+    auth.preregister("svc", Some("svc-secret"));
+    let var = env_var("CC_SECRET", "svc-secret");
+    let d = Daemon::start(serde_json::json!({"docs": {
+        "type": "streamable_http", "url": mcp.url,
+        "oauth": {"grant": "client_credentials", "client_id": "svc", "client_secret_env": var,
+                  "scopes": ["mcp:read"]},
+    }}))
+    .await;
+    let mut conn = d.connect().await;
+
+    let status = conn.wait_state("docs", "connected").await;
+    assert_eq!(status["auth"]["state"], "authorized");
+    assert_eq!(status["tool_count"], 2);
+    assert_eq!(auth.state.lock().unwrap().count("client_credentials"), 1);
+    let (code, _) = conn
+        .err("mcp.auth.start", serde_json::json!({"server": "docs"}))
+        .await;
+    assert_eq!(code, codes::INVALID_PARAMS as i64, "nothing to sign in to");
+
+    assert!(use_tool(&d, &mut conn, "mcp__docs__echo")
+        .await
+        .contains("echo: ok"));
+    assert_eq!(
+        auth.state.lock().unwrap().count("client_credentials"),
+        1,
+        "a token that lasts is reused"
+    );
+
+    auth.state.lock().unwrap().tokens.clear();
+    assert!(use_tool(&d, &mut conn, "mcp__docs__echo")
+        .await
+        .contains("echo: ok"));
+    assert_eq!(
+        auth.state.lock().unwrap().count("client_credentials"),
+        2,
+        "a refused token is fetched again and the call retried"
+    );
+
+    {
+        let mut s = auth.state.lock().unwrap();
+        s.token_ttl = 30;
+        s.tokens.clear();
+    }
+    use_tool(&d, &mut conn, "mcp__docs__echo").await;
+    let before = auth.state.lock().unwrap().count("client_credentials");
+    assert!(use_tool(&d, &mut conn, "mcp__docs__echo")
+        .await
+        .contains("echo: ok"));
+    assert!(
+        auth.state.lock().unwrap().count("client_credentials") > before,
+        "a token about to expire is fetched again before it is used"
+    );
+    assert_eq!(conn.status("docs").await["auth"]["state"], "authorized");
+}
+
+#[tokio::test]
+async fn client_credentials_can_authenticate_with_a_signed_assertion() {
+    let (mcp, auth) = McpServer::start().await;
+    auth.preregister("svc-jwt", Some("a secret the daemon does not have"));
+    let key = env_var("CC_KEY", TEST_SIGNING_KEY);
+    let d = Daemon::start(serde_json::json!({"docs": {
+        "type": "streamable_http", "url": mcp.url,
+        "oauth": {"grant": "client_credentials", "client_id": "svc-jwt",
+                  "private_key_jwt": {"key_env": key, "alg": "ES256"}},
+    }}))
+    .await;
+    let mut conn = d.connect().await;
+    let status = conn.wait_state("docs", "connected").await;
+    assert_eq!(status["auth"]["state"], "authorized");
+    assert_eq!(
+        d.record(&mcp.url).await.tokens.unwrap().client_id,
+        "svc-jwt"
+    );
+}
+
+#[tokio::test]
+async fn an_enterprise_identity_is_exchanged_for_the_server_token() {
+    let (mcp, auth) = McpServer::start().await;
+    auth.preregister("ema-client", None);
+    let idp = crate::mcp_oauth_mock::AuthServer::start(&mcp.url).await;
+    idp.preregister("agix-at-idp", Some("idp-secret"));
+    {
+        let mut s = idp.state.lock().unwrap();
+        s.identities.push("id-token-alice".into());
+        s.jag_client_id = "ema-client".into();
+    }
+    let idp_secret = env_var("IDP_SECRET", "idp-secret");
+    let policy = serde_json::json!({"enterprise_idp": {
+        "issuer": idp.url, "token_endpoint": format!("{}/token", idp.url),
+        "client_id": "agix-at-idp", "client_secret_env": idp_secret,
+    }});
+    let d = Daemon::start_with_policy(
+        serde_json::json!({"docs": {
+            "type": "streamable_http", "url": mcp.url,
+            "oauth": {"grant": "enterprise", "client_id": "ema-client", "scopes": ["mcp:read"]},
+        }}),
+        Some(policy),
+    )
+    .await;
+    let mut conn = d.connect().await;
+    let waiting = conn.wait_state("docs", "auth_required").await;
+    assert!(
+        waiting["auth"]["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("mcp.auth.setIdentity"),
+        "{waiting}"
+    );
+
+    let out = conn
+        .ok(
+            "mcp.auth.setIdentity",
+            serde_json::json!({"id_token": "someone-else"}),
+        )
+        .await;
+    assert_eq!(out["reconnected"], serde_json::json!(["docs"]));
+    let refused = conn.status("docs").await;
+    assert_eq!(refused["state"], "auth_required");
+    assert!(
+        refused["auth"]["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("refused the identity"),
+        "{refused}"
+    );
+
+    conn.ok(
+        "mcp.auth.setIdentity",
+        serde_json::json!({"id_token": "id-token-alice"}),
+    )
+    .await;
+    conn.event("mcp_connected", "docs").await;
+    let status = conn.status("docs").await;
+    assert_eq!(status["tool_count"], 2);
+    assert_eq!(status["auth"]["state"], "authorized");
+    assert_eq!(status["auth"]["scopes"], serde_json::json!(["mcp:read"]));
+    assert!(
+        idp.state
+            .lock()
+            .unwrap()
+            .count(crate::mcp_oauth_mock::TOKEN_EXCHANGE)
+            >= 2
+    );
+    assert_eq!(
+        auth.state
+            .lock()
+            .unwrap()
+            .count(crate::mcp_oauth_mock::JWT_BEARER),
+        1
+    );
+    assert!(use_tool(&d, &mut conn, "mcp__docs__echo")
+        .await
+        .contains("echo: ok"));
+
+    let (code, _) = conn
+        .err(
+            "mcp.auth.setIdentity",
+            serde_json::json!({"id_token": "a", "refresh_token": "b"}),
+        )
+        .await;
+    assert_eq!(code, codes::INVALID_PARAMS as i64);
+}
+
+#[tokio::test]
+async fn an_identity_without_an_enterprise_idp_is_refused() {
+    let d = Daemon::start(serde_json::json!({})).await;
+    let mut conn = d.connect().await;
+    let (code, message) = conn
+        .err(
+            "mcp.auth.setIdentity",
+            serde_json::json!({"refresh_token": "rt"}),
+        )
+        .await;
+    assert_eq!(code, codes::INVALID_PARAMS as i64);
+    assert!(message.contains("enterprise IdP"), "{message}");
+}
+
+#[tokio::test]
+async fn the_policy_refuses_an_authorization_server_before_the_user_is_sent_anywhere() {
+    let (mcp, auth) = McpServer::start().await;
+    let d = Daemon::start_with_policy(
+        serde_json::json!({"docs": http_server(&mcp.url)}),
+        Some(serde_json::json!({"allowed_authorization_servers": ["https://login.corp.example"]})),
+    )
+    .await;
+    let mut conn = d.connect().await;
+    conn.wait_state("docs", "auth_required").await;
+    let (code, message) = conn
+        .err("mcp.auth.start", serde_json::json!({"server": "docs"}))
+        .await;
+    assert_eq!(code, codes::MCP_SERVER_DENIED as i64);
+    assert!(
+        message.contains("allowed_authorization_servers"),
+        "{message}"
+    );
+    let requests = auth.state.lock().unwrap().requests.clone();
+    assert!(
+        requests.iter().all(|r| r.contains("/.well-known/")),
+        "only metadata was read: {requests:?}"
+    );
+
+    let (mcp, _auth) = McpServer::start().await;
+    let d = Daemon::start_with_policy(
+        serde_json::json!({"docs": http_server(&mcp.url)}),
+        Some(serde_json::json!({"allowed_authorization_servers": ["http://127.0.0.1:*"]})),
+    )
+    .await;
+    let mut conn = d.connect().await;
+    conn.wait_state("docs", "auth_required").await;
+    conn.sign_in("docs", serde_json::json!({})).await;
 }

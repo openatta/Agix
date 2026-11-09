@@ -157,7 +157,8 @@ monitors and structured output ([table below](#tools--40-built-in)).
   and custom agent types.
 - MCP authorization (the 2025-11-25 spec, OAuth 2.1): discovery, dynamic
   client registration, PKCE, refresh; sign-in driven by the host over RPC with
-  a loopback or host-owned redirect; tokens in 0600 files or the host's own
+  a loopback or host-owned redirect; client credentials and enterprise-managed
+  authorization for unattended servers; tokens in 0600 files or the host's own
   store ([`docs/mcp_auth.md`](docs/mcp_auth.md)).
 - An enterprise MCP policy: allow and deny lists by server name, command or
   URL, read from a system path users cannot write (or `--mcp-policy`); an
@@ -387,7 +388,7 @@ echo '{"jsonrpc":"2.0","id":2,"method":"session.run_turn",
 While the turn runs, `session.event` frames stream back (text deltas, tool
 calls, tool results, prompts, task progress); the response arrives when the turn
 ends. A typical client subscribes to a session on one connection
-(`session.subscribe`) and drives it from another. Sixty-seven methods are
+(`session.subscribe`) and drives it from another. Sixty-eight methods are
 documented in [`docs/daemon_rpc_protocol.md`](docs/daemon_rpc_protocol.md) —
 sessions, history and context, tasks and sub-agents, scenes, configuration,
 MCP, plugins, scheduling — and every documented response shape is compared

@@ -99,6 +99,7 @@ pub(crate) fn is_loopback(url: &Url) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AddressPolicy {
     allowed: Option<AddressClass>,
+    configured: bool,
 }
 
 impl AddressPolicy {
@@ -107,7 +108,19 @@ impl AddressPolicy {
             Some(c @ (AddressClass::Loopback | AddressClass::Private)) => Some(c),
             _ => None,
         };
-        Self { allowed }
+        Self {
+            allowed,
+            configured: false,
+        }
+    }
+
+    /// For an endpoint the deployment named itself (an enterprise IdP), which
+    /// nothing a server says can redirect.
+    pub fn configured() -> Self {
+        Self {
+            allowed: None,
+            configured: true,
+        }
     }
 
     pub fn admits_private(&self) -> bool {
@@ -115,7 +128,7 @@ impl AddressPolicy {
     }
 
     fn allows_class(&self, class: AddressClass) -> bool {
-        class == AddressClass::Public || Some(class) == self.allowed
+        self.configured || class == AddressClass::Public || Some(class) == self.allowed
     }
 
     pub fn allows_ip(&self, ip: IpAddr) -> bool {
@@ -172,8 +185,16 @@ pub struct OAuthHttp {
 
 impl OAuthHttp {
     pub fn for_server(server: &Url) -> Result<Self, String> {
+        Self::build(server, AddressPolicy::for_server(server))
+    }
+
+    /// For calls to `endpoint`, which the deployment configured.
+    pub fn for_configured(endpoint: &Url) -> Result<Self, String> {
+        Self::build(endpoint, AddressPolicy::configured())
+    }
+
+    fn build(server: &Url, policy: AddressPolicy) -> Result<Self, String> {
         base::interface::exec::local::install_tls_provider();
-        let policy = AddressPolicy::for_server(server);
         let mut builder = reqwest::Client::builder()
             .user_agent(concat!("agix/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(CONNECT_TIMEOUT)

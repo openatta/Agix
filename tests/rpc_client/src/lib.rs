@@ -640,6 +640,15 @@ impl DaemonRpcClient {
             .await
     }
 
+    /// `mcp.auth.setIdentity` with an ID token.
+    pub async fn mcp_auth_set_identity(&mut self, id_token: &str) -> anyhow::Result<RpcResponse> {
+        self.call(
+            "mcp.auth.setIdentity",
+            serde_json::json!({ "id_token": id_token }),
+        )
+        .await
+    }
+
     pub async fn mcp_auth_logout(
         &mut self,
         target: &Target,

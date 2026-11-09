@@ -213,6 +213,49 @@ impl StdioMcpClient {
         }
     }
 
+    fn unattended(
+        &self,
+    ) -> Option<(
+        &crate::oauth::McpAuth,
+        String,
+        &crate::config::McpOAuthConfig,
+    )> {
+        let oauth = self.config.oauth().filter(|o| o.grant.is_unattended())?;
+        let auth = self
+            .auth
+            .as_deref()
+            .filter(|_| self.config.oauth_capable())?;
+        Some((auth, crate::oauth::server_url(&self.config)?, oauth))
+    }
+
+    /// Fetch an unattended server's token again when it is about to expire,
+    /// or always when `renew`.
+    async fn keep_token(&self, renew: bool) -> Result<(), McpError> {
+        match self.unattended() {
+            Some((auth, url, oauth)) => {
+                auth.renew_unattended(&self.server_name, &url, oauth, renew)
+                    .await
+            }
+            None => Ok(()),
+        }
+    }
+
+    /// Run `op` with a current token; an unattended server that refuses
+    /// one gets a newly fetched one and `op` once more.
+    async fn authorized<T, F, Fut>(&self, op: F) -> Result<T, McpError>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<T, McpError>>,
+    {
+        self.keep_token(false).await?;
+        let first = op().await;
+        if matches!(first, Err(McpError::AuthRequired { .. })) && self.unattended().is_some() {
+            self.keep_token(true).await?;
+            return self.noted(op().await).await;
+        }
+        self.noted(first).await
+    }
+
     /// Report an authorization refusal to the pool's authorization state —
     /// a 401 takes the server's tokens away, a 403 asks for more scope.
     async fn noted<T>(&self, result: Result<T, McpError>) -> Result<T, McpError> {
@@ -422,7 +465,7 @@ impl McpClient for StdioMcpClient {
     }
 
     async fn list_tools(&self) -> Result<Vec<McpToolMeta>, McpError> {
-        match self.list_tools_inner().await {
+        match self.authorized(|| self.list_tools_inner()).await {
             Err(e) if is_transport_error(&e) => {
                 warn!(
                     server = %self.server_name,
@@ -430,9 +473,9 @@ impl McpClient for StdioMcpClient {
                     "MCP list_tools transport error; attempting reconnect"
                 );
                 self.try_reconnect().await?;
-                self.noted(self.list_tools_inner().await).await
+                self.authorized(|| self.list_tools_inner()).await
             }
-            other => self.noted(other).await,
+            other => other,
         }
     }
 
@@ -441,7 +484,8 @@ impl McpClient for StdioMcpClient {
         tool_name: &str,
         args: serde_json::Map<String, serde_json::Value>,
     ) -> Result<McpCallResult, McpError> {
-        match self.call_tool_inner(tool_name, args.clone()).await {
+        let call = || self.call_tool_inner(tool_name, args.clone());
+        match self.authorized(call).await {
             Err(e) if is_transport_error(&e) => {
                 warn!(
                     server = %self.server_name,
@@ -450,23 +494,22 @@ impl McpClient for StdioMcpClient {
                     "MCP call_tool transport error; attempting reconnect"
                 );
                 self.try_reconnect().await?;
-                self.noted(self.call_tool_inner(tool_name, args).await)
-                    .await
+                self.authorized(call).await
             }
-            other => self.noted(other).await,
+            other => other,
         }
     }
 
     async fn list_resources(&self) -> Result<Vec<McpResourceMeta>, McpError> {
-        self.noted(self.list_resources_inner().await).await
+        self.authorized(|| self.list_resources_inner()).await
     }
 
     async fn read_resource(&self, uri: &str) -> Result<Vec<McpContent>, McpError> {
-        self.noted(self.read_resource_inner(uri).await).await
+        self.authorized(|| self.read_resource_inner(uri)).await
     }
 
     async fn list_prompts(&self) -> Result<Vec<McpPromptMeta>, McpError> {
-        self.noted(self.list_prompts_inner().await).await
+        self.authorized(|| self.list_prompts_inner()).await
     }
 
     async fn get_prompt(
@@ -474,7 +517,7 @@ impl McpClient for StdioMcpClient {
         prompt_name: &str,
         args: &std::collections::HashMap<String, String>,
     ) -> Result<String, McpError> {
-        self.noted(self.get_prompt_inner(prompt_name, args).await)
+        self.authorized(|| self.get_prompt_inner(prompt_name, args))
             .await
     }
 }

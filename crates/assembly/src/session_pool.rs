@@ -882,6 +882,7 @@ fn auth_flow_error(e: mcp::oauth::AuthFlowError) -> RpcError {
     use mcp::oauth::AuthFlowError;
     match e {
         AuthFlowError::Invalid(message) => (codes::INVALID_PARAMS, message),
+        AuthFlowError::Denied(message) => (codes::MCP_SERVER_DENIED, message),
         AuthFlowError::Failed(message) => (codes::MCP_AUTH_FAILED, message),
     }
 }
@@ -1093,6 +1094,7 @@ impl SessionPool {
             Some(client) => auth.with_client(client),
             None => auth,
         });
+        self.mcp_auth.set_policy(self.mcp_policy.clone());
         self
     }
 
@@ -1105,6 +1107,15 @@ impl SessionPool {
     #[cfg(feature = "mcp")]
     pub fn with_mcp_policy(mut self, policy: mcp::policy::McpPolicyGate) -> Self {
         self.mcp_policy = Arc::new(policy);
+        self.mcp_auth.set_policy(self.mcp_policy.clone());
+        self
+    }
+
+    /// The enterprise IdP `"grant": "enterprise"` MCP servers exchange the
+    /// user's identity at.
+    #[cfg(feature = "mcp")]
+    pub fn with_mcp_enterprise_idp(self, idp: Option<mcp::config::EnterpriseIdp>) -> Self {
+        self.mcp_auth.set_enterprise_idp(idp);
         self
     }
 
@@ -1769,13 +1780,21 @@ impl SessionPool {
     /// pool has it, connected or waiting for a sign-in. Each outcome is a
     /// `mcp_connected` / `mcp_connect_failed` event.
     #[cfg(feature = "mcp")]
-    async fn reconnect_mcp_servers(&self, url: &str) {
+    async fn reconnect_mcp_servers(&self, url: &str) -> Vec<String> {
+        self.reconnect_mcp_where(|manager| manager.servers_at(url))
+            .await
+    }
+
+    /// [`Self::reconnect_mcp_servers`] for the servers `pick` names in each
+    /// cached manager.
+    #[cfg(feature = "mcp")]
+    async fn reconnect_mcp_where(&self, pick: impl Fn(&McpManager) -> Vec<String>) -> Vec<String> {
         let mut touched = Vec::new();
         let mut outcomes: HashMap<String, Option<mcp::manager::ServerStatus>> = HashMap::new();
         {
             let mut cache = self.mcp_by_project.lock().await;
             for (key, manager) in cache.iter_mut() {
-                let names = manager.servers_at(url);
+                let names = pick(manager);
                 if names.is_empty() {
                     continue;
                 }
@@ -1799,6 +1818,8 @@ impl SessionPool {
             }
         }
         self.invalidate_mcp_keys(&touched).await;
+        let mut names: Vec<String> = outcomes.keys().cloned().collect();
+        names.sort();
         for (name, status) in outcomes {
             self.emit_event(match status {
                 Some(s) => serde_json::json!({
@@ -1810,10 +1831,45 @@ impl SessionPool {
                 None => serde_json::json!({
                     "kind": "mcp_connect_failed",
                     "server": name,
-                    "error": "connect failed after signing in — see daemon log for the specific reason",
+                    "error": "connect failed after authorizing — see mcp.status and the daemon log",
                 }),
             });
         }
+        names
+    }
+
+    /// `mcp.auth.setIdentity` — the user's enterprise identity, which every
+    /// `"grant": "enterprise"` server waiting for one is then connected with.
+    #[cfg(feature = "mcp")]
+    pub async fn mcp_auth_set_identity(
+        &self,
+        identity: mcp::oauth::EnterpriseIdentity,
+    ) -> Result<serde_json::Value, RpcError> {
+        if self.mcp_auth.enterprise_idp().is_none() {
+            return Err((
+                codes::INVALID_PARAMS,
+                "no enterprise IdP is configured: the host's Assembly::mcp_enterprise_idp or \
+                 the MCP policy's enterprise_idp names one"
+                    .into(),
+            ));
+        }
+        self.mcp_auth.set_identity(Some(identity));
+        let reconnected = self
+            .reconnect_mcp_where(|manager| {
+                manager
+                    .pending()
+                    .iter()
+                    .filter(|p| {
+                        manager
+                            .config_of(&p.name)
+                            .and_then(|c| c.oauth())
+                            .is_some_and(|o| o.grant == mcp::config::OAuthGrant::Enterprise)
+                    })
+                    .map(|p| p.name.clone())
+                    .collect()
+            })
+            .await;
+        Ok(serde_json::json!({"reconnected": reconnected}))
     }
 
     /// The configuration of the MCP server `name` on a project, for a

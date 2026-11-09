@@ -10,6 +10,8 @@
 //! PKCE, the `resource` indicator, issuer checks and refresh are rmcp's;
 //! what is decided here is which client identity to use, which scopes to ask
 //! for, where the browser comes back to, and when tokens are thrown away.
+//! Servers no person signs in to — client credentials, enterprise-managed —
+//! are in [`unattended`].
 //!
 //! Records live in an [`McpCredentialStore`] keyed by the canonical server
 //! URL. Design and usage: `docs/mcp_auth.md`.
@@ -17,6 +19,7 @@
 mod callback;
 pub mod http;
 pub mod store;
+mod unattended;
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -32,13 +35,15 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
-use crate::config::{expand_env_vars, McpOAuthConfig, McpServerConfig};
+use crate::config::{expand_env_vars, EnterpriseIdp, McpOAuthConfig, McpServerConfig};
 use crate::error::McpError;
+use crate::policy::McpPolicyGate;
 
 pub use callback::LoopbackCallback;
 pub use store::{
     FileCredentialStore, McpClientRegistration, McpCredentialStore, McpCredentials, McpTokens,
 };
+pub use unattended::EnterpriseIdentity;
 
 pub const FLOW_TTL: Duration = Duration::from_secs(10 * 60);
 
@@ -124,6 +129,9 @@ pub enum AuthFlowError {
     /// The request itself is wrong: no such server, flow or redirect.
     #[error("{0}")]
     Invalid(String),
+    /// The MCP policy does not allow the authorization server.
+    #[error("{0}")]
+    Denied(String),
     /// The authorization server, or the exchange with it, failed.
     #[error("{0}")]
     Failed(String),
@@ -183,6 +191,7 @@ struct Entry {
     challenge: Option<String>,
     needed_scopes: Vec<String>,
     issuer: Option<String>,
+    has_tokens: bool,
     scopes: Vec<String>,
     expires_at: Option<u64>,
     error: Option<String>,
@@ -206,6 +215,7 @@ pub(crate) struct Shared {
     flows: tokio::sync::Mutex<HashMap<String, Flow>>,
     write_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     refresh_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    acquire_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     listener: RwLock<Option<AuthListener>>,
     flow_ttl: Mutex<Duration>,
 }
@@ -258,9 +268,14 @@ impl Shared {
         lock_for(&self.refresh_locks, key)
     }
 
+    fn acquire_lock(&self, key: &str) -> Arc<tokio::sync::Mutex<()>> {
+        lock_for(&self.acquire_locks, key)
+    }
+
     fn remember(&self, key: &str, record: &McpCredentials) {
         self.with_entry(key, |e| {
             e.issuer = record.issuer.clone();
+            e.has_tokens = record.tokens.is_some();
             match &record.tokens {
                 Some(t) => {
                     e.scopes = t.scopes.clone();
@@ -323,6 +338,9 @@ impl Shared {
 pub struct McpAuth {
     shared: Arc<Shared>,
     client: McpOAuthClient,
+    policy: RwLock<Arc<McpPolicyGate>>,
+    enterprise_idp: RwLock<Option<EnterpriseIdp>>,
+    identity: RwLock<Option<EnterpriseIdentity>>,
 }
 
 impl std::fmt::Debug for McpAuth {
@@ -427,6 +445,9 @@ impl McpAuth {
     fn build(store: Arc<dyn McpCredentialStore>, credential_dir: Option<PathBuf>) -> Self {
         Self {
             client: McpOAuthClient::default(),
+            policy: RwLock::new(Arc::new(McpPolicyGate::open())),
+            enterprise_idp: RwLock::new(None),
+            identity: RwLock::new(None),
             shared: Arc::new(Shared {
                 store,
                 credential_dir,
@@ -434,6 +455,7 @@ impl McpAuth {
                 flows: tokio::sync::Mutex::new(HashMap::new()),
                 write_locks: Mutex::new(HashMap::new()),
                 refresh_locks: Mutex::new(HashMap::new()),
+                acquire_locks: Mutex::new(HashMap::new()),
                 listener: RwLock::new(None),
                 flow_ttl: Mutex::new(FLOW_TTL),
             }),
@@ -460,6 +482,61 @@ impl McpAuth {
             .listener
             .write()
             .unwrap_or_else(|e| e.into_inner()) = Some(listener);
+    }
+
+    /// The policy whose `allowed_authorization_servers` every authorization
+    /// server is checked against before use.
+    pub fn set_policy(&self, policy: Arc<McpPolicyGate>) {
+        *self.policy.write().unwrap_or_else(|e| e.into_inner()) = policy;
+    }
+
+    pub fn set_enterprise_idp(&self, idp: Option<EnterpriseIdp>) {
+        *self
+            .enterprise_idp
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = idp;
+    }
+
+    pub fn enterprise_idp(&self) -> Option<EnterpriseIdp> {
+        self.enterprise_idp
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// The user's enterprise identity, held in memory only, that
+    /// `"grant": "enterprise"` servers are authorized from.
+    pub fn set_identity(&self, identity: Option<EnterpriseIdentity>) {
+        *self.identity.write().unwrap_or_else(|e| e.into_inner()) = identity;
+    }
+
+    fn identity(&self) -> Option<EnterpriseIdentity> {
+        self.identity
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    fn admit_issuer(&self, issuer: Option<&str>) -> Result<(), String> {
+        self.policy
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .admit_authorization_server(issuer)
+    }
+
+    async fn remember_metadata(&self, key: &str, metadata: &AuthorizationMetadata) {
+        let issuer = metadata.issuer.clone();
+        let json = serde_json::to_value(metadata).ok();
+        if let Err(e) = self
+            .shared
+            .update(key, |r| {
+                r.issuer = issuer;
+                r.authorization_server = json;
+            })
+            .await
+        {
+            tracing::warn!(error = %e, "could not store MCP authorization server metadata");
+        }
     }
 
     /// How long a started sign-in may wait for its callback.
@@ -500,23 +577,7 @@ impl McpAuth {
     }
 
     async fn new_manager(&self, url: &str, key: &str) -> Result<AuthorizationManager, String> {
-        let parsed = Url::parse(url).map_err(|e| format!("`{url}`: {e}"))?;
-        let http = http::OAuthHttp::for_server(&parsed)?;
-        let private = http.policy().admits_private();
-        let mut manager = if private {
-            AuthorizationManager::new_allowing_private_addresses(url).await
-        } else {
-            AuthorizationManager::new(url).await
-        }
-        .map_err(|e| describe(&e))?;
-        manager
-            .with_client(http.client())
-            .map_err(|e| describe(&e))?;
-        manager.set_credential_store(store::ServerStore {
-            key: key.to_string(),
-            shared: self.shared.clone(),
-        });
-        Ok(manager)
+        new_manager(&self.shared, url, key).await
     }
 
     fn oauth_target(
@@ -546,6 +607,13 @@ impl McpAuth {
     ) -> Result<FlowStart, AuthFlowError> {
         let (url, key, oauth) = self.oauth_target(server, cfg)?;
         let failed = |e: String| AuthFlowError::Failed(e);
+        if oauth.grant.is_unattended() {
+            return Err(AuthFlowError::Invalid(format!(
+                "MCP server `{server}` is authorized without a sign-in (\"grant\": {}); \
+                 there is nothing to start",
+                serde_json::to_string(&oauth.grant).unwrap_or_default()
+            )));
+        }
 
         let (listener, redirect_uri) = match redirect {
             Redirect::Loopback => {
@@ -587,6 +655,8 @@ impl McpAuth {
         }
         let metadata = resolution.metadata;
         check_endpoints(&url, &metadata).map_err(failed)?;
+        self.admit_issuer(metadata.issuer.as_deref())
+            .map_err(AuthFlowError::Denied)?;
         require_pkce(&metadata)?;
         manager.set_metadata(metadata.clone());
 
@@ -953,6 +1023,22 @@ impl McpAuth {
             e.names.insert(server.to_string());
         });
         let mut manager = self.new_manager(url, &key).await.map_err(connect_failed)?;
+        if let Some(oauth) = oauth.filter(|o| o.grant.is_unattended()) {
+            self.renew_unattended(server, url, oauth, false).await?;
+            // With a client configured, rmcp's attempt to refresh a token it
+            // was refused ends in "authorization required" — no refresh
+            // token — which is what makes the caller fetch a new one.
+            if let Ok(Some(record)) = self.shared.load(&key).await {
+                let metadata = record
+                    .authorization_server
+                    .and_then(|m| serde_json::from_value::<AuthorizationMetadata>(m).ok());
+                if let (Some(metadata), Some(tokens)) = (metadata, record.tokens) {
+                    manager.set_metadata(metadata);
+                    let _ = manager.configure_client_id(&tokens.client_id);
+                }
+            }
+            return Ok((manager, true));
+        }
         let record = self.shared.load(&key).await.map_err(|e| {
             connect_failed(format!(
                 "cannot read the stored sign-in for `{server}`: {e}"
@@ -981,6 +1067,8 @@ impl McpAuth {
             })?,
         };
         check_endpoints(url, &metadata).map_err(connect_failed)?;
+        self.admit_issuer(metadata.issuer.as_deref())
+            .map_err(connect_failed)?;
         manager.set_metadata(metadata);
         if !manager
             .initialize_from_store()
@@ -1080,6 +1168,31 @@ impl McpAuth {
             scopes: needed,
         });
     }
+}
+
+/// An rmcp manager for the server at `url`, its HTTP under the server's
+/// address policy and its tokens in the record for `key`.
+async fn new_manager(
+    shared: &Arc<Shared>,
+    url: &str,
+    key: &str,
+) -> Result<AuthorizationManager, String> {
+    let parsed = Url::parse(url).map_err(|e| format!("`{url}`: {e}"))?;
+    let http = http::OAuthHttp::for_server(&parsed)?;
+    let mut manager = if http.policy().admits_private() {
+        AuthorizationManager::new_allowing_private_addresses(url).await
+    } else {
+        AuthorizationManager::new(url).await
+    }
+    .map_err(|e| describe(&e))?;
+    manager
+        .with_client(http.client())
+        .map_err(|e| describe(&e))?;
+    manager.set_credential_store(store::ServerStore {
+        key: key.to_string(),
+        shared: shared.clone(),
+    });
+    Ok(manager)
 }
 
 fn client_secret_for(

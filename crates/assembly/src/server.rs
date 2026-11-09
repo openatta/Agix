@@ -592,11 +592,17 @@ impl DaemonServer {
             "mcp.auth.cancel" => self.method_mcp_auth_cancel(id, req.params).await,
             #[cfg(feature = "mcp")]
             "mcp.auth.logout" => self.method_mcp_auth_logout(id, req.params).await,
+            #[cfg(feature = "mcp")]
+            "mcp.auth.setIdentity" => self.method_mcp_auth_set_identity(id, req.params).await,
             #[cfg(not(feature = "mcp"))]
-            "mcp.status" | "mcp.addServer" | "mcp.updateServer" | "mcp.auth.start"
-            | "mcp.auth.complete" | "mcp.auth.cancel" | "mcp.auth.logout" => {
-                module_not_compiled(id, &req.method, "mcp")
-            }
+            "mcp.status"
+            | "mcp.addServer"
+            | "mcp.updateServer"
+            | "mcp.auth.start"
+            | "mcp.auth.complete"
+            | "mcp.auth.cancel"
+            | "mcp.auth.logout"
+            | "mcp.auth.setIdentity" => module_not_compiled(id, &req.method, "mcp"),
             "commands.list" => RpcResponse::ok(
                 id,
                 serde_json::json!({"commands": self.pool.list_commands().await}),
@@ -1369,6 +1375,39 @@ impl DaemonServer {
             .mcp_auth_logout(project_root.as_deref(), &scene, server)
             .await
         {
+            Ok(result) => RpcResponse::ok(id, result),
+            Err((code, message)) => RpcResponse::err(id, code, message),
+        }
+    }
+
+    /// `mcp.auth.setIdentity` params: exactly one of `{"id_token"}` /
+    /// `{"refresh_token"}`.
+    #[cfg(feature = "mcp")]
+    async fn method_mcp_auth_set_identity(
+        &self,
+        id: serde_json::Value,
+        params: serde_json::Value,
+    ) -> RpcResponse {
+        use mcp::oauth::EnterpriseIdentity;
+        let text = |key: &str| {
+            params
+                .get(key)
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        };
+        let identity = match (text("id_token"), text("refresh_token")) {
+            (Some(token), None) => EnterpriseIdentity::IdToken(token),
+            (None, Some(token)) => EnterpriseIdentity::RefreshToken(token),
+            _ => {
+                return RpcResponse::err(
+                    id,
+                    codes::INVALID_PARAMS,
+                    "give exactly one of id_token / refresh_token",
+                )
+            }
+        };
+        match self.pool.mcp_auth_set_identity(identity).await {
             Ok(result) => RpcResponse::ok(id, result),
             Err((code, message)) => RpcResponse::err(id, code, message),
         }

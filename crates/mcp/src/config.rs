@@ -90,6 +90,8 @@ impl Serialize for McpServerConfig {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpOAuthConfig {
+    #[serde(default)]
+    pub grant: OAuthGrant,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -98,6 +100,143 @@ pub struct McpOAuthConfig {
     pub scopes: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub callback_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_key_jwt: Option<PrivateKeyJwt>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OAuthGrant {
+    /// A person signs in through a browser (`mcp.auth.start`).
+    #[default]
+    AuthorizationCode,
+    /// The daemon authenticates as itself; no person involved.
+    ClientCredentials,
+    /// The enterprise identity the host supplied is exchanged for the token.
+    Enterprise,
+}
+
+impl OAuthGrant {
+    /// Whether tokens come without a person: fetched again rather than
+    /// signed in to again.
+    pub fn is_unattended(self) -> bool {
+        self != OAuthGrant::AuthorizationCode
+    }
+}
+
+/// The private key a `client_credentials` client signs its assertion with
+/// (RFC 7523): a PEM file, or a PEM in an environment variable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrivateKeyJwt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_file: Option<std::path::PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_env: Option<String>,
+    #[serde(default = "default_signing_alg")]
+    pub alg: String,
+}
+
+fn default_signing_alg() -> String {
+    "RS256".into()
+}
+
+pub const SIGNING_ALGS: &[&str] = &["RS256", "RS384", "RS512", "ES256", "ES384"];
+
+impl PrivateKeyJwt {
+    /// The PEM, read from the file or environment variable.
+    pub fn pem(&self) -> Result<Vec<u8>, String> {
+        match (&self.key_file, &self.key_env) {
+            (Some(path), _) => std::fs::read(path)
+                .map_err(|e| format!("oauth.private_key_jwt.key_file {}: {e}", path.display())),
+            (None, Some(var)) => match std::env::var(var) {
+                Ok(v) if !v.trim().is_empty() => Ok(v.into_bytes()),
+                _ => Err(format!(
+                    "oauth.private_key_jwt.key_env names `{var}`, which is not set"
+                )),
+            },
+            (None, None) => Err("oauth.private_key_jwt names no key".into()),
+        }
+    }
+}
+
+/// The enterprise identity provider whose tokens `"grant": "enterprise"`
+/// servers are authorized with (Enterprise-Managed Authorization: the
+/// user's ID token or refresh token is exchanged at this IdP for an
+/// identity assertion grant, which the server's authorization server then
+/// redeems). Given by the host or the managed MCP policy, not by user
+/// settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnterpriseIdp {
+    pub issuer: String,
+    pub token_endpoint: String,
+    /// This client's registration at the IdP.
+    pub client_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret_env: Option<String>,
+    /// How the client authenticates at the IdP; `client_secret_basic` when
+    /// there is a secret, `none` when not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_auth: Option<ClientAuthMethod>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientAuthMethod {
+    None,
+    ClientSecretBasic,
+    ClientSecretPost,
+}
+
+impl EnterpriseIdp {
+    pub fn validate(&self) -> Result<(), String> {
+        for (key, value) in [
+            ("issuer", &self.issuer),
+            ("token_endpoint", &self.token_endpoint),
+            ("client_id", &self.client_id),
+        ] {
+            if value.trim().is_empty() {
+                return Err(format!("enterprise_idp.{key} must not be empty"));
+            }
+        }
+        match (self.client_auth, &self.client_secret_env) {
+            (Some(ClientAuthMethod::None), Some(_)) => {
+                Err("enterprise_idp: `client_auth: none` takes no client_secret_env".into())
+            }
+            (
+                Some(ClientAuthMethod::ClientSecretBasic | ClientAuthMethod::ClientSecretPost),
+                None,
+            ) => Err("enterprise_idp: that client_auth needs client_secret_env".into()),
+            _ => Ok(()),
+        }
+    }
+
+    pub fn client_secret(&self) -> Result<Option<String>, String> {
+        secret_from_env(
+            "enterprise_idp.client_secret_env",
+            self.client_secret_env.as_deref(),
+        )
+    }
+
+    pub fn auth_method(&self) -> ClientAuthMethod {
+        self.client_auth
+            .unwrap_or(if self.client_secret_env.is_some() {
+                ClientAuthMethod::ClientSecretBasic
+            } else {
+                ClientAuthMethod::None
+            })
+    }
+}
+
+fn secret_from_env(key: &str, var: Option<&str>) -> Result<Option<String>, String> {
+    let Some(var) = var else {
+        return Ok(None);
+    };
+    match std::env::var(var) {
+        Ok(v) if !v.is_empty() => Ok(Some(v)),
+        _ => Err(format!("{key} names `{var}`, which is not set")),
+    }
 }
 
 impl McpOAuthConfig {
@@ -109,21 +248,52 @@ impl McpOAuthConfig {
         if self.client_secret_env.is_some() && self.client_id.is_none() {
             return Err("oauth: `client_secret_env` needs the `client_id` it belongs to".into());
         }
-        Ok(())
+        if let Some(key) = &self.private_key_jwt {
+            if self.grant != OAuthGrant::ClientCredentials {
+                return Err(
+                    "oauth: `private_key_jwt` is only for `\"grant\": \"client_credentials\"`"
+                        .into(),
+                );
+            }
+            if key.key_file.is_some() == key.key_env.is_some() {
+                return Err(
+                    "oauth.private_key_jwt: give exactly one of `key_file` / `key_env`".into(),
+                );
+            }
+            if !SIGNING_ALGS.contains(&key.alg.as_str()) {
+                return Err(format!(
+                    "oauth.private_key_jwt.alg `{}` is not one of {}",
+                    key.alg,
+                    SIGNING_ALGS.join(", ")
+                ));
+            }
+        }
+        match self.grant {
+            OAuthGrant::AuthorizationCode => Ok(()),
+            OAuthGrant::ClientCredentials => {
+                if self.client_id.is_none() {
+                    return Err("oauth: `client_credentials` needs `client_id`".into());
+                }
+                if self.client_secret_env.is_some() == self.private_key_jwt.is_some() {
+                    return Err("oauth: `client_credentials` needs exactly one of \
+                                `client_secret_env` / `private_key_jwt`"
+                        .into());
+                }
+                Ok(())
+            }
+            OAuthGrant::Enterprise => match self.client_id {
+                Some(_) => Ok(()),
+                None => Err("oauth: `enterprise` needs `client_id`, this client's \
+                             registration at the server's authorization server"
+                    .into()),
+            },
+        }
     }
 
     /// The configured client secret, read from the environment variable
     /// `client_secret_env` names.
     pub fn client_secret(&self) -> Result<Option<String>, String> {
-        let Some(var) = &self.client_secret_env else {
-            return Ok(None);
-        };
-        match std::env::var(var) {
-            Ok(v) if !v.is_empty() => Ok(Some(v)),
-            _ => Err(format!(
-                "oauth.client_secret_env names `{var}`, which is not set"
-            )),
-        }
+        secret_from_env("oauth.client_secret_env", self.client_secret_env.as_deref())
     }
 }
 
@@ -342,6 +512,69 @@ mod tests {
     fn a_client_secret_needs_its_client_id() {
         let v = json!({"type": "streamable_http", "url": "https://h/mcp", "oauth": {"client_secret_env": "S"}});
         assert!(serde_json::from_value::<McpServerConfig>(v).is_err());
+    }
+
+    #[test]
+    fn unattended_grants_name_how_the_client_authenticates() {
+        let parse = |oauth: serde_json::Value| {
+            serde_json::from_value::<McpServerConfig>(
+                json!({"type": "streamable_http", "url": "https://h/mcp", "oauth": oauth}),
+            )
+        };
+        assert!(parse(json!({"grant": "client_credentials", "client_id": "c"})).is_err());
+        assert!(parse(json!({
+            "grant": "client_credentials", "client_id": "c", "client_secret_env": "S",
+            "private_key_jwt": {"key_env": "K"}
+        }))
+        .is_err());
+        let ok = parse(json!({
+            "grant": "client_credentials", "client_id": "c", "client_secret_env": "S"
+        }))
+        .unwrap();
+        assert!(ok.oauth().unwrap().grant.is_unattended());
+        assert!(parse(json!({
+            "grant": "client_credentials", "client_id": "c",
+            "private_key_jwt": {"key_file": "/k.pem", "alg": "ES256"}
+        }))
+        .is_ok());
+        assert!(parse(json!({
+            "grant": "client_credentials", "client_id": "c",
+            "private_key_jwt": {"key_file": "/k.pem", "key_env": "K"}
+        }))
+        .is_err());
+        assert!(parse(json!({
+            "grant": "client_credentials", "client_id": "c",
+            "private_key_jwt": {"key_env": "K", "alg": "HS256"}
+        }))
+        .is_err());
+        assert!(parse(json!({"private_key_jwt": {"key_env": "K"}})).is_err());
+        assert!(parse(json!({"grant": "enterprise"})).is_err());
+        assert!(parse(json!({"grant": "enterprise", "client_id": "c"})).is_ok());
+    }
+
+    #[test]
+    fn an_enterprise_idp_secret_matches_its_client_auth() {
+        let idp = |extra: serde_json::Value| {
+            let mut v = json!({"issuer": "https://idp", "token_endpoint": "https://idp/token", "client_id": "c"});
+            v.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            serde_json::from_value::<EnterpriseIdp>(v).unwrap()
+        };
+        assert_eq!(idp(json!({})).auth_method(), ClientAuthMethod::None);
+        assert_eq!(
+            idp(json!({"client_secret_env": "S"})).auth_method(),
+            ClientAuthMethod::ClientSecretBasic
+        );
+        assert!(idp(json!({"client_auth": "client_secret_post"}))
+            .validate()
+            .is_err());
+        assert!(
+            idp(json!({"client_auth": "none", "client_secret_env": "S"}))
+                .validate()
+                .is_err()
+        );
+        assert!(idp(json!({})).validate().is_ok());
     }
 
     #[test]

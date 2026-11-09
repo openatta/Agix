@@ -1,9 +1,11 @@
-//! 企业 MCP 策略：一个进程能连哪些 MCP server。
+//! 企业 MCP 策略：一个进程能连哪些 MCP server、它们的 OAuth 能用哪些授权服务器、
+//! 企业身份从哪个 IdP 换。
 //!
 //! 策略来自宿主（`Assembly::mcp_policy`）或系统管理路径上的
 //! `mcp-policy.json`（[`managed_policy_path`]），从不来自用户可写的数据目录。
 //! [`McpPolicyGate`] 是会话池实际执行的那一份：每个要连的 server 先过
-//! [`McpPolicyGate::admit`]，被拒的不会起进程、不会发请求。策略文件读不了、
+//! [`McpPolicyGate::admit`]，被拒的不会起进程、不会发请求；授权服务器在任何
+//! 跳转之前过 [`McpPolicyGate::admit_authorization_server`]。策略文件读不了、
 //! 解析不了，一律按"全部拒绝"处理并在 `daemon.doctor` 里报出来。
 //!
 //! 规则格式与匹配语义见 `docs/ARCHITECTURE.md` §6.4。
@@ -14,7 +16,7 @@ use base::interface::health::{CheckResult, HealthCheck};
 use globset::{GlobBuilder, GlobMatcher};
 use serde::{Deserialize, Serialize};
 
-use crate::config::{expand_env_vars, McpServerConfig};
+use crate::config::{expand_env_vars, EnterpriseIdp, McpServerConfig};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -24,6 +26,14 @@ pub struct McpPolicy {
     pub allowed_servers: Option<Vec<McpServerRule>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub denied_servers: Vec<McpServerRule>,
+    /// Globs over authorization server issuers (`scheme://host[:port][/path]`,
+    /// no trailing `/`). `None`: any; otherwise an issuer matching none is
+    /// refused before the user is sent anywhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_authorization_servers: Option<Vec<String>>,
+    /// The IdP `"grant": "enterprise"` servers exchange the user's identity at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enterprise_idp: Option<EnterpriseIdp>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,11 +131,17 @@ fn normalized_url(raw: &str) -> Option<String> {
     Some(format!("{}://{host}{port}{}", url.scheme(), url.path()))
 }
 
+fn normalized_issuer(raw: &str) -> Option<String> {
+    let url = normalized_url(raw)?;
+    Some(url.trim_end_matches('/').to_string())
+}
+
 enum Rules {
     Absent,
     Active {
         allowed: Option<Vec<CompiledRule>>,
         denied: Vec<CompiledRule>,
+        issuers: Option<Vec<GlobMatcher>>,
     },
     Unreadable(String),
 }
@@ -133,6 +149,7 @@ enum Rules {
 pub struct McpPolicyGate {
     origin: PolicyOrigin,
     rules: Rules,
+    enterprise_idp: Option<EnterpriseIdp>,
 }
 
 impl McpPolicyGate {
@@ -140,12 +157,14 @@ impl McpPolicyGate {
         Self {
             origin: PolicyOrigin::None,
             rules: Rules::Absent,
+            enterprise_idp: None,
         }
     }
 
     pub fn from_host(policy: McpPolicy) -> Self {
         Self {
             origin: PolicyOrigin::Host,
+            enterprise_idp: policy.enterprise_idp.clone(),
             rules: compile(policy),
         }
     }
@@ -154,17 +173,62 @@ impl McpPolicyGate {
     /// `required` (the path was named explicitly); anything else that keeps
     /// the file from being read as a policy denies every server.
     pub fn load(path: &Path, required: bool) -> Self {
+        let mut enterprise_idp = None;
         let rules = match std::fs::read_to_string(path) {
             Ok(text) => match serde_json::from_str::<McpPolicy>(&text) {
-                Ok(policy) => compile(policy),
+                Ok(policy) => {
+                    enterprise_idp = policy.enterprise_idp.clone();
+                    compile(policy)
+                }
                 Err(e) => Rules::Unreadable(format!("invalid policy: {e}")),
             },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound && !required => Rules::Absent,
             Err(e) => Rules::Unreadable(format!("cannot read: {e}")),
         };
+        if !matches!(rules, Rules::Active { .. }) {
+            enterprise_idp = None;
+        }
         Self {
             origin: PolicyOrigin::File(path.to_path_buf()),
             rules,
+            enterprise_idp,
+        }
+    }
+
+    pub fn enterprise_idp(&self) -> Option<&EnterpriseIdp> {
+        self.enterprise_idp.as_ref()
+    }
+
+    /// May an MCP server's OAuth use the authorization server `issuer`?
+    /// Asked before any redirect or token request.
+    pub fn admit_authorization_server(&self, issuer: Option<&str>) -> Result<(), String> {
+        match &self.rules {
+            Rules::Absent | Rules::Active { issuers: None, .. } => Ok(()),
+            Rules::Unreadable(e) => Err(format!(
+                "denied: {} is unreadable ({e}), so no authorization server is allowed",
+                self.describe_origin()
+            )),
+            Rules::Active {
+                issuers: Some(globs),
+                ..
+            } => {
+                let Some(issuer) = issuer.and_then(normalized_issuer) else {
+                    return Err(format!(
+                        "denied by {}: the authorization server names no issuer, and \
+                         allowed_authorization_servers is set",
+                        self.describe_origin()
+                    ));
+                };
+                if globs.iter().any(|g| g.is_match(&issuer)) {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "denied by {}: authorization server {issuer} matches no \
+                         allowed_authorization_servers rule",
+                        self.describe_origin()
+                    ))
+                }
+            }
         }
     }
 
@@ -192,7 +256,9 @@ impl McpPolicyGate {
                 "denied: {} is unreadable ({e}), so every MCP server is denied",
                 self.describe_origin()
             )),
-            Rules::Active { allowed, denied } => {
+            Rules::Active {
+                allowed, denied, ..
+            } => {
                 if let Some(rule) = denied.iter().find(|r| r.matches(name, cfg)) {
                     return Err(format!(
                         "denied by {}: matches denied_servers rule {}",
@@ -228,8 +294,36 @@ fn compile(policy: McpPolicy) -> Rules {
         Ok(allowed) => allowed,
         Err(e) => return Rules::Unreadable(e),
     };
+    let issuers = policy
+        .allowed_authorization_servers
+        .map(|patterns| {
+            patterns
+                .iter()
+                .map(|p| {
+                    GlobBuilder::new(p)
+                        .literal_separator(true)
+                        .build()
+                        .map(|g| g.compile_matcher())
+                        .map_err(|e| {
+                            format!("allowed_authorization_servers {p:?}: invalid glob: {e}")
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose();
+    let issuers = match issuers {
+        Ok(issuers) => issuers,
+        Err(e) => return Rules::Unreadable(e),
+    };
+    if let Some(Err(e)) = policy.enterprise_idp.as_ref().map(EnterpriseIdp::validate) {
+        return Rules::Unreadable(e);
+    }
     match compile_all(policy.denied_servers) {
-        Ok(denied) => Rules::Active { allowed, denied },
+        Ok(denied) => Rules::Active {
+            allowed,
+            denied,
+            issuers,
+        },
         Err(e) => Rules::Unreadable(e),
     }
 }
@@ -245,11 +339,17 @@ impl HealthCheck for McpPolicyGate {
             PolicyOrigin::Host => ("host", None),
             PolicyOrigin::File(path) => ("file", Some(path.display().to_string())),
         };
-        let (allowed, denied) = match &self.rules {
-            Rules::Active { allowed, denied } => {
-                (allowed.as_ref().map(Vec::len), Some(denied.len()))
-            }
-            _ => (None, None),
+        let (allowed, denied, issuers) = match &self.rules {
+            Rules::Active {
+                allowed,
+                denied,
+                issuers,
+            } => (
+                allowed.as_ref().map(Vec::len),
+                Some(denied.len()),
+                issuers.as_ref().map(Vec::len),
+            ),
+            _ => (None, None, None),
         };
         let details = serde_json::json!({
             "source": source,
@@ -257,6 +357,8 @@ impl HealthCheck for McpPolicyGate {
             "in_force": matches!(self.rules, Rules::Active { .. } | Rules::Unreadable(_)),
             "allowed_servers": allowed,
             "denied_servers": denied,
+            "allowed_authorization_servers": issuers,
+            "enterprise_idp": self.enterprise_idp.as_ref().map(|idp| idp.issuer.clone()),
             "error": self.error(),
         });
         match &self.rules {
@@ -455,6 +557,7 @@ mod tests {
         let g = McpPolicyGate::from_host(McpPolicy {
             allowed_servers: None,
             denied_servers: vec![McpServerRule::Url("[".into())],
+            ..Default::default()
         });
         assert!(g.admit("a", &stdio("x")).is_err());
     }
@@ -479,6 +582,54 @@ mod tests {
         let none = McpPolicyGate::open().check();
         assert_eq!(none.details["source"], "none");
         assert_eq!(none.details["in_force"], false);
+    }
+
+    #[test]
+    fn authorization_servers_are_admitted_by_issuer_glob() {
+        assert!(gate("{}").admit_authorization_server(None).is_ok());
+        let g = gate(
+            r#"{"allowed_authorization_servers": ["https://login.corp.example", "https://*.okta.com/oauth2/**"]}"#,
+        );
+        assert!(g
+            .admit_authorization_server(Some("https://login.corp.example/"))
+            .is_ok());
+        assert!(g
+            .admit_authorization_server(Some("https://acme.okta.com/oauth2/default"))
+            .is_ok());
+        let err = g
+            .admit_authorization_server(Some("https://evil.example"))
+            .unwrap_err();
+        assert!(err.contains("allowed_authorization_servers"), "{err}");
+        assert!(g
+            .admit_authorization_server(Some("https://login.corp.example.evil.example"))
+            .is_err());
+        assert!(g.admit_authorization_server(None).is_err());
+        assert!(gate(r#"{"allowed_authorization_servers": []}"#)
+            .admit_authorization_server(Some("https://login.corp.example"))
+            .is_err());
+    }
+
+    #[test]
+    fn an_unreadable_policy_admits_no_authorization_server_and_names_no_idp() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp-policy.json");
+        std::fs::write(
+            &path,
+            r#"{"enterprise_idp": {"issuer": "https://idp", "token_endpoint": "https://idp/t", "client_id": "c"}, "typo": 1}"#,
+        )
+        .unwrap();
+        let g = McpPolicyGate::load(&path, true);
+        assert!(g.admit_authorization_server(Some("https://as")).is_err());
+        assert!(g.enterprise_idp().is_none());
+
+        std::fs::write(
+            &path,
+            r#"{"enterprise_idp": {"issuer": "https://idp", "token_endpoint": "https://idp/t", "client_id": "c"}}"#,
+        )
+        .unwrap();
+        let g = McpPolicyGate::load(&path, true);
+        assert_eq!(g.enterprise_idp().unwrap().issuer, "https://idp");
+        assert!(g.admit_authorization_server(Some("https://as")).is_ok());
     }
 
     #[test]

@@ -708,6 +708,8 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
                "in_force":false,        // 有策略在执行(读不了也算:那时全部拒绝)
                "allowed_servers":null,  // 规则条数;null = 没写 allowed_servers
                "denied_servers":null,
+               "allowed_authorization_servers":null, // 条数;null = 没写,任何授权服务器都行
+               "enterprise_idp":null,   // 策略指定的企业 IdP 的 issuer
                "error":null } }         // 读不了时的原因
 ```
 
@@ -1892,7 +1894,7 @@ daemon 自己那一对,给路径 = 它服务的另一个项目,`null` → `INVAL
 不接受定位参数。`mcp.addServer` / `mcp.updateServer` / `mcp.auth.start` / `mcp.auth.logout` /
 `import.*` 接受 §6.4 的 `scene` / `project_root`:省略 = 这个 daemon 自己那一对,给路径 = 它
 服务的另一个项目,`null` → `INVALID_PARAMS`。`mcp.auth.complete` / `mcp.auth.cancel` 按
-`flow_id` 找到登录,不需要定位。
+`flow_id` 找到登录,不需要定位;`mcp.auth.setIdentity` 作用于这个 daemon 的全部项目。
 
 #### `mcp.status`
 
@@ -1974,9 +1976,11 @@ MCP 策略拒绝这个 server → `MCP_SERVER_DENIED`,**什么都不写、不连
 接住回调,调 `mcp.auth.complete`。`expires_in` 秒内没完成,登录过期(`mcp_auth_failed`)。
 同一个 server 再发起一次会取消前一次;不同 server 的登录可以同时进行。
 
-没有这个 server、它不用 OAuth(stdio、websocket、配了固定 `Authorization` 头的)、redirect
-不合法 → `INVALID_PARAMS`;MCP 策略拒绝它 → `MCP_SERVER_DENIED`;发现失败、授权服务器不支持
-PKCE S256、无法注册客户端 → `MCP_AUTH_FAILED`。
+没有这个 server、它不用 OAuth(stdio、websocket、配了固定 `Authorization` 头的)、它是不需要
+登录的 `client_credentials` / `enterprise` server、redirect 不合法 → `INVALID_PARAMS`;MCP 策略
+拒绝它,或它的授权服务器不在策略的 `allowed_authorization_servers` 里 → `MCP_SERVER_DENIED`
+(这时用户还没被送去任何地方);发现失败、授权服务器不支持 PKCE S256、无法注册客户端 →
+`MCP_AUTH_FAILED`。
 
 #### `mcp.auth.complete`
 
@@ -2000,6 +2004,25 @@ PKCE S256、无法注册客户端 → `MCP_AUTH_FAILED`。
 
 `{ "flow_id": "…" }` → `{ "server": "docs" }`。放弃这次登录,server 的 `auth.state` 回到发起之前
 (还没登录过就是 `required`)。`flow_id` 不存在 → `INVALID_PARAMS`。
+
+#### `mcp.auth.setIdentity`
+
+```jsonc
+// → params:二选一
+{ "id_token": "eyJ…" }          // 企业 IdP 签给这个客户端的 OIDC ID token
+{ "refresh_token": "…" }        // 或企业 IdP 的刷新令牌
+```
+
+```jsonc
+// ← result
+{ "reconnected": [ "docs" ] }
+```
+
+交给 daemon 用户的企业身份(`mcp_auth.md` §4),只放在内存里。所有 `"grant": "enterprise"`
+且还在等身份的 server 随即用它换令牌并重连(`reconnected` 是重连了的 server,结果看
+`mcp_connected` / `mcp_connect_failed` 与 `mcp.status`);之后令牌到期时也用它再换。企业 IdP
+拒绝这个身份时 server 留在 `auth_required`,`auth.error` 写明要换一个新的。两个都给或都不给、
+没有配置企业 IdP → `INVALID_PARAMS`。
 
 #### `mcp.auth.logout`
 
@@ -2310,7 +2333,7 @@ WebAssembly 组件,场景改用 `[scene] dir`。
 |---|---|---|
 | `mcp_connected` | `{server, transport, tool_count}` | 启动连接、`config.reload` 重连、`mcp.addServer` / `mcp.updateServer` 成功 |
 | `mcp_connect_failed` | `{server, error}` | 同上,失败时。另外,启动、重连、另一个项目第一次起会话时要连的 server 里,配置解析不了的、被 MCP 策略拒绝的(`ARCHITECTURE.md` §6.4)各发一条,`error` 就是原因;连接失败的具体原因在 daemon 日志里 |
-| `mcp_auth_required` | `{server, scopes}` | 远端 server 要求登录:没有令牌、令牌被拒且刷新不了,或要求更多 scope(这时 server 保持连接)。`scopes` 是要请求的(可能为空)。同一个 server 从已登录/未涉及变成需要登录时发一次 |
+| `mcp_auth_required` | `{server, scopes}` | 远端 server 要求登录:没有令牌、令牌被拒且刷新不了,或要求更多 scope(这时 server 保持连接);`enterprise` server 还没有可用的企业身份(宿主该调 `mcp.auth.setIdentity`)。`scopes` 是要请求的(可能为空)。同一个 server 从已登录/未涉及变成需要登录时发一次 |
 | `mcp_auth_completed` | `{server}` | 登录完成,令牌已存;随后是这个 server 的 `mcp_connected` / `mcp_connect_failed` |
 | `mcp_auth_failed` | `{server, error}` | 登录失败:授权服务器在回调里报错、换令牌失败,或 10 分钟内没完成 |
 | `import_detected` | `{sources:[{source,description}]}` | 启动时探测到还没处理过的可导入配置 |
@@ -2352,7 +2375,7 @@ WebAssembly 组件,场景改用 `[scene] dir`。
 | -32017 | TOO_MANY_IN_FLIGHT | 这条连接同时在途的请求已达上限(§5.2) |
 | -32018 | TASK_NOT_FOUND | `session.taskOutput`:引擎不知道这个任务(没跑过、结束得早已被忘掉,或引擎不在内存里) |
 | -32019 | TASK_LIMIT | `session.startAgent`:会话的子 Agent 已到 `execution.max_concurrent_subagents`,或委派已到最深 |
-| -32020 | MCP_SERVER_DENIED | `mcp.addServer` / `mcp.updateServer`:MCP 策略拒绝这个 server,没有写入任何东西;`mcp.auth.start` / `mcp.auth.logout`:这个 server 被策略拒绝 |
+| -32020 | MCP_SERVER_DENIED | `mcp.addServer` / `mcp.updateServer`:MCP 策略拒绝这个 server,没有写入任何东西;`mcp.auth.start` / `mcp.auth.logout`:这个 server 被策略拒绝,或(`start`)它的授权服务器不在 `allowed_authorization_servers` 里 |
 | -32021 | MCP_AUTH_FAILED | `mcp.auth.*`:授权服务器或登录本身失败——发现、注册、PKCE、回调 `state` 不符、换令牌;`message` 可以直接给用户看 |
 
 还有两个常量在代码里定义了但**没有任何路径会发出**,客户端不必为它们写分支:
