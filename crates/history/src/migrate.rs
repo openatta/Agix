@@ -116,6 +116,13 @@ pub fn migrate_layout(data_root: &Path) -> MigrationReport {
             if !entry.path().is_dir() {
                 continue;
             }
+            // Under `sessions/` a name that is not a session id reads as a
+            // transcript directory, and the next startup's first pass would
+            // move it into `projects/`.
+            if !is_session_id(name) {
+                tracing::debug!(path = %entry.path().display(), "migration: not a session id, leaving it in the legacy root");
+                continue;
+            }
             move_dir(&entry.path(), &sessions.join(name), &mut report, |r| {
                 r.sidecars_moved += 1
             });
@@ -191,6 +198,21 @@ mod tests {
             .join(&sid)
             .join("metadata.json")
             .exists());
+    }
+
+    #[test]
+    fn a_legacy_entry_that_is_not_a_session_id_stays_where_it_is() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        touch(&root.join("code/sessions/not-a-session/notes.txt"));
+
+        let r = migrate_layout(root);
+
+        assert!(r.did_nothing(), "{r:?}");
+        assert!(root.join("code/sessions/not-a-session/notes.txt").exists());
+        assert!(!root.join("sessions/not-a-session").exists());
+        assert!(migrate_layout(root).did_nothing());
+        assert!(!root.join("projects/not-a-session").exists());
     }
 
     #[test]
