@@ -169,11 +169,13 @@ impl Reply {
     }
 }
 
-/// The next `remaining` conversation requests get `reply` in place of
-/// whatever they would have had.
+/// The next `remaining` conversation requests — those whose body carries
+/// `needle`, when there is one — get `reply` in place of whatever they would
+/// have had.
 pub(crate) struct Failures {
     remaining: usize,
     reply: Option<Reply>,
+    needle: Option<String>,
 }
 
 impl Failures {
@@ -181,17 +183,29 @@ impl Failures {
         Self {
             remaining: 0,
             reply: None,
+            needle: None,
         }
     }
 
     pub(crate) fn set(&mut self, n: usize, reply: Reply) {
         self.remaining = n;
         self.reply = Some(reply);
+        self.needle = None;
     }
 
-    pub(crate) fn take(&mut self, path: &str) -> Option<Reply> {
+    pub(crate) fn set_when(&mut self, needle: &str, n: usize, reply: Reply) {
+        self.set(n, reply);
+        self.needle = Some(needle.to_string());
+    }
+
+    pub(crate) fn take(&mut self, path: &str, body: &[u8]) -> Option<Reply> {
         if self.remaining == 0 || !is_conversation(path) {
             return None;
+        }
+        if let Some(needle) = &self.needle {
+            if !String::from_utf8_lossy(body).contains(needle.as_str()) {
+                return None;
+            }
         }
         self.remaining -= 1;
         self.reply.clone()
@@ -419,6 +433,13 @@ impl ProviderStub {
         self.failures.lock().unwrap().set(n, reply);
     }
 
+    /// [`inject_failures`](Self::inject_failures) for only the requests
+    /// whose body carries `needle` — one model's name, or the fixed
+    /// instruction of one kind of call; the rest pass untouched.
+    pub fn inject_failures_when(&self, needle: &str, n: usize, reply: Reply) {
+        self.failures.lock().unwrap().set_when(needle, n, reply);
+    }
+
     pub fn seen(&self) -> Vec<SeenRequest> {
         self.seen.lock().unwrap().clone()
     }
@@ -454,7 +475,7 @@ impl ProviderStub {
         let Some(RawRequest { path, body, .. }) = read_request(&mut sock).await? else {
             return Ok(());
         };
-        let injected = self.failures.lock().unwrap().take(&path);
+        let injected = self.failures.lock().unwrap().take(&path, &body);
         self.seen.lock().unwrap().push(SeenRequest {
             path,
             body: serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null),

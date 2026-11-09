@@ -61,6 +61,11 @@ pub struct DaemonOptions {
     /// Extra arguments for a spawned daemon. Ignored in this process, which
     /// has no command line to put them on.
     pub extra_args: Vec<String>,
+    /// Environment variables set for a spawned daemon, over the ones it
+    /// inherits — `NO_PROXY` for a case that reaches a server on this
+    /// machine over HTTP. Ignored in this process, whose environment is
+    /// every test's.
+    pub env: Vec<(String, String)>,
     /// The MCP policy file to enforce in place of the machine's managed one:
     /// `--mcp-policy` for a spawned daemon, the same config field `main.rs`
     /// sets from it for one in this process.
@@ -91,6 +96,7 @@ impl DaemonOptions {
             instance: "harness".to_string(),
             binary: None,
             extra_args: Vec::new(),
+            env: Vec::new(),
             mcp_policy: None,
             host: Host::default(),
         }
@@ -133,6 +139,11 @@ impl DaemonOptions {
 
     pub fn arg(mut self, arg: impl Into<String>) -> Self {
         self.extra_args.push(arg.into());
+        self
+    }
+
+    pub fn env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.env.push((key.into(), value.into()));
         self
     }
 
@@ -444,6 +455,7 @@ async fn spawn_command(
         .env("ANTHROPIC_AUTH_TOKEN", "harness")
         .env_remove("ANTHROPIC_API_KEY")
         .env_remove("AGIX_DAEMON_TOKEN")
+        .envs(opts.env.iter().map(|(k, v)| (k, v)))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::from(stderr))

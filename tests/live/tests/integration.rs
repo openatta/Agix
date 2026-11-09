@@ -10,6 +10,7 @@ mod demo_plugins;
 mod four_project_pipeline;
 mod harness;
 mod host_agents;
+mod mcp_boundaries;
 mod minimal_tier;
 mod session_prompt;
 mod turn_throughput;

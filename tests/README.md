@@ -91,6 +91,8 @@ token 用量。改了 `tests/live` 后 lint 也要带上 feature：
 | `live_plugins.rs` | `examples/plugins` 的两个样例：`demo-rust` 编进 daemon、`demo-quickjs` 经 `plugin.install` 装上。`!stamp` 快捷方式展开成 `DemoStamp` 调用；报告里有只有异步提示词钩子读得到的通知、只有工具算得出的指纹，没有被结果改写遮掉的密钥；`generated/` 下的写入被脚本拒绝；`demo-auditor` 子 Agent 用插件的工具交回指纹；`session.get` 的 `health` 报出插件的计数，脚本零失败 |
 | `live_programs.rs` | `RunCode` 的三种用法：一个程序经 `agent()` 并行起四个子 Agent、按 schema 收回结果再合并写盘（只有输入文件里有的封签一路传上来）；后台运行的程序边跑边推 `log()` 行，结束时以通知回到会话，模型据此交回结果；`acceptEdits` 下 deny 规则在程序里照样拦住写入，程序看得见拒绝 |
 | `live_unattended.rs` | `harnix` 场景、缺省权限、无人值守：项目内 Edit 与沙箱里的 Bash 照常做完，往实例授权的根之外写被拒绝且没有任何询问发给宿主；`AskUserQuestion` 与计划模式连名字都不出现 |
+| `live_mcp.rs` | toy MCP server 那一套：宿主打断一轮时进行中的 `slow` 在 server 那头被取消；一个 server 中途 `crash`，调用报错、另一个 server 照常、它自己下一次调用又连回来；超过 50 000 字节的 `big` 结果只有截断后的头到达模型，4 万字节的整段到达；`ListMcpResources` / `ReadMcpResource` 读到运行时写进资源的令牌、unicode 资源原样、20 万字节的资源不整段进模型，`@toy:<uri>` 引用把资源内联进那条消息（大资源带截断标记）而不调工具；`mcp.addServer` 后同一会话下一轮就能用、`mcp.updateServer` 后调用落到新进程；streamable HTTP 与 SSE 两种传输（另起的 daemon，`NO_PROXY` 放过本机）；`--mcp-policy` 拒绝的 server（含插件声明的 `<插件>-mcp-<名字>`）在 `mcp.status` 里是 `denied`、工具从未出现在请求里、进程从未起过、`mcp.addServer` 它得 `-32020` 且 settings.json 不变；插件声明的 server 在 `config.reload` 之后新会话照样能用；工具结果里的 `elicitation://` URL 触发 `Elicitation` hook。MCP prompt 作斜杠命令那一条是已知缺陷，`#[ignore]` |
+| `live_web.rs` | `PageServer` 上的页面：普通页（实体解码、中文）取回成文本，没配 `task_models.web_fetch` 时即使给了 `prompt` 也没有抽取调用；7 万字符的页在 5 万字符处截断、截断点之后的标记不进模型；404 / 500 以错误返回，重定向交回目标 URL 而不跟随（目标只在模型自己再取时被命中），JSON 原样；宿主打断一轮时等着慢页的 `WebFetch` 立刻收尾；`task_models.web_fetch` 指向第二个 Flash 名字时恰有一次抽取请求落在那个模型上、读的是整页，会话模型的请求里没有整页，抽取请求被注入 400 时退回页面文本；`task_models.web_search` 把搜索请求路由到第三个名字 |
 | `live_context.rs` | 手动压缩由模型写摘要（`FullCompact`），压缩前给的事实之后还答得出；一轮里读的文件撑过 `compaction.threshold_tokens` 时自己压缩、照样做完这一轮；`session.fork` 的分叉记得分叉前的、不知道源会话之后的；带 `output_schema` 建的会话一轮以符合 schema 的 `structured_output` 结束 |
 
 **权限模式。** `LiveRun` 缺省用 `bypassPermissions`。这个模式下一条规则都不看，deny
@@ -151,7 +153,7 @@ let mut run = LiveRun::builder("perm")
     .await?;
 ```
 
-- `options` 改 `DaemonOptions`（`scene`、`arg`、`session_cap`、`prompt_timeout`、`mcp_policy`），
+- `options` 改 `DaemonOptions`（`scene`、`arg`、`env`、`session_cap`、`prompt_timeout`、`mcp_policy`；`env` 只给另起的 daemon），
   `restart` 时再套一遍；`before_start` 在项目设置写完、daemon 起来之前跑，写 daemon 起来时
   要在盘上读到的东西（global / scene 层设置、记忆、策略文件、声明式场景、fixture）。
 - `config(LiveConfig::for_endpoint(&stub.base_url(), model))` 把真实端点换成一个桩——框架自己的
@@ -181,7 +183,8 @@ toy server 的工具、资源、提示词和参数（`--calls` 记调用、`--re
 **模型那端的花样。** `ProviderStub` 的 `Reply::ended(blocks, "max_tokens" | "pause_turn")`、
 `Block::thinking(..)`、`Reply::delayed(d, reply)`（期间请求一直挂着）、`Reply::cut(bytes, reply)`
 （流断在半截）；`inject_failures(n, Reply::status(529, ..))` 让接下来 n 次对话请求先失败
-（不消耗脚本），`LiveProvider` 也有同名方法（不转发、不计预算），`LiveProvider::route(prefix, upstream)`
+（不消耗脚本），`LiveProvider` 也有同名方法（不转发、不计预算），`inject_failures_when(needle, n, ..)`
+只让 body 里带 `needle` 的请求失败（某个模型名、某类调用的固定指令），`LiveProvider::route(prefix, upstream)`
 把某个路径（如 `/v1/chat/completions`）转到另一个端点。`SeenRequest::purpose()` 按引擎自己的
 固定指令分出 `Turn` / `Compact` / `MemoryRecall` / `MemoryExtract` / `WebFetch` / `Title`，
 另有 `model()`、`has_tools()`、`system_contains()`、`messages_contain()`。遥测文件用

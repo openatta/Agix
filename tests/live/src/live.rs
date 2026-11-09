@@ -345,6 +345,13 @@ impl LiveProvider {
         lock(&self.failures).set(n, reply);
     }
 
+    /// [`inject_failures`](Self::inject_failures) for only the requests
+    /// whose body carries `needle` — the extraction call's fixed
+    /// instruction, say, while the turn's own calls go through.
+    pub fn inject_failures_when(&self, needle: &str, n: usize, reply: Reply) {
+        lock(&self.failures).set_when(needle, n, reply);
+    }
+
     /// Forward requests whose path starts with `prefix` to `upstream`
     /// instead (`"/v1/chat/completions"` → an OpenAI-compatible endpoint),
     /// with the same credential, also as a bearer token.
@@ -401,7 +408,7 @@ impl LiveProvider {
             body: serde_json::from_slice(&body).unwrap_or(Value::Null),
         };
 
-        let injected = lock(&self.failures).take(&path);
+        let injected = lock(&self.failures).take(&path, &body);
         if let Some(reply) = injected {
             let status = match &reply {
                 Reply::Status { code, .. } => *code,
