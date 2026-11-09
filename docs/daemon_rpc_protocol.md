@@ -930,7 +930,7 @@ daemon 重启后恢复)都按同一份 `options` 重建,之后的调用里再传
 ```jsonc
 // → params
 { "session_id": "…",              // 可选!省略则自动新建一个会话
-  "message": "把权限层重构一下",     // 必填
+  "message": "把权限层重构一下",     // 必填;只有空白且没有附件 → INVALID_PARAMS
   "turn_id": "t-1",               // 可选,省略则服务端生成;不能是目标轮(goal-<修订>-<轮次>-…)或定时任务(schedule- / cron- 开头)的形式
   "attachments": [ ],             // 可选,见 §4.4
   "options": { },                 // 可选,同 session.create,仅新建时生效
@@ -941,6 +941,9 @@ daemon 重启后恢复)都按同一份 `options` 重建,之后的调用里再传
   "name": null,                   // 首轮自动命名的结果,场景不开启时为 null
   "api_calls": "…" }              // 数字:本轮打了几次模型 API
 ```
+
+`message` 为空或只有空白、又没有一个形状对的附件(§4.4),这次调用直接以 `INVALID_PARAMS`
+失败:不建会话、不调模型。只带附件、`message` 为空是可以的。
 
 **最终响应里没有 `stop_reason` / `usage`** —— 那两个在 `turn_complete` 事件里
 (§7)。想拿到它们就必须读事件流。

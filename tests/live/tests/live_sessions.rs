@@ -964,7 +964,6 @@ async fn unicode_in_messages_file_names_and_contents_survives_byte_for_byte() ->
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: an empty or whitespace-only message is accepted and sent to the model as a turn (crates/assembly/src/server.rs method_session_run_turn checks only that `message` is a string)"]
 async fn an_empty_message_is_refused_without_calling_the_model() -> anyhow::Result<()> {
     let mut run = LiveRun::builder("empty").start().await?;
     let session = run.session().await?;

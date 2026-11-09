@@ -1576,6 +1576,13 @@ impl DaemonServer {
                     .collect()
             })
             .unwrap_or_default();
+        if user_msg.trim().is_empty() && attachments.is_empty() {
+            return RpcResponse::err(
+                id,
+                codes::INVALID_PARAMS,
+                "message is empty and there are no attachments",
+            );
+        }
 
         let on_busy = match params.get("on_busy") {
             None | Some(serde_json::Value::Null) => crate::session_pool::OnBusy::default(),

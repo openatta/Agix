@@ -438,6 +438,8 @@ WebAssembly 载体整个移除。
   有副作用的工具会执行两遍);下一个请求重连。
 - `mcp.status` 的 `state` 多了 `disconnected`、`connecting`、`failed`(带 `error`);
   `mcp_connect_failed` 的 `error` 写明原因,不再是"看 daemon 日志"。
+- `session.run_turn` 的 `message` 为空或只有空白、又没有附件,报 `INVALID_PARAMS`,不再当作
+  一轮发给模型。
 
 ### 嵌入方
 
