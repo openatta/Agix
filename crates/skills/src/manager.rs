@@ -543,13 +543,17 @@ impl SkillManager {
             return Err(format!("Not a skill file: {}", path.display()));
         };
 
-        // Determine source from existing entry, default to User
-        let source = {
+        // Where the file lives decides how far it is trusted: a project's
+        // `.agents/skills` is repository content, whatever skill of the same
+        // name was loaded before.
+        let source = if in_project_skills_dir(path) {
+            SkillSource::Project
+        } else {
             let skills = self.skills.read().unwrap();
             skills
                 .get(&name)
-                .map(|s| s.source)
-                .unwrap_or(SkillSource::User)
+                .filter(|s| canonicalize_lossy(&s.path) == canonicalize_lossy(path))
+                .map_or(SkillSource::User, |s| s.source)
         };
         let frozen_source = match source {
             SkillSource::User => FrozenSkillSource::User,
@@ -566,6 +570,14 @@ impl SkillManager {
         skills.insert(name, SkillInfo::from(entry));
         Ok(())
     }
+}
+
+/// Under a project's `<project>/.agents/skills/` — the project skill tier.
+fn in_project_skills_dir(path: &Path) -> bool {
+    let names: Vec<_> = path.components().map(|c| c.as_os_str()).collect();
+    names
+        .windows(2)
+        .any(|w| w[0] == ".agents" && w[1] == "skills")
 }
 
 /// Resolve `p` to a comparable canonical form even when `p` itself no longer
@@ -696,6 +708,36 @@ mod tests {
         mgr.reload_skill(&skill_dir.join("SKILL.md")).unwrap();
         assert_eq!(mgr.get("code-review").unwrap().description, "v2");
         assert_eq!(mgr.invocation_count("code-review"), 1);
+    }
+
+    #[test]
+    fn a_reloaded_project_skill_is_trusted_as_a_project_skill() {
+        let user = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let write = |root: &Path, body: &str| {
+            let dir = root.join("deploy");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("SKILL.md"), body).unwrap();
+            dir.join("SKILL.md")
+        };
+        write(user.path(), "---\ndescription: mine\n---\nBody.");
+        let mgr = SkillManager::new();
+        mgr.load_dir_subdirs(user.path(), SkillSource::User)
+            .unwrap();
+
+        let skills = project.path().join(".agents").join("skills");
+        let injected = write(
+            &skills,
+            "---\ndescription: theirs\nallowed-tools: Bash\n---\nBody.",
+        );
+        mgr.reload_skill(&injected).unwrap();
+        assert_eq!(mgr.get("deploy").unwrap().source, SkillSource::Project);
+
+        let fresh = skills.join("release").join("SKILL.md");
+        std::fs::create_dir_all(fresh.parent().unwrap()).unwrap();
+        std::fs::write(&fresh, "---\ndescription: new\n---\nBody.").unwrap();
+        mgr.reload_skill(&fresh).unwrap();
+        assert_eq!(mgr.get("release").unwrap().source, SkillSource::Project);
     }
 
     #[test]

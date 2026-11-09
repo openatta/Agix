@@ -269,10 +269,9 @@ impl Tool for SkillTool {
         // Dynamic context injection (`` !`command` ``, ` ```! ` blocks) runs
         // first, over the raw body, before variable substitution —
         // preprocessing, not something the model executes; runs once over
-        // the original file. See `expand_dynamic_context`'s doc comment for
-        // the security posture (delegates to the real BashTool, not a raw
-        // shell-out).
-        let body = expand_dynamic_context(&body, &ctx).await;
+        // the original file. Before `allowed_tools` below, on purpose: a
+        // skill's own frontmatter does not get to approve its own commands.
+        let body = expand_dynamic_context(&body, &ctx, self.permission.as_deref()).await;
 
         // Use full expand_skill_vars ($1..$9, $@, $ARGUMENTS, {ARGS}, etc.)
         let arg_names = skill_info
@@ -561,24 +560,26 @@ const DISABLED_PLACEHOLDER: &str = "[shell command execution disabled by policy]
 /// placeholders, so a command's own output can't trigger a second round of
 /// injection.
 ///
-/// Security posture: commands run through the real `BashTool::call()` with
-/// the *same* `ToolContext` this skill invocation itself received — the
-/// same sandbox policy, cwd, and cancellation a normal model-issued Bash
-/// call would get, not a separate raw `std::process::Command` shell-out.
-/// This is deliberate: a skill body is untrusted input the same way a
-/// model-generated Bash command is, and should go through exactly one
-/// execution path, not two with potentially different guarantees. (Whether
-/// that shared path is *itself* actually sandboxed today is a separate,
-/// pre-existing question — see `ToolContext.config`'s construction in
-/// `runtime::turn::execute_tool_inner`, which currently always uses
-/// `EngineConfig::defaults_for(..)` rather than the real session settings;
-/// this function inherits whatever that resolves to, correctly, rather
-/// than adding a second inconsistency on top of it.)
+/// Security posture: a skill body is untrusted input the same way a
+/// model-generated Bash command is — a project skill is whatever the
+/// repository says — so each command is held to what a model's `Bash` call
+/// with that command would be: the session's `Permission` decides first,
+/// then it runs through the real `BashTool::call()` with this invocation's
+/// `ToolContext` (same sandbox, cwd, cancellation). A deny rule refuses it;
+/// so does a call that would need the user's approval, because
+/// preprocessing has no one to ask — only what the rules allow, or what
+/// `Bash` itself lets through silently (a read-only command inside the
+/// project), runs. The skill's own `allowed-tools` are not applied yet at
+/// this point. With no `Permission` wired nothing runs.
 ///
 /// Respects `ctx.config.disable_skill_shell_execution` — when set, every
 /// placeholder is replaced with a fixed disabled-notice string instead of
 /// running anything.
-async fn expand_dynamic_context(body: &str, ctx: &ToolContext) -> String {
+async fn expand_dynamic_context(
+    body: &str,
+    ctx: &ToolContext,
+    permission: Option<&dyn base::interface::permission::Permission>,
+) -> String {
     if !body.contains("!`") && !body.contains("```!") {
         return body.to_string();
     }
@@ -602,7 +603,7 @@ async fn expand_dynamic_context(body: &str, ctx: &ToolContext) -> String {
         let Some(m) = caps.get(0) else { continue };
         out.push_str(&body[last_end..m.start()]);
         let command = caps.get(1).map_or("", |c| c.as_str());
-        out.push_str(&run_skill_shell_command(command, ctx, disabled).await);
+        out.push_str(&run_skill_shell_command(command, ctx, disabled, permission).await);
         last_end = m.end();
     }
     out.push_str(&body[last_end..]);
@@ -618,23 +619,44 @@ async fn expand_dynamic_context(body: &str, ctx: &ToolContext) -> String {
         out.push_str(&body[last_end..m.start()]);
         out.push_str(caps.get(1).map_or("", |c| c.as_str())); // preserve the leading space/tab (or nothing at line start)
         let command = caps.get(2).map_or("", |c| c.as_str());
-        out.push_str(&run_skill_shell_command(command, ctx, disabled).await);
+        out.push_str(&run_skill_shell_command(command, ctx, disabled, permission).await);
         last_end = m.end();
     }
     out.push_str(&body[last_end..]);
     out
 }
 
-async fn run_skill_shell_command(command: &str, ctx: &ToolContext, disabled: bool) -> String {
+async fn run_skill_shell_command(
+    command: &str,
+    ctx: &ToolContext,
+    disabled: bool,
+    permission: Option<&dyn base::interface::permission::Permission>,
+) -> String {
+    use base::interface::permission::PermissionOutcome;
     if disabled {
         return DISABLED_PLACEHOLDER.to_string();
     }
+    let input = serde_json::json!({"command": command});
+    let refused = match permission {
+        None => Some("no permission check is wired for this skill".to_string()),
+        Some(permission) => match permission
+            .check("Bash", &input, &ctx.cwd, &ctx.session_id)
+            .await
+        {
+            PermissionOutcome::Permit => None,
+            PermissionOutcome::Deny { reason } => Some(reason),
+            PermissionOutcome::Prompt { message, .. } => Some(format!(
+                "it needs the user's approval, which a skill's inline command cannot ask for \
+                 ({message}); run it with the Bash tool instead"
+            )),
+        },
+    };
+    if let Some(reason) = refused {
+        tracing::warn!(command = %command, reason = %reason, "skill inline command not run");
+        return format!("[`{command}` not run: {reason}]");
+    }
     let result = tools::bash::BashTool
-        .call(
-            serde_json::json!({"command": command}),
-            ctx.clone(),
-            ProgressSender::noop(""),
-        )
+        .call(input, ctx.clone(), ProgressSender::noop(""))
         .await;
     match result {
         // Trim exactly one trailing newline, matching shell `$(...)` command
@@ -670,11 +692,103 @@ pub fn register(
 #[cfg(test)]
 mod dynamic_context_tests {
     use super::*;
+    use base::interface::permission::{Permission, PermissionOutcome};
+
+    struct Permits;
+
+    #[async_trait]
+    impl Permission for Permits {
+        async fn check(
+            &self,
+            _: &str,
+            _: &Value,
+            _: &std::path::Path,
+            _: &str,
+        ) -> PermissionOutcome {
+            PermissionOutcome::Permit
+        }
+    }
+
+    async fn expand(body: &str, ctx: &ToolContext) -> String {
+        expand_dynamic_context(body, ctx, Some(&Permits)).await
+    }
+
+    /// The session's real gate over the real `Bash`, under `rules`.
+    fn gate(
+        rules: Vec<base::permission::PermissionRule>,
+        mode: base::permission::PermissionMode,
+    ) -> permissions::rule_set_permission::RuleSetPermission {
+        let registry = Arc::new(base::tool::InMemoryToolRegistry::new());
+        tools::register_builtin_tools(&registry);
+        permissions::rule_set_permission::RuleSetPermission::new(
+            Arc::new(permissions::gate::PermissionGate::new(
+                permissions::ruleset::RuleSet::new(rules),
+            )),
+            registry,
+            mode,
+        )
+    }
+
+    fn bash_rule(
+        behavior: base::permission::RuleBehavior,
+        content: Option<&str>,
+    ) -> base::permission::PermissionRule {
+        base::permission::PermissionRule {
+            source: base::permission::RuleSource::ProjectSettings,
+            behavior,
+            tool_name: "Bash".into(),
+            rule_content: content.map(Into::into),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_inline_command_is_held_to_the_rules_a_bash_call_would_be() {
+        use base::permission::{PermissionMode, RuleBehavior};
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ToolContext::for_test(dir.path().to_path_buf());
+        let body = "!`echo stamped > stamp.txt`";
+
+        let denied = gate(
+            vec![bash_rule(RuleBehavior::Deny, None)],
+            PermissionMode::AcceptEdits,
+        );
+        let out = expand_dynamic_context(body, &ctx, Some(&denied)).await;
+        assert!(
+            out.contains("not run") && out.contains("denied by rule"),
+            "{out}"
+        );
+        assert!(!dir.path().join("stamp.txt").exists());
+
+        let asks = gate(vec![], PermissionMode::Default);
+        let out = expand_dynamic_context(body, &ctx, Some(&asks)).await;
+        assert!(out.contains("needs the user's approval"), "{out}");
+        assert!(!dir.path().join("stamp.txt").exists());
+
+        let out = expand_dynamic_context(body, &ctx, None).await;
+        assert!(out.contains("not run"), "{out}");
+        assert!(!dir.path().join("stamp.txt").exists());
+
+        let allowed = gate(
+            vec![bash_rule(RuleBehavior::Allow, Some("echo:*"))],
+            PermissionMode::Default,
+        );
+        expand_dynamic_context(body, &ctx, Some(&allowed)).await;
+        assert!(dir.path().join("stamp.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn a_read_only_inline_command_runs_as_a_bash_call_would() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ToolContext::for_test(dir.path().to_path_buf());
+        let asks = gate(vec![], base::permission::PermissionMode::Default);
+        let out = expand_dynamic_context("!`echo hello`", &ctx, Some(&asks)).await;
+        assert_eq!(out, "hello");
+    }
 
     #[tokio::test]
     async fn inline_placeholder_at_line_start_is_substituted() {
         let body = "## Info\n!`echo hello-world`\n\nDone.";
-        let out = expand_dynamic_context(body, &ToolContext::for_test(std::env::temp_dir())).await;
+        let out = expand(body, &ToolContext::for_test(std::env::temp_dir())).await;
         assert!(out.contains("hello-world"));
         assert!(!out.contains("!`echo"));
     }
@@ -682,7 +796,7 @@ mod dynamic_context_tests {
     #[tokio::test]
     async fn inline_placeholder_after_whitespace_is_substituted() {
         let body = "Value: !`echo 42`.";
-        let out = expand_dynamic_context(body, &ToolContext::for_test(std::env::temp_dir())).await;
+        let out = expand(body, &ToolContext::for_test(std::env::temp_dir())).await;
         assert!(out.contains("Value: 42."));
     }
 
@@ -691,14 +805,14 @@ mod dynamic_context_tests {
         // `!` must be at line start or after whitespace — `KEY=!\`cmd\`` has
         // no separator, so it's untouched.
         let body = "KEY=!`echo should-not-run`";
-        let out = expand_dynamic_context(body, &ToolContext::for_test(std::env::temp_dir())).await;
+        let out = expand(body, &ToolContext::for_test(std::env::temp_dir())).await;
         assert_eq!(out, body);
     }
 
     #[tokio::test]
     async fn fenced_block_is_substituted() {
         let body = "## Environment\n```!\necho line-one\necho line-two\n```\n";
-        let out = expand_dynamic_context(body, &ToolContext::for_test(std::env::temp_dir())).await;
+        let out = expand(body, &ToolContext::for_test(std::env::temp_dir())).await;
         assert!(out.contains("line-one"));
         assert!(out.contains("line-two"));
         assert!(!out.contains("```!"));
@@ -713,7 +827,7 @@ mod dynamic_context_tests {
             c
         });
         let body = "!`echo should-not-run`";
-        let out = expand_dynamic_context(body, &ctx).await;
+        let out = expand(body, &ctx).await;
         assert_eq!(out, DISABLED_PLACEHOLDER);
         assert!(!out.contains("should-not-run"));
     }
@@ -721,7 +835,7 @@ mod dynamic_context_tests {
     #[tokio::test]
     async fn body_with_no_placeholders_is_returned_unchanged() {
         let body = "Just plain instructions, no shell syntax here.";
-        let out = expand_dynamic_context(body, &ToolContext::for_test(std::env::temp_dir())).await;
+        let out = expand(body, &ToolContext::for_test(std::env::temp_dir())).await;
         assert_eq!(out, body);
     }
 
@@ -735,7 +849,7 @@ mod dynamic_context_tests {
         // command that needs to *produce* a backtick has to build it this
         // way rather than embed one directly.
         let body = "!`printf '!\\140echo nested\\140'`";
-        let out = expand_dynamic_context(body, &ToolContext::for_test(std::env::temp_dir())).await;
+        let out = expand(body, &ToolContext::for_test(std::env::temp_dir())).await;
         assert_eq!(out, "!`echo nested`", "output was: {out}");
     }
 }
