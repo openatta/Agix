@@ -492,6 +492,10 @@ WebAssembly 载体整个移除。
   `session.respondToPrompt`。让 hook 或 MCP 服务器回调 daemon 的,改由宿主转一手。`--token`
   写在命令行上时 `ps` 里看得见,Linux 上沙箱里的命令可以拿它连 TCP 端口——用
   `AGIX_DAEMON_TOKEN` 传。
+- **hook 的 `if` 对 `Bash` / `Monitor` 按实际启动的程序比**(`hooks.md`"`if`"一节),与 deny
+  规则同一套读法:`Bash(rm:*)` 现在也命中 `cd . && rm x`、`"rm" x`、`/bin/rm x`、`env rm x`、
+  `bash -c 'rm x'`,以及程序名读不出来的命令(`$CMD x`)。以前只比整行原文的前缀,这些都绕得过;
+  配了这类 `if` 的 hook 会比以前跑得多。
 - agent 类型 frontmatter 的 `permission_mode` 真正作用到子 Agent 的权限判定上(以前写 `plan`
   不起作用),可以比父会话宽也可以严;父会话在 `plan` 时取两者中更严的那个,父会话是
   `bypassPermissions` 时随父会话,插件带来的类型只能收紧。团队成员(`TeamCreate`、`Agent` 的

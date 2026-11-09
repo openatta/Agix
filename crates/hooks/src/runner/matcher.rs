@@ -3,8 +3,10 @@
 //! Supports:
 //! - `""` or `*` — every call, and events that carry no tool at all
 //! - `Bash` — exact tool name match
-//! - `Bash(<content>)` — tool name + content (prefix:*, glob, exact)
-//! - Other tool names (Read, Edit, mcp__*) — same rules
+//! - `Bash(<content>)` — tool name + content (prefix:*, glob, exact); for
+//!   `Bash` and `Monitor` the content is matched against what the command
+//!   runs, as a deny rule matches it
+//! - Other tool names (Read, Edit, mcp__*) — same rules, against the text
 //! - `Edit|Write`, `Bash(git push:*)|Write` — any of the alternatives; a `|`
 //!   inside parentheses belongs to the content, not the alternation
 
@@ -77,7 +79,34 @@ fn alternative_matches(pat: &str, input: &HookInput) -> bool {
     let Some(content) = content else {
         return false;
     };
+    if SHELL_TOOLS.contains(&tool_name) {
+        return shell_matches(&rc, content);
+    }
     match_content(&rc, content)
+}
+
+/// Tools whose content is a shell command line.
+const SHELL_TOOLS: &[&str] = &["Bash", "Monitor"];
+
+/// Whether `line` runs what `pattern` names, read the way a `Bash(...)` deny
+/// rule reads it: the whole line, each simple command in it, and each
+/// program it starts with quotes, wrappers and paths taken off. A command
+/// whose program cannot be told from its text matches too, as it does a deny
+/// rule — a hook that guards a command must not be talked past.
+fn shell_matches(pattern: &str, line: &str) -> bool {
+    use base::permission::{PermissionRule, RuleBehavior, RuleSource};
+    use permissions::ruleset::{RuleHit, RuleSet};
+    let mut rules = RuleSet::empty();
+    rules.add(PermissionRule {
+        source: RuleSource::UserSettings,
+        behavior: RuleBehavior::Deny,
+        tool_name: "Bash".into(),
+        rule_content: Some(pattern.to_string()),
+    });
+    matches!(
+        rules.evaluate_shell("Bash", None, line),
+        RuleHit::Deny(_) | RuleHit::Unclear(_)
+    )
 }
 
 fn match_tool_name(rule: &str, actual: &str) -> bool {
@@ -227,6 +256,47 @@ mod tests {
         assert!(if_matches("Bash(git push:*)|Write", &push));
         assert!(!if_matches("Bash(git push:*)|Write", &ls));
         assert!(if_matches("Bash(git push:*)|Write", &write));
+    }
+
+    /// A `Bash(...)` pattern is about the program that runs, as a deny rule
+    /// is: a hook that stands guard over `rm` fires however the command
+    /// spells it, and where the program cannot be told from the text.
+    #[test]
+    fn a_shell_pattern_matches_what_runs_however_it_is_spelled() {
+        for command in [
+            "rm -rf x",
+            "cd . && rm -rf x",
+            "ls; rm x",
+            "\"rm\" x",
+            "\\rm x",
+            "/bin/rm x",
+            "env rm x",
+            "env -i rm x",
+            "sudo rm -rf x",
+            "timeout 5 rm x",
+            "bash -c 'rm x'",
+            "find . -exec rm {} +",
+            "$RM x",
+        ] {
+            assert!(
+                if_matches("Bash(rm:*)", &make_input("Bash", Some(command))),
+                "`{command}`"
+            );
+        }
+        for command in ["ls", "echo rm", "git rm x", "grep -r rm ."] {
+            assert!(
+                !if_matches("Bash(rm:*)", &make_input("Bash", Some(command))),
+                "`{command}`"
+            );
+        }
+        assert!(if_matches(
+            "Monitor(rm:*)",
+            &make_input("Monitor", Some("tail -f log; /bin/rm x"))
+        ));
+        assert!(if_matches(
+            "Bash(git push:*)",
+            &make_input("Bash", Some("cd repo && git push origin main"))
+        ));
     }
 
     #[test]

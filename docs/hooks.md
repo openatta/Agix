@@ -133,13 +133,22 @@ JSON。子 Agent 的最终回答应当是 `{"ok": true|false, "reason": "…"}`:
 |---|---|
 | `""`、`*`(或不写) | 一切,包括不带工具的事件 |
 | `Bash` | `tool_name` 等于 `Bash` |
-| `Bash(git push:*)` | 工具名相同,且内容是 `git push` 或以 `git push ` 开头 |
+| `Bash(git push:*)` | 工具名相同,且命令启动的程序是 `git push` 或以 `git push ` 开头(见下) |
 | `Write(*.rs)` | 内容匹配这个 glob(`*` 跨目录;`file_path` 是绝对路径) |
 | `mcp__github` | 这个 MCP server 的所有工具(`mcp__github__…`) |
 | `Edit\|Write`、`Bash(git push:*)\|Write` | 任一个;括号里的 `\|` 属于内容 |
 
 "内容"依次取 `tool_input` 的 `command`、`file_path`、`path`、`url`。除 `""` / `*` 之外的
 写法都要求 payload 有 `tool_name`——表里哪些事件带它,写在 payload 一列。
+
+**`Bash` 与 `Monitor` 的内容按 `Bash(...)` deny 规则的读法比**(`ARCHITECTURE.md` §6.1,
+`permissions::invocation`):整行、按 `&&` / `;` / `|` 等切开的每一段、以及每一段实际启动的程序
+(去引号、展开花括号、剥掉 `env` / `exec` / `command` / `sudo` / `timeout` / `xargs` 等 wrapper
+与它们的选项、程序路径取名字,`sh -c` / `eval` / `find -exec` 里的也看)分别去比,任一个命中就
+跑。所以 `Bash(rm:*)` 对 `cd . && rm -rf x`、`"rm" x`、`\rm x`、`/bin/rm x`、`env rm x`、
+`bash -c 'rm x'` 都命中;`echo rm`、`git rm x` 不命中。**程序名读不出来的命令一律命中**
+(`$CMD x`、命令名是通配或替换的),和 deny 规则在这种时候改为询问是同一个道理:守着某条命令的
+hook 不能被换个写法绕过去,宁可多跑一次。其他工具的内容仍按原文比。
 
 ---
 

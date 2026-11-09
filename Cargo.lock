@@ -1285,6 +1285,7 @@ dependencies = [
  "globset",
  "libc",
  "notify",
+ "permissions",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
