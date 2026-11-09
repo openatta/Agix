@@ -769,6 +769,18 @@ pub struct SessionPool {
     /// applies. Filled from the session's log the first time a session not
     /// built in this process is resumed.
     specs: std::sync::Mutex<HashMap<String, SessionSpec>>,
+    /// Sessions out of memory whose spec is still in `specs`, oldest first:
+    /// those the log cannot give back (a recorder's progress, a session with
+    /// no log). At most `cap` of them.
+    kept_specs: std::sync::Mutex<std::collections::VecDeque<String>>,
+    /// The engines taken out of `sessions` that may still be stopping, by
+    /// session id. A session brought back under one of these ids waits for
+    /// that engine first, so the two never run side by side.
+    stopping: std::sync::Mutex<HashMap<String, CancellationToken>>,
+    /// Set once [`Self::shutdown_all`] starts; no session is created after.
+    shutting_down: std::sync::atomic::AtomicBool,
+    /// Cancelled when [`Self::shutdown_all`] has finished.
+    shut_down: CancellationToken,
     /// Every project this pool has built a session for, `None` being the
     /// no-project tier. What `session.list` enumerates cold sessions under —
     /// kept apart from `bindings`, which a settings change empties.
@@ -1115,6 +1127,10 @@ impl SessionPool {
             },
             pool_watch: std::sync::Mutex::new(Vec::new()),
             specs: std::sync::Mutex::new(HashMap::new()),
+            kept_specs: std::sync::Mutex::new(std::collections::VecDeque::new()),
+            stopping: std::sync::Mutex::new(HashMap::new()),
+            shutting_down: std::sync::atomic::AtomicBool::new(false),
+            shut_down: CancellationToken::new(),
             served: std::sync::Mutex::new(Vec::new()),
             permission_prompt_timeout: DEFAULT_PERMISSION_PROMPT_TIMEOUT,
             credentials: Arc::new(base::interface::credentials::ConfigCredentials),
@@ -2627,8 +2643,11 @@ impl SessionPool {
         options: Option<&SessionOptions>,
         resume: bool,
     ) -> Result<String, String> {
+        self.refuse_while_shutting_down()?;
+        self.wait_until_stopped(&session_id).await;
         let claim = self.claim_log(&session_id).await?;
         let spec = self.spec_for(&session_id, resume, options).await;
+        self.lock_kept_specs().retain(|k| k != &session_id);
         let options = spec.options.as_ref();
         self.note_served(project_root_for_meta.as_deref());
         let scene_id = scene.id().to_string();
@@ -3081,6 +3100,12 @@ impl SessionPool {
         });
 
         let mut sessions = self.sessions.lock().await;
+        // Checked again under the lock `shutdown_all` drains the map with: a
+        // session inserted after that would outlive the shutdown.
+        if let Err(e) = self.refuse_while_shutting_down() {
+            cancel.cancel();
+            return Err(e);
+        }
 
         // 容量检查：驱逐最久未活跃的 session。只有这次 insert 真的会让
         // session **总数**增加时才需要驱逐——`session_id` 已经在 map 里的话
@@ -3088,7 +3113,9 @@ impl SessionPool {
         // "替换同一个 key"，不是"新增一个"，`sessions.len()` 不会变，不该
         // 因为这次重建就凭空多驱逐一个无关的、真正最久未用的 session。
         if !sessions.contains_key(&session_id) && sessions.len() >= self.cap {
-            if let Some(evicted) = evict_lru(&mut sessions) {
+            if let Some((evicted, live)) = evict_lru(&mut sessions) {
+                self.evict(&evicted, &live);
+                info!(sid = %evicted, "session evicted (LRU, pool full)");
                 self.emit_session_event(
                     "session_evicted",
                     &evicted,
@@ -3097,8 +3124,10 @@ impl SessionPool {
             }
         }
 
+        let (event_rx, arrived) = relay_events(event_rx);
         let event_rx = Arc::new(AsyncMutex::new(Some(event_rx)));
-        self.forward_events_between_turns(&session_id, &event_rx, &cancel);
+        let idle = Arc::new(tokio::sync::Notify::new());
+        self.forward_events_between_turns(&session_id, &event_rx, &arrived, &idle, &cancel);
         let live = LiveSession {
             input_tx,
             event_rx,
@@ -3118,7 +3147,7 @@ impl SessionPool {
             turn_initiator: None,
             state: Some(state.clone()),
             spawner: Some(spawner),
-            idle: Arc::new(tokio::sync::Notify::new()),
+            idle,
             scripts: script_ledger,
             health,
             subscribers: HashMap::new(),
@@ -3185,7 +3214,9 @@ impl SessionPool {
             SessionSpec::default()
         };
         // A log written before specs were recorded has none; the options of
-        // the call that brought the session back are the best there is.
+        // the call that brought the session back are the best there is, and
+        // are recorded so the next resume finds them too.
+        let adopted = resume && spec.options.is_none() && options.is_some();
         if spec.options.is_none() {
             spec.options = options.cloned();
         }
@@ -3197,10 +3228,15 @@ impl SessionPool {
         if spec.options.as_ref().is_some_and(|o| o.recorder.is_some()) {
             spec.recorder = Some(telemetry::recorder::Recorder::new());
         }
-        self.lock_specs()
+        let spec = self
+            .lock_specs()
             .entry(session_id.to_string())
             .or_insert(spec)
-            .clone()
+            .clone();
+        if adopted {
+            self.persist_spec(session_id, &spec).await;
+        }
+        spec
     }
 
     fn lock_specs(&self) -> std::sync::MutexGuard<'_, HashMap<String, SessionSpec>> {
@@ -3648,6 +3684,79 @@ impl SessionPool {
     /// closed, and an id is never reused.
     fn forget_spec(&self, session_id: &str) {
         self.lock_specs().remove(session_id);
+    }
+
+    /// Stop `live`, just taken out of `sessions` under `sid`, without
+    /// waiting for it: whoever brings `sid` back waits instead
+    /// ([`Self::wait_until_stopped`]).
+    fn stop_removed(&self, sid: &str, live: &LiveSession) {
+        live.cancel.cancel();
+        let mut stopping = self
+            .stopping
+            .lock()
+            .expect("stopping is never held across a panic");
+        stopping.retain(|_, exited| !exited.is_cancelled());
+        stopping.insert(sid.to_string(), live.exited.clone());
+    }
+
+    /// Wait, within [`AGENT_EXIT_GRACE`], for the engine `sid` last ran on
+    /// to stop, if it has not.
+    async fn wait_until_stopped(&self, sid: &str) {
+        let exited = self
+            .stopping
+            .lock()
+            .expect("stopping is never held across a panic")
+            .get(sid)
+            .cloned();
+        let Some(exited) = exited else { return };
+        if tokio::time::timeout(AGENT_EXIT_GRACE, exited.cancelled())
+            .await
+            .is_err()
+        {
+            warn!(%sid, "the session's previous engine did not stop within the grace period");
+        }
+    }
+
+    /// Take `live` out of memory as [`Self::stop_removed`] does, for a
+    /// session that may be brought back.
+    fn evict(&self, sid: &str, live: &LiveSession) {
+        self.stop_removed(sid, live);
+        reap_process_groups_later(live);
+        self.release_spec(sid);
+    }
+
+    /// Drop the spec of `sid`, now out of memory, when its log gives it
+    /// back; one the log cannot — a recorder's progress, a session with no
+    /// log — is kept, for at most `cap` sessions.
+    fn release_spec(&self, sid: &str) {
+        let logged = self.history_store.is_some() && base::session::SessionId::parse(sid).is_ok();
+        let records = self
+            .lock_specs()
+            .get(sid)
+            .is_some_and(|spec| spec.recorder.is_some());
+        if logged && !records {
+            self.forget_spec(sid);
+            return;
+        }
+        let oldest = {
+            let mut kept = self.lock_kept_specs();
+            kept.retain(|k| k != sid);
+            kept.push_back(sid.to_string());
+            if kept.len() > self.cap {
+                kept.pop_front()
+            } else {
+                None
+            }
+        };
+        if let Some(oldest) = oldest {
+            self.forget_spec(&oldest);
+        }
+    }
+
+    fn lock_kept_specs(&self) -> std::sync::MutexGuard<'_, std::collections::VecDeque<String>> {
+        self.kept_specs
+            .lock()
+            .expect("kept_specs is never held across a panic")
     }
 
     /// Record a raised ask so late subscribers can be handed it.
@@ -4612,9 +4721,8 @@ impl SessionPool {
                         }
                     };
                     if let Some(dead) = dead {
-                        dead.cancel.cancel();
+                        self.evict(&sid, &dead);
                         dead.idle.notify_waiters();
-                        reap_process_groups_later(&dead);
                         self.emit_session_event(
                             "session_closed",
                             &sid,
@@ -4878,7 +4986,8 @@ impl SessionPool {
                 serde_json::to_value(settings.as_ref()).unwrap_or_else(|_| serde_json::json!({}))
             }
             _ => match path {
-                Some(p) => std::fs::read_to_string(&p)
+                Some(p) => tokio::fs::read_to_string(&p)
+                    .await
                     .ok()
                     .and_then(|raw| serde_json::from_str(&raw).ok())
                     .unwrap_or(serde_json::Value::Null),
@@ -5390,7 +5499,7 @@ impl SessionPool {
                     {
                         let mut sessions = self.sessions.lock().await;
                         if let Some(live) = sessions.remove(&child_str) {
-                            live.cancel.cancel();
+                            self.stop_removed(&child_str, &live);
                             reap_process_groups_later(&live);
                         }
                     }
@@ -5435,7 +5544,7 @@ impl SessionPool {
         let process_groups = {
             let mut sessions = self.sessions.lock().await;
             sessions.remove(session_id).and_then(|live| {
-                live.cancel.cancel();
+                self.stop_removed(session_id, &live);
                 info!(%session_id, "session removed");
                 self.emit_session_event(
                     "session_closed",
@@ -5749,6 +5858,7 @@ impl SessionPool {
                 };
                 let recordings = if include.recording {
                     self.measure_recordings(&settings, &request.session_id, &lineage)
+                        .await
                 } else {
                     Vec::new()
                 };
@@ -5833,7 +5943,7 @@ impl SessionPool {
     /// the daemon's own. `recorder` is never written to the log, so for a
     /// session this process did not build only the daemon's root and the
     /// session ids are known.
-    fn measure_recordings(
+    async fn measure_recordings(
         &self,
         settings: &Settings,
         root_session: &str,
@@ -5873,7 +5983,7 @@ impl SessionPool {
             }
             for root in &dirs {
                 let dir = root.join(&name);
-                if let Ok(meta) = std::fs::metadata(dir.join("calls.jsonl")) {
+                if let Ok(meta) = tokio::fs::metadata(dir.join("calls.jsonl")).await {
                     found.push(crate::export::RecordingPart {
                         name: name.clone(),
                         dir,
@@ -6342,28 +6452,46 @@ impl SessionPool {
                 Some(root) => root.join(".agix"),
                 None => self.paths.global_root(),
             };
-            Arc::new(Settings::load(
+            let (global_root, scene_root, scene_id) = (
                 self.paths.global_root(),
                 self.scene_root(scene_id, &startup_scene),
-                local_dir,
-                scene_id,
-                &default_model,
-            ))
+                scene_id.to_string(),
+            );
+            Arc::new(
+                off_the_runtime(move || {
+                    Settings::load(
+                        global_root,
+                        scene_root,
+                        local_dir,
+                        &scene_id,
+                        &default_model,
+                    )
+                })
+                .await,
+            )
         };
 
         let (watch, unwatched_settings) = self.watch_tiers_of(&settings, &key);
         let last_good = self.last_good_routers.lock().await.get(&key).cloned();
-        let built = Arc::new(ProjectBinding {
-            unwatched_settings,
-            ..ProjectBinding::build(
-                settings,
-                &self.plugins.agent_types(),
-                watch,
-                &self.client,
-                last_good,
-                &self.credentials,
-            )
-        });
+        let (agent_types, client, credentials) = (
+            self.plugins.agent_types(),
+            self.client.clone(),
+            self.credentials.clone(),
+        );
+        let built = Arc::new(
+            off_the_runtime(move || ProjectBinding {
+                unwatched_settings,
+                ..ProjectBinding::build(
+                    settings,
+                    &agent_types,
+                    watch,
+                    &client,
+                    last_good,
+                    &credentials,
+                )
+            })
+            .await,
+        );
         if let Some(router) = built.task_router.clone() {
             self.last_good_routers
                 .lock()
@@ -6832,20 +6960,7 @@ impl SessionPool {
                     None => (String::new(), String::new()),
                 }
             };
-            // `resume_or_create` falls back to a fresh id if creation under
-            // the requested one failed — report what actually came back,
-            // and don't claim history was restored onto an id that never
-            // had any.
-            let status = if has_history && sid == session_id {
-                "resumed"
-            } else {
-                "created"
-            };
-            let (message_count, entry_count) = if sid == session_id {
-                (message_count, entry_count)
-            } else {
-                (0, 0)
-            };
+            let status = if has_history { "resumed" } else { "created" };
 
             Ok(self
                 .resume_report(
@@ -6923,8 +7038,18 @@ impl SessionPool {
         })
     }
 
-    /// 关闭所有 session，等每个 Agent 把手上的一轮收尾落盘再返回。
+    /// 关闭所有 session，等每个 Agent 把手上的一轮收尾落盘再返回。From the
+    /// moment this starts no session is created; a second call waits for the
+    /// first to finish.
     pub async fn shutdown_all(&self) {
+        if self
+            .shutting_down
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            self.shut_down.cancelled().await;
+            return;
+        }
+        let _done = self.shut_down.clone().drop_guard();
         let (exits, ledgers): (Vec<CancellationToken>, Vec<_>) = {
             let mut sessions = self.sessions.lock().await;
             sessions
@@ -6947,6 +7072,13 @@ impl SessionPool {
                 .map(|ledger| ledger.reap(PROCESS_GROUP_GRACE)),
         )
         .await;
+    }
+
+    fn refuse_while_shutting_down(&self) -> Result<(), String> {
+        if self.shutting_down.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err("the daemon is shutting down".to_string());
+        }
+        Ok(())
     }
 
     /// Stops the Agent running under `session_id`, if any, and waits for it
@@ -7120,34 +7252,53 @@ impl SessionPool {
     }
 
     /// While no turn holds `event_rx`, pass on what the engine still says: a
-    /// background sub-agent's question and progress, a team stage. A turn
-    /// that starts takes the receiver as before; this only ever tries the
-    /// lock, so it never makes a turn wait.
+    /// background sub-agent's question and progress, a team stage. Woken by
+    /// `arrived` when the engine sends something; when a turn holds the
+    /// receiver, waits for `idle` and looks again, since what arrived as the
+    /// turn ended is still there. A turn that starts takes the receiver as
+    /// before; this only ever tries the lock, so it never makes a turn wait.
     fn forward_events_between_turns(
         &self,
         session_id: &str,
         event_rx: &Arc<AsyncMutex<Option<EventReceiver>>>,
+        arrived: &Arc<tokio::sync::Notify>,
+        idle: &Arc<tokio::sync::Notify>,
         cancel: &CancellationToken,
     ) {
         let Some(pool) = self.this.get().cloned() else {
             return;
         };
-        let (event_rx, cancel) = (event_rx.clone(), cancel.clone());
+        let (event_rx, arrived, idle, cancel) = (
+            event_rx.clone(),
+            arrived.clone(),
+            idle.clone(),
+            cancel.clone(),
+        );
         let session_id = session_id.to_string();
         tokio::spawn(async move {
             loop {
                 tokio::select! {
                     _ = cancel.cancelled() => return,
-                    _ = tokio::time::sleep(Duration::from_millis(200)) => {}
+                    _ = arrived.notified() => {}
                 }
-                let mut waiting = Vec::new();
-                if let Ok(mut slot) = event_rx.try_lock() {
-                    if let Some(rx) = slot.as_mut() {
-                        while let Ok(event) = rx.try_recv() {
-                            waiting.push(event);
+                let waiting = loop {
+                    let returned = idle.notified();
+                    tokio::pin!(returned);
+                    returned.as_mut().enable();
+                    if let Ok(mut slot) = event_rx.try_lock() {
+                        if let Some(rx) = slot.as_mut() {
+                            let mut waiting = Vec::new();
+                            while let Ok(event) = rx.try_recv() {
+                                waiting.push(event);
+                            }
+                            break waiting;
                         }
                     }
-                }
+                    tokio::select! {
+                        _ = cancel.cancelled() => return,
+                        _ = returned => {}
+                    }
+                };
                 if waiting.is_empty() {
                     continue;
                 }
@@ -7476,8 +7627,7 @@ impl SessionPool {
                 let to_evict = idle_session_ids(&sessions, Instant::now(), pool.idle_timeout);
                 for sid in &to_evict {
                     if let Some(live) = sessions.remove(sid) {
-                        live.cancel.cancel();
-                        reap_process_groups_later(&live);
+                        pool.evict(sid, &live);
                         info!(%sid, "session evicted (idle timeout)");
                         pool.emit_session_event(
                             "session_evicted",
@@ -7520,24 +7670,15 @@ impl SessionPool {
         }
     }
 
-    /// 从 HistoryStore 恢复 session 或创建新的。
-    /// Resume a session referenced by `sid` (loading history first, if a
-    /// `history_store` is configured) or create it fresh under a new id if
-    /// that fails. Mirrors `create()`'s `Result<String, String>` shape — a
-    /// second failed attempt is a real (if rare) error condition, not a bug,
-    /// so it's propagated to the caller instead of panicking (a
-    /// `create()` failure here is
-    /// systemic — e.g. engine construction failing, or a `daemon.shutdown`
-    /// racing this call — so retrying under a new id is unlikely to help,
-    /// but the caller still deserves a normal JSON-RPC error instead of the
-    /// connection silently dying).
+    /// Bring `sid` into memory under that id: resumed from its log when it
+    /// has one, created empty otherwise. A failure is the caller's error —
+    /// never a different session under a fresh id, which would carry the
+    /// conversation on somewhere the host is not looking.
     async fn resume_or_create(
         &self,
         sid: String,
         options: Option<&SessionOptions>,
     ) -> Result<String, String> {
-        // Another daemon writing this session is not a failure a fresh id
-        // should paper over, so it is answered before anything is retried.
         let _claim = self.claim_log(&sid).await?;
         // 尝试从 HistoryStore 加载历史消息。`sid` 来自 RPC 调用方（`session.run_turn`
         // 的 `session_id` 参数），不保证是合法的 BASE58 ID——解析失败当作"没有历史"
@@ -7598,39 +7739,16 @@ impl SessionPool {
             ));
         };
 
-        match self
-            .create(
-                sid.clone(),
-                scene,
-                binding,
-                project_root_for_meta,
-                options,
-                has_history,
-            )
-            .await
-        {
-            Ok(s) => Ok(s),
-            Err(e) => {
-                warn!(%sid, error=%e, has_history, "create failed, retrying with a fresh id");
-                let new_sid = Id::new().to_string();
-                // A fresh id has no on-disk history of its own, so this retry
-                // never resumes — even if the original `sid` had history we
-                // failed to load.
-                // Degraded fallback path — the pool's default project
-                // rather than re-deriving `sid`'s original one, since this
-                // only runs when something about `sid` was already broken.
-                self.create(
-                    new_sid.clone(),
-                    self.scene.clone(),
-                    self.default_binding().await,
-                    Some(self.cwd.clone()),
-                    options,
-                    false,
-                )
-                .await
-                .map_err(|e| format!("create {sid} failed, retry also failed: {e}"))
-            }
-        }
+        self.create(
+            sid.clone(),
+            scene,
+            binding,
+            project_root_for_meta,
+            options,
+            has_history,
+        )
+        .await
+        .map_err(|e| format!("session `{sid}` could not be brought back: {e}"))
     }
 
     /// `sid` in memory: resumed from its log, or created, unless it already
@@ -7704,8 +7822,8 @@ impl SessionPool {
         Ok(HeldSlot { slot, event_rx })
     }
 
-    /// Rebuild `sid` while `held` keeps turns off it. A rebuild that did not
-    /// land on `sid` gives the slot back to the session that is still there.
+    /// Rebuild `sid` while `held` keeps turns off it. A failed rebuild gives
+    /// the slot back to the session that is still there.
     async fn rebuild_holding(
         &self,
         sid: &str,
@@ -7713,7 +7831,7 @@ impl SessionPool {
         options: Option<&SessionOptions>,
     ) -> Result<String, Rebuild> {
         let rebuilt = self.resume_or_create(sid.to_string(), options).await;
-        if !matches!(&rebuilt, Ok(rebuilt) if rebuilt == sid) {
+        if rebuilt.is_err() {
             *held.slot.lock().await = Some(held.event_rx);
             if let Some(live) = self.sessions.lock().await.get(sid) {
                 live.idle.notify_waiters();
@@ -7858,20 +7976,44 @@ fn is_busy(live: &LiveSession) -> bool {
     })
 }
 
-/// Evict the least recently active idle session. Returns its id, or `None`
+/// Run `work` — disk reads and directory scans — on the blocking pool rather
+/// than on a runtime worker.
+async fn off_the_runtime<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+    match tokio::task::spawn_blocking(work).await {
+        Ok(value) => value,
+        Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+        Err(e) => panic!("blocking work did not finish: {e}"),
+    }
+}
+
+/// The engine's events passed through to a receiver of their own, with a
+/// notice each time one arrives — what lets the forwarder between turns sleep
+/// until there is something to forward.
+fn relay_events(mut from_engine: EventReceiver) -> (EventReceiver, Arc<tokio::sync::Notify>) {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let arrived = Arc::new(tokio::sync::Notify::new());
+    let notify = arrived.clone();
+    tokio::spawn(async move {
+        while let Some(event) = from_engine.recv().await {
+            if tx.send(event).is_err() {
+                return;
+            }
+            notify.notify_one();
+        }
+    });
+    (rx, arrived)
+}
+
+/// Take the least recently active idle session out of `sessions`, or `None`
 /// when every session is busy — the pool then runs over its cap rather than
 /// cut one off.
-fn evict_lru(sessions: &mut HashMap<String, LiveSession>) -> Option<String> {
-    let (sid, _) = sessions
+fn evict_lru(sessions: &mut HashMap<String, LiveSession>) -> Option<(String, LiveSession)> {
+    let sid = sessions
         .iter()
         .filter(|(_, live)| !is_busy(live))
         .min_by_key(|(_, live)| live.last_active)
-        .map(|(k, v)| (k.clone(), v.last_active))?;
-    let live = sessions.remove(&sid)?;
-    live.cancel.cancel();
-    reap_process_groups_later(&live);
-    info!(%sid, "session evicted (LRU, pool full)");
-    Some(sid)
+        .map(|(k, _)| k.clone())?;
+    sessions.remove_entry(&sid)
 }
 
 /// The frame for an event the engine sends whether or not a turn is running
@@ -9140,11 +9282,14 @@ mod eviction_tests {
         sessions.insert("with_a_task".to_string(), with_a_task);
 
         assert!(idle_session_ids(&sessions, now, Duration::from_secs(300)).is_empty());
-        assert_eq!(evict_lru(&mut sessions), None, "every session is busy");
+        assert!(evict_lru(&mut sessions).is_none(), "every session is busy");
         assert_eq!(sessions.len(), 3);
 
         sessions.insert("idle".to_string(), dummy_live_session(now));
-        assert_eq!(evict_lru(&mut sessions).as_deref(), Some("idle"));
+        assert_eq!(
+            evict_lru(&mut sessions).map(|(sid, _)| sid).as_deref(),
+            Some("idle")
+        );
     }
 
     #[test]
@@ -10158,6 +10303,36 @@ mod rebuild_tests {
         let live = sessions.get(&sid).unwrap();
         assert!(live.subscribers.contains_key(&watcher.id()));
         assert!(live.pending_prompts.contains_key("p1"));
+    }
+
+    #[tokio::test]
+    async fn eviction_keeps_only_the_specs_a_log_cannot_give_back() {
+        let (pool, _dir, _store) = pool_with_history().await;
+        let logged = new_session(&pool).await;
+        let recording = new_session(&pool).await;
+        pool.lock_specs().get_mut(&recording).unwrap().recorder =
+            Some(telemetry::recorder::Recorder::new());
+        for sid in [&logged, &recording] {
+            let live = pool.sessions.lock().await.remove(sid).unwrap();
+            pool.evict(sid, &live);
+        }
+        assert!(!pool.lock_specs().contains_key(&logged));
+        assert!(pool.lock_specs().contains_key(&recording));
+
+        let unlogged: Vec<String> = (0..pool.cap).map(|i| format!("no log {i}")).collect();
+        for sid in &unlogged {
+            pool.lock_specs()
+                .insert(sid.clone(), SessionSpec::default());
+            pool.release_spec(sid);
+        }
+        assert!(
+            !pool.lock_specs().contains_key(&recording),
+            "the oldest kept spec makes room"
+        );
+        assert!(unlogged
+            .iter()
+            .all(|sid| pool.lock_specs().contains_key(sid)));
+        assert_eq!(pool.lock_kept_specs().len(), pool.cap);
     }
 
     #[tokio::test]

@@ -213,6 +213,17 @@ async fn start_scripted_server_in(
     settings: Settings,
     prompt_timeout: Duration,
 ) -> (ScriptedServer, SeenRequests) {
+    start_scripted_server_holding(scene_id, rounds, settings, prompt_timeout, 8).await
+}
+
+/// The same daemon keeping at most `session_cap` sessions in memory.
+async fn start_scripted_server_holding(
+    scene_id: &str,
+    rounds: Vec<Vec<StreamEvent>>,
+    settings: Settings,
+    prompt_timeout: Duration,
+    session_cap: usize,
+) -> (ScriptedServer, SeenRequests) {
     // Silent unless `RUST_LOG` says otherwise. These tests drive the whole
     // engine, so being able to turn logging on without editing the file is
     // worth the four lines — it is how the `respondToPrompt` deadlock this
@@ -236,7 +247,7 @@ async fn start_scripted_server_in(
         scene_id,
         &StaticDaemonPaths::new(dir.path().to_path_buf()),
     );
-    config.session_cap = 8;
+    config.session_cap = session_cap;
     // The caller's settings, kept inside this test's directory: `Settings::
     // defaults_for` carries a literal `~/.agix`, and the assembly places the
     // memory store and the history roots from exactly these paths.
@@ -1503,6 +1514,66 @@ async fn session_resume_reattaches_and_reports_state() {
         sent.contains("remembered question"),
         "resumed session lost its transcript: {sent}"
     );
+
+    srv.stop().await;
+}
+
+/// A session that cannot be brought back is an error under its own id, not a
+/// fresh session the turn quietly runs in instead.
+#[tokio::test]
+async fn resume_failure_does_not_switch_session_id() {
+    let (srv, seen) =
+        start_scripted_server(vec![text_round("x")], ask_settings(), Duration::ZERO).await;
+    let sid = inject_session_in_scene(&srv, "code").await;
+    srv.store
+        .append(
+            sid,
+            history::entry::LogEntry::Extension {
+                ns: "agix.session".into(),
+                event: "spec".into(),
+                payload: serde_json::json!({"provider": "no-longer-configured"}),
+            },
+        )
+        .await
+        .unwrap();
+
+    let turn = rpc(
+        &srv.sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.run_turn","params":{{"session_id":"{sid}","message":"hi"}},"id":1}}"#
+        ),
+    )
+    .await;
+    assert!(turn["result"].is_null(), "{turn}");
+    assert!(
+        turn["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no-longer-configured"),
+        "{turn}"
+    );
+    let resumed = rpc(
+        &srv.sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.resume","params":{{"session_id":"{sid}"}},"id":2}}"#
+        ),
+    )
+    .await;
+    assert!(resumed["result"].is_null(), "{resumed}");
+    assert!(seen.lock().unwrap().is_empty(), "a turn ran somewhere");
+
+    let listed = rpc(
+        &srv.sock,
+        r#"{"jsonrpc":"2.0","method":"session.list","params":{},"id":3}"#,
+    )
+    .await;
+    let ids: Vec<&str> = listed["result"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s["session_id"].as_str())
+        .collect();
+    assert_eq!(ids, [sid.to_string().as_str()], "{listed}");
 
     srv.stop().await;
 }
@@ -4792,6 +4863,64 @@ async fn a_stop_hook_that_discontinues_still_ends_the_turn_and_frees_the_session
 
     let (_, again) = turn_complete_of(&srv.sock, Some(&sid), "hello again").await;
     assert_eq!(again["stop_reason"], "stopped_by_hook");
+
+    srv.stop().await;
+}
+
+/// A session pushed out of a full pool and used again comes back once its
+/// old engine has stopped — its `SessionEnd` hook done — and not beside it.
+#[tokio::test]
+async fn an_evicted_session_resumes_without_locked() {
+    let log_dir = tempfile::tempdir().unwrap();
+    let log = log_dir.path().join("hooks.log");
+    let (srv, seen) = start_scripted_server_holding(
+        "code",
+        vec![
+            text_round("noted"),
+            text_round("other"),
+            text_round("ostrich"),
+        ],
+        hooked_settings(serde_json::json!({
+            "SessionStart": [
+                { "type": "command", "command": format!("echo start >> '{}'", log.display()) }
+            ],
+            "SessionEnd": [
+                { "type": "command", "command": format!("sleep 1; echo end >> '{}'", log.display()) }
+            ]
+        })),
+        Duration::ZERO,
+        1,
+    )
+    .await;
+
+    let first = run_turn(&srv.sock, None, "the word is ostrich").await;
+    let second = run_turn(&srv.sock, None, "something else").await;
+    assert_ne!(first, second);
+    seen.lock().unwrap().clear();
+    assert_eq!(
+        run_turn(&srv.sock, Some(&first), "what was the word").await,
+        first
+    );
+    let sent = format!("{:?}", seen.lock().unwrap().last().unwrap().messages);
+    assert!(sent.contains("the word is ostrich"), "history lost: {sent}");
+
+    let lines = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let text = std::fs::read_to_string(&log).unwrap_or_default();
+            let lines: Vec<String> = text.lines().map(str::to_string).collect();
+            if lines.len() >= 5 {
+                return lines;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("every hook ran");
+    assert_eq!(
+        lines[..4],
+        ["start", "start", "end", "start"],
+        "the first session came back before its old engine had stopped: {lines:?}"
+    );
 
     srv.stop().await;
 }
