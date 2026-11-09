@@ -145,6 +145,7 @@ fn warn_unconfined_once(unmet: &str) {
 async fn output(git: &EngineGit, cwd: &Path, args: &[&str]) -> Option<std::process::Output> {
     let spec = git.command(cwd, args, &[]).ok()?;
     let mut cmd = Command::new(&spec.program);
+    crate::interface::exec::local::SubprocessEnv::default().apply(&mut cmd);
     cmd.args(&spec.args)
         .current_dir(&spec.cwd)
         .envs(spec.env.iter().map(|(k, v)| (k, v)));

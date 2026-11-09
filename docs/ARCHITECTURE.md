@@ -518,9 +518,11 @@ stat 的时间,读盘不挡写入。走的是 `Meta` 里的父子关系,只沿 `
    整组停;前台进程退出后输出最多再等 `OUTPUT_GRACE_AFTER_EXIT`,还被后台进程占着就
    连它们一起停。Bash、Monitor、command hook、MCP stdio 都是这条规矩。
 5. **子进程的环境只在一处决定。** `base::interface::exec::local::SubprocessEnv`:缺省
-   继承宿主环境但去掉引擎自己的凭据(`ANTHROPIC_*`、`AGIX_DAEMON_TOKEN`),
-   `allowlist` 模式只留 `PATH` / `HOME` / 语言环境等几项加上 `allow` 列出的。Bash、
-   Monitor、command hook 与 MCP stdio 服务都按 `sandbox.subprocess_env` 取策略——MCP
+   继承宿主环境但去掉引擎自己的凭据(`ANTHROPIC_*`、`AGIX_DAEMON_TOKEN`,以及任何一层
+   设置里 provider 的 `api_key_env` 指向的变量——加载设置时、读取 key 时都记下,进程内
+   一直有效),`allowlist` 模式只留 `PATH` / `HOME` / 语言环境等几项加上 `allow` 列出的。Bash、
+   Monitor、command hook、MCP stdio 服务与引擎自己跑的 git 都按它起——git 用缺省策略,其余
+   按 `sandbox.subprocess_env` 取策略——MCP
    服务取的是声明它的那份设置(daemon 按项目、scene 建连),再叠各服务自己的 `env`。这和沙箱无关——沙箱关着,模型一句 `printenv` 读到什么也由它决定。
 
 沙箱是**轻量写限制,不是安全隔离**。已知逃逸路径写在

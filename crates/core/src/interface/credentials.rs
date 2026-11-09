@@ -113,10 +113,14 @@ pub struct EnvCredentials {
 }
 
 impl EnvCredentials {
+    /// Also holds every name back from the environment child processes
+    /// inherit ([`hold_back_credential`](crate::interface::exec::local::env::hold_back_credential)).
     pub fn new(names: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        Self {
-            names: names.into_iter().map(Into::into).collect(),
+        let names: Vec<String> = names.into_iter().map(Into::into).collect();
+        for name in &names {
+            crate::interface::exec::local::env::hold_back_credential(name);
         }
+        Self { names }
     }
 
     /// The names the engine has always looked at, in the order it looked.

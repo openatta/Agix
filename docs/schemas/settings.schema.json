@@ -571,7 +571,7 @@
           "default": {
             "mode": "inherit"
           },
-          "description": "The environment `Bash` / `Monitor` commands, command hooks and MCP\nstdio servers start from, sandboxed or not. By default the host's\nenvironment minus the engine's own credentials (`ANTHROPIC_*`,\n`AGIX_DAEMON_TOKEN`); `\"mode\": \"allowlist\"` keeps only `PATH`,\n`HOME`, the locale and a few others, plus whatever `allow` names. An MCP\nserver takes the policy of the settings it is declared in, with its own\n`env` added on top."
+          "description": "The environment `Bash` / `Monitor` commands, command hooks and MCP\nstdio servers start from, sandboxed or not. By default the host's\nenvironment minus the engine's own credentials (`ANTHROPIC_*`,\n`AGIX_DAEMON_TOKEN`, every provider's `api_key_env`); `\"mode\":\n\"allowlist\"` keeps only `PATH`,\n`HOME`, the locale and a few others, plus whatever `allow` names. An MCP\nserver takes the policy of the settings it is declared in, with its own\n`env` added on top."
         },
         "unattended_requires_network_policy": {
           "default": false,

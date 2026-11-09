@@ -6,6 +6,7 @@
 //! never pass by default; everything else does unless the operator switches to
 //! an allowlist.
 
+use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
 
 #[derive(
@@ -73,11 +74,37 @@ const BASELINE: &[&str] = &[
     "LOCALAPPDATA",
 ];
 
-/// The engine's own credentials: the model provider's keys and the daemon's
-/// bearer token.
+/// Environment variables the engine has been told hold one of its own
+/// credentials — every `api_key_env` a provider names, whatever its name.
+static NAMED_CREDENTIALS: std::sync::RwLock<BTreeSet<String>> =
+    std::sync::RwLock::new(BTreeSet::new());
+
+/// From now on, treat the variable `name` as one of the engine's own
+/// credentials: no child process inherits it unless a policy's `allow` names
+/// it. Process-wide, because the environment children inherit from is. The
+/// variables a shell cannot work without are never held back, whatever a
+/// settings file names.
+pub fn hold_back_credential(name: &str) {
+    if name.is_empty() || BASELINE.contains(&name) {
+        return;
+    }
+    let mut named = NAMED_CREDENTIALS
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    named.insert(name.to_string());
+}
+
+/// The engine's own credentials: the model provider's keys — the
+/// `ANTHROPIC_*` variables and whatever [`hold_back_credential`] was told —
+/// and the daemon's bearer token.
 pub fn is_engine_credential(name: &OsStr) -> bool {
     let name = name.to_string_lossy();
-    name.starts_with("ANTHROPIC_") || name == "AGIX_DAEMON_TOKEN"
+    name.starts_with("ANTHROPIC_")
+        || name == "AGIX_DAEMON_TOKEN"
+        || NAMED_CREDENTIALS
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(name.as_ref())
 }
 
 /// Never inherited: `CDPATH` would make a child shell's `cd foo` reach a
@@ -176,6 +203,27 @@ mod tests {
                 "CDPATH",
             ]
         );
+    }
+
+    #[test]
+    fn a_variable_a_provider_key_is_read_from_is_held_back_too() {
+        hold_back_credential("AGIX_ENV_TEST_PROVIDER_KEY");
+        let mut host = host();
+        host.push(("AGIX_ENV_TEST_PROVIDER_KEY".into(), "sk-canary".into()));
+        assert!(names(SubprocessEnv::default().plan(host.clone()))
+            .contains(&"AGIX_ENV_TEST_PROVIDER_KEY".to_string()));
+        let passed_on_purpose = SubprocessEnv {
+            allow: vec!["AGIX_ENV_TEST_PROVIDER_KEY".into()],
+            ..Default::default()
+        };
+        assert!(!names(passed_on_purpose.plan(host))
+            .contains(&"AGIX_ENV_TEST_PROVIDER_KEY".to_string()));
+    }
+
+    #[test]
+    fn a_variable_a_shell_needs_is_never_held_back() {
+        hold_back_credential("PATH");
+        assert!(!is_engine_credential(OsStr::new("PATH")));
     }
 
     #[test]

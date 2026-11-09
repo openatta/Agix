@@ -455,6 +455,11 @@ WebAssembly 载体整个移除。
 - 沙箱里的命令对 `.claude` 与 `.agix` 一视同仁:`.claude` 目录项本身、其下的 `settings*.json`、
   `mcp.local.json` 与 `hooks`、`agents`、`skills` 等配置目录(名单见 ARCHITECTURE §6.3)不可写;
   macOS 上不存在的 `.claude` 也建不出来。
+- 子进程(`Bash`、`Monitor`、command hook、MCP stdio 服务)的环境里不再有 provider 的 key:
+  任何一层设置里 provider 的 `api_key_env` 指向的变量(如 `DEEPSEEK_API_KEY`)与 `ANTHROPIC_*`
+  一样剥掉。以前只剥 `ANTHROPIC_*`,别家 provider 的 key 一句 `printenv` 就读得到。确实要把它交给
+  子进程的,写进 `sandbox.subprocess_env.allow`。引擎自己跑的 git(及仓库配置让它起的程序)
+  同样不带这些变量。
 - 无人值守会话的 `Bash` / `Monitor` 不能再请系统服务在沙箱外代办:macOS 上 `open`(经
   LaunchServices 起应用、开 URL)、`defaults write`(经 `cfprefsd` 写偏好)、`osascript` 给别的应用
   发 Apple event 都会失败;Linux 上命令进独立的 IPC 命名空间,会话 D-Bus 与 systemd 用户实例的

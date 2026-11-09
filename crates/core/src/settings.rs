@@ -643,7 +643,8 @@ pub struct SandboxConfig {
     /// The environment `Bash` / `Monitor` commands, command hooks and MCP
     /// stdio servers start from, sandboxed or not. By default the host's
     /// environment minus the engine's own credentials (`ANTHROPIC_*`,
-    /// `AGIX_DAEMON_TOKEN`); `"mode": "allowlist"` keeps only `PATH`,
+    /// `AGIX_DAEMON_TOKEN`, every provider's `api_key_env`); `"mode":
+    /// "allowlist"` keeps only `PATH`,
     /// `HOME`, the locale and a few others, plus whatever `allow` names. An MCP
     /// server takes the policy of the settings it is declared in, with its own
     /// `env` added on top.
@@ -990,6 +991,17 @@ impl Settings {
 
         settings.permission_rules = permission_rules;
         settings.local_permission_rules = local_permission_rules;
+
+        // Before any session these settings start runs a child process: a
+        // provider key is not read until a client is built, and an MCP
+        // server or hook can start before that.
+        for name in settings
+            .providers
+            .values()
+            .filter_map(|p| p.api_key_env.as_deref())
+        {
+            crate::interface::exec::local::env::hold_back_credential(name);
+        }
 
         settings.paths = PathSettings {
             user_data_dir: scene_dir,
@@ -1526,6 +1538,27 @@ mod tests {
         let deepseek = &settings.providers["deepseek"];
         assert_eq!(deepseek.api_key.as_deref(), Some("project-key"));
         assert_eq!(deepseek.default_model.as_deref(), Some("deepseek-pro"));
+    }
+
+    #[test]
+    fn a_provider_key_variable_is_held_back_from_child_processes_once_loaded() {
+        use crate::interface::exec::local::env::is_engine_credential;
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        write_settings(
+            &project,
+            r#"{"providers": {"deepseek": {"api_key_env": "AGIX_SETTINGS_TEST_DEEPSEEK_KEY"}}}"#,
+        );
+        let name = std::ffi::OsStr::new("AGIX_SETTINGS_TEST_DEEPSEEK_KEY");
+        assert!(!is_engine_credential(name));
+        Settings::load(
+            root.path().join("global"),
+            root.path().join("scene"),
+            project,
+            "code",
+            "m",
+        );
+        assert!(is_engine_credential(name));
     }
 
     #[test]
