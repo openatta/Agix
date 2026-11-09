@@ -816,6 +816,10 @@ WebAssembly 载体整个移除。
 - hook 新增 `on_error`(四种后端都认):缺省 `"allow"`,失败照旧放行;写 `"block"` 的,超时、
   出错、command 退出码不是 0 或 2、回答不是 JSON,都等于它回答了 `decision: "block"`,理由写明
   是哪个 hook、怎么失败的(`hooks.md`"失败"一节)。
+- **`TaskCompleted` 在任何运行中任务结束时都发**(完成、失败、被停下),与 `TaskCreated` 成对,
+  `reason` 是这个任务的 JSON(`task_id`、`kind`、`status`……)。团队成员一轮正常结束时的那次
+  `TaskCompleted`(带 `team_name` / `teammate_name`)照旧;只想要后者的 hook 改成看 payload 里
+  有没有 `team_name`,或者改用 `TeammateIdle`。
 - HTTP hook 新增 `allow_local`(缺省 `false`):写 `true` 的可以指向本机或内网,只放开 url 里的
   主机与端口,重定向到别的内部目标照旧被拒。
 - 无人值守的 MCP server(`client_credentials`、`enterprise`)拿到的令牌寿命短于 30 秒左右时,

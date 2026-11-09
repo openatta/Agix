@@ -176,7 +176,7 @@ impl HookEvent {
                 Ignored,
             ),
             HookEvent::TeammateIdle => (
-                "团队成员的一轮结束(不论怎么结束),在 `TaskCompleted` 之后",
+                "团队成员的一轮结束(不论怎么结束),在这一轮的 `TaskCompleted` 之后",
                 "`team_name`、`teammate_name`、`turn_id`、`stop_reason`",
                 Ignored,
             ),
@@ -186,8 +186,11 @@ impl HookEvent {
                 Ignored,
             ),
             HookEvent::TaskCompleted => (
-                "团队成员的一轮正常结束、交给它的活干完了",
-                "`team_name`、`teammate_name`、`turn_id`、`stop_reason`",
+                "一个运行中的任务结束(完成、失败、被停下),与 `TaskCreated` 成对;\
+                 另外团队成员的一轮正常结束时也发一次",
+                "任务结束:`reason`(这个任务在 `session.tasks` 里的 JSON:`task_id`、`kind`、\
+                 `status` 为 `done` / `failed` / `stopped`……);团队成员的一轮:`team_name`、\
+                 `teammate_name`、`turn_id`、`stop_reason`",
                 Ignored,
             ),
             HookEvent::Elicitation => (

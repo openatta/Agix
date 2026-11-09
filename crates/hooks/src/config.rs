@@ -191,9 +191,10 @@ pub enum HookEvent {
     /// A running task started (a sub-agent, shell command, monitor, team
     /// member); `reason` carries the task as `session.tasks` lists it.
     TaskCreated,
-    /// A team member's turn ended normally — the work it was given is done;
-    /// `team_name` / `teammate_name` say which. Fires just before
-    /// `TeammateIdle`.
+    /// A running task ended — completed, failed or stopped; `reason` carries
+    /// the task as `session.tasks` lists it. Also fired when a team member's
+    /// turn ends normally, with `team_name` / `teammate_name` instead, just
+    /// before `TeammateIdle`.
     TaskCompleted,
     /// An MCP server's tool result contains an elicitation URL (`mcp://` or
     /// `elicitation://`) — the server is asking for user attention (e.g. an

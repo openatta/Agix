@@ -167,7 +167,7 @@ impl Ledger {
 
 /// Events fired from a task of their own rather than in line with what
 /// triggered them, so they land in the ledger at no fixed place.
-const FIRED_ASIDE: [&str; 2] = ["TaskCreated", "Elicitation"];
+const FIRED_ASIDE: [&str; 3] = ["TaskCreated", "TaskCompleted", "Elicitation"];
 
 fn in_line(e: &Value) -> bool {
     !FIRED_ASIDE.iter().any(|name| e["hook_event_name"] == *name)
@@ -175,8 +175,17 @@ fn in_line(e: &Value) -> bool {
 
 /// A task the ledger saw start, of `kind`.
 fn task_created_of(kind: &str) -> impl Fn(&Value) -> bool + '_ {
+    task_event_of("TaskCreated", kind)
+}
+
+/// A task the ledger saw end, of `kind`.
+fn task_completed_of(kind: &str) -> impl Fn(&Value) -> bool + '_ {
+    task_event_of("TaskCompleted", kind)
+}
+
+fn task_event_of<'a>(event: &'a str, kind: &'a str) -> impl Fn(&Value) -> bool + 'a {
     move |e| {
-        e["hook_event_name"] == "TaskCreated"
+        e["hook_event_name"] == event
             && e["reason"]
                 .as_str()
                 .and_then(|r| serde_json::from_str::<Value>(r).ok())
@@ -379,6 +388,16 @@ async fn every_wired_event_fires_at_its_moment() -> anyhow::Result<()> {
 
     let task: Value = serde_json::from_str(tasked["reason"].as_str().unwrap_or("null"))?;
     assert_eq!(task["kind"], "agent", "{tasked}");
+    let finished = ledger
+        .wait_until(
+            "the sub-agent's TaskCompleted",
+            task_completed_of("agent"),
+            Duration::from_secs(60),
+        )
+        .await?;
+    let ended: Value = serde_json::from_str(finished["reason"].as_str().unwrap_or("null"))?;
+    assert_eq!(ended["task_id"], task["task_id"], "{finished}");
+    assert_eq!(ended["status"], "done", "{finished}");
     assert!(
         in_order(&all, event_is("SubagentStart"), event_is("SubagentStop"))
             && in_order(
@@ -682,9 +701,13 @@ async fn a_team_member_finishing_fires_task_completed_and_teammate_idle() -> any
     );
     stub.script_when("MEMBER-MARK", [Reply::text("hi from the member")]);
     run.turn(&session, "PARENT-MARK run the team").await?;
+    let member_turn_ended = |event: &'static str| {
+        move |e: &Value| e["hook_event_name"] == event && e["team_name"] == "crew"
+    };
     for event in ["TaskCompleted", "TeammateIdle"] {
-        let fired = ledger.wait_for(event, Duration::from_secs(60)).await?;
-        assert_eq!(fired["team_name"], "crew", "{fired}");
+        let fired = ledger
+            .wait_until(event, member_turn_ended(event), Duration::from_secs(60))
+            .await?;
         assert_eq!(fired["teammate_name"], "solo", "{fired}");
         assert_ne!(
             fired["session_id"],
@@ -692,11 +715,16 @@ async fn a_team_member_finishing_fires_task_completed_and_teammate_idle() -> any
             "the member's own session: {fired}"
         );
     }
-    let names = ledger.names();
+    let turn_ends: Vec<String> = ledger
+        .entries()
+        .iter()
+        .filter(|e| e.get("team_name").is_some())
+        .map(|e| e["hook_event_name"].as_str().unwrap_or("?").to_string())
+        .collect();
     assert_eq!(
-        names,
+        turn_ends,
         ["TaskCompleted", "TeammateIdle"],
-        "the lead is not a member: {names:?}"
+        "the lead is not a member: {turn_ends:?}"
     );
     run.finish().await;
     Ok(())

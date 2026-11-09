@@ -2360,10 +2360,11 @@ impl Builder {
             tools.register(Arc::new(ptc::RunCodeTool::for_registry(tools.as_ref())));
         }
 
-        // `TaskCreated` fires when a running task starts — a sub-agent, a
-        // shell command, a monitor, a team member — whatever started it. A
-        // task ending is the background work an `async_rewake` hook waits on,
-        // unless the embedder gave a wake channel of its own.
+        // `TaskCreated` fires when a running task starts and `TaskCompleted`
+        // when it ends — a sub-agent, a shell command, a monitor, a team
+        // member — whatever started it. A task ending is also the background
+        // work an `async_rewake` hook waits on, unless the embedder gave a wake
+        // channel of its own.
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let hooks = hooks.clone();
             let mut events = session_state.subscribe_tasks();
@@ -2384,6 +2385,12 @@ impl Builder {
                             }
                         }
                         Ok(event) if event["kind"] == "task_finished" => {
+                            if hooks.has_hooks_for(hooks::HookEvent::TaskCompleted) {
+                                let input =
+                                    hooks::HookInput::from_ambient(&ambient, "TaskCompleted")
+                                        .with_reason(event["task"].to_string());
+                                let _ = hooks.run(hooks::HookEvent::TaskCompleted, &input).await;
+                            }
                             if let Some(wake) = &task_wake {
                                 let _ = wake.send(());
                             }
@@ -4612,6 +4619,87 @@ mod tests {
         let task: serde_json::Value =
             serde_json::from_str(payload["reason"].as_str().unwrap()).unwrap();
         assert_eq!(task["task_id"], "t-1");
+    }
+
+    #[tokio::test]
+    async fn task_completed_fires_when_a_running_task_ends_however_it_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let seen = dir.path().join("task_completed.jsonl");
+        let mut settings = test_settings();
+        settings.hooks_config = Some(serde_json::json!({
+            "TaskCompleted": [
+                { "type": "command", "command": format!("cat >> '{}'", seen.display()) }
+            ]
+        }));
+        let (agent, _event_rx, _input_tx) = Builder::new()
+            .scene(Arc::new(scene::code::CodeScene::default()))
+            .model(Arc::new(DummyModel))
+            .settings(Arc::new(settings))
+            .skip_warmup(true)
+            .build()
+            .expect("build should succeed");
+        let endings = [
+            (
+                "t-done",
+                base::context::TaskType::Code,
+                base::context::RunningStatus::Completed,
+            ),
+            (
+                "t-failed",
+                base::context::TaskType::Agent,
+                base::context::RunningStatus::Failed("boom".into()),
+            ),
+            (
+                "t-stopped",
+                base::context::TaskType::Teammate,
+                base::context::RunningStatus::Cancelled,
+            ),
+        ];
+        for (id, kind, _) in &endings {
+            agent.session_state.register_task(
+                *id,
+                *kind,
+                CancellationToken::new(),
+                serde_json::json!({}),
+            );
+        }
+        for (id, _, status) in endings {
+            agent.session_state.finish_task(id, status);
+        }
+
+        let mut tasks: Vec<serde_json::Value> = Vec::new();
+        for _ in 0..300 {
+            tasks = std::fs::read_to_string(&seen)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+                .inspect(|p| assert_eq!(p["hook_event_name"], "TaskCompleted"))
+                .map(|p| serde_json::from_str(p["reason"].as_str().unwrap()).unwrap())
+                .collect();
+            if tasks.len() == 3 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let ended = |id: &str| {
+            tasks
+                .iter()
+                .find(|t| t["task_id"] == id)
+                .map(|t| (t["kind"].clone(), t["status"].clone()))
+                .unwrap_or_else(|| panic!("no TaskCompleted for {id}: {tasks:?}"))
+        };
+        assert_eq!(
+            ended("t-done"),
+            (serde_json::json!("code"), serde_json::json!("done"))
+        );
+        assert_eq!(
+            ended("t-failed"),
+            (serde_json::json!("agent"), serde_json::json!("failed"))
+        );
+        assert_eq!(
+            ended("t-stopped"),
+            (serde_json::json!("teammate"), serde_json::json!("stopped"))
+        );
     }
 
     #[tokio::test]

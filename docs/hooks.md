@@ -239,9 +239,9 @@ hook 是策略的补充,不是唯一的门:要硬拦的东西写成权限规则�
 | `Notification` | 需要人注意时:一个权限询问在等回答;模型调了 `PushNotification` | `tool_name`、`tool_input`(被询问的调用,或 `PushNotification` 的入参)、`reason`、`turn_id` | 只通知,回答被丢弃 |
 | `SubagentStop` | 子 Agent 跑完(成功、出错、被取消);常驻团队成员在被停下时 | `session_id` 是子 Agent 的;`agent_type`、`stop_reason`(`end_turn` / `error` / `cancelled` / `shutdown`) | 只通知,回答被丢弃 |
 | `SubagentStart` | 子 Agent 开始跑之前,每一种起法都发:前台、后台、宿主 `session.startAgent`、`TeamCreate` 成员、常驻成员 | `session_id` 是子 Agent 的;`agent_type` | 只通知,回答被丢弃 |
-| `TeammateIdle` | 团队成员的一轮结束(不论怎么结束),在 `TaskCompleted` 之后 | `team_name`、`teammate_name`、`turn_id`、`stop_reason` | 只通知,回答被丢弃 |
+| `TeammateIdle` | 团队成员的一轮结束(不论怎么结束),在这一轮的 `TaskCompleted` 之后 | `team_name`、`teammate_name`、`turn_id`、`stop_reason` | 只通知,回答被丢弃 |
 | `TaskCreated` | 一个运行中的任务开始:子 Agent、后台 shell 命令、Monitor、团队成员 | `reason`(这个任务在 `session.tasks` 里的 JSON) | 只通知,回答被丢弃 |
-| `TaskCompleted` | 团队成员的一轮正常结束、交给它的活干完了 | `team_name`、`teammate_name`、`turn_id`、`stop_reason` | 只通知,回答被丢弃 |
+| `TaskCompleted` | 一个运行中的任务结束(完成、失败、被停下),与 `TaskCreated` 成对;另外团队成员的一轮正常结束时也发一次 | 任务结束:`reason`(这个任务在 `session.tasks` 里的 JSON:`task_id`、`kind`、`status` 为 `done` / `failed` / `stopped`……);团队成员的一轮:`team_name`、`teammate_name`、`turn_id`、`stop_reason` | 只通知,回答被丢弃 |
 | `Elicitation` | MCP 工具的结果里带了 elicitation 链接(`mcp://`、`elicitation://`) | `tool_name`(`mcp_elicitation_<server>`)、`tool_input`:`server_name`、`url` | 只通知,回答被丢弃 |
 | `ElicitationResult` | **从不触发**:宿主把用户对 elicitation 的回答交回来时;还没有宿主侧的回传通路 | `tool_name`、`tool_input`:`server_name`、`url`、`response`;`tool_result` | 只通知,回答被丢弃 |
 | `ConfigChange` | **从不触发**:配置在运行中变了;改配置的 RPC 在池一级,高于任何一个会话的 hooks | — | 只通知,回答被丢弃 |
@@ -259,9 +259,15 @@ hook 是策略的补充,不是唯一的门:要硬拦的东西写成权限规则�
   `<system-reminder>` 交给模型,这一轮接着跑;下一次要结束时 `Stop` 再问一遍,payload 的
   `stop_hook_active` 为 `true`。一个无条件拦的 hook 应当看这个字段放行;不看的,由每轮的
   调用上限截住。
-- **团队成员。** `TaskCompleted` / `TeammateIdle` 只在团队成员(`TeamCreate` 的成员、`Agent`
-  带 `team_name` 的常驻成员)的会话里发,先 `TaskCompleted`(只在正常结束时)后
-  `TeammateIdle`,都在这一轮落盘之后,比这一轮的 `TurnComplete` hook 晚。
+- **任务的开始与结束。** `TaskCreated` / `TaskCompleted` 成对:任务在 `session.tasks` 里出现时
+  发前者,结束(`status` 为 `done`、`failed`、`stopped`)时发后者,`reason` 是同一个任务的 JSON,
+  `task_id` 对得上。两者都在会话自己的一个任务里发,和引发它们的那一步没有固定先后。后台 shell
+  命令、Monitor 在一秒之内就结束的不算任务,两个都不发。
+- **团队成员。** 成员(`TeamCreate` 的成员、`Agent` 带 `team_name` 的常驻成员)的会话里,
+  每一轮结束还发一对:先 `TaskCompleted`(只在正常结束时)后 `TeammateIdle`,payload 带
+  `team_name` / `teammate_name` 而不带 `reason`,都在这一轮落盘之后,比这一轮的 `TurnComplete`
+  hook 晚。所以一个 `TaskCompleted` hook 看 payload 里有没有 `team_name` 来分这两种:有的是成员的
+  一轮干完了,没有的是一个任务结束了(常驻成员作为任务结束时,`kind` 是 `teammate`)。
 - **`FileChanged`。** 只有根会话起监视,子 Agent 不重复发;监视的是 `instruction_file`
   和根会话载入过的每一份 `AGENTS.md`,不是任意文件。不存在的路径不监视。
 - **`UserPromptSubmit` 之后还有一道。** 嵌入方的 `prompt.submit` 扩展点跑在 hook 之后,
