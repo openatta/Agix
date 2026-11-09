@@ -214,6 +214,8 @@ pub mod call_purpose {
     pub const TEAM_JUDGE: &str = "team_judge";
     /// The provider searching the web for a `WebSearch` call.
     pub const WEB_SEARCH: &str = "web_search";
+    /// A model answering a `WebFetch` call's `prompt` from the fetched page.
+    pub const WEB_FETCH: &str = "web_fetch";
 }
 
 /// Tool definition sent to the model.

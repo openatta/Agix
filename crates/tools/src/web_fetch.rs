@@ -1,15 +1,19 @@
 //! WebFetchTool —— "WebFetch"。
 //!
-//! 通过执行层的 `Network` 抓 URL；如果 content-type 含 html 用 html2text
-//! 渲染纯文本；其它（json / text / binary）按 utf-8 解码或标识 binary。
-//! 5 MB 上限、~50_000 char 上限、15s 超时。
+//! 通过执行层的 `Network` 抓 URL；content-type 含 html 的用 html2text 转成纯
+//! 文本，其它按 utf-8 解码。5 MB 上限、15s 超时，不跟随重定向。
+//!
+//! 带了 [`PageExtractor`]（`task_models.web_fetch` 配了模型）且调用给了
+//! `prompt` 时，返回那个模型对 `prompt` 的回答；否则返回页面文本，截到
+//! 50_000 字符。抽取失败或答空时退回页面文本，结果头里写明。
 
 use crate::cancel::run_with_cancel;
+use crate::page_extract::PageExtractor;
 use async_trait::async_trait;
 use base::error::ToolError;
 use base::interface::exec::{HttpRequest, Network, Origin};
 use base::tool::{
-    PermissionDecision, ProgressSender, PromptContext, SecondaryLlm, Tool, ToolContext, ToolResult,
+    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
     ValidationResult,
 };
 use schemars::JsonSchema;
@@ -21,41 +25,65 @@ use std::time::Duration;
 const MAX_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_OUTPUT_CHARS: usize = 50_000;
 const TIMEOUT: Duration = Duration::from_secs(15);
-/// Input cap fed to the secondary LLM. Aligns with
-/// `MAX_MARKDOWN_LENGTH`; truncation marker appended on overflow.
-const MAX_SECONDARY_INPUT_CHARS: usize = 80_000;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WebFetchInput {
     /// HTTP/HTTPS URL to fetch.
     pub url: String,
 
-    /// Optional question / instruction about the page (recorded for context;
-    /// model interprets the returned text itself).
+    /// What you want from the page. When page extraction is enabled a model
+    /// answers this from the page; otherwise it is not acted on and the page
+    /// text is returned, truncated at 50,000 characters.
     #[serde(default)]
     pub prompt: Option<String>,
 }
 
-/// Optional secondary-LLM extractor. When wired, after fetching
-/// the URL the tool calls the secondary LLM with `(prompt, content)` and
-/// returns the model's distillation instead of the raw 50KB page. CLI/TUI
-/// inject this from the same Anthropic client used by the engine, with the
-/// model overridden to `compact_model` (haiku-tier).
-#[derive(Default, Clone)]
+#[derive(Default, Debug, Clone)]
 pub struct WebFetchTool {
-    secondary: Option<Arc<dyn SecondaryLlm>>,
+    extractor: Option<Arc<PageExtractor>>,
 }
 
 impl WebFetchTool {
-    /// Construct a new instance.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Builder: set secondary llm.
-    pub fn with_secondary_llm(secondary: Arc<dyn SecondaryLlm>) -> Self {
+    pub fn with_extractor(extractor: PageExtractor) -> Self {
         Self {
-            secondary: Some(secondary),
+            extractor: Some(Arc::new(extractor)),
+        }
+    }
+
+    pub fn extracts(&self) -> bool {
+        self.extractor.is_some()
+    }
+
+    async fn body_for(
+        &self,
+        prompt: Option<&str>,
+        text: &str,
+        ctx: &ToolContext,
+    ) -> Result<(String, String), ToolError> {
+        let prompt = prompt.filter(|p| !p.trim().is_empty());
+        let (Some(extractor), Some(prompt)) = (&self.extractor, prompt) else {
+            return Ok(("page text".into(), page_with_cap(text)));
+        };
+        let extracting = extractor.extract(prompt, text, &ctx.session_id, ctx.cancel.clone());
+        match run_with_cancel(&ctx.cancel, extracting).await? {
+            Ok(answer) if !answer.trim().is_empty() => {
+                Ok((format!("extracted by {}", extractor.model_name()), answer))
+            }
+            Ok(_) => Ok((
+                "page text; the extraction model returned nothing".into(),
+                page_with_cap(text),
+            )),
+            Err(e) => {
+                tracing::warn!(error = %e, "WebFetch extraction failed; returning the page text");
+                Ok((
+                    format!("page text; extraction failed: {e}"),
+                    page_with_cap(text),
+                ))
+            }
         }
     }
 }
@@ -70,7 +98,11 @@ impl Tool for WebFetchTool {
     }
 
     fn description(&self) -> &str {
-        "Fetch a URL and extract relevant content via sub-LLM."
+        if self.extracts() {
+            "Fetch a URL and have a model answer `prompt` from the page."
+        } else {
+            "Fetch a URL and return the page as plain text."
+        }
     }
 
     fn input_schema(&self) -> Value {
@@ -78,7 +110,11 @@ impl Tool for WebFetchTool {
     }
 
     async fn prompt(&self, _: &PromptContext) -> String {
-        include_str!("prompts/coding/web_fetch.prompt.md").to_string()
+        if self.extracts() {
+            include_str!("prompts/coding/web_fetch.extract.prompt.md").to_string()
+        } else {
+            include_str!("prompts/coding/web_fetch.prompt.md").to_string()
+        }
     }
 
     fn is_concurrency_safe(&self, _: &Value) -> bool {
@@ -130,72 +166,34 @@ impl Tool for WebFetchTool {
         };
         match result {
             Ok((status, text)) => {
-                // If a secondary LLM is wired AND the user
-                // supplied a prompt, ask the cheap model to extract relevant
-                // bits. Otherwise return the raw fetched text (legacy path).
-                let body = match (&input.prompt, self.secondary.as_ref()) {
-                    (Some(prompt), Some(secondary)) if !prompt.trim().is_empty() => {
-                        let truncated = truncate_for_secondary(&text);
-                        match secondary.extract_with_prompt(prompt, &truncated).await {
-                            Ok(extracted) if !extracted.trim().is_empty() => extracted,
-                            Ok(_) => fallback_text(&text),
-                            Err(e) => {
-                                tracing::warn!(
-                                    error = %e,
-                                    "secondary LLM extraction failed; returning raw fetched text"
-                                );
-                                fallback_text(&text)
-                            }
-                        }
-                    }
-                    _ => fallback_text(&text),
+                let (mode, body) = self.body_for(input.prompt.as_deref(), &text, &ctx).await?;
+                let prompt = match &input.prompt {
+                    Some(p) => format!(" | prompt was: {p}"),
+                    None => String::new(),
                 };
-                let header = if input.prompt.is_some() {
-                    let mode = if self.secondary.is_some() {
-                        "extracted-by-haiku"
-                    } else {
-                        "raw"
-                    };
-                    format!(
-                        "[HTTP {status} | url={} | prompt was: {} | mode={mode}]\n\n",
-                        input.url,
-                        input.prompt.as_deref().unwrap_or("")
-                    )
-                } else {
-                    format!("[HTTP {status} | url={}]\n\n", input.url)
-                };
-                Ok(ToolResult::text(format!("{header}{body}")))
+                Ok(ToolResult::text(format!(
+                    "[HTTP {status} | url={}{prompt} | mode={mode}]\n\n{body}",
+                    input.url
+                )))
             }
             Err(FetchError::HttpStatus { status, body }) => Ok(ToolResult::error_text(format!(
                 "HTTP {status}\n{}",
                 truncate_chars(&body, 4000)
             ))),
-            Err(FetchError::Redirect(location)) => {
-                // Cross-host redirect — return to model for re-fetch.
-                Ok(ToolResult::text(format!(
-                    "Redirected to: {location}\n\nRe-fetch this URL to continue."
-                )))
-            }
+            Err(FetchError::Redirect(location)) => Ok(ToolResult::text(format!(
+                "Redirected to: {location}\n\nRe-fetch this URL to continue."
+            ))),
             Err(FetchError::Egress(e)) => Err(e.into()),
         }
     }
 }
 
-fn fallback_text(text: &str) -> String {
+fn page_with_cap(text: &str) -> String {
     if text.chars().count() > MAX_OUTPUT_CHARS {
         let truncated: String = text.chars().take(MAX_OUTPUT_CHARS).collect();
         format!("{truncated}\n\n[truncated to first {MAX_OUTPUT_CHARS} chars]")
     } else {
         text.to_string()
-    }
-}
-
-fn truncate_for_secondary(text: &str) -> String {
-    if text.chars().count() <= MAX_SECONDARY_INPUT_CHARS {
-        text.to_string()
-    } else {
-        let head: String = text.chars().take(MAX_SECONDARY_INPUT_CHARS).collect();
-        format!("{head}\n\n[Content truncated due to length...]")
     }
 }
 
@@ -503,6 +501,197 @@ not found";
                 assert!(t.contains("not found"));
             }
             _ => panic!(),
+        }
+    }
+
+    /// Answers every extraction the same way, keeping the params it was asked with.
+    struct ExtractingModel {
+        answer: Result<&'static str, &'static str>,
+        hang: bool,
+        asked: std::sync::Mutex<Vec<base::interface::model::StreamParams>>,
+    }
+
+    impl ExtractingModel {
+        fn new(answer: Result<&'static str, &'static str>) -> Arc<Self> {
+            Arc::new(Self {
+                answer,
+                hang: false,
+                asked: Default::default(),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl base::interface::model::Model for ExtractingModel {
+        fn api_type(&self) -> base::provider::ApiType {
+            base::provider::ApiType::Anthropic
+        }
+        async fn stream(
+            &self,
+            _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+            _tools: Vec<base::interface::model::ToolDef>,
+            _messages: Vec<base::interface::model::ModelMessage>,
+            params: base::interface::model::StreamParams,
+            _cancel: tokio_util::sync::CancellationToken,
+        ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError>
+        {
+            use base::interface::model::{ModelError, ModelEvent};
+            self.asked.lock().unwrap().push(params);
+            if self.hang {
+                return Ok(Box::new(futures::stream::pending()));
+            }
+            let text = self
+                .answer
+                .map_err(|e| ModelError::Unsupported(e.to_string()))?;
+            Ok(Box::new(futures::stream::iter([
+                Ok(ModelEvent::TextDelta { text: text.into() }),
+                Ok(ModelEvent::EndTurn {
+                    stop_reason: "end_turn".into(),
+                    usage: Default::default(),
+                }),
+            ])))
+        }
+    }
+
+    fn extracting(model: &Arc<ExtractingModel>) -> WebFetchTool {
+        WebFetchTool::with_extractor(PageExtractor::new(model.clone(), "fetch-model"))
+    }
+
+    async fn fetch_text(tool: &WebFetchTool, input: Value) -> String {
+        let r = tool
+            .call(input, ctx_in(Path::new("/tmp")), ProgressSender::noop("t"))
+            .await
+            .unwrap();
+        assert!(!r.is_error);
+        match r.content {
+            base::tool::ToolResultContent::Text(t) => t,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn with_an_extractor_the_models_answer_replaces_the_page() {
+        let (port, _) = a_server_that_would_answer().await;
+        let model = ExtractingModel::new(Ok("the answer"));
+        let text = fetch_text(
+            &extracting(&model),
+            json!({"url": format!("http://127.0.0.1:{port}/"), "prompt": "what is it?"}),
+        )
+        .await;
+        assert!(text.contains("mode=extracted by fetch-model"), "{text}");
+        assert!(text.ends_with("the answer"), "{text}");
+        assert!(!text.contains("hello"), "the page itself stays out: {text}");
+
+        let asked = model.asked.lock().unwrap();
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0].model, "fetch-model");
+        let origin = asked[0].origin.as_ref().expect("attributed");
+        assert_eq!(origin.session_id, "test");
+        assert_eq!(
+            origin.purpose(),
+            Some(base::interface::model::call_purpose::WEB_FETCH)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_extraction_returns_the_page_and_says_why() {
+        let (port, _) = a_server_that_would_answer().await;
+        let model = ExtractingModel::new(Err("provider down"));
+        let text = fetch_text(
+            &extracting(&model),
+            json!({"url": format!("http://127.0.0.1:{port}/"), "prompt": "what is it?"}),
+        )
+        .await;
+        assert!(
+            text.contains("mode=page text; extraction failed:") && text.contains("provider down"),
+            "{text}"
+        );
+        assert!(text.ends_with("hello"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn an_empty_answer_returns_the_page_and_says_so() {
+        let (port, _) = a_server_that_would_answer().await;
+        let model = ExtractingModel::new(Ok("  "));
+        let text = fetch_text(
+            &extracting(&model),
+            json!({"url": format!("http://127.0.0.1:{port}/"), "prompt": "what is it?"}),
+        )
+        .await;
+        assert!(text.contains("returned nothing"), "{text}");
+        assert!(text.ends_with("hello"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn without_a_prompt_nothing_is_extracted() {
+        let (port, _) = a_server_that_would_answer().await;
+        let model = ExtractingModel::new(Ok("the answer"));
+        let text = fetch_text(
+            &extracting(&model),
+            json!({"url": format!("http://127.0.0.1:{port}/"), "prompt": " "}),
+        )
+        .await;
+        assert!(text.contains("mode=page text]"), "{text}");
+        assert!(text.ends_with("hello"), "{text}");
+        assert!(model.asked.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn without_an_extractor_the_prompt_is_only_echoed() {
+        let (port, _) = a_server_that_would_answer().await;
+        let text = fetch_text(
+            &WebFetchTool::new(),
+            json!({"url": format!("http://127.0.0.1:{port}/"), "prompt": "what is it?"}),
+        )
+        .await;
+        assert!(
+            text.contains("prompt was: what is it? | mode=page text]"),
+            "{text}"
+        );
+        assert!(text.ends_with("hello"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn cancelling_stops_a_running_extraction() {
+        let (port, _) = a_server_that_would_answer().await;
+        let model = Arc::new(ExtractingModel {
+            answer: Ok(""),
+            hang: true,
+            asked: Default::default(),
+        });
+        let ctx = ctx_in(Path::new("/tmp"));
+        let cancel = ctx.cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cancel.cancel();
+        });
+        let r = extracting(&model)
+            .call(
+                json!({"url": format!("http://127.0.0.1:{port}/"), "prompt": "q"}),
+                ctx,
+                ProgressSender::noop("t"),
+            )
+            .await;
+        assert!(matches!(r, Err(ToolError::Cancelled)), "{r:?}");
+        assert_eq!(model.asked.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn what_the_model_is_told_matches_whether_pages_are_extracted() {
+        let ctx = PromptContext::default();
+        let plain = WebFetchTool::new();
+        assert!(plain.description().contains("plain text"));
+        let plain_prompt = plain.prompt(&ctx).await;
+        assert!(plain_prompt.contains("not acted on"));
+
+        let model = ExtractingModel::new(Ok("x"));
+        let extracting = extracting(&model);
+        assert!(extracting.description().contains("answer `prompt`"));
+        assert!(extracting.prompt(&ctx).await.contains("separate model"));
+
+        for prompt in [plain_prompt, extracting.prompt(&ctx).await] {
+            assert!(!prompt.contains("HTTPS"), "no upgrade happens");
+            assert!(!prompt.contains("cache"), "nothing is cached");
         }
     }
 }

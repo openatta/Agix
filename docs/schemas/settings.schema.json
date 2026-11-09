@@ -957,7 +957,7 @@
       "additionalProperties": {
         "$ref": "#/$defs/TaskModelOverride"
       },
-      "description": "Per-task-type provider/model routing — see `base::provider::resolve_task_models`.",
+      "description": "Per-task-type provider/model routing — see `base::provider::resolve_task_models`.\n\nKeys: `main`, `subagent`, `compact`, `memory`, `title`, `web_search`,\n`web_fetch`. `web_fetch` alone has no default: `WebFetch` has a model\nread the page only when this names one, and otherwise returns the page\ntext.",
       "type": "object"
     },
     "telemetry_enabled": {

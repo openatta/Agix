@@ -38,7 +38,8 @@ pub mod worktree_tools;
 // From anthropic/ — tool-side logic
 #[cfg(feature = "web")]
 pub mod native_search;
-pub mod secondary_llm;
+#[cfg(feature = "web")]
+pub mod page_extract;
 
 // Agent tool
 
@@ -62,6 +63,10 @@ use std::sync::Arc;
 /// `CronStore` plus something to drain it), and
 /// `EnterWorktreeTool`/`ExitWorktreeTool` ([`register_worktree_tools`] — need
 /// a session-scoped `WorktreeRegistry`).
+///
+/// `WebFetchTool` is registered here without page extraction;
+/// [`register_web_fetch`] swaps in the extracting one when a session routes
+/// `task_models.web_fetch` to a model.
 ///
 /// Still excluded with no helper: `mcp::auth_tool::McpAuthTool` (needs SaaS auth
 /// infrastructure that does not exist here).
@@ -125,6 +130,33 @@ pub fn register_web_search(
     reg.register(Arc::new(crate::web_search::WebSearchTool::new(Box::new(
         crate::native_search::NativeSearchProvider::new(model, model_name),
     ))));
+}
+
+/// Make the registry's `WebFetch` answer its `prompt` through `extraction`
+/// (a model and the model name to call it with), replacing the one already
+/// there. Without `extraction` an existing `WebFetch` is kept as it is — a
+/// delegate's registry carries its parent's — and a plain one is registered
+/// only when there is none. Never leaves two entries under the name.
+///
+/// Registers nothing in a build without the `web` tools.
+pub fn register_web_fetch(
+    reg: &base::tool::InMemoryToolRegistry,
+    extraction: Option<(Arc<dyn base::interface::model::Model>, String)>,
+) {
+    #[cfg(not(feature = "web"))]
+    let _ = (reg, extraction);
+    #[cfg(feature = "web")]
+    match extraction {
+        Some((model, model_name)) => {
+            reg.replace(Arc::new(crate::web_fetch::WebFetchTool::with_extractor(
+                crate::page_extract::PageExtractor::new(model, model_name),
+            )));
+        }
+        None if reg.get("WebFetch").is_none() => {
+            reg.register(Arc::new(crate::web_fetch::WebFetchTool::new()));
+        }
+        None => {}
+    }
 }
 
 /// Registers `StructuredOutput` bound to `schema`, the host's output contract,
@@ -287,6 +319,41 @@ mod register_builtin_tools_tests {
             }
             Ok(ok) => panic!("expected a descriptive error, got {:?}", ok.content),
         }
+    }
+
+    fn web_fetches(reg: &base::tool::InMemoryToolRegistry) -> Vec<Arc<dyn Tool>> {
+        reg.list()
+            .into_iter()
+            .filter(|t| t.name() == "WebFetch")
+            .collect()
+    }
+
+    #[test]
+    fn register_web_fetch_leaves_one_web_fetch_either_way() {
+        let empty = base::tool::InMemoryToolRegistry::new();
+        register_web_fetch(&empty, None);
+        assert_eq!(web_fetches(&empty).len(), 1, "registered when absent");
+
+        let reg = Arc::new(base::tool::InMemoryToolRegistry::new());
+        register_builtin_tools(&reg);
+        register_web_fetch(&reg, None);
+        assert_eq!(web_fetches(&reg).len(), 1);
+        assert!(web_fetches(&reg)[0].description().contains("plain text"));
+
+        register_web_fetch(&reg, Some((Arc::new(NoSearch), "fetch-model".into())));
+        let fetches = web_fetches(&reg);
+        assert_eq!(fetches.len(), 1, "replaced, not appended");
+        assert!(fetches[0].description().contains("answer `prompt`"));
+    }
+
+    #[test]
+    fn without_a_routed_model_an_extracting_web_fetch_is_kept() {
+        let reg = Arc::new(base::tool::InMemoryToolRegistry::new());
+        register_web_fetch(&reg, Some((Arc::new(NoSearch), "fetch-model".into())));
+        register_web_fetch(&reg, None);
+        let fetches = web_fetches(&reg);
+        assert_eq!(fetches.len(), 1);
+        assert!(fetches[0].description().contains("answer `prompt`"));
     }
 
     /// Cron tools registered against a shared store actually

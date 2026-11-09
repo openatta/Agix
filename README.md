@@ -93,7 +93,8 @@ when no one is watching.
 **Models**
 - Anthropic and OpenAI-compatible APIs, so hosted and local models
   (llama.cpp, Ollama, vLLM, …) both work.
-- Per-task routing (`main`, `subagent`, `compact`, `memory`, `web_search`),
+- Per-task routing (`main`, `subagent`, `compact`, `memory`, `web_search`,
+  `web_fetch`),
   per-session providers, and model switching mid-session.
 - Retry with backoff, plus recovery: switch model, compact and retry, or
   raise `max_tokens`.
@@ -495,10 +496,13 @@ sandbox — see `docs/ARCHITECTURE.md` §3.2.3 and §6.3.
 }
 ```
 
-Task keys `main`, `subagent`, `compact`, `memory` and `web_search` route each kind
-of call; a session can also choose its own provider. `WebSearch` searches
-through the session's own model (the provider's built-in search) unless
-`task_models.web_search` names another provider.
+Task keys `main`, `subagent`, `compact`, `memory`, `web_search` and `web_fetch`
+route each kind of call; a session can also choose its own provider. `WebSearch`
+searches through the session's own model (the provider's built-in search) unless
+`task_models.web_search` names another provider. `WebFetch` returns the page as
+plain text (truncated at 50,000 characters); only when `task_models.web_fetch`
+names a provider does that provider's model read the page and answer the call's
+`prompt` instead. It never falls back to the session's own model.
 
 ### Context, telemetry, recording
 

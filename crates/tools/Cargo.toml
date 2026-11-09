@@ -10,7 +10,6 @@ autotests    = false
 
 [dependencies]
 base          = { workspace = true }
-model         = { workspace = true }
 permissions   = { workspace = true }
 tokio         = { workspace = true }
 tokio-util    = { workspace = true }

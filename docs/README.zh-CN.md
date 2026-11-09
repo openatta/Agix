@@ -63,8 +63,8 @@ Agix 是 agent 产品底下的那台引擎:它运行一个**会话**——装配
 
 **模型**
 - Anthropic 与 OpenAI 兼容两种接口,托管模型和本地模型(llama.cpp、Ollama、vLLM 等)都能接。
-- 按调用种类路由(`main`、`subagent`、`compact`、`memory`、`web_search`),会话可单独选
-  厂商,中途可换模型。
+- 按调用种类路由(`main`、`subagent`、`compact`、`memory`、`web_search`、`web_fetch`),
+  会话可单独选厂商,中途可换模型。
 - 退避重试,外加恢复策略:换模型、压缩后重试、调高 `max_tokens`。
 - 对缓存友好的提示词:会话自己的信息放在第一条消息里,不常用的工具用 `ToolSearch` 按需加载,
   压缩时发出缓存编辑。
@@ -416,9 +416,11 @@ let pool = daemon::assemble::pool(
 }
 ```
 
-任务键 `main`、`subagent`、`compact`、`memory`、`web_search` 各自路由一类调用;会话也能
-选自己的 provider。`WebSearch` 默认经会话自己的模型让提供方搜索,`task_models.web_search`
-可以换一个提供方。
+任务键 `main`、`subagent`、`compact`、`memory`、`web_search`、`web_fetch` 各自路由一类
+调用;会话也能选自己的 provider。`WebSearch` 默认经会话自己的模型让提供方搜索,
+`task_models.web_search` 可以换一个提供方。`WebFetch` 默认返回页面转成的纯文本(超过
+50,000 字符截断);只有 `task_models.web_fetch` 配了 provider 时,才由那个模型读页面、按调用
+的 `prompt` 作答。它不会退回到会话自己的模型。
 
 ### 上下文、遥测、录制
 

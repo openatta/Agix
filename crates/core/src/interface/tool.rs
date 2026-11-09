@@ -843,11 +843,6 @@ fn string_constants(one_of: &Value) -> Option<Vec<Value>> {
         .collect()
 }
 
-#[async_trait]
-pub trait SecondaryLlm: Send + Sync {
-    async fn extract_with_prompt(&self, p: &str, c: &str) -> Result<String, String>;
-}
-
 #[cfg(test)]
 mod compact_schema_tests {
     use super::*;

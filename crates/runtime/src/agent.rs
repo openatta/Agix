@@ -23,6 +23,9 @@ use tracing;
 /// The `task_models` key that routes `WebSearch` to a provider of its own.
 const WEB_SEARCH_TASK: &str = "web_search";
 
+/// The `task_models` key that turns on `WebFetch` page extraction.
+const WEB_FETCH_TASK: &str = "web_fetch";
+
 /// The one tool in `NEEDS_A_USER` an attended session also needs a host for:
 /// see [`Builder::question_prompts`].
 const ASK_USER_QUESTION: &str = "AskUserQuestion";
@@ -2087,6 +2090,19 @@ impl Builder {
         };
         tools::register_web_search(&tools, search_model, search_model_name);
 
+        // Extraction runs only on a model routed for it: the session's own
+        // model is too costly to spend reading whole pages.
+        let fetch_extraction = self.task_router.as_ref().and_then(|router| {
+            let name = router.model_name_for(WEB_FETCH_TASK)?;
+            let model = Arc::new(telemetry::model::TelemetryModel::new(
+                router.model_for(WEB_FETCH_TASK),
+                telemetry_handle.clone(),
+                settings.model.model_name.clone(),
+            )) as Arc<dyn Model>;
+            Some((model, name.to_string()))
+        });
+        tools::register_web_fetch(&tools, fetch_extraction);
+
         // Worktree tools — one `WorktreeRegistry` per session (it holds at
         // most one active worktree; `EnterWorktree` refuses a second and
         // `ExitWorktree` cleans up what this session created).
@@ -3619,6 +3635,7 @@ mod tests {
 
         for expected in [
             "WebSearch",
+            "WebFetch",
             "CronCreate",
             "CronDelete",
             "CronList",
@@ -7320,6 +7337,183 @@ mod tests {
         assert!(search_once(&agent).await.contains("from.searcher.example"));
         assert_eq!(*searcher_asked.lock().unwrap(), ["search-model"]);
         assert!(session_asked.lock().unwrap().is_empty());
+    }
+
+    /// Answers every call with `answer`, noting the model name and purpose
+    /// each one was made with.
+    struct ExtractSpy {
+        answer: &'static str,
+        asked: Asked,
+    }
+
+    type Asked = Arc<std::sync::Mutex<Vec<(String, Option<String>)>>>;
+
+    #[async_trait::async_trait]
+    impl Model for ExtractSpy {
+        fn api_type(&self) -> base::provider::ApiType {
+            base::provider::ApiType::Anthropic
+        }
+        async fn stream(
+            &self,
+            _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+            _tools: Vec<base::interface::model::ToolDef>,
+            _messages: Vec<base::interface::model::ModelMessage>,
+            params: base::interface::model::StreamParams,
+            _cancel: CancellationToken,
+        ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError>
+        {
+            let purpose = params
+                .origin
+                .as_ref()
+                .and_then(|o| o.purpose())
+                .map(str::to_string);
+            self.asked.lock().unwrap().push((params.model, purpose));
+            Ok(Box::new(futures::stream::iter(vec![
+                Ok(base::interface::model::ModelEvent::TextDelta {
+                    text: self.answer.into(),
+                }),
+                Ok(base::interface::model::ModelEvent::EndTurn {
+                    stop_reason: "end_turn".into(),
+                    usage: Default::default(),
+                }),
+            ])))
+        }
+    }
+
+    fn extract_spy(answer: &'static str) -> (Arc<ExtractSpy>, Asked) {
+        let asked = Asked::default();
+        (
+            Arc::new(ExtractSpy {
+                answer,
+                asked: asked.clone(),
+            }),
+            asked,
+        )
+    }
+
+    /// A local server answering every request with the same small page.
+    async fn a_page() -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        const RESPONSE: &[u8] = b"HTTP/1.1 200 OK\r\n\
+content-type: text/plain\r\n\
+content-length: 14\r\n\
+connection: close\r\n\
+\r\n\
+the whole page";
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 4096];
+                let _ = sock.read(&mut buf).await;
+                let _ = sock.write_all(RESPONSE).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+        format!("http://127.0.0.1:{port}/")
+    }
+
+    async fn fetch_once(agent: &Agent, url: &str) -> String {
+        let result = agent
+            .tools
+            .get("WebFetch")
+            .expect("WebFetch is registered")
+            .call(
+                serde_json::json!({"url": url, "prompt": "what does it say?"}),
+                base::tool::ToolContext::for_test(std::env::temp_dir()),
+                base::tool::ProgressSender::noop("t"),
+            )
+            .await
+            .expect("the fetch answered");
+        format!("{:?}", result.content)
+    }
+
+    fn templated() -> Arc<InMemoryToolRegistry> {
+        let template = Arc::new(InMemoryToolRegistry::new());
+        tools::register_builtin_tools(&template);
+        template
+    }
+
+    #[tokio::test]
+    async fn task_models_web_fetch_extracts_pages_on_the_routed_model() {
+        let (session, session_asked) = extract_spy("from the session");
+        let (fetcher, fetcher_asked) = extract_spy("from the fetcher");
+        let router = base::provider::TaskRouter::new(
+            [("fetcher".to_string(), fetcher as Arc<dyn Model>)].into(),
+            [(
+                WEB_FETCH_TASK.to_string(),
+                base::provider::ResolvedModel {
+                    provider_id: "fetcher".into(),
+                    model: "fetch-model".into(),
+                },
+            )]
+            .into(),
+            session.clone() as Arc<dyn Model>,
+        );
+        let (agent, _rx, _tx) = Builder::new()
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+            .model(session as Arc<dyn Model>)
+            .settings(Arc::new(test_settings()))
+            .tools(templated())
+            .task_router(Arc::new(router))
+            .skip_warmup(true)
+            .build()
+            .expect("build should succeed");
+        assert_eq!(
+            agent
+                .tools
+                .names()
+                .iter()
+                .filter(|n| *n == "WebFetch")
+                .count(),
+            1,
+            "the template's WebFetch is replaced, not shadowed"
+        );
+
+        let result = fetch_once(&agent, &a_page().await).await;
+        assert!(result.contains("from the fetcher"), "{result}");
+        assert!(result.contains("mode=extracted by fetch-model"), "{result}");
+        assert_eq!(
+            *fetcher_asked.lock().unwrap(),
+            [(
+                "fetch-model".to_string(),
+                Some(base::interface::model::call_purpose::WEB_FETCH.to_string())
+            )]
+        );
+        assert!(session_asked.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn without_task_models_web_fetch_no_model_reads_the_page() {
+        let (session, session_asked) = extract_spy("from the session");
+        let (other, other_asked) = extract_spy("from another task's model");
+        let router = base::provider::TaskRouter::new(
+            [("other".to_string(), other as Arc<dyn Model>)].into(),
+            [(
+                WEB_SEARCH_TASK.to_string(),
+                base::provider::ResolvedModel {
+                    provider_id: "other".into(),
+                    model: "search-model".into(),
+                },
+            )]
+            .into(),
+            session.clone() as Arc<dyn Model>,
+        );
+        let (agent, _rx, _tx) = Builder::new()
+            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+            .model(session as Arc<dyn Model>)
+            .settings(Arc::new(test_settings()))
+            .tools(templated())
+            .task_router(Arc::new(router))
+            .skip_warmup(true)
+            .build()
+            .expect("build should succeed");
+
+        let result = fetch_once(&agent, &a_page().await).await;
+        assert!(result.contains("the whole page"), "{result}");
+        assert!(result.contains("mode=page text"), "{result}");
+        assert!(session_asked.lock().unwrap().is_empty());
+        assert!(other_asked.lock().unwrap().is_empty());
     }
 
     /// Compacts by keeping the messages for which `keep` holds, reported as

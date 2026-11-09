@@ -41,7 +41,6 @@
 //! | [`event_sink::EventSink`] | where the engine's events go |
 //! | [`health::HealthCheck`] | whether a subsystem is working |
 //! | [`elicitation::Elicitation`] | how the engine asks a person something |
-//! | [`tool::SecondaryLlm`] | the small model tools may call |
 //! | [`token_counter::TokenCounter`] | how big the context is judged to be |
 //! | [`prompt_registry::PromptRegistry`] | what goes into the system prompt |
 //! | [`prompt_assembler::PromptAssembler`] | how the whole prompt is put together |

@@ -151,6 +151,11 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_provider: Option<String>,
     /// Per-task-type provider/model routing — see `base::provider::resolve_task_models`.
+    ///
+    /// Keys: `main`, `subagent`, `compact`, `memory`, `title`, `web_search`,
+    /// `web_fetch`. `web_fetch` alone has no default: `WebFetch` has a model
+    /// read the page only when this names one, and otherwise returns the page
+    /// text.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub task_models: HashMap<String, TaskModelOverride>,
 
