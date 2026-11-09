@@ -909,6 +909,11 @@ daemon 管。设计与用法在 [`mcp_auth.md`](mcp_auth.md);这里只记它在�
 文本到达模型本来就要靠人读(插件同一判断),所以提示词一类照常;provider、`telemetry_url`、
 `recorder` 这类"把东西送到别处"的键现在不在表里。信任之后项目层恢复全部行为。
 
+一个值类型不对(`"language": 5`、`"network_mode": 42`)时,`Settings::load` 只丢掉这个值并
+warn,`daemon.doctor` 的 `settings.tiers` 报 `degraded`、在那一层的 `ignored_values` 里列出;
+同一个文件里其余的值和别的层照常。整个对象的值都不对时报这个对象本身。这对信任与否都一样:
+一处拼错不会让全局层的 hook、沙箱设置跟着失效。
+
 **信任是项目根的属性,存在全局层,项目自己改不了**:
 
 ```jsonc

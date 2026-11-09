@@ -715,9 +715,9 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
       { "name":"memory",             "status":"ok", "summary":"0/200 memories",
         "details": { "enabled":true, "count":0, "cap":200 } } ] },
   "settings_tiers": [
-    { "tier":"global",  "path":"…/settings.json",       "exists":false, "parses":true, "error":null, "unknown_keys":[] },
-    { "tier":"scene",   "path":"…/settings.json",       "exists":false, "parses":true, "error":null, "unknown_keys":[] },
-    { "tier":"project", "path":"…/.agix/settings.json", "exists":false, "parses":true, "error":null, "unknown_keys":[] } ],
+    { "tier":"global",  "path":"…/settings.json",       "exists":false, "parses":true, "error":null, "unknown_keys":[], "ignored_values":[] },
+    { "tier":"scene",   "path":"…/settings.json",       "exists":false, "parses":true, "error":null, "unknown_keys":[], "ignored_values":[] },
+    { "tier":"project", "path":"…/.agix/settings.json", "exists":false, "parses":true, "error":null, "unknown_keys":[], "ignored_values":[] } ],
   "providers": { "ok":true, "default_provider":null, "configured":[], "task_models":[],
                  "warnings":[], "error":null },
   "hooks": { "configured":false, "ok":true, "error":null },
@@ -741,6 +741,12 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 `settings_tiers[].unknown_keys` 是那份文件里没有任何设置读的顶层键(拼错的、别的工具的),
 加载时被忽略,daemon 日志里各有一条 warn。有这样的键时 `settings.tiers` 仍是 `ok`,
 `summary` 里写明是哪几层。
+
+`settings_tiers[].ignored_values` 是这一层(`settings.json` 与 `settings.local.json`)里类型
+不对、因而被丢掉的值:`{ "tier", "origin", "key", "error" }`,`key` 是点分的
+(`sandbox.network_mode`),整个对象都不对时是这个对象本身。被丢的只是这个值,同一个文件里
+其余的值和别的层照常生效。有这样的值时 `settings.tiers` 是 `degraded`,`summary` 列出
+`<层> (<键>)`。
 
 `providers.ok` 只说明配置**形状**解析得通(每个 `task_models` 条目都指向一个存在
 的 provider),不说明真能建出客户端,更不说明那个端点能连上 —— 缺凭据、`base_url`

@@ -27,6 +27,9 @@ struct TierStatus {
     error: Option<String>,
     /// Top-level keys no setting reads; they are ignored.
     unknown_keys: Vec<String>,
+    /// Values in this tier's files that do not fit their setting, left out
+    /// of the merge — see `Settings::ignored_values`.
+    ignored_values: Vec<base::settings::IgnoredValue>,
 }
 
 fn inspect_tier(tier: &'static str, dir: &Path) -> TierStatus {
@@ -40,6 +43,7 @@ fn inspect_tier(tier: &'static str, dir: &Path) -> TierStatus {
             parses: true,
             error: None,
             unknown_keys: Vec::new(),
+            ignored_values: Vec::new(),
         };
     }
     match std::fs::read_to_string(&path) {
@@ -51,6 +55,7 @@ fn inspect_tier(tier: &'static str, dir: &Path) -> TierStatus {
                 parses: true,
                 error: None,
                 unknown_keys: base::settings::unknown_settings_keys(&value),
+                ignored_values: Vec::new(),
             },
             Err(e) => TierStatus {
                 tier,
@@ -59,6 +64,7 @@ fn inspect_tier(tier: &'static str, dir: &Path) -> TierStatus {
                 parses: false,
                 error: Some(format!("invalid JSON: {e}")),
                 unknown_keys: Vec::new(),
+                ignored_values: Vec::new(),
             },
         },
         Err(e) => TierStatus {
@@ -68,23 +74,29 @@ fn inspect_tier(tier: &'static str, dir: &Path) -> TierStatus {
             parses: false,
             error: Some(format!("read error: {e}")),
             unknown_keys: Vec::new(),
+            ignored_values: Vec::new(),
         },
     }
 }
 
-/// The three settings.json tiers: is each one there, and does it parse?
+/// The three settings.json tiers: is each one there, does it parse, and
+/// does every value in it fit its setting?
 pub struct SettingsTiersCheck {
     global: PathBuf,
     scene: PathBuf,
     project: PathBuf,
+    ignored: Vec<base::settings::IgnoredValue>,
 }
 
 impl SettingsTiersCheck {
-    pub fn new(paths: &dyn DaemonPaths) -> Self {
+    /// `settings` are the ones loaded from these tiers; what their load left
+    /// out is reported against the tier it came from.
+    pub fn new(paths: &dyn DaemonPaths, settings: &Settings) -> Self {
         Self {
             global: paths.global_root(),
             scene: paths.config_root(),
             project: paths.project_root().join(".agix"),
+            ignored: settings.ignored_values.clone(),
         }
     }
 }
@@ -95,12 +107,25 @@ impl HealthCheck for SettingsTiersCheck {
     }
 
     fn check(&self) -> CheckResult {
-        let tiers = vec![
+        let mut tiers = vec![
             inspect_tier("global", &self.global),
             inspect_tier("scene", &self.scene),
             inspect_tier("project", &self.project),
         ];
+        for tier in &mut tiers {
+            tier.ignored_values = self
+                .ignored
+                .iter()
+                .filter(|v| v.tier == tier.tier)
+                .cloned()
+                .collect();
+        }
         let broken: Vec<&str> = tiers.iter().filter(|t| !t.parses).map(|t| t.tier).collect();
+        let misfits: Vec<String> = self
+            .ignored
+            .iter()
+            .map(|v| format!("{} ({})", v.tier, v.key))
+            .collect();
         let with_unknown: Vec<&str> = tiers
             .iter()
             .filter(|t| !t.unknown_keys.is_empty())
@@ -110,17 +135,23 @@ impl HealthCheck for SettingsTiersCheck {
 
         // A tier that is simply absent is the normal case, not a fault: most
         // deployments write one file and leave the other two alone.
-        if broken.is_empty() && with_unknown.is_empty() {
+        if !broken.is_empty() {
+            CheckResult::degraded(format!("unreadable settings.json: {}", broken.join(", ")))
+                .with_details(details)
+        } else if !misfits.is_empty() {
+            CheckResult::degraded(format!(
+                "settings values that do not fit their setting, ignored: {}",
+                misfits.join(", ")
+            ))
+            .with_details(details)
+        } else if with_unknown.is_empty() {
             CheckResult::ok("every settings.json present parses").with_details(details)
-        } else if broken.is_empty() {
+        } else {
             CheckResult::ok(format!(
                 "every settings.json present parses; keys no setting reads, ignored, in: {}",
                 with_unknown.join(", ")
             ))
             .with_details(details)
-        } else {
-            CheckResult::degraded(format!("unreadable settings.json: {}", broken.join(", ")))
-                .with_details(details)
         }
     }
 }
@@ -329,7 +360,7 @@ pub fn run_doctor(
     extra: &HealthChecks,
 ) -> serde_json::Value {
     let mut checks = HealthChecks::new()
-        .with(Arc::new(SettingsTiersCheck::new(paths)))
+        .with(Arc::new(SettingsTiersCheck::new(paths, &settings)))
         .with(Arc::new(ProviderRoutingCheck::new(settings.clone())))
         .with(Arc::new(HooksCheck::new(settings.clone())))
         .with(Arc::new(MemoryCheck::new(settings.clone())));
@@ -458,6 +489,56 @@ mod tests {
         assert!(
             check["summary"].as_str().unwrap().contains("ignored"),
             "{check}"
+        );
+    }
+
+    #[test]
+    fn a_value_that_does_not_fit_its_setting_degrades_the_tiers_check() {
+        let root = tempfile::tempdir().unwrap();
+        let (global, project) = (root.path().join("global"), root.path().join("work"));
+        std::fs::create_dir_all(&global).unwrap();
+        std::fs::create_dir_all(project.join(".agix")).unwrap();
+        std::fs::write(
+            project.join(".agix/settings.json"),
+            r#"{"language": 5, "memory_enabled": false}"#,
+        )
+        .unwrap();
+        let settings = Settings::load(
+            global.clone(),
+            global.join("scenes/code"),
+            project.join(".agix"),
+            "code",
+            "m",
+        );
+        let paths = StaticDaemonPaths::with_project(global.join("scenes/code"), project)
+            .with_global(global);
+
+        let report = run_doctor(
+            &paths,
+            "code",
+            Arc::new(settings),
+            false,
+            crate::plugins::PluginStatus::Enabled,
+            &no_extra_checks(),
+        );
+
+        let check = &report["health"]["checks"][0];
+        assert_eq!(check["name"], "settings.tiers");
+        assert_eq!(check["status"], "degraded", "{check}");
+        assert!(
+            check["summary"].as_str().unwrap().contains("language"),
+            "{check}"
+        );
+        let project_tier = report["settings_tiers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["tier"] == "project")
+            .unwrap()
+            .clone();
+        assert_eq!(
+            project_tier["ignored_values"][0]["key"], "language",
+            "{project_tier}"
         );
     }
 

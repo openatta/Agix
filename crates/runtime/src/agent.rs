@@ -2748,6 +2748,7 @@ mod tests {
             hooks_config: None,
             project_trust: Default::default(),
             project_layer: Default::default(),
+            ignored_values: Vec::new(),
             mcp_servers: Default::default(),
             providers: Default::default(),
             default_provider: None,

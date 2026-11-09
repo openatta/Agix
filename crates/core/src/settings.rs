@@ -156,6 +156,11 @@ pub struct Settings {
     #[serde(skip)]
     pub project_layer: crate::project_trust::ProjectLayer,
 
+    /// The values `Settings::load` left out because they do not fit their
+    /// setting. Never read from a settings file.
+    #[serde(skip)]
+    pub ignored_values: Vec<IgnoredValue>,
+
     /// MCP server configurations, keyed by server name (merged from
     /// global/scene/project layers). `$VAR` / `${VAR}` / `${VAR:-default}`
     /// are expanded in a server's `command`, `args`, `env`, `url` and
@@ -191,6 +196,19 @@ pub struct Settings {
 
 fn default_memory_enabled() -> bool {
     true
+}
+
+/// A value in a settings file that does not fit its setting — `"language": 5`
+/// — left out of the merge on its own, so the rest of its file and every
+/// other tier still apply.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct IgnoredValue {
+    pub tier: &'static str,
+    pub origin: String,
+    /// Dotted, as `sandbox.network_mode`; empty when the file as a whole is
+    /// not a settings object.
+    pub key: String,
+    pub error: String,
 }
 
 /// Permission mode for tool execution.
@@ -929,10 +947,10 @@ impl Settings {
     ///
     /// **Never fails** — a layer that doesn't exist is skipped; a layer that
     /// fails to parse is skipped with a `tracing::warn!` (path + error)
-    /// rather than aborting startup or silently losing the problem. If the
-    /// fully-merged JSON somehow doesn't deserialize into `Settings` (e.g. a
-    /// layer put a string where an object was expected), the merge is
-    /// discarded with a warning and plain defaults are returned instead.
+    /// rather than aborting startup or silently losing the problem. A value
+    /// that parses but does not fit its setting (a string where an object
+    /// was expected) is left out by itself, with a warning and an entry in
+    /// `ignored_values`; the rest of its layer and every other layer apply.
     ///
     /// `scope` identifies which product instance `scene_dir` belongs to (see
     /// `base::paths::ConfigPaths`) — no default at this layer; callers decide.
@@ -971,9 +989,9 @@ impl Settings {
     /// The merge is identical — that is the point of the split. `source`
     /// decides only which layers exist, in what order, and what JSON is in
     /// them; everything after that (stripping `paths`, holding an overlay's
-    /// `permission_rules` apart, the recursive merge, the fall back to
-    /// defaults if the result will not deserialize, validation) happens here
-    /// and is the same for every source.
+    /// `permission_rules` apart, the recursive merge, leaving out values that
+    /// do not fit, validation) happens here and is the same for every
+    /// source.
     ///
     /// The directory arguments stay because they are not where configuration
     /// is read from — they are where this scene's *data* lives, which
@@ -1030,6 +1048,7 @@ impl Settings {
             matched,
             ..Default::default()
         };
+        let mut ignored_values = Vec::new();
 
         for layer in layers {
             for key in unknown_settings_keys(&layer.value) {
@@ -1092,21 +1111,25 @@ impl Settings {
                     }
                 }
             }
-            merge_json_values(&mut merged_json, layer_json);
+            for (key, error) in merge_fitting(&mut merged_json, layer_json) {
+                tracing::warn!(layer = layer.tier.name(), origin = %layer.origin, key, error, "settings value does not fit its setting, ignoring it");
+                ignored_values.push(IgnoredValue {
+                    tier: layer.tier.name(),
+                    origin: layer.origin.clone(),
+                    key,
+                    error,
+                });
+            }
         }
         let mut seen = std::collections::HashSet::new();
         project_layer
             .requires_trust
             .retain(|key| seen.insert(key.clone()));
 
-        let mut settings: Settings = match serde_json::from_value(merged_json) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!(error = %e, "merged settings.json failed to deserialize into Settings; falling back to defaults");
-                base
-            }
-        };
+        // Every merge step above was checked to deserialize.
+        let mut settings: Settings = serde_json::from_value(merged_json).unwrap_or(base);
 
+        settings.ignored_values = ignored_values;
         settings.permission_rules = permission_rules;
         settings.local_permission_rules = local_permission_rules;
         settings.project_trust = project_trust;
@@ -1192,6 +1215,7 @@ impl Settings {
             hooks_config: None,
             project_trust: Default::default(),
             project_layer: Default::default(),
+            ignored_values: Vec::new(),
             mcp_servers: HashMap::new(),
             providers: HashMap::new(),
             default_provider: None,
@@ -1232,6 +1256,54 @@ pub fn unknown_settings_keys(layer: &serde_json::Value) -> Vec<String> {
         .filter(|key| key.as_str() != "$schema" && !KNOWN.contains(key))
         .cloned()
         .collect()
+}
+
+/// Merge `over` into `merged` — a settings object that deserializes — one
+/// value at a time, leaving out each value that would stop the result from
+/// deserializing. Returns the dotted keys left out, with why. An object
+/// whose values all fail is reported as itself rather than value by value.
+fn merge_fitting(merged: &mut serde_json::Value, over: serde_json::Value) -> Vec<(String, String)> {
+    let mut ignored = Vec::new();
+    merge_fitting_at(merged, &mut Vec::new(), over, &mut ignored);
+    ignored
+}
+
+fn merge_fitting_at(
+    merged: &mut serde_json::Value,
+    path: &mut Vec<String>,
+    over: serde_json::Value,
+    ignored: &mut Vec<(String, String)>,
+) -> bool {
+    use serde::Deserialize as _;
+    let nested = path
+        .iter()
+        .rev()
+        .fold(over.clone(), |inner, key| serde_json::json!({ key: inner }));
+    let mut candidate = merged.clone();
+    merge_json_values(&mut candidate, nested);
+    let error = match Settings::deserialize(&candidate) {
+        Ok(_) => {
+            *merged = candidate;
+            return true;
+        }
+        Err(e) => e.to_string(),
+    };
+    let serde_json::Value::Object(fields) = over else {
+        ignored.push((path.join("."), error));
+        return false;
+    };
+    let before = ignored.len();
+    let mut any_fit = false;
+    for (key, value) in fields {
+        path.push(key);
+        any_fit |= merge_fitting_at(merged, path, value, ignored);
+        path.pop();
+    }
+    if !any_fit {
+        ignored.truncate(before);
+        ignored.push((path.join("."), error));
+    }
+    any_fit
 }
 
 /// Recursively merge `over` into `base` in place: objects merge key-by-key
@@ -1975,6 +2047,58 @@ mod tests {
                     trusted: Vec::new(),
                 }
             );
+        }
+
+        #[test]
+        fn a_mistyped_value_is_dropped_alone_and_the_tiers_beneath_it_stand() {
+            for trust in ["trusted", "untrusted"] {
+                let tiers = Tiers::new();
+                write_settings(
+                    &tiers.global,
+                    &serde_json::json!({
+                        "project_trust": {"default": trust},
+                        "hooks_config": {"PreToolUse": [{"type": "command", "command": "audit"}]},
+                        "sandbox": {"network_mode": "deny_all", "require_enforcement": true},
+                        "permission_mode": "plan",
+                    })
+                    .to_string(),
+                );
+                tiers.project_writes(
+                    r#"{
+                        "language": 5,
+                        "sandbox": {"dangerously_disable_sandbox": "true", "deny_write": ["build/"]},
+                        "memory_enabled": false
+                    }"#,
+                );
+
+                let settings = tiers.load();
+
+                assert!(settings.hooks_config.is_some(), "{trust}");
+                assert_eq!(
+                    settings.sandbox.network_mode,
+                    crate::context::config::NetworkModeConfig::DenyAll,
+                    "{trust}"
+                );
+                assert!(settings.sandbox.require_enforcement, "{trust}");
+                assert!(!settings.sandbox.dangerously_disable_sandbox, "{trust}");
+                assert_eq!(settings.sandbox.deny_write, ["build/"], "{trust}");
+                assert_eq!(settings.permission_mode, PermissionMode::Plan, "{trust}");
+                assert!(!settings.memory_enabled, "{trust}");
+                assert_eq!(settings.language, None, "{trust}");
+                let ignored: Vec<(&str, &str)> = settings
+                    .ignored_values
+                    .iter()
+                    .map(|v| (v.tier, v.key.as_str()))
+                    .collect();
+                assert_eq!(
+                    ignored,
+                    [
+                        ("project", "language"),
+                        ("project", "sandbox.dangerously_disable_sandbox")
+                    ],
+                    "{trust}"
+                );
+            }
         }
 
         #[test]
