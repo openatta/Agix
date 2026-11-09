@@ -5646,7 +5646,13 @@ mod catalog_tests {
         }
     }
 
-    struct BlockingModel;
+    /// Blocks its thread for the whole call, and records how many calls were
+    /// in flight at once.
+    #[derive(Default)]
+    struct BlockingModel {
+        in_flight: std::sync::atomic::AtomicUsize,
+        peak: std::sync::atomic::AtomicUsize,
+    }
     #[async_trait]
     impl Model for BlockingModel {
         fn api_type(&self) -> base::provider::ApiType {
@@ -5661,20 +5667,27 @@ mod catalog_tests {
             _cancel: tokio_util::sync::CancellationToken,
         ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError>
         {
-            std::thread::sleep(std::time::Duration::from_millis(400));
+            use std::sync::atomic::Ordering::SeqCst;
+            let now = self.in_flight.fetch_add(1, SeqCst) + 1;
+            self.peak.fetch_max(now, SeqCst);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while self.peak.load(SeqCst) < 2 && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            self.in_flight.fetch_sub(1, SeqCst);
             Err(base::interface::model::ModelError::Internal("done".into()))
         }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn foreground_sub_agents_of_one_turn_run_on_separate_threads() {
-        let agent_tool = agent_tool_with_model(Arc::new(BlockingModel));
-        let start = std::time::Instant::now();
+        let model = Arc::new(BlockingModel::default());
+        let agent_tool = agent_tool_with_model(model.clone());
         let _ = futures::join!(run_sub_with(&agent_tool), run_sub_with(&agent_tool));
-        let elapsed = start.elapsed();
-        assert!(
-            elapsed < std::time::Duration::from_millis(750),
-            "two 400ms sub-agents took {elapsed:?}: they were polled one after the other"
+        assert_eq!(
+            model.peak.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "two sub-agents whose model calls block their thread were polled one after the other"
         );
     }
 

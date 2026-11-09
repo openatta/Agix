@@ -5480,6 +5480,11 @@ mod tests {
         assert!(result.is_ok());
         drop(ctx);
 
+        let decided = rx
+            .recv()
+            .await
+            .expect("permission_decision should have been recorded");
+        assert_eq!(decided.kind(), "permission_decision");
         let first = rx
             .recv()
             .await
@@ -5980,6 +5985,11 @@ mod tests {
             "the cancelled registration should have been cleaned up"
         );
 
+        let asked = telemetry_rx
+            .recv()
+            .await
+            .expect("permission_decision should have been recorded");
+        assert_eq!(asked.kind(), "permission_decision");
         let event = telemetry_rx
             .recv()
             .await
