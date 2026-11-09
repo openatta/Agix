@@ -3,7 +3,7 @@
 use serde::Serialize;
 
 /// Session 开始事件的载荷。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct SessionStartPayload {
     pub permission_mode: String,
     pub model: String,
@@ -20,7 +20,7 @@ pub struct SessionStartPayload {
 }
 
 /// Session 结束事件的载荷。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct SessionEndPayload {
     pub duration_ms: i64,
     pub total_turns: u32,
@@ -35,7 +35,7 @@ pub struct SessionEndPayload {
 }
 
 /// How long the daemon took to start, recorded once it is ready to serve.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct StartupTimingPayload {
     pub total_startup_ms: u64,
     /// Reading the command line, settings and scenes.
@@ -45,7 +45,7 @@ pub struct StartupTimingPayload {
 }
 
 /// 关闭 / 退出原因事件的载荷。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct ShutdownSignalPayload {
     pub reason: String,
     pub duration_ms: i64,

@@ -5,7 +5,7 @@ use serde::Serialize;
 use crate::RedactionPolicy;
 
 /// 工具开始执行事件的载荷（在 ToolExecution 之前发出）。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct ToolStartPayload {
     pub tool_name: String,
     pub tool_use_id: String,
@@ -15,7 +15,7 @@ pub struct ToolStartPayload {
 }
 
 /// 工具执行事件的载荷。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct ToolExecutionPayload {
     pub tool_name: String,
     pub tool_use_id: String,
@@ -31,7 +31,7 @@ pub struct ToolExecutionPayload {
 }
 
 /// 工具被取消事件的载荷。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct ToolCancelledPayload {
     pub tool_name: String,
     pub reason: String,
@@ -41,7 +41,7 @@ pub struct ToolCancelledPayload {
 /// What the session's permission check said about one tool call, before
 /// anyone was asked. Whether an asked call then ran is `tool_execution`'s
 /// `user_approved`.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct PermissionDecisionPayload {
     pub tool_name: String,
     pub outcome: PermissionDecisionOutcome,
@@ -50,7 +50,7 @@ pub struct PermissionDecisionPayload {
     pub latency_ms: u64,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolOutcome {
     Approved,
@@ -61,7 +61,7 @@ pub enum ToolOutcome {
     Cancelled,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionDecisionOutcome {
     AutoAllow,

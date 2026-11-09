@@ -152,7 +152,8 @@ monitors and structured output ([table below](#tools--45-built-in)).
   registrations.
 - Rust plugins compiled into the host, and QuickJS scripts, installable as
   packages with install-time disclosure.
-- Hooks at thirty moments, with command, prompt, HTTP and agent backends.
+- Hooks at thirty moments, with command, prompt, HTTP and agent backends
+  ([`docs/hooks.md`](docs/hooks.md)).
 - An MCP client (stdio, SSE, streamable HTTP, WebSocket), declarative scenes,
   and custom agent types.
 - MCP authorization (the 2025-11-25 spec, OAuth 2.1): discovery, dynamic
@@ -168,7 +169,8 @@ monitors and structured output ([table below](#tools--45-built-in)).
 **Records**
 - An append-only JSONL history that can be resumed, forked or rebuilt after
   a crash.
-- 22 telemetry event types, with OpenTelemetry export.
+- 22 telemetry event types, with OpenTelemetry export
+  ([`docs/telemetry.md`](docs/telemetry.md)).
 - A recorder for byte-exact offline replay.
 - Session export as a zip archive or a directory, sub-agents included.
 
@@ -606,6 +608,8 @@ works and how to run it: [`tests/README.md`](tests/README.md).
 |---|---|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | how the engine is put together — layers, modules, the turn, sessions and scenes, history, execution, concurrency, disk layout |
 | [docs/extension_points.md](docs/extension_points.md) | every seam: what you can replace, contribute to or intercept, what it costs, who may |
+| [docs/hooks.md](docs/hooks.md) | the hook protocol: configuration, the four backends, exit codes, timeouts, payloads, answers, and when each event fires |
+| [docs/telemetry.md](docs/telemetry.md) | the telemetry files, envelope and redaction, and every event type with its fields |
 | [docs/daemon_rpc_protocol.md](docs/daemon_rpc_protocol.md) | the JSON-RPC reference — methods, events, error codes, auth |
 | [docs/plugin_development.md](docs/plugin_development.md) | writing Rust and QuickJS plugins, with the examples in `examples/plugins/` |
 | [docs/extending_quickjs.md](docs/extending_quickjs.md) | writing script extensions |

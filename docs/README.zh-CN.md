@@ -108,7 +108,7 @@ MCP、询问、通知、监视、结构化输出(见下文[能力](#能力))。
 **扩展**
 - 公开的 45 个扩展点:30 个契约、9 个拦截点、6 个注册点。
 - 编译进宿主的 Rust 插件,与 QuickJS 脚本;可以打成插件包安装,安装时强制披露。
-- 三十个时机的 hook,后端有 command、prompt、HTTP、agent 四种。
+- 三十个时机的 hook,后端有 command、prompt、HTTP、agent 四种([hooks.md](hooks.md))。
 - MCP 客户端(stdio、SSE、streamable HTTP、WebSocket);声明式场景;自定义 Agent 类型。
 - MCP 授权(2025-11-25 规范,OAuth 2.1):发现、动态客户端注册、PKCE、刷新;登录由宿主经 RPC
   驱动,回调走回环或宿主自己的地址;无人值守的 server 用 client credentials 或企业托管授权;
@@ -118,7 +118,7 @@ MCP、询问、通知、监视、结构化输出(见下文[能力](#能力))。
 
 **记录**
 - 只追加的 JSONL 历史:可恢复、可分叉,崩溃后可重建。
-- 22 种遥测事件,可导出到 OpenTelemetry。
+- 22 种遥测事件,可导出到 OpenTelemetry([telemetry.md](telemetry.md))。
 - 录制器:不联网,逐字节回放。
 - 会话导出成 zip 或目录,子 Agent 一起带上。
 
@@ -507,6 +507,8 @@ cargo test  -p live --features real-model --test real_model  # LIVE 层,对真�
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 引擎怎么拼起来——分层、模块、一轮、会话与场景、历史、执行、并发、磁盘布局 |
 | [extension_points.md](extension_points.md) | 每个接缝:能换什么、能往哪里贡献、能拦截什么,代价与谁能用 |
+| [hooks.md](hooks.md) | hook 协议:配置、四种后端、退出码、超时、payload、回答,每个事件在何时触发 |
+| [telemetry.md](telemetry.md) | 遥测文件、信封与脱敏,每种事件与它的字段 |
 | [daemon_rpc_protocol.md](daemon_rpc_protocol.md) | JSON-RPC 参考——方法、事件、错误码、认证 |
 | [plugin_development.md](plugin_development.md) | 写 Rust 插件与 QuickJS 插件,样例在 `examples/plugins/` |
 | [extending_quickjs.md](extending_quickjs.md) | 写脚本扩展 |

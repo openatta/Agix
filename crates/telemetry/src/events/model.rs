@@ -13,7 +13,7 @@ use crate::RedactionPolicy;
 /// No time-to-first-token and no retry count: the first is measured where the
 /// stream is consumed, not where a call is accounted for, and retries happen
 /// inside the client, under the model contract.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct ApiRequestPayload {
     pub model: String,
     pub input_tokens: u64,
@@ -42,7 +42,7 @@ pub struct ApiRequestPayload {
 /// A model call that failed: the provider refused it, or its stream broke
 /// before the reply was complete. Emitted once per failed attempt, whether
 /// or not the turn then recovers.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct ApiErrorPayload {
     pub model: String,
     /// `api`, `auth`, `rate_limited`, `overloaded`, `network`, `internal`,
@@ -57,14 +57,14 @@ pub struct ApiErrorPayload {
 
 /// 会话 token 预算强制执行事件的载荷——`max_budget_tokens` 90% 提醒注入
 /// 或 100% 硬停两种动作都用这个 payload，用 `action` 区分。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct BudgetEnforcedPayload {
     pub action: BudgetEnforcedAction,
     pub total_tokens_used: u64,
     pub budget: u64,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BudgetEnforcedAction {
     /// 达到 90% 阈值，向对话注入"请收尾"提醒，轮次继续。

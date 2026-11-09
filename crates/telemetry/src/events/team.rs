@@ -3,7 +3,7 @@
 use serde::Serialize;
 
 /// A sub-agent started: one the `Agent` tool runs, or a team member.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct AgentSpawnedPayload {
     /// The sub-agent's label (`<type>#<id>`) or the team member's label.
     pub agent_id: String,
@@ -20,7 +20,7 @@ pub struct AgentSpawnedPayload {
 }
 
 /// A sub-agent finished.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct AgentCompletedPayload {
     pub agent_id: String,
     pub role: String,
@@ -29,7 +29,7 @@ pub struct AgentCompletedPayload {
 }
 
 /// Team 流水线阶段完成事件的载荷。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct TeamStageCompletePayload {
     pub stage_name: String,
     pub agent_count: usize,

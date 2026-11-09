@@ -10,6 +10,7 @@ mod extension_entries;
 mod extension_points_doc;
 mod home_is_never_discovered;
 mod hook_event_wiring;
+mod hook_events_doc;
 mod host_scenes;
 mod mcp_oauth;
 mod mcp_policy;

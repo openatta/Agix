@@ -7,6 +7,7 @@ use serde::Serialize;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+pub mod inventory;
 mod mcp;
 mod model;
 mod session;
@@ -49,10 +50,12 @@ pub struct TelemetryEvent {
     pub payload: EventPayload,
 }
 
-/// One line per event kind: the constructor, the variant, its payload. The
-/// constructor's name is the kind the event serializes to.
+/// One line per event kind: when it is emitted, the constructor, the
+/// variant, its payload, and which file records it. The constructor's name is
+/// the kind the event serializes to; the doc line is the "when" column of the
+/// inventory in `docs/telemetry.md`.
 macro_rules! event_kinds {
-    ($($(#[$doc:meta])* $kind:ident => $variant:ident($payload:ty);)*) => {
+    ($($(#[doc = $doc:literal])+ $kind:ident => $variant:ident($payload:ty) in $recorded:ident;)*) => {
         /// 事件体枚举 —— 每种变体序列化为 `type` discriminator + 字段。
         #[derive(Debug, Clone, Serialize)]
         #[serde(tag = "type", rename_all = "snake_case")]
@@ -72,11 +75,22 @@ macro_rules! event_kinds {
                     $(EventPayload::$variant(_) => stringify!($kind),)*
                 }
             }
+
+            /// Every kind with what the inventory says about it, in
+            /// declaration order.
+            pub fn inventory() -> Vec<inventory::KindInfo> {
+                vec![$(inventory::KindInfo {
+                    kind: stringify!($kind),
+                    when: concat!($($doc),+),
+                    recorded: inventory::Recorded::$recorded,
+                    schema: || schemars::schema_for!($payload),
+                },)*]
+            }
         }
 
         impl TelemetryEvent {
             $(
-                $(#[$doc])*
+                $(#[doc = $doc])+
                 pub fn $kind(
                     session_id: &str,
                     turn_no: u32,
@@ -91,53 +105,53 @@ macro_rules! event_kinds {
 }
 
 event_kinds! {
-    /// Session 开始。
-    session_start => SessionStart(SessionStartPayload);
-    /// Session 结束。
-    session_end => SessionEnd(SessionEndPayload);
-    /// daemon 启动完成，可以接请求了（记在池级遥测里）。
-    startup_timing => StartupTiming(StartupTimingPayload);
-    /// 一次模型调用完成。
-    api_request => ApiRequest(ApiRequestPayload);
-    /// 一次模型调用失败。
-    api_error => ApiError(ApiErrorPayload);
-    /// 工具开始执行。
-    tool_start => ToolStart(ToolStartPayload);
-    /// 工具执行完成（含 outcome）。
-    tool_execution => ToolExecution(ToolExecutionPayload);
-    /// 工具被取消。
-    tool_cancelled => ToolCancelled(ToolCancelledPayload);
-    /// 会话的权限检查对一次工具调用的判定。
-    permission_decision => PermissionDecision(PermissionDecisionPayload);
-    /// 一轮开始时用户送来的消息（只记大小）。
-    user_prompt_submit => UserPromptSubmit(UserPromptSubmitPayload);
-    /// 一轮的消息是斜杠命令。
-    slash_command_used => SlashCommandUsed(SlashCommandUsedPayload);
-    /// 单轮开始。
-    turn_start => TurnStart(TurnStartPayload);
-    /// 单轮完成。
-    turn_complete => TurnComplete(TurnCompletePayload);
-    /// Token 预算强制执行。
-    budget_enforced => BudgetEnforced(BudgetEnforcedPayload);
-    /// 压缩行为。
-    compact_action => CompactAction(CompactActionPayload);
-    /// Resume / replay 结果。
-    resume_action => ResumeAction(ResumeActionPayload);
-    /// 会话退出。
-    shutdown_signal => ShutdownSignal(ShutdownSignalPayload);
-    /// MCP 服务器连上（记在池级遥测里）。
-    mcp_server_connected => McpServerConnected(McpServerConnectedPayload);
-    /// MCP 服务器没连上（记在池级遥测里）。
-    mcp_connection_error => McpConnectionError(McpConnectionErrorPayload);
-    /// 子 Agent 启动。
-    agent_spawned => AgentSpawned(AgentSpawnedPayload);
-    /// 子 Agent 结束。
-    agent_completed => AgentCompleted(AgentCompletedPayload);
-    /// Team 流水线阶段完成。
-    team_stage_complete => TeamStageComplete(TeamStageCompletePayload);
+    /// daemon 建好一个会话之后、它的第一轮之前;新建与按 id 重建都算。
+    session_start => SessionStart(SessionStartPayload) in Session;
+    /// 会话的主循环退出(关闭、输入通道关闭、被取消);合计是这次载入以来的。
+    session_end => SessionEnd(SessionEndPayload) in Session;
+    /// daemon 启动完成、开始接请求时,一次。
+    startup_timing => StartupTiming(StartupTimingPayload) in Pool;
+    /// 每次模型调用完成。一轮里的调用不带 `purpose`;辅助调用带:`compact`、`memory`、`title`、`hook`、`team_judge`、`web_search`、`web_fetch`。
+    api_request => ApiRequest(ApiRequestPayload) in Session;
+    /// 一轮里的一次模型调用失败:请求被拒,或流在回复完整之前断了。每次失败的尝试一条,不论这一轮后来恢复没有;取消不算。
+    api_error => ApiError(ApiErrorPayload) in Session;
+    /// 工具开始执行:PreToolUse hook、输入校验、权限都放行之后。
+    tool_start => ToolStart(ToolStartPayload) in Session;
+    /// 工具执行结束,成功或失败;工具自己报告的失败(如 Bash 非零退出)算失败。
+    tool_execution => ToolExecution(ToolExecutionPayload) in Session;
+    /// 一次工具调用在等权限回答时会话被关闭。
+    tool_cancelled => ToolCancelled(ToolCancelledPayload) in Session;
+    /// 会话的权限检查对一次工具调用作出判定,在询问任何人之前。
+    permission_decision => PermissionDecision(PermissionDecisionPayload) in Session;
+    /// 一轮开始,紧接 `turn_start`:开这一轮的用户消息,只记大小。
+    user_prompt_submit => UserPromptSubmit(UserPromptSubmitPayload) in Session;
+    /// 开一轮的消息是斜杠命令。
+    slash_command_used => SlashCommandUsed(SlashCommandUsedPayload) in Session;
+    /// 一轮开始,UserPromptSubmit hook 放行之后。
+    turn_start => TurnStart(TurnStartPayload) in Session;
+    /// 一轮结束,`stop_reason` 说怎么结束的。
+    turn_complete => TurnComplete(TurnCompletePayload) in Session;
+    /// 会话 token 预算到 90% 注入收尾提醒,或到 100% 中止这一轮。
+    budget_enforced => BudgetEnforced(BudgetEnforcedPayload) in Session;
+    /// 一次压缩完成或失败。
+    compact_action => CompactAction(CompactActionPayload) in Session;
+    /// 会话从日志重建(会话文件);恢复请求落到已在内存里、找不到、已结束的侧链会话上(池文件);团队从 scratchpad 接上(会话文件)。
+    resume_action => ResumeAction(ResumeActionPayload) in Both;
+    /// 会话的主循环退出,紧接 `session_end`。
+    shutdown_signal => ShutdownSignal(ShutdownSignalPayload) in Session;
+    /// 一个 MCP server 连上:启动时、重载时、新增时。
+    mcp_server_connected => McpServerConnected(McpServerConnectedPayload) in Pool;
+    /// 一个要连的 MCP server 没连上:起不来、握手失败或超时、配置被拒。
+    mcp_connection_error => McpConnectionError(McpConnectionErrorPayload) in Pool;
+    /// 子 Agent 开始:`Agent` 工具起的(前台、后台)、常驻团队成员、`TeamCreate` 流水线的成员。
+    agent_spawned => AgentSpawned(AgentSpawnedPayload) in Session;
+    /// 子 Agent 结束;常驻团队成员在被停下时。
+    agent_completed => AgentCompleted(AgentCompletedPayload) in Session;
+    /// `TeamCreate` 流水线的一个阶段跑完。
+    team_stage_complete => TeamStageComplete(TeamStageCompletePayload) in Session;
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ResumeOutcome {
     Succeeded,
@@ -147,14 +161,14 @@ pub enum ResumeOutcome {
 }
 
 /// 单轮开始事件的载荷。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct TurnStartPayload {
     pub resumed: bool,
     pub is_retry: bool,
 }
 
 /// 单轮完成事件的载荷。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct TurnCompletePayload {
     pub stop_reason: String,
     pub api_calls: u32,
@@ -166,7 +180,7 @@ pub struct TurnCompletePayload {
 }
 
 /// 压缩行为事件的载荷。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct CompactActionPayload {
     pub strategy: String,
     pub before_tokens: u64,
@@ -178,7 +192,7 @@ pub struct CompactActionPayload {
 }
 
 /// Resume / replay 结果。Payload 只记录结构化类别和计数，不包含 transcript 内容。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct ResumeActionPayload {
     pub outcome: ResumeOutcome,
     pub source: String,
@@ -192,14 +206,14 @@ pub struct ResumeActionPayload {
 }
 
 /// The message a user turn opens with — its size, never its text.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct UserPromptSubmitPayload {
     pub char_count: u32,
     pub attachment_count: u32,
 }
 
 /// A turn whose message is a slash command.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct SlashCommandUsedPayload {
     /// The command's name, without the leading `/`.
     pub command: String,

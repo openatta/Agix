@@ -5,7 +5,7 @@ use serde::Serialize;
 use crate::RedactionPolicy;
 
 /// An MCP server connected: at startup, on a reload, or when one is added.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct McpServerConnectedPayload {
     pub server_name: String,
     pub transport: String,
@@ -14,7 +14,7 @@ pub struct McpServerConnectedPayload {
 
 /// An MCP server that was to be connected was not: it would not start, the
 /// handshake failed or timed out, its configuration was rejected.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct McpConnectionErrorPayload {
     pub server_name: String,
     pub error_message: String,

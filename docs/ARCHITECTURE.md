@@ -959,3 +959,6 @@ cargo build -p daemon --no-default-features --features full    # 两者皆无
 
 怎么写脚本见 `extending_quickjs.md`;插件包的格式见 `plugin_packages.md`;两种插件的开发
 指南与样例见 `plugin_development.md`。
+
+hook 的协议与三十个事件见 [`hooks.md`](hooks.md);遥测的文件、信封与事件清单见
+[`telemetry.md`](telemetry.md)。
