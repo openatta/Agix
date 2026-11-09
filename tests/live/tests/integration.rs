@@ -14,5 +14,6 @@ mod host_agents;
 mod mcp_boundaries;
 mod minimal_tier;
 mod permission_bounds;
+mod session_boundaries;
 mod session_prompt;
 mod turn_throughput;

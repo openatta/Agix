@@ -5,15 +5,21 @@
 
 mod live_agents;
 mod live_basics;
+mod live_commands;
 mod live_context;
 mod live_extensions;
 mod live_hooks;
 mod live_host;
 mod live_mcp;
+mod live_memory;
 mod live_multi_agent;
 mod live_permissions;
 mod live_plugins;
 mod live_programs;
+mod live_providers;
+mod live_scenes;
+mod live_sessions;
 mod live_team;
+mod live_transport;
 mod live_unattended;
 mod live_web;

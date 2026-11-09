@@ -29,6 +29,8 @@ reqwest     = { workspace = true }
 # of "walk a directory into an archive and hash it".
 test-runner = { path = "../runner" }
 demo-rust-plugin = { workspace = true }
+# For reading what `session.export` wrote.
+zip = { workspace = true }
 
 [features]
 # The live tier: cases that talk to a real model, with the credentials in the
