@@ -79,8 +79,7 @@ impl Drop for DaemonLockGuard {
 ///
 /// The claim is the `flock`: one held by another process refuses it. A lock
 /// taken, the recorded holder is checked too, since a daemon from before the
-/// file was locked never took one (docs/ARCHITECTURE.md §7 — the same
-/// staleness rules as the team-directory lock):
+/// file was locked never took one (docs/ARCHITECTURE.md §7):
 /// ```text
 /// flock 被别的进程持有              → 拒绝，AnotherDaemonRunning
 /// 拿到 flock，文件里记录的
@@ -326,8 +325,7 @@ pub struct InstanceFile {
     pub started_at: String,
 }
 
-/// Atomically write `<dir>/<instance>.json` (tmp + rename, `0600` on Unix —
-/// same pattern as [`write_lock_file`]).
+/// Atomically write `<dir>/<instance>.json` (tmp + rename, `0600` on Unix).
 pub fn write_instance_file(dir: &Path, instance: &str, file: &InstanceFile) -> io::Result<()> {
     fs::create_dir_all(dir)?;
     let path = dir.join(format!("{instance}.json"));

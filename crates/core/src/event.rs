@@ -26,7 +26,7 @@ pub struct QueuedUserMessage {
 
 /// Events emitted by the Engine during a turn.
 ///
-/// The upper layer (CLI/TUI/daemon/Jiandu desktop) consumes these
+/// The upper layer (a CLI, a TUI, the daemon, a desktop host) consumes these
 /// via `EventReceiver` and renders/dispatches as appropriate.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]

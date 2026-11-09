@@ -1,8 +1,7 @@
-//! Integration tests for daemon — RPC envelope + session manager
-//! exercised via the public API. Pure data tests; no real socket needed.
+//! The JSON-RPC envelope through the public API. Pure data tests; no real
+//! socket needed.
 
 use daemon::rpc::{codes, RpcRequest, RpcResponse};
-use daemon::session_manager::SessionManager;
 use serde_json::json;
 
 #[test]
@@ -54,25 +53,4 @@ fn rpc_error_code_constants_match_jsonrpc_spec() {
     assert_eq!(codes::METHOD_NOT_FOUND, -32601);
     assert_eq!(codes::INVALID_PARAMS, -32602);
     assert_eq!(codes::INTERNAL_ERROR, -32603);
-}
-
-#[test]
-fn session_manager_new_starts_empty() {
-    let mgr = SessionManager::new(8);
-    assert_eq!(mgr.count(), 0);
-    assert!(mgr.get("never-existed").is_none());
-}
-
-#[test]
-fn session_manager_create_then_get() {
-    let mut mgr = SessionManager::new(8);
-    mgr.create("sess-1");
-    assert!(mgr.get("sess-1").is_some());
-    assert_eq!(mgr.count(), 1);
-}
-
-#[test]
-fn session_manager_get_nonexistent_returns_none() {
-    let mgr = SessionManager::new(8);
-    assert!(mgr.get("ghost").is_none());
 }

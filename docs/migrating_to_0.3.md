@@ -997,3 +997,6 @@ WebAssembly 载体整个移除。
   `base::interface::agent_spawner::TeamSeat { team, member }`);自己实现这个方法的要加上。
 - `agents::agent_tool::AgentTool` 起的子 Agent 用 `set_hooks` 给的那个 runner(经
   `Builder::hooks`),不再从 settings 另建。
+- 删除没有调用方的 `base::rpc`、`base::log`(`base::interface::log`:`Logger`、`NoopLogger`、
+  `LogRouter` 与 `log_*!` 宏)、`tools::aliases`(`BriefTool`、`PowerShellTool`、`ReplTool`)
+  与 `assembly::session_manager`(`daemon::session_manager`)。日志用 `tracing`。

@@ -7,8 +7,8 @@ pub use assembly::telemetry_otel;
 #[cfg(feature = "ws")]
 pub use assembly::ws;
 pub use assembly::{
-    assemble, config, discovery, doctor, model_router, plugins, rpc, server, session_manager,
-    session_pool, watch_hub,
+    assemble, config, discovery, doctor, model_router, plugins, rpc, server, session_pool,
+    watch_hub,
 };
 
 pub use assembly::{

@@ -20,7 +20,6 @@ pub mod modules;
 pub mod plugins;
 pub mod rpc;
 pub mod server;
-pub mod session_manager;
 pub mod session_pool;
 #[cfg(feature = "otel")]
 pub mod telemetry_otel;

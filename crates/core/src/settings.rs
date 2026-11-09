@@ -41,8 +41,10 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scripts: Vec<ScriptBinding>,
 
-    /// Path to an instruction file (e.g. AGENTS.md, CLAUDE.md).
-    /// The AGENT reads the file at its discretion (every turn, on change, etc.).
+    /// One more instruction file (e.g. a `CLAUDE.md` outside the project),
+    /// read when the session is built and given to the model alongside the
+    /// discovered `AGENTS.md` files. A root session with a `FileChanged`
+    /// hook watches it.
     #[serde(default)]
     pub instruction_file: Option<PathBuf>,
 
@@ -56,16 +58,21 @@ pub struct Settings {
     /// LLM interaction recording. None = pass-through.
     #[serde(default)]
     pub recorder: Option<RecorderConfig>,
-    /// Telemetry endpoint URL. None = noop.
+    /// OTLP endpoint telemetry events are exported to. Unset, the
+    /// `OTEL_EXPORTER_OTLP_ENDPOINT` environment variable is used; neither
+    /// means no export. Only a build with the `otel` feature exports — any
+    /// other logs a warning when this is set.
     #[serde(default)]
     pub telemetry_url: Option<String>,
-    /// Session persistence directory. None = no persistence.
-    /// Default: `Some(user_data_dir/sessions/)`.
+    /// Not read. Transcripts always go under the state directory
+    /// (`paths.local_data_dir`); the field is kept so existing settings files
+    /// and struct literals still compile.
     #[serde(default)]
     pub session_dir: Option<PathBuf>,
 
-    /// Enable the file-based memory system (MEMORY.md + .md files).
-    /// Default: true. Set to false to disable memory prompt injection and file-based memory.
+    /// The file-based memory system (`MEMORY.md` + one `.md` per memory).
+    /// Default `true`. `false` drops the memory prompt, the memory index in
+    /// each turn's reminder, and recall.
     #[serde(default = "default_memory_enabled")]
     pub memory_enabled: bool,
 
@@ -73,8 +80,8 @@ pub struct Settings {
     /// and fenced ` ```! ` blocks in `SKILL.md` bodies). Default: false
     /// (enabled). When true, each such placeholder is replaced with
     /// `[shell command execution disabled by policy]` instead of running.
-    /// Most useful set in managed/org-wide settings where individual users
-    /// can't override it.
+    /// Like every setting, a higher tier can set it back: there is no tier
+    /// users cannot override.
     #[serde(default)]
     pub disable_skill_shell_execution: bool,
 
@@ -130,12 +137,20 @@ pub struct Settings {
     #[serde(default = "default_true")]
     pub telemetry_enabled: bool,
 
-    /// Hooks configuration (merged from global/scene/project layers).
+    /// Lifecycle hooks: an object from event name (`PreToolUse`,
+    /// `SessionStart`, … — `hooks::HookEvent`) to a list of hooks, each with
+    /// a `type` of `command`, `prompt`, `http` or `agent`. Tiers merge per
+    /// event: a tier that lists an event replaces the lower tiers' list for
+    /// it. An unknown event name is skipped with a warning; the rest still
+    /// apply. Format: `docs/extension_points.md`, "生命周期 hook".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hooks_config: Option<serde_json::Value>,
 
     /// MCP server configurations, keyed by server name (merged from
-    /// global/scene/project layers). Kept untyped (`serde_json::Value`
+    /// global/scene/project layers). `$VAR` / `${VAR}` / `${VAR:-default}`
+    /// are expanded in a server's `command`, `args`, `env`, `url` and
+    /// `headers` when it connects — the only place in settings that expands
+    /// anything. Kept untyped (`serde_json::Value`
     /// rather than `mcp::config::McpServerConfig`) — `core` cannot depend on
     /// `mcp` (which already depends on `core`, for `base::paths::ConfigPaths`)
     /// without a circular dependency; downstream consumers deserialize each
@@ -404,8 +419,8 @@ pub struct ExecutionSettings {
     #[serde(default = "default_team_stage_concurrency")]
     pub team_stage_concurrency: usize,
     /// Gates whether `TeamCreate`/`TeamList`/`TeamDelete` are registered at
-    /// all for a session (`agents::AgentsModule::on_session`, and only when
-    /// the scene supports teams). Default `false`: most
+    /// all for a session (`agents::AgentsModule`), and only in a scene whose
+    /// `Scene::supports_team` is true. Default `false`: most
     /// deployments never use multi-agent team coordination, and an
     /// always-registered tool means its `tool.prompt.md` "When to Use"
     /// section is always in the system prompt and its `team`/`name` input

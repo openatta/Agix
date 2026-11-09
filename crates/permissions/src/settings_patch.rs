@@ -1,4 +1,4 @@
-//! **S1-f **: append a permission rule to a settings.json /
+//! Append a permission rule to a settings.json /
 //! settings.local.json file atomically, preserving unknown fields. Used by
 //! the interactive ask dialog's "always allow" shortcut.
 //!

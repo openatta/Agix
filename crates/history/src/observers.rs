@@ -1,10 +1,10 @@
 //! Observers that ship with the engine.
 //!
-//! [`AppendObserver`] is a seam a host fills, and until now only tests filled
-//! it. What a host asks about a running session first is how much is in it,
-//! and the only way to answer that was to read the log back and parse it —
-//! per question, per session, on the same thread that is trying to serve the
-//! next turn. The numbers are a by-product of writes that already happened.
+//! [`AppendObserver`] is a seam a host fills. What a host asks about a
+//! running session first is how much is in it, and reading the log back to
+//! answer would parse it per question, per session, on the same thread that
+//! is trying to serve the next turn. The numbers here are a by-product of
+//! writes that already happened.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};

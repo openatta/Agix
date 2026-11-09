@@ -1,6 +1,5 @@
 //! Built-in tool implementations — all concrete tools the agent can invoke.
 
-pub mod aliases;
 pub mod ask_user;
 pub mod bash;
 pub mod cancel;

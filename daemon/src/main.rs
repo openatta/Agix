@@ -325,9 +325,6 @@ async fn serve(cli: Cli) -> anyhow::Result<()> {
     )?;
     let scope = scene.id().to_string();
 
-    // `load_daemon_config` delegates all settings.json parsing/merging to
-    // `Settings::load()` — the single canonical loader (global → scene →
-    // project).
     let paths = DefaultDaemonPaths::from_env(&scope);
     let mut daemon_config = load_daemon_config(
         &cli.model,
@@ -351,7 +348,6 @@ async fn serve(cli: Cli) -> anyhow::Result<()> {
         env!("CARGO_PKG_VERSION"),
     );
 
-    // TCP listener config
     if let Some(ref addr_str) = cli.listen {
         let addr: std::net::SocketAddr = addr_str
             .parse()
@@ -520,7 +516,6 @@ async fn serve(cli: Cli) -> anyhow::Result<()> {
         });
     }
 
-    // 启动后台回收
     pool.start_janitor();
 
     let _pool_ready_ms = perf.checkpoint("pool_ready");

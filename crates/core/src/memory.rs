@@ -387,10 +387,8 @@ impl MemoryStore {
     ///
     /// Compaction never *moves* a memory: each victim is deleted from the
     /// directory it was loaded from, and only the directories that actually
-    /// changed get their index rebuilt. The previous implementation wiped the
-    /// `.md` files out of both directories and rewrote the survivors into
-    /// `user_dir`, which emptied the project-local directory and relocated its
-    /// contents to global on the first compaction.
+    /// changed get their index rebuilt. Rewriting the survivors into one
+    /// directory would move project memories into the user's.
     pub fn compact(&self, max_entries: usize) -> Result<usize, MemoryError> {
         let mut all = self.load_all_with_home();
         // Drop low-confidence memories, then truncate by count.

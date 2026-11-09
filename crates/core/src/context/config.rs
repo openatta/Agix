@@ -67,7 +67,8 @@ pub struct EngineConfig {
     pub thinking_mode: ThinkingModeConfig,
 
     pub permission_mode: PermissionMode,
-    /// 是否禁用 BashTool 沙盒（才有效；占位）
+    /// Mirrors `Settings.sandbox.dangerously_disable_sandbox`: commands run
+    /// outside the OS sandbox.
     pub dangerously_disable_sandbox: bool,
     /// Bash sandbox extended policy. Default:
     /// `default_deny_read` baked-in (~/.ssh, ~/.aws, etc), network unrestricted.
@@ -75,12 +76,8 @@ pub struct EngineConfig {
     /// overrides any field. Tool layer (`agix-tools::bash::sandbox`) reads
     /// these fields to build its platform-specific profile.
     pub sandbox_policy: SandboxPolicyConfig,
-    /// Mirrors `Settings.disable_skill_shell_execution` — read by
-    /// `SkillTool`'s dynamic-content-injection step via `ToolContext.config`.
-    /// Unlike `dangerously_disable_sandbox` above, this one *is* correctly
-    /// threaded from `Settings` at the one place `EngineConfig` gets built
-    /// from real settings (`agent.rs`'s `agent_engine_config` block) — not
-    /// left at its `defaults_for()` default everywhere.
+    /// Mirrors `Settings.disable_skill_shell_execution` — read by the skill
+    /// expansion's `` !`cmd` `` step via `ToolContext.config`.
     pub disable_skill_shell_execution: bool,
     /// Mirrors `Settings.sandbox.subprocess_env`.
     pub subprocess_env: crate::interface::exec::local::SubprocessEnv,
@@ -190,10 +187,7 @@ pub enum ThinkingModeConfig {
 #[derive(Debug, Clone, Default)]
 pub struct SandboxPolicyConfig {
     pub allow_read: Vec<PathBuf>,
-    /// Empty = use built-in defaults. Non-empty = use this list verbatim
-    /// (caller can disable defaults entirely by passing `[PathBuf::from("")]`
-    /// — actually no, we use Option semantics: None means "use defaults",
-    /// Some(vec) means "use exactly this").
+    /// `None` = the built-in defaults; `Some(list)` = exactly this list.
     pub deny_read: Option<Vec<PathBuf>>,
     pub network_mode: NetworkModeConfig,
     pub allowed_domains: Vec<String>,
@@ -339,13 +333,6 @@ impl EngineConfig {
         c.team_member_idle_timeout_secs = settings.execution.team_member_idle_timeout_secs;
         c.max_agent_depth = settings.execution.max_agent_depth;
 
-        // `Settings.permission_mode` (`interface::settings::PermissionMode`,
-        // serde/JSON-schema-facing) and `EngineConfig.permission_mode`
-        // (`permission::PermissionMode`, what `PermissionGate` actually
-        // dispatches on) are two distinct types with identical variant sets
-        // — a pre-existing split, not something to unify here. Conversion
-        // lives on `permission::PermissionMode` (`impl From<...>`) so other
-        // call sites (e.g. daemon's per-session `RuleSetPermission`) share it.
         c.permission_mode = settings.permission_mode.into();
         c.dangerously_disable_sandbox = settings.sandbox.dangerously_disable_sandbox;
         // `Settings.sandbox.deny_read` is a plain `Vec`, empty when the user

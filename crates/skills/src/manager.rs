@@ -17,13 +17,10 @@ pub struct SkillInfo {
     pub name: String,
     pub description: String,
     /// Additional trigger context appended to `description` in the model-
-    /// facing listing (e.g. example phrasings) — was parsed into
-    /// `SkillEntry` but never carried through to this runtime-facing struct
-    /// until the listing actually needed it.
+    /// facing listing (e.g. example phrasings).
     pub when_to_use: Option<String>,
     pub source: SkillSource,
     pub path: PathBuf,
-    // -- Extended fields --
     /// Restrict tools this skill can invoke (whitelist of tool names)
     pub allowed_tools: Option<Vec<String>>,
     /// Tools removed from the pool while this skill is active (denylist)

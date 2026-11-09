@@ -271,9 +271,8 @@ impl Tool for FileEditTool {
         .await??;
         ctx.session.record_write(&path);
 
-        // **S1-a **: emit structured diff payload alongside text. TUI
-        // parses `structured_content.kind == "diff"` and renders inline; CLI
-        // / headless ignores and shows text. is_error stays false.
+        // A TUI renders `structured_content` (`kind == "diff"`) inline; the
+        // model and headless hosts read the text.
         let structured = serde_json::to_value(&outcome.diff).ok();
         let mut result = ToolResult::text(outcome.summary);
         result.structured_content = structured;
@@ -281,8 +280,8 @@ impl Tool for FileEditTool {
     }
 }
 
-/// **S1-a **: structured diff payload — TUI deserializes from
-/// `ToolResult.structured_content` to render inline. Wire-format-stable.
+/// The diff as data, in `ToolResult.structured_content`, for a host that
+/// renders it inline. Wire-format-stable.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DiffPayload {
     pub kind: String, // always "diff"
@@ -407,8 +406,8 @@ async fn perform_edits_structured(
     })
 }
 
-/// **S1-a **: generate both unified-text (for headless / model) AND
-/// structured payload (for TUI inline render). One pass — same hunks.
+/// Unified text for the model and the structured payload for a host, from
+/// one pass over the same hunks.
 /// Max 100 changed lines; overflow → truncated=true on the structured side
 /// + `[diff truncated]` marker on the text side.
 fn render_diff(before: &str, after: &str, path: &str) -> (String, DiffPayload) {

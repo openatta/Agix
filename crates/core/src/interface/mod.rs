@@ -37,7 +37,6 @@
 //! | [`permission::Permission`] | tool authorization |
 //! | [`agent_spawner::AgentSpawner`] | how sub-agents are launched |
 //! | [`import_callback::ImportCallback`] | the host's answer to an import prompt |
-//! | [`log::Logger`] | log routing |
 //! | [`event_sink::EventSink`] | where the engine's events go |
 //! | [`health::HealthCheck`] | whether a subsystem is working |
 //! | [`elicitation::Elicitation`] | how the engine asks a person something |
@@ -76,7 +75,6 @@ pub mod health;
 pub use crate::event;
 pub mod import_callback;
 pub mod instruction_provider;
-pub mod log;
 #[deprecated(note = "moved to `base::memory` — a concrete store, not an injectable contract")]
 pub use crate::memory;
 pub mod budget_policy;
@@ -122,8 +120,5 @@ mod old_paths_still_resolve {
     use crate::interface::prompt::PromptBlock;
     use crate::interface::rules::RuleEntry;
     use crate::interface::settings::Settings;
-    // `tool` and `log` moved *into* this directory; their pre-move paths were
-    // at the crate root and are re-exported from `lib.rs`.
-    use crate::log::Logger;
     use crate::tool::{Tool, ToolRegistry};
 }

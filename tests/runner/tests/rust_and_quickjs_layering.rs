@@ -144,8 +144,8 @@ async fn a_local_script_takes_a_block_name_a_rust_plugin_also_registers() {
     }
 }
 
-/// A host that brings its own registry used to replace the one the scripts
-/// registered into, and every script contribution vanished without a word.
+/// A host that brings its own registry adds to the one the scripts registered
+/// into; replacing it would drop every script contribution without a word.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_host_registry_keeps_the_scripts_contributions() {
     for order in ORDERS {

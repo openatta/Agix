@@ -1,21 +1,13 @@
 //! Building a running engine out of a configuration.
 //!
 //! The order these pieces go together in, and what they default to, is the
-//! engine's knowledge rather than its embedder's. Before this module every
-//! host had to know it: read the settings, resolve the provider routing,
-//! build the credentials and the client, place the history roots, migrate an
-//! old layout, hand eleven positional arguments to [`SessionPool::new`] in
-//! the right order, then remember the three startup steps a session silently
-//! misses without — plugin components, MCP connection, the janitor.
-//!
-//! That knowledge was copied. `main.rs` had it, the test harness had it
-//! ("`SessionPool::new` the way `main.rs` does", it said), and every
-//! daemon-level test file had a shortened version of its own. A copy is not
-//! merely duplication here: when the assembly changes, nothing tells the
-//! copies. There is no compile error for a step nobody performs.
-//!
-//! So this is the one place that knows. `main.rs` is a command line and a set
-//! of listeners on top of it, and a host embedding the daemon hands over a
+//! engine's knowledge rather than its embedder's: read the settings, resolve
+//! the provider routing, build the credentials and the client, place the
+//! history roots, migrate an old layout, build the [`SessionPool`], then run
+//! the startup steps a session silently misses without — plugin components,
+//! MCP connection, the janitor. A step nobody performs is no compile error, so
+//! this is the one place that knows: `main.rs` is a command line and a set of
+//! listeners on top of it, and a host embedding the daemon hands over a
 //! [`DaemonConfig`] and gets back an engine.
 //!
 //! What stays out: anything with a process to itself. Discovery locks,

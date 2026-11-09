@@ -811,13 +811,9 @@ const FILE_READ_TOOLS: &[&str] = &["Read"];
 /// Returns (path, content) pairs for file-read tool results found in the messages.
 ///
 /// Pairs `ToolUse` → `ToolResult` by `tool_use_id`, taking the path from the
-/// tool *input* (`file_path`) rather than guessing it from the result body.
-///
-/// The previous implementation sniffed content: it treated a tool result as a
-/// file read if its first line started with `/` or `./`. The Read tool emits
-/// `cat -n` style output (`format_with_line_numbers`: `"{:>6}\t{}\n"`), so every
-/// line starts with padding spaces and a line number and the check matched
-/// **zero** results, always — post-compact file recovery had never once fired.
+/// tool *input* (`file_path`) rather than guessing it from the result body:
+/// the body is `cat -n` style (`"{:>6}\t{}\n"`), so it carries no path to
+/// sniff.
 pub fn extract_recent_reads(messages: &[ModelMessage]) -> Vec<(String, String)> {
     // Pass 1: tool_use_id → file_path, for file-read tool uses only.
     let mut read_calls: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();

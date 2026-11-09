@@ -103,8 +103,8 @@ impl StdioMcpClient {
 
     /// Connect, forwarding this server's notifications to `sink`.
     ///
-    /// `None` reproduces the pre-existing behavior exactly: the handler is
-    /// still real, it simply has nowhere to report to.
+    /// With `None` the handler is still real, it simply has nowhere to report
+    /// to.
     pub async fn connect_with_sink(
         server_name: &str,
         config: &McpServerConfig,

@@ -22,7 +22,7 @@ pub struct PromptRequest {
     pub options: Vec<PromptOption>,
     /// 工具入参的简短摘要（用于在对话框头部回显）
     pub tool_input_summary: Option<String>,
-    /// **S1-f **: canonical content string for rule generation, from
+    /// Canonical content string for rule generation, from
     /// `Tool::permission_match_content`. Used by "always allow" / "always deny"
     /// shortcuts to build a rule like `<tool>(<content>)` without re-parsing
     /// `tool_input_summary`. None when the tool didn't expose a match content

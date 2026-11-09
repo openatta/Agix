@@ -22,9 +22,7 @@ pub enum PermissionMode {
 /// `interface::settings::PermissionMode` (serde/JSON-schema-facing, what
 /// `Settings`/RPC params deserialize into) and this `PermissionMode`
 /// (what `PermissionGate` actually dispatches on) are two distinct types
-/// with identical variant sets — a pre-existing split (see
-/// `context::config::EngineConfig::from_settings`, the first place this
-/// conversion was needed). Shared here instead of duplicated per call site.
+/// with identical variant sets.
 impl From<crate::settings::PermissionMode> for PermissionMode {
     fn from(m: crate::settings::PermissionMode) -> Self {
         match m {

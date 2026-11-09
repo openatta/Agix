@@ -15,12 +15,11 @@
 //! * [`ExtractionPolicy`] — what the model is told about writing memories
 //!   down, which is the whole of the current extraction strategy.
 //!
-//! # The default is the old behavior, exactly
+//! # The defaults
 //!
-//! `MemoryStore` implements the storage trait over the same directories, and
-//! the shipped retriever is the same LLM selection call. A session that
-//! registers nothing behaves as it did, which is what makes this safe to land
-//! before anything uses it.
+//! `MemoryStore` implements the storage trait over the session's memory
+//! directories, and the shipped retriever is an LLM selection call. A session
+//! that registers nothing gets those two.
 
 use std::collections::HashSet;
 

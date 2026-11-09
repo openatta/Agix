@@ -127,8 +127,6 @@ mod tests {
         }
     }
 
-    // -- match_tool_name --
-
     #[test]
     fn match_tool_name_exact() {
         assert!(match_tool_name("Bash", "Bash"));
@@ -142,8 +140,6 @@ mod tests {
         assert!(!match_tool_name("mcp__github", "Bash"));
         assert!(!match_tool_name("mcp__github", "mcp__slack"));
     }
-
-    // -- match_content --
 
     #[test]
     fn match_content_prefix_wildcard() {
@@ -164,8 +160,6 @@ mod tests {
         assert!(match_content("ls", "ls"));
         assert!(!match_content("ls", "ls -la"));
     }
-
-    // -- if_matches --
 
     #[test]
     fn if_matches_tool_name_only() {

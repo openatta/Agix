@@ -22,9 +22,8 @@ pub enum PermissionOutcome {
 
 /// Tool execution permission interface.
 ///
-/// Implementations decide whether a tool call is allowed.
-/// Agix uses `RuleSetPermission` (Allow/Deny/Ask + RuleSet engine).
-/// Jiandu uses `CwdPermission` (cwd boundary + callback hook).
+/// Implementations decide whether a tool call is allowed. The engine's own is
+/// `permissions::gate::PermissionGate` (rules, modes, the host's answers).
 #[async_trait]
 pub trait Permission: Send + Sync {
     /// Check whether a tool call is permitted.

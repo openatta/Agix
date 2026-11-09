@@ -1124,7 +1124,7 @@ mod tests {
     /// End-to-end: after a real compaction event, resuming the session from
     /// disk must reconstruct the *compacted* state, not replay the original
     /// pre-compaction messages — proving the write side
-    /// (`replace_messages_after_compact`) and the pre-existing read side
+    /// (`replace_messages_after_compact`) and the read side
     /// (`transcript::project_messages`'s `LogEntry::Compact` handling,
     /// which wholesale-replaces the projection when `replacement_history`
     /// is present) actually agree with each other.
