@@ -124,6 +124,25 @@ pub fn session_file(project_dir: &Path, session: &SessionId) -> PathBuf {
     project_dir.join(format!("{}.jsonl", session))
 }
 
+/// A name next to `path` for writing it before a rename puts it in place,
+/// distinct for every caller in every process.
+pub(crate) fn temp_sibling(path: &Path) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    path.with_file_name(format!(
+        ".{name}.{}-{}-{nanos:08x}.tmp",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

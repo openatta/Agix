@@ -367,12 +367,15 @@ async fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), H
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    let tmp = path.with_extension(format!(
-        "{}.tmp",
-        path.extension().and_then(|e| e.to_str()).unwrap_or("json")
-    ));
-    tokio::fs::write(&tmp, serde_json::to_vec_pretty(value)?).await?;
-    tokio::fs::rename(tmp, path).await?;
+    let tmp = crate::path::temp_sibling(path);
+    if let Err(e) = tokio::fs::write(&tmp, serde_json::to_vec_pretty(value)?).await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(e.into());
+    }
+    if let Err(e) = tokio::fs::rename(&tmp, path).await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(e.into());
+    }
     Ok(())
 }
 
@@ -380,6 +383,15 @@ async fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), H
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    fn assert_no_temp_files(dir: &Path) {
+        let left: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
+    }
 
     #[tokio::test]
     async fn project_state_roundtrips() {
@@ -397,7 +409,7 @@ mod tests {
         assert_eq!(loaded.session_id, session);
         assert_eq!(loaded.schema_version, PROJECT_SESSION_SCHEMA_VERSION);
         assert!(loaded.history_file.ends_with(&format!("{session}.jsonl")));
-        assert!(!cwd.path().join(".agix/code/session.json.tmp").exists());
+        assert_no_temp_files(cwd.path().join(".agix").as_path());
     }
 
     #[tokio::test]
@@ -435,6 +447,6 @@ mod tests {
         assert!(paths.repl_input_history.ends_with("repl_input_history.txt"));
         assert_ne!(paths.tui_input_history, paths.repl_input_history);
         assert!(paths.metadata.exists());
-        assert!(!paths.metadata.with_extension("json.tmp").exists());
+        assert_no_temp_files(&paths.dir);
     }
 }

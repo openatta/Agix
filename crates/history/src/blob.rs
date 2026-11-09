@@ -86,37 +86,6 @@ impl PasteStore {
             None => Ok(None),
         }
     }
-
-    /// Remove files whose last modification time is older than 7 days.
-    /// Returns how many were removed.
-    pub fn cleanup(&self) -> Result<usize, std::io::Error> {
-        let now = std::time::SystemTime::now();
-        let max_age = std::time::Duration::from_secs(7 * 24 * 3600);
-        let mut removed = 0;
-
-        if !self.dir.exists() {
-            return Ok(0);
-        }
-
-        for entry in std::fs::read_dir(&self.dir)? {
-            let entry = entry?;
-            let meta = entry.metadata()?;
-            if !meta.is_file() {
-                continue;
-            }
-            if let Ok(modified) = meta.modified() {
-                if now
-                    .duration_since(modified)
-                    .unwrap_or(std::time::Duration::ZERO)
-                    > max_age
-                {
-                    std::fs::remove_file(entry.path())?;
-                    removed += 1;
-                }
-            }
-        }
-        Ok(removed)
-    }
 }
 
 impl BlobStore for PasteStore {
@@ -128,8 +97,14 @@ impl BlobStore for PasteStore {
         let id = content_id(bytes);
         std::fs::create_dir_all(&self.dir)?;
         let path = self.dir.join(&id);
-        if !path.exists() {
-            std::fs::write(&path, bytes)?;
+        let whole = std::fs::metadata(&path).is_ok_and(|m| m.len() == bytes.len() as u64);
+        if !whole {
+            let tmp = crate::path::temp_sibling(&path);
+            let written = std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, &path));
+            if written.is_err() {
+                let _ = std::fs::remove_file(&tmp);
+            }
+            written?;
         }
         Ok(id)
     }
@@ -270,11 +245,19 @@ mod contract_tests {
     }
 
     #[test]
-    fn cleanup_skips_fresh_files_and_an_empty_directory() {
+    fn a_paste_cut_short_is_written_again_and_no_temp_file_is_left() {
         let dir = tempfile::TempDir::new().unwrap();
         let store = PasteStore::new(dir.path());
-        assert_eq!(store.cleanup().unwrap(), 0);
-        store.store("fresh content").unwrap();
-        assert_eq!(store.cleanup().unwrap(), 0);
+        let content = b"the whole of a pasted file";
+        let id = store.put(content).unwrap();
+        std::fs::write(dir.path().join("pastes").join(&id), &content[..5]).unwrap();
+
+        assert_eq!(store.put(content).unwrap(), id);
+        assert_eq!(store.get(&id).unwrap().as_deref(), Some(&content[..]));
+        let names: Vec<_> = std::fs::read_dir(dir.path().join("pastes"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, [std::ffi::OsString::from(&id)]);
     }
 }
