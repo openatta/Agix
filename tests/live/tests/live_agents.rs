@@ -2,7 +2,9 @@
 //! parallel, a foreground one whose question reaches the host inside its
 //! parent's turn, a background one a host talks to while it runs, and a
 //! sleep loop that would wait out a background one blind, turned towards
-//! `TaskWait`.
+//! `TaskWait`. An agent type's frontmatter bounds its sub-agent (tools,
+//! calls, permission mode), a chain of sub-agents ends where the depth limit
+//! withholds `Agent`, and `max_concurrent_subagents` refuses one more.
 
 use std::time::Duration;
 
@@ -366,6 +368,263 @@ async fn a_sleep_loop_waiting_on_a_background_agent_is_turned_towards_task_wait(
         events.tool_uses
     );
     assert!(events.text.contains(&token), "{}", events.text);
+    run.finish().await;
+    Ok(())
+}
+
+fn typed(front: &str, body: &str) -> String {
+    format!("---\n{front}\n---\n{body}")
+}
+
+fn requests_of(run: &LiveRun, marker: &str) -> Vec<live::SeenRequest> {
+    run.provider
+        .calls()
+        .into_iter()
+        .filter(|c| c.has_tools() && (c.system_contains(marker) || c.messages_contain(marker)))
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_types_allowed_tools_and_max_turns_bound_its_sub_agent() -> anyhow::Result<()> {
+    let mut run = LiveRun::start("typed", json!({}), Mode::InProcess).await?;
+    let model = run.config().model_at(0).to_string();
+    for (i, word) in ["one", "two", "three", "four"].iter().enumerate() {
+        run.write_file(&format!("{word}.txt"), &format!("word {}\n", i + 1))?;
+    }
+    run.write_file(
+        ".agix/agents/reader.md",
+        &typed(
+            &format!("description: Reads only\nmodel: {model}\nallowed_tools: [Read]"),
+            "READER-ROLE. Write the word WRITTEN to reader.txt with the Write tool if you have \
+             it. If you have no tool that writes, answer CANNOT and stop.",
+        ),
+    )?;
+    run.write_file(
+        ".agix/agents/brief.md",
+        &typed(
+            &format!("description: Short on calls\nmodel: {model}\nmax_turns: 2"),
+            "BRIEF-ROLE. Read one.txt, two.txt, three.txt and four.txt with the Read tool, \
+             exactly one call per message, then answer with their words.",
+        ),
+    )?;
+    let session = run.session().await?;
+    let events = run
+        .turn(
+            &session,
+            "Call the Agent tool twice, one after the other and in the foreground: \
+             subagent_type reader with prompt \"Go.\", then subagent_type brief with prompt \
+             \"Go.\". Do nothing else yourself; then reply with what each reported.",
+        )
+        .await?;
+    assert!(
+        events
+            .tool_uses
+            .iter()
+            .filter(|(n, _)| n == "Agent")
+            .count()
+            >= 2,
+        "{:?}",
+        events.tool_uses
+    );
+
+    assert!(run.read_file("reader.txt").is_none());
+    let reader = requests_of(&run, "READER-ROLE");
+    assert!(!reader.is_empty(), "no request carried the reader's body");
+    for call in &reader {
+        let tools = call.tool_names();
+        assert!(
+            !tools
+                .iter()
+                .any(|t| t == "Write" || t == "Bash" || t == "Edit"),
+            "allowed_tools [Read] offered more: {tools:?}"
+        );
+    }
+
+    let brief = requests_of(&run, "BRIEF-ROLE");
+    eprintln!("[live typed] brief made {} calls", brief.len());
+    assert!(
+        !brief.is_empty() && brief.len() <= 2,
+        "max_turns 2 caps its calls: {}",
+        brief.len()
+    );
+    run.finish().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "product bug: a sub-agent's permission is the parent's handler (agents/src/agent_tool.rs:1783, ParentPermission::check at :3803 asks the parent's rule set in the parent's mode), so an agent type's `permission_mode` never changes what is asked; and the sub-agent's prompts wait EngineConfig's default 300 s (agents/src/lib.rs:76 uses defaults_for, not from_settings; agent_tool.rs:1795) whatever the session's prompt timeout"]
+async fn an_agent_types_permission_mode_governs_what_its_sub_agent_is_asked() -> anyhow::Result<()>
+{
+    let mut run = LiveRun::builder("typed-mode")
+        .settings(json!({
+            "permission_mode": "default",
+            "permission_rules": [{ "tool": "Agent", "action": "allow" }]
+        }))
+        .options(|o| o.prompt_timeout(Duration::from_secs(3)))
+        .start()
+        .await?;
+    let model = run.config().model_at(0).to_string();
+    let stamp = format!("BOLD-{}", nonce());
+    run.write_file(
+        "bold.sh",
+        &format!("echo {stamp} > bold.txt\necho {stamp}\n"),
+    )?;
+    run.write_file(
+        ".agix/agents/bold.md",
+        &typed(
+            &format!(
+                "description: Runs a script\nmodel: {model}\npermission_mode: bypassPermissions"
+            ),
+            "BOLD-ROLE. Run `sh bold.sh` with the Bash tool and answer with what it printed.",
+        ),
+    )?;
+    let session = run.session().await?;
+    let watcher = run
+        .watch_with(&session, |e| {
+            (e["prompt_type"] == "permission").then(|| live::Answer::deny("not asked for"))
+        })
+        .await?;
+    run.turn(
+        &session,
+        "Call the Agent tool once in the foreground with subagent_type bold and prompt \
+         \"Go.\". Do nothing else yourself; reply with what it reported.",
+    )
+    .await?;
+    let asked = watcher.asked();
+    eprintln!("[live typed-mode] asked {}", asked.len());
+    assert!(
+        asked.is_empty(),
+        "a bypassPermissions sub-agent asked: {asked:?}"
+    );
+    assert_eq!(
+        run.read_file("bold.txt").map(|s| s.trim().to_string()),
+        Some(stamp)
+    );
+    drop(watcher);
+    run.finish().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_chain_of_sub_agents_ends_where_the_depth_limit_withholds_the_agent_tool(
+) -> anyhow::Result<()> {
+    let mut run = LiveRun::start("chain", json!({}), Mode::InProcess).await?;
+    run.write_file(
+        ".agix/agents/relay.md",
+        &agent_type(
+            "Passes the work one level down",
+            run.config().model_at(0),
+            "RELAY-ROLE. Look at your own tool list. If it has a tool named Agent: run `echo \
+             relay >> chain.log` with Bash, then call the Agent tool once, in the foreground, \
+             with subagent_type relay and prompt \"Go on.\", and answer with what it answered. \
+             If you have no tool named Agent: run `echo bottom >> chain.log` with Bash and \
+             answer BOTTOM.",
+        ),
+    )?;
+    let session = run.session().await?;
+    let events = run
+        .turn(
+            &session,
+            "Call the Agent tool once, in the foreground, with subagent_type relay and prompt \
+             \"Go on.\". Do nothing else; reply with what it answered.",
+        )
+        .await?;
+    let chain: Vec<String> = run
+        .read_file("chain.log")
+        .unwrap_or_default()
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    eprintln!("[live chain] {chain:?}");
+    assert_eq!(chain, ["relay", "relay", "bottom"], "{}", events.text);
+    let relays = requests_of(&run, "RELAY-ROLE");
+    assert!(
+        relays
+            .iter()
+            .any(|c| !c.tool_names().iter().any(|t| t == "Agent")),
+        "the deepest relay is never offered Agent"
+    );
+    run.finish().await;
+    Ok(())
+}
+
+async fn host_agent(run: &mut LiveRun, session: &str) -> anyhow::Result<Option<i64>> {
+    let resp = run
+        .client
+        .call(
+            "session.startAgent",
+            json!({ "session_id": session, "prompt": "Reply OK.", "description": "host" }),
+        )
+        .await?;
+    Ok(resp.error.map(|e| e.code as i64))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn max_concurrent_subagents_refuses_one_more_from_the_model_and_the_host(
+) -> anyhow::Result<()> {
+    let mut run = LiveRun::start(
+        "slots",
+        json!({ "execution": { "max_concurrent_subagents": 1 } }),
+        Mode::InProcess,
+    )
+    .await?;
+    run.write_file(
+        "slow.sh",
+        "i=0\nwhile [ $i -lt 10 ]; do i=$((i+1)); sleep 2; done\necho slow-done\n",
+    )?;
+    run.write_file(
+        ".agix/agents/slowpoke.md",
+        &agent_type(
+            "Runs a slow script",
+            run.config().model_at(0),
+            "Run `sh slow.sh` with Bash and answer with exactly what it prints.",
+        ),
+    )?;
+    let session = run.session().await?;
+    let events = run
+        .turn(
+            &session,
+            "Start a background sub-agent with the Agent tool: subagent_type slowpoke, \
+             background true, description first, prompt \"Run it.\". Right after, in your next \
+             message, start a second one the same way with description second. If the second \
+             is refused, do not retry and do not wait; reply with the refusal.",
+        )
+        .await?;
+    let agents: Vec<&(String, String, bool)> = events
+        .tool_results
+        .iter()
+        .filter(|(n, _, _)| n == "Agent")
+        .collect();
+    eprintln!("[live slots] {agents:?}");
+    assert!(
+        agents
+            .iter()
+            .any(|(_, t, _)| t.contains("max_concurrent_subagents")),
+        "the second spawn was refused for the limit: {agents:?}"
+    );
+    let running = run
+        .tasks(&session)
+        .await?
+        .into_iter()
+        .filter(|t| t["kind"] == "agent" && t["status"] == "running")
+        .count();
+    assert_eq!(running, 1);
+
+    assert_eq!(
+        host_agent(&mut run, &session).await?,
+        Some(-32019),
+        "TASK_LIMIT while the first runs"
+    );
+    run.wait_tasks_settled(&session, Duration::from_secs(300))
+        .await?;
+    assert_eq!(
+        host_agent(&mut run, &session).await?,
+        None,
+        "a slot is free again"
+    );
+    run.wait_tasks_settled(&session, Duration::from_secs(120))
+        .await?;
     run.finish().await;
     Ok(())
 }

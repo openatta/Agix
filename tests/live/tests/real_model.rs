@@ -4,6 +4,7 @@
 //! `cargo test -p live --features real-model --test real_model live_basics::`.
 
 mod live_agents;
+mod live_autonomy;
 mod live_basics;
 mod live_commands;
 mod live_context;
@@ -23,3 +24,4 @@ mod live_team;
 mod live_transport;
 mod live_unattended;
 mod live_web;
+mod live_workspace;

@@ -97,6 +97,21 @@ pub enum Reply {
     /// This reply's bytes up to `after_bytes`, then the connection closes: a
     /// stream that broke off mid-message.
     Cut(usize, Box<Reply>),
+    /// This reply with the stream held for `wait` right after its `n`-th
+    /// block (from 0) has closed: what came before has arrived whole, the
+    /// rest has not — a model still writing while a tool call is complete.
+    Stall {
+        after_block: usize,
+        wait: Duration,
+        reply: Box<Reply>,
+    },
+    /// These blocks, then an `error` event where the message would have
+    /// ended: a stream the provider opened with a 200 and then failed.
+    Errored {
+        blocks: Vec<Block>,
+        kind: String,
+        message: String,
+    },
 }
 
 impl Reply {
@@ -130,6 +145,24 @@ impl Reply {
         Self::Cut(after_bytes, Box::new(reply))
     }
 
+    pub fn stalled(after_block: usize, wait: Duration, reply: Reply) -> Self {
+        Self::Stall {
+            after_block,
+            wait,
+            reply: Box::new(reply),
+        }
+    }
+
+    /// `kind` is the provider's error type — `overloaded_error`,
+    /// `invalid_request_error`.
+    pub fn errored(blocks: Vec<Block>, kind: &str, message: &str) -> Self {
+        Self::Errored {
+            blocks,
+            kind: kind.to_string(),
+            message: message.to_string(),
+        }
+    }
+
     /// The response bytes, and how long to hold them back.
     fn render(&self) -> (Duration, Vec<u8>) {
         match self {
@@ -153,6 +186,22 @@ impl Reply {
                 bytes.truncate(*after);
                 (wait, bytes)
             }
+            Self::Stall { reply, .. } => reply.render(),
+            Self::Errored {
+                blocks,
+                kind,
+                message,
+            } => {
+                let mut text = sse_response(blocks, None);
+                if let Some(end) = text.find("event: message_delta") {
+                    text.truncate(end);
+                }
+                text.push_str(&event(&serde_json::json!({
+                    "type": "error",
+                    "error": { "type": kind, "message": message }
+                })));
+                (Duration::ZERO, text.into_bytes())
+            }
         }
     }
 
@@ -162,8 +211,22 @@ impl Reply {
         if !wait.is_zero() {
             tokio::time::sleep(wait).await;
         }
-        sock.write_all(&bytes).await?;
+        let (now, later, pause) = match self {
+            Self::Stall {
+                after_block, wait, ..
+            } => {
+                let at = after_block_end(&bytes, *after_block).unwrap_or(bytes.len());
+                (&bytes[..at], &bytes[at..], *wait)
+            }
+            _ => (&bytes[..], &bytes[..0], Duration::ZERO),
+        };
+        sock.write_all(now).await?;
         sock.flush().await?;
+        if !later.is_empty() {
+            tokio::time::sleep(pause).await;
+            sock.write_all(later).await?;
+            sock.flush().await?;
+        }
         let _ = sock.shutdown().await;
         Ok(())
     }
@@ -556,6 +619,15 @@ pub(crate) async fn read_request(
         headers,
         body,
     }))
+}
+
+/// Where the `n`-th `content_block_stop` event of a rendered stream ends.
+fn after_block_end(bytes: &[u8], n: usize) -> Option<usize> {
+    let mut from = 0;
+    for _ in 0..=n {
+        from += find(&bytes[from..], b"event: content_block_stop")? + 1;
+    }
+    Some(from + find(&bytes[from..], b"\n\n")? + 2)
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {

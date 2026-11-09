@@ -2,7 +2,9 @@
 //! sees it: the `harnix` scene under the default permission policy, with no
 //! one to answer a prompt. Work inside the project gets done — files edited,
 //! commands run in the OS sandbox — and a write outside it is refused rather
-//! than put to a person, and the model is told so instead of left waiting.
+//! than put to a person, and the model is told so instead of left waiting. A
+//! shell command that writes outside the roots — a redirect, a copy — is
+//! stopped the same way.
 
 use std::time::Duration;
 
@@ -98,6 +100,59 @@ async fn an_unattended_session_works_inside_its_roots_and_is_refused_outside() -
             );
         }
     }
+    drop(watcher);
+    run.finish().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shell_command_writing_outside_the_roots_is_refused_unattended() -> anyhow::Result<()> {
+    let mut run = LiveRun::start(
+        "unattended-shell",
+        json!({ "permission_mode": "default" }),
+        Mode::InProcess,
+    )
+    .await?;
+    // Not under the world's root: that is in the user's temp directory,
+    // which the macOS sandbox leaves writable for `mktemp`.
+    let elsewhere = tempfile::Builder::new()
+        .prefix("agix-outside-")
+        .tempdir_in("/private/tmp")?;
+    let outside = elsewhere.path().to_path_buf();
+    let (stray, copied) = (outside.join("stray.txt"), outside.join("copied.txt"));
+    run.write_file("inside.txt", "inside\n")?;
+    run.client
+        .call("scene.activate", json!({ "scene": "harnix" }))
+        .await?;
+    let session = run.session_with(json!({ "scene": "harnix" })).await?;
+    let watcher = run.watch(&session, false).await?;
+    let events = tokio::time::timeout(
+        Duration::from_secs(600),
+        run.turn(
+            &session,
+            &format!(
+                "Run these two commands with the Bash tool, one at a time, exactly as written. \
+                 If one fails, do not try any other way; report its error and go on.\n\
+                 1. `echo STRAY > {}`\n\
+                 2. `cp inside.txt {}`\n\
+                 Reply with a one-line report per command.",
+                stray.display(),
+                copied.display()
+            ),
+        ),
+    )
+    .await??;
+    assert!(
+        events.tool_uses.iter().filter(|(n, _)| n == "Bash").count() >= 2,
+        "{:?}",
+        events.tool_uses
+    );
+    assert!(!stray.exists(), "a redirect wrote outside the roots");
+    assert!(!copied.exists(), "a copy wrote outside the roots");
+    assert!(
+        watcher.events("prompt").is_empty(),
+        "nobody is there to ask, so nothing was asked"
+    );
     drop(watcher);
     run.finish().await;
     Ok(())

@@ -3,7 +3,9 @@
 //! output a host follows by byte offset, a session's
 //! own prompt, a resume, plan mode, goals — one the model sets, one the host
 //! sets, one that cannot be reached and has to end blocked rather than loop —
-//! a question the model asks that the host answers, and a spawned `agixd`.
+//! a question the model asks that the host answers, and a spawned `agixd`. A
+//! watching host sees every `goal_changed` of a goal's life and a tool call's
+//! arguments as `tool_args_delta` frames that spell its input.
 
 use live::{LiveRun, Mode};
 use serde_json::{json, Value};
@@ -630,6 +632,98 @@ async fn a_question_the_model_asks_reaches_the_host_and_its_answer_steers_the_wo
         Some("green".to_string()),
         "the host's answer decided what was written"
     );
+    run.finish().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_watching_host_sees_each_goal_change_and_a_tool_call_as_it_is_written(
+) -> anyhow::Result<()> {
+    let mut run = LiveRun::start("frames", json!({}), Mode::InProcess).await?;
+    let token = format!("FRAMED-{}", nonce());
+    let session = run.session().await?;
+    let watcher = run.watch(&session, false).await?;
+    let set = run
+        .client
+        .call(
+            "session.setGoal",
+            json!({
+                "session_id": session,
+                "objective": format!(
+                    "framed.txt holds {token}. Write it with the Write tool, then mark the goal \
+                     complete with GoalUpdate (GoalGet gives its id and revision; fetch either \
+                     with ToolSearch if needed)."
+                ),
+                "max_rounds": 3
+            }),
+        )
+        .await?;
+    assert!(set.error.is_none(), "{set:?}");
+    let goal = settled_goal(&mut run, &session).await?;
+    assert_eq!(goal["phase"], "complete", "{goal}");
+    let cleared = run
+        .client
+        .call(
+            "session.updateGoal",
+            json!({ "session_id": session, "action": "clear" }),
+        )
+        .await?;
+    assert!(cleared.error.is_none(), "{cleared:?}");
+    watcher
+        .wait_for("a cleared goal", std::time::Duration::from_secs(10), |e| {
+            e["kind"] == "goal_changed" && e["goal"].is_null()
+        })
+        .await?;
+
+    let changes: Vec<Value> = watcher
+        .events("goal_changed")
+        .into_iter()
+        .map(|f| f["event"]["goal"].clone())
+        .collect();
+    eprintln!("[live frames] goal_changed {changes:?}");
+    assert_eq!(
+        changes.first().map(|g| g["phase"].clone()),
+        Some(json!("active"))
+    );
+    assert!(
+        changes.iter().any(|g| g["phase"] == "complete"),
+        "{changes:?}"
+    );
+    assert!(changes.last().is_some_and(Value::is_null), "{changes:?}");
+    let revisions: Vec<u64> = changes
+        .iter()
+        .filter_map(|g| g["revision"].as_u64())
+        .collect();
+    assert!(revisions.windows(2).all(|w| w[0] <= w[1]), "{revisions:?}");
+
+    let frames = watcher.frames();
+    let write = frames
+        .iter()
+        .map(|f| &f["event"])
+        .find(|e| e["kind"] == "tool_use" && e["name"] == "Write")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("no Write call"))?;
+    let streamed: String = frames
+        .iter()
+        .map(|f| &f["event"])
+        .filter(|e| e["kind"] == "tool_args_delta" && e["id"] == write["id"])
+        .filter_map(|e| e["partial_json"].as_str())
+        .collect();
+    assert!(
+        frames
+            .iter()
+            .any(|f| f["event"]["kind"] == "tool_use_start" && f["event"]["id"] == write["id"]),
+        "no tool_use_start for the Write"
+    );
+    let assembled: Value = serde_json::from_str(&streamed)
+        .map_err(|e| anyhow::anyhow!("the deltas are not the input's JSON ({e}): {streamed}"))?;
+    assert_eq!(assembled, write["input"], "the deltas spell the call");
+    assert!(streamed.contains(&token));
+    assert_eq!(
+        run.read_file("framed.txt").map(|s| s.trim().to_string()),
+        Some(token)
+    );
+    drop(watcher);
     run.finish().await;
     Ok(())
 }

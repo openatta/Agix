@@ -1,5 +1,7 @@
 //! A `TeamCreate` team with a real model: a later stage works from what an
-//! earlier stage saved to the team's shared memory.
+//! earlier stage saved to the team's shared memory; two members of one stage
+//! pass a word through their mailboxes, the stage reports `team_progress`,
+//! and the team is listed and then deleted.
 
 use live::{LiveRun, Mode};
 use serde_json::json;
@@ -68,6 +70,108 @@ async fn a_later_stage_works_from_what_an_earlier_stage_remembered() -> anyhow::
         "the scout never saved to team memory"
     );
     assert!(used("TeamMemoryRead"), "the scribe never read team memory");
+    run.finish().await;
+    Ok(())
+}
+
+fn tool_used(run: &LiveRun, tool: &str) -> bool {
+    run.provider.calls().iter().any(|c| {
+        c.body["messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|m| m["content"].as_array())
+            .flatten()
+            .any(|b| b["type"] == "tool_use" && b["name"] == tool)
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn members_of_a_stage_pass_a_message_and_the_team_is_listed_then_deleted(
+) -> anyhow::Result<()> {
+    let mut run = LiveRun::start(
+        "mail",
+        json!({ "execution": { "team_enabled": true } }),
+        Mode::InProcess,
+    )
+    .await?;
+    let token = format!(
+        "PARCEL-{:x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+            % 0xffff_ffff
+    );
+    run.write_file("notes/parcel.txt", &format!("{token}\n"))?;
+    let session = run.session().await?;
+    let watcher = run.watch(&session, false).await?;
+    let events = run
+        .turn(
+            &session,
+            "Load TeamCreate, TeamList and TeamDelete with ToolSearch if needed. Use TeamCreate \
+             to run a team named mail, with permission_mode bypassPermissions and one stage \
+             named swap with two agents:\n\
+             - label sender: \"Read notes/parcel.txt. Call ListPeers, then call SendMessage \
+             with peer receiver and the file's content as the message. Then answer SENT.\"\n\
+             - label receiver: \"Call ReadMail. While it has no message, run `sleep 1` with \
+             Bash and call ReadMail again, up to 20 times. When a message arrives, write the \
+             word it carries to received.txt with the Write tool and answer GOT. Do not read \
+             anything under notes/.\"\n\
+             When the team returns: call TeamList, then TeamDelete with name mail, then \
+             TeamList again. Do not read notes/ or write received.txt yourself. Reply DONE.",
+        )
+        .await?;
+    assert_eq!(
+        run.read_file("received.txt").map(|s| s.trim().to_string()),
+        Some(token),
+        "the word reached the receiver only through its mailbox"
+    );
+    for tool in ["ListPeers", "SendMessage", "ReadMail"] {
+        assert!(tool_used(&run, tool), "no member called {tool}");
+    }
+
+    let lists: Vec<&(String, String, bool)> = events
+        .tool_results
+        .iter()
+        .filter(|(n, _, _)| n == "TeamList")
+        .collect();
+    eprintln!("[live mail] {lists:?}");
+    assert!(lists.len() >= 2, "{:?}", events.tool_uses);
+    assert!(lists[0].1.contains("\"mail\""), "{lists:?}");
+    assert!(
+        !lists.last().is_some_and(|(_, t, _)| t.contains("\"mail\"")),
+        "TeamDelete left the team listed: {lists:?}"
+    );
+    assert!(
+        events
+            .tool_results
+            .iter()
+            .any(|(n, _, failed)| n == "TeamDelete" && !failed),
+        "{:?}",
+        events.tool_results
+    );
+
+    let stages: Vec<(String, String)> = watcher
+        .events("team_progress")
+        .iter()
+        .map(|f| &f["event"])
+        .filter(|e| e["team"] == "mail")
+        .map(|e| {
+            (
+                e["stage"].as_str().unwrap_or_default().to_string(),
+                e["status"].as_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect();
+    eprintln!("[live mail] team_progress {stages:?}");
+    assert_eq!(
+        stages,
+        [
+            ("swap".to_string(), "started".to_string()),
+            ("swap".to_string(), "completed".to_string())
+        ]
+    );
+    drop(watcher);
     run.finish().await;
     Ok(())
 }
