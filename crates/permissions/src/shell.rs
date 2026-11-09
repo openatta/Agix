@@ -1,4 +1,5 @@
-//! Splitting a shell command line into the simple commands it runs.
+//! Splitting a shell command line into the simple commands it runs, and
+//! reading a simple command's words the way the shell will.
 //!
 //! A permission rule names one command (`Bash(git push:*)`); a command line
 //! can run many. Matching a rule against the whole line lets
@@ -10,11 +11,29 @@
 //!
 //! This is a scanner, not a shell parser: it errs towards producing more
 //! segments, never fewer, because an extra segment can only add a refusal.
+//! [`lex`] is the word-level half: what each word becomes once quotes are
+//! removed, and whether the shell would still expand it — which is what
+//! `crate::invocation` needs to tell what program a segment really starts.
+
+/// One simple command of a line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Segment {
+    /// As [`simple_commands`] returns it.
+    pub text: String,
+    /// The same command before transparent wrappers were peeled off its
+    /// front — `command -p rm x` where `text` is `-p rm x`.
+    pub source: String,
+}
 
 /// Every simple command the line runs, as source text with leading
 /// keywords (`if`, `then`, `!`, ...), grouping brackets, variable
 /// assignments and transparent wrappers (`env`, `nohup`, ...) removed.
 pub fn simple_commands(line: &str) -> Vec<String> {
+    segments(line).into_iter().map(|s| s.text).collect()
+}
+
+/// [`simple_commands`], each with its [`Segment::source`].
+pub fn segments(line: &str) -> Vec<Segment> {
     let mut out = Vec::new();
     split_into(line, &mut out);
     out
@@ -75,7 +94,209 @@ pub fn words(command: &str) -> Vec<String> {
     out
 }
 
-fn split_into(src: &str, out: &mut Vec<String>) {
+/// One word of a simple command as the shell reads it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Word {
+    /// The word with quotes and escapes removed.
+    pub text: String,
+    /// A redirection operator (`>`, `2>>`, `<`, `&>`, `<<<`, ...). The word
+    /// after it is its target.
+    pub redirect: bool,
+    /// Holds a `$name`, `${...}`, `$(...)`, `$'...'` or a backquote outside
+    /// single quotes: its value is only known once the line runs.
+    pub substitutes: bool,
+    /// Starts with an unquoted `~`, which the shell replaces with a home
+    /// directory — `$HOME`'s, whatever the line set it to.
+    pub tilde: bool,
+    /// Holds an unquoted `*`, `?` or `[`.
+    pub globs: bool,
+    /// Holds an unquoted `{` or `}`.
+    pub braces: bool,
+    /// Holds an unquoted `(` or `)`.
+    pub parens: bool,
+    /// Any part of it was quoted or escaped.
+    pub quoted: bool,
+}
+
+impl Word {
+    /// An unquoted word with no expansion in it.
+    pub fn plain(text: impl Into<String>) -> Self {
+        let text = text.into();
+        Self {
+            globs: text.contains(['*', '?', '[']),
+            text,
+            ..Self::default()
+        }
+    }
+
+    /// Nothing in it is left for the shell to expand.
+    pub fn is_literal(&self) -> bool {
+        !(self.substitutes || self.tilde || self.globs || self.braces || self.parens)
+    }
+}
+
+/// The words of one simple command, redirection operators split out as
+/// words of their own: `rm>/dev/null x` is `rm`, `>`, `/dev/null`, `x`.
+pub fn lex(command: &str) -> Vec<Word> {
+    let chars: Vec<char> = command.chars().collect();
+    let mut out = Vec::new();
+    let mut word = Word::default();
+    let mut started = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            c if c.is_whitespace() => end_word(&mut out, &mut word, &mut started),
+            '\'' => {
+                started = true;
+                word.quoted = true;
+                i += 1;
+                while i < chars.len() && chars[i] != '\'' {
+                    word.text.push(chars[i]);
+                    i += 1;
+                }
+            }
+            '"' => {
+                started = true;
+                word.quoted = true;
+                i += 1;
+                while i < chars.len() && chars[i] != '"' {
+                    match chars[i] {
+                        '\\' if matches!(chars.get(i + 1), Some('$' | '`' | '"' | '\\' | '\n')) => {
+                            i += 1;
+                            if chars[i] != '\n' {
+                                word.text.push(chars[i]);
+                            }
+                        }
+                        '$' if expands_at(&chars, i + 1) => {
+                            word.substitutes = true;
+                            word.text.push('$');
+                        }
+                        '`' => {
+                            word.substitutes = true;
+                            word.text.push('`');
+                        }
+                        q => word.text.push(q),
+                    }
+                    i += 1;
+                }
+            }
+            '\\' => {
+                started = true;
+                word.quoted = true;
+                if let Some(&n) = chars.get(i + 1) {
+                    if n != '\n' {
+                        word.text.push(n);
+                    }
+                    i += 1;
+                }
+            }
+            '$' if matches!(chars.get(i + 1), Some('\'' | '"')) || expands_at(&chars, i + 1) => {
+                started = true;
+                word.substitutes = true;
+                word.text.push('$');
+            }
+            '`' => {
+                started = true;
+                word.substitutes = true;
+                word.text.push('`');
+            }
+            '<' | '>' => {
+                let fd = started
+                    && !word.quoted
+                    && !word.text.is_empty()
+                    && word.text.chars().all(|d| d.is_ascii_digit());
+                let mut op = if fd {
+                    started = false;
+                    std::mem::take(&mut word).text
+                } else {
+                    end_word(&mut out, &mut word, &mut started);
+                    String::new()
+                };
+                op.push(c);
+                i = take_operator_tail(&chars, i, &mut op);
+                out.push(Word {
+                    text: op,
+                    redirect: true,
+                    ..Word::default()
+                });
+            }
+            '&' if chars.get(i + 1) == Some(&'>') => {
+                end_word(&mut out, &mut word, &mut started);
+                let mut op = String::from("&>");
+                i += 1;
+                if chars.get(i + 1) == Some(&'>') {
+                    op.push('>');
+                    i += 1;
+                }
+                out.push(Word {
+                    text: op,
+                    redirect: true,
+                    ..Word::default()
+                });
+            }
+            '~' if !started => {
+                started = true;
+                word.tilde = true;
+                word.text.push('~');
+            }
+            c => {
+                started = true;
+                match c {
+                    '*' | '?' | '[' => word.globs = true,
+                    '{' | '}' => word.braces = true,
+                    '(' | ')' => word.parens = true,
+                    _ => {}
+                }
+                word.text.push(c);
+            }
+        }
+        i += 1;
+    }
+    end_word(&mut out, &mut word, &mut started);
+    out
+}
+
+fn end_word(out: &mut Vec<Word>, word: &mut Word, started: &mut bool) {
+    if *started {
+        out.push(std::mem::take(word));
+    }
+    *started = false;
+}
+
+/// Whether a `$` followed by `chars[i]` starts an expansion rather than
+/// standing for itself.
+fn expands_at(chars: &[char], i: usize) -> bool {
+    chars.get(i).is_some_and(|&c| {
+        c.is_ascii_alphanumeric()
+            || matches!(c, '_' | '{' | '(' | '?' | '#' | '@' | '*' | '!' | '$' | '-')
+    })
+}
+
+/// Extend the redirection operator `op`, whose first character is at
+/// `chars[i]`, by the characters that belong to it; returns the index of
+/// its last character.
+fn take_operator_tail(chars: &[char], mut i: usize, op: &mut String) -> usize {
+    let tails: &[&str] = if chars[i] == '>' {
+        &[">", "&", "|"]
+    } else {
+        &["<<", "<-", "<", ">", "&"]
+    };
+    for tail in tails {
+        let n = tail.chars().count();
+        if chars
+            .get(i + 1..i + 1 + n)
+            .is_some_and(|s| s.iter().copied().eq(tail.chars()))
+        {
+            op.push_str(tail);
+            i += n;
+            break;
+        }
+    }
+    i
+}
+
+fn split_into(src: &str, out: &mut Vec<Segment>) {
     let chars: Vec<char> = src.chars().collect();
     let mut current = String::new();
     let mut i = 0;
@@ -148,7 +369,7 @@ fn split_into(src: &str, out: &mut Vec<String>) {
 /// Scan a double-quoted string starting just past its opening quote,
 /// splitting any substitution inside it into `out`; returns the index of
 /// the closing quote.
-fn scan_double_quoted(chars: &[char], mut i: usize, out: &mut Vec<String>) -> usize {
+fn scan_double_quoted(chars: &[char], mut i: usize, out: &mut Vec<Segment>) -> usize {
     while i < chars.len() {
         match chars[i] {
             '"' => return i,
@@ -210,40 +431,79 @@ fn find_close_paren(chars: &[char], mut i: usize) -> usize {
     chars.len()
 }
 
-const PREFIX_KEYWORDS: &[&str] = &["if", "then", "else", "elif", "do", "while", "until", "!"];
+pub(crate) const PREFIX_KEYWORDS: &[&str] =
+    &["if", "then", "else", "elif", "do", "while", "until", "!"];
 const WRAPPERS: &[&str] = &["time", "nohup", "command", "builtin", "exec", "env"];
 const TRAILING_KEYWORDS: &[&str] = &["fi", "done", "esac"];
 
-fn push_command(raw: &str, out: &mut Vec<String>) {
+fn push_command(raw: &str, out: &mut Vec<Segment>) {
     let mut rest = raw.trim();
     let mut wrapper = None;
+    let mut source = None;
     loop {
-        rest = rest.trim_start_matches(['(', '{']).trim_start();
+        rest = strip_group_openers(rest);
         let end = first_word_end(rest);
         let first = &rest[..end];
         if first.is_empty() {
             break;
         }
         if WRAPPERS.contains(&first) {
+            source.get_or_insert(rest);
             wrapper = Some(first);
         } else if !(PREFIX_KEYWORDS.contains(&first) || is_assignment(first)) {
             break;
         }
         rest = rest[end..].trim_start();
     }
-    let mut rest = rest.trim_end();
-    while let Some(stripped) = rest.strip_suffix([')', '}']) {
-        rest = stripped.trim_end();
-    }
+    let rest = strip_group_closers(rest);
+    let source = strip_group_closers(source.unwrap_or(rest));
     if TRAILING_KEYWORDS.contains(&rest) {
         return;
     }
     // A bare wrapper is a command in its own right: `env` alone prints the
     // environment.
-    match (rest.is_empty(), wrapper) {
-        (false, _) => out.push(rest.to_string()),
-        (true, Some(w)) => out.push(w.to_string()),
-        (true, None) => {}
+    let text = match (rest.is_empty(), wrapper) {
+        (false, _) => rest,
+        (true, Some(w)) => w,
+        (true, None) => return,
+    };
+    out.push(Segment {
+        text: text.to_string(),
+        source: source.to_string(),
+    });
+}
+
+/// `(` always opens a subshell; `{` opens a group only as a word of its own —
+/// `{rm,x}` is a brace expansion, not a group.
+fn strip_group_openers(mut s: &str) -> &str {
+    loop {
+        s = s.trim_start();
+        if let Some(rest) = s.strip_prefix('(') {
+            s = rest;
+        } else if let Some(rest) = s
+            .strip_prefix('{')
+            .filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+        {
+            s = rest;
+        } else {
+            return s;
+        }
+    }
+}
+
+fn strip_group_closers(mut s: &str) -> &str {
+    loop {
+        s = s.trim_end();
+        if let Some(rest) = s.strip_suffix(')') {
+            s = rest;
+        } else if let Some(rest) = s
+            .strip_suffix('}')
+            .filter(|rest| rest.is_empty() || rest.ends_with(char::is_whitespace))
+        {
+            s = rest;
+        } else {
+            return s;
+        }
     }
 }
 
@@ -276,7 +536,7 @@ fn first_word_end(s: &str) -> usize {
     bytes.len()
 }
 
-fn is_assignment(word: &str) -> bool {
+pub(crate) fn is_assignment(word: &str) -> bool {
     let Some((name, _)) = word.split_once('=') else {
         return false;
     };
@@ -351,11 +611,26 @@ mod tests {
         assert_eq!(split("if true; then FOO=1 rm x; fi"), vec!["true", "rm x"]);
         assert_eq!(split("(cd sub; make)"), vec!["cd sub", "make"]);
         assert_eq!(split("{ ls; }"), vec!["ls"]);
+        assert_eq!(split("{ ls;}"), vec!["ls"]);
         assert_eq!(
             split("env A=\"b c\" nohup xforge approve"),
             vec!["xforge approve"]
         );
         assert_eq!(split("! git diff --quiet"), vec!["git diff --quiet"]);
+    }
+
+    #[test]
+    fn a_brace_expansion_is_a_word_not_a_group() {
+        assert_eq!(split("{rm,victim.txt}"), vec!["{rm,victim.txt}"]);
+        assert_eq!(split("echo {a,b}"), vec!["echo {a,b}"]);
+    }
+
+    #[test]
+    fn a_segment_keeps_the_wrappers_it_was_found_under() {
+        let s = segments("true && command -p rm x");
+        assert_eq!(s[1].text, "-p rm x");
+        assert_eq!(s[1].source, "command -p rm x");
+        assert_eq!(segments("(ls)")[0].source, "ls");
     }
 
     #[test]
@@ -376,5 +651,56 @@ mod tests {
             words(r#"cat "a b" 'c d' e\ f"#),
             vec!["cat", "a b", "c d", "e f"]
         );
+    }
+
+    fn texts(command: &str) -> Vec<String> {
+        lex(command).into_iter().map(|w| w.text).collect()
+    }
+
+    #[test]
+    fn lexing_removes_quotes_the_way_the_shell_does() {
+        assert_eq!(texts(r#""rm" \rm r''m "r"m"#), vec!["rm"; 4]);
+        assert_eq!(texts(r#"echo "a\b" "\$x""#), vec!["echo", r"a\b", "$x"]);
+    }
+
+    #[test]
+    fn redirections_are_words_of_their_own() {
+        assert_eq!(
+            texts("rm>/dev/null x 2>>log <in &>all"),
+            vec![
+                "rm",
+                ">",
+                "/dev/null",
+                "x",
+                "2>>",
+                "log",
+                "<",
+                "in",
+                "&>",
+                "all"
+            ]
+        );
+        let words = lex("a 2>&1");
+        assert!(words[1].redirect && words[1].text == "2>&");
+        assert!(!lex("'2'>x")[0].redirect);
+    }
+
+    #[test]
+    fn what_the_shell_would_still_expand_is_marked() {
+        let w = |s: &str| lex(s).remove(0);
+        assert!(w("$HOME/x").substitutes);
+        assert!(w("\"${D}\"/x").substitutes);
+        assert!(w("$'\\x72m'").substitutes);
+        assert!(w("`id`").substitutes);
+        assert!(!w("'$HOME'").substitutes);
+        assert!(!w("foo$").substitutes);
+        assert!(!w("\"foo$\"").substitutes);
+        assert!(w("~/x").tilde);
+        assert!(!w("'~'/x").tilde);
+        assert!(!w("a~b").tilde);
+        assert!(w("/bin/r?").globs);
+        assert!(w("{rm,x}").braces);
+        assert!(w("f()").parens);
+        assert!(w("plain").is_literal());
     }
 }

@@ -3,6 +3,7 @@
 pub mod dangerous;
 pub mod error;
 pub mod gate;
+pub mod invocation;
 pub mod path_rule;
 pub mod path_safety;
 pub mod rule;

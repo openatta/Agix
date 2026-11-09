@@ -167,6 +167,10 @@ impl Tool for ExitPlanModeTool {
         false
     }
 
+    fn leaves_plan_mode(&self) -> bool {
+        true
+    }
+
     /// Rejects if not currently in plan mode (error code 1).
     async fn validate_input(&self, _input: &Value, ctx: &ToolContext) -> ValidationResult {
         if !plan_mode_active(ctx) {
@@ -177,8 +181,6 @@ impl Tool for ExitPlanModeTool {
                 1,
             );
         }
-        // Teammates skip the mode check — not implemented yet.
-        let _ = ctx;
         ValidationResult::Ok
     }
 

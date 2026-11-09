@@ -425,6 +425,16 @@ pub trait Tool: Send + Sync + 'static {
         false
     }
 
+    /// Is this the call that takes the session out of plan mode?
+    ///
+    /// Plan mode refuses every tool that is not read-only, and leaving plan
+    /// mode changes the session's state, so the way out would be refused too.
+    /// A tool that returns `true` is spared that one refusal and is decided
+    /// as in any mode that asks: a matching rule, else the host's answer.
+    fn leaves_plan_mode(&self) -> bool {
+        false
+    }
+
     /// This tool's detailed usage guide, when it has one that says more than
     /// `description()` already does — `None` when it doesn't.
     ///

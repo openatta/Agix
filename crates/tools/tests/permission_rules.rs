@@ -303,6 +303,112 @@ async fn a_deny_for_one_command_reaches_it_wherever_it_sits_in_the_line() {
     assert!(matches!(o, PermissionOutcome::Permit), "{o:?}");
 }
 
+/// What a user who wants "anything but deleting" writes.
+fn anything_but_rm() -> RuleSetPermission {
+    permission(
+        vec![
+            PermissionRule {
+                rule_content: None,
+                ..rule(RuleBehavior::Allow, "Bash", "")
+            },
+            rule(RuleBehavior::Deny, "Bash", "rm:*"),
+        ],
+        PermissionMode::AcceptEdits,
+    )
+}
+
+#[tokio::test]
+async fn a_deny_reaches_the_program_however_its_name_is_spelled() {
+    let dir = tempfile::tempdir().unwrap();
+    let perm = anything_but_rm();
+    for line in [
+        "\"rm\" -rf build",
+        "\\rm -rf build",
+        "r''m -rf build",
+        "{rm,-rf,build}",
+        "/bin/rm -rf build",
+        "./node_modules/.bin/rm x",
+        "command -p rm -rf build",
+        "env -i rm -rf build",
+        "exec rm -rf build",
+        "builtin rm x",
+        "nice -n 5 rm -rf build",
+        "time rm -rf build",
+        "sudo -u root rm -rf build",
+        "timeout 5 rm -rf build",
+        "bash -c 'rm -rf build'",
+        "eval rm -rf build",
+        "find . -name build -exec rm -rf {} +",
+        "ls | xargs rm",
+        ">/dev/null rm -rf build",
+    ] {
+        let o = check(&perm, "Bash", bash(line), dir.path()).await;
+        assert!(is_deny(&o), "{line}: {o:?}");
+    }
+    for line in ["echo rm", "git rm --cached x", "command -v rm", "ls rm"] {
+        let o = check(&perm, "Bash", bash(line), dir.path()).await;
+        assert!(matches!(o, PermissionOutcome::Permit), "{line}: {o:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_program_that_cannot_be_read_off_the_line_is_asked_about_under_a_deny() {
+    let dir = tempfile::tempdir().unwrap();
+    for line in [
+        "$CMD -rf build",
+        "\"$(echo rm)\" -rf build",
+        "$'\\x72\\x6d' -rf build",
+        "/bin/r? -rf build",
+        "sudo --some-new-flag rm -rf build",
+    ] {
+        let o = check(&anything_but_rm(), "Bash", bash(line), dir.path()).await;
+        assert!(
+            matches!(o, PermissionOutcome::Prompt { .. }),
+            "{line}: {o:?}"
+        );
+        let refused = check(
+            &permission(
+                vec![
+                    rule(RuleBehavior::Allow, "Bash", "*"),
+                    rule(RuleBehavior::Deny, "Bash", "rm:*"),
+                ],
+                PermissionMode::DontAsk,
+            ),
+            "Bash",
+            bash(line),
+            dir.path(),
+        )
+        .await;
+        assert!(is_deny(&refused), "dontAsk {line}: {refused:?}");
+    }
+    let unruled = permission(
+        vec![PermissionRule {
+            rule_content: None,
+            ..rule(RuleBehavior::Allow, "Bash", "")
+        }],
+        PermissionMode::AcceptEdits,
+    );
+    let o = check(&unruled, "Bash", bash("$CMD -rf build"), dir.path()).await;
+    assert!(
+        matches!(o, PermissionOutcome::Permit),
+        "with no deny to slip past, nothing changes: {o:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_quoted_protected_path_is_still_protected() {
+    let dir = tempfile::tempdir().unwrap();
+    let perm = permission(vec![], PermissionMode::AcceptEdits);
+    for line in [
+        "cat ~/\".ssh\"/id_rsa",
+        "cat ~/.s''sh/id_rsa",
+        "cat ~/'.aws'/credentials",
+    ] {
+        let o = check(&perm, "Bash", bash(line), dir.path()).await;
+        assert!(is_deny(&o), "{line}: {o:?}");
+    }
+}
+
 #[tokio::test]
 async fn an_exact_allow_for_a_whole_line_still_permits_that_line() {
     let dir = tempfile::tempdir().unwrap();
@@ -346,4 +452,53 @@ async fn a_read_only_command_is_only_silent_inside_the_project() {
             "{line}: {o:?}"
         );
     }
+}
+
+#[tokio::test]
+async fn a_read_through_anything_the_shell_still_expands_is_asked_about() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path();
+    std::fs::create_dir(cwd.join("src")).unwrap();
+    let perm = permission(vec![], PermissionMode::Default);
+    for line in [
+        "HOME=/etc; cat $HOME/hosts",
+        "cat \"${D}\"/x",
+        "cat $F",
+        "echo $ANTHROPIC_API_KEY",
+        "HOME=/etc cat ~/hosts",
+        "D=/etc; cd $D && cat hosts",
+        "cd && cat .bashrc",
+        "cd ~ && cat .bashrc",
+        "cd /etc && cat hosts",
+        "cd .. && cat x",
+        "pushd /etc && cat hosts",
+        "cat </etc/hosts",
+    ] {
+        let o = check(&perm, "Bash", bash(line), cwd).await;
+        assert!(
+            matches!(o, PermissionOutcome::Prompt { .. }),
+            "{line}: {o:?}"
+        );
+    }
+    for line in [
+        "cd src && ls",
+        "cd src && cat a.rs",
+        "grep -n 'foo$' src/a.rs",
+        "echo '$HOME'",
+    ] {
+        let o = check(&perm, "Bash", bash(line), cwd).await;
+        assert!(matches!(o, PermissionOutcome::Permit), "{line}: {o:?}");
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_cd_through_a_symlink_out_of_the_project_is_asked_about() {
+    let dir = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let cwd = dir.path();
+    std::os::unix::fs::symlink(outside.path(), cwd.join("elsewhere")).unwrap();
+    let perm = permission(vec![], PermissionMode::Default);
+    let o = check(&perm, "Bash", bash("cd elsewhere && cat x"), cwd).await;
+    assert!(matches!(o, PermissionOutcome::Prompt { .. }), "{o:?}");
 }

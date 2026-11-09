@@ -16,7 +16,8 @@
 //!    shell 命令按简单命令逐段匹配）：`Deny` 直接返回
 //! 4. bypass-immune 路径检查（`is_path_bypass_immune`）→ deny
 //! 5. 模式级硬拒绝：
-//!    - `Plan` 且非只读工具 → deny
+//!    - `Plan` 且非只读工具 → deny（离开计划模式的那个工具除外，见
+//!      `Tool::leaves_plan_mode`：它照常走规则与询问）
 //!    - `DontAsk` 且没有 allow 规则命中 → deny
 //!
 //!    之后第 3 步的 `Ask` 命中 → ask（`DontAsk` 下 deny）
@@ -161,6 +162,7 @@ impl PermissionGate {
                     .unwrap_or_default();
                 format!("Rule matches: {rule_str} [ask]{content_info} — requires confirmation")
             }
+            RuleHit::Unclear(rule) => unclear_message(tool_name, &rule),
             RuleHit::None => {
                 let content_display = content.as_deref().unwrap_or("<no content>");
                 let has_rules_for_tool = rules
@@ -214,6 +216,19 @@ impl PermissionGate {
                 _ => rules.evaluate(tool.name(), content.as_deref()),
             }
         };
+        // The protected-path checks compare path components, which quotes
+        // inside a word (`~/".ssh"/id_rsa`) would otherwise hide.
+        let unquoted = content
+            .iter()
+            .filter(|_| kind == PermissionContentKind::ShellCommand)
+            .flat_map(|line| crate::shell::segments(line))
+            .map(|segment| {
+                crate::shell::lex(&segment.source)
+                    .into_iter()
+                    .map(|w| w.text)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            });
         let checked = content
             .iter()
             .cloned()
@@ -222,6 +237,7 @@ impl PermissionGate {
                     .iter()
                     .flat_map(|r| r.all().map(|p| p.to_string_lossy().into_owned())),
             )
+            .chain(unquoted)
             .collect();
         (hit, checked)
     }
@@ -244,6 +260,10 @@ impl PermissionGate {
                     message: format!("denied by rule: {}", format_rule_string(&rule)),
                     decision_reason: DecisionReason::Rule(rule),
                 },
+                RuleHit::Unclear(rule) => PermissionDecision::Deny {
+                    message: unclear_message(tool.name(), &rule),
+                    decision_reason: DecisionReason::Rule(rule),
+                },
                 _ => PermissionDecision::Allow {
                     updated_input: None,
                     decision_reason: None,
@@ -251,7 +271,7 @@ impl PermissionGate {
             });
         }
 
-        let mode = ctx.session.permission_mode();
+        let mode = ctx.permission_mode;
         if mode == PermissionMode::BypassPermissions {
             return Ok(PermissionDecision::Allow {
                 updated_input: None,
@@ -292,7 +312,18 @@ impl PermissionGate {
                 });
             }
             RuleHit::Allow(rule) => (Some(rule), None),
-            RuleHit::Ask(rule) => (None, Some(rule)),
+            RuleHit::Ask(rule) => {
+                let message = format!(
+                    "{} matches {}, which requires confirmation",
+                    tool.name(),
+                    format_rule_string(&rule)
+                );
+                (None, Some((rule, message)))
+            }
+            RuleHit::Unclear(rule) => {
+                let message = unclear_message(tool.name(), &rule);
+                (None, Some((rule, message)))
+            }
             RuleHit::None => (None, None),
         };
 
@@ -307,7 +338,8 @@ impl PermissionGate {
             });
         }
 
-        // 5. 模式级硬拒绝 —— 读 session（运行时可变），不读 config 的初始值。
+        // 5. 模式级硬拒绝 —— 模式取 `ctx.permission_mode`：调用方每次从会话的当前
+        //    模式填它（委派收窄后的模式也落在这里），不是 config 的初始值。
         //    这两条同样要压过 pending 的工具自判 Allow，否则 Plan 模式下
         //    `Write`（自判 Allow）照样能落盘，`DontAsk` 也拦不住任何自判工具。
         // A tool may opt its self-`Allow` out of *mode* denials when that
@@ -316,7 +348,11 @@ impl PermissionGate {
         // affect the rule engine or the bypass-immune list above, both of
         // which have already had their say.
         let mode_denials_apply = !(tool_self_allow && tool.self_allow_overrides_mode());
-        if mode_denials_apply && matches!(mode, PermissionMode::Plan) && !tool.is_read_only(input) {
+        if mode_denials_apply
+            && matches!(mode, PermissionMode::Plan)
+            && !tool.is_read_only(input)
+            && !tool.leaves_plan_mode()
+        {
             return Ok(PermissionDecision::Deny {
                 message: "plan mode forbids non-readonly tools".into(),
                 decision_reason: DecisionReason::Mode(mode),
@@ -331,24 +367,17 @@ impl PermissionGate {
 
         // An ask rule outranks the tool's own allow: it prompts in every mode
         // that prompts at all and denies under dontAsk.
-        if let Some(rule) = rule_ask {
+        if let Some((rule, message)) = rule_ask {
             match mode {
                 PermissionMode::DontAsk => {
                     return Ok(PermissionDecision::Deny {
-                        message: format!(
-                            "dontAsk mode and an ask rule matched: {}",
-                            format_rule_string(&rule)
-                        ),
+                        message: format!("dontAsk mode: {message}"),
                         decision_reason: DecisionReason::Rule(rule),
                     });
                 }
                 _ => {
                     return Ok(PermissionDecision::Ask {
-                        message: format!(
-                            "{} matches {}, which requires confirmation",
-                            tool.name(),
-                            format_rule_string(&rule)
-                        ),
+                        message,
                         decision_reason: Some(DecisionReason::Rule(rule)),
                     });
                 }
@@ -418,8 +447,8 @@ impl PermissionGate {
             | PermissionMode::Plan
             // Bypass 在第 1 步之后就返回了；列在这里只为 match 穷尽。
             | PermissionMode::BypassPermissions => {
-                // Plan 命中此处说明 tool 是 read_only（非只读的在第 5 步已经
-                // deny 了）—— 默认 allow
+                // Plan 下走到这里的非只读工具只有 `leaves_plan_mode` 的那个，
+                // 其余在第 5 步已经 deny 了；只读的默认 allow
                 if matches!(mode, PermissionMode::Plan) && tool.is_read_only(input) {
                     return Ok(PermissionDecision::Allow {
                         updated_input: None,
@@ -517,6 +546,7 @@ mod tests {
         own_decision: Option<base::tool::PermissionDecision>,
         match_content: Option<String>,
         invalid: bool,
+        leaves_plan: bool,
     }
 
     impl FakeTool {
@@ -527,7 +557,12 @@ mod tests {
                 own_decision: None,
                 match_content: None,
                 invalid: false,
+                leaves_plan: false,
             }
+        }
+        fn leaves_plan(mut self) -> Self {
+            self.leaves_plan = true;
+            self
         }
         fn invalid(mut self) -> Self {
             self.invalid = true;
@@ -560,6 +595,9 @@ mod tests {
         }
         fn is_read_only(&self, _: &Value) -> bool {
             self.read_only
+        }
+        fn leaves_plan_mode(&self) -> bool {
+            self.leaves_plan
         }
         async fn validate_input(
             &self,
@@ -864,6 +902,53 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(d, PermissionDecision::Deny { .. }));
+    }
+
+    #[tokio::test]
+    async fn the_way_out_of_plan_mode_is_asked_about_or_decided_by_a_rule() {
+        let exit = || FakeTool::new("ExitPlanMode").leaves_plan();
+        let plan = ctx_with_mode(PermissionMode::Plan);
+        let asked = PermissionGate::empty()
+            .check(&exit(), &json!({}), &plan)
+            .await
+            .unwrap();
+        assert!(matches!(asked, PermissionDecision::Ask { .. }), "{asked:?}");
+
+        let rule = |behavior| PermissionRule {
+            source: base::permission::RuleSource::UserSettings,
+            behavior,
+            tool_name: "ExitPlanMode".into(),
+            rule_content: None,
+        };
+        let allowed = PermissionGate::new(RuleSet::new(vec![rule(
+            base::permission::RuleBehavior::Allow,
+        )]))
+        .check(&exit(), &json!({}), &plan)
+        .await
+        .unwrap();
+        assert!(
+            matches!(allowed, PermissionDecision::Allow { .. }),
+            "{allowed:?}"
+        );
+        let denied = PermissionGate::new(RuleSet::new(vec![rule(
+            base::permission::RuleBehavior::Deny,
+        )]))
+        .check(&exit(), &json!({}), &plan)
+        .await
+        .unwrap();
+        assert!(
+            matches!(denied, PermissionDecision::Deny { .. }),
+            "{denied:?}"
+        );
+
+        let write = PermissionGate::empty()
+            .check(&FakeTool::new("Write"), &json!({}), &plan)
+            .await
+            .unwrap();
+        assert!(
+            matches!(write, PermissionDecision::Deny { .. }),
+            "{write:?}"
+        );
     }
 
     #[tokio::test]
@@ -1172,6 +1257,14 @@ mod bypass_immune_tests {
         // 描述里提到但不在词边界上的不算
         assert!(!is_path_bypass_immune("echo norm -rf / please"));
     }
+}
+
+fn unclear_message(tool_name: &str, rule: &PermissionRule) -> String {
+    format!(
+        "{tool_name}: which program a command here runs cannot be told from its text, so it \
+         cannot be checked against {}",
+        format_rule_string(rule)
+    )
 }
 
 /// Best-effort extraction of permission-match content from a JSON tool

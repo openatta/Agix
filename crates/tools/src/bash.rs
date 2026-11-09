@@ -693,34 +693,83 @@ pub fn engine_git_for(
 
 /// Whether every path-looking argument of every command in `line` resolves
 /// inside the session's cwd or one of its additional directories.
+///
+/// Only a literal can be resolved here: a word the shell still expands — a
+/// `$VAR`, a `~` (whatever `HOME` the line set), a substitution — may name
+/// anything, and so may a relative path after a `cd` whose target is not a
+/// literal directory inside. Relative paths after a literal `cd` are checked
+/// against every directory the line may be in by then.
 fn path_args_stay_within(line: &str, ctx: &ToolContext) -> bool {
     if ctx.session.read_anywhere {
         return true;
     }
     let roots = crate::security::readable_roots(ctx);
-    permissions::shell::simple_commands(line)
-        .iter()
-        .flat_map(|cmd| permissions::shell::words(cmd).into_iter().skip(1))
-        .filter_map(|arg| match arg.split_once('=') {
-            Some((flag, value)) if flag.starts_with('-') => Some(value.to_string()),
-            _ if arg.starts_with('-') => None,
-            _ => Some(arg),
-        })
-        .filter(|arg| looks_like_path(arg))
-        .all(|arg| {
-            // `~user/...` is another account's home, which `ResolvedPath`
-            // does not expand.
-            if arg.starts_with('~') && arg != "~" && !arg.starts_with("~/") {
+    let inside = |arg: &str, base: &std::path::Path| {
+        permissions::path_rule::ResolvedPath::new(arg, base)
+            .all()
+            .all(|p| {
+                roots.iter().any(|root| {
+                    p.starts_with(root) || crate::security::is_path_within_root(p, root)
+                })
+            })
+    };
+    let mut bases = vec![ctx.cwd.clone()];
+    for segment in permissions::shell::simple_commands(line) {
+        let words = permissions::shell::lex(&segment);
+        let Some((command, args)) = words.split_first() else {
+            continue;
+        };
+        let mut redirect_target = false;
+        let mut operands = Vec::new();
+        for word in args {
+            if word.redirect {
+                redirect_target = true;
+                continue;
+            }
+            if word.substitutes || word.tilde {
                 return false;
             }
-            permissions::path_rule::ResolvedPath::new(&arg, &ctx.cwd)
-                .all()
-                .all(|p| {
-                    roots.iter().any(|root| {
-                        p.starts_with(root) || crate::security::is_path_within_root(p, root)
-                    })
-                })
-        })
+            if std::mem::take(&mut redirect_target) {
+                operands.push((word.text.as_str(), true));
+                continue;
+            }
+            match word.text.split_once('=') {
+                Some((flag, value)) if flag.starts_with('-') => {
+                    if value.starts_with('~') {
+                        return false;
+                    }
+                    operands.push((value, false));
+                }
+                _ if word.text.starts_with('-') && word.text != "-" => {}
+                _ => operands.push((word.text.as_str(), false)),
+            }
+        }
+        if matches!(command.text.as_str(), "cd" | "pushd") {
+            let Some((target, _)) = operands.first() else {
+                return false;
+            };
+            if *target == "-" {
+                continue;
+            }
+            if !bases.iter().all(|base| inside(target, base)) {
+                return false;
+            }
+            let entered: Vec<_> = bases
+                .iter()
+                .map(|base| permissions::path_rule::ResolvedPath::new(target, base).primary)
+                .collect();
+            bases.extend(entered);
+            continue;
+        }
+        let stays = operands
+            .iter()
+            .filter(|(arg, is_target)| *is_target || looks_like_path(arg))
+            .all(|(arg, _)| bases.iter().all(|base| inside(arg, base)));
+        if !stays {
+            return false;
+        }
+    }
+    true
 }
 
 fn looks_like_path(arg: &str) -> bool {
@@ -1029,9 +1078,22 @@ pub mod classify {
                 }
             }
         }
+        if first == "ps" && cmd.split_whitespace().skip(1).any(ps_arg_shows_environment) {
+            return true;
+        }
         cmd.split_whitespace()
             .skip(1) // 命令名本身不是路径参数
             .any(path_arg_hits_denied_read)
+    }
+
+    /// `ps eww`、macOS 的 `ps -E`、`-o environ` 会印出同一用户其它进程的环境变量——
+    /// daemon 自己的 API key 也在里面。宁可多问：不带 `-` 的 BSD 风格选项里有 `e`、
+    /// 带 `-` 的里有 `E`、格式里出现 `env`，都算。
+    fn ps_arg_shows_environment(arg: &str) -> bool {
+        match arg.strip_prefix('-') {
+            None => arg.contains('e'),
+            Some(flags) => flags.contains('E') || flags.contains("env"),
+        }
     }
 
     /// `default_deny_read()` 的路径拆成"相对 `$HOME` 的组件序列"，用于和命令参数
@@ -1774,6 +1836,22 @@ mod tests {
                 !read_only(bad),
                 "`{bad}` reads credentials — must not be read-only"
             );
+        }
+    }
+
+    #[test]
+    fn a_ps_that_prints_environments_is_not_read_only() {
+        for bad in [
+            "ps eww",
+            "ps auxe",
+            "ps -E",
+            "ps -o pid,environ",
+            "ps -wwE -p 1",
+        ] {
+            assert!(!read_only(bad), "`{bad}` prints environments");
+        }
+        for fine in ["ps", "ps aux", "ps -ef", "ps -p 123"] {
+            assert!(read_only(fine), "`{fine}`");
         }
     }
 

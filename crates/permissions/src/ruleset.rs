@@ -48,6 +48,10 @@ pub enum RuleHit {
     Allow(PermissionRule),
     Deny(PermissionRule),
     Ask(PermissionRule),
+    /// A shell command whose program cannot be told from its text, under a
+    /// deny or ask rule (this one) it might be spelled to slip past. Weighs
+    /// as an ask.
+    Unclear(PermissionRule),
     /// 没有规则命中
     None,
 }
@@ -60,9 +64,16 @@ impl RuleHit {
         match (&self, &other) {
             (RuleHit::Deny(_), _) => self,
             (_, RuleHit::Deny(_)) => other,
-            (RuleHit::Ask(_), _) => self,
-            (_, RuleHit::Ask(_)) => other,
+            (RuleHit::Ask(_) | RuleHit::Unclear(_), _) => self,
+            (_, RuleHit::Ask(_) | RuleHit::Unclear(_)) => other,
             _ => self,
+        }
+    }
+
+    fn refusal(self) -> RuleHit {
+        match self {
+            RuleHit::Allow(_) => RuleHit::None,
+            other => other,
         }
     }
 }
@@ -187,12 +198,18 @@ impl RuleSet {
             })
     }
 
-    /// shell 命令行的裁决：按 `shell::simple_commands` 切出的每条简单命令分别
+    /// shell 命令行的裁决：按 `shell::segments` 切出的每条简单命令分别
     /// 匹配。任何一段（或整行）命中 deny 就拒、命中 ask 就问；放行要求每一段都
     /// 被 allow——或者整行原样等于一条不带通配的 allow（用户批准过的正是这一整行）。
+    ///
+    /// deny / ask 另外按每段实际启动的程序再比一遍（`invocation::invocations`：
+    /// 去引号、展开花括号、剥 wrapper 及其选项、程序路径取名字），所以
+    /// `"rm" x`、`/bin/rm x`、`command -p rm x` 都撞得上 `Bash(rm:*)`；程序名
+    /// 读不出来的段（`$CMD x`）在有带内容的 deny / ask 规则时记为 `Unclear`。
+    /// allow 只认原文：规整只会让裁决更严，不会更宽。
     pub fn evaluate_shell(&self, tool_name: &str, line: &str) -> RuleHit {
         let whole = self.evaluate(tool_name, Some(line));
-        let segments = crate::shell::simple_commands(line);
+        let segments = crate::shell::segments(line);
         if segments.is_empty() {
             return whole;
         }
@@ -201,7 +218,7 @@ impl RuleSet {
         let mut segment_allow = None;
         let mut all_allowed = true;
         for seg in &segments {
-            match self.evaluate(tool_name, Some(seg)) {
+            match self.evaluate(tool_name, Some(&seg.text)) {
                 RuleHit::Allow(r) => {
                     segment_allow.get_or_insert(r);
                 }
@@ -210,6 +227,7 @@ impl RuleSet {
                     refusal = refusal.restricted_by(other);
                 }
             }
+            refusal = refusal.restricted_by(self.refusal_of_what_runs(tool_name, &seg.source));
         }
         let exact_allow = match whole {
             RuleHit::Allow(r) if r.rule_content.as_deref() == Some(line.trim()) => Some(r),
@@ -221,11 +239,54 @@ impl RuleSet {
         };
 
         match (refusal, exact_allow, segment_allow) {
-            (r @ (RuleHit::Deny(_) | RuleHit::Ask(_)), _, _) => r,
+            (r @ (RuleHit::Deny(_) | RuleHit::Ask(_) | RuleHit::Unclear(_)), _, _) => r,
             (_, Some(r), _) => RuleHit::Allow(r),
             (_, None, Some(r)) if all_allowed => RuleHit::Allow(r),
             _ => RuleHit::None,
         }
+    }
+
+    fn refusal_of_what_runs(&self, tool_name: &str, source: &str) -> RuleHit {
+        use crate::invocation::{invocations, program_name, Invocation};
+        let mut refusal = RuleHit::None;
+        for run in invocations(source) {
+            match run {
+                Invocation::Runs(argv) => {
+                    let Some((program, args)) = argv.split_first() else {
+                        continue;
+                    };
+                    for spelled in [program.as_str(), program_name(program)] {
+                        let command = std::iter::once(spelled)
+                            .chain(args.iter().map(String::as_str))
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        refusal = refusal
+                            .restricted_by(self.evaluate(tool_name, Some(&command)).refusal());
+                    }
+                }
+                Invocation::Unknown => {
+                    if let Some(rule) = self.content_refusal(tool_name) {
+                        refusal = refusal.restricted_by(RuleHit::Unclear(rule));
+                    }
+                }
+            }
+        }
+        refusal
+    }
+
+    /// A deny (else an ask) rule on `tool_name` that names a content pattern —
+    /// one a command could be spelled to get past.
+    fn content_refusal(&self, tool_name: &str) -> Option<PermissionRule> {
+        let named = |behavior| {
+            self.rules.iter().find(|r| {
+                r.behavior == behavior
+                    && r.rule_content.is_some()
+                    && matches_tool_name(&r.tool_name, tool_name)
+            })
+        };
+        named(RuleBehavior::Deny)
+            .or_else(|| named(RuleBehavior::Ask))
+            .cloned()
     }
 
     /// `matches` 对命中的规则返回其特异性，不命中返回 `None`。

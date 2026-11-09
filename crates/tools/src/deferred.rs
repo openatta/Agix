@@ -144,6 +144,14 @@ impl Tool for DeferredTool {
         self.inner.permission_content_kind()
     }
 
+    fn self_allow_overrides_mode(&self) -> bool {
+        self.inner.self_allow_overrides_mode()
+    }
+
+    fn leaves_plan_mode(&self) -> bool {
+        self.inner.leaves_plan_mode()
+    }
+
     fn affected_paths(&self, input: &Value) -> Vec<PathBuf> {
         self.inner.affected_paths(input)
     }
@@ -305,6 +313,22 @@ mod tests {
             }
         }
         Arc::new(T(name))
+    }
+
+    #[test]
+    fn deferring_a_tool_keeps_what_the_permission_gate_asks_of_it() {
+        let out = apply_deferred_policy(
+            vec![
+                Arc::new(crate::plan_mode::ExitPlanModeTool) as Arc<dyn Tool>,
+                Arc::new(crate::task_message::TaskMessageTool),
+            ],
+            &["ExitPlanMode".to_string(), "TaskMessage".to_string()],
+        );
+        assert!(out.iter().all(|t| t.is_deferred()));
+        let exit = out.iter().find(|t| t.name() == "ExitPlanMode").unwrap();
+        assert!(exit.leaves_plan_mode());
+        let message = out.iter().find(|t| t.name() == "TaskMessage").unwrap();
+        assert!(message.self_allow_overrides_mode());
     }
 
     #[test]
