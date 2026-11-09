@@ -25,7 +25,6 @@
 //! 8. 其余 PermissionMode 分派：
 //!    - `AcceptEdits` 且工具只读 → allow；Edit / Write 走到这里说明工具自己
 //!      没放行（写项目外）或要确认（`.git` / `.agix`），照样 ask
-//!    - `Auto` / `Yolo` → classifier，Defer 则落到 ask
 //!    - 其余（含只读工具下的 `Plan`）→ ask / allow
 //!
 //! **为什么 2 的 Allow 要等到第 6 步才兑现**：`Write` / `Edit` / `Read` /
@@ -46,7 +45,6 @@ use crate::error::GateError;
 use crate::path_rule::ResolvedPath;
 use crate::rule::format_rule_string;
 use crate::ruleset::{path_rule_group, RuleHit, RuleSet};
-use async_trait::async_trait;
 use base::permission::PermissionRule;
 use base::permission::{DecisionReason, PermissionDecision, PermissionMode};
 use base::tool::ToolContext;
@@ -54,49 +52,8 @@ use base::tool::{PermissionContentKind, Tool};
 use serde_json::Value;
 use std::sync::{Arc, RwLock};
 
-/// Auto 模式下的 LLM-based 决策器。在没有规则匹配 + 工具自身没结论时，让小
-/// 模型（典型 haiku）看一眼工具调用，给出 allow / defer。
-///
-/// **职责非常窄**：classifier 不能 Deny —— 拒绝由 RuleSet 或工具自身负责。
-/// 如果 classifier 不能给出明确 Allow，就 Defer 让 gate fall through 到 Ask。
-/// 这保留了用户最终决定权，避免 model 过度自信酿成 destructive ops。
-#[async_trait]
-pub trait AutoClassifier: Send + Sync {
-    /// 决策入参：工具名、tool prompt（让 classifier 知道工具能干啥）、tool input（看具体调用）
-    async fn classify(
-        &self,
-        tool_name: &str,
-        tool_description: &str,
-        input: &Value,
-    ) -> ClassifyDecision;
-}
-
-/// classifier 决策。
-///
-/// `Serialize` + `Deserialize` 允许 LlmClassifier 持久化决策缓存到 ~/.agix/。
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "verdict", rename_all = "snake_case")]
-pub enum ClassifyDecision {
-    /// classifier 判定为安全，应允许执行。
-    Allow { reason: String },
-    /// classifier 判定为危险（仅 LLM-based classifier 使用）。对应的
-    /// `PermissionDecision::Deny` 将包含此 reason。
-    Deny { reason: String },
-    /// classifier 认为安全但建议改输入后执行（例如加 `--dry-run`）。
-    /// Gate 将其映射为 `Allow` 并在 decision_reason 附带建议内容。
-    AllowWithEdit {
-        reason: String,
-        /// 建议的修改内容（文本描述，不直接做 input 改写）。
-        suggested_edits: String,
-    },
-    /// classifier 不确定，让 gate 继续走 ask 流程
-    Defer,
-}
-
 pub struct PermissionGate {
     rules: Arc<RwLock<RuleSet>>,
-    /// `Auto` 模式生效时的 classifier。`None` 时 Auto 行为同 Default（fall to ask）。
-    auto_classifier: Option<Arc<dyn AutoClassifier>>,
     deny_rules_only: bool,
 }
 
@@ -105,7 +62,6 @@ impl PermissionGate {
     pub fn new(rules: RuleSet) -> Self {
         Self {
             rules: Arc::new(RwLock::new(rules)),
-            auto_classifier: None,
             deny_rules_only: false,
         }
     }
@@ -123,13 +79,6 @@ impl PermissionGate {
     /// Empty/default instance with no state.
     pub fn empty() -> Self {
         Self::new(RuleSet::empty())
-    }
-
-    /// 注入 Auto mode classifier。CLI 在 permission_mode == Auto 时构造 LLM-based
-    /// 实现；测试可以注入 mock。
-    pub fn with_auto_classifier(mut self, classifier: Arc<dyn AutoClassifier>) -> Self {
-        self.auto_classifier = Some(classifier);
-        self
     }
 
     /// Snapshot view of the rule list.
@@ -467,8 +416,6 @@ impl PermissionGate {
 
             PermissionMode::Default
             | PermissionMode::Plan
-            | PermissionMode::Auto
-            | PermissionMode::Yolo
             // Bypass 在第 1 步之后就返回了；列在这里只为 match 穷尽。
             | PermissionMode::BypassPermissions => {
                 // Plan 命中此处说明 tool 是 read_only（非只读的在第 5 步已经
@@ -478,52 +425,6 @@ impl PermissionGate {
                         updated_input: None,
                         decision_reason: Some(DecisionReason::Mode(mode)),
                     });
-                }
-                // Auto / Yolo 模式：如果挂了 classifier 就让它判一下。
-                // - Allow → 允许
-                // - Deny → 拒绝（仅 LLM-based classifier 产生）
-                // - AllowWithEdit → 允许（reason 附带建议内容）
-                // - Defer → 继续走 ask。Default 和 Plan(write) 直接走 ask。
-                if matches!(mode, PermissionMode::Auto | PermissionMode::Yolo) {
-                    if let Some(classifier) = &self.auto_classifier {
-                        let prompt_ctx = base::tool::PromptContext::default();
-                        let description = tool.prompt(&prompt_ctx).await;
-                        let decision = classifier.classify(tool.name(), &description, input).await;
-                        match decision {
-                            ClassifyDecision::Allow { reason } => {
-                                return Ok(PermissionDecision::Allow {
-                                    updated_input: None,
-                                    decision_reason: Some(DecisionReason::Other(format!(
-                                        "auto-classifier: {reason}"
-                                    ))),
-                                });
-                            }
-                            ClassifyDecision::Deny { reason } => {
-                                return Ok(PermissionDecision::Deny {
-                                    message: format!("classifier denied: {reason}"),
-                                    decision_reason: DecisionReason::Classifier {
-                                        classifier: "llm".into(),
-                                    },
-                                });
-                            }
-                            ClassifyDecision::AllowWithEdit {
-                                reason,
-                                suggested_edits,
-                            } => {
-                                let mut label = format!("auto-classifier: {reason}");
-                                if !suggested_edits.is_empty() {
-                                    label.push_str(&format!(
-                                        " (suggested edits: {suggested_edits})"
-                                    ));
-                                }
-                                return Ok(PermissionDecision::Allow {
-                                    updated_input: None,
-                                    decision_reason: Some(DecisionReason::Other(label)),
-                                });
-                            }
-                            ClassifyDecision::Defer => { /* fall through to Ask */ }
-                        }
-                    }
                 }
                 Ok(PermissionDecision::Ask {
                     message: format!("Allow {}?", tool.name()),
@@ -843,6 +744,12 @@ mod tests {
 
     #[tokio::test]
     async fn bypass_mode_consults_no_rule_no_protected_path_and_no_tool_verdict() {
+        for spelling in ["bypassPermissions", "auto", "yolo"] {
+            bypass_spelling_consults_nothing(spelling).await;
+        }
+    }
+
+    async fn bypass_spelling_consults_nothing(spelling: &str) {
         let deny_bash = || {
             RuleSet::new(vec![PermissionRule {
                 source: base::permission::RuleSource::PolicySettings,
@@ -851,7 +758,8 @@ mod tests {
                 rule_content: None,
             }])
         };
-        let ctx = ctx_with_mode(PermissionMode::BypassPermissions);
+        let mode: PermissionMode = serde_json::from_value(json!(spelling)).unwrap();
+        let ctx = ctx_with_mode(mode);
         let cases = [
             FakeTool::new("Bash").matches("rm -rf build"),
             FakeTool::new("Read").read_only().matches("~/.ssh/id_rsa"),
@@ -878,7 +786,7 @@ mod tests {
                         ..
                     }
                 ),
-                "{:?}: {d:?}",
+                "{spelling} {:?}: {d:?}",
                 tool.match_content
             );
         }
@@ -1054,163 +962,6 @@ mod tests {
     async fn default_mode_asks_when_no_rule() {
         let tool = FakeTool::new("Bash");
         let gate = PermissionGate::empty();
-        let d = gate
-            .check(&tool, &json!({}), &ctx_with_mode(PermissionMode::Default))
-            .await
-            .unwrap();
-        assert!(matches!(d, PermissionDecision::Ask { .. }));
-    }
-
-    #[tokio::test]
-    async fn auto_mode_without_classifier_falls_to_ask() {
-        // 没挂 classifier 时 Auto 退化为 Default ask
-        let tool = FakeTool::new("Bash");
-        let gate = PermissionGate::empty();
-        let d = gate
-            .check(&tool, &json!({}), &ctx_with_mode(PermissionMode::Auto))
-            .await
-            .unwrap();
-        assert!(matches!(d, PermissionDecision::Ask { .. }));
-    }
-
-    /// 测试用 stub classifier：固定返回某 ClassifyDecision。
-    struct StubClassifier(ClassifyDecision);
-
-    #[async_trait]
-    impl AutoClassifier for StubClassifier {
-        async fn classify(&self, _: &str, _: &str, _: &Value) -> ClassifyDecision {
-            self.0.clone()
-        }
-    }
-
-    #[tokio::test]
-    async fn auto_mode_with_classifier_allow_returns_allow() {
-        let tool = FakeTool::new("Read");
-        let gate = PermissionGate::empty().with_auto_classifier(Arc::new(StubClassifier(
-            ClassifyDecision::Allow {
-                reason: "obviously read-only".into(),
-            },
-        )));
-        let d = gate
-            .check(&tool, &json!({}), &ctx_with_mode(PermissionMode::Auto))
-            .await
-            .unwrap();
-        match d {
-            PermissionDecision::Allow {
-                decision_reason: Some(DecisionReason::Other(label)),
-                ..
-            } => {
-                assert!(label.contains("auto-classifier"));
-                assert!(label.contains("obviously read-only"));
-            }
-            other => panic!("expected Allow with auto-classifier reason, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn auto_mode_with_classifier_defer_falls_to_ask() {
-        let tool = FakeTool::new("Bash");
-        let gate = PermissionGate::empty()
-            .with_auto_classifier(Arc::new(StubClassifier(ClassifyDecision::Defer)));
-        let d = gate
-            .check(&tool, &json!({}), &ctx_with_mode(PermissionMode::Auto))
-            .await
-            .unwrap();
-        assert!(matches!(d, PermissionDecision::Ask { .. }));
-    }
-
-    #[tokio::test]
-    async fn auto_mode_with_classifier_deny_returns_deny() {
-        let tool = FakeTool::new("Bash");
-        let gate = PermissionGate::empty().with_auto_classifier(Arc::new(StubClassifier(
-            ClassifyDecision::Deny {
-                reason: "rm -rf / is destructive".into(),
-            },
-        )));
-        let d = gate
-            .check(&tool, &json!({}), &ctx_with_mode(PermissionMode::Auto))
-            .await
-            .unwrap();
-        match d {
-            PermissionDecision::Deny {
-                message,
-                decision_reason: DecisionReason::Classifier { classifier },
-            } => {
-                assert!(message.contains("destructive"));
-                assert_eq!(classifier, "llm");
-            }
-            other => panic!("expected Deny with classifier reason, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn auto_mode_with_classifier_allow_with_edit_returns_allow() {
-        let tool = FakeTool::new("Bash");
-        let gate = PermissionGate::empty().with_auto_classifier(Arc::new(StubClassifier(
-            ClassifyDecision::AllowWithEdit {
-                reason: "safe with dry-run".into(),
-                suggested_edits: "add --dry-run flag".into(),
-            },
-        )));
-        let d = gate
-            .check(&tool, &json!({}), &ctx_with_mode(PermissionMode::Auto))
-            .await
-            .unwrap();
-        match d {
-            PermissionDecision::Allow {
-                decision_reason: Some(DecisionReason::Other(label)),
-                ..
-            } => {
-                assert!(label.contains("dry-run"));
-                assert!(label.contains("add --dry-run flag"));
-            }
-            other => panic!("expected Allow with classifier reason, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn auto_mode_with_classifier_deny_short_circuits_to_deny() {
-        let tool = FakeTool::new("Bash");
-        let gate = PermissionGate::empty().with_auto_classifier(Arc::new(StubClassifier(
-            ClassifyDecision::Deny {
-                reason: "dangerous across any mode".into(),
-            },
-        )));
-        let d = gate
-            .check(&tool, &json!({}), &ctx_with_mode(PermissionMode::Auto))
-            .await
-            .unwrap();
-        assert!(matches!(d, PermissionDecision::Deny { .. }));
-    }
-
-    #[tokio::test]
-    async fn auto_mode_with_classifier_allow_with_edit_empty_edits() {
-        let tool = FakeTool::new("Read");
-        let gate = PermissionGate::empty().with_auto_classifier(Arc::new(StubClassifier(
-            ClassifyDecision::AllowWithEdit {
-                reason: "fine as-is".into(),
-                suggested_edits: String::new(),
-            },
-        )));
-        let d = gate
-            .check(&tool, &json!({}), &ctx_with_mode(PermissionMode::Auto))
-            .await
-            .unwrap();
-        assert!(matches!(d, PermissionDecision::Allow { .. }));
-    }
-
-    #[tokio::test]
-    async fn classifier_does_not_run_in_default_mode() {
-        // Default 模式根本不该调 classifier；这里给个会 panic 的 classifier 也安全
-        struct ExplodingClassifier;
-        #[async_trait]
-        impl AutoClassifier for ExplodingClassifier {
-            async fn classify(&self, _: &str, _: &str, _: &Value) -> ClassifyDecision {
-                panic!("should never be called in Default mode");
-            }
-        }
-        let tool = FakeTool::new("Read");
-        let gate = PermissionGate::empty().with_auto_classifier(Arc::new(ExplodingClassifier));
         let d = gate
             .check(&tool, &json!({}), &ctx_with_mode(PermissionMode::Default))
             .await

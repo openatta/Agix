@@ -3,8 +3,6 @@
 use serde::{Deserialize, Serialize};
 
 /// 权限模式。
-///
-/// `auto` 仅在启用 transcript 分类器时有意义。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum PermissionMode {
@@ -12,18 +10,13 @@ pub enum PermissionMode {
     Default,
     Plan,
     AcceptEdits,
+    #[serde(alias = "auto", alias = "yolo")]
     BypassPermissions,
-    /// 启用 auto-mode 分类器才有意义
-    Auto,
     DontAsk,
     /// Bubble permission requests up to parent agent in team/coordinator
     /// mode. Instead of prompting the user directly, the permission request is
     /// forwarded to the parent agent for decision.
     Bubble,
-    /// **YOLO mode**: aggressive auto-approval for power users. Automatically
-    /// allows known-safe operations (read, git, ls, etc.) using the YoloClassifier.
-    /// Feature-gated — falls back to Default behavior when the feature is disabled.
-    Yolo,
 }
 
 /// `interface::settings::PermissionMode` (serde/JSON-schema-facing, what
@@ -39,20 +32,18 @@ impl From<crate::settings::PermissionMode> for PermissionMode {
             crate::settings::PermissionMode::AcceptEdits => Self::AcceptEdits,
             crate::settings::PermissionMode::BypassPermissions => Self::BypassPermissions,
             crate::settings::PermissionMode::Plan => Self::Plan,
-            crate::settings::PermissionMode::Auto => Self::Auto,
             crate::settings::PermissionMode::DontAsk => Self::DontAsk,
             crate::settings::PermissionMode::Bubble => Self::Bubble,
-            crate::settings::PermissionMode::Yolo => Self::Yolo,
         }
     }
 }
 
 impl PermissionMode {
     /// Whether the user can set this mode via settings.json / CLI.
-    /// `Auto` and `Bubble` are program-only — they are set by the runtime
-    /// (classifier activation, team coordinator) and rejected from user config.
+    /// `Bubble` is program-only — set by the team coordinator runtime and
+    /// rejected from user config.
     pub fn is_user_settable(self) -> bool {
-        !matches!(self, Self::Auto | Self::Bubble)
+        !matches!(self, Self::Bubble)
     }
 }
 
@@ -110,9 +101,6 @@ pub enum DecisionReason {
     Mode(PermissionMode),
     Hook {
         hook_name: String,
-    },
-    Classifier {
-        classifier: String,
     },
     SubcommandResults,
     SafetyCheck,
@@ -228,6 +216,18 @@ mod tests {
         assert_eq!(s, serde_json::Value::String("bypassPermissions".into()));
         let back: PermissionMode = serde_json::from_value(s).unwrap();
         assert_eq!(back, PermissionMode::BypassPermissions);
+    }
+
+    #[test]
+    fn auto_and_yolo_are_bypass() {
+        for spelling in ["auto", "yolo"] {
+            let mode: PermissionMode = serde_json::from_value(spelling.into()).unwrap();
+            assert_eq!(mode, PermissionMode::BypassPermissions);
+            assert_eq!(
+                serde_json::to_value(mode).unwrap(),
+                serde_json::Value::String("bypassPermissions".into())
+            );
+        }
     }
 
     #[test]

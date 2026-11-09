@@ -67,11 +67,10 @@ pub struct TeamCreateInput {
     /// to let the team actually make changes, `DontAsk` to allow nothing
     /// beyond structurally-safe read-only tools, etc. — the same
     /// `PermissionMode` values `settings.json`'s own `permission_mode`
-    /// uses. `Auto` and `Bubble` aren't accepted here (rejected at
-    /// validation) — `Auto` needs a transcript classifier this call site
-    /// doesn't have, and `Bubble` needs a lead that's actually available to
-    /// answer mid-call, which isn't true for `TeamCreate`'s synchronous
-    /// batch mode (see this tool's own prompt for why).
+    /// uses. `Bubble` isn't accepted here (rejected at validation) — it
+    /// needs a lead that's actually available to answer mid-call, which
+    /// isn't true for `TeamCreate`'s synchronous batch mode (see this tool's
+    /// own prompt for why).
     #[serde(default)]
     pub permission_mode: Option<base::interface::settings::PermissionMode>,
 }
@@ -210,13 +209,11 @@ impl base::tool::Tool for TeamCreateTool {
         }
         if matches!(
             inp.permission_mode,
-            Some(base::interface::settings::PermissionMode::Auto)
-                | Some(base::interface::settings::PermissionMode::Bubble)
+            Some(base::interface::settings::PermissionMode::Bubble)
         ) {
             return Err(ToolError::Validation(
-                "permission_mode: \"auto\" and \"bubble\" are not valid here — \"auto\" needs \
-                 a transcript classifier this call site doesn't have, and \"bubble\" needs an \
-                 available lead, which a synchronous TeamCreate call doesn't have either"
+                "permission_mode: \"bubble\" is not valid here — it needs an available lead, \
+                 which a synchronous TeamCreate call doesn't have"
                     .into(),
             ));
         }

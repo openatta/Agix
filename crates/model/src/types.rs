@@ -956,7 +956,7 @@ mod tests {
     }
 
     /// A single-turn request (the very first message of a session, or a
-    /// one-shot classifier call) has no stable conversation prefix to cache —
+    /// one-shot auxiliary call) has no stable conversation prefix to cache —
     /// marking the only user message would be a write nothing reads.
     #[test]
     fn single_user_turn_gets_no_message_breakpoint() {

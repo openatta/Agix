@@ -452,11 +452,10 @@ pub struct AgentInput {
     /// With `team_name` + `name`: the permission mode a new member runs under
     /// for its whole lifetime (default `plan`, read-only). The first member
     /// spawned under a team fixes it for the team; messaging a live member
-    /// ignores it. `auto` and `bubble` are rejected.
+    /// ignores it. `bubble` is rejected.
     // Fixed at spawn because a persistent member's lead is not around to
-    // answer per-call prompts (see `AgentTool::build_team_member_agent`):
-    // `bubble` needs that lead, and `auto` needs a transcript classifier this
-    // call site doesn't have.
+    // answer per-call prompts (see `AgentTool::build_team_member_agent`), and
+    // `bubble` needs that lead.
     #[serde(default)]
     pub permission_mode: Option<base::interface::settings::PermissionMode>,
 }
@@ -1104,9 +1103,7 @@ fn permission_restraint(mode: base::interface::settings::PermissionMode) -> u8 {
         M::DontAsk => 90,
         M::Bubble => 60,
         M::Default => 50,
-        M::Auto => 40,
         M::AcceptEdits => 30,
-        M::Yolo => 20,
         M::BypassPermissions => 10,
     }
 }
@@ -1640,7 +1637,7 @@ impl Inner {
     /// The model instance a sub-agent spawn should use. All three spawn
     /// points (`run_sub`, `run_sub_inner`, resume) are the same task type —
     /// `task_models` in settings.json is keyed by a small fixed taxonomy
-    /// (`main`/`subagent`/`team`/`classifier`/`compact`/`web_fetch`), not
+    /// (`main`/`subagent`/`compact`/`memory`/`web_search`), not
     /// by `subagent_type` (which agent *kind* — "general-purpose",
     /// "code-reviewer", etc. — a different axis entirely), so the lookup
     /// key here is always the literal `"subagent"` task type regardless of
@@ -4070,14 +4067,12 @@ impl base::tool::Tool for AgentTool {
                 }
                 if matches!(
                     inp.permission_mode,
-                    Some(base::interface::settings::PermissionMode::Auto)
-                        | Some(base::interface::settings::PermissionMode::Bubble)
+                    Some(base::interface::settings::PermissionMode::Bubble)
                 ) {
                     return Err(base::error::ToolError::Validation(
-                        "permission_mode: \"auto\" and \"bubble\" are not valid here — \"auto\" \
-                         needs a transcript classifier this call site doesn't have, and \
-                         \"bubble\" needs an available lead, which a persistent member's lead \
-                         (only runs code during its own turns) doesn't reliably have either"
+                        "permission_mode: \"bubble\" is not valid here — it needs an available \
+                         lead, which a persistent member's lead (only runs code during its own \
+                         turns) doesn't reliably have"
                             .into(),
                     ));
                 }
@@ -6252,17 +6247,27 @@ mod catalog_tests {
     }
 
     #[tokio::test]
-    async fn call_rejects_auto_permission_mode_for_persistent_members() {
+    async fn auto_for_a_persistent_member_is_bypass() {
         let agent_tool = team_enabled_agent_tool();
         let ctx = ToolContext::for_test(std::path::PathBuf::from("/tmp"));
         let input = serde_json::json!({
-            "prompt": "hi", "team_name": "t", "name": "worker", "permission_mode": "auto",
+            "prompt": "hi", "team_name": "t-auto", "name": "worker", "permission_mode": "auto",
         });
-        let result =
-            base::tool::Tool::call(&agent_tool, input, ctx, ProgressSender::noop("t")).await;
-        assert!(
-            result.is_err(),
-            "\"auto\" needs a transcript classifier this call site doesn't have"
+        base::tool::Tool::call(&agent_tool, input, ctx, ProgressSender::noop("t"))
+            .await
+            .unwrap();
+        wait_until_idle(&agent_tool, &team_key("t-auto", "worker")).await;
+
+        let registry = agent_tool
+            .inner
+            .team_registry
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .unwrap();
+        assert_eq!(
+            registry.team_permission_mode("t-auto"),
+            Some(base::interface::settings::PermissionMode::BypassPermissions)
         );
     }
 

@@ -2227,12 +2227,9 @@ version = "0.3.9-2026110803"
 dependencies = [
  "async-trait",
  "base",
- "futures",
  "globset",
- "hex",
  "serde",
  "serde_json",
- "sha2",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",

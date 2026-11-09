@@ -97,7 +97,7 @@ impl Tool for EnterPlanModeTool {
         // `PermissionGate` dispatches on — so from the next tool call
         // onwards, non-read-only tools are actually denied rather than
         // merely discouraged by the text below.
-        ctx.session.set_permission_mode(PermissionMode::Plan);
+        ctx.session.enter_plan_mode();
 
         Ok(ToolResult::text(
             "Entered plan mode. You should now focus on exploring the codebase \
@@ -195,7 +195,7 @@ impl Tool for ExitPlanModeTool {
     ) -> Result<ToolResult, ToolError> {
         let input: ExitPlanModeInput = serde_json::from_value(input)?;
         if plan_mode_active(&ctx) {
-            ctx.session.set_permission_mode(PermissionMode::Default);
+            let restored = ctx.session.exit_plan_mode();
             // `allowed_prompts` are the permission grants the model is asking
             // for as part of leaving plan mode ("I will need to run the test
             // suite").
@@ -213,7 +213,7 @@ impl Tool for ExitPlanModeTool {
             }
             let note = input.note.unwrap_or_default();
             let mut msg = format!(
-                "Exited plan mode (now: Default).{}{}",
+                "Exited plan mode (now: {restored:?}).{}{}",
                 if note.is_empty() { "" } else { " note: " },
                 note
             );
@@ -317,6 +317,38 @@ mod tests {
             .unwrap();
         assert!(!plan_mode_active(&c));
         assert_eq!(c.session.permission_mode(), PermissionMode::Default);
+    }
+
+    #[tokio::test]
+    async fn exit_restores_the_mode_plan_was_entered_from() {
+        for before in [
+            PermissionMode::Default,
+            PermissionMode::AcceptEdits,
+            PermissionMode::BypassPermissions,
+            PermissionMode::DontAsk,
+        ] {
+            let c = session_ctx();
+            c.session.set_permission_mode(before);
+            EnterPlanModeTool
+                .call(serde_json::json!({}), c.clone(), ProgressSender::noop("t"))
+                .await
+                .unwrap();
+            EnterPlanModeTool
+                .call(serde_json::json!({}), c.clone(), ProgressSender::noop("t"))
+                .await
+                .unwrap();
+            let r = ExitPlanModeTool
+                .call(serde_json::json!({}), c.clone(), ProgressSender::noop("t"))
+                .await
+                .unwrap();
+            assert_eq!(c.session.permission_mode(), before);
+            match r.content {
+                base::tool::ToolResultContent::Text(s) => {
+                    assert!(s.contains(&format!("now: {before:?}")), "{s}")
+                }
+                _ => panic!("expected text"),
+            }
+        }
     }
 
     #[tokio::test]

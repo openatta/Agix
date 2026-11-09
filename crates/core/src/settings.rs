@@ -178,28 +178,25 @@ pub enum PermissionMode {
     Default,
     /// Auto-accept edits to files (Write/Edit), prompt for others.
     AcceptEdits,
-    /// Bypass all permission checks.
+    /// Bypass all permission checks. `auto` and `yolo` are accepted as
+    /// other spellings of this mode and read back as `bypassPermissions`.
+    #[serde(alias = "auto", alias = "yolo")]
     BypassPermissions,
     /// Plan mode — only allow read-only tools.
     Plan,
-    /// Auto mode — skip prompts for known-safe operations.
-    /// **Program-only**: requires transcript classifier; cannot be set by user.
-    Auto,
     /// Don't ask — deny any tool not explicitly allowed (no prompt).
     DontAsk,
     /// Bubble mode — forward permission requests up to a parent agent.
     /// **Program-only**: set by team/coordinator runtime; cannot be set by user.
     Bubble,
-    /// YOLO mode — aggressive auto-approval for power users.
-    Yolo,
 }
 
 impl PermissionMode {
     /// Whether the user can set this mode via settings.json / CLI.
-    /// `Auto` and `Bubble` are program-only — they are set by the runtime
-    /// (classifier activation, team coordinator) and rejected from user config.
+    /// `Bubble` is program-only — set by the team coordinator runtime and
+    /// rejected from user config.
     pub fn is_user_settable(self) -> bool {
-        !matches!(self, Self::Auto | Self::Bubble)
+        !matches!(self, Self::Bubble)
     }
 
     /// How permissive this mode is, on a total order — higher grants more
@@ -221,8 +218,6 @@ impl PermissionMode {
     /// - `Bubble` is `Default` with the question routed to a parent agent
     ///   rather than a human; the same set of calls still needs approval.
     /// - `AcceptEdits` additionally waves through `Write`/`Edit`.
-    /// - `Auto` then `Yolo` hand progressively more of the decision to a
-    ///   classifier.
     /// - `BypassPermissions` asks nothing at all.
     pub fn permissiveness(self) -> u8 {
         match self {
@@ -231,9 +226,7 @@ impl PermissionMode {
             Self::Default => 2,
             Self::Bubble => 3,
             Self::AcceptEdits => 4,
-            Self::Auto => 5,
-            Self::Yolo => 6,
-            Self::BypassPermissions => 7,
+            Self::BypassPermissions => 5,
         }
     }
 
@@ -1081,33 +1074,40 @@ mod tests {
 
     #[test]
     fn permission_mode_deserializes_bubble_and_dontask() {
-        // dontAsk is user-settable; bubble and auto are program-only. Settings
-        // must deserialize all but validation rejects non-user-settable modes.
         let b: PermissionMode = serde_json::from_str("\"bubble\"").unwrap();
         assert_eq!(b, PermissionMode::Bubble);
         assert!(!b.is_user_settable(), "Bubble is program-only");
-
-        let a: PermissionMode = serde_json::from_str("\"auto\"").unwrap();
-        assert_eq!(a, PermissionMode::Auto);
-        assert!(!a.is_user_settable(), "Auto is program-only");
 
         let d: PermissionMode = serde_json::from_str("\"dontAsk\"").unwrap();
         assert_eq!(d, PermissionMode::DontAsk);
         assert!(d.is_user_settable(), "DontAsk is user-settable");
 
-        // Validation: Bubble in settings is rejected.
         let s = Settings {
             permission_mode: PermissionMode::Bubble,
             ..Settings::defaults_for("test")
         };
         assert!(s.validate().is_err());
+    }
 
-        // Validation: Auto in settings is rejected.
-        let s = Settings {
-            permission_mode: PermissionMode::Auto,
-            ..Settings::defaults_for("test")
-        };
-        assert!(s.validate().is_err());
+    #[test]
+    fn auto_and_yolo_in_settings_json_mean_bypass() {
+        for spelling in ["auto", "yolo"] {
+            let root = tempfile::tempdir().unwrap();
+            let project = root.path().join("project");
+            write_settings(&project, &format!(r#"{{"permission_mode": "{spelling}"}}"#));
+            let settings = Settings::load(
+                root.path().join("global"),
+                root.path().join("scene"),
+                project,
+                "code",
+                "m",
+            );
+            assert_eq!(settings.permission_mode, PermissionMode::BypassPermissions);
+            assert_eq!(
+                serde_json::to_value(settings.permission_mode).unwrap(),
+                serde_json::json!("bypassPermissions")
+            );
+        }
     }
 
     #[test]

@@ -3688,6 +3688,69 @@ async fn allow_client_permission_override_lets_a_client_opt_out() {
     srv.stop().await;
 }
 
+#[tokio::test]
+async fn auto_and_yolo_open_a_session_that_reports_bypass_permissions() {
+    for spelling in ["auto", "yolo"] {
+        let mut settings = ask_settings();
+        settings.allow_client_permission_override = true;
+        let (srv, _seen) = start_scripted_server(
+            asking_bash_rounds("aliased.txt"),
+            settings,
+            Duration::from_secs(30),
+        )
+        .await;
+
+        let (frames, response) = rpc_streaming(
+            &srv.sock,
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "session.run_turn",
+                "params": {"message": "make a file", "options": {"permission_mode": spelling}},
+                "id": 1,
+            })
+            .to_string(),
+        )
+        .await;
+        assert!(response["result"].is_object(), "turn failed: {response}");
+        assert!(
+            events_of_kind(&frames, "prompt").is_empty(),
+            "{spelling} must not prompt: {frames:?}"
+        );
+        let sid = response["result"]["session_id"].as_str().unwrap();
+
+        let entries = srv
+            .store
+            .load(base::session::SessionId::parse(sid).unwrap())
+            .await
+            .unwrap();
+        let recorded = entries.iter().find_map(|env| match &env.entry {
+            history::entry::LogEntry::Extension { ns, payload, .. } if ns == "agix.session" => {
+                Some(payload["options"]["permission_mode"].clone())
+            }
+            _ => None,
+        });
+        assert_eq!(recorded, Some(serde_json::json!("bypassPermissions")));
+
+        let resumed = rpc(
+            &srv.sock,
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "session.resume",
+                "params": {"session_id": sid, "options": {"permission_mode": spelling}},
+                "id": 2,
+            })
+            .to_string(),
+        )
+        .await;
+        assert_eq!(
+            resumed["result"]["permission"]["mode"], "bypassPermissions",
+            "{resumed}"
+        );
+
+        srv.stop().await;
+    }
+}
+
 /// A session's options are part of what it is, not of the call that
 /// happened to build its engine: a reload rebuilds the engine, and the next
 /// turn — sent with no options at all — must run under the ones the session

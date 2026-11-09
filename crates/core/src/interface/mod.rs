@@ -61,7 +61,6 @@
 //! and **cannot be re-exported here** without pointing a dependency edge
 //! downward: `Compactor` (`compaction`), `HistoryStore` (`history`),
 //! `Plugin` (`runtime`), `TelemetryRecorder` (`telemetry`),
-//! `AutoClassifier` (`permissions`),
 //! `McpClient` (`mcp`), `AnthropicClient` (`model`), `SearchProvider`
 //! (`tools`). Anyone looking for the full map wants the extension-point
 //! index, not this directory.

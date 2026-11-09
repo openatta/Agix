@@ -8200,6 +8200,41 @@ mod resolve_session_permission_tests {
     }
 
     #[test]
+    fn auto_and_yolo_in_session_options_clamp_and_resolve_as_bypass() {
+        use base::interface::settings::PermissionMode;
+        for spelling in ["auto", "yolo"] {
+            let opts: SessionOptions =
+                serde_json::from_value(serde_json::json!({ "permission_mode": spelling })).unwrap();
+            assert_eq!(
+                opts.permission_mode,
+                Some(PermissionMode::BypassPermissions)
+            );
+
+            assert_eq!(
+                effective_permission_mode(&defaults(), Some(&opts)),
+                PermissionMode::Default,
+                "{spelling} must clamp like bypassPermissions"
+            );
+            let mut accepts_edits = defaults();
+            accepts_edits.permission_mode = PermissionMode::AcceptEdits;
+            assert_eq!(
+                effective_permission_mode(&accepts_edits, Some(&opts)),
+                PermissionMode::AcceptEdits
+            );
+
+            let mut bypass = defaults();
+            bypass.permission_mode = PermissionMode::BypassPermissions;
+            let (host, resolved) = resolve(&bypass, Some(&opts));
+            assert!(Arc::ptr_eq(&host, &resolved), "{spelling}");
+
+            let mut overridable = defaults();
+            overridable.allow_client_permission_override = true;
+            let (host, resolved) = resolve(&overridable, Some(&opts));
+            assert!(Arc::ptr_eq(&host, &resolved), "{spelling}");
+        }
+    }
+
+    #[test]
     fn settings_ask_default_is_overridable_per_session_without_becoming_allow_all() {
         let opts = SessionOptions {
             permission_mode: Some(base::interface::settings::PermissionMode::DontAsk),

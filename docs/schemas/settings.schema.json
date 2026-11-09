@@ -275,17 +275,12 @@
         },
         {
           "const": "bypassPermissions",
-          "description": "Bypass all permission checks.",
+          "description": "Bypass all permission checks. `auto` and `yolo` are accepted as\nother spellings of this mode and read back as `bypassPermissions`.",
           "type": "string"
         },
         {
           "const": "plan",
           "description": "Plan mode — only allow read-only tools.",
-          "type": "string"
-        },
-        {
-          "const": "auto",
-          "description": "Auto mode — skip prompts for known-safe operations.\n**Program-only**: requires transcript classifier; cannot be set by user.",
           "type": "string"
         },
         {
@@ -296,11 +291,6 @@
         {
           "const": "bubble",
           "description": "Bubble mode — forward permission requests up to a parent agent.\n**Program-only**: set by team/coordinator runtime; cannot be set by user.",
-          "type": "string"
-        },
-        {
-          "const": "yolo",
-          "description": "YOLO mode — aggressive auto-approval for power users.",
           "type": "string"
         }
       ]

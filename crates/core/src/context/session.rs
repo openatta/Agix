@@ -38,8 +38,9 @@ pub struct SessionState {
     /// command runs.
     pub sandbox_disabled: bool,
     /// 权限模式（运行时可变；EnterPlanMode / ExitPlanMode 工具会切）。
-    /// 私有 + Mutex 内部可变 —— 调用方走 `permission_mode()` / `set_permission_mode()`。
-    permission_mode: std::sync::Mutex<PermissionMode>,
+    /// 私有 + Mutex 内部可变 —— 调用方走 `permission_mode()` / `set_permission_mode()`
+    /// / `enter_plan_mode()` / `exit_plan_mode()`。
+    permission_mode: std::sync::Mutex<ModeSlot>,
     /// 模型自己维护的 todo 列表（TodoWrite 工具更新；/tasks 命令读取）。
     todos: std::sync::Mutex<Vec<TodoItem>>,
     /// 本会话已激活的 deferred 工具名集合。`Tool::is_deferred()`
@@ -80,6 +81,12 @@ pub struct SessionState {
     last_read_path: std::sync::Mutex<Option<PathBuf>>,
     /// What `StructuredOutput` last accepted in the current turn.
     structured_output: std::sync::Mutex<Option<serde_json::Value>>,
+}
+
+#[derive(Debug, Default)]
+struct ModeSlot {
+    current: PermissionMode,
+    before_plan: Option<PermissionMode>,
 }
 
 /// 一条文件快照。把"工具改之前"的状态存下来，用于 `/rewind`。
@@ -190,7 +197,7 @@ impl SessionState {
             cache_directories: Vec::new(),
             unattended: false,
             sandbox_disabled: false,
-            permission_mode: std::sync::Mutex::new(PermissionMode::Default),
+            permission_mode: std::sync::Mutex::new(ModeSlot::default()),
             todos: std::sync::Mutex::new(Vec::new()),
             activated_tools: std::sync::Mutex::new(HashSet::new()),
             running_tasks: std::sync::Mutex::new(HashMap::new()),
@@ -722,27 +729,44 @@ impl SessionState {
 
     /// Builder：设初始权限模式（CLI 启动时从 settings/CLI 注入）。
     pub fn with_permission_mode(self, mode: PermissionMode) -> Self {
-        *self
-            .permission_mode
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = mode;
+        self.set_permission_mode(mode);
         self
     }
 
-    /// 读当前模式（PermissionMode 是 Copy，返回值就行）。
-    pub fn permission_mode(&self) -> PermissionMode {
-        *self
-            .permission_mode
+    fn mode_slot(&self) -> std::sync::MutexGuard<'_, ModeSlot> {
+        self.permission_mode
             .lock()
             .unwrap_or_else(|e| e.into_inner())
     }
 
-    /// 切换模式（EnterPlanMode / ExitPlanMode / `/permissions` 命令）。
+    /// 读当前模式（PermissionMode 是 Copy，返回值就行）。
+    pub fn permission_mode(&self) -> PermissionMode {
+        self.mode_slot().current
+    }
+
+    /// 直接设模式，并忘掉进入计划模式前的那个。
     pub fn set_permission_mode(&self, mode: PermissionMode) {
-        *self
-            .permission_mode
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = mode;
+        *self.mode_slot() = ModeSlot {
+            current: mode,
+            before_plan: None,
+        };
+    }
+
+    /// 进计划模式，记下进入前的模式给 [`exit_plan_mode`](Self::exit_plan_mode)。
+    /// 已经在计划模式里时什么都不改。
+    pub fn enter_plan_mode(&self) {
+        let mut slot = self.mode_slot();
+        if slot.current != PermissionMode::Plan {
+            slot.before_plan = Some(slot.current);
+            slot.current = PermissionMode::Plan;
+        }
+    }
+
+    /// 退出计划模式，回到进入前的模式；会话一开始就在计划模式里的回到 `Default`。
+    pub fn exit_plan_mode(&self) -> PermissionMode {
+        let mut slot = self.mode_slot();
+        slot.current = slot.before_plan.take().unwrap_or_default();
+        slot.current
     }
 
     /// 读取当前 todo 列表（克隆给调用方）

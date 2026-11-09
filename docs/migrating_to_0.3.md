@@ -389,19 +389,37 @@ WebAssembly 载体整个移除。
 - `daemon.doctor` 的 `plugins.status` 不再出现 `packages-only`;带插件包的构建报 `enabled`。
 - `session.get` 多一个 `health`:会话的插件注册了健康检查时才有。
 
-## 0.3.9 之后
+## 0.3.9 之后:到 0.3.10
 
-### 部署 `agixd` 的
+### 部署 `agixd` 的、RPC 客户端
 
+- **`auto`、`yolo` 就是 `bypassPermissions`。** settings.json 的 `permission_mode`、
+  `options.permission_mode`、agent 类型 frontmatter 里写这两个,得到的都是完全放行,报回来是
+  `bypassPermissions`。以前 settings.json 里的 `auto` 被退回 `default`,`yolo` 与经 RPC 传进来的
+  `auto` 实际按 `default` 询问——配了它们的现在不再询问。只想少问几句的,用 `acceptEdits`
+  或 `default` 加 allow 规则。
+- Agent 工具(团队成员)和 `TeamCreate` 的 `permission_mode` 不再拒收 `auto`,按
+  `bypassPermissions` 处理;`bubble` 照旧拒收。
+- `ExitPlanMode` 回到 `EnterPlanMode` 之前的模式,不再一律回 `default`。
 - `feature_flags` 只剩 `cached_microcompact` 与 `reactive_compact`。`team_mode`、
   `plugin_marketplace`、`extended_memory`、`experimental_agent`、`recorder_auto_detect`、
   `dream_task` 从来没有生效,删除;配置里留着照样能加载,只是被忽略。`AGIX_FEATURE_*`
   环境变量同样从未生效。
 - 工具 `VerifyPlanExecution` 删除:它要读的计划正文从没有地方写入,调用总是报
   "No active plan found"。
+- `session.export` 的 `runtime.json` 去掉 `plan_text`(一直是 `null`)。
 
 ### 嵌入方
 
+- `PermissionMode::Auto`、`PermissionMode::Yolo` 删除(`base::permission` 与
+  `base::settings` 两份都删),用 `BypassPermissions`。`permissiveness()` 的取值跟着变了。
+- 权限分类器整个删除:`permissions::gate::{AutoClassifier, ClassifyDecision}`、
+  `PermissionGate::with_auto_classifier` / `with_yolo_classifier`、`permissions::llm_classifier`、
+  `permissions::yolo`、`DecisionReason::Classifier`、`call_purpose::CLASSIFY`;一并删掉只服务它的
+  `PermissionGate::{record_denial, record_success, consecutive_denials, total_denials,
+  should_fallback_to_prompting}`。
+- `SessionState` 多了 `enter_plan_mode()` / `exit_plan_mode()`;`set_permission_mode` 会忘掉
+  进入计划模式前记下的模式。
 - `base` 的 cargo feature `team-mode`、`plugin-marketplace`、`experimental-agent` 删除
   (什么也不控制)。`FeatureFlags::is_enabled`、`enabled_flags`、`apply_env_overrides` 删除。
 - `SessionState` 去掉 `plan_text` / `set_plan_text` / `clear_plan_text` 与 `plan_slug` 那三个;
@@ -415,7 +433,3 @@ WebAssembly 载体整个移除。
   (生产路径 `MemoryRetriever` 一直走它)。
 - `hooks::HookRunner::set_network`、`auth::OAuth2Client::with_network` 删除;后者要换出口直接设
   `net` 字段。
-
-### RPC 客户端
-
-- `session.export` 的 `runtime.json` 去掉 `plan_text`(一直是 `null`)。

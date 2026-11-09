@@ -17,9 +17,6 @@ serde_json    = { workspace = true }
 thiserror     = { workspace = true }
 globset       = { workspace = true }
 tracing       = { workspace = true }
-futures       = { workspace = true }
-sha2          = { workspace = true }
-hex           = { workspace = true }
 unicode-normalization = { workspace = true }
 uuid          = { workspace = true }
 [dev-dependencies]

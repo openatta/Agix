@@ -26,9 +26,7 @@ impl HookRunner {
         timeout_ms: Option<u64>,
     ) -> HookOutcome {
         let Some(executor) = &self.prompt_executor else {
-            return HookOutcome::Skipped(
-                "prompt-type hook needs a PromptHookExecutor injected (CLI does this for Auto mode)",
-            );
+            return HookOutcome::Skipped("prompt-type hook needs a PromptHookExecutor injected");
         };
         let timeout_dur = timeout_ms
             .map(Duration::from_millis)

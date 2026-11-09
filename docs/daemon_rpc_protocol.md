@@ -327,15 +327,20 @@ daemon 按**单轮**如实上报,不做跨轮/跨会话聚合。
 | `default` | 未显式放行的工具调用都发 `prompt` 询问(**默认**) |
 | `bubble` | 把询问上抛给父 Agent —— 程序专用,写进 settings.json 会被退回 `default` |
 | `acceptEdits` | 自动放行项目内的文件写入与只读调用,其余询问(项目外的写入照样询问) |
-| `auto` | 依赖会话分类器 —— 程序专用,同上 |
-| `yolo` | 激进自动放行 |
 | `bypassPermissions` | 不询问、不看任何规则 —— 规则里的 `deny`、`.ssh` / `.aws` / `.gnupg` 与 `/etc/passwd` 一类路径、`rm -rf /` 一类命令都放行;只有不合法的输入(没读过就改、超出上限、会被读错的路径)被拒,`Bash` 仍在 OS 沙箱里 |
+
+`auto`、`yolo` 是 `bypassPermissions` 的另外两种写法:在 settings.json、`options.permission_mode`、
+agent 类型的 frontmatter 里都收,解析出来就是 `bypassPermissions`,夹紧、存进会话日志、
+`session.resume` 报出来的也都是 `bypassPermissions`。
 
 表格是按**宽松程度从严到宽**排的,这个顺序就是会话级取值被夹紧的依据:会话只能
 比 settings 更严,不能更宽,除非 settings 里开了 `allow_client_permission_override`。
 
+会话中途 `EnterPlanMode` 进了 `plan`,`ExitPlanMode` 获准后回到进入前的那个模式;会话
+一开始就是 `plan` 的,退出后是 `default`。
+
 **越界不报错。** 经 RPC 传进来的 `permission_mode` 无论是什么,都不会被拒绝:比
-settings 宽的被**静默夹到 settings 允许的最宽处**并记一条 warn 日志,程序专用的两个
+settings 宽的被**静默夹到 settings 允许的最宽处**并记一条 warn 日志,程序专用的 `bubble`
 也只是这样被夹掉,不会有错误响应。所以客户端拿不到"你要的模式没生效"的信号 ——
 要确认实际生效的模式,读 `session.resume` 响应里的 `permission.mode`。
 

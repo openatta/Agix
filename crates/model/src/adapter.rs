@@ -1088,10 +1088,9 @@ mod map_stream_event_tests {
         assert_eq!(text, "hello world");
     }
 
-    /// `llm_classifier.rs` treats `ModelEvent::ContentBlockStart { block:
-    /// Text, .. }` as an alternate text source (some providers send whole
-    /// text blocks this way instead of via deltas) — this emission must
-    /// survive the tool_use accumulation rewrite.
+    /// Some providers send whole text blocks as `ContentBlockStart { Text }`
+    /// instead of via deltas, so this emission must survive the tool_use
+    /// accumulation.
     #[test]
     fn content_block_start_with_text_is_still_emitted() {
         let events = vec![StreamEvent::ContentBlockStart {

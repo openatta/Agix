@@ -82,19 +82,17 @@ pub struct AgentTypeDefinition {
 
 /// Parse the textual `permission_mode` an agent-type declaration carries —
 /// agent `.md` frontmatter and plugin manifests both spell it as a string.
-/// `auto`/`bubble` are program-only and deliberately unparseable here.
+/// `bubble` is program-only and deliberately unparseable here.
 pub fn parse_permission_mode(value: &str) -> Option<crate::interface::settings::PermissionMode> {
     use crate::interface::settings::PermissionMode;
     match value {
         "default" => Some(PermissionMode::Default),
         "acceptEdits" | "accept_edits" | "accept-edits" => Some(PermissionMode::AcceptEdits),
-        "bypassPermissions" | "bypass_permissions" | "bypass-permissions" => {
+        "bypassPermissions" | "bypass_permissions" | "bypass-permissions" | "auto" | "yolo" => {
             Some(PermissionMode::BypassPermissions)
         }
         "plan" => Some(PermissionMode::Plan),
         "dontAsk" | "dont_ask" | "dont-ask" => Some(PermissionMode::DontAsk),
-        // "auto" is program-only (requires a transcript classifier) and not
-        // settable from frontmatter; anything else is left unrecognized.
         _ => None,
     }
 }

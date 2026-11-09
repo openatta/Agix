@@ -208,7 +208,6 @@ impl CallOrigin {
 pub mod call_purpose {
     pub const COMPACT: &str = "compact";
     pub const MEMORY: &str = "memory";
-    pub const CLASSIFY: &str = "classify";
     pub const TITLE: &str = "title";
     pub const HOOK: &str = "hook";
     /// Team aggregation picking or merging its agents' results.
