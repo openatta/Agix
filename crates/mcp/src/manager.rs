@@ -1276,6 +1276,7 @@ mod tests {
                 startup_timeout_ms: Some(600),
                 ..Default::default()
             },
+            working_dir: None,
         };
         let (mut m, late) = McpManager::connect_all_within(
             HashMap::from([("mute".to_string(), mute)]),

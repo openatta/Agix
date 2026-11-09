@@ -525,7 +525,7 @@ WebAssembly 载体整个移除。
 - 未信任的项目同样扣下决定东西送到哪里的键:`providers`(整段)、指向项目自己 provider 的
   `default_provider` / `task_models` 条目、`model.base_url` / `model.auth_token`、`telemetry_url`、
   `recorder`、`instruction_file`,以及放进更多插件的 `plugins` 值;它的 skill 的 `allowed-tools`
-  不授予任何东西;全局层、场景层里相对路径的脚本绑定在未信任的项目里不绑定。这些都列进
+  不授予任何东西;全局层、场景层里相对路径的脚本绑定在未信任的项目里不绑定。全局层、场景层和插件的 stdio MCP server 在未信任的项目里以全局配置目录为工作目录启动(相对的 `command`、参数里的相对路径在那里解析),不再继承 daemon 的工作目录。这些都列进
   `requires_trust`,所以只改了 `providers.*.base_url` 的仓库也会让宿主弹出信任对话框。
   **自己往项目层写 provider、模型端点的部署**(在项目的 `.agix/settings.json` 里写 `model`、
   `providers` 的宿主)在 0.4 之前要把这些项目目录写进 `trusted`,否则翻缺省之后它们不生效。
@@ -1014,6 +1014,9 @@ WebAssembly 载体整个移除。
 
 #### MCP 与 OAuth
 
+- `mcp::config::McpServerConfig::Stdio` 多了 `working_dir: Option<PathBuf>`(不从配置读,
+  `serde` 跳过;`None` 是原来的行为),由新方法 `run_in(dir)` 设置;用结构体字面量构造它的要补
+  `working_dir: None`。
 - `McpServerConfig::InProcess` 删除,`McpPolicyGate::admit` 不再豁免它。`McpServerConfig` 新增
   `confined_to_own_env()`,`mcp::config` 新增 `expand_vars_with`;`McpError` 新增 `is_permanent()`。
 - `base::interface::mcp_servers::McpServers` 多了必须实现的

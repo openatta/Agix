@@ -711,11 +711,26 @@ async fn spawn_service(
 ) -> Result<Spawned, McpError> {
     match config {
         McpServerConfig::Stdio {
-            command, args, env, ..
+            command,
+            args,
+            env,
+            working_dir,
+            ..
         } => {
             // Expand $VAR/${VAR}/${VAR:-default}/$$ in command/args/env values
             // before spawning.
             let command = crate::config::expand_env_vars(command);
+            // Which directory a relative program path is taken from once
+            // `current_dir` is set differs between platforms; joined here, it
+            // is always the working directory.
+            let command = match working_dir {
+                Some(dir)
+                    if command.contains('/') && std::path::Path::new(&command).is_relative() =>
+                {
+                    dir.join(&command).to_string_lossy().into_owned()
+                }
+                _ => command,
+            };
             let args: Vec<String> = args
                 .iter()
                 .map(|a| crate::config::expand_env_vars(a))
@@ -724,9 +739,17 @@ async fn spawn_service(
                 .iter()
                 .map(|(k, v)| (k.clone(), crate::config::expand_env_vars(v)))
                 .collect();
-            spawn_stdio_service(server_name, &command, &args, &env, sink, env_policy)
-                .await
-                .map(Spawned::from)
+            spawn_stdio_service(
+                server_name,
+                &command,
+                &args,
+                &env,
+                working_dir.as_deref(),
+                sink,
+                env_policy,
+            )
+            .await
+            .map(Spawned::from)
         }
         McpServerConfig::StreamableHttp { url, headers, .. }
         | McpServerConfig::Sse { url, headers, .. } => {
@@ -769,6 +792,7 @@ async fn spawn_stdio_service(
     command: &str,
     args: &[String],
     env: &std::collections::HashMap<String, String>,
+    working_dir: Option<&std::path::Path>,
     sink: Option<crate::notify::NotificationSink>,
     env_policy: &base::interface::exec::local::SubprocessEnv,
 ) -> Result<
@@ -778,6 +802,9 @@ async fn spawn_stdio_service(
     let mut cmd = tokio::process::Command::new(command);
     for a in args {
         cmd.arg(a);
+    }
+    if let Some(dir) = working_dir {
+        cmd.current_dir(dir);
     }
     env_policy.apply(&mut cmd);
     for (k, v) in env {
@@ -1325,6 +1352,7 @@ done
             env: HashMap::new(),
             scope: None,
             timeouts,
+            working_dir: None,
         }
     }
 
@@ -1340,6 +1368,7 @@ done
                 startup_timeout_ms: Some(300),
                 ..Default::default()
             },
+            working_dir: None,
         };
         let started = Instant::now();
         let err = StdioMcpClient::connect("mute", &cfg).await.err().unwrap();
@@ -1460,6 +1489,7 @@ done
             env: HashMap::new(),
             scope: None,
             timeouts: Default::default(),
+            working_dir: None,
         };
         let client = StdioMcpClient::connect("sh", &cfg).await.unwrap();
         let pid: i32 = std::fs::read_to_string(&pid_file)
@@ -1509,6 +1539,7 @@ done
             env: HashMap::new(),
             scope: None,
             timeouts: Default::default(),
+            working_dir: None,
         };
         let bad_url = McpServerConfig::StreamableHttp {
             url: "not a url".into(),
@@ -1533,6 +1564,45 @@ done
         assert_eq!(failed, ["bad_url", "missing"]);
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stdio_server_given_a_directory_starts_there_and_its_relative_command_is_found_there()
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("where.txt");
+        let script = dir.path().join("server.sh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\npwd -P > '{}'\n", out.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let cfg = McpServerConfig::Stdio {
+            command: "./server.sh".into(),
+            args: Vec::new(),
+            env: HashMap::new(),
+            scope: None,
+            timeouts: Default::default(),
+            working_dir: None,
+        }
+        .run_in(dir.path());
+        let _ = StdioMcpClient::connect("probe", &cfg).await;
+
+        let mut seen = String::new();
+        for _ in 0..100 {
+            seen = std::fs::read_to_string(&out).unwrap_or_default();
+            if !seen.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            seen.trim(),
+            dir.path().canonicalize().unwrap().to_string_lossy()
+        );
+    }
+
     /// A stdio server is a child process like any other, and starts under the
     /// environment policy of the settings it was declared in.
     #[cfg(unix)]
@@ -1547,6 +1617,7 @@ done
             env: HashMap::new(),
             scope: None,
             timeouts: Default::default(),
+            working_dir: None,
         };
         let policy = SubprocessEnv {
             mode: SubprocessEnvMode::Allowlist,
@@ -1593,6 +1664,7 @@ done
                 env: HashMap::new(),
                 scope: None,
                 timeouts: Default::default(),
+                working_dir: None,
             },
             instructions: None,
             inner: tokio::sync::Mutex::new(None),
@@ -1641,6 +1713,7 @@ done
                 env: HashMap::new(),
                 scope: None,
                 timeouts: Default::default(),
+                working_dir: None,
             },
             instructions: None,
             inner: tokio::sync::Mutex::new(None),
@@ -1718,6 +1791,7 @@ done
                 env: HashMap::new(),
                 scope: None,
                 timeouts: Default::default(),
+                working_dir: None,
             },
             instructions: None,
             inner: tokio::sync::Mutex::new(None),
@@ -1825,6 +1899,7 @@ done
                     env: HashMap::new(),
                     scope: None,
                     timeouts: Default::default(),
+                    working_dir: None,
                 },
                 instructions: Some("test".into()),
                 inner: tokio::sync::Mutex::new(None),

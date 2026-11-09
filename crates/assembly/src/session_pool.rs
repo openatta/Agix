@@ -1381,6 +1381,24 @@ impl SessionPool {
         })
     }
 
+    /// Where a stdio server starts for the project `settings` were loaded
+    /// for. In an untrusted project every server running there is the user's,
+    /// a scene's or a plugin's, and starts in the global configuration
+    /// directory: a relative command or script path would otherwise be found
+    /// in the daemon's working directory, which may be that project.
+    #[cfg(feature = "mcp")]
+    fn placed_mcp_server(
+        &self,
+        settings: &Settings,
+        cfg: mcp::config::McpServerConfig,
+    ) -> mcp::config::McpServerConfig {
+        if settings.project_layer.trust.is_untrusted() {
+            cfg.run_in(&self.paths.global_root())
+        } else {
+            cfg
+        }
+    }
+
     /// Parse the servers `settings` configure and pass each through
     /// `admit_mcp`, a project's own after `confined_to_own_env`. Every entry
     /// that will not be connected gets a `mcp_connect_failed` event here.
@@ -1410,7 +1428,9 @@ impl SessionPool {
             let refusal = match parsed {
                 Ok(cfg) => match self.admit_mcp(name, &cfg) {
                     Ok(()) => {
-                        admitted.servers.insert(name.clone(), cfg);
+                        admitted
+                            .servers
+                            .insert(name.clone(), self.placed_mcp_server(settings, cfg));
                         continue;
                     }
                     Err(reason) => {
@@ -1927,12 +1947,11 @@ impl SessionPool {
             Some(project_root.unwrap_or(self.cwd.as_path()).to_path_buf()),
             scene_id.to_string(),
         );
-        let env = self
+        let target_settings = self
             .settings_for_project(target.0.as_deref(), scene_id)
-            .await
-            .sandbox
-            .subprocess_env
-            .clone();
+            .await;
+        let env = target_settings.sandbox.subprocess_env.clone();
+        let cfg = &self.placed_mcp_server(&target_settings, cfg.clone());
         let (statuses, entries, failure) = {
             let mut cache = self.mcp_by_project.lock().await;
             let current = cache

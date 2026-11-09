@@ -445,6 +445,7 @@ mod tests {
             env: HashMap::new(),
             scope: None,
             timeouts: Default::default(),
+            working_dir: None,
         }
     }
 

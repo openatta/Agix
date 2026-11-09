@@ -675,3 +675,44 @@ async fn a_projects_own_mcp_servers_wait_for_trust() {
         "{status}"
     );
 }
+
+#[cfg(all(unix, feature = "mcp"))]
+#[tokio::test]
+async fn the_users_mcp_servers_find_nothing_inside_an_untrusted_project() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("spawns.log");
+    let (home, work) = (dir.path().join("home"), dir.path().join("work"));
+    std::fs::create_dir_all(work.join(".agix")).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    for (root, mark) in [(&home, "global"), (&work, "project")] {
+        let script = root.join("mcp.sh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\necho \"{mark} $0\" >> '{}'\n", log.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mut global = untrusted_by_default();
+    global["mcp_servers"] = json!({
+        "by_arg": {"type": "stdio", "command": "/bin/sh", "args": ["mcp.sh"]},
+        "by_command": {"type": "stdio", "command": "./mcp.sh"},
+    });
+    std::fs::write(home.join("settings.json"), global.to_string()).unwrap();
+    std::fs::write(work.join(".agix/settings.json"), "{}").unwrap();
+    let daemon = Daemon::serve(dir, home, work).await;
+    let spawned = || std::fs::read_to_string(&log).unwrap_or_default();
+
+    daemon.ok("mcp.status", json!({})).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while !(spawned().contains("global mcp.sh") && spawned().contains("/home/./mcp.sh")) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "both servers start in the global directory; log: {:?}",
+            spawned()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(!spawned().contains("project"), "log: {:?}", spawned());
+}

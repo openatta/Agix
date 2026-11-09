@@ -25,6 +25,11 @@ pub enum McpServerConfig {
         scope: Option<Vec<String>>,
         #[serde(flatten)]
         timeouts: McpTimeouts,
+        /// Where the process starts and a relative `command` is found; the
+        /// daemon's own working directory when `None`. Set by the embedder
+        /// ([`McpServerConfig::run_in`]), never by configuration.
+        #[serde(skip)]
+        working_dir: Option<std::path::PathBuf>,
     },
     StreamableHttp {
         url: String,
@@ -352,6 +357,15 @@ impl McpServerConfig {
             | McpServerConfig::Sse { timeouts, .. }
             | McpServerConfig::WebSocket { timeouts, .. } => timeouts,
         }
+    }
+
+    /// A stdio server started in `dir`, with a relative `command` path and
+    /// relative arguments resolved there; other transports are unchanged.
+    pub fn run_in(mut self, dir: &std::path::Path) -> Self {
+        if let McpServerConfig::Stdio { working_dir, .. } = &mut self {
+            *working_dir = Some(dir.to_path_buf());
+        }
+        self
     }
 
     /// The `oauth` block of a remote server.
@@ -817,6 +831,7 @@ mod tests {
             env: HashMap::new(),
             scope: None,
             timeouts: Default::default(),
+            working_dir: None,
         };
         assert!(stdio.url().is_none());
 

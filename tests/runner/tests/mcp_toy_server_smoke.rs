@@ -38,6 +38,7 @@ async fn mcp_toy_server_connects_and_ping_round_trips() {
             env: HashMap::new(),
             scope: None,
             timeouts: Default::default(),
+            working_dir: None,
         },
     );
 
