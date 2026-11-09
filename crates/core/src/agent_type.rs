@@ -5,13 +5,13 @@
 //! declare agent types too, and they sit below that module.
 
 /// Where an [`AgentTypeDefinition`] came from, which decides whether its
-/// `permission_mode` / `max_turns` are honored as written or clamped.
+/// `max_turns` is honored as written or clamped.
 ///
-/// A definition can loosen the session it spawns into: `permission_mode`
-/// overwrites the parent's mode, and `max_turns` overwrites the API-call cap.
-/// That is the user's prerogative for a file they wrote themselves. It is not
-/// something a package downloaded from a marketplace gets to do: the agents
-/// module clamps such a definition to the parent session's mode and cap.
+/// `max_turns` overwrites the API-call cap, which may raise it: the user's
+/// prerogative for a file they wrote themselves, not something a package
+/// downloaded from a marketplace gets to do — the agents module clamps such
+/// a definition to the parent session's cap. `permission_mode` is clamped to
+/// the parent's mode whatever the source.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum AgentTypeSource {
     /// Shipped with Agix.
@@ -47,8 +47,8 @@ pub struct AgentTypeDefinition {
     pub disallowed_tools: Vec<String>,
     /// Optional model override (e.g. "claude-sonnet-4-20250514").
     pub model: Option<String>,
-    /// Optional permission-mode override for spawned subagents of this type,
-    /// independent of the parent session's mode.
+    /// Optional permission mode for spawned subagents of this type; one
+    /// looser than the parent session's is held to the parent's.
     pub permission_mode: Option<crate::interface::settings::PermissionMode>,
     /// Optional `ModelSettings::effort` override for spawned subagents, by
     /// name (`low` … `max`).

@@ -537,6 +537,8 @@ pub(crate) struct SubRun {
     disallowed_tools: Vec<String>,
     deny_rules: Vec<base::permission::PermissionRule>,
     output_schema: Option<Value>,
+    /// A mode the caller asked for (a team's), held to the parent's.
+    permission_mode: Option<base::interface::settings::PermissionMode>,
 }
 
 impl SubRun {
@@ -594,6 +596,28 @@ impl Permission for DenyRulesFirst {
             _ => {
                 self.inner
                     .check(tool_name, tool_input, cwd, session_id)
+                    .await
+            }
+        }
+    }
+    async fn check_for_delegate(
+        &self,
+        tool_name: &str,
+        tool_input: &Value,
+        cwd: &std::path::Path,
+        session_id: &str,
+        delegate: &Arc<base::context::SessionState>,
+    ) -> base::interface::permission::PermissionOutcome {
+        use base::interface::permission::PermissionOutcome;
+        match self
+            .rules
+            .check(tool_name, tool_input, cwd, session_id)
+            .await
+        {
+            denied @ PermissionOutcome::Deny { .. } => denied,
+            _ => {
+                self.inner
+                    .check_for_delegate(tool_name, tool_input, cwd, session_id, delegate)
                     .await
             }
         }
@@ -1088,45 +1112,6 @@ fn parse_effort(effort: &str) -> Option<Effort> {
     serde_json::from_value(serde_json::Value::String(effort.to_string())).ok()
 }
 
-/// How much a permission mode restrains the agent. Higher restrains more.
-///
-/// There is no natural ordering on `PermissionMode` — the variants describe
-/// different policies, not points on a scale — so this is a deliberate
-/// ranking, used for exactly one question: is the mode an agent type asks for
-/// at least as restrictive as the one it would otherwise inherit
-/// ([`apply_agent_type_overrides`])? Ties are fine; only a strict decrease is
-/// refused.
-fn permission_restraint(mode: base::interface::settings::PermissionMode) -> u8 {
-    use base::interface::settings::PermissionMode as M;
-    match mode {
-        M::Plan => 100,
-        M::DontAsk => 90,
-        M::Bubble => 60,
-        M::Default => 50,
-        M::AcceptEdits => 30,
-        M::BypassPermissions => 10,
-    }
-}
-
-/// Apply an `AgentTypeDefinition`'s `permission_mode`/`effort`/`max_turns`
-/// overrides to an already-built subagent `Settings`, in place. Called after
-/// `sub_settings()`/the inline equivalent in `run_sub_inner` — kept as a
-/// separate step (not folded into `settings_from_parent`) so it applies
-/// identically regardless of which of the two settings-construction paths
-/// built the base `Settings`.
-///
-/// Overrides from a plugin-declared type are **clamped**: the mode may only
-/// hold or increase [`permission_restraint`], and the API-call cap may only
-/// hold or decrease. An agent type is a plain data declaration, and once
-/// plugins can ship one it arrives over the network — a package naming
-/// `permission_mode = "bypassPermissions"` would otherwise switch the
-/// permission gate off for everything its sub-agent does, and `max_turns =
-/// 10000` would spend the user's tokens at a rate they never agreed to.
-///
-/// Types the user controls keep the unclamped behavior: overriding your own
-/// session is the point of writing the file. `ExecutionParams`'s
-/// `max_api_calls_per_turn` documents the same "one side must not silently
-/// widen the other" rule for scenes; this brings agent types in line.
 /// Whether an agent type's `allowed_tools` / `disallowed_tools` let a tool
 /// through. No type, or a type with neither list, admits everything.
 fn type_admits_tool(def: Option<&AgentTypeDefinition>, name: &str) -> bool {
@@ -1151,20 +1136,29 @@ fn contributed_tool_filter(
     })
 }
 
+/// Apply an `AgentTypeDefinition`'s `permission_mode`/`effort`/`max_turns`
+/// overrides to an already-built subagent `Settings`, in place — the same
+/// step whichever path built the base `Settings`.
+///
+/// The mode is held to the parent's whatever the type's source: a type can
+/// make its sub-agent stricter than the session that spawns it, never freer
+/// (`PermissionMode::min_permissive`). A project's `.agix/agents/*.md` is
+/// repository content, and a plugin's types arrive over the network; either
+/// naming `bypassPermissions` would otherwise switch the gate off for
+/// everything the sub-agent does. The API-call cap is clamped the same way
+/// for plugin types only: a cap the user wrote is theirs to raise.
 fn apply_agent_type_overrides(settings: &mut Settings, def: &AgentTypeDefinition) {
     if let Some(mode) = def.permission_mode {
-        if def.source.may_loosen()
-            || permission_restraint(mode) >= permission_restraint(settings.permission_mode)
-        {
-            settings.permission_mode = mode;
-        } else {
+        let clamped = mode.min_permissive(settings.permission_mode);
+        if clamped != mode {
             tracing::warn!(
                 agent_type = %def.name,
                 requested = ?mode,
                 inherited = ?settings.permission_mode,
-                "plugin-declared agent type asked for a looser permission mode; keeping the inherited one"
+                "agent type asked for a looser permission mode than its parent's; keeping the parent's"
             );
         }
+        settings.permission_mode = clamped;
     }
     if let Some(effort) = &def.effort {
         if let Some(level) = parse_effort(effort) {
@@ -2571,6 +2565,32 @@ impl AgentTool {
         self.permission_handler()
     }
 
+    /// A team member's permission: the parent's, judged in the member's own
+    /// mode, as any sub-agent's is — the parent's deny rules and its host's
+    /// answers reach the member. With no parent wired (an `AgentTool` built
+    /// on its own) there are no rules to inherit, and the member is judged by
+    /// its mode alone.
+    pub(crate) fn team_member_permission(
+        &self,
+        tools: &Arc<InMemoryToolRegistry>,
+        mode: base::interface::settings::PermissionMode,
+    ) -> Arc<dyn Permission> {
+        let wired = self
+            .inner
+            .parent_permission
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some();
+        if wired {
+            return self.permission_handler();
+        }
+        Arc::new(permissions::rule_set_permission::RuleSetPermission::new(
+            Arc::new(permissions::gate::PermissionGate::empty()),
+            tools.clone(),
+            mode.into(),
+        ))
+    }
+
     /// System prompt injected into the sub-agent's context for the given
     /// `subagent_type`, looked up from the merged built-in + disk catalog.
     fn type_prompt(&self, t: Option<&str>) -> Option<String> {
@@ -2738,7 +2758,9 @@ impl AgentTool {
         .await
     }
 
-    /// `run_sub` for a `TeamCreate` member.
+    /// `run_sub` for a `TeamCreate` member, in the team's `permission_mode`
+    /// held to the parent's.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn run_team_member(
         &self,
         prompt: String,
@@ -2747,6 +2769,7 @@ impl AgentTool {
         cancel: tokio_util::sync::CancellationToken,
         perm: Arc<dyn Permission>,
         subagent_type: Option<&str>,
+        permission_mode: Option<base::interface::settings::PermissionMode>,
     ) -> Result<String, base::error::ToolError> {
         let admission = self
             .inner
@@ -2761,7 +2784,10 @@ impl AgentTool {
             perm,
             subagent_type,
             None,
-            SubRun::default(),
+            SubRun {
+                permission_mode,
+                ..SubRun::default()
+            },
         )
         .await
     }
@@ -2792,6 +2818,9 @@ impl AgentTool {
         let mut sub_settings = self.sub_settings(model_override.as_deref(), cwd);
         if let Some(d) = &def {
             apply_agent_type_overrides(&mut sub_settings, d);
+        }
+        if let Some(mode) = run.permission_mode {
+            sub_settings.permission_mode = mode.min_permissive(sub_settings.permission_mode);
         }
         let scene = self.inner.scene_for_subagent(def.as_ref(), &sub_settings);
         let scene_id = scene.id().to_string();
@@ -3114,9 +3143,8 @@ impl AgentTool {
     /// `permission_mode` is the already-*resolved* grant this member runs
     /// under for its entire lifetime (resolution — explicit override vs.
     /// the team's established grant vs. the safe default — happens in
-    /// `spawn_or_message_team_member`, once, not here) — built into a real
-    /// `permissions::RuleSetPermission`, not the `AlwaysPermit`
-    /// `self.permission_handler()` would otherwise return.
+    /// `spawn_or_message_team_member`, once, not here), held to the parent's
+    /// mode; see [`Self::team_member_permission`] for its rules.
     async fn build_team_member_agent(
         &self,
         tools: Arc<InMemoryToolRegistry>,
@@ -3135,17 +3163,11 @@ impl AgentTool {
         if let Some(d) = &def {
             apply_agent_type_overrides(&mut sub_settings, d);
         }
+        sub_settings.permission_mode = permission_mode.min_permissive(sub_settings.permission_mode);
         let scene = self.inner.scene_for_subagent(def.as_ref(), &sub_settings);
         let scene_id = scene.id().to_string();
+        let perm = self.team_member_permission(&tools, sub_settings.permission_mode);
         let settings = Arc::new(sub_settings);
-        let perm: Arc<dyn Permission> =
-            Arc::new(permissions::rule_set_permission::RuleSetPermission::new(
-                Arc::new(permissions::gate::PermissionGate::new(
-                    permissions::ruleset::RuleSet::new(vec![]),
-                )),
-                tools.clone(),
-                permission_mode.into(),
-            ));
         let sid = base::id::Id::new().to_string();
         let sid_for_meta = sid.clone();
         let mut builder = Builder::new()
@@ -3711,6 +3733,23 @@ struct ParentPermission {
 /// refused rather than asked about.
 struct NoPrompt(Arc<dyn Permission>);
 
+fn refuse_a_question(
+    tool_name: &str,
+    outcome: base::interface::permission::PermissionOutcome,
+) -> base::interface::permission::PermissionOutcome {
+    use base::interface::permission::PermissionOutcome;
+    match outcome {
+        PermissionOutcome::Prompt { message, .. } => PermissionOutcome::Deny {
+            reason: format!(
+                "`{tool_name}` needs the user's approval, which a sub-agent started from a \
+                 program cannot ask for. Leave this step out of the program and run it \
+                 directly. Approval asked: {message}"
+            ),
+        },
+        other => other,
+    }
+}
+
 #[async_trait]
 impl Permission for NoPrompt {
     async fn check(
@@ -3720,17 +3759,25 @@ impl Permission for NoPrompt {
         cwd: &std::path::Path,
         session_id: &str,
     ) -> base::interface::permission::PermissionOutcome {
-        use base::interface::permission::PermissionOutcome;
-        match self.0.check(tool_name, tool_input, cwd, session_id).await {
-            PermissionOutcome::Prompt { message, .. } => PermissionOutcome::Deny {
-                reason: format!(
-                    "`{tool_name}` needs the user's approval, which a sub-agent started from a \
-                     program cannot ask for. Leave this step out of the program and run it \
-                     directly. Approval asked: {message}"
-                ),
-            },
-            other => other,
-        }
+        refuse_a_question(
+            tool_name,
+            self.0.check(tool_name, tool_input, cwd, session_id).await,
+        )
+    }
+    async fn check_for_delegate(
+        &self,
+        tool_name: &str,
+        tool_input: &Value,
+        cwd: &std::path::Path,
+        session_id: &str,
+        delegate: &Arc<base::context::SessionState>,
+    ) -> base::interface::permission::PermissionOutcome {
+        refuse_a_question(
+            tool_name,
+            self.0
+                .check_for_delegate(tool_name, tool_input, cwd, session_id, delegate)
+                .await,
+        )
     }
     fn bind_tool_registry(&self, tools: Arc<dyn base::tool::ToolRegistry>) {
         self.0.bind_tool_registry(tools);
@@ -3773,6 +3820,37 @@ impl Drop for Waiting<'_> {
     }
 }
 
+/// What `mode` refuses on its own, for a parent handler that can only judge
+/// in its own session's mode (the default `check_for_delegate`). A rule-set
+/// parent has already refused all of this, and more precisely.
+fn held_to_mode(
+    outcome: base::interface::permission::PermissionOutcome,
+    mode: base::permission::PermissionMode,
+    tool: Option<&dyn base::tool::Tool>,
+    input: &Value,
+) -> base::interface::permission::PermissionOutcome {
+    use base::interface::permission::PermissionOutcome;
+    use base::permission::PermissionMode;
+    match (mode, outcome) {
+        (_, denied @ PermissionOutcome::Deny { .. }) => denied,
+        (PermissionMode::Plan, _)
+            if tool.is_some_and(|t| {
+                !t.is_read_only(input) && !t.self_allow_overrides_mode() && !t.leaves_plan_mode()
+            }) =>
+        {
+            PermissionOutcome::Deny {
+                reason: "plan mode forbids non-readonly tools".into(),
+            }
+        }
+        (PermissionMode::DontAsk, PermissionOutcome::Prompt { message, .. }) => {
+            PermissionOutcome::Deny {
+                reason: format!("dontAsk mode: {message}"),
+            }
+        }
+        (_, outcome) => outcome,
+    }
+}
+
 #[async_trait]
 impl Permission for ParentPermission {
     async fn check(
@@ -3782,6 +3860,50 @@ impl Permission for ParentPermission {
         cwd: &std::path::Path,
         session_id: &str,
     ) -> base::interface::permission::PermissionOutcome {
+        self.decide(tool_name, tool_input, cwd, session_id, None)
+            .await
+    }
+
+    async fn check_for_delegate(
+        &self,
+        tool_name: &str,
+        tool_input: &Value,
+        cwd: &std::path::Path,
+        session_id: &str,
+        delegate: &Arc<base::context::SessionState>,
+    ) -> base::interface::permission::PermissionOutcome {
+        self.decide(tool_name, tool_input, cwd, session_id, Some(delegate))
+            .await
+    }
+
+    fn bind_tool_registry(&self, tools: Arc<dyn base::tool::ToolRegistry>) {
+        *self
+            .own_tools
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tools);
+    }
+
+    fn bind_session_state(&self, session: Arc<base::context::SessionState>) {
+        *self
+            .session
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(session);
+    }
+}
+
+impl ParentPermission {
+    /// The parent's verdict on a call of the sub-agent's — or, as `delegate`,
+    /// of the sub-agent's own delegate — judged against the caller's session
+    /// (its mode, what it has read), then asked of the host when it is a
+    /// question.
+    async fn decide(
+        &self,
+        tool_name: &str,
+        tool_input: &Value,
+        cwd: &std::path::Path,
+        session_id: &str,
+        delegate: Option<&Arc<base::context::SessionState>>,
+    ) -> base::interface::permission::PermissionOutcome {
         use base::interface::permission::PermissionOutcome;
         let own = self
             .own_tools
@@ -3789,28 +3911,48 @@ impl Permission for ParentPermission {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
             .and_then(|tools| tools.get(tool_name));
-        if let Some(tool) = own {
-            let ctx = ToolContext::from_engine_ctx(
+        let session = self
+            .session
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let judged = delegate.cloned().or_else(|| session.clone());
+        if let (Some(tool), None) = (&own, delegate) {
+            let mut ctx = ToolContext::from_engine_ctx(
                 cwd.to_path_buf(),
                 tokio_util::sync::CancellationToken::new(),
             );
+            if let Some(judged) = &judged {
+                ctx.session = judged.clone();
+            }
             if let base::tool::ValidationResult::Err(reason, _) =
                 tool.validate_input(tool_input, &ctx).await
             {
                 return PermissionOutcome::Deny { reason };
             }
         }
-        let outcome = self
-            .inner
-            .check(tool_name, tool_input, cwd, session_id)
-            .await;
-        let unattended = self
-            .session
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .is_some_and(|s| s.unattended);
-        if unattended {
+        let outcome = match &judged {
+            Some(judged) => {
+                let mode = session.as_ref().map_or(judged.permission_mode(), |own| {
+                    own.permission_mode()
+                        .min_permissive(judged.permission_mode())
+                });
+                held_to_mode(
+                    self.inner
+                        .check_for_delegate(tool_name, tool_input, cwd, session_id, judged)
+                        .await,
+                    mode,
+                    own.as_deref(),
+                    tool_input,
+                )
+            }
+            None => {
+                self.inner
+                    .check(tool_name, tool_input, cwd, session_id)
+                    .await
+            }
+        };
+        if session.as_ref().is_some_and(|s| s.unattended) {
             return outcome;
         }
         let PermissionOutcome::Prompt {
@@ -3885,10 +4027,16 @@ impl Permission for ParentPermission {
             Ok(runtime::agent::PermissionDecision::Permit) => PermissionOutcome::Permit,
             Ok(runtime::agent::PermissionDecision::PermitAlways { .. }) => {
                 // Persist on the *parent's* handler, which is where the rule
-                // engine actually lives — `self.inner` is the parent's
-                // `Permission`, so a sub-agent's "always" answer applies to
-                // the rest of the session exactly like the parent's would.
-                self.inner.add_persistent_allow(tool_name, None);
+                // engine actually lives, for what was asked — this command,
+                // this path — as the parent's own answer is. A tool not in
+                // the sub-agent's registry has no content to scope it by, and
+                // is permitted this once.
+                if let Some(tool) = &own {
+                    self.inner.add_persistent_allow(
+                        tool_name,
+                        tool.permission_match_content(tool_input).as_deref(),
+                    );
+                }
                 PermissionOutcome::Permit
             }
             Ok(runtime::agent::PermissionDecision::Deny { reason }) => {
@@ -3900,20 +4048,6 @@ impl Permission for ParentPermission {
                 reason: format!("`{tool_name}`: permission request closed without an answer"),
             },
         }
-    }
-
-    fn bind_tool_registry(&self, tools: Arc<dyn base::tool::ToolRegistry>) {
-        *self
-            .own_tools
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tools);
-    }
-
-    fn bind_session_state(&self, session: Arc<base::context::SessionState>) {
-        *self
-            .session
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(session);
     }
 }
 
@@ -4992,11 +5126,11 @@ mod catalog_tests {
         assert_eq!(settings.execution.max_api_calls_per_turn, 5);
     }
 
-    /// Overriding your own session is the point of writing the file, so a
-    /// type loaded from a directory the user controls keeps the unclamped
-    /// behavior.
+    /// A type in a directory the user controls may raise its own API-call
+    /// cap, but not loosen the permission mode: a project's `agents/` is
+    /// whatever the repository says.
     #[test]
-    fn local_agent_type_keeps_unclamped_override_behavior() {
+    fn local_agent_type_may_raise_its_cap_but_not_loosen_its_mode() {
         use base::interface::settings::PermissionMode as M;
         let def = AgentTypeDefinition {
             name: "mine".into(),
@@ -5012,17 +5146,8 @@ mod catalog_tests {
 
         apply_agent_type_overrides(&mut settings, &def);
 
-        assert_eq!(settings.permission_mode, M::BypassPermissions);
+        assert_eq!(settings.permission_mode, M::Default);
         assert_eq!(settings.execution.max_api_calls_per_turn, 200);
-    }
-
-    #[test]
-    fn permission_restraint_orders_plan_above_default_above_bypass() {
-        use base::interface::settings::PermissionMode as M;
-        assert!(permission_restraint(M::Plan) > permission_restraint(M::Default));
-        assert!(permission_restraint(M::Default) > permission_restraint(M::AcceptEdits));
-        assert!(permission_restraint(M::AcceptEdits) > permission_restraint(M::BypassPermissions));
-        assert!(permission_restraint(M::DontAsk) > permission_restraint(M::Default));
     }
 
     #[test]
@@ -5690,6 +5815,7 @@ mod catalog_tests {
             std::path::PathBuf::from("/tmp"),
             tokio_util::sync::CancellationToken::new(),
             Arc::new(AlwaysPermit),
+            None,
             None,
         );
         tokio::select! {
@@ -7082,6 +7208,123 @@ mod catalog_tests {
             base::interface::permission::PermissionOutcome::Permit
         ));
         assert_eq!(seen.lock().unwrap().as_slice(), ["Bash"]);
+    }
+
+    /// The parent's rules decide a sub-agent's call in the sub-agent's own
+    /// mode when that is stricter, and in the parent's when it is not.
+    #[tokio::test]
+    async fn the_parent_judges_a_sub_agents_call_in_the_stricter_of_the_two_modes() {
+        use base::interface::permission::PermissionOutcome;
+        use base::permission::PermissionMode;
+        let project = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("notes.txt"), "x").unwrap();
+        let registry = Arc::new(InMemoryToolRegistry::new());
+        tools::register_builtin_tools(&registry);
+        let parent = Arc::new(permissions::rule_set_permission::RuleSetPermission::new(
+            Arc::new(permissions::gate::PermissionGate::empty()),
+            registry.clone(),
+            PermissionMode::AcceptEdits,
+        ));
+        parent.bind_session_state(Arc::new(
+            base::context::SessionState::new(project.path().to_path_buf())
+                .with_permission_mode(PermissionMode::AcceptEdits),
+        ));
+        let agent_tool = test_agent_tool();
+        agent_tool.set_parent_permission(parent);
+        let sub = agent_tool.sub_permission();
+        sub.bind_tool_registry(registry);
+        let sub_session = Arc::new(base::context::SessionState::new(
+            project.path().to_path_buf(),
+        ));
+        sub.bind_session_state(sub_session.clone());
+        let check = |tool: &'static str, input: Value| {
+            let sub = sub.clone();
+            let cwd = project.path().to_path_buf();
+            async move { sub.check(tool, &input, &cwd, "sub").await }
+        };
+        let write = serde_json::json!({"file_path": project.path().join("a.txt"), "content": "x"});
+        let read_outside = serde_json::json!({"file_path": outside.path().join("notes.txt")});
+
+        sub_session.set_permission_mode(PermissionMode::AcceptEdits);
+        assert!(matches!(
+            check("Write", write.clone()).await,
+            PermissionOutcome::Permit
+        ));
+        assert!(matches!(
+            check("Read", read_outside.clone()).await,
+            PermissionOutcome::Permit
+        ));
+
+        sub_session.set_permission_mode(PermissionMode::Plan);
+        match check("Write", write.clone()).await {
+            PermissionOutcome::Deny { reason } => assert!(reason.contains("plan mode"), "{reason}"),
+            other => panic!("a plan-mode sub-agent wrote: {other:?}"),
+        }
+
+        sub_session.set_permission_mode(PermissionMode::Default);
+        assert!(
+            matches!(
+                check("Read", read_outside.clone()).await,
+                PermissionOutcome::Deny { .. }
+            ),
+            "a default-mode sub-agent is asked about a read outside; with no channel, refused"
+        );
+
+        sub_session.set_permission_mode(PermissionMode::BypassPermissions);
+        assert!(
+            matches!(
+                check("Bash", serde_json::json!({"command": "touch made"})).await,
+                PermissionOutcome::Deny { .. }
+            ),
+            "a sub-agent claiming bypass is still asked what the parent asks"
+        );
+    }
+
+    /// A team member is held to the parent's rules, not given a rule set of
+    /// its own.
+    #[tokio::test]
+    async fn a_team_member_is_judged_by_the_parents_rules() {
+        use base::interface::permission::PermissionOutcome;
+        use base::permission::{PermissionMode, PermissionRule, RuleBehavior, RuleSource};
+        let project = tempfile::tempdir().unwrap();
+        let registry = Arc::new(InMemoryToolRegistry::new());
+        tools::register_builtin_tools(&registry);
+        let parent = Arc::new(permissions::rule_set_permission::RuleSetPermission::new(
+            Arc::new(permissions::gate::PermissionGate::new(
+                permissions::ruleset::RuleSet::new(vec![PermissionRule {
+                    source: RuleSource::ProjectSettings,
+                    behavior: RuleBehavior::Deny,
+                    tool_name: "Write".into(),
+                    rule_content: Some("**/locked/**".into()),
+                }]),
+            )),
+            registry.clone(),
+            PermissionMode::AcceptEdits,
+        ));
+        let agent_tool = test_agent_tool();
+        agent_tool.set_parent_permission(parent);
+        let member = agent_tool.team_member_permission(
+            &registry,
+            base::interface::settings::PermissionMode::BypassPermissions,
+        );
+        member.bind_tool_registry(registry);
+        member.bind_session_state(Arc::new(
+            base::context::SessionState::new(project.path().to_path_buf())
+                .with_permission_mode(PermissionMode::AcceptEdits),
+        ));
+        let outcome = member
+            .check(
+                "Write",
+                &serde_json::json!({"file_path": project.path().join("locked/a.txt"), "content": "x"}),
+                project.path(),
+                "member",
+            )
+            .await;
+        assert!(
+            matches!(outcome, PermissionOutcome::Deny { .. }),
+            "{outcome:?}"
+        );
     }
 
     struct PromptsForEverything;

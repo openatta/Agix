@@ -36,6 +36,30 @@ pub trait Permission: Send + Sync {
         session_id: &str,
     ) -> PermissionOutcome;
 
+    /// [`Self::check`] for a call made by a delegate of this handler's
+    /// session — a sub-agent, a team member — judged against the delegate's
+    /// own [`SessionState`]: its permission mode, and what it has read (a
+    /// write to a file the delegate read is checked against the delegate's
+    /// reads, not the session's). The delegate's mode only ever tightens the
+    /// verdict: an implementation judges in the stricter of it and its own
+    /// session's mode.
+    ///
+    /// The default ignores `delegate` and judges as [`Self::check`]; the
+    /// caller then narrows that verdict as far as it can by itself.
+    ///
+    /// [`SessionState`]: crate::context::SessionState
+    async fn check_for_delegate(
+        &self,
+        tool_name: &str,
+        tool_input: &serde_json::Value,
+        cwd: &Path,
+        session_id: &str,
+        delegate: &Arc<crate::context::SessionState>,
+    ) -> PermissionOutcome {
+        let _ = delegate;
+        self.check(tool_name, tool_input, cwd, session_id).await
+    }
+
     /// Bind this handler to the tool registry the session actually dispatches
     /// against.
     ///

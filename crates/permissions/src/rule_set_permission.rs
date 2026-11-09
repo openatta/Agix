@@ -117,16 +117,16 @@ impl RuleSetPermission {
     fn tools(&self) -> Arc<dyn ToolRegistry> {
         self.tools.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
-}
 
-#[async_trait]
-impl Permission for RuleSetPermission {
-    async fn check(
+    /// `check` against the session's own state, or against `delegate`'s in
+    /// the stricter of the two sessions' modes.
+    async fn decide(
         &self,
         tool_name: &str,
         tool_input: &serde_json::Value,
         cwd: &Path,
         session_id: &str,
+        delegate: Option<&Arc<SessionState>>,
     ) -> PermissionOutcome {
         // Unknown tool name — fail closed.
         //
@@ -154,7 +154,7 @@ impl Permission for RuleSetPermission {
         // Prefer the session's live state (so a runtime `set_permission_mode`
         // — plan mode — is honored); fall back to a throwaway carrying the
         // construction-time mode when nothing was bound.
-        ctx.session = match self
+        let own = match self
             .session
             .read()
             .unwrap_or_else(|e| e.into_inner())
@@ -165,7 +165,14 @@ impl Permission for RuleSetPermission {
                 SessionState::new(cwd.to_path_buf()).with_permission_mode(self.permission_mode),
             ),
         };
-        ctx.permission_mode = ctx.session.permission_mode();
+        let own_mode = own.permission_mode();
+        (ctx.session, ctx.permission_mode) = match delegate {
+            Some(delegate) => (
+                delegate.clone(),
+                delegate.permission_mode().min_permissive(own_mode),
+            ),
+            None => (own, own_mode),
+        };
         ctx.additional_writable_dirs = ctx.session.additional_writable_dirs.clone();
         ctx.dangerously_disable_sandbox = ctx.session.sandbox_disabled;
 
@@ -183,6 +190,32 @@ impl Permission for RuleSetPermission {
                 reason: format!("permission check error: {e}"),
             },
         }
+    }
+}
+
+#[async_trait]
+impl Permission for RuleSetPermission {
+    async fn check(
+        &self,
+        tool_name: &str,
+        tool_input: &serde_json::Value,
+        cwd: &Path,
+        session_id: &str,
+    ) -> PermissionOutcome {
+        self.decide(tool_name, tool_input, cwd, session_id, None)
+            .await
+    }
+
+    async fn check_for_delegate(
+        &self,
+        tool_name: &str,
+        tool_input: &serde_json::Value,
+        cwd: &Path,
+        session_id: &str,
+        delegate: &Arc<SessionState>,
+    ) -> PermissionOutcome {
+        self.decide(tool_name, tool_input, cwd, session_id, Some(delegate))
+            .await
     }
 
     fn bind_tool_registry(&self, tools: Arc<dyn ToolRegistry>) {
@@ -417,6 +450,36 @@ mod tests {
                 .await,
             PermissionOutcome::Permit
         ));
+    }
+
+    #[tokio::test]
+    async fn a_delegates_narrower_mode_tightens_the_verdict_and_a_wider_one_does_not_loosen_it() {
+        let perm = RuleSetPermission::new(
+            Arc::new(PermissionGate::empty()),
+            registry_with(FakeTool {
+                name: "Write",
+                read_only: false,
+            }),
+            PermissionMode::Default,
+        );
+        let session = Arc::new(
+            SessionState::new(std::path::PathBuf::from("/tmp"))
+                .with_permission_mode(PermissionMode::Default),
+        );
+        perm.bind_session_state(session.clone());
+        let delegate = Arc::new(SessionState::new(std::path::PathBuf::from("/tmp")));
+        let input = json!({});
+        let judged =
+            || perm.check_for_delegate("Write", &input, Path::new("/tmp"), "s1", &delegate);
+
+        delegate.set_permission_mode(PermissionMode::Plan);
+        assert!(matches!(judged().await, PermissionOutcome::Deny { .. }));
+        delegate.set_permission_mode(PermissionMode::BypassPermissions);
+        assert!(matches!(judged().await, PermissionOutcome::Prompt { .. }));
+        session.set_permission_mode(PermissionMode::BypassPermissions);
+        delegate.set_permission_mode(PermissionMode::DontAsk);
+        assert!(matches!(judged().await, PermissionOutcome::Deny { .. }));
+        assert_eq!(session.permission_mode(), PermissionMode::BypassPermissions);
     }
 
     /// A temporary allow carrying `rule_content` must only match calls whose

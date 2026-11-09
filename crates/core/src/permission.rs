@@ -38,12 +38,33 @@ impl From<crate::settings::PermissionMode> for PermissionMode {
     }
 }
 
+impl From<PermissionMode> for crate::settings::PermissionMode {
+    fn from(m: PermissionMode) -> Self {
+        match m {
+            PermissionMode::Default => Self::Default,
+            PermissionMode::AcceptEdits => Self::AcceptEdits,
+            PermissionMode::BypassPermissions => Self::BypassPermissions,
+            PermissionMode::Plan => Self::Plan,
+            PermissionMode::DontAsk => Self::DontAsk,
+            PermissionMode::Bubble => Self::Bubble,
+        }
+    }
+}
+
 impl PermissionMode {
     /// Whether the user can set this mode via settings.json / CLI.
     /// `Bubble` is program-only — set by the team coordinator runtime and
     /// rejected from user config.
     pub fn is_user_settable(self) -> bool {
         !matches!(self, Self::Bubble)
+    }
+
+    /// The stricter of two modes — see
+    /// `settings::PermissionMode::permissiveness` for the order.
+    pub fn min_permissive(self, other: Self) -> Self {
+        crate::settings::PermissionMode::from(self)
+            .min_permissive(other.into())
+            .into()
     }
 }
 

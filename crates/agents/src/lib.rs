@@ -72,14 +72,8 @@ impl Module for AgentsModule {
 
     fn on_session(&self, cx: &mut SessionContext<'_>) -> Result<(), ModuleError> {
         let settings = cx.settings;
-        let defaults = EngineConfig::defaults_for(settings.model.model_name.clone());
-        let max_depth = defaults.max_agent_depth;
-        let engine_config = Arc::new({
-            let mut c = defaults;
-            c.max_tokens = settings.model.max_tokens;
-            c.fallback_model = settings.model.fallback_model.clone();
-            c
-        });
+        let engine_config = Arc::new(EngineConfig::from_settings(settings));
+        let max_depth = engine_config.max_agent_depth;
 
         let slots = self
             .slots

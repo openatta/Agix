@@ -83,27 +83,21 @@ impl AgentSpawner for RuntimeAgentSpawner {
         for t in extra_tools {
             tools.register(t);
         }
-        // `Some(mode)` — a real, rule-driven `Permission` built from the
-        // caller's chosen grant (see the trait doc comment). `None` keeps
-        // the prior behavior (`sub_permission()`, today `AlwaysPermit`).
-        // No `permission_rules` are threaded in here (empty `RuleSet`) —
-        // team members don't currently inherit the parent session's
-        // configured allow/deny rules, only the coarse `PermissionMode`
-        // itself; narrower per-tool rule inheritance is a possible future
-        // refinement, not done here.
-        let perm: Arc<dyn base::interface::permission::Permission> = match permission_mode {
-            Some(mode) => Arc::new(permissions::rule_set_permission::RuleSetPermission::new(
-                Arc::new(permissions::gate::PermissionGate::new(
-                    permissions::ruleset::RuleSet::new(vec![]),
-                )),
-                tools.clone(),
-                mode.into(),
-            )),
+        let perm = match permission_mode {
+            Some(mode) => self.agent_tool.team_member_permission(&tools, mode),
             None => self.agent_tool.sub_permission(),
         };
 
         self.agent_tool
-            .run_team_member(prompt, tools, cwd, cancel, perm, agent_type.as_deref())
+            .run_team_member(
+                prompt,
+                tools,
+                cwd,
+                cancel,
+                perm,
+                agent_type.as_deref(),
+                permission_mode,
+            )
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send>)
     }

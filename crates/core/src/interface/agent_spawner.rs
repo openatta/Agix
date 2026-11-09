@@ -73,17 +73,14 @@ pub trait AgentSpawner: Send + Sync {
     /// hook-triggered spawns, test fakes) keeps working unchanged without
     /// needing to know this method exists. Only `RuntimeAgentSpawner`
     /// overrides it for real.
-    /// `permission_mode`, when `Some`, is the permission grant this spawn
-    /// runs under (`base::interface::settings::PermissionMode` —
-    /// `BypassPermissions`/`Plan`/`DontAsk`/etc.), chosen once by the caller
-    /// at spawn time rather than negotiated interactively per tool call —
-    /// see `team::coordinator::OrchestrateRequest::permission_mode`'s doc
-    /// comment for why ("one team, one authorization" instead of either a
-    /// hardcoded blanket policy or an interactive bubble-up that has no
-    /// reliable listener). `None` — like `extra_tools` being empty —
-    /// delegates to `spawn_agent`'s existing behavior (today, that's
-    /// `AlwaysPermit`); only `RuntimeAgentSpawner` interprets `Some` for
-    /// real, by building a `permissions::RuleSetPermission` from it.
+    /// `permission_mode`, when `Some`, is the mode this spawn runs under
+    /// (`base::interface::settings::PermissionMode`), chosen once by the
+    /// caller at spawn time — see
+    /// `team::coordinator::OrchestrateRequest::permission_mode`'s doc comment
+    /// ("one team, one authorization"). It is held to the spawning session's
+    /// mode: it can make the member stricter, never freer, and the session's
+    /// rules apply to the member as to any sub-agent. `None` — like
+    /// `extra_tools` being empty — delegates to `spawn_agent`'s behavior.
     #[allow(clippy::too_many_arguments)]
     async fn spawn_agent_with_tools(
         &self,
