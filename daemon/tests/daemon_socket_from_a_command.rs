@@ -1,0 +1,248 @@
+//! A command a session runs cannot act as the daemon's host.
+//!
+//! The daemon's unix socket answers whoever reaches it, and `project.trust`,
+//! `mcp.addServer` or `session.respondToPrompt` from a model's own command
+//! would undo every other boundary. So a `Bash` call that talks JSON-RPC to
+//! the daemon gets nothing out of it: inside the OS sandbox it cannot connect,
+//! and outside it the daemon refuses a connection from its own descendant.
+//! The host's connection works throughout.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use daemon::config::{load_daemon_config, StaticDaemonPaths};
+use daemon::DaemonServer;
+use model::mock::MockAnthropicClient;
+use model::stream::{BlockDelta, ContentBlockStart, MessageDeltaPayload, StreamEvent, Usage};
+use serde_json::json;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::UnixStream;
+use tokio_util::sync::CancellationToken;
+
+const UNAUTHORIZED: i64 = -32003;
+
+/// Connects to the socket in `argv[1]` and asks it to trust `argv[2]`.
+const CLIENT: &str = r#"
+import json, socket, sys
+s = socket.socket(socket.AF_UNIX)
+try:
+    s.connect(sys.argv[1])
+except OSError as e:
+    print("connect " + "failed:", e)
+    sys.exit(0)
+request = {"jsonrpc": "2.0", "id": 1, "method": "project.trust",
+           "params": {"project_root": sys.argv[2], "trusted": True}}
+s.sendall((json.dumps(request) + "\n").encode())
+print("re" + "ply:", s.makefile().readline().strip())
+"#;
+
+fn text_round(text: &str) -> Vec<StreamEvent> {
+    vec![
+        StreamEvent::ContentBlockStart {
+            index: 0,
+            content_block: ContentBlockStart::Text {
+                text: String::new(),
+            },
+        },
+        StreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: BlockDelta::TextDelta { text: text.into() },
+        },
+        StreamEvent::ContentBlockStop { index: 0 },
+        StreamEvent::MessageDelta {
+            delta: MessageDeltaPayload {
+                stop_reason: Some(base::message::StopReason::EndTurn),
+                stop_sequence: None,
+            },
+            usage: Some(Usage::default()),
+        },
+    ]
+}
+
+fn bash_round(command: &str) -> Vec<StreamEvent> {
+    vec![
+        StreamEvent::ContentBlockStart {
+            index: 0,
+            content_block: ContentBlockStart::ToolUse {
+                id: "toolu_daemon".into(),
+                name: "Bash".into(),
+                input: serde_json::Value::Null,
+            },
+        },
+        StreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: BlockDelta::InputJsonDelta {
+                partial_json: json!({ "command": command }).to_string(),
+            },
+        },
+        StreamEvent::ContentBlockStop { index: 0 },
+        StreamEvent::MessageDelta {
+            delta: MessageDeltaPayload {
+                stop_reason: Some(base::message::StopReason::ToolUse),
+                stop_sequence: None,
+            },
+            usage: Some(Usage::default()),
+        },
+    ]
+}
+
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+fn has_python() -> bool {
+    std::process::Command::new("python3")
+        .arg("-c")
+        .arg("pass")
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// The socket is outside the state root, where `--socket` may put it: only
+/// the daemon having named it keeps a command off it.
+struct Daemon {
+    sock: PathBuf,
+    work: PathBuf,
+    model: Arc<MockAnthropicClient>,
+    _dir: tempfile::TempDir,
+}
+
+impl Daemon {
+    async fn start(sandboxed: bool) -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let (home, work) = (dir.path().join("home"), dir.path().join("work"));
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(work.join(".agix")).unwrap();
+        let global = json!({
+            "project_trust": {"default": "untrusted"},
+            "sandbox": {"dangerously_disable_sandbox": !sandboxed},
+        });
+        std::fs::write(home.join("settings.json"), global.to_string()).unwrap();
+
+        let sock = dir.path().join("agix.sock");
+        let paths =
+            StaticDaemonPaths::with_project(home.clone(), work.clone()).with_global(home.clone());
+        let mut config = load_daemon_config("claude-sonnet-4-6", 2000, Some(&sock), "code", &paths);
+        config.settings.memory_enabled = false;
+        config.settings.permission_mode =
+            base::interface::settings::PermissionMode::BypassPermissions;
+
+        let model = Arc::new(MockAnthropicClient::new());
+        let pool = daemon::assemble::pool(
+            &config,
+            Arc::new(scene::code::CodeScene::default()),
+            daemon::Assembly {
+                cwd: Some(work.clone()),
+                model_client: Some(model.clone()),
+                transcripts: daemon::Transcripts::Nowhere,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("the daemon assembles");
+
+        let server = Arc::new(DaemonServer::new(pool, CancellationToken::new()));
+        let listener = DaemonServer::bind_unix(&sock).unwrap();
+        tokio::spawn(async move {
+            let _ = server.serve_unix_listener(listener).await;
+        });
+        Self {
+            sock,
+            work,
+            model,
+            _dir: dir,
+        }
+    }
+
+    async fn ok(&self, method: &str, params: serde_json::Value) -> serde_json::Value {
+        let request = json!({"jsonrpc":"2.0","method":method,"params":params,"id":1});
+        let mut conn = UnixStream::connect(&self.sock).await.unwrap();
+        conn.write_all(format!("{request}\n").as_bytes())
+            .await
+            .unwrap();
+        let (r, _w) = conn.split();
+        let mut reader = BufReader::new(r);
+        loop {
+            let mut line = String::new();
+            let n = tokio::time::timeout(Duration::from_secs(120), reader.read_line(&mut line))
+                .await
+                .unwrap_or_else(|_| panic!("{method}: no response"))
+                .unwrap();
+            assert!(n > 0, "{method}: connection closed before a response");
+            let frame: serde_json::Value = serde_json::from_str(&line).unwrap();
+            if frame.get("id").is_some() {
+                assert!(frame.get("result").is_some(), "{method} failed: {frame}");
+                return frame["result"].clone();
+            }
+        }
+    }
+
+    fn project(&self) -> serde_json::Value {
+        json!({ "project_root": self.work })
+    }
+
+    /// Has the model run the client against the daemon's socket and returns
+    /// what the command printed, as the model was shown it.
+    async fn command_calls_the_daemon(&self) -> String {
+        let command = format!(
+            "python3 -c {} {} {}",
+            shell_quote(CLIENT),
+            shell_quote(&self.sock.display().to_string()),
+            shell_quote(&self.work.display().to_string()),
+        );
+        self.model.push_turn(bash_round(&command));
+        self.model.push_turn(text_round("done"));
+        self.ok("session.run_turn", json!({"message": "call the daemon"}))
+            .await;
+        let shown = self.model.nth_request(1).expect("the model saw the result");
+        let shown = serde_json::to_string(&shown).unwrap();
+        let start = shown
+            .find("connect failed:")
+            .or_else(|| shown.find("reply:"))
+            .unwrap_or_else(|| panic!("the command printed nothing: {shown}"));
+        shown[start..].chars().take(400).collect()
+    }
+
+    async fn assert_still_untrusted(&self) {
+        let status = self.ok("project.status", self.project()).await;
+        assert_eq!(status["trust"], "untrusted", "{status}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandboxed_command_cannot_reach_the_daemon() {
+    if !has_python() {
+        eprintln!("skipped: no python3");
+        return;
+    }
+    let daemon = Daemon::start(true).await;
+    daemon.assert_still_untrusted().await;
+    let printed = daemon.command_calls_the_daemon().await;
+    assert!(
+        !printed.contains("\\\"result\\\""),
+        "the command got an answer: {printed}"
+    );
+    #[cfg(target_os = "macos")]
+    assert!(
+        printed.starts_with("connect failed:"),
+        "the sandbox let it connect: {printed}"
+    );
+    daemon.assert_still_untrusted().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_daemon_refuses_a_command_it_started_outside_the_sandbox() {
+    if !has_python() {
+        eprintln!("skipped: no python3");
+        return;
+    }
+    let daemon = Daemon::start(false).await;
+    let printed = daemon.command_calls_the_daemon().await;
+    assert!(
+        printed.starts_with("reply:") && printed.contains(&UNAUTHORIZED.to_string()),
+        "the daemon did not refuse it: {printed}"
+    );
+    assert!(!printed.contains("\\\"result\\\""), "{printed}");
+    daemon.assert_still_untrusted().await;
+}

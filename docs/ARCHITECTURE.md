@@ -742,6 +742,19 @@ Linux 上 bwrap 加 `--unshare-ipc` 并遮住 `$XDG_RUNTIME_DIR/bus`、`$XDG_RUN
 未在真机 bubblewrap 上跑过)。有人值守的会话不加:命令经人确认,`open` 打开浏览器之类照常可用。
 网络敞开时,命令能连到的本机服务(sshd、容器守护进程)在任何策略下都是出口。
 
+daemon 自己是最近的那个本机服务:连上它的 socket 就是宿主,能 `mcp.addServer` 让 daemon 在沙箱
+外起程序、`project.trust` 自己的项目、`session.respondToPrompt` 自己批准自己的询问。所以不论
+哪种网络策略、有没有人值守,沙箱里的命令都连不上它:macOS profile 拒绝连状态目录下的任何 unix
+socket(项目就在状态目录里时除外)和这个进程监听的 socket(`--socket` 放在别处的也算),按解析后
+的路径比,符号链接、相对路径绕不过;这个进程的 TCP / WebSocket 端口同样拒绝。Linux 上 bwrap
+拒绝不了 connect,只能把 `/dev/null` 挂到状态目录与各场景目录下的每个 socket 文件、以及这个进程
+监听的 socket 上(目录本身照常可读);TCP 端口在 Linux 上只有断网才断得掉(Linux 这一半同样未在
+真机 bubblewrap 上跑过)。daemon 这一侧另有一道:unix socket 上对端进程是 daemon 自己起的
+(它的子孙,或者还在 daemon 起的某个进程组里——父进程退出后被 init 收养的后台进程也算),连接
+直接以 `UNAUTHORIZED` 拒绝,不论命令进没进沙箱;`setsid` 离开进程组的孤儿认不出来,这时靠沙箱。
+TCP / WebSocket 靠 token:子进程环境里没有 `AGIX_DAEMON_TOKEN`,但 `--token` 写在命令行上时
+`ps` 里谁都看得见,Linux 上这就是一条出口,所以用环境变量传 token。
+
 包管理与构建工具要写自己的缓存(`pip`、`npm`、`cargo`、`go` …),所以沙箱里的 `Bash`
 另外可写 `sandbox.cache_directories`:按工具链分组的缓存目录,缺省列好了 python / node /
 rust / go / java / ruby / dotnet / swift 的常见位置,开箱即用。设置文件里写一个组名就整组替换

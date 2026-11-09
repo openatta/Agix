@@ -7,6 +7,7 @@
 
 pub mod env;
 pub mod filesystem;
+pub mod lineage;
 #[cfg(feature = "http")]
 pub mod network;
 pub mod orphans;

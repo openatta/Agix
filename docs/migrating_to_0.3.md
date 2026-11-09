@@ -483,6 +483,15 @@ WebAssembly 载体整个移除。
   LaunchServices 起应用、开 URL)、`defaults write`(经 `cfprefsd` 写偏好)、`osascript` 给别的应用
   发 Apple event 都会失败;Linux 上命令进独立的 IPC 命名空间,会话 D-Bus 与 systemd 用户实例的
   socket 被遮住(`systemd-run --user`、`gdbus call --session` 失败)。有人值守的会话不变。
+- **daemon 不再服务它自己起的进程。** Unix socket 上的对端是 daemon 的子孙(模型调用的
+  `Bash` / `Monitor`、command hook、stdio MCP 服务器,以及它们留在后台、还在 daemon 起的进程组里
+  的进程)时,daemon 回一帧 `UNAUTHORIZED`(-32003,`id: null`)就关连接。沙箱里的命令另外连不上
+  状态目录下的任何 unix socket 和 daemon 监听的 socket(`--socket` 放在哪都算;macOS 拒绝
+  connect,Linux 把 `/dev/null` 挂在 socket 文件上),macOS 上也连不上 daemon 的 TCP / WebSocket
+  端口。以前模型的一条命令就能连上 socket,以宿主身份 `mcp.addServer`、`project.trust`、
+  `session.respondToPrompt`。让 hook 或 MCP 服务器回调 daemon 的,改由宿主转一手。`--token`
+  写在命令行上时 `ps` 里看得见,Linux 上沙箱里的命令可以拿它连 TCP 端口——用
+  `AGIX_DAEMON_TOKEN` 传。
 - agent 类型 frontmatter 的 `permission_mode` 真正作用到子 Agent 的权限判定上(以前写 `plan`
   不起作用),可以比父会话宽也可以严;父会话在 `plan` 时取两者中更严的那个,父会话是
   `bypassPermissions` 时随父会话,插件带来的类型只能收紧。团队成员(`TeamCreate`、`Agent` 的
@@ -889,6 +898,11 @@ WebAssembly 载体整个移除。
   `AgentTool::with_parent_tools` 的目录参数换成 `&[(PathBuf, AgentTypeSource)]`
   (`load_agent_types_from_dir` 多一个 `source`);新增 `agent_type_dirs(&Settings)` 按设置给出这三层。
 
+- `DaemonServer::bind_unix` 把 socket 登记给沙箱(`base::interface::exec::local::sandbox::
+  fence_socket`),`serve_tcp_listener` / `serve_ws_listener` 登记端口(`fence_port`);
+  `serve_unix_listener` 拒绝本进程起的进程(`base::interface::exec::local::lineage::started_here`)。
+  自己 bind 监听器、不经 `bind_unix` 的,调一次 `fence_socket`。嵌着 daemon 的进程里,自己起的
+  子进程连不上这个 socket:要连的客户端得是宿主自己或者别的、不由它起的进程。
 - `base::interface::exec::SandboxPolicy` 多了 `deny_ipc_escapes`,`base::tool::SandboxSettings`
   与 `base::context::config::SandboxPolicyConfig` 多了 `unattended_requires_network_policy`;
   用结构体字面量构造它们的要补字段(或改用 `..Default::default()`)。

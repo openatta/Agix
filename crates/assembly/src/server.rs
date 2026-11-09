@@ -22,6 +22,14 @@
 //! attacker-controlled `base_url`/`api_key` — treat socket/token exposure
 //! with the same care as exposing the LLM credentials themselves.
 //!
+//! The processes the daemon starts itself run as the same user, so file
+//! permissions alone would let a model's command in. They are kept out three
+//! ways: the unix socket refuses a peer this daemon started
+//! (`lineage::started_here`); the OS sandbox refuses a confined command's
+//! connect to the socket, and on macOS to the TCP / WebSocket ports
+//! (`sandbox::fence_socket` / `fence_port`); and no child inherits
+//! `AGIX_DAEMON_TOKEN`.
+//!
 //! That boundary does not cover tool execution: `session.run_turn` defaults
 //! to `ask` and raises `session.event{kind:"prompt"}` frames that
 //! `session.respondToPrompt` answers. See `crate::assemble::AllowAllPermission`
@@ -218,6 +226,30 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
+/// The pid of the peer on `stream`, if this process started it.
+fn started_by_this_daemon(stream: &tokio::net::UnixStream) -> Option<u32> {
+    let pid = u32::try_from(stream.peer_cred().ok()?.pid()?).ok()?;
+    base::interface::exec::local::lineage::started_here(pid).then_some(pid)
+}
+
+/// One error frame, so the refused process learns why, then the connection
+/// is dropped unread.
+async fn refuse_own_descendant(mut stream: tokio::net::UnixStream, pid: u32) {
+    warn!(
+        pid,
+        "refused a connection on the unix socket from a process this daemon started"
+    );
+    let refusal = RpcResponse::err(
+        serde_json::Value::Null,
+        codes::UNAUTHORIZED,
+        "this daemon does not serve processes it started itself",
+    );
+    if let Ok(mut line) = serde_json::to_vec(&refusal) {
+        line.push(b'\n');
+        let _ = stream.write_all(&line).await;
+    }
+}
+
 pub struct DaemonServer {
     pool: Arc<SessionPool>,
     /// Source of connection ids. Monotonic for the process lifetime — an id
@@ -291,6 +323,9 @@ impl DaemonServer {
         if self.tcp_token.read().await.is_none() {
             anyhow::bail!("TCP requires token");
         }
+        if let Ok(addr) = listener.local_addr() {
+            base::interface::exec::local::sandbox::fence_port(addr);
+        }
         loop {
             tokio::select! {
                 _ = self.shutdown_token.cancelled() => break,
@@ -325,7 +360,8 @@ impl DaemonServer {
     /// this user only; a directory it creates for it is this user's only
     /// too. Split from [`Self::serve_unix_listener`] so a caller can bind
     /// every listener before announcing the daemon — a client that finds it
-    /// must be able to connect.
+    /// must be able to connect. No command this process sandboxes can connect
+    /// to it.
     pub fn bind_unix(socket_path: &Path) -> anyhow::Result<UnixListener> {
         if let Some(parent) = socket_path.parent() {
             crate::discovery::create_private_dir(parent)?;
@@ -339,11 +375,17 @@ impl DaemonServer {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))?;
         }
+        base::interface::exec::local::sandbox::fence_socket(socket_path);
         info!(path=%socket_path.display());
         Ok(listener)
     }
 
     /// Accept loop over an already-bound unix listener.
+    ///
+    /// A connection from a process this daemon started — a command, a hook,
+    /// an MCP server, or what one of them left running — is refused: file
+    /// permissions cannot tell it from the host, and as a client it could
+    /// trust its own project or answer its own permission prompts.
     pub async fn serve_unix_listener(
         self: Arc<Self>,
         listener: UnixListener,
@@ -356,6 +398,10 @@ impl DaemonServer {
                         Ok((stream, _addr)) => {
                             let this = self.clone();
                             tokio::spawn(async move {
+                                if let Some(pid) = started_by_this_daemon(&stream) {
+                                    refuse_own_descendant(stream, pid).await;
+                                    return;
+                                }
                                 let (r, w) = stream.into_split();
                                 let writer: ByteWriter = Arc::new(AsyncMutex::new(Box::new(w)));
                                 let sink: Sink = Arc::new(LineSink(writer));

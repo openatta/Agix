@@ -42,6 +42,21 @@
 //! confined, writing at most the git directory and `.agix/worktrees/` when it
 //! creates a worktree, and only the session's `TMPDIR` otherwise.
 //!
+//! # What a confined command may not connect to
+//!
+//! The daemon it runs under: a command connected to the daemon's socket would
+//! be its host, free to add an MCP server that runs outside the sandbox, trust
+//! its own project or answer its own permission prompts. So under every
+//! policy, network open or not, a command cannot connect to a unix socket in
+//! the state root (unless the project lives there) or to one this process
+//! serves ([`fence_socket`], wherever `--socket` put it). macOS refuses the
+//! connect, by resolved path; Linux mounts `/dev/null` over the socket — over
+//! each one in the state root and its scene directories, not the directories
+//! themselves, which stay readable. macOS also refuses this process's TCP
+//! and WebSocket ports ([`fence_port`]); on Linux only `--unshare-net` cuts
+//! them off. The daemon refuses its own descendants on the unix socket as
+//! well, which is what holds where no backend runs.
+//!
 //! **The whole file is behind the `sandbox` feature, off by default.** What it
 //! constrains is the commands the *model* runs, which is defence in depth on a
 //! machine whose owner is sitting at it and a boundary only where the agent
@@ -93,7 +108,68 @@ pub use crate::interface::exec::{
     default_deny_read, Confined, Enforcement, NetworkMode, ProcessSpec, Sandbox, SandboxMode,
     SandboxPolicy,
 };
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::RwLock;
+
+/// What this process serves its clients on.
+static SERVED: RwLock<Served> = RwLock::new(Served {
+    sockets: Vec::new(),
+    ports: Vec::new(),
+});
+
+struct Served {
+    sockets: Vec<PathBuf>,
+    ports: Vec<SocketAddr>,
+}
+
+/// From now on, no command this process confines may connect to the unix
+/// socket at `path`. For a daemon's own listener, wherever `--socket` put it:
+/// a command connected to it would be its host.
+pub fn fence_socket(path: &Path) {
+    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let mut served = SERVED.write().unwrap_or_else(|e| e.into_inner());
+    if !served.sockets.contains(&path) {
+        served.sockets.push(path);
+    }
+}
+
+/// [`fence_socket`] for a TCP listener. Only the macOS backend can refuse a
+/// port; bwrap can cut the network only as a whole.
+pub fn fence_port(addr: SocketAddr) {
+    let mut served = SERVED.write().unwrap_or_else(|e| e.into_inner());
+    if !served.ports.contains(&addr) {
+        served.ports.push(addr);
+    }
+}
+
+/// The fenced sockets that are still there.
+#[cfg(all(feature = "sandbox", any(target_os = "macos", target_os = "linux")))]
+fn fenced_sockets() -> Vec<PathBuf> {
+    let served = SERVED.read().unwrap_or_else(|e| e.into_inner());
+    served
+        .sockets
+        .iter()
+        .filter(|p| is_socket(p))
+        .cloned()
+        .collect()
+}
+
+#[cfg(all(feature = "sandbox", target_os = "macos"))]
+fn fenced_ports() -> Vec<SocketAddr> {
+    SERVED
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .ports
+        .clone()
+}
+
+#[cfg(all(feature = "sandbox", any(target_os = "macos", target_os = "linux")))]
+fn is_socket(path: &Path) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    path.symlink_metadata()
+        .is_ok_and(|m| m.file_type().is_socket())
+}
 
 /// The state root to protect: the one the caller named, else the
 /// conventional `$HOME/.agix`.
@@ -535,6 +611,37 @@ fn build_macos_profile(cwd: &Path, additional: &[PathBuf], policy: &SandboxPolic
         }
     }
 
+    // Last, so that no allowlist entry above reopens them. The kernel matches
+    // a unix-socket connect against the socket's resolved path, so a symlink
+    // or a relative name meets the same rule.
+    if let Some(root) = roots
+        .state_root
+        .as_deref()
+        .filter(|root| !roots.cwd.starts_with(root))
+    {
+        s.push_str(&format!(
+            "(deny network-outbound (remote unix-socket (subpath \"{}\")))\n",
+            path(root)
+        ));
+    }
+    for socket in fenced_sockets() {
+        s.push_str(&format!(
+            "(deny network-outbound (remote unix-socket (literal \"{}\")))\n",
+            path(&socket)
+        ));
+    }
+    for addr in fenced_ports() {
+        let host = if addr.ip().is_loopback() {
+            "localhost"
+        } else {
+            "*"
+        };
+        s.push_str(&format!(
+            "(deny network-outbound (remote tcp \"{host}:{}\"))\n",
+            addr.port()
+        ));
+    }
+
     s
 }
 
@@ -686,6 +793,26 @@ fn bus_paths(runtime_dir: Option<PathBuf>, bus_address: Option<&str>) -> Vec<Pat
     paths
 }
 
+/// The unix sockets a command must not reach: those this process serves, and
+/// any in the state root or one of its scene directories, where daemons put
+/// theirs. bwrap cannot refuse a connect, only hide the file.
+#[cfg(all(feature = "sandbox", target_os = "linux"))]
+fn daemon_sockets(state_root: Option<&Path>) -> Vec<PathBuf> {
+    let mut sockets = fenced_sockets();
+    if let Some(root) = state_root {
+        let dirs = std::iter::once(root.to_path_buf()).chain(subdirs(&root.join("scenes")));
+        for dir in dirs {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            sockets.extend(entries.flatten().map(|e| e.path()).filter(|p| is_socket(p)));
+        }
+    }
+    sockets.sort();
+    sockets.dedup();
+    sockets
+}
+
 #[cfg(all(feature = "sandbox", target_os = "linux"))]
 fn linux_wrap(
     inner: ProcessSpec,
@@ -740,6 +867,9 @@ fn linux_wrap(
         for p in protected_scene_files(policy, state_root) {
             bind(&mut args, "--ro-bind-try", &p);
         }
+    }
+    for socket in daemon_sockets(roots.state_root.as_deref()) {
+        bind_over(&mut args, Path::new("/dev/null"), &socket);
     }
 
     // Deny-read: an empty tmpfs over a directory, /dev/null over a file.
@@ -1233,13 +1363,24 @@ mod tests {
         assert!(allow_idx > deny_idx);
     }
 
+    /// The profile without the rules that fence off the daemon itself, which
+    /// every network mode has.
+    #[cfg(target_os = "macos")]
+    fn network_mode_rules(profile: &str) -> String {
+        profile
+            .lines()
+            .filter(|l| !l.starts_with("(deny network-outbound"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_unrestricted_network_emits_no_network_rules() {
         let mut o = opts("ls", Path::new("/tmp/work"));
         o.policy.network_mode = NetworkMode::Unrestricted;
         let cmd = wrap(o);
-        let profile = &cmd.spec.args[1];
+        let profile = network_mode_rules(&cmd.spec.args[1]);
         assert!(
             !profile.contains("network"),
             "Unrestricted must not add any network rule, profile:\n{profile}"
@@ -1252,7 +1393,7 @@ mod tests {
         let mut o = opts("ls", Path::new("/tmp/work"));
         o.policy.network_mode = NetworkMode::DenyAll;
         let cmd = wrap(o);
-        let profile = &cmd.spec.args[1];
+        let profile = network_mode_rules(&cmd.spec.args[1]);
         assert!(profile.contains("(deny network*)"), "profile:\n{profile}");
         assert!(
             !profile.contains("network-outbound"),
@@ -1293,7 +1434,7 @@ mod tests {
         o.policy.network_mode = NetworkMode::Allowlist;
         o.policy.allowed_domains = vec![];
         let cmd = wrap(o);
-        let profile = &cmd.spec.args[1];
+        let profile = network_mode_rules(&cmd.spec.args[1]);
         assert!(profile.contains("(deny network*)"), "profile:\n{profile}");
         assert!(!profile.contains("network-outbound"), "profile:\n{profile}");
     }
@@ -1344,6 +1485,45 @@ mod tests {
         let unattended = wrap(o);
         assert!(!attended.spec.args.iter().any(|a| a == "--unshare-ipc"));
         assert!(unattended.spec.args.iter().any(|a| a == "--unshare-ipc"));
+    }
+
+    /// `/dev/null` is mounted over every socket in the state root's scene
+    /// directories and over every socket this process serves, after the
+    /// state root's own read-only mount so it lands on top.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_hides_the_daemons_sockets() {
+        let state = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let scene = state.path().join("scenes").join("code");
+        std::fs::create_dir_all(&scene).unwrap();
+        let in_state = scene.join("daemon.sock");
+        let served = elsewhere.path().join("served.sock");
+        let _listeners =
+            [&in_state, &served].map(|p| std::os::unix::net::UnixListener::bind(p).unwrap());
+        fence_socket(&served);
+
+        let mut o = opts("ls", Path::new("/tmp/work"));
+        o.policy.state_root = Some(state.path().to_path_buf());
+        let args = wrap(o).spec.args;
+        if !args.iter().any(|a| a == "--") {
+            return;
+        }
+        let state_mount = args
+            .windows(2)
+            .position(|w| w[0] == "--ro-bind" && Path::new(&w[1]) == resolve_path(state.path()))
+            .expect("the state root is mounted read-only");
+        for socket in [&in_state, &served] {
+            let socket = resolve_path(socket).display().to_string();
+            let hidden = args
+                .windows(3)
+                .position(|w| w[0] == "--ro-bind-try" && w[1] == "/dev/null" && w[2] == socket)
+                .unwrap_or_else(|| panic!("{socket} is not hidden: {args:?}"));
+            assert!(
+                hidden > state_mount,
+                "{socket} is hidden under the state root's mount"
+            );
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -1997,6 +2177,118 @@ mod tests {
         }
         assert!(!runs("git", &["add", "a"]));
         assert!(!s.project.join(".git").join("index").exists());
+    }
+
+    /// A unix socket that answers every connection and hangs up.
+    #[cfg(target_os = "macos")]
+    #[allow(clippy::unwrap_used)]
+    fn listening(path: PathBuf) -> PathBuf {
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        std::thread::spawn(move || {
+            for conn in listener.incoming() {
+                drop(conn);
+            }
+        });
+        path
+    }
+
+    /// No sandboxed command connects to a unix socket in the state root or
+    /// one this process serves, however it names the socket: the daemon's own
+    /// socket is one or the other, and a command connected to it is the
+    /// daemon's host. Other sockets stay reachable.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_sandboxed_command_cannot_connect_to_the_daemons_socket() {
+        let Some(s) = UnderSandboxExec::new() else {
+            return;
+        };
+        let scene = s.state_root.join("scenes").join("code");
+        std::fs::create_dir_all(&scene).unwrap();
+        let in_state = listening(scene.join("daemon.sock"));
+        let served = listening(s.elsewhere.join("served.sock"));
+        let other = listening(s.elsewhere.join("other.sock"));
+        fence_socket(&served);
+
+        let nc = |path: &Path| format!("nc -U '{}' < /dev/null", path.display());
+        for socket in [&in_state, &served, &other] {
+            assert!(
+                outside("nc", &["-U", &socket.display().to_string()]),
+                "{} is not reachable at all",
+                socket.display()
+            );
+        }
+        assert!(s.runs(&nc(&other)), "an unrelated socket was refused");
+        for socket in [&in_state, &served] {
+            assert!(!s.runs(&nc(socket)), "{} was reached", socket.display());
+        }
+        let link = format!(
+            "ln -s '{}' link.sock && nc -U link.sock < /dev/null",
+            in_state.display()
+        );
+        assert!(!s.runs(&link), "reached through a symlink");
+        let relative = format!("cd '{}' && nc -U daemon.sock < /dev/null", scene.display());
+        assert!(!s.runs(&relative), "reached by a relative name");
+    }
+
+    /// The loopback port a daemon listens on is refused the same way: the
+    /// token is not in a command's environment, but `--token` is in `ps`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_sandboxed_command_cannot_connect_to_the_daemons_port() {
+        let Some(s) = UnderSandboxExec::new() else {
+            return;
+        };
+        let accepting = |listener: std::net::TcpListener| {
+            let port = listener.local_addr().unwrap().port();
+            std::thread::spawn(move || {
+                for conn in listener.incoming() {
+                    drop(conn);
+                }
+            });
+            port
+        };
+        let served = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        fence_port(served.local_addr().unwrap());
+        let served = accepting(served);
+        let other = accepting(std::net::TcpListener::bind("127.0.0.1:0").unwrap());
+
+        assert!(s.runs(&format!("nc -z 127.0.0.1 {other}")));
+        for host in ["127.0.0.1", "localhost"] {
+            assert!(
+                !s.runs(&format!("nc -z {host} {served}")),
+                "{host}:{served} was reached"
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_profile_refuses_unix_sockets_in_the_state_root_and_the_fenced_ones() {
+        let socket = std::env::temp_dir().join(format!("fenced-{}.sock", std::process::id()));
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        fence_socket(&socket);
+        let policy = SandboxPolicy {
+            state_root: Some(PathBuf::from("/srv/agix-state")),
+            network_mode: NetworkMode::Allowlist,
+            allowed_domains: vec!["localhost".into()],
+            ..Default::default()
+        };
+        let profile = build_macos_profile(Path::new("/work/project"), &[], &policy);
+        let _ = std::fs::remove_file(&socket);
+
+        let state_rule =
+            "(deny network-outbound (remote unix-socket (subpath \"/srv/agix-state\")))";
+        let socket_rule = format!(
+            "(deny network-outbound (remote unix-socket (literal \"{}\")))",
+            resolve_path(&socket).display()
+        );
+        let allow = profile.find("(allow network-outbound").unwrap();
+        for rule in [state_rule, &socket_rule] {
+            let at = profile
+                .find(rule)
+                .unwrap_or_else(|| panic!("{rule}\n{profile}"));
+            assert!(at > allow, "an allowlist entry would reopen it:\n{profile}");
+        }
     }
 
     /// No root given: fall back to the conventional location rather than

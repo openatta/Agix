@@ -5,6 +5,7 @@
 mod assemble_defaults;
 mod carrier_invariants;
 mod daemon_e2e;
+mod daemon_socket_from_a_command;
 mod dependency_direction;
 mod extension_entries;
 mod extension_points_doc;

@@ -35,14 +35,14 @@ daemon 的真实响应逐字段比对;`daemon.doctor` 的例子由 `crates/assem
 
 | 传输 | 怎么开 | 认证 |
 |---|---|---|
-| Unix socket | 默认开(`--socket <path>` 可改) | 文件权限:socket 为 `0600`,daemon 为它新建的目录为 `0700` |
+| Unix socket | 默认开(`--socket <path>` 可改) | 文件权限:socket 为 `0600`,daemon 为它新建的目录为 `0700`;daemon 自己起的进程连不上,见 §5.1 |
 | TCP | `--listen <addr>` | `daemon.auth` 握手,见 §5.1 |
 | WebSocket | `--listen-ws <addr>` | `daemon.auth` 握手 + Origin 校验,见 §5.1 |
 
 TCP 与 WebSocket 都要求 `--token` 或 `AGIX_DAEMON_TOKEN`;没有 token 时监听器
 **启动即失败**,不会先起来再拒绝所有人。**推荐用环境变量**:命令行参数在 `ps` 里
-别的用户也看得见。daemon 起子进程(模型调用的 Bash、stdio MCP 服务器)时会把这个变量
-剥掉,不会传下去。
+别的用户也看得见,daemon 自己起的进程(模型调用的 Bash)也看得见。daemon 起子进程
+(Bash、hook、stdio MCP 服务器)时会把这个变量剥掉,不会传下去。
 
 **TCP 与 WebSocket 都是明文,daemon 不做 TLS。** token 和之后的每一帧(提示、工具结果、
 `config.setProvider` 的 `api_key`)都按原样过网,所以只把它们开在回环地址、可信网络上,
@@ -491,6 +491,13 @@ daemon 的全部场景与会话,而且**没有任何逐方法的授权**。特�
 网络上一过就算泄露了。
 
 Unix socket 靠文件系统权限(只有 daemon 的用户能连),不握手,一样是"能连上就全权"。
+唯一的例外是 daemon 自己起的进程:对端是 daemon 的子孙(模型调用的 `Bash`、hook、stdio MCP
+服务器,以及它们留在后台的进程)时,daemon 先发一帧
+`{"jsonrpc":"2.0","id":null,"error":{"code":-32003,…}}` 再关连接,一个请求都不读。它们和宿主
+是同一个用户,文件权限分不出来,而模型的命令要是能当宿主,就能自己信任自己的项目、自己批准
+自己的询问。沙箱里的命令另外连不上 socket(macOS 上也连不上 TCP / WebSocket 端口),见
+`ARCHITECTURE.md` §6.3。宿主要嵌 daemon 又要让自己起的子进程连它的,得另开一个不由 daemon
+进程起的客户端。
 
 #### WebSocket 的 Origin 校验
 
@@ -2605,7 +2612,7 @@ transcript,这一轮以 `ENGINE_ERROR` 结束,不会重发。
 | -32603 | INTERNAL_ERROR | 服务端内部错误(写盘失败、会话创建失败等) |
 | -32000 | SESSION_NOT_FOUND | 会话不存在,或该方法要求它在内存里而它不在 |
 | -32002 | ENGINE_ERROR | turn 执行期错误,`message` 带引擎错误码 |
-| -32003 | UNAUTHORIZED | TCP / WebSocket 握手缺失或失败 |
+| -32003 | UNAUTHORIZED | TCP / WebSocket 握手缺失或失败;Unix socket 上的对端是 daemon 自己起的进程(§5.1) |
 | -32004 | SCENE_NOT_FOUND | 场景未注册,或(`session.create`)未激活 |
 | -32006 | SCENE_MISMATCH | 会话记录的场景与这个 daemon 的不符 |
 | -32009 | SCENE_HAS_ACTIVE_SESSIONS | `scene.deactivate` 被内存中的会话挡住 |
