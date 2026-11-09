@@ -1140,25 +1140,27 @@ fn contributed_tool_filter(
 /// overrides to an already-built subagent `Settings`, in place — the same
 /// step whichever path built the base `Settings`.
 ///
-/// The mode is held to the parent's whatever the type's source: a type can
-/// make its sub-agent stricter than the session that spawns it, never freer
-/// (`PermissionMode::min_permissive`). A project's `.agix/agents/*.md` is
-/// repository content, and a plugin's types arrive over the network; either
-/// naming `bypassPermissions` would otherwise switch the gate off for
-/// everything the sub-agent does. The API-call cap is clamped the same way
-/// for plugin types only: a cap the user wrote is theirs to raise.
+/// A type's mode replaces the parent's, wider or narrower, as
+/// `PermissionMode::for_delegate` allows. A plugin's types arrive over the
+/// network and can only tighten; the API-call cap is clamped the same way for
+/// them.
 fn apply_agent_type_overrides(settings: &mut Settings, def: &AgentTypeDefinition) {
     if let Some(mode) = def.permission_mode {
-        let clamped = mode.min_permissive(settings.permission_mode);
-        if clamped != mode {
+        let applied = if def.source.may_loosen() {
+            settings.permission_mode.for_delegate(mode)
+        } else {
+            mode.min_permissive(settings.permission_mode)
+        };
+        if applied != mode {
             tracing::warn!(
                 agent_type = %def.name,
                 requested = ?mode,
                 inherited = ?settings.permission_mode,
-                "agent type asked for a looser permission mode than its parent's; keeping the parent's"
+                applied = ?applied,
+                "agent type's permission mode held by its parent's"
             );
         }
-        settings.permission_mode = clamped;
+        settings.permission_mode = applied;
     }
     if let Some(effort) = &def.effort {
         if let Some(level) = parse_effort(effort) {
@@ -3934,8 +3936,7 @@ impl ParentPermission {
         let outcome = match &judged {
             Some(judged) => {
                 let mode = session.as_ref().map_or(judged.permission_mode(), |own| {
-                    own.permission_mode()
-                        .min_permissive(judged.permission_mode())
+                    own.permission_mode().for_delegate(judged.permission_mode())
                 });
                 held_to_mode(
                     self.inner
@@ -5130,7 +5131,7 @@ mod catalog_tests {
     /// cap, but not loosen the permission mode: a project's `agents/` is
     /// whatever the repository says.
     #[test]
-    fn local_agent_type_may_raise_its_cap_but_not_loosen_its_mode() {
+    fn local_agent_type_may_raise_its_cap_and_loosen_its_mode() {
         use base::interface::settings::PermissionMode as M;
         let def = AgentTypeDefinition {
             name: "mine".into(),
@@ -5146,8 +5147,39 @@ mod catalog_tests {
 
         apply_agent_type_overrides(&mut settings, &def);
 
-        assert_eq!(settings.permission_mode, M::Default);
+        assert_eq!(settings.permission_mode, M::BypassPermissions);
         assert_eq!(settings.execution.max_api_calls_per_turn, 200);
+    }
+
+    #[test]
+    fn a_planning_parent_holds_a_type_to_plan_and_a_bypassing_one_takes_it_along() {
+        use base::interface::settings::PermissionMode as M;
+        let typed = |mode| AgentTypeDefinition {
+            name: "mine".into(),
+            source: AgentTypeSource::LocalFile,
+            description: "d".into(),
+            permission_mode: Some(mode),
+            ..Default::default()
+        };
+        for (parent, asked, applied) in [
+            (M::Plan, M::AcceptEdits, M::Plan),
+            (M::Plan, M::DontAsk, M::DontAsk),
+            (M::BypassPermissions, M::Plan, M::BypassPermissions),
+            (M::AcceptEdits, M::Default, M::Default),
+        ] {
+            let mut settings = Settings::defaults_for("test-model");
+            settings.permission_mode = parent;
+            apply_agent_type_overrides(&mut settings, &typed(asked));
+            assert_eq!(settings.permission_mode, applied, "{parent:?} + {asked:?}");
+        }
+        let mut settings = Settings::defaults_for("test-model");
+        settings.permission_mode = M::Default;
+        let plugin = AgentTypeDefinition {
+            source: AgentTypeSource::Plugin,
+            ..typed(M::BypassPermissions)
+        };
+        apply_agent_type_overrides(&mut settings, &plugin);
+        assert_eq!(settings.permission_mode, M::Default);
     }
 
     #[test]
@@ -7213,7 +7245,7 @@ mod catalog_tests {
     /// The parent's rules decide a sub-agent's call in the sub-agent's own
     /// mode when that is stricter, and in the parent's when it is not.
     #[tokio::test]
-    async fn the_parent_judges_a_sub_agents_call_in_the_stricter_of_the_two_modes() {
+    async fn a_sub_agents_call_is_judged_in_its_own_mode_unless_the_parent_plans() {
         use base::interface::permission::PermissionOutcome;
         use base::permission::PermissionMode;
         let project = tempfile::tempdir().unwrap();
@@ -7226,10 +7258,11 @@ mod catalog_tests {
             registry.clone(),
             PermissionMode::AcceptEdits,
         ));
-        parent.bind_session_state(Arc::new(
+        let parent_session = Arc::new(
             base::context::SessionState::new(project.path().to_path_buf())
                 .with_permission_mode(PermissionMode::AcceptEdits),
-        ));
+        );
+        parent.bind_session_state(parent_session.clone());
         let agent_tool = test_agent_tool();
         agent_tool.set_parent_permission(parent);
         let sub = agent_tool.sub_permission();
@@ -7275,10 +7308,17 @@ mod catalog_tests {
         assert!(
             matches!(
                 check("Bash", serde_json::json!({"command": "touch made"})).await,
-                PermissionOutcome::Deny { .. }
+                PermissionOutcome::Permit
             ),
-            "a sub-agent claiming bypass is still asked what the parent asks"
+            "a bypassing sub-agent is not asked what its acceptEdits parent would be"
         );
+
+        parent_session.set_permission_mode(PermissionMode::Plan);
+        sub_session.set_permission_mode(PermissionMode::AcceptEdits);
+        match check("Write", write.clone()).await {
+            PermissionOutcome::Deny { reason } => assert!(reason.contains("plan mode"), "{reason}"),
+            other => panic!("a sub-agent wrote while its parent planned: {other:?}"),
+        }
     }
 
     /// A team member is held to the parent's rules, not given a rule set of

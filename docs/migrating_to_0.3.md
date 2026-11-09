@@ -413,11 +413,11 @@ WebAssembly 载体整个移除。
   allow 规则不变。带引号的受保护路径(`~/".ssh"/id_rsa`)同样按受保护路径拒绝。
 - 只读 `Bash` 命令的免询问更窄:参数里有 `$VAR`、`~`、替换的,`cd` / `pushd` 到不是项目内
   字面路径之后再读的,现在要询问。`echo $HOME` 这类也在其中。
-- agent 类型 frontmatter 的 `permission_mode` 真正作用到子 Agent 的权限判定上,但只能比父会话
-  严:以前写 `plan` 不起作用;项目或用户目录里写 `bypassPermissions` 的类型,以前会被当成放开,
-  现在按父会话的模式。团队成员(`TeamCreate`、`Agent` 的 `team_name`)同样:继承父会话的全部
-  规则,`permission_mode` 只能收紧,询问到父会话的宿主那里问。以前成员没有任何规则,
-  `bypassPermissions` 整队免确认。
+- agent 类型 frontmatter 的 `permission_mode` 真正作用到子 Agent 的权限判定上(以前写 `plan`
+  不起作用),可以比父会话宽也可以严;父会话在 `plan` 时取两者中更严的那个,父会话是
+  `bypassPermissions` 时随父会话,插件带来的类型只能收紧。团队成员(`TeamCreate`、`Agent` 的
+  `team_name`)继承父会话的全部规则,模型要的 `permission_mode` 只能收紧,询问到父会话的宿主
+  那里问。以前成员没有任何规则,`bypassPermissions` 整队免确认。
 - 子 Agent 的询问等待上限跟会话的 `--permission-prompt-timeout`,不再固定 300 秒;在子 Agent 的
   询问上答 `permit_always`,记下的是那一条命令或路径,不再是整个工具。
 - 子 Agent 能改它自己读过的已有文件了:以前读后再写的检查查的是父会话的读取记录,子 Agent 的
@@ -538,7 +538,8 @@ WebAssembly 载体整个移除。
   要把它填成会话当前的模式(`RuleSetPermission` 已经这么做)。
 - `permissions::ruleset::RuleHit` 多了 `Unclear`(按 ask 处理),穷举匹配要补一支。
   新增 `permissions::invocation`、`permissions::shell::{segments, Segment, lex, Word}`。
-- `AgentTypeSource::may_loosen` 只管 `max_turns`;`permission_mode` 一律钳到父会话。
+- `AgentTypeSource::may_loosen` 同时管 `max_turns` 与 `permission_mode`。新增
+  `PermissionMode::for_delegate`(两个 `PermissionMode` 上都有)。
 - `base::permission::PermissionMode` 多了 `min_permissive`,并能 `into()` 成
   `base::settings::PermissionMode`。
 - `base` 的 cargo feature `team-mode`、`plugin-marketplace`、`experimental-agent` 删除

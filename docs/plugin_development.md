@@ -113,7 +113,7 @@ let pool = daemon::assemble::pool(&config, scene, daemon::Assembly {
 
 `agent_type` 的 `source`:编进宿主的插件用 `AgentTypeSource::Builtin`,它覆盖的
 `max_turns` 照原样生效;`Plugin` 是给从网上装来的包用的,`max_turns` 会被钳到父会话的上限
-以内。`permission_mode` 不论来源都只能比父会话严,宽的按父会话的。优先级是:内建和包 <
+以内,`permission_mode` 也只能比父会话严;`Builtin` 与磁盘上的 `agents/*.md` 可以放宽。优先级是:内建和包 <
 Rust 插件 < 磁盘上的 `agents/*.md`。
 
 ### 名字

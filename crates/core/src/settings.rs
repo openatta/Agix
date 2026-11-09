@@ -243,6 +243,18 @@ impl PermissionMode {
             self
         }
     }
+
+    /// The mode a delegate (sub-agent, team member) runs in when the session
+    /// that spawned it is in `self`: its own, wider or narrower — except that a
+    /// planning parent holds it to plan, and a parent that bypasses takes it
+    /// along.
+    pub fn for_delegate(self, delegate: Self) -> Self {
+        match self {
+            Self::Plan => delegate.min_permissive(self),
+            Self::BypassPermissions => self,
+            _ => delegate,
+        }
+    }
 }
 
 /// A single permission rule: allow/deny/ask a tool matching a pattern.

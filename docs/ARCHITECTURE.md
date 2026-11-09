@@ -574,12 +574,13 @@ git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git
 `plan` 拒绝一切非只读工具,唯独离开计划模式的那一个(`ExitPlanMode`,
 `Tool::leaves_plan_mode`)照常走规则与询问:宿主批准才退出,回到进入前的模式。
 
-委派出去的工作不比委派它的会话宽。子 Agent 与团队成员的每次调用都交给父会话的
-`Permission` 判(`Permission::check_for_delegate`),父会话的规则与宿主的回答都作用于它们,
-输入校验看的是子 Agent 自己的会话状态(它读过哪些文件),
-判的模式取子 Agent 自己的与父会话当前的两者中更严的那个:agent 类型 frontmatter、
-`TeamCreate` / `Agent(team_name)` 里的 `permission_mode` 只能收紧,不能放宽,不论类型
-文件来自哪一层。子 Agent 的询问经父会话的通道到宿主,等待上限就是会话的
+子 Agent 与团队成员的每次调用都交给父会话的 `Permission` 判
+(`Permission::check_for_delegate`),父会话的规则与宿主的回答都作用于它们,输入校验看的是
+子 Agent 自己的会话状态(它读过哪些文件)。判的模式是子 Agent 自己的
+(`PermissionMode::for_delegate`):父会话在 `plan` 时取两者中更严的那个,父会话是
+`bypassPermissions` 时随父会话。agent 类型 frontmatter 的 `permission_mode` 可以比父会话
+宽也可以严,插件带来的类型只能收紧;模型在 `Agent` 调用、`TeamCreate` /
+`Agent(team_name)` 里自己要的 `permission_mode` 只能收紧。子 Agent 的询问经父会话的通道到宿主,等待上限就是会话的
 `permission_prompt_timeout`;在那里答"永久允许",记下的是这一条命令或路径,不是整个工具。
 
 skill 正文里的 `` !`cmd` `` 在送给模型之前执行,同样先过会话的 `Permission`(按一次

@@ -1748,7 +1748,7 @@ Shell 命令、监视器没有收件箱。会话不在内存里 → `SESSION_NOT
 { "session_id": "…",                 // 父会话
   "prompt": "…",
   "description": "…",                // 可选,进 task.detail
-  "subagent_type": "reviewer",       // 可选,按 agent 目录取模型、工具、skills、scene、permission_mode(只能更严)
+  "subagent_type": "reviewer",       // 可选,按 agent 目录取模型、工具、skills、scene、permission_mode(可放宽,插件带来的类型只能更严)
   "model": "…",                      // 可选,压过 agent 类型的 model;不接受 provider,子 Agent 用父会话的 provider
   "allowed_tools": [ ], "disallowed_tools": [ ],  // 可选,在 agent 类型之上再收窄,只会更少
   "permission_rules": [ ],           // 可选,同 options.permission_rules 的写法;只有 deny 生效
@@ -2470,9 +2470,9 @@ daemon 会话的默认权限模式是 **`default`(ask)**,不是放行一切。
 §7 `task_updated`)。超时与关闭的规则同上。
 
 `permission_mode: "bubble"` 不是另一条路:子 Agent 的询问无论它是什么模式,到宿主的都是
-上面这条父会话的 `prompt` 帧,团队成员也一样。判的模式是子 Agent 自己的与父会话的两者
-中更严的那个:agent 类型的 `permission_mode`、团队的 `permission_mode` 能让它更严,不能
-让它更宽。它的询问等多久同父会话的(`--permission-prompt-timeout`);答 `permit_always`
+上面这条父会话的 `prompt` 帧,团队成员也一样。判的模式是子 Agent 自己的:agent 类型的 `permission_mode` 可以比父会话宽(插件带来的类型
+只能更严),团队的 `permission_mode` 只能更严;父会话在 `plan` 时取两者中更严的那个,父会话
+是 `bypassPermissions` 时随父会话。它的询问等多久同父会话的(`--permission-prompt-timeout`);答 `permit_always`
 记下的是这一条命令或路径。
 
 宿主自己已做沙箱、不需要第二层权限时显式声明放行:任意层 settings.json 的

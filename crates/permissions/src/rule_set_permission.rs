@@ -169,7 +169,7 @@ impl RuleSetPermission {
         (ctx.session, ctx.permission_mode) = match delegate {
             Some(delegate) => (
                 delegate.clone(),
-                delegate.permission_mode().min_permissive(own_mode),
+                own_mode.for_delegate(delegate.permission_mode()),
             ),
             None => (own, own_mode),
         };
@@ -453,7 +453,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_delegates_narrower_mode_tightens_the_verdict_and_a_wider_one_does_not_loosen_it() {
+    async fn a_delegate_is_judged_in_its_own_mode_held_to_plan_and_taken_along_by_bypass() {
         let perm = RuleSetPermission::new(
             Arc::new(PermissionGate::empty()),
             registry_with(FakeTool {
@@ -475,11 +475,14 @@ mod tests {
         delegate.set_permission_mode(PermissionMode::Plan);
         assert!(matches!(judged().await, PermissionOutcome::Deny { .. }));
         delegate.set_permission_mode(PermissionMode::BypassPermissions);
-        assert!(matches!(judged().await, PermissionOutcome::Prompt { .. }));
+        assert!(matches!(judged().await, PermissionOutcome::Permit));
         session.set_permission_mode(PermissionMode::BypassPermissions);
         delegate.set_permission_mode(PermissionMode::DontAsk);
+        assert!(matches!(judged().await, PermissionOutcome::Permit));
+        session.set_permission_mode(PermissionMode::Plan);
+        delegate.set_permission_mode(PermissionMode::BypassPermissions);
         assert!(matches!(judged().await, PermissionOutcome::Deny { .. }));
-        assert_eq!(session.permission_mode(), PermissionMode::BypassPermissions);
+        assert_eq!(session.permission_mode(), PermissionMode::Plan);
     }
 
     /// A temporary allow carrying `rule_content` must only match calls whose

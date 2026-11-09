@@ -40,9 +40,8 @@ pub trait Permission: Send + Sync {
     /// session — a sub-agent, a team member — judged against the delegate's
     /// own [`SessionState`]: its permission mode, and what it has read (a
     /// write to a file the delegate read is checked against the delegate's
-    /// reads, not the session's). The delegate's mode only ever tightens the
-    /// verdict: an implementation judges in the stricter of it and its own
-    /// session's mode.
+    /// reads, not the session's), in the mode `PermissionMode::for_delegate`
+    /// gives it against this handler's own session.
     ///
     /// The default ignores `delegate` and judges as [`Self::check`]; the
     /// caller then narrows that verdict as far as it can by itself.

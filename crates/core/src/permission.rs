@@ -66,6 +66,13 @@ impl PermissionMode {
             .min_permissive(other.into())
             .into()
     }
+
+    /// See `settings::PermissionMode::for_delegate`.
+    pub fn for_delegate(self, delegate: Self) -> Self {
+        crate::settings::PermissionMode::from(self)
+            .for_delegate(delegate.into())
+            .into()
+    }
 }
 
 /// 权限闸的统一返回类型。Tool::check_permissions / 规则引擎 / Hook / mode 决策
