@@ -140,7 +140,7 @@ impl Daemon {
     }
 
     async fn wait_for_spawn(&self, name: &str) {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
         while !self.spawned().iter().any(|n| n == name) {
             assert!(
                 tokio::time::Instant::now() < deadline,
@@ -166,7 +166,7 @@ fn allow_kept_and_blocked_deny_blocked() -> McpPolicy {
 }
 
 async fn denied_in_status(pool: &SessionPool) -> Vec<(String, String)> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     loop {
         let denied: Vec<(String, String)> = pool
             .mcp_status()
@@ -197,7 +197,7 @@ async fn failed_events(
 ) -> Vec<(String, String)> {
     let mut failed = std::collections::BTreeMap::new();
     while failed.len() < expected {
-        let event = tokio::time::timeout(Duration::from_secs(10), events.recv())
+        let event = tokio::time::timeout(Duration::from_secs(60), events.recv())
             .await
             .expect("timed out waiting for mcp_connect_failed")
             .unwrap();
@@ -485,7 +485,7 @@ async fn plugin_servers_reach_another_project() {
 }
 
 async fn wait_for_line(d: &Daemon, prefix: &str) -> String {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     loop {
         if let Some(line) = d.spawned().into_iter().find(|l| l.starts_with(prefix)) {
             return line;

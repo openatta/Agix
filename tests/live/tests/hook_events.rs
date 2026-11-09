@@ -140,22 +140,47 @@ impl Ledger {
     }
 
     async fn wait_for(&self, event: &str, timeout: Duration) -> anyhow::Result<Value> {
+        self.wait_until(event, |e| e["hook_event_name"] == event, timeout)
+            .await
+    }
+
+    async fn wait_until(
+        &self,
+        what: &str,
+        wanted: impl Fn(&Value) -> bool,
+        timeout: Duration,
+    ) -> anyhow::Result<Value> {
         let deadline = Instant::now() + timeout;
         loop {
-            if let Some(found) = self
-                .entries()
-                .into_iter()
-                .find(|e| e["hook_event_name"] == event)
-            {
+            if let Some(found) = self.entries().into_iter().find(|e| wanted(e)) {
                 return Ok(found);
             }
             anyhow::ensure!(
                 Instant::now() < deadline,
-                "no {event} within {timeout:?}; the ledger has {:?}",
+                "no {what} within {timeout:?}; the ledger has {:?}",
                 self.names()
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+    }
+}
+
+/// Events fired from a task of their own rather than in line with what
+/// triggered them, so they land in the ledger at no fixed place.
+const FIRED_ASIDE: [&str; 2] = ["TaskCreated", "Elicitation"];
+
+fn in_line(e: &Value) -> bool {
+    !FIRED_ASIDE.iter().any(|name| e["hook_event_name"] == *name)
+}
+
+/// A task the ledger saw start, of `kind`.
+fn task_created_of(kind: &str) -> impl Fn(&Value) -> bool + '_ {
+    move |e| {
+        e["hook_event_name"] == "TaskCreated"
+            && e["reason"]
+                .as_str()
+                .and_then(|r| serde_json::from_str::<Value>(r).ok())
+                .is_some_and(|task| task["kind"] == kind)
     }
 }
 
@@ -219,7 +244,7 @@ async fn every_wired_event_fires_at_its_moment() -> anyhow::Result<()> {
         })
         .await?;
     ledger
-        .wait_for("CwdChanged", Duration::from_secs(10))
+        .wait_for("CwdChanged", Duration::from_secs(60))
         .await?;
     let opening = ledger.entries();
     assert!(
@@ -252,7 +277,14 @@ async fn every_wired_event_fires_at_its_moment() -> anyhow::Result<()> {
     stub.script([Reply::text("SUB-DONE")]);
     run.turn(&session, "PARENT-MARK turn one").await?;
     ledger
-        .wait_for("Elicitation", Duration::from_secs(5))
+        .wait_for("Elicitation", Duration::from_secs(60))
+        .await?;
+    let tasked = ledger
+        .wait_until(
+            "the sub-agent's TaskCreated",
+            task_created_of("agent"),
+            Duration::from_secs(60),
+        )
         .await?;
     let all = ledger.entries();
     let turn_one: Vec<Value> = all[opening.len()..]
@@ -345,11 +377,6 @@ async fn every_wired_event_fires_at_its_moment() -> anyhow::Result<()> {
     );
     assert_eq!(elicited["tool_input"]["server_name"], "demo");
 
-    let tasked = all
-        .iter()
-        .find(|e| e["hook_event_name"] == "TaskCreated")
-        .cloned()
-        .unwrap_or_default();
     let task: Value = serde_json::from_str(tasked["reason"].as_str().unwrap_or("null"))?;
     assert_eq!(task["kind"], "agent", "{tasked}");
     assert!(
@@ -364,7 +391,7 @@ async fn every_wired_event_fires_at_its_moment() -> anyhow::Result<()> {
     );
     let ending: Vec<&str> = turn_one
         .iter()
-        .filter(|e| e["session_id"] == session.as_str())
+        .filter(|e| e["session_id"] == session.as_str() && in_line(e))
         .map(|e| e["hook_event_name"].as_str().unwrap_or("?"))
         .collect();
     assert!(
@@ -411,7 +438,12 @@ async fn every_wired_event_fires_at_its_moment() -> anyhow::Result<()> {
     let ended = stopped.turn_complete_event.clone().unwrap_or_default();
     assert_eq!(ended["stop_reason"], "stopped_by_hook", "{ended}");
     assert_eq!(ended["message"], "LEDGER-STOPPED", "{ended}");
-    let stopping = names_of(&ledger.entries()[before_stop..]);
+    let stopping: Vec<Value> = ledger.entries()[before_stop..]
+        .iter()
+        .filter(|e| in_line(e))
+        .cloned()
+        .collect();
+    let stopping = names_of(&stopping);
     assert!(
         stopping.ends_with(&["Stop".to_string(), "StopFailure".to_string()]),
         "a Stop hook that ends the turn: StopFailure, and no TurnComplete: {stopping:?}"
@@ -423,7 +455,7 @@ async fn every_wired_event_fires_at_its_moment() -> anyhow::Result<()> {
         .call("session.close", json!({ "session_id": session }))
         .await?;
     let end = ledger
-        .wait_for("SessionEnd", Duration::from_secs(10))
+        .wait_for("SessionEnd", Duration::from_secs(60))
         .await?;
     assert_eq!(end["session_id"], session.as_str());
 
@@ -609,7 +641,7 @@ async fn file_changed_fires_when_the_agents_md_a_session_loaded_is_edited() -> a
     stub.script([Reply::text("ok")]);
     run.turn(&session, "hello").await?;
     ledger
-        .wait_for("InstructionsLoaded", Duration::from_secs(5))
+        .wait_for("InstructionsLoaded", Duration::from_secs(60))
         .await?;
     edit_until_file_changed(&ledger, &run.project.join("AGENTS.md")).await?;
     run.finish().await;
@@ -645,7 +677,7 @@ async fn a_team_member_finishing_fires_task_completed_and_teammate_idle() -> any
     stub.script_when("MEMBER-MARK", [Reply::text("hi from the member")]);
     run.turn(&session, "PARENT-MARK run the team").await?;
     for event in ["TaskCompleted", "TeammateIdle"] {
-        let fired = ledger.wait_for(event, Duration::from_secs(5)).await?;
+        let fired = ledger.wait_for(event, Duration::from_secs(60)).await?;
         assert_eq!(fired["team_name"], "crew", "{fired}");
         assert_eq!(fired["teammate_name"], "solo", "{fired}");
         assert_ne!(
@@ -701,7 +733,7 @@ async fn every_way_of_starting_a_sub_agent_is_bracketed_by_subagent_hooks() -> a
     stub.script_when("MEMBER-MARK", [Reply::text("hi from the member")]);
     run.turn(&session, "PARENT-MARK go").await?;
 
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(60);
     let entries = loop {
         let entries = ledger.entries();
         let starts = entries

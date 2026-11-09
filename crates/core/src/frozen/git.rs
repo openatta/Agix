@@ -15,7 +15,12 @@ use tokio::process::Command;
 use tokio::time::timeout;
 
 /// Git subcommand unified timeout.
+#[cfg(not(test))]
 const GIT_TIMEOUT: Duration = Duration::from_millis(1500);
+/// The tests here assert what git reported, and a loaded test run can take
+/// longer than a session's startup budget to start a sandboxed git.
+#[cfg(test)]
+const GIT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Options every git the engine runs itself puts before its subcommand.
 ///

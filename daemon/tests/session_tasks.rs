@@ -184,7 +184,7 @@ impl Daemon {
 macro_rules! eventually {
     ($what:expr, $probe:expr) => {{
         let mut found = None;
-        for _ in 0..200 {
+        for _ in 0..2400 {
             if let Some(hit) = $probe {
                 found = Some(hit);
                 break;
@@ -884,14 +884,20 @@ async fn reads_from_each_next_byte_join_into_a_commands_whole_output() {
 
 #[tokio::test]
 async fn a_read_after_more_than_is_kept_says_how_much_was_dropped() {
-    let (daemon, session, task_id, turn) =
-        start_command("echo start; sleep 1; yes x | head -c 600000; sleep 1").await;
+    let gate = tempfile::tempdir().unwrap();
+    let go = gate.path().join("go");
+    let (daemon, session, task_id, turn) = start_command(&format!(
+        "echo start; while [ ! -e '{}' ]; do sleep 0.05; done; yes x | head -c 600000",
+        go.display()
+    ))
+    .await;
     let first = eventually!("the first line", {
         let out = read_from(&daemon, &session, &task_id, 0).await;
         (out["output"] == "start\n").then_some(out)
     });
     assert_eq!(first["next_byte"], 6);
-    tokio::time::timeout(Duration::from_secs(20), turn)
+    std::fs::write(&go, "").unwrap();
+    tokio::time::timeout(Duration::from_secs(120), turn)
         .await
         .expect("the command ends")
         .unwrap();

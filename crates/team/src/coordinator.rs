@@ -1150,18 +1150,62 @@ mod tests {
         }
     }
 
-    /// (a) A stage with N agents, each sleeping D ms, should complete in
-    /// wall-clock time much closer to D than to N*D — proving the agents
-    /// run concurrently rather than sequentially.
+    /// Each spawn waits until all `n` of a stage are in flight at once.
+    struct GatheringSpawner {
+        gathered: tokio::sync::Barrier,
+    }
+
+    #[async_trait]
+    impl AgentSpawner for GatheringSpawner {
+        async fn spawn_agent(
+            &self,
+            _prompt: String,
+            _allowed_tools: Vec<String>,
+            _cwd: std::path::PathBuf,
+            _cancel: tokio_util::sync::CancellationToken,
+            _agent_type: Option<String>,
+        ) -> Result<String, Box<dyn std::error::Error + Send>> {
+            self.gathered.wait().await;
+            Ok("done".into())
+        }
+
+        async fn spawn_agent_with_tools(
+            &self,
+            prompt: String,
+            allowed_tools: Vec<String>,
+            _extra_tools: Vec<Arc<dyn base::tool::Tool>>,
+            cwd: std::path::PathBuf,
+            cancel: tokio_util::sync::CancellationToken,
+            agent_type: Option<String>,
+            _permission_mode: Option<base::interface::settings::PermissionMode>,
+            _seat: Option<base::interface::agent_spawner::TeamSeat>,
+        ) -> Result<String, Box<dyn std::error::Error + Send>> {
+            self.spawn_agent(prompt, allowed_tools, cwd, cancel, agent_type)
+                .await
+        }
+
+        async fn spawn_agent_background(
+            &self,
+            _prompt: String,
+            _allowed_tools: Vec<String>,
+            _cwd: std::path::PathBuf,
+            _cancel: tokio_util::sync::CancellationToken,
+            _agent_type: Option<String>,
+            _session: Arc<base::context::SessionState>,
+        ) -> Result<String, Box<dyn std::error::Error + Send>> {
+            unimplemented!("not exercised by these tests")
+        }
+    }
+
+    /// (a) The agents of a stage are all running at the same time: none of
+    /// them can finish until every one has started.
     #[tokio::test]
     async fn stage_agents_run_concurrently() {
         let n = 6usize;
-        let delay_ms: u64 = 100;
-
         let agents: Vec<TeamAgentSpec> = (0..n)
             .map(|i| TeamAgentSpec {
                 label: format!("agent{i}"),
-                prompt: delay_ms.to_string(),
+                prompt: "work".into(),
                 agent_type: None,
             })
             .collect();
@@ -1172,21 +1216,19 @@ mod tests {
         }];
 
         let (_dir, ctx) = make_ctx();
-        let spawner = Arc::new(FakeSpawner::new());
+        let spawner = Arc::new(GatheringSpawner {
+            gathered: tokio::sync::Barrier::new(n),
+        });
         let coordinator = DefaultCoordinator::with_agent_spawner(spawner);
         let req = make_request(ctx, stages);
 
-        let start = std::time::Instant::now();
-        let result = coordinator.orchestrate(req).await.expect("orchestrate ok");
-        let elapsed = start.elapsed();
-
+        // Run one after the other, the first agent would wait for the rest
+        // forever; the timeout only turns that into a failure.
+        let result = tokio::time::timeout(Duration::from_secs(120), coordinator.orchestrate(req))
+            .await
+            .expect("the stage's agents never all ran at once")
+            .expect("orchestrate ok");
         assert!(!result.is_error, "no agent should have errored");
-        let sequential_upper_bound = Duration::from_millis(delay_ms * n as u64);
-        assert!(
-            elapsed < sequential_upper_bound.mul_f64(0.6),
-            "expected concurrent dispatch (~{delay_ms}ms), got {elapsed:?} \
-             (sequential would be ~{sequential_upper_bound:?})"
-        );
     }
 
     /// (b) The section order in the coordinator's output must match the

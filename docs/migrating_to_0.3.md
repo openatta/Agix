@@ -813,6 +813,9 @@ WebAssembly 载体整个移除。
 - `async_rewake` 在 daemon 里生效:会话的运行中任务(子 Agent、后台命令、Monitor)有一个结束,
   就算唤醒信号,等着的 hook 在会话处理下一条输入之后、等再下一条之前重跑。以前 daemon 不接
   唤醒通道,这类 hook 永远不会重跑。
+- 无人值守的 MCP server(`client_credentials`、`enterprise`)拿到的令牌寿命短于 30 秒左右时,
+  调用不再间歇地以"需要授权"失败:令牌何时重新取由 daemon 决定,底层的 OAuth 客户端不再因为
+  它"快到期"而拒绝使用刚取到的令牌。
 
 ### 嵌入方
 

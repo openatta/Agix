@@ -133,7 +133,8 @@ discovery 取授权服务器元数据。server 没有发布任何 OAuth 元数�
 ## 4. 无人值守:client credentials 与企业托管授权
 
 没人坐在浏览器前的 server(定时任务、服务端部署)用这两种 `grant`。令牌在用之前检查:剩不到
-60 秒就重新取;server 以 401 拒绝时重新取一次并重试那次调用。都不需要 `mcp.auth.start`
+60 秒就重新取(寿命本来就不到 60 秒的令牌,每次用之前都取一个新的,取到的就用,不再因为
+"快到期"被拒);server 以 401 拒绝时重新取一次并重试那次调用。都不需要 `mcp.auth.start`
 (对它们调会得到 `INVALID_PARAMS`)。
 
 ### `client_credentials`

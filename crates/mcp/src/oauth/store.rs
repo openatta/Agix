@@ -204,6 +204,9 @@ pub(crate) fn now_secs() -> u64 {
 pub(crate) struct ServerStore {
     pub(crate) key: String,
     pub(crate) shared: Arc<super::Shared>,
+    /// The daemon fetches this server's tokens again before they expire
+    /// (an unattended grant), so rmcp is not told when they do.
+    pub(crate) renewed_by_us: bool,
 }
 
 fn store_error(e: impl std::fmt::Display) -> AuthError {
@@ -269,7 +272,15 @@ impl CredentialStore for ServerStore {
         let record = self.shared.load(&self.key).await.map_err(store_error)?;
         Ok(record.and_then(|r| {
             let issuer = r.issuer.clone();
-            r.tokens.map(|t| tokens_to_rmcp(&t, issuer))
+            r.tokens.map(|mut t| {
+                // rmcp gives up on a token with less than its margin (30 s)
+                // left and, with no refresh token, asks for a sign-in; one
+                // that lives shorter than that would never be used.
+                if self.renewed_by_us {
+                    t.expires_at = None;
+                }
+                tokens_to_rmcp(&t, issuer)
+            })
         }))
     }
 

@@ -1025,6 +1025,11 @@ impl McpAuth {
         let mut manager = self.new_manager(url, &key).await.map_err(connect_failed)?;
         if let Some(oauth) = oauth.filter(|o| o.grant.is_unattended()) {
             self.renew_unattended(server, url, oauth, false).await?;
+            manager.set_credential_store(store::ServerStore {
+                key: key.clone(),
+                shared: self.shared.clone(),
+                renewed_by_us: true,
+            });
             // With a client configured, rmcp's attempt to refresh a token it
             // was refused ends in "authorization required" — no refresh
             // token — which is what makes the caller fetch a new one.
@@ -1191,6 +1196,7 @@ async fn new_manager(
     manager.set_credential_store(store::ServerStore {
         key: key.to_string(),
         shared: shared.clone(),
+        renewed_by_us: false,
     });
     Ok(manager)
 }

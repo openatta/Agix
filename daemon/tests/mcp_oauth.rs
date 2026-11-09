@@ -879,12 +879,16 @@ async fn client_credentials_connect_unattended_and_are_fetched_again_when_refuse
         "a refused token is fetched again and the call retried"
     );
 
+    // Shorter-lived than the margin rmcp keeps before an expiry: the daemon
+    // fetching these tokens is what keeps them current, so each is used.
     {
         let mut s = auth.state.lock().unwrap();
-        s.token_ttl = 30;
+        s.token_ttl = 20;
         s.tokens.clear();
     }
-    use_tool(&d, &mut conn, "mcp__docs__echo").await;
+    assert!(use_tool(&d, &mut conn, "mcp__docs__echo")
+        .await
+        .contains("echo: ok"));
     let before = auth.state.lock().unwrap().count("client_credentials");
     assert!(use_tool(&d, &mut conn, "mcp__docs__echo")
         .await

@@ -5783,12 +5783,13 @@ mod catalog_tests {
         }
     }
 
-    /// Blocks its thread for the whole call, and records how many calls were
-    /// in flight at once.
+    /// Blocks its thread until a second call is in flight beside it (or the
+    /// test gives up and releases it), and records how many were at once.
     #[derive(Default)]
     struct BlockingModel {
         in_flight: std::sync::atomic::AtomicUsize,
         peak: std::sync::atomic::AtomicUsize,
+        released: std::sync::atomic::AtomicBool,
     }
     #[async_trait]
     impl Model for BlockingModel {
@@ -5807,8 +5808,7 @@ mod catalog_tests {
             use std::sync::atomic::Ordering::SeqCst;
             let now = self.in_flight.fetch_add(1, SeqCst) + 1;
             self.peak.fetch_max(now, SeqCst);
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            while self.peak.load(SeqCst) < 2 && std::time::Instant::now() < deadline {
+            while self.peak.load(SeqCst) < 2 && !self.released.load(SeqCst) {
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
             self.in_flight.fetch_sub(1, SeqCst);
@@ -5820,7 +5820,17 @@ mod catalog_tests {
     async fn foreground_sub_agents_of_one_turn_run_on_separate_threads() {
         let model = Arc::new(BlockingModel::default());
         let agent_tool = agent_tool_with_model(model.clone());
-        let _ = futures::join!(run_sub_with(&agent_tool), run_sub_with(&agent_tool));
+        // Polled one after the other, the first call would block its thread
+        // for good; the timeout only keeps that failure from hanging the run.
+        let both = tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            futures::future::join(run_sub_with(&agent_tool), run_sub_with(&agent_tool)),
+        )
+        .await;
+        model
+            .released
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(both.is_ok(), "the two sub-agents never ran side by side");
         assert_eq!(
             model.peak.load(std::sync::atomic::Ordering::SeqCst),
             2,
