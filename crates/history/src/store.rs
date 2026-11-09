@@ -788,7 +788,10 @@ impl JsonlHistoryStore {
             let entries = match self.load(session_id).await {
                 Ok(entries) => entries,
                 Err(HistoryError::SessionNotFound(_)) => continue,
-                Err(e) => return Err(e),
+                Err(e) => {
+                    skip_unreadable(session_id, &e);
+                    continue;
+                }
             };
             let messages = project_messages_with(&entries, self.projection());
             if session_id.to_string().contains(needle) || messages_match_query(&messages, needle) {
@@ -838,11 +841,22 @@ impl JsonlHistoryStore {
 
         let mut out = Vec::new();
         for (session_id, path, mtime) in candidates {
-            let entries = load_entries_from_path(&path, session_id).await?;
             let metadata = load_session_metadata(&self.sessions_root, session_id).await;
             if !filter.matches(metadata.as_ref()) {
                 continue;
             }
+            let entries = match read_log(&path).await {
+                Ok(Some(content)) => parse_log(&content, self.blobs.as_deref()),
+                Ok(None) => continue,
+                Err(e) => Err(e),
+            };
+            let entries = match entries {
+                Ok(entries) => entries,
+                Err(e) => {
+                    skip_unreadable(session_id, &e);
+                    continue;
+                }
+            };
             let messages = project_messages_with(&entries, self.projection());
             let haystack = format!(
                 "{}\n{}\n{}\n{}",
@@ -1058,23 +1072,10 @@ async fn collect_session_files(
     Ok(out)
 }
 
-async fn load_entries_from_path(
-    path: &Path,
-    session: SessionId,
-) -> Result<Vec<EnvelopedEntry>, HistoryError> {
-    let content = read_log(path)
-        .await?
-        .ok_or_else(|| HistoryError::SessionNotFound(session.to_string()))?;
-    let mut entries = Vec::new();
-    for (i, line) in content.lines().enumerate() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let env = serde_json::from_str::<EnvelopedEntry>(line)
-            .map_err(|error| HistoryError::Parse { line: i + 1, error })?;
-        entries.push(env);
-    }
-    Ok(entries)
+/// A search reads every transcript it reaches, and one that will not read is
+/// a property of that session, not a reason to answer nothing.
+fn skip_unreadable(session: SessionId, error: &HistoryError) {
+    tracing::warn!(%session, %error, "leaving an unreadable transcript out of the search");
 }
 
 /// A log's text, without a last line that a crash cut short — or `None` when
@@ -4151,6 +4152,36 @@ mod crash_tests {
             .await
             .unwrap()
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_broken_line_mid_log_leaves_only_that_session_out_of_a_search() {
+        let root = TempDir::new().unwrap();
+        let store = store_in(&root).await;
+        let good = SessionId::new();
+        let broken = SessionId::new();
+        store.append(good, user("needle one")).await.unwrap();
+        store.append(broken, user("needle two")).await.unwrap();
+        store.append(broken, user("needle three")).await.unwrap();
+        let path = store.session_path_of(broken).await;
+        let log = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, log.replacen('\n', "\nnot json\n", 1)).unwrap();
+        assert!(matches!(
+            store.load(broken).await,
+            Err(HistoryError::Parse { .. })
+        ));
+
+        let here = store.search_session_summaries("needle", 10).await.unwrap();
+        let everywhere = store
+            .search_all_project_session_summaries("needle", 10)
+            .await
+            .unwrap();
+        for found in [here, everywhere] {
+            assert_eq!(
+                found.iter().map(|s| s.session_id).collect::<Vec<_>>(),
+                [good]
+            );
+        }
     }
 
     #[tokio::test]
