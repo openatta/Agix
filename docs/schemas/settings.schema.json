@@ -122,7 +122,7 @@
         },
         "team_enabled": {
           "default": false,
-          "description": "Gates whether `TeamCreate`/`TeamList`/`TeamDelete` are registered at\nall for a session (`agents::AgentsModule::on_session`, and only when\nthe scene supports teams). Default `false`: most\ndeployments never use multi-agent team coordination, and an\nalways-registered tool means its `tool.prompt.md` \"When to Use\"\nsection is always in the system prompt and its `team`/`name` input\nfields are always in the `Agent` tool's schema, whether or not the\noperator ever intends to allow it. Flipping this only affects\nsessions built *after* the change (existing sessions keep whatever\ntool set they were built with — same as every other setting here);\nthere is no separate restart requirement.",
+          "description": "Gates whether `TeamCreate`/`TeamList`/`TeamDelete` are registered at\nall for a session (`agents::AgentsModule`), and only in a scene whose\n`Scene::supports_team` is true. Default `false`: most\ndeployments never use multi-agent team coordination, and an\nalways-registered tool means its `tool.prompt.md` \"When to Use\"\nsection is always in the system prompt and its `team`/`name` input\nfields are always in the `Agent` tool's schema, whether or not the\noperator ever intends to allow it. Flipping this only affects\nsessions built *after* the change (existing sessions keep whatever\ntool set they were built with — same as every other setting here);\nthere is no separate restart requirement.",
           "type": "boolean"
         },
         "team_max_persistent_members": {
@@ -759,7 +759,7 @@
     },
     "disable_skill_shell_execution": {
       "default": false,
-      "description": "Disable skill dynamic-content-injection shell commands (`` !`cmd` ``\nand fenced ` ```! ` blocks in `SKILL.md` bodies). Default: false\n(enabled). When true, each such placeholder is replaced with\n`[shell command execution disabled by policy]` instead of running.\nMost useful set in managed/org-wide settings where individual users\ncan't override it.",
+      "description": "Disable skill dynamic-content-injection shell commands (`` !`cmd` ``\nand fenced ` ```! ` blocks in `SKILL.md` bodies). Default: false\n(enabled). When true, each such placeholder is replaced with\n`[shell command execution disabled by policy]` instead of running.\nLike every setting, a higher tier can set it back: there is no tier\nusers cannot override.",
       "type": "boolean"
     },
     "execution": {
@@ -778,11 +778,11 @@
       }
     },
     "hooks_config": {
-      "description": "Hooks configuration (merged from global/scene/project layers)."
+      "description": "Lifecycle hooks: an object from event name (`PreToolUse`,\n`SessionStart`, … — `hooks::HookEvent`) to a list of hooks, each with\na `type` of `command`, `prompt`, `http` or `agent`. Tiers merge per\nevent: a tier that lists an event replaces the lower tiers' list for\nit. An unknown event name is skipped with a warning; the rest still\napply. Format: `docs/extension_points.md`, \"生命周期 hook\"."
     },
     "instruction_file": {
       "default": null,
-      "description": "Path to an instruction file (e.g. AGENTS.md, CLAUDE.md).\nThe AGENT reads the file at its discretion (every turn, on change, etc.).",
+      "description": "One more instruction file (e.g. a `CLAUDE.md` outside the project),\nread when the session is built and given to the model alongside the\ndiscovered `AGENTS.md` files. A root session with a `FileChanged`\nhook watches it.",
       "type": [
         "string",
         "null"
@@ -797,12 +797,12 @@
     },
     "mcp_servers": {
       "additionalProperties": true,
-      "description": "MCP server configurations, keyed by server name (merged from\nglobal/scene/project layers). Kept untyped (`serde_json::Value`\nrather than `mcp::config::McpServerConfig`) — `core` cannot depend on\n`mcp` (which already depends on `core`, for `base::paths::ConfigPaths`)\nwithout a circular dependency; downstream consumers deserialize each\nvalue into `McpServerConfig` themselves.",
+      "description": "MCP server configurations, keyed by server name (merged from\nglobal/scene/project layers). `$VAR` / `${VAR}` / `${VAR:-default}`\nare expanded in a server's `command`, `args`, `env`, `url` and\n`headers` when it connects — the only place in settings that expands\nanything. Kept untyped (`serde_json::Value`\nrather than `mcp::config::McpServerConfig`) — `core` cannot depend on\n`mcp` (which already depends on `core`, for `base::paths::ConfigPaths`)\nwithout a circular dependency; downstream consumers deserialize each\nvalue into `McpServerConfig` themselves.",
       "type": "object"
     },
     "memory_enabled": {
       "default": true,
-      "description": "Enable the file-based memory system (MEMORY.md + .md files).\nDefault: true. Set to false to disable memory prompt injection and file-based memory.",
+      "description": "The file-based memory system (`MEMORY.md` + one `.md` per memory).\nDefault `true`. `false` drops the memory prompt, the memory index in\neach turn's reminder, and recall.",
       "type": "boolean"
     },
     "model": {
@@ -947,7 +947,7 @@
     },
     "session_dir": {
       "default": null,
-      "description": "Session persistence directory. None = no persistence.\nDefault: `Some(user_data_dir/sessions/)`.",
+      "description": "Not read. Transcripts always go under the state directory\n(`paths.local_data_dir`); the field is kept so existing settings files\nand struct literals still compile.",
       "type": [
         "string",
         "null"
@@ -967,7 +967,7 @@
     },
     "telemetry_url": {
       "default": null,
-      "description": "Telemetry endpoint URL. None = noop.",
+      "description": "OTLP endpoint telemetry events are exported to. Unset, the\n`OTEL_EXPORTER_OTLP_ENDPOINT` environment variable is used; neither\nmeans no export. Only a build with the `otel` feature exports — any\nother logs a warning when this is set.",
       "type": [
         "string",
         "null"
