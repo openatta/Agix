@@ -1492,6 +1492,7 @@ async fn an_http_hook_that_allows_local_reaches_this_machine_and_its_verdict_cou
         .start()
         .await?;
     let session = run.session().await?;
+    let _approve = run.watch(&session, true).await?;
     stub.script([
         Reply::calls("b2", "Bash", json!({ "command": "echo x > ran.txt" })),
         Reply::text("done"),
