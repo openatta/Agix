@@ -27,6 +27,9 @@ impl McpServers for McpManager {
     async fn refresh_tools(&mut self) {
         McpManager::refresh_tools(self).await;
     }
+    async fn refresh_if_changed(&mut self) -> bool {
+        McpManager::refresh_if_changed(self).await
+    }
     fn instructions(&self) -> Vec<McpServerInstruction> {
         self.server_instructions()
     }

@@ -59,4 +59,19 @@ impl McpError {
             McpError::AuthRequired { .. } | McpError::InsufficientScope { .. }
         )
     }
+
+    /// A connect that fails the same way however often it is tried: the
+    /// command is not there or may not be run, or the URL does not parse.
+    pub fn is_permanent(&self) -> bool {
+        let McpError::ConnectFailed { source, .. } = self else {
+            return false;
+        };
+        source.downcast_ref::<url::ParseError>().is_some()
+            || source.downcast_ref::<std::io::Error>().is_some_and(|e| {
+                matches!(
+                    e.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+                )
+            })
+    }
 }

@@ -72,10 +72,11 @@ pub struct McpManager {
     clients: Vec<McpClientHandle>,
     adapters: Vec<Arc<dyn Tool>>,
     prompts: Vec<McpPromptEntry>,
-    /// Notifications servers have sent that nothing has acted on yet — see
-    /// `crate::notify::NotificationQueue`. Shared with every connected
-    /// client, since the reaction (re-asking for tools) is manager-wide.
-    notifications: Arc<crate::notify::NotificationQueue>,
+    /// What the servers have announced; every connection this manager and
+    /// those shared from it make reports here.
+    announcements: Arc<crate::notify::Announcements>,
+    /// The announcements this manager's tools and prompts reflect.
+    seen: HashMap<String, crate::notify::ListEpochs>,
     /// Shared MCP output cache.
     output_cache: Arc<Mutex<McpOutputCache>>,
     /// Callback invoked when an MCP tool result contains an elicitation URL.
@@ -114,7 +115,8 @@ impl McpManager {
             clients: Vec::new(),
             adapters: Vec::new(),
             prompts: Vec::new(),
-            notifications: crate::notify::NotificationQueue::new(),
+            announcements: crate::notify::Announcements::new(),
+            seen: HashMap::new(),
             output_cache: Arc::new(Mutex::new(McpOutputCache::new())),
             elicitation_callback: Arc::new(Mutex::new(None)),
             subprocess_env: base::interface::exec::local::SubprocessEnv::default(),
@@ -210,10 +212,7 @@ impl McpManager {
     ) -> (Self, Option<LateConnects>) {
         let elicitation_cell: Arc<Mutex<Option<ElicitationCallback>>> = Arc::new(Mutex::new(None));
         let cache = Arc::new(Mutex::new(McpOutputCache::new()));
-        // Shared with every client this builds, and kept as this manager's
-        // own field, so a server that announces a tool change reaches the
-        // same queue the manager later drains.
-        let notifications = crate::notify::NotificationQueue::new();
+        let announcements = crate::notify::Announcements::new();
         let mut connecting: Vec<PendingServer> = servers
             .iter()
             .map(|(name, cfg)| PendingServer {
@@ -226,7 +225,8 @@ impl McpManager {
             clients: Vec::new(),
             adapters: Vec::new(),
             prompts: Vec::new(),
-            notifications: notifications.clone(),
+            announcements: announcements.clone(),
+            seen: HashMap::new(),
             output_cache: cache.clone(),
             elicitation_callback: elicitation_cell.clone(),
             subprocess_env: subprocess_env.clone(),
@@ -254,7 +254,7 @@ impl McpManager {
                     let link = ServerLink {
                         cache: cache.clone(),
                         elicitation_cell: elicitation_cell.clone(),
-                        notifications: notifications.clone(),
+                        announcements: announcements.clone(),
                         subprocess_env: subprocess_env.clone(),
                         auth: auth.clone(),
                     };
@@ -351,14 +351,24 @@ impl McpManager {
     }
 
     /// Re-run `prompts/list` on every connected server and rebuild the slash
-    /// command catalog — after a `PromptListChanged` notification, say.
-    ///
-    /// A server that fails to answer is skipped with a warning — its prompts
-    /// simply don't appear as commands, the rest of the session is unaffected.
+    /// command catalog. A server that fails to answer keeps the prompts it
+    /// had.
     pub async fn refresh_prompts(&mut self) {
+        self.relist_prompts(None).await;
+    }
+
+    async fn relist_prompts(&mut self, only: Option<&[String]>) {
         let mut prompts = Vec::new();
         for client in &self.clients {
-            prompts.extend(prompts_of(client).await);
+            let name = client.server_name();
+            let listed = match only {
+                Some(only) if !only.iter().any(|n| n == name) => None,
+                _ => try_prompts_of(client).await,
+            };
+            match listed {
+                Some(listed) => prompts.extend(listed),
+                None => prompts.extend(self.prompts.iter().filter(|p| p.server == name).cloned()),
+            }
         }
         self.prompts = prompts;
     }
@@ -371,7 +381,7 @@ impl McpManager {
         let client = StdioMcpClient::connect_with_env(
             name,
             cfg,
-            Some(link.notifications.sink()),
+            Some(link.announcements.sink()),
             link.subprocess_env.clone(),
             link.auth.clone(),
         )
@@ -391,7 +401,7 @@ impl McpManager {
     /// MAX_RETRIES=5, INITIAL_DELAY=1s, MAX_DELAY=30s, ±25% jitter. A server
     /// that asks for authorization is not retried: only a sign-in changes
     /// its answer. Nor is one that ran out of time: it would only use up
-    /// its whole limit again.
+    /// its whole limit again. Nor one that cannot be started at all.
     async fn connect_with_retry(
         name: &str,
         cfg: &McpServerConfig,
@@ -405,7 +415,11 @@ impl McpManager {
         for attempt in 0..MAX_RETRIES {
             match Self::connect_one(name, cfg, link).await {
                 Ok(result) => return Ok(result),
-                Err(e) if e.is_auth() || matches!(e, McpError::Timeout { .. }) => return Err(e),
+                Err(e)
+                    if e.is_auth() || e.is_permanent() || matches!(e, McpError::Timeout { .. }) =>
+                {
+                    return Err(e)
+                }
                 Err(e) => {
                     last_err = Some(e);
                     if attempt + 1 < MAX_RETRIES {
@@ -448,6 +462,7 @@ impl McpManager {
         self.clients.retain(|c| c.server_name() != name);
         self.adapters.retain(|a| a.source() != source);
         self.prompts.retain(|p| p.server != name);
+        self.seen.remove(name);
         self.pending.retain(|p| p.name != name);
         self.failed.retain(|f| f.name != name);
     }
@@ -462,7 +477,7 @@ impl McpManager {
         let link = ServerLink {
             cache: self.output_cache.clone(),
             elicitation_cell: self.elicitation_callback.clone(),
-            notifications: self.notifications.clone(),
+            announcements: self.announcements.clone(),
             subprocess_env: self.subprocess_env.clone(),
             auth: self.auth.clone(),
         };
@@ -521,13 +536,15 @@ impl McpManager {
 
     /// A manager over the same connections — client handles are shared, no
     /// server is reconnected — that a session can own. Its tool adapters
-    /// are built by [`Self::refresh_tools`].
+    /// are built by [`Self::refresh_tools`]; it reads the same
+    /// announcements.
     pub fn share(&self) -> Self {
         Self {
             clients: self.clients.clone(),
             adapters: Vec::new(),
             prompts: self.prompts.clone(),
-            notifications: crate::notify::NotificationQueue::new(),
+            announcements: self.announcements.clone(),
+            seen: self.seen.clone(),
             output_cache: Arc::new(Mutex::new(McpOutputCache::new())),
             elicitation_callback: Arc::new(Mutex::new(None)),
             subprocess_env: self.subprocess_env.clone(),
@@ -819,59 +836,81 @@ impl McpManager {
         out
     }
 
-    /// Refresh tools from connected MCP servers. Used between turns to pick up
-    /// newly connected servers.
-    /// Re-fetches tool lists from all connected clients and updates adapters.
-    /// Re-ask every server for its tools when one of them announced a
-    /// change.
-    ///
-    /// Returns whether anything was refreshed, so a caller can log it or
-    /// skip work when nothing happened. This is the consumer that makes the
-    /// notification path mean something — before it, `McpNotification` was a
-    /// type nothing constructed and nothing read.
-    pub async fn refresh_tools_if_announced(&mut self) -> bool {
-        if !self.notifications.take_tools_changed() {
-            return false;
+    /// List again the tools, and the prompts, of the servers that announced
+    /// a change since this manager last looked. Returns whether any did.
+    pub async fn refresh_if_changed(&mut self) -> bool {
+        let mut tools = Vec::new();
+        let mut prompts = Vec::new();
+        for client in &self.clients {
+            let name = client.server_name();
+            let now = self.announcements.of(name);
+            let seen = self.seen.insert(name.to_string(), now).unwrap_or_default();
+            if now.tools != seen.tools {
+                tools.push(name.to_string());
+            }
+            if now.prompts != seen.prompts {
+                prompts.push(name.to_string());
+            }
         }
-        tracing::info!("an MCP server announced new tools; re-reading every server's list");
-        self.refresh_tools().await;
-        true
+        if !tools.is_empty() {
+            info!(servers = ?tools, "MCP servers announced a tool change; listing their tools again");
+            self.relist_tools(Some(&tools)).await;
+        }
+        if !prompts.is_empty() {
+            self.relist_prompts(Some(&prompts)).await;
+        }
+        !tools.is_empty() || !prompts.is_empty()
     }
 
-    /// Notifications parked since the last drain, for diagnostics.
-    pub fn pending_notifications(&self) -> Vec<McpNotification> {
-        self.notifications.drain()
-    }
-
+    /// List every connected server's tools again. A server whose list fails
+    /// keeps the tools it had; one that lists none has none.
     pub async fn refresh_tools(&mut self) {
-        let mut new_adapters: Vec<Arc<dyn Tool>> = Vec::new();
-        // Always alias the shared cell (not gated on it currently holding
-        // `Some`) — see the field doc comment: a caller may set the callback
-        // *after* this runs, and only sharing the cell (not a snapshot of
-        // its contents) makes that visible to these adapters.
+        for client in &self.clients {
+            let name = client.server_name();
+            let now = self.announcements.of(name);
+            self.seen.entry(name.to_string()).or_default().tools = now.tools;
+        }
+        self.relist_tools(None).await;
+    }
+
+    async fn relist_tools(&mut self, only: Option<&[String]>) {
+        let mut adapters: Vec<Arc<dyn Tool>> = Vec::new();
+        // The shared cell, not what it holds now: a callback set after this
+        // runs has to reach these adapters too.
         let cell = self.elicitation_callback.clone();
         for client in &self.clients {
-            match client.list_tools().await {
-                Ok(tools) => {
-                    new_adapters.extend(server_adapters(client, tools, &self.output_cache, &cell));
+            let name = client.server_name();
+            let listed = match only {
+                Some(only) if !only.iter().any(|n| n == name) => None,
+                _ => match client.list_tools().await {
+                    Ok(tools) => Some(tools),
+                    Err(e) => {
+                        warn!(server = %name, error = %e, "MCP tool refresh failed; keeping its previous tools");
+                        None
+                    }
+                },
+            };
+            match listed {
+                Some(tools) => {
+                    adapters.extend(server_adapters(client, tools, &self.output_cache, &cell))
                 }
-                Err(e) => {
-                    warn!(
-                        server = %client.server_name(),
-                        error = %e,
-                        "MCP tool refresh failed; keeping previous adapter set"
+                None => {
+                    let source = format!("mcp:{name}");
+                    adapters.extend(
+                        self.adapters
+                            .iter()
+                            .filter(|a| a.source() == source)
+                            .cloned(),
                     );
                 }
             }
         }
-        if !new_adapters.is_empty() {
-            self.adapters = new_adapters;
-        }
+        self.adapters = adapters;
     }
 
     /// `/doctor` `/mcp` 用的状态摘要：每个 server 的 name / transport / 工具数。
     /// transport 字段：来自 client 的 transport_kind()——stdio / streamable_http / sse /
-    /// in_process / web_socket（见 connect.rs）。
+    /// web_socket（见 connect.rs）。
     pub fn server_statuses(&self) -> Vec<ServerStatus> {
         let mut counts: HashMap<String, usize> = HashMap::new();
         for a in &self.adapters {
@@ -914,22 +953,28 @@ fn server_adapters(
 }
 
 async fn prompts_of(client: &McpClientHandle) -> Vec<McpPromptEntry> {
+    try_prompts_of(client).await.unwrap_or_default()
+}
+
+async fn try_prompts_of(client: &McpClientHandle) -> Option<Vec<McpPromptEntry>> {
     match client.list_prompts().await {
         Ok(server_prompts) => {
             info!(server = %client.server_name(), n_prompts = server_prompts.len(), "MCP prompts collected");
-            server_prompts
-                .into_iter()
-                .map(|p| McpPromptEntry {
-                    server: client.server_name().to_string(),
-                    name: p.name,
-                    description: p.description.unwrap_or_default(),
-                    arguments: p.arguments,
-                })
-                .collect()
+            Some(
+                server_prompts
+                    .into_iter()
+                    .map(|p| McpPromptEntry {
+                        server: client.server_name().to_string(),
+                        name: p.name,
+                        description: p.description.unwrap_or_default(),
+                        arguments: p.arguments,
+                    })
+                    .collect(),
+            )
         }
         Err(e) => {
             warn!(server = %client.server_name(), error = %e, "MCP prompt collection failed; skipping");
-            Vec::new()
+            None
         }
     }
 }
@@ -938,7 +983,7 @@ async fn prompts_of(client: &McpClientHandle) -> Vec<McpPromptEntry> {
 struct ServerLink {
     cache: Arc<Mutex<McpOutputCache>>,
     elicitation_cell: Arc<Mutex<Option<ElicitationCallback>>>,
-    notifications: Arc<crate::notify::NotificationQueue>,
+    announcements: Arc<crate::notify::Announcements>,
     subprocess_env: base::interface::exec::local::SubprocessEnv,
     auth: Option<Arc<crate::oauth::McpAuth>>,
 }
@@ -1565,44 +1610,240 @@ mod tests {
 }
 
 #[cfg(test)]
-mod notification_wiring_tests {
+mod refresh_tests {
     use super::*;
+    use crate::client::{McpCallResult, McpPromptMeta, McpToolMeta};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// A server announcing new tools must reach `dispatch_notification`;
-    /// this pins the queue that carries the `McpNotification` there.
+    /// A server whose answers to `tools/list` and `prompts/list` the test
+    /// changes, and which counts how often it is asked.
+    struct Scripted {
+        name: String,
+        tools: Mutex<Result<Vec<&'static str>, ()>>,
+        prompts: Mutex<Result<Vec<&'static str>, ()>>,
+        tool_lists: AtomicUsize,
+        prompt_lists: AtomicUsize,
+    }
+
+    impl Scripted {
+        fn new(name: &str, tools: &[&'static str]) -> Arc<Self> {
+            Arc::new(Self {
+                name: name.into(),
+                tools: Mutex::new(Ok(tools.to_vec())),
+                prompts: Mutex::new(Ok(Vec::new())),
+                tool_lists: AtomicUsize::new(0),
+                prompt_lists: AtomicUsize::new(0),
+            })
+        }
+
+        fn lists(&self, tools: Result<&[&'static str], ()>) {
+            *self.tools.lock().unwrap() = tools.map(<[_]>::to_vec);
+        }
+
+        fn lists_prompts(&self, prompts: &[&'static str]) {
+            *self.prompts.lock().unwrap() = Ok(prompts.to_vec());
+        }
+
+        fn fail(&self) -> McpError {
+            McpError::NotConnected {
+                name: self.name.clone(),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl McpClient for Scripted {
+        fn server_name(&self) -> &str {
+            &self.name
+        }
+
+        async fn list_tools(&self) -> Result<Vec<McpToolMeta>, McpError> {
+            self.tool_lists.fetch_add(1, Ordering::SeqCst);
+            let tools = self
+                .tools
+                .lock()
+                .unwrap()
+                .clone()
+                .map_err(|_| self.fail())?;
+            Ok(tools
+                .into_iter()
+                .map(|name| McpToolMeta {
+                    name: name.into(),
+                    description: None,
+                    input_schema: serde_json::json!({"type": "object"}),
+                    hints: Default::default(),
+                })
+                .collect())
+        }
+
+        async fn call_tool(
+            &self,
+            _: &str,
+            _: serde_json::Map<String, serde_json::Value>,
+        ) -> Result<McpCallResult, McpError> {
+            Err(self.fail())
+        }
+
+        async fn list_prompts(&self) -> Result<Vec<McpPromptMeta>, McpError> {
+            self.prompt_lists.fetch_add(1, Ordering::SeqCst);
+            let prompts = self
+                .prompts
+                .lock()
+                .unwrap()
+                .clone()
+                .map_err(|_| self.fail())?;
+            Ok(prompts
+                .into_iter()
+                .map(|name| McpPromptMeta {
+                    name: name.into(),
+                    description: None,
+                    arguments: Vec::new(),
+                })
+                .collect())
+        }
+    }
+
+    async fn manager_of(servers: &[&Arc<Scripted>]) -> McpManager {
+        let clients = servers
+            .iter()
+            .map(|s| (*s).clone() as McpClientHandle)
+            .collect();
+        McpManager::from_clients(clients).await
+    }
+
+    fn tool_names(m: &McpManager) -> Vec<String> {
+        let mut names: Vec<String> = m
+            .tool_adapters()
+            .iter()
+            .map(|a| a.name().to_string())
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn announce(m: &McpManager, n: McpNotification) {
+        m.announcements.record(&n);
+    }
+
     #[tokio::test]
-    async fn a_manager_starts_with_nothing_announced() {
-        let mut m = McpManager::empty();
-        assert!(m.pending_notifications().is_empty());
+    async fn a_server_whose_list_fails_keeps_its_tools_and_one_that_lists_none_loses_them() {
+        let flaky = Scripted::new("flaky", &["read"]);
+        let shrinking = Scripted::new("shrinking", &["gone"]);
+        let steady = Scripted::new("steady", &["ping"]);
+        let mut m = manager_of(&[&flaky, &shrinking, &steady]).await;
+        assert_eq!(
+            tool_names(&m),
+            [
+                "mcp__flaky__read",
+                "mcp__shrinking__gone",
+                "mcp__steady__ping"
+            ]
+        );
+
+        flaky.lists(Err(()));
+        shrinking.lists(Ok(&[]));
+        m.refresh_tools().await;
+        assert_eq!(tool_names(&m), ["mcp__flaky__read", "mcp__steady__ping"]);
+
+        let mut only_failing = manager_of(&[&flaky]).await;
+        flaky.lists(Ok(&["read"]));
+        only_failing.refresh_tools().await;
+        flaky.lists(Err(()));
+        only_failing.refresh_tools().await;
+        assert_eq!(tool_names(&only_failing), ["mcp__flaky__read"]);
+
+        steady.lists(Ok(&[]));
+        let mut all_empty = manager_of(&[&steady]).await;
+        steady.lists(Ok(&["ping"]));
+        all_empty.refresh_tools().await;
+        steady.lists(Ok(&[]));
+        all_empty.refresh_tools().await;
         assert!(
-            !m.refresh_tools_if_announced().await,
-            "nothing announced means no work"
+            tool_names(&all_empty).is_empty(),
+            "{:?}",
+            tool_names(&all_empty)
         );
     }
 
     #[tokio::test]
-    async fn an_announced_tool_change_triggers_exactly_one_refresh() {
-        let mut m = McpManager::empty();
-        m.notifications.push(McpNotification::ToolListChanged {
-            server: "github".into(),
-        });
+    async fn nothing_is_listed_again_without_an_announcement() {
+        let s = Scripted::new("s", &["a"]);
+        let mut m = manager_of(&[&s]).await;
+        let asked = s.tool_lists.load(Ordering::SeqCst);
+        for _ in 0..3 {
+            assert!(!m.refresh_if_changed().await);
+        }
+        assert_eq!(s.tool_lists.load(Ordering::SeqCst), asked);
+    }
 
-        assert!(m.refresh_tools_if_announced().await);
+    #[tokio::test]
+    async fn an_announced_tool_change_lists_that_server_once() {
+        let changed = Scripted::new("changed", &["a"]);
+        let quiet = Scripted::new("quiet", &["q"]);
+        let mut m = manager_of(&[&changed, &quiet]).await;
+        let quiet_asked = quiet.tool_lists.load(Ordering::SeqCst);
+
+        changed.lists(Ok(&["a", "b"]));
+        announce(
+            &m,
+            McpNotification::ToolListChanged {
+                server: "changed".into(),
+            },
+        );
+        assert!(m.refresh_if_changed().await);
+        assert_eq!(
+            tool_names(&m),
+            ["mcp__changed__a", "mcp__changed__b", "mcp__quiet__q"]
+        );
+        assert_eq!(quiet.tool_lists.load(Ordering::SeqCst), quiet_asked);
         assert!(
-            !m.refresh_tools_if_announced().await,
-            "one announcement is one refresh, not a standing order"
+            !m.refresh_if_changed().await,
+            "one announcement is one listing"
         );
     }
 
-    /// A resource or prompt change does not invalidate the tool list, and
-    /// re-reading every server's tools for it would be work nobody asked
-    /// for.
     #[tokio::test]
-    async fn other_announcements_do_not_trigger_a_tool_refresh() {
-        let mut m = McpManager::empty();
-        m.notifications.push(McpNotification::ResourceListChanged {
-            server: "github".into(),
-        });
-        assert!(!m.refresh_tools_if_announced().await);
+    async fn every_session_shared_from_a_manager_sees_the_announcement() {
+        let s = Scripted::new("s", &["a"]);
+        let central = manager_of(&[&s]).await;
+        let mut first = central.share();
+        first.refresh_tools().await;
+        let mut second = central.share();
+        second.refresh_tools().await;
+
+        s.lists(Ok(&["a", "b"]));
+        let sink = central.announcements.sink();
+        sink(McpNotification::ToolListChanged { server: "s".into() });
+
+        assert!(first.refresh_if_changed().await);
+        assert!(second.refresh_if_changed().await);
+        assert_eq!(tool_names(&first), ["mcp__s__a", "mcp__s__b"]);
+        assert_eq!(tool_names(&second), ["mcp__s__a", "mcp__s__b"]);
+    }
+
+    #[tokio::test]
+    async fn an_announced_prompt_change_lists_the_prompts_again_and_a_resource_change_nothing() {
+        let s = Scripted::new("s", &["a"]);
+        let mut m = manager_of(&[&s]).await;
+        let (tools_asked, prompts_asked) = (
+            s.tool_lists.load(Ordering::SeqCst),
+            s.prompt_lists.load(Ordering::SeqCst),
+        );
+
+        announce(
+            &m,
+            McpNotification::ResourceListChanged { server: "s".into() },
+        );
+        assert!(!m.refresh_if_changed().await);
+
+        s.lists_prompts(&["review"]);
+        announce(
+            &m,
+            McpNotification::PromptListChanged { server: "s".into() },
+        );
+        assert!(m.refresh_if_changed().await);
+        assert_eq!(s.tool_lists.load(Ordering::SeqCst), tools_asked);
+        assert_eq!(s.prompt_lists.load(Ordering::SeqCst), prompts_asked + 1);
+        assert!(m.find_prompt_command("mcp__s__review").is_some());
     }
 }

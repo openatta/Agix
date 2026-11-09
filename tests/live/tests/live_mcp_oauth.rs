@@ -477,11 +477,14 @@ async fn after_a_logout_the_servers_tools_are_gone() -> anyhow::Result<()> {
 async fn a_client_credentials_server_is_used_with_nobody_signing_in() -> anyhow::Result<()> {
     let world = OAuthWorld::start().await;
     world.auth.preregister("batch", Some("batch-secret"));
+    let servers = json!({ "mcp_servers": { SERVER: world.config_with(json!({
+        "grant": "client_credentials", "client_id": "batch",
+        "client_secret_env": "AGIX_LIVE_MCP_SECRET", "scopes": ["mcp:read"]
+    })) } });
+    // A user's server, not the project's: a project's own servers may not
+    // read the daemon's environment.
     let mut run = LiveRun::builder("oauth-cc")
-        .settings(json!({ "mcp_servers": { SERVER: world.config_with(json!({
-            "grant": "client_credentials", "client_id": "batch",
-            "client_secret_env": "AGIX_LIVE_MCP_SECRET", "scopes": ["mcp:read"]
-        })) } }))
+        .before_start(move |world, _| world.write_global_settings(&servers))
         .mode(Mode::Spawned)
         .options(|o| o.env("AGIX_LIVE_MCP_SECRET", "batch-secret"))
         .start()

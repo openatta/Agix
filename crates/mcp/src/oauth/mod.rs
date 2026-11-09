@@ -858,7 +858,7 @@ impl McpAuth {
                     flow.redirect_uri
                 )));
             }
-            if !params.contains_key("error") && params.get("state") != Some(&flow.state) {
+            if params.get("state") != Some(&flow.state) {
                 return Err(AuthFlowError::Failed(
                     "the callback's state does not match this sign-in; it was not the response \
                      to it"

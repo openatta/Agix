@@ -555,7 +555,7 @@ async fn the_policys_globs_hold_end_to_end(mode: Mode) -> anyhow::Result<()> {
     .await?;
     assert_eq!(
         names_in_state(&status, "denied"),
-        ["blocked", "evil_url", "nested", "pathed", "port_url"],
+        ["blocked", "evil_url", "named", "nested", "pathed", "port_url"],
         "{status:?}"
     );
     let reason = |name: &str| {
@@ -571,6 +571,10 @@ async fn the_policys_globs_hold_end_to_end(mode: Mode) -> anyhow::Result<()> {
         reason("nested").contains("no allowed_servers rule"),
         "{status:?}"
     );
+    assert!(
+        reason("named").contains("a `name` rule there admits nothing"),
+        "{status:?}"
+    );
 
     let session = run.session().await?;
     stub.script([
@@ -581,7 +585,9 @@ async fn the_policys_globs_hold_end_to_end(mode: Mode) -> anyhow::Result<()> {
     let ping = result_of(&events, "mcp__globbed__ping").expect("a ping result");
     assert!(!ping.2 && ping.1.contains("toy: inside"), "{ping:?}");
     let offered = stub.calls()[0].tool_names();
-    for denied in ["blocked", "nested", "pathed", "evil_url", "port_url"] {
+    for denied in [
+        "blocked", "named", "nested", "pathed", "evil_url", "port_url",
+    ] {
         let prefix = format!("mcp__{denied}__");
         assert!(
             offered.iter().all(|n| !n.starts_with(&prefix)),
@@ -619,7 +625,12 @@ async fn the_policys_globs_hold_end_to_end(mode: Mode) -> anyhow::Result<()> {
         .find(|c| c["name"] == "mcp.policy")
         .cloned()
         .unwrap_or_default();
-    assert_eq!(check["status"], "ok", "{check}");
+    assert_eq!(check["status"], "degraded", "{check}");
+    assert_eq!(
+        check["details"]["inert_allowed_rules"],
+        json!([r#"{"name": "named"}"#]),
+        "{check}"
+    );
     assert_eq!(check["details"]["source"], "file", "{check}");
     assert_eq!(check["details"]["allowed_servers"], 5, "{check}");
     assert_eq!(check["details"]["denied_servers"], 1, "{check}");

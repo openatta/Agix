@@ -1,7 +1,8 @@
 //! The MCP policy at each place the pool connects servers: startup,
-//! `config.reload`, a project's first session, and `mcp.addServer`.
+//! `config.reload`, a project's first session, and `mcp.addServer`; and what
+//! a project's own servers may read from the daemon's environment there.
 //!
-//! Every server here is `/bin/sh` appending its own name to a log, so the log
+//! Every server here is a shell appending its own name to a log, so the log
 //! is a count of the processes the daemon actually started. A denied server
 //! must never appear in it.
 
@@ -33,12 +34,27 @@ impl Daemon {
         self.dir.path()
     }
 
+    /// `stray` is started through `/usr/bin/env`, so no rule for `/bin/sh`
+    /// admits it.
     fn server(&self, name: &str) -> serde_json::Value {
-        serde_json::json!({
-            "type": "stdio",
-            "command": "/bin/sh",
-            "args": ["-c", format!("echo {name} >> '{}'", self.log.display())],
-        })
+        self.logging(name, &format!("echo {name}"))
+    }
+
+    fn logging(&self, name: &str, script: &str) -> serde_json::Value {
+        let script = format!("{script} >> '{}'", self.log.display());
+        if name == "stray" {
+            serde_json::json!({
+                "type": "stdio",
+                "command": "/usr/bin/env",
+                "args": ["sh", "-c", script],
+            })
+        } else {
+            serde_json::json!({
+                "type": "stdio",
+                "command": "/bin/sh",
+                "args": ["-c", script],
+            })
+        }
     }
 
     fn configure(&self, project: &Path, names: &[&str]) {
@@ -144,7 +160,7 @@ fn policy(json: serde_json::Value) -> McpPolicy {
 /// `stray` is in no allow rule.
 fn allow_kept_and_blocked_deny_blocked() -> McpPolicy {
     policy(serde_json::json!({
-        "allowed_servers": [{"name": "kept"}, {"name": "blocked"}],
+        "allowed_servers": [{"command": "/bin/sh"}],
         "denied_servers": [{"name": "blocked"}],
     }))
 }
@@ -466,4 +482,81 @@ async fn plugin_servers_reach_another_project() {
     let events = failed_events(&mut events, 1).await;
     assert_eq!(events[0].0, "p-mcp-srv", "{events:?}");
     assert!(d.spawned().is_empty(), "started: {:?}", d.spawned());
+}
+
+async fn wait_for_line(d: &Daemon, prefix: &str) -> String {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(line) = d.spawned().into_iter().find(|l| l.starts_with(prefix)) {
+            return line;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "nothing logged `{prefix}`; logged: {:?}",
+            d.spawned()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn a_projects_own_server_does_not_expand_the_daemons_environment() {
+    std::env::set_var("AGIX_E2E_PROJECT_SECRET", "s3cret");
+    let d = Daemon::new();
+    let mut project = d.logging(
+        "proj",
+        r#"echo "proj:[$AGIX_E2E_PROJECT_SECRET][${OWN}][${AGIX_E2E_PROJECT_SECRET:-unset}]""#,
+    );
+    project["env"] = serde_json::json!({"OWN": "mine"});
+    std::fs::create_dir_all(d.root().join(".agix")).unwrap();
+    std::fs::write(
+        d.root().join(".agix").join("settings.json"),
+        serde_json::json!({"mcp_servers": {"proj": project}}).to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        d.root().join("settings.json"),
+        serde_json::json!({"mcp_servers": {
+            "user": d.logging("user", r#"echo "user:[$AGIX_E2E_PROJECT_SECRET]""#),
+        }})
+        .to_string(),
+    )
+    .unwrap();
+
+    let _pool = d.start(None).await;
+    assert_eq!(wait_for_line(&d, "proj:").await, "proj:[][mine][unset]");
+    assert_eq!(wait_for_line(&d, "user:").await, "user:[s3cret]");
+}
+
+#[tokio::test]
+async fn a_server_added_over_rpc_is_the_projects_own() {
+    std::env::set_var("AGIX_E2E_ADDED_SECRET", "s3cret");
+    let d = Daemon::new();
+    let pool = d.start(None).await;
+
+    pool.add_mcp_server(
+        None,
+        "code",
+        "added",
+        d.logging("added", r#"echo "added:[$AGIX_E2E_ADDED_SECRET]""#),
+    )
+    .await
+    .unwrap();
+    assert_eq!(wait_for_line(&d, "added:").await, "added:[]");
+
+    let (code, message) = pool
+        .add_mcp_server(
+            None,
+            "code",
+            "remote",
+            serde_json::json!({
+                "type": "streamable_http",
+                "url": "https://mcp.example/mcp",
+                "oauth": {"client_id": "c", "client_secret_env": "AGIX_E2E_ADDED_SECRET"},
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(code, daemon::rpc::codes::INVALID_PARAMS, "{message}");
+    assert!(message.contains("client_secret_env"), "{message}");
 }

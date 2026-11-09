@@ -307,6 +307,13 @@ impl StdioMcpClient {
                 self.authorized.store(spawned.authorized, Ordering::SeqCst);
                 self.consecutive_failures.store(0, Ordering::SeqCst);
                 debug!(server = %self.server_name, "MCP server reconnected");
+                if let Some(sink) = &self.sink {
+                    let server = self.server_name.clone();
+                    sink(crate::manager::McpNotification::ToolListChanged {
+                        server: server.clone(),
+                    });
+                    sink(crate::manager::McpNotification::PromptListChanged { server });
+                }
                 Ok(())
             }
             Err(e) => {
@@ -481,27 +488,7 @@ impl StdioMcpClient {
                 svc.read_resource(ReadResourceRequestParams::new(uri)),
             )
             .await?;
-        // rmcp ReadResourceResult.contents 是 Vec<ResourceContents>；转成我们的 McpContent
-        let mut out = Vec::new();
-        for c in result.contents {
-            match c {
-                rmcp::model::ResourceContents::TextResourceContents { text, .. } => {
-                    out.push(McpContent::Text(text));
-                }
-                rmcp::model::ResourceContents::BlobResourceContents {
-                    blob, mime_type, ..
-                } => {
-                    out.push(McpContent::Image {
-                        data: blob,
-                        media_type: mime_type.unwrap_or_else(|| "application/octet-stream".into()),
-                    });
-                }
-                other => out.push(McpContent::Other(
-                    serde_json::to_value(other).unwrap_or(serde_json::Value::Null),
-                )),
-            }
-        }
-        Ok(out)
+        Ok(result.contents.into_iter().map(resource_content).collect())
     }
 
     async fn list_prompts_inner(&self) -> Result<Vec<McpPromptMeta>, McpError> {
@@ -743,7 +730,7 @@ async fn spawn_service(
         }
         McpServerConfig::StreamableHttp { url, headers, .. }
         | McpServerConfig::Sse { url, headers, .. } => {
-            let url = crate::config::expand_env_vars(url);
+            let url = parsed_url(server_name, &crate::config::expand_env_vars(url))?;
             let headers: std::collections::HashMap<String, String> = headers
                 .iter()
                 .map(|(k, v)| (k.clone(), crate::config::expand_env_vars(v)))
@@ -753,20 +740,8 @@ async fn spawn_service(
                 .map(|auth| (auth, config.oauth()));
             spawn_streamable_http_service(server_name, &url, &headers, auth, sink).await
         }
-        McpServerConfig::InProcess { name, .. } => {
-            // In-process servers are handled by InProcessMcpClient via
-            // the process-local registry. StdioMcpClient cannot spawn them.
-            Err(McpError::ConnectFailed {
-                name: server_name.into(),
-                source: anyhow::anyhow!(
-                    "in-process MCP server '{}' must be connected via \
-                     InProcessMcpClient::connect, not spawned as a subprocess",
-                    name
-                ),
-            })
-        }
         McpServerConfig::WebSocket { url, headers, .. } => {
-            let url = crate::config::expand_env_vars(url);
+            let url = parsed_url(server_name, &crate::config::expand_env_vars(url))?;
             let headers: std::collections::HashMap<String, String> = headers
                 .iter()
                 .map(|(k, v)| (k.clone(), crate::config::expand_env_vars(v)))
@@ -775,6 +750,17 @@ async fn spawn_service(
                 .await
                 .map(Spawned::from)
         }
+    }
+}
+
+/// `url`, unless it does not parse — which no retry would change.
+fn parsed_url(server_name: &str, url: &str) -> Result<String, McpError> {
+    match url::Url::parse(url) {
+        Ok(_) => Ok(url.to_string()),
+        Err(e) => Err(McpError::ConnectFailed {
+            name: server_name.into(),
+            source: anyhow::Error::new(e).context(format!("invalid url {url:?}")),
+        }),
     }
 }
 
@@ -809,7 +795,13 @@ async fn spawn_stdio_service(
         }
     })?;
 
-    crate::notify::NotifyingHandler::new(server_name, sink)
+    let handler = crate::notify::NotifyingHandler::new(server_name, sink);
+    #[cfg(unix)]
+    let handler = match transport.id() {
+        Some(pid) => handler.keeping(base::interface::exec::local::orphans::list(pid as i32)),
+        None => handler,
+    };
+    handler
         .serve(transport)
         .await
         .map_err(|e| McpError::ConnectFailed {
@@ -992,6 +984,31 @@ fn service_error(server_name: &str, op: &str, e: rmcp::ServiceError) -> McpError
 }
 
 /// 把 rmcp::model::ContentBlock 转成我们的 McpContent。
+/// A blob is an image only when its MIME type says so; any other is named,
+/// not carried, since nothing downstream can show it.
+fn resource_content(c: rmcp::model::ResourceContents) -> McpContent {
+    match c {
+        rmcp::model::ResourceContents::TextResourceContents { text, .. } => McpContent::Text(text),
+        rmcp::model::ResourceContents::BlobResourceContents {
+            blob, mime_type, ..
+        } => match mime_type {
+            Some(mime) if mime.to_ascii_lowercase().starts_with("image/") => McpContent::Image {
+                data: blob,
+                media_type: mime,
+            },
+            mime => {
+                let padding = blob.bytes().rev().take_while(|b| *b == b'=').count();
+                let bytes = (blob.len() / 4 * 3).saturating_sub(padding);
+                McpContent::Text(format!(
+                    "[binary resource: {}, {bytes} bytes]",
+                    mime.as_deref().unwrap_or("application/octet-stream")
+                ))
+            }
+        },
+        other => McpContent::Other(serde_json::to_value(other).unwrap_or(serde_json::Value::Null)),
+    }
+}
+
 fn rmcp_content_to_ours(c: &rmcp::model::ContentBlock) -> McpContent {
     match c {
         rmcp::model::ContentBlock::Text(t) => McpContent::Text(t.text.to_string()),
@@ -1390,6 +1407,130 @@ done
         assert!(matches!(&pong.content[..], [McpContent::Text(t)] if t == "pong"));
         assert!(client.is_connected());
         client.shutdown().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_reconnected_server_is_announced_as_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = sh_server(dir.path(), Default::default());
+        let announcements = crate::notify::Announcements::new();
+        let client = StdioMcpClient::connect_with_sink("sh", &cfg, Some(announcements.sink()))
+            .await
+            .unwrap();
+        assert_eq!(announcements.of("sh"), Default::default());
+
+        client
+            .current()
+            .await
+            .unwrap()
+            .cancellation_token()
+            .cancel();
+        for _ in 0..100 {
+            if !client.is_connected() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        client.call_tool("ping", Default::default()).await.unwrap();
+        let after = announcements.of("sh");
+        assert_eq!((after.tools, after.prompts), (1, 1));
+        client.shutdown().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stdio_servers_process_group_is_listed_while_it_runs() {
+        use base::interface::exec::local::orphans;
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("pid");
+        let McpServerConfig::Stdio { args, .. } = sh_server(dir.path(), Default::default()) else {
+            unreachable!()
+        };
+        let cfg = McpServerConfig::Stdio {
+            command: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                format!(
+                    "echo $$$$ > '{}'; exec /bin/sh '{}'",
+                    pid_file.display(),
+                    args[0]
+                ),
+            ],
+            env: HashMap::new(),
+            scope: None,
+            timeouts: Default::default(),
+        };
+        let client = StdioMcpClient::connect("sh", &cfg).await.unwrap();
+        let pid: i32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(orphans::listed().contains(&pid), "{:?}", orphans::listed());
+
+        client.shutdown().await;
+        for _ in 0..100 {
+            if !orphans::listed().contains(&pid) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(!orphans::listed().contains(&pid), "{:?}", orphans::listed());
+    }
+
+    #[test]
+    fn only_an_image_blob_is_an_image() {
+        let blob = |mime: Option<&str>| {
+            serde_json::from_value::<rmcp::model::ResourceContents>(serde_json::json!({
+                "uri": "x://y", "blob": "aGVsbG8=", "mimeType": mime,
+            }))
+            .unwrap()
+        };
+        assert!(matches!(
+            resource_content(blob(Some("image/png"))),
+            McpContent::Image { media_type, .. } if media_type == "image/png"
+        ));
+        assert!(matches!(
+            resource_content(blob(Some("application/pdf"))),
+            McpContent::Text(t) if t == "[binary resource: application/pdf, 5 bytes]"
+        ));
+        assert!(matches!(
+            resource_content(blob(None)),
+            McpContent::Text(t) if t == "[binary resource: application/octet-stream, 5 bytes]"
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_command_that_is_not_there_or_a_url_that_does_not_parse_is_not_retried() {
+        let missing = McpServerConfig::Stdio {
+            command: "/nonexistent/agix-mcp-server".into(),
+            args: Vec::new(),
+            env: HashMap::new(),
+            scope: None,
+            timeouts: Default::default(),
+        };
+        let bad_url = McpServerConfig::StreamableHttp {
+            url: "not a url".into(),
+            headers: HashMap::new(),
+            oauth: None,
+            scope: None,
+            timeouts: Default::default(),
+        };
+        let started = Instant::now();
+        let manager = crate::manager::McpManager::connect_all(HashMap::from([
+            ("missing".to_string(), missing),
+            ("bad_url".to_string(), bad_url),
+        ]))
+        .await;
+        assert!(
+            started.elapsed() < Duration::from_millis(900),
+            "retried: took {:?}",
+            started.elapsed()
+        );
+        let mut failed: Vec<&str> = manager.failed().iter().map(|f| f.name.as_str()).collect();
+        failed.sort();
+        assert_eq!(failed, ["bad_url", "missing"]);
     }
 
     /// A stdio server is a child process like any other, and starts under the

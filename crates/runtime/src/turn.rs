@@ -1605,7 +1605,7 @@ impl Agent {
                     }
                 }
 
-                self.mcp.refresh_tools().await;
+                self.mcp.refresh_if_changed().await;
                 sync_mcp_adapters(self.tools.as_ref(), self.mcp.as_ref(), |n| {
                     self.scene.permits_tool(n)
                 });

@@ -1,8 +1,9 @@
 //! The process groups this process has started and would leave running if it
 //! died without stopping them.
 //!
-//! Commands lead groups of their own (see `process`), so they do not die with
-//! the daemon. A clean shutdown stops them through their handles and ledgers;
+//! Commands lead groups of their own (see `process`), and so do MCP stdio
+//! servers (put on the list with [`list`]), so they do not die with the
+//! daemon. A clean shutdown stops them through their handles and ledgers;
 //! an abort or a `SIGKILL` runs neither. This keeps the one process-wide list
 //! those two cases need: [`kill_all`] for a panic hook that is about to abort,
 //! and a copy on disk that the next run — after a supervisor restarts it —
@@ -43,6 +44,33 @@ pub(super) fn started(group: i32) {
 
 pub(super) fn stopped(group: i32) {
     update(|groups| groups.remove(&group));
+}
+
+/// A process group started outside `process` — an MCP server's — on the
+/// list until this is dropped.
+#[derive(Debug)]
+pub struct Listed(i32);
+
+pub fn list(group: i32) -> Listed {
+    started(group);
+    Listed(group)
+}
+
+impl Drop for Listed {
+    fn drop(&mut self) {
+        stopped(self.0);
+    }
+}
+
+/// The groups on the list now.
+pub fn listed() -> Vec<i32> {
+    ORPHANS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .groups
+        .iter()
+        .copied()
+        .collect()
 }
 
 fn update(change: impl FnOnce(&mut BTreeSet<i32>) -> bool) {

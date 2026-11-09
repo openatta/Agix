@@ -8,6 +8,9 @@
 //! 跳转之前过 [`McpPolicyGate::admit_authorization_server`]。策略文件读不了、
 //! 解析不了，一律按"全部拒绝"处理并在 `daemon.doctor` 里报出来。
 //!
+//! `allowed_servers` 里的 `name` 规则不放行任何 server：name 是写配置的人自己起的键，
+//! 放行得落在实际要跑的 command 或要连的 url 上；`name` 只在 `denied_servers` 里起作用。
+//!
 //! 规则格式与匹配语义见 `docs/ARCHITECTURE.md` §6.4。
 
 use std::path::{Path, PathBuf};
@@ -102,9 +105,13 @@ impl CompiledRule {
         let matcher = match &rule {
             McpServerRule::Name(n) => Matcher::Name(n.clone()),
             McpServerRule::Command(pattern) => Matcher::Command(glob(pattern)?),
-            McpServerRule::Url(pattern) => Matcher::Url(glob(pattern)?),
+            McpServerRule::Url(pattern) => Matcher::Url(glob(&normalized_url_pattern(pattern))?),
         };
         Ok(Self { rule, matcher })
+    }
+
+    fn admits(&self, name: &str, cfg: &McpServerConfig) -> bool {
+        !matches!(self.matcher, Matcher::Name(_)) && self.matches(name, cfg)
     }
 
     fn matches(&self, name: &str, cfg: &McpServerConfig) -> bool {
@@ -124,11 +131,44 @@ impl CompiledRule {
 
 /// `scheme://host[:port]/path`, without userinfo, query or fragment, so a
 /// `?` or `#` in the URL cannot carry text a host-matching `*` would accept.
+/// `ws`/`wss` read as `http`/`https`, the URL a WebSocket server falls back
+/// to, and a host's trailing `.` is dropped: it names the same host.
 fn normalized_url(raw: &str) -> Option<String> {
     let url = url::Url::parse(raw).ok()?;
-    let host = url.host_str()?;
-    let port = url.port().map(|p| format!(":{p}")).unwrap_or_default();
-    Some(format!("{}://{host}{port}{}", url.scheme(), url.path()))
+    let host = url.host_str()?.trim_end_matches('.');
+    if host.is_empty() {
+        return None;
+    }
+    let scheme = match url.scheme() {
+        "ws" => "http",
+        "wss" => "https",
+        other => other,
+    };
+    let default_port = match scheme {
+        "http" => Some(80),
+        "https" => Some(443),
+        _ => None,
+    };
+    let port = url
+        .port_or_known_default()
+        .filter(|p| Some(*p) != default_port)
+        .map(|p| format!(":{p}"))
+        .unwrap_or_default();
+    Some(format!("{scheme}://{host}{port}{}", url.path()))
+}
+
+/// A `url` rule written for `ws://`/`wss://` matches what [`normalized_url`]
+/// makes of those URLs.
+fn normalized_url_pattern(pattern: &str) -> String {
+    for (ws, http) in [("ws://", "http://"), ("wss://", "https://")] {
+        if pattern
+            .get(..ws.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(ws))
+        {
+            return format!("{http}{}", &pattern[ws.len()..]);
+        }
+    }
+    pattern.to_string()
 }
 
 fn normalized_issuer(raw: &str) -> Option<String> {
@@ -244,12 +284,8 @@ impl McpPolicyGate {
     }
 
     /// May `name`, configured as `cfg`, be connected? `Err` says why not,
-    /// naming the policy. In-process servers are host code, not configuration
-    /// a user could point elsewhere, and are always admitted.
+    /// naming the policy.
     pub fn admit(&self, name: &str, cfg: &McpServerConfig) -> Result<(), String> {
-        if matches!(cfg, McpServerConfig::InProcess { .. }) {
-            return Ok(());
-        }
         match &self.rules {
             Rules::Absent => Ok(()),
             Rules::Unreadable(e) => Err(format!(
@@ -267,10 +303,18 @@ impl McpPolicyGate {
                     ));
                 }
                 match allowed {
-                    Some(allowed) if !allowed.iter().any(|r| r.matches(name, cfg)) => Err(format!(
-                        "denied by {}: matches no allowed_servers rule",
-                        self.describe_origin()
-                    )),
+                    Some(allowed) if !allowed.iter().any(|r| r.admits(name, cfg)) => {
+                        let by_name_only = allowed.iter().any(|r| r.matches(name, cfg));
+                        Err(format!(
+                            "denied by {}: matches no allowed_servers rule{}",
+                            self.describe_origin(),
+                            if by_name_only {
+                                " (a `name` rule there admits nothing; allow its command or url)"
+                            } else {
+                                ""
+                            }
+                        ))
+                    }
                     _ => Ok(()),
                 }
             }
@@ -339,7 +383,7 @@ impl HealthCheck for McpPolicyGate {
             PolicyOrigin::Host => ("host", None),
             PolicyOrigin::File(path) => ("file", Some(path.display().to_string())),
         };
-        let (allowed, denied, issuers) = match &self.rules {
+        let (allowed, denied, issuers, inert) = match &self.rules {
             Rules::Active {
                 allowed,
                 denied,
@@ -348,8 +392,14 @@ impl HealthCheck for McpPolicyGate {
                 allowed.as_ref().map(Vec::len),
                 Some(denied.len()),
                 issuers.as_ref().map(Vec::len),
+                allowed
+                    .iter()
+                    .flatten()
+                    .filter(|r| matches!(r.matcher, Matcher::Name(_)))
+                    .map(|r| r.rule.to_string())
+                    .collect::<Vec<_>>(),
             ),
-            _ => (None, None, None),
+            _ => (None, None, None, Vec::new()),
         };
         let details = serde_json::json!({
             "source": source,
@@ -359,10 +409,18 @@ impl HealthCheck for McpPolicyGate {
             "denied_servers": denied,
             "allowed_authorization_servers": issuers,
             "enterprise_idp": self.enterprise_idp.as_ref().map(|idp| idp.issuer.clone()),
+            "inert_allowed_rules": inert,
             "error": self.error(),
         });
         match &self.rules {
             Rules::Absent => CheckResult::ok("no MCP policy").with_details(details),
+            Rules::Active { .. } if !inert.is_empty() => CheckResult::degraded(format!(
+                "{} in force; allowed_servers rules {} admit nothing: a `name` rule \
+                 only denies, allow a command or url instead",
+                self.describe_origin(),
+                inert.join(", ")
+            ))
+            .with_details(details),
             Rules::Active { .. } => CheckResult::ok(format!("{} in force", self.describe_origin()))
                 .with_details(details),
             Rules::Unreadable(e) => CheckResult::failing(format!(
@@ -421,10 +479,29 @@ mod tests {
 
     #[test]
     fn an_allow_list_admits_only_what_it_matches() {
-        let g = gate(r#"{"allowed_servers": [{"name": "github"}]}"#);
-        assert!(g.admit("github", &stdio("x")).is_ok());
-        let err = g.admit("other", &stdio("x")).unwrap_err();
+        let g = gate(r#"{"allowed_servers": [{"command": "github-mcp"}]}"#);
+        assert!(g.admit("github", &stdio("github-mcp")).is_ok());
+        let err = g.admit("github", &stdio("x")).unwrap_err();
         assert!(err.contains("no allowed_servers rule"), "{err}");
+    }
+
+    #[test]
+    fn a_name_alone_in_allowed_servers_does_not_admit_a_command() {
+        let g = gate(r#"{"allowed_servers": [{"name": "github"}]}"#);
+        let err = g.admit("github", &stdio("/tmp/anything")).unwrap_err();
+        assert!(err.contains("a `name` rule there admits nothing"), "{err}");
+        assert!(g.admit("github", &http("https://evil.example/")).is_err());
+
+        let check = g.check();
+        assert_eq!(check.status, HealthStatus::Degraded, "{}", check.summary);
+        assert_eq!(
+            check.details["inert_allowed_rules"],
+            serde_json::json!([r#"{"name": "github"}"#])
+        );
+
+        let both = gate(r#"{"allowed_servers": [{"name": "github"}, {"command": "github-mcp"}]}"#);
+        assert!(both.admit("github", &stdio("github-mcp")).is_ok());
+        assert!(both.admit("github", &stdio("/tmp/anything")).is_err());
     }
 
     #[test]
@@ -437,7 +514,7 @@ mod tests {
     #[test]
     fn deny_wins_over_allow() {
         let g = gate(
-            r#"{"allowed_servers": [{"name": "github"}, {"command": "npx"}],
+            r#"{"allowed_servers": [{"command": "npx"}],
                 "denied_servers": [{"name": "github"}]}"#,
         );
         assert!(g.admit("github", &stdio("npx")).is_err());
@@ -507,18 +584,52 @@ mod tests {
             .is_err());
     }
 
-    #[test]
-    fn in_process_servers_are_exempt() {
-        let cfg = McpServerConfig::InProcess {
-            name: "host".into(),
+    fn websocket(url: &str) -> McpServerConfig {
+        McpServerConfig::WebSocket {
+            url: url.into(),
+            headers: HashMap::new(),
             scope: None,
             timeouts: Default::default(),
-        };
-        assert!(gate(r#"{"allowed_servers": []}"#).admit("x", &cfg).is_ok());
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("mcp-policy.json");
-        std::fs::write(&path, "not json").unwrap();
-        assert!(McpPolicyGate::load(&path, true).admit("x", &cfg).is_ok());
+        }
+    }
+
+    #[test]
+    fn a_websocket_server_is_matched_by_its_http_rule() {
+        let deny = gate(r#"{"denied_servers": [{"url": "https://evil.example/**"}]}"#);
+        assert!(deny
+            .admit("a", &websocket("wss://evil.example/mcp"))
+            .is_err());
+        assert!(deny
+            .admit("a", &websocket("wss://evil.example:443/mcp"))
+            .is_err());
+        assert!(deny.admit("a", &websocket("wss://ok.example/mcp")).is_ok());
+
+        let plain = gate(r#"{"denied_servers": [{"url": "http://evil.example/**"}]}"#);
+        assert!(plain
+            .admit("a", &websocket("ws://evil.example/mcp"))
+            .is_err());
+
+        let ws_rule = gate(r#"{"allowed_servers": [{"url": "wss://corp.example/**"}]}"#);
+        assert!(ws_rule
+            .admit("a", &websocket("wss://corp.example/mcp"))
+            .is_ok());
+        assert!(ws_rule
+            .admit("a", &http("https://corp.example/mcp"))
+            .is_ok());
+        assert!(ws_rule
+            .admit("a", &websocket("ws://corp.example/mcp"))
+            .is_err());
+    }
+
+    #[test]
+    fn a_trailing_dot_host_is_the_same_host() {
+        let deny = gate(r#"{"denied_servers": [{"url": "https://evil.example/**"}]}"#);
+        assert!(deny.admit("a", &http("https://evil.example./mcp")).is_err());
+        assert!(deny
+            .admit("a", &http("https://EVIL.example../mcp"))
+            .is_err());
+        let allow = gate(r#"{"allowed_servers": [{"url": "https://corp.example/**"}]}"#);
+        assert!(allow.admit("a", &http("https://corp.example./mcp")).is_ok());
     }
 
     #[test]
@@ -571,7 +682,7 @@ mod tests {
         let path = dir.path().join("mcp-policy.json");
         std::fs::write(
             &path,
-            r#"{"allowed_servers": [{"name": "a"}], "denied_servers": [{"name": "b"}, {"name": "c"}]}"#,
+            r#"{"allowed_servers": [{"command": "a"}], "denied_servers": [{"name": "b"}, {"name": "c"}]}"#,
         )
         .unwrap();
         let result = McpPolicyGate::load(&path, false).check();

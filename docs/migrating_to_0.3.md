@@ -616,6 +616,40 @@ WebAssembly 载体整个移除。
 - settings.json 里没有任何设置读的顶层键(拼错的、别的工具的,如 `hooks`)在加载时各记一条
   warn,`daemon.doctor` 的 `settings_tiers[]` 多了 `unknown_keys`。行为不变,仍被忽略。
 
+- **MCP 策略里 `allowed_servers` 的 `name` 规则不再放行任何 server**,`name` 只在
+  `denied_servers` 里起作用。只靠 `{"name": …}` 放行的策略现在拒绝这些 server(拒绝原因会说
+  明),`daemon.doctor` 的 `mcp.policy` 报 `degraded` 并在 `inert_allowed_rules` 里列出它们;
+  改成 `command` / `url` 规则。`url` 规则匹配前把 `ws://` / `wss://` 当作 `http://` /
+  `https://`、去掉主机名末尾的 `.`(规则里写的 `ws://` / `wss://` 同样换过来),
+  `denied_servers` 因此也拦得住 WebSocket 回退和 `evil.example.` 这种写法。
+- **项目层的 MCP server 读不了 daemon 的环境。** 项目 `.agix/settings.json` /
+  `settings.local.json` 里声明或改过的 server——包括 `mcp.addServer` / `mcp.updateServer` 写进去
+  的——`command` / `args` / `url` / `headers` 里的 `$VAR` 只用它自己 `env` 块的值展开,`env` 块
+  的值本身不展开;`oauth` 里写 `client_secret_env` / `private_key_jwt.key_env` 的不连接
+  (`mcp_connect_failed`,`mcp.addServer` 报 `INVALID_PARAMS`)。靠 `$GITHUB_TOKEN` 这类变量的
+  项目 server,把值写成字面量,或把 server 挪到全局层 / 场景层;全局层、场景层、插件声明的
+  server 照旧。项目放在 `$HOME`、`.agix` 就是全局目录的,按全局层算。
+- `"type": "in_process"` 的 MCP server 配置不再被接受(从来没有实现过,连接必然失败),以
+  `invalid config` 报出。`"type": "websocket"` 现在与 `web_socket` 同义。
+- server 名含 `__` 或以 `_` 结尾的 MCP server,工具名改走"清洗 + 哈希"(`a__b` 的工具叫
+  `mcp__a_b_<6 位哈希>__…`),本来就要哈希、清洗后以 `_` 结尾的名字(如 `docs.`)也不再带那个
+  `_`。写了这些 server 的权限规则要跟着改名。
+- 工具调用之后不再把每个 MCP server 的工具都重列一遍:只有发了 `tools/list_changed`(或断线
+  后重连上)的 server 才在下一步重列,发了 `prompts/list_changed` 的重读它的 prompt;
+  `resources/list_changed` 不触发任何事。重列失败的 server 保留原来的工具,不再让整组工具
+  消失;重列得到空列表的,工具清空。
+- `config.reload` 的 `routing` 多了 `mcp_connecting`:重连最多等 10 秒,没连完的在后台接着连,
+  结果随后以通知到达。命令不存在、没有执行权限、URL 解析不了的 MCP server 不再退避重试
+  (以前每个要等十几秒)。
+- 消息里 `@server:uri` 内联的资源:`server` / `uri` 属性做了转义,正文里的 `</mcp-resource`
+  被拆开,资源伪造不了闭合标签;MIME 不是 `image/*` 的二进制资源显示为
+  `[binary resource: <mime>, <n> bytes]`,不再标成图片。
+- MCP OAuth 回调带 `error` 时同样要求 `state` 相符;不符的被拒,登录继续等真正的回调。以前
+  任何本机进程发一个 `?error=x` 就能把进行中的登录作废。
+- MCP stdio server 的进程组记进孤儿登记:daemon 被 `SIGKILL` 之后,下次启动会把它们清掉。
+- 只读且幂等的 MCP 工具结果超过 256 KB 的不再缓存。
+- 登录之后重连失败的 `mcp_connect_failed` 的 `error` 带上失败原因。
+
 ### 嵌入方
 
 - `AgentEvent` 多了 `Notification { message, status, turn_id }`;穷举匹配它的要补一支。
@@ -633,7 +667,19 @@ WebAssembly 载体整个移除。
   `RedactionPolicy::scrub_message`。`TelemetryHandleError` 多了 `Io`,`FileRecorder::record`
   写失败返回它;新增 `FileRecorder::with_max_bytes`,去掉 `FileRecorder::exists`。
 - `team::prompt::build_coordinator_prompt` 删除(没有地方读它)。
-
+- `McpServerConfig::InProcess` 删除,`McpPolicyGate::admit` 不再豁免它。`McpServerConfig` 新增
+  `confined_to_own_env()`,`mcp::config` 新增 `expand_vars_with`;`McpError` 新增 `is_permanent()`。
+- `base::interface::mcp_servers::McpServers` 多了必须实现的
+  `async fn refresh_if_changed(&mut self) -> bool`;回合循环在工具步骤之后调它,不再调
+  `refresh_tools`(`EngineCommand::RefreshMcp` 仍然全量重列)。
+- `mcp::notify::NotificationQueue` 删除,换成 `Announcements`(按 server、按种类计数,
+  `sink()` / `record()` / `of()`)与 `ListEpochs`;`McpManager::refresh_tools_if_announced` 改名
+  `refresh_if_changed`(也重读宣布过变化的 prompt),`pending_notifications` 删除。`share()`
+  出来的 manager 与原来那个读同一份通知。`McpManager::refresh_tools` / `refresh_prompts` 对
+  列表失败的 server 保留它原有的工具 / prompt。`NotifyingHandler` 多了 `keeping()`。
+- `base::interface::exec::local::orphans` 新增 `list(group) -> Listed`(drop 时移出登记)与
+  `listed()`。
+- `mcp::output_cache::MAX_CACHED_RESULT_BYTES` 新增。
 - `AnthropicModel::stream` / `OpenAICompatibleModel::stream` 在返回前等到厂商开始回答:请求被拒
   (状态码、连不上、重试用尽)从 `stream()` 返回 `Err`,不再是流的第一项;两者都认传进来的
   `CancellationToken`,取消时 `stream()` 返回 `ModelError::Cancelled`,流里出 `Err(Cancelled)` 后结束。

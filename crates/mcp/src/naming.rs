@@ -9,10 +9,11 @@
 //! every session and on every connect:
 //!
 //! - A server name that already fits (those characters, at most
-//!   [`MAX_SERVER_SEGMENT`] long) is used as it is. Any other has every
-//!   other character replaced by `_`, is cut to fit, and ends in `_` plus six
-//!   hex digits of its SHA-256, so two names that differ only in what was
-//!   replaced still differ.
+//!   [`MAX_SERVER_SEGMENT`] long, no `__` and no `_` at its end, which would
+//!   make it read as more than one segment) is used as it is. Any other has
+//!   every other character replaced by `_`, its runs of `_` made one, is cut
+//!   to fit, and ends in `_` plus six hex digits of its SHA-256, so two names
+//!   that differ only in what was replaced still differ.
 //! - A tool or prompt name has the same characters replaced. When the whole
 //!   name would pass 64 characters its tool part is cut and ends in the same
 //!   kind of hash; two tools of one server that come out the same are told
@@ -57,10 +58,26 @@ fn hashed(sanitized: &str, raw: &str, max: usize) -> String {
 
 /// The `<server>` in `mcp__<server>__<tool>`.
 pub fn server_segment(server: &str) -> String {
-    if !server.is_empty() && server.len() <= MAX_SERVER_SEGMENT && server.chars().all(allowed) {
+    if !server.is_empty()
+        && server.len() <= MAX_SERVER_SEGMENT
+        && server.chars().all(allowed)
+        && !server.contains(SEPARATOR)
+        && !server.ends_with('_')
+    {
         return server.to_string();
     }
-    hashed(&sanitize(server), server, MAX_SERVER_SEGMENT)
+    let mut single = String::with_capacity(server.len());
+    for c in sanitize(server).chars() {
+        if !(c == '_' && single.ends_with('_')) {
+            single.push(c);
+        }
+    }
+    let kept = MAX_SERVER_SEGMENT - HASH_HEX - 1;
+    let mut cut: String = single.chars().take(kept).collect();
+    while cut.ends_with('_') {
+        cut.pop();
+    }
+    format!("{cut}{}", hash_suffix(server))
 }
 
 /// `mcp__<server>__<tool>` for one tool or prompt of `server`.
@@ -163,6 +180,27 @@ mod tests {
         assert_ne!(names[1], names[0]);
         assert!(api_accepts(&names[1]), "{}", names[1]);
         assert_eq!(names[2], names[0]);
+    }
+
+    #[test]
+    fn a_server_name_that_reads_as_more_than_one_segment_is_hashed() {
+        let joined = tool_name("a__b", "c");
+        assert_ne!(joined, tool_name("a", "b__c"));
+        let seg = server_segment("a__b");
+        assert!(!seg.contains("__"), "{seg}");
+        assert!(seg.starts_with("a_b_"), "{seg}");
+
+        let trailing = server_segment("github_");
+        assert!(!trailing.contains("__"), "{trailing}");
+        assert!(!tool_name("github_", "x").starts_with("mcp__github__"));
+
+        for odd in ["__", "_x__", "a___b", &format!("{}__", "y".repeat(38))] {
+            let seg = server_segment(odd);
+            assert!(!seg.contains("__") && !seg.ends_with('_'), "{odd} -> {seg}");
+            assert!(seg.len() <= MAX_SERVER_SEGMENT, "{odd} -> {seg}");
+            assert!(api_accepts(&tool_name(odd, "t")), "{odd}");
+        }
+        assert_eq!(server_segment("my_srv-2"), "my_srv-2");
     }
 
     #[test]

@@ -707,7 +707,7 @@ rust / go / java / ruby / dotnet / swift 的常见位置,开箱即用。设置�
 ```jsonc
 {
   "allowed_servers": [              // 可省;省略 = 没被拒的都放行;[] = 全部拒绝
-    { "name": "github" },
+    { "command": "/opt/mcp/bin/github-mcp" },
     { "command": "/opt/mcp/bin/*" },
     { "url": "https://*.corp.example/**" }
   ],
@@ -737,9 +737,15 @@ rust / go / java / ruby / dotnet / swift 的常见位置,开箱即用。设置�
 
 | 键 | 匹配对象 | 规则 |
 |---|---|---|
-| `name` | server 的名字(`mcp_servers` 的键;插件的是 `<插件>-mcp-<名字>`) | 完全相等 |
+| `name` | server 的名字(`mcp_servers` 的键;插件的是 `<插件>-mcp-<名字>`) | 完全相等;**只在 `denied_servers` 里起作用** |
 | `command` | stdio server 的 `command`,`$VAR` / `${VAR}` / `${VAR:-默认}` 展开之后 | glob;不带通配就是完全相等 |
 | `url` | 远端 server 的 `url`,同样先展开,再规整成 `scheme://host[:port]/path` | glob |
+
+**`name` 不放行。** 名字是写 `mcp_servers` 的人自己起的键,谁都能把任意命令或 URL 起名叫
+`github`,所以 `allowed_servers` 里的 `name` 规则不放行任何 server——放行要落在实际跑的
+`command` 或实际连的 `url` 上。这样的规则不让策略失效(其余规则照常),`daemon.doctor` 的
+`mcp.policy` 报 `degraded` 并在 `inert_allowed_rules` 里列出它们;被它"命中"却因此被拒的
+server,拒绝原因会说明。`denied_servers` 里的 `name` 照常生效:按名字拒绝不会放进不该放的。
 
 glob 按 §6.1 的约定:`*` 不跨 `/`,`**` 跨。所以 `{"command": "npx"}` 只放行写成 `npx`
 的命令,不放行 `/tmp/evil-npx`,也不放行 `/usr/local/bin/npx`;`/opt/mcp/bin/*` 不放行
@@ -748,10 +754,17 @@ glob 按 §6.1 的约定:`*` 不跨 `/`,`**` 跨。所以 `{"command": "npx"}` �
 不带 `/` 的命令名在起进程时按 `PATH` 找,而 `PATH` 用户改得了(daemon 的环境、server 配置
 的 `env`),所以要钉死一个二进制,放行它的绝对路径。
 
-URL 规整去掉了 userinfo、query、fragment,主机名小写、默认端口省略:`https://*.corp.example/**`
+URL 规整去掉了 userinfo、query、fragment,主机名小写、去掉末尾的 `.`、默认端口省略,
+`ws://` / `wss://` 当作 `http://` / `https://`(WebSocket server 连不上时会回退到同一主机的
+HTTP;规则里写的 `ws://` / `wss://` 同样换过来):`https://*.corp.example/**`
 不会被 `https://evil.example?.corp.example/` 或 `https://evil.example/.corp.example/` 骗过,
-也不匹配显式写了非默认端口的 `https://mcp.corp.example:8443/`(要放行就写进模式里)。路径要
-用 `/**`:`https://h/*` 只匹配一层路径。
+`denied_servers` 里的 `https://evil.example/**` 也拦得住 `wss://evil.example/` 和
+`https://evil.example./`;它不匹配显式写了非默认端口的 `https://mcp.corp.example:8443/`
+(要放行就写进模式里)。路径要用 `/**`:`https://h/*` 只匹配一层路径。
+
+**deny 是尽力而为,allow 才可靠。** 匹配只看规整后的字面:同一台主机换个 IP 字面量
+(`https://203.0.113.7/`)、换个 DNS 别名、换个装着同一个二进制的路径,`denied_servers` 都拦
+不住。要可靠地限制连什么,写 `allowed_servers`。
 
 **裁决**:命中任一条 `denied_servers` 就拒;否则有 `allowed_servers` 时必须命中其中一条;
 都没写就放行。deny 永远优先,和 §6.1 一样。
@@ -764,9 +777,17 @@ URL 规整去掉了 userinfo、query、fragment,主机名小写、默认端口�
 `"state": "denied"` 列出;`mcp.addServer` / `mcp.updateServer` 在写 settings.json **之前**
 就以 `MCP_SERVER_DENIED` 拒绝。见 `daemon_rpc_protocol.md` §6.5、§8、§9。
 
-**不受管的**:宿主 Rust 代码自己接上的 MCP——`type: "in_process"` 的 server(指向宿主在
-进程内注册的服务),以及宿主经 `customize_session` 或自己的 `Builder` 装进会话的
-`McpModule`。它们是宿主的代码,不是用户能改指向的配置;要管,宿主自己管。
+**不受管的**:宿主经 `customize_session` 或自己的 `Builder` 装进会话的 `McpModule`。它们是
+宿主的代码,不是用户能改指向的配置;要管,宿主自己管。
+
+**项目层的 `$VAR` 只从 server 自己的 `env` 块取。** 项目 `.agix/settings.json`(以及
+`settings.local.json`)里声明或改写过的 server——`mcp.addServer` / `mcp.updateServer` 写的
+就是这一层——`command` / `args` / `url` / `headers` 里的 `$VAR` 只用它自己 `env` 块里的值
+展开,`env` 块的值本身不展开,一律不读 daemon 的进程环境;它的 `oauth` 也不能用
+`client_secret_env` / `private_key_jwt.key_env`(读的是 daemon 的环境),写了就以
+`mcp_connect_failed` 拒绝连接。全局层、场景层和插件声明的 server 照旧用 daemon 的环境展开。
+这条对已经信任的项目同样成立:克隆来的仓库不应该能把 `$GITHUB_TOKEN` 发到它指定的 URL。
+项目层只改了全局 server 的一部分(比如只换了 `url`)也算项目层的 server。
 
 ### 6.5 MCP 授权
 

@@ -397,6 +397,9 @@ pub(crate) mod fakes {
             self.0.clone()
         }
         async fn refresh_tools(&mut self) {}
+        async fn refresh_if_changed(&mut self) -> bool {
+            false
+        }
         fn instructions(&self) -> Vec<McpServerInstruction> {
             Vec::new()
         }

@@ -19,6 +19,9 @@ pub trait McpServers: Send + Sync {
     fn tools(&self) -> Vec<Arc<dyn Tool>>;
     /// Lists the servers' tools again.
     async fn refresh_tools(&mut self);
+    /// Lists again what a server announced has changed since this last
+    /// looked; whether anything had.
+    async fn refresh_if_changed(&mut self) -> bool;
     fn instructions(&self) -> Vec<McpServerInstruction>;
     /// The resources `text` references, rendered for the model; `None` when
     /// it references none.
@@ -51,6 +54,9 @@ impl McpServers for NoMcpServers {
         Vec::new()
     }
     async fn refresh_tools(&mut self) {}
+    async fn refresh_if_changed(&mut self) -> bool {
+        false
+    }
     fn instructions(&self) -> Vec<McpServerInstruction> {
         Vec::new()
     }

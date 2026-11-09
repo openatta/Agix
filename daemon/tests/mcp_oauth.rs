@@ -41,9 +41,10 @@ impl Daemon {
     ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_path_buf();
-        std::fs::create_dir_all(root.join(".agix")).unwrap();
+        // The user's settings, not the project's: a project's own servers
+        // may not read `client_secret_env` from the daemon's environment.
         std::fs::write(
-            root.join(".agix").join("settings.json"),
+            root.join("settings.json"),
             serde_json::json!({ "mcp_servers": servers }).to_string(),
         )
         .unwrap();
@@ -1207,6 +1208,33 @@ async fn a_forged_loopback_callback_is_refused_and_the_sign_in_keeps_waiting() {
     assert_eq!(code, 400, "{page}");
     assert!(page.contains("did not complete"), "{page}");
     assert_eq!(conn.status("docs").await["auth"]["state"], "authorizing");
+    let (code, page) = follow(&location).await;
+    assert_eq!(code, 200, "{page}");
+    conn.event("mcp_connected", "docs").await;
+}
+
+#[tokio::test]
+async fn an_error_callback_that_is_not_this_sign_ins_is_refused_too() {
+    let (mcp, _auth) = McpServer::start().await;
+    let d = Daemon::start(serde_json::json!({"docs": http_server(&mcp.url)})).await;
+    let mut conn = d.connect().await;
+    conn.wait_state("docs", "auth_required").await;
+    let start = conn
+        .ok("mcp.auth.start", serde_json::json!({"server": "docs"}))
+        .await;
+    let location = consent(start["authorize_url"].as_str().unwrap()).await;
+
+    for query in ["error=access_denied", "error=access_denied&state=forged"] {
+        let mut forged = url::Url::parse(&location).unwrap();
+        forged.set_query(Some(query));
+        let (code, page) = follow(forged.as_str()).await;
+        assert_eq!(code, 400, "{query}: {page}");
+        assert_eq!(
+            conn.status("docs").await["auth"]["state"],
+            "authorizing",
+            "{query}"
+        );
+    }
     let (code, page) = follow(&location).await;
     assert_eq!(code, 200, "{page}");
     conn.event("mcp_connected", "docs").await;

@@ -5,12 +5,27 @@
 //! reach the server, since it may change state or answer differently. One
 //! cache is shared by every adapter a manager builds, in memory only.
 
-use crate::client::McpCallResult;
+use crate::client::{McpCallResult, McpContent};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 const CACHE_TTL: Duration = Duration::from_secs(30);
 const MAX_CACHE_ENTRIES: usize = 100;
+/// Results larger than this are not kept: a hundred of them would be
+/// hundreds of megabytes held for a 30-second saving.
+pub const MAX_CACHED_RESULT_BYTES: usize = 256 * 1024;
+
+fn result_bytes(result: &McpCallResult) -> usize {
+    result
+        .content
+        .iter()
+        .map(|c| match c {
+            McpContent::Text(t) => t.len(),
+            McpContent::Image { data, .. } => data.len(),
+            McpContent::Other(v) => v.to_string().len(),
+        })
+        .sum()
+}
 
 #[derive(Debug, Clone)]
 struct CacheEntry {
@@ -54,7 +69,8 @@ impl McpOutputCache {
     }
 
     /// Store a successful result, evicting the oldest entry when full. Error
-    /// results are not stored: a failure is no reason to skip the next call.
+    /// results are not stored: a failure is no reason to skip the next call;
+    /// nor are ones over [`MAX_CACHED_RESULT_BYTES`].
     pub fn put(
         &mut self,
         server: &str,
@@ -62,7 +78,7 @@ impl McpOutputCache {
         args: &serde_json::Map<String, serde_json::Value>,
         result: McpCallResult,
     ) {
-        if result.is_error {
+        if result.is_error || result_bytes(&result) > MAX_CACHED_RESULT_BYTES {
             return;
         }
         if self.entries.len() >= MAX_CACHE_ENTRIES {
@@ -108,7 +124,6 @@ impl McpOutputCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::McpContent;
 
     fn make_result(text: &str) -> McpCallResult {
         McpCallResult {
@@ -135,6 +150,18 @@ mod tests {
             McpContent::Text(s) => assert_eq!(s, "cached"),
             _ => panic!("expected text"),
         }
+    }
+
+    #[test]
+    fn a_result_over_the_size_limit_is_not_kept() {
+        let mut cache = McpOutputCache::new();
+        let args = make_args("big");
+        let big = "x".repeat(MAX_CACHED_RESULT_BYTES + 1);
+        cache.put("github", "search_issues", &args, make_result(&big));
+        assert!(cache.get("github", "search_issues", &args).is_none());
+        let at_limit = "x".repeat(MAX_CACHED_RESULT_BYTES);
+        cache.put("github", "search_issues", &args, make_result(&at_limit));
+        assert!(cache.get("github", "search_issues", &args).is_some());
     }
 
     #[test]

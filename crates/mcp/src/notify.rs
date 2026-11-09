@@ -1,34 +1,32 @@
 //! Receiving a server's notifications.
 //!
-//! MCP is bidirectional: a server can tell the client its tool list changed
-//! rather than waiting to be asked again. `McpNotification` and
-//! `McpManager::dispatch_notification` were written for that and then never
-//! connected to a transport — nothing in the process ever constructed one,
-//! so a server announcing new tools was talking to a wall.
+//! A server tells its client when its tool, prompt or resource list changed.
+//! [`NotifyingHandler`] is the client handler rmcp drives for a connection;
+//! it forwards those notifications to a [`NotificationSink`], and
+//! [`Announcements`] is the sink every connection of one manager reports
+//! into. A manager — the pool's, and each session's shared from it — reads
+//! the counts there against the ones it last acted on and lists again only
+//! the servers that announced a change (`McpManager::refresh_if_changed`).
 //!
-//! This is the missing half. The client handler that rmcp drives is no
-//! longer the unit type, and forwards the notifications we act on.
+//! Tool and prompt changes are acted on. A resource change is counted and
+//! otherwise ignored: the resource tools ask the server on every call.
 
 use crate::manager::McpNotification;
 use rmcp::handler::client::ClientHandler;
 use rmcp::service::{NotificationContext, RoleClient};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Called on the transport's task when a server sends a notification.
-///
-/// Deliberately a plain callback rather than a channel: a receiver has to be
-/// drained by someone, and a notification nobody drains is the same silence
-/// this module exists to fix.
 pub type NotificationSink = Arc<dyn Fn(McpNotification) + Send + Sync>;
 
-/// The client handler rmcp drives for one connection.
-///
-/// Everything except the notifications we care about keeps `ClientHandler`'s
-/// default behavior, which is what the unit type provided before.
+/// The client handler rmcp drives for one connection. Everything but the
+/// list-changed notifications keeps `ClientHandler`'s default behavior.
 #[derive(Clone)]
 pub struct NotifyingHandler {
     server: String,
     sink: Option<NotificationSink>,
+    keep: Option<Arc<dyn Send + Sync>>,
 }
 
 impl NotifyingHandler {
@@ -36,12 +34,20 @@ impl NotifyingHandler {
         Self {
             server: server.into(),
             sink,
+            keep: None,
         }
     }
 
     /// A handler that receives notifications and discards them.
     pub fn silent(server: impl Into<String>) -> Self {
         Self::new(server, None)
+    }
+
+    /// Hold `value` for as long as the connection runs: rmcp drops the
+    /// handler when the connection's task ends.
+    pub fn keeping(mut self, value: impl Send + Sync + 'static) -> Self {
+        self.keep = Some(Arc::new(value));
+        self
     }
 
     fn emit(&self, notification: McpNotification) {
@@ -52,8 +58,6 @@ impl NotifyingHandler {
 }
 
 impl ClientHandler for NotifyingHandler {
-    /// The one that matters: a server whose tools changed is a server whose
-    /// cached tool list is now wrong, and the host has to re-ask.
     fn on_tool_list_changed(
         &self,
         _context: NotificationContext<RoleClient>,
@@ -86,52 +90,49 @@ impl ClientHandler for NotifyingHandler {
     }
 }
 
-/// Notifications that have arrived and not yet been acted on.
-///
-/// A queue rather than an immediate refresh because the reaction — re-asking
-/// a server for its tools — needs `&mut McpManager`, and the notification
-/// arrives on the transport's own task where no such handle exists. Parking
-/// it here lets whoever owns the manager pick it up.
-#[derive(Default)]
-pub struct NotificationQueue {
-    pending: std::sync::Mutex<Vec<McpNotification>>,
+/// How many times a server has announced each of its lists changed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ListEpochs {
+    pub tools: u64,
+    pub prompts: u64,
+    pub resources: u64,
 }
 
-impl NotificationQueue {
+/// What servers have announced, as counts. Counts rather than a queue: every
+/// manager sharing these connections reads the same announcements, each
+/// against what it last acted on, and none of them takes them from the rest.
+#[derive(Default)]
+pub struct Announcements {
+    epochs: std::sync::Mutex<HashMap<String, ListEpochs>>,
+}
+
+impl Announcements {
     pub fn new() -> Arc<Self> {
         Arc::new(Self::default())
     }
 
-    /// A sink that parks into this queue.
+    /// A sink that counts into this.
     pub fn sink(self: &Arc<Self>) -> NotificationSink {
-        let queue = Arc::clone(self);
-        Arc::new(move |n| queue.push(n))
+        let announcements = Arc::clone(self);
+        Arc::new(move |n| announcements.record(&n))
     }
 
-    pub fn push(&self, notification: McpNotification) {
-        self.lock().push(notification);
+    pub fn record(&self, notification: &McpNotification) {
+        let (server, count): (&str, fn(&mut ListEpochs) -> &mut u64) = match notification {
+            McpNotification::ToolListChanged { server } => (server, |e| &mut e.tools),
+            McpNotification::PromptListChanged { server } => (server, |e| &mut e.prompts),
+            McpNotification::ResourceListChanged { server } => (server, |e| &mut e.resources),
+            McpNotification::Custom { .. } => return,
+        };
+        *count(self.lock().entry(server.to_string()).or_default()) += 1;
     }
 
-    /// Take everything queued so far, leaving the queue empty.
-    pub fn drain(&self) -> Vec<McpNotification> {
-        std::mem::take(&mut *self.lock())
+    pub fn of(&self, server: &str) -> ListEpochs {
+        self.lock().get(server).copied().unwrap_or_default()
     }
 
-    /// Has any server announced that its tools changed? Answering this
-    /// clears the queue, since the answer is acted on by re-asking every
-    /// server anyway.
-    pub fn take_tools_changed(&self) -> bool {
-        self.drain()
-            .iter()
-            .any(|n| matches!(n, McpNotification::ToolListChanged { .. }))
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.lock().is_empty()
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<McpNotification>> {
-        self.pending.lock().unwrap_or_else(|e| e.into_inner())
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, ListEpochs>> {
+        self.epochs.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -160,9 +161,6 @@ mod tests {
         }
     }
 
-    /// A connection with no sink behaves exactly as the unit handler did,
-    /// which is what keeps this change invisible to callers that do not want
-    /// notifications.
     #[test]
     fn a_silent_handler_drops_everything_without_complaint() {
         let h = NotifyingHandler::silent("github");
@@ -172,37 +170,44 @@ mod tests {
     }
 
     #[test]
-    fn the_queue_parks_notifications_until_someone_can_act_on_them() {
-        let q = NotificationQueue::new();
-        assert!(q.is_empty());
+    fn announcements_are_counted_per_server_and_kind_and_stay_for_every_reader() {
+        let a = Announcements::new();
+        let sink = a.sink();
+        assert_eq!(a.of("github"), ListEpochs::default());
 
-        NotifyingHandler::new("github", Some(q.sink())).emit(McpNotification::ToolListChanged {
+        sink(McpNotification::ToolListChanged {
             server: "github".into(),
         });
-        assert!(!q.is_empty());
+        sink(McpNotification::ToolListChanged {
+            server: "github".into(),
+        });
+        sink(McpNotification::PromptListChanged {
+            server: "github".into(),
+        });
+        sink(McpNotification::ResourceListChanged {
+            server: "db".into(),
+        });
 
-        assert_eq!(q.drain().len(), 1);
-        assert!(q.is_empty(), "draining takes them");
+        let github = a.of("github");
+        assert_eq!((github.tools, github.prompts, github.resources), (2, 1, 0));
+        assert_eq!(a.of("db").resources, 1);
+        assert_eq!(a.of("github"), github, "reading takes nothing away");
     }
 
     #[test]
-    fn asking_whether_tools_changed_clears_the_queue() {
-        let q = NotificationQueue::new();
-        q.push(McpNotification::ResourceListChanged { server: "a".into() });
-        q.push(McpNotification::ToolListChanged { server: "b".into() });
-
-        assert!(q.take_tools_changed());
-        assert!(
-            q.is_empty(),
-            "the answer is acted on by re-asking every server, so nothing is left to replay"
-        );
-        assert!(!q.take_tools_changed(), "and it does not fire twice");
-    }
-
-    #[test]
-    fn other_notifications_do_not_claim_the_tools_changed() {
-        let q = NotificationQueue::new();
-        q.push(McpNotification::PromptListChanged { server: "a".into() });
-        assert!(!q.take_tools_changed());
+    fn a_kept_value_lives_as_long_as_the_handler_and_its_clones() {
+        struct Flag(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for Flag {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let h = NotifyingHandler::silent("s").keeping(Flag(dropped.clone()));
+        let clone = h.clone();
+        drop(h);
+        assert!(!dropped.load(std::sync::atomic::Ordering::SeqCst));
+        drop(clone);
+        assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
     }
 }
