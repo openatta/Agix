@@ -1080,6 +1080,77 @@ async fn plugin_install_refuses_a_package_it_cannot_load_back() {
 
 #[cfg(feature = "plugin-packages")]
 #[tokio::test]
+async fn plugin_rpcs_refuse_names_that_leave_the_cache() {
+    let (_server, sock, dir, handle) = start_server().await;
+    std::fs::create_dir_all(dir.path().join("keep").join("1.0.0")).unwrap();
+    std::fs::create_dir_all(dir.path().join("plugins").join("keep")).unwrap();
+    let (archive_path, checksum) = build_demo_plugin_zip(dir.path(), "demo-plugin");
+
+    let calls = [
+        r#"{"name":"../..","scope":"global"}"#.to_string(),
+        r#"{"name":"..","version":"keep"}"#.to_string(),
+        r#"{"name":"demo-plugin","version":"../../../keep"}"#.to_string(),
+        format!(r#"{{"name":"{}"}}"#, dir.path().join("keep").display()),
+    ];
+    for params in &calls {
+        let resp = rpc_call(
+            &sock,
+            &format!(r#"{{"jsonrpc":"2.0","method":"plugin.uninstall","id":1,"params":{params}}}"#),
+        )
+        .await;
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["error"]["code"], codes::INVALID_PARAMS, "{params}: {v}");
+    }
+    for (name, version) in [("../../escaped", "1.0.0"), ("demo-plugin", "../../escaped")] {
+        let resp = rpc_call(
+            &sock,
+            &format!(
+                r#"{{"jsonrpc":"2.0","method":"plugin.install","id":1,"params":{{"name":"{name}","version":"{version}","download_url":"file://{}","checksum":"{checksum}"}}}}"#,
+                archive_path.display(),
+            ),
+        )
+        .await;
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(
+            v["error"]["code"],
+            codes::INVALID_PARAMS,
+            "{name} {version}: {v}"
+        );
+    }
+    assert!(dir.path().join("keep").join("1.0.0").is_dir());
+    assert!(dir.path().join("plugins").join("keep").is_dir());
+    assert!(!dir.path().join("escaped").exists());
+
+    let resp = rpc_call(
+        &sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"plugin.install","id":1,"params":{{"name":"other-name","version":"1.0.0","download_url":"file://{}","checksum":"{checksum}"}}}}"#,
+            archive_path.display(),
+        ),
+    )
+    .await;
+    let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    assert_eq!(v["error"]["code"], codes::INVALID_PARAMS, "{v}");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("demo-plugin"),
+        "a package installed under another name is refused: {v}"
+    );
+    assert!(!dir
+        .path()
+        .join("plugins")
+        .join("cache")
+        .join("other-name")
+        .exists());
+
+    _server.shutdown_token().cancel();
+    let _ = handle.await;
+}
+
+#[cfg(feature = "plugin-packages")]
+#[tokio::test]
 async fn plugin_lifecycle_install_list_disable_enable_uninstall() {
     let (_server, sock, dir, handle) = start_server().await;
     let (archive_path, checksum) = build_demo_plugin_zip(dir.path(), "demo-plugin");

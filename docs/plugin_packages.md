@@ -98,6 +98,8 @@ cd my-plugin && zip -r ../my-plugin.zip . && shasum -a 256 ../my-plugin.zip
 - `download_url` 接受 `https://`/`http://` 和 `file://`。**网络来源必须带 checksum**,没有就
   在下载前拒掉;`file://` 可以不带。
 - `scope` 是 `"global"`(默认)或 `"scene"`,决定落进哪一层的 cache。
+- `name`、`version` 是 cache 里的目录名,只收 ASCII 字母、数字、`.`、`_`、`-`、`+`,不以
+  `.` 开头;`name` 还得与包里 `[plugin] name` 一致。
 - 解压后立刻按发现时的方式把 manifest 读回来;读不回来(包括上面那几类拒装的写法)就整个
   删掉并报错。
 - zip 里带 `..` 或绝对路径的条目跳过,不解压。

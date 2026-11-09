@@ -241,9 +241,16 @@ mod packages {
             let manifest = cache
                 .cached_manifest(name, version)
                 .ok_or_else(|| format!("no plugin.toml in the installed package `{name}`"))?;
-            plugin::manifest::Plugin::load(&cache.version_dir(name, version), &manifest)
-                .map(|_| ())
-                .map_err(|e| e.to_string())
+            let loaded =
+                plugin::manifest::Plugin::load(&cache.version_dir(name, version), &manifest)
+                    .map_err(|e| e.to_string())?;
+            if loaded.manifest.plugin.name != name {
+                return Err(format!(
+                    "the package calls itself `{}`, not `{name}`",
+                    loaded.manifest.plugin.name
+                ));
+            }
+            Ok(())
         }
 
         pub fn cache_for(&self, scope: &str) -> Result<plugin::cache::PluginCache, String> {

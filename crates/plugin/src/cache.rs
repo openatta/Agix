@@ -14,9 +14,33 @@
 //! │   │   ├── plugin.toml
 //! │   │   └── ... (extracted archive contents)
 //! ```
+//!
+//! `{name}` and `{version}` come from whoever calls `plugin.install` /
+//! `plugin.uninstall`, so each must pass [`check_component`] before it is
+//! joined onto the root.
 
 use crate::manifest::PluginError;
 use std::path::PathBuf;
+
+/// `Ok` when `value` can name one directory of the cache: 1 to 128 ASCII
+/// letters, digits, `.`, `_`, `-` or `+`, not starting with `.`. `what` names
+/// the field in the error.
+pub fn check_component(what: &str, value: &str) -> Result<(), PluginError> {
+    let fits = !value.is_empty()
+        && value.len() <= 128
+        && !value.starts_with('.')
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+'));
+    if fits {
+        Ok(())
+    } else {
+        Err(PluginError::Schema(format!(
+            "plugin {what} {value:?} must be ASCII letters, digits, `.`, `_`, `-` or `+`, \
+             not starting with `.`"
+        )))
+    }
+}
 
 /// Manages the plugin cache directory.
 pub struct PluginCache {
@@ -103,8 +127,20 @@ impl PluginCache {
         }
     }
 
-    /// Remove a cached plugin version.
+    /// Remove a cached plugin version. Refuses anything that would not be a
+    /// directory inside this cache.
     pub fn remove_version(&self, name: &str, version: &str) -> Result<(), PluginError> {
+        check_component("name", name)?;
+        check_component("version", version)?;
+        let plugin_dir = self.root.join(name);
+        if let (Ok(root), Ok(resolved)) = (self.root.canonicalize(), plugin_dir.canonicalize()) {
+            if resolved.parent() != Some(root.as_path()) {
+                return Err(PluginError::Io(std::io::Error::other(format!(
+                    "{} resolves outside the plugin cache, not removing it",
+                    plugin_dir.display()
+                ))));
+            }
+        }
         let dir = self.version_dir(name, version);
         if dir.is_dir() {
             std::fs::remove_dir_all(&dir).map_err(|e| {
@@ -114,7 +150,6 @@ impl PluginCache {
             })?;
         }
         // If no more versions remain, remove the plugin directory
-        let plugin_dir = self.root.join(name);
         if plugin_dir.is_dir() {
             if let Ok(entries) = std::fs::read_dir(&plugin_dir) {
                 if entries.flatten().count() == 0 {
@@ -146,6 +181,54 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let cache = cache_with_versions(&tmp, "p", &["0.9.0", "0.10.0", "1.0.0"]);
         assert_eq!(cache.list_versions("p"), ["1.0.0", "0.10.0", "0.9.0"]);
+    }
+
+    #[test]
+    fn names_that_could_leave_the_cache_are_refused() {
+        for bad in [
+            "", "/", "..", ".", ".hidden", "a/b", "../x", "a\\b", "/etc", "名字", "a b",
+        ] {
+            assert!(check_component("name", bad).is_err(), "{bad:?} accepted");
+        }
+        for good in [
+            "demo",
+            "demo-plugin",
+            "code_review.helper",
+            "1.0.0",
+            "1.0.0-rc.1+build.5",
+        ] {
+            assert!(check_component("version", good).is_ok(), "{good:?} refused");
+        }
+    }
+
+    #[test]
+    fn removing_a_root_named_plugin_touches_nothing_outside_the_cache() {
+        let tmp = TempDir::new().unwrap();
+        let outside = tmp.path().join("precious");
+        std::fs::create_dir_all(outside.join("keep")).unwrap();
+        let cache = cache_with_versions(&tmp, "p", &["1.0.0"]);
+        let absolute = tmp.path().display().to_string();
+        for (name, version) in [
+            (absolute.as_str(), "precious"),
+            ("..", ".."),
+            ("../..", "precious"),
+        ] {
+            assert!(cache.remove_version(name, version).is_err());
+        }
+        assert!(outside.join("keep").is_dir());
+        assert!(cache.version_dir("p", "1.0.0").is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_plugin_directory_that_links_out_of_the_cache_is_not_followed() {
+        let tmp = TempDir::new().unwrap();
+        let outside = tmp.path().join("elsewhere");
+        std::fs::create_dir_all(outside.join("1.0.0")).unwrap();
+        let cache = cache_with_versions(&tmp, "p", &["1.0.0"]);
+        std::os::unix::fs::symlink(&outside, cache.root_path().join("linked")).unwrap();
+        assert!(cache.remove_version("linked", "1.0.0").is_err());
+        assert!(outside.join("1.0.0").is_dir());
     }
 
     #[test]

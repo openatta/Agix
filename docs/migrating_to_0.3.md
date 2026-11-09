@@ -480,6 +480,9 @@ WebAssembly 载体整个移除。
   hook、送达排队消息)。
 - 并发安全的工具在它的 `tool_use` 到齐时就开始跑,`tool_result` 与权限询问可能夹在同一步后面的
   `text_delta` 之间到达。
+- `plugin.install` / `plugin.uninstall` 的 `name`、`version` 只收 1–128 个 ASCII 字母、数字、
+  `.`、`_`、`-`、`+`,不以 `.` 开头,别的报 `INVALID_PARAMS`(以前 `{"name": "/"}` 会把根目录
+  下的目录逐个当版本删掉);`plugin.install` 还要求包里 `[plugin] name` 等于 `name`。
 - 团队的 `SendMessage` 只投给团队声明过的成员,`peer` 不在其中时报错并列出成员;提示词改成与
   schema 一致的 `{"peer", "message"}`(以前教的 `to` / `summary` / `"*"` 广播从来不被接受)。
   不是纯 ASCII 文件名的成员标签,邮箱文件改名为 `mailbox/~<hash>.jsonl`。
@@ -563,3 +566,6 @@ WebAssembly 载体整个移除。
   `..Default::default()`)。`McpOAuthConfig` 多了 `grant`、`private_key_jwt`。
 - `team::mailbox::MailboxStore::send` 返回 `Result<(), UnknownPeer>`,不是成员的收件人被拒;
   新增 `MailboxStore::check_peer` 与 `team::mailbox::mailbox_file`(标签到文件名)。
+- `plugin::cache::check_component` 新增;`plugin::install::{install, uninstall}` 与
+  `PluginCache::remove_version` 对不合规的 `name` / `version` 返回 `PluginError::Schema`,
+  `remove_version` 还拒绝解析到 cache 之外的插件目录。

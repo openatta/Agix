@@ -7,7 +7,10 @@
 //! - `file://`, a local absolute path read off disk, for development and
 //!   sideloading; the checksum is optional.
 //!
-//! Zip entries with `..` or an absolute path are skipped, not extracted.
+//! Zip entries with `..` or an absolute path are skipped, not extracted, and
+//! a `name` or `version` that is not one plain cache directory name is
+//! refused before anything is read or removed (see
+//! [`check_component`](crate::cache::check_component)).
 
 use crate::cache::PluginCache;
 use crate::manifest::PluginError;
@@ -39,6 +42,8 @@ pub async fn install(
             "plugin name '{name}' is blocked (matches blocklist entry '{blocked}')"
         )));
     }
+    crate::cache::check_component("name", name)?;
+    crate::cache::check_component("version", &source.version)?;
     if cache.is_cached(name, &source.version) {
         return Ok(Installed::AlreadyPresent);
     }
@@ -68,6 +73,7 @@ pub fn uninstall(
     name: &str,
     version: Option<&str>,
 ) -> Result<usize, PluginError> {
+    crate::cache::check_component("name", name)?;
     let versions = match version {
         Some(v) => vec![v.to_string()],
         None => cache.list_versions(name),
@@ -269,6 +275,27 @@ mod tests {
         }
         assert_eq!(uninstall(&cache, "p", None).unwrap(), 2);
         assert!(cache.list_versions("p").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_name_or_version_that_is_not_one_directory_is_refused() {
+        let tmp = TempDir::new().unwrap();
+        let archive = zip_bytes(&[("plugin.toml", "[plugin]\nname = \"x\"\n")]);
+        let archive_path = tmp.path().join("x.zip");
+        std::fs::write(&archive_path, &archive).unwrap();
+        let cache = PluginCache::new(tmp.path().join("cache"));
+        for (name, version) in [("../out", "1.0.0"), ("..", "out"), ("x", "../../out")] {
+            let source = PluginSource {
+                download_url: format!("file://{}", archive_path.display()),
+                checksum: None,
+                version: version.into(),
+            };
+            assert!(install(&cache, name, &source).await.is_err());
+            assert!(uninstall(&cache, name, Some(version)).is_err());
+        }
+        assert!(uninstall(&cache, "..", None).is_err());
+        assert!(!tmp.path().join("out").exists());
+        assert!(!tmp.path().join("cache").exists());
     }
 
     #[tokio::test]

@@ -2082,6 +2082,11 @@ MCP 策略拒绝这个 server → `MCP_SERVER_DENIED`,**什么都不写、不连
 
 **daemon 自己去取,没有上传通道。** 没有 marketplace 查询,直接从给的源装。
 
+`name` 与 `version` 各是 cache 里的一级目录名:1–128 个 ASCII 字母、数字、`.`、`_`、
+`-`、`+`,不以 `.` 开头;别的(`/`、`..`、绝对路径、非 ASCII)一律 `INVALID_PARAMS`,
+什么都不读不删。`plugin.uninstall` 同此。包里 manifest 的 `[plugin] name` 必须等于
+`name`,否则按读不回来处理。
+
 **`checksum` 对 `http(s)://` 源是必填的**,缺了会在发起请求之前就拒绝;`file://`
 源可以省略。流程:取包 → 校验 → 解包 → 按发现时的方式把 manifest 读回来;读不回来就把
 这次安装**回滚**并报错。带 `[[wasm]]` 或 `[scene.own]` 段的包在这一步被拒——引擎不跑
