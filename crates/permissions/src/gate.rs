@@ -46,6 +46,7 @@ use crate::error::GateError;
 use crate::path_rule::ResolvedPath;
 use crate::rule::format_rule_string;
 use crate::ruleset::{path_rule_group, shell_rule_group, RuleHit, RuleSet};
+use base::paths::{PROJECT_WORKTREES_DIR, STATE_ROOT_WORKING_DIRS};
 use base::permission::PermissionRule;
 use base::permission::{DecisionReason, PermissionDecision, PermissionMode};
 use base::tool::ToolContext;
@@ -1024,10 +1025,13 @@ const BYPASS_IMMUNE_COMPONENTS: &[&str] = &[".ssh", ".aws", ".gnupg"];
 /// a `.git` component blocks far more than it protects.
 const CONFIRMATION_REQUIRED_COMPONENTS: &[&str] = &[".git", ".claude", ".agix"];
 
-/// What under `.agix` is the agent's own working space rather than its
-/// configuration: the scratchpad its prompt sends temporary files to, and
-/// the memory directory it is told to write to directly.
-const AGIX_WORKING_DIRS: &[&str] = &["scratchpad", "memory"];
+/// Is this entry directly in `.agix` the agent's working space rather than
+/// its configuration: the scratchpad its prompt sends temporary files to,
+/// the memory directory it is told to write to directly, or the worktrees
+/// its sessions work in.
+fn is_agix_working_dir(name: &str) -> bool {
+    STATE_ROOT_WORKING_DIRS.contains(&name) || name == PROJECT_WORKTREES_DIR
+}
 
 /// Does this path (or command argument) name something under
 /// [`CONFIRMATION_REQUIRED_COMPONENTS`]?
@@ -1047,7 +1051,7 @@ fn is_path_confirmation_required(content: &str) -> bool {
                             .split(|c: char| !(c.is_alphanumeric() || "._-".contains(c)))
                             .next()
                             .unwrap_or_default();
-                        AGIX_WORKING_DIRS.contains(&name)
+                        is_agix_working_dir(name)
                     }))
         })
 }
@@ -1099,7 +1103,10 @@ fn is_path_bypass_immune(content: &str) -> bool {
 
 #[cfg(test)]
 mod bypass_immune_tests {
-    use super::{is_path_bypass_immune, is_path_confirmation_required};
+    use super::{
+        is_agix_working_dir, is_path_bypass_immune, is_path_confirmation_required,
+        PROJECT_WORKTREES_DIR, STATE_ROOT_WORKING_DIRS,
+    };
 
     /// `.github` / `.gitignore` / `.gitlab-ci.yml` 只是**前缀**撞上
     /// `.git`，不是同一个路径组件。把它们判成 bypass-immune 会让 agent 改不了
@@ -1166,14 +1173,34 @@ mod bypass_immune_tests {
             "/Users/me/.agix/memory/MEMORY.md",
             "cd /repo\nS=/repo/.agix/scratchpad\nmkdir -p \"$S\"",
             "printf x > \"$d/.agix/scratchpad\"",
+            "/repo/.agix/worktrees/feat-a/feature.txt",
+            "cd /repo/.agix/worktrees/feat-a && git add -A",
         ] {
             assert!(!is_path_confirmation_required(p), "{p}");
         }
         for p in [
             "/repo/.agix/agents/reviewer.md",
             "/repo/.agix/scratchpad.md",
+            "/repo/.agix/worktrees/feat-a/.agix/agents/reviewer.md",
+            "/repo/.agix/worktrees/feat-a/.claude/settings.json",
+            "/repo/.agix/worktrees/feat-a/.git",
         ] {
             assert!(is_path_confirmation_required(p), "{p}");
+        }
+    }
+
+    #[test]
+    fn what_the_gate_treats_as_working_space_the_sandbox_leaves_writable() {
+        use base::paths::{ENGINE_CONFIG_DIRS, ENGINE_CONFIG_FILES};
+        for name in STATE_ROOT_WORKING_DIRS
+            .iter()
+            .chain([&PROJECT_WORKTREES_DIR])
+        {
+            assert!(is_agix_working_dir(name), "{name}");
+            assert!(
+                !ENGINE_CONFIG_DIRS.contains(name) && !ENGINE_CONFIG_FILES.contains(name),
+                "{name}"
+            );
         }
     }
 

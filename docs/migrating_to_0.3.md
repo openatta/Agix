@@ -825,6 +825,9 @@ WebAssembly 载体整个移除。
 - 无人值守的 MCP server(`client_credentials`、`enterprise`)拿到的令牌寿命短于 30 秒左右时,
   调用不再间歇地以"需要授权"失败:令牌何时重新取由 daemon 决定,底层的 OAuth 客户端不再因为
   它"快到期"而拒绝使用刚取到的令牌。
+- 在会话自己的工作树(`EnterWorktree` 建在 `.agix/worktrees/<名字>/` 下)里写文件、跑命令
+  不再当作改 agent 配置去询问,按项目里的普通文件判;无人值守会话以前在工作树里一写就被拒。
+  工作树里的 `.agix`、`.claude`、`.git` 照旧要确认。
 
 ### 嵌入方
 

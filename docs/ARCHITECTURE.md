@@ -747,8 +747,9 @@ rust / go / java / ruby / dotnet / swift 的常见位置,开箱即用。设置�
 (`"python": []` 去掉这一组),写新组名就是加一组,没提到的组保持缺省。这些目录只对 `Bash`
 放开,文件工具写不到。
 
-`.agix` 下的路径缺省要人确认(它是 agent 的配置),只有 `scratchpad` 与 `memory` 两处除外:
-那是提示词让模型去写的工作区。
+`.agix` 下的路径缺省要人确认(它是 agent 的配置),只有 `scratchpad`、`memory` 与 `worktrees`
+三处除外:前两处是提示词让模型去写的工作区,`worktrees` 下是 `EnterWorktree` 建的工作树,
+里面是项目本身的工作(工作树里自己的 `.agix`、`.claude`、`.git` 照旧要确认)。
 
 ### 6.4 MCP 策略
 

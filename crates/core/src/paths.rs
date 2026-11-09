@@ -49,6 +49,11 @@ use std::path::PathBuf;
 /// sandboxed commands may write.
 pub const STATE_ROOT_WORKING_DIRS: &[&str] = &["scratchpad", "memory"];
 
+/// The directory in a project's `.agix` that holds the git worktrees
+/// `EnterWorktree` creates: project work checked out elsewhere, not
+/// configuration, so it is outside [`ENGINE_CONFIG_DIRS`].
+pub const PROJECT_WORKTREES_DIR: &str = "worktrees";
+
 /// The directories an agent's configuration lives in: `.agix` in a project
 /// and as the state root, and `.claude`, which the engine imports from.
 /// What may be written in one is decided by [`ENGINE_CONFIG_FILES`] and

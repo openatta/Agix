@@ -139,7 +139,6 @@ fn assert_removed(run: &LiveRun, tree: &Path, slug: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: a write in the session's own worktree (.agix/worktrees/) needs confirmation, so unattended it is refused"]
 async fn a_worktree_takes_the_changes_and_leaves_the_main_checkout_alone() -> anyhow::Result<()> {
     let (mut run, session) = start("worktree", true).await?;
     let token = format!("FEATURE-{}", nonce());
@@ -161,7 +160,6 @@ async fn a_worktree_takes_the_changes_and_leaves_the_main_checkout_alone() -> an
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: a write in the session's own worktree (.agix/worktrees/) needs confirmation, so unattended it is refused"]
 async fn removing_a_worktree_with_changes_is_refused_until_discard_is_given() -> anyhow::Result<()>
 {
     let (mut run, session) = start("worktree-dirty", true).await?;
@@ -192,7 +190,6 @@ async fn removing_a_worktree_with_changes_is_refused_until_discard_is_given() ->
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: a write in the session's own worktree (.agix/worktrees/) needs confirmation, so unattended it is refused"]
 async fn keeping_a_worktree_leaves_it_on_disk_and_the_session_can_enter_another(
 ) -> anyhow::Result<()> {
     let (mut run, session) = start("worktree-keep", true).await?;

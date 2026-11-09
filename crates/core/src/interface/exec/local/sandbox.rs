@@ -257,8 +257,8 @@ const GIT_CONTROL_FILES: &[&str] = &["config", "config.worktree", "commondir"];
 
 #[cfg(feature = "sandbox")]
 use crate::paths::{
-    ENGINE_CONFIG_DIRS, ENGINE_CONFIG_FILES, ENGINE_CONFIG_ROOTS, STATE_ROOT_SESSION_TMP,
-    STATE_ROOT_WORKING_DIRS,
+    ENGINE_CONFIG_DIRS, ENGINE_CONFIG_FILES, ENGINE_CONFIG_ROOTS, PROJECT_WORKTREES_DIR,
+    STATE_ROOT_SESSION_TMP, STATE_ROOT_WORKING_DIRS,
 };
 
 /// The paths a policy is written against, each with its symlinks resolved.
@@ -386,7 +386,7 @@ fn project_guard(cwd: &Path) -> ProjectGuard {
     for worktree in subdirs(&git_dir.join("worktrees")) {
         files.extend(GIT_CONTROL_FILES.iter().map(|f| worktree.join(f)));
     }
-    for worktree in subdirs(&agix_dir.join("worktrees")) {
+    for worktree in subdirs(&agix_dir.join(PROJECT_WORKTREES_DIR)) {
         files.push(worktree.join(".git"));
     }
     ProjectGuard {
@@ -640,7 +640,7 @@ fn guard_project(args: &mut Vec<String>, roots: &Roots) {
         }
     }
     let agix = roots.cwd.join(".agix");
-    for worktree in subdirs(&agix.join("worktrees")) {
+    for worktree in subdirs(&agix.join(PROJECT_WORKTREES_DIR)) {
         bind(args, "--ro-bind-try", &worktree.join(".git"));
     }
 }
