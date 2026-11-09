@@ -10,9 +10,10 @@ use base::interface::permission::Permission;
 use base::interface::scene::Scene;
 use base::interface::skill_catalog::{SkillCatalog, SkillExpansion};
 use base::tool::ToolContext;
-type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
 use crate::manager::{SkillInfo, SkillManager, SkillSource};
+
+type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
 pub fn to_entry(skill: &SkillInfo) -> SkillEntry {
     SkillEntry {

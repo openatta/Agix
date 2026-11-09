@@ -134,7 +134,7 @@ fn cases() -> Vec<ScriptCase> {
             expect: Expect::MarkAppears("SCRIPT-TRACE-RECALL"),
             // Which the `after` half then dropped, though the rewritten
             // query found it too.
-            absent: Some("secret-key-rotation"),
+            absent: Some("rotate the signing key quarterly"),
             also: &[],
             turns: &["when can I ship this?"],
             replies: || vec![Reply::Text("on tuesday")],
