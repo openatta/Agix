@@ -3861,9 +3861,8 @@ struct ParentPermission {
     pending: Option<runtime::agent::PendingPermissions>,
     /// How long a question waits for its answer; `0` waits indefinitely.
     timeout_secs: u64,
-    /// The sub-agent's own tools. `inner` looks a tool up in the parent's,
-    /// where a tool the sub-agent holds its own instance of — a
-    /// `StructuredOutput` bound to its output schema — is a different one.
+    /// The sub-agent's own tools, for the input checks and the mode held here
+    /// on top of the parent's verdict.
     own_tools: std::sync::RwLock<Option<Arc<dyn base::tool::ToolRegistry>>>,
     task: Option<Arc<base::context::RunningTask>>,
     /// The sub-agent's own session. When nobody attends it, a question is

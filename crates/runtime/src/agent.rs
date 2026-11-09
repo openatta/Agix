@@ -2456,6 +2456,7 @@ impl Builder {
         // (which flip `SessionState.permission_mode`) actually move the gate
         // instead of being decorative.
         permission.bind_session_state(session_state.clone());
+        session_state.bind_tools(&(tools.clone() as Arc<dyn base::tool::ToolRegistry>));
 
         // Built before the `Agent` literal takes ownership of `scene` and
         // `settings`. The ceilings are read once per session, which is when

@@ -828,6 +828,10 @@ WebAssembly 载体整个移除。
 - 在会话自己的工作树(`EnterWorktree` 建在 `.agix/worktrees/<名字>/` 下)里写文件、跑命令
   不再当作改 agent 配置去询问,按项目里的普通文件判;无人值守会话以前在工作树里一写就被拒。
   工作树里的 `.agix`、`.claude`、`.git` 照旧要确认。
+- 带 `output_schema` 的 `session.startAgent` 子 Agent 交结果(`StructuredOutput`)不再询问宿主:
+  会话本身没有 schema 时没有这个工具,以前子 Agent 的调用按"未知工具"去问,无人答就一直等着。
+  现在子 Agent 的调用按它自己那份工具判,父会话的规则照旧适用(deny 了 `StructuredOutput`
+  的照样拒)。
 
 ### 嵌入方
 
@@ -916,6 +920,9 @@ WebAssembly 载体整个移除。
   should_fallback_to_prompting}`。
 - `SessionState` 多了 `enter_plan_mode()` / `exit_plan_mode()`;`set_permission_mode` 会忘掉
   进入计划模式前记下的模式。
+- `SessionState` 多了 `bind_tools()` / `tool()`:会话派发工具用的注册表,`runtime::agent::Builder::build`
+  绑上。`RuleSetPermission::check_for_delegate` 先在 delegate 的注册表里找工具,找不到才用自己的;
+  自己实现 `Permission` 又要判 delegate 调用的,同样可以用 `delegate.tool(name)`。
 - 自己实现 `Compactor` 的:引擎传给 `compact` 的 `max_tokens` 在自动压缩时是阈值减去
   请求的固定开销与必然补回的提醒;返回的策略不是 `NoOp`、对话却没有变小(连同补回的提醒
   一起算)的,引擎不采用。`DefaultCompactor` 的兜底一条都折不掉时返回 `NoOp`。

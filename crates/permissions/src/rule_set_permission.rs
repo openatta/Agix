@@ -120,7 +120,9 @@ impl RuleSetPermission {
     }
 
     /// `check` against the session's own state, or against `delegate`'s in
-    /// the stricter of the two sessions' modes.
+    /// the stricter of the two sessions' modes, on the tool the delegate's
+    /// call dispatches to — its own `StructuredOutput`, which the session may
+    /// not have — under this session's rules.
     async fn decide(
         &self,
         tool_name: &str,
@@ -137,7 +139,10 @@ impl RuleSetPermission {
         // every per-session tool (`Skill`, `Agent`, `mcp__*`, ...) run
         // unchecked. A genuinely nonexistent tool surfaces as a prompt whose
         // message says so, and dispatch's own error follows if approved.
-        let Some(tool) = self.tools().get(tool_name) else {
+        let Some(tool) = delegate
+            .and_then(|d| d.tool(tool_name))
+            .or_else(|| self.tools().get(tool_name))
+        else {
             return PermissionOutcome::Prompt {
                 prompt_id: uuid::Uuid::new_v4().to_string(),
                 message: format!(
@@ -484,6 +489,95 @@ mod tests {
         delegate.set_permission_mode(PermissionMode::BypassPermissions);
         assert!(matches!(judged().await, PermissionOutcome::Deny { .. }));
         assert_eq!(session.permission_mode(), PermissionMode::Plan);
+    }
+
+    struct HandIn;
+
+    #[async_trait2]
+    impl Tool for HandIn {
+        fn name(&self) -> &str {
+            "StructuredOutput"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            json!({"type": "object"})
+        }
+        async fn prompt(&self, _: &base::tool::PromptContext) -> String {
+            "hand in".into()
+        }
+        fn is_read_only(&self, _: &serde_json::Value) -> bool {
+            true
+        }
+        async fn check_permissions(
+            &self,
+            _: &serde_json::Value,
+            _: &ToolContext,
+        ) -> ToolPermissionDecision {
+            ToolPermissionDecision::allow()
+        }
+        async fn call(
+            &self,
+            _: serde_json::Value,
+            _: ToolContext,
+            _: base::tool::ProgressSender,
+        ) -> Result<base::tool::ToolResult, ToolError> {
+            Ok(base::tool::ToolResult::text("ok"))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_delegates_own_tool_is_judged_under_the_sessions_rules() {
+        let delegate = Arc::new(SessionState::new(std::path::PathBuf::from("/tmp")));
+        let delegate_tools: Arc<dyn ToolRegistry> = Arc::new(InMemoryToolRegistry::new());
+        delegate_tools.register(Arc::new(HandIn));
+        delegate.bind_tools(&delegate_tools);
+        let judged = |perm: RuleSetPermission| {
+            let delegate = delegate.clone();
+            async move {
+                perm.check_for_delegate(
+                    "StructuredOutput",
+                    &json!({}),
+                    Path::new("/tmp"),
+                    "s1",
+                    &delegate,
+                )
+                .await
+            }
+        };
+
+        let parent_without_it = || {
+            RuleSetPermission::new(
+                Arc::new(PermissionGate::empty()),
+                Arc::new(InMemoryToolRegistry::new()),
+                PermissionMode::Default,
+            )
+        };
+        assert!(matches!(
+            parent_without_it()
+                .check("StructuredOutput", &json!({}), Path::new("/tmp"), "s1")
+                .await,
+            PermissionOutcome::Prompt { .. }
+        ));
+        assert!(matches!(
+            judged(parent_without_it()).await,
+            PermissionOutcome::Permit
+        ));
+
+        let denying = RuleSetPermission::new(
+            Arc::new(PermissionGate::new(RuleSet::new(vec![
+                base::permission::PermissionRule {
+                    source: base::permission::RuleSource::UserSettings,
+                    behavior: base::permission::RuleBehavior::Deny,
+                    tool_name: "StructuredOutput".into(),
+                    rule_content: None,
+                },
+            ]))),
+            Arc::new(InMemoryToolRegistry::new()),
+            PermissionMode::Default,
+        );
+        assert!(matches!(
+            judged(denying).await,
+            PermissionOutcome::Deny { .. }
+        ));
     }
 
     /// A temporary allow carrying `rule_content` must only match calls whose

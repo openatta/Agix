@@ -70,6 +70,34 @@ async fn start_agent(client: &mut DaemonRpcClient, params: Value) -> anyhow::Res
     Ok(response.result.unwrap_or_default())
 }
 
+/// The task `started` reported, once it is no longer running.
+async fn settled(
+    client: &mut DaemonRpcClient,
+    session: &str,
+    started: &Value,
+) -> anyhow::Result<Value> {
+    let task_id = started["task_id"].as_str().unwrap_or_default();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let listed = client
+            .call("session.tasks", json!({ "session_id": session }))
+            .await?
+            .result
+            .unwrap_or_default();
+        let task = listed["tasks"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|t| t["task_id"] == task_id && t["status"] != "running")
+            .cloned();
+        if let Some(task) = task {
+            return Ok(task);
+        }
+        anyhow::ensure!(tokio::time::Instant::now() < deadline, "{listed}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_started_on_an_idle_session_runs_as_its_task() -> anyhow::Result<()> {
     let (_world, provider, daemon, mut client, session) =
@@ -221,27 +249,7 @@ async fn structured_output_is_on_the_task_and_the_parent_can_be_left_out() -> an
         }),
     )
     .await?;
-    let task_id = started["task_id"].as_str().unwrap_or_default().to_string();
-
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-    let task = loop {
-        let listed = client
-            .call("session.tasks", json!({ "session_id": session }))
-            .await?
-            .result
-            .unwrap_or_default();
-        let task = listed["tasks"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|t| t["task_id"] == task_id.as_str() && t["status"] != "running")
-            .cloned();
-        if let Some(task) = task {
-            break task;
-        }
-        anyhow::ensure!(tokio::time::Instant::now() < deadline, "{listed}");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    };
+    let task = settled(&mut client, &session, &started).await?;
     assert_eq!(task["status"], "done", "{task}");
     assert_eq!(
         task["structured_output"],
@@ -263,6 +271,45 @@ async fn structured_output_is_on_the_task_and_the_parent_can_be_left_out() -> an
     assert!(
         !asked.body.to_string().contains("task-notification"),
         "notify_parent: false keeps it out of the parent's conversation"
+    );
+    daemon.stop().await;
+    Ok(())
+}
+
+/// The session has no output schema, so no `StructuredOutput` of its own;
+/// the agent's, bound to the schema it was started with, is judged as the
+/// tool it is rather than as one the session does not know.
+#[tokio::test(flavor = "multi_thread")]
+async fn handing_in_needs_no_approval_when_the_session_has_no_schema() -> anyhow::Result<()> {
+    let (_world, provider, daemon, mut client, session) =
+        daemon_with("schema-default", json!({ "permission_mode": "default" })).await?;
+    provider.script_when(
+        "hand in the verdict",
+        [
+            Reply::calls("so-1", "StructuredOutput", json!({ "verdict": "pass" })),
+            Reply::text("handed in"),
+        ],
+    );
+    let started = start_agent(
+        &mut client,
+        json!({
+            "session_id": session,
+            "prompt": "hand in the verdict",
+            "output_schema": {
+                "type": "object",
+                "required": ["verdict"],
+                "properties": { "verdict": { "type": "string" } }
+            },
+            "notify_parent": false
+        }),
+    )
+    .await?;
+    let task = settled(&mut client, &session, &started).await?;
+    assert_eq!(task["status"], "done", "{task}");
+    assert_eq!(
+        task["structured_output"],
+        json!({ "verdict": "pass" }),
+        "{task}"
     );
     daemon.stop().await;
     Ok(())

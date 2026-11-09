@@ -169,7 +169,6 @@ async fn a_background_agent_takes_a_message_and_reports_back() -> anyhow::Result
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: the agent's StructuredOutput is not in the parent's permission registry, so handing in asks the host"]
 async fn a_host_started_agent_hands_in_what_its_schema_asks_for() -> anyhow::Result<()> {
     let mut run = LiveRun::start("hosted", json!({}), Mode::InProcess).await?;
     let code = format!("KESTREL-{}", nonce());

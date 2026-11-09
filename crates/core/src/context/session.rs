@@ -81,6 +81,8 @@ pub struct SessionState {
     last_read_path: std::sync::Mutex<Option<PathBuf>>,
     /// What `StructuredOutput` last accepted in the current turn.
     structured_output: std::sync::Mutex<Option<serde_json::Value>>,
+    /// Weak: the registry's tools may hold this session.
+    tools: std::sync::RwLock<Option<std::sync::Weak<dyn crate::tool::ToolRegistry>>>,
 }
 
 #[derive(Debug, Default)]
@@ -212,6 +214,7 @@ impl SessionState {
             read_cache: std::sync::Mutex::new(HashMap::new()),
             last_read_path: std::sync::Mutex::new(None),
             structured_output: std::sync::Mutex::new(None),
+            tools: std::sync::RwLock::new(None),
         }
     }
 
@@ -913,6 +916,25 @@ impl SessionState {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .take()
+    }
+
+    /// Bind the registry this session's tool calls dispatch against, so that
+    /// a permission judging them on this session's behalf — a sub-agent's
+    /// calls, judged by its parent — judges the tool that will run.
+    pub fn bind_tools(&self, tools: &std::sync::Arc<dyn crate::tool::ToolRegistry>) {
+        *self.tools.write().unwrap_or_else(|e| e.into_inner()) =
+            Some(std::sync::Arc::downgrade(tools));
+    }
+
+    /// The tool this session's calls named `name` dispatch to, if a registry
+    /// is bound and holds it.
+    pub fn tool(&self, name: &str) -> Option<std::sync::Arc<dyn crate::tool::Tool>> {
+        self.tools
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()?
+            .upgrade()?
+            .get(name)
     }
 
     /// 当前已激活的 deferred 工具名（克隆 set；调用方只读）。
