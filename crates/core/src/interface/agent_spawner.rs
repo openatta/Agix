@@ -33,6 +33,23 @@ pub trait AgentSpawner: Send + Sync {
         agent_type: Option<String>,
     ) -> Result<String, Box<dyn std::error::Error + Send>>;
 
+    /// `spawn_agent` without an agent type, on `model` instead of the
+    /// parent's — what an agent hook's `model` asks for. The default refuses
+    /// rather than run it on a model nobody chose.
+    async fn spawn_agent_on_model(
+        &self,
+        prompt: String,
+        cwd: PathBuf,
+        cancel: CancellationToken,
+        model: String,
+    ) -> Result<String, Box<dyn std::error::Error + Send>> {
+        let _ = (prompt, cwd, cancel, model);
+        Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "this spawner cannot choose a sub-agent's model",
+        )))
+    }
+
     /// Background variant of `spawn_agent` — used by a skill's `context:
     /// fork` + `background: true` frontmatter. Returns a task id
     /// immediately instead of awaiting the sub-agent's final text; the

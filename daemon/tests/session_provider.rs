@@ -200,3 +200,35 @@ async fn a_session_moves_to_another_provider_and_stays_there() {
         "after a reload the session still talks to provider two: {refused}"
     );
 }
+
+#[tokio::test]
+async fn a_provider_added_while_a_session_is_open_can_be_chosen_by_it() {
+    let daemon = start_daemon().await;
+    let session = daemon.session(serde_json::json!({})).await;
+
+    daemon
+        .ok(
+            "config.setProvider",
+            serde_json::json!({
+                "provider_id": "three",
+                "config": {
+                    "api_type": "anthropic",
+                    "base_url": "http://127.0.0.1:9",
+                    "api_key": "unused",
+                    "default_model": "three-a",
+                    "models": ["three-a"]
+                },
+                "default_provider": "three"
+            }),
+        )
+        .await;
+
+    let switched = daemon
+        .ok(
+            "session.setModel",
+            serde_json::json!({"session_id": session, "provider": "three", "model": "three-a"}),
+        )
+        .await;
+    assert_eq!(switched["provider"], "three");
+    assert_eq!(switched["model"], "three-a");
+}

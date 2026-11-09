@@ -78,7 +78,8 @@ impl HookEvent {
                 "`tool_name`、`tool_input`、`tool_use_id`",
                 Acts(
                     "`decision: \"block\"`(或 exit 2):这次调用不执行,模型收到 \
-                     `Blocked by PreToolUse hook: <message>`;`updated_input`:换掉入参,换过的照常校验、过权限",
+                     `Blocked by PreToolUse hook: <message>`;`updated_input`:换掉入参,换过的照常校验、过权限;\
+                     `decision: \"approve\"`:权限检查要询问时不再问人,直接放行(规则拒绝的照样拒绝)",
                 ),
             ),
             HookEvent::PostToolUse => (

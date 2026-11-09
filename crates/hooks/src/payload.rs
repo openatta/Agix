@@ -149,7 +149,8 @@ pub struct HookResponse {
     #[serde(default, rename = "continue")]
     pub r#continue: Option<bool>,
 
-    /// `PreToolUse`：改写权限决定，`Block` 直接拒绝这次调用（工具不会执行）。
+    /// `PreToolUse`：`Block` 直接拒绝这次调用（工具不会执行）；`Approve` 在权限
+    /// 检查要询问时代为答应，不再问人（规则拒绝的照样拒绝）。
     /// `PostToolUse`：`Block` 把这次调用的结果替换成一条 denial（工具已经跑完，
     /// 改写的是模型看到的 tool_result，不是"不让跑"），并触发同一并发批次里
     /// 其它工具调用的取消（复用 `execute_stream` 已有的"任意工具出错取消同批
@@ -164,10 +165,6 @@ pub struct HookResponse {
     /// 改写工具入参（仅 PreToolUse；hook 想 redirect 路径等用）
     #[serde(default)]
     pub updated_input: Option<serde_json::Value>,
-
-    /// 不把 hook 的 stdout 进 transcript（仅日志）
-    #[serde(default)]
-    pub suppress_output: Option<bool>,
 
     /// 异步唤醒。hook 返回 true 表示请求在后台工作完成时被重新执行。
     /// 需要 hook 配置中 `async_rewake: true` 配合。

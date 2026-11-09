@@ -2939,7 +2939,7 @@ impl SessionPool {
         // On by default: `Builder::build()`'s fallback handle drops its
         // receiver on the spot, so without a recorder every event is lost.
         // The caller's `output` only chooses *where*, and
-        // `telemetry.mode: disabled` in settings.json opts out.
+        // `telemetry_enabled: false` in settings.json opts out.
         //
         // `TELEMETRY_DIR/<session-id>.jsonl` under the local data dir keeps
         // one file per session, next to the transcripts, so a recording is

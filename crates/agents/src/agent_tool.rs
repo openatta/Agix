@@ -2939,6 +2939,32 @@ impl AgentTool {
         .await
     }
 
+    /// `run_sub` without an agent type, on `model`.
+    pub(crate) async fn run_sub_on_model(
+        &self,
+        prompt: String,
+        tools: Arc<InMemoryToolRegistry>,
+        cwd: std::path::PathBuf,
+        cancel: tokio_util::sync::CancellationToken,
+        perm: Arc<dyn Permission>,
+        model: String,
+    ) -> Result<String, base::error::ToolError> {
+        self.run_sub_tagged(
+            prompt,
+            tools,
+            cwd,
+            cancel,
+            perm,
+            None,
+            None,
+            SubRun {
+                model: Some(model),
+                ..SubRun::default()
+            },
+        )
+        .await
+    }
+
     /// `run_sub` for a `TeamCreate` member, in the team's `permission_mode`
     /// held to the parent's.
     #[allow(clippy::too_many_arguments)]
@@ -5960,6 +5986,73 @@ mod catalog_tests {
                 }),
             ])))
         }
+    }
+
+    /// Answers at once, noting the model each request asked for.
+    struct ModelNameModel {
+        asked_for: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+    #[async_trait]
+    impl Model for ModelNameModel {
+        fn api_type(&self) -> base::provider::ApiType {
+            base::provider::ApiType::Anthropic
+        }
+        async fn stream(
+            &self,
+            _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+            _tools: Vec<base::interface::model::ToolDef>,
+            _messages: Vec<ModelMessage>,
+            params: base::interface::model::StreamParams,
+            _cancel: tokio_util::sync::CancellationToken,
+        ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError>
+        {
+            use base::interface::model::ModelEvent;
+            self.asked_for.lock().unwrap().push(params.model);
+            Ok(Box::new(futures::stream::iter(vec![
+                Ok(ModelEvent::TextDelta {
+                    text: "{\"ok\":true}".into(),
+                }),
+                Ok(ModelEvent::EndTurn {
+                    stop_reason: "end_turn".into(),
+                    usage: Default::default(),
+                }),
+            ])))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_spawn_on_a_model_asks_for_that_model() {
+        use base::interface::agent_spawner::AgentSpawner;
+        let asked_for = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let tools = Arc::new(InMemoryToolRegistry::new());
+        let agent_tool = AgentTool::with_parent_tools(
+            Arc::new(ModelNameModel {
+                asked_for: asked_for.clone(),
+            }),
+            Arc::new(EngineConfig::defaults_for("test-model")),
+            tools.clone(),
+            tools,
+            &[],
+            &[],
+        );
+        let spawner = crate::spawner::RuntimeAgentSpawner::new(Arc::new(agent_tool));
+
+        let answer = spawner
+            .spawn_agent_on_model(
+                "review".into(),
+                std::path::PathBuf::from("/tmp"),
+                tokio_util::sync::CancellationToken::new(),
+                "claude-haiku-4-5".into(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(answer, "{\"ok\":true}");
+        let asked_for = asked_for.lock().unwrap();
+        assert!(!asked_for.is_empty());
+        assert!(
+            asked_for.iter().all(|m| m == "claude-haiku-4-5"),
+            "{asked_for:?}"
+        );
     }
 
     /// The `AgentTool` of a session on `SceneWithProbe`: its registry already

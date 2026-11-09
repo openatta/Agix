@@ -27,9 +27,9 @@ pub use events::{
     BudgetEnforcedAction, BudgetEnforcedPayload, CompactActionPayload, EventPayload,
     McpConnectionErrorPayload, McpServerConnectedPayload, PermissionDecisionOutcome,
     PermissionDecisionPayload, ResumeActionPayload, ResumeOutcome, SessionEndPayload,
-    SessionStartPayload, ShutdownSignalPayload, SlashCommandUsedPayload, StartupTimingPayload,
-    TeamStageCompletePayload, TelemetryEvent, ToolCancelledPayload, ToolExecutionPayload,
-    ToolOutcome, ToolStartPayload, TurnCompletePayload, TurnStartPayload, UserPromptSubmitPayload,
+    SessionStartPayload, SlashCommandUsedPayload, StartupTimingPayload, TeamStageCompletePayload,
+    TelemetryEvent, ToolCancelledPayload, ToolExecutionPayload, ToolOutcome, ToolStartPayload,
+    TurnCompletePayload, TurnStartPayload, UserPromptSubmitPayload,
 };
 pub use file_recorder::FileRecorder;
 pub use handle::{

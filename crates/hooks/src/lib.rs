@@ -1,6 +1,6 @@
 //! Lifecycle hook runner — event callbacks (Command / Prompt / HTTP / Agent).
 //!
-//! 30 event types × 5 hook backends. No hooks registered = zero overhead (noop runner).
+//! 30 event types × 4 hook backends. No hooks registered = zero overhead (noop runner).
 
 pub mod catalog;
 pub mod config;

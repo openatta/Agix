@@ -44,16 +44,6 @@ pub struct StartupTimingPayload {
     pub pool_build_ms: u64,
 }
 
-/// 关闭 / 退出原因事件的载荷。
-#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
-pub struct ShutdownSignalPayload {
-    pub reason: String,
-    pub duration_ms: i64,
-    pub total_turns: u32,
-    pub had_errors: bool,
-    pub exit_code: i32,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,27 +124,5 @@ mod tests {
         assert_eq!(v["total_startup_ms"], 1500);
         assert_eq!(v["pool_build_ms"], 800);
         assert_eq!(event.kind(), "startup_timing");
-    }
-
-    #[test]
-    fn shutdown_signal_serializes() {
-        let event = TelemetryEvent::shutdown_signal(
-            "sess",
-            10,
-            None,
-            ShutdownSignalPayload {
-                reason: "user_quit".into(),
-                duration_ms: 300000,
-                total_turns: 10,
-                had_errors: false,
-                exit_code: 0,
-            },
-        );
-        let v =
-            serde_json::to_value(&event).expect("serialization of telemetry event should not fail");
-        assert_eq!(v["type"], "shutdown_signal");
-        assert_eq!(v["reason"], "user_quit");
-        assert_eq!(v["total_turns"], 10);
-        assert_eq!(event.kind(), "shutdown_signal");
     }
 }

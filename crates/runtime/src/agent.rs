@@ -783,20 +783,6 @@ impl Agent {
                     stop_reason: exit_reason.to_string(),
                 },
             ));
-        let _ = self
-            .telemetry_handle
-            .record(telemetry::TelemetryEvent::shutdown_signal(
-                &self.session.session_id,
-                0,
-                None,
-                telemetry::ShutdownSignalPayload {
-                    reason: exit_reason.to_string(),
-                    duration_ms,
-                    total_turns: self.session.turn_count,
-                    had_errors: false,
-                    exit_code: 0,
-                },
-            ));
         tracing::info!("Engine stopped");
     }
 
@@ -1737,7 +1723,9 @@ impl Builder {
     }
     /// When background work completes, something sends `()` on the
     /// associated sender; the hooks runner picks up the signal and
-    /// re-executes any pending rewake hooks.
+    /// re-executes any pending rewake hooks. Without one, a session that
+    /// builds its own hooks runner wakes them when one of its running tasks
+    /// ends.
     pub fn wake_receiver(mut self, rx: tokio::sync::mpsc::UnboundedReceiver<()>) -> Self {
         self.wake_rx = Some(rx);
         self
@@ -2033,6 +2021,7 @@ impl Builder {
                 .collect();
         let agent_spawner = crate::module::LateAgentSpawner::default();
         let session_ended = CancellationToken::new();
+        let own_runner = self.hooks.is_none();
         let hooks = self.hooks.unwrap_or_else(|| {
             build_hook_runner(
                 &settings,
@@ -2041,9 +2030,21 @@ impl Builder {
                 Some(session.session_id_str().to_string()),
             )
         });
-        if let Some(rx) = self.wake_rx {
-            hooks.set_wake_receiver(rx);
-        }
+        // A runner handed in belongs to a session above this one, which wired
+        // its wake channel already; taking it over would move every rewake of
+        // the tree onto this session's tasks.
+        let task_wake = match self.wake_rx {
+            Some(rx) => {
+                hooks.set_wake_receiver(rx);
+                None
+            }
+            None if own_runner && tokio::runtime::Handle::try_current().is_ok() => {
+                let (tx, rx) = mpsc::unbounded_channel();
+                hooks.set_wake_receiver(rx);
+                Some(tx)
+            }
+            None => None,
+        };
         let skill_catalog = crate::module::LateSkillCatalog::default();
         // Register TaskStopTool — stop running background tasks by ID
         tools.register(std::sync::Arc::new(tools::task_stop::TaskStopTool));
@@ -2361,7 +2362,9 @@ impl Builder {
         }
 
         // `TaskCreated` fires when a running task starts — a sub-agent, a
-        // shell command, a monitor, a team member — whatever started it.
+        // shell command, a monitor, a team member — whatever started it. A
+        // task ending is the background work an `async_rewake` hook waits on,
+        // unless the embedder gave a wake channel of its own.
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let hooks = hooks.clone();
             let mut events = session_state.subscribe_tasks();
@@ -2379,6 +2382,11 @@ impl Builder {
                                 let input = hooks::HookInput::from_ambient(&ambient, "TaskCreated")
                                     .with_reason(event["task"].to_string());
                                 let _ = hooks.run(hooks::HookEvent::TaskCreated, &input).await;
+                            }
+                        }
+                        Ok(event) if event["kind"] == "task_finished" => {
+                            if let Some(wake) = &task_wake {
+                                let _ = wake.send(());
                             }
                         }
                         Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
@@ -3003,7 +3011,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_emits_session_end_and_shutdown_signal_on_exit() {
+    async fn run_emits_session_end_on_exit() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
         let (mut agent, _event_rx, _input_tx) = Builder::new()
             .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
@@ -3027,10 +3035,6 @@ mod tests {
             kinds.push(event.kind().to_string());
         }
         assert!(kinds.contains(&"session_end".to_string()), "got: {kinds:?}");
-        assert!(
-            kinds.contains(&"shutdown_signal".to_string()),
-            "got: {kinds:?}"
-        );
     }
 
     struct DummyModel;
@@ -4609,6 +4613,84 @@ mod tests {
         let task: serde_json::Value =
             serde_json::from_str(payload["reason"].as_str().unwrap()).unwrap();
         assert_eq!(task["task_id"], "t-1");
+    }
+
+    #[tokio::test]
+    async fn an_async_rewake_hook_runs_again_once_a_running_task_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let woken = dir.path().join("woken");
+        let mut settings = test_settings();
+        settings.hooks_config = Some(serde_json::json!({
+            "SessionStart": [{
+                "type": "command",
+                "async_rewake": true,
+                "command": format!(
+                    "input=$(cat); case \"$input\" in *WakeEvent*) echo woken > '{}' ;; \
+                     *) echo '{{\"rewake\":true}}' ;; esac",
+                    woken.display()
+                )
+            }]
+        }));
+        let (mut agent, mut event_rx, input_tx) = Builder::new()
+            .scene(Arc::new(scene::code::CodeScene::default()))
+            .model(Arc::new(FailingModel))
+            .settings(Arc::new(settings))
+            .skip_warmup(true)
+            .build()
+            .expect("build should succeed");
+        let session = agent.session_state.clone();
+        let task = session.register_task(
+            "t-1",
+            base::context::TaskType::Agent,
+            CancellationToken::new(),
+            serde_json::json!({}),
+        );
+        let cancel = CancellationToken::new();
+        let running = tokio::spawn({
+            let cancel = cancel.clone();
+            async move { agent.run(cancel).await }
+        });
+
+        async fn one_turn(
+            input: &mpsc::UnboundedSender<InputMessage>,
+            events: &mut mpsc::UnboundedReceiver<AgentEvent>,
+            turn_id: &str,
+        ) {
+            input
+                .send(InputMessage::User {
+                    content: "go".into(),
+                    attachments: vec![],
+                    turn_id: turn_id.into(),
+                })
+                .unwrap();
+            loop {
+                match events.recv().await.expect("the session is running") {
+                    AgentEvent::TurnComplete { .. } | AgentEvent::Error { .. } => return,
+                    _ => {}
+                }
+            }
+        }
+
+        one_turn(&input_tx, &mut event_rx, "t1").await;
+        one_turn(&input_tx, &mut event_rx, "t2").await;
+        assert!(
+            !woken.exists(),
+            "nothing it waits on has finished, so the hook is not run again"
+        );
+
+        session.finish_task(&task.task_id, base::context::RunningStatus::Completed);
+        let mut ran_again = false;
+        for turn in 3..50 {
+            one_turn(&input_tx, &mut event_rx, &format!("t{turn}")).await;
+            if woken.exists() {
+                ran_again = true;
+                break;
+            }
+        }
+        assert!(ran_again, "the task's end wakes the hook");
+
+        cancel.cancel();
+        running.await.unwrap();
     }
 
     #[tokio::test]

@@ -3732,6 +3732,15 @@ async fn fire_ctx_lifecycle_hook(
     let _ = ctx.hooks.run(event, &input).await;
 }
 
+/// The head of a failed call's text, as much of it as a telemetry line keeps.
+fn telemetry_error_text(text: &str) -> String {
+    const KEPT_CHARS: usize = 512;
+    match text.char_indices().nth(KEPT_CHARS) {
+        Some((cut, _)) => format!("{}…", &text[..cut]),
+        None => text.to_string(),
+    }
+}
+
 fn record_permission_decision(
     ctx: &ToolExecCtx,
     tool: &Arc<dyn base::tool::Tool>,
@@ -4083,8 +4092,10 @@ async fn execute_tool_inner(
         .get(name)
         .ok_or_else(|| format!("Tool not found: {name}"))?;
 
-    // PreToolUse: can block the call outright, or rewrite its input.
+    // PreToolUse: can block the call outright, rewrite its input, or answer
+    // the permission question in advance.
     let mut input = input;
+    let mut hook_approved = false;
     if ctx.hooks.has_hooks_for(hooks::HookEvent::PreToolUse) {
         let pre_input = hooks::HookInput {
             hook_event_name: "PreToolUse".into(),
@@ -4112,6 +4123,7 @@ async fn execute_tool_inner(
         if let Some(updated) = hook_result.updated_input() {
             input = updated.clone();
         }
+        hook_approved = hook_result.approved().is_some();
     }
 
     // Permission check. `Permit` proceeds unchanged; `Deny` blocks the call outright; `Prompt`
@@ -4139,6 +4151,11 @@ async fn execute_tool_inner(
         .check(name, &input, &ctx.cwd, &ctx.session_id)
         .await;
     record_permission_decision(ctx, &tool, name, &input, &checked, check_started);
+    let checked = match checked {
+        PermissionOutcome::Prompt { .. } if hook_approved => PermissionOutcome::Permit,
+        other => other,
+    };
+    let user_approved = matches!(checked, PermissionOutcome::Prompt { .. });
     match checked {
         PermissionOutcome::Permit => {}
         PermissionOutcome::Deny { reason } => {
@@ -4338,36 +4355,7 @@ async fn execute_tool_inner(
     let tool_start = std::time::Instant::now();
     let result =
         run_catching_panics(tool.call(input, tool_ctx, base::tool::ProgressSender::noop(""))).await;
-    let latency_ms = tool_start.elapsed().as_millis() as f64;
-    // Both ways a call can go wrong: the engine could not run it, or it ran
-    // and called its own result a failure. Reading only `is_err` reported a
-    // shell command that exited non-zero as a success.
-    let is_error = match &result {
-        Ok(r) => r.is_error,
-        Err(_) => true,
-    };
-    let _ = ctx
-        .telemetry_handle
-        .record(telemetry::TelemetryEvent::tool_execution(
-            &ctx.session_id,
-            ctx.turn_no,
-            Some(ctx.turn_id.clone()),
-            telemetry::ToolExecutionPayload {
-                tool_name: name.to_string(),
-                tool_use_id: ctx.tool_use_id.clone(),
-                outcome: if is_error {
-                    telemetry::ToolOutcome::Failed
-                } else {
-                    telemetry::ToolOutcome::Succeeded
-                },
-                is_error,
-                error_message: None,
-                latency_ms: latency_ms as u64,
-                input_json_size: 0,
-                result_content_size: 0,
-                user_approved: true,
-            },
-        ));
+    let latency_ms = tool_start.elapsed().as_millis() as u64;
 
     let mut outcome = match result {
         Ok(r) => {
@@ -4387,6 +4375,40 @@ async fn execute_tool_inner(
         }
         Err(e) => Err(e.to_string()),
     };
+    // Both ways a call can go wrong: the engine could not run it, or it ran
+    // and called its own result a failure. Reading only `is_err` reported a
+    // shell command that exited non-zero as a success.
+    let (is_error, error_message, result_content_size) = match &outcome {
+        Ok(answer) if answer.reported_failure => (
+            true,
+            Some(telemetry_error_text(&answer.text)),
+            answer.text.len() as u64,
+        ),
+        Ok(answer) => (false, None, answer.text.len() as u64),
+        Err(message) => (true, Some(telemetry_error_text(message)), 0),
+    };
+    let _ = ctx
+        .telemetry_handle
+        .record(telemetry::TelemetryEvent::tool_execution(
+            &ctx.session_id,
+            ctx.turn_no,
+            Some(ctx.turn_id.clone()),
+            telemetry::ToolExecutionPayload {
+                tool_name: name.to_string(),
+                tool_use_id: ctx.tool_use_id.clone(),
+                outcome: if is_error {
+                    telemetry::ToolOutcome::Failed
+                } else {
+                    telemetry::ToolOutcome::Succeeded
+                },
+                is_error,
+                error_message,
+                latency_ms,
+                input_json_size,
+                result_content_size,
+                user_approved,
+            },
+        ));
 
     // PostToolUse: the tool already ran, but this can still act two ways.
     //
@@ -5720,6 +5742,169 @@ mod tests {
             .await
             .expect("tool_execution should have been recorded");
         assert_eq!(second.kind(), "tool_execution");
+    }
+
+    async fn recorded_tool_execution(
+        ctx: &mut ToolExecCtx,
+        tool: &str,
+        input: serde_json::Value,
+    ) -> (
+        base::interface::tool_middleware::ToolOutcome,
+        serde_json::Value,
+    ) {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        ctx.telemetry_handle = telemetry::TelemetryHandle::new(tx);
+        let result = execute_tool_with_telemetry(ctx, tool, input).await;
+        ctx.telemetry_handle = telemetry::TelemetryHandle::noop();
+        let mut execution = None;
+        while let Some(event) = rx.recv().await {
+            if event.kind() == "tool_execution" {
+                execution = Some(serde_json::to_value(event).unwrap());
+            }
+        }
+        (
+            result,
+            execution.expect("tool_execution should have been recorded"),
+        )
+    }
+
+    #[tokio::test]
+    async fn tool_execution_reports_the_sizes_and_the_failure_it_saw() {
+        let tools = Arc::new(base::tool::InMemoryToolRegistry::new());
+        tools.register(Arc::new(ProbeTool {
+            called: Default::default(),
+        }));
+        tools.register(Arc::new(FailingTool));
+        let hooks_runner = Arc::new(hooks::HookRunner::new(std::collections::HashMap::new()));
+        let mut ctx = test_exec_ctx(tools, hooks_runner);
+
+        let input = serde_json::json!({"x": 1});
+        let (result, ran) = recorded_tool_execution(&mut ctx, "Probe", input.clone()).await;
+        assert!(result.is_ok());
+        assert_eq!(ran["input_json_size"], input.to_string().len());
+        assert_eq!(ran["result_content_size"], "probe-ran".len());
+        assert_eq!(ran["is_error"], false);
+        assert!(ran.get("error_message").is_none(), "{ran}");
+        assert_eq!(
+            ran["user_approved"], false,
+            "the rule engine allowed it; nobody was asked"
+        );
+
+        let (result, failed) =
+            recorded_tool_execution(&mut ctx, "Failing", serde_json::json!({})).await;
+        assert!(result.is_err());
+        assert_eq!(failed["is_error"], true);
+        assert_eq!(failed["outcome"], "failed");
+        let message = failed["error_message"].as_str().unwrap();
+        assert!(message.contains("probe failed on purpose"), "{failed}");
+    }
+
+    #[tokio::test]
+    async fn tool_execution_says_a_user_approved_the_call_they_were_asked_about() {
+        let tools = Arc::new(base::tool::InMemoryToolRegistry::new());
+        tools.register(Arc::new(ProbeTool {
+            called: Default::default(),
+        }));
+        let hooks_runner = Arc::new(hooks::HookRunner::new(std::collections::HashMap::new()));
+        let mut ctx = test_exec_ctx_with_permission(
+            tools,
+            hooks_runner,
+            Arc::new(PromptTestPermission { prompt_id: "asked" }),
+        );
+        let pending: Arc<
+            std::sync::Mutex<
+                std::collections::HashMap<
+                    String,
+                    tokio::sync::oneshot::Sender<crate::agent::PermissionDecision>,
+                >,
+            >,
+        > = Default::default();
+        let (events, _events_rx) = tokio::sync::mpsc::unbounded_channel();
+        ctx.elicitation = Arc::new(crate::elicitation::ChannelElicitation::new(
+            crate::event_bus::EventBus::new(events),
+            pending.clone(),
+        ));
+        let answer = tokio::spawn(async move {
+            loop {
+                if let Some(tx) = pending.lock().unwrap().remove("asked") {
+                    let _ = tx.send(crate::agent::PermissionDecision::Permit);
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        });
+
+        let (result, ran) = recorded_tool_execution(&mut ctx, "Probe", serde_json::json!({})).await;
+        answer.await.unwrap();
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(ran["user_approved"], true);
+    }
+
+    #[test]
+    fn a_long_failure_text_is_cut_on_a_character_boundary() {
+        let kept = telemetry_error_text(&"é".repeat(2000));
+        assert_eq!(kept.chars().count(), 513);
+        assert!(kept.ends_with('…'));
+        assert_eq!(telemetry_error_text("short"), "short");
+    }
+
+    #[tokio::test]
+    async fn a_pre_tool_use_approve_answers_the_permission_question_but_not_a_denial() {
+        let called = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let tools = Arc::new(base::tool::InMemoryToolRegistry::new());
+        tools.register(Arc::new(ProbeTool {
+            called: called.clone(),
+        }));
+        let approving = || {
+            let mut settings: hooks::config::HooksSettings = std::collections::HashMap::new();
+            settings.insert(
+                hooks::HookEvent::PreToolUse,
+                vec![hooks::config::HookConfig::Command {
+                    command: r#"echo '{"decision":"approve"}'"#.into(),
+                    shell: None,
+                    timeout: None,
+                    if_pattern: None,
+                    only_on_error: None,
+                    once: None,
+                    async_rewake: None,
+                }],
+            );
+            Arc::new(hooks::HookRunner::new(settings))
+        };
+
+        let unanswered = test_exec_ctx_with_permission(
+            tools.clone(),
+            Arc::new(hooks::HookRunner::new(std::collections::HashMap::new())),
+            Arc::new(PromptTestPermission { prompt_id: "p" }),
+        );
+        let declined =
+            execute_tool_with_telemetry(&unanswered, "Probe", serde_json::json!({})).await;
+        assert!(declined.is_err(), "nobody answered, so it does not run");
+        assert!(called.lock().unwrap().is_none());
+
+        let mut approved = test_exec_ctx_with_permission(
+            tools.clone(),
+            approving(),
+            Arc::new(PromptTestPermission { prompt_id: "p" }),
+        );
+        let (result, ran) =
+            recorded_tool_execution(&mut approved, "Probe", serde_json::json!({})).await;
+        assert!(result.is_ok(), "{result:?}");
+        assert!(
+            called.lock().unwrap().is_some(),
+            "the hook's approval let it run"
+        );
+        assert_eq!(ran["user_approved"], false, "a hook is not a user");
+
+        *called.lock().unwrap() = None;
+        let denied =
+            test_exec_ctx_with_permission(tools, approving(), Arc::new(DenyAllTestPermission));
+        let refused = execute_tool_with_telemetry(&denied, "Probe", serde_json::json!({})).await;
+        assert!(
+            refused.is_err(),
+            "approve answers a question, it does not lift a rule"
+        );
+        assert!(called.lock().unwrap().is_none());
     }
 
     #[tokio::test]

@@ -16,9 +16,7 @@ mod tool;
 
 pub use mcp::{McpConnectionErrorPayload, McpServerConnectedPayload};
 pub use model::{ApiErrorPayload, ApiRequestPayload, BudgetEnforcedAction, BudgetEnforcedPayload};
-pub use session::{
-    SessionEndPayload, SessionStartPayload, ShutdownSignalPayload, StartupTimingPayload,
-};
+pub use session::{SessionEndPayload, SessionStartPayload, StartupTimingPayload};
 pub use team::{AgentCompletedPayload, AgentSpawnedPayload, TeamStageCompletePayload};
 pub use tool::{
     PermissionDecisionOutcome, PermissionDecisionPayload, ToolCancelledPayload,
@@ -137,8 +135,6 @@ event_kinds! {
     compact_action => CompactAction(CompactActionPayload) in Session;
     /// 会话从日志重建(会话文件);恢复请求落到已在内存里、找不到、已结束的侧链会话上(池文件);团队从 scratchpad 接上(会话文件)。
     resume_action => ResumeAction(ResumeActionPayload) in Both;
-    /// 会话的主循环退出,紧接 `session_end`。
-    shutdown_signal => ShutdownSignal(ShutdownSignalPayload) in Session;
     /// 一个 MCP server 连上:启动时、重载时、新增时。
     mcp_server_connected => McpServerConnected(McpServerConnectedPayload) in Pool;
     /// 一个要连的 MCP server 没连上:起不来、握手失败或超时、配置被拒。

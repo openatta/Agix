@@ -794,6 +794,25 @@ WebAssembly 载体整个移除。
 - 父会话结束时(关闭、删除、被驱逐、daemon 停止),它的常驻团队成员随之停下,正在跑的那一轮
   也被取消。以前成员不受会话结束影响,在途的一轮照跑完,空闲的一直留着。
 - 常驻团队成员也记 `agent_spawned`(`background: true`)/ `agent_completed`(成员停下时)遥测。
+- 遥测去掉 `shutdown_signal`(剩 21 种):它紧跟 `session_end` 发,`reason` / `duration_ms` /
+  `total_turns` 与 `session_end` 重复,`had_errors` / `exit_code` 恒为 `false` / `0`。用
+  `session_end` 的 `stop_reason`。
+- `tool_execution` 的字段是真数:`input_json_size`、`result_content_size`(结果文本的字节数)
+  以前恒为 0;`user_approved` 只在这次调用问过人、人答应了时为 `true`(以前恒为 `true`);
+  失败时有 `error_message`(以前从不出现;daemon 写出前照旧换成 `[REDACTED]`)。
+- 遥测文件(`telemetry/<session>.jsonl`、`pool.jsonl`、`options.telemetry.output`)只有属主可读写
+  (`0600`,已有的文件打开时也收紧),为它们新建的目录是 `0700`;以前随 umask。
+- **`PreToolUse` hook 答 `decision: "approve"` 就不再问人**:权限检查要询问的调用直接放行
+  (无人值守会话同样),规则拒绝的照样拒绝,别的 hook 说 `block` 照样拦。以前 `approve` 解析了
+  但不起作用。`agent` hook 的 `ok: true` 记为 `approve`,所以配在 `PreToolUse` 上的 agent hook
+  答 `ok: true` 也有这个效果。
+- `agent` hook 的 `model` 生效:子 Agent 跑在这个模型上,按会话的路由选 provider。以前这个字段
+  被忽略,子 Agent 用会话的模型。
+- hook 回答里的 `suppress_output` 不再是一个字段(写了也不报错):引擎从不把 hook 的 stdout
+  交给模型或宿主,没有可隐藏的。
+- `async_rewake` 在 daemon 里生效:会话的运行中任务(子 Agent、后台命令、Monitor)有一个结束,
+  就算唤醒信号,等着的 hook 在会话处理下一条输入之后、等再下一条之前重跑。以前 daemon 不接
+  唤醒通道,这类 hook 永远不会重跑。
 
 ### 嵌入方
 
@@ -1018,3 +1037,11 @@ WebAssembly 载体整个移除。
 - 删除没有调用方的 `base::rpc`、`base::log`(`base::interface::log`:`Logger`、`NoopLogger`、
   `LogRouter` 与 `log_*!` 宏)、`tools::aliases`(`BriefTool`、`PowerShellTool`、`ReplTool`)
   与 `assembly::session_manager`(`daemon::session_manager`)。日志用 `tracing`。
+- `telemetry`:删除 `ShutdownSignalPayload` 与 `TelemetryEvent::shutdown_signal`。`FileRecorder`
+  建的文件是 `0600`,为它新建的那一层目录是 `0700`。
+- `hooks::HookResponse` 去掉 `suppress_output`。`check_rewakes` 在没有 hook 等着时把通道里的信号
+  清掉:hook 要求唤醒之前就结束的工作不算数。
+- `AgentSpawner` 多了 `spawn_agent_on_model(prompt, cwd, cancel, model)`(agent hook 的 `model`
+  走它),缺省实现拒绝;只有 `RuntimeAgentSpawner` 真正实现。
+- `runtime::agent::Builder` 没给 `wake_receiver`、hooks runner 又是自己建的(根会话)时,
+  会话的运行中任务结束就唤醒 `async_rewake` hook;给了 `wake_receiver` 的照旧只听它。

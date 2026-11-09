@@ -42,6 +42,21 @@ impl AgentSpawner for RuntimeAgentSpawner {
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send>)
     }
 
+    async fn spawn_agent_on_model(
+        &self,
+        prompt: String,
+        cwd: PathBuf,
+        cancel: CancellationToken,
+        model: String,
+    ) -> Result<String, Box<dyn std::error::Error + Send>> {
+        let tools = self.agent_tool.sub_tools(&[]);
+        let perm = self.agent_tool.sub_permission();
+        self.agent_tool
+            .run_sub_on_model(prompt, tools, cwd, cancel, perm, model)
+            .await
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send>)
+    }
+
     async fn spawn_agent_background(
         &self,
         prompt: String,

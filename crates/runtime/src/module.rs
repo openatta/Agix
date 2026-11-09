@@ -240,6 +240,18 @@ impl AgentSpawner for LateAgentSpawner {
             .await
     }
 
+    async fn spawn_agent_on_model(
+        &self,
+        prompt: String,
+        cwd: PathBuf,
+        cancel: CancellationToken,
+        model: String,
+    ) -> Result<String, Box<dyn std::error::Error + Send>> {
+        self.require()?
+            .spawn_agent_on_model(prompt, cwd, cancel, model)
+            .await
+    }
+
     async fn spawn_agent_background(
         &self,
         prompt: String,

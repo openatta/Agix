@@ -576,15 +576,25 @@ impl HookRunner {
     /// and returns their responses.
     ///
     /// If no wake signal is available, the pending set is preserved so the
-    /// hooks can be re-executed on a later call.
+    /// hooks can be re-executed on a later call. Signals that arrive while no
+    /// hook is waiting are discarded: work that finished before a hook asked
+    /// to be woken is not what it is waiting for.
     pub async fn check_rewakes(&self, ambient: HookInput) -> Vec<HookResponse> {
-        // Drain the pending set under lock
         let pending: Vec<(HookEvent, usize)> = {
             let mut set = self
                 .pending_rewakes
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if set.is_empty() {
+                drop(set);
+                if let Some(rx) = self
+                    .wake_receiver
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .as_mut()
+                {
+                    while rx.try_recv().is_ok() {}
+                }
                 return Vec::new();
             }
             set.drain().collect()

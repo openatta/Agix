@@ -100,8 +100,8 @@ impl PromptHookExecutor for ModelPromptHookExecutor {
 /// Runs a `"type": "agent"` hook by delegating to the same `AgentSpawner`
 /// used for sub-agent tool calls (see `agents::spawner::RuntimeAgentSpawner`).
 /// The `HookInput` payload is folded into the prompt text (`AgentSpawner`
-/// has no separate "context" parameter); the `model` override is not
-/// honored — `AgentSpawner::spawn_agent` has no model-selection parameter.
+/// has no separate "context" parameter); a hook's `model` runs the agent on
+/// that model, routed the way the session routes a model name.
 pub struct AgentSpawnerHookExecutor {
     spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner>,
     cwd: std::path::PathBuf,
@@ -121,16 +121,25 @@ impl AgentHookExecutor for AgentSpawnerHookExecutor {
     async fn execute(
         &self,
         prompt: &str,
-        _model: Option<&str>,
+        model: Option<&str>,
         payload: &HookInput,
     ) -> Result<String, String> {
         let payload_json = serde_json::to_string(payload).unwrap_or_default();
         let full_prompt = format!("{prompt}\n\nContext:\n{payload_json}");
         let cancel = tokio_util::sync::CancellationToken::new();
-        self.spawner
-            .spawn_agent(full_prompt, vec![], self.cwd.clone(), cancel, None)
-            .await
-            .map_err(|e| e.to_string())
+        let spawned = match model {
+            Some(model) => {
+                self.spawner
+                    .spawn_agent_on_model(full_prompt, self.cwd.clone(), cancel, model.to_string())
+                    .await
+            }
+            None => {
+                self.spawner
+                    .spawn_agent(full_prompt, vec![], self.cwd.clone(), cancel, None)
+                    .await
+            }
+        };
+        spawned.map_err(|e| e.to_string())
     }
 }
 
@@ -226,6 +235,16 @@ mod tests {
         ) -> Result<String, Box<dyn std::error::Error + Send>> {
             Ok("stub-task-id".to_string())
         }
+
+        async fn spawn_agent_on_model(
+            &self,
+            _prompt: String,
+            _cwd: std::path::PathBuf,
+            _cancel: tokio_util::sync::CancellationToken,
+            model: String,
+        ) -> Result<String, Box<dyn std::error::Error + Send>> {
+            Ok(format!("ran on {model}"))
+        }
     }
 
     #[tokio::test]
@@ -240,5 +259,19 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out, r#"{"ok":true}"#);
+    }
+
+    #[tokio::test]
+    async fn an_agent_hooks_model_is_the_model_its_agent_runs_on() {
+        let spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner> =
+            Arc::new(StubSpawner {
+                response: r#"{"ok":true}"#,
+            });
+        let executor = AgentSpawnerHookExecutor::new(spawner, std::path::PathBuf::from("/tmp"));
+        let out = executor
+            .execute("review this", Some("claude-haiku-4-5"), &test_input())
+            .await
+            .unwrap();
+        assert_eq!(out, "ran on claude-haiku-4-5");
     }
 }

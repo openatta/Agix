@@ -169,7 +169,7 @@ monitors and structured output ([table below](#tools--45-built-in)).
 **Records**
 - An append-only JSONL history that can be resumed, forked or rebuilt after
   a crash.
-- 22 telemetry event types, with OpenTelemetry export
+- 21 telemetry event types, with OpenTelemetry export
   ([`docs/telemetry.md`](docs/telemetry.md)).
 - A recorder for byte-exact offline replay.
 - Session export as a zip archive or a directory, sub-agents included.
@@ -525,7 +525,7 @@ names a provider does that provider's model read the page and answer the call's
   predictive pass with a circuit breaker (`reactive`), and hourly clearing that
   emits cache edits so the prompt cache is not thrown away
   (`cached_microcompact`).
-- **Telemetry**: 22 structured event types (`EventPayload` (22)) with
+- **Telemetry**: 21 structured event types (`EventPayload` (21)) with
   OpenTelemetry export, four token counts per call, and the calls no turn asked
   for — compaction, memory, hooks, search — counted too.
 - **Recorder**: wrap any `Model` and a session becomes a self-contained

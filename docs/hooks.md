@@ -67,9 +67,11 @@ hook 是写在设置里的外部回调:引擎走到一个具名时刻(调工具�
   - `only_on_error`:只在 payload 的 `is_error` 为 `true` 时跑(配在 `PostToolUse` 上用)。
   - `once`:在这个会话(连同它的子 Agent)里**真正跑过一次**后不再跑;`if`、`only_on_error`
     没放行的那几次不算。
-  - `async_rewake`:回答里带 `"rewake": true` 时记下这个 hook;嵌入方在 `Builder::wake_receiver`
-    给的通道上发一个信号后,会话在处理下一条输入之前以 `hook_event_name: "WakeEvent"` 再跑它
-    一次。daemon 不接这条通道。
+  - `async_rewake`:回答里带 `"rewake": true` 时记下这个 hook,等后台工作结束后以
+    `hook_event_name: "WakeEvent"` 再跑它一次(重跑的回答被丢弃)。"后台工作结束"指会话的一个
+    运行中任务(子 Agent、后台命令、Monitor)结束;嵌入方给了 `Builder::wake_receiver` 的,
+    改为在那条通道上收到信号。会话在两条输入之间查一次:处理完一条输入、等下一条之前,有
+    信号就重跑。hook 要求唤醒之前就结束的工作不算。
 
 ### `prompt`
 
@@ -108,9 +110,9 @@ hook 是写在设置里的外部回调:引擎走到一个具名时刻(调工具�
 
 用会话的 agent spawner 起一个子 Agent,任务是 `prompt` 后接 `Context:` 和 payload 的
 JSON。子 Agent 的最终回答应当是 `{"ok": true|false, "reason": "…"}`:`ok: true` 记为
-`approve`,`ok: false` 或缺 `ok` 记为 `block`,`reason` 作 `message`;不是 JSON 的回答
-只当 `message`,不拦不改。`model` 字段目前不起作用(spawner 没有选模型的参数),子 Agent
-用会话的模型。
+`approve`(配在 `PreToolUse` 上就是替人答应权限询问,见"回答"),`ok: false` 或缺 `ok` 记为
+`block`,`reason` 作 `message`;不是 JSON 的回答只当 `message`,不拦不改。写了 `model` 的,
+子 Agent 跑在这个模型上,provider 按会话的路由选;不写用会话的模型。
 
 ---
 
@@ -169,16 +171,18 @@ JSON。子 Agent 的最终回答应当是 `{"ok": true|false, "reason": "…"}`:
 
 | 字段 | 作用 |
 |---|---|
-| `decision` | `"block"`:在能拦的事件上拦下(各事件含义见下表);`"approve"`:解析,引擎不读 |
+| `decision` | `"block"`:在能拦的事件上拦下(各事件含义见下表);`"approve"`:`PreToolUse` 上替人答应——权限检查要询问的这次调用不再问人、直接放行(无人值守会话同样),权限规则拒绝的照样拒绝;别的事件上不起作用 |
 | `message` | 拦下的理由——交给模型或写进结果的那句话 |
 | `continue` | `false`:在能结束一轮的事件上结束它 |
 | `updated_input` | `PreToolUse`:新的入参(整个替换);`UserPromptSubmit`:新的消息文本(JSON 字符串) |
 | `rewake` | 见 `async_rewake` |
-| `suppress_output` | 解析,引擎不读 |
+
+hook 的 stdout 只用来读回答,引擎不把它交给模型或宿主;要让模型看到的话写进 `message`。
+所以没有 `suppress_output` 这样的字段,写了也不报错。
 
 **一个事件配了几个 hook,它们并发跑,结果按配置顺序合并:** 有一个说 `block` 就拦(理由取
-第一个拦的);有一个说 `continue: false` 就结束;`updated_input` 取配置顺序里第一个给出的,
-后面的不看。一个 hook 慢或者坏了,不耽误同一事件的其他 hook。
+第一个拦的,`block` 压过别的 hook 的 `approve`);有一个说 `continue: false` 就结束;
+`updated_input` 取配置顺序里第一个给出的,后面的不看。一个 hook 慢或者坏了,不耽误同一事件的其他 hook。
 
 **失败就是放行。** 超时(到时 command 的进程被杀掉)、起不来、command 退出码不是 0 或 2、
 HTTP 非 2xx、回答解析不出来——这个 hook 不拦、不改、不结束任何东西,只记一条 warn。
@@ -195,7 +199,7 @@ hook 是策略的补充,不是唯一的门:要硬拦的东西写成权限规则�
 <!-- BEGIN GENERATED TABLE — see hooks::catalog::render_markdown -->
 | 事件 | 何时触发 | payload(三个公共字段之外) | 回答能做什么 |
 |---|---|---|---|
-| `PreToolUse` | 每次工具调用分发之前,在输入校验与权限检查之前;子 Agent 的调用也算 | `tool_name`、`tool_input`、`tool_use_id` | `decision: "block"`(或 exit 2):这次调用不执行,模型收到 `Blocked by PreToolUse hook: <message>`;`updated_input`:换掉入参,换过的照常校验、过权限 |
+| `PreToolUse` | 每次工具调用分发之前,在输入校验与权限检查之前;子 Agent 的调用也算 | `tool_name`、`tool_input`、`tool_use_id` | `decision: "block"`(或 exit 2):这次调用不执行,模型收到 `Blocked by PreToolUse hook: <message>`;`updated_input`:换掉入参,换过的照常校验、过权限;`decision: "approve"`:权限检查要询问时不再问人,直接放行(规则拒绝的照样拒绝) |
 | `PostToolUse` | 工具真正跑完之后(成功或失败);被 PreToolUse、权限拦下的调用不发 | `tool_name`、`tool_input`、`tool_use_id`、`tool_result`(结果文本)、`is_error` | `decision: "block"`:结果换成 `Denied by PostToolUse hook: <message>`,同一批并发的其他调用被取消;`continue: false`:这一批工具跑完后结束这一轮(`stopped_by_hook`) |
 | `PostToolUseFailure` | 工具调用以错误结束(工具返回错误或 panic)时,在 PostToolUse 之前;工具自己报告失败的结果(如 Bash 非零退出)不算 | `tool_name`、`tool_input`、`reason`(错误文本)、`turn_id` | 只通知,回答被丢弃 |
 | `TurnStart` | 一轮开始,UserPromptSubmit 放行之后、第一次调模型之前 | `turn_id` | 只通知,回答被丢弃 |

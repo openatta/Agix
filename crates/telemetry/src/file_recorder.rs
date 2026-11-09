@@ -4,7 +4,8 @@
 //! `TelemetryHandle` would be used. Events are written synchronously
 //! (blocking) to guarantee ordering within a turn. A file that reaches its
 //! size limit is moved to `<file>.1` (replacing the one before) and a new one
-//! started, so a long-lived daemon keeps at most two files' worth.
+//! started, so a long-lived daemon keeps at most two files' worth. Files are
+//! readable by their owner only, as is a directory created for them.
 
 use crate::events::TelemetryEvent;
 use crate::handle::{TelemetryHandleError, TelemetryRecorder};
@@ -44,7 +45,7 @@ impl FileRecorder {
     pub fn with_max_bytes(path: impl Into<PathBuf>, max_bytes: u64) -> std::io::Result<Self> {
         let path: PathBuf = path.into();
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            private_parent(parent)?;
         }
         let file = open_append(&path)?;
         let len = file.metadata()?.len();
@@ -65,8 +66,31 @@ impl FileRecorder {
     }
 }
 
+/// `dir` made owner-only if this creates it; the directories above it are
+/// created as any other.
+fn private_parent(dir: &std::path::Path) -> std::io::Result<()> {
+    if dir.as_os_str().is_empty() || dir.is_dir() {
+        return Ok(());
+    }
+    if let Some(above) = dir.parent() {
+        std::fs::create_dir_all(above)?;
+    }
+    crate::recorder::private_dir(dir)
+}
+
+/// An existing file is narrowed too: what it holds is the same either way.
 fn open_append(path: &std::path::Path) -> std::io::Result<File> {
-    OpenOptions::new().create(true).append(true).open(path)
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let file = options.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(file)
 }
 
 impl TelemetryRecorder for FileRecorder {
@@ -137,6 +161,34 @@ mod tests {
         };
         assert_eq!(lines(&dir.path().join("t.jsonl.1")), 3);
         assert_eq!(lines(&path), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn files_and_the_directory_made_for_them_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let dir = tempfile::tempdir().unwrap();
+        let telemetry = dir.path().join("project").join("telemetry");
+        let path = telemetry.join("t.jsonl");
+        let line = serde_json::to_string(&event()).unwrap().len() as u64 + 1;
+        let rec = FileRecorder::with_max_bytes(&path, line).unwrap();
+        rec.record(event()).unwrap();
+        rec.record(event()).unwrap();
+
+        assert_eq!(mode(&telemetry), 0o700);
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(
+            mode(&telemetry.join("t.jsonl.1")),
+            0o600,
+            "the rotated file too"
+        );
+
+        let loose = dir.path().join("loose.jsonl");
+        std::fs::write(&loose, "").unwrap();
+        std::fs::set_permissions(&loose, std::fs::Permissions::from_mode(0o644)).unwrap();
+        FileRecorder::new(&loose).unwrap();
+        assert_eq!(mode(&loose), 0o600, "a file already there is narrowed");
     }
 
     #[test]

@@ -21,8 +21,8 @@
 - **开关**:`settings.json` 的 `telemetry_enabled`,缺省 `true`。关掉后会话与池都不记。
 - **轮转**:一个文件写到 64 MiB(`telemetry::file_recorder::DEFAULT_MAX_BYTES`)就改名为
   `<文件>.1`(覆盖上一个 `.1`),再开一个新的;一个文件最多占两份的空间。
-- **文件权限**:按进程的 umask 建,引擎不另外收紧。录像目录与文件才是只有属主可读写
-  (0700 / 0600)。
+- **文件权限**:只有属主可读写(0600),已有的文件打开时也收紧;为它们新建的那一层目录是
+  0700,再往上缺的目录照常建。录像同样如此。
 - **不阻塞**:事件经一个 500 条的队列交给后台写;队列满了就丢,写失败每分钟至多记一条
   warn。遥测从不让一轮等它。
 
@@ -107,7 +107,6 @@ handle 和一个后台 future,事件过滤、脱敏之后交给你给的每个 `
 | `budget_enforced` | 会话 token 预算到 90% 注入收尾提醒,或到 100% 中止这一轮。 | 会话 | `action`(`warning_injected` / `turn_stopped`)、`budget`、`total_tokens_used` |
 | `compact_action` | 一次压缩完成或失败。 | 会话 | `after_message_count`、`after_tokens`、`before_message_count`、`before_tokens`、`latency_ms`、`strategy`、`success` |
 | `resume_action` | 会话从日志重建(会话文件);恢复请求落到已在内存里、找不到、已结束的侧链会话上(池文件);团队从 scratchpad 接上(会话文件)。 | 会话 / 池 | `compact_boundary_count`、`entry_count`、`latency_ms`、`outcome`(`succeeded` / `partial` / `degraded` / `failed`)、`projected_message_count`、`sidechain_entry_count`、`source`、`warning_kind?` |
-| `shutdown_signal` | 会话的主循环退出,紧接 `session_end`。 | 会话 | `duration_ms`、`exit_code`、`had_errors`、`reason`、`total_turns` |
 | `mcp_server_connected` | 一个 MCP server 连上:启动时、重载时、新增时。 | 池 | `server_name`、`tool_count`、`transport` |
 | `mcp_connection_error` | 一个要连的 MCP server 没连上:起不来、握手失败或超时、配置被拒。 | 池 | `error_message`、`server_name` |
 | `agent_spawned` | 子 Agent 开始:`Agent` 工具起的(前台、后台)、常驻团队成员、`TeamCreate` 流水线的成员。 | 会话 | `agent_id`、`background`、`model?`、`role`、`stage_name?` |

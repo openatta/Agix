@@ -118,7 +118,7 @@ MCP、询问、通知、监视、结构化输出(见下文[能力](#能力))。
 
 **记录**
 - 只追加的 JSONL 历史:可恢复、可分叉,崩溃后可重建。
-- 22 种遥测事件,可导出到 OpenTelemetry([telemetry.md](telemetry.md))。
+- 21 种遥测事件,可导出到 OpenTelemetry([telemetry.md](telemetry.md))。
 - 录制器:不联网,逐字节回放。
 - 会话导出成 zip 或目录,子 Agent 一起带上。
 
@@ -435,7 +435,7 @@ let pool = daemon::assemble::pool(
   系统提示词与工具定义之后剩下的大小。`compaction` 设置里可以打开两项:带熔断的预测式
   提前清理(`reactive`),以及每小时一次、以 cache edit 下发、不白扔已付过钱的提示缓存的
   清理(`cached_microcompact`)。
-- **遥测**:22 种结构化事件,可导出到 OpenTelemetry,每次调用四个 token 计数,不属于任何
+- **遥测**:21 种结构化事件,可导出到 OpenTelemetry,每次调用四个 token 计数,不属于任何
   一轮的调用——压缩、记忆、hooks、搜索——也算进去。
 - **录制**:把任意 `Model` 包一层,一个会话就成了自包含的目录;回放逐字节一致、不用联网。
 
