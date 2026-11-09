@@ -94,6 +94,15 @@ fn resolve_command(mut argv: Vec<Word>, depth: usize, out: &mut Vec<Invocation>)
         let name = program_name(&first.text).to_string();
         let args = &argv[1..];
 
+        // A shell keyword that opens a block: what runs inside it (a `case`
+        // branch, a function body) is not this word, and the scanner does not
+        // follow it in. Reading the program off the first word here would hand
+        // a deny `case x in *) rm;; esac` on the strength of its spelling.
+        if !first.quoted && matches!(name.as_str(), "case" | "function" | "select") {
+            out.push(Invocation::Unknown);
+            return;
+        }
+
         if let Some(wrapper) = WRAPPERS.iter().find(|w| w.names.contains(&name.as_str())) {
             match wrapper.command_in(args) {
                 Wrapped::At(n) => {
@@ -107,12 +116,28 @@ fn resolve_command(mut argv: Vec<Word>, depth: usize, out: &mut Vec<Invocation>)
                 }
             }
         } else if SHELLS.contains(&name.as_str()) {
-            match command_string(args) {
+            match shell_target(args) {
+                ShellTarget::Command(Some(script)) if script.is_literal() => {
+                    resolve_line(&script.text, depth, out);
+                }
+                // A `-c` whose string the line builds, or a shell that reads
+                // its script from stdin / a here-string: what it runs cannot be
+                // told from the text, so a deny must not be waved past it.
+                ShellTarget::Command(_) | ShellTarget::Stdin => out.push(Invocation::Unknown),
+                // A script file argument — recorded as the shell itself below,
+                // the same as a program whose source this cannot read.
+                ShellTarget::File => {}
+            }
+        } else if matches!(name.as_str(), "su" | "runuser") {
+            match dash_c_command(args) {
                 Some(Some(script)) if script.is_literal() => {
                     resolve_line(&script.text, depth, out);
                 }
                 Some(_) => out.push(Invocation::Unknown),
-                None => {}
+                None => match after_double_dash(args) {
+                    Some(command) => resolve_command(command, depth, out),
+                    None => out.push(Invocation::Unknown),
+                },
             }
         } else if name == "eval" {
             if args.iter().all(Word::is_literal) {
@@ -201,9 +226,17 @@ fn expand_into(text: &str, out: &mut Vec<String>) -> Option<()> {
 
 const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "fish"];
 
-/// The string `sh -c STRING` runs: `Some(None)` when there is a `-c` but no
-/// string after it, `None` when the shell runs a script file or reads stdin.
-fn command_string(args: &[Word]) -> Option<Option<Word>> {
+/// What a shell started with `args` runs.
+enum ShellTarget {
+    /// `sh -c STRING`: the `STRING` word, or `None` when `-c` has none after it.
+    Command(Option<Word>),
+    /// A script file argument (`sh script.sh`).
+    File,
+    /// Nothing named — the shell reads its script from stdin or a here-string.
+    Stdin,
+}
+
+fn shell_target(args: &[Word]) -> ShellTarget {
     let mut takes_c = false;
     let mut i = 0;
     while let Some(w) = args.get(i) {
@@ -227,7 +260,55 @@ fn command_string(args: &[Word]) -> Option<Option<Word>> {
         }
         break;
     }
-    takes_c.then(|| args.get(i).cloned())
+    if takes_c {
+        ShellTarget::Command(args.get(i).cloned())
+    } else if i < args.len() {
+        ShellTarget::File
+    } else {
+        ShellTarget::Stdin
+    }
+}
+
+/// The command string of a `-c` / `--command` option (`su -c 'rm x' user`):
+/// `Some(Some(w))` the string, `Some(None)` a `-c` with none after it, `None`
+/// no such option.
+fn dash_c_command(args: &[Word]) -> Option<Option<Word>> {
+    let mut i = 0;
+    while let Some(w) = args.get(i) {
+        let t = w.text.as_str();
+        if t == "--" {
+            return None;
+        }
+        if let Some(rest) = t.strip_prefix("--command") {
+            return Some(
+                rest.strip_prefix('=')
+                    .map(Word::plain)
+                    .or_else(|| args.get(i + 1).cloned()),
+            );
+        }
+        if let Some(cluster) = t
+            .strip_prefix('-')
+            .filter(|c| !c.is_empty() && !c.starts_with('-'))
+        {
+            if let Some(pos) = cluster.find('c') {
+                let after = &cluster[pos + 1..];
+                return Some(if after.is_empty() {
+                    args.get(i + 1).cloned()
+                } else {
+                    Some(Word::plain(after))
+                });
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The command vector after a `--` separator (`runuser -u me -- rm x`).
+fn after_double_dash(args: &[Word]) -> Option<Vec<Word>> {
+    let at = args.iter().position(|w| w.text == "--" && !w.quoted)?;
+    let rest = &args[at + 1..];
+    (!rest.is_empty()).then(|| rest.to_vec())
 }
 
 /// The commands `find ... -exec CMD ... ;` runs.
@@ -298,7 +379,47 @@ const WRAPPERS: &[Wrapper] = &[
         ..NO_WRAPPER
     },
     Wrapper {
-        names: &["builtin", "nohup", "coproc"],
+        names: &["builtin", "nohup", "coproc", "busybox"],
+        ..NO_WRAPPER
+    },
+    Wrapper {
+        names: &["pkexec"],
+        long_values: &["user"],
+        long_flags: &["disable-internal-agent", "keep-cwd", "version", "help"],
+        ..NO_WRAPPER
+    },
+    Wrapper {
+        names: &["caffeinate"],
+        short_values: "tw",
+        short_flags: "dimsu",
+        ..NO_WRAPPER
+    },
+    Wrapper {
+        names: &["ionice"],
+        short_values: "cnp",
+        short_flags: "t",
+        ..NO_WRAPPER
+    },
+    Wrapper {
+        names: &["chrt"],
+        short_values: "pTPD",
+        short_flags: "ofrbidRmav",
+        long_flags: &["reset-on-fork"],
+        operands: 1,
+        ..NO_WRAPPER
+    },
+    Wrapper {
+        names: &["taskset"],
+        short_values: "p",
+        short_flags: "ac",
+        operands: 1,
+        ..NO_WRAPPER
+    },
+    Wrapper {
+        names: &["flock"],
+        short_values: "wE",
+        short_flags: "sxunoF",
+        operands: 1,
         ..NO_WRAPPER
     },
     Wrapper {
@@ -611,6 +732,51 @@ mod tests {
             runs("find . -name a -exec rm {} \\;"),
             ["rm {}", "find . -name a -exec rm {} ;"]
         );
+    }
+
+    #[test]
+    fn more_wrappers_are_unwrapped() {
+        for line in [
+            "busybox rm x",
+            "flock /tmp/lock rm x",
+            "flock -w 5 /tmp/lock rm x",
+            "ionice -c 3 rm x",
+            "chrt -o 0 rm x",
+            "taskset -c 0 rm x",
+            "taskset 0x3 rm x",
+            "pkexec rm x",
+            "caffeinate -i rm x",
+            "su -c 'rm x' root",
+            "su -c 'rm x'",
+            "runuser -u me -- rm x",
+        ] {
+            assert!(
+                runs(line).iter().any(|r| r == "rm x"),
+                "{line}: {:?}",
+                runs(line)
+            );
+        }
+    }
+
+    #[test]
+    fn a_block_keyword_and_a_shell_reading_stdin_are_unknown() {
+        for line in [
+            "case x in *) rm -rf b;; esac",
+            "function f { rm -rf b; }",
+            "select x in a b; do rm; done",
+            "sh",
+            "bash <<< 'rm -rf b'",
+            "su root",
+        ] {
+            assert!(
+                runs(line).iter().any(|r| r == "?"),
+                "{line}: {:?}",
+                runs(line)
+            );
+        }
+        // A real script-file argument is not stdin, and stays readable as the
+        // shell itself.
+        assert_eq!(runs("bash script.sh"), ["bash script.sh"]);
     }
 
     #[test]

@@ -10,7 +10,7 @@
 use crate::dangerous::{detect_dangerous_rules, log_dangerous_warnings};
 use crate::path_rule::{self, ResolvedPath};
 use crate::shadow::{detect_shadowed_rules, log_shadow_warnings};
-use base::permission::{PermissionMode, PermissionRule, RuleBehavior};
+use base::permission::{PermissionRule, RuleBehavior};
 use base::tool::PermissionContentKind;
 use std::path::Path;
 
@@ -27,20 +27,12 @@ pub fn path_rule_group(kind: PermissionContentKind) -> Option<&'static str> {
     }
 }
 
-/// Tools that are considered safe (read-only, no side effects).
-///
-/// These are auto-allowed even in strict modes (DontAsk, Plan) and are the
-/// only tools auto-allowed in BypassPermissions without path safety checks.
-pub const SAFE_TOOLS: &[&str] = &["Read", "Glob", "Grep", "TaskList", "TaskGet", "ToolSearch"];
-
-/// Result of the safe-tool / mode-based quick check via `RuleSet::check`.
-///
-/// - `Allowed` — the tool is auto-allowed by the safe-tool allowlist or mode policy.
-/// - `Deferred` — needs further evaluation by rules and standard permission flow.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CheckResult {
-    Allowed,
-    Deferred,
+/// The rule tool name whose shell-command deny / ask rules also govern every
+/// shell-running tool: a `Bash(rm:*)` deny holds for `Monitor` too, the same
+/// way `Read(...)` reaches `Grep`. An allow on the group does not widen — a
+/// tool runs a command only when its own rules, or the whole line, allow it.
+pub fn shell_rule_group(kind: PermissionContentKind) -> Option<&'static str> {
+    matches!(kind, PermissionContentKind::ShellCommand).then_some("Bash")
 }
 
 /// 规则匹配结果。
@@ -207,7 +199,17 @@ impl RuleSet {
     /// `"rm" x`、`/bin/rm x`、`command -p rm x` 都撞得上 `Bash(rm:*)`；程序名
     /// 读不出来的段（`$CMD x`）在有带内容的 deny / ask 规则时记为 `Unclear`。
     /// allow 只认原文：规整只会让裁决更严，不会更宽。
-    pub fn evaluate_shell(&self, tool_name: &str, line: &str) -> RuleHit {
+    pub fn evaluate_shell(&self, tool_name: &str, group: Option<&str>, line: &str) -> RuleHit {
+        let mut hit = self.evaluate_shell_for(tool_name, line);
+        if let Some(group) = group.filter(|g| *g != tool_name) {
+            // The group contributes refusals only: an allow named for the group
+            // must not let a command through a tool the group does not name.
+            hit = hit.restricted_by(self.evaluate_shell_for(group, line).refusal());
+        }
+        hit
+    }
+
+    fn evaluate_shell_for(&self, tool_name: &str, line: &str) -> RuleHit {
         let whole = self.evaluate(tool_name, Some(line));
         let segments = crate::shell::segments(line);
         if segments.is_empty() {
@@ -313,38 +315,6 @@ impl RuleSet {
                 RuleBehavior::Deny => RuleHit::Deny(r.clone()),
                 RuleBehavior::Ask => RuleHit::Ask(r.clone()),
             },
-        }
-    }
-
-    /// 基于安全工具白名单与权限模式的快速决策。
-    ///
-    /// - **BypassPermissions**: 安全工具直接允许；非安全工具仍返回 `Deferred`，
-    ///   由调用方应用路径安全检查后再决定。
-    /// - **DontAsk / Plan**: 安全工具直接允许（只读操作不应被严格模式误杀）。
-    /// - 其它模式: 一律 `Deferred`，走标准规则匹配与模式分派流程。
-    pub fn check(
-        &self,
-        tool_name: &str,
-        _content: Option<&str>,
-        mode: PermissionMode,
-    ) -> CheckResult {
-        match mode {
-            PermissionMode::BypassPermissions => {
-                // 安全工具绕过
-                if SAFE_TOOLS.contains(&tool_name) {
-                    return CheckResult::Allowed;
-                }
-                // 非安全工具：调用方应继续执行路径安全检查
-                CheckResult::Deferred
-            }
-            PermissionMode::DontAsk | PermissionMode::Plan => {
-                // 严格模式下安全工具自动放行
-                if SAFE_TOOLS.contains(&tool_name) {
-                    return CheckResult::Allowed;
-                }
-                CheckResult::Deferred
-            }
-            _ => CheckResult::Deferred,
         }
     }
 }
@@ -695,90 +665,5 @@ mod tests {
     fn empty_ruleset_yields_none() {
         let rs = RuleSet::empty();
         assert!(matches!(rs.evaluate("Bash", Some("ls")), RuleHit::None));
-    }
-
-    #[test]
-    fn safe_tools_allowed_in_bypass_mode() {
-        let rs = RuleSet::empty();
-        for &tool in SAFE_TOOLS {
-            assert_eq!(
-                rs.check(tool, None, PermissionMode::BypassPermissions),
-                CheckResult::Allowed,
-                "safe tool {tool} should be Allowed in BypassPermissions"
-            );
-        }
-    }
-
-    #[test]
-    fn unsafe_tools_deferred_in_bypass_mode() {
-        let rs = RuleSet::empty();
-        assert_eq!(
-            rs.check("Bash", None, PermissionMode::BypassPermissions),
-            CheckResult::Deferred,
-            "Bash should be Deferred in BypassPermissions (needs path safety)"
-        );
-        assert_eq!(
-            rs.check("Edit", None, PermissionMode::BypassPermissions),
-            CheckResult::Deferred
-        );
-        assert_eq!(
-            rs.check("Write", None, PermissionMode::BypassPermissions),
-            CheckResult::Deferred
-        );
-    }
-
-    #[test]
-    fn safe_tools_allowed_in_strict_modes() {
-        let rs = RuleSet::empty();
-        for &tool in SAFE_TOOLS {
-            assert_eq!(
-                rs.check(tool, None, PermissionMode::DontAsk),
-                CheckResult::Allowed,
-                "safe tool {tool} should be Allowed in DontAsk"
-            );
-            assert_eq!(
-                rs.check(tool, None, PermissionMode::Plan),
-                CheckResult::Allowed,
-                "safe tool {tool} should be Allowed in Plan"
-            );
-        }
-    }
-
-    #[test]
-    fn unsafe_tools_deferred_in_strict_modes() {
-        let rs = RuleSet::empty();
-        assert_eq!(
-            rs.check("Bash", None, PermissionMode::DontAsk),
-            CheckResult::Deferred
-        );
-        assert_eq!(
-            rs.check("Bash", None, PermissionMode::Plan),
-            CheckResult::Deferred
-        );
-    }
-
-    #[test]
-    fn check_defers_in_default_mode() {
-        let rs = RuleSet::empty();
-        assert_eq!(
-            rs.check("Read", None, PermissionMode::Default),
-            CheckResult::Deferred,
-            "even safe tools should be Deferred in Default mode"
-        );
-        assert_eq!(
-            rs.check("Bash", None, PermissionMode::Default),
-            CheckResult::Deferred
-        );
-    }
-
-    #[test]
-    fn safe_tools_list_contains_expected_tools() {
-        assert!(SAFE_TOOLS.contains(&"Read"));
-        assert!(SAFE_TOOLS.contains(&"Glob"));
-        assert!(SAFE_TOOLS.contains(&"Grep"));
-        assert!(SAFE_TOOLS.contains(&"TaskList"));
-        assert!(SAFE_TOOLS.contains(&"TaskGet"));
-        assert!(SAFE_TOOLS.contains(&"ToolSearch"));
-        assert_eq!(SAFE_TOOLS.len(), 6);
     }
 }

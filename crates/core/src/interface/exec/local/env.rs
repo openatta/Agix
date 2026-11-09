@@ -80,6 +80,13 @@ pub fn is_engine_credential(name: &OsStr) -> bool {
     name.starts_with("ANTHROPIC_") || name == "AGIX_DAEMON_TOKEN"
 }
 
+/// Never inherited: `CDPATH` would make a child shell's `cd foo` reach a
+/// directory outside the project that the permission check, which reads the
+/// literal `foo`, never saw.
+fn never_inherited(name: &OsStr) -> bool {
+    name == "CDPATH"
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum Plan {
     Remove(Vec<OsString>),
@@ -108,13 +115,16 @@ impl SubprocessEnv {
             SubprocessEnvMode::Inherit => Plan::Remove(
                 host.into_iter()
                     .map(|(name, _)| name)
-                    .filter(|name| is_engine_credential(name) && !allowed(name))
+                    .filter(|name| {
+                        never_inherited(name) || (is_engine_credential(name) && !allowed(name))
+                    })
                     .collect(),
             ),
             SubprocessEnvMode::Allowlist => Plan::Replace(
                 host.into_iter()
                     .filter(|(name, _)| {
-                        BASELINE.iter().any(|b| OsStr::new(b) == name) || allowed(name)
+                        !never_inherited(name)
+                            && (BASELINE.iter().any(|b| OsStr::new(b) == name) || allowed(name))
                     })
                     .collect(),
             ),
@@ -135,6 +145,7 @@ mod tests {
             ("AGIX_DAEMON_TOKEN", "t"),
             ("GITHUB_TOKEN", "gh"),
             ("SSH_AUTH_SOCK", "/tmp/agent"),
+            ("CDPATH", "/"),
         ]
         .into_iter()
         .map(|(k, v)| (k.into(), v.into()))
@@ -154,16 +165,26 @@ mod tests {
     }
 
     #[test]
-    fn inherit_drops_only_the_engines_own_credentials() {
+    fn inherit_drops_the_engines_credentials_and_cdpath() {
         let plan = SubprocessEnv::default().plan(host());
         assert_eq!(
             names(plan),
             [
                 "AGIX_DAEMON_TOKEN",
                 "ANTHROPIC_API_KEY",
-                "ANTHROPIC_BASE_URL"
+                "ANTHROPIC_BASE_URL",
+                "CDPATH",
             ]
         );
+    }
+
+    #[test]
+    fn cdpath_is_never_kept_even_when_named() {
+        let policy = SubprocessEnv {
+            mode: SubprocessEnvMode::Allowlist,
+            allow: vec!["CDPATH".into()],
+        };
+        assert_eq!(names(policy.plan(host())), ["HOME", "PATH"]);
     }
 
     #[test]
@@ -174,7 +195,7 @@ mod tests {
         };
         assert_eq!(
             names(policy.plan(host())),
-            ["AGIX_DAEMON_TOKEN", "ANTHROPIC_BASE_URL"]
+            ["AGIX_DAEMON_TOKEN", "ANTHROPIC_BASE_URL", "CDPATH"]
         );
     }
 

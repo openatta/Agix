@@ -341,6 +341,15 @@ async fn a_deny_reaches_the_program_however_its_name_is_spelled() {
         "find . -name build -exec rm -rf {} +",
         "ls | xargs rm",
         ">/dev/null rm -rf build",
+        "busybox rm -rf build",
+        "flock /tmp/lock rm -rf build",
+        "ionice -c 3 rm -rf build",
+        "chrt -o 0 rm -rf build",
+        "taskset -c 0 rm -rf build",
+        "su -c 'rm -rf build' root",
+        "runuser -u me -- rm -rf build",
+        "caffeinate -i rm -rf build",
+        "pkexec rm -rf build",
     ] {
         let o = check(&perm, "Bash", bash(line), dir.path()).await;
         assert!(is_deny(&o), "{line}: {o:?}");
@@ -360,6 +369,11 @@ async fn a_program_that_cannot_be_read_off_the_line_is_asked_about_under_a_deny(
         "$'\\x72\\x6d' -rf build",
         "/bin/r? -rf build",
         "sudo --some-new-flag rm -rf build",
+        "case x in *) rm -rf build;; esac",
+        "function f { rm -rf build; }; f",
+        "echo 'rm -rf build' | sh",
+        "bash <<< 'rm -rf build'",
+        "flock -c 'rm -rf build' /tmp/lock",
     ] {
         let o = check(&anything_but_rm(), "Bash", bash(line), dir.path()).await;
         assert!(
@@ -403,6 +417,8 @@ async fn a_quoted_protected_path_is_still_protected() {
         "cat ~/\".ssh\"/id_rsa",
         "cat ~/.s''sh/id_rsa",
         "cat ~/'.aws'/credentials",
+        "OLDPWD=~/.ssh; cd - && cat id_rsa",
+        "K=~/.aws/credentials; cat $K",
     ] {
         let o = check(&perm, "Bash", bash(line), dir.path()).await;
         assert!(is_deny(&o), "{line}: {o:?}");
@@ -473,6 +489,11 @@ async fn a_read_through_anything_the_shell_still_expands_is_asked_about() {
         "cd .. && cat x",
         "pushd /etc && cat hosts",
         "cat </etc/hosts",
+        "cd - && cat x",
+        "popd && cat x",
+        "CDPATH=/; cd etc && cat passwd",
+        "PWD=/etc; cd . && cat hosts",
+        "OLDPWD=/etc; cd - && cat hosts",
     ] {
         let o = check(&perm, "Bash", bash(line), cwd).await;
         assert!(
@@ -489,6 +510,82 @@ async fn a_read_through_anything_the_shell_still_expands_is_asked_about() {
         let o = check(&perm, "Bash", bash(line), cwd).await;
         assert!(matches!(o, PermissionOutcome::Permit), "{line}: {o:?}");
     }
+}
+
+#[tokio::test]
+async fn a_read_only_name_that_runs_a_program_is_asked_about_and_refused_in_plan_mode() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path();
+    for line in [
+        "fd . -x touch ran.txt",
+        "rg --pre ./x.sh . x.txt",
+        "git grep -O./x.sh foo",
+        "cargo check",
+        "PATH=.; ls",
+        "sort -o out.txt in.txt",
+        "git config core.pager cat",
+    ] {
+        let o = check(
+            &permission(vec![], PermissionMode::Default),
+            "Bash",
+            bash(line),
+            cwd,
+        )
+        .await;
+        assert!(
+            matches!(o, PermissionOutcome::Prompt { .. }),
+            "{line}: {o:?}"
+        );
+        let o = check(
+            &permission(vec![], PermissionMode::Plan),
+            "Bash",
+            bash(line),
+            cwd,
+        )
+        .await;
+        assert!(is_deny(&o), "plan {line}: {o:?}");
+    }
+}
+
+/// A shell command that writes the engine's own configuration is not
+/// read-only, so it goes to the normal confirmation flow rather than the
+/// silent fast path — while reading it stays silent.
+#[tokio::test]
+async fn a_shell_command_writing_the_engines_configuration_is_asked_about() {
+    let dir = tempfile::tempdir().unwrap();
+    let perm = permission(vec![], PermissionMode::Default);
+    let o = check(&perm, "Bash", bash("git config user.name x"), dir.path()).await;
+    assert!(matches!(o, PermissionOutcome::Prompt { .. }), "{o:?}");
+    let o = check(&perm, "Bash", bash("git config user.name"), dir.path()).await;
+    assert!(matches!(o, PermissionOutcome::Permit), "read: {o:?}");
+}
+
+fn monitor(command: &str) -> Value {
+    json!({ "command": command, "description": "watch" })
+}
+
+#[tokio::test]
+async fn a_bash_deny_also_holds_monitor() {
+    let dir = tempfile::tempdir().unwrap();
+    let perm = permission(
+        vec![
+            PermissionRule {
+                rule_content: None,
+                ..rule(RuleBehavior::Allow, "Monitor", "")
+            },
+            rule(RuleBehavior::Deny, "Bash", "rm:*"),
+            rule(RuleBehavior::Ask, "Bash", "curl:*"),
+        ],
+        PermissionMode::Default,
+    );
+    for line in ["rm -rf build", "true && \\rm -rf build"] {
+        let o = check(&perm, "Monitor", monitor(line), dir.path()).await;
+        assert!(is_deny(&o), "{line}: {o:?}");
+    }
+    let o = check(&perm, "Monitor", monitor("curl -s x"), dir.path()).await;
+    assert!(matches!(o, PermissionOutcome::Prompt { .. }), "{o:?}");
+    let o = check(&perm, "Monitor", monitor("tail -f log"), dir.path()).await;
+    assert!(matches!(o, PermissionOutcome::Permit), "{o:?}");
 }
 
 #[cfg(unix)]

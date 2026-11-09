@@ -431,6 +431,85 @@ fn find_close_paren(chars: &[char], mut i: usize) -> usize {
     chars.len()
 }
 
+/// Every `NAME=value` assignment made at a command position in `line`, with
+/// the value's quotes removed. A leading assignment (`PATH=. ls`), a chain of
+/// them (`A=1 B=2 cmd`) and a segment that is only an assignment (`CDPATH=/`)
+/// all contribute; an `=` inside an argument (`cmd --opt=v`) does not, because
+/// it is not at a command position. What the shell would still expand in the
+/// value (`$X`, `~`) is left in the text — the caller that reads a path out of
+/// it treats an unexpanded value as reaching anywhere, as it must.
+pub fn assignments(line: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for seg in raw_command_segments(line) {
+        for word in words(&seg) {
+            if let Some(pair) = leading_assignment(&word) {
+                out.push(pair);
+            } else if WRAPPERS.contains(&word.as_str()) || word.starts_with('-') {
+                // `env`/`command`/… and their options sit before the
+                // assignments they pass on (`env PATH=. ls`); step over them.
+                continue;
+            } else {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// `line` cut at the operators that separate commands (`;`, newline, `|`,
+/// `&`, `&&`, `||`), keeping every piece — including one that is only an
+/// assignment, which [`segments`] drops. Quotes, escapes and substitutions
+/// are stepped over so an operator inside them does not split.
+fn raw_command_segments(line: &str) -> Vec<String> {
+    let chars: Vec<char> = line.chars().collect();
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '\\' => {
+                cur.push('\\');
+                if let Some(&n) = chars.get(i + 1) {
+                    cur.push(n);
+                    i += 1;
+                }
+            }
+            '\'' => {
+                let end = find_char(&chars, i + 1, '\'');
+                cur.extend(&chars[i..(end + 1).min(chars.len())]);
+                i = end;
+            }
+            '"' => {
+                let end = find_unescaped(&chars, i + 1, '"');
+                cur.extend(&chars[i..(end + 1).min(chars.len())]);
+                i = end;
+            }
+            '`' => {
+                let end = find_unescaped(&chars, i + 1, '`');
+                cur.extend(&chars[i..(end + 1).min(chars.len())]);
+                i = end;
+            }
+            '$' if chars.get(i + 1) == Some(&'(') => {
+                let end = find_close_paren(&chars, i + 2);
+                cur.extend(&chars[i..(end + 1).min(chars.len())]);
+                i = end;
+            }
+            ';' | '\n' | '|' | '&' => out.push(std::mem::take(&mut cur)),
+            c => cur.push(c),
+        }
+        i += 1;
+    }
+    out.push(cur);
+    out
+}
+
+/// A `NAME=value` word at a command position: `Some((name, value))` when the
+/// name is a shell-variable name, else `None`.
+fn leading_assignment(word: &str) -> Option<(String, String)> {
+    let (name, value) = word.split_once('=')?;
+    is_assignment(word).then(|| (name.to_string(), value.to_string()))
+}
+
 pub(crate) const PREFIX_KEYWORDS: &[&str] =
     &["if", "then", "else", "elif", "do", "while", "until", "!"];
 const WRAPPERS: &[&str] = &["time", "nohup", "command", "builtin", "exec", "env"];
@@ -536,7 +615,7 @@ fn first_word_end(s: &str) -> usize {
     bytes.len()
 }
 
-pub(crate) fn is_assignment(word: &str) -> bool {
+pub fn is_assignment(word: &str) -> bool {
     let Some((name, _)) = word.split_once('=') else {
         return false;
     };

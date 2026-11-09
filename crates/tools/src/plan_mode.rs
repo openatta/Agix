@@ -28,9 +28,7 @@ use serde_json::Value;
 ///
 /// Derived from the session's permission mode rather than tracked separately,
 /// so there is exactly one source of truth and it is the same one the
-/// permission gate dispatches on — the previous split (`PLAN_MODE_ACTIVE`
-/// static for the tools, `SessionState.permission_mode` for the gate) is
-/// what made the two disagree.
+/// permission gate dispatches on.
 pub fn plan_mode_active(ctx: &ToolContext) -> bool {
     matches!(ctx.session.permission_mode(), PermissionMode::Plan)
 }

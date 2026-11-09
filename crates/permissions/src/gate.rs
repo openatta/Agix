@@ -45,7 +45,7 @@
 use crate::error::GateError;
 use crate::path_rule::ResolvedPath;
 use crate::rule::format_rule_string;
-use crate::ruleset::{path_rule_group, RuleHit, RuleSet};
+use crate::ruleset::{path_rule_group, shell_rule_group, RuleHit, RuleSet};
 use base::permission::PermissionRule;
 use base::permission::{DecisionReason, PermissionDecision, PermissionMode};
 use base::tool::ToolContext;
@@ -108,85 +108,6 @@ impl PermissionGate {
             .remove_by_source(source);
     }
 
-    /// Produce a human-readable explanation of what permission decision
-    /// the rule engine would make for a given tool call.
-    ///
-    /// This is a lightweight, synchronous alternative to `check()` that
-    /// only consults the rule engine (no tool-specific checks, no mode
-    /// dispatch). It explains whether a rule matches, and if so, which one.
-    ///
-    /// Examples:
-    /// - `"Allowed by rule: Bash(git:*) matches \"git status\""`
-    /// - `"Denied by path safety: /etc/passwd is in bypass-immune deny list"`
-    /// - `"Ask: no matching rule found for Bash(kubectl) — no rules configured for this tool"`
-    /// - `"Rule matches: Bash(git status) [ask] — requires confirmation"`
-    pub fn explain_decision(&self, tool_name: &str, tool_input: &Value) -> String {
-        // Best-effort content extraction mirroring tool implementations.
-        let content = extract_content_from_input(tool_input);
-
-        // 1. Check bypass-immune paths even in the explainer, since this
-        //    check always runs before mode dispatch.
-        if let Some(ref c) = content {
-            if is_path_bypass_immune(c) {
-                return format!("Denied by path safety: \"{c}\" is in the bypass-immune deny list");
-            }
-        }
-
-        // 2. Rule engine evaluation.
-        let rules = self
-            .rules
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match rules.evaluate(tool_name, content.as_deref()) {
-            RuleHit::Allow(rule) => {
-                let rule_str = format_rule_string(&rule);
-                let content_info = content
-                    .as_ref()
-                    .map(|c| format!(" matches \"{c}\""))
-                    .unwrap_or_default();
-                format!("Allowed by rule: {rule_str}{content_info}")
-            }
-            RuleHit::Deny(rule) => {
-                let rule_str = format_rule_string(&rule);
-                let content_info = content
-                    .as_ref()
-                    .map(|c| format!(" matches \"{c}\""))
-                    .unwrap_or_default();
-                format!("Denied by rule: {rule_str}{content_info}")
-            }
-            RuleHit::Ask(rule) => {
-                let rule_str = format_rule_string(&rule);
-                let content_info = content
-                    .as_ref()
-                    .map(|c| format!(" matches \"{c}\""))
-                    .unwrap_or_default();
-                format!("Rule matches: {rule_str} [ask]{content_info} — requires confirmation")
-            }
-            RuleHit::Unclear(rule) => unclear_message(tool_name, &rule),
-            RuleHit::None => {
-                let content_display = content.as_deref().unwrap_or("<no content>");
-                let has_rules_for_tool = rules
-                    .rules()
-                    .iter()
-                    .any(|r| crate::ruleset::matches_tool_name(&r.tool_name, tool_name));
-
-                if has_rules_for_tool {
-                    format!(
-                        "Ask: no matching rule found for {}({content_display}) — \
-                         the tool has rules but none match this specific content",
-                        tool_name,
-                    )
-                } else {
-                    format!(
-                        "Ask: no matching rule found for {}({content_display}) — \
-                         no rules have been configured for this tool",
-                        tool_name,
-                    )
-                }
-            }
-        }
-    }
-
     /// The rule this call matches, and every string the rules were matched
     /// against (the content and each resolved form of its path).
     fn rule_hit(
@@ -211,24 +132,32 @@ impl PermissionGate {
                     rules.evaluate_path(tool.name(), group, path, &ctx.cwd)
                 }
                 (_, _, Some(line)) if kind == PermissionContentKind::ShellCommand => {
-                    rules.evaluate_shell(tool.name(), line)
+                    rules.evaluate_shell(tool.name(), shell_rule_group(kind), line)
                 }
                 _ => rules.evaluate(tool.name(), content.as_deref()),
             }
         };
         // The protected-path checks compare path components, which quotes
         // inside a word (`~/".ssh"/id_rsa`) would otherwise hide.
-        let unquoted = content
-            .iter()
-            .filter(|_| kind == PermissionContentKind::ShellCommand)
-            .flat_map(|line| crate::shell::segments(line))
-            .map(|segment| {
-                crate::shell::lex(&segment.source)
-                    .into_iter()
-                    .map(|w| w.text)
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            });
+        let shell_line = content
+            .as_deref()
+            .filter(|_| kind == PermissionContentKind::ShellCommand);
+        // Each argument on its own, quotes removed, so a protected path is a
+        // whole string the component checks can isolate — `~/".ssh"/id_rsa`
+        // becomes `~/.ssh/id_rsa`, and `.agix/settings.local.json` is not glued
+        // to the command word before it.
+        let unquoted = shell_line
+            .into_iter()
+            .flat_map(crate::shell::segments)
+            .flat_map(|segment| crate::shell::lex(&segment.source))
+            .map(|w| w.text);
+        // A segment that is only an assignment (`OLDPWD=~/.ssh;`) never reaches
+        // `segments`, but its value can name a protected path a later command
+        // reads through — so the values are checked too.
+        let assignment_values = shell_line
+            .into_iter()
+            .flat_map(crate::shell::assignments)
+            .map(|(_, value)| value);
         let checked = content
             .iter()
             .cloned()
@@ -238,6 +167,7 @@ impl PermissionGate {
                     .flat_map(|r| r.all().map(|p| p.to_string_lossy().into_owned())),
             )
             .chain(unquoted)
+            .chain(assignment_values)
             .collect();
         (hit, checked)
     }
@@ -392,7 +322,10 @@ impl PermissionGate {
         //    它们不是凭据（凭据在第 4 步就硬拒了），用户完全可能想让 agent 去
         //    改；但"工具自己说没问题"不足以让一次改写 agent 自身规则的调用静默
         //    通过。所以这里只是**跳过快速通道**，让它落到下面的模式分派去走正常
-        //    确认流程 —— 该问就问，而不是一律拒绝。只读的调用改不了规则，不算。
+        //    确认流程 —— 该问就问，而不是一律拒绝。只读的调用改不了规则，不算
+        //    （读 agent 配置是正常工作，写才要确认）。改写 `.git` / `.agix` 的
+        //    shell 命令不是只读（分类器会否掉 `git config k v` 这类），走的是上面
+        //    的非只读分支。
         let needs_confirmation = !tool.is_read_only(input)
             && checked_strings
                 .iter()
@@ -1265,184 +1198,4 @@ fn unclear_message(tool_name: &str, rule: &PermissionRule) -> String {
          cannot be checked against {}",
         format_rule_string(rule)
     )
-}
-
-/// Best-effort extraction of permission-match content from a JSON tool
-/// input, mirroring what individual tool implementations do in their
-/// `permission_match_content` methods. This is used by the explainer
-/// for human-readable descriptions; it does not need to be exhaustive
-/// since the real decision always goes through the proper Tool trait.
-fn extract_content_from_input(input: &Value) -> Option<String> {
-    // Bash, Monitor, and similar command-based tools
-    if let Some(cmd) = input.get("command").and_then(|v| v.as_str()) {
-        return Some(cmd.to_string());
-    }
-    // FileRead, FileWrite, FileEdit, and similar path-based tools
-    if let Some(path) = input.get("file_path").and_then(|v| v.as_str()) {
-        return Some(path.to_string());
-    }
-    if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
-        return Some(path.to_string());
-    }
-    // WebFetch
-    if let Some(url) = input.get("url").and_then(|v| v.as_str()) {
-        return Some(url.to_string());
-    }
-    // Glob, Grep
-    if let Some(pattern) = input.get("pattern").and_then(|v| v.as_str()) {
-        return Some(pattern.to_string());
-    }
-    // WebSearch
-    if let Some(query) = input.get("query").and_then(|v| v.as_str()) {
-        return Some(query.to_string());
-    }
-    None
-}
-
-#[cfg(test)]
-mod explain_tests {
-    use super::*;
-    use base::permission::{RuleBehavior, RuleSource};
-    use serde_json::json;
-
-    fn make_gate_with_rules(rules: Vec<(bool, &str, &str)>) -> PermissionGate {
-        let permission_rules: Vec<PermissionRule> = rules
-            .into_iter()
-            .map(|(is_allow, tool, content)| {
-                let behavior = if is_allow {
-                    RuleBehavior::Allow
-                } else {
-                    RuleBehavior::Deny
-                };
-                PermissionRule {
-                    source: RuleSource::UserSettings,
-                    behavior,
-                    tool_name: tool.into(),
-                    rule_content: if content.is_empty() {
-                        None
-                    } else {
-                        Some(content.into())
-                    },
-                }
-            })
-            .collect();
-        PermissionGate::new(RuleSet::new(permission_rules))
-    }
-
-    #[test]
-    fn explain_allowed_by_rule_matches_content() {
-        let gate = make_gate_with_rules(vec![(true, "Bash", "git status")]);
-        let explanation = gate.explain_decision("Bash", &json!({"command": "git status"}));
-        assert!(
-            explanation.contains("Allowed by rule"),
-            "expected Allowed by rule, got: {explanation}"
-        );
-        assert!(
-            explanation.contains("Bash(git status)"),
-            "expected rule ref, got: {explanation}"
-        );
-        assert!(explanation.contains("git status"));
-    }
-
-    #[test]
-    fn explain_allowed_by_prefix_rule() {
-        let gate = make_gate_with_rules(vec![(true, "Bash", "git:*")]);
-        let explanation = gate.explain_decision("Bash", &json!({"command": "git log"}));
-        assert!(explanation.contains("Allowed by rule"));
-        assert!(explanation.contains("Bash(git:*)"));
-        assert!(explanation.contains("git log"));
-    }
-
-    #[test]
-    fn explain_denied_by_rule() {
-        let gate = make_gate_with_rules(vec![(false, "Read", "/tmp/secret/**")]);
-        let explanation =
-            gate.explain_decision("Read", &json!({"file_path": "/tmp/secret/data.txt"}));
-        assert!(
-            explanation.contains("Denied by rule"),
-            "expected Denied by rule, got: {explanation}"
-        );
-        assert!(explanation.contains("/tmp/secret/**"));
-    }
-
-    #[test]
-    fn explain_ask_no_matching_rule() {
-        let gate = make_gate_with_rules(vec![(true, "Bash", "git:*")]);
-        let explanation = gate.explain_decision("Read", &json!({"file_path": "/tmp/x"}));
-        assert!(
-            explanation.contains("Ask: no matching rule found"),
-            "expected Ask: no matching rule found, got: {explanation}"
-        );
-        assert!(explanation.contains("Read"));
-    }
-
-    #[test]
-    fn explain_bypass_immune_path() {
-        let gate = PermissionGate::empty();
-        let explanation = gate.explain_decision("Read", &json!({"file_path": "/etc/passwd"}));
-        assert!(
-            explanation.contains("Denied by path safety"),
-            "expected Denied by path safety, got: {explanation}"
-        );
-        assert!(explanation.contains("/etc/passwd"));
-    }
-
-    #[test]
-    fn explain_ask_rule() {
-        let rules = vec![PermissionRule {
-            source: RuleSource::UserSettings,
-            behavior: RuleBehavior::Ask,
-            tool_name: "Bash".into(),
-            rule_content: None,
-        }];
-        let gate = PermissionGate::new(RuleSet::new(rules));
-        let explanation = gate.explain_decision("Bash", &json!({"command": "ls"}));
-        assert!(
-            explanation.contains("[ask]"),
-            "expected [ask] marker, got: {explanation}"
-        );
-        assert!(explanation.contains("requires confirmation"));
-    }
-
-    #[test]
-    fn extract_content_from_command_field() {
-        let input = json!({"command": "git push origin main"});
-        assert_eq!(
-            extract_content_from_input(&input),
-            Some("git push origin main".into())
-        );
-    }
-
-    #[test]
-    fn extract_content_from_file_path_field() {
-        let input = json!({"file_path": "/etc/hosts"});
-        assert_eq!(
-            extract_content_from_input(&input),
-            Some("/etc/hosts".into())
-        );
-    }
-
-    #[test]
-    fn extract_content_returns_none_for_empty_input() {
-        let input = json!({});
-        assert_eq!(extract_content_from_input(&input), None);
-    }
-
-    #[test]
-    fn extract_content_from_url_field() {
-        let input = json!({"url": "https://example.com"});
-        assert_eq!(
-            extract_content_from_input(&input),
-            Some("https://example.com".into())
-        );
-    }
-
-    #[test]
-    fn extract_content_from_path_field() {
-        let input = json!({"path": "/tmp/file.txt"});
-        assert_eq!(
-            extract_content_from_input(&input),
-            Some("/tmp/file.txt".into())
-        );
-    }
 }

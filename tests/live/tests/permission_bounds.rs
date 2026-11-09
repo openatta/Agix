@@ -490,6 +490,45 @@ async fn a_read_after_cd_to_a_variable_is_asked_about() -> anyhow::Result<()> {
     outside_read(|dir| format!("D={}; cd $D && cat secret.txt", dir.display())).await
 }
 
+/// Under `default`, a command whose name is on the read-only list but whose
+/// arguments make it start another program is put to the host, who denies
+/// it, so the program never runs.
+async fn runs_a_program_through_a_reader(command: &str) -> anyhow::Result<()> {
+    let stub = ProviderStub::start().await?;
+    let mut run = stubbed("reader-runs", &stub)
+        .settings(json!({ "permission_mode": "default" }))
+        .start()
+        .await?;
+    run.write_file("x.sh", "touch ran.txt\n")?;
+    let session = run.session().await?;
+    let watcher = run
+        .watch_with(&session, |_| Some(Answer::deny("NOT-READ-ONLY")))
+        .await?;
+    stub.script([bash("b1", command), Reply::text("done")]);
+    let events = run.turn(&session, "search").await?;
+    assert_eq!(prompted_tools(&watcher), ["Bash"], "`{command}`");
+    assert!(
+        run.read_file("ran.txt").is_none(),
+        "`{command}` ran a program without asking: {:?}",
+        events.tool_results
+    );
+    run.finish().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reader_that_runs_a_program_is_asked_about() -> anyhow::Result<()> {
+    runs_a_program_through_a_reader("fd . -x sh x.sh").await?;
+    runs_a_program_through_a_reader("rg --pre sh . x.sh").await?;
+    runs_a_program_through_a_reader("PATH=.:$PATH; sort -o ran.txt x.sh").await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cd_back_to_where_the_shell_was_is_asked_about() -> anyhow::Result<()> {
+    outside_read(|dir| format!("OLDPWD={}; cd - && cat secret.txt", dir.display())).await?;
+    outside_read(|dir| format!("CDPATH={}/..; cd outside && cat secret.txt", dir.display())).await
+}
+
 fn team_of_one(prompt: &str, mode: &str) -> Reply {
     Reply::calls(
         "t1",
