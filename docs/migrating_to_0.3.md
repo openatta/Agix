@@ -446,6 +446,10 @@ WebAssembly 载体整个移除。
   `plan` 下被拒,在 `acceptEdits` 下要询问(以前两处都静默放行)。
 - 子进程环境永远不带 `CDPATH`(`inherit` 与 `allowlist` 两种模式都剥掉),免得子 shell 的
   `cd foo` 落到项目外、而权限检查看的是字面 `foo`。
+- 无人值守会话的 `Bash` / `Monitor` 不能再请系统服务在沙箱外代办:macOS 上 `open`(经
+  LaunchServices 起应用、开 URL)、`defaults write`(经 `cfprefsd` 写偏好)、`osascript` 给别的应用
+  发 Apple event 都会失败;Linux 上命令进独立的 IPC 命名空间,会话 D-Bus 与 systemd 用户实例的
+  socket 被遮住(`systemd-run --user`、`gdbus call --session` 失败)。有人值守的会话不变。
 - agent 类型 frontmatter 的 `permission_mode` 真正作用到子 Agent 的权限判定上(以前写 `plan`
   不起作用),可以比父会话宽也可以严;父会话在 `plan` 时取两者中更严的那个,父会话是
   `bypassPermissions` 时随父会话,插件带来的类型只能收紧。团队成员(`TeamCreate`、`Agent` 的
@@ -743,6 +747,9 @@ WebAssembly 载体整个移除。
 
 ### 嵌入方
 
+- `base::interface::exec::SandboxPolicy` 多了 `deny_ipc_escapes`,`base::tool::SandboxSettings`
+  与 `base::context::config::SandboxPolicyConfig` 多了 `unattended_requires_network_policy`;
+  用结构体字面量构造它们的要补字段(或改用 `..Default::default()`)。
 - `AgentEvent` 多了 `Notification { message, status, turn_id }`;穷举匹配它的要补一支。
 - `telemetry`:`EventPayload` 去掉上面那 15 个变体及其 payload 类型,多了 `KINDS`;
   `TurnStartPayload` / `TurnCompletePayload` 去掉 `turn_no` / `turn_id`,`UserPromptSubmitPayload`

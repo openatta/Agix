@@ -74,6 +74,7 @@ fn to_sandbox_policy(settings: &base::tool::SandboxSettings) -> sandbox::Sandbox
         // this turn opened up.
         additional_writable: Vec::new(),
         only_additional_writable: false,
+        deny_ipc_escapes: false,
     }
 }
 
@@ -567,6 +568,7 @@ fn sandbox_policy(ctx: &ToolContext) -> sandbox::SandboxPolicy {
         .chain(caches)
         .chain([session_temp_dir(&ctx.session_id)])
         .collect();
+    policy.deny_ipc_escapes = ctx.session.unattended;
     policy
 }
 
@@ -1869,6 +1871,17 @@ mod tests {
             assert!(writable.contains(&std::path::PathBuf::from(home).join(".npm")));
         }
         assert!(!writable.iter().any(|p| p.starts_with("~")));
+    }
+
+    #[test]
+    fn only_an_unattended_command_is_kept_from_acting_through_other_processes() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = ctx_in(dir.path());
+        assert!(!sandbox_policy(&ctx).deny_ipc_escapes);
+        let mut session = base::context::SessionState::new(dir.path().to_path_buf());
+        session.unattended = true;
+        ctx.session = std::sync::Arc::new(session);
+        assert!(sandbox_policy(&ctx).deny_ipc_escapes);
     }
 
     fn unattended_in_a_holding_sandbox(

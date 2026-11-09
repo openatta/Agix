@@ -64,6 +64,12 @@ pub struct SandboxPolicy {
     /// guarding a file it does not use while leaving its real settings.json
     /// writable.
     pub state_root: Option<PathBuf>,
+    /// Also refuse the ways a command can have another process act for it
+    /// outside the sandbox: on macOS sending Apple events, opening apps and
+    /// URLs through LaunchServices, and writing preferences through
+    /// `cfprefsd`; on Linux the host's IPC namespace and the session bus.
+    /// For an unattended session, where nobody approved the command.
+    pub deny_ipc_escapes: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

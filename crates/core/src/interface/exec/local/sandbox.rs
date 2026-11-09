@@ -69,6 +69,23 @@
 //!    engine's own git runs inside the sandbox, so it carries none of that out
 //!    unconfined; a git the user runs in the project afterwards does. macOS
 //!    denies both.
+//! 6. **Another process acting for the command**: the sandbox follows the
+//!    command's own process tree, not what it asks a system service to do.
+//!    On macOS, measured against `sandbox-exec`: `open` has LaunchServices
+//!    start an app outside the sandbox, `defaults write` has `cfprefsd` write
+//!    any preference domain, and an Apple event reaches an app that runs
+//!    unconfined (Finder itself refuses events from a sandboxed sender, other
+//!    apps need not). launchd refuses `launchctl submit` / `bootstrap` from a
+//!    sandboxed caller. A policy with `deny_ipc_escapes` — every unattended
+//!    session's — denies `lsopen`, `user-preference-write` and
+//!    `appleevent-send`. On Linux the same policy adds `--unshare-ipc` and
+//!    hides the session bus and the systemd user manager's socket under
+//!    `$XDG_RUNTIME_DIR` (and the bus path `DBUS_SESSION_BUS_ADDRESS` names),
+//!    so `systemd-run --user` has nothing to talk to; an abstract-socket bus
+//!    is reachable unless the network is cut too. The Linux half has not been
+//!    run against a real bubblewrap. With the network open, any local
+//!    service listening on a socket the command can reach (sshd, a container
+//!    daemon) is a way out under every policy.
 
 pub use crate::interface::exec::{
     default_deny_read, Confined, Enforcement, NetworkMode, ProcessSpec, Sandbox, SandboxMode,
@@ -492,6 +509,14 @@ fn build_macos_profile(cwd: &Path, additional: &[PathBuf], policy: &SandboxPolic
         }
     }
 
+    // `launchctl submit` / `bootstrap` need no rule: launchd refuses a job
+    // from a sandboxed caller.
+    if policy.deny_ipc_escapes {
+        s.push_str("(deny appleevent-send)\n");
+        s.push_str("(deny lsopen)\n");
+        s.push_str("(deny user-preference-write)\n");
+    }
+
     // DNS is IPC to mDNSResponder, which `network*` does not cover, so name
     // resolution survives both restricted modes; `remote tcp` matches by
     // hostname.
@@ -613,6 +638,47 @@ fn guard_project(args: &mut Vec<String>, roots: &Roots) {
 }
 
 #[cfg(all(feature = "sandbox", target_os = "linux"))]
+fn bind_over(args: &mut Vec<String>, source: &Path, target: &Path) {
+    args.extend([
+        "--ro-bind-try".to_string(),
+        source.display().to_string(),
+        target.display().to_string(),
+    ]);
+}
+
+/// Where this user's session D-Bus and systemd user manager listen. An
+/// abstract socket (`unix:abstract=`) has no path to hide; only
+/// `--unshare-net` reaches it.
+#[cfg(all(feature = "sandbox", target_os = "linux"))]
+fn session_bus_paths() -> Vec<PathBuf> {
+    bus_paths(
+        std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from),
+        std::env::var("DBUS_SESSION_BUS_ADDRESS").ok().as_deref(),
+    )
+}
+
+#[cfg(all(feature = "sandbox", target_os = "linux"))]
+fn bus_paths(runtime_dir: Option<PathBuf>, bus_address: Option<&str>) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(runtime) = runtime_dir {
+        paths.push(runtime.join("bus"));
+        paths.push(runtime.join("systemd"));
+    }
+    if let Some(address) = bus_address {
+        paths.extend(
+            address
+                .split(';')
+                .flat_map(|a| a.split(','))
+                .filter_map(|kv| kv.strip_prefix("unix:path=").or(kv.strip_prefix("path=")))
+                .map(PathBuf::from),
+        );
+    }
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+#[cfg(all(feature = "sandbox", target_os = "linux"))]
 fn linux_wrap(
     inner: ProcessSpec,
     cwd: &Path,
@@ -679,6 +745,17 @@ fn linux_wrap(
             args.push("--ro-bind-try".into());
             args.push("/dev/null".into());
             args.push(s);
+        }
+    }
+
+    if policy.deny_ipc_escapes {
+        args.push("--unshare-ipc".into());
+        for bus in session_bus_paths() {
+            if bus.is_dir() {
+                args.extend(["--tmpfs".into(), bus.display().to_string()]);
+            } else if bus.exists() {
+                bind_over(&mut args, Path::new("/dev/null"), &bus);
+            }
         }
     }
 
@@ -1108,6 +1185,7 @@ mod tests {
             state_root: None,
             additional_writable: Vec::new(),
             only_additional_writable: false,
+            deny_ipc_escapes: false,
         };
         let cmd = wrap(o);
         let profile = &cmd.spec.args[1];
@@ -1129,6 +1207,7 @@ mod tests {
             state_root: None,
             additional_writable: Vec::new(),
             only_additional_writable: false,
+            deny_ipc_escapes: false,
         };
         let cmd = wrap(o);
         let profile = &cmd.spec.args[1];
@@ -1244,6 +1323,37 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn linux_unattended_unshares_ipc() {
+        let mut o = opts("ls", Path::new("/tmp/work"));
+        let attended = wrap(o.clone());
+        if attended.mode != SandboxMode::LinuxBwrap {
+            return;
+        }
+        o.policy.deny_ipc_escapes = true;
+        let unattended = wrap(o);
+        assert!(!attended.spec.args.iter().any(|a| a == "--unshare-ipc"));
+        assert!(unattended.spec.args.iter().any(|a| a == "--unshare-ipc"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_session_bus_is_found_where_the_environment_says() {
+        assert_eq!(
+            bus_paths(
+                Some(PathBuf::from("/run/user/1000")),
+                Some("unix:path=/run/user/1000/bus,guid=x;unix:guid=y,path=/tmp/dbus-z"),
+            ),
+            [
+                PathBuf::from("/run/user/1000/bus"),
+                PathBuf::from("/run/user/1000/systemd"),
+                PathBuf::from("/tmp/dbus-z"),
+            ]
+        );
+        assert!(bus_paths(None, Some("unix:abstract=/tmp/dbus-x")).is_empty());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn linux_unrestricted_network_omits_unshare_net() {
         let mut o = opts("ls", Path::new("/tmp/work"));
         o.policy.network_mode = NetworkMode::Unrestricted;
@@ -1354,6 +1464,7 @@ mod tests {
                 state_root: None,
                 additional_writable: Vec::new(),
                 only_additional_writable: false,
+                deny_ipc_escapes: false,
             },
         };
         let cmd = wrap(o);
@@ -1390,6 +1501,7 @@ mod tests {
                 state_root: None,
                 additional_writable: Vec::new(),
                 only_additional_writable: false,
+                deny_ipc_escapes: false,
             },
         };
         let cmd = wrap(o);
@@ -1472,6 +1584,7 @@ mod tests {
                 state_root: None,
                 additional_writable: Vec::new(),
                 only_additional_writable: false,
+                deny_ipc_escapes: false,
             },
         };
         let cmd = wrap(o);
@@ -1599,6 +1712,14 @@ mod tests {
         }
 
         fn runs(&self, command: &str) -> bool {
+            self.run(command, false)
+        }
+
+        fn runs_unattended(&self, command: &str) -> bool {
+            self.run(command, true)
+        }
+
+        fn run(&self, command: &str, deny_ipc_escapes: bool) -> bool {
             let additional = vec![self.tmp.clone()];
             let confined = wrap(SandboxOptions {
                 command,
@@ -1607,6 +1728,7 @@ mod tests {
                 disable: false,
                 policy: SandboxPolicy {
                     state_root: Some(self.state_root.clone()),
+                    deny_ipc_escapes,
                     ..Default::default()
                 },
             });
@@ -1618,6 +1740,98 @@ mod tests {
                 .unwrap()
                 .status
                 .success()
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn outside(program: &str, args: &[&str]) -> bool {
+        std::process::Command::new(program)
+            .args(args)
+            .output()
+            .is_ok_and(|o| o.status.success())
+    }
+
+    /// Unattended, a command cannot have another process do outside the
+    /// sandbox what the sandbox refuses it: launchd, LaunchServices, an
+    /// Apple event, `cfprefsd`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unattended_a_command_cannot_act_through_another_process() {
+        let Some(s) = UnderSandboxExec::new() else {
+            return;
+        };
+        let elsewhere = s.elsewhere.display().to_string();
+        let label = format!("com.agix.sandbox-test.{}", std::process::id());
+
+        for runs in [UnderSandboxExec::runs, UnderSandboxExec::runs_unattended] {
+            let submitted = runs(
+                &s,
+                &format!("launchctl submit -l {label} -- /usr/bin/touch '{elsewhere}/launchd'"),
+            );
+            outside("launchctl", &["remove", &label]);
+            assert!(!submitted, "launchd took a job from a sandboxed command");
+        }
+
+        let wrote = s.runs_unattended(&format!("defaults write {label} k v"));
+        let stored = outside("defaults", &["read", &label, "k"]);
+        outside("defaults", &["delete", &label]);
+        assert!(!wrote && !stored, "cfprefsd wrote a preference for it");
+
+        let applet = s.elsewhere.join("Applet.app");
+        let applet_built = outside(
+            "osacompile",
+            &[
+                "-o",
+                &applet.display().to_string(),
+                "-e",
+                &format!("do shell script \"touch '{elsewhere}/opened'\""),
+            ],
+        );
+        if applet_built {
+            let opened = s.runs_unattended(&format!("open -g '{}'", applet.display()));
+            if opened {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+            }
+            assert!(!opened, "LaunchServices opened an app for it");
+        }
+
+        assert!(!s.runs_unattended("osascript -e 'tell application \"Finder\" to count windows'"));
+
+        for marker in ["launchd", "opened"] {
+            assert!(!s.elsewhere.join(marker).exists(), "{marker}");
+        }
+    }
+
+    /// Those refusals leave ordinary work alone, reading preferences included.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unattended_ordinary_work_still_runs() {
+        let Some(s) = UnderSandboxExec::new() else {
+            return;
+        };
+        for command in [
+            "git add a && git commit -qm first",
+            "echo x > notes.md && mktemp && echo x > \"$TMPDIR/f\"",
+            "defaults read -g > /dev/null",
+        ] {
+            assert!(s.runs_unattended(command), "`{command}` was refused");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn only_an_unattended_profile_refuses_the_ipc_routes() {
+        let mut o = opts("ls", Path::new("/tmp/work"));
+        let attended = wrap(o.clone()).spec.args[1].clone();
+        o.policy.deny_ipc_escapes = true;
+        let unattended = wrap(o).spec.args[1].clone();
+        for rule in [
+            "(deny appleevent-send)",
+            "(deny lsopen)",
+            "(deny user-preference-write)",
+        ] {
+            assert!(!attended.contains(rule), "{rule}");
+            assert!(unattended.contains(rule), "{rule}");
         }
     }
 

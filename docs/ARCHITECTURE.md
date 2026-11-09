@@ -524,8 +524,9 @@ stat 的时间,读盘不挡写入。走的是 `Meta` 里的父子关系,只沿 `
    服务取的是声明它的那份设置(daemon 按项目、scene 建连),再叠各服务自己的 `env`。这和沙箱无关——沙箱关着,模型一句 `printenv` 读到什么也由它决定。
 
 沙箱是**轻量写限制,不是安全隔离**。已知逃逸路径写在
-`crates/core/src/interface/exec/local/sandbox.rs` 的模块头里,五条;第 5 条对引擎自己的
-git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git。它限住的写入范围见 §6.3。
+`crates/core/src/interface/exec/local/sandbox.rs` 的模块头里,六条;第 5 条对引擎自己的
+git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git;第 6 条(让别的进程替命令
+在沙箱外做事)在无人值守会话里收口(见 §6.3)。它限住的写入范围见 §6.3。
 
 ---
 
@@ -687,6 +688,16 @@ git 目录与 `.agix/worktrees/`,工作目录本身不可写,网络不通。沙�
 只给 git 目录就在项目根下 `.git` 的仓库建 worktree,别处的 git 目录沙箱护不住它的配置。
 不论进不进沙箱,这些 git 都带 `-c core.fsmonitor=false -c core.hooksPath=/dev/null`。
 `/resume @repo` 找仓库根不跑 git,只向上找 `.git`。
+
+沙箱只管命令自己的进程树,管不到它请系统服务代办的事。macOS 上实测:`open` 让
+LaunchServices 在沙箱外起一个应用,`defaults write` 让 `cfprefsd` 写任意偏好域,Apple event
+能让沙箱外的应用替它做事(Finder 本身拒绝来自沙箱进程的事件,别的应用未必);`launchctl
+submit` / `bootstrap` 则被 launchd 拒绝。无人值守会话的 `Bash` / `Monitor` 另外拒绝这几条:
+macOS profile 加 `(deny lsopen)`、`(deny user-preference-write)`、`(deny appleevent-send)`,
+Linux 上 bwrap 加 `--unshare-ipc` 并遮住 `$XDG_RUNTIME_DIR/bus`、`$XDG_RUNTIME_DIR/systemd`
+与 `DBUS_SESSION_BUS_ADDRESS` 指向的路径(抽象 socket 的总线只有断网才断得掉;Linux 这一半
+未在真机 bubblewrap 上跑过)。有人值守的会话不加:命令经人确认,`open` 打开浏览器之类照常可用。
+网络敞开时,命令能连到的本机服务(sshd、容器守护进程)在任何策略下都是出口。
 
 包管理与构建工具要写自己的缓存(`pip`、`npm`、`cargo`、`go` …),所以沙箱里的 `Bash`
 另外可写 `sandbox.cache_directories`:按工具链分组的缓存目录,缺省列好了 python / node /
