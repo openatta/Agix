@@ -586,10 +586,7 @@ async fn execute(
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .push(&text);
-            } else if notices_left
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-                .is_ok()
-            {
+            } else if take_one(&notices_left) {
                 notify_session.post_notice(
                     None,
                     format!(
@@ -949,6 +946,18 @@ fn truncate(text: &str, max_chars: usize) -> (String, bool) {
     } else {
         (text.chars().take(max_chars).collect(), true)
     }
+}
+
+/// Take one from `left` unless it is already zero.
+fn take_one(left: &AtomicU32) -> bool {
+    let mut n = left.load(Ordering::SeqCst);
+    while n > 0 {
+        match left.compare_exchange(n, n - 1, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return true,
+            Err(seen) => n = seen,
+        }
+    }
+    false
 }
 
 #[cfg(test)]
