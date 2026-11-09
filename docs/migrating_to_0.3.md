@@ -537,8 +537,53 @@ WebAssembly 载体整个移除。
 - `session.delete`,以及 `session.close` / `session.delete` 级联删掉的会话,连同
   `sessions/<id>/` 整个目录一起删(会话记忆、metadata、输入历史);以前只删 `metadata.json`。
   会话还在本 daemon 里活着时只留下空的 `writer.lock`。
+- `ExitWorktree` 的 `keep` 真的结束 worktree 会话(worktree 留在磁盘上),之后可以再
+  `EnterWorktree`;以前会话一直留在里面,下一次进入被拒。`remove` 因为有未提交改动被拒时会话
+  仍在 worktree 里,带 `discard_changes` 重试能删掉(以前 worktree 成了孤儿)。分支上有别的
+  分支与远端都没有的提交时同样拒绝删除。
+- `Grep` 搜 32 MiB 以内的文件(以前 4 MiB),更大的不读,结果末尾列出被跳过的文件;以前静默
+  跳过,报 no matches。`multiline: true` 时 `.` 匹配换行,content 模式给出匹配跨过的每一行。
+- 定时任务的 cron 表达式一直按 UTC 匹配,`CronCreate` 的说明现在也这么写,结果里带当前
+  UTC 时间。`scheduled_tasks.json` 改为原子写;读不出来的文件挪到 `scheduled_tasks.json.corrupt`
+  再从空表开始,不再被下一次保存覆盖。
+- 新帧 `notification`(`{message,status}`,协议 §7):模型调用 `PushNotification` 时发给会话的
+  订阅者,同时触发 `Notification` hook(`reason` 为通知正文,`tool_name` 为
+  `PushNotification`)。宿主该把它当通知送到用户面前;macOS 上引擎所在的机器仍顺带弹一条
+  桌面通知,失败不算错。
+- `/cost` 报的是会话自载入以来模型调用数、工具调用数和厂商报回的四项 token,不再是按字符数
+  估的美元数。
+- 遥测(`telemetry/<session>.jsonl`、`pool.jsonl`、OTel)`schema_version` 升为 2:payload 不再
+  重复信封的 `turn_no` / `turn_id`;从来没有发出过的 15 种事件删除(`config_loaded`、
+  `tool_decision`、`intent_classified`、`interrupt_signal`、`context_window_report`、
+  `model_route`、`error_record`、`mcp_server_disconnected`、`mcp_tool_call`、`agent_message`、
+  `memory_snapshot`、`file_operation`、`tui_action`、`hook_execution`、`outcome_record`),
+  剩 22 种;`api_error`、`permission_decision`、
+  `user_prompt_submit`、`slash_command_used` 现在会发,`mcp_server_connected` /
+  `mcp_connection_error` / `startup_timing` 记进 `pool.jsonl`;`Agent` 工具的子 Agent 记
+  `agent_spawned` / `agent_completed`。`session_end` 的 token 与调用合计是真数,去掉
+  `total_cost_usd` 与 `total_errors`;`startup_timing` 只剩 `total_startup_ms`、`config_load_ms`、
+  `pool_build_ms`。遥测文件到 64 MiB 轮转到 `<file>.1`。录像目录与文件只有属主可读写。
+- `Agent` 工具的 schema 去掉从未生效的 `auto_background_after_secs`。子 Agent 因 `max_turns`
+  停下时,交回父会话的结果里写明这一点(以前可能是一个空结果)。`TeamCreate` 的结果不再带
+  协调者的 ROLE/TOOLS 说明段。
 
 ### 嵌入方
+
+- `AgentEvent` 多了 `Notification { message, status, turn_id }`;穷举匹配它的要补一支。
+- `telemetry`:`EventPayload` 去掉上面那 15 个变体及其 payload 类型,多了 `KINDS`;
+  `TurnStartPayload` / `TurnCompletePayload` 去掉 `turn_no` / `turn_id`,`UserPromptSubmitPayload`
+  只剩 `char_count` / `attachment_count`,`SlashCommandUsedPayload` 是 `{command, kind, has_arg}`,
+  `ApiErrorPayload` 的 `http_status` 变 `Option<u16>`、去掉 `retry_count`,
+  `PermissionDecisionPayload` 去掉 `rule_source`、`PermissionDecisionOutcome` 去掉
+  `Escalated` / `Remembered`,`AgentSpawnedPayload` 是 `{agent_id, role, model?, stage_name?,
+  background}`,`AgentCompletedPayload` 去掉 `turn_count` / `tool_call_count`,
+  `McpServerConnectedPayload` / `McpConnectionErrorPayload` 精简,`StartupTimingPayload` 见上,
+  `SessionEndPayload` 去掉 `total_cost_usd` / `total_errors`。`telemetry::cost`、`telemetry::stats`
+  删除。`RedactionPolicy` 与 `TelemetryConfig` 去掉 `redact_prompts` / `redact_tool_content`
+  (`RedactionPolicy` 还去掉 `redact_secrets`、`has_content_redaction`),新增
+  `RedactionPolicy::scrub_message`。`TelemetryHandleError` 多了 `Io`,`FileRecorder::record`
+  写失败返回它;新增 `FileRecorder::with_max_bytes`,去掉 `FileRecorder::exists`。
+- `team::prompt::build_coordinator_prompt` 删除(没有地方读它)。
 
 - `AnthropicModel::stream` / `OpenAICompatibleModel::stream` 在返回前等到厂商开始回答:请求被拒
   (状态码、连不上、重试用尽)从 `stream()` 返回 `Err`,不再是流的第一项;两者都认传进来的
