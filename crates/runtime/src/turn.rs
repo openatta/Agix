@@ -210,7 +210,6 @@ impl Agent {
                                 unreachable!("MCP prompt commands are dispatched above")
                             }
                             crate::commands::Command::Local { .. } => {
-                                // Handle well-known local commands directly
                                 let result_text = match sc.name.as_str() {
                                     "help" => self.handle_help_command(),
                                     "skills" => self.handle_skills_command(),
@@ -1006,6 +1005,7 @@ impl Agent {
         };
         self.deliver_notices();
         self.pending_input = user_text_fingerprint(&message).map(|fp| (fp, spans));
+        self.turn_started_at = Some(std::time::Instant::now());
         self.session.push_message_from(message, origin);
         if std::mem::take(&mut self.output_token_target_unannounced) {
             if let Some(target) = self.output_token_target {
@@ -1449,10 +1449,8 @@ impl Agent {
 
             // A git-mutating Bash call this round means the session-start
             // `FrozenContext` git snapshot (branch/status/log) is now stale
-            // — refresh just that slice. See `turn_included_git_mutating_bash_call`
-            // and `FrozenContext::refresh_git` doc comments.
-            if has_tool_uses && Self::turn_included_git_mutating_bash_call(self.session.messages())
-            {
+            // — refresh just that slice.
+            if has_tool_uses && Self::included_git_mutating_bash_call(self.this_step()) {
                 if let Some(ref mut frozen) = self.frozen {
                     frozen
                         .refresh_git(&engine_git_from(&self.config, &self.session.session_id))
@@ -1464,11 +1462,10 @@ impl Agent {
             }
 
             // A PostToolUse hook can request the turn end right here — every
-            // tool_use emitted in this round already has its tool_result
-            // pushed to the session by this point (execute_stream pushes
-            // results as each tool call completes, not after the whole
-            // stream finishes), so there's no risk of a dangling tool_use
-            // block without a matching result. Mirrors the Stop hook's
+            // tool_use emitted in this round already has its tool_result in
+            // the session (execute_stream writes the reply together with all
+            // of its results once the round is over), so there's no risk of
+            // a dangling tool_use block without a matching result. Mirrors the Stop hook's
             // discontinue path below, just triggered from a different point.
             if discontinued.load(std::sync::atomic::Ordering::Relaxed) {
                 tracing::info!("PostToolUse hook discontinued the turn");
@@ -1627,7 +1624,7 @@ impl Agent {
                 // Activate conditional skills whose `paths` patterns match
                 // files accessed by Read/Write/Edit tool operations this turn.
                 {
-                    let file_paths = Self::extract_tool_file_paths(self.session.messages());
+                    let file_paths = Self::extract_tool_file_paths(self.messages_this_turn());
                     if !file_paths.is_empty() {
                         let activated = self.skills.activate_for_paths(&file_paths);
                         if !activated.is_empty() {
@@ -1875,8 +1872,8 @@ impl Agent {
                 });
             }
 
-            // Feature #9: Check if session memory is stale and inject a system reminder
-            // prompting the model to update its cross-session session notes.
+            // Remind the model to update its cross-session notes once they
+            // have gone stale.
             if let Some(ref sm) = self.session.session_memory {
                 let current_turn = self.session.turn_count;
                 // If a Write/Edit this turn targeted the sidecar file itself,
@@ -1884,7 +1881,7 @@ impl Agent {
                 // of nagging again next turn. Compares against the exact
                 // path we tell the model below, so a literal match is enough
                 // (no canonicalization needed).
-                let updated_this_turn = Self::extract_tool_file_paths(self.session.messages())
+                let updated_this_turn = Self::extract_tool_file_paths(self.messages_this_turn())
                     .iter()
                     .any(|p| p == sm.path());
                 if updated_this_turn {
@@ -1932,9 +1929,11 @@ or project context that should survive across sessions.
         content: String,
         is_error: bool,
     ) -> Result<TurnOutcome, TurnError> {
-        // Inject tool result into session message history.
-        // The caller (Agent::run) will feed the next input; if that input is a
-        // User message, run_user_turn will pick up from the updated session state.
+        if !awaits_result(self.session.messages(), &tool_use_id) {
+            return Err(TurnError::Internal(format!(
+                "no tool call {tool_use_id} is waiting for a result"
+            )));
+        }
         self.session.push_message(ModelMessage {
             role: MessageRole::User,
             content: vec![ModelContentBlock::ToolResult {
@@ -1953,23 +1952,38 @@ or project context that should survive across sessions.
         })
     }
 
-    /// Extract file paths from Read/Write/Edit tool uses in the session messages.
-    ///
-    /// Scans recent messages for `ToolUse` blocks with these tool names and
-    /// extracts the `file_path` field from their input JSON. The collected
-    /// paths are passed to `activate_conditional_skills_for_paths` so that
-    /// skills with matching `paths` patterns are injected into context.
-    fn extract_tool_file_paths(messages: &[ModelMessage]) -> Vec<PathBuf> {
-        // Only look at messages from the current turn (last half of messages).
-        let cutoff = if messages.len() > 40 {
-            messages.len() / 2
-        } else {
-            0
+    /// The messages pushed since this turn's user message, that message
+    /// included; the whole transcript before any turn has started.
+    fn messages_this_turn(&self) -> &[ModelMessage] {
+        let messages = self.session.messages();
+        let Some(started) = self.turn_started_at else {
+            return messages;
         };
+        let first = self
+            .session
+            .message_ages()
+            .iter()
+            .rposition(|(_, at)| *at < started)
+            .map_or(0, |i| i + 1);
+        &messages[first..]
+    }
+
+    /// The reply of the step that just ran and the results after it.
+    fn this_step(&self) -> &[ModelMessage] {
+        let messages = self.session.messages();
+        let reply = messages
+            .iter()
+            .rposition(|m| m.role == MessageRole::Assistant)
+            .unwrap_or(0);
+        &messages[reply..]
+    }
+
+    /// The `file_path` of every `Read`/`Write`/`Edit` call in `messages`.
+    fn extract_tool_file_paths(messages: &[ModelMessage]) -> Vec<PathBuf> {
         let tool_names = ["Read", "Write", "Edit"];
         let mut paths: Vec<PathBuf> = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        for msg in messages.iter().skip(cutoff) {
+        for msg in messages {
             for block in &msg.content {
                 if let ModelContentBlock::ToolUse { name, input, .. } = block {
                     if !tool_names.contains(&name.as_str()) {
@@ -1987,23 +2001,6 @@ or project context that should survive across sessions.
         paths
     }
 
-    /// Whether any `Bash` tool call in the recent (same "last half of
-    /// messages" window as `extract_tool_file_paths`) conversation looks
-    /// like it mutated git state — used to decide whether to pay for a
-    /// `FrozenContext::refresh_git()` round-trip (real subprocess I/O, not
-    /// free) rather than trusting the session-start snapshot for the rest of
-    /// a long-running session (see `crates/core/src/frozen/mod.rs`'s
-    /// module-level "not refreshed during a session" caveat).
-    ///
-    /// Deliberately a heuristic, not a shell parser: scans for `git`
-    /// followed within a few tokens by a known state-mutating subcommand
-    /// name, tolerating global flags (`-C <dir>`, `--no-pager`, ...) between
-    /// them. False positives (e.g. `git log --grep=commit`) just cost one
-    /// extra (cheap, timeout-bounded) `refresh_git()` call; false negatives
-    /// (a mutating command this list doesn't recognize, or one run through
-    /// e.g. a wrapper script) just mean the pre-existing "frozen until next
-    /// session" staleness persists a bit longer — neither is a correctness
-    /// hazard, both degrade to prior behavior.
     /// Counts the calls of the step that just ran — see [`crate::repeat_guard`].
     fn notice_repeated_calls(&mut self) {
         let Some(step) = self
@@ -2040,7 +2037,22 @@ or project context that should survive across sessions.
         }
     }
 
-    fn turn_included_git_mutating_bash_call(messages: &[ModelMessage]) -> bool {
+    /// Whether any `Bash` call in `messages` looks like it mutated git state
+    /// — used to decide whether to pay for a `FrozenContext::refresh_git()`
+    /// round-trip (real subprocess I/O, not free) rather than trusting the
+    /// session-start snapshot for the rest of a long-running session (see
+    /// `crates/core/src/frozen/mod.rs`'s module-level "not refreshed during a
+    /// session" caveat).
+    ///
+    /// Deliberately a heuristic, not a shell parser: scans for `git`
+    /// followed within a few tokens by a known state-mutating subcommand
+    /// name, tolerating global flags (`-C <dir>`, `--no-pager`, ...) between
+    /// them. False positives (e.g. `git log --grep=commit`) just cost one
+    /// extra (cheap, timeout-bounded) `refresh_git()` call; false negatives
+    /// (a mutating command this list doesn't recognize, or one run through
+    /// e.g. a wrapper script) just mean the "frozen until next session"
+    /// staleness persists a bit longer — neither is a correctness hazard.
+    fn included_git_mutating_bash_call(messages: &[ModelMessage]) -> bool {
         const GIT_MUTATING_SUBCOMMANDS: &[&str] = &[
             "checkout",
             "switch",
@@ -2063,12 +2075,7 @@ or project context that should survive across sessions.
             "am",
             "apply",
         ];
-        let cutoff = if messages.len() > 40 {
-            messages.len() / 2
-        } else {
-            0
-        };
-        for msg in messages.iter().skip(cutoff) {
+        for msg in messages {
             for block in &msg.content {
                 let ModelContentBlock::ToolUse { name, input, .. } = block else {
                     continue;
@@ -4024,6 +4031,30 @@ impl Agent {
     }
 }
 
+/// Under `panic = "unwind"` a tool that panics fails its own call instead of
+/// unwinding through the round; under `panic = "abort"` (the `release`
+/// profile) the process ends before this ever runs.
+async fn run_catching_panics(
+    call: impl std::future::Future<Output = Result<base::tool::ToolResult, base::error::ToolError>>,
+) -> Result<base::tool::ToolResult, base::error::ToolError> {
+    use futures::FutureExt as _;
+    match std::panic::AssertUnwindSafe(call).catch_unwind().await {
+        Ok(result) => result,
+        Err(payload) => Err(base::error::ToolError::exec(format!(
+            "tool panicked: {}",
+            panic_message(payload.as_ref())
+        ))),
+    }
+}
+
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("(non-string panic payload)")
+}
+
 async fn execute_tool_inner(
     ctx: &ToolExecCtx,
     name: &str,
@@ -4065,17 +4096,14 @@ async fn execute_tool_inner(
         }
     }
 
-    // Permission check — first live caller of `Permission::check` anywhere
-    // in the dispatch path (see `Agent.permission`'s doc comment history).
-    // `Permit` proceeds unchanged; `Deny` blocks the call outright; `Prompt`
+    // Permission check. `Permit` proceeds unchanged; `Deny` blocks the call outright; `Prompt`
     // asks the host and genuinely blocks until it answers — matching
     // conventional confirmation-prompt UX (a CLI `y/n`, `sudo`, ...), not a
     // race against an arbitrary timeout. The one thing that can still
     // interrupt the wait is the *session* going away: `ctx.cancel` is the
     // same token `daemon::SessionPool::shutdown_session` fires on
     // `session.close`/client-disconnect, threaded down through
-    // `Agent::run(cancel)` → `process_turn` → `run_user_turn` — no new
-    // plumbing needed. If nobody explicitly approved the call before the
+    // `Agent::run(cancel)` → `process_turn` → `run_user_turn`. If nobody explicitly approved the call before the
     // session tore down, the safe default is to *not* run it.
     // Whatever permission handler the host installed, a call whose input the
     // tool rejects never reaches it.
@@ -4290,9 +4318,8 @@ async fn execute_tool_inner(
             },
         ));
     let tool_start = std::time::Instant::now();
-    let result = tool
-        .call(input, tool_ctx, base::tool::ProgressSender::noop(""))
-        .await;
+    let result =
+        run_catching_panics(tool.call(input, tool_ctx, base::tool::ProgressSender::noop(""))).await;
     let latency_ms = tool_start.elapsed().as_millis() as f64;
     // Both ways a call can go wrong: the engine could not run it, or it ran
     // and called its own result a failure. Reading only `is_err` reported a
@@ -4357,12 +4384,10 @@ async fn execute_tool_inner(
     //    becomes this tool_use's tool_result content (an error/denial
     //    message instead of whatever the tool actually returned). Turning it
     //    into an `Err` also — for free, not via new plumbing — triggers
-    //    `execute_stream`'s pre-existing "any tool error cancels all
-    //    siblings in the same concurrent batch" mechanism
-    //    (`streaming.rs`'s `batch_abort`), so in-flight/not-yet-started
-    //    sibling calls in this batch get cancelled too. Before this, a
-    //    PostToolUse hook had no way to act on a single risky result short
-    //    of ending the entire turn.
+    //    `execute_stream`'s "any tool error cancels all siblings in the
+    //    same concurrent batch" mechanism (`streaming.rs`'s `batch_abort`),
+    //    so in-flight/not-yet-started sibling calls in this batch get
+    //    cancelled too.
     //
     // PostToolUseFailure — the error-only sibling of PostToolUse, so a hook
     // that only cares about failures doesn't have to subscribe to every tool
@@ -5057,20 +5082,46 @@ fn says_context_too_long(message: &str) -> bool {
     WORDINGS.iter().any(|w| message.contains(w))
 }
 
-/// Gives every `tool_use` a `tool_result` in the message right after it.
+/// Whether `id` is a `tool_use` of the last reply that nothing after it has
+/// answered yet.
+fn awaits_result(messages: &[ModelMessage], id: &str) -> bool {
+    let Some(last_reply) = messages
+        .iter()
+        .rposition(|m| m.role == MessageRole::Assistant)
+    else {
+        return false;
+    };
+    let used = messages[last_reply]
+        .content
+        .iter()
+        .any(|b| matches!(b, ModelContentBlock::ToolUse { id: used, .. } if used == id));
+    let answered = messages[last_reply + 1..]
+        .iter()
+        .flat_map(|m| &m.content)
+        .any(
+            |b| matches!(b, ModelContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == id),
+        );
+    used && !answered
+}
+
+/// Gives every `tool_use` a `tool_result` in the message right after it, and
+/// drops every `tool_result` that answers no `tool_use` there.
 ///
 /// The engine never writes an unpaired one, but a transcript written by a
 /// process that died mid-step can hold one, and the API rejects every
-/// request after it — a session that can never answer again. Applied to the
-/// outgoing request only; the transcript keeps what actually happened.
-fn pair_dangling_tool_uses(mut messages: Vec<ModelMessage>) -> Vec<ModelMessage> {
-    let mut i = 0;
-    while i < messages.len() {
-        if messages[i].role != MessageRole::Assistant {
-            i += 1;
+/// request after it — a session that can never answer again. Results a host
+/// injected after the engine's own arrive as later user messages; they are
+/// gathered into the first. Applied to the outgoing request only; the
+/// transcript keeps what actually happened.
+fn pair_dangling_tool_uses(messages: Vec<ModelMessage>) -> Vec<ModelMessage> {
+    let mut out: Vec<ModelMessage> = Vec::with_capacity(messages.len() + 1);
+    let mut messages = messages.into_iter().peekable();
+    while let Some(message) = messages.next() {
+        if message.role != MessageRole::Assistant {
+            push_unless_empty(&mut out, without_tool_results(message));
             continue;
         }
-        let used: Vec<String> = messages[i]
+        let used: Vec<String> = message
             .content
             .iter()
             .filter_map(|b| match b {
@@ -5078,50 +5129,72 @@ fn pair_dangling_tool_uses(mut messages: Vec<ModelMessage>) -> Vec<ModelMessage>
                 _ => None,
             })
             .collect();
+        out.push(message);
+
+        let mut answers: std::collections::HashMap<String, ModelContentBlock> =
+            std::collections::HashMap::new();
+        let mut replies: Vec<ModelMessage> = Vec::new();
+        while let Some(reply) = messages.next_if(|m| m.role == MessageRole::User) {
+            let (results, rest): (Vec<_>, Vec<_>) = reply
+                .content
+                .into_iter()
+                .partition(|b| matches!(b, ModelContentBlock::ToolResult { .. }));
+            for result in results {
+                if let ModelContentBlock::ToolResult { tool_use_id, .. } = &result {
+                    if used.contains(tool_use_id) && !answers.contains_key(tool_use_id) {
+                        answers.insert(tool_use_id.clone(), result);
+                    }
+                }
+            }
+            replies.push(ModelMessage {
+                role: MessageRole::User,
+                content: rest,
+            });
+        }
         if used.is_empty() {
-            i += 1;
+            for reply in replies {
+                push_unless_empty(&mut out, reply);
+            }
             continue;
         }
-        let next_is_user = messages
-            .get(i + 1)
-            .is_some_and(|m| m.role == MessageRole::User);
-        let answered: HashSet<&str> = if next_is_user {
-            messages[i + 1]
-                .content
-                .iter()
-                .filter_map(|b| match b {
-                    ModelContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
-                    _ => None,
-                })
-                .collect()
-        } else {
-            HashSet::new()
-        };
-        let missing: Vec<ModelContentBlock> = used
+        let mut paired: Vec<ModelContentBlock> = used
             .iter()
-            .filter(|id| !answered.contains(id.as_str()))
-            .map(|id| ModelContentBlock::ToolResult {
-                tool_use_id: id.clone(),
-                content: "The tool call did not complete.".into(),
-                is_error: Some(true),
+            .map(|id| {
+                answers
+                    .remove(id)
+                    .unwrap_or_else(|| ModelContentBlock::ToolResult {
+                        tool_use_id: id.clone(),
+                        content: "The tool call did not complete.".into(),
+                        is_error: Some(true),
+                    })
             })
             .collect();
-        if !missing.is_empty() {
-            if next_is_user {
-                messages[i + 1].content.splice(0..0, missing);
-            } else {
-                messages.insert(
-                    i + 1,
-                    ModelMessage {
-                        role: MessageRole::User,
-                        content: missing,
-                    },
-                );
-            }
+        let mut replies = replies.into_iter();
+        if let Some(first) = replies.next() {
+            paired.extend(first.content);
         }
-        i += 2;
+        out.push(ModelMessage {
+            role: MessageRole::User,
+            content: paired,
+        });
+        for reply in replies {
+            push_unless_empty(&mut out, reply);
+        }
     }
-    messages
+    out
+}
+
+fn without_tool_results(mut message: ModelMessage) -> ModelMessage {
+    message
+        .content
+        .retain(|b| !matches!(b, ModelContentBlock::ToolResult { .. }));
+    message
+}
+
+fn push_unless_empty(out: &mut Vec<ModelMessage>, message: ModelMessage) {
+    if !message.content.is_empty() {
+        out.push(message);
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -5269,8 +5342,7 @@ mod tests {
         assert_eq!(request.params.input_map.unwrap().user_message, 2);
     }
 
-    /// The session-memory staleness reset (`run_user_turn`'s "Feature #9"
-    /// block) recognizes a self-update by comparing `extract_tool_file_paths`
+    /// The session-memory staleness reset in `run_user_turn` recognizes a self-update by comparing `extract_tool_file_paths`
     /// against `sm.path()` — this pins down that a `Write` to the exact
     /// sidecar path is detected, and an unrelated `Write` isn't mistaken
     /// for one.
@@ -5304,7 +5376,40 @@ mod tests {
         assert!(!paths.contains(&sidecar));
     }
 
-    /// `turn_included_git_mutating_bash_call` gates whether `FrozenContext`
+    #[tokio::test]
+    async fn this_turn_starts_at_its_user_message_however_long_the_transcript() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut agent, _event_rx, _input_tx) = crate::agent::Builder::new()
+            .scene(Arc::new(scene::code::CodeScene::default()))
+            .model(Arc::new(FixedUsageModel {
+                usage: Default::default(),
+            }))
+            .settings(Arc::new(recall_test_settings(tmp.path())))
+            .skip_warmup(true)
+            .build()
+            .expect("build should succeed");
+        let write = |path: &str| ModelMessage {
+            role: MessageRole::Assistant,
+            content: vec![ModelContentBlock::ToolUse {
+                id: path.into(),
+                name: "Write".into(),
+                input: serde_json::json!({"file_path": path, "content": "x"}),
+            }],
+        };
+        for i in 0..60 {
+            agent.session.push_message(write(&format!("/old/{i}")));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        agent.turn_started_at = Some(std::time::Instant::now());
+        agent.session.push_message(write("/new"));
+
+        assert_eq!(
+            Agent::extract_tool_file_paths(agent.messages_this_turn()),
+            [PathBuf::from("/new")]
+        );
+    }
+
+    /// `included_git_mutating_bash_call` gates whether `FrozenContext`
     /// pays for a `refresh_git()` round-trip — this pins its heuristic down
     /// against the cases it's meant to catch and the ones it must not
     /// false-positive on.
@@ -5321,35 +5426,35 @@ mod tests {
 
     #[test]
     fn git_mutating_bash_detects_plain_checkout() {
-        assert!(Agent::turn_included_git_mutating_bash_call(&[bash_msg(
+        assert!(Agent::included_git_mutating_bash_call(&[bash_msg(
             "git checkout -b feature-x"
         )]));
     }
 
     #[test]
     fn git_mutating_bash_detects_commit_with_global_flags() {
-        assert!(Agent::turn_included_git_mutating_bash_call(&[bash_msg(
+        assert!(Agent::included_git_mutating_bash_call(&[bash_msg(
             "git -C /repo --no-pager commit -m 'msg'"
         )]));
     }
 
     #[test]
     fn git_mutating_bash_detects_within_a_chained_command() {
-        assert!(Agent::turn_included_git_mutating_bash_call(&[bash_msg(
+        assert!(Agent::included_git_mutating_bash_call(&[bash_msg(
             "cd /repo && git add -A && git commit -m wip"
         )]));
     }
 
     #[test]
     fn git_mutating_bash_ignores_read_only_git_status() {
-        assert!(!Agent::turn_included_git_mutating_bash_call(&[bash_msg(
+        assert!(!Agent::included_git_mutating_bash_call(&[bash_msg(
             "git status --short"
         )]));
     }
 
     #[test]
     fn git_mutating_bash_ignores_read_only_git_log() {
-        assert!(!Agent::turn_included_git_mutating_bash_call(&[bash_msg(
+        assert!(!Agent::included_git_mutating_bash_call(&[bash_msg(
             "git log --oneline -n 5"
         )]));
     }
@@ -5364,12 +5469,12 @@ mod tests {
                 input: serde_json::json!({"file_path": "git commit history.md"}),
             }],
         };
-        assert!(!Agent::turn_included_git_mutating_bash_call(&[msg]));
+        assert!(!Agent::included_git_mutating_bash_call(&[msg]));
     }
 
     #[test]
     fn git_mutating_bash_ignores_unrelated_commands() {
-        assert!(!Agent::turn_included_git_mutating_bash_call(&[bash_msg(
+        assert!(!Agent::included_git_mutating_bash_call(&[bash_msg(
             "ls -la && cat README.md"
         )]));
     }
@@ -8737,6 +8842,46 @@ mod dangling_tool_use_tests {
         ]);
         assert_eq!(out.len(), 2);
         assert_eq!(result_ids(&out[1]), ["a", "b"]);
+    }
+
+    #[test]
+    fn results_that_answer_no_tool_use_before_them_are_dropped() {
+        let out = pair_dangling_tool_uses(vec![
+            msg(MessageRole::User, vec![tool_result("ghost")]),
+            msg(MessageRole::Assistant, vec![tool_use("a")]),
+            msg(
+                MessageRole::User,
+                vec![tool_result("a"), tool_result("a"), tool_result("x")],
+            ),
+        ]);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].role, MessageRole::Assistant);
+        assert_eq!(result_ids(&out[1]), ["a"]);
+    }
+
+    #[test]
+    fn results_in_later_user_messages_join_the_first() {
+        let out = pair_dangling_tool_uses(vec![
+            msg(MessageRole::Assistant, vec![tool_use("a"), tool_use("b")]),
+            msg(MessageRole::User, vec![tool_result("a")]),
+            msg(MessageRole::User, vec![tool_result("b")]),
+        ]);
+        assert_eq!(out.len(), 2);
+        assert_eq!(result_ids(&out[1]), ["a", "b"]);
+    }
+
+    #[test]
+    fn a_result_is_awaited_only_for_an_unanswered_call_of_the_last_reply() {
+        let transcript = vec![
+            msg(MessageRole::Assistant, vec![tool_use("old")]),
+            msg(MessageRole::User, vec![tool_result("old")]),
+            msg(MessageRole::Assistant, vec![tool_use("a"), tool_use("b")]),
+            msg(MessageRole::User, vec![tool_result("a")]),
+        ];
+        assert!(awaits_result(&transcript, "b"));
+        assert!(!awaits_result(&transcript, "a"));
+        assert!(!awaits_result(&transcript, "old"));
+        assert!(!awaits_result(&transcript, "made-up"));
     }
 
     #[test]

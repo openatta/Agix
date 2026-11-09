@@ -2,11 +2,11 @@
 //!
 //! `crates/hooks` deliberately has no way to run these itself (it doesn't
 //! depend on `model`/`runtime` to avoid a circular dependency — see the
-//! `PromptHookExecutor` doc comment in `hooks::runner`). Before this module,
-//! nothing in the app ever injected an implementation, so a `"type": "prompt"`
-//! or `"type": "agent"` hook always fell through to `HookOutcome::Skipped`
-//! with "no executor configured". `Builder::build()` wires these in using
-//! the same `model`/agent-spawning capability it already has on hand.
+//! `PromptHookExecutor` doc comment in `hooks::runner`). Without one injected,
+//! a `"type": "prompt"` or `"type": "agent"` hook falls through to
+//! `HookOutcome::Skipped` with "no executor configured". `Builder::build()`
+//! wires these in using the same `model`/agent-spawning capability it already
+//! has on hand.
 
 use base::interface::model::{
     MessageRole, Model, ModelContentBlock, ModelEvent, ModelMessage, StreamParams,

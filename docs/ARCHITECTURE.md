@@ -112,7 +112,7 @@ fork 型 skill 要 agents 提供的 spawner。委派出去的子会话用父会�
 
 `release` profile(fat LTO、`opt-level = "s"`、`panic = "abort"`)在 panic 时中止进程,
 由 supervisor 拉起;只有明确要 `release-fast`(`opt-level = 3`、`panic = "unwind"`)时
-才展开,任务里的 panic 只结束那个任务。中止前 panic hook 停掉
+才展开,任务里的 panic 只结束那个任务;工具调用里的 panic 变成这次调用的错误结果,这一轮照常往下走。中止前 panic hook 停掉
 命令所在的进程组并写崩溃记录(`~/.agix/daemon/crashes/`);来不及跑 hook 的(SIGKILL、
 OOM)由同名实例下次启动、拿到锁之后按落盘的进程组记录(`~/.agix/daemon/groups/`)
 清理:先 `SIGTERM`,500 ms 后 `SIGKILL`。会话历史每个条目整行写进日志,每一步结束和
@@ -157,8 +157,14 @@ systemd(`Restart=on-failure`)。systemd 下要设 `KillMode=process`:`daemon.shu
 出口:finish_turn —— 先落盘;团队成员再发 TaskCompleted / TeammateIdle;最后发 TurnComplete
 ```
 
+**回复停在 `max_tokens` 时,三个决策按步骤顺序轮流说话,先说的算。** 第 6 步
+`TurnPolicy::after_model_call` 说停就停;回复要了工具就照常下一步,另外两个都不问;
+否则第 9 步先问 `RecoveryPolicy::on_early_stop`,它决定抬高上限重发就重发,
+Stop hook 和 `BudgetPolicy::on_output_target` 这一步都不再问;它放弃了才轮到 Stop hook,
+最后才是 `on_output_target`。
+
 **工具在第 5 步里跑,不等回复写完。** 并发安全的 `tool_use` 一到齐就开始,模型接着往下写;
-不并发安全的是屏障,等前面那批跑完再单独跑。所以第 6、7 步拦不住这一条回复要的工具——
+不并发安全的是屏障,等前面那批跑完再单独跑;它跑的时候照样读流,读到的等它跑完再处理。所以第 6、7 步拦不住这一条回复要的工具——
 它们决定的是还走不走下一步。要在工具跑之前拦,用权限、`PreToolUse` hook 或
 `ToolMiddleware`。
 

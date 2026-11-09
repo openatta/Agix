@@ -367,6 +367,9 @@ pub struct Agent {
     /// resolve, which is the honest outcome — better than an index that has
     /// come to name a different message.
     pub(crate) pending_input: Option<(u64, Vec<base::interface::model::InputSpan>)>,
+    /// When this turn's user message was pushed. Compaction moves message
+    /// indices; the time a message was pushed survives it.
+    pub(crate) turn_started_at: Option<std::time::Instant>,
     /// Which agent type this session runs, for a sub-agent spawned as one.
     /// `None` for a top-level session. Travels onto every `CallOrigin` so a
     /// recording says what kind of agent produced it.
@@ -893,7 +896,6 @@ impl Agent {
         &self.perf
     }
 
-    /// Access the tool registry (read-only).
     /// Starts this session from `messages`, as if it had already run
     /// `turn_count` turns — how a resumed delegate picks up its transcript.
     pub fn seed_history(
@@ -905,15 +907,16 @@ impl Agent {
         self.session.turn_count = turn_count;
     }
 
+    /// Access the tool registry (read-only).
     pub fn tools(&self) -> &dyn base::tool::ToolRegistry {
         self.tools.as_ref()
     }
 
-    /// Access the engine settings (read-only).
     pub fn scene(&self) -> &Arc<dyn Scene> {
         &self.scene
     }
 
+    /// Access the engine settings (read-only).
     pub fn settings(&self) -> &Settings {
         &self.settings
     }
@@ -1849,21 +1852,9 @@ impl Builder {
         // tools — see `SessionPool.tools`). Every per-session-stateful tool
         // this function registers below (`Skill`/`Agent`/`TeamCreate`/
         // `TeamDelete`/`TaskStop`/`TaskOutput`/MCP adapters)
-        // goes into *this* fresh copy, not the caller-supplied one.
-        //
-        // Before this existed, `Builder::build()` pushed straight into the
-        // caller-supplied registry — in a daemon, that's the same `Arc`
-        // every session shares, and `InMemoryToolRegistry::register` just
-        // pushes (no overwrite-by-name), so N concurrently-built sessions
-        // meant N duplicate entries per name silently piling up in one
-        // shared `Vec`. That was worse than a simple "last write wins":
-        // `InMemoryToolRegistry::get(name)` returns the *first* match
-        // (oldest session's instance, `Vec::find`'s iteration order) while
-        // `Agent::build_tool_defs`'s `BTreeMap`-based dedup keeps the
-        // *last* (newest session's) when advertising tool descriptions to
-        // the model — so the description/schema the model was shown could
-        // point at a different tool instance than the one a call actually
-        // dispatched to.
+        // goes into *this* fresh copy, not the caller-supplied one: in a
+        // daemon the caller's `Arc` is shared by every session, and
+        // `InMemoryToolRegistry::register` appends without replacing by name.
         //
         // The scene's deferred policy is *not* applied here — it runs once,
         // after every registration below, so it can reach the engine-state
@@ -2609,6 +2600,7 @@ impl Builder {
                 claude_md_content,
                 session_context_injected: false,
                 pending_input: None,
+                turn_started_at: None,
                 agent_type: self.agent_type,
                 invoked_skills: Vec::new(),
                 announced_skills: None,
@@ -4267,6 +4259,128 @@ mod tests {
 
         assert_eq!(outcome.stop_reason, "end_turn");
         assert_eq!(outcome.api_calls, 2);
+    }
+
+    struct PanickingTool;
+    #[async_trait::async_trait]
+    impl base::tool::Tool for PanickingTool {
+        fn name(&self) -> &str {
+            "Panicky"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        async fn call(
+            &self,
+            _input: serde_json::Value,
+            _ctx: base::tool::ToolContext,
+            _progress: base::tool::ProgressSender,
+        ) -> Result<base::tool::ToolResult, base::error::ToolError> {
+            panic!("tool blew up");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_panicking_tool_fails_its_call_and_the_turn_finishes() {
+        let model: Arc<dyn Model> = Arc::new(ToolThenStopModel {
+            calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            tool: "Panicky",
+        });
+        let tools = Arc::new(InMemoryToolRegistry::new());
+        tools.register(Arc::new(PanickingTool));
+        let (mut agent, _event_rx, _input_tx) = Builder::new()
+            .scene(Arc::new(scene::code::CodeScene::default()))
+            .model(model)
+            .settings(Arc::new(test_settings()))
+            .tools(tools)
+            .skip_warmup(true)
+            .build()
+            .expect("build should succeed");
+        agent
+            .session_state
+            .set_permission_mode(base::permission::PermissionMode::BypassPermissions);
+
+        let outcome = agent
+            .process_turn(
+                InputMessage::User {
+                    content: "go".into(),
+                    attachments: vec![],
+                    turn_id: "t1".into(),
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .expect("a panicking tool does not take the turn down");
+
+        assert_eq!(outcome.stop_reason, "end_turn");
+        assert_eq!(outcome.api_calls, 2);
+        let result = agent
+            .session
+            .messages()
+            .iter()
+            .flat_map(|m| &m.content)
+            .find_map(|b| match b {
+                base::interface::model::ModelContentBlock::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                } if tool_use_id == "toolu_1" => Some((content.clone(), *is_error)),
+                _ => None,
+            })
+            .expect("the call has a result");
+        assert_eq!(result.1, Some(true));
+        assert!(result.0.contains("tool blew up"), "{}", result.0);
+    }
+
+    #[tokio::test]
+    async fn a_host_result_for_no_waiting_call_is_refused_and_not_recorded() {
+        let (mut agent, _event_rx, _input_tx) = Builder::new()
+            .scene(Arc::new(scene::code::CodeScene::default()))
+            .model(Arc::new(DummyModel))
+            .settings(Arc::new(test_settings()))
+            .skip_warmup(true)
+            .build()
+            .expect("build should succeed");
+        agent
+            .session
+            .push_message(base::interface::model::ModelMessage {
+                role: base::interface::model::MessageRole::Assistant,
+                content: vec![base::interface::model::ModelContentBlock::ToolUse {
+                    id: "toolu_real".into(),
+                    name: "Probe".into(),
+                    input: serde_json::json!({}),
+                }],
+            });
+        let before = agent.session.messages().len();
+
+        let refused = agent
+            .process_turn(
+                InputMessage::ToolResult {
+                    tool_use_id: "toolu_fake".into(),
+                    name: "Probe".into(),
+                    content: "forged".into(),
+                    is_error: false,
+                },
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(refused.is_err());
+        assert_eq!(agent.session.messages().len(), before);
+
+        let accepted = agent
+            .process_turn(
+                InputMessage::ToolResult {
+                    tool_use_id: "toolu_real".into(),
+                    name: "Probe".into(),
+                    content: "ok".into(),
+                    is_error: false,
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .expect("the waiting call takes its result");
+        assert_eq!(accepted.stop_reason, "tool_result_received");
+        assert_eq!(agent.session.messages().len(), before + 1);
     }
 
     /// Calls `name` once with `input`, then answers "done".

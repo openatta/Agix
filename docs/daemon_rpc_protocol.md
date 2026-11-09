@@ -2300,7 +2300,7 @@ MCP 策略拒绝这个 server → `MCP_SERVER_DENIED`,**什么都不写、不连
 | `thinking_delta` | `{text}` | 模型思考过程的增量,与正文分开,宿主可以折叠或不显示 |
 | `tool_use_start` | `{id,name}` | 模型开始写一次工具调用,参数还在流;同 `id` 的 `tool_use` 随后到达。界面可以先画出工具行 |
 | `tool_args_delta` | `{id,partial_json}` | 这次调用参数的原始片段,按到达顺序拼起来就是 `tool_use.input` 的 JSON 文本(高频) |
-| `tool_use` | `{id,name,input}` | 模型发起工具调用,参数已完整 |
+| `tool_use` | `{id,name,input}` | 模型发起工具调用,参数已完整。参数不是完整 JSON 的(多半被输出上限截断)`input` 为 `{}`,不执行,随后的 `tool_result` 是说明这一点的错误 |
 | `tool_result` | `{id,name,content,is_error}` | 工具返回 |
 | `prompt` | `permission`:`{prompt_type,prompt_id,tool_name,message,paths[],tool_use_id?}`;`question`:`{prompt_type,prompt_id,tool_use_id,question,header,options:[{key,label}]}` | 需宿主回答,用 `session.respondToPrompt`;`tool_use_id` 是被问的那次 `tool_use`(`question` 的 `prompt_id` 就是它)。`question` 的 `header` 可为 `null`,`options` 为空表示自由回答 |
 | `subagent_progress` | `{agent_label,agent_session_id,agent_type,parent_turn,parent_tool_use_id,task_id,event}` | 子 Agent 事件镜像,`event` 是嵌套的本表结构;`parent_tool_use_id` 是父会话里发起它的那次 `Agent` 调用,不知道时为 `null`;`task_id` 是它在 `session.tasks` 里的任务 |

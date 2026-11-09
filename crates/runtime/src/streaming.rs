@@ -3,9 +3,11 @@
 //!
 //! A concurrency-safe tool starts the moment its `tool_use` is complete and
 //! runs while the model goes on writing; a non-concurrency-safe one is a
-//! barrier that waits for the batch in flight, then runs alone. Any tool error
-//! cancels its batch's siblings. Each model reply reaches the session as one
-//! assistant message plus the one user message answering its tool calls.
+//! barrier that waits for the batch in flight, then runs alone — the stream is
+//! still read meanwhile, and what arrives is acted on once it is done. Any
+//! tool error cancels its batch's siblings. Each model reply reaches the
+//! session as one assistant message plus the one user message answering its
+//! tool calls.
 //!
 //! A call that fails — an error from the provider, a stream that ends before
 //! the message does — before its reply asked for a tool leaves nothing behind,
@@ -130,39 +132,48 @@ where
     // needs the canonical order restored before it is written.
     let mut pending_result_blocks: Vec<(usize, ModelContentBlock)> = Vec::new();
     let mut pending_new_msgs: Vec<Vec<serde_json::Value>> = Vec::new();
+    let mut read_ahead = ReadAhead::default();
 
     loop {
-        // The batch is polled here, beside the stream, or nothing would run
-        // it until the stream ended.
-        let event = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => {
+        let next = match read_ahead.events.pop_front() {
+            Some(_) if cancel.is_cancelled() => {
                 cancelled = true;
                 break;
             }
-            Some(done) = batch.next(), if !batch.is_empty() => {
-                let (idx, id, result): (usize, String, _) = done;
-                finish_tool(
-                    idx,
-                    &id,
-                    &result,
-                    &batch_abort,
-                    &queued_tool_names,
-                    event_tx,
-                    &turn_id,
-                    &mut pending_result_blocks,
-                    &mut pending_new_msgs,
-                );
-                continue;
-            }
-            next = stream.next() => match next {
-                Some(Ok(event)) => event,
-                Some(Err(e)) => {
-                    failure = Some(e);
+            Some(next) => next,
+            // The batch is polled here, beside the stream, or nothing would
+            // run it until the stream ended.
+            None => tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    cancelled = true;
                     break;
                 }
-                None => break,
+                Some(done) = batch.next(), if !batch.is_empty() => {
+                    let (idx, id, result): (usize, String, _) = done;
+                    finish_tool(
+                        idx,
+                        &id,
+                        &result,
+                        &batch_abort,
+                        &queued_tool_names,
+                        event_tx,
+                        &turn_id,
+                        &mut pending_result_blocks,
+                        &mut pending_new_msgs,
+                    );
+                    continue;
+                }
+                next = stream.next() => next,
             },
+        };
+        let event = match next {
+            Some(Ok(event)) => event,
+            Some(Err(e)) => {
+                failure = Some(e);
+                break;
+            }
+            None => break,
         };
         match event {
             ModelEvent::TextDelta { text } => {
@@ -265,17 +276,20 @@ where
                         (idx, id, result)
                     });
                 } else {
-                    drain_batch(
-                        &mut batch,
-                        &batch_abort,
-                        &queued_tool_names,
-                        event_tx,
-                        &turn_id,
-                        &mut pending_result_blocks,
-                        &mut pending_new_msgs,
-                    )
-                    .await;
-                    let result = execute_tool(id.clone(), name.clone(), input).await;
+                    let barrier = async {
+                        drain_batch(
+                            &mut batch,
+                            &batch_abort,
+                            &queued_tool_names,
+                            event_tx,
+                            &turn_id,
+                            &mut pending_result_blocks,
+                            &mut pending_new_msgs,
+                        )
+                        .await;
+                        execute_tool(id.clone(), name.clone(), input).await
+                    };
+                    let result = read_ahead.during(barrier, &mut stream).await;
                     let (content, new_msgs, failed) = read_outcome(&result);
                     buffer_result(
                         event_tx,
@@ -294,6 +308,42 @@ where
                 }
 
                 tool_calls += 1;
+            }
+            ModelEvent::MalformedToolUse {
+                id,
+                name,
+                raw_input,
+            } => {
+                close_thinking(&mut pending_thinking, &mut reply, None, provenance);
+                close_text(&mut pending_text, &mut reply);
+                has_tool_uses = true;
+                // The API takes only an object here; what the model actually
+                // wrote goes back to it in the result.
+                let input = serde_json::Value::Object(Default::default());
+                reply.push(ModelContentBlock::ToolUse {
+                    id: id.clone(),
+                    name: name.clone(),
+                    input: input.clone(),
+                });
+                let _ = event_tx.send(AgentEvent::ToolUse {
+                    id: id.clone(),
+                    name: name.clone(),
+                    input,
+                    turn_id: turn_id.clone(),
+                });
+                let idx = tool_index;
+                tool_index += 1;
+                queued_tool_names.push(name.clone());
+                buffer_result(
+                    event_tx,
+                    &turn_id,
+                    &mut pending_result_blocks,
+                    idx,
+                    &id,
+                    &name,
+                    &malformed_call_answer(&raw_input),
+                    true,
+                );
             }
             ModelEvent::EndTurn {
                 stop_reason: sr,
@@ -365,6 +415,45 @@ where
         tool_calls,
         cancelled,
     })
+}
+
+fn malformed_call_answer(raw_input: &str) -> String {
+    const SHOWN: usize = 200;
+    let shown = match raw_input.char_indices().nth(SHOWN) {
+        Some((end, _)) => format!("{}…", &raw_input[..end]),
+        None => raw_input.to_string(),
+    };
+    format!(
+        "This call was not run: its arguments are not complete JSON, most likely \
+         because the reply reached its output limit. Call the tool again with \
+         complete arguments, splitting large content across several calls if \
+         needed. The arguments received began: {shown}"
+    )
+}
+
+/// What the stream delivered while a barrier tool ran, kept in order for the
+/// loop to take before it reads the stream again. Reading on keeps the
+/// connection drained while a long tool runs, so a provider never sees its
+/// stream stall; nothing read here is acted on before the barrier is done.
+#[derive(Default)]
+struct ReadAhead {
+    /// `None` is the stream's end.
+    events: std::collections::VecDeque<Option<Result<ModelEvent, ModelError>>>,
+}
+
+impl ReadAhead {
+    async fn during<T>(&mut self, work: impl Future<Output = T>, stream: &mut ModelStream) -> T {
+        use futures::StreamExt;
+        tokio::pin!(work);
+        loop {
+            let finished = matches!(self.events.back(), Some(None | Some(Err(_))));
+            tokio::select! {
+                biased;
+                out = &mut work => return out,
+                next = stream.next(), if !finished => self.events.push_back(next),
+            }
+        }
+    }
 }
 
 /// Buffer one finished tool's result. An `Err` (as opposed to a tool
@@ -574,15 +663,9 @@ mod tests {
     use base::interface::tool_middleware::ToolAnswer;
 
     /// Thinking blocks must survive into the transcript, with their
-    /// signatures, and must lead the assistant turn.
-    ///
-    /// Before this, `stream.rs` parsed thinking, `parser.rs` had contract
-    /// tests for that parsing, and then the adapter dropped it on the floor —
-    /// so `ModelContentBlock` had no thinking to carry and the assistant
-    /// message rebuilt here contained only text and tool_use. On a
-    /// `thinking + tool_use` turn that makes the *next* request malformed:
-    /// the API requires the previous assistant turn's thinking blocks to be
-    /// replayed with signatures intact.
+    /// signatures, and must lead the assistant turn: on a
+    /// `thinking + tool_use` turn the API requires the previous assistant
+    /// turn's thinking blocks to be replayed with signatures intact.
     #[tokio::test]
     async fn thinking_blocks_lead_the_assistant_turn_and_keep_their_signature() {
         let events: Vec<Result<ModelEvent, ModelError>> = vec![
@@ -769,6 +852,62 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn a_call_with_broken_arguments_is_answered_with_an_error_and_not_run() {
+        let events: Vec<Result<ModelEvent, ModelError>> = vec![
+            Ok(ModelEvent::MalformedToolUse {
+                id: "call_1".into(),
+                name: "Write".into(),
+                raw_input: r#"{"file_path": "a.txt", "content": "half"#.into(),
+            }),
+            Ok(ModelEvent::EndTurn {
+                stop_reason: "max_tokens".into(),
+                usage: Usage::default(),
+            }),
+        ];
+        let stream: base::interface::model::ModelStream = Box::new(futures::stream::iter(events));
+        let mut session = session::session::SessionManager::in_memory(None);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let tx = crate::event_bus::EventBus::new(tx);
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ran_probe = ran.clone();
+
+        let result = execute_stream(
+            stream,
+            &mut session,
+            &tx,
+            "test-turn".into(),
+            move |_id, _name, _input| {
+                ran_probe.store(true, std::sync::atomic::Ordering::SeqCst);
+                async move { Ok(ToolAnswer::text("ran")) }
+            },
+            |_name, _input| false,
+            CancellationToken::new(),
+            &[],
+            None,
+        )
+        .await
+        .expect("execute_stream should succeed");
+
+        assert!(!ran.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(result.has_tool_uses);
+        assert_eq!(result.tool_calls, 0);
+        assert_adjacent_tool_pairing(session.messages());
+        match &session.messages()[1].content[..] {
+            [ModelContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            }] => {
+                assert_eq!(tool_use_id, "call_1");
+                assert_eq!(*is_error, Some(true));
+                assert!(content.contains("output limit"), "{content}");
+                assert!(content.contains(r#""content": "half"#), "{content}");
+            }
+            other => panic!("expected one tool_result, got {other:?}"),
+        }
     }
 
     /// When the model emits the same (name, input) tool call twice in one
@@ -1379,6 +1518,64 @@ mod tests {
         .expect("the message had ended");
         assert_eq!(done.stop_reason, "end_turn");
         assert_eq!(session.messages().len(), 1);
+    }
+
+    /// The barrier tool below cannot finish until the stream has been read
+    /// past its call; the text that arrived meanwhile still lands after it.
+    #[tokio::test]
+    async fn a_barrier_tool_keeps_the_stream_read_and_acts_on_it_afterwards() {
+        use futures::StreamExt;
+        let read_on = Arc::new(tokio::sync::Notify::new());
+        let waits = Arc::clone(&read_on);
+        let head = futures::stream::iter(vec![Ok::<_, ModelError>(ModelEvent::ToolUse {
+            id: "w".into(),
+            name: "Write".into(),
+            input: serde_json::json!({"file_path": "a.txt"}),
+        })]);
+        let tail = futures::stream::once(async move {
+            read_on.notify_one();
+            Ok(ModelEvent::TextDelta {
+                text: "after".into(),
+            })
+        })
+        .chain(futures::stream::iter(vec![Ok(ModelEvent::EndTurn {
+            stop_reason: "tool_use".into(),
+            usage: Usage::default(),
+        })]));
+        let stream: base::interface::model::ModelStream = Box::new(Box::pin(head.chain(tail)));
+
+        let mut session = session::session::SessionManager::in_memory(None);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let tx = crate::event_bus::EventBus::new(tx);
+        let done = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            execute_stream(
+                stream,
+                &mut session,
+                &tx,
+                "test-turn".into(),
+                move |_id, _name, _input| {
+                    let waits = Arc::clone(&waits);
+                    async move {
+                        waits.notified().await;
+                        Ok(ToolAnswer::text("wrote"))
+                    }
+                },
+                |_name, _input| false,
+                CancellationToken::new(),
+                &[],
+                None,
+            ),
+        )
+        .await
+        .expect("the stream was not read while the barrier tool ran")
+        .expect("the call succeeds");
+        assert_eq!(done.stop_reason, "tool_use");
+        assert_adjacent_tool_pairing(session.messages());
+        assert!(matches!(
+            &session.messages()[0].content[..],
+            [ModelContentBlock::ToolUse { .. }, ModelContentBlock::Text { text }] if text == "after"
+        ));
     }
 
     /// The stream below cannot end until the tool has started. If the tool

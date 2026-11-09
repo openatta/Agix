@@ -106,6 +106,15 @@ pub trait RecoveryPolicy: Send + Sync {
 
     /// The call succeeded but stopped early — `reason` is the model's own
     /// stop reason.
+    ///
+    /// Asked only for a reply that called no tools, after
+    /// [`TurnPolicy::after_model_call`] let the turn go on. A retry decided
+    /// here comes before the `Stop` hook and before
+    /// [`BudgetPolicy::on_output_target`], which see the reply only when this
+    /// gives up.
+    ///
+    /// [`TurnPolicy::after_model_call`]: crate::interface::turn_policy::TurnPolicy::after_model_call
+    /// [`BudgetPolicy::on_output_target`]: crate::interface::budget_policy::BudgetPolicy::on_output_target
     fn on_early_stop(&self, reason: &str, attempt: &RecoveryAttempt) -> StopRecovery;
 }
 

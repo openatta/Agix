@@ -290,33 +290,7 @@ impl ChunkAccumulator {
     fn drain_tool_calls(&mut self) -> Vec<ModelEvent> {
         std::mem::take(&mut self.pending)
             .into_values()
-            .map(|p| {
-                let input = if p.arguments.trim().is_empty() {
-                    serde_json::Value::Object(Default::default())
-                } else {
-                    match serde_json::from_str(&p.arguments) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            // Same degradation as the Anthropic path: hand the
-                            // dispatcher an empty input so it fails input
-                            // validation with a clear message, rather than
-                            // dropping the call or killing the turn.
-                            tracing::warn!(
-                                error = %e,
-                                tool = %p.name,
-                                raw = %p.arguments,
-                                "failed to parse accumulated tool_call arguments"
-                            );
-                            serde_json::Value::Object(Default::default())
-                        }
-                    }
-                };
-                ModelEvent::ToolUse {
-                    id: p.id,
-                    name: p.name,
-                    input,
-                }
-            })
+            .map(|p| crate::tool_use_from_arguments(p.id, p.name, p.arguments))
             .collect()
     }
 }
@@ -650,11 +624,11 @@ mod tests {
         }
     }
 
-    /// Unparseable accumulated arguments degrade to an empty object rather
-    /// than panicking or dropping the call — same contract as the Anthropic
-    /// path, so the dispatcher reports a clean validation failure.
+    /// Unparseable accumulated arguments are reported as such, with the raw
+    /// text, rather than as a call with empty input — same contract as the
+    /// Anthropic path.
     #[test]
-    fn malformed_arguments_fall_back_to_empty_object() {
+    fn malformed_arguments_are_reported_as_malformed() {
         let events = run(&[
             json!({"choices": [{"index": 0, "delta": {"tool_calls": [
                 {"index": 0, "id": "c", "function": {"name": "Bash", "arguments": "{not valid"}}
@@ -663,10 +637,15 @@ mod tests {
         ]);
         let events = without_progress(events);
         match &events[0] {
-            ModelEvent::ToolUse { input, .. } => {
-                assert_eq!(input, &serde_json::Value::Object(Default::default()))
+            ModelEvent::MalformedToolUse {
+                id,
+                name,
+                raw_input,
+            } => {
+                assert_eq!((id.as_str(), name.as_str()), ("c", "Bash"));
+                assert_eq!(raw_input, "{not valid");
             }
-            other => panic!("expected ToolUse, got {other:?}"),
+            other => panic!("expected MalformedToolUse, got {other:?}"),
         }
     }
 

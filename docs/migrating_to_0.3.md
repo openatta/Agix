@@ -758,6 +758,13 @@ WebAssembly 载体整个移除。
   `TaskCreated` 带上会话当前的模式;`SubagentStart/Stop` 带子 Agent 自己的 cwd 与模式;
   `FileChanged`、`Elicitation` 与 rewake 的 `WakeEvent` 带上会话 id、项目根与模式(以前
   `session_id` 为空、`cwd` 是 daemon 进程的工作目录或空、模式写死 `default`)。
+- 参数不是完整 JSON 的工具调用(多半是回复撞上输出上限被截断)不再以空参数 `{}` 去跑:
+  不派发,直接给它一条 `is_error` 的 `tool_result`,说明参数不完整并附上收到的开头,模型下一步
+  重新调用。`tool_use` 帧的 `input` 是 `{}`。以前这类调用拿空参数照常执行。
+- 不并发安全的工具(屏障)运行期间引擎照样读模型的流,读到的等它跑完再处理;以前这段时间
+  不读,长时间运行的工具让厂商那边的连接空等。
+- 工具调用里的 panic(只在 `panic = "unwind"` 的构建,如 `release-fast` 与 dev)变成这次调用的
+  错误结果,这一轮照常往下走;以前它让整轮失败。`release` 构建照旧中止进程。
 
 ### 嵌入方
 
@@ -803,6 +810,14 @@ WebAssembly 载体整个移除。
 - `model::stream::ContentBlockStart` 与 `BlockDelta` 多了 `Unknown`:不认识的块类型、增量类型
   跳过这一块,不再让整条流解析失败;穷举匹配它们的要补一支。
 - 自己实现 `Model` 的:流必须以 `ModelEvent::EndTurn` 收尾,没有它的流被当作中途断开。
+- `ModelEvent` 多了 `MalformedToolUse { id, name, raw_input }`:参数解析不了的工具调用,两个
+  内置适配器以它代替 `ToolUse { input: {} }`;穷举匹配 `ModelEvent` 的要补一支,自己实现
+  `Model` 的也该这样报。
+- `InputMessage::ToolResult` 的 `tool_use_id` 必须是最近一条回复里还没有结果的调用,否则
+  `process_turn` 返回 `TurnError::Internal`、transcript 不变。发往模型的请求里,不对应前一条
+  回复里任何 `tool_use` 的 `tool_result` 被去掉。
+- `runtime::context`(`AgentContext`)删除,从来没有调用方。
+- `ToolExec::with_timeout` 起的计时任务随这次调用结束,不再睡到超时。
 - `runtime::streaming::execute_stream` 返回 `Result<StreamResult, StreamFailure>`(原为
   `Result<_, TurnError>`);`StreamResult` 多了 `cancelled`。
 - `StopRecovery` 多了 `Continue`,`DefaultRecovery` 对 `pause_turn` 返回它;穷举匹配

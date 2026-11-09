@@ -2,7 +2,6 @@
 
 pub mod agent;
 pub mod commands;
-pub mod context;
 pub mod elicitation;
 pub mod event_bus;
 pub mod hook_executors;

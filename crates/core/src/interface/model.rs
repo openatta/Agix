@@ -371,6 +371,15 @@ pub enum ModelEvent {
         name: String,
         input: Value,
     },
+    /// A tool call whose arguments are not a JSON value — usually cut off
+    /// because the reply reached its output limit. It is not run; it is
+    /// answered with an error so the model can call again.
+    MalformedToolUse {
+        id: String,
+        name: String,
+        /// The arguments as they arrived.
+        raw_input: String,
+    },
     /// One raw fragment of a tool call's arguments, exactly as the model
     /// produced it. Observational only: the adapter still concatenates the
     /// fragments and emits the assembled [`ModelEvent::ToolUse`], which is what

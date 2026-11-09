@@ -25,3 +25,31 @@ pub mod tokens;
 pub mod types;
 
 pub use openai::OpenAICompatibleModel;
+
+/// The call a tool's streamed arguments make: no arguments at all are an
+/// empty object, anything else has to parse.
+pub(crate) fn tool_use_from_arguments(
+    id: String,
+    name: String,
+    arguments: String,
+) -> base::interface::model::ModelEvent {
+    use base::interface::model::ModelEvent;
+    if arguments.trim().is_empty() {
+        return ModelEvent::ToolUse {
+            id,
+            name,
+            input: serde_json::Value::Object(Default::default()),
+        };
+    }
+    match serde_json::from_str(&arguments) {
+        Ok(input) => ModelEvent::ToolUse { id, name, input },
+        Err(e) => {
+            tracing::warn!(error = %e, tool = %name, raw = %arguments, "tool call arguments are not JSON");
+            ModelEvent::MalformedToolUse {
+                id,
+                name,
+                raw_input: arguments,
+            }
+        }
+    }
+}

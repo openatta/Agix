@@ -82,6 +82,13 @@ pub trait TurnPolicy: Send + Sync {
     }
 
     /// After a model call came back, before acting on what it asked for.
+    ///
+    /// Asked first, whatever the stop reason: a `Stop` here ends a reply cut
+    /// off at `max_tokens` before [`RecoveryPolicy::on_early_stop`] or
+    /// [`BudgetPolicy::on_output_target`] see it.
+    ///
+    /// [`RecoveryPolicy::on_early_stop`]: crate::interface::recovery_policy::RecoveryPolicy::on_early_stop
+    /// [`BudgetPolicy::on_output_target`]: crate::interface::budget_policy::BudgetPolicy::on_output_target
     fn after_model_call(&self, _progress: &TurnProgress<'_>) -> TurnStep {
         TurnStep::Continue
     }

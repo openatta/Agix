@@ -1,14 +1,9 @@
 //! `BudgetPolicy` — what a turn is allowed to spend, and how much context it
 //! may carry.
 //!
-//! Three judgements, all of them constants before this: a cumulative token
-//! ceiling read straight off settings, an output-volume target with three
-//! magic numbers deciding when to stop asking for more, and a compaction
-//! threshold the scene returned as a pair of numbers with no ceiling above
-//! them. The last one is the gap that matters: `TokenBudget` said when to
-//! start compacting and never said how large a context was too large, so
-//! there was no configuration that could answer "never send a request bigger
-//! than this".
+//! Three judgements: a cumulative token ceiling, an output-volume target
+//! deciding when to stop asking for more, and the context size at which to
+//! compact together with the ceiling no request may exceed.
 //!
 //! # Two ceilings that look alike and are not
 //!
@@ -143,6 +138,15 @@ pub trait BudgetPolicy: Send + Sync {
     }
 
     /// When the model has stopped and a volume of output was asked for.
+    ///
+    /// Last of the three that can act on a reply cut off at `max_tokens`:
+    /// [`TurnPolicy::after_model_call`] can end the turn first,
+    /// [`RecoveryPolicy::on_early_stop`] can retry it with a higher limit
+    /// first, and a `Stop` hook that ends or sends back the turn comes first
+    /// too.
+    ///
+    /// [`TurnPolicy::after_model_call`]: crate::interface::turn_policy::TurnPolicy::after_model_call
+    /// [`RecoveryPolicy::on_early_stop`]: crate::interface::recovery_policy::RecoveryPolicy::on_early_stop
     fn on_output_target(&self, _progress: &OutputProgress) -> OutputTarget {
         OutputTarget::Reached
     }

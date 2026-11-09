@@ -101,11 +101,16 @@ pub struct ToolExec {
     /// something stricter; it cannot loosen the turn's, because a child token
     /// fires when its parent does no matter what.
     cancel: CancellationToken,
+    /// Ends the timers `with_timeout` started once the call is over.
+    deadlines: Vec<tokio_util::sync::DropGuard>,
 }
 
 impl ToolExec {
     pub fn new(cancel: CancellationToken) -> Self {
-        Self { cancel }
+        Self {
+            cancel,
+            deadlines: Vec::new(),
+        }
     }
 
     pub fn cancel(&self) -> &CancellationToken {
@@ -124,11 +129,10 @@ impl ToolExec {
         tokio::spawn(async move {
             tokio::select! {
                 _ = tokio::time::sleep(after) => fires.cancel(),
-                // The parent already ended it; nothing left to do, and the
-                // timer should not outlive the call it belongs to.
                 _ = fires.cancelled() => {}
             }
         });
+        self.deadlines.push(child.clone().drop_guard());
         self.cancel = child;
     }
 }
@@ -261,6 +265,40 @@ mod tests {
         )
         .await;
         assert_eq!(outcome, Err("cancelled".to_string()));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_deadline_timer_ends_with_the_call() {
+        struct Deadline;
+        #[async_trait]
+        impl ToolMiddleware for Deadline {
+            async fn around(
+                &self,
+                call: &ToolCall,
+                exec: &mut ToolExec,
+                next: NextDispatch<'_>,
+            ) -> ToolOutcome {
+                exec.with_timeout(Duration::from_secs(3600));
+                next.run(call, exec).await
+            }
+        }
+
+        let metrics = tokio::runtime::Handle::current().metrics();
+        let before = metrics.num_alive_tasks();
+        let turn = CancellationToken::new();
+        let outcome = dispatch_through(
+            &[Arc::new(Deadline) as Arc<dyn ToolMiddleware>],
+            call(),
+            turn.clone(),
+            |_| async { Ok(ToolAnswer::text("quick")) },
+        )
+        .await;
+        assert_eq!(outcome, Ok(ToolAnswer::text("quick")));
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(metrics.num_alive_tasks(), before);
+        assert!(!turn.is_cancelled());
     }
 
     /// A wrapper narrows the signal; it cannot widen it. The turn's own

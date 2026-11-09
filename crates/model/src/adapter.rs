@@ -431,27 +431,11 @@ fn map_stream_event(
             let Some(pending) = acc.tool_uses.remove(&index) else {
                 return vec![];
             };
-            let input = if pending.json.trim().is_empty() {
-                serde_json::Value::Object(Default::default())
-            } else {
-                match serde_json::from_str(&pending.json) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            tool = %pending.name,
-                            raw = %pending.json,
-                            "failed to parse accumulated tool_use input JSON"
-                        );
-                        serde_json::Value::Object(Default::default())
-                    }
-                }
-            };
-            vec![Ok(ModelEvent::ToolUse {
-                id: pending.id,
-                name: pending.name,
-                input,
-            })]
+            vec![Ok(crate::tool_use_from_arguments(
+                pending.id,
+                pending.name,
+                pending.json,
+            ))]
         }
         // The opening event is the only place the input count appears on the
         // real wire — `message_delta` repeats the output count and, usually,
@@ -1152,12 +1136,10 @@ mod map_stream_event_tests {
         }
     }
 
-    /// Unparseable accumulated JSON must degrade to an empty object instead
-    /// of panicking or silently dropping the tool call — the dispatcher
-    /// downstream then fails tool input validation with a clear error
-    /// instead of the whole turn crashing.
+    /// Unparseable accumulated JSON is reported as a malformed call, not
+    /// dropped and not dispatched with made-up input.
     #[test]
-    fn malformed_accumulated_json_falls_back_to_empty_object() {
+    fn malformed_accumulated_json_is_reported_as_malformed() {
         let events = vec![
             StreamEvent::ContentBlockStart {
                 index: 0,
@@ -1181,12 +1163,17 @@ mod map_stream_event_tests {
         // The unparseable bytes still reach an observer verbatim — that is the
         // case a recording exists for.
         assert_eq!(arg_fragments(&out), vec!["{not valid json"]);
-        match tool_uses(&out)[0] {
-            ModelEvent::ToolUse { input, .. } => {
-                assert_eq!(input, &serde_json::Value::Object(Default::default()))
-            }
-            other => panic!("expected ToolUse, got {other:?}"),
-        }
+        assert!(tool_uses(&out).is_empty());
+        let malformed: Vec<_> = out
+            .iter()
+            .filter_map(|e| match e {
+                ModelEvent::MalformedToolUse { id, raw_input, .. } => {
+                    Some((id.as_str(), raw_input.as_str()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(malformed, [("call_3", "{not valid json")]);
     }
 
     /// `ContentBlockStop` for an index that was never opened as a tool_use
