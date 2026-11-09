@@ -101,6 +101,12 @@ pub trait McpClient: Send + Sync {
         None
     }
 
+    /// Whether the connection was up when last seen; one that is not comes
+    /// back on the next request.
+    fn is_connected(&self) -> bool {
+        true
+    }
+
     async fn list_tools(&self) -> Result<Vec<McpToolMeta>, McpError>;
 
     async fn call_tool(

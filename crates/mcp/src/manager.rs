@@ -2,6 +2,8 @@
 //!
 //! 用法：CLI 启动时把 settings.mcp_servers 喂给 `connect_all`；返回的 manager 把
 //! 全部 server 的 tools 摊平成 `Vec<Arc<dyn Tool>>` 加进 ToolRegistry。
+//! 不想等慢 server 的调用方用 `connect_all_within`：到点先拿已连上的，其余的结果
+//! 从 [`LateConnects`] 陆续到，交给 [`McpManager::absorb`]。
 
 use crate::adapter::McpToolAdapter;
 use crate::client::{McpClient, McpClientHandle};
@@ -10,8 +12,7 @@ use crate::connect::StdioMcpClient;
 use crate::error::McpError;
 use crate::output_cache::McpOutputCache;
 use crate::prompts::{
-    parse_prompt_args, render_prompt_failure, render_prompt_success, split_command_name,
-    PromptInvocation,
+    parse_prompt_args, render_prompt_failure, render_prompt_success, PromptInvocation,
 };
 use crate::resources::{
     find_resource_refs, flatten_resource_content, render_resource_block, render_resource_error,
@@ -22,8 +23,11 @@ use base::text::truncate_at_char_boundary;
 use base::tool::Tool;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::task::JoinSet;
 use tracing::{info, warn};
+
+const MAX_CONCURRENT_CONNECTS: usize = 3;
 
 /// Longest instruction text kept from any one MCP server when assembling the
 /// system prompt. `connect.rs` already clamps what a server may hand us at
@@ -94,6 +98,13 @@ pub struct McpManager {
     denied: Vec<DeniedServer>,
     /// Servers waiting for a person to sign in; they contribute no tools.
     pending: Vec<PendingServer>,
+    /// Servers still connecting when this manager was handed out.
+    connecting: Vec<PendingServer>,
+    /// Servers that could not be connected, with why.
+    failed: Vec<FailedServer>,
+    /// Which `connect_all_within` the `connecting` servers belong to, so a
+    /// late result reaches only managers made from that connect.
+    batch: Arc<()>,
 }
 
 impl McpManager {
@@ -111,7 +122,22 @@ impl McpManager {
             configs: HashMap::new(),
             denied: Vec::new(),
             pending: Vec::new(),
+            connecting: Vec::new(),
+            failed: Vec::new(),
+            batch: Arc::new(()),
         }
+    }
+
+    /// A manager over clients already connected, with their tools and
+    /// prompts read.
+    pub async fn from_clients(clients: Vec<McpClientHandle>) -> Self {
+        let mut manager = Self {
+            clients,
+            ..Self::empty()
+        };
+        manager.refresh_tools().await;
+        manager.refresh_prompts().await;
+        manager
     }
 
     /// Register an elicitation callback. When an MCP tool result contains an
@@ -128,7 +154,7 @@ impl McpManager {
     }
 
     /// 连所有 server，list_tools 完成后构造 adapters。
-    /// 使用并发连接——最多 3 个本地 stdio server 同时启动，远程 server 可更多。
+    /// 使用并发连接——最多 3 个 server 同时连。
     /// 单个 server 失败不整体失败 —— warn + skip。
     pub async fn connect_all(servers: HashMap<String, McpServerConfig>) -> Self {
         Self::connect_all_with(
@@ -144,12 +170,20 @@ impl McpManager {
     /// remote servers authorized through `auth` — the owning pool's, so pools
     /// in one process never share tokens. A server that asks for a sign-in
     /// is kept as [`PendingServer`] rather than connected.
+    ///
+    /// Waits for every server; each is bounded by its startup limit.
     pub async fn connect_all_with(
         servers: HashMap<String, McpServerConfig>,
         env: base::interface::exec::local::SubprocessEnv,
         auth: Option<Arc<crate::oauth::McpAuth>>,
     ) -> Self {
-        Self::connect_all_impl(servers, env, auth).await
+        let (mut manager, late) = Self::connect_all_within(servers, env, auth, None).await;
+        if let Some(mut late) = late {
+            while let Some(outcome) = late.next().await {
+                manager.absorb(outcome);
+            }
+        }
+        manager
     }
 
     /// Start every stdio server this manager adds later under `env`.
@@ -164,154 +198,167 @@ impl McpManager {
         self
     }
 
-    async fn connect_all_impl(
+    /// [`Self::connect_all_with`] that returns once `wait` has passed, with
+    /// the servers that are connected by then. The rest keep connecting;
+    /// their results come out of the returned [`LateConnects`], one by one,
+    /// for [`Self::absorb`]. `None` waits for all of them.
+    pub async fn connect_all_within(
         servers: HashMap<String, McpServerConfig>,
         subprocess_env: base::interface::exec::local::SubprocessEnv,
         auth: Option<Arc<crate::oauth::McpAuth>>,
-    ) -> Self {
-        // Shared cell (see the field doc comment on `elicitation_callback`)
-        // threaded through every spawned connect task and every adapter it
-        // builds, then reused as-is for this manager's own field — so a
-        // later `set_elicitation_callback` call reaches adapters built here.
+        wait: Option<Duration>,
+    ) -> (Self, Option<LateConnects>) {
         let elicitation_cell: Arc<Mutex<Option<ElicitationCallback>>> = Arc::new(Mutex::new(None));
         let cache = Arc::new(Mutex::new(McpOutputCache::new()));
         // Shared with every client this builds, and kept as this manager's
         // own field, so a server that announces a tool change reaches the
         // same queue the manager later drains.
         let notifications = crate::notify::NotificationQueue::new();
-        let configs = servers.clone();
-        let mut clients: Vec<McpClientHandle> = Vec::new();
-        let mut adapters: Vec<Arc<dyn Tool>> = Vec::new();
-        let mut pending: Vec<PendingServer> = Vec::new();
-        let mut set = JoinSet::new();
-        let max_concurrent = 3usize; // limit concurrent spawns
+        let mut connecting: Vec<PendingServer> = servers
+            .iter()
+            .map(|(name, cfg)| PendingServer {
+                name: name.clone(),
+                transport: cfg.transport_kind(),
+            })
+            .collect();
+        connecting.sort_by(|a, b| a.name.cmp(&b.name));
+        let mut manager = Self {
+            clients: Vec::new(),
+            adapters: Vec::new(),
+            prompts: Vec::new(),
+            notifications: notifications.clone(),
+            output_cache: cache.clone(),
+            elicitation_callback: elicitation_cell.clone(),
+            subprocess_env: subprocess_env.clone(),
+            auth: auth.clone(),
+            configs: servers.clone(),
+            denied: Vec::new(),
+            pending: Vec::new(),
+            connecting,
+            failed: Vec::new(),
+            batch: Arc::new(()),
+        };
+        if servers.is_empty() {
+            return (manager, None);
+        }
 
-        type ConnectOutput =
-            Result<(String, McpClientHandle, Vec<Arc<dyn Tool>>), (String, &'static str, McpError)>;
-
-        // Process a JoinSet result: success → collect into clients/adapters;
-        // a server asking for a sign-in waits as pending; other errors are
-        // non-fatal (warn + skip).
-        let handle_result =
-            |clients: &mut Vec<McpClientHandle>,
-             adapters: &mut Vec<Arc<dyn Tool>>,
-             pending: &mut Vec<PendingServer>,
-             result: Result<ConnectOutput, tokio::task::JoinError>| {
-                match result {
-                    Ok(Ok((_name, client, server_adapters))) => {
-                        clients.push(client);
-                        adapters.extend(server_adapters);
-                    }
-                    Ok(Err((name, transport, e))) if e.is_auth() => {
-                        info!(server = %name, "MCP server needs a sign-in before it connects");
-                        pending.push(PendingServer { name, transport });
-                    }
-                    Ok(Err((name, _, e))) => {
-                        warn!(server = %name, error = %e, "MCP server connect failed; skipping");
-                    }
-                    Err(join_err) => {
-                        warn!(?join_err, "MCP connect task panicked; skipping");
-                    }
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let mut set = JoinSet::new();
+            let mut queued = servers.into_iter();
+            loop {
+                while set.len() < MAX_CONCURRENT_CONNECTS {
+                    let Some((name, cfg)) = queued.next() else {
+                        break;
+                    };
+                    let link = ServerLink {
+                        cache: cache.clone(),
+                        elicitation_cell: elicitation_cell.clone(),
+                        notifications: notifications.clone(),
+                        subprocess_env: subprocess_env.clone(),
+                        auth: auth.clone(),
+                    };
+                    set.spawn(async move {
+                        let result = Self::connect_with_retry(&name, &cfg, &link).await;
+                        Outcome::of(name, result)
+                    });
                 }
-            };
-
-        for (name, cfg) in servers {
-            // Wait if we're at the concurrency limit
-            while set.len() >= max_concurrent {
-                if let Some(result) = set.join_next().await {
-                    handle_result(&mut clients, &mut adapters, &mut pending, result);
+                let joined = tokio::select! {
+                    joined = set.join_next() => joined,
+                    _ = tx.closed() => return,
+                };
+                let Some(joined) = joined else {
+                    return;
+                };
+                match joined {
+                    Ok(outcome) => {
+                        if tx.send(outcome).is_err() {
+                            return;
+                        }
+                    }
+                    Err(join_err) => warn!(?join_err, "MCP connect task panicked; skipping"),
                 }
             }
+        });
 
-            let cache_for_spawn = cache.clone();
-            let cell_for_spawn = elicitation_cell.clone();
-            let queue_for_spawn = notifications.clone();
-            let env_for_spawn = subprocess_env.clone();
-            let auth_for_spawn = auth.clone();
-            set.spawn(async move {
-                match Self::connect_with_retry(
-                    &name,
-                    &cfg,
-                    cache_for_spawn,
-                    cell_for_spawn,
-                    queue_for_spawn,
-                    &env_for_spawn,
-                    auth_for_spawn,
-                )
-                .await
-                {
-                    Ok((client, server_adapters)) => {
-                        info!(server = %name, n_tools = server_adapters.len(), "MCP server connected");
-                        Ok((name, client, server_adapters))
-                    }
-                    Err(e) => Err((name, cfg.transport_kind(), e)),
-                }
-            });
-        }
-
-        // Drain remaining
-        while let Some(result) = set.join_next().await {
-            handle_result(&mut clients, &mut adapters, &mut pending, result);
-        }
-        pending.sort_by(|a, b| a.name.cmp(&b.name));
-
-        let manager = Self {
-            clients,
-            adapters,
-            notifications,
-            prompts: Vec::new(),
-            output_cache: cache,
-            elicitation_callback: elicitation_cell,
-            subprocess_env,
-            auth,
-            configs,
-            denied: Vec::new(),
-            pending,
+        let mut late = LateConnects {
+            rx,
+            batch: manager.batch.clone(),
         };
-        // Collect MCP prompts from connected servers (non-blocking: fail silently)
-        manager.collect_prompts().await
+        let deadline = wait.map(|w| tokio::time::Instant::now() + w);
+        loop {
+            let next = match deadline {
+                Some(at) => match tokio::time::timeout_at(at, late.next()).await {
+                    Ok(next) => next,
+                    Err(_) => break,
+                },
+                None => late.next().await,
+            };
+            match next {
+                Some(outcome) => {
+                    manager.absorb(outcome);
+                }
+                None => break,
+            }
+        }
+        if manager.connecting.is_empty() {
+            (manager, None)
+        } else {
+            (manager, Some(late))
+        }
     }
 
-    async fn collect_prompts(mut self) -> Self {
-        self.refresh_prompts().await;
-        self
+    /// Take in one late result of the connect `outcome` came from. Returns
+    /// whether it was this manager's to take: a manager made from another
+    /// connect, or one that has dropped the server since, leaves it alone.
+    pub fn absorb(&mut self, outcome: ConnectOutcome) -> bool {
+        if !Arc::ptr_eq(&self.batch, &outcome.batch) {
+            return false;
+        }
+        let name = outcome.result.name().to_string();
+        let Some(at) = self.connecting.iter().position(|c| c.name == name) else {
+            return false;
+        };
+        let transport = self.connecting.remove(at).transport;
+        match outcome.result {
+            Outcome::Connected {
+                client,
+                adapters,
+                prompts,
+                ..
+            } => {
+                info!(server = %name, n_tools = adapters.len(), "MCP server connected");
+                self.install_server(&name, client, adapters);
+                self.prompts.extend(prompts);
+            }
+            Outcome::NeedsSignIn { .. } => {
+                info!(server = %name, "MCP server needs a sign-in before it connects");
+                self.forget(&name);
+                self.pending.push(PendingServer { name, transport });
+                self.pending.sort_by(|a, b| a.name.cmp(&b.name));
+            }
+            Outcome::Failed { error, .. } => {
+                warn!(server = %name, %error, "MCP server connect failed; skipping");
+                self.forget(&name);
+                self.failed.push(FailedServer {
+                    name,
+                    transport,
+                    error,
+                });
+            }
+        }
+        true
     }
 
     /// Re-run `prompts/list` on every connected server and rebuild the slash
-    /// command catalog. Called once after `connect_all`; also useful after a
-    /// `PromptListChanged` notification or when a manager was assembled from
-    /// pre-built clients (`from_clients`, which cannot await).
+    /// command catalog — after a `PromptListChanged` notification, say.
     ///
     /// A server that fails to answer is skipped with a warning — its prompts
     /// simply don't appear as commands, the rest of the session is unaffected.
     pub async fn refresh_prompts(&mut self) {
         let mut prompts = Vec::new();
         for client in &self.clients {
-            match client.list_prompts().await {
-                Ok(server_prompts) => {
-                    let n_prompts = server_prompts.len();
-                    for p in server_prompts {
-                        prompts.push(McpPromptEntry {
-                            server: client.server_name().to_string(),
-                            name: p.name.clone(),
-                            description: p.description.unwrap_or_default(),
-                            arguments: p.arguments,
-                        });
-                    }
-                    info!(
-                        server = %client.server_name(),
-                        n_prompts,
-                        "MCP prompts collected"
-                    );
-                }
-                Err(e) => {
-                    warn!(
-                        server = %client.server_name(),
-                        error = %e,
-                        "MCP prompt collection failed; skipping"
-                    );
-                }
-            }
+            prompts.extend(prompts_of(client).await);
         }
         self.prompts = prompts;
     }
@@ -319,66 +366,46 @@ impl McpManager {
     async fn connect_one(
         name: &str,
         cfg: &McpServerConfig,
-        cache: Arc<Mutex<McpOutputCache>>,
-        elicitation_cell: Arc<Mutex<Option<ElicitationCallback>>>,
-        notifications: Arc<crate::notify::NotificationQueue>,
-        subprocess_env: &base::interface::exec::local::SubprocessEnv,
-        auth: Option<Arc<crate::oauth::McpAuth>>,
-    ) -> Result<(McpClientHandle, Vec<Arc<dyn Tool>>), McpError> {
-        // StdioMcpClient 现在支持 stdio + streamable_http 两种 config（spawn_service 里分派）
+        link: &ServerLink,
+    ) -> Result<Connected, McpError> {
         let client = StdioMcpClient::connect_with_env(
             name,
             cfg,
-            Some(notifications.sink()),
-            subprocess_env.clone(),
-            auth,
+            Some(link.notifications.sink()),
+            link.subprocess_env.clone(),
+            link.auth.clone(),
         )
         .await?;
         let tools = client.list_tools().await?;
         let handle: McpClientHandle = client;
-        let adapters: Vec<Arc<dyn Tool>> = tools
-            .into_iter()
-            .map(|meta| {
-                let adapter = McpToolAdapter::with_cache(handle.clone(), meta, cache.clone())
-                    .with_elicitation_callback(elicitation_cell.clone());
-                Arc::new(adapter) as Arc<dyn Tool>
-            })
-            .collect();
-        Ok((handle, adapters))
+        let adapters = server_adapters(&handle, tools, &link.cache, &link.elicitation_cell);
+        let prompts = prompts_of(&handle).await;
+        Ok(Connected {
+            client: handle,
+            adapters,
+            prompts,
+        })
     }
 
     /// Connect to an MCP server with exponential backoff retry:
     /// MAX_RETRIES=5, INITIAL_DELAY=1s, MAX_DELAY=30s, ±25% jitter. A server
     /// that asks for authorization is not retried: only a sign-in changes
-    /// its answer.
+    /// its answer. Nor is one that ran out of time: it would only use up
+    /// its whole limit again.
     async fn connect_with_retry(
         name: &str,
         cfg: &McpServerConfig,
-        cache: Arc<Mutex<McpOutputCache>>,
-        elicitation_cell: Arc<Mutex<Option<ElicitationCallback>>>,
-        notifications: Arc<crate::notify::NotificationQueue>,
-        subprocess_env: &base::interface::exec::local::SubprocessEnv,
-        auth: Option<Arc<crate::oauth::McpAuth>>,
-    ) -> Result<(McpClientHandle, Vec<Arc<dyn Tool>>), McpError> {
+        link: &ServerLink,
+    ) -> Result<Connected, McpError> {
         const MAX_RETRIES: u32 = 5;
         const INITIAL_DELAY_MS: u64 = 1_000;
         const MAX_DELAY_MS: u64 = 30_000;
 
         let mut last_err = None;
         for attempt in 0..MAX_RETRIES {
-            match Self::connect_one(
-                name,
-                cfg,
-                cache.clone(),
-                elicitation_cell.clone(),
-                notifications.clone(),
-                subprocess_env,
-                auth.clone(),
-            )
-            .await
-            {
+            match Self::connect_one(name, cfg, link).await {
                 Ok(result) => return Ok(result),
-                Err(e) if e.is_auth() => return Err(e),
+                Err(e) if e.is_auth() || matches!(e, McpError::Timeout { .. }) => return Err(e),
                 Err(e) => {
                     last_err = Some(e);
                     if attempt + 1 < MAX_RETRIES {
@@ -414,13 +441,15 @@ impl McpManager {
         self.adapters.extend(server_adapters);
     }
 
-    /// Take a server's connection, tools, prompts and pending sign-in away.
+    /// Take a server's connection, tools, prompts, pending sign-in and
+    /// failure away.
     fn forget(&mut self, name: &str) {
         let source = format!("mcp:{name}");
         self.clients.retain(|c| c.server_name() != name);
         self.adapters.retain(|a| a.source() != source);
         self.prompts.retain(|p| p.server != name);
         self.pending.retain(|p| p.name != name);
+        self.failed.retain(|f| f.name != name);
     }
 
     /// Connect an MCP server after construction, replacing any server already
@@ -429,26 +458,23 @@ impl McpManager {
     /// connection, if any, stays and a warning is logged.
     pub async fn add_server(&mut self, name: &str, cfg: &McpServerConfig) {
         self.configs.insert(name.to_string(), cfg.clone());
-        let cb = self.elicitation_callback.clone();
-        match Self::connect_one(
-            name,
-            cfg,
-            self.output_cache.clone(),
-            cb,
-            self.notifications.clone(),
-            &self.subprocess_env,
-            self.auth.clone(),
-        )
-        .await
-        {
-            Ok((client, server_adapters)) => {
+        self.connecting.retain(|c| c.name != name);
+        let link = ServerLink {
+            cache: self.output_cache.clone(),
+            elicitation_cell: self.elicitation_callback.clone(),
+            notifications: self.notifications.clone(),
+            subprocess_env: self.subprocess_env.clone(),
+            auth: self.auth.clone(),
+        };
+        match Self::connect_one(name, cfg, &link).await {
+            Ok(connected) => {
                 info!(
                     server = %name,
-                    n_tools = server_adapters.len(),
+                    n_tools = connected.adapters.len(),
                     "MCP server connected"
                 );
-                self.install_server(name, client, server_adapters);
-                self.refresh_prompts().await;
+                self.install_server(name, connected.client, connected.adapters);
+                self.prompts.extend(connected.prompts);
             }
             Err(e) if e.is_auth() => {
                 info!(server = %name, "MCP server needs a sign-in before it connects");
@@ -460,6 +486,14 @@ impl McpManager {
             }
             Err(e) => {
                 warn!(server = %name, error = %e, "MCP server connect failed; skipping");
+                if !self.clients.iter().any(|c| c.server_name() == name) {
+                    self.failed.retain(|f| f.name != name);
+                    self.failed.push(FailedServer {
+                        name: name.to_string(),
+                        transport: cfg.transport_kind(),
+                        error: e.to_string(),
+                    });
+                }
             }
         }
     }
@@ -501,17 +535,9 @@ impl McpManager {
             configs: self.configs.clone(),
             denied: self.denied.clone(),
             pending: self.pending.clone(),
-        }
-    }
-
-    /// 用注入测试 client 构造 manager（绕过真 connect）。
-    #[doc(hidden)]
-    pub fn from_clients(clients: Vec<McpClientHandle>) -> Self {
-        // Can't await list_tools here; use empty adapters as placeholder.
-        // Real usage should go through connect_all.
-        Self {
-            clients,
-            ..Self::empty()
+            connecting: self.connecting.clone(),
+            failed: self.failed.clone(),
+            batch: self.batch.clone(),
         }
     }
 
@@ -565,6 +591,14 @@ impl McpManager {
     pub fn pending(&self) -> &[PendingServer] {
         &self.pending
     }
+
+    pub fn connecting(&self) -> &[PendingServer] {
+        &self.connecting
+    }
+
+    pub fn failed(&self) -> &[FailedServer] {
+        &self.failed
+    }
     /// Number of registered servers.
     pub fn server_count(&self) -> usize {
         self.clients.len()
@@ -580,10 +614,9 @@ impl McpManager {
         &self.prompts
     }
 
-    /// Seed the prompt catalog without a `prompts/list` round trip. Exists so
-    /// tests can build the "command list was collected while the server was
-    /// up, then the server went away" state that `from_clients` (which cannot
-    /// await) otherwise can't express.
+    /// Seed the prompt catalog without a `prompts/list` round trip, for the
+    /// "command list was collected while the server was up, then the server
+    /// went away" state.
     #[doc(hidden)]
     pub fn set_prompts_for_test(&mut self, prompts: Vec<McpPromptEntry>) {
         self.prompts = prompts;
@@ -611,10 +644,7 @@ impl McpManager {
     /// Look up a collected prompt by its slash command name
     /// (`mcp__<server>__<prompt>`).
     pub fn find_prompt_command(&self, command: &str) -> Option<&McpPromptEntry> {
-        let (server, prompt) = split_command_name(command)?;
-        self.prompts
-            .iter()
-            .find(|p| p.server == server && p.name == prompt)
+        self.prompts.iter().find(|p| p.command_name() == command)
     }
 
     /// Run an MCP prompt slash command end to end: map + validate the
@@ -823,15 +853,7 @@ impl McpManager {
         for client in &self.clients {
             match client.list_tools().await {
                 Ok(tools) => {
-                    for meta in tools {
-                        let adapter = McpToolAdapter::with_cache(
-                            client.clone(),
-                            meta,
-                            self.output_cache.clone(),
-                        )
-                        .with_elicitation_callback(cell.clone());
-                        new_adapters.push(Arc::new(adapter) as Arc<dyn Tool>);
-                    }
+                    new_adapters.extend(server_adapters(client, tools, &self.output_cache, &cell));
                 }
                 Err(e) => {
                     warn!(
@@ -851,16 +873,10 @@ impl McpManager {
     /// transport 字段：来自 client 的 transport_kind()——stdio / streamable_http / sse /
     /// in_process / web_socket（见 connect.rs）。
     pub fn server_statuses(&self) -> Vec<ServerStatus> {
-        // 把每 client 的 server_name 与持有它的 adapter 数关联起来
-        // adapter 通过 McpToolAdapter::server_name() 暴露 server 名（已存在）
         let mut counts: HashMap<String, usize> = HashMap::new();
         for a in &self.adapters {
-            // adapter 的 name 形如 mcp__<server>__<tool>；提取 <server>
-            let n = a.name();
-            if let Some(rest) = n.strip_prefix("mcp__") {
-                if let Some((server, _tool)) = rest.split_once("__") {
-                    *counts.entry(server.to_string()).or_insert(0) += 1;
-                }
+            if let Some(server) = a.source().strip_prefix("mcp:") {
+                *counts.entry(server.to_string()).or_insert(0) += 1;
             }
         }
         self.clients
@@ -869,8 +885,162 @@ impl McpManager {
                 name: c.server_name().to_string(),
                 transport: c.transport_kind(),
                 tool_count: counts.get(c.server_name()).copied().unwrap_or(0),
+                connected: c.is_connected(),
             })
             .collect()
+    }
+}
+
+/// What a server's tools are offered as: one adapter per tool, named among
+/// the server's others by [`crate::naming::tool_names`].
+fn server_adapters(
+    client: &McpClientHandle,
+    tools: Vec<crate::client::McpToolMeta>,
+    cache: &Arc<Mutex<McpOutputCache>>,
+    elicitation_cell: &Arc<Mutex<Option<ElicitationCallback>>>,
+) -> Vec<Arc<dyn Tool>> {
+    let names =
+        crate::naming::tool_names(client.server_name(), tools.iter().map(|t| t.name.as_str()));
+    tools
+        .into_iter()
+        .zip(names)
+        .map(|(meta, name)| {
+            let adapter = McpToolAdapter::with_cache(client.clone(), meta, cache.clone())
+                .named(name)
+                .with_elicitation_callback(elicitation_cell.clone());
+            Arc::new(adapter) as Arc<dyn Tool>
+        })
+        .collect()
+}
+
+async fn prompts_of(client: &McpClientHandle) -> Vec<McpPromptEntry> {
+    match client.list_prompts().await {
+        Ok(server_prompts) => {
+            info!(server = %client.server_name(), n_prompts = server_prompts.len(), "MCP prompts collected");
+            server_prompts
+                .into_iter()
+                .map(|p| McpPromptEntry {
+                    server: client.server_name().to_string(),
+                    name: p.name,
+                    description: p.description.unwrap_or_default(),
+                    arguments: p.arguments,
+                })
+                .collect()
+        }
+        Err(e) => {
+            warn!(server = %client.server_name(), error = %e, "MCP prompt collection failed; skipping");
+            Vec::new()
+        }
+    }
+}
+
+/// What every connection a manager makes shares with it.
+struct ServerLink {
+    cache: Arc<Mutex<McpOutputCache>>,
+    elicitation_cell: Arc<Mutex<Option<ElicitationCallback>>>,
+    notifications: Arc<crate::notify::NotificationQueue>,
+    subprocess_env: base::interface::exec::local::SubprocessEnv,
+    auth: Option<Arc<crate::oauth::McpAuth>>,
+}
+
+struct Connected {
+    client: McpClientHandle,
+    adapters: Vec<Arc<dyn Tool>>,
+    prompts: Vec<McpPromptEntry>,
+}
+
+/// How one server's connect ended, for [`McpManager::absorb`].
+pub struct ConnectOutcome {
+    result: Outcome,
+    batch: Arc<()>,
+}
+
+enum Outcome {
+    Connected {
+        name: String,
+        client: McpClientHandle,
+        adapters: Vec<Arc<dyn Tool>>,
+        prompts: Vec<McpPromptEntry>,
+    },
+    NeedsSignIn {
+        name: String,
+    },
+    Failed {
+        name: String,
+        error: String,
+    },
+}
+
+impl Outcome {
+    fn name(&self) -> &str {
+        match self {
+            Outcome::Connected { name, .. }
+            | Outcome::NeedsSignIn { name }
+            | Outcome::Failed { name, .. } => name,
+        }
+    }
+
+    fn of(name: String, result: Result<Connected, McpError>) -> Self {
+        match result {
+            Ok(c) => Outcome::Connected {
+                name,
+                client: c.client,
+                adapters: c.adapters,
+                prompts: c.prompts,
+            },
+            Err(e) if e.is_auth() => Outcome::NeedsSignIn { name },
+            Err(e) => Outcome::Failed {
+                name,
+                error: e.to_string(),
+            },
+        }
+    }
+}
+
+impl ConnectOutcome {
+    pub fn server(&self) -> &str {
+        self.result.name()
+    }
+
+    /// The server's status when it connected, `None` when it did not.
+    pub fn connected(&self) -> Option<ServerStatus> {
+        match &self.result {
+            Outcome::Connected {
+                client, adapters, ..
+            } => Some(ServerStatus {
+                name: client.server_name().to_string(),
+                transport: client.transport_kind(),
+                tool_count: adapters.len(),
+                connected: true,
+            }),
+            _ => None,
+        }
+    }
+
+    /// Why it did not connect, unless it is waiting for a sign-in.
+    pub fn error(&self) -> Option<&str> {
+        match &self.result {
+            Outcome::Failed { error, .. } => Some(error),
+            _ => None,
+        }
+    }
+}
+
+/// The servers of a [`McpManager::connect_all_within`] that had not finished
+/// when it returned. Dropping it stops them.
+pub struct LateConnects {
+    rx: tokio::sync::mpsc::UnboundedReceiver<Outcome>,
+    batch: Arc<()>,
+}
+
+impl LateConnects {
+    /// The next server to finish, `None` once all have.
+    pub async fn next(&mut self) -> Option<ConnectOutcome> {
+        let result = self.rx.recv().await?;
+        Some(ConnectOutcome {
+            result,
+            batch: self.batch.clone(),
+        })
     }
 }
 
@@ -880,6 +1050,15 @@ pub struct ServerStatus {
     pub name: String,
     pub transport: &'static str,
     pub tool_count: usize,
+    /// The connection was up when last seen; see [`McpClient::is_connected`].
+    pub connected: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct FailedServer {
+    pub name: String,
+    pub transport: &'static str,
+    pub error: String,
 }
 
 #[derive(Debug, Clone)]
@@ -919,13 +1098,13 @@ mod tests {
         assert!(m.tool_adapters().is_empty());
     }
 
-    #[test]
-    fn server_instructions_collects_nonempty_client_instructions() {
+    #[tokio::test]
+    async fn server_instructions_collects_nonempty_client_instructions() {
         let client = Arc::new(
             crate::client::MockMcpClient::new("github", Vec::new())
                 .with_instructions("Use issues carefully."),
         );
-        let m = McpManager::from_clients(vec![client]);
+        let m = McpManager::from_clients(vec![client]).await;
         let instructions = m.server_instructions();
         assert_eq!(instructions.len(), 1);
         assert_eq!(instructions[0].name, "github");
@@ -944,6 +1123,7 @@ mod tests {
                 headers: HashMap::new(),
                 oauth: None,
                 scope: None,
+                timeouts: Default::default(),
             },
         );
         let m = McpManager::connect_all(servers).await;
@@ -1007,7 +1187,7 @@ mod tests {
                 meta: None,
             },
         );
-        let mut manager = McpManager::from_clients(vec![client]);
+        let mut manager = McpManager::from_clients(vec![client]).await;
         // Adapters get built here, *before* any callback is registered —
         // the ordering every real caller (daemon) actually uses.
         manager.refresh_tools().await;
@@ -1039,6 +1219,56 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_server_still_connecting_when_the_wait_ends_is_finished_later() {
+        let mute = McpServerConfig::Stdio {
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), "while IFS= read -r line; do :; done".into()],
+            env: HashMap::new(),
+            scope: None,
+            timeouts: crate::config::McpTimeouts {
+                startup_timeout_ms: Some(600),
+                ..Default::default()
+            },
+        };
+        let (mut m, late) = McpManager::connect_all_within(
+            HashMap::from([("mute".to_string(), mute)]),
+            Default::default(),
+            None,
+            Some(Duration::from_millis(100)),
+        )
+        .await;
+        let names: Vec<&str> = m.connecting().iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["mute"]);
+        let mut late = late.expect("the mute server is still connecting");
+
+        let outcome = late.next().await.expect("an outcome");
+        assert!(outcome.connected().is_none());
+        assert!(outcome.error().is_some_and(|e| e.contains("initialize")));
+        let mut other = McpManager::empty();
+        let mut copy = m.share();
+        assert!(copy.absorb(outcome));
+        assert!(copy.connecting().is_empty());
+        assert_eq!(copy.failed()[0].name, "mute");
+        assert!(late.next().await.is_none());
+
+        assert!(!other.absorb(ConnectOutcome {
+            result: Outcome::Failed {
+                name: "mute".into(),
+                error: "x".into()
+            },
+            batch: m.batch.clone(),
+        }));
+        assert!(m.absorb(ConnectOutcome {
+            result: Outcome::Failed {
+                name: "mute".into(),
+                error: "x".into()
+            },
+            batch: m.batch.clone(),
+        }));
+    }
+
     #[tokio::test]
     async fn connect_all_returns_empty_for_empty_input() {
         let m = McpManager::connect_all(HashMap::new()).await;
@@ -1046,13 +1276,13 @@ mod tests {
         assert_eq!(m.tool_count(), 0);
     }
 
-    #[test]
-    fn server_instructions_are_bounded_per_server() {
+    #[tokio::test]
+    async fn server_instructions_are_bounded_per_server() {
         let long = "x".repeat(MAX_SERVER_INSTRUCTION_BYTES * 3);
         let client = Arc::new(
             crate::client::MockMcpClient::new("chatty", Vec::new()).with_instructions(long.clone()),
         );
-        let m = McpManager::from_clients(vec![client]);
+        let m = McpManager::from_clients(vec![client]).await;
         let out = m.server_instructions();
         assert_eq!(out.len(), 1);
         assert!(
@@ -1066,8 +1296,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn server_instructions_are_bounded_in_total_across_servers() {
+    #[tokio::test]
+    async fn server_instructions_are_bounded_in_total_across_servers() {
         let long = "y".repeat(MAX_SERVER_INSTRUCTION_BYTES);
         let clients: Vec<crate::client::McpClientHandle> = (0..10)
             .map(|i| {
@@ -1077,7 +1307,7 @@ mod tests {
                 ) as crate::client::McpClientHandle
             })
             .collect();
-        let m = McpManager::from_clients(clients);
+        let m = McpManager::from_clients(clients).await;
         let total: usize = m
             .server_instructions()
             .iter()
@@ -1089,13 +1319,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn server_instructions_never_split_a_multibyte_character() {
+    #[tokio::test]
+    async fn server_instructions_never_split_a_multibyte_character() {
         // A byte-slice cut here would panic, since every character is 3 bytes.
         let long = "中".repeat(MAX_SERVER_INSTRUCTION_BYTES);
         let client =
             Arc::new(crate::client::MockMcpClient::new("cn", Vec::new()).with_instructions(long));
-        let m = McpManager::from_clients(vec![client]);
+        let m = McpManager::from_clients(vec![client]).await;
         let out = m.server_instructions();
         assert!(out[0].instructions.starts_with("中中"));
     }
@@ -1128,7 +1358,7 @@ mod tests {
                 ])
                 .with_prompt_body("review_pr", "Review PR {pr} in {repo}, carefully."),
         );
-        let mut m = McpManager::from_clients(vec![client]);
+        let mut m = McpManager::from_clients(vec![client]).await;
         m.refresh_prompts().await;
         m
     }
@@ -1173,7 +1403,7 @@ mod tests {
                 )])
                 .with_prompt_body("review_pr", "body"),
         );
-        let mut m = McpManager::from_clients(vec![client.clone()]);
+        let mut m = McpManager::from_clients(vec![client.clone()]).await;
         m.refresh_prompts().await;
 
         let out = m
@@ -1207,13 +1437,13 @@ mod tests {
                 .with_prompts(vec![prompt_meta("review_pr", vec![])])
                 .with_prompt_body("review_pr", "body"),
         );
-        let mut m = McpManager::from_clients(vec![up]);
+        let mut m = McpManager::from_clients(vec![up]).await;
         m.refresh_prompts().await;
         let entry = m.all_prompts().to_vec();
 
         let down = Arc::new(crate::client::MockMcpClient::new("github", Vec::new()).down())
             as crate::client::McpClientHandle;
-        let mut m = McpManager::from_clients(vec![down]);
+        let mut m = McpManager::from_clients(vec![down]).await;
         m.prompts = entry;
 
         let out = m.invoke_prompt_command("mcp__github__review_pr", "").await;
@@ -1242,7 +1472,7 @@ mod tests {
                 }])
                 .with_resource_text("doc://guide/install", "Run `cargo install agix`."),
         );
-        McpManager::from_clients(vec![client])
+        McpManager::from_clients(vec![client]).await
     }
 
     #[tokio::test]
@@ -1302,7 +1532,7 @@ mod tests {
     #[tokio::test]
     async fn a_down_server_degrades_to_a_visible_error_block() {
         let client = Arc::new(crate::client::MockMcpClient::new("docs", Vec::new()).down());
-        let m = McpManager::from_clients(vec![client]);
+        let m = McpManager::from_clients(vec![client]).await;
         let out = m
             .resolve_resource_refs("check @docs:doc://guide/install")
             .await
@@ -1318,7 +1548,7 @@ mod tests {
             crate::client::MockMcpClient::new("docs", Vec::new())
                 .with_resource_text("doc://huge", huge.clone()),
         );
-        let m = McpManager::from_clients(vec![client]);
+        let m = McpManager::from_clients(vec![client]).await;
         let out = m.resolve_resource_refs("@docs:doc://huge").await.unwrap();
         assert!(out.len() < huge.len());
         assert!(out.contains("[... truncated"));

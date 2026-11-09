@@ -423,6 +423,21 @@ WebAssembly 载体整个移除。
   `private_key_jwt`)或 `enterprise`(企业托管授权;身份经新方法 `mcp.auth.setIdentity` 给)。
 - MCP 策略文件多了两个可选键:`allowed_authorization_servers`(授权服务器 issuer 的 glob)与
   `enterprise_idp`。`daemon.doctor` 的 `mcp.policy` 详情相应多了这两项。
+- **MCP 工具名按 API 的规则造。** 工具名(与 prompt 斜杠命令)是 `mcp__<server>__<tool>`,
+  两段里 `[A-Za-z0-9_-]` 以外的字符换成 `_`;server 名有这种字符或长过 40 的,后面再接 `_`
+  加六位哈希(`my server` → `mcp__my_server_<hash>__…`);整个名字超过 64 时工具段截短并接哈希。
+  只用这些字符、不长的 server 名不变。名字怪的 server,权限规则要按新名字写,`MCP` 工具会列出
+  每个工具的名字。工具的 `inputSchema` 顶层不是 `type: object` 的,
+  按 object 报给模型。
+- **MCP 有了时限。** `mcp_servers.<name>` 可带 `startup_timeout_ms` / `tool_timeout_ms`;
+  缺省取环境变量 `MCP_TIMEOUT` / `MCP_TOOL_TIMEOUT`,再缺省 30 秒 / 10 分钟。握手不回、只回
+  非 JSON 的 server 到时被停掉、报 `mcp_connect_failed`,不再把会话创建卡死;工具调用超时在
+  server 端取消,报错。会话创建最多等 MCP 10 秒,没连完的后台接着连,连上后发 `mcp_connected`,
+  会话在下一轮前换上。
+- **MCP 工具调用断在途中不再重发。** server 在调用中途退出,这次调用报错(以前重连后再发一次,
+  有副作用的工具会执行两遍);下一个请求重连。
+- `mcp.status` 的 `state` 多了 `disconnected`、`connecting`、`failed`(带 `error`);
+  `mcp_connect_failed` 的 `error` 写明原因,不再是"看 daemon 日志"。
 
 ### 嵌入方
 
@@ -462,6 +477,14 @@ WebAssembly 载体整个移除。
 - `McpManager::connect_all_with_oauth` 换成 `connect_all_with(servers, env, auth: Option<Arc<McpAuth>>)`;
   新增 `share()`(会话用的、共享连接的那一份)、`pending()`(等登录的 server)。
   `McpError` 多了 `AuthRequired` / `InsufficientScope`。
+- `McpManager::from_clients` 改成 `async`,读好工具与 prompt 再返回。新增
+  `connect_all_within(.., wait)`(到点先返回,其余经 `LateConnects` / `absorb()` 陆续进来)、
+  `connecting()`、`failed()`;`ServerStatus` 多了 `connected`。
+- `McpServerConfig` 每个变体多了 `timeouts: McpTimeouts`(`#[serde(flatten)]`;结构体字面量要补
+  `timeouts: Default::default()`)。`McpError` 多了 `ConnectionLost`、`Timeout`;
+  `McpClient` 多了带默认实现的 `is_connected()`。
+- 新模块 `mcp::naming`(`tool_name`、`tool_names`、`server_segment`);
+  `mcp::prompts::{split_command_name, MCP_COMMAND_PREFIX}` 删除,`McpToolAdapter` 多了 `named()`。
 - rmcp 升到 3.9,开了 `auth`、`auth-client-credentials-jwt`、`auth-enterprise-managed`。
 - `Assembly` 多了 `mcp_enterprise_idp: Option<mcp::config::EnterpriseIdp>`;`McpPolicy` 多了
   `allowed_authorization_servers`、`enterprise_idp` 两个字段(结构体字面量要补,或用

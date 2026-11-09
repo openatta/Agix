@@ -1,8 +1,8 @@
 //! MCP prompts → slash commands.
 //!
 //! An MCP server's `prompts/list` entries are exposed to the user as slash
-//! commands named `mcp__<server>__<prompt>` (the same naming scheme the tool
-//! adapters already use — see `adapter.rs`). Invoking one runs `prompts/get`
+//! commands named `mcp__<server>__<prompt>` (the same names the tool
+//! adapters get — see [`crate::naming`]). Invoking one runs `prompts/get`
 //! on the owning server and the rendered messages are injected into the
 //! conversation as the user turn's content.
 //!
@@ -35,9 +35,6 @@ use crate::client::McpPromptArg;
 use std::collections::HashMap;
 use std::fmt;
 
-/// Prefix shared by MCP-derived tool and prompt names.
-pub const MCP_COMMAND_PREFIX: &str = "mcp__";
-
 /// An MCP server prompt exposed as a slash command.
 #[derive(Debug, Clone)]
 pub struct McpPromptEntry {
@@ -53,7 +50,7 @@ impl McpPromptEntry {
     /// The slash command name this prompt is registered under:
     /// `mcp__<server>__<prompt>` (no leading `/`).
     pub fn command_name(&self) -> String {
-        format!("{MCP_COMMAND_PREFIX}{}__{}", self.server, self.name)
+        crate::naming::tool_name(&self.server, &self.name)
     }
 
     /// A one-line `argument_hint`-style summary for `/help` output.
@@ -70,19 +67,6 @@ impl McpPromptEntry {
             .collect::<Vec<_>>()
             .join(" ")
     }
-}
-
-/// Split a `mcp__<server>__<prompt>` command name back into its parts.
-/// Returns `None` for names that don't follow the scheme.
-pub fn split_command_name(command: &str) -> Option<(&str, &str)> {
-    let rest = command.strip_prefix(MCP_COMMAND_PREFIX)?;
-    // Server names can't contain `__` (they're config keys); split on the
-    // *first* `__` so prompt names containing `__` still round-trip.
-    let (server, prompt) = rest.split_once("__")?;
-    if server.is_empty() || prompt.is_empty() {
-        return None;
-    }
-    Some((server, prompt))
 }
 
 /// Why a slash command's argument string could not be mapped onto a prompt's
@@ -326,16 +310,13 @@ mod tests {
     }
 
     #[test]
-    fn split_command_name_round_trips() {
+    fn an_odd_server_name_makes_the_command_its_tools_are_named_like() {
+        let mut e = entry();
+        e.server = "issue tracker".into();
         assert_eq!(
-            split_command_name("mcp__github__review_pr"),
-            Some(("github", "review_pr"))
+            e.command_name(),
+            crate::naming::tool_name("issue tracker", "review_pr")
         );
-        // Prompt names may themselves contain `__`.
-        assert_eq!(split_command_name("mcp__srv__a__b"), Some(("srv", "a__b")));
-        assert_eq!(split_command_name("review_pr"), None);
-        assert_eq!(split_command_name("mcp__github"), None);
-        assert_eq!(split_command_name("mcp____x"), None);
     }
 
     #[test]

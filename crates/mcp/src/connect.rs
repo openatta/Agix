@@ -3,17 +3,24 @@
 //! 注：rmcp 把 RunningService 暴露成 generic over transport；我们用 trait
 //! object 屏蔽，让上层只看 `dyn McpClient`。
 //!
+//! ## 时限
+//!
+//! 起 server 加握手、以及工具调用以外的每个请求，受 server 的启动时限约束；
+//! `tools/call` 受工具时限约束（见 [`crate::config::McpTimeouts`]）。超时的请求在
+//! server 端被取消（rmcp 发 `notifications/cancelled`），连接本身留着。
+//!
 //! ## 重连策略
 //!
 //! Server 子进程 crash 或管道断了之后：
-//! - **检测**：list_tools / call_tool 拿到 transport-shape 的错误（rmcp 报错文本
-//!   含 `closed` / `eof` / `broken` 或我们自己看到 inner=None）
-//! - **重连**：drop 旧 service → 用原 config 重 spawn 子进程 → 重做 MCP 握手
-//! - **节流**：两次 reconnect 至少隔 [`MIN_RECONNECT_INTERVAL`]；连续失败超
-//!   [`MAX_CONSECUTIVE_FAILURES`] 之后回到 NotConnected，留给下次显式调用再试
+//! - **检测**：请求在途时连接断开（rmcp 报 `TransportClosed` / `TransportSend`）
+//!   → 丢掉这条连接，报 [`McpError::ConnectionLost`]；或发请求前就看到连接已关
+//! - **重连**：下一个请求发出前用原 config 重 spawn 子进程、重做 MCP 握手
+//! - **不重放工具调用**：断在途中的 `tools/call` 可能已经执行过，只报错；
+//!   只读的 list / read / get 断在途中会在新连接上再问一次
+//! - **节流**：两次 reconnect 至少隔 [`MIN_RECONNECT_INTERVAL`]；连续失败到
+//!   [`MAX_CONSECUTIVE_FAILURES`] 次后报 NotConnected，过 [`FAILURE_COOLDOWN`]
+//!   再试
 //! - **不做主动 keepalive**：纯 lazy 检测；下个请求触发恢复
-//!
-//! 见 agix-mcp/AGIX.md。
 
 use crate::client::{
     McpCallResult, McpClient, McpContent, McpPromptArg, McpPromptMeta, McpResourceMeta, McpToolMeta,
@@ -31,8 +38,10 @@ use tracing::{debug, info, warn};
 
 /// 两次自动 reconnect 之间至少这么久 —— 防 server 启动慢时被洪水重连击垮
 const MIN_RECONNECT_INTERVAL: Duration = Duration::from_millis(500);
-/// 连续 reconnect 失败超过这个数就放弃，转 NotConnected
+/// 连续 reconnect 失败到这个数就先不再试，转 NotConnected
 const MAX_CONSECUTIVE_FAILURES: u32 = 3;
+/// 放弃之后隔这么久，下一个请求再试一次
+const FAILURE_COOLDOWN: Duration = Duration::from_secs(30);
 const MAX_MCP_DESCRIPTION_LENGTH: usize = 10_000;
 
 /// Clamp what a single server may hand us at initialize time.
@@ -60,9 +69,11 @@ pub struct StdioMcpClient {
     server_name: String,
     config: McpServerConfig,
     instructions: Option<String>,
-    inner: Mutex<
-        Option<rmcp::service::RunningService<rmcp::RoleClient, crate::notify::NotifyingHandler>>,
-    >,
+    /// Shared out per request rather than held across it, so one slow call
+    /// does not queue every other request to the same server behind it.
+    inner: Mutex<Option<Arc<Service>>>,
+    /// Also what serializes reconnects: two requests that find the
+    /// connection gone make one new one between them.
     last_reconnect_at: Mutex<Option<Instant>>,
     consecutive_failures: AtomicU32,
     /// Kept so a reconnect rebuilds the same notification wiring — a server
@@ -119,7 +130,7 @@ impl StdioMcpClient {
         env_policy: base::interface::exec::local::SubprocessEnv,
         auth: Option<Arc<crate::oauth::McpAuth>>,
     ) -> Result<Arc<Self>, McpError> {
-        let spawned = spawn_service(
+        let spawned = spawn_service_within(
             server_name,
             config,
             sink.clone(),
@@ -136,7 +147,7 @@ impl StdioMcpClient {
             server_name: server_name.into(),
             config: config.clone(),
             instructions,
-            inner: Mutex::new(Some(spawned.service)),
+            inner: Mutex::new(Some(Arc::new(spawned.service))),
             last_reconnect_at: Mutex::new(None),
             consecutive_failures: AtomicU32::new(0),
             sink,
@@ -153,38 +164,136 @@ impl StdioMcpClient {
     /// 主动关连接 —— shutdown 子进程。
     pub async fn shutdown(&self) {
         if let Some(svc) = self.inner.lock().await.take() {
-            let _ = svc.cancel().await;
+            close(svc).await;
         }
     }
 
-    /// 把 inner 里残留的死 service 丢掉，用原 config 重 spawn 一份。
-    /// 节流 + 失败计数；超阈值返回 NotConnected。
-    async fn try_reconnect(&self) -> Result<(), McpError> {
-        let fails = self.consecutive_failures.load(Ordering::SeqCst);
-        if fails >= MAX_CONSECUTIVE_FAILURES {
-            return Err(McpError::NotConnected {
-                name: self.server_name.clone(),
-            });
+    /// Whether the connection is up as far as this client last saw: a
+    /// server that died since is found out here only once its pipe closed.
+    pub fn is_connected(&self) -> bool {
+        match self.inner.try_lock() {
+            Ok(guard) => guard.as_deref().is_some_and(is_open),
+            Err(_) => true,
         }
+    }
 
-        // 节流：上次 reconnect 还不到 MIN_RECONNECT_INTERVAL 的话先等
-        {
-            let mut last = self.last_reconnect_at.lock().await;
-            if let Some(t) = *last {
-                let since = t.elapsed();
-                if since < MIN_RECONNECT_INTERVAL {
-                    tokio::time::sleep(MIN_RECONNECT_INTERVAL - since).await;
+    async fn current(&self) -> Option<Arc<Service>> {
+        self.inner
+            .lock()
+            .await
+            .as_ref()
+            .filter(|svc| is_open(svc))
+            .cloned()
+    }
+
+    /// The connection to send a request on, made anew first when there is
+    /// none or it has closed — a request that has not gone out yet is the
+    /// one kind a new connection may take without anything running twice.
+    async fn service(&self) -> Result<Arc<Service>, McpError> {
+        if let Some(svc) = self.current().await {
+            return Ok(svc);
+        }
+        self.try_reconnect().await?;
+        self.current().await.ok_or_else(|| McpError::NotConnected {
+            name: self.server_name.clone(),
+        })
+    }
+
+    /// Stop using `svc`, unless a reconnect already replaced it.
+    async fn lose(&self, svc: &Arc<Service>) {
+        let mut guard = self.inner.lock().await;
+        if guard.as_ref().is_some_and(|cur| Arc::ptr_eq(cur, svc)) {
+            if let Some(old) = guard.take() {
+                drop(guard);
+                close(old).await;
+            }
+        }
+    }
+
+    /// Await one request on `svc` within `limit`. A connection that drops
+    /// under it is given up, so the next request makes a new one.
+    async fn request<T>(
+        &self,
+        op: &'static str,
+        limit: Duration,
+        svc: &Arc<Service>,
+        fut: impl std::future::Future<Output = Result<T, rmcp::ServiceError>>,
+    ) -> Result<T, McpError> {
+        match tokio::time::timeout(limit, fut).await {
+            Ok(Ok(v)) => Ok(v),
+            Ok(Err(e)) => {
+                let dropped = connection_dropped(&e);
+                match service_error(&self.server_name, op, e) {
+                    McpError::RmcpService(_) if dropped => {
+                        self.lose(svc).await;
+                        Err(McpError::ConnectionLost {
+                            name: self.server_name.clone(),
+                            op,
+                        })
+                    }
+                    other => Err(other),
                 }
             }
-            *last = Some(Instant::now());
+            Err(_) => Err(McpError::Timeout {
+                name: self.server_name.clone(),
+                op,
+                after: limit,
+            }),
+        }
+    }
+
+    fn request_limit(&self) -> Duration {
+        self.config.timeouts().startup()
+    }
+
+    /// A read that may be asked again: one whose connection dropped under
+    /// it is, on a new connection.
+    async fn read_again_if_dropped<T, F, Fut>(&self, op: F) -> Result<T, McpError>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<T, McpError>>,
+    {
+        match self.authorized(&op).await {
+            Err(McpError::ConnectionLost { .. }) => {
+                warn!(server = %self.server_name, "MCP connection dropped during a read; asking again");
+                self.authorized(op).await
+            }
+            other => other,
+        }
+    }
+
+    /// 用原 config 重 spawn 一份连接，替掉已经关了的那份。
+    /// 节流 + 失败计数；失败到阈值后先报 NotConnected，冷却过后再试。
+    async fn try_reconnect(&self) -> Result<(), McpError> {
+        let mut last = self.last_reconnect_at.lock().await;
+        if self.current().await.is_some() {
+            return Ok(());
+        }
+        let mut fails = self.consecutive_failures.load(Ordering::SeqCst);
+        if fails >= MAX_CONSECUTIVE_FAILURES {
+            if last.is_some_and(|t| t.elapsed() >= FAILURE_COOLDOWN) {
+                fails = 0;
+                self.consecutive_failures.store(0, Ordering::SeqCst);
+            } else {
+                return Err(McpError::NotConnected {
+                    name: self.server_name.clone(),
+                });
+            }
         }
 
-        // 先把旧 service 清掉（cancel 会 kill 子进程）
+        if let Some(t) = *last {
+            let since = t.elapsed();
+            if since < MIN_RECONNECT_INTERVAL {
+                tokio::time::sleep(MIN_RECONNECT_INTERVAL - since).await;
+            }
+        }
+        *last = Some(Instant::now());
+
         if let Some(old) = self.inner.lock().await.take() {
-            let _ = old.cancel().await;
+            close(old).await;
         }
 
-        match spawn_service(
+        match spawn_service_within(
             &self.server_name,
             &self.config,
             self.sink.clone(),
@@ -194,7 +303,7 @@ impl StdioMcpClient {
         .await
         {
             Ok(spawned) => {
-                *self.inner.lock().await = Some(spawned.service);
+                *self.inner.lock().await = Some(Arc::new(spawned.service));
                 self.authorized.store(spawned.authorized, Ordering::SeqCst);
                 self.consecutive_failures.store(0, Ordering::SeqCst);
                 debug!(server = %self.server_name, "MCP server reconnected");
@@ -283,14 +392,15 @@ impl StdioMcpClient {
     }
 
     async fn list_tools_inner(&self) -> Result<Vec<McpToolMeta>, McpError> {
-        let guard = self.inner.lock().await;
-        let svc = guard.as_ref().ok_or_else(|| McpError::NotConnected {
-            name: self.server_name.clone(),
-        })?;
-        let list = svc
-            .list_tools(Default::default())
-            .await
-            .map_err(|e| service_error(&self.server_name, "list_tools", e))?;
+        let svc = self.service().await?;
+        let list = self
+            .request(
+                "list_tools",
+                self.request_limit(),
+                &svc,
+                svc.list_tools(Default::default()),
+            )
+            .await?;
         Ok(list
             .tools
             .into_iter()
@@ -315,16 +425,16 @@ impl StdioMcpClient {
         tool_name: &str,
         args: serde_json::Map<String, serde_json::Value>,
     ) -> Result<McpCallResult, McpError> {
-        let guard = self.inner.lock().await;
-        let svc = guard.as_ref().ok_or_else(|| McpError::NotConnected {
-            name: self.server_name.clone(),
-        })?;
-
+        let svc = self.service().await?;
         let req = CallToolRequestParams::new(tool_name.to_string()).with_arguments(args);
-        let result = svc
-            .call_tool(req)
-            .await
-            .map_err(|e| service_error(&self.server_name, "call_tool", e))?;
+        let result = self
+            .request(
+                "call_tool",
+                self.config.timeouts().tool(),
+                &svc,
+                svc.call_tool(req),
+            )
+            .await?;
 
         let mut content_blocks = Vec::new();
         for c in result.content.iter() {
@@ -339,15 +449,16 @@ impl StdioMcpClient {
     }
 
     async fn list_resources_inner(&self) -> Result<Vec<McpResourceMeta>, McpError> {
-        let guard = self.inner.lock().await;
-        let svc = guard.as_ref().ok_or_else(|| McpError::NotConnected {
-            name: self.server_name.clone(),
-        })?;
+        let svc = self.service().await?;
         // rmcp 的 list_all_resources 自动分页直到拿完
-        let resources = svc
-            .list_all_resources()
-            .await
-            .map_err(|e| service_error(&self.server_name, "list_resources", e))?;
+        let resources = self
+            .request(
+                "list_resources",
+                self.request_limit(),
+                &svc,
+                svc.list_all_resources(),
+            )
+            .await?;
         Ok(resources
             .into_iter()
             .map(|r| McpResourceMeta {
@@ -361,14 +472,15 @@ impl StdioMcpClient {
 
     async fn read_resource_inner(&self, uri: &str) -> Result<Vec<McpContent>, McpError> {
         use rmcp::model::ReadResourceRequestParams;
-        let guard = self.inner.lock().await;
-        let svc = guard.as_ref().ok_or_else(|| McpError::NotConnected {
-            name: self.server_name.clone(),
-        })?;
-        let result = svc
-            .read_resource(ReadResourceRequestParams::new(uri))
-            .await
-            .map_err(|e| service_error(&self.server_name, "read_resource", e))?;
+        let svc = self.service().await?;
+        let result = self
+            .request(
+                "read_resource",
+                self.request_limit(),
+                &svc,
+                svc.read_resource(ReadResourceRequestParams::new(uri)),
+            )
+            .await?;
         // rmcp ReadResourceResult.contents 是 Vec<ResourceContents>；转成我们的 McpContent
         let mut out = Vec::new();
         for c in result.contents {
@@ -393,14 +505,15 @@ impl StdioMcpClient {
     }
 
     async fn list_prompts_inner(&self) -> Result<Vec<McpPromptMeta>, McpError> {
-        let guard = self.inner.lock().await;
-        let svc = guard.as_ref().ok_or_else(|| McpError::NotConnected {
-            name: self.server_name.clone(),
-        })?;
-        let prompts = svc
-            .list_all_prompts()
-            .await
-            .map_err(|e| service_error(&self.server_name, "list_prompts", e))?;
+        let svc = self.service().await?;
+        let prompts = self
+            .request(
+                "list_prompts",
+                self.request_limit(),
+                &svc,
+                svc.list_all_prompts(),
+            )
+            .await?;
         Ok(prompts
             .into_iter()
             .map(|p| McpPromptMeta {
@@ -427,11 +540,7 @@ impl StdioMcpClient {
     ) -> Result<String, McpError> {
         use rmcp::model::GetPromptRequestParams;
 
-        let guard = self.inner.lock().await;
-        let svc = guard.as_ref().ok_or_else(|| McpError::NotConnected {
-            name: self.server_name.clone(),
-        })?;
-
+        let svc = self.service().await?;
         let mut params = GetPromptRequestParams::new(prompt_name);
         if !args.is_empty() {
             let mut json_args = rmcp::model::JsonObject::new();
@@ -441,10 +550,14 @@ impl StdioMcpClient {
             params = params.with_arguments(json_args);
         }
 
-        let result = svc
-            .get_prompt(params)
-            .await
-            .map_err(|e| service_error(&self.server_name, "get_prompt", e))?;
+        let result = self
+            .request(
+                "get_prompt",
+                self.request_limit(),
+                &svc,
+                svc.get_prompt(params),
+            )
+            .await?;
 
         Ok(render_prompt_result(result))
     }
@@ -464,19 +577,12 @@ impl McpClient for StdioMcpClient {
         self.instructions.as_deref()
     }
 
+    fn is_connected(&self) -> bool {
+        StdioMcpClient::is_connected(self)
+    }
+
     async fn list_tools(&self) -> Result<Vec<McpToolMeta>, McpError> {
-        match self.authorized(|| self.list_tools_inner()).await {
-            Err(e) if is_transport_error(&e) => {
-                warn!(
-                    server = %self.server_name,
-                    error = %e,
-                    "MCP list_tools transport error; attempting reconnect"
-                );
-                self.try_reconnect().await?;
-                self.authorized(|| self.list_tools_inner()).await
-            }
-            other => other,
-        }
+        self.read_again_if_dropped(|| self.list_tools_inner()).await
     }
 
     async fn call_tool(
@@ -484,32 +590,28 @@ impl McpClient for StdioMcpClient {
         tool_name: &str,
         args: serde_json::Map<String, serde_json::Value>,
     ) -> Result<McpCallResult, McpError> {
-        let call = || self.call_tool_inner(tool_name, args.clone());
-        match self.authorized(call).await {
-            Err(e) if is_transport_error(&e) => {
-                warn!(
-                    server = %self.server_name,
-                    tool = tool_name,
-                    error = %e,
-                    "MCP call_tool transport error; attempting reconnect"
-                );
-                self.try_reconnect().await?;
-                self.authorized(call).await
-            }
-            other => other,
+        let result = self
+            .authorized(|| self.call_tool_inner(tool_name, args.clone()))
+            .await;
+        if let Err(e @ (McpError::ConnectionLost { .. } | McpError::Timeout { .. })) = &result {
+            warn!(server = %self.server_name, tool = tool_name, error = %e, "MCP tool call failed; not repeated");
         }
+        result
     }
 
     async fn list_resources(&self) -> Result<Vec<McpResourceMeta>, McpError> {
-        self.authorized(|| self.list_resources_inner()).await
+        self.read_again_if_dropped(|| self.list_resources_inner())
+            .await
     }
 
     async fn read_resource(&self, uri: &str) -> Result<Vec<McpContent>, McpError> {
-        self.authorized(|| self.read_resource_inner(uri)).await
+        self.read_again_if_dropped(|| self.read_resource_inner(uri))
+            .await
     }
 
     async fn list_prompts(&self) -> Result<Vec<McpPromptMeta>, McpError> {
-        self.authorized(|| self.list_prompts_inner()).await
+        self.read_again_if_dropped(|| self.list_prompts_inner())
+            .await
     }
 
     async fn get_prompt(
@@ -517,7 +619,7 @@ impl McpClient for StdioMcpClient {
         prompt_name: &str,
         args: &std::collections::HashMap<String, String>,
     ) -> Result<String, McpError> {
-        self.authorized(|| self.get_prompt_inner(prompt_name, args))
+        self.read_again_if_dropped(|| self.get_prompt_inner(prompt_name, args))
             .await
     }
 }
@@ -552,6 +654,28 @@ fn render_prompt_result(result: rmcp::model::GetPromptResult) -> String {
 
 type Service = rmcp::service::RunningService<rmcp::RoleClient, crate::notify::NotifyingHandler>;
 
+fn is_open(svc: &Service) -> bool {
+    !svc.is_closed() && !svc.peer().is_transport_closed()
+}
+
+async fn close(svc: Arc<Service>) {
+    match Arc::try_unwrap(svc) {
+        Ok(svc) => {
+            let _ = svc.cancel().await;
+        }
+        Err(shared) => shared.cancellation_token().cancel(),
+    }
+}
+
+/// The connection went away with the request on it, so whether the server
+/// got the request cannot be told.
+fn connection_dropped(e: &rmcp::ServiceError) -> bool {
+    matches!(
+        e,
+        rmcp::ServiceError::TransportClosed | rmcp::ServiceError::TransportSend(_)
+    )
+}
+
 struct Spawned {
     service: Service,
     /// The connection sends an OAuth token.
@@ -565,6 +689,29 @@ impl From<Service> for Spawned {
             authorized: false,
         }
     }
+}
+
+/// [`spawn_service`] within the server's startup limit. A server that does
+/// not finish its handshake in time is stopped: dropping the half-made
+/// connection kills a stdio server's process group.
+async fn spawn_service_within(
+    server_name: &str,
+    config: &McpServerConfig,
+    sink: Option<crate::notify::NotificationSink>,
+    env_policy: &base::interface::exec::local::SubprocessEnv,
+    auth: Option<&crate::oauth::McpAuth>,
+) -> Result<Spawned, McpError> {
+    let limit = config.timeouts().startup();
+    tokio::time::timeout(
+        limit,
+        spawn_service(server_name, config, sink, env_policy, auth),
+    )
+    .await
+    .unwrap_or(Err(McpError::Timeout {
+        name: server_name.into(),
+        op: "initialize",
+        after: limit,
+    }))
 }
 
 /// 根据 server config 起一个新 rmcp service（连过 + 握手完成）。
@@ -842,32 +989,6 @@ fn service_error(server_name: &str, op: &str, e: rmcp::ServiceError) -> McpError
         }
     }
     McpError::RmcpService(format!("{op}: {e}"))
-}
-
-/// 启发式判断：错误是不是 transport / connectivity 类（值得重连）vs
-/// 真正的 RPC / schema / business 错（不该重连）。
-///
-/// 假阳性的代价：多 spawn 一次子进程（轻）。假阴性的代价：用户错过自动恢复
-/// （重）。所以这里偏宽松。
-pub(crate) fn is_transport_error(e: &McpError) -> bool {
-    match e {
-        McpError::NotConnected { .. } => true,
-        McpError::RmcpService(msg) => {
-            let m = msg.to_ascii_lowercase();
-            [
-                "closed",
-                "eof",
-                "broken pipe",
-                "connection",
-                "channel",
-                "timeout",
-            ]
-            .iter()
-            .any(|k| m.contains(k))
-        }
-        McpError::Transport(_) => true,
-        _ => false,
-    }
 }
 
 /// 把 rmcp::model::ContentBlock 转成我们的 McpContent。
@@ -1159,6 +1280,118 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    /// `/bin/sh` speaking just enough MCP: it answers the handshake and
+    /// `tools/list`, answers a call to `ping`, and never answers a call to
+    /// anything else.
+    #[cfg(unix)]
+    fn sh_server(dir: &std::path::Path, timeouts: crate::config::McpTimeouts) -> McpServerConfig {
+        let script = dir.join("server.sh");
+        std::fs::write(
+            &script,
+            r#"while IFS= read -r line; do
+  id=$(printf '%s' "$line" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sh","version":"0"}}}\n' "$id" ;;
+    *'"method":"tools/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[]}}\n' "$id" ;;
+    *'"name":"ping"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"pong"}]}}\n' "$id" ;;
+  esac
+done
+"#,
+        )
+        .unwrap();
+        McpServerConfig::Stdio {
+            command: "/bin/sh".into(),
+            args: vec![script.to_string_lossy().into_owned()],
+            env: HashMap::new(),
+            scope: None,
+            timeouts,
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_server_that_never_finishes_its_handshake_is_given_up_on_in_time() {
+        let cfg = McpServerConfig::Stdio {
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), "while IFS= read -r line; do :; done".into()],
+            env: HashMap::new(),
+            scope: None,
+            timeouts: crate::config::McpTimeouts {
+                startup_timeout_ms: Some(300),
+                ..Default::default()
+            },
+        };
+        let started = Instant::now();
+        let err = StdioMcpClient::connect("mute", &cfg).await.err().unwrap();
+        assert!(
+            matches!(
+                err,
+                McpError::Timeout {
+                    op: "initialize",
+                    ..
+                }
+            ),
+            "{err}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_tool_call_past_its_limit_fails_and_the_connection_stays() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = sh_server(
+            dir.path(),
+            crate::config::McpTimeouts {
+                tool_timeout_ms: Some(300),
+                ..Default::default()
+            },
+        );
+        let client = StdioMcpClient::connect("sh", &cfg).await.unwrap();
+        let err = client
+            .call_tool("hang", Default::default())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                McpError::Timeout {
+                    op: "call_tool",
+                    ..
+                }
+            ),
+            "{err}"
+        );
+        assert!(client.is_connected());
+        let pong = client.call_tool("ping", Default::default()).await.unwrap();
+        assert!(matches!(&pong.content[..], [McpContent::Text(t)] if t == "pong"));
+        client.shutdown().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_server_that_died_is_seen_as_disconnected_and_reconnected_for_the_next_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = sh_server(dir.path(), Default::default());
+        let client = StdioMcpClient::connect("sh", &cfg).await.unwrap();
+        let svc = client.current().await.unwrap();
+        svc.cancellation_token().cancel();
+        for _ in 0..100 {
+            if !client.is_connected() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(!client.is_connected());
+        let pong = client.call_tool("ping", Default::default()).await.unwrap();
+        assert!(matches!(&pong.content[..], [McpContent::Text(t)] if t == "pong"));
+        assert!(client.is_connected());
+        client.shutdown().await;
+    }
+
     /// A stdio server is a child process like any other, and starts under the
     /// environment policy of the settings it was declared in.
     #[cfg(unix)]
@@ -1172,6 +1405,7 @@ mod tests {
             args: vec!["-c".into(), format!("env > '{}'", out.display())],
             env: HashMap::new(),
             scope: None,
+            timeouts: Default::default(),
         };
         let policy = SubprocessEnv {
             mode: SubprocessEnvMode::Allowlist,
@@ -1197,43 +1431,15 @@ mod tests {
     }
 
     #[test]
-    fn is_transport_error_for_not_connected() {
-        let e = McpError::NotConnected { name: "x".into() };
-        assert!(is_transport_error(&e));
-    }
-
-    #[test]
-    fn is_transport_error_for_transport_variant() {
-        let e = McpError::Transport(anyhow::anyhow!("any"));
-        assert!(is_transport_error(&e));
-    }
-
-    #[test]
-    fn is_transport_error_for_rmcp_with_eof_msg() {
-        let e = McpError::RmcpService("connection closed by peer".into());
-        assert!(is_transport_error(&e));
-        let e = McpError::RmcpService("read EOF unexpectedly".into());
-        assert!(is_transport_error(&e));
-        let e = McpError::RmcpService("broken pipe writing to child".into());
-        assert!(is_transport_error(&e));
-    }
-
-    #[test]
-    fn is_transport_error_skips_genuine_rpc_errors() {
-        // 业务错误：tool 抛 ValidationError —— 不该重连
-        let e = McpError::RmcpService("tool returned validation error: bad arg".into());
-        assert!(!is_transport_error(&e));
-    }
-
-    #[test]
-    fn is_transport_error_skips_unknown_tool_and_schema() {
-        let e = McpError::UnknownTool {
-            name: "x".into(),
-            tool: "y".into(),
-        };
-        assert!(!is_transport_error(&e));
-        let e = McpError::Schema(serde_json::from_str::<()>("not json").unwrap_err());
-        assert!(!is_transport_error(&e));
+    fn only_a_connection_that_went_away_counts_as_dropped() {
+        assert!(connection_dropped(&rmcp::ServiceError::TransportClosed));
+        assert!(!connection_dropped(&rmcp::ServiceError::Timeout {
+            timeout: Duration::from_secs(1)
+        }));
+        assert!(!connection_dropped(&rmcp::ServiceError::UnexpectedResponse));
+        assert!(!connection_dropped(&rmcp::ServiceError::Cancelled {
+            reason: None
+        }));
     }
 
     #[test]
@@ -1245,6 +1451,7 @@ mod tests {
                 args: Vec::new(),
                 env: HashMap::new(),
                 scope: None,
+                timeouts: Default::default(),
             },
             instructions: None,
             inner: tokio::sync::Mutex::new(None),
@@ -1267,6 +1474,7 @@ mod tests {
                 headers: HashMap::new(),
                 oauth: None,
                 scope: None,
+                timeouts: Default::default(),
             },
             instructions: None,
             inner: tokio::sync::Mutex::new(None),
@@ -1281,9 +1489,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_prompt_errors_not_connected_when_no_session() {
+    async fn get_prompt_errors_when_the_server_cannot_be_reached() {
         // `get_prompt` 和其他真实方法（`list_prompts`/`read_resource`）一样，
-        // 未连接时报 `NotConnected`，而不是伪装成功。
+        // 连不上时报错，而不是伪装成功。
         let client = StdioMcpClient {
             server_name: "x".into(),
             config: McpServerConfig::Stdio {
@@ -1291,6 +1499,7 @@ mod tests {
                 args: Vec::new(),
                 env: HashMap::new(),
                 scope: None,
+                timeouts: Default::default(),
             },
             instructions: None,
             inner: tokio::sync::Mutex::new(None),
@@ -1305,7 +1514,13 @@ mod tests {
             .get_prompt("some-prompt", &HashMap::new())
             .await
             .unwrap_err();
-        assert!(matches!(err, McpError::NotConnected { .. }), "err: {err:?}");
+        assert!(
+            matches!(
+                err,
+                McpError::NotConnected { .. } | McpError::ConnectFailed { .. }
+            ),
+            "err: {err:?}"
+        );
     }
 
     fn text_message(role: rmcp::model::Role, text: &str) -> rmcp::model::PromptMessage {
@@ -1361,6 +1576,7 @@ mod tests {
                 args: Vec::new(),
                 env: HashMap::new(),
                 scope: None,
+                timeouts: Default::default(),
             },
             instructions: None,
             inner: tokio::sync::Mutex::new(None),
@@ -1416,6 +1632,7 @@ mod tests {
                 url: "ws://localhost:8080/mcp".into(),
                 headers: HashMap::new(),
                 scope: None,
+                timeouts: Default::default(),
             },
             instructions: None,
             inner: tokio::sync::Mutex::new(None),
@@ -1438,6 +1655,7 @@ mod tests {
                     url: "ws://localhost:8080/mcp".into(),
                     headers: HashMap::new(),
                     scope: None,
+                    timeouts: Default::default(),
                 },
                 instructions: None,
                 inner: tokio::sync::Mutex::new(None),
@@ -1465,6 +1683,7 @@ mod tests {
                     args: vec![],
                     env: HashMap::new(),
                     scope: None,
+                    timeouts: Default::default(),
                 },
                 instructions: Some("test".into()),
                 inner: tokio::sync::Mutex::new(None),

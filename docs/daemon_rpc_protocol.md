@@ -1913,10 +1913,11 @@ daemon 自己那一对,给路径 = 它服务的另一个项目,`null` → `INVAL
 | `state` | 意思 |
 |---|---|
 | `connected` | 连上了 |
+| `disconnected` | 连上过,连接后来断了(进程退出、管道关闭);下一个请求先重连。断在途中的工具调用报错,不重发 |
+| `connecting` | 还在连。会话创建最多等 10 秒,没连完的在后台接着连,连上后发 `mcp_connected`,这个项目的会话在下一轮之前换上它 |
 | `auth_required` | 远端 server 要求 OAuth 登录(回了 401),还没登录或令牌已失效;没有工具,`tool_count` 为 0。用 `mcp.auth.start` 登录 |
+| `failed` | 没连上(进程起不来、握手失败或超时),另带 `error` 说明原因 |
 | `denied` | MCP 策略(`ARCHITECTURE.md` §6.4)拒绝了它,`tool_count` 为 0,另带 `error` 说明是哪份策略、哪条规则 |
-
-没连上的其他原因(进程起不来、握手失败)不在这里,看 `mcp_connect_failed` 通知和 daemon 日志。
 
 `auth` 每个元素都有,是这个 server 的授权状态(`mcp_auth.md` §2):`state` 为
 `none` / `required` / `authorizing` / `authorized` / `failed`;按需带 `issuer`、`scopes`
@@ -1935,7 +1936,9 @@ scope(403 `insufficient_scope`),现有令牌对别的请求仍然有效。
 `config` 是一个 `McpServerConfig`,按 `type` 标签联合:`stdio` / `streamable_http` /
 `sse` / `websocket` / `in_process`;`streamable_http` / `sse` 可以带 `oauth` 块
 (`mcp_auth.md` §1),带 `oauth_provider` 的配置被拒绝(`INVALID_PARAMS`,message 给出 `oauth`
-的写法)。写进项目层 settings.json 并**立刻尝试连接**,成功与否都会发一条
+的写法)。每种都可以带 `startup_timeout_ms`(起进程加握手,以及工具调用以外的每个请求;默认取
+环境变量 `MCP_TIMEOUT`,再缺省 30000)与 `tool_timeout_ms`(一次工具调用;默认取
+`MCP_TOOL_TIMEOUT`,再缺省 600000),超时的请求在 server 端被取消。写进项目层 settings.json 并**立刻尝试连接**,成功与否都会发一条
 `mcp_connected` / `mcp_connect_failed` 的 `daemon.event`;要求登录的 server 发
 `mcp_auth_required`,在响应的 `servers` 里是 `state: "auth_required"`。
 
@@ -2332,7 +2335,7 @@ WebAssembly 组件,场景改用 `[scene] dir`。
 | `kind` | 载荷 | 什么时候 |
 |---|---|---|
 | `mcp_connected` | `{server, transport, tool_count}` | 启动连接、`config.reload` 重连、`mcp.addServer` / `mcp.updateServer` 成功 |
-| `mcp_connect_failed` | `{server, error}` | 同上,失败时。另外,启动、重连、另一个项目第一次起会话时要连的 server 里,配置解析不了的、被 MCP 策略拒绝的(`ARCHITECTURE.md` §6.4)各发一条,`error` 就是原因;连接失败的具体原因在 daemon 日志里 |
+| `mcp_connect_failed` | `{server, error}` | 同上,失败时,`error` 是原因(进程起不来、握手失败、超过启动时限……)。另外,启动、重连、另一个项目第一次起会话时要连的 server 里,配置解析不了的、被 MCP 策略拒绝的(`ARCHITECTURE.md` §6.4)各发一条;会话创建时还没连完、之后在后台连上或失败的 server 也各发一条 `mcp_connected` / `mcp_connect_failed` |
 | `mcp_auth_required` | `{server, scopes}` | 远端 server 要求登录:没有令牌、令牌被拒且刷新不了,或要求更多 scope(这时 server 保持连接);`enterprise` server 还没有可用的企业身份(宿主该调 `mcp.auth.setIdentity`)。`scopes` 是要请求的(可能为空)。同一个 server 从已登录/未涉及变成需要登录时发一次 |
 | `mcp_auth_completed` | `{server}` | 登录完成,令牌已存;随后是这个 server 的 `mcp_connected` / `mcp_connect_failed` |
 | `mcp_auth_failed` | `{server, error}` | 登录失败:授权服务器在回调里报错、换令牌失败,或 10 分钟内没完成 |

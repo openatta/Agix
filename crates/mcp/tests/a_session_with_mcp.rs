@@ -153,7 +153,7 @@ async fn build_registers_mcp_tool_adapters_into_the_executable_tool_registry() {
             hints: Default::default(),
         }],
     ));
-    let mut mcp_manager = McpManager::from_clients(vec![mock_client]);
+    let mut mcp_manager = McpManager::from_clients(vec![mock_client]).await;
     mcp_manager.refresh_tools().await;
     assert_eq!(
         mcp_manager.tool_adapters().len(),
@@ -248,7 +248,7 @@ async fn build_wires_mcp_elicitation_urls_to_the_elicitation_hook() {
             meta: None,
         },
     );
-    let mut mcp_manager = McpManager::from_clients(vec![mock_client]);
+    let mut mcp_manager = McpManager::from_clients(vec![mock_client]).await;
     mcp_manager.refresh_tools().await;
 
     let (agent, _event_rx, _input_tx) = Builder::new()
@@ -315,7 +315,7 @@ async fn mcp_manager_for_turn_tests(down: bool) -> McpManager {
             )
             .with_resource_text("doc://guide/install", "RESOURCE-BODY: run cargo install."),
     );
-    let mut mgr = McpManager::from_clients(vec![client]);
+    let mut mgr = McpManager::from_clients(vec![client]).await;
     mgr.refresh_prompts().await;
     if down {
         // Collect the prompt list while the server is up, *then* knock it
@@ -324,7 +324,7 @@ async fn mcp_manager_for_turn_tests(down: bool) -> McpManager {
         // invocation must degrade rather than fail.
         let prompts = mgr.all_prompts().to_vec();
         let dead = Arc::new(mcp::client::MockMcpClient::new("github", Vec::new()).down());
-        let mut dead_mgr = McpManager::from_clients(vec![dead]);
+        let mut dead_mgr = McpManager::from_clients(vec![dead]).await;
         dead_mgr.set_prompts_for_test(prompts);
         return dead_mgr;
     }

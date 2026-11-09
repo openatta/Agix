@@ -15,6 +15,18 @@ pub enum McpError {
     #[error("server '{name}' is not connected")]
     NotConnected { name: String },
 
+    /// The connection dropped with the request on it. A tool call is not
+    /// sent again, since it may already have run.
+    #[error("server '{name}' connection was lost during {op}; it was not sent again, and the next request reconnects")]
+    ConnectionLost { name: String, op: &'static str },
+
+    #[error("server '{name}' did not answer {op} within {}s", .after.as_secs_f64())]
+    Timeout {
+        name: String,
+        op: &'static str,
+        after: std::time::Duration,
+    },
+
     /// The server answered 401: it needs a person to sign in (again).
     #[error("server '{name}' needs the user to sign in before it can be used")]
     AuthRequired {

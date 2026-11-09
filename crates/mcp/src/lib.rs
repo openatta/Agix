@@ -8,6 +8,7 @@ pub mod connect;
 pub mod error;
 pub mod manager;
 pub mod module;
+pub mod naming;
 pub mod notify;
 pub mod oauth;
 pub mod output_cache;

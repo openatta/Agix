@@ -386,6 +386,7 @@ mod tests {
             args: vec![],
             env: HashMap::new(),
             scope: None,
+            timeouts: Default::default(),
         }
     }
 
@@ -395,6 +396,7 @@ mod tests {
             headers: HashMap::new(),
             oauth: None,
             scope: None,
+            timeouts: Default::default(),
         }
     }
 
@@ -510,6 +512,7 @@ mod tests {
         let cfg = McpServerConfig::InProcess {
             name: "host".into(),
             scope: None,
+            timeouts: Default::default(),
         };
         assert!(gate(r#"{"allowed_servers": []}"#).admit("x", &cfg).is_ok());
         let dir = tempfile::tempdir().unwrap();

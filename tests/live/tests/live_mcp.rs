@@ -388,7 +388,6 @@ async fn resources_reach_the_model_by_tool_and_by_reference() -> anyhow::Result<
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: the per-session McpManager is built with from_clients + refresh_tools only, never refresh_prompts, so no /mcp__<server>__<prompt> command exists in a daemon session (assembly/src/session_pool.rs:2332)"]
 async fn an_mcp_prompt_runs_as_a_slash_command() -> anyhow::Result<()> {
     let mut run = LiveRun::builder("mcp-prompts")
         .settings(json!({ "mcp_servers": { "toy": McpToy::stdio_config(&[])? } }))

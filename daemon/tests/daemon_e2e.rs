@@ -476,11 +476,16 @@ async fn mcp_add_server_writes_settings_and_reports_connect_failure() {
         "definitely-not-a-real-binary-xyz"
     );
 
-    // The binary doesn't exist, so the connect attempt fails — status must not list it.
+    // The binary doesn't exist, so the connect attempt fails — status lists it
+    // as failed, with why.
     let resp = rpc_call(&sock, r#"{"jsonrpc":"2.0","method":"mcp.status","id":2}"#).await;
     let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    let servers = v["result"]["servers"].as_array().unwrap();
+    assert_eq!(servers.len(), 1, "resp: {v}");
+    assert_eq!(servers[0]["name"], "bogus", "resp: {v}");
+    assert_eq!(servers[0]["state"], "failed", "resp: {v}");
     assert!(
-        v["result"]["servers"].as_array().unwrap().is_empty(),
+        servers[0]["error"].as_str().is_some_and(|e| !e.is_empty()),
         "resp: {v}"
     );
 
@@ -1549,7 +1554,14 @@ async fn config_reload_attempts_to_connect_a_hand_edited_mcp_server() {
     // exist), but the attempt happened, which is what actually matters here.
     let resp = rpc_call(&sock, r#"{"jsonrpc":"2.0","method":"mcp.status","id":2}"#).await;
     let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
-    assert!(v["result"]["servers"].as_array().unwrap().is_empty());
+    let servers = v["result"]["servers"].as_array().unwrap();
+    assert!(
+        !servers.is_empty()
+            && servers
+                .iter()
+                .all(|s| s["name"] == "hand-edited" && s["state"] == "failed"),
+        "resp: {v}"
+    );
 
     _server.shutdown_token().cancel();
     let _ = handle.await;

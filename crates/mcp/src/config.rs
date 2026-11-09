@@ -1,5 +1,5 @@
 //! MCP server 配置。`type` 字段做 enum tag；远端 server 的 `oauth` 块描述它的访问令牌
-//! 从哪来，语义见 `docs/mcp_auth.md`。
+//! 从哪来，语义见 `docs/mcp_auth.md`；每个 server 连接与调用的时限见 [`McpTimeouts`]。
 
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -20,6 +20,8 @@ pub enum McpServerConfig {
         /// An empty vec or None means "all". Each entry is a tool/resource/prompt name prefix.
         #[serde(default)]
         scope: Option<Vec<String>>,
+        #[serde(flatten)]
+        timeouts: McpTimeouts,
     },
     StreamableHttp {
         url: String,
@@ -29,6 +31,8 @@ pub enum McpServerConfig {
         oauth: Option<McpOAuthConfig>,
         #[serde(default)]
         scope: Option<Vec<String>>,
+        #[serde(flatten)]
+        timeouts: McpTimeouts,
     },
     /// Served by the streamable HTTP transport, which accepts the same servers.
     Sse {
@@ -39,6 +43,8 @@ pub enum McpServerConfig {
         oauth: Option<McpOAuthConfig>,
         #[serde(default)]
         scope: Option<Vec<String>>,
+        #[serde(flatten)]
+        timeouts: McpTimeouts,
     },
     /// In-process transport: look up a pre-registered McpClient by name
     /// in the process-local registry. No subprocess or network is spawned;
@@ -47,6 +53,8 @@ pub enum McpServerConfig {
         name: String,
         #[serde(default)]
         scope: Option<Vec<String>>,
+        #[serde(flatten)]
+        timeouts: McpTimeouts,
     },
     /// WebSocket transport: connect to an MCP server over WebSocket.
     WebSocket {
@@ -55,6 +63,8 @@ pub enum McpServerConfig {
         headers: HashMap<String, String>,
         #[serde(default)]
         scope: Option<Vec<String>>,
+        #[serde(flatten)]
+        timeouts: McpTimeouts,
     },
 }
 
@@ -297,7 +307,60 @@ impl McpOAuthConfig {
     }
 }
 
+/// How long a server may take. Each limit is the server's own
+/// `startup_timeout_ms` / `tool_timeout_ms`, else the `MCP_TIMEOUT` /
+/// `MCP_TOOL_TIMEOUT` environment variable (milliseconds, as Claude Code
+/// reads them), else the default.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpTimeouts {
+    /// Starting the server and finishing the MCP handshake, and every
+    /// request other than a tool call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_timeout_ms: Option<u64>,
+    /// One `tools/call`. A call past it is cancelled on the server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_timeout_ms: Option<u64>,
+}
+
+pub const DEFAULT_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+pub const DEFAULT_TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
+fn limit(own: Option<u64>, env: &str, default: std::time::Duration) -> std::time::Duration {
+    own.or_else(|| std::env::var(env).ok()?.trim().parse().ok())
+        .filter(|ms| *ms > 0)
+        .map(std::time::Duration::from_millis)
+        .unwrap_or(default)
+}
+
+impl McpTimeouts {
+    pub fn startup(&self) -> std::time::Duration {
+        limit(
+            self.startup_timeout_ms,
+            "MCP_TIMEOUT",
+            DEFAULT_STARTUP_TIMEOUT,
+        )
+    }
+
+    pub fn tool(&self) -> std::time::Duration {
+        limit(
+            self.tool_timeout_ms,
+            "MCP_TOOL_TIMEOUT",
+            DEFAULT_TOOL_TIMEOUT,
+        )
+    }
+}
+
 impl McpServerConfig {
+    pub fn timeouts(&self) -> &McpTimeouts {
+        match self {
+            McpServerConfig::Stdio { timeouts, .. }
+            | McpServerConfig::StreamableHttp { timeouts, .. }
+            | McpServerConfig::Sse { timeouts, .. }
+            | McpServerConfig::InProcess { timeouts, .. }
+            | McpServerConfig::WebSocket { timeouts, .. } => timeouts,
+        }
+    }
+
     /// The `oauth` block of a remote server.
     pub fn oauth(&self) -> Option<&McpOAuthConfig> {
         match self {
@@ -635,14 +698,40 @@ mod tests {
         let cfg = McpServerConfig::InProcess {
             name: "x".into(),
             scope: None,
+            timeouts: Default::default(),
         };
         assert!(cfg.oauth().is_none() && !cfg.oauth_capable());
         let cfg = McpServerConfig::WebSocket {
             url: "ws://localhost/mcp".into(),
             headers: HashMap::new(),
             scope: None,
+            timeouts: Default::default(),
         };
         assert!(cfg.oauth().is_none() && !cfg.oauth_capable());
+    }
+
+    #[test]
+    fn a_server_names_its_own_time_limits_and_keeps_them_when_written_back() {
+        let v = json!({
+            "type": "stdio", "command": "srv",
+            "startup_timeout_ms": 1500, "tool_timeout_ms": 90000,
+        });
+        let cfg: McpServerConfig = serde_json::from_value(v).unwrap();
+        assert_eq!(
+            cfg.timeouts().startup(),
+            std::time::Duration::from_millis(1500)
+        );
+        assert_eq!(cfg.timeouts().tool(), std::time::Duration::from_secs(90));
+        let back = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(back["startup_timeout_ms"], 1500);
+        assert_eq!(back["tool_timeout_ms"], 90000);
+
+        let bare: McpServerConfig =
+            serde_json::from_value(json!({"type": "streamable_http", "url": "http://h/mcp"}))
+                .unwrap();
+        assert_eq!(*bare.timeouts(), McpTimeouts::default());
+        let back = serde_json::to_value(&bare).unwrap();
+        assert!(back.get("startup_timeout_ms").is_none(), "{back}");
     }
 
     #[test]
@@ -665,6 +754,7 @@ mod tests {
             args: vec![],
             env: HashMap::new(),
             scope: None,
+            timeouts: Default::default(),
         };
         assert!(stdio.url().is_none());
 
@@ -673,6 +763,7 @@ mod tests {
             headers: HashMap::new(),
             oauth: None,
             scope: None,
+            timeouts: Default::default(),
         };
         assert_eq!(http.url(), Some("https://example.com"));
 
@@ -680,12 +771,14 @@ mod tests {
             url: "ws://localhost".into(),
             headers: HashMap::new(),
             scope: None,
+            timeouts: Default::default(),
         };
         assert_eq!(ws.url(), Some("ws://localhost"));
 
         let inproc = McpServerConfig::InProcess {
             name: "test".into(),
             scope: None,
+            timeouts: Default::default(),
         };
         assert!(inproc.url().is_none());
     }

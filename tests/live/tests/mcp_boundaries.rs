@@ -122,7 +122,6 @@ async fn wait_for_line(path: &Path, wanted: (&str, &str), timeout: Duration) -> 
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: no timeout on the MCP handshake, so a server that never answers initialize holds session.create forever (mcp/src/manager.rs connect_one, session_pool.rs mcp_for_project)"]
 async fn a_server_that_never_answers_initialize_does_not_hold_up_a_session() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let scratch = tempfile::tempdir()?;
@@ -158,7 +157,6 @@ async fn a_server_that_never_answers_initialize_does_not_hold_up_a_session() -> 
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: no timeout on the MCP handshake, and lines that are not JSON-RPC are skipped while it waits, so a server answering garbage holds session.create forever (mcp/src/manager.rs connect_one, session_pool.rs mcp_for_project)"]
 async fn a_server_that_answers_garbage_is_left_out_and_the_others_still_work() -> anyhow::Result<()>
 {
     let stub = ProviderStub::start().await?;
@@ -334,7 +332,6 @@ fn is_api_tool_name(name: &str) -> bool {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: an MCP server name is spliced into the tool name unchanged, so a name with a space, a dot or non-ASCII yields a tool name the Messages API rejects (mcp/src/adapter.rs:79)"]
 async fn odd_server_names_still_make_tool_names_the_api_accepts() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let odd = ["with space", "dot.ted", "ünïcode", &"long".repeat(16)];
@@ -357,7 +354,6 @@ async fn odd_server_names_still_make_tool_names_the_api_accepts() -> anyhow::Res
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: a call whose server died mid-call is sent again after the reconnect, so a non-idempotent tool runs twice (mcp/src/connect.rs:327-335)"]
 async fn a_call_whose_server_died_is_reported_not_replayed() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let scratch = tempfile::tempdir()?;
@@ -470,7 +466,6 @@ async fn an_interrupted_mcp_call_is_cancelled_on_the_server() -> anyhow::Result<
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product bug: the per-session McpManager is built with from_clients + refresh_tools only, never refresh_prompts, so no /mcp__<server>__<prompt> command exists in a daemon session (assembly/src/session_pool.rs:2332)"]
 async fn an_mcp_prompt_runs_as_a_slash_command_and_a_missing_argument_is_reported(
 ) -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;

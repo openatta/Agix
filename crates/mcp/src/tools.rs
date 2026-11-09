@@ -336,10 +336,14 @@ impl Tool for DispatchMcpTool {
             }
             match client.list_tools().await {
                 Ok(tools) => {
-                    for t in tools {
+                    let names = crate::naming::tool_names(
+                        client.server_name(),
+                        tools.iter().map(|t| t.name.as_str()),
+                    );
+                    for (t, name) in tools.into_iter().zip(names) {
                         all.push(json!({
                             "server": client.server_name(),
-                            "tool_name": format!("mcp__{}__{}", client.server_name(), t.name),
+                            "tool_name": name,
                             "raw_name": t.name,
                             "description": t.description,
                         }));

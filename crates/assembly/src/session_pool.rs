@@ -674,6 +674,12 @@ pub struct SessionPool {
     /// project are not interchangeable.
     #[cfg(feature = "mcp")]
     mcp_by_project: AsyncMutex<HashMap<ProjectSceneKey, Arc<McpManager>>>,
+    /// Held over a pair's first MCP connect, so a session created while the
+    /// startup connect is still running waits for it instead of starting
+    /// every server a second time. One for all pairs: a first connect is
+    /// bounded by `MCP_SESSION_CONNECT_WAIT`.
+    #[cfg(feature = "mcp")]
+    mcp_first_connect: AsyncMutex<()>,
     /// This pool's MCP authorization: sign-in state per server, the flows in
     /// progress, and the credential store (files under its own user data
     /// root unless the host gave one).
@@ -901,7 +907,20 @@ fn mcp_status_entries(manager: &McpManager) -> Vec<serde_json::Value> {
     let connected = manager.server_statuses().into_iter().map(|s| {
         serde_json::json!({
             "name": s.name, "transport": s.transport, "tool_count": s.tool_count,
-            "state": "connected", "auth": auth(&s.name),
+            "state": if s.connected { "connected" } else { "disconnected" },
+            "auth": auth(&s.name),
+        })
+    });
+    let connecting = manager.connecting().iter().map(|c| {
+        serde_json::json!({
+            "name": c.name, "transport": c.transport, "tool_count": 0,
+            "state": "connecting", "auth": auth(&c.name),
+        })
+    });
+    let failed = manager.failed().iter().map(|f| {
+        serde_json::json!({
+            "name": f.name, "transport": f.transport, "tool_count": 0,
+            "state": "failed", "error": f.error, "auth": auth(&f.name),
         })
     });
     let pending = manager.pending().iter().map(|p| {
@@ -916,7 +935,29 @@ fn mcp_status_entries(manager: &McpManager) -> Vec<serde_json::Value> {
             "state": "denied", "error": d.reason, "auth": {"state": "none"},
         })
     });
-    connected.chain(pending).chain(denied).collect()
+    connected
+        .chain(connecting)
+        .chain(pending)
+        .chain(failed)
+        .chain(denied)
+        .collect()
+}
+
+/// How long a session's creation waits for its project's MCP servers to
+/// connect. One still connecting then goes on in the background and joins
+/// the project's sessions at their next turn.
+#[cfg(feature = "mcp")]
+const MCP_SESSION_CONNECT_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+#[cfg(feature = "mcp")]
+fn mcp_connect_failed_event(manager: &McpManager, name: &str) -> serde_json::Value {
+    let error = manager
+        .failed()
+        .iter()
+        .find(|f| f.name == name)
+        .map(|f| f.error.clone())
+        .unwrap_or_else(|| "connect failed — see daemon log for the specific reason".into());
+    serde_json::json!({ "kind": "mcp_connect_failed", "server": name, "error": error })
 }
 
 /// Build the router a settings tier's `providers`/`task_models` describe.
@@ -1035,6 +1076,8 @@ impl SessionPool {
             paths,
             #[cfg(feature = "mcp")]
             mcp_by_project: AsyncMutex::new(HashMap::new()),
+            #[cfg(feature = "mcp")]
+            mcp_first_connect: AsyncMutex::new(()),
             #[cfg(feature = "mcp")]
             mcp_auth,
             #[cfg(feature = "mcp")]
@@ -1393,43 +1436,23 @@ impl SessionPool {
     /// Connect the default project's MCP servers (`configured_mcp_servers`)
     /// in the background — never blocks the caller. Each outcome is a
     /// `daemon.event`: `mcp_connected`, or `mcp_connect_failed` for a config
-    /// that does not parse, a server the policy denies, or one
-    /// `McpManager::connect_all` could not reach (the specific reason for
-    /// that last one is in its own `tracing::warn!`). Once attempts finish,
-    /// the default project's cache entry is replaced — new sessions created
-    /// for it after that point see the connected servers; sessions already
-    /// running, and every other project's cache entry, are unaffected.
+    /// that does not parse, a server the policy denies, or one that could
+    /// not be reached, with the reason. This is the default project's first
+    /// connect (see `first_mcp_connect`), so a session created meanwhile
+    /// waits for it rather than connecting again.
     #[cfg(feature = "mcp")]
     pub fn connect_mcp_servers_in_background(self: &Arc<Self>) {
+        let _ = self.this.set(Arc::downgrade(self));
         self.watch_mcp_auth();
         let pool = self.clone();
         tokio::spawn(async move {
             let settings = pool.settings.read().await.clone();
-            let servers = pool.configured_mcp_servers(&settings);
-            if servers.is_empty() {
+            if pool.configured_mcp_servers(&settings).is_empty() {
                 return;
             }
-            let AdmittedMcp {
-                servers: admitted,
-                denied,
-                ..
-            } = pool.admit_mcp_servers(&servers);
-            let requested: std::collections::HashSet<String> = admitted.keys().cloned().collect();
-            let mut manager = McpManager::connect_all_with(
-                admitted,
-                settings.sandbox.subprocess_env.clone(),
-                Some(pool.mcp_auth.clone()),
-            )
-            .await
-            .with_denied(denied);
-            // A server may have announced a tool change while this project's
-            // manager was being built or reused. Acting on it here is what
-            // keeps the announcement from being one more thing nobody reads.
-            manager.refresh_tools_if_announced().await;
-            let statuses = manager.server_statuses();
-            let connected: std::collections::HashSet<String> =
-                statuses.iter().map(|s| s.name.clone()).collect();
-            for status in &statuses {
+            let key = (Some(pool.cwd.clone()), settings.paths.scope.clone());
+            let manager = pool.first_mcp_connect(key, &settings).await;
+            for status in manager.server_statuses() {
                 pool.emit_event(serde_json::json!({
                     "kind": "mcp_connected",
                     "server": status.name,
@@ -1437,18 +1460,96 @@ impl SessionPool {
                     "tool_count": status.tool_count,
                 }));
             }
-            for name in requested.difference(&connected) {
-                pool.emit_event(serde_json::json!({
-                    "kind": "mcp_connect_failed",
-                    "server": name,
-                    "error": "connect failed — see daemon log for the specific reason",
-                }));
+            let not_connected = manager.failed().iter().map(|f| &f.name);
+            for name in not_connected.chain(manager.pending().iter().map(|p| &p.name)) {
+                pool.emit_event(mcp_connect_failed_event(&manager, name));
             }
-            pool.mcp_by_project.lock().await.insert(
-                (Some(pool.cwd.clone()), settings.paths.scope.clone()),
-                Arc::new(manager),
-            );
         });
+    }
+
+    /// The pair's MCP manager: the cached one, or a new connect of the
+    /// servers `settings` declare, cached. The connect returns after
+    /// [`MCP_SESSION_CONNECT_WAIT`]; a server still connecting then is
+    /// finished by [`Self::finish_mcp_connects`].
+    #[cfg(feature = "mcp")]
+    async fn first_mcp_connect(
+        &self,
+        key: ProjectSceneKey,
+        settings: &Settings,
+    ) -> Arc<McpManager> {
+        let _first = self.mcp_first_connect.lock().await;
+        if let Some(existing) = self.mcp_by_project.lock().await.get(&key) {
+            return existing.clone();
+        }
+        let AdmittedMcp {
+            servers: admitted,
+            denied,
+            ..
+        } = self.admit_mcp_servers(&self.configured_mcp_servers(settings));
+        let pool = self.this.get().and_then(std::sync::Weak::upgrade);
+        let wait = pool.as_ref().map(|_| MCP_SESSION_CONNECT_WAIT);
+        let (mut manager, late) = McpManager::connect_all_within(
+            admitted,
+            settings.sandbox.subprocess_env.clone(),
+            Some(self.mcp_auth.clone()),
+            wait,
+        )
+        .await;
+        // A server may have announced a tool change while this project's
+        // manager was being built. Acting on it here is what keeps the
+        // announcement from being one more thing nobody reads.
+        manager.refresh_tools_if_announced().await;
+        let manager = Arc::new(manager.with_denied(denied));
+        self.mcp_by_project
+            .lock()
+            .await
+            .insert(key.clone(), manager.clone());
+        if let (Some(pool), Some(late)) = (pool, late) {
+            tokio::spawn(Self::finish_mcp_connects(Arc::downgrade(&pool), key, late));
+        }
+        manager
+    }
+
+    /// Take each server that finishes after its pair's manager was handed
+    /// out into that manager, announce it, and have the pair's sessions
+    /// rebuilt on it before their next turn. Stops when the pair's manager
+    /// has been replaced or dropped since — a reload connects anew.
+    #[cfg(feature = "mcp")]
+    async fn finish_mcp_connects(
+        pool: std::sync::Weak<Self>,
+        key: ProjectSceneKey,
+        mut late: mcp::manager::LateConnects,
+    ) {
+        while let Some(outcome) = late.next().await {
+            let Some(pool) = pool.upgrade() else {
+                return;
+            };
+            let server = outcome.server().to_string();
+            let connected = outcome.connected();
+            let updated = {
+                let mut cache = pool.mcp_by_project.lock().await;
+                let Some(current) = cache.get(&key) else {
+                    return;
+                };
+                let mut updated = current.share();
+                if !updated.absorb(outcome) {
+                    continue;
+                }
+                let updated = Arc::new(updated);
+                cache.insert(key.clone(), updated.clone());
+                updated
+            };
+            pool.emit_event(match connected {
+                Some(s) => serde_json::json!({
+                    "kind": "mcp_connected",
+                    "server": s.name,
+                    "transport": s.transport,
+                    "tool_count": s.tool_count,
+                }),
+                None => mcp_connect_failed_event(&updated, &server),
+            });
+            pool.invalidate_mcp_keys(std::slice::from_ref(&key)).await;
+        }
     }
 
     /// Reconnect MCP servers to match `mcp_servers` (from freshly-reloaded
@@ -1506,11 +1607,7 @@ impl SessionPool {
             }));
         }
         for name in &unreachable {
-            self.emit_event(serde_json::json!({
-                "kind": "mcp_connect_failed",
-                "server": name,
-                "error": "connect failed — see daemon log for the specific reason",
-            }));
+            self.emit_event(mcp_connect_failed_event(&manager, name));
         }
         let mut failed = unreachable;
         failed.extend(refused);
@@ -1654,7 +1751,7 @@ impl SessionPool {
             .sandbox
             .subprocess_env
             .clone();
-        let (statuses, entries) = {
+        let (statuses, entries, failure) = {
             let mut cache = self.mcp_by_project.lock().await;
             let current = cache
                 .get(&target)
@@ -1675,8 +1772,9 @@ impl SessionPool {
             updated.add_server(name, cfg).await;
             let statuses = updated.server_statuses();
             let entries = mcp_status_entries(&updated);
+            let failure = mcp_connect_failed_event(&updated, name);
             cache.insert(target.clone(), Arc::new(updated));
-            (statuses, entries)
+            (statuses, entries, failure)
         };
         // A running session holds its own manager, cloned from the cache when
         // its engine was built. Marking its binding stale rebuilds it on the
@@ -1695,11 +1793,7 @@ impl SessionPool {
                 "transport": s.transport,
                 "tool_count": s.tool_count,
             })),
-            None => self.emit_event(serde_json::json!({
-                "kind": "mcp_connect_failed",
-                "server": name,
-                "error": "connect failed — see daemon log for the specific reason",
-            })),
+            None => self.emit_event(failure),
         }
 
         Ok(serde_json::json!({
@@ -6402,27 +6496,8 @@ impl SessionPool {
         if let Some(existing) = self.mcp_by_project.lock().await.get(&key) {
             return existing.clone();
         }
-
         let settings = self.settings_for_project(project_root, scene_id).await;
-        let AdmittedMcp {
-            servers: admitted,
-            denied,
-            ..
-        } = self.admit_mcp_servers(&self.configured_mcp_servers(&settings));
-        let manager = Arc::new(
-            McpManager::connect_all_with(
-                admitted,
-                settings.sandbox.subprocess_env.clone(),
-                Some(self.mcp_auth.clone()),
-            )
-            .await
-            .with_denied(denied),
-        );
-        self.mcp_by_project
-            .lock()
-            .await
-            .insert(key, manager.clone());
-        manager
+        self.first_mcp_connect(key, &settings).await
     }
 
     /// A session's own recorded `(schema_version, project_root)`, read off

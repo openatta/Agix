@@ -1,7 +1,7 @@
 //! `McpToolAdapter` —— 把一条 MCP server 提供的工具包装成 agix `Tool`。
 //!
 //! 工具名按 `mcp__<server>__<tool>` 命名，与权限规则匹配语义一致
-//! （见 agix-permissions::ruleset）。
+//! （见 agix-permissions::ruleset）；两段怎么从 server 名与工具名得来见 [`crate::naming`]。
 
 use crate::client::{McpCallResult, McpClientHandle, McpContent, McpToolHints, McpToolMeta};
 use crate::error::McpError;
@@ -76,7 +76,7 @@ impl McpToolAdapter {
     ) -> Self {
         let server_name = client.server_name().to_string();
         let tool_name = meta.name.clone();
-        let full_name = format!("mcp__{server_name}__{tool_name}");
+        let full_name = crate::naming::tool_name(&server_name, &tool_name);
         let full_description = meta
             .description
             .unwrap_or_else(|| format!("MCP tool: {tool_name}"));
@@ -87,7 +87,7 @@ impl McpToolAdapter {
             server_name,
             full_description,
             description,
-            input_schema: meta.input_schema,
+            input_schema: object_schema(meta.input_schema),
             hints: meta.hints,
             client,
             cache,
@@ -95,7 +95,14 @@ impl McpToolAdapter {
         }
     }
 
-    /// Server-qualified tool name, e.g. `{server}__{tool}`.
+    /// Go by `full_name` instead — what [`crate::naming::tool_names`] gave
+    /// this tool among its server's others.
+    pub fn named(mut self, full_name: String) -> Self {
+        self.full_name = full_name;
+        self
+    }
+
+    /// Server-qualified tool name, e.g. `mcp__{server}__{tool}`.
     pub fn full_name(&self) -> &str {
         &self.full_name
     }
@@ -241,6 +248,21 @@ impl Tool for McpToolAdapter {
         }
 
         Ok(into_tool_result(result))
+    }
+}
+
+/// A tool's input schema as a model API takes it: an object schema at the
+/// top. A server that sends none, or one without `type`, still gets its tool
+/// offered rather than the whole request refused.
+fn object_schema(schema: Value) -> Value {
+    match schema {
+        Value::Object(mut map) => {
+            if map.get("type").and_then(Value::as_str) != Some("object") {
+                map.insert("type".into(), Value::String("object".into()));
+            }
+            Value::Object(map)
+        }
+        _ => serde_json::json!({ "type": "object" }),
     }
 }
 
@@ -396,6 +418,36 @@ mod tests {
         let adapter = McpToolAdapter::new(client, m);
         let s = adapter.input_schema();
         assert_eq!(s["properties"]["q"]["type"], "string");
+    }
+
+    #[tokio::test]
+    async fn a_schema_without_an_object_type_is_offered_as_an_object() {
+        let client: McpClientHandle = Arc::new(MockMcpClient::new("github", vec![]));
+        for (sent, properties) in [
+            (json!({"properties": {"q": {}}}), json!({"q": {}})),
+            (json!(null), Value::Null),
+            (json!(true), Value::Null),
+        ] {
+            let mut m = meta("x");
+            m.input_schema = sent;
+            let s = McpToolAdapter::new(client.clone(), m).input_schema();
+            assert_eq!(s["type"], "object", "{s}");
+            assert_eq!(s["properties"], properties, "{s}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_odd_server_name_still_makes_a_tool_name_the_api_takes() {
+        let client = Arc::new(MockMcpClient::new("my server.v2", vec![]));
+        let adapter = McpToolAdapter::new(client, meta("create.issue"));
+        assert_eq!(
+            adapter.name(),
+            crate::naming::tool_name("my server.v2", "create.issue")
+        );
+        assert!(adapter.name().starts_with("mcp__my_server_v2_"));
+        assert!(adapter.name().ends_with("__create_issue"));
+        assert_eq!(adapter.server_name(), "my server.v2");
+        assert_eq!(adapter.tool_name(), "create.issue");
     }
 
     #[tokio::test]
