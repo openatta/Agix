@@ -182,17 +182,20 @@ impl ChunkAccumulator {
         let mut out = Vec::new();
 
         if let Some(u) = chunk.usage {
+            let cached = u
+                .prompt_tokens_details
+                .and_then(|d| d.cached_tokens)
+                .unwrap_or(0);
             self.usage = Usage {
-                input_tokens: u.prompt_tokens,
+                // `prompt_tokens` already counts the cached part; `Usage`
+                // keeps the two apart, the way the Messages API reports them.
+                input_tokens: u.prompt_tokens.saturating_sub(cached),
                 output_tokens: u.completion_tokens,
                 // This protocol has no notion of a cache *write*: the prefix
                 // cache is the provider's own and nobody is billed for
                 // filling it.
                 cache_creation_input_tokens: 0,
-                cache_read_input_tokens: u
-                    .prompt_tokens_details
-                    .and_then(|d| d.cached_tokens)
-                    .unwrap_or(0),
+                cache_read_input_tokens: cached,
             };
         }
 
@@ -452,7 +455,10 @@ mod tests {
 
         match events.last().expect("EndTurn") {
             ModelEvent::EndTurn { usage, .. } => {
-                assert_eq!(usage.input_tokens, 300);
+                assert_eq!(
+                    usage.input_tokens, 44,
+                    "the cached part is already in prompt_tokens and must not be counted twice"
+                );
                 assert_eq!(
                     usage.cache_read_input_tokens, 256,
                     "the cached read was dropped"
@@ -604,8 +610,7 @@ mod tests {
     }
 
     /// `prompt_tokens_details.cached_tokens` parses, and the surrounding usage
-    /// still reaches `EndTurn`. (The cached count itself has nowhere to go —
-    /// see [`PromptTokensDetails`].)
+    /// still reaches `EndTurn`, split into the uncached and cached parts.
     #[test]
     fn cached_tokens_parse_without_disturbing_usage() {
         let events = run(&[
@@ -617,7 +622,8 @@ mod tests {
         ]);
         match events.last().expect("EndTurn") {
             ModelEvent::EndTurn { usage, .. } => {
-                assert_eq!(usage.input_tokens, 1000);
+                assert_eq!(usage.input_tokens, 104);
+                assert_eq!(usage.cache_read_input_tokens, 896);
                 assert_eq!(usage.output_tokens, 20);
             }
             other => panic!("expected EndTurn, got {other:?}"),
@@ -817,7 +823,8 @@ data: [DONE]\n\
         match events.last().expect("EndTurn") {
             ModelEvent::EndTurn { stop_reason, usage } => {
                 assert_eq!(stop_reason, "tool_use");
-                assert_eq!(usage.input_tokens, 101);
+                assert_eq!(usage.input_tokens, 37);
+                assert_eq!(usage.cache_read_input_tokens, 64);
                 assert_eq!(usage.output_tokens, 17);
             }
             other => panic!("expected EndTurn, got {other:?}"),

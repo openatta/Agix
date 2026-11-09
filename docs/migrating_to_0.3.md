@@ -506,6 +506,9 @@ WebAssembly 载体整个移除。
   503、529 一样;以前直接失败。
 - Anthropic 的 `base_url` / `ANTHROPIC_BASE_URL` 写到 `…/v1` 或写全 `…/v1/messages` 都可以,
   不再拼成 `…/v1/v1/messages`。
+- OpenAI 兼容 provider 报回的 `input_tokens` 不再含已缓存的那部分(那部分在
+  `cache_read_input_tokens`),和 Anthropic 的含义一致;以前缓存命中的部分算了两遍,
+  `context.tokens` 与按 token 估的花费都偏大。
 
 ### 嵌入方
 
