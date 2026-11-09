@@ -994,6 +994,46 @@ async fn a_hook_that_fails_hangs_or_prints_garbage_changes_nothing() -> anyhow::
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_failing_hook_with_on_error_block_blocks_the_call() -> anyhow::Result<()> {
+    let stub = ProviderStub::start().await?;
+    let ledger = Ledger::new()?;
+    let hang = ledger.path("hang.sh");
+    executable(&hang, "#!/bin/sh\ncat > /dev/null\nexec sleep 30\n")?;
+    let failing = ledger.path("failing.sh");
+    executable(&failing, "#!/bin/sh\ncat > /dev/null\nexit 1\n")?;
+    let mut hung = command_hook(&hang, 1000);
+    hung["on_error"] = json!("block");
+    hung["if"] = json!("Bash(echo one*)");
+    let mut broken = command_hook(&failing, 30_000);
+    broken["on_error"] = json!("block");
+    broken["if"] = json!("Bash(echo two*)");
+    let mut run = stubbed("on-error-block", &stub)
+        .settings(json!({ "hooks_config": { "PreToolUse": [hung, broken] } }))
+        .start()
+        .await?;
+    let session = run.session().await?;
+    stub.script([
+        Reply::calls("b1", "Bash", json!({ "command": "echo one > one.txt" })),
+        Reply::calls("b2", "Bash", json!({ "command": "echo two > two.txt" })),
+        Reply::text("done"),
+    ]);
+    let events = run.turn(&session, "go").await?;
+    assert!(run.read_file("one.txt").is_none() && run.read_file("two.txt").is_none());
+    let (_, timed_out, is_error) = &events.tool_results[0];
+    assert!(
+        *is_error && timed_out.contains("hang.sh") && timed_out.contains("timed out"),
+        "{timed_out}"
+    );
+    let (_, exited, is_error) = &events.tool_results[1];
+    assert!(
+        *is_error && exited.contains("failing.sh") && exited.contains("exited 1"),
+        "{exited}"
+    );
+    run.finish().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn every_hook_on_an_event_runs_the_first_rewrite_wins_and_a_block_wins_over_both(
 ) -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;

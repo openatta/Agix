@@ -813,6 +813,9 @@ WebAssembly 载体整个移除。
 - `async_rewake` 在 daemon 里生效:会话的运行中任务(子 Agent、后台命令、Monitor)有一个结束,
   就算唤醒信号,等着的 hook 在会话处理下一条输入之后、等再下一条之前重跑。以前 daemon 不接
   唤醒通道,这类 hook 永远不会重跑。
+- hook 新增 `on_error`(四种后端都认):缺省 `"allow"`,失败照旧放行;写 `"block"` 的,超时、
+  出错、command 退出码不是 0 或 2、回答不是 JSON,都等于它回答了 `decision: "block"`,理由写明
+  是哪个 hook、怎么失败的(`hooks.md`"失败"一节)。
 - 无人值守的 MCP server(`client_credentials`、`enterprise`)拿到的令牌寿命短于 30 秒左右时,
   调用不再间歇地以"需要授权"失败:令牌何时重新取由 daemon 决定,底层的 OAuth 客户端不再因为
   它"快到期"而拒绝使用刚取到的令牌。
@@ -1048,3 +1051,6 @@ WebAssembly 载体整个移除。
   走它),缺省实现拒绝;只有 `RuntimeAgentSpawner` 真正实现。
 - `runtime::agent::Builder` 没给 `wake_receiver`、hooks runner 又是自己建的(根会话)时,
   会话的运行中任务结束就唤醒 `async_rewake` hook;给了 `wake_receiver` 的照旧只听它。
+- `hooks::HookConfig` 的四个变体都多了 `on_error: hooks::OnError`(结构体字面量要补,
+  `OnError::Allow` 是原来的行为)。`HookOutcome::Ran` 多了 `failure: Option<String>`:跑了但
+  回答不能用(退出码不是 0 或 2、不是 JSON)时写明原因。

@@ -25,7 +25,7 @@ impl HookRunner {
         timeout_dur: Duration,
     ) -> HookOutcome {
         let Some(executor) = &self.prompt_executor else {
-            return HookOutcome::Skipped("prompt-type hook needs a PromptHookExecutor injected");
+            return HookOutcome::Skipped(super::NO_PROMPT_EXECUTOR);
         };
         let result =
             match tokio::time::timeout(timeout_dur, executor.execute(prompt, model, input)).await {
@@ -40,10 +40,10 @@ impl HookRunner {
                     ));
                 }
             };
-        // 模型可能用 markdown 包 JSON；尽力解
-        let response = parse_hook_response_lenient(&result);
+        let (response, failure) = parse_hook_response_lenient(&result);
         HookOutcome::Ran {
             response,
+            failure: failure.map(|e| format!("prompt hook answer is not a JSON answer: {e}")),
             stdout: result,
             stderr: String::new(),
             exit_code: Some(0),
@@ -93,9 +93,10 @@ impl HookRunner {
         if !(200..300).contains(&status) {
             return HookOutcome::Error(format!("http hook {status}: {}", truncate(&body, 500)));
         }
-        let response = parse_hook_response_lenient(&body);
+        let (response, failure) = parse_hook_response_lenient(&body);
         HookOutcome::Ran {
             response,
+            failure: failure.map(|e| format!("http hook body is not a JSON answer: {e}")),
             stdout: body,
             stderr: String::new(),
             exit_code: Some(0),
@@ -171,13 +172,14 @@ impl HookRunner {
             }
         };
         let exit_code = status.code;
-        let response = response_for_exit(command, exit_code, &stdout, &stderr);
+        let (response, failure) = response_for_exit(command, exit_code, &stdout, &stderr);
 
         HookOutcome::Ran {
             response,
             stdout,
             stderr,
             exit_code,
+            failure,
         }
     }
 }
@@ -185,7 +187,7 @@ impl HookRunner {
 /// The exit code a command hook blocks with, whatever it printed.
 const BLOCKING_EXIT: i32 = 2;
 
-/// What a command hook's exit says.
+/// What a command hook's exit says, and why it failed when it did.
 ///
 /// `2` blocks, with stderr as the reason (stdout when stderr is empty); its
 /// stdout is not read as JSON. `0` hands stdout over as the JSON answer. Any
@@ -196,13 +198,22 @@ fn response_for_exit(
     exit_code: Option<i32>,
     stdout: &str,
     stderr: &str,
-) -> HookResponse {
+) -> (HookResponse, Option<String>) {
     match exit_code {
-        Some(0) if stdout.trim().is_empty() => HookResponse::default(),
-        Some(0) => serde_json::from_str::<HookResponse>(stdout.trim()).unwrap_or_else(|e| {
-            warn!(command, stdout = %stdout, error = %e, "hook stdout is not a JSON answer; it is ignored");
-            HookResponse::default()
-        }),
+        Some(0) if stdout.trim().is_empty() => (HookResponse::default(), None),
+        Some(0) => match serde_json::from_str::<HookResponse>(stdout.trim()) {
+            Ok(response) => (response, None),
+            Err(e) => {
+                warn!(command, stdout = %stdout, error = %e, "hook stdout is not a JSON answer; it is ignored");
+                (
+                    HookResponse::default(),
+                    Some(format!(
+                        "stdout is not a JSON answer ({e}): {}",
+                        truncate(stdout.trim(), 200)
+                    )),
+                )
+            }
+        },
         Some(BLOCKING_EXIT) => {
             let reason = [stderr.trim(), stdout.trim()]
                 .into_iter()
@@ -210,11 +221,14 @@ fn response_for_exit(
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("hook exited {BLOCKING_EXIT}"));
             debug!(command, %reason, "hook exited 2; blocking");
-            HookResponse {
-                decision: Some(HookDecision::Block),
-                message: Some(reason),
-                ..Default::default()
-            }
+            (
+                HookResponse {
+                    decision: Some(HookDecision::Block),
+                    message: Some(reason),
+                    ..Default::default()
+                },
+                None,
+            )
         }
         other => {
             warn!(
@@ -223,7 +237,17 @@ fn response_for_exit(
                 stderr = %stderr.trim(),
                 "hook exited neither 0 nor 2; it neither blocks nor rewrites anything"
             );
-            HookResponse::default()
+            let exit = match other {
+                Some(code) => format!("exited {code}"),
+                None => "was killed by a signal".to_string(),
+            };
+            let stderr = stderr.trim();
+            let failure = if stderr.is_empty() {
+                exit
+            } else {
+                format!("{exit}: {}", truncate(stderr, 200))
+            };
+            (HookResponse::default(), Some(failure))
         }
     }
 }
@@ -252,8 +276,8 @@ async fn collect_output(
 }
 
 /// 解析 hook 响应文本为 HookResponse。模型可能 wrap 在 ``` ```json``` 里；
-/// 解析失败时返回 default response（continue=None, decision=None）。
-fn parse_hook_response_lenient(s: &str) -> HookResponse {
+/// 空文本是什么都不说；解析失败时返回 default response 与失败原因。
+fn parse_hook_response_lenient(s: &str) -> (HookResponse, Option<String>) {
     let trimmed = s.trim();
     let candidate = if let Some(rest) = trimmed.strip_prefix("```json") {
         rest.trim_start_matches('\n').trim_end_matches("```").trim()
@@ -262,10 +286,19 @@ fn parse_hook_response_lenient(s: &str) -> HookResponse {
     } else {
         trimmed
     };
-    serde_json::from_str(candidate).unwrap_or_default()
+    if candidate.is_empty() {
+        return (HookResponse::default(), None);
+    }
+    match serde_json::from_str(candidate) {
+        Ok(response) => (response, None),
+        Err(e) => (
+            HookResponse::default(),
+            Some(format!("{e}: {}", truncate(candidate, 200))),
+        ),
+    }
 }
 
-fn truncate(s: &str, max: usize) -> String {
+pub(super) fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
     } else {
@@ -280,21 +313,23 @@ mod tests {
 
     #[test]
     fn parse_hook_response_handles_plain_json() {
-        let r = parse_hook_response_lenient(r#"{"decision":"block"}"#);
+        let (r, failure) = parse_hook_response_lenient(r#"{"decision":"block"}"#);
+        assert_eq!(failure, None);
         assert_eq!(r.decision, Some(HookDecision::Block));
     }
 
     #[test]
     fn parse_hook_response_handles_markdown_block() {
-        let r = parse_hook_response_lenient("```json\n{\"continue\":false}\n```");
+        let (r, _) = parse_hook_response_lenient("```json\n{\"continue\":false}\n```");
         assert_eq!(r.r#continue, Some(false));
     }
 
     #[test]
     fn parse_hook_response_garbage_returns_default() {
-        let r = parse_hook_response_lenient("not json at all{{{");
+        let (r, failure) = parse_hook_response_lenient("not json at all{{{");
         assert_eq!(r.decision, None);
         assert_eq!(r.r#continue, None);
+        assert!(failure.is_some());
     }
 
     #[test]
@@ -311,26 +346,29 @@ mod tests {
 
     #[test]
     fn parse_hook_response_handles_markdown_without_lang() {
-        let r = parse_hook_response_lenient("```\n{\"decision\":\"approve\"}\n```");
+        let (r, _) = parse_hook_response_lenient("```\n{\"decision\":\"approve\"}\n```");
         assert_eq!(r.decision, Some(HookDecision::Approve));
     }
 
     #[test]
     fn parse_hook_response_empty_string_returns_default() {
-        let r = parse_hook_response_lenient("");
+        let (r, failure) = parse_hook_response_lenient("");
         assert_eq!(r.decision, None);
+        assert_eq!(failure, None, "saying nothing is not a failure");
     }
 
     #[test]
     fn parse_hook_response_whitespace_only() {
-        let r = parse_hook_response_lenient("   \n  ");
+        let (r, failure) = parse_hook_response_lenient("   \n  ");
         assert_eq!(r.decision, None);
+        assert_eq!(failure, None);
     }
 
     #[test]
     fn exit_2_blocks_whatever_stdout_says() {
         for stdout in ["", "not json {{", r#"{"decision":"approve"}"#] {
-            let r = response_for_exit("h", Some(2), stdout, "NO-RM\n");
+            let (r, failure) = response_for_exit("h", Some(2), stdout, "NO-RM\n");
+            assert_eq!(failure, None);
             assert_eq!(r.decision, Some(HookDecision::Block), "stdout {stdout:?}");
             assert_eq!(r.message.as_deref(), Some("NO-RM"));
         }
@@ -338,10 +376,10 @@ mod tests {
 
     #[test]
     fn exit_2_without_stderr_gives_stdout_as_the_reason() {
-        let r = response_for_exit("h", Some(2), "plain words\n", "");
+        let (r, _) = response_for_exit("h", Some(2), "plain words\n", "");
         assert_eq!(r.decision, Some(HookDecision::Block));
         assert_eq!(r.message.as_deref(), Some("plain words"));
-        let r = response_for_exit("h", Some(2), "", "");
+        let (r, _) = response_for_exit("h", Some(2), "", "");
         assert_eq!(r.message.as_deref(), Some("hook exited 2"));
     }
 
@@ -349,21 +387,24 @@ mod tests {
     fn any_other_failure_lets_the_call_through() {
         for code in [Some(1), Some(127), None] {
             for stdout in ["", "oops", r#"{"decision":"block"}"#] {
-                let r = response_for_exit("h", code, stdout, "boom");
+                let (r, failure) = response_for_exit("h", code, stdout, "boom");
                 assert_eq!(r.decision, None, "{code:?} {stdout:?}");
                 assert_eq!(r.r#continue, None);
+                assert!(failure.is_some_and(|f| f.contains("boom")), "{code:?}");
             }
         }
     }
 
     #[test]
     fn exit_0_reads_stdout_as_the_answer() {
-        let r = response_for_exit("h", Some(0), r#"{"decision":"block","message":"m"}"#, "");
+        let (r, failure) =
+            response_for_exit("h", Some(0), r#"{"decision":"block","message":"m"}"#, "");
         assert_eq!(r.decision, Some(HookDecision::Block));
-        assert_eq!(response_for_exit("h", Some(0), "", "x").decision, None);
-        assert_eq!(
-            response_for_exit("h", Some(0), "garbage", "").decision,
-            None
-        );
+        assert_eq!(failure, None);
+        let (r, failure) = response_for_exit("h", Some(0), "", "x");
+        assert_eq!((r.decision, failure), (None, None));
+        let (r, failure) = response_for_exit("h", Some(0), "garbage", "");
+        assert_eq!(r.decision, None);
+        assert!(failure.is_some_and(|f| f.contains("garbage")));
     }
 }

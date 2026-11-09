@@ -3,7 +3,7 @@
 //! 四种变体都会执行（`HookRunner::run_one` 逐一分发）：`command` 与 `http`
 //! 自足；`prompt` 与 `agent` 需要宿主注入 `PromptHookExecutor` /
 //! `AgentHookExecutor`，没注入时该 hook 被 Skip 并附原因，不是静默失败。
-//! 四种都认 `if`（见 `runner::matcher`）；`only_on_error`、`once`、
+//! 四种都认 `if`（见 `runner::matcher`）与 `on_error`；`only_on_error`、`once`、
 //! `async_rewake` 只有 `command` 有。
 
 use serde::{Deserialize, Serialize};
@@ -25,6 +25,8 @@ pub enum HookConfig {
         /// 权限规则风格的过滤模式，例如 "Bash(git push:*)"。命中才跑。
         #[serde(default, rename = "if")]
         if_pattern: Option<String>,
+        #[serde(default)]
+        on_error: OnError,
         /// 仅当工具结果 is_error=true 时才跑（PostToolUse 用）
         #[serde(default)]
         only_on_error: Option<bool>,
@@ -46,6 +48,8 @@ pub enum HookConfig {
         model: Option<String>,
         #[serde(default, rename = "if")]
         if_pattern: Option<String>,
+        #[serde(default)]
+        on_error: OnError,
     },
     /// HTTP webhook
     Http {
@@ -56,6 +60,8 @@ pub enum HookConfig {
         timeout: Option<u64>,
         #[serde(default, rename = "if")]
         if_pattern: Option<String>,
+        #[serde(default)]
+        on_error: OnError,
     },
     /// 跑子 agent
     Agent {
@@ -66,7 +72,22 @@ pub enum HookConfig {
         timeout: Option<u64>,
         #[serde(default, rename = "if")]
         if_pattern: Option<String>,
+        #[serde(default)]
+        on_error: OnError,
     },
+}
+
+/// What a hook that fails — times out, errors, exits other than 0 or 2,
+/// answers something that is not a JSON answer — amounts to.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnError {
+    /// The failure is logged and the hook says nothing.
+    #[default]
+    Allow,
+    /// The failure is the hook answering `{"decision": "block"}`, with the
+    /// failure as its message.
+    Block,
 }
 
 impl HookConfig {
@@ -97,6 +118,15 @@ impl HookConfig {
             }
         }
         Ok(())
+    }
+
+    pub(crate) fn on_error(&self) -> OnError {
+        match self {
+            HookConfig::Command { on_error, .. }
+            | HookConfig::Prompt { on_error, .. }
+            | HookConfig::Http { on_error, .. }
+            | HookConfig::Agent { on_error, .. } => *on_error,
+        }
     }
 
     pub(crate) fn is_once(&self) -> bool {
@@ -353,7 +383,8 @@ mod tests {
             "if": "Bash",
             "only_on_error": true,
             "once": false,
-            "async_rewake": true
+            "async_rewake": true,
+            "on_error": "block"
         });
         let h: HookConfig = serde_json::from_value(v).unwrap();
         match h {
@@ -362,6 +393,7 @@ mod tests {
                 shell,
                 timeout,
                 if_pattern,
+                on_error,
                 only_on_error,
                 once,
                 async_rewake,
@@ -373,6 +405,7 @@ mod tests {
                 assert_eq!(only_on_error, Some(true));
                 assert_eq!(once, Some(false));
                 assert_eq!(async_rewake, Some(true));
+                assert_eq!(on_error, OnError::Block);
             }
             _ => panic!("expected Command variant"),
         }

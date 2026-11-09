@@ -44,7 +44,8 @@ hook 是写在设置里的外部回调:引擎走到一个具名时刻(调工具�
 
 ## 四种后端
 
-`type` 字段选后端。四种都认 `timeout`(毫秒,不写就是 **60 秒**)和 `if`。
+`type` 字段选后端。四种都认 `timeout`(毫秒,不写就是 **60 秒**)、`if` 和 `on_error`
+(见"失败")。
 
 ### `command`
 
@@ -184,8 +185,25 @@ hook 的 stdout 只用来读回答,引擎不把它交给模型或宿主;要让�
 第一个拦的,`block` 压过别的 hook 的 `approve`);有一个说 `continue: false` 就结束;
 `updated_input` 取配置顺序里第一个给出的,后面的不看。一个 hook 慢或者坏了,不耽误同一事件的其他 hook。
 
-**失败就是放行。** 超时(到时 command 的进程被杀掉)、起不来、command 退出码不是 0 或 2、
-HTTP 非 2xx、回答解析不出来——这个 hook 不拦、不改、不结束任何东西,只记一条 warn。
+### 失败
+
+失败指:超时(到时 command 的进程被杀掉)、起不来、command 退出码不是 0 或 2、HTTP 非 2xx
+或连不上、回答不是 JSON(空输出不算,那是什么都不说)、agent 子 Agent 的回答不是 JSON、
+会话没接上 prompt / agent 后端。
+
+**缺省失败就是放行**(`"on_error": "allow"`):这个 hook 不拦、不改、不结束任何东西,只记一条
+warn。
+
+写了 **`"on_error": "block"`** 的 hook,失败等于它回答了 `{"decision": "block"}`,`message` 是
+`<哪个 hook> failed and its on_error is block: <失败原因>`(hook 写作 `` command `<命令>` ``、
+`` http `<url>` ``、`prompt hook`、`agent hook`)。拦下的效果按事件走,同回答 `block`:
+`PreToolUse` 上这次调用不执行,`Stop` 上这一轮不结束、模型被送回去,只通知的事件上不起作用。
+`if`、`only_on_error` 没放行的那次不算失败。
+
+```json
+{ "type": "command", "command": "policy-check.sh", "timeout": 5000, "on_error": "block" }
+```
+
 hook 是策略的补充,不是唯一的门:要硬拦的东西写成权限规则。
 
 ---

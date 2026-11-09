@@ -7,13 +7,13 @@
 pub mod executor;
 pub mod matcher;
 
-use crate::config::{HookConfig, HookEvent, HooksSettings};
+use crate::config::{HookConfig, HookEvent, HooksSettings, OnError};
 use crate::payload::{HookDecision, HookInput, HookResponse};
 use std::sync::Arc;
 use std::time::Duration;
 
 /// 没写 `timeout` 的 hook 最多跑多久（60 秒），四种后端都一样。到时它什么都不拦、
-/// 不改。
+/// 不改，除非它写了 `on_error: "block"`。
 pub const DEFAULT_HOOK_TIMEOUT_MS: u64 = 60_000;
 
 #[derive(Debug, Clone)]
@@ -24,6 +24,8 @@ pub enum HookOutcome {
         stdout: String,
         stderr: String,
         exit_code: Option<i32>,
+        /// 跑了但没给出能用的回答：command 退出码不是 0 或 2、回答不是 JSON
+        failure: Option<String>,
     },
     /// hook 配置不适用（if 不匹配 / 类型不支持）
     Skipped(&'static str),
@@ -403,12 +405,14 @@ impl HookRunner {
 
         for (idx, outcome) in &indexed {
             if let HookOutcome::Error(error) = outcome {
-                tracing::warn!(
-                    event = ?event,
-                    hook = %configs[*idx].describe(),
-                    %error,
-                    "hook failed; it neither blocks nor rewrites anything"
-                );
+                if configs[*idx].on_error() == OnError::Allow {
+                    tracing::warn!(
+                        event = ?event,
+                        hook = %configs[*idx].describe(),
+                        %error,
+                        "hook failed; it neither blocks nor rewrites anything"
+                    );
+                }
             }
         }
 
@@ -450,7 +454,13 @@ impl HookRunner {
         drop(once_set);
 
         HookRunResult {
-            outcomes: indexed.into_iter().map(|(_, o)| o).collect(),
+            outcomes: indexed
+                .into_iter()
+                .map(|(idx, outcome)| match configs[idx].on_error() {
+                    OnError::Allow => outcome,
+                    OnError::Block => block_on_failure(event, &configs[idx], outcome),
+                })
+                .collect(),
         }
     }
 
@@ -517,9 +527,7 @@ impl HookRunner {
         timeout: Duration,
     ) -> HookOutcome {
         let Some(ref executor) = self.agent_executor else {
-            return HookOutcome::Skipped(
-                "agent hook: no AgentHookExecutor configured — wire one at CLI/daemon startup",
-            );
+            return HookOutcome::Skipped(NO_AGENT_EXECUTOR);
         };
         let answered =
             match tokio::time::timeout(timeout, executor.execute(prompt, model, input)).await {
@@ -551,6 +559,7 @@ impl HookRunner {
                         stdout: response,
                         stderr: String::new(),
                         exit_code: Some(0),
+                        failure: None,
                     }
                 } else {
                     HookOutcome::Ran {
@@ -558,6 +567,10 @@ impl HookRunner {
                             message: Some(response.clone()),
                             ..Default::default()
                         },
+                        failure: Some(format!(
+                            "agent hook answer is not JSON: {}",
+                            executor::truncate(&response, 200)
+                        )),
                         stdout: response,
                         stderr: String::new(),
                         exit_code: Some(0),
@@ -658,6 +671,44 @@ impl HookRunner {
     }
 }
 
+const NO_PROMPT_EXECUTOR: &str = "prompt-type hook needs a PromptHookExecutor injected";
+const NO_AGENT_EXECUTOR: &str =
+    "agent hook: no AgentHookExecutor configured — wire one at CLI/daemon startup";
+
+/// A failed `on_error: "block"` hook, turned into the block it stands for.
+///
+/// A hook whose backend this host never wired is a failure here too: a hook
+/// written to fail closed must not open because nothing could run it.
+fn block_on_failure(event: HookEvent, cfg: &HookConfig, outcome: HookOutcome) -> HookOutcome {
+    let (why, stdout, stderr, exit_code) = match outcome {
+        HookOutcome::Error(error) => (error, String::new(), String::new(), None),
+        HookOutcome::Ran {
+            failure: Some(failure),
+            stdout,
+            stderr,
+            exit_code,
+            ..
+        } => (failure, stdout, stderr, exit_code),
+        HookOutcome::Skipped(why) if why == NO_PROMPT_EXECUTOR || why == NO_AGENT_EXECUTOR => {
+            (why.to_string(), String::new(), String::new(), None)
+        }
+        other => return other,
+    };
+    let message = format!("{} failed and its on_error is block: {why}", cfg.describe());
+    tracing::warn!(event = ?event, %message, "hook failed; blocking");
+    HookOutcome::Ran {
+        response: HookResponse {
+            decision: Some(HookDecision::Block),
+            message: Some(message),
+            ..Default::default()
+        },
+        stdout,
+        stderr,
+        exit_code,
+        failure: Some(why),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -702,6 +753,7 @@ mod tests {
                 only_on_error: None,
                 once: None,
                 async_rewake: None,
+                on_error: OnError::Allow,
             }],
         );
         let r = HookRunner::new(s);
@@ -723,6 +775,7 @@ mod tests {
                 only_on_error: Some(true),
                 once: None,
                 async_rewake: None,
+                on_error: OnError::Allow,
             }],
         );
         let r = HookRunner::new(s);
@@ -747,6 +800,7 @@ mod tests {
                 timeout: None,
                 model: None,
                 if_pattern: None,
+                on_error: OnError::Allow,
             }],
         );
         let r = HookRunner::new(s);
@@ -768,6 +822,7 @@ mod tests {
                     only_on_error: None,
                     once: None,
                     async_rewake: None,
+                    on_error: OnError::Allow,
                 },
                 HookConfig::Command {
                     command: "echo peer-still-runs".into(),
@@ -777,6 +832,7 @@ mod tests {
                     only_on_error: None,
                     once: None,
                     async_rewake: None,
+                    on_error: OnError::Allow,
                 },
             ],
         );
@@ -804,6 +860,7 @@ mod tests {
                     only_on_error: None,
                     once: None,
                     async_rewake: None,
+                    on_error: OnError::Allow,
                 },
                 HookConfig::Command {
                     command: "echo second".into(),
@@ -813,6 +870,7 @@ mod tests {
                     only_on_error: None,
                     once: None,
                     async_rewake: None,
+                    on_error: OnError::Allow,
                 },
             ],
         );
@@ -841,6 +899,7 @@ mod tests {
                 only_on_error: None,
                 once: None,
                 async_rewake: None,
+                on_error: OnError::Allow,
             }],
         );
         let r = HookRunner::new(s);
@@ -862,6 +921,7 @@ mod tests {
                 only_on_error: None,
                 once: None,
                 async_rewake: None,
+                on_error: OnError::Allow,
             }],
         );
         let r = HookRunner::new(s);
@@ -917,6 +977,7 @@ mod tests {
                 only_on_error: None,
                 once: None,
                 async_rewake: None,
+                on_error: OnError::Allow,
             }],
         );
         let r = HookRunner::new(s).with_hooks_search_dirs(vec![dir.clone()]);
@@ -940,6 +1001,7 @@ mod tests {
                 only_on_error: None,
                 once: None,
                 async_rewake: None,
+                on_error: OnError::Allow,
             }],
         );
         HookRunner::new(s)
@@ -1081,6 +1143,7 @@ mod tests {
                 only_on_error: None,
                 once: None,
                 async_rewake: None,
+                on_error: OnError::Allow,
             }],
         );
         let r = HookRunner::new(s); // no hooks_search_dirs configured
@@ -1101,6 +1164,7 @@ mod tests {
                 headers: HashMap::new(),
                 timeout: Some(500),
                 if_pattern: None,
+                on_error: OnError::Allow,
             }],
         );
         let r = HookRunner::new(s);
@@ -1126,6 +1190,7 @@ mod tests {
             only_on_error: None,
             once: None,
             async_rewake: None,
+            on_error: OnError::Allow,
         }
     }
 
@@ -1165,6 +1230,7 @@ mod tests {
             only_on_error: None,
             once: Some(true),
             async_rewake: None,
+            on_error: OnError::Allow,
         };
         let r = on_pre_tool_use(vec![hook]);
         for cmd in ["ls", "git push origin", "git push origin", "ls"] {
@@ -1199,18 +1265,21 @@ mod tests {
                 timeout: None,
                 model: None,
                 if_pattern: Some("Write|Edit".into()),
+                on_error: OnError::Allow,
             },
             HookConfig::Agent {
                 prompt: "judge".into(),
                 timeout: None,
                 model: None,
                 if_pattern: Some("Write".into()),
+                on_error: OnError::Allow,
             },
             HookConfig::Http {
                 url: "http://203.0.113.1/hook".into(),
                 headers: HashMap::new(),
                 timeout: Some(100),
                 if_pattern: Some("Write".into()),
+                on_error: OnError::Allow,
             },
         ])
         .with_prompt_executor(Arc::new(Answering(r#"{"decision":"block"}"#)))
@@ -1248,6 +1317,7 @@ mod tests {
             timeout: Some(200),
             model: None,
             if_pattern: None,
+            on_error: OnError::Allow,
         }])
         .with_agent_executor(Arc::new(Slow));
         let started = std::time::Instant::now();
@@ -1255,6 +1325,133 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(5));
         assert!(result.outcomes[0].is_error(), "{:?}", result.outcomes);
         assert!(result.blocked().is_none());
+    }
+
+    fn blocking_on_error(mut hook: HookConfig) -> HookConfig {
+        match &mut hook {
+            HookConfig::Command { on_error, .. }
+            | HookConfig::Prompt { on_error, .. }
+            | HookConfig::Http { on_error, .. }
+            | HookConfig::Agent { on_error, .. } => *on_error = OnError::Block,
+        }
+        hook
+    }
+
+    fn block_message(result: &HookRunResult) -> String {
+        result
+            .blocked()
+            .and_then(|r| r.message.clone())
+            .unwrap_or_else(|| panic!("not blocked: {:?}", result.outcomes))
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failing_command_hook_with_on_error_block_blocks() {
+        let mut timing_out = command("sleep 30");
+        if let HookConfig::Command { timeout, .. } = &mut timing_out {
+            *timeout = Some(300);
+        }
+        for (hook, said) in [
+            (timing_out, "timed out"),
+            (command("echo boom >&2; exit 1"), "exited 1: boom"),
+            (command("echo 'not json'"), "not a JSON answer"),
+        ] {
+            let result = on_pre_tool_use(vec![blocking_on_error(hook)])
+                .run(HookEvent::PreToolUse, &input_for_bash("ls"))
+                .await;
+            let message = block_message(&result);
+            assert!(
+                message.contains("command `") && message.contains(said),
+                "{message}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn on_error_block_leaves_a_working_hook_alone() {
+        let quiet = on_pre_tool_use(vec![blocking_on_error(command("true"))])
+            .run(HookEvent::PreToolUse, &input_for_bash("ls"))
+            .await;
+        assert!(quiet.blocked().is_none(), "{:?}", quiet.outcomes);
+
+        let refused = on_pre_tool_use(vec![blocking_on_error(command("echo NO >&2; exit 2"))])
+            .run(HookEvent::PreToolUse, &input_for_bash("ls"))
+            .await;
+        assert_eq!(block_message(&refused), "NO");
+
+        let mut skipped = blocking_on_error(command("exit 1"));
+        if let HookConfig::Command { if_pattern, .. } = &mut skipped {
+            *if_pattern = Some("Write".into());
+        }
+        let skipped = on_pre_tool_use(vec![skipped])
+            .run(HookEvent::PreToolUse, &input_for_bash("ls"))
+            .await;
+        assert!(skipped.blocked().is_none(), "{:?}", skipped.outcomes);
+    }
+
+    #[tokio::test]
+    async fn failing_prompt_http_and_agent_hooks_with_on_error_block_block() {
+        let prompt = || HookConfig::Prompt {
+            prompt: "judge".into(),
+            timeout: None,
+            model: None,
+            if_pattern: None,
+            on_error: OnError::Block,
+        };
+        let agent = |timeout| HookConfig::Agent {
+            prompt: "judge".into(),
+            timeout,
+            model: None,
+            if_pattern: None,
+            on_error: OnError::Block,
+        };
+
+        let unparsable = on_pre_tool_use(vec![prompt()])
+            .with_prompt_executor(Arc::new(Answering("sure, looks fine")))
+            .run(HookEvent::PreToolUse, &input_for_bash("ls"))
+            .await;
+        assert!(block_message(&unparsable).contains("prompt hook"));
+
+        let unwired = on_pre_tool_use(vec![prompt()])
+            .run(HookEvent::PreToolUse, &input_for_bash("ls"))
+            .await;
+        assert!(block_message(&unwired).contains("PromptHookExecutor"));
+
+        let unreachable = on_pre_tool_use(vec![HookConfig::Http {
+            url: "http://127.0.0.1:1/no-such".into(),
+            headers: HashMap::new(),
+            timeout: Some(500),
+            if_pattern: None,
+            on_error: OnError::Block,
+        }])
+        .run(HookEvent::PreToolUse, &input_for_bash("ls"))
+        .await;
+        assert!(block_message(&unreachable).contains("http `http://127.0.0.1:1/no-such`"));
+
+        let timed_out = on_pre_tool_use(vec![agent(Some(200))])
+            .with_agent_executor(Arc::new(Slow))
+            .run(HookEvent::PreToolUse, &input_for_bash("ls"))
+            .await;
+        assert!(block_message(&timed_out).contains("timed out"));
+
+        let errored = on_pre_tool_use(vec![agent(None)])
+            .with_agent_executor(Arc::new(Failing))
+            .run(HookEvent::PreToolUse, &input_for_bash("ls"))
+            .await;
+        assert!(block_message(&errored).contains("JUDGE-UNAVAILABLE"));
+
+        let rambling = on_pre_tool_use(vec![agent(None)])
+            .with_agent_executor(Arc::new(Answering("I think it is fine")))
+            .run(HookEvent::PreToolUse, &input_for_bash("ls"))
+            .await;
+        assert!(block_message(&rambling).contains("not JSON"));
+
+        let approving = on_pre_tool_use(vec![agent(None)])
+            .with_agent_executor(Arc::new(Answering(r#"{"ok":true}"#)))
+            .run(HookEvent::PreToolUse, &input_for_bash("ls"))
+            .await;
+        assert!(approving.blocked().is_none(), "{:?}", approving.outcomes);
     }
 
     #[test]
@@ -1301,6 +1498,7 @@ mod tests {
             timeout: None,
             model: None,
             if_pattern: None,
+            on_error: OnError::Allow,
         }])
         .with_agent_executor(Arc::new(Failing));
         let result = r.run(HookEvent::PreToolUse, &input_for_bash("ls")).await;

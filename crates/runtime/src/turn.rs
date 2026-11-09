@@ -5867,6 +5867,7 @@ mod tests {
                     only_on_error: None,
                     once: None,
                     async_rewake: None,
+                    on_error: hooks::OnError::Allow,
                 }],
             );
             Arc::new(hooks::HookRunner::new(settings))
@@ -5940,6 +5941,7 @@ mod tests {
                 only_on_error: None,
                 once: None,
                 async_rewake: None,
+                on_error: hooks::OnError::Allow,
             }],
         );
         let hooks_runner = Arc::new(hooks::HookRunner::new(settings));
@@ -5973,6 +5975,7 @@ mod tests {
                 only_on_error: None,
                 once: None,
                 async_rewake: None,
+                on_error: hooks::OnError::Allow,
             }],
         );
         let hooks_runner = Arc::new(hooks::HookRunner::new(settings));
@@ -6022,6 +6025,7 @@ mod tests {
                 only_on_error: None,
                 once: None,
                 async_rewake: None,
+                on_error: hooks::OnError::Allow,
             }],
         );
         let mut ctx = test_exec_ctx(tools, Arc::new(hooks::HookRunner::new(settings)));
@@ -6075,6 +6079,7 @@ mod tests {
                 only_on_error: None,
                 once: None,
                 async_rewake: None,
+                on_error: hooks::OnError::Allow,
             }],
         );
         let hooks_runner = Arc::new(hooks::HookRunner::new(settings));
@@ -6105,6 +6110,7 @@ mod tests {
                 only_on_error: None,
                 once: None,
                 async_rewake: None,
+                on_error: hooks::OnError::Allow,
             }],
         );
         test_exec_ctx(tools, Arc::new(hooks::HookRunner::new(settings)))
@@ -6188,6 +6194,7 @@ mod tests {
                 only_on_error: None,
                 once: None,
                 async_rewake: None,
+                on_error: hooks::OnError::Allow,
             }],
         );
         let ctx = test_exec_ctx(tools, Arc::new(hooks::HookRunner::new(settings)));
@@ -6217,6 +6224,7 @@ mod tests {
                 only_on_error: None,
                 once: None,
                 async_rewake: None,
+                on_error: hooks::OnError::Allow,
             }],
         );
         let hooks_runner = Arc::new(hooks::HookRunner::new(settings));
@@ -6256,6 +6264,7 @@ mod tests {
                 only_on_error: None,
                 once: None,
                 async_rewake: None,
+                on_error: hooks::OnError::Allow,
             }],
         );
         let hooks_runner = Arc::new(hooks::HookRunner::new(settings));

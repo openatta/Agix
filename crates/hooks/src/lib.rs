@@ -9,7 +9,8 @@ pub mod runner;
 pub mod watcher;
 
 pub use config::{
-    parse_hooks_settings, HookConfig, HookEvent, HooksParseReport, HooksSettings, UNWIRED_EVENTS,
+    parse_hooks_settings, HookConfig, HookEvent, HooksParseReport, HooksSettings, OnError,
+    UNWIRED_EVENTS,
 };
 pub use payload::{HookDecision, HookInput, HookResponse};
 pub use runner::HookRunner;
