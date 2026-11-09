@@ -678,13 +678,14 @@ pub(crate) fn confine_shell(
 }
 
 /// Whether an unattended shell-running tool may run a command nobody can be
-/// asked about: the OS sandbox fully confines its writes **and** the network
-/// is closed. An open network is a hole the write sandbox does not cover —
-/// a command confined to the project's files can still reach out — so with
-/// nobody to answer, it is left to the normal allow rules instead.
+/// asked about: the OS sandbox fully confines its writes, and — when
+/// `sandbox.unattended_requires_network_policy` is on — the network is not
+/// left unrestricted, since the write sandbox does not cover it.
 pub(crate) fn unattended_sandbox_allows(ctx: &ToolContext) -> bool {
     use base::context::config::NetworkModeConfig;
-    !matches!(ctx.sandbox.network_mode, NetworkModeConfig::Unrestricted) && sandbox_holds(ctx)
+    let network_ok = !ctx.sandbox.unattended_requires_network_policy
+        || !matches!(ctx.sandbox.network_mode, NetworkModeConfig::Unrestricted);
+    network_ok && sandbox_holds(ctx)
 }
 
 /// Whether a command run now would be fully confined by the OS sandbox.
@@ -1886,20 +1887,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unattended_bash_with_open_network_is_not_auto_allowed() {
+    async fn unattended_bash_runs_in_a_holding_sandbox_whatever_the_network_by_default() {
         use base::context::config::NetworkModeConfig;
         let dir = tempfile::tempdir().unwrap();
         let input = json!({"command": "sh build.sh"});
-        let open = unattended_in_a_holding_sandbox(dir.path(), NetworkModeConfig::Unrestricted);
-        assert!(matches!(
-            BashTool.check_permissions(&input, &open).await,
-            PermissionDecision::Ask { .. }
-        ));
-        for closed in [NetworkModeConfig::DenyAll, NetworkModeConfig::Allowlist] {
-            let ctx = unattended_in_a_holding_sandbox(dir.path(), closed);
+        for network in [
+            NetworkModeConfig::Unrestricted,
+            NetworkModeConfig::DenyAll,
+            NetworkModeConfig::Allowlist,
+        ] {
+            let ctx = unattended_in_a_holding_sandbox(dir.path(), network);
             assert!(
                 matches!(
                     BashTool.check_permissions(&input, &ctx).await,
+                    PermissionDecision::Allow { .. }
+                ),
+                "{network:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn unattended_bash_with_open_network_is_not_auto_allowed_when_the_setting_says_so() {
+        use base::context::config::NetworkModeConfig;
+        let dir = tempfile::tempdir().unwrap();
+        let input = json!({"command": "sh build.sh"});
+        let requiring = |network| {
+            let mut ctx = unattended_in_a_holding_sandbox(dir.path(), network);
+            ctx.sandbox.unattended_requires_network_policy = true;
+            ctx
+        };
+        assert!(matches!(
+            BashTool
+                .check_permissions(&input, &requiring(NetworkModeConfig::Unrestricted))
+                .await,
+            PermissionDecision::Ask { .. }
+        ));
+        for closed in [NetworkModeConfig::DenyAll, NetworkModeConfig::Allowlist] {
+            assert!(
+                matches!(
+                    BashTool.check_permissions(&input, &requiring(closed)).await,
                     PermissionDecision::Allow { .. }
                 ),
                 "{closed:?}"
@@ -2065,6 +2092,7 @@ mod tests {
             network_mode: base::context::config::NetworkModeConfig::Allowlist,
             state_root: None,
             require_enforcement: false,
+            unattended_requires_network_policy: false,
             deny_write: Vec::new(),
             allow_write: Vec::new(),
         };
@@ -2793,6 +2821,7 @@ mod allow_read_tests {
             network_mode: base::context::config::NetworkModeConfig::Unrestricted,
             state_root: None,
             require_enforcement: false,
+            unattended_requires_network_policy: false,
             deny_write: Vec::new(),
             allow_write: Vec::new(),
         };

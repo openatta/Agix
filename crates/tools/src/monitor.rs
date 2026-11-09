@@ -91,8 +91,9 @@ impl Tool for MonitorTool {
         include_str!("prompts/coding/monitor.prompt.md").to_string()
     }
 
-    fn is_read_only(&self, _: &Value) -> bool {
-        true
+    fn is_read_only(&self, input: &Value) -> bool {
+        serde_json::from_value::<MonitorInput>(input.clone())
+            .is_ok_and(|p| crate::bash::classify::is_read_only(&p.command))
     }
 
     fn is_concurrency_safe(&self, _: &Value) -> bool {
@@ -459,32 +460,35 @@ mod tests {
         use base::context::config::NetworkModeConfig;
         let dir = TempDir::new().unwrap();
         let input = json!({"command": "npm run dev", "description": "dev server"});
-        let unattended = |network| {
+        let unattended = |network, requires_network_policy| {
             let mut ctx = ctx_in(dir.path());
             let mut session = SessionState::new(dir.path().to_path_buf());
             session.unattended = true;
             ctx.session = Arc::new(session);
             ctx.dangerously_disable_sandbox = false;
             ctx.sandbox.network_mode = network;
+            ctx.sandbox.unattended_requires_network_policy = requires_network_policy;
             ctx.exec.sandbox = Arc::new(Holds);
             ctx
         };
+        let input = &input;
+        let decide =
+            move |ctx: ToolContext| async move { MonitorTool.check_permissions(input, &ctx).await };
+        for (network, requires, allowed) in [
+            (NetworkModeConfig::Unrestricted, false, true),
+            (NetworkModeConfig::DenyAll, false, true),
+            (NetworkModeConfig::Unrestricted, true, false),
+            (NetworkModeConfig::DenyAll, true, true),
+        ] {
+            let d = decide(unattended(network, requires)).await;
+            assert_eq!(
+                matches!(d, PermissionDecision::Allow { .. }),
+                allowed,
+                "{network:?}, requires_network_policy={requires}: {d:?}"
+            );
+        }
         assert!(matches!(
-            MonitorTool
-                .check_permissions(&input, &unattended(NetworkModeConfig::DenyAll))
-                .await,
-            PermissionDecision::Allow { .. }
-        ));
-        assert!(matches!(
-            MonitorTool
-                .check_permissions(&input, &unattended(NetworkModeConfig::Unrestricted))
-                .await,
-            PermissionDecision::Ask { .. }
-        ));
-        assert!(matches!(
-            MonitorTool
-                .check_permissions(&input, &ctx_in(dir.path()))
-                .await,
+            decide(ctx_in(dir.path())).await,
             PermissionDecision::Ask { .. }
         ));
     }

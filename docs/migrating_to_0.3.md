@@ -435,10 +435,15 @@ WebAssembly 载体整个移除。
   (`is_error`),结构化结果多了 `timed_out`。以前超时直接以错误结束,已打印的全丢了。
 - `Bash` 单行超过 64 KB 时截断并标 `…[line truncated]`,然后继续读后面的行;以前到那一行就
   静默丢掉之后的全部输出。
-- 无人值守会话里,`Monitor` 的脚本在 OS 沙箱完整生效、且网络不是 `Unrestricted` 时自动放行
-  (与 `Bash` 同一条件),否则照旧拒绝。`Bash` 的无人值守自动放行也加了这条网络条件:默认的
-  `Unrestricted` 网络下即使沙箱生效也不再自动放行——沙箱只限写,网络仍是个口子。要无人值守跑,
-  把 `sandbox.network_mode` 设为 `deny_all` / `allowlist`,或写 allow 规则。
+- 无人值守会话里,`Monitor` 的脚本在 OS 沙箱完整生效时自动放行(与 `Bash` 同一条件),以前恒为
+  询问、也就是恒被拒。新设置 `sandbox.unattended_requires_network_policy`(缺省 `false`)打开后,
+  `Bash` 与 `Monitor` 的这条自动放行另外要求 `sandbox.network_mode` 不是 `unrestricted`——沙箱只限写,
+  网络仍是个口子;不满足就回到 allow 规则。0.4 会把缺省改成 `true`,无人值守跑命令的部署现在就可以
+  把网络收成 `deny_all` / `allowlist` 并打开它。
+- `plan` 模式下,只读工具自己没放行的调用改为询问,与 `default` 相同:读项目外的文件、
+  `WebFetch`、只读的 MCP 工具、参数指向项目外的只读 `Bash`。以前 `plan` 对只读工具一律放行。
+- `Monitor` 不再恒为只读,按它的命令用 `Bash` 的只读分类判:跑脚本、起服务的 `Monitor` 在
+  `plan` 下被拒,在 `acceptEdits` 下要询问(以前两处都静默放行)。
 - 子进程环境永远不带 `CDPATH`(`inherit` 与 `allowlist` 两种模式都剥掉),免得子 shell 的
   `cd foo` 落到项目外、而权限检查看的是字面 `foo`。
 - agent 类型 frontmatter 的 `permission_mode` 真正作用到子 Agent 的权限判定上(以前写 `plan`

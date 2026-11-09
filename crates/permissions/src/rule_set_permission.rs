@@ -103,6 +103,7 @@ impl RuleSetPermission {
             allow_write: settings.sandbox.allow_write.clone(),
             state_root: None,
             require_enforcement: settings.sandbox.require_enforcement,
+            unattended_requires_network_policy: settings.sandbox.unattended_requires_network_policy,
         })
     }
 

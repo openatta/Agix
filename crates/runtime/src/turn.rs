@@ -3817,6 +3817,9 @@ fn sandbox_settings_from(config: &base::context::EngineConfig) -> base::tool::Sa
         allow_write: config.sandbox_policy.allow_write.clone(),
         state_root: config.sandbox_policy.state_root.clone(),
         require_enforcement: config.sandbox_policy.require_enforcement,
+        unattended_requires_network_policy: config
+            .sandbox_policy
+            .unattended_requires_network_policy,
     }
 }
 
@@ -5172,6 +5175,7 @@ mod sandbox_settings_tests {
             allowed_domains: vec!["api.example.com".into()],
             state_root: None,
             require_enforcement: false,
+            unattended_requires_network_policy: true,
             deny_write: Vec::new(),
             allow_write: Vec::new(),
         };
@@ -5182,6 +5186,7 @@ mod sandbox_settings_tests {
         assert_eq!(s.deny_read, [PathBuf::from("/tmp/secret")]);
         assert_eq!(s.network_mode, NetworkModeConfig::DenyAll);
         assert_eq!(s.allowed_domains, ["api.example.com"]);
+        assert!(s.unattended_requires_network_policy);
     }
 
     /// The same knob, reaching the egress a tool's own HTTP goes out through

@@ -92,16 +92,16 @@ async fn an_unattended_command_runs_only_inside_the_sandbox() {
         PermissionDecision::Ask { .. }
     ));
 
-    // The sandbox holds writes, not the network: with the network open (the
-    // default) an unattended command is not auto-allowed even when it holds.
-    let mut open_network = ctx_in(project.path(), |s| s.unattended = true);
-    open_network.dangerously_disable_sandbox = false;
-    assert!(!allowed(&bash(&open_network).await));
-
     let mut unattended = ctx_in(project.path(), |s| s.unattended = true);
     unattended.dangerously_disable_sandbox = false;
-    unattended.sandbox.network_mode = base::context::config::NetworkModeConfig::DenyAll;
     let holds = tools::bash::sandbox_status().starts_with("available");
+    assert_eq!(allowed(&bash(&unattended).await), holds);
+
+    // Asked to, the network has to be closed as well: the sandbox holds
+    // writes, not the network.
+    unattended.sandbox.unattended_requires_network_policy = true;
+    assert!(!allowed(&bash(&unattended).await));
+    unattended.sandbox.network_mode = base::context::config::NetworkModeConfig::DenyAll;
     assert_eq!(allowed(&bash(&unattended).await), holds);
 }
 

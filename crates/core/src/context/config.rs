@@ -69,7 +69,7 @@ pub struct EngineConfig {
     pub permission_mode: PermissionMode,
     /// 是否禁用 BashTool 沙盒（才有效；占位）
     pub dangerously_disable_sandbox: bool,
-    /// **Hardening **: Bash sandbox extended policy. Default:
+    /// Bash sandbox extended policy. Default:
     /// `default_deny_read` baked-in (~/.ssh, ~/.aws, etc), network unrestricted.
     /// Settings.json `sandbox.{deny_read,allow_read,allowed_domains,network_mode}`
     /// overrides any field. Tool layer (`agix-tools::bash::sandbox`) reads
@@ -189,8 +189,8 @@ pub enum ThinkingModeConfig {
     OnBudget(u32),
 }
 
-/// **Hardening **: data-only sandbox policy in core (so `EngineConfig`
-/// doesn't need to depend on the tools crate). Lifted to a real `SandboxPolicy`
+/// Data-only sandbox policy in core (so `EngineConfig` doesn't need to
+/// depend on the tools crate). Lifted to a real `SandboxPolicy`
 /// inside `agix-tools::bash::sandbox` at call-site.
 #[derive(Debug, Clone, Default)]
 pub struct SandboxPolicyConfig {
@@ -215,6 +215,8 @@ pub struct SandboxPolicyConfig {
     pub state_root: Option<PathBuf>,
     /// See `base::settings::SandboxConfig::require_enforcement`.
     pub require_enforcement: bool,
+    /// See `base::settings::SandboxConfig::unattended_requires_network_policy`.
+    pub unattended_requires_network_policy: bool,
 }
 
 #[derive(
@@ -375,6 +377,7 @@ impl EngineConfig {
             // sits under the invoking user's home.
             state_root: Some(settings.paths.global_data_dir.clone()),
             require_enforcement: settings.sandbox.require_enforcement,
+            unattended_requires_network_policy: settings.sandbox.unattended_requires_network_policy,
         };
         c.disable_skill_shell_execution = settings.disable_skill_shell_execution;
         c.path_style = settings.path_style.unwrap_or_default();

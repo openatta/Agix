@@ -590,7 +590,12 @@ git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git
 的、`.git` / `.agix` 下要确认的,在 `acceptEdits` 下照样询问——无人值守的会话里就是拒绝。
 
 `plan` 拒绝一切非只读工具,唯独离开计划模式的那一个(`ExitPlanMode`,
-`Tool::leaves_plan_mode`)照常走规则与询问:宿主批准才退出,回到进入前的模式。
+`Tool::leaves_plan_mode`)照常走规则与询问:宿主批准才退出,回到进入前的模式。除此之外
+与 `default` 相同:只读工具自己没放行的调用(读项目外的文件、`WebFetch`、只读的 MCP 工具)
+照样询问。
+
+`Monitor` 算不算只读看它要跑的命令,与 `Bash` 用同一套分类:`tail -f log` 是只读,
+`npm run dev`、`python3 watch.py` 不是——`plan` 下拒绝,`acceptEdits` 下询问。
 
 子 Agent 与团队成员的每次调用都交给父会话的 `Permission` 判
 (`Permission::check_for_delegate`),父会话的规则与宿主的回答都作用于它们,输入校验看的是
@@ -646,11 +651,11 @@ skill 自己的 `allowed-tools` 这时还没生效,不能给自己的命令开�
 一句话给自己开权限,等于让注入的内容给自己开权限。
 
 `Bash` 不能事先知道一条命令会写哪里,所以无人值守时它靠 OS 沙箱:沙箱完整生效
-(`Enforcement::Full`)**且网络不是 `Unrestricted`** 才放行,写入被限制在可写根之内;沙箱
-不可用(关掉了,或 Linux 上没有 bubblewrap)就和别的未授权调用一样被拒。网络缺省是
-`Unrestricted`——沙箱只限写不限网,一条被关在项目目录里的命令照样能往外连,所以无人值守下
-要先把 `sandbox.network_mode` 收成 `deny_all` / `allowlist`(或写 allow 规则),否则不自动放行。
-沙箱在 `assembly` / `daemon` 缺省编译进来。沙箱只限写,不限读——读的限制落在文件工具上,
+(`Enforcement::Full`)就放行,写入被限制在可写根之内;沙箱不可用(关掉了,或 Linux 上没有
+bubblewrap)就和别的未授权调用一样被拒。沙箱只限写不限网,网络缺省是 `Unrestricted`,一条被关在
+项目目录里的命令照样能往外连;`sandbox.unattended_requires_network_policy: true` 时自动放行另外
+要求 `sandbox.network_mode` 是 `deny_all` / `allowlist`,否则回到 allow 规则。这个开关 0.3.x 缺省
+关(保持原来的行为),0.4 改为缺省开。沙箱在 `assembly` / `daemon` 缺省编译进来。沙箱只限写,不限读——读的限制落在文件工具上,
 `Bash` 读项目外的东西只受凭据黑名单约束。`Monitor` 的脚本进同一个沙箱,
 `sandbox.require_enforcement` 对它同样生效,无人值守下的自动放行也走上面这同一条件。
 

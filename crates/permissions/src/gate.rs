@@ -26,7 +26,7 @@
 //! 8. 其余 PermissionMode 分派：
 //!    - `AcceptEdits` 且工具只读 → allow；Edit / Write 走到这里说明工具自己
 //!      没放行（写项目外）或要确认（`.git` / `.agix`），照样 ask
-//!    - 其余（含只读工具下的 `Plan`）→ ask / allow
+//!    - 其余（`Default`，以及只读工具下的 `Plan`）→ ask
 //!
 //! **为什么 2 的 Allow 要等到第 6 步才兑现**：`Write` / `Edit` / `Read` /
 //! `Grep` / `Glob` / 只读 `Bash` 全都会自判 Allow。在第 2 步就返回的话，用户写在
@@ -376,23 +376,15 @@ impl PermissionGate {
                 decision_reason: Some(DecisionReason::Mode(mode)),
             }),
 
+            // Plan 只比 Default 多一条"非只读拒绝"(第 5 步)：只读工具走到这里，说明它
+            // 自己没放行(读项目外、联网)，和 Default 一样要问。
             PermissionMode::Default
             | PermissionMode::Plan
             // Bypass 在第 1 步之后就返回了；列在这里只为 match 穷尽。
-            | PermissionMode::BypassPermissions => {
-                // Plan 下走到这里的非只读工具只有 `leaves_plan_mode` 的那个，
-                // 其余在第 5 步已经 deny 了；只读的默认 allow
-                if matches!(mode, PermissionMode::Plan) && tool.is_read_only(input) {
-                    return Ok(PermissionDecision::Allow {
-                        updated_input: None,
-                        decision_reason: Some(DecisionReason::Mode(mode)),
-                    });
-                }
-                Ok(PermissionDecision::Ask {
-                    message: format!("Allow {}?", tool.name()),
-                    decision_reason: Some(DecisionReason::Mode(mode)),
-                })
-            }
+            | PermissionMode::BypassPermissions => Ok(PermissionDecision::Ask {
+                message: format!("Allow {}?", tool.name()),
+                decision_reason: Some(DecisionReason::Mode(mode)),
+            }),
         }
     }
 }
@@ -885,14 +877,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn plan_mode_allows_readonly() {
-        let tool = FakeTool::new("Read").read_only();
-        let gate = PermissionGate::empty();
-        let d = gate
-            .check(&tool, &json!({}), &ctx_with_mode(PermissionMode::Plan))
-            .await
-            .unwrap();
-        assert!(matches!(d, PermissionDecision::Allow { .. }));
+    async fn plan_mode_asks_for_a_read_outside_the_project_as_default_mode_does() {
+        let inside = FakeTool::new("Read")
+            .read_only()
+            .matches("/tmp/a.txt")
+            .own(base::tool::PermissionDecision::allow());
+        let outside = FakeTool::new("Read")
+            .read_only()
+            .matches("/elsewhere/a.txt");
+        for mode in [PermissionMode::Plan, PermissionMode::Default] {
+            let ctx = ctx_with_mode(mode);
+            let gate = PermissionGate::empty();
+            let d = gate.check(&inside, &json!({}), &ctx).await.unwrap();
+            assert!(
+                matches!(d, PermissionDecision::Allow { .. }),
+                "{mode:?}: {d:?}"
+            );
+            let d = gate.check(&outside, &json!({}), &ctx).await.unwrap();
+            assert!(
+                matches!(d, PermissionDecision::Ask { .. }),
+                "{mode:?}: {d:?}"
+            );
+        }
     }
 
     #[tokio::test]

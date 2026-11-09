@@ -26,6 +26,8 @@ pub struct SandboxSettings {
     pub state_root: Option<PathBuf>,
     /// See `base::settings::SandboxConfig::require_enforcement`.
     pub require_enforcement: bool,
+    /// See `base::settings::SandboxConfig::unattended_requires_network_policy`.
+    pub unattended_requires_network_policy: bool,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InterruptBehavior {

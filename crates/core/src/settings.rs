@@ -632,6 +632,14 @@ pub struct SandboxConfig {
     /// installed, and every Windows host, on upgrade.
     #[serde(default)]
     pub require_enforcement: bool,
+    /// In an unattended session, a `Bash` / `Monitor` command nobody can be
+    /// asked about runs without an allow rule when the sandbox fully holds
+    /// it. With this on, it also needs `network_mode` other than
+    /// `unrestricted`: the sandbox holds writes, and an open network is a way
+    /// out it does not cover. Off by default in 0.3.x, which keeps the
+    /// earlier behavior; 0.4 turns it on.
+    #[serde(default)]
+    pub unattended_requires_network_policy: bool,
     /// The environment `Bash` / `Monitor` commands, command hooks and MCP
     /// stdio servers start from, sandboxed or not. By default the host's
     /// environment minus the engine's own credentials (`ANTHROPIC_*`,

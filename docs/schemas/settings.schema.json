@@ -572,6 +572,11 @@
             "mode": "inherit"
           },
           "description": "The environment `Bash` / `Monitor` commands, command hooks and MCP\nstdio servers start from, sandboxed or not. By default the host's\nenvironment minus the engine's own credentials (`ANTHROPIC_*`,\n`AGIX_DAEMON_TOKEN`); `\"mode\": \"allowlist\"` keeps only `PATH`,\n`HOME`, the locale and a few others, plus whatever `allow` names. An MCP\nserver takes the policy of the settings it is declared in, with its own\n`env` added on top."
+        },
+        "unattended_requires_network_policy": {
+          "default": false,
+          "description": "In an unattended session, a `Bash` / `Monitor` command nobody can be\nasked about runs without an allow rule when the sandbox fully holds\nit. With this on, it also needs `network_mode` other than\n`unrestricted`: the sandbox holds writes, and an open network is a way\nout it does not cover. Off by default in 0.3.x, which keeps the\nearlier behavior; 0.4 turns it on.",
+          "type": "boolean"
         }
       },
       "required": [
@@ -921,7 +926,8 @@
         "require_enforcement": false,
         "subprocess_env": {
           "mode": "inherit"
-        }
+        },
+        "unattended_requires_network_policy": false
       }
     },
     "scripts": {

@@ -588,6 +588,74 @@ async fn a_bash_deny_also_holds_monitor() {
     assert!(matches!(o, PermissionOutcome::Permit), "{o:?}");
 }
 
+/// A watch script is only as read-only as the command it runs: plan mode
+/// refuses one that writes or starts other programs, and acceptEdits does not
+/// wave it through.
+#[tokio::test]
+async fn a_monitor_script_is_read_only_only_when_its_command_is() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path();
+    let plan = permission(vec![], PermissionMode::Plan);
+    let accept_edits = permission(vec![], PermissionMode::AcceptEdits);
+    for line in [
+        "python3 watch.py",
+        "while true; do date >> log; sleep 5; done",
+        "npm run dev",
+    ] {
+        let o = check(&plan, "Monitor", monitor(line), cwd).await;
+        assert!(is_deny(&o), "plan {line}: {o:?}");
+        let o = check(&accept_edits, "Monitor", monitor(line), cwd).await;
+        assert!(
+            matches!(o, PermissionOutcome::Prompt { .. }),
+            "acceptEdits {line}: {o:?}"
+        );
+    }
+    let o = check(&plan, "Monitor", monitor("tail -f log"), cwd).await;
+    assert!(
+        matches!(o, PermissionOutcome::Prompt { .. }),
+        "plan, read-only: {o:?}"
+    );
+    let o = check(&accept_edits, "Monitor", monitor("tail -f log"), cwd).await;
+    assert!(
+        matches!(o, PermissionOutcome::Permit),
+        "acceptEdits, read-only: {o:?}"
+    );
+}
+
+/// Plan mode adds a refusal of writes to Default mode and nothing else: a
+/// read outside the project is asked about there as it is in Default.
+#[tokio::test]
+async fn plan_mode_asks_before_reading_outside_the_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let cwd = dir.path();
+    std::fs::write(cwd.join("a.txt"), "a").unwrap();
+    std::fs::write(outside.path().join("b.txt"), "b").unwrap();
+    let elsewhere = outside.path().join("b.txt").display().to_string();
+    for mode in [PermissionMode::Plan, PermissionMode::Default] {
+        let perm = permission(vec![], mode);
+        let read = |path: String| json!({ "file_path": path });
+        let o = check(
+            &perm,
+            "Read",
+            read(cwd.join("a.txt").display().to_string()),
+            cwd,
+        )
+        .await;
+        assert!(matches!(o, PermissionOutcome::Permit), "{mode:?}: {o:?}");
+        let o = check(&perm, "Read", read(elsewhere.clone()), cwd).await;
+        assert!(
+            matches!(o, PermissionOutcome::Prompt { .. }),
+            "{mode:?}: {o:?}"
+        );
+        let o = check(&perm, "Bash", bash(&format!("cat {elsewhere}")), cwd).await;
+        assert!(
+            matches!(o, PermissionOutcome::Prompt { .. }),
+            "{mode:?}: {o:?}"
+        );
+    }
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn a_cd_through_a_symlink_out_of_the_project_is_asked_about() {

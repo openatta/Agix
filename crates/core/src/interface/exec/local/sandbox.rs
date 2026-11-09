@@ -92,7 +92,7 @@ fn state_root_of(policy: &SandboxPolicy) -> Option<PathBuf> {
 /// it can't resolve a daemon's actual `--scenes` set itself. A daemon that
 /// knows its real active scenes (`SessionPool::scene_registry`) should
 /// populate `known_scenes` instead of relying on this; this constant only
-/// covers the four builtins, so a deployment running a scene this list
+/// covers the three builtins, so a deployment running a scene this list
 /// doesn't know about would otherwise get no protection for that scene's
 /// `settings.json` at all. Keep in sync with `daemon::main::resolve_scene`
 /// and `crates/scene/src/*.rs` regardless, since it's still the
@@ -150,7 +150,7 @@ pub struct SandboxOptions<'a> {
     pub cwd: &'a Path,
     pub additional_writable: &'a [PathBuf],
     pub disable: bool,
-    /// **Hardening **: extended policy (deny-read, network mode, etc).
+    /// Extended policy (deny-read, network mode, etc).
     /// Falls back to safe defaults via `SandboxPolicy::default()`.
     pub policy: SandboxPolicy,
 }
