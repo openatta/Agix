@@ -36,7 +36,8 @@
   里声明的 server(`mcp.addServer` 写的也是这一层)不能用 `client_secret_env` 和
   `private_key_jwt.key_env`,写了就不连接(`mcp_connect_failed`;`mcp.addServer` 报
   `INVALID_PARAMS`);它的 `url` / `headers` 里的 `$VAR` 也不从 daemon 的环境展开
-  (`ARCHITECTURE.md` §6.4)。机密客户端放在全局层或场景层声明。
+  (`ARCHITECTURE.md` §6.4)。机密客户端放在全局层或场景层声明。项目没被信任时,它自己的
+  server 根本不启动,也就不会走到登录(`mcp.status` 里是 `untrusted`,`ARCHITECTURE.md` §6.6)。
 - 配了固定的 `headers.Authorization` 的 server **不走 OAuth**:静态令牌照旧原样发送,401 就是
   连接失败。
 - `oauth_provider` 已删除。配置里出现它,整条 server 配置被拒绝,错误信息给出 `oauth` 的写法。

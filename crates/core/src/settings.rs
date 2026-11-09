@@ -80,8 +80,8 @@ pub struct Settings {
     /// and fenced ` ```! ` blocks in `SKILL.md` bodies). Default: false
     /// (enabled). When true, each such placeholder is replaced with
     /// `[shell command execution disabled by policy]` instead of running.
-    /// Like every setting, a higher tier can set it back: there is no tier
-    /// users cannot override.
+    /// A higher tier can set it back, except a project that is not trusted
+    /// (`project_trust`).
     #[serde(default)]
     pub disable_skill_shell_execution: bool,
 
@@ -145,6 +145,16 @@ pub struct Settings {
     /// apply. Format: `docs/extension_points.md`, "生命周期 hook".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hooks_config: Option<serde_json::Value>,
+
+    /// Which projects' own configuration takes effect as written — see
+    /// [`crate::project_trust`]. Read from the global tier only.
+    #[serde(default)]
+    pub project_trust: crate::project_trust::ProjectTrustSettings,
+
+    /// What `Settings::load` decided about the project tier: trusted or not,
+    /// and what of it needs trust. Never read from a settings file.
+    #[serde(skip)]
+    pub project_layer: crate::project_trust::ProjectLayer,
 
     /// MCP server configurations, keyed by server name (merged from
     /// global/scene/project layers). `$VAR` / `${VAR}` / `${VAR:-default}`
@@ -910,6 +920,13 @@ impl Settings {
     /// layers live, that's decided by the caller's `global_dir`/`scene_dir`/
     /// `local_dir`/`scope` arguments alone.
     ///
+    /// The project tier is the one exception to "every layer merges the same
+    /// way": unless the global tier's `project_trust` trusts the project root
+    /// (`local_dir`'s parent), what in it could loosen anything is held back
+    /// before it merges — see [`crate::project_trust`]. `project_trust`
+    /// itself is read from the global tier only. The decision, and what it
+    /// held back, is `project_layer`.
+    ///
     /// **Never fails** — a layer that doesn't exist is skipped; a layer that
     /// fails to parse is skipped with a `tracing::warn!` (path + error)
     /// rather than aborting startup or silently losing the problem. If the
@@ -961,7 +978,8 @@ impl Settings {
     /// The directory arguments stay because they are not where configuration
     /// is read from — they are where this scene's *data* lives, which
     /// `settings.paths` reports and which a settings file is never allowed to
-    /// override.
+    /// override — and because they say which project the project tier is,
+    /// and whether it is one of its own.
     pub fn load_from(
         source: &dyn crate::interface::config_source::ConfigSource,
         global_dir: PathBuf,
@@ -970,13 +988,50 @@ impl Settings {
         scope: &str,
         default_model: &str,
     ) -> Self {
+        use crate::interface::config_source::Tier;
+        use crate::project_trust::{gate_layer, ProjectLayer, ProjectTrust, ProjectTrustSettings};
+
         let base = Self::defaults_for(default_model);
         let mut merged_json = serde_json::to_value(&base).unwrap_or_else(|_| serde_json::json!({}));
 
         let mut permission_rules: Vec<PermissionRule> = Vec::new();
         let mut local_permission_rules: Vec<PermissionRule> = Vec::new();
 
-        for layer in source.layers() {
+        let layers = source.layers();
+        let own_project =
+            crate::project_trust::is_own_project_dir(&local_dir, &global_dir, &scene_dir);
+        // Two tiers sharing a directory are read once, at the higher tier: a
+        // project rooted at `$HOME` reads `~/.agix` as its project tier, and
+        // those files are still the user's global settings.
+        let scene_is_global = crate::project_trust::same_dir(&scene_dir, &global_dir);
+        let project_is_global =
+            !own_project && crate::project_trust::same_dir(&local_dir, &global_dir);
+        let is_global = |tier: Tier| match tier {
+            Tier::Global => true,
+            Tier::Scene => scene_is_global,
+            Tier::Project => project_is_global,
+        };
+        let is_own_project = |tier: Tier| tier == Tier::Project && own_project;
+
+        let project_trust = ProjectTrustSettings::from_layers(
+            layers
+                .iter()
+                .filter(|l| is_global(l.tier))
+                .map(|l| &l.value),
+        );
+        let (trust, matched) = if own_project {
+            project_trust.decide(local_dir.parent().unwrap_or(&local_dir))
+        } else {
+            (ProjectTrust::NoProject, None)
+        };
+        let withhold = trust.is_untrusted();
+        let mut project_layer = ProjectLayer {
+            trust,
+            matched,
+            ..Default::default()
+        };
+
+        for layer in layers {
             for key in unknown_settings_keys(&layer.value) {
                 tracing::warn!(layer = layer.tier.name(), origin = %layer.origin, key, "settings key not recognised, ignoring it");
             }
@@ -985,17 +1040,50 @@ impl Settings {
                 // `paths` is resolved from this function's own arguments,
                 // never from settings.json content.
                 obj.remove("paths");
+                if !is_global(layer.tier) && obj.remove("project_trust").is_some() {
+                    tracing::warn!(layer = layer.tier.name(), origin = %layer.origin, "project_trust is read from the global tier only, ignoring it here");
+                }
+                if is_own_project(layer.tier) {
+                    for (name, server) in obj
+                        .get("mcp_servers")
+                        .and_then(|v| v.as_object())
+                        .into_iter()
+                        .flatten()
+                    {
+                        let entry = project_layer
+                            .mcp_servers
+                            .entry(name.clone())
+                            .or_insert(serde_json::Value::Null);
+                        merge_json_values(entry, server.clone());
+                    }
+                    let gated = gate_layer(obj, &merged_json, withhold);
+                    if withhold && !gated.is_empty() {
+                        tracing::warn!(origin = %layer.origin, withheld = ?gated, "project is not trusted; settings only a trusted project may set are ignored");
+                    }
+                    project_layer.requires_trust.extend(gated);
+                }
                 if let Some(rules) = obj.remove("permission_rules") {
                     match serde_json::from_value::<Vec<PermissionRule>>(rules) {
                         Ok(rules) => {
-                            let tagged = rules.into_iter().map(|mut r| {
-                                r.tier = Some(layer.tier);
-                                r
-                            });
+                            let mut kept = Vec::new();
+                            for mut rule in rules {
+                                if is_own_project(layer.tier)
+                                    && rule.action == PermissionAction::Allow
+                                {
+                                    project_layer
+                                        .requires_trust
+                                        .push(format!("permission_rules.allow({})", rule.tool));
+                                    if withhold {
+                                        continue;
+                                    }
+                                }
+                                rule.tier = Some(layer.tier);
+                                kept.push(rule);
+                            }
                             if layer.machine_local {
-                                local_permission_rules.extend(tagged);
+                                local_permission_rules.extend(kept);
                             } else {
-                                permission_rules.extend(tagged);
+                                permission_rules.extend(kept);
                             }
                         }
                         Err(e) => {
@@ -1006,6 +1094,10 @@ impl Settings {
             }
             merge_json_values(&mut merged_json, layer_json);
         }
+        let mut seen = std::collections::HashSet::new();
+        project_layer
+            .requires_trust
+            .retain(|key| seen.insert(key.clone()));
 
         let mut settings: Settings = match serde_json::from_value(merged_json) {
             Ok(s) => s,
@@ -1017,6 +1109,8 @@ impl Settings {
 
         settings.permission_rules = permission_rules;
         settings.local_permission_rules = local_permission_rules;
+        settings.project_trust = project_trust;
+        settings.project_layer = project_layer;
 
         // Before any session these settings start runs a child process: a
         // provider key is not read until a client is built, and an MCP
@@ -1096,6 +1190,8 @@ impl Settings {
             permission_rules: Vec::new(),
             local_permission_rules: Vec::new(),
             hooks_config: None,
+            project_trust: Default::default(),
+            project_layer: Default::default(),
             mcp_servers: HashMap::new(),
             providers: HashMap::new(),
             default_provider: None,
@@ -1689,6 +1785,221 @@ mod tests {
         );
         assert_eq!(settings.model.model_name, "fallback-model");
         assert!(settings.providers.is_empty());
+    }
+
+    mod project_trust {
+        use super::*;
+        use crate::project_trust::ProjectTrust;
+
+        struct Tiers {
+            _root: tempfile::TempDir,
+            global: PathBuf,
+            scene: PathBuf,
+            project: PathBuf,
+        }
+
+        impl Tiers {
+            fn new() -> Self {
+                let root = tempfile::tempdir().unwrap();
+                let at = |p: &str| root.path().join(p);
+                let (global, scene, project) = (at("global"), at("scene"), at("work"));
+                Self {
+                    global,
+                    scene,
+                    project,
+                    _root: root,
+                }
+            }
+
+            fn load(&self) -> Settings {
+                Settings::load(
+                    self.global.clone(),
+                    self.scene.clone(),
+                    self.project.join(".agix"),
+                    "code",
+                    "m",
+                )
+            }
+
+            fn project_writes(&self, content: &str) {
+                write_settings(&self.project.join(".agix"), content);
+            }
+        }
+
+        const LOOSENING: &str = r#"{
+            "permission_mode": "bypassPermissions",
+            "permission_rules": [
+                {"tool": "Bash", "action": "allow"},
+                {"tool": "Bash(rm:*)", "action": "deny"}
+            ],
+            "hooks_config": {"PreToolUse": [{"type": "command", "command": "x"}]},
+            "mcp_servers": {"fs": {"type": "stdio", "command": "x"}},
+            "sandbox": {"read_anywhere": true},
+            "language": "fr"
+        }"#;
+
+        #[test]
+        fn an_untrusted_project_cannot_loosen_permissions() {
+            let tiers = Tiers::new();
+            write_settings(
+                &tiers.global,
+                r#"{"project_trust": {"default": "untrusted"}}"#,
+            );
+            tiers.project_writes(LOOSENING);
+            write_local_settings(
+                &tiers.project.join(".agix"),
+                r#"{"permission_rules": [{"tool": "Read", "action": "allow"}]}"#,
+            );
+
+            let settings = tiers.load();
+
+            assert_eq!(settings.project_layer.trust, ProjectTrust::Untrusted);
+            assert_eq!(settings.permission_mode, PermissionMode::Default);
+            assert!(settings
+                .permission_rules
+                .iter()
+                .all(|r| r.action == PermissionAction::Deny));
+            assert_eq!(settings.permission_rules.len(), 1);
+            assert!(settings.local_permission_rules.is_empty());
+            assert!(settings.hooks_config.is_none());
+            assert!(settings.mcp_servers.is_empty());
+            assert!(!settings.sandbox.read_anywhere);
+            assert_eq!(settings.language.as_deref(), Some("fr"));
+            assert_eq!(
+                settings.project_layer.requires_trust,
+                [
+                    "hooks_config",
+                    "mcp_servers.fs",
+                    "permission_mode",
+                    "sandbox.read_anywhere",
+                    "permission_rules.allow(Bash)",
+                    "permission_rules.allow(Read)",
+                ]
+            );
+            assert!(settings.project_layer.mcp_servers.contains_key("fs"));
+        }
+
+        #[test]
+        fn an_untrusted_project_may_still_tighten() {
+            let tiers = Tiers::new();
+            write_settings(
+                &tiers.global,
+                r#"{"project_trust": {"default": "untrusted"}, "permission_mode": "acceptEdits"}"#,
+            );
+            tiers.project_writes(
+                r#"{"permission_mode": "plan", "sandbox": {"network_mode": "deny_all"}}"#,
+            );
+
+            let settings = tiers.load();
+
+            assert_eq!(settings.permission_mode, PermissionMode::Plan);
+            assert_eq!(
+                settings.sandbox.network_mode,
+                crate::context::config::NetworkModeConfig::DenyAll
+            );
+            assert!(settings.project_layer.requires_trust.is_empty());
+        }
+
+        #[test]
+        fn by_default_a_project_is_trusted_and_nothing_changes() {
+            let tiers = Tiers::new();
+            tiers.project_writes(LOOSENING);
+
+            let settings = tiers.load();
+
+            assert_eq!(settings.project_layer.trust, ProjectTrust::Trusted);
+            assert_eq!(settings.project_layer.matched, None);
+            assert_eq!(settings.permission_mode, PermissionMode::BypassPermissions);
+            assert_eq!(settings.permission_rules.len(), 2);
+            assert!(settings.hooks_config.is_some());
+            assert!(settings.mcp_servers.contains_key("fs"));
+            assert!(settings.sandbox.read_anywhere);
+            assert!(
+                settings
+                    .project_layer
+                    .requires_trust
+                    .contains(&"hooks_config".to_string()),
+                "what trust governs is reported even while it is granted"
+            );
+        }
+
+        #[test]
+        fn a_trusted_pattern_trusts_the_project_under_an_untrusted_default() {
+            let tiers = Tiers::new();
+            write_settings(
+                &tiers.global,
+                r#"{"project_trust": {"default": "untrusted"}}"#,
+            );
+            write_local_settings(
+                &tiers.global,
+                &serde_json::json!({"project_trust": {"trusted": [tiers.project]}}).to_string(),
+            );
+            tiers.project_writes(LOOSENING);
+
+            let settings = tiers.load();
+
+            assert_eq!(settings.project_layer.trust, ProjectTrust::Trusted);
+            assert_eq!(
+                settings.project_layer.matched.as_deref(),
+                Some(tiers.project.to_str().unwrap())
+            );
+            assert_eq!(settings.permission_mode, PermissionMode::BypassPermissions);
+            assert_eq!(
+                settings.project_trust.default,
+                crate::project_trust::TrustLevel::Untrusted
+            );
+        }
+
+        #[test]
+        fn trust_is_set_only_in_the_global_tier() {
+            let tiers = Tiers::new();
+            write_settings(
+                &tiers.global,
+                r#"{"project_trust": {"default": "untrusted"}}"#,
+            );
+            let grant =
+                serde_json::json!({"project_trust": {"default": "trusted", "trusted": ["/**"]}})
+                    .to_string();
+            write_settings(&tiers.scene, &grant);
+            write_local_settings(&tiers.project.join(".agix"), &grant);
+            tiers.project_writes(r#"{"hooks_config": {}}"#);
+
+            let settings = tiers.load();
+
+            assert_eq!(settings.project_layer.trust, ProjectTrust::Untrusted);
+            assert!(settings.hooks_config.is_none());
+            assert_eq!(
+                settings.project_trust,
+                crate::project_trust::ProjectTrustSettings {
+                    default: crate::project_trust::TrustLevel::Untrusted,
+                    trusted: Vec::new(),
+                }
+            );
+        }
+
+        #[test]
+        fn a_project_whose_agix_is_the_global_directory_has_no_project_tier() {
+            let tiers = Tiers::new();
+            write_settings(
+                &tiers.global,
+                r#"{"project_trust": {"default": "untrusted"}, "hooks_config": {}}"#,
+            );
+
+            let settings = Settings::load(
+                tiers.global.clone(),
+                tiers.scene.clone(),
+                tiers.global.clone(),
+                "code",
+                "m",
+            );
+
+            assert_eq!(settings.project_layer.trust, ProjectTrust::NoProject);
+            assert!(settings.hooks_config.is_some());
+            assert_eq!(
+                settings.project_trust.default,
+                crate::project_trust::TrustLevel::Untrusted
+            );
+        }
     }
 }
 

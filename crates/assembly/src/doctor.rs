@@ -262,6 +262,60 @@ impl HealthCheck for MemoryCheck {
     }
 }
 
+/// Whether a project is trusted, and what of its own configuration that
+/// decides — `project.status`'s answer for it, as a verdict.
+///
+/// `degraded` when something is set aside: the project is not trusted and
+/// has configuration that only a trusted one gets, or it is trusted only by
+/// `project_trust.default` — which 0.4 turns to `untrusted` — and has such
+/// configuration that would then stop taking effect.
+pub struct ProjectTrustCheck(serde_json::Value);
+
+impl ProjectTrustCheck {
+    pub fn new(status: serde_json::Value) -> Self {
+        Self(status)
+    }
+}
+
+impl HealthCheck for ProjectTrustCheck {
+    fn name(&self) -> &str {
+        "project.trust"
+    }
+
+    fn check(&self) -> CheckResult {
+        let status = &self.0;
+        let gated: Vec<&str> = status["requires_trust"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str())
+            .collect();
+        let by_list = !status["matched"].is_null();
+        let result = match (status["trust"].as_str(), gated.is_empty()) {
+            (Some("untrusted"), true) => {
+                CheckResult::ok("project not trusted; nothing in it needs trust")
+            }
+            (Some("untrusted"), false) => CheckResult::degraded(format!(
+                "project not trusted; withheld until it is: {}",
+                gated.join(", ")
+            )),
+            (Some("trusted"), _) if by_list => {
+                CheckResult::ok("project trusted by project_trust.trusted")
+            }
+            (Some("trusted"), true) => CheckResult::ok(
+                "project trusted by project_trust.default; nothing in it needs trust",
+            ),
+            (Some("trusted"), false) => CheckResult::degraded(format!(
+                "project trusted only by project_trust.default, which 0.4 turns to untrusted; \
+                 these would then stop taking effect: {}",
+                gated.join(", ")
+            )),
+            _ => CheckResult::ok("no project tier"),
+        };
+        result.with_details(status.clone())
+    }
+}
+
 /// Build the full diagnostic report as a JSON value (the RPC result body).
 ///
 /// `extra` is whatever the process wired in beside the engine's own checks —

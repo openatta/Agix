@@ -464,6 +464,15 @@ async fn documented_daemon_scene_and_config_results_are_real() {
     verify(&doc, &daemon, "commands.list", serde_json::json!({})).await;
     verify(&doc, &daemon, "import.list", serde_json::json!({})).await;
 
+    verify(&doc, &daemon, "project.status", serde_json::json!({})).await;
+    verify(
+        &doc,
+        &daemon,
+        "project.trust",
+        serde_json::json!({"trusted": true}),
+    )
+    .await;
+
     // `plugin.list` answers PLUGINS_DISABLED in a build without the carrier,
     // which is most builds — the feature is off by default. Its documented
     // shape is only claimed for a build that has it.

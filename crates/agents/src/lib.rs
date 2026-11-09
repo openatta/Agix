@@ -88,19 +88,14 @@ impl Module for AgentsModule {
                 shared.clone(),
             )
             .with_session_agent_types(cx.plugin_agent_types),
-            None => {
-                let project = settings.paths.project_root().join(".agix").join("agents");
-                let scene = settings.paths.user_data_dir.join("agents");
-                let global = settings.paths.global_data_dir.join("agents");
-                AgentTool::with_parent_tools(
-                    cx.model.clone(),
-                    engine_config,
-                    cx.tools.clone(),
-                    cx.tools.clone(),
-                    &[&global, &scene, &project],
-                    cx.plugin_agent_types,
-                )
-            }
+            None => AgentTool::with_parent_tools(
+                cx.model.clone(),
+                engine_config,
+                cx.tools.clone(),
+                cx.tools.clone(),
+                &agent_tool::agent_type_dirs(settings),
+                cx.plugin_agent_types,
+            ),
         }
         .with_settings(settings.clone())
         .with_depth(cx.depth)

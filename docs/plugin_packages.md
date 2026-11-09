@@ -169,6 +169,8 @@ cd my-plugin && zip -r ../my-plugin.zip . && shasum -a 256 ../my-plugin.zip
   能做什么由这份身份决定,而不是由虚拟机决定。
 - 包声明的 agent 类型带 `AgentTypeSource::Plugin`,它对 `permission_mode` / `max_turns` 的
   覆盖被钳制——网上来的定义不能给子代理比会话本身更多。
+- 用户没信任的项目,它自己的配置按同一条规则对待(`ARCHITECTURE.md` §6.6):克隆来的仓库
+  和下载来的包一样,只能新增、只能收紧。
 - `settings.json` 的 `plugins` 段是部署级开关:`{"plugins": {"enabled": false}}` 一个都不
   加载;非空的 `{"plugins": {"allow": ["a", "b"]}}` 是白名单。完全不要插件的部署优先用
   构建 flag,那样没有东西可以再打开。白名单按 manifest 里的名字比,发现时检查,手工放进

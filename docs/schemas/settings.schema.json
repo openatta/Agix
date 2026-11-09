@@ -331,6 +331,24 @@
       },
       "type": "object"
     },
+    "ProjectTrustSettings": {
+      "description": "`project_trust` in settings.json. Read from the global tier only; a scene\nor project tier that sets it is ignored with a warning.",
+      "properties": {
+        "default": {
+          "$ref": "#/$defs/TrustLevel",
+          "default": "trusted",
+          "description": "A project that no `trusted` pattern matches. `trusted` in 0.3.x;\n0.4 makes it `untrusted`."
+        },
+        "trusted": {
+          "description": "Trusted project roots: absolute paths, or globs where `*` stays within\none path segment and `**` crosses them. A leading `~/` is the home\ndirectory. The global `settings.json` and `settings.local.json` lists\nadd up rather than one replacing the other; `project.trust` writes to\nthe second.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
     "ProviderConfig": {
       "description": "A single provider's connection + model config, as written in settings.json.",
       "properties": {
@@ -736,6 +754,14 @@
           "type": "string"
         }
       ]
+    },
+    "TrustLevel": {
+      "description": "What a project no `trusted` pattern names is.",
+      "enum": [
+        "trusted",
+        "untrusted"
+      ],
+      "type": "string"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -759,7 +785,7 @@
     },
     "disable_skill_shell_execution": {
       "default": false,
-      "description": "Disable skill dynamic-content-injection shell commands (`` !`cmd` ``\nand fenced ` ```! ` blocks in `SKILL.md` bodies). Default: false\n(enabled). When true, each such placeholder is replaced with\n`[shell command execution disabled by policy]` instead of running.\nLike every setting, a higher tier can set it back: there is no tier\nusers cannot override.",
+      "description": "Disable skill dynamic-content-injection shell commands (`` !`cmd` ``\nand fenced ` ```! ` blocks in `SKILL.md` bodies). Default: false\n(enabled). When true, each such placeholder is replaced with\n`[shell command execution disabled by policy]` instead of running.\nA higher tier can set it back, except a project that is not trusted\n(`project_trust`).",
       "type": "boolean"
     },
     "execution": {
@@ -839,6 +865,13 @@
       "default": {
         "enabled": true
       }
+    },
+    "project_trust": {
+      "$ref": "#/$defs/ProjectTrustSettings",
+      "default": {
+        "default": "trusted"
+      },
+      "description": "Which projects' own configuration takes effect as written — see\n[`crate::project_trust`]. Read from the global tier only."
     },
     "prompt_append": {
       "default": null,

@@ -18,6 +18,7 @@ pub mod interface;
 pub mod path;
 pub mod paths;
 pub mod process_identity;
+pub mod project_trust;
 pub mod prompt;
 pub mod provider;
 pub mod summary;

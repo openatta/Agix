@@ -116,6 +116,36 @@ pub fn build_skill_manager_unwatched(settings: &Settings) -> SkillManager {
     build_skill_manager(settings, false)
 }
 
+/// The project's own skills whose body runs a command (`` !`cmd` `` or a
+/// ` ```! ` block) — what waits for the project to be trusted. As
+/// `skills/<name>`, for `project.status`.
+pub fn project_skills_requiring_trust(settings: &Settings) -> Vec<String> {
+    use crate::manager::SkillSource;
+    if settings.project_layer.trust == base::project_trust::ProjectTrust::NoProject {
+        return Vec::new();
+    }
+    let manager = SkillManager::new();
+    let dir = settings.paths.project_root().join(".agents").join("skills");
+    if manager
+        .load_dir_subdirs(&dir, SkillSource::Project)
+        .is_err()
+    {
+        return Vec::new();
+    }
+    let mut out: Vec<String> = manager
+        .list()
+        .into_iter()
+        .filter(|skill| {
+            manager
+                .get_skill_content(&skill.name)
+                .is_some_and(|body| crate::tool::runs_commands(&body))
+        })
+        .map(|skill| format!("skills/{}", skill.name))
+        .collect();
+    out.sort();
+    out
+}
+
 fn build_skill_manager(settings: &Settings, watch: bool) -> SkillManager {
     use crate::manager::SkillSource;
     use crate::sources::BundledSkills;

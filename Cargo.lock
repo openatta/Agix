@@ -325,6 +325,7 @@ dependencies = [
  "base64 0.22.1",
  "bs58",
  "futures",
+ "globset",
  "hex",
  "libc",
  "regex",

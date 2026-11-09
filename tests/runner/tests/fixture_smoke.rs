@@ -46,7 +46,10 @@ fn settings_json_mcp_servers_parses() {
 #[test]
 fn custom_agent_type_frontmatter_parses() {
     let dir = fixture_dir().join(".agix/agents");
-    let types = agents::agent_tool::load_agent_types_from_dir(&dir);
+    let types = agents::agent_tool::load_agent_types_from_dir(
+        &dir,
+        agents::agent_tool::AgentTypeSource::User,
+    );
     assert!(
         !types.is_empty(),
         "expected at least one *.md agent type under .agix/agents/"

@@ -138,14 +138,19 @@ monitors and structured output ([table below](#tools--45-built-in)).
 - Unattended scenes that refuse instead of asking.
 - Permission prompts that time out closed.
 - Worktree isolation.
+- Workspace trust: a project the user has not trusted gets plugin-level
+  authority — its own settings can only tighten, and its hooks, MCP servers,
+  skill commands and looser agent types wait for trust (granted in the global
+  tier or over RPC; trusted by default until 0.4,
+  [ARCHITECTURE.md](docs/ARCHITECTURE.md) §6.6).
 
 **Host control**
-- Sixty-odd RPC methods: create, resume, fork, rebuild and export sessions;
+- Seventy RPC methods: create, resume, fork, rebuild and export sessions;
   read history and the exact context of the next model call; answer
   permission and question prompts.
 - Start, message, stop and follow tasks, reading their output by byte offset.
-- Switch the model or prompt; manage scenes, MCP servers, plugins and
-  schedules.
+- Switch the model or prompt; manage scenes, MCP servers, plugins,
+  schedules and which projects are trusted.
 
 **Extensibility**
 - 45 published extension points: 30 contracts, 9 interceptions and 6
@@ -391,10 +396,10 @@ echo '{"jsonrpc":"2.0","id":2,"method":"session.run_turn",
 While the turn runs, `session.event` frames stream back (text deltas, tool
 calls, tool results, prompts, task progress); the response arrives when the turn
 ends. A typical client subscribes to a session on one connection
-(`session.subscribe`) and drives it from another. Sixty-eight methods are
+(`session.subscribe`) and drives it from another. Seventy methods are
 documented in [`docs/daemon_rpc_protocol.md`](docs/daemon_rpc_protocol.md) —
 sessions, history and context, tasks and sub-agents, scenes, configuration,
-MCP, plugins, scheduling — and every documented response shape is compared
+project trust, MCP, plugins, scheduling — and every documented response shape is compared
 against a real daemon's answer by a test.
 
 Useful flags: `--scene` / `--scenes` (which scenes to serve), `--listen` /

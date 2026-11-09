@@ -4,21 +4,23 @@
 //! spawning live in the agents module; the type is here because plugin hosts
 //! declare agent types too, and they sit below that module.
 
-/// Where an [`AgentTypeDefinition`] came from, which decides whether its
-/// `max_turns` is honored as written or clamped.
+/// Where an [`AgentTypeDefinition`] came from, which decides whether it may
+/// hand its sub-agent more than the parent session had.
 ///
-/// `max_turns` overwrites the API-call cap, which may raise it: the user's
-/// prerogative for a file they wrote themselves, not something a package
-/// downloaded from a marketplace gets to do — the agents module clamps such
-/// a definition to the parent session's cap. `permission_mode` is clamped to
-/// the parent's mode whatever the source.
+/// `permission_mode` and `max_turns` may loosen what the parent had only for
+/// a definition the user wrote or accepted: one of their own, or one in a
+/// project they trust. A plugin's, or an untrusted project's, is held to the
+/// parent's — and an untrusted project's does not replace a built-in, plugin
+/// or user type of the same name.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum AgentTypeSource {
     /// Shipped with Agix.
     #[default]
     Builtin,
-    /// Loaded from an `agents/` directory the user controls.
-    LocalFile,
+    /// The global or scene `agents/` directory.
+    User,
+    /// The project's `.agix/agents/`, and whether the project is trusted.
+    Project { trusted: bool },
     /// Declared by an installed plugin.
     Plugin,
 }
@@ -27,7 +29,17 @@ impl AgentTypeSource {
     /// May a definition from this source hand its sub-agent *more* than the
     /// session it was spawned from already had?
     pub fn may_loosen(self) -> bool {
-        !matches!(self, Self::Plugin)
+        match self {
+            Self::Builtin | Self::User => true,
+            Self::Project { trusted } => trusted,
+            Self::Plugin => false,
+        }
+    }
+
+    /// Does a definition from this source replace one of the same name from
+    /// the built-ins, a plugin or another tier?
+    pub fn may_shadow(self) -> bool {
+        matches!(self, Self::User | Self::Project { trusted: true })
     }
 }
 
@@ -47,8 +59,8 @@ pub struct AgentTypeDefinition {
     pub disallowed_tools: Vec<String>,
     /// Optional model override (e.g. "claude-sonnet-4-20250514").
     pub model: Option<String>,
-    /// Optional permission mode for spawned subagents of this type; one
-    /// looser than the parent session's is held to the parent's.
+    /// Optional permission mode for spawned subagents of this type. Whether
+    /// it may be looser than the parent session's depends on `source`.
     pub permission_mode: Option<crate::interface::settings::PermissionMode>,
     /// Optional `ModelSettings::effort` override for spawned subagents, by
     /// name (`low` … `max`).

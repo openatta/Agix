@@ -33,6 +33,10 @@ hook 是写在设置里的外部回调:引擎走到一个具名时刻(调工具�
 - **按层合并。** 设置文件各层(全局 `~/.agix/settings.json` → 场景 → 项目
   `.agix/settings.json`,每层后面跟它自己的 `settings.local.json`)按 JSON 递归合并:
   不同事件各自保留,**同一个事件在高层出现时,高层的数组整个替换低层的**。
+- **未信任的项目不算数。** 项目没被信任时(`ARCHITECTURE.md` §6.6),它两份设置文件里的
+  `hooks_config` 整段忽略、记一条 warn,低层同名事件的 hook 照常生效;`project.trust` 之后
+  这个项目的会话重建,项目的 hook 才加载。`project.status` 的 `requires_trust` 里有
+  `hooks_config` 就说明项目配了 hook。
 - **坏一条只丢一条。** 不认识的事件名(拼错、写给更新版本引擎的)、格式不对的条目,丢掉那一条、
   记一条 warn,其余照常生效。事件名区分大小写,不做"最接近的"猜测。
 - **从不触发的事件会说出来。** 有两个事件能配、能解析,但引擎里没有地方触发它们(表里标着
@@ -55,8 +59,8 @@ hook 是写在设置里的外部回调:引擎走到一个具名时刻(调工具�
 ```
 
 - 以 `<shell> -c <command>` 起进程,`shell` 缺省 `bash`;工作目录是 payload 的 `cwd`。
-- `PATH` 前面依次加上项目的 `.agix/hooks/`、`~/.agix/scenes/<scene>/hooks/`、
-  `~/.agix/hooks/`,所以 `command` 可以直接写放在那里的脚本名。环境与 Bash 工具同一套
+- `PATH` 前面依次加上项目的 `.agix/hooks/`(项目未被信任时没有这一项)、
+  `~/.agix/scenes/<scene>/hooks/`、`~/.agix/hooks/`,所以 `command` 可以直接写放在那里的脚本名。环境与 Bash 工具同一套
   (`sandbox.subprocess_env`)。command hook **不进 OS 沙箱**,以 daemon 的身份运行。
 - stdin 收到一行 JSON payload(见下)。
 - **退出码只认 0 和 2。**

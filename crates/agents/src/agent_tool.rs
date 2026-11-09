@@ -127,13 +127,13 @@ pub fn builtin_agent_types() -> Vec<AgentTypeDefinition> {
 /// * `allowed_tools` — optional comma/array list; empty = all tools
 /// * `model` — optional model override
 ///
-/// Returns all successfully parsed definitions. Malformed files are silently
-/// skipped with a `tracing::warn!` message.
+/// Returns all successfully parsed definitions, tagged with `source`.
+/// Malformed files are skipped with a `tracing::warn!` message.
 ///
 /// Sync (`std::fs`), not async — matches `skills::manager::SkillManager::load_dir`,
 /// which is called from the same sync `Builder::build()` context this
 /// function is meant to be called from (see `merge_agent_types`).
-pub fn load_agent_types_from_dir(dir: &Path) -> Vec<AgentTypeDefinition> {
+pub fn load_agent_types_from_dir(dir: &Path, source: AgentTypeSource) -> Vec<AgentTypeDefinition> {
     let mut types = Vec::new();
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -152,7 +152,7 @@ pub fn load_agent_types_from_dir(dir: &Path) -> Vec<AgentTypeDefinition> {
             }
         };
         match parse_agent_type_file(&content, &path) {
-            Some(def) => types.push(def),
+            Some(def) => types.push(AgentTypeDefinition { source, ..def }),
             None => {
                 tracing::warn!(path = %path.display(), "agent type: failed to parse frontmatter");
             }
@@ -161,20 +161,49 @@ pub fn load_agent_types_from_dir(dir: &Path) -> Vec<AgentTypeDefinition> {
     types
 }
 
-/// Merge the built-in agent types with disk-loaded ones from up to three
-/// tiers (pass fewer to skip a tier — e.g. tests often only want one dir).
+/// The `agents/` directories a session with these settings reads, lowest
+/// first: global, scene, then the project's `.agix/agents` tagged with
+/// whether the project is trusted. A session with no project tier of its own
+/// has no third.
+pub fn agent_type_dirs(settings: &Settings) -> Vec<(std::path::PathBuf, AgentTypeSource)> {
+    use base::project_trust::ProjectTrust;
+    let mut dirs = vec![
+        (
+            settings.paths.global_data_dir.join("agents"),
+            AgentTypeSource::User,
+        ),
+        (
+            settings.paths.user_data_dir.join("agents"),
+            AgentTypeSource::User,
+        ),
+    ];
+    let trusted = match settings.project_layer.trust {
+        ProjectTrust::NoProject => None,
+        ProjectTrust::Trusted => Some(true),
+        ProjectTrust::Untrusted => Some(false),
+    };
+    if let Some(trusted) = trusted {
+        dirs.push((
+            settings.paths.project_root().join(".agix").join("agents"),
+            AgentTypeSource::Project { trusted },
+        ));
+    }
+    dirs
+}
+
+/// Merge the built-in agent types with those of `plugin_types` and the
+/// `agents/` directories in `dirs`, lowest priority first.
 ///
 /// Precedence low → high: built-in defaults < `plugin_types` (plugin-declared
-/// `[[agents]]`) < `dirs[0]` (global) < `dirs[1]` (scene) < `dirs[2]`
-/// (project) — same override order as skills (`crates/core/src/frozen/skill.rs`).
-/// A definition with the same `name` as a lower-tier one replaces it
-/// entirely (not field-merged — a type definition is one atomic unit,
-/// same convention as `task_models` overrides in the multi-provider LLM
-/// config). This means `.agix/agents/*.md` customization always wins over a
-/// plugin's default, but a plugin's agent type still overrides the bare
-/// built-in of the same name.
+/// `[[agents]]`) < each directory in order — same override order as skills
+/// (`crates/core/src/frozen/skill.rs`). A definition replaces a lower one of
+/// the same `name` entirely (not field-merged — a type definition is one
+/// atomic unit, same convention as `task_models` overrides in the
+/// multi-provider LLM config), when its source may shadow
+/// ([`AgentTypeSource::may_shadow`]): an untrusted project's type only adds
+/// names nothing else defines.
 pub fn merge_agent_types(
-    dirs: &[&Path],
+    dirs: &[(std::path::PathBuf, AgentTypeSource)],
     plugin_types: &[AgentTypeDefinition],
 ) -> std::collections::HashMap<String, AgentTypeDefinition> {
     let mut merged: std::collections::HashMap<String, AgentTypeDefinition> = builtin_agent_types()
@@ -184,12 +213,47 @@ pub fn merge_agent_types(
     for def in plugin_types {
         merged.insert(def.name.clone(), def.clone());
     }
-    for dir in dirs {
-        for def in load_agent_types_from_dir(dir) {
-            merged.insert(def.name.clone(), def);
+    for (dir, source) in dirs {
+        for def in load_agent_types_from_dir(dir, *source) {
+            if def.source.may_shadow() || !merged.contains_key(&def.name) {
+                merged.insert(def.name.clone(), def);
+            } else {
+                tracing::warn!(agent_type = %def.name, dir = %dir.display(), "the project is not trusted, so its agent type does not replace the one already defined");
+            }
         }
     }
     merged
+}
+
+/// The project agent types that behave differently once the project is
+/// trusted: the ones that replace a type of the same name from elsewhere, or
+/// may hand their sub-agent a looser mode or a higher call cap than
+/// `settings` give the session. As `agents/<name>`, for `project.status`.
+pub fn project_agent_types_requiring_trust(
+    settings: &Settings,
+    plugin_types: &[AgentTypeDefinition],
+) -> Vec<String> {
+    let dirs = agent_type_dirs(settings);
+    let Some((project_dir, AgentTypeSource::Project { .. })) = dirs.last() else {
+        return Vec::new();
+    };
+    let below = merge_agent_types(&dirs[..dirs.len() - 1], plugin_types);
+    let mut out: Vec<String> =
+        load_agent_types_from_dir(project_dir, AgentTypeSource::Project { trusted: true })
+            .into_iter()
+            .filter(|def| {
+                below.contains_key(&def.name)
+                    || def.permission_mode.is_some_and(|m| {
+                        m.permissiveness() > settings.permission_mode.permissiveness()
+                    })
+                    || def
+                        .max_turns
+                        .is_some_and(|n| n > settings.execution.max_api_calls_per_turn)
+            })
+            .map(|def| format!("agents/{}", def.name))
+            .collect();
+    out.sort();
+    out
 }
 
 /// A live-reloaded agent-type catalog meant to be built **once** and shared
@@ -226,7 +290,10 @@ impl SharedAgentTypeCatalog {
     /// unrelated file edit before the next plugin refresh); accepted rather
     /// than threading a second live-shared `plugin_types` reference through
     /// the watcher for it.
-    pub fn build(dirs: &[&Path], plugin_types: &[AgentTypeDefinition]) -> Self {
+    pub fn build(
+        dirs: &[(std::path::PathBuf, AgentTypeSource)],
+        plugin_types: &[AgentTypeDefinition],
+    ) -> Self {
         Self::build_with(dirs, plugin_types, true)
     }
 
@@ -235,11 +302,18 @@ impl SharedAgentTypeCatalog {
     /// itself. One `notify` stream per catalog is fine for one catalog; a
     /// host building one per project reaches the backend's per-process
     /// ceiling, and on macOS that is an abort rather than an error.
-    pub fn unwatched(dirs: &[&Path], plugin_types: &[AgentTypeDefinition]) -> Self {
+    pub fn unwatched(
+        dirs: &[(std::path::PathBuf, AgentTypeSource)],
+        plugin_types: &[AgentTypeDefinition],
+    ) -> Self {
         Self::build_with(dirs, plugin_types, false)
     }
 
-    fn build_with(dirs: &[&Path], plugin_types: &[AgentTypeDefinition], watch: bool) -> Self {
+    fn build_with(
+        dirs: &[(std::path::PathBuf, AgentTypeSource)],
+        plugin_types: &[AgentTypeDefinition],
+        watch: bool,
+    ) -> Self {
         let merged = merge_agent_types(dirs, plugin_types);
         let agent_types = Arc::new(std::sync::RwLock::new(Arc::new(merged)));
         if !watch {
@@ -248,9 +322,8 @@ impl SharedAgentTypeCatalog {
                 _watcher: None,
             };
         }
-        let owned_dirs: Vec<std::path::PathBuf> = dirs.iter().map(|p| p.to_path_buf()).collect();
         let _watcher = crate::type_watcher::AgentTypeWatcher::watch(
-            owned_dirs,
+            dirs.to_vec(),
             plugin_types.to_vec(),
             agent_types.clone(),
         )
@@ -268,7 +341,11 @@ impl SharedAgentTypeCatalog {
     /// Re-merge the catalog in place — e.g. after a plugin install/enable/
     /// disable changes `plugin_types` and there's no filesystem event to
     /// trigger the watcher's own reload. See the caveat on `build()`.
-    pub fn refresh(&self, dirs: &[&Path], plugin_types: &[AgentTypeDefinition]) {
+    pub fn refresh(
+        &self,
+        dirs: &[(std::path::PathBuf, AgentTypeSource)],
+        plugin_types: &[AgentTypeDefinition],
+    ) {
         *self
             .agent_types
             .write()
@@ -384,7 +461,7 @@ fn parse_agent_type_file(content: &str, path: &Path) -> Option<AgentTypeDefiniti
 
     Some(AgentTypeDefinition {
         name,
-        source: AgentTypeSource::LocalFile,
+        source: AgentTypeSource::User,
         description,
         allowed_tools,
         disallowed_tools,
@@ -1286,6 +1363,8 @@ fn fallback_settings(
         allow_client_permission_override: false,
         telemetry_enabled: true,
         hooks_config: None,
+        project_trust: Default::default(),
+        project_layer: Default::default(),
         mcp_servers: Default::default(),
         providers: Default::default(),
         default_provider: None,
@@ -1756,7 +1835,7 @@ impl Inner {
             .get(name)
             .cloned();
         match (shared, self.session_agent_types.get(name)) {
-            (Some(on_disk), _) if on_disk.source == AgentTypeSource::LocalFile => Some(on_disk),
+            (Some(on_disk), _) if on_disk.source.may_shadow() => Some(on_disk),
             (_, Some(declared)) => Some(declared.clone()),
             (shared, None) => shared,
         }
@@ -2328,7 +2407,7 @@ impl AgentTool {
         config: Arc<EngineConfig>,
         parent_tools: Arc<InMemoryToolRegistry>,
         fallback_tools: Arc<InMemoryToolRegistry>,
-        agent_dirs: &[&Path],
+        agent_dirs: &[(std::path::PathBuf, AgentTypeSource)],
         plugin_agent_types: &[AgentTypeDefinition],
     ) -> Self {
         let agent_types = merge_agent_types(agent_dirs, plugin_agent_types);
@@ -2343,10 +2422,8 @@ impl AgentTool {
         // pre-watcher, build-time-only catalog rather than failing
         // construction — same non-fatal handling as
         // `SkillManager::enable_watching`.
-        let owned_dirs: Vec<std::path::PathBuf> =
-            agent_dirs.iter().map(|p| p.to_path_buf()).collect();
         let _agent_type_watcher = crate::type_watcher::AgentTypeWatcher::watch(
-            owned_dirs,
+            agent_dirs.to_vec(),
             plugin_agent_types.to_vec(),
             agent_types.clone(),
         )
@@ -2514,7 +2591,8 @@ impl AgentTool {
     }
 
     /// Agent types this session's plugins declare, on top of the catalog this
-    /// tool was built with. Only the types loaded from disk outrank them.
+    /// tool was built with. Only those whose source may shadow
+    /// ([`AgentTypeSource::may_shadow`]) outrank them.
     pub fn with_session_agent_types(mut self, types: &[AgentTypeDefinition]) -> Self {
         if types.is_empty() {
             return self;
@@ -2529,10 +2607,7 @@ impl AgentTool {
             .as_ref()
             .clone();
         for (name, definition) in inner.session_agent_types.iter() {
-            if visible
-                .get(name)
-                .map_or(true, |d| d.source != AgentTypeSource::LocalFile)
-            {
+            if visible.get(name).map_or(true, |d| !d.source.may_shadow()) {
                 visible.insert(name.clone(), definition.clone());
             }
         }
@@ -4491,7 +4566,7 @@ mod catalog_tests {
             "security-auditor.md",
             "---\nname: security-auditor\ndescription: Finds security issues\nallowed_tools: [Read, Grep, Glob]\nmodel: claude-opus-4-8\n---\nYou are a security auditor.",
         );
-        let types = load_agent_types_from_dir(&dir);
+        let types = load_agent_types_from_dir(&dir, AgentTypeSource::User);
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(types.len(), 1);
         let t = &types[0];
@@ -4517,7 +4592,7 @@ mod catalog_tests {
             "db-reader.md",
             "---\nname: db-reader\ndescription: Read-only DB queries\ndisallowed_tools: AskUserQuestion\npermission_mode: plan\neffort: high\nmax_turns: 10\nskills: api-conventions, error-handling\nmcp_servers: github, sentry\n---\nBody.",
         );
-        let types = load_agent_types_from_dir(&dir);
+        let types = load_agent_types_from_dir(&dir, AgentTypeSource::User);
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(types.len(), 1);
         let t = &types[0];
@@ -4547,7 +4622,7 @@ mod catalog_tests {
             "helper.md",
             "---\nname: helper\n---\nThis agent helps\nwith multi-line stuff.\n\nMore body.",
         );
-        let types = load_agent_types_from_dir(&dir);
+        let types = load_agent_types_from_dir(&dir, AgentTypeSource::User);
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(types.len(), 1);
         assert_eq!(
@@ -4654,7 +4729,7 @@ mod catalog_tests {
             "explore.md",
             "---\ndescription: Custom explore override\n---\nCustom body.",
         );
-        let merged = merge_agent_types(&[&dir], &[]);
+        let merged = merge_agent_types(&[(dir.clone(), AgentTypeSource::User)], &[]);
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(merged["explore"].description, "Custom explore override");
         assert_eq!(merged["explore"].system_prompt, "Custom body.");
@@ -4691,9 +4766,65 @@ mod catalog_tests {
             "---\ndescription: from project\n---\nbody",
         );
 
-        let merged = merge_agent_types(&[&global_dir, &scene_dir, &project_dir], &[]);
+        let merged = merge_agent_types(
+            &[
+                (global_dir, AgentTypeSource::User),
+                (scene_dir, AgentTypeSource::User),
+                (project_dir, AgentTypeSource::Project { trusted: true }),
+            ],
+            &[],
+        );
         let _ = std::fs::remove_dir_all(&base);
         assert_eq!(merged["reviewer"].description, "from project");
+    }
+
+    #[test]
+    fn a_project_agent_type_cannot_loosen_until_trusted() {
+        use base::interface::settings::PermissionMode as M;
+        let tmp = tempfile::tempdir().unwrap();
+        let (user_dir, project_dir) = (tmp.path().join("user"), tmp.path().join("project"));
+        write_agent_md(
+            &user_dir,
+            "reviewer.md",
+            "---\ndescription: the user's\n---\nbody",
+        );
+        for name in ["explore", "reviewer", "fresh"] {
+            write_agent_md(
+                &project_dir,
+                &format!("{name}.md"),
+                "---\ndescription: the project's\npermission_mode: bypassPermissions\nmax_turns: 500\n---\nbody",
+            );
+        }
+        let merged_as = |trusted: bool| {
+            merge_agent_types(
+                &[
+                    (user_dir.clone(), AgentTypeSource::User),
+                    (project_dir.clone(), AgentTypeSource::Project { trusted }),
+                ],
+                &[],
+            )
+        };
+        let loosened = |def: &AgentTypeDefinition| {
+            let mut settings = Settings::defaults_for("test-model");
+            settings.permission_mode = M::Default;
+            settings.execution.max_api_calls_per_turn = 25;
+            apply_agent_type_overrides(&mut settings, def);
+            (
+                settings.permission_mode,
+                settings.execution.max_api_calls_per_turn,
+            )
+        };
+
+        let untrusted = merged_as(false);
+        assert_eq!(untrusted["explore"].source, AgentTypeSource::Builtin);
+        assert_eq!(untrusted["reviewer"].description, "the user's");
+        assert_eq!(untrusted["fresh"].description, "the project's");
+        assert_eq!(loosened(&untrusted["fresh"]), (M::Default, 25));
+
+        let trusted = merged_as(true);
+        assert_eq!(trusted["explore"].description, "the project's");
+        assert_eq!(trusted["reviewer"].description, "the project's");
+        assert_eq!(loosened(&trusted["fresh"]), (M::BypassPermissions, 500));
     }
 
     #[test]
@@ -4743,7 +4874,7 @@ mod catalog_tests {
         let merged_plugin_only = merge_agent_types(&[], &plugin_types);
         assert_eq!(merged_plugin_only["explore"].description, "from plugin");
 
-        let merged = merge_agent_types(&[&dir], &plugin_types);
+        let merged = merge_agent_types(&[(dir.clone(), AgentTypeSource::User)], &plugin_types);
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(merged["explore"].description, "from disk dir");
         assert_eq!(merged["explore"].system_prompt, "Disk body.");
@@ -4890,7 +5021,7 @@ mod catalog_tests {
         };
         let shared: std::collections::HashMap<String, AgentTypeDefinition> = [
             def("builtin", AgentTypeSource::Builtin, "shared"),
-            def("on-disk", AgentTypeSource::LocalFile, "disk"),
+            def("on-disk", AgentTypeSource::User, "disk"),
         ]
         .into_iter()
         .map(|d| (d.name.clone(), d))
@@ -5037,8 +5168,14 @@ mod catalog_tests {
         let tools = Arc::new(InMemoryToolRegistry::new());
         let model: Arc<dyn Model> = Arc::new(DummyModel);
         let config = Arc::new(EngineConfig::defaults_for("parent-default-model"));
-        let agent_tool =
-            AgentTool::with_parent_tools(model, config, tools.clone(), tools, &[dir], &[]);
+        let agent_tool = AgentTool::with_parent_tools(
+            model,
+            config,
+            tools.clone(),
+            tools,
+            &[(dir.to_path_buf(), AgentTypeSource::User)],
+            &[],
+        );
 
         // Two servers' worth of MCP tools attached to the parent — only
         // "github"'s should make it into the resolved registry.
@@ -5091,8 +5228,14 @@ mod catalog_tests {
         let tools = Arc::new(tools);
         let model: Arc<dyn Model> = Arc::new(DummyModel);
         let config = Arc::new(EngineConfig::defaults_for("parent-default-model"));
-        let agent_tool =
-            AgentTool::with_parent_tools(model, config, tools.clone(), tools, &[dir], &[]);
+        let agent_tool = AgentTool::with_parent_tools(
+            model,
+            config,
+            tools.clone(),
+            tools,
+            &[(dir.to_path_buf(), AgentTypeSource::User)],
+            &[],
+        );
 
         let resolved = agent_tool.resolve_tools(Some("no-writes"));
         let names: Vec<String> = resolved
@@ -5125,8 +5268,14 @@ mod catalog_tests {
         let tools = Arc::new(tools);
         let model: Arc<dyn Model> = Arc::new(DummyModel);
         let config = Arc::new(EngineConfig::defaults_for("parent-default-model"));
-        let agent_tool =
-            AgentTool::with_parent_tools(model, config, tools.clone(), tools, &[dir], &[]);
+        let agent_tool = AgentTool::with_parent_tools(
+            model,
+            config,
+            tools.clone(),
+            tools,
+            &[(dir.to_path_buf(), AgentTypeSource::User)],
+            &[],
+        );
 
         let resolved = agent_tool.resolve_tools(Some("conflicting"));
         let names: Vec<String> = resolved
@@ -5150,8 +5299,14 @@ mod catalog_tests {
         let tools = Arc::new(InMemoryToolRegistry::new());
         let model: Arc<dyn Model> = Arc::new(DummyModel);
         let config = Arc::new(EngineConfig::defaults_for("parent-default-model"));
-        let agent_tool =
-            AgentTool::with_parent_tools(model, config, tools.clone(), tools, &[dir], &[]);
+        let agent_tool = AgentTool::with_parent_tools(
+            model,
+            config,
+            tools.clone(),
+            tools,
+            &[(dir.to_path_buf(), AgentTypeSource::User)],
+            &[],
+        );
 
         // Same lookup `run_sub`/`run_sub_inner` perform: resolve the type's
         // `model` override, then thread it into `sub_settings()`.
@@ -5264,15 +5419,12 @@ mod catalog_tests {
         assert_eq!(settings.execution.max_api_calls_per_turn, 5);
     }
 
-    /// A type in a directory the user controls may raise its own API-call
-    /// cap, but not loosen the permission mode: a project's `agents/` is
-    /// whatever the repository says.
     #[test]
-    fn local_agent_type_may_raise_its_cap_and_loosen_its_mode() {
+    fn a_users_agent_type_may_raise_its_cap_and_loosen_its_mode() {
         use base::interface::settings::PermissionMode as M;
         let def = AgentTypeDefinition {
             name: "mine".into(),
-            source: AgentTypeSource::LocalFile,
+            source: AgentTypeSource::User,
             description: "d".into(),
             permission_mode: Some(M::BypassPermissions),
             max_turns: Some(200),
@@ -5293,7 +5445,7 @@ mod catalog_tests {
         use base::interface::settings::PermissionMode as M;
         let typed = |mode| AgentTypeDefinition {
             name: "mine".into(),
-            source: AgentTypeSource::LocalFile,
+            source: AgentTypeSource::User,
             description: "d".into(),
             permission_mode: Some(mode),
             ..Default::default()
@@ -5357,8 +5509,14 @@ mod catalog_tests {
         let tools = Arc::new(InMemoryToolRegistry::new());
         let model: Arc<dyn Model> = Arc::new(DummyModel);
         let config = Arc::new(EngineConfig::defaults_for("parent-default-model"));
-        let agent_tool =
-            AgentTool::with_parent_tools(model, config, tools.clone(), tools, &[dir], &[]);
+        let agent_tool = AgentTool::with_parent_tools(
+            model,
+            config,
+            tools.clone(),
+            tools,
+            &[(dir.to_path_buf(), AgentTypeSource::User)],
+            &[],
+        );
 
         let def = agent_tool.inner.agent_type_def("cautious").unwrap();
         let mut settings = agent_tool.sub_settings(None, std::path::PathBuf::from("/tmp/cwd"));
@@ -5446,8 +5604,14 @@ mod catalog_tests {
         let tools = Arc::new(InMemoryToolRegistry::new());
         let model: Arc<dyn Model> = Arc::new(DummyModel);
         let config = Arc::new(EngineConfig::defaults_for("parent-default-model"));
-        let agent_tool =
-            AgentTool::with_parent_tools(model, config, tools.clone(), tools, &[&dir], &[]);
+        let agent_tool = AgentTool::with_parent_tools(
+            model,
+            config,
+            tools.clone(),
+            tools,
+            &[(dir.clone(), AgentTypeSource::User)],
+            &[],
+        );
 
         assert_eq!(
             agent_tool
@@ -8225,7 +8389,7 @@ mod catalog_tests {
             "digger.md",
             "---\nname: digger\ndescription: Source digger\nscene: harnix\n---\nBody.",
         );
-        let types = load_agent_types_from_dir(&dir);
+        let types = load_agent_types_from_dir(&dir, AgentTypeSource::User);
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(types[0].scene.as_deref(), Some("harnix"));
     }

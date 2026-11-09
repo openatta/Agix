@@ -835,8 +835,33 @@ WebAssembly 载体整个移除。
 - 启动时还不存在的 skill 目录(项目第一次建出 `.agents/skills/`)里后来写进的 skill 能用上了:
   下一次有请求用到这个项目的配置(`commands.list`、建会话等)时按新出现的目录重载,运行中的会话
   在下一轮之前重建,这个目录此后也被监视。以前只有显式 `config.reload` 或重启才看得到。
+- **项目信任(`ARCHITECTURE.md` §6.6)。** 全局设置多了 `project_trust: { default, trusted }`。
+  没被信任的项目按插件级信任处理:它的 `permission_mode` / 规则 / 沙箱设置只能收紧,
+  `hooks_config`、`mcp_servers`、`scripts` 不生效,`.agix/hooks/` 不进 hook 的 `PATH`,
+  `.agix/agents/` 里的类型只能收紧、不替换同名类型,`.agents/skills/` 里的 `` !`cmd` `` 不执行。
+  **0.3.10 缺省 `default: "trusted"`,什么都不变**;`daemon.doctor` 多了一项 `project.trust`,
+  项目里有要信任才生效的东西而只靠缺省被信任时报 `degraded`,把它们列出来。
+  `project_trust` 只从全局层读,场景层、项目层里写的忽略。
+- 新方法 `project.status`、`project.trust`(协议 §6.8),新通知 `project_trust_changed`,新错误码
+  `PROJECT_UNTRUSTED`(-32022,`mcp.addServer` / `mcp.updateServer` 写进未信任的项目时),
+  `mcp.status` 多了 `state: "untrusted"`。
+- **0.4 会把 `project_trust.default` 改成 `untrusted`。** 现在就该做的:桌面宿主在打开项目时
+  调 `project.status`,`requires_trust` 不空就问用户、用 `project.trust` 记下回答;自己创建项目
+  目录的无人值守部署(写项目层 `mcp_servers` / `permission_mode` 的那种)在全局
+  `settings.json` 里写 `"project_trust": {"trusted": ["<项目目录>/**"]}`。可以先把 `default` 设成
+  `untrusted` 试跑,`daemon.doctor` 与 `project.status` 会说哪些东西被扣下了。
 
 ### 嵌入方
+
+- `Settings` 多了 `project_trust`(全局层的设置)与 `project_layer`(`Settings::load` 算出的
+  信任判定与 `requires_trust`,不读不写文件);用结构体字面量构造的要补这两项
+  (`Default::default()`)。代码里造的 `Settings` 的 `project_layer` 缺省是"没有项目层",什么都不扣。
+  `base::context::EngineConfig` 多了 `project_untrusted`。新模块 `base::project_trust`。
+- `base::agent_type::AgentTypeSource::LocalFile` 拆成 `User`(全局 / 场景的 `agents/`)与
+  `Project { trusted }`,多了 `may_shadow()`。`agents::agent_tool::{merge_agent_types,
+  load_agent_types_from_dir}`、`SharedAgentTypeCatalog::{build, unwatched, refresh}`、
+  `AgentTool::with_parent_tools` 的目录参数换成 `&[(PathBuf, AgentTypeSource)]`
+  (`load_agent_types_from_dir` 多一个 `source`);新增 `agent_type_dirs(&Settings)` 按设置给出这三层。
 
 - `base::interface::exec::SandboxPolicy` 多了 `deny_ipc_escapes`,`base::tool::SandboxSettings`
   与 `base::context::config::SandboxPolicyConfig` 多了 `unattended_requires_network_policy`;

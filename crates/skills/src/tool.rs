@@ -311,7 +311,7 @@ pub async fn expand_for_invocation(
         .ok_or(ExpandError::NotFound)?;
     // Before the grants below take effect, on purpose: a skill's own
     // frontmatter does not get to approve its own commands.
-    let body = expand_dynamic_context(&body, ctx, permission).await;
+    let body = expand_dynamic_context(&body, ctx, permission, info.source).await;
     let expanded = base::frozen::skill::expand_skill_vars_named(
         &body,
         args,
@@ -522,7 +522,13 @@ fn split_allowed_tool_entry(entry: &str) -> (&str, Option<&str>) {
     }
 }
 
+/// Whether a skill body holds a command its expansion would run.
+pub(crate) fn runs_commands(body: &str) -> bool {
+    body.contains("!`") || body.contains("```!")
+}
+
 const DISABLED_PLACEHOLDER: &str = "[shell command execution disabled by policy]";
+const UNTRUSTED_PLACEHOLDER: &str = "[shell command not run: this project is not trusted]";
 
 /// Dynamic context injection: `` !`command` `` (inline, `!` at start of
 /// line or after whitespace only) and fenced ` ```!\n...\n``` ` blocks in a
@@ -546,13 +552,15 @@ const DISABLED_PLACEHOLDER: &str = "[shell command execution disabled by policy]
 ///
 /// Respects `ctx.config.disable_skill_shell_execution` — when set, every
 /// placeholder is replaced with a fixed disabled-notice string instead of
-/// running anything.
+/// running anything — and does the same for a project skill while the
+/// project is not trusted (`ctx.config.project_untrusted`).
 async fn expand_dynamic_context(
     body: &str,
     ctx: &ToolContext,
     permission: Option<&dyn base::interface::permission::Permission>,
+    source: crate::manager::SkillSource,
 ) -> String {
-    if !body.contains("!`") && !body.contains("```!") {
+    if !runs_commands(body) {
         return body.to_string();
     }
 
@@ -566,7 +574,13 @@ async fn expand_dynamic_context(
         regex::Regex::new(r"(?m)(^|[ \t])!`([^`]*)`").unwrap()
     });
 
-    let disabled = ctx.config.disable_skill_shell_execution;
+    let refusal = if ctx.config.disable_skill_shell_execution {
+        Some(DISABLED_PLACEHOLDER)
+    } else if source == crate::manager::SkillSource::Project && ctx.config.project_untrusted {
+        Some(UNTRUSTED_PLACEHOLDER)
+    } else {
+        None
+    };
 
     // Pass 1: fenced multi-line blocks.
     let mut out = String::with_capacity(body.len());
@@ -575,7 +589,7 @@ async fn expand_dynamic_context(
         let Some(m) = caps.get(0) else { continue };
         out.push_str(&body[last_end..m.start()]);
         let command = caps.get(1).map_or("", |c| c.as_str());
-        out.push_str(&run_skill_shell_command(command, ctx, disabled, permission).await);
+        out.push_str(&run_skill_shell_command(command, ctx, refusal, permission).await);
         last_end = m.end();
     }
     out.push_str(&body[last_end..]);
@@ -591,7 +605,7 @@ async fn expand_dynamic_context(
         out.push_str(&body[last_end..m.start()]);
         out.push_str(caps.get(1).map_or("", |c| c.as_str())); // preserve the leading space/tab (or nothing at line start)
         let command = caps.get(2).map_or("", |c| c.as_str());
-        out.push_str(&run_skill_shell_command(command, ctx, disabled, permission).await);
+        out.push_str(&run_skill_shell_command(command, ctx, refusal, permission).await);
         last_end = m.end();
     }
     out.push_str(&body[last_end..]);
@@ -601,12 +615,12 @@ async fn expand_dynamic_context(
 async fn run_skill_shell_command(
     command: &str,
     ctx: &ToolContext,
-    disabled: bool,
+    refusal: Option<&str>,
     permission: Option<&dyn base::interface::permission::Permission>,
 ) -> String {
     use base::interface::permission::PermissionOutcome;
-    if disabled {
-        return DISABLED_PLACEHOLDER.to_string();
+    if let Some(refusal) = refusal {
+        return refusal.to_string();
     }
     let input = serde_json::json!({"command": command});
     let refused = match permission {
@@ -682,7 +696,7 @@ mod dynamic_context_tests {
     }
 
     async fn expand(body: &str, ctx: &ToolContext) -> String {
-        expand_dynamic_context(body, ctx, Some(&Permits)).await
+        expand_dynamic_context(body, ctx, Some(&Permits), crate::manager::SkillSource::User).await
     }
 
     /// The session's real gate over the real `Bash`, under `rules`.
@@ -724,7 +738,9 @@ mod dynamic_context_tests {
             vec![bash_rule(RuleBehavior::Deny, None)],
             PermissionMode::AcceptEdits,
         );
-        let out = expand_dynamic_context(body, &ctx, Some(&denied)).await;
+        let out =
+            expand_dynamic_context(body, &ctx, Some(&denied), crate::manager::SkillSource::User)
+                .await;
         assert!(
             out.contains("not run") && out.contains("denied by rule"),
             "{out}"
@@ -732,11 +748,13 @@ mod dynamic_context_tests {
         assert!(!dir.path().join("stamp.txt").exists());
 
         let asks = gate(vec![], PermissionMode::Default);
-        let out = expand_dynamic_context(body, &ctx, Some(&asks)).await;
+        let out =
+            expand_dynamic_context(body, &ctx, Some(&asks), crate::manager::SkillSource::User)
+                .await;
         assert!(out.contains("needs the user's approval"), "{out}");
         assert!(!dir.path().join("stamp.txt").exists());
 
-        let out = expand_dynamic_context(body, &ctx, None).await;
+        let out = expand_dynamic_context(body, &ctx, None, crate::manager::SkillSource::User).await;
         assert!(out.contains("not run"), "{out}");
         assert!(!dir.path().join("stamp.txt").exists());
 
@@ -744,7 +762,13 @@ mod dynamic_context_tests {
             vec![bash_rule(RuleBehavior::Allow, Some("echo:*"))],
             PermissionMode::Default,
         );
-        expand_dynamic_context(body, &ctx, Some(&allowed)).await;
+        expand_dynamic_context(
+            body,
+            &ctx,
+            Some(&allowed),
+            crate::manager::SkillSource::User,
+        )
+        .await;
         assert!(dir.path().join("stamp.txt").exists());
     }
 
@@ -753,7 +777,13 @@ mod dynamic_context_tests {
         let dir = tempfile::tempdir().unwrap();
         let ctx = ToolContext::for_test(dir.path().to_path_buf());
         let asks = gate(vec![], base::permission::PermissionMode::Default);
-        let out = expand_dynamic_context("!`echo hello`", &ctx, Some(&asks)).await;
+        let out = expand_dynamic_context(
+            "!`echo hello`",
+            &ctx,
+            Some(&asks),
+            crate::manager::SkillSource::User,
+        )
+        .await;
         assert_eq!(out, "hello");
     }
 
@@ -802,6 +832,31 @@ mod dynamic_context_tests {
         let out = expand(body, &ctx).await;
         assert_eq!(out, DISABLED_PLACEHOLDER);
         assert!(!out.contains("should-not-run"));
+    }
+
+    #[tokio::test]
+    async fn project_skill_commands_wait_for_trust() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = ToolContext::for_test(dir.path().to_path_buf());
+        ctx.config = Arc::new({
+            let mut c = base::context::EngineConfig::defaults_for("test-model");
+            c.project_untrusted = true;
+            c
+        });
+        let body = "!`echo ran > ran.txt`";
+        let expand_from = |source| expand_dynamic_context(body, &ctx, Some(&Permits), source);
+
+        assert_eq!(
+            expand_from(crate::manager::SkillSource::Project).await,
+            UNTRUSTED_PLACEHOLDER
+        );
+        assert!(!dir.path().join("ran.txt").exists());
+
+        expand_from(crate::manager::SkillSource::User).await;
+        assert!(
+            dir.path().join("ran.txt").exists(),
+            "only the project's own skills wait for trust"
+        );
     }
 
     #[tokio::test]

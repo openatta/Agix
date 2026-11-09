@@ -245,6 +245,27 @@ daemon 按**单轮**如实上报,不做跨轮/跨会话聚合。
 **没有游标分页。** `session.history` 用 `offset` / `limit`;`session.list` 不分页,
 一次返回全部。
 
+### 3.6 项目信任
+
+一个项目自己的配置(`<项目>/.agix/` 下的设置、agent 类型、hook 脚本,`.agents/skills/`)
+是仓库内容。**没被信任的项目按插件级信任处理**:它的设置只能收紧,不能放宽;它的
+`hooks_config`、`mcp_servers`、`scripts` 不生效,`.agix/hooks/` 不进 hook 命令的 `PATH`;
+它的 agent 类型只能收紧、不替换同名类型;它的 skill 里的 `` !`cmd` `` 不执行。完整的表在
+`ARCHITECTURE.md` §6.6。
+
+信任是**项目根**的属性,只能写在全局层的 `project_trust` 里(`default` 加 `trusted` 路径 /
+glob 清单),项目自己写的忽略。三态:
+
+| `trust` | 意思 |
+|---|---|
+| `trusted` | 项目层全部生效 |
+| `untrusted` | 项目层按上面收紧 |
+| `none` | 没有自己的项目层(无项目会话,或项目的 `.agix` 就是全局目录) |
+
+**0.3.x 缺省 `default: "trusted"`**,行为与之前完全一样;**0.4 缺省改为 `untrusted`**。
+宿主用 `project.status`(§6.8)拿到状态和"信任之后才生效的东西"来画确认对话框,用
+`project.trust` 记下用户的选择;无人值守的部署在全局设置里写 `trusted` glob 预先信任。
+
 ---
 
 ## 4. 数据类型
@@ -409,6 +430,9 @@ settings 宽的被**静默夹到 settings 允许的最宽处**并记一条 warn 
 { "type": "permit_always", "scope": "session" }   // 本会话内一直允许
 { "type": "permit_always", "scope": "local" }     // 另外写进 .agix/settings.local.json,之后新建的会话即可见
 ```
+
+未信任的项目(§3.6)不读它 `settings.local.json` 里的 allow 规则,`local` 写下的规则因此
+不会被之后的会话读回;要它持久,先信任这个项目。
 
 `prompt_type` 为 `question` 时,`session.respondToPrompt` 的 `answer`,两种形态:
 
@@ -725,6 +749,20 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 
 `plugins.status` 是这个二进制**能不能加载插件**:`enabled`、`disabled-by-policy`
 (编进来了但配置关掉了)、`compiled-out`(根本没编进来)。
+
+daemon 自己的会话池在 `health.checks` 里还有一项 `project.trust`,`details` 就是
+daemon 自己的项目的 `project.status` 结果(§6.8):
+
+```jsonc
+{ "name":"project.trust", "status":"degraded",
+  "summary":"project trusted only by project_trust.default, which 0.4 turns to untrusted; these would then stop taking effect: hooks_config, mcp_servers.github",
+  "details": { "project_root":"/Users/x/repo", "trust":"trusted", "matched":null,
+               "default":"trusted", "requires_trust":["hooks_config", "mcp_servers.github"] } }
+```
+
+没有东西要信任才生效、或项目由 `trusted` 清单明确信任时是 `ok`;项目未被信任而有东西被扣下
+(`summary` 列出它们),或只靠 `default: "trusted"` 信任而有这样的东西(0.4 起它们会停用)时
+是 `degraded`。
 
 编入了 mcp 模块的构建,`health.checks` 里还有一项 `mcp.policy`(排在最前),说明在执行
 哪一份 MCP 策略(`ARCHITECTURE.md` §6.4):
@@ -1993,6 +2031,7 @@ daemon 自己那一对,给路径 = 它服务的另一个项目,`null` → `INVAL
 | `auth_required` | 远端 server 要求 OAuth 登录(回了 401),还没登录或令牌已失效;没有工具,`tool_count` 为 0。用 `mcp.auth.start` 登录 |
 | `failed` | 没连上(进程起不来、握手失败或超时),另带 `error` 说明原因 |
 | `denied` | MCP 策略(`ARCHITECTURE.md` §6.4)拒绝了它,`tool_count` 为 0,另带 `error` 说明是哪份策略、哪条规则 |
+| `untrusted` | 项目自己声明的 server,项目未被信任(§3.6),没有启动;`tool_count` 为 0,另带 `error`。`project.trust` 之后启动 |
 
 `auth` 每个元素都有,是这个 server 的授权状态(`mcp_auth.md` §2):`state` 为
 `none` / `required` / `authorizing` / `authorized` / `failed`;按需带 `issuer`、`scopes`
@@ -2029,7 +2068,8 @@ scope(403 `insufficient_scope`),现有令牌对别的请求仍然有效。
 `secrets_written_to` 只在改了 settings.local.json 时才有。
 配置解析不了、名字为空、已有的 settings.json / settings.local.json 不是 JSON 对象 → `INVALID_PARAMS`。
 MCP 策略拒绝这个 server → `MCP_SERVER_DENIED`,**什么都不写、不连接、不发通知**,`message`
-写明是哪份策略、哪条规则。
+写明是哪份策略、哪条规则。目标项目未被信任(§3.6)→ `PROJECT_UNTRUSTED`,同样什么都不做:
+写进去的 server 也不会启动。
 
 同名的服务已经存在时是替换,不是再加一份——settings.local.json 里它原有的那部分也一起换掉,
 新配置没有 `headers` / `env` 就删掉。这个项目上正在跑的会话在下一轮之前按新连接重建,进行中的
@@ -2304,6 +2344,60 @@ settings.local.json)里声明过,否则 `INVALID_PARAMS` —— 用来换令牌�
 
 会话被 `session.delete` 删掉时,它的定时任务一起删除。
 
+### 6.8 `project.*`
+
+项目信任(§3.6)。两个方法都接受 `scene` / `project_root` 定位参数,语义同 `config.reload`:
+省略 = 这个 daemon 自己那一对,给路径 = 它服务的另一个项目,`null` → `INVALID_PARAMS`。
+`scene` 只影响 `requires_trust` 的判断(比如项目的 `permission_mode` 比哪一层的更宽),信任本身
+与场景无关。
+
+#### `project.status`
+
+```jsonc
+// → params(都可选)
+{ "project_root": "/Users/x/repo-b", "scene": "code" }
+// ← result
+{ "project_root": "…/work",
+  "trust": "trusted",          // trusted | untrusted | none
+  "matched": null,             // 命中的 project_trust.trusted 条目;null = 由 default 决定
+  "default": "trusted",        // project_trust.default
+  "requires_trust": [ ] }      // 见下
+```
+
+`requires_trust` 是这个项目里**要信任才生效**的东西,不论现在信不信任都列出来——
+`trust` 是 `untrusted` 时它们正被扣下,`trusted` 时它们在生效、一旦不信任就会停:
+
+| 条目 | 意思 |
+|---|---|
+| `hooks_config`、`scripts` | 项目设置里的 hook、脚本绑定 |
+| `mcp_servers.<名字>` | 项目设置里声明或改写的 MCP server |
+| `permission_mode`、`allow_client_permission_override`、`disable_skill_shell_execution` | 比下面几层更松的值 |
+| `permission_rules.allow(<规则>)` | 项目设置里的一条 allow 规则 |
+| `sandbox.<键>`(含 `sandbox.cache_directories.<组>`、`sandbox.subprocess_env.allow`) | 放宽沙箱的值 |
+| `agents/<名字>` | 替换同名类型、或要求比会话更松的模式 / 更高的调用上限的项目 agent 类型 |
+| `skills/<名字>` | 正文里有 `` !`cmd` `` / ` ```! ` 的项目 skill |
+
+#### `project.trust`
+
+```jsonc
+// → params
+{ "project_root": "/Users/x/repo-b",   // 可选,省略 = daemon 自己的项目
+  "trusted": true }                     // 必填
+// ← result
+{ "project_root": "…/work", "trust": "trusted", "matched": "…/work",
+  "default": "trusted", "requires_trust": [ ],
+  "written_to": "…/settings.local.json" }
+```
+
+`trusted: true` 把这个项目根(原样)加进全局层 `settings.local.json`(0600)的
+`project_trust.trusted`;`false` 把指向同一目录的条目删掉。结果是写完之后的
+`project.status`,外加 `written_to`。**`false` 只删这一条**:另一条 glob 或
+`default: "trusted"` 仍然信任它时,结果里照样是 `trusted`(`matched` 说明是哪一条),
+要改就改全局设置。缺 `trusted` → `INVALID_PARAMS`。
+
+写完之后这个项目的会话在下一轮之前按新的信任状态重建,它的 MCP 连接重连,并发一条
+`project_trust_changed`(§8)。
+
 ---
 
 ## 7. 流式帧:`session.event`
@@ -2465,6 +2559,7 @@ transcript,这一轮以 `ENGINE_ERROR` 结束,不会重发。
 | `turn_started` | `{session_id, turn_id, initiator}` | 一轮开始。`initiator`:`client`(某条连接的 `run_turn`)、`schedule`(定时任务,§6.7)、`goal`(目标的自动轮) |
 | `turn_completed` | `{session_id, turn_id, initiator}` | 这一轮结束,无论成功、出错还是被中断 |
 | `events_lagged` | `{missed}` | 这条连接读得太慢,有 `missed` 条通知没送到。需要的话用 `session.list` 等对账 |
+| `project_trust_changed` | `{project_root, trust}` | `project.trust` 写完之后;`trust` 是写完后的状态(§3.6) |
 
 会话与轮的事件让宿主**不必订阅每个会话**就知道哪些会话在内存里、哪些在跑 ——
 包括不是它发起的轮(定时任务,或者别的客户端)。没有 `config_reloaded` /
@@ -2497,6 +2592,7 @@ transcript,这一轮以 `ENGINE_ERROR` 结束,不会重发。
 | -32019 | TASK_LIMIT | `session.startAgent`:会话的子 Agent 已到 `execution.max_concurrent_subagents`,或委派已到最深 |
 | -32020 | MCP_SERVER_DENIED | `mcp.addServer` / `mcp.updateServer`:MCP 策略拒绝这个 server,没有写入任何东西;`mcp.auth.start` / `mcp.auth.logout`:这个 server 被策略拒绝,或(`start`)它的授权服务器不在 `allowed_authorization_servers` 里 |
 | -32021 | MCP_AUTH_FAILED | `mcp.auth.*`:授权服务器或登录本身失败——发现、注册、PKCE、回调 `state` 不符、换令牌;`message` 可以直接给用户看 |
+| -32022 | PROJECT_UNTRUSTED | `mcp.addServer` / `mcp.updateServer`:目标项目未被信任(§3.6),它自己声明的 server 不会启动,所以什么都没写 |
 
 还有两个常量在代码里定义了但**没有任何路径会发出**,客户端不必为它们写分支:
 `PARSE_ERROR (-32700)` / `INVALID_REQUEST (-32600)`(解析不了的帧被静默丢弃,见

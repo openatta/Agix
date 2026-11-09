@@ -71,11 +71,10 @@ impl ProjectModules {
             #[cfg(feature = "skills")]
             skills: Arc::new(skills::module::build_skill_manager_unwatched(settings)),
             #[cfg(feature = "agents")]
-            agent_types: {
-                let dirs = agent_type_dirs(settings);
-                let dirs_ref: [&std::path::Path; 3] = [&dirs[0], &dirs[1], &dirs[2]];
-                agents::agent_tool::SharedAgentTypeCatalog::unwatched(&dirs_ref, plugin_agent_types)
-            },
+            agent_types: agents::agent_tool::SharedAgentTypeCatalog::unwatched(
+                &agents::agent_tool::agent_type_dirs(settings),
+                plugin_agent_types,
+            ),
         }
     }
 
@@ -114,11 +113,10 @@ impl ProjectModules {
         plugin_agent_types: &[AgentTypeDefinition],
     ) {
         #[cfg(feature = "agents")]
-        {
-            let dirs = agent_type_dirs(settings);
-            let dirs_ref: [&std::path::Path; 3] = [&dirs[0], &dirs[1], &dirs[2]];
-            self.agent_types.refresh(&dirs_ref, plugin_agent_types);
-        }
+        self.agent_types.refresh(
+            &agents::agent_tool::agent_type_dirs(settings),
+            plugin_agent_types,
+        );
         #[cfg(not(feature = "agents"))]
         let _ = (settings, plugin_agent_types);
     }
@@ -142,16 +140,6 @@ impl ProjectModules {
         out.push(Arc::new(skills::SkillsModule::shared(self.skills.clone())));
         out
     }
-}
-
-/// Global → scene → project `agents/*.md` directories.
-#[cfg(feature = "agents")]
-fn agent_type_dirs(settings: &Settings) -> [std::path::PathBuf; 3] {
-    [
-        settings.paths.global_data_dir.join("agents"),
-        settings.paths.user_data_dir.join("agents"),
-        settings.paths.project_root().join(".agix").join("agents"),
-    ]
 }
 
 #[cfg(test)]

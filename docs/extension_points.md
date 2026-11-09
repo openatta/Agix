@@ -936,7 +936,7 @@ let store = Arc::new(ObservedHistoryStore::new(inner, vec![my_observer]));
 
 三十个具名事件,四种后端(command、prompt、HTTP、agent),在 `settings.json` 的
 `hooks_config` 里配:事件名 → 一组 hook。各层按事件合并,上层写了某个事件就整组替换下层
-的那一组。有些事件能解析、能接受配置,但还没有任何地方触发它们;`hooks::UNWIRED_EVENTS`
+的那一组;没被信任的项目(`ARCHITECTURE.md` §6.6)那一层的整段不加载。有些事件能解析、能接受配置,但还没有任何地方触发它们;`hooks::UNWIRED_EVENTS`
 是那份清单,配到这类事件时引擎会告警,而 `daemon/tests/hook_event_wiring.rs` 从两个
 方向盯着这份清单不许说谎。
 

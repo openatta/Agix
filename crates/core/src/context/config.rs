@@ -79,6 +79,9 @@ pub struct EngineConfig {
     /// Mirrors `Settings.disable_skill_shell_execution` — read by the skill
     /// expansion's `` !`cmd` `` step via `ToolContext.config`.
     pub disable_skill_shell_execution: bool,
+    /// The project tier is not trusted (`Settings::project_layer`): a project
+    /// skill's `` !`cmd` `` is not run.
+    pub project_untrusted: bool,
     /// Mirrors `Settings.sandbox.subprocess_env`.
     pub subprocess_env: crate::interface::exec::local::SubprocessEnv,
     /// Where the commands of this session record their process groups;
@@ -290,6 +293,7 @@ impl EngineConfig {
             dangerously_disable_sandbox: false,
             sandbox_policy: SandboxPolicyConfig::default(),
             disable_skill_shell_execution: false,
+            project_untrusted: false,
             subprocess_env: Default::default(),
             process_groups: None,
 
@@ -363,6 +367,7 @@ impl EngineConfig {
             unattended_requires_network_policy: settings.sandbox.unattended_requires_network_policy,
         };
         c.disable_skill_shell_execution = settings.disable_skill_shell_execution;
+        c.project_untrusted = settings.project_layer.trust.is_untrusted();
         c.path_style = settings.path_style.unwrap_or_default();
         c.subprocess_env = settings.sandbox.subprocess_env.clone();
 

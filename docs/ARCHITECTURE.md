@@ -247,7 +247,7 @@ serde 的 `Option<Option<T>>` 免费区分前两者,但 `null` 与字符串的�
 显式检查,**在到达 `SessionPool` 之前**。无项目会话的 `local_data_dir` 取
 `global_data_dir` 本身,而不是 `<project>/.agix`。
 
-`config.*` / `mcp.addServer` / `mcp.updateServer` / `import.*` 这几个**作用在项目层**的方法用的是另一套
+`config.*` / `project.*` / `mcp.addServer` / `mcp.updateServer` / `import.*` 这几个**作用在项目层**的方法用的是另一套
 两态:省略 = 这个 daemon 自己的项目,给路径 = 它服务的另一个项目,**`null` 拒绝** ——
 无项目会话没有项目层可写。
 
@@ -636,14 +636,15 @@ git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git
 子 Agent 自己的会话状态(它读过哪些文件)。判的模式是子 Agent 自己的
 (`PermissionMode::for_delegate`):父会话在 `plan` 时取两者中更严的那个,父会话是
 `bypassPermissions` 时随父会话。agent 类型 frontmatter 的 `permission_mode` 可以比父会话
-宽也可以严,插件带来的类型只能收紧;模型在 `Agent` 调用、`TeamCreate` /
+宽也可以严,插件带来的、未信任项目里的类型只能收紧(§6.6);模型在 `Agent` 调用、`TeamCreate` /
 `Agent(team_name)` 里自己要的 `permission_mode` 只能收紧。子 Agent 的询问经父会话的通道到宿主,等待上限就是会话的
 `permission_prompt_timeout`;在那里答"永久允许",记下的是这一条命令或路径,不是整个工具。
 
 skill 正文里的 `` !`cmd` `` 在送给模型之前执行,同样先过会话的 `Permission`(按一次
 `Bash` 调用判):deny 规则拒掉的不跑,要询问的也不跑——预处理没有人可问——只有规则
 放行的、或 `Bash` 自己静默放行的(项目内的只读命令)才执行,替换成一行写明原因的文字。
-skill 自己的 `allowed-tools` 这时还没生效,不能给自己的命令开门。
+skill 自己的 `allowed-tools` 这时还没生效,不能给自己的命令开门。未信任项目自己的 skill
+(`.agents/skills/`)里的命令一条都不跑(§6.6)。
 
 模型调 `Skill`、`context: fork` 的 skill 交给子 Agent、用户打 `/name`,三条路径展开 skill
 用的是同一个函数(`skills::expand_for_invocation`,内核经 `SkillCatalog::expand` 调到):
@@ -858,7 +859,8 @@ HTTP;规则里写的 `ws://` / `wss://` 同样换过来):`https://*.corp.example
 `client_secret_env` / `private_key_jwt.key_env`(读的是 daemon 的环境),写了就以
 `mcp_connect_failed` 拒绝连接。全局层、场景层和插件声明的 server 照旧用 daemon 的环境展开。
 这条对已经信任的项目同样成立:克隆来的仓库不应该能把 `$GITHUB_TOKEN` 发到它指定的 URL。
-项目层只改了全局 server 的一部分(比如只换了 `url`)也算项目层的 server。
+项目层只改了全局 server 的一部分(比如只换了 `url`)也算项目层的 server。未信任的项目,
+它自己的 server 根本不启动(§6.6)。
 
 ### 6.5 MCP 授权
 
@@ -879,6 +881,59 @@ daemon 管。设计与用法在 [`mcp_auth.md`](mcp_auth.md);这里只记它在�
   跳转之前对照 `allowed_authorization_servers`。
 - **无人值守的 server**(`client_credentials`、企业托管授权)不经过登录:令牌在每次请求之前
   检查,快到期或被拒时重新取。企业身份由宿主经 `mcp.auth.setIdentity` 交来,只在内存里。
+
+### 6.6 项目信任
+
+项目层——`<项目>/.agix/settings.json` 与 `settings.local.json`、`.agix/agents/`、
+`.agix/hooks/`、`.agents/skills/`——是仓库内容,克隆来的仓库里就是作者写的东西。§6.1 到
+§6.4 的那些防线都假设项目可能是敌意的;没有信任这一层,同一个仓库只要在自己的设置里写
+`permission_mode: "bypassPermissions"`、一条 hook 或一个 MCP server,就绕过了它们。
+
+**未信任的项目层按插件级信任处理**——复用插件包已有的那条"网上来的东西只能新增、只能收紧"
+的规则(`plugin_packages.md` §信任),不另造一套权限体系:
+
+| 项目层内容 | 未信任时 |
+|---|---|
+| `permission_mode` | 只能比它下面几层合出来的更严 |
+| `permission_rules` | `deny` / `ask` 照常,`allow` 丢弃(含 `settings.local.json` 里"永久允许,本项目"记下的) |
+| `hooks_config`、`scripts` | 整段忽略;`.agix/hooks/` 也不放进 hook 命令的 `PATH`,用户层 hook 写的裸脚本名不会落到项目里的同名文件 |
+| `mcp_servers` | 不启动;`mcp.status` 里是 `"state": "untrusted"`;`mcp.addServer` / `mcp.updateServer` 以 `PROJECT_UNTRUSTED` 拒绝,什么都不写 |
+| `allow_client_permission_override: true`、`disable_skill_shell_execution: false` | 丢弃 |
+| `sandbox`:`dangerously_disable_sandbox` / `read_anywhere` 设为真,`require_enforcement` / `unattended_requires_network_policy` 设为假,`network_mode` 更松 | 丢弃 |
+| `sandbox`:`additional_directories` / `read_directories` / `allow_read` / `allow_write` / `allowed_domains`,`cache_directories` 的某一组,`subprocess_env.allow` | 只要多出下面几层没有的条目就整项丢弃;只删不加的保留 |
+| `sandbox`:`deny_read` / `deny_write`、`subprocess_env.mode` | 少了下面几层有的条目(或从 `allowlist` 改回 `inherit`)就丢弃;`deny_read` 非空会替换内建的凭据清单,所以下面几层没写时项目也只能不写 |
+| `.agix/agents/*.md` | 来源是 `AgentTypeSource::Project { trusted: false }`:`permission_mode` / `max_turns` 只能收紧,与内建、插件、用户层同名的不替换它们 |
+| `.agents/skills/` 里的 `` !`cmd` `` | 不执行,换成一行说明(与 `disable_skill_shell_execution` 同一条路) |
+| 其余(`instruction_file`、提示词、`rules`、记忆、模型与 provider 选择……) | 照常 |
+
+文本到达模型本来就要靠人读(插件同一判断),所以提示词一类照常;provider、`telemetry_url`、
+`recorder` 这类"把东西送到别处"的键现在不在表里。信任之后项目层恢复全部行为。
+
+**信任是项目根的属性,存在全局层,项目自己改不了**:
+
+```jsonc
+// ~/.agix/settings.json 或 settings.local.json
+{ "project_trust": {
+    "default": "trusted",                       // trusted | untrusted;0.3.x 缺省 trusted
+    "trusted": ["/Users/x/work/**", "/srv/ipd/lines/*"] } }
+```
+
+判定:没有自己的项目层(无项目会话,或项目的 `.agix` 就是全局 / 场景目录)→ 不涉及信任;
+`trusted` 里有一条命中项目根(路径相等,或 glob:`*` 不跨 `/`,`**` 跨,`~/` 是家目录;
+符号链接两种写法都认)→ 信任;否则取 `default`。`project_trust` 只从全局层读,场景层、
+项目层里写的忽略并记一条 warn。全局层 `settings.json` 与 `settings.local.json` 的
+`trusted` 清单相加,不是后者盖前者。合并时的判定结果在 `Settings::project_layer`:
+信任状态、命中的那条、以及项目层里哪些东西要信任才生效(`requires_trust`)。
+
+宿主经 `project.status` 读状态与 `requires_trust`(用来画"信任这个项目吗"的对话框),经
+`project.trust` 把项目根加进或移出全局 `settings.local.json` 的 `trusted`,之后这个项目的
+绑定与 MCP 连接重建,发 `project_trust_changed` 通知。`daemon.doctor` 的 `project.trust`
+检查报 daemon 自己的项目:未信任且有东西被扣下,或只靠 `default: trusted` 才信任而有东西
+要信任才生效,都是 `degraded`。确认对话框是宿主的事;无人值守部署用 `trusted` glob 预先信任
+它们自己创建的项目目录。
+
+**0.3.x 缺省 `trusted`**,行为与之前完全一样,`daemon.doctor` 提示哪些内容在 0.4 会停用;
+**0.4 把缺省改成 `untrusted`**。
 
 ---
 

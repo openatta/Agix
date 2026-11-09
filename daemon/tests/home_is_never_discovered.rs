@@ -61,6 +61,12 @@ const ALLOWED: &[(&str, &str)] = &[
          `SandboxPolicy::state_root` first.",
     ),
     (
+        "crates/core/src/project_trust.rs",
+        "expands a leading `~/` in `project_trust.trusted` patterns, the same \
+         `~` permission rules expand — the home the user means by \
+         `~/work/**`. A fact about the machine, never a place Agix writes.",
+    ),
+    (
         "crates/permissions/src/path_rule.rs",
         "expands `~` in permission rules and in the paths tools are asked to \
          touch — the home a shell expands `~` to when the command runs. A fact \

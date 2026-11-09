@@ -599,6 +599,8 @@ impl DaemonServer {
             // next turn — see `SessionPool::run_turn`).
             "config.reload" => self.method_config_reload(id, req.params).await,
             "config.get" => self.method_config_get(id, req.params).await,
+            "project.status" => self.method_project_status(id, req.params).await,
+            "project.trust" => self.method_project_trust(id, req.params).await,
             #[cfg(feature = "mcp")]
             "mcp.status" => RpcResponse::ok(
                 id,
@@ -1016,6 +1018,45 @@ impl DaemonServer {
                 .reload_settings(project_root.as_deref(), &scene)
                 .await,
         )
+    }
+
+    async fn method_project_status(
+        &self,
+        id: serde_json::Value,
+        params: serde_json::Value,
+    ) -> RpcResponse {
+        let (project_root, scene) = match self.config_target(&params) {
+            Ok(target) => target,
+            Err(message) => return RpcResponse::err(id, codes::INVALID_PARAMS, message),
+        };
+        RpcResponse::ok(
+            id,
+            self.pool
+                .project_status(project_root.as_deref(), &scene)
+                .await,
+        )
+    }
+
+    async fn method_project_trust(
+        &self,
+        id: serde_json::Value,
+        params: serde_json::Value,
+    ) -> RpcResponse {
+        let (project_root, scene) = match self.config_target(&params) {
+            Ok(target) => target,
+            Err(message) => return RpcResponse::err(id, codes::INVALID_PARAMS, message),
+        };
+        let Some(trusted) = params.get("trusted").and_then(|v| v.as_bool()) else {
+            return RpcResponse::err(id, codes::INVALID_PARAMS, "missing boolean `trusted`");
+        };
+        match self
+            .pool
+            .set_project_trust(project_root.as_deref(), &scene, trusted)
+            .await
+        {
+            Ok(result) => RpcResponse::ok(id, result),
+            Err(e) => RpcResponse::err(id, codes::INTERNAL_ERROR, e),
+        }
     }
 
     /// The `(project_root, scene)` pair a configuration method acts on.

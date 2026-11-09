@@ -15,6 +15,7 @@ mod host_scenes;
 mod mcp_oauth;
 mod mcp_policy;
 mod one_assembly;
+mod project_trust;
 mod protocol_doc_examples;
 mod protocol_doc_matches_dispatch;
 mod readme_matches_the_code;

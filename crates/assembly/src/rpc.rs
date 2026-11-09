@@ -386,6 +386,10 @@ pub mod codes {
     /// registration, a refused or mismatched callback, the code exchange.
     /// `message` is meant for the user.
     pub const MCP_AUTH_FAILED: i32 = -32021;
+
+    /// `mcp.addServer`/`mcp.updateServer` into a project that is not trusted:
+    /// the server would never start, so nothing was written.
+    pub const PROJECT_UNTRUSTED: i32 = -32022;
 }
 
 /// `session.startAgent`'s params.

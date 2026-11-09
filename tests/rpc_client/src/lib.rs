@@ -586,6 +586,23 @@ impl DaemonRpcClient {
             .await
     }
 
+    pub async fn project_status(&mut self, target: &Target) -> anyhow::Result<RpcResponse> {
+        self.call("project.status", target.with(serde_json::json!({})))
+            .await
+    }
+
+    pub async fn project_trust(
+        &mut self,
+        target: &Target,
+        trusted: bool,
+    ) -> anyhow::Result<RpcResponse> {
+        self.call(
+            "project.trust",
+            target.with(serde_json::json!({ "trusted": trusted })),
+        )
+        .await
+    }
+
     pub async fn mcp_status(&mut self) -> anyhow::Result<RpcResponse> {
         self.call("mcp.status", Value::Null).await
     }

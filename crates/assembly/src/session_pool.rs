@@ -917,46 +917,65 @@ struct AdmittedMcp {
     refused: Vec<String>,
 }
 
-/// Whether `settings` came with a project tier of its own: one whose `.agix`
-/// is neither the global nor the scene directory. A project rooted at
-/// `$HOME` shares `~/.agix` with the global tier, and those files are the
-/// user's.
-#[cfg(feature = "mcp")]
-fn has_own_project_tier(settings: &Settings) -> bool {
-    is_own_project_dir(
-        &settings.paths.local_data_dir,
-        &settings.paths.global_data_dir,
-        &settings.paths.user_data_dir,
-    )
-}
-
-#[cfg(feature = "mcp")]
-fn is_own_project_dir(project: &Path, global: &Path, scene: &Path) -> bool {
-    let same = |a: &Path, b: &Path| {
-        a == b
-            || matches!(
-                (a.canonicalize(), b.canonicalize()),
-                (Ok(a), Ok(b)) if a == b
-            )
-    };
-    !same(project, global) && !same(project, scene)
-}
-
 /// The `mcp_servers` keys the project tier's own files (`settings.json`,
 /// `settings.local.json`) declare. A key a project sets at all, even one
 /// field of a global server's, makes that server the project's.
 #[cfg(feature = "mcp")]
 fn project_tier_mcp_servers(settings: &Settings) -> std::collections::HashSet<String> {
-    if !has_own_project_tier(settings) {
-        return Default::default();
+    settings.project_layer.mcp_servers.keys().cloned().collect()
+}
+
+/// What `project.status` answers for `root`, from the settings its sessions
+/// are built with.
+fn project_trust_report(
+    root: &Path,
+    settings: &Settings,
+    plugin_agent_types: &[base::agent_type::AgentTypeDefinition],
+) -> serde_json::Value {
+    let layer = &settings.project_layer;
+    #[cfg_attr(not(any(feature = "agents", feature = "skills")), allow(unused_mut))]
+    let mut requires_trust = layer.requires_trust.clone();
+    #[cfg(feature = "agents")]
+    requires_trust.extend(agents::agent_tool::project_agent_types_requiring_trust(
+        settings,
+        plugin_agent_types,
+    ));
+    #[cfg(not(feature = "agents"))]
+    let _ = plugin_agent_types;
+    #[cfg(feature = "skills")]
+    requires_trust.extend(skills::module::project_skills_requiring_trust(settings));
+    serde_json::json!({
+        "project_root": root,
+        "trust": layer.trust.as_str(),
+        "matched": layer.matched,
+        "default": settings.project_trust.default,
+        "requires_trust": requires_trust,
+    })
+}
+
+/// `mcp.status` entries for the project's own servers that are not started
+/// because the project is not trusted.
+#[cfg(feature = "mcp")]
+fn untrusted_mcp_entries(settings: &Settings) -> Vec<serde_json::Value> {
+    if !settings.project_layer.trust.is_untrusted() {
+        return Vec::new();
     }
-    use base::interface::settings::{SETTINGS_FILE, SETTINGS_LOCAL_FILE};
-    [SETTINGS_FILE, SETTINGS_LOCAL_FILE]
+    settings
+        .project_layer
+        .mcp_servers
         .iter()
-        .filter_map(|file| std::fs::read_to_string(settings.paths.local_data_dir.join(file)).ok())
-        .filter_map(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-        .filter_map(|v| v.get("mcp_servers")?.as_object().cloned())
-        .flat_map(|servers| servers.into_iter().map(|(name, _)| name))
+        .filter(|(name, _)| !settings.mcp_servers.contains_key(*name))
+        .map(|(name, cfg)| {
+            let transport = serde_json::from_value::<mcp::config::McpServerConfig>(cfg.clone())
+                .map(|c| c.transport_kind().to_string())
+                .unwrap_or_else(|_| "unknown".into());
+            serde_json::json!({
+                "name": name, "transport": transport, "tool_count": 0,
+                "state": "untrusted",
+                "error": "the project is not trusted; its own MCP servers start once it is (project.trust)",
+                "auth": {"state": "none"},
+            })
+        })
         .collect()
 }
 
@@ -1569,7 +1588,9 @@ impl SessionPool {
             .get(&(Some(self.cwd.clone()), startup_scene))
             .cloned()
             .unwrap_or_else(|| Arc::new(McpManager::empty()));
-        mcp_status_entries(&manager)
+        let mut entries = mcp_status_entries(&manager);
+        entries.extend(untrusted_mcp_entries(&*self.settings.read().await));
+        entries
     }
 
     /// Connect the default project's MCP servers (`configured_mcp_servers`)
@@ -1829,11 +1850,25 @@ impl SessionPool {
             .map_err(|e| invalid(format!("invalid mcp server config: {e}")))?;
         let startup_scene = self.settings.read().await.paths.scope.clone();
         let written_to = self.settings_path_of(project_root);
-        if is_own_project_dir(
+        if base::project_trust::is_own_project_dir(
             written_to.parent().unwrap_or(&written_to),
             &self.paths.global_root(),
             &self.scene_root(scene_id, &startup_scene),
         ) {
+            let target = project_root.unwrap_or(self.cwd.as_path());
+            let (trust, _) =
+                base::project_trust::ProjectTrustSettings::read_global(&self.paths.global_root())
+                    .decide(target);
+            if trust.is_untrusted() {
+                return Err((
+                    crate::rpc::codes::PROJECT_UNTRUSTED,
+                    format!(
+                        "{} is not trusted, so a server declared in its settings would not start; \
+                         trust it first (project.trust) or declare the server in the global tier",
+                        target.display()
+                    ),
+                ));
+            }
             cfg = cfg.confined_to_own_env().map_err(invalid)?;
         }
         self.admit_mcp(name, &cfg)
@@ -2366,6 +2401,9 @@ impl SessionPool {
         let mut checks: Vec<Arc<dyn base::interface::health::HealthCheck>> = Vec::new();
         #[cfg(feature = "mcp")]
         checks.push(self.mcp_policy.clone());
+        checks.push(Arc::new(crate::doctor::ProjectTrustCheck::new(
+            project_trust_report(&self.cwd, &settings, &self.plugins.agent_types()),
+        )));
         checks.extend(self.plugins.health_check());
         checks.extend(
             self.health
@@ -2528,6 +2566,93 @@ impl SessionPool {
         }
 
         Ok(result)
+    }
+
+    /// `project.status` — whether `project_root` (this daemon's own project
+    /// when `None`) is trusted, and what of the project's own configuration
+    /// takes effect only when it is.
+    pub async fn project_status(
+        &self,
+        project_root: Option<&Path>,
+        scene_id: &str,
+    ) -> serde_json::Value {
+        let root = project_root.unwrap_or(self.cwd.as_path());
+        let settings = self.settings_for_project(Some(root), scene_id).await;
+        project_trust_report(root, &settings, &self.plugins.agent_types())
+    }
+
+    /// `project.trust` — add `project_root` to, or take it off, the
+    /// `project_trust.trusted` list in the global tier's
+    /// `settings.local.json`, and rebuild what that project's sessions were
+    /// built from. Taking it off removes only that exact entry: a glob or
+    /// `project_trust.default` may still trust the project, and the status
+    /// returned says so.
+    pub async fn set_project_trust(
+        &self,
+        project_root: Option<&Path>,
+        scene_id: &str,
+        trusted: bool,
+    ) -> Result<serde_json::Value, String> {
+        use crate::watch_hub::Tier;
+        let root = project_root.unwrap_or(self.cwd.as_path()).to_path_buf();
+        let entry = root.display().to_string();
+        let path = self
+            .paths
+            .global_root()
+            .join(base::interface::settings::SETTINGS_LOCAL_FILE);
+        let mut local = read_settings_object(&path).await?;
+        let obj = local
+            .as_object_mut()
+            .expect("verified to be an object above");
+        let section = obj
+            .entry("project_trust")
+            .or_insert_with(|| serde_json::json!({}));
+        if !section.is_object() {
+            *section = serde_json::json!({});
+        }
+        let list = section
+            .as_object_mut()
+            .expect("made an object above")
+            .entry("trusted")
+            .or_insert_with(|| serde_json::json!([]));
+        if !list.is_array() {
+            *list = serde_json::json!([]);
+        }
+        let list = list.as_array_mut().expect("made an array above");
+        let listed = |v: &serde_json::Value| {
+            v.as_str()
+                .is_some_and(|p| base::project_trust::same_dir(Path::new(p), &root))
+        };
+        if trusted {
+            if !list.iter().any(listed) {
+                list.push(serde_json::Value::String(entry));
+            }
+        } else {
+            list.retain(|v| !listed(v));
+        }
+        write_settings_file(&path, &local, true).await?;
+
+        let tier = Tier::Project(root.clone());
+        #[cfg(feature = "mcp")]
+        self.forget_mcp_built_from(&tier, None).await;
+        let startup_scene = self.settings.read().await.paths.scope.clone();
+        if root == self.cwd {
+            self.reload_settings_from(None, &startup_scene, Some(&tier))
+                .await;
+        }
+        if root != self.cwd || scene_id != startup_scene {
+            self.reload_settings_from(Some(&root), scene_id, Some(&tier))
+                .await;
+        }
+
+        let mut status = self.project_status(Some(&root), scene_id).await;
+        self.emit_event(serde_json::json!({
+            "kind": "project_trust_changed",
+            "project_root": root,
+            "trust": status["trust"],
+        }));
+        status["written_to"] = serde_json::Value::String(path.display().to_string());
+        Ok(status)
     }
 
     /// Re-read whatever is currently on disk across all three settings.json

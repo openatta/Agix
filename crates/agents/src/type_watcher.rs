@@ -14,7 +14,9 @@
 //! project-level override file is deleted. The full re-merge is cheap:
 //! these directories are typically a handful of small files.
 
-use crate::agent_tool::{merge_agent_types, AgentTypeDefinition, SharedAgentTypeMap};
+use crate::agent_tool::{
+    merge_agent_types, AgentTypeDefinition, AgentTypeSource, SharedAgentTypeMap,
+};
 use notify::event::Event;
 use notify::{recommended_watcher, RecursiveMode, Watcher};
 use std::path::PathBuf;
@@ -42,7 +44,7 @@ impl AgentTypeWatcher {
     /// keep the build-time-only catalog), matching how
     /// `SkillManager::enable_watching` failures are handled.
     pub(crate) fn watch(
-        dirs: Vec<PathBuf>,
+        dirs: Vec<(PathBuf, AgentTypeSource)>,
         plugin_types: Vec<AgentTypeDefinition>,
         target: SharedAgentTypeMap,
     ) -> Result<Self, String> {
@@ -53,7 +55,7 @@ impl AgentTypeWatcher {
         })
         .map_err(|e| format!("notify watcher creation failed: {e}"))?;
 
-        for dir in &dirs {
+        for (dir, _) in &dirs {
             if dir.exists() {
                 watcher_handle
                     .watch(dir, RecursiveMode::Recursive)
@@ -74,7 +76,7 @@ impl AgentTypeWatcher {
 
 fn drain_events(
     rx: Receiver<notify::Result<Event>>,
-    dirs: &[PathBuf],
+    dirs: &[(PathBuf, AgentTypeSource)],
     plugin_types: &[AgentTypeDefinition],
     target: &SharedAgentTypeMap,
 ) {
@@ -86,9 +88,7 @@ fn drain_events(
                     .iter()
                     .any(|p| p.extension().and_then(|e| e.to_str()) == Some("md"));
                 if is_agent_type_change {
-                    let dir_refs: Vec<&std::path::Path> =
-                        dirs.iter().map(|p| p.as_path()).collect();
-                    let merged = merge_agent_types(&dir_refs, plugin_types);
+                    let merged = merge_agent_types(dirs, plugin_types);
                     let count = merged.len();
                     *target
                         .write()

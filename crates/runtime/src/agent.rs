@@ -1232,11 +1232,18 @@ fn build_hook_runner(
             );
         }
     }
-    let hooks_search_dirs = vec![
-        settings.paths.project_root().join(".agix").join("hooks"),
-        settings.paths.user_data_dir.join("hooks"),
-        settings.paths.global_data_dir.join("hooks"),
-    ];
+    // An untrusted project's hooks config is already gone from `settings`;
+    // its `hooks/` directory goes too, or a user hook naming a script would
+    // run the project's file of that name.
+    let project_hooks = (!settings.project_layer.trust.is_untrusted())
+        .then(|| settings.paths.project_root().join(".agix").join("hooks"));
+    let hooks_search_dirs: Vec<_> = project_hooks
+        .into_iter()
+        .chain([
+            settings.paths.user_data_dir.join("hooks"),
+            settings.paths.global_data_dir.join("hooks"),
+        ])
+        .collect();
     let prompt_executor = Arc::new(crate::hook_executors::ModelPromptHookExecutor::new(
         model,
         settings.model.model_name.clone(),
@@ -2739,6 +2746,8 @@ mod tests {
             allow_client_permission_override: false,
             telemetry_enabled: false,
             hooks_config: None,
+            project_trust: Default::default(),
+            project_layer: Default::default(),
             mcp_servers: Default::default(),
             providers: Default::default(),
             default_provider: None,

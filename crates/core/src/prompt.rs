@@ -452,6 +452,8 @@ mod tests {
             allow_client_permission_override: false,
             telemetry_enabled: false,
             hooks_config: None,
+            project_trust: Default::default(),
+            project_layer: Default::default(),
             mcp_servers: Default::default(),
             providers: Default::default(),
             default_provider: None,
