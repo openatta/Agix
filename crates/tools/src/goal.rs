@@ -287,7 +287,7 @@ mod tests {
         assert!(!done.is_error, "{}", text(&done));
         assert!(text(&done).contains("call no more tools"));
         assert_eq!(ctx.session.goal_view()["phase"], "complete");
-        assert_eq!(ctx.session.take_unrecorded_goal_changes().len(), 2);
+        assert_eq!(ctx.session.unrecorded_goal_changes().await.changes.len(), 2);
     }
 
     #[tokio::test]

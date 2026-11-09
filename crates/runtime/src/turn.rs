@@ -108,7 +108,8 @@ pub(crate) fn holds_session_context(messages: &[ModelMessage]) -> bool {
 impl Agent {
     /// Write the goal changes the session log does not have yet.
     pub(crate) async fn record_goal_changes(&mut self) {
-        for goal in self.session_state.take_unrecorded_goal_changes() {
+        let unrecorded = self.session_state.unrecorded_goal_changes().await;
+        for goal in &unrecorded.changes {
             let payload = serde_json::json!({ "goal": goal });
             if let Err(e) = self
                 .session

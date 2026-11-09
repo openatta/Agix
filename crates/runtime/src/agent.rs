@@ -755,6 +755,12 @@ impl Agent {
                 }
             }
         }
+        // What a failed write left for the next step, and goal changes made
+        // since the last one, would otherwise never reach the log.
+        if let Err(e) = self.session.persist().await {
+            tracing::warn!(error = %e, "failed to persist session");
+        }
+        self.record_goal_changes().await;
         // SessionEnd — one exit point for all three ways the loop ends
         // (shutdown command, input channel closed, cancellation), so a hook
         // that cleans up gets to run regardless of which one happened.

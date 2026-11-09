@@ -22,6 +22,13 @@ pub const BLOCKED_MIN_ROUNDS: u32 = 3;
 
 const GOAL_TURN_PREFIX: &str = "goal-";
 
+/// Goal snapshots to write to the session log, oldest first; `None` records
+/// a cleared goal. See [`crate::context::SessionState::unrecorded_goal_changes`].
+pub struct UnrecordedGoalChanges {
+    pub changes: Vec<Option<Goal>>,
+    pub(crate) _writing: tokio::sync::OwnedMutexGuard<()>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GoalPhase {

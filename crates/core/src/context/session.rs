@@ -58,6 +58,7 @@ pub struct SessionState {
     /// Goal snapshots changed but not yet written to the session log; `None`
     /// records a cleared goal.
     unrecorded_goal_changes: std::sync::Mutex<Vec<Option<super::goal::Goal>>>,
+    goal_recording: std::sync::Arc<tokio::sync::Mutex<()>>,
     goal_events: tokio::sync::broadcast::Sender<serde_json::Value>,
     /// Who started the turn now running, which decides what goal operations
     /// it may perform.
@@ -207,6 +208,7 @@ impl SessionState {
             notices: std::sync::Mutex::new(Vec::new()),
             goal: std::sync::Mutex::new(super::goal::GoalSlot::default()),
             unrecorded_goal_changes: std::sync::Mutex::new(Vec::new()),
+            goal_recording: Default::default(),
             goal_events: tokio::sync::broadcast::channel(64).0,
             turn_origin: std::sync::Mutex::new(super::goal::TurnOrigin::default()),
             file_snapshots: std::sync::Mutex::new(FileSnapshotRegistry::default()),
@@ -626,10 +628,16 @@ impl SessionState {
         lock(&self.goal).carry_arming_from(&before);
     }
 
-    /// Goal changes the session log does not have yet, oldest first; whoever
-    /// takes them writes them.
-    pub fn take_unrecorded_goal_changes(&self) -> Vec<Option<super::goal::Goal>> {
-        std::mem::take(&mut *lock(&self.unrecorded_goal_changes))
+    /// Goal changes the session log does not have yet, oldest first, for the
+    /// caller to write while it holds what this returns. Until then every
+    /// other caller waits, so the log gets the changes in the order they were
+    /// made, and a caller handed none knows none are still being written.
+    pub async fn unrecorded_goal_changes(&self) -> super::goal::UnrecordedGoalChanges {
+        let writing = self.goal_recording.clone().lock_owned().await;
+        super::goal::UnrecordedGoalChanges {
+            changes: std::mem::take(&mut *lock(&self.unrecorded_goal_changes)),
+            _writing: writing,
+        }
     }
 
     /// The goal's view each time it changes.
