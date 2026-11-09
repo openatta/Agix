@@ -480,6 +480,9 @@ WebAssembly 载体整个移除。
   hook、送达排队消息)。
 - 并发安全的工具在它的 `tool_use` 到齐时就开始跑,`tool_result` 与权限询问可能夹在同一步后面的
   `text_delta` 之间到达。
+- 团队的 `SendMessage` 只投给团队声明过的成员,`peer` 不在其中时报错并列出成员;提示词改成与
+  schema 一致的 `{"peer", "message"}`(以前教的 `to` / `summary` / `"*"` 广播从来不被接受)。
+  不是纯 ASCII 文件名的成员标签,邮箱文件改名为 `mailbox/~<hash>.jsonl`。
 
 ### 嵌入方
 
@@ -558,3 +561,5 @@ WebAssembly 载体整个移除。
 - `Assembly` 多了 `mcp_enterprise_idp: Option<mcp::config::EnterpriseIdp>`;`McpPolicy` 多了
   `allowed_authorization_servers`、`enterprise_idp` 两个字段(结构体字面量要补,或用
   `..Default::default()`)。`McpOAuthConfig` 多了 `grant`、`private_key_jwt`。
+- `team::mailbox::MailboxStore::send` 返回 `Result<(), UnknownPeer>`,不是成员的收件人被拒;
+  新增 `MailboxStore::check_peer` 与 `team::mailbox::mailbox_file`(标签到文件名)。

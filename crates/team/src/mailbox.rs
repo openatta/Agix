@@ -7,6 +7,10 @@
 //! - `SendMessage`: push a message to a peer's mailbox
 //! - `ReadMail`: drain received messages from own mailbox
 //! - `ListPeers`: list all known agent labels in this team
+//!
+//! A label is whatever the model named a member, so mail goes only to labels
+//! the team declared, and a label is turned into a file name by
+//! [`mailbox_file`] rather than spliced into a path.
 
 use async_trait::async_trait;
 use base::error::ToolError;
@@ -18,6 +22,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 /// A single message in an agent's mailbox.
@@ -33,7 +38,7 @@ pub struct MailboxMessage {
 pub struct MailboxStore {
     inner: Mutex<MailboxInner>,
     /// When Some, messages are also appended to JSONL files in this dir.
-    persist_dir: Option<std::path::PathBuf>,
+    persist_dir: Option<PathBuf>,
 }
 
 struct MailboxInner {
@@ -56,13 +61,14 @@ impl MailboxStore {
     }
 
     /// Create a mailbox store with file persistence. Messages are appended
-    /// to JSONL files (`<persist_dir>/<peer>.jsonl`) for cross-turn survival.
-    pub fn with_persistence(peers: Vec<String>, persist_dir: std::path::PathBuf) -> Self {
+    /// to one JSONL file per peer (see [`mailbox_file`]) for cross-turn
+    /// survival.
+    pub fn with_persistence(peers: Vec<String>, persist_dir: PathBuf) -> Self {
         let _ = std::fs::create_dir_all(&persist_dir);
         // Load existing messages from disk into the in-memory store
         let mut mailboxes: HashMap<String, Vec<MailboxMessage>> = HashMap::new();
         for peer in &peers {
-            let file_path = persist_dir.join(format!("{peer}.jsonl"));
+            let file_path = mailbox_file(&persist_dir, peer);
             if let Ok(contents) = std::fs::read_to_string(&file_path) {
                 let mut msgs = Vec::new();
                 for line in contents.lines() {
@@ -82,7 +88,9 @@ impl MailboxStore {
     }
 
     /// Send a message to a peer's mailbox (locked; persists to file under same lock).
-    pub fn send(&self, from: &str, to: &str, content: &str) {
+    /// A `to` that is not one of the team's peers is refused.
+    pub fn send(&self, from: &str, to: &str, content: &str) -> Result<(), UnknownPeer> {
+        self.check_peer(to)?;
         let msg = MailboxMessage {
             from: from.to_string(),
             timestamp_ms: std::time::SystemTime::now()
@@ -93,7 +101,7 @@ impl MailboxStore {
         };
         // Serialize outside the lock so the lock region is tight.
         let serialized = self.persist_dir.as_ref().map(|dir| {
-            let file_path = dir.join(format!("{to}.jsonl"));
+            let file_path = mailbox_file(dir, to);
             let json = serde_json::to_string(&msg);
             (file_path, json)
         });
@@ -116,6 +124,19 @@ impl MailboxStore {
         } else if let Some((_, Err(e))) = serialized {
             tracing::warn!(peer = %to, error = %e, "mailbox: failed to serialize message");
         }
+        Ok(())
+    }
+
+    /// `Err` naming the team's peers when `peer` is not one of them.
+    pub fn check_peer(&self, peer: &str) -> Result<(), UnknownPeer> {
+        let inner = self.inner.lock().expect("mailbox lock poisoned");
+        if inner.peers.iter().any(|p| p == peer) {
+            return Ok(());
+        }
+        Err(UnknownPeer {
+            peer: peer.to_string(),
+            peers: inner.peers.clone(),
+        })
     }
 
     /// Drain up to `max` messages from a peer's mailbox (FIFO, oldest first).
@@ -133,7 +154,7 @@ impl MailboxStore {
         }
         // Sync persisted JSONL file with remaining mailbox contents.
         if let Some(ref dir) = self.persist_dir {
-            let file_path = dir.join(format!("{peer}.jsonl"));
+            let file_path = mailbox_file(dir, peer);
             if is_empty {
                 let _ = std::fs::remove_file(&file_path);
             } else if let Some(msgs) = inner.mailboxes.get(peer) {
@@ -157,6 +178,47 @@ impl MailboxStore {
             .peers
             .clone()
     }
+}
+
+/// A message addressed to a label the team does not have.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownPeer {
+    pub peer: String,
+    pub peers: Vec<String>,
+}
+
+impl std::fmt::Display for UnknownPeer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "`{}` is not a peer in this team; peers: {}",
+            self.peer,
+            self.peers.join(", ")
+        )
+    }
+}
+
+impl std::error::Error for UnknownPeer {}
+
+/// The file `peer`'s mail is kept in, always directly inside `dir`.
+///
+/// A label made only of ASCII letters, digits, `-`, `_` and `.` (not leading)
+/// is its own file name; any other is replaced by a hash of it, so neither a
+/// separator nor `..` nor an absolute path in a label can reach the path.
+pub fn mailbox_file(dir: &Path, peer: &str) -> PathBuf {
+    let plain = !peer.is_empty()
+        && peer.len() <= 64
+        && !peer.starts_with('.')
+        && peer
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    if plain {
+        return dir.join(format!("{peer}.jsonl"));
+    }
+    let hash = peer.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+    });
+    dir.join(format!("~{hash:016x}.jsonl"))
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -197,20 +259,16 @@ impl base::tool::Tool for SendMessageTool {
     }
 
     async fn prompt(&self, _: &PromptContext) -> String {
-        "Send a message to another agent.\n\
+        "Send a message to another agent in your team.\n\
          \n\
          ```json\n\
-         {\"to\": \"researcher\", \"summary\": \"assign task 1\", \"message\": \"start on task #1\"}\n\
+         {\"peer\": \"researcher\", \"message\": \"start on task #1\"}\n\
          ```\n\
          \n\
-         | `to` | |\n\
-         |---|---|\n\
-         | `\"researcher\"` | Teammate by name |\n\
-         | `\"*\"` | Broadcast to all teammates |\n\
-         Your plain text output is NOT visible to other agents -- to communicate, \
-         you MUST call this tool. Messages from teammates are delivered \
-         automatically; use `ReadMail` to retrieve them. Refer to teammates by \
-         name, never by UUID."
+         `peer` is a teammate's label, as `ListPeers` lists them; there is no \
+         broadcast. Your plain text output is NOT visible to other agents -- to \
+         communicate, you MUST call this tool. Messages sent to you wait in your \
+         mailbox until you call `ReadMail`."
             .to_string()
     }
 
@@ -229,7 +287,10 @@ impl base::tool::Tool for SendMessageTool {
             Ok(p) if p.message.trim().is_empty() => {
                 ValidationResult::err("message must not be empty", 2)
             }
-            Ok(_) => ValidationResult::Ok,
+            Ok(p) => match self.mailbox.check_peer(&p.peer) {
+                Ok(()) => ValidationResult::Ok,
+                Err(unknown) => ValidationResult::err(unknown.to_string(), 4),
+            },
             Err(e) => ValidationResult::err(format!("invalid input: {e}"), 3),
         }
     }
@@ -256,8 +317,12 @@ impl base::tool::Tool for SendMessageTool {
         _: ProgressSender,
     ) -> Result<ToolResult, ToolError> {
         let input: SendMessageInput = serde_json::from_value(input)?;
-        self.mailbox
-            .send(&self.from_label, &input.peer, &input.message);
+        if let Err(unknown) = self
+            .mailbox
+            .send(&self.from_label, &input.peer, &input.message)
+        {
+            return Ok(ToolResult::error_text(unknown.to_string()));
+        }
         Ok(ToolResult {
             content: ToolResultContent::Text(format!("Message sent to {}", input.peer)),
             is_error: false,
@@ -480,8 +545,8 @@ mod tests {
     #[test]
     fn mailbox_send_and_drain() {
         let mb = MailboxStore::new(vec!["alice".into(), "bob".into()]);
-        mb.send("alice", "bob", "hello from alice");
-        mb.send("alice", "bob", "second message");
+        mb.send("alice", "bob", "hello from alice").unwrap();
+        mb.send("alice", "bob", "second message").unwrap();
 
         let msgs = mb.drain("bob", 10).unwrap();
         assert_eq!(msgs.len(), 2);
@@ -501,9 +566,9 @@ mod tests {
     #[test]
     fn mailbox_drain_respects_max() {
         let mb = MailboxStore::new(vec!["a".into(), "b".into()]);
-        mb.send("a", "b", "m1");
-        mb.send("a", "b", "m2");
-        mb.send("a", "b", "m3");
+        mb.send("a", "b", "m1").unwrap();
+        mb.send("a", "b", "m2").unwrap();
+        mb.send("a", "b", "m3").unwrap();
 
         let msgs = mb.drain("b", 2).unwrap();
         assert_eq!(msgs.len(), 2);
@@ -561,8 +626,8 @@ mod tests {
     #[tokio::test]
     async fn read_mail_tool_with_messages() {
         let mb = Arc::new(MailboxStore::new(vec!["a".into(), "b".into()]));
-        mb.send("a", "b", "msg1");
-        mb.send("a", "b", "msg2");
+        mb.send("a", "b", "msg1").unwrap();
+        mb.send("a", "b", "msg2").unwrap();
         let tool = ReadMailTool::new(mb.clone(), "b");
         let r = tool
             .call(
@@ -642,8 +707,8 @@ mod tests {
         let peers = vec!["a".to_string(), "b".to_string()];
 
         let mb = MailboxStore::with_persistence(peers.clone(), persist.clone());
-        mb.send("a", "b", "msg1");
-        mb.send("a", "b", "msg2");
+        mb.send("a", "b", "msg1").unwrap();
+        mb.send("a", "b", "msg2").unwrap();
 
         // Reload: persisted messages must appear.
         let mb2 = MailboxStore::with_persistence(peers, persist);
@@ -660,8 +725,8 @@ mod tests {
         let peers = vec!["a".to_string(), "b".to_string()];
 
         let mb = MailboxStore::with_persistence(peers.clone(), persist.clone());
-        mb.send("a", "b", "msg1");
-        mb.send("a", "b", "msg2");
+        mb.send("a", "b", "msg1").unwrap();
+        mb.send("a", "b", "msg2").unwrap();
         // Drain all messages — they must not reappear on reload.
         let _ = mb.drain("b", 10).unwrap();
 
@@ -672,6 +737,61 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn mail_to_a_label_the_team_does_not_have_is_refused() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let persist = dir.path().join("team").join("mailbox");
+        let mb = Arc::new(MailboxStore::with_persistence(
+            vec!["sender".into(), "receiver".into()],
+            persist.clone(),
+        ));
+        let tool = SendMessageTool::new(mb.clone(), "sender");
+        let escape = dir.path().join("escaped");
+        for peer in [
+            "../../escaped".to_string(),
+            escape.display().to_string(),
+            "nobody".to_string(),
+        ] {
+            let input = serde_json::json!({"peer": peer, "message": "x"});
+            let checked = tool.validate_input(&input, &ctx()).await;
+            assert!(!matches!(checked, ValidationResult::Ok), "{peer} validated");
+            let r = tool
+                .call(input, ctx(), ProgressSender::noop("t"))
+                .await
+                .unwrap();
+            assert!(r.is_error, "{peer} was sent to");
+            assert!(text_content(&r).contains("receiver"), "the peers are named");
+        }
+        assert!(!dir.path().join("escaped.jsonl").exists());
+        let files: Vec<_> = std::fs::read_dir(&persist).unwrap().flatten().collect();
+        assert!(files.is_empty(), "nothing was written for a refused peer");
+    }
+
+    #[test]
+    fn a_label_that_is_not_a_plain_file_name_stays_inside_the_mailbox_dir() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let persist = dir.path().join("mailbox");
+        let odd = ["../../x", "/abs/path", "研究员", "a b", ".hidden", ".."];
+        let peers: Vec<String> = odd.iter().map(|s| s.to_string()).collect();
+        let mb = MailboxStore::with_persistence(peers.clone(), persist.clone());
+        for (i, peer) in odd.iter().enumerate() {
+            mb.send("lead", peer, &format!("m{i}")).unwrap();
+            let file = mailbox_file(&persist, peer);
+            assert_eq!(file.parent(), Some(persist.as_path()), "{peer}");
+            assert!(file.is_file(), "{peer}");
+        }
+        let reloaded = MailboxStore::with_persistence(peers, persist);
+        for (i, peer) in odd.iter().enumerate() {
+            let msgs = reloaded.drain(peer, 10).unwrap();
+            assert_eq!(msgs[0].content, format!("m{i}"));
+        }
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        assert_eq!(
+            mailbox_file(Path::new("/m"), "worker-1"),
+            Path::new("/m/worker-1.jsonl")
+        );
+    }
+
     #[test]
     fn mailbox_persistence_partial_drain() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -679,9 +799,9 @@ mod tests {
         let peers = vec!["a".to_string(), "b".to_string()];
 
         let mb = MailboxStore::with_persistence(peers.clone(), persist.clone());
-        mb.send("a", "b", "m1");
-        mb.send("a", "b", "m2");
-        mb.send("a", "b", "m3");
+        mb.send("a", "b", "m1").unwrap();
+        mb.send("a", "b", "m2").unwrap();
+        mb.send("a", "b", "m3").unwrap();
         // Drain only one message.
         let drained = mb.drain("b", 1).unwrap();
         assert_eq!(drained.len(), 1);
