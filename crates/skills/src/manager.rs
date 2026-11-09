@@ -117,9 +117,35 @@ pub struct InvocationStats {
     pub last_seq: u64,
 }
 
+/// A directory a [`SkillManager`] scanned. Kept so a file the watcher reports
+/// is read back as the tier it lives in, not as whatever happens to share its
+/// name.
+struct Tier {
+    root: PathBuf,
+    source: SkillSource,
+    nested: bool,
+}
+
+/// What a changed file is to a manager's tiers.
+enum Located {
+    /// A skill file of `tiers[tier]`.
+    Skill {
+        tier: usize,
+        source: SkillSource,
+        name: String,
+    },
+    /// Inside a tier, but not where that tier keeps a skill — a skill's
+    /// supporting file such as `skills/foo/reference.md`.
+    NotASkill,
+    /// Under none of the tiers.
+    Elsewhere,
+}
+
 /// Manages loaded skills at runtime. Skills are .md files with YAML frontmatter.
 pub struct SkillManager {
     skills: RwLock<HashMap<String, SkillInfo>>,
+    /// The directories scanned, in scan order: a later one wins a name.
+    tiers: RwLock<Vec<Tier>>,
     watcher: RwLock<Option<std::sync::Arc<crate::watcher::SkillWatcher>>>,
     /// This manager's read cursor into `watcher`'s change log — see
     /// `SkillWatcher::check_and_reload_since`. Only meaningful when
@@ -140,6 +166,7 @@ impl SkillManager {
     pub fn new() -> Self {
         Self {
             skills: RwLock::new(HashMap::new()),
+            tiers: RwLock::new(Vec::new()),
             watcher: RwLock::new(None),
             watcher_last_seen: std::sync::atomic::AtomicU64::new(0),
             invocation_stats: RwLock::new(HashMap::new()),
@@ -224,6 +251,7 @@ impl SkillManager {
     /// project skills: <cwd>/.agents/skills/).
     /// Each .md file is a skill; filename (without .md) is the skill name.
     pub fn load_dir(&self, dir: &Path, source: SkillSource) -> std::io::Result<usize> {
+        self.note_tier(dir, source, false);
         Ok(
             self.load_from(std::sync::Arc::new(crate::sources::SkillDirectory::flat(
                 dir, source,
@@ -234,6 +262,7 @@ impl SkillManager {
     /// Load skills from a directory using SKILL.md subdirectory format.
     /// Each subdirectory containing a SKILL.md becomes a skill.
     pub fn load_dir_subdirs(&self, dir: &Path, source: SkillSource) -> std::io::Result<usize> {
+        self.note_tier(dir, source, true);
         Ok(
             self.load_from(std::sync::Arc::new(crate::sources::SkillDirectory::tier(
                 dir, source,
@@ -241,14 +270,56 @@ impl SkillManager {
         )
     }
 
+    fn note_tier(&self, dir: &Path, source: SkillSource, nested: bool) {
+        self.tiers.write().unwrap().push(Tier {
+            root: canonicalize_lossy(dir),
+            source,
+            nested,
+        });
+    }
+
+    fn locate(&self, path: &Path) -> Located {
+        let path = canonicalize_lossy(path);
+        let tiers = self.tiers.read().unwrap();
+        let mut inside = false;
+        for (index, tier) in tiers.iter().enumerate().rev() {
+            let Ok(relative) = path.strip_prefix(&tier.root) else {
+                continue;
+            };
+            inside = true;
+            let parts: Option<Vec<&str>> = relative.iter().map(|c| c.to_str()).collect();
+            let name = match parts.as_deref() {
+                Some([file]) => file.strip_suffix(".md"),
+                Some([dir, "SKILL.md"]) if tier.nested => Some(*dir),
+                _ => None,
+            };
+            if let Some(name) = name.filter(|n| !n.is_empty()) {
+                return Located::Skill {
+                    tier: index,
+                    source: tier.source,
+                    name: name.to_string(),
+                };
+            }
+        }
+        if inside {
+            Located::NotASkill
+        } else {
+            Located::Elsewhere
+        }
+    }
+
     /// Take `fresh`'s catalog and sources in place of this one's, keeping
     /// the invocation history. Everything holding this manager sees the new
     /// catalog at once.
     pub fn replace_catalog(&self, fresh: SkillManager) {
         let SkillManager {
-            skills, providers, ..
+            skills,
+            tiers,
+            providers,
+            ..
         } = fresh;
         *self.skills.write().unwrap() = skills.into_inner().unwrap();
+        *self.tiers.write().unwrap() = tiers.into_inner().unwrap();
         *self.providers.write().unwrap() = providers.into_inner().unwrap();
     }
 
@@ -508,6 +579,14 @@ impl SkillManager {
     /// format (`<name>.md`). If the file no longer exists on disk, the skill
     /// is removed from the cache. Returns an error if the path is not a valid
     /// skill file or parsing fails.
+    ///
+    /// The skill's source is the tier the file is in, never the source of a
+    /// skill that merely has the same name: a file in the project tier is a
+    /// project skill however it got there. A file under no tier this manager
+    /// scanned is a project skill too — the least trusted kind — unless it is
+    /// the very file an existing entry was loaded from. A file in a tier that
+    /// an entry from a later tier outranks leaves that entry alone, and a
+    /// tier's non-skill files (a skill's own `reference.md`) are ignored.
     pub fn reload_skill(&self, path: &Path) -> Result<(), String> {
         if !path.exists() {
             let target = canonicalize_lossy(path);
@@ -516,44 +595,21 @@ impl SkillManager {
             return Ok(());
         }
 
-        // Determine skill name from path
-        let (name, _file_name) = if path.file_name().and_then(|s| s.to_str()) == Some("SKILL.md") {
-            // Subdirectory format: skills/<name>/SKILL.md
-            let name = path
-                .parent()
-                .and_then(|p| p.file_name())
-                .and_then(|s| s.to_str())
-                .ok_or_else(|| format!("Cannot determine skill name: {}", path.display()))?
-                .to_string();
-            (name, "SKILL.md".to_string())
-        } else if path.extension().and_then(|s| s.to_str()) == Some("md") {
-            // Flat format: <name>.md
-            let name = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .ok_or_else(|| format!("Cannot determine skill name: {}", path.display()))?
-                .to_string();
-            let fname = path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("unknown.md")
-                .to_string();
-            (name, fname)
-        } else {
-            return Err(format!("Not a skill file: {}", path.display()));
-        };
-
-        // Where the file lives decides how far it is trusted: a project's
-        // `.agents/skills` is repository content, whatever skill of the same
-        // name was loaded before.
-        let source = if in_project_skills_dir(path) {
-            SkillSource::Project
-        } else {
-            let skills = self.skills.read().unwrap();
-            skills
-                .get(&name)
-                .filter(|s| canonicalize_lossy(&s.path) == canonicalize_lossy(path))
-                .map_or(SkillSource::User, |s| s.source)
+        let (name, source) = match self.locate(path) {
+            Located::NotASkill => return Ok(()),
+            Located::Skill { tier, source, name } => {
+                if self.outranked(&name, path, tier) {
+                    return Ok(());
+                }
+                (name, source)
+            }
+            Located::Elsewhere => {
+                let name = name_from_layout(path)?;
+                let same_file = self
+                    .get(&name)
+                    .filter(|s| canonicalize_lossy(&s.path) == canonicalize_lossy(path));
+                (name, same_file.map_or(SkillSource::Project, |s| s.source))
+            }
         };
         let frozen_source = match source {
             SkillSource::User => FrozenSkillSource::User,
@@ -570,14 +626,32 @@ impl SkillManager {
         skills.insert(name, SkillInfo::from(entry));
         Ok(())
     }
+
+    /// Whether `name` is held by a different file from a tier after `tier`.
+    fn outranked(&self, name: &str, path: &Path, tier: usize) -> bool {
+        let Some(existing) = self.get(name) else {
+            return false;
+        };
+        if canonicalize_lossy(&existing.path) == canonicalize_lossy(path) {
+            return false;
+        }
+        matches!(self.locate(&existing.path), Located::Skill { tier: held, .. } if held > tier)
+    }
 }
 
-/// Under a project's `<project>/.agents/skills/` — the project skill tier.
-fn in_project_skills_dir(path: &Path) -> bool {
-    let names: Vec<_> = path.components().map(|c| c.as_os_str()).collect();
-    names
-        .windows(2)
-        .any(|w| w[0] == ".agents" && w[1] == "skills")
+/// A skill's name from its file alone: `<name>/SKILL.md` or `<name>.md`.
+fn name_from_layout(path: &Path) -> Result<String, String> {
+    let named_by = if path.file_name().and_then(|s| s.to_str()) == Some("SKILL.md") {
+        path.parent().and_then(|p| p.file_name())
+    } else if path.extension().and_then(|s| s.to_str()) == Some("md") {
+        path.file_stem()
+    } else {
+        return Err(format!("Not a skill file: {}", path.display()));
+    };
+    named_by
+        .and_then(|s| s.to_str())
+        .map(str::to_string)
+        .ok_or_else(|| format!("Cannot determine skill name: {}", path.display()))
 }
 
 /// Resolve `p` to a comparable canonical form even when `p` itself no longer
@@ -770,6 +844,86 @@ mod tests {
         let content = mgr.get_skill_content("mcp__test-server-get-skill-content__search");
         assert!(content.is_some(), "expected mcp skill content, got None");
         assert!(content.unwrap().contains("search"));
+    }
+
+    fn write_skill(dir: &Path, name: &str, description: &str) -> PathBuf {
+        let skill_dir = dir.join(name);
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        let file = skill_dir.join("SKILL.md");
+        std::fs::write(
+            &file,
+            format!(
+                "---\nname: {name}\ndescription: {description}\nallowed-tools: [Bash]\n---\nbody"
+            ),
+        )
+        .unwrap();
+        file
+    }
+
+    #[test]
+    fn a_skill_reloaded_from_the_project_tier_is_a_project_skill() {
+        let user = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let mgr = SkillManager::new();
+        mgr.load_dir_subdirs(user.path(), SkillSource::User)
+            .unwrap();
+        mgr.load_dir_subdirs(project.path(), SkillSource::Project)
+            .unwrap();
+
+        let injected = write_skill(project.path(), "deploy", "planted");
+        mgr.reload_skill(&injected).unwrap();
+        assert_eq!(mgr.get("deploy").unwrap().source, SkillSource::Project);
+
+        let mine = write_skill(user.path(), "notes", "mine");
+        mgr.reload_skill(&mine).unwrap();
+        assert_eq!(mgr.get("notes").unwrap().source, SkillSource::User);
+
+        let shadow = write_skill(project.path(), "notes", "project copy");
+        mgr.reload_skill(&shadow).unwrap();
+        let notes = mgr.get("notes").unwrap();
+        assert_eq!(
+            notes.source,
+            SkillSource::Project,
+            "the project tier wins a name"
+        );
+        mgr.reload_skill(&mine).unwrap();
+        assert_eq!(
+            mgr.get("notes").unwrap().description,
+            "project copy",
+            "an edit to the outranked user copy does not replace the project's"
+        );
+    }
+
+    #[test]
+    fn a_file_under_no_scanned_tier_is_not_trusted_as_a_user_skill() {
+        let user = tempfile::tempdir().unwrap();
+        let mgr = SkillManager::new();
+        let mine = write_skill(user.path(), "deploy", "mine");
+        mgr.load_dir_subdirs(user.path(), SkillSource::User)
+            .unwrap();
+
+        let elsewhere = tempfile::tempdir().unwrap();
+        let stray = write_skill(elsewhere.path(), "deploy", "stray");
+        mgr.reload_skill(&stray).unwrap();
+        assert_eq!(mgr.get("deploy").unwrap().source, SkillSource::Project);
+
+        let fresh = SkillManager::new();
+        fresh.reload_skill(&mine).unwrap();
+        assert_eq!(fresh.get("deploy").unwrap().source, SkillSource::Project);
+    }
+
+    #[test]
+    fn a_skills_supporting_markdown_is_not_a_skill() {
+        let project = tempfile::tempdir().unwrap();
+        let mgr = SkillManager::new();
+        write_skill(project.path(), "foo", "real");
+        mgr.load_dir_subdirs(project.path(), SkillSource::Project)
+            .unwrap();
+        let reference = project.path().join("foo").join("reference.md");
+        std::fs::write(&reference, "---\ndescription: not a skill\n---\n").unwrap();
+        mgr.reload_skill(&reference).unwrap();
+        assert!(mgr.get("reference").is_none());
+        assert!(mgr.get("foo").is_some());
     }
 
     #[test]

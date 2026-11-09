@@ -486,6 +486,10 @@ WebAssembly 载体整个移除。
 - 团队的 `SendMessage` 只投给团队声明过的成员,`peer` 不在其中时报错并列出成员;提示词改成与
   schema 一致的 `{"peer", "message"}`(以前教的 `to` / `summary` / `"*"` 广播从来不被接受)。
   不是纯 ASCII 文件名的成员标签,邮箱文件改名为 `mailbox/~<hash>.jsonl`。
+- skill 文件热重载时按文件所在的层定来源:项目层 `.agents/skills/` 里新出现或改动的 skill
+  一律是 project 来源(以前不认识的名字一律当 user,项目里的 `allowed-tools: [Bash]` 因此免确认);
+  不在任何扫描层下的文件同样按 project;后面的层占着同名 skill 时,前面层的改动不再顶替它;
+  `skills/<name>/` 下 `SKILL.md` 以外的 `.md` 不再被注册成 skill。
 
 ### 嵌入方
 

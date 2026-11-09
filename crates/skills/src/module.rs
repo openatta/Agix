@@ -118,27 +118,24 @@ pub fn build_skill_manager_unwatched(settings: &Settings) -> SkillManager {
 
 fn build_skill_manager(settings: &Settings, watch: bool) -> SkillManager {
     use crate::manager::SkillSource;
-    use crate::sources::{BundledSkills, SkillDirectory};
+    use crate::sources::BundledSkills;
 
     let skill_mgr = SkillManager::new();
     let project_skills_dir = settings.paths.project_root().join(".agents").join("skills");
-    let tiers: [Arc<dyn base::interface::skill_provider::SkillProvider>; 3] = [
-        Arc::new(SkillDirectory::tier(
+    let tiers = [
+        (
             settings.paths.global_data_dir.join("skills"),
             SkillSource::User,
-        )),
-        Arc::new(SkillDirectory::tier(
+        ),
+        (
             settings.paths.user_data_dir.join("skills"),
             SkillSource::User,
-        )),
-        Arc::new(SkillDirectory::tier(
-            project_skills_dir.clone(),
-            SkillSource::Project,
-        )),
+        ),
+        (project_skills_dir.clone(), SkillSource::Project),
     ];
     let loaded_count: usize = tiers
-        .into_iter()
-        .map(|tier| skill_mgr.load_from(tier))
+        .iter()
+        .map(|(dir, source)| skill_mgr.load_dir_subdirs(dir, *source).unwrap_or(0))
         .sum();
     // Built-ins come last and defer: a project that writes its own skill of
     // the same name means to replace the one in the binary.
