@@ -446,6 +446,10 @@ WebAssembly 载体整个移除。
   `plan` 下被拒,在 `acceptEdits` 下要询问(以前两处都静默放行)。
 - 子进程环境永远不带 `CDPATH`(`inherit` 与 `allowlist` 两种模式都剥掉),免得子 shell 的
   `cd foo` 落到项目外、而权限检查看的是字面 `foo`。
+- 沙箱里命令的 `TMPDIR` 从 `<系统临时目录>/agix-<会话 id>` 挪到 `<状态目录>/tmp/<会话 id>`
+  (缺省 `~/.agix/tmp/<会话 id>`),只有本会话的命令写得到;以前在 macOS 上它落在所有沙箱命令
+  都可写的 `DARWIN_USER_TEMP_DIR` 里,会话之间彼此可写。7 天没动过的会话临时目录由之后的进程
+  清掉。
 - 无人值守会话的 `Bash` / `Monitor` 不能再请系统服务在沙箱外代办:macOS 上 `open`(经
   LaunchServices 起应用、开 URL)、`defaults write`(经 `cfprefsd` 写偏好)、`osascript` 给别的应用
   发 Apple event 都会失败;Linux 上命令进独立的 IPC 命名空间,会话 D-Bus 与 systemd 用户实例的

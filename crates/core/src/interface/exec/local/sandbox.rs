@@ -26,8 +26,9 @@
 //! `.git/{config,config.worktree,commondir}` and `.git/hooks/`, the
 //! configuration under `.agix/` (settings, MCP, hooks, agents, skills,
 //! plugins, rules, scenes, policy, scripts, output styles), and the `.git`
-//! links of the engine's worktrees. Of the state root only `scratchpad/` and
-//! `memory/` stay writable. On Linux `.agix` is read-only as a whole and its
+//! links of the engine's worktrees. Of the state root only `scratchpad/`,
+//! `memory/` and those of `additional_writable` under `tmp/` (a session's
+//! own `TMPDIR`) stay writable. On Linux `.agix` is read-only as a whole and its
 //! existing working entries are opened again, so a new entry directly in it
 //! cannot be created either.
 //!
@@ -272,7 +273,7 @@ const PROJECT_CONFIG_DIRS: &[&str] = &[
 const GIT_CONTROL_FILES: &[&str] = &["config", "config.worktree", "commondir"];
 
 #[cfg(feature = "sandbox")]
-use crate::paths::STATE_ROOT_WORKING_DIRS;
+use crate::paths::{STATE_ROOT_SESSION_TMP, STATE_ROOT_WORKING_DIRS};
 
 /// The paths a policy is written against, each with its symlinks resolved.
 ///
@@ -308,6 +309,16 @@ impl Roots {
     /// unless the project lives inside it, in which case fencing the root
     /// would fence the project too, or nothing but the named roots is
     /// writable, in which case it is shut already.
+    /// The writable roots that are a session's own directory under the
+    /// state root's `tmp/`: the fence around the state root would otherwise
+    /// shut them along with the rest of it.
+    fn session_temp_dirs_in<'a>(&'a self, root: &Path) -> impl Iterator<Item = &'a PathBuf> {
+        let tmp = root.join(STATE_ROOT_SESSION_TMP);
+        self.writable
+            .iter()
+            .filter(move |p| p.starts_with(&tmp) && **p != tmp)
+    }
+
     fn fenced_state_root(&self) -> Option<&Path> {
         self.state_root
             .as_deref()
@@ -473,6 +484,9 @@ fn build_macos_profile(cwd: &Path, additional: &[PathBuf], policy: &SandboxPolic
         s.push_str("(allow file-write*");
         for dir in STATE_ROOT_WORKING_DIRS {
             s.push_str(&format!(" (subpath \"{}\")", path(&root.join(dir))));
+        }
+        for dir in roots.session_temp_dirs_in(root) {
+            s.push_str(&format!(" (subpath \"{}\")", path(dir)));
         }
         s.push_str(")\n");
     }
@@ -716,6 +730,9 @@ fn linux_wrap(
             bind(&mut args, "--ro-bind", root);
             for dir in STATE_ROOT_WORKING_DIRS {
                 bind(&mut args, "--bind-try", &root.join(dir));
+            }
+            for dir in roots.session_temp_dirs_in(root) {
+                bind(&mut args, "--bind-try", dir);
             }
         }
     }
@@ -1893,6 +1910,47 @@ mod tests {
         }
         assert!(s.project.join(".agix").join("notes.txt").is_file());
         assert!(s.tmp.join("f").is_file());
+    }
+
+    /// A session's temporary directory sits in the state root, which is
+    /// otherwise shut: its own is writable, a sibling session's is not.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_session_writes_its_own_temporary_directory_and_no_other() {
+        let Some(s) = UnderSandboxExec::new() else {
+            return;
+        };
+        let tmp = s.state_root.join(STATE_ROOT_SESSION_TMP);
+        let (mine, theirs) = (tmp.join("mine"), tmp.join("theirs"));
+        for d in [&mine, &theirs] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let policy = SandboxPolicy {
+            state_root: Some(s.state_root.clone()),
+            additional_writable: vec![mine.clone()],
+            ..Default::default()
+        };
+        let runs = |command: String| {
+            let confined = PlatformSandbox.confine(
+                ProcessSpec::new("bash", &s.project).args(["-c".to_string(), command]),
+                &policy,
+            );
+            std::process::Command::new(&confined.spec.program)
+                .args(&confined.spec.args)
+                .current_dir(&s.project)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        };
+        assert!(runs(format!("echo x > '{}/f'", mine.display())));
+        for target in [theirs.join("f"), tmp.join("f")] {
+            assert!(
+                !runs(format!("echo x > '{}'", target.display())),
+                "{}",
+                target.display()
+            );
+        }
     }
 
     /// A policy that names its writable roots leaves nothing else writable:

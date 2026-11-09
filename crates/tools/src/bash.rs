@@ -566,7 +566,7 @@ fn sandbox_policy(ctx: &ToolContext) -> sandbox::SandboxPolicy {
         .iter()
         .cloned()
         .chain(caches)
-        .chain([session_temp_dir(&ctx.session_id)])
+        .chain([session_temp_dir(&ctx.sandbox, &ctx.session_id)])
         .collect();
     policy.deny_ipc_escapes = ctx.session.unattended;
     policy
@@ -575,21 +575,47 @@ fn sandbox_policy(ctx: &ToolContext) -> sandbox::SandboxPolicy {
 /// The session's own temporary directory: a sandboxed command's `TMPDIR`,
 /// and the only temporary directory it may write besides the one macOS
 /// `mktemp` insists on.
-fn session_temp_dir(session_id: &str) -> std::path::PathBuf {
+///
+/// Under the state root, `<state root>/tmp/<session>`, rather than in the
+/// system temporary directory: on macOS that is the per-user
+/// `DARWIN_USER_TEMP_DIR` every sandboxed command may write, so one
+/// session's commands could reach into another's.
+fn session_temp_dir(
+    settings: &base::tool::SandboxSettings,
+    session_id: &str,
+) -> std::path::PathBuf {
     let id: String = session_id
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
         .collect();
-    std::env::temp_dir().join(format!("agix-{id}"))
+    match &settings.state_root {
+        Some(root) => root.join(base::paths::STATE_ROOT_SESSION_TMP).join(id),
+        None => std::env::temp_dir().join(format!("agix-{id}")),
+    }
 }
 
+/// How long a session's temporary directory may go untouched before another
+/// session's start clears it away.
+const STALE_SESSION_TEMP_DIR: Duration = Duration::from_secs(7 * 24 * 3600);
+
 /// [`session_temp_dir`], created private to this user if it is not there yet.
-fn prepared_session_temp_dir(session_id: &str) -> Option<std::path::PathBuf> {
-    let dir = session_temp_dir(session_id);
-    let mut builder = std::fs::DirBuilder::new();
-    #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-    match builder.create(&dir) {
+fn prepared_session_temp_dir(
+    settings: &base::tool::SandboxSettings,
+    session_id: &str,
+) -> Option<std::path::PathBuf> {
+    let dir = session_temp_dir(settings, session_id);
+    let private = |recursive| {
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(recursive);
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder
+    };
+    if let Some(parent) = dir.parent().filter(|_| settings.state_root.is_some()) {
+        let _ = private(true).create(parent);
+        clear_stale_session_temp_dirs(parent);
+    }
+    match private(false).create(&dir) {
         Ok(()) => Some(dir),
         Err(e)
             if e.kind() == std::io::ErrorKind::AlreadyExists
@@ -602,6 +628,30 @@ fn prepared_session_temp_dir(session_id: &str) -> Option<std::path::PathBuf> {
             None
         }
     }
+}
+
+/// Once per process: the session directories under `parent` nothing has
+/// touched for [`STALE_SESSION_TEMP_DIR`]. Nothing else removes them — unlike
+/// the system temporary directory, the state root is not swept by the OS.
+fn clear_stale_session_temp_dirs(parent: &std::path::Path) {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let Ok(entries) = std::fs::read_dir(parent) else {
+            return;
+        };
+        let now = std::time::SystemTime::now();
+        for entry in entries.flatten() {
+            let stale = entry.metadata().is_ok_and(|m| {
+                m.is_dir()
+                    && m.modified().is_ok_and(|t| {
+                        now.duration_since(t).unwrap_or_default() > STALE_SESSION_TEMP_DIR
+                    })
+            });
+            if stale {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    });
 }
 
 /// `command` as the process a shell-running tool spawns: wrapped by the OS
@@ -620,7 +670,7 @@ pub(crate) fn confine_shell(
     }
     let mut confined = ctx.exec.sandbox.confine(intent, &sandbox_policy(ctx));
     if confined.enforcement != Enforcement::None {
-        if let Some(tmp) = prepared_session_temp_dir(&ctx.session_id) {
+        if let Some(tmp) = prepared_session_temp_dir(&ctx.sandbox, &ctx.session_id) {
             confined
                 .spec
                 .env
@@ -727,7 +777,7 @@ pub fn engine_git_for(
         sandbox,
         to_sandbox_policy(settings),
         settings.require_enforcement,
-        prepared_session_temp_dir(session_id),
+        prepared_session_temp_dir(settings, session_id),
     )
 }
 
@@ -2001,6 +2051,31 @@ mod tests {
         assert_ne!(tmp, std::env::temp_dir());
         assert!(sandbox_policy(&ctx).additional_writable.contains(&tmp));
         std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn each_session_gets_its_own_tmpdir_under_the_state_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let tmpdir_for = |session: &str| {
+            let mut ctx = ctx_in(dir.path());
+            ctx.session_id = session.to_string();
+            ctx.sandbox.state_root = Some(state.path().to_path_buf());
+            ctx.dangerously_disable_sandbox = false;
+            ctx.exec.sandbox =
+                std::sync::Arc::new(Reports(Enforcement::Full, SandboxMode::MacOSSandboxExec));
+            let tmp = tmpdir_of(&confine_shell("Bash", "true", &ctx).unwrap()).unwrap();
+            let writable = sandbox_policy(&ctx).additional_writable;
+            (tmp, writable)
+        };
+        let (a, writable_a) = tmpdir_for("session-a");
+        let (b, _) = tmpdir_for("session-b");
+        let root = state.path().join(base::paths::STATE_ROOT_SESSION_TMP);
+        assert_eq!(a, root.join("session-a"));
+        assert_eq!(b, root.join("session-b"));
+        assert!(a.is_dir() && b.is_dir());
+        assert!(writable_a.contains(&a));
+        assert!(!writable_a.contains(&b) && !writable_a.contains(&root));
     }
 
     #[test]

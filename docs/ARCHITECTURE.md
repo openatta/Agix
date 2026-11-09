@@ -662,9 +662,11 @@ bubblewrap)就和别的未授权调用一样被拒。沙箱只限写不限网,�
 
 沙箱里的命令能写的:工作目录、`sandbox.additional_directories` 与会话授予的目录、
 `sandbox.cache_directories`(见下)、状态目录下的 `scratchpad` 与 `memory`、`/dev`,以及
-会话自己的临时目录——它作为 `TMPDIR` 交给命令(`<系统临时目录>/agix-<会话 id>`)。
+会话自己的临时目录——它作为 `TMPDIR` 交给命令(`<状态目录>/tmp/<会话 id>`),别的会话的
+写不到;7 天没动过的,进程里第一次准备临时目录时清掉。
 `/tmp`、`/var/tmp` 这类共享的临时目录写不到;macOS 上另外放开当前用户的
-`DARWIN_USER_TEMP_DIR`,因为系统的 `mktemp` 不看 `TMPDIR`、只往那里建文件。Linux 上
+`DARWIN_USER_TEMP_DIR`,因为系统的 `mktemp` 不看 `TMPDIR`、只往那里建文件——同一用户的
+会话在这里彼此可写,所以会话的 `TMPDIR` 不放在这里。Linux 上
 `/tmp` 是每条命令私有、用完即弃的 tmpfs。写规则之前每个路径都先解析符号链接(macOS 的
 `/tmp` 实为 `/private/tmp`),否则规则落不到内核检查的那个路径上。
 
@@ -673,7 +675,7 @@ bubblewrap)就和别的未授权调用一样被拒。沙箱只限写不限网,�
 `.git/commondir`、`.git/hooks/`、`.agix` 下的配置(`settings.json`、`settings.local.json`、
 `mcp.local.json`,以及 `mcp`、`hooks`、`agents`、`skills`、`plugins`、`rules`、`scenes`、
 `policy`、`scripts`、`output-styles` 目录)、引擎 worktree 的 `.git` 链接;状态目录除
-`scratchpad` 与 `memory` 外整个不可写。`git add` / `git commit`、在 `.agix` 下写草稿照常可用;
+`scratchpad`、`memory` 与本会话的 `tmp/<会话 id>` 外整个不可写。`git add` / `git commit`、在 `.agix` 下写草稿照常可用;
 `git config`、`git remote add` 这类改仓库配置的命令在沙箱里会失败。Linux 上 `.agix` 整个只读、
 已有的工作目录逐个重新打开,所以 `.agix` 下直接新建条目也会失败;没有 `.git` 的项目、没有
 `commondir` 的仓库在 Linux 上补不上这一道(见 `sandbox.rs` 模块头第 5 条),所以有下一段。

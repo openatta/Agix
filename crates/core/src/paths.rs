@@ -49,6 +49,11 @@ use std::path::PathBuf;
 /// sandboxed commands may write.
 pub const STATE_ROOT_WORKING_DIRS: &[&str] = &["scratchpad", "memory"];
 
+/// Under the state root, one temporary directory per session,
+/// `<state root>/tmp/<session>`: the session's sandboxed commands may write
+/// their own and no other.
+pub const STATE_ROOT_SESSION_TMP: &str = "tmp";
+
 /// Unified management of AGENT persistent directory paths.
 ///
 /// Default: `global_data_dir = $HOME/.agix/`
