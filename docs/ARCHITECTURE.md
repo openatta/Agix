@@ -546,15 +546,21 @@ git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git
    ("永久允许"记下的就是那一整行)。deny / ask 另按每段**实际启动的程序**再比一遍
    (`permissions::invocation`):去掉引号与转义,展开花括号,丢掉重定向,程序路径取
    名字(`/bin/rm` 是 `rm`),剥掉 `env` / `command` / `exec` / `nice` / `time` /
-   `sudo` / `timeout` / `xargs` 等 wrapper 连同它们的选项,`sh -c`、`eval`、
-   `find -exec` 里的命令也算。程序名从文本里读不出来的段(`$CMD x`、`r?`、看不懂的
-   wrapper 选项)在该工具有带内容的 deny / ask 规则时按 ask 处理(`dontAsk` 下拒绝),
-   永远不会因此被放行。allow 只认原文——规整只让裁决更严。这收窄了绕过 deny 的写法,
-   但 shell 上的 deny 规则不是沙箱(`python3 -c 'os.remove(...)'` 里没有 `rm`),
-   边界是 OS 沙箱。
+   `sudo` / `timeout` / `xargs` / `busybox` / `flock` / `ionice` / `pkexec` 等 wrapper 连同
+   它们的选项,`sh -c`、`eval`、`find -exec`、`su -c`、`runuser -- ` 里的命令也算。程序名从
+   文本里读不出来的段(`$CMD x`、`r?`、看不懂的 wrapper 选项、`case`/`function` 块、读 stdin 的
+   裸 `sh`)在该工具有带内容的 deny / ask 规则时按 ask 处理(`dontAsk` 下拒绝),永远不会因此
+   被放行。allow 只认原文——规整只让裁决更严。这些 `Bash(...)` 的 deny / ask 同样管住别的
+   跑 shell 的工具(`Monitor`),allow 不跨工具。但 shell 上的 deny 规则不是沙箱
+   (`python3 -c 'os.remove(...)'` 里没有 `rm`),边界是 OS 沙箱。
    只读命令的自动放行只限路径参数都落在 cwd 与附加目录之内的;指向外面的,和 `Read`
    读项目外的文件一样交给模式分派。参数里有 shell 还要展开的东西(`$VAR`、`~`、替换)
-   的,或者 `cd` / `pushd` 到不是项目内字面路径的地方之后再按相对路径读的,都不算在内。
+   的,`cd` / `pushd` 到不是项目内字面路径的地方(或 `cd -` / `popd` / `pushd +N` 落到
+   命令没写出的目录)之后再按相对路径读的,都不算在内。只读名单只收"不管带什么参数都
+   不会写文件、不会执行别的程序"的命令:`rg --pre`、`fd -x`、`git grep -O`、`man -P`、
+   `sort --compress-program`、`git -c …`、`cargo build/check`(跑 build.rs)这类会拉起程序的,
+   `sort -o`、`uniq IN OUT`、`yq -i`、`git config k v`、`git branch -D` 这类会写文件 / 改仓库的,
+   以及设 `PATH` / `LD_PRELOAD` / `PAGER` / `CDPATH` 等变量的,都不免询问。
 
 场景的工具白名单不在这里:它在会话注册表上就把工具拿掉了(§3.5),被拿掉的工具根本
 到不了权限这一步。
@@ -628,10 +634,13 @@ skill 自己的 `allowed-tools` 这时还没生效,不能给自己的命令开�
 一句话给自己开权限,等于让注入的内容给自己开权限。
 
 `Bash` 不能事先知道一条命令会写哪里,所以无人值守时它靠 OS 沙箱:沙箱完整生效
-(`Enforcement::Full`)就放行,写入被限制在可写根之内;沙箱不可用(关掉了,或 Linux
-上没有 bubblewrap)就和别的未授权调用一样被拒。沙箱在 `assembly` / `daemon` 缺省编译进来。
-沙箱只限写,不限读——读的限制落在文件工具上,`Bash` 读项目外的东西只受凭据黑名单约束。
-`Monitor` 的脚本进同一个沙箱,`sandbox.require_enforcement` 对它同样生效。
+(`Enforcement::Full`)**且网络不是 `Unrestricted`** 才放行,写入被限制在可写根之内;沙箱
+不可用(关掉了,或 Linux 上没有 bubblewrap)就和别的未授权调用一样被拒。网络缺省是
+`Unrestricted`——沙箱只限写不限网,一条被关在项目目录里的命令照样能往外连,所以无人值守下
+要先把 `sandbox.network_mode` 收成 `deny_all` / `allowlist`(或写 allow 规则),否则不自动放行。
+沙箱在 `assembly` / `daemon` 缺省编译进来。沙箱只限写,不限读——读的限制落在文件工具上,
+`Bash` 读项目外的东西只受凭据黑名单约束。`Monitor` 的脚本进同一个沙箱,
+`sandbox.require_enforcement` 对它同样生效,无人值守下的自动放行也走上面这同一条件。
 
 沙箱里的命令能写的:工作目录、`sandbox.additional_directories` 与会话授予的目录、
 `sandbox.cache_directories`(见下)、状态目录下的 `scratchpad` 与 `memory`、`/dev`,以及

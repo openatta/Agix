@@ -412,7 +412,35 @@ WebAssembly 载体整个移除。
   内容的 deny / ask 规则时改为询问(`dontAsk` 下拒绝)。以前它们按原文前缀匹配,都绕得过去。
   allow 规则不变。带引号的受保护路径(`~/".ssh"/id_rsa`)同样按受保护路径拒绝。
 - 只读 `Bash` 命令的免询问更窄:参数里有 `$VAR`、`~`、替换的,`cd` / `pushd` 到不是项目内
-  字面路径之后再读的,现在要询问。`echo $HOME` 这类也在其中。
+  字面路径之后再读的,现在要询问。`echo $HOME` 这类也在其中。`cd -`、`popd`、`pushd +N`(落到
+  `$OLDPWD` / 目录栈,命令没写出目的地)之后再按相对路径读的,同样要询问。
+- 只读白名单里会**拉起别的程序**的命令不再免询问:`rg --pre` / `--search-zip` / `-z`、
+  `fd -x` / `-X` / `--exec` / `--exec-batch`、`git grep -O`、`man -P` / `-H`、`bat --pager`、
+  `sort --compress-program`,以及 `git -c …`(能设 `core.pager` / `core.fsmonitor` / 外部 diff)、
+  `git log --ext-diff`。`cargo build` / `cargo check`(会跑 `build.rs` 与过程宏)移出只读前缀。
+  设 `PATH` / `LD_PRELOAD` / `DYLD_INSERT_LIBRARIES` / `PAGER` / `MANPAGER` / `GIT_PAGER` /
+  `LESSOPEN` 等变量(`PAGER=sh man ls`、`PATH=.; ls`)也一样要询问。
+- 只读白名单里会**写文件 / 改仓库**的命令不再免询问:`sort` / `shuf` / `tree` 带 `-o`、
+  `uniq` / `xxd` 带第二个位置参数、`yq -i`,以及 `git config` 带值(或 `--unset` / `--add` /
+  `--edit` / `set`)、`git branch -d/-D/-m/-f/-u/<新名>`、`git tag -d/<新名>`、
+  `git remote add/remove/set-url/rename/prune`、`git diff/log/show --output`。`git config key`
+  (读)、`git branch` / `git tag` / `git remote` 的列示形式仍是只读。
+- `Bash` 的 deny / ask 规则多了几种绕法的识别:`case`/`function`/`select` 块、读 stdin /
+  here-string 的裸 `sh` / `bash`(`echo 'rm' | sh`、`bash <<< 'rm'`)程序名读不出来,有带内容的
+  deny / ask 规则时按询问处理;`busybox` / `flock` / `ionice` / `chrt` / `taskset` / `pkexec` /
+  `caffeinate` / `su -c` / `runuser -- ` 等 wrapper 剥掉后比里面真正启动的程序。
+- `Bash(...)` 的 deny / ask 规则同样管住 `Monitor`(此前只按工具名匹配,`Monitor` 逃得过)。
+  一个 `Monitor` 名下的 allow 不受影响,被 `Bash` 名下的 deny/ask 收紧。
+- `Bash` 超时不再丢输出:命令被停掉前打印的内容照样返回,末尾标 `[timed out after Nms]`
+  (`is_error`),结构化结果多了 `timed_out`。以前超时直接以错误结束,已打印的全丢了。
+- `Bash` 单行超过 64 KB 时截断并标 `…[line truncated]`,然后继续读后面的行;以前到那一行就
+  静默丢掉之后的全部输出。
+- 无人值守会话里,`Monitor` 的脚本在 OS 沙箱完整生效、且网络不是 `Unrestricted` 时自动放行
+  (与 `Bash` 同一条件),否则照旧拒绝。`Bash` 的无人值守自动放行也加了这条网络条件:默认的
+  `Unrestricted` 网络下即使沙箱生效也不再自动放行——沙箱只限写,网络仍是个口子。要无人值守跑,
+  把 `sandbox.network_mode` 设为 `deny_all` / `allowlist`,或写 allow 规则。
+- 子进程环境永远不带 `CDPATH`(`inherit` 与 `allowlist` 两种模式都剥掉),免得子 shell 的
+  `cd foo` 落到项目外、而权限检查看的是字面 `foo`。
 - agent 类型 frontmatter 的 `permission_mode` 真正作用到子 Agent 的权限判定上(以前写 `plan`
   不起作用),可以比父会话宽也可以严;父会话在 `plan` 时取两者中更严的那个,父会话是
   `bypassPermissions` 时随父会话,插件带来的类型只能收紧。团队成员(`TeamCreate`、`Agent` 的
@@ -621,7 +649,11 @@ WebAssembly 载体整个移除。
 - `PermissionGate::check` 的模式取 `ctx.permission_mode`,不再读 `ctx.session`;直接调 gate 的
   要把它填成会话当前的模式(`RuleSetPermission` 已经这么做)。
 - `permissions::ruleset::RuleHit` 多了 `Unclear`(按 ask 处理),穷举匹配要补一支。
-  新增 `permissions::invocation`、`permissions::shell::{segments, Segment, lex, Word}`。
+  新增 `permissions::invocation`、`permissions::shell::{segments, Segment, lex, Word, assignments}`。
+- `RuleSet::evaluate_shell` 多一个 `group: Option<&str>` 参数(shell 命令的组名,`Monitor` 传
+  `Some("Bash")`);新增 `permissions::ruleset::shell_rule_group`。
+- 删除 `permissions::ruleset::{SAFE_TOOLS, CheckResult, RuleSet::check}` 与
+  `PermissionGate::explain_decision`:都没有生产调用点(裁决走 `PermissionGate::check`)。
 - `AgentTypeSource::may_loosen` 同时管 `max_turns` 与 `permission_mode`。新增
   `PermissionMode::for_delegate`(两个 `PermissionMode` 上都有)。
 - `base::permission::PermissionMode` 多了 `min_permissive`,并能 `into()` 成
