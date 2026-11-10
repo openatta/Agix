@@ -2,6 +2,8 @@
 //! daemon's tests and embedders have always used (`daemon::config`,
 //! `daemon::SessionPool`, `daemon::DaemonServer`, …). The binary is `main.rs`.
 
+pub mod logging;
+
 #[cfg(feature = "otel")]
 pub use assembly::telemetry_otel;
 #[cfg(feature = "ws")]

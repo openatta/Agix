@@ -273,7 +273,7 @@ pub fn start_otel(endpoint: &str) -> Result<OtelExporter, OtelError> {
 
     let protocol = detect_protocol(endpoint);
     base::interface::exec::local::install_tls_provider();
-    let mut client = reqwest::Client::builder();
+    let mut client = reqwest::Client::builder().timeout(Duration::from_secs(10));
     if is_loopback(endpoint) {
         client = client.no_proxy();
     }

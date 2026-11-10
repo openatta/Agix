@@ -311,10 +311,9 @@ async fn serve(cli: Cli) -> anyhow::Result<()> {
     let perf = PerfCollector::new();
 
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
+        .with_env_filter(daemon::logging::log_filter(
+            std::env::var("RUST_LOG").ok().as_deref(),
+        ))
         .init();
 
     let scene = resolve_scene(
@@ -539,6 +538,10 @@ async fn serve(cli: Cli) -> anyhow::Result<()> {
         let server = server.clone();
         tokio::spawn(async move {
             shutdown_signal().await;
+            tokio::spawn(async {
+                shutdown_signal().await;
+                std::process::exit(130);
+            });
             server.shutdown().await;
         });
     }
@@ -586,16 +589,27 @@ async fn serve(cli: Cli) -> anyhow::Result<()> {
 
     server.clone().serve_unix_listener(unix).await?;
     // Whoever stopped the listener is stopping the sessions; this waits for it.
-    pool.shutdown_all().await;
+    if tokio::time::timeout(SHUTDOWN_GRACE, pool.shutdown_all())
+        .await
+        .is_err()
+    {
+        tracing::warn!("sessions did not shut down within {SHUTDOWN_GRACE:?}; exiting anyway");
+    }
 
     #[cfg(feature = "otel")]
-    let _ = tokio::task::spawn_blocking(assembly::telemetry_otel::shutdown_process_exporter).await;
+    let _ = tokio::time::timeout(
+        SHUTDOWN_GRACE,
+        tokio::task::spawn_blocking(assembly::telemetry_otel::shutdown_process_exporter),
+    )
+    .await;
     drop(lock);
     let _ = std::fs::remove_file(&groups_file);
     daemon::discovery::remove_instance_file(&instances_dir, &instance_name);
     info!("daemon stopped");
     Ok(())
 }
+
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 
 async fn shutdown_signal() {
     #[cfg(unix)]
