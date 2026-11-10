@@ -142,8 +142,8 @@ impl SessionPool {
                 PoolError::Internal("the entry was not found after writing it".to_string())
             })?;
 
-        let frame = StreamFrame::extension_entry(session_id, written.clone());
-        self.broadcast_to_session(session_id, &frame).await;
+        self.publish_between_turns(session_id, SessionEvent::ExtensionEntry(written.clone()))
+            .await;
         Ok(written)
     }
 
@@ -208,7 +208,7 @@ impl SessionPool {
                     Some(current_turn_id),
                 )));
             }
-            live.last_active = Instant::now();
+            live.hub.touch();
             (
                 live.input_tx.clone(),
                 live.project.clone(),

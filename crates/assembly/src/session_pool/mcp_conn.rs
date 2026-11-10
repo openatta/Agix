@@ -391,7 +391,7 @@ impl SessionPool {
             cfg = cfg.confined_to_own_env().map_err(invalid)?;
         }
         self.admit_mcp(name, &cfg)
-            .map_err(|reason| PoolError::McpServerDenied(reason))?;
+            .map_err(PoolError::McpServerDenied)?;
         self.write_mcp_server(project_root, scene_id, name, &cfg, config, must_exist)
             .await
             .map_err(invalid)

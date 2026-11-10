@@ -87,36 +87,7 @@ const METHODS: &[&str] = &[
     "session.updateGoal",
 ];
 
-const SESSION_EVENT_KINDS: &[&str] = &[
-    "turn_start",
-    "step_start",
-    "step_end",
-    "text_delta",
-    "thinking_delta",
-    "tool_use_start",
-    "tool_args_delta",
-    "tool_use",
-    "tool_progress",
-    "tool_result",
-    "prompt",
-    "subagent_progress",
-    "team_progress",
-    "skills_changed",
-    "notification",
-    "compact",
-    "user_message_delivered",
-    "user_message_refused",
-    "user_messages_returned",
-    "turn_complete",
-    "error",
-    "task_started",
-    "task_updated",
-    "task_progress",
-    "task_finished",
-    "goal_changed",
-    "extension_entry",
-    "subscription_dropped",
-];
+const SESSION_EVENT_KINDS: &[&str] = crate::rpc::events::SessionEventPayload::KINDS;
 
 const DAEMON_EVENT_KINDS: &[&str] = &[
     "mcp_connected",

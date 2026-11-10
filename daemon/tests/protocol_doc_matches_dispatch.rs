@@ -242,57 +242,6 @@ fn every_method_a_client_can_send_is_driven_by_a_test() {
     );
 }
 
-/// The `kind` each `AgentEvent` arm of `run_turn`'s forwarding loop emits.
-///
-/// Bounded to the loop rather than scanned over the file: `daemon.event`
-/// frames carry a `kind` of their own and are not part of this whitelist, and
-/// a scan that could not tell them apart would report the wrong drift.
-fn forwarded_event_kinds(pool_rs: &str) -> Vec<String> {
-    const ARM: &str = "Some(AgentEvent::";
-    let start = pool_rs
-        .find(ARM)
-        .expect("run_turn still forwards `AgentEvent` arms");
-    let loop_body = &pool_rs[start..];
-    // The wildcard that ends the forwarding match — everything past it
-    // belongs to some other part of the file.
-    let end = loop_body
-        .find("_ => continue,")
-        .expect("the forwarding match no longer ends in a wildcard");
-    let loop_body = &loop_body[..end];
-
-    let mut out: Vec<String> = loop_body
-        .split(ARM)
-        .skip(1)
-        .filter_map(|arm| {
-            let at = arm.find("\"kind\"")?;
-            let rest = arm[at + "\"kind\"".len()..].trim_start();
-            let rest = rest.strip_prefix(':')?.trim_start();
-            let value = rest.strip_prefix('"')?;
-            Some(value.split('"').next()?.to_string())
-        })
-        .collect();
-    out.sort();
-    out.dedup();
-    out
-}
-
-/// The `kind` of each frame `background_frame` builds — the events forwarded
-/// the same way inside a turn and between turns.
-fn background_event_kinds(pool_rs: &str) -> Vec<String> {
-    let start = pool_rs
-        .find("fn background_frame(")
-        .expect("session_pool/helpers.rs still has `background_frame`");
-    let body = &pool_rs[start..];
-    let body = &body[..body.find("\n}\n").unwrap_or(body.len())];
-    body.split("\"kind\":")
-        .skip(1)
-        .filter_map(|rest| {
-            let value = rest.trim_start().strip_prefix('"')?;
-            Some(value.split('"').next()?.to_string())
-        })
-        .collect()
-}
-
 /// `kind`s documented in §7's table — the first cell of each row, backticked.
 fn documented_event_kinds(doc: &str) -> Vec<String> {
     let section = doc
@@ -315,28 +264,6 @@ fn documented_event_kinds(doc: &str) -> Vec<String> {
     out
 }
 
-/// The `kind` of each `session.event` frame sent outside a turn — the ones
-/// `StreamFrame`'s own constructors build (`subscription_dropped`, …) rather
-/// than `run_turn`'s forwarding loop.
-fn out_of_turn_event_kinds(rpc_rs: &str) -> Vec<String> {
-    let start = rpc_rs
-        .find("impl StreamFrame {")
-        .expect("rpc.rs still has `impl StreamFrame`");
-    let block = &rpc_rs[start..];
-    let block = &block[..block.find("\n}\n").unwrap_or(block.len())];
-    let mut out: Vec<String> = block
-        .split("\"kind\":")
-        .skip(1)
-        .filter_map(|rest| {
-            let value = rest.trim_start().strip_prefix('"')?;
-            Some(value.split('"').next()?.to_string())
-        })
-        .collect();
-    out.sort();
-    out.dedup();
-    out
-}
-
 /// §7's table and the frames the daemon sends are the same whitelist.
 ///
 /// Both directions fail differently. A documented kind with no arm is a
@@ -345,30 +272,20 @@ fn out_of_turn_event_kinds(rpc_rs: &str) -> Vec<String> {
 /// ignore kinds they do not know, one that every well-behaved client drops.
 #[test]
 fn every_stream_event_is_documented_and_every_documented_one_is_sent() {
-    let root = repo_root();
-    let turn =
-        std::fs::read_to_string(root.join("crates/assembly/src/session_pool/turn.rs")).unwrap();
-    let helpers =
-        std::fs::read_to_string(root.join("crates/assembly/src/session_pool/helpers.rs")).unwrap();
-    let rpc = std::fs::read_to_string(root.join("crates/assembly/src/rpc.rs")).unwrap();
-    let doc = std::fs::read_to_string(root.join("docs/daemon_rpc_protocol.md")).unwrap();
+    let doc = std::fs::read_to_string(repo_root().join("docs/daemon_rpc_protocol.md")).unwrap();
 
-    let mut sent = forwarded_event_kinds(&turn);
-    sent.extend(background_event_kinds(&helpers));
-    sent.extend(out_of_turn_event_kinds(&rpc));
+    let mut sent: Vec<String> = daemon::rpc::events::SessionEventPayload::KINDS
+        .iter()
+        .map(|k| k.to_string())
+        .collect();
     sent.sort();
-    sent.dedup();
     let documented = documented_event_kinds(&doc);
 
-    assert!(
-        sent.len() > 5,
-        "only found {sent:?} — the forwarding scan is broken, not the doc"
-    );
     let undocumented: Vec<&String> = sent.iter().filter(|k| !documented.contains(k)).collect();
     let never_sent: Vec<&String> = documented.iter().filter(|k| !sent.contains(k)).collect();
     assert!(
         undocumented.is_empty() && never_sent.is_empty(),
-        "§7's table and `run_turn`'s forwarding match disagree.\n\
+        "§7's table and the `session.event` projection disagree.\n\
          sent but undocumented: {undocumented:?}\n\
          documented but never sent: {never_sent:?}"
     );

@@ -129,11 +129,11 @@ impl SessionPool {
         let already_active = {
             let mut sessions = self.sessions.lock().await;
             sessions.get_mut(session_id).map(|live| {
-                live.last_active = Instant::now();
+                live.hub.touch();
                 (
                     live.name.clone(),
                     format_instant(live.created_at),
-                    format_instant(live.last_active),
+                    format_instant(live.hub.last_active()),
                 )
             })
         };
@@ -213,7 +213,7 @@ impl SessionPool {
                 (
                     live.name.clone(),
                     format_instant(live.created_at),
-                    format_instant(live.last_active),
+                    format_instant(live.hub.last_active()),
                 )
             });
             if let Some((name, created_at, last_active)) = raced {
@@ -240,7 +240,7 @@ impl SessionPool {
                 match sessions.get(&sid) {
                     Some(live) => (
                         format_instant(live.created_at),
-                        format_instant(live.last_active),
+                        format_instant(live.hub.last_active()),
                     ),
                     None => (String::new(), String::new()),
                 }

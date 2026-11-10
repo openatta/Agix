@@ -27,7 +27,7 @@ impl SessionPool {
         };
         if live.current_turn.as_deref() == Some(turn_id) {
             live.current_turn = None;
-            live.turn_connection = None;
+            live.turn_watcher = None;
             live.turn_terminated = false;
             self.emit_session_event(
                 "turn_completed",
@@ -37,8 +37,7 @@ impl SessionPool {
                     "initiator": live.turn_initiator.take(),
                 }),
             );
-            live.pending_prompts
-                .retain(|_, prompt| prompt.task_id.is_some());
+            live.hub.retain_task_asks();
         }
         live.idle.notify_waiters();
         true
@@ -53,7 +52,7 @@ impl SessionPool {
         message: String,
         attachments: Vec<runtime::agent::Attachment>,
         turn_id: String,
-        client: Arc<crate::rpc::Client>,
+        client: Arc<dyn SessionWatcher>,
         options: Option<SessionOptions>,
         on_busy: OnBusy,
         initiator: &'static str,
@@ -120,7 +119,7 @@ impl SessionPool {
                 let Some(live) = sessions.get_mut(&sid) else {
                     return Err(PoolError::session_not_found(&sid));
                 };
-                live.last_active = Instant::now();
+                live.hub.touch();
                 (
                     live.input_tx.clone(),
                     live.event_rx.clone(),
@@ -160,8 +159,8 @@ impl SessionPool {
                     if let Ok(Ok(runtime::steering::SteerAck::Accepted)) =
                         tokio::time::timeout(Duration::from_secs(5), acked).await
                     {
-                        if let Some(live) = self.sessions.lock().await.get_mut(&sid) {
-                            live.subscribers.insert(client.id(), client.clone());
+                        if let Some(hub) = self.hub_of(&sid).await {
+                            hub.subscribe(client.clone());
                         }
                         return Ok(serde_json::json!({
                             "session_id": sid,
@@ -203,7 +202,7 @@ impl SessionPool {
                     if wanted {
                         live.current_turn = Some(turn_id.clone());
                         live.turn_initiator = Some(initiator);
-                        live.turn_connection = Some(client.id());
+                        live.turn_watcher = Some(client.id());
                         live.turn_terminated = false;
                         self.emit_session_event(
                             "turn_started",
@@ -213,15 +212,15 @@ impl SessionPool {
                         // Whoever starts a turn watches it. Not a special role
                         // — it lands in the same subscriber set as any tab that
                         // called `session.subscribe`, and leaves the same way.
-                        live.subscribers.insert(client.id(), client.clone());
+                        live.hub.subscribe(client.clone());
                     }
-                    Some((wanted, live.state.clone()))
+                    Some((wanted, live.state.clone(), live.hub.clone()))
                 }
             }
         };
-        let turn_state = match started {
-            Some((true, state)) => state,
-            Some((false, _)) => {
+        let (turn_state, hub) = match started {
+            Some((true, state, hub)) => (state, hub),
+            Some((false, _, _)) => {
                 self.release_turn_slot(&sid, &event_rx_mutex, event_rx, &turn_id)
                     .await;
                 return Ok(
@@ -244,36 +243,27 @@ impl SessionPool {
             turn_id: turn_id.clone(),
         });
 
+        let session_key: Arc<str> = Arc::from(sid.as_str());
+        let turn_key: Arc<str> = Arc::from(turn_id.as_str());
+        let frame_of = |event| SessionFrame {
+            session_id: session_key.clone(),
+            turn_id: Some(turn_key.clone()),
+            event,
+        };
         let api_calls;
         let ended_with;
         loop {
-            let event = event_rx.recv().await;
-            if let Some((frame, ask)) = event
-                .as_ref()
-                .and_then(|event| background_frame(&sid, Some(&turn_id), event))
-            {
-                // Registered before it is sent: a tab that subscribes between
-                // the two must still be handed the question.
-                if let Some(ask) = &ask {
-                    self.remember_prompt(&sid, ask, &frame).await;
-                }
-                self.broadcast_to_session(&sid, &frame).await;
-                continue;
-            }
-            let Some(event) = event else {
+            let Some(event) = event_rx.recv().await else {
                 // The engine is gone. Dropping the entry is what lets the
                 // next call on this id resume it from its transcript instead
                 // of sending into a closed channel.
-                let f = StreamFrame::event(
+                self.publish_terminal(
                     &sid,
-                    &turn_id,
-                    serde_json::json!({
-                        "kind":"error","code":"engine_stopped",
-                        "message":"engine stopped before the turn completed"
-                    }),
-                );
-                self.broadcast_terminal(&sid, &event_rx_mutex, &f, Some(client.id()))
-                    .await;
+                    &event_rx_mutex,
+                    &frame_of(SessionEvent::EngineStopped),
+                    Some(client.id()),
+                )
+                .await;
                 let dead = {
                     let mut sessions = self.sessions.lock().await;
                     let ours = sessions
@@ -297,26 +287,24 @@ impl SessionPool {
                 warn!(%sid, "engine stopped before the turn completed");
                 return Err(PoolError::EngineStopped);
             };
-            let Some(body) = turn_event_body(&event) else {
-                continue;
-            };
-            let f = StreamFrame::event(&sid, &turn_id, body);
             match event {
+                AgentEvent::SystemInit { .. } => continue,
                 AgentEvent::TurnComplete {
-                    stop_reason,
+                    ref stop_reason,
                     api_calls: ac,
                     context,
                     ..
                 } => {
                     api_calls = ac;
-                    ended_with = stop_reason;
+                    ended_with = stop_reason.clone();
                     if context.is_some() {
                         if let Some(live) = self.sessions.lock().await.get_mut(&sid) {
                             live.context = context;
                         }
                     }
+                    let last = frame_of(SessionEvent::Agent(event));
                     if !self
-                        .broadcast_terminal(&sid, &event_rx_mutex, &f, None)
+                        .publish_terminal(&sid, &event_rx_mutex, &last, None)
                         .await
                     {
                         return Err(PoolError::Engine(EngineFailure {
@@ -326,16 +314,25 @@ impl SessionPool {
                     }
                     break;
                 }
-                AgentEvent::Error { code, message, .. } => {
-                    // The caller learns this from its error response; every
-                    // other watcher would otherwise see a turn that never ends.
-                    self.broadcast_terminal(&sid, &event_rx_mutex, &f, Some(client.id()))
+                AgentEvent::Error {
+                    ref code,
+                    ref message,
+                    ..
+                } => {
+                    let failure = EngineFailure {
+                        code: code.clone(),
+                        message: message.clone(),
+                    };
+                    // The caller learns this from its own result; every other
+                    // watcher would otherwise see a turn that never ends.
+                    let last = frame_of(SessionEvent::Agent(event));
+                    self.publish_terminal(&sid, &event_rx_mutex, &last, Some(client.id()))
                         .await;
                     self.release_turn_slot(&sid, &event_rx_mutex, event_rx, &turn_id)
                         .await;
-                    return Err(PoolError::Engine(EngineFailure { code, message }));
+                    return Err(PoolError::Engine(failure));
                 }
-                _ => self.broadcast_to_session(&sid, &f).await,
+                event => publish_agent_event(&hub, &session_key, Some(&turn_key), event),
             }
         }
 

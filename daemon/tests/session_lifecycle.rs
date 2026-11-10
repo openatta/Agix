@@ -2112,6 +2112,99 @@ async fn the_turn_complete_frame_reports_the_whole_turn() {
     srv.stop().await;
 }
 
+/// Read `lines` until the response to request `id`, returning the frames
+/// that came before it and the response.
+async fn until_response<R: tokio::io::AsyncBufRead + Unpin>(
+    lines: &mut tokio::io::Lines<R>,
+    id: u64,
+) -> (Vec<serde_json::Value>, serde_json::Value) {
+    let mut frames = Vec::new();
+    loop {
+        let line = lines
+            .next_line()
+            .await
+            .unwrap()
+            .expect("the connection closed before the response");
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        if v["id"] == id {
+            return (frames, v);
+        }
+        frames.push(v);
+    }
+}
+
+/// `turn_complete` is a turn's last frame and only the `run_turn` response
+/// follows it (protocol §5.5) — for the connection that started the turn and
+/// for one that only watches. A watcher's frames and its own responses share
+/// one queue, so a request it sends once the turn has answered is answered
+/// after that turn's `turn_complete`.
+#[tokio::test]
+async fn every_watcher_has_turn_complete_before_the_turns_response() {
+    let (srv, _seen) = start_scripted_server(
+        vec![text_round("done")],
+        ask_settings_no_memory(),
+        Duration::ZERO,
+    )
+    .await;
+    let created = rpc(
+        &srv.sock,
+        r#"{"jsonrpc":"2.0","method":"session.create","id":1,"params":{}}"#,
+    )
+    .await;
+    let sid = created["result"]["session_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{created}"))
+        .to_string();
+
+    let (read, mut write) = UnixStream::connect(&srv.sock).await.unwrap().into_split();
+    let mut watcher = BufReader::new(read).lines();
+    let subscribe = serde_json::json!({
+        "jsonrpc": "2.0", "method": "session.subscribe", "id": 1,
+        "params": {"session_id": sid},
+    });
+    write
+        .write_all(format!("{subscribe}\n").as_bytes())
+        .await
+        .unwrap();
+    let (_, subscribed) = until_response(&mut watcher, 1).await;
+    assert!(subscribed["result"].is_object(), "{subscribed}");
+
+    let run = serde_json::json!({
+        "jsonrpc": "2.0", "method": "session.run_turn", "id": 1,
+        "params": {"session_id": sid, "message": "hi", "turn_id": "t-order"},
+    });
+    let (frames, response) = rpc_streaming(&srv.sock, &run.to_string()).await;
+    assert!(response["result"].is_object(), "turn failed: {response}");
+    let last = frames
+        .last()
+        .unwrap_or_else(|| panic!("no frames before {response}"));
+    assert_eq!(
+        last["params"]["event"]["kind"], "turn_complete",
+        "{frames:#?}"
+    );
+    assert_eq!(last["params"]["turn_id"], "t-order", "{last}");
+
+    let ping = serde_json::json!({"jsonrpc": "2.0", "method": "daemon.ping", "id": 2});
+    write
+        .write_all(format!("{ping}\n").as_bytes())
+        .await
+        .unwrap();
+    let (seen, pong) = until_response(&mut watcher, 2).await;
+    assert_eq!(pong["result"]["pong"], true, "{pong}");
+    let completes: Vec<&serde_json::Value> = seen
+        .iter()
+        .filter(|f| f["params"]["event"]["kind"] == "turn_complete")
+        .collect();
+    assert_eq!(
+        completes.len(),
+        1,
+        "the watcher's turn_complete came after the turn had answered: {seen:#?}"
+    );
+    assert_eq!(completes[0]["params"]["turn_id"], "t-order");
+
+    srv.stop().await;
+}
+
 #[tokio::test]
 async fn a_project_bound_sessions_memories_land_in_its_own_project() {
     // The scripted client repeats its last round forever, so the background

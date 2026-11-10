@@ -11,9 +11,11 @@ impl SessionPool {
 
     /// Stop `live`, just taken out of `sessions` under `sid`, without
     /// waiting for it: whoever brings `sid` back waits instead
-    /// ([`Self::wait_until_stopped`]).
+    /// ([`Self::wait_until_stopped`]). Nothing it still produces reaches its
+    /// watchers.
     pub(super) fn stop_removed(&self, sid: &str, live: &LiveSession) {
         live.cancel.cancel();
+        live.hub.clear();
         let mut stopping = self
             .stopping
             .lock()
@@ -366,6 +368,7 @@ impl SessionPool {
                 .map(|(sid, live)| {
                     self.end_cut_off_turn(&sid, &live);
                     live.cancel.cancel();
+                    live.hub.clear();
                     info!(%sid, "session removed (shutdown)");
                     (live.exited, live.process_groups)
                 })

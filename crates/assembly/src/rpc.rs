@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 
+pub mod events;
+
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct RpcRequest {
     /// JSON-RPC version (must be "2.0")
@@ -188,7 +190,8 @@ impl Client {
                     due.into_iter().map(|d| d.session_id).collect()
                 };
                 for session_id in due {
-                    let notice = StreamFrame::subscription_dropped(&session_id);
+                    let notice =
+                        events::SessionEventNotification::subscription_dropped(&session_id);
                     let Ok(json) = serde_json::to_string(&notice) else {
                         continue;
                     };
@@ -673,8 +676,7 @@ pub struct TelemetryOptions {
     pub output: String, // absolute path to telemetry output file
 }
 
-/// Streaming frame sent during long-running operations (e.g. session.run_turn).
-/// Matches stream-json format.
+/// A notification frame the daemon pushes outside any request.
 #[derive(Debug, Clone, Serialize)]
 pub struct StreamFrame {
     pub jsonrpc: &'static str,
@@ -683,92 +685,6 @@ pub struct StreamFrame {
 }
 
 impl StreamFrame {
-    pub fn event(session_id: &str, turn_id: &str, event: Value) -> Self {
-        Self {
-            jsonrpc: "2.0",
-            method: "session.event",
-            params: serde_json::json!({"session_id": session_id, "turn_id": turn_id, "event": event}),
-        }
-    }
-
-    /// [`Self::event`], or outside any turn (`turn_id: null`) when `turn_id`
-    /// is `None`.
-    pub fn event_in(session_id: &str, turn_id: Option<&str>, event: Value) -> Self {
-        Self {
-            jsonrpc: "2.0",
-            method: "session.event",
-            params: serde_json::json!({"session_id": session_id, "turn_id": turn_id, "event": event}),
-        }
-    }
-
-    /// Told to a connection whose subscription to `session_id` was dropped
-    /// because it fell too far behind. Not part of any turn.
-    pub fn subscription_dropped(session_id: &str) -> Self {
-        Self {
-            jsonrpc: "2.0",
-            method: "session.event",
-            params: serde_json::json!({
-                "session_id": session_id,
-                "turn_id": null,
-                "event": {"kind": "subscription_dropped", "reason": "overflow"},
-            }),
-        }
-    }
-
-    /// A task of `session_id` started, changed, printed or finished
-    /// (`SessionState::subscribe_tasks`), told to the session's watchers. Not
-    /// part of any turn.
-    pub fn task_event(session_id: &str, event: &Value) -> Option<Self> {
-        let task = || event.get("task").cloned();
-        let event = match event.get("kind")?.as_str()? {
-            "task_started" => serde_json::json!({"kind": "task_started", "task": task()?}),
-            "task_updated" => serde_json::json!({"kind": "task_updated", "task": task()?}),
-            "task_finished" => serde_json::json!({"kind": "task_finished", "task": task()?}),
-            "task_progress" => serde_json::json!({
-                "kind": "task_progress",
-                "task_id": event.get("task_id")?,
-                "appended": event.get("appended")?,
-                "skipped_bytes": event.get("skipped_bytes")?,
-                "from_byte": event.get("from_byte")?,
-                "next_byte": event.get("next_byte")?,
-            }),
-            _ => return None,
-        };
-        Some(Self {
-            jsonrpc: "2.0",
-            method: "session.event",
-            params: serde_json::json!({"session_id": session_id, "turn_id": null, "event": event}),
-        })
-    }
-
-    /// `session_id`'s goal changed; `goal` is its view, `null` once cleared.
-    /// Not part of any turn.
-    pub fn goal_changed(session_id: &str, goal: Value) -> Self {
-        Self {
-            jsonrpc: "2.0",
-            method: "session.event",
-            params: serde_json::json!({
-                "session_id": session_id,
-                "turn_id": null,
-                "event": {"kind": "goal_changed", "goal": goal},
-            }),
-        }
-    }
-
-    /// A host wrote an extension entry into `session_id`'s log
-    /// (`session.appendEntry`). Not part of any turn.
-    pub fn extension_entry(session_id: &str, entry: Value) -> Self {
-        Self {
-            jsonrpc: "2.0",
-            method: "session.event",
-            params: serde_json::json!({
-                "session_id": session_id,
-                "turn_id": null,
-                "event": {"kind": "extension_entry", "entry": entry},
-            }),
-        }
-    }
-
     /// A daemon-level async notification (MCP connect outcome, import
     /// auto-detection, ...) pushed to any connection subscribed via
     /// `daemon.subscribeEvents` — not tied to any particular session/turn.
@@ -979,15 +895,10 @@ mod tests {
 
     #[test]
     fn stream_frame_format() {
-        let f = StreamFrame::event(
-            "sess-1",
-            "turn-1",
-            serde_json::json!({"kind": "text", "data": "hi"}),
-        );
+        let f = StreamFrame::daemon_event(serde_json::json!({"kind": "session_created"}));
         let s = serde_json::to_string(&f).unwrap();
-        assert!(s.contains(r#""method":"session.event""#));
-        assert!(s.contains(r#""session_id":"sess-1""#));
-        assert!(s.contains(r#""turn_id":"turn-1""#));
+        assert!(s.contains(r#""method":"daemon.event""#));
+        assert!(s.contains(r#""kind":"session_created""#));
     }
 
     #[test]

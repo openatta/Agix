@@ -1150,8 +1150,7 @@
             "agent_type": "explore",
             "event": {
               "kind": "text_delta",
-              "text": "hello",
-              "turn_id": "inner"
+              "text": "hello"
             },
             "kind": "subagent_progress",
             "parent_tool_use_id": "toolu_agent",
@@ -1188,8 +1187,7 @@
             "agent_type": "explore",
             "event": {
               "kind": "text_delta",
-              "text": "hello",
-              "turn_id": "inner"
+              "text": "hello"
             },
             "kind": "subagent_progress",
             "parent_tool_use_id": "toolu_agent",
@@ -1216,8 +1214,7 @@
               "message": "m",
               "name": "Read",
               "progress": 42,
-              "tool_use_id": "toolu_in",
-              "turn_id": "inner"
+              "tool_use_id": "toolu_in"
             },
             "kind": "subagent_progress",
             "parent_tool_use_id": "toolu_agent",
@@ -1262,8 +1259,7 @@
               "message": "m",
               "name": "Read",
               "progress": 42,
-              "tool_use_id": "toolu_in",
-              "turn_id": "inner"
+              "tool_use_id": "toolu_in"
             },
             "kind": "subagent_progress",
             "parent_tool_use_id": "toolu_agent",
@@ -1285,12 +1281,12 @@
             "agent_session_id": "child",
             "agent_type": "explore",
             "event": {
-              "kind": "permission_prompt",
+              "kind": "prompt",
               "message": "ok?",
               "paths": [],
               "prompt_id": "p3",
-              "tool_name": "Bash",
-              "turn_id": "inner"
+              "prompt_type": "permission",
+              "tool_name": "Bash"
             },
             "kind": "subagent_progress",
             "parent_tool_use_id": "toolu_agent",
@@ -1329,12 +1325,12 @@
             "agent_session_id": "child",
             "agent_type": "explore",
             "event": {
-              "kind": "permission_prompt",
+              "kind": "prompt",
               "message": "ok?",
               "paths": [],
               "prompt_id": "p3",
-              "tool_name": "Bash",
-              "turn_id": "inner"
+              "prompt_type": "permission",
+              "tool_name": "Bash"
             },
             "kind": "subagent_progress",
             "parent_tool_use_id": "toolu_agent",
@@ -1358,14 +1354,12 @@
             "event": {
               "dropped_messages": 6,
               "dropped_rounds": 1,
-              "estimated_tokens_saved": null,
-              "kind": "compact_action",
+              "kind": "compact",
               "messages_after": 3,
               "messages_before": 9,
               "strategy": "Snip",
               "tokens_after": 0,
-              "tokens_before": 0,
-              "turn_id": "inner"
+              "tokens_before": 0
             },
             "kind": "subagent_progress",
             "parent_tool_use_id": "toolu_agent",
@@ -1408,14 +1402,12 @@
             "event": {
               "dropped_messages": 6,
               "dropped_rounds": 1,
-              "estimated_tokens_saved": null,
-              "kind": "compact_action",
+              "kind": "compact",
               "messages_after": 3,
               "messages_before": 9,
               "strategy": "Snip",
               "tokens_after": 0,
-              "tokens_before": 0,
-              "turn_id": "inner"
+              "tokens_before": 0
             },
             "kind": "subagent_progress",
             "parent_tool_use_id": "toolu_agent",
@@ -1428,29 +1420,7 @@
       }
     },
     {
-      "between_turns": {
-        "jsonrpc": "2.0",
-        "method": "session.event",
-        "params": {
-          "event": {
-            "agent_label": "explore#1a2b3c4d",
-            "agent_session_id": "child",
-            "agent_type": "explore",
-            "event": {
-              "kind": "system_init",
-              "mcp_servers": [],
-              "scene": "code",
-              "tools": []
-            },
-            "kind": "subagent_progress",
-            "parent_tool_use_id": "toolu_agent",
-            "parent_turn": 2,
-            "task_id": "a1"
-          },
-          "session_id": "s1",
-          "turn_id": null
-        }
-      },
+      "between_turns": null,
       "case": "subagent_system_init",
       "event": {
         "agent_label": "explore#1a2b3c4d",
@@ -1468,29 +1438,7 @@
         "parent_turn": 2,
         "task_id": "a1"
       },
-      "in_turn": {
-        "jsonrpc": "2.0",
-        "method": "session.event",
-        "params": {
-          "event": {
-            "agent_label": "explore#1a2b3c4d",
-            "agent_session_id": "child",
-            "agent_type": "explore",
-            "event": {
-              "kind": "system_init",
-              "mcp_servers": [],
-              "scene": "code",
-              "tools": []
-            },
-            "kind": "subagent_progress",
-            "parent_tool_use_id": "toolu_agent",
-            "parent_turn": 2,
-            "task_id": "a1"
-          },
-          "session_id": "s1",
-          "turn_id": "t1"
-        }
-      }
+      "in_turn": null
     },
     {
       "between_turns": {
@@ -1513,7 +1461,6 @@
               "seq": 2,
               "stop_reason": "end_turn",
               "tool_calls": 0,
-              "turn_id": "inner",
               "usage": {
                 "cache_creation_input_tokens": 2,
                 "cache_read_input_tokens": 1,
@@ -1575,7 +1522,6 @@
               "seq": 2,
               "stop_reason": "end_turn",
               "tool_calls": 0,
-              "turn_id": "inner",
               "usage": {
                 "cache_creation_input_tokens": 2,
                 "cache_read_input_tokens": 1,
@@ -1608,11 +1554,9 @@
               "agent_type": "explore",
               "event": {
                 "kind": "text_delta",
-                "text": "deep",
-                "turn_id": "inner"
+                "text": "deep"
               },
               "kind": "subagent_progress",
-              "parent_session_id": "s1",
               "parent_tool_use_id": "toolu_agent",
               "parent_turn": 2,
               "task_id": "a1"
@@ -1666,11 +1610,9 @@
               "agent_type": "explore",
               "event": {
                 "kind": "text_delta",
-                "text": "deep",
-                "turn_id": "inner"
+                "text": "deep"
               },
               "kind": "subagent_progress",
-              "parent_session_id": "s1",
               "parent_tool_use_id": "toolu_agent",
               "parent_turn": 2,
               "task_id": "a1"
@@ -1696,8 +1638,7 @@
             "agent_type": null,
             "event": {
               "kind": "text_delta",
-              "text": "x",
-              "turn_id": "inner"
+              "text": "x"
             },
             "kind": "subagent_progress",
             "parent_tool_use_id": null,
@@ -1732,8 +1673,7 @@
             "agent_type": null,
             "event": {
               "kind": "text_delta",
-              "text": "x",
-              "turn_id": "inner"
+              "text": "x"
             },
             "kind": "subagent_progress",
             "parent_tool_use_id": null,

@@ -396,7 +396,7 @@ impl SessionPool {
                         sid.clone(),
                         live.name.clone(),
                         live.created_at,
-                        live.last_active,
+                        live.hub.last_active(),
                     )
                 })
                 .collect()

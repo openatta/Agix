@@ -147,14 +147,15 @@ impl DaemonServer {
             .subscribe_session(session_id, client.clone())
             .await
         {
-            Ok(v) => Some(v),
+            Ok(subscribed) => Some(watch::subscribed_json(&subscribed)),
             Err(crate::session_pool::api::PoolError::SessionNotFound { .. }) if resume => {
                 let inferred = match self.pool.resume_session(session_id, false, None).await {
                     Ok(resumed) => resumed["scene_inferred"].clone(),
                     Err(e) => return failure(id, e),
                 };
                 return match self.pool.subscribe_session(session_id, client).await {
-                    Ok(mut v) => {
+                    Ok(subscribed) => {
+                        let mut v = watch::subscribed_json(&subscribed);
                         if let Some(obj) = v.as_object_mut() {
                             obj.insert("resumed".into(), serde_json::json!(true));
                             obj.insert("scene_inferred".into(), inferred);
@@ -487,7 +488,12 @@ impl DaemonServer {
         let Some(session_id) = params.get("session_id").and_then(|v| v.as_str()) else {
             return RpcResponse::err(id, codes::INVALID_PARAMS, "missing session_id");
         };
-        self.pool.unsubscribe_session(session_id, client.id()).await;
+        self.pool
+            .unsubscribe_session(
+                session_id,
+                crate::session_pool::api::WatcherId(client.id().0),
+            )
+            .await;
         RpcResponse::ok(
             id,
             serde_json::json!({"session_id": session_id, "subscribed": false}),

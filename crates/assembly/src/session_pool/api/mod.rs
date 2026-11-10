@@ -2,5 +2,10 @@
 //! 不接触 JSON-RPC 线格式。
 
 mod error;
+mod events;
 
 pub use error::{Busy, EngineFailure, PoolError};
+pub use events::{
+    emitted_outside_turns, AskKind, PendingAsk, SessionEvent, SessionFrame, SessionWatcher,
+    Subscribed, WatcherId,
+};

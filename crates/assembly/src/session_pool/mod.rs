@@ -7,7 +7,7 @@
 //! - 空闲超时回收
 //! - session.list 合并活跃 + 历史
 
-use crate::rpc::{SessionOptions, StreamFrame};
+use crate::rpc::SessionOptions;
 use base::id::Id;
 use base::interface::event::AgentEvent;
 use base::interface::permission::Permission;
@@ -37,6 +37,7 @@ mod create;
 mod goal;
 mod helpers;
 mod history_rpc;
+mod hub;
 mod listing;
 #[cfg(feature = "mcp")]
 mod mcp_cache;
@@ -55,9 +56,13 @@ mod teardown;
 mod tests;
 mod turn;
 
-use api::{Busy, EngineFailure, PoolError};
+use api::{
+    emitted_outside_turns, AskKind, Busy, EngineFailure, PoolError, SessionEvent, SessionFrame,
+    SessionWatcher, Subscribed, WatcherId,
+};
 use helpers::*;
 use history_rpc::*;
+use hub::SessionHub;
 use permission_scripts::*;
 use pool_telemetry::*;
 use settings_reload::*;
@@ -530,7 +535,6 @@ struct LiveSession {
     /// Session name（CHAT 场景首轮后由 LLM 生成；CODING 为 None）。
     name: Option<String>,
     created_at: Instant,
-    last_active: Instant,
     /// 用于首轮命名判断。
     is_first_turn: bool,
     /// Set by `session.rename`. The first-turn auto-namer skips a session
@@ -555,9 +559,10 @@ struct LiveSession {
     idle: Arc<tokio::sync::Notify>,
     /// Who started the running turn: `"client"`, `"schedule"` or `"goal"`.
     turn_initiator: Option<&'static str>,
-    /// The connection that started the running turn; it hears how the turn
-    /// ended from its `run_turn` response rather than from an `error` frame.
-    turn_connection: Option<crate::rpc::ConnectionId>,
+    /// Who started the running turn, when a watcher did; it hears how the
+    /// turn ended from its `run_turn` result rather than from an `error`
+    /// frame.
+    turn_watcher: Option<WatcherId>,
     /// The running turn's `turn_complete` or `error` frame has gone out.
     turn_terminated: bool,
     /// The engine's own session state: the tasks `session.tasks` lists.
@@ -573,31 +578,15 @@ struct LiveSession {
     scripts: Option<Arc<base::interface::script::ScriptLedger>>,
     /// The checks this session's plugins registered, for `session.get`.
     health: Arc<base::interface::health::HealthChecks>,
-    /// Connections watching this session.
-    ///
-    /// Every frame the session produces goes to all of them. A turn is not
-    /// owned by the connection that started it — several browser tabs can
-    /// watch one conversation, and closing the one that sent the message is
-    /// not a reason to stop.
-    subscribers: HashMap<crate::rpc::ConnectionId, Arc<crate::rpc::Client>>,
-    /// Asks (permission prompts and questions) raised and not yet answered,
-    /// by `prompt_id`.
-    ///
-    /// Kept so a connection that subscribes later — a second tab, or the
-    /// same tab after a refresh — is handed the question instead of finding
-    /// a session that appears stuck. The engine remains the authority on
-    /// whether an answer is still wanted; this is a mirror for redelivery,
-    /// and an answer to a `prompt_id` nobody awaits is already a documented
-    /// no-op.
-    pending_prompts: HashMap<String, PendingPrompt>,
+    /// Who watches this session, what it is still asking, and when it was
+    /// last active. Every frame the session produces goes to all of its
+    /// watchers; a turn is not owned by the one that started it. Kept across
+    /// a rebuild, so the watchers and the open asks go on with the session.
+    hub: Arc<SessionHub>,
     /// The process groups this session's commands started, kept when
     /// `sandbox.reap_process_groups` is on and stopped when the session ends.
     process_groups: Option<Arc<platform::GroupLedger>>,
 }
-
-/// A raised ask: its `prompt_id`, and the background task asking it when
-/// one does.
-type Ask = (String, Option<String>);
 
 /// What `session.respondToPrompt` delivers, by `prompt_type`.
 #[derive(Debug, Clone)]
@@ -607,21 +596,12 @@ pub enum PromptAnswer {
 }
 
 impl PromptAnswer {
-    pub fn prompt_type(&self) -> &'static str {
+    pub fn kind(&self) -> AskKind {
         match self {
-            Self::Permission(_) => crate::rpc::PROMPT_TYPE_PERMISSION,
-            Self::Question(_) => crate::rpc::PROMPT_TYPE_QUESTION,
+            Self::Permission(_) => AskKind::Permission,
+            Self::Question(_) => AskKind::Question,
         }
     }
-}
-
-/// A raised ask, as redelivered to a late subscriber.
-struct PendingPrompt {
-    frame: serde_json::Value,
-    /// The background task whose sub-agent asks, when one does. Such an ask
-    /// is not the running turn's and outlives it; it goes when it is answered
-    /// or its task ends.
-    task_id: Option<String>,
 }
 
 pub struct SessionPool {
@@ -798,7 +778,7 @@ pub struct SessionPool {
     ///
     /// Defaults to [`DEFAULT_PERMISSION_PROMPT_TIMEOUT`]; `daemon/src/main.rs`
     /// overrides it from `--permission-prompt-timeout`. See
-    /// `LiveSession.pending_prompts` for why this lives here rather than in
+    /// `LiveSession.hub` for why this lives here rather than in
     /// the engine.
     permission_prompt_timeout: Duration,
     /// Where provider keys come from when a binding builds its router.

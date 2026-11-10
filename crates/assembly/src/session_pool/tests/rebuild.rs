@@ -115,25 +115,23 @@ async fn a_rebuild_keeps_the_goal_armed_and_the_round_it_was_about_to_start() {
 async fn a_rebuild_moves_the_sessions_watchers_and_open_questions_along() {
     let (pool, _dir, _store) = pool_with_history().await;
     let sid = new_session(&pool).await;
-    let watcher = Arc::new(crate::rpc::Client::new(
-        crate::rpc::ConnectionId(u64::MAX - 7),
-        Arc::new(Discard),
-    ));
-    pool.subscribe_session(&sid, watcher.clone()).await.unwrap();
-    pool.remember_prompt(
+    pool.subscribe_session(&sid, Arc::new(NullWatcher(7)))
+        .await
+        .unwrap();
+    raise_ask(
+        &pool.hub_of(&sid).await.unwrap(),
         &sid,
-        &("p1".to_string(), Some("task-1".to_string())),
-        &serde_json::json!({"kind": "prompt"}),
-    )
-    .await;
+        "p1",
+        Some("task-1"),
+    );
 
     pool.set_session_prompt(&sid, append)
         .await
         .unwrap_or_else(|_| panic!("an idle session takes the change"));
     let sessions = pool.sessions.lock().await;
     let live = sessions.get(&sid).unwrap();
-    assert!(live.subscribers.contains_key(&watcher.id()));
-    assert!(live.pending_prompts.contains_key("p1"));
+    assert!(live.hub.is_watched_by(WatcherId(7)));
+    assert_eq!(live.hub.pending_prompt_ids(), ["p1"]);
 }
 
 #[tokio::test]
@@ -202,27 +200,21 @@ async fn a_background_tasks_question_outlives_the_turn_and_goes_with_its_task() 
         .get_mut(&sid)
         .unwrap()
         .current_turn = Some("t1".into());
-    pool.remember_prompt(&sid, &("own".into(), None), &serde_json::json!({}))
-        .await;
-    pool.remember_prompt(
-        &sid,
-        &("background".into(), Some("task-1".into())),
-        &serde_json::json!({}),
-    )
-    .await;
+    let hub = pool.hub_of(&sid).await.unwrap();
+    raise_ask(&hub, &sid, "own", None);
+    raise_ask(&hub, &sid, "background", Some("task-1"));
 
     assert!(pool.release_turn_slot(&sid, &slot, rx, "t1").await);
     assert_eq!(
         pending_ids(&pool, &sid).await,
         vec!["background".to_string()]
     );
-    pool.forget_prompts_of_task(&sid, "task-1").await;
+    hub.forget_asks_of_task("task-1");
     assert!(pending_ids(&pool, &sid).await.is_empty());
 }
 
 async fn pending_ids(pool: &SessionPool, sid: &str) -> Vec<String> {
-    let sessions = pool.sessions.lock().await;
-    sessions[sid].pending_prompts.keys().cloned().collect()
+    pool.hub_of(sid).await.unwrap().pending_prompt_ids()
 }
 
 fn transcript_of(store_dir: &std::path::Path, sid: &str) -> std::path::PathBuf {

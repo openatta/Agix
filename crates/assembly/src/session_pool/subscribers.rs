@@ -1,101 +1,67 @@
-//! 会话的订阅者与待答提示：订阅/退订、广播、中断、`respond_to_prompt`。
+//! 会话的订阅者与待答提示：订阅/退订、本轮终止帧、中断、`respond_to_prompt`。
 
 use super::*;
 
 impl SessionPool {
-    /// Record a raised ask so late subscribers can be handed it.
-    pub(super) async fn remember_prompt<T: serde::Serialize>(
-        &self,
-        session_id: &str,
-        (prompt_id, task_id): &Ask,
-        frame: &T,
-    ) {
-        let Ok(frame) = serde_json::to_value(frame) else {
-            return;
-        };
-        let mut sessions = self.sessions.lock().await;
-        if let Some(live) = sessions.get_mut(session_id) {
-            live.pending_prompts.insert(
-                prompt_id.clone(),
-                PendingPrompt {
-                    frame,
-                    task_id: task_id.clone(),
-                },
-            );
+    /// The hub of live `session_id`.
+    pub(super) async fn hub_of(&self, session_id: &str) -> Option<Arc<SessionHub>> {
+        self.sessions
+            .lock()
+            .await
+            .get(session_id)
+            .map(|live| live.hub.clone())
+    }
+
+    /// Hand `event`, which belongs to no turn, to whoever watches
+    /// `session_id`.
+    pub(super) async fn publish_between_turns(&self, session_id: &str, event: SessionEvent) {
+        if let Some(hub) = self.hub_of(session_id).await {
+            hub.publish(&frame_between_turns(session_id, event));
         }
     }
 
-    /// Forget an ask: answered, or the turn that raised it ended.
-    pub(super) async fn forget_prompt(&self, session_id: &str, prompt_id: &str) {
-        let mut sessions = self.sessions.lock().await;
-        if let Some(live) = sessions.get_mut(session_id) {
-            live.pending_prompts.remove(prompt_id);
-        }
-    }
-
-    /// Forget the asks of a background task that ended.
-    pub(super) async fn forget_prompts_of_task(&self, session_id: &str, task_id: &str) {
-        let mut sessions = self.sessions.lock().await;
-        if let Some(live) = sessions.get_mut(session_id) {
-            live.pending_prompts
-                .retain(|_, prompt| prompt.task_id.as_deref() != Some(task_id));
-        }
-    }
-
-    /// Register `client` as a watcher of `session_id`.
+    /// Register `watcher` as a watcher of `session_id`.
     ///
-    /// Returns the transcript watermark and any unanswered permission asks,
-    /// which together are what a newly opened tab needs to catch up:
-    /// subscribe first, then read history up to `last_seq`, then apply the
-    /// frames that arrived meanwhile. Reading first and subscribing second
-    /// loses everything produced in between — the reason this returns a
-    /// watermark at all.
+    /// Returns the transcript watermark and any unanswered asks, which
+    /// together are what a newly opened tab needs to catch up: subscribe
+    /// first, then read history up to `last_seq`, then apply the frames that
+    /// arrived meanwhile. Reading first and subscribing second loses
+    /// everything produced in between — the reason this returns a watermark
+    /// at all.
     pub async fn subscribe_session(
         &self,
         session_id: &str,
-        client: Arc<crate::rpc::Client>,
-    ) -> Result<serde_json::Value, PoolError> {
+        watcher: Arc<dyn SessionWatcher>,
+    ) -> Result<Subscribed, PoolError> {
         self.refuse_scene_mismatch(session_id).await?;
-        let pending: Vec<serde_json::Value> = {
-            let mut sessions = self.sessions.lock().await;
-            let Some(live) = sessions.get_mut(session_id) else {
-                return Err(PoolError::session_not_found(session_id));
-            };
-            live.subscribers.insert(client.id(), client);
-            live.pending_prompts
-                .values()
-                .map(|prompt| prompt.frame.clone())
-                .collect()
-        };
-
-        Ok(serde_json::json!({
-            "session_id": session_id,
-            "last_seq": self.transcript_len(session_id).await,
-            "pending_prompts": pending,
-        }))
+        let hub = self
+            .hub_of(session_id)
+            .await
+            .ok_or_else(|| PoolError::session_not_found(session_id))?;
+        let pending = hub.subscribe(watcher);
+        Ok(Subscribed {
+            session_id: session_id.to_string(),
+            last_seq: self.transcript_len(session_id).await,
+            pending,
+        })
     }
 
-    /// Stop sending this session's frames to `connection`.
-    pub async fn unsubscribe_session(
-        &self,
-        session_id: &str,
-        connection: crate::rpc::ConnectionId,
-    ) {
-        let mut sessions = self.sessions.lock().await;
-        if let Some(live) = sessions.get_mut(session_id) {
-            live.subscribers.remove(&connection);
+    /// Stop handing this session's frames to `watcher`.
+    pub async fn unsubscribe_session(&self, session_id: &str, watcher: WatcherId) {
+        if let Some(hub) = self.hub_of(session_id).await {
+            hub.unsubscribe(watcher);
         }
     }
 
-    /// A connection went away: forget it everywhere.
+    /// A watcher went away — a connection closed: forget it everywhere.
     ///
     /// That is all a disconnect means: the turn keeps running, because
     /// another connection may be watching and a teardown would cascade into
     /// deleting the session's sidechain transcripts.
-    pub async fn drop_connection(&self, connection: crate::rpc::ConnectionId) {
-        let mut sessions = self.sessions.lock().await;
-        for live in sessions.values_mut() {
-            live.subscribers.remove(&connection);
+    pub async fn drop_watcher(&self, watcher: WatcherId) {
+        let sessions = self.sessions.lock().await;
+        for live in sessions.values() {
+            live.hub.unsubscribe(watcher);
         }
     }
 
@@ -117,65 +83,18 @@ impl SessionPool {
             .unwrap_or(0)
     }
 
-    /// Send one frame to every connection watching `session_id`.
-    ///
-    /// A subscriber that cannot take the frame — gone, or fallen far enough
-    /// behind to fill its queue — is dropped here rather than waited on. One
-    /// tab that stopped reading must not hold up the turn or the other tabs
-    /// watching it. A subscriber dropped for falling behind is told so
-    /// (`subscription_dropped`) and can subscribe again and catch up through
-    /// `last_seq`, which is what makes dropping an acceptable answer.
-    pub(super) async fn broadcast_to_session<T: serde::Serialize>(
-        &self,
-        session_id: &str,
-        frame: &T,
-    ) {
-        self.broadcast_to_session_except(session_id, frame, None)
-            .await;
-    }
-
-    /// [`Self::broadcast_to_session`], skipping one connection — the caller
-    /// that is about to be told the same thing in its own response.
-    pub(super) async fn broadcast_to_session_except<T: serde::Serialize>(
-        &self,
-        session_id: &str,
-        frame: &T,
-        except: Option<crate::rpc::ConnectionId>,
-    ) {
-        let json = match serde_json::to_string(frame) {
-            Ok(json) => json,
-            Err(e) => {
-                tracing::warn!(error = %e, "could not serialize a session frame; dropping it");
-                return;
-            }
-        };
-        let mut sessions = self.sessions.lock().await;
-        let Some(live) = sessions.get_mut(session_id) else {
-            return;
-        };
-        live.last_active = Instant::now();
-        live.subscribers.retain(|id, client| {
-            Some(*id) == except || client.try_send_for(session_id, json.clone())
-        });
-    }
-
     /// Send the running turn's last frame, if `slot` is still the session's
     /// turn slot. Marked under the same lock `session.close` takes the
     /// session out with, so every watcher gets exactly one: this one, or the
     /// one the close sends ([`Self::end_cut_off_turn`]). Returns whether the
     /// session was still there to send it to.
-    pub(super) async fn broadcast_terminal<T: serde::Serialize>(
+    pub(super) async fn publish_terminal(
         &self,
         session_id: &str,
         slot: &Arc<AsyncMutex<Option<EventReceiver>>>,
-        frame: &T,
-        except: Option<crate::rpc::ConnectionId>,
+        frame: &SessionFrame,
+        except: Option<WatcherId>,
     ) -> bool {
-        let json = serde_json::to_string(frame)
-            .inspect_err(
-                |e| tracing::warn!(error = %e, "could not serialize a session frame; dropping it"),
-            )
-            .ok();
         let mut sessions = self.sessions.lock().await;
         let Some(live) = sessions
             .get_mut(session_id)
@@ -184,18 +103,13 @@ impl SessionPool {
             return false;
         };
         live.turn_terminated = true;
-        live.last_active = Instant::now();
-        if let Some(json) = json {
-            live.subscribers.retain(|id, client| {
-                Some(*id) == except || client.try_send_for(session_id, json.clone())
-            });
-        }
+        live.hub.publish_except(frame, except);
         true
     }
 
     /// `live`, just taken out of the map, was running a turn whose last
     /// frame has not gone out: send its watchers an `error` frame in its
-    /// place. Its initiator learns the same from its `run_turn` response.
+    /// place. Its initiator learns the same from its `run_turn` result.
     pub(super) fn end_cut_off_turn(&self, session_id: &str, live: &LiveSession) {
         let Some(turn_id) = live.current_turn.as_deref() else {
             return;
@@ -203,23 +117,12 @@ impl SessionPool {
         if live.turn_terminated {
             return;
         }
-        let frame = StreamFrame::event(
-            session_id,
-            turn_id,
-            serde_json::json!({
-                "kind": "error",
-                "code": SESSION_CLOSED,
-                "message": SESSION_CLOSED_MESSAGE,
-            }),
-        );
-        let Ok(json) = serde_json::to_string(&frame) else {
-            return;
+        let frame = SessionFrame {
+            session_id: Arc::from(session_id),
+            turn_id: Some(Arc::from(turn_id)),
+            event: SessionEvent::Closed,
         };
-        for (id, client) in &live.subscribers {
-            if Some(*id) != live.turn_connection {
-                client.try_send_for(session_id, json.clone());
-            }
-        }
+        live.hub.publish_except(&frame, live.turn_watcher);
     }
 
     /// The turn currently running on `session_id`, if any. `session.get`
@@ -288,25 +191,23 @@ impl SessionPool {
         prompt_id: String,
         answer: PromptAnswer,
     ) -> Result<(), PoolError> {
-        let input_tx = {
+        let (input_tx, hub) = {
             let sessions = self.sessions.lock().await;
             let Some(live) = sessions.get(session_id) else {
                 return Err(PoolError::session_not_found(session_id));
             };
-            let asked = live.pending_prompts.get(&prompt_id).and_then(|prompt| {
-                prompt
-                    .frame
-                    .pointer("/params/event/prompt_type")
-                    .and_then(|t| t.as_str())
-                    .map(str::to_string)
-            });
-            if let Some(asked) = asked.filter(|asked| asked != answer.prompt_type()) {
+            if let Some(asked) = live
+                .hub
+                .ask_kind(&prompt_id)
+                .filter(|asked| *asked != answer.kind())
+            {
                 return Err(PoolError::InvalidRequest(format!(
-                    "prompt `{prompt_id}` is a {asked} prompt, not a {}",
-                    answer.prompt_type()
+                    "prompt `{prompt_id}` is a {} prompt, not a {}",
+                    asked.as_str(),
+                    answer.kind().as_str()
                 )));
             }
-            live.input_tx.clone()
+            (live.input_tx.clone(), live.hub.clone())
         };
 
         // Straight to the engine, whose input demultiplexer wakes the blocked
@@ -322,7 +223,7 @@ impl SessionPool {
                 answer,
             },
         });
-        self.forget_prompt(session_id, &prompt_id).await;
+        hub.forget_ask(&prompt_id);
         Ok(())
     }
 }

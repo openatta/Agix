@@ -1,7 +1,7 @@
 //! Daemon server — JSON-RPC over Unix socket / TCP.
 //!
 //! Accepts newline-delimited JSON-RPC 2.0 requests, dispatches them
-//! to the agent engine, and streams events back as `StreamFrame` lines.
+//! to the agent engine, and streams events back as `session.event` lines.
 //!
 //! The framing is the only part that belongs to a transport. `dispatch` takes
 //! a request and a [`Sink`], so `crate::ws` carries the same protocol over
@@ -66,6 +66,7 @@ mod methods_config;
 mod methods_session;
 mod methods_turn;
 mod transport;
+mod watch;
 
 #[cfg(feature = "ws")]
 pub(crate) use connection::refusal_frame;
@@ -150,7 +151,9 @@ impl DaemonServer {
     /// Forget a connection's subscriptions. Public for the same reason as
     /// [`Self::accept_connection`].
     pub async fn drop_connection(&self, connection: crate::rpc::ConnectionId) {
-        self.pool.drop_connection(connection).await;
+        self.pool
+            .drop_watcher(crate::session_pool::api::WatcherId(connection.0))
+            .await;
     }
 
     /// The configured TCP/WebSocket token, if any.

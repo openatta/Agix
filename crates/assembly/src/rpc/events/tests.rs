@@ -1,9 +1,11 @@
-//! 特征化测试：每种 `AgentEvent` 样本、以及 daemon 自己合成的会话帧，按现在的
-//! 路径（turn 内的帧、两轮之间转发的帧）序列化出的线上 JSON，冻结在
-//! `testdata/session_events.golden.json`。`AGIX_UPDATE_GOLDEN=1` 时重写该文件。
+//! 会话帧投影的测试。golden 冻结每种 `AgentEvent` 样本、以及池自己合成的会话事件，
+//! 在 turn 内和两轮之间各发出什么帧（`testdata/session_events.golden.json`，
+//! `AGIX_UPDATE_GOLDEN=1` 时重写）。
 
 use super::*;
+use crate::session_pool::api::emitted_outside_turns;
 use serde_json::{json, Value};
+use std::sync::Arc;
 
 const SID: &str = "s1";
 const TURN: &str = "t1";
@@ -207,81 +209,83 @@ fn json_of<T: serde::Serialize>(frame: &T) -> Value {
     serde_json::to_value(frame).expect("a frame serializes")
 }
 
-fn in_turn_old(event: &AgentEvent) -> Value {
-    if let Some((frame, _)) = background_frame(SID, Some(TURN), event) {
-        return json_of(&frame);
-    }
-    match turn_event_body(event) {
-        Some(body) => json_of(&StreamFrame::event(SID, TURN, body)),
-        None => Value::Null,
+fn frame(turn_id: Option<&str>, event: SessionEvent) -> SessionFrame {
+    SessionFrame {
+        session_id: Arc::from(SID),
+        turn_id: turn_id.map(Arc::from),
+        event,
     }
 }
 
-fn between_turns_old(event: &AgentEvent) -> Value {
-    background_frame(SID, None, event)
-        .map(|(frame, _)| json_of(&frame))
+fn on_wire(frame: &SessionFrame) -> Value {
+    SessionEventNotification::of(frame)
+        .map(|n| json_of(&n))
         .unwrap_or(Value::Null)
 }
 
-fn daemon_frames_old() -> Vec<(&'static str, Value)> {
+fn in_turn(event: &AgentEvent) -> Value {
+    on_wire(&frame(Some(TURN), SessionEvent::Agent(event.clone())))
+}
+
+fn between_turns(event: &AgentEvent) -> Value {
+    if !emitted_outside_turns(event) {
+        return Value::Null;
+    }
+    on_wire(&frame(None, SessionEvent::Agent(event.clone())))
+}
+
+fn daemon_frames() -> Vec<(&'static str, Value)> {
     let task = json!({"task_id": "a1", "kind": "agent", "status": "running",
                       "started_ms": 1, "ended_ms": null, "detail": {}});
     let task_event = |kind: &str| {
-        let event = json!({"kind": kind, "task": task});
-        json_of(&StreamFrame::task_event(SID, &event).expect("a task frame"))
+        on_wire(&frame(
+            None,
+            SessionEvent::Task(json!({"kind": kind, "task": task})),
+        ))
     };
     let progress = json!({"kind": "task_progress", "task_id": "a1", "appended": "out",
                           "skipped_bytes": 0, "from_byte": 0, "next_byte": 3});
     vec![
         (
             "engine_stopped",
-            json_of(&StreamFrame::event(
-                SID,
-                TURN,
-                json!({
-                    "kind":"error","code":"engine_stopped",
-                    "message":"engine stopped before the turn completed"
-                }),
-            )),
+            on_wire(&frame(Some(TURN), SessionEvent::EngineStopped)),
         ),
         (
             "session_closed",
-            json_of(&StreamFrame::event(
-                SID,
-                TURN,
-                json!({
-                    "kind": "error", "code": SESSION_CLOSED, "message": SESSION_CLOSED_MESSAGE,
-                }),
-            )),
+            on_wire(&frame(Some(TURN), SessionEvent::Closed)),
         ),
         ("task_started", task_event("task_started")),
         ("task_updated", task_event("task_updated")),
         ("task_finished", task_event("task_finished")),
         (
             "task_progress",
-            json_of(&StreamFrame::task_event(SID, &progress).expect("a task frame")),
+            on_wire(&frame(None, SessionEvent::Task(progress))),
         ),
         (
             "goal_changed",
-            json_of(&StreamFrame::goal_changed(
-                SID,
-                json!({"id": "g1", "objective": "ship", "status": "active"}),
+            on_wire(&frame(
+                None,
+                SessionEvent::GoalChanged(
+                    json!({"id": "g1", "objective": "ship", "status": "active"}),
+                ),
             )),
         ),
         (
             "goal_cleared",
-            json_of(&StreamFrame::goal_changed(SID, Value::Null)),
+            on_wire(&frame(None, SessionEvent::GoalChanged(Value::Null))),
         ),
         (
             "extension_entry",
-            json_of(&StreamFrame::extension_entry(
-                SID,
-                json!({"ns": "host", "event": "note", "payload": {"a": 1}, "seq": 3}),
+            on_wire(&frame(
+                None,
+                SessionEvent::ExtensionEntry(
+                    json!({"ns": "host", "event": "note", "payload": {"a": 1}, "seq": 3}),
+                ),
             )),
         ),
         (
             "subscription_dropped",
-            json_of(&crate::rpc::StreamFrame::subscription_dropped(SID)),
+            json_of(&SessionEventNotification::subscription_dropped(SID)),
         ),
     ]
 }
@@ -295,12 +299,12 @@ fn render() -> Value {
             json!({
                 "case": case,
                 "event": sample,
-                "in_turn": in_turn_old(&event),
-                "between_turns": between_turns_old(&event),
+                "in_turn": in_turn(&event),
+                "between_turns": between_turns(&event),
             })
         })
         .collect();
-    let daemon: Vec<Value> = daemon_frames_old()
+    let daemon: Vec<Value> = daemon_frames()
         .into_iter()
         .map(|(case, frame)| json!({"case": case, "frame": frame}))
         .collect();
@@ -325,4 +329,69 @@ fn every_session_frame_keeps_its_wire_shape() {
             assert_eq!(want, got, "{section}/{}", want["case"]);
         }
     }
+}
+
+#[test]
+fn the_listed_kinds_are_exactly_the_ones_the_samples_produce() {
+    let rendered = render();
+    let mut produced: Vec<String> = Vec::new();
+    let mut collect = |frame: &Value| {
+        let mut event = &frame["params"]["event"];
+        while !event.is_null() {
+            produced.push(event["kind"].as_str().unwrap().to_string());
+            event = &event["event"];
+        }
+    };
+    for case in rendered["agent"].as_array().unwrap() {
+        collect(&case["in_turn"]);
+        collect(&case["between_turns"]);
+    }
+    for case in rendered["daemon"].as_array().unwrap() {
+        collect(&case["frame"]);
+    }
+    produced.sort();
+    produced.dedup();
+    let mut listed: Vec<String> = SessionEventPayload::KINDS
+        .iter()
+        .map(|k| k.to_string())
+        .collect();
+    listed.sort();
+    assert_eq!(produced, listed);
+}
+
+#[test]
+fn a_sub_agents_event_is_projected_like_the_parents_and_dropped_when_the_parent_would_drop_it() {
+    let sample = |inner: Value| -> AgentEvent {
+        serde_json::from_value(json!({
+            "kind": "subagent_progress", "agent_label": "explore#1", "agent_session_id": "child",
+            "agent_type": null, "parent_session_id": SID, "parent_turn": 1, "event": inner,
+        }))
+        .unwrap()
+    };
+    let wrapped = in_turn(&sample(json!({
+        "kind": "compact_action", "strategy": "Snip", "messages_before": 9, "messages_after": 3,
+        "turn_id": "inner", "dropped_rounds": null, "dropped_messages": null,
+        "estimated_tokens_saved": null,
+    })));
+    let inner = &wrapped["params"]["event"]["event"];
+    assert_eq!(inner["kind"], "compact", "{wrapped}");
+    assert!(inner.get("turn_id").is_none(), "{wrapped}");
+
+    let dropped = in_turn(&sample(json!({"kind": "system", "message": "x"})));
+    assert!(dropped.is_null(), "{dropped}");
+}
+
+#[test]
+fn a_whole_progress_figure_is_an_integer_and_a_fractional_one_keeps_its_fraction() {
+    let progress = |value: f64| -> AgentEvent {
+        serde_json::from_value(json!({
+            "kind": "tool_progress", "tool_use_id": "toolu_1", "name": "Bash", "message": "m",
+            "progress": value, "dropped": 0, "turn_id": "inner",
+        }))
+        .unwrap()
+    };
+    let whole = in_turn(&progress(2.0));
+    assert!(whole["params"]["event"]["progress"].is_u64(), "{whole}");
+    let fraction = in_turn(&progress(0.25));
+    assert_eq!(fraction["params"]["event"]["progress"].as_f64(), Some(0.25));
 }

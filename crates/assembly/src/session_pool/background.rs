@@ -159,7 +159,7 @@ impl SessionPool {
                 "schedule",
             )
             .await;
-        self.drop_connection(connection).await;
+        self.drop_watcher(WatcherId(connection.0)).await;
         if let Err(e) = response {
             warn!(job_id = %job.id, %session_id, error = %e, "scheduled job's turn failed");
         }

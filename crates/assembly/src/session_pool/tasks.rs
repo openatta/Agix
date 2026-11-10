@@ -10,23 +10,21 @@ impl SessionPool {
     /// turn ended is still there. A turn that starts takes the receiver as
     /// before; this only ever tries the lock, so it never makes a turn wait.
     pub(super) fn forward_events_between_turns(
-        &self,
         session_id: &str,
+        hub: &Arc<SessionHub>,
         event_rx: &Arc<AsyncMutex<Option<EventReceiver>>>,
         arrived: &Arc<tokio::sync::Notify>,
         idle: &Arc<tokio::sync::Notify>,
         cancel: &CancellationToken,
     ) {
-        let Some(pool) = self.this.get().cloned() else {
-            return;
-        };
-        let (event_rx, arrived, idle, cancel) = (
+        let (hub, event_rx, arrived, idle, cancel) = (
+            hub.clone(),
             event_rx.clone(),
             arrived.clone(),
             idle.clone(),
             cancel.clone(),
         );
-        let session_id = session_id.to_string();
+        let session_key: Arc<str> = Arc::from(session_id);
         tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -51,16 +49,9 @@ impl SessionPool {
                         _ = returned => {}
                     }
                 };
-                if waiting.is_empty() {
-                    continue;
-                }
-                let Some(pool) = pool.upgrade() else { return };
                 for event in waiting {
-                    if let Some((frame, ask)) = background_frame(&session_id, None, &event) {
-                        if let Some(ask) = &ask {
-                            pool.remember_prompt(&session_id, ask, &frame).await;
-                        }
-                        pool.broadcast_to_session(&session_id, &frame).await;
+                    if emitted_outside_turns(&event) {
+                        publish_agent_event(&hub, &session_key, None, event);
                     }
                 }
             }
@@ -70,28 +61,24 @@ impl SessionPool {
     /// Push `session_id`'s task events to whoever watches the session, for as
     /// long as its engine lives. Outside any turn, so `turn_id` is `null`.
     pub(super) fn forward_task_events(
-        &self,
         session_id: &str,
+        hub: &Arc<SessionHub>,
         state: &Arc<base::context::SessionState>,
     ) {
-        let Some(pool) = self.this.get().cloned() else {
-            return;
-        };
         let mut events = state.subscribe_tasks();
+        let hub = Arc::downgrade(hub);
         let session_id = session_id.to_string();
         tokio::spawn(async move {
             loop {
                 match events.recv().await {
                     Ok(event) => {
-                        let Some(pool) = pool.upgrade() else { return };
+                        let Some(hub) = hub.upgrade() else { return };
                         if event["kind"] == "task_finished" {
                             if let Some(task_id) = event["task"]["task_id"].as_str() {
-                                pool.forget_prompts_of_task(&session_id, task_id).await;
+                                hub.forget_asks_of_task(task_id);
                             }
                         }
-                        if let Some(frame) = StreamFrame::task_event(&session_id, &event) {
-                            pool.broadcast_to_session(&session_id, &frame).await;
-                        }
+                        hub.publish(&frame_between_turns(&session_id, SessionEvent::Task(event)));
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return,

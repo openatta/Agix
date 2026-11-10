@@ -56,7 +56,7 @@ impl SessionPool {
                 "goal",
             )
             .await;
-        self.drop_connection(connection).await;
+        self.drop_watcher(WatcherId(connection.0)).await;
         if let Some(state) = self.live_state(&sid).await {
             state.goal_abandon_round(&round.turn_id);
         }
@@ -205,22 +205,22 @@ impl SessionPool {
 
     /// Push `session_id`'s goal changes to whoever watches the session.
     pub(super) fn forward_goal_events(
-        &self,
         session_id: &str,
+        hub: &Arc<SessionHub>,
         state: &Arc<base::context::SessionState>,
     ) {
-        let Some(pool) = self.this.get().cloned() else {
-            return;
-        };
         let mut events = state.subscribe_goal();
+        let hub = Arc::downgrade(hub);
         let session_id = session_id.to_string();
         tokio::spawn(async move {
             loop {
                 match events.recv().await {
                     Ok(goal) => {
-                        let Some(pool) = pool.upgrade() else { return };
-                        let frame = StreamFrame::goal_changed(&session_id, goal);
-                        pool.broadcast_to_session(&session_id, &frame).await;
+                        let Some(hub) = hub.upgrade() else { return };
+                        hub.publish(&frame_between_turns(
+                            &session_id,
+                            SessionEvent::GoalChanged(goal),
+                        ));
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return,

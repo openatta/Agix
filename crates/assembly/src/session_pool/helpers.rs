@@ -1,4 +1,4 @@
-//! 池内通用的自由函数：scene 注册表、事件中继、LRU 驱逐、后台帧、空闲判定等。
+//! 池内通用的自由函数：scene 注册表、事件中继与发布、LRU 驱逐、空闲判定等。
 
 use super::*;
 
@@ -41,8 +41,6 @@ pub(super) fn registry_of(
     (registry, refused)
 }
 
-/// Where a connection the pool opens for itself writes: nowhere. Its turn's
-/// frames still reach every real subscriber of the session.
 /// A goal round as its own boxed future: `run_turn` starts rounds and rounds
 /// run `run_turn`, so the `Send` of one cannot be inferred from the other.
 pub(super) fn goal_round_task(
@@ -113,268 +111,54 @@ pub(super) fn evict_lru(
     let sid = sessions
         .iter()
         .filter(|(_, live)| !is_busy(live))
-        .min_by_key(|(_, live)| live.last_active)
+        .min_by_key(|(_, live)| live.hub.last_active())
         .map(|(k, _)| k.clone())?;
     sessions.remove_entry(&sid)
 }
 
-/// The frame for an event the engine sends whether or not a turn is running
-/// — a question, a tool call's, a sub-agent's or a team's progress, changed
-/// skills — with
-/// the id of the question and of the background task asking it when it is
-/// one; `None` for any other event.
-///
-/// A question is not terminal: the tool call that asked waits on
-/// `session.respondToPrompt`. A sub-agent's activity arrives under its own
-/// `kind`, so a client that does not know it ignores it and one that does
-/// can show the sub-agent's tool calls under its `agent_label` instead of a
-/// stalled `Agent` call.
-pub(super) fn background_frame(
-    sid: &str,
-    turn_id: Option<&str>,
-    event: &AgentEvent,
-) -> Option<(StreamFrame, Option<Ask>)> {
-    let (body, prompt_id) = match event {
+/// The ask `event` raises — its `prompt_id`, the background task asking it
+/// when one does, and what kind of answer it wants.
+pub(super) fn ask_of(event: &AgentEvent) -> Option<(String, Option<String>, AskKind)> {
+    match event {
         AgentEvent::PermissionPrompt {
-            prompt_id,
-            tool_name,
-            message,
-            paths,
-            tool_use_id,
-            task_id,
-            ..
-        } => {
-            let mut body = serde_json::json!({
-                "kind":"prompt","prompt_type":crate::rpc::PROMPT_TYPE_PERMISSION,"prompt_id":prompt_id,
-                "tool_name":tool_name,"message":message,
-                "paths":paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>()
-            });
-            if let Some(tool_use_id) = tool_use_id {
-                body["tool_use_id"] = serde_json::json!(tool_use_id);
-            }
-            (body, Some((prompt_id.clone(), task_id.clone())))
-        }
+            prompt_id, task_id, ..
+        } => Some((prompt_id.clone(), task_id.clone(), AskKind::Permission)),
         AgentEvent::QuestionPrompt {
-            prompt_id,
-            question,
-            header,
-            options,
-            tool_use_id,
-            task_id,
-            ..
-        } => (
-            serde_json::json!({
-                "kind":"prompt","prompt_type":crate::rpc::PROMPT_TYPE_QUESTION,
-                "prompt_id":prompt_id,"tool_use_id":tool_use_id,
-                "question":question,"header":header,"options":options
-            }),
-            Some((prompt_id.clone(), task_id.clone())),
-        ),
-        AgentEvent::SubagentProgress {
-            agent_label,
-            agent_session_id,
-            agent_type,
-            parent_turn,
-            parent_tool_use_id,
-            task_id,
-            event,
-            ..
-        } => (
-            serde_json::json!({
-                "kind":"subagent_progress","agent_label":agent_label,
-                "agent_session_id":agent_session_id,"agent_type":agent_type,
-                "parent_turn":parent_turn,"parent_tool_use_id":parent_tool_use_id,
-                "task_id":task_id,
-                "event":serde_json::to_value(&**event).unwrap_or(serde_json::Value::Null)
-            }),
-            None,
-        ),
-        AgentEvent::ToolProgress {
-            tool_use_id,
-            name,
-            message,
-            progress,
-            total,
-            dropped,
-            turn_id: _,
-        } => {
-            let mut body = serde_json::json!({
-                "kind":"tool_progress","tool_use_id":tool_use_id,"name":name,
-                "message":message,"dropped":dropped
-            });
-            for (key, value) in [("progress", progress), ("total", total)] {
-                if let Some(v) = value {
-                    body[key] = base::event::progress_count_json(*v);
-                }
-            }
-            (body, None)
-        }
-        AgentEvent::SkillsChanged { added, removed, .. } => (
-            serde_json::json!({"kind":"skills_changed","added":added,"removed":removed}),
-            None,
-        ),
-        AgentEvent::Notification {
-            message, status, ..
-        } => (
-            serde_json::json!({"kind":"notification","message":message,"status":status}),
-            None,
-        ),
-        AgentEvent::TeamProgress {
-            team,
-            team_id,
-            stage,
-            stage_index,
-            stage_count,
-            status,
-            members,
-            failed,
-        } => (
-            serde_json::json!({
-                "kind":"team_progress","team":team,"team_id":team_id,"stage":stage,
-                "stage_index":stage_index,"stage_count":stage_count,
-                "status":status,"members":members,"failed":failed
-            }),
-            None,
-        ),
-        _ => return None,
-    };
-    Some((StreamFrame::event_in(sid, turn_id, body), prompt_id))
+            prompt_id, task_id, ..
+        } => Some((prompt_id.clone(), task_id.clone(), AskKind::Question)),
+        _ => None,
+    }
 }
 
-/// The `event` of the frame a running turn sends for an engine event that
-/// is the turn's own — its steps, its text, its tool calls, how it ended —
-/// or `None` for one that does not go out.
-pub(super) fn turn_event_body(event: &AgentEvent) -> Option<serde_json::Value> {
-    let body = match event {
-        AgentEvent::TurnStart { .. } => serde_json::json!({"kind":"turn_start"}),
-        AgentEvent::StepStart { step, .. } => serde_json::json!({"kind":"step_start","step":step}),
-        AgentEvent::StepEnd {
-            step,
-            stop_reason,
-            usage,
-            tool_calls,
-            seq,
-            ..
-        } => serde_json::json!({
-            "kind":"step_end","step":step,"stop_reason":stop_reason,
-            "tool_calls":tool_calls,"seq":seq,
-            "usage":serde_json::to_value(usage).unwrap_or_else(|_| serde_json::json!({}))
-        }),
-        AgentEvent::TextDelta { text, .. } => serde_json::json!({"kind":"text_delta","text":text}),
-        AgentEvent::ThinkingDelta { text, .. } => {
-            serde_json::json!({"kind":"thinking_delta","text":text})
-        }
-        AgentEvent::ToolUseStart { id, name, .. } => {
-            serde_json::json!({"kind":"tool_use_start","id":id,"name":name})
-        }
-        AgentEvent::ToolArgsDelta {
-            id, partial_json, ..
-        } => serde_json::json!({"kind":"tool_args_delta","id":id,"partial_json":partial_json}),
-        AgentEvent::ToolUse {
-            id, name, input, ..
-        } => serde_json::json!({"kind":"tool_use","id":id,"name":name,"input":input}),
-        AgentEvent::ToolResult {
-            id,
-            name,
-            content,
-            is_error,
-            ..
-        } => serde_json::json!({
-            "kind":"tool_result","id":id,"name":name,"content":content,"is_error":is_error
-        }),
-        // Destructured exhaustively on purpose — a field added to
-        // `CompactAction` must fail this build rather than quietly stop
-        // reaching the client, which is how `Usage`'s two cache fields missed
-        // `turn_complete` for a release.
-        AgentEvent::CompactAction {
-            strategy,
-            messages_before,
-            messages_after,
-            turn_id: _,
-            dropped_rounds,
-            dropped_messages,
-            estimated_tokens_saved,
-            tokens_before,
-            tokens_after,
-        } => {
-            let mut event = serde_json::json!({
-                "kind":"compact","strategy":strategy,
-                "messages_before":messages_before,"messages_after":messages_after,
-                "tokens_before":tokens_before,"tokens_after":tokens_after
-            });
-            let map = event.as_object_mut().expect("json! built an object");
-            for (key, value) in [
-                ("dropped_rounds", dropped_rounds),
-                ("dropped_messages", dropped_messages),
-                ("estimated_tokens_saved", estimated_tokens_saved),
-            ] {
-                if let Some(v) = value {
-                    map.insert(key.into(), serde_json::json!(v));
-                }
-            }
-            event
-        }
-        AgentEvent::UserMessageDelivered {
-            message_id,
-            content,
-            ..
-        } => serde_json::json!({
-            "kind":"user_message_delivered","message_id":message_id,"content":content
-        }),
-        AgentEvent::UserMessageRefused {
-            message_id,
-            content,
-            message,
-            ..
-        } => serde_json::json!({
-            "kind":"user_message_refused","message_id":message_id,
-            "content":content,"message":message
-        }),
-        AgentEvent::UserMessagesReturned { messages, .. } => {
-            serde_json::json!({"kind":"user_messages_returned","messages":messages})
-        }
-        AgentEvent::TurnComplete {
-            stop_reason,
-            api_calls,
-            tool_calls,
-            usage,
-            message,
-            last_call_usage,
-            context,
-            structured_output,
-            seq,
-            truncated,
-            ..
-        } => {
-            let mut event = serde_json::json!({
-                "kind":"turn_complete","stop_reason":stop_reason,"api_calls":api_calls,
-                "tool_calls":tool_calls,"seq":seq,
-                "last_call_usage":serde_json::to_value(last_call_usage).unwrap_or_else(|_| serde_json::json!({})),
-                // Serialized whole rather than field by field: a
-                // hand-written projection is invisible to the
-                // compiler when `Usage` grows.
-                "usage":serde_json::to_value(usage).unwrap_or_else(|_| serde_json::json!({}))
-            });
-            if let Some(message) = message {
-                event["message"] = serde_json::json!(message);
-            }
-            if let Some(context) = context {
-                event["context"] = serde_json::json!(context);
-            }
-            if let Some(output) = structured_output {
-                event["structured_output"] = output.clone();
-            }
-            if *truncated {
-                event["truncated"] = serde_json::json!(true);
-            }
-            event
-        }
-        AgentEvent::Error { code, message, .. } => {
-            serde_json::json!({"kind":"error","code":code,"message":message})
-        }
-        _ => return None,
+/// Hand `event` to whoever watches the session, recording it first when it
+/// is an ask.
+pub(super) fn publish_agent_event(
+    hub: &SessionHub,
+    session_id: &Arc<str>,
+    turn_id: Option<&Arc<str>>,
+    event: AgentEvent,
+) {
+    let ask = ask_of(&event);
+    let frame = SessionFrame {
+        session_id: session_id.clone(),
+        turn_id: turn_id.cloned(),
+        event: SessionEvent::Agent(event),
     };
-    Some(body)
+    match ask {
+        Some((prompt_id, task_id, kind)) => {
+            hub.publish_ask(Arc::new(frame), prompt_id, task_id, kind)
+        }
+        None => hub.publish(&frame),
+    }
+}
+
+/// A frame of `session_id` that belongs to no turn.
+pub(super) fn frame_between_turns(session_id: &str, event: SessionEvent) -> SessionFrame {
+    SessionFrame {
+        session_id: Arc::from(session_id),
+        turn_id: None,
+        event,
+    }
 }
 
 pub(super) fn reap_process_groups_later(live: &LiveSession) {
@@ -394,7 +178,9 @@ pub(super) fn idle_session_ids(
 ) -> Vec<String> {
     sessions
         .iter()
-        .filter(|(_, live)| now.duration_since(live.last_active) > timeout && !is_busy(live))
+        .filter(|(_, live)| {
+            now.saturating_duration_since(live.hub.last_active()) > timeout && !is_busy(live)
+        })
         .map(|(sid, _)| sid.clone())
         .collect()
 }

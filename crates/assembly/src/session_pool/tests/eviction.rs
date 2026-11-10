@@ -18,7 +18,6 @@ fn dummy_live_session(last_active: Instant) -> LiveSession {
         project: None,
         name: None,
         created_at: last_active,
-        last_active,
         is_first_turn: true,
         named_by_user: false,
         namer: SessionNamer::of(
@@ -32,15 +31,14 @@ fn dummy_live_session(last_active: Instant) -> LiveSession {
         binding_stale: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         current_turn: None,
         turn_initiator: None,
-        turn_connection: None,
+        turn_watcher: None,
         turn_terminated: false,
         state: None,
         spawner: None,
         idle: Arc::new(tokio::sync::Notify::new()),
         scripts: None,
         health: Default::default(),
-        subscribers: HashMap::new(),
-        pending_prompts: HashMap::new(),
+        hub: Arc::new(SessionHub::active_at(last_active)),
         process_groups: None,
     }
 }

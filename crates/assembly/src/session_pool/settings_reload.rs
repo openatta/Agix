@@ -430,7 +430,7 @@ impl SessionPool {
                 .map_err(|e| e.to_string())
         })
         .await
-        .map_err(|e| PoolError::Internal(e))?;
+        .map_err(PoolError::Internal)?;
 
         let tier = Tier::Project(root.clone());
         #[cfg(feature = "mcp")]

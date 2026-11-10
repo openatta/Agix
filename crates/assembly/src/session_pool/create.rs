@@ -59,7 +59,7 @@ impl SessionPool {
                 options.and_then(|o| o.provider.as_deref()),
                 options.and_then(|o| o.model.as_deref()),
             )
-            .map_err(|e| PoolError::InvalidRequest(e))?;
+            .map_err(PoolError::InvalidRequest)?;
 
         let scene_id_for_result = scene.id().to_string();
         let project_trust = binding.settings.project_layer.trust;
@@ -422,8 +422,13 @@ impl SessionPool {
         let state = agent.session_state();
         let spawner = agent.agent_spawner();
         let health = agent.health();
-        self.forward_task_events(&session_id, &state);
-        self.forward_goal_events(&session_id, &state);
+        // A rebuild goes on with the hub of the session it replaces.
+        let hub = self
+            .hub_of(&session_id)
+            .await
+            .unwrap_or_else(|| Arc::new(SessionHub::new()));
+        Self::forward_task_events(&session_id, &hub, &state);
+        Self::forward_goal_events(&session_id, &hub, &state);
 
         let _ = agent
             .telemetry()
@@ -605,7 +610,7 @@ impl SessionPool {
         let (event_rx, arrived) = relay_events(event_rx);
         let event_rx = Arc::new(AsyncMutex::new(Some(event_rx)));
         let idle = Arc::new(tokio::sync::Notify::new());
-        self.forward_events_between_turns(&session_id, &event_rx, &arrived, &idle, &cancel);
+        Self::forward_events_between_turns(&session_id, &hub, &event_rx, &arrived, &idle, &cancel);
         let live = LiveSession {
             input_tx,
             event_rx,
@@ -617,21 +622,19 @@ impl SessionPool {
             named_by_user: stored_name.is_some(),
             name: stored_name,
             created_at: Instant::now(),
-            last_active: Instant::now(),
             is_first_turn: !has_user_turn,
             namer,
             binding_stale: binding.stale.clone(),
             current_turn: None,
             turn_initiator: None,
-            turn_connection: None,
+            turn_watcher: None,
             turn_terminated: false,
             state: Some(state.clone()),
             spawner: Some(spawner),
             idle,
             scripts: script_ledger,
             health,
-            subscribers: HashMap::new(),
-            pending_prompts: HashMap::new(),
+            hub: hub.clone(),
             process_groups,
         };
         // `insert` returning `Some` means a live entry already existed under
@@ -644,9 +647,8 @@ impl SessionPool {
         let rebuilt = match sessions.insert(session_id.clone(), live) {
             Some(old) => {
                 old.cancel.cancel();
-                if let Some(new) = sessions.get_mut(&session_id) {
-                    new.subscribers.extend(old.subscribers);
-                    new.pending_prompts.extend(old.pending_prompts);
+                if !Arc::ptr_eq(&old.hub, &hub) {
+                    hub.absorb(&old.hub);
                 }
                 old.idle.notify_waiters();
                 true
@@ -656,8 +658,10 @@ impl SessionPool {
         drop(sessions);
         let goal = state.goal_view();
         if resume && !goal.is_null() {
-            let frame = StreamFrame::goal_changed(&session_id, goal);
-            self.broadcast_to_session(&session_id, &frame).await;
+            hub.publish(&frame_between_turns(
+                &session_id,
+                SessionEvent::GoalChanged(goal),
+            ));
         }
         if !rebuilt {
             self.emit_session_event(
