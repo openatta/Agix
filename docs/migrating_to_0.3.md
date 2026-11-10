@@ -1281,7 +1281,27 @@ WebAssembly 载体整个移除。
 
 ## 0.3.10 之后:到 0.3.11
 
+### 部署 `agixd` 的
+
+#### 权限与沙箱
+
+- **部署方的 managed 设置。** 系统路径上的 `managed-settings.json`(macOS
+  `/Library/Application Support/Agix/`,Linux 等 `/etc/agix/`,Windows `%ProgramData%\Agix\`;
+  `--managed-settings <路径>` 换成别的文件,这个文件必须存在)是一层用户、项目、模型都改不了的
+  设置,只认 `permission_rules` 与 `disable_bypass_permissions_mode`。它的 deny / ask 压过下层
+  的 allow,在 `bypassPermissions`(含 `auto` / `yolo`)下照样生效;`disable_bypass_permissions_mode:
+  true` 让 bypass 一律按 `default` 运行。文件读不了、有别的键、值不对时拒绝所有工具调用,
+  `daemon.doctor` 的 `settings.managed` 报 `failing`。没有这个文件的部署不受影响
+  (`ARCHITECTURE.md` §6.1"用户规则与部署方规则")。
+
 ### RPC 客户端
+
+- `daemon.doctor` 的 `health.checks` 多一项 `settings.managed`(查找的路径、是否存在、来源与
+  内容);`config.get` 的回答多一个 `managed` 字段(`tier: "effective"` 时为 managed 层,否则
+  `null`)。
+- `PermissionRule.source` 为 `policySettings` 的规则在同样具体的命中里先被报出(数值由 10 改为
+  70)。裁决不变。
+
 
 - **新增帧:一行不是合法 JSON 时,服务端回
   `{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}`**
@@ -1289,6 +1309,20 @@ WebAssembly 载体整个移除。
   一个 `id` 为 `null` 的错误帧(它不对应任何在途请求);缺 `method` 的合法 JSON 仍然不回。
 
 ### 嵌入方
+
+- `base::interface::config_source::Tier` 多了 `Managed`;`ConfigSource` 给出的 `Tier::Managed`
+  层由 `Settings::load_from` 按 managed 层读(只认上面两个键),不进普通合并。对 `Tier` 做
+  穷尽 `match` 的要加一支。
+- `Settings` 多了 `managed: Option<base::managed_settings::ManagedSettings>`(`serde(skip)`);
+  逐字段构造 `Settings` 的要补 `managed: None`。`Settings::apply_managed` 把一层 managed 设置
+  放到已加载的设置上。
+- `DaemonConfig::managed_settings_path`:不设时读系统路径。`assemble::pool` 读一次,套到会话池
+  加载的每一份设置上;已经带着 managed 层的 `config.settings` 在没有文件时保留它。
+- `PermissionGate::with_managed(permissions::gate::ManagedPolicy)`;
+  `RuleSetPermission::from_settings` 自动接上设置里的 managed 层。自己拼 gate 的嵌入方要接上
+  它,否则 managed 规则只按普通规则生效、在 bypass 下不生效。
+- 有 managed 层时,`Assembly.permission` 不再替换 `bypassPermissions` 会话的 gate。
+
 
 - `AgentSpawner` 的主入口是 `spawn(SpawnRequest)`:`SpawnRequest::new(prompt, cwd, cancel)`,
   再按需填 `agent_type`、`model`、`allowed_tools` 与 `mode`(`SpawnMode::Wait` 等最终文本、

@@ -4,6 +4,7 @@ pub mod agent_type;
 pub mod error;
 pub mod event;
 pub mod id;
+pub mod managed_settings;
 pub mod memory;
 pub mod message;
 pub mod permission;

@@ -119,6 +119,9 @@ MCP、询问、通知、监视、结构化输出(见下文[能力](#能力))。
   令牌存在 0600 文件或宿主自己的存储里([mcp_auth.md](mcp_auth.md))。
 - 企业 MCP 策略:按 server 名、命令、URL 的允许与拒绝列表,从用户写不了的系统路径读
   (或 `--mcp-policy`);策略读不了就拒绝所有 server([ARCHITECTURE.md](ARCHITECTURE.md) §6.4)。
+- 部署方的 managed 设置:从用户写不了的系统路径读(或 `--managed-settings`),其中的 deny / ask
+  在 `bypassPermissions` 下照样生效,还能关掉 bypass;读不了就拒绝所有工具调用
+  ([ARCHITECTURE.md](ARCHITECTURE.md) §6.1)。
 
 **记录**
 - 只追加的 JSONL 历史:可恢复、可分叉,崩溃后可重建。
@@ -324,7 +327,7 @@ echo '{"jsonrpc":"2.0","id":2,"method":"session.run_turn",
 ——每个文档里写的响应形状都有测试拿真实 daemon 的回答对照。
 
 常用参数:`--scene` / `--scenes`(服务哪些场景)、`--listen` / `--listen-ws` 加
-`--token`(带认证的 TCP / WebSocket)、`--session-cap`、`--worker-threads`、`--permission-prompt-timeout`、`--mcp-policy`。
+`--token`(带认证的 TCP / WebSocket)、`--session-cap`、`--worker-threads`、`--permission-prompt-timeout`、`--mcp-policy`、`--managed-settings`。
 每个运行中的 daemon 在 `~/.agix/daemon/instances.d/` 下写一个发现文件,客户端按场景
 找到它,不用拼路径。
 

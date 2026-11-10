@@ -98,6 +98,10 @@ impl SessionPool {
     pub async fn doctor_report(&self) -> serde_json::Value {
         let settings = self.settings.read().await.clone();
         let mut checks: Vec<Arc<dyn base::interface::health::HealthCheck>> = Vec::new();
+        checks.push(Arc::new(crate::doctor::ManagedSettingsCheck::new(
+            self.managed_settings_path.clone(),
+            &settings,
+        )));
         #[cfg(feature = "mcp")]
         checks.push(self.mcp_policy.clone());
         checks.push(Arc::new(crate::doctor::ProjectTrustCheck::new(
@@ -498,13 +502,13 @@ impl SessionPool {
         // below rebuilds from disk.
         if is_default {
             let default_model = self.settings.read().await.model.model_name.clone();
-            let reloaded = Arc::new(Settings::load(
+            let reloaded = Arc::new(self.with_managed_layer(Settings::load(
                 self.paths.global_root(),
                 self.paths.config_root(),
                 self.paths.project_root().join(".agix"),
                 self.scene.id(),
                 &default_model,
-            ));
+            )));
             *self.settings.write().await = reloaded;
         }
 

@@ -48,6 +48,9 @@ Options:
       --mcp-policy <PATH>          MCP policy file to enforce instead of the managed one
                                    [default: /Library/Application Support/Agix/mcp-policy.json
                                    on macOS, /etc/agix/mcp-policy.json elsewhere]
+      --managed-settings <PATH>    Managed settings file to enforce instead of the system one
+                                   [default: /Library/Application Support/Agix/managed-settings.json
+                                   on macOS, /etc/agix/managed-settings.json elsewhere]
   -h, --help                       Print help
   -V, --version                    Print version
 ";
@@ -133,6 +136,10 @@ struct Cli {
     /// that one it must exist: a policy someone named and that is not there
     /// denies every MCP server rather than none.
     mcp_policy: Option<PathBuf>,
+
+    /// The managed settings file, in place of the platform's. It must exist:
+    /// one someone named and that is not there refuses every tool call.
+    managed_settings: Option<PathBuf>,
 }
 
 fn number<T: std::str::FromStr>(parser: &mut lexopt::Parser, flag: &str) -> Result<T, lexopt::Error>
@@ -201,6 +208,7 @@ impl Cli {
             permission_prompt_timeout: 300,
             worker_threads: None,
             mcp_policy: None,
+            managed_settings: None,
         };
         let mut parser = lexopt::Parser::from_args(args);
         while let Some(arg) = parser.next()? {
@@ -233,6 +241,7 @@ impl Cli {
                     cli.worker_threads = Some(worker_threads(&parser.value()?.string()?)?)
                 }
                 Long("mcp-policy") => cli.mcp_policy = Some(parser.value()?.into()),
+                Long("managed-settings") => cli.managed_settings = Some(parser.value()?.into()),
                 Short('h') | Long("help") => return Ok(Invocation::Help),
                 Short('V') | Long("version") => return Ok(Invocation::Version),
                 _ => return Err(arg.unexpected()),
@@ -339,6 +348,7 @@ async fn serve(cli: Cli) -> anyhow::Result<()> {
         anyhow::bail!("--mcp-policy: this build has no MCP module (feature `mcp`)");
     }
     daemon_config.mcp_policy_path = cli.mcp_policy.clone();
+    daemon_config.managed_settings_path = cli.managed_settings.clone();
     daemon_config.settings.session_dir = Some(daemon_config.settings.paths.local_data_dir.clone());
     let daemon_root = daemon_config.paths.global_root().join("daemon");
     base::crash::install(
@@ -716,6 +726,7 @@ mod tests {
         assert!(cli.socket.is_none() && cli.instance.is_none() && cli.scenes.is_empty());
         assert_eq!(cli.worker_threads, None);
         assert_eq!(cli.mcp_policy, None);
+        assert_eq!(cli.managed_settings, None);
     }
 
     #[test]
@@ -750,6 +761,7 @@ mod tests {
             "--token=s",
             "--mcp-policy",
             "/etc/corp/mcp.json",
+            "--managed-settings=/etc/corp/managed.json",
         ]);
         assert_eq!(
             cli.socket.as_deref(),
@@ -763,6 +775,10 @@ mod tests {
         assert_eq!(
             cli.mcp_policy.as_deref(),
             Some(std::path::Path::new("/etc/corp/mcp.json"))
+        );
+        assert_eq!(
+            cli.managed_settings.as_deref(),
+            Some(std::path::Path::new("/etc/corp/managed.json"))
         );
     }
 

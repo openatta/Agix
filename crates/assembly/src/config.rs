@@ -180,6 +180,10 @@ pub struct DaemonConfig {
     /// (`mcp::policy::managed_policy_path`). A file named here must exist.
     /// Ignored when the host passes `Assembly::mcp_policy`.
     pub mcp_policy_path: Option<PathBuf>,
+    /// Where to read the deployment's managed settings instead of the
+    /// platform's path (`base::managed_settings::managed_settings_path`). A
+    /// file named here must exist.
+    pub managed_settings_path: Option<PathBuf>,
     pub settings: Settings,
 }
 
@@ -231,6 +235,7 @@ impl DaemonConfig {
             permission_rules: RuleSet::empty(),
             session_idle_timeout_secs: 3600,
             mcp_policy_path: None,
+            managed_settings_path: None,
             settings: Settings::defaults_for("claude-sonnet-4-6"),
         }
     }
@@ -283,6 +288,7 @@ pub fn load_daemon_config(
         permission_rules: RuleSet::empty(),
         session_idle_timeout_secs: 3600,
         mcp_policy_path: None,
+        managed_settings_path: None,
         settings,
     }
 }

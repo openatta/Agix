@@ -735,6 +735,10 @@ pub struct SessionPool {
     /// `admit_mcp`.
     #[cfg(feature = "mcp")]
     mcp_policy: Arc<mcp::policy::McpPolicyGate>,
+    /// Where this pool looked for the deployment's managed settings, and what
+    /// it found there: applied on top of every settings it loads.
+    managed_settings_path: PathBuf,
+    managed_settings: Option<base::managed_settings::ManagedSettings>,
     /// Every session's scheduled jobs, fired by this pool's scheduler (see
     /// `start_scheduler`) whether or not the session is in memory.
     schedule: Arc<tools::cron::CronStore>,
@@ -1206,6 +1210,8 @@ impl SessionPool {
             mcp_auth,
             #[cfg(feature = "mcp")]
             mcp_policy: Arc::new(mcp::policy::McpPolicyGate::open()),
+            managed_settings_path: base::managed_settings::managed_settings_path(),
+            managed_settings: None,
             schedule,
             internal_connections: std::sync::atomic::AtomicU64::new(u64::MAX),
             this: std::sync::OnceLock::new(),
@@ -1273,6 +1279,27 @@ impl SessionPool {
     #[cfg(feature = "mcp")]
     pub fn mcp_auth(&self) -> Arc<mcp::oauth::McpAuth> {
         self.mcp_auth.clone()
+    }
+
+    /// The deployment's managed settings, read from `path`: put on top of the
+    /// pool's own settings now and of every settings it loads later.
+    pub fn with_managed_settings(
+        mut self,
+        path: PathBuf,
+        managed: Option<base::managed_settings::ManagedSettings>,
+    ) -> Self {
+        let mut settings = (**self.settings.get_mut()).clone();
+        settings.apply_managed(managed.clone());
+        *self.settings.get_mut() = Arc::new(settings);
+        self.managed_settings_path = path;
+        self.managed_settings = managed;
+        self
+    }
+
+    /// `settings` with this pool's managed layer on top.
+    pub(crate) fn with_managed_layer(&self, mut settings: Settings) -> Settings {
+        settings.apply_managed(self.managed_settings.clone());
+        settings
     }
 
     #[cfg(feature = "mcp")]

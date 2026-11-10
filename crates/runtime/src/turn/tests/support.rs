@@ -42,6 +42,7 @@ pub(super) fn recall_test_settings(root: &std::path::Path) -> base::interface::s
         project_trust: Default::default(),
         project_layer: Default::default(),
         ignored_values: Vec::new(),
+        managed: None,
         mcp_servers: Default::default(),
         providers: Default::default(),
         default_provider: None,

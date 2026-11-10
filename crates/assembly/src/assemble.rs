@@ -180,7 +180,10 @@ pub async fn pool(
     scene: Arc<dyn Scene>,
     assembly: Assembly,
 ) -> anyhow::Result<Arc<SessionPool>> {
-    let settings = Arc::new(config.settings.clone());
+    let (managed_path, managed) = managed_settings(config);
+    let mut settings = config.settings.clone();
+    settings.apply_managed(managed.clone());
+    let settings = Arc::new(settings);
     for (section, module) in crate::modules::unassembled_settings(&settings) {
         tracing::warn!(
             section,
@@ -205,7 +208,7 @@ pub async fn pool(
     };
     let permission = assembly.permission;
     if matches!(
-        config.settings.permission_mode,
+        settings.permission_mode,
         base::interface::settings::PermissionMode::BypassPermissions
     ) {
         warn!(
@@ -238,7 +241,8 @@ pub async fn pool(
         config.paths.clone(),
     )
     .with_permission_prompt_timeout(assembly.permission_prompt_timeout)
-    .with_credentials(credentials);
+    .with_credentials(credentials)
+    .with_managed_settings(managed_path, managed);
     pool = pool.with_plugins(assembly.plugins);
     if let Some(customize) = assembly.customize_session {
         pool = pool.with_session_customizer(customize);
@@ -297,6 +301,23 @@ pub async fn pool(
     pool.start_scheduler();
 
     Ok(pool)
+}
+
+/// The managed settings file this pool reads — the one the config names,
+/// which must exist, else the platform's — and what is in it. Settings that
+/// already carry a managed layer (an embedder's `Tier::Managed` source) keep
+/// it when there is no file.
+fn managed_settings(
+    config: &DaemonConfig,
+) -> (PathBuf, Option<base::managed_settings::ManagedSettings>) {
+    use base::managed_settings::{managed_settings_path, ManagedSettings};
+    let (path, required) = match &config.managed_settings_path {
+        Some(path) => (path.clone(), true),
+        None => (managed_settings_path(), false),
+    };
+    let managed =
+        ManagedSettings::read(&path, required).or_else(|| config.settings.managed.clone());
+    (path, managed)
 }
 
 #[cfg(feature = "mcp")]

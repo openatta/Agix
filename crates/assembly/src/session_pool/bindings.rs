@@ -78,18 +78,17 @@ impl SessionPool {
                 self.scene_root(scene_id, &startup_scene),
                 scene_id.to_string(),
             );
-            Arc::new(
-                off_the_runtime(move || {
-                    Settings::load(
-                        global_root,
-                        scene_root,
-                        local_dir,
-                        &scene_id,
-                        &default_model,
-                    )
-                })
-                .await,
-            )
+            let loaded = off_the_runtime(move || {
+                Settings::load(
+                    global_root,
+                    scene_root,
+                    local_dir,
+                    &scene_id,
+                    &default_model,
+                )
+            })
+            .await;
+            Arc::new(self.with_managed_layer(loaded))
         };
 
         let (watch, unwatched_settings) = self.watch_tiers_of(&settings, &key);

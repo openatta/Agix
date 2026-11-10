@@ -171,6 +171,10 @@ monitors and structured output ([table below](#tools--45-built-in)).
   URL, read from a system path users cannot write (or `--mcp-policy`); an
   unreadable policy denies every server
   ([ARCHITECTURE.md](docs/ARCHITECTURE.md) §6.4).
+- Managed settings for the deployment, read from a system path users cannot
+  write (or `--managed-settings`): their deny and ask rules hold even under
+  `bypassPermissions`, and they can switch that mode off; an unreadable file
+  refuses every tool call ([ARCHITECTURE.md](docs/ARCHITECTURE.md) §6.1).
 
 **Records**
 - An append-only JSONL history that can be resumed, forked or rebuilt after
@@ -405,7 +409,7 @@ against a real daemon's answer by a test.
 
 Useful flags: `--scene` / `--scenes` (which scenes to serve), `--listen` /
 `--listen-ws` with `--token` (TCP / WebSocket, authenticated), `--session-cap`,
-`--worker-threads`, `--permission-prompt-timeout`, `--mcp-policy`. Each running daemon writes a discovery file
+`--worker-threads`, `--permission-prompt-timeout`, `--mcp-policy`, `--managed-settings`. Each running daemon writes a discovery file
 under `~/.agix/daemon/instances.d/`, so a client finds it by scene instead of
 by path.
 

@@ -153,6 +153,7 @@ pub(super) fn fallback_settings(
         project_trust: Default::default(),
         project_layer: Default::default(),
         ignored_values: Vec::new(),
+        managed: None,
         mcp_servers: Default::default(),
         providers: Default::default(),
         default_provider: None,

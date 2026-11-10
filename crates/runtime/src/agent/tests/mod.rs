@@ -44,6 +44,7 @@ pub(super) fn test_settings() -> base::interface::settings::Settings {
         project_trust: Default::default(),
         project_layer: Default::default(),
         ignored_values: Vec::new(),
+        managed: None,
         mcp_servers: Default::default(),
         providers: Default::default(),
         default_provider: None,

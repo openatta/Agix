@@ -103,8 +103,9 @@ pub fn rules_from_settings(
 
 /// 一个 `Settings` 里全部权限规则，各自带上所在层对应的 [`RuleSource`]：
 /// 全局与 scene 层是用户自己的设置（`UserSettings`），项目层是仓库里提交的
-/// （`ProjectSettings`），`settings.local.json` 是 `LocalSettings`。代码里直接
-/// 构造、没有层信息的规则按 `ProjectSettings` 算。
+/// （`ProjectSettings`），`settings.local.json` 是 `LocalSettings`，部署方的
+/// managed 层是 `PolicySettings`。代码里直接构造、没有层信息的规则按
+/// `ProjectSettings` 算。
 pub fn rules_from_all_tiers(settings: &base::interface::settings::Settings) -> Vec<PermissionRule> {
     use base::interface::config_source::Tier;
     let mut rules: Vec<PermissionRule> = settings
@@ -114,6 +115,7 @@ pub fn rules_from_all_tiers(settings: &base::interface::settings::Settings) -> V
             let source = match r.tier {
                 Some(Tier::Global | Tier::Scene) => RuleSource::UserSettings,
                 Some(Tier::Project) | None => RuleSource::ProjectSettings,
+                Some(Tier::Managed) => RuleSource::PolicySettings,
             };
             rules_from_settings(std::slice::from_ref(r), source)
         })
@@ -122,6 +124,12 @@ pub fn rules_from_all_tiers(settings: &base::interface::settings::Settings) -> V
         &settings.local_permission_rules,
         RuleSource::LocalSettings,
     ));
+    if let Some(managed) = &settings.managed {
+        rules.extend(rules_from_settings(
+            &managed.permission_rules,
+            RuleSource::PolicySettings,
+        ));
+    }
     rules
 }
 

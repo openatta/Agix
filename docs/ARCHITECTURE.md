@@ -570,14 +570,15 @@ git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git
 顺序在 `crates/permissions/src/gate.rs` 的模块头。规则这一步有四条约束:
 
 1. **deny 永远优先。** 一次调用命中的规则里有一条 deny 就拒绝,否则有 ask 就问,否则
-   才 allow(`bypassPermissions` 不看规则,见本节末)。哪一层写的、写得多具体,都不参与裁决——项目仓库里提交的一条 allow 推不翻
+   才 allow(`bypassPermissions` 只看部署方 managed 层的规则,见本节末)。哪一层写的、写得多具体,都不参与裁决——项目仓库里提交的一条 allow 推不翻
    用户自己设置里的 deny,插件贡献的、客户端经 RPC 传进来的 allow 也一样。要"大范围
    禁止、小范围例外",写法是 `dontAsk` 模式加只列允许范围的 allow,而不是一条宽 deny
    加一条窄 allow。
-2. **各层的规则并存。** 全局、scene、项目三层(以及各自的 `settings.local.json`)的
-   `permission_rules` 拼在一起生效,不像普通设置项那样后层盖前层。每条规则记着自己来自
-   哪一层——全局与 scene 层是 `UserSettings`,项目层是 `ProjectSettings`,local 是
-   `LocalSettings`——只用来报出命中的是哪一条。
+2. **各层的规则并存。** 全局、scene、项目三层(以及各自的 `settings.local.json`)与部署方
+   的 managed 层的 `permission_rules` 拼在一起生效,不像普通设置项那样后层盖前层。每条
+   规则记着自己来自哪一层——全局与 scene 层是 `UserSettings`,项目层是 `ProjectSettings`,
+   local 是 `LocalSettings`,managed 层是 `PolicySettings`——只用来报出命中的是哪一条
+   (几条同样具体时先报 managed 层的)。
 3. **路径先规整再匹配。** 读写路径的工具,路径按会话 cwd 解析成绝对路径并去掉 `.` /
    `..`,`~` 在规则与路径两边都展开;符号链接解析后的路径算作别名——按原样写法解析的
    也算,符号链接后面的 `..` 是从链接目标往上走的,`link/../x` 落在哪里,deny 就在哪里
@@ -630,19 +631,54 @@ git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git
 场景的工具白名单不在这里:它在会话注册表上就把工具拿掉了(§3.5),被拿掉的工具根本
 到不了权限这一步。
 
-`bypassPermissions` 一条规则都不看:deny、ask、免于 bypass 的路径(`.ssh` / `.aws`、
+`bypassPermissions` 只看部署方 managed 层的 deny 与 ask(见下面"用户规则与部署方规则"),
+用户自己各层的规则一条都不看:deny、ask、免于 bypass 的路径(`.ssh` / `.aws`、
 `rm -rf /` 一类)、`.git` / `.agix` 的确认、工具自己的判定(含 §6.2 第 2 道的拒写名单)
 全部跳过,输入合法就放行。仍然生效的是输入校验——读后再写的过期检查、大小上限、§6.2
 第 1 道的误读路径、`Bash` 的超时上限与长 `sleep` 拦截——和 OS 沙箱:`Bash` 照样被关在
 可写根之内(`dangerously_disable_sandbox` 除外),无人值守会话也一样。`agixd` 的
 `bypassPermissions` 会话同样走这道 gate,运行中进了计划模式也照样只读;只有宿主自己给了
-`Assembly.permission` 时,才换成宿主的那一个。要 deny 规则仍然算数,用 `acceptEdits`,
+`Assembly.permission`、且没有 managed 层时,才换成宿主的那一个。要 deny 规则仍然算数,用 `acceptEdits`,
 或 `dontAsk` 加 allow 规则。
 
 这样设计是因为 bypass 是给"边界在引擎之外"的部署用的——一次性容器、VM、CI 机器,
 真正挡东西的是那一层与 OS 沙箱。一个"跳过大部分规则"的模式会让人以为规则还守着,
 其实 deny 本来就不是沙箱(§6.1 第 4 条),它在 bypass 下留下的只是错觉;所以 bypass
 要么全跳,要么不用,中间态交给 `dontAsk`。
+
+**用户规则与部署方规则。** 上面的规则都是用户自己写的(或项目、插件、客户端替用户写的),
+bypass 是用户对自己规则的放弃。部署方——企业 IT、无人值守的托管方——要的是另一回事:
+一层用户改不了、用户选的模式也绕不过的规则。这就是 managed 层(`base::managed_settings`):
+
+- **来源。** 系统路径上的一个文件:macOS `/Library/Application Support/Agix/managed-settings.json`,
+  Linux 等 `/etc/agix/managed-settings.json`,Windows `%ProgramData%\Agix\managed-settings.json`。
+  `agixd --managed-settings <路径>`(嵌入方:`DaemonConfig::managed_settings_path`)换成别的
+  文件,这个文件**必须存在**。用户数据目录、项目、模型都改不了这条路径:它只来自系统路径
+  和启动参数,不从任何设置文件读。嵌入方也可以在 `ConfigSource` 里给一层
+  `Tier::Managed`;装配时有文件就以文件为准。读一次,改了要重启 daemon。
+- **能写什么。** 只认 `permission_rules`(与其他层同一格式)和
+  `disable_bypass_permissions_mode`(`true` / `false`),外加编辑器的 `$schema`。
+- **压过下层。** managed 的 deny / ask 与其他层的规则一起按第 1 条裁决,下层任何 allow
+  都推不翻;在 `bypassPermissions`(含 `auto` / `yolo`)下,gate 仍然只拿 managed 层的规则
+  判一遍:命中 deny 拒绝,命中 ask(或程序名读不出来的 shell 段)询问,其余照 bypass 放行。
+  询问在无人值守会话里就是拒绝。
+- **managed 的 allow 不比别层的 allow 多什么。** 它和用户层的 allow 一样参与裁决:推不翻
+  下层的 deny,也不把 bypass 之外的模式变宽。理由是第 1 条:deny 是硬边界,用户给自己写的
+  deny 也应当守住;部署方要放宽的只是"少问",那用普通 allow 就够,而要"禁止"就写 deny。
+  让 managed allow 盖过用户 deny,等于让部署方替用户撤销用户自己的边界,这不是 managed 层
+  要解决的问题。
+- **关掉 bypass。** `disable_bypass_permissions_mode: true` 时,`bypassPermissions` 不管从
+  哪来(设置文件、`options.permission_mode`、agent 类型 frontmatter、团队)都按 `default`
+  判;会话创建时报出的模式也是 `default`。
+- **读不了就全拒。** 文件读不了、不是合法 JSON、有上面以外的键(`permision_rules` 这样的
+  拼写错误不会被当成"没写")、值的形状不对、规则写不成规则——一律当作 managed 层在、但
+  拒绝所有工具调用,任何模式都一样,`daemon.doctor` 的 `settings.managed` 报 `failing`。
+  文件不存在(且没用 `--managed-settings` 点名)= 没有 managed 层,一切照旧。
+- **看得见。** `daemon.doctor` 的 `settings.managed` 检查报出查找的路径、是否存在、来源与
+  内容;`config.get` 的 `effective` 回答多一个 `managed` 字段。
+
+managed 层管的是权限,不是沙箱:它挡得住模型发起的调用,挡不住能改 daemon 启动参数或
+换掉二进制的人。要防机器的使用者本人,启动方式与二进制也得由部署方控制。
 
 `acceptEdits` 只多放行只读调用:项目内的 `Edit` / `Write` 本来就由工具自己放行,项目外
 的、`.git` / `.agix` 下要确认的,在 `acceptEdits` 下照样询问——无人值守的会话里就是拒绝。

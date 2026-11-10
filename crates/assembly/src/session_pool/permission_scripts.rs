@@ -14,8 +14,23 @@ use super::*;
 /// the daemon.
 ///
 /// With nothing configured anywhere the result is `PermissionMode::Default`
-/// — i.e. *ask*.
+/// — i.e. *ask*. Managed settings that disable bypass turn a
+/// `bypassPermissions` result, however it was reached, into `Default`.
 pub(super) fn effective_permission_mode(
+    settings: &Settings,
+    options: Option<&SessionOptions>,
+) -> base::interface::settings::PermissionMode {
+    let mode = requested_permission_mode(settings, options);
+    if mode == base::interface::settings::PermissionMode::BypassPermissions
+        && settings.bypass_disabled()
+    {
+        warn!("the managed settings disable bypassPermissions; this session runs in default mode");
+        return base::interface::settings::PermissionMode::Default;
+    }
+    mode
+}
+
+fn requested_permission_mode(
     settings: &Settings,
     options: Option<&SessionOptions>,
 ) -> base::interface::settings::PermissionMode {
@@ -212,7 +227,10 @@ pub(super) fn resolve_session_permission(
     mode: base::interface::settings::PermissionMode,
     options: Option<&SessionOptions>,
 ) -> Arc<dyn Permission> {
-    if let (Some(host), base::interface::settings::PermissionMode::BypassPermissions) = (host, mode)
+    // A host's own permission never sees the managed layer, so it does not
+    // stand in for the gate while there is one.
+    if let (Some(host), base::interface::settings::PermissionMode::BypassPermissions, None) =
+        (host, mode, &settings.managed)
     {
         return host.clone();
     }

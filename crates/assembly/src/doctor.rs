@@ -294,6 +294,67 @@ impl HealthCheck for MemoryCheck {
     }
 }
 
+/// The deployment's managed settings: where they were looked for, whether
+/// they are there, and — `failing` — whether they cannot be honoured, in
+/// which case every tool call is refused.
+pub struct ManagedSettingsCheck {
+    path: PathBuf,
+    managed: Option<base::managed_settings::ManagedSettings>,
+    unreadable: Option<String>,
+}
+
+impl ManagedSettingsCheck {
+    pub fn new(path: PathBuf, settings: &Settings) -> Self {
+        Self {
+            path,
+            managed: settings.managed.clone(),
+            unreadable: permissions::gate::ManagedPolicy::from_settings(settings)
+                .unreadable()
+                .map(str::to_string),
+        }
+    }
+}
+
+impl HealthCheck for ManagedSettingsCheck {
+    fn name(&self) -> &str {
+        "settings.managed"
+    }
+
+    fn check(&self) -> CheckResult {
+        let Some(managed) = &self.managed else {
+            return CheckResult::ok(format!("no managed settings at {}", self.path.display()))
+                .with_details(serde_json::json!({
+                    "present": false,
+                    "path": self.path.display().to_string(),
+                }));
+        };
+        let details = serde_json::json!({
+            "present": true,
+            "path": self.path.display().to_string(),
+            "origin": managed.origin,
+            "error": self.unreadable,
+            "permission_rules": managed.permission_rules,
+            "disable_bypass_permissions_mode": managed.disable_bypass_permissions_mode,
+        });
+        match &self.unreadable {
+            Some(why) => CheckResult::failing(format!(
+                "managed settings cannot be honoured, every tool call is refused: {why}"
+            )),
+            None => CheckResult::ok(format!(
+                "managed settings from {}: {} permission rule(s){}",
+                managed.origin,
+                managed.permission_rules.len(),
+                if managed.disable_bypass_permissions_mode {
+                    ", bypassPermissions disabled"
+                } else {
+                    ""
+                }
+            )),
+        }
+        .with_details(details)
+    }
+}
+
 /// Whether a project is trusted, and what of its own configuration that
 /// decides — `project.status`'s answer for it, as a verdict.
 ///

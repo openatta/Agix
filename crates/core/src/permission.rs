@@ -162,7 +162,7 @@ pub enum RuleSource {
     CliArg,
     /// 会话内通过 `/permissions` 命令设置
     Session,
-    /// 来自 agix-managed-settings
+    /// 部署方的 managed settings（`base::managed_settings`）
     PolicySettings,
     /// 由命令展开时临时注入
     Command,
@@ -176,13 +176,13 @@ impl RuleSource {
     /// 不参与 allow / ask / deny 之间的裁决——那只看行为，deny 永远优先。
     pub fn priority(self) -> u8 {
         match self {
+            Self::PolicySettings => 70,
             Self::CliArg => 60,
             Self::Session => 50,
             Self::Command => 45,
             Self::LocalSettings => 40,
             Self::ProjectSettings => 30,
             Self::UserSettings => 20,
-            Self::PolicySettings => 10,
             Self::Plugin => 5,
         }
     }
@@ -233,7 +233,7 @@ mod tests {
         assert!(RuleSource::CliArg.priority() > RuleSource::LocalSettings.priority());
         assert!(RuleSource::LocalSettings.priority() > RuleSource::ProjectSettings.priority());
         assert!(RuleSource::ProjectSettings.priority() > RuleSource::UserSettings.priority());
-        assert!(RuleSource::UserSettings.priority() > RuleSource::PolicySettings.priority());
+        assert!(RuleSource::PolicySettings.priority() > RuleSource::CliArg.priority());
     }
 
     #[test]

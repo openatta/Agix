@@ -161,6 +161,12 @@ pub struct Settings {
     #[serde(skip)]
     pub ignored_values: Vec<IgnoredValue>,
 
+    /// The deployment's layer, above every other — see
+    /// [`crate::managed_settings`]. Set by [`Settings::apply_managed`] or by a
+    /// `Tier::Managed` layer in `load_from`; never read from a settings file.
+    #[serde(skip)]
+    pub managed: Option<crate::managed_settings::ManagedSettings>,
+
     /// MCP server configurations, keyed by server name (merged from
     /// global/scene/project layers). `$VAR` / `${VAR}` / `${VAR:-default}`
     /// are expanded in a server's `command`, `args`, `env`, `url` and
@@ -1028,6 +1034,7 @@ impl Settings {
             Tier::Global => true,
             Tier::Scene => scene_is_global,
             Tier::Project => project_is_global,
+            Tier::Managed => false,
         };
         let is_own_project = |tier: Tier| tier == Tier::Project && own_project;
 
@@ -1049,8 +1056,18 @@ impl Settings {
             ..Default::default()
         };
         let mut ignored_values = Vec::new();
+        let mut managed: Option<crate::managed_settings::ManagedSettings> = None;
 
         for layer in layers {
+            if layer.tier == Tier::Managed {
+                let this =
+                    crate::managed_settings::ManagedSettings::from_value(layer.origin, layer.value);
+                managed = Some(match managed {
+                    Some(earlier) => earlier.followed_by(this),
+                    None => this,
+                });
+                continue;
+            }
             for key in unknown_settings_keys(&layer.value) {
                 tracing::warn!(layer = layer.tier.name(), origin = %layer.origin, key, "settings key not recognised, ignoring it");
             }
@@ -1158,8 +1175,33 @@ impl Settings {
             tracing::warn!("Settings validation: {reason}");
             settings.permission_mode = PermissionMode::default();
         }
+        if managed.is_some() {
+            settings.apply_managed(managed);
+        }
 
         settings
+    }
+
+    /// Put the deployment's layer on top of these settings, replacing any
+    /// managed layer they already carry. With bypass disabled, a
+    /// `bypassPermissions` the lower tiers configured becomes `default`.
+    pub fn apply_managed(&mut self, managed: Option<crate::managed_settings::ManagedSettings>) {
+        if let Some(m) = &managed {
+            if m.disable_bypass_permissions_mode
+                && self.permission_mode == PermissionMode::BypassPermissions
+            {
+                tracing::warn!(origin = %m.origin, "managed settings disable bypassPermissions; permission_mode falls back to default");
+                self.permission_mode = PermissionMode::Default;
+            }
+        }
+        self.managed = managed;
+    }
+
+    /// Whether the deployment has taken `bypassPermissions` away.
+    pub fn bypass_disabled(&self) -> bool {
+        self.managed
+            .as_ref()
+            .is_some_and(|m| m.disable_bypass_permissions_mode)
     }
 
     /// Validate settings consistency. Returns Err on invalid combinations.
@@ -1216,6 +1258,7 @@ impl Settings {
             project_trust: Default::default(),
             project_layer: Default::default(),
             ignored_values: Vec::new(),
+            managed: None,
             mcp_servers: HashMap::new(),
             providers: HashMap::new(),
             default_provider: None,
@@ -1624,6 +1667,69 @@ mod tests {
 
         let settings = Settings::load(global, scene, project, "code", "cli-default");
         assert_eq!(settings.model.model_name, "scene-model");
+    }
+
+    #[test]
+    fn a_managed_layer_is_held_apart_and_takes_bypass_away() {
+        use crate::interface::config_source::{InMemoryLayers, Tier};
+
+        let source = InMemoryLayers::new()
+            .with(
+                Tier::Global,
+                false,
+                "user",
+                serde_json::json!({"permission_mode": "yolo",
+                    "permission_rules": [{"tool": "Bash", "action": "allow"}]}),
+            )
+            .with(
+                Tier::Managed,
+                false,
+                "it",
+                serde_json::json!({"disable_bypass_permissions_mode": true,
+                    "permission_rules": [{"tool": "Bash(curl:*)", "action": "deny"}]}),
+            );
+        let root = tempfile::tempdir().unwrap();
+        let settings = Settings::load_from(
+            &source,
+            root.path().join("global"),
+            root.path().join("scene"),
+            root.path().join("project"),
+            "code",
+            "m",
+        );
+
+        assert_eq!(settings.permission_mode, PermissionMode::Default);
+        assert!(settings.bypass_disabled());
+        assert_eq!(settings.permission_rules.len(), 1);
+        let managed = settings.managed.expect("the managed layer");
+        assert_eq!(managed.origin, "it");
+        assert_eq!(managed.permission_rules[0].tool, "Bash(curl:*)");
+        assert_eq!(managed.permission_rules[0].tier, Some(Tier::Managed));
+    }
+
+    #[test]
+    fn a_managed_layer_with_a_key_it_may_not_set_merges_nothing() {
+        use crate::interface::config_source::{InMemoryLayers, Tier};
+
+        let source = InMemoryLayers::new().with(
+            Tier::Managed,
+            false,
+            "it",
+            serde_json::json!({"model": {"model_name": "forced"}}),
+        );
+        let root = tempfile::tempdir().unwrap();
+        let settings = Settings::load_from(
+            &source,
+            root.path().join("global"),
+            root.path().join("scene"),
+            root.path().join("project"),
+            "code",
+            "m",
+        );
+
+        assert_eq!(settings.model.model_name, "m");
+        let error = settings.managed.and_then(|m| m.error).expect("an error");
+        assert!(error.contains("model"), "{error}");
     }
 
     /// The same configuration, once from six files and

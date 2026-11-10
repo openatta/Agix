@@ -152,9 +152,11 @@ impl SessionPool {
             }
         };
 
+        let mut managed = serde_json::Value::Null;
         let mut value = match tier {
             "effective" => {
                 let settings = self.settings_for_project(project_root, scene_id).await;
+                managed = serde_json::to_value(&settings.managed).unwrap_or_default();
                 serde_json::to_value(settings.as_ref()).unwrap_or_else(|_| serde_json::json!({}))
             }
             _ => match path {
@@ -176,6 +178,7 @@ impl SessionPool {
             "project_root": project_root.map(|p| p.display().to_string()),
             "tier": tier,
             "settings": value,
+            "managed": managed,
         }))
     }
 

@@ -66,9 +66,10 @@ impl RuleSetPermission {
         }
     }
 
-    /// Build one straight from `Settings`, wiring in both permission-rule
-    /// tiers with their own `RuleSource` (see
-    /// `crate::rule::rules_from_all_tiers`).
+    /// Build one straight from `Settings`, wiring in every permission-rule
+    /// tier with its own `RuleSource` (see
+    /// `crate::rule::rules_from_all_tiers`) and holding every call to the
+    /// managed layer (`crate::gate::ManagedPolicy`).
     ///
     /// This is the path that makes `permission_rules` and
     /// `settings.local.json` actually take effect, and every embedder that
@@ -90,7 +91,10 @@ impl RuleSetPermission {
         let mut rules = crate::rule::rules_from_all_tiers(settings);
         rules.extend(extra_rules);
         Self::new(
-            Arc::new(PermissionGate::new(crate::ruleset::RuleSet::new(rules))),
+            Arc::new(
+                PermissionGate::new(crate::ruleset::RuleSet::new(rules))
+                    .with_managed(crate::gate::ManagedPolicy::from_settings(settings)),
+            ),
             tools,
             mode,
         )
@@ -828,5 +832,130 @@ mod tests {
             matches!(outcome, PermissionOutcome::Deny { .. }),
             "{outcome:?}"
         );
+    }
+
+    fn with_managed(
+        user: serde_json::Value,
+        managed: serde_json::Value,
+    ) -> base::interface::settings::Settings {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("settings.json"), user.to_string()).unwrap();
+        let mut settings = base::interface::settings::Settings::load(
+            root.path().to_path_buf(),
+            root.path().join("scene"),
+            root.path().join("project"),
+            "code",
+            "m",
+        );
+        settings.apply_managed(Some(base::managed_settings::ManagedSettings::from_value(
+            "it", managed,
+        )));
+        settings
+    }
+
+    async fn verdict(
+        settings: &base::interface::settings::Settings,
+        mode: PermissionMode,
+        command: &'static str,
+    ) -> PermissionOutcome {
+        RuleSetPermission::from_settings(
+            settings,
+            mode,
+            registry_with_content_tool(ContentAwareFakeTool {
+                name: "Bash",
+                content: Some(command),
+            }),
+            [],
+        )
+        .check("Bash", &json!({}), Path::new("/tmp"), "s1")
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_managed_deny_overrides_a_users_allow_and_a_managed_allow_no_users_deny() {
+        let settings = with_managed(
+            json!({"permission_rules": [{"tool": "Bash", "action": "allow"}]}),
+            json!({"permission_rules": [{"tool": "Bash(rm:*)", "action": "deny"}]}),
+        );
+        let outcome = verdict(&settings, PermissionMode::Default, "rm -rf build").await;
+        assert!(
+            matches!(outcome, PermissionOutcome::Deny { .. }),
+            "{outcome:?}"
+        );
+        let outcome = verdict(&settings, PermissionMode::Default, "ls").await;
+        assert!(matches!(outcome, PermissionOutcome::Permit), "{outcome:?}");
+
+        let settings = with_managed(
+            json!({"permission_rules": [{"tool": "Bash(rm:*)", "action": "deny"}]}),
+            json!({"permission_rules": [{"tool": "Bash", "action": "allow"}]}),
+        );
+        let outcome = verdict(&settings, PermissionMode::Default, "rm -rf build").await;
+        assert!(
+            matches!(outcome, PermissionOutcome::Deny { .. }),
+            "{outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn bypass_and_its_aliases_still_answer_to_the_managed_deny_and_ask() {
+        let settings = with_managed(
+            json!({"permission_rules": [{"tool": "Bash(ls)", "action": "deny"}]}),
+            json!({"permission_rules": [
+                {"tool": "Bash(rm:*)", "action": "deny"},
+                {"tool": "Bash(chmod:*)", "action": "ask"},
+            ]}),
+        );
+        for spelling in ["bypassPermissions", "auto", "yolo"] {
+            let mode: PermissionMode = serde_json::from_value(json!(spelling)).unwrap();
+            let outcome = verdict(&settings, mode, "rm -rf build").await;
+            assert!(
+                matches!(outcome, PermissionOutcome::Deny { ref reason } if reason.contains("managed")),
+                "{spelling}: {outcome:?}"
+            );
+            let outcome = verdict(&settings, mode, "chmod 600 key").await;
+            assert!(
+                matches!(outcome, PermissionOutcome::Prompt { .. }),
+                "{spelling}: {outcome:?}"
+            );
+            let outcome = verdict(&settings, mode, "ls").await;
+            assert!(
+                matches!(outcome, PermissionOutcome::Permit),
+                "{spelling}: a user's deny is not consulted under bypass: {outcome:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn disabling_bypass_judges_a_bypass_session_as_default() {
+        let settings = with_managed(
+            json!({"permission_mode": "bypassPermissions"}),
+            json!({"disable_bypass_permissions_mode": true}),
+        );
+        assert_eq!(
+            settings.permission_mode,
+            base::interface::settings::PermissionMode::Default
+        );
+        let outcome = verdict(&settings, PermissionMode::BypassPermissions, "touch x").await;
+        assert!(
+            matches!(outcome, PermissionOutcome::Prompt { .. }),
+            "{outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_managed_layer_that_cannot_be_honoured_refuses_every_call() {
+        for managed in [
+            json!({"permission_mode": "plan"}),
+            json!({"permission_rules": [{"tool": "Bash(rm:*", "action": "deny"}]}),
+        ] {
+            let settings = with_managed(json!({}), managed.clone());
+            for mode in [PermissionMode::BypassPermissions, PermissionMode::Default] {
+                let outcome = verdict(&settings, mode, "ls").await;
+                assert!(
+                    matches!(outcome, PermissionOutcome::Deny { ref reason } if reason.contains("managed settings")),
+                    "{managed} {mode:?}: {outcome:?}"
+                );
+            }
+        }
     }
 }

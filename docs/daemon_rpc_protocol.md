@@ -416,16 +416,22 @@ settings 宽的被**静默夹到 settings 允许的最宽处**并记一条 warn 
 
 | `source` | 数值 |
 |---|---|
+| `policySettings` | 70 —— 部署方的 managed 设置(`ARCHITECTURE.md` §6.1) |
 | `cliArg` | 60 |
 | `session` | 50 —— **客户端经 RPC 传入的规则用这个** |
 | `command` | 45 |
 | `localSettings` | 40 |
 | `projectSettings` | 30 |
 | `userSettings` | 20 |
-| `policySettings` | 10 |
 | `plugin` | 5 |
 
 `source` 与 `behavior` 都是 camelCase/小写的既有序列化格式,不是笔误。
+
+`bypassPermissions`(及 `auto` / `yolo`)会话不看这些规则,只看 `policySettings` 那一层的
+`deny` / `ask`——但只认真正从 managed 设置文件读进来的规则:客户端在这里写
+`"source": "policySettings"` 只改变报出时的名字,不会让它在 bypass 下生效。managed 设置关掉了
+bypass(`disable_bypass_permissions_mode`)时,请求 `bypassPermissions` 的会话按 `default`
+运行,`session.create` / `session.resume` 报出的 `permission.mode` 也是 `default`。
 
 ### 4.7 `PermissionDecision` / `QuestionAnswer` — 回答提问
 
@@ -1907,6 +1913,25 @@ Shell 命令、监视器没有收件箱。会话不在内存里 → `SESSION_NOT
 会话不在内存里 → `SESSION_NOT_FOUND`(这个和 `session.close` 不一样:答一个没在跑
 的会话的提问不可能是"已经完成了")。
 
+daemon 自己的会话池在 `health.checks` 里还有一项 `settings.managed`,说明部署方的 managed
+设置(`ARCHITECTURE.md` §6.1"用户规则与部署方规则")在哪里找、找到了什么:
+
+```jsonc
+{ "name":"settings.managed", "status":"ok",
+  "summary":"managed settings from /etc/agix/managed-settings.json: 1 permission rule(s)",
+  "details": { "present":true,
+               "path":"/etc/agix/managed-settings.json",   // 查找的路径(--managed-settings 或系统路径)
+               "origin":"/etc/agix/managed-settings.json", // 这一层的来源
+               "error":null,                               // 不能执行时的原因
+               "permission_rules":[ { "tool":"Bash(curl:*)", "action":"deny" } ],
+               "disable_bypass_permissions_mode":false } }
+```
+
+没有这个文件时是 `ok`,`details` 只有 `{ "present": false, "path": "…" }`。文件读不了、
+不是 JSON、有 `permission_rules` / `disable_bypass_permissions_mode` / `$schema` 以外的键、
+值的形状不对或有写不成规则的规则时是 `failing`:这时**所有工具调用都被拒绝**,任何权限模式
+都一样。
+
 未在 `--permission-prompt-timeout`(默认 300 秒)内回答的提问**失败关闭**:权限提问按拒绝
 处理,turn 带着一条 error `tool_result` 继续;模型的提问以"用户没有回答"作为
 `AskUserQuestion` 的结果交还模型。都不会挂死。
@@ -1922,8 +1947,14 @@ Shell 命令、监视器没有收件箱。会话不在内存里 → `SESSION_NOT
   "include_secrets": false }
 // ← result
 { "scene": "code", "project_root": null, "tier": "effective",
-  "settings": { } }
+  "settings": { },
+  "managed": null }
 ```
+
+`managed` 只在 `tier: "effective"` 时有内容:部署方的 managed 层
+(`{ "origin", "permission_rules", "disable_bypass_permissions_mode" }`,不能执行时另有
+`error`),没有这一层时是 `null`。它不并进 `settings`——`settings.permission_rules` 只是各层
+设置文件里的规则,managed 层的规则在这里单列,裁决时与它们一起生效。
 
 **该层没有文件时 `settings` 是 `null`,不是 `{}`** —— "这层没配"和"这层配了个空的"
 是两种状态,配置界面得能区分。`tier: "project"` 而没给 `project_root` 同理。
@@ -2697,6 +2728,10 @@ daemon 会话的默认权限模式是 **`default`(ask)**,不是放行一切。
 
 会话级只能**收紧**、不能放宽,除非 settings 里开了 `allow_client_permission_override`
 (§4.5)。
+
+部署方的 managed 设置(`ARCHITECTURE.md` §6.1)在这两者之上:它的 `deny` / `ask` 在
+`bypassPermissions` 下照样拒绝 / 询问;它写了 `disable_bypass_permissions_mode: true` 时,
+上面两种声明都只得到 `default`。
 
 ---
 

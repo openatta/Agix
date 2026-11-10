@@ -14,6 +14,7 @@ mod home_is_never_discovered;
 mod hook_event_wiring;
 mod hook_events_doc;
 mod host_scenes;
+mod managed_settings;
 mod mcp_oauth;
 mod mcp_policy;
 mod one_assembly;

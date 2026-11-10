@@ -3,9 +3,11 @@
 //! 决策顺序（`PreToolUse` hook 不在此处——由调用方 `runtime::turn` 在进入
 //! 本 gate 之前执行，见 `execute_tool_inner`）：
 //!
+//! 0. 部署方的 managed 层（`ManagedPolicy`）读不了 → 一律 deny；它关掉了
+//!    bypass 的，`BypassPermissions` 按 `Default` 判
 //! 1. `tool.validate_input` —— 输入合法性。`BypassPermissions` 到此为止：
 //!    输入合法即 allow，下面的规则、受保护路径、`.git` / `.agix` 确认和工具
-//!    自己的判定一概不看
+//!    自己的判定一概不看——只看 managed 层的 deny / ask
 //! 2. `tool.check_permissions` —— 工具自带的判定：
 //!    - `Deny` **直接返回**（工具拒绝自己是权威的：只有工具知道自己的输入
 //!      为什么不该跑）
@@ -49,8 +51,8 @@ use crate::path_rule::ResolvedPath;
 use crate::rule::format_rule_string;
 use crate::ruleset::{path_rule_group, shell_rule_group, RuleHit, RuleSet};
 use base::paths::{PROJECT_WORKTREES_DIR, STATE_ROOT_WORKING_DIRS};
-use base::permission::PermissionRule;
 use base::permission::{DecisionReason, PermissionDecision, PermissionMode};
+use base::permission::{PermissionRule, RuleBehavior, RuleSource};
 use base::tool::ToolContext;
 use base::tool::{PermissionContentKind, Tool};
 use serde_json::Value;
@@ -59,6 +61,58 @@ use std::sync::{Arc, RwLock};
 pub struct PermissionGate {
     rules: Arc<RwLock<RuleSet>>,
     deny_rules_only: bool,
+    managed: ManagedPolicy,
+}
+
+/// What the deployment's managed settings (`base::managed_settings`) hold every
+/// call to, whatever the session's mode. Its rules are also among the gate's
+/// own, where they weigh like any other; here they are what a
+/// `bypassPermissions` session still answers to.
+#[derive(Clone, Default)]
+pub struct ManagedPolicy {
+    rules: RuleSet,
+    bypass_disabled: bool,
+    unreadable: Option<String>,
+}
+
+impl ManagedPolicy {
+    /// The managed layer `settings` carry. A rule in it that does not parse
+    /// makes the layer unreadable rather than dropping the rule.
+    pub fn from_settings(settings: &base::interface::settings::Settings) -> Self {
+        let Some(managed) = &settings.managed else {
+            return Self::default();
+        };
+        let mut unreadable = managed.error.clone();
+        let mut rules = RuleSet::empty();
+        for rule in &managed.permission_rules {
+            let behavior = match rule.action {
+                base::interface::settings::PermissionAction::Allow => RuleBehavior::Allow,
+                base::interface::settings::PermissionAction::Deny => RuleBehavior::Deny,
+                base::interface::settings::PermissionAction::Ask => RuleBehavior::Ask,
+            };
+            match crate::rule::parse_rule_string(&rule.tool, RuleSource::PolicySettings, behavior) {
+                Ok(parsed) => rules.add(parsed),
+                Err(e) => {
+                    unreadable.get_or_insert_with(|| {
+                        format!(
+                            "{}: permission rule `{}` does not parse: {e}",
+                            managed.origin, rule.tool
+                        )
+                    });
+                }
+            }
+        }
+        Self {
+            rules,
+            bypass_disabled: managed.disable_bypass_permissions_mode,
+            unreadable,
+        }
+    }
+
+    /// Why the layer cannot be honoured, when it cannot.
+    pub fn unreadable(&self) -> Option<&str> {
+        self.unreadable.as_deref()
+    }
 }
 
 impl PermissionGate {
@@ -67,7 +121,14 @@ impl PermissionGate {
         Self {
             rules: Arc::new(RwLock::new(rules)),
             deny_rules_only: false,
+            managed: ManagedPolicy::default(),
         }
+    }
+
+    /// Hold every call to `managed` as well, in every mode.
+    pub fn with_managed(mut self, managed: ManagedPolicy) -> Self {
+        self.managed = managed;
+        self
     }
 
     /// A gate whose only verdict of its own is a matching `deny` rule: any
@@ -119,6 +180,58 @@ impl PermissionGate {
         input: &Value,
         ctx: &ToolContext,
     ) -> (RuleHit, Vec<String>) {
+        let rules = self
+            .rules
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Self::rule_hit_in(&rules, tool, input, ctx)
+    }
+
+    /// The managed layer's verdict on a `bypassPermissions` call: its deny
+    /// refuses, its ask asks, anything else is allowed.
+    fn bypass_decision(
+        &self,
+        tool: &dyn Tool,
+        input: &Value,
+        ctx: &ToolContext,
+    ) -> PermissionDecision {
+        let hit = if self.managed.rules.is_empty() {
+            RuleHit::None
+        } else {
+            Self::rule_hit_in(&self.managed.rules, tool, input, ctx).0
+        };
+        match hit {
+            RuleHit::Deny(rule) => PermissionDecision::Deny {
+                message: format!("denied by managed rule: {}", format_rule_string(&rule)),
+                decision_reason: DecisionReason::Rule(rule),
+            },
+            RuleHit::Ask(rule) => PermissionDecision::Ask {
+                message: format!(
+                    "{} matches managed rule {}, which requires confirmation",
+                    tool.name(),
+                    format_rule_string(&rule)
+                ),
+                decision_reason: Some(DecisionReason::Rule(rule)),
+            },
+            RuleHit::Unclear(rule) => PermissionDecision::Ask {
+                message: unclear_message(tool.name(), &rule),
+                decision_reason: Some(DecisionReason::Rule(rule)),
+            },
+            RuleHit::Allow(_) | RuleHit::None => PermissionDecision::Allow {
+                updated_input: None,
+                decision_reason: Some(DecisionReason::Mode(PermissionMode::BypassPermissions)),
+            },
+        }
+    }
+
+    /// The rule in `rules` this call matches, and every string the rules were
+    /// matched against (the content and each resolved form of its path).
+    fn rule_hit_in(
+        rules: &RuleSet,
+        tool: &dyn Tool,
+        input: &Value,
+        ctx: &ToolContext,
+    ) -> (RuleHit, Vec<String>) {
         let content = tool.permission_match_content(input);
         let kind = tool.permission_content_kind();
         let path_group = path_rule_group(kind);
@@ -126,10 +239,6 @@ impl PermissionGate {
             .zip(content.as_deref())
             .map(|(_, c)| ResolvedPath::new(c, &ctx.cwd));
         let hit = {
-            let rules = self
-                .rules
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
             match (path_group, &resolved, content.as_deref()) {
                 (Some(group), Some(path), _) => {
                     rules.evaluate_path(tool.name(), group, path, &ctx.cwd)
@@ -181,6 +290,16 @@ impl PermissionGate {
         input: &Value,
         ctx: &ToolContext,
     ) -> Result<PermissionDecision, GateError> {
+        if let Some(why) = &self.managed.unreadable {
+            return Ok(PermissionDecision::Deny {
+                message: format!(
+                    "the managed settings cannot be honoured, so every tool call is refused \
+                     until they are fixed: {why}"
+                ),
+                decision_reason: DecisionReason::Other("managed settings unreadable".into()),
+            });
+        }
+
         // 1. validateInput
         if let base::tool::ValidationResult::Err(msg, code) = tool.validate_input(input, ctx).await
         {
@@ -204,12 +323,14 @@ impl PermissionGate {
             });
         }
 
-        let mode = ctx.permission_mode;
+        let mode = match ctx.permission_mode {
+            PermissionMode::BypassPermissions if self.managed.bypass_disabled => {
+                PermissionMode::Default
+            }
+            mode => mode,
+        };
         if mode == PermissionMode::BypassPermissions {
-            return Ok(PermissionDecision::Allow {
-                updated_input: None,
-                decision_reason: Some(DecisionReason::Mode(mode)),
-            });
+            return Ok(self.bypass_decision(tool, input, ctx));
         }
 
         // 2. tool.check_permissions —— 工具自带判定
@@ -718,7 +839,7 @@ mod tests {
     async fn bypass_spelling_consults_nothing(spelling: &str) {
         let deny_bash = || {
             RuleSet::new(vec![PermissionRule {
-                source: base::permission::RuleSource::PolicySettings,
+                source: base::permission::RuleSource::UserSettings,
                 behavior: base::permission::RuleBehavior::Deny,
                 tool_name: "Bash".into(),
                 rule_content: None,

@@ -38,7 +38,7 @@ use crate::settings::{SETTINGS_FILE, SETTINGS_LOCAL_FILE};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// Which of the three tiers a layer belongs to, lowest priority first.
+/// Which tier a layer belongs to, lowest priority first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tier {
     /// Shared by every scene on this machine.
@@ -47,6 +47,10 @@ pub enum Tier {
     Scene,
     /// This project.
     Project,
+    /// The deployment's — see [`crate::managed_settings`]. Only
+    /// `permission_rules` and `disable_bypass_permissions_mode` are read from
+    /// it, and nothing below it can override them.
+    Managed,
 }
 
 impl Tier {
@@ -55,6 +59,7 @@ impl Tier {
             Self::Global => "global",
             Self::Scene => "scene",
             Self::Project => "project",
+            Self::Managed => "managed",
         }
     }
 }
