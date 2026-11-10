@@ -1384,6 +1384,14 @@ WebAssembly 载体整个移除。
   `Bash` 免询问;现在第一个通配之前只有 `/`、`.`、`~` 或空白的内容(连同 `Edit(/)` 这类指向根、
   家目录、当前目录的)与整类授权一样不给,记一条 warn。用户层 skill 不受影响。靠这类写法免询问的
   项目 / 插件 skill,改写成真正收窄的 `Bash(cargo test:*)`、`Write(src/**)`。
+- **`WebFetch` / `Ping` 规则按 URL 的各部分匹配。** 以前规则内容是整串 URL 上的 glob,`*` 能跨 `/`,
+  `WebFetch(https://*.example.com/**)` 会放行 `https://evil.net/.example.com/`;现在调用的 URL 先
+  规整(去 userinfo / query / fragment,主机名小写,默认端口省略),再与模式的 scheme、主机、端口、
+  路径分别匹配,主机里的通配只跨 `.`(`ARCHITECTURE.md` §6.1 第 5 条)。**会变的写法**:不是
+  `scheme://host[/path]` 形状的 allow(`WebFetch(*example.com*)`)只放行原样相等的 URL,启动时记一条
+  warn(deny / ask 照旧按整串 glob 拦);`https://h/**` 不再匹配 `https://h:8443/`,要任何端口写
+  `https://h:*/**`。项目或插件 skill 的 `allowed-tools` 里主机钉不住域名的 URL 模式
+  (`WebFetch(https://*/**)`)按整类授权处理,不给。
 
 #### hooks
 
@@ -1436,6 +1444,11 @@ WebAssembly 载体整个移除。
   而这只是 server 对自己的说法,一个恶意或出错的 server 能把任何工具标成只读。要免询问的,为它写
   allow 规则(`mcp__<server>` 管整个 server,`mcp__<server>__<工具>` 管一个);`default` 下本来就要问,
   不受影响。
+- **MCP 策略的 `url` 规则与 `allowed_authorization_servers` 按 URL 的各部分匹配**,与 `WebFetch` 规则
+  同一个函数:主机里的通配只在主机里(`https://**` 是任何主机的根路径,要任何 URL 写
+  `https://*/**`),模式不写路径时只认 `/`。写不成 `scheme://host[/path]` 的规则(`{"url": "**"}`、
+  `{"url": "*.corp.example"}`)现在算写错,整份策略按读不了处理、拒绝所有 server,`daemon.doctor`
+  的 `mcp.policy` 报 `failing`。用这种写法的策略改成带 scheme 与主机的模式。
 - `RUST_LOG=debug` 不再把 rmcp 的授权日志(授权码、令牌)落盘:`rmcp::transport::auth` 固定在 `info`,
   用户显式写了这个 target 才放开。
 
@@ -1534,6 +1547,11 @@ WebAssembly 载体整个移除。
   工具、读过的文件记录(`Edit` 前要先 `Read` 的依据)和 `/rewind` 的文件快照也都丢了;现在都留着。
   `plan` 之外的模式仍取重建时的设置:`plan` 里退出回到的是新设置的模式,不在 `plan` 里的会话
   直接换成新设置的模式。
+- managed 层的 `ask` 不再被 `PreToolUse` hook 的 `approve` 吞掉:配了这种 hook 的会话,也会收到
+  managed 规则要求的 permission `prompt` 帧,宿主要能回答。
+- `options.permission_rules` 里 `WebFetch` / `Ping` 的 `rule_content` 按 URL 的各部分匹配
+  (`daemon_rpc_protocol.md` §4.6):传 `scheme://host[:port][/path]` 形状的模式;别的写法作 `allow`
+  只放行原样相等的 URL。
 
 #### 方法、帧与错误
 
@@ -1609,6 +1627,11 @@ WebAssembly 载体整个移除。
   `approve` 不答它。自己实现 `Permission` 的构造 `Prompt` 时补 `managed: false`(或按
   `PermissionGate::asked_by_managed(decision_reason)` 填);不带 `..` 解构 `Prompt` 的要加 `..`。
   gate 在 managed 层也问的调用上,`Ask` 的 `decision_reason` 报的是 managed 那条规则。
+- URL 规则的匹配收进 `base::url_rule` 一份:`NormalizedUrl::parse` 规整 URL,`UrlPattern::parse`
+  编译 `scheme://host[:port][/path]` 模式,`url_rule::matches(pattern, url)` 一步到位。`RuleSet::evaluate`
+  对 `WebFetch` / `Ping` 用它;`mcp::policy` 的私有 `normalized_url` 删除;`tools::security::allowed_domains_name`
+  经它取主机。`permissions::dangerous::is_unscoped_grant(tool_name, content)` 是"这条授权能不能从空前缀
+  匹配起"的判断,skill 授权过滤与危险规则告警共用。
 - 路径规整与根目录包含判断收进 `permissions::path_rule` 一份:`permissions::path_safety` 与
   `tools::security` 里各自的 `normalize_path_lexically` 删除,改用 `path_rule::normalize_path_lexically`;
   两个同名 `is_path_within_root` 按语义改名——按组件比字面的是 `path_rule::is_within_root_lexical`,

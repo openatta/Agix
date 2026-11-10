@@ -16,6 +16,7 @@
 use std::path::{Path, PathBuf};
 
 use base::interface::health::{CheckResult, HealthCheck};
+use base::url_rule::{NormalizedUrl, UrlPattern};
 use globset::{GlobBuilder, GlobMatcher};
 use serde::{Deserialize, Serialize};
 
@@ -29,9 +30,10 @@ pub struct McpPolicy {
     pub allowed_servers: Option<Vec<McpServerRule>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub denied_servers: Vec<McpServerRule>,
-    /// Globs over authorization server issuers (`scheme://host[:port][/path]`,
-    /// no trailing `/`). `None`: any; otherwise an issuer matching none is
-    /// refused before the user is sent anywhere.
+    /// URL patterns (`base::url_rule`) over authorization server issuers
+    /// (`scheme://host[:port][/path]`, no trailing `/`). `None`: any;
+    /// otherwise an issuer matching none is refused before the user is sent
+    /// anywhere.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_authorization_servers: Option<Vec<String>>,
     /// The IdP `"grant": "enterprise"` servers exchange the user's identity at.
@@ -85,7 +87,7 @@ pub enum PolicyOrigin {
 enum Matcher {
     Name(String),
     Command(GlobMatcher),
-    Url(GlobMatcher),
+    Url(Box<UrlPattern>),
 }
 
 struct CompiledRule {
@@ -108,9 +110,9 @@ impl CompiledRule {
             McpServerRule::Command(pattern) => {
                 Matcher::Command(glob(pattern, COMMANDS_IGNORE_CASE)?)
             }
-            McpServerRule::Url(pattern) => {
-                Matcher::Url(glob(&normalized_url_pattern(pattern), false)?)
-            }
+            McpServerRule::Url(pattern) => Matcher::Url(Box::new(
+                UrlPattern::parse(pattern).map_err(|e| format!("rule {rule}: {e}"))?,
+            )),
         };
         Ok(Self { rule, matcher })
     }
@@ -134,8 +136,8 @@ impl CompiledRule {
             },
             Matcher::Url(m) => cfg
                 .url()
-                .and_then(|url| normalized_url(&expand_env_vars(url)))
-                .is_some_and(|url| m.is_match(url)),
+                .and_then(|url| NormalizedUrl::parse(&expand_env_vars(url)))
+                .is_some_and(|url| m.matches(&url)),
         }
     }
 }
@@ -183,51 +185,8 @@ fn climbs(cfg: &McpServerConfig) -> bool {
     }
 }
 
-/// `scheme://host[:port]/path`, without userinfo, query or fragment, so a
-/// `?` or `#` in the URL cannot carry text a host-matching `*` would accept.
-/// `ws`/`wss` read as `http`/`https`, the URL a WebSocket server falls back
-/// to, and a host's trailing `.` is dropped: it names the same host.
-fn normalized_url(raw: &str) -> Option<String> {
-    let url = url::Url::parse(raw).ok()?;
-    let host = url.host_str()?.trim_end_matches('.');
-    if host.is_empty() {
-        return None;
-    }
-    let scheme = match url.scheme() {
-        "ws" => "http",
-        "wss" => "https",
-        other => other,
-    };
-    let default_port = match scheme {
-        "http" => Some(80),
-        "https" => Some(443),
-        _ => None,
-    };
-    let port = url
-        .port_or_known_default()
-        .filter(|p| Some(*p) != default_port)
-        .map(|p| format!(":{p}"))
-        .unwrap_or_default();
-    Some(format!("{scheme}://{host}{port}{}", url.path()))
-}
-
-/// A `url` rule written for `ws://`/`wss://` matches what [`normalized_url`]
-/// makes of those URLs.
-fn normalized_url_pattern(pattern: &str) -> String {
-    for (ws, http) in [("ws://", "http://"), ("wss://", "https://")] {
-        if pattern
-            .get(..ws.len())
-            .is_some_and(|head| head.eq_ignore_ascii_case(ws))
-        {
-            return format!("{http}{}", &pattern[ws.len()..]);
-        }
-    }
-    pattern.to_string()
-}
-
-fn normalized_issuer(raw: &str) -> Option<String> {
-    let url = normalized_url(raw)?;
-    Some(url.trim_end_matches('/').to_string())
+fn normalized_issuer(raw: &str) -> Option<NormalizedUrl> {
+    NormalizedUrl::parse(raw).map(NormalizedUrl::without_trailing_slash)
 }
 
 /// Whether two issuers name the same authorization server, written either
@@ -241,7 +200,7 @@ enum Rules {
     Active {
         allowed: Option<Vec<CompiledRule>>,
         denied: Vec<CompiledRule>,
-        issuers: Option<Vec<GlobMatcher>>,
+        issuers: Option<Vec<UrlPattern>>,
     },
     Unreadable(String),
 }
@@ -319,7 +278,7 @@ impl McpPolicyGate {
                         self.describe_origin()
                     ));
                 };
-                if globs.iter().any(|g| g.is_match(&issuer)) {
+                if globs.iter().any(|g| g.matches(&issuer)) {
                     Ok(())
                 } else {
                     Err(format!(
@@ -416,13 +375,7 @@ fn compile(policy: McpPolicy) -> Rules {
             patterns
                 .iter()
                 .map(|p| {
-                    GlobBuilder::new(p)
-                        .literal_separator(true)
-                        .build()
-                        .map(|g| g.compile_matcher())
-                        .map_err(|e| {
-                            format!("allowed_authorization_servers {p:?}: invalid glob: {e}")
-                        })
+                    UrlPattern::parse(p).map_err(|e| format!("allowed_authorization_servers: {e}"))
                 })
                 .collect::<Result<Vec<_>, _>>()
         })
@@ -650,8 +603,23 @@ mod tests {
     fn a_command_rule_does_not_match_a_remote_server_nor_a_url_rule_a_stdio_one() {
         let g = gate(r#"{"allowed_servers": [{"command": "*"}]}"#);
         assert!(g.admit("a", &http("https://x.example/")).is_err());
-        let g = gate(r#"{"allowed_servers": [{"url": "**"}]}"#);
+        let g = gate(r#"{"allowed_servers": [{"url": "https://*/**"}]}"#);
+        assert!(g.admit("a", &http("https://x.example/")).is_ok());
         assert!(g.admit("a", &stdio("npx")).is_err());
+    }
+
+    /// A `url` rule is matched part by part, so one that names no scheme and
+    /// host cannot be read; like any unreadable rule it denies everything.
+    #[test]
+    fn a_url_rule_that_is_not_a_url_pattern_makes_the_policy_unreadable() {
+        for rule in ["**", "*.corp.example", "corp.example/**"] {
+            let g = gate(&format!(r#"{{"denied_servers": [{{"url": "{rule}"}}]}}"#));
+            assert!(g.error().is_some(), "{rule}");
+            assert!(
+                g.admit("a", &http("https://ok.example/")).is_err(),
+                "{rule}"
+            );
+        }
     }
 
     #[test]

@@ -416,6 +416,13 @@ settings 宽的被**静默夹到 settings 允许的最宽处**并记一条 warn 
   工作目录解析,`.` / `..` 去掉,`~` 展开;符号链接解析后的路径上命中 `deny` / `ask`
   也算。`*` 不跨 `/`,`**` 跨。`Read(...)` 同样约束 `Grep` / `Glob`,`Edit(...)` 同样
   约束 `Write` / `NotebookEdit`。
+- `WebFetch` / `Ping` 用 URL 模式 `scheme://host[:port][/path]`(`"https://*.example.com/**"`)。
+  调用的 URL 先规整(去掉 userinfo、query、fragment,主机名小写、去掉末尾的 `.`、默认端口
+  省略),再与模式**按部分**分别匹配:主机里的通配只跨 `.`,到不了端口和路径
+  (`https://evil.net/.example.com/` 不命中上面那条);不写端口只认缺省端口,`:*` 认任何端口;
+  路径里 `*` 不跨 `/`,`**` 跨。与调用的 URL 原样相等的也命中("永久允许"记下的就是原样的 URL)。
+  写不成这种形状的(`"*example.com*"`)作 `allow` 只命中原样相等的 URL,作 `deny` / `ask`
+  仍按整串 glob 匹配。
 
 裁决只看 `behavior`:一次调用命中的规则里只要有一条 `deny` 就拒绝,否则有 `ask`
 就提问,否则才是 `allow`。`source` 和规则写得多具体都不参与裁决——客户端传入的

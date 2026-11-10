@@ -24,3 +24,4 @@ pub mod prompt;
 pub mod provider;
 pub mod summary;
 pub mod text;
+pub mod url_rule;

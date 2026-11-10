@@ -309,7 +309,8 @@ let pool = assembly::assemble::pool(&config, scene, Assembly {
   环境变量读,不进凭据记录。
 - **授权服务器白名单。** MCP 策略(`ARCHITECTURE.md` §6.4)可以写
   `"allowed_authorization_servers": ["https://login.corp.example", "https://corp.okta.com/oauth2/default"]`:
-  对 issuer(规整成 `scheme://host[:port][/path]`、末尾不带 `/`)做 glob,`*` 不跨 `/`。写具体的
+  对 issuer(规整成 `scheme://host[:port][/path]`、末尾不带 `/`)按 URL 模式拆开匹配(`ARCHITECTURE.md`
+  §6.1 第 5 条):主机里的 `*` 只跨 `.`、到不了路径,路径里的 `*` 不跨 `/`。写具体的
   租户:`https://*.okta.com/**` 这样的通配放进的是**任何人**在 Okta 上开的租户,包括攻击者自己
   注册的那个。不匹配的
   授权服务器在**任何跳转、注册、令牌请求之前**被拒绝;写了这一项而授权服务器元数据没有

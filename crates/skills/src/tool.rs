@@ -338,7 +338,7 @@ pub async fn expand_for_invocation(
         .flatten()
         .filter_map(|entry| {
             let (tool_name, rule_content) = split_allowed_tool_entry(entry);
-            if restricted && permissions::dangerous::is_unscoped_grant(rule_content) {
+            if restricted && permissions::dangerous::is_unscoped_grant(tool_name, rule_content) {
                 tracing::warn!(
                     skill = %info.name,
                     source = info.source.as_str(),

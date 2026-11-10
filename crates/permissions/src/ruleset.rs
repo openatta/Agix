@@ -17,6 +17,9 @@ use std::path::Path;
 /// Tools whose rule content is a path.
 const PATH_RULE_TOOLS: &[&str] = &["Read", "Grep", "Glob", "Edit", "Write", "NotebookEdit"];
 
+/// Tools whose rule content is a URL, matched as `base::url_rule` reads one.
+pub(crate) const URL_RULE_TOOLS: &[&str] = &["WebFetch", "Ping"];
+
 /// The rule tool name whose path rules also govern every tool of `kind`:
 /// `Read(...)` covers whatever reads a file, `Edit(...)` whatever writes one.
 pub fn path_rule_group(kind: PermissionContentKind) -> Option<&'static str> {
@@ -106,6 +109,15 @@ impl RuleSet {
                     "`*` in a path rule no longer matches across `/`; use `**` to reach subdirectories"
                 );
             }
+            if URL_RULE_TOOLS.contains(&r.tool_name.as_str()) {
+                if let Err(e) = base::url_rule::UrlPattern::parse(content) {
+                    tracing::warn!(
+                        rule = %crate::rule::format_rule_string(r),
+                        "{e}: as an allow it matches only that exact URL; a deny or ask \
+                         still matches it as a glob over the whole URL"
+                    );
+                }
+            }
         }
         Self { rules }
     }
@@ -149,12 +161,16 @@ impl RuleSet {
     /// Read 文件路径），原样比对。`None` 表示工具没提供匹配内容；此时只按工具名
     /// （无 content 限定的）规则匹配。
     pub fn evaluate(&self, tool_name: &str, content: Option<&str>) -> RuleHit {
+        let url_valued = URL_RULE_TOOLS.contains(&tool_name);
         self.decide(|r| {
             if !matches_tool_name(&r.tool_name, tool_name) {
                 return None;
             }
             match (&r.rule_content, content) {
                 (None, _) => Some(0),
+                (Some(rc), Some(c)) if url_valued => {
+                    matches_url(rc, c, r.behavior).then_some(rc.len() as i32)
+                }
                 (Some(rc), Some(c)) => matches_content(rc, c).then_some(rc.len() as i32),
                 (Some(_), None) => None,
             }
@@ -377,6 +393,25 @@ pub(crate) fn matches_content(pattern: &str, content: &str) -> bool {
     }
     // 3. 精确匹配
     pattern == content
+}
+
+/// A URL-valued tool's rule: the same text, or `base::url_rule` matching it
+/// part by part. A pattern or URL that cannot be read as one still meets a
+/// deny or ask as a glob over the whole text — a refusal written before
+/// patterns were URLs must not stop refusing — but never lets anything else
+/// through as an allow.
+fn matches_url(pattern: &str, content: &str, behavior: RuleBehavior) -> bool {
+    if pattern == content {
+        return true;
+    }
+    let parsed = base::url_rule::UrlPattern::parse(pattern)
+        .ok()
+        .zip(base::url_rule::NormalizedUrl::parse(content));
+    match (parsed, behavior) {
+        (Some((pattern, url)), _) => pattern.matches(&url),
+        (None, RuleBehavior::Allow) => false,
+        (None, RuleBehavior::Deny | RuleBehavior::Ask) => matches_content(pattern, content),
+    }
 }
 
 #[cfg(test)]
@@ -678,10 +713,9 @@ mod tests {
         assert!(matches!(rs.evaluate("Bash", Some("ls")), RuleHit::None));
     }
 
-    /// A URL rule's `*` is a glob over the whole URL, so the host it
-    /// seems to pin can be spelled in another host's path.
+    /// A URL rule's host wildcard stays in the host: the host it pins cannot
+    /// be spelled in another host's path.
     #[test]
-    #[ignore = "audit: confirmed defect, fix pending"]
     fn audit_f14_a_subdomain_url_rule_matches_another_hosts_path() {
         let rule = crate::rule::parse_rule_string(
             "WebFetch(https://*.example.com/**)",
@@ -705,6 +739,54 @@ mod tests {
             assert!(
                 matches!(rs.evaluate("WebFetch", Some(url)), RuleHit::None),
                 "`{url}` matched WebFetch(https://*.example.com/**)"
+            );
+        }
+    }
+
+    #[test]
+    fn a_url_rule_that_is_not_a_url_pattern_still_refuses_but_never_allows() {
+        let rs = |behavior| {
+            RuleSet::new(vec![rule(
+                "WebFetch",
+                Some("*evil.example*"),
+                behavior,
+                RuleSource::UserSettings,
+            )])
+        };
+        let url = Some("https://evil.example/x");
+        assert!(matches!(
+            rs(RuleBehavior::Deny).evaluate("WebFetch", url),
+            RuleHit::Deny(_)
+        ));
+        assert!(matches!(
+            rs(RuleBehavior::Ask).evaluate("WebFetch", url),
+            RuleHit::Ask(_)
+        ));
+        assert!(matches!(
+            rs(RuleBehavior::Allow).evaluate("WebFetch", url),
+            RuleHit::None
+        ));
+
+        let exact = RuleSet::new(vec![rule(
+            "WebFetch",
+            Some("https://h.example/a?b=1"),
+            RuleBehavior::Allow,
+            RuleSource::Session,
+        )]);
+        assert!(matches!(
+            exact.evaluate("WebFetch", Some("https://h.example/a?b=1")),
+            RuleHit::Allow(_)
+        ));
+        let deny = RuleSet::new(vec![rule(
+            "WebFetch",
+            Some("https://evil.example/**"),
+            RuleBehavior::Deny,
+            RuleSource::UserSettings,
+        )]);
+        for url in ["https://EVIL.example./x", "https://evil.example:443/x?q"] {
+            assert!(
+                matches!(deny.evaluate("WebFetch", Some(url)), RuleHit::Deny(_)),
+                "{url}"
             );
         }
     }

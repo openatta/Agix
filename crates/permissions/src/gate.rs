@@ -739,12 +739,11 @@ mod tests {
         assert!(decide(vec![managed.clone(), user.clone()], vec![managed.clone()]).await);
         assert!(!decide(vec![user], vec![]).await);
 
-        let bypass = PermissionGate::new(RuleSet::new(vec![managed.clone()])).with_managed(
-            ManagedPolicy {
+        let bypass =
+            PermissionGate::new(RuleSet::new(vec![managed.clone()])).with_managed(ManagedPolicy {
                 rules: RuleSet::new(vec![managed]),
                 ..Default::default()
-            },
-        );
+            });
         let d = bypass
             .check(
                 &tool,

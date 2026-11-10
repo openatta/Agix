@@ -140,7 +140,7 @@ fn is_broad_allow(rule: &PermissionRule) -> Option<String> {
              of a powerful tool that can access any file or execute arbitrary commands",
             tool_name
         )),
-        Some(content) if is_unscoped_grant(Some(content)) => Some(format!(
+        Some(content) if is_unscoped_grant(tool_name, Some(content)) => Some(format!(
             "Allow rule with wildcard '{content}' on {tool_name}: nothing literal comes \
              before its first wildcard, so it effectively permits unrestricted use, same \
              as having no content restriction"
@@ -153,11 +153,19 @@ fn is_broad_allow(rule: &PermissionRule) -> Option<String> {
 /// make: no content at all, or a pattern that matches from an empty prefix —
 /// nothing but `/`, `.`, `~` or blanks ahead of its first wildcard (`*`,
 /// `**`, `/**`, `~/**`, `* --version`, `:*`). A path without a wildcard
-/// covers the directory it names, so `/`, `~` and `.` are unscoped too.
-pub fn is_unscoped_grant(content: Option<&str>) -> bool {
+/// covers the directory it names, so `/`, `~` and `.` are unscoped too. For a
+/// URL-valued tool, a pattern whose host pins no domain (`https://*/**`,
+/// `https://*.com/**`, see `base::url_rule::UrlPattern::host_is_open`) is
+/// unscoped as well.
+pub fn is_unscoped_grant(tool_name: &str, content: Option<&str>) -> bool {
     let Some(content) = content else {
         return true;
     };
+    if crate::ruleset::URL_RULE_TOOLS.contains(&tool_name)
+        && base::url_rule::UrlPattern::parse(content).is_ok_and(|p| p.host_is_open())
+    {
+        return true;
+    }
     let literal = match content.strip_suffix(":*") {
         Some(prefix) => prefix,
         None => content
@@ -404,7 +412,7 @@ mod tests {
             Some("~"),
             Some("."),
         ] {
-            assert!(is_unscoped_grant(content), "{content:?}");
+            assert!(is_unscoped_grant("Bash", content), "{content:?}");
         }
         for content in [
             "git status:*",
@@ -414,8 +422,15 @@ mod tests {
             "./build.sh",
             "~/notes/**",
         ] {
-            assert!(!is_unscoped_grant(Some(content)), "{content}");
+            assert!(!is_unscoped_grant("Bash", Some(content)), "{content}");
         }
+        for content in ["https://*/**", "https://*.com/**", "http*://**"] {
+            assert!(is_unscoped_grant("WebFetch", Some(content)), "{content}");
+        }
+        assert!(!is_unscoped_grant(
+            "WebFetch",
+            Some("https://*.example.com/**")
+        ));
     }
 
     #[test]

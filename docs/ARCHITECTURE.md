@@ -626,7 +626,7 @@ git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git
 两个内建 skill 就写它)。保护它会给日常编辑加询问,挡不住同一类"持久的提示"(仓库里任何会被
 读到的文件都是)。
 
-规则这一步有四条约束:
+规则这一步有五条约束:
 
 1. **deny 永远优先。** 一次调用命中的规则里有一条 deny 就拒绝,否则有 ask 就问,否则
    才 allow(`bypassPermissions` 只看部署方 managed 层的规则,见本节末)。哪一层写的、写得多具体,都不参与裁决——项目仓库里提交的一条 allow 推不翻
@@ -686,6 +686,16 @@ git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git
    的,`cd` / `pushd` 到不是项目内字面路径的地方(或 `cd -` / `popd` / `pushd +N` 落到
    命令没写出的目录)之后再按相对路径读的,都不算在内;glob 按它此刻在磁盘上匹配到的
    路径查(`.*/x` 在 macOS 的 bash 3.2 下能匹配到 `../x`)。
+5. **URL 拆开再匹配。** `WebFetch(...)` / `Ping(...)` 的规则内容是 `scheme://host[:port][/path]`
+   形状的 URL 模式(`base::url_rule`)。调用的 URL 先规整——去掉 userinfo、query、fragment,主机名
+   小写、去掉末尾的 `.`、默认端口省略,`ws` / `wss` 当作 `http` / `https`——再与模式的 scheme、
+   主机、端口、路径**分别**匹配:主机里的通配只跨 `.`,到不了端口和路径,所以
+   `https://*.example.com/**` 不被 `https://evil.net/.example.com/` 骗过;不写端口只认缺省端口,
+   `:*` 认任何端口;路径的 `*` 不跨 `/`,`**` 跨。与调用的 URL 原样相等的规则也命中("永久允许"
+   记下的是原样的 URL)。写不成这种形状的内容(`*example.com*`)作 allow 只命中原样相等的 URL,
+   作 deny / ask 仍按整串 glob 匹配——规整只让裁决更严。MCP 策略的 `url` 与
+   `allowed_authorization_servers` 规则(§6.4)用的是同一个匹配函数。`sandbox.allowed_domains`
+   不是这种规则:它列的是域名(含子域),网络层按主机执行,只共用 URL 的规整取主机这一步。
 
 场景的工具白名单不在这里:它在会话注册表上就把工具拿掉了(§3.5),被拿掉的工具根本
 到不了权限这一步。
@@ -786,7 +796,8 @@ skill 自己的 `allowed-tools` 这时还没生效,不能给自己的命令开�
 不受它影响);只写工具名的整类授权只认用户层 skill,项目层与插件包带来的 skill 必须写成
 `Tool(内容)`,而且内容要真正收窄:第一个通配之前只有 `/`、`.`、`~` 或空白的(`Bash(*)`、
 `Write(**)`、`Edit(/**)`、`Bash(* --version)`,以及指向根、家目录、当前目录的 `Edit(/)`)与整类授权
-一样不给(`permissions::dangerous::is_unscoped_grant`);未信任项目自己的 skill 什么都不授予(§6.6)。
+一样不给,`WebFetch` / `Ping` 的 URL 模式主机钉不住域名的(`https://*/**`、`https://*.com/**`)也一样
+(`permissions::dangerous::is_unscoped_grant`);未信任项目自己的 skill 什么都不授予(§6.6)。
 
 ### 6.2 写路径的管控
 
@@ -1018,7 +1029,7 @@ rust / go / java / ruby / dotnet / swift 的常见位置,开箱即用。设置�
 ```
 
 `allowed_authorization_servers` 管 OAuth(§6.5):远端 server 的授权服务器 issuer 规整成
-`scheme://host[:port][/path]`(末尾不带 `/`)后按 glob 匹配,不匹配的在任何跳转、注册、令牌
+`scheme://host[:port][/path]`(末尾不带 `/`)后按 §6.1 第 5 条的 URL 模式拆开匹配,不匹配的在任何跳转、注册、令牌
 请求之前被拒绝,`mcp.auth.start` 报 `MCP_SERVER_DENIED`。`enterprise_idp` 给出
 `"grant": "enterprise"` 的 server 用来交换用户身份的 IdP;宿主经 `Assembly::mcp_enterprise_idp`
 给了的话以宿主的为准。策略读不了时两者都不生效:没有授权服务器被允许,也没有 IdP。
@@ -1032,7 +1043,7 @@ issuer 的 glob 不要通配托管 IdP 的域名:`https://*.okta.com/**`、`http
 |---|---|---|
 | `name` | server 的名字(`mcp_servers` 的键;插件的是 `<插件>-mcp-<名字>`) | 完全相等;**只在 `denied_servers` 里起作用** |
 | `command` | stdio server 的 `command`,`$VAR` / `${VAR}` / `${VAR:-默认}` 展开之后 | glob;不带通配就是完全相等 |
-| `url` | 远端 server 的 `url`,同样先展开,再规整成 `scheme://host[:port]/path` | glob |
+| `url` | 远端 server 的 `url`,同样先展开,再规整成 `scheme://host[:port]/path` | URL 模式(§6.1 第 5 条):scheme、主机、端口、路径分别匹配 |
 
 **`name` 不放行。** 名字是写 `mcp_servers` 的人自己起的键,谁都能把任意命令或 URL 起名叫
 `github`,所以 `allowed_servers` 里的 `name` 规则不放行任何 server——放行要落在实际跑的
@@ -1056,7 +1067,9 @@ HTTP;规则里写的 `ws://` / `wss://` 同样换过来):`https://*.corp.example
 不会被 `https://evil.example?.corp.example/` 或 `https://evil.example/.corp.example/` 骗过,
 `denied_servers` 里的 `https://evil.example/**` 也拦得住 `wss://evil.example/` 和
 `https://evil.example./`;它不匹配显式写了非默认端口的 `https://mcp.corp.example:8443/`
-(要放行就写进模式里)。路径要用 `/**`:`https://h/*` 只匹配一层路径。
+(要放行就写进模式里,或写 `:*`)。主机里的通配只在主机里:`https://**` 是任何主机的根路径,不是任何 URL。
+路径要用 `/**`:`https://h/*` 只匹配一层路径。`url` 规则与 issuer 写不成 `scheme://host[/path]` 的
+(`**`、`*.corp.example`)算规则写错,整份策略按读不了处理。
 
 **deny 是尽力而为,allow 才可靠。** 匹配只看规整后的字面:同一台主机换个 IP 字面量
 (`https://203.0.113.7/`)、换个 DNS 别名、换个装着同一个二进制的路径,`denied_servers` 都拦

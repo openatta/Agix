@@ -139,12 +139,9 @@ pub async fn check_write_permission(
 /// url carries reaches that host, so `acceptEdits` sends a request without
 /// asking only to a host the settings vouch for.
 pub fn allowed_domains_name(url: &str, ctx: &base::tool::ToolContext) -> bool {
-    url::Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(str::to_string))
-        .is_some_and(|host| {
-            base::interface::exec::domains_name_host(&ctx.sandbox.allowed_domains, &host)
-        })
+    base::url_rule::NormalizedUrl::parse(url).is_some_and(|url| {
+        base::interface::exec::domains_name_host(&ctx.sandbox.allowed_domains, url.host())
+    })
 }
 
 /// Where the file tools may read without asking: the project, every
