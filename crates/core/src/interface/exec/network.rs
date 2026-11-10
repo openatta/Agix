@@ -240,10 +240,16 @@ fn internal_v6(ip: std::net::Ipv6Addr) -> bool {
         || (first & 0xffc0) == 0xfe80
         || (first & 0xffc0) == 0xfec0
         || ip.is_multicast()
+        || matches!(ip.segments(), [0x64, 0xff9b, 1, ..])
         || carried_v4(ip).is_some_and(internal_v4)
 }
 
-fn carried_v4(ip: std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr> {
+/// The IPv4 address an IPv6 one is a way of reaching: mapped
+/// (`::ffff:a.b.c.d`), SIIT (`::ffff:0:a.b.c.d`), compatible (`::a.b.c.d`),
+/// NAT64 (`64:ff9b::/96`, and the local-use `64:ff9b:1::/48` with the
+/// address in its last 32 bits), 6to4 (`2002::/16`) and Teredo's client
+/// (`2001::/32`, stored inverted).
+pub fn carried_v4(ip: std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr> {
     if let Some(v4) = ip.to_ipv4_mapped() {
         return Some(v4);
     }
@@ -254,8 +260,11 @@ fn carried_v4(ip: std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr> {
     };
     match ip.segments() {
         [0, 0, 0, 0, 0, 0, hi, lo] => Some(from(hi, lo)),
+        [0, 0, 0, 0, 0xffff, 0, hi, lo] => Some(from(hi, lo)),
         [0x64, 0xff9b, 0, 0, 0, 0, hi, lo] => Some(from(hi, lo)),
+        [0x64, 0xff9b, 1, _, _, _, hi, lo] => Some(from(hi, lo)),
         [0x2002, hi, lo, ..] => Some(from(hi, lo)),
+        [0x2001, 0, _, _, _, _, hi, lo] => Some(from(!hi, !lo)),
         _ => None,
     }
 }
@@ -292,6 +301,12 @@ mod tests {
             "64:ff9b::7f00:1",
             "2002:7f00:1::",
             "2002:c0a8:101::1",
+            "::ffff:0:7f00:1",
+            "::ffff:0:a00:1",
+            "64:ff9b:1::a9fe:a9fe",
+            "64:ff9b:1:2::808:808",
+            "2001:0:4136:e378:8000:63bf:80ff:fffe",
+            "2001:0:4136:e378:8000:63bf:f5ff:fffe",
             "fc00::1",
             "fd12:3456::1",
             "fe80::1",
@@ -318,6 +333,8 @@ mod tests {
             "::ffff:8.8.8.8",
             "64:ff9b::808:808",
             "2002:808:808::1",
+            "::ffff:0:808:808",
+            "2001:0:4136:e378:8000:63bf:f7f7:f7f7",
         ] {
             assert!(
                 !is_internal_address(ip.parse().expect("an address")),

@@ -10,12 +10,19 @@
 //! does; through a proxy only the host name can be checked, since the proxy
 //! resolves it. Everything goes over https, except to a loopback address; for
 //! a server off loopback the client itself refuses plain http, so metadata
-//! cannot be swapped in transit.
+//! cannot be swapped in transit. Which addresses count as internal is
+//! `base`'s [`is_internal_address`], the same answer a model-directed fetch
+//! gets.
+//!
+//! [`transport_client`] is the MCP connection's own client, kept to the
+//! server's origin across redirects and filtered the same way.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
+use base::interface::exec::is_internal_address;
+use base::interface::exec::network::carried_v4;
 use futures::StreamExt;
 use rmcp::transport::auth::{
     OAuthHttpClient, OAuthHttpClientError, OAuthHttpClientFuture, OAuthHttpRedirectPolicy,
@@ -36,43 +43,30 @@ enum AddressClass {
     Reserved,
 }
 
+/// Public is whatever [`is_internal_address`] does not call internal; of
+/// the rest, only loopback and private networks are told apart, everything
+/// else is reserved.
 fn class_of(ip: IpAddr) -> AddressClass {
-    let ip = match ip {
-        IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(ip),
-        v4 => v4,
-    };
-    match ip {
-        IpAddr::V4(v4) => {
-            let [a, b, ..] = v4.octets();
-            if v4.is_loopback() {
-                AddressClass::Loopback
-            } else if v4.is_private() || (a == 100 && (64..=127).contains(&b)) {
-                AddressClass::Private
-            } else if v4.is_link_local()
-                || v4.is_unspecified()
-                || v4.is_broadcast()
-                || v4.is_multicast()
-                || a == 0
-                || (a == 198 && (b == 18 || b == 19))
-            {
-                AddressClass::Reserved
-            } else {
-                AddressClass::Public
-            }
-        }
-        IpAddr::V6(v6) => {
-            let first = v6.segments()[0];
-            if v6.is_loopback() {
-                AddressClass::Loopback
-            } else if first & 0xfe00 == 0xfc00 {
-                AddressClass::Private
-            } else if v6.is_unspecified() || v6.is_multicast() || first & 0xffc0 == 0xfe80 {
-                AddressClass::Reserved
-            } else {
-                AddressClass::Public
-            }
-        }
+    if !is_internal_address(ip) {
+        return AddressClass::Public;
     }
+    let v4 = match ip {
+        IpAddr::V6(v6) if v6.is_loopback() => return AddressClass::Loopback,
+        IpAddr::V6(v6) if v6.segments()[0] & 0xfe00 == 0xfc00 => return AddressClass::Private,
+        IpAddr::V6(v6) => carried_v4(v6),
+        IpAddr::V4(v4) => Some(v4),
+    };
+    match v4 {
+        Some(v4) if v4.is_loopback() => AddressClass::Loopback,
+        Some(v4) if v4.is_private() || is_shared_address_space(v4) => AddressClass::Private,
+        _ => AddressClass::Reserved,
+    }
+}
+
+/// 100.64.0.0/10, carrier-grade NAT.
+fn is_shared_address_space(v4: std::net::Ipv4Addr) -> bool {
+    let [a, b, ..] = v4.octets();
+    a == 100 && (64..128).contains(&b)
 }
 
 fn host_class(url: &Url) -> Option<AddressClass> {
@@ -368,6 +362,35 @@ mod tests {
             assert!(policy.check_url(&url(blocked)).is_err(), "{blocked}");
         }
         assert!(policy.check_url(&url("file:///etc/passwd")).is_err());
+    }
+
+    #[test]
+    fn every_ipv6_spelling_of_an_internal_ipv4_address_is_refused_too() {
+        let policy = AddressPolicy::for_server(&url("https://mcp.example.com/mcp"));
+        for blocked in [
+            "::ffff:0:7f00:1",
+            "::ffff:0:a9fe:a9fe",
+            "::127.0.0.1",
+            "64:ff9b::a00:1",
+            "64:ff9b:1::808:808",
+            "2002:a9fe:a9fe::1",
+            "2001:0:4136:e378:8000:63bf:80ff:fffe",
+            "192.0.0.8",
+            "240.0.0.1",
+        ] {
+            assert!(!policy.allows_ip(blocked.parse().unwrap()), "{blocked}");
+        }
+        assert!(policy.allows_ip("2001:4860:4860::8888".parse().unwrap()));
+        assert!(policy.allows_ip("64:ff9b::808:808".parse().unwrap()));
+
+        let local = AddressPolicy::for_server(&url("http://127.0.0.1:9000/mcp"));
+        assert!(local.allows_ip("::1".parse().unwrap()));
+        assert!(local.allows_ip("::ffff:0:7f00:1".parse().unwrap()));
+        assert!(!local.allows_ip("::ffff:0:a9fe:a9fe".parse().unwrap()));
+        let corp = AddressPolicy::for_server(&url("https://10.1.2.3/mcp"));
+        assert!(corp.allows_ip("fd00::1".parse().unwrap()));
+        assert!(corp.allows_ip("::ffff:0:a00:9".parse().unwrap()));
+        assert!(!corp.allows_ip("fe80::1".parse().unwrap()));
     }
 
     #[test]
