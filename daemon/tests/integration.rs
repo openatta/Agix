@@ -20,7 +20,6 @@ mod host_scenes;
 mod managed_settings;
 mod mcp_oauth;
 mod mcp_policy;
-mod one_assembly;
 mod plugin_skills;
 mod plugin_tools_in_scene;
 mod project_trust;

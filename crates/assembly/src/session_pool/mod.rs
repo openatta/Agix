@@ -1165,7 +1165,7 @@ fn resolve_router(
 
 impl SessionPool {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub(crate) fn new(
         cap: usize,
         idle_timeout_secs: u64,
         client: Arc<dyn AnthropicClient>,
