@@ -591,7 +591,8 @@ git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git
    (`permissions::invocation`):去掉引号与转义,展开花括号,丢掉重定向,程序路径取
    名字(`/bin/rm` 是 `rm`),剥掉 `env` / `command` / `exec` / `nice` / `time` /
    `sudo` / `timeout` / `xargs` / `busybox` / `flock` / `ionice` / `pkexec` 等 wrapper 连同
-   它们的选项,`sh -c`、`eval`、`find -exec`、`su -c`、`runuser -- ` 里的命令也算。程序名从
+   它们的选项,`sh -c`、`eval`、`find -exec`、`su -c`、`runuser -- `、`watch`、`script -c`、
+   `parallel` 里的命令也算。程序名从
    文本里读不出来的段(`$CMD x`、`r?`、看不懂的 wrapper 选项、`case`/`function` 块、读 stdin 的
    裸 `sh`)在该工具有带内容的 deny / ask 规则时按 ask 处理(`dontAsk` 下拒绝),永远不会因此
    被放行。allow 只认原文——规整只让裁决更严。这些 `Bash(...)` 的 deny / ask 同样管住别的

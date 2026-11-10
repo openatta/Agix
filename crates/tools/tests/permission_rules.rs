@@ -348,6 +348,11 @@ async fn a_deny_reaches_the_program_however_its_name_is_spelled() {
         "taskset -c 0 rm -rf build",
         "su -c 'rm -rf build' root",
         "runuser -u me -- rm -rf build",
+        "arch rm -rf build",
+        "watch 'rm -rf build'",
+        "watch -n 2 rm -rf build",
+        "script -c 'rm -rf build' typescript",
+        "parallel rm ::: build",
         "caffeinate -i rm -rf build",
         "pkexec rm -rf build",
     ] {

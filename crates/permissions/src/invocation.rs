@@ -6,7 +6,8 @@
 //! [`invocations`] turns a segment from [`crate::shell::segments`] into the
 //! argument vectors it starts — quotes removed, braces expanded, redirections
 //! dropped, known wrappers (`env`, `exec`, `sudo`, `timeout`, `xargs`, ...)
-//! unwrapped with their options, `sh -c` / `eval` / `find -exec` looked into —
+//! unwrapped with their options, `sh -c` / `eval` / `find -exec` / `watch` /
+//! `script -c` / `parallel` looked into —
 //! so the rule engine can hold deny and ask rules to what runs rather than to
 //! how it was typed. The Bash tool's read-only fast path reads a line the
 //! same way, through [`traced_invocations`], which also says which wrappers
@@ -195,6 +196,26 @@ fn resolve_command(mut argv: Vec<Word>, mut trail: Trail, depth: usize, out: &mu
                     None => out.push(trail.found(Invocation::Unknown)),
                 },
             }
+        } else if name == "watch" {
+            match watch_command(args) {
+                Some(line) => resolve_line(&line, depth, out),
+                None => out.push(trail.found(Invocation::Unknown)),
+            }
+        } else if name == "script" {
+            match dash_c_command(args) {
+                Some(Some(script)) if script.is_literal() => {
+                    resolve_line(&script.text, depth, out);
+                }
+                Some(_) => out.push(trail.found(Invocation::Unknown)),
+                // No `-c`: `script file` records an interactive shell, not a
+                // command given here — kept as `script` itself below.
+                None => {}
+            }
+        } else if name == "parallel" {
+            match parallel_command(args) {
+                Some(line) => resolve_line(&line, depth, out),
+                None => out.push(trail.found(Invocation::Unknown)),
+            }
         } else if name == "eval" {
             if args.iter().all(Word::is_literal) {
                 let script: Vec<&str> = args.iter().map(|w| w.text.as_str()).collect();
@@ -360,6 +381,57 @@ fn dash_c_command(args: &[Word]) -> Option<Option<Word>> {
     None
 }
 
+/// The shell command string `watch [options] command…` runs — `watch` joins
+/// the words after its options and hands them to `sh -c`. Only `-n` /
+/// `--interval` takes a following value; every other `-word` before the
+/// command is a flag. `None` when no command word follows.
+fn watch_command(args: &[Word]) -> Option<String> {
+    let mut i = 0;
+    while let Some(w) = args.get(i) {
+        let t = w.text.as_str();
+        if t == "--" {
+            i += 1;
+            break;
+        }
+        if matches!(t, "-n" | "--interval") {
+            i += 2;
+            continue;
+        }
+        if t.starts_with('-') && t.len() > 1 {
+            i += 1;
+            continue;
+        }
+        break;
+    }
+    let rest = &args[i.min(args.len())..];
+    rest.iter()
+        .all(Word::is_literal)
+        .then(|| {
+            rest.iter()
+                .map(|w| w.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .filter(|line| !line.is_empty())
+}
+
+/// The command template `parallel` runs, as `sh -c` sees it: the words before
+/// the first `:::` / `::::`, joined. `None` when an option, a `:::` or a
+/// non-literal word leads — GNU parallel's options and input modes are too
+/// many to read off the text, so what runs cannot be told.
+fn parallel_command(args: &[Word]) -> Option<String> {
+    let first = args.first()?;
+    if !first.is_literal() || first.text.starts_with('-') || first.text.starts_with(":::") {
+        return None;
+    }
+    let template: Vec<&str> = args
+        .iter()
+        .take_while(|w| !w.text.starts_with(":::"))
+        .map(|w| w.text.as_str())
+        .collect();
+    (!template.is_empty()).then(|| template.join(" "))
+}
+
 /// The command vector after a `--` separator (`runuser -u me -- rm x`).
 fn after_double_dash(args: &[Word]) -> Option<Vec<Word>> {
     let at = args.iter().position(|w| w.text == "--" && !w.quoted)?;
@@ -435,7 +507,7 @@ const WRAPPERS: &[Wrapper] = &[
         ..NO_WRAPPER
     },
     Wrapper {
-        names: &["builtin", "nohup", "coproc", "busybox"],
+        names: &["builtin", "nohup", "coproc", "busybox", "arch"],
         ..NO_WRAPPER
     },
     Wrapper {
@@ -830,9 +902,33 @@ mod tests {
             "su -c 'rm x' root",
             "su -c 'rm x'",
             "runuser -u me -- rm x",
+            "arch rm x",
+            "watch 'rm x'",
+            "watch rm x",
+            "watch -n 2 rm x",
+            "script -c 'rm x' typescript",
         ] {
             assert!(
                 runs(line).iter().any(|r| r == "rm x"),
+                "{line}: {:?}",
+                runs(line)
+            );
+        }
+        // `parallel` appends its `:::` inputs as arguments, so the command
+        // template is `rm` alone — enough for a deny on `rm` to reach it.
+        assert!(runs("parallel rm ::: a b").iter().any(|r| r == "rm"));
+    }
+
+    #[test]
+    fn a_wrapper_whose_command_cannot_be_read_is_unknown() {
+        for line in [
+            "watch $CMD",
+            "parallel -j4 rm ::: x",
+            "parallel ::: rm ls",
+            "script -c \"$CMD\" out",
+        ] {
+            assert!(
+                runs(line).iter().any(|r| r == "?"),
                 "{line}: {:?}",
                 runs(line)
             );
