@@ -3410,6 +3410,48 @@ mod tests {
         assert!(ok && listed.contains("skills"), "{listed}");
     }
 
+    /// 场景目录是指向别处的符号链接时（把场景放在 dotfiles 仓库里再链进来），
+    /// 它的 `settings.json` 仍是这个场景的凭据，沙箱里的命令照样不该读到。
+    /// macOS 的读拒绝按 `^<状态目录>/scenes/[^/]+/` 匹配解析后的路径，链接目标
+    /// 不在那下面，于是放行；Linux 撤掉围栏的分支（引擎自己的 git、pdftotext、
+    /// 项目在状态目录内）逐个遮挡 `Located::existing()`，它只列真目录，0.3.11
+    /// 的 `scene_dirs` 还跟随符号链接。
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    #[ignore = "audit: confirmed defect, fix pending"]
+    #[allow(clippy::unwrap_used)]
+    fn audit3_a_scene_linked_in_from_elsewhere_keeps_its_settings_unreadable() {
+        if !a_backend_runs() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        let project = dir.path().join("project");
+        let elsewhere = dir.path().join("dotfiles/scene");
+        std::fs::create_dir_all(state.join("scenes")).unwrap();
+        std::fs::create_dir_all(&project).unwrap();
+        let secret = "agix-audit3-scene-secret";
+        write_file(&elsewhere.join("settings.json"), secret);
+        write_file(&state.join("scenes/code/settings.json"), secret);
+        std::os::unix::fs::symlink(&elsewhere, state.join("scenes/linked")).unwrap();
+        let policy = SandboxPolicy {
+            state_root: Some(state.clone()),
+            ..Default::default()
+        };
+        for path in [
+            state.join("scenes/code/settings.json"),
+            state.join("scenes/linked/settings.json"),
+        ] {
+            let out = run_confined(&project, &policy, &[], &format!("cat '{}'", path.display()));
+            let shown = String::from_utf8_lossy(&out.stdout);
+            assert!(
+                !out.status.success() && !shown.contains(secret),
+                "{} was read: {shown:?}",
+                path.display()
+            );
+        }
+    }
+
     /// The project's own `.agix/settings.local.json` and `.agix/mcp.local.json`
     /// are where the engine writes the project's keys; a command reads neither,
     /// even with the whole project in `allow_read`. The committed
