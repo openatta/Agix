@@ -3,8 +3,9 @@
 //! 第一个具体工具。只读、并发安全、不需要用户确认。
 
 use async_trait::async_trait;
+use base::engine_exec::EngineExec;
 use base::error::ToolError;
-use base::interface::exec::{ExecError, FileSystem, Metadata};
+use base::interface::exec::{ExecError, FileSystem, Metadata, ProcessSpec};
 use base::tool::{
     PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
     ToolResultBlock, ToolResultContent, ToolSpec, ValidationResult,
@@ -156,6 +157,7 @@ impl Tool for FileReadTool {
         _ = ctx.cancel.cancelled() => return Err(ToolError::Cancelled),
         r = read_file_to_text(
             &*ctx.exec.filesystem,
+            &ctx,
             &path,
             &input,
             max_bytes as u64,
@@ -231,6 +233,7 @@ fn resolve_path(s: &str, cwd: &Path) -> PathBuf {
 
 async fn read_file_to_text(
     fs: &dyn FileSystem,
+    ctx: &ToolContext,
     path: &Path,
     input: &FileReadInput,
     max_bytes: u64,
@@ -270,9 +273,15 @@ async fn read_file_to_text(
 
     // PDF handling
     if ext == "pdf" {
-        return read_pdf_text(path, &metadata, max_bytes, input.pages.as_deref())
-            .await
-            .map(ToolResult::text);
+        return read_pdf_text(
+            &crate::bash::engine_exec(ctx),
+            path,
+            &metadata,
+            max_bytes,
+            input.pages.as_deref(),
+        )
+        .await
+        .map(ToolResult::text);
     }
 
     // Jupyter notebook handling
@@ -371,8 +380,14 @@ async fn read_image(
     })
 }
 
-/// Read a PDF file — returns basic text extraction via the `pdftotext` CLI tool.
+/// How long `pdftotext` may take over one file.
+const PDFTOTEXT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Read a PDF file — returns basic text extraction via the `pdftotext` CLI
+/// tool, run as the engine runs its helpers: through the session's providers
+/// and in its sandbox.
 async fn read_pdf_text(
+    engine: &EngineExec,
     path: &Path,
     metadata: &Metadata,
     max_bytes: u64,
@@ -386,37 +401,20 @@ async fn read_pdf_text(
         )));
     }
     let page_range = pages.unwrap_or("1-20");
-    let mut pdftotext = tokio::process::Command::new("pdftotext");
-    pdftotext
-        .arg("-f")
-        .arg(page_range.split('-').next().unwrap_or("1"))
-        .arg("-l")
-        .arg(page_range.split('-').nth(1).unwrap_or("20"))
-        .arg(path)
-        .arg("-") // stdout
-        .kill_on_drop(true);
-    platform::apply_subprocess_env(
-        &base::interface::exec::SubprocessEnv::default(),
-        &mut pdftotext,
-    );
-    // A session of its own, so it has no controlling terminal: the file is
-    // the model's choice, and a program that could open `/dev/tty` could push
-    // input (`TIOCSTI`) into the daemon's terminal for the shell there to run.
-    #[cfg(unix)]
-    // SAFETY: `setsid` is async-signal-safe and touches no memory.
-    unsafe {
-        pdftotext.pre_exec(|| {
-            if libc::setsid() == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    let output = pdftotext.output().await;
+    let cwd = path.parent().unwrap_or(path);
+    let pdftotext = ProcessSpec::new("pdftotext", cwd).args([
+        "-f".to_string(),
+        page_range.split('-').next().unwrap_or("1").to_string(),
+        "-l".to_string(),
+        page_range.split('-').nth(1).unwrap_or("20").to_string(),
+        path.to_string_lossy().into_owned(),
+        "-".to_string(), // stdout
+    ]);
+    let output = engine.helper(pdftotext, &[], PDFTOTEXT_TIMEOUT).await;
 
     match output {
-        Ok(o) if o.status.success() => {
-            let text = String::from_utf8_lossy(&o.stdout).to_string();
+        Ok(o) if o.status.success => {
+            let text = o.stdout_lossy().into_owned();
             let truncated = if text.len() > max_bytes as usize {
                 // Character-boundary aware: extracted PDF text is arbitrary
                 // UTF-8, so a raw `&text[..max_bytes]` panics whenever the cap

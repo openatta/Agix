@@ -619,16 +619,15 @@ Agent 的上下文,本来就该在一处。
 4. **一个命令是它起的整个进程组。** 本机 provider 让每个子进程领一个会话(也就领了一个
    进程组,且没有控制终端——命令没法经 `/dev/tty` 用 `TIOCSTI` 往 daemon 的终端里塞输入,
    等沙箱外的 shell 去执行),停的时候整组停;前台进程退出后输出最多再等 `OUTPUT_GRACE_AFTER_EXIT`,还被后台进程占着就
-   连它们一起停。Bash、Monitor、command hook 经本机 provider 起,引擎自己跑的 git 经会话的
-   `exec.process` 起(`base::engine_exec`),都是这条规矩;MCP stdio server 经 process-wrap
-   起,同样领一个会话、停的时候整组停。`Read` 调的 `pdftotext` 也领一个会话、没有控制终端,
-   超时或取消时停掉的是它本身。
+   连它们一起停。Bash、Monitor、command hook 经本机 provider 起,引擎自己跑的 git 与 `Read`
+   调的 `pdftotext` 经会话的 `exec.process` 起(`base::engine_exec`),都是这条规矩;MCP
+   stdio server 经 process-wrap 起,同样领一个会话、停的时候整组停。
 5. **子进程的环境只在一处决定。** `base::interface::exec::env::SubprocessEnv`:缺省
    继承宿主环境但去掉引擎自己的凭据,`allowlist` 模式只留 `PATH` / `HOME` / 语言环境等几项
    加上 `allow` 列出的。Bash、Monitor、command hook、MCP stdio 服务、引擎自己跑的 git 与
-   `Read` 调的 `pdftotext` 都按它起——`pdftotext` 用缺省策略,引擎的 git 经会话的
-   `exec.process` 起,与会话的命令同一份 `sandbox.subprocess_env`,其余也按它取策略——MCP
-   服务取的是声明它的那份设置(daemon 按项目、scene 建连),再叠各服务自己的 `env`。这和沙箱无关——沙箱关着,模型一句 `printenv` 读到什么也由它决定。
+   `Read` 调的 `pdftotext` 都按它起——引擎的 git 与 `pdftotext` 经会话的 `exec.process` 起,
+   与会话的命令同一份 `sandbox.subprocess_env`,其余也按它取策略——MCP 服务取的是声明它的
+   那份设置(daemon 按项目、scene 建连),再叠各服务自己的 `env`。这和沙箱无关——沙箱关着,模型一句 `printenv` 读到什么也由它决定。
 
    **引擎自己的凭据**是固定的 `ANTHROPIC_*`、`AGIX_DAEMON_TOKEN`,加上配置里点名"密钥在这个
    环境变量里"的每一个变量:
@@ -1070,9 +1069,9 @@ sandbox-exec 的 profile 里远端主机只能写 `*` 或 `localhost`,写了别�
 有回环以外的条目时报 degraded。按域名放行得另起一个本机代理,现在没有。
 
 命令没有控制终端:本机 provider 让它领一个新会话(§5 第 4 条),所以它打不开 `/dev/tty`,
-也就没法用 `TIOCSTI` 往 daemon 所在的终端里塞按键(CVE-2017-5226 那一类)。不经本机 provider
-起的几种子进程也一样各领一个会话:引擎自己跑的 git(连同仓库配置让它跑的 filter driver,
-沙箱里的命令写得出这样的配置)、`Read` 调的 `pdftotext`、MCP stdio server。bwrap 不加
+也就没法用 `TIOCSTI` 往 daemon 所在的终端里塞按键(CVE-2017-5226 那一类)。引擎自己跑的 git
+(连同仓库配置让它跑的 filter driver,沙箱里的命令写得出这样的配置)和 `Read` 调的 `pdftotext`
+经会话的 `exec.process` 起,同样如此;不经本机 provider 起的 MCP stdio server 也领一个会话。bwrap 不加
 `--new-session`:它会把 bwrap 的 PID 1 连同整个 PID 命名空间带出命令的进程组,停组就停不到
 命令留下的后台进程了。
 
