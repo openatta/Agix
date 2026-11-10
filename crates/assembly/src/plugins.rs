@@ -365,7 +365,7 @@ mod packages {
         let (global, scene) = tier_dirs(paths);
         let global_state = plugin::state::EnableState::new(global.clone());
         let scene_state = plugin::state::EnableState::new(scene.clone());
-        plugin::discover_plugins(&global, &scene)
+        let active: Vec<plugin::manifest::Plugin> = plugin::discover_plugins(&global, &scene)
             .into_iter()
             .filter(|p| {
                 let name = &p.manifest.plugin.name;
@@ -375,7 +375,11 @@ mod packages {
                 }
                 plugin::state::resolve_enabled(name, &global_state, &scene_state)
             })
-            .collect()
+            .collect();
+        for (_, server) in active.iter().flat_map(plugin::mcp::servers_for) {
+            base::interface::exec::env::hold_back_what_an_mcp_server_reads(&server);
+        }
+        active
     }
 }
 

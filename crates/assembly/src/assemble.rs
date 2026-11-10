@@ -267,6 +267,16 @@ pub async fn pool(
         {
             anyhow::bail!("Assembly::mcp_enterprise_idp: {e}");
         }
+        for name in [
+            assembly.mcp_enterprise_idp.as_ref(),
+            policy.enterprise_idp(),
+        ]
+        .into_iter()
+        .flatten()
+        .filter_map(|idp| idp.client_secret_env.as_deref())
+        {
+            base::interface::exec::env::hold_back_credential(name);
+        }
         let idp = assembly
             .mcp_enterprise_idp
             .or_else(|| policy.enterprise_idp().cloned());

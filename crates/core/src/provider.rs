@@ -46,6 +46,8 @@ pub struct ProviderConfig {
     /// [`CredentialSource`](crate::interface::credentials::CredentialSource).
     pub api_key: Option<String>,
     /// Environment variable holding the key, read when `api_key` is unset.
+    /// No child process inherits it once a settings file names it, unless
+    /// `sandbox.subprocess_env.allow` does.
     pub api_key_env: Option<String>,
     /// Model used when a task_models override doesn't name one explicitly,
     /// or when a named model fails the `models` allow-list check below.

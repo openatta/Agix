@@ -326,7 +326,7 @@
         },
         "api_key_env": {
           "default": null,
-          "description": "Environment variable holding the key, read when `api_key` is unset.",
+          "description": "Environment variable holding the key, read when `api_key` is unset.\nNo child process inherits it once a settings file names it, unless\n`sandbox.subprocess_env.allow` does.",
           "type": [
             "string",
             "null"
@@ -561,7 +561,7 @@
           "default": {
             "mode": "inherit"
           },
-          "description": "The environment `Bash` / `Monitor` commands, command hooks and MCP\nstdio servers start from, sandboxed or not. By default the host's\nenvironment minus the engine's own credentials (`ANTHROPIC_*`,\n`AGIX_DAEMON_TOKEN`, every provider's `api_key_env`); `\"mode\":\n\"allowlist\"` keeps only `PATH`,\n`HOME`, the locale and a few others, plus whatever `allow` names. An MCP\nserver takes the policy of the settings it is declared in, with its own\n`env` added on top."
+          "description": "The environment `Bash` / `Monitor` commands, command hooks and MCP\nstdio servers start from, sandboxed or not. By default the host's\nenvironment minus the engine's own credentials: `ANTHROPIC_*`,\n`AGIX_DAEMON_TOKEN`, and every variable a setting names as holding a\nsecret — a provider's `api_key_env`, an MCP server's\n`oauth.client_secret_env` / `oauth.private_key_jwt.key_env` and every\n`$VAR` in its `command`, `args`, `env`, `url` or `headers` (outside\nthe project's own tier), a plugin's MCP servers likewise, the\nenterprise IdP's `client_secret_env`. `\"mode\": \"allowlist\"` keeps only\n`PATH`, `HOME`, the locale and a few others, plus whatever `allow`\nnames. An MCP server takes the policy of the settings it is declared\nin, with its own `env` added on top: what it is given there it gets,\nanother server's secret it does not."
         },
         "unattended_requires_network_policy": {
           "default": false,
@@ -616,7 +616,7 @@
       "description": "`sandbox.subprocess_env` in settings.json.",
       "properties": {
         "allow": {
-          "description": "Variables passed through whatever the mode would do with them — in\n`allowlist` mode the extra names to keep, in `inherit` mode a way to\nhand one of the engine's own credentials to a child on purpose.",
+          "description": "Variables passed through whatever the mode would do with them — in\n`allowlist` mode the extra names to keep, in `inherit` mode a way to\nhand one of the engine's own credentials (a provider's `api_key_env`,\na variable an MCP server's configuration reads) to every child on\npurpose.",
           "items": {
             "type": "string"
           },
@@ -784,7 +784,7 @@
     },
     "mcp_servers": {
       "additionalProperties": true,
-      "description": "MCP server configurations, keyed by server name (merged from\nglobal/scene/project layers). `$VAR` / `${VAR}` / `${VAR:-default}`\nare expanded in a server's `command`, `args`, `env`, `url` and\n`headers` when it connects — the only place in settings that expands\nanything. Kept untyped (`serde_json::Value`\nrather than `mcp::config::McpServerConfig`) — `core` cannot depend on\n`mcp` (which already depends on `core`, for `base::paths::ConfigPaths`)\nwithout a circular dependency; downstream consumers deserialize each\nvalue into `McpServerConfig` themselves.",
+      "description": "MCP server configurations, keyed by server name (merged from\nglobal/scene/project layers). `$VAR` / `${VAR}` / `${VAR:-default}`\nare expanded in a server's `command`, `args`, `env`, `url` and\n`headers` when it connects — the only place in settings that expands\nanything. Every variable of the daemon's environment read there, and\nevery `*_env` of a server's `oauth` block, counts as that server's\nsecret: no other child process inherits it (`sandbox.subprocess_env`).\nKept untyped (`serde_json::Value`\nrather than `mcp::config::McpServerConfig`) — `core` cannot depend on\n`mcp` (which already depends on `core`, for `base::paths::ConfigPaths`)\nwithout a circular dependency; downstream consumers deserialize each\nvalue into `McpServerConfig` themselves.",
       "type": "object"
     },
     "memory_enabled": {

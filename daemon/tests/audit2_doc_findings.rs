@@ -257,11 +257,9 @@ async fn audit2_a_url_shaped_deny_written_for_0_3_10_still_refuses_deeper_paths(
     );
 }
 
-/// `mcp_auth.md` §1:"密钥只交给它所属的授权服务器"。`client_secret_env` 指向的变量却不在
-/// 子进程要去掉的引擎凭据里(只有 `ANTHROPIC_*`、`AGIX_DAEMON_TOKEN` 与 provider 的
-/// `api_key_env`),模型一条 `printenv` 就读得到。
+/// `mcp_auth.md` §1:"密钥只交给它所属的授权服务器"。`client_secret_env` 指向的变量不进
+/// 任何子进程的环境,模型一条 `printenv` 读不到。
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "audit: confirmed defect, fix pending"]
 async fn audit2_an_mcp_oauth_client_secret_is_not_handed_to_commands() {
     const VAR: &str = "AUDIT2_DOCS_MCP_SECRET";
     const CANARY: &str = "AUDIT2-CANARY-5d1e";
@@ -296,6 +294,67 @@ async fn audit2_an_mcp_oauth_client_secret_is_not_handed_to_commands() {
     assert!(
         !result.contains(CANARY),
         "the MCP OAuth client secret reached the model through printenv: {result}"
+    );
+}
+
+/// ARCHITECTURE §5 第 5 条:任何一层设置里 provider 的 `api_key_env` 指向的变量同样不交给
+/// 命令。provider 写在另一个项目的设置里(会话在用的模型留在这个项目),daemon 读过那份设置之后,
+/// 这个项目里的 `printenv` 也读不到它。
+#[tokio::test(flavor = "multi_thread")]
+async fn audit2_a_provider_key_env_is_not_handed_to_commands() {
+    const VAR: &str = "AUDIT2_OTHER_PROJECT_PROVIDER_KEY";
+    const CANARY: &str = "AUDIT2-CANARY-8a3f";
+    // SAFETY: the name is unique to this test; no other test reads it.
+    unsafe { std::env::set_var(VAR, CANARY) };
+    let mut other = PathBuf::new();
+    let daemon = Daemon::start(
+        Setup {
+            mode: PermissionMode::BypassPermissions,
+            ..Default::default()
+        },
+        |home, _| {
+            other = home.parent().unwrap().join("other");
+            std::fs::create_dir_all(other.join(".agix")).unwrap();
+            std::fs::write(
+                other.join(".agix").join("settings.json"),
+                json!({"providers": {"spare": {
+                    "api_type": "openai_compatible",
+                    "base_url": "http://127.0.0.1:9/v1",
+                    "api_key_env": VAR,
+                    "default_model": "m",
+                }}, "default_provider": "spare"})
+                .to_string(),
+            )
+            .unwrap();
+        },
+    )
+    .await;
+    let request = json!({"jsonrpc":"2.0","method":"project.status",
+                         "params":{"project_root": other},"id":3});
+    let mut conn = UnixStream::connect(&daemon.sock).await.unwrap();
+    conn.write_all(format!("{request}\n").as_bytes())
+        .await
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(conn).read_line(&mut line).await.unwrap();
+    let reply: Value = serde_json::from_str(&line).unwrap();
+    assert!(reply.get("result").is_some(), "precondition: {reply}");
+
+    daemon.model.push_turn(tool_round(
+        "toolu_env",
+        "Bash",
+        json!({"command": format!("printenv {VAR}; echo end")}),
+    ));
+    daemon.model.push_turn(text_round("done"));
+    daemon.turn_denying_prompts().await;
+    let result = daemon.tool_result("toolu_env").to_string();
+    assert!(
+        result.contains("end"),
+        "precondition: the command ran: {result}"
+    );
+    assert!(
+        !result.contains(CANARY),
+        "the provider key reached the model through printenv: {result}"
     );
 }
 

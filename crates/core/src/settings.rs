@@ -177,7 +177,10 @@ pub struct Settings {
     /// global/scene/project layers). `$VAR` / `${VAR}` / `${VAR:-default}`
     /// are expanded in a server's `command`, `args`, `env`, `url` and
     /// `headers` when it connects — the only place in settings that expands
-    /// anything. Kept untyped (`serde_json::Value`
+    /// anything. Every variable of the daemon's environment read there, and
+    /// every `*_env` of a server's `oauth` block, counts as that server's
+    /// secret: no other child process inherits it (`sandbox.subprocess_env`).
+    /// Kept untyped (`serde_json::Value`
     /// rather than `mcp::config::McpServerConfig`) — `core` cannot depend on
     /// `mcp` (which already depends on `core`, for `base::paths::ConfigPaths`)
     /// without a circular dependency; downstream consumers deserialize each
@@ -736,12 +739,17 @@ pub struct SandboxConfig {
     pub unattended_requires_network_policy: bool,
     /// The environment `Bash` / `Monitor` commands, command hooks and MCP
     /// stdio servers start from, sandboxed or not. By default the host's
-    /// environment minus the engine's own credentials (`ANTHROPIC_*`,
-    /// `AGIX_DAEMON_TOKEN`, every provider's `api_key_env`); `"mode":
-    /// "allowlist"` keeps only `PATH`,
-    /// `HOME`, the locale and a few others, plus whatever `allow` names. An MCP
-    /// server takes the policy of the settings it is declared in, with its own
-    /// `env` added on top.
+    /// environment minus the engine's own credentials: `ANTHROPIC_*`,
+    /// `AGIX_DAEMON_TOKEN`, and every variable a setting names as holding a
+    /// secret — a provider's `api_key_env`, an MCP server's
+    /// `oauth.client_secret_env` / `oauth.private_key_jwt.key_env` and every
+    /// `$VAR` in its `command`, `args`, `env`, `url` or `headers` (outside
+    /// the project's own tier), a plugin's MCP servers likewise, the
+    /// enterprise IdP's `client_secret_env`. `"mode": "allowlist"` keeps only
+    /// `PATH`, `HOME`, the locale and a few others, plus whatever `allow`
+    /// names. An MCP server takes the policy of the settings it is declared
+    /// in, with its own `env` added on top: what it is given there it gets,
+    /// another server's secret it does not.
     #[serde(default)]
     pub subprocess_env: crate::interface::exec::SubprocessEnv,
     /// Stop, when a daemon session ends (closed, evicted, or the daemon
@@ -1092,6 +1100,7 @@ impl Settings {
         let mut ignored_values = Vec::new();
         let mut managed: Option<crate::managed_settings::ManagedSettings> = None;
         let mut mcp_server_dirs: HashMap<String, PathBuf> = HashMap::new();
+        let mut mcp_secret_vars: Vec<String> = Vec::new();
 
         for layer in layers {
             if layer.tier == Tier::Managed {
@@ -1183,6 +1192,14 @@ impl Settings {
                 if server.get("command").is_some() || !mcp_server_dirs.contains_key(name) {
                     mcp_server_dirs.insert(name.clone(), declared_in.to_path_buf());
                 }
+                // A project's own servers read nothing from this process's
+                // environment (`confined_to_own_env`), so the names they
+                // write are not secrets of the daemon's.
+                if !is_own_project(layer.tier) {
+                    mcp_secret_vars.extend(
+                        crate::interface::exec::env::variables_an_mcp_server_reads(server),
+                    );
+                }
             }
             for (key, error) in merge_fitting(&mut merged_json, layer_json) {
                 tracing::warn!(layer = layer.tier.name(), origin = %layer.origin, key, error, "settings value does not fit its setting, ignoring it");
@@ -1210,12 +1227,13 @@ impl Settings {
         settings.mcp_server_dirs = mcp_server_dirs;
 
         // Before any session these settings start runs a child process: a
-        // provider key is not read until a client is built, and an MCP
-        // server or hook can start before that.
+        // provider key is not read until a client is built, an MCP secret not
+        // until its server connects, and a hook or `Bash` can run before that.
         for name in settings
             .providers
             .values()
             .filter_map(|p| p.api_key_env.as_deref())
+            .chain(mcp_secret_vars.iter().map(String::as_str))
         {
             crate::interface::exec::env::hold_back_credential(name);
         }
@@ -2077,6 +2095,36 @@ mod tests {
             "m",
         );
         assert!(is_engine_credential(name));
+    }
+
+    #[test]
+    fn what_a_global_mcp_server_reads_is_held_back_and_a_projects_own_is_not() {
+        use crate::interface::exec::env::is_engine_credential;
+        let root = tempfile::tempdir().unwrap();
+        let global = root.path().join("global");
+        let project = root.path().join("project");
+        write_settings(
+            &global,
+            r#"{"mcp_servers": {"docs": {"type": "streamable_http", "url": "https://h/mcp",
+                "headers": {"X-Key": "$AGIX_SETTINGS_TEST_MCP_HEADER"},
+                "oauth": {"client_id": "c", "client_secret_env": "AGIX_SETTINGS_TEST_MCP_SECRET",
+                          "issuer": "https://login.example"}}}}"#,
+        );
+        write_settings(
+            &project,
+            r#"{"mcp_servers": {"own": {"type": "stdio", "command": "x",
+                "env": {"T": "$AGIX_SETTINGS_TEST_PROJECT_VAR"}}}}"#,
+        );
+        Settings::load(global, root.path().join("scene"), project, "code", "m");
+        for name in [
+            "AGIX_SETTINGS_TEST_MCP_HEADER",
+            "AGIX_SETTINGS_TEST_MCP_SECRET",
+        ] {
+            assert!(is_engine_credential(std::ffi::OsStr::new(name)), "{name}");
+        }
+        assert!(!is_engine_credential(std::ffi::OsStr::new(
+            "AGIX_SETTINGS_TEST_PROJECT_VAR"
+        )));
     }
 
     #[test]

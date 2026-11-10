@@ -3,6 +3,8 @@
 //!
 //! 配置里的 `$VAR` 在连接时用本进程的环境展开（[`expand_env_vars`]）。项目层声明的
 //! server 先过 [`McpServerConfig::confined_to_own_env`]：只从它自己的 `env` 块取值。
+//! 从本进程环境里读的变量都算这个 server 的密钥，别的子进程不继承
+//! （`base::interface::exec::env::variables_an_mcp_server_reads`）。
 
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -95,7 +97,8 @@ impl Serialize for McpServerConfig {
 }
 
 /// How a remote server's access token is obtained. Secrets are never written
-/// here: `client_secret_env` names an environment variable.
+/// here: `client_secret_env` names an environment variable, which no child
+/// process inherits once a settings file names it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpOAuthConfig {
@@ -186,6 +189,8 @@ pub struct EnterpriseIdp {
     pub token_endpoint: String,
     /// This client's registration at the IdP.
     pub client_id: String,
+    /// Held back from every child process's environment, as a setting's
+    /// `client_secret_env` is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_secret_env: Option<String>,
     /// How the client authenticates at the IdP; `client_secret_basic` when
@@ -524,89 +529,7 @@ pub fn expand_env_vars(input: &str) -> String {
     expand_vars_with(input, |name| std::env::var(name).ok())
 }
 
-/// [`expand_env_vars`] with the variables `lookup` gives instead of this
-/// process's environment.
-pub fn expand_vars_with(input: &str, lookup: impl Fn(&str) -> Option<String>) -> String {
-    let chars: Vec<char> = input.chars().collect();
-    let mut out = String::with_capacity(input.len());
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        if c != '$' {
-            out.push(c);
-            i += 1;
-            continue;
-        }
-        // c == '$'
-        if i + 1 >= chars.len() {
-            out.push('$');
-            i += 1;
-            continue;
-        }
-        let next = chars[i + 1];
-        if next == '$' {
-            out.push('$');
-            i += 2;
-            continue;
-        }
-        if next == '{' {
-            // find closing '}'
-            let mut end = None;
-            let mut j = i + 2;
-            while j < chars.len() {
-                if chars[j] == '}' {
-                    end = Some(j);
-                    break;
-                }
-                j += 1;
-            }
-            if let Some(j) = end {
-                let body: String = chars[i + 2..j].iter().collect();
-                let (name, default) = match body.split_once(":-") {
-                    Some((n, d)) => (n.to_string(), Some(d.to_string())),
-                    None => (body, None),
-                };
-                match lookup(&name) {
-                    Some(v) if !v.is_empty() => out.push_str(&v),
-                    _ => {
-                        if let Some(d) = default {
-                            out.push_str(&d);
-                        }
-                    }
-                }
-                i = j + 1;
-                continue;
-            }
-            // no closing brace — emit literally
-            out.push('$');
-            i += 1;
-            continue;
-        }
-        // `$VAR` — name is [A-Za-z_][A-Za-z0-9_]*
-        let start = i + 1;
-        let mut j = start;
-        while j < chars.len() {
-            let ch = chars[j];
-            let valid =
-                ch.is_ascii_alphabetic() || ch == '_' || (j > start && ch.is_ascii_alphanumeric());
-            if !valid {
-                break;
-            }
-            j += 1;
-        }
-        if j > start {
-            let name: String = chars[start..j].iter().collect();
-            if let Some(v) = lookup(&name) {
-                out.push_str(&v);
-            }
-            i = j;
-        } else {
-            out.push('$');
-            i += 1;
-        }
-    }
-    out
-}
+pub use base::interface::exec::env::expand_vars_with;
 
 #[cfg(test)]
 mod tests {

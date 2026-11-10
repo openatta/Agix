@@ -1,10 +1,15 @@
 //! The environment a child process on this machine starts from.
 //!
-//! Every program the engine launches — a `Bash` command, a command hook, an
-//! MCP stdio server — gets its environment from here, so that what a model can
-//! read with `printenv` is decided in one place. The engine's own credentials
-//! never pass by default; everything else does unless the operator switches to
-//! an allowlist.
+//! Every program the engine launches — a `Bash` / `Monitor` command, a command
+//! hook, an MCP stdio server, the engine's own git and `pdftotext` — gets its
+//! environment from here, so that what a model can read with `printenv` is
+//! decided in one place. The engine's own credentials never pass by default;
+//! everything else does unless the operator switches to an allowlist.
+//!
+//! Which variables are credentials is decided where configuration names them:
+//! a settings file, a plugin, the MCP policy or the host each report the
+//! variables they read a secret from ([`hold_back_credential`]) before any
+//! child starts under them.
 
 use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
@@ -38,7 +43,9 @@ pub struct SubprocessEnv {
     pub mode: SubprocessEnvMode,
     /// Variables passed through whatever the mode would do with them — in
     /// `allowlist` mode the extra names to keep, in `inherit` mode a way to
-    /// hand one of the engine's own credentials to a child on purpose.
+    /// hand one of the engine's own credentials (a provider's `api_key_env`,
+    /// a variable an MCP server's configuration reads) to every child on
+    /// purpose.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allow: Vec<String>,
 }
@@ -74,8 +81,12 @@ const BASELINE: &[&str] = &[
     "LOCALAPPDATA",
 ];
 
-/// Environment variables the engine has been told hold one of its own
-/// credentials — every `api_key_env` a provider names, whatever its name.
+/// Environment variables the engine has been told hold a secret: a
+/// provider's `api_key_env`, what an MCP server's configuration reads
+/// ([`variables_an_mcp_server_reads`]), the enterprise IdP's
+/// `client_secret_env`, the OTLP exporter's headers. Only ever grows: a
+/// settings reload adds what the new files name, and a name the files stop
+/// naming still holds the same secret in this process's environment.
 static NAMED_CREDENTIALS: std::sync::RwLock<BTreeSet<String>> =
     std::sync::RwLock::new(BTreeSet::new());
 
@@ -94,9 +105,8 @@ pub fn hold_back_credential(name: &str) {
     named.insert(name.to_string());
 }
 
-/// The engine's own credentials: the model provider's keys — the
-/// `ANTHROPIC_*` variables and whatever [`hold_back_credential`] was told —
-/// and the daemon's bearer token.
+/// The engine's own credentials: the `ANTHROPIC_*` variables, the daemon's
+/// bearer token, and whatever [`hold_back_credential`] was told.
 pub fn is_engine_credential(name: &OsStr) -> bool {
     let name = name.to_string_lossy();
     name.starts_with("ANTHROPIC_")
@@ -105,6 +115,146 @@ pub fn is_engine_credential(name: &OsStr) -> bool {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains(name.as_ref())
+}
+
+/// The variables `input` refers to as `$VAR`, `${VAR}` or `${VAR:-…}`.
+pub fn referenced_vars(input: &str) -> Vec<String> {
+    let named = std::cell::RefCell::new(Vec::new());
+    expand_vars_with(input, |name| {
+        named.borrow_mut().push(name.to_string());
+        None
+    });
+    named.into_inner()
+}
+
+/// The variables of this process's environment an `mcp_servers` entry reads
+/// when it connects: every `$VAR` in its `command`, `args`, `env`, `url` and
+/// `headers`, and the variables its `oauth` block names
+/// (`client_secret_env`, `private_key_jwt.key_env`).
+pub fn variables_an_mcp_server_reads(server: &serde_json::Value) -> Vec<String> {
+    use serde_json::Value;
+    let field = |key: &str| server.get(key);
+    let strings = ["command", "url"]
+        .into_iter()
+        .filter_map(|key| field(key)?.as_str())
+        .chain(
+            field("args")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str),
+        )
+        .chain(
+            ["env", "headers"]
+                .into_iter()
+                .filter_map(|key| field(key)?.as_object())
+                .flatten()
+                .filter_map(|(_, v)| v.as_str()),
+        );
+    let mut names: Vec<String> = strings.flat_map(referenced_vars).collect();
+    let oauth = field("oauth");
+    names.extend(
+        [
+            oauth.and_then(|o| o.get("client_secret_env")),
+            oauth
+                .and_then(|o| o.get("private_key_jwt"))
+                .and_then(|k| k.get("key_env")),
+        ]
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string),
+    );
+    names
+}
+
+/// [`hold_back_credential`] for every variable
+/// [`variables_an_mcp_server_reads`] finds in `server`.
+pub fn hold_back_what_an_mcp_server_reads(server: &serde_json::Value) {
+    for name in variables_an_mcp_server_reads(server) {
+        hold_back_credential(&name);
+    }
+}
+
+/// Expand `$VAR`, `${VAR}`, `${VAR:-default}` (the default when unset or
+/// empty) and `$$` (a literal `$`) in `input`, with the variables `lookup`
+/// gives. A variable it does not give expands to nothing.
+pub fn expand_vars_with(input: &str, lookup: impl Fn(&str) -> Option<String>) -> String {
+    let chars: Vec<char> = input.chars().collect();
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c != '$' {
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        if i + 1 >= chars.len() {
+            out.push('$');
+            i += 1;
+            continue;
+        }
+        let next = chars[i + 1];
+        if next == '$' {
+            out.push('$');
+            i += 2;
+            continue;
+        }
+        if next == '{' {
+            let mut end = None;
+            let mut j = i + 2;
+            while j < chars.len() {
+                if chars[j] == '}' {
+                    end = Some(j);
+                    break;
+                }
+                j += 1;
+            }
+            if let Some(j) = end {
+                let body: String = chars[i + 2..j].iter().collect();
+                let (name, default) = match body.split_once(":-") {
+                    Some((n, d)) => (n.to_string(), Some(d.to_string())),
+                    None => (body, None),
+                };
+                match lookup(&name) {
+                    Some(v) if !v.is_empty() => out.push_str(&v),
+                    _ => {
+                        if let Some(d) = default {
+                            out.push_str(&d);
+                        }
+                    }
+                }
+                i = j + 1;
+                continue;
+            }
+            out.push('$');
+            i += 1;
+            continue;
+        }
+        let start = i + 1;
+        let mut j = start;
+        while j < chars.len() {
+            let ch = chars[j];
+            let valid =
+                ch.is_ascii_alphabetic() || ch == '_' || (j > start && ch.is_ascii_alphanumeric());
+            if !valid {
+                break;
+            }
+            j += 1;
+        }
+        if j > start {
+            let name: String = chars[start..j].iter().collect();
+            if let Some(v) = lookup(&name) {
+                out.push_str(&v);
+            }
+            i = j;
+        } else {
+            out.push('$');
+            i += 1;
+        }
+    }
+    out
 }
 
 /// Never inherited: `CDPATH` would make a child shell's `cd foo` reach a
@@ -218,6 +368,43 @@ mod tests {
         };
         assert!(!names(passed_on_purpose.plan(host))
             .contains(&"AGIX_ENV_TEST_PROVIDER_KEY".to_string()));
+    }
+
+    #[test]
+    fn what_an_mcp_server_reads_from_this_process() {
+        let server = serde_json::json!({
+            "type": "streamable_http",
+            "command": "$BIN_DIR/x",
+            "args": ["--token", "${ARG_TOKEN:-none}", "$$LITERAL"],
+            "env": {"GITHUB_TOKEN": "$GH_TOKEN", "FIXED": "value"},
+            "url": "https://h/mcp?key=${URL_KEY}",
+            "headers": {"Authorization": "Bearer $HEADER_TOKEN"},
+            "oauth": {"client_id": "c", "client_secret_env": "SECRET_VAR",
+                      "private_key_jwt": {"key_env": "SIGNING_KEY"}},
+        });
+        let mut names = variables_an_mcp_server_reads(&server);
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                "ARG_TOKEN",
+                "BIN_DIR",
+                "GH_TOKEN",
+                "HEADER_TOKEN",
+                "SECRET_VAR",
+                "SIGNING_KEY",
+                "URL_KEY"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_variable_an_mcp_server_reads_is_held_back() {
+        let server = serde_json::json!({"type": "stdio", "command": "x",
+            "env": {"T": "$AGIX_ENV_TEST_MCP_TOKEN"}});
+        hold_back_what_an_mcp_server_reads(&server);
+        assert!(is_engine_credential(OsStr::new("AGIX_ENV_TEST_MCP_TOKEN")));
+        assert!(!is_engine_credential(OsStr::new("T")));
     }
 
     #[test]

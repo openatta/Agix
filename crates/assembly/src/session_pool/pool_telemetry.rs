@@ -8,6 +8,10 @@ use super::*;
 /// `telemetry::spawn`), just writing to one shared `pool.jsonl` instead of
 /// per-session files, since these events happen before any session exists.
 pub(super) fn build_pool_telemetry(settings: &Settings) -> telemetry::TelemetryHandle {
+    #[cfg(feature = "otel")]
+    for name in OTLP_HEADER_VARIABLES {
+        base::interface::exec::env::hold_back_credential(name);
+    }
     if !settings.telemetry_enabled {
         return telemetry::TelemetryHandle::noop();
     }
@@ -67,6 +71,17 @@ pub(super) fn recordings_root(settings: &Settings, requested: Option<&str>) -> P
     }
     base::paths::ConfigPaths::from_settings(&settings.paths).global_recordings_dir()
 }
+
+/// What the OTLP exporter reads its request headers from — where a
+/// collector's API key goes — so a build that exports holds them back from
+/// every child process, whether or not this pool exports.
+#[cfg(feature = "otel")]
+const OTLP_HEADER_VARIABLES: &[&str] = &[
+    "OTEL_EXPORTER_OTLP_HEADERS",
+    "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+    "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+    "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+];
 
 /// A `TelemetryRecorder` that forwards turn/tool events to OpenTelemetry, or
 /// `None` when no OTLP endpoint is configured.

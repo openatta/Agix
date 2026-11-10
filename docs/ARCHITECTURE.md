@@ -585,12 +585,36 @@ Agent 的上下文,本来就该在一处。
    server 经 process-wrap 起,同样领一个会话、停的时候整组停。引擎自己跑的 git 和 `Read`
    调的 `pdftotext` 也各领一个会话、没有控制终端,超时或取消时停掉的是它本身。
 5. **子进程的环境只在一处决定。** `base::interface::exec::env::SubprocessEnv`:缺省
-   继承宿主环境但去掉引擎自己的凭据(`ANTHROPIC_*`、`AGIX_DAEMON_TOKEN`,以及任何一层
-   设置里 provider 的 `api_key_env` 指向的变量——加载设置时、读取 key 时都记下,进程内
-   一直有效),`allowlist` 模式只留 `PATH` / `HOME` / 语言环境等几项加上 `allow` 列出的。Bash、
-   Monitor、command hook、MCP stdio 服务与引擎自己跑的 git 都按它起——git 用缺省策略,其余
-   按 `sandbox.subprocess_env` 取策略——MCP
-   服务取的是声明它的那份设置(daemon 按项目、scene 建连),再叠各服务自己的 `env`。这和沙箱无关——沙箱关着,模型一句 `printenv` 读到什么也由它决定。
+   继承宿主环境但去掉引擎自己的凭据,`allowlist` 模式只留 `PATH` / `HOME` / 语言环境等几项
+   加上 `allow` 列出的。Bash、Monitor、command hook、MCP stdio 服务、引擎自己跑的 git 与
+   `Read` 调的 `pdftotext` 都按它起——git 与 `pdftotext` 用缺省策略,其余按
+   `sandbox.subprocess_env` 取策略——MCP 服务取的是声明它的那份设置(daemon 按项目、scene
+   建连),再叠各服务自己的 `env`。这和沙箱无关——沙箱关着,模型一句 `printenv` 读到什么也由它决定。
+
+   **引擎自己的凭据**是固定的 `ANTHROPIC_*`、`AGIX_DAEMON_TOKEN`,加上配置里点名"密钥在这个
+   环境变量里"的每一个变量:
+
+   | 谁点名 | 哪些变量 | 在哪里记下 |
+   |---|---|---|
+   | 任何一层设置的 `providers` | `api_key_env` | `Settings::load` |
+   | 全局层、场景层设置的 `mcp_servers` | `oauth.client_secret_env`、`oauth.private_key_jwt.key_env`,以及 `command` / `args` / `env` / `url` / `headers` 里的每个 `$VAR` | `Settings::load` |
+   | 插件包的 `[[mcp]]` | 同上 | 插件启用时(`active_plugins`) |
+   | 任何连上的 MCP server(经 `mcp.addServer`、嵌入方直接交给 `McpManager` 的也算) | 同上 | 连接之前(`spawn_service`) |
+   | MCP 策略文件的 `enterprise_idp`、`Assembly::mcp_enterprise_idp` | `client_secret_env` | 装配时 |
+   | 嵌入方的 `EnvCredentials` | 它读的每个名字 | 构造时 |
+   | 带 `otel` feature 的构建 | `OTEL_EXPORTER_OTLP_HEADERS` 与按信号分的三个 `*_HEADERS` | 建池时 |
+
+   项目自己那一层的 MCP server 不算:它们读不到 daemon 的环境(§6.4),写的变量名不是 daemon
+   的密钥。记下的名字放在 `env.rs` 的进程级集合里(子进程继承的是进程的环境,所有池共用一份),
+   由 `hold_back_credential` 加入、`is_engine_credential` 查询;都发生在按这份配置起任何子进程
+   之前。集合只增不减:设置重载时新点名的变量随之加入,不再点名的仍然剔除——密钥还在进程的
+   环境里,一份删掉了 `oauth` 块的设置不该让 `printenv` 重新读得到它。`PATH`、`HOME` 这类
+   `allowlist` 缺省保留的变量不论谁点名都不剔除。确实要交给子进程的写进
+   `sandbox.subprocess_env.allow`,它对这份设置起的所有子进程生效。
+
+   MCP stdio server 也按这条起:它显式的 `env` 照给(`"env": {"GITHUB_TOKEN": "$GITHUB_TOKEN"}`
+   给它的就是这个值),继承来的环境里没有别的 server、provider 的密钥。一个 server 要用的密钥
+   写进它自己的 `env`,不要靠继承。
 
 沙箱是**轻量写限制,不是安全隔离**。已知逃逸路径写在
 `crates/platform/src/sandbox.rs` 的模块头里,四条;第 3 条对引擎自己的
@@ -851,7 +875,7 @@ bubblewrap)就和别的未授权调用一样被拒。沙箱只限写不限网,�
 项目目录里的命令照样能往外连;`sandbox.unattended_requires_network_policy: true` 时自动放行另外
 要求 `sandbox.network_mode` 是 `deny_all` / `allowlist`,否则回到 allow 规则。这个开关 0.3.x 缺省
 关(保持原来的行为),计划在后续 0.3.x 改为缺省开。沙箱在 `assembly` / `daemon` 缺省编译进来。沙箱只限写,不限读——读的限制落在文件工具上,
-`Bash` 读项目外的东西只受凭据黑名单约束:`sandbox.deny_read`(缺省是家目录下的凭据,
+`Bash` 从环境变量里读得到什么由 §5 第 5 条决定,设置里点名的密钥都不在其中;读项目外的文件只受凭据黑名单约束:`sandbox.deny_read`(缺省是家目录下的凭据,
 `base::interface::exec::default_deny_read`)减去 `sandbox.allow_read`;另外不论怎么配,
 §6.1 凭据名单上引擎自己的那部分——状态目录与各场景目录下的设置文件(`settings*.json`、
 `mcp.local.json`)和 `mcp/oauth/`,状态目录下的 `daemon/auth/`,以及项目自己的

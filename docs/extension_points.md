@@ -560,8 +560,10 @@ provider——模型、OAuth、遥测和 registry 的 client 各造各的。所�
 引擎自己的凭据,设置里对应 `sandbox.subprocess_env`。自己写 `Process` 的,这两条
 也该守住:"停掉一个命令"指的是它起的全部进程,模型 `printenv` 能读到什么也该是一个
 明确的决定。哪些变量算引擎的凭据问 `base::interface::exec::env::is_engine_credential`:除了固定的几个,
-还有设置里 provider 的 `api_key_env` 指向的、`EnvCredentials` 读过的;自己的凭据来源也读环境
-变量的,用 `base::interface::exec::env::hold_back_credential` 把名字报上来。
+还有设置里 provider 的 `api_key_env`、MCP server 配置读的变量(`oauth` 的 `*_env` 与 `$VAR`)、
+企业 IdP 的 `client_secret_env`、`EnvCredentials` 读过的(全表见 `ARCHITECTURE.md` §5 第 5 条);
+自己的凭据来源也读环境变量的,用 `base::interface::exec::env::hold_back_credential` 把名字报上来,
+自己交来 MCP server 配置的用 `hold_back_what_an_mcp_server_reads`——都要在起子进程之前。
 
 命令自己先退出、留在后台的进程(`nohup … &`、`npm run dev &`)不随句柄停。要在会话结束时
 收掉它们,给会话一份 `platform::GroupLedger`:`Builder::process_groups(ledger)` 让这个会话

@@ -710,6 +710,9 @@ async fn spawn_service(
     env_policy: &platform::SubprocessEnv,
     auth: Option<&crate::oauth::McpAuth>,
 ) -> Result<Spawned, McpError> {
+    if let Ok(declared) = serde_json::to_value(config) {
+        base::interface::exec::env::hold_back_what_an_mcp_server_reads(&declared);
+    }
     match config {
         McpServerConfig::Stdio {
             command,
@@ -1689,6 +1692,57 @@ done
         assert!(
             !seen.contains("CARGO_MANIFEST_DIR="),
             "an allowlist policy passed the host's environment through: {seen}"
+        );
+    }
+
+    /// A stdio server gets what its own `env` gives it, and does not inherit
+    /// another server's secret.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stdio_server_inherits_no_other_servers_secret() {
+        const OTHER: &str = "AGIX_CONNECT_TEST_OTHER_SERVERS_SECRET";
+        const OWN: &str = "AGIX_CONNECT_TEST_OWN_SECRET";
+        // SAFETY: both names are unique to this test; no other test reads them.
+        unsafe {
+            std::env::set_var(OTHER, "other-canary");
+            std::env::set_var(OWN, "own-canary");
+        }
+        base::interface::exec::env::hold_back_what_an_mcp_server_reads(&serde_json::json!({
+            "type": "streamable_http", "url": "https://h/mcp",
+            "headers": {"Authorization": format!("Bearer ${OTHER}")},
+        }));
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("env.txt");
+        let cfg = McpServerConfig::Stdio {
+            command: "sh".into(),
+            args: vec!["-c".into(), format!("env > '{}'", out.display())],
+            env: HashMap::from([("GIVEN".to_string(), format!("${OWN}"))]),
+            scope: None,
+            timeouts: Default::default(),
+            working_dir: None,
+        };
+        let _ = StdioMcpClient::connect_with_env(
+            "probe",
+            &cfg,
+            None,
+            platform::SubprocessEnv::default(),
+            None,
+        )
+        .await;
+
+        let mut seen = String::new();
+        for _ in 0..100 {
+            seen = std::fs::read_to_string(&out).unwrap_or_default();
+            if seen.contains("GIVEN=") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(seen.contains("GIVEN=own-canary"), "the server saw: {seen}");
+        assert!(!seen.contains("other-canary"), "the server saw: {seen}");
+        assert!(
+            !seen.contains(&format!("{OWN}=")),
+            "the variable its env reads was inherited as well: {seen}"
         );
     }
 

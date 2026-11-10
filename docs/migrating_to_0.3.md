@@ -1395,6 +1395,17 @@ WebAssembly 载体整个移除。
   warn(deny / ask 照旧按整串 glob 拦);`https://h/**` 不再匹配 `https://h:8443/`,要任何端口写
   `https://h:*/**`。项目或插件 skill 的 `allowed-tools` 里主机钉不住域名的 URL 模式
   (`WebFetch(https://*/**)`)按整类授权处理,不给。
+- **设置里点名的密钥变量不再交给子进程。** 以前子进程的环境只剥 `ANTHROPIC_*`、`AGIX_DAEMON_TOKEN`
+  与 provider 的 `api_key_env`,MCP OAuth 的 `client_secret_env` 一句 `printenv` 就读得到。现在
+  全局层、场景层与插件声明的 MCP server 的 `oauth.client_secret_env`、`oauth.private_key_jwt.key_env`,
+  它的 `command` / `args` / `env` / `url` / `headers` 里 `$VAR` 引用的变量,企业 IdP 的
+  `client_secret_env`,以及带 `otel` 构建时的 `OTEL_EXPORTER_OTLP_*HEADERS`,同样剥掉——`Bash`、
+  `Monitor`、command hook、引擎的 git、`pdftotext` 与 MCP stdio server 都不继承(ARCHITECTURE §5
+  第 5 条)。`PATH`、`HOME` 这类 shell 离不开的变量不受影响。**会变的用法**:靠继承拿到别的 server
+  或命令也在用的变量的——比如 GitHub MCP server 的 `headers` 写了 `$GITHUB_TOKEN`,而 `Bash` 里的
+  `gh` 也靠这个变量——命令里读不到了;要命令也拿到,写进 `sandbox.subprocess_env.allow`。stdio
+  server 自己要的密钥写进它的 `env`(`"env": {"GITHUB_TOKEN": "$GITHUB_TOKEN"}`),不要靠继承。
+  剥掉的名单只增不减,删掉设置里的点名要重启 daemon 才放回。
 
 #### hooks
 

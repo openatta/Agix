@@ -40,6 +40,12 @@
   `mcp.auth.start` 报 `MCP_SERVER_DENIED`,两样都没有时报 `INVALID_PARAMS`,密钥都不发出;
   刷新、吊销与无人值守的令牌请求同样只在 issuer 相符时带上它。动态注册得到的密钥只发给当初
   注册它的那个 issuer。
+- **密钥也不经子进程的环境流出。** `client_secret_env`、`private_key_jwt.key_env` 与企业 IdP 的
+  `client_secret_env` 指向的变量,以及 server 的 `url` / `headers` / `env` / `command` / `args` 里
+  `$VAR` 引用的变量,daemon 加载设置、启用插件、装配 MCP 策略时就记下,任何子进程都不继承:
+  `Bash`、`Monitor`、command hook、引擎自己跑的 git、`pdftotext`,以及别的 MCP stdio server——模型一句
+  `printenv` 读不到(`ARCHITECTURE.md` §5 第 5 条)。stdio server 自己 `env` 里写的照给,继承来的
+  环境里没有别的 server 的密钥。确实要让命令也拿到某个变量的,写进 `sandbox.subprocess_env.allow`。
 - **项目层的 server 读不了 daemon 的环境,也用不了 daemon 的身份。** 项目
   `.agix/settings.json` / `settings.local.json` 里声明的 server(`mcp.addServer` 写的也是这一层)
   不能用 `client_secret_env`、`private_key_jwt.key_env`(读 daemon 的环境)、
@@ -305,8 +311,8 @@ let pool = assembly::assemble::pool(&config, scene, Assembly {
 - **redirect URI** 只有 daemon 自己的 `127.0.0.1` 回环地址,或宿主给的(见 §3)。
 - **令牌只出现在凭据存储里**:不进日志、遥测、会话录像与 transcript、`daemon.event`、任何 RPC
   响应。只以 `Authorization: Bearer` 头发送。
-- 机密客户端的密钥只从环境变量读;动态注册得到的密钥存在凭据记录里;签断言的私钥从文件或
-  环境变量读,不进凭据记录。
+- 机密客户端的密钥只从环境变量读,这些变量不交给任何子进程(§1);动态注册得到的密钥存在凭据
+  记录里;签断言的私钥从文件或环境变量读,不进凭据记录。
 - **授权服务器白名单。** MCP 策略(`ARCHITECTURE.md` §6.4)可以写
   `"allowed_authorization_servers": ["https://login.corp.example", "https://corp.okta.com/oauth2/default"]`:
   对 issuer(规整成 `scheme://host[:port][/path]`、末尾不带 `/`)按 URL 模式拆开匹配(`ARCHITECTURE.md`
