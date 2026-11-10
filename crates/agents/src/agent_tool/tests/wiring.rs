@@ -28,6 +28,45 @@ pub(super) fn parent_settings_for_test(scope: &str) -> (Settings, std::path::Pat
     (s, dir)
 }
 
+pub(super) struct CapturesHost(pub(super) std::sync::Mutex<Option<runtime::agent::HostContracts>>);
+
+impl runtime::module::Module for CapturesHost {
+    fn id(&self) -> &'static str {
+        "captures-host"
+    }
+    fn on_session(
+        &self,
+        cx: &mut runtime::module::SessionContext<'_>,
+    ) -> Result<(), runtime::module::ModuleError> {
+        *self.0.lock().unwrap() = Some(cx.host.clone());
+        Ok(())
+    }
+}
+
+/// The host contracts a session built with nothing set resolves, without
+/// its modules: what a wired `AgentTool` is handed, ready to adjust.
+pub(super) fn host_contracts() -> runtime::agent::HostContracts {
+    let (settings, dir) = parent_settings_for_test("code");
+    let probe = Arc::new(CapturesHost(Default::default()));
+    let built = Builder::new()
+        .scene(Arc::new(scene::code::CodeScene::default()))
+        .model(Arc::new(DummyModel))
+        .settings(Arc::new(settings))
+        .skip_warmup(true)
+        .module(probe.clone())
+        .build();
+    let _ = std::fs::remove_dir_all(&dir);
+    drop(built.expect("the session builds"));
+    let mut host = probe
+        .0
+        .lock()
+        .unwrap()
+        .take()
+        .expect("the module saw the host");
+    host.modules.clear();
+    host
+}
+
 /// One tool-use round then a text answer — the minimum needed to observe
 /// a sub-agent's tool call and its final text.
 pub(super) struct ProbeThenTextModel {
@@ -191,7 +230,10 @@ async fn subagent_transcript_is_written_as_a_linked_sidechain() {
         .await
         .unwrap(),
     );
-    agent_tool.set_history_store(store.clone());
+    let agent_tool = agent_tool.with_host(runtime::agent::HostContracts {
+        history_store: Some(store.clone()),
+        ..host_contracts()
+    });
     agent_tool.set_parent_session_id("parent-session-1".to_string());
 
     let _text = agent_tool
@@ -257,7 +299,10 @@ async fn cancelled_subagent_run_writes_no_terminal_marker() {
         .await
         .unwrap(),
     );
-    agent_tool.set_history_store(store.clone());
+    let agent_tool = agent_tool.with_host(runtime::agent::HostContracts {
+        history_store: Some(store.clone()),
+        ..host_contracts()
+    });
     agent_tool.set_parent_session_id("parent-session-1".to_string());
 
     let cancel = tokio_util::sync::CancellationToken::new();
@@ -313,7 +358,10 @@ async fn subagent_run_writes_a_terminal_marker_when_its_task_concludes() {
         .await
         .unwrap(),
     );
-    agent_tool.set_history_store(store.clone());
+    let agent_tool = agent_tool.with_host(runtime::agent::HostContracts {
+        history_store: Some(store.clone()),
+        ..host_contracts()
+    });
     agent_tool.set_parent_session_id("parent-session-1".to_string());
 
     let _text = agent_tool
@@ -357,7 +405,10 @@ async fn subagent_run_writes_a_terminal_marker_when_its_task_concludes() {
 async fn subagent_telemetry_events_reach_the_parents_sink() {
     let (agent_tool, tools, _runs, dir) = wired_agent_tool("code");
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
-    agent_tool.set_telemetry_handle(telemetry::TelemetryHandle::new(tx));
+    let agent_tool = agent_tool.with_host(runtime::agent::HostContracts {
+        telemetry: telemetry::TelemetryHandle::new(tx),
+        ..host_contracts()
+    });
 
     let _text = agent_tool
         .run_sub_tagged(

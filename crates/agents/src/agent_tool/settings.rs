@@ -80,20 +80,11 @@ pub(super) fn settings_from_parent(
     model_name: String,
     max_tokens: u32,
     fallback_model: Option<String>,
-    instruction_file: Option<&std::path::PathBuf>,
 ) -> Settings {
     let mut settings = parent.clone();
     settings.model.model_name = model_name;
     settings.model.max_tokens = max_tokens;
     settings.model.fallback_model = fallback_model;
-    // Cloning the parent already carries `Settings.instruction_file`;
-    // `instruction_file` here additionally covers the case where the parent
-    // got its instruction file from `Builder::instruction_file(..)` rather
-    // than from settings.json — a `Builder`-level value that is invisible in
-    // `Settings` and would otherwise be silently dropped for sub-agents.
-    if let Some(p) = instruction_file {
-        settings.instruction_file = Some(p.clone());
-    }
     settings
 }
 
@@ -111,7 +102,6 @@ pub(super) fn fallback_settings(
     max_tokens: u32,
     fallback_model: Option<String>,
     local_data_dir: std::path::PathBuf,
-    instruction_file: Option<&std::path::PathBuf>,
 ) -> Settings {
     Settings {
         model: ModelSettings {
@@ -135,7 +125,7 @@ pub(super) fn fallback_settings(
         compaction: Default::default(),
         sandbox: SandboxConfig::default(),
         plugins: Default::default(),
-        instruction_file: instruction_file.cloned(),
+        instruction_file: None,
         prompt_append: None,
         prompt_override: None,
         recorder: None,

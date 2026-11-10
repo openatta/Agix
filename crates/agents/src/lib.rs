@@ -83,7 +83,7 @@ impl Module for AgentsModule {
             .slots
             .clone()
             .unwrap_or_else(|| SubagentSlots::new(settings.execution.max_concurrent_subagents));
-        let mut tool = match &self.shared_types {
+        let tool = match &self.shared_types {
             Some(shared) => AgentTool::with_shared_agent_types(
                 cx.model.clone(),
                 engine_config,
@@ -104,17 +104,11 @@ impl Module for AgentsModule {
         .with_settings(settings.clone())
         .with_depth(cx.depth)
         .with_subagent_slots(slots.clone())
-        .with_modules(self.for_delegates(cx.modules, &slots));
-        if let Some(router) = cx.task_router {
-            tool = tool.with_task_router(router.clone());
-        }
-        if !cx.delegate_plugins.is_empty() {
-            tool = tool.with_delegate_plugins(cx.delegate_plugins.to_vec(), cx.plugin_tools);
-        }
-        tool = tool
-            .with_exec(cx.exec.clone())
-            .with_token_counter(cx.token_counter.clone())
-            .with_rule_provider(cx.rules.clone());
+        .with_host(runtime::agent::HostContracts {
+            modules: self.for_delegates(&cx.host.modules, &slots),
+            ..cx.host.clone()
+        })
+        .with_plugin_tools(cx.plugin_tools);
         let tool = Arc::new(tool);
 
         // For `AgentTypeDefinition.mcp_servers` and `.skills`: a delegate is
@@ -126,18 +120,10 @@ impl Module for AgentsModule {
         tool.set_event_sender(cx.events.clone());
         tool.set_hooks(cx.hooks.clone());
         tool.set_session_ended(cx.session_ended());
-        tool.set_parent_permission(cx.permission.clone(), cx.session_state.clone());
+        tool.set_parent_permission(cx.host.permission.clone(), cx.session_state.clone());
         tool.set_parent_pending_permissions(cx.pending_permissions.clone());
         tool.set_scene(cx.scene.clone());
-        if let Some(registry) = cx.scene_registry {
-            tool.set_scene_registry(registry.clone());
-        }
-        tool.set_instruction_file(cx.instruction_file.cloned());
-        if let Some(store) = cx.history_store {
-            tool.set_history_store(store.clone());
-        }
         tool.set_parent_session_id(cx.session_id.to_string());
-        tool.set_telemetry_handle(cx.telemetry.clone());
 
         let spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner> =
             Arc::new(RuntimeAgentSpawner::new(tool.clone()));
@@ -167,7 +153,7 @@ impl Module for AgentsModule {
                 cx.scene.id().to_string(),
             ));
             create.set_event_sender(cx.events.unbounded_bridge());
-            create.set_telemetry_handle(cx.telemetry.clone());
+            create.set_telemetry_handle(cx.host.telemetry.clone());
             cx.tools.register(create);
             cx.tools
                 .register(Arc::new(team::tool::TeamListTool::new(registry.clone())));

@@ -462,7 +462,7 @@ pub(super) fn parse_agent_type_file(content: &str, path: &Path) -> Option<AgentT
 /// Resolve a scene id against the built-in set.
 ///
 /// The fallback for callers that never wired a `SceneRegistry` — see
-/// `Inner::scene_registry` and `Inner::resolve_scene_id`. This is also how a
+/// `HostContracts::scene_registry` and `Inner::resolve_scene_id`. This is also how a
 /// sub-agent recovers its parent's scene when no explicit
 /// `Arc<dyn Scene>` was wired in (the daemon sets `Settings.paths.scope`
 /// to `scene.id()`, so the scope *is* the scene id there). Unknown ids return

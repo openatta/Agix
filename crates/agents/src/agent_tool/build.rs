@@ -102,17 +102,27 @@ impl Inner {
         let parent_session_id = parent
             .map(|(sid, _, _)| sid.to_string())
             .or_else(|| self.parent_session_id());
-        let mut builder = Builder::new()
-            .session_id(sid.clone())
-            .lineage(parent_session_id.clone(), subagent_type)
-            .scene(scene)
-            .contributed_tool_filter(contributed_tool_filter(def.as_ref(), run))
-            .model(self.model_for_subagent())
-            .tools(tools)
-            .settings(settings.clone())
-            .agent_depth(depth)
-            .memory_extraction(extracts_memories)
-            .permission(permission);
+        // First, so that what the delegate decides for itself below — its
+        // permission, narrowed from the parent's — replaces what it inherits.
+        let builder = Builder::new();
+        let builder = match &self.host {
+            Some(host) => builder.inherit(host.clone()),
+            None => builder,
+        };
+        let mut builder = match self.hooks() {
+            Some(runner) => builder.hooks(runner),
+            None => builder,
+        }
+        .session_id(sid.clone())
+        .lineage(parent_session_id.clone(), subagent_type)
+        .scene(scene)
+        .contributed_tool_filter(contributed_tool_filter(def.as_ref(), run))
+        .model(self.model_for_subagent())
+        .tools(tools)
+        .settings(settings.clone())
+        .agent_depth(depth)
+        .memory_extraction(extracts_memories)
+        .permission(permission);
         if let Some(schema) = &run.output_schema {
             builder = builder.output_schema(schema.clone());
         }
@@ -123,7 +133,6 @@ impl Inner {
             builder = builder.mcp_servers(servers);
         }
         let history_store = self.history_store();
-        builder = self.inherited_by_a_delegate(builder);
         let (agent, event_rx, input_tx) = builder
             .build()
             .map_err(|e| base::error::ToolError::Execution(anyhow!("build: {e}")))?;

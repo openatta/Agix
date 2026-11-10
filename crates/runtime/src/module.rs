@@ -20,14 +20,13 @@ use base::frozen::SkillEntry;
 use base::interface::agent_spawner::AgentSpawner;
 use base::interface::mcp_servers::McpServers;
 use base::interface::model::Model;
-use base::interface::permission::PermissionSet;
 use base::interface::scene::Scene;
 use base::interface::skill_catalog::{NoSkills, SkillCatalog};
 use base::settings::Settings;
 use base::tool::InMemoryToolRegistry;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::PendingPermissions;
+use crate::agent::{HostContracts, PendingPermissions};
 
 pub trait Module: Send + Sync {
     fn id(&self) -> &'static str;
@@ -67,45 +66,26 @@ pub struct SessionContext<'a> {
     pub settings: &'a Arc<Settings>,
     pub config: &'a Arc<EngineConfig>,
     pub scene: &'a Arc<dyn Scene>,
-    pub scene_registry: Option<&'a Arc<scene::SceneRegistry>>,
     /// Already wrapped for telemetry: what a module calls through it is
     /// accounted to this session.
     pub model: &'a Arc<dyn Model>,
-    pub permission: &'a PermissionSet,
     pub pending_permissions: &'a PendingPermissions,
     pub hooks: &'a Arc<hooks::HookRunner>,
     /// What a hook payload this module fires starts from: the session's id,
     /// cwd and current permission mode.
     pub hook_ambient: &'a hooks::payload::Ambient,
     pub events: &'a crate::event_bus::EventBus,
-    pub telemetry: &'a telemetry::TelemetryHandle,
     pub session_id: &'a str,
     pub session_state: &'a Arc<SessionState>,
-    pub history_store: Option<&'a Arc<dyn history::store::HistoryStore>>,
-    pub instruction_file: Option<&'a PathBuf>,
     /// How many agents deep this session is: 0 for one a host created.
     pub depth: u32,
-    pub task_router: Option<&'a Arc<base::provider::TaskRouter>>,
-    /// Where the session reaches the machine; a delegate reaches it there
-    /// too.
-    pub exec: &'a base::interface::exec::ExecProviders,
-    /// What judges the session's size; a delegate judges its own with it.
-    pub token_counter: &'a Arc<dyn base::interface::token_counter::TokenCounter>,
-    /// Where the session's rule index comes from; a delegate is shown the
-    /// same.
-    pub rules: &'a Arc<dyn base::interface::instruction_provider::RuleProvider>,
-    /// The Rust plugins this session was built with; a delegate is built
-    /// with them too.
-    pub delegate_plugins: &'a [Arc<dyn crate::plugin::Plugin>],
-    /// The tools those plugins registered here. A delegate gets its own from
-    /// the plugins, not this session's copies.
+    /// What a delegate of this session is built on, whole.
+    pub host: &'a HostContracts,
+    /// The tools the session's plugins registered here. A delegate gets its
+    /// own from the plugins, not this session's copies.
     pub plugin_tools: &'a [String],
     /// Agent types the session's plugins declare.
     pub plugin_agent_types: &'a [base::agent_type::AgentTypeDefinition],
-    /// Every module this session runs, this one included: the assembled
-    /// list narrowed by the scene. What a module that spawns delegates
-    /// assembles them with.
-    pub modules: &'a [Arc<dyn Module>],
     pub(crate) mcp: &'a mut Option<Box<dyn McpServers>>,
     pub(crate) agent_spawner: &'a LateAgentSpawner,
     pub(crate) skill_catalog: &'a LateSkillCatalog,

@@ -78,7 +78,7 @@ const COMPOSITION_ROOT_FILES: &[&str] = &[
 const COMPOSITION_ROOT_DIRS: &[&str] = &["crates/runtime/src/agent/"];
 
 const SPAWN_SITE_FILE: &str = "crates/agents/src/agent_tool/build.rs";
-const SPAWN_INHERITANCE: &str = "inherited_by_a_delegate";
+const SPAWN_INHERITANCE: &str = "inherit";
 
 fn not_test_support(f: &&SourceFile) -> bool {
     !ws().package(&f.package).dir.starts_with("tests/")
@@ -390,7 +390,7 @@ fn every_spawn_site_takes_the_whole_inheritance() {
     assert!(
         *inherits,
         "{hit} builds a session in `{function}` without calling `{SPAWN_INHERITANCE}` in the \
-         same function. Everything a delegated session inherits is on that one list precisely \
+         same function. Everything a delegated session inherits is in `HostContracts` precisely \
          so a spawn site cannot take some of it."
     );
 }

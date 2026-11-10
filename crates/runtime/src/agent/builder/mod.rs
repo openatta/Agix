@@ -4,7 +4,9 @@ use super::*;
 
 mod build;
 mod hook_runner;
+mod host;
 pub(in crate::agent) use hook_runner::{build_hook_runner, hook_ambient};
+pub use host::{HostContracts, HostLayers};
 
 pub struct Builder {
     scene: Option<Arc<dyn Scene>>,
@@ -46,8 +48,8 @@ pub struct Builder {
     /// Multi-provider per-task-type model routing — see `Builder::task_router`.
     task_router: Option<Arc<base::provider::TaskRouter>>,
     /// Every scene this host registered, so an agent type's `scene:` id can
-    /// name one beyond the built-in four (plugin scenes, in particular) —
-    /// see `agents::agent_tool::AgentTool::set_scene_registry`.
+    /// name one beyond the built-in four (plugin scenes, in particular), in
+    /// this session and in every delegate under it.
     scene_registry: Option<Arc<scene::SceneRegistry>>,
     /// Where the standing instructions come from — see
     /// [`Builder::instruction_provider`].

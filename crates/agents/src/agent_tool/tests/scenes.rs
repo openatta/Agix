@@ -123,7 +123,10 @@ fn agent_type_can_name_a_scene_that_only_the_registry_knows() {
         id: "plugin:demo",
         inner: Arc::new(scene::mini::MiniScene),
     }));
-    agent_tool.set_scene_registry(Arc::new(registry));
+    let agent_tool = agent_tool.with_host(runtime::agent::HostContracts {
+        scene_registry: Some(Arc::new(registry)),
+        ..host_contracts()
+    });
 
     assert_eq!(
         agent_tool
@@ -190,9 +193,9 @@ fn subagent_scene_falls_back_to_settings_scope_then_code() {
     );
 }
 
-/// A sub-agent must be able to see AGENTS.md / CLAUDE.md, both when
-/// the parent got it from settings.json and when it came from
-/// `Builder::instruction_file(..)` (invisible in `Settings`).
+/// A sub-agent's settings carry the instruction file the parent's settings
+/// name; one the parent got from `Builder::instruction` reaches it through
+/// the inherited instruction provider instead.
 #[test]
 fn subagent_inherits_the_parent_instruction_file() {
     let tools = Arc::new(InMemoryToolRegistry::new());
@@ -201,35 +204,14 @@ fn subagent_inherits_the_parent_instruction_file() {
 
     let mut parent = Settings::defaults_for("test-model");
     parent.instruction_file = Some(std::path::PathBuf::from("/proj/AGENTS.md"));
-    let agent_tool = AgentTool::with_parent_tools(
-        model.clone(),
-        config.clone(),
-        tools.clone(),
-        tools.clone(),
-        &[],
-        &[],
-    )
-    .with_settings(Arc::new(parent));
+    let agent_tool = AgentTool::with_parent_tools(model, config, tools.clone(), tools, &[], &[])
+        .with_settings(Arc::new(parent));
     assert_eq!(
         agent_tool
             .sub_settings(None, std::path::PathBuf::from("/tmp"))
             .instruction_file,
         Some(std::path::PathBuf::from("/proj/AGENTS.md")),
         "sub-agents must inherit the project's instruction file from settings"
-    );
-
-    // Builder-level instruction file: not present in `Settings` at all.
-    let bare = AgentTool::with_parent_tools(model, config, tools.clone(), tools, &[], &[]);
-    assert_eq!(
-        bare.sub_settings(None, std::path::PathBuf::from("/tmp"))
-            .instruction_file,
-        None
-    );
-    bare.set_instruction_file(Some(std::path::PathBuf::from("/proj/CLAUDE.md")));
-    assert_eq!(
-        bare.sub_settings(None, std::path::PathBuf::from("/tmp"))
-            .instruction_file,
-        Some(std::path::PathBuf::from("/proj/CLAUDE.md"))
     );
 }
 

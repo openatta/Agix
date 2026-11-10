@@ -4,6 +4,7 @@ use super::*;
 
 impl Builder {
     pub fn build(self) -> Result<(Agent, EventReceiver, InputSender), EngineError> {
+        let host_layers = self.host_layers();
         let scene = self
             .scene
             .ok_or_else(|| EngineError::Internal("scene required".into()))?;
@@ -393,35 +394,42 @@ impl Builder {
         }
         {
             let session_id = session.session_id_str().to_string();
-            let token_counter = session.token_counter().clone();
+            let host = HostContracts {
+                exec: exec.clone(),
+                token_counter: session.token_counter().clone(),
+                rules: rules.clone(),
+                environment: environment.clone(),
+                permission: permission.clone(),
+                history_store: self.history_store.clone(),
+                telemetry: telemetry_handle.clone(),
+                task_router: self.task_router.clone(),
+                scene_registry: self.scene_registry.clone(),
+                memory_store: memory_store.clone(),
+                memory_retriever: self.memory_retriever.clone(),
+                retrieval_hooks: self.retrieval_hooks.clone(),
+                instruction_provider: instruction_provider.clone(),
+                plugins: self.plugins.clone(),
+                modules: modules.clone(),
+                host_layers,
+            };
             let mut cx = crate::module::SessionContext {
                 tools: &tools,
                 template_tools: &template,
                 settings: &settings,
                 config: &config,
                 scene: &scene,
-                scene_registry: self.scene_registry.as_ref(),
                 model: &model,
-                permission: &permission,
                 pending_permissions: &pending_permissions,
                 hooks: &hooks,
                 hook_ambient: &hook_ambient,
                 events: &event_tx,
-                telemetry: &telemetry_handle,
                 session_id: &session_id,
                 session_state: &session_state,
-                history_store: self.history_store.as_ref(),
-                instruction_file: instruction_file.as_ref(),
                 depth: agent_depth,
-                task_router: self.task_router.as_ref(),
-                exec: &exec,
-                token_counter: &token_counter,
-                rules: &rules,
-                delegate_plugins: &self.plugins,
+                host: &host,
                 plugin_tools: &plugin_tools,
                 plugin_agent_types: &plugin_agent_types,
                 mcp: &mut mcp_slot,
-                modules: &modules,
                 agent_spawner: &agent_spawner,
                 skill_catalog: &skill_catalog,
                 session_ended: &session_ended,

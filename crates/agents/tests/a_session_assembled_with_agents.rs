@@ -350,7 +350,6 @@ fn plain_delegation() -> serde_json::Value {
 
 /// The date the host fixed for a session is the date its delegates are told.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "D2: a delegate does not inherit the host's environment (R1)"]
 async fn a_delegate_is_told_the_date_its_host_fixed() {
     let start = time::OffsetDateTime::from_unix_timestamp(978_307_200).expect("2001-01-01");
     let model = delegate_once(plain_delegation(), |b| {
@@ -389,7 +388,6 @@ impl base::interface::tool_middleware::ToolMiddleware for CountsCalls {
 
 /// A host's tool middleware wraps its delegates' tool calls too.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "D2: a delegate does not inherit the host's tool middleware (R1)"]
 async fn a_hosts_tool_middleware_wraps_its_delegates_calls() {
     let wrapped = Arc::new(std::sync::Mutex::new(Vec::new()));
     let model = delegate_once(plain_delegation(), |b| {

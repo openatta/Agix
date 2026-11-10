@@ -379,9 +379,12 @@ async fn a_delegate_runs_on_its_parents_host_contracts() {
         seen: Default::default(),
     }))
     .with_settings(Arc::new(settings))
-    .with_exec(providers)
-    .with_token_counter(counter.clone())
-    .with_rule_provider(rules.clone());
+    .with_host(runtime::agent::HostContracts {
+        exec: providers,
+        token_counter: counter.clone(),
+        rules: rules.clone(),
+        ..host_contracts()
+    });
 
     let ran = agent_tool
         .run_sub(
@@ -410,6 +413,70 @@ async fn a_delegate_runs_on_its_parents_host_contracts() {
         rules.0.load(std::sync::atomic::Ordering::SeqCst) > 0,
         "the delegate's rule index did not come from the parent's provider"
     );
+}
+
+struct KeepsEverything;
+impl base::interface::memory_contracts::RetrievalHook for KeepsEverything {}
+
+/// A delegate is assembled on the contracts its parent resolved, the same
+/// values and not copies of them: the scenes an agent type's `scene:` may
+/// name, the memory store with the retriever and hooks that filter what is
+/// recalled from it, the standing instructions, the clock.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_delegate_is_assembled_on_its_parents_host_contracts() {
+    let probe = Arc::new(CapturesHost(Default::default()));
+    let mut registry = scene::SceneRegistry::new();
+    registry.register_builtin();
+    let parent = runtime::agent::HostContracts {
+        scene_registry: Some(Arc::new(registry)),
+        memory_retriever: Some(Arc::new(
+            base::interface::memory_contracts::SubstringRetriever,
+        )),
+        retrieval_hooks: vec![Arc::new(KeepsEverything)],
+        modules: vec![probe.clone()],
+        ..host_contracts()
+    };
+    let agent_tool = test_agent_tool().with_host(parent.clone());
+    let _delegate = agent_tool
+        .build_team_member_agent(
+            Arc::new(InMemoryToolRegistry::new()),
+            std::env::temp_dir(),
+            None,
+            base::settings::PermissionMode::Plan,
+            None,
+        )
+        .await
+        .expect("the delegate builds");
+    let seen = probe
+        .0
+        .lock()
+        .unwrap()
+        .take()
+        .expect("the delegate ran its parent's modules");
+
+    let same = |a: Option<&Arc<scene::SceneRegistry>>, b: Option<&Arc<scene::SceneRegistry>>| matches!((a, b), (Some(a), Some(b)) if Arc::ptr_eq(a, b));
+    assert!(
+        same(seen.scene_registry.as_ref(), parent.scene_registry.as_ref()),
+        "the delegate cannot resolve the scenes its parent can"
+    );
+    assert!(Arc::ptr_eq(&seen.memory_store, &parent.memory_store));
+    assert!(
+        matches!(
+            (&seen.memory_retriever, &parent.memory_retriever),
+            (Some(a), Some(b)) if Arc::ptr_eq(a, b)
+        ),
+        "the delegate recalls with another retriever"
+    );
+    assert_eq!(seen.retrieval_hooks.len(), 1);
+    assert!(Arc::ptr_eq(
+        &seen.retrieval_hooks[0],
+        &parent.retrieval_hooks[0]
+    ));
+    assert!(Arc::ptr_eq(
+        &seen.instruction_provider,
+        &parent.instruction_provider
+    ));
+    assert!(Arc::ptr_eq(&seen.environment, &parent.environment));
 }
 
 fn team_of(members: &[&str]) -> Value {

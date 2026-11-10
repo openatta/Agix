@@ -202,30 +202,16 @@ pub(super) struct Inner {
     /// `None` when unset (e.g. in tests, or the generic `AgentSpawner`
     /// bridge) falls back to a hardcoded `"code"` scope.
     pub(super) parent_settings: Option<Arc<Settings>>,
-    /// Multi-provider per-task-type model routing — see
-    /// `Builder::task_router` / `Inner::model_for_subagent`. `None` (the
-    /// default) means every sub-agent spawn inherits `model` unchanged,
-    /// exactly matching behavior before multi-provider routing existed.
-    pub(super) task_router: Option<Arc<base::provider::TaskRouter>>,
-    /// The plugins every delegate is built with, as its parent was — the
-    /// QuickJS layer among them, which decides itself what follows a delegate.
-    pub(super) delegate_plugins: Vec<Arc<dyn runtime::plugin::Plugin>>,
+    /// What the parent session was built on, which every delegate is built
+    /// on too; its modules are the ones a delegate is assembled with. `None`
+    /// for an `AgentTool` built on its own.
+    pub(super) host: Option<runtime::agent::HostContracts>,
     /// The tools those plugins registered in this session. A delegate is not
     /// handed these copies: its own plugins register its own.
     pub(super) plugin_tools: Arc<std::collections::HashSet<String>>,
     /// Agent types this session's plugins declare, over the shared catalog:
     /// above built-in and package types, below the ones on disk.
     pub(super) session_agent_types: Arc<std::collections::HashMap<String, AgentTypeDefinition>>,
-    /// The parent session's providers: a delegate runs on them, process
-    /// ledger included.
-    pub(super) exec: Option<base::interface::exec::ExecProviders>,
-    /// What judges the parent session's size; a delegate judges its own
-    /// with it.
-    pub(super) token_counter: Option<Arc<dyn base::interface::token_counter::TokenCounter>>,
-    /// Where the parent session's rule index comes from.
-    pub(super) rules: Option<Arc<dyn base::interface::instruction_provider::RuleProvider>>,
-    /// What every delegate is assembled with: the parent session's modules.
-    pub(super) modules: Vec<Arc<dyn runtime::module::Module>>,
     /// The parent session's `SkillManager`, when known — used to resolve
     /// the `skills:` preload field on `AgentTypeDefinition`. Set via
     /// `AgentTool::set_skill_catalog` *after* construction (interior
@@ -296,11 +282,6 @@ pub(super) struct Inner {
     /// Cancelled when the parent session ends; every persistent team
     /// member's token is a child of it.
     pub(super) session_ended: SetLater<tokio_util::sync::CancellationToken>,
-    /// The parent session's history store, so a sub-agent's transcript is
-    /// persisted and a failed sub-agent can be inspected afterwards.
-    /// The sub-agent gets its own fresh session id, so it lands in its own
-    /// JSONL file — the parent's transcript is never written to.
-    pub(super) history_store: SetLater<Option<Arc<dyn HistoryStore>>>,
     /// The **parent session's** permission and state. Sub-agent permission
     /// checks are routed here instead of being hard-permitted, so a session
     /// that opts into a real permission can't be bypassed just by spawning a
@@ -322,17 +303,6 @@ pub(super) struct Inner {
     /// back to resolving `Settings.paths.scope` via `resolve_scene_id`, then to
     /// `CodeScene`.
     pub(super) parent_scene: SetLater<Option<Arc<dyn Scene>>>,
-    /// Every scene this process knows about, for resolving an agent type's
-    /// `scene:` id. `None` falls back to [`builtin_scene_by_id`], which is
-    /// what an embedder that never wires a registry (tests, library callers)
-    /// gets — the built-in four. A host that registers
-    /// scenes beyond those (the daemon, which also registers plugin scenes)
-    /// wires its registry here so those ids resolve too.
-    pub(super) scene_registry: SetLater<Option<Arc<scene::SceneRegistry>>>,
-    /// The parent's resolved instruction file (AGENTS.md / CLAUDE.md), for
-    /// the case where it came from `Builder::instruction_file(..)` and so
-    /// isn't visible in `Settings` — see `settings_from_parent`.
-    pub(super) instruction_file: SetLater<Option<std::path::PathBuf>>,
     /// The parent `Agent`'s own session id, so a freshly spawned sub-agent's
     /// first `Meta` line can record `parent_session_id` and thereby become
     /// discoverable via `HistoryStore::child_sessions`. Same set-after-
@@ -343,15 +313,6 @@ pub(super) struct Inner {
     /// written with `parent_session_id: None` — they still persist, they're
     /// just not linkable back to a parent.
     pub(super) parent_session_id: SetLater<Option<String>>,
-    /// The parent `Agent`'s own telemetry handle — sub-agents built through
-    /// this `AgentTool` inherit it instead of each falling back to
-    /// `Builder::build()`'s own noop default (a channel whose receiver is
-    /// dropped immediately, silently discarding every event). Same set-
-    /// after-construction pattern as the other parent-state fields on this
-    /// struct. `None` (tests, embedders that never call
-    /// `set_telemetry_handle`) means spawned sub-agents get `Builder`'s
-    /// usual noop fallback.
-    pub(super) telemetry_handle: SetLater<Option<TelemetryHandle>>,
 }
 
 impl Inner {
@@ -437,50 +398,6 @@ impl Inner {
         Ok(self.depth + 1)
     }
 
-    /// Everything a delegated session inherits from the one that spawned it.
-    ///
-    /// Written once because the list is not derivable from anything: each item
-    /// is on it because somebody noticed it was missing, and the noticing
-    /// happened once per item — a transcript that was not persisted, telemetry
-    /// dropped on the floor, a policy that stopped at the first delegation. A
-    /// fifth spawn site copying three of the four is the shape every one of
-    /// those had.
-    ///
-    /// Deliberately not here: what a delegate decides for itself — its scene,
-    /// its model, its tool set, its depth, its own settings. Those differ per
-    /// spawn site; `build_delegate` resolves them from its `DelegatePlan`.
-    pub(super) fn inherited_by_a_delegate(&self, mut builder: Builder) -> Builder {
-        // A policy that stops at the first delegation is not a policy.
-        for plugin in &self.delegate_plugins {
-            builder = builder.plugin(plugin.clone());
-        }
-        // Its own session id keeps a delegate's transcript in a file of its
-        // own rather than mixed into the parent's.
-        if let Some(store) = self.history_store() {
-            builder = builder.history_store(store);
-        }
-        // Without this, every event a delegate produces — tool timings,
-        // permission decisions, cost — goes to `Builder::build()`'s noop.
-        if let Some(handle) = self.telemetry_handle() {
-            builder = builder.telemetry_handle(handle);
-        }
-        if let Some(exec) = &self.exec {
-            builder = builder.exec(exec.clone());
-        }
-        if let Some(counter) = &self.token_counter {
-            builder = builder.token_counter(counter.clone());
-        }
-        if let Some(rules) = &self.rules {
-            builder = builder.rule_provider(rules.clone());
-        }
-        // One runner for the whole tree: `once` holds across it, and the
-        // root's file watcher is the only one.
-        if let Some(runner) = self.hooks() {
-            builder = builder.hooks(runner);
-        }
-        builder.modules(self.modules.iter().cloned())
-    }
-
     pub(super) fn hooks(&self) -> Option<Arc<hooks::HookRunner>> {
         self.hooks.get().and_then(|runner| runner.upgrade())
     }
@@ -503,7 +420,7 @@ impl Inner {
     /// key here is always the literal `"subagent"` task type regardless of
     /// which `subagent_type` was requested.
     pub(super) fn model_for_subagent(&self) -> Arc<dyn Model> {
-        match &self.task_router {
+        match self.host.as_ref().and_then(|h| h.task_router.as_ref()) {
             Some(router) => router.model_for("subagent"),
             None => self.model.clone(),
         }
@@ -567,11 +484,7 @@ impl Inner {
     }
 
     pub(super) fn history_store(&self) -> Option<Arc<dyn HistoryStore>> {
-        self.history_store.get()
-    }
-
-    pub(super) fn instruction_file(&self) -> Option<std::path::PathBuf> {
-        self.instruction_file.get()
+        self.host.as_ref().and_then(|h| h.history_store.clone())
     }
 
     pub(super) fn parent_session_id(&self) -> Option<String> {
@@ -579,7 +492,7 @@ impl Inner {
     }
 
     pub(super) fn telemetry_handle(&self) -> Option<TelemetryHandle> {
-        self.telemetry_handle.get()
+        self.host.as_ref().map(|h| h.telemetry.clone())
     }
 
     /// See `AgentTool::permission_handler` — same resolution, reachable from
@@ -621,7 +534,7 @@ impl Inner {
                 pending: self.parent_pending_permissions.get(),
                 timeout_secs: self.config.permission_prompt_timeout_secs,
                 task,
-                parent_exec: self.exec.clone(),
+                parent_exec: self.host.as_ref().map(|h| h.exec.clone()),
             }),
             grants: Arc::new(ParentGrants(parent.permission.grants)),
         }
@@ -652,22 +565,11 @@ impl Inner {
     ) -> Settings {
         let c = &inner.config;
         let model_name = model_name.unwrap_or(&c.model).to_string();
-        let instruction_file = inner.instruction_file();
         match &inner.parent_settings {
-            Some(parent) => settings_from_parent(
-                parent,
-                model_name,
-                c.max_tokens,
-                c.fallback_model.clone(),
-                instruction_file.as_ref(),
-            ),
-            None => fallback_settings(
-                model_name,
-                c.max_tokens,
-                c.fallback_model.clone(),
-                cwd,
-                instruction_file.as_ref(),
-            ),
+            Some(parent) => {
+                settings_from_parent(parent, model_name, c.max_tokens, c.fallback_model.clone())
+            }
+            None => fallback_settings(model_name, c.max_tokens, c.fallback_model.clone(), cwd),
         }
     }
 
@@ -757,7 +659,7 @@ impl Inner {
     /// would silently fall through to "unrecognized scene" and inherit the
     /// parent's instead.
     pub(super) fn resolve_scene_id(&self, id: &str) -> Option<Arc<dyn Scene>> {
-        if let Some(registry) = self.scene_registry.get() {
+        if let Some(registry) = self.host.as_ref().and_then(|h| h.scene_registry.as_ref()) {
             return registry.resolve(id);
         }
         builtin_scene_by_id(id)

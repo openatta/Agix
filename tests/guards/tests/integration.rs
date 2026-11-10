@@ -4,6 +4,7 @@
 
 mod api_surface;
 mod base;
+mod delegation;
 mod deps;
 mod layering;
 mod process_state;

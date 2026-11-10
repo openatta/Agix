@@ -79,9 +79,11 @@ async fn a_new_member_past_the_cap_is_refused_while_every_member_is_busy() {
 
 #[tokio::test]
 async fn a_persistent_member_is_in_its_sessions_telemetry_from_start_to_stop() {
-    let agent_tool = team_enabled_agent_tool();
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
-    agent_tool.set_telemetry_handle(TelemetryHandle::new(tx));
+    let agent_tool = team_enabled_agent_tool().with_host(runtime::agent::HostContracts {
+        telemetry: TelemetryHandle::new(tx),
+        ..host_contracts()
+    });
     let session = Arc::new(base::context::SessionState::new(std::path::PathBuf::from(
         "/tmp",
     )));

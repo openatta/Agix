@@ -176,14 +176,9 @@ impl AgentTool {
                 _agent_type_watcher,
                 description,
                 parent_settings: None,
-                task_router: None,
-                delegate_plugins: Vec::new(),
+                host: None,
                 plugin_tools: Default::default(),
                 session_agent_types: Default::default(),
-                exec: None,
-                token_counter: None,
-                rules: None,
-                modules: Vec::new(),
                 skill_manager: Default::default(),
                 delegate_mcp: Default::default(),
                 team_registry: Default::default(),
@@ -193,14 +188,10 @@ impl AgentTool {
                 event_tx: Default::default(),
                 hooks: Default::default(),
                 session_ended: Default::default(),
-                history_store: Default::default(),
                 parent_permission: Default::default(),
                 parent_pending_permissions: Default::default(),
                 parent_scene: Default::default(),
-                scene_registry: Default::default(),
-                instruction_file: Default::default(),
                 parent_session_id: Default::default(),
-                telemetry_handle: Default::default(),
             }),
         }
     }
@@ -248,14 +239,9 @@ impl AgentTool {
                 _agent_type_watcher: None,
                 description,
                 parent_settings: None,
-                task_router: None,
-                delegate_plugins: Vec::new(),
+                host: None,
                 plugin_tools: Default::default(),
                 session_agent_types: Default::default(),
-                exec: None,
-                token_counter: None,
-                rules: None,
-                modules: Vec::new(),
                 skill_manager: Default::default(),
                 delegate_mcp: Default::default(),
                 team_registry: Default::default(),
@@ -265,14 +251,10 @@ impl AgentTool {
                 event_tx: Default::default(),
                 hooks: Default::default(),
                 session_ended: Default::default(),
-                history_store: Default::default(),
                 parent_permission: Default::default(),
                 parent_pending_permissions: Default::default(),
                 parent_scene: Default::default(),
-                scene_registry: Default::default(),
-                instruction_file: Default::default(),
                 parent_session_id: Default::default(),
-                telemetry_handle: Default::default(),
             }),
         }
     }
@@ -283,17 +265,6 @@ impl AgentTool {
     pub fn with_settings(mut self, settings: Arc<Settings>) -> Self {
         let mut inner = (*self.inner).clone();
         inner.parent_settings = Some(settings);
-        self.inner = Arc::new(inner);
-        self
-    }
-
-    /// Record how deep the owning agent already sits in the delegation
-    /// chain, so `spawn_guard` can refuse to go past
-    /// `EngineConfig::max_agent_depth`. Set by `Builder::build()` from
-    /// `Builder::agent_depth`; `0` (a root session) otherwise.
-    pub fn with_modules(mut self, modules: Vec<Arc<dyn runtime::module::Module>>) -> Self {
-        let mut inner = (*self.inner).clone();
-        inner.modules = modules;
         self.inner = Arc::new(inner);
         self
     }
@@ -312,15 +283,18 @@ impl AgentTool {
         self
     }
 
-    /// The plugins every agent this tool spawns is built with, and the tools
-    /// they registered in this session.
-    pub fn with_delegate_plugins(
-        mut self,
-        plugins: Vec<Arc<dyn runtime::plugin::Plugin>>,
-        their_tools: &[String],
-    ) -> Self {
+    /// Build every delegate on `host`, as the parent session was.
+    pub fn with_host(mut self, host: runtime::agent::HostContracts) -> Self {
         let mut inner = (*self.inner).clone();
-        inner.delegate_plugins = plugins;
+        inner.host = Some(host);
+        self.inner = Arc::new(inner);
+        self
+    }
+
+    /// The tools the parent's plugins registered in it, which a delegate's
+    /// own plugins register again rather than inherit.
+    pub fn with_plugin_tools(mut self, their_tools: &[String]) -> Self {
+        let mut inner = (*self.inner).clone();
         inner.plugin_tools = Arc::new(their_tools.iter().cloned().collect());
         self.inner = Arc::new(inner);
         self
@@ -348,44 +322,6 @@ impl AgentTool {
             }
         }
         inner.description = describe_agent_types(&visible).into();
-        self.inner = Arc::new(inner);
-        self
-    }
-
-    /// Judge delegates' size with the parent session's counter.
-    pub fn with_token_counter(
-        mut self,
-        counter: Arc<dyn base::interface::token_counter::TokenCounter>,
-    ) -> Self {
-        let mut inner = (*self.inner).clone();
-        inner.token_counter = Some(counter);
-        self.inner = Arc::new(inner);
-        self
-    }
-
-    /// Show delegates the parent session's rule index.
-    pub fn with_rule_provider(
-        mut self,
-        rules: Arc<dyn base::interface::instruction_provider::RuleProvider>,
-    ) -> Self {
-        let mut inner = (*self.inner).clone();
-        inner.rules = Some(rules);
-        self.inner = Arc::new(inner);
-        self
-    }
-
-    /// Run delegates on the parent session's providers.
-    pub fn with_exec(mut self, exec: base::interface::exec::ExecProviders) -> Self {
-        let mut inner = (*self.inner).clone();
-        inner.exec = Some(exec);
-        self.inner = Arc::new(inner);
-        self
-    }
-
-    /// See `Inner::task_router` / `Inner::model_for_subagent`.
-    pub fn with_task_router(mut self, router: Arc<base::provider::TaskRouter>) -> Self {
-        let mut inner = (*self.inner).clone();
-        inner.task_router = Some(router);
         self.inner = Arc::new(inner);
         self
     }
@@ -436,24 +372,11 @@ impl AgentTool {
         self.inner.session_ended.set(ended);
     }
 
-    /// Attach the parent session's history store so sub-agent transcripts are
-    /// persisted — see `Inner::history_store`.
-    pub fn set_history_store(&self, store: Arc<dyn HistoryStore>) {
-        self.inner.history_store.set(Some(store));
-    }
-
     /// Record the parent `Agent`'s own session id, so sub-agents spawned
     /// from here can stamp `parent_session_id` on their own `Meta` line —
     /// see `Inner::parent_session_id`.
     pub fn set_parent_session_id(&self, id: String) {
         self.inner.parent_session_id.set(Some(id));
-    }
-
-    /// Record the parent `Agent`'s own telemetry handle, so sub-agents
-    /// spawned from here inherit it instead of getting `Builder::build()`'s
-    /// noop default — see `Inner::telemetry_handle`.
-    pub fn set_telemetry_handle(&self, handle: TelemetryHandle) {
-        self.inner.telemetry_handle.set(Some(handle));
     }
 
     /// Route sub-agent permission checks to the parent session's
@@ -492,19 +415,6 @@ impl AgentTool {
     /// `Inner::parent_scene`.
     pub fn set_scene(&self, scene: Arc<dyn Scene>) {
         self.inner.parent_scene.set(Some(scene));
-    }
-
-    /// Let an agent type's `scene:` id resolve against every scene the host
-    /// registered, not just the built-in four — see `Inner::scene_registry`.
-    pub fn set_scene_registry(&self, registry: Arc<scene::SceneRegistry>) {
-        self.inner.scene_registry.set(Some(registry));
-    }
-
-    /// Let sub-agents inherit an instruction file that the parent got from
-    /// `Builder::instruction_file(..)` rather than from settings.json
-    /// — see `settings_from_parent`.
-    pub fn set_instruction_file(&self, path: Option<std::path::PathBuf>) {
-        self.inner.instruction_file.set(path);
     }
 }
 

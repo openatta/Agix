@@ -176,7 +176,7 @@ impl crate::module::Module for ListsModules {
         cx: &mut crate::module::SessionContext<'_>,
     ) -> Result<(), crate::module::ModuleError> {
         let mut saw = self.saw.lock().unwrap();
-        saw.extend(cx.modules.iter().map(|m| format!("handed {}", m.id())));
+        saw.extend(cx.host.modules.iter().map(|m| format!("handed {}", m.id())));
         Ok(())
     }
 }

@@ -541,7 +541,7 @@ plan 模式的那一次调用)、`short_description`、`callable_from_code`、`c
 
 `Scene::modules()` / `Scene::disabled_modules()` 对模块做的事和 `tools()` 对工具做的一样:
 **只能减**。`Builder::build()` 在任何模块运行之前按 `Scene::permits_module` 过滤装配
-列表,`SessionContext::modules` 和子 agent 拿到的都是过滤后的那份。留下的模块 `requires`
+列表,`SessionContext::host` 里的 `modules` 和子 agent 拿到的都是过滤后的那份。留下的模块 `requires`
 一个被排除的模块时构建失败——依赖关系由模块声明,场景不能悄悄拆掉它。
 
 ### 3.7 声明式场景

@@ -85,7 +85,10 @@ fn model_for_subagent_routes_through_task_router_when_configured() {
         default_model,
     ));
 
-    let agent_tool = test_agent_tool().with_task_router(router);
+    let agent_tool = test_agent_tool().with_host(runtime::agent::HostContracts {
+        task_router: Some(router),
+        ..host_contracts()
+    });
     let picked = agent_tool.inner.model_for_subagent();
     assert!(Arc::ptr_eq(&picked, &routed_model));
     assert!(!Arc::ptr_eq(&picked, &agent_tool.inner.model));
@@ -103,7 +106,10 @@ fn model_for_subagent_falls_back_to_default_when_no_subagent_override() {
         router_default.clone(),
     ));
 
-    let agent_tool = test_agent_tool().with_task_router(router);
+    let agent_tool = test_agent_tool().with_host(runtime::agent::HostContracts {
+        task_router: Some(router),
+        ..host_contracts()
+    });
     let picked = agent_tool.inner.model_for_subagent();
     assert!(Arc::ptr_eq(&picked, &router_default));
     assert!(!Arc::ptr_eq(&picked, &agent_tool.inner.model));

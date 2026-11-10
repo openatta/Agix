@@ -78,7 +78,7 @@ impl Module for SkillsModule {
             manager,
             admission,
             cx.agent_spawner(),
-            cx.permission.clone(),
+            cx.host.permission.clone(),
         );
         Ok(())
     }
