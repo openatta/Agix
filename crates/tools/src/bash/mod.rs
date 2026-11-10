@@ -245,10 +245,7 @@ impl Tool for BashTool {
         let output = child.output().expect("the stream is taken once");
 
         let stop_reading = tokio_util::sync::CancellationToken::new();
-        let sink = Sink {
-            progress: progress.clone(),
-            task: task_scope.task().clone(),
-        };
+        let sink = Sink::new(progress.clone(), task_scope.task().clone());
         let mut drain = tokio::spawn(drain_output(output, sink, stop_reading.clone()));
 
         // A timeout is a result the model can read, not an error that throws

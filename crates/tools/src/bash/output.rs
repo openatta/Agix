@@ -1,6 +1,6 @@
 //! Turns a command's tagged output stream into per-pipe text: line splitting, caps and progress.
 
-use base::tool::ProgressSender;
+use base::tool::{ProgressSender, ProgressUpdate};
 use futures::StreamExt;
 
 /// 输出文本上限（防止一个 yes / cat /dev/random 把内存吃光）
@@ -88,18 +88,38 @@ impl Lines {
     }
 }
 
-/// Where each line goes as it arrives: the tool call's progress, and the
-/// task's own output (`TaskOutput`, a host's `session.taskOutput`).
+/// Where each line goes as it arrives: the tool call's progress (the line,
+/// and how many lines so far), and the task's own output (`TaskOutput`, a
+/// host's `session.taskOutput`).
 pub(super) struct Sink {
     pub(super) progress: ProgressSender,
     pub(super) task: std::sync::Arc<base::context::RunningTask>,
+    pub(super) lines: std::sync::atomic::AtomicU64,
 }
 
 impl Sink {
+    pub(super) fn new(
+        progress: ProgressSender,
+        task: std::sync::Arc<base::context::RunningTask>,
+    ) -> Self {
+        Self {
+            progress,
+            task,
+            lines: Default::default(),
+        }
+    }
+
     fn line(&self, line: &str) {
-        let line = format!("{line}\n");
-        self.progress.send(&line);
-        self.task.append_output(&line);
+        let seen = self
+            .lines
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+        self.progress.update(ProgressUpdate {
+            message: line.to_string(),
+            progress: Some(seen as f64),
+            total: None,
+        });
+        self.task.append_output(&format!("{line}\n"));
     }
 }
 
@@ -141,13 +161,13 @@ mod tests {
 
     #[test]
     fn a_cut_line_ends_on_a_character_boundary() {
-        let sink = Sink {
-            progress: ProgressSender::noop("t"),
-            task: std::sync::Arc::new(base::context::RunningTask::new(
+        let sink = Sink::new(
+            ProgressSender::noop("t"),
+            std::sync::Arc::new(base::context::RunningTask::new(
                 "t".into(),
                 base::context::TaskType::Shell,
             )),
-        };
+        );
         let mut lines = Lines::default();
         lines.feed("é".repeat(MAX_LINE_BYTES).as_bytes(), &sink);
         lines.feed(b"\nnext\n", &sink);

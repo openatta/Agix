@@ -38,6 +38,7 @@ mod session_lifecycle;
 mod session_provider;
 mod session_set_model;
 mod session_tasks;
+mod tool_progress;
 mod two_pools_one_process;
 mod wiring_coverage;
 mod ws_transport;
