@@ -5,7 +5,7 @@
 //! configured with or creates may show up in the other: not its sessions, not
 //! the skills its data root holds, not its scenes, not where its MCP OAuth
 //! tokens live. Process-wide state is what would break that, and
-//! `the_engine_keeps_no_new_process_wide_state` keeps more of it from arriving.
+//! `tests/guards/tests/process_state.rs` keeps more of it from arriving.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -209,109 +209,4 @@ async fn two_pools_in_one_process_see_nothing_of_each_other() {
         b.pool.mcp_auth().credential_dir(),
         "MCP OAuth tokens persist under each pool's own root"
     );
-}
-
-/// A `static` holding something that can change after it is first set is
-/// shared by every pool in the process. The ones that exist are listed here
-/// with the reason they may be process-wide; a new one fails this test until
-/// it is either moved onto the pool or added here with its reason.
-#[test]
-fn the_engine_keeps_no_new_process_wide_state() {
-    const ALLOWED: &[(&str, &str, &str)] = &[
-        ("crates/model/src/tokens.rs", "TokenCounter", "the default counter: a stateless estimator"),
-        ("crates/scene/src/code.rs", "SECTION_CACHE", "prompt sections keyed by a fingerprint of their inputs"),
-        ("crates/core/src/memory.rs", "PATTERNS", "compiled regexes"),
-        ("crates/core/src/dir_lock.rs", "LOCKS", "serialises the holders of a settings or memory directory within this process, which every session of every pool may share; flock covers other processes"),
-        ("crates/tools/src/bash/classify/mod.rs", "SUFFIXES", "a constant table"),
-        ("crates/mcp/src/manager.rs", "REGISTRY", "the official MCP registry: a constant"),
-        ("crates/platform/src/network.rs", "PROXIED", "an HTTP client; it reads the process environment's proxy, which every pool shares anyway"),
-        ("crates/platform/src/network.rs", "DIRECT", "an HTTP client with no per-pool configuration"),
-        ("crates/platform/src/network.rs", "PUBLIC_ONLY", "an HTTP client whose resolver refuses internal addresses; the only thing it reads is the process environment's proxy"),
-        ("crates/platform/src/sandbox.rs", "AVAILABLE", "whether this machine can sandbox at all"),
-        ("crates/platform/src/sandbox.rs", "SERVED", "the sockets and ports this process serves clients on, which no sandboxed child of any pool may reach, and the token files it writes for them, which none may read"),
-        ("crates/core/src/interface/exec/env.rs", "NAMED_CREDENTIALS", "variables holding a provider key, kept out of every child's environment: the environment children inherit is the process's, which every pool shares"),
-        ("crates/platform/src/orphans.rs", "ORPHANS", "the process groups this process leads: an OS resource of the process, which an aborting panic hook must reach in full"),
-        ("crates/assembly/src/telemetry_otel.rs", "PROCESS_EXPORTER", "the OpenTelemetry exporter installs process-wide providers; see assemble::pool"),
-        ("crates/core/src/interface/tool.rs", "DERIVING", "a per-thread stack of the tool types inside their default `spec()`, emptied before the call returns: it breaks the spec/old-method recursion and carries nothing between calls"),
-        ("crates/history/src/lock.rs", "HELD", "the session-log locks this process holds: an flock belongs to an open file, so every pool writing one state directory must share the one open file per log"),
-    ];
-
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    let mut found = Vec::new();
-    for dir in ["crates", "daemon/src"] {
-        visit(&root.join(dir), &root, &mut found);
-    }
-    let unexpected: Vec<_> = found
-        .into_iter()
-        .filter(|(file, line)| {
-            !ALLOWED
-                .iter()
-                .any(|(allowed, name, _why)| file == allowed && line.contains(name))
-        })
-        .collect();
-    assert!(
-        unexpected.is_empty(),
-        "process-wide mutable state, shared by every pool in the process:\n{}",
-        unexpected
-            .iter()
-            .map(|(file, line)| format!("  {file}: {line}"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    );
-}
-
-fn visit(dir: &std::path::Path, root: &std::path::Path, found: &mut Vec<(String, String)>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            if path.file_name().is_some_and(|n| n == "tests") {
-                continue;
-            }
-            visit(&path, root, found);
-            continue;
-        }
-        if !path.extension().is_some_and(|e| e == "rs") {
-            continue;
-        }
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let rel = path
-            .strip_prefix(root)
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .replace('\\', "/");
-        let code = &text[..test_code_start(&text).unwrap_or(text.len())];
-        for line in code.lines().map(str::trim) {
-            let is_static = line.starts_with("static ") || line.starts_with("pub static ");
-            let mutable = ["Mutex<", "RwLock<", "RefCell<", "OnceLock<", "OnceCell<"]
-                .iter()
-                .any(|cell| line.contains(cell));
-            if is_static && mutable {
-                found.push((rel.clone(), line.to_string()));
-            }
-        }
-    }
-}
-
-/// Where a file's test code starts: its first `#[cfg(test)]` that is not just
-/// declaring a test module kept in another file (`#[cfg(test)] mod tests;`),
-/// which split modules put near the top.
-fn test_code_start(text: &str) -> Option<usize> {
-    const MARK: &str = "#[cfg(test)]";
-    let mut from = 0;
-    while let Some(found) = text[from..].find(MARK) {
-        let at = from + found;
-        let next = text[at + MARK.len()..].trim_start();
-        let line = next.lines().next().unwrap_or("").trim();
-        let declares_a_file = line.starts_with("mod ") && line.ends_with(';');
-        if !declares_a_file {
-            return Some(at);
-        }
-        from = at + MARK.len();
-    }
-    None
 }
