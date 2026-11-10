@@ -779,7 +779,9 @@ skill 自己的 `allowed-tools` 这时还没生效,不能给自己的命令开�
 去掉 frontmatter 的正文 → `` !`cmd` `` → 参数替换 → 正文截到 8000 字符 → 接上 `files:`
 声明的参考文件。`allowed-tools` 授权到这一轮结束(fork 的子 Agent 有自己的 `Permission`,
 不受它影响);只写工具名的整类授权只认用户层 skill,项目层与插件包带来的 skill 必须写成
-`Tool(内容)`;未信任项目自己的 skill 什么都不授予(§6.6)。
+`Tool(内容)`,而且内容要真正收窄:第一个通配之前只有 `/`、`.`、`~` 或空白的(`Bash(*)`、
+`Write(**)`、`Edit(/**)`、`Bash(* --version)`,以及指向根、家目录、当前目录的 `Edit(/)`)与整类授权
+一样不给(`permissions::dangerous::is_unscoped_grant`);未信任项目自己的 skill 什么都不授予(§6.6)。
 
 ### 6.2 写路径的管控
 

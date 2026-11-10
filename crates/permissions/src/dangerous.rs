@@ -140,16 +140,33 @@ fn is_broad_allow(rule: &PermissionRule) -> Option<String> {
              of a powerful tool that can access any file or execute arbitrary commands",
             tool_name
         )),
-        Some(content) if content == "*" || content == "**" => Some(format!(
-            "Allow rule with wildcard '{content}' on {tool_name}: effectively permits \
-             unrestricted use, same as having no content restriction"
-        )),
-        Some(content) if content == "/**" || content == "**/*" => Some(format!(
-            "Allow rule with broad path wildcard '{content}' on {tool_name}: permits \
-             access to the entire filesystem through this tool"
+        Some(content) if is_unscoped_grant(Some(content)) => Some(format!(
+            "Allow rule with wildcard '{content}' on {tool_name}: nothing literal comes \
+             before its first wildcard, so it effectively permits unrestricted use, same \
+             as having no content restriction"
         )),
         _ => None,
     }
+}
+
+/// Whether a grant with this rule content reaches every call its tool can
+/// make: no content at all, or a pattern that matches from an empty prefix —
+/// nothing but `/`, `.`, `~` or blanks ahead of its first wildcard (`*`,
+/// `**`, `/**`, `~/**`, `* --version`, `:*`). A path without a wildcard
+/// covers the directory it names, so `/`, `~` and `.` are unscoped too.
+pub fn is_unscoped_grant(content: Option<&str>) -> bool {
+    let Some(content) = content else {
+        return true;
+    };
+    let literal = match content.strip_suffix(":*") {
+        Some(prefix) => prefix,
+        None => content
+            .find(['*', '?', '[', '{'])
+            .map_or(content, |wildcard| &content[..wildcard]),
+    };
+    literal
+        .trim_matches(|c: char| matches!(c, '/' | '.' | '~') || c.is_whitespace())
+        .is_empty()
 }
 
 /// Check if a Bash allow rule has a destructive subcommand prefix pattern.
@@ -365,6 +382,40 @@ mod tests {
             RuleSource::UserSettings,
         )]);
         assert!(dangers.is_empty());
+    }
+
+    #[test]
+    fn a_grant_is_unscoped_when_it_can_match_from_an_empty_prefix() {
+        for content in [
+            None,
+            Some("*"),
+            Some("**"),
+            Some("/**"),
+            Some("**/*"),
+            Some("~/**"),
+            Some("./**"),
+            Some("* --version"),
+            Some("?"),
+            Some("[a-z]*"),
+            Some("{a,b}"),
+            Some(":*"),
+            Some(" :*"),
+            Some("/"),
+            Some("~"),
+            Some("."),
+        ] {
+            assert!(is_unscoped_grant(content), "{content:?}");
+        }
+        for content in [
+            "git status:*",
+            "cargo test",
+            "src/**",
+            "/tmp/build/*",
+            "./build.sh",
+            "~/notes/**",
+        ] {
+            assert!(!is_unscoped_grant(Some(content)), "{content}");
+        }
     }
 
     #[test]

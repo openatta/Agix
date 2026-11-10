@@ -287,8 +287,10 @@ const SKILL_BODY_CHAR_CAP: usize = 8000;
 /// tool name switches off confirmation for every call to that tool, which is
 /// only safe from a skill the user put there. `<project>/.agents/skills/` is
 /// repository content — attacker-supplied on a cloned repo — and a plugin
-/// package is someone else's, so those only get grants that name a content
-/// pattern (`Bash(cargo test:*)`). A project skill gets none at all while
+/// package is someone else's, so those only get grants that narrow the tool
+/// to a content pattern (`Bash(cargo test:*)`) — not one that matches from an
+/// empty prefix (`Bash(*)`, `Write(**)`, see
+/// `permissions::dangerous::is_unscoped_grant`). A project skill gets none at all while
 /// the project is not trusted (`ctx.config.project_untrusted`).
 pub async fn expand_for_invocation(
     manager: &crate::manager::SkillManager,
@@ -336,13 +338,14 @@ pub async fn expand_for_invocation(
         .flatten()
         .filter_map(|entry| {
             let (tool_name, rule_content) = split_allowed_tool_entry(entry);
-            if rule_content.is_none() && restricted {
+            if restricted && permissions::dangerous::is_unscoped_grant(rule_content) {
                 tracing::warn!(
                     skill = %info.name,
                     source = info.source.as_str(),
                     tool = %tool_name,
                     "ignoring a blanket `allowed-tools` grant from a project or plugin skill; \
-                     scope it as `Tool(pattern)` to have it honored"
+                     scope it as `Tool(pattern)` with literal text ahead of any wildcard \
+                     to have it honored"
                 );
                 return None;
             }
@@ -1233,6 +1236,41 @@ mod tests {
             scoped,
             "only the project's own skills wait for trust"
         );
+    }
+
+    /// `Bash(*)` names content, but its `*` matches every command — the same
+    /// blanket grant as a bare `Bash`.
+    #[tokio::test]
+    async fn a_wildcard_grant_from_a_project_or_plugin_skill_is_refused() {
+        let grants = |source: FrozenSkillSource| async move {
+            let mgr = crate::manager::SkillManager::new();
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("wild.md");
+            std::fs::write(&path, "Anything goes.").unwrap();
+            mgr.register_bundled(SkillEntry {
+                name: "wild".into(),
+                description: "wild".into(),
+                source,
+                path,
+                allowed_tools: Some(vec![
+                    "Bash(*)".into(),
+                    "Write(**)".into(),
+                    "Edit(/**)".into(),
+                    "Bash(cargo test:*)".into(),
+                ]),
+                ..Default::default()
+            });
+            let info = mgr.list().into_iter().find(|s| s.name == "wild").unwrap();
+            let ctx = platform::tool_context_for_test(dir.path().to_path_buf());
+            expand_for_invocation(&mgr, &info, "", &ctx, None)
+                .await
+                .unwrap()
+                .grants
+        };
+        let scoped = vec![("Bash".to_string(), Some("cargo test:*".to_string()))];
+        assert_eq!(grants(FrozenSkillSource::Project).await, scoped);
+        assert_eq!(grants(FrozenSkillSource::Plugin).await, scoped);
+        assert_eq!(grants(FrozenSkillSource::User).await.len(), 4);
     }
 
     /// A plugin package is someone else's code just the same.

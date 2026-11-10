@@ -1379,6 +1379,11 @@ WebAssembly 载体整个移除。
   (`config.setProvider` 的 key、MCP headers)或录遥测时,没有 `.agix/.gitignore` 就生成一份,写着
   `settings.local.json`、`mcp.local.json`、`telemetry/`。已有的不动,缺的行也不补:以前就有
   `.agix/.gitignore` 的项目自己核对一下这三项(§8)。
+- **项目与插件 skill 的 `allowed-tools` 不再能用通配授权一切。** 以前只拒绝只写工具名的整类授权,
+  `Bash(*)`、`Write(**)`、`Edit(/**)` 带了内容就照给,已信任项目或插件里的一个 skill 就能让任意
+  `Bash` 免询问;现在第一个通配之前只有 `/`、`.`、`~` 或空白的内容(连同 `Edit(/)` 这类指向根、
+  家目录、当前目录的)与整类授权一样不给,记一条 warn。用户层 skill 不受影响。靠这类写法免询问的
+  项目 / 插件 skill,改写成真正收窄的 `Bash(cargo test:*)`、`Write(src/**)`。
 
 #### hooks
 

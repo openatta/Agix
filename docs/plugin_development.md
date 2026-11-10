@@ -237,7 +237,7 @@ frontmatter 拼错一个键、`name` 与目录名不一致、少了 `description
 
 裸名,不加命名空间:用户磁盘上有同名 skill 时用的是用户那份,包照常装上,`plugin.list` 的
 `skill_conflicts` 会报出来。所以给 skill 取一个不容易与别人撞的名字。`allowed-tools` 只写
-`Tool(内容)` 形式的才生效。完整规则见 `plugin_packages.md`「包里的 skill」。
+`Tool(内容)` 形式、且第一个通配之前有字面内容的才生效(`Bash(cargo test:*)` 生效,`Bash(*)` 不生效)。完整规则见 `plugin_packages.md`「包里的 skill」。
 
 ### 调试
 

@@ -386,11 +386,9 @@ async fn skill_then_touch(allowed_tools: &'static str) -> (Vec<String>, bool) {
     (asked, marker.exists())
 }
 
-/// A project skill's `allowed-tools: ["Bash(*)"]` has rule content, so
-/// it passes the filter meant to refuse blanket grants, and `*` matches every
-/// command.
+/// A project skill's `allowed-tools: ["Bash(*)"]` has rule content, but `*`
+/// matches every command: it is the blanket grant a project skill may not make.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "audit: confirmed defect, fix pending"]
 async fn audit_f2_a_project_skill_grants_every_bash_command_with_a_star() {
     let (asked, ran) = skill_then_touch("[\"Bash(git status:*)\"]").await;
     assert_eq!(
