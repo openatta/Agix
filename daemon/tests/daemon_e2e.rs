@@ -264,6 +264,70 @@ async fn a_notification_gets_no_response() {
     let _ = handle.await;
 }
 
+#[tokio::test]
+async fn a_line_that_is_not_json_gets_a_parse_error_and_the_connection_goes_on() {
+    let (_server, sock, _dir, handle) = start_server().await;
+    let mut client = UnixStream::connect(&sock).await.unwrap();
+    client.write_all(b"this is not json\n").await.unwrap();
+    client
+        .write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"daemon.status\",\"id\":9}\n")
+        .await
+        .unwrap();
+    let (r, _w) = client.split();
+    let mut lines = BufReader::new(r);
+
+    let mut first = String::new();
+    lines.read_line(&mut first).await.unwrap();
+    let v: serde_json::Value = serde_json::from_str(&first).unwrap();
+    assert_eq!(
+        v,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": null,
+            "error": { "code": -32700, "message": "Parse error" }
+        })
+    );
+
+    let mut second = String::new();
+    lines.read_line(&mut second).await.unwrap();
+    let v: serde_json::Value = serde_json::from_str(&second).unwrap();
+    assert_eq!(v["id"], 9, "the connection still serves requests: {v}");
+    assert!(v.get("result").is_some(), "{v}");
+
+    _server.shutdown_token().cancel();
+    let _ = handle.await;
+}
+
+#[tokio::test]
+async fn doctor_lists_the_safety_posture_checks() {
+    let (_server, sock, _dir, handle) = start_server().await;
+    let resp = rpc_call(
+        &sock,
+        r#"{"jsonrpc":"2.0","method":"daemon.doctor","id":1}"#,
+    )
+    .await;
+    let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    let names: Vec<&str> = v["result"]["health"]["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c["name"].as_str())
+        .collect();
+    for expected in [
+        "settings.permission_mode",
+        "settings.hooks_fail_open",
+        "build.panic",
+    ] {
+        assert!(
+            names.contains(&expected),
+            "{expected} missing from {names:?}"
+        );
+    }
+
+    _server.shutdown_token().cancel();
+    let _ = handle.await;
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn unix_socket_is_owner_only() {

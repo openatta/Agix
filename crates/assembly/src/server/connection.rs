@@ -37,7 +37,12 @@ impl DaemonServer {
         while let Some(line) = lines.next_frame().await {
             let req: RpcRequest = match serde_json::from_str(&line) {
                 Ok(r) => r,
-                Err(_) => continue,
+                Err(e) => {
+                    if let Some(frame) = parse_error_frame(&e) {
+                        send_frame(&client, &frame).await;
+                    }
+                    continue;
+                }
             };
             self.clone().serve_request(req, &client, &in_flight);
         }
@@ -84,5 +89,33 @@ impl DaemonServer {
             }
             drop(permit);
         });
+    }
+}
+
+/// The reply to a line that is not JSON at all. Valid JSON of the wrong shape
+/// (no `method`) is still dropped without an answer.
+pub(crate) fn parse_error_frame(e: &serde_json::Error) -> Option<RpcResponse> {
+    (e.classify() != serde_json::error::Category::Data)
+        .then(|| RpcResponse::err(serde_json::Value::Null, codes::PARSE_ERROR, "Parse error"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn garbage_gets_a_parse_error_and_a_request_without_method_does_not() {
+        let garbage = serde_json::from_str::<RpcRequest>("{not json").unwrap_err();
+        let frame = parse_error_frame(&garbage).unwrap();
+        let v = serde_json::to_value(frame).unwrap();
+        assert_eq!(v["jsonrpc"], "2.0");
+        assert_eq!(v["id"], serde_json::Value::Null);
+        assert_eq!(v["error"]["code"], -32700);
+        assert_eq!(v["error"]["message"], "Parse error");
+
+        let truncated = serde_json::from_str::<RpcRequest>("{\"id\":1").unwrap_err();
+        assert!(parse_error_frame(&truncated).is_some());
+        let no_method = serde_json::from_str::<RpcRequest>("{\"id\":1}").unwrap_err();
+        assert!(parse_error_frame(&no_method).is_none());
     }
 }

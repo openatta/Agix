@@ -115,7 +115,11 @@ fork 型 skill 要 agents 提供的 spawner。委派出去的子会话用父会�
 
 `release` profile(fat LTO、`opt-level = "s"`、`panic = "abort"`)在 panic 时中止进程,
 由 supervisor 拉起;只有明确要 `release-fast`(`opt-level = 3`、`panic = "unwind"`)时
-才展开,任务里的 panic 只结束那个任务;工具调用里的 panic 变成这次调用的错误结果,这一轮照常往下走。中止前 panic hook 停掉
+才展开,任务里的 panic 只结束那个任务;工具调用里的 panic 变成这次调用的错误结果,这一轮照常往下走。
+也就是说,**`release` 构建里这层兜底不生效**:一个工具 panic 会带走整个进程和它上面所有会话,
+不是只带走这一次调用。这是有意的取舍(`release` 要小、要快,崩了由 supervisor 拉起、会话从日志恢复),
+不想要的部署用 `release-fast`,或者保证工具代码不 panic。`daemon.doctor` 的 `build.panic` 一项
+报告这个构建是哪一种。中止前 panic hook 停掉
 命令所在的进程组并写崩溃记录(`~/.agix/daemon/crashes/`);来不及跑 hook 的(SIGKILL、
 OOM)由同名实例下次启动、拿到锁之后按落盘的进程组记录(`~/.agix/daemon/groups/`)
 清理:先 `SIGTERM`,500 ms 后 `SIGKILL`。会话历史每个条目整行写进日志,每一步结束和

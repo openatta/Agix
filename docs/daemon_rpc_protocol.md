@@ -77,9 +77,11 @@ TCP 与 WebSocket 都要求 `--token` 或 `AGIX_DAEMON_TOKEN`;没有 token 时�
 
 `result` 与 `error` 互斥,恰有其一。
 
-**解析不了的帧被静默丢弃**:一行不是合法 JSON、或者缺 `method`,服务端跳过这一行
-继续读下一行,不回任何响应。所以客户端不会看到 `PARSE_ERROR` / `INVALID_REQUEST` ——
-这两个常量在代码里定义了,但没有任何路径发出它们(§9)。
+**一行不是合法 JSON**:服务端回一帧
+`{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}`
+(`PARSE_ERROR`;`id` 是 `null`,因为读不出请求的 id),连接不断,继续读下一行。
+**合法 JSON 但缺 `method`** 的帧仍被静默丢弃,不回任何响应——`INVALID_REQUEST`
+没有任何路径发出(§9)。WebSocket 的文本消息同理。
 
 ---
 
@@ -2634,9 +2636,9 @@ transcript,这一轮以 `ENGINE_ERROR` 结束,不会重发。
 | -32021 | MCP_AUTH_FAILED | `mcp.auth.*`:授权服务器或登录本身失败——发现、注册、PKCE、回调 `state` 不符、换令牌;`message` 可以直接给用户看 |
 | -32022 | PROJECT_UNTRUSTED | `mcp.addServer` / `mcp.updateServer` / `config.setProvider`:目标项目未被信任(§3.6),写进它项目层的 server / provider 不会生效,所以什么都没写 |
 
-还有两个常量在代码里定义了但**没有任何路径会发出**,客户端不必为它们写分支:
-`PARSE_ERROR (-32700)` / `INVALID_REQUEST (-32600)`(解析不了的帧被静默丢弃,见
-§1)。`-32001` 保留不用:会话数到顶时驱逐最久未用的空闲会话,不拒绝新建。
+还有一个常量在代码里定义了但**没有任何路径会发出**,客户端不必为它写分支:
+`INVALID_REQUEST (-32600)`(缺 `method` 的帧被静默丢弃,见 §1);`PARSE_ERROR (-32700)`
+只在一行不是合法 JSON 时回,`id` 为 `null`。`-32001` 保留不用:会话数到顶时驱逐最久未用的空闲会话,不拒绝新建。
 
 ### 9.1 `error.data` 的形状
 

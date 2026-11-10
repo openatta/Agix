@@ -12,6 +12,7 @@
 //! report rather than in a second endpoint.
 
 use crate::config::DaemonPaths;
+use crate::doctor_posture;
 use base::interface::health::{CheckResult, HealthCheck, HealthChecks};
 use base::interface::settings::Settings;
 use std::path::{Path, PathBuf};
@@ -363,7 +364,14 @@ pub fn run_doctor(
         .with(Arc::new(SettingsTiersCheck::new(paths, &settings)))
         .with(Arc::new(ProviderRoutingCheck::new(settings.clone())))
         .with(Arc::new(HooksCheck::new(settings.clone())))
-        .with(Arc::new(MemoryCheck::new(settings.clone())));
+        .with(Arc::new(MemoryCheck::new(settings.clone())))
+        .with(Arc::new(doctor_posture::PermissionModeCheck::new(
+            settings.clone(),
+        )))
+        .with(Arc::new(doctor_posture::HooksFailOpenCheck::new(
+            settings.clone(),
+        )))
+        .with(Arc::new(doctor_posture::PanicStrategyCheck));
     for check in extra.checks() {
         checks = checks.with(check.clone());
     }
@@ -715,11 +723,14 @@ mod tests {
                 "settings.providers",
                 "settings.hooks",
                 "memory",
+                "settings.permission_mode",
+                "settings.hooks_fail_open",
+                "build.panic",
                 "acme.licence"
             ]
         );
         assert_eq!(
-            report["health"]["checks"][4]["details"]["last_ok"],
+            report["health"]["checks"][7]["details"]["last_ok"],
             "2026-08-30T11:00:00Z"
         );
     }

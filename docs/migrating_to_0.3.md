@@ -1278,3 +1278,13 @@ WebAssembly 载体整个移除。
 - 插件缺省不再自动加载,要用的显式启用。分两步:0.3.11 起提供 `plugins.enable_on_install`(缺省 `true`,行为不变),之后再翻缺省。
 - `sandbox.unattended_requires_network_policy` 缺省改为 `true`:无人值守会话里 `Bash` 与 `Monitor` 的"沙箱完整生效即自动放行"另外要求 `sandbox.network_mode` 不是 `unrestricted`(见"权限与沙箱")。分两步:0.3.11 起 `daemon.doctor` 对"无人值守 + 网络 unrestricted + 开关关着"告警,之后再翻缺省。
 - `session.create` / `session.run_turn` / `session.resume` 的 `options` 严格解析:不认识的字段、读不出来的值报 `INVALID_PARAMS`,不再被忽略。分两步:0.3.11 起 `permission_rules` 里一条坏规则只丢那一条(不再连累整个字段),并提供 opt-in 的严格解析,之后再缺省严格。现在就把 `result.ignored_options` 当错误处理。
+
+## 0.3.10 之后:到 0.3.11
+
+### RPC 客户端
+
+- **新增帧:一行不是合法 JSON 时,服务端回
+  `{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}`**
+  (unix socket、TCP、WebSocket 都是),连接不断。以前这样的行被静默丢弃。宿主的读循环要容得下
+  一个 `id` 为 `null` 的错误帧(它不对应任何在途请求);缺 `method` 的合法 JSON 仍然不回。
+

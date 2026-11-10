@@ -205,8 +205,14 @@ async fn handle(server: Arc<DaemonServer>, stream: TcpStream) -> anyhow::Result<
             Message::Close(_) => break,
             _ => continue,
         };
-        let Ok(req) = serde_json::from_str::<RpcRequest>(&text) else {
-            continue;
+        let req = match serde_json::from_str::<RpcRequest>(&text) {
+            Ok(req) => req,
+            Err(e) => {
+                if let Some(frame) = crate::server::parse_error_frame(&e) {
+                    send_frame(&client, &frame).await;
+                }
+                continue;
+            }
         };
         // Served on its own task — a browser tab holds one socket for
         // everything, so a turn that occupied the read loop would make its

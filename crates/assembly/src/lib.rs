@@ -14,6 +14,7 @@ pub mod assemble;
 pub mod config;
 pub mod discovery;
 pub mod doctor;
+pub mod doctor_posture;
 pub mod export;
 pub mod model_router;
 pub mod modules;
