@@ -1202,7 +1202,10 @@ fn write_line(path: &Path, line: &[u8], known_len: Option<u64>) -> Result<u64, H
     if Some(f.metadata()?.len()) != known_len {
         end_on_a_line_break(&mut f, path)?;
     }
+    #[cfg(not(test))]
     f.write_all(line)?;
+    #[cfg(test)]
+    crash_tests::mid_write::write_all(&mut f, path, line)?;
     f.flush()?;
     Ok(f.metadata()?.len())
 }
@@ -1374,9 +1377,8 @@ impl HistoryStore for JsonlHistoryStore {
         entry: LogEntry,
         tags: crate::entry::EntryTags,
     ) -> Result<(), HistoryError> {
-        let _writer = self.writer_lock(session).await?;
-        let log = self.log_of(session);
-        let mut log = log.lock().await;
+        let writer = self.writer_lock(session).await?;
+        let mut log = self.log_of(session).lock_owned().await;
 
         // A `Meta` line is where a session says which project it belongs to,
         // so it is also where that gets recorded — in the map for this
@@ -1419,9 +1421,15 @@ impl HistoryStore for JsonlHistoryStore {
         let mut line = serde_json::to_vec(&enveloped)?;
         line.push(b'\n');
 
-        let known_len = log.len_after_last_append.take();
-        log.len_after_last_append =
-            Some(blocking(move || write_line(&path, &line, known_len)).await?);
+        // The locks go into the write and come back out of it: a caller that
+        // gives up while the line is going down drops only this future, and
+        // the next append must not get in before the line is whole.
+        let (_writer, _log) = blocking(move || {
+            let known_len = log.len_after_last_append.take();
+            log.len_after_last_append = Some(write_line(&path, &line, known_len)?);
+            Ok((writer, log))
+        })
+        .await?;
 
         // After the log, and never in front of it. The transcript is the
         // record; these are a convenience computed from it, so a sidecar that
@@ -1479,17 +1487,19 @@ impl HistoryStore for JsonlHistoryStore {
     /// throughout so no other process can start writing in between.
     async fn delete(&self, session: SessionId) -> Result<(), HistoryError> {
         let writer = self.writer_lock(session).await?;
-        let log = self.log_of(session);
-        let mut log = log.lock().await;
+        let mut log = self.log_of(session).lock_owned().await;
         let jsonl_path = self.session_path_of(session).await;
-        match tokio::fs::remove_file(&jsonl_path).await {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(HistoryError::Io(e)),
-        }
-        log.len_after_last_append = None;
         let sidecar = session_sidecar_dir(&self.sessions_root, &session);
-        blocking(move || writer.remove_sidecar(&sidecar).map_err(HistoryError::Io)).await?;
+        blocking(move || {
+            match std::fs::remove_file(&jsonl_path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(HistoryError::Io(e)),
+            }
+            log.len_after_last_append = None;
+            writer.remove_sidecar(&sidecar).map_err(HistoryError::Io)
+        })
+        .await?;
         self.homes.lock().await.remove(&session);
         self.synced_dirs.lock().await.remove(&session);
         Ok(())
@@ -4443,5 +4453,99 @@ mod crash_tests {
         );
         drop(claim);
         assert!(lock_elsewhere(&lock_path).is_some());
+    }
+
+    /// Stops one log's next line halfway onto the disk until the test lets
+    /// it finish.
+    pub(crate) mod mid_write {
+        use std::collections::HashMap;
+        use std::path::{Path, PathBuf};
+        use std::sync::{mpsc, LazyLock, Mutex};
+
+        pub(crate) struct Pause {
+            pub(crate) entered: mpsc::SyncSender<()>,
+            pub(crate) release: mpsc::Receiver<()>,
+            pub(crate) finished: mpsc::SyncSender<()>,
+        }
+
+        static ARMED: LazyLock<Mutex<HashMap<PathBuf, Pause>>> = LazyLock::new(Default::default);
+
+        pub(crate) fn arm(path: &Path, pause: Pause) {
+            ARMED.lock().unwrap().insert(path.to_path_buf(), pause);
+        }
+
+        pub(crate) fn write_all(
+            file: &mut std::fs::File,
+            path: &Path,
+            line: &[u8],
+        ) -> std::io::Result<()> {
+            use std::io::Write;
+            let Some(pause) = ARMED.lock().unwrap().remove(path) else {
+                return file.write_all(line);
+            };
+            let (head, rest) = line.split_at(line.len() / 2);
+            file.write_all(head)?;
+            file.flush()?;
+            pause.entered.send(()).unwrap();
+            pause.release.recv().unwrap();
+            file.write_all(rest)?;
+            let _ = pause.finished.send(());
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn an_append_given_up_mid_write_finishes_its_line_before_the_next_append() {
+        use std::sync::mpsc;
+        let root = TempDir::new().unwrap();
+        let store = Arc::new(store_in(&root).await);
+        let s = SessionId::new();
+        store.append(s, user("one")).await.unwrap();
+        let path = store.session_path_of(s).await;
+
+        let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::sync_channel(1);
+        mid_write::arm(
+            &path,
+            mid_write::Pause {
+                entered: entered_tx,
+                release: release_rx,
+                finished: finished_tx,
+            },
+        );
+        let giving_up = store.clone();
+        let two = tokio::spawn(async move { giving_up.append(s, user("two")).await });
+        tokio::task::spawn_blocking(move || entered_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        two.abort();
+        assert!(two.await.unwrap_err().is_cancelled());
+
+        // A lock let go mid-write lets the next append run to its end while
+        // the half-written line waits; a lock still held makes it wait.
+        if store.log_of(s).try_lock().is_ok() {
+            store.append(s, user("three")).await.unwrap();
+            release_tx.send(()).unwrap();
+        } else {
+            release_tx.send(()).unwrap();
+            store.append(s, user("three")).await.unwrap();
+        }
+        tokio::task::spawn_blocking(move || finished_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let texts: Vec<String> = raw
+            .lines()
+            .map(|line| {
+                let env = serde_json::from_str::<EnvelopedEntry>(line)
+                    .unwrap_or_else(|e| panic!("a broken line in the log: {line:?}: {e}"));
+                text_of(&env)
+            })
+            .collect();
+        assert_eq!(texts, ["one", "two", "three"]);
     }
 }
