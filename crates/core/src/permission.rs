@@ -19,7 +19,7 @@ pub enum PermissionMode {
     Bubble,
 }
 
-/// `interface::settings::PermissionMode` (serde/JSON-schema-facing, what
+/// `settings::PermissionMode` (serde/JSON-schema-facing, what
 /// `Settings`/RPC params deserialize into) and this `PermissionMode`
 /// (what `PermissionGate` actually dispatches on) are two distinct types
 /// with identical variant sets.

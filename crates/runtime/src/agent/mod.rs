@@ -1,11 +1,11 @@
 //! Engine struct and builder — the central AGENT orchestrator.
 
-use base::interface::event::AgentEvent;
-use base::interface::memory::MemoryStore;
+use base::event::AgentEvent;
 use base::interface::model::Model;
 use base::interface::permission::Permission;
 use base::interface::scene::Scene;
-use base::interface::settings::Settings;
+use base::memory::MemoryStore;
+use base::settings::Settings;
 use base::tool::InMemoryToolRegistry;
 use compaction::cached::CachedMicroCompact;
 use compaction::compact::{Compactor, DefaultCompactor};

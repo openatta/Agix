@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use base::event::AgentEvent;
 use base::interface::scene::Scene;
-use base::interface::settings::*;
+use base::settings::*;
 use base::tool::{InMemoryToolRegistry, Tool};
 use model::adapter::AnthropicModel;
 use model::client::{AuthMode, HttpAnthropicClient};

@@ -9,10 +9,10 @@ use base::interface::model::{
     MessageRole, Model, ModelContentBlock, ModelError, ModelEvent, ModelMessage, ModelStream,
     StreamParams, ToolDef, Usage,
 };
-use base::interface::prompt::{CacheStrategy, PromptBlock};
-use base::interface::settings::ThinkingMode;
 use base::message::{CacheEdit, ContentBlock, Role};
+use base::prompt::{CacheStrategy, PromptBlock};
 use base::provider::ApiType;
+use base::settings::ThinkingMode;
 use futures::StreamExt;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;

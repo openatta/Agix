@@ -3,7 +3,7 @@
 use super::prompt::open_conversation_with_user_blocks;
 use crate::agent::Agent;
 use base::interface::model::{MessageRole, ModelContentBlock, ModelMessage, ModelStream, ToolDef};
-use base::interface::prompt::PromptBlock;
+use base::prompt::PromptBlock;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;

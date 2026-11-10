@@ -57,7 +57,7 @@ pub(crate) struct SubRun {
     pub(super) deny_rules: Vec<base::permission::PermissionRule>,
     pub(super) output_schema: Option<Value>,
     /// A mode the caller asked for (a team's), held to the parent's.
-    pub(super) permission_mode: Option<base::interface::settings::PermissionMode>,
+    pub(super) permission_mode: Option<base::settings::PermissionMode>,
     /// A `TeamCreate` member, whose spawn and completion the team
     /// coordinator records with its stage.
     pub(super) team_member: bool,

@@ -10,10 +10,10 @@
 //! every turn.
 
 use crate::common;
-use base::interface::prompt::{CacheStrategy, PromptBlock};
 use base::interface::scene::{
     ExecutionParams, ReminderContext, Scene, ScenePromptContext, TokenBudget,
 };
+use base::prompt::{CacheStrategy, PromptBlock};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Mutex, OnceLock};
@@ -326,7 +326,7 @@ fn render_prompt_blocks(sections: Vec<ResolvedSection>) -> Vec<PromptBlock> {
         match s.phase {
             SectionPhase::Static => {
                 out.push(PromptBlock {
-                    role: base::interface::prompt::BlockRole::System,
+                    role: base::prompt::BlockRole::System,
                     content: s.text,
                     cache_strategy: Some(CacheStrategy::Global),
                     name: Some(s.name.to_string()),
@@ -342,7 +342,7 @@ fn render_prompt_blocks(sections: Vec<ResolvedSection>) -> Vec<PromptBlock> {
     let d = dynamic_texts.join("\n\n");
     if !d.is_empty() {
         out.push(PromptBlock {
-            role: base::interface::prompt::BlockRole::System,
+            role: base::prompt::BlockRole::System,
             content: d,
             cache_strategy: Some(CacheStrategy::Ephemeral),
             name: Some(dynamic_names.join(",")),

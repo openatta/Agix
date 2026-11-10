@@ -5,8 +5,7 @@
 //! least one trait the engine holds as a `dyn` object.** Data types,
 //! configuration and concrete stores live at the crate root instead
 //! (`base::settings`, `base::event`, `base::prompt`, `base::memory`,
-//! `base::rules`); their `base::interface::*` paths still resolve via the
-//! re-exports below.
+//! `base::rules`).
 //!
 //! # What is reachable from here, and what is not
 //!
@@ -65,21 +64,18 @@
 
 pub mod agent_spawner;
 pub mod backoff;
+pub mod budget_policy;
 pub mod catalog;
 pub mod config_source;
 pub mod credentials;
 pub mod elicitation;
+pub mod environment;
 pub mod event_sink;
+pub mod exec;
 pub mod health;
-#[deprecated(note = "moved to `base::event` — event payloads, not an injectable contract")]
-pub use crate::event;
 pub mod import_callback;
 pub mod instruction_provider;
-#[deprecated(note = "moved to `base::memory` — a concrete store, not an injectable contract")]
-pub use crate::memory;
-pub mod budget_policy;
-pub mod environment;
-pub mod exec;
+pub mod mcp_servers;
 pub mod memory_contracts;
 pub mod model;
 pub mod model_factory;
@@ -90,11 +86,6 @@ pub mod prompt_assembly;
 pub mod prompt_middleware;
 pub mod prompt_registry;
 pub mod recovery_policy;
-#[deprecated(note = "moved to `base::prompt` — prompt data types and the assembler function")]
-pub use crate::prompt;
-#[deprecated(note = "moved to `base::rules` — this module defines no extension contract")]
-pub use crate::rules;
-pub mod mcp_servers;
 pub mod scene;
 pub mod script;
 pub mod script_adapters;
@@ -106,19 +97,3 @@ pub mod tool_dispatch;
 pub mod tool_middleware;
 pub mod tool_result;
 pub mod turn_policy;
-#[deprecated(note = "moved to `base::settings` — declarative configuration types")]
-pub use crate::settings;
-
-/// Nothing in this repo imports through the deprecated re-exports above, so
-/// only a check like this notices if one is dropped. `use` resolves at compile
-/// time, which is the whole assertion.
-#[cfg(test)]
-#[allow(deprecated, unused_imports)]
-mod old_paths_still_resolve {
-    use crate::interface::event::AgentEvent;
-    use crate::interface::memory::MemoryStore;
-    use crate::interface::prompt::PromptBlock;
-    use crate::interface::rules::RuleEntry;
-    use crate::interface::settings::Settings;
-    use crate::tool::{Tool, ToolRegistry};
-}

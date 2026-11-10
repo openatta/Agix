@@ -41,7 +41,7 @@ impl Model for ProbeThenTextModel {
     }
     async fn stream(
         &self,
-        _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+        _prompt_blocks: Vec<base::prompt::PromptBlock>,
         _tools: Vec<base::interface::model::ToolDef>,
         _messages: Vec<ModelMessage>,
         _params: base::interface::model::StreamParams,
@@ -701,10 +701,9 @@ async fn a_team_member_is_judged_by_the_parents_rules() {
     ));
     let agent_tool = test_agent_tool();
     agent_tool.set_parent_permission(parent);
-    let member = agent_tool.inner.team_member_permission(
-        &registry,
-        base::interface::settings::PermissionMode::BypassPermissions,
-    );
+    let member = agent_tool
+        .inner
+        .team_member_permission(&registry, base::settings::PermissionMode::BypassPermissions);
     member.bind_tool_registry(registry);
     member.bind_session_state(Arc::new(
         base::context::SessionState::new(project.path().to_path_buf())

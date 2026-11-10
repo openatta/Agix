@@ -15,15 +15,15 @@
 use anyhow::anyhow;
 use async_trait::async_trait;
 use base::context::EngineConfig;
-use base::interface::event::AgentEvent;
+use base::event::AgentEvent;
 use base::interface::model::Model;
 use base::interface::permission::Permission;
 use base::interface::scene::Scene;
-use base::interface::settings::{
+use base::paths::PromptFiles;
+use base::settings::{
     Effort, ExecutionSettings, ModelSettings, PathSettings, PermissionMode, SandboxConfig,
     Settings, ThinkingMode,
 };
-use base::paths::PromptFiles;
 use base::tool::ProgressSender;
 use base::tool::ToolContext;
 use base::tool::ToolResultContent;
@@ -101,7 +101,7 @@ pub struct AgentInput {
     // answer per-call prompts (see `AgentTool::build_team_member_agent`), and
     // `bubble` needs that lead.
     #[serde(default)]
-    pub permission_mode: Option<base::interface::settings::PermissionMode>,
+    pub permission_mode: Option<base::settings::PermissionMode>,
 }
 
 pub struct AgentTool {
@@ -549,7 +549,7 @@ impl base::tool::Tool for AgentTool {
                 }
                 if matches!(
                     inp.permission_mode,
-                    Some(base::interface::settings::PermissionMode::Bubble)
+                    Some(base::settings::PermissionMode::Bubble)
                 ) {
                     return Err(base::error::ToolError::Validation(
                         "permission_mode: \"bubble\" is not valid here — it needs an available \

@@ -38,7 +38,7 @@
 use base::interface::model::{
     Model, ModelError, ModelEvent, ModelMessage, ModelStream, StreamParams, ToolDef, Usage,
 };
-use base::interface::prompt::PromptBlock;
+use base::prompt::PromptBlock;
 use base::provider::ApiType;
 use serde_json::Value;
 use std::sync::{Arc, Mutex};

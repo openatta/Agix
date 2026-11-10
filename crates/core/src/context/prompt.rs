@@ -120,32 +120,3 @@ impl std::fmt::Debug for ToolCtx {
             .finish()
     }
 }
-
-/// 给 Tool::prompt() 用的"组装期"上下文 —— 拼工具描述时知道有哪些其它工具 / agent。
-///
-/// 与 ToolCtx 不同：**没有** session / effects；纯静态信息。
-#[derive(Clone)]
-#[deprecated(note = "use base::tool::PromptContext")]
-pub struct PromptCtx {
-    /// 当前会话允许的所有工具（Tool 之间相互引用，如 AgentTool 列出可被 spawn 的 agent）
-    pub all_tool_names: Vec<String>,
-    /// 当前会话允许的 agent 类型
-    pub allowed_agent_types: Vec<String>,
-}
-
-#[allow(deprecated)]
-impl PromptCtx {
-    pub fn empty() -> Self {
-        Self {
-            all_tool_names: Vec::new(),
-            allowed_agent_types: Vec::new(),
-        }
-    }
-}
-
-#[allow(deprecated)]
-impl Default for PromptCtx {
-    fn default() -> Self {
-        Self::empty()
-    }
-}

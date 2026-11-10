@@ -11,7 +11,7 @@ use super::tool_exec::{execute_tool_with_telemetry, ToolExecCtx};
 use super::tool_result::{attach_tool_result_images, PendingToolImage};
 use super::{TurnError, TurnOutcome};
 use crate::agent::Agent;
-use base::interface::event::AgentEvent;
+use base::event::AgentEvent;
 use base::interface::model::{MessageRole, ModelContentBlock, ModelMessage, Usage};
 use base::interface::prompt_middleware::PromptDelivery;
 use std::collections::HashSet;
@@ -263,7 +263,7 @@ impl Agent {
         // Memory prefetch: fire LLM-based relevant memory selection as a
         // background task. The handle aborts it when dropped, so a recall that
         // misses its budget stops spending on the selection call.
-        type Recall = (Vec<String>, Vec<base::interface::memory::DurableMemory>);
+        type Recall = (Vec<String>, Vec<base::memory::DurableMemory>);
         let mut prefetch_handle: Option<tokio_util::task::AbortOnDropHandle<Recall>> =
             if !self.settings.memory_enabled {
                 None
@@ -452,7 +452,7 @@ impl Agent {
                         Default::default()
                     }
                 };
-            let relevant: Vec<base::interface::memory::DurableMemory> = {
+            let relevant: Vec<base::memory::DurableMemory> = {
                 let surfaced: &std::collections::HashSet<String> = self
                     .prompt
                     .frozen

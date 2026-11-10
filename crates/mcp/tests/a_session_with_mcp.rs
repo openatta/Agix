@@ -11,7 +11,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use base::interface::model::{Model, ModelContentBlock, ModelMessage};
 use base::interface::scene::Scene;
-use base::interface::settings::*;
+use base::settings::*;
 use mcp::manager::McpManager;
 use runtime::agent::Builder;
 
@@ -24,7 +24,7 @@ impl Model for DummyModel {
     }
     async fn stream(
         &self,
-        _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+        _prompt_blocks: Vec<base::prompt::PromptBlock>,
         _tools: Vec<base::interface::model::ToolDef>,
         _messages: Vec<ModelMessage>,
         _params: base::interface::model::StreamParams,
@@ -49,7 +49,7 @@ impl Model for RecordingAnswerModel {
     }
     async fn stream(
         &self,
-        _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+        _prompt_blocks: Vec<base::prompt::PromptBlock>,
         _tools: Vec<base::interface::model::ToolDef>,
         messages: Vec<ModelMessage>,
         _params: base::interface::model::StreamParams,

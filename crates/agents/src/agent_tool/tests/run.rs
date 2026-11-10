@@ -207,7 +207,7 @@ impl Model for PanickingModel {
     }
     async fn stream(
         &self,
-        _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+        _prompt_blocks: Vec<base::prompt::PromptBlock>,
         _tools: Vec<base::interface::model::ToolDef>,
         _messages: Vec<ModelMessage>,
         _params: base::interface::model::StreamParams,
@@ -242,7 +242,7 @@ impl Model for HangingModel {
     }
     async fn stream(
         &self,
-        _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+        _prompt_blocks: Vec<base::prompt::PromptBlock>,
         _tools: Vec<base::interface::model::ToolDef>,
         _messages: Vec<ModelMessage>,
         _params: base::interface::model::StreamParams,
@@ -266,7 +266,7 @@ impl Model for AnswersOnlyCancellation {
     }
     async fn stream(
         &self,
-        _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+        _prompt_blocks: Vec<base::prompt::PromptBlock>,
         _tools: Vec<base::interface::model::ToolDef>,
         _messages: Vec<ModelMessage>,
         _params: base::interface::model::StreamParams,

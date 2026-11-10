@@ -44,7 +44,7 @@ pub enum AppendError {
 /// doesn't exist, it's created with `{}` first. If an identical entry is
 /// already present, the file is left untouched.
 ///
-/// The shape here is the one `base::interface::settings::Settings`
+/// The shape here is the one `base::settings::Settings`
 /// deserializes — writing anything else produces a file `Settings::load`
 /// silently drops as an unknown key.
 ///
@@ -138,14 +138,12 @@ mod tests {
     #[test]
     fn appended_rules_round_trip_through_settings_load() {
         let dir = TempDir::new().unwrap();
-        let local = dir
-            .path()
-            .join(base::interface::settings::SETTINGS_LOCAL_FILE);
+        let local = dir.path().join(base::settings::SETTINGS_LOCAL_FILE);
         append_permission_rule(&local, AppendTarget::Allow, "Bash(git status)").unwrap();
         append_permission_rule(&local, AppendTarget::Deny, "Bash(rm -rf:*)").unwrap();
 
         let empty = TempDir::new().unwrap();
-        let settings = base::interface::settings::Settings::load(
+        let settings = base::settings::Settings::load(
             empty.path().to_path_buf(),
             empty.path().to_path_buf(),
             dir.path().to_path_buf(),
@@ -161,14 +159,8 @@ mod tests {
         assert_eq!(
             loaded,
             vec![
-                (
-                    "Bash(git status)",
-                    base::interface::settings::PermissionAction::Allow
-                ),
-                (
-                    "Bash(rm -rf:*)",
-                    base::interface::settings::PermissionAction::Deny
-                ),
+                ("Bash(git status)", base::settings::PermissionAction::Allow),
+                ("Bash(rm -rf:*)", base::settings::PermissionAction::Deny),
             ]
         );
     }
@@ -261,9 +253,7 @@ mod tests {
     fn the_local_settings_file_stays_private() {
         use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new().unwrap();
-        let p = dir
-            .path()
-            .join(base::interface::settings::SETTINGS_LOCAL_FILE);
+        let p = dir.path().join(base::settings::SETTINGS_LOCAL_FILE);
         fs::write(&p, r#"{"providers":{"x":{"api_key":"sk"}}}"#).unwrap();
         fs::set_permissions(&p, fs::Permissions::from_mode(0o600)).unwrap();
 
@@ -276,7 +266,7 @@ mod tests {
         let fresh = dir
             .path()
             .join("fresh")
-            .join(base::interface::settings::SETTINGS_LOCAL_FILE);
+            .join(base::settings::SETTINGS_LOCAL_FILE);
         append_permission_rule(&fresh, AppendTarget::Allow, "Bash(ls)").unwrap();
         assert_eq!(
             fs::metadata(&fresh).unwrap().permissions().mode() & 0o777,

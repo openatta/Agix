@@ -1,8 +1,8 @@
 //! 回合后记忆抽取与模型/场景提示的流向。
 
 use crate::turn::memory_extraction::extract_memories_after_turn;
-use base::interface::memory::{DurableMemory, MemoryStore, MemoryType};
 use base::interface::model::{MessageRole, ModelContentBlock, ModelMessage};
+use base::memory::{DurableMemory, MemoryStore, MemoryType};
 use std::sync::Arc;
 
 use std::sync::Mutex;
@@ -29,7 +29,7 @@ impl base::interface::model::Model for CapturingModel {
     }
     async fn stream(
         &self,
-        _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+        _prompt_blocks: Vec<base::prompt::PromptBlock>,
         _tools: Vec<base::interface::model::ToolDef>,
         messages: Vec<ModelMessage>,
         params: base::interface::model::StreamParams,
@@ -157,7 +157,7 @@ impl base::interface::model::Model for ExtractingModel {
     }
     async fn stream(
         &self,
-        _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+        _prompt_blocks: Vec<base::prompt::PromptBlock>,
         _tools: Vec<base::interface::model::ToolDef>,
         _messages: Vec<ModelMessage>,
         _params: base::interface::model::StreamParams,
@@ -211,8 +211,7 @@ async fn project_memories_are_extracted_into_the_local_scope() {
     );
     assert!(!local_dir.join("user-is-a-go-dev.md").exists());
     // Both indices reflect their own contents.
-    let local_index =
-        std::fs::read_to_string(local_dir.join(base::interface::memory::INDEX_FILE)).unwrap();
+    let local_index = std::fs::read_to_string(local_dir.join(base::memory::INDEX_FILE)).unwrap();
     assert!(local_index.contains("release-freeze"));
     assert!(!local_index.contains("user-is-a-go-dev"));
 }
@@ -227,7 +226,7 @@ impl base::interface::model::Model for Answering {
     }
     async fn stream(
         &self,
-        _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+        _prompt_blocks: Vec<base::prompt::PromptBlock>,
         _tools: Vec<base::interface::model::ToolDef>,
         _messages: Vec<ModelMessage>,
         _params: base::interface::model::StreamParams,
@@ -289,7 +288,7 @@ fn names_in(store: &MemoryStore) -> std::collections::BTreeSet<String> {
 
 #[tokio::test]
 async fn a_full_store_stops_extraction_and_loses_nothing() {
-    const CAP: usize = base::interface::memory::MAX_MEMORIES;
+    const CAP: usize = base::memory::MAX_MEMORIES;
     let store = tmp_memory_store();
     store.persist_batch(old_memories(CAP)).unwrap();
     let before = names_in(&store);
@@ -303,7 +302,7 @@ async fn a_full_store_stops_extraction_and_loses_nothing() {
 
 #[tokio::test]
 async fn extraction_fills_the_store_up_to_its_cap_and_no_further() {
-    const CAP: usize = base::interface::memory::MAX_MEMORIES;
+    const CAP: usize = base::memory::MAX_MEMORIES;
     let store = tmp_memory_store();
     store.persist_batch(old_memories(CAP - 1)).unwrap();
     extract_with(

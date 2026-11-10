@@ -14,7 +14,7 @@
 use crate::config::DaemonPaths;
 use crate::doctor_posture;
 use base::interface::health::{CheckResult, HealthCheck, HealthChecks};
-use base::interface::settings::Settings;
+use base::settings::Settings;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -272,14 +272,14 @@ impl HealthCheck for MemoryCheck {
     }
 
     fn check(&self) -> CheckResult {
-        let cap = base::interface::memory::MAX_MEMORIES;
+        let cap = base::memory::MAX_MEMORIES;
         if !self.0.memory_enabled {
             return CheckResult::ok("memory is off")
                 .with_details(serde_json::json!({ "enabled": false, "cap": cap }));
         }
-        let store = base::interface::memory::MemoryStore::for_paths(
-            &base::paths::ConfigPaths::from_settings(&self.0.paths),
-        );
+        let store = base::memory::MemoryStore::for_paths(&base::paths::ConfigPaths::from_settings(
+            &self.0.paths,
+        ));
         let count = store.count();
         let details = serde_json::json!({ "enabled": true, "count": count, "cap": cap });
         if count >= cap {
@@ -696,14 +696,14 @@ mod tests {
         settings.paths.workspace =
             base::settings::Workspace::project_of(&settings.paths.local_data_dir);
         let settings = Arc::new(settings);
-        let store = base::interface::memory::MemoryStore::for_paths(
-            &base::paths::ConfigPaths::from_settings(&settings.paths),
-        );
+        let store = base::memory::MemoryStore::for_paths(&base::paths::ConfigPaths::from_settings(
+            &settings.paths,
+        ));
         let fill = |from: usize, to: usize| {
             store
                 .persist_batch(
                     (from..to)
-                        .map(|i| base::interface::memory::DurableMemory {
+                        .map(|i| base::memory::DurableMemory {
                             name: format!("m{i}"),
                             description: String::new(),
                             memory_type: Default::default(),
@@ -717,7 +717,7 @@ mod tests {
                 )
                 .unwrap();
         };
-        let cap = base::interface::memory::MAX_MEMORIES;
+        let cap = base::memory::MAX_MEMORIES;
         let memory_check = |settings: &Arc<Settings>| {
             let report = run_doctor(
                 &StaticDaemonPaths::new(dir.path().to_path_buf()),

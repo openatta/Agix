@@ -5,7 +5,7 @@
 //! `AGIX_CONFIG_HOME` at runtime.
 //!
 //! [`load_daemon_config`] delegates all settings.json parsing/merging to
-//! `base::interface::settings::Settings::load()` — the single canonical
+//! `base::settings::Settings::load()` — the single canonical
 //! loader (global → scene → project, generic recursive JSON merge).
 //! `DaemonConfig` just wraps that one `Settings` plus the handful of fields
 //! that are genuinely daemon-process-level, not settings.json content
@@ -16,7 +16,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use base::interface::settings::Settings;
+use base::settings::Settings;
 use permissions::ruleset::RuleSet;
 
 /// Controls where the daemon reads its configuration and writes its runtime

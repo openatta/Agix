@@ -559,7 +559,7 @@ impl base::interface::scene::Scene for BudgetScene {
     fn build_system_prompt(
         &self,
         ctx: &base::interface::scene::ScenePromptContext,
-    ) -> Vec<base::interface::prompt::PromptBlock> {
+    ) -> Vec<base::prompt::PromptBlock> {
         self.inner.build_system_prompt(ctx)
     }
     fn tools(&self) -> Vec<String> {

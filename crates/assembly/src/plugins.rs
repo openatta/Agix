@@ -47,7 +47,7 @@ pub const DISABLED_MESSAGE: &str = "plugins are not available in this build";
 pub struct PackageScripts {
     pub name: String,
     pub root: std::path::PathBuf,
-    pub bindings: Vec<base::interface::settings::ScriptBinding>,
+    pub bindings: Vec<base::settings::ScriptBinding>,
 }
 
 /// One active package's skills, each with the body it expands to.
@@ -78,7 +78,7 @@ mod packages {
         /// The `settings.plugins` policy this pool started with. Held rather
         /// than re-read, so a refresh mid-session cannot quietly widen what
         /// is allowed to load.
-        policy: base::interface::settings::PluginsConfig,
+        policy: base::settings::PluginsConfig,
         enabled: bool,
         /// The permitted, enabled set. Rescanned by install/uninstall/enable/
         /// disable, so every reader — the MCP configs, the script bindings,
@@ -92,10 +92,7 @@ mod packages {
     }
 
     impl Packages {
-        pub fn new(
-            paths: Arc<dyn DaemonPaths>,
-            policy: base::interface::settings::PluginsConfig,
-        ) -> Self {
+        pub fn new(paths: Arc<dyn DaemonPaths>, policy: base::settings::PluginsConfig) -> Self {
             let enabled = policy.enabled;
             let active = Arc::new(if enabled {
                 active_plugins(paths.as_ref(), &policy)
@@ -115,7 +112,7 @@ mod packages {
             self.enabled
         }
 
-        pub fn policy(&self) -> &base::interface::settings::PluginsConfig {
+        pub fn policy(&self) -> &base::settings::PluginsConfig {
             &self.policy
         }
 
@@ -170,7 +167,7 @@ mod packages {
                         .manifest
                         .script
                         .iter()
-                        .map(|s| base::interface::settings::ScriptBinding {
+                        .map(|s| base::settings::ScriptBinding {
                             path: PathBuf::from(s.file()),
                             point: s.point.clone(),
                             entry: s.function().to_string(),
@@ -360,7 +357,7 @@ mod packages {
 
     fn active_plugins(
         paths: &dyn DaemonPaths,
-        policy: &base::interface::settings::PluginsConfig,
+        policy: &base::settings::PluginsConfig,
     ) -> Vec<plugin::manifest::Plugin> {
         let (global, scene) = tier_dirs(paths);
         let global_state = plugin::state::EnableState::new(global.clone());
@@ -507,10 +504,7 @@ mod imp {
     }
 
     impl PluginSubsystem {
-        pub fn new(
-            paths: Arc<dyn DaemonPaths>,
-            policy: base::interface::settings::PluginsConfig,
-        ) -> Self {
+        pub fn new(paths: Arc<dyn DaemonPaths>, policy: base::settings::PluginsConfig) -> Self {
             Self {
                 packages: super::packages::Packages::new(paths, policy),
             }
@@ -524,7 +518,7 @@ mod imp {
             }
         }
 
-        pub fn policy(&self) -> &base::interface::settings::PluginsConfig {
+        pub fn policy(&self) -> &base::settings::PluginsConfig {
             self.packages.policy()
         }
 
@@ -697,10 +691,7 @@ mod imp {
     pub struct PluginSubsystem;
 
     impl PluginSubsystem {
-        pub fn new(
-            _paths: Arc<dyn DaemonPaths>,
-            _policy: base::interface::settings::PluginsConfig,
-        ) -> Self {
+        pub fn new(_paths: Arc<dyn DaemonPaths>, _policy: base::settings::PluginsConfig) -> Self {
             Self
         }
         pub fn status(&self) -> PluginStatus {

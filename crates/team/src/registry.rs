@@ -8,7 +8,7 @@
 //! handed to all three tools' coordinators via `DefaultCoordinator::with_registry`.
 
 use crate::coordinator::TeammateLifecycle;
-use base::interface::settings::PermissionMode;
+use base::settings::PermissionMode;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::RwLock;

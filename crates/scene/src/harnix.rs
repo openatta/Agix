@@ -4,8 +4,8 @@
 //! tools and prompt lines that would wait on a reply are not here.
 
 use crate::common;
-use base::interface::prompt::PromptBlock;
 use base::interface::scene::{ReminderContext, Scene, ScenePromptContext, TokenBudget};
+use base::prompt::PromptBlock;
 
 pub const TOOLS: &[&str] = &[
     "Agent",

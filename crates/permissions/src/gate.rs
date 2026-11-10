@@ -85,7 +85,7 @@ pub struct ManagedPolicy {
 impl ManagedPolicy {
     /// The managed layer `settings` carry. A rule in it that does not parse
     /// makes the layer unreadable rather than dropping the rule.
-    pub fn from_settings(settings: &base::interface::settings::Settings) -> Self {
+    pub fn from_settings(settings: &base::settings::Settings) -> Self {
         let Some(managed) = &settings.managed else {
             return Self::default();
         };
@@ -93,9 +93,9 @@ impl ManagedPolicy {
         let mut rules = RuleSet::empty();
         for rule in &managed.permission_rules {
             let behavior = match rule.action {
-                base::interface::settings::PermissionAction::Allow => RuleBehavior::Allow,
-                base::interface::settings::PermissionAction::Deny => RuleBehavior::Deny,
-                base::interface::settings::PermissionAction::Ask => RuleBehavior::Ask,
+                base::settings::PermissionAction::Allow => RuleBehavior::Allow,
+                base::settings::PermissionAction::Deny => RuleBehavior::Deny,
+                base::settings::PermissionAction::Ask => RuleBehavior::Ask,
             };
             match crate::rule::parse_rule_string(&rule.tool, RuleSource::PolicySettings, behavior) {
                 Ok(parsed) => rules.add(parsed),

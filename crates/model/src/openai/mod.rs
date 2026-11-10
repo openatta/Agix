@@ -30,7 +30,7 @@ use base::interface::backoff::{
 };
 use base::interface::exec::{HttpRequest, HttpStream, Network, Origin};
 use base::interface::model::{Model, ModelError, ModelMessage, ModelStream, StreamParams, ToolDef};
-use base::interface::prompt::PromptBlock;
+use base::prompt::PromptBlock;
 use base::provider::{ApiType, ThinkingToggle};
 use futures::stream::StreamExt;
 use platform::LocalNetwork;
@@ -488,7 +488,7 @@ mod tests {
                 StreamParams {
                     model: "m".into(),
                     max_tokens: 10,
-                    thinking_mode: base::interface::settings::ThinkingMode::Off,
+                    thinking_mode: base::settings::ThinkingMode::Off,
                     effort: None,
                     fallback_model: None,
                     cache_edits: Vec::new(),

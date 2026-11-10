@@ -17,10 +17,10 @@
 //! `prompt.variable` registrations to expand after assembly, so it cannot be
 //! refused here: whether it resolves depends on what the host registered.
 
-use base::interface::prompt::PromptBlock;
 use base::interface::scene::{
     ExecutionParams, ReminderContext, Scene, ScenePromptContext, TokenBudget,
 };
+use base::prompt::PromptBlock;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 

@@ -135,7 +135,7 @@ impl AgentTool {
         cancel: tokio_util::sync::CancellationToken,
         subagent_type: Option<&str>,
         model: Option<String>,
-        permission_mode: Option<base::interface::settings::PermissionMode>,
+        permission_mode: Option<base::settings::PermissionMode>,
         seat: Option<base::interface::agent_spawner::TeamSeat>,
     ) -> Result<String, base::error::ToolError> {
         let admission = self

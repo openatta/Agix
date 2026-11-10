@@ -19,7 +19,7 @@ impl Model for LineageModel {
     }
     async fn stream(
         &self,
-        _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+        _prompt_blocks: Vec<base::prompt::PromptBlock>,
         _tools: Vec<base::interface::model::ToolDef>,
         _messages: Vec<ModelMessage>,
         params: base::interface::model::StreamParams,
@@ -183,7 +183,7 @@ impl base::tool::Tool for AskingProbe {
 #[tokio::test]
 async fn a_team_create_member_is_judged_in_its_mode_held_to_the_parents() {
     use base::interface::agent_spawner::{AgentSpawner as _, SpawnMode, SpawnRequest};
-    use base::interface::settings::PermissionMode;
+    use base::settings::PermissionMode;
     for (parent_mode, probe_runs) in [
         (PermissionMode::Default, 0),
         (PermissionMode::BypassPermissions, 1),
@@ -245,7 +245,7 @@ impl Model for GuardThatAsksForAGuard {
     }
     async fn stream(
         &self,
-        _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+        _prompt_blocks: Vec<base::prompt::PromptBlock>,
         _tools: Vec<base::interface::model::ToolDef>,
         _messages: Vec<ModelMessage>,
         params: base::interface::model::StreamParams,

@@ -19,13 +19,11 @@ use super::*;
 pub(super) fn effective_permission_mode(
     settings: &Settings,
     options: Option<&SessionOptions>,
-) -> base::interface::settings::PermissionMode {
+) -> base::settings::PermissionMode {
     let mode = requested_permission_mode(settings, options);
-    if mode == base::interface::settings::PermissionMode::BypassPermissions
-        && settings.bypass_disabled()
-    {
+    if mode == base::settings::PermissionMode::BypassPermissions && settings.bypass_disabled() {
         warn!("the managed settings disable bypassPermissions; this session runs in default mode");
-        return base::interface::settings::PermissionMode::Default;
+        return base::settings::PermissionMode::Default;
     }
     mode
 }
@@ -33,7 +31,7 @@ pub(super) fn effective_permission_mode(
 fn requested_permission_mode(
     settings: &Settings,
     options: Option<&SessionOptions>,
-) -> base::interface::settings::PermissionMode {
+) -> base::settings::PermissionMode {
     let Some(requested) = options.and_then(|o| o.permission_mode) else {
         return settings.permission_mode;
     };
@@ -65,7 +63,7 @@ fn requested_permission_mode(
 /// bug in their JavaScript.
 #[cfg(feature = "scripts")]
 pub(super) fn bind_scripts(
-    settings: &Arc<base::interface::settings::Settings>,
+    settings: &Arc<base::settings::Settings>,
     project_root: &std::path::Path,
     packages: &[crate::plugins::PackageScripts],
 ) -> (
@@ -133,9 +131,7 @@ pub(super) fn bind_scripts(
 /// load whatever file the repository puts at it, with the authority of a
 /// script inside the project.
 #[cfg_attr(not(feature = "scripts"), allow(dead_code))]
-pub(super) fn operator_script_bindings(
-    settings: &Settings,
-) -> Vec<base::interface::settings::ScriptBinding> {
+pub(super) fn operator_script_bindings(settings: &Settings) -> Vec<base::settings::ScriptBinding> {
     if !settings.project_layer.trust.is_untrusted() {
         return settings.scripts.clone();
     }
@@ -162,7 +158,7 @@ pub(super) fn operator_script_bindings(
 /// loudly rather than ignored — and so is a package that ships one.
 #[cfg(not(feature = "scripts"))]
 pub(super) fn bind_scripts(
-    settings: &Arc<base::interface::settings::Settings>,
+    settings: &Arc<base::settings::Settings>,
     _project_root: &std::path::Path,
     packages: &[crate::plugins::PackageScripts],
 ) -> (Option<()>, Vec<(String, String)>) {
@@ -201,12 +197,12 @@ pub(super) fn resolve_session_permission(
     host: Option<&Arc<dyn Permission>>,
     tools: &Arc<base::tool::InMemoryToolRegistry>,
     settings: &Settings,
-    mode: base::interface::settings::PermissionMode,
+    mode: base::settings::PermissionMode,
     options: Option<&SessionOptions>,
 ) -> Arc<dyn Permission> {
     // A host's own permission never sees the managed layer, so it does not
     // stand in for the gate while there is one.
-    if let (Some(host), base::interface::settings::PermissionMode::BypassPermissions, None) =
+    if let (Some(host), base::settings::PermissionMode::BypassPermissions, None) =
         (host, mode, &settings.managed)
     {
         return host.clone();

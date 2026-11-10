@@ -3,10 +3,10 @@
 use super::support::{recall_test_settings, FixedUsageModel};
 use crate::agent::InputMessage;
 use crate::turn::prompt::build_prompt_context;
-use base::interface::event::AgentEvent;
-use base::interface::memory::{DurableMemory, MemoryStore, MemoryType};
+use base::event::AgentEvent;
 use base::interface::model::{ModelContentBlock, ModelMessage};
-use base::interface::settings::ThinkingMode;
+use base::memory::{DurableMemory, MemoryStore, MemoryType};
+use base::settings::ThinkingMode;
 use base::tool::ToolContext;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -14,8 +14,8 @@ use std::sync::Arc;
 #[test]
 #[allow(deprecated)]
 fn prompt_context_includes_os() {
-    let settings = base::interface::settings::Settings {
-        model: base::interface::settings::ModelSettings {
+    let settings = base::settings::Settings {
+        model: base::settings::ModelSettings {
             api_type: base::provider::ApiType::Anthropic,
             base_url: "https://api.example.com".into(),
             auth_token: "test".into(),
@@ -25,7 +25,7 @@ fn prompt_context_includes_os() {
             effort: None,
             fallback_model: None,
         },
-        paths: base::interface::settings::PathSettings {
+        paths: base::settings::PathSettings {
             user_data_dir: "/tmp/user".into(),
             global_data_dir: "/tmp/global".into(),
             workspace: base::settings::Workspace::project_of(std::path::Path::new("/tmp/local")),
@@ -44,7 +44,7 @@ fn prompt_context_includes_os() {
         memory_enabled: true,
         disable_skill_shell_execution: false,
         path_style: Default::default(),
-        permission_mode: base::interface::settings::PermissionMode::Default,
+        permission_mode: base::settings::PermissionMode::Default,
         permission_rules: Vec::new(),
         local_permission_rules: Vec::new(),
         allow_client_permission_override: false,
@@ -108,7 +108,7 @@ impl base::interface::model::Model for RecordingAnswerModel {
     }
     async fn stream(
         &self,
-        _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+        _prompt_blocks: Vec<base::prompt::PromptBlock>,
         _tools: Vec<base::interface::model::ToolDef>,
         messages: Vec<ModelMessage>,
         _params: base::interface::model::StreamParams,
@@ -228,7 +228,7 @@ async fn max_budget_tokens_stops_the_turn_on_reported_usage() {
     let scene: Arc<dyn base::interface::scene::Scene> = Arc::new(scene::code::CodeScene::default());
 
     let mut settings = recall_test_settings(tmp.path());
-    settings.execution = base::interface::settings::ExecutionSettings {
+    settings.execution = base::settings::ExecutionSettings {
         max_budget_tokens: Some(1000),
         ..Default::default()
     };
@@ -299,7 +299,7 @@ async fn a_recall_past_its_budget_is_stopped() {
         }
         async fn stream(
             &self,
-            prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+            prompt_blocks: Vec<base::prompt::PromptBlock>,
             tools: Vec<base::interface::model::ToolDef>,
             messages: Vec<ModelMessage>,
             params: base::interface::model::StreamParams,

@@ -467,7 +467,7 @@ pub struct SessionOptions {
     /// the settings'; a looser one is clamped unless the settings set
     /// `allow_client_permission_override`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub permission_mode: Option<base::interface::settings::PermissionMode>,
+    pub permission_mode: Option<base::settings::PermissionMode>,
     /// Allow/deny/ask rules for the `RuleSetPermission` this session's
     /// `permission_mode` (if set) constructs. Ignored when `permission_mode`
     /// is `None`.
@@ -760,7 +760,7 @@ mod tests {
             telemetry: Some(TelemetryOptions {
                 output: "/tmp/t.jsonl".into(),
             }),
-            permission_mode: Some(base::interface::settings::PermissionMode::Plan),
+            permission_mode: Some(base::settings::PermissionMode::Plan),
             permission_rules: vec![serde_json::from_value(serde_json::json!({
                 "source": "session", "behavior": "allow", "tool_name": "Read"
             }))

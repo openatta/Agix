@@ -19,7 +19,7 @@ impl Model for PlainReplyModel {
     }
     async fn stream(
         &self,
-        _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+        _prompt_blocks: Vec<base::prompt::PromptBlock>,
         _tools: Vec<base::interface::model::ToolDef>,
         _messages: Vec<base::interface::model::ModelMessage>,
         _params: base::interface::model::StreamParams,
@@ -251,7 +251,7 @@ impl Model for StepRecordingModel {
     }
     async fn stream(
         &self,
-        _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+        _prompt_blocks: Vec<base::prompt::PromptBlock>,
         _tools: Vec<base::interface::model::ToolDef>,
         messages: Vec<base::interface::model::ModelMessage>,
         params: base::interface::model::StreamParams,
@@ -473,7 +473,7 @@ async fn compacting_on_request_works_far_below_the_threshold() {
 /// then lets it finish. Returns every event up to `TurnComplete` and what
 /// each model call was sent.
 pub(super) async fn steer_during_a_tool_step(
-    settings: base::interface::settings::Settings,
+    settings: base::settings::Settings,
     builder: impl FnOnce(Builder) -> Builder,
     steered: &[(&str, &str)],
 ) -> (
@@ -539,7 +539,7 @@ pub(super) async fn steer_during_a_tool_step(
     (events, sent)
 }
 
-pub(super) fn prompt_hook(command: &str) -> base::interface::settings::Settings {
+pub(super) fn prompt_hook(command: &str) -> base::settings::Settings {
     let mut settings = test_settings();
     settings.hooks_config = Some(serde_json::json!({
         "UserPromptSubmit": [ { "type": "command", "command": command } ]

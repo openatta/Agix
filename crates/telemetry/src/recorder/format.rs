@@ -10,8 +10,8 @@
 //! representation, so there is no second shape that can drift from the first.
 
 use base::interface::model::{InputMap, ModelError, ModelEvent, Usage};
-use base::interface::settings::{Effort, ThinkingMode};
 use base::provider::ApiType;
+use base::settings::{Effort, ThinkingMode};
 use serde::{Deserialize, Serialize};
 
 use super::blob::BlobId;

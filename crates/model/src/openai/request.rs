@@ -6,7 +6,7 @@
 //! unit tests without standing up an HTTP server.
 
 use base::interface::model::{MessageRole, ModelContentBlock, ModelMessage, ToolDef};
-use base::interface::prompt::PromptBlock;
+use base::prompt::PromptBlock;
 use base::provider::ThinkingToggle;
 use base::settings::{Effort, ThinkingMode};
 use serde::Serialize;
@@ -404,7 +404,7 @@ fn collapse(parts: Vec<ContentPart>) -> Option<ChatContent> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base::interface::prompt::{BlockRole, CacheStrategy};
+    use base::prompt::{BlockRole, CacheStrategy};
     use serde_json::json;
 
     fn msg(role: MessageRole, content: Vec<ModelContentBlock>) -> ModelMessage {

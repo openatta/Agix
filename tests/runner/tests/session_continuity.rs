@@ -12,9 +12,9 @@
 use base::interface::model::{
     Model, ModelError, ModelEvent, ModelMessage, ModelStream, StreamParams, ToolDef, Usage,
 };
-use base::interface::prompt::PromptBlock;
-use base::interface::settings::RecorderMode;
+use base::prompt::PromptBlock;
 use base::provider::ApiType;
+use base::settings::RecorderMode;
 use std::sync::Arc;
 use test_runner::api_runner::{self, AgentRunnerConfig};
 use test_runner::script::{self};

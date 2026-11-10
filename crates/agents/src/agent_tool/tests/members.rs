@@ -24,7 +24,7 @@ async fn team_member_inherits_the_parents_scene_instead_of_always_coding() {
             Arc::new(InMemoryToolRegistry::new()),
             std::path::PathBuf::from("/tmp"),
             None,
-            base::interface::settings::PermissionMode::Plan,
+            base::settings::PermissionMode::Plan,
             None,
         )
         .await
@@ -46,7 +46,7 @@ async fn a_delegate_runs_its_hooks_on_the_parents_runner() {
             Arc::new(InMemoryToolRegistry::new()),
             std::path::PathBuf::from("/tmp"),
             None,
-            base::interface::settings::PermissionMode::Plan,
+            base::settings::PermissionMode::Plan,
             None,
         )
         .await
@@ -549,7 +549,7 @@ async fn auto_for_a_persistent_member_is_bypass() {
     let registry = agent_tool.inner.team_registry.get().unwrap();
     assert_eq!(
         registry.team_permission_mode("t-auto"),
-        Some(base::interface::settings::PermissionMode::BypassPermissions)
+        Some(base::settings::PermissionMode::BypassPermissions)
     );
 }
 
@@ -586,7 +586,7 @@ async fn spawn_or_message_team_member_establishes_team_permission_mode_for_later
             None,
             std::path::PathBuf::from("/tmp"),
             session.clone(),
-            Some(base::interface::settings::PermissionMode::BypassPermissions),
+            Some(base::settings::PermissionMode::BypassPermissions),
         )
         .await
         .unwrap();
@@ -610,7 +610,7 @@ async fn spawn_or_message_team_member_establishes_team_permission_mode_for_later
     let registry = agent_tool.inner.team_registry.get().unwrap();
     assert_eq!(
         registry.team_permission_mode("t4"),
-        Some(base::interface::settings::PermissionMode::BypassPermissions),
+        Some(base::settings::PermissionMode::BypassPermissions),
         "the team's grant, established by the first member, must not have been \
          overwritten by the second spawn's implicit default"
     );
@@ -644,7 +644,7 @@ async fn spawn_or_message_team_member_defaults_to_plan_when_nothing_specified() 
     let registry = agent_tool.inner.team_registry.get().unwrap();
     assert_eq!(
         registry.team_permission_mode("t5"),
-        Some(base::interface::settings::PermissionMode::Plan),
+        Some(base::settings::PermissionMode::Plan),
         "an unconfigured spawn must resolve to (and record) the safe Plan default"
     );
 }
@@ -716,7 +716,7 @@ async fn plan_mode_permits_send_message_despite_not_being_read_only() {
             permissions::ruleset::RuleSet::new(vec![]),
         )),
         tools,
-        base::interface::settings::PermissionMode::Plan.into(),
+        base::settings::PermissionMode::Plan.into(),
     );
 
     let send_outcome = perm

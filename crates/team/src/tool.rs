@@ -65,7 +65,7 @@ pub struct TeamCreateInput {
     /// whole team (default `plan`, read-only). It can only make the team
     /// stricter than this session, never looser. `bubble` is rejected.
     #[serde(default)]
-    pub permission_mode: Option<base::interface::settings::PermissionMode>,
+    pub permission_mode: Option<base::settings::PermissionMode>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema)]
@@ -200,7 +200,7 @@ impl base::tool::Tool for TeamCreateTool {
         }
         if matches!(
             inp.permission_mode,
-            Some(base::interface::settings::PermissionMode::Bubble)
+            Some(base::settings::PermissionMode::Bubble)
         ) {
             return Err(ToolError::Validation(
                 "permission_mode: \"bubble\" is not valid here — it needs an available lead, \
@@ -526,7 +526,7 @@ mod tests {
         }
         async fn stream(
             &self,
-            _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+            _prompt_blocks: Vec<base::prompt::PromptBlock>,
             _tools: Vec<base::interface::model::ToolDef>,
             _messages: Vec<base::interface::model::ModelMessage>,
             _params: base::interface::model::StreamParams,

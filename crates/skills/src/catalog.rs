@@ -194,8 +194,8 @@ impl SkillCatalog for SceneSkills {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base::interface::prompt::PromptBlock;
     use base::interface::scene::{ScenePromptContext, TokenBudget};
+    use base::prompt::PromptBlock;
 
     struct Picky(Vec<&'static str>, Vec<&'static str>);
     impl Scene for Picky {

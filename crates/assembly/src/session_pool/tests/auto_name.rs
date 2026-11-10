@@ -6,7 +6,7 @@ use base::interface::model::{
     call_purpose, Model, ModelError, ModelEvent, ModelMessage, ModelStream, StreamParams, ToolDef,
     Usage,
 };
-use base::interface::prompt::PromptBlock;
+use base::prompt::PromptBlock;
 use base::provider::{ApiType, ResolvedModel, TaskRouter};
 use std::sync::atomic::{AtomicUsize, Ordering};
 

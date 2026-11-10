@@ -5,7 +5,7 @@ use super::reporting::{record_permission_decision, telemetry_error_text};
 use super::tool_env::tool_context_for;
 use super::tool_progress::{CloseOnDrop, GateHandle, ProgressGate};
 use super::tool_result::{render_tool_result_content, PendingToolImage};
-use base::interface::event::AgentEvent;
+use base::event::AgentEvent;
 use std::sync::Arc;
 
 /// Context bundle for tool execution — owned to survive async closures.

@@ -12,7 +12,7 @@
 use std::sync::Arc;
 
 use base::agent_type::AgentTypeDefinition;
-use base::interface::settings::Settings;
+use base::settings::Settings;
 use runtime::commands::CommandRegistry;
 use runtime::module::Module;
 

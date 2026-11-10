@@ -31,10 +31,10 @@
 //! it, so there is no file to go stale and nothing to regenerate reflexively.
 //! What the task itself does is pinned by the scripted replies.
 
-use base::interface::memory::MemoryStore;
 use base::interface::scene::Scene;
 use base::interface::script::ScriptOutcome;
 use base::interface::tool::InMemoryToolRegistry;
+use base::memory::MemoryStore;
 use base::memory::{DurableMemory, MemoryType};
 use std::path::Path;
 use std::sync::Arc;

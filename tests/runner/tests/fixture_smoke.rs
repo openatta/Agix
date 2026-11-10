@@ -70,7 +70,7 @@ fn settings_load_resolves_project_root_and_config_from_fixture() {
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp).unwrap();
 
-    let settings = base::interface::settings::Settings::load(
+    let settings = base::settings::Settings::load(
         tmp.join("global_empty"),
         tmp.join("scene_empty"),
         fixture_dir().join(".agix"),

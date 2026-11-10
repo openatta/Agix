@@ -22,8 +22,8 @@ use base::interface::mcp_servers::McpServers;
 use base::interface::model::Model;
 use base::interface::permission::Permission;
 use base::interface::scene::Scene;
-use base::interface::settings::Settings;
 use base::interface::skill_catalog::{NoSkills, SkillCatalog};
+use base::settings::Settings;
 use base::tool::InMemoryToolRegistry;
 use tokio_util::sync::CancellationToken;
 

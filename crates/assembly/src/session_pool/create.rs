@@ -445,7 +445,7 @@ impl SessionPool {
                     max_tokens: settings_snapshot.model.max_tokens,
                     thinking_mode: !matches!(
                         settings_snapshot.model.thinking_mode,
-                        base::interface::settings::ThinkingMode::Off
+                        base::settings::ThinkingMode::Off
                     ),
                     sandbox_enabled: !settings_snapshot.sandbox.dangerously_disable_sandbox,
                     resume_from: resume.then(|| session_id.clone()),

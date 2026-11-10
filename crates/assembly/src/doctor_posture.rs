@@ -6,7 +6,7 @@
 
 use base::context::config::NetworkModeConfig;
 use base::interface::health::{CheckResult, HealthCheck};
-use base::interface::settings::{PermissionMode, Settings};
+use base::settings::{PermissionMode, Settings};
 use hooks::{HookConfig, HookEvent, OnError};
 use std::sync::Arc;
 

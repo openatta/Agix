@@ -8,8 +8,8 @@ use base::interface::model::{
     call_purpose, CallOrigin, MessageRole, Model, ModelContentBlock, ModelError, ModelEvent,
     ModelMessage, StreamParams,
 };
-use base::interface::prompt::PromptBlock;
-use base::interface::settings::ThinkingMode;
+use base::prompt::PromptBlock;
+use base::settings::ThinkingMode;
 use futures::stream::StreamExt;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;

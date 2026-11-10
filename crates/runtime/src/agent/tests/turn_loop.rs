@@ -82,7 +82,7 @@ impl Model for ToolThenStopModel {
     }
     async fn stream(
         &self,
-        _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+        _prompt_blocks: Vec<base::prompt::PromptBlock>,
         _tools: Vec<base::interface::model::ToolDef>,
         _messages: Vec<base::interface::model::ModelMessage>,
         _params: base::interface::model::StreamParams,
@@ -372,7 +372,7 @@ impl Model for OneCallModel {
     }
     async fn stream(
         &self,
-        _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+        _prompt_blocks: Vec<base::prompt::PromptBlock>,
         _tools: Vec<base::interface::model::ToolDef>,
         _messages: Vec<base::interface::model::ModelMessage>,
         _params: base::interface::model::StreamParams,
@@ -837,7 +837,7 @@ impl Model for AnswersDirectlySlowPrefetchModel {
     }
     async fn stream(
         &self,
-        _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+        _prompt_blocks: Vec<base::prompt::PromptBlock>,
         _tools: Vec<base::interface::model::ToolDef>,
         messages: Vec<base::interface::model::ModelMessage>,
         _params: base::interface::model::StreamParams,
@@ -886,12 +886,12 @@ async fn turn_without_tool_use_does_not_wait_on_a_slow_memory_prefetch() {
     // prefetch branch — see its own "headers.len() <= max_results"
     // early return.
     let tmp = tempfile::tempdir().unwrap();
-    let memory_store = Arc::new(base::interface::memory::MemoryStore::new(
+    let memory_store = Arc::new(base::memory::MemoryStore::new(
         tmp.path().join("user"),
         tmp.path().join("local"),
     ));
-    let memories: Vec<base::interface::memory::DurableMemory> = (0..8)
-        .map(|i| base::interface::memory::DurableMemory {
+    let memories: Vec<base::memory::DurableMemory> = (0..8)
+        .map(|i| base::memory::DurableMemory {
             name: format!("mem-{i}"),
             description: format!("test memory {i}"),
             memory_type: Default::default(),

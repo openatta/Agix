@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
-use base::interface::settings::Settings;
+use base::settings::Settings;
 use daemon::config::{load_daemon_config, StaticDaemonPaths};
 use daemon::rpc::codes;
 use daemon::DaemonServer;
@@ -4115,7 +4115,7 @@ async fn a_question_answered_as_a_permission_prompt_is_refused() {
 #[tokio::test]
 async fn settings_bypass_permissions_opt_out_restores_allow_all() {
     let mut settings = ask_settings();
-    settings.permission_mode = base::interface::settings::PermissionMode::BypassPermissions;
+    settings.permission_mode = base::settings::PermissionMode::BypassPermissions;
 
     let (srv, _seen) = start_scripted_server(
         asking_bash_rounds("bypassed.txt"),
@@ -4340,9 +4340,9 @@ async fn settings_permission_rules_finally_reach_the_daemon() {
     // long time with no production consumer at all. Under the ask default it
     // finally has one: an Allow rule pre-empts the prompt.
     let mut settings = ask_settings();
-    settings.permission_rules = vec![base::interface::settings::PermissionRule {
+    settings.permission_rules = vec![base::settings::PermissionRule {
         tool: "Bash(touch ruled.txt)".into(),
-        action: base::interface::settings::PermissionAction::Allow,
+        action: base::settings::PermissionAction::Allow,
         tier: None,
     }];
 
@@ -6187,7 +6187,7 @@ fn background_name(test: &str) -> String {
 
 async fn start_server_running_a_background_sleep(reap: bool, name: &str) -> ScriptedServer {
     let mut settings = ask_settings_no_memory();
-    settings.permission_mode = base::interface::settings::PermissionMode::BypassPermissions;
+    settings.permission_mode = base::settings::PermissionMode::BypassPermissions;
     settings.sandbox.reap_process_groups = reap;
     let (srv, _seen) = start_scripted_server(
         vec![

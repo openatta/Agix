@@ -2,11 +2,11 @@
 //!
 //! 每轮: 发送用户消息 → 收集 AgentEvent → 记录输出 → 可选 LLM 比对。
 
-use base::interface::event::AgentEvent;
+use base::event::AgentEvent;
 use base::interface::model::Model;
 use base::interface::scene::Scene;
-use base::interface::settings::{PermissionMode, RecorderConfig, RecorderMode, ThinkingMode};
 use base::provider::ApiType;
+use base::settings::{PermissionMode, RecorderConfig, RecorderMode, ThinkingMode};
 use base::tool::InMemoryToolRegistry;
 use runtime::agent::{Builder, EventReceiver, InputMessage, InputSender};
 use std::path::PathBuf;
@@ -244,7 +244,7 @@ async fn build_agent(
         // 落在 workdir 本身，工具（Bash/Read/...)、skills/rules 发现都对着这份
         // 拷贝操作,不是手搭的空 Settings。
         let workdir = tmp.join("workdir");
-        base::interface::settings::Settings::load(
+        base::settings::Settings::load(
             tmp.join("global_empty"),
             tmp.join("scene_empty"),
             workdir.join(".agix"),
@@ -252,9 +252,9 @@ async fn build_agent(
             &model_name,
         )
     } else {
-        base::interface::settings::Settings::defaults_for(&model_name)
+        base::settings::Settings::defaults_for(&model_name)
     };
-    settings.model = base::interface::settings::ModelSettings {
+    settings.model = base::settings::ModelSettings {
         api_type: ApiType::Anthropic,
         base_url: String::new(),
         auth_token: String::new(),
@@ -265,7 +265,7 @@ async fn build_agent(
         fallback_model: None,
     };
     if config.fixture_dir.is_none() {
-        settings.paths = base::interface::settings::PathSettings {
+        settings.paths = base::settings::PathSettings {
             user_data_dir: tmp.join("user"),
             global_data_dir: tmp.join("global"),
             workspace: base::settings::Workspace::project_of(&tmp.join("local")),

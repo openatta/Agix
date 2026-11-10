@@ -5,8 +5,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use base::interface::prompt::PromptBlock;
 use base::interface::scene::{Scene, ScenePromptContext, TokenBudget};
+use base::prompt::PromptBlock;
 use daemon::config::{load_daemon_config, StaticDaemonPaths};
 use daemon::DaemonServer;
 use model::client::AnthropicClient;

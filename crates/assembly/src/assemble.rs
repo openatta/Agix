@@ -209,7 +209,7 @@ pub async fn pool(
     let permission = assembly.permission;
     if matches!(
         settings.permission_mode,
-        base::interface::settings::PermissionMode::BypassPermissions
+        base::settings::PermissionMode::BypassPermissions
     ) {
         warn!(
             "settings.permission_mode = bypassPermissions — no permission rule is consulted for \

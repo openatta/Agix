@@ -407,7 +407,7 @@ impl SessionPool {
         config: serde_json::Value,
         must_exist: bool,
     ) -> Result<serde_json::Value, String> {
-        use base::interface::settings::{SETTINGS_FILE, SETTINGS_LOCAL_FILE};
+        use base::settings::{SETTINGS_FILE, SETTINGS_LOCAL_FILE};
         let settings_path = self.settings_path_of(project_root);
         let local_path = settings_path.with_file_name(SETTINGS_LOCAL_FILE);
         let shown = settings_path.display().to_string();

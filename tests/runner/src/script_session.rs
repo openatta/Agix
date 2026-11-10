@@ -19,12 +19,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use base::interface::memory::MemoryStore;
 use base::interface::model::Model;
 use base::interface::scene::Scene;
 use base::interface::script::{ScriptLedger, ScriptOutcome, ScriptRecord};
-use base::interface::settings::{PathSettings, ScriptBinding, Settings, ThinkingMode};
 use base::interface::tool::{InMemoryToolRegistry, Tool};
+use base::memory::MemoryStore;
+use base::settings::{PathSettings, ScriptBinding, Settings, ThinkingMode};
 use runtime::agent::{Builder, InputMessage};
 use tokio_util::sync::CancellationToken;
 
@@ -307,9 +307,9 @@ pub async fn drive(root: &Path, session: Session) -> Ran {
     // here to answer a prompt, and a case that hung on one would look like a
     // case whose turn never finished.
     if !session.asking {
-        settings.permission_mode = base::interface::settings::PermissionMode::BypassPermissions;
+        settings.permission_mode = base::settings::PermissionMode::BypassPermissions;
     } else {
-        settings.permission_mode = base::interface::settings::PermissionMode::Default;
+        settings.permission_mode = base::settings::PermissionMode::Default;
     }
     settings.scripts = session.bindings;
     settings.hooks_config = session.hooks;
@@ -332,7 +332,7 @@ pub async fn drive(root: &Path, session: Session) -> Ran {
             Arc::new(
                 permissions::rule_set_permission::RuleSetPermission::from_settings(
                     &settings,
-                    base::interface::settings::PermissionMode::Default.into(),
+                    base::settings::PermissionMode::Default.into(),
                     registry.clone(),
                     Vec::new(),
                 ),

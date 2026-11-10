@@ -5,8 +5,8 @@ use super::request::{estimate_request_overhead, pair_dangling_tool_uses, ModelRe
 use super::SESSION_CONTEXT_OPENING;
 use crate::agent::Agent;
 use base::interface::model::{MessageRole, ModelContentBlock, ModelMessage, ToolDef};
-use base::interface::prompt::PromptBlock;
 use base::interface::scene::ScenePromptContext;
+use base::prompt::PromptBlock;
 use std::borrow::Cow;
 use std::collections::HashSet;
 
@@ -67,7 +67,7 @@ pub(super) fn open_conversation_with_user_blocks(request: &mut ModelRequest) {
     let (opening, system): (Vec<PromptBlock>, Vec<PromptBlock>) =
         std::mem::take(&mut request.prompt_blocks)
             .into_iter()
-            .partition(|b| b.role == base::interface::prompt::BlockRole::User);
+            .partition(|b| b.role == base::prompt::BlockRole::User);
     request.prompt_blocks = system;
     if opening.is_empty() {
         return;
@@ -92,7 +92,7 @@ pub(super) fn open_conversation_with_user_blocks(request: &mut ModelRequest) {
 }
 
 pub(super) fn build_prompt_context<'a>(
-    settings: &'a base::interface::settings::Settings,
+    settings: &'a base::settings::Settings,
     frozen: Option<&'a base::frozen::FrozenContext>,
     mcp_instructions: Option<&'a str>,
     skills_text: Option<&'a str>,

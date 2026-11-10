@@ -61,7 +61,7 @@ pub struct AgentTypeDefinition {
     pub model: Option<String>,
     /// Optional permission mode for spawned subagents of this type. Whether
     /// it may be looser than the parent session's depends on `source`.
-    pub permission_mode: Option<crate::interface::settings::PermissionMode>,
+    pub permission_mode: Option<crate::settings::PermissionMode>,
     /// Optional `ModelSettings::effort` override for spawned subagents, by
     /// name (`low` … `max`).
     pub effort: Option<String>,
@@ -95,8 +95,8 @@ pub struct AgentTypeDefinition {
 /// Parse the textual `permission_mode` an agent-type declaration carries —
 /// agent `.md` frontmatter and plugin manifests both spell it as a string.
 /// `bubble` is program-only and deliberately unparseable here.
-pub fn parse_permission_mode(value: &str) -> Option<crate::interface::settings::PermissionMode> {
-    use crate::interface::settings::PermissionMode;
+pub fn parse_permission_mode(value: &str) -> Option<crate::settings::PermissionMode> {
+    use crate::settings::PermissionMode;
     match value {
         "default" => Some(PermissionMode::Default),
         "acceptEdits" | "accept_edits" | "accept-edits" => Some(PermissionMode::AcceptEdits),

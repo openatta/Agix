@@ -435,7 +435,7 @@ impl Model for ChattyModel {
     }
     async fn stream(
         &self,
-        _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+        _prompt_blocks: Vec<base::prompt::PromptBlock>,
         _tools: Vec<base::interface::model::ToolDef>,
         _messages: Vec<base::interface::model::ModelMessage>,
         _params: base::interface::model::StreamParams,
@@ -831,7 +831,7 @@ async fn a_recovery_policy_can_refuse_the_fallback_the_engine_would_take() {
         }
         async fn stream(
             &self,
-            _p: Vec<base::interface::prompt::PromptBlock>,
+            _p: Vec<base::prompt::PromptBlock>,
             _t: Vec<base::interface::model::ToolDef>,
             _m: Vec<base::interface::model::ModelMessage>,
             _s: base::interface::model::StreamParams,
@@ -894,9 +894,7 @@ async fn a_recovery_policy_can_refuse_the_fallback_the_engine_would_take() {
 }
 
 /// Records the prompt blocks of the first request and ends the turn.
-pub(super) struct RecordingModel(
-    pub(super) Arc<std::sync::Mutex<Vec<base::interface::prompt::PromptBlock>>>,
-);
+pub(super) struct RecordingModel(pub(super) Arc<std::sync::Mutex<Vec<base::prompt::PromptBlock>>>);
 
 #[async_trait::async_trait]
 impl Model for RecordingModel {
@@ -905,7 +903,7 @@ impl Model for RecordingModel {
     }
     async fn stream(
         &self,
-        prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+        prompt_blocks: Vec<base::prompt::PromptBlock>,
         _tools: Vec<base::interface::model::ToolDef>,
         _messages: Vec<base::interface::model::ModelMessage>,
         _params: base::interface::model::StreamParams,
@@ -929,7 +927,7 @@ impl Model for RecordingModel {
 /// Runs one turn and returns the prompt blocks the model was given.
 pub(super) async fn prompt_blocks_for_one_turn(
     assembler: Option<Arc<dyn base::interface::prompt_assembler::PromptAssembler>>,
-) -> Vec<base::interface::prompt::PromptBlock> {
+) -> Vec<base::prompt::PromptBlock> {
     let recorded = Arc::new(std::sync::Mutex::new(Vec::new()));
     let mut builder = Builder::new()
         .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
@@ -975,11 +973,8 @@ async fn a_host_can_replace_prompt_assembly_outright() {
 
     struct OnlyThis;
     impl PromptAssembler for OnlyThis {
-        fn assemble(
-            &self,
-            _request: &AssemblyRequest<'_>,
-        ) -> Vec<base::interface::prompt::PromptBlock> {
-            vec![base::interface::prompt::PromptBlock::system("only this").named("host.only")]
+        fn assemble(&self, _request: &AssemblyRequest<'_>) -> Vec<base::prompt::PromptBlock> {
+            vec![base::prompt::PromptBlock::system("only this").named("host.only")]
         }
     }
 

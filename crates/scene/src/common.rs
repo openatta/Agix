@@ -1,8 +1,8 @@
 //! Prompt pieces the built-in scenes share: the safety rules, the session
 //! context, the prompt tail and the reminder wrapping.
 
-use base::interface::prompt::PromptBlock;
 use base::interface::scene::{ReminderContext, ScenePromptContext};
+use base::prompt::PromptBlock;
 
 pub(crate) const SAFETY_RULES: &str = "\
 IMPORTANT: Assist with authorized security testing, defensive security, CTF challenges, and \

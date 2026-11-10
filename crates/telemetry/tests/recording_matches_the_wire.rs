@@ -30,9 +30,9 @@ use base::interface::model::{
     CallOrigin, Model, ModelContentBlock, ModelError, ModelEvent, ModelMessage, ModelStream,
     StreamParams, ToolDef, Usage,
 };
-use base::interface::prompt::{BlockRole, CacheStrategy, PromptBlock};
-use base::interface::settings::{Divergence, RecorderConfig, RecorderMode, ThinkingMode};
+use base::prompt::{BlockRole, CacheStrategy, PromptBlock};
 use base::provider::ApiType;
+use base::settings::{Divergence, RecorderConfig, RecorderMode, ThinkingMode};
 use futures::StreamExt;
 use std::sync::{Arc, Mutex};
 use telemetry::recorder::reader;

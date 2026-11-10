@@ -1,8 +1,8 @@
 //! `script_binding_tests` 原样搬来的用例。
 
 use super::*;
-use base::interface::settings::ScriptBinding;
 use base::project_trust::ProjectTrust;
+use base::settings::ScriptBinding;
 
 #[test]
 fn a_relative_binding_does_not_reach_into_an_untrusted_project() {

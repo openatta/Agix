@@ -195,8 +195,8 @@ impl SessionPool {
         };
         for (tier, config_dir, skills_dir) in tiers {
             for file in [
-                base::interface::settings::SETTINGS_FILE,
-                base::interface::settings::SETTINGS_LOCAL_FILE,
+                base::settings::SETTINGS_FILE,
+                base::settings::SETTINGS_LOCAL_FILE,
             ] {
                 subscribe(&tier, WatchTarget::Settings, config_dir.join(file));
             }

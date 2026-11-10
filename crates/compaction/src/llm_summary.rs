@@ -39,7 +39,7 @@ use std::time::Duration;
 use base::interface::model::{
     MessageRole, Model, ModelContentBlock, ModelEvent, ModelMessage, StreamParams,
 };
-use base::interface::settings::ThinkingMode;
+use base::settings::ThinkingMode;
 use base::text::truncate_at_char_boundary;
 use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
@@ -488,7 +488,7 @@ mod tests {
     use super::*;
     use crate::compact::Compactor;
     use base::interface::model::{ModelError, ModelStream, ToolDef};
-    use base::interface::prompt::PromptBlock;
+    use base::prompt::PromptBlock;
     use base::provider::ApiType;
     use std::sync::Mutex;
 

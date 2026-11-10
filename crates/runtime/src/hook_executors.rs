@@ -10,8 +10,8 @@
 use base::interface::model::{
     MessageRole, Model, ModelContentBlock, ModelEvent, ModelMessage, StreamParams,
 };
-use base::interface::prompt::PromptBlock;
-use base::interface::settings::ThinkingMode;
+use base::prompt::PromptBlock;
+use base::settings::ThinkingMode;
 use hooks::payload::HookInput;
 use hooks::runner::{AgentHookExecutor, PromptHookExecutor};
 use std::sync::Arc;

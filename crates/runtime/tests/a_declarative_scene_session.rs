@@ -12,10 +12,10 @@ use async_trait::async_trait;
 use base::interface::model::{
     Model, ModelError, ModelEvent, ModelMessage, ModelStream, StreamParams, ToolDef,
 };
-use base::interface::prompt::PromptBlock;
 use base::interface::prompt_registry::{InMemoryPromptRegistry, PromptRegistry};
 use base::interface::scene::Scene;
-use base::interface::settings::*;
+use base::prompt::PromptBlock;
+use base::settings::*;
 use base::tool::InMemoryToolRegistry;
 use runtime::agent::{Agent, Builder};
 use tokio_util::sync::CancellationToken;

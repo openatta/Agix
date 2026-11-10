@@ -11,8 +11,8 @@
 
 use async_trait::async_trait;
 use base::error::ToolError;
-pub use base::interface::memory::{scan_for_secrets, SecretPattern};
-use base::interface::memory::{DurableMemory, MemoryError, MemoryStore, MemoryType};
+pub use base::memory::{scan_for_secrets, SecretPattern};
+use base::memory::{DurableMemory, MemoryError, MemoryStore, MemoryType};
 use base::tool::{
     PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
     ValidationResult,

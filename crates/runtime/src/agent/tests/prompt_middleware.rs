@@ -41,7 +41,7 @@ impl base::interface::prompt_middleware::PromptMiddleware for Screen {
 }
 
 pub(super) fn answering_agent(
-    settings: base::interface::settings::Settings,
+    settings: base::settings::Settings,
     builder: impl FnOnce(Builder) -> Builder,
 ) -> (
     Agent,

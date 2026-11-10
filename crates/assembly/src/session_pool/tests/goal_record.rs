@@ -138,7 +138,7 @@ impl base::interface::model::Model for CountsTurnCalls {
 
     async fn stream(
         &self,
-        _: Vec<base::interface::prompt::PromptBlock>,
+        _: Vec<base::prompt::PromptBlock>,
         _: Vec<base::interface::model::ToolDef>,
         _: Vec<base::interface::model::ModelMessage>,
         params: base::interface::model::StreamParams,

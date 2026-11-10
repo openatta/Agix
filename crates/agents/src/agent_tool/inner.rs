@@ -617,7 +617,7 @@ impl Inner {
     pub(super) fn team_member_permission(
         &self,
         tools: &Arc<InMemoryToolRegistry>,
-        mode: base::interface::settings::PermissionMode,
+        mode: base::settings::PermissionMode,
     ) -> Arc<dyn Permission> {
         let wired = self.parent_permission.get().is_some();
         if wired {

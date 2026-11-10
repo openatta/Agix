@@ -182,7 +182,7 @@ async fn admit_tools_reaches_only_the_plugins_own_tools_and_yields_to_disallowed
         fn build_system_prompt(
             &self,
             ctx: &base::interface::scene::ScenePromptContext,
-        ) -> Vec<base::interface::prompt::PromptBlock> {
+        ) -> Vec<base::prompt::PromptBlock> {
             scene::mini::MiniScene.build_system_prompt(ctx)
         }
         fn tools(&self) -> Vec<String> {
@@ -439,7 +439,7 @@ async fn scene_extra_tools_are_registered_and_follow_the_deferred_policy() {
         fn build_system_prompt(
             &self,
             _: &base::interface::scene::ScenePromptContext,
-        ) -> Vec<base::interface::prompt::PromptBlock> {
+        ) -> Vec<base::prompt::PromptBlock> {
             vec![]
         }
         fn tools(&self) -> Vec<String> {
@@ -500,7 +500,7 @@ async fn scene_extra_tool_colliding_with_a_registered_name_fails_the_build() {
         fn build_system_prompt(
             &self,
             _: &base::interface::scene::ScenePromptContext,
-        ) -> Vec<base::interface::prompt::PromptBlock> {
+        ) -> Vec<base::prompt::PromptBlock> {
             vec![]
         }
         fn tools(&self) -> Vec<String> {
@@ -560,7 +560,7 @@ async fn scene_extra_tool_cannot_claim_an_engine_state_tool_name() {
         fn build_system_prompt(
             &self,
             _: &base::interface::scene::ScenePromptContext,
-        ) -> Vec<base::interface::prompt::PromptBlock> {
+        ) -> Vec<base::prompt::PromptBlock> {
             vec![]
         }
         fn tools(&self) -> Vec<String> {

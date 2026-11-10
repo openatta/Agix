@@ -5,8 +5,8 @@ use base::context::EngineConfig;
 use base::error::ToolError;
 use base::interface::agent_spawner::{AgentSpawner, SpawnMode, SpawnRequest};
 use base::interface::model::{Model, ModelEvent, StreamParams};
-use base::interface::prompt::{BlockRole, PromptBlock};
-use base::interface::settings::ThinkingMode;
+use base::prompt::{BlockRole, PromptBlock};
+use base::settings::ThinkingMode;
 use base::tool::InMemoryToolRegistry;
 use base::tool::ToolContext;
 use base::tool::ToolResult;
@@ -19,7 +19,7 @@ use crate::tool::{AggregateMode, TeamStage};
 
 /// The parent session's event channel, when the composition root wired one
 /// in — see [`Coordinator::set_event_sender`].
-pub type TeamEventSender = tokio::sync::mpsc::UnboundedSender<base::interface::event::AgentEvent>;
+pub type TeamEventSender = tokio::sync::mpsc::UnboundedSender<base::event::AgentEvent>;
 
 #[async_trait]
 pub trait Coordinator: Send + Sync {
@@ -77,7 +77,7 @@ pub struct OrchestrateRequest {
     /// a caller to think about permissions to get *something* better than
     /// unrestricted access, but is never silently more permissive than
     /// that without an explicit choice.
-    pub permission_mode: Option<base::interface::settings::PermissionMode>,
+    pub permission_mode: Option<base::settings::PermissionMode>,
 }
 
 /// Lifecycle states for team members.
@@ -180,7 +180,7 @@ impl DefaultCoordinator {
         stage: &str,
         stage_index: usize,
         stage_count: usize,
-        status: base::interface::event::TeamStageStatus,
+        status: base::event::TeamStageStatus,
         members: Vec<String>,
         failed: Vec<String>,
     ) {
@@ -192,7 +192,7 @@ impl DefaultCoordinator {
         else {
             return;
         };
-        let _ = tx.send(base::interface::event::AgentEvent::TeamProgress {
+        let _ = tx.send(base::event::AgentEvent::TeamProgress {
             team: team.to_string(),
             team_id: team_id.to_string(),
             stage: stage.to_string(),
@@ -239,8 +239,7 @@ impl Coordinator for DefaultCoordinator {
             ctx,
             permission_mode,
         } = req;
-        let permission_mode =
-            permission_mode.unwrap_or(base::interface::settings::PermissionMode::Plan);
+        let permission_mode = permission_mode.unwrap_or(base::settings::PermissionMode::Plan);
 
         let all_labels: Vec<String> = stages
             .iter()
@@ -359,7 +358,7 @@ impl Coordinator for DefaultCoordinator {
                 &stage.name,
                 si,
                 stage_count,
-                base::interface::event::TeamStageStatus::Started,
+                base::event::TeamStageStatus::Started,
                 stage_members.clone(),
                 Vec::new(),
             );
@@ -605,7 +604,7 @@ impl Coordinator for DefaultCoordinator {
                 &stage.name,
                 si,
                 stage_count,
-                base::interface::event::TeamStageStatus::Completed,
+                base::event::TeamStageStatus::Completed,
                 stage_members,
                 failed.clone(),
             );
@@ -1661,7 +1660,7 @@ mod tests {
     /// and must arrive before the final tool result.
     #[tokio::test]
     async fn team_progress_is_emitted_per_stage_before_the_final_result() {
-        use base::interface::event::{AgentEvent, TeamStageStatus};
+        use base::event::{AgentEvent, TeamStageStatus};
 
         let stages = vec![
             TeamStage {
@@ -1801,7 +1800,7 @@ mod tests {
     /// host can surface the problem without waiting for the whole run.
     #[tokio::test]
     async fn team_progress_reports_failed_members() {
-        use base::interface::event::{AgentEvent, TeamStageStatus};
+        use base::event::{AgentEvent, TeamStageStatus};
 
         struct AlwaysFails;
         #[async_trait]

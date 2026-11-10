@@ -187,8 +187,8 @@ mod tests {
     use crate::recorder::format::{now_ms, ChunkRecord, Outcome, RecordedParams, FORMAT_VERSION};
     use crate::recorder::writer::RecordingWriter;
     use base::interface::model::Usage;
-    use base::interface::settings::ThinkingMode;
     use base::provider::ApiType;
+    use base::settings::ThinkingMode;
 
     fn header() -> Header {
         Header {

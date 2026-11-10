@@ -1,7 +1,7 @@
 //! 会话事件的出口：池把每个会话产生的事件当场同步交给订阅它的 `SessionWatcher`，
 //! 事件怎么上线（投影成什么帧、写进哪条连接）由订阅者决定。
 
-use base::interface::event::AgentEvent;
+use base::event::AgentEvent;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

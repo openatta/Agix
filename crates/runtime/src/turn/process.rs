@@ -6,7 +6,7 @@ use super::token_budget::{find_token_budget_directive, strip_token_budget_direct
 use super::tool_exec::resolve_permission_response;
 use super::{TurnError, TurnOutcome, ENDS_A_GOAL_ROUND_NORMALLY};
 use crate::agent::{Agent, EngineCommand, InputMessage};
-use base::interface::event::AgentEvent;
+use base::event::AgentEvent;
 use base::interface::model::{MessageRole, ModelContentBlock, ModelMessage, Usage};
 use base::interface::prompt_middleware::{PromptDecision, PromptDelivery};
 use std::sync::Arc;

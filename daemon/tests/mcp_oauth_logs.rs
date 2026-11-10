@@ -107,7 +107,7 @@ async fn no_token_is_ever_logged() {
         &StaticDaemonPaths::new(root.clone()),
     );
     config.settings.memory_enabled = false;
-    config.settings.permission_mode = base::interface::settings::PermissionMode::BypassPermissions;
+    config.settings.permission_mode = base::settings::PermissionMode::BypassPermissions;
     let model = Arc::new(MockAnthropicClient::new());
     let pool = daemon::assemble::pool(
         &config,

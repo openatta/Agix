@@ -143,7 +143,7 @@ impl Scene for NarrowingScene {
     fn build_system_prompt(
         &self,
         _: &base::interface::scene::ScenePromptContext,
-    ) -> Vec<base::interface::prompt::PromptBlock> {
+    ) -> Vec<base::prompt::PromptBlock> {
         Vec::new()
     }
     fn tools(&self) -> Vec<String> {
@@ -306,7 +306,7 @@ impl Model for DummyModel {
     }
     async fn stream(
         &self,
-        _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+        _prompt_blocks: Vec<base::prompt::PromptBlock>,
         _tools: Vec<base::interface::model::ToolDef>,
         _messages: Vec<base::interface::model::ModelMessage>,
         _params: base::interface::model::StreamParams,
@@ -327,7 +327,7 @@ impl Model for FailingModel {
     }
     async fn stream(
         &self,
-        _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+        _prompt_blocks: Vec<base::prompt::PromptBlock>,
         _tools: Vec<base::interface::model::ToolDef>,
         _messages: Vec<base::interface::model::ModelMessage>,
         _params: base::interface::model::StreamParams,

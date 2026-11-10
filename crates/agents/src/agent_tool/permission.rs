@@ -373,7 +373,7 @@ impl ParentPermission {
         // parent's own — the prompt itself is otherwise identical, which is
         // deliberate: it is answered through the identical path.
         if event_tx
-            .send(base::interface::event::AgentEvent::PermissionPrompt {
+            .send(base::event::AgentEvent::PermissionPrompt {
                 prompt_id: prompt_id.clone(),
                 tool_name: tool_name.to_string(),
                 message: format!("[sub-agent {session_id}] {message}"),

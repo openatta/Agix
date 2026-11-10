@@ -4,15 +4,15 @@ use crate::agent::Agent;
 use crate::turn::request::sync_mcp_adapters;
 use base::interface::model::ModelMessage;
 use base::interface::model::ToolDef;
-use base::interface::prompt::PromptBlock;
 use base::interface::scene::ScenePromptContext;
+use base::prompt::PromptBlock;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use base::error::ToolError;
 use base::interface::scene::{ExecutionParams, Scene, TokenBudget};
-use base::interface::settings::Settings;
+use base::settings::Settings;
 use base::tool::{
     InMemoryToolRegistry, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext,
     ToolResult,
@@ -139,7 +139,7 @@ fn test_scene(allowed: Vec<String>) -> Arc<dyn Scene> {
 
 #[allow(deprecated)]
 fn test_settings(root: &std::path::Path) -> Settings {
-    use base::interface::settings::*;
+    use base::settings::*;
     Settings {
         model: ModelSettings {
             api_type: base::provider::ApiType::Anthropic,

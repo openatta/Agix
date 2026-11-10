@@ -7,8 +7,8 @@
 
 use std::sync::Arc;
 
-use base::interface::settings::Settings;
 use base::interface::skill_provider::SkillProvider;
+use base::settings::Settings;
 use runtime::module::{Module, ModuleError, SessionContext};
 
 use crate::manager::SkillManager;

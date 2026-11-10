@@ -197,7 +197,7 @@ impl SessionPool {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| self.paths.project_root())
             .join(".agix")
-            .join(base::interface::settings::SETTINGS_FILE)
+            .join(base::settings::SETTINGS_FILE)
     }
 
     /// Merge a provider config patch (and/or `default_provider` /
@@ -209,7 +209,7 @@ impl SessionPool {
     ///
     /// `config_patch`/`task_models_patch` are raw partial JSON objects
     /// merged key-by-key onto the existing project-tier file (see
-    /// `base::interface::settings::merge_json_values`) — deliberately not
+    /// `base::settings::merge_json_values`) — deliberately not
     /// typed `ProviderConfig` structs, since deserializing a partial patch
     /// into a `#[serde(default)]` struct would silently null out every field
     /// the caller didn't mention, clobbering unrelated existing values.
@@ -233,7 +233,7 @@ impl SessionPool {
         default_provider: Option<String>,
         task_models_patch: Option<serde_json::Value>,
     ) -> Result<serde_json::Value, PoolError> {
-        use base::interface::settings::{SETTINGS_FILE, SETTINGS_LOCAL_FILE};
+        use base::settings::{SETTINGS_FILE, SETTINGS_LOCAL_FILE};
         let invalid = |message: String| PoolError::InvalidRequest(message);
         if provider_id.trim().is_empty() {
             return Err(invalid("provider_id must not be empty".into()));
@@ -284,7 +284,7 @@ impl SessionPool {
             } else if let Some(mut cfg) = config_patch {
                 let secrets = take_provider_secrets(&mut cfg);
                 let existing = provider_entry(obj, &provider_id);
-                base::interface::settings::merge_json_values(existing, cfg);
+                base::settings::merge_json_values(existing, cfg);
                 let mut moved = take_provider_secrets(existing);
                 moved.extend(secrets);
                 if !moved.is_empty() {
@@ -309,7 +309,7 @@ impl SessionPool {
                 if !task_models.is_object() {
                     *task_models = serde_json::json!({});
                 }
-                base::interface::settings::merge_json_values(task_models, tm);
+                base::settings::merge_json_values(task_models, tm);
             }
 
             // The key first: a failure after it leaves a key nothing uses yet,
@@ -375,7 +375,7 @@ impl SessionPool {
         trusted: bool,
     ) -> Result<serde_json::Value, PoolError> {
         use crate::watch_hub::Tier;
-        use base::interface::settings::SETTINGS_LOCAL_FILE;
+        use base::settings::SETTINGS_LOCAL_FILE;
         let root = project_root.unwrap_or(self.cwd.as_path()).to_path_buf();
         if !root.is_absolute() {
             return Err(PoolError::InvalidRequest(format!(

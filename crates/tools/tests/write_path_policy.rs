@@ -192,14 +192,14 @@ async fn a_project_reached_through_a_symlink_is_still_the_project() {
 
 use base::interface::permission::{Permission, PermissionOutcome};
 
-fn settings_allowing(paths: Vec<PathBuf>) -> base::interface::settings::Settings {
-    let mut s = base::interface::settings::Settings::defaults_for("test-model");
+fn settings_allowing(paths: Vec<PathBuf>) -> base::settings::Settings {
+    let mut s = base::settings::Settings::defaults_for("test-model");
     s.sandbox.allow_write = paths;
     s
 }
 
 async fn gate_decision(
-    settings: &base::interface::settings::Settings,
+    settings: &base::settings::Settings,
     cwd: &std::path::Path,
     path: &std::path::Path,
 ) -> PermissionOutcome {

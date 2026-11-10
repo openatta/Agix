@@ -5,10 +5,10 @@ use crate::agent::Agent;
 use crate::turn::prompt::open_conversation_with_user_blocks;
 use crate::turn::request::ModelRequest;
 use crate::turn::TurnOutcome;
-use base::interface::event::AgentEvent;
+use base::event::AgentEvent;
 use base::interface::model::{MessageRole, ModelContentBlock, ModelMessage};
-use base::interface::prompt::PromptBlock;
-use base::interface::settings::ThinkingMode;
+use base::prompt::PromptBlock;
+use base::settings::ThinkingMode;
 use std::path::PathBuf;
 use std::sync::Arc;
 

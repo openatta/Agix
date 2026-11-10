@@ -2,8 +2,8 @@
 //!
 //! 字段名 / 形状对应 API；与 agix-base::Message / ContentBlock 配合使用。
 
-use base::interface::settings::Effort;
 use base::message::{ContentBlock, Role};
+use base::settings::Effort;
 use serde::Serialize;
 use serde_json::Value;
 

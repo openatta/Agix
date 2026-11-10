@@ -2,7 +2,7 @@
 
 use crate::turn::reporting::telemetry_error_text;
 use crate::turn::tool_exec::{apply_result_transformers, execute_tool_with_telemetry, ToolExecCtx};
-use base::interface::event::AgentEvent;
+use base::event::AgentEvent;
 use std::sync::Arc;
 
 /// A probe tool that records the input it was actually called with.
@@ -128,7 +128,7 @@ fn test_exec_ctx_with_permission(
         local_settings_path: Some(
             std::env::temp_dir()
                 .join(".agix")
-                .join(base::interface::settings::SETTINGS_LOCAL_FILE),
+                .join(base::settings::SETTINGS_LOCAL_FILE),
         ),
         session_id: "test-session".into(),
         turn_no: 1,
@@ -979,7 +979,7 @@ async fn permission_prompt_answered_permit_always_local_persists_rule_to_disk() 
         tool_use_id: "toolu_test".into(),
         tools,
         cwd: dir.path().to_path_buf(),
-        local_settings_path: Some(agix_dir.join(base::interface::settings::SETTINGS_LOCAL_FILE)),
+        local_settings_path: Some(agix_dir.join(base::settings::SETTINGS_LOCAL_FILE)),
         session_id: "test-session".into(),
         turn_no: 1,
         agent_depth: 0,
@@ -1025,7 +1025,7 @@ async fn permission_prompt_answered_permit_always_local_persists_rule_to_disk() 
         "add_persistent_allow must be called with the tool's derived match content"
     );
 
-    let settings_local_path = agix_dir.join(base::interface::settings::SETTINGS_LOCAL_FILE);
+    let settings_local_path = agix_dir.join(base::settings::SETTINGS_LOCAL_FILE);
     assert!(
         settings_local_path.exists(),
         "expected {} to exist — anywhere else is outside the Bash sandbox's \
@@ -1037,7 +1037,7 @@ async fn permission_prompt_answered_permit_always_local_persists_rule_to_disk() 
     // a shape `Settings` doesn't deserialize would leave the user
     // re-answering the same prompt every restart.
     let empty = tempfile::tempdir().unwrap();
-    let loaded = base::interface::settings::Settings::load(
+    let loaded = base::settings::Settings::load(
         empty.path().to_path_buf(),
         empty.path().to_path_buf(),
         agix_dir.clone(),
@@ -1061,9 +1061,7 @@ async fn permission_prompt_answered_permit_always_local_persists_rule_to_disk() 
 
     // Not written to the shared/committed settings.json tier.
     assert!(
-        !agix_dir
-            .join(base::interface::settings::SETTINGS_FILE)
-            .exists(),
+        !agix_dir.join(base::settings::SETTINGS_FILE).exists(),
         "must not touch the shared/committed settings.json tier"
     );
 }

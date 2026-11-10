@@ -1,12 +1,12 @@
 //! 回合测试之间共用的夹具。
 
 use base::interface::model::ModelMessage;
-use base::interface::settings::ThinkingMode;
+use base::settings::ThinkingMode;
 
 #[allow(deprecated)]
-pub(super) fn recall_test_settings(root: &std::path::Path) -> base::interface::settings::Settings {
-    base::interface::settings::Settings {
-        model: base::interface::settings::ModelSettings {
+pub(super) fn recall_test_settings(root: &std::path::Path) -> base::settings::Settings {
+    base::settings::Settings {
+        model: base::settings::ModelSettings {
             api_type: base::provider::ApiType::Anthropic,
             base_url: "https://api.example.com".into(),
             auth_token: "test".into(),
@@ -16,7 +16,7 @@ pub(super) fn recall_test_settings(root: &std::path::Path) -> base::interface::s
             effort: None,
             fallback_model: None,
         },
-        paths: base::interface::settings::PathSettings {
+        paths: base::settings::PathSettings {
             user_data_dir: root.join("user-data"),
             global_data_dir: root.join("global-data"),
             workspace: base::settings::Workspace::project_of(&root.join("local-data")),
@@ -35,7 +35,7 @@ pub(super) fn recall_test_settings(root: &std::path::Path) -> base::interface::s
         memory_enabled: true,
         disable_skill_shell_execution: false,
         path_style: Default::default(),
-        permission_mode: base::interface::settings::PermissionMode::Default,
+        permission_mode: base::settings::PermissionMode::Default,
         permission_rules: Vec::new(),
         local_permission_rules: Vec::new(),
         allow_client_permission_override: false,
@@ -69,7 +69,7 @@ impl base::interface::model::Model for FixedUsageModel {
     }
     async fn stream(
         &self,
-        _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+        _prompt_blocks: Vec<base::prompt::PromptBlock>,
         _tools: Vec<base::interface::model::ToolDef>,
         _messages: Vec<ModelMessage>,
         _params: base::interface::model::StreamParams,

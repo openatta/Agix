@@ -581,7 +581,7 @@ not found";
         }
         async fn stream(
             &self,
-            _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+            _prompt_blocks: Vec<base::prompt::PromptBlock>,
             _tools: Vec<base::interface::model::ToolDef>,
             _messages: Vec<base::interface::model::ModelMessage>,
             params: base::interface::model::StreamParams,

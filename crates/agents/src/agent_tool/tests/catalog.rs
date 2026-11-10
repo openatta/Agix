@@ -80,7 +80,7 @@ fn load_agent_types_from_dir_parses_new_fields() {
     assert_eq!(t.disallowed_tools, vec!["AskUserQuestion"]);
     assert_eq!(
         t.permission_mode,
-        Some(base::interface::settings::PermissionMode::Plan)
+        Some(base::settings::PermissionMode::Plan)
     );
     assert_eq!(t.effort.as_deref(), Some("high"));
     assert_eq!(t.max_turns, Some(10));
@@ -265,7 +265,7 @@ fn merge_agent_types_precedence_is_low_to_high_across_dirs() {
 
 #[test]
 fn a_project_agent_type_cannot_loosen_until_trusted() {
-    use base::interface::settings::PermissionMode as M;
+    use base::settings::PermissionMode as M;
     let tmp = tempfile::tempdir().unwrap();
     let (user_dir, project_dir) = (tmp.path().join("user"), tmp.path().join("project"));
     write_agent_md(
@@ -451,7 +451,7 @@ impl Model for DummyModel {
     }
     async fn stream(
         &self,
-        _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+        _prompt_blocks: Vec<base::prompt::PromptBlock>,
         _tools: Vec<base::interface::model::ToolDef>,
         _messages: Vec<ModelMessage>,
         _params: base::interface::model::StreamParams,

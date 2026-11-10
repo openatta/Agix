@@ -254,7 +254,7 @@ mod register_builtin_tools_tests {
         }
         async fn stream(
             &self,
-            _: Vec<base::interface::prompt::PromptBlock>,
+            _: Vec<base::prompt::PromptBlock>,
             _: Vec<base::interface::model::ToolDef>,
             _: Vec<base::interface::model::ModelMessage>,
             _: base::interface::model::StreamParams,

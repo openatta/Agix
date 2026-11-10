@@ -111,7 +111,7 @@ scene = "plugin:p"
         assert_eq!(t.model.as_deref(), Some("claude-opus-5"));
         assert_eq!(
             t.permission_mode,
-            Some(base::interface::settings::PermissionMode::Plan)
+            Some(base::settings::PermissionMode::Plan)
         );
         assert_eq!(t.effort.as_deref(), Some("high"));
         assert_eq!(t.max_turns, Some(30));

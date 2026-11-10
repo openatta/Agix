@@ -30,7 +30,7 @@ use std::time::Instant;
 use base::interface::model::{
     CallKind, Model, ModelError, ModelEvent, ModelMessage, ModelStream, StreamParams, ToolDef,
 };
-use base::interface::prompt::PromptBlock;
+use base::prompt::PromptBlock;
 use base::provider::ApiType;
 use futures::StreamExt;
 use tokio_util::sync::CancellationToken;

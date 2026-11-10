@@ -16,7 +16,7 @@
 use base::interface::model::{
     CallOrigin, Model, ModelError, ModelEvent, ModelMessage, StreamParams, ToolDef,
 };
-use base::interface::prompt::PromptBlock;
+use base::prompt::PromptBlock;
 use futures::StreamExt;
 use std::path::Path;
 use std::sync::Arc;
@@ -471,8 +471,8 @@ mod tests {
     use super::*;
     use crate::recorder::format::{now_ms, Header, Record, RecordedParams, FORMAT_VERSION};
     use crate::recorder::writer::RecordingWriter;
-    use base::interface::settings::ThinkingMode;
     use base::provider::ApiType;
+    use base::settings::ThinkingMode;
 
     fn write_one_call(dir: &Path) {
         let writer = RecordingWriter::create(dir.parent().unwrap(), {

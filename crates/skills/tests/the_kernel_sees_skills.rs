@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use base::frozen::SkillEntry;
 use base::interface::model::{Model, ModelMessage};
 use base::interface::scene::Scene;
-use base::interface::settings::*;
+use base::settings::*;
 use base::tool::InMemoryToolRegistry;
 use runtime::agent::Builder;
 use runtime::commands::{Command, CommandRegistry};
@@ -26,7 +26,7 @@ impl Model for DummyModel {
     }
     async fn stream(
         &self,
-        _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+        _prompt_blocks: Vec<base::prompt::PromptBlock>,
         _tools: Vec<base::interface::model::ToolDef>,
         _messages: Vec<ModelMessage>,
         _params: base::interface::model::StreamParams,

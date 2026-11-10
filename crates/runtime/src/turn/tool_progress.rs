@@ -4,7 +4,7 @@
 //! 补发，调用结束时再补一次；合并掉的条数随下一条以 `dropped` 带出。限流逻辑在
 //! [`ProgressThrottle`] 里，时间由调用方传入。
 
-use base::interface::event::AgentEvent;
+use base::event::AgentEvent;
 use base::tool::{ProgressCallback, ProgressUpdate};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

@@ -1,7 +1,7 @@
 //! 回合结束后的持久记忆抽取。
 
-use base::interface::memory::{DurableMemory, MemoryStore, MemoryType};
 use base::interface::model::{MessageRole, ModelContentBlock, ModelMessage};
+use base::memory::{DurableMemory, MemoryStore, MemoryType};
 use std::sync::Arc;
 
 /// How long a stopping session waits for its memory extractions. Under the
@@ -55,7 +55,7 @@ pub(crate) async fn extract_memories_after_turn(
         return;
     }
 
-    const CAP: usize = base::interface::memory::MAX_MEMORIES;
+    const CAP: usize = base::memory::MAX_MEMORIES;
     let counting = store.clone();
     let held = tokio::task::spawn_blocking(move || counting.count())
         .await
@@ -116,7 +116,7 @@ For each memory, return a JSON object with:\n\
 Return only a JSON array of memories. If nothing is worth saving, return []."
     );
 
-    use base::interface::settings::ThinkingMode;
+    use base::settings::ThinkingMode;
     let request_messages = vec![ModelMessage {
         role: MessageRole::User,
         content: vec![
@@ -208,7 +208,7 @@ Return only a JSON array of memories. If nothing is worth saving, return []."
     let memories: Vec<DurableMemory> = memories
         .into_iter()
         .filter(|memory| {
-            let found = base::interface::memory::scan_for_secrets(memory);
+            let found = base::memory::scan_for_secrets(memory);
             if !found.is_empty() {
                 let kinds: Vec<&str> = found.iter().map(|f| f.kind).collect();
                 tracing::warn!(memory = %memory.name, ?kinds, "not saving an extracted memory that holds a secret");
@@ -227,14 +227,14 @@ Return only a JSON array of memories. If nothing is worth saving, return []."
     // user or external resources and is global. Persisting the whole batch
     // globally — which is what the unscoped `persist_batch` does for new
     // names — leaked one project's context into every other project.
-    let scoped: Vec<base::interface::memory::ScopedMemory> = memories
+    let scoped: Vec<base::memory::ScopedMemory> = memories
         .into_iter()
         .map(|memory| {
             let scope = match memory.memory_type {
-                MemoryType::Project => base::interface::memory::MemoryScope::Local,
-                _ => base::interface::memory::MemoryScope::User,
+                MemoryType::Project => base::memory::MemoryScope::Local,
+                _ => base::memory::MemoryScope::User,
             };
-            base::interface::memory::ScopedMemory { memory, scope }
+            base::memory::ScopedMemory { memory, scope }
         })
         .collect();
     let persisted = tokio::task::spawn_blocking(move || {
@@ -256,7 +256,7 @@ Return only a JSON array of memories. If nothing is worth saving, return []."
             );
         }
         store.persist_batch_scoped(admitted)?;
-        Ok::<_, base::interface::memory::MemoryError>(())
+        Ok::<_, base::memory::MemoryError>(())
     })
     .await;
     match persisted {

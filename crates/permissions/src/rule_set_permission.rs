@@ -83,7 +83,7 @@ impl RuleSetPermission {
     /// caller adds on top (the daemon's `SessionOptions::permission_rules`),
     /// evaluated alongside the configured ones rather than replacing them.
     pub fn from_settings(
-        settings: &base::interface::settings::Settings,
+        settings: &base::settings::Settings,
         mode: PermissionMode,
         tools: Arc<dyn ToolRegistry>,
         extra_rules: impl IntoIterator<Item = base::permission::PermissionRule>,
@@ -811,13 +811,8 @@ mod tests {
             std::fs::create_dir_all(dir).unwrap();
             std::fs::write(dir.join("settings.json"), body).unwrap();
         }
-        let settings = base::interface::settings::Settings::load(
-            global,
-            root.path().join("scene"),
-            project,
-            "code",
-            "m",
-        );
+        let settings =
+            base::settings::Settings::load(global, root.path().join("scene"), project, "code", "m");
 
         let perm = RuleSetPermission::from_settings(
             &settings,
@@ -849,10 +844,10 @@ mod tests {
     fn with_managed(
         user: serde_json::Value,
         managed: serde_json::Value,
-    ) -> base::interface::settings::Settings {
+    ) -> base::settings::Settings {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("settings.json"), user.to_string()).unwrap();
-        let mut settings = base::interface::settings::Settings::load(
+        let mut settings = base::settings::Settings::load(
             root.path().to_path_buf(),
             root.path().join("scene"),
             root.path().join("project"),
@@ -866,7 +861,7 @@ mod tests {
     }
 
     async fn verdict(
-        settings: &base::interface::settings::Settings,
+        settings: &base::settings::Settings,
         mode: PermissionMode,
         command: &'static str,
     ) -> PermissionOutcome {
@@ -945,7 +940,7 @@ mod tests {
         );
         assert_eq!(
             settings.permission_mode,
-            base::interface::settings::PermissionMode::Default
+            base::settings::PermissionMode::Default
         );
         let outcome = verdict(&settings, PermissionMode::BypassPermissions, "touch x").await;
         assert!(

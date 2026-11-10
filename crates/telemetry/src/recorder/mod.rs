@@ -40,9 +40,9 @@ use async_trait::async_trait;
 use base::interface::model::{
     Model, ModelError, ModelEvent, ModelMessage, ModelStream, StreamParams, ToolDef, Usage,
 };
-use base::interface::prompt::PromptBlock;
-use base::interface::settings::{Divergence, RecorderConfig, RecorderMode};
+use base::prompt::PromptBlock;
 use base::provider::ApiType;
+use base::settings::{Divergence, RecorderConfig, RecorderMode};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -960,8 +960,8 @@ impl Drop for RecordingStream {
 mod tests {
     use super::*;
     use base::interface::model::{call_purpose, CallOrigin};
-    use base::interface::prompt::BlockRole;
-    use base::interface::settings::ThinkingMode;
+    use base::prompt::BlockRole;
+    use base::settings::ThinkingMode;
     use futures::StreamExt;
 
     /// Replays a fixed script, or fails to open when `open_error` is set.

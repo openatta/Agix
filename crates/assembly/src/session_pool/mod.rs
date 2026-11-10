@@ -8,12 +8,12 @@
 //! - session.list 合并活跃 + 历史
 
 use crate::rpc::SessionOptions;
+use base::event::AgentEvent;
 use base::id::Id;
-use base::interface::event::AgentEvent;
 use base::interface::permission::Permission;
 use base::interface::scene::Scene;
-use base::interface::settings::Settings;
-use base::interface::settings::{Divergence, RecorderConfig, RecorderMode};
+use base::settings::Settings;
+use base::settings::{Divergence, RecorderConfig, RecorderMode};
 #[cfg(feature = "mcp")]
 use mcp::manager::McpManager;
 use model::adapter::AnthropicModel;
@@ -454,7 +454,7 @@ impl SessionNamer {
             CallOrigin, MessageRole, ModelContentBlock, ModelError, ModelEvent, ModelMessage,
             StreamParams,
         };
-        use base::interface::prompt::PromptBlock;
+        use base::prompt::PromptBlock;
         use futures::StreamExt;
 
         let system = PromptBlock::system(
@@ -469,7 +469,7 @@ impl SessionNamer {
         let params = StreamParams {
             model: self.model_name.clone(),
             max_tokens: 50,
-            thinking_mode: base::interface::settings::ThinkingMode::Off,
+            thinking_mode: base::settings::ThinkingMode::Off,
             effort: None,
             fallback_model: None,
             cache_edits: vec![],

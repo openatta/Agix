@@ -12,8 +12,8 @@ use base::interface::mcp_servers::{McpPromptCommand, McpPromptInvocation, McpSer
 use base::interface::model::{
     Model, ModelError, ModelEvent, ModelMessage, ModelStream, StreamParams, ToolDef,
 };
-use base::interface::prompt::PromptBlock;
-use base::interface::settings::{PathSettings, Settings};
+use base::prompt::PromptBlock;
+use base::settings::{PathSettings, Settings};
 use base::tool::{InMemoryToolRegistry, Tool};
 use runtime::agent::Builder;
 use runtime::module::{Module, ModuleError, SessionContext};

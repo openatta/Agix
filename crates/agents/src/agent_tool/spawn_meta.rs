@@ -74,7 +74,7 @@ impl SpawnTelemetry {
 pub(super) struct SubagentPayload {
     pub(super) session_id: String,
     pub(super) cwd: std::path::PathBuf,
-    pub(super) permission_mode: base::interface::settings::PermissionMode,
+    pub(super) permission_mode: base::settings::PermissionMode,
     pub(super) agent_type: Option<String>,
     pub(super) stop_reason: Option<String>,
 }

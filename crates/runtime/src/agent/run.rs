@@ -82,7 +82,7 @@ impl Agent {
             .tools
             .list()
             .iter()
-            .map(|t| base::interface::event::ToolInfo {
+            .map(|t| base::event::ToolInfo {
                 name: t.name().to_string(),
                 description: t.description().to_string(),
             })
@@ -514,7 +514,7 @@ impl Agent {
     }
 
     /// Recorder status — None when no recording is configured.
-    pub fn recorder(&self) -> Option<&base::interface::settings::RecorderConfig> {
+    pub fn recorder(&self) -> Option<&base::settings::RecorderConfig> {
         self.settings.recorder.as_ref()
     }
 

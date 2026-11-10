@@ -41,7 +41,7 @@ pub struct SkillEntry {
     /// Override model for this skill
     pub model: Option<String>,
     /// Effort/thinking-mode override while this skill is active. Maps onto
-    /// `base::interface::settings::ThinkingMode` — Agix has no separate
+    /// `base::settings::ThinkingMode` — Agix has no separate
     /// "effort" axis, so this is not a new concept, just this field's name.
     pub effort: Option<String>,
     /// Execution context: "fork" (sub-agent) or "inline" (default)

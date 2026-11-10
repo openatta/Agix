@@ -74,10 +74,10 @@ pub fn format_rule_string(r: &PermissionRule) -> String {
 /// 多数调用方要的是 [`rules_from_all_tiers`]——它按来源分别调用本函数，
 /// 直接用本函数意味着调用方自己决定 `source`。
 pub fn rules_from_settings(
-    rules: &[base::interface::settings::PermissionRule],
+    rules: &[base::settings::PermissionRule],
     source: RuleSource,
 ) -> Vec<PermissionRule> {
-    use base::interface::settings::PermissionAction;
+    use base::settings::PermissionAction;
     rules
         .iter()
         .filter_map(|r| {
@@ -106,7 +106,7 @@ pub fn rules_from_settings(
 /// （`ProjectSettings`），`settings.local.json` 是 `LocalSettings`，部署方的
 /// managed 层是 `PolicySettings`。代码里直接构造、没有层信息的规则按
 /// `ProjectSettings` 算。
-pub fn rules_from_all_tiers(settings: &base::interface::settings::Settings) -> Vec<PermissionRule> {
+pub fn rules_from_all_tiers(settings: &base::settings::Settings) -> Vec<PermissionRule> {
     use base::interface::config_source::Tier;
     let mut rules: Vec<PermissionRule> = settings
         .permission_rules
@@ -223,9 +223,9 @@ mod tests {
 
     fn settings_rule(
         tool: &str,
-        action: base::interface::settings::PermissionAction,
-    ) -> base::interface::settings::PermissionRule {
-        base::interface::settings::PermissionRule {
+        action: base::settings::PermissionAction,
+    ) -> base::settings::PermissionRule {
+        base::settings::PermissionRule {
             tool: tool.to_string(),
             action,
             tier: None,
@@ -234,7 +234,7 @@ mod tests {
 
     #[test]
     fn settings_rules_convert_with_action_mapped_to_behavior() {
-        use base::interface::settings::PermissionAction;
+        use base::settings::PermissionAction;
         let converted = rules_from_settings(
             &[
                 settings_rule("Bash(git push:*)", PermissionAction::Deny),
@@ -257,7 +257,7 @@ mod tests {
 
     #[test]
     fn settings_rules_skip_unparsable_entries_instead_of_failing_all() {
-        use base::interface::settings::PermissionAction;
+        use base::settings::PermissionAction;
         let converted = rules_from_settings(
             &[
                 settings_rule("Bash(unbalanced", PermissionAction::Deny),

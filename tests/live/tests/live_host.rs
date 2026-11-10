@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use base::interface::prompt::PromptBlock;
 use base::interface::scene::{Scene, ScenePromptContext, TokenBudget};
+use base::prompt::PromptBlock;
 use base::tool::{ProgressSender, Tool, ToolContext, ToolResult, ToolResultContent};
 use live::{Host, LiveRun, Mode, Watcher};
 use serde_json::{json, Value};

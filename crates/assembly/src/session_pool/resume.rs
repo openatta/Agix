@@ -332,7 +332,7 @@ impl SessionPool {
         name: Option<String>,
         created_at: String,
         last_active: String,
-        mode: base::interface::settings::PermissionMode,
+        mode: base::settings::PermissionMode,
     ) -> serde_json::Value {
         let (mode, project) = {
             let sessions = self.sessions.lock().await;
@@ -353,7 +353,7 @@ impl SessionPool {
                 self.settings.read().await.clone(),
             ),
         };
-        let prompts_enabled = mode != base::interface::settings::PermissionMode::BypassPermissions
+        let prompts_enabled = mode != base::settings::PermissionMode::BypassPermissions
             || settings
                 .managed
                 .as_ref()

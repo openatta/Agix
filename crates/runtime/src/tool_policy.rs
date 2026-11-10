@@ -58,8 +58,8 @@ pub(crate) fn covers(entry: &str, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base::interface::prompt::PromptBlock;
     use base::interface::scene::{ScenePromptContext, TokenBudget};
+    use base::prompt::PromptBlock;
 
     struct Whitelisted {
         tools: Vec<&'static str>,

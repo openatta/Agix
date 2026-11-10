@@ -16,11 +16,11 @@
 
 use base::interface::model::{Model, Usage};
 use base::interface::scene::Scene;
-use base::interface::settings::{PathSettings, PermissionMode, Settings, ThinkingMode};
 use base::interface::tool::{
     InMemoryToolRegistry, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext,
     ToolResult,
 };
+use base::settings::{PathSettings, PermissionMode, Settings, ThinkingMode};
 use runtime::agent::Builder;
 use std::sync::Arc;
 use test_runner::scripted_model::{Reply, ScriptedModel};

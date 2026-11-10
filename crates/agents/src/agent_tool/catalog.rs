@@ -380,7 +380,7 @@ pub(super) fn parse_agent_type_file(content: &str, path: &Path) -> Option<AgentT
     let mut allowed_tools: Vec<String> = Vec::new();
     let mut disallowed_tools: Vec<String> = Vec::new();
     let mut model: Option<String> = None;
-    let mut permission_mode: Option<base::interface::settings::PermissionMode> = None;
+    let mut permission_mode: Option<base::settings::PermissionMode> = None;
     let mut effort: Option<String> = None;
     let mut max_turns: Option<u32> = None;
     let mut skills: Vec<String> = Vec::new();

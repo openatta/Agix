@@ -15,7 +15,7 @@
 //! request again.
 
 use crate::agent::EventSender;
-use base::interface::event::AgentEvent;
+use base::event::AgentEvent;
 use base::interface::model::{
     MessageRole, ModelContentBlock, ModelError, ModelEvent, ModelMessage, ModelStream, Usage,
 };

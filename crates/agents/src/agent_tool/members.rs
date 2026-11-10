@@ -21,7 +21,7 @@ impl AgentTool {
         tools: Arc<InMemoryToolRegistry>,
         cwd: std::path::PathBuf,
         subagent_type: Option<&str>,
-        permission_mode: base::interface::settings::PermissionMode,
+        permission_mode: base::settings::PermissionMode,
         seat: Option<base::interface::agent_spawner::TeamSeat>,
     ) -> Result<(Agent, EventReceiver, InputSender, SubagentPayload), base::error::ToolError> {
         let depth = self
@@ -81,7 +81,7 @@ impl AgentTool {
         subagent_type: Option<String>,
         cwd: std::path::PathBuf,
         session: Arc<base::context::SessionState>,
-        permission_mode: Option<base::interface::settings::PermissionMode>,
+        permission_mode: Option<base::settings::PermissionMode>,
     ) -> Result<String, base::error::ToolError> {
         let _spawn_guard = self.inner.team_spawn_lock.lock().await;
         let key = (team_name.clone(), member_name.clone());
@@ -163,7 +163,7 @@ impl AgentTool {
                     .as_ref()
                     .and_then(|r| r.team_permission_mode(&team_name))
             })
-            .unwrap_or(base::interface::settings::PermissionMode::Plan);
+            .unwrap_or(base::settings::PermissionMode::Plan);
         if let Some(r) = &registry {
             r.set_team_permission_mode_if_absent(&team_name, resolved_permission_mode);
         }
