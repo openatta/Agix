@@ -554,89 +554,121 @@ async fn bridged(tool: &dyn Tool, input: &Value, ctx: &ToolContext) -> ToolFacts
     facts
 }
 
-/// Bash and Monitor state their own facts; what those lead to must be what
-/// the facts bridged from their old answers lead to, in every cell. Where the
-/// gate does not refuse a sample before reading the tool, both must also be
-/// what the gate concludes, so the comparison is about the decisions and not
-/// only about itself.
-#[tokio::test]
-async fn bash_and_monitor_facts_conclude_as_their_bridged_ones() {
-    let dir = tempfile::tempdir().unwrap();
-    let cwd = dir.path().canonicalize().unwrap();
+/// One cell of one call: the conclusion the tool's own facts lead to, the one
+/// the facts bridged from its old answers lead to, and the gate's where it did
+/// not refuse the sample before reading the tool.
+struct Compared {
+    at: String,
+    cell: Cell,
+    stated: &'static str,
+    old: &'static str,
+    gate: Option<&'static str>,
+}
+
+async fn compare_stated_with_bridged(name: &str, input: &Value, cwd: &Path) -> Vec<Compared> {
     let registry = builtin_tools();
-    let mut compared = 0usize;
-    let mut against_the_gate = 0usize;
-    for name in ["Bash", "Monitor"] {
-        let tool = registry.get(name).unwrap();
-        for sample in samples(name, &cwd, "/home/matrix") {
-            let input = &sample.input;
-            let refused_before_facts = matches!(
-                decide(
-                    &permission(name, RuleCase::None),
-                    &tool,
-                    input,
-                    &cwd,
-                    PermissionMode::BypassPermissions,
-                    false,
-                )
-                .await,
-                PermissionOutcome::Deny { .. }
-            );
-            for (mode_name, mode) in MODES {
-                for unattended in [false, true] {
-                    let session = session(&cwd, mode, unattended);
-                    let ctx = context_like_the_gates(&session, &cwd);
-                    let stated = ToolFacts::gather(tool.as_ref(), input, &ctx).await;
-                    let old = bridged(tool.as_ref(), input, &ctx).await;
-                    assert_eq!(stated.subject, old.subject, "{name} {input}");
-                    assert_eq!(stated.traits, old.traits, "{name} {input}");
-                    assert_eq!(stated.stance, old.stance, "{name} {input}");
-                    assert_eq!(stated.origin, old.origin, "{name} {input}");
-                    let confined = !ctx.dangerously_disable_sandbox
-                        && (!ctx.sandbox.unattended_requires_network_policy
-                            || !matches!(
-                                ctx.sandbox.network_mode,
-                                base::context::config::NetworkModeConfig::Unrestricted
-                            ));
-                    for (rule_name, rule) in RULES {
-                        let outcome = decide(
-                            &permission(name, rule),
-                            &tool,
-                            input,
-                            &cwd,
-                            mode,
-                            unattended,
-                        )
-                        .await;
-                        for hook_approved in [false, true] {
-                            let cell = Cell {
-                                mode,
-                                rule,
-                                unattended,
-                                hook_approved,
-                                confined,
-                            };
-                            let at = format!(
-                                "{name} {input} {mode_name} {rule_name} unattended={unattended} \
-                                 hook={hook_approved}: stated {stated:?}, bridged {old:?}"
-                            );
-                            let expected = conclusion(&old, cell);
-                            assert_eq!(conclusion(&stated, cell), expected, "{at}");
-                            compared += 1;
-                            if !refused_before_facts {
-                                assert_eq!(
-                                    expected,
-                                    after_runtime(&outcome, hook_approved, unattended),
-                                    "{at}"
-                                );
-                                against_the_gate += 1;
-                            }
-                        }
-                    }
+    let tool = registry.get(name).unwrap();
+    let refused_before_facts = matches!(
+        decide(
+            &permission(name, RuleCase::None),
+            &tool,
+            input,
+            cwd,
+            PermissionMode::BypassPermissions,
+            false,
+        )
+        .await,
+        PermissionOutcome::Deny { .. }
+    );
+    let mut out = Vec::new();
+    for (mode_name, mode) in MODES {
+        for unattended in [false, true] {
+            let session = session(cwd, mode, unattended);
+            let ctx = context_like_the_gates(&session, cwd);
+            let stated = ToolFacts::gather(tool.as_ref(), input, &ctx).await;
+            let old = bridged(tool.as_ref(), input, &ctx).await;
+            assert_eq!(stated.subject, old.subject, "{name} {input}");
+            assert_eq!(stated.traits, old.traits, "{name} {input}");
+            assert_eq!(stated.stance, old.stance, "{name} {input}");
+            assert_eq!(stated.origin, old.origin, "{name} {input}");
+            let confined = !ctx.dangerously_disable_sandbox
+                && (!ctx.sandbox.unattended_requires_network_policy
+                    || !matches!(
+                        ctx.sandbox.network_mode,
+                        base::context::config::NetworkModeConfig::Unrestricted
+                    ));
+            for (rule_name, rule) in RULES {
+                let outcome =
+                    decide(&permission(name, rule), &tool, input, cwd, mode, unattended).await;
+                for hook_approved in [false, true] {
+                    let cell = Cell {
+                        mode,
+                        rule,
+                        unattended,
+                        hook_approved,
+                        confined,
+                    };
+                    out.push(Compared {
+                        at: format!(
+                            "{name} {input} {mode_name} {rule_name} unattended={unattended} \
+                             hook={hook_approved}: stated {stated:?}, bridged {old:?}"
+                        ),
+                        cell,
+                        stated: conclusion(&stated, cell),
+                        old: conclusion(&old, cell),
+                        gate: (!refused_before_facts)
+                            .then(|| after_runtime(&outcome, hook_approved, unattended)),
+                    });
                 }
             }
         }
     }
+    out
+}
+
+/// Tools that state their own facts: what those lead to must be what the facts
+/// bridged from their old answers lead to, in every cell. Where the gate does
+/// not refuse a sample before reading the tool, both must also be what the
+/// gate concludes, so the comparison is about the decisions and not only about
+/// itself. Returns how many cells were compared, and how many of those
+/// against the gate.
+async fn assert_facts_conclude_as_bridged(names: &[&str]) -> (usize, usize) {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().canonicalize().unwrap();
+    let (mut compared, mut against_the_gate) = (0usize, 0usize);
+    for name in names {
+        for sample in samples(name, &cwd, "/home/matrix") {
+            for c in compare_stated_with_bridged(name, &sample.input, &cwd).await {
+                assert_eq!(c.stated, c.old, "{}", c.at);
+                compared += 1;
+                if let Some(gate) = c.gate {
+                    assert_eq!(c.old, gate, "{}", c.at);
+                    against_the_gate += 1;
+                }
+            }
+        }
+    }
+    (compared, against_the_gate)
+}
+
+#[tokio::test]
+async fn bash_and_monitor_facts_conclude_as_their_bridged_ones() {
+    let (compared, against_the_gate) = assert_facts_conclude_as_bridged(&["Bash", "Monitor"]).await;
     assert_eq!(compared, (12 + 4) * 5 * 2 * 5 * 2);
     assert_eq!(against_the_gate, (9 + 4) * 5 * 2 * 5 * 2);
+}
+
+#[tokio::test]
+async fn file_tools_facts_conclude_as_their_bridged_ones() {
+    let (compared, against_the_gate) = assert_facts_conclude_as_bridged(&[
+        "Read",
+        "Write",
+        "Edit",
+        "NotebookEdit",
+        "Grep",
+        "Glob",
+    ])
+    .await;
+    assert_eq!(compared, (3 + 4 + 2 + 2 + 2 + 2) * 5 * 2 * 5 * 2);
+    assert!(against_the_gate > 0);
 }

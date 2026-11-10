@@ -8,6 +8,7 @@ use crate::cancel::run_with_cancel;
 use async_trait::async_trait;
 use base::error::ToolError;
 use base::interface::exec::FileSystem;
+use base::interface::permission::PermissionFacts;
 use base::tool::{
     PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
     ToolSpec, ValidationResult,
@@ -105,6 +106,11 @@ impl Tool for FileWriteTool {
     async fn check_permissions(&self, input: &Value, ctx: &ToolContext) -> PermissionDecision {
         let file_path = self.permission_match_content(input);
         crate::security::check_write_permission(self.name(), file_path.as_deref(), ctx).await
+    }
+
+    async fn permission_facts(&self, input: &Value, ctx: &ToolContext) -> PermissionFacts {
+        let file_path = self.permission_match_content(input);
+        crate::security::write_facts(self.name(), file_path.as_deref(), ctx).await
     }
 
     async fn call(

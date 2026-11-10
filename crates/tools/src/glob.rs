@@ -5,6 +5,7 @@
 
 use async_trait::async_trait;
 use base::error::ToolError;
+use base::interface::permission::{PermissionFacts, Reach, Subject};
 use base::tool::{
     PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
     ToolSpec, ValidationResult,
@@ -107,6 +108,23 @@ impl Tool for GlobTool {
         PermissionDecision::Ask {
             message: "Glob outside the project requires confirmation".into(),
             decision_reason: None,
+        }
+    }
+
+    async fn permission_facts(&self, input: &Value, ctx: &ToolContext) -> PermissionFacts {
+        let subject = Subject::of(
+            base::tool::PermissionContentKind::ReadPath,
+            self.permission_match_content(input),
+        );
+        match serde_json::from_value::<GlobInput>(input.clone()).map(|i| i.path) {
+            Ok(Some(path)) => crate::security::read_facts(
+                self.name(),
+                subject,
+                Some(&resolve_path(&path, &ctx.cwd)),
+                ctx,
+            ),
+            Ok(None) => PermissionFacts::new(subject, Reach::Inside),
+            Err(_) => crate::security::read_facts(self.name(), subject, None, ctx),
         }
     }
 

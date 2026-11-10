@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use base::engine_exec::EngineExec;
 use base::error::ToolError;
 use base::interface::exec::{ExecError, FileSystem, Metadata, ProcessSpec};
+use base::interface::permission::{PermissionFacts, Subject};
 use base::tool::{
     PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
     ToolResultBlock, ToolResultContent, ToolSpec, ValidationResult,
@@ -125,6 +126,17 @@ impl Tool for FileReadTool {
             message: "Read outside the project requires confirmation".into(),
             decision_reason: None,
         }
+    }
+
+    async fn permission_facts(&self, input: &Value, ctx: &ToolContext) -> PermissionFacts {
+        let subject = Subject::of(
+            base::tool::PermissionContentKind::ReadPath,
+            self.permission_match_content(input),
+        );
+        let target = serde_json::from_value::<FileReadInput>(input.clone())
+            .ok()
+            .map(|parsed| resolve_path(&parsed.file_path, &ctx.cwd));
+        crate::security::read_facts(self.name(), subject, target.as_deref(), ctx)
     }
 
     async fn call(

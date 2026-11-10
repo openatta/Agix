@@ -1,6 +1,7 @@
 //! Tool security helpers — path validation, sandbox detection, safe guards.
 
 use base::interface::exec::FileSystem;
+use base::interface::permission::{PermissionFacts, Reach, Subject};
 use permissions::path_rule::{is_within_root_resolved, normalize_path_lexically};
 use std::path::{Component, Path, PathBuf};
 
@@ -99,40 +100,77 @@ pub async fn write_policy(ctx: &base::tool::ToolContext) -> permissions::path_sa
         .with_allowed(allowed)
 }
 
-/// What a file-writing tool decides about writing `file_path` — `None` when
-/// the input did not parse: inside the write policy it allows, outside every
-/// root it asks, onto a guarded name or system path it denies.
-pub async fn check_write_permission(
+/// What a file-writing tool says about writing `file_path` — `None` when the
+/// input did not parse: inside the write policy it is `Inside`, outside every
+/// root `Outside`, onto a guarded name or system path `Refused`.
+pub async fn write_facts(
     tool: &str,
     file_path: Option<&str>,
     ctx: &base::tool::ToolContext,
-) -> base::tool::PermissionDecision {
-    use base::tool::PermissionDecision;
+) -> PermissionFacts {
     use permissions::path_safety::{check_write_for, PathSafetyError};
 
+    let subject = file_path.map_or(Subject::None, |p| Subject::WritePath(p.into()));
     let Some(file_path) = file_path else {
-        return PermissionDecision::Ask {
-            message: format!("{tool} requires confirmation"),
-            decision_reason: None,
-        };
+        return PermissionFacts::new(subject, Reach::Unknown)
+            .with_question(format!("{tool} requires confirmation"));
     };
     let fs = &*ctx.exec.filesystem;
     let target = resolve_write_target(file_path, &ctx.cwd, fs).await;
     let resolved = fs.canonicalize_best_effort(&target).await;
     let policy = write_policy(ctx).await;
     match check_write_for(Path::new(file_path), &resolved, &policy) {
-        Ok(()) => PermissionDecision::Allow {
+        Ok(()) => PermissionFacts::new(subject, Reach::Inside),
+        Err(PathSafetyError::OutsideAllowedRoots { .. }) => {
+            PermissionFacts::new(subject, Reach::Outside)
+                .with_question(format!("{tool} outside the project requires confirmation"))
+        }
+        Err(err) => PermissionFacts::new(subject, Reach::Refused(format!("{err:?}"))),
+    }
+}
+
+/// What a file-writing tool decides about writing `file_path`.
+pub async fn check_write_permission(
+    tool: &str,
+    file_path: Option<&str>,
+    ctx: &base::tool::ToolContext,
+) -> base::tool::PermissionDecision {
+    use base::tool::PermissionDecision;
+
+    let facts = write_facts(tool, file_path, ctx).await;
+    match facts.reach {
+        Reach::Inside => PermissionDecision::Allow {
             decision_reason: Some("project_write".into()),
         },
-        Err(PathSafetyError::OutsideAllowedRoots { .. }) => PermissionDecision::Ask {
-            message: format!("{tool} outside the project requires confirmation"),
-            decision_reason: None,
-        },
-        Err(err) => PermissionDecision::Deny {
-            reason: Some(format!("{err:?}")),
+        Reach::Refused(reason) => PermissionDecision::Deny {
+            reason: Some(reason),
             decision_reason: Some("path_safety".into()),
         },
+        _ => PermissionDecision::Ask {
+            message: facts.question.unwrap_or_default(),
+            decision_reason: None,
+        },
     }
+}
+
+/// What a read-only tool says about reading `target`: `Inside` where
+/// [`read_allowed`], `Outside` elsewhere, `Unknown` when the input named no
+/// path it could parse.
+pub fn read_facts(
+    tool: &str,
+    subject: Subject,
+    target: Option<&Path>,
+    ctx: &base::tool::ToolContext,
+) -> PermissionFacts {
+    let reach = match target {
+        Some(path) if read_allowed(path, ctx) => {
+            return PermissionFacts::new(subject, Reach::Inside)
+        }
+        Some(_) => Reach::Outside,
+        None => Reach::Unknown,
+    };
+    PermissionFacts::new(subject, reach)
+        .with_question(format!("{tool} outside the project requires confirmation"))
 }
 
 /// Whether `sandbox.allowed_domains` names the host `url` reaches. What the
