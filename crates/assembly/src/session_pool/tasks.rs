@@ -228,7 +228,7 @@ impl SessionPool {
         }
         self.ensure_live(session_id, None)
             .await
-            .map_err(|e| (codes::INTERNAL_ERROR, e))?;
+            .map_err(CreateError::into_rpc)?;
         let (state, spawner, cancel) = {
             let sessions = self.sessions.lock().await;
             let live = sessions.get(session_id).ok_or_else(not_found)?;
@@ -273,7 +273,7 @@ impl SessionPool {
         }
         self.ensure_live(session_id, None)
             .await
-            .map_err(|e| (codes::INTERNAL_ERROR, e))?;
+            .map_err(CreateError::into_rpc)?;
         let input_tx = {
             let sessions = self.sessions.lock().await;
             let live = sessions.get(session_id).ok_or_else(|| {

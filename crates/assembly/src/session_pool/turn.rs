@@ -89,7 +89,7 @@ impl SessionPool {
                 };
                 match resolved {
                     Ok(sid) => sid,
-                    Err(e) => return RpcResponse::err(id, codes::INTERNAL_ERROR, e),
+                    Err(e) => return e.into_response(id),
                 }
             }
             None => {
@@ -106,9 +106,7 @@ impl SessionPool {
                     .await
                 {
                     Ok(sid) => sid,
-                    Err(e) => {
-                        return RpcResponse::err(id, codes::INTERNAL_ERROR, e);
-                    }
+                    Err(e) => return e.into_response(id),
                 }
             }
         };

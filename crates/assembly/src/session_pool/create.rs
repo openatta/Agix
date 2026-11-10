@@ -88,7 +88,7 @@ impl SessionPool {
                 false,
             )
             .await
-            .map_err(|e| (codes::INTERNAL_ERROR, e))?;
+            .map_err(CreateError::into_rpc)?;
 
         let created_at = {
             let sessions = self.sessions.lock().await;
@@ -125,9 +125,9 @@ impl SessionPool {
         project_root_for_meta: Option<PathBuf>,
         options: Option<&SessionOptions>,
         resume: bool,
-    ) -> Result<String, String> {
+    ) -> Result<String, CreateError> {
         self.refuse_while_shutting_down()?;
-        self.wait_until_stopped(&session_id).await;
+        self.wait_until_stopped(&session_id).await?;
         let claim = self.claim_log(&session_id).await?;
         let spec = self.spec_for(&session_id, resume, options).await;
         self.lock_kept_specs().retain(|k| k != &session_id);
@@ -521,7 +521,7 @@ impl SessionPool {
                 .await
                 .get(&session_id)
                 .and_then(|live| live.state.clone());
-            self.stop_live_agent(&session_id).await;
+            self.stop_live_agent(&session_id).await?;
             let resume_start = std::time::Instant::now();
             let resume_result = agent.resume_session(&session_id).await;
             if let Some(previous) = &previous_state {
@@ -587,7 +587,7 @@ impl SessionPool {
         // session inserted after that would outlive the shutdown.
         if let Err(e) = self.refuse_while_shutting_down() {
             cancel.cancel();
-            return Err(e);
+            return Err(e.into());
         }
 
         // 容量检查：驱逐最久未活跃的 session。只有这次 insert 真的会让

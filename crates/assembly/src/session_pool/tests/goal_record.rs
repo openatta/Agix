@@ -119,7 +119,7 @@ async fn an_evicted_session_s_engine_writes_its_goal_changes_as_it_stops() {
 
     let live = pool.sessions.lock().await.remove(&sid).unwrap();
     pool.evict(&sid, &live);
-    pool.wait_until_stopped(&sid).await;
+    pool.wait_until_stopped(&sid).await.unwrap();
     let cold = pool.session_goal(&sid).await.unwrap();
     assert_eq!(cold["goal"]["phase"], "blocked", "{cold}");
 }

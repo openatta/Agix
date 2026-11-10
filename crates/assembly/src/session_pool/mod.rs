@@ -91,6 +91,11 @@ pub enum ResumeError {
         parent_session_id: Option<String>,
         final_state: history::entry::SessionEndState,
     },
+    /// The engine the session last ran on has not stopped yet.
+    Busy {
+        session_id: String,
+        message: String,
+    },
     Rpc(RpcError),
 }
 
@@ -1439,7 +1444,84 @@ enum Rebuild {
         current_turn: Option<String>,
         running_tasks: Vec<String>,
     },
+    Failed(CreateError),
+}
+
+/// Why a session was not brought up under its id.
+#[derive(Debug)]
+pub(super) enum CreateError {
+    /// The engine the id last ran on is still running past
+    /// [`AGENT_EXIT_GRACE`]; a second one would write the same transcript.
+    PreviousEngineRunning { session_id: String, message: String },
     Failed(String),
+}
+
+impl From<String> for CreateError {
+    fn from(e: String) -> Self {
+        Self::Failed(e)
+    }
+}
+
+impl CreateError {
+    pub(super) fn previous_engine_running(sid: &str) -> Self {
+        Self::PreviousEngineRunning {
+            session_id: sid.to_string(),
+            message: format!(
+                "session `{sid}` is still stopping on its previous engine; try again once it has"
+            ),
+        }
+    }
+
+    pub(super) fn context(self, outer: impl FnOnce(String) -> String) -> Self {
+        match self {
+            Self::PreviousEngineRunning {
+                session_id,
+                message,
+            } => Self::PreviousEngineRunning {
+                session_id,
+                message: outer(message),
+            },
+            Self::Failed(e) => Self::Failed(outer(e)),
+        }
+    }
+
+    /// For an RPC whose `SESSION_BUSY` carries no `data`.
+    pub(super) fn into_rpc(self) -> RpcError {
+        match self {
+            Self::PreviousEngineRunning { message, .. } => (codes::SESSION_BUSY, message),
+            Self::Failed(e) => (codes::INTERNAL_ERROR, e),
+        }
+    }
+
+    pub(super) fn into_response(self, id: serde_json::Value) -> RpcResponse {
+        match self {
+            Self::PreviousEngineRunning {
+                session_id,
+                message,
+            } => RpcResponse::err_with_data(
+                id,
+                codes::SESSION_BUSY,
+                message,
+                serde_json::json!({ "session_id": session_id, "current_turn_id": null }),
+            ),
+            Self::Failed(e) => RpcResponse::err(id, codes::INTERNAL_ERROR, e),
+        }
+    }
+}
+
+impl From<CreateError> for ResumeError {
+    fn from(e: CreateError) -> Self {
+        match e {
+            CreateError::PreviousEngineRunning {
+                session_id,
+                message,
+            } => ResumeError::Busy {
+                session_id,
+                message,
+            },
+            CreateError::Failed(e) => ResumeError::Rpc((codes::INTERNAL_ERROR, e)),
+        }
+    }
 }
 
 impl From<Rebuild> for SetModelError {
@@ -1456,7 +1538,11 @@ impl From<Rebuild> for SetModelError {
                 codes::SESSION_NOT_FOUND,
                 "session is no longer running".to_string(),
             )),
-            Rebuild::Failed(e) => SetModelError::Rpc((codes::INTERNAL_ERROR, e)),
+            Rebuild::Failed(CreateError::PreviousEngineRunning { .. }) => SetModelError::Busy {
+                current_turn_id: None,
+                running_task_ids: Vec::new(),
+            },
+            Rebuild::Failed(e) => SetModelError::Rpc(e.into_rpc()),
         }
     }
 }

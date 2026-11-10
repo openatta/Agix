@@ -133,6 +133,7 @@ impl SessionPool {
                 .await
                 .map_err(|e| match e {
                     ResumeError::Rpc(e) => e,
+                    ResumeError::Busy { message, .. } => (codes::SESSION_BUSY, message),
                     ResumeError::SidechainTerminal { session_id, .. } => (
                         codes::SIDECHAIN_TERMINAL,
                         format!("session {session_id} is a finished sub-agent session"),

@@ -24,20 +24,24 @@ impl SessionPool {
 
     /// Wait, within [`AGENT_EXIT_GRACE`], for the engine `sid` last ran on
     /// to stop, if it has not.
-    pub(super) async fn wait_until_stopped(&self, sid: &str) {
+    pub(super) async fn wait_until_stopped(&self, sid: &str) -> Result<(), CreateError> {
         let exited = self
             .stopping
             .lock()
             .expect("stopping is never held across a panic")
             .get(sid)
             .cloned();
-        let Some(exited) = exited else { return };
+        let Some(exited) = exited else {
+            return Ok(());
+        };
         if tokio::time::timeout(AGENT_EXIT_GRACE, exited.cancelled())
             .await
             .is_err()
         {
             warn!(%sid, "the session's previous engine did not stop within the grace period");
+            return Err(CreateError::previous_engine_running(sid));
         }
+        Ok(())
     }
 
     /// Take `live` out of memory as [`Self::stop_removed`] does, for a
@@ -385,11 +389,11 @@ impl SessionPool {
 
     /// Stops the Agent running under `session_id`, if any, and waits for it
     /// to finish — so whatever reads its transcript next reads all of it.
-    pub(super) async fn stop_live_agent(&self, session_id: &str) {
+    pub(super) async fn stop_live_agent(&self, session_id: &str) -> Result<(), CreateError> {
         let exited = {
             let sessions = self.sessions.lock().await;
             let Some(live) = sessions.get(session_id) else {
-                return;
+                return Ok(());
             };
             live.cancel.cancel();
             live.exited.clone()
@@ -399,6 +403,8 @@ impl SessionPool {
             .is_err()
         {
             warn!(%session_id, "previous agent did not stop within the grace period");
+            return Err(CreateError::previous_engine_running(session_id));
         }
+        Ok(())
     }
 }

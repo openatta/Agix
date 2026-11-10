@@ -223,7 +223,7 @@ impl SessionPool {
             let sid = self
                 .resume_or_create(session_id.to_string(), options)
                 .await
-                .map_err(|e| ResumeError::Rpc((codes::INTERNAL_ERROR, e)))?;
+                .map_err(ResumeError::from)?;
 
             let (created_at, last_active) = {
                 let sessions = self.sessions.lock().await;
@@ -356,7 +356,7 @@ impl SessionPool {
         &self,
         sid: String,
         options: Option<&SessionOptions>,
-    ) -> Result<String, String> {
+    ) -> Result<String, CreateError> {
         let _claim = self.claim_log(&sid).await?;
         // 尝试从 HistoryStore 加载历史消息。`sid` 来自 RPC 调用方（`session.run_turn`
         // 的 `session_id` 参数），不保证是合法的 BASE58 ID——解析失败当作"没有历史"
@@ -414,7 +414,8 @@ impl SessionPool {
         let Some(scene) = self.resolve_scene(Some(&scene_id)).await else {
             return Err(format!(
                 "session `{sid}` was recorded under scene `{scene_id}`, which is not active on this daemon"
-            ));
+            )
+            .into());
         };
 
         self.create(
@@ -426,7 +427,7 @@ impl SessionPool {
             has_history,
         )
         .await
-        .map_err(|e| format!("session `{sid}` could not be brought back: {e}"))
+        .map_err(|e| e.context(|e| format!("session `{sid}` could not be brought back: {e}")))
     }
 
     /// `sid` in memory: resumed from its log, or created, unless it already
@@ -436,7 +437,7 @@ impl SessionPool {
         &self,
         sid: &str,
         options: Option<&SessionOptions>,
-    ) -> Result<String, String> {
+    ) -> Result<String, CreateError> {
         self.with_session_lock(sid, async {
             if self.sessions.lock().await.contains_key(sid) {
                 return Ok(sid.to_string());

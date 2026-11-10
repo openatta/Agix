@@ -34,6 +34,15 @@ pub(super) fn resume_failure(
                 }),
             )
         }
+        crate::session_pool::ResumeError::Busy {
+            session_id,
+            message,
+        } => RpcResponse::err_with_data(
+            id,
+            codes::SESSION_BUSY,
+            message,
+            serde_json::json!({ "session_id": session_id, "current_turn_id": null }),
+        ),
         crate::session_pool::ResumeError::Rpc((code, message)) => {
             RpcResponse::err(id, code, message)
         }

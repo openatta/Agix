@@ -1540,6 +1540,9 @@ client,会话在原地按新的规格重建(它是空闲的,不会腰斩什么),
 - 会话正在共用同一状态目录的另一个 daemon 里 → `INTERNAL_ERROR`,消息含
   "being written by another process";不会换 id 新建。`session.run_turn` 指名这样的会话
   同样如此。
+- 会话刚被关闭或驱逐,它上一个引擎在宽限期(5 秒)内还没停下 → `SESSION_BUSY`,`data` 是
+  `{session_id, current_turn_id: null}`;过一会儿再试。两个引擎不会同时写一份转录。
+  `session.run_turn` 指名这样的会话同样如此。
 - 会话因别的原因建不回来(例如它记录的 `provider` 已经不在配置里)→ `INTERNAL_ERROR`,
   消息写明原因。同样不会换一个新 id 建会话顶替,`session.run_turn` 也一样。
 
@@ -2717,7 +2720,7 @@ transcript,这一轮以 `ENGINE_ERROR` 结束,不会重发。
 | -32010 | PROJECT_NOT_FOUND | `project_root` 不存在或不是目录 |
 | -32012 | PROJECT_REQUIRED | 场景 `requires_project` 为真,但传了 `project_root: null` |
 | -32014 | SIDECHAIN_TERMINAL | 侧链会话已终态收尾,不可 resume |
-| -32015 | SESSION_BUSY | 该会话已有 turn 在跑,且 `on_busy` 是 `reject`(§5.3) |
+| -32015 | SESSION_BUSY | 该会话已有 turn 在跑,且 `on_busy` 是 `reject`(§5.3);或要把它调回内存时,它上一个引擎还没停下(`session.resume`) |
 | -32016 | PLUGINS_DISABLED | 插件子系统不可用 —— 被编译裁掉或被策略关闭 |
 | -32017 | TOO_MANY_IN_FLIGHT | 这条连接同时在途的请求已达上限(§5.2) |
 | -32018 | TASK_NOT_FOUND | `session.taskOutput`:引擎不知道这个任务(没跑过、结束得早已被忘掉,或引擎不在内存里) |

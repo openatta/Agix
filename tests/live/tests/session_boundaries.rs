@@ -5,7 +5,8 @@
 //! recovers from (`max_tokens`, `pause_turn`), thinking that streams apart
 //! from the answer and goes back with its signature, a stream cut short, and
 //! an interrupt while the model has not answered at all or a compaction
-//! summary is still being written.
+//! summary is still being written, and a closed session whose engine has not
+//! stopped yet being resumed.
 //!
 //! The live tier cannot ask for any of these on demand; here the model's side
 //! is held fixed so the product's side is all that varies.
@@ -662,6 +663,76 @@ async fn an_interrupt_ends_a_turn_whose_compaction_summary_has_not_come_back() -
         &history[..history.len().min(2000)]
     );
     drop(watcher);
+    run.finish().await;
+    Ok(())
+}
+
+/// A closed session whose engine is still stuck in a `SessionStart` hook is
+/// not resumed on a second engine: the two would write one transcript. Once
+/// the hook lets go, the resume goes through.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_whose_engine_has_not_stopped_is_not_resumed_on_another() -> anyhow::Result<()> {
+    let stub = ProviderStub::start().await?;
+    let scratch = tempfile::tempdir()?;
+    let (started, release) = (
+        scratch.path().join("started"),
+        scratch.path().join("release"),
+    );
+    let hook = scratch.path().join("hold.sh");
+    std::fs::write(
+        &hook,
+        format!(
+            "#!/bin/sh\ncat >/dev/null\nif [ ! -e '{started}' ]; then\n  touch '{started}'\n  \
+             while [ ! -e '{release}' ]; do sleep 0.05; done\nfi\necho '{{}}'\n",
+            started = started.display(),
+            release = release.display(),
+        ),
+    )?;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))?;
+    }
+    let mut run = stubbed("stuck-engine", &stub)
+        .settings(json!({
+            "hooks_config": {
+                "SessionStart": [{ "type": "command", "command": hook, "timeout": 120_000 }]
+            }
+        }))
+        .start()
+        .await?;
+    let session = run.session().await?;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !started.exists() {
+        anyhow::ensure!(Instant::now() < deadline, "the SessionStart hook never ran");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let closed = run.client.session_close(&session).await?;
+    anyhow::ensure!(closed.error.is_none(), "{closed:?}");
+    let refused = run
+        .client
+        .call("session.resume", json!({ "session_id": session }))
+        .await?;
+    let error = refused.error.as_ref().map(|e| (e.code, e.data.clone()));
+    assert_eq!(
+        error,
+        Some((
+            -32015,
+            Some(json!({ "session_id": session, "current_turn_id": null }))
+        )),
+        "{refused:?}"
+    );
+
+    std::fs::write(&release, "")?;
+    let resumed = run
+        .client
+        .call("session.resume", json!({ "session_id": session }))
+        .await?;
+    assert_eq!(
+        resumed.result.as_ref().map(|r| r["status"].clone()),
+        Some(json!("resumed")),
+        "{resumed:?}"
+    );
     run.finish().await;
     Ok(())
 }
