@@ -2543,3 +2543,190 @@ async fn plugin_reload_picks_up_a_plugin_that_appeared_on_disk() {
     _server.shutdown_token().cancel();
     let _ = handle.await;
 }
+
+#[cfg(feature = "plugin-packages")]
+fn build_scene_plugin_zip(dir: &std::path::Path, name: &str) -> (PathBuf, String) {
+    use std::io::Write;
+    let mut buf = Vec::new();
+    {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+        let files = [
+            (
+                "plugin.toml",
+                format!(
+                    "[plugin]\nname = \"{name}\"\nversion = \"1.0.0\"\napi_version = \"0.1\"\n\n[scene]\ndir = \"scene\"\n"
+                ),
+            ),
+            ("scene/prompt.md", "You are the demo workflow agent.".into()),
+            (
+                "scene/scene.json",
+                format!(
+                    r#"{{"id": "plugin:{name}", "name": "Demo", "description": "d", "tools": ["Read"]}}"#
+                ),
+            ),
+        ];
+        for (path, content) in files {
+            writer.start_file(path, opts).unwrap();
+            writer.write_all(content.as_bytes()).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+    let archive_path = dir.join(format!("{name}.zip"));
+    std::fs::write(&archive_path, &buf).unwrap();
+    let mut hasher = Sha256::new();
+    hasher.update(&buf);
+    (archive_path, hex::encode(hasher.finalize()))
+}
+
+/// With `plugins.enable_on_install` off, `plugin.install` reports
+/// `enabled: false` and the package contributes nothing (here: its scene
+/// cannot host a session) until the host calls `plugin.enable`.
+#[cfg(feature = "plugin-packages")]
+#[tokio::test]
+async fn plugin_install_leaves_a_package_off_when_enable_on_install_is_false() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("settings.json"),
+        r#"{"plugins": {"enable_on_install": false}}"#,
+    )
+    .unwrap();
+    let (archive_path, checksum) = build_scene_plugin_zip(dir.path(), "held-scene");
+    let (server, sock, _dir, handle) = start_server_in(dir).await;
+
+    let call = |body: String| {
+        let sock = sock.clone();
+        async move {
+            let resp = rpc_call(&sock, &body).await;
+            serde_json::from_str::<serde_json::Value>(&resp).unwrap()
+        }
+    };
+    let session_in_scene = || {
+        call(
+            r#"{"jsonrpc":"2.0","method":"session.create","id":9,"params":{"scene":"plugin:held-scene"}}"#
+                .to_string(),
+        )
+    };
+
+    let v = call(format!(
+        r#"{{"jsonrpc":"2.0","method":"plugin.install","id":1,"params":{{"name":"held-scene","version":"1.0.0","download_url":"file://{}","checksum":"{}"}}}}"#,
+        archive_path.display(),
+        checksum,
+    ))
+    .await;
+    assert_eq!(v["result"]["success"], true, "{v}");
+    assert_eq!(v["result"]["enabled"], false, "{v}");
+    assert!(
+        v["result"]["disclosure"]["scene"].is_string(),
+        "the disclosure is still returned: {v}"
+    );
+    assert!(
+        session_in_scene().await["error"].is_object(),
+        "a package that is not enabled served a session"
+    );
+
+    let listed = call(r#"{"jsonrpc":"2.0","method":"plugin.list","id":2}"#.to_string()).await;
+    let entry = listed["result"]["plugins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "held-scene")
+        .unwrap_or_else(|| panic!("installed but not listed: {listed}"))
+        .clone();
+    assert_eq!(entry["enabled"], false);
+
+    let v = call(
+        r#"{"jsonrpc":"2.0","method":"plugin.enable","id":3,"params":{"name":"held-scene"}}"#
+            .to_string(),
+    )
+    .await;
+    assert_eq!(v["result"]["enabled"], true, "{v}");
+    assert!(
+        session_in_scene().await["result"]["session_id"].is_string(),
+        "enabling the package did not make its scene servable"
+    );
+
+    let doctor = call(r#"{"jsonrpc":"2.0","method":"daemon.doctor","id":4}"#.to_string()).await;
+    assert!(
+        doctor["result"]["health"]
+            .to_string()
+            .contains("plugins.enable_on_install"),
+        "doctor does not report the setting: {doctor}"
+    );
+
+    server.shutdown_token().cancel();
+    let _ = handle.await;
+}
+
+/// Installing is the default and still enables: the result says so, and the
+/// doctor announces that the default is going to change.
+#[cfg(feature = "plugin-packages")]
+#[tokio::test]
+async fn plugin_install_enables_by_default_and_doctor_announces_the_coming_change() {
+    let (server, sock, dir, handle) = start_server().await;
+    let (archive_path, checksum) = build_scene_plugin_zip(dir.path(), "eager-scene");
+    let resp = rpc_call(
+        &sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"plugin.install","id":1,"params":{{"name":"eager-scene","version":"1.0.0","download_url":"file://{}","checksum":"{}"}}}}"#,
+            archive_path.display(),
+            checksum,
+        ),
+    )
+    .await;
+    let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    assert_eq!(v["result"]["enabled"], true, "{v}");
+
+    let resp = rpc_call(
+        &sock,
+        r#"{"jsonrpc":"2.0","method":"daemon.doctor","id":2}"#,
+    )
+    .await;
+    assert!(
+        resp.contains("planned to default to false"),
+        "doctor is silent about the coming default: {resp}"
+    );
+
+    server.shutdown_token().cancel();
+    let _ = handle.await;
+}
+
+/// A package that reached the cache without `plugin.install` and is over the
+/// disclosure limits is not loaded, and `daemon.doctor` names it.
+#[cfg(feature = "plugin-packages")]
+#[tokio::test]
+async fn an_oversized_hand_placed_package_is_not_loaded_and_doctor_names_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let pkg = dir.path().join("plugins/cache/wordy/1.0.0");
+    std::fs::create_dir_all(&pkg).unwrap();
+    std::fs::write(
+        pkg.join("plugin.toml"),
+        format!(
+            "[plugin]\nname = \"wordy\"\nversion = \"1.0.0\"\napi_version = \"0.1\"\ndescription = \"{}\"\n",
+            "x".repeat(600)
+        ),
+    )
+    .unwrap();
+    let (server, sock, _dir, handle) = start_server_in(dir).await;
+
+    let resp = rpc_call(&sock, r#"{"jsonrpc":"2.0","method":"plugin.list","id":1}"#).await;
+    let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    assert!(
+        v["result"]["plugins"].as_array().unwrap().is_empty(),
+        "an over-limit package was listed as loadable: {v}"
+    );
+    let resp = rpc_call(
+        &sock,
+        r#"{"jsonrpc":"2.0","method":"daemon.doctor","id":2}"#,
+    )
+    .await;
+    let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    let health = v["result"]["health"].to_string();
+    assert!(
+        health.contains("plugins.refused") && health.contains("wordy"),
+        "doctor does not name the refused package: {health}"
+    );
+
+    server.shutdown_token().cancel();
+    let _ = handle.await;
+}

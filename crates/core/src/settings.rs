@@ -577,6 +577,11 @@ pub struct PluginsConfig {
     /// name that is not on it is refused rather than merely unmentioned.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub allow: Vec<String>,
+    /// Whether `plugin.install` turns a package on once it is installed.
+    /// With `false` the host reads the disclosure the install returns and
+    /// calls `plugin.enable` itself. Defaults to `true`, which a later 0.3.x
+    /// release is planned to change to `false`.
+    pub enable_on_install: bool,
 }
 
 impl Default for PluginsConfig {
@@ -584,6 +589,7 @@ impl Default for PluginsConfig {
         Self {
             enabled: true,
             allow: Vec::new(),
+            enable_on_install: true,
         }
     }
 }
@@ -2338,6 +2344,7 @@ mod plugins_policy_tests {
         let c = PluginsConfig {
             enabled: false,
             allow: vec!["github-tools".into()],
+            ..Default::default()
         };
         assert!(
             !c.permits("github-tools"),
@@ -2352,6 +2359,7 @@ mod plugins_policy_tests {
         let c = PluginsConfig {
             enabled: true,
             allow: vec!["github-tools".into()],
+            ..Default::default()
         };
         assert!(c.permits("github-tools"));
         assert!(!c.permits("something-else"));

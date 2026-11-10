@@ -103,12 +103,14 @@ cd my-plugin && zip -r ../my-plugin.zip . && shasum -a 256 ../my-plugin.zip
   `.` 开头;`name` 还得与包里 `[plugin] name` 一致。
 - 压缩包最大 128 MiB;解开后合计不超过 512 MiB、条目不超过 10 000 个,单个大于 1 MiB 的
   条目压缩比不超过 200 倍。超了就拒,什么都不留下。
-- 先解到同一目录下的临时目录,完整了才改名成 `<version>/`,并写一个完成标记
-  `.agix-installed`;同一层 cache 的安装与卸载互斥(`cache/.lock`)。没有完成标记的版本目录
-  不算装过,再装一次会替换它。
-- 解压后立刻按发现时的方式把 manifest 读回来,并生成下面的披露;读不回来(包括上面那几类
-  拒装的写法)或披露超限,就整个删掉并报错。已经装过的同一版本也照样读回、照样披露,不过
-  就报错(不删,它不是这次放进去的)。
+- 先解到同一目录下的临时目录,在里面按发现时的方式把 manifest 读回来、检查披露(读不回来,
+  包括上面那几类拒装的写法,或披露超限,就报错,cache 里不会出现这个包),都过了才改名成
+  `<version>/`,并写一个完成标记 `.agix-installed`,里面是压缩包的 SHA-256;同一层 cache 的
+  安装与卸载互斥,扫描 cache 的一方(`cache/.lock` 的共享锁)等它们做完再读。没有完成标记
+  的版本目录不算装过,再装一次会替换它。
+- 已经装过的同一版本:这次给的 `checksum` 与完成标记里记的不一致,cache 里的就不算要装的
+  这个包,会被替换;一致或没给就算装过,照样读回、照样披露,读不回来就报错(不删,它不是
+  这次放进去的)。
 - zip 里带 `..` 或绝对路径的条目跳过,不解压。
 
 其余的生命周期:`plugin.list`(每个已安装的插件连同启用状态与 `root`,包括被禁用的)、
@@ -121,6 +123,12 @@ cd my-plugin && zip -r ../my-plugin.zip . && shasum -a 256 ../my-plugin.zip
 `plugins.enable_state` 检查报 `degraded` 并给出是哪一层、什么原因。文件是先写临时文件再改名
 写进去的,写到一半不会留下坏文件。
 
+`plugin.install` 的结果带 `enabled`,是装完之后这个包解析出的启用状态。`settings.json` 的
+`plugins.enable_on_install` 缺省 `true`,装完即启用;设为 `false` 时,这一层还没有它启用
+记录的新包装完保持禁用,要宿主读过披露后显式 `plugin.enable`。`daemon.doctor` 的
+`plugins.enable_on_install` 检查在开关为 `true` 时提示:计划在后续 0.3.x 把缺省改成
+`false`。
+
 插件的场景装上就是 active,不需要 `scene.activate`;进入它仍然要显式的
 `session.create {"scene": "plugin:<name>"}`。
 
@@ -131,8 +139,9 @@ cd my-plugin && zip -r ../my-plugin.zip . && shasum -a 256 ../my-plugin.zip
 ~/.agix/scenes/<scope>/plugins/cache/<name>/<version>/    # scene 层,同名时压过 global
 ```
 
-同一个名字装了多个版本时,semver 最高的赢。加载不了的 manifest 带一条警告被跳过,其他
-插件照常加载。
+同一个名字装了多个版本时,semver 最高的赢。加载不了的 manifest、披露超过下面上限的包,
+带一条警告被跳过,其他插件照常加载;手工放进目录或旧版本装进来的超限包同样不加载,
+`daemon.doctor` 的 `plugins.refused` 检查报 `degraded` 并列出名字、版本和原因。
 
 ## 安装期披露
 
@@ -158,7 +167,7 @@ cd my-plugin && zip -r ../my-plugin.zip . && shasum -a 256 ../my-plugin.zip
 (`connects to <url> (<type>)`);`env`、`headers` 只列键名,值通常是凭据。
 
 两个上限是拒绝,不是警告:单行描述超过 **500 字符**;提示词超过 **40 000 字符**,
-`plugin.install` 就返回错误,包被删掉。
+`plugin.install` 就返回错误,包不会进 cache;扫描时也按同样的上限,超限的包不加载。
 
 `inert: true` 表示这个包不声明能力、没有场景、没有 MCP 服务器、没有任何对模型可见的文本。
 

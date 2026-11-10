@@ -323,6 +323,11 @@
           },
           "type": "array"
         },
+        "enable_on_install": {
+          "default": true,
+          "description": "Whether `plugin.install` turns a package on once it is installed.\nWith `false` the host reads the disclosure the install returns and\ncalls `plugin.enable` itself. Defaults to `true`, which a later 0.3.x\nrelease is planned to change to `false`.",
+          "type": "boolean"
+        },
         "enabled": {
           "default": true,
           "description": "Load installed plugins at all.",
@@ -863,6 +868,7 @@
     "plugins": {
       "$ref": "#/$defs/PluginsConfig",
       "default": {
+        "enable_on_install": true,
         "enabled": true
       }
     },

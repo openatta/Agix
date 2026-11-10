@@ -1294,6 +1294,18 @@ WebAssembly 载体整个移除。
   `daemon.doctor` 的 `settings.managed` 报 `failing`。没有这个文件的部署不受影响
   (`ARCHITECTURE.md` §6.1"用户规则与部署方规则")。
 
+#### 插件
+
+- **`plugins.enable_on_install`(缺省 `true`,行为不变)。** 设为 `false` 时 `plugin.install` 装完不启用,
+  宿主读过披露后显式调 `plugin.enable`;`plugin.install` 的结果多了 `enabled` 字段。计划在后续 0.3.x
+  把缺省改成 `false`,现在就可以在 `settings.json` 的 `plugins` 段写 `"enable_on_install": false` 试跑,
+  `daemon.doctor` 的 `plugins.enable_on_install` 检查在缺省值下会提示这件事。
+- 披露超限的包(单行描述超 500 字符、提示词超 40 000 字符),以前只在 `plugin.install` 时拒绝,手工放进
+  cache 的、旧版本装进来的照样加载;现在发现阶段也检查,超限的不加载,`daemon.doctor` 的
+  `plugins.refused` 检查报出名字和原因。
+- `plugin.install` 现在在临时目录里读回 manifest、检查披露,通过了才放进 cache,失败不再先放进去再删;
+  同一版本已装过时,若这次给的 `checksum` 与安装时记下的压缩包 SHA-256 不一致,cache 里的会被替换。
+
 ### RPC 客户端
 
 - `daemon.doctor` 的 `health.checks` 多一项 `settings.managed`(查找的路径、是否存在、来源与
@@ -1301,7 +1313,6 @@ WebAssembly 载体整个移除。
   `null`)。
 - `PermissionRule.source` 为 `policySettings` 的规则在同样具体的命中里先被报出(数值由 10 改为
   70)。裁决不变。
-
 
 - **新增帧:一行不是合法 JSON 时,服务端回
   `{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}`**
@@ -1322,7 +1333,6 @@ WebAssembly 载体整个移除。
   `RuleSetPermission::from_settings` 自动接上设置里的 managed 层。自己拼 gate 的嵌入方要接上
   它,否则 managed 规则只按普通规则生效、在 bypass 下不生效。
 - 有 managed 层时,`Assembly.permission` 不再替换 `bypassPermissions` 会话的 gate。
-
 
 - `AgentSpawner` 的主入口是 `spawn(SpawnRequest)`:`SpawnRequest::new(prompt, cwd, cancel)`,
   再按需填 `agent_type`、`model`、`allowed_tools` 与 `mode`(`SpawnMode::Wait` 等最终文本、

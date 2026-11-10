@@ -2264,14 +2264,22 @@ settings.local.json)里声明过,否则 `INVALID_PARAMS` —— 用来换令牌�
 
 **`checksum` 对 `http(s)://` 源是必填的**,缺了会在发起请求之前就拒绝;`file://`
 源可以省略。流程:取包(最大 128 MiB)→ 校验 → 解包到临时目录(有总量、条目数、压缩比
-上限)→ 改名就位 → 按发现时的方式把 manifest 读回来并生成披露;读不回来、或披露里有超限的
-文本,就把这次安装**回滚**并报 `INVALID_PARAMS`。带 `[[wasm]]` 或 `[scene.own]` 段的包在这
-一步被拒——引擎不跑 WebAssembly 组件,场景改用 `[scene] dir`。同一版本已经装过时同样读回、
-同样披露,不过就报错,但不删它。
+上限)→ 在临时目录里按发现时的方式把 manifest 读回来、检查披露 → 改名就位。读不回来、
+或披露里有超限的文本,这次安装就在改名之前被拒,报 `INVALID_PARAMS`,cache 里什么都不会
+出现。带 `[[wasm]]` 或 `[scene.own]` 段的包在这一步被拒——引擎不跑 WebAssembly 组件,
+场景改用 `[scene] dir`。
 
-响应:`{ "success": true, "message": "…", "disclosure": … }`。`disclosure` 是这个
-插件会往模型上下文里塞的文本和它要起的 MCP 服务器(命令行或地址),让调用方在依赖它之前
-先看见;字段见 `plugin_packages.md`。
+压缩包的 SHA-256 记在版本目录的完成标记里。同一版本已经装过时,若这次给的 `checksum`
+与记下的不一致,cache 里的那份就不算要装的这个包,会被取来的新包替换;一致(或这次没给
+`checksum`、或标记是旧版本留下的空标记)就按"已装过"处理,同样读回、同样披露,读不回来就
+报错,但不删它。
+
+响应:`{ "success": true, "message": "…", "enabled": true, "disclosure": … }`。
+`enabled` 是装完之后这个包按启用状态解析出的结果:`plugins.enable_on_install` 缺省 `true`,
+装完即启用;设为 `false` 时,新装的包(这一层没有它的启用记录)装完保持禁用,宿主读过
+披露后要显式调 `plugin.enable`,包才会往会话里贡献东西。已经有启用记录的名字(包括升级
+同名包)保持原状。`disclosure` 是这个插件会往模型上下文里塞的文本和它要起的 MCP 服务器
+(命令行或地址),让调用方在依赖它之前先看见;字段见 `plugin_packages.md`。
 
 #### `plugin.uninstall`
 

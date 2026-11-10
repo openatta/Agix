@@ -99,6 +99,15 @@ impl EnableState {
         map.insert(name.to_string(), enabled);
         self.save(&map)
     }
+
+    /// Drop `name`'s entry, so it falls back to the default again.
+    pub fn clear(&self, name: &str) -> Result<(), PluginError> {
+        let mut map = self.load()?;
+        if map.remove(name).is_some() {
+            self.save(&map)?;
+        }
+        Ok(())
+    }
 }
 
 /// Resolve whether `name` is active: scene explicit setting wins, else
@@ -122,6 +131,17 @@ mod tests {
         state.set_enabled("my-plugin", true).unwrap();
         assert_eq!(state.get("my-plugin"), Some(true));
         assert_eq!(state.fault(), None);
+    }
+
+    #[test]
+    fn clear_returns_a_name_to_the_default() {
+        let dir = TempDir::new().unwrap();
+        let state = EnableState::new(dir.path().to_path_buf());
+        state.set_enabled("p", false).unwrap();
+        state.set_enabled("q", false).unwrap();
+        state.clear("p").unwrap();
+        assert_eq!(state.get("p"), None);
+        assert_eq!(state.get("q"), Some(false));
     }
 
     #[test]
