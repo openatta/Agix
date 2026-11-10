@@ -31,7 +31,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio_util::sync::CancellationToken;
 
-fn protocol_doc() -> String {
+pub(crate) fn protocol_doc() -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("daemon crate has a parent (repo root)")
@@ -41,7 +41,7 @@ fn protocol_doc() -> String {
 }
 
 /// The section under `#### \`method\``, up to the next heading of any level.
-fn section<'a>(doc: &'a str, method: &str) -> &'a str {
+pub(crate) fn section<'a>(doc: &'a str, method: &str) -> &'a str {
     let heading = format!("`{method}`");
     let start = doc
         .lines()
@@ -133,7 +133,7 @@ fn numbers_as_measurements(v: serde_json::Value) -> serde_json::Value {
     }
 }
 
-fn strip_line_comment(line: &str) -> &str {
+pub(crate) fn strip_line_comment(line: &str) -> &str {
     let chars: Vec<char> = line.chars().collect();
     let mut in_string = false;
     let mut escaped = false;
@@ -177,7 +177,7 @@ fn assert_documented(path: &str, documented: &serde_json::Value, actual: &serde_
     }
 }
 
-fn check(
+pub(crate) fn check(
     path: &str,
     documented: &serde_json::Value,
     actual: &serde_json::Value,
@@ -220,7 +220,7 @@ fn check(
 
 /// One canned assistant turn: says "ok" and stops. `session.run_turn` has to
 /// reach `turn_complete` for its response shape to exist at all.
-struct OneTurnClient;
+pub(crate) struct OneTurnClient;
 
 impl AnthropicClient for OneTurnClient {
     fn stream_messages(&self, _req: MessagesRequest) -> EventStream {
@@ -391,7 +391,7 @@ async fn verify(
     actual
 }
 
-fn compiled_in(module: &str) -> bool {
+pub(crate) fn compiled_in(module: &str) -> bool {
     match module {
         "mcp" => cfg!(feature = "mcp"),
         "agents" => cfg!(feature = "agents"),

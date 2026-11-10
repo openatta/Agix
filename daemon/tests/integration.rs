@@ -23,6 +23,7 @@ mod plugin_tools_in_scene;
 mod project_trust;
 mod protocol_doc_examples;
 mod protocol_doc_matches_dispatch;
+mod protocol_doc_wire;
 mod readme_matches_the_code;
 mod resume_recorder;
 mod rpc_smoke;
