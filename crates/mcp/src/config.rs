@@ -529,7 +529,7 @@ pub fn expand_env_vars(input: &str) -> String {
     expand_vars_with(input, |name| std::env::var(name).ok())
 }
 
-pub use base::interface::exec::env::expand_vars_with;
+use base::interface::exec::env::expand_vars_with;
 
 #[cfg(test)]
 mod tests {
