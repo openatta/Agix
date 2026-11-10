@@ -716,7 +716,7 @@ managed 层管的是权限,不是沙箱:它挡得住模型发起的调用,挡不
 子 Agent 与团队成员的每次调用都交给父会话的 `Permission` 判
 (`Permission::check_for_delegate`),父会话的规则与宿主的回答都作用于它们,输入校验看的是
 子 Agent 自己的会话状态(它读过哪些文件)。判的模式是子 Agent 自己的
-(`PermissionMode::for_delegate`):父会话在 `plan` 时取两者中更严的那个,父会话是
+(`PermissionMode::for_delegate`):父会话在 `plan` 或 `dontAsk` 时取两者中更严的那个,父会话是
 `bypassPermissions` 时随父会话。agent 类型 frontmatter 的 `permission_mode` 可以比父会话
 宽也可以严,插件带来的、未信任项目里的类型只能收紧(§6.6);模型在 `Agent` 调用、`TeamCreate` /
 `Agent(team_name)` 里自己要的 `permission_mode` 只能收紧。子 Agent 的询问经父会话的通道到宿主,等待上限就是会话的

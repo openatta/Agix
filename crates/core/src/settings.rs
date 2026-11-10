@@ -300,11 +300,11 @@ impl PermissionMode {
 
     /// The mode a delegate (sub-agent, team member) runs in when the session
     /// that spawned it is in `self`: its own, wider or narrower — except that a
-    /// planning parent holds it to plan, and a parent that bypasses takes it
-    /// along.
+    /// planning parent holds it to plan, a parent that asks nobody holds it to
+    /// `dontAsk`, and a parent that bypasses takes it along.
     pub fn for_delegate(self, delegate: Self) -> Self {
         match self {
-            Self::Plan => delegate.min_permissive(self),
+            Self::Plan | Self::DontAsk => delegate.min_permissive(self),
             Self::BypassPermissions => self,
             _ => delegate,
         }
@@ -1482,6 +1482,38 @@ mod tests {
             ..Settings::defaults_for("test")
         };
         assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn a_delegate_runs_in_its_own_mode_unless_its_parent_holds_or_carries_it() {
+        use PermissionMode::*;
+        let all = [
+            Default,
+            AcceptEdits,
+            BypassPermissions,
+            Plan,
+            DontAsk,
+            Bubble,
+        ];
+        for parent in all {
+            for delegate in all {
+                let expected = match parent {
+                    Plan | DontAsk => delegate.min_permissive(parent),
+                    BypassPermissions => BypassPermissions,
+                    Default | AcceptEdits | Bubble => delegate,
+                };
+                assert_eq!(
+                    parent.for_delegate(delegate),
+                    expected,
+                    "parent {parent:?}, delegate {delegate:?}"
+                );
+            }
+        }
+        assert_eq!(DontAsk.for_delegate(BypassPermissions), DontAsk);
+        assert_eq!(DontAsk.for_delegate(AcceptEdits), DontAsk);
+        assert_eq!(DontAsk.for_delegate(Default), DontAsk);
+        assert_eq!(Plan.for_delegate(BypassPermissions), Plan);
+        assert_eq!(Default.for_delegate(BypassPermissions), BypassPermissions);
     }
 
     #[test]

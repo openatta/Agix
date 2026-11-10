@@ -2796,7 +2796,7 @@ daemon 会话的默认权限模式是 **`default`(ask)**,不是放行一切。
 
 `permission_mode: "bubble"` 不是另一条路:子 Agent 的询问无论它是什么模式,到宿主的都是
 上面这条父会话的 `prompt` 帧,团队成员也一样。判的模式是子 Agent 自己的:agent 类型的 `permission_mode` 可以比父会话宽(插件带来的类型
-只能更严),团队的 `permission_mode` 只能更严;父会话在 `plan` 时取两者中更严的那个,父会话
+只能更严),团队的 `permission_mode` 只能更严;父会话在 `plan` 或 `dontAsk` 时取两者中更严的那个,父会话
 是 `bypassPermissions` 时随父会话。它的询问等多久同父会话的(`--permission-prompt-timeout`);答 `permit_always`
 记下的是这一条命令或路径。
 
