@@ -38,7 +38,9 @@ impl AgentSpawner for RuntimeAgentSpawner {
             mode,
             ..
         } = request;
-        let tools = self.agent_tool.sub_tools(&allowed_tools);
+        let tools = self
+            .agent_tool
+            .delegate_tools(agent_type.as_deref(), &allowed_tools, &[]);
         let ran = match mode {
             SpawnMode::Wait => {
                 let perm = self.agent_tool.sub_permission();

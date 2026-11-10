@@ -167,7 +167,7 @@ impl AgentTool {
             r.set_team_permission_mode_if_absent(&team_name, resolved_permission_mode);
         }
 
-        let tools = self.resolve_tools(subagent_type.as_deref());
+        let tools = self.delegate_tools(subagent_type.as_deref(), &[], &[]);
         let (agent, event_rx, input_tx, payload) = self
             .build_team_member_agent(
                 tools,

@@ -3,19 +3,12 @@
 
 use super::*;
 
-/// Excluded from the tool set a sub-agent inherits, so a "full access" type
-/// (general-purpose/claude/any custom type with an empty `allowed_tools`)
-/// doesn't hand delegation straight back to the child.
+/// Never inherited: a delegate's own agents module registers its own `Agent`,
+/// counted from the delegate's depth, or none at the limit. The parent's would
+/// spawn at the parent's depth, past `EngineConfig::max_agent_depth`.
 ///
-/// This filter is a convenience, not the bound: what actually stops a
-/// delegation chain is `Inner::depth` counted against
-/// `EngineConfig::max_agent_depth`, enforced in `spawn_guard` on every spawn
-/// path and mirrored by `Builder::build()` withholding this tool at the
-/// limit. Filtering alone cannot bound anything — `build()` creates a fresh
-/// per-session registry and registers `Agent` into it regardless of what
-/// `resolve_tools` handed over, and `RuntimeAgentSpawner` (Skill
-/// `context: fork`, team members) bypasses `resolve_tools` entirely by
-/// passing `sub_tools()` through unfiltered.
+/// The bound itself is `Inner::depth` against `max_agent_depth`, enforced in
+/// `spawn_guard` on every spawn path.
 pub(super) const AGENT_TOOL_NAME: &str = "Agent";
 
 /// A live persistent team member (`Agent` tool's `team_name`+`name` mode).
@@ -124,7 +117,9 @@ impl<T> Clone for SetLater<T> {
 pub(super) struct Inner {
     pub(super) model: Arc<dyn Model>,
     pub(super) config: Arc<EngineConfig>,
+    /// What the parent session was built from.
     pub(super) fallback_tools: Arc<InMemoryToolRegistry>,
+    /// The parent session's own registry, as it stands when a delegate spawns.
     pub(super) parent_tools: Arc<InMemoryToolRegistry>,
     /// Delegation depth of the agent that *owns* this tool, not of the
     /// children it spawns — those get `depth + 1` (see `spawn_guard`).
@@ -608,29 +603,16 @@ impl Inner {
         }
     }
 
-    /// The parent's tools a delegate starts from: all of them but the ones
-    /// the parent's scene contributed. Those belong to the scene, and the
-    /// delegate's own scene contributes its tools again when it is built —
-    /// inheriting them as well would register each twice.
+    /// The tools a delegate starts from: the ones its parent was built from
+    /// (`fallback_tools`, the template) that the parent still has
+    /// (`parent_tools`, its session registry) — so nothing its scene took away.
+    /// What the parent's engine, modules, scene and plugins registered on top
+    /// is not among them; the delegate's own build registers its own of each.
     pub(super) fn inherited_tools(&self) -> Vec<Arc<dyn base::tool::Tool>> {
-        let parent_scene = self.parent_scene.get();
-        let scene_tools: std::collections::HashSet<String> = parent_scene
-            .map(|scene| {
-                scene
-                    .extra_tools()
-                    .iter()
-                    .map(|t| t.name().to_string())
-                    .collect()
-            })
-            .unwrap_or_default();
         let mut out: Vec<Arc<dyn base::tool::Tool>> = Vec::new();
-        for tool in self
-            .parent_tools
-            .all()
-            .into_iter()
-            .chain(self.fallback_tools.all())
-        {
-            if !scene_tools.contains(tool.name())
+        for tool in self.fallback_tools.all() {
+            if tool.name() != AGENT_TOOL_NAME
+                && self.parent_tools.get(tool.name()).is_some()
                 && !self.plugin_tools.contains(tool.name())
                 && !out.iter().any(|t| t.name() == tool.name())
             {

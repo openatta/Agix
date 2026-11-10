@@ -601,7 +601,7 @@ impl base::tool::Tool for AgentTool {
             .as_ref()
             .map(|h| h.path().to_path_buf())
             .unwrap_or_else(|| ctx.session.cwd.clone());
-        let tools = self.resolve_tools(inp.subagent_type.as_deref());
+        let tools = self.delegate_tools(inp.subagent_type.as_deref(), &[], &[]);
         let prompt = self.build_prompt(inp.subagent_type.as_deref(), &inp.prompt);
         let sid = base::id::Id::new().to_string();
 

@@ -4,19 +4,6 @@
 use super::*;
 
 impl AgentTool {
-    /// Returns the fallback tool registry for sub-agent creation.
-    /// The parent's tools a delegate inherits, narrowed to `allowed`; empty
-    /// allows them all.
-    pub(crate) fn sub_tools(&self, allowed: &[String]) -> Arc<InMemoryToolRegistry> {
-        let registry = InMemoryToolRegistry::new();
-        for tool in self.inner.inherited_tools() {
-            if lists_admit_tool(allowed, &[], tool.name()) {
-                registry.register(tool);
-            }
-        }
-        Arc::new(registry)
-    }
-
     /// Returns a permission handler for sub-agent creation.
     pub(crate) fn sub_permission(&self) -> Arc<dyn Permission> {
         self.permission_handler()
@@ -58,36 +45,29 @@ impl AgentTool {
         false
     }
 
-    /// Resolve the tool set for a given subagent type.
+    /// The tools a delegate of `subagent_type` gets: what it inherits
+    /// (`Inner::inherited_tools`), narrowed by the type's `allowed_tools` /
+    /// `disallowed_tools` and then by the caller's `allowed` / `disallowed`
+    /// (empty narrows nothing). Every spawn path resolves its tools here.
     ///
-    /// Returns a filtered [`InMemoryToolRegistry`] containing only the
-    /// built-in tools the named agent type is allowed to use, plus (if
-    /// `AgentTypeDefinition.mcp_servers` names any) the matching MCP tools
-    /// from the parent's already-connected `McpManager`. Unknown types, and
-    /// types whose `allowed_tools` is empty (the "full access" convention —
-    /// see `general-purpose`/`claude`), fall back to the full built-in tool
-    /// set **minus "Agent" itself** — see `AGENT_TOOL_NAME` doc comment for
-    /// why. MCP is never part of that "full access" default: a subagent
-    /// gets zero MCP tools unless `mcp_servers` explicitly grants them,
-    /// regardless of how the built-in `allowed_tools` resolves — MCP access
-    /// is opt-in per subagent, not inherited.
-    pub(super) fn resolve_tools(&self, subagent_type: Option<&str>) -> Arc<InMemoryToolRegistry> {
+    /// MCP tools are not inherited: a type's `mcp_servers` grants the matching
+    /// servers' tools from the parent's connections, on top of those lists.
+    pub(crate) fn delegate_tools(
+        &self,
+        subagent_type: Option<&str>,
+        allowed: &[String],
+        disallowed: &[String],
+    ) -> Arc<InMemoryToolRegistry> {
         let def = subagent_type.and_then(|name| self.inner.agent_type_def(name));
-        // `disallowed_tools` and `allowed_tools` together; a tool listed in
-        // both ends up removed either way.
         let registry = InMemoryToolRegistry::new();
         for tool in self.inner.inherited_tools() {
-            if tool.name() != AGENT_TOOL_NAME && type_admits_tool(def.as_ref(), tool.name()) {
+            if type_admits_tool(def.as_ref(), tool.name())
+                && lists_admit_tool(allowed, disallowed, tool.name())
+            {
                 registry.register(tool);
             }
         }
 
-        // MCP: additive, opt-in-only grant from `mcp_servers`, reusing the
-        // parent's live connections rather than reconnecting. Applies on
-        // top of either branch above — a restricted `allowed_tools` list
-        // that doesn't mention any `mcp__...` name still lets a granted MCP
-        // server's tools through, since `mcp_servers` is a separate axis
-        // from the built-in tool allow/deny lists.
         if let Some(d) = &def {
             if !d.mcp_servers.is_empty() {
                 let adapters = self.inner.mcp_tool_adapters();
@@ -100,7 +80,8 @@ impl AgentTool {
                 for tool in &adapters {
                     if d.mcp_servers.iter().any(|server| {
                         Self::tool_name_matches(tool.name(), &format!("mcp__{server}"))
-                    }) {
+                    }) && lists_admit_tool(allowed, disallowed, tool.name())
+                    {
                         registry.register(tool.clone());
                     }
                 }

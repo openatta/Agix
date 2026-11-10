@@ -428,11 +428,14 @@ async fn a_spawn_on_a_model_asks_for_that_model() {
 }
 
 /// The `AgentTool` of a session on `SceneWithProbe`: its registry already
-/// holds the scene's tool, as `Builder::build()` leaves it.
+/// holds the scene's tool, as `Builder::build()` leaves it, and the template
+/// it was built from does not.
 pub(super) fn agent_tool_on_a_scene_with_a_tool(
     types: &[AgentTypeDefinition],
 ) -> (AgentTool, Arc<std::sync::Mutex<Vec<Vec<String>>>>) {
     let offered = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let template = Arc::new(InMemoryToolRegistry::new());
+    template.register(Arc::new(NamedTool("Read")));
     let tools = Arc::new(InMemoryToolRegistry::new());
     tools.register(Arc::new(NamedTool("Read")));
     tools.register(Arc::new(NamedTool("scene_probe")));
@@ -441,8 +444,8 @@ pub(super) fn agent_tool_on_a_scene_with_a_tool(
             offered: offered.clone(),
         }),
         Arc::new(EngineConfig::defaults_for("test-model")),
-        tools.clone(),
         tools,
+        template,
         &[],
         types,
     );

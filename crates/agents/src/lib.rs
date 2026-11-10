@@ -75,6 +75,10 @@ impl Module for AgentsModule {
         let engine_config = Arc::new(EngineConfig::from_settings(settings));
         let max_depth = engine_config.max_agent_depth;
 
+        let template = Arc::new(base::tool::InMemoryToolRegistry::new());
+        for t in cx.template_tools.list() {
+            template.register(t);
+        }
         let slots = self
             .slots
             .clone()
@@ -84,7 +88,7 @@ impl Module for AgentsModule {
                 cx.model.clone(),
                 engine_config,
                 cx.tools.clone(),
-                cx.tools.clone(),
+                template,
                 shared.clone(),
             )
             .with_session_agent_types(cx.plugin_agent_types),
@@ -92,7 +96,7 @@ impl Module for AgentsModule {
                 cx.model.clone(),
                 engine_config,
                 cx.tools.clone(),
-                cx.tools.clone(),
+                template,
                 &agent_tool::agent_type_dirs(settings),
                 cx.plugin_agent_types,
             ),

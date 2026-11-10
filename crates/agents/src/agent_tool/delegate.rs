@@ -256,7 +256,7 @@ impl AgentTool {
             .as_ref()
             .map(|h| h.path().to_path_buf())
             .unwrap_or_else(|| ctx.session.cwd.clone());
-        let tools = self.resolve_tools(input.subagent_type.as_deref());
+        let tools = self.delegate_tools(input.subagent_type.as_deref(), &[], &[]);
         let prompt = self.build_prompt(input.subagent_type.as_deref(), &input.prompt);
         let subagent_type = input.subagent_type.clone();
         let inner = self.inner.clone();
@@ -323,16 +323,11 @@ impl AgentTool {
                 "tag": request.tag,
             }),
         );
-        let tools = InMemoryToolRegistry::new();
-        for tool in self.resolve_tools(request.subagent_type.as_deref()).all() {
-            if lists_admit_tool(
-                &request.allowed_tools,
-                &request.disallowed_tools,
-                tool.name(),
-            ) {
-                tools.register(tool);
-            }
-        }
+        let tools = self.delegate_tools(
+            request.subagent_type.as_deref(),
+            &request.allowed_tools,
+            &request.disallowed_tools,
+        );
         let prompt = self.build_prompt(request.subagent_type.as_deref(), &request.prompt);
         let run = SubRun {
             model: request.model,
@@ -355,7 +350,7 @@ impl AgentTool {
                 Self::run_sub_inner(
                     &inner,
                     prompt,
-                    Arc::new(tools),
+                    tools,
                     cwd,
                     cancel,
                     subagent_type.as_deref(),

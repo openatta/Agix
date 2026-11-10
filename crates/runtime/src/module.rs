@@ -60,6 +60,10 @@ impl ModuleError {
 /// The session as a module sees it while it is being built.
 pub struct SessionContext<'a> {
     pub tools: &'a Arc<InMemoryToolRegistry>,
+    /// What the session was built from (`Builder::tools`), before the engine,
+    /// the modules, the scene and the plugins registered theirs: the tools a
+    /// delegate may inherit.
+    pub template_tools: &'a Arc<dyn base::tool::ToolRegistry>,
     pub settings: &'a Arc<Settings>,
     pub config: &'a Arc<EngineConfig>,
     pub scene: &'a Arc<dyn Scene>,

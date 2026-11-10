@@ -13,7 +13,7 @@ impl Builder {
         let model = self
             .model
             .ok_or_else(|| EngineError::Internal("model required".into()))?;
-        let tools = self
+        let template: Arc<dyn base::tool::ToolRegistry> = self
             .tools
             .unwrap_or_else(|| Arc::new(InMemoryToolRegistry::new()));
         // Per-session tool registry, seeded from whatever was passed in (a
@@ -32,7 +32,7 @@ impl Builder {
         let tools = {
             let session_tools = Arc::new(InMemoryToolRegistry::new());
             let mut had_tool_search = false;
-            for t in tools.list() {
+            for t in template.list() {
                 // `ToolSearchTool` closes over the registry it searches. The
                 // instance in the incoming template closes over the
                 // *template*, so it would report on the template's tools —
@@ -368,6 +368,7 @@ impl Builder {
             let session_id = session.session_id_str().to_string();
             let mut cx = crate::module::SessionContext {
                 tools: &tools,
+                template_tools: &template,
                 settings: &settings,
                 config: &config,
                 scene: &scene,
@@ -555,6 +556,17 @@ impl Builder {
         #[cfg(feature = "ptc")]
         if self.agent_depth == 0 && tool_policy.scene_permits(ptc::TOOL_NAME) {
             tools.register(Arc::new(ptc::RunCodeTool::for_registry(tools.as_ref())));
+        }
+
+        let names = tools.names();
+        let mut seen = std::collections::HashSet::new();
+        let twice: Vec<&String> = names.iter().filter(|n| !seen.insert(n.as_str())).collect();
+        debug_assert!(twice.is_empty(), "tools registered twice: {twice:?}");
+        if !twice.is_empty() {
+            tracing::error!(
+                tools = ?twice,
+                "tools registered twice; dispatch reaches only the first of each"
+            );
         }
 
         // `TaskCreated` fires when a running task starts and `TaskCompleted`

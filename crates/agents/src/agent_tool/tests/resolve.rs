@@ -9,11 +9,53 @@ pub(super) fn test_agent_tool() -> AgentTool {
     let tools = Arc::new(tools);
     let model: Arc<dyn Model> = Arc::new(DummyModel);
     let config = Arc::new(EngineConfig::defaults_for("test-model"));
-    let agent_tool = AgentTool::with_parent_tools(model, config, tools.clone(), tools, &[], &[]);
-    // Register self into the same registry it holds, matching how
-    // `Builder::build()` wires it — needed so `resolve_tools()`'s
-    // recursion guard has something to actually filter out.
-    agent_tool
+    AgentTool::with_parent_tools(model, config, tools.clone(), tools, &[], &[])
+}
+
+fn names_of(registry: &InMemoryToolRegistry) -> Vec<String> {
+    registry
+        .all()
+        .iter()
+        .map(|t| t.name().to_string())
+        .collect()
+}
+
+/// A parent built from `Read`/`Bash`/`Write`, whose session then registered
+/// `Skill`, `TaskStop` and `Agent` of its own and dropped `Write`.
+fn agent_tool_over_a_built_session() -> AgentTool {
+    let template = InMemoryToolRegistry::new();
+    for name in ["Read", "Bash", "Write"] {
+        template.register(Arc::new(NamedTool(name)));
+    }
+    let session = InMemoryToolRegistry::new();
+    for name in ["Read", "Bash", "Skill", "TaskStop", AGENT_TOOL_NAME] {
+        session.register(Arc::new(NamedTool(name)));
+    }
+    AgentTool::with_parent_tools(
+        Arc::new(DummyModel),
+        Arc::new(EngineConfig::defaults_for("test-model")),
+        Arc::new(session),
+        Arc::new(template),
+        &[],
+        &[],
+    )
+}
+
+#[test]
+fn a_delegate_inherits_only_template_tools_its_parent_still_has() {
+    let names = names_of(&agent_tool_over_a_built_session().delegate_tools(None, &[], &[]));
+    assert_eq!(names, ["Read", "Bash"]);
+}
+
+#[test]
+fn a_callers_lists_narrow_the_agent_types_tools() {
+    let agent_tool = agent_tool_over_a_built_session();
+    let explore = agent_tool.delegate_tools(Some("explore"), &[], &[]);
+    assert_eq!(names_of(&explore), ["Read"]);
+    let none_left = agent_tool.delegate_tools(Some("explore"), &[], &["Read".into()]);
+    assert!(names_of(&none_left).is_empty());
+    let only_bash = agent_tool.delegate_tools(None, &["Bash".into()], &[]);
+    assert_eq!(names_of(&only_bash), ["Bash"]);
 }
 
 #[test]
@@ -68,7 +110,7 @@ fn model_for_subagent_falls_back_to_default_when_no_subagent_override() {
 }
 
 #[test]
-fn resolve_tools_full_access_excludes_agent_itself() {
+fn delegate_tools_full_access_excludes_agent_itself() {
     let agent_tool = test_agent_tool();
     // Register "Agent" into the same registry the tool was built with,
     // simulating `Builder::build()`'s self-registration.
@@ -83,7 +125,7 @@ fn resolve_tools_full_access_excludes_agent_itself() {
     agent_tool.inner.parent_tools.register(self_arc);
 
     // "general-purpose" is a full-access type (empty allowed_tools).
-    let resolved = agent_tool.resolve_tools(Some("general-purpose"));
+    let resolved = agent_tool.delegate_tools(Some("general-purpose"), &[], &[]);
     let names: Vec<String> = resolved
         .all()
         .iter()
@@ -98,9 +140,9 @@ fn resolve_tools_full_access_excludes_agent_itself() {
 }
 
 #[test]
-fn resolve_tools_restricted_type_filters_to_allowed_list() {
+fn delegate_tools_restricted_type_filters_to_allowed_list() {
     let agent_tool = test_agent_tool();
-    let resolved = agent_tool.resolve_tools(Some("explore"));
+    let resolved = agent_tool.delegate_tools(Some("explore"), &[], &[]);
     let names: Vec<String> = resolved
         .all()
         .iter()
@@ -111,7 +153,7 @@ fn resolve_tools_restricted_type_filters_to_allowed_list() {
 }
 
 #[test]
-fn resolve_tools_mcp_servers_grants_matching_server_tools_only() {
+fn delegate_tools_mcp_servers_grants_matching_server_tools_only() {
     let tmp = agent_type_dir();
     let dir = tmp.path();
     write_agent_md(
@@ -139,7 +181,7 @@ fn resolve_tools_mcp_servers_grants_matching_server_tools_only() {
     ];
     agent_tool.set_mcp_tool_adapters(adapters);
 
-    let resolved = agent_tool.resolve_tools(Some("github-agent"));
+    let resolved = agent_tool.delegate_tools(Some("github-agent"), &[], &[]);
     let names: Vec<String> = resolved
         .all()
         .iter()
@@ -150,14 +192,14 @@ fn resolve_tools_mcp_servers_grants_matching_server_tools_only() {
 }
 
 #[test]
-fn resolve_tools_without_mcp_servers_field_grants_no_mcp_tools() {
+fn delegate_tools_without_mcp_servers_field_grants_no_mcp_tools() {
     // Confirms MCP access is opt-in, not inherited by default — even
     // the "full access" (empty allowed_tools) convention doesn't pull
     // in MCP tools unless mcp_servers explicitly names a server.
     let agent_tool = test_agent_tool();
     agent_tool.set_mcp_tool_adapters(vec![Arc::new(NamedTool("mcp__github__list_prs"))]);
 
-    let resolved = agent_tool.resolve_tools(Some("general-purpose"));
+    let resolved = agent_tool.delegate_tools(Some("general-purpose"), &[], &[]);
     let names: Vec<String> = resolved
         .all()
         .iter()
@@ -167,7 +209,7 @@ fn resolve_tools_without_mcp_servers_field_grants_no_mcp_tools() {
 }
 
 #[test]
-fn resolve_tools_disallowed_tools_removes_from_full_access_pool() {
+fn delegate_tools_disallowed_tools_removes_from_full_access_pool() {
     let tmp = agent_type_dir();
     let dir = tmp.path();
     write_agent_md(
@@ -191,7 +233,7 @@ fn resolve_tools_disallowed_tools_removes_from_full_access_pool() {
         &[],
     );
 
-    let resolved = agent_tool.resolve_tools(Some("no-writes"));
+    let resolved = agent_tool.delegate_tools(Some("no-writes"), &[], &[]);
     let names: Vec<String> = resolved
         .all()
         .iter()
@@ -206,7 +248,7 @@ fn resolve_tools_disallowed_tools_removes_from_full_access_pool() {
 }
 
 #[test]
-fn resolve_tools_disallowed_tools_applied_before_allowed_tools() {
+fn delegate_tools_disallowed_tools_applied_before_allowed_tools() {
     let tmp = agent_type_dir();
     let dir = tmp.path();
     // A tool listed in both allowed_tools and disallowed_tools must end
@@ -231,7 +273,7 @@ fn resolve_tools_disallowed_tools_applied_before_allowed_tools() {
         &[],
     );
 
-    let resolved = agent_tool.resolve_tools(Some("conflicting"));
+    let resolved = agent_tool.delegate_tools(Some("conflicting"), &[], &[]);
     let names: Vec<String> = resolved
         .all()
         .iter()

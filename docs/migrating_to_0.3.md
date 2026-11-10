@@ -1494,6 +1494,13 @@ WebAssembly 载体整个移除。
 
 - 后台子 Agent 与常驻团队成员的调用记录也带 `parent_session_id` 与 `agent_type`(以前只有前台委派写);
   `TeamCreate` 的成员与常驻成员一样按收紧后的模式拿权限。
+- **Skill fork、`TeamCreate` 成员与 agent hook 起的子 Agent 按 agent 类型收窄工具。** 以前这几条路径
+  只按 skill 的 `allowed-tools` 过滤,`agent: explore` 的 fork 照样拿到 `Write`、`Edit`、`Bash`,
+  到了 `max_agent_depth` 还拿着父会话的 `Agent`,能越过深度上限再起一层。现在它们和模型调 `Agent`
+  一样:先按类型的 `allowed_tools` / `disallowed_tools`,再按调用方的列表,`Agent` 不继承。
+- 子 Agent 只继承父会话建的时候拿到的那批工具,不再继承父会话的引擎、模块注册的工具:`Skill`、
+  `Team*`、`Task*` 这类由子会话自己再注册一份(以前同名的两份并存,分发只认第一个,即父会话的);
+  `ListMcpResources`、`ReadMcpResource`、`MCP` 三个 MCP 工具子 Agent 不再有。
 
 ### RPC 客户端
 
@@ -1623,6 +1630,14 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。
   标了 `#[non_exhaustive]`:crate 外用 `SpawnRequest::new(..)` 再按需改字段(`..SpawnRequest::new(..)`
   的结构体更新写法在 crate 外同样不可用,逐字段赋值),`match SpawnMode` 要有通配分支。
 - 宿主起子 Agent 的 `start_agent(AgentRequest, …)` 不变。
+- `runtime::module::SessionContext` 多一个公开字段 `template_tools`:会话建的时候传进
+  `Builder::tools` 的那一份。起子会话的模块从它继承工具,不要从 `cx.tools` 继承——后者还装着
+  引擎和各模块注册的、子会话会自己再注册的工具。`SessionContext` 不在 crate 外构造,只读的模块不用改。
+- `AgentTool::with_parent_tools` / `with_shared_agent_types` 的两个注册表分了工:`parent_tools` 是父会话
+  自己的注册表,`fallback_tools` 是它建的时候的模板;子 Agent 继承的是模板里父会话还留着的工具。
+  两个传同一份(`AgentTool::new` 即如此)的行为不变。
+- `Builder::build()` 结束时检查工具表里没有重名:debug 构建与测试里断言失败,release 构建记一条
+  `error`。自己往模板里放 `Skill`、`TaskStop` 这类引擎会再注册的工具的嵌入方会撞上它。
 
 #### 执行层与 platform
 

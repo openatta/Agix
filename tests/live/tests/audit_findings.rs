@@ -188,7 +188,6 @@ async fn audit_a_sub_agent_granted_an_mcp_server_is_shown_and_keeps_its_tools() 
 /// read-only tools, and at the depth limit has no `Agent` — not the parent's,
 /// either, which would count the grandchild against the parent's depth.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "audit: confirmed defect, fix pending"]
 async fn audit_a_forked_skill_gets_its_agent_types_tools_and_no_parents_agent() -> anyhow::Result<()>
 {
     let stub = ProviderStub::start().await?;
