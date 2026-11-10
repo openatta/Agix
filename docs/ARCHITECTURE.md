@@ -951,6 +951,14 @@ bubblewrap)就和别的未授权调用一样被拒。沙箱只限写不限网,�
 不存在的 `.agents` 在 Linux 上建得出来;没有 `.git` 的项目、没有
 `commondir` 的仓库在 Linux 上补不上这一道(见 `sandbox.rs` 模块头第 3 条),所以有下一段。
 
+保护只到项目自己的 `.git`。沙箱里的命令可以在子目录里 `git init` 一个新仓库、写它的
+`.git/config`(`core.fsmonitor` 之类),再 `git add` 成一个 gitlink 登记进项目的 index;
+用户之后在项目里跑 git(沙箱外)会进这个嵌套仓库、照它的配置执行,这一步不受沙箱约束。
+两个后端都挡不住:禁止新建名为 `.git` 的目录项会连 `git init`、`git clone`、包管理器拉
+git 依赖、测试里建临时仓库一起弄坏,而且在别处建好再挪进项目照样绕过。引擎自己跑的 git
+带 `-c core.fsmonitor=false` 等选项,不受影响。结构性的办法(命令结束后检测项目里新出现的
+嵌套 `.git`,告警或询问)留到后续版本。见 `sandbox.rs` 模块头已知逃逸。
+
 引擎自己跑的 git(每轮的 `git status`、worktree 的创建与清理)经 `base::frozen::git::EngineGit` 起:会话的命令进沙箱(没有
 `dangerously_disable_sandbox`)时,它也进同一个沙箱,不论有人值守与否——仓库配置让 git 去
 跑的 filter driver 之类因此同样受约束。这时它只能写会话的 `TMPDIR`,创建 worktree 时再加

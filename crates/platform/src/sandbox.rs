@@ -120,10 +120,20 @@
 //!    to talk to, and screen's socket directory (tmux's is in `/tmp`, private
 //!    already); an abstract-socket bus is reachable unless the network is cut
 //!    too. A multiplexer on a socket of its own choosing (`tmux -S`) is not
-//!    found. The Linux half has not been
-//!    run against a real bubblewrap. With the network open, any local
+//!    found. With the network open, any local
 //!    service listening on a socket the command can reach (sshd, a container
 //!    daemon) is a way out under every policy.
+//! 5. **A nested repository planted in the project**: the guard protects the
+//!    project's own `.git`, but a command can `git init` a repository in a
+//!    subdirectory, write its `.git/config` (`core.fsmonitor` and the like)
+//!    and `git add` it into the project's index as a gitlink. The user's own
+//!    `git` in the project afterwards, outside the sandbox, enters it and runs
+//!    what its configuration names. Neither backend stops this: refusing to
+//!    create a `.git` entry would break `git init`, `git clone` and every
+//!    package manager that checks out a git dependency, and a repository built
+//!    elsewhere and moved in would evade it anyway. The engine's own `git`
+//!    carries `-c core.fsmonitor=false` and is unaffected; catching a new
+//!    nested `.git` after a command runs is left to a later version.
 //!
 //! Not among them, measured on bubblewrap 0.8: `/proc` is mounted afresh for
 //! the command's PID namespace, so it shows neither the host's processes nor
@@ -1112,6 +1122,77 @@ fn guard_project(args: &mut Vec<String>, roots: &Roots) {
     }
 }
 
+/// Expose the state root read-only while keeping its credentials masked
+/// against writes that land after the sandbox is set up.
+///
+/// A `/dev/null` bind over a key file is pinned to that file's dentry. The
+/// engine rewrites `settings.local.json` through a temporary file and a
+/// rename, which replaces the dentry and drops the bind (measured on bwrap
+/// 0.8), and a key file not there at wrap is never bound at all — so a
+/// lingering process from an earlier command could read a credential written
+/// afterwards. Instead, every directory that holds loose key files — the
+/// state root and each scene directory — is covered with a tmpfs and its
+/// non-credential entries are bound back over it; the token directories
+/// (`mcp/oauth/`, `daemon/auth/`) are left under the tmpfs rather than bound
+/// back. A credential created or rename-rewritten there afterwards lands under
+/// the tmpfs, on no path the command can read.
+///
+/// The readable contents enumerated from the host are bound back as they are
+/// at wrap time; a readable file created later does not appear, which for a
+/// confined command reading the state root is acceptable where masking a late
+/// credential is not.
+#[cfg(all(feature = "sandbox", target_os = "linux"))]
+fn expose_state_root_masked(args: &mut Vec<String>, root: &Path, policy: &SandboxPolicy) {
+    reexpose_dir(args, root, &|name| {
+        !base::paths::is_state_root_key_file(name)
+            && name != "scenes"
+            && name != "mcp"
+            && name != "daemon"
+    });
+    mask_token_parent(args, &root.join("mcp"), "oauth");
+    mask_token_parent(args, &root.join("daemon"), "auth");
+
+    let scenes_dir = root.join("scenes");
+    if scenes_dir.symlink_metadata().is_ok_and(|m| m.is_dir()) {
+        args.extend(["--tmpfs".into(), scenes_dir.display().to_string()]);
+        for scene in scene_dirs(policy, root) {
+            if scene.symlink_metadata().is_ok_and(|m| m.is_dir()) {
+                reexpose_dir(args, &scene, &|name| {
+                    !base::paths::is_state_root_key_file(name) && name != "mcp"
+                });
+                mask_token_parent(args, &scene.join("mcp"), "oauth");
+            }
+        }
+    }
+}
+
+/// tmpfs `dir`, then bind every child whose name `keep` accepts back
+/// read-only. The children left out stay under the tmpfs, unreachable.
+#[cfg(all(feature = "sandbox", target_os = "linux"))]
+fn reexpose_dir(args: &mut Vec<String>, dir: &Path, keep: &dyn Fn(&str) -> bool) {
+    args.extend(["--tmpfs".into(), dir.display().to_string()]);
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_name().to_str().is_some_and(keep) {
+            bind(args, "--ro-bind", &entry.path());
+        }
+    }
+}
+
+/// A directory such as `mcp` or `daemon` that holds a token directory
+/// (`oauth`, `auth`) beside readable content: tmpfs it and bind back only the
+/// readable siblings, so the token directory and anything written into it
+/// later stays masked.
+#[cfg(all(feature = "sandbox", target_os = "linux"))]
+fn mask_token_parent(args: &mut Vec<String>, dir: &Path, secret: &str) {
+    if dir.symlink_metadata().is_ok_and(|m| m.is_dir()) {
+        let secret = secret.to_string();
+        reexpose_dir(args, dir, &move |name| name != secret);
+    }
+}
+
 /// Make `path` unreadable where it exists: an empty tmpfs over a directory,
 /// `/dev/null` over anything else.
 #[cfg(all(feature = "sandbox", target_os = "linux"))]
@@ -1185,16 +1266,49 @@ fn daemon_sockets(state_root: Option<&Path>) -> Vec<PathBuf> {
 }
 
 /// Runs bwrap (`"$@"`) with the command's stdout and stderr on fds 3 and 4,
-/// and bwrap's own stdio on `/dev/null` and an unlinked file printed to
-/// stderr once bwrap exits. bwrap's PID 1 keeps fds 0–2 for as long as
-/// anything the command left in the background runs, which would hold the
+/// bwrap's own stdout on `/dev/null` and its stderr on an unlinked scratch
+/// file printed to stderr once bwrap exits; stdin (fd 0) passes through to
+/// bwrap and the command untouched. bwrap's PID 1 keeps fds 0–2 for as long
+/// as anything the command left in the background runs, which would hold the
 /// command's output open; it closes every other fd.
+///
+/// The scratch file is made in the host's `/tmp`, not the session `TMPDIR`
+/// that `mktemp` would otherwise pick up from the environment: the session
+/// `TMPDIR` is bound writable into the sandbox, so a process an earlier
+/// command left running there could swap the file for a symlink between
+/// `mktemp` and the `exec` that opens it, and this wrapper runs outside the
+/// sandbox. The sandbox always mounts its own tmpfs over `/tmp`, so a file in
+/// the host's `/tmp` is on no path a confined command can reach. `mktemp`,
+/// `rm` and `cat` are addressed absolutely so a writable directory earlier on
+/// `PATH` cannot stand one of them in.
 #[cfg(all(feature = "sandbox", target_os = "linux"))]
-const BWRAP_STDIO_OUTSIDE: &str = r#"err=$(mktemp 2>/dev/null) && exec 5>"$err" 6<"$err" && rm -f "$err" || exec 5>/dev/null 6</dev/null
-"$@" 3>&1 4>&2 >/dev/null 2>&5 5>&- 6<&-
-status=$?
-cat <&6 >&2
-exit "$status""#;
+fn bwrap_stdio_outside() -> String {
+    let mktemp = trusted_bin("mktemp");
+    let rm = trusted_bin("rm");
+    let cat = trusted_bin("cat");
+    format!(
+        "err=$({mktemp} -p /tmp 2>/dev/null) && exec 5>\"$err\" 6<\"$err\" && {rm} -f \"$err\" || exec 5>/dev/null 6</dev/null\n\
+         \"$@\" 3>&1 4>&2 >/dev/null 2>&5 5>&- 6<&-\n\
+         status=$?\n\
+         {cat} <&6 >&2\n\
+         exit \"$status\""
+    )
+}
+
+/// The absolute path of a core utility `name`, looked up in the system
+/// directories rather than `PATH` (which a command could have planted a
+/// writable entry on). Falls back to the bare name where none is found, so a
+/// deployment with its utilities elsewhere still runs, unhardened.
+#[cfg(all(feature = "sandbox", target_os = "linux"))]
+fn trusted_bin(name: &str) -> String {
+    for dir in ["/usr/bin", "/bin", "/usr/sbin", "/sbin"] {
+        let path = Path::new(dir).join(name);
+        if path.exists() {
+            return path.display().to_string();
+        }
+    }
+    name.to_string()
+}
 
 /// The inside half of [`BWRAP_STDIO_OUTSIDE`]: fds 3 and 4 back to 1 and 2,
 /// then the command.
@@ -1243,9 +1357,9 @@ fn linux_wrap(
     for p in &roots.writable {
         bind(&mut args, "--bind-try", p);
     }
-    if let Some(root) = roots.fenced_state_root() {
-        if root.is_dir() {
-            bind(&mut args, "--ro-bind", root);
+    match roots.fenced_state_root() {
+        Some(root) if root.is_dir() => {
+            expose_state_root_masked(&mut args, root, policy);
             for dir in STATE_ROOT_WORKING_DIRS {
                 bind(&mut args, "--bind-try", &root.join(dir));
             }
@@ -1253,21 +1367,29 @@ fn linux_wrap(
                 bind(&mut args, "--bind-try", dir);
             }
         }
+        // The project lives in the state root, or nothing but the named roots
+        // is writable: a tmpfs over the whole root would mask the project too,
+        // so the credentials are bound shut one by one. A key file the engine
+        // rewrites through a rename can slip back out from under its bind —
+        // the escape the fenced branch above closes; here it is a residual,
+        // narrowed by the project living in the root being the rare case.
+        _ => {
+            if let Some(state_root) = &roots.state_root {
+                bind(
+                    &mut args,
+                    "--ro-bind-try",
+                    &state_root.join("settings.json"),
+                );
+                for p in protected_scene_files(policy, state_root) {
+                    bind(&mut args, "--ro-bind-try", &p);
+                }
+                for p in state_root_secrets(policy, state_root) {
+                    hide(&mut args, &p);
+                }
+            }
+        }
     }
     guard_project(&mut args, &roots);
-    if let Some(state_root) = &roots.state_root {
-        bind(
-            &mut args,
-            "--ro-bind-try",
-            &state_root.join("settings.json"),
-        );
-        for p in protected_scene_files(policy, state_root) {
-            bind(&mut args, "--ro-bind-try", &p);
-        }
-        for p in state_root_secrets(policy, state_root) {
-            hide(&mut args, &p);
-        }
-    }
     for agix in project_agix_dirs(&roots.cwd) {
         let Ok(entries) = std::fs::read_dir(&agix) else {
             continue;
@@ -1339,7 +1461,12 @@ fn linux_wrap(
     args.extend(["sh", "-c", BWRAP_STDIO_INSIDE, "sh"].map(String::from));
     args.push(inner.program);
     args.extend(inner.args);
-    let outside = ["-c", BWRAP_STDIO_OUTSIDE, "sh", "bwrap"].map(String::from);
+    let outside = [
+        "-c".into(),
+        bwrap_stdio_outside(),
+        "sh".into(),
+        "bwrap".into(),
+    ];
     Confined {
         enforcement: if unmet.is_empty() {
             Enforcement::Full
@@ -1611,7 +1738,7 @@ mod tests {
     fn what_bwrap_itself_says_reaches_stderr() {
         let fake_bwrap = "echo printed >&3; echo complained >&4; echo 'bwrap: refused' >&2; exit 1";
         let out = std::process::Command::new("sh")
-            .args(["-c", BWRAP_STDIO_OUTSIDE, "sh", "sh", "-c", fake_bwrap])
+            .args(["-c", &bwrap_stdio_outside(), "sh", "sh", "-c", fake_bwrap])
             .output()
             .unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout), "printed\n");
@@ -1620,6 +1747,57 @@ mod tests {
             "complained\nbwrap: refused\n"
         );
         assert_eq!(out.status.code(), Some(1));
+    }
+
+    /// The outer wrapper, which runs outside the sandbox, keeps its scratch
+    /// file off every writable root. It used to let `mktemp` land the file in
+    /// the session `TMPDIR` — a writable root a confined process shares — where
+    /// a process an earlier command left running could swap it for a symlink;
+    /// the wrapper then wrote through it outside the sandbox. It now pins the
+    /// file to the host's `/tmp`, which the sandbox always shadows with a
+    /// private tmpfs, so no confined command reaches it. The helpers are
+    /// addressed absolutely so `PATH` cannot redirect them.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_outer_wrapper_keeps_its_scratch_file_off_every_writable_root() {
+        let project = Path::new("/tmp/work/project");
+        let session_tmp = PathBuf::from("/home/u/.agix/tmp/session-1");
+        let mut o = opts("ls", project);
+        let extras = [session_tmp.clone()];
+        o.additional_writable = &extras;
+        let cmd = wrap(o);
+        if cmd.mode != SandboxMode::LinuxBwrap {
+            return;
+        }
+        // The outer shell script is the one the wrapping `sh -c` runs.
+        assert_eq!(cmd.spec.args[0], "-c");
+        let script = &cmd.spec.args[1];
+        assert_eq!(cmd.spec.args[2], "sh");
+        assert_eq!(cmd.spec.args[3], "bwrap");
+
+        assert!(
+            script.contains("-p /tmp"),
+            "the scratch file must be pinned to the host /tmp: {script}"
+        );
+        for root in [
+            project.display().to_string(),
+            session_tmp.display().to_string(),
+        ] {
+            assert!(
+                !script.contains(&root),
+                "the wrapper names a writable root ({root}): {script}"
+            );
+        }
+        for util in ["mktemp", "rm", "cat"] {
+            let absolute = trusted_bin(util);
+            if absolute.starts_with('/') {
+                assert!(
+                    script.contains(&format!("{absolute} "))
+                        || script.contains(&format!("{absolute}\n")),
+                    "{util} is not addressed by its absolute path {absolute}: {script}"
+                );
+            }
+        }
     }
 
     /// A configuration file that does not exist yet is what a read-only bind
@@ -1682,29 +1860,71 @@ mod tests {
             .exists());
     }
 
+    /// With the project outside the state root, the state root and every scene
+    /// directory are masked with a tmpfs and their readable entries bound back,
+    /// leaving the key files under the tmpfs — which a credential written after
+    /// wrap cannot climb out of, where a `/dev/null` bind over the file could.
     #[cfg(target_os = "linux")]
     #[test]
-    fn linux_wrap_re_denies_writes_to_global_and_scene_settings_json() {
-        let cmd = wrap(opts("ls", Path::new("/tmp/work")));
+    #[allow(clippy::unwrap_used)]
+    fn linux_wrap_masks_global_and_scene_credentials_with_a_tmpfs() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        for scene in ["code", "triage"] {
+            let d = state.join("scenes").join(scene);
+            std::fs::create_dir_all(d.join("skills")).unwrap();
+            std::fs::write(d.join("settings.json"), "{}").unwrap();
+            std::fs::write(d.join("settings.local.json"), "{}").unwrap();
+            std::fs::write(d.join("scene.json"), "{}").unwrap();
+        }
+        std::fs::create_dir_all(state.join("skills")).unwrap();
+        std::fs::write(state.join("settings.json"), "{}").unwrap();
+        std::fs::write(state.join("settings.local.json"), "{}").unwrap();
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let policy = SandboxPolicy {
+            state_root: Some(state.clone()),
+            ..Default::default()
+        };
+        let cmd = PlatformSandbox.confine(
+            ProcessSpec::new("bash", &project).args(["-c", "ls"].map(String::from)),
+            &policy,
+        );
         if cmd.mode != SandboxMode::LinuxBwrap {
             return;
         }
-        let Some(home) = std::env::var_os("HOME") else {
-            return;
-        };
-        let home_str = std::path::Path::new(&home).display().to_string();
-        assert!(cmd
-            .spec
-            .args
-            .iter()
-            .any(|a| a == &format!("{home_str}/.agix/settings.json")));
-        for scene in KNOWN_SCENES {
-            let needle = format!("{home_str}/.agix/scenes/{scene}/settings.json");
+        let args = &cmd.spec.args;
+        let tmpfs_targets: Vec<&String> = args
+            .windows(2)
+            .filter(|w| w[0] == "--tmpfs")
+            .map(|w| &w[1])
+            .collect();
+        assert!(
+            tmpfs_targets.contains(&&state.display().to_string()),
+            "the state root is not masked: {args:?}"
+        );
+        for scene in ["code", "triage"] {
+            let d = state.join("scenes").join(scene).display().to_string();
             assert!(
-                cmd.spec.args.iter().any(|a| a == &needle),
-                "expected a --ro-bind-try re-mount for scene `{scene}`'s settings.json"
+                tmpfs_targets.contains(&&d),
+                "scene `{scene}` is not masked: {args:?}"
             );
         }
+        assert!(
+            !args
+                .iter()
+                .any(|a| a.ends_with("settings.json") || a.ends_with("settings.local.json")),
+            "a key file was bound back over the tmpfs: {args:?}"
+        );
+        assert!(
+            args.iter().any(|a| a.ends_with("scene.json")),
+            "a readable scene file was shut too: {args:?}"
+        );
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "--ro-bind" && w[1].ends_with("/skills")),
+            "the state root's skills are not readable: {args:?}"
+        );
     }
 
     #[test]
@@ -1926,8 +2146,9 @@ mod tests {
     }
 
     /// `/dev/null` is mounted over every socket in the state root's scene
-    /// directories and over every socket this process serves, after the
-    /// state root's own read-only mount so it lands on top.
+    /// directories and over every socket this process serves, after the state
+    /// root's tmpfs mask and the re-exposure of its contents so it lands on
+    /// top: a socket re-bound as a readable sibling must still end up hidden.
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_hides_the_daemons_sockets() {
@@ -1947,10 +2168,10 @@ mod tests {
         if !args.iter().any(|a| a == "--") {
             return;
         }
-        let state_mount = args
+        let state_mask = args
             .windows(2)
-            .position(|w| w[0] == "--ro-bind" && Path::new(&w[1]) == resolve_path(state.path()))
-            .expect("the state root is mounted read-only");
+            .position(|w| w[0] == "--tmpfs" && Path::new(&w[1]) == resolve_path(state.path()))
+            .expect("the state root is masked with a tmpfs");
         for socket in [&in_state, &served] {
             let socket = resolve_path(socket).display().to_string();
             let hidden = args
@@ -1958,8 +2179,8 @@ mod tests {
                 .position(|w| w[0] == "--ro-bind-try" && w[1] == "/dev/null" && w[2] == socket)
                 .unwrap_or_else(|| panic!("{socket} is not hidden: {args:?}"));
             assert!(
-                hidden > state_mount,
-                "{socket} is hidden under the state root's mount"
+                hidden > state_mask,
+                "{socket} is hidden before the state root's mask lands"
             );
         }
     }
@@ -2575,7 +2796,7 @@ mod tests {
     /// one whose configuration names a program for that git to run.
     #[cfg(target_os = "macos")]
     #[test]
-    #[ignore = "audit: confirmed defect, fix pending"]
+    #[ignore = "known escape: nested repository, see sandbox.rs header"]
     fn audit2_a_sandboxed_command_cannot_plant_an_embedded_repositorys_configuration() {
         let s = UnderSandboxExec::new().expect("sandbox-exec runs here");
         assert!(
@@ -3323,6 +3544,88 @@ mod tests {
             );
         }
         assert_eq!(cat(&agix.join("settings.json")), (true, "fine".to_string()));
+    }
+
+    /// A process an earlier command left running cannot read a credential the
+    /// engine writes into the state root while a later command is confined.
+    /// Credentials used to be masked by binding over each file at wrap time;
+    /// a file absent then was never bound, and `/dev/null` bound over an
+    /// existing one falls off when the engine rewrites it through a temporary
+    /// file and a rename (both measured on bwrap 0.8). The state root's
+    /// credential directories are now covered with a tmpfs instead, so neither
+    /// a late create nor a rename reaches the confined command — while a
+    /// readable sibling stays readable.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn a_lingering_process_cannot_read_a_credential_written_after_it_started() {
+        if !a_backend_runs() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(project.join(".agix")).unwrap();
+        write_file(&state.join("skills/s/SKILL.md"), "fine");
+        let existing = state.join("settings.local.json");
+        write_file(&existing, "{\"old\":true}");
+        let fresh = state.join("settings.json");
+        let policy = SandboxPolicy {
+            state_root: Some(state.clone()),
+            ..Default::default()
+        };
+        let command = format!(
+            "( until [ -e go ]; do sleep 0.02; done; \
+              {{ cat '{existing}'; echo; cat '{fresh}'; echo; cat '{skill}'; }} > out 2>/dev/null; \
+              touch done ) & exit 0",
+            existing = existing.display(),
+            fresh = fresh.display(),
+            skill = state.join("skills/s/SKILL.md").display(),
+        );
+        let confined = PlatformSandbox.confine(
+            ProcessSpec::new("bash", &project).args(["-c", &command].map(String::from)),
+            &policy,
+        );
+        assert_eq!(
+            confined.enforcement,
+            Enforcement::Full,
+            "{:?}",
+            confined.unmet
+        );
+        let mut child = std::process::Command::new(&confined.spec.program)
+            .args(&confined.spec.args)
+            .current_dir(&project)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+
+        let secret = "agix-after-the-fact-secret";
+        std::fs::write(&fresh, secret).unwrap();
+        let tmp = state.join(".settings.local.json.9999.tmp");
+        std::fs::write(&tmp, secret).unwrap();
+        std::fs::rename(&tmp, &existing).unwrap();
+        std::fs::write(project.join("go"), "").unwrap();
+
+        let done = (0..500).any(|_| {
+            if project.join("done").exists() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            false
+        });
+        let _ = child.wait();
+        assert!(done, "the background reader never finished");
+        let saw = std::fs::read_to_string(project.join("out")).unwrap_or_default();
+        assert!(
+            !saw.contains(secret),
+            "a lingering process read a credential written after it started: {saw:?}"
+        );
+        assert!(
+            saw.contains("fine"),
+            "the mask shut a readable file too: {saw:?}"
+        );
     }
 
     /// Unattended, a command cannot have the keychain read for it through

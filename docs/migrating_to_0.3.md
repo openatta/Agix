@@ -1355,6 +1355,26 @@ WebAssembly 载体整个移除。
   输出"。现在输出另有去处的后台进程留着,`sandbox.reap_process_groups` 打开时随会话收掉;daemon
   被 `SIGKILL` 时正在跑的命令也不再跟着死,由下一次启动按上次的进程组记录收掉。命令仍在自己的
   PID 命名空间里:`$!` 不是宿主上的 pid,后一条命令也看不见前一条留下的进程。
+- **Linux 上包裹 bwrap 的外层 sh 收紧了。** 外层 sh 在沙箱外运行,以前它的 `mktemp` 跟着
+  会话 `TMPDIR`(沙箱里可写的根)建临时文件,前一条命令留下的后台进程能趁 `mktemp` 与打开它
+  之间把它换成符号链接,让外层在沙箱外写任意文件;现在这个临时文件固定建在宿主的 `/tmp`——沙箱
+  对 `/tmp` 恒挂私有 tmpfs,沙箱里的命令够不着。外层用到的 `mktemp` / `rm` / `cat` 改用绝对路径,
+  不再按宿主 `PATH` 查找,项目里可写目录提前到 `PATH` 上也替换不掉它们。
+- **Linux 上状态目录里的凭据改用 tmpfs 整体遮住。** 以前靠逐个 bind 遮每个 key 文件,只对
+  wrap 那一刻已存在的文件有效:真机(bwrap 0.8)上 `/dev/null` 挂在文件的 dentry 上,引擎用
+  "临时文件 + rename"重写 `settings.local.json` 后这层挂失效,前一条命令留下的后台进程读得到
+  新内容;wrap 时还不存在的凭据根本没被挡。现在对装着散落 key 文件的目录(状态目录本身、各
+  场景目录)整体盖一层 tmpfs,再把非凭据项逐个只读绑回,`mcp/oauth`、`daemon/auth` 留在 tmpfs
+  下不绑回——之后新建或 rename 重写的凭据都落在 tmpfs 下,命令读不到。副作用:命令读状态目录时,
+  wrap 之后才新建的**可读**文件(如新起的会话记录)在这条命令里看不到。项目在状态目录之内的
+  会话(`project_root` 落在状态目录下)仍走旧的逐文件遮法——整体 tmpfs 会连项目一起遮——那里
+  rename 重写是已知残留。
+- **沙箱只护项目自己的 `.git`,嵌套仓库不护。** 沙箱里的命令可以在子目录 `git init` 一个仓库、
+  写它的 `.git/config`、再 `git add` 成 gitlink 登记进项目 index;用户之后在项目里跑 git(沙箱外)
+  会进这个嵌套仓库、照它的配置执行(`core.fsmonitor` 之类)。两个后端都挡不住——禁止新建 `.git`
+  会连 `git init`、`git clone`、包管理器拉 git 依赖一起弄坏,在别处建好再挪进来也绕得过。引擎
+  自己的 git 带 `-c core.fsmonitor=false` 不受影响。这是已知逃逸(`sandbox.rs` 模块头、§6.3);
+  结构性的检测(命令结束后发现项目里新出现的嵌套 `.git` 再告警/询问)留到后续版本。
 - **凭据任何模式下都读不到,项目的 skill 目录写入要确认。** 两份名单放在 `base::paths`,gate、
   文件工具与沙箱共用(`ARCHITECTURE.md` §6.1):
   - 状态目录与各场景目录下的 `settings*.json`、`mcp.local*.json`、`mcp/oauth/`,状态目录下的
