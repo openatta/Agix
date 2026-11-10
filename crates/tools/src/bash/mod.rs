@@ -303,7 +303,7 @@ impl Tool for BashTool {
                  process with the Monitor tool instead]",
             );
         }
-        let is_error = status.as_ref().map_or(true, |s| !s.success);
+        let is_error = status.as_ref().is_none_or(|s| !s.success);
         match &status {
             None => combined.push_str(&format!("\n[timed out after {}ms]", timeout.as_millis())),
             Some(s) if !s.success => match s.code {

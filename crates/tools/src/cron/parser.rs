@@ -56,7 +56,7 @@ fn field_matches(field: &str, value: u8, default_min: u8, default_max: u8) -> bo
         if value < start {
             return false;
         }
-        (value - start) % step == 0
+        (value - start).is_multiple_of(step)
     }
 }
 

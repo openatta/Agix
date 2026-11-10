@@ -10,9 +10,7 @@ pub(super) fn parse_effort(effort: &str) -> Option<Effort> {
 /// Whether an agent type's `allowed_tools` / `disallowed_tools` let a tool
 /// through. No type, or a type with neither list, admits everything.
 pub(super) fn type_admits_tool(def: Option<&AgentTypeDefinition>, name: &str) -> bool {
-    def.map_or(true, |def| {
-        lists_admit_tool(&def.allowed_tools, &def.disallowed_tools, name)
-    })
+    def.is_none_or(|def| lists_admit_tool(&def.allowed_tools, &def.disallowed_tools, name))
 }
 
 pub(super) fn lists_admit_tool(allowed: &[String], disallowed: &[String], name: &str) -> bool {

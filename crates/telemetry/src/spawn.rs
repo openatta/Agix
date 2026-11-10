@@ -101,7 +101,7 @@ async fn fan_out(
                 continue;
             };
             failed_since_warning += 1;
-            if last_warned.map_or(true, |at| at.elapsed() >= WARN_EVERY) {
+            if last_warned.is_none_or(|at| at.elapsed() >= WARN_EVERY) {
                 tracing::warn!(%error, failed = failed_since_warning, "a telemetry recorder is failing; events are being lost");
                 last_warned = Some(std::time::Instant::now());
                 failed_since_warning = 0;

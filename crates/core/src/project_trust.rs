@@ -241,7 +241,7 @@ pub fn gate_layer(layer: &mut Map<String, Value>, lower: &Value, withhold: bool)
     }
     if layer
         .get("scripts")
-        .is_some_and(|v| v.as_array().map_or(true, |a| !a.is_empty()))
+        .is_some_and(|v| v.as_array().is_none_or(|a| !a.is_empty()))
     {
         found.push("scripts".to_string());
         if withhold {
@@ -511,7 +511,7 @@ fn is_subset(small: &Value, big: Option<&Value>) -> bool {
 }
 
 fn is_empty_list(v: &Value) -> bool {
-    v.as_array().map_or(true, Vec::is_empty)
+    v.as_array().is_none_or(Vec::is_empty)
 }
 
 #[cfg(test)]

@@ -337,7 +337,7 @@ impl McpAuth {
             entry.has_tokens
                 && entry
                     .expires_at
-                    .map_or(true, |at| at > now_secs() + RENEW_BEFORE_SECS)
+                    .is_none_or(|at| at > now_secs() + RENEW_BEFORE_SECS)
         };
         if !renew && fresh(&self.shared.entry(&key)) {
             return Ok(());

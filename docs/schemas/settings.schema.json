@@ -274,8 +274,12 @@
           "type": "string"
         },
         {
-          "const": "bypassPermissions",
           "description": "Bypass all permission checks. `auto` and `yolo` are accepted as\nother spellings of this mode and read back as `bypassPermissions`.",
+          "enum": [
+            "bypassPermissions",
+            "auto",
+            "yolo"
+          ],
           "type": "string"
         },
         {
@@ -774,7 +778,7 @@
   "properties": {
     "allow_client_permission_override": {
       "default": false,
-      "description": "Whether an RPC client may request a *more permissive* mode than\n`permission_mode` above.\n\nThe daemon's `session.create` takes an optional `permission_mode` in\nits options. With this `false` — the default — a client can *tighten*\nthe mode for its own session, but a request to loosen it is clamped to\nwhat is configured here. Otherwise any client that could authenticate\ncould open a `bypassPermissions` session no matter how the daemon was\nconfigured (`crates/assembly/src/server.rs` notes there is no\nper-method authorization on that socket).\n\nSet it to `true` only when every client of this daemon is as trusted\nas the daemon itself.",
+      "description": "Whether an RPC client may request a *more permissive* mode than\n`permission_mode` above.\n\nThe daemon's `session.create` takes an optional `permission_mode` in\nits options. With this `false` — the default — a client can *tighten*\nthe mode for its own session, but a request to loosen it is clamped to\nwhat is configured here. Otherwise any client that could authenticate\ncould open a `bypassPermissions` session no matter how the daemon was\nconfigured (`crates/assembly/src/server/mod.rs` notes there is no\nper-method authorization on that socket).\n\nSet it to `true` only when every client of this daemon is as trusted\nas the daemon itself.",
       "type": "boolean"
     },
     "compaction": {
@@ -809,7 +813,7 @@
       }
     },
     "hooks_config": {
-      "description": "Lifecycle hooks: an object from event name (`PreToolUse`,\n`SessionStart`, … — `hooks::HookEvent`) to a list of hooks, each with\na `type` of `command`, `prompt`, `http` or `agent`. Tiers merge per\nevent: a tier that lists an event replaces the lower tiers' list for\nit. An unknown event name is skipped with a warning; the rest still\napply. Format: `docs/extension_points.md`, \"生命周期 hook\"."
+      "description": "Lifecycle hooks: an object from event name (`PreToolUse`,\n`SessionStart`, … — `hooks::HookEvent`) to a list of hooks, each with\na `type` of `command`, `prompt`, `http` or `agent`. Tiers merge per\nevent: a tier that lists an event replaces the lower tiers' list for\nit. An unknown event name is skipped with a warning; the rest still\napply. Format: `docs/hooks.md`."
     },
     "instruction_file": {
       "default": null,

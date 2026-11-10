@@ -622,7 +622,7 @@ static POINTS: [ExtensionPoint; 45] = [
         id: "hooks",
         kind: Kind::Interception,
         summary: "生命周期回调——command、prompt、HTTP 或 agent",
-        timing: "三十个具名时刻;见 hook 事件清单",
+        timing: "三十个具名时刻;见 docs/hooks.md",
         rewrites: "按事件而异:拦截、改写输入、结束这一轮",
         frequency: Frequency::PerToolCall,
         trust: Trust {

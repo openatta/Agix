@@ -252,7 +252,7 @@ pub enum EngineError {
 pub type ToolFilter = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 fn admits(filter: &Option<ToolFilter>, name: &str) -> bool {
-    filter.as_ref().map_or(true, |admits| admits(name))
+    filter.as_ref().is_none_or(|admits| admits(name))
 }
 
 impl Default for Builder {

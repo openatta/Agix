@@ -180,7 +180,7 @@ impl SessionPool {
             .filter(|(_, env)| match &env.entry {
                 history::entry::LogEntry::Extension { ns, .. } => {
                     !ns.starts_with(ENGINE_NS_PREFIX)
-                        && namespaces.map_or(true, |wanted| wanted.iter().any(|w| w == ns))
+                        && namespaces.is_none_or(|wanted| wanted.iter().any(|w| w == ns))
                 }
                 _ => false,
             })

@@ -45,7 +45,7 @@ impl ProgressThrottle {
             return Offer::Closed;
         }
         let due = self.due_at();
-        if due.map_or(true, |at| now >= at) && self.pending.is_none() {
+        if due.is_none_or(|at| now >= at) && self.pending.is_none() {
             self.last_sent = Some(now);
             return Offer::Send(Emit {
                 update,

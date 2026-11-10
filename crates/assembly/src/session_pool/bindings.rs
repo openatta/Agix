@@ -210,7 +210,7 @@ impl SessionPool {
     /// scene and global tiers under more.
     pub(super) async fn invalidate_bindings(&self, changed: Option<&crate::watch_hub::Tier>) {
         self.bindings.lock().await.retain(|key, binding| {
-            let hit = changed.map_or(true, |tier| tier_covers(tier, key));
+            let hit = changed.is_none_or(|tier| tier_covers(tier, key));
             if hit {
                 binding.mark_stale();
             }

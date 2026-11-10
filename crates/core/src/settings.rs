@@ -123,7 +123,7 @@ pub struct Settings {
     /// the mode for its own session, but a request to loosen it is clamped to
     /// what is configured here. Otherwise any client that could authenticate
     /// could open a `bypassPermissions` session no matter how the daemon was
-    /// configured (`crates/assembly/src/server.rs` notes there is no
+    /// configured (`crates/assembly/src/server/mod.rs` notes there is no
     /// per-method authorization on that socket).
     ///
     /// Set it to `true` only when every client of this daemon is as trusted
@@ -144,7 +144,7 @@ pub struct Settings {
     /// a `type` of `command`, `prompt`, `http` or `agent`. Tiers merge per
     /// event: a tier that lists an event replaces the lower tiers' list for
     /// it. An unknown event name is skipped with a warning; the rest still
-    /// apply. Format: `docs/extension_points.md`, "生命周期 hook".
+    /// apply. Format: `docs/hooks.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hooks_config: Option<serde_json::Value>,
 
@@ -1314,11 +1314,34 @@ impl Settings {
 /// `Settings::load()` actually accepts. Published as `docs/schemas/settings.schema.json`
 /// for editor autocomplete/validation (reference it from a settings.json file
 /// via a `"$schema"` key). Regenerate with:
-/// `cargo test -p base settings_schema_matches_committed_file -- --ignored`
-/// after changing any `Settings`-reachable type (see that test for the exact
-/// write-back invocation).
+/// `cargo test -p base write_settings_schema -- --ignored`
+/// after changing any `Settings`-reachable type.
 pub fn settings_json_schema() -> serde_json::Value {
-    serde_json::to_value(schemars::schema_for!(Settings)).unwrap_or(serde_json::Value::Null)
+    let mut schema =
+        serde_json::to_value(schemars::schema_for!(Settings)).unwrap_or(serde_json::Value::Null);
+    admit_permission_mode_aliases(&mut schema);
+    schema
+}
+
+/// schemars renders each variant as a `const`, which has no room for serde's
+/// `alias`: the spellings `Settings` accepts for `bypassPermissions` have to
+/// be added by hand or editors flag them.
+fn admit_permission_mode_aliases(schema: &mut serde_json::Value) {
+    let variants = schema
+        .pointer_mut("/$defs/PermissionMode/oneOf")
+        .and_then(serde_json::Value::as_array_mut);
+    for variant in variants.into_iter().flatten() {
+        let Some(object) = variant.as_object_mut() else {
+            continue;
+        };
+        if object.get("const") == Some(&serde_json::json!("bypassPermissions")) {
+            object.remove("const");
+            object.insert(
+                "enum".into(),
+                serde_json::json!(["bypassPermissions", "auto", "yolo"]),
+            );
+        }
+    }
 }
 
 /// The top-level keys of one settings file that no setting reads — a typo,
@@ -2099,29 +2122,40 @@ mod tests {
         }
     }
 
-    /// Regenerates `docs/schemas/settings.schema.json` from the current
-    /// `Settings` type definitions and asserts it matches what's committed —
-    /// fails (rather than silently drifting) if a `Settings`-reachable type
-    /// changed without regenerating the schema. `#[ignore]`d because it
-    /// writes to the repo tree; not run by default `cargo test`.
-    ///
-    /// To regenerate after a real schema change: run this test once with
-    /// `cargo test -p base settings_schema_matches_committed_file -- --ignored`
-    /// (it writes the file even on "mismatch" before asserting), then commit
-    /// the updated `docs/schemas/settings.schema.json`.
+    fn committed_schema_path() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/schemas/settings.schema.json")
+    }
+
+    fn rendered_schema() -> String {
+        serde_json::to_string_pretty(&settings_json_schema()).unwrap() + "\n"
+    }
+
+    #[test]
+    fn settings_schema_matches_committed_file() {
+        let existing = std::fs::read_to_string(committed_schema_path()).unwrap_or_default();
+        assert!(
+            existing == rendered_schema(),
+            "docs/schemas/settings.schema.json is out of date; run `cargo test -p base write_settings_schema -- --ignored` and commit it"
+        );
+    }
+
     #[test]
     #[ignore]
-    fn settings_schema_matches_committed_file() {
+    fn write_settings_schema() {
+        let path = committed_schema_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, rendered_schema()).unwrap();
+    }
+
+    #[test]
+    fn the_schema_admits_the_permission_mode_aliases() {
         let schema = settings_json_schema();
-        let pretty = serde_json::to_string_pretty(&schema).unwrap() + "\n";
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../docs/schemas/settings.schema.json");
-        let existing = std::fs::read_to_string(&path).unwrap_or_default();
-        if existing != pretty {
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(&path, &pretty).unwrap();
-        }
-        assert_eq!(existing, pretty, "docs/schemas/settings.schema.json was out of date and has been regenerated — review the diff and commit it");
+        let admitted = schema.to_string();
+        assert!(
+            admitted.contains(r#"["bypassPermissions","auto","yolo"]"#),
+            "{admitted}"
+        );
     }
 
     #[test]

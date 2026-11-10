@@ -33,7 +33,7 @@ pub(crate) const WORKING_RULES: &str = "\
 /// separated; `None` means all), or nothing when it has neither `RunCode`
 /// nor `Agent`.
 pub(crate) fn batch_work(available_tools: Option<&str>) -> Option<String> {
-    let has = |name: &str| available_tools.map_or(true, |t| t.split(',').any(|n| n.trim() == name));
+    let has = |name: &str| available_tools.is_none_or(|t| t.split(',').any(|n| n.trim() == name));
     let mut lines = Vec::new();
     if has("RunCode") {
         lines.push(

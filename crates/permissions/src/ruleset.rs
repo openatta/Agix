@@ -314,7 +314,7 @@ impl RuleSet {
                 specificity,
                 source_priority: r.source.priority() as i32,
             };
-            if best.as_ref().map_or(true, |(_, b)| score > *b) {
+            if best.as_ref().is_none_or(|(_, b)| score > *b) {
                 best = Some((r, score));
             }
         }

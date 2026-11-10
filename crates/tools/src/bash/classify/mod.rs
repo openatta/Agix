@@ -306,7 +306,7 @@ fn has_file_redirect(cmd: &str) -> bool {
         }
         let ends_the_word = bytes
             .get(end)
-            .map_or(true, |b| b.is_ascii_whitespace() || b";|&<>)".contains(b));
+            .is_none_or(|b| b.is_ascii_whitespace() || b";|&<>)".contains(b));
         if end == start || !ends_the_word {
             return true;
         }
