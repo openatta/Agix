@@ -79,6 +79,8 @@ impl LadderBackoff {
     /// Six steps covering roughly a minute — what both clients shipped with.
     pub const DEFAULT_STEPS: &'static [u64] = &[1_000, 2_000, 4_000, 8_000, 16_000, 32_000];
     pub const DEFAULT_JITTER: f32 = 0.25;
+    /// A provider asking for longer than this is not going to be waited for.
+    pub const MAX_SERVER_HINT: Duration = Duration::from_secs(60);
 
     pub fn new() -> Self {
         Self::from_millis(Self::DEFAULT_STEPS.to_vec())
@@ -112,6 +114,7 @@ impl BackoffPolicy for LadderBackoff {
         // not, but it does not get to extend the budget — the step it replaces
         // is still spent.
         let base = match attempt.server_hint {
+            Some(hint) if hint > Self::MAX_SERVER_HINT => return Backoff::GiveUp,
             Some(hint) => hint.as_millis() as u64,
             None => *step,
         };
@@ -134,7 +137,8 @@ fn jittered(base_ms: u64, ratio: f32) -> Duration {
     let unit = (nanos % 1_000_000) as f32 / 1_000_000.0;
     let signed = (unit - 0.5) * 2.0;
     let delta_ms = (base_ms as f32 * ratio * signed) as i64;
-    let final_ms = (base_ms as i64 + delta_ms).max(0) as u64;
+    let base = i64::try_from(base_ms).unwrap_or(i64::MAX);
+    let final_ms = base.saturating_add(delta_ms).max(0) as u64;
     Duration::from_millis(final_ms)
 }
 
@@ -170,6 +174,30 @@ mod tests {
             Backoff::WaitThenRetry(d) => d.as_millis() as u64,
             Backoff::GiveUp => panic!("expected a retry, got GiveUp"),
         }
+    }
+
+    #[test]
+    fn a_server_hint_beyond_the_cap_gives_up_instead_of_wrapping() {
+        let p = LadderBackoff::new();
+        for secs in [61, 3_600, u64::MAX] {
+            let attempt = FailedAttempt {
+                index: 0,
+                failure: RequestFailure::RateLimited,
+                server_hint: Some(Duration::from_secs(secs)),
+            };
+            assert_eq!(p.after_failure(&attempt), Backoff::GiveUp, "{secs}s");
+        }
+        let at_cap = FailedAttempt {
+            index: 0,
+            failure: RequestFailure::RateLimited,
+            server_hint: Some(LadderBackoff::MAX_SERVER_HINT),
+        };
+        assert!(wait_ms(p.after_failure(&at_cap)) >= 45_000);
+    }
+
+    #[test]
+    fn jitter_of_a_huge_base_saturates() {
+        assert!(jittered(u64::MAX, 0.25) >= Duration::from_millis(i64::MAX as u64 / 2));
     }
 
     /// The ladder is six numbers a reader has no way to check against intent,
