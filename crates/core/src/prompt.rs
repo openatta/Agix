@@ -1,8 +1,10 @@
 //! Prompt assembly — pure function that stitches together multi-source content.
 
+use crate::interface::instruction_provider::RuleProvider;
+use crate::interface::prompt_assembler::AssemblyRequest;
 use crate::interface::scene::{Scene, ScenePromptContext};
 use crate::memory::{memory_prompt, MemoryStore};
-use crate::rules::build_rules_prompt;
+use crate::rules::render_rules_prompt;
 use crate::settings::Settings;
 use serde::{Deserialize, Serialize};
 
@@ -184,15 +186,16 @@ pub fn assemble_prompt(
     skills_text: Option<&str>,
     mcp_instructions: Option<&str>,
 ) -> Vec<PromptBlock> {
-    assemble_prompt_with(
-        &crate::interface::prompt_registry::NoRegistrations,
+    assemble_prompt_with(&AssemblyRequest {
+        registry: &crate::interface::prompt_registry::NoRegistrations,
         scene,
         settings,
         memory_store,
         ctx,
+        rules: &crate::rules::RuleTiers::for_paths(&settings.paths).rules(),
         skills_text,
         mcp_instructions,
-    )
+    })
 }
 
 /// [`assemble_prompt`], merging in whatever else registered a contribution.
@@ -206,15 +209,17 @@ pub fn assemble_prompt(
 /// `prompt_override` still wins over all of it. Overriding the prompt means
 /// overriding the prompt; a contribution surviving it would make the setting
 /// mean something narrower than it says.
-pub fn assemble_prompt_with(
-    registry: &dyn crate::interface::prompt_registry::PromptRegistry,
-    scene: &dyn Scene,
-    settings: &Settings,
-    memory_store: &MemoryStore,
-    ctx: &ScenePromptContext,
-    skills_text: Option<&str>,
-    mcp_instructions: Option<&str>,
-) -> Vec<PromptBlock> {
+pub fn assemble_prompt_with(request: &AssemblyRequest<'_>) -> Vec<PromptBlock> {
+    let AssemblyRequest {
+        registry,
+        scene,
+        settings,
+        memory_store,
+        ctx,
+        rules,
+        skills_text,
+        mcp_instructions,
+    } = *request;
     use crate::interface::prompt_registry::{orders, PromptContent, RegisteredBlock};
 
     // If override is set, return it as the sole system block.
@@ -278,7 +283,7 @@ pub fn assemble_prompt_with(
     // description), not full content. Omitted entirely when no `.agix/rules/`
     // files exist anywhere, so sessions that don't use this feature pay zero
     // extra tokens. See `crate::rules` module docs.
-    if let Some(text) = build_rules_prompt(&settings.paths) {
+    if let Some(text) = render_rules_prompt(rules) {
         kernel.push((orders::RULES, PromptBlock::system(text).named(names::RULES)));
     }
 
@@ -708,15 +713,16 @@ mod tests {
         let ctx = test_ctx();
 
         let direct = assemble_prompt(&scene, &settings, &store, &ctx, Some("skills"), Some("mcp"));
-        let through_registry = assemble_prompt_with(
-            &NoRegistrations,
-            &scene,
-            &settings,
-            &store,
-            &ctx,
-            Some("skills"),
-            Some("mcp"),
-        );
+        let through_registry = assemble_prompt_with(&AssemblyRequest {
+            registry: &NoRegistrations,
+            scene: &scene,
+            settings: &settings,
+            memory_store: &store,
+            ctx: &ctx,
+            rules: &[],
+            skills_text: Some("skills"),
+            mcp_instructions: Some("mcp"),
+        });
         assert_eq!(direct, through_registry);
     }
 
@@ -740,15 +746,16 @@ mod tests {
                 .from_origin(BlockOrigin::Plugin("example".into())),
         );
 
-        let blocks = assemble_prompt_with(
-            registry.as_ref(),
-            &scene,
-            &settings,
-            &store,
-            &ctx,
-            Some("skills inventory"),
-            None,
-        );
+        let blocks = assemble_prompt_with(&AssemblyRequest {
+            registry: registry.as_ref(),
+            scene: &scene,
+            settings: &settings,
+            memory_store: &store,
+            ctx: &ctx,
+            rules: &[],
+            skills_text: Some("skills inventory"),
+            mcp_instructions: None,
+        });
         let names: Vec<&str> = blocks.iter().filter_map(|b| b.name.as_deref()).collect();
         let mine = names.iter().position(|n| *n == "mine.preamble").unwrap();
         let skills = names
@@ -764,15 +771,16 @@ mod tests {
         );
 
         disposer.dispose();
-        let after = assemble_prompt_with(
-            registry.as_ref(),
-            &scene,
-            &settings,
-            &store,
-            &ctx,
-            Some("skills inventory"),
-            None,
-        );
+        let after = assemble_prompt_with(&AssemblyRequest {
+            registry: registry.as_ref(),
+            scene: &scene,
+            settings: &settings,
+            memory_store: &store,
+            ctx: &ctx,
+            rules: &[],
+            skills_text: Some("skills inventory"),
+            mcp_instructions: None,
+        });
         assert!(after
             .iter()
             .all(|b| b.name.as_deref() != Some("mine.preamble")));
@@ -790,15 +798,16 @@ mod tests {
         );
         let tmp = TempDir::new().unwrap();
         let store = MemoryStore::new(tmp.path().join("user"), tmp.path().join("local"));
-        let blocks = assemble_prompt_with(
-            registry.as_ref(),
-            &TestScene,
-            &test_settings(),
-            &store,
-            &test_ctx(),
-            None,
-            None,
-        );
+        let blocks = assemble_prompt_with(&AssemblyRequest {
+            registry: registry.as_ref(),
+            scene: &TestScene,
+            settings: &test_settings(),
+            memory_store: &store,
+            ctx: &test_ctx(),
+            rules: &[],
+            skills_text: None,
+            mcp_instructions: None,
+        });
         assert!(blocks
             .iter()
             .all(|b| b.name.as_deref() != Some("mine.sometimes")));
@@ -823,15 +832,16 @@ mod tests {
 
         let tmp = TempDir::new().unwrap();
         let store = MemoryStore::new(tmp.path().join("user"), tmp.path().join("local"));
-        let blocks = assemble_prompt_with(
-            registry.as_ref(),
-            &TestScene,
-            &test_settings(),
-            &store,
-            &test_ctx(),
-            None,
-            None,
-        );
+        let blocks = assemble_prompt_with(&AssemblyRequest {
+            registry: registry.as_ref(),
+            scene: &TestScene,
+            settings: &test_settings(),
+            memory_store: &store,
+            ctx: &test_ctx(),
+            rules: &[],
+            skills_text: None,
+            mcp_instructions: None,
+        });
         let mine = blocks
             .iter()
             .find(|b| b.name.as_deref() == Some("mine.greeting"))
@@ -871,15 +881,16 @@ mod tests {
 
         let tmp = TempDir::new().unwrap();
         let store = MemoryStore::new(tmp.path().join("user"), tmp.path().join("local"));
-        let blocks = assemble_prompt_with(
-            registry.as_ref(),
-            &TestScene,
-            &test_settings(),
-            &store,
-            &test_ctx(),
-            Some("skills inventory"),
-            None,
-        );
+        let blocks = assemble_prompt_with(&AssemblyRequest {
+            registry: registry.as_ref(),
+            scene: &TestScene,
+            settings: &test_settings(),
+            memory_store: &store,
+            ctx: &test_ctx(),
+            rules: &[],
+            skills_text: Some("skills inventory"),
+            mcp_instructions: None,
+        });
         let named: Vec<&str> = blocks.iter().filter_map(|b| b.name.as_deref()).collect();
         assert!(
             named.contains(&names::SKILLS_CATALOG),
@@ -917,15 +928,16 @@ mod tests {
 
         let tmp = TempDir::new().unwrap();
         let store = MemoryStore::new(tmp.path().join("user"), tmp.path().join("local"));
-        let blocks = assemble_prompt_with(
-            registry.as_ref(),
-            &TestScene,
-            &test_settings(),
-            &store,
-            &test_ctx(),
-            Some("skills inventory"),
-            None,
-        );
+        let blocks = assemble_prompt_with(&AssemblyRequest {
+            registry: registry.as_ref(),
+            scene: &TestScene,
+            settings: &test_settings(),
+            memory_store: &store,
+            ctx: &test_ctx(),
+            rules: &[],
+            skills_text: Some("skills inventory"),
+            mcp_instructions: None,
+        });
         let skills = blocks
             .iter()
             .find(|b| b.name.as_deref() == Some(names::SKILLS_CATALOG))

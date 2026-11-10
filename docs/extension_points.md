@@ -776,9 +776,16 @@ Builder::new().instruction_provider(Arc::new(InlineInstructions::new(
 )))
 ```
 
-全局、scene、项目这三层规则各是一个 `RuleProvider`,由
-`base::rules::default_rule_sources` 组合、由 `discover_rules_from` 按后来居上合并,
-所以换一套层级列表是换一个组合,而不是改发现函数。
+全局、scene、项目这三层规则各是一个 `RuleProvider`,由 `base::rules::RuleTiers::for_paths`
+组合,按后来居上合并;`RuleTiers` 本身也是一个 `RuleProvider`。所以换一套层级列表是用
+`RuleTiers::new` 换一个组合,经 `Builder::rule_provider` 接进会话(子 Agent 沿用),而不是改发现函数。
+
+```rust
+Builder::new().rule_provider(Arc::new(RuleTiers::new(vec![
+    Arc::new(RuleDirectory::new("/etc/agix/rules")),
+    Arc::new(StaticRules::new("service", entries)),
+])))
+```
 
 ---
 

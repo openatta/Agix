@@ -159,6 +159,8 @@ pub(crate) struct PromptContext {
     /// Computed lazily on the first turn unless the builder seeded it.
     pub(crate) frozen: Option<base::frozen::FrozenContext>,
     pub(crate) claude_md_content: Option<String>,
+    /// Read on every assembly, as the rule directories used to be scanned.
+    pub(crate) rules: Arc<dyn base::interface::instruction_provider::RuleProvider>,
     /// Cleared by `/clear` and by compaction.
     pub(crate) session_context_injected: bool,
     /// Re-injected after compaction.

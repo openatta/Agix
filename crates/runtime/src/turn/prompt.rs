@@ -487,6 +487,7 @@ impl Agent {
             &*self.policies.environment,
         );
         ctx.available_tools = tools_ref;
+        let rules = self.prompt.rules.rules();
         let blocks = self.prompt.prompt_assembler.assemble(
             &base::interface::prompt_assembler::AssemblyRequest {
                 registry: self.prompt.prompt_registry.as_ref(),
@@ -494,6 +495,7 @@ impl Agent {
                 settings: &self.settings,
                 memory_store: &self.memory.memory_store,
                 ctx: &ctx,
+                rules: &rules,
                 skills_text: skills_ref,
                 mcp_instructions: mcp_ref,
             },

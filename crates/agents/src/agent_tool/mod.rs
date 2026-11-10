@@ -182,6 +182,7 @@ impl AgentTool {
                 session_agent_types: Default::default(),
                 exec: None,
                 token_counter: None,
+                rules: None,
                 modules: Vec::new(),
                 skill_manager: Default::default(),
                 delegate_mcp: Default::default(),
@@ -253,6 +254,7 @@ impl AgentTool {
                 session_agent_types: Default::default(),
                 exec: None,
                 token_counter: None,
+                rules: None,
                 modules: Vec::new(),
                 skill_manager: Default::default(),
                 delegate_mcp: Default::default(),
@@ -357,6 +359,17 @@ impl AgentTool {
     ) -> Self {
         let mut inner = (*self.inner).clone();
         inner.token_counter = Some(counter);
+        self.inner = Arc::new(inner);
+        self
+    }
+
+    /// Show delegates the parent session's rule index.
+    pub fn with_rule_provider(
+        mut self,
+        rules: Arc<dyn base::interface::instruction_provider::RuleProvider>,
+    ) -> Self {
+        let mut inner = (*self.inner).clone();
+        inner.rules = Some(rules);
         self.inner = Arc::new(inner);
         self
     }

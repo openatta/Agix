@@ -116,6 +116,10 @@ impl Builder {
             .environment
             .clone()
             .unwrap_or_else(|| Arc::new(base::interface::environment::SystemEnvironment));
+        let rules: Arc<dyn base::interface::instruction_provider::RuleProvider> = self
+            .rule_provider
+            .clone()
+            .unwrap_or_else(|| Arc::new(base::rules::RuleTiers::for_paths(&settings.paths)));
         let memory_store = self.memory_store.unwrap_or_else(|| {
             Arc::new(MemoryStore::for_paths(
                 &base::paths::ConfigPaths::from_settings(&settings.paths),
@@ -419,6 +423,7 @@ impl Builder {
                 task_router: self.task_router.as_ref(),
                 exec: &exec,
                 token_counter: &token_counter,
+                rules: &rules,
                 delegate_plugins: &self.plugins,
                 plugin_tools: &plugin_tools,
                 plugin_agent_types: &plugin_agent_types,
@@ -850,6 +855,7 @@ impl Builder {
                     prompt_middleware: Arc::new(prompt_middleware),
                     frozen: self.frozen, // pre-seeded or lazily computed on first turn
                     claude_md_content,
+                    rules,
                     session_context_injected: false,
                     invoked_skills: Vec::new(),
                     announced_skills: None,

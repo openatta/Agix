@@ -105,6 +105,8 @@ pub struct Builder {
     exec: Option<base::interface::exec::ExecProviders>,
     /// See [`Builder::token_counter`].
     token_counter: Option<Arc<dyn base::interface::token_counter::TokenCounter>>,
+    /// See [`Builder::rule_provider`].
+    rule_provider: Option<Arc<dyn base::interface::instruction_provider::RuleProvider>>,
     modules: Vec<Arc<dyn crate::module::Module>>,
     session_prompt: Option<SessionPrompt>,
 }
@@ -162,6 +164,7 @@ impl Builder {
             process_groups: None,
             exec: None,
             token_counter: None,
+            rule_provider: None,
             modules: Vec::new(),
             session_prompt: None,
         }
@@ -223,6 +226,17 @@ impl Builder {
         counter: Arc<dyn base::interface::token_counter::TokenCounter>,
     ) -> Self {
         self.token_counter = Some(counter);
+        self
+    }
+
+    /// Where the rule index the model is shown comes from. Replaces the
+    /// three tiers (`base::rules::RuleTiers::for_paths`); compose with
+    /// `RuleTiers::new`. Delegates are shown the same index.
+    pub fn rule_provider(
+        mut self,
+        rules: Arc<dyn base::interface::instruction_provider::RuleProvider>,
+    ) -> Self {
+        self.rule_provider = Some(rules);
         self
     }
 

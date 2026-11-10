@@ -447,3 +447,64 @@ async fn a_session_is_judged_by_the_counter_it_was_built_with() {
     let overhead = agent.compaction.request_overhead_tokens;
     assert!(overhead > 0 && overhead % 1_000 == 0, "{overhead}");
 }
+
+/// Answers at once, keeping the system prompt each call carried.
+struct KeepsPrompt(Arc<std::sync::Mutex<Vec<String>>>);
+
+#[async_trait::async_trait]
+impl Model for KeepsPrompt {
+    fn api_type(&self) -> base::provider::ApiType {
+        base::provider::ApiType::Anthropic
+    }
+    async fn stream(
+        &self,
+        prompt_blocks: Vec<base::prompt::PromptBlock>,
+        tools: Vec<base::interface::model::ToolDef>,
+        messages: Vec<base::interface::model::ModelMessage>,
+        params: base::interface::model::StreamParams,
+        cancel: CancellationToken,
+    ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError> {
+        self.0.lock().unwrap().extend(
+            prompt_blocks
+                .iter()
+                .filter(|b| b.name.as_deref() == Some(base::prompt::names::RULES))
+                .map(|b| b.content.clone()),
+        );
+        super::events_and_steering::PlainReplyModel
+            .stream(prompt_blocks, tools, messages, params, cancel)
+            .await
+    }
+}
+
+/// The rule index the model is shown is the one the host's provider gives,
+/// not the three tiers on disk.
+#[tokio::test]
+async fn the_rule_index_comes_from_the_provider_the_session_was_built_with() {
+    let rules = Arc::new(base::interface::instruction_provider::StaticRules::new(
+        "service",
+        vec![base::rules::RuleEntry {
+            name: "deploys".into(),
+            description: "how a deploy goes out".into(),
+            path: "/srv/rules/deploys.md".into(),
+        }],
+    ));
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (mut agent, _event_rx, _input_tx) = Builder::new()
+        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .model(Arc::new(KeepsPrompt(seen.clone())))
+        .settings(Arc::new(test_settings()))
+        .rule_provider(rules)
+        .skip_warmup(true)
+        .build()
+        .expect("build should succeed");
+    agent
+        .run_turn("go".into(), "t1".into(), CancellationToken::new())
+        .await
+        .expect("the turn runs");
+    let seen = seen.lock().unwrap();
+    assert!(
+        seen.iter()
+            .any(|block| block.contains("`/srv/rules/deploys.md`: how a deploy goes out")),
+        "{seen:?}"
+    );
+}

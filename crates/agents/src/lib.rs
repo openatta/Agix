@@ -113,7 +113,8 @@ impl Module for AgentsModule {
         }
         tool = tool
             .with_exec(cx.exec.clone())
-            .with_token_counter(cx.token_counter.clone());
+            .with_token_counter(cx.token_counter.clone())
+            .with_rule_provider(cx.rules.clone());
         let tool = Arc::new(tool);
 
         // For `AgentTypeDefinition.mcp_servers` and `.skills`: a delegate is

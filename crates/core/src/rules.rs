@@ -15,6 +15,7 @@ use crate::interface::instruction_provider::{RuleDirectory, RuleProvider};
 use crate::paths::PromptFiles;
 use crate::settings::PathSettings;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// One discovered rule document.
 #[derive(Debug, Clone, PartialEq)]
@@ -30,53 +31,65 @@ pub struct RuleEntry {
     pub path: PathBuf,
 }
 
-/// The engine's own rule sources: the three tiers, outermost first, so
-/// project overrides scene overrides global — same precedence as
-/// skills/agents (`crates/core/src/frozen/skill.rs`,
-/// `crates/agents/src/agent_tool/catalog.rs::merge_agent_types`).
-pub fn default_rule_sources(paths: &PathSettings) -> Vec<Box<dyn RuleProvider>> {
-    let files = PromptFiles::for_project(&crate::paths::ConfigPaths::from_settings(paths));
-    let project = paths
-        .project_root()
-        .map(|project| project.join(".agix").join("rules"));
-    [
-        paths.global_data_dir.join("rules"),
-        paths.user_data_dir.join("rules"),
-    ]
-    .into_iter()
-    .chain(project)
-    .map(|dir| {
-        Box::new(RuleDirectory::new(dir).reading_with(files.clone())) as Box<dyn RuleProvider>
-    })
-    .collect()
+/// Rule sources merged into one index: a later source's entry replaces an
+/// earlier one of the same name, and the result is sorted by name.
+#[derive(Clone)]
+pub struct RuleTiers {
+    sources: Vec<Arc<dyn RuleProvider>>,
 }
 
-/// Scan the three tiers and return one entry per unique filename stem.
-pub fn discover_rules(paths: &PathSettings) -> Vec<RuleEntry> {
-    discover_rules_from(&default_rule_sources(paths))
-}
-
-/// Merge `sources` into one index: later sources win a name collision, and
-/// the result is sorted by name for stable output.
-pub fn discover_rules_from(sources: &[Box<dyn RuleProvider>]) -> Vec<RuleEntry> {
-    let mut by_name: std::collections::HashMap<String, RuleEntry> =
-        std::collections::HashMap::new();
-    for source in sources {
-        for entry in source.rules() {
-            by_name.insert(entry.name.clone(), entry);
-        }
+impl RuleTiers {
+    pub fn new(sources: Vec<Arc<dyn RuleProvider>>) -> Self {
+        Self { sources }
     }
-    let mut entries: Vec<RuleEntry> = by_name.into_values().collect();
-    entries.sort_by(|a, b| a.name.cmp(&b.name));
-    entries
+
+    /// The engine's own tiers, outermost first, so project overrides scene
+    /// overrides global — same precedence as skills/agents
+    /// (`crates/core/src/frozen/skill.rs`,
+    /// `crates/agents/src/agent_tool/catalog.rs::merge_agent_types`).
+    pub fn for_paths(paths: &PathSettings) -> Self {
+        let files = PromptFiles::for_project(&crate::paths::ConfigPaths::from_settings(paths));
+        let project = paths
+            .project_root()
+            .map(|project| project.join(".agix").join("rules"));
+        let sources = [
+            paths.global_data_dir.join("rules"),
+            paths.user_data_dir.join("rules"),
+        ]
+        .into_iter()
+        .chain(project)
+        .map(|dir| {
+            Arc::new(RuleDirectory::new(dir).reading_with(files.clone())) as Arc<dyn RuleProvider>
+        })
+        .collect();
+        Self::new(sources)
+    }
+}
+
+impl RuleProvider for RuleTiers {
+    fn id(&self) -> &str {
+        "tiers"
+    }
+
+    fn rules(&self) -> Vec<RuleEntry> {
+        let mut by_name: std::collections::HashMap<String, RuleEntry> =
+            std::collections::HashMap::new();
+        for source in &self.sources {
+            for entry in source.rules() {
+                by_name.insert(entry.name.clone(), entry);
+            }
+        }
+        let mut entries: Vec<RuleEntry> = by_name.into_values().collect();
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        entries
+    }
 }
 
 /// Render the "Available Rules" system prompt block. Returns `None` when no
 /// rule documents exist anywhere — keeps token cost at zero for sessions
 /// that don't use this feature at all, matching the "宽进严出" philosophy
 /// used elsewhere in the config system (unused config = zero runtime cost).
-pub fn build_rules_prompt(paths: &PathSettings) -> Option<String> {
-    let entries = discover_rules(paths);
+pub fn render_rules_prompt(entries: &[RuleEntry]) -> Option<String> {
     if entries.is_empty() {
         return None;
     }
@@ -89,7 +102,7 @@ pub fn build_rules_prompt(paths: &PathSettings) -> Option<String> {
             .to_string(),
         String::new(),
     ];
-    for e in &entries {
+    for e in entries {
         lines.push(format!("- `{}`: {}", e.path.display(), e.description));
     }
     Some(lines.join("\n"))
@@ -126,8 +139,8 @@ mod tests {
             &root.path().join("scene"),
             &root.path().join("global"),
         );
-        assert!(discover_rules(&paths).is_empty());
-        assert!(build_rules_prompt(&paths).is_none());
+        assert!(RuleTiers::for_paths(&paths).rules().is_empty());
+        assert!(render_rules_prompt(&RuleTiers::for_paths(&paths).rules()).is_none());
     }
 
     #[test]
@@ -144,7 +157,7 @@ mod tests {
             &root.path().join("scene"),
             &root.path().join("global"),
         );
-        let entries = discover_rules(&paths);
+        let entries = RuleTiers::for_paths(&paths).rules();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "security");
         assert_eq!(entries[0].description, "Security guidelines");
@@ -165,7 +178,7 @@ mod tests {
         );
 
         let paths = paths_for(&project, &scene, &global);
-        let entries = discover_rules(&paths);
+        let entries = RuleTiers::for_paths(&paths).rules();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].description, "from project");
     }
@@ -183,7 +196,7 @@ mod tests {
         );
 
         let paths = paths_for(&project, &root.path().join("scene"), &global);
-        let entries = discover_rules(&paths);
+        let entries = RuleTiers::for_paths(&paths).rules();
         assert_eq!(entries.len(), 2);
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert!(names.contains(&"architecture"));
@@ -191,7 +204,7 @@ mod tests {
     }
 
     #[test]
-    fn build_rules_prompt_lists_filenames_and_descriptions() {
+    fn the_rules_block_lists_filenames_and_descriptions() {
         let root = TempDir::new().unwrap();
         let project = root.path().join("project");
         write_rule(
@@ -204,7 +217,8 @@ mod tests {
             &root.path().join("scene"),
             &root.path().join("global"),
         );
-        let text = build_rules_prompt(&paths).expect("expected a rules block");
+        let text = render_rules_prompt(&RuleTiers::for_paths(&paths).rules())
+            .expect("expected a rules block");
         assert!(text.contains("Available Rules"));
         assert!(text.contains("testing.md"));
         assert!(text.contains("Testing conventions"));
@@ -216,8 +230,8 @@ mod tests {
     /// last-wins rule the tiers use.
     #[test]
     fn a_source_the_engine_does_not_own_takes_part_in_the_merge() {
-        let sources: Vec<Box<dyn RuleProvider>> = vec![
-            Box::new(StaticRules::new(
+        let sources: Vec<Arc<dyn RuleProvider>> = vec![
+            Arc::new(StaticRules::new(
                 "service",
                 vec![RuleEntry {
                     name: "testing".into(),
@@ -225,7 +239,7 @@ mod tests {
                     path: PathBuf::from("/srv/testing.md"),
                 }],
             )),
-            Box::new(StaticRules::new(
+            Arc::new(StaticRules::new(
                 "override",
                 vec![RuleEntry {
                     name: "testing".into(),
@@ -234,7 +248,7 @@ mod tests {
                 }],
             )),
         ];
-        let entries = discover_rules_from(&sources);
+        let entries = RuleTiers::new(sources).rules();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].description, "from the later source");
     }

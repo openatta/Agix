@@ -348,9 +348,24 @@ impl base::interface::token_counter::TokenCounter for CountingCounter {
     }
 }
 
+/// Counts the times its index was asked for.
+#[derive(Default)]
+struct CountingRules(std::sync::atomic::AtomicUsize);
+
+impl base::interface::instruction_provider::RuleProvider for CountingRules {
+    fn id(&self) -> &str {
+        "counting"
+    }
+    fn rules(&self) -> Vec<base::rules::RuleEntry> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Vec::new()
+    }
+}
+
 /// A delegate is built with the host's answers its parent was: the git its
 /// first turn asks for to collect the repository context reaches the
-/// parent's `Process`, and its size is judged by the parent's counter.
+/// parent's `Process`, its size is judged by the parent's counter, and its
+/// rule index comes from the parent's provider.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_delegate_runs_on_its_parents_host_contracts() {
     use base::interface::exec::in_process::ScriptedProcess;
@@ -360,13 +375,15 @@ async fn a_delegate_runs_on_its_parents_host_contracts() {
         ..base::interface::exec::ExecProviders::in_process()
     };
     let counter = Arc::new(CountingCounter::default());
+    let rules = Arc::new(CountingRules::default());
     let (settings, dir) = parent_settings_for_test("code");
     let agent_tool = agent_tool_with_model(Arc::new(LineageModel {
         seen: Default::default(),
     }))
     .with_settings(Arc::new(settings))
     .with_exec(providers)
-    .with_token_counter(counter.clone());
+    .with_token_counter(counter.clone())
+    .with_rule_provider(rules.clone());
 
     let ran = agent_tool
         .run_sub(
@@ -390,5 +407,9 @@ async fn a_delegate_runs_on_its_parents_host_contracts() {
     assert!(
         counter.0.load(std::sync::atomic::Ordering::SeqCst) > 0,
         "the delegate's size was not judged by the parent's counter"
+    );
+    assert!(
+        rules.0.load(std::sync::atomic::Ordering::SeqCst) > 0,
+        "the delegate's rule index did not come from the parent's provider"
     );
 }

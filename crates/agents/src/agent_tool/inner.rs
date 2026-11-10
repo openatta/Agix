@@ -222,6 +222,8 @@ pub(super) struct Inner {
     /// What judges the parent session's size; a delegate judges its own
     /// with it.
     pub(super) token_counter: Option<Arc<dyn base::interface::token_counter::TokenCounter>>,
+    /// Where the parent session's rule index comes from.
+    pub(super) rules: Option<Arc<dyn base::interface::instruction_provider::RuleProvider>>,
     /// What every delegate is assembled with: the parent session's modules.
     pub(super) modules: Vec<Arc<dyn runtime::module::Module>>,
     /// The parent session's `SkillManager`, when known — used to resolve
@@ -467,6 +469,9 @@ impl Inner {
         }
         if let Some(counter) = &self.token_counter {
             builder = builder.token_counter(counter.clone());
+        }
+        if let Some(rules) = &self.rules {
+            builder = builder.rule_provider(rules.clone());
         }
         // One runner for the whole tree: `once` holds across it, and the
         // root's file watcher is the only one.

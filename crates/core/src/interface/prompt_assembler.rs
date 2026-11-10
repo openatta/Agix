@@ -31,6 +31,8 @@ pub struct AssemblyRequest<'a> {
     pub settings: &'a Settings,
     pub memory_store: &'a MemoryStore,
     pub ctx: &'a ScenePromptContext<'a>,
+    /// The rule documents the model is told exist, already merged.
+    pub rules: &'a [crate::rules::RuleEntry],
     /// The skills inventory, already rendered.
     pub skills_text: Option<&'a str>,
     /// Usage guidance from the connected MCP servers, already rendered.
@@ -47,15 +49,7 @@ pub struct DefaultAssembler;
 
 impl PromptAssembler for DefaultAssembler {
     fn assemble(&self, request: &AssemblyRequest<'_>) -> Vec<PromptBlock> {
-        crate::prompt::assemble_prompt_with(
-            request.registry,
-            request.scene,
-            request.settings,
-            request.memory_store,
-            request.ctx,
-            request.skills_text,
-            request.mcp_instructions,
-        )
+        crate::prompt::assemble_prompt_with(request)
     }
 }
 
