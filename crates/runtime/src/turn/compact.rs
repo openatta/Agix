@@ -258,7 +258,12 @@ impl Agent {
                         tracing::info!("compaction: LLM summary produced (FullCompact)");
                         Some(ok)
                     }
-                    Err(compaction::compact::CompactError::Cancelled) => {
+                    // An interrupt can also surface as the summary request's
+                    // own error, depending on where the stream was when it hit.
+                    Err(e)
+                        if cancel.is_cancelled()
+                            || matches!(e, compaction::compact::CompactError::Cancelled) =>
+                    {
                         tracing::info!("compaction: interrupted while summarizing; left as it was");
                         return Err(NotCompacted::Cancelled);
                     }
