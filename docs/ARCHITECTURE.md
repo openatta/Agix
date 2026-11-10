@@ -820,7 +820,7 @@ rust / go / java / ruby / dotnet / swift 的常见位置,开箱即用。设置�
   ],
   "allowed_authorization_servers": [ // 可省;省略 = 任何授权服务器;[] = 全部拒绝
     "https://login.corp.example",
-    "https://*.okta.com/oauth2/**"
+    "https://corp.okta.com/oauth2/default"  // 写具体租户;*.okta.com 放进任何人的租户
   ],
   "enterprise_idp": {               // 可省;企业托管授权换身份的 IdP(mcp_auth.md §4)
     "issuer": "https://login.corp.example",
@@ -835,6 +835,9 @@ rust / go / java / ruby / dotnet / swift 的常见位置,开箱即用。设置�
 请求之前被拒绝,`mcp.auth.start` 报 `MCP_SERVER_DENIED`。`enterprise_idp` 给出
 `"grant": "enterprise"` 的 server 用来交换用户身份的 IdP;宿主经 `Assembly::mcp_enterprise_idp`
 给了的话以宿主的为准。策略读不了时两者都不生效:没有授权服务器被允许,也没有 IdP。
+issuer 的 glob 不要通配托管 IdP 的域名:`https://*.okta.com/**`、`https://login.microsoftonline.com/**`
+放进的是这家服务上**任何**租户,攻击者自己开一个就能当上"允许的"授权服务器;写到具体租户
+(`https://corp.okta.com/oauth2/default`、带租户 ID 的路径)为止。
 
 每条规则恰好一个键,按它匹配:
 
@@ -852,7 +855,10 @@ server,拒绝原因会说明。`denied_servers` 里的 `name` 照常生效:按�
 
 glob 按 §6.1 的约定:`*` 不跨 `/`,`**` 跨。所以 `{"command": "npx"}` 只放行写成 `npx`
 的命令,不放行 `/tmp/evil-npx`,也不放行 `/usr/local/bin/npx`;`/opt/mcp/bin/*` 不放行
-`/opt/mcp/bin/sub/x`。`command` 规则不匹配远端 server,`url` 规则不匹配 stdio server。
+`/opt/mcp/bin/sub/x`。匹配前 `command` 先按字面规整(去掉 `.` 段与重复的 `/`,`..` 按上一级
+折算),含 `..` 的命令不命中任何 `allowed_servers` 规则——`/opt/mcp/**` 不放行
+`/opt/mcp/../../tmp/evil`——但照样按折算后的路径去比 `denied_servers`。macOS 的文件系统不分
+大小写,`command` 规则在那里也不分(`/tmp/**` 拦得住 `/TMP/evil`)。`command` 规则不匹配远端 server,`url` 规则不匹配 stdio server。
 规则不看 `args`:放行一个解释器(`/usr/bin/python3`、`node`)就放行了它能跑的任何脚本。
 不带 `/` 的命令名在起进程时按 `PATH` 找,而 `PATH` 用户改得了(daemon 的环境、server 配置
 的 `env`),所以要钉死一个二进制,放行它的绝对路径。
@@ -887,8 +893,9 @@ HTTP;规则里写的 `ws://` / `wss://` 同样换过来):`https://*.corp.example
 `settings.local.json`)里声明或改写过的 server——`mcp.addServer` / `mcp.updateServer` 写的
 就是这一层,其中 `headers` 与 `env` 落在 `settings.local.json`——`command` / `args` / `url` / `headers` 里的 `$VAR` 只用它自己 `env` 块里的值
 展开,`env` 块的值本身不展开,一律不读 daemon 的进程环境;它的 `oauth` 也不能用
-`client_secret_env` / `private_key_jwt.key_env`(读的是 daemon 的环境),写了就以
-`mcp_connect_failed` 拒绝连接。全局层、场景层和插件声明的 server 照旧用 daemon 的环境展开。
+`client_secret_env` / `private_key_jwt.key_env`(读的是 daemon 的环境)、
+`private_key_jwt.key_file`(读本机的私钥文件)和 `"grant": "enterprise"`(花宿主交来的企业身份),
+写了就以 `mcp_connect_failed` 拒绝连接。全局层、场景层和插件声明的 server 照旧用 daemon 的环境展开。
 这条对已经信任的项目同样成立:克隆来的仓库不应该能把 `$GITHUB_TOKEN` 发到它指定的 URL。
 项目层只改了全局 server 的一部分(比如只换了 `url`)也算项目层的 server。未信任的项目,
 它自己的 server 根本不启动(§6.6)。
@@ -912,6 +919,15 @@ daemon 管。设计与用法在 [`mcp_auth.md`](mcp_auth.md);这里只记它在�
   跳转之前对照 `allowed_authorization_servers`。
 - **无人值守的 server**(`client_credentials`、企业托管授权)不经过登录:令牌在每次请求之前
   检查,快到期或被拒时重新取。企业身份由宿主经 `mcp.auth.setIdentity` 交来,只在内存里。
+- **地址过滤与代理**:OAuth 请求与非回环 server 的 MCP 连接都过 `mcp::oauth::http` 的地址
+  过滤,判定与模型发起的请求共用 `is_internal_address`。配了 `HTTP(S)_PROXY` 时代理替我们解析
+  DNS,过滤只看得到主机名与 IP 字面量(`mcp_auth.md` §7)。
+- **工具名的 server 段在一个管理器里唯一**:`mcp__<段>__<工具>` 的段由 server 名确定地造出
+  (`mcp::naming`),本身合规的名字原样用,别的清洗后接哈希,两个不同的名字可能落到同一段
+  (`my_srv_<哈希>` 与 `my.srv`)。连接前查重:同时配置的几个撞了,一个都不连,`mcp.status`
+  里都是 `failed`,`error` 点名撞上的那个;后来经 `mcp.addServer` 加进来的撞上已有的,只拒
+  新来的。不给撞的加哈希,是因为那会改掉一个合规名字的工具名,写好的权限规则跟着失效;都拒
+  而不是挑一个留下,是因为两边谁是"本来的"无从判断,留错一个就让权限规则落到别人的工具上。
 
 ### 6.6 项目信任
 

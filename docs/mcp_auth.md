@@ -21,6 +21,7 @@
     "oauth": {
       "client_id": "agix-desktop",          // 在授权服务器上预先注册好的客户端
       "client_secret_env": "DOCS_MCP_SECRET", // 机密客户端的密钥:环境变量的名字,不是密钥本身
+      "issuer": "https://login.example.com", // 这个客户端注册在哪个授权服务器(它的 issuer)
       "scopes": ["files:read"],              // 要请求的 scope
       "callback_port": 8765                  // 回环回调固定用这个端口(默认临时端口)
     }
@@ -32,9 +33,18 @@
   `oauth` 只在要指定客户端、scope 或端口时才写。
 - `client_secret_env` 必须配 `client_id`。密钥只从环境变量读,配置里写不了字面量
   (`deny_unknown_fields`:写成 `client_secret` 会被拒绝)。
-- **项目层的 server 读不了 daemon 的环境。** 项目 `.agix/settings.json` / `settings.local.json`
-  里声明的 server(`mcp.addServer` 写的也是这一层)不能用 `client_secret_env` 和
-  `private_key_jwt.key_env`,写了就不连接(`mcp_connect_failed`;`mcp.addServer` 报
+- **密钥只交给它所属的授权服务器。** 授权服务器是 MCP server 自己在受保护资源元数据里指的,
+  server 换一个指向就能把密钥引到别处。所以配了 `client_secret_env`,还要有下面之一:
+  `issuer` 写明这个客户端注册在哪个授权服务器(与发现到的 issuer 去掉末尾 `/` 后完全相等),
+  或 MCP 策略写了 `allowed_authorization_servers`(`ARCHITECTURE.md` §6.4)。issuer 不符时
+  `mcp.auth.start` 报 `MCP_SERVER_DENIED`,两样都没有时报 `INVALID_PARAMS`,密钥都不发出;
+  刷新、吊销与无人值守的令牌请求同样只在 issuer 相符时带上它。动态注册得到的密钥只发给当初
+  注册它的那个 issuer。
+- **项目层的 server 读不了 daemon 的环境,也用不了 daemon 的身份。** 项目
+  `.agix/settings.json` / `settings.local.json` 里声明的 server(`mcp.addServer` 写的也是这一层)
+  不能用 `client_secret_env`、`private_key_jwt.key_env`(读 daemon 的环境)、
+  `private_key_jwt.key_file`(读本机上的私钥文件)和 `"grant": "enterprise"`(花的是宿主交来的
+  企业身份),写了就不连接(`mcp_connect_failed`;`mcp.addServer` 报
   `INVALID_PARAMS`);它的 `url` / `headers` 里的 `$VAR` 也不从 daemon 的环境展开
   (`ARCHITECTURE.md` §6.4)。机密客户端放在全局层或场景层声明。项目没被信任时,它自己的
   server 根本不启动,也就不会走到登录(`mcp.status` 里是 `untrusted`,`ARCHITECTURE.md` §6.6)。
@@ -117,7 +127,9 @@ discovery 取授权服务器元数据。server 没有发布任何 OAuth 元数�
 ### 令牌的生命周期
 
 - 令牌快到期(剩不到 30 秒)时在用之前刷新;授权服务器轮换刷新令牌时存新的。同一个 server
-  的刷新在进程内串行,两个连接不会拿同一个旧刷新令牌各刷一次。
+  的刷新串行:进程内一把锁,默认的文件存储再对这条记录的锁文件加 `flock`,所以共用一个
+  `mcp/oauth/` 的几个 daemon / CLI 也是一个刷完另一个才开始。后一个拿到锁之后重读记录,用的是
+  前一个刚换来的刷新令牌,不会拿已经作废的旧令牌去刷。
 - **只有两种情况会丢掉令牌**:刷新被授权服务器以 `invalid_grant` 拒绝;或令牌被 server 以
   401 拒绝且刷新也救不回来。这时删除令牌(**保留**客户端注册),状态回到 `required`,
   发 `mcp_auth_required`,server 从所有连接里摘下。
@@ -130,7 +142,9 @@ discovery 取授权服务器元数据。server 没有发布任何 OAuth 元数�
 
 `mcp.auth.logout` 在授权服务器提供 `revocation_endpoint` 时吊销刷新令牌与访问令牌
 (RFC 7009),然后删除令牌、断开 server,状态回到 `required`。客户端注册保留,下次登录不必
-重新注册。
+重新注册。登出全程持有刷新用的那把锁:正在进行的刷新先做完,登出吊销的是它换来的令牌;
+刷新写回之前也会看一眼,记录里的令牌已经不是它开始时那一份(被登出清掉,或被别处换掉),
+就不写回。
 
 ## 4. 无人值守:client credentials 与企业托管授权
 
@@ -146,7 +160,8 @@ daemon 以自己的身份取令牌(OAuth 2.0 client credentials,MCP 的 SEP-1046
 
 ```jsonc
 "oauth": { "grant": "client_credentials", "client_id": "agix-batch",
-           "client_secret_env": "BATCH_MCP_SECRET" }      // client_secret_basic / _post,按授权服务器支持的
+           "client_secret_env": "BATCH_MCP_SECRET",       // client_secret_basic / _post,按授权服务器支持的
+           "issuer": "https://login.example.com" }        // 密钥只交给这个授权服务器(§1)
 "oauth": { "grant": "client_credentials", "client_id": "agix-batch",
            "private_key_jwt": { "key_file": "/etc/agix/mcp-client.pem",   // 或 "key_env": "VAR"
                                 "alg": "ES256" } }        // RS256(默认) RS384 RS512 ES256 ES384
@@ -181,7 +196,8 @@ MCP server 各登录一次,企业 IdP 决定谁能用哪个 server。
 ```jsonc
 "oauth": { "grant": "enterprise",
            "client_id": "agix-mcp",              // 这个客户端在 server 的授权服务器上的注册
-           "client_secret_env": "DOCS_AS_SECRET", // 可省
+           "client_secret_env": "DOCS_AS_SECRET", // 可省;写了就要有 issuer(§1)
+           "issuer": "https://as.docs.example",
            "scopes": ["files:read"] }
 ```
 
@@ -219,7 +235,8 @@ MCP server 各登录一次,企业 IdP 决定谁能用哪个 server。
 ## 6. 凭据存储
 
 默认存在用户数据目录的 `mcp/oauth/` 下:每个 server 一个文件,文件名是规范化 server URL 的
-SHA-256,权限 0600(目录 0700),写入走临时文件 + 原子改名。存的是一条
+SHA-256,权限 0600(目录 0700),写入走临时文件 + 原子改名。旁边的 `<哈希>.lock` 是刷新与
+登出时 `flock` 的那个文件(记录本身每次写都换一个 inode,锁不住)。存的是一条
 `mcp::oauth::McpCredentials`:server URL、客户端注册(动态注册得到的 `client_id` /
 `client_secret`、redirect URI、issuer)、令牌(访问令牌、刷新令牌、到期时间、scope、令牌所属的
 客户端)、issuer、授权服务器元数据(发现失败时退回它,登出时从中找吊销端点)。
@@ -237,6 +254,10 @@ pub trait McpCredentialStore: Send + Sync {
     async fn load(&self, server_url: &str) -> std::io::Result<Option<McpCredentials>>;
     async fn save(&self, server_url: &str, credentials: &McpCredentials) -> std::io::Result<()>;
     async fn delete(&self, server_url: &str) -> std::io::Result<()>;
+    // 可省:返回的值活着期间,别的进程对同一条记录的刷新与登出要等着
+    async fn lock(&self, server_url: &str) -> std::io::Result<Option<Box<dyn Send>>> {
+        Ok(None)
+    }
 }
 
 let pool = assembly::assemble::pool(&config, scene, Assembly {
@@ -253,7 +274,8 @@ let pool = assembly::assemble::pool(&config, scene, Assembly {
   可以当一个机密存;它的 `Debug` 不显示任何机密。
 - 没存过的 URL,`load` 返回 `Ok(None)`。**后端暂时不可用要返回错误,不要返回 `None`**:
   `None` 的意思是"未登录",会让用户重新登录。
-- daemon 对同一条记录的读改写在进程内串行;跨进程共享同一份存储时,协调归存储自己。
+- daemon 对同一条记录的读改写在进程内串行。刷新与登出还会先拿 `lock`:默认的文件存储
+  对 `<哈希>.lock` 加 `flock`,自己的存储要跨进程协调就实现它,不实现就只有进程内的串行。
 - `mcp_oauth_client` 决定动态注册时报给授权服务器的名字(用户在同意页上看到),以及 CIMD
   用的元数据文档 URL;省略时名字是 `Agix`,只用动态注册。
 
@@ -261,8 +283,18 @@ let pool = assembly::assemble::pool(&config, scene, Assembly {
 
 - **SSRF。** 发现与授权服务器的请求只能到公网地址,外加 MCP server 自己那一类地址:server
   在回环上,授权服务器也可以在回环上;server 在私网,也可以在私网。链路本地(含云元数据
-  `169.254.169.254`)、组播、未指定地址永远不行。IP 字面量和 DNS 解析结果都检查。配了
-  `HTTP(S)_PROXY` 时由代理解析域名,只能按主机名检查;回环上的 server 的 OAuth 请求不走代理。
+  `169.254.169.254`)、组播、未指定地址永远不行。IP 字面量和 DNS 解析结果都检查,带着内部
+  IPv4 的各种 IPv6 写法(映射、SIIT `::ffff:0:a.b.c.d`、NAT64 含本地用的 `64:ff9b:1::/48`、
+  6to4、Teredo)按它带着的 IPv4 算,判定与模型发起的请求共用 `is_internal_address`。
+  **配了 `HTTP(S)_PROXY` 时域名由代理替我们解析**,daemon 看不到解析结果,只能按主机名和
+  IP 字面量检查;要靠地址过滤挡住内网,就别让 MCP 的流量走一个能进内网的代理。回环上的
+  server 的 OAuth 请求不走代理。
+- **MCP 连接本身。** `streamable_http` / `sse` 的请求只跟同源(scheme、主机、端口都相同)的
+  重定向,跨源的 3xx 原样交回、不跟,配置的 `headers` 不会被带到别的主机。server 不在回环上时,
+  它的主机名解析出的回环、链路本地、组播等地址一律不连(私网照常可以,企业内网的 server 常在
+  那里);要连本机的 server,URL 里就写回环地址。
+- **URL 里的凭据不外露。** `mcp.status`、`mcp_connect_failed` 与错误信息里出现的 URL 去掉
+  userinfo、query 与 fragment(`https://u:p@h/mcp?key=…` 报成 `https://h/mcp`)。
 - **只走 HTTPS。** 元数据发现、issuer、注册、令牌、吊销端点必须是 `https`;只有在回环地址上的
   授权服务器可以用 `http`(OAuth 2.1 §1.5)。私网的 `http` 授权服务器同样拒绝,企业 IdP 的端点也一样。
   例外只有一处:MCP server 本身在回环上(本地开发)时,发现请求不强制 `https`,但取回的 issuer
@@ -276,8 +308,10 @@ let pool = assembly::assemble::pool(&config, scene, Assembly {
 - 机密客户端的密钥只从环境变量读;动态注册得到的密钥存在凭据记录里;签断言的私钥从文件或
   环境变量读,不进凭据记录。
 - **授权服务器白名单。** MCP 策略(`ARCHITECTURE.md` §6.4)可以写
-  `"allowed_authorization_servers": ["https://login.corp.example", "https://*.okta.com/oauth2/**"]`:
-  对 issuer(规整成 `scheme://host[:port][/path]`、末尾不带 `/`)做 glob,`*` 不跨 `/`。不匹配的
+  `"allowed_authorization_servers": ["https://login.corp.example", "https://corp.okta.com/oauth2/default"]`:
+  对 issuer(规整成 `scheme://host[:port][/path]`、末尾不带 `/`)做 glob,`*` 不跨 `/`。写具体的
+  租户:`https://*.okta.com/**` 这样的通配放进的是**任何人**在 Okta 上开的租户,包括攻击者自己
+  注册的那个。不匹配的
   授权服务器在**任何跳转、注册、令牌请求之前**被拒绝;写了这一项而授权服务器元数据没有
   `issuer`,同样拒绝。不写 = 任何授权服务器都行。
 - 企业 IdP 的端点是部署方配置的,不受上面"只能到公网"的地址限制;server 的授权服务器仍然受。
@@ -286,8 +320,8 @@ let pool = assembly::assemble::pool(&config, scene, Assembly {
 
 - 不支持 DPoP 与 mTLS 绑定的令牌;只发 Bearer。
 - 不做 RFC 9207 之外的回调来源校验;回环监听只接受 `GET /callback`。
-- 刷新的跨进程协调不在这里:多个 daemon 共享同一份存储且授权服务器轮换刷新令牌时,可能有一个
-  刷新失败并要求重新登录。
+- 跨进程的刷新是排队,不是合并:后拿到锁的进程用新的刷新令牌再刷一次,而不是直接用前一个
+  刚换来的访问令牌(rmcp 拿到锁后总会发令牌请求)。令牌不会因此作废,只是多一次请求。
 - WebSocket server 连不上退回 streamable HTTP 时不带 OAuth。
 - 企业托管授权:只检查 ID-JAG 的结构与绑定(issuer、audience、client、resource、scope、有效期),
   **不验签**——它直接来自受信的 IdP 令牌端点,签名由 server 的授权服务器验证;不支持 Rich
