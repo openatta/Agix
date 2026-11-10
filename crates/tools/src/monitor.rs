@@ -19,6 +19,7 @@ use async_trait::async_trait;
 use base::context::{RunningStatus, RunningTask, SessionState, TaskType};
 use base::error::ToolError;
 use base::interface::exec::{OutputStream, ProcessHandle};
+use base::interface::permission::{PermissionFacts, Reach, Runs, Subject};
 use base::tool::{
     CallTraits, PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext,
     ToolResult, ToolSpec, ValidationResult,
@@ -73,6 +74,15 @@ pub struct MonitorInput {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct MonitorTool;
 
+impl MonitorTool {
+    fn reads_only_where_it_may(&self, input: &Value, ctx: &ToolContext) -> bool {
+        serde_json::from_value::<MonitorInput>(input.clone()).is_ok_and(|p| {
+            crate::bash::classify::is_read_only(&p.command)
+                && crate::bash::stays_where_the_session_may_read(&p.command, ctx)
+        })
+    }
+}
+
 #[async_trait]
 impl Tool for MonitorTool {
     fn name(&self) -> &str {
@@ -98,10 +108,7 @@ impl Tool for MonitorTool {
     }
 
     fn accept_edits_allows(&self, input: &Value, ctx: &ToolContext) -> bool {
-        serde_json::from_value::<MonitorInput>(input.clone()).is_ok_and(|p| {
-            crate::bash::classify::is_read_only(&p.command)
-                && crate::bash::stays_where_the_session_may_read(&p.command, ctx)
-        })
+        self.reads_only_where_it_may(input, ctx)
     }
 
     fn spec(&self) -> ToolSpec {
@@ -142,6 +149,20 @@ impl Tool for MonitorTool {
             };
         }
         PermissionDecision::ask("Monitor command requires confirmation")
+    }
+
+    async fn permission_facts(&self, input: &Value, ctx: &ToolContext) -> PermissionFacts {
+        let subject = self
+            .permission_match_content(input)
+            .map_or(Subject::None, Subject::Shell);
+        let reach = if self.reads_only_where_it_may(input, ctx) {
+            Reach::Inside
+        } else {
+            Reach::Unknown
+        };
+        PermissionFacts::new(subject, reach)
+            .with_runs(Runs::background())
+            .with_question("Monitor command requires confirmation")
     }
 
     async fn call(
@@ -451,6 +472,37 @@ mod tests {
                 unmet: Vec::new(),
             }
         }
+    }
+
+    #[tokio::test]
+    async fn a_monitor_always_runs_in_the_background_and_is_inside_only_when_it_reads() {
+        let dir = TempDir::new().unwrap();
+        let mut unattended = ctx_in(dir.path());
+        let mut session = SessionState::new(dir.path().to_path_buf());
+        session.unattended = true;
+        unattended.session = Arc::new(session);
+        unattended.dangerously_disable_sandbox = false;
+        unattended.exec.sandbox = Arc::new(Holds);
+        for (command, reach) in [
+            ("tail -f log.txt", Reach::Inside),
+            ("ls", Reach::Inside),
+            ("cargo watch", Reach::Unknown),
+            ("tail -f /elsewhere/log", Reach::Unknown),
+        ] {
+            let input = json!({ "command": command, "description": "watch" });
+            for ctx in [&ctx_in(dir.path()), &unattended] {
+                let facts = MonitorTool.permission_facts(&input, ctx).await;
+                assert_eq!(facts.subject, Subject::Shell(command.into()), "{command}");
+                assert_eq!(facts.reach, reach, "{command}");
+                assert_eq!(facts.runs, Some(Runs::background()), "{command}");
+            }
+        }
+        let unparsed = MonitorTool
+            .permission_facts(&json!({ "description": "watch" }), &ctx_in(dir.path()))
+            .await;
+        assert_eq!(unparsed.subject, Subject::None);
+        assert_eq!(unparsed.reach, Reach::Unknown);
+        assert_eq!(unparsed.runs, Some(Runs::background()));
     }
 
     #[tokio::test]

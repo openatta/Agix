@@ -201,6 +201,55 @@ async fn unattended_bash_with_open_network_is_not_auto_allowed_when_the_setting_
     }
 }
 
+#[tokio::test]
+async fn a_read_only_command_where_the_session_may_read_runs_inside() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = ctx_in(dir.path());
+    for command in ["ls -la", "git status", "cat README.md | head -3"] {
+        let facts = BashTool
+            .permission_facts(&json!({ "command": command }), &ctx)
+            .await;
+        assert_eq!(
+            facts,
+            PermissionFacts::new(Subject::Shell(command.into()), Reach::Inside)
+                .with_runs(Runs::foreground()),
+            "{command}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn any_other_command_runs_without_the_tool_vouching_for_it() {
+    let dir = tempfile::tempdir().unwrap();
+    for (command, ctx) in [
+        ("cargo build", ctx_in(dir.path())),
+        ("echo hi > out.txt", ctx_in(dir.path())),
+        ("cat /elsewhere/data.txt", ctx_in(dir.path())),
+        (
+            "sh build.sh",
+            unattended_in_a_holding_sandbox(
+                dir.path(),
+                base::context::config::NetworkModeConfig::DenyAll,
+            ),
+        ),
+    ] {
+        let facts = BashTool
+            .permission_facts(&json!({ "command": command }), &ctx)
+            .await;
+        assert_eq!(facts.subject, Subject::Shell(command.into()), "{command}");
+        assert_eq!(facts.reach, Reach::Unknown, "{command}");
+        assert_eq!(facts.runs, Some(Runs::foreground()), "{command}");
+        assert!(facts.question.is_some(), "{command}");
+    }
+    let unparsed = BashTool
+        .permission_facts(&json!({ "cmd": "ls" }), &ctx_in(dir.path()))
+        .await;
+    assert_eq!(
+        (unparsed.subject, unparsed.reach),
+        (Subject::None, Reach::Unknown)
+    );
+}
+
 /// Bypass skips every rule; the sandbox is not a rule.
 #[tokio::test]
 async fn a_bypass_session_still_runs_bash_through_the_sandbox() {

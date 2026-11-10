@@ -9,6 +9,9 @@
 //!
 //! 家目录用固定的 `/home/matrix`，不读环境；沙箱用一个恒报 Full 的桩，让无人值守的
 //! Bash 放行通道不随运行机器变化。
+//!
+//! 自己声明 `permission_facts` 的工具另有一条等价断言：它的事实和从旧方法桥接推出的
+//! 事实，经同一个按中心判定顺序写的 `conclusion` 得出相同结论，且与 gate 的结论一致。
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -16,10 +19,13 @@ use base::context::SessionState;
 use base::interface::exec::{
     Confined, Enforcement, ExecProviders, ProcessSpec, Sandbox, SandboxMode, SandboxPolicy,
 };
-use base::interface::permission::{PermissionOutcome, PermissionPolicy, PermissionRequest};
+use base::interface::permission::{
+    ModeStance, PermissionFacts, PermissionOutcome, PermissionPolicy, PermissionRequest, Reach,
+    ToolFacts,
+};
 use base::permission::{PermissionMode, PermissionRule, RuleBehavior, RuleSource};
 use base::settings::{PermissionAction, Settings};
-use base::tool::{InMemoryToolRegistry, Tool};
+use base::tool::{InMemoryToolRegistry, SandboxSettings, Tool, ToolContext};
 use permissions::rule_set_permission::RuleSetPermission;
 use serde_json::{json, Value};
 use std::fmt::Write as _;
@@ -239,7 +245,7 @@ const MODES: [(&str, PermissionMode); 5] = [
     ("bypassPermissions", PermissionMode::BypassPermissions),
 ];
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum RuleCase {
     None,
     Allow,
@@ -316,6 +322,16 @@ fn raw(outcome: &PermissionOutcome) -> &'static str {
     }
 }
 
+fn session(cwd: &Path, mode: PermissionMode, unattended: bool) -> Arc<SessionState> {
+    let mut state = SessionState::new(cwd.to_path_buf()).with_permission_mode(mode);
+    state.unattended = unattended;
+    state.bind_exec(ExecProviders {
+        sandbox: Arc::new(HoldsEverything),
+        ..platform::local_providers()
+    });
+    Arc::new(state)
+}
+
 async fn decide(
     policy: &RuleSetPermission,
     tool: &Arc<dyn Tool>,
@@ -324,13 +340,7 @@ async fn decide(
     mode: PermissionMode,
     unattended: bool,
 ) -> PermissionOutcome {
-    let mut state = SessionState::new(cwd.to_path_buf()).with_permission_mode(mode);
-    state.unattended = unattended;
-    state.bind_exec(ExecProviders {
-        sandbox: Arc::new(HoldsEverything),
-        ..platform::local_providers()
-    });
-    let session = Arc::new(state);
+    let session = session(cwd, mode, unattended);
     policy
         .decide(&PermissionRequest::new(
             tool.name(),
@@ -417,4 +427,216 @@ async fn every_builtin_tool_is_decided_the_same_in_every_cell() {
             expected.lines().nth(first),
         );
     }
+}
+
+/// What `RuleSetPermission` hands a tool's own checks, for the same session.
+fn context_like_the_gates(session: &Arc<SessionState>, cwd: &Path) -> ToolContext {
+    let settings = Settings::defaults_for("matrix-model");
+    let mut ctx = ToolContext::from_engine_ctx_with(
+        cwd.to_path_buf(),
+        tokio_util::sync::CancellationToken::new(),
+        session.exec().unwrap(),
+    );
+    ctx.session_id = "matrix".into();
+    ctx.sandbox = SandboxSettings {
+        allow_read: settings.sandbox.allow_read.clone(),
+        deny_read: settings.sandbox.deny_read.clone(),
+        allowed_domains: settings.sandbox.allowed_domains.clone(),
+        network_mode: settings.sandbox.network_mode,
+        deny_write: settings.sandbox.deny_write.clone(),
+        allow_write: settings.sandbox.allow_write.clone(),
+        paths: Arc::new(base::paths::SensitivePaths::for_paths(
+            &base::paths::ConfigPaths::from_settings(&settings.paths),
+        )),
+        require_enforcement: settings.sandbox.require_enforcement,
+        unattended_requires_network_policy: settings.sandbox.unattended_requires_network_policy,
+    };
+    ctx.session = session.clone();
+    ctx.permission_mode = session.permission_mode();
+    ctx.additional_writable_dirs = session.additional_writable_dirs.clone();
+    ctx.dangerously_disable_sandbox = session.sandbox_disabled;
+    ctx
+}
+
+#[derive(Clone, Copy)]
+struct Cell {
+    mode: PermissionMode,
+    rule: RuleCase,
+    unattended: bool,
+    hook_approved: bool,
+    /// The session's sandbox fully holds a command, under the network
+    /// condition `sandbox.unattended_requires_network_policy` sets.
+    confined: bool,
+}
+
+/// The final conclusion a call's facts lead to, weighed in the order the
+/// central policy weighs them. Credentials, an unreadable managed layer and
+/// the bypass-immune paths are judged on the subject before any of this and
+/// are left out.
+fn conclusion(facts: &ToolFacts, cell: Cell) -> &'static str {
+    use PermissionMode::*;
+    let answer = |person_only: bool| {
+        if cell.hook_approved && !person_only {
+            "Permit"
+        } else if cell.unattended {
+            "Deny"
+        } else {
+            "Prompt"
+        }
+    };
+    let managed = cell.rule == RuleCase::ManagedAsk;
+    if cell.mode == BypassPermissions {
+        return if managed { answer(true) } else { "Permit" };
+    }
+    if matches!(facts.reach, Reach::Refused(_)) || cell.rule == RuleCase::Deny {
+        return "Deny";
+    }
+    let contained = matches!(
+        facts.reach,
+        Reach::SessionOnly | Reach::Delegates | Reach::Operator | Reach::Inside
+    );
+    let spared = contained && facts.stance == ModeStance::Coordination;
+    if cell.mode == Plan
+        && !facts.traits.read_only
+        && facts.stance != ModeStance::LeavesPlan
+        && !spared
+    {
+        return "Deny";
+    }
+    if cell.mode == DontAsk && cell.rule != RuleCase::Allow && !spared {
+        return "Deny";
+    }
+    if matches!(cell.rule, RuleCase::Ask | RuleCase::ManagedAsk) {
+        return answer(managed);
+    }
+    let writes_configuration = !facts.traits.read_only
+        && facts.subject.content().is_some_and(|s| {
+            s.split_whitespace()
+                .any(base::paths::SensitivePaths::names_configuration)
+        });
+    let background = facts.runs.is_some_and(|r| r.background);
+    if contained && !background && !writes_configuration {
+        return "Permit";
+    }
+    if cell.rule == RuleCase::Allow {
+        return "Permit";
+    }
+    if cell.mode == AcceptEdits
+        && facts.traits.read_only
+        && matches!(
+            facts.reach,
+            Reach::SessionOnly | Reach::Inside | Reach::Host { listed: true }
+        )
+    {
+        return "Permit";
+    }
+    // `Inside` as well as `Unknown`: a background command that stays where the
+    // session may read is no further-reaching than one nobody vouched for, and
+    // unattended it runs today.
+    if cell.unattended
+        && cell.confined
+        && facts.runs.is_some()
+        && matches!(facts.reach, Reach::Unknown | Reach::Inside)
+        && !writes_configuration
+    {
+        return "Permit";
+    }
+    answer(false)
+}
+
+async fn bridged(tool: &dyn Tool, input: &Value, ctx: &ToolContext) -> ToolFacts {
+    let mut facts = ToolFacts::gather(tool, input, ctx).await;
+    let bridged = PermissionFacts::bridged(tool, input, ctx).await;
+    facts.subject = bridged.subject;
+    facts.reach = bridged.reach;
+    facts.runs = bridged.runs;
+    facts.question = bridged.question;
+    facts
+}
+
+/// Bash and Monitor state their own facts; what those lead to must be what
+/// the facts bridged from their old answers lead to, in every cell. Where the
+/// gate does not refuse a sample before reading the tool, both must also be
+/// what the gate concludes, so the comparison is about the decisions and not
+/// only about itself.
+#[tokio::test]
+async fn bash_and_monitor_facts_conclude_as_their_bridged_ones() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().canonicalize().unwrap();
+    let registry = builtin_tools();
+    let mut compared = 0usize;
+    let mut against_the_gate = 0usize;
+    for name in ["Bash", "Monitor"] {
+        let tool = registry.get(name).unwrap();
+        for sample in samples(name, &cwd, "/home/matrix") {
+            let input = &sample.input;
+            let refused_before_facts = matches!(
+                decide(
+                    &permission(name, RuleCase::None),
+                    &tool,
+                    input,
+                    &cwd,
+                    PermissionMode::BypassPermissions,
+                    false,
+                )
+                .await,
+                PermissionOutcome::Deny { .. }
+            );
+            for (mode_name, mode) in MODES {
+                for unattended in [false, true] {
+                    let session = session(&cwd, mode, unattended);
+                    let ctx = context_like_the_gates(&session, &cwd);
+                    let stated = ToolFacts::gather(tool.as_ref(), input, &ctx).await;
+                    let old = bridged(tool.as_ref(), input, &ctx).await;
+                    assert_eq!(stated.subject, old.subject, "{name} {input}");
+                    assert_eq!(stated.traits, old.traits, "{name} {input}");
+                    assert_eq!(stated.stance, old.stance, "{name} {input}");
+                    assert_eq!(stated.origin, old.origin, "{name} {input}");
+                    let confined = !ctx.dangerously_disable_sandbox
+                        && (!ctx.sandbox.unattended_requires_network_policy
+                            || !matches!(
+                                ctx.sandbox.network_mode,
+                                base::context::config::NetworkModeConfig::Unrestricted
+                            ));
+                    for (rule_name, rule) in RULES {
+                        let outcome = decide(
+                            &permission(name, rule),
+                            &tool,
+                            input,
+                            &cwd,
+                            mode,
+                            unattended,
+                        )
+                        .await;
+                        for hook_approved in [false, true] {
+                            let cell = Cell {
+                                mode,
+                                rule,
+                                unattended,
+                                hook_approved,
+                                confined,
+                            };
+                            let at = format!(
+                                "{name} {input} {mode_name} {rule_name} unattended={unattended} \
+                                 hook={hook_approved}: stated {stated:?}, bridged {old:?}"
+                            );
+                            let expected = conclusion(&old, cell);
+                            assert_eq!(conclusion(&stated, cell), expected, "{at}");
+                            compared += 1;
+                            if !refused_before_facts {
+                                assert_eq!(
+                                    expected,
+                                    after_runtime(&outcome, hook_approved, unattended),
+                                    "{at}"
+                                );
+                                against_the_gate += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(compared, (12 + 4) * 5 * 2 * 5 * 2);
+    assert_eq!(against_the_gate, (9 + 4) * 5 * 2 * 5 * 2);
 }

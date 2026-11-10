@@ -26,6 +26,7 @@ pub use sandbox::{engine_exec, engine_exec_for};
 
 use async_trait::async_trait;
 use base::error::ToolError;
+use base::interface::permission::{PermissionFacts, Reach, Runs, Subject};
 use base::tool::{
     CallTraits, PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext,
     ToolResult, ToolSpec, ValidationResult,
@@ -193,6 +194,19 @@ impl Tool for BashTool {
             message: "Bash command requires confirmation".into(),
             decision_reason: None,
         }
+    }
+
+    async fn permission_facts(&self, input: &Value, ctx: &ToolContext) -> PermissionFacts {
+        let subject = self
+            .permission_match_content(input)
+            .map_or(Subject::None, Subject::Shell);
+        let facts = if self.reads_only_where_it_may(input, ctx) {
+            PermissionFacts::new(subject, Reach::Inside)
+        } else {
+            PermissionFacts::new(subject, Reach::Unknown)
+                .with_question("Bash command requires confirmation")
+        };
+        facts.with_runs(Runs::foreground())
     }
 
     async fn call(
