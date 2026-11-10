@@ -808,6 +808,29 @@ async fn a_reader_handed_configuration_that_runs_a_program_is_not_read_only() {
     .await;
 }
 
+/// A helper program a variable names (a browser, an askpass), a host the
+/// arguments pick, and a version-manager shim the project's files point
+/// elsewhere are asked about in Default and refused in Plan.
+#[tokio::test]
+async fn a_helper_program_a_remote_host_or_a_shim_is_not_read_only() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_not_read_only(
+        &[
+            "HOMEBREW_BROWSER=./x.sh brew info --github wget",
+            "SSH_ASKPASS_REQUIRE=force SSH_ASKPASS=./x git remote show ssh://example.invalid/r",
+            "SSH_ASKPASS=./x git remote -v",
+            "brew list",
+            "npm view --registry=https://example.invalid/ x",
+            "git remote show https://example.invalid/x.git",
+            "node --version",
+            "npm list",
+            "pip show requests",
+        ],
+        dir.path(),
+    )
+    .await;
+}
+
 fn fake_git_dir(at: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(at.join("objects"))?;
     std::fs::create_dir_all(at.join("refs/heads"))?;

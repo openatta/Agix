@@ -3,6 +3,7 @@
 //! `cargo test -p daemon --test integration session_lifecycle::`.
 
 mod assemble_defaults;
+mod bash_read_only_lane;
 mod carrier_invariants;
 mod daemon_e2e;
 mod daemon_socket_from_a_command;

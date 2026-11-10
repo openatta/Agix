@@ -5,6 +5,7 @@ mod lists;
 use super::CmdClassification;
 use lists::{DESTRUCTIVE_PREFIXES, READ_ONLY_COMMANDS, READ_ONLY_PREFIXES};
 use permissions::invocation::{program_name, traced_invocations, Invocation, Traced};
+use permissions::shell::is_dangerous_variable;
 
 /// 命令分类。**保守**：未识别 → read_only=false, destructive=false（不算
 /// 安全也不算危险，走默认 ask 路径）。
@@ -425,7 +426,9 @@ fn option_runs_or_writes(name: &str, args: &[&str]) -> bool {
 }
 
 /// `git <subcommand> …` — read-only in general — under an option or operand
-/// that writes the repository or runs a program.
+/// that writes the repository or runs a program. `git remote` keeps it only
+/// in the forms that read the configuration (bare, `-v`, `get-url`): `show`
+/// and the rest contact a host, which `show <URL>` lets the argument pick.
 ///
 /// Only the form with nothing between `git` and the subcommand is on the
 /// read-only list (`READ_ONLY_PREFIXES`), so the global options that hand git
@@ -477,20 +480,10 @@ fn git_forfeits_read_only(args: &[&str]) -> bool {
                 "format",
             ],
         ),
-        "remote" => matches!(
-            rest.iter().find(|a| !a.starts_with('-')).copied(),
-            Some(
-                "add"
-                    | "remove"
-                    | "rm"
-                    | "set-url"
-                    | "rename"
-                    | "prune"
-                    | "set-head"
-                    | "set-branches"
-                    | "update"
-            )
-        ),
+        "remote" => {
+            let lists = rest.iter().all(|a| matches!(*a, "-v" | "--verbose"));
+            !(lists || rest.first() == Some(&"get-url"))
+        }
         "grep" => {
             rest.iter().any(wants_external)
                 || rest
@@ -570,63 +563,9 @@ fn git_ref_edits(
     has_operand && !has_list_context
 }
 
-/// Variables whose assignment changes how a later word runs or where a read
-/// lands: program lookup and loading, the configuration a reader takes its
-/// options from (git's `GIT_CONFIG_*`, `RIPGREP_CONFIG_PATH`, `MANOPT`, a
-/// `XDG_CONFIG_HOME` with a `git/config` in it), a pager it shells out to, and
-/// the directories `cd` and `~` resolve against. Setting any of them takes
-/// the line off the read-only fast path.
-const DANGEROUS_ASSIGN_NAMES: &[&str] = &[
-    "PATH",
-    "BASH_ENV",
-    "ENV",
-    "SHELLOPTS",
-    "BASHOPTS",
-    "PROMPT_COMMAND",
-    "IFS",
-    "LESSOPEN",
-    "LESSCLOSE",
-    "MANOPT",
-    "MANROFFOPT",
-    "MANROFFSEQ",
-    "BROWSER",
-    "KUBECONFIG",
-    "ACKRC",
-    "CDPATH",
-    "OLDPWD",
-    "HOME",
-    "PWD",
-];
-
-const DANGEROUS_ASSIGN_PREFIXES: &[&str] = &[
-    "GIT_",
-    "LD_",
-    "DYLD_",
-    "XDG_",
-    "GROFF_",
-    "DOCKER_",
-    "NPM_CONFIG_",
-    "PYTHON",
-    "PERL",
-    "RUBY",
-    "NODE_",
-    "BAT_",
-    "ACK_",
-];
-
-const DANGEROUS_ASSIGN_SUFFIXES: &[&str] = &["PAGER", "_CONFIG_PATH", "_CONFIG_FILE"];
-
-fn is_dangerous_variable(name: &str) -> bool {
-    let name = name.to_ascii_uppercase();
-    DANGEROUS_ASSIGN_NAMES.contains(&name.as_str())
-        || DANGEROUS_ASSIGN_PREFIXES
-            .iter()
-            .any(|p| name.starts_with(p))
-        || DANGEROUS_ASSIGN_SUFFIXES.iter().any(|s| name.ends_with(s))
-}
-
 /// Does `line` assign a dangerous variable ([`is_dangerous_variable`]) at a
-/// command position?
+/// command position? Setting any of them takes the line off the read-only
+/// fast path.
 fn sets_a_dangerous_variable(line: &str) -> bool {
     permissions::shell::assignments(line)
         .iter()

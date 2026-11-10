@@ -605,16 +605,21 @@ git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git
    程序"的命令:`rg --pre`、`fd -x`、`git grep -O`、`man -P`、`sort --compress-program`、
    `cargo build/check`(跑 build.rs)这类会拉起程序的,`sort -o`、`uniq IN OUT`、`yq -i`、
    `git config k v`、`git branch -D`、`printf -v` 这类会写文件 / 改仓库 / 设变量的,写文件的
-   重定向(含 `>&file`),以及设 `PATH` / `LD_PRELOAD` / `CDPATH`、任何 `*PAGER`、`GIT_*`、
-   `XDG_*`、`*_CONFIG_PATH` 等变量的,都不免询问;长选项按 GNU 与 git 的缩写规则认
+   重定向(含 `>&file`),以及设 `PATH` / `LD_PRELOAD` / `CDPATH`、任何 `*PAGER` /
+   `*BROWSER` / `*EDITOR`、`GIT_*`、`SSH_*`(`SSH_ASKPASS`)、`HOMEBREW_*`、`XDG_*`、
+   `*_CONFIG_PATH` 等变量的(`permissions::shell::is_dangerous_variable`),都不免询问;长选项按 GNU 与 git 的缩写规则认
    (`sort --outp=f` 就是 `--output`)。项目自己的文件能把程序换掉的也不在名单里:
    `cargo metadata` / `cargo tree` 要问 rustc(`.cargo/config.toml` 的
    `build.rustc-wrapper`),`cargo` / `rustc --version` 与 `rustup show` 跑
-   `rust-toolchain.toml` 指定的工具链(可以是一个路径)。`git` 只以 `git <子命令>` 的形式、
+   `rust-toolchain.toml` 指定的工具链(可以是一个路径);`node` / `npm` / `pip` 连
+   `--version`、`list` 也不收——装了 asdf / nvm / volta / pyenv 时它们是按项目里的
+   `.tool-versions` / `.nvmrc` / `.python-version` 选二进制的 shim。`brew` 整个不收(按
+   `HOMEBREW_*` 拉起浏览器、编辑器)。`git` 只以 `git <子命令>` 的形式、
    只在会话自己所在的仓库里只读:`cd` 进项目带来的裸仓库(`fixtures/x.git`)或嵌套的 `.git`
    再跑,那个仓库的配置(`core.fsmonitor`、`diff.external`)由项目作者写,git 会照着拉起
-   程序。会向参数里的主机发请求的 `dig`、`ping`、`nslookup`、`traceroute` 也不在名单里
-   (主机名本身就能经 DNS 带出数据)。
+   程序。会向参数里的主机发请求的 `dig`、`ping`、`nslookup`、`traceroute`、`npm view`
+   (`--registry`)、`git remote show <URL>` 也不在名单里(主机名本身就能经 DNS 带出数据);
+   `git remote` 只认不联网的光秃秃、`-v`、`get-url`。
    只读命令的自动放行还只限路径参数都落在 cwd 与附加目录之内的;指向外面的,和 `Read`
    读项目外的文件一样交给模式分派。参数里有 shell 还要展开的东西(`$VAR`、`~`、替换)
    的,`cd` / `pushd` 到不是项目内字面路径的地方(或 `cd -` / `popd` / `pushd +N` 落到

