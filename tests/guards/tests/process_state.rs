@@ -51,7 +51,6 @@ const PROCESS_STATE: &[(&str, &str, Kind, &str)] = &[
     ("crates/core/src/interface/exec/env.rs", "NAMED_CREDENTIALS", ProcessEnv, "variables holding a provider key, kept out of every child's environment: the environment children inherit is the process's, which every pool shares"),
     ("crates/platform/src/orphans.rs", "ORPHANS", OsResource, "the process groups this process leads: an OS resource of the process, which an aborting panic hook must reach in full"),
     ("crates/assembly/src/telemetry_otel.rs", "PROCESS_EXPORTER", OsResource, "the OpenTelemetry exporter installs process-wide providers; see assemble::pool"),
-    ("crates/core/src/interface/tool.rs", "DERIVING", NotYet("removing the default `spec()` that reads the old per-field methods"), "a per-thread stack of the tool types inside their default `spec()`, emptied before the call returns: it breaks the spec/old-method recursion and carries nothing between calls"),
     ("crates/history/src/lock.rs", "HELD", OsResource, "the session-log locks this process holds: an flock belongs to an open file, so every pool writing one state directory must share the one open file per log"),
     ("crates/ptc/src/lib.rs", "SLOTS", NotYet("an EngineFactory that builds run_slots per pool"), "the RunCode thread budget; nothing in production passes `with_run_slots`, so every pool in the process draws on this one semaphore"),
     ("crates/ptc/src/engine.rs", "ORIGIN", Constant, "the epoch of a monotonic clock, fixed on first read"),
@@ -239,7 +238,7 @@ fn each_listed_static_is_the_kind_it_says() {
 #[test]
 fn the_scan_sees_the_statics_it_must() {
     let names: Vec<&str> = scanned().iter().map(|s| s.name.as_str()).collect();
-    for expected in ["WARNED", "DERIVING", "SLOTS"] {
+    for expected in ["WARNED", "NEXT_FENCE", "SLOTS"] {
         assert!(
             names.contains(&expected),
             "the scan misses `{expected}`: {names:?}"
