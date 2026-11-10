@@ -266,6 +266,7 @@ pub const CAPABILITIES: &[&str] = &[
     "session_tasks",
     "task_output",
     "task_progress",
+    "tool_progress",
     "task_output_offsets",
     "task_messages",
     "context_edits",

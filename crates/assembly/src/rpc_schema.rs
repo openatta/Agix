@@ -96,6 +96,7 @@ const SESSION_EVENT_KINDS: &[&str] = &[
     "tool_use_start",
     "tool_args_delta",
     "tool_use",
+    "tool_progress",
     "tool_result",
     "prompt",
     "subagent_progress",

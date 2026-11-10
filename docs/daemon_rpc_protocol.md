@@ -708,6 +708,7 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 | `context_edits` | 有 `session.inspectContext` / `session.dropMessages` / `session.editMessage`(§6.3) |
 | `extension_entries` | 有 `session.appendEntry` / `session.entries`,写入推 `extension_entry`(§6.3、§7) |
 | `task_output` | 有 `session.taskOutput`,Shell 命令与监视器的输出边跑边记(§6.3) |
+| `tool_progress` | 运行中的工具调用推 `tool_progress`,每次调用每秒至多一帧,带 `dropped`;子 Agent 的包在 `subagent_progress` 里(§7) |
 | `task_progress` | 任务边跑边推:`task_progress` 推 Shell 命令、监视器与 `RunCode` 程序新增的输出(程序的是 `log()` 行与每次子调用的一行),`task_updated` 推子 Agent 的用量与等待;`subagent_progress` 带 `task_id`(§7) |
 | `task_output_offsets` | 任务输出按字节偏移:`session.taskOutput` 接受 `from_byte`,应答带 `from_byte` / `next_byte` / `dropped` / `final`;`task_progress` 帧带 `from_byte` / `next_byte`;被停掉的任务等工作收尾才发 `task_finished`(§6.3、§7) |
 | `task_messages` | 有 `session.messageTask`,消息进运行中的后台子 Agent(§6.3) |
@@ -2571,6 +2572,7 @@ settings.local.json)里声明过,否则 `INVALID_PARAMS` —— 用来换令牌�
 | `tool_use_start` | `{id,name}` | 模型开始写一次工具调用,参数还在流;同 `id` 的 `tool_use` 随后到达。界面可以先画出工具行 |
 | `tool_args_delta` | `{id,partial_json}` | 这次调用参数的原始片段,按到达顺序拼起来就是 `tool_use.input` 的 JSON 文本(高频) |
 | `tool_use` | `{id,name,input}` | 模型发起工具调用,参数已完整。参数不是完整 JSON 的(多半被输出上限截断)`input` 为 `{}`,不执行,随后的 `tool_result` 是说明这一点的错误 |
+| `tool_progress` | `{tool_use_id,name,message,progress?,total?,dropped}` | 运行中的工具调用报的进度,`tool_use_id` 是那次 `tool_use` 的 `id`;每次调用每秒至多一帧,`dropped` 是上一帧以来合并掉的条数。不进 transcript,不保证送达 |
 | `tool_result` | `{id,name,content,is_error}` | 工具返回 |
 | `prompt` | `permission`:`{prompt_type,prompt_id,tool_name,message,paths[],tool_use_id?}`;`question`:`{prompt_type,prompt_id,tool_use_id,question,header,options:[{key,label}]}` | 需宿主回答,用 `session.respondToPrompt`;`tool_use_id` 是被问的那次 `tool_use`(`question` 的 `prompt_id` 就是它)。`question` 的 `header` 可为 `null`,`options` 为空表示自由回答 |
 | `subagent_progress` | `{agent_label,agent_session_id,agent_type,parent_turn,parent_tool_use_id,task_id,event}` | 子 Agent 事件镜像,`event` 是嵌套的本表结构;`parent_tool_use_id` 是父会话里发起它的那次 `Agent` 调用,不知道时为 `null`;`task_id` 是它在 `session.tasks` 里的任务 |
@@ -2603,8 +2605,9 @@ settings.local.json)里声明过,否则 `INVALID_PARAMS` —— 用来换令牌�
 协议错误。
 
 一轮帧的次序是:`turn_start`,然后每次模型调用一组 `step_start` … `step_end`,这次调用
-的 `text_delta` / `thinking_delta` / `tool_use` / `tool_result` / `prompt` 都落在这一组
-里,最后是 `turn_complete`(或 `error`)。本地命令(`/clear` 之类)不调用模型,只有
+的 `text_delta` / `thinking_delta` / `tool_use` / `tool_progress` / `tool_result` / `prompt` 都落在这一组
+里,最后是 `turn_complete`(或 `error`)。同一次调用的 `tool_progress` 都在它的 `tool_use` 之后、
+`tool_result` 之前。本地命令(`/clear` 之类)不调用模型,只有
 `turn_start` 和 `turn_complete`。
 
 并发安全的工具(读文件、搜索、抓网页……)在它的 `tool_use` 到齐时就开始跑,模型还在接着

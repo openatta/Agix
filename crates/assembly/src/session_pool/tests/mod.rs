@@ -17,4 +17,5 @@ mod script_binding;
 /// pool does itself.
 mod session_listing;
 mod set_model;
+mod tool_progress_frame;
 mod with_session_lock;

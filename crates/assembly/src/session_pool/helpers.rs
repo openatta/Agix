@@ -119,7 +119,8 @@ pub(super) fn evict_lru(
 }
 
 /// The frame for an event the engine sends whether or not a turn is running
-/// — a question, a sub-agent's or a team's progress, changed skills — with
+/// — a question, a tool call's, a sub-agent's or a team's progress, changed
+/// skills — with
 /// the id of the question and of the background task asking it when it is
 /// one; `None` for any other event.
 ///
@@ -188,6 +189,26 @@ pub(super) fn background_frame(
             }),
             None,
         ),
+        AgentEvent::ToolProgress {
+            tool_use_id,
+            name,
+            message,
+            progress,
+            total,
+            dropped,
+            turn_id: _,
+        } => {
+            let mut body = serde_json::json!({
+                "kind":"tool_progress","tool_use_id":tool_use_id,"name":name,
+                "message":message,"dropped":dropped
+            });
+            for (key, value) in [("progress", progress), ("total", total)] {
+                if let Some(v) = value {
+                    body[key] = serde_json::json!(v);
+                }
+            }
+            (body, None)
+        }
         AgentEvent::SkillsChanged { added, removed, .. } => (
             serde_json::json!({"kind":"skills_changed","added":added,"removed":removed}),
             None,
