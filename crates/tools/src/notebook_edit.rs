@@ -286,7 +286,7 @@ mod tests {
     async fn notebook_write_permission_matches_write_and_edit() {
         let dir = TempDir::new().unwrap();
         let outside = TempDir::new().unwrap();
-        let ctx = ToolContext::for_test(dir.path().to_path_buf());
+        let ctx = platform::tool_context_for_test(dir.path().to_path_buf());
         let input = |path: &str| json!({"file_path": path, "mode": "delete", "cell_index": 0});
         let decide = |input: Value| {
             let ctx = ctx.clone();

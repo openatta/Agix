@@ -227,7 +227,7 @@ mod tests {
         std::fs::write(outside.join("secret"), "s").unwrap();
         std::fs::write(proj.join("secret"), "p").unwrap();
         std::os::unix::fs::symlink(outside.join("sub"), proj.join("link")).unwrap();
-        let ctx = base::tool::ToolContext::for_test(proj.clone());
+        let ctx = platform::tool_context_for_test(proj.clone());
 
         assert_eq!(
             std::fs::read_to_string(proj.join("link/../secret")).unwrap(),
