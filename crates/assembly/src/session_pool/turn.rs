@@ -3,43 +3,38 @@
 use super::*;
 
 impl SessionPool {
-    /// Give the turn slot `slot` back and mark the session idle again, if
-    /// `slot` is still the session's — a session closed or replaced while the
-    /// turn ran is not this turn's to touch. Done under the sessions lock, so
-    /// nothing sees the slot free while `turn_id` still reads as running.
-    /// Whatever the turn's own engine was asking died with the turn;
-    /// a background task's asks stay. Returns whether `slot` was the
-    /// session's.
+    /// Give the receiver back and mark the session idle again, if the
+    /// ticket's entry is still the session's — a session closed or replaced
+    /// while the turn ran is not this turn's to touch. Done under the
+    /// sessions lock, so nothing sees the slot free while the turn still
+    /// reads as running. Whatever the turn's own engine was asking died with
+    /// the turn; a background task's asks stay. Returns whether the entry was
+    /// still the session's.
     pub(super) async fn release_turn_slot(
         &self,
-        sid: &str,
-        slot: &Arc<AsyncMutex<Option<EventReceiver>>>,
+        ticket: &TurnTicket,
         event_rx: EventReceiver,
-        turn_id: &str,
     ) -> bool {
         let mut sessions = self.sessions.lock().await;
-        *slot.lock().await = Some(event_rx);
+        *ticket.rx.lock().await = Some(event_rx);
         let Some(live) = sessions
-            .get_mut(sid)
-            .filter(|live| Arc::ptr_eq(&live.event_rx, slot))
+            .get_mut(&ticket.sid)
+            .filter(|live| live.turn.generation == ticket.generation)
         else {
             return false;
         };
-        if live.current_turn.as_deref() == Some(turn_id) {
-            live.current_turn = None;
-            live.turn_watcher = None;
-            live.turn_terminated = false;
+        if let Some(turn) = live.turn.release(ticket.generation, &ticket.turn_id) {
             self.emit_session_event(
                 "turn_completed",
-                sid,
+                &ticket.sid,
                 serde_json::json!({
-                    "turn_id": turn_id,
-                    "initiator": live.turn_initiator.take().map(Initiator::as_str),
+                    "turn_id": ticket.turn_id,
+                    "initiator": turn.initiator.as_str(),
                 }),
             );
             live.hub.retain_task_asks();
         }
-        live.idle.notify_waiters();
+        live.turn.idle.notify_waiters();
         true
     }
 
@@ -117,8 +112,8 @@ impl SessionPool {
         // 必须**在发消息之前**取：消息一旦 send 进去就归正在跑的那个 Agent
         // 消费了，先发后取的话，调用方看到忙，消息却已经被别的 turn 吃掉。
         let mut steer_tried = false;
-        let (input_tx, event_rx_mutex, mut event_rx) = loop {
-            let (input_tx, event_rx_mutex, busy_with, idle) = {
+        let (input_tx, generation, event_rx_mutex, mut event_rx) = loop {
+            let (input_tx, generation, event_rx_mutex, busy_with, idle) = {
                 let mut sessions = self.sessions.lock().await;
                 let Some(live) = sessions.get_mut(&sid) else {
                     return Err(PoolError::session_not_found(&sid));
@@ -126,9 +121,10 @@ impl SessionPool {
                 live.hub.touch();
                 (
                     live.input_tx.clone(),
-                    live.event_rx.clone(),
-                    live.current_turn.clone(),
-                    live.idle.clone(),
+                    live.turn.generation,
+                    live.turn.rx.clone(),
+                    live.turn.current_turn_id(),
+                    live.turn.idle.clone(),
                 )
             };
             let became_idle = idle.notified();
@@ -141,9 +137,9 @@ impl SessionPool {
                     .lock()
                     .await
                     .get(&sid)
-                    .is_some_and(|live| Arc::ptr_eq(&live.event_rx, &event_rx_mutex));
+                    .is_some_and(|live| live.turn.generation == generation);
                 if still_this_session {
-                    break (input_tx, event_rx_mutex, rx);
+                    break (input_tx, generation, event_rx_mutex, rx);
                 }
                 *event_rx_mutex.lock().await = Some(rx);
                 continue;
@@ -189,24 +185,30 @@ impl SessionPool {
         // A goal round runs only if it is still the one its goal handed out:
         // a pause, clear or change since then, or another turn's round, means
         // nobody wants it any more.
+        let ticket = TurnTicket {
+            sid: sid.clone(),
+            generation,
+            turn_id: turn_id.clone(),
+            rx: event_rx_mutex,
+        };
         let started = {
             let mut sessions = self.sessions.lock().await;
             match sessions
                 .get_mut(&sid)
-                .filter(|live| Arc::ptr_eq(&live.event_rx, &event_rx_mutex))
+                .filter(|live| live.turn.generation == generation)
             {
                 None => None,
                 Some(live) => {
-                    let wanted = initiator != Initiator::Goal
+                    let wanted = (initiator != Initiator::Goal
                         || live
                             .state
                             .as_ref()
-                            .is_some_and(|state| state.goal_claim_round(&turn_id));
+                            .is_some_and(|state| state.goal_claim_round(&turn_id)))
+                        && live
+                            .turn
+                            .claim(RunningTurn::new(turn_id.clone(), initiator, initiator_id))
+                            .is_ok();
                     if wanted {
-                        live.current_turn = Some(turn_id.clone());
-                        live.turn_initiator = Some(initiator);
-                        live.turn_watcher = initiator_id;
-                        live.turn_terminated = false;
                         self.emit_session_event(
                             "turn_started",
                             &sid,
@@ -226,15 +228,14 @@ impl SessionPool {
         let (turn_state, hub) = match started {
             Some((true, state, hub)) => (state, hub),
             Some((false, _, _)) => {
-                self.release_turn_slot(&sid, &event_rx_mutex, event_rx, &turn_id)
-                    .await;
+                self.release_turn_slot(&ticket, event_rx).await;
                 return Ok(TurnOutcome::Skipped {
                     session_id: sid,
                     turn_id,
                 });
             }
             None => {
-                *event_rx_mutex.lock().await = Some(event_rx);
+                *ticket.rx.lock().await = Some(event_rx);
                 return Err(PoolError::session_not_found(&sid));
             }
         };
@@ -264,8 +265,7 @@ impl SessionPool {
                 // next call on this id resume it from its transcript instead
                 // of sending into a closed channel.
                 self.publish_terminal(
-                    &sid,
-                    &event_rx_mutex,
+                    &ticket,
                     &frame_of(SessionEvent::EngineStopped),
                     initiator_id,
                 )
@@ -274,7 +274,7 @@ impl SessionPool {
                     let mut sessions = self.sessions.lock().await;
                     let ours = sessions
                         .get(&sid)
-                        .is_some_and(|live| Arc::ptr_eq(&live.event_rx, &event_rx_mutex));
+                        .is_some_and(|live| live.turn.generation == generation);
                     if ours {
                         sessions.remove(&sid)
                     } else {
@@ -283,7 +283,7 @@ impl SessionPool {
                 };
                 if let Some(dead) = dead {
                     self.evict(&sid, &dead);
-                    dead.idle.notify_waiters();
+                    dead.turn.idle.notify_waiters();
                     self.emit_session_event(
                         "session_closed",
                         &sid,
@@ -309,10 +309,7 @@ impl SessionPool {
                         }
                     }
                     let last = frame_of(SessionEvent::Agent(event));
-                    if !self
-                        .publish_terminal(&sid, &event_rx_mutex, &last, None)
-                        .await
-                    {
+                    if !self.publish_terminal(&ticket, &last, None).await {
                         return Err(PoolError::Engine(EngineFailure {
                             code: SESSION_CLOSED.to_string(),
                             message: SESSION_CLOSED_MESSAGE.to_string(),
@@ -332,10 +329,8 @@ impl SessionPool {
                     // The caller learns this from its own result; every other
                     // watcher would otherwise see a turn that never ends.
                     let last = frame_of(SessionEvent::Agent(event));
-                    self.publish_terminal(&sid, &event_rx_mutex, &last, initiator_id)
-                        .await;
-                    self.release_turn_slot(&sid, &event_rx_mutex, event_rx, &turn_id)
-                        .await;
+                    self.publish_terminal(&ticket, &last, initiator_id).await;
+                    self.release_turn_slot(&ticket, event_rx).await;
                     return Err(PoolError::Engine(failure));
                 }
                 event => publish_agent_event(&hub, &session_key, Some(&turn_key), event),
@@ -352,9 +347,7 @@ impl SessionPool {
             Some(state) => self.goal_round_after(&sid, state, &ended_with).await,
             None => None,
         };
-        let ours = self
-            .release_turn_slot(&sid, &event_rx_mutex, event_rx, &turn_id)
-            .await;
+        let ours = self.release_turn_slot(&ticket, event_rx).await;
         if let (true, Some(round)) = (ours, next_round) {
             self.start_goal_round(&sid, round);
         }

@@ -510,10 +510,10 @@ impl SessionPool {
             let sessions = self.sessions.lock().await;
             let live = sessions.get(sid).ok_or(Rebuild::NotLive)?;
             (
-                live.event_rx.clone(),
-                live.current_turn.clone(),
+                live.turn.rx.clone(),
+                live.turn.current_turn_id(),
                 live.state.clone(),
-                live.idle.clone(),
+                live.turn.idle.clone(),
             )
         };
         let mut taken = slot.lock().await;
@@ -579,7 +579,7 @@ impl SessionPool {
         if rebuilt.is_err() {
             *held.slot.lock().await = Some(held.event_rx);
             if let Some(live) = self.sessions.lock().await.get(sid) {
-                live.idle.notify_waiters();
+                live.turn.idle.notify_waiters();
             }
         }
         rebuilt.map_err(Rebuild::Failed)

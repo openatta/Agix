@@ -43,6 +43,7 @@ mod listing;
 mod mcp_cache;
 mod mcp_conn;
 mod permission_scripts;
+mod phase;
 mod plugins;
 mod pool_telemetry;
 mod resume;
@@ -64,6 +65,7 @@ use helpers::*;
 use history_rpc::*;
 use hub::SessionHub;
 use permission_scripts::*;
+use phase::{Generations, RunningTurn, TurnSlot, TurnTicket};
 use pool_telemetry::*;
 use settings_reload::*;
 
@@ -519,7 +521,12 @@ impl SessionNamer {
 
 struct LiveSession {
     input_tx: InputSender,
-    event_rx: Arc<AsyncMutex<Option<EventReceiver>>>,
+    /// Which engine this entry is, what it is doing, and the receiver its
+    /// turns take. A session runs one turn at a time; the running one is
+    /// named here, so a refusal can name it
+    /// (`SESSION_BUSY.data.current_turn_id`) and `session.get` can report
+    /// `turn_state`.
+    turn: TurnSlot,
     cancel: CancellationToken,
     /// Cancelled once the Agent's task has returned and dropped the Agent.
     exited: CancellationToken,
@@ -546,25 +553,6 @@ struct LiveSession {
     /// rebuilds the session before its next turn once it is set — lazily,
     /// so an invalidation never has to walk the sessions.
     binding_stale: Arc<std::sync::atomic::AtomicBool>,
-    /// The turn currently running on this session, if any.
-    ///
-    /// A session runs one turn at a time — `event_rx` is taken exclusively
-    /// for the duration, so the second caller could never have been served
-    /// anyway. This records *which* turn holds it, so the refusal can name it
-    /// (`SESSION_BUSY.data.current_turn_id`) and `session.get` can report
-    /// `turn_state` instead of the caller having to infer it.
-    current_turn: Option<String>,
-    /// Woken whenever the session stops running a turn — a `run_turn` with
-    /// `on_busy: queue` waits on it for its slot.
-    idle: Arc<tokio::sync::Notify>,
-    /// Who started the running turn.
-    turn_initiator: Option<Initiator>,
-    /// Who started the running turn, when a watcher did; it hears how the
-    /// turn ended from its `run_turn` result rather than from an `error`
-    /// frame.
-    turn_watcher: Option<WatcherId>,
-    /// The running turn's `turn_complete` or `error` frame has gone out.
-    turn_terminated: bool,
     /// The engine's own session state: the tasks `session.tasks` lists.
     state: Option<Arc<base::context::SessionState>>,
     /// How the engine starts sub-agents, for `session.startAgent`.
@@ -760,6 +748,9 @@ pub struct SessionPool {
     stopping: std::sync::Mutex<HashMap<String, CancellationToken>>,
     /// Set once [`Self::shutdown_all`] starts; no session is created after.
     shutting_down: std::sync::atomic::AtomicBool,
+    /// Numbers every engine this pool brings up, so a turn can tell the entry
+    /// it started on from one brought up later under the same id.
+    generations: Generations,
     /// Cancelled when [`Self::shutdown_all`] has finished.
     shut_down: CancellationToken,
     /// Every project this pool has built a session for, `None` being the
@@ -1178,6 +1169,7 @@ impl SessionPool {
             kept_specs: std::sync::Mutex::new(std::collections::VecDeque::new()),
             stopping: std::sync::Mutex::new(HashMap::new()),
             shutting_down: std::sync::atomic::AtomicBool::new(false),
+            generations: Generations::default(),
             shut_down: CancellationToken::new(),
             served: std::sync::Mutex::new(Vec::new()),
             permission_prompt_timeout: DEFAULT_PERMISSION_PROMPT_TIMEOUT,

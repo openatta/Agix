@@ -83,26 +83,25 @@ impl SessionPool {
             .unwrap_or(0)
     }
 
-    /// Send the running turn's last frame, if `slot` is still the session's
-    /// turn slot. Marked under the same lock `session.close` takes the
+    /// Send the running turn's last frame, if the ticket's entry is still the
+    /// session's. Marked under the same lock `session.close` takes the
     /// session out with, so every watcher gets exactly one: this one, or the
     /// one the close sends ([`Self::end_cut_off_turn`]). Returns whether the
     /// session was still there to send it to.
     pub(super) async fn publish_terminal(
         &self,
-        session_id: &str,
-        slot: &Arc<AsyncMutex<Option<EventReceiver>>>,
+        ticket: &TurnTicket,
         frame: &SessionFrame,
         except: Option<WatcherId>,
     ) -> bool {
         let mut sessions = self.sessions.lock().await;
         let Some(live) = sessions
-            .get_mut(session_id)
-            .filter(|live| Arc::ptr_eq(&live.event_rx, slot))
+            .get_mut(&ticket.sid)
+            .filter(|live| live.turn.generation == ticket.generation)
         else {
             return false;
         };
-        live.turn_terminated = true;
+        live.turn.mark_terminated(ticket.generation);
         live.hub.publish_except(frame, except);
         true
     }
@@ -111,18 +110,15 @@ impl SessionPool {
     /// frame has not gone out: send its watchers an `error` frame in its
     /// place. Its initiator learns the same from its `run_turn` result.
     pub(super) fn end_cut_off_turn(&self, session_id: &str, live: &LiveSession) {
-        let Some(turn_id) = live.current_turn.as_deref() else {
+        let Some(turn) = live.turn.running().filter(|turn| !turn.terminated) else {
             return;
         };
-        if live.turn_terminated {
-            return;
-        }
         let frame = SessionFrame {
             session_id: Arc::from(session_id),
-            turn_id: Some(Arc::from(turn_id)),
+            turn_id: Some(Arc::from(turn.turn_id.as_str())),
             event: SessionEvent::Closed,
         };
-        live.hub.publish_except(&frame, live.turn_watcher);
+        live.hub.publish_except(&frame, turn.origin);
     }
 
     /// The turn currently running on `session_id`, if any. `session.get`
@@ -133,7 +129,7 @@ impl SessionPool {
             .lock()
             .await
             .get(session_id)
-            .and_then(|live| live.current_turn.clone())
+            .and_then(|live| live.turn.current_turn_id())
     }
 
     /// Cancel the in-flight turn, keeping the session.
@@ -159,7 +155,7 @@ impl SessionPool {
             };
             (
                 live.input_tx.clone(),
-                live.current_turn.clone(),
+                live.turn.current_turn_id(),
                 live.state.clone(),
             )
         };

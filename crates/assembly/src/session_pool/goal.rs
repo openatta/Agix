@@ -179,17 +179,17 @@ impl SessionPool {
         }
         self.record_goal_changes(sid, &state).await;
 
-        let initiator = self
+        let running = self
             .sessions
             .lock()
             .await
             .get(sid)
-            .map(|live| (live.current_turn.is_some(), live.turn_initiator));
-        match initiator {
-            Some((true, Some(Initiator::Goal))) if pausing => {
+            .map(|live| live.turn.running().map(|turn| turn.initiator));
+        match running {
+            Some(Some(Initiator::Goal)) if pausing => {
                 self.interrupt_turn(sid).await?;
             }
-            Some((false, _)) => self.continue_goal(sid).await,
+            Some(None) => self.continue_goal(sid).await,
             _ => {}
         }
         Ok(serde_json::json!({ "goal": state.goal_view() }))

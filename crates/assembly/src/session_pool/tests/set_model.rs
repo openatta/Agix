@@ -23,7 +23,9 @@ async fn a_session_with_a_turn_in_flight_refuses_rather_than_queues() {
         sessions
             .get_mut(&session_id)
             .expect("the session is live")
-            .current_turn = Some("t1".into());
+            .turn
+            .claim(RunningTurn::new("t1".into(), Initiator::Client, None))
+            .unwrap();
     }
 
     match pool

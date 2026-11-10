@@ -37,7 +37,7 @@ async fn slot_and_state(
 ) {
     let sessions = pool.sessions.lock().await;
     let live = sessions.get(sid).expect("the session is live");
-    (live.event_rx.clone(), live.state.clone().expect("a state"))
+    (live.turn.rx.clone(), live.state.clone().expect("a state"))
 }
 
 fn append(prompt: &mut runtime::agent::SessionPrompt) {
@@ -194,17 +194,26 @@ async fn a_background_tasks_question_outlives_the_turn_and_goes_with_its_task() 
     let sid = new_session(&pool).await;
     let (slot, _) = slot_and_state(&pool, &sid).await;
     let rx = slot.lock().await.take().unwrap();
-    pool.sessions
+    let generation = pool
+        .sessions
         .lock()
         .await
         .get_mut(&sid)
         .unwrap()
-        .current_turn = Some("t1".into());
+        .turn
+        .claim(RunningTurn::new("t1".into(), Initiator::Client, None))
+        .unwrap();
     let hub = pool.hub_of(&sid).await.unwrap();
     raise_ask(&hub, &sid, "own", None);
     raise_ask(&hub, &sid, "background", Some("task-1"));
 
-    assert!(pool.release_turn_slot(&sid, &slot, rx, "t1").await);
+    let ticket = TurnTicket {
+        sid: sid.clone(),
+        generation,
+        turn_id: "t1".into(),
+        rx: slot,
+    };
+    assert!(pool.release_turn_slot(&ticket, rx).await);
     assert_eq!(
         pending_ids(&pool, &sid).await,
         vec!["background".to_string()]

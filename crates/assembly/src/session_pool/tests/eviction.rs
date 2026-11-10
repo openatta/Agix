@@ -10,7 +10,7 @@ fn dummy_live_session(last_active: Instant) -> LiveSession {
     let (_event_tx, event_rx): (_, EventReceiver) = tokio::sync::mpsc::unbounded_channel();
     LiveSession {
         input_tx,
-        event_rx: Arc::new(AsyncMutex::new(Some(event_rx))),
+        turn: TurnSlot::new(Generations::default().next(), event_rx),
         cancel: CancellationToken::new(),
         exited: CancellationToken::new(),
         context: None,
@@ -29,13 +29,8 @@ fn dummy_live_session(last_active: Instant) -> LiveSession {
             "claude-sonnet-4-6",
         ),
         binding_stale: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        current_turn: None,
-        turn_initiator: None,
-        turn_watcher: None,
-        turn_terminated: false,
         state: None,
         spawner: None,
-        idle: Arc::new(tokio::sync::Notify::new()),
         scripts: None,
         health: Default::default(),
         hub: Arc::new(SessionHub::active_at(last_active)),
@@ -115,10 +110,13 @@ fn eviction_passes_over_a_session_that_is_doing_something() {
     let long_ago = now.checked_sub(Duration::from_secs(600)).unwrap();
     let mut sessions = HashMap::new();
     let mut in_a_turn = dummy_live_session(long_ago);
-    in_a_turn.current_turn = Some("t1".into());
+    in_a_turn
+        .turn
+        .claim(RunningTurn::new("t1".into(), Initiator::Client, None))
+        .unwrap();
     sessions.insert("in_a_turn".to_string(), in_a_turn);
     let slot_taken = dummy_live_session(long_ago);
-    slot_taken.event_rx.try_lock().unwrap().take();
+    slot_taken.turn.rx.try_lock().unwrap().take();
     sessions.insert("slot_taken".to_string(), slot_taken);
     let mut with_a_task = dummy_live_session(long_ago);
     with_a_task.state = Some(running_a_task());

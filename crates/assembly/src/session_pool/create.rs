@@ -608,12 +608,18 @@ impl SessionPool {
         }
 
         let (event_rx, arrived) = relay_events(event_rx);
-        let event_rx = Arc::new(AsyncMutex::new(Some(event_rx)));
-        let idle = Arc::new(tokio::sync::Notify::new());
-        Self::forward_events_between_turns(&session_id, &hub, &event_rx, &arrived, &idle, &cancel);
+        let turn = TurnSlot::new(self.generations.next(), event_rx);
+        Self::forward_events_between_turns(
+            &session_id,
+            &hub,
+            &turn.rx,
+            &arrived,
+            &turn.idle,
+            &cancel,
+        );
         let live = LiveSession {
             input_tx,
-            event_rx,
+            turn,
             cancel,
             exited,
             context: None,
@@ -625,13 +631,8 @@ impl SessionPool {
             is_first_turn: !has_user_turn,
             namer,
             binding_stale: binding.stale.clone(),
-            current_turn: None,
-            turn_initiator: None,
-            turn_watcher: None,
-            turn_terminated: false,
             state: Some(state.clone()),
             spawner: Some(spawner),
-            idle,
             scripts: script_ledger,
             health,
             hub: hub.clone(),
@@ -650,7 +651,7 @@ impl SessionPool {
                 if !Arc::ptr_eq(&old.hub, &hub) {
                     hub.absorb(&old.hub);
                 }
-                old.idle.notify_waiters();
+                old.turn.idle.notify_waiters();
                 true
             }
             None => false,

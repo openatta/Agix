@@ -55,10 +55,10 @@ pub(super) fn goal_round_task(
 /// holding its turn slot (a turn about to start, a rebuild), or running
 /// background tasks.
 pub(super) fn is_busy(live: &LiveSession) -> bool {
-    if live.current_turn.is_some() {
+    if !live.turn.is_idle() {
         return true;
     }
-    let slot_free = live.event_rx.try_lock().is_ok_and(|slot| slot.is_some());
+    let slot_free = live.turn.rx.try_lock().is_ok_and(|slot| slot.is_some());
     if !slot_free {
         return true;
     }

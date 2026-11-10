@@ -138,7 +138,7 @@ impl SessionPool {
                         .filter_map(|(sid, _)| {
                             let sid = sid.to_string();
                             let live = sessions.get(&sid)?;
-                            Some((sid, (live.current_turn.clone(), live.state.clone())))
+                            Some((sid, (live.turn.current_turn_id(), live.state.clone())))
                         })
                         .collect()
                 };

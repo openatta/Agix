@@ -265,9 +265,10 @@ impl SessionPool {
             let live = sessions
                 .get(session_id)
                 .ok_or_else(|| PoolError::no_session(session_id))?;
-            if let Some(turn) = &live.current_turn {
+            if let Some(turn) = live.turn.running() {
                 return Err(PoolError::SessionBusy(Busy::context_moving(
-                    session_id, turn,
+                    session_id,
+                    &turn.turn_id,
                 )));
             }
             live.input_tx.clone()

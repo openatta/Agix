@@ -202,7 +202,7 @@ impl SessionPool {
             let Some(live) = sessions.get_mut(session_id) else {
                 return Err(PoolError::session_not_found(session_id));
             };
-            if let Some(current_turn_id) = live.current_turn.clone() {
+            if let Some(current_turn_id) = live.turn.current_turn_id() {
                 return Err(PoolError::SessionBusy(Busy::turn_running(
                     session_id,
                     Some(current_turn_id),
@@ -298,7 +298,7 @@ impl SessionPool {
             let sessions = self.sessions.lock().await;
             if let Some(current_turn_id) = sessions
                 .get(session_id)
-                .and_then(|l| l.current_turn.clone())
+                .and_then(|l| l.turn.current_turn_id())
             {
                 return Err(PoolError::SessionBusy(Busy::turn_running(
                     session_id,

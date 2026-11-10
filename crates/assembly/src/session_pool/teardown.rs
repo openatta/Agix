@@ -402,13 +402,13 @@ impl SessionPool {
     /// the next turn into an engine that is no longer reading. Whoever brings
     /// the session back waits for that engine instead.
     pub(super) async fn stop_live_agent(&self, session_id: &str) -> Result<(), CreateError> {
-        let (exited, slot) = {
+        let (exited, generation) = {
             let sessions = self.sessions.lock().await;
             let Some(live) = sessions.get(session_id) else {
                 return Ok(());
             };
             live.cancel.cancel();
-            (live.exited.clone(), live.event_rx.clone())
+            (live.exited.clone(), live.turn.generation)
         };
         if tokio::time::timeout(AGENT_EXIT_GRACE, exited.cancelled())
             .await
@@ -419,7 +419,7 @@ impl SessionPool {
                 let mut sessions = self.sessions.lock().await;
                 let ours = sessions
                     .get(session_id)
-                    .is_some_and(|live| Arc::ptr_eq(&live.event_rx, &slot));
+                    .is_some_and(|live| live.turn.generation == generation);
                 if ours {
                     sessions.remove(session_id)
                 } else {
@@ -428,7 +428,7 @@ impl SessionPool {
             };
             if let Some(stopping) = stopping {
                 self.evict(session_id, &stopping);
-                stopping.idle.notify_waiters();
+                stopping.turn.idle.notify_waiters();
                 self.emit_session_event(
                     "session_evicted",
                     session_id,
