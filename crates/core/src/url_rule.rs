@@ -311,6 +311,24 @@ mod tests {
         }
     }
 
+    /// A rule meets a URL in the form the request goes out in: a host written
+    /// in Unicode is the punycode the URL parser turns it into, and an
+    /// unreserved character spelled as a percent-escape is that character —
+    /// the server reads `/%61dmin/` as `/admin/`. Otherwise a deny written
+    /// for the host or the path does not refuse the very URL it names.
+    #[test]
+    #[ignore = "audit: confirmed defect, fix pending"]
+    fn audit2_a_rule_meets_the_url_the_request_goes_to() {
+        assert!(
+            matches("https://bücher.example/**", "https://bücher.example/x"),
+            "a Unicode host does not match itself"
+        );
+        assert!(
+            matches("https://h.example/admin/**", "https://h.example/%61dmin/x"),
+            "a percent-escaped letter walks past a path rule"
+        );
+    }
+
     #[test]
     fn a_normalized_url_is_written_one_way() {
         let u = NormalizedUrl::parse("WSS://User@Corp.Example.:443/a/?q#f").unwrap();
