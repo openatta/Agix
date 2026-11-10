@@ -198,7 +198,9 @@ impl RuleSet {
     /// 去引号、展开花括号、剥 wrapper 及其选项、程序路径取名字），所以
     /// `"rm" x`、`/bin/rm x`、`command -p rm x` 都撞得上 `Bash(rm:*)`；程序名
     /// 读不出来的段（`$CMD x`）在有带内容的 deny / ask 规则时记为 `Unclear`。
-    /// allow 只认原文：规整只会让裁决更严，不会更宽。
+    /// allow 只认原文：规整只会让裁决更严，不会更宽。带前导危险变量的段
+    /// （`PATH=. ls`）的 allow 还要连赋值一起命中，光允许裸命令（`Bash(ls:*)`）
+    /// 盖不住它。
     pub fn evaluate_shell(&self, tool_name: &str, group: Option<&str>, line: &str) -> RuleHit {
         let mut hit = self.evaluate_shell_for(tool_name, line);
         if let Some(group) = group.filter(|g| *g != tool_name) {
@@ -220,14 +222,23 @@ impl RuleSet {
         let mut segment_allow = None;
         let mut all_allowed = true;
         for seg in &segments {
-            match self.evaluate(tool_name, Some(&seg.text)) {
+            // An allow must name the command as written: a segment run under a
+            // dangerous variable (`PATH=. ls`) is covered only by a rule that
+            // carries the assignment, never by one for the bare command. A
+            // deny or ask still reaches it off the stripped text and what runs.
+            let guarded = crate::shell::assignments(&seg.written)
+                .iter()
+                .any(|(name, _)| crate::shell::is_dangerous_variable(name));
+            let allow_on = if guarded { &seg.written } else { &seg.text };
+            match self.evaluate(tool_name, Some(allow_on)) {
                 RuleHit::Allow(r) => {
                     segment_allow.get_or_insert(r);
                 }
-                other => {
-                    all_allowed = false;
-                    refusal = refusal.restricted_by(other);
-                }
+                _ => all_allowed = false,
+            }
+            match self.evaluate(tool_name, Some(&seg.text)) {
+                RuleHit::Allow(_) | RuleHit::None => {}
+                refused => refusal = refusal.restricted_by(refused),
             }
             refusal = refusal.restricted_by(self.refusal_of_what_runs(tool_name, &seg.source));
         }

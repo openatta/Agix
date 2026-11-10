@@ -303,6 +303,33 @@ async fn a_deny_for_one_command_reaches_it_wherever_it_sits_in_the_line() {
     assert!(matches!(o, PermissionOutcome::Permit), "{o:?}");
 }
 
+/// An allow for a bare command does not cover the same command run under a
+/// dangerous variable — the assignment can turn a read into a program the
+/// project points at. Only an allow that names the assignment covers it; a
+/// harmless assignment is unaffected.
+#[tokio::test]
+async fn an_allow_for_a_bare_command_does_not_cover_a_dangerous_assignment() {
+    let dir = tempfile::tempdir().unwrap();
+    let perm = permission(
+        vec![rule(RuleBehavior::Allow, "Bash", "ls:*")],
+        PermissionMode::DontAsk,
+    );
+    for allowed in ["ls -la", "FOO=1 ls", "LC_ALL=C ls"] {
+        let o = check(&perm, "Bash", bash(allowed), dir.path()).await;
+        assert!(matches!(o, PermissionOutcome::Permit), "{allowed}: {o:?}");
+    }
+    for guarded in ["PATH=. ls", "LD_PRELOAD=x.so ls", "env PATH=. ls"] {
+        let o = check(&perm, "Bash", bash(guarded), dir.path()).await;
+        assert!(is_deny(&o), "{guarded}: {o:?}");
+    }
+    let names_it = permission(
+        vec![rule(RuleBehavior::Allow, "Bash", "PATH=. ls:*")],
+        PermissionMode::DontAsk,
+    );
+    let o = check(&names_it, "Bash", bash("PATH=. ls"), dir.path()).await;
+    assert!(matches!(o, PermissionOutcome::Permit), "{o:?}");
+}
+
 /// What a user who wants "anything but deleting" writes.
 fn anything_but_rm() -> RuleSetPermission {
     permission(

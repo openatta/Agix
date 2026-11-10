@@ -23,6 +23,10 @@ pub struct Segment {
     /// The same command before transparent wrappers were peeled off its
     /// front — `command -p rm x` where `text` is `-p rm x`.
     pub source: String,
+    /// The command as written from its first assignment or wrapper on, past
+    /// any leading keyword — `PATH=. ls` where `text` is `ls`. What an allow
+    /// rule must name to cover a command run under a dangerous variable.
+    pub written: String,
 }
 
 /// Every simple command the line runs, as source text with leading
@@ -588,12 +592,16 @@ fn push_command(raw: &str, out: &mut Vec<Segment>) {
     let mut rest = raw.trim();
     let mut wrapper = None;
     let mut source = None;
+    let mut written = None;
     loop {
         rest = strip_group_openers(rest);
         let end = first_word_end(rest);
         let first = &rest[..end];
         if first.is_empty() {
             break;
+        }
+        if !PREFIX_KEYWORDS.contains(&first) {
+            written.get_or_insert(rest);
         }
         if WRAPPERS.contains(&first) {
             source.get_or_insert(rest);
@@ -605,6 +613,7 @@ fn push_command(raw: &str, out: &mut Vec<Segment>) {
     }
     let rest = strip_group_closers(rest);
     let source = strip_group_closers(source.unwrap_or(rest));
+    let written = strip_group_closers(written.unwrap_or(rest));
     if TRAILING_KEYWORDS.contains(&rest) {
         return;
     }
@@ -618,6 +627,7 @@ fn push_command(raw: &str, out: &mut Vec<Segment>) {
     out.push(Segment {
         text: text.to_string(),
         source: source.to_string(),
+        written: written.to_string(),
     });
 }
 
@@ -779,6 +789,18 @@ mod tests {
         assert_eq!(s[1].text, "-p rm x");
         assert_eq!(s[1].source, "command -p rm x");
         assert_eq!(segments("(ls)")[0].source, "ls");
+    }
+
+    #[test]
+    fn a_segment_keeps_the_assignments_it_was_written_with() {
+        assert_eq!(segments("PATH=. ls")[0].written, "PATH=. ls");
+        assert_eq!(
+            segments("if PATH=. ls; then ls; fi")[0].written,
+            "PATH=. ls"
+        );
+        assert_eq!(segments("env PATH=. ls")[0].written, "env PATH=. ls");
+        assert_eq!(segments("ls")[0].written, "ls");
+        assert_eq!(segments("(PATH=. ls)")[0].written, "PATH=. ls");
     }
 
     #[test]
