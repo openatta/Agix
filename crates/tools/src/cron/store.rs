@@ -241,6 +241,9 @@ impl CronStore {
                 return Vec::new();
             }
         };
+        if data.trim().is_empty() {
+            return Vec::new();
+        }
         match serde_json::from_str(&data) {
             Ok(jobs) => jobs,
             Err(e) => {
@@ -270,7 +273,12 @@ fn write_atomic(path: &Path, body: &str) -> std::io::Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     let tmp = sibling(path, &format!(".tmp-{}", std::process::id()));
-    std::fs::write(&tmp, body)?;
+    {
+        use std::io::Write;
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(body.as_bytes())?;
+        file.sync_all()?;
+    }
     std::fs::rename(&tmp, path).inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
     })
@@ -431,6 +439,17 @@ mod tests {
         assert_eq!(store.list().len(), 1);
         assert_eq!(store.pop_due_at(at("2026-10-26T11:00:00Z")).len(), 1);
         assert!(store.list().is_empty());
+    }
+
+    #[test]
+    fn an_empty_store_file_is_an_empty_list_not_corruption() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cron.json");
+        std::fs::write(&path, "  \n").unwrap();
+
+        let store = CronStore::load_or_default(Some(path.clone()));
+        assert!(store.list().is_empty());
+        assert!(!dir.path().join("cron.json.corrupt").exists());
     }
 
     #[test]

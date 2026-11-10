@@ -88,6 +88,13 @@ impl PasteStore {
     }
 }
 
+fn write_synced(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::File::create(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
 impl BlobStore for PasteStore {
     fn name(&self) -> &str {
         "paste"
@@ -100,7 +107,7 @@ impl BlobStore for PasteStore {
         let whole = std::fs::metadata(&path).is_ok_and(|m| m.len() == bytes.len() as u64);
         if !whole {
             let tmp = crate::path::temp_sibling(&path);
-            let written = std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, &path));
+            let written = write_synced(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, &path));
             if written.is_err() {
                 let _ = std::fs::remove_file(&tmp);
             }
