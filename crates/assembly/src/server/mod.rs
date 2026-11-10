@@ -70,6 +70,7 @@ mod transport;
 pub(crate) use connection::parse_error_frame;
 use dispatch::{parse_param, read_options, reporting_ignored};
 pub use listen::UnixBinding;
+#[cfg(feature = "ws")]
 pub(crate) use transport::MAX_FRAME_BYTES;
 pub(crate) use transport::MAX_IN_FLIGHT_PER_CONNECTION;
 use transport::{ByteWriter, FrameReader, LineSink, Reader};
