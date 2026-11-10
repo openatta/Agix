@@ -1081,12 +1081,14 @@ bubblewrap)就和别的未授权调用一样被拒。沙箱只限写不限网,�
 `commondir` 的仓库在 Linux 上补不上这一道(见 `sandbox.rs` 模块头第 3 条),所以有下一段。
 
 读遮挡的写法两个后端不同,来源相同:都是 `SensitivePaths::credential_locations` 给出的位置。macOS 把
-每条翻成一条读拒绝正则,所以 profile 写出之后才新建的场景目录也在内;写保护同理,状态目录与各
-`scenes/<场景>/` 下的 `settings.json`、`scene.json`、`prompt.md` 是一条正则。Linux 的状态目录遮挡由
+每条翻成一条读拒绝正则,所以 profile 写出之后才新建的场景目录也在内;内核按解析后的路径匹配,所以
+链进 `scenes/` 的场景目录(`Located::linked_dirs_resolved`)按解析后的位置再各加一条。写保护同理,
+状态目录与各 `scenes/<场景>/` 下的 `settings.json`、`scene.json`、`prompt.md` 是一条正则。Linux 的状态目录遮挡由
 `platform::sandbox::mask::mask_plan` 生成 tmpfs 与只读 bind 的序列(不分操作系统,可在 macOS 上单测):
 每个含凭据或通向凭据的目录先盖一层 tmpfs,再把其余条目只读绑回;之后写进去的凭据落在 tmpfs 里,
 读不到。通向凭据的条目若不是真目录(符号链接的场景、`scenes/` 里的普通文件)保持遮住。撤掉围栏、
-或项目在状态目录里时整块盖 tmpfs 会连项目一起盖住,改为按 `Located::existing()` 逐个遮挡;这种情况下
+或项目在状态目录里时整块盖 tmpfs 会连项目一起盖住,改为按 `Located::existing()` 逐个遮挡(它跟随
+符号链接列场景目录);这种情况下
 状态目录也按配置根保护:它的 `ENGINE_CONFIG_FILES` 与 `ENGINE_CONFIG_DIRS` 对沙箱命令只读(cwd 所在的
 那个配置目录除外)。
 

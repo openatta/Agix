@@ -273,13 +273,31 @@ pub struct Located {
 }
 
 impl Located {
-    /// The directories the secret is directly in, as they exist now.
+    /// The directories the secret is directly in, as they exist now, spelled
+    /// under `base`.
     pub fn dirs(&self) -> Vec<PathBuf> {
         if self.under_each_scene {
-            real_subdirs(&self.base.join("scenes"))
+            scene_dirs_in(&self.base)
+                .into_iter()
+                .map(|scene| scene.path)
+                .collect()
         } else {
             vec![self.base.clone()]
         }
+    }
+
+    /// The scene directories among [`Self::dirs`] that are symbolic links,
+    /// as they resolve: a backend that matches resolved paths against
+    /// `base/scenes/<any>/` does not see the secret in them.
+    pub fn linked_dirs_resolved(&self) -> Vec<PathBuf> {
+        if !self.under_each_scene {
+            return Vec::new();
+        }
+        scene_dirs_in(&self.base)
+            .into_iter()
+            .filter(|scene| scene.resolved != scene.path)
+            .map(|scene| scene.resolved)
+            .collect()
     }
 
     /// The paths that are this secret now.
@@ -498,8 +516,11 @@ impl SensitivePaths {
     pub fn scene_dirs(&self) -> Vec<PathBuf> {
         self.state_root
             .as_ref()
-            .map(|root| real_subdirs(&root.real.join("scenes")))
+            .map(|root| scene_dirs_in(&root.real))
             .unwrap_or_default()
+            .into_iter()
+            .map(|scene| scene.path)
+            .collect()
     }
 
     /// How the engine reads a file of the project for the model.
@@ -641,18 +662,29 @@ impl Spellings {
     }
 }
 
-/// The real directories directly under `dir`, symbolic links left out, in
-/// name order.
-fn real_subdirs(dir: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+/// A directory in `<state root>/scenes/`, possibly a symbolic link to one
+/// elsewhere.
+struct SceneDir {
+    path: PathBuf,
+    resolved: PathBuf,
+}
+
+/// The scene directories in `base/scenes/`, symbolic links to directories
+/// included, in name order.
+fn scene_dirs_in(base: &Path) -> Vec<SceneDir> {
+    let Ok(entries) = std::fs::read_dir(base.join("scenes")) else {
         return Vec::new();
     };
-    let mut dirs: Vec<PathBuf> = entries
+    let mut dirs: Vec<SceneDir> = entries
         .flatten()
-        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
         .map(|e| e.path())
+        .filter(|path| path.is_dir())
+        .map(|path| SceneDir {
+            resolved: path.canonicalize().unwrap_or_else(|_| path.clone()),
+            path,
+        })
         .collect();
-    dirs.sort();
+    dirs.sort_by(|a, b| a.path.cmp(&b.path));
     dirs
 }
 
@@ -794,12 +826,10 @@ mod tests {
     }
 
     /// Linux 沙箱撤掉围栏的分支（引擎 git、pdftotext、项目在状态目录内）按
-    /// `existing()` 逐个遮挡凭据。场景目录是符号链接时它的密钥文件也得在里面；
-    /// 0.3.11 的 `scene_dirs` 用跟随链接的 `is_dir()` 列场景，这里的
-    /// `real_subdirs` 不跟随，链进来的场景整个漏掉。
+    /// `existing()` 逐个遮挡凭据：场景目录是符号链接时，它的密钥文件也在里面，
+    /// 解析后的目录交给按解析路径匹配的后端。
     #[cfg(unix)]
     #[test]
-    #[ignore = "audit: confirmed defect, fix pending"]
     fn audit3_a_scene_linked_in_from_elsewhere_has_its_key_files_located() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("state");
@@ -819,6 +849,10 @@ mod tests {
                 .contains(&root.join("scenes/linked/settings.json")),
             "{:?}",
             keys.existing()
+        );
+        assert_eq!(
+            keys.linked_dirs_resolved(),
+            vec![elsewhere.canonicalize().unwrap()]
         );
     }
 

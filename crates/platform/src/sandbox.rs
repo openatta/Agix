@@ -764,10 +764,12 @@ fn build_macos_profile(cwd: &Path, additional: &[PathBuf], policy: &SandboxPolic
         .paths
         .credential_locations(&project_agix_dirs(&roots.cwd))
     {
-        s.push_str(&format!(
-            "(deny file-read* (regex \"{}\"))\n",
-            sandbox_escape(&credential_read_regex(&located))
-        ));
+        for regex in credential_read_regexes(&located) {
+            s.push_str(&format!(
+                "(deny file-read* (regex \"{}\"))\n",
+                sandbox_escape(&regex)
+            ));
+        }
     }
 
     // `launchctl submit` / `bootstrap` need no rule: launchd refuses a job
@@ -870,17 +872,32 @@ fn spellings(path: &Path) -> Vec<PathBuf> {
     }
 }
 
-/// The paths `located` is, as a regular expression over a resolved path.
+/// The paths `located` is, as regular expressions over a resolved path: one
+/// for its directories under `base`, and one for each scene linked in from
+/// elsewhere, whose files resolve outside `base`.
 #[cfg(all(feature = "sandbox", target_os = "macos"))]
-fn credential_read_regex(located: &base::paths::Located) -> String {
-    use base::paths::{KeyFileNames, Secret};
+fn credential_read_regexes(located: &base::paths::Located) -> Vec<String> {
     let base = regex_escape(&located.base.display().to_string());
-    let dir = if located.under_each_scene {
+    let under_base = if located.under_each_scene {
         format!("^{base}/scenes/[^/]+/")
     } else {
         format!("^{base}/")
     };
-    match located.secret {
+    let linked = located
+        .linked_dirs_resolved()
+        .into_iter()
+        .map(|dir| format!("^{}/", regex_escape(&dir.display().to_string())));
+    std::iter::once(under_base)
+        .chain(linked)
+        .map(|dir| secret_regex(&dir, located.secret))
+        .collect()
+}
+
+/// The paths `secret` is in the directories `dir`, a regex prefix, matches.
+#[cfg(all(feature = "sandbox", target_os = "macos"))]
+fn secret_regex(dir: &str, secret: base::paths::Secret) -> String {
+    use base::paths::{KeyFileNames, Secret};
+    match secret {
         Secret::KeyFiles(names @ KeyFileNames::StateRoot) => {
             format!(
                 r"{dir}\.?({})[^/]*\.json[^/]*$",
@@ -3411,14 +3428,10 @@ mod tests {
     }
 
     /// 场景目录是指向别处的符号链接时（把场景放在 dotfiles 仓库里再链进来），
-    /// 它的 `settings.json` 仍是这个场景的凭据，沙箱里的命令照样不该读到。
-    /// macOS 的读拒绝按 `^<状态目录>/scenes/[^/]+/` 匹配解析后的路径，链接目标
-    /// 不在那下面，于是放行；Linux 撤掉围栏的分支（引擎自己的 git、pdftotext、
-    /// 项目在状态目录内）逐个遮挡 `Located::existing()`，它只列真目录，0.3.11
-    /// 的 `scene_dirs` 还跟随符号链接。
+    /// 它的 `settings.json` 仍是这个场景的凭据，沙箱里的命令照样读不到。macOS
+    /// 的读拒绝匹配的是解析后的路径，链接目标不在 `<状态目录>/scenes/` 下。
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
-    #[ignore = "audit: confirmed defect, fix pending"]
     #[allow(clippy::unwrap_used)]
     fn audit3_a_scene_linked_in_from_elsewhere_keeps_its_settings_unreadable() {
         if !a_backend_runs() {
