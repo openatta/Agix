@@ -1812,9 +1812,14 @@
         "params": {
           "event": {
             "goal": {
+              "armed": true,
               "id": "g1",
+              "max_rounds": 256,
               "objective": "ship",
-              "status": "active"
+              "phase": "active",
+              "revision": 1,
+              "rounds_since_armed": 0,
+              "rounds_started": 0
             },
             "kind": "goal_changed"
           },

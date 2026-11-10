@@ -134,6 +134,15 @@ pub struct GoalSlot {
     pub next_revision: u64,
 }
 
+/// A goal as hosts and the model see it: the goal, and whether automatic
+/// rounds are armed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GoalView {
+    #[serde(flatten)]
+    pub goal: Goal,
+    pub armed: bool,
+}
+
 /// The next automatic round to run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GoalRound {
@@ -142,15 +151,11 @@ pub struct GoalRound {
 }
 
 impl GoalSlot {
-    pub fn view(&self) -> serde_json::Value {
-        match &self.goal {
-            Some(goal) => {
-                let mut v = serde_json::to_value(goal).unwrap_or_default();
-                v["armed"] = serde_json::Value::Bool(self.armed);
-                v
-            }
-            None => serde_json::Value::Null,
-        }
+    pub fn view(&self) -> Option<GoalView> {
+        self.goal.clone().map(|goal| GoalView {
+            goal,
+            armed: self.armed,
+        })
     }
 
     /// The goal as read back from a log: disarmed.

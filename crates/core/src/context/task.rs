@@ -104,7 +104,7 @@ pub struct RunningTask {
     /// How much of the output has gone out as `task_progress`, in bytes.
     progress_sent: std::sync::Mutex<u64>,
     /// The session's task event channel, once the task is registered.
-    events: std::sync::OnceLock<tokio::sync::broadcast::Sender<serde_json::Value>>,
+    events: std::sync::OnceLock<tokio::sync::broadcast::Sender<TaskEvent>>,
 }
 
 /// Delivers a message to a running task's work.
@@ -156,7 +156,7 @@ impl RunningTask {
 
     /// Where this task's `task_*` events go; set once, by the session that
     /// registers it.
-    pub fn report_to(&self, events: tokio::sync::broadcast::Sender<serde_json::Value>) {
+    pub fn report_to(&self, events: tokio::sync::broadcast::Sender<TaskEvent>) {
         let _ = self.events.set(events);
     }
 
@@ -198,7 +198,7 @@ impl RunningTask {
             return;
         };
         if self.announced.load(std::sync::atomic::Ordering::SeqCst) && !self.has_ended() {
-            let _ = events.send(serde_json::json!({"kind": "task_updated", "task": self.info()}));
+            let _ = events.send(TaskEvent::Updated { task: self.info() });
         }
     }
 
@@ -259,14 +259,13 @@ impl RunningTask {
         let cut = ceil_char_boundary(&output.kept, output.kept.len() - shown);
         let appended = &output.kept[cut..];
         let from_byte = output.total - appended.len() as u64;
-        let _ = events.send(serde_json::json!({
-            "kind": "task_progress",
-            "task_id": self.task_id,
-            "skipped_bytes": from_byte - *sent,
-            "appended": appended,
-            "from_byte": from_byte,
-            "next_byte": output.total,
-        }));
+        let _ = events.send(TaskEvent::Progress {
+            task_id: self.task_id.clone(),
+            skipped_bytes: from_byte - *sent,
+            appended: appended.to_string(),
+            from_byte,
+            next_byte: output.total,
+        });
         *sent = output.total;
     }
 
@@ -337,8 +336,8 @@ impl RunningTask {
         Ok(output.slice(at, dropped))
     }
 
-    /// The wire shape of this task (`session.tasks`, `task_*` events).
-    pub fn info(&self) -> serde_json::Value {
+    /// This task as hosts see it (`session.tasks`, `task_*` events).
+    pub fn info(&self) -> TaskInfo {
         let status = self
             .status
             .lock()
@@ -349,35 +348,108 @@ impl RunningTask {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
-        let (status, error) = match status {
-            RunningStatus::Running if !waiting_for.is_empty() => ("waiting", None),
-            RunningStatus::Running => ("running", None),
-            RunningStatus::Completed => ("done", None),
-            RunningStatus::Cancelled => ("stopped", None),
-            RunningStatus::Failed(e) => ("failed", Some(e)),
+        let (status, error, waiting_for) = match status {
+            RunningStatus::Running if !waiting_for.is_empty() => {
+                (TaskStatus::Waiting, None, waiting_for)
+            }
+            RunningStatus::Running => (TaskStatus::Running, None, Vec::new()),
+            RunningStatus::Completed => (TaskStatus::Done, None, Vec::new()),
+            RunningStatus::Cancelled => (TaskStatus::Stopped, None, Vec::new()),
+            RunningStatus::Failed(e) => (TaskStatus::Failed, Some(e), Vec::new()),
         };
-        let mut info = serde_json::json!({
-            "task_id": self.task_id,
-            "kind": self.task_type.as_str(),
-            "status": status,
-            "started_ms": self.started_ms,
-            "ended_ms": *self.ended_ms.lock().unwrap_or_else(|e| e.into_inner()),
-            "detail": self.detail.lock().unwrap_or_else(|e| e.into_inner()).clone(),
-        });
-        if let Some(error) = error {
-            info["error"] = serde_json::json!(error);
+        TaskInfo {
+            task_id: self.task_id.clone(),
+            kind: self.task_type,
+            status,
+            started_ms: self.started_ms,
+            ended_ms: *self.ended_ms.lock().unwrap_or_else(|e| e.into_inner()),
+            detail: self
+                .detail
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+            error,
+            waiting_for,
+            usage: *self.usage.lock().unwrap_or_else(|e| e.into_inner()),
+            structured_output: self.structured_output.get().cloned(),
         }
-        if status == "waiting" {
-            info["waiting_for"] = serde_json::json!(waiting_for);
-        }
-        if let Some(usage) = *self.usage.lock().unwrap_or_else(|e| e.into_inner()) {
-            info["usage"] = serde_json::json!(usage);
-        }
-        if let Some(output) = self.structured_output.get() {
-            info["structured_output"] = output.clone();
-        }
-        info
     }
+}
+
+/// A task as `session.tasks` lists it and the `task_*` events carry it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct TaskInfo {
+    pub task_id: String,
+    #[serde(serialize_with = "wire_kind")]
+    pub kind: TaskType,
+    pub status: TaskStatus,
+    /// Unix millis.
+    pub started_ms: i64,
+    /// Unix millis; `null` while it runs.
+    pub ended_ms: Option<i64>,
+    pub detail: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// The prompt ids the work waits on; empty unless `status` is `waiting`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub waiting_for: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<crate::interface::model::Usage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub structured_output: Option<serde_json::Value>,
+}
+
+/// On the wire a task's kind goes by [`TaskType::as_str`], not its serde
+/// name: `cron`, not `cron_job`.
+fn wire_kind<S: serde::Serializer>(kind: &TaskType, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_str(kind.as_str())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskStatus {
+    Running,
+    /// Running, and waiting on the host to answer a question.
+    Waiting,
+    Done,
+    Stopped,
+    Failed,
+}
+
+impl TaskStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Waiting => "waiting",
+            Self::Done => "done",
+            Self::Stopped => "stopped",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+/// What a session's tasks report as they run
+/// ([`super::SessionState::subscribe_tasks`]).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(tag = "kind")]
+pub enum TaskEvent {
+    #[serde(rename = "task_started")]
+    Started { task: TaskInfo },
+    #[serde(rename = "task_updated")]
+    Updated { task: TaskInfo },
+    /// What a streamed task printed since the last one: bytes
+    /// `from_byte..next_byte` of everything it ever printed, after
+    /// `skipped_bytes` that did not fit in one frame.
+    #[serde(rename = "task_progress")]
+    Progress {
+        task_id: String,
+        skipped_bytes: u64,
+        appended: String,
+        from_byte: u64,
+        next_byte: u64,
+    },
+    #[serde(rename = "task_finished")]
+    Finished { task: TaskInfo },
 }
 
 /// A task's output, as the offsets of everything ever appended count it.
@@ -532,20 +604,17 @@ mod tests {
 
     fn reporting(
         task_type: TaskType,
-    ) -> (
-        RunningTask,
-        tokio::sync::broadcast::Receiver<serde_json::Value>,
-    ) {
+    ) -> (RunningTask, tokio::sync::broadcast::Receiver<TaskEvent>) {
         let (events, rx) = tokio::sync::broadcast::channel(64);
         let task = RunningTask::new("t-1".into(), task_type);
         task.report_to(events);
         (task, rx)
     }
 
-    fn drain(
-        rx: &mut tokio::sync::broadcast::Receiver<serde_json::Value>,
-    ) -> Vec<serde_json::Value> {
-        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    fn drain(rx: &mut tokio::sync::broadcast::Receiver<TaskEvent>) -> Vec<serde_json::Value> {
+        std::iter::from_fn(|| rx.try_recv().ok())
+            .map(|e| serde_json::to_value(e).unwrap())
+            .collect()
     }
 
     #[test]

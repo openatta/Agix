@@ -5,6 +5,8 @@
 //! 逼着人决定它上不上线。
 
 use crate::session_pool::api::{SessionEvent, SessionFrame};
+use base::context::goal::GoalView;
+use base::context::{TaskEvent, TaskInfo};
 use base::event::{AgentEvent, ContextUsage, QueuedUserMessage, TeamStageStatus};
 use base::interface::elicitation::ElicitOption;
 use base::interface::model::Usage;
@@ -140,23 +142,23 @@ pub enum SessionEventPayload {
         message: String,
     },
     TaskStarted {
-        task: Value,
+        task: TaskInfo,
     },
     TaskUpdated {
-        task: Value,
+        task: TaskInfo,
     },
     TaskProgress {
-        task_id: Value,
-        appended: Value,
-        skipped_bytes: Value,
-        from_byte: Value,
-        next_byte: Value,
+        task_id: String,
+        appended: String,
+        skipped_bytes: u64,
+        from_byte: u64,
+        next_byte: u64,
     },
     TaskFinished {
-        task: Value,
+        task: TaskInfo,
     },
     GoalChanged {
-        goal: Value,
+        goal: Option<GoalView>,
     },
     ExtensionEntry {
         entry: Value,
@@ -252,21 +254,24 @@ impl SessionEventPayload {
         }
     }
 
-    fn from_task(event: &Value) -> Option<Self> {
-        let task = || event.get("task").cloned();
-        let field = |key: &str| event.get(key).cloned();
-        Some(match event.get("kind")?.as_str()? {
-            "task_started" => Self::TaskStarted { task: task()? },
-            "task_updated" => Self::TaskUpdated { task: task()? },
-            "task_finished" => Self::TaskFinished { task: task()? },
-            "task_progress" => Self::TaskProgress {
-                task_id: field("task_id")?,
-                appended: field("appended")?,
-                skipped_bytes: field("skipped_bytes")?,
-                from_byte: field("from_byte")?,
-                next_byte: field("next_byte")?,
+    fn from_task(event: &TaskEvent) -> Option<Self> {
+        Some(match event.clone() {
+            TaskEvent::Started { task } => Self::TaskStarted { task },
+            TaskEvent::Updated { task } => Self::TaskUpdated { task },
+            TaskEvent::Finished { task } => Self::TaskFinished { task },
+            TaskEvent::Progress {
+                task_id,
+                skipped_bytes,
+                appended,
+                from_byte,
+                next_byte,
+            } => Self::TaskProgress {
+                task_id,
+                appended,
+                skipped_bytes,
+                from_byte,
+                next_byte,
             },
-            _ => return None,
         })
     }
 

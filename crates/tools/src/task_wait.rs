@@ -141,13 +141,13 @@ impl Tool for TaskWaitTool {
         let mut text = String::new();
         for t in &tasks {
             let info = t.info();
-            let status = info["status"].as_str().unwrap_or("running").to_string();
+            let status = info.status.as_str();
             let mut entry = json!({"task_id": t.task_id, "status": status});
             text.push_str(&format!("## {} — {status}\n", t.task_id));
             if t.has_ended() {
                 ctx.session.retract_notice(&t.task_id);
                 let tail = t.output_tail(OUTPUT_TAIL_BYTES);
-                if let Some(e) = info["error"].as_str() {
+                if let Some(e) = info.error.as_deref() {
                     text.push_str(&format!("error: {e}\n"));
                     entry["error"] = json!(e);
                 }

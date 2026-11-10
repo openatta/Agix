@@ -657,7 +657,7 @@ impl SessionPool {
         };
         drop(sessions);
         let goal = state.goal_view();
-        if resume && !goal.is_null() {
+        if resume && goal.is_some() {
             hub.publish(&frame_between_turns(
                 &session_id,
                 SessionEvent::GoalChanged(goal),

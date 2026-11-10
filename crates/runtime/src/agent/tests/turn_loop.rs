@@ -1,6 +1,11 @@
 //! Turn execution through the agent: goal rounds, tool failures, hooks, permissions, cancellation.
 
 use super::*;
+use base::context::goal::GoalPhase;
+
+fn goal_phase(state: &base::context::SessionState) -> Option<GoalPhase> {
+    state.goal_view().map(|view| view.goal.phase)
+}
 
 /// Test tool: always succeeds, records nothing — just needs to exist so
 /// the mock model's `ToolUse` call has something real to dispatch to.
@@ -196,12 +201,12 @@ async fn run_starts_goal_rounds_until_the_limit() {
     assert!(turns[2].starts_with("goal-1-2-"), "{turns:?}");
 
     for _ in 0..100 {
-        if state.goal_view()["phase"] == "blocked" {
+        if goal_phase(&state) == Some(GoalPhase::Blocked) {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    assert_eq!(state.goal_view()["phase"], "blocked");
+    assert_eq!(goal_phase(&state), Some(GoalPhase::Blocked));
     stop.cancel();
     let _ = engine.await;
 }

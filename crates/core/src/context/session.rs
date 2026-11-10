@@ -8,8 +8,12 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use super::goal::{GoalError, GoalView};
 use super::prompt::{PromptRequest, PromptResponse, SystemMessage};
-use super::task::{RunningStatus, RunningTask, TaskType, TodoItem, TodoStatus};
+use super::task::{
+    RunningStatus, RunningTask, TaskEvent, TaskInfo, TaskType, TodoItem, TodoStatus,
+};
+use tokio::sync::broadcast;
 
 /// 单次会话的可变状态。
 ///
@@ -54,14 +58,14 @@ pub struct SessionState {
     running_tasks: std::sync::Mutex<HashMap<String, std::sync::Arc<RunningTask>>>,
     /// Its tasks' events, for whoever shows this session's tasks — see
     /// [`SessionState::subscribe_tasks`].
-    task_events: tokio::sync::broadcast::Sender<serde_json::Value>,
+    task_events: broadcast::Sender<TaskEvent>,
     /// This session's goal — see [`super::goal`].
     goal: std::sync::Mutex<super::goal::GoalSlot>,
     /// Goal snapshots changed but not yet written to the session log; `None`
     /// records a cleared goal.
     unrecorded_goal_changes: std::sync::Mutex<Vec<Option<super::goal::Goal>>>,
     goal_recording: std::sync::Arc<tokio::sync::Mutex<()>>,
-    goal_events: tokio::sync::broadcast::Sender<serde_json::Value>,
+    goal_events: broadcast::Sender<Option<GoalView>>,
     /// Who started the turn now running, which decides what goal operations
     /// it may perform.
     turn_origin: std::sync::Mutex<super::goal::TurnOrigin>,
@@ -216,12 +220,12 @@ impl SessionState {
         Self::announce_on(&self.task_events, task);
     }
 
-    fn announce_on(events: &tokio::sync::broadcast::Sender<serde_json::Value>, task: &RunningTask) {
+    fn announce_on(events: &broadcast::Sender<TaskEvent>, task: &RunningTask) {
         if !task
             .announced
             .swap(true, std::sync::atomic::Ordering::SeqCst)
         {
-            let _ = events.send(serde_json::json!({"kind": "task_started", "task": task.info()}));
+            let _ = events.send(TaskEvent::Started { task: task.info() });
         }
     }
 
@@ -258,15 +262,12 @@ impl SessionState {
 
     /// Close the task's output and announce `task_finished`; `false` if it
     /// was closed already.
-    fn close_on(
-        events: &tokio::sync::broadcast::Sender<serde_json::Value>,
-        task: &RunningTask,
-    ) -> bool {
+    fn close_on(events: &broadcast::Sender<TaskEvent>, task: &RunningTask) -> bool {
         if !task.close_output() {
             return false;
         }
         if task.announced.load(std::sync::atomic::Ordering::SeqCst) {
-            let _ = events.send(serde_json::json!({"kind": "task_finished", "task": task.info()}));
+            let _ = events.send(TaskEvent::Finished { task: task.info() });
         }
         true
     }
@@ -410,8 +411,8 @@ impl SessionState {
     }
 
     /// Every task this session knows — running, and the most recently ended —
-    /// oldest first, in their wire shape.
-    pub fn task_infos(&self) -> Vec<serde_json::Value> {
+    /// oldest first.
+    pub fn task_infos(&self) -> Vec<TaskInfo> {
         let mut tasks: Vec<std::sync::Arc<RunningTask>> = self
             .running_tasks
             .lock()
@@ -423,10 +424,8 @@ impl SessionState {
         tasks.iter().map(|t| t.info()).collect()
     }
 
-    /// `task_started` / `task_updated` / `task_finished` (`{kind, task}`) and
-    /// `task_progress` (`{kind, task_id, appended, skipped_bytes}`) as they
-    /// happen.
-    pub fn subscribe_tasks(&self) -> tokio::sync::broadcast::Receiver<serde_json::Value> {
+    /// Its tasks' events as they happen.
+    pub fn subscribe_tasks(&self) -> broadcast::Receiver<TaskEvent> {
         self.task_events.subscribe()
     }
 
@@ -438,8 +437,8 @@ impl SessionState {
         *lock(&self.turn_origin)
     }
 
-    /// The goal as hosts and the model see it, `null` when there is none.
-    pub fn goal_view(&self) -> serde_json::Value {
+    /// The goal as hosts and the model see it.
+    pub fn goal_view(&self) -> Option<GoalView> {
         lock(&self.goal).view()
     }
 
@@ -448,10 +447,10 @@ impl SessionState {
         objective: String,
         max_rounds: Option<u32>,
         origin: super::goal::TurnOrigin,
-    ) -> Result<serde_json::Value, super::goal::GoalError> {
+    ) -> Result<GoalView, GoalError> {
         let mut slot = lock(&self.goal);
         slot.create(objective, max_rounds, origin)?;
-        Ok(self.goal_changed(&slot, true))
+        self.goal_changed(&slot, true).ok_or(GoalError::NoGoal)
     }
 
     pub fn goal_update(
@@ -460,10 +459,10 @@ impl SessionState {
         revision: u64,
         action: super::goal::GoalAction,
         origin: super::goal::TurnOrigin,
-    ) -> Result<serde_json::Value, super::goal::GoalError> {
+    ) -> Result<GoalView, GoalError> {
         let mut slot = lock(&self.goal);
         slot.update(goal_id, revision, action, origin)?;
-        Ok(self.goal_changed(&slot, true))
+        self.goal_changed(&slot, true).ok_or(GoalError::NoGoal)
     }
 
     pub fn goal_clear(
@@ -529,11 +528,11 @@ impl SessionState {
     }
 
     /// The goal's view each time it changes.
-    pub fn subscribe_goal(&self) -> tokio::sync::broadcast::Receiver<serde_json::Value> {
+    pub fn subscribe_goal(&self) -> broadcast::Receiver<Option<GoalView>> {
         self.goal_events.subscribe()
     }
 
-    fn goal_changed(&self, slot: &super::goal::GoalSlot, record: bool) -> serde_json::Value {
+    fn goal_changed(&self, slot: &super::goal::GoalSlot, record: bool) -> Option<GoalView> {
         if record {
             lock(&self.unrecorded_goal_changes).push(slot.goal.clone());
         }

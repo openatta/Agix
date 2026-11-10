@@ -30,9 +30,9 @@ pub enum SessionEvent {
     Agent(AgentEvent),
     /// A task of the session started, changed, printed or finished
     /// (`SessionState::subscribe_tasks`).
-    Task(serde_json::Value),
-    /// The session's goal changed; `null` once cleared.
-    GoalChanged(serde_json::Value),
+    Task(base::context::TaskEvent),
+    /// The session's goal changed; `None` once cleared.
+    GoalChanged(Option<base::context::goal::GoalView>),
     /// A host wrote an extension entry into the session's log.
     ExtensionEntry(serde_json::Value),
     /// The engine went away before the running turn completed.

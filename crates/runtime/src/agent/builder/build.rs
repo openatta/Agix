@@ -587,18 +587,18 @@ impl Builder {
                         event = events.recv() => event,
                     };
                     match event {
-                        Ok(event) if event["kind"] == "task_started" => {
+                        Ok(base::context::TaskEvent::Started { task }) => {
                             if hooks.has_hooks_for(hooks::HookEvent::TaskCreated) {
                                 let input = hooks::HookInput::from_ambient(&ambient, "TaskCreated")
-                                    .with_reason(event["task"].to_string());
+                                    .with_reason(serde_json::json!(task).to_string());
                                 let _ = hooks.run(hooks::HookEvent::TaskCreated, &input).await;
                             }
                         }
-                        Ok(event) if event["kind"] == "task_finished" => {
+                        Ok(base::context::TaskEvent::Finished { task }) => {
                             if hooks.has_hooks_for(hooks::HookEvent::TaskCompleted) {
                                 let input =
                                     hooks::HookInput::from_ambient(&ambient, "TaskCompleted")
-                                        .with_reason(event["task"].to_string());
+                                        .with_reason(serde_json::json!(task).to_string());
                                 let _ = hooks.run(hooks::HookEvent::TaskCompleted, &input).await;
                             }
                             if let Some(wake) = &task_wake {

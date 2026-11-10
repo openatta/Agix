@@ -664,8 +664,8 @@ mod tests {
         let id = session
             .task_infos()
             .into_iter()
-            .find(|t| t["kind"] == "monitor")
-            .and_then(|t| t["task_id"].as_str().map(str::to_string))
+            .find(|t| t.kind == base::context::TaskType::Monitor)
+            .map(|t| t.task_id)
             .expect("the monitor is a task");
         session.find_running_task(&id).unwrap()
     }

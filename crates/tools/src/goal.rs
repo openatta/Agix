@@ -68,7 +68,8 @@ fn refused(e: GoalError) -> ToolResult {
     ToolResult::error_text(e.to_string())
 }
 
-fn view_result(view: Value, note: &str) -> ToolResult {
+fn view_result(view: base::context::goal::GoalView, note: &str) -> ToolResult {
+    let view = serde_json::to_value(view).unwrap_or_default();
     let mut result = ToolResult::text(format!(
         "{note}{}",
         serde_json::to_string_pretty(&view).unwrap_or_default()
@@ -155,11 +156,9 @@ impl Tool for GoalGetTool {
         if let Err(r) = origin(&ctx) {
             return Ok(r);
         }
-        let view = ctx.session.goal_view();
-        Ok(if view.is_null() {
-            ToolResult::text("This session has no goal.")
-        } else {
-            view_result(view, "")
+        Ok(match ctx.session.goal_view() {
+            None => ToolResult::text("This session has no goal."),
+            Some(view) => view_result(view, ""),
         })
     }
 }
@@ -251,6 +250,10 @@ mod tests {
             .unwrap()
     }
 
+    fn goal_json(ctx: &ToolContext) -> Value {
+        serde_json::to_value(ctx.session.goal_view()).unwrap()
+    }
+
     fn text(r: &ToolResult) -> String {
         match &r.content {
             base::tool::ToolResultContent::Text(s) => s.clone(),
@@ -277,7 +280,7 @@ mod tests {
         .await;
         assert!(!done.is_error, "{}", text(&done));
         assert!(text(&done).contains("call no more tools"));
-        assert_eq!(ctx.session.goal_view()["phase"], "complete");
+        assert_eq!(goal_json(&ctx)["phase"], "complete");
         assert_eq!(ctx.session.unrecorded_goal_changes().await.changes.len(), 2);
     }
 
@@ -287,7 +290,7 @@ mod tests {
         ctx.agent_depth = 1;
         let r = call(&GoalCreateTool, json!({"objective": "x"}), &ctx).await;
         assert!(r.is_error);
-        assert!(ctx.session.goal_view().is_null());
+        assert!(ctx.session.goal_view().is_none());
     }
 
     #[tokio::test]
@@ -297,7 +300,7 @@ mod tests {
         let round = ctx.session.goal_next_round().unwrap();
         ctx.session
             .set_turn_origin(TurnOrigin::from_turn_id(&round.turn_id));
-        let view = ctx.session.goal_view();
+        let view = goal_json(&ctx);
         let r = call(
             &GoalUpdateTool,
             json!({"goal_id": view["id"], "revision": view["revision"], "action": "pause"}),
@@ -312,7 +315,7 @@ mod tests {
     async fn blocked_needs_a_reason() {
         let ctx = platform::tool_context_for_test("/tmp".into());
         call(&GoalCreateTool, json!({"objective": "x"}), &ctx).await;
-        let view = ctx.session.goal_view();
+        let view = goal_json(&ctx);
         let r = call(
             &GoalUpdateTool,
             json!({"goal_id": view["id"], "revision": view["revision"], "action": "blocked"}),

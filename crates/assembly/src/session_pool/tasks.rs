@@ -73,10 +73,8 @@ impl SessionPool {
                 match events.recv().await {
                     Ok(event) => {
                         let Some(hub) = hub.upgrade() else { return };
-                        if event["kind"] == "task_finished" {
-                            if let Some(task_id) = event["task"]["task_id"].as_str() {
-                                hub.forget_asks_of_task(task_id);
-                            }
+                        if let base::context::TaskEvent::Finished { task } = &event {
+                            hub.forget_asks_of_task(&task.task_id);
                         }
                         hub.publish(&frame_between_turns(&session_id, SessionEvent::Task(event)));
                     }
@@ -100,20 +98,24 @@ impl SessionPool {
             .and_then(|live| live.state.clone());
         let mut tasks = state.as_ref().map(|s| s.task_infos()).unwrap_or_default();
         tasks.extend(self.schedule.list_for(session_id).into_iter().map(|job| {
-            serde_json::json!({
-                "task_id": job.id,
-                "kind": "cron",
-                "status": "waiting",
-                "started_ms": job.created_ms,
-                "ended_ms": null,
-                "detail": {
+            base::context::TaskInfo {
+                task_id: job.id,
+                kind: base::context::TaskType::CronJob,
+                status: base::context::TaskStatus::Waiting,
+                started_ms: job.created_ms,
+                ended_ms: None,
+                detail: serde_json::json!({
                     "cron": job.cron,
                     "prompt": job.prompt,
                     "recurring": job.recurring,
                     "durable": job.durable,
                     "expires_ms": job.expires_ms,
-                },
-            })
+                }),
+                error: None,
+                waiting_for: Vec::new(),
+                usage: None,
+                structured_output: None,
+            }
         }));
         serde_json::json!({"active": state.is_some(), "tasks": tasks})
     }
@@ -163,7 +165,7 @@ impl SessionPool {
         Ok(serde_json::json!({
             "output": slice.text,
             "truncated": truncated,
-            "status": task.info()["status"],
+            "status": task.info().status,
             "from_byte": slice.from_byte,
             "next_byte": slice.next_byte,
             "dropped": slice.dropped,

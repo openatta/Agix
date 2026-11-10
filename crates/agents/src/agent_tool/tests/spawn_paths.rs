@@ -69,9 +69,7 @@ async fn start_in_background(agent_tool: &AgentTool, ctx: ToolContext) {
     .await
     .expect("the background sub-agent is started");
     let task = session.task_infos().pop().expect("a registered task");
-    let task = session
-        .find_running_task(task["task_id"].as_str().unwrap())
-        .unwrap();
+    let task = session.find_running_task(&task.task_id).unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(10), task.wait_ended())
         .await
         .expect("the sub-agent finishes");

@@ -134,7 +134,12 @@ async fn a_rebuild_keeps_the_goal_armed_and_the_round_it_was_about_to_start() {
         .unwrap_or_else(|_| panic!("an idle session takes the change"));
     let (_, after) = slot_and_state(&pool, &sid).await;
     assert!(!Arc::ptr_eq(&before, &after), "the session was rebuilt");
-    assert_eq!(after.goal_view()["armed"], true, "{}", after.goal_view());
+    assert_eq!(
+        after.goal_view().map(|view| view.armed),
+        Some(true),
+        "{:?}",
+        after.goal_view()
+    );
     assert!(after.goal_claim_round(&round.turn_id));
 }
 
@@ -212,7 +217,7 @@ async fn two_callers_reviving_one_cold_session_build_one_engine() {
         "one build to create, one to revive"
     );
     let (_, state) = slot_and_state(&pool, &sid).await;
-    assert!(state.goal_view().is_null());
+    assert!(state.goal_view().is_none());
 }
 
 fn turn_complete(context: base::event::ContextUsage) -> AgentEvent {

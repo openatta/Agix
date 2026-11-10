@@ -129,11 +129,10 @@ impl SessionPool {
             .ok_or_else(|| PoolError::session_not_found(sid))?;
         let human = base::context::goal::TurnOrigin::Human;
         let current = || {
-            let view = state.goal_view();
-            (
-                view["id"].as_str().unwrap_or_default().to_string(),
-                view["revision"].as_u64().unwrap_or_default(),
-            )
+            state
+                .goal_view()
+                .map(|view| (view.goal.id, view.goal.revision))
+                .unwrap_or_default()
         };
         let invalid = |e: base::context::goal::GoalError| PoolError::InvalidRequest(e.to_string());
         let pausing = matches!(change, GoalChange::Pause);

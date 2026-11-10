@@ -235,16 +235,41 @@ fn between_turns(event: &AgentEvent) -> Value {
 }
 
 fn daemon_frames() -> Vec<(&'static str, Value)> {
-    let task = json!({"task_id": "a1", "kind": "agent", "status": "running",
-                      "started_ms": 1, "ended_ms": null, "detail": {}});
-    let task_event = |kind: &str| {
-        on_wire(&frame(
-            None,
-            SessionEvent::Task(json!({"kind": kind, "task": task})),
-        ))
+    let task = base::context::TaskInfo {
+        task_id: "a1".into(),
+        kind: base::context::TaskType::Agent,
+        status: base::context::TaskStatus::Running,
+        started_ms: 1,
+        ended_ms: None,
+        detail: json!({}),
+        error: None,
+        waiting_for: Vec::new(),
+        usage: None,
+        structured_output: None,
     };
-    let progress = json!({"kind": "task_progress", "task_id": "a1", "appended": "out",
-                          "skipped_bytes": 0, "from_byte": 0, "next_byte": 3});
+    let task_event = |event: fn(base::context::TaskInfo) -> base::context::TaskEvent| {
+        on_wire(&frame(None, SessionEvent::Task(event(task.clone()))))
+    };
+    let progress = base::context::TaskEvent::Progress {
+        task_id: "a1".into(),
+        appended: "out".into(),
+        skipped_bytes: 0,
+        from_byte: 0,
+        next_byte: 3,
+    };
+    let goal = base::context::goal::GoalView {
+        goal: base::context::goal::Goal {
+            id: "g1".into(),
+            revision: 1,
+            objective: "ship".into(),
+            phase: base::context::goal::GoalPhase::Active,
+            max_rounds: 256,
+            rounds_started: 0,
+            rounds_since_armed: 0,
+            blocked_reason: None,
+        },
+        armed: true,
+    };
     vec![
         (
             "engine_stopped",
@@ -254,25 +279,29 @@ fn daemon_frames() -> Vec<(&'static str, Value)> {
             "session_closed",
             on_wire(&frame(Some(TURN), SessionEvent::Closed)),
         ),
-        ("task_started", task_event("task_started")),
-        ("task_updated", task_event("task_updated")),
-        ("task_finished", task_event("task_finished")),
+        (
+            "task_started",
+            task_event(|task| base::context::TaskEvent::Started { task }),
+        ),
+        (
+            "task_updated",
+            task_event(|task| base::context::TaskEvent::Updated { task }),
+        ),
+        (
+            "task_finished",
+            task_event(|task| base::context::TaskEvent::Finished { task }),
+        ),
         (
             "task_progress",
             on_wire(&frame(None, SessionEvent::Task(progress))),
         ),
         (
             "goal_changed",
-            on_wire(&frame(
-                None,
-                SessionEvent::GoalChanged(
-                    json!({"id": "g1", "objective": "ship", "status": "active"}),
-                ),
-            )),
+            on_wire(&frame(None, SessionEvent::GoalChanged(Some(goal)))),
         ),
         (
             "goal_cleared",
-            on_wire(&frame(None, SessionEvent::GoalChanged(Value::Null))),
+            on_wire(&frame(None, SessionEvent::GoalChanged(None))),
         ),
         (
             "extension_entry",

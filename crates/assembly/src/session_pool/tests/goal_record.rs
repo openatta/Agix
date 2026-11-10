@@ -74,7 +74,10 @@ async fn session_with_a_goal(pool: &SessionPool) -> (String, Arc<base::context::
 fn blocks_on_its_round_limit(state: &base::context::SessionState) {
     state.goal_claim_round(&state.goal_next_round().expect("a round").turn_id);
     assert!(state.goal_next_round().is_none());
-    assert_eq!(state.goal_view()["phase"], "blocked");
+    assert_eq!(
+        state.goal_view().unwrap().goal.phase,
+        base::context::goal::GoalPhase::Blocked
+    );
 }
 
 #[tokio::test]
@@ -309,11 +312,11 @@ struct HoldsTheGoalWriteAfterTheTurn {
 impl HoldsTheGoalWriteAfterTheTurn {
     fn edit_the_goal(&self) {
         let state = self.state.get().expect("the session's state");
-        let view = state.goal_view();
+        let view = state.goal_view().unwrap();
         state
             .goal_update(
-                view["id"].as_str().unwrap(),
-                view["revision"].as_u64().unwrap(),
+                &view.goal.id,
+                view.goal.revision,
                 base::context::goal::GoalAction::Edit {
                     objective: Some("ship it, again".into()),
                     max_rounds: None,
@@ -416,8 +419,8 @@ async fn an_interrupt_while_an_answered_goal_round_records_the_goal_stops_the_ne
 
     assert!(interrupted, "the interrupt found no turn");
     assert_eq!(
-        state.goal_view()["armed"],
-        false,
+        state.goal_view().map(|view| view.armed),
+        Some(false),
         "the interrupt was answered true, yet the goal stays armed for the next round"
     );
     assert_eq!(

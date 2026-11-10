@@ -19,6 +19,9 @@ pub use self::session::*;
 pub use self::task::*;
 
 #[cfg(test)]
+mod wire_golden;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::error::EffectError;
@@ -90,10 +93,10 @@ mod tests {
         }
     }
 
-    fn task_events(
-        rx: &mut tokio::sync::broadcast::Receiver<serde_json::Value>,
-    ) -> Vec<serde_json::Value> {
-        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    fn task_events(rx: &mut tokio::sync::broadcast::Receiver<TaskEvent>) -> Vec<serde_json::Value> {
+        std::iter::from_fn(|| rx.try_recv().ok())
+            .map(|e| serde_json::to_value(e).unwrap())
+            .collect()
     }
 
     #[tokio::test]
@@ -109,7 +112,7 @@ mod tests {
         task.append_output("round 1\n");
         assert!(s.cancel_running_task("cd-1"));
         assert!(task.cancel.is_cancelled());
-        assert_eq!(task.info()["status"], "stopped");
+        assert_eq!(task.info().status, TaskStatus::Stopped);
         assert!(!s.cancel_running_task("cd-1"), "already stopped");
         let kinds: Vec<_> = task_events(&mut rx)
             .iter()
