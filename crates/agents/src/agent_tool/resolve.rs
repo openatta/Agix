@@ -32,20 +32,7 @@ impl AgentTool {
         tools: &Arc<InMemoryToolRegistry>,
         mode: base::interface::settings::PermissionMode,
     ) -> Arc<dyn Permission> {
-        let wired = self
-            .inner
-            .parent_permission
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_some();
-        if wired {
-            return self.permission_handler();
-        }
-        Arc::new(permissions::rule_set_permission::RuleSetPermission::new(
-            Arc::new(permissions::gate::PermissionGate::empty()),
-            tools.clone(),
-            mode.into(),
-        ))
+        self.inner.team_member_permission(tools, mode)
     }
 
     /// System prompt injected into the sub-agent's context for the given
@@ -136,6 +123,7 @@ impl AgentTool {
         Arc::new(registry)
     }
 
+    #[cfg(test)]
     pub(super) fn sub_settings(
         &self,
         model_name: Option<&str>,

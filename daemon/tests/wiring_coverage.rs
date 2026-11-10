@@ -22,11 +22,11 @@
 //! # A composition root that is not the daemon's
 //!
 //! The check above asks whether the *main* session gets a capability. It
-//! cannot see the other place sessions are built: `AgentTool` and its
-//! neighbours spawn sub-agents, team members and background tasks, each with a
-//! `Builder` of their own. A capability wired into the main session and not
-//! into those is invisible to the check and to everything else, so a delegate
-//! silently runs without it. The second test here is about that root.
+//! cannot see the other place sessions are built: `AgentTool` spawns
+//! sub-agents, team members and background tasks with a `Builder` of its own.
+//! A capability wired into the main session and not into that one is
+//! invisible to the check and to everything else, so a delegate silently runs
+//! without it. The second test here is about that root.
 
 use std::path::{Path, PathBuf};
 
@@ -139,51 +139,61 @@ fn wiring_shaped_functions_are_referenced_from_a_composition_root() {
     );
 }
 
-/// Every session a delegate gets is built through the one list of what a
-/// delegate inherits.
+/// Every session a delegate gets is built in one place, and that place takes
+/// the one list of what a delegate inherits.
 ///
-/// Source-text again, and the shape it looks for is deliberately crude: a
-/// `Builder::new()` in `agent_tool/` that is not followed by
-/// `inherited_by_a_delegate` within the same statement block. What it is
-/// really enforcing is that the list lives in one place — a spawn site that
-/// hand-copies three of the four things a delegate needs compiles, passes its
-/// own tests, and quietly drops the fourth.
+/// Source-text again, and deliberately crude: every `Builder::new()` in the
+/// `agents` crate outside its test directories is a spawn site. There must be
+/// exactly one, in `agent_tool/build.rs`, followed by
+/// `inherited_by_a_delegate` within the same statement block. A second spawn
+/// site that hand-copies three of the four things a delegate needs compiles,
+/// passes its own tests, and quietly drops the fourth.
 #[test]
 fn every_spawn_site_takes_the_whole_inheritance() {
     let root = repo_root();
-    let dir = root.join("crates/agents/src/agent_tool");
-    let mut missing = Vec::new();
-    for entry in std::fs::read_dir(&dir).expect("crates/agents/src/agent_tool should exist") {
-        let path = entry.unwrap().path();
-        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
-            continue;
-        }
-        let text = std::fs::read_to_string(&path).unwrap();
-        let lines: Vec<&str> = text.lines().collect();
-        for (i, line) in lines.iter().enumerate() {
-            if !line.contains("Builder::new()") {
+    let src = root.join("crates/agents/src");
+    let mut sites = Vec::new();
+    let mut stack = vec![src.clone()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("crates/agents/src should be readable") {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|n| n != "tests") {
+                    stack.push(path);
+                }
                 continue;
             }
-            // The call comes within a few lines of the chain it extends; a
-            // generous window keeps this from breaking on formatting.
-            let window = lines[i..(i + 40).min(lines.len())].join("\n");
-            if !window.contains("inherited_by_a_delegate") {
-                missing.push(format!(
-                    "{}:{}",
-                    path.file_name().unwrap().to_string_lossy(),
-                    i + 1
-                ));
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            let lines: Vec<&str> = text.lines().collect();
+            for (i, line) in lines.iter().enumerate() {
+                if !line.contains("Builder::new()") || line.contains("thread::Builder::new()") {
+                    continue;
+                }
+                // The call comes within a few lines of the chain it extends; a
+                // generous window keeps this from breaking on formatting.
+                let window = lines[i..(i + 40).min(lines.len())].join("\n");
+                let at = path.strip_prefix(&src).unwrap().display().to_string();
+                sites.push((at, i + 1, window.contains("inherited_by_a_delegate")));
             }
         }
     }
 
+    let places: Vec<String> = sites.iter().map(|(f, l, _)| format!("{f}:{l}")).collect();
     assert!(
-        missing.is_empty(),
-        "agent_tool/ builds a session at {missing:?} without taking \
-         `Inner::inherited_by_a_delegate`. Everything a delegated session \
-         inherits is on that one list precisely so a new spawn site cannot \
-         take some of it: add the call, and if this site genuinely must not \
-         inherit, say why where the builder is."
+        sites.len() == 1 && sites[0].0 == "agent_tool/build.rs",
+        "the agents crate builds a session at {places:?}; a delegated session is \
+         assembled in exactly one place, `Inner::build_delegate` in agent_tool/build.rs. \
+         Route the new spawn site through it, with what differs expressed in \
+         `DelegatePlan`."
+    );
+    assert!(
+        sites[0].2,
+        "agent_tool/build.rs builds a session at {places:?} without taking \
+         `Inner::inherited_by_a_delegate`. Everything a delegated session inherits \
+         is on that one list precisely so a spawn site cannot take some of it."
     );
 }
 

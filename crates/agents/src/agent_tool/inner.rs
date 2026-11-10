@@ -384,7 +384,7 @@ impl Inner {
     ///
     /// Deliberately not here: what a delegate decides for itself — its scene,
     /// its model, its tool set, its depth, its own settings. Those differ per
-    /// spawn site, which is why they stay at the call sites.
+    /// spawn site; `build_delegate` resolves them from its `DelegatePlan`.
     pub(super) fn inherited_by_a_delegate(&self, mut builder: Builder) -> Builder {
         // A policy that stops at the first delegation is not a policy.
         for plugin in &self.delegate_plugins {
@@ -567,9 +567,27 @@ impl Inner {
         Arc::new(AlwaysPermit)
     }
 
+    pub(super) fn team_member_permission(
+        &self,
+        tools: &Arc<InMemoryToolRegistry>,
+        mode: base::interface::settings::PermissionMode,
+    ) -> Arc<dyn Permission> {
+        let wired = self
+            .parent_permission
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some();
+        if wired {
+            return self.permission_handler();
+        }
+        Arc::new(permissions::rule_set_permission::RuleSetPermission::new(
+            Arc::new(permissions::gate::PermissionGate::empty()),
+            tools.clone(),
+            mode.into(),
+        ))
+    }
+
     /// Build a sub-agent's `Settings`, inheriting the parent's when known.
-    /// Shared by the `&self` (`run_sub`) and static (`run_sub_inner`,
-    /// background) paths so both apply exactly the same inheritance.
     pub(super) fn sub_settings(
         inner: &Inner,
         model_name: Option<&str>,

@@ -5,14 +5,10 @@ use super::*;
 
 impl AgentTool {
     /// Build the `Agent`/channels for a team member, without running any
-    /// turn yet — the persistent-member counterpart to `run_sub_inner`'s
-    /// preamble, split out because a persistent member's caller needs to
-    /// keep the built `Agent` alive across many turns rather than run one
-    /// and discard it. Deliberately skips the `skills:` preload text
-    /// injection `run_sub_inner` does for one-shot sub-agents — that only
-    /// makes sense prepended to a *first* message, and persistent members
-    /// don't have a clean single "first message" hook here (the very first
-    /// message goes through the same code path as every later one). The
+    /// turn yet: a persistent member's caller keeps the built `Agent` alive
+    /// across many turns. No `skills:` preload text — that only makes sense
+    /// prepended to a *first* message, and a persistent member's first
+    /// message goes through the same path as every later one. The
     /// `agent_type`'s `model`/`permission_mode`/`effort`/`max_turns`
     /// overrides still apply.
     /// `permission_mode` is the already-*resolved* grant this member runs
@@ -28,57 +24,34 @@ impl AgentTool {
         permission_mode: base::interface::settings::PermissionMode,
         seat: Option<base::interface::agent_spawner::TeamSeat>,
     ) -> Result<(Agent, EventReceiver, InputSender, SubagentPayload), base::error::ToolError> {
-        let child_depth = self
+        let depth = self
             .inner
             .spawn_guard()
             .map_err(base::error::ToolError::Denied)?;
-        let cwd_for_meta = cwd.clone();
-        let def = subagent_type.and_then(|t| self.inner.agent_type_def(t));
-        let model_override = def.as_ref().and_then(|d| d.model.clone());
-        let mut sub_settings = self.sub_settings(model_override.as_deref(), cwd);
-        if let Some(d) = &def {
-            apply_agent_type_overrides(&mut sub_settings, d);
-        }
-        sub_settings.permission_mode = permission_mode.min_permissive(sub_settings.permission_mode);
-        let scene = self.inner.scene_for_subagent(def.as_ref(), &sub_settings);
-        let scene_id = scene.id().to_string();
-        let perm = self.team_member_permission(&tools, sub_settings.permission_mode);
-        let settings = Arc::new(sub_settings);
-        let sid = base::id::Id::new().to_string();
-        let sid_for_meta = sid.clone();
-        let mut builder = Builder::new()
-            .session_id(sid)
-            .scene(scene)
-            .contributed_tool_filter(contributed_tool_filter(def.as_ref(), &SubRun::default()))
-            .model(self.inner.model_for_subagent())
-            .tools(tools)
-            .settings(settings.clone())
-            .agent_depth(child_depth)
-            .permission(perm);
-        if let Some(seat) = seat {
-            builder = builder.team_seat(seat);
-        }
-        // The session's plugins follow the delegate, the operator's policy
-        // scripts among them. Without this, spawning is a way around every
-        // rule they wrote, chosen by the model.
-        let history_store = self.inner.history_store();
-        builder = self.inner.inherited_by_a_delegate(builder);
-        let (agent, event_rx, input_tx) = builder
-            .build()
-            .map_err(|e| base::error::ToolError::Execution(anyhow!("build: {e}")))?;
-        if let Some(store) = history_store {
-            write_sidechain_meta(
-                &store,
-                &sid_for_meta,
-                self.inner.parent_session_id(),
-                &scene_id,
-                &cwd_for_meta,
-                &settings,
-            )
-            .await;
-        }
-        let payload = SubagentPayload::of(&sid_for_meta, &cwd_for_meta, &settings, subagent_type);
-        Ok((agent, event_rx, input_tx, payload))
+        let run = SubRun {
+            permission_mode: Some(permission_mode),
+            seat,
+            ..SubRun::default()
+        };
+        let delegate = self
+            .inner
+            .build_delegate(DelegatePlan {
+                tools,
+                cwd,
+                depth,
+                subagent_type,
+                grant: Grant::TeamMember,
+                parent: None,
+                records_lineage: false,
+                run: &run,
+            })
+            .await?;
+        Ok((
+            delegate.agent,
+            delegate.event_rx,
+            delegate.input_tx,
+            delegate.payload,
+        ))
     }
 
     /// Persistent-member counterpart to `run_sub`/`launch_bg`: routes

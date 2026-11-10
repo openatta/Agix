@@ -291,9 +291,7 @@ pub(super) fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
 
 /// After a one-shot sidechain's turn has finished — successfully, with an
 /// error, or because `cancel` fired — writes the matching `SessionEnd`
-/// terminal marker. The single place `run_sub_tagged` and `run_sub_inner`
-/// route through instead of each hand-rolling the same Completed/Failed
-/// mapping.
+/// terminal marker.
 ///
 /// A cancelled turn is deliberately left unmarked: cancellation means the
 /// work was interrupted, not that the conversation reached a real endpoint,

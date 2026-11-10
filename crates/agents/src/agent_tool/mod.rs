@@ -39,6 +39,7 @@ use tools::worktree::create_worktree;
 
 pub use base::agent_type::{parse_permission_mode, AgentTypeDefinition, AgentTypeSource};
 
+mod build;
 mod catalog;
 mod delegate;
 mod inner;
@@ -52,6 +53,7 @@ mod task;
 mod tests;
 mod turn;
 
+use build::*;
 pub use catalog::*;
 pub use inner::*;
 use permission::*;
