@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use base::error::ToolError;
+use base::interface::permission::{PermissionFacts, Reach, Subject};
 use base::interface::tool::{
     PathStyle, PermissionDecision, ProgressSender, Tool, ToolContext, ToolOrigin, ToolResult,
     ToolSpec,
@@ -62,6 +63,10 @@ impl Tool for StampTool {
 
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
         PermissionDecision::allow()
+    }
+
+    async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
+        PermissionFacts::new(Subject::None, Reach::SessionOnly)
     }
 
     async fn call(

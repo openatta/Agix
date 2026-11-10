@@ -7,6 +7,7 @@
 use async_trait::async_trait;
 use base::error::ToolError;
 use base::interface::agent_spawner::{AgentSpawner, SpawnMode, SpawnRequest};
+use base::interface::permission::{PermissionFacts, Reach, Subject};
 use base::interface::skill_catalog::SkillExpansion;
 use base::tool::{
     PathStyle, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolResultContent,
@@ -112,6 +113,10 @@ impl Tool for SkillTool {
 
     fn spec(&self) -> ToolSpec {
         ToolSpec::new()
+    }
+
+    async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
+        PermissionFacts::new(Subject::None, Reach::Delegates)
     }
 
     async fn guide(&self, _: &PromptContext) -> Option<String> {
@@ -1934,5 +1939,41 @@ mod tests {
             content,
             "<command-name>no-files</command-name>\n<command-args></command-args>\n\nJust a plain skill body."
         );
+    }
+
+    async fn facts_conclude_as_the_bridged_ones(
+        tool: &dyn base::tool::Tool,
+        input: serde_json::Value,
+    ) {
+        use base::interface::permission::{PermissionFacts, Reach};
+        let ctx = platform::tool_context_for_test(std::path::PathBuf::from("/tmp"));
+        let stated = tool.permission_facts(&input, &ctx).await;
+        let old = PermissionFacts::bridged(tool, &input, &ctx).await;
+        let contained = |reach: &Reach| {
+            matches!(
+                reach,
+                Reach::SessionOnly | Reach::Delegates | Reach::Operator | Reach::Inside
+            )
+        };
+        assert_eq!(stated.subject, old.subject, "{}", tool.name());
+        assert_eq!(stated.question, old.question, "{}", tool.name());
+        assert_eq!(stated.runs, old.runs, "{}", tool.name());
+        assert_eq!(
+            contained(&stated.reach),
+            contained(&old.reach),
+            "{}",
+            tool.name()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_skill_delegates_and_runs_as_before() {
+        let mgr = Arc::new(crate::manager::SkillManager::new());
+        let tool = SkillTool::new(mgr);
+        let input = serde_json::json!({ "skill": "anything" });
+        let ctx = platform::tool_context_for_test(std::env::temp_dir());
+        let facts = tool.permission_facts(&input, &ctx).await;
+        assert_eq!(facts.reach, base::interface::permission::Reach::Delegates);
+        facts_conclude_as_the_bridged_ones(&tool, input).await;
     }
 }

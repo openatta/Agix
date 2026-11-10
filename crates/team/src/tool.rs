@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use base::context::EngineConfig;
 use base::error::ToolError;
 use base::interface::model::Model;
+use base::interface::permission::{PermissionFacts, Reach, Subject};
 use base::tool::InMemoryToolRegistry;
 use base::tool::PromptContext;
 use base::tool::ToolContext;
@@ -183,6 +184,10 @@ impl base::tool::Tool for TeamCreateTool {
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
         PermissionDecision::allow()
     }
+
+    async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
+        PermissionFacts::new(Subject::None, Reach::SessionOnly)
+    }
     async fn call(
         &self,
         input: Value,
@@ -276,6 +281,10 @@ impl base::tool::Tool for TeamDeleteTool {
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
         PermissionDecision::allow()
     }
+
+    async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
+        PermissionFacts::new(Subject::None, Reach::SessionOnly)
+    }
     async fn call(
         &self,
         input: Value,
@@ -341,6 +350,10 @@ impl base::tool::Tool for TeamListTool {
     }
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
         PermissionDecision::allow()
+    }
+
+    async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
+        PermissionFacts::new(Subject::None, Reach::SessionOnly)
     }
     async fn call(
         &self,
@@ -535,5 +548,36 @@ mod tests {
         {
             panic!("NoopModel::stream should not be called by this test");
         }
+    }
+
+    async fn facts_conclude_as_the_bridged_ones(
+        tool: &dyn base::tool::Tool,
+        input: serde_json::Value,
+    ) {
+        use base::interface::permission::{PermissionFacts, Reach};
+        let ctx = platform::tool_context_for_test(std::path::PathBuf::from("/tmp"));
+        let stated = tool.permission_facts(&input, &ctx).await;
+        let old = PermissionFacts::bridged(tool, &input, &ctx).await;
+        let contained = |reach: &Reach| {
+            matches!(
+                reach,
+                Reach::SessionOnly | Reach::Delegates | Reach::Operator | Reach::Inside
+            )
+        };
+        assert_eq!(stated.subject, old.subject, "{}", tool.name());
+        assert_eq!(stated.question, old.question, "{}", tool.name());
+        assert_eq!(stated.runs, old.runs, "{}", tool.name());
+        assert_eq!(
+            contained(&stated.reach),
+            contained(&old.reach),
+            "{}",
+            tool.name()
+        );
+    }
+
+    #[tokio::test]
+    async fn team_list_touches_only_the_session() {
+        let tool = TeamListTool::new(Arc::new(TeamRegistry::new()));
+        facts_conclude_as_the_bridged_ones(&tool, serde_json::json!({})).await;
     }
 }

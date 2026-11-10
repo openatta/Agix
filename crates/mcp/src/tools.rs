@@ -9,6 +9,7 @@
 
 use crate::client::{McpClientHandle, McpContent};
 use async_trait::async_trait;
+use base::interface::permission::{PermissionFacts, Reach, Subject};
 use base::{
     error::ToolError, tool::PermissionDecision, tool::ProgressSender, tool::PromptContext,
     tool::Tool, tool::ToolContext, tool::ToolResult, tool::ToolSpec, tool::ValidationResult,
@@ -62,6 +63,10 @@ impl Tool for ListMcpResourcesTool {
     }
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
         PermissionDecision::allow()
+    }
+
+    async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
+        PermissionFacts::new(Subject::None, Reach::Operator)
     }
     async fn call(
         &self,
@@ -175,6 +180,10 @@ impl Tool for ReadMcpResourceTool {
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
         // MCP resource 是 server 暴露的；可能很大但本身是只读
         PermissionDecision::allow()
+    }
+
+    async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
+        PermissionFacts::new(Subject::None, Reach::Operator)
     }
     async fn call(
         &self,
@@ -316,6 +325,10 @@ impl Tool for DispatchMcpTool {
     }
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
         PermissionDecision::allow()
+    }
+
+    async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
+        PermissionFacts::new(Subject::None, Reach::Operator)
     }
     async fn call(
         &self,
@@ -546,6 +559,51 @@ mod tests {
                 assert!(s.contains("(no MCP tools available)"));
             }
             _ => panic!(),
+        }
+    }
+
+    async fn facts_conclude_as_the_bridged_ones(
+        tool: &dyn base::tool::Tool,
+        input: serde_json::Value,
+    ) {
+        use base::interface::permission::{PermissionFacts, Reach};
+        let ctx = platform::tool_context_for_test(std::path::PathBuf::from("/tmp"));
+        let stated = tool.permission_facts(&input, &ctx).await;
+        let old = PermissionFacts::bridged(tool, &input, &ctx).await;
+        let contained = |reach: &Reach| {
+            matches!(
+                reach,
+                Reach::SessionOnly | Reach::Delegates | Reach::Operator | Reach::Inside
+            )
+        };
+        assert_eq!(stated.subject, old.subject, "{}", tool.name());
+        assert_eq!(stated.question, old.question, "{}", tool.name());
+        assert_eq!(stated.runs, old.runs, "{}", tool.name());
+        assert_eq!(
+            contained(&stated.reach),
+            contained(&old.reach),
+            "{}",
+            tool.name()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_resource_and_introspection_tools_reach_only_what_the_operator_configured() {
+        for (tool, input) in [
+            (
+                Box::new(ListMcpResourcesTool::new(vec![])) as Box<dyn Tool>,
+                json!({}),
+            ),
+            (
+                Box::new(ReadMcpResourceTool::new(vec![])),
+                json!({ "uri": "file:///x" }),
+            ),
+            (Box::new(DispatchMcpTool::new(vec![])), json!({})),
+        ] {
+            let ctx = platform::tool_context_for_test(std::path::PathBuf::from("/tmp"));
+            let facts = tool.permission_facts(&input, &ctx).await;
+            assert_eq!(facts.reach, base::interface::permission::Reach::Operator);
+            facts_conclude_as_the_bridged_ones(tool.as_ref(), input).await;
         }
     }
 }

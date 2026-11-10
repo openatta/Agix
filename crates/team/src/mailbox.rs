@@ -14,6 +14,7 @@
 
 use async_trait::async_trait;
 use base::error::ToolError;
+use base::interface::permission::{PermissionFacts, Reach, Subject};
 use base::tool::{
     PathStyle, PermissionDecision, ProgressSender, PromptContext, ToolContext, ToolResult,
     ToolResultContent, ToolSpec, ValidationResult,
@@ -348,6 +349,10 @@ impl base::tool::Tool for SendMessageTool {
         PermissionDecision::allow()
     }
 
+    async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
+        PermissionFacts::new(Subject::None, Reach::SessionOnly)
+    }
+
     async fn call(
         &self,
         input: Value,
@@ -444,6 +449,10 @@ impl base::tool::Tool for ReadMailTool {
         PermissionDecision::allow()
     }
 
+    async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
+        PermissionFacts::new(Subject::None, Reach::SessionOnly)
+    }
+
     async fn call(
         &self,
         input: Value,
@@ -532,6 +541,10 @@ impl base::tool::Tool for ListPeersTool {
 
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
         PermissionDecision::allow()
+    }
+
+    async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
+        PermissionFacts::new(Subject::None, Reach::SessionOnly)
     }
 
     async fn call(
@@ -890,5 +903,46 @@ mod tests {
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0].content, "m2");
         assert_eq!(msgs[1].content, "m3");
+    }
+
+    async fn facts_conclude_as_the_bridged_ones(
+        tool: &dyn base::tool::Tool,
+        input: serde_json::Value,
+    ) {
+        use base::interface::permission::{PermissionFacts, Reach};
+        let ctx = platform::tool_context_for_test(std::path::PathBuf::from("/tmp"));
+        let stated = tool.permission_facts(&input, &ctx).await;
+        let old = PermissionFacts::bridged(tool, &input, &ctx).await;
+        let contained = |reach: &Reach| {
+            matches!(
+                reach,
+                Reach::SessionOnly | Reach::Delegates | Reach::Operator | Reach::Inside
+            )
+        };
+        assert_eq!(stated.subject, old.subject, "{}", tool.name());
+        assert_eq!(stated.question, old.question, "{}", tool.name());
+        assert_eq!(stated.runs, old.runs, "{}", tool.name());
+        assert_eq!(
+            contained(&stated.reach),
+            contained(&old.reach),
+            "{}",
+            tool.name()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_mailbox_tools_touch_only_the_session() {
+        let mb = Arc::new(MailboxStore::new(vec!["a".into(), "b".into()]));
+        facts_conclude_as_the_bridged_ones(
+            &SendMessageTool::new(mb.clone(), "a"),
+            serde_json::json!({ "to": "b", "message": "hi" }),
+        )
+        .await;
+        facts_conclude_as_the_bridged_ones(
+            &ReadMailTool::new(mb.clone(), "a"),
+            serde_json::json!({}),
+        )
+        .await;
+        facts_conclude_as_the_bridged_ones(&ListPeersTool::new(mb), serde_json::json!({})).await;
     }
 }

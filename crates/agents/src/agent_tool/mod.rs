@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use base::context::EngineConfig;
 use base::event::AgentEvent;
 use base::interface::model::Model;
-use base::interface::permission::PermissionSet;
+use base::interface::permission::{PermissionFacts, PermissionSet, Reach, Subject};
 use base::interface::scene::Scene;
 use base::paths::PromptFiles;
 use base::settings::{
@@ -515,6 +515,9 @@ impl base::tool::Tool for AgentTool {
             .callable_from_code(true)
             .code_result("the sub-agent's final text; an object when output_schema is given")
             .concurrency_safe(true)
+    }
+    async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
+        PermissionFacts::new(Subject::None, Reach::Delegates)
     }
     fn name(&self) -> &str {
         AGENT_TOOL_NAME

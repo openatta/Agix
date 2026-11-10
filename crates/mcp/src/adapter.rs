@@ -8,6 +8,7 @@ use crate::error::McpError;
 use crate::manager::ElicitationCallback;
 use crate::output_cache::McpOutputCache;
 use async_trait::async_trait;
+use base::interface::permission::{PermissionFacts, Reach, Subject};
 use base::{
     error::ToolError,
     tool::PermissionDecision,
@@ -192,6 +193,11 @@ impl Tool for McpToolAdapter {
             message: format!("Allow MCP tool {} ?", self.full_name),
             decision_reason: None,
         }
+    }
+
+    async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
+        PermissionFacts::new(Subject::None, Reach::Server)
+            .with_question(format!("Allow MCP tool {} ?", self.full_name))
     }
 
     async fn call(
@@ -695,5 +701,39 @@ mod tests {
         let adapter = McpToolAdapter::new(client, meta("x"));
         let d = adapter.check_permissions(&json!({}), &ctx()).await;
         assert!(matches!(d, PermissionDecision::Ask { .. }));
+    }
+
+    async fn facts_conclude_as_the_bridged_ones(
+        tool: &dyn base::tool::Tool,
+        input: serde_json::Value,
+    ) {
+        use base::interface::permission::{PermissionFacts, Reach};
+        let ctx = platform::tool_context_for_test(std::path::PathBuf::from("/tmp"));
+        let stated = tool.permission_facts(&input, &ctx).await;
+        let old = PermissionFacts::bridged(tool, &input, &ctx).await;
+        let contained = |reach: &Reach| {
+            matches!(
+                reach,
+                Reach::SessionOnly | Reach::Delegates | Reach::Operator | Reach::Inside
+            )
+        };
+        assert_eq!(stated.subject, old.subject, "{}", tool.name());
+        assert_eq!(stated.question, old.question, "{}", tool.name());
+        assert_eq!(stated.runs, old.runs, "{}", tool.name());
+        assert_eq!(
+            contained(&stated.reach),
+            contained(&old.reach),
+            "{}",
+            tool.name()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_mcp_tool_is_a_servers_and_asks_as_before() {
+        let client = Arc::new(MockMcpClient::new("github", vec![]));
+        let adapter = McpToolAdapter::new(client, meta("create_issue"));
+        let facts = adapter.permission_facts(&json!({}), &ctx()).await;
+        assert_eq!(facts.reach, base::interface::permission::Reach::Server);
+        facts_conclude_as_the_bridged_ones(&adapter, json!({})).await;
     }
 }

@@ -11,6 +11,7 @@
 
 use async_trait::async_trait;
 use base::error::ToolError;
+use base::interface::permission::{PermissionFacts, Reach, Subject};
 pub use base::memory::{scan_for_secrets, SecretPattern};
 use base::memory::{DurableMemory, MemoryError, MemoryStore, MemoryType};
 use base::tool::{
@@ -349,6 +350,10 @@ impl Tool for TeamMemorySaveTool {
         PermissionDecision::allow()
     }
 
+    async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
+        PermissionFacts::new(Subject::None, Reach::SessionOnly)
+    }
+
     // Writes only under the team's own directory, the way the mailbox
     // persists; plan-mode members must still be able to contribute.
 
@@ -437,6 +442,10 @@ impl Tool for TeamMemoryReadTool {
 
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
         PermissionDecision::allow()
+    }
+
+    async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
+        PermissionFacts::new(Subject::None, Reach::SessionOnly)
     }
 
     async fn call(
@@ -862,5 +871,43 @@ mod tests {
         .await;
         assert!(bad_name.is_error);
         assert!(store.load_team_memories().is_empty());
+    }
+
+    async fn facts_conclude_as_the_bridged_ones(
+        tool: &dyn base::tool::Tool,
+        input: serde_json::Value,
+    ) {
+        use base::interface::permission::{PermissionFacts, Reach};
+        let ctx = platform::tool_context_for_test(std::path::PathBuf::from("/tmp"));
+        let stated = tool.permission_facts(&input, &ctx).await;
+        let old = PermissionFacts::bridged(tool, &input, &ctx).await;
+        let contained = |reach: &Reach| {
+            matches!(
+                reach,
+                Reach::SessionOnly | Reach::Delegates | Reach::Operator | Reach::Inside
+            )
+        };
+        assert_eq!(stated.subject, old.subject, "{}", tool.name());
+        assert_eq!(stated.question, old.question, "{}", tool.name());
+        assert_eq!(stated.runs, old.runs, "{}", tool.name());
+        assert_eq!(
+            contained(&stated.reach),
+            contained(&old.reach),
+            "{}",
+            tool.name()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_team_memory_tools_touch_only_the_session() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(TeamMemoryStore::with_dir(tmp.path().join("memory")));
+        facts_conclude_as_the_bridged_ones(
+            &TeamMemorySaveTool::new(store.clone(), "t/a"),
+            serde_json::json!({}),
+        )
+        .await;
+        facts_conclude_as_the_bridged_ones(&TeamMemoryReadTool::new(store), serde_json::json!({}))
+            .await;
     }
 }

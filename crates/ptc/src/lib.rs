@@ -13,6 +13,7 @@ mod engine;
 use async_trait::async_trait;
 use base::context::{RunningStatus, RunningTask, SessionState, TaskType};
 use base::error::ToolError;
+use base::interface::permission::{PermissionFacts, Reach, Subject};
 use base::interface::tool_dispatch::{CallableTool, ToolDispatch};
 use base::tool::{
     PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolRegistry,
@@ -289,6 +290,10 @@ impl Tool for RunCodeTool {
     }
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
         PermissionDecision::allow()
+    }
+
+    async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
+        PermissionFacts::new(Subject::None, Reach::Delegates)
     }
     async fn call(
         &self,

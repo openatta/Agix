@@ -8,6 +8,7 @@ use std::io::Write;
 mod catalog;
 mod lifecycle;
 mod members;
+mod permission_facts;
 mod programs;
 mod resolve;
 mod run;
