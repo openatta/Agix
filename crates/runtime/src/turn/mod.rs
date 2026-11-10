@@ -19,6 +19,7 @@ mod user_turn;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use compact::AutoCompactBackoff;
 pub(crate) use process::hook_permission_mode;
 pub(crate) use tool_env::{engine_git_from, exec_providers_from};
 pub(crate) use tool_exec::resolve_permission_response;

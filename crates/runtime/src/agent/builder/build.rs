@@ -865,6 +865,7 @@ impl Builder {
                         ..Default::default()
                     }),
                     request_overhead_tokens: 0,
+                    auto_backoff: Default::default(),
                 },
                 token_budget: TokenBudget {
                     target: None,

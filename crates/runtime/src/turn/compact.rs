@@ -170,15 +170,33 @@ impl Agent {
             _ if self.session.token_count() > threshold => threshold,
             _ => return,
         };
+        let context_tokens = self.context_tokens();
+        if self.compaction.auto_backoff.holds(context_tokens) {
+            return;
+        }
         let target = room.saturating_sub(self.recovery_reserve());
-        let _ = self
+        match self
             .run_compaction(
                 target,
                 budget.compact_keep_recent,
                 CompactTrigger::Auto,
                 cancel,
             )
-            .await;
+            .await
+        {
+            Ok(_) | Err(NotCompacted::Cancelled) => {}
+            Err(e) => {
+                self.compaction
+                    .auto_backoff
+                    .missed(context_tokens, threshold);
+                tracing::warn!(
+                    misses = self.compaction.auto_backoff.misses(),
+                    context_tokens,
+                    threshold,
+                    "automatic compaction {e}; not tried again for a while"
+                );
+            }
+        }
     }
 
     /// One compaction, start to finish: the `PreCompact` hook, an LLM summary
@@ -325,6 +343,7 @@ impl Agent {
         self.report_compaction(&summary, result.projection.as_ref(), compact_start);
         // The warning can fire again once the budget fills up again.
         self.compaction.compact_warning_issued = false;
+        self.compaction.auto_backoff = AutoCompactBackoff::default();
 
         // Two pieces of context are injected once per session, as
         // `<system-reminder>` user messages, and are therefore ordinary
@@ -564,5 +583,41 @@ impl Agent {
                     "{refusal}; compacting the conversation to retry {why}"
                 ))
             })
+    }
+}
+
+/// Automatic compactions in a row that left the conversation as it was. Each
+/// one makes the next wait twice as many due checks as the last, up to
+/// [`MAX_WAIT`](Self::MAX_WAIT), unless the context grows by a tenth of the
+/// threshold first: more conversation may be something to drop.
+#[derive(Debug, Default)]
+pub(crate) struct AutoCompactBackoff {
+    misses: u32,
+    checks_left: u32,
+    resume_above: usize,
+}
+
+impl AutoCompactBackoff {
+    const FIRST_WAIT: u32 = 2;
+    const MAX_WAIT: u32 = 32;
+
+    pub(crate) fn misses(&self) -> u32 {
+        self.misses
+    }
+
+    /// Whether this due check is skipped.
+    pub(crate) fn holds(&mut self, context_tokens: usize) -> bool {
+        if self.checks_left == 0 || context_tokens > self.resume_above {
+            self.checks_left = 0;
+            return false;
+        }
+        self.checks_left -= 1;
+        true
+    }
+
+    pub(crate) fn missed(&mut self, context_tokens: usize, threshold: usize) {
+        self.misses = self.misses.saturating_add(1);
+        self.checks_left = (Self::FIRST_WAIT << (self.misses - 1).min(16)).min(Self::MAX_WAIT);
+        self.resume_above = context_tokens.saturating_add(threshold / 10);
     }
 }

@@ -197,6 +197,7 @@ pub(crate) struct Compaction {
     /// the message total by `context_tokens()`: without it the threshold check
     /// sees only message content and under-counts by a large constant.
     pub(crate) request_overhead_tokens: usize,
+    pub(crate) auto_backoff: crate::turn::AutoCompactBackoff,
 }
 
 /// An output token target, kept until it is met, given up on, or cleared —

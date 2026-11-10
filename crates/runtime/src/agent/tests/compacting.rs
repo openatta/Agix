@@ -333,3 +333,138 @@ async fn automatic_compaction_leaves_room_for_the_request_overhead() {
         agent.context_tokens()
     );
 }
+
+/// Answers every compaction with nothing dropped, or with an error, and
+/// counts how often it was asked.
+struct Unshrinkable {
+    asked: Arc<std::sync::atomic::AtomicUsize>,
+    fails: bool,
+}
+
+#[async_trait::async_trait]
+impl compaction::compact::Compactor for Unshrinkable {
+    async fn compact(
+        &self,
+        messages: Vec<base::interface::model::ModelMessage>,
+        _max_tokens: usize,
+        _keep_rounds: usize,
+    ) -> Result<
+        (
+            Vec<base::interface::model::ModelMessage>,
+            compaction::compact::CompactResult,
+        ),
+        compaction::compact::CompactError,
+    > {
+        self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.fails {
+            return Err(compaction::compact::CompactError::Internal(
+                "summarizer down".into(),
+            ));
+        }
+        let n = messages.len();
+        Ok((
+            messages,
+            compaction::compact::CompactResult {
+                strategy: compaction::compact::CompactStrategy::NoOp,
+                messages_before: n,
+                messages_after: n,
+                tokens_before: 0,
+                tokens_after: 0,
+                projection: None,
+            },
+        ))
+    }
+
+    fn wants_llm_summary(
+        &self,
+        _messages: &[base::interface::model::ModelMessage],
+        _max_tokens: usize,
+        _keep_rounds: usize,
+    ) -> bool {
+        false
+    }
+}
+
+fn over_the_threshold(fails: bool) -> (Agent, Arc<std::sync::atomic::AtomicUsize>) {
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (mut agent, _rx, _tx) = Builder::new()
+        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .model(Arc::new(DummyModel))
+        .compactor(Arc::new(Unshrinkable {
+            asked: asked.clone(),
+            fails,
+        }))
+        .settings(Arc::new({
+            let mut s = test_settings();
+            s.compaction.threshold_tokens = Some(6_000);
+            s.compaction.keep_recent = Some(50);
+            s.compaction.reactive = false;
+            s
+        }))
+        .skip_warmup(true)
+        .build()
+        .expect("build should succeed");
+    push_rounds(&mut agent, 40);
+    agent.compaction.request_overhead_tokens = 2_000;
+    assert!(agent.context_tokens() > 6_000);
+    (agent, asked)
+}
+
+fn push_rounds(agent: &mut Agent, rounds: usize) {
+    for i in 0..rounds {
+        agent.session.push_message(text_message(
+            base::interface::model::MessageRole::User,
+            &format!("question {i}: {}", "words ".repeat(50)),
+        ));
+        agent.session.push_message(text_message(
+            base::interface::model::MessageRole::Assistant,
+            &format!("answer {i}: {}", "words ".repeat(50)),
+        ));
+    }
+}
+
+async fn checks(agent: &mut Agent, n: usize) {
+    for _ in 0..n {
+        agent
+            .compact_if_needed(&tokio_util::sync::CancellationToken::new())
+            .await;
+    }
+}
+
+/// An automatic compaction that saves nothing is not retried at every
+/// step: each miss in a row doubles how many due checks go by first.
+#[tokio::test]
+async fn automatic_compaction_that_saves_nothing_backs_off() {
+    let (mut agent, asked) = over_the_threshold(false);
+    let asked = || asked.load(std::sync::atomic::Ordering::SeqCst);
+    checks(&mut agent, 1).await;
+    assert_eq!(asked(), 1);
+    checks(&mut agent, 2).await;
+    assert_eq!(asked(), 1, "held for two checks");
+    checks(&mut agent, 1).await;
+    assert_eq!(asked(), 2);
+    checks(&mut agent, 4).await;
+    assert_eq!(asked(), 2, "held for four checks");
+    checks(&mut agent, 1).await;
+    assert_eq!(asked(), 3);
+}
+
+/// A wait ends early once the context has grown well past where the last
+/// attempt left it.
+#[tokio::test]
+async fn a_backed_off_compaction_is_tried_again_once_the_context_grows() {
+    let (mut agent, asked) = over_the_threshold(false);
+    checks(&mut agent, 1).await;
+    push_rounds(&mut agent, 10);
+    checks(&mut agent, 1).await;
+    assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+/// A compactor that fails counts as a miss like one that saves nothing.
+#[tokio::test]
+async fn a_failed_automatic_compaction_backs_off_too() {
+    let (mut agent, asked) = over_the_threshold(true);
+    checks(&mut agent, 3).await;
+    assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(agent.compaction.auto_backoff.misses(), 1);
+}
