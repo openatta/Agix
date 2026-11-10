@@ -5,6 +5,7 @@
 mod accept_edits_reads;
 mod assemble_defaults;
 mod audit2_doc_findings;
+mod audit3_trust_boundaries;
 mod audit_security_findings;
 mod bash_read_only_lane;
 mod carrier_invariants;
