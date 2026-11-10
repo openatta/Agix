@@ -532,7 +532,7 @@ fn split_allowed_tool_entry(entry: &str) -> (&str, Option<&str>) {
 
 /// Whether a skill body holds a command its expansion would run.
 pub(crate) fn runs_commands(body: &str) -> bool {
-    body.contains("!`") || body.contains("```!")
+    base::frozen::skill::body_runs_commands(body)
 }
 
 const DISABLED_PLACEHOLDER: &str = "[shell command execution disabled by policy]";

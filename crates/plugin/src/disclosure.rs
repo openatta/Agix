@@ -1,9 +1,9 @@
 //! What a plugin will do, stated before it is trusted to do it.
 //!
 //! Sandboxes handle what a plugin *executes*. They do nothing about what it
-//! *says*: a tool description, an agent description and a scene's system
-//! prompt all reach the model verbatim, and text reaching the model is the
-//! one attack the isolation model cannot address. The only defence is a
+//! *says*: a tool description, an agent description, a scene's system
+//! prompt and a skill all reach the model verbatim, and text reaching the
+//! model is the one attack the isolation model cannot address. The only defence is a
 //! person reading it, so installation has to put it in front of them.
 
 use crate::manifest::{Plugin, PluginError};
@@ -37,6 +37,8 @@ pub struct Disclosure {
     pub capabilities: Vec<String>,
     /// Scene id this plugin registers, if any.
     pub scene: Option<String>,
+    /// Names of the skills it ships.
+    pub skills: Vec<String>,
     /// MCP servers it will start: declared name and kind, then the command
     /// line or URL it resolves to. Environment variables and headers are
     /// listed by name only, since their values are typically credentials.
@@ -120,7 +122,62 @@ impl Disclosure {
             d.push_text("scene system prompt", scene.prompt(), MAX_PROMPT_CHARS)?;
         }
 
+        for skill in crate::skills::declared_skills(plugin)? {
+            d.push_skill(&skill)?;
+        }
+
         Ok(d)
+    }
+
+    /// A skill's listing reaches the model every turn and its body whenever
+    /// it is invoked; a body that runs commands, or a skill that asks for
+    /// tools without confirmation, is a capability as well.
+    fn push_skill(&mut self, skill: &crate::skills::PackageSkill) -> Result<(), PluginError> {
+        let entry = &skill.entry;
+        let name = &entry.name;
+        self.skills.push(name.clone());
+        self.push_text(
+            &format!("skill `{name}` description"),
+            &entry.description,
+            MAX_DESCRIPTION_CHARS,
+        )?;
+        if let Some(when) = &entry.when_to_use {
+            self.push_text(
+                &format!("skill `{name}` when_to_use"),
+                when,
+                MAX_DESCRIPTION_CHARS,
+            )?;
+        }
+        self.push_text(
+            &format!("skill `{name}` body"),
+            &skill.body,
+            MAX_PROMPT_CHARS,
+        )?;
+        for (file, text) in &skill.files {
+            self.push_text(
+                &format!("skill `{name}` file `{file}`"),
+                text,
+                MAX_PROMPT_CHARS,
+            )?;
+        }
+        if base::frozen::skill::body_runs_commands(&skill.body) {
+            self.capabilities.push(format!(
+                "skill `{name}` runs shell commands when it is expanded, each held to the \
+                 session's permission rules"
+            ));
+        }
+        if let Some(tools) = entry.allowed_tools.as_ref().filter(|t| !t.is_empty()) {
+            self.capabilities.push(format!(
+                "skill `{name}` lets {} run without confirmation while it is active (a bare \
+                 tool name is not honored from a package)",
+                tools
+                    .iter()
+                    .map(|t| format!("`{t}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        Ok(())
     }
 
     /// Does this plugin reach anything outside itself, or shape what the
@@ -340,6 +397,98 @@ prompt = "agent.md"
             "\n[[agent]]\nname = \"a\"\ndescription = \"d\"\nprompt = \"agent.md\"\n",
         );
         assert!(Disclosure::from_plugin(&p).is_err());
+    }
+
+    fn write(root: &Path, path: &str, body: &str) {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    }
+
+    /// A skill's description is in front of the model every turn and its body
+    /// whenever it runs, so both are what an installer has to show.
+    #[test]
+    fn a_skill_is_disclosed_with_its_description_and_body() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "skills/tour/SKILL.md",
+            "---\ndescription: Walk through it\nwhen_to_use: When asked for a tour\n\
+             allowed-tools: [\"Bash(ls:*)\"]\n---\nRun !`ls` and show the tools.\n",
+        );
+        let p = load(dir.path(), "\n[skills]\ndir = \"skills\"\n");
+        let d = Disclosure::from_plugin(&p).unwrap();
+        assert!(
+            !d.is_inert(),
+            "a package that shapes what the model is told"
+        );
+        assert_eq!(d.skills, ["tour"]);
+        let text = |origin: &str| {
+            d.model_visible
+                .iter()
+                .find(|v| v.origin == origin)
+                .map(|v| v.text.as_str())
+        };
+        assert_eq!(text("skill `tour` description"), Some("Walk through it"));
+        assert_eq!(
+            text("skill `tour` when_to_use"),
+            Some("When asked for a tour")
+        );
+        assert_eq!(
+            text("skill `tour` body"),
+            Some("Run !`ls` and show the tools.\n")
+        );
+        assert!(
+            d.capabilities.iter().any(|c| c.contains("shell commands")),
+            "{:?}",
+            d.capabilities
+        );
+        assert!(
+            d.capabilities.iter().any(|c| c.contains("`Bash(ls:*)`")),
+            "{:?}",
+            d.capabilities
+        );
+    }
+
+    #[test]
+    fn a_skill_over_the_limits_refuses_the_install() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = load(dir.path(), "\n[skills]\ndir = \"skills\"\n");
+        let long = "x".repeat(MAX_DESCRIPTION_CHARS + 1);
+        write(
+            dir.path(),
+            "skills/tour/SKILL.md",
+            &format!("---\ndescription: {long}\n---\nbody\n"),
+        );
+        let err = Disclosure::from_plugin(&p).unwrap_err().to_string();
+        assert!(
+            err.contains("skill `tour` description") && err.contains("over the"),
+            "{err}"
+        );
+
+        write(
+            dir.path(),
+            "skills/tour/SKILL.md",
+            &format!(
+                "---\ndescription: d\n---\n{}\n",
+                "x".repeat(MAX_PROMPT_CHARS)
+            ),
+        );
+        let err = Disclosure::from_plugin(&p).unwrap_err().to_string();
+        assert!(err.contains("skill `tour` body"), "{err}");
+
+        write(
+            dir.path(),
+            "skills/tour/SKILL.md",
+            "---\ndescription: d\nfiles: [ref.md]\n---\nbody\n",
+        );
+        write(
+            dir.path(),
+            "skills/tour/ref.md",
+            &"x".repeat(MAX_PROMPT_CHARS + 1),
+        );
+        let err = Disclosure::from_plugin(&p).unwrap_err().to_string();
+        assert!(err.contains("skill `tour` file `ref.md`"), "{err}");
     }
 
     /// The name a package gives a server says nothing about what it runs;

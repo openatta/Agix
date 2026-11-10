@@ -157,6 +157,10 @@ pub struct SkillManager {
     /// lives in its source rather than on disk can still be expanded — see
     /// `get_skill_content`.
     providers: RwLock<Vec<std::sync::Arc<dyn SkillProvider>>>,
+    /// Which of `providers` put each name in the catalog. Only that one is
+    /// asked for the body: another source with a skill of the same name
+    /// would otherwise answer for the one that won it.
+    owners: RwLock<HashMap<String, usize>>,
 }
 
 impl SkillManager {
@@ -169,6 +173,7 @@ impl SkillManager {
             invocation_stats: RwLock::new(HashMap::new()),
             invocation_seq: std::sync::atomic::AtomicU64::new(0),
             providers: RwLock::new(Vec::new()),
+            owners: RwLock::new(HashMap::new()),
         }
     }
 
@@ -226,27 +231,34 @@ impl SkillManager {
         let entries = provider.skills();
         let overrides = provider.precedence() == SkillPrecedence::Override;
         let mut count = 0;
+        let mut providers = self
+            .providers
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        let index = providers.len();
         {
             let mut skills = self.skills.write().unwrap_or_else(PoisonError::into_inner);
+            let mut owners = self.owners.write().unwrap_or_else(PoisonError::into_inner);
             for entry in entries {
                 let name = entry.name.clone();
-                match skills.entry(name) {
+                let claimed = match skills.entry(name.clone()) {
                     std::collections::hash_map::Entry::Vacant(e) => {
                         e.insert(SkillInfo::from(entry));
-                        count += 1;
+                        true
                     }
                     std::collections::hash_map::Entry::Occupied(mut e) if overrides => {
                         e.insert(SkillInfo::from(entry));
-                        count += 1;
+                        true
                     }
-                    std::collections::hash_map::Entry::Occupied(_) => {}
+                    std::collections::hash_map::Entry::Occupied(_) => false,
+                };
+                if claimed {
+                    owners.insert(name, index);
+                    count += 1;
                 }
             }
         }
-        self.providers
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(provider);
+        providers.push(provider);
         count
     }
 
@@ -322,8 +334,11 @@ impl SkillManager {
             skills,
             tiers,
             providers,
+            owners,
             ..
         } = fresh;
+        *self.owners.write().unwrap_or_else(PoisonError::into_inner) =
+            owners.into_inner().unwrap_or_else(PoisonError::into_inner);
         *self.skills.write().unwrap_or_else(PoisonError::into_inner) =
             skills.into_inner().unwrap_or_else(PoisonError::into_inner);
         *self.tiers.write().unwrap_or_else(PoisonError::into_inner) =
@@ -448,18 +463,20 @@ impl SkillManager {
         if path_str.starts_with("(bundled:") {
             return crate::bundled::bundled_body(name).map(|s| s.to_string());
         }
-        // Newest source first: a source registered later is the one whose
-        // entry is in the catalog if two of them claimed the same name.
-        for provider in self
-            .providers
+        let owner = self
+            .owners
             .read()
             .unwrap_or_else(PoisonError::into_inner)
-            .iter()
-            .rev()
-        {
-            if let Some(body) = provider.body(name) {
-                return Some(body);
-            }
+            .get(name)
+            .copied();
+        if let Some(body) = owner.and_then(|index| {
+            self.providers
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(index)
+                .and_then(|provider| provider.body(name))
+        }) {
+            return Some(body);
         }
         let content = std::fs::read_to_string(&info.path).ok()?;
         Some(
@@ -626,7 +643,14 @@ impl SkillManager {
         if !path.exists() {
             let target = canonicalize_lossy(path);
             let mut skills = self.skills.write().unwrap_or_else(PoisonError::into_inner);
-            skills.retain(|_, info| canonicalize_lossy(&info.path) != target);
+            let mut owners = self.owners.write().unwrap_or_else(PoisonError::into_inner);
+            skills.retain(|name, info| {
+                let keep = canonicalize_lossy(&info.path) != target;
+                if !keep {
+                    owners.remove(name);
+                }
+                keep
+            });
             return Ok(());
         }
 
@@ -658,6 +682,10 @@ impl SkillManager {
             .ok_or_else(|| format!("Failed to parse skill file: {}", path.display()))?;
 
         let mut skills = self.skills.write().unwrap_or_else(PoisonError::into_inner);
+        self.owners
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&name);
         skills.insert(name, SkillInfo::from(entry));
         Ok(())
     }

@@ -18,6 +18,7 @@ mod managed_settings;
 mod mcp_oauth;
 mod mcp_policy;
 mod one_assembly;
+mod plugin_skills;
 mod plugin_tools_in_scene;
 mod project_trust;
 mod protocol_doc_examples;

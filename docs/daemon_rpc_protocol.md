@@ -2263,7 +2263,13 @@ settings.local.json)里声明过,否则 `INVALID_PARAMS` —— 用来换令牌�
 { "plugins": [ ] }
 // 元素:{ "name":"…", "version":"…", "description":"…", "enabled": true,
 //        "root": "/…/plugins/cache/<name>/<version>",
-//        "script_faults": [] }
+//        "script_faults": [],
+//        "skills": [ "tour" ],
+//        "skill_conflicts": [ ] }
+// skill_conflicts 元素:
+//   { "skill": "tour", "shadowed_by": "user|project|plugin",
+//     "path": "/…/skills/tour/SKILL.md",
+//     "plugin": "…" }                       // 只在 shadowed_by 为 plugin 时有
 ```
 
 列出磁盘上的全部插件及启用状态,包括已停用的。
@@ -2274,6 +2280,11 @@ settings.local.json)里声明过,否则 `INVALID_PARAMS` —— 用来换令牌�
 
 `script_faults` 是这个包的 `[[script]]` 绑定里没能兑现的那些,每条带原因。来自包的绑定
 是逐条降级的,所以这里非空不代表包没装上,只代表少了那几条贡献。
+
+`skills` 是包的 `[skills]` 段带来的 skill 名。包里的 skill 用裸名、优先级最低(只压过内建):
+磁盘上的同名 skill、或按包名排在前面的另一个包的同名 skill 占着这个名字时,它被遮住,
+`skill_conflicts` 各记一条——`shadowed_by` 是占着名字的那份的来源,`path` 是它的
+`SKILL.md`,另一个包时 `plugin` 给出包名。按这个 daemon 自己的项目和场景算;停用的包没有冲突。
 
 #### `plugin.install`
 
@@ -2309,8 +2320,10 @@ settings.local.json)里声明过,否则 `INVALID_PARAMS` —— 用来换令牌�
 `enabled` 是装完之后这个包按启用状态解析出的结果:`plugins.enable_on_install` 缺省 `true`,
 装完即启用;设为 `false` 时,新装的包(这一层没有它的启用记录)装完保持禁用,宿主读过
 披露后要显式调 `plugin.enable`,包才会往会话里贡献东西。已经有启用记录的名字(包括升级
-同名包)保持原状。`disclosure` 是这个插件会往模型上下文里塞的文本和它要起的 MCP 服务器
-(命令行或地址),让调用方在依赖它之前先看见;字段见 `plugin_packages.md`。
+同名包)保持原状。`disclosure` 是这个插件会往模型上下文里塞的文本(含它带的 skill 的
+描述与正文)、它带的 skill 名(`skills`)和它要起的 MCP 服务器(命令行或地址),让调用方
+在依赖它之前先看见;字段见 `plugin_packages.md`。包里有一个 `SKILL.md` 校验不过,同样在
+改名之前被拒,报 `INVALID_PARAMS`,消息里写明是哪个 skill、哪一项。
 
 #### `plugin.uninstall`
 
@@ -2345,7 +2358,8 @@ settings.local.json)里声明过,否则 `INVALID_PARAMS` —— 用来换令牌�
 
 **什么时候生效**:装/卸/启用/停用/重扫**只影响之后新建的会话**。插件贡献的工具是在
 会话创建时注入工具表的,已经在跑的会话保持原样。受影响的场景与斜杠命令会立即刷新,
-所以 `scene.list` / `commands.list` 在调用返回之后就是新的。
+所以 `scene.list` / `commands.list` 在调用返回之后就是新的。包带的 skill 例外:技能目录是
+就地换掉的,已经在跑的会话在下一轮开始时就看到包的 skill 出现或消失(发 `skills_changed`)。
 
 > 插件子系统可以在编译期整个裁掉(daemon 的 `plugin-packages` feature,默认开启)。
 > 裁掉或被策略关掉的构建里,上面五个方法一律返回 `PLUGINS_DISABLED (-32016)` ——

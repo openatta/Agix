@@ -169,7 +169,7 @@ struct ProjectBinding {
 impl ProjectBinding {
     fn build(
         settings: Arc<Settings>,
-        plugin_agent_types: &[base::agent_type::AgentTypeDefinition],
+        plugins: &crate::plugins::Contributions,
         watch: Vec<crate::watch_hub::WatchToken>,
         client: &Arc<dyn AnthropicClient>,
         last_good_router: Option<Arc<base::provider::TaskRouter>>,
@@ -183,7 +183,7 @@ impl ProjectBinding {
             Some(router) => router.model_for("main"),
             None => Arc::new(AnthropicModel::new(client.clone())),
         };
-        let modules = crate::modules::ProjectModules::build(&settings, plugin_agent_types);
+        let modules = crate::modules::ProjectModules::build(&settings, plugins);
         let commands = modules.commands();
         Self {
             settings,
@@ -269,10 +269,14 @@ impl ProjectBinding {
         self.modules.reload_skills(&self.settings);
     }
 
-    /// Re-merge what the plugin set now contributes. Skill directories are
-    /// not re-scanned: the catalog every session on the pair shares is
-    /// live-reloaded, and `commands` is a view onto that same catalog.
-    fn refresh_plugins(&self, plugin_agent_types: &[base::agent_type::AgentTypeDefinition]) {
+    /// Re-merge what the plugin set now contributes, in place: every session
+    /// on the pair shares these catalogs, and `commands` is a view onto the
+    /// skill one.
+    fn refresh_plugins(&self, plugins: &crate::plugins::Contributions) {
+        self.modules.refresh_plugins(&self.settings, plugins);
+    }
+
+    fn refresh_agent_types(&self, plugin_agent_types: &[base::agent_type::AgentTypeDefinition]) {
         self.modules
             .refresh_agent_types(&self.settings, plugin_agent_types);
     }

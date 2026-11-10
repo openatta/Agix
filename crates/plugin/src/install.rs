@@ -593,6 +593,35 @@ mod tests {
         assert!(walkdir_files(&tmp.path().join("cache").join("demo")).is_empty());
     }
 
+    #[tokio::test]
+    async fn one_skill_with_bad_frontmatter_keeps_the_whole_package_out() {
+        let tmp = TempDir::new().unwrap();
+        let cache = PluginCache::new(tmp.path().join("cache"));
+        let manifest = format!("{DEMO_MANIFEST}\n[skills]\ndir = \"skills\"\n");
+        let archive = zip_bytes(&[
+            ("plugin.toml", manifest.as_str()),
+            (
+                "skills/good/SKILL.md",
+                "---\ndescription: fine\n---\nbody\n",
+            ),
+            (
+                "skills/bad/SKILL.md",
+                "---\ndescription: d\nuser_invocable: sometimes\n---\nbody\n",
+            ),
+        ]);
+        let source = file_source(tmp.path(), &archive, None);
+        let err = install(&cache, "demo", &source)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("skill `bad`") && err.contains("`user_invocable`"),
+            "{err}"
+        );
+        assert!(!cache.version_dir("demo", "1.0.0").exists());
+        assert!(walkdir_files(&tmp.path().join("cache").join("demo")).is_empty());
+    }
+
     fn walkdir_files(dir: &Path) -> Vec<PathBuf> {
         let mut out = Vec::new();
         if let Ok(entries) = std::fs::read_dir(dir) {

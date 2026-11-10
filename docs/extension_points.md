@@ -690,10 +690,27 @@ store 由造它的人自己配:`MemoryStore::new(user, local).with_environment(e
 ### skill 从哪来 — `skill.source`
 
 `base::interface::skill_provider::SkillProvider`,由 `skills::SkillsModule` 装进会话;
-引擎经 `base::interface::skill_catalog::SkillCatalog` 读 skill,不直接依赖 skills。自带三个实现,覆盖 skill 一直
-以来的三个来源:`skills::sources::SkillDirectory`(一层目录)、`BundledSkills`
-(编进二进制的内建)和 `McpSkills`(一台连上的 server 的工具)。第四个是加进去,
-不是替掉:
+引擎经 `base::interface::skill_catalog::SkillCatalog` 读 skill,不直接依赖 skills。自带四个实现,
+一个来源一个:`skills::sources::SkillDirectory`(一层目录)、`BundledSkills`
+(编进二进制的内建)、`PluginSkills`(一个插件包的 `[skills]`,见 `plugin_packages.md`)和
+`McpSkills`(一台连上的 server 的工具)。
+
+同名时谁赢由两件事决定:加载的先后,和 source 的 `SkillPrecedence`——`Override` 替掉已有的,
+`Fallback` 只填没人占的名字。daemon 的技能目录按这个顺序加载:
+
+| 顺序 | source | 来源(`SkillSource`) | 优先级 |
+|---|---|---|---|
+| 1 | 全局层 `~/.agix/skills/` | `user` | `Override` |
+| 2 | 场景层 `~/.agix/scenes/<scope>/skills/` | `user` | `Override` |
+| 3 | 项目层 `<项目>/.agents/skills/` | `project` | `Override` |
+| 4 | 每个启用的插件包,按包名排序 | `plugin` | `Fallback` |
+| 5 | 内建 | `user` | `Fallback` |
+
+结果是:磁盘三层里后面的压过前面的,磁盘压过包,包压过内建,两个包之间先到的赢。一个名字
+只属于一个 source,展开时也只问这个 source 要正文。被磁盘或别的包遮住的包 skill,`plugin.list`
+在那个包的 `skill_conflicts` 里报出来。
+
+宿主自己的 source 是加进去,不是替掉:
 
 ```rust
 Builder::new().module(Arc::new(

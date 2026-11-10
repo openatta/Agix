@@ -53,9 +53,20 @@ impl SessionPool {
 
     /// Every installed plugin with its current enable state — for the
     /// `plugin.list` RPC. Includes disabled ones, since a management UI needs
-    /// to show and re-enable them.
+    /// to show and re-enable them. Which of a package's skills are shadowed
+    /// is answered for the daemon's own project and scene, like the rest of
+    /// `plugin.*`.
     pub async fn list_plugins(&self) -> Vec<serde_json::Value> {
-        self.plugins.list()
+        let mut listed = self.plugins.list();
+        let mut conflicts = self.default_binding().await.modules.skill_conflicts();
+        for entry in &mut listed {
+            let found = entry["name"]
+                .as_str()
+                .and_then(|name| conflicts.remove(name))
+                .unwrap_or_default();
+            entry["skill_conflicts"] = serde_json::Value::from(found);
+        }
+        listed
     }
 
     /// Install a plugin from an explicit source. `scope` picks which tier's
@@ -122,16 +133,16 @@ impl SessionPool {
         Ok(out)
     }
 
-    /// Re-merge whatever the plugin set now contributes into the pool-wide
-    /// catalogs. The subsystem has already re-read itself by this point; what
-    /// is left is the state this pool derives from it. Skill directories are
-    /// deliberately not re-scanned: `self.skill_catalog` is the one
-    /// persistent, live-reloaded manager every session shares.
+    /// Re-merge whatever the plugin set now contributes into the catalogs of
+    /// every binding. The subsystem has already re-read itself by this point;
+    /// what is left is the state this pool derives from it. The catalogs are
+    /// swapped in place, so a running session's next turn sees a package's
+    /// skills come or go.
     pub(super) async fn refresh_after_plugin_change(&self) {
         self.adopt_plugin_scenes().await;
-        let plugin_agent_types = self.plugins.agent_types();
+        let contributions = self.plugins.contributions();
         for binding in self.bindings.lock().await.values() {
-            binding.refresh_plugins(&plugin_agent_types);
+            binding.refresh_plugins(&contributions);
         }
     }
 }

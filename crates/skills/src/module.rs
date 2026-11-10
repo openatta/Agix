@@ -106,14 +106,25 @@ impl Module for SkillsModule {
 /// fine for one manager, and a `notify` backend has a per-process ceiling
 /// that a host building one of these per project will reach.
 pub fn build_default_skill_manager(settings: &Settings) -> SkillManager {
-    build_skill_manager(settings, true)
+    build_skill_manager(settings, &[], true)
 }
 
 /// [`build_default_skill_manager`] without the watcher — the same catalog,
 /// reloaded by whoever is already watching rather than by a `notify` thread
 /// of its own.
 pub fn build_skill_manager_unwatched(settings: &Settings) -> SkillManager {
-    build_skill_manager(settings, false)
+    build_skill_manager(settings, &[], false)
+}
+
+/// [`build_skill_manager_unwatched`] with what installed plugin packages ship,
+/// between the tiers and the built-ins: a skill on disk wins over a package's
+/// of the same name, and a package's over a built-in, the order agent types
+/// are merged in.
+pub fn build_skill_manager_with_plugins(
+    settings: &Settings,
+    plugins: &[Arc<dyn SkillProvider>],
+) -> SkillManager {
+    build_skill_manager(settings, plugins, false)
 }
 
 /// The project's own skills whose body runs a command (`` !`cmd` `` or a
@@ -147,7 +158,11 @@ pub fn project_skills_requiring_trust(settings: &Settings) -> Vec<String> {
     out
 }
 
-fn build_skill_manager(settings: &Settings, watch: bool) -> SkillManager {
+fn build_skill_manager(
+    settings: &Settings,
+    plugins: &[Arc<dyn SkillProvider>],
+    watch: bool,
+) -> SkillManager {
     use crate::manager::SkillSource;
     use crate::sources::BundledSkills;
 
@@ -168,6 +183,9 @@ fn build_skill_manager(settings: &Settings, watch: bool) -> SkillManager {
         .iter()
         .map(|(dir, source)| skill_mgr.load_dir_subdirs(dir, *source).unwrap_or(0))
         .sum();
+    for provider in plugins {
+        skill_mgr.load_from(provider.clone());
+    }
     // Built-ins come last and defer: a project that writes its own skill of
     // the same name means to replace the one in the binary.
     skill_mgr.load_from(Arc::new(BundledSkills));
@@ -217,6 +235,67 @@ mod tests {
         assert_eq!(
             project_skills_requiring_trust(&settings),
             ["skills/grants", "skills/runs"]
+        );
+    }
+
+    fn packaged(plugin: &str, name: &str, body: &str) -> Arc<dyn SkillProvider> {
+        let entry = base::frozen::skill::SkillEntry {
+            name: name.into(),
+            description: format!("{plugin}'s {name}"),
+            path: std::path::PathBuf::from(format!("/cache/{plugin}/skills/{name}/SKILL.md")),
+            ..Default::default()
+        };
+        Arc::new(crate::sources::PluginSkills::new(
+            plugin,
+            vec![(entry, body.to_string())],
+        ))
+    }
+
+    /// Disk over package over built-in, and of two packages the first:
+    /// a name ends up with exactly one source, and expanding it gives that
+    /// source's text, not the text of a source it beat.
+    #[test]
+    fn a_disk_skill_wins_over_a_packaged_one_which_wins_over_a_built_in() {
+        use crate::manager::SkillSource;
+        let home = tempfile::tempdir().unwrap();
+        let mut settings = Settings::defaults_for("m");
+        settings.paths.global_data_dir = home.path().join("global");
+        settings.paths.user_data_dir = home.path().join("scene");
+        settings.paths.local_data_dir = home.path().join("project/.agix");
+        let disk = settings.paths.global_data_dir.join("skills/tour");
+        std::fs::create_dir_all(&disk).unwrap();
+        std::fs::write(
+            disk.join("SKILL.md"),
+            "---\ndescription: the user's tour\n---\nDISK BODY\n",
+        )
+        .unwrap();
+
+        let catalog = build_skill_manager_with_plugins(
+            &settings,
+            &[
+                packaged("alpha", "tour", "ALPHA TOUR"),
+                packaged("alpha", "guide", "ALPHA GUIDE"),
+                packaged("beta", "guide", "BETA GUIDE"),
+                packaged("beta", "simplify", "BETA SIMPLIFY"),
+            ],
+        );
+
+        let tour = catalog.get("tour").unwrap();
+        assert_eq!(tour.source, SkillSource::User);
+        assert_eq!(
+            catalog.get_skill_content("tour").unwrap().trim(),
+            "DISK BODY"
+        );
+
+        let guide = catalog.get("guide").unwrap();
+        assert_eq!(guide.source, SkillSource::Plugin);
+        assert_eq!(guide.description, "alpha's guide");
+        assert_eq!(catalog.get_skill_content("guide").unwrap(), "ALPHA GUIDE");
+
+        assert_eq!(catalog.get("simplify").unwrap().source, SkillSource::Plugin);
+        assert_eq!(
+            catalog.get_skill_content("simplify").unwrap(),
+            "BETA SIMPLIFY"
         );
     }
 }

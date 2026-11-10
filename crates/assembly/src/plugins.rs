@@ -3,10 +3,10 @@
 //!
 //! Reading a package — manifest, fetch, checksum, unpack, cache, disclose,
 //! enable — is the `plugin-packages` feature. A package runs nothing of its
-//! own: its MCP servers, script bindings, scene directory and agent types are
-//! honored by the parts of the engine that already exist. Without the feature
-//! the same API answers that there are no plugins, so the rest of the daemon
-//! needs no conditional compilation of its own.
+//! own: its MCP servers, script bindings, scene directory, agent types and
+//! skills are honored by the parts of the engine that already exist. Without
+//! the feature the same API answers that there are no plugins, so the rest of
+//! the daemon needs no conditional compilation of its own.
 
 use crate::config::DaemonPaths;
 use std::collections::HashMap;
@@ -50,10 +50,25 @@ pub struct PackageScripts {
     pub bindings: Vec<base::interface::settings::ScriptBinding>,
 }
 
+/// One active package's skills, each with the body it expands to.
+#[derive(Clone)]
+pub struct PackageSkills {
+    pub plugin: String,
+    pub skills: Vec<(base::frozen::skill::SkillEntry, String)>,
+}
+
+/// What the active packages add to a project's catalogs.
+#[derive(Clone, Default)]
+pub struct Contributions {
+    pub agent_types: Vec<base::agent_type::AgentTypeDefinition>,
+    /// In package-name order, which is the order the catalog takes them in.
+    pub skills: Vec<PackageSkills>,
+}
+
 /// Manifests, the cache, the enable state, and what a package declares.
 #[cfg(feature = "plugin-packages")]
 mod packages {
-    use super::{DaemonPaths, PackageScripts};
+    use super::{DaemonPaths, PackageScripts, PackageSkills};
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::{Arc, RwLock};
@@ -162,6 +177,29 @@ mod packages {
                 .collect()
         }
 
+        /// Discovery already read these skills; a package whose files changed
+        /// since and no longer pass loses its skills here, not the others'.
+        pub fn skills(&self) -> Vec<PackageSkills> {
+            self.active()
+                .iter()
+                .filter(|p| p.manifest.skills.is_some())
+                .filter_map(|p| match plugin::skills::declared_skills(p) {
+                    Ok(skills) => Some(PackageSkills {
+                        plugin: p.name().to_string(),
+                        skills: skills.into_iter().map(|s| (s.entry, s.body)).collect(),
+                    }),
+                    Err(e) => {
+                        tracing::warn!(
+                            plugin = %p.name(),
+                            error = %e,
+                            "package skills no longer load; skipping them"
+                        );
+                        None
+                    }
+                })
+                .collect()
+        }
+
         pub fn note_script_faults(&self, faults: Vec<(String, String)>) {
             let mut by_plugin: HashMap<String, Vec<String>> = HashMap::new();
             for (plugin, reason) in faults {
@@ -185,6 +223,9 @@ mod packages {
                 .iter()
                 .map(|p| {
                     let name = &p.manifest.plugin.name;
+                    let skills: Vec<String> = plugin::skills::declared_skills(p)
+                        .map(|skills| skills.into_iter().map(|s| s.entry.name).collect())
+                        .unwrap_or_default();
                     serde_json::json!({
                         "name": name,
                         "version": p.manifest.plugin.version,
@@ -196,6 +237,8 @@ mod packages {
                         // makes the daemon's disk layout part of its API.
                         "root": p.root.display().to_string(),
                         "script_faults": script_faults.get(name.as_str()).cloned().unwrap_or_default(),
+                        "skills": skills,
+                        "skill_conflicts": [],
                     })
                 })
                 .collect()
@@ -331,6 +374,7 @@ fn disclosure_json(d: &plugin::Disclosure) -> serde_json::Value {
         "version": d.version,
         "capabilities": d.capabilities,
         "scene": d.scene,
+        "skills": d.skills,
         "mcp_servers": d.mcp_servers,
         "model_visible": d.model_visible.iter().map(|v| serde_json::json!({
             "origin": v.origin,
@@ -470,6 +514,13 @@ mod imp {
 
         pub fn agent_types(&self) -> Vec<AgentTypeDefinition> {
             self.packages.agent_types()
+        }
+
+        pub fn contributions(&self) -> Contributions {
+            Contributions {
+                agent_types: self.packages.agent_types(),
+                skills: self.packages.skills(),
+            }
         }
 
         pub fn scenes(&self) -> Vec<Arc<dyn base::interface::scene::Scene>> {
@@ -637,6 +688,9 @@ mod imp {
         }
         pub fn agent_types(&self) -> Vec<AgentTypeDefinition> {
             Vec::new()
+        }
+        pub fn contributions(&self) -> Contributions {
+            Contributions::default()
         }
         pub fn scenes(&self) -> Vec<Arc<dyn base::interface::scene::Scene>> {
             Vec::new()

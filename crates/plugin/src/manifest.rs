@@ -2,8 +2,9 @@
 //!
 //! Everything here is data. Nothing in this crate executes a plugin: a
 //! package declares MCP servers, scripts for the host's QuickJS carrier, a
-//! declarative scene directory and agent types, and each is turned into what
-//! the engine consumes without running anything the package shipped.
+//! declarative scene directory, agent types and a directory of skills, and
+//! each is turned into what the engine consumes without running anything the
+//! package shipped.
 
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -17,7 +18,7 @@ pub const SUPPORTED_API_VERSIONS: &[&str] = &["0.1"];
 
 /// Top-level sections this build understands, for the unknown-section
 /// warning in [`Plugin::load`].
-pub const KNOWN_SECTIONS: &[&str] = &["plugin", "mcp", "script", "scene", "agent"];
+pub const KNOWN_SECTIONS: &[&str] = &["plugin", "mcp", "script", "scene", "agent", "skills"];
 
 /// Top-level sections addressed to whoever embeds the engine, not to the
 /// engine.
@@ -47,6 +48,10 @@ pub struct PluginManifest {
     /// Agent types this plugin declares.
     #[serde(default)]
     pub agent: Vec<AgentDef>,
+    /// Skills this plugin ships. Only a package that says so has any: a
+    /// `skills/` directory with no `[skills]` section contributes nothing.
+    #[serde(default)]
+    pub skills: Option<SkillsSection>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -122,6 +127,12 @@ pub struct SceneSection {
     /// be `plugin:<name>`.
     #[serde(default)]
     pub dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct SkillsSection {
+    /// A directory of `<name>/SKILL.md` skills, relative to the plugin root.
+    pub dir: PathBuf,
 }
 
 /// A plugin-declared agent type.
@@ -220,7 +231,7 @@ impl Plugin {
     }
 }
 
-fn inside_package(path: &Path) -> bool {
+pub(crate) fn inside_package(path: &Path) -> bool {
     !path.is_absolute() && !path.components().any(|c| c.as_os_str() == "..")
 }
 
@@ -354,6 +365,15 @@ fn validate(m: &PluginManifest) -> Result<(), PluginError> {
         }
     }
 
+    if let Some(skills) = &m.skills {
+        if !inside_package(&skills.dir) {
+            return Err(PluginError::Schema(format!(
+                "`[skills] dir` `{}` must name a directory inside the package",
+                skills.dir.display()
+            )));
+        }
+    }
+
     for a in &m.agent {
         if !inside_package(&a.prompt) {
             return Err(PluginError::Schema(format!(
@@ -435,12 +455,57 @@ api_version = "0.1"
     }
 
     #[test]
+    fn a_skills_dir_has_to_be_inside_the_package() {
+        let m = load_str(&format!("{MINIMAL}\n[skills]\ndir = \"skills\"\n")).unwrap();
+        assert_eq!(
+            m.skills.map(|s| s.dir),
+            Some(PathBuf::from("skills")),
+            "`[skills]` is a known section"
+        );
+        assert!(unknown_sections(&format!("{MINIMAL}\n[skills]\ndir = \"skills\"\n")).is_empty());
+
+        for outside in ["../elsewhere", "/abs/skills", "skills/../../up"] {
+            let e = load_str(&format!("{MINIMAL}\n[skills]\ndir = \"{outside}\"\n"))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                e.contains("`[skills] dir`") && e.contains("inside the package"),
+                "{outside}: {e}"
+            );
+        }
+    }
+
+    /// The section is what turns skills on, so it has to say where they are.
+    #[test]
+    fn a_skills_section_without_a_dir_is_refused() {
+        let err = load_str(&format!("{MINIMAL}\n[skills]\n")).unwrap_err();
+        assert!(err.to_string().contains("dir"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_skills_dir_that_links_out_of_the_package_does_not_resolve() {
+        let outside = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("plugin.toml"),
+            format!("{MINIMAL}\n[skills]\ndir = \"skills\"\n"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("skills")).unwrap();
+        let p = Plugin::load(dir.path(), &dir.path().join("plugin.toml")).unwrap();
+        let err = p.path(Path::new("skills")).unwrap_err().to_string();
+        assert!(err.contains("outside the package"), "{err}");
+    }
+
+    #[test]
     fn a_manifest_may_declare_no_payloads_at_all() {
         let m = load_str(MINIMAL).unwrap();
         assert_eq!(m.plugin.name, "p");
         assert!(m.mcp.is_empty());
         assert!(m.agent.is_empty());
         assert!(m.scene.dir.is_none());
+        assert!(m.skills.is_none());
     }
 
     #[test]

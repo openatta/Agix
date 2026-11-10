@@ -2,9 +2,9 @@
 //! [`SkillProvider`](base::interface::skill_provider::SkillProvider)
 //! implementations.
 //!
-//! Three of them, matching the three places skills have always come from:
-//! the directory tiers, the built-ins compiled into the binary, and the tools
-//! of a connected MCP server.
+//! One per place skills come from: the directory tiers, the built-ins
+//! compiled into the binary, an installed plugin package, and the tools of a
+//! connected MCP server.
 
 use base::frozen::frontmatter::parse_skill_file;
 use base::frozen::skill::{SkillEntry, SkillSource as FrozenSkillSource};
@@ -108,6 +108,53 @@ impl SkillProvider for BundledSkills {
 
     fn body(&self, name: &str) -> Option<String> {
         crate::bundled::bundled_body(name).map(|s| s.to_string())
+    }
+}
+
+/// One plugin package's skills, as read and checked when the package loaded.
+///
+/// Bodies are held rather than re-read from the package directory, so what a
+/// skill expands to is the text its package disclosed. A name another source
+/// loaded first stays with that source: the disk tiers win over a package,
+/// and of two packages the one loaded first.
+pub struct PluginSkills {
+    id: String,
+    entries: Vec<SkillEntry>,
+    bodies: std::collections::HashMap<String, String>,
+}
+
+impl PluginSkills {
+    pub fn new(plugin: &str, skills: Vec<(SkillEntry, String)>) -> Self {
+        let mut entries = Vec::with_capacity(skills.len());
+        let mut bodies = std::collections::HashMap::with_capacity(skills.len());
+        for (mut entry, body) in skills {
+            entry.source = FrozenSkillSource::Plugin;
+            bodies.insert(entry.name.clone(), body);
+            entries.push(entry);
+        }
+        Self {
+            id: format!("plugin:{plugin}"),
+            entries,
+            bodies,
+        }
+    }
+}
+
+impl SkillProvider for PluginSkills {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn precedence(&self) -> SkillPrecedence {
+        SkillPrecedence::Fallback
+    }
+
+    fn skills(&self) -> Vec<SkillEntry> {
+        self.entries.clone()
+    }
+
+    fn body(&self, name: &str) -> Option<String> {
+        self.bodies.get(name).cloned()
     }
 }
 

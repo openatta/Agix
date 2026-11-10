@@ -93,8 +93,8 @@ impl SessionPool {
 
         let (watch, unwatched_settings) = self.watch_tiers_of(&settings, &key);
         let last_good = self.last_good_routers.lock().await.get(&key).cloned();
-        let (agent_types, client, credentials) = (
-            self.plugins.agent_types(),
+        let (contributions, client, credentials) = (
+            self.plugins.contributions(),
             self.client.clone(),
             self.credentials.clone(),
         );
@@ -103,7 +103,7 @@ impl SessionPool {
                 unwatched_settings,
                 ..ProjectBinding::build(
                     settings,
-                    &agent_types,
+                    &contributions,
                     watch,
                     &client,
                     last_good,
@@ -240,7 +240,7 @@ impl SessionPool {
             }
             match target {
                 WatchTarget::Skills => binding.reload_skills(),
-                WatchTarget::Agents => binding.refresh_plugins(&plugin_agent_types),
+                WatchTarget::Agents => binding.refresh_agent_types(&plugin_agent_types),
                 _ => {}
             }
         }

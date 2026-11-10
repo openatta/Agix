@@ -388,6 +388,12 @@ pub async fn try_expand_skill_command(
     Some(format_skill_invocation(skill, args).await)
 }
 
+/// Whether a skill body holds a command its expansion would run: an inline
+/// `` !`cmd` `` or a ` ```! ` block.
+pub fn body_runs_commands(body: &str) -> bool {
+    body.contains("!`") || body.contains("```!")
+}
+
 /// Expand skill variables in `body`. Equivalent to
 /// `expand_skill_vars_named(body, args, &[])` — no named-argument
 /// substitution, only positional/legacy forms. Kept as the simple entry

@@ -111,7 +111,7 @@ async fn bind(
     settings.memory_enabled = false;
     let mut binding = ProjectBinding::build(
         Arc::new(settings),
-        &[],
+        &Default::default(),
         vec![],
         &pool.client,
         None,

@@ -1310,6 +1310,14 @@ WebAssembly 载体整个移除。
   `plugins.refused` 检查报出名字和原因。
 - `plugin.install` 现在在临时目录里读回 manifest、检查披露,通过了才放进 cache,失败不再先放进去再删;
   同一版本已装过时,若这次给的 `checksum` 与安装时记下的压缩包 SHA-256 不一致,cache 里的会被替换。
+- **插件包可以带 skill(#43)。** manifest 新增可选段 `[skills] dir = "skills"`,目录里每个
+  `<名字>/SKILL.md` 是一个 skill,随包的安装、启停、卸载出现和消失,来源记为 `plugin`。只认显式
+  写了这一段的包:已经装着、恰好带 `skills/` 目录却没写这一段的包,升级后行为不变。skill 用裸名,
+  磁盘上同名的 skill 优先,被遮住的在 `plugin.list` 新增的 `skill_conflicts` 里报出(另有 `skills`
+  列出包带的 skill 名);`plugin.install` 的 `disclosure` 多了 `skills`,skill 的描述和正文进
+  `model_visible`,受同样的 500 / 40 000 字符上限约束。`SKILL.md` 校验从严,一个不过整包拒装
+  (`plugin_packages.md`「包里的 skill」)。以前把包里的 skill 拷进实例 skill 目录的宿主,改成在
+  manifest 里声明之后删掉拷贝,否则磁盘那份会遮住包里的。
 
 - **`session_dir` 已弃用。** 它从来不读(transcript 总在状态目录下),现在设置文件里写了它,加载时
   每个写了它的文件记一条 warn;settings schema 里标了 `deprecated`。删掉这一行即可,行为不变。

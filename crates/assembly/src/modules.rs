@@ -3,7 +3,8 @@
 //! place their features appear.
 //!
 //! Per project and scene, a [`ProjectModules`] holds what the modules share
-//! across that pair's sessions (the skill catalog, the agent-type catalog);
+//! across that pair's sessions (the skill catalog, the agent-type catalog,
+//! and what installed packages contribute to both);
 //! per session, [`ProjectModules::session_modules`] hands the builder the
 //! modules in the order they depend on each other: MCP (added by the pool,
 //! which owns the connections) first, then agents, then skills.
@@ -55,6 +56,10 @@ pub(crate) struct ProjectModules {
     /// once because they share this instance.
     #[cfg(feature = "skills")]
     skills: Arc<skills::manager::SkillManager>,
+    /// Kept so a rescan of the skill directories rebuilds the catalog with
+    /// the packages' skills rather than without them.
+    #[cfg(feature = "skills")]
+    plugin_skills: std::sync::RwLock<Vec<crate::plugins::PackageSkills>>,
     #[cfg(feature = "agents")]
     agent_types: agents::agent_tool::SharedAgentTypeCatalog,
 }
@@ -65,15 +70,17 @@ impl ProjectModules {
     /// [`Self::refresh_agent_types`], so a second mechanism would be both
     /// redundant and — at one `notify` stream per catalog per project — the
     /// thing that runs a process out of them.
-    pub(crate) fn build(settings: &Settings, plugin_agent_types: &[AgentTypeDefinition]) -> Self {
-        let _ = (settings, plugin_agent_types);
+    pub(crate) fn build(settings: &Settings, plugins: &crate::plugins::Contributions) -> Self {
+        let _ = (settings, plugins);
         Self {
             #[cfg(feature = "skills")]
-            skills: Arc::new(skills::module::build_skill_manager_unwatched(settings)),
+            skills: Arc::new(skill_catalog(settings, &plugins.skills)),
+            #[cfg(feature = "skills")]
+            plugin_skills: std::sync::RwLock::new(plugins.skills.clone()),
             #[cfg(feature = "agents")]
             agent_types: agents::agent_tool::SharedAgentTypeCatalog::unwatched(
                 &agents::agent_tool::agent_type_dirs(settings),
-                plugin_agent_types,
+                &plugins.agent_types,
             ),
         }
     }
@@ -97,13 +104,80 @@ impl ProjectModules {
     }
 
     /// Re-read the skill directories into the catalog the pair's sessions
-    /// already share.
+    /// already share. A running session notices the difference at the start
+    /// of its next turn.
     pub(crate) fn reload_skills(&self, settings: &Settings) {
         #[cfg(feature = "skills")]
-        self.skills
-            .replace_catalog(skills::module::build_skill_manager_unwatched(settings));
+        {
+            let packages = self
+                .plugin_skills
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            self.skills
+                .replace_catalog(skill_catalog(settings, &packages));
+        }
         #[cfg(not(feature = "skills"))]
         let _ = settings;
+    }
+
+    /// Take up what the active packages contribute now.
+    pub(crate) fn refresh_plugins(
+        &self,
+        settings: &Settings,
+        plugins: &crate::plugins::Contributions,
+    ) {
+        self.refresh_agent_types(settings, &plugins.agent_types);
+        #[cfg(feature = "skills")]
+        {
+            *self
+                .plugin_skills
+                .write()
+                .unwrap_or_else(|e| e.into_inner()) = plugins.skills.clone();
+            self.reload_skills(settings);
+        }
+    }
+
+    /// Package skills whose name another source holds in this catalog, by
+    /// package: which source, and the file it was read from.
+    pub(crate) fn skill_conflicts(
+        &self,
+    ) -> std::collections::HashMap<String, Vec<serde_json::Value>> {
+        #[cfg_attr(not(feature = "skills"), allow(unused_mut))]
+        let mut out: std::collections::HashMap<String, Vec<serde_json::Value>> =
+            std::collections::HashMap::new();
+        #[cfg(feature = "skills")]
+        {
+            let packages = self.plugin_skills.read().unwrap_or_else(|e| e.into_inner());
+            let package_of = |path: &std::path::Path| {
+                packages
+                    .iter()
+                    .find(|p| p.skills.iter().any(|(entry, _)| entry.path == path))
+                    .map(|p| p.plugin.clone())
+            };
+            for package in packages.iter() {
+                for (entry, _) in &package.skills {
+                    let Some(holder) = self.skills.get(&entry.name) else {
+                        continue;
+                    };
+                    if holder.path == entry.path {
+                        continue;
+                    }
+                    let mut conflict = serde_json::json!({
+                        "skill": entry.name,
+                        "shadowed_by": holder.source.as_str(),
+                        "path": holder.path.display().to_string(),
+                    });
+                    if let Some(other) = package_of(&holder.path) {
+                        conflict["plugin"] = other.into();
+                    }
+                    out.entry(package.plugin.clone())
+                        .or_default()
+                        .push(conflict);
+                }
+            }
+        }
+        out
     }
 
     /// Re-merge the agent types from the tiers and what plugins contribute.
@@ -142,6 +216,23 @@ impl ProjectModules {
     }
 }
 
+#[cfg(feature = "skills")]
+fn skill_catalog(
+    settings: &Settings,
+    packages: &[crate::plugins::PackageSkills],
+) -> skills::manager::SkillManager {
+    let providers: Vec<Arc<dyn base::interface::skill_provider::SkillProvider>> = packages
+        .iter()
+        .map(|p| {
+            Arc::new(skills::sources::PluginSkills::new(
+                &p.plugin,
+                p.skills.clone(),
+            )) as Arc<dyn base::interface::skill_provider::SkillProvider>
+        })
+        .collect();
+    skills::module::build_skill_manager_with_plugins(settings, &providers)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,5 +253,88 @@ mod tests {
             named.contains(&("execution.team_enabled", "agents")),
             !cfg!(feature = "agents")
         );
+    }
+
+    #[cfg(feature = "skills")]
+    fn package(plugin: &str, names: &[&str]) -> crate::plugins::PackageSkills {
+        crate::plugins::PackageSkills {
+            plugin: plugin.into(),
+            skills: names
+                .iter()
+                .map(|name| {
+                    let entry = base::frozen::skill::SkillEntry {
+                        name: (*name).into(),
+                        description: format!("{plugin} {name}"),
+                        source: base::frozen::skill::SkillSource::Plugin,
+                        path: format!("/cache/{plugin}/skills/{name}/SKILL.md").into(),
+                        ..Default::default()
+                    };
+                    (entry, format!("{plugin} body"))
+                })
+                .collect(),
+        }
+    }
+
+    /// A package skill that loses its name is still listed with its package,
+    /// and the conflict says who has the name: the disk, or the package that
+    /// sorts first.
+    #[cfg(feature = "skills")]
+    #[test]
+    fn a_shadowed_package_skill_is_reported_with_what_shadows_it() {
+        let home = tempfile::tempdir().unwrap();
+        let mut settings = Settings::defaults_for("test");
+        settings.paths.global_data_dir = home.path().join("global");
+        settings.paths.user_data_dir = home.path().join("scene");
+        settings.paths.local_data_dir = home.path().join("project/.agix");
+        let disk = home.path().join("project/.agents/skills/tour");
+        std::fs::create_dir_all(&disk).unwrap();
+        std::fs::write(
+            disk.join("SKILL.md"),
+            "---\ndescription: the project's tour\n---\nbody\n",
+        )
+        .unwrap();
+
+        let modules = ProjectModules::build(
+            &settings,
+            &crate::plugins::Contributions {
+                skills: vec![
+                    package("alpha", &["guide", "tour"]),
+                    package("beta", &["guide", "solo"]),
+                ],
+                ..Default::default()
+            },
+        );
+        let conflicts = modules.skill_conflicts();
+
+        let alpha = &conflicts["alpha"];
+        assert_eq!(alpha.len(), 1, "{conflicts:?}");
+        assert_eq!(alpha[0]["skill"], "tour");
+        assert_eq!(alpha[0]["shadowed_by"], "project");
+        assert!(alpha[0]["path"]
+            .as_str()
+            .unwrap()
+            .ends_with(".agents/skills/tour/SKILL.md"));
+        assert!(alpha[0].get("plugin").is_none());
+
+        let beta = &conflicts["beta"];
+        assert_eq!(beta.len(), 1, "{conflicts:?}");
+        assert_eq!(beta[0]["skill"], "guide");
+        assert_eq!(beta[0]["shadowed_by"], "plugin");
+        assert_eq!(beta[0]["plugin"], "alpha");
+
+        modules.refresh_plugins(
+            &settings,
+            &crate::plugins::Contributions {
+                skills: vec![package("beta", &["guide", "solo"])],
+                ..Default::default()
+            },
+        );
+        assert!(modules.skill_conflicts().is_empty());
+        assert_eq!(
+            modules.skills().get_skill_content("guide").as_deref(),
+            Some("beta body"),
+            "with alpha gone, beta's skill has the name"
+        );
+        assert!(modules.skills().get("solo").is_some());
     }
 }

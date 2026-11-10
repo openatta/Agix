@@ -119,6 +119,38 @@ fn split_outside_parens(s: &str, is_separator: impl Fn(char) -> bool) -> Vec<&st
     out
 }
 
+/// The frontmatter keys [`parse_skill_file`] reads, aliases included. Kept
+/// beside its `match` so the two change together: a checker that refuses
+/// unknown keys reads this list.
+pub const SKILL_FRONTMATTER_KEYS: &[&str] = &[
+    "name",
+    "description",
+    "when_to_use",
+    "whenToUse",
+    "argument_hint",
+    "argumentHint",
+    "allowed_tools",
+    "allowedTools",
+    "allowed-tools",
+    "disallowed_tools",
+    "disallowedTools",
+    "disallowed-tools",
+    "arguments",
+    "model",
+    "effort",
+    "context",
+    "agent",
+    "background",
+    "disable_model_invocation",
+    "disableModelInvocation",
+    "user_invocable",
+    "userInvocable",
+    "paths",
+    "version",
+    "files",
+    "hooks",
+];
+
 /// Parse SKILL.md: extract YAML frontmatter (`---` delimited `key: value` lines),
 /// extracting name / description / when_to_use and extended fields.
 ///

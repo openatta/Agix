@@ -159,6 +159,40 @@ mod tests {
         );
     }
 
+    /// A package placed in the cache by hand never went through install's
+    /// checks, so its skills are read here as strictly as there.
+    #[test]
+    fn a_cached_package_with_a_skill_over_the_limits_is_refused() {
+        let global = TempDir::new().unwrap();
+        let scene = TempDir::new().unwrap();
+        write_plugin(
+            global.path(),
+            "skilled",
+            "1.0.0",
+            "\n[skills]\ndir = \"skills\"\n",
+        );
+        let skill = global
+            .path()
+            .join("cache/skilled/1.0.0/skills/tour/SKILL.md");
+        std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
+        std::fs::write(
+            &skill,
+            format!(
+                "---\ndescription: d\n---\n{}\n",
+                "x".repeat(crate::disclosure::MAX_PROMPT_CHARS + 1)
+            ),
+        )
+        .unwrap();
+        let found = scan_plugins(global.path(), scene.path());
+        assert!(found.plugins.is_empty());
+        assert_eq!(found.refused.len(), 1);
+        assert!(
+            found.refused[0].reason.contains("skill `tour` body"),
+            "{:?}",
+            found.refused
+        );
+    }
+
     #[test]
     fn a_scan_waits_for_an_install_holding_the_cache_lock() {
         let global = TempDir::new().unwrap();

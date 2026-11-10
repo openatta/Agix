@@ -220,6 +220,25 @@ cd examples/plugins/quickjs && zip -r ../demo-quickjs.zip . && shasum -a 256 ../
 `session.create {"scene": "plugin:demo-quickjs"}`。manifest 的完整格式、校验规则和信任模型在
 `plugin_packages.md`。
 
+### 包里带 skill
+
+教模型何时、怎样用包里工具的那几段说明,写成 skill 跟包一起发,不要让宿主拷进实例的 skill
+目录——那样停用、卸载时它们不会跟着走,也不在披露里。在 `plugin.toml` 里写
+
+```toml
+[skills]
+dir = "skills"
+```
+
+再把 skill 放成 `skills/<名字>/SKILL.md`,写法与磁盘上的 skill 相同,但校验严得多:
+frontmatter 拼错一个键、`name` 与目录名不一致、少了 `description`,整个包都装不上,
+错误里写明是哪个 skill、哪一项。动手前先在本地装一遍,看 `plugin.install` 的报错和 `disclosure`
+里列出的正文。
+
+裸名,不加命名空间:用户磁盘上有同名 skill 时用的是用户那份,包照常装上,`plugin.list` 的
+`skill_conflicts` 会报出来。所以给 skill 取一个不容易与别人撞的名字。`allowed-tools` 只写
+`Tool(内容)` 形式的才生效。完整规则见 `plugin_packages.md`「包里的 skill」。
+
 ### 调试
 
 脚本失败了什么都不改,所以"没生效"在外面看起来和"没绑上"一样。查 `session.get` 的 `scripts`:
@@ -242,7 +261,7 @@ cd examples/plugins/quickjs && zip -r ../demo-quickjs.zip . && shasum -a 256 ../
 
 `Plugin`、`PluginSession`、`Registrar` 的方法,九个脚本点的 JSON 形状,脚本绑定的字段,以及 `plugin.toml` 的写法(`api_version = "0.1"`),原则上只做增量,不改已有的含义;但 `api_version` 还是 `0.1`,这条原则不是保证。破坏兼容的改动不会静默发生,每次都列在发布对应的迁移文档(`migrating_to_0.3.md`)里,升级前先读那一节。
 
-0.3.10 就有这样的改动:`[[mcp]] kind = "dsh"` 被拒(引擎不再带 DSH 桥);披露里超限的文本从警告变成拒装;`[[agent]] prompt` 与 `[[mcp]] config` 必须在包内,与 `[[script]]` 一样;`[[mcp]] config` 里写 `oauth_provider` 的被拒,改用 `oauth`;`plugin.install` 的 `name`、`version` 只收 1–128 个 ASCII 字母、数字与 `.`、`_`、`-`、`+`。
+0.3.10 就有这样的改动:`[[mcp]] kind = "dsh"` 被拒(引擎不再带 DSH 桥);披露里超限的文本从警告变成拒装;`[[agent]] prompt` 与 `[[mcp]] config` 必须在包内,与 `[[script]]` 一样;`[[mcp]] config` 里写 `oauth_provider` 的被拒,改用 `oauth`;`plugin.install` 的 `name`、`version` 只收 1–128 个 ASCII 字母、数字与 `.`、`_`、`-`、`+`。0.3.11 新增 `[skills]` 段,只增不改:没写它的包不受影响。
 
 各个点背后的 trait(`ToolMiddleware`、`ModelInterceptor`……)按 `extension_points.md` 里各自的说明。
 

@@ -128,7 +128,7 @@
         },
         {
           "const": "policySettings",
-          "description": "来自 agix-managed-settings",
+          "description": "部署方的 managed settings（`base::managed_settings`）",
           "type": "string"
         },
         {
