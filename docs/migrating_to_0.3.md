@@ -1333,6 +1333,11 @@ WebAssembly 载体整个移除。
   `RuleSetPermission::from_settings` 自动接上设置里的 managed 层。自己拼 gate 的嵌入方要接上
   它,否则 managed 规则只按普通规则生效、在 bypass 下不生效。
 - 有 managed 层时,`Assembly.permission` 不再替换 `bypassPermissions` 会话的 gate。
+- 插件作者:`runtime::plugin::Registrar::admit_tools(pattern)` 让插件自己登记的工具穿过场景的
+  `tools` 白名单(`mini`、`harnix` 这类场景以前会把它们全部拿掉);场景的 `disallowed_tools` 仍然
+  优先,pattern 碰不到内建工具和别的插件的工具。只新增:不调它的插件、现有场景的意思都不变。
+  被场景策略拿掉的工具现在记一条 `debug` 日志。为此包装每个 `Scene` 的宿主可以改用它
+  (`plugin_development.md`「场景的工具白名单」)。
 
 - `AgentSpawner` 的主入口是 `spawn(SpawnRequest)`:`SpawnRequest::new(prompt, cwd, cancel)`,
   再按需填 `agent_type`、`model`、`allowed_tools` 与 `mode`(`SpawnMode::Wait` 等最终文本、

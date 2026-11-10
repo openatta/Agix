@@ -73,6 +73,7 @@ pub struct Registrar {
     pub(crate) async_assembly_hooks: Vec<(Arc<dyn AsyncAssemblyHook>, Authority)>,
     pub(crate) health_checks: Vec<Arc<dyn HealthCheck>>,
     pub(crate) turn_starts: Vec<TurnStart>,
+    pub(crate) admit_patterns: Vec<String>,
 }
 
 pub type TurnStart = Arc<dyn Fn() + Send + Sync>;
@@ -80,6 +81,17 @@ pub type TurnStart = Arc<dyn Fn() + Send + Sync>;
 impl Registrar {
     pub fn tool(&mut self, tool: Arc<dyn Tool>) -> &mut Self {
         self.tools.push(tool);
+        self
+    }
+
+    /// Let this plugin's own tools matching `pattern` — an exact name, or a
+    /// prefix ending in `*` — through a scene's `tools` whitelist. The scene's
+    /// `disallowed_tools` still removes them, and an agent type's
+    /// `allowed_tools` still narrows a sub-agent. A pattern never reaches a
+    /// built-in tool or another plugin's: it is matched only against what
+    /// this plugin registers with [`tool`](Self::tool).
+    pub fn admit_tools(&mut self, pattern: impl Into<String>) -> &mut Self {
+        self.admit_patterns.push(pattern.into());
         self
     }
 
@@ -218,6 +230,13 @@ impl Registrar {
 pub(crate) struct Layers {
     pub rust: Registrar,
     pub quickjs: Registrar,
+    /// Every tool a plugin registered, by name.
+    pub tool_owners: HashMap<String, ToolOwner>,
+}
+
+pub(crate) struct ToolOwner {
+    pub plugin: String,
+    pub admitted: bool,
 }
 
 #[derive(Default)]
@@ -239,6 +258,7 @@ pub(crate) fn register_all(
     let mut layers = Layers {
         rust: Registrar::default(),
         quickjs: Registrar::default(),
+        tool_owners: HashMap::new(),
     };
     let mut plugin_names = HashSet::new();
     let mut tools = HashMap::new();
@@ -270,6 +290,30 @@ pub(crate) fn register_all(
 
         for tool in &r.tools {
             claim(&mut tools, tool.name(), &owner, "tool")?;
+            let admitted = r
+                .admit_patterns
+                .iter()
+                .any(|pattern| crate::tool_policy::covers(pattern, tool.name()));
+            layers.tool_owners.insert(
+                tool.name().to_string(),
+                ToolOwner {
+                    plugin: plugin.name().to_string(),
+                    admitted,
+                },
+            );
+        }
+        for pattern in &r.admit_patterns {
+            if !r
+                .tools
+                .iter()
+                .any(|tool| crate::tool_policy::covers(pattern, tool.name()))
+            {
+                tracing::debug!(
+                    plugin = plugin.name(),
+                    pattern = %pattern,
+                    "admit_tools pattern matches none of the tools this plugin registers"
+                );
+            }
         }
         for definition in &r.agent_types {
             claim(&mut agent_types, &definition.name, &owner, "agent type")?;

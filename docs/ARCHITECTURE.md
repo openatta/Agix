@@ -405,6 +405,11 @@ recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着
 注册表本身:`Builder::build()` 把不许的工具从注册表里移走,之后运行期才出现的 MCP 适配器
 也按它过滤。宣告、`ToolSearch`、分派读的是同一张表,不存在"不宣告但能调用"的工具。
 
+这份判定在 `Builder::build()` 里算一次,成为会话的 `ToolPolicy`(`runtime/src/tool_policy.rs`):
+场景允许的,加上插件经 `Registrar::admit_tools` 放行的自己登记的工具(场景 `disallowed_tools()`
+里的除外)。注册表过滤、每次请求的工具宣告、MCP 适配器同步都读这一份;`runtime` 里别处不直接问
+`Scene::permits_tool`,`daemon/tests/wiring_coverage.rs` 守着这一条。
+
 三条硬约束:
 
 1. **`extra_tools()` 重名直接失败,不覆盖。** 注册表按名字返回首个同名项,静默覆盖会让

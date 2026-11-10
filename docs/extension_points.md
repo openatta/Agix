@@ -1032,6 +1032,7 @@ Assembly { plugins: vec![Arc::new(Tickets)], ..Default::default() }  // 池里�
 | 方法 | 扩展点 | 名字 |
 |---|---|---|
 | `tool` | 会话的工具表 | `Tool::name()` |
+| `admit_tools` | 场景工具白名单的放行 | 本插件 `tool` 登记的名字:精确名,或以 `*` 结尾的前缀 |
 | `agent_type` | `Agent` 工具可选的 agent 类型 | `AgentTypeDefinition::name` |
 | `tool_middleware` | `tool.around` | — |
 | `tool_result` | `tool.result` | — |
@@ -1056,6 +1057,20 @@ agent 类型和磁盘上的定义之间仍按层级覆盖:内建 < 插件包与�
   由子会话自己那次登记给出,再按 agent 类型的工具白名单收窄——和场景自带的工具一样
   (`Builder::contributed_tool_filter`)。`ScriptPlugin` 在子会话里只登记工具与模型调用
   两侧的拦截,不带提示词贡献,也不重置配额——子会话的调用记在父会话这一轮。
+- **场景的工具白名单。** 场景的 `tools()` 非空时,插件登记的工具和别的工具一样要在白名单里才留得下。
+  插件用 `admit_tools(pattern)` 让**自己登记的**工具穿过白名单:
+
+  ```rust
+  r.tool(Arc::new(FileTicketTool))   // 名字是 tickets__file
+   .admit_tools("tickets__*");
+  ```
+
+  `Builder::build` 为会话算一份工具策略:一个工具留下,当且仅当场景允许它
+  (`Scene::permits_tool`),或者它由插件登记、命中这个插件的某个 pattern、并且不在场景的
+  `disallowed_tools` 里。pattern 只和这个插件自己的工具比,放行不了内建工具和别的插件的工具。
+  注册表、每次请求的工具宣告、MCP 适配器同步读的都是这一份;agent 类型的 `allowed_tools`、
+  需要用户回答的工具(`NEEDS_A_USER`)照旧在它之外收窄。被移除的工具记 `debug` 日志
+  (工具名、场景、插件名)。不调 `admit_tools` 的插件,行为和以前一样。
 - **宿主看得见的。** 插件的 `health_check` 在 daemon 的 `session.get` 里以 `health` 报出,
   直接嵌引擎时从 `Agent::health()` 取。
 - **契约不在这里。** 换掉一个子系统(上面「契约」一节)仍然是 `Builder` 上的单槽 setter;

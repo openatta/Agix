@@ -215,8 +215,8 @@ pub(super) fn push_unless_empty(out: &mut Vec<ModelMessage>, message: ModelMessa
 /// Make the dispatch registry's MCP entries match `mcp`'s current adapter
 /// list: new tools are added, re-listed ones take the fresh instance, and ones
 /// a server stopped listing are withdrawn so they can no longer be called.
-/// Adapters the scene does not permit are never registered — see
-/// `Scene::permits_tool`.
+/// Adapters the session's tool policy does not permit are never registered
+/// — see `tool_policy`.
 pub(super) fn sync_mcp_adapters(
     tools: &dyn base::tool::ToolRegistry,
     mcp: &dyn base::interface::mcp_servers::McpServers,
@@ -285,7 +285,7 @@ impl Agent {
         }
         let selected: Vec<Arc<dyn base::tool::Tool>> = pool
             .into_values()
-            .filter(|t| self.scene.permits_tool(t.name()))
+            .filter(|t| self.tooling.tool_policy.permits(t.name()))
             .collect();
 
         // A guide is only worth pointing at if the model has a way to fetch

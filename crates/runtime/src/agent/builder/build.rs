@@ -163,6 +163,7 @@ impl Builder {
         let crate::plugin::Layers {
             rust: mut rust_layer,
             quickjs: mut quickjs_layer,
+            tool_owners: plugin_tool_owners,
         } = {
             let project_root = settings.paths.project_root();
             let plugin_session = crate::plugin::PluginSession {
@@ -477,6 +478,16 @@ impl Builder {
             }
         }
 
+        let tool_policy = Arc::new(crate::tool_policy::ToolPolicy::new(
+            scene.clone(),
+            plugin_tool_owners
+                .iter()
+                .filter(|(name, owner)| {
+                    owner.admitted && admits(&self.contributed_tool_filter, name)
+                })
+                .map(|(name, _)| name.clone()),
+        ));
+
         // The scene's deferred policy, applied once over the complete set.
         //
         // It has to run here rather than on the registry the caller handed in:
@@ -521,8 +532,20 @@ impl Builder {
         for t in tools.list() {
             let waits_on_a_reply = base::interface::scene::NEEDS_A_USER.contains(&t.name())
                 && (!attended || (t.name() == ASK_USER_QUESTION && !questions_answered));
-            if waits_on_a_reply || !scene.permits_tool(t.name()) {
+            let excluded = !tool_policy.permits(t.name());
+            if waits_on_a_reply || excluded {
                 tools.remove(t.name());
+                tracing::debug!(
+                    tool = t.name(),
+                    scene = scene.id(),
+                    plugin = plugin_tool_owners.get(t.name()).map(|o| o.plugin.as_str()),
+                    reason = if excluded {
+                        "not permitted by the scene's tool policy"
+                    } else {
+                        "waits on a reply no one will give"
+                    },
+                    "tool removed from the session"
+                );
             }
         }
 
@@ -530,7 +553,7 @@ impl Builder {
         // with. Only the root session writes programs: a sub-agent is already
         // one delegation down.
         #[cfg(feature = "ptc")]
-        if self.agent_depth == 0 && scene.permits_tool(ptc::TOOL_NAME) {
+        if self.agent_depth == 0 && tool_policy.scene_permits(ptc::TOOL_NAME) {
             tools.register(Arc::new(ptc::RunCodeTool::for_registry(tools.as_ref())));
         }
 
@@ -781,6 +804,7 @@ impl Builder {
                     tool_middleware: Arc::new(tool_middleware),
                     result_transformers: Arc::new(result_transformers),
                     mcp_shadow_warned: std::collections::HashSet::new(),
+                    tool_policy,
                 },
                 gate: Gate {
                     permission,

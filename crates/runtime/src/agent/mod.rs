@@ -130,6 +130,7 @@ pub(crate) struct Tooling {
     /// Built-in/MCP name collisions already logged, so a persistent one does
     /// not warn on every request.
     pub(crate) mcp_shadow_warned: std::collections::HashSet<String>,
+    pub(crate) tool_policy: Arc<crate::tool_policy::ToolPolicy>,
 }
 
 /// Permission, the questions put to the host, and hooks.

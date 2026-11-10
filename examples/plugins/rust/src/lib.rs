@@ -4,6 +4,7 @@
 //! | Registration | Here |
 //! |---|---|
 //! | `tool` | `DemoStamp`, a fingerprint of a piece of text (`tool.rs`) |
+//! | `admit_tools` | keeps `DemoStamp` in scenes with a tool whitelist (below) |
 //! | `agent_type` | `demo-auditor`, a read-only sub-agent (`auditor`, below) |
 //! | `tool_middleware` | refuses any file ending in `.secret` (`policy.rs`) |
 //! | `tool_result` | redacts `SECRET-…` tokens from what tools return (`policy.rs`) |
@@ -70,6 +71,7 @@ impl Plugin for DemoPlugin {
         let activity = Arc::new(Activity::default());
 
         r.tool(Arc::new(tool::StampTool::new(activity.clone())))
+            .admit_tools(tool::NAME)
             .agent_type(auditor())
             .tool_middleware(Arc::new(policy::SecretFiles::new(activity.clone())))
             .tool_result(Arc::new(policy::RedactSecrets::new(activity.clone())))

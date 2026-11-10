@@ -6,7 +6,7 @@ Agix 的插件只有两种:**编译进宿主的 Rust 插件**,和**跑在内嵌 
 
 | 目录 | 是什么 |
 |---|---|
-| `examples/plugins/rust/` | `demo-rust`,一个 Rust 插件。`Registrar` 的 15 个注册方法全部用到,每个做一件小事 |
+| `examples/plugins/rust/` | `demo-rust`,一个 Rust 插件。`Registrar` 的 16 个注册方法全部用到,每个做一件小事 |
 | `examples/plugins/quickjs/` | `demo-quickjs`,一个插件包。九个可绑定的点各绑一个脚本,另带一个 agent 类型和一个场景 |
 
 这两个样例有测试跑着:`tests/live/tests/demo_plugins.rs` 用模型桩逐项断言,每次 push 都跑;
@@ -64,11 +64,12 @@ let pool = daemon::assemble::pool(&config, scene, daemon::Assembly {
 }).await?;
 ```
 
-### `Registrar` 的 15 个方法
+### `Registrar` 的 16 个方法
 
 | 方法 | 扩展点 | `demo-rust` 里拿它做什么 | 文件 |
 |---|---|---|---|
 | `tool` | 工具 | `DemoStamp`:给一段文本算指纹 | `tool.rs` |
+| `admit_tools` | 场景的工具白名单 | 让 `DemoStamp` 在 `mini`、`harnix` 这类有白名单的场景里也留下 | `lib.rs` |
 | `agent_type` | agent 类型 | `demo-auditor`:只读的审计子 Agent | `lib.rs` |
 | `tool_middleware` | `tool.around` | 涉及 `.secret` 文件的调用一律拒绝 | `policy.rs` |
 | `tool_result` | `tool.result` | 把工具结果里的 `SECRET-…` 换成 `[redacted]` | `policy.rs` |
@@ -115,6 +116,29 @@ let pool = daemon::assemble::pool(&config, scene, daemon::Assembly {
 `max_turns` 照原样生效;`Plugin` 是给从网上装来的包用的,`max_turns` 会被钳到父会话的上限
 以内,`permission_mode` 也只能比父会话严;`Builtin` 与磁盘上的 `agents/*.md` 可以放宽。优先级是:内建和包 <
 Rust 插件 < 磁盘上的 `agents/*.md`。
+
+### 场景的工具白名单
+
+场景的 `tools()` 非空(`mini`、`harnix`,以及写了 `"tools"` 的声明式场景)时,会话里只留白名单
+里的工具,插件用 `tool` 登记的也一样会被拿掉。要让自己的工具在这样的场景里也留下,在同一次
+`register` 里调 `admit_tools`:
+
+```rust
+r.tool(Arc::new(tool::StampTool::new(activity.clone())))
+    .admit_tools(tool::NAME);          // 精确名
+// 一组按前缀起名的工具:
+r.admit_tools("app__*");               // 以 * 结尾是前缀
+```
+
+- pattern 只和**这个插件自己** `tool` 登记的工具比,碰不到内建工具,也碰不到别的插件的工具。
+  写 `admit_tools("Bash")` 什么也不放行。
+- 场景的 `disallowed_tools` 仍然优先:场景作者写了 `"disallowed_tools": ["app__*"]`,放行的也留不下。
+- 子 Agent 照旧按 agent 类型的 `allowed_tools` 收窄;子会话自己那次 `register` 里的 `admit_tools`
+  对子会话的场景生效。
+- 白名单为空的场景(如 `code`)本来就留着插件工具,调不调都一样。
+
+被场景拿掉的工具记一条 `debug` 日志(`tool removed from the session`,带工具名、场景和插件名),
+看到"登记了但模型说没有这个工具"时先打开 `RUST_LOG=runtime=debug` 看这一条。
 
 ### 名字
 

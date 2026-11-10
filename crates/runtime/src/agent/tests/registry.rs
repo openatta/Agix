@@ -126,6 +126,94 @@ async fn build_registers_what_a_rust_plugin_registers() {
     assert!(agent.health().report().find("plugin.check").is_some());
 }
 
+#[tokio::test]
+async fn admit_tools_reaches_only_the_plugins_own_tools_and_yields_to_disallowed() {
+    struct Named(&'static str);
+    #[async_trait::async_trait]
+    impl base::tool::Tool for Named {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        async fn call(
+            &self,
+            _: serde_json::Value,
+            _: base::tool::ToolContext,
+            _: base::tool::ProgressSender,
+        ) -> Result<base::tool::ToolResult, base::error::ToolError> {
+            Ok(base::tool::ToolResult::text("done"))
+        }
+    }
+    struct Greedy;
+    impl crate::plugin::Plugin for Greedy {
+        fn name(&self) -> &str {
+            "greedy"
+        }
+        fn register(&self, _: &crate::plugin::PluginSession<'_>, r: &mut crate::plugin::Registrar) {
+            r.tool(Arc::new(Named("a__x")))
+                .tool(Arc::new(Named("a__blocked")))
+                .admit_tools("a__*")
+                .admit_tools("Bash")
+                .admit_tools("b__*");
+        }
+    }
+    struct Quiet;
+    impl crate::plugin::Plugin for Quiet {
+        fn name(&self) -> &str {
+            "quiet"
+        }
+        fn register(&self, _: &crate::plugin::PluginSession<'_>, r: &mut crate::plugin::Registrar) {
+            r.tool(Arc::new(Named("b__z")));
+        }
+    }
+    struct ReadOnly;
+    impl Scene for ReadOnly {
+        fn id(&self) -> &str {
+            "read-only"
+        }
+        fn name(&self) -> &str {
+            "read-only"
+        }
+        fn description(&self) -> &str {
+            ""
+        }
+        fn build_system_prompt(
+            &self,
+            ctx: &base::interface::scene::ScenePromptContext,
+        ) -> Vec<base::interface::prompt::PromptBlock> {
+            scene::mini::MiniScene.build_system_prompt(ctx)
+        }
+        fn tools(&self) -> Vec<String> {
+            vec!["Read".into()]
+        }
+        fn disallowed_tools(&self) -> Vec<String> {
+            vec!["a__blocked".into()]
+        }
+        fn token_budget(&self) -> base::interface::scene::TokenBudget {
+            scene::mini::MiniScene.token_budget()
+        }
+    }
+
+    let template = Arc::new(InMemoryToolRegistry::new());
+    tools::register_builtin_tools(&template);
+    let (agent, _event_rx, _input_tx) = Builder::new()
+        .scene(Arc::new(ReadOnly) as Arc<dyn Scene>)
+        .model(Arc::new(DummyModel) as Arc<dyn Model>)
+        .settings(Arc::new(test_settings()))
+        .tools(template)
+        .plugin(Arc::new(Greedy))
+        .plugin(Arc::new(Quiet))
+        .skip_warmup(true)
+        .build()
+        .expect("build should succeed");
+
+    let mut names = agent.tooling.tools.names();
+    names.sort();
+    assert_eq!(names, vec!["Read".to_string(), "a__x".to_string()]);
+}
+
 /// The instruction file is one implementation of a
 /// contract, so a host that already holds its conventions needs no file.
 #[tokio::test]

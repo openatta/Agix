@@ -10,6 +10,7 @@ pub mod plugin;
 mod repeat_guard;
 pub mod steering;
 pub mod streaming;
+mod tool_policy;
 pub mod turn;
 
 /// Whether this build carries `RunCode` (the `ptc` feature).
