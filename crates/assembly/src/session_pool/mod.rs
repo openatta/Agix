@@ -37,6 +37,8 @@ mod goal;
 mod helpers;
 mod history_rpc;
 mod listing;
+#[cfg(feature = "mcp")]
+mod mcp_cache;
 mod mcp_conn;
 mod permission_scripts;
 mod plugins;
@@ -728,13 +730,7 @@ pub struct SessionPool {
     /// scene tier can declare its own `mcp_servers`, so two scenes on one
     /// project are not interchangeable.
     #[cfg(feature = "mcp")]
-    mcp_by_project: AsyncMutex<HashMap<ProjectSceneKey, Arc<McpManager>>>,
-    /// Held over a pair's first MCP connect, so a session created while the
-    /// startup connect is still running waits for it instead of starting
-    /// every server a second time. One for all pairs: a first connect is
-    /// bounded by `MCP_SESSION_CONNECT_WAIT`.
-    #[cfg(feature = "mcp")]
-    mcp_first_connect: AsyncMutex<()>,
+    mcp_by_project: mcp_cache::McpCache,
     /// This pool's MCP authorization: sign-in state per server, the flows in
     /// progress, and the credential store (files under its own user data
     /// root unless the host gave one).
@@ -1212,9 +1208,7 @@ impl SessionPool {
             history_store,
             paths,
             #[cfg(feature = "mcp")]
-            mcp_by_project: AsyncMutex::new(HashMap::new()),
-            #[cfg(feature = "mcp")]
-            mcp_first_connect: AsyncMutex::new(()),
+            mcp_by_project: mcp_cache::McpCache::default(),
             #[cfg(feature = "mcp")]
             mcp_auth,
             #[cfg(feature = "mcp")]
@@ -1452,7 +1446,10 @@ enum Rebuild {
 pub(super) enum CreateError {
     /// The engine the id last ran on is still running past
     /// [`AGENT_EXIT_GRACE`]; a second one would write the same transcript.
-    PreviousEngineRunning { session_id: String, message: String },
+    PreviousEngineRunning {
+        session_id: String,
+        message: String,
+    },
     Failed(String),
 }
 

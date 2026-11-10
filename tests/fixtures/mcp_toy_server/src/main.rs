@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! mcp-toy-server [--transport stdio|http|sse] [--port N] [--port-file PATH]
-//!                [--calls PATH] [--name NAME] [--resources DIR]
+//!                [--calls PATH] [--name NAME] [--resources DIR] [--mute]
 //! ```
 //!
 //! - `http` / `sse` 在 127.0.0.1 上起 streamable HTTP，绑定后先在 stdout 第一行打出
@@ -17,6 +17,8 @@
 //!   调用真的到了这个进程。
 //! - `--resources DIR`：目录里每个文件成为一个资源 `toy://files/<文件名>`，测试把
 //!   运行时生成的令牌写进去，就能证明模型读到的是资源本身。
+//! - `--mute`（只对 stdio）：读 stdin 但从不应答，握手永远完成不了。收到第一行时往
+//!   `--calls` 记一行 `<name>\tmuted`，测试据此知道连接已经卡在它身上。
 //!
 //! 工具：`ping`、`echo`、`slow`（可取消）、`crash`（进程直接退出）、`big`（指定字节数）、
 //! `elicit`（结果里带一个 `elicitation://` URL，Agix 据此触发 Elicitation hook）。
@@ -51,6 +53,7 @@ struct Options {
     calls: Option<PathBuf>,
     name: String,
     resources: Option<PathBuf>,
+    mute: bool,
 }
 
 fn parse_args() -> anyhow::Result<Options> {
@@ -61,6 +64,7 @@ fn parse_args() -> anyhow::Result<Options> {
         calls: std::env::var_os("TOY_MCP_CALLS").map(PathBuf::from),
         name: "toy".into(),
         resources: None,
+        mute: false,
     };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -75,6 +79,7 @@ fn parse_args() -> anyhow::Result<Options> {
             "--calls" => opts.calls = Some(value()?.into()),
             "--name" => opts.name = value()?,
             "--resources" => opts.resources = Some(value()?.into()),
+            "--mute" => opts.mute = true,
             other => anyhow::bail!("unknown argument {other}"),
         }
     }
@@ -368,12 +373,28 @@ async fn main() -> anyhow::Result<()> {
         resources: opts.resources.clone(),
         elicitations: AtomicUsize::new(0),
     });
+    if opts.mute {
+        return stay_mute(&state).await;
+    }
     if opts.transport == "stdio" {
         let service = ToyServer { state }.serve(rmcp::transport::stdio()).await?;
         service.waiting().await?;
         return Ok(());
     }
     serve_http(opts, state).await
+}
+
+async fn stay_mute(state: &State) -> anyhow::Result<()> {
+    use tokio::io::AsyncBufReadExt as _;
+    let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+    let mut told = false;
+    while lines.next_line().await?.is_some() {
+        if !told {
+            state.record("muted");
+            told = true;
+        }
+    }
+    Ok(())
 }
 
 async fn serve_http(opts: Options, state: Arc<State>) -> anyhow::Result<()> {

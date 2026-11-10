@@ -182,7 +182,7 @@ async fn a_settings_change_drops_exactly_the_connections_built_from_it() {
         &default_coding,
         &pool.mcp_for_project(Some(pool.cwd()), "code").await
     ));
-    assert_eq!(pool.mcp_by_project.lock().await.len(), 1);
+    assert_eq!(pool.mcp_by_project.connected_pairs(), 1);
 }
 
 #[cfg(feature = "mcp")]
@@ -331,4 +331,67 @@ async fn an_agents_directory_created_later_is_picked_up_and_watched() {
         &after,
         &pool.binding_for(Some(pool.cwd()), "mini").await
     ));
+}
+
+/// A pair whose server never finishes its handshake keeps its own first
+/// connect waiting and no other pair's.
+#[cfg(feature = "mcp")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pair_stuck_connecting_holds_up_no_other_pairs_connect() {
+    let (pool, dir) = test_pool().await;
+    let pool = Arc::new(pool);
+    let stuck = dir.path().join("stuck");
+    let asked = dir.path().join("asked");
+    std::fs::create_dir_all(stuck.join(".agix")).unwrap();
+    std::fs::write(
+        stuck.join(".agix").join("settings.json"),
+        serde_json::json!({
+            "mcp_servers": {
+                "mute": {
+                    "type": "stdio",
+                    "command": "/bin/sh",
+                    "args": ["-c", format!("touch '{}'; while read l; do :; done", asked.display())],
+                    "startup_timeout_ms": 20_000,
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let other = dir.path().join("other");
+    std::fs::create_dir_all(&other).unwrap();
+
+    let mut connecting = tokio::spawn({
+        let pool = pool.clone();
+        async move { pool.mcp_for_project(Some(&stuck), "code").await }
+    });
+    while !asked.exists() {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    let unaffected = pool.mcp_for_project(Some(&other), "code");
+    tokio::pin!(unaffected);
+    tokio::select! {
+        biased;
+        manager = &mut unaffected => {
+            assert_eq!(manager.server_count(), 0);
+            assert!(!connecting.is_finished(), "the other pair waited for the stuck connect");
+        }
+        _ = &mut connecting => panic!("the other pair waited for the stuck connect"),
+    }
+    connecting.abort();
+}
+
+/// Two first callers on one pair get the one manager its one connect made.
+#[cfg(feature = "mcp")]
+#[tokio::test(flavor = "multi_thread")]
+async fn two_first_callers_on_one_pair_share_its_connect() {
+    let (pool, dir) = test_pool().await;
+    let other = dir.path().join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    let (a, b) = tokio::join!(
+        pool.mcp_for_project(Some(&other), "code"),
+        pool.mcp_for_project(Some(&other), "code"),
+    );
+    assert!(Arc::ptr_eq(&a, &b));
 }

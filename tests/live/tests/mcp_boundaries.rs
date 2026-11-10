@@ -1,5 +1,6 @@
 //! MCP servers and web pages that misbehave, against a scripted model: a
-//! server that never finishes its handshake, one that answers garbage, one
+//! server that never finishes its handshake (and, being added to one project,
+//! holds up no other), one that answers garbage, one
 //! with hundreds of tools or the same tool twice, server names a tool name
 //! cannot carry, a call whose server dies under it, an interrupted call, a
 //! prompt run as a slash command, the MCP policy's globs end to end, and
@@ -153,6 +154,45 @@ async fn a_server_that_never_answers_initialize_does_not_hold_up_a_session() -> 
     let events = run.turn(&session, "ping").await?;
     let ping = result_of(&events, "mcp__toy__ping").expect("a ping result");
     assert!(!ping.2 && ping.1.contains("toy: past-the-mute"), "{ping:?}");
+    run.finish().await;
+    Ok(())
+}
+
+/// `mcp.addServer` waits for the server it adds; one that never answers its
+/// handshake keeps that call waiting, and a session on another project is
+/// created meanwhile all the same.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_stuck_connecting_to_one_project_holds_up_no_other() -> anyhow::Result<()> {
+    let stub = ProviderStub::start().await?;
+    let scratch = tempfile::tempdir()?;
+    let calls = scratch.path().join("calls.log");
+    let mut run = stubbed("stuck-mcp", &stub).start().await?;
+    let other = run.world.project("unaffected")?;
+
+    let mut adder = run.daemon.connect().await?;
+    let mut mute = McpToy::stdio_config(&["--mute", "--calls", &calls.to_string_lossy()])?;
+    mute["startup_timeout_ms"] = json!(20_000);
+    let adding = tokio::spawn(async move {
+        adder
+            .mcp_add_server(&rpc_client::Target::own(), "mute", mute)
+            .await
+    });
+    anyhow::ensure!(
+        wait_for_line(&calls, ("toy", "muted"), Duration::from_secs(20)).await,
+        "the mute server was never started"
+    );
+
+    {
+        let create = run
+            .client
+            .session_create(json!({ "project_root": other.to_string_lossy() }));
+        tokio::pin!(create);
+        tokio::select! {
+            biased;
+            created = &mut create => { created?; }
+            added = adding => panic!("the other project's session waited for the stuck add: {added:?}"),
+        }
+    }
     run.finish().await;
     Ok(())
 }

@@ -276,9 +276,7 @@ impl SessionPool {
         keep: Option<&ProjectSceneKey>,
     ) {
         self.mcp_by_project
-            .lock()
-            .await
-            .retain(|key, _| !tier_covers(tier, key) || keep == Some(key));
+            .retain(|key| !tier_covers(tier, key) || keep == Some(key));
     }
 
     /// This project's centrally-connected `McpManager` — the MCP
@@ -305,8 +303,8 @@ impl SessionPool {
         scene_id: &str,
     ) -> Arc<McpManager> {
         let key = (project_root.map(Path::to_path_buf), scene_id.to_string());
-        if let Some(existing) = self.mcp_by_project.lock().await.get(&key) {
-            return existing.clone();
+        if let Some(existing) = self.mcp_by_project.current(&key) {
+            return existing;
         }
         let settings = self.settings_for_project(project_root, scene_id).await;
         self.first_mcp_connect(key, &settings).await

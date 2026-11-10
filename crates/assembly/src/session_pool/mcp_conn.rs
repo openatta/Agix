@@ -110,10 +110,7 @@ impl SessionPool {
         let startup_scene = self.settings.read().await.paths.scope.clone();
         let manager = self
             .mcp_by_project
-            .lock()
-            .await
-            .get(&(Some(self.cwd.clone()), startup_scene))
-            .cloned()
+            .current(&(Some(self.cwd.clone()), startup_scene))
             .unwrap_or_else(|| Arc::new(McpManager::empty()));
         let mut entries = mcp_status_entries(&manager);
         entries.extend(untrusted_mcp_entries(&*self.settings.read().await));
@@ -157,16 +154,19 @@ impl SessionPool {
     /// The pair's MCP manager: the cached one, or a new connect of the
     /// servers `settings` declare, cached. The connect returns after
     /// [`MCP_SESSION_CONNECT_WAIT`]; a server still connecting then is
-    /// finished by [`Self::finish_mcp_connects`].
+    /// finished by [`Self::finish_mcp_connects`]. A caller that arrives while
+    /// the pair's first connect runs waits for it rather than starting every
+    /// server a second time; other pairs do not wait.
     #[cfg(feature = "mcp")]
     pub(super) async fn first_mcp_connect(
         &self,
         key: ProjectSceneKey,
         settings: &Settings,
     ) -> Arc<McpManager> {
-        let _first = self.mcp_first_connect.lock().await;
-        if let Some(existing) = self.mcp_by_project.lock().await.get(&key) {
-            return existing.clone();
+        let slot = self.mcp_by_project.slot(&key);
+        let update = slot.update().await;
+        if let Some(existing) = update.current() {
+            return existing;
         }
         let AdmittedMcp {
             servers: admitted,
@@ -186,10 +186,8 @@ impl SessionPool {
         // built, after its list was read.
         manager.refresh_if_changed().await;
         let manager = Arc::new(manager.with_denied(denied));
-        self.mcp_by_project
-            .lock()
-            .await
-            .insert(key.clone(), manager.clone());
+        update.set(manager.clone());
+        drop(update);
         if let (Some(pool), Some(late)) = (pool, late) {
             tokio::spawn(Self::finish_mcp_connects(Arc::downgrade(&pool), key, late));
         }
@@ -212,9 +210,12 @@ impl SessionPool {
             };
             let server = outcome.server().to_string();
             let connected = outcome.connected();
+            let Some(slot) = pool.mcp_by_project.existing(&key) else {
+                return;
+            };
             let updated = {
-                let mut cache = pool.mcp_by_project.lock().await;
-                let Some(current) = cache.get(&key) else {
+                let update = slot.update().await;
+                let Some(current) = update.current() else {
                     return;
                 };
                 let mut updated = current.share();
@@ -222,7 +223,7 @@ impl SessionPool {
                     continue;
                 }
                 let updated = Arc::new(updated);
-                cache.insert(key.clone(), updated.clone());
+                update.set(updated.clone());
                 updated
             };
             pool.emit_event(match connected {
@@ -266,6 +267,9 @@ impl SessionPool {
         scene_id: &str,
         settings: &Settings,
     ) -> (Vec<String>, Vec<String>, Vec<String>) {
+        let key = (project_root.map(Path::to_path_buf), scene_id.to_string());
+        let slot = self.mcp_by_project.slot(&key);
+        let update = slot.update().await;
         let AdmittedMcp {
             servers: admitted,
             denied,
@@ -312,11 +316,8 @@ impl SessionPool {
         let mut failed = unreachable;
         failed.extend(refused);
 
-        let key = (project_root.map(Path::to_path_buf), scene_id.to_string());
-        self.mcp_by_project
-            .lock()
-            .await
-            .insert(key.clone(), Arc::new(manager));
+        update.set(Arc::new(manager));
+        drop(update);
         if let (Some(pool), Some(late)) = (pool, late) {
             tokio::spawn(Self::finish_mcp_connects(Arc::downgrade(&pool), key, late));
         }
@@ -459,11 +460,11 @@ impl SessionPool {
             .await;
         let env = target_settings.sandbox.subprocess_env.clone();
         let cfg = &self.placed_mcp_server(&target_settings, cfg.clone());
+        let slot = self.mcp_by_project.slot(&target);
         let (statuses, entries, failure) = {
-            let mut cache = self.mcp_by_project.lock().await;
-            let current = cache
-                .get(&target)
-                .cloned()
+            let update = slot.update().await;
+            let current = update
+                .current()
                 .unwrap_or_else(|| Arc::new(McpManager::empty()));
             let still_denied = current
                 .denied()
@@ -481,7 +482,7 @@ impl SessionPool {
             let statuses = updated.server_statuses();
             let entries = mcp_status_entries(&updated);
             let failure = mcp_connect_failed_event(&updated, name);
-            cache.insert(target.clone(), Arc::new(updated));
+            update.set(Arc::new(updated));
             (statuses, entries, failure)
         };
         // A running session holds its own manager, cloned from the cache when
@@ -559,25 +560,26 @@ impl SessionPool {
     #[cfg(feature = "mcp")]
     pub(super) async fn demote_mcp_servers(&self, url: &str) {
         let mut touched = Vec::new();
-        {
-            let mut cache = self.mcp_by_project.lock().await;
-            for (key, manager) in cache.iter_mut() {
-                let names: Vec<String> = manager
-                    .servers_at(url)
-                    .into_iter()
-                    .filter(|n| manager.clients().iter().any(|c| c.server_name() == n))
-                    .collect();
-                if names.is_empty() {
-                    continue;
-                }
-                let mut updated = manager.share();
-                for name in &names {
-                    updated.demote(name);
-                }
-                updated.refresh_tools().await;
-                *manager = Arc::new(updated);
-                touched.push(key.clone());
+        for (key, slot) in self.mcp_by_project.slots() {
+            let update = slot.update().await;
+            let Some(manager) = update.current() else {
+                continue;
+            };
+            let names: Vec<String> = manager
+                .servers_at(url)
+                .into_iter()
+                .filter(|n| manager.clients().iter().any(|c| c.server_name() == n))
+                .collect();
+            if names.is_empty() {
+                continue;
             }
+            let mut updated = manager.share();
+            for name in &names {
+                updated.demote(name);
+            }
+            updated.refresh_tools().await;
+            update.set(Arc::new(updated));
+            touched.push(key);
         }
         self.invalidate_mcp_keys(&touched).await;
     }
@@ -601,43 +603,44 @@ impl SessionPool {
         let mut touched = Vec::new();
         let mut outcomes: HashMap<String, Result<mcp::manager::ServerStatus, Option<String>>> =
             HashMap::new();
-        {
-            let mut cache = self.mcp_by_project.lock().await;
-            for (key, manager) in cache.iter_mut() {
-                let names = pick(manager);
-                if names.is_empty() {
-                    continue;
-                }
-                let mut updated = manager.share();
-                for name in &names {
-                    if let Some(cfg) = updated.config_of(name).cloned() {
-                        updated.add_server(name, &cfg).await;
-                    }
-                }
-                updated.refresh_tools().await;
-                let statuses = updated.server_statuses();
-                for name in names {
-                    let outcome = match statuses.iter().find(|s| s.name == name) {
-                        Some(status) => Ok(status.clone()),
-                        None => Err(updated
-                            .failed()
-                            .iter()
-                            .find(|f| f.name == name)
-                            .map(|f| f.error.clone())),
-                    };
-                    let telling = |o: &Result<_, Option<String>>| match o {
-                        Ok(_) => 2,
-                        Err(Some(_)) => 1,
-                        Err(None) => 0,
-                    };
-                    let seen = outcomes.entry(name).or_insert(Err(None));
-                    if telling(&outcome) > telling(seen) {
-                        *seen = outcome;
-                    }
-                }
-                *manager = Arc::new(updated);
-                touched.push(key.clone());
+        for (key, slot) in self.mcp_by_project.slots() {
+            let update = slot.update().await;
+            let Some(manager) = update.current() else {
+                continue;
+            };
+            let names = pick(&manager);
+            if names.is_empty() {
+                continue;
             }
+            let mut updated = manager.share();
+            for name in &names {
+                if let Some(cfg) = updated.config_of(name).cloned() {
+                    updated.add_server(name, &cfg).await;
+                }
+            }
+            updated.refresh_tools().await;
+            let statuses = updated.server_statuses();
+            for name in names {
+                let outcome = match statuses.iter().find(|s| s.name == name) {
+                    Some(status) => Ok(status.clone()),
+                    None => Err(updated
+                        .failed()
+                        .iter()
+                        .find(|f| f.name == name)
+                        .map(|f| f.error.clone())),
+                };
+                let telling = |o: &Result<_, Option<String>>| match o {
+                    Ok(_) => 2,
+                    Err(Some(_)) => 1,
+                    Err(None) => 0,
+                };
+                let seen = outcomes.entry(name).or_insert(Err(None));
+                if telling(&outcome) > telling(seen) {
+                    *seen = outcome;
+                }
+            }
+            update.set(Arc::new(updated));
+            touched.push(key);
         }
         self.invalidate_mcp_keys(&touched).await;
         let mut names: Vec<String> = outcomes.keys().cloned().collect();
