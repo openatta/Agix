@@ -177,12 +177,10 @@ async fn both_protocols_ask_one_policy_the_same_questions() {
     }
 }
 
-/// The one thing the two protocols legitimately differ on. `retry-after` is
-/// part of the Messages API's wire format and has no counterpart in Chat
-/// Completions, so parsing it stays in the Anthropic client — but it arrives
-/// as an input to the shared policy rather than as a second retry rule.
+/// `retry-after` is read on both sides and arrives as an input to the shared
+/// policy rather than as a second retry rule.
 #[tokio::test]
-async fn only_the_protocol_that_has_a_retry_after_header_supplies_one() {
+async fn both_protocols_pass_the_retry_after_header_to_the_policy() {
     let anthropic_policy = Recorder::new(1);
     let openai_policy = Recorder::new(1);
 
@@ -205,8 +203,9 @@ async fn only_the_protocol_that_has_a_retry_after_header_supplies_one() {
         "the retry-after header the server sent never reached the policy"
     );
     assert!(
-        o.iter().all(|o| o.server_hint.is_none()),
-        "chat completions has no retry-after to report"
+        o.iter()
+            .all(|o| o.server_hint == Some(Duration::from_secs(7))),
+        "the retry-after header the server sent never reached the policy"
     );
 }
 

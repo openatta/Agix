@@ -113,12 +113,11 @@ impl BackoffPolicy for LadderBackoff {
         // A provider that names its own delay knows something the ladder does
         // not, but it does not get to extend the budget — the step it replaces
         // is still spent.
-        let base = match attempt.server_hint {
-            Some(hint) if hint > Self::MAX_SERVER_HINT => return Backoff::GiveUp,
-            Some(hint) => hint.as_millis() as u64,
-            None => *step,
-        };
-        Backoff::WaitThenRetry(jittered(base, self.jitter_ratio))
+        match attempt.server_hint {
+            Some(hint) if hint > Self::MAX_SERVER_HINT => Backoff::GiveUp,
+            Some(hint) => Backoff::WaitThenRetry(after_hint(hint)),
+            None => Backoff::WaitThenRetry(jittered(*step, self.jitter_ratio)),
+        }
     }
 }
 
@@ -129,17 +128,27 @@ impl BackoffPolicy for LadderBackoff {
 /// generator: this is jitter, not a nonce, and the alternative is a `rand`
 /// dependency in the crate at the bottom of the graph.
 fn jittered(base_ms: u64, ratio: f32) -> Duration {
-    use std::time::SystemTime;
-    let nanos = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or(0);
-    let unit = (nanos % 1_000_000) as f32 / 1_000_000.0;
+    let unit = unit_noise();
     let signed = (unit - 0.5) * 2.0;
     let delta_ms = (base_ms as f32 * ratio * signed) as i64;
     let base = i64::try_from(base_ms).unwrap_or(i64::MAX);
     let final_ms = base.saturating_add(delta_ms).max(0) as u64;
     Duration::from_millis(final_ms)
+}
+
+/// The server's hint is a floor: retrying earlier is another rejection, so the
+/// spread only goes upward, by up to a tenth of the hint.
+fn after_hint(hint: Duration) -> Duration {
+    hint + hint.mul_f32(0.1 * unit_noise())
+}
+
+fn unit_noise() -> f32 {
+    use std::time::SystemTime;
+    let nanos = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    (nanos % 1_000_000) as f32 / 1_000_000.0
 }
 
 /// Never retries anything.
@@ -246,7 +255,7 @@ mod tests {
     }
 
     /// A provider that names a delay overrides the ladder for that step —
-    /// but does not buy an extra one.
+    /// but does not buy an extra one, and its delay is a floor.
     #[test]
     fn a_server_hint_replaces_the_step_without_extending_the_budget() {
         let p = LadderBackoff::new();
@@ -255,11 +264,13 @@ mod tests {
             failure: RequestFailure::RateLimited,
             server_hint: Some(Duration::from_secs(7)),
         };
-        let ms = wait_ms(p.after_failure(&hinted(0)));
-        assert!(
-            (5_250..=8_750).contains(&ms),
-            "{ms}ms is not the hinted 7s ±25%"
-        );
+        for _ in 0..200 {
+            let ms = wait_ms(p.after_failure(&hinted(0)));
+            assert!(
+                (7_000..=7_700).contains(&ms),
+                "{ms}ms is not the hinted 7s plus at most 10%"
+            );
+        }
         assert_eq!(p.after_failure(&hinted(6)), Backoff::GiveUp);
     }
 

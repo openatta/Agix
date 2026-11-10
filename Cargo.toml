@@ -54,6 +54,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 eventsource-stream = "0.2"
 bytes = "1"
 url = "2"
+httpdate = "1"
 
 # WebSocket
 tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }

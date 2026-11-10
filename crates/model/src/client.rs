@@ -5,6 +5,7 @@
 
 use crate::error::{is_transient_status, AnthropicError};
 use crate::parser::parse_sse;
+use crate::retry_after::parse_retry_after;
 use crate::stream::StreamEvent;
 use crate::types::MessagesRequest;
 use base::interface::backoff::{
@@ -13,11 +14,11 @@ use base::interface::backoff::{
 use base::interface::exec::{HttpRequest, HttpStream, Network, Origin};
 use futures::stream::{Stream, StreamExt};
 use platform::LocalNetwork;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use url::Url;
 
 /// Anthropic API base URL.
@@ -57,7 +58,7 @@ async fn classify_response(resp: HttpStream) -> Result<HttpStream, AnthropicErro
     if (200..300).contains(&code) {
         return Ok(resp);
     }
-    let retry_after = parse_retry_after(&resp.headers);
+    let retry_after = parse_retry_after(&resp.headers, SystemTime::now());
     let mut anthropic_headers = HashMap::new();
     for (name, value) in &resp.headers {
         let n = name.to_ascii_lowercase();
@@ -80,10 +81,15 @@ async fn classify_response(resp: HttpStream) -> Result<HttpStream, AnthropicErro
             retry_after,
             headers: anthropic_headers,
         },
-        (503 | 529, _) | (_, Some("overloaded_error")) => {
-            AnthropicError::Overloaded { status: code }
-        }
-        _ => AnthropicError::Server { status: code, body },
+        (503 | 529, _) | (_, Some("overloaded_error")) => AnthropicError::Overloaded {
+            status: code,
+            retry_after,
+        },
+        _ => AnthropicError::Server {
+            status: code,
+            body,
+            retry_after,
+        },
     })
 }
 
@@ -109,12 +115,6 @@ async fn drain_to_string(
         }
     }
     String::from_utf8_lossy(&buf).into_owned()
-}
-
-fn parse_retry_after(headers: &BTreeMap<String, String>) -> Option<Duration> {
-    let v = headers.get("retry-after")?;
-    // RFC 7231 retry-after：要么数字秒数，要么 HTTP 时间。我们只支持数字秒数。
-    v.trim().parse::<u64>().ok().map(Duration::from_secs)
 }
 
 /// 一次 HTTP send + classify。失败时按 AnthropicError 分类返回。
@@ -189,14 +189,18 @@ async fn send_with_retry(
         let attempt_result =
             match tokio::time::timeout(STREAM_IDLE_TIMEOUT, send_one(inner, req)).await {
                 Ok(result) => result,
-                Err(_elapsed) => Err(AnthropicError::StreamInterrupted),
+                Err(_elapsed) => Err(AnthropicError::Transport(anyhow::anyhow!(
+                    "no response headers within the idle window"
+                ))),
             };
         let e = match attempt_result {
             Ok(resp) => return Ok(resp),
             Err(e) => e,
         };
         let server_hint = match &e {
-            AnthropicError::RateLimited { retry_after, .. } => *retry_after,
+            AnthropicError::RateLimited { retry_after, .. }
+            | AnthropicError::Overloaded { retry_after, .. }
+            | AnthropicError::Server { retry_after, .. } => *retry_after,
             _ => None,
         };
         let verdict = inner.backoff.after_failure(&FailedAttempt {
@@ -393,6 +397,36 @@ mod tests {
         let _: Arc<dyn AnthropicClient> = Arc::new(c);
     }
 
+    struct SilentNetwork(Arc<std::sync::atomic::AtomicUsize>);
+
+    #[async_trait::async_trait]
+    impl Network for SilentNetwork {
+        async fn send(
+            &self,
+            _req: HttpRequest,
+            _origin: Origin,
+        ) -> Result<base::interface::exec::HttpResponse, base::interface::exec::ExecError> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            futures::future::pending().await
+        }
+
+        fn permits(&self, _host: &str, _origin: Origin) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn no_response_headers_within_the_window_is_retried() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let client = HttpAnthropicClient::new(AuthMode::ApiKey("k".into()))
+            .unwrap()
+            .with_network(Arc::new(SilentNetwork(calls.clone())))
+            .with_backoff(vec![1, 1]);
+        let mut events = client.stream_messages(MessagesRequest::minimal("m", "hi"));
+        assert!(matches!(events.next().await, Some(Err(_))));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
     /// 复现导致 000.c_project 真实录制卡死 150s+ 的场景：底层连接静默卡死（不报
     /// 错、不结束流），没有这层超时的话 `events.next()` 会永远 pending。用
     /// `start_paused` 让 90s 的等待在测试里瞬间"流逝"，不用真的等。
@@ -429,8 +463,7 @@ mod tests {
     }
 
     /// 哪些错误还值得再发一次，用共享策略读得懂的词汇表达。`Other` 是默认策略
-    /// 一律不重试的那一类——注意 `StreamInterrupted` 在这一类里：首字节前的静默
-    /// 超时不重试，因为分不清服务端是没收到请求还是已经在算了。
+    /// 一律不重试的那一类；`StreamInterrupted` 只在流中途出现，在这一类里。
     #[test]
     fn only_pre_stream_failures_classify_as_retryable_kinds() {
         assert_eq!(
@@ -445,7 +478,10 @@ mod tests {
             RequestFailure::RateLimited
         );
         assert_eq!(
-            failure_kind(&AnthropicError::Overloaded { status: 529 }),
+            failure_kind(&AnthropicError::Overloaded {
+                status: 529,
+                retry_after: None
+            }),
             RequestFailure::Overloaded
         );
         for status in [408, 500, 502, 504] {
@@ -453,6 +489,7 @@ mod tests {
                 failure_kind(&AnthropicError::Server {
                     status,
                     body: String::new(),
+                    retry_after: None,
                 }),
                 RequestFailure::Overloaded,
                 "{status}"
@@ -462,10 +499,12 @@ mod tests {
             AnthropicError::Server {
                 status: 400,
                 body: String::new(),
+                retry_after: None,
             },
             AnthropicError::Server {
                 status: 501,
                 body: String::new(),
+                retry_after: None,
             },
             AnthropicError::Auth("bad key".into()),
             AnthropicError::StreamInterrupted,

@@ -18,11 +18,18 @@ pub enum AnthropicError {
 
     /// HTTP 503 / 529 —— 后端过载，可重试
     #[error("overloaded (HTTP {status})")]
-    Overloaded { status: u16 },
+    Overloaded {
+        status: u16,
+        retry_after: Option<Duration>,
+    },
 
     /// 其他 4xx / 5xx。只有 [`is_transient_status`] 认的那几个在首字节前重试
     #[error("server error {status}: {body}")]
-    Server { status: u16, body: String },
+    Server {
+        status: u16,
+        body: String,
+        retry_after: Option<Duration>,
+    },
 
     /// 认证失败（401 / 403）
     #[error("auth: {0}")]

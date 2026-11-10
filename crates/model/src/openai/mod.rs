@@ -24,6 +24,7 @@
 pub mod request;
 pub mod stream;
 
+use crate::retry_after::parse_retry_after;
 use async_trait::async_trait;
 use base::interface::backoff::{
     Backoff, BackoffPolicy, FailedAttempt, LadderBackoff, RequestFailure,
@@ -35,7 +36,7 @@ use base::provider::{ApiType, ThinkingToggle};
 use futures::stream::StreamExt;
 use platform::LocalNetwork;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
@@ -197,10 +198,20 @@ fn chat_completions_url(base_url: &str) -> Result<Url, ModelError> {
         .map_err(|e| ModelError::Internal(format!("invalid base_url '{base_url}': {e}")))
 }
 
+/// A failed attempt: the classified error and whatever delay the server named.
+type AttemptFailure = (ModelError, Option<Duration>);
+
 /// One HTTP attempt, with the response classified into [`ModelError`].
-async fn send_once(inner: &Inner, req: &ChatCompletionsRequest) -> Result<HttpStream, ModelError> {
-    let body = serde_json::to_vec(req)
-        .map_err(|e| ModelError::Internal(format!("serializing the request: {e}")))?;
+async fn send_once(
+    inner: &Inner,
+    req: &ChatCompletionsRequest,
+) -> Result<HttpStream, AttemptFailure> {
+    let body = serde_json::to_vec(req).map_err(|e| {
+        (
+            ModelError::Internal(format!("serializing the request: {e}")),
+            None,
+        )
+    })?;
     let mut builder = HttpRequest::post(inner.endpoint.as_str())
         .header("content-type", "application/json")
         .header("authorization", format!("Bearer {}", inner.api_key));
@@ -213,12 +224,13 @@ async fn send_once(inner: &Inner, req: &ChatCompletionsRequest) -> Result<HttpSt
         .net
         .open(builder.body(body), Origin::Operator)
         .await
-        .map_err(exec_error)?;
+        .map_err(|e| (exec_error(e), None))?;
 
     let code = resp.status;
     if (200..300).contains(&code) {
         return Ok(resp);
     }
+    let hint = parse_retry_after(&resp.headers, SystemTime::now());
     // Truncate: an error body can be an entire HTML error page.
     let body = drain_to_string(resp.body).await;
     let body = if body.len() > 4096 {
@@ -226,7 +238,7 @@ async fn send_once(inner: &Inner, req: &ChatCompletionsRequest) -> Result<HttpSt
     } else {
         body
     };
-    Err(match code {
+    let error = match code {
         401 | 403 => ModelError::Auth(body),
         429 => ModelError::RateLimited,
         503 | 529 => ModelError::Overloaded,
@@ -234,14 +246,13 @@ async fn send_once(inner: &Inner, req: &ChatCompletionsRequest) -> Result<HttpSt
             status: code,
             message: body,
         },
-    })
+    };
+    Err((error, hint))
 }
 
 /// Translate a [`ModelError`] into the backoff policy's vocabulary.
 ///
-/// Chat Completions carries no `retry-after` the way the Messages API does, so
-/// this side never supplies a server hint — the policy that reads one is the
-/// same policy either way.
+/// The server's own `retry-after` hint travels beside the error, not in it.
 fn failure_kind(e: &ModelError) -> RequestFailure {
     match e {
         ModelError::Network(_) => RequestFailure::Transport,
@@ -294,18 +305,19 @@ async fn send_with_retry(
         // cover it. Same bound as the mid-stream idle timeout.
         let result = match tokio::time::timeout(STREAM_IDLE_TIMEOUT, send_once(inner, req)).await {
             Ok(r) => r,
-            Err(_elapsed) => Err(ModelError::Network(
-                "no response headers within the idle window".into(),
+            Err(_elapsed) => Err((
+                ModelError::Network("no response headers within the idle window".into()),
+                None,
             )),
         };
-        let e = match result {
+        let (e, server_hint) = match result {
             Ok(resp) => return Ok(resp),
-            Err(e) => e,
+            Err(failure) => failure,
         };
         let verdict = inner.backoff.after_failure(&FailedAttempt {
             index: attempt,
             failure: failure_kind(&e),
-            server_hint: None,
+            server_hint,
         });
         match verdict {
             Backoff::GiveUp => return Err(e),

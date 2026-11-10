@@ -1952,6 +1952,7 @@ dependencies = [
  "bytes",
  "eventsource-stream",
  "futures",
+ "httpdate",
  "platform",
  "serde",
  "serde_json",

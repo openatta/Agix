@@ -527,7 +527,7 @@ fn map_error(e: crate::error::AnthropicError) -> ModelError {
         AnthropicError::Overloaded { .. } => ModelError::Overloaded,
         AnthropicError::Transport(e) => ModelError::Network(e.to_string()),
         e @ AnthropicError::StreamInterrupted => ModelError::Network(e.to_string()),
-        AnthropicError::Server { status, body } => ModelError::Api {
+        AnthropicError::Server { status, body, .. } => ModelError::Api {
             status,
             message: body,
         },
@@ -1382,10 +1382,14 @@ mod call_failure_tests {
     #[tokio::test]
     async fn a_refused_request_is_the_calls_error() {
         let client = Arc::new(MockAnthropicClient::new());
-        client.push_turn_with_errors(vec![Err(AnthropicError::Overloaded { status: 529 })]);
+        client.push_turn_with_errors(vec![Err(AnthropicError::Overloaded {
+            status: 529,
+            retry_after: None,
+        })]);
         client.push_turn_with_errors(vec![Err(AnthropicError::Server {
             status: 400,
             body: "prompt is too long".into(),
+            retry_after: None,
         })]);
         let model = AnthropicModel::new(client);
         assert!(matches!(
