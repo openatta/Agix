@@ -171,7 +171,7 @@ impl base::interface::tool::Tool for Echo {
     fn description(&self) -> &str {
         "Echo the `say` argument back."
     }
-    fn input_schema(&self) -> serde_json::Value {
+    fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
         serde_json::json!({"type": "object", "properties": {"say": {"type": "string"}}})
     }
     async fn check_permissions(

@@ -9,7 +9,7 @@ use base::interface::model::Model;
 use base::tool::InMemoryToolRegistry;
 use base::tool::PromptContext;
 use base::tool::ToolContext;
-use base::tool::{PermissionDecision, ToolSpec, ValidationResult};
+use base::tool::{PathStyle, PermissionDecision, ToolSpec, ValidationResult};
 use base::tool::{ProgressSender, ToolResult};
 
 use schemars::JsonSchema;
@@ -161,7 +161,7 @@ impl base::tool::Tool for TeamCreateTool {
     fn description(&self) -> &str {
         "Create a team of sub-agents for multi-stage parallel task execution"
     }
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: PathStyle) -> Value {
         serde_json::to_value(schemars::schema_for!(TeamCreateInput)).unwrap_or(Value::Null)
     }
 
@@ -255,7 +255,7 @@ impl base::tool::Tool for TeamDeleteTool {
     fn description(&self) -> &str {
         "Delete a previously created team and clean up its resources"
     }
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: PathStyle) -> Value {
         serde_json::to_value(schemars::schema_for!(TeamDeleteInput)).unwrap_or(Value::Null)
     }
 
@@ -314,7 +314,7 @@ impl base::tool::Tool for TeamListTool {
     fn description(&self) -> &str {
         "List currently active teams created via TeamCreate, with each member's status"
     }
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: PathStyle) -> Value {
         serde_json::to_value(schemars::schema_for!(TeamListInput)).unwrap_or(Value::Null)
     }
 

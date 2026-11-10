@@ -137,8 +137,8 @@ async fn snapshot(tool: &dyn Tool, cwd: &Path) -> Value {
             "leaves_plan_mode": spec.permission.leaves_plan_mode,
         },
         "input_schema": {
-            "absolute": tool.input_schema_for(PathStyle::Absolute),
-            "workspace_relative": tool.input_schema_for(PathStyle::WorkspaceRelative),
+            "absolute": tool.input_schema(PathStyle::Absolute),
+            "workspace_relative": tool.input_schema(PathStyle::WorkspaceRelative),
         },
         "guide": guide,
         "calls": calls,

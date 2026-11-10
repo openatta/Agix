@@ -229,7 +229,7 @@ impl base::tool::Tool for GateTool {
         "gate tool (test tool)"
     }
 
-    fn input_schema(&self) -> serde_json::Value {
+    fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
         serde_json::json!({"type": "object"})
     }
     async fn call(

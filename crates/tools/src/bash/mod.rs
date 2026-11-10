@@ -27,8 +27,8 @@ pub use sandbox::{engine_git, engine_git_for};
 use async_trait::async_trait;
 use base::error::ToolError;
 use base::tool::{
-    CallTraits, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
-    ToolSpec, ValidationResult,
+    CallTraits, PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext,
+    ToolResult, ToolSpec, ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -85,7 +85,7 @@ impl Tool for BashTool {
         "Run a shell command (sandboxed by default)."
     }
 
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: PathStyle) -> Value {
         crate::input_schema::<BashInput>()
     }
 

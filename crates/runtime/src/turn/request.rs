@@ -322,7 +322,7 @@ impl Agent {
             let input_schema = if deferred {
                 serde_json::json!({"type": "object", "properties": {}})
             } else {
-                base::tool::compact_schema(t.input_schema_for(self.config.path_style))
+                base::tool::compact_schema(t.input_schema(self.config.path_style))
             };
             defs.push(base::interface::model::ToolDef {
                 name: t.name().to_string(),

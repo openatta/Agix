@@ -855,7 +855,7 @@ MCP 工具不管 server 报不报 `readOnlyHint` 都询问——那是 server �
 放行用的是同一个函数,所以这几个工具的读在 `acceptEdits` 下不比 `default` 多放行。
 
 `plan` 拒绝一切非只读工具,唯独离开计划模式的那一个(`ExitPlanMode`,
-`Tool::leaves_plan_mode`)照常走规则与询问:宿主批准才退出,回到进入前的模式。除此之外
+`ToolPermissionSpec::leaves_plan_mode`)照常走规则与询问:宿主批准才退出,回到进入前的模式。除此之外
 与 `default` 相同:只读工具自己没放行的调用(读项目外的文件、`WebFetch`、只读的 MCP 工具)
 照样询问。
 

@@ -12,7 +12,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use base::interface::scene::{Scene, ScenePromptContext, TokenBudget};
 use base::prompt::PromptBlock;
-use base::tool::{ProgressSender, Tool, ToolContext, ToolResult, ToolResultContent};
+use base::tool::{PathStyle, ProgressSender, Tool, ToolContext, ToolResult, ToolResultContent};
 use live::{Host, LiveRun, Mode, Watcher};
 use serde_json::{json, Value};
 
@@ -480,7 +480,7 @@ impl Tool for ServiceStatus {
     fn description(&self) -> &str {
         "The current status of one production service, with its open incident if any."
     }
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: PathStyle) -> Value {
         json!({
             "type": "object",
             "required": ["service"],

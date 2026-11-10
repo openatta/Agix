@@ -158,7 +158,7 @@ impl base::tool::Tool for AskingProbe {
         "asking probe (test tool)"
     }
 
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: base::tool::PathStyle) -> Value {
         serde_json::json!({})
     }
     async fn check_permissions(

@@ -409,6 +409,7 @@ pub enum PermissionContentKind {
 /// registers a builtin whose name happens to start that way. An adapter that
 /// knows which server or plugin it is fronting says so here.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum ToolOrigin {
     #[default]
     Builtin,
@@ -455,6 +456,7 @@ impl ToolOrigin {
 /// What a tool says about one call: answered by [`Tool::call_traits`], which
 /// is handed the call's input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct CallTraits {
     pub read_only: bool,
     pub concurrency_safe: bool,
@@ -478,6 +480,7 @@ impl CallTraits {
 
 /// What the permission engine reads off a tool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ToolPermissionSpec {
     /// How the permission engine reads [`Tool::permission_match_content`].
     pub content_kind: PermissionContentKind,
@@ -528,6 +531,7 @@ impl Default for ToolPermissionSpec {
 /// The input schema is not here: it is built on every call and the spec is
 /// asked for far more often than the schema.
 #[derive(Debug, Clone, PartialEq, Default)]
+#[non_exhaustive]
 pub struct ToolSpec {
     /// What `ToolSearch` lists next to the name; the description when unset.
     pub short_description: Option<String>,
@@ -598,107 +602,43 @@ impl ToolSpec {
         self.permission.leaves_plan_mode = yes;
         self
     }
-
-    fn from_methods<T: Tool + ?Sized>(tool: &T) -> Self {
-        if spec_derivation::in_progress::<T>() {
-            return Self::new();
-        }
-        let _deriving = spec_derivation::enter::<T>();
-        let any_input = Value::Null;
-        Self {
-            short_description: tool.short_description(),
-            origin: ToolOrigin::Builtin,
-            traits: CallTraits {
-                read_only: tool.is_read_only(&any_input),
-                concurrency_safe: tool.is_concurrency_safe(&any_input),
-                destructive: tool.is_destructive(&any_input),
-            },
-            callable_from_code: tool.callable_from_code(),
-            code_result: tool.code_result(),
-            needs_dispatch: tool.needs_dispatch(),
-            permission: ToolPermissionSpec {
-                content_kind: tool.permission_content_kind(),
-                self_allow_overrides_mode: tool.self_allow_overrides_mode(),
-                leaves_plan_mode: tool.leaves_plan_mode(),
-            },
-        }
-    }
 }
 
-/// `spec()` defaults to reading the capability methods and they default to
-/// reading `spec()`, so a tool that overrides neither would recurse forever.
-/// While a type's default `spec()` is reading its methods, the ones it did not
-/// override give their plain default instead of asking `spec()` again.
+/// A tool the model can call.
 ///
-/// Keyed by type, not by instance: whether `spec()` is overridden is a fact
-/// about the type, and a wrapper holding its inner tool inline shares its
-/// address.
-mod spec_derivation {
-    use std::any::TypeId;
-    use std::cell::RefCell;
-
-    thread_local! {
-        static DERIVING: RefCell<Vec<TypeId>> = const { RefCell::new(Vec::new()) };
-    }
-
-    pub(super) fn in_progress<T: ?Sized + 'static>() -> bool {
-        DERIVING.with(|d| d.borrow().contains(&TypeId::of::<T>()))
-    }
-
-    pub(super) fn enter<T: ?Sized + 'static>() -> Guard {
-        let id = TypeId::of::<T>();
-        DERIVING.with(|d| d.borrow_mut().push(id));
-        Guard(id)
-    }
-
-    pub(super) struct Guard(TypeId);
-
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            DERIVING.with(|d| {
-                let mut d = d.borrow_mut();
-                if let Some(i) = d.iter().rposition(|t| *t == self.0) {
-                    d.remove(i);
-                }
-            });
-        }
-    }
-}
-
-fn from_spec<T: Tool + ?Sized, R>(
-    tool: &T,
-    field: impl FnOnce(ToolSpec) -> R,
-    plain: impl FnOnce() -> R,
-) -> R {
-    if spec_derivation::in_progress::<T>() {
-        plain()
-    } else {
-        field(tool.spec())
-    }
-}
-
+/// What holds for every call is one [`spec`](Self::spec); what depends on the
+/// call's input is [`call_traits`](Self::call_traits), which defaults to the
+/// spec's answer. `check_permissions`, `permission_match_content` and
+/// `accept_edits_allows` are the permission engine's view of the call.
 #[async_trait]
 pub trait Tool: Send + Sync + 'static {
     fn name(&self) -> &str;
-    fn description(&self) -> &str {
-        ""
-    }
-    fn input_schema(&self) -> Value;
+    fn description(&self) -> &str;
+    /// Everything about this tool that holds for every call — see
+    /// [`ToolSpec`].
+    fn spec(&self) -> ToolSpec;
+    /// The input schema as worded for a session's [`PathStyle`]; only tools
+    /// whose argument docs mention paths read `style`.
+    fn input_schema(&self, style: PathStyle) -> Value;
 
-    /// [`input_schema`](Self::input_schema) as worded for a session's
-    /// [`PathStyle`]; only tools whose argument docs mention paths differ.
-    fn input_schema_for(&self, _style: PathStyle) -> Value {
-        self.input_schema()
+    /// This tool's detailed usage guide, when it has one that says more than
+    /// `description()` already does.
+    ///
+    /// `ToolDef`s carry only `description()`; the full guides total ~85 KB
+    /// across the built-in set, too much to pay on every API call, so the model
+    /// fetches them on demand via `ToolSearch{query: "select:<name>"}`.
+    async fn guide(&self, _ctx: &PromptContext) -> Option<String> {
+        None
     }
 
-    async fn prompt(&self, _: &PromptContext) -> String {
-        self.description().to_string()
+    /// What this call reads, writes and may run beside; `spec().traits` unless
+    /// the answer depends on the input.
+    fn call_traits(&self, _input: &Value) -> CallTraits {
+        self.spec().traits
     }
-    fn self_allow_overrides_mode(&self) -> bool {
-        from_spec(self, |s| s.permission.self_allow_overrides_mode, || false)
-    }
-    fn leaves_plan_mode(&self) -> bool {
-        from_spec(self, |s| s.permission.leaves_plan_mode, || false)
+
+    fn permission_match_content(&self, _: &Value) -> Option<String> {
+        None
     }
 
     /// Whether `acceptEdits` lets this call through when neither the tool
@@ -711,76 +651,11 @@ pub trait Tool: Send + Sync + 'static {
         self.call_traits(input).read_only
     }
 
-    async fn detailed_prompt(&self, ctx: &PromptContext) -> Option<String> {
-        let body = self.prompt(ctx).await;
-        let trimmed = body.trim();
-        if trimmed.is_empty() || trimmed == self.description().trim() {
-            return None;
-        }
-        Some(body)
-    }
-
-    /// This tool's detailed usage guide, when it has one that says more than
-    /// `description()` already does.
-    ///
-    /// `ToolDef`s carry only `description()`; the full guides total ~85 KB
-    /// across the built-in set, too much to pay on every API call, so the model
-    /// fetches them on demand via `ToolSearch{query: "select:<name>"}`.
-    async fn guide(&self, ctx: &PromptContext) -> Option<String> {
-        self.detailed_prompt(ctx).await
-    }
-
-    /// Everything about this tool that holds for every call — see
-    /// [`ToolSpec`].
-    fn spec(&self) -> ToolSpec {
-        ToolSpec::from_methods(self)
-    }
-
-    /// What this call reads, writes and may run beside; `spec().traits` unless
-    /// the answer depends on the input.
-    fn call_traits(&self, input: &Value) -> CallTraits {
-        CallTraits {
-            read_only: self.is_read_only(input),
-            concurrency_safe: self.is_concurrency_safe(input),
-            destructive: self.is_destructive(input),
-        }
-    }
-    fn is_read_only(&self, _: &Value) -> bool {
-        from_spec(self, |s| s.traits.read_only, || false)
-    }
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        from_spec(self, |s| s.traits.concurrency_safe, || false)
-    }
-    fn is_destructive(&self, _: &Value) -> bool {
-        from_spec(self, |s| s.traits.destructive, || false)
-    }
-    fn callable_from_code(&self) -> bool {
-        from_spec(self, |s| s.callable_from_code, || false)
-    }
-    fn code_result(&self) -> Option<&'static str> {
-        from_spec(self, |s| s.code_result, || None)
-    }
-    fn needs_dispatch(&self) -> bool {
-        from_spec(self, |s| s.needs_dispatch, || false)
-    }
-    fn short_description(&self) -> Option<String> {
-        from_spec(self, |s| s.short_description, || None)
-    }
-    fn permission_match_content(&self, _: &Value) -> Option<String> {
-        None
-    }
-    fn permission_content_kind(&self) -> PermissionContentKind {
-        from_spec(
-            self,
-            |s| s.permission.content_kind,
-            || PermissionContentKind::Opaque,
-        )
+    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
+        PermissionDecision::allow()
     }
     async fn validate_input(&self, _: &Value, _: &ToolContext) -> ValidationResult {
         ValidationResult::Ok
-    }
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        PermissionDecision::allow()
     }
     async fn call(
         &self,
@@ -1172,14 +1047,14 @@ mod tests {
         fn name(&self) -> &str {
             "f"
         }
-        fn input_schema(&self) -> Value {
+        fn description(&self) -> &str {
+            "f"
+        }
+        fn spec(&self) -> ToolSpec {
+            ToolSpec::new().read_only(true).concurrency_safe(true)
+        }
+        fn input_schema(&self, _: PathStyle) -> Value {
             serde_json::json!({})
-        }
-        fn is_read_only(&self, _: &Value) -> bool {
-            true
-        }
-        fn is_concurrency_safe(&self, _: &Value) -> bool {
-            true
         }
         async fn call(
             &self,
@@ -1220,45 +1095,20 @@ mod spec_tests {
         Ok(ToolResult::text("ok"))
     }
 
-    struct Silent;
+    struct Plain;
     #[async_trait]
-    impl Tool for Silent {
+    impl Tool for Plain {
         fn name(&self) -> &str {
-            "Silent"
-        }
-        fn input_schema(&self) -> Value {
-            serde_json::json!({"type": "object"})
-        }
-        async fn call(
-            &self,
-            _: Value,
-            _: ToolContext,
-            _: ProgressSender,
-        ) -> Result<ToolResult, ToolError> {
-            unreachable_call().await
-        }
-    }
-
-    struct Legacy;
-    #[async_trait]
-    impl Tool for Legacy {
-        fn name(&self) -> &str {
-            "Legacy"
+            "Plain"
         }
         fn description(&self) -> &str {
-            "written against the methods"
+            "says nothing about itself"
         }
-        fn input_schema(&self) -> Value {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec::new()
+        }
+        fn input_schema(&self, _: PathStyle) -> Value {
             serde_json::json!({"type": "object"})
-        }
-        fn is_read_only(&self, _: &Value) -> bool {
-            true
-        }
-        fn code_result(&self) -> Option<&'static str> {
-            Some("{n: number}")
-        }
-        fn permission_content_kind(&self) -> PermissionContentKind {
-            PermissionContentKind::ReadPath
         }
         async fn call(
             &self,
@@ -1276,7 +1126,10 @@ mod spec_tests {
         fn name(&self) -> &str {
             "Declared"
         }
-        fn input_schema(&self) -> Value {
+        fn description(&self) -> &str {
+            "declares a spec"
+        }
+        fn input_schema(&self, _: PathStyle) -> Value {
             serde_json::json!({"type": "object"})
         }
         fn spec(&self) -> ToolSpec {
@@ -1301,23 +1154,16 @@ mod spec_tests {
         }
     }
 
-    #[test]
-    fn a_tool_that_overrides_nothing_gets_the_defaults_without_recursing() {
-        assert_eq!(Silent.spec(), ToolSpec::new());
-        assert_eq!(Silent.call_traits(&Value::Null), CallTraits::default());
-    }
-
-    #[test]
-    fn the_default_spec_reads_the_methods_a_tool_overrides() {
-        let spec = Legacy.spec();
-        assert!(spec.traits.read_only);
-        assert_eq!(spec.code_result, Some("{n: number}"));
+    #[tokio::test]
+    async fn a_tool_that_declares_nothing_gets_the_defaults() {
+        assert_eq!(Plain.spec(), ToolSpec::new());
+        assert_eq!(Plain.call_traits(&Value::Null), CallTraits::default());
+        assert_eq!(Plain.spec().origin, ToolOrigin::Builtin);
         assert_eq!(
-            spec.permission.content_kind,
-            PermissionContentKind::ReadPath
+            Plain.spec().permission.content_kind,
+            PermissionContentKind::Opaque
         );
-        assert!(!spec.traits.concurrency_safe);
-        assert!(Legacy.call_traits(&Value::Null).read_only);
+        assert!(Plain.guide(&PromptContext::default()).await.is_none());
     }
 
     #[test]
@@ -1455,7 +1301,10 @@ mod registry_contract_tests {
         fn description(&self) -> &str {
             "stub"
         }
-        fn input_schema(&self) -> Value {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec::new()
+        }
+        fn input_schema(&self, _: PathStyle) -> Value {
             serde_json::json!({"type": "object"})
         }
         async fn call(

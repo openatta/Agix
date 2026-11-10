@@ -17,7 +17,8 @@
 use base::interface::model::{Model, Usage};
 use base::interface::scene::Scene;
 use base::interface::tool::{
-    InMemoryToolRegistry, PermissionDecision, ProgressSender, Tool, ToolContext, ToolResult,
+    InMemoryToolRegistry, PathStyle, PermissionDecision, ProgressSender, Tool, ToolContext,
+    ToolResult,
 };
 use base::settings::{PathSettings, PermissionMode, Settings, ThinkingMode};
 use runtime::agent::Builder;
@@ -166,7 +167,7 @@ impl Tool for Echo {
     fn description(&self) -> &str {
         "Echo the `say` argument back."
     }
-    fn input_schema(&self) -> serde_json::Value {
+    fn input_schema(&self, _: PathStyle) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {"say": {"type": "string"}},

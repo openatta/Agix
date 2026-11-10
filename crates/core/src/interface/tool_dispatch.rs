@@ -13,7 +13,7 @@ pub struct CallableTool {
     pub name: String,
     pub description: String,
     pub input_schema: Value,
-    /// See `Tool::code_result`.
+    /// See `ToolSpec::code_result`.
     pub result: Option<String>,
 }
 

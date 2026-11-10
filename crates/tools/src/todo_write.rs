@@ -7,8 +7,8 @@ use async_trait::async_trait;
 use base::context::TodoStatus;
 use base::error::ToolError;
 use base::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
-    ValidationResult,
+    PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
+    ToolSpec, ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -41,7 +41,7 @@ impl Tool for TodoWriteTool {
         "Maintain a structured task list for the current turn."
     }
 
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: PathStyle) -> Value {
         crate::input_schema::<TodoWriteInput>()
     }
 

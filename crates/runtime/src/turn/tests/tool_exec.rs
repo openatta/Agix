@@ -22,7 +22,7 @@ impl base::tool::Tool for ProbeTool {
         "probe tool (test tool)"
     }
 
-    fn input_schema(&self) -> serde_json::Value {
+    fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
         serde_json::json!({"type": "object"})
     }
     async fn call(
@@ -53,7 +53,7 @@ impl base::tool::Tool for PickyTool {
         "picky tool (test tool)"
     }
 
-    fn input_schema(&self) -> serde_json::Value {
+    fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
         serde_json::json!({"type": "object"})
     }
     async fn validate_input(
@@ -90,7 +90,7 @@ impl base::tool::Tool for FailingTool {
         "failing tool (test tool)"
     }
 
-    fn input_schema(&self) -> serde_json::Value {
+    fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
         serde_json::json!({"type": "object"})
     }
     async fn call(
@@ -403,7 +403,7 @@ impl base::tool::Tool for NeedsPath {
         "needs path (test tool)"
     }
 
-    fn input_schema(&self) -> serde_json::Value {
+    fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
         serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}},
                            "required": ["path"]})
     }
@@ -550,7 +550,7 @@ impl base::tool::Tool for FakePushNotification {
         "fake push notification (test tool)"
     }
 
-    fn input_schema(&self) -> serde_json::Value {
+    fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
         serde_json::json!({"type": "object"})
     }
     async fn call(
@@ -1020,7 +1020,7 @@ impl base::tool::Tool for ContentProbeTool {
         "content probe tool (test tool)"
     }
 
-    fn input_schema(&self) -> serde_json::Value {
+    fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
         serde_json::json!({"type": "object"})
     }
     fn permission_match_content(&self, _input: &serde_json::Value) -> Option<String> {

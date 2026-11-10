@@ -3,7 +3,9 @@
 //! Rust also registers — whichever of the two the builder was handed first.
 
 use base::interface::prompt_registry::{InMemoryPromptRegistry, PromptRegistry, RegisteredBlock};
-use base::interface::tool::{PermissionDecision, ProgressSender, Tool, ToolContext, ToolResult};
+use base::interface::tool::{
+    PathStyle, PermissionDecision, ProgressSender, Tool, ToolContext, ToolResult,
+};
 use base::interface::tool_middleware::{
     NextDispatch, ToolCall, ToolExec, ToolMiddleware, ToolOutcome,
 };
@@ -182,7 +184,7 @@ impl Tool for ScriptEcho {
     fn description(&self) -> &str {
         "Echo the `say` argument back."
     }
-    fn input_schema(&self) -> serde_json::Value {
+    fn input_schema(&self, _: PathStyle) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {"say": {"type": "string"}},
@@ -235,7 +237,7 @@ impl Tool for PluginEcho {
     fn description(&self) -> &str {
         "Echo the `say` argument back, from a plugin."
     }
-    fn input_schema(&self) -> serde_json::Value {
+    fn input_schema(&self, _: PathStyle) -> serde_json::Value {
         serde_json::json!({"type": "object", "properties": {"say": {"type": "string"}}})
     }
     async fn call(

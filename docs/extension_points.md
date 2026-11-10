@@ -101,39 +101,41 @@ let (agent, events, input) = Builder::new().tools(tools).model(model).build()?;
 就被取回来,模型也就看不见它了。`base::tool::LayeredToolRegistry` 是一个做好的
 范例——它包住另一个 registry,在不改动对方的前提下把工具藏起来。
 
-#### 实现一个工具:推荐实现 `spec()`
+#### 实现一个工具
 
-`Tool` 必须实现的只有 `name`、`input_schema`、`call`。其余描述工具自身、与这次调用的
-输入无关的东西——只读、并发安全、破坏性、中断方式、是否 deferred、能否被程序调用、
-权限匹配内容的种类、来源等——推荐收进一个 `spec()`,返回 `base::tool::ToolSpec`:
+`Tool` 必须实现的是 `name`、`description`、`spec`、`input_schema`、`call` 五个方法。
+与这次调用的输入无关的东西——只读、并发安全、破坏性、能否被程序调用、权限匹配内容的
+种类、来源等——都在 `spec()` 里声明,返回 `base::tool::ToolSpec`,用 `ToolSpec::new()`
+加链式 setter 构造:
 
 ```rust
 impl Tool for FileTicketTool {
     fn name(&self) -> &str { "FileTicket" }
     fn description(&self) -> &str { "File a ticket in the tracker." }
-    fn input_schema(&self) -> Value { /* … */ }
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            concurrency_safe: true,
-            callable_from_code: true,
-            ..ToolSpec::defaults_for(self)   // 名字、描述取自上面两个方法,其余取缺省
-        }
+        ToolSpec::new().concurrency_safe(true).callable_from_code(true)
     }
-    // validate_input / check_permissions / call …
+    fn input_schema(&self, _style: PathStyle) -> Value { /* … */ }
+    // guide / call_traits / validate_input / check_permissions / call …
 }
 ```
 
-- `is_read_only`、`is_deferred`、`permission_content_kind` 这些方法的缺省实现读的就是
-  `spec()`,实现了 `spec()` 就不用再逐个覆写它们。两种写法都能编译、行为一样:只覆写
-  这些方法的老写法,`spec()` 的缺省实现会从方法里读出来。
-- **包一层别的工具的,转发 `spec()`**:`fn spec(&self) -> ToolSpec { self.inner.spec() }`,
-  要改的字段用 `ToolSpec { deferred: true, ..self.inner.spec() }` 覆盖。逐个转发方法
-  的包装器每加一个能力就要记得多转发一个,漏掉的那个会悄悄变回缺省值。
-- 答案取决于输入的(比如 `Bash` 按命令判断只读),照旧覆写那个方法,`spec()` 里对应的
-  字段写保守的答案;包装器对这几个带输入的方法(`is_read_only`、`is_concurrency_safe`、
-  `is_destructive`、`interrupt_behavior`,以及 `permission_match_content`、
-  `affected_paths`、`validate_input`、`check_permissions`、`accept_edits_allows`、`call`)仍要逐个转发。
-- `spec()` 里不要调用这些能力方法:它们的缺省实现反过来读 `spec()`。
+- `ToolSpec` 的字段按含义分组:`traits`(`CallTraits`:只读、并发安全、破坏性)、
+  `permission`(`ToolPermissionSpec`:匹配内容的种类、自判放行是否压过 plan/dontAsk 模式、
+  是不是退出 plan 模式的那一次调用)、`origin`(`ToolOrigin`:内建、MCP server、插件),
+  以及 `short_description`、`callable_from_code`、`code_result`、`needs_dispatch`。
+  这几个类型都带 `#[non_exhaustive]`,crate 外只能用 setter 构造,读字段不受影响。
+- **答案取决于输入的**(比如 `Bash` 按命令判断只读),覆写
+  `call_traits(&self, input) -> CallTraits`,`spec()` 里写不看输入时的保守答案。缺省的
+  `call_traits` 就是 `spec().traits`。
+- `input_schema` 收到会话的 `PathStyle`;参数说明里不提路径的工具忽略它。
+- **详细用法指南**写在 `guide()` 里,返回 `Some(..)`;比 `description()` 多不出什么的就
+  不实现(缺省 `None`)。请求的工具表只带 `description()`,有指南的工具后面附一行
+  `ToolSearch{"query":"select:<name>"}`,模型要看时再取。
+- 是否延迟(只发名字和描述、schema 经 `ToolSearch` 取)是会话的事,由场景的
+  `deferred_tools()` 决定,工具自己不声明。
+- `permission_match_content`、`accept_edits_allows`、`check_permissions` 是权限引擎看
+  这次调用的三个入口;`accept_edits_allows` 缺省读 `call_traits(input).read_only`。
 
 #### 报进度:`call` 的 `progress`
 
@@ -177,12 +179,10 @@ async fn call(&self, input: Value, ctx: ToolContext, progress: ProgressSender)
 ```rust
 impl Tool for FileTicketTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            callable_from_code: true,
-            code_result: Some("{id: string, status: string}"),   // 程序拿到的结构化结果的形状
-            concurrency_safe: true,                               // 程序里可并行
-            ..ToolSpec::defaults_for(self)
-        }
+        ToolSpec::new()
+            .callable_from_code(true)
+            .code_result("{id: string, status: string}") // 程序拿到的结构化结果的形状
+            .concurrency_safe(true) // 程序里可并行
     }
     // …
 }
@@ -193,7 +193,7 @@ impl Tool for FileTicketTool {
 - `code_result` 写给模型看:它出现在 `RunCode` 使用指南里那行签名的 `→` 后面。工具的
   `ToolResult::structured_content` 有值时程序拿到的是那个对象,否则是和模型直接调用时
   同一段文本;给了 `code_result` 就要真的给 `structured_content`。
-- `is_concurrency_safe` 在程序里的含义和模型一次发多个调用时相同:是的同时至多 8 个,
+- `call_traits(input).concurrency_safe` 在程序里的含义和模型一次发多个调用时相同:是的同时至多 8 个,
   不是的按提交顺序一个个跑。
 - 程序里的每次调用和直接调用走同一条派发路径:参数校验、`PreToolUse` / `PostToolUse`、
   中间件、遥测、权限。权限判定为"询问"时这次调用直接失败——程序跑到一半不弹询问。

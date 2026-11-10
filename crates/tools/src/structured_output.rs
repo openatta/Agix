@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use base::error::ToolError;
 use base::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
-    ValidationResult,
+    PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
+    ToolSpec, ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -53,7 +53,7 @@ impl Tool for StructuredOutputTool {
          and not the whole result as one string."
     }
 
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: PathStyle) -> Value {
         match &self.schema {
             Some(schema) => schema.clone(),
             None => crate::input_schema::<StructuredOutputInput>(),

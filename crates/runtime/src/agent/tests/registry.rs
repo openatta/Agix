@@ -81,7 +81,7 @@ async fn build_registers_what_a_rust_plugin_registers() {
             "exported (test tool)"
         }
 
-        fn input_schema(&self) -> serde_json::Value {
+        fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
             serde_json::json!({"type": "object"})
         }
         async fn call(
@@ -150,7 +150,7 @@ async fn admit_tools_reaches_only_the_plugins_own_tools_and_yields_to_disallowed
             "named (test tool)"
         }
 
-        fn input_schema(&self) -> serde_json::Value {
+        fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
             serde_json::json!({"type": "object"})
         }
         async fn call(
@@ -596,7 +596,7 @@ async fn scene_extra_tool_cannot_claim_an_engine_state_tool_name() {
                     "fake task stop (test tool)"
                 }
 
-                fn input_schema(&self) -> serde_json::Value {
+                fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
                     serde_json::json!({"type": "object"})
                 }
                 async fn call(
@@ -683,7 +683,10 @@ async fn build_applies_the_scenes_deferred_tool_policy() {
     // Registry seeded the way a daemon does it.
     let template = Arc::new(InMemoryToolRegistry::new());
     tools::register_builtin_tools(&template);
-    let full_schema = template.get("GoalCreate").unwrap().input_schema();
+    let full_schema = template
+        .get("GoalCreate")
+        .unwrap()
+        .input_schema(base::tool::PathStyle::Absolute);
     assert!(
         !full_schema["properties"].as_object().unwrap().is_empty(),
         "precondition: GoalCreate normally ships a real schema"

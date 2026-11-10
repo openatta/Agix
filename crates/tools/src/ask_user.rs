@@ -8,8 +8,8 @@ use async_trait::async_trait;
 use base::error::ToolError;
 use base::interface::elicitation::{ElicitKind, ElicitOption, ElicitOutcome, ElicitRequest};
 use base::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
-    ValidationResult,
+    PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
+    ToolSpec, ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -48,7 +48,7 @@ impl Tool for AskUserQuestionTool {
         "Ask the user a question with multiple-choice options."
     }
 
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: PathStyle) -> Value {
         crate::input_schema::<AskUserQuestionInput>()
     }
     async fn guide(&self, _: &PromptContext) -> Option<String> {

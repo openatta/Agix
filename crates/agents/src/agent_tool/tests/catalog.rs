@@ -484,7 +484,7 @@ impl base::tool::Tool for NamedTool {
         "named tool (test tool)"
     }
 
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: base::tool::PathStyle) -> Value {
         serde_json::json!({})
     }
     async fn call(

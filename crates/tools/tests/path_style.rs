@@ -102,10 +102,10 @@ async fn default_style_leaves_schemas_and_guide_as_generated() {
         (&FileEditTool, "The absolute path to the file to edit."),
     ] {
         assert_eq!(
-            tool.input_schema_for(PathStyle::Absolute),
-            tool.input_schema()
+            tool.input_schema(PathStyle::Absolute),
+            tool.input_schema(PathStyle::Absolute)
         );
-        let schema = tool.input_schema_for(PathStyle::Absolute);
+        let schema = tool.input_schema(PathStyle::Absolute);
         assert!(schema["properties"]["file_path"]["description"]
             .as_str()
             .unwrap()
@@ -177,7 +177,7 @@ async fn workspace_relative_keeps_paths_outside_the_working_directory_absolute()
 #[tokio::test]
 async fn workspace_relative_rewords_argument_docs_and_the_read_guide() {
     for tool in [&FileReadTool as &dyn Tool, &FileWriteTool, &FileEditTool] {
-        let schema = tool.input_schema_for(PathStyle::WorkspaceRelative);
+        let schema = tool.input_schema(PathStyle::WorkspaceRelative);
         let doc = schema["properties"]["file_path"]["description"]
             .as_str()
             .unwrap();

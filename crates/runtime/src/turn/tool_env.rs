@@ -140,7 +140,7 @@ impl base::interface::tool_dispatch::ToolDispatch for SubCallDispatcher {
                             .short_description
                             .unwrap_or_else(|| t.description().to_string()),
                         input_schema: base::tool::compact_schema(
-                            t.input_schema_for(self.ctx.config.path_style),
+                            t.input_schema(self.ctx.config.path_style),
                         ),
                         result: spec.code_result.map(str::to_string),
                     })

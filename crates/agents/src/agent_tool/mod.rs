@@ -27,7 +27,7 @@ use base::settings::{
 use base::tool::ProgressSender;
 use base::tool::ToolContext;
 use base::tool::ToolResultContent;
-use base::tool::{InMemoryToolRegistry, ToolSpec};
+use base::tool::{InMemoryToolRegistry, PathStyle, ToolSpec};
 use history::store::HistoryStore;
 use runtime::agent::{Agent, Builder, EventReceiver, InputMessage, InputSender};
 use schemars::JsonSchema;
@@ -487,7 +487,7 @@ impl base::tool::Tool for AgentTool {
     fn description(&self) -> &str {
         &self.inner.description
     }
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: PathStyle) -> Value {
         serde_json::to_value(schemars::schema_for!(AgentInput)).unwrap_or(Value::Null)
     }
     async fn guide(&self, _: &base::tool::PromptContext) -> Option<String> {

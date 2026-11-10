@@ -31,7 +31,9 @@
 //! reason.
 
 use base::interface::script::ScriptOutcome;
-use base::interface::tool::{PermissionDecision, ProgressSender, Tool, ToolContext, ToolResult};
+use base::interface::tool::{
+    PathStyle, PermissionDecision, ProgressSender, Tool, ToolContext, ToolResult,
+};
 use base::memory::{DurableMemory, MemoryStore, MemoryType};
 use std::sync::Arc;
 use test_runner::script_session::{drive, Ran, Session};
@@ -783,7 +785,7 @@ impl Tool for ScriptEcho {
     fn description(&self) -> &str {
         "Echo the `say` argument back."
     }
-    fn input_schema(&self) -> serde_json::Value {
+    fn input_schema(&self, _: PathStyle) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {"say": {"type": "string"}},

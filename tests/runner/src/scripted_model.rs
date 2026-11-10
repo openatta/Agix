@@ -59,7 +59,7 @@ pub enum Reply {
         input: Value,
     },
     /// Several tool calls in a single assistant message. Whether they run
-    /// concurrently is the engine's decision (`Tool::is_concurrency_safe`),
+    /// concurrently is the engine's decision (`Tool::call_traits`),
     /// which is exactly what the trace records.
     Tools(Vec<(&'static str, &'static str, Value)>),
     /// Text, then a stop reason of the script's choosing — `max_tokens` is the

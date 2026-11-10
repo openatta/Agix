@@ -60,7 +60,7 @@ impl base::tool::Tool for Echo {
     fn description(&self) -> &str {
         "Answers with its own name."
     }
-    fn input_schema(&self) -> serde_json::Value {
+    fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
         json!({"type": "object"})
     }
     async fn call(

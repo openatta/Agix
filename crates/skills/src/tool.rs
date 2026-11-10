@@ -9,7 +9,8 @@ use base::error::ToolError;
 use base::interface::agent_spawner::{AgentSpawner, SpawnMode, SpawnRequest};
 use base::interface::skill_catalog::SkillExpansion;
 use base::tool::{
-    ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolResultContent, ToolSpec,
+    PathStyle, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolResultContent,
+    ToolSpec,
 };
 use serde_json::Value;
 use std::sync::Arc;
@@ -92,7 +93,7 @@ impl Tool for SkillTool {
     fn description(&self) -> &str {
         "Execute a skill within the main conversation. Skills are loaded from ~/.agix/skills/ (global), ~/.agix/scenes/<scene>/skills/ (scene override), and <project>/.agents/skills/ (project-level). Only skills listed in the user-invocable section are available."
     }
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: PathStyle) -> Value {
         serde_json::json!({
             "type": "object",
             "properties": {
@@ -1146,7 +1147,7 @@ mod tests {
                 "fake bash tool (test tool)"
             }
 
-            fn input_schema(&self) -> Value {
+            fn input_schema(&self, _: PathStyle) -> Value {
                 serde_json::json!({"type": "object"})
             }
             async fn guide(&self, _: &PromptContext) -> Option<String> {
@@ -1380,7 +1381,7 @@ mod tests {
                 "asking bash (test tool)"
             }
 
-            fn input_schema(&self) -> Value {
+            fn input_schema(&self, _: PathStyle) -> Value {
                 serde_json::json!({"type": "object"})
             }
             async fn guide(&self, _: &PromptContext) -> Option<String> {

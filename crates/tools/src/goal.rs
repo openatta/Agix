@@ -5,7 +5,9 @@
 use async_trait::async_trait;
 use base::context::goal::{GoalAction, GoalError, TurnOrigin};
 use base::error::ToolError;
-use base::tool::{PermissionDecision, ProgressSender, Tool, ToolContext, ToolResult, ToolSpec};
+use base::tool::{
+    PathStyle, PermissionDecision, ProgressSender, Tool, ToolContext, ToolResult, ToolSpec,
+};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
@@ -87,7 +89,7 @@ impl Tool for GoalCreateTool {
          complete. Use it when the user's request is a long-running objective that one turn \
          won't finish, even if they don't say \"goal\"; not for single-turn work."
     }
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: PathStyle) -> Value {
         crate::input_schema::<GoalCreateInput>()
     }
 
@@ -134,7 +136,7 @@ impl Tool for GoalGetTool {
     fn description(&self) -> &str {
         "Read this session's goal, including the id and revision GoalUpdate needs."
     }
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: PathStyle) -> Value {
         crate::input_schema::<GoalGetInput>()
     }
 
@@ -174,7 +176,7 @@ impl Tool for GoalUpdateTool {
          only when the whole objective is achieved; difficulty or remaining work is not \
          blocked."
     }
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: PathStyle) -> Value {
         crate::input_schema::<GoalUpdateInput>()
     }
 

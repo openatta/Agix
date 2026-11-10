@@ -70,7 +70,7 @@ return reviews.map((r, i) => ({ module: args.modules[i], ...(r.status === "fulfi
 
 ## 3. 哪些工具能从代码里调
 
-由工具自己声明（`Tool::callable_from_code`，缺省否）。**干活、返回数据的**声明可以；
+由工具自己声明（`ToolSpec::callable_from_code`，缺省否）。**干活、返回数据的**声明可以；
 **和对话或人打交道的**不声明：
 
 | 可以 | 不可以 |
@@ -81,7 +81,7 @@ return reviews.map((r, i) => ({ module: args.modules[i], ...(r.status === "fulfi
 | MCP 工具（`mcp__*`） | `Team*`、`Task*`、`Monitor`、`Cron*`、`PushNotification`、`StructuredOutput`、worktree |
 
 使用指南里列出本会话可调的那些，一行一个签名，由各工具的 schema 与它声明的返回形状
-（`Tool::code_result`）生成；场景过滤掉的不出现（工具描述里只列调用形状，见 §6）：
+（`ToolSpec::code_result`）生成；场景过滤掉的不出现（工具描述里只列调用形状，见 §6）：
 
 ```
 tools.Glob({pattern, path?, …}) → {paths: string[], more: number} — Find files …

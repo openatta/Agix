@@ -6,8 +6,8 @@ use async_trait::async_trait;
 use base::error::ToolError;
 use base::tool::Tool;
 use base::tool::{
-    PermissionDecision, ProgressSender, PromptContext, ToolContext, ToolResult, ToolResultContent,
-    ToolSpec, ValidationResult,
+    PathStyle, PermissionDecision, ProgressSender, PromptContext, ToolContext, ToolResult,
+    ToolResultContent, ToolSpec, ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -31,7 +31,7 @@ impl Tool for SleepTool {
         "Sleep"
     }
 
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: PathStyle) -> Value {
         crate::input_schema::<SleepInput>()
     }
 

@@ -15,8 +15,8 @@ use base::context::{RunningStatus, RunningTask, SessionState, TaskType};
 use base::error::ToolError;
 use base::interface::tool_dispatch::{CallableTool, ToolDispatch};
 use base::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolRegistry, ToolResult,
-    ToolSpec,
+    PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolRegistry,
+    ToolResult, ToolSpec,
 };
 use engine::{CallRequest, Host, Run, ScriptEnd};
 use schemars::JsonSchema;
@@ -118,7 +118,7 @@ impl RunCodeTool {
                         .short_description
                         .unwrap_or_else(|| t.description().to_string()),
                     input_schema: base::tool::compact_schema(
-                        t.input_schema_for(base::tool::PathStyle::Absolute),
+                        t.input_schema(base::tool::PathStyle::Absolute),
                     ),
                     result: spec.code_result.map(str::to_string),
                 })
@@ -277,7 +277,7 @@ impl Tool for RunCodeTool {
     fn description(&self) -> &str {
         &self.description
     }
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: PathStyle) -> Value {
         serde_json::to_value(schemars::schema_for!(RunCodeInput)).unwrap_or(Value::Null)
     }
     async fn guide(&self, _: &PromptContext) -> Option<String> {

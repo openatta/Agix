@@ -280,7 +280,7 @@ async fn a_result_transformer_is_the_last_thing_to_touch_a_tool_result() {
             "leaks a token tool (test tool)"
         }
 
-        fn input_schema(&self) -> serde_json::Value {
+        fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
             serde_json::json!({"type": "object"})
         }
         async fn call(
@@ -704,7 +704,7 @@ async fn the_egress_policy_reaches_the_tool_that_has_to_obey_it() {
             "egress probe (test tool)"
         }
 
-        fn input_schema(&self) -> serde_json::Value {
+        fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
             serde_json::json!({"type": "object"})
         }
         async fn call(

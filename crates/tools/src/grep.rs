@@ -9,8 +9,8 @@ use async_trait::async_trait;
 use base::error::ToolError;
 use base::interface::exec::FileSystem;
 use base::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
-    ValidationResult,
+    PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
+    ToolSpec, ValidationResult,
 };
 use ignore::{WalkBuilder, WalkState};
 use schemars::JsonSchema;
@@ -85,7 +85,7 @@ impl Tool for GrepTool {
         "Search file contents with regex (ripgrep-style)."
     }
 
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: PathStyle) -> Value {
         crate::input_schema::<GrepInput>()
     }
 
@@ -680,7 +680,7 @@ mod tests {
 
     #[test]
     fn input_schema_is_object_with_pattern_field() {
-        let schema = GrepTool.input_schema();
+        let schema = GrepTool.input_schema(base::tool::PathStyle::Absolute);
         let s = serde_json::to_value(&schema).unwrap();
         assert_eq!(s["type"], "object");
         assert!(s["properties"].get("pattern").is_some());

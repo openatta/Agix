@@ -305,7 +305,7 @@ mod tests {
             "fake tool (test tool)"
         }
 
-        fn input_schema(&self) -> serde_json::Value {
+        fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
             json!({"type": "object"})
         }
         async fn guide(&self, _: &base::tool::PromptContext) -> Option<String> {
@@ -356,7 +356,7 @@ mod tests {
             "content aware fake tool (test tool)"
         }
 
-        fn input_schema(&self) -> serde_json::Value {
+        fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
             json!({"type": "object"})
         }
         async fn guide(&self, _: &base::tool::PromptContext) -> Option<String> {
@@ -532,7 +532,7 @@ mod tests {
             "hand in (test tool)"
         }
 
-        fn input_schema(&self) -> serde_json::Value {
+        fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
             json!({"type": "object"})
         }
         async fn guide(&self, _: &base::tool::PromptContext) -> Option<String> {
@@ -996,7 +996,7 @@ mod tests {
             "filesystem probe (test tool)"
         }
 
-        fn input_schema(&self) -> serde_json::Value {
+        fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
             json!({"type": "object"})
         }
         async fn check_permissions(

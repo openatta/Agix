@@ -20,7 +20,9 @@
 //! a build that *has* the carrier cannot observe the build that does not.
 
 use base::interface::script::{ScriptError, ScriptOutcome};
-use base::interface::tool::{PermissionDecision, ProgressSender, Tool, ToolContext, ToolResult};
+use base::interface::tool::{
+    PathStyle, PermissionDecision, ProgressSender, Tool, ToolContext, ToolResult,
+};
 use std::sync::Arc;
 use test_runner::script_session::{drive, Ran, Session};
 use test_runner::scripted_model::Reply;
@@ -639,7 +641,7 @@ impl Tool for Guarded {
     fn description(&self) -> &str {
         "Does nothing, but insists on being approved first."
     }
-    fn input_schema(&self) -> serde_json::Value {
+    fn input_schema(&self, _: PathStyle) -> serde_json::Value {
         serde_json::json!({"type": "object", "properties": {}})
     }
     async fn check_permissions(
@@ -675,7 +677,7 @@ impl Tool for Echo {
     fn description(&self) -> &str {
         "Echo the `say` argument back."
     }
-    fn input_schema(&self) -> serde_json::Value {
+    fn input_schema(&self, _: PathStyle) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {"say": {"type": "string"}},

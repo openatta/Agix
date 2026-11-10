@@ -9,8 +9,8 @@ use std::sync::Arc;
 use super::store::CronStore;
 use base::error::ToolError;
 use base::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
-    ValidationResult,
+    PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
+    ToolSpec, ValidationResult,
 };
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -39,7 +39,7 @@ impl Tool for CronDeleteTool {
         "Cancel a scheduled cron job by ID"
     }
 
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: PathStyle) -> Value {
         crate::input_schema::<CronDeleteInput>()
     }
 

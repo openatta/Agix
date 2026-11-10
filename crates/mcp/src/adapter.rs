@@ -157,7 +157,7 @@ impl Tool for McpToolAdapter {
         &self.description
     }
 
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: base::tool::PathStyle) -> Value {
         self.input_schema.clone()
     }
 
@@ -411,7 +411,7 @@ mod tests {
         let mut m = meta("x");
         m.input_schema = json!({"type": "object", "properties": {"q": {"type": "string"}}});
         let adapter = McpToolAdapter::new(client, m);
-        let s = adapter.input_schema();
+        let s = adapter.input_schema(base::tool::PathStyle::Absolute);
         assert_eq!(s["properties"]["q"]["type"], "string");
     }
 
@@ -425,7 +425,8 @@ mod tests {
         ] {
             let mut m = meta("x");
             m.input_schema = sent;
-            let s = McpToolAdapter::new(client.clone(), m).input_schema();
+            let s = McpToolAdapter::new(client.clone(), m)
+                .input_schema(base::tool::PathStyle::Absolute);
             assert_eq!(s["type"], "object", "{s}");
             assert_eq!(s["properties"], properties, "{s}");
         }

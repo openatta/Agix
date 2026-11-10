@@ -15,8 +15,8 @@ use crate::worktree::WorktreeHandle;
 use async_trait::async_trait;
 use base::error::ToolError;
 use base::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
-    ValidationResult,
+    PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
+    ToolSpec, ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -87,7 +87,7 @@ impl Tool for EnterWorktreeTool {
     fn name(&self) -> &str {
         "EnterWorktree"
     }
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: PathStyle) -> Value {
         crate::input_schema::<EnterWorktreeInput>()
     }
     async fn guide(&self, _: &PromptContext) -> Option<String> {
@@ -201,7 +201,7 @@ impl Tool for ExitWorktreeTool {
     fn name(&self) -> &str {
         "ExitWorktree"
     }
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: PathStyle) -> Value {
         crate::input_schema::<ExitWorktreeInput>()
     }
     async fn guide(&self, _: &PromptContext) -> Option<String> {

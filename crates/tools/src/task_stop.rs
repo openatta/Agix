@@ -10,7 +10,8 @@ use async_trait::async_trait;
 use base::context::RunningStatus;
 use base::error::ToolError;
 use base::tool::{
-    PermissionDecision, ProgressSender, Tool, ToolContext, ToolResult, ToolSpec, ValidationResult,
+    PathStyle, PermissionDecision, ProgressSender, Tool, ToolContext, ToolResult, ToolSpec,
+    ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -44,7 +45,7 @@ impl Tool for TaskStopTool {
         "TaskStop"
     }
 
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: PathStyle) -> Value {
         crate::input_schema::<TaskStopInput>()
     }
 

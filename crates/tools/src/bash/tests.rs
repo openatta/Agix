@@ -1150,7 +1150,7 @@ async fn name_is_bash() {
 
 #[test]
 fn input_schema_is_object_with_command_field() {
-    let schema = BashTool.input_schema();
+    let schema = BashTool.input_schema(base::tool::PathStyle::Absolute);
     let s = serde_json::to_value(&schema).unwrap();
     assert_eq!(s["type"], "object");
     // "command" should be in properties

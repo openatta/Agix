@@ -46,7 +46,7 @@ impl Tool for ListMcpResourcesTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new().concurrency_safe(true).read_only(true)
     }
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: base::tool::PathStyle) -> Value {
         serde_json::to_value(schemars::schema_for!(ListMcpResourcesInput)).expect("schema")
     }
     async fn guide(&self, _: &PromptContext) -> Option<String> {
@@ -155,7 +155,7 @@ impl Tool for ReadMcpResourceTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new().concurrency_safe(true).read_only(true)
     }
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: base::tool::PathStyle) -> Value {
         serde_json::to_value(schemars::schema_for!(ReadMcpResourceInput)).expect("schema")
     }
     async fn guide(&self, _: &PromptContext) -> Option<String> {
@@ -300,7 +300,7 @@ impl Tool for DispatchMcpTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new().concurrency_safe(true).read_only(true)
     }
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: base::tool::PathStyle) -> Value {
         serde_json::to_value(schemars::schema_for!(DispatchMcpInput)).expect("schema")
     }
     async fn guide(&self, _: &PromptContext) -> Option<String> {

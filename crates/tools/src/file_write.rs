@@ -9,8 +9,8 @@ use async_trait::async_trait;
 use base::error::ToolError;
 use base::interface::exec::FileSystem;
 use base::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
-    ValidationResult,
+    PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
+    ToolSpec, ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -49,12 +49,12 @@ impl Tool for FileWriteTool {
         "Create or overwrite a file with given content."
     }
 
-    fn input_schema(&self) -> Value {
-        crate::input_schema::<FileWriteInput>()
-    }
-
-    fn input_schema_for(&self, style: base::tool::PathStyle) -> Value {
-        crate::file_read::workspace_relative_file_path(self.input_schema(), style, "write")
+    fn input_schema(&self, style: PathStyle) -> Value {
+        crate::file_read::workspace_relative_file_path(
+            crate::input_schema::<FileWriteInput>(),
+            style,
+            "write",
+        )
     }
 
     async fn guide(&self, _: &PromptContext) -> Option<String> {
@@ -515,7 +515,7 @@ mod tests {
     #[tokio::test]
     async fn schema_has_required_fields() {
         let tool = FileWriteTool;
-        let s = tool.input_schema();
+        let s = tool.input_schema(PathStyle::Absolute);
         let body = s
             .get("properties")
             .or_else(|| s.get("schema").and_then(|s| s.get("properties")))

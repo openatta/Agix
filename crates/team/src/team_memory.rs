@@ -14,8 +14,8 @@ use base::error::ToolError;
 pub use base::memory::{scan_for_secrets, SecretPattern};
 use base::memory::{DurableMemory, MemoryError, MemoryStore, MemoryType};
 use base::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
-    ValidationResult,
+    PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
+    ToolSpec, ValidationResult,
 };
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -312,7 +312,7 @@ impl Tool for TeamMemorySaveTool {
         ""
     }
 
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: PathStyle) -> Value {
         serde_json::to_value(schemars::schema_for!(TeamMemorySaveInput))
             .expect("schemars output is valid JSON")
     }
@@ -416,7 +416,7 @@ impl Tool for TeamMemoryReadTool {
         ""
     }
 
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: PathStyle) -> Value {
         serde_json::to_value(schemars::schema_for!(TeamMemoryReadInput))
             .expect("schemars output is valid JSON")
     }

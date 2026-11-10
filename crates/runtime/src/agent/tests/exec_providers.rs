@@ -25,7 +25,7 @@ impl base::tool::Tool for ExecProbe {
         "exec probe (test tool)"
     }
 
-    fn input_schema(&self) -> serde_json::Value {
+    fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
         serde_json::json!({"type": "object"})
     }
     async fn check_permissions(

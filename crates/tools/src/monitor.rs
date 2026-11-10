@@ -20,8 +20,8 @@ use base::context::{RunningStatus, RunningTask, SessionState, TaskType};
 use base::error::ToolError;
 use base::interface::exec::{OutputStream, ProcessHandle};
 use base::tool::{
-    CallTraits, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
-    ToolSpec, ValidationResult,
+    CallTraits, PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext,
+    ToolResult, ToolSpec, ValidationResult,
 };
 use futures::StreamExt;
 use schemars::JsonSchema;
@@ -83,7 +83,7 @@ impl Tool for MonitorTool {
         "Start a background script that streams stdout lines as events."
     }
 
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: PathStyle) -> Value {
         crate::input_schema::<MonitorInput>()
     }
 
@@ -580,7 +580,7 @@ mod tests {
     #[test]
     fn schema_is_valid_object() {
         let tool = MonitorTool;
-        let schema = tool.input_schema();
+        let schema = tool.input_schema(base::tool::PathStyle::Absolute);
         assert!(schema.is_object(), "schema should be an object");
     }
 

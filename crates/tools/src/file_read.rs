@@ -64,13 +64,8 @@ impl Tool for FileReadTool {
         "Read a file (text/image/PDF) with optional line range."
     }
 
-    fn input_schema(&self) -> Value {
-        // schemars::schema_for! 给的 RootSchema 序列化是合法 JSON Schema draft-07
-        crate::input_schema::<FileReadInput>()
-    }
-
-    fn input_schema_for(&self, style: PathStyle) -> Value {
-        workspace_relative_file_path(self.input_schema(), style, "read")
+    fn input_schema(&self, style: PathStyle) -> Value {
+        workspace_relative_file_path(crate::input_schema::<FileReadInput>(), style, "read")
     }
 
     async fn guide(&self, ctx: &PromptContext) -> Option<String> {
@@ -907,7 +902,7 @@ mod tests {
     #[tokio::test]
     async fn input_schema_is_object_with_file_path() {
         let tool = FileReadTool;
-        let s = tool.input_schema();
+        let s = tool.input_schema(PathStyle::Absolute);
         // schemars 的 RootSchema 顶层有 type/properties
         assert!(s.is_object(), "schema must be a JSON object");
         let body = if let Some(p) = s.get("properties") {

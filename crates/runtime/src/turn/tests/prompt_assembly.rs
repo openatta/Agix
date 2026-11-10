@@ -14,8 +14,8 @@ use base::error::ToolError;
 use base::interface::scene::{ExecutionParams, Scene, TokenBudget};
 use base::settings::Settings;
 use base::tool::{
-    InMemoryToolRegistry, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext,
-    ToolResult,
+    InMemoryToolRegistry, PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool,
+    ToolContext, ToolResult,
 };
 use serde_json::{json, Value};
 
@@ -37,7 +37,7 @@ impl Tool for GuidedTool {
     fn description(&self) -> &str {
         "Launch a sub-agent."
     }
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: PathStyle) -> Value {
         json!({"type": "object", "properties": {"prompt": {"type": "string"}}})
     }
     async fn guide(&self, _: &PromptContext) -> Option<String> {
@@ -71,7 +71,7 @@ impl Tool for PlainTool {
     fn description(&self) -> &str {
         "Reads a file."
     }
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: PathStyle) -> Value {
         json!({"type": "object"})
     }
     async fn call(

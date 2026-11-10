@@ -20,8 +20,8 @@
 use async_trait::async_trait;
 use base::error::ToolError;
 use base::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
-    ValidationResult,
+    PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
+    ToolSpec, ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -178,7 +178,7 @@ impl Tool for ToolSearchTool {
         "ToolSearch"
     }
 
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: PathStyle) -> Value {
         crate::input_schema::<ToolSearchInput>()
     }
 
@@ -236,7 +236,7 @@ impl Tool for ToolSearchTool {
             description: describe(t),
             guide,
             deferred_schema: is_deferred(t)
-                .then(|| base::tool::compact_schema(t.input_schema_for(ctx.config.path_style))),
+                .then(|| base::tool::compact_schema(t.input_schema(ctx.config.path_style))),
         };
 
         let mut matches: Vec<Match> = Vec::new();
@@ -439,7 +439,7 @@ mod tests {
             "late tool (test tool)"
         }
 
-        fn input_schema(&self) -> Value {
+        fn input_schema(&self, _: PathStyle) -> Value {
             json!({"type": "object"})
         }
         async fn guide(&self, _: &PromptContext) -> Option<String> {
@@ -473,7 +473,7 @@ mod tests {
             "active tool (test tool)"
         }
 
-        fn input_schema(&self) -> Value {
+        fn input_schema(&self, _: PathStyle) -> Value {
             json!({"type": "object"})
         }
         async fn guide(&self, _: &PromptContext) -> Option<String> {
@@ -629,7 +629,7 @@ mod tests {
             fn description(&self) -> &str {
                 "Look up a ticket"
             }
-            fn input_schema(&self) -> Value {
+            fn input_schema(&self, _: PathStyle) -> Value {
                 json!({"type": "object", "properties": {"ticket": {"type": "string"}},
                        "required": ["ticket"]})
             }
@@ -764,7 +764,7 @@ mod tests {
             fn description(&self) -> &str {
                 "Launch a sub-agent."
             }
-            fn input_schema(&self) -> Value {
+            fn input_schema(&self, _: PathStyle) -> Value {
                 json!({"type": "object"})
             }
             async fn guide(&self, _: &PromptContext) -> Option<String> {
@@ -824,7 +824,7 @@ mod tests {
             fn description(&self) -> &str {
                 "Does one thing."
             }
-            fn input_schema(&self) -> Value {
+            fn input_schema(&self, _: PathStyle) -> Value {
                 json!({"type": "object"})
             }
             async fn call(
@@ -884,7 +884,7 @@ mod tests {
             fn description(&self) -> &str {
                 "Plain tool."
             }
-            fn input_schema(&self) -> Value {
+            fn input_schema(&self, _: PathStyle) -> Value {
                 json!({"type": "object"})
             }
             async fn call(

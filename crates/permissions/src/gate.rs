@@ -659,7 +659,7 @@ mod tests {
             "fake tool (test tool)"
         }
 
-        fn input_schema(&self) -> Value {
+        fn input_schema(&self, _: base::tool::PathStyle) -> Value {
             json!({"type":"object"})
         }
         async fn guide(&self, _: &base::tool::PromptContext) -> Option<String> {

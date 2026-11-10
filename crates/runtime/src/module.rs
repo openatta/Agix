@@ -346,7 +346,7 @@ pub(crate) mod fakes {
         fn description(&self) -> &str {
             "a tool an MCP server lists"
         }
-        fn input_schema(&self) -> serde_json::Value {
+        fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
             serde_json::json!({"type": "object"})
         }
         fn spec(&self) -> base::tool::ToolSpec {

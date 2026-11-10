@@ -222,7 +222,7 @@ fn with_schema(
     format!(
         "{message}\n\nInput schema of {}: {}",
         tool.name(),
-        base::tool::compact_schema(tool.input_schema_for(config.path_style))
+        base::tool::compact_schema(tool.input_schema(config.path_style))
     )
 }
 

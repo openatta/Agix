@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use base::error::ToolError;
 use base::interface::tool::{
-    PermissionDecision, ProgressSender, Tool, ToolContext, ToolOrigin, ToolResult, ToolSpec,
+    PathStyle, PermissionDecision, ProgressSender, Tool, ToolContext, ToolOrigin, ToolResult,
+    ToolSpec,
 };
 use serde_json::Value;
 
@@ -51,7 +52,7 @@ impl Tool for StampTool {
             .concurrency_safe(true)
     }
 
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: PathStyle) -> Value {
         serde_json::json!({
             "type": "object",
             "properties": {"text": {"type": "string", "description": "The text to stamp, exactly"}},

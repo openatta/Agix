@@ -15,8 +15,8 @@
 use async_trait::async_trait;
 use base::error::ToolError;
 use base::tool::{
-    PermissionDecision, ProgressSender, PromptContext, ToolContext, ToolResult, ToolResultContent,
-    ToolSpec, ValidationResult,
+    PathStyle, PermissionDecision, ProgressSender, PromptContext, ToolContext, ToolResult,
+    ToolResultContent, ToolSpec, ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -308,7 +308,7 @@ impl base::tool::Tool for SendMessageTool {
         ToolSpec::new().self_allow_overrides_mode(true)
     }
 
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: PathStyle) -> Value {
         serde_json::to_value(schemars::schema_for!(SendMessageInput))
             .expect("schemars output is valid JSON")
     }
@@ -411,7 +411,7 @@ impl base::tool::Tool for ReadMailTool {
         ToolSpec::new().concurrency_safe(true).read_only(true)
     }
 
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: PathStyle) -> Value {
         serde_json::to_value(schemars::schema_for!(ReadMailInput))
             .expect("schemars output is valid JSON")
     }
@@ -507,7 +507,7 @@ impl base::tool::Tool for ListPeersTool {
         ToolSpec::new().concurrency_safe(true).read_only(true)
     }
 
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: PathStyle) -> Value {
         serde_json::json!({
             "type": "object",
             "properties": {},

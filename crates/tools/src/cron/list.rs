@@ -7,8 +7,8 @@ use std::sync::Arc;
 use super::store::CronStore;
 use base::error::ToolError;
 use base::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
-    ValidationResult,
+    PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
+    ToolSpec, ValidationResult,
 };
 
 pub struct CronListTool {
@@ -31,7 +31,7 @@ impl Tool for CronListTool {
         "List scheduled cron jobs"
     }
 
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: PathStyle) -> Value {
         serde_json::json!({
             "type": "object",
             "properties": {},

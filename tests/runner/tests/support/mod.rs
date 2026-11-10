@@ -12,7 +12,9 @@
 //! tool result that becomes empty is still a visible difference.
 
 use base::event::AgentEvent;
-use base::interface::tool::{PermissionDecision, ProgressSender, Tool, ToolContext, ToolResult};
+use base::interface::tool::{
+    PathStyle, PermissionDecision, ProgressSender, Tool, ToolContext, ToolResult,
+};
 use std::sync::Arc;
 
 /// Echoes its `say` argument. Concurrency-safe, so a batch of them exercises
@@ -34,7 +36,7 @@ impl Tool for GoldenEcho {
     fn description(&self) -> &str {
         "Echo the `say` argument back."
     }
-    fn input_schema(&self) -> serde_json::Value {
+    fn input_schema(&self, _: PathStyle) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {"say": {"type": "string"}},
@@ -81,7 +83,7 @@ impl Tool for GoldenFlood {
     fn description(&self) -> &str {
         "Return a very large result."
     }
-    fn input_schema(&self) -> serde_json::Value {
+    fn input_schema(&self, _: PathStyle) -> serde_json::Value {
         serde_json::json!({"type": "object", "properties": {}})
     }
     async fn check_permissions(
@@ -125,7 +127,7 @@ impl Tool for GoldenReports {
     fn description(&self) -> &str {
         "Runs, and reports that the work failed."
     }
-    fn input_schema(&self) -> serde_json::Value {
+    fn input_schema(&self, _: PathStyle) -> serde_json::Value {
         serde_json::json!({"type": "object", "properties": {}})
     }
     async fn check_permissions(
@@ -162,7 +164,7 @@ impl Tool for GoldenBoom {
     fn description(&self) -> &str {
         "Always fails."
     }
-    fn input_schema(&self) -> serde_json::Value {
+    fn input_schema(&self, _: PathStyle) -> serde_json::Value {
         serde_json::json!({"type": "object", "properties": {}})
     }
     async fn check_permissions(
@@ -201,7 +203,7 @@ impl Tool for GoldenAsk {
     fn description(&self) -> &str {
         "Requires approval."
     }
-    fn input_schema(&self) -> serde_json::Value {
+    fn input_schema(&self, _: PathStyle) -> serde_json::Value {
         serde_json::json!({"type": "object", "properties": {}})
     }
     async fn check_permissions(
@@ -249,7 +251,7 @@ impl Tool for GoldenReadFile {
     fn description(&self) -> &str {
         "Return a kilobyte of file contents."
     }
-    fn input_schema(&self) -> serde_json::Value {
+    fn input_schema(&self, _: PathStyle) -> serde_json::Value {
         serde_json::json!({"type": "object", "properties": {}})
     }
     async fn check_permissions(

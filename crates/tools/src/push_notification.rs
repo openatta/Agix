@@ -13,8 +13,8 @@ use crate::exec_capture::capture;
 #[cfg(target_os = "macos")]
 use base::interface::exec::ProcessSpec;
 use base::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
-    ValidationResult,
+    PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
+    ToolSpec, ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -43,7 +43,7 @@ impl Tool for PushNotificationTool {
         "Notify the user: the host that runs this session shows it (and any Notification hook gets it)."
     }
 
-    fn input_schema(&self) -> Value {
+    fn input_schema(&self, _: PathStyle) -> Value {
         crate::input_schema::<PushNotificationInput>()
     }
 
