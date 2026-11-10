@@ -25,6 +25,20 @@ pub(crate) use tool_exec::resolve_permission_response;
 
 use base::interface::model::{MessageRole, ModelContentBlock, ModelMessage, Usage};
 
+/// What one user turn knows about itself; replaced as the turn begins.
+#[derive(Default)]
+pub(crate) struct TurnState {
+    /// When the turn's user message was pushed. Compaction moves message
+    /// indices; the time a message was pushed survives it.
+    pub(crate) started_at: Option<std::time::Instant>,
+    /// The turn's user message, identified by a fingerprint of its text
+    /// rather than by index because compaction rewrites the message list
+    /// before the request is assembled.
+    pub(crate) pending_input: Option<(u64, Vec<base::interface::model::InputSpan>)>,
+    pub(crate) last_call_usage: Option<Usage>,
+    pub(crate) truncated: bool,
+}
+
 /// Why a compaction runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CompactTrigger {

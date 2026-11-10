@@ -394,8 +394,8 @@ impl Agent {
             content: user_blocks,
         };
         self.deliver_notices();
-        self.pending_input = user_text_fingerprint(&message).map(|fp| (fp, spans));
-        self.turn_started_at = Some(std::time::Instant::now());
+        self.turn.pending_input = user_text_fingerprint(&message).map(|fp| (fp, spans));
+        self.turn.started_at = Some(std::time::Instant::now());
         self.session.push_message_from(message, origin);
         if std::mem::take(&mut self.token_budget.unannounced) {
             if let Some(target) = self.token_budget.target {
@@ -769,8 +769,8 @@ impl Agent {
             tool_calls += stream_result.tool_calls;
             let stop_reason = stream_result.stop_reason;
             let usage = stream_result.usage;
-            self.last_call_usage = Some(usage);
-            self.turn_truncated |= stream_result.truncated;
+            self.turn.last_call_usage = Some(usage);
+            self.turn.truncated |= stream_result.truncated;
             if let Err(e) = self.session.persist().await {
                 tracing::warn!(error = %e, "failed to persist session");
             }

@@ -165,7 +165,7 @@ async fn this_turn_starts_at_its_user_message_however_long_the_transcript() {
         agent.session.push_message(write(&format!("/old/{i}")));
     }
     std::thread::sleep(std::time::Duration::from_millis(2));
-    agent.turn_started_at = Some(std::time::Instant::now());
+    agent.turn.started_at = Some(std::time::Instant::now());
     agent.session.push_message(write("/new"));
 
     assert_eq!(

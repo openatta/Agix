@@ -79,15 +79,7 @@ pub struct Agent {
     pub(crate) memory: Memory,
     pub(crate) compaction: Compaction,
     pub(crate) token_budget: TokenBudget,
-    /// When this turn's user message was pushed. Compaction moves message
-    /// indices; the time a message was pushed survives it.
-    pub(crate) turn_started_at: Option<std::time::Instant>,
-    /// This turn's user message, identified by a fingerprint of its text
-    /// rather than by index because compaction rewrites the message list
-    /// before the request is assembled.
-    pub(crate) pending_input: Option<(u64, Vec<base::interface::model::InputSpan>)>,
-    pub(crate) last_call_usage: Option<base::interface::model::Usage>,
-    pub(crate) turn_truncated: bool,
+    pub(crate) turn: crate::turn::TurnState,
     /// Read by the *next* turn, to decide whether to rescan for skills; starts
     /// `true` so the first turn scans.
     pub(crate) last_had_tool_uses: bool,

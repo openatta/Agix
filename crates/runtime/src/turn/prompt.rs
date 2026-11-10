@@ -519,7 +519,7 @@ impl Agent {
         &self,
         messages: &[ModelMessage],
     ) -> Option<base::interface::model::InputMap> {
-        resolve_input_map(self.pending_input.as_ref(), messages)
+        resolve_input_map(self.turn.pending_input.as_ref(), messages)
     }
 
     pub(super) async fn build_prompt_for_turn(

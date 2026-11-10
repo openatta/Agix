@@ -48,7 +48,7 @@ impl Agent {
     /// included; the whole transcript before any turn has started.
     pub(super) fn messages_this_turn(&self) -> &[ModelMessage] {
         let messages = self.session.messages();
-        let Some(started) = self.turn_started_at else {
+        let Some(started) = self.turn.started_at else {
             return messages;
         };
         let first = self

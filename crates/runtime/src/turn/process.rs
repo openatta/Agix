@@ -347,8 +347,7 @@ impl Agent {
         cancel: CancellationToken,
         origin: history::entry::MessageOrigin,
     ) -> Result<TurnOutcome, TurnError> {
-        self.last_call_usage = None;
-        self.turn_truncated = false;
+        self.turn = super::TurnState::default();
         self.session_state.take_structured_output();
         crate::steering::lock(&self.channels.steering).open();
         let outcome = self
@@ -586,11 +585,11 @@ impl Agent {
                 usage: o.total_usage,
                 turn_id: self.current_turn_id.clone(),
                 message: o.message.clone(),
-                last_call_usage: self.last_call_usage.unwrap_or_default(),
-                context: self.last_call_usage.map(|u| self.context_usage(u)),
+                last_call_usage: self.turn.last_call_usage.unwrap_or_default(),
+                context: self.turn.last_call_usage.map(|u| self.context_usage(u)),
                 structured_output: self.session_state.take_structured_output(),
                 seq: self.session.messages.len() as u64,
-                truncated: self.turn_truncated,
+                truncated: self.turn.truncated,
             });
         }
         outcome
