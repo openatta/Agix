@@ -3,9 +3,10 @@
 
 #![cfg(all(feature = "sandbox", target_os = "macos"))]
 
-use base::frozen::git::EngineGit;
+use base::engine_exec::{Confinement, EngineExec};
 use base::frozen::FrozenContext;
 use base::paths::ConfigPaths;
+use base::project_trust::ProjectTrust;
 use std::path::Path;
 use tempfile::TempDir;
 
@@ -82,14 +83,20 @@ async fn a_filter_the_repository_names_runs_inside_the_sessions_sandbox() {
         .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))
         .unwrap();
 
-    let sandboxed = EngineGit::sandboxed(
-        std::sync::Arc::new(PlatformSandbox),
-        SandboxPolicy {
-            state_root: Some(state_root.to_path_buf()),
-            ..Default::default()
+    let sandboxed = EngineExec::new(
+        base::interface::exec::ExecProviders {
+            sandbox: std::sync::Arc::new(PlatformSandbox),
+            ..platform::local_providers()
         },
-        true,
-        None,
+        Confinement::Sandboxed {
+            policy: SandboxPolicy {
+                state_root: Some(state_root.to_path_buf()),
+                ..Default::default()
+            },
+            require_enforcement: true,
+            tmpdir: None,
+        },
+        ProjectTrust::Trusted,
     );
     let mut ctx = FrozenContext::collect(
         project.to_path_buf(),
@@ -113,7 +120,12 @@ async fn a_filter_the_repository_names_runs_inside_the_sessions_sandbox() {
 
     // Unsandboxed, the same status does run it, so the check above is
     // looking at something that would happen.
-    ctx.refresh_git_status(&EngineGit::Direct).await;
+    ctx.refresh_git_status(&EngineExec::new(
+        platform::local_providers(),
+        Confinement::Unconfined,
+        ProjectTrust::Trusted,
+    ))
+    .await;
     assert!(ctx.git_status.is_some());
     assert!(marker.exists());
 }

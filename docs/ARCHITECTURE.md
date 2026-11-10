@@ -619,15 +619,16 @@ Agent 的上下文,本来就该在一处。
 4. **一个命令是它起的整个进程组。** 本机 provider 让每个子进程领一个会话(也就领了一个
    进程组,且没有控制终端——命令没法经 `/dev/tty` 用 `TIOCSTI` 往 daemon 的终端里塞输入,
    等沙箱外的 shell 去执行),停的时候整组停;前台进程退出后输出最多再等 `OUTPUT_GRACE_AFTER_EXIT`,还被后台进程占着就
-   连它们一起停。Bash、Monitor、command hook 经本机 provider 起,都是这条规矩;MCP stdio
-   server 经 process-wrap 起,同样领一个会话、停的时候整组停。引擎自己跑的 git 和 `Read`
-   调的 `pdftotext` 也各领一个会话、没有控制终端,超时或取消时停掉的是它本身。
+   连它们一起停。Bash、Monitor、command hook 经本机 provider 起,引擎自己跑的 git 经会话的
+   `exec.process` 起(`base::engine_exec`),都是这条规矩;MCP stdio server 经 process-wrap
+   起,同样领一个会话、停的时候整组停。`Read` 调的 `pdftotext` 也领一个会话、没有控制终端,
+   超时或取消时停掉的是它本身。
 5. **子进程的环境只在一处决定。** `base::interface::exec::env::SubprocessEnv`:缺省
    继承宿主环境但去掉引擎自己的凭据,`allowlist` 模式只留 `PATH` / `HOME` / 语言环境等几项
    加上 `allow` 列出的。Bash、Monitor、command hook、MCP stdio 服务、引擎自己跑的 git 与
-   `Read` 调的 `pdftotext` 都按它起——git 与 `pdftotext` 用缺省策略,其余按
-   `sandbox.subprocess_env` 取策略——MCP 服务取的是声明它的那份设置(daemon 按项目、scene
-   建连),再叠各服务自己的 `env`。这和沙箱无关——沙箱关着,模型一句 `printenv` 读到什么也由它决定。
+   `Read` 调的 `pdftotext` 都按它起——`pdftotext` 用缺省策略,引擎的 git 经会话的
+   `exec.process` 起,与会话的命令同一份 `sandbox.subprocess_env`,其余也按它取策略——MCP
+   服务取的是声明它的那份设置(daemon 按项目、scene 建连),再叠各服务自己的 `env`。这和沙箱无关——沙箱关着,模型一句 `printenv` 读到什么也由它决定。
 
    **引擎自己的凭据**是固定的 `ANTHROPIC_*`、`AGIX_DAEMON_TOKEN`,加上配置里点名"密钥在这个
    环境变量里"的每一个变量:
@@ -1004,7 +1005,8 @@ git 依赖、测试里建临时仓库一起弄坏,而且在别处建好再挪进
 带 `-c core.fsmonitor=false` 等选项,不受影响。结构性的办法(命令结束后检测项目里新出现的
 嵌套 `.git`,告警或询问)留到后续版本。见 `sandbox.rs` 模块头已知逃逸。
 
-引擎自己跑的 git(每轮的 `git status`、worktree 的创建与清理)经 `base::frozen::git::EngineGit` 起:会话的命令进沙箱(没有
+引擎自己跑的 git(每轮的 `git status`、worktree 的创建与清理)经 `base::engine_exec::EngineExec` 起,走会话的
+`exec.process`:会话的命令进沙箱(没有
 `dangerously_disable_sandbox`)时,它也进同一个沙箱,不论有人值守与否——仓库配置让 git 去
 跑的 filter driver 之类因此同样受约束。这时它只能写会话的 `TMPDIR`,创建 worktree 时再加
 git 目录与 `.agix/worktrees/`,工作目录本身不可写,网络不通。沙箱兑现不了时照
@@ -1013,7 +1015,7 @@ git 目录与 `.agix/worktrees/`,工作目录本身不可写,网络不通。沙�
 引擎直接删,不交给 git——沙箱不许写已有 worktree 的 `.git` 链接与 `commondir`。沙箱的 git
 只给 git 目录就在项目根下 `.git` 的仓库建 worktree,别处的 git 目录沙箱护不住它的配置。
 不论进不进沙箱,这些 git 都带 `-c core.fsmonitor=false -c core.hooksPath=/dev/null`,都领一个
-自己的会话(§5 第 4 条),它跑起来的 filter driver 因此也没有控制终端;超时就被杀掉。
+自己的会话(§5 第 4 条),它跑起来的 filter driver 因此也没有控制终端;超时就整组停掉。
 `/resume @repo` 找仓库根不跑 git,只向上找 `.git`。
 
 沙箱只管命令自己的进程树,管不到它请系统服务代办的事。macOS 上实测:`open` 让

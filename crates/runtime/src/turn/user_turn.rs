@@ -6,7 +6,7 @@ use super::process::{hook_permission_mode, PromptScreen};
 use super::prompt::user_text_fingerprint;
 use super::request::{pair_dangling_tool_uses, sync_mcp_adapters};
 use super::round::count_structured_output_calls;
-use super::tool_env::engine_git_from;
+use super::tool_env::engine_exec_from;
 use super::tool_exec::{execute_tool_with_telemetry, ToolExecCtx};
 use super::tool_result::{attach_tool_result_images, PendingToolImage};
 use super::{TurnError, TurnOutcome};
@@ -200,7 +200,12 @@ impl Agent {
         // Compute frozen context lazily on first turn. Includes git status,
         // branch, platform, etc.
         let collected_this_turn = self.prompt.frozen.is_none();
-        let engine_git = engine_git_from(&self.config, &self.exec, &self.session.session_id);
+        let engine_git = engine_exec_from(
+            &self.config,
+            &self.exec,
+            &self.session.session_id,
+            self.settings.project_layer.trust,
+        );
         if collected_this_turn {
             self.prompt.frozen = Some(
                 super::collect_frozen(
@@ -852,10 +857,11 @@ impl Agent {
             {
                 if let Some(ref mut frozen) = self.prompt.frozen {
                     frozen
-                        .refresh_git(&engine_git_from(
+                        .refresh_git(&engine_exec_from(
                             &self.config,
                             &self.exec,
                             &self.session.session_id,
+                            self.settings.project_layer.trust,
                         ))
                         .await;
                 }

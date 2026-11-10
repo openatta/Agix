@@ -6,7 +6,6 @@
 //! mid-session git commits are not updated.
 
 pub mod frontmatter;
-pub mod git;
 pub mod import;
 pub mod memory;
 pub mod regex;
@@ -27,12 +26,17 @@ pub use self::skill::{
 
 use self::memory::collect_memory_files_with;
 use self::utils::truncate_chars;
+use crate::engine_exec::{EngineExec, GitAccess};
 use crate::paths::ConfigPaths;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use time::format_description::well_known::Iso8601;
 
 /// Git status output character limit.
 const MAX_GIT_STATUS_CHARS: usize = 2000;
+
+/// How long each git subcommand collecting the context may take.
+const GIT_TIMEOUT: Duration = Duration::from_millis(1500);
 
 /// 会话级冻结的环境信息。一次会话只算一次；turn 之间不变。
 #[derive(Debug, Clone, Default)]
@@ -146,23 +150,87 @@ impl GitFields {
     }
 }
 
-async fn collect_git_fields(engine_git: &git::EngineGit, cwd: &Path) -> GitFields {
-    let is_git = git::run_git_check(engine_git, cwd).await;
+/// `git <args>` in `cwd`: its trimmed stdout, or `None` on any failure,
+/// timeout, non-zero exit or empty output.
+async fn run_git_text(engine: &EngineExec, cwd: &Path, args: &[&str]) -> Option<String> {
+    let out = engine
+        .git(cwd, GitAccess::ReadOnly, args, GIT_TIMEOUT)
+        .await
+        .ok()?;
+    if !out.status.success {
+        return None;
+    }
+    let s = out.stdout_lossy().trim().to_string();
+    (!s.is_empty()).then_some(s)
+}
+
+async fn run_git_check(engine: &EngineExec, cwd: &Path) -> bool {
+    run_git_text(engine, cwd, &["rev-parse", "--is-inside-work-tree"])
+        .await
+        .is_some_and(|out| out == "true")
+}
+
+/// A worktree has `.git` as a file holding a `gitdir:` line, not a directory.
+async fn is_worktree(engine: &EngineExec, cwd: &Path) -> bool {
+    engine
+        .exec()
+        .filesystem
+        .read_to_string(&cwd.join(".git"))
+        .await
+        .is_ok_and(|content| content.trim().starts_with("gitdir:"))
+}
+
+/// `origin/HEAD` if there is one, else whichever of `main` / `master` exists.
+async fn detect_main_branch(engine: &EngineExec, cwd: &Path) -> Option<String> {
+    if let Some(out) = run_git_text(
+        engine,
+        cwd,
+        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+    )
+    .await
+    {
+        if let Some(name) = out.strip_prefix("origin/") {
+            return Some(name.to_string());
+        }
+        return Some(out);
+    }
+    for &cand in &["main", "master"] {
+        if run_git_text(
+            engine,
+            cwd,
+            &[
+                "show-ref",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{cand}"),
+            ],
+        )
+        .await
+        .is_some()
+        {
+            return Some(cand.to_string());
+        }
+    }
+    None
+}
+
+async fn collect_git_fields(engine_git: &EngineExec, cwd: &Path) -> GitFields {
+    let is_git = run_git_check(engine_git, cwd).await;
     if !is_git {
         return GitFields::none();
     }
-    let is_worktree = git::is_worktree(cwd).await;
-    let git_branch = git::run_git_text(engine_git, cwd, &["symbolic-ref", "--short", "HEAD"]).await;
-    let git_main_branch = git::detect_main_branch(engine_git, cwd).await;
-    let git_user_name = git::run_git_text(engine_git, cwd, &["config", "user.name"]).await;
-    let git_status = git::run_git_text(
+    let is_worktree = is_worktree(engine_git, cwd).await;
+    let git_branch = run_git_text(engine_git, cwd, &["symbolic-ref", "--short", "HEAD"]).await;
+    let git_main_branch = detect_main_branch(engine_git, cwd).await;
+    let git_user_name = run_git_text(engine_git, cwd, &["config", "user.name"]).await;
+    let git_status = run_git_text(
         engine_git,
         cwd,
         &["--no-optional-locks", "status", "--short"],
     )
     .await
     .map(|s| truncate_chars(&s, MAX_GIT_STATUS_CHARS, "\n... (truncated)"));
-    let git_log = git::run_git_text(
+    let git_log = run_git_text(
         engine_git,
         cwd,
         &["--no-optional-locks", "log", "--oneline", "-n", "5"],
@@ -184,12 +252,12 @@ impl FrozenContext {
     /// 不该 fail -- 让上层 build_system_prompt 总能拿到一份合理的快照。
     ///
     /// `paths` 是这个实例的根目录集合——引擎层不去环境里找，调用方（daemon）
-    /// 决定这个实例的状态放在哪。`engine_git` 决定其中的 git 命令怎么起。
+    /// 决定这个实例的状态放在哪。`engine_git` 是这个会话起 git 的途径。
     pub async fn collect(
         cwd: PathBuf,
         paths: &ConfigPaths,
         environment: &dyn crate::interface::environment::Environment,
-        engine_git: &git::EngineGit,
+        engine_git: &EngineExec,
     ) -> Self {
         Self::collect_with_options(
             cwd,
@@ -208,7 +276,7 @@ impl FrozenContext {
         cwd: PathBuf,
         paths: &ConfigPaths,
         environment: &dyn crate::interface::environment::Environment,
-        engine_git: &git::EngineGit,
+        engine_git: &EngineExec,
     ) -> Self {
         Self::collect_with_options(
             cwd,
@@ -230,7 +298,7 @@ impl FrozenContext {
         opts: CollectOptions,
         paths: &ConfigPaths,
         environment: &dyn crate::interface::environment::Environment,
-        engine_git: &git::EngineGit,
+        engine_git: &EngineExec,
     ) -> Self {
         let cwd_clone = cwd.clone();
 
@@ -261,7 +329,7 @@ impl FrozenContext {
 
         // user email 仅在已是 git repo 时尝试 git config
         let user_email = if is_git {
-            git::run_git_text(engine_git, &cwd_clone, &["config", "user.email"]).await
+            run_git_text(engine_git, &cwd_clone, &["config", "user.email"]).await
         } else {
             None
         };
@@ -341,7 +409,7 @@ impl FrozenContext {
     /// `runtime::turn`'s caller), not on every turn: a git status/log/branch
     /// re-derivation is real subprocess I/O (bounded by the same 1.5s
     /// per-subcommand timeout `collect_with_options` uses), not free.
-    pub async fn refresh_git(&mut self, engine_git: &git::EngineGit) {
+    pub async fn refresh_git(&mut self, engine_git: &EngineExec) {
         let git = collect_git_fields(engine_git, &self.cwd).await;
         self.is_git = git.is_git;
         self.is_worktree = git.is_worktree;
@@ -373,13 +441,13 @@ impl FrozenContext {
     /// anything injected per turn and change far more slowly, so paying for
     /// them every turn buys nothing. Skips all I/O when the session is not in
     /// a git repository at all — the common non-repo case stays free.
-    pub async fn refresh_git_status(&mut self, engine_git: &git::EngineGit) {
+    pub async fn refresh_git_status(&mut self, engine_git: &EngineExec) {
         if !self.is_git {
             return;
         }
         self.git_branch =
-            git::run_git_text(engine_git, &self.cwd, &["symbolic-ref", "--short", "HEAD"]).await;
-        self.git_status = git::run_git_text(
+            run_git_text(engine_git, &self.cwd, &["symbolic-ref", "--short", "HEAD"]).await;
+        self.git_status = run_git_text(
             engine_git,
             &self.cwd,
             &["--no-optional-locks", "status", "--short"],
@@ -495,6 +563,57 @@ mod tests {
 
     use tempfile::TempDir;
 
+    /// Nothing scripted: every git the engine asks for fails, as it does
+    /// outside a repository.
+    fn no_git() -> EngineExec {
+        EngineExec::new(
+            crate::interface::exec::ExecProviders::in_process(),
+            Default::default(),
+            Default::default(),
+        )
+    }
+
+    /// The git context is whatever the session's providers answer: its git
+    /// through `exec.process`, its `.git` through `exec.filesystem`.
+    #[tokio::test]
+    async fn the_git_context_comes_from_the_sessions_providers() {
+        use crate::engine_exec::ENGINE_GIT_OPTIONS;
+        use crate::interface::exec::in_process::{
+            InMemoryFileSystem, ScriptedProcess, ScriptedRun,
+        };
+        let dir = TempDir::new().unwrap();
+        let git = |args: &str| format!("git {} {args}", ENGINE_GIT_OPTIONS.join(" "));
+        let process = ScriptedProcess::new()
+            .with(
+                git("rev-parse --is-inside-work-tree"),
+                ScriptedRun::ok("true\n"),
+            )
+            .with(git("symbolic-ref --short HEAD"), ScriptedRun::ok("topic\n"))
+            .with(
+                git("--no-optional-locks status --short"),
+                ScriptedRun::ok(" M a.rs\n"),
+            );
+        let exec = crate::interface::exec::ExecProviders {
+            process: std::sync::Arc::new(process.clone()),
+            filesystem: std::sync::Arc::new(
+                InMemoryFileSystem::new().with_file(dir.path().join(".git"), "gitdir: /x\n"),
+            ),
+            ..crate::interface::exec::ExecProviders::in_process()
+        };
+        let ctx = FrozenContext::collect(
+            dir.path().to_path_buf(),
+            &test_paths(dir.path()),
+            &crate::interface::environment::SystemEnvironment,
+            &EngineExec::new(exec, Default::default(), Default::default()),
+        )
+        .await;
+        assert!(ctx.is_git);
+        assert!(ctx.is_worktree);
+        assert_eq!(ctx.git_branch.as_deref(), Some("topic"));
+        assert_eq!(ctx.git_status.as_deref(), Some("M a.rs"));
+        assert!(process.seen().iter().all(|argv| argv.starts_with(&git(""))));
+    }
+
     #[tokio::test]
     async fn collects_basic_fields_for_arbitrary_dir() {
         let dir = TempDir::new().unwrap();
@@ -502,7 +621,7 @@ mod tests {
             dir.path().to_path_buf(),
             &test_paths(dir.path()),
             &crate::interface::environment::SystemEnvironment,
-            &git::EngineGit::Direct,
+            &no_git(),
         )
         .await;
         assert!(!ctx.platform.is_empty());
@@ -510,203 +629,6 @@ mod tests {
                                         // 不在 git 仓库下，is_git=false 且 git_* 字段都 None
         assert!(!ctx.is_git);
         assert!(ctx.git_status.is_none());
-    }
-
-    #[tokio::test]
-    async fn detects_git_repo_in_a_real_repo() {
-        // 当前 cwd 是 agix 仓库本身，已经初始化了 git
-        let pwd = std::env::current_dir().unwrap();
-        let ctx = FrozenContext::collect(
-            pwd.clone(),
-            &test_paths(&pwd),
-            &crate::interface::environment::SystemEnvironment,
-            &git::EngineGit::Direct,
-        )
-        .await;
-        assert!(ctx.is_git, "expected agix workspace to be inside git");
-        assert!(ctx.git_branch.is_some());
-    }
-
-    /// Runs a `git` command and fails loudly if it did not work.
-    ///
-    /// Checks the exit status, not just the spawn: a `git init` that exits
-    /// non-zero (a machine out of file descriptors or process slots) leaves a
-    /// directory that is not a repository, and the test would otherwise fail
-    /// several lines later on an assertion with nothing to act on.
-    fn run_git(cwd: &std::path::Path) -> impl Fn(&[&str]) + '_ {
-        move |args: &[&str]| {
-            let out = std::process::Command::new("git")
-                .args(args)
-                .current_dir(cwd)
-                .output()
-                .unwrap_or_else(|e| panic!("could not run `git {}`: {e}", args.join(" ")));
-            assert!(
-                out.status.success(),
-                "`git {}` failed ({}): {}{}",
-                args.join(" "),
-                out.status,
-                String::from_utf8_lossy(&out.stderr),
-                String::from_utf8_lossy(&out.stdout),
-            );
-        }
-    }
-
-    /// The engine's own git runs outside the sandbox, in a repository a
-    /// sandboxed command may have configured. A program that repository
-    /// names as its fsmonitor must not run.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn the_engines_git_does_not_run_the_repositorys_fsmonitor() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = TempDir::new().unwrap();
-        let run = run_git(dir.path());
-        run(&["init", "-q"]);
-        let marker = dir.path().join("fsmonitor-ran");
-        let script = dir.path().join("fsmonitor.sh");
-        std::fs::write(
-            &script,
-            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
-        )
-        .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        run(&["config", "core.fsmonitor", script.to_str().unwrap()]);
-
-        let mut ctx = FrozenContext::collect(
-            dir.path().to_path_buf(),
-            &test_paths(dir.path()),
-            &crate::interface::environment::SystemEnvironment,
-            &git::EngineGit::Direct,
-        )
-        .await;
-        assert!(ctx.is_git);
-        ctx.refresh_git_status(&git::EngineGit::Direct).await;
-        ctx.refresh_git(&git::EngineGit::Direct).await;
-        assert!(!marker.exists(), "the engine's git ran core.fsmonitor");
-
-        // A plain git in the same repository does run it, so the check above
-        // is looking at something that would happen.
-        run(&["status", "--short"]);
-        assert!(marker.exists());
-    }
-
-    /// The session's commands are sandboxed and the host requires that, but
-    /// the sandbox cannot hold git: the engine goes without git context
-    /// rather than run git outside it. Without the requirement it runs the
-    /// plain git the session's commands then get too.
-    #[tokio::test]
-    async fn a_git_the_sandbox_cannot_hold_is_not_run_when_the_host_requires_one() {
-        use crate::interface::exec::in_process::NoSandbox;
-        let pwd = std::env::current_dir().unwrap();
-        let collect = |require_enforcement| {
-            let pwd = pwd.clone();
-            async move {
-                let engine_git = git::EngineGit::sandboxed(
-                    std::sync::Arc::new(NoSandbox),
-                    Default::default(),
-                    require_enforcement,
-                    None,
-                );
-                FrozenContext::collect(
-                    pwd.clone(),
-                    &test_paths(&pwd),
-                    &crate::interface::environment::SystemEnvironment,
-                    &engine_git,
-                )
-                .await
-            }
-        };
-
-        let refused = collect(true).await;
-        assert!(!refused.is_git);
-        assert!(refused.git_status.is_none());
-        assert!(refused.git_branch.is_none());
-
-        assert!(collect(false).await.is_git);
-    }
-
-    /// `refresh_git` exists precisely to relax the module's "not refreshed
-    /// during a session" characteristic for the git-derived fields — this
-    /// pins down that calling it after the branch actually changes on disk
-    /// updates `git_branch` in place, without needing a full re-`collect()`.
-    #[tokio::test]
-    async fn refresh_git_picks_up_a_branch_change() {
-        let dir = TempDir::new().unwrap();
-        let run = run_git(dir.path());
-        run(&["init", "-q"]);
-        run(&["config", "user.email", "test@example.com"]);
-        run(&["config", "user.name", "Test"]);
-        run(&["commit", "--allow-empty", "-q", "-m", "init"]);
-        run(&["checkout", "-q", "-b", "original-branch"]);
-
-        let mut ctx = FrozenContext::collect(
-            dir.path().to_path_buf(),
-            &test_paths(dir.path()),
-            &crate::interface::environment::SystemEnvironment,
-            &git::EngineGit::Direct,
-        )
-        .await;
-        assert_eq!(ctx.git_branch.as_deref(), Some("original-branch"));
-
-        run(&["checkout", "-q", "-b", "new-branch"]);
-        ctx.refresh_git(&git::EngineGit::Direct).await;
-        assert_eq!(
-            ctx.git_branch.as_deref(),
-            Some("new-branch"),
-            "refresh_git should have picked up the branch switch made after collect()"
-        );
-    }
-
-    /// The per-turn `<system-reminder>` re-shows `gitStatus` on every
-    /// turn, so a session-start snapshot of it is not merely stale, it is
-    /// actively misleading — the model reads it as current fact and keeps
-    /// citing files that are no longer dirty. Same shape as
-    /// `refresh_git_picks_up_a_branch_change`, but for the field that
-    /// actually changes several times per turn, and driven by a change made
-    /// *outside* the agent (the user committing) rather than by a git command
-    /// the model ran — which is the case `refresh_git`'s Bash-sniffing caller
-    /// cannot see.
-    #[tokio::test]
-    async fn refresh_git_status_picks_up_a_commit_made_mid_session() {
-        let dir = TempDir::new().unwrap();
-        let run = run_git(dir.path());
-        run(&["init", "-q"]);
-        run(&["config", "user.email", "test@example.com"]);
-        run(&["config", "user.name", "Test"]);
-        run(&["commit", "--allow-empty", "-q", "-m", "init"]);
-        tokio::fs::write(dir.path().join("dirty.txt"), "wip")
-            .await
-            .unwrap();
-        run(&["add", "dirty.txt"]);
-
-        let mut ctx = FrozenContext::collect(
-            dir.path().to_path_buf(),
-            &test_paths(dir.path()),
-            &crate::interface::environment::SystemEnvironment,
-            &git::EngineGit::Direct,
-        )
-        .await;
-        assert!(
-            ctx.git_status
-                .as_deref()
-                .unwrap_or_default()
-                .contains("dirty.txt"),
-            "sanity check: the staged file should show up at collect() time"
-        );
-
-        // The user commits from another terminal — no Bash tool call, so the
-        // heuristic that gates the wider `refresh_git` never fires.
-        run(&["commit", "-q", "-m", "done"]);
-        ctx.refresh_git_status(&git::EngineGit::Direct).await;
-
-        assert!(
-            !ctx.git_status
-                .as_deref()
-                .unwrap_or_default()
-                .contains("dirty.txt"),
-            "git status must not keep reporting a file that was committed \
-             mid-session, got: {:?}",
-            ctx.git_status
-        );
     }
 
     /// Outside a git repository the refresh must cost nothing and invent
@@ -718,11 +640,11 @@ mod tests {
             dir.path().to_path_buf(),
             &test_paths(dir.path()),
             &crate::interface::environment::SystemEnvironment,
-            &git::EngineGit::Direct,
+            &no_git(),
         )
         .await;
         assert!(!ctx.is_git);
-        ctx.refresh_git_status(&git::EngineGit::Direct).await;
+        ctx.refresh_git_status(&no_git()).await;
         assert!(ctx.git_status.is_none());
         assert!(ctx.git_branch.is_none());
     }
@@ -750,7 +672,7 @@ mod tests {
             dir.path().to_path_buf(),
             &paths,
             &crate::interface::environment::SystemEnvironment,
-            &git::EngineGit::Direct,
+            &no_git(),
         )
         .await;
         assert_eq!(ctx.memory_dir, paths.global_memory_dir());
@@ -774,7 +696,7 @@ mod tests {
             dir.path().to_path_buf(),
             &test_paths(dir.path()),
             &crate::interface::environment::SystemEnvironment,
-            &git::EngineGit::Direct,
+            &no_git(),
         )
         .await;
         assert_eq!(ctx.memory_blocks.len(), 1, "expected one AGENTS.md");
@@ -798,7 +720,7 @@ mod tests {
             child,
             &test_paths(dir.path()),
             &crate::interface::environment::SystemEnvironment,
-            &git::EngineGit::Direct,
+            &no_git(),
         )
         .await;
         // 应该顺序：parent 在前，child 在后（远到近）

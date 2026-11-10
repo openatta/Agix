@@ -248,35 +248,45 @@ fn sandbox_holds(ctx: &ToolContext) -> bool {
     ctx.exec.sandbox.confine(probe, &policy).enforcement == base::interface::exec::Enforcement::Full
 }
 
-/// How the engine starts its own git in the session `ctx` belongs to.
-pub fn engine_git(ctx: &ToolContext) -> base::frozen::git::EngineGit {
-    engine_git_for(
+/// How the engine starts its own git and helpers in the session `ctx`
+/// belongs to.
+pub fn engine_exec(ctx: &ToolContext) -> base::engine_exec::EngineExec {
+    let trust = if ctx.config.project_untrusted {
+        base::project_trust::ProjectTrust::Untrusted
+    } else {
+        base::project_trust::ProjectTrust::Trusted
+    };
+    engine_exec_for(
         &ctx.sandbox,
-        ctx.exec.sandbox.clone(),
+        &ctx.exec,
         ctx.dangerously_disable_sandbox,
         &ctx.session_id,
+        trust,
     )
 }
 
-/// Inside the session's sandbox whenever the session's shell commands are,
-/// so what a repository such a command configured makes git start is held
-/// to the same roots. Run by the engine, outside it, git would carry that out
-/// unconfined.
-pub fn engine_git_for(
+/// Through the session's providers, and inside its sandbox whenever the
+/// session's shell commands are, so what a repository such a command
+/// configured makes git run is held to the same roots. Run by the engine,
+/// outside it, git would carry that out unconfined.
+pub fn engine_exec_for(
     settings: &base::tool::SandboxSettings,
-    sandbox: std::sync::Arc<dyn base::interface::exec::Sandbox>,
+    exec: &base::interface::exec::ExecProviders,
     sandbox_disabled: bool,
     session_id: &str,
-) -> base::frozen::git::EngineGit {
-    if sandbox_disabled {
-        return base::frozen::git::EngineGit::Direct;
-    }
-    base::frozen::git::EngineGit::sandboxed(
-        sandbox,
-        to_sandbox_policy(settings),
-        settings.require_enforcement,
-        prepared_session_temp_dir(settings, session_id),
-    )
+    trust: base::project_trust::ProjectTrust,
+) -> base::engine_exec::EngineExec {
+    use base::engine_exec::{Confinement, EngineExec};
+    let confinement = if sandbox_disabled {
+        Confinement::Unconfined
+    } else {
+        Confinement::Sandboxed {
+            policy: to_sandbox_policy(settings),
+            require_enforcement: settings.require_enforcement,
+            tmpdir: prepared_session_temp_dir(settings, session_id),
+        }
+    };
+    EngineExec::new(exec.clone(), confinement, trust)
 }
 
 #[cfg(test)]

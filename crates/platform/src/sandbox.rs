@@ -48,7 +48,7 @@
 //! the state root's working entries and `DARWIN_USER_TEMP_DIR`: only
 //! `additional_writable` and `/dev` are writable, the read-only entries above
 //! still apply inside them. The engine's own git runs under such a policy in
-//! every session whose commands are sandboxed (`frozen::git::EngineGit`), so a
+//! every session whose commands are sandboxed (`base::engine_exec`), so a
 //! filter driver or other program a repository's configuration names runs
 //! confined, writing at most the git directory and `.agix/worktrees/` when it
 //! creates a worktree, and only the session's `TMPDIR` otherwise.

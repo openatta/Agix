@@ -33,18 +33,21 @@ pub(super) fn sandbox_settings_from(
     }
 }
 
-/// How the engine starts its own git for this session: in the sandbox its
-/// tool calls run in, whenever it confines them.
-pub(crate) fn engine_git_from(
+/// How the engine starts its own git and helpers for this session: through
+/// its providers, in the sandbox its tool calls run in whenever it confines
+/// them.
+pub(crate) fn engine_exec_from(
     config: &base::context::EngineConfig,
     exec: &base::interface::exec::ExecProviders,
     session_id: &str,
-) -> base::frozen::git::EngineGit {
-    tools::bash::engine_git_for(
+    trust: base::project_trust::ProjectTrust,
+) -> base::engine_exec::EngineExec {
+    tools::bash::engine_exec_for(
         &sandbox_settings_from(config),
-        exec.sandbox.clone(),
+        exec,
         config.dangerously_disable_sandbox,
         session_id,
+        trust,
     )
 }
 
@@ -53,7 +56,7 @@ pub(crate) fn engine_git_from(
 pub(crate) async fn collect_frozen(
     paths: &base::settings::PathSettings,
     environment: &dyn base::interface::environment::Environment,
-    engine_git: &base::frozen::git::EngineGit,
+    engine_git: &base::engine_exec::EngineExec,
 ) -> base::frozen::FrozenContext {
     use base::frozen::FrozenContext;
     let config_paths = base::paths::ConfigPaths::from_settings(paths);

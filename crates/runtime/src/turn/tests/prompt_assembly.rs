@@ -446,7 +446,11 @@ async fn parent_agents_md_reaches_the_prompt_with_nearest_last() {
         child.clone(),
         &base::paths::ConfigPaths::new(child.join(".state"), child.join(".agix"), "code"),
         &base::interface::environment::SystemEnvironment,
-        &base::frozen::git::EngineGit::Direct,
+        &base::engine_exec::EngineExec::new(
+            platform::local_providers(),
+            Default::default(),
+            Default::default(),
+        ),
     )
     .await;
     let mut settings = test_settings(dir.path());
@@ -497,7 +501,11 @@ async fn single_instruction_file_is_injected_verbatim() {
         root.clone(),
         &base::paths::ConfigPaths::new(root.join(".state"), root.join(".agix"), "code"),
         &base::interface::environment::SystemEnvironment,
-        &base::frozen::git::EngineGit::Direct,
+        &base::engine_exec::EngineExec::new(
+            platform::local_providers(),
+            Default::default(),
+            Default::default(),
+        ),
     )
     .await;
     let mut settings = test_settings(dir.path());

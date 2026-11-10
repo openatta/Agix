@@ -302,8 +302,8 @@ fn a_command_nothing_confines_keeps_the_callers_tmpdir() {
 /// The engine's own git goes into the sandbox exactly when the session's
 /// shell commands do, may write only the session's TMPDIR and what the
 /// command names, and reaches no network.
-#[test]
-fn the_engines_git_is_sandboxed_exactly_when_the_sessions_commands_are() {
+#[tokio::test]
+async fn the_engines_git_is_sandboxed_exactly_when_the_sessions_commands_are() {
     #[derive(Default)]
     struct Records(std::sync::Mutex<Option<base::interface::exec::SandboxPolicy>>);
     impl Sandbox for Records {
@@ -327,19 +327,31 @@ fn the_engines_git_is_sandboxed_exactly_when_the_sessions_commands_are() {
     ctx.session_id = uuid::Uuid::new_v4().to_string();
     let records = std::sync::Arc::new(Records::default());
     ctx.exec.sandbox = records.clone();
+    let process = base::interface::exec::in_process::ScriptedProcess::new().with(
+        "wrapper git",
+        base::interface::exec::in_process::ScriptedRun::ok(""),
+    );
+    ctx.exec.process = std::sync::Arc::new(process.clone());
 
     ctx.dangerously_disable_sandbox = true;
-    assert!(!engine_git(&ctx).is_sandboxed());
+    assert!(!engine_exec(&ctx).is_sandboxed());
 
     ctx.dangerously_disable_sandbox = false;
     let bookkeeping = dir.path().join(".git");
-    let spec = engine_git(&ctx)
-        .command(dir.path(), &["status"], std::slice::from_ref(&bookkeeping))
+    engine_exec(&ctx)
+        .git(
+            dir.path(),
+            base::engine_exec::GitAccess::Writes(std::slice::from_ref(&bookkeeping)),
+            &["status"],
+            std::time::Duration::from_secs(5),
+        )
+        .await
         .unwrap();
-    assert_eq!(spec.program, "wrapper");
-    let tmp = tmpdir_of(&spec).expect("TMPDIR is set");
+    assert_eq!(process.seen(), ["wrapper git"]);
     let policy = records.0.lock().unwrap().clone().unwrap();
     assert!(policy.only_additional_writable);
+    let tmp = policy.additional_writable[0].clone();
+    assert!(tmp.is_dir(), "the session's TMPDIR is prepared");
     assert_eq!(policy.additional_writable, vec![tmp.clone(), bookkeeping]);
     assert_eq!(
         policy.network_mode,

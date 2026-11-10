@@ -394,12 +394,6 @@ fn the_workspace_is_read_through_its_module_trees() {
 #[test]
 fn a_test_marker_early_in_a_file_hides_nothing_after_it() {
     let ws = ws();
-    let names: Vec<String> = ws
-        .production()
-        .filter(|f| f.rel == "crates/core/src/frozen/git.rs")
-        .flat_map(|f| static_names(f, View::Prod))
-        .collect();
-    assert!(names.iter().any(|n| n == "WARNED"), "{names:?}");
     let store = ws.file("crates/history/src/store.rs");
     assert!(
         store.production_lines() > 1000,

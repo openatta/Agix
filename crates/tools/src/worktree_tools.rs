@@ -12,8 +12,8 @@
 
 use crate::worktree::WorktreeHandle;
 use async_trait::async_trait;
+use base::engine_exec::GitAccess;
 use base::error::ToolError;
-use base::interface::exec::capture;
 use base::tool::{
     PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
     ToolSpec, ValidationResult,
@@ -22,6 +22,8 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
+
+const GIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// 会话期间的 active worktree —— EnterWorktree 创建 / ExitWorktree 清理。
 /// in-memory 单 session 状态；不持久化。
@@ -134,7 +136,7 @@ impl Tool for EnterWorktreeTool {
         }
         match crate::worktree::create_worktree(
             &ctx.exec,
-            &crate::bash::engine_git(&ctx),
+            &crate::bash::engine_exec(&ctx),
             &ctx.cwd,
             &input.slug,
         )
@@ -322,17 +324,18 @@ impl ExitWorktreeTool {
 /// caller's only use for the answer is whether to refuse a removal the user
 /// asked for, and refusing on an unanswerable question strands the worktree.
 async fn unsaved_work(ctx: &ToolContext, path: &std::path::Path, branch: &str) -> Vec<String> {
-    let git = crate::bash::engine_git(ctx);
+    let git = crate::bash::engine_exec(ctx);
     let run = |args: Vec<String>| {
         let git = git.clone();
         async move {
             let args: Vec<&str> = args.iter().map(String::as_str).collect();
-            let spec = git.command(path, &args, &[]).ok()?;
-            capture(&*ctx.exec.process, spec, ctx.cancel.clone())
-                .await
-                .ok()
-                .filter(|o| o.status.success)
-                .map(|o| o.stdout_lossy().trim().to_string())
+            let out = tokio::select! {
+                out = git.git(path, GitAccess::ReadOnly, &args, GIT_TIMEOUT) => out.ok()?,
+                () = ctx.cancel.cancelled() => return None,
+            };
+            out.status
+                .success
+                .then(|| out.stdout_lossy().trim().to_string())
         }
     };
     let mut unsaved = Vec::new();

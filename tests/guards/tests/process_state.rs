@@ -58,7 +58,7 @@ const PROCESS_STATE: &[(&str, &str, Kind, &str)] = &[
     ("crates/core/src/settings.rs", "KNOWN", Constant, "the settings keys, derived once from the schema"),
     ("crates/core/src/settings.rs", "DEPRECATED", Constant, "the deprecated settings keys, derived once from the schema"),
     ("crates/core/src/public_suffix.rs", "RULES", Constant, "the public suffix list compiled into the binary, parsed once"),
-    ("crates/core/src/frozen/git.rs", "WARNED", OnceFlag, "says once per process that git runs unconfined"),
+    ("crates/core/src/engine_exec.rs", "WARNED", OnceFlag, "says once per process that the engine's subprocesses run unconfined"),
     ("crates/tools/src/bash/sandbox.rs", "ONCE", OnceFlag, "sweeps stale session temp directories once per process"),
     ("crates/platform/src/network.rs", "ONCE", OnceFlag, "installs the process-wide TLS provider reqwest needs"),
     ("crates/assembly/src/telemetry_otel.rs", "TOLD", OnceFlag, "says once that a later OpenTelemetry endpoint is ignored"),

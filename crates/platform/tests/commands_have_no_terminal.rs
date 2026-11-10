@@ -10,9 +10,10 @@
 #![cfg(unix)]
 #![allow(clippy::unwrap_used)]
 
-use base::frozen::git::EngineGit;
+use base::engine_exec::{Confinement, EngineExec};
 use base::frozen::FrozenContext;
 use base::interface::exec::{Process, ProcessSpec, Sandbox, SandboxPolicy};
+use base::project_trust::ProjectTrust;
 use futures::StreamExt;
 use platform::testing::{on_a_terminal_of_its_own, PROBE};
 use platform::{LocalProcess, PlatformSandbox};
@@ -61,16 +62,20 @@ fn a_filter_the_engines_git_runs_cannot_reach_the_terminal() {
         || {
             let runtime = current_thread();
             let state = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
-            let sandboxed = EngineGit::sandboxed(
-                std::sync::Arc::new(PlatformSandbox),
-                SandboxPolicy {
+            let sandboxed = Confinement::Sandboxed {
+                policy: SandboxPolicy {
                     state_root: Some(state.path().to_path_buf()),
                     ..Default::default()
                 },
-                std::env::var_os("AGIX_REQUIRE_SANDBOX").is_some(),
-                None,
-            );
-            for git in [EngineGit::Direct, sandboxed] {
+                require_enforcement: std::env::var_os("AGIX_REQUIRE_SANDBOX").is_some(),
+                tmpdir: None,
+            };
+            for confinement in [Confinement::Unconfined, sandboxed] {
+                let git = EngineExec::new(
+                    platform::local_providers(),
+                    confinement,
+                    ProjectTrust::Trusted,
+                );
                 let project = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
                 repository_with_a_terminal_probing_filter(project.path());
                 let ctx = runtime.block_on(FrozenContext::collect(

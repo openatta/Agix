@@ -376,8 +376,12 @@ impl Agent {
     async fn warmup(&mut self) {
         let base_url = self.settings.model.base_url.clone();
         let session_memory = self.session.session_memory.clone();
-        let engine_git =
-            crate::turn::engine_git_from(&self.config, &self.exec, &self.session.session_id);
+        let engine_git = crate::turn::engine_exec_from(
+            &self.config,
+            &self.exec,
+            &self.session.session_id,
+            self.settings.project_layer.trust,
+        );
 
         let (frozen, _, _) = tokio::join!(
             // 1. Pre-compute the frozen environment snapshot (git status, branch, platform, etc.)

@@ -5,3 +5,4 @@
 mod capture;
 mod commands_have_no_terminal;
 mod engine_git_in_sandbox;
+mod frozen_git;

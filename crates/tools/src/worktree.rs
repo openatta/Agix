@@ -1,6 +1,6 @@
 //! Git worktree 管理器 —— 给 sub-agent 提供独立 checkout 的隔离运行环境。
 //!
-//! 本模块不引入 git 库依赖，全靠 `git` 子命令；每条都经 [`EngineGit`] 起——
+//! 本模块不引入 git 库依赖，全靠 `git` 子命令；每条都经 [`EngineExec`] 起——
 //! 会话的命令在沙箱里时，这里的 git 也在同一个沙箱里，只能写 git 目录与
 //! `.agix/worktrees/`。删除 worktree 时，它的目录和 `.git/worktrees/` 下的那一项
 //! 由引擎经 `FileSystem` 删，不交给 git：沙箱不许写已有 worktree 的 `.git` 链接
@@ -23,13 +23,10 @@
 //! - git 必须进沙箱却进不去 → `GitRefused`，不在沙箱外跑
 //! - cleanup 失败仅 warn，不传播 —— sub-agent 主要工作已完成
 
-use base::frozen::git::EngineGit;
-use base::interface::exec::capture;
+use base::engine_exec::{EngineExec, EngineExecError, GitAccess};
 use base::interface::exec::{ExecError, ExecProviders};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use tokio::time::timeout;
-use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 const SLUG_MAX_LEN: usize = 64;
@@ -45,7 +42,7 @@ pub struct WorktreeHandle {
     branch: String,
     repo: Repo,
     exec: ExecProviders,
-    git: EngineGit,
+    git: EngineExec,
     /// 若已经被 cleanup 过则 false，二次调用变 no-op
     pending: bool,
 }
@@ -105,7 +102,6 @@ impl WorktreeHandle {
         }
 
         if let Err(e) = run_git(
-            &self.exec,
             &self.git,
             &self.repo.root,
             &["branch", "-D", &self.branch],
@@ -164,12 +160,12 @@ pub enum WorktreeError {
 /// 4. `git worktree add -b <branch> <path> HEAD`
 pub async fn create_worktree(
     exec: &ExecProviders,
-    git: &EngineGit,
+    git: &EngineExec,
     cwd: &Path,
     slug: &str,
 ) -> Result<WorktreeHandle, WorktreeError> {
     validate_slug(slug)?;
-    let repo = find_repo(exec, git, cwd).await?;
+    let repo = find_repo(git, cwd).await?;
     let flat = flatten_slug(slug);
     let path = repo.root.join(WORKTREES_SUBDIR).join(&flat);
     if exec.filesystem.metadata(&path).await.is_ok() {
@@ -185,7 +181,6 @@ pub async fn create_worktree(
     ensure_gitignore_entry(exec, &repo.root, ".agix/").await;
 
     run_git(
-        exec,
         git,
         &repo.root,
         &[
@@ -231,15 +226,15 @@ pub async fn create_worktree(
 ///
 /// 失败仅 warn，不阻塞启动 —— 用户体验上 "agix 启动忽然卡住" 比 "孤儿没清"
 /// 更糟。
-pub async fn prune_orphan_worktrees(exec: &ExecProviders, git: &EngineGit, cwd: &Path) {
-    let repo = match find_repo(exec, git, cwd).await {
+pub async fn prune_orphan_worktrees(exec: &ExecProviders, git: &EngineExec, cwd: &Path) {
+    let repo = match find_repo(git, cwd).await {
         Ok(r) => r,
         Err(_) => return, // 非 git repo，没什么可清的
     };
     let writable = repo.bookkeeping();
 
     // 1. git worktree prune —— 清 git 内部状态
-    if let Err(e) = run_git(exec, git, &repo.root, &["worktree", "prune"], &writable).await {
+    if let Err(e) = run_git(git, &repo.root, &["worktree", "prune"], &writable).await {
         debug!(error = %e, "git worktree prune failed; ignoring");
     }
 
@@ -251,15 +246,9 @@ pub async fn prune_orphan_worktrees(exec: &ExecProviders, git: &EngineGit, cwd: 
     };
 
     // git worktree list --porcelain 拿活跃列表，比对找孤儿
-    let active = run_git_capture(
-        exec,
-        git,
-        &repo.root,
-        &["worktree", "list", "--porcelain"],
-        &[],
-    )
-    .await
-    .unwrap_or_default();
+    let active = run_git_capture(git, &repo.root, &["worktree", "list", "--porcelain"], &[])
+        .await
+        .unwrap_or_default();
 
     let mut pruned = 0usize;
     for entry in entries {
@@ -287,7 +276,7 @@ pub async fn prune_orphan_worktrees(exec: &ExecProviders, git: &EngineGit, cwd: 
             continue;
         }
         // 分支可能不存在（创建失败时未必有），失败也 OK
-        let _ = run_git(exec, git, &repo.root, &["branch", "-D", &branch], &writable).await;
+        let _ = run_git(git, &repo.root, &["branch", "-D", &branch], &writable).await;
         pruned += 1;
     }
 
@@ -346,18 +335,14 @@ pub(crate) fn flatten_slug(s: &str) -> String {
 /// A sandboxed git may write the git directory only where the sandbox guards
 /// its configuration and hooks, which it does for `<root>/.git`; a repository
 /// whose git directory lives anywhere else is refused there.
-async fn find_repo(
-    exec: &ExecProviders,
-    git: &EngineGit,
-    cwd: &Path,
-) -> Result<Repo, WorktreeError> {
-    let out = run_git_capture(exec, git, cwd, &["rev-parse", "--show-toplevel"], &[]).await?;
+async fn find_repo(git: &EngineExec, cwd: &Path) -> Result<Repo, WorktreeError> {
+    let out = run_git_capture(git, cwd, &["rev-parse", "--show-toplevel"], &[]).await?;
     let trimmed = out.trim();
     if trimmed.is_empty() {
         return Err(WorktreeError::NotAGitRepo(cwd.to_path_buf()));
     }
     let root = PathBuf::from(trimmed);
-    let common = run_git_capture(exec, git, &root, &["rev-parse", "--git-common-dir"], &[]).await?;
+    let common = run_git_capture(git, &root, &["rev-parse", "--git-common-dir"], &[]).await?;
     let git_dir = root.join(common.trim());
     let guarded = root.join(".git");
     if git.is_sandboxed() && !same_dir(&git_dir, &guarded) {
@@ -415,40 +400,32 @@ async fn ensure_gitignore_entry(exec: &ExecProviders, repo_root: &Path, entry: &
 
 /// 跑一个 git 命令；非零退出转 GitFailed。stdout/stderr 一并附进 error。
 async fn run_git(
-    exec: &ExecProviders,
-    git: &EngineGit,
+    git: &EngineExec,
     cwd: &Path,
     args: &[&str],
     writable: &[PathBuf],
 ) -> Result<(), WorktreeError> {
-    let _ = run_git_capture(exec, git, cwd, args, writable).await?;
+    let _ = run_git_capture(git, cwd, args, writable).await?;
     Ok(())
 }
 
 /// 跑 git，返回 stdout（trimmed）。带 15s 超时。沙箱里它只能写 `writable`。
 async fn run_git_capture(
-    exec: &ExecProviders,
-    git: &EngineGit,
+    git: &EngineExec,
     cwd: &Path,
     args: &[&str],
     writable: &[PathBuf],
 ) -> Result<String, WorktreeError> {
-    let mut spec = git
-        .command(cwd, args, writable)
-        .map_err(WorktreeError::GitRefused)?;
-    spec.env.extend([
-        ("GIT_TERMINAL_PROMPT".to_string(), "0".to_string()),
-        ("GIT_ASKPASS".to_string(), String::new()),
-    ]);
-
-    let out = timeout(
-        GIT_TIMEOUT,
-        capture(&*exec.process, spec, CancellationToken::new()),
-    )
-    .await
-    .map_err(|_| {
-        WorktreeError::GitFailed(format!("git {} timed out after 15s", args.join(" ")))
-    })??;
+    let out = git
+        .git(cwd, GitAccess::Writes(writable), args, GIT_TIMEOUT)
+        .await
+        .map_err(|e| match e {
+            EngineExecError::Refused(why) => WorktreeError::GitRefused(why),
+            EngineExecError::TimedOut(_) => {
+                WorktreeError::GitFailed(format!("git {} timed out after 15s", args.join(" ")))
+            }
+            EngineExecError::Failed(e) => WorktreeError::Exec(e),
+        })?;
 
     if !out.status.success {
         return Err(WorktreeError::GitFailed(format!(
@@ -555,6 +532,18 @@ mod tests {
         platform::local_providers()
     }
 
+    fn engine(exec: &ExecProviders) -> EngineExec {
+        EngineExec::new(exec.clone(), Confinement::Unconfined, ProjectTrust::Trusted)
+    }
+
+    fn direct() -> EngineExec {
+        engine(&exec())
+    }
+
+    use base::engine_exec::Confinement;
+    use base::project_trust::ProjectTrust;
+    use tokio_util::sync::CancellationToken;
+
     use base::interface::exec::{
         DirEntry, FileSystem, Metadata, Process, ProcessHandle, ProcessSpec,
     };
@@ -628,49 +617,36 @@ mod tests {
     async fn make_minimal_repo() -> TempDir {
         let dir = TempDir::new().unwrap();
         let p = dir.path();
-        let init = run_git_capture(&exec(), &EngineGit::Direct, p, &["init"], &[]).await;
+        let init = run_git_capture(&direct(), p, &["init"], &[]).await;
         assert!(init.is_ok(), "git init: {init:?}");
         // 配置 user 让 commit 不报错（CI 可能没全局 config）
         run_git_capture(
-            &exec(),
-            &EngineGit::Direct,
+            &direct(),
             p,
             &["config", "user.email", "test@example.com"],
             &[],
         )
         .await
         .unwrap();
-        run_git_capture(
-            &exec(),
-            &EngineGit::Direct,
-            p,
-            &["config", "user.name", "test"],
-            &[],
-        )
-        .await
-        .unwrap();
+        run_git_capture(&direct(), p, &["config", "user.name", "test"], &[])
+            .await
+            .unwrap();
         tokio::fs::write(p.join("README.md"), "# test")
             .await
             .unwrap();
-        run_git_capture(&exec(), &EngineGit::Direct, p, &["add", "."], &[])
+        run_git_capture(&direct(), p, &["add", "."], &[])
             .await
             .unwrap();
-        run_git_capture(
-            &exec(),
-            &EngineGit::Direct,
-            p,
-            &["commit", "-m", "init"],
-            &[],
-        )
-        .await
-        .unwrap();
+        run_git_capture(&direct(), p, &["commit", "-m", "init"], &[])
+            .await
+            .unwrap();
         dir
     }
 
     #[tokio::test]
     async fn create_worktree_succeeds_in_real_repo() {
         let repo = make_minimal_repo().await;
-        let mut handle = create_worktree(&exec(), &EngineGit::Direct, repo.path(), "probe")
+        let mut handle = create_worktree(&exec(), &direct(), repo.path(), "probe")
             .await
             .unwrap();
 
@@ -694,15 +670,9 @@ mod tests {
         // cleanup 后路径 + 分支都应当消失
         handle.cleanup().await;
         assert!(!repo.path().join(".agix/worktrees/probe").exists());
-        let branches = run_git_capture(
-            &exec(),
-            &EngineGit::Direct,
-            repo.path(),
-            &["branch", "--list"],
-            &[],
-        )
-        .await
-        .unwrap();
+        let branches = run_git_capture(&direct(), repo.path(), &["branch", "--list"], &[])
+            .await
+            .unwrap();
         assert!(
             !branches.contains("agix/worktree-probe"),
             "branch should be deleted; got {branches:?}"
@@ -712,10 +682,9 @@ mod tests {
     #[tokio::test]
     async fn create_worktree_flattens_nested_slug() {
         let repo = make_minimal_repo().await;
-        let mut handle =
-            create_worktree(&exec(), &EngineGit::Direct, repo.path(), "team/feature-a")
-                .await
-                .unwrap();
+        let mut handle = create_worktree(&exec(), &direct(), repo.path(), "team/feature-a")
+            .await
+            .unwrap();
         // 嵌套 slug 应当 flatten 成 +
         assert!(
             handle.path().to_string_lossy().contains("team+feature-a"),
@@ -729,11 +698,11 @@ mod tests {
     #[tokio::test]
     async fn create_worktree_fails_on_existing_path() {
         let repo = make_minimal_repo().await;
-        let mut h1 = create_worktree(&exec(), &EngineGit::Direct, repo.path(), "dup")
+        let mut h1 = create_worktree(&exec(), &direct(), repo.path(), "dup")
             .await
             .unwrap();
         // 第二次同名 slug 应当 AlreadyExists
-        let r2 = create_worktree(&exec(), &EngineGit::Direct, repo.path(), "dup").await;
+        let r2 = create_worktree(&exec(), &direct(), repo.path(), "dup").await;
         assert!(matches!(r2, Err(WorktreeError::AlreadyExists(_))));
         h1.cleanup().await;
     }
@@ -741,7 +710,7 @@ mod tests {
     #[tokio::test]
     async fn create_worktree_fails_on_non_git_dir() {
         let plain = TempDir::new().unwrap();
-        let r = create_worktree(&exec(), &EngineGit::Direct, plain.path(), "probe").await;
+        let r = create_worktree(&exec(), &direct(), plain.path(), "probe").await;
         assert!(
             matches!(
                 r,
@@ -754,7 +723,7 @@ mod tests {
     #[tokio::test]
     async fn create_worktree_rejects_invalid_slug_before_touching_disk() {
         let repo = make_minimal_repo().await;
-        let r = create_worktree(&exec(), &EngineGit::Direct, repo.path(), "../escape").await;
+        let r = create_worktree(&exec(), &direct(), repo.path(), "../escape").await;
         assert!(matches!(r, Err(WorktreeError::InvalidSlug(_))));
         // 路径不应当被创建
         assert!(!repo.path().join(".agix").exists());
@@ -788,7 +757,7 @@ mod tests {
             .unwrap();
         assert!(orphan.exists());
 
-        prune_orphan_worktrees(&exec(), &EngineGit::Direct, repo.path()).await;
+        prune_orphan_worktrees(&exec(), &direct(), repo.path()).await;
         assert!(
             !orphan.exists(),
             "orphan dir should be removed; still at {}",
@@ -800,7 +769,7 @@ mod tests {
     async fn prune_keeps_active_worktrees() {
         let repo = make_minimal_repo().await;
         // 一个真活跃的 worktree
-        let mut active = create_worktree(&exec(), &EngineGit::Direct, repo.path(), "active")
+        let mut active = create_worktree(&exec(), &direct(), repo.path(), "active")
             .await
             .unwrap();
         let active_path = active.path().to_path_buf();
@@ -808,7 +777,7 @@ mod tests {
         let orphan = repo.path().join(".agix/worktrees/orphan");
         tokio::fs::create_dir_all(&orphan).await.unwrap();
 
-        prune_orphan_worktrees(&exec(), &EngineGit::Direct, repo.path()).await;
+        prune_orphan_worktrees(&exec(), &direct(), repo.path()).await;
 
         // 活跃的应当还在
         assert!(active_path.exists(), "active worktree should be preserved");
@@ -823,16 +792,16 @@ mod tests {
     async fn prune_in_non_git_dir_is_silent_noop() {
         let plain = TempDir::new().unwrap();
         // 不应当 panic 或 error
-        prune_orphan_worktrees(&exec(), &EngineGit::Direct, plain.path()).await;
+        prune_orphan_worktrees(&exec(), &direct(), plain.path()).await;
     }
 
     #[tokio::test]
     async fn prune_with_no_agix_dir_is_silent_noop() {
         let repo = make_minimal_repo().await;
         // 全新 repo 没 .agix/worktrees/ 目录
-        prune_orphan_worktrees(&exec(), &EngineGit::Direct, repo.path()).await;
+        prune_orphan_worktrees(&exec(), &direct(), repo.path()).await;
         // git 还是好的
-        let r = run_git_capture(&exec(), &EngineGit::Direct, repo.path(), &["status"], &[]).await;
+        let r = run_git_capture(&direct(), repo.path(), &["status"], &[]).await;
         assert!(r.is_ok());
     }
 
@@ -856,7 +825,7 @@ mod tests {
         let repo = make_minimal_repo().await;
         let (providers, log) = watched();
 
-        let mut handle = create_worktree(&providers, &EngineGit::Direct, repo.path(), "watched")
+        let mut handle = create_worktree(&providers, &engine(&providers), repo.path(), "watched")
             .await
             .unwrap();
         handle.cleanup().await;
@@ -866,7 +835,7 @@ mod tests {
             argv.iter().all(|a| a[0] == "git"),
             "nothing but git should be spawned: {argv:?}"
         );
-        let options = base::frozen::git::ENGINE_GIT_OPTIONS;
+        let options = base::engine_exec::ENGINE_GIT_OPTIONS;
         assert!(
             argv.iter()
                 .all(|a| a[1..]
@@ -914,7 +883,7 @@ mod tests {
         std::fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
         std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-        let mut handle = create_worktree(&exec(), &EngineGit::Direct, repo.path(), "hooked")
+        let mut handle = create_worktree(&exec(), &direct(), repo.path(), "hooked")
             .await
             .unwrap();
         handle.cleanup().await;
@@ -931,14 +900,17 @@ mod tests {
         }
         let repo = make_minimal_repo().await;
         let state = TempDir::new().unwrap();
-        let git = EngineGit::sandboxed(
-            std::sync::Arc::new(platform::PlatformSandbox),
-            base::interface::exec::SandboxPolicy {
-                state_root: Some(state.path().to_path_buf()),
-                ..Default::default()
+        let git = EngineExec::new(
+            exec(),
+            Confinement::Sandboxed {
+                policy: base::interface::exec::SandboxPolicy {
+                    state_root: Some(state.path().to_path_buf()),
+                    ..Default::default()
+                },
+                require_enforcement: true,
+                tmpdir: None,
             },
-            true,
-            None,
+            ProjectTrust::Trusted,
         );
 
         let mut handle = create_worktree(&exec(), &git, repo.path(), "boxed")
@@ -946,7 +918,6 @@ mod tests {
             .unwrap();
         assert!(handle.path().join("README.md").is_file());
         let head = run_git_capture(
-            &exec(),
             &git,
             handle.path(),
             &["rev-parse", "--abbrev-ref", "HEAD"],
@@ -960,11 +931,7 @@ mod tests {
         assert!(!handle.path().exists());
         let direct = |args: &'static [&'static str]| {
             let root = repo.path().to_path_buf();
-            async move {
-                run_git_capture(&exec(), &EngineGit::Direct, &root, args, &[])
-                    .await
-                    .unwrap()
-            }
+            async move { run_git_capture(&direct(), &root, args, &[]).await.unwrap() }
         };
         assert!(!direct(&["branch", "--list"]).await.contains("boxed"));
         assert!(!direct(&["worktree", "list", "--porcelain"])
@@ -977,12 +944,16 @@ mod tests {
     #[tokio::test]
     async fn a_worktree_is_refused_when_its_git_must_be_sandboxed_and_cannot_be() {
         let repo = make_minimal_repo().await;
-        let (providers, log) = watched();
-        let git = EngineGit::sandboxed(
-            std::sync::Arc::new(base::interface::exec::in_process::NoSandbox),
-            Default::default(),
-            true,
-            None,
+        let (mut providers, log) = watched();
+        providers.sandbox = std::sync::Arc::new(base::interface::exec::in_process::NoSandbox);
+        let git = EngineExec::new(
+            providers.clone(),
+            Confinement::Sandboxed {
+                policy: Default::default(),
+                require_enforcement: true,
+                tmpdir: None,
+            },
+            ProjectTrust::Trusted,
         );
 
         let r = create_worktree(&providers, &git, repo.path(), "refused").await;

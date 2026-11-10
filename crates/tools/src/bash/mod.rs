@@ -22,7 +22,7 @@ pub use base::interface::exec::SandboxMode;
 pub use platform::sandbox::sandbox_status;
 
 pub(crate) use sandbox::{confine_shell, unattended_sandbox_allows};
-pub use sandbox::{engine_git, engine_git_for};
+pub use sandbox::{engine_exec, engine_exec_for};
 
 use async_trait::async_trait;
 use base::error::ToolError;

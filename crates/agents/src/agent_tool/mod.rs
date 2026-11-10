@@ -586,7 +586,7 @@ impl base::tool::Tool for AgentTool {
         let mut worktree_handle = match &inp.worktree {
             Some(s) => match create_worktree(
                 &ctx.exec,
-                &tools::bash::engine_git(&ctx),
+                &tools::bash::engine_exec(&ctx),
                 &ctx.session.cwd,
                 s,
             )
