@@ -219,7 +219,6 @@ async fn deny(sock: &Path, session_id: &str, prompt_id: &str) {
 /// `WebFetch(https://evil.example/*)`、`WebFetch(https://evil.example*)` 都拒绝
 /// `https://evil.example/a/b`，现在这次调用落到询问上。
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "audit: confirmed defect, fix pending"]
 async fn audit2_a_url_shaped_deny_written_for_0_3_10_still_refuses_deeper_paths() {
     let mut asked_instead = Vec::new();
     for rule in [
@@ -417,7 +416,6 @@ async fn audit2_a_request_with_a_mistyped_field_is_answered() {
 /// 原样 URL 带着 query 时,它又被当成 URL 模式:`?` 成了路径里匹配任意一个字符的通配,
 /// 永久允许 `https://h.example/a?b` 连 `https://h.example/axb` 一起放行。
 #[test]
-#[ignore = "audit: confirmed defect, fix pending"]
 fn audit2_permit_always_on_a_url_with_a_query_allows_only_that_url() {
     use base::permission::{RuleBehavior, RuleSource};
     use permissions::ruleset::{RuleHit, RuleSet};
@@ -448,7 +446,6 @@ fn audit2_permit_always_on_a_url_with_a_query_allows_only_that_url() {
 /// 域名的 URL 模式"按整类授权处理。`*.co.uk` 两段都是字面量,`host_is_open` 当它钉住了,可
 /// 任何人都能注册 `x.co.uk`。
 #[test]
-#[ignore = "audit: confirmed defect, fix pending"]
 fn audit2_a_skill_url_grant_on_a_public_suffix_is_unscoped() {
     assert!(
         !permissions::dangerous::is_unscoped_grant("WebFetch", Some("https://*.example.com/**")),

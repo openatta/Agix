@@ -1392,16 +1392,31 @@ WebAssembly 载体整个移除。
   `.agix/.gitignore` 的项目自己核对一下这三项(§8)。
 - **项目与插件 skill 的 `allowed-tools` 不再能用通配授权一切。** 以前只拒绝只写工具名的整类授权,
   `Bash(*)`、`Write(**)`、`Edit(/**)` 带了内容就照给,已信任项目或插件里的一个 skill 就能让任意
-  `Bash` 免询问;现在第一个通配之前只有 `/`、`.`、`~` 或空白的内容(连同 `Edit(/)` 这类指向根、
-  家目录、当前目录的)与整类授权一样不给,记一条 warn。用户层 skill 不受影响。靠这类写法免询问的
-  项目 / 插件 skill,改写成真正收窄的 `Bash(cargo test:*)`、`Write(src/**)`。
+  `Bash` 免询问;现在够得和整类授权一样远的内容同样不给,记一条 warn。只看第一个通配之前有没有
+  字面内容不够——`Write(x/../../../**)` 解析出来就是 `/**`,`Bash(b*)` 的 `*` 跨空格、盖住
+  `bash -c '…'`,`WebFetch(https://*.co.uk/**)` 下的子域谁都能注册——所以按工具分别判:路径类
+  (`Read` / `Edit` / `Write` / …)按规则匹配时的同一套解析得出模式钉住的目录,它要落在项目根(会话的
+  工作目录)之内、且不是项目根本身,按原样写法与解析符号链接之后都算;shell 类(`Bash` / `Monitor`)
+  第一个通配之前要是一个完整的程序名加空格(或 `程序名 …:*`),而且这个程序不是 shell、wrapper
+  (`bash`、`env`、`sudo`、`xargs`、`find`、`eval` 一类)——它们跑的是参数里写的任何命令;URL 类
+  主机里的通配要落在一个可注册的域名之内(按公共后缀列表判,`*.example.com` 给,`*.co.uk`、
+  `*.github.io`、`*.com` 不给)。拿不准的按整类授权处理。用户层 skill 不受影响。靠这类写法免询问的
+  项目 / 插件 skill,改写成真正收窄的 `Bash(cargo test:*)`、`Write(src/**)`;项目外的路径
+  (`Write(/tmp/build/**)`、`Edit(~/notes/**)`)从项目或插件 skill 授权也不再生效。用户自己设置里的
+  这类 allow 照旧生效,只是启动时的危险规则告警认得它们(`Bash(sudo:*)` 从 warning 升为 critical)。
 - **`WebFetch` / `Ping` 规则按 URL 的各部分匹配。** 以前规则内容是整串 URL 上的 glob,`*` 能跨 `/`,
   `WebFetch(https://*.example.com/**)` 会放行 `https://evil.net/.example.com/`;现在调用的 URL 先
   规整(去 userinfo / query / fragment,主机名小写,默认端口省略),再与模式的 scheme、主机、端口、
   路径分别匹配,主机里的通配只跨 `.`(`ARCHITECTURE.md` §6.1 第 5 条)。**会变的写法**:不是
   `scheme://host[/path]` 形状的 allow(`WebFetch(*example.com*)`)只放行原样相等的 URL,启动时记一条
-  warn(deny / ask 照旧按整串 glob 拦);`https://h/**` 不再匹配 `https://h:8443/`,要任何端口写
-  `https://h:*/**`。项目或插件 skill 的 `allowed-tools` 里主机钉不住域名的 URL 模式
+  warn;`https://h/**` 不再匹配 `https://h:8443/`,要任何端口写 `https://h:*/**`。deny / ask 不会因此
+  变窄:它们除了按部分匹配,还照旧按整串 glob 匹配原样的 URL,两种读法任一命中就生效——
+  `WebFetch(https://evil.example/*)`、`WebFetch(https://evil.example*)` 仍然拒绝
+  `https://evil.example/a/b`。模式这一侧也规整:Unicode 主机转成 punycode(`https://bücher.example/**`
+  命中它点名的主机),两侧路径里非保留字符的百分号转义解码(`/%61dmin/` 撞得上 `/admin/**` 的
+  deny),`%2F` 这类保留字符不解码。模式里写 `?` 或 `#` 的不再是 URL 模式(`?` 不当通配):作 allow
+  只认原样相等,"永久允许"记下的带 query 的 URL 因此只放行它自己;"永久允许"记下的 URL 里有
+  `*`、`[`、`{` 的按字面转义后记下。项目或插件 skill 的 `allowed-tools` 里主机钉不住域名的 URL 模式
   (`WebFetch(https://*/**)`)按整类授权处理,不给。
 - **设置里点名的密钥变量不再交给子进程。** 以前子进程的环境只剥 `ANTHROPIC_*`、`AGIX_DAEMON_TOKEN`
   与 provider 的 `api_key_env`,MCP OAuth 的 `client_secret_env` 一句 `printenv` 就读得到。现在
@@ -1673,8 +1688,12 @@ WebAssembly 载体整个移除。
 - URL 规则的匹配收进 `base::url_rule` 一份:`NormalizedUrl::parse` 规整 URL,`UrlPattern::parse`
   编译 `scheme://host[:port][/path]` 模式,`url_rule::matches(pattern, url)` 一步到位。`RuleSet::evaluate`
   对 `WebFetch` / `Ping` 用它;`mcp::policy` 的私有 `normalized_url` 删除;`tools::security::allowed_domains_name`
-  经它取主机。`permissions::dangerous::is_unscoped_grant(tool_name, content)` 是"这条授权能不能从空前缀
-  匹配起"的判断,skill 授权过滤与危险规则告警共用。
+  经它取主机。`permissions::dangerous::is_unscoped_grant(tool_name, content)` 是"这条授权是否和整类
+  授权够得一样远"的判断(危险规则告警用它),`is_unscoped_grant_in(tool_name, content, project_root)`
+  再要求路径类授权落在项目根之内(skill 授权过滤用它)。`UrlPattern::host_is_open` 改按公共后缀列表判
+  (新模块 `base::public_suffix`,列表随源码带着);`url_rule::literal_pattern` 把一个 URL 写成只匹配
+  它自己的规则内容,`permissions::ruleset::literal_rule_content` 与 `settings_patch::build_rule_string`
+  记"永久允许"时用它。`UrlPattern::parse` 拒绝带 `?` / `#` 的模式。
 - 路径规整与根目录包含判断收进 `permissions::path_rule` 一份:`permissions::path_safety` 与
   `tools::security` 里各自的 `normalize_path_lexically` 删除,改用 `path_rule::normalize_path_lexically`;
   两个同名 `is_path_within_root` 按语义改名——按组件比字面的是 `path_rule::is_within_root_lexical`,

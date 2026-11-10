@@ -288,9 +288,9 @@ const SKILL_BODY_CHAR_CAP: usize = 8000;
 /// only safe from a skill the user put there. `<project>/.agents/skills/` is
 /// repository content — attacker-supplied on a cloned repo — and a plugin
 /// package is someone else's, so those only get grants that narrow the tool
-/// to a content pattern (`Bash(cargo test:*)`) — not one that matches from an
-/// empty prefix (`Bash(*)`, `Write(**)`, see
-/// `permissions::dangerous::is_unscoped_grant`). A project skill gets none at all while
+/// to a content pattern (`Bash(cargo test:*)`) — not one that reaches as far
+/// as the bare tool or out of the project (`Bash(b*)`, `Write(../**)`, see
+/// `permissions::dangerous::is_unscoped_grant_in`). A project skill gets none at all while
 /// the project is not trusted (`ctx.config.project_untrusted`).
 pub async fn expand_for_invocation(
     manager: &crate::manager::SkillManager,
@@ -342,14 +342,16 @@ pub async fn expand_for_invocation(
         .flatten()
         .filter_map(|entry| {
             let (tool_name, rule_content) = split_allowed_tool_entry(entry);
-            if restricted && permissions::dangerous::is_unscoped_grant(tool_name, rule_content) {
+            if restricted
+                && permissions::dangerous::is_unscoped_grant_in(tool_name, rule_content, &ctx.cwd)
+            {
                 tracing::warn!(
                     skill = %info.name,
                     source = info.source.as_str(),
                     tool = %tool_name,
                     "ignoring a blanket `allowed-tools` grant from a project or plugin skill; \
-                     scope it as `Tool(pattern)` with literal text ahead of any wildcard \
-                     to have it honored"
+                     scope it as `Tool(pattern)` to a path inside the project, a program \
+                     (`Bash(cargo test:*)`) or a registrable domain to have it honored"
                 );
                 return None;
             }
@@ -1272,7 +1274,14 @@ mod tests {
                     "Bash(*)".into(),
                     "Write(**)".into(),
                     "Edit(/**)".into(),
+                    "Write(x/../../../../../../../../**)".into(),
+                    "Edit(/U*/**)".into(),
+                    "Bash(b*)".into(),
+                    "Bash(bash:*)".into(),
+                    "WebFetch(https://*.co.uk/**)".into(),
                     "Bash(cargo test:*)".into(),
+                    "Write(src/**)".into(),
+                    "WebFetch(https://*.example.com/**)".into(),
                 ]),
                 ..Default::default()
             });
@@ -1283,10 +1292,17 @@ mod tests {
                 .unwrap()
                 .grants
         };
-        let scoped = vec![("Bash".to_string(), Some("cargo test:*".to_string()))];
+        let scoped: Vec<_> = [
+            ("Bash", "cargo test:*"),
+            ("Write", "src/**"),
+            ("WebFetch", "https://*.example.com/**"),
+        ]
+        .into_iter()
+        .map(|(tool, content)| (tool.to_string(), Some(content.to_string())))
+        .collect();
         assert_eq!(grants(FrozenSkillSource::Project).await, scoped);
         assert_eq!(grants(FrozenSkillSource::Plugin).await, scoped);
-        assert_eq!(grants(FrozenSkillSource::User).await.len(), 4);
+        assert_eq!(grants(FrozenSkillSource::User).await.len(), 11);
     }
 
     /// A plugin package is someone else's code just the same.

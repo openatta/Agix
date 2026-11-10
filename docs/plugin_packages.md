@@ -256,7 +256,12 @@ cd my-plugin && zip -r ../my-plugin.zip . && shasum -a 256 ../my-plugin.zip
 - 包声明的 agent 类型带 `AgentTypeSource::Plugin`,它对 `permission_mode` / `max_turns` 的
   覆盖被钳制——网上来的定义不能给子代理比会话本身更多。
 - 包带的 skill 来源是 `SkillSource::Plugin`:`allowed-tools` 里只写工具名的整类授权不生效,
-  要写成 `Tool(内容)`,`Bash(*)`、`Write(**)` 这类第一个通配之前没有字面内容的也不生效;正文里的 `` !`cmd` `` 和模型的一次 `Bash` 调用一样先过会话的权限规则,
+  要写成 `Tool(内容)`,而且内容要真正收窄,够得和整类授权一样远的也不生效:路径要解析到项目
+  之内(`Write(src/**)` 生效,`Write(**)`、`Write(x/../../**)`、`Edit(/U*/**)`、`Write(/tmp/x/**)`
+  不生效),shell 命令要以一个完整的程序名加空格开头、且不是 `bash` / `env` / `sudo` / `xargs`
+  这类跑别的命令的程序(`Bash(cargo test:*)` 生效,`Bash(*)`、`Bash(b*)`、`Bash(bash:*)` 不生效),
+  URL 的主机通配要落在可注册的域名之内(`WebFetch(https://*.example.com/**)` 生效,
+  `https://*.co.uk/**`、`https://*.github.io/**` 不生效),见 `ARCHITECTURE.md` §6.1;正文里的 `` !`cmd` `` 和模型的一次 `Bash` 调用一样先过会话的权限规则,
   要询问的不跑。项目信任管的是项目自己的 `.agents/skills/`,不改变包里 skill 的这些规则;
   未信任项目的 `.agents/skills/` 仍按磁盘层压过包里的同名 skill(它的命令不跑、授权不给)。
 - 用户没信任的项目,它自己的配置按同一条规则对待(`ARCHITECTURE.md` §6.6):克隆来的仓库

@@ -85,13 +85,15 @@ pub fn append_permission_rule(
     Ok(true)
 }
 
-/// Build a canonical rule string `<tool_name>(<content>)`. Returns None when
-/// content is empty (no useful pattern can be derived).
+/// Build a canonical rule string `<tool_name>(<content>)` that matches the
+/// call `match_content` came from (`ruleset::literal_rule_content`). Returns
+/// None when content is empty (no useful pattern can be derived).
 pub fn build_rule_string(tool_name: &str, match_content: Option<&str>) -> Option<String> {
     let content = match_content?.trim();
     if content.is_empty() {
         return None;
     }
+    let content = crate::ruleset::literal_rule_content(tool_name, content);
     Some(format!("{tool_name}({content})"))
 }
 
@@ -307,6 +309,18 @@ mod tests {
         assert_eq!(
             build_rule_string("Bash", Some("git status")).as_deref(),
             Some("Bash(git status)")
+        );
+    }
+
+    #[test]
+    fn a_url_with_glob_characters_is_recorded_as_a_literal() {
+        assert_eq!(
+            build_rule_string("WebFetch", Some("https://h.example/**")).as_deref(),
+            Some("WebFetch(https://h.example/[*][*])")
+        );
+        assert_eq!(
+            build_rule_string("WebFetch", Some("https://h.example/a?b")).as_deref(),
+            Some("WebFetch(https://h.example/a?b)")
         );
     }
 }

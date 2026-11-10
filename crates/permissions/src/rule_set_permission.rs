@@ -272,7 +272,8 @@ impl Permission for RuleSetPermission {
             source: base::permission::RuleSource::Session,
             behavior: base::permission::RuleBehavior::Allow,
             tool_name: tool_name.to_string(),
-            rule_content: rule_content.map(|s| s.to_string()),
+            rule_content: rule_content
+                .map(|content| crate::ruleset::literal_rule_content(tool_name, content)),
         }]);
     }
 }

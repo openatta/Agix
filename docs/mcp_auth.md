@@ -35,7 +35,8 @@
   (`deny_unknown_fields`:写成 `client_secret` 会被拒绝)。
 - **密钥只交给它所属的授权服务器。** 授权服务器是 MCP server 自己在受保护资源元数据里指的,
   server 换一个指向就能把密钥引到别处。所以配了 `client_secret_env`,还要有下面之一:
-  `issuer` 写明这个客户端注册在哪个授权服务器(与发现到的 issuer 去掉末尾 `/` 后完全相等),
+  `issuer` 写明这个客户端注册在哪个授权服务器(与发现到的 issuer 按 URL 规整——scheme 与主机
+  小写、缺省端口省略、去掉末尾 `/`——之后相等),
   或 MCP 策略写了 `allowed_authorization_servers`(`ARCHITECTURE.md` §6.4)。issuer 不符时
   `mcp.auth.start` 报 `MCP_SERVER_DENIED`,两样都没有时报 `INVALID_PARAMS`,密钥都不发出;
   刷新、吊销与无人值守的令牌请求同样只在 issuer 相符时带上它。动态注册得到的密钥只发给当初
@@ -315,8 +316,8 @@ let pool = assembly::assemble::pool(&config, scene, Assembly {
   记录里;签断言的私钥从文件或环境变量读,不进凭据记录。
 - **授权服务器白名单。** MCP 策略(`ARCHITECTURE.md` §6.4)可以写
   `"allowed_authorization_servers": ["https://login.corp.example", "https://corp.okta.com/oauth2/default"]`:
-  对 issuer(规整成 `scheme://host[:port][/path]`、末尾不带 `/`)按 URL 模式拆开匹配(`ARCHITECTURE.md`
-  §6.1 第 5 条):主机里的 `*` 只跨 `.`、到不了路径,路径里的 `*` 不跨 `/`。写具体的
+  对 issuer(规整成 `scheme://host[:port][/path]`、末尾不带 `/`;模式也去掉末尾的 `/`)按 URL 模式拆开
+  匹配(`ARCHITECTURE.md` §6.1 第 5 条):主机里的 `*` 只跨 `.`、到不了路径,路径里的 `*` 不跨 `/`。写具体的
   租户:`https://*.okta.com/**` 这样的通配放进的是**任何人**在 Okta 上开的租户,包括攻击者自己
   注册的那个。不匹配的
   授权服务器在**任何跳转、注册、令牌请求之前**被拒绝;写了这一项而授权服务器元数据没有

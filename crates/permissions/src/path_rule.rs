@@ -123,7 +123,7 @@ fn expand_home(raw: &str) -> Option<PathBuf> {
     Some(home_dir()?.join(rest))
 }
 
-fn home_dir() -> Option<PathBuf> {
+pub(crate) fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .filter(|h| !h.is_empty())

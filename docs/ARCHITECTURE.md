@@ -725,14 +725,23 @@ git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git
    命令没写出的目录)之后再按相对路径读的,都不算在内;glob 按它此刻在磁盘上匹配到的
    路径查(`.*/x` 在 macOS 的 bash 3.2 下能匹配到 `../x`)。
 5. **URL 拆开再匹配。** `WebFetch(...)` / `Ping(...)` 的规则内容是 `scheme://host[:port][/path]`
-   形状的 URL 模式(`base::url_rule`)。调用的 URL 先规整——去掉 userinfo、query、fragment,主机名
-   小写、去掉末尾的 `.`、默认端口省略,`ws` / `wss` 当作 `http` / `https`——再与模式的 scheme、
-   主机、端口、路径**分别**匹配:主机里的通配只跨 `.`,到不了端口和路径,所以
+   形状的 URL 模式(`base::url_rule`)。两侧都规整成请求真正发出去的样子:调用的 URL 去掉
+   userinfo、query、fragment,主机名小写(Unicode 主机是它的 punycode)、去掉末尾的 `.`、默认端口
+   省略,`ws` / `wss` 当作 `http` / `https`;模式的主机逐个标签过同一套 IDNA,`https://bücher.example`
+   就是 `https://xn--bcher-kva.example`;两侧路径里非保留字符(字母、数字、`-` `.` `_` `~`)的百分号
+   转义解码、其余转义统一成大写——服务器把 `/%61dmin` 读成 `/admin`,`%2F` 却不是 `/`。然后与模式的
+   scheme、主机、端口、路径**分别**匹配:主机里的通配只跨 `.`,到不了端口和路径,所以
    `https://*.example.com/**` 不被 `https://evil.net/.example.com/` 骗过;不写端口只认缺省端口,
-   `:*` 认任何端口;路径的 `*` 不跨 `/`,`**` 跨。与调用的 URL 原样相等的规则也命中("永久允许"
-   记下的是原样的 URL)。写不成这种形状的内容(`*example.com*`)作 allow 只命中原样相等的 URL,
-   作 deny / ask 仍按整串 glob 匹配——规整只让裁决更严。MCP 策略的 `url` 与
-   `allowed_authorization_servers` 规则(§6.4)用的是同一个匹配函数。`sandbox.allowed_domains`
+   `:*` 认任何端口;不写路径只认 `/`,路径的 `*` 不跨 `/`,`**` 跨。模式里不能有 `?` 与 `#`(在 URL
+   里它们开始 query 与 fragment,`?` 不当通配)。与调用的 URL 原样相等的规则也命中;"永久允许"记下
+   的是原样的 URL,其中的 `*`、`[`、`{` 先按字面转义(`url_rule::literal_pattern`),带 query 的写不成
+   模式、只认原样相等,所以记下的规则只放行那一个 URL。
+   规整让两个方向的匹配都更准,而 deny / ask 不比按整串 glob 匹配时窄:deny / ask 除了按部分匹配,
+   还按整串 glob(`*` 跨 `/`)匹配调用原样的 URL,任一命中就生效——这些规则写下时就是这么读的,
+   `https://evil.example/*` 拒绝 `https://evil.example/a/b`。allow 只按部分匹配。写不成这种形状的
+   内容(`*example.com*`)作 allow 只命中原样相等的 URL,作 deny / ask 只按整串 glob 匹配。MCP 策略的
+   `url` 与 `allowed_authorization_servers` 规则(§6.4)用的是同一个按部分匹配的函数(不带整串 glob 那
+   一层;`allowed_authorization_servers` 的模式与 issuer 一样去掉末尾的 `/` 再比)。`sandbox.allowed_domains`
    不是这种规则:它列的是域名(含子域),网络层按主机执行,只共用 URL 的规整取主机这一步。
 
 场景的工具白名单不在这里:它在会话注册表上就把工具拿掉了(§3.5),被拿掉的工具根本
@@ -832,10 +841,29 @@ skill 自己的 `allowed-tools` 这时还没生效,不能给自己的命令开�
 去掉 frontmatter 的正文 → `` !`cmd` `` → 参数替换 → 正文截到 8000 字符 → 接上 `files:`
 声明的参考文件。`allowed-tools` 授权到这一轮结束(fork 的子 Agent 有自己的 `Permission`,
 不受它影响);只写工具名的整类授权只认用户层 skill,项目层与插件包带来的 skill 必须写成
-`Tool(内容)`,而且内容要真正收窄:第一个通配之前只有 `/`、`.`、`~` 或空白的(`Bash(*)`、
-`Write(**)`、`Edit(/**)`、`Bash(* --version)`,以及指向根、家目录、当前目录的 `Edit(/)`)与整类授权
-一样不给,`WebFetch` / `Ping` 的 URL 模式主机钉不住域名的(`https://*/**`、`https://*.com/**`)也一样
-(`permissions::dangerous::is_unscoped_grant`);未信任项目自己的 skill 什么都不授予(§6.6)。
+`Tool(内容)`,而且内容要真正收窄——够得和整类授权一样远的与整类授权一样不给
+(`permissions::dangerous::is_unscoped_grant_in`,拿不准的都算):
+
+- 路径类(`Read` / `Edit` / `Write` / `Grep` / `Glob` / `NotebookEdit`):模式按第 3 条的同一套解析
+  (`path_rule::resolve_pattern`,相对会话的工作目录)得出它钉住的目录——第一个带通配的组件之前的
+  部分——这个目录要在项目根(会话的工作目录)之内且不是项目根本身,按原样写法与解析符号链接之后
+  都要。所以 `Write(**)`、`Edit(./**)`、`Edit(*.rs)`(任何深度)、`Write(x/../../../**)`(就是 `/**`)、
+  `Edit(/U*/**)`、`Write(/tmp/build/**)`、`Edit(~/notes/**)`、指向项目外的符号链接下的路径都不给,
+  `Write(src/**)` 给。
+- shell 类(`Bash` / `Monitor`):规则的 glob 里 `*` 跨空格,第一个通配之前必须是一个完整的程序名
+  加空格(`git *`),`程序名 …:*` 的前缀也从一个完整的程序名开始;`Bash(b*)`、`Bash(* --version)`、
+  `Bash(/opt/x/*)` 不给。程序是 shell 或 wrapper 的(`bash`、`sh`、`env`、`sudo`、`xargs`、`timeout`、
+  `find`、`eval`,`permissions::invocation::runs_commands_it_is_given`)也不给——它们跑参数里写的任何命令。
+- URL 类(`WebFetch` / `Ping`):主机里的通配要落在一个可注册的域名之内——最后一个带通配的标签后面
+  写出的标签不能只是公共后缀(按 Public Suffix List 判,`base::public_suffix`)或数字。
+  `https://*.example.com/**` 给;`https://*/**`、`https://*.com/**`、`https://*.co.uk/**`、
+  `https://*.github.io/**`(后两个下面的子域谁都能注册)不给。
+
+公共后缀列表随源码带着(`crates/core/src/public_suffix_list.dat`,只留两段及以上的规则),每次发布前
+更新;把 `psl` 这类把列表编成代码的 crate 引进来,release 的 `agixd` 要多出约 800 KB,列表原文只占约
+140 KB(§1 的体积取舍)。列表过期时漏掉的是新加的后缀,那样的模式会被当成钉住了域名——所以要更新。
+危险规则告警(`is_broad_allow`)用的是不看项目根的那一半(`is_unscoped_grant`):用户自己设置里
+这类 allow 照旧生效,启动时记一条 critical。未信任项目自己的 skill 什么都不授予(§6.6)。
 
 ### 6.2 写路径的管控
 
@@ -1110,7 +1138,7 @@ HTTP;规则里写的 `ws://` / `wss://` 同样换过来):`https://*.corp.example
 `https://evil.example./`;它不匹配显式写了非默认端口的 `https://mcp.corp.example:8443/`
 (要放行就写进模式里,或写 `:*`)。主机里的通配只在主机里:`https://**` 是任何主机的根路径,不是任何 URL。
 路径要用 `/**`:`https://h/*` 只匹配一层路径。`url` 规则与 issuer 写不成 `scheme://host[/path]` 的
-(`**`、`*.corp.example`)算规则写错,整份策略按读不了处理。
+(`**`、`*.corp.example`、带 `?` 或 `#` 的)算规则写错,整份策略按读不了处理。
 
 **deny 是尽力而为,allow 才可靠。** 匹配只看规整后的字面:同一台主机换个 IP 字面量
 (`https://203.0.113.7/`)、换个 DNS 别名、换个装着同一个二进制的路径,`denied_servers` 都拦

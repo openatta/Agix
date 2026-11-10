@@ -515,7 +515,6 @@ async fn audit_f4_an_mcp_servers_read_only_hint_skips_the_accept_edits_prompt() 
 /// resolves to `/**`: a project skill granting `Write` that way lets every
 /// write anywhere through without a prompt.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "audit: confirmed defect, fix pending"]
 async fn audit2_a_project_skill_grants_every_write_with_a_climbing_pattern() {
     let (asked, written) = skill_then_write_outside("[\"Write(src/**)\"]").await;
     assert_eq!(

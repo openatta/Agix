@@ -375,7 +375,10 @@ fn compile(policy: McpPolicy) -> Rules {
             patterns
                 .iter()
                 .map(|p| {
-                    UrlPattern::parse(p).map_err(|e| format!("allowed_authorization_servers: {e}"))
+                    // Issuers are compared without a trailing `/`; so is the
+                    // pattern, or `https://as.example/tenant/` matches none.
+                    UrlPattern::parse(p.trim().trim_end_matches('/'))
+                        .map_err(|e| format!("allowed_authorization_servers: {e}"))
                 })
                 .collect::<Result<Vec<_>, _>>()
         })
@@ -790,6 +793,27 @@ mod tests {
         assert!(g.admit_authorization_server(None).is_err());
         assert!(gate(r#"{"allowed_authorization_servers": []}"#)
             .admit_authorization_server(Some("https://login.corp.example"))
+            .is_err());
+    }
+
+    #[test]
+    fn an_authorization_server_pattern_is_compared_without_its_trailing_slash() {
+        let g = gate(
+            r#"{"allowed_authorization_servers": ["https://corp.okta.com/oauth2/default/", "https://login.corp.example/"]}"#,
+        );
+        for issuer in [
+            "https://corp.okta.com/oauth2/default",
+            "https://corp.okta.com/oauth2/default/",
+            "https://login.corp.example",
+            "https://login.corp.example/",
+        ] {
+            assert!(
+                g.admit_authorization_server(Some(issuer)).is_ok(),
+                "{issuer}"
+            );
+        }
+        assert!(g
+            .admit_authorization_server(Some("https://corp.okta.com/oauth2/default/x"))
             .is_err());
     }
 

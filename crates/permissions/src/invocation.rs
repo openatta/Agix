@@ -249,6 +249,18 @@ pub fn program_name(word: &str) -> &str {
     word.rsplit('/').next().unwrap_or(word)
 }
 
+/// Whether the program `name` runs a command its arguments spell out — a
+/// shell, a wrapper, `eval`, `find -exec` — so that allowing it with any
+/// arguments allows every command.
+pub fn runs_commands_it_is_given(name: &str) -> bool {
+    SHELLS.contains(&name)
+        || WRAPPERS.iter().any(|w| w.names.contains(&name))
+        || matches!(
+            name,
+            "su" | "runuser" | "watch" | "script" | "parallel" | "eval" | "find" | "gfind"
+        )
+}
+
 /// `pre{a,b}post` → `prea post`... as the shell expands it. `None` for a
 /// sequence (`{1..3}`), a quoted or substituted brace, or too many words.
 fn expand_braces(word: &Word) -> Option<Vec<Word>> {

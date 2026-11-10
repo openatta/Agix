@@ -15,7 +15,8 @@ use base::tool::PermissionContentKind;
 use std::path::Path;
 
 /// Tools whose rule content is a path.
-const PATH_RULE_TOOLS: &[&str] = &["Read", "Grep", "Glob", "Edit", "Write", "NotebookEdit"];
+pub(crate) const PATH_RULE_TOOLS: &[&str] =
+    &["Read", "Grep", "Glob", "Edit", "Write", "NotebookEdit"];
 
 /// Tools whose rule content is a URL, matched as `base::url_rule` reads one.
 pub(crate) const URL_RULE_TOOLS: &[&str] = &["WebFetch", "Ping"];
@@ -396,21 +397,34 @@ pub(crate) fn matches_content(pattern: &str, content: &str) -> bool {
 }
 
 /// A URL-valued tool's rule: the same text, or `base::url_rule` matching it
-/// part by part. A pattern or URL that cannot be read as one still meets a
-/// deny or ask as a glob over the whole text — a refusal written before
-/// patterns were URLs must not stop refusing — but never lets anything else
-/// through as an allow.
+/// part by part. A deny or ask also meets every URL its text matches as a
+/// glob over the whole URL, the way rules matched before they were read as
+/// URLs (`*` across `/`, a pattern without a path reaching any path): a
+/// refusal written then must not refuse less now. An allow never gets that
+/// wider reading.
 fn matches_url(pattern: &str, content: &str, behavior: RuleBehavior) -> bool {
     if pattern == content {
         return true;
     }
-    let parsed = base::url_rule::UrlPattern::parse(pattern)
+    let part_by_part = base::url_rule::UrlPattern::parse(pattern)
         .ok()
-        .zip(base::url_rule::NormalizedUrl::parse(content));
-    match (parsed, behavior) {
-        (Some((pattern, url)), _) => pattern.matches(&url),
-        (None, RuleBehavior::Allow) => false,
-        (None, RuleBehavior::Deny | RuleBehavior::Ask) => matches_content(pattern, content),
+        .zip(base::url_rule::NormalizedUrl::parse(content))
+        .is_some_and(|(pattern, url)| pattern.matches(&url));
+    match behavior {
+        RuleBehavior::Allow => part_by_part,
+        RuleBehavior::Deny | RuleBehavior::Ask => part_by_part || matches_content(pattern, content),
+    }
+}
+
+/// The rule content a "permit always" answer records for a call whose match
+/// content is `content`: one that matches that call and no other. A URL may
+/// carry glob characters a URL pattern would read as wildcards
+/// (`base::url_rule::literal_pattern`).
+pub fn literal_rule_content(tool_name: &str, content: &str) -> String {
+    if URL_RULE_TOOLS.contains(&tool_name) {
+        base::url_rule::literal_pattern(content)
+    } else {
+        content.to_string()
     }
 }
 
@@ -789,5 +803,68 @@ mod tests {
                 "{url}"
             );
         }
+    }
+
+    /// A refusal reaches every URL that either reading of its text reaches; an
+    /// allow only what the URL reading does.
+    #[test]
+    fn a_url_refusal_keeps_the_whole_url_glob_reading_and_an_allow_does_not_get_it() {
+        let rs = |content: &str, behavior| {
+            RuleSet::new(vec![rule(
+                "WebFetch",
+                Some(content),
+                behavior,
+                RuleSource::UserSettings,
+            )])
+        };
+        let url = "https://evil.example/a/b";
+        for content in ["https://evil.example/*", "https://evil.example*"] {
+            assert!(
+                matches!(
+                    rs(content, RuleBehavior::Deny).evaluate("WebFetch", Some(url)),
+                    RuleHit::Deny(_)
+                ),
+                "deny {content} on {url}"
+            );
+            assert!(
+                matches!(
+                    rs(content, RuleBehavior::Ask).evaluate("WebFetch", Some(url)),
+                    RuleHit::Ask(_)
+                ),
+                "ask {content} on {url}"
+            );
+        }
+        for (content, url) in [
+            ("https://evil.example/*", "https://evil.example/a/b"),
+            ("https://h.example/a?b", "https://h.example/axb"),
+            ("https://*.example.com/**", "https://evil.net/.example.com/"),
+        ] {
+            assert!(
+                matches!(
+                    rs(content, RuleBehavior::Allow).evaluate("WebFetch", Some(url)),
+                    RuleHit::None
+                ),
+                "allow {content} on {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn permit_always_on_a_url_records_a_rule_for_that_url_alone() {
+        let rs = RuleSet::new(vec![rule(
+            "WebFetch",
+            Some(&literal_rule_content("WebFetch", "https://h.example/**")),
+            RuleBehavior::Allow,
+            RuleSource::Session,
+        )]);
+        assert!(matches!(
+            rs.evaluate("WebFetch", Some("https://h.example/**")),
+            RuleHit::Allow(_)
+        ));
+        assert!(matches!(
+            rs.evaluate("WebFetch", Some("https://h.example/secret")),
+            RuleHit::None
+        ));
+        assert_eq!(literal_rule_content("Bash", "ls *"), "ls *");
     }
 }

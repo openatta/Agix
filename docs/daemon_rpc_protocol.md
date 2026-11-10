@@ -421,12 +421,16 @@ settings 宽的被**静默夹到 settings 允许的最宽处**并记一条 warn 
   也算。`*` 不跨 `/`,`**` 跨。`Read(...)` 同样约束 `Grep` / `Glob`,`Edit(...)` 同样
   约束 `Write` / `NotebookEdit`。
 - `WebFetch` / `Ping` 用 URL 模式 `scheme://host[:port][/path]`(`"https://*.example.com/**"`)。
-  调用的 URL 先规整(去掉 userinfo、query、fragment,主机名小写、去掉末尾的 `.`、默认端口
-  省略),再与模式**按部分**分别匹配:主机里的通配只跨 `.`,到不了端口和路径
-  (`https://evil.net/.example.com/` 不命中上面那条);不写端口只认缺省端口,`:*` 认任何端口;
-  路径里 `*` 不跨 `/`,`**` 跨。与调用的 URL 原样相等的也命中("永久允许"记下的就是原样的 URL)。
-  写不成这种形状的(`"*example.com*"`)作 `allow` 只命中原样相等的 URL,作 `deny` / `ask`
-  仍按整串 glob 匹配。
+  调用的 URL 先规整(去掉 userinfo、query、fragment,主机名小写、Unicode 主机转成 punycode、去掉
+  末尾的 `.`、默认端口省略,`ws` / `wss` 按 `http` / `https` 算),模式的主机同样转成 punycode,两侧
+  路径里字母、数字、`-` `.` `_` `~` 的百分号转义解码(`/%61dmin` 即 `/admin`;`%2F` 不解码),再
+  **按部分**分别匹配:主机里的通配只跨 `.`,到不了端口和路径(`https://evil.net/.example.com/`
+  不命中上面那条);不写端口只认缺省端口,`:*` 认任何端口;不写路径只认 `/`,路径里 `*` 不跨 `/`,
+  `**` 跨。模式里不能有 `?` / `#`(`?` 不是通配)。与调用的 URL 原样相等的也命中;"永久允许"记下的
+  是原样的 URL,其中的 `*`、`[`、`{` 按字面转义,所以只放行那一个 URL。`deny` / `ask` 另外按整串
+  glob(`*` 跨 `/`)匹配原样的 URL,两种读法任一命中就生效——`"https://evil.example/*"` 的 `deny`
+  拒绝 `https://evil.example/a/b`;`allow` 只按部分匹配。写不成这种形状的(`"*example.com*"`)作
+  `allow` 只命中原样相等的 URL,作 `deny` / `ask` 只按整串 glob 匹配。
 
 裁决只看 `behavior`:一次调用命中的规则里只要有一条 `deny` 就拒绝,否则有 `ask`
 就提问,否则才是 `allow`。`source` 和规则写得多具体都不参与裁决——客户端传入的
