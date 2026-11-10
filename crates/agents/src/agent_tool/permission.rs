@@ -301,9 +301,14 @@ impl ParentPermission {
             .clone();
         let judged = delegate.cloned().or_else(|| session.clone());
         if let (Some(tool), None) = (&own, delegate) {
-            let mut ctx = platform::tool_context_from_engine_ctx(
+            let exec = judged
+                .as_ref()
+                .and_then(|judged| judged.exec())
+                .unwrap_or_else(platform::local_providers);
+            let mut ctx = ToolContext::from_engine_ctx_with(
                 cwd.to_path_buf(),
                 tokio_util::sync::CancellationToken::new(),
+                exec,
             );
             if let Some(judged) = &judged {
                 ctx.session = judged.clone();

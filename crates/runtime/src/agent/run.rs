@@ -343,7 +343,8 @@ impl Agent {
         let paths = base::paths::ConfigPaths::from_settings(&self.settings.paths);
         let base_url = self.settings.model.base_url.clone();
         let session_memory = self.session.session_memory.clone();
-        let engine_git = crate::turn::engine_git_from(&self.config, &self.session.session_id);
+        let engine_git =
+            crate::turn::engine_git_from(&self.config, &self.exec, &self.session.session_id);
 
         let (frozen, _, _) = tokio::join!(
             // 1. Pre-compute the frozen environment snapshot (git status, branch, platform, etc.)

@@ -1368,3 +1368,11 @@ WebAssembly 载体整个移除。
   也编得过。
 - `EngineConfig::process_groups` 删除。它只在 `Builder` 内部转手:会话的进程组台账一直经
   `Builder::process_groups(ledger)` 给,这条不变。
+
+**权限判断与执行用同一套 provider。**
+
+- `SessionState` 新增 `bind_exec(exec)` / `exec()`。`Builder::build()` 给会话造一次
+  `ExecProviders`,工具调用与引擎自己的 git 用它,并绑在会话的 `SessionState` 上。
+- `RuleSetPermission` 与子 Agent 的权限包装构造 `ToolContext` 时取被判会话的
+  `SessionState::exec()`,没绑过的(自己拼 `SessionState`、不经 `Builder` 的)仍用本机,与以前相同。
+  自己实现 `Permission` 并构造 `ToolContext` 的照此改。

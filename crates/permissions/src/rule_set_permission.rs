@@ -11,9 +11,9 @@ use async_trait::async_trait;
 use base::context::SessionState;
 use base::interface::permission::{Permission, PermissionOutcome};
 use base::permission::{PermissionDecision as GateDecision, PermissionMode};
-use base::tool::ToolRegistry;
 #[cfg(test)]
-use base::tool::{InMemoryToolRegistry, ToolContext};
+use base::tool::InMemoryToolRegistry;
+use base::tool::{ToolContext, ToolRegistry};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 use tokio_util::sync::CancellationToken;
@@ -158,10 +158,6 @@ impl RuleSetPermission {
             };
         };
 
-        let mut ctx =
-            platform::tool_context_from_engine_ctx(cwd.to_path_buf(), CancellationToken::new());
-        ctx.session_id = session_id.to_string();
-        ctx.sandbox = self.sandbox.clone();
         // Prefer the session's live state (so a runtime `set_permission_mode`
         // — plan mode — is honored); fall back to a throwaway carrying the
         // construction-time mode when nothing was bound.
@@ -177,13 +173,22 @@ impl RuleSetPermission {
             ),
         };
         let own_mode = own.permission_mode();
-        (ctx.session, ctx.permission_mode) = match delegate {
+        let (judged, permission_mode) = match delegate {
             Some(delegate) => (
                 delegate.clone(),
                 own_mode.for_delegate(delegate.permission_mode()),
             ),
             None => (own, own_mode),
         };
+        // The machine the call will run on is the judged session's; one that
+        // never had its providers bound runs on this one.
+        let exec = judged.exec().unwrap_or_else(platform::local_providers);
+        let mut ctx =
+            ToolContext::from_engine_ctx_with(cwd.to_path_buf(), CancellationToken::new(), exec);
+        ctx.session_id = session_id.to_string();
+        ctx.sandbox = self.sandbox.clone();
+        ctx.session = judged;
+        ctx.permission_mode = permission_mode;
         ctx.additional_writable_dirs = ctx.session.additional_writable_dirs.clone();
         ctx.dangerously_disable_sandbox = ctx.session.sandbox_disabled;
 
@@ -958,5 +963,71 @@ mod tests {
                 );
             }
         }
+    }
+
+    struct FilesystemProbe(std::sync::Mutex<Vec<Arc<dyn base::interface::exec::FileSystem>>>);
+
+    #[async_trait2]
+    impl Tool for FilesystemProbe {
+        fn name(&self) -> &str {
+            "FilesystemProbe"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            json!({"type": "object"})
+        }
+        async fn check_permissions(
+            &self,
+            _: &serde_json::Value,
+            ctx: &ToolContext,
+        ) -> ToolPermissionDecision {
+            self.0.lock().unwrap().push(ctx.exec.filesystem.clone());
+            ToolPermissionDecision::allow()
+        }
+        async fn call(
+            &self,
+            _: serde_json::Value,
+            _: ToolContext,
+            _: base::tool::ProgressSender,
+        ) -> Result<base::tool::ToolResult, ToolError> {
+            Ok(base::tool::ToolResult::text("ok"))
+        }
+    }
+
+    /// A call is judged on the providers of the session it runs in: the bound
+    /// session's for its own calls, the delegate's for a delegate's.
+    #[tokio::test]
+    async fn a_call_is_judged_on_the_providers_of_the_session_it_runs_in() {
+        let probe = Arc::new(FilesystemProbe(Default::default()));
+        let tools = Arc::new(InMemoryToolRegistry::new());
+        tools.register(probe.clone());
+        let perm = RuleSetPermission::new(
+            Arc::new(PermissionGate::empty()),
+            tools.clone(),
+            PermissionMode::Default,
+        );
+        let own = Arc::new(SessionState::new("/tmp".into()));
+        let own_exec = base::interface::exec::ExecProviders::in_process();
+        own.bind_exec(own_exec.clone());
+        perm.bind_session_state(own);
+        let delegate = Arc::new(SessionState::new("/tmp".into()));
+        let delegate_exec = base::interface::exec::ExecProviders::in_process();
+        delegate.bind_exec(delegate_exec.clone());
+        delegate.bind_tools(&(tools as Arc<dyn ToolRegistry>));
+
+        perm.check("FilesystemProbe", &json!({}), Path::new("/tmp"), "s1")
+            .await;
+        perm.check_for_delegate(
+            "FilesystemProbe",
+            &json!({}),
+            Path::new("/tmp"),
+            "s1",
+            &delegate,
+        )
+        .await;
+
+        let seen = probe.0.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert!(Arc::ptr_eq(&seen[0], &own_exec.filesystem));
+        assert!(Arc::ptr_eq(&seen[1], &delegate_exec.filesystem));
     }
 }

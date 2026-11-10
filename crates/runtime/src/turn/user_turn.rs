@@ -200,7 +200,7 @@ impl Agent {
         // Compute frozen context lazily on first turn. Includes git status,
         // branch, platform, etc.
         let collected_this_turn = self.prompt.frozen.is_none();
-        let engine_git = engine_git_from(&self.config, &self.session.session_id);
+        let engine_git = engine_git_from(&self.config, &self.exec, &self.session.session_id);
         if collected_this_turn {
             let cwd = self.settings.paths.project_root();
             let paths = base::paths::ConfigPaths::from_settings(&self.settings.paths);
@@ -844,7 +844,11 @@ impl Agent {
             if has_tool_uses && Self::included_git_mutating_bash_call(self.this_step()) {
                 if let Some(ref mut frozen) = self.prompt.frozen {
                     frozen
-                        .refresh_git(&engine_git_from(&self.config, &self.session.session_id))
+                        .refresh_git(&engine_git_from(
+                            &self.config,
+                            &self.exec,
+                            &self.session.session_id,
+                        ))
                         .await;
                 }
             }

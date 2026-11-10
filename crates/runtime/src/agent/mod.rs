@@ -67,7 +67,8 @@ pub struct Agent {
     /// whole session, handed to every `ToolContext` — see `Builder::build()`.
     pub(crate) session_state: Arc<base::context::SessionState>,
     /// How this session's tool calls reach the machine: built once from
-    /// `config` and the builder's process-group ledger.
+    /// `config` and the builder's process-group ledger, and bound to
+    /// `session_state` for the permission that judges those calls.
     pub(crate) exec: base::interface::exec::ExecProviders,
     /// Outlives the turn it names: what is announced between turns (a
     /// `/compact`, a turn error) carries the last turn's id.

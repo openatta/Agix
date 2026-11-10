@@ -33,15 +33,16 @@ pub(super) fn sandbox_settings_from(
     }
 }
 
-/// How the engine starts its own git for this session: in the sandbox
-/// [`exec_providers_from`] gives its tool calls, whenever it confines them.
+/// How the engine starts its own git for this session: in the sandbox its
+/// tool calls run in, whenever it confines them.
 pub(crate) fn engine_git_from(
     config: &base::context::EngineConfig,
+    exec: &base::interface::exec::ExecProviders,
     session_id: &str,
 ) -> base::frozen::git::EngineGit {
     tools::bash::engine_git_for(
         &sandbox_settings_from(config),
-        Arc::new(platform::PlatformSandbox),
+        exec.sandbox.clone(),
         config.dangerously_disable_sandbox,
         session_id,
     )

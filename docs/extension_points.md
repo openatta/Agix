@@ -536,6 +536,10 @@ provider——模型、OAuth、遥测和 registry 的 client 各造各的。所�
 (缺省关):打开后会话关闭、被逐出、daemon 收尾时都会收,故意留在后台的服务也一并停掉。
 自己拼 `ExecProviders` 的用 `platform::local_providers_with_ledger`。
 
+自己实现 `Permission`、又要构造 `ToolContext` 去问工具 `check_permissions` 的,provider 取
+`SessionState::exec()`——`Builder::build()` 把会话执行用的那套绑在那里,子 Agent 的调用用
+子 Agent 的 `SessionState`。另起一套本机的,判的就不是命令要跑的那台机器。
+
 沙箱有一条不变量是引擎强制而不是请求的:**要求过约束的策略,绝不会悄悄变成一次不
 受约束的运行。** 后端报告 `Full`、`Partial` 或 `None`,并说清自己没能兑现什么;
 `sandbox.require_enforcement` 决定不到 `Full` 要不要拒。约束什么、要不要约束,始终

@@ -63,5 +63,6 @@ mod events_and_steering;
 mod policies;
 use events_and_steering::*;
 mod compacting;
+mod exec_providers;
 mod prompt_middleware;
 mod web_tasks;

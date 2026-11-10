@@ -84,6 +84,7 @@ pub struct SessionState {
     structured_output: std::sync::Mutex<Option<serde_json::Value>>,
     /// Weak: the registry's tools may hold this session.
     tools: std::sync::RwLock<Option<std::sync::Weak<dyn crate::tool::ToolRegistry>>>,
+    exec: std::sync::RwLock<Option<crate::interface::exec::ExecProviders>>,
 }
 
 #[derive(Debug, Default)]
@@ -217,6 +218,7 @@ impl SessionState {
             last_read_path: std::sync::Mutex::new(None),
             structured_output: std::sync::Mutex::new(None),
             tools: std::sync::RwLock::new(None),
+            exec: std::sync::RwLock::new(None),
         }
     }
 
@@ -932,6 +934,18 @@ impl SessionState {
     pub fn bind_tools(&self, tools: &std::sync::Arc<dyn crate::tool::ToolRegistry>) {
         *self.tools.write().unwrap_or_else(|e| e.into_inner()) =
             Some(std::sync::Arc::downgrade(tools));
+    }
+
+    /// Bind the providers this session's tool calls run on, so that a
+    /// permission judging a call — the paths it resolves, whether the sandbox
+    /// holds it — judges it against the machine it will run on.
+    pub fn bind_exec(&self, exec: crate::interface::exec::ExecProviders) {
+        *self.exec.write().unwrap_or_else(|e| e.into_inner()) = Some(exec);
+    }
+
+    /// The providers [`bind_exec`](Self::bind_exec) bound, if any.
+    pub fn exec(&self) -> Option<crate::interface::exec::ExecProviders> {
+        self.exec.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// The tool this session's calls named `name` dispatch to, if a registry

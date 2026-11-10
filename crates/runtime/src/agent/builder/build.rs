@@ -267,6 +267,10 @@ impl Builder {
             state.sandbox_disabled = settings.sandbox.dangerously_disable_sandbox;
             state
         });
+        // One set for the session: its tool calls run on it, and a permission
+        // judging them reads it back from the session state.
+        let exec = crate::turn::exec_providers_from(&config, self.process_groups.as_ref());
+        session_state.bind_exec(exec.clone());
         let hook_ambient = hook_ambient(
             session.session_id_str().to_string(),
             settings.paths.project_root().display().to_string(),
@@ -749,7 +753,7 @@ impl Builder {
             Agent {
                 scene,
                 settings,
-                exec: crate::turn::exec_providers_from(&config, self.process_groups.as_ref()),
+                exec,
                 config,
                 session,
                 session_state,
