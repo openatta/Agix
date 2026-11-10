@@ -496,7 +496,7 @@ agent 跑的命令各有自己的进程组,daemon 崩了它们还活着,所以 d
 
 ## 构建与测试
 
-Rust 1.80+。测试不需要网络,也不需要 key。
+Rust 1.88+。测试不需要网络,也不需要 key。
 
 ```sh
 cargo build --workspace

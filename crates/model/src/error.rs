@@ -60,8 +60,6 @@ pub enum AnthropicError {
     Denied(String),
 }
 
-impl AnthropicError {}
-
 /// 服务端那一侧临时出了错、请求本身没问题的状态码：内部错误、网关拿不到或等不到
 /// 上游、请求超时。两个协议都用它决定首字节前要不要再发一次。
 pub(crate) fn is_transient_status(status: u16) -> bool {

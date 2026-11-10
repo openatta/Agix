@@ -3743,7 +3743,7 @@ dependencies = [
 
 [[package]]
 name = "test-runner"
-version = "0.1.0"
+version = "0.3.10-2026110901"
 dependencies = [
  "agents",
  "anyhow",

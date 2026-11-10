@@ -1,6 +1,6 @@
 [package]
 name = "test-runner"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 publish = false
 description = "Agix test runner — executes .test scenario files against Agent API or Daemon"

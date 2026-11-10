@@ -33,7 +33,7 @@ members = [
 [workspace.package]
 version = "0.3.10-2026110901"
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.88"
 license = "Apache-2.0"
 publish = false
 authors = ["Agix contributors"]

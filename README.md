@@ -3,7 +3,7 @@
 [![CI](https://github.com/openatta/agix/actions/workflows/ci.yml/badge.svg)](https://github.com/openatta/agix/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/openatta/agix?display_name=tag&sort=semver)](https://github.com/openatta/agix/releases)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](#license)
-[![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](#build-and-test)
+[![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](#build-and-test)
 
 **中文版:[docs/README.zh-CN.md](docs/README.zh-CN.md)**
 
@@ -598,7 +598,7 @@ A few switches whose effect the rest of this README does not mention:
 
 ## Build and test
 
-Rust 1.80+. The test suite needs no network and no key.
+Rust 1.88+. The test suite needs no network and no key.
 
 ```sh
 cargo build --workspace
