@@ -226,3 +226,70 @@ async fn pending_ids(pool: &SessionPool, sid: &str) -> Vec<String> {
     let sessions = pool.sessions.lock().await;
     sessions[sid].pending_prompts.keys().cloned().collect()
 }
+
+fn transcript_of(store_dir: &std::path::Path, sid: &str) -> std::path::PathBuf {
+    let name = format!("{sid}.jsonl");
+    let mut dirs = vec![store_dir.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.file_name().is_some_and(|n| n == name.as_str()) {
+                return path;
+            }
+        }
+    }
+    panic!("no transcript for {sid} under {}", store_dir.display())
+}
+
+fn break_log(path: &std::path::Path) -> Vec<u8> {
+    use std::io::Write as _;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(path)
+        .unwrap()
+        .write_all(b"\xff\xfe\n")
+        .unwrap();
+    std::fs::read(path).unwrap()
+}
+
+#[tokio::test]
+async fn session_resume_refuses_a_log_that_does_not_load_even_with_create_if_missing() {
+    let (pool, _dir, store) = pool_with_history().await;
+    let sid = new_session(&pool).await;
+    pool.shutdown_session(&sid).await;
+    let broken = break_log(&transcript_of(store.path(), &sid));
+
+    for create_if_missing in [false, true] {
+        match pool.resume_session(&sid, create_if_missing, None).await {
+            Err(ResumeError::Rpc((code, message))) => {
+                assert_eq!(code, codes::INTERNAL_ERROR, "{message}");
+                assert!(message.contains("could not be loaded"), "{message}");
+            }
+            Err(_) => panic!("refused for some other reason"),
+            Ok(v) => panic!("resumed a log that does not load: {v}"),
+        }
+    }
+    assert!(!pool.sessions.lock().await.contains_key(&sid));
+    assert_eq!(
+        std::fs::read(transcript_of(store.path(), &sid)).unwrap(),
+        broken
+    );
+}
+
+#[tokio::test]
+async fn a_rebuild_whose_log_does_not_load_leaves_the_session_running_as_it_was() {
+    let (pool, _dir, store) = pool_with_history().await;
+    let sid = new_session(&pool).await;
+    let (slot, state) = slot_and_state(&pool, &sid).await;
+    break_log(&transcript_of(store.path(), &sid));
+
+    assert!(matches!(
+        pool.rebuild_idle(&sid, None).await,
+        Err(Rebuild::Failed(_))
+    ));
+    let (still_slot, still_state) = slot_and_state(&pool, &sid).await;
+    assert!(Arc::ptr_eq(&slot, &still_slot) && Arc::ptr_eq(&state, &still_state));
+    assert!(slot.lock().await.is_some(), "the turn slot was given back");
+}

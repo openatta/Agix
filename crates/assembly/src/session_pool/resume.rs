@@ -146,23 +146,7 @@ impl SessionPool {
             if let Some((parent_session_id, state)) =
                 self.sidechain_terminal_state(session_id).await
             {
-                let _ = self
-                    .pool_telemetry
-                    .record(telemetry::TelemetryEvent::resume_action(
-                        session_id,
-                        0,
-                        None,
-                        telemetry::ResumeActionPayload {
-                            outcome: telemetry::ResumeOutcome::Failed,
-                            source: "sidechain_terminal".into(),
-                            entry_count: 0,
-                            projected_message_count: 0,
-                            compact_boundary_count: 0,
-                            sidechain_entry_count: 0,
-                            warning_kind: Some("sidechain_terminal".into()),
-                            latency_ms: resume_start.elapsed().as_millis() as u64,
-                        },
-                    ));
+                self.record_refused_resume(session_id, "sidechain_terminal", resume_start);
                 return Err(ResumeError::SidechainTerminal {
                     session_id: session_id.to_string(),
                     parent_session_id,
@@ -170,26 +154,16 @@ impl SessionPool {
                 });
             }
 
+            let has_history = match self.has_history(session_id).await {
+                Ok(has_history) => has_history,
+                Err(e) => {
+                    self.record_refused_resume(session_id, "unreadable", resume_start);
+                    return Err(ResumeError::Rpc((codes::INTERNAL_ERROR, e)));
+                }
+            };
             let (message_count, entry_count) = self.history_counts(session_id).await;
-            let has_history = entry_count > 0;
             if !has_history && !create_if_missing {
-                let _ = self
-                    .pool_telemetry
-                    .record(telemetry::TelemetryEvent::resume_action(
-                        session_id,
-                        0,
-                        None,
-                        telemetry::ResumeActionPayload {
-                            outcome: telemetry::ResumeOutcome::Failed,
-                            source: "not_found".into(),
-                            entry_count: 0,
-                            projected_message_count: 0,
-                            compact_boundary_count: 0,
-                            sidechain_entry_count: 0,
-                            warning_kind: Some("not_found".into()),
-                            latency_ms: resume_start.elapsed().as_millis() as u64,
-                        },
-                    ));
+                self.record_refused_resume(session_id, "not_found", resume_start);
                 return Err(ResumeError::Rpc((
                     codes::SESSION_NOT_FOUND,
                     format!(
@@ -251,6 +225,46 @@ impl SessionPool {
                 .await)
         })
         .await
+    }
+
+    fn record_refused_resume(&self, session_id: &str, why: &str, started: Instant) {
+        let _ = self
+            .pool_telemetry
+            .record(telemetry::TelemetryEvent::resume_action(
+                session_id,
+                0,
+                None,
+                telemetry::ResumeActionPayload {
+                    outcome: telemetry::ResumeOutcome::Failed,
+                    source: why.into(),
+                    entry_count: 0,
+                    projected_message_count: 0,
+                    compact_boundary_count: 0,
+                    sidechain_entry_count: 0,
+                    warning_kind: Some(why.into()),
+                    latency_ms: started.elapsed().as_millis() as u64,
+                },
+            ));
+    }
+
+    /// Whether `sid` has a log with entries in it. A log that is not there is
+    /// none, as is one for an id no store could hold; a log that is there but
+    /// does not load is an error, never a session to start over under the
+    /// same id.
+    pub(super) async fn has_history(&self, sid: &str) -> Result<bool, String> {
+        let (Some(store), Ok(parsed)) = (
+            self.history_store.as_ref(),
+            base::session::SessionId::parse(sid),
+        ) else {
+            return Ok(false);
+        };
+        match store.load(parsed).await {
+            Ok(entries) => Ok(!entries.is_empty()),
+            Err(history::error::HistoryError::SessionNotFound(_)) => Ok(false),
+            Err(e) => Err(format!(
+                "session `{sid}` could not be brought back: its transcript could not be loaded: {e}"
+            )),
+        }
     }
 
     /// Projected message count + raw entry count for a session id, or
@@ -360,21 +374,7 @@ impl SessionPool {
         options: Option<&SessionOptions>,
     ) -> Result<String, CreateError> {
         let _claim = self.claim_log(&sid).await?;
-        // 尝试从 HistoryStore 加载历史消息。`sid` 来自 RPC 调用方（`session.run_turn`
-        // 的 `session_id` 参数），不保证是合法的 BASE58 ID——解析失败当作"没有历史"
-        // 处理（等价于查不到），而不是 unwrap 崩溃：一个格式错误的 session_id 不该
-        // 让整条连接的处理任务 panic。
-        let has_history = if let Some(ref store) = self.history_store {
-            match base::session::SessionId::parse(&sid) {
-                Ok(parsed) => match store.load(parsed).await {
-                    Ok(entries) => !entries.is_empty(),
-                    Err(_) => false,
-                },
-                Err(_) => false,
-            }
-        } else {
-            false
-        };
+        let has_history = self.has_history(&sid).await?;
 
         // Rebuild against *this session's own* recorded project, not
         // always the pool default — otherwise a session created under

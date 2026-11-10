@@ -1559,7 +1559,11 @@ client,会话在原地按新的规格重建(它是空闲的,不会腰斩什么),
 - 会话已经在内存里 → `already_active`,什么都不动,只报状态。
 - 磁盘上有历史 → `resumed`。
 - 磁盘上没有历史:`create_if_missing: false`(默认)时 `SESSION_NOT_FOUND`;
-  为 `true` 时新建,`status` 是 `created`。
+  为 `true` 时新建,`status` 是 `created`。"没有历史"只指转录文件不存在(或在但是空的)。
+- 转录文件在但读不出来(没有读权限、中间有不是 UTF-8 或不是合法 JSON 的整行)→
+  `INTERNAL_ERROR`,消息含 "transcript could not be loaded" 和读盘错误;带不带
+  `create_if_missing` 都一样,不起引擎,也不往那份转录写任何东西。崩溃截断、没有换行结尾的最后
+  半行不算读不出来,读的时候丢掉。`session.run_turn` 指名这样的会话同样如此。
 - 场景不符 → `SCENE_MISMATCH`;老文件没记场景 → 按当前场景恢复,`scene_inferred`
   为 `true`(§3.4)。
 - 目标是已终态的侧链 → `SIDECHAIN_TERMINAL`(§3.3)。
@@ -2067,7 +2071,8 @@ daemon 自己的会话池在 `health.checks` 里还有一项 `settings.managed`,
 失效**惰性生效**:已有会话在下一次 `run_turn` 之前若空闲则原地重建,忙碌的跳过本轮
 下次再检查。**正在进行的 turn 不会被中断**;还有后台任务在跑的会话也算忙,这一轮照旧用原来的
 配置,任务都结束之后才重建,所以后台任务不会因为配置变化被停掉。重建保留会话结束了的任务
-(`session.tasks` / `session.taskOutput` 照查)和模型还没读到的 `<task-notification>`。
+(`session.tasks` / `session.taskOutput` 照查)和模型还没读到的 `<task-notification>`。重建时转录
+读不出来,会话不重建、照旧在原来的引擎上跑,这次 `run_turn` 返回 `INTERNAL_ERROR`(见 `session.resume`)。
 
 **多数情况下不需要显式调用**:daemon 监视每个项目的 `settings.json` /
 `settings.local.json`,改动落盘后自己重读(去抖 300ms);文件内容没变的写入不算改动。监视触发的重读知道是哪一层变了,

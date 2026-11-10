@@ -510,12 +510,9 @@ impl SessionPool {
             }
         }
 
-        // Load prior messages back into memory before the turn loop starts —
-        // `resume_or_create` only decided *that* history exists on disk, the
-        // actual projection back into `Agent.session.messages` happens here.
-        // A failure here (corrupt entry, race with a concurrent delete, ...)
-        // degrades to the same "id reused, empty context" behavior as before
-        // this was wired up, rather than failing session creation outright.
+        // A log that does not load back is the caller's error: going on with
+        // an empty context would carry the conversation on with none of what
+        // came before, appended to the very log that holds it.
         let mut stored_name = None;
         let mut has_user_turn = false;
         if resume {
@@ -528,20 +525,10 @@ impl SessionPool {
             self.stop_live_agent(&session_id).await?;
             let resume_start = std::time::Instant::now();
             let resume_result = agent.resume_session(&session_id).await;
-            if let Some(previous) = &previous_state {
-                state.carry_goal_arming_from(previous);
-                state.carry_tasks_and_notices_from(previous);
-            }
             let outcome = match &resume_result {
                 Ok(()) => telemetry::ResumeOutcome::Succeeded,
-                // Doesn't fail session creation — degrades to "id reused,
-                // empty context" (see the warn! below), which is what
-                // `Degraded` (not `Failed`) means here.
-                Err(_) => telemetry::ResumeOutcome::Degraded,
+                Err(_) => telemetry::ResumeOutcome::Failed,
             };
-            if let Err(e) = &resume_result {
-                warn!(%session_id, error = %e, "resume_session failed, continuing with empty context");
-            }
             let (projected_message_count, entry_count) = self.history_counts(&session_id).await;
             let entries = self.load_entries(&session_id).await.unwrap_or_default();
             let compact_boundary_count = entries
@@ -567,11 +554,26 @@ impl SessionPool {
                         compact_boundary_count,
                         sidechain_entry_count,
                         warning_kind: resume_result
+                            .as_ref()
                             .err()
                             .map(|_| "resume_session_failed".to_string()),
                         latency_ms: resume_start.elapsed().as_millis() as u64,
                     },
                 ));
+            if let Err(e) = resume_result {
+                // The old engine is already stopped; an entry left in the map
+                // would take turns it can no longer run.
+                if previous_state.is_some() {
+                    if let Some(live) = self.sessions.lock().await.remove(&session_id) {
+                        self.evict(&session_id, &live);
+                    }
+                }
+                return Err(format!("its transcript could not be loaded: {e}").into());
+            }
+            if let Some(previous) = &previous_state {
+                state.carry_goal_arming_from(previous);
+                state.carry_tasks_and_notices_from(previous);
+            }
         }
 
         let cancel = CancellationToken::new();

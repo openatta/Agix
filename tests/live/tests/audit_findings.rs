@@ -487,61 +487,79 @@ async fn audit_an_interrupt_stops_session_compact_while_its_summary_is_written(
     Ok(())
 }
 
-/// A transcript that exists but fails to load (here: a torn write left bytes
-/// that are not UTF-8) is a failed resume, not a session with no history: the
-/// conversation does not go on with an empty context, and the log does not
-/// get a second `Meta`.
+/// A transcript that exists but fails to load is a failed resume, not a
+/// session with no history: the turn is refused, the model is never asked,
+/// and the log is left exactly as it was — no second `Meta`, no new turn.
+/// Two ways to break one: a whole line that is not UTF-8 (a newline-ended
+/// line was written in full, so it is not a torn tail the reader may drop),
+/// and a file this process may write but not read.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "audit: confirmed defect, fix pending"]
 async fn audit_a_transcript_that_fails_to_load_is_not_resumed_as_an_empty_session(
 ) -> anyhow::Result<()> {
     use std::io::Write as _;
+    use std::os::unix::fs::PermissionsExt as _;
     let stub = ProviderStub::start().await?;
     let mut run = stubbed("unloadable", &stub).start().await?;
-    let session = run.session().await?;
-    stub.script([Reply::text("first answer")]);
-    run.turn(&session, "FIRST-MARK hello").await?;
-    let closed = run.client.session_close(&session).await?;
-    anyhow::ensure!(closed.error.is_none(), "{closed:?}");
-    let transcript = run
-        .world
-        .transcript_dir(&run.project)
-        .join(format!("{session}.jsonl"));
-    anyhow::ensure!(
-        transcript.exists(),
-        "no transcript at {}",
-        transcript.display()
-    );
-    let metas = |path: &Path| {
-        String::from_utf8_lossy(&std::fs::read(path).unwrap_or_default())
-            .lines()
-            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-            .filter(|v| v["kind"] == "meta")
-            .count()
-    };
-    let metas_before = metas(&transcript);
-    std::fs::OpenOptions::new()
-        .append(true)
-        .open(&transcript)?
-        .write_all(b"\xff\xfe\n")?;
+    let breakages: [(&str, &[u8], bool); 2] = [
+        ("a line that is not UTF-8", b"\xff\xfe\n", false),
+        ("a write-only file", b"", true),
+    ];
+    for (n, (how, appended, write_only)) in breakages.into_iter().enumerate() {
+        let session = run.session().await?;
+        stub.script([Reply::text("first answer")]);
+        run.turn(&session, &format!("FIRST-MARK-{n} hello")).await?;
+        let closed = run.client.session_close(&session).await?;
+        anyhow::ensure!(closed.error.is_none(), "{closed:?}");
+        let transcript = run
+            .world
+            .transcript_dir(&run.project)
+            .join(format!("{session}.jsonl"));
+        anyhow::ensure!(
+            transcript.exists(),
+            "no transcript at {}",
+            transcript.display()
+        );
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&transcript)?
+            .write_all(appended)?;
+        let broken = std::fs::read(&transcript)?;
+        if write_only {
+            std::fs::set_permissions(&transcript, std::fs::Permissions::from_mode(0o200))?;
+            if std::fs::read(&transcript).is_ok() {
+                eprintln!("skipping {how}: this process reads files it has no read permission on");
+                std::fs::set_permissions(&transcript, std::fs::Permissions::from_mode(0o600))?;
+                continue;
+            }
+        }
 
-    stub.script([Reply::text("second answer")]);
-    let resumed = run
-        .client
-        .run_turn_with(json!({ "session_id": session, "message": "SECOND-MARK again" }))
-        .await?;
+        stub.script([Reply::text("second answer")]);
+        let second_mark = format!("SECOND-MARK-{n}");
+        let resumed = run
+            .client
+            .run_turn_with(
+                json!({ "session_id": session, "message": format!("{second_mark} again") }),
+            )
+            .await?;
+        if write_only {
+            std::fs::set_permissions(&transcript, std::fs::Permissions::from_mode(0o600))?;
+        }
 
-    let refused = resumed.response.as_ref().is_some_and(|r| r.error.is_some());
-    let second = turns_with(&stub, "SECOND-MARK", &[]);
-    let kept_context = second
-        .first()
-        .is_some_and(|c| c.messages_contain("FIRST-MARK"));
-    let metas_after = metas(&transcript);
-    assert!(
-        refused || (kept_context && metas_after == metas_before),
-        "resumed a transcript that failed to load: the next request carried the earlier turn: \
-         {kept_context}; Meta entries {metas_before} -> {metas_after}"
-    );
+        let error = resumed.response.as_ref().and_then(|r| r.error.as_ref());
+        assert!(
+            error.is_some_and(|e| e.message.contains("could not be loaded")),
+            "{how}: the turn on a transcript that does not load was not refused: {:?}",
+            resumed.response
+        );
+        assert!(
+            turns_with(&stub, &second_mark, &[]).is_empty(),
+            "{how}: the model was asked to go on from a transcript that did not load"
+        );
+        assert!(
+            std::fs::read(&transcript)? == broken,
+            "{how}: the refused resume wrote to the transcript"
+        );
+    }
     run.finish().await;
     Ok(())
 }

@@ -1502,6 +1502,13 @@ WebAssembly 载体整个移除。
   内还没停下(卡在一个不理会取消的 hook 里之类),返回 `SESSION_BUSY`(`data` 为
   `{session_id, current_turn_id: null}`),稍后重试即可。以前只记一条 warn 就照常起新引擎,两个引擎
   会写同一份转录。
+- **转录读不出来的会话不再被当成新会话。** `session.resume`、`session.run_turn` 调回一个会话时,
+  转录文件在但读不出来(权限不够、中间有不是 UTF-8 或不是合法 JSON 的整行),以前当作"没有历史":
+  `run_turn` 以空上下文接着跑,还往那份转录里再写一条 `Meta`;带 `create_if_missing: false` 的
+  `session.resume` 报的是 `SESSION_NOT_FOUND`。现在一律返回 `INTERNAL_ERROR`,`message` 含
+  "transcript could not be loaded" 和读盘错误,不起引擎、不往转录写任何东西,带不带
+  `create_if_missing` 都一样;`SESSION_NOT_FOUND` 只表示转录文件不存在。崩溃截断的最后半行
+  (没有换行结尾)仍按原规则丢掉,不算读不出来。
 - **新增帧 `tool_progress`**(能力位 `tool_progress`):运行中的工具调用报的进度,
   `{tool_use_id,name,message,progress?,total?,dropped}`,落在这次调用的 `tool_use` 与 `tool_result`
   之间。每次调用每秒至多一帧,`dropped` 是合并掉的条数;不进 transcript,不保证送达。内建工具里
