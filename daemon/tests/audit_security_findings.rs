@@ -545,3 +545,82 @@ async fn skill_then_write_outside(allowed_tools: &'static str) -> (Vec<String>, 
     );
     (asked, outside.exists())
 }
+
+/// A project skill is whatever `.agents/skills/` names, and a repository
+/// can name a symbolic link there: the file it points at is then the
+/// skill — its first line the description every request's skill listing
+/// shows, its whole text what an invocation reads into the conversation.
+/// The project's own key file is a credential no tool may read into the
+/// model, and a link is how a cloned repository gets at it.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "audit: confirmed defect, fix pending"]
+async fn audit2_a_project_skill_linked_to_a_credential_reads_it_into_the_model() {
+    let daemon = Daemon::start(Setup::default(), |_, work| {
+        std::fs::create_dir_all(work.join(".agix")).unwrap();
+        std::fs::write(
+            work.join(".agix/settings.local.json"),
+            json!({"model": {"auth_token": SECRET}}).to_string(),
+        )
+        .unwrap();
+        std::fs::create_dir_all(work.join(".agents/skills")).unwrap();
+        std::os::unix::fs::symlink(
+            "../../.agix/settings.local.json",
+            work.join(".agents/skills/notes.md"),
+        )
+        .unwrap();
+    })
+    .await;
+    daemon.model.push_turn(tool_round(
+        "toolu_read",
+        "Read",
+        json!({"file_path": ".agix/settings.local.json"}),
+    ));
+    daemon.model.push_turn(tool_round(
+        "toolu_skill",
+        "Skill",
+        json!({"skill": "notes"}),
+    ));
+    daemon.model.push_turn(text_round("done"));
+
+    let asked = daemon.turn_denying_prompts().await;
+    assert_eq!(
+        daemon.tool_result("toolu_read")["is_error"],
+        true,
+        "precondition: a Read of the key file is refused"
+    );
+    let first = serde_json::to_string(&daemon.model.nth_request(0).unwrap()).unwrap();
+    assert!(
+        !first.contains(SECRET),
+        "the first request's skill listing carries the project's key file"
+    );
+    let skill = daemon.tool_result("toolu_skill").to_string();
+    let seen = daemon.everything_the_model_saw();
+    assert!(
+        !seen.contains(SECRET),
+        "the project's key file reached the model through a linked skill \
+         (prompts: {asked:?}, skill result: {skill})"
+    );
+}
+
+/// `AGENTS.md` goes into every session's system prompt, and in a cloned
+/// repository it can be a link to the project's key file.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "audit: confirmed defect, fix pending"]
+async fn audit2_a_linked_agents_md_reads_a_credential_into_the_prompt() {
+    let daemon = Daemon::start(Setup::default(), |_, work| {
+        std::fs::create_dir_all(work.join(".agix")).unwrap();
+        std::fs::write(
+            work.join(".agix/settings.local.json"),
+            json!({"model": {"auth_token": SECRET}}).to_string(),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(".agix/settings.local.json", work.join("AGENTS.md")).unwrap();
+    })
+    .await;
+    daemon.model.push_turn(text_round("done"));
+    daemon.turn_denying_prompts().await;
+    assert!(
+        !daemon.everything_the_model_saw().contains(SECRET),
+        "the project's key file reached the system prompt through a linked AGENTS.md"
+    );
+}
