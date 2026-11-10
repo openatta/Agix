@@ -453,9 +453,11 @@ async fn an_agent_types_allowed_tools_and_max_turns_bound_its_sub_agent() -> any
     Ok(())
 }
 
-/// A `default` agent type under an `acceptEdits` parent is asked about a write
-/// inside the project that the parent's mode would let through — and its
-/// question waits the session's prompt timeout, not a fixed one.
+/// A `default` agent type under an `acceptEdits` parent is asked about a
+/// read-only `Monitor` command in the project, which the parent's mode would
+/// let through unasked (a `Write` in the project is not asked about in either
+/// mode) — and its question waits the session's prompt timeout, not a fixed
+/// one.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_types_permission_mode_governs_what_its_sub_agent_is_asked() -> anyhow::Result<()>
 {
@@ -468,16 +470,15 @@ async fn an_agent_types_permission_mode_governs_what_its_sub_agent_is_asked() ->
         .start()
         .await?;
     let model = run.config().model_at(0).to_string();
-    let stamp = format!("STAMP-{}", nonce());
+    run.write_file("notes.txt", &format!("NOTES-{}\n", nonce()))?;
     run.write_file(
         ".agix/agents/careful.md",
         &typed(
-            &format!("description: Writes one file\nmodel: {model}\npermission_mode: default"),
-            &format!(
-                "CAREFUL-ROLE. Use the Write tool to create notes.txt in the project with the \
-                 single line {stamp}, then answer DONE. If the write is refused, answer REFUSED \
-                 and stop; do not try another way."
-            ),
+            &format!("description: Watches one file\nmodel: {model}\npermission_mode: default"),
+            "CAREFUL-ROLE. Use the Monitor tool (load it with ToolSearch if it is not in your \
+             tools) with command `tail -f notes.txt` and description \"watch the notes\", then \
+             answer DONE. If the Monitor call is refused, answer REFUSED and stop; do not try \
+             another way.",
         ),
     )?;
     let session = run.session().await?;
@@ -504,8 +505,8 @@ async fn an_agent_types_permission_mode_governs_what_its_sub_agent_is_asked() ->
         started.elapsed()
     );
     assert!(
-        asked.iter().any(|t| t == "Write"),
-        "the `default` sub-agent was not asked about its write: {asked:?}"
+        asked.iter().any(|t| t == "Monitor"),
+        "the `default` sub-agent was not asked about its Monitor command: {asked:?}"
     );
     assert!(
         started.elapsed() < Duration::from_secs(200),
