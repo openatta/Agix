@@ -15,7 +15,7 @@ use crate::worktree::WorktreeHandle;
 use async_trait::async_trait;
 use base::error::ToolError;
 use base::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
+    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
     ValidationResult,
 };
 use schemars::JsonSchema;
@@ -93,8 +93,9 @@ impl Tool for EnterWorktreeTool {
     async fn prompt(&self, _: &PromptContext) -> String {
         include_str!("prompts/coding/worktree_enter.prompt.md").to_string()
     }
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        false // 改 registry
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::defaults_for(self)
     }
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {
         match serde_json::from_value::<EnterWorktreeInput>(input.clone()) {
@@ -206,11 +207,12 @@ impl Tool for ExitWorktreeTool {
     async fn prompt(&self, _: &PromptContext) -> String {
         include_str!("prompts/coding/worktree_exit.prompt.md").to_string()
     }
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        false
-    }
-    fn is_destructive(&self, _: &Value) -> bool {
-        true // 删 worktree 目录 + 分支
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            destructive: true,
+            ..ToolSpec::defaults_for(self)
+        }
     }
     async fn validate_input(&self, _: &Value, _: &ToolContext) -> ValidationResult {
         ValidationResult::Ok

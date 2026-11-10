@@ -28,7 +28,7 @@ pub use sandbox::{engine_git, engine_git_for};
 use async_trait::async_trait;
 use base::error::ToolError;
 use base::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
+    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
     ValidationResult,
 };
 use schemars::JsonSchema;
@@ -63,11 +63,17 @@ pub struct BashTool;
 
 #[async_trait]
 impl Tool for BashTool {
-    fn callable_from_code(&self) -> bool {
-        true
-    }
-    fn code_result(&self) -> Option<&'static str> {
-        Some("{stdout, stderr, exit_code}; a non-zero exit rejects with the output")
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            callable_from_code: true,
+            code_result: Some(
+                "{stdout, stderr, exit_code}; a non-zero exit rejects with the output",
+            ),
+            destructive: true,
+            interrupt_behavior: base::tool::InterruptBehavior::Block,
+            permission_content_kind: base::tool::PermissionContentKind::ShellCommand,
+            ..ToolSpec::defaults_for(self)
+        }
     }
     fn name(&self) -> &str {
         "Bash"
@@ -87,10 +93,6 @@ impl Tool for BashTool {
 
     fn is_concurrency_safe(&self, input: &Value) -> bool {
         self.is_read_only(input)
-    }
-
-    fn interrupt_behavior(&self, _input: &Value) -> base::tool::InterruptBehavior {
-        base::tool::InterruptBehavior::Block
     }
 
     fn is_read_only(&self, input: &Value) -> bool {
@@ -115,10 +117,6 @@ impl Tool for BashTool {
         serde_json::from_value::<BashInput>(input.clone())
             .ok()
             .map(|p| p.command)
-    }
-
-    fn permission_content_kind(&self) -> base::tool::PermissionContentKind {
-        base::tool::PermissionContentKind::ShellCommand
     }
 
     async fn validate_input(&self, input: &Value, ctx: &ToolContext) -> ValidationResult {

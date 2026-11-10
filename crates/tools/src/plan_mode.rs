@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use base::error::ToolError;
 use base::permission::PermissionMode;
 use base::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
+    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
     ValidationResult,
 };
 use schemars::JsonSchema;
@@ -57,14 +57,14 @@ impl Tool for EnterPlanModeTool {
         include_str!("prompts/coding/plan_mode.enter.prompt.md").to_string()
     }
 
-    /// Safe to call while other tools are running (it only toggles a
-    /// session mode flag).
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        true
-    }
-
-    fn is_read_only(&self, _: &Value) -> bool {
-        true
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            // Safe to call while other tools are running (it only toggles a
+            // session mode flag).
+            concurrency_safe: true,
+            read_only: true,
+            ..ToolSpec::defaults_for(self)
+        }
     }
 
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {
@@ -156,17 +156,12 @@ impl Tool for ExitPlanModeTool {
         include_str!("prompts/coding/plan_mode.exit.prompt.md").to_string()
     }
 
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        true
-    }
-
-    /// Moves the session out of plan mode — not read-only.
-    fn is_read_only(&self, _: &Value) -> bool {
-        false
-    }
-
-    fn leaves_plan_mode(&self) -> bool {
-        true
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            concurrency_safe: true,
+            leaves_plan_mode: true,
+            ..ToolSpec::defaults_for(self)
+        }
     }
 
     /// Rejects if not currently in plan mode (error code 1).

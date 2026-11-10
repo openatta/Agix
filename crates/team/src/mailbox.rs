@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use base::error::ToolError;
 use base::tool::{
     PermissionDecision, ProgressSender, PromptContext, ToolContext, ToolResult, ToolResultContent,
-    ValidationResult,
+    ToolSpec, ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -294,8 +294,18 @@ impl base::tool::Tool for SendMessageTool {
         "SendMessage"
     }
 
-    fn is_deferred(&self) -> bool {
-        false
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            // Writing to a teammate's in-memory mailbox touches no file, no shell and
+            // no network — it is the coordination channel itself, not an effect on
+            // the user's workspace. Team members run under `PermissionMode::Plan` by
+            // default (see `team::coordinator`), and plan mode exists to stop the
+            // agent mutating the workspace before the user has approved a plan; a
+            // member that cannot report back to its coordinator is simply broken.
+            // See `Tool::self_allow_overrides_mode`.
+            self_allow_overrides_mode: true,
+            ..ToolSpec::defaults_for(self)
+        }
     }
 
     fn input_schema(&self) -> Value {
@@ -317,14 +327,6 @@ impl base::tool::Tool for SendMessageTool {
             .to_string()
     }
 
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        false // SendMessage is not read-only, cannot be concurrency-safe
-    }
-
-    fn is_read_only(&self, _: &Value) -> bool {
-        false
-    }
-
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {
         let parsed: Result<SendMessageInput, _> = serde_json::from_value(input.clone());
         match parsed {
@@ -342,17 +344,6 @@ impl base::tool::Tool for SendMessageTool {
 
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
         PermissionDecision::allow()
-    }
-
-    /// Writing to a teammate's in-memory mailbox touches no file, no shell and
-    /// no network — it is the coordination channel itself, not an effect on
-    /// the user's workspace. Team members run under `PermissionMode::Plan` by
-    /// default (see `team::coordinator`), and plan mode exists to stop the
-    /// agent mutating the workspace before the user has approved a plan; a
-    /// member that cannot report back to its coordinator is simply broken.
-    /// See `Tool::self_allow_overrides_mode`.
-    fn self_allow_overrides_mode(&self) -> bool {
-        true
     }
 
     async fn call(
@@ -411,8 +402,12 @@ impl base::tool::Tool for ReadMailTool {
         "ReadMail"
     }
 
-    fn is_deferred(&self) -> bool {
-        false
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            concurrency_safe: true,
+            read_only: true,
+            ..ToolSpec::defaults_for(self)
+        }
     }
 
     fn input_schema(&self) -> Value {
@@ -431,14 +426,6 @@ impl base::tool::Tool for ReadMailTool {
          Input:\n\
          - max (optional, default 10): maximum number of messages to read"
             .to_string()
-    }
-
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        true
-    }
-
-    fn is_read_only(&self, _: &Value) -> bool {
-        true
     }
 
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {
@@ -510,8 +497,12 @@ impl base::tool::Tool for ListPeersTool {
         "ListPeers"
     }
 
-    fn is_deferred(&self) -> bool {
-        false
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            concurrency_safe: true,
+            read_only: true,
+            ..ToolSpec::defaults_for(self)
+        }
     }
 
     fn input_schema(&self) -> Value {
@@ -529,14 +520,6 @@ impl base::tool::Tool for ListPeersTool {
          - Use this to discover which agents you can send messages to via `SendMessage`\n\
          - Useful when you join an existing team and need to know your teammates"
             .to_string()
-    }
-
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        true
-    }
-
-    fn is_read_only(&self, _: &Value) -> bool {
-        true
     }
 
     async fn validate_input(&self, _: &Value, _: &ToolContext) -> ValidationResult {

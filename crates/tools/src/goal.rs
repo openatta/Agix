@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use base::context::goal::{GoalAction, GoalError, TurnOrigin};
 use base::error::ToolError;
 use base::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
+    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -95,8 +95,9 @@ impl Tool for GoalCreateTool {
     async fn prompt(&self, _: &PromptContext) -> String {
         self.description().to_string()
     }
-    fn is_read_only(&self, _: &Value) -> bool {
-        false
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::defaults_for(self)
     }
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
         PermissionDecision::allow()
@@ -144,11 +145,13 @@ impl Tool for GoalGetTool {
     async fn prompt(&self, _: &PromptContext) -> String {
         self.description().to_string()
     }
-    fn is_read_only(&self, _: &Value) -> bool {
-        true
-    }
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        true
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            read_only: true,
+            concurrency_safe: true,
+            ..ToolSpec::defaults_for(self)
+        }
     }
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
         PermissionDecision::allow()
@@ -189,8 +192,9 @@ impl Tool for GoalUpdateTool {
     async fn prompt(&self, _: &PromptContext) -> String {
         self.description().to_string()
     }
-    fn is_read_only(&self, _: &Value) -> bool {
-        false
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::defaults_for(self)
     }
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
         PermissionDecision::allow()

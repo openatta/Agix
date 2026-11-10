@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use base::error::ToolError;
 use base::interface::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
+    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
 };
 use serde_json::Value;
 
@@ -44,8 +44,13 @@ impl Tool for StampTool {
          Use it when asked to stamp something."
     }
 
-    fn source(&self) -> std::borrow::Cow<'_, str> {
-        std::borrow::Cow::Owned(format!("plugin:{}", crate::NAME))
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            source: format!("plugin:{}", crate::NAME),
+            read_only: true,
+            concurrency_safe: true,
+            ..ToolSpec::defaults_for(self)
+        }
     }
 
     fn input_schema(&self) -> Value {
@@ -54,14 +59,6 @@ impl Tool for StampTool {
             "properties": {"text": {"type": "string", "description": "The text to stamp, exactly"}},
             "required": ["text"]
         })
-    }
-
-    fn is_read_only(&self, _: &Value) -> bool {
-        true
-    }
-
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        true
     }
 
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {

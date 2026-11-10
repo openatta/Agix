@@ -7,7 +7,7 @@ use std::sync::Arc;
 use super::store::CronStore;
 use base::error::ToolError;
 use base::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
+    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
     ValidationResult,
 };
 
@@ -43,12 +43,12 @@ impl Tool for CronListTool {
         include_str!("../prompts/coding/cron_list.prompt.md").to_string()
     }
 
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        true
-    }
-
-    fn is_read_only(&self, _: &Value) -> bool {
-        true
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            concurrency_safe: true,
+            read_only: true,
+            ..ToolSpec::defaults_for(self)
+        }
     }
 
     async fn validate_input(&self, _: &Value, _: &ToolContext) -> ValidationResult {

@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use base::error::ToolError;
 use base::interface::exec::{HttpRequest, Origin};
 use base::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
+    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
     ValidationResult,
 };
 use schemars::JsonSchema;
@@ -50,12 +50,12 @@ impl Tool for PingTool {
         include_str!("prompts/coding/ping.prompt.md").to_string()
     }
 
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        true
-    }
-
-    fn is_read_only(&self, _: &Value) -> bool {
-        true
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            concurrency_safe: true,
+            read_only: true,
+            ..ToolSpec::defaults_for(self)
+        }
     }
 
     fn accept_edits_allows(&self, input: &Value, ctx: &ToolContext) -> bool {

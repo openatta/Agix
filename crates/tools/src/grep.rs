@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use base::error::ToolError;
 use base::interface::exec::FileSystem;
 use base::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
+    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
     ValidationResult,
 };
 use ignore::{WalkBuilder, WalkState};
@@ -67,11 +67,15 @@ pub struct GrepTool;
 
 #[async_trait]
 impl Tool for GrepTool {
-    fn callable_from_code(&self) -> bool {
-        true
-    }
-    fn code_result(&self) -> Option<&'static str> {
-        Some("files_with_matches (default): {files: string[]}; count: {counts: {path: n}}; content: text, one 'path:line' match per line")
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            callable_from_code: true,
+            code_result: Some("files_with_matches (default): {files: string[]}; count: {counts: {path: n}}; content: text, one 'path:line' match per line"),
+            concurrency_safe: true,
+            read_only: true,
+            permission_content_kind: base::tool::PermissionContentKind::ReadPath,
+            ..ToolSpec::defaults_for(self)
+        }
     }
     fn name(&self) -> &str {
         "Grep"
@@ -79,10 +83,6 @@ impl Tool for GrepTool {
 
     fn description(&self) -> &str {
         "Search file contents with regex (ripgrep-style)."
-    }
-
-    fn is_deferred(&self) -> bool {
-        false // eager — sub-agents and tasks need Grep without ToolSearch
     }
 
     fn input_schema(&self) -> Value {
@@ -93,22 +93,10 @@ impl Tool for GrepTool {
         include_str!("prompts/coding/grep.prompt.md").to_string()
     }
 
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        true
-    }
-
-    fn is_read_only(&self, _: &Value) -> bool {
-        true
-    }
-
     fn permission_match_content(&self, input: &Value) -> Option<String> {
         serde_json::from_value::<GrepInput>(input.clone())
             .ok()
             .map(|i| i.path.unwrap_or_else(|| ".".into()))
-    }
-
-    fn permission_content_kind(&self) -> base::tool::PermissionContentKind {
-        base::tool::PermissionContentKind::ReadPath
     }
 
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {

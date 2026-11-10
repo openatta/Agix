@@ -20,8 +20,8 @@ use base::context::{RunningStatus, RunningTask, SessionState, TaskType};
 use base::error::ToolError;
 use base::interface::exec::{OutputStream, ProcessHandle};
 use base::tool::{
-    InterruptBehavior, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext,
-    ToolResult, ValidationResult,
+    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
+    ValidationResult,
 };
 use futures::StreamExt;
 use schemars::JsonSchema;
@@ -103,26 +103,18 @@ impl Tool for MonitorTool {
         })
     }
 
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        true
-    }
-
-    fn is_destructive(&self, _: &Value) -> bool {
-        false
-    }
-
-    fn interrupt_behavior(&self, _: &Value) -> InterruptBehavior {
-        InterruptBehavior::Cancel
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            concurrency_safe: true,
+            permission_content_kind: base::tool::PermissionContentKind::ShellCommand,
+            ..ToolSpec::defaults_for(self)
+        }
     }
 
     fn permission_match_content(&self, input: &Value) -> Option<String> {
         serde_json::from_value::<MonitorInput>(input.clone())
             .ok()
             .map(|p| p.command)
-    }
-
-    fn permission_content_kind(&self) -> base::tool::PermissionContentKind {
-        base::tool::PermissionContentKind::ShellCommand
     }
 
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {

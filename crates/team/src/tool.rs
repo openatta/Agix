@@ -9,7 +9,7 @@ use base::interface::model::Model;
 use base::tool::InMemoryToolRegistry;
 use base::tool::PromptContext;
 use base::tool::ToolContext;
-use base::tool::{PermissionDecision, ValidationResult};
+use base::tool::{PermissionDecision, ToolSpec, ValidationResult};
 use base::tool::{ProgressSender, ToolResult};
 
 use schemars::JsonSchema;
@@ -164,11 +164,9 @@ impl base::tool::Tool for TeamCreateTool {
     fn input_schema(&self) -> Value {
         serde_json::to_value(schemars::schema_for!(TeamCreateInput)).unwrap_or(Value::Null)
     }
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        false
-    }
-    fn is_read_only(&self, _: &Value) -> bool {
-        false
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::defaults_for(self)
     }
     async fn prompt(&self, _: &PromptContext) -> String {
         include_str!("tool.prompt.md").to_string()
@@ -260,11 +258,9 @@ impl base::tool::Tool for TeamDeleteTool {
     fn input_schema(&self) -> Value {
         serde_json::to_value(schemars::schema_for!(TeamDeleteInput)).unwrap_or(Value::Null)
     }
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        false
-    }
-    fn is_read_only(&self, _: &Value) -> bool {
-        false
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::defaults_for(self)
     }
     async fn prompt(&self, _: &PromptContext) -> String {
         "Delete a team by name. This cancels any running sub-agents and \
@@ -319,11 +315,13 @@ impl base::tool::Tool for TeamListTool {
     fn input_schema(&self) -> Value {
         serde_json::to_value(schemars::schema_for!(TeamListInput)).unwrap_or(Value::Null)
     }
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        true
-    }
-    fn is_read_only(&self, _: &Value) -> bool {
-        true
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            concurrency_safe: true,
+            read_only: true,
+            ..ToolSpec::defaults_for(self)
+        }
     }
     async fn prompt(&self, _: &PromptContext) -> String {
         "List teams created via TeamCreate that are still tracked (i.e. haven't been \

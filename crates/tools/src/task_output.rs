@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use base::context::RunningStatus;
 use base::error::ToolError;
 use base::tool::{
-    PermissionDecision, ProgressSender, Tool, ToolContext, ToolResult, ValidationResult,
+    PermissionDecision, ProgressSender, Tool, ToolContext, ToolResult, ToolSpec, ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -62,12 +62,12 @@ impl Tool for TaskOutputTool {
         crate::input_schema::<TaskOutputInput>()
     }
 
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        true
-    }
-
-    fn is_read_only(&self, _: &Value) -> bool {
-        true
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            concurrency_safe: true,
+            read_only: true,
+            ..ToolSpec::defaults_for(self)
+        }
     }
 
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {

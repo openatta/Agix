@@ -14,7 +14,7 @@ use base::error::ToolError;
 pub use base::interface::memory::{scan_for_secrets, SecretPattern};
 use base::interface::memory::{DurableMemory, MemoryError, MemoryStore, MemoryType};
 use base::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
+    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
     ValidationResult,
 };
 use serde_json::Value;
@@ -342,8 +342,12 @@ impl Tool for TeamMemorySaveTool {
 
     // Writes only under the team's own directory, the way the mailbox
     // persists; plan-mode members must still be able to contribute.
-    fn self_allow_overrides_mode(&self) -> bool {
-        true
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            self_allow_overrides_mode: true,
+            ..ToolSpec::defaults_for(self)
+        }
     }
 
     async fn call(
@@ -416,12 +420,12 @@ impl Tool for TeamMemoryReadTool {
             .to_string()
     }
 
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        true
-    }
-
-    fn is_read_only(&self, _: &Value) -> bool {
-        true
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            concurrency_safe: true,
+            read_only: true,
+            ..ToolSpec::defaults_for(self)
+        }
     }
 
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {

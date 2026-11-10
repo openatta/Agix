@@ -7,7 +7,7 @@ use base::error::ToolError;
 use base::tool::Tool;
 use base::tool::{
     PermissionDecision, ProgressSender, PromptContext, ToolContext, ToolResult, ToolResultContent,
-    ValidationResult,
+    ToolSpec, ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -39,11 +39,12 @@ impl Tool for SleepTool {
         include_str!("prompts/coding/sleep.prompt.md").to_string()
     }
 
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        true
-    }
-    fn is_read_only(&self, _: &Value) -> bool {
-        true
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            concurrency_safe: true,
+            read_only: true,
+            ..ToolSpec::defaults_for(self)
+        }
     }
 
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {

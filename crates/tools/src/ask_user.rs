@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use base::error::ToolError;
 use base::interface::elicitation::{ElicitKind, ElicitOption, ElicitOutcome, ElicitRequest};
 use base::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
+    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
     ValidationResult,
 };
 use schemars::JsonSchema;
@@ -54,11 +54,12 @@ impl Tool for AskUserQuestionTool {
     async fn prompt(&self, _: &PromptContext) -> String {
         include_str!("prompts/coding/ask_user.prompt.md").to_string()
     }
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        false
-    }
-    fn is_read_only(&self, _: &Value) -> bool {
-        true
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            read_only: true,
+            ..ToolSpec::defaults_for(self)
+        }
     }
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {
         match serde_json::from_value::<AskUserQuestionInput>(input.clone()) {

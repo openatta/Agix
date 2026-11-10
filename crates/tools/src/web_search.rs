@@ -9,7 +9,7 @@ use crate::cancel::run_with_cancel;
 use async_trait::async_trait;
 use base::error::ToolError;
 use base::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
+    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
     ValidationResult,
 };
 use schemars::JsonSchema;
@@ -80,21 +80,19 @@ impl WebSearchTool {
 
 #[async_trait]
 impl Tool for WebSearchTool {
-    fn callable_from_code(&self) -> bool {
-        true
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            callable_from_code: true,
+            concurrency_safe: true,
+            read_only: true,
+            ..ToolSpec::defaults_for(self)
+        }
     }
     fn description(&self) -> &str {
         "Search the web and return results with linked sources"
     }
     fn name(&self) -> &str {
         "WebSearch"
-    }
-
-    /// (2026-05)**: 翻 eager。理由同 AgentTool：deferred 时模型
-    /// 永远想不起来"我可以搜网"，vibe / research 类问题没信息源就硬答。schema
-    /// 小（<1KB），eager 后 cache 命中零边际成本。
-    fn is_deferred(&self) -> bool {
-        false
     }
 
     fn input_schema(&self) -> Value {
@@ -110,14 +108,6 @@ impl Tool for WebSearchTool {
             ))
             .unwrap_or_else(|_| "May 2026".to_string());
         prompt.replace("{currentMonthYear}", &current_month_year)
-    }
-
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        true
-    }
-
-    fn is_read_only(&self, _: &Value) -> bool {
-        true
     }
 
     fn permission_match_content(&self, input: &Value) -> Option<String> {

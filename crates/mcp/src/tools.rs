@@ -11,7 +11,7 @@ use crate::client::{McpClientHandle, McpContent};
 use async_trait::async_trait;
 use base::{
     error::ToolError, tool::PermissionDecision, tool::ProgressSender, tool::PromptContext,
-    tool::Tool, tool::ToolContext, tool::ToolResult, tool::ValidationResult,
+    tool::Tool, tool::ToolContext, tool::ToolResult, tool::ToolSpec, tool::ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -40,8 +40,12 @@ impl Tool for ListMcpResourcesTool {
         "ListMcpResources"
     }
 
-    fn is_deferred(&self) -> bool {
-        false
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            concurrency_safe: true,
+            read_only: true,
+            ..ToolSpec::defaults_for(self)
+        }
     }
     fn input_schema(&self) -> Value {
         serde_json::to_value(schemars::schema_for!(ListMcpResourcesInput)).expect("schema")
@@ -51,12 +55,6 @@ impl Tool for ListMcpResourcesTool {
          etc — non-tool readable objects). Pass `server` to filter to one server. \
          Returns array of {server, uri, name, description, mime_type}."
             .into()
-    }
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        true
-    }
-    fn is_read_only(&self, _: &Value) -> bool {
-        true
     }
     async fn validate_input(&self, _: &Value, _: &ToolContext) -> ValidationResult {
         ValidationResult::Ok
@@ -150,8 +148,12 @@ impl Tool for ReadMcpResourceTool {
         "ReadMcpResource"
     }
 
-    fn is_deferred(&self) -> bool {
-        false
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            concurrency_safe: true,
+            read_only: true,
+            ..ToolSpec::defaults_for(self)
+        }
     }
     fn input_schema(&self) -> Value {
         serde_json::to_value(schemars::schema_for!(ReadMcpResourceInput)).expect("schema")
@@ -160,12 +162,6 @@ impl Tool for ReadMcpResourceTool {
         "Read a single MCP resource by URI. Returns text content (or base64 blob for \
          binary). Use ListMcpResources first to find available URIs."
             .into()
-    }
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        true
-    }
-    fn is_read_only(&self, _: &Value) -> bool {
-        true
     }
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {
         match serde_json::from_value::<ReadMcpResourceInput>(input.clone()) {
@@ -296,8 +292,12 @@ impl Tool for DispatchMcpTool {
         "MCP"
     }
 
-    fn is_deferred(&self) -> bool {
-        false
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            concurrency_safe: true,
+            read_only: true,
+            ..ToolSpec::defaults_for(self)
+        }
     }
     fn input_schema(&self) -> Value {
         serde_json::to_value(schemars::schema_for!(DispatchMcpInput)).expect("schema")
@@ -307,12 +307,6 @@ impl Tool for DispatchMcpTool {
          under `mcp__<server>__<tool>` names — call them directly, no dispatcher \
          needed. This tool just lists what's available so you know the names."
             .into()
-    }
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        true
-    }
-    fn is_read_only(&self, _: &Value) -> bool {
-        true
     }
     async fn validate_input(&self, _: &Value, _: &ToolContext) -> ValidationResult {
         ValidationResult::Ok

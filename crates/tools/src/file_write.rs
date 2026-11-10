@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use base::error::ToolError;
 use base::interface::exec::FileSystem;
 use base::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
+    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
     ValidationResult,
 };
 use schemars::JsonSchema;
@@ -35,8 +35,14 @@ pub struct FileWriteTool;
 
 #[async_trait]
 impl Tool for FileWriteTool {
-    fn callable_from_code(&self) -> bool {
-        true
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            callable_from_code: true,
+            destructive: true,
+            interrupt_behavior: base::tool::InterruptBehavior::Block,
+            permission_content_kind: base::tool::PermissionContentKind::WritePath,
+            ..ToolSpec::defaults_for(self)
+        }
     }
     fn name(&self) -> &str {
         "Write"
@@ -58,30 +64,10 @@ impl Tool for FileWriteTool {
         include_str!("prompts/coding/file_write.prompt.md").to_string()
     }
 
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        false
-    }
-
-    fn is_read_only(&self, _: &Value) -> bool {
-        false
-    }
-
-    fn is_destructive(&self, _: &Value) -> bool {
-        true
-    }
-
-    fn interrupt_behavior(&self, _input: &Value) -> base::tool::InterruptBehavior {
-        base::tool::InterruptBehavior::Block
-    }
-
     fn permission_match_content(&self, input: &Value) -> Option<String> {
         serde_json::from_value::<FileWriteInput>(input.clone())
             .ok()
             .map(|i| i.file_path)
-    }
-
-    fn permission_content_kind(&self) -> base::tool::PermissionContentKind {
-        base::tool::PermissionContentKind::WritePath
     }
 
     async fn validate_input(&self, input: &Value, ctx: &ToolContext) -> ValidationResult {

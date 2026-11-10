@@ -8,7 +8,9 @@ use async_trait::async_trait;
 use base::error::ToolError;
 use base::interface::agent_spawner::{AgentSpawner, SpawnMode, SpawnRequest};
 use base::interface::skill_catalog::SkillExpansion;
-use base::tool::{ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolResultContent};
+use base::tool::{
+    ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolResultContent, ToolSpec,
+};
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -106,8 +108,9 @@ impl Tool for SkillTool {
             "required": ["skill"]
         })
     }
-    fn is_read_only(&self, _input: &Value) -> bool {
-        false // skills may do anything
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::defaults_for(self)
     }
 
     async fn prompt(&self, _: &PromptContext) -> String {

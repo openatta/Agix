@@ -16,6 +16,7 @@ use base::{
     tool::ToolResult,
     tool::ToolResultBlock,
     tool::ToolResultContent,
+    tool::ToolSpec,
     tool::ValidationResult,
     tool::{PromptContext, ToolContext},
 };
@@ -138,8 +139,19 @@ impl McpToolAdapter {
 
 #[async_trait]
 impl Tool for McpToolAdapter {
-    fn callable_from_code(&self) -> bool {
-        true
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            callable_from_code: true,
+            source: format!("mcp:{}", self.server_name),
+            // Taken from the server's `readOnlyHint`; a server that says nothing is
+            // assumed to write.
+            read_only: self.hints.read_only == Some(true),
+            destructive: self.hints.destructive == Some(true),
+            // MCP tools are dynamic — their schemas and prompts come from live server
+            // connections and may change between turns (e.g., after reconnection).
+            dynamic: true,
+            ..ToolSpec::defaults_for(self)
+        }
     }
     fn name(&self) -> &str {
         &self.full_name
@@ -153,36 +165,12 @@ impl Tool for McpToolAdapter {
         self.input_schema.clone()
     }
 
-    fn source(&self) -> std::borrow::Cow<'_, str> {
-        std::borrow::Cow::Owned(format!("mcp:{}", self.server_name))
-    }
-
     async fn prompt(&self, _: &PromptContext) -> String {
         self.full_description.clone()
     }
 
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        false
-    }
-
-    /// Taken from the server's `readOnlyHint`; a server that says nothing is
-    /// assumed to write.
-    fn is_read_only(&self, _: &Value) -> bool {
-        self.hints.read_only == Some(true)
-    }
-
-    fn is_destructive(&self, _: &Value) -> bool {
-        self.hints.destructive == Some(true)
-    }
-
     fn permission_match_content(&self, _: &Value) -> Option<String> {
         None // MCP 工具的"内容"不可解释；只按 tool_name 匹配规则
-    }
-
-    /// MCP tools are dynamic — their schemas and prompts come from live server
-    /// connections and may change between turns (e.g., after reconnection).
-    fn is_dynamic(&self) -> bool {
-        true
     }
 
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {

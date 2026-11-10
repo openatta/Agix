@@ -16,6 +16,7 @@ use base::error::ToolError;
 use base::interface::tool_dispatch::{CallableTool, ToolDispatch};
 use base::tool::{
     PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolRegistry, ToolResult,
+    ToolSpec,
 };
 use engine::{CallRequest, Host, Run, ScriptEnd};
 use schemars::JsonSchema;
@@ -278,8 +279,12 @@ impl Tool for RunCodeTool {
     async fn prompt(&self, _: &PromptContext) -> String {
         self.guide.clone()
     }
-    fn needs_dispatch(&self) -> bool {
-        true
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            needs_dispatch: true,
+            ..ToolSpec::defaults_for(self)
+        }
     }
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
         PermissionDecision::allow()

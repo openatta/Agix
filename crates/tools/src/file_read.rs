@@ -7,7 +7,7 @@ use base::error::ToolError;
 use base::interface::exec::{ExecError, FileSystem, Metadata};
 use base::tool::{
     PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
-    ToolResultBlock, ToolResultContent, ValidationResult,
+    ToolResultBlock, ToolResultContent, ToolSpec, ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -42,11 +42,15 @@ pub struct FileReadTool;
 
 #[async_trait]
 impl Tool for FileReadTool {
-    fn callable_from_code(&self) -> bool {
-        true
-    }
-    fn code_result(&self) -> Option<&'static str> {
-        Some("text, each line prefixed with its number and a tab")
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            callable_from_code: true,
+            code_result: Some("text, each line prefixed with its number and a tab"),
+            concurrency_safe: true,
+            read_only: true,
+            permission_content_kind: base::tool::PermissionContentKind::ReadPath,
+            ..ToolSpec::defaults_for(self)
+        }
     }
     fn name(&self) -> &str {
         "Read"
@@ -73,22 +77,10 @@ impl Tool for FileReadTool {
         }
     }
 
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        true
-    }
-
-    fn is_read_only(&self, _: &Value) -> bool {
-        true
-    }
-
     fn permission_match_content(&self, input: &Value) -> Option<String> {
         serde_json::from_value::<FileReadInput>(input.clone())
             .ok()
             .map(|i| i.file_path)
-    }
-
-    fn permission_content_kind(&self) -> base::tool::PermissionContentKind {
-        base::tool::PermissionContentKind::ReadPath
     }
 
     async fn validate_input(&self, input: &Value, _ctx: &ToolContext) -> ValidationResult {

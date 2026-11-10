@@ -9,7 +9,7 @@
 use async_trait::async_trait;
 use base::error::ToolError;
 use base::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
+    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
     ValidationResult,
 };
 use schemars::JsonSchema;
@@ -53,8 +53,13 @@ pub struct NotebookEditTool;
 
 #[async_trait]
 impl Tool for NotebookEditTool {
-    fn callable_from_code(&self) -> bool {
-        true
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            callable_from_code: true,
+            interrupt_behavior: base::tool::InterruptBehavior::Block,
+            permission_content_kind: base::tool::PermissionContentKind::WritePath,
+            ..ToolSpec::defaults_for(self)
+        }
     }
     fn description(&self) -> &str {
         "Edit Jupyter notebook cells (replace, insert, delete)"
@@ -69,19 +74,10 @@ impl Tool for NotebookEditTool {
     async fn prompt(&self, _: &PromptContext) -> String {
         include_str!("prompts/coding/notebook_edit.prompt.md").to_string()
     }
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        false // 写文件
-    }
-    fn interrupt_behavior(&self, _input: &Value) -> base::tool::InterruptBehavior {
-        base::tool::InterruptBehavior::Block
-    }
     fn permission_match_content(&self, input: &Value) -> Option<String> {
         serde_json::from_value::<NotebookEditInput>(input.clone())
             .ok()
             .map(|i| i.file_path)
-    }
-    fn permission_content_kind(&self) -> base::tool::PermissionContentKind {
-        base::tool::PermissionContentKind::WritePath
     }
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {
         let parsed: Result<NotebookEditInput, _> = serde_json::from_value(input.clone());

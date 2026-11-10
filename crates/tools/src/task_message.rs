@@ -7,7 +7,7 @@
 use async_trait::async_trait;
 use base::error::ToolError;
 use base::tool::{
-    PermissionDecision, ProgressSender, Tool, ToolContext, ToolResult, ValidationResult,
+    PermissionDecision, ProgressSender, Tool, ToolContext, ToolResult, ToolSpec, ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -65,19 +65,16 @@ impl Tool for TaskMessageTool {
             .to_string()
     }
 
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        true
-    }
-
-    fn is_read_only(&self, _: &Value) -> bool {
-        false
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            concurrency_safe: true,
+            self_allow_overrides_mode: true,
+            ..ToolSpec::defaults_for(self)
+        }
     }
 
     // Talking to one's own sub-agent touches no file, shell or network; a
     // plan-mode agent must still be able to steer the agents it started.
-    fn self_allow_overrides_mode(&self) -> bool {
-        true
-    }
 
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {
         match serde_json::from_value::<TaskMessageInput>(input.clone()) {

@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use base::error::ToolError;
 use base::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
+    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
     ValidationResult,
 };
 use schemars::JsonSchema;
@@ -48,11 +48,17 @@ pub struct GlobTool;
 
 #[async_trait]
 impl Tool for GlobTool {
-    fn callable_from_code(&self) -> bool {
-        true
-    }
-    fn code_result(&self) -> Option<&'static str> {
-        Some("{paths: string[], more: number} — newest first; more counts what max_results cut")
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            callable_from_code: true,
+            code_result: Some(
+                "{paths: string[], more: number} — newest first; more counts what max_results cut",
+            ),
+            concurrency_safe: true,
+            read_only: true,
+            permission_content_kind: base::tool::PermissionContentKind::ReadPath,
+            ..ToolSpec::defaults_for(self)
+        }
     }
     fn name(&self) -> &str {
         "Glob"
@@ -60,10 +66,6 @@ impl Tool for GlobTool {
 
     fn description(&self) -> &str {
         "Find files by glob pattern (e.g. src/**/*.rs)."
-    }
-
-    fn is_deferred(&self) -> bool {
-        false // always eager — sub-agents need Glob visible without ToolSearch
     }
 
     fn input_schema(&self) -> Value {
@@ -74,22 +76,10 @@ impl Tool for GlobTool {
         include_str!("prompts/coding/glob.prompt.md").to_string()
     }
 
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        true
-    }
-
-    fn is_read_only(&self, _: &Value) -> bool {
-        true
-    }
-
     fn permission_match_content(&self, input: &Value) -> Option<String> {
         serde_json::from_value::<GlobInput>(input.clone())
             .ok()
             .map(|i| i.path.unwrap_or_else(|| ".".into()))
-    }
-
-    fn permission_content_kind(&self) -> base::tool::PermissionContentKind {
-        base::tool::PermissionContentKind::ReadPath
     }
 
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {

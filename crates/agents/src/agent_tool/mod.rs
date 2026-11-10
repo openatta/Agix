@@ -23,10 +23,10 @@ use base::interface::settings::{
     Effort, ExecutionSettings, ModelSettings, PathSettings, PermissionMode, SandboxConfig,
     Settings, ThinkingMode,
 };
-use base::tool::InMemoryToolRegistry;
 use base::tool::ProgressSender;
 use base::tool::ToolContext;
 use base::tool::ToolResultContent;
+use base::tool::{InMemoryToolRegistry, ToolSpec};
 use history::store::HistoryStore;
 use runtime::agent::{Agent, Builder, EventReceiver, InputMessage, InputSender};
 use schemars::JsonSchema;
@@ -476,11 +476,13 @@ impl AgentTool {
 
 #[async_trait]
 impl base::tool::Tool for AgentTool {
-    fn callable_from_code(&self) -> bool {
-        true
-    }
-    fn code_result(&self) -> Option<&'static str> {
-        Some("the sub-agent's final text; an object when output_schema is given")
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            callable_from_code: true,
+            code_result: Some("the sub-agent's final text; an object when output_schema is given"),
+            concurrency_safe: true,
+            ..ToolSpec::defaults_for(self)
+        }
     }
     fn name(&self) -> &str {
         AGENT_TOOL_NAME
@@ -493,12 +495,6 @@ impl base::tool::Tool for AgentTool {
     }
     async fn prompt(&self, _: &base::tool::PromptContext) -> String {
         include_str!("agent_tool.prompt.md").to_string()
-    }
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        true
-    }
-    fn is_read_only(&self, _: &Value) -> bool {
-        false
     }
 
     async fn call(

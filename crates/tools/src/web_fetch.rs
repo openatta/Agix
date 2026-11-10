@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use base::error::ToolError;
 use base::interface::exec::{HttpRequest, Network, Origin};
 use base::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
+    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
     ValidationResult,
 };
 use schemars::JsonSchema;
@@ -91,8 +91,13 @@ impl WebFetchTool {
 
 #[async_trait]
 impl Tool for WebFetchTool {
-    fn callable_from_code(&self) -> bool {
-        true
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            callable_from_code: true,
+            concurrency_safe: true,
+            read_only: true,
+            ..ToolSpec::defaults_for(self)
+        }
     }
     fn name(&self) -> &str {
         "WebFetch"
@@ -116,14 +121,6 @@ impl Tool for WebFetchTool {
         } else {
             include_str!("prompts/coding/web_fetch.prompt.md").to_string()
         }
-    }
-
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        true
-    }
-
-    fn is_read_only(&self, _: &Value) -> bool {
-        true
     }
 
     fn accept_edits_allows(&self, input: &Value, ctx: &ToolContext) -> bool {

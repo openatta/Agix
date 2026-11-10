@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use base::context::RunningStatus;
 use base::error::ToolError;
 use base::tool::{
-    PermissionDecision, ProgressSender, Tool, ToolContext, ToolResult, ValidationResult,
+    PermissionDecision, ProgressSender, Tool, ToolContext, ToolResult, ToolSpec, ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -48,12 +48,11 @@ impl Tool for TaskStopTool {
         crate::input_schema::<TaskStopInput>()
     }
 
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        true
-    }
-
-    fn is_read_only(&self, _: &Value) -> bool {
-        false
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            concurrency_safe: true,
+            ..ToolSpec::defaults_for(self)
+        }
     }
 
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {
