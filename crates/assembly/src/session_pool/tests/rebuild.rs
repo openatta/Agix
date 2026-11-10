@@ -212,6 +212,83 @@ async fn two_callers_reviving_one_cold_session_build_one_engine() {
     assert!(state.goal_view().is_null());
 }
 
+fn turn_complete(context: base::event::ContextUsage) -> AgentEvent {
+    AgentEvent::TurnComplete {
+        stop_reason: "end_turn".into(),
+        api_calls: 1,
+        tool_calls: 0,
+        usage: Default::default(),
+        turn_id: "t1".into(),
+        message: None,
+        last_call_usage: Default::default(),
+        context: Some(context),
+        structured_output: None,
+        seq: 0,
+        truncated: false,
+    }
+}
+
+/// The turn of a session closed and brought back under the same id is
+/// still reading what its engine sent; what it reads last writes nothing
+/// into the entry that has the id now.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_late_turn_complete_of_a_closed_session_leaves_the_resumed_one_alone() {
+    let (pool, _dir, _store) = pool_with_history().await;
+    let sid = new_session(&pool).await;
+    let (late_tx, late_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (old_generation, _engine_events) = {
+        let sessions = pool.sessions.lock().await;
+        let live = &sessions[&sid];
+        let engine_events = live.turn.rx.lock().await.replace(late_rx);
+        (live.turn.generation, engine_events)
+    };
+    let pool = Arc::new(pool);
+    let old_turn = {
+        let pool = pool.clone();
+        let request = TurnRequest {
+            session_id: Some(sid.clone()),
+            message: "hello".into(),
+            attachments: Vec::new(),
+            turn_id: "t1".into(),
+            options: None,
+            on_busy: OnBusy::Reject,
+            initiator: Initiator::Client,
+        };
+        tokio::spawn(async move { pool.run_turn(request, None).await })
+    };
+    while pool.current_turn_of(&sid).await.is_none() {
+        tokio::task::yield_now().await;
+    }
+
+    pool.shutdown_session(&sid).await.unwrap();
+    pool.ensure_live(&sid, None).await.unwrap();
+    let resumed = slot_and_state(&pool, &sid).await.0;
+    assert_ne!(resumed, old_generation);
+    late_tx
+        .send(turn_complete(base::event::ContextUsage {
+            tokens: 1000,
+            compact_threshold: 2000,
+            window: 4000,
+        }))
+        .unwrap();
+    assert!(
+        old_turn.await.unwrap().is_err(),
+        "the closed turn completed"
+    );
+    assert_eq!(
+        pool.adopt_generated_name(&sid, old_generation, "a guess".into())
+            .await,
+        None
+    );
+
+    let sessions = pool.sessions.lock().await;
+    let live = &sessions[&sid];
+    assert_eq!(live.turn.generation, resumed);
+    assert!(live.turn.is_idle());
+    assert_eq!(live.context, None, "the old turn wrote its context");
+    assert_eq!(live.name, None, "the old turn named the session");
+}
+
 #[tokio::test]
 async fn a_background_tasks_question_outlives_the_turn_and_goes_with_its_task() {
     let (pool, _dir, _store) = pool_with_history().await;

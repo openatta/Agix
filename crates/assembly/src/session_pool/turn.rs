@@ -290,7 +290,13 @@ impl SessionPool {
                     api_calls = ac;
                     ended_with = stop_reason.clone();
                     if context.is_some() {
-                        if let Some(live) = self.sessions.lock().await.get_mut(&sid) {
+                        if let Some(live) = self
+                            .sessions
+                            .lock()
+                            .await
+                            .get_mut(&sid)
+                            .filter(|live| live.turn.generation == generation)
+                        {
                             live.context = context;
                         }
                     }
@@ -349,7 +355,10 @@ impl SessionPool {
         let mut session_name = None;
         let naming = {
             let mut sessions = self.sessions.lock().await;
-            match sessions.get_mut(&sid) {
+            match sessions
+                .get_mut(&sid)
+                .filter(|live| live.turn.generation == generation)
+            {
                 // A slash command is not what the conversation is about.
                 Some(live) if live.is_first_turn && !message.starts_with('/') => {
                     live.is_first_turn = false;
@@ -368,7 +377,7 @@ impl SessionPool {
         if let Some((prompt, namer)) = naming {
             match namer.name(&prompt).await {
                 Ok(Some(name)) => {
-                    session_name = self.adopt_generated_name(&sid, name).await;
+                    session_name = self.adopt_generated_name(&sid, generation, name).await;
                 }
                 Ok(None) => {}
                 Err(e) => {
@@ -387,11 +396,19 @@ impl SessionPool {
 
     /// A name somebody typed while the naming call was out wins over the
     /// guess; otherwise the guess is stored like any other name, so a resume
-    /// or a daemon restart finds it.
-    pub(super) async fn adopt_generated_name(&self, sid: &str, name: String) -> Option<String> {
+    /// or a daemon restart finds it. A guess made for the entry of
+    /// `generation` is dropped once another entry has the id.
+    pub(super) async fn adopt_generated_name(
+        &self,
+        sid: &str,
+        generation: Generation,
+        name: String,
+    ) -> Option<String> {
         {
             let mut sessions = self.sessions.lock().await;
-            let live = sessions.get_mut(sid)?;
+            let live = sessions
+                .get_mut(sid)
+                .filter(|live| live.turn.generation == generation)?;
             if live.named_by_user {
                 return live.name.clone();
             }
