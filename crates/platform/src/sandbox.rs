@@ -11,6 +11,9 @@
 //!   `--unshare-net`; bwrap has no domain-level filter, so `Allowlist`
 //!   degrades to the same whole-network cut rather than silently opening up —
 //!   failure goes toward the safer side, and says so through `Enforcement`.
+//!   Each command gets a PID namespace of its own, so the pids it sees (`$!`
+//!   among them) are not the host's, and a later command does not see what an
+//!   earlier one left running. What it left running outlives it, as on macOS.
 //! - **Windows**: no backend.
 //!
 //! # What a confined command may write
@@ -1091,6 +1094,23 @@ fn daemon_sockets(state_root: Option<&Path>) -> Vec<PathBuf> {
     sockets
 }
 
+/// Runs bwrap (`"$@"`) with the command's stdout and stderr on fds 3 and 4,
+/// and bwrap's own stdio on `/dev/null` and an unlinked file printed to
+/// stderr once bwrap exits. bwrap's PID 1 keeps fds 0–2 for as long as
+/// anything the command left in the background runs, which would hold the
+/// command's output open; it closes every other fd.
+#[cfg(all(feature = "sandbox", target_os = "linux"))]
+const BWRAP_STDIO_OUTSIDE: &str = r#"err=$(mktemp 2>/dev/null) && exec 5>"$err" 6<"$err" && rm -f "$err" || exec 5>/dev/null 6</dev/null
+"$@" 3>&1 4>&2 >/dev/null 2>&5 5>&- 6<&-
+status=$?
+cat <&6 >&2
+exit "$status""#;
+
+/// The inside half of [`BWRAP_STDIO_OUTSIDE`]: fds 3 and 4 back to 1 and 2,
+/// then the command.
+#[cfg(all(feature = "sandbox", target_os = "linux"))]
+const BWRAP_STDIO_INSIDE: &str = r#"exec 1>&3 2>&4 3>&- 4>&- && exec "$@""#;
+
 #[cfg(all(feature = "sandbox", target_os = "linux"))]
 fn linux_wrap(
     inner: ProcessSpec,
@@ -1113,8 +1133,11 @@ fn linux_wrap(
             "/proc",
             "--dev",
             "/dev",
+            // No `--die-with-parent`: bwrap exits as soon as the command does,
+            // and the namespace would go with it, taking whatever the command
+            // left in the background. That stays in the command's process
+            // group, which is how it gets stopped.
             "--unshare-pid",
-            "--die-with-parent",
         ]
         .map(String::from),
     );
@@ -1214,8 +1237,10 @@ fn linux_wrap(
     } else {
         Vec::new()
     };
+    args.extend(["sh", "-c", BWRAP_STDIO_INSIDE, "sh"].map(String::from));
     args.push(inner.program);
     args.extend(inner.args);
+    let outside = ["-c", BWRAP_STDIO_OUTSIDE, "sh", "bwrap"].map(String::from);
     Confined {
         enforcement: if unmet.is_empty() {
             Enforcement::Full
@@ -1223,7 +1248,7 @@ fn linux_wrap(
             Enforcement::Partial
         },
         unmet,
-        spec: ProcessSpec::new("bwrap", &inner.cwd).args(args),
+        spec: ProcessSpec::new("sh", &inner.cwd).args(outside.into_iter().chain(args)),
         mode: SandboxMode::LinuxBwrap,
     }
 }
@@ -1390,7 +1415,11 @@ mod tests {
             c.spec.args
         );
         assert_eq!(
-            c.spec.args.iter().filter(|a| a.as_str() == "-c").count(),
+            c.spec
+                .args
+                .windows(2)
+                .filter(|w| w[0] == "bash" && w[1] == "-c")
+                .count(),
             1,
             "argv: {:?}",
             c.spec.args
@@ -1452,7 +1481,8 @@ mod tests {
         let cmd = wrap(opts("ls", Path::new("/tmp/work")));
         match cmd.mode {
             SandboxMode::LinuxBwrap => {
-                assert_eq!(cmd.spec.program, "bwrap");
+                assert_eq!(cmd.spec.program, "sh");
+                assert_eq!(cmd.spec.args[3], "bwrap");
                 assert!(cmd.spec.args.iter().any(|a| a == "--ro-bind"));
                 assert!(cmd.spec.args.iter().any(|a| a == "/tmp/work"));
                 let bash_pos = cmd
@@ -1471,6 +1501,26 @@ mod tests {
             }
             other => panic!("unexpected mode on linux: {other:?}"),
         }
+    }
+
+    /// bwrap's own messages — a mount it could not make, namespaces it may
+    /// not create — still reach the command's stderr, after what the command
+    /// itself printed, and its exit status is the command's.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn what_bwrap_itself_says_reaches_stderr() {
+        let fake_bwrap = "echo printed >&3; echo complained >&4; echo 'bwrap: refused' >&2; exit 1";
+        let out = std::process::Command::new("sh")
+            .args(["-c", BWRAP_STDIO_OUTSIDE, "sh", "sh", "-c", fake_bwrap])
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "printed\n");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stderr),
+            "complained\nbwrap: refused\n"
+        );
+        assert_eq!(out.status.code(), Some(1));
     }
 
     /// A configuration file that does not exist yet is what a read-only bind
@@ -2727,6 +2777,70 @@ mod tests {
         run.output().unwrap()
     }
 
+    /// `npm run dev > log &` and the like: what a confined command leaves in
+    /// the background, its output sent elsewhere, neither holds the command's
+    /// output open nor goes when the command exits. It is in the command's
+    /// process group, where stopping the group reaches it.
+    ///
+    /// The background loop gives up after a while, so that a sandbox holding
+    /// the output open fails this rather than hangs it.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    #[allow(clippy::unwrap_used, unsafe_code)]
+    fn what_a_confined_command_leaves_running_outlives_it_in_its_process_group() {
+        use std::os::unix::process::CommandExt;
+        if !a_backend_runs() {
+            return;
+        }
+        let project = tempfile::tempdir().unwrap();
+        let command = "echo out; echo err >&2; \
+                       (i=0; while [ ! -e exited ] && [ $i -lt 600 ]; do sleep 0.05; i=$((i+1)); done; \
+                        [ -e exited ] && touch outlived && exec sleep 600) >/dev/null 2>&1 & \
+                       exit 3";
+        let confined = PlatformSandbox.confine(
+            ProcessSpec::new("bash", project.path()).args(["-c", command].map(String::from)),
+            &SandboxPolicy::default(),
+        );
+        assert_eq!(
+            confined.enforcement,
+            Enforcement::Full,
+            "{:?}",
+            confined.unmet
+        );
+        let child = std::process::Command::new(&confined.spec.program)
+            .args(&confined.spec.args)
+            .current_dir(project.path())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let group = child.id() as libc::pid_t;
+        let output = child.wait_with_output().unwrap();
+        std::fs::write(project.path().join("exited"), "").unwrap();
+
+        let until = |what: &dyn Fn() -> bool| {
+            (0..1500).any(|_| {
+                let done = what();
+                if !done {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                done
+            })
+        };
+        let outlived = until(&|| project.path().join("outlived").exists());
+        // SAFETY: plain integers; the group is the one just started.
+        unsafe { libc::killpg(group, libc::SIGKILL) };
+        // SAFETY: as above; signal 0 only asks whether the group exists.
+        let stopped = until(&|| unsafe { libc::killpg(group, 0) } != 0);
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "out\n");
+        assert_eq!(String::from_utf8_lossy(&output.stderr), "err\n");
+        assert_eq!(output.status.code(), Some(3));
+        assert!(outlived, "the background loop went with the command");
+        assert!(stopped, "stopping the group stops what the command left");
+    }
+
     /// A submodule's git directory, `modules/<name>` under the git directory
     /// of the repository that holds it, as `git submodule` lays it out.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -3063,7 +3177,8 @@ mod enforcement_tests {
             }
             SandboxMode::LinuxBwrap => {
                 assert_eq!(w.enforcement, Enforcement::Full);
-                assert_eq!(w.spec.program, "bwrap");
+                assert_eq!(w.spec.program, "sh");
+                assert_eq!(w.spec.args[3], "bwrap");
             }
         }
     }

@@ -1341,6 +1341,12 @@ WebAssembly 载体整个移除。
   挡,之后别的服务用到也连不上;现在跟监听器一起注销,`--unix-socket-auth` 的 token 文件也是
   删掉时注销。Linux 上本来就围不了单个端口,网络开着时沙箱里的命令连得上 TCP / WebSocket 端口,
   要断就用 `network_mode: deny_all` / `allowlist`(§6.3)。
+- **Linux 上命令放到后台的进程活过命令本身,与 macOS 一致。** 以前 bwrap 带
+  `--die-with-parent`,命令一退出,它的 PID 命名空间连同 `npm run dev > log &` 这样的进程一起
+  被收掉;bwrap 的 PID 1 又一直占着命令的输出,`Bash` 等 1 秒后还会停掉它们并报"后台进程占着
+  输出"。现在输出另有去处的后台进程留着,`sandbox.reap_process_groups` 打开时随会话收掉;daemon
+  被 `SIGKILL` 时正在跑的命令也不再跟着死,由下一次启动按上次的进程组记录收掉。命令仍在自己的
+  PID 命名空间里:`$!` 不是宿主上的 pid,后一条命令也看不见前一条留下的进程。
 - **项目 `.agix/` 会多一个 `.gitignore`。** 第一次往项目 `.agix/` 写 `settings.local.json`
   (`config.setProvider` 的 key、MCP headers)或录遥测时,没有 `.agix/.gitignore` 就生成一份,写着
   `settings.local.json`、`mcp.local.json`、`telemetry/`。已有的不动,缺的行也不补:以前就有
