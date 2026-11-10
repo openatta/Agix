@@ -325,16 +325,22 @@ async fn a_sandboxed_command_cannot_read_the_keys_the_daemon_keeps() {
         return;
     }
     let daemon = Daemon::start(true).await;
-    let files = [
-        daemon.home.join("settings.local.json"),
-        daemon.home.join("scenes/code/mcp/oauth/server.json"),
-        daemon.home.join("scratchpad/notes.md"),
-    ];
-    let command = files
-        .iter()
-        .map(|f| format!("cat {}", shell_quote(&f.display().to_string())))
-        .collect::<Vec<_>>()
-        .join("; ");
+    // Through a variable: the gate refuses a command that names a credential
+    // before it runs, and this is about what the sandbox lets a command read.
+    let command = std::iter::once(format!(
+        "H={}",
+        shell_quote(&daemon.home.display().to_string())
+    ))
+    .chain(
+        [
+            "settings.local.json",
+            "scenes/code/mcp/oauth/server.json",
+            "scratchpad/notes.md",
+        ]
+        .map(|f| format!("cat \"$H/{f}\"")),
+    )
+    .collect::<Vec<_>>()
+    .join("; ");
     let shown = daemon.command_shows(&command).await;
     assert!(
         shown.contains(READABLE),

@@ -137,6 +137,7 @@ impl Tool for GlobTool {
         let walker_root = root.clone();
         let cancel = ctx.cancel.clone();
         let scan_early_stop = max_results * 4; // scan up to 4x for early cutoff
+        let excluded = crate::security::credentials(&ctx).excluded_from_walk(&root);
         let scan = tokio::task::spawn_blocking(
             move || -> Result<Vec<(PathBuf, SystemTime)>, ToolError> {
                 let mut results = Vec::new();
@@ -145,6 +146,7 @@ impl Tool for GlobTool {
                     .git_exclude(input.respect_gitignore)
                     .git_global(input.respect_gitignore)
                     .hidden(false)
+                    .filter_entry(move |entry| !excluded(entry.path()))
                     .build();
                 for entry in walker {
                     if cancel.is_cancelled() {

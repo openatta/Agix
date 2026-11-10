@@ -31,12 +31,15 @@
 //! included, and the directories leading down to them), the
 //! configuration under `.agix/` and `.claude/` (`base::paths::ENGINE_CONFIG_*`:
 //! settings, MCP, hooks, agents, skills, plugins, rules, scenes, policy,
-//! scripts, output styles), and the `.git` links of the engine's worktrees.
+//! scripts, output styles), the project's skills (`.agents/skills/`,
+//! `base::paths::PROJECT_ENGINE_CONFIG_DIRS`, and the `.agents` entry above
+//! it), and the `.git` links of the engine's worktrees.
 //! Of the state root only `scratchpad/`, `memory/` and those of
 //! `additional_writable` under `tmp/` (a session's own `TMPDIR`) stay
 //! writable. On Linux `.agix`, and `.claude` where it exists, is read-only as
 //! a whole and its existing working entries are opened again, so a new entry
-//! directly in it cannot be created either.
+//! directly in it cannot be created either; `.agents/skills/` is read-only
+//! where `.agents` exists.
 //!
 //! A policy with `only_additional_writable` leaves out the working directory,
 //! the state root's working entries and `DARWIN_USER_TEMP_DIR`: only
@@ -50,9 +53,11 @@
 //! # What a confined command may not read
 //!
 //! The policy's `deny_read` (the credential stores in the user's home, by
-//! default) less its `allow_read`, and whatever the policy says, the state
-//! root's settings files and MCP OAuth tokens, its own and every scene's,
-//! and the project's `.agix/settings.local.json` and `.agix/mcp.local.json`.
+//! default) less its `allow_read`, and whatever the policy says, the
+//! credentials of `base::paths` (`Credentials`): the state root's settings
+//! files and MCP OAuth tokens, its own and every scene's, the daemons'
+//! socket tokens under `daemon/auth/`, and the project's
+//! `.agix/settings.local.json` and `.agix/mcp.local.json`.
 //!
 //! # What a confined command may not connect to
 //!
@@ -303,24 +308,32 @@ fn scene_dirs(policy: &SandboxPolicy, state_root: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// What in the state root a command may not read: the settings files, whose
-/// provider keys and MCP headers are plain text, and the MCP OAuth tokens —
-/// of the root and of every scene. The macOS profile says the same with a
+/// What in the state root a command may not read: `base::paths`'
+/// credentials — the settings files, whose provider keys and MCP headers are
+/// plain text, and the MCP OAuth tokens, of the root and of every scene, and
+/// the daemons' socket tokens. The macOS profile says the same with a
 /// pattern, which also covers the ones written while the command runs.
 #[cfg(all(feature = "sandbox", target_os = "linux"))]
 fn state_root_secrets(policy: &SandboxPolicy, state_root: &Path) -> Vec<PathBuf> {
-    let holds_keys = |name: &str| {
-        let name = name.strip_prefix('.').unwrap_or(name);
-        (name.starts_with("settings") || name.starts_with("mcp.local")) && name.contains(".json")
-    };
-    let mut secrets = Vec::new();
+    let mut secrets: Vec<PathBuf> = base::paths::DAEMON_TOKEN_DIRS
+        .iter()
+        .map(|dir| state_root.join(dir))
+        .collect();
     for dir in std::iter::once(state_root.to_path_buf()).chain(scene_dirs(policy, state_root)) {
-        secrets.push(dir.join("mcp").join("oauth"));
+        secrets.extend(
+            base::paths::STATE_ROOT_TOKEN_DIRS
+                .iter()
+                .map(|d| dir.join(d)),
+        );
         if let Ok(entries) = std::fs::read_dir(&dir) {
             secrets.extend(
                 entries
                     .flatten()
-                    .filter(|e| e.file_name().to_str().is_some_and(holds_keys))
+                    .filter(|e| {
+                        e.file_name()
+                            .to_str()
+                            .is_some_and(base::paths::is_state_root_key_file)
+                    })
                     .map(|e| e.path()),
             );
         }
@@ -339,15 +352,6 @@ fn project_agix_dirs(cwd: &Path) -> Vec<PathBuf> {
     } else {
         vec![given, real]
     }
-}
-
-/// Whether a file directly in a project's `.agix` holds the project's keys:
-/// `settings.local.json` and `mcp.local.json`, which are where the engine
-/// writes them, and the temporary files it writes them through.
-#[cfg(all(feature = "sandbox", target_os = "linux"))]
-fn holds_project_keys(name: &str) -> bool {
-    let name = name.strip_prefix('.').unwrap_or(name);
-    name.starts_with("settings.local.json") || name.starts_with("mcp.local.json")
 }
 
 #[derive(Debug, Clone)]
@@ -444,8 +448,8 @@ const GIT_CONTROL_FILES: &[&str] = &["config", "config.worktree", "commondir"];
 
 #[cfg(feature = "sandbox")]
 use base::paths::{
-    ENGINE_CONFIG_DIRS, ENGINE_CONFIG_FILES, ENGINE_CONFIG_ROOTS, PROJECT_WORKTREES_DIR,
-    STATE_ROOT_SESSION_TMP, STATE_ROOT_WORKING_DIRS,
+    ENGINE_CONFIG_DIRS, ENGINE_CONFIG_FILES, ENGINE_CONFIG_ROOTS, PROJECT_ENGINE_CONFIG_DIRS,
+    PROJECT_WORKTREES_DIR, STATE_ROOT_SESSION_TMP, STATE_ROOT_WORKING_DIRS,
 };
 
 /// The paths a policy is written against, each with its symlinks resolved.
@@ -634,6 +638,18 @@ fn project_guard(cwd: &Path) -> ProjectGuard {
         }
         entries.push(root);
     }
+    for dir in PROJECT_ENGINE_CONFIG_DIRS {
+        let mut above = cwd.to_path_buf();
+        for part in Path::new(dir).components() {
+            above.push(part);
+            let real = resolve_path(&above);
+            if real != above {
+                entries.push(real);
+            }
+            entries.push(above.clone());
+        }
+        trees.push(resolve_path(&above));
+    }
 
     for worktree in subdirs(&agix_dir.join(PROJECT_WORKTREES_DIR)) {
         files.push(worktree.join(".git"));
@@ -755,21 +771,31 @@ fn build_macos_profile(cwd: &Path, additional: &[PathBuf], policy: &SandboxPolic
     if let Some(root) = &roots.state_root {
         let root = regex_escape(&root.display().to_string());
         let config_dir = format!("^{root}/(scenes/[^/]+/)?");
-        for secret in [
-            format!(r"{config_dir}\.?(settings|mcp\.local)[^/]*\.json[^/]*$"),
-            format!("{config_dir}mcp/oauth(/|$)"),
-        ] {
+        let stems = alternatives(base::paths::STATE_ROOT_KEY_FILE_STEMS);
+        let secrets = std::iter::once(format!(r"{config_dir}\.?({stems})[^/]*\.json[^/]*$"))
+            .chain(
+                base::paths::STATE_ROOT_TOKEN_DIRS
+                    .iter()
+                    .map(|dir| format!("{config_dir}{}(/|$)", regex_escape(dir))),
+            )
+            .chain(
+                base::paths::DAEMON_TOKEN_DIRS
+                    .iter()
+                    .map(|dir| format!("^{root}/{}(/|$)", regex_escape(dir))),
+            );
+        for secret in secrets {
             s.push_str(&format!(
                 "(deny file-read* (regex \"{}\"))\n",
                 sandbox_escape(&secret)
             ));
         }
     }
+    let project_keys = alternatives(base::paths::PROJECT_KEY_FILES);
     for agix in project_agix_dirs(&roots.cwd) {
         let agix = regex_escape(&agix.display().to_string());
         s.push_str(&format!(
             "(deny file-read* (regex \"{}\"))\n",
-            sandbox_escape(&format!(r"^{agix}/\.?(settings|mcp)\.local\.json[^/]*$"))
+            sandbox_escape(&format!(r"^{agix}/\.?({project_keys})[^/]*$"))
         ));
     }
 
@@ -867,6 +893,15 @@ fn spellings(path: &Path) -> Vec<PathBuf> {
     } else {
         vec![path.to_path_buf(), resolved]
     }
+}
+
+#[cfg(all(feature = "sandbox", target_os = "macos"))]
+fn alternatives(names: &[&str]) -> String {
+    names
+        .iter()
+        .map(|name| regex_escape(name))
+        .collect::<Vec<_>>()
+        .join("|")
 }
 
 #[cfg(all(feature = "sandbox", target_os = "macos"))]
@@ -1015,6 +1050,26 @@ fn guard_project(args: &mut Vec<String>, roots: &Roots) {
                 }
             }
         }
+    }
+    for dir in PROJECT_ENGINE_CONFIG_DIRS {
+        let path = roots.cwd.join(dir);
+        let above: Vec<PathBuf> = Path::new(dir)
+            .ancestors()
+            .skip(1)
+            .filter(|a| !a.as_os_str().is_empty())
+            .map(|a| roots.cwd.join(a))
+            .collect();
+        // Held only where the directory above it exists, as `.claude` is.
+        let held = above
+            .iter()
+            .all(|a| a.symlink_metadata().is_ok_and(|m| m.is_dir()));
+        if !held || !roots.opens(&path) {
+            continue;
+        }
+        for a in above.iter().rev() {
+            bind(args, "--bind", a);
+        }
+        read_only(args, &path);
     }
     let agix = roots.cwd.join(".agix");
     for worktree in subdirs(&agix.join(PROJECT_WORKTREES_DIR)) {
@@ -1178,7 +1233,11 @@ fn linux_wrap(
             continue;
         };
         for entry in entries.flatten() {
-            if entry.file_name().to_str().is_some_and(holds_project_keys) {
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(base::paths::is_project_key_file)
+            {
                 hide(&mut args, &entry.path());
             }
         }
@@ -2119,7 +2178,7 @@ mod tests {
             .lines()
             .filter(|l| l.contains("file-read*") && !l.contains("(literal "))
             .collect();
-        assert_eq!(reads.len(), 3, "{reads:?}");
+        assert_eq!(reads.len(), 4, "{reads:?}");
         assert!(
             reads
                 .iter()
@@ -2408,10 +2467,11 @@ mod tests {
     }
 
     /// `.agents/skills/` is where the engine loads the project's skills
-    /// from, yet a sandboxed command may plant one there.
+    /// from, so a sandboxed command may not plant one there, nor move the
+    /// directories above it aside for others — whether they exist yet or
+    /// not. The rest of `.agents/` is the project's.
     #[cfg(target_os = "macos")]
     #[test]
-    #[ignore = "audit: confirmed defect, fix pending"]
     fn audit_f1_a_sandboxed_command_cannot_plant_a_project_skill() {
         let s = UnderSandboxExec::new().expect("sandbox-exec runs here");
         assert!(
@@ -2423,6 +2483,25 @@ mod tests {
         assert!(
             !planted && !s.project.join(".agents/skills/x/SKILL.md").exists(),
             "a sandboxed command wrote .agents/skills/x/SKILL.md"
+        );
+
+        std::fs::create_dir_all(s.project.join(".agents/skills/kept")).unwrap();
+        let elsewhere = s.elsewhere.display().to_string();
+        for command in [
+            "mkdir .agents/skills/x".to_string(),
+            "echo x > .agents/skills/kept/SKILL.md".to_string(),
+            "mv .agents/skills .agents/skills.old".to_string(),
+            "mv .agents .agents.old && mkdir -p .agents/skills/x".to_string(),
+            "rm -rf .agents/skills".to_string(),
+            format!("rm -rf .agents && ln -s '{elsewhere}' .agents"),
+        ] {
+            assert!(!s.runs(&command), "`{command}` was allowed");
+        }
+        assert!(s.project.join(".agents/skills/kept").is_dir());
+        assert!(!s.project.join(".agents/skills/x").exists());
+        assert!(
+            s.runs("echo x > .agents/notes.md"),
+            "the rest of .agents was shut too"
         );
     }
 
@@ -2996,6 +3075,8 @@ mod tests {
             state.join("scenes/code/settings.local.json"),
             state.join("scenes/code/mcp/oauth/server.json"),
             state.join("scenes/triage/settings.local.json"),
+            state.join("mcp/oauth/server.json"),
+            state.join("daemon/auth/desktop.token"),
         ];
         for path in &secrets {
             write_file(path, secret);
@@ -3010,6 +3091,7 @@ mod tests {
             state.join("memory/MEMORY.md"),
             state.join("scratchpad/notes.md"),
             state.join("sessions/s.jsonl"),
+            state.join("daemon/instances.d/desktop.json"),
         ];
         for path in &readable {
             write_file(path, "fine");

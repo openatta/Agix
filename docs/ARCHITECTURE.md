@@ -583,9 +583,32 @@ git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git
 
 ### 6.1 规则怎么裁决
 
-内建的 `PermissionGate` 按固定顺序走:工具自己的判定(拒绝即拒;放行只先记下,等后面
-都没否掉才兑现)→ 规则 → 免于 bypass 的路径 → 模式级硬拒绝 → 兑现 → 模式分派。完整
-顺序在 `crates/permissions/src/gate.rs` 的模块头。规则这一步有四条约束:
+内建的 `PermissionGate` 按固定顺序走:凭据(任何模式都拒)→ 工具自己的判定(拒绝即拒;
+放行只先记下,等后面都没否掉才兑现)→ 规则 → 免于 bypass 的路径 → 模式级硬拒绝 → 兑现 →
+模式分派。完整顺序在 `crates/permissions/src/gate.rs` 的模块头。
+
+**两份敏感路径名单。** gate、文件工具(`tools::security::read_allowed`、`Grep` / `Glob`
+的遍历、只读 `Bash` 的路径判断)和 OS 沙箱读的是 `base::paths` 里同两份名单,不各抄一份:
+
+- **凭据**(`base::paths::Credentials`):状态目录与各场景目录下的设置文件(`settings*.json`、
+  `mcp.local*.json`,明文的 `api_key` 与 MCP headers 在里面)和 `mcp/oauth/`,状态目录下
+  daemon 的 `daemon/auth/`,项目 `.agix` 下的 `settings.local.json` / `mcp.local.json`,以及
+  任何位置的 `.ssh` / `.aws` / `.gnupg`。调用里有一个字符串(路径工具的路径及其解析后的各种
+  写法,shell 命令的每个词与赋值,`--flag=value` 的值)落在这里,gate 就拒绝,不问,
+  `bypassPermissions` 下也一样;`Grep` / `Glob` 搜它上层的目录时跳过它;沙箱里的命令读不到,
+  `sandbox.allow_read` 放不开。没有一个回答能让"把 token 读进模型"成为好主意,所以不询问。
+- **引擎配置**(`base::paths::ENGINE_CONFIG_{ROOTS,FILES,DIRS}` 与 `PROJECT_ENGINE_CONFIG_DIRS`):
+  `.agix` / `.claude` 下除工作区之外的部分,和项目的 `.agents/skills/`(skill 的
+  `allowed-tools` 会给自己授权)。写工具写这里要确认(工具自判的放行不算数),沙箱里只读
+  (§6.2、§6.3)。读不受限。
+
+项目根的 `AGENTS.md`(以及 `CLAUDE.md`)不在引擎配置里:它每会话注入提示词,但只是文字——
+不授予权限、不跑命令、不接 hook 或 MCP,模型写进去的东西和写进 README、代码注释的一样,只能
+影响模型自己读到什么;它在仓库里,改动看得见;让 agent 维护它是常见的请求(`init`、`import`
+两个内建 skill 就写它)。保护它会给日常编辑加询问,挡不住同一类"持久的提示"(仓库里任何会被
+读到的文件都是)。
+
+规则这一步有四条约束:
 
 1. **deny 永远优先。** 一次调用命中的规则里有一条 deny 就拒绝,否则有 ask 就问,否则
    才 allow(`bypassPermissions` 只看部署方 managed 层的规则,见本节末)。哪一层写的、写得多具体,都不参与裁决——项目仓库里提交的一条 allow 推不翻
@@ -650,9 +673,9 @@ git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git
 到不了权限这一步。
 
 `bypassPermissions` 只看部署方 managed 层的 deny 与 ask(见下面"用户规则与部署方规则"),
-用户自己各层的规则一条都不看:deny、ask、免于 bypass 的路径(`.ssh` / `.aws`、
-`rm -rf /` 一类)、`.git` / `.agix` 的确认、工具自己的判定(含 §6.2 第 2 道的拒写名单)
-全部跳过,输入合法就放行。仍然生效的是输入校验——读后再写的过期检查、大小上限、§6.2
+用户自己各层的规则一条都不看:deny、ask、免于 bypass 的路径(`/etc/passwd`、
+`rm -rf /` 一类)、配置目录的确认、工具自己的判定(含 §6.2 第 2 道的拒写名单)
+全部跳过,输入合法就放行——凭据除外,它在任何模式下都拒绝(本节开头)。仍然生效的是输入校验——读后再写的过期检查、大小上限、§6.2
 第 1 道的误读路径、`Bash` 的超时上限与长 `sleep` 拦截——和 OS 沙箱:`Bash` 照样被关在
 可写根之内(`dangerously_disable_sandbox` 除外),无人值守会话也一样。`agixd` 的
 `bypassPermissions` 会话同样走这道 gate,运行中进了计划模式也照样只读;只有宿主自己给了
@@ -699,7 +722,7 @@ managed 层管的是权限,不是沙箱:它挡得住模型发起的调用,挡不
 换掉二进制的人。要防机器的使用者本人,启动方式与二进制也得由部署方控制。
 
 `acceptEdits` 只多放行只读调用:项目内的 `Edit` / `Write` 本来就由工具自己放行,项目外
-的、`.git` / `.agix` 下要确认的,在 `acceptEdits` 下照样询问——无人值守的会话里就是拒绝。
+的、`.git` / `.agix` / `.agents/skills` 下要确认的,在 `acceptEdits` 下照样询问——无人值守的会话里就是拒绝。
 只读调用里够得比"读"更远的也不放行(`Tool::accept_edits_allows`):`WebFetch` / `Ping`
 只放行 `sandbox.allowed_domains` 列出的主机(含子域),URL 本身就能把数据带到主机那里;
 进了会话所在仓库之外的仓库的只读 `git`(`Bash` / `Monitor`)照样询问。读项目外的文件也与
@@ -758,9 +781,10 @@ skill 自己的 `allowed-tools` 这时还没生效,不能给自己的命令开�
 
    最后一条**按"文件名 + 所在目录"匹配,不按目录**。`.agix` 同时是子代理 git worktree
    的落脚点,把整个目录设为拒写会否掉子代理被创建出来要做的每一次写入。`.agix` / `.claude`
-   下的配置目录(`hooks`、`agents`、`skills` …)对写工具是"要确认",不是"拒写";沙箱里的
-   命令没法逐次确认,所以对它们是拒写(§6.3)。两边用同一份名单
-   (`base::paths::ENGINE_CONFIG_{ROOTS,FILES,DIRS}`)。
+   下的配置目录(`hooks`、`agents`、`skills` …)和项目的 `.agents/skills/` 对写工具是"要确认",
+   不是"拒写";沙箱里的命令没法逐次确认,所以对它们是拒写(§6.3)。两边用同一份名单
+   (`base::paths::ENGINE_CONFIG_{ROOTS,FILES,DIRS}`、`PROJECT_ENGINE_CONFIG_DIRS`,§6.1)。
+   另外,凭据名单(§6.1)上的路径在 gate 那一步就拒绝了,任何模式都到不了这里。
 
    **这个不对称是有意的。** 写工具改引擎配置目录是确认,沙箱里的 Bash 写同一处是硬拒,
    理由有两条:无人值守时确认本来就会变成拒绝,所以硬拒只是把这个结果提前;交互时用户
@@ -774,7 +798,8 @@ skill 自己的 `allowed-tools` 这时还没生效,不能给自己的命令开�
 ### 6.3 项目之外
 
 可读写的根:项目目录、实例状态目录(`~/.agix`)下的 `scratchpad` 与 `memory`、
-`sandbox.additional_directories`。只读的根再加整个状态目录与 `sandbox.read_directories`。
+`sandbox.additional_directories`。只读的根再加整个状态目录(凭据除外,§6.1)与
+`sandbox.read_directories`。
 `Read` / `Glob` / `Grep` 与只读 shell 命令在这些根之内直接放行,之外要人批准;
 `sandbox.read_anywhere: true` 把读放开到任意位置。这些都是实例的设置——嵌入方创建实例时定。
 
@@ -790,10 +815,11 @@ bubblewrap)就和别的未授权调用一样被拒。沙箱只限写不限网,�
 关(保持原来的行为),计划在后续 0.3.x 改为缺省开。沙箱在 `assembly` / `daemon` 缺省编译进来。沙箱只限写,不限读——读的限制落在文件工具上,
 `Bash` 读项目外的东西只受凭据黑名单约束:`sandbox.deny_read`(缺省是家目录下的凭据,
 `base::interface::exec::default_deny_read`)减去 `sandbox.allow_read`;另外不论怎么配,
-状态目录与各场景目录下的设置文件(`settings*.json`、`mcp.local.json`,明文的 `api_key` 与 MCP
-headers 在里面)和 `mcp/oauth/`,以及项目自己的 `.agix/settings.local.json`、`.agix/mcp.local.json`
-(项目这一层的 key 写在这里)都读不到,`allow_read` 也放不开。状态目录里别的东西(skills、
-memory、scratchpad、会话记录、`scene.json`)照常可读。`Monitor` 的脚本进同一个沙箱,
+§6.1 凭据名单上引擎自己的那部分——状态目录与各场景目录下的设置文件(`settings*.json`、
+`mcp.local.json`)和 `mcp/oauth/`,状态目录下的 `daemon/auth/`,以及项目自己的
+`.agix/settings.local.json`、`.agix/mcp.local.json`(项目这一层的 key 写在这里)——都读不到,
+`allow_read` 也放不开。状态目录里别的东西(skills、memory、scratchpad、会话记录、`scene.json`、
+`daemon/instances.d/`)照常可读。`Monitor` 的脚本进同一个沙箱,
 `sandbox.require_enforcement` 对它同样生效,无人值守下的自动放行也走上面这同一条件。
 
 沙箱里的命令能写的:工作目录、`sandbox.additional_directories` 与会话授予的目录、
@@ -812,12 +838,15 @@ memory、scratchpad、会话记录、`scene.json`)照常可读。`Monitor` 的�
 下,嵌套的子模块在上一层的 `modules/` 下)里的同样几项以及通向它的各级目录(不能挪走换一个;
 查找不跟符号链接,深度和个数有上限)、`.agix` 与 `.claude` 下的配置
 (`settings.json`、`settings.local.json`、`mcp.local.json`,以及 `mcp`、`hooks`、`agents`、
-`skills`、`plugins`、`rules`、`scenes`、`policy`、`scripts`、`output-styles` 目录)、引擎
-worktree 的 `.git` 链接;状态目录除
+`skills`、`plugins`、`rules`、`scenes`、`policy`、`scripts`、`output-styles` 目录)、项目的
+`.agents/skills/` 连同它上面的 `.agents` 目录项(macOS 上不存在时也建不出来;`.agents` 下别的
+东西照常可写)、引擎 worktree 的 `.git` 链接;状态目录除
 `scratchpad`、`memory` 与本会话的 `tmp/<会话 id>` 外整个不可写。`git add` / `git commit`、在 `.agix` 下写草稿照常可用;
 `git config`、`git remote add` 这类改仓库配置的命令在沙箱里会失败。Linux 上 `.agix`(以及已经
 存在的 `.claude`)整个只读、已有的工作目录逐个重新打开,所以其下直接新建条目也会失败;Linux
-上不存在的 `.claude` 不加挡(挡它会在每个项目里留下一个空挂载点);没有 `.git` 的项目、没有
+上不存在的 `.claude` 不加挡(挡它会在每个项目里留下一个空挂载点),`.agents/skills/` 同理只在
+`.agents` 已经存在时挡(`.agents` 绑定到自身,挪不走;`skills` 只读,不存在时留一个只读的空挂载点),
+不存在的 `.agents` 在 Linux 上建得出来;没有 `.git` 的项目、没有
 `commondir` 的仓库在 Linux 上补不上这一道(见 `sandbox.rs` 模块头第 5 条),所以有下一段。
 
 引擎自己跑的 git(每轮的 `git status`、worktree 的创建与清理)经 `base::frozen::git::EngineGit` 起:会话的命令进沙箱(没有
@@ -898,7 +927,8 @@ rust / go / java / ruby / dotnet / swift 的常见位置,开箱即用。设置�
 
 `.agix` 下的路径缺省要人确认(它是 agent 的配置),只有 `scratchpad`、`memory` 与 `worktrees`
 三处除外:前两处是提示词让模型去写的工作区,`worktrees` 下是 `EnterWorktree` 建的工作树,
-里面是项目本身的工作(工作树里自己的 `.agix`、`.claude`、`.git` 照旧要确认)。
+里面是项目本身的工作(工作树里自己的 `.agix`、`.claude`、`.git` 照旧要确认)。项目的
+`.agents/skills/` 下的写入同样要确认,`.agents` 下别的路径不要。
 
 ### 6.4 MCP 策略
 

@@ -5,8 +5,10 @@
 //!
 //! 0. 部署方的 managed 层（`ManagedPolicy`）读不了 → 一律 deny；它关掉了
 //!    bypass 的，`BypassPermissions` 按 `Default` 判
-//! 1. `tool.validate_input` —— 输入合法性。`BypassPermissions` 到此为止：
-//!    输入合法即 allow，下面的规则、受保护路径、`.git` / `.agix` 确认和工具
+//! 1. `tool.validate_input` —— 输入合法性。之后是凭据（`base::paths::Credentials`：
+//!    状态目录的设置文件、MCP OAuth 与 daemon token，项目的 key 文件，`.ssh` 一类）
+//!    → deny，任何模式都一样。`BypassPermissions` 到此为止：
+//!    输入合法即 allow，下面的规则、受保护路径、配置目录的确认和工具
 //!    自己的判定一概不看——只看 managed 层的 deny / ask
 //! 2. `tool.check_permissions` —— 工具自带的判定：
 //!    - `Deny` **直接返回**（工具拒绝自己是权威的：只有工具知道自己的输入
@@ -28,7 +30,7 @@
 //! 8. 其余 PermissionMode 分派：
 //!    - `AcceptEdits` 且工具认可（`Tool::accept_edits_allows`，缺省即只读）→
 //!      allow；Edit / Write 走到这里说明工具自己没放行（写项目外）或要确认
-//!      （`.git` / `.agix`），照样 ask。向模型选的主机发请求的只读工具
+//!      （配置目录），照样 ask。向模型选的主机发请求的只读工具
 //!      （`WebFetch`、`Ping`）只在 `sandbox.allowed_domains` 列出该主机时认可
 //!    - 其余（`Default`，以及只读工具下的 `Plan`）→ ask
 //!
@@ -50,7 +52,10 @@ use crate::error::GateError;
 use crate::path_rule::ResolvedPath;
 use crate::rule::format_rule_string;
 use crate::ruleset::{path_rule_group, shell_rule_group, RuleHit, RuleSet};
-use base::paths::{PROJECT_WORKTREES_DIR, STATE_ROOT_WORKING_DIRS};
+use base::paths::{
+    Credentials, CREDENTIAL_DIR_NAMES, ENGINE_CONFIG_ROOTS, PROJECT_ENGINE_CONFIG_DIRS,
+    PROJECT_WORKTREES_DIR, STATE_ROOT_WORKING_DIRS,
+};
 use base::permission::{DecisionReason, PermissionDecision, PermissionMode};
 use base::permission::{PermissionRule, RuleBehavior, RuleSource};
 use base::tool::ToolContext;
@@ -249,38 +254,7 @@ impl PermissionGate {
                 _ => rules.evaluate(tool.name(), content.as_deref()),
             }
         };
-        // The protected-path checks compare path components, which quotes
-        // inside a word (`~/".ssh"/id_rsa`) would otherwise hide.
-        let shell_line = content
-            .as_deref()
-            .filter(|_| kind == PermissionContentKind::ShellCommand);
-        // Each argument on its own, quotes removed, so a protected path is a
-        // whole string the component checks can isolate — `~/".ssh"/id_rsa`
-        // becomes `~/.ssh/id_rsa`, and `.agix/settings.local.json` is not glued
-        // to the command word before it.
-        let unquoted = shell_line
-            .into_iter()
-            .flat_map(crate::shell::segments)
-            .flat_map(|segment| crate::shell::lex(&segment.source))
-            .map(|w| w.text);
-        // A segment that is only an assignment (`OLDPWD=~/.ssh;`) never reaches
-        // `segments`, but its value can name a protected path a later command
-        // reads through — so the values are checked too.
-        let assignment_values = shell_line
-            .into_iter()
-            .flat_map(crate::shell::assignments)
-            .map(|(_, value)| value);
-        let checked = content
-            .iter()
-            .cloned()
-            .chain(
-                resolved
-                    .iter()
-                    .flat_map(|r| r.all().map(|p| p.to_string_lossy().into_owned())),
-            )
-            .chain(unquoted)
-            .chain(assignment_values)
-            .collect();
+        let checked = protected_path_candidates(kind, content.as_deref(), resolved.as_ref());
         (hit, checked)
     }
 
@@ -320,6 +294,15 @@ impl PermissionGate {
                     updated_input: None,
                     decision_reason: None,
                 },
+            });
+        }
+
+        if let Some(path) = names_a_credential(tool, input, ctx) {
+            return Ok(PermissionDecision::Deny {
+                message: format!(
+                    "'{path}' holds credentials; no tool reads or writes it, in any permission mode"
+                ),
+                decision_reason: DecisionReason::ToolBuiltin("credentials".into()),
             });
         }
 
@@ -442,8 +425,8 @@ impl PermissionGate {
         //    也不在会硬拒的模式里。Default 模式下项目内的 Write/Edit 与只读
         //    Bash 因此静默通过。
         //
-        //    唯一的例外是 agent / 仓库配置目录（`.git` / `.claude` / `.agix`）：
-        //    它们不是凭据（凭据在第 4 步就硬拒了），用户完全可能想让 agent 去
+        //    唯一的例外是 agent / 仓库配置目录（`.git` / `.claude` / `.agix` / `.agents/skills`）：
+        //    它们不是凭据（凭据在第 1 步之后就硬拒了），用户完全可能想让 agent 去
         //    改；但"工具自己说没问题"不足以让一次改写 agent 自身规则的调用静默
         //    通过。所以这里只是**跳过快速通道**，让它落到下面的模式分派去走正常
         //    确认流程 —— 该问就问，而不是一律拒绝。只读的调用改不了规则，不算
@@ -596,6 +579,7 @@ mod tests {
         match_content: Option<String>,
         invalid: bool,
         leaves_plan: bool,
+        kind: PermissionContentKind,
     }
 
     impl FakeTool {
@@ -607,6 +591,7 @@ mod tests {
                 match_content: None,
                 invalid: false,
                 leaves_plan: false,
+                kind: PermissionContentKind::Opaque,
             }
         }
         fn leaves_plan(mut self) -> Self {
@@ -627,6 +612,10 @@ mod tests {
         }
         fn matches(mut self, c: &str) -> Self {
             self.match_content = Some(c.into());
+            self
+        }
+        fn shell(mut self) -> Self {
+            self.kind = PermissionContentKind::ShellCommand;
             self
         }
     }
@@ -670,6 +659,9 @@ mod tests {
         }
         fn permission_match_content(&self, _: &Value) -> Option<String> {
             self.match_content.clone()
+        }
+        fn permission_content_kind(&self) -> PermissionContentKind {
+            self.kind
         }
         async fn call(
             &self,
@@ -764,9 +756,80 @@ mod tests {
             PermissionDecision::Deny {
                 decision_reason: DecisionReason::ToolBuiltin(ref which),
                 ..
-            } => assert_eq!(which, "bypass_immune"),
-            other => panic!("expected bypass_immune Deny, got {other:?}"),
+            } => assert_eq!(which, "credentials"),
+            other => panic!("expected a credentials Deny, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn credentials_are_refused_in_every_mode() {
+        let state = tempfile::tempdir().unwrap();
+        let token = state.path().join("mcp/oauth/x.json");
+        for (content, mode, shell) in [
+            (
+                token.display().to_string(),
+                PermissionMode::BypassPermissions,
+                false,
+            ),
+            (
+                token.display().to_string(),
+                PermissionMode::AcceptEdits,
+                false,
+            ),
+            (
+                format!("cat '{}/Settings.json'", state.path().display()),
+                PermissionMode::BypassPermissions,
+                true,
+            ),
+            (
+                "rg key .agix/settings.local.json".to_string(),
+                PermissionMode::Default,
+                true,
+            ),
+            (
+                format!("--from={}/daemon/auth/x.token", state.path().display()),
+                PermissionMode::Default,
+                false,
+            ),
+        ] {
+            let tool = FakeTool::new("Read")
+                .read_only()
+                .own(base::tool::PermissionDecision::allow())
+                .matches(&content);
+            let tool = if shell { tool.shell() } else { tool };
+            let mut ctx = ctx_with_mode(mode);
+            ctx.sandbox.state_root = Some(state.path().to_path_buf());
+            let d = PermissionGate::empty()
+                .check(&tool, &json!({}), &ctx)
+                .await
+                .unwrap();
+            assert!(
+                matches!(
+                    d,
+                    PermissionDecision::Deny {
+                        decision_reason: DecisionReason::ToolBuiltin(ref which),
+                        ..
+                    } if which == "credentials"
+                ),
+                "{content} under {mode:?}: {d:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_rest_of_the_state_root_is_not_a_credential() {
+        let state = tempfile::tempdir().unwrap();
+        let tool = FakeTool::new("Read")
+            .read_only()
+            .own(base::tool::PermissionDecision::allow())
+            .matches(&state.path().join("skills/x/SKILL.md").display().to_string());
+        let mut ctx = ctx_with_mode(PermissionMode::Default);
+        ctx.sandbox.state_root = Some(state.path().to_path_buf());
+        let d = PermissionGate::empty()
+            .check(&tool, &json!({}), &ctx)
+            .await
+            .unwrap();
+        assert!(matches!(d, PermissionDecision::Allow { .. }), "{d:?}");
     }
 
     /// `DontAsk` 是"没有规则就拒绝"，自判 Allow 不该把它变成"什么都放行"。
@@ -849,7 +912,7 @@ mod tests {
         let ctx = ctx_with_mode(mode);
         let cases = [
             FakeTool::new("Bash").matches("rm -rf build"),
-            FakeTool::new("Read").read_only().matches("~/.ssh/id_rsa"),
+            FakeTool::new("Read").read_only().matches("/etc/passwd"),
             FakeTool::new("Bash").matches("rm -rf /"),
             FakeTool::new("Write")
                 .matches("/repo/.agix/settings.json")
@@ -1120,33 +1183,73 @@ mod tests {
     use base::permission::PermissionRule;
 }
 
-/// Directory names that are bypass-immune when they appear as a **whole path
-/// component**: touching one is denied outright, in every permission mode.
-/// Compared component-wise, never as substrings — see
-/// [`is_path_bypass_immune`].
-///
-/// Only credential stores belong here. The bar is "no answer the user could
-/// give at a prompt would make this a good idea" — a tool call that wants to
-/// read `~/.ssh` is either a mistake or an exfiltration attempt, and there is
-/// nothing to confirm.
-const BYPASS_IMMUNE_COMPONENTS: &[&str] = &[".ssh", ".aws", ".gnupg"];
+/// Every string the protected-path checks look at: the call's content, each
+/// resolved form of its path, and for a shell command each word and each
+/// assigned value.
+fn protected_path_candidates(
+    kind: PermissionContentKind,
+    content: Option<&str>,
+    resolved: Option<&ResolvedPath>,
+) -> Vec<String> {
+    // The protected-path checks compare path components, which quotes
+    // inside a word (`~/".ssh"/id_rsa`) would otherwise hide.
+    let shell_line = content.filter(|_| kind == PermissionContentKind::ShellCommand);
+    // Each argument on its own, quotes removed, so a protected path is a
+    // whole string the component checks can isolate — `~/".ssh"/id_rsa`
+    // becomes `~/.ssh/id_rsa`, and `.agix/settings.local.json` is not glued
+    // to the command word before it.
+    let unquoted = shell_line
+        .into_iter()
+        .flat_map(crate::shell::segments)
+        .flat_map(|segment| crate::shell::lex(&segment.source))
+        .map(|w| w.text);
+    // A segment that is only an assignment (`OLDPWD=~/.ssh;`) never reaches
+    // `segments`, but its value can name a protected path a later command
+    // reads through — so the values are checked too.
+    let assignment_values = shell_line
+        .into_iter()
+        .flat_map(crate::shell::assignments)
+        .map(|(_, value)| value);
+    content
+        .map(str::to_string)
+        .into_iter()
+        .chain(
+            resolved
+                .into_iter()
+                .flat_map(|r| r.all().map(|p| p.to_string_lossy().into_owned())),
+        )
+        .chain(unquoted)
+        .chain(assignment_values)
+        .collect()
+}
 
-/// Directory names that must never be reached by a *silent* fast path, but
-/// which the user can legitimately approve: agent and repository
-/// configuration.
-///
-/// They are not in [`BYPASS_IMMUNE_COMPONENTS`]: that would make editing
-/// `.claude/settings.json` or `.agix/agents/*.md` impossible, and configuring
-/// the agent is a thing users routinely ask the agent to do. They are not
-/// credentials; the actual risk is a tool quietly rewriting the rules it is
-/// judged by. So they get the weaker treatment that risk calls for: the
-/// tool's own `Allow` does not apply to them, and the call goes to the
-/// normal confirmation flow instead.
-///
-/// `.git` is here rather than above for the same reason — `git` plumbing
-/// through `Bash` is normal work, and a blanket deny on any path containing
-/// a `.git` component blocks far more than it protects.
-const CONFIRMATION_REQUIRED_COMPONENTS: &[&str] = &[".git", ".claude", ".agix"];
+/// The first string of the call that names a [`Credentials`] location, each
+/// taken as a path from the session's cwd, as is the value of a
+/// `--flag=value`.
+fn names_a_credential(tool: &dyn Tool, input: &Value, ctx: &ToolContext) -> Option<String> {
+    let content = tool.permission_match_content(input)?;
+    let kind = tool.permission_content_kind();
+    let resolved = path_rule_group(kind).map(|_| ResolvedPath::new(&content, &ctx.cwd));
+    let credentials = Credentials::new(ctx.sandbox.state_root.as_deref());
+    protected_path_candidates(kind, Some(&content), resolved.as_ref())
+        .into_iter()
+        .find(|candidate| {
+            std::iter::once(candidate.as_str())
+                .chain(candidate.split_once('=').map(|(_, value)| value))
+                .filter(|word| !word.is_empty())
+                .any(|word| {
+                    ResolvedPath::new(word, &ctx.cwd)
+                        .all()
+                        .any(|p| credentials.hold(p))
+                })
+        })
+}
+
+/// The repository's own configuration: confirmed like the engine's rather
+/// than refused — `git` plumbing through `Bash` is normal work, and a
+/// blanket deny on any path containing a `.git` component blocks far more
+/// than it protects.
+const REPOSITORY_CONFIG_DIR: &str = ".git";
 
 /// Is this entry directly in `.agix` the agent's working space rather than
 /// its configuration: the scratchpad its prompt sends temporary files to,
@@ -1156,26 +1259,51 @@ fn is_agix_working_dir(name: &str) -> bool {
     STATE_ROOT_WORKING_DIRS.contains(&name) || name == PROJECT_WORKTREES_DIR
 }
 
-/// Does this path (or command argument) name something under
-/// [`CONFIRMATION_REQUIRED_COMPONENTS`]?
+/// Does this path (or command argument) name configuration that must never
+/// be reached by a *silent* fast path, but which the user can legitimately
+/// approve: `.git`, an [`ENGINE_CONFIG_ROOTS`] directory outside its working
+/// space, or a [`PROJECT_ENGINE_CONFIG_DIRS`] directory?
+///
+/// Not credentials: refusing them would make editing `.claude/settings.json`
+/// or `.agix/agents/*.md` impossible, and configuring the agent is a thing
+/// users routinely ask it to do. The risk is a tool quietly rewriting the
+/// rules it is judged by, so the tool's own `Allow` does not apply to them
+/// and the call goes to the normal confirmation flow instead.
 ///
 /// Same whole-component matching as [`is_path_bypass_immune`] — `.github`
 /// must not match `.git`.
 fn is_path_confirmation_required(content: &str) -> bool {
     let lowered = content.to_lowercase();
     let components: Vec<&str> = lowered.split('/').collect();
+    // In a shell command the name runs on into whatever follows it.
+    let name_in = |component: &str| {
+        component
+            .split(|c: char| !(c.is_alphanumeric() || "._-".contains(c)))
+            .next()
+            .unwrap_or_default()
+            .to_string()
+    };
+    let opens_dir = |rest: &[&str], dir: &str| {
+        let dir: Vec<&str> = dir.split('/').collect();
+        let Some((last, above)) = dir.split_last() else {
+            return false;
+        };
+        rest.len() >= dir.len()
+            && above.iter().zip(rest).all(|(d, c)| d == c)
+            && name_in(rest[above.len()]) == *last
+    };
     lowered.contains('/')
         && components.iter().enumerate().any(|(i, component)| {
-            CONFIRMATION_REQUIRED_COMPONENTS.contains(component)
-                && !(*component == ".agix"
-                    && components.get(i + 1).is_some_and(|next| {
-                        // In a shell command the name runs on into whatever follows it.
-                        let name = next
-                            .split(|c: char| !(c.is_alphanumeric() || "._-".contains(c)))
-                            .next()
-                            .unwrap_or_default();
-                        is_agix_working_dir(name)
-                    }))
+            let config_root = *component == REPOSITORY_CONFIG_DIR
+                || (ENGINE_CONFIG_ROOTS.contains(component)
+                    && !(*component == ".agix"
+                        && components
+                            .get(i + 1)
+                            .is_some_and(|next| is_agix_working_dir(&name_in(next)))));
+            config_root
+                || PROJECT_ENGINE_CONFIG_DIRS
+                    .iter()
+                    .any(|dir| opens_dir(&components[i..], dir))
         })
 }
 
@@ -1199,7 +1327,7 @@ fn is_path_bypass_immune(content: &str) -> bool {
         // trailing `/`) simply never match anything in the list.
         if lowered
             .split('/')
-            .any(|component| BYPASS_IMMUNE_COMPONENTS.contains(&component))
+            .any(|component| CREDENTIAL_DIR_NAMES.contains(&component))
         {
             return true;
         }
@@ -1287,6 +1415,26 @@ mod bypass_immune_tests {
             "/repo/.github/workflows/ci.yml"
         ));
         assert!(!is_path_confirmation_required("/repo/src/main.rs"));
+    }
+
+    #[test]
+    fn a_projects_skills_are_configuration() {
+        for p in [
+            "/repo/.agents/skills/x/SKILL.md",
+            "/repo/.agents/skills",
+            ".agents/skills;",
+            "/repo/.Agents/Skills/x/SKILL.md",
+        ] {
+            assert!(is_path_confirmation_required(p), "{p}");
+        }
+        for p in [
+            "/repo/.agents/notes.md",
+            "/repo/.agents/skills2/x",
+            "/repo/skills/x",
+            "/repo/AGENTS.md",
+        ] {
+            assert!(!is_path_confirmation_required(p), "{p}");
+        }
     }
 
     #[test]

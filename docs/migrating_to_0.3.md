@@ -1347,6 +1347,21 @@ WebAssembly 载体整个移除。
   输出"。现在输出另有去处的后台进程留着,`sandbox.reap_process_groups` 打开时随会话收掉;daemon
   被 `SIGKILL` 时正在跑的命令也不再跟着死,由下一次启动按上次的进程组记录收掉。命令仍在自己的
   PID 命名空间里:`$!` 不是宿主上的 pid,后一条命令也看不见前一条留下的进程。
+- **凭据任何模式下都读不到,项目的 skill 目录写入要确认。** 两份名单放在 `base::paths`,gate、
+  文件工具与沙箱共用(`ARCHITECTURE.md` §6.1):
+  - 状态目录与各场景目录下的 `settings*.json`、`mcp.local*.json`、`mcp/oauth/`,状态目录下的
+    `daemon/auth/`,项目的 `.agix/settings.local.json` / `.agix/mcp.local.json`,以及 `.ssh` /
+    `.aws` / `.gnupg`:以前状态目录整个是可读的根,`Read` / `Grep` / `Glob` 在 `default` 和
+    无人值守会话里不询问就把 key 与 token 读给模型;现在点名它们的调用(含 shell 命令里的路径)
+    直接拒绝,不询问,`bypassPermissions` 下也拒绝(以前 bypass 连 `~/.ssh` 都放行);搜状态目录时
+    跳过它们。沙箱另外挡住了 `daemon/auth/` 下所有实例的 token(以前只挡本进程那一个)。
+    **迁移**:靠模型 `Read` 全局 `settings.json` 的流程(内建 `updateConfig` skill 的全局层与 local
+    层)不再可行,由宿主经 `config.get` / `config.setProvider` 等 RPC 或用户自己改;项目提交的
+    `.agix/settings.json` 照常可读。
+  - 项目的 `.agents/skills/`:以前 `Write` / `Edit` 在 `default` 下不询问,macOS 沙箱里的 `Bash`
+    也能写,模型能给自己种一个带 `allowed-tools` 的 skill;现在写工具写这里要确认(无人值守即拒绝),
+    沙箱里只读,`.agents` 目录项本身挪不走、不存在时建不出来(Linux 上只在 `.agents` 已存在时挡)。
+    `.agents` 下别的路径与项目根的 `AGENTS.md` 不受影响。
 - **项目 `.agix/` 会多一个 `.gitignore`。** 第一次往项目 `.agix/` 写 `settings.local.json`
   (`config.setProvider` 的 key、MCP headers)或录遥测时,没有 `.agix/.gitignore` 就生成一份,写着
   `settings.local.json`、`mcp.local.json`、`telemetry/`。已有的不动,缺的行也不补:以前就有

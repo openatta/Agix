@@ -202,12 +202,15 @@ impl Tool for GrepTool {
             usize::MAX
         };
         let walk_cancel = cancel.clone();
+        let excluded = crate::security::credentials(&ctx).excluded_from_walk(&root);
         let result = tokio::task::spawn_blocking(move || {
             let found = Arc::new(Mutex::new(Collected::new(cap)));
 
             // 用 ignore::WalkBuilder 自动遵守 .gitignore + 排除 .git/
             let mut wb = WalkBuilder::new(&root_owned);
-            wb.standard_filters(true).hidden(false);
+            wb.standard_filters(true)
+                .hidden(false)
+                .filter_entry(move |entry| !excluded(entry.path()));
             wb.build_parallel().run(|| {
                 let found = found.clone();
                 let pat = pattern_arc.clone();

@@ -188,6 +188,22 @@ impl Daemon {
             .map(|r| serde_json::to_string(&r).unwrap())
             .collect()
     }
+
+    fn tool_result(&self, id: &str) -> Value {
+        (0..self.model.calls())
+            .filter_map(|i| self.model.nth_request(i))
+            .map(|r| serde_json::to_value(r).unwrap())
+            .find_map(|request| {
+                request["messages"]
+                    .as_array()?
+                    .iter()
+                    .filter_map(|m| m["content"].as_array())
+                    .flatten()
+                    .find(|block| block["type"] == "tool_result" && block["tool_use_id"] == id)
+                    .cloned()
+            })
+            .unwrap_or_else(|| panic!("no request carries a tool_result for {id}"))
+    }
 }
 
 async fn deny(sock: &Path, session_id: &str, prompt_id: &str) {
@@ -204,67 +220,96 @@ async fn deny(sock: &Path, session_id: &str, prompt_id: &str) {
     assert_eq!(reply["result"]["prompt_id"], prompt_id, "{reply}");
 }
 
-/// The state root is a read directory, so the file tools read its
-/// settings and MCP OAuth tokens without asking.
+/// The state root is a read directory, but its settings, MCP OAuth tokens
+/// and daemon tokens are credentials: a read of one is refused rather than
+/// asked about, in every mode, and a search of the state root leaves them
+/// out while it still searches the rest.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "audit: confirmed defect, fix pending"]
-async fn audit_f5_state_root_credentials_are_read_without_asking() {
-    let daemon = Daemon::start(Setup::default(), |home, _| {
-        std::fs::create_dir_all(home.join("mcp/oauth")).unwrap();
-        std::fs::write(
-            home.join("mcp/oauth/x.json"),
-            json!({"access_token": SECRET}).to_string(),
+async fn audit_f5_state_root_credentials_are_never_read() {
+    for mode in [PermissionMode::Default, PermissionMode::BypassPermissions] {
+        let daemon = Daemon::start(
+            Setup {
+                mode,
+                ..Default::default()
+            },
+            |home, _| {
+                for (path, content) in [
+                    (
+                        "mcp/oauth/x.json",
+                        json!({"access_token": SECRET}).to_string(),
+                    ),
+                    ("daemon/auth/desktop.token", SECRET.to_string()),
+                    ("skills/s/SKILL.md", "AUDIT-SECRET-not".to_string()),
+                ] {
+                    std::fs::create_dir_all(home.join(path).parent().unwrap()).unwrap();
+                    std::fs::write(home.join(path), content).unwrap();
+                }
+            },
         )
-        .unwrap();
-    })
-    .await;
-    let home = daemon.home.display().to_string();
-    daemon.model.push_turn(tool_round(
-        "toolu_read_settings",
-        "Read",
-        json!({"file_path": format!("{home}/settings.json")}),
-    ));
-    daemon.model.push_turn(tool_round(
-        "toolu_read_token",
-        "Read",
-        json!({"file_path": format!("{home}/mcp/oauth/x.json")}),
-    ));
-    daemon.model.push_turn(tool_round(
-        "toolu_grep",
-        "Grep",
-        json!({"pattern": "AUDIT-SECRET", "path": home, "output_mode": "content"}),
-    ));
-    daemon.model.push_turn(tool_round(
-        "toolu_glob",
-        "Glob",
-        json!({"pattern": "**/*.json", "path": home}),
-    ));
-    daemon.model.push_turn(text_round("done"));
-
-    let asked = daemon.turn_denying_prompts().await;
-    let seen = daemon.everything_the_model_saw();
-    assert!(
-        !seen.contains(SECRET),
-        "an OAuth token in the state root reached the model; prompts raised: {asked:?}"
-    );
-    assert_eq!(
-        asked,
-        [
-            "toolu_read_settings",
-            "toolu_read_token",
+        .await;
+        let home = daemon.home.display().to_string();
+        let reads = [
+            ("toolu_read_settings", format!("{home}/settings.json")),
+            ("toolu_read_token", format!("{home}/mcp/oauth/x.json")),
+            (
+                "toolu_read_daemon",
+                format!("{home}/daemon/auth/desktop.token"),
+            ),
+            (
+                "toolu_read_dotdot",
+                format!("{home}/skills/../mcp/oauth/x.json"),
+            ),
+        ];
+        for (id, path) in &reads {
+            daemon
+                .model
+                .push_turn(tool_round(id, "Read", json!({"file_path": path})));
+        }
+        daemon.model.push_turn(tool_round(
             "toolu_grep",
-            "toolu_glob"
-        ],
-        "reads of the state root's settings and tokens were not asked about"
-    );
+            "Grep",
+            json!({"pattern": "AUDIT-SECRET", "path": home, "output_mode": "content"}),
+        ));
+        daemon.model.push_turn(tool_round(
+            "toolu_glob",
+            "Glob",
+            json!({"pattern": "**/*", "path": home}),
+        ));
+        daemon.model.push_turn(text_round("done"));
+
+        let asked = daemon.turn_denying_prompts().await;
+        let seen = daemon.everything_the_model_saw();
+        assert!(
+            !seen.contains(SECRET),
+            "{mode:?}: a token in the state root reached the model; prompts raised: {asked:?}"
+        );
+        assert!(
+            asked.is_empty(),
+            "{mode:?}: a credential read is refused, not asked about: {asked:?}"
+        );
+        for (id, _) in &reads {
+            let result = daemon.tool_result(id);
+            assert_eq!(result["is_error"], true, "{mode:?} {id}: {result}");
+        }
+        let grep = daemon.tool_result("toolu_grep");
+        assert!(
+            grep.to_string().contains("AUDIT-SECRET-not"),
+            "{mode:?}: the rest of the state root is still searched: {grep}"
+        );
+        let glob = daemon.tool_result("toolu_glob").to_string();
+        assert!(glob.contains("SKILL.md"), "{mode:?}: {glob}");
+        assert!(
+            !glob.contains("oauth") && !glob.contains("desktop.token"),
+            "{mode:?}: {glob}"
+        );
+    }
 }
 
-/// `<project>/.agents/skills/` is where the project's skills load from,
-/// but a `Write` there is the tool's own silent `Allow`, unlike one into
-/// `.agix`.
+/// `<project>/.agents/skills/` is where the project's skills load from, so
+/// a `Write` there is asked about like one into `.agix`, not the tool's own
+/// silent `Allow`.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "audit: confirmed defect, fix pending"]
-async fn audit_f1_writing_a_project_skill_is_not_asked_about() {
+async fn audit_f1_writing_a_project_skill_is_asked_about() {
     let daemon = Daemon::start(Setup::default(), |_, _| {}).await;
     let work = daemon.work.display().to_string();
     daemon.model.push_turn(tool_round(
@@ -280,17 +325,26 @@ async fn audit_f1_writing_a_project_skill_is_not_asked_about() {
             "content": "---\nname: x\ndescription: planted\nallowed-tools: [\"Bash(*)\"]\n---\nbody",
         }),
     ));
+    for (id, file) in [
+        ("toolu_notes", ".agents/notes.md"),
+        ("toolu_agents_md", "AGENTS.md"),
+    ] {
+        daemon.model.push_turn(tool_round(
+            id,
+            "Write",
+            json!({"file_path": format!("{work}/{file}"), "content": "x"}),
+        ));
+    }
     daemon.model.push_turn(text_round("done"));
 
     let asked = daemon.turn_denying_prompts().await;
-    assert!(
-        asked.iter().any(|id| id == "toolu_agix"),
-        "precondition: a write into .agix is asked about: {asked:?}"
-    );
+    assert_eq!(asked, ["toolu_agix", "toolu_skill"]);
     assert!(
         !daemon.work.join(".agents/skills/x/SKILL.md").exists(),
         "a skill was planted in .agents/skills without a prompt: {asked:?}"
     );
+    assert!(daemon.work.join(".agents/notes.md").is_file());
+    assert!(daemon.work.join("AGENTS.md").is_file());
 }
 
 fn project_with_skill(allowed_tools: &'static str) -> impl FnOnce(&Path, &Path) {

@@ -82,6 +82,128 @@ pub const ENGINE_CONFIG_DIRS: &[&str] = &[
     "output-styles",
 ];
 
+/// Directories in a project, outside the [`ENGINE_CONFIG_ROOTS`], that the
+/// engine loads configuration from: the project's skills, whose
+/// `allowed-tools` grant permissions. Guarded like a configuration
+/// directory in those roots: a write tool asks, a sandboxed command cannot
+/// write, and the directories above one cannot be moved aside.
+pub const PROJECT_ENGINE_CONFIG_DIRS: &[&str] = &[".agents/skills"];
+
+/// Directory names that hold credentials wherever they appear as a whole
+/// path component.
+pub const CREDENTIAL_DIR_NAMES: &[&str] = &[".ssh", ".aws", ".gnupg"];
+
+/// In the state root and in each `scenes/<scene>/` under it, the stems of
+/// the files that hold provider keys and MCP headers in plain text — see
+/// [`is_state_root_key_file`].
+pub const STATE_ROOT_KEY_FILE_STEMS: &[&str] = &["settings", "mcp.local"];
+
+/// In the state root and in each scene directory under it: the MCP OAuth
+/// tokens.
+pub const STATE_ROOT_TOKEN_DIRS: &[&str] = &["mcp/oauth"];
+
+/// In the state root only: the tokens a daemon writes for its unix socket.
+pub const DAEMON_TOKEN_DIRS: &[&str] = &["daemon/auth"];
+
+/// In a project's `.agix`: the files the engine writes the project's keys
+/// to — see [`is_project_key_file`].
+pub const PROJECT_KEY_FILES: &[&str] = &["settings.local.json", "mcp.local.json"];
+
+/// Whether a file of this name in the state root or a scene directory holds
+/// keys: its name, less a leading `.`, starts with a
+/// [`STATE_ROOT_KEY_FILE_STEMS`] entry and has `.json` in it, which covers
+/// `settings.local.json` and the temporary files the engine writes through.
+pub fn is_state_root_key_file(name: &str) -> bool {
+    let name = name.strip_prefix('.').unwrap_or(name);
+    STATE_ROOT_KEY_FILE_STEMS
+        .iter()
+        .any(|stem| name.starts_with(stem))
+        && name.contains(".json")
+}
+
+/// Whether a file of this name in a project's `.agix` holds the project's
+/// keys: a [`PROJECT_KEY_FILES`] entry, or a temporary file named after one.
+pub fn is_project_key_file(name: &str) -> bool {
+    let name = name.strip_prefix('.').unwrap_or(name);
+    PROJECT_KEY_FILES.iter().any(|file| name.starts_with(file))
+}
+
+/// Where credentials are, for one state root: what no tool reads or writes
+/// and no permission mode lets through. The sandbox refuses the same
+/// locations to a command, from the same constants.
+#[derive(Debug, Clone, Default)]
+pub struct Credentials {
+    /// The state root as given and as the filesystem resolves it, lowercased
+    /// component by component.
+    state_roots: Vec<Vec<String>>,
+}
+
+impl Credentials {
+    pub fn new(state_root: Option<&std::path::Path>) -> Self {
+        let mut state_roots = Vec::new();
+        if let Some(root) = state_root {
+            state_roots.push(lowered_components(root));
+            if let Ok(real) = std::fs::canonicalize(root) {
+                let real = lowered_components(&real);
+                if !state_roots.contains(&real) {
+                    state_roots.push(real);
+                }
+            }
+        }
+        Self { state_roots }
+    }
+
+    /// Whether the absolute, normalized `path` is, or is under, a credential
+    /// location. Compared without case: on a case-insensitive filesystem
+    /// `Settings.JSON` is the same file.
+    pub fn hold(&self, path: &std::path::Path) -> bool {
+        let components = lowered_components(path);
+        let names = |dirs: &[&str], rest: &[String]| {
+            dirs.iter().any(|dir| {
+                let dir: Vec<&str> = dir.split('/').collect();
+                rest.len() >= dir.len() && dir.iter().zip(rest).all(|(d, c)| d == c)
+            })
+        };
+        if components
+            .iter()
+            .any(|c| CREDENTIAL_DIR_NAMES.contains(&c.as_str()))
+        {
+            return true;
+        }
+        if components
+            .windows(2)
+            .any(|pair| pair[0] == ".agix" && is_project_key_file(&pair[1]))
+        {
+            return true;
+        }
+        self.state_roots.iter().any(|root| {
+            let Some(rest) = components.strip_prefix(root.as_slice()) else {
+                return false;
+            };
+            if names(DAEMON_TOKEN_DIRS, rest) {
+                return true;
+            }
+            let in_config_dir = match rest {
+                [scenes, _, inner @ ..] if scenes == "scenes" && !inner.is_empty() => inner,
+                _ => rest,
+            };
+            [rest, in_config_dir].iter().any(|dir| {
+                matches!(dir, [file] if is_state_root_key_file(file))
+                    || names(STATE_ROOT_TOKEN_DIRS, dir)
+            })
+        })
+    }
+}
+
+fn lowered_components(path: &std::path::Path) -> Vec<String> {
+    path.components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(name) => Some(name.to_string_lossy().to_lowercase()),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Under the state root, one temporary directory per session,
 /// `<state root>/tmp/<session>`: the session's sandboxed commands may write
 /// their own and no other.
@@ -240,6 +362,46 @@ mod tests {
             PathBuf::from("/tmp/test-project/.agix"),
             "code",
         )
+    }
+
+    #[test]
+    fn credentials_are_the_state_roots_keys_and_tokens_and_a_projects_keys() {
+        let creds = Credentials::new(Some(std::path::Path::new("/state/home")));
+        for p in [
+            "/state/home/settings.json",
+            "/state/home/settings.local.json",
+            "/state/home/.settings.json.tmp-1",
+            "/state/home/mcp.local.json",
+            "/state/home/Settings.JSON",
+            "/state/home/mcp/oauth",
+            "/state/home/mcp/oauth/x.json",
+            "/state/home/scenes/code/settings.json",
+            "/state/home/scenes/code/mcp/oauth/x.json",
+            "/state/home/daemon/auth/desktop.token",
+            "/repo/.agix/settings.local.json",
+            "/repo/.agix/mcp.local.json",
+            "/home/u/.ssh/id_rsa",
+            "/home/u/.aws",
+        ] {
+            assert!(creds.hold(std::path::Path::new(p)), "{p}");
+        }
+        for p in [
+            "/state/home",
+            "/state/home/mcp",
+            "/state/home/mcp.json",
+            "/state/home/skills/x/SKILL.md",
+            "/state/home/memory/settings.json",
+            "/state/home/scenes/code/scene.json",
+            "/state/home/scenes/settings.json/x",
+            "/state/home/daemon/instances.d/x.json",
+            "/state/homework/settings.json",
+            "/repo/.agix/settings.json",
+            "/repo/settings.local.json",
+            "/repo/.github/x",
+        ] {
+            assert!(!creds.hold(std::path::Path::new(p)), "{p}");
+        }
+        assert!(!Credentials::new(None).hold(std::path::Path::new("/state/home/settings.json")));
     }
 
     #[test]

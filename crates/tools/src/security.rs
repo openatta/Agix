@@ -163,8 +163,53 @@ pub fn readable_roots(ctx: &base::tool::ToolContext) -> Vec<PathBuf> {
 /// Both the normalized spelling and where the OS takes the path as written
 /// have to be inside: the tools open the path as written, and a `..` after a
 /// symlink climbs out of the link's target, not out of the link.
+///
+/// Never for a [`credentials`] location.
 pub fn read_allowed(path: &Path, ctx: &base::tool::ToolContext) -> bool {
-    ctx.session.read_anywhere || within_readable_roots(path, ctx)
+    !credentials(ctx).hold_any(&ctx.cwd.join(path))
+        && (ctx.session.read_anywhere || within_readable_roots(path, ctx))
+}
+
+/// Where this session's credentials are. The gate refuses a call naming
+/// one in every mode; the file tools also leave them out of what a search
+/// of a directory above one walks.
+pub fn credentials(ctx: &base::tool::ToolContext) -> SessionCredentials {
+    SessionCredentials(base::paths::Credentials::new(
+        ctx.sandbox.state_root.as_deref(),
+    ))
+}
+
+/// [`base::paths::Credentials`], judged on both the normalized path and
+/// where the filesystem takes it.
+#[derive(Debug, Clone)]
+pub struct SessionCredentials(base::paths::Credentials);
+
+impl SessionCredentials {
+    pub fn hold_any(&self, path: &Path) -> bool {
+        self.0.hold(&normalize_path_lexically(path))
+            || self
+                .0
+                .hold(&permissions::path_rule::resolve_physically(path))
+    }
+
+    /// What a walk from `root` leaves out, for a walk that follows no
+    /// symlink below `root`: each entry judged as spelled under `root` and
+    /// as under where `root` resolves, without resolving entry by entry.
+    pub fn excluded_from_walk(
+        &self,
+        root: &Path,
+    ) -> impl Fn(&Path) -> bool + Send + Sync + 'static {
+        let credentials = self.0.clone();
+        let root = normalize_path_lexically(root);
+        let real = permissions::path_rule::resolve_physically(&root);
+        move |path| {
+            let path = normalize_path_lexically(path);
+            credentials.hold(&path)
+                || path
+                    .strip_prefix(&root)
+                    .is_ok_and(|rest| credentials.hold(&real.join(rest)))
+        }
+    }
 }
 
 /// Both where `path` reads as written and where the filesystem actually
@@ -240,6 +285,29 @@ mod tests {
         assert!(!read_allowed(&proj.join("link/../secret"), &ctx));
         assert!(read_allowed(Path::new("src/../secret"), &ctx));
         assert!(read_allowed(Path::new("secret"), &ctx));
+    }
+
+    #[test]
+    fn a_credential_is_not_readable_even_where_everything_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let (proj, state) = (dir.path().join("proj"), dir.path().join("state"));
+        let mut ctx = platform::tool_context_for_test(proj.clone());
+        ctx.sandbox.state_root = Some(state.clone());
+        let mut session = base::context::SessionState::new(proj);
+        session.read_anywhere = true;
+        ctx.session = std::sync::Arc::new(session);
+
+        assert!(!read_allowed(&state.join("mcp/oauth/x.json"), &ctx));
+        assert!(!read_allowed(&state.join("settings.json"), &ctx));
+        assert!(!read_allowed(Path::new(".agix/settings.local.json"), &ctx));
+        assert!(read_allowed(&state.join("skills/x/SKILL.md"), &ctx));
+        assert!(read_allowed(Path::new(".agix/settings.json"), &ctx));
+
+        let excluded = credentials(&ctx).excluded_from_walk(&state);
+        assert!(excluded(&state.join("mcp/oauth")));
+        assert!(excluded(&state.join("daemon/auth")));
+        assert!(!excluded(&state.join("mcp")));
+        assert!(!excluded(&state.join("daemon/instances.d")));
     }
 
     #[test]
