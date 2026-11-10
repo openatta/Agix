@@ -1512,6 +1512,7 @@ WebAssembly 载体整个移除。
 - 新增机器可读的 JSON-RPC 描述 `docs/schemas/rpc.schema.json`:方法名、`session.event` / `daemon.event` 的
   `kind`、错误码表与请求 / 响应 / 错误帧,已有强类型的 params(目前只有 `session.startAgent`)带 schema,
   其余标"未类型化"。由 `cargo test -p assembly write_rpc_schema -- --ignored` 生成,可以拿去生成客户端。
+- **请求因过长被拒、为重试而压缩时中断,以 `cancelled` 结束。** 以前这一轮报 `ENGINE_ERROR`。
 
 ### 嵌入方
 

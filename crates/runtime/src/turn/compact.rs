@@ -567,7 +567,9 @@ impl Agent {
     /// The refusal is the measurement here, not the budget: the conversation
     /// that went out was too big whatever the estimate made of it, so the
     /// target is half of what was sent rather than the configured threshold,
-    /// which it may well not have reached.
+    /// which it may well not have reached. An interrupt while the summary is
+    /// written is not a failure: the caller sees `cancel` and ends the turn
+    /// as cancelled.
     pub(crate) async fn compact_for_retry(
         &mut self,
         refusal: &base::interface::model::ModelError,
@@ -580,14 +582,15 @@ impl Agent {
             .min(budget.compact_threshold)
             .saturating_sub(self.recovery_reserve());
         let keep = budget.compact_keep_recent.min(5);
-        self.run_compaction(target, keep, CompactTrigger::Recovery, cancel)
+        match self
+            .run_compaction(target, keep, CompactTrigger::Recovery, cancel)
             .await
-            .map(|_| ())
-            .map_err(|why| {
-                TurnError::Model(format!(
-                    "{refusal}; compacting the conversation to retry {why}"
-                ))
-            })
+        {
+            Ok(_) | Err(NotCompacted::Cancelled) => Ok(()),
+            Err(why) => Err(TurnError::Model(format!(
+                "{refusal}; compacting the conversation to retry {why}"
+            ))),
+        }
     }
 }
 

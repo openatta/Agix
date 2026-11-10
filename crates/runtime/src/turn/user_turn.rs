@@ -735,6 +735,12 @@ impl Agent {
                     }
                     base::interface::recovery_policy::Recovery::CompactAndRetry => {
                         self.compact_for_retry(&failure.error, &cancel).await?;
+                        if cancel.is_cancelled() {
+                            break (
+                                crate::streaming::StreamResult::cancelled(),
+                                messages_before_step,
+                            );
+                        }
                         // The retry keeps skills and MCP instructions: they
                         // cost a few KB, the history is what blew the budget,
                         // and the compaction freed far more.

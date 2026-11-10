@@ -404,7 +404,6 @@ async fn audit_an_interrupt_sent_between_turns_reaches_the_turn_it_was_sent_for(
 /// while its summary is being written ends the turn the way any interrupt
 /// does, not with an engine error.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "audit: confirmed defect, fix pending"]
 async fn audit_an_interrupt_during_the_compaction_for_a_size_refusal_is_not_an_engine_error(
 ) -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
