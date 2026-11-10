@@ -125,7 +125,7 @@ mod tests {
     use std::path::Path;
 
     fn ctx_in(cwd: &Path) -> ToolContext {
-        ToolContext::for_test(cwd.to_path_buf())
+        platform::tool_context_for_test(cwd.to_path_buf())
     }
 
     #[tokio::test]
@@ -172,7 +172,7 @@ mod tests {
     #[tokio::test]
     async fn cancel_aborts() {
         let tool = PingTool;
-        let ctx = ToolContext::for_test("/tmp".into());
+        let ctx = platform::tool_context_for_test("/tmp".into());
         ctx.cancel.cancel();
         let r = tool
             .call(
@@ -219,8 +219,8 @@ mod tests {
         );
 
         let mut ctx = ctx_in(Path::new("/tmp"));
-        ctx.exec = base::interface::exec::ExecProviders::local().with_network(std::sync::Arc::new(
-            base::interface::exec::local::LocalNetwork::for_agent_policy(
+        ctx.exec = platform::local_providers().with_network(std::sync::Arc::new(
+            platform::LocalNetwork::for_agent_policy(
                 base::context::config::NetworkModeConfig::Unrestricted,
                 vec!["127.0.0.1".into()],
             ),

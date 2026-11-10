@@ -105,14 +105,20 @@ jobs:
       # The OS sandbox is on in the default build; this is the build without
       # it, whose `PlatformSandbox` confines nothing.
       - name: no sandbox backend
-        run: cargo check -p base
+        run: cargo check -p platform
 
-      # The contract crate without an HTTP stack: what a crate that only
-      # implements the traits depends on. The graph check is the claim.
-      - name: base without http
+      # The contract crate has no HTTP stack at all — it is what a crate that
+      # only implements the traits depends on — and this machine's providers
+      # can go without one. The graph checks are the claim.
+      - name: no http stack
         run: |
-          cargo test -p base --no-default-features
-          if cargo tree -p base --no-default-features -e normal | grep -Eq '\b(reqwest|rustls|hyper) v'; then
-            echo "base without http still links an HTTP stack"
+          cargo test -p base
+          if cargo tree -p base -e normal | grep -Eq '\b(reqwest|rustls|hyper) v'; then
+            echo "base links an HTTP stack"
+            exit 1
+          fi
+          cargo test -p platform --no-default-features
+          if cargo tree -p platform --no-default-features -e normal | grep -Eq '\b(reqwest|rustls|hyper) v'; then
+            echo "platform without http still links an HTTP stack"
             exit 1
           fi

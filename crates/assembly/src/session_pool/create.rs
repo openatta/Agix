@@ -400,7 +400,7 @@ impl SessionPool {
                 .await
                 .get(&session_id)
                 .and_then(|live| live.process_groups.clone());
-            Some(kept.unwrap_or_else(base::interface::exec::local::GroupLedger::new))
+            Some(kept.unwrap_or_else(platform::GroupLedger::new))
         } else {
             None
         };

@@ -18,6 +18,7 @@ tokio-util  = { workspace = true }
 tracing     = { workspace = true }
 
 [dev-dependencies]
+platform = { workspace = true }
 tokio = { workspace = true, features = ["full", "macros", "rt-multi-thread"] }
 
 [lints.clippy]

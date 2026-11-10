@@ -23,6 +23,7 @@ notify        = { workspace = true }
 globset       = { workspace = true }
 
 [dev-dependencies]
+platform = { workspace = true }
 scene      = { workspace = true }
 tokio-util = { workspace = true }
 tempfile = { workspace = true }

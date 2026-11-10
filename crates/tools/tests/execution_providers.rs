@@ -15,7 +15,7 @@ use base::interface::tool::{ProgressSender, Tool, ToolContext, ToolResult};
 use std::sync::Arc;
 
 fn ctx_with(providers: ExecProviders, require_enforcement: bool) -> ToolContext {
-    let mut ctx = ToolContext::for_test(std::path::PathBuf::from("/work"));
+    let mut ctx = platform::tool_context_for_test(std::path::PathBuf::from("/work"));
     ctx.dangerously_disable_sandbox = false;
     ctx.sandbox.require_enforcement = require_enforcement;
     ctx.exec = providers;
@@ -70,7 +70,7 @@ async fn a_tool_runs_against_the_second_provider_without_touching_the_machine() 
 #[tokio::test]
 async fn the_local_set_is_the_same_construction() {
     let dir = tempfile::tempdir().unwrap();
-    let mut ctx = ctx_with(ExecProviders::local(), false);
+    let mut ctx = ctx_with(platform::local_providers(), false);
     ctx.cwd = dir.path().to_path_buf();
     ctx.dangerously_disable_sandbox = true;
     let result = run(ctx, "echo from-the-machine").await;

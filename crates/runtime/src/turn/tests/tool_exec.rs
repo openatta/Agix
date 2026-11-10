@@ -137,6 +137,10 @@ fn test_exec_ctx_with_permission(
         hooks,
         discontinued: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         config: Arc::new(base::context::EngineConfig::defaults_for("test")),
+        exec: crate::turn::exec_providers_from(
+            &base::context::EngineConfig::defaults_for("test"),
+            None,
+        ),
         permission,
         session_state: Arc::new(base::context::SessionState::new(std::env::temp_dir())),
         elicitation: Arc::new(base::interface::elicitation::DeclineAll),
@@ -981,6 +985,10 @@ async fn permission_prompt_answered_permit_always_local_persists_rule_to_disk() 
         hooks: hooks_runner,
         discontinued: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         config: Arc::new(base::context::EngineConfig::defaults_for("test")),
+        exec: crate::turn::exec_providers_from(
+            &base::context::EngineConfig::defaults_for("test"),
+            None,
+        ),
         permission,
         session_state: Arc::new(base::context::SessionState::new(dir.path().to_path_buf())),
         tool_middleware: Arc::new(Vec::new()),

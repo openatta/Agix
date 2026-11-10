@@ -41,7 +41,7 @@ fn tool_context_egress_is_taken_from_the_engine_config() {
     config.sandbox_policy.network_mode = NetworkModeConfig::Allowlist;
     config.sandbox_policy.allowed_domains = vec!["api.example.com".into()];
 
-    let exec = exec_providers_from(&config);
+    let exec = exec_providers_from(&config, None);
 
     assert!(exec.network.permits("api.example.com", Origin::Agent));
     assert!(

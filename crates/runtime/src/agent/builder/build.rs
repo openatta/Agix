@@ -226,7 +226,6 @@ impl Builder {
         let config = Arc::new({
             let mut c = base::context::EngineConfig::from_settings(&settings);
             c.path_style = settings.path_style.unwrap_or_else(|| scene.path_style());
-            c.process_groups = self.process_groups.clone();
             c
         });
 
@@ -750,6 +749,7 @@ impl Builder {
             Agent {
                 scene,
                 settings,
+                exec: crate::turn::exec_providers_from(&config, self.process_groups.as_ref()),
                 config,
                 session,
                 session_state,

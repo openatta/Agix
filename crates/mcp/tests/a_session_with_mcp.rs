@@ -273,7 +273,7 @@ async fn build_wires_mcp_elicitation_urls_to_the_elicitation_hook() {
         .tools()
         .get("mcp__test-server__authorize")
         .expect("MCP tool adapter registered");
-    let ctx = base::tool::ToolContext::for_test(dir.path().to_path_buf());
+    let ctx = platform::tool_context_for_test(dir.path().to_path_buf());
     let progress = base::tool::ProgressSender::noop("test-tool-use");
     tool.call(serde_json::json!({}), ctx, progress)
         .await

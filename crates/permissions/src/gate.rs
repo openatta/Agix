@@ -682,7 +682,7 @@ mod tests {
     }
 
     fn ctx_with_mode(mode: PermissionMode) -> base::tool::ToolContext {
-        let mut ctx = base::tool::ToolContext::for_test(PathBuf::from("/tmp"));
+        let mut ctx = platform::tool_context_for_test(PathBuf::from("/tmp"));
         ctx.permission_mode = mode;
         ctx.session = Arc::new(SessionState::new(PathBuf::from("/tmp")).with_permission_mode(mode));
         ctx.tool_use_id = "test".into();

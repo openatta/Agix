@@ -26,34 +26,9 @@ regex         = { workspace = true }
 globset       = { workspace = true }
 base64        = { workspace = true }
 bs58          = { workspace = true }
-url           = { workspace = true }
-reqwest       = { workspace = true, optional = true }
-rustls        = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc          = { workspace = true }
-
-[features]
-default = ["http"]
-
-# `LocalNetwork`, this machine's HTTP client (reqwest + rustls). Everything in
-# the workspace keeps it on; a crate that only implements the contracts can
-# turn it off and take `base` without an HTTP stack, in which case the local
-# providers' network refuses every request.
-http = ["dep:reqwest", "dep:rustls"]
-
-# The OS process sandbox for `Bash` — macOS `sandbox-exec`, Linux
-# `bubblewrap`. Off in this crate, on in `assembly` and `daemon`: it is the
-# boundary an unattended session's shell commands run inside — with nobody to
-# approve a command, one runs only when the sandbox fully holds it.
-#
-# Off means no backend is compiled at all: `PlatformSandbox` says it cannot
-# confine anything, and `sandbox.require_enforcement` — which exists to refuse
-# rather than run unconstrained — refuses every command, naming this feature.
-# The contract, the policy type and the credential deny-read list stay either
-# way; the last of those is a data-exfiltration guard the command classifier
-# uses whether or not anything is sandboxed.
-sandbox = []
 
 [dev-dependencies]
 tempfile = { workspace = true }

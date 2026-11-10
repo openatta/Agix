@@ -233,7 +233,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn ctx() -> ToolContext {
-        ToolContext::for_test(PathBuf::from("/tmp"))
+        platform::tool_context_for_test(PathBuf::from("/tmp"))
     }
 
     /// A `ToolContext` whose `session` is shared between the calls a test
@@ -242,7 +242,7 @@ mod tests {
     /// plan mode is only meaningful across calls. Plan state is per-session,
     /// so concurrent tests own different `SessionState`s and cannot collide.
     fn session_ctx() -> ToolContext {
-        ToolContext::for_test(PathBuf::from("/tmp"))
+        platform::tool_context_for_test(PathBuf::from("/tmp"))
     }
 
     #[tokio::test]

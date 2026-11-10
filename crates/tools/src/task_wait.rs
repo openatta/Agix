@@ -185,7 +185,7 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     fn ctx_with(session: Arc<SessionState>) -> ToolContext {
-        let mut ctx = ToolContext::for_test(std::env::temp_dir());
+        let mut ctx = platform::tool_context_for_test(std::env::temp_dir());
         ctx.session = session;
         ctx
     }

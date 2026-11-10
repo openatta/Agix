@@ -2,7 +2,7 @@
 //! themselves, not a call that misses the schema and not the whole result
 //! serialized into one string field.
 
-use base::interface::tool::{Tool, ToolContext, ValidationResult};
+use base::interface::tool::{Tool, ValidationResult};
 use serde_json::json;
 use tools::structured_output::StructuredOutputTool;
 
@@ -18,7 +18,7 @@ fn tool() -> StructuredOutputTool {
 }
 
 async fn check(input: serde_json::Value) -> Result<(), String> {
-    let ctx = ToolContext::for_test(std::env::temp_dir());
+    let ctx = platform::tool_context_for_test(std::env::temp_dir());
     match tool().validate_input(&input, &ctx).await {
         ValidationResult::Ok => Ok(()),
         ValidationResult::Err(msg, _) => Err(msg),

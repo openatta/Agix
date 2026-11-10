@@ -213,7 +213,7 @@ impl OAuthHttp {
     }
 
     fn build(server: &Url, policy: AddressPolicy) -> Result<Self, String> {
-        base::interface::exec::local::install_tls_provider();
+        platform::install_tls_provider();
         let mut builder = reqwest::Client::builder()
             .user_agent(concat!("agix/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(CONNECT_TIMEOUT)
@@ -341,7 +341,7 @@ impl OAuthHttpClient for OAuthHttp {
 /// [`AddressPolicy::for_remote_transport`]. No total timeout, since a
 /// response may be a stream.
 pub(crate) fn transport_client(server: &str) -> reqwest::Client {
-    base::interface::exec::local::install_tls_provider();
+    platform::install_tls_provider();
     let same_origin = reqwest::redirect::Policy::custom(|attempt| {
         let from = attempt.previous().last().map(Url::origin);
         if attempt.previous().len() > MAX_REDIRECTS {

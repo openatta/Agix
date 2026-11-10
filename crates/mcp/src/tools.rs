@@ -444,7 +444,7 @@ mod tests {
         let r = tool
             .call(
                 json!({}),
-                ToolContext::for_test("/tmp".into()),
+                platform::tool_context_for_test("/tmp".into()),
                 ProgressSender::noop("t"),
             )
             .await
@@ -467,7 +467,7 @@ mod tests {
         let r = tool
             .call(
                 json!({"server": "fs"}),
-                ToolContext::for_test("/tmp".into()),
+                platform::tool_context_for_test("/tmp".into()),
                 ProgressSender::noop("t"),
             )
             .await
@@ -487,7 +487,7 @@ mod tests {
         let r = tool
             .call(
                 json!({}),
-                ToolContext::for_test("/tmp".into()),
+                platform::tool_context_for_test("/tmp".into()),
                 ProgressSender::noop("t"),
             )
             .await
@@ -507,7 +507,7 @@ mod tests {
         let r = tool
             .call(
                 json!({"uri": "file:///nowhere"}),
-                ToolContext::for_test("/tmp".into()),
+                platform::tool_context_for_test("/tmp".into()),
                 ProgressSender::noop("t"),
             )
             .await
@@ -519,7 +519,10 @@ mod tests {
     async fn read_validates_empty_uri() {
         let tool = ReadMcpResourceTool::new(vec![]);
         let r = tool
-            .validate_input(&json!({"uri": "  "}), &ToolContext::for_test("/tmp".into()))
+            .validate_input(
+                &json!({"uri": "  "}),
+                &platform::tool_context_for_test("/tmp".into()),
+            )
             .await;
         assert!(!matches!(r, ValidationResult::Ok));
     }
@@ -530,7 +533,7 @@ mod tests {
         let r = tool
             .call(
                 json!({}),
-                ToolContext::for_test("/tmp".into()),
+                platform::tool_context_for_test("/tmp".into()),
                 ProgressSender::noop("t"),
             )
             .await

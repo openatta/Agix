@@ -45,6 +45,7 @@ time          = { workspace = true }
 script-host   = { workspace = true }
 
 [dev-dependencies]
+platform = { workspace = true }
 tempfile      = { workspace = true }
 
 [[test]]

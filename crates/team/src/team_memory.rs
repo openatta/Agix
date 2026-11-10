@@ -788,7 +788,7 @@ mod tests {
         assert!(loaded.is_empty());
     }
     async fn save(tool: &TeamMemorySaveTool, input: serde_json::Value) -> ToolResult {
-        let ctx = ToolContext::for_test(std::env::temp_dir());
+        let ctx = platform::tool_context_for_test(std::env::temp_dir());
         if !tool.validate_input(&input, &ctx).await.is_ok() {
             return ToolResult::error_text("invalid");
         }
@@ -818,7 +818,7 @@ mod tests {
             .contains("[ci-dashboard](ci-dashboard.md)"));
 
         let reader = TeamMemoryReadTool::new(store);
-        let ctx = ToolContext::for_test(tmp.path().to_path_buf());
+        let ctx = platform::tool_context_for_test(tmp.path().to_path_buf());
         let read = reader
             .call(
                 serde_json::json!({"name": "ci-dashboard"}),

@@ -715,7 +715,7 @@ pub struct SandboxConfig {
     /// server takes the policy of the settings it is declared in, with its own
     /// `env` added on top.
     #[serde(default)]
-    pub subprocess_env: crate::interface::exec::local::SubprocessEnv,
+    pub subprocess_env: crate::interface::exec::SubprocessEnv,
     /// Stop, when a daemon session ends (closed, evicted, or the daemon
     /// shutting down), every process group its commands started that is still
     /// running — including services a command deliberately left in the
@@ -1166,7 +1166,7 @@ impl Settings {
             .values()
             .filter_map(|p| p.api_key_env.as_deref())
         {
-            crate::interface::exec::local::env::hold_back_credential(name);
+            crate::interface::exec::env::hold_back_credential(name);
         }
 
         settings.paths = PathSettings {
@@ -1848,7 +1848,7 @@ mod tests {
 
     #[test]
     fn a_provider_key_variable_is_held_back_from_child_processes_once_loaded() {
-        use crate::interface::exec::local::env::is_engine_credential;
+        use crate::interface::exec::env::is_engine_credential;
         let root = tempfile::tempdir().unwrap();
         let project = root.path().join("project");
         write_settings(

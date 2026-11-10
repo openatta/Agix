@@ -83,10 +83,7 @@ pub struct EngineConfig {
     /// skill's `` !`cmd` `` is not run.
     pub project_untrusted: bool,
     /// Mirrors `Settings.sandbox.subprocess_env`.
-    pub subprocess_env: crate::interface::exec::local::SubprocessEnv,
-    /// Where the commands of this session record their process groups;
-    /// `None` keeps no record.
-    pub process_groups: Option<std::sync::Arc<crate::interface::exec::local::GroupLedger>>,
+    pub subprocess_env: crate::interface::exec::SubprocessEnv,
 
     /// File read/write byte/line limits. Sub-config keeps related field
     /// values together so cross-tool tuning (Read/Write/Edit) is one
@@ -295,7 +292,6 @@ impl EngineConfig {
             disable_skill_shell_execution: false,
             project_untrusted: false,
             subprocess_env: Default::default(),
-            process_groups: None,
 
             // grouped sub-configs
             file_limits: FileLimits::default(),

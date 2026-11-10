@@ -191,7 +191,7 @@ async fn fetch_bytes(download_url: &str) -> Result<Vec<u8>, PluginError> {
     }
     // `Origin::Operator`: a plugin archive comes from a marketplace an
     // operator configured, not from a url the model named.
-    let net = base::interface::exec::local::LocalNetwork::default();
+    let net = platform::LocalNetwork::default();
     let mut request = base::interface::exec::HttpRequest::get(download_url);
     request.max_bytes = Some(MAX_ARCHIVE_BYTES);
     let resp = base::interface::exec::Network::send(

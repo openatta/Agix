@@ -18,7 +18,7 @@
 测试文件要在 `integration.rs` 里补一行 `mod`，同一程序里的测试共用一个进程。只跑其中一个
 文件，用模块名过滤：`cargo test -p daemon --test integration session_lifecycle::`。例外有三个：LIVE 层的
 `live_*` 合成另一个程序 `real_model`（要 `real-model` feature），`compare_dsh` 单独一个，
-`crates/core/tests` 的两个文件各自一个——它们动的是进程级的状态（只构建一次的 HTTP 客户端
+`crates/platform/tests` 里除 `integration` 外的两个文件各自一个——它们动的是进程级的状态（只构建一次的 HTTP 客户端
 读到的代理环境变量、本进程领的全部进程组），和别的测试同进程就不成立。
 
 有几条要的不是同一个 daemon：「没有脚本引擎的构建拿到 `scripts` 段怎么办」只能由

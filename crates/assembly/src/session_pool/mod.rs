@@ -615,7 +615,7 @@ struct LiveSession {
     pending_prompts: HashMap<String, PendingPrompt>,
     /// The process groups this session's commands started, kept when
     /// `sandbox.reap_process_groups` is on and stopped when the session ends.
-    process_groups: Option<Arc<base::interface::exec::local::GroupLedger>>,
+    process_groups: Option<Arc<platform::GroupLedger>>,
 }
 
 /// A raised ask: its `prompt_id`, and the background task asking it when

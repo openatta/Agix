@@ -164,7 +164,7 @@ mod tests {
         let r = tool
             .validate_input(
                 &json!({"question": "  "}),
-                &base::tool::ToolContext::for_test("/tmp".into()),
+                &platform::tool_context_for_test("/tmp".into()),
             )
             .await;
         assert!(!matches!(r, ValidationResult::Ok));
@@ -176,7 +176,7 @@ mod tests {
         let r = tool
             .validate_input(
                 &json!({"question": "ok?", "options": [{"key": "", "label": "yes"}]}),
-                &base::tool::ToolContext::for_test("/tmp".into()),
+                &platform::tool_context_for_test("/tmp".into()),
             )
             .await;
         assert!(!matches!(r, ValidationResult::Ok));
@@ -197,7 +197,7 @@ mod elicitation_tests {
     fn ctx_with(
         asker: Option<Arc<dyn base::interface::elicitation::Elicitation>>,
     ) -> base::tool::ToolContext {
-        let mut ctx = base::tool::ToolContext::for_test("/tmp".into());
+        let mut ctx = platform::tool_context_for_test("/tmp".into());
         ctx.elicitation = asker;
         ctx
     }
@@ -270,7 +270,7 @@ mod waiting_tests {
     }
 
     fn ctx_with(asker: Arc<dyn Elicitation>, timeout_secs: u64) -> ToolContext {
-        let mut ctx = ToolContext::for_test("/tmp".into());
+        let mut ctx = platform::tool_context_for_test("/tmp".into());
         ctx.elicitation = Some(asker);
         let mut config = (*ctx.config).clone();
         config.permission_prompt_timeout_secs = timeout_secs;

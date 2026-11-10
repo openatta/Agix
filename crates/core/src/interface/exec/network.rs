@@ -198,7 +198,9 @@ pub fn domains_name_host(domains: &[String], host: &str) -> bool {
     })
 }
 
-pub(crate) fn domain_key(entry: &str) -> String {
+/// A `sandbox.allowed_domains` entry or a host, in the form
+/// [`domains_name_host`] compares them in.
+pub fn domain_key(entry: &str) -> String {
     let bare = entry
         .trim()
         .trim_start_matches('[')

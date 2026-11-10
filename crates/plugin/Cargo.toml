@@ -9,6 +9,7 @@ description  = "Agix — plugin packages: manifest, discovery, cache, install"
 
 [dependencies]
 base          = { workspace = true }
+platform      = { workspace = true }
 scene         = { workspace = true }
 serde         = { workspace = true }
 serde_json    = { workspace = true }

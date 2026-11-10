@@ -462,7 +462,7 @@ async fn a_foreground_sub_agent_on_its_parents_scene_gets_the_scenes_tools_once(
     let result = base::tool::Tool::call(
         &agent_tool,
         serde_json::json!({ "prompt": "look", "description": "look" }),
-        ToolContext::for_test(std::env::temp_dir()),
+        platform::tool_context_for_test(std::env::temp_dir()),
         ProgressSender::noop("t"),
     )
     .await
@@ -476,7 +476,7 @@ async fn a_foreground_sub_agent_on_its_parents_scene_gets_the_scenes_tools_once(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_background_sub_agent_and_a_spawned_one_get_the_scenes_tools_once() {
     let (agent_tool, offered) = agent_tool_on_a_scene_with_a_tool(&[]);
-    let ctx = ToolContext::for_test(std::env::temp_dir());
+    let ctx = platform::tool_context_for_test(std::env::temp_dir());
     let session = ctx.session.clone();
     base::tool::Tool::call(
         &agent_tool,
@@ -539,7 +539,7 @@ async fn an_agent_types_tool_lists_narrow_the_scenes_tools_too() {
             serde_json::json!({
                 "prompt": "look", "description": "look", "subagent_type": agent_type
             }),
-            ToolContext::for_test(std::env::temp_dir()),
+            platform::tool_context_for_test(std::env::temp_dir()),
             ProgressSender::noop("t"),
         )
         .await

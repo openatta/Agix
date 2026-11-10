@@ -10,8 +10,8 @@
 #![cfg(feature = "http")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use base::interface::exec::local::LocalNetwork;
 use base::interface::exec::{HttpRequest, Network, Origin};
+use platform::LocalNetwork;
 
 /// A server answering every request with `body`, whatever was asked for.
 /// Standing in for an HTTP proxy is exactly this: a plain-HTTP proxy request

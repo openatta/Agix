@@ -351,7 +351,7 @@ async fn serve(cli: Cli) -> anyhow::Result<()> {
     daemon_config.managed_settings_path = cli.managed_settings.clone();
     daemon_config.settings.session_dir = Some(daemon_config.settings.paths.local_data_dir.clone());
     let daemon_root = daemon_config.paths.global_root().join("daemon");
-    base::crash::install(
+    platform::crash::install(
         daemon_root.join("crashes"),
         "agixd",
         env!("CARGO_PKG_VERSION"),
@@ -439,10 +439,7 @@ async fn serve(cli: Cli) -> anyhow::Result<()> {
     let reaped = {
         let path = groups_file.clone();
         tokio::task::spawn_blocking(move || {
-            base::interface::exec::local::orphans::reap_previous(
-                &path,
-                std::time::Duration::from_millis(500),
-            )
+            platform::orphans::reap_previous(&path, std::time::Duration::from_millis(500))
         })
         .await?
     };
@@ -452,8 +449,8 @@ async fn serve(cli: Cli) -> anyhow::Result<()> {
             "stopped process groups a previous run of this instance left running"
         );
     }
-    base::interface::exec::local::orphans::persist_to(groups_file.clone());
-    let identity = base::process_identity::ProcessIdentity::current();
+    platform::orphans::persist_to(groups_file.clone());
+    let identity = platform::process_identity::ProcessIdentity::current();
     let instance_file = daemon::discovery::InstanceFile {
         instance: instance_name.clone(),
         pid: identity.pid,

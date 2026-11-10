@@ -97,7 +97,7 @@ pub struct Builder {
     goal_rounds_from_owner: bool,
     /// Where this session's commands record their process groups — see
     /// [`Builder::process_groups`].
-    process_groups: Option<Arc<base::interface::exec::local::GroupLedger>>,
+    process_groups: Option<Arc<platform::GroupLedger>>,
     modules: Vec<Arc<dyn crate::module::Module>>,
     session_prompt: Option<SessionPrompt>,
 }
@@ -185,11 +185,8 @@ impl Builder {
     /// they left running with [`GroupLedger::reap`] once it ends. Without one,
     /// a command that exits leaves its background processes to run on.
     ///
-    /// [`GroupLedger::reap`]: base::interface::exec::local::GroupLedger::reap
-    pub fn process_groups(
-        mut self,
-        ledger: Arc<base::interface::exec::local::GroupLedger>,
-    ) -> Self {
+    /// [`GroupLedger::reap`]: platform::GroupLedger::reap
+    pub fn process_groups(mut self, ledger: Arc<platform::GroupLedger>) -> Self {
         self.process_groups = Some(ledger);
         self
     }

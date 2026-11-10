@@ -739,7 +739,7 @@ mod dynamic_context_tests {
     async fn an_inline_command_is_held_to_the_rules_a_bash_call_would_be() {
         use base::permission::{PermissionMode, RuleBehavior};
         let dir = tempfile::tempdir().unwrap();
-        let ctx = ToolContext::for_test(dir.path().to_path_buf());
+        let ctx = platform::tool_context_for_test(dir.path().to_path_buf());
         let body = "!`echo stamped > stamp.txt`";
 
         let denied = gate(
@@ -783,7 +783,7 @@ mod dynamic_context_tests {
     #[tokio::test]
     async fn a_read_only_inline_command_runs_as_a_bash_call_would() {
         let dir = tempfile::tempdir().unwrap();
-        let ctx = ToolContext::for_test(dir.path().to_path_buf());
+        let ctx = platform::tool_context_for_test(dir.path().to_path_buf());
         let asks = gate(vec![], base::permission::PermissionMode::Default);
         let out = expand_dynamic_context(
             "!`echo hello`",
@@ -798,7 +798,7 @@ mod dynamic_context_tests {
     #[tokio::test]
     async fn inline_placeholder_at_line_start_is_substituted() {
         let body = "## Info\n!`echo hello-world`\n\nDone.";
-        let out = expand(body, &ToolContext::for_test(std::env::temp_dir())).await;
+        let out = expand(body, &platform::tool_context_for_test(std::env::temp_dir())).await;
         assert!(out.contains("hello-world"));
         assert!(!out.contains("!`echo"));
     }
@@ -806,7 +806,7 @@ mod dynamic_context_tests {
     #[tokio::test]
     async fn inline_placeholder_after_whitespace_is_substituted() {
         let body = "Value: !`echo 42`.";
-        let out = expand(body, &ToolContext::for_test(std::env::temp_dir())).await;
+        let out = expand(body, &platform::tool_context_for_test(std::env::temp_dir())).await;
         assert!(out.contains("Value: 42."));
     }
 
@@ -815,14 +815,14 @@ mod dynamic_context_tests {
         // `!` must be at line start or after whitespace — `KEY=!\`cmd\`` has
         // no separator, so it's untouched.
         let body = "KEY=!`echo should-not-run`";
-        let out = expand(body, &ToolContext::for_test(std::env::temp_dir())).await;
+        let out = expand(body, &platform::tool_context_for_test(std::env::temp_dir())).await;
         assert_eq!(out, body);
     }
 
     #[tokio::test]
     async fn fenced_block_is_substituted() {
         let body = "## Environment\n```!\necho line-one\necho line-two\n```\n";
-        let out = expand(body, &ToolContext::for_test(std::env::temp_dir())).await;
+        let out = expand(body, &platform::tool_context_for_test(std::env::temp_dir())).await;
         assert!(out.contains("line-one"));
         assert!(out.contains("line-two"));
         assert!(!out.contains("```!"));
@@ -830,7 +830,7 @@ mod dynamic_context_tests {
 
     #[tokio::test]
     async fn disable_skill_shell_execution_replaces_with_fixed_placeholder_not_running_anything() {
-        let mut ctx = ToolContext::for_test(std::env::temp_dir());
+        let mut ctx = platform::tool_context_for_test(std::env::temp_dir());
         ctx.config = Arc::new({
             let mut c = base::context::EngineConfig::defaults_for("test-model");
             c.disable_skill_shell_execution = true;
@@ -845,7 +845,7 @@ mod dynamic_context_tests {
     #[tokio::test]
     async fn project_skill_commands_wait_for_trust() {
         let dir = tempfile::tempdir().unwrap();
-        let mut ctx = ToolContext::for_test(dir.path().to_path_buf());
+        let mut ctx = platform::tool_context_for_test(dir.path().to_path_buf());
         ctx.config = Arc::new({
             let mut c = base::context::EngineConfig::defaults_for("test-model");
             c.project_untrusted = true;
@@ -870,7 +870,7 @@ mod dynamic_context_tests {
     #[tokio::test]
     async fn body_with_no_placeholders_is_returned_unchanged() {
         let body = "Just plain instructions, no shell syntax here.";
-        let out = expand(body, &ToolContext::for_test(std::env::temp_dir())).await;
+        let out = expand(body, &platform::tool_context_for_test(std::env::temp_dir())).await;
         assert_eq!(out, body);
     }
 
@@ -884,7 +884,7 @@ mod dynamic_context_tests {
         // command that needs to *produce* a backtick has to build it this
         // way rather than embed one directly.
         let body = "!`printf '!\\140echo nested\\140'`";
-        let out = expand(body, &ToolContext::for_test(std::env::temp_dir())).await;
+        let out = expand(body, &platform::tool_context_for_test(std::env::temp_dir())).await;
         assert_eq!(out, "!`echo nested`", "output was: {out}");
     }
 
@@ -930,7 +930,7 @@ mod dynamic_context_tests {
         let mgr = Arc::new(crate::manager::SkillManager::new());
         mgr.load_dir_subdirs(dir.path(), crate::manager::SkillSource::User)
             .unwrap();
-        let ctx = ToolContext::for_test(dir.path().to_path_buf());
+        let ctx = platform::tool_context_for_test(dir.path().to_path_buf());
         let forks = Arc::new(Forks::default());
         let tool = SkillTool::new(mgr.clone())
             .with_permission(Arc::new(Permits))
@@ -1057,7 +1057,7 @@ mod tests {
         let result = tool
             .call(
                 serde_json::json!({"skill": "code-review"}),
-                ToolContext::for_test(std::env::temp_dir()),
+                platform::tool_context_for_test(std::env::temp_dir()),
                 ProgressSender::noop("t"),
             )
             .await
@@ -1163,7 +1163,7 @@ mod tests {
         let result = tool
             .call(
                 serde_json::json!({"skill": "uses-bash"}),
-                ToolContext::for_test(std::env::temp_dir()),
+                platform::tool_context_for_test(std::env::temp_dir()),
                 ProgressSender::noop("t"),
             )
             .await
@@ -1217,7 +1217,7 @@ mod tests {
                 ..Default::default()
             });
             let info = mgr.list().into_iter().find(|s| s.name == "py").unwrap();
-            let mut ctx = ToolContext::for_test(dir.path().to_path_buf());
+            let mut ctx = platform::tool_context_for_test(dir.path().to_path_buf());
             ctx.config = Arc::new({
                 let mut c = base::context::EngineConfig::defaults_for("test-model");
                 c.project_untrusted = untrusted;
@@ -1318,7 +1318,7 @@ mod tests {
         let result = tool
             .call(
                 serde_json::json!({"skill": "grabby"}),
-                ToolContext::for_test(std::env::temp_dir()),
+                platform::tool_context_for_test(std::env::temp_dir()),
                 ProgressSender::noop("t"),
             )
             .await
@@ -1347,7 +1347,7 @@ mod tests {
         assert_eq!(mgr.invocation_count("code-review"), 0);
         tool.call(
             serde_json::json!({"skill": "code-review"}),
-            ToolContext::for_test(std::env::temp_dir()),
+            platform::tool_context_for_test(std::env::temp_dir()),
             ProgressSender::noop("t"),
         )
         .await
@@ -1356,7 +1356,7 @@ mod tests {
 
         tool.call(
             serde_json::json!({"skill": "code-review"}),
-            ToolContext::for_test(std::env::temp_dir()),
+            platform::tool_context_for_test(std::env::temp_dir()),
             ProgressSender::noop("t"),
         )
         .await
@@ -1375,7 +1375,7 @@ mod tests {
         let _ = tool
             .call(
                 serde_json::json!({"skill": "manual-only"}),
-                ToolContext::for_test(std::env::temp_dir()),
+                platform::tool_context_for_test(std::env::temp_dir()),
                 ProgressSender::noop("t"),
             )
             .await;
@@ -1390,7 +1390,7 @@ mod tests {
         register_test_skill(&mgr, "code-review", "Review the changed files.", false);
         let tool = SkillTool::new(mgr);
 
-        let ctx1 = ToolContext::for_test(std::env::temp_dir());
+        let ctx1 = platform::tool_context_for_test(std::env::temp_dir());
         let session_id = ctx1.session_id.clone();
         let first = tool
             .call(
@@ -1402,7 +1402,7 @@ mod tests {
             .expect("call should not error");
         assert!(first.new_messages.is_some());
 
-        let mut ctx2 = ToolContext::for_test(std::env::temp_dir());
+        let mut ctx2 = platform::tool_context_for_test(std::env::temp_dir());
         ctx2.session_id = session_id;
         let second = tool
             .call(
@@ -1433,18 +1433,18 @@ mod tests {
 
         tool.call(
             serde_json::json!({"skill": "code-review"}),
-            ToolContext::for_test(std::env::temp_dir()),
+            platform::tool_context_for_test(std::env::temp_dir()),
             ProgressSender::noop("t"),
         )
         .await
         .expect("call should not error");
 
-        // A fresh ToolContext::for_test has a different/independent identity
-        // from the harness's perspective — but for_test() always uses the
+        // A fresh `tool_context_for_test` has a different/independent identity
+        // from the harness's perspective — but `tool_context_for_test` always uses the
         // same literal session_id ("test"), so exercise the real
         // distinguishing behavior by asserting the dedup is keyed off
-        // session_id explicitly instead of relying on for_test()'s default.
-        let mut ctx = ToolContext::for_test(std::env::temp_dir());
+        // session_id explicitly instead of relying on `tool_context_for_test`'s default.
+        let mut ctx = platform::tool_context_for_test(std::env::temp_dir());
         ctx.session_id = "a-different-session".into();
         let result = tool
             .call(
@@ -1480,7 +1480,7 @@ mod tests {
         let result = tool
             .call(
                 serde_json::json!({"skill": "deep-research"}),
-                ToolContext::for_test(std::env::temp_dir()),
+                platform::tool_context_for_test(std::env::temp_dir()),
                 ProgressSender::noop("t"),
             )
             .await
@@ -1518,7 +1518,7 @@ mod tests {
         let result = tool
             .call(
                 serde_json::json!({"skill": "bg-research"}),
-                ToolContext::for_test(std::env::temp_dir()),
+                platform::tool_context_for_test(std::env::temp_dir()),
                 ProgressSender::noop("t"),
             )
             .await
@@ -1554,7 +1554,7 @@ mod tests {
 
         tool.call(
             serde_json::json!({"skill": "pr-summary"}),
-            ToolContext::for_test(std::env::temp_dir()),
+            platform::tool_context_for_test(std::env::temp_dir()),
             ProgressSender::noop("t"),
         )
         .await
@@ -1574,7 +1574,7 @@ mod tests {
         let err = tool
             .call(
                 serde_json::json!({"skill": "manual-only"}),
-                ToolContext::for_test(std::env::temp_dir()),
+                platform::tool_context_for_test(std::env::temp_dir()),
                 ProgressSender::noop("t"),
             )
             .await
@@ -1591,7 +1591,7 @@ mod tests {
         let err = tool
             .call(
                 serde_json::json!({"skill": "does-not-exist"}),
-                ToolContext::for_test(std::env::temp_dir()),
+                platform::tool_context_for_test(std::env::temp_dir()),
                 ProgressSender::noop("t"),
             )
             .await
@@ -1628,7 +1628,7 @@ mod tests {
         let result = tool
             .call(
                 serde_json::json!({"skill": "bundled-notes"}),
-                ToolContext::for_test(std::env::temp_dir()),
+                platform::tool_context_for_test(std::env::temp_dir()),
                 ProgressSender::noop("t"),
             )
             .await
@@ -1660,7 +1660,7 @@ mod tests {
         let result = tool
             .call(
                 serde_json::json!({"skill": "cjk-body"}),
-                ToolContext::for_test(std::env::temp_dir()),
+                platform::tool_context_for_test(std::env::temp_dir()),
                 ProgressSender::noop("t"),
             )
             .await
@@ -1709,7 +1709,7 @@ mod tests {
         let result = tool
             .call(
                 serde_json::json!({"skill": "cjk-notes"}),
-                ToolContext::for_test(std::env::temp_dir()),
+                platform::tool_context_for_test(std::env::temp_dir()),
                 ProgressSender::noop("t"),
             )
             .await
@@ -1757,7 +1757,7 @@ mod tests {
         let result = tool
             .call(
                 serde_json::json!({"skill": "escaping-skill"}),
-                ToolContext::for_test(std::env::temp_dir()),
+                platform::tool_context_for_test(std::env::temp_dir()),
                 ProgressSender::noop("t"),
             )
             .await
@@ -1796,7 +1796,7 @@ mod tests {
         let result = tool
             .call(
                 serde_json::json!({"skill": "no-files"}),
-                ToolContext::for_test(std::env::temp_dir()),
+                platform::tool_context_for_test(std::env::temp_dir()),
                 ProgressSender::noop("t"),
             )
             .await

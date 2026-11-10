@@ -273,7 +273,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_get_and_complete() {
-        let ctx = ToolContext::for_test("/tmp".into());
+        let ctx = platform::tool_context_for_test("/tmp".into());
         let created = call(&GoalCreateTool, json!({"objective": "tests green"}), &ctx).await;
         assert!(!created.is_error, "{}", text(&created));
         let goal = call(&GoalGetTool, json!({}), &ctx).await;
@@ -296,7 +296,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_sub_agent_has_no_goal() {
-        let mut ctx = ToolContext::for_test("/tmp".into());
+        let mut ctx = platform::tool_context_for_test("/tmp".into());
         ctx.agent_depth = 1;
         let r = call(&GoalCreateTool, json!({"objective": "x"}), &ctx).await;
         assert!(r.is_error);
@@ -305,7 +305,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_automatic_round_cannot_pause() {
-        let ctx = ToolContext::for_test("/tmp".into());
+        let ctx = platform::tool_context_for_test("/tmp".into());
         call(&GoalCreateTool, json!({"objective": "x"}), &ctx).await;
         let round = ctx.session.goal_next_round().unwrap();
         ctx.session
@@ -323,7 +323,7 @@ mod tests {
 
     #[tokio::test]
     async fn blocked_needs_a_reason() {
-        let ctx = ToolContext::for_test("/tmp".into());
+        let ctx = platform::tool_context_for_test("/tmp".into());
         call(&GoalCreateTool, json!({"objective": "x"}), &ctx).await;
         let view = ctx.session.goal_view();
         let r = call(

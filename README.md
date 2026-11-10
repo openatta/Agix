@@ -206,6 +206,8 @@ other way.
               │
             model · scene · history · session · compaction · telemetry · hooks · permissions · tools
               │
+ machine    platform ───────── this machine's execution providers, crash hook, process identity
+              │
  contract   core (crate `base`) — every trait and every shared data type
 ```
 
@@ -353,6 +355,7 @@ does not carry answers `METHOD_NOT_FOUND` naming the module.
 | Layer | Crate | Responsibility |
 |---|---|---|
 | contract | `core` (`base`) | traits, settings, messages, prompt types, the extension catalog |
+| machine | `platform` | the local process, filesystem, network and OS sandbox behind the execution contracts |
 | kernel | `runtime` | turn loop, streaming tool executor, `Builder`, `Module` |
 | kernel | `model` | Anthropic and OpenAI-compatible adapters, retry and backoff |
 | kernel | `tools` | built-in tools (`web` and `structured-output` are features) |
@@ -368,8 +371,8 @@ does not carry answers `METHOD_NOT_FOUND` naming the module.
 | assembly | `assembly` | session pool, configuration, provider routing, the JSON-RPC server |
 | shell | `daemon` | the `agixd` binary |
 
-19 crates under `crates/`, plus `daemon/`, the five test members and the
-example plugin in `examples/plugins/rust` — 26 workspace members in total. The full picture — sessions and scenes, the history
+20 crates under `crates/`, plus `daemon/`, the five test members and the
+example plugin in `examples/plugins/rust` — 27 workspace members in total. The full picture — sessions and scenes, the history
 log, execution, locks, disk layout — is in
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 

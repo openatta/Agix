@@ -11,9 +11,9 @@ use async_trait::async_trait;
 use base::context::SessionState;
 use base::interface::permission::{Permission, PermissionOutcome};
 use base::permission::{PermissionDecision as GateDecision, PermissionMode};
+use base::tool::ToolRegistry;
 #[cfg(test)]
-use base::tool::InMemoryToolRegistry;
-use base::tool::{ToolContext, ToolRegistry};
+use base::tool::{InMemoryToolRegistry, ToolContext};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 use tokio_util::sync::CancellationToken;
@@ -158,7 +158,8 @@ impl RuleSetPermission {
             };
         };
 
-        let mut ctx = ToolContext::from_engine_ctx(cwd.to_path_buf(), CancellationToken::new());
+        let mut ctx =
+            platform::tool_context_from_engine_ctx(cwd.to_path_buf(), CancellationToken::new());
         ctx.session_id = session_id.to_string();
         ctx.sandbox = self.sandbox.clone();
         // Prefer the session's live state (so a runtime `set_permission_mode`

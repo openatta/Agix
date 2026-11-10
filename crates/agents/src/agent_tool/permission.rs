@@ -301,7 +301,7 @@ impl ParentPermission {
             .clone();
         let judged = delegate.cloned().or_else(|| session.clone());
         if let (Some(tool), None) = (&own, delegate) {
-            let mut ctx = ToolContext::from_engine_ctx(
+            let mut ctx = platform::tool_context_from_engine_ctx(
                 cwd.to_path_buf(),
                 tokio_util::sync::CancellationToken::new(),
             );

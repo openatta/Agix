@@ -356,7 +356,7 @@ impl Agent {
             // 2. Fire-and-forget pre-connect GET to the API base URL (warms TCP/TLS)
             async move {
                 if !base_url.is_empty() {
-                    let net = base::interface::exec::local::LocalNetwork::default();
+                    let net = platform::LocalNetwork::default();
                     let warming = base::interface::exec::Network::send(
                         &net,
                         base::interface::exec::HttpRequest::get(&base_url),

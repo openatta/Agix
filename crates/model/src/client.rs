@@ -10,9 +10,9 @@ use crate::types::MessagesRequest;
 use base::interface::backoff::{
     Backoff, BackoffPolicy, FailedAttempt, LadderBackoff, RequestFailure,
 };
-use base::interface::exec::local::LocalNetwork;
 use base::interface::exec::{HttpRequest, HttpStream, Network, Origin};
 use futures::stream::{Stream, StreamExt};
+use platform::LocalNetwork;
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::pin::Pin;

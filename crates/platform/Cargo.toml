@@ -1,0 +1,65 @@
+[package]
+name = "platform"
+version      = { workspace = true }
+edition      = { workspace = true }
+rust-version = { workspace = true }
+license      = { workspace = true }
+publish      = false
+description  = "Agix — this machine's execution providers, crash hook, and process identity"
+autotests    = false
+
+[dependencies]
+base          = { workspace = true }
+tokio         = { workspace = true }
+tokio-util    = { workspace = true }
+futures       = { workspace = true }
+async-trait   = { workspace = true }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+tracing       = { workspace = true }
+url           = { workspace = true }
+reqwest       = { workspace = true, optional = true }
+rustls        = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc          = { workspace = true }
+
+[features]
+default = ["http"]
+
+# `LocalNetwork`, this machine's HTTP client (reqwest + rustls). Everything in
+# the workspace keeps it on; without it the local providers' network refuses
+# every request.
+http = ["dep:reqwest", "dep:rustls"]
+
+# The OS process sandbox for `Bash` — macOS `sandbox-exec`, Linux
+# `bubblewrap`. Off in this crate, on in `assembly` and `daemon`: it is the
+# boundary an unattended session's shell commands run inside — with nobody to
+# approve a command, one runs only when the sandbox fully holds it.
+#
+# Off means no backend is compiled at all: `PlatformSandbox` says it cannot
+# confine anything, and `sandbox.require_enforcement` — which exists to refuse
+# rather than run unconstrained — refuses every command, naming this feature.
+# The contract, the policy type and the credential deny-read list live in
+# `base` and stay either way; the last of those is a data-exfiltration guard
+# the command classifier uses whether or not anything is sandboxed.
+sandbox = []
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+
+[[test]]
+name = "an_aborting_process_stops_its_commands"
+path = "tests/an_aborting_process_stops_its_commands.rs"
+
+[[test]]
+name = "loopback_egress_skips_the_proxy"
+path = "tests/loopback_egress_skips_the_proxy.rs"
+
+[lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"

@@ -487,14 +487,14 @@ fn resolve_path(s: &str, cwd: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base::interface::exec::local::LocalFileSystem;
     use base::interface::exec::{DirEntry, ExecError, Metadata};
     use base::tool::ToolResultContent;
+    use platform::LocalFileSystem;
     use serde_json::json;
     use tempfile::TempDir;
 
     fn ctx_in(cwd: &Path) -> ToolContext {
-        ToolContext::for_test(cwd.to_path_buf())
+        platform::tool_context_for_test(cwd.to_path_buf())
     }
 
     /// 起 grep 工具不再依赖 rg；这个 gate 函数保留为永远返回 true 兼容
@@ -692,7 +692,7 @@ mod tests {
     #[tokio::test]
     async fn cancel_aborts() {
         let dir = TempDir::new().unwrap();
-        let ctx = ToolContext::for_test(dir.path().to_path_buf());
+        let ctx = platform::tool_context_for_test(dir.path().to_path_buf());
         let cancel = ctx.cancel.clone();
         // We cancel before the call starts since grep is usually fast.
         // This verifies the cancel path exists and returns correctly.

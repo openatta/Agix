@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::interface::exec::{DirEntry, ExecError, FileSystem, Metadata};
+use base::interface::exec::{DirEntry, ExecError, FileSystem, Metadata};
 
 pub struct LocalFileSystem;
 

@@ -167,7 +167,7 @@ impl Tool for CronCreateTool {
 mod tests {
     use super::*;
     use crate::cron::delete::CronDeleteTool;
-    use base::tool::{ProgressSender, ToolContext};
+    use base::tool::ProgressSender;
     use serde_json::json;
 
     #[test]
@@ -181,7 +181,7 @@ mod tests {
             create
                 .call(
                     json!({"cron": "0 9 * * *", "prompt": "test", "recurring": true}),
-                    ToolContext::for_test("/tmp".into()),
+                    platform::tool_context_for_test("/tmp".into()),
                     ProgressSender::noop(""),
                 )
                 .await
@@ -204,7 +204,7 @@ mod tests {
             delete
                 .call(
                     json!({"id": id}),
-                    ToolContext::for_test("/tmp".into()),
+                    platform::tool_context_for_test("/tmp".into()),
                     ProgressSender::noop(""),
                 )
                 .await

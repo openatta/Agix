@@ -491,7 +491,7 @@ let mut ctx = /* … */;
 ctx.exec = ExecProviders::in_process();   // switching is this call
 ```
 
-自带两套 provider。`ExecProviders::local()` 就是本机,到哪儿都是默认。
+自带两套 provider。`platform::local_providers()` 就是本机,生产里会话用的都是它。
 `ExecProviders::in_process()` 是一棵内存里的树、一批事先定好的命令、一个只回答被
 喂过的东西的网络,以及一个如实报告自己什么都没约束的沙箱——配上 `FixedEnvironment`,
 整个会话跑得起来也放得回去,不碰任何东西。
@@ -520,21 +520,21 @@ ctx.exec = ExecProviders::in_process();   // switching is this call
 provider——模型、OAuth、遥测和 registry 的 client 各造各的。所以换掉这个点管得住
 模型能够到哪,而*整体地*审计或者离线,今天它还给不了。
 
-`local()` 起的每个子进程自领一个进程组,停的时候整组停,所以命令里放到后台的进程
+本机 provider 起的每个子进程自领一个进程组,停的时候整组停,所以命令里放到后台的进程
 也会被停掉;命令本身退出后,输出最多再等 `OUTPUT_GRACE_AFTER_EXIT`。子进程的环境由
-`ExecProviders::local_with` 收的那份 `SubprocessEnv` 决定——缺省是宿主环境去掉
+`platform::local_providers_with` 收的那份 `SubprocessEnv` 决定——缺省是宿主环境去掉
 引擎自己的凭据,设置里对应 `sandbox.subprocess_env`。自己写 `Process` 的,这两条
 也该守住:"停掉一个命令"指的是它起的全部进程,模型 `printenv` 能读到什么也该是一个
-明确的决定。哪些变量算引擎的凭据问 `local::env::is_engine_credential`:除了固定的几个,
+明确的决定。哪些变量算引擎的凭据问 `base::interface::exec::env::is_engine_credential`:除了固定的几个,
 还有设置里 provider 的 `api_key_env` 指向的、`EnvCredentials` 读过的;自己的凭据来源也读环境
-变量的,用 `local::env::hold_back_credential` 把名字报上来。
+变量的,用 `base::interface::exec::env::hold_back_credential` 把名字报上来。
 
 命令自己先退出、留在后台的进程(`nohup … &`、`npm run dev &`)不随句柄停。要在会话结束时
-收掉它们,给会话一份 `local::GroupLedger`:`Builder::process_groups(ledger)` 让这个会话
+收掉它们,给会话一份 `platform::GroupLedger`:`Builder::process_groups(ledger)` 让这个会话
 (连同它派出的子 Agent)起的每个进程组记进台账,引擎停下后由嵌入方调 `ledger.reap(grace)`
 ——先 `SIGTERM`,`grace` 后还在的 `SIGKILL`。daemon 里对应设置 `sandbox.reap_process_groups`
 (缺省关):打开后会话关闭、被逐出、daemon 收尾时都会收,故意留在后台的服务也一并停掉。
-自己拼 `ExecProviders` 的用 `ExecProviders::local_with_ledger`。
+自己拼 `ExecProviders` 的用 `platform::local_providers_with_ledger`。
 
 沙箱有一条不变量是引擎强制而不是请求的:**要求过约束的策略,绝不会悄悄变成一次不
 受约束的运行。** 后端报告 `Full`、`Partial` 或 `None`,并说清自己没能兑现什么;

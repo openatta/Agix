@@ -30,6 +30,8 @@ Agix 是一个**库**,不是一个应用。它提供的是"跑一个 agent 会�
            │
          model · scene · history · session · compaction · telemetry · hooks · permissions · tools
            │
+ 本机    platform ───────── 执行层的本机实现(进程、文件、网络、OS 沙箱)、崩溃钩子、进程身份
+           │
  契约    core(包名 base)── 所有 trait、所有共享数据类型
 ```
 
@@ -39,18 +41,25 @@ Agix 是一个**库**,不是一个应用。它提供的是"跑一个 agent 会�
 - 模块依赖契约与内核;模块之间的依赖只经 `Module::requires` 声明的顺序。
 - 只有装配层与外壳知道有哪些模块;模块 feature 的 `#[cfg]` 只出现在
   `assembly`(模块清单、会话池的 MCP 部分、RPC 服务)与 `daemon` 里。
+- `platform` 只依赖契约,契约不依赖它。用它的是真要碰本机的 crate——`tools`、`runtime`、
+  `model`、`hooks`、`permissions`、`mcp`、`plugin`、`agents`、`assembly`、`daemon`,清单与
+  各自的理由在 `MAY_USE_PLATFORM`;`scene`、`history`、`session`、`compaction`、
+  `telemetry`、`ptc`、`team`、`skills`、`script-host` 只经契约,测试里用到的除外。
 
 RPC 服务和会话池在同一个 crate 里是体积上的取舍:两者共用大量泛型实例(serde_json、
 tokio、rmcp),分在两个 crate 时各编一份,release 的 `agixd` 因此大约 2.8 MB。
 
 **`core` 里没有任何第一方依赖。** 它定义 trait 与数据类型,别的 crate 实现它们。
 这条约束是整个扩展面成立的前提:一个宿主要替换某个子系统时,面对的是 `core` 里的
-一个 trait,而不是某个具体 crate 的内部结构。本机 HTTP 客户端(`LocalNetwork`)在
-默认开启的 `http` feature 下;只实现契约的 crate 可以不要它。
+一个 trait,而不是某个具体 crate 的内部结构。执行层的本机实现也不在 `core`:
+"本机"是 `platform` 对这些 trait 的一种回答,`in_process()` 是另一种。本机 HTTP 客户端
+(`LocalNetwork`)在 `platform` 默认开启的 `http` feature 下,OS 沙箱后端在它的 `sandbox`
+feature 下(`assembly` / `daemon` 的同名 feature 转发过去)。
 
 | crate | 层 | 职责 |
 |---|---|---|
 | `core`(包名 `base`) | 契约 | 所有 `trait`、`Settings`、消息与提示词类型、扩展点清单、`SkillCatalog` / `McpServers` 等内核面向模块的接口 |
+| `platform` | 本机 | 执行层四个契约的本机实现(`LocalProcess`、`LocalFileSystem`、`LocalNetwork`、`PlatformSandbox`)与 `local_providers*`;进程组台账与孤儿收尾、崩溃钩子、进程身份 |
 | `runtime` | 内核 | 轮次循环、流式解析、工具调度、`Module` / `SessionContext` |
 | `model` | 内核 | 模型协议适配(Anthropic Messages / OpenAI Chat Completions),重试与退避 |
 | `tools` | 内核 | 内建工具;`web`、`structured-output` 两组是 feature |
@@ -526,7 +535,7 @@ stat 的时间,读盘不挡写入。走的是 `Meta` 里的父子关系,只沿 `
 | `Network` | 每一次出网请求,以及它能不能出去 |
 | `Sandbox` | 进程**怎么**被约束——永远不决定**要不要**约束 |
 
-两个 provider:`ExecProviders::local()`(本机,默认)与 `in_process()`
+两个 provider:`platform::local_providers()`(本机,生产里用的)与 `ExecProviders::in_process()`
 (内存文件树、预置的命令应答、离线网络、诚实地报告自己什么都不约束的沙箱)。
 
 五条容易搞错的:
@@ -546,7 +555,7 @@ stat 的时间,读盘不挡写入。走的是 `Meta` 里的父子关系,只沿 `
 4. **一个命令是它起的整个进程组。** 本机 provider 让每个子进程领一个进程组,停的时候
    整组停;前台进程退出后输出最多再等 `OUTPUT_GRACE_AFTER_EXIT`,还被后台进程占着就
    连它们一起停。Bash、Monitor、command hook、MCP stdio 都是这条规矩。
-5. **子进程的环境只在一处决定。** `base::interface::exec::local::SubprocessEnv`:缺省
+5. **子进程的环境只在一处决定。** `base::interface::exec::env::SubprocessEnv`:缺省
    继承宿主环境但去掉引擎自己的凭据(`ANTHROPIC_*`、`AGIX_DAEMON_TOKEN`,以及任何一层
    设置里 provider 的 `api_key_env` 指向的变量——加载设置时、读取 key 时都记下,进程内
    一直有效),`allowlist` 模式只留 `PATH` / `HOME` / 语言环境等几项加上 `allow` 列出的。Bash、
@@ -555,7 +564,7 @@ stat 的时间,读盘不挡写入。走的是 `Meta` 里的父子关系,只沿 `
    服务取的是声明它的那份设置(daemon 按项目、scene 建连),再叠各服务自己的 `env`。这和沙箱无关——沙箱关着,模型一句 `printenv` 读到什么也由它决定。
 
 沙箱是**轻量写限制,不是安全隔离**。已知逃逸路径写在
-`crates/core/src/interface/exec/local/sandbox.rs` 的模块头里,六条;第 5 条对引擎自己的
+`crates/platform/src/sandbox.rs` 的模块头里,六条;第 5 条对引擎自己的
 git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git;第 6 条(让别的进程替命令
 在沙箱外做事)在无人值守会话里收口(见 §6.3)。它限住的写入范围见 §6.3。
 
@@ -1064,7 +1073,7 @@ warn。全局层 `settings.json` 与 `settings.local.json` 的
 两把锁,都靠 `flock`,进程无论怎么退出内核都会释放:
 
 - **daemon 实例锁** `daemon.lock`:拿到 `flock` 之后,再看文件里记的上一个持有者——不持
-  `flock` 的旧版本 daemon 也挡得住。这一步由 `base::process_identity::decide_stale_lock` 判。
+  `flock` 的旧版本 daemon 也挡得住。这一步由 `platform::process_identity::decide_stale_lock` 判。
 - **会话日志的单写者锁** `sessions/<id>/writer.lock`(§1.3):只有 `flock`,不记持有者。
 
 `decide_stale_lock` 的判定依据是 **pid + 进程启动时间**,不是文件 mtime,也不是超时:

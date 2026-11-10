@@ -626,6 +626,7 @@ impl Agent {
             let discontinued_for_exec = Arc::clone(&discontinued);
             let events_for_exec = self.channels.event_tx.clone();
             let config_for_exec = Arc::clone(&self.config);
+            let exec_providers = self.exec.clone();
             let permission_for_exec = Arc::clone(&self.gate.permission);
             let session_state_for_exec = Arc::clone(&self.session_state);
             let elicitation_for_exec = Arc::clone(&self.gate.elicitation);
@@ -649,6 +650,7 @@ impl Agent {
                         cancel: cancel_for_exec.clone(),
                         hooks: Arc::clone(&hooks_for_exec),
                         config: Arc::clone(&config_for_exec),
+                        exec: exec_providers.clone(),
                         permission: Arc::clone(&permission_for_exec),
                         session_state: Arc::clone(&session_state_for_exec),
                         elicitation: Arc::clone(&elicitation_for_exec),

@@ -4,7 +4,7 @@
 //! not be among them: a command that could call the daemon would be its own
 //! host. A process counts as started here when this process is among its
 //! ancestors, or when it or an ancestor is in a process group this process
-//! started ([`super::orphans::listed`]) — which is where a command's
+//! started ([`crate::orphans::listed`]) — which is where a command's
 //! background child stays when its parent exits and it is handed to init. One
 //! that also leaves the group (`setsid`) is not recognised; the OS sandbox,
 //! which follows a process wherever it is reparented, is what refuses that one.
@@ -19,7 +19,7 @@ pub fn started_here(pid: u32) -> bool {
     if pid == me {
         return false;
     }
-    let groups = super::orphans::listed();
+    let groups = crate::orphans::listed();
     let mut current = pid;
     for _ in 0..MAX_DEPTH {
         let Some(Parentage { parent, group }) = parentage(current) else {
@@ -145,7 +145,7 @@ mod tests {
 
         let unlisted = started_here(orphan);
         let listed = {
-            let _listed = super::super::orphans::list(leader);
+            let _listed = crate::orphans::list(leader);
             started_here(orphan)
         };
         kill(orphan);

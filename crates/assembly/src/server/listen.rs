@@ -6,7 +6,7 @@ use super::*;
 /// The pid of the peer on `stream`, if this process started it.
 pub(super) fn started_by_this_daemon(stream: &tokio::net::UnixStream) -> Option<u32> {
     let pid = u32::try_from(stream.peer_cred().ok()?.pid()?).ok()?;
-    base::interface::exec::local::lineage::started_here(pid).then_some(pid)
+    platform::lineage::started_here(pid).then_some(pid)
 }
 
 /// Whether the peer on `stream` runs as a different user than this daemon.
@@ -79,7 +79,7 @@ impl DaemonServer {
             anyhow::bail!("TCP requires token");
         }
         if let Ok(addr) = listener.local_addr() {
-            base::interface::exec::local::sandbox::fence_port(addr);
+            platform::sandbox::fence_port(addr);
         }
         loop {
             tokio::select! {
@@ -130,7 +130,7 @@ impl DaemonServer {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))?;
         }
-        base::interface::exec::local::sandbox::fence_socket(socket_path);
+        platform::sandbox::fence_socket(socket_path);
         info!(path=%socket_path.display());
         Ok(listener)
     }

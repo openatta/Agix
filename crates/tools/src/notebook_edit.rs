@@ -276,8 +276,8 @@ fn source_to_lines(source: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base::interface::exec::local::LocalFileSystem;
     use base::interface::exec::{DirEntry, ExecError, FileSystem, Metadata};
+    use platform::LocalFileSystem;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -310,7 +310,7 @@ mod tests {
         let p = dir.path().join("a.ipynb");
         tokio::fs::write(&p, empty_notebook_json()).await.unwrap();
         let tool = NotebookEditTool;
-        let ctx = ToolContext::for_test(dir.path().to_path_buf());
+        let ctx = platform::tool_context_for_test(dir.path().to_path_buf());
         let r = tool
             .call(
                 json!({
@@ -336,7 +336,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let p = dir.path().join("rel.ipynb");
         tokio::fs::write(&p, empty_notebook_json()).await.unwrap();
-        let ctx = ToolContext::for_test(dir.path().to_path_buf());
+        let ctx = platform::tool_context_for_test(dir.path().to_path_buf());
         NotebookEditTool
             .call(
                 json!({
@@ -360,7 +360,7 @@ mod tests {
         let p = dir.path().join("b.ipynb");
         tokio::fs::write(&p, one_code_cell_json()).await.unwrap();
         let tool = NotebookEditTool;
-        let ctx = ToolContext::for_test(dir.path().to_path_buf());
+        let ctx = platform::tool_context_for_test(dir.path().to_path_buf());
         let r = tool
             .call(
                 json!({
@@ -387,7 +387,7 @@ mod tests {
         let p = dir.path().join("c.ipynb");
         tokio::fs::write(&p, one_code_cell_json()).await.unwrap();
         let tool = NotebookEditTool;
-        let ctx = ToolContext::for_test(dir.path().to_path_buf());
+        let ctx = platform::tool_context_for_test(dir.path().to_path_buf());
         let r = tool
             .call(
                 json!({
@@ -411,7 +411,7 @@ mod tests {
         let p = dir.path().join("d.ipynb");
         tokio::fs::write(&p, empty_notebook_json()).await.unwrap();
         let tool = NotebookEditTool;
-        let ctx = ToolContext::for_test(dir.path().to_path_buf());
+        let ctx = platform::tool_context_for_test(dir.path().to_path_buf());
         let r = tool
             .call(
                 json!({
@@ -437,7 +437,7 @@ mod tests {
                     "cell_index": 0,
                     "new_source": "x"
                 }),
-                &ToolContext::for_test("/tmp".into()),
+                &platform::tool_context_for_test("/tmp".into()),
             )
             .await;
         assert!(!matches!(r, ValidationResult::Ok));
@@ -501,7 +501,7 @@ mod tests {
             body: one_code_cell_json(),
             written: std::sync::Mutex::new(Vec::new()),
         });
-        let mut ctx = ToolContext::for_test(dir.path().to_path_buf());
+        let mut ctx = platform::tool_context_for_test(dir.path().to_path_buf());
         ctx.exec.filesystem = provider.clone();
 
         NotebookEditTool

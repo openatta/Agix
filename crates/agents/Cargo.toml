@@ -9,6 +9,7 @@ description  = "Agix — sub-agents: the Agent tool, agent types, and team orche
 
 [dependencies]
 base          = { workspace = true }
+platform      = { workspace = true }
 runtime       = { workspace = true }
 team          = { workspace = true }
 tools         = { workspace = true }

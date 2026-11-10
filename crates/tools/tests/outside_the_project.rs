@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 fn ctx_in(cwd: &Path, state: impl FnOnce(&mut SessionState)) -> ToolContext {
-    let mut ctx = ToolContext::for_test(cwd.to_path_buf());
+    let mut ctx = platform::tool_context_for_test(cwd.to_path_buf());
     ctx.permission_mode = base::permission::PermissionMode::Default;
     let mut session = SessionState::new(cwd.to_path_buf());
     state(&mut session);

@@ -7,8 +7,8 @@
 
 #![cfg(unix)]
 
-use base::interface::exec::local::{orphans, LocalProcess};
 use base::interface::exec::{Process, ProcessSpec};
+use platform::{orphans, LocalProcess};
 use tokio_util::sync::CancellationToken;
 
 fn group_alive(group: i32) -> bool {

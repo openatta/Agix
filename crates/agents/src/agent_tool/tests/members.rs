@@ -95,7 +95,7 @@ pub(super) async fn wait_until_idle(agent_tool: &AgentTool, key: &(String, Strin
 #[tokio::test]
 async fn call_rejects_team_name_and_name_when_team_coordination_is_not_enabled() {
     let agent_tool = test_agent_tool(); // no set_team_registry — team coordination "off"
-    let ctx = ToolContext::for_test(std::path::PathBuf::from("/tmp"));
+    let ctx = platform::tool_context_for_test(std::path::PathBuf::from("/tmp"));
     let input = serde_json::json!({ "prompt": "hi", "team_name": "t", "name": "worker" });
     let result = base::tool::Tool::call(&agent_tool, input, ctx, ProgressSender::noop("t")).await;
     assert!(
@@ -108,7 +108,7 @@ async fn call_rejects_team_name_and_name_when_team_coordination_is_not_enabled()
 #[tokio::test]
 async fn call_rejects_team_name_given_without_name() {
     let agent_tool = team_enabled_agent_tool();
-    let ctx = ToolContext::for_test(std::path::PathBuf::from("/tmp"));
+    let ctx = platform::tool_context_for_test(std::path::PathBuf::from("/tmp"));
     let input = serde_json::json!({ "prompt": "hi", "team_name": "t" });
     let result = base::tool::Tool::call(&agent_tool, input, ctx, ProgressSender::noop("t")).await;
     assert!(
@@ -537,7 +537,7 @@ async fn team_delete_cleanup_stops_a_persistent_member() {
 #[tokio::test]
 async fn auto_for_a_persistent_member_is_bypass() {
     let agent_tool = team_enabled_agent_tool();
-    let ctx = ToolContext::for_test(std::path::PathBuf::from("/tmp"));
+    let ctx = platform::tool_context_for_test(std::path::PathBuf::from("/tmp"));
     let input = serde_json::json!({
         "prompt": "hi", "team_name": "t-auto", "name": "worker", "permission_mode": "auto",
     });
@@ -556,7 +556,7 @@ async fn auto_for_a_persistent_member_is_bypass() {
 #[tokio::test]
 async fn call_rejects_bubble_permission_mode_for_persistent_members() {
     let agent_tool = team_enabled_agent_tool();
-    let ctx = ToolContext::for_test(std::path::PathBuf::from("/tmp"));
+    let ctx = platform::tool_context_for_test(std::path::PathBuf::from("/tmp"));
     let input = serde_json::json!({
         "prompt": "hi", "team_name": "t", "name": "worker", "permission_mode": "bubble",
     });

@@ -342,10 +342,7 @@ impl AgentTool {
         self
     }
 
-    pub fn with_process_groups(
-        mut self,
-        ledger: Arc<base::interface::exec::local::GroupLedger>,
-    ) -> Self {
+    pub fn with_process_groups(mut self, ledger: Arc<platform::GroupLedger>) -> Self {
         let mut inner = (*self.inner).clone();
         inner.process_groups = Some(ledger);
         self.inner = Arc::new(inner);

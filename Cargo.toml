@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/core",
+    "crates/platform",
     "crates/model",
     "crates/hooks",
     "crates/plugin",
@@ -102,6 +103,7 @@ notify = "6"
 
 # Internal crate dependencies
 base     = { path = "crates/core" }
+platform = { path = "crates/platform" }
 demo-rust-plugin = { path = "examples/plugins/rust" }
 model    = { path = "crates/model" }
 hooks    = { path = "crates/hooks" }

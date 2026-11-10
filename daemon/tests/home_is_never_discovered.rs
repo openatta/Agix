@@ -54,7 +54,7 @@ const ALLOWED: &[(&str, &str)] = &[
          the contract rather than with a backend.",
     ),
     (
-        "crates/core/src/interface/exec/local/sandbox.rs",
+        "crates/platform/src/sandbox.rs",
         "a backend confines a process on this machine, and the state root it \
          protects falls back to $HOME/.agix when the policy does not name one. \
          Where Agix's own settings.json lives comes from \

@@ -14,8 +14,8 @@ use std::sync::{Arc, Mutex};
 use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 
-use super::env::SubprocessEnv;
-use crate::interface::exec::{
+use crate::env::SubprocessEnv;
+use base::interface::exec::{
     ExecError, ExitStatus, OutputChunk, OutputStream, Process, ProcessHandle, ProcessSpec,
 };
 
@@ -99,7 +99,7 @@ fn forget_emptied(groups: &mut BTreeSet<i32>) {
     groups.retain(|g| {
         let alive = group_alive(*g);
         if !alive {
-            super::orphans::stopped(*g);
+            crate::orphans::stopped(*g);
         }
         alive
     });
@@ -112,19 +112,19 @@ struct ForgetOnDrop<'a>(&'a [i32]);
 impl Drop for ForgetOnDrop<'_> {
     fn drop(&mut self) {
         for g in self.0 {
-            super::orphans::stopped(*g);
+            crate::orphans::stopped(*g);
         }
     }
 }
 
 #[cfg(unix)]
-pub(super) fn group_alive(group: i32) -> bool {
+pub(crate) fn group_alive(group: i32) -> bool {
     // SAFETY: signal 0 only asks whether the group exists and is ours to signal.
     unsafe { libc::killpg(group, 0) == 0 }
 }
 
 #[cfg(not(unix))]
-pub(super) fn group_alive(_group: i32) -> bool {
+pub(crate) fn group_alive(_group: i32) -> bool {
     false
 }
 
@@ -184,7 +184,7 @@ impl Process for LocalProcess {
         let group = child.id().map(|pid| pid as libc::pid_t);
         #[cfg(unix)]
         if let Some(group) = group {
-            super::orphans::started(group);
+            crate::orphans::started(group);
             if let Some(ledger) = &self.ledger {
                 ledger.record(group);
             }
@@ -255,7 +255,7 @@ struct LocalHandle {
 }
 
 #[cfg(unix)]
-pub(super) fn signal_group(group: libc::pid_t, signal: libc::c_int) {
+pub(crate) fn signal_group(group: libc::pid_t, signal: libc::c_int) {
     // SAFETY: plain integers in, nothing borrowed; a group that is already
     // gone comes back as ESRCH, which is the outcome being asked for.
     unsafe {
@@ -271,7 +271,7 @@ impl Drop for LocalHandle {
                 signal_group(group, libc::SIGKILL);
             }
             if !self.kept {
-                super::orphans::stopped(group);
+                crate::orphans::stopped(group);
             }
         }
     }
@@ -400,8 +400,8 @@ mod tests {
         let (inherited, _, _) = run(probe()).await;
         assert!(inherited.contains(env!("CARGO_MANIFEST_DIR")));
 
-        let allowlist = super::super::env::SubprocessEnv {
-            mode: super::super::env::SubprocessEnvMode::Allowlist,
+        let allowlist = crate::env::SubprocessEnv {
+            mode: crate::env::SubprocessEnvMode::Allowlist,
             allow: vec![],
         };
         let (out, _, _) = run_with(LocalProcess::new(allowlist), probe()).await;

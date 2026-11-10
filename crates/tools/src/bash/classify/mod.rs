@@ -608,7 +608,7 @@ fn denied_read_suffixes() -> &'static [Vec<String>] {
     static SUFFIXES: std::sync::OnceLock<Vec<Vec<String>>> = std::sync::OnceLock::new();
     SUFFIXES.get_or_init(|| {
         let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-        base::interface::exec::local::sandbox::default_deny_read()
+        platform::sandbox::default_deny_read()
             .into_iter()
             .map(|p| {
                 let rel = home

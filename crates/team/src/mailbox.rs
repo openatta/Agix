@@ -565,7 +565,7 @@ mod tests {
     use std::sync::Arc;
 
     fn ctx() -> ToolContext {
-        ToolContext::for_test(PathBuf::from("/tmp"))
+        platform::tool_context_for_test(PathBuf::from("/tmp"))
     }
 
     fn text_content(r: &ToolResult) -> &str {

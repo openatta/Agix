@@ -192,7 +192,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn a_write_target_follows_the_os_through_a_symlink_before_a_dotdot() {
-        let fs = base::interface::exec::local::LocalFileSystem;
+        let fs = platform::LocalFileSystem;
         let dir = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(dir.path()).unwrap();
         let (proj, outside) = (root.join("proj"), root.join("outside"));

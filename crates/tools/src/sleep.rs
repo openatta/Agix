@@ -103,7 +103,7 @@ mod tests {
         let r = tool
             .validate_input(
                 &json!({"duration_ms": 0}),
-                &ToolContext::for_test("/tmp".into()),
+                &platform::tool_context_for_test("/tmp".into()),
             )
             .await;
         assert!(!matches!(r, ValidationResult::Ok));
@@ -115,7 +115,7 @@ mod tests {
         let r = tool
             .validate_input(
                 &json!({"duration_ms": 999_999}),
-                &ToolContext::for_test("/tmp".into()),
+                &platform::tool_context_for_test("/tmp".into()),
             )
             .await;
         assert!(!matches!(r, ValidationResult::Ok));
@@ -128,7 +128,7 @@ mod tests {
         let r = tool
             .call(
                 json!({"duration_ms": 50}),
-                ToolContext::for_test("/tmp".into()),
+                platform::tool_context_for_test("/tmp".into()),
                 ProgressSender::noop("t"),
             )
             .await
@@ -142,7 +142,7 @@ mod tests {
     #[tokio::test]
     async fn cancellable() {
         let tool = SleepTool;
-        let ctx = ToolContext::for_test("/tmp".into());
+        let ctx = platform::tool_context_for_test("/tmp".into());
         let cancel = ctx.cancel.clone();
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;

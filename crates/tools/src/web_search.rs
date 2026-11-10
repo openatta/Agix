@@ -276,7 +276,7 @@ mod tests {
     use std::path::Path;
 
     fn ctx_in(cwd: &Path) -> ToolContext {
-        ToolContext::for_test(cwd.to_path_buf())
+        platform::tool_context_for_test(cwd.to_path_buf())
     }
 
     struct MockProvider(Vec<SearchResult>);
@@ -404,7 +404,7 @@ mod tests {
     #[tokio::test]
     async fn cancel_aborts() {
         let tool = WebSearchTool::new(Box::new(MockProvider(vec![])));
-        let ctx = ToolContext::for_test("/tmp".into());
+        let ctx = platform::tool_context_for_test("/tmp".into());
         ctx.cancel.cancel();
         let r = tool
             .call(json!({"query": "rust"}), ctx, ProgressSender::noop("t"))

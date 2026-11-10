@@ -229,7 +229,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn ctx_in(cwd: &Path) -> ToolContext {
-        ToolContext::for_test(cwd.to_path_buf())
+        platform::tool_context_for_test(cwd.to_path_buf())
     }
 
     async fn make_tree(dir: &Path) {
@@ -363,7 +363,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         make_tree(dir.path()).await;
         let tool = GlobTool;
-        let ctx = ToolContext::for_test(dir.path().to_path_buf());
+        let ctx = platform::tool_context_for_test(dir.path().to_path_buf());
         ctx.cancel.cancel();
         let err = tool
             .call(json!({"pattern": "**/*"}), ctx, ProgressSender::noop("t"))

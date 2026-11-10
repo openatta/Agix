@@ -432,7 +432,7 @@ mod tests {
         let err = deferred
             .call(
                 json!({"file": "a.txt"}),
-                ToolContext::for_test("/tmp".into()),
+                platform::tool_context_for_test("/tmp".into()),
                 ProgressSender::noop("t"),
             )
             .await
@@ -533,7 +533,7 @@ mod tests {
         let found = search
             .call(
                 json!({"query": "select:Grep"}),
-                ToolContext::for_test("/tmp".into()),
+                platform::tool_context_for_test("/tmp".into()),
                 ProgressSender::noop("t"),
             )
             .await
@@ -549,7 +549,7 @@ mod tests {
             .unwrap()
             .call(
                 json!({"path": "x"}),
-                ToolContext::for_test("/tmp".into()),
+                platform::tool_context_for_test("/tmp".into()),
                 ProgressSender::noop("t"),
             )
             .await

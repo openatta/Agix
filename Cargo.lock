@@ -21,6 +21,7 @@ dependencies = [
  "model",
  "notify",
  "permissions",
+ "platform",
  "runtime",
  "scene",
  "schemars",
@@ -165,6 +166,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "permissions",
+ "platform",
  "plugin",
  "reqwest",
  "runtime",
@@ -330,8 +332,6 @@ dependencies = [
  "hex",
  "libc",
  "regex",
- "reqwest",
- "rustls",
  "schemars",
  "serde",
  "serde_json",
@@ -342,7 +342,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "url",
  "uuid",
 ]
 
@@ -699,6 +698,7 @@ dependencies = [
  "model",
  "notify",
  "permissions",
+ "platform",
  "reqwest",
  "runtime",
  "scene",
@@ -1287,6 +1287,7 @@ dependencies = [
  "libc",
  "notify",
  "permissions",
+ "platform",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -1892,6 +1893,7 @@ dependencies = [
  "history",
  "mcp-oauth-mock",
  "model",
+ "platform",
  "reqwest",
  "rpc-client",
  "runtime",
@@ -1971,6 +1973,7 @@ dependencies = [
  "libc",
  "mcp-oauth-mock",
  "oauth2",
+ "platform",
  "process-wrap",
  "reqwest",
  "rmcp",
@@ -2087,6 +2090,7 @@ dependencies = [
  "bytes",
  "eventsource-stream",
  "futures",
+ "platform",
  "serde",
  "serde_json",
  "tempfile",
@@ -2415,6 +2419,7 @@ dependencies = [
  "async-trait",
  "base",
  "globset",
+ "platform",
  "serde",
  "serde_json",
  "tempfile",
@@ -2516,12 +2521,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
+name = "platform"
+version = "0.3.10-2026110901"
+dependencies = [
+ "async-trait",
+ "base",
+ "futures",
+ "libc",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "plugin"
 version = "0.3.10-2026110901"
 dependencies = [
  "base",
  "hex",
  "libc",
+ "platform",
  "scene",
  "semver",
  "serde",
@@ -2628,6 +2653,7 @@ version = "0.3.10-2026110901"
 dependencies = [
  "async-trait",
  "base",
+ "platform",
  "rquickjs",
  "schemars",
  "serde",
@@ -3002,6 +3028,7 @@ dependencies = [
  "model",
  "notify",
  "permissions",
+ "platform",
  "ptc",
  "scene",
  "schemars",
@@ -3469,6 +3496,7 @@ dependencies = [
  "globset",
  "notify",
  "permissions",
+ "platform",
  "regex",
  "runtime",
  "scene",
@@ -3652,6 +3680,7 @@ dependencies = [
  "async-trait",
  "base",
  "futures",
+ "platform",
  "regex",
  "schemars",
  "serde",
@@ -3730,6 +3759,7 @@ dependencies = [
  "mcp",
  "model",
  "permissions",
+ "platform",
  "rpc-client",
  "runtime",
  "scene",
@@ -4021,6 +4051,7 @@ dependencies = [
  "jsonschema",
  "libc",
  "permissions",
+ "platform",
  "regex",
  "schemars",
  "serde",

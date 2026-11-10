@@ -148,7 +148,7 @@ mod tests {
     }
 
     fn ctx_with_tasks(tasks: MockTasks) -> ToolContext {
-        let mut ctx = ToolContext::for_test(Path::new("/").to_path_buf());
+        let mut ctx = platform::tool_context_for_test(Path::new("/").to_path_buf());
         ctx.running_tasks = Some(Arc::new(tasks) as Arc<dyn RunningTasksCallback>);
         ctx
     }

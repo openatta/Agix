@@ -24,4 +24,5 @@ telemetry = { workspace = true }
 regex = { workspace = true }
 
 [dev-dependencies]
+platform = { workspace = true }
 tempfile = { workspace = true }

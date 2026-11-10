@@ -82,7 +82,7 @@ pub struct SessionContext<'a> {
     /// How many agents deep this session is: 0 for one a host created.
     pub depth: u32,
     pub task_router: Option<&'a Arc<base::provider::TaskRouter>>,
-    pub process_groups: Option<&'a Arc<base::interface::exec::local::GroupLedger>>,
+    pub process_groups: Option<&'a Arc<platform::GroupLedger>>,
     /// The Rust plugins this session was built with; a delegate is built
     /// with them too.
     pub delegate_plugins: &'a [Arc<dyn crate::plugin::Plugin>],

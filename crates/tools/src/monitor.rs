@@ -434,7 +434,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn ctx_in(cwd: &std::path::Path) -> ToolContext {
-        ToolContext::for_test(cwd.to_path_buf())
+        platform::tool_context_for_test(cwd.to_path_buf())
     }
 
     struct Holds;

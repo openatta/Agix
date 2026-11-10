@@ -10,6 +10,7 @@ autotests = false
 daemon      = { workspace = true }
 rpc-client  = { workspace = true }
 base        = { workspace = true }
+platform    = { workspace = true }
 model       = { workspace = true }
 scene       = { workspace = true }
 runtime     = { workspace = true }

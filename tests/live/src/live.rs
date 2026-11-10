@@ -299,7 +299,7 @@ impl ModelEndpoint for LiveProvider {
 
 impl LiveProvider {
     pub async fn start(config: LiveConfig) -> anyhow::Result<Self> {
-        base::interface::exec::local::install_tls_provider();
+        platform::install_tls_provider();
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(600))
             .build()?;

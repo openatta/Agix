@@ -434,7 +434,7 @@ mod tests {
         let result = tool
             .call(
                 serde_json::json!({}),
-                ToolContext::for_test(std::path::PathBuf::from("/tmp")),
+                platform::tool_context_for_test(std::path::PathBuf::from("/tmp")),
                 ProgressSender::noop("t"),
             )
             .await
@@ -503,7 +503,7 @@ mod tests {
         let err = tool
             .call(
                 input,
-                ToolContext::for_test(dir.path().to_path_buf()),
+                platform::tool_context_for_test(dir.path().to_path_buf()),
                 ProgressSender::noop("t"),
             )
             .await

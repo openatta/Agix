@@ -500,7 +500,7 @@ mod tests {
     }
 
     fn make_ctx() -> ToolContext {
-        ToolContext::for_test(PathBuf::from("/tmp"))
+        platform::tool_context_for_test(PathBuf::from("/tmp"))
     }
 
     #[tokio::test]

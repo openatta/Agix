@@ -64,7 +64,7 @@ mod tests {
     #[tokio::test]
     async fn both_pipes_and_the_status_survive_the_round_trip() {
         let out = capture(
-            &ExecProviders::local(),
+            &platform::local_providers(),
             sh("echo out; echo err >&2; exit 2"),
             CancellationToken::new(),
         )
@@ -81,7 +81,7 @@ mod tests {
         let out = tokio::time::timeout(
             std::time::Duration::from_secs(20),
             capture(
-                &ExecProviders::local(),
+                &platform::local_providers(),
                 sh("head -c 400000 /dev/zero | tr '\\0' 'x'"),
                 CancellationToken::new(),
             ),
@@ -95,7 +95,7 @@ mod tests {
     #[tokio::test]
     async fn a_missing_program_is_the_targets_failure_not_an_unreachable_provider() {
         let e = capture(
-            &ExecProviders::local(),
+            &platform::local_providers(),
             ProcessSpec::new("agix-no-such-program", std::env::temp_dir()),
             CancellationToken::new(),
         )

@@ -41,34 +41,32 @@ pub(crate) fn engine_git_from(
 ) -> base::frozen::git::EngineGit {
     tools::bash::engine_git_for(
         &sandbox_settings_from(config),
-        Arc::new(base::interface::exec::local::PlatformSandbox),
+        Arc::new(platform::PlatformSandbox),
         config.dangerously_disable_sandbox,
         session_id,
     )
 }
 
-/// The execution providers a tool call reaches the machine through.
+/// The execution providers a session's tool calls reach the machine through,
+/// with every process group a command starts recorded in `process_groups`.
 ///
 /// Only the egress is configured from `EngineConfig`; the other three are
 /// this machine either way. `sandbox.network_mode` is a statement about where
 /// the *model* may reach, which is as true of a `WebFetch` as it is of a
 /// `curl` inside a sandboxed command.
-pub(super) fn exec_providers_from(
+pub(crate) fn exec_providers_from(
     config: &base::context::EngineConfig,
+    process_groups: Option<&Arc<platform::GroupLedger>>,
 ) -> base::interface::exec::ExecProviders {
     let env = config.subprocess_env.clone();
-    match &config.process_groups {
-        Some(ledger) => {
-            base::interface::exec::ExecProviders::local_with_ledger(env, ledger.clone())
-        }
-        None => base::interface::exec::ExecProviders::local_with(env),
+    match process_groups {
+        Some(ledger) => platform::local_providers_with_ledger(env, ledger.clone()),
+        None => platform::local_providers_with(env),
     }
-    .with_network(Arc::new(
-        base::interface::exec::local::LocalNetwork::for_agent_policy(
-            config.sandbox_policy.network_mode,
-            config.sandbox_policy.allowed_domains.clone(),
-        ),
-    ))
+    .with_network(Arc::new(platform::LocalNetwork::for_agent_policy(
+        config.sandbox_policy.network_mode,
+        config.sandbox_policy.allowed_domains.clone(),
+    )))
 }
 
 /// Sub-calls a tool makes (`RunCode`), through the same dispatch as the
@@ -193,7 +191,7 @@ pub(super) fn tool_context_for(ctx: &ToolExecCtx, tool: &Arc<dyn base::tool::Too
         agent_depth: ctx.agent_depth,
         events_tx: None,
         elicitation: Some(Arc::clone(&ctx.elicitation)),
-        exec: exec_providers_from(&ctx.config),
+        exec: ctx.exec.clone(),
         dispatch: tool.needs_dispatch().then(|| {
             Arc::new(SubCallDispatcher::new(ctx))
                 as Arc<dyn base::interface::tool_dispatch::ToolDispatch>
@@ -227,7 +225,7 @@ impl Agent {
             agent_depth: self.identity.agent_depth,
             events_tx: None,
             elicitation: Some(Arc::clone(&self.gate.elicitation)),
-            exec: exec_providers_from(&self.config),
+            exec: self.exec.clone(),
             dispatch: None,
             from_code: false,
         }

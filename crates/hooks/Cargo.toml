@@ -9,6 +9,7 @@ description  = "Agix — lifecycle hook runner"
 
 [dependencies]
 base          = { workspace = true }
+platform      = { workspace = true }
 permissions   = { workspace = true }
 tokio         = { workspace = true }
 tokio-util    = { workspace = true }

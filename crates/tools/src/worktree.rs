@@ -549,13 +549,13 @@ mod tests {
     }
 
     fn exec() -> ExecProviders {
-        ExecProviders::local()
+        platform::local_providers()
     }
 
-    use base::interface::exec::local::{LocalFileSystem, LocalProcess};
     use base::interface::exec::{
         DirEntry, FileSystem, Metadata, Process, ProcessHandle, ProcessSpec,
     };
+    use platform::{LocalFileSystem, LocalProcess};
 
     /// The local providers, with a note of everything that went through them.
     ///
@@ -615,7 +615,7 @@ mod tests {
 
     fn watched() -> (ExecProviders, std::sync::Arc<Log>) {
         let log = std::sync::Arc::new(Log::default());
-        let mut providers = ExecProviders::local();
+        let mut providers = platform::local_providers();
         providers.process = std::sync::Arc::new(WatchedProcess(log.clone()));
         providers.filesystem = std::sync::Arc::new(WatchedFileSystem(log.clone()));
         (providers, log)
@@ -929,7 +929,7 @@ mod tests {
         let repo = make_minimal_repo().await;
         let state = TempDir::new().unwrap();
         let git = EngineGit::sandboxed(
-            std::sync::Arc::new(base::interface::exec::local::PlatformSandbox),
+            std::sync::Arc::new(platform::PlatformSandbox),
             base::interface::exec::SandboxPolicy {
                 state_root: Some(state.path().to_path_buf()),
                 ..Default::default()

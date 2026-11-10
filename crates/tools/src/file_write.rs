@@ -197,15 +197,15 @@ async fn write_file(fs: &dyn FileSystem, path: &Path, content: &str) -> Result<u
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base::interface::exec::local::LocalFileSystem;
     use base::interface::exec::{DirEntry, ExecError, Metadata};
     use base::tool::ToolResultContent;
+    use platform::LocalFileSystem;
     use serde_json::json;
     use std::sync::Arc;
     use tempfile::TempDir;
 
     fn ctx_in(cwd: &Path) -> ToolContext {
-        ToolContext::for_test(cwd.to_path_buf())
+        platform::tool_context_for_test(cwd.to_path_buf())
     }
 
     #[tokio::test]
@@ -390,7 +390,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let p = dir.path().join("c.txt");
         let tool = FileWriteTool;
-        let ctx = ToolContext::for_test(dir.path().to_path_buf());
+        let ctx = platform::tool_context_for_test(dir.path().to_path_buf());
         ctx.cancel.cancel();
         let err = tool
             .call(

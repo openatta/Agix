@@ -140,7 +140,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn ctx() -> ToolContext {
-        ToolContext::for_test(PathBuf::from("/tmp"))
+        platform::tool_context_for_test(PathBuf::from("/tmp"))
     }
 
     async fn write(tool: &TodoWriteTool, ctx: &ToolContext, todos: Value) -> ToolResult {

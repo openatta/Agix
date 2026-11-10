@@ -1,7 +1,7 @@
 //! Sandbox policy for shell-running tools: settings to policy, confining a command, the session TMPDIR and the engine's own git.
 
-use base::interface::exec::local::sandbox;
 use base::tool::{ToolContext, ToolResult};
+use platform::sandbox;
 use std::time::Duration;
 
 /// `ToolContext.sandbox`（`base::tool::SandboxSettings`，跨 crate 的纯数据

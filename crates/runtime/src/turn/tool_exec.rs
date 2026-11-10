@@ -36,6 +36,8 @@ pub(crate) struct ToolExecCtx {
     /// comment. Cloned into `ToolContext.config` instead of the
     /// `defaults_for("unknown")` placeholder.
     pub config: Arc<base::context::EngineConfig>,
+    /// The session's providers — see `Agent.exec`.
+    pub exec: base::interface::exec::ExecProviders,
     /// Real permission checker — see `Agent.permission`. Consulted once per
     /// tool call in `execute_tool_inner`, after the `PreToolUse` hook step.
     pub permission: Arc<dyn base::interface::permission::Permission>,

@@ -9,7 +9,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use base::context::config::NetworkModeConfig;
-use base::interface::exec::local::LocalNetwork;
 use base::interface::exec::{Network, Origin};
 use base::interface::model::{Model, ModelError, StreamParams};
 use base::settings::ThinkingMode;
@@ -18,6 +17,7 @@ use model::client::{AnthropicClient, AuthMode, HttpAnthropicClient};
 use model::error::AnthropicError;
 use model::types::MessagesRequest;
 use model::OpenAICompatibleModel;
+use platform::LocalNetwork;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 

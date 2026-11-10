@@ -29,7 +29,7 @@ fn edit(path: &Path, old: &str, new: &str) -> Value {
 #[tokio::test]
 async fn the_session_edits_what_it_wrote_without_reading_it_back() {
     let dir = tempfile::tempdir().unwrap();
-    let ctx = ToolContext::for_test(dir.path().to_path_buf());
+    let ctx = platform::tool_context_for_test(dir.path().to_path_buf());
     let path = dir.path().join("report.md");
     let write = tools::file_write::FileWriteTool;
     let editor = tools::file_edit::FileEditTool;
@@ -57,7 +57,7 @@ async fn the_session_edits_what_it_wrote_without_reading_it_back() {
 #[tokio::test]
 async fn a_change_from_outside_still_needs_a_fresh_read() {
     let dir = tempfile::tempdir().unwrap();
-    let ctx = ToolContext::for_test(dir.path().to_path_buf());
+    let ctx = platform::tool_context_for_test(dir.path().to_path_buf());
     let path = dir.path().join("notes.txt");
     let input = json!({ "file_path": path.display().to_string(), "content": "alpha\n" });
     run(&tools::file_write::FileWriteTool, input, &ctx)

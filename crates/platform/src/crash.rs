@@ -13,7 +13,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::interface::exec::local::orphans;
+use crate::orphans;
 
 /// Installs the hook. Records go to `<dir>/<unix-seconds>-<pid>.txt`.
 pub fn install(dir: PathBuf, program: &'static str, version: &'static str) {

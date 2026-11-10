@@ -180,7 +180,7 @@ pub(super) struct Inner {
     /// Agent types this session's plugins declare, over the shared catalog:
     /// above built-in and package types, below the ones on disk.
     pub(super) session_agent_types: Arc<std::collections::HashMap<String, AgentTypeDefinition>>,
-    pub(super) process_groups: Option<Arc<base::interface::exec::local::GroupLedger>>,
+    pub(super) process_groups: Option<Arc<platform::GroupLedger>>,
     /// What every delegate is assembled with: the parent session's modules.
     pub(super) modules: Vec<Arc<dyn runtime::module::Module>>,
     /// The parent session's `SkillManager`, when known — used to resolve

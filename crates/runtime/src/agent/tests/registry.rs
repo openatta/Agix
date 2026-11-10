@@ -632,7 +632,7 @@ async fn build_applies_the_scenes_deferred_tool_policy() {
         .expect("ToolSearch rebound onto the session registry")
         .call(
             serde_json::json!({"query": "select:GoalCreate"}),
-            base::tool::ToolContext::for_test("/tmp".into()),
+            platform::tool_context_for_test("/tmp".into()),
             base::tool::ProgressSender::noop("t"),
         )
         .await

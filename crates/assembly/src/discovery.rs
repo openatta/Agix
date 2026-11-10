@@ -21,7 +21,7 @@
 //! alongside `daemon.lock`, not a replacement for it — existing single-scene
 //! clients keep working unmodified.
 
-use base::process_identity::{
+use platform::process_identity::{
     decide_stale_lock, ProcessIdentity, ProcessLiveness, StaleLockDecision,
 };
 use serde::{Deserialize, Serialize};
@@ -419,7 +419,7 @@ pub fn discover_instances(dir: &Path) -> Vec<InstanceFile> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base::process_identity::process_start_time;
+    use platform::process_identity::process_start_time;
     use tempfile::TempDir;
 
     fn read_lock_file(lock_path: &Path) -> Result<Option<DaemonLock>, LockFileError> {
@@ -607,7 +607,7 @@ mod tests {
     }
 
     // `ProcessIdentity`/`ProcessLiveness`/`parse_elapsed` behavior itself is
-    // covered by `base::process_identity`'s own tests — the tests here only
+    // covered by `platform::process_identity`'s own tests — the tests here only
     // cover this module's use of them (the lock file's accept/reject/reclaim
     // decisions).
 
@@ -676,7 +676,7 @@ mod tests {
             "the entry was dropped. recorded={recorded_start}, \
              now={:?}, verdict={:?}, dir_entries={:?}",
             process_start_time(child.pid()),
-            base::process_identity::ProcessIdentity::check(&ProcessIdentity {
+            platform::process_identity::ProcessIdentity::check(&ProcessIdentity {
                 pid: child.pid(),
                 started_at: recorded_start,
             }),
@@ -736,7 +736,7 @@ mod tests {
             "recorded={}, now={:?}, verdict={:?}, dir_entries={:?}",
             identity.started_at,
             process_start_time(identity.pid),
-            base::process_identity::ProcessIdentity::check(&identity),
+            platform::process_identity::ProcessIdentity::check(&identity),
             std::fs::read_dir(&instances_dir).map(|d| d
                 .flatten()
                 .map(|e| e.file_name().to_string_lossy().to_string())

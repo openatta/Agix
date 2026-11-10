@@ -83,7 +83,7 @@ pub struct StdioMcpClient {
     sink: Option<crate::notify::NotificationSink>,
     /// The environment policy a stdio server's process starts under, kept
     /// for the same reason: a reconnect must not start it under another.
-    env_policy: base::interface::exec::local::SubprocessEnv,
+    env_policy: platform::SubprocessEnv,
     /// The owning pool's authorization state, for remote servers that use
     /// OAuth.
     auth: Option<Arc<crate::oauth::McpAuth>>,
@@ -114,7 +114,7 @@ impl StdioMcpClient {
             server_name,
             config,
             sink,
-            base::interface::exec::local::SubprocessEnv::default(),
+            platform::SubprocessEnv::default(),
             None,
         )
         .await
@@ -127,7 +127,7 @@ impl StdioMcpClient {
         server_name: &str,
         config: &McpServerConfig,
         sink: Option<crate::notify::NotificationSink>,
-        env_policy: base::interface::exec::local::SubprocessEnv,
+        env_policy: platform::SubprocessEnv,
         auth: Option<Arc<crate::oauth::McpAuth>>,
     ) -> Result<Arc<Self>, McpError> {
         let spawned = spawn_service_within(
@@ -686,7 +686,7 @@ async fn spawn_service_within(
     server_name: &str,
     config: &McpServerConfig,
     sink: Option<crate::notify::NotificationSink>,
-    env_policy: &base::interface::exec::local::SubprocessEnv,
+    env_policy: &platform::SubprocessEnv,
     auth: Option<&crate::oauth::McpAuth>,
 ) -> Result<Spawned, McpError> {
     let limit = config.timeouts().startup();
@@ -707,7 +707,7 @@ async fn spawn_service(
     server_name: &str,
     config: &McpServerConfig,
     sink: Option<crate::notify::NotificationSink>,
-    env_policy: &base::interface::exec::local::SubprocessEnv,
+    env_policy: &platform::SubprocessEnv,
     auth: Option<&crate::oauth::McpAuth>,
 ) -> Result<Spawned, McpError> {
     match config {
@@ -795,7 +795,7 @@ async fn spawn_stdio_service(
     env: &std::collections::HashMap<String, String>,
     working_dir: Option<&std::path::Path>,
     sink: Option<crate::notify::NotificationSink>,
-    env_policy: &base::interface::exec::local::SubprocessEnv,
+    env_policy: &platform::SubprocessEnv,
 ) -> Result<
     rmcp::service::RunningService<rmcp::RoleClient, crate::notify::NotifyingHandler>,
     McpError,
@@ -826,7 +826,7 @@ async fn spawn_stdio_service(
     let handler = crate::notify::NotifyingHandler::new(server_name, sink);
     #[cfg(unix)]
     let handler = match transport.id() {
-        Some(pid) => handler.keeping(base::interface::exec::local::orphans::list(pid as i32)),
+        Some(pid) => handler.keeping(platform::orphans::list(pid as i32)),
         None => handler,
     };
     handler
@@ -1471,7 +1471,7 @@ done
     #[cfg(unix)]
     #[tokio::test]
     async fn a_stdio_servers_process_group_is_listed_while_it_runs() {
-        use base::interface::exec::local::orphans;
+        use platform::orphans;
         let dir = tempfile::tempdir().unwrap();
         let pid_file = dir.path().join("pid");
         let McpServerConfig::Stdio { args, .. } = sh_server(dir.path(), Default::default()) else {
@@ -1609,7 +1609,7 @@ done
     #[cfg(unix)]
     #[tokio::test]
     async fn a_stdio_server_starts_under_the_env_policy_it_was_given() {
-        use base::interface::exec::local::{SubprocessEnv, SubprocessEnvMode};
+        use platform::{SubprocessEnv, SubprocessEnvMode};
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("env.txt");
         let cfg = McpServerConfig::Stdio {

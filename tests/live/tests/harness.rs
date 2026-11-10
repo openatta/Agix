@@ -22,7 +22,7 @@ fn stubbed(name: &str, stub: &ProviderStub) -> LiveRunBuilder {
 
 /// A client for this machine's servers, past the shell's proxy.
 fn direct_http() -> anyhow::Result<reqwest::Client> {
-    base::interface::exec::local::install_tls_provider();
+    platform::install_tls_provider();
     Ok(reqwest::Client::builder().no_proxy().build()?)
 }
 

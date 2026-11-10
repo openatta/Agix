@@ -15,17 +15,23 @@
 //! the sandbox *policy* — what to constrain and whether to constrain at all —
 //! is the kernel's. A provider decides *how* to constrain, never *whether*.
 //!
+//! This machine's own answers to the four contracts are the `platform` crate,
+//! which depends on this one; [`env`] stays here because it is the
+//! `sandbox.subprocess_env` setting and the engine's credential list, both of
+//! which `base` itself reads.
+//!
 //! [`tool_middleware`]: crate::interface::tool_middleware
 //! [`health`]: crate::interface::health
 //! [`environment`]: crate::interface::environment
 
+pub mod env;
 pub mod filesystem;
 pub mod in_process;
-pub mod local;
 pub mod network;
 pub mod process;
 pub mod sandbox;
 
+pub use env::{SubprocessEnv, SubprocessEnvMode};
 pub use filesystem::{DirEntry, FileSystem, Metadata};
 pub use network::{
     domains_name_host, is_internal_address, HttpRequest, HttpResponse, HttpStream, Network, Origin,
@@ -54,40 +60,11 @@ pub struct ExecProviders {
 }
 
 impl ExecProviders {
-    /// This machine.
-    pub fn local() -> Self {
-        Self::local_with(local::SubprocessEnv::default())
-    }
-
-    /// This machine, with child processes started from `env`.
-    pub fn local_with(env: local::SubprocessEnv) -> Self {
-        Self {
-            process: std::sync::Arc::new(local::LocalProcess::new(env)),
-            filesystem: std::sync::Arc::new(local::LocalFileSystem),
-            #[cfg(feature = "http")]
-            network: std::sync::Arc::new(local::LocalNetwork::default()),
-            #[cfg(not(feature = "http"))]
-            network: std::sync::Arc::new(NoNetwork),
-            sandbox: std::sync::Arc::new(local::PlatformSandbox),
-        }
-    }
-
-    /// [`local_with`](Self::local_with), with every process group a command
-    /// starts recorded in `ledger`.
-    pub fn local_with_ledger(
-        env: local::SubprocessEnv,
-        ledger: std::sync::Arc<local::GroupLedger>,
-    ) -> Self {
-        Self {
-            process: std::sync::Arc::new(local::LocalProcess::with_ledger(env, ledger)),
-            ..Self::local_with(local::SubprocessEnv::default())
-        }
-    }
-
     /// Nothing on the machine: a memory tree, commands decided in advance, no
     /// network, and a sandbox honest enough to say it constrains nothing.
     ///
-    /// The second provider. Switching is this call.
+    /// The provider beside this machine's (`platform::local_providers`).
+    /// Switching is this call.
     pub fn in_process() -> Self {
         Self {
             process: std::sync::Arc::new(in_process::ScriptedProcess::new()),
@@ -102,12 +79,6 @@ impl ExecProviders {
     pub fn with_network(mut self, n: std::sync::Arc<dyn Network>) -> Self {
         self.network = n;
         self
-    }
-}
-
-impl Default for ExecProviders {
-    fn default() -> Self {
-        Self::local()
     }
 }
 
@@ -173,23 +144,5 @@ impl From<ExecError> for crate::error::ToolError {
             ExecError::Denied(m) => Self::Denied(m),
             ExecError::Failed(m) => Self::exec(m),
         }
-    }
-}
-
-/// The network of a `base` built without `http`: every request is refused as
-/// a provider that is not there, never sent some other way.
-#[cfg(not(feature = "http"))]
-struct NoNetwork;
-
-#[cfg(not(feature = "http"))]
-#[async_trait::async_trait]
-impl Network for NoNetwork {
-    async fn send(&self, _: HttpRequest, _: Origin) -> Result<HttpResponse, ExecError> {
-        Err(ExecError::Unavailable(
-            "this build of `base` has no HTTP client (feature `http`)".into(),
-        ))
-    }
-    fn permits(&self, _: &str, _: Origin) -> bool {
-        false
     }
 }

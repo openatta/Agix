@@ -72,7 +72,7 @@ async fn mcp_toy_server_connects_and_ping_round_trips() {
             )
         });
 
-    let ctx = base::tool::ToolContext::for_test(std::env::temp_dir());
+    let ctx = platform::tool_context_for_test(std::env::temp_dir());
     let progress = base::tool::ProgressSender::noop("test-tool-use");
     let result = tool
         .call(serde_json::json!({ "message": "hello" }), ctx, progress)

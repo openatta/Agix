@@ -15,9 +15,9 @@ use std::time::Duration;
 
 use futures::StreamExt;
 
-use crate::context::config::NetworkModeConfig;
-use crate::interface::exec::network::domain_key;
-use crate::interface::exec::{
+use base::context::config::NetworkModeConfig;
+use base::interface::exec::network::domain_key;
+use base::interface::exec::{
     domains_name_host, is_internal_address, ExecError, HttpRequest, HttpResponse, HttpStream,
     Network, Origin,
 };
@@ -577,7 +577,7 @@ mod tests {
     #[test]
     fn the_allowlist_is_not_case_sensitive() {
         let n = LocalNetwork::for_agent_policy(
-            crate::context::config::NetworkModeConfig::Allowlist,
+            base::context::config::NetworkModeConfig::Allowlist,
             vec!["Example.COM".into()],
         );
         assert!(n.permits("example.com", Origin::Agent));

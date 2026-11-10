@@ -357,7 +357,7 @@ mod tests {
     }
 
     fn ctx() -> ToolContext {
-        ToolContext::for_test(std::path::PathBuf::from("/tmp"))
+        platform::tool_context_for_test(std::path::PathBuf::from("/tmp"))
     }
 
     #[tokio::test]
@@ -665,7 +665,7 @@ mod tests {
         // mock 不会挂起（没有 push_response 时同步返回错误），所以先触发 cancel，
         // 让 select! biased 命中 cancel 分支。
         let adapter = McpToolAdapter::new(client, meta("hang"));
-        let ctx = ToolContext::for_test(std::path::PathBuf::from("/tmp"));
+        let ctx = platform::tool_context_for_test(std::path::PathBuf::from("/tmp"));
         ctx.cancel.cancel();
         let err = adapter
             .call(json!({}), ctx, ProgressSender::noop("t"))

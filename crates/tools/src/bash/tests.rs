@@ -1,5 +1,5 @@
 use super::sandbox::{sandbox_policy, to_sandbox_policy};
-use base::interface::exec::local::sandbox;
+use platform::sandbox;
 
 use base::interface::exec::{Confined, Enforcement, ProcessSpec, Sandbox, SandboxMode};
 
@@ -109,7 +109,7 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 
 fn ctx_in(cwd: &std::path::Path) -> ToolContext {
-    ToolContext::for_test(cwd.to_path_buf())
+    platform::tool_context_for_test(cwd.to_path_buf())
 }
 
 #[test]
@@ -1015,7 +1015,7 @@ async fn run_in_background_is_refused_rather_than_silently_ignored() {
 async fn cancel_kills_child_quickly() {
     let dir = TempDir::new().unwrap();
     let tool = BashTool;
-    let ctx = ToolContext::for_test(dir.path().to_path_buf());
+    let ctx = platform::tool_context_for_test(dir.path().to_path_buf());
     let cancel = ctx.cancel.clone();
     let task = tokio::spawn(async move {
         tool.call(

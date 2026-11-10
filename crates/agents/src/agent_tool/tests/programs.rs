@@ -24,7 +24,7 @@ pub(super) fn agent_call_ctx(
     tool_use_id: &str,
     from_code: bool,
 ) -> ToolContext {
-    let mut ctx = ToolContext::for_test(cwd);
+    let mut ctx = platform::tool_context_for_test(cwd);
     ctx.tool_use_id = tool_use_id.into();
     ctx.from_code = from_code;
     ctx
@@ -193,7 +193,7 @@ async fn a_program_cannot_start_a_background_team_or_worktree_sub_agent() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_panicking_background_sub_agent_ends_its_task_failed_and_says_so() {
     let agent_tool = agent_tool_with_model(Arc::new(PanickingModel));
-    let ctx = ToolContext::for_test(std::env::temp_dir());
+    let ctx = platform::tool_context_for_test(std::env::temp_dir());
     let session = ctx.session.clone();
     let started = base::tool::Tool::call(
         &agent_tool,

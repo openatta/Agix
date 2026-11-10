@@ -627,7 +627,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn ctx_in(cwd: &Path) -> ToolContext {
-        ToolContext::for_test(cwd.to_path_buf())
+        platform::tool_context_for_test(cwd.to_path_buf())
     }
 
     #[tokio::test]
@@ -863,7 +863,7 @@ mod tests {
         tokio::fs::write(&p, "x").await.unwrap();
         let tool = FileReadTool;
 
-        let ctx = ToolContext::for_test(dir.path().to_path_buf());
+        let ctx = platform::tool_context_for_test(dir.path().to_path_buf());
         ctx.cancel.cancel(); // 提前取消
         let err = tool
             .call(

@@ -150,6 +150,8 @@ MCP、询问、通知、监视、结构化输出(见下文[能力](#能力))。
              │
            model · scene · history · session · compaction · telemetry · hooks · permissions · tools
              │
+ 本机      platform ───────── 执行层的本机实现、崩溃钩子、进程身份
+             │
  契约      core(包名 `base`)── 所有 trait 与所有共享数据类型
 ```
 
@@ -276,6 +278,7 @@ let (mut agent, events, input) = runtime::agent::Builder::new()
 | 层 | crate | 职责 |
 |---|---|---|
 | 契约 | `core`(`base`) | trait、设置、消息、提示词类型、扩展点清单 |
+| 本机 | `platform` | 执行层契约背后的本机进程、文件系统、网络与 OS 沙箱 |
 | 内核 | `runtime` | turn loop、流式工具执行、`Builder`、`Module` |
 | 内核 | `model` | Anthropic 与 OpenAI 兼容适配,重试与退避 |
 | 内核 | `tools` | 内建工具(`web`、`structured-output` 两组是 feature) |
@@ -291,8 +294,8 @@ let (mut agent, events, input) = runtime::agent::Builder::new()
 | 装配 | `assembly` | 会话池、配置、provider 路由、JSON-RPC 服务 |
 | 外壳 | `daemon` | `agixd` 二进制 |
 
-`crates/` 下 19 个 crate,加上 `daemon/`、五个测试成员与 `examples/plugins/rust` 的示例插件,
-工作区共 26 个成员。完整的
+`crates/` 下 20 个 crate,加上 `daemon/`、五个测试成员与 `examples/plugins/rust` 的示例插件,
+工作区共 27 个成员。完整的
 图景——会话与场景、历史日志、执行层、锁、磁盘布局——在 [`ARCHITECTURE.md`](ARCHITECTURE.md)。
 
 ---

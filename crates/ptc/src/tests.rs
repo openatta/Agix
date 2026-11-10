@@ -84,7 +84,7 @@ fn limits() -> Limits {
 
 async fn run_with(code: &str, args: Value, limits: Limits) -> (ToolResult, Arc<Fake>, ToolContext) {
     let fake = Arc::new(Fake::default());
-    let mut ctx = ToolContext::for_test("/tmp".into());
+    let mut ctx = platform::tool_context_for_test("/tmp".into());
     ctx.tool_use_id = "toolu_code".into();
     ctx.dispatch = Some(fake.clone());
     let tool = RunCodeTool::new(&[], limits);
@@ -297,7 +297,7 @@ async fn runs_beyond_the_thread_cap_wait_for_a_slot() {
     let fake = Arc::new(Fake::default());
     let slots = Arc::new(Semaphore::new(1));
     let start = |id: &str| {
-        let mut ctx = ToolContext::for_test("/tmp".into());
+        let mut ctx = platform::tool_context_for_test("/tmp".into());
         ctx.tool_use_id = id.into();
         ctx.dispatch = Some(fake.clone());
         let tool = RunCodeTool::new(&[], limits()).with_run_slots(slots.clone());
@@ -326,7 +326,7 @@ async fn runs_beyond_the_thread_cap_wait_for_a_slot() {
 /// the sub-agent may be holding the last one.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_run_inside_a_sub_agent_does_not_wait_for_a_slot() {
-    let mut ctx = ToolContext::for_test("/tmp".into());
+    let mut ctx = platform::tool_context_for_test("/tmp".into());
     ctx.tool_use_id = "toolu_nested".into();
     ctx.agent_depth = 1;
     ctx.dispatch = Some(Arc::new(Fake::default()));
@@ -374,7 +374,7 @@ async fn the_call_limit_ends_the_run() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_stop_request_lets_the_program_wrap_up() {
     let fake = Arc::new(Fake::default());
-    let mut ctx = ToolContext::for_test("/tmp".into());
+    let mut ctx = platform::tool_context_for_test("/tmp".into());
     ctx.tool_use_id = "toolu_stop".into();
     ctx.dispatch = Some(fake.clone());
     let session = ctx.session.clone();
@@ -402,7 +402,7 @@ async fn a_stop_request_lets_the_program_wrap_up() {
 #[tokio::test(flavor = "multi_thread")]
 async fn messages_sent_to_the_task_reach_the_program() {
     let fake = Arc::new(Fake::default());
-    let mut ctx = ToolContext::for_test("/tmp".into());
+    let mut ctx = platform::tool_context_for_test("/tmp".into());
     ctx.tool_use_id = "toolu_msg".into();
     ctx.dispatch = Some(fake.clone());
     let session = ctx.session.clone();
@@ -456,7 +456,7 @@ async fn the_log_comes_back_with_the_result() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_background_run_ends_when_the_session_does() {
     let fake = Arc::new(Fake::default());
-    let mut ctx = ToolContext::for_test("/tmp".into());
+    let mut ctx = platform::tool_context_for_test("/tmp".into());
     ctx.tool_use_id = "toolu_bg".into();
     ctx.dispatch = Some(fake.clone());
     let (session, session_cancel) = (ctx.session.clone(), ctx.cancel.clone());
@@ -499,7 +499,7 @@ async fn a_background_run_ends_when_the_session_does() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_task_stop_on_a_background_run_still_gets_the_grace_period() {
     let fake = Arc::new(Fake::default());
-    let mut ctx = ToolContext::for_test("/tmp".into());
+    let mut ctx = platform::tool_context_for_test("/tmp".into());
     ctx.dispatch = Some(fake.clone());
     let session = ctx.session.clone();
     let tool = RunCodeTool::new(&[], limits());

@@ -28,12 +28,12 @@ use async_trait::async_trait;
 use base::interface::backoff::{
     Backoff, BackoffPolicy, FailedAttempt, LadderBackoff, RequestFailure,
 };
-use base::interface::exec::local::LocalNetwork;
 use base::interface::exec::{HttpRequest, HttpStream, Network, Origin};
 use base::interface::model::{Model, ModelError, ModelMessage, ModelStream, StreamParams, ToolDef};
 use base::interface::prompt::PromptBlock;
 use base::provider::{ApiType, ThinkingToggle};
 use futures::stream::StreamExt;
+use platform::LocalNetwork;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;

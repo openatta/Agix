@@ -1099,7 +1099,7 @@ mod tests {
 
     fn make_ctx() -> (tempfile::TempDir, ToolContext) {
         let dir = tempfile::tempdir().expect("tempdir");
-        let ctx = ToolContext::for_test(dir.path().to_path_buf());
+        let ctx = platform::tool_context_for_test(dir.path().to_path_buf());
         (dir, ctx)
     }
 
@@ -1304,7 +1304,7 @@ mod tests {
                 .iter()
                 .find(|t| t.name() == "ListPeers")
                 .expect("coordinator must hand each team member a ListPeers tool");
-            let ctx = ToolContext::for_test(request.cwd);
+            let ctx = platform::tool_context_for_test(request.cwd);
             let result = list_peers
                 .call(
                     serde_json::json!({}),
@@ -1391,7 +1391,7 @@ mod tests {
                 "description": "Handlers return typed errors",
                 "content": "Every handler returns a typed error, never a string."
             });
-            let ctx = ToolContext::for_test(request.cwd);
+            let ctx = platform::tool_context_for_test(request.cwd);
             let result = save
                 .call(input, ctx, base::tool::ProgressSender::noop("test"))
                 .await

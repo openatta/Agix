@@ -496,15 +496,15 @@ fn parse_pair(s: &str) -> Option<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base::interface::exec::local::LocalFileSystem;
     use base::interface::exec::{DirEntry, Metadata};
     use base::tool::ToolResultContent;
+    use platform::LocalFileSystem;
     use serde_json::json;
     use std::sync::Arc;
     use tempfile::TempDir;
 
     fn ctx_in(cwd: &Path) -> ToolContext {
-        ToolContext::for_test(cwd.to_path_buf())
+        platform::tool_context_for_test(cwd.to_path_buf())
     }
 
     #[tokio::test]
@@ -944,7 +944,7 @@ mod tests {
         let p = dir.path().join("a.txt");
         tokio::fs::write(&p, "abc").await.unwrap();
         let tool = FileEditTool;
-        let ctx = ToolContext::for_test(dir.path().to_path_buf());
+        let ctx = platform::tool_context_for_test(dir.path().to_path_buf());
         ctx.cancel.cancel();
         let err = tool
             .call(

@@ -290,8 +290,9 @@ pub struct ToolContext {
     /// the answer up.
     pub elicitation: Option<Arc<dyn crate::interface::elicitation::Elicitation>>,
     /// How this tool reaches the machine — see
-    /// [`crate::interface::exec`]. The default is this machine; a deployment
-    /// executing somewhere else replaces the set and no tool notices.
+    /// [`crate::interface::exec`]. In production this machine's
+    /// (`platform`); a deployment executing somewhere else replaces the set
+    /// and no tool notices.
     pub exec: crate::interface::exec::ExecProviders,
     /// How this tool calls other tools — set only for a tool whose
     /// [`Tool::needs_dispatch`] says it does.
@@ -301,7 +302,7 @@ pub struct ToolContext {
     pub from_code: bool,
 }
 impl ToolContext {
-    pub fn for_test(cwd: PathBuf) -> Self {
+    pub fn for_test_with(cwd: PathBuf, exec: crate::interface::exec::ExecProviders) -> Self {
         Self {
             cwd: cwd.clone(),
             session_id: "test".into(),
@@ -323,12 +324,16 @@ impl ToolContext {
             agent_depth: 0,
             events_tx: None,
             elicitation: None,
-            exec: Default::default(),
+            exec,
             dispatch: None,
             from_code: false,
         }
     }
-    pub fn from_engine_ctx(cwd: PathBuf, cancel: CancellationToken) -> Self {
+    pub fn from_engine_ctx_with(
+        cwd: PathBuf,
+        cancel: CancellationToken,
+        exec: crate::interface::exec::ExecProviders,
+    ) -> Self {
         Self {
             cwd: cwd.clone(),
             session_id: String::new(),
@@ -350,7 +355,7 @@ impl ToolContext {
             agent_depth: 0,
             events_tx: None,
             elicitation: None,
-            exec: Default::default(),
+            exec,
             dispatch: None,
             from_code: false,
         }

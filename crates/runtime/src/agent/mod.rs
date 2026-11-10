@@ -66,6 +66,9 @@ pub struct Agent {
     /// owns everything tools read and write across calls. One instance for the
     /// whole session, handed to every `ToolContext` — see `Builder::build()`.
     pub(crate) session_state: Arc<base::context::SessionState>,
+    /// How this session's tool calls reach the machine: built once from
+    /// `config` and the builder's process-group ledger.
+    pub(crate) exec: base::interface::exec::ExecProviders,
     /// Outlives the turn it names: what is announced between turns (a
     /// `/compact`, a turn error) carries the last turn's id.
     pub(crate) current_turn_id: String,

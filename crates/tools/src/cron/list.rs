@@ -107,7 +107,7 @@ impl Tool for CronListTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base::tool::{ProgressSender, ToolContext};
+    use base::tool::ProgressSender;
     use serde_json::json;
 
     #[test]
@@ -118,7 +118,7 @@ mod tests {
         let r = rt.block_on(async {
             tool.call(
                 json!({}),
-                ToolContext::for_test("/tmp".into()),
+                platform::tool_context_for_test("/tmp".into()),
                 ProgressSender::noop(""),
             )
             .await

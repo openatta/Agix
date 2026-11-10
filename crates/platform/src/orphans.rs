@@ -35,14 +35,14 @@ struct Record {
     groups: Vec<i32>,
 }
 
-pub(super) fn started(group: i32) {
+pub(crate) fn started(group: i32) {
     update(|groups| {
-        groups.retain(|g| super::process::group_alive(*g));
+        groups.retain(|g| crate::process::group_alive(*g));
         groups.insert(group)
     });
 }
 
-pub(super) fn stopped(group: i32) {
+pub(crate) fn stopped(group: i32) {
     update(|groups| groups.remove(&group));
 }
 
@@ -119,7 +119,7 @@ pub fn kill_all() -> Vec<i32> {
     let groups: Vec<i32> = orphans.groups.iter().copied().collect();
     for g in &groups {
         #[cfg(unix)]
-        super::process::signal_group(*g, libc::SIGKILL);
+        crate::process::signal_group(*g, libc::SIGKILL);
     }
     groups
 }
@@ -163,22 +163,22 @@ pub fn reap_previous(path: &Path, grace: Duration) -> Vec<i32> {
     let targets: Vec<i32> = record
         .groups
         .into_iter()
-        .filter(|g| super::process::group_alive(*g) && !leader_is_newer(*g, written))
+        .filter(|g| crate::process::group_alive(*g) && !leader_is_newer(*g, written))
         .collect();
     #[cfg(unix)]
     {
         for g in &targets {
-            super::process::signal_group(*g, libc::SIGTERM);
+            crate::process::signal_group(*g, libc::SIGTERM);
         }
         let deadline = std::time::Instant::now() + grace;
         while std::time::Instant::now() < deadline
-            && targets.iter().any(|g| super::process::group_alive(*g))
+            && targets.iter().any(|g| crate::process::group_alive(*g))
         {
             std::thread::sleep(Duration::from_millis(20));
         }
         for g in &targets {
-            if super::process::group_alive(*g) {
-                super::process::signal_group(*g, libc::SIGKILL);
+            if crate::process::group_alive(*g) {
+                crate::process::signal_group(*g, libc::SIGKILL);
             }
         }
     }
@@ -228,7 +228,7 @@ mod tests {
             vec![group]
         );
         let _ = child.wait();
-        assert!(!super::super::process::group_alive(group));
+        assert!(!crate::process::group_alive(group));
         assert!(!path.exists());
     }
 

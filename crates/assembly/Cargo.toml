@@ -9,6 +9,7 @@ description  = "Agix — the assembly: modules into sessions, sessions into a po
 
 [dependencies]
 base          = { workspace = true }
+platform      = { workspace = true }
 runtime       = { workspace = true }
 agents        = { workspace = true, optional = true }
 model         = { workspace = true }
@@ -89,11 +90,11 @@ plugin-packages = ["dep:plugin"]
 
 # ── Everything else ─────────────────────────────────────────────────────
 
-# The OS process sandbox around `Bash` — see `base`'s feature of the same name.
+# The OS process sandbox around `Bash` — see `platform`'s feature of the same name.
 # On by default: an unattended session runs shell commands only when the
 # sandbox holds them. Independent of the script carrier: it constrains the
 # model's own shell commands, not anybody's extensions.
-sandbox = ["base/sandbox"]
+sandbox = ["platform/sandbox"]
 
 # Fan session telemetry out to an OTLP collector in addition to the per-session
 # JSONL file. Off by default: the OTLP SDK is a large dependency tree and the

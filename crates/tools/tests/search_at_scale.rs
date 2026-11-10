@@ -46,7 +46,7 @@ fn generate_project(root: &Path) {
 }
 
 fn ctx(root: &Path) -> ToolContext {
-    ToolContext::for_test(root.to_path_buf())
+    platform::tool_context_for_test(root.to_path_buf())
 }
 
 async fn run(tool: &dyn Tool, input: serde_json::Value, root: &Path) -> String {

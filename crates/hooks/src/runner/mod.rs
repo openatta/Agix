@@ -172,7 +172,7 @@ pub struct HookRunner {
     /// is still just a shell string, only the search path changes.
     hooks_search_dirs: Vec<std::path::PathBuf>,
     project_untrusted: bool,
-    process: base::interface::exec::local::LocalProcess,
+    process: platform::LocalProcess,
 }
 
 impl HookRunner {
@@ -183,7 +183,7 @@ impl HookRunner {
             default_timeout: Duration::from_millis(DEFAULT_HOOK_TIMEOUT_MS),
             prompt_executor: None,
             agent_executor: None,
-            net: Arc::new(base::interface::exec::local::LocalNetwork::default()),
+            net: Arc::new(platform::LocalNetwork::default()),
             once_executed: std::sync::Mutex::new(std::collections::HashSet::new()),
             file_watcher: std::sync::Mutex::new(None),
             pending_rewakes: std::sync::Mutex::new(std::collections::HashSet::new()),
@@ -195,8 +195,8 @@ impl HookRunner {
     }
 
     /// Builder: the environment a `Command` hook starts from.
-    pub fn with_subprocess_env(mut self, env: base::interface::exec::local::SubprocessEnv) -> Self {
-        self.process = base::interface::exec::local::LocalProcess::new(env);
+    pub fn with_subprocess_env(mut self, env: platform::SubprocessEnv) -> Self {
+        self.process = platform::LocalProcess::new(env);
         self
     }
 
@@ -1377,8 +1377,8 @@ mod tests {
             .await;
         assert_eq!(stdout_of(inherited), env!("CARGO_MANIFEST_DIR"));
 
-        let allowlist = base::interface::exec::local::SubprocessEnv {
-            mode: base::interface::exec::local::SubprocessEnvMode::Allowlist,
+        let allowlist = platform::SubprocessEnv {
+            mode: platform::SubprocessEnvMode::Allowlist,
             allow: vec![],
         };
         let narrowed = one_command_hook(probe, 10_000)

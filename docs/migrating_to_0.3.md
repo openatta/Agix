@@ -1344,3 +1344,27 @@ WebAssembly 载体整个移除。
   `spawn_agent_with_tools` 覆盖不会被走到,要模型、额外工具或权限模式的请求被拒绝。要支持这些的
   改为实现 `spawn`。`spawn` 与旧方法都不实现的,调用会无限递归。
 - 宿主起子 Agent 的 `start_agent(AgentRequest, …)` 不变。
+
+**本机执行层搬进 `platform`。** 执行层的本机实现、崩溃钩子与进程身份从 `base` 搬进新的
+`platform` crate。依赖方向是 `platform → base`,`base` 不能反过来重新导出 `platform` 的东西,
+所以**旧路径没有留垫片**:用到它们的在 `Cargo.toml` 里加上 `platform`,按下表改路径。
+
+| 0.3.10 | 0.3.11 |
+|---|---|
+| `base::interface::exec::local::*` | `platform::*`,例如 `local::LocalNetwork` → `platform::LocalNetwork`、`local::sandbox::fence_port` → `platform::sandbox::fence_port`、`local::orphans` → `platform::orphans` |
+| `base::crash` | `platform::crash` |
+| `base::process_identity` | `platform::process_identity` |
+| `ExecProviders::local()` / `local_with(env)` / `local_with_ledger(env, ledger)` | `platform::local_providers()` / `local_providers_with(env)` / `local_providers_with_ledger(env, ledger)` |
+| `ToolContext::for_test(cwd)` | `platform::tool_context_for_test(cwd)`;要别的 provider 的用 `ToolContext::for_test_with(cwd, exec)` |
+| `ToolContext::from_engine_ctx(cwd, cancel)` | `platform::tool_context_from_engine_ctx(cwd, cancel)`,或 `ToolContext::from_engine_ctx_with(cwd, cancel, exec)` |
+| `base` 的 feature `http`、`sandbox` | `platform` 的同名 feature;`assembly/sandbox`、`daemon/sandbox` 照旧转发 |
+
+- `ExecProviders` 不再实现 `Default`:`base` 不知道"本机"是什么,要本机的显式写
+  `platform::local_providers()`。
+- `SubprocessEnv`、`SubprocessEnvMode` 与 `hold_back_credential`、`is_engine_credential` 留在
+  `base`——它们是 `sandbox.subprocess_env` 设置的类型和引擎的凭据表,`base` 自己要读——路径是
+  `base::interface::exec::env::*`(`base::interface::exec::{SubprocessEnv, SubprocessEnvMode}`
+  也行)。`platform::env` 与 `platform::SubprocessEnv` 是同一份的再导出,所以上表第一行整体替换
+  也编得过。
+- `EngineConfig::process_groups` 删除。它只在 `Builder` 内部转手:会话的进程组台账一直经
+  `Builder::process_groups(ledger)` 给,这条不变。

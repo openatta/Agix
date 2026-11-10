@@ -89,7 +89,7 @@ pub struct McpManager {
     /// commonly runs before an embedder gets a chance to call it.
     elicitation_callback: Arc<Mutex<Option<ElicitationCallback>>>,
     /// What a stdio server this manager starts gets for an environment.
-    subprocess_env: base::interface::exec::local::SubprocessEnv,
+    subprocess_env: platform::SubprocessEnv,
     /// The owning pool's authorization state, handed to every connection.
     auth: Option<Arc<crate::oauth::McpAuth>>,
     /// Every server this manager was asked to connect, connected or not, so
@@ -119,7 +119,7 @@ impl McpManager {
             seen: HashMap::new(),
             output_cache: Arc::new(Mutex::new(McpOutputCache::new())),
             elicitation_callback: Arc::new(Mutex::new(None)),
-            subprocess_env: base::interface::exec::local::SubprocessEnv::default(),
+            subprocess_env: platform::SubprocessEnv::default(),
             auth: None,
             configs: HashMap::new(),
             denied: Vec::new(),
@@ -159,12 +159,7 @@ impl McpManager {
     /// 使用并发连接——最多 3 个 server 同时连。
     /// 单个 server 失败不整体失败 —— warn + skip。
     pub async fn connect_all(servers: HashMap<String, McpServerConfig>) -> Self {
-        Self::connect_all_with(
-            servers,
-            base::interface::exec::local::SubprocessEnv::default(),
-            None,
-        )
-        .await
+        Self::connect_all_with(servers, platform::SubprocessEnv::default(), None).await
     }
 
     /// `connect_all`, with stdio servers started under `env` (the
@@ -176,7 +171,7 @@ impl McpManager {
     /// Waits for every server; each is bounded by its startup limit.
     pub async fn connect_all_with(
         servers: HashMap<String, McpServerConfig>,
-        env: base::interface::exec::local::SubprocessEnv,
+        env: platform::SubprocessEnv,
         auth: Option<Arc<crate::oauth::McpAuth>>,
     ) -> Self {
         let (mut manager, late) = Self::connect_all_within(servers, env, auth, None).await;
@@ -189,7 +184,7 @@ impl McpManager {
     }
 
     /// Start every stdio server this manager adds later under `env`.
-    pub fn with_subprocess_env(mut self, env: base::interface::exec::local::SubprocessEnv) -> Self {
+    pub fn with_subprocess_env(mut self, env: platform::SubprocessEnv) -> Self {
         self.subprocess_env = env;
         self
     }
@@ -206,7 +201,7 @@ impl McpManager {
     /// for [`Self::absorb`]. `None` waits for all of them.
     pub async fn connect_all_within(
         mut servers: HashMap<String, McpServerConfig>,
-        subprocess_env: base::interface::exec::local::SubprocessEnv,
+        subprocess_env: platform::SubprocessEnv,
         auth: Option<Arc<crate::oauth::McpAuth>>,
         wait: Option<Duration>,
     ) -> (Self, Option<LateConnects>) {
@@ -1048,7 +1043,7 @@ struct ServerLink {
     cache: Arc<Mutex<McpOutputCache>>,
     elicitation_cell: Arc<Mutex<Option<ElicitationCallback>>>,
     announcements: Arc<crate::notify::Announcements>,
-    subprocess_env: base::interface::exec::local::SubprocessEnv,
+    subprocess_env: platform::SubprocessEnv,
     auth: Option<Arc<crate::oauth::McpAuth>>,
 }
 
@@ -1356,7 +1351,7 @@ mod tests {
         }));
 
         let adapter = manager.tool_adapters()[0].clone();
-        let ctx = base::tool::ToolContext::for_test(std::env::temp_dir());
+        let ctx = platform::tool_context_for_test(std::env::temp_dir());
         let progress = base::tool::ProgressSender::noop("test");
         adapter
             .call(serde_json::json!({}), ctx, progress)

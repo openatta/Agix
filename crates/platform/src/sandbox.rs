@@ -104,7 +104,7 @@
 //!    service listening on a socket the command can reach (sshd, a container
 //!    daemon) is a way out under every policy.
 
-pub use crate::interface::exec::{
+pub use base::interface::exec::{
     default_deny_read, Confined, Enforcement, NetworkMode, ProcessSpec, Sandbox, SandboxMode,
     SandboxPolicy,
 };
@@ -332,7 +332,7 @@ fn plain(inner: ProcessSpec, mode: SandboxMode) -> Confined {
 const GIT_CONTROL_FILES: &[&str] = &["config", "config.worktree", "commondir"];
 
 #[cfg(feature = "sandbox")]
-use crate::paths::{
+use base::paths::{
     ENGINE_CONFIG_DIRS, ENGINE_CONFIG_FILES, ENGINE_CONFIG_ROOTS, PROJECT_WORKTREES_DIR,
     STATE_ROOT_SESSION_TMP, STATE_ROOT_WORKING_DIRS,
 };

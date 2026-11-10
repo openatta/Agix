@@ -19,8 +19,8 @@ use output::{drain_output, Sink};
 pub(crate) use paths::git_stays_in_the_sessions_repository;
 use paths::path_args_stay_within;
 
-pub use base::interface::exec::local::sandbox::sandbox_status;
 pub use base::interface::exec::SandboxMode;
+pub use platform::sandbox::sandbox_status;
 
 pub(crate) use sandbox::{confine_shell, unattended_sandbox_allows};
 pub use sandbox::{engine_git, engine_git_for};
