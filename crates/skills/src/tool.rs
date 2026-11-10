@@ -301,7 +301,7 @@ const SKILL_BODY_CHAR_CAP: usize = 8000;
 /// to a content pattern (`Bash(cargo test:*)`) — not one that reaches as far
 /// as the bare tool or out of the project (`Bash(b*)`, `Write(../**)`, see
 /// `permissions::dangerous::is_unscoped_grant_in`). A project skill gets none at all while
-/// the project is not trusted (`ctx.config.project_untrusted`).
+/// the project is not trusted (`ctx.config.project_trust.is_untrusted()`).
 pub async fn expand_for_invocation(
     manager: &crate::manager::SkillManager,
     info: &crate::manager::SkillInfo,
@@ -337,8 +337,8 @@ pub async fn expand_for_invocation(
         info.source,
         crate::manager::SkillSource::Project | crate::manager::SkillSource::Plugin
     );
-    let withheld =
-        info.source == crate::manager::SkillSource::Project && ctx.config.project_untrusted;
+    let withheld = info.source == crate::manager::SkillSource::Project
+        && ctx.config.project_trust.is_untrusted();
     if withheld && info.allowed_tools.as_ref().is_some_and(|t| !t.is_empty()) {
         tracing::warn!(
             skill = %info.name,
@@ -602,7 +602,7 @@ const UNTRUSTED_PLACEHOLDER: &str = "[shell command not run: this project is not
 /// Respects `ctx.config.disable_skill_shell_execution` — when set, every
 /// placeholder is replaced with a fixed disabled-notice string instead of
 /// running anything — and does the same for a project skill while the
-/// project is not trusted (`ctx.config.project_untrusted`).
+/// project is not trusted (`ctx.config.project_trust.is_untrusted()`).
 async fn expand_dynamic_context(
     body: &str,
     ctx: &ToolContext,
@@ -625,7 +625,9 @@ async fn expand_dynamic_context(
 
     let refusal = if ctx.config.disable_skill_shell_execution {
         Some(DISABLED_PLACEHOLDER)
-    } else if source == crate::manager::SkillSource::Project && ctx.config.project_untrusted {
+    } else if source == crate::manager::SkillSource::Project
+        && ctx.config.project_trust.is_untrusted()
+    {
         Some(UNTRUSTED_PLACEHOLDER)
     } else {
         None
@@ -908,7 +910,7 @@ mod dynamic_context_tests {
         let (mut ctx, _tools) = bash_ctx(dir.path().to_path_buf());
         ctx.config = Arc::new({
             let mut c = base::context::EngineConfig::defaults_for("test-model");
-            c.project_untrusted = true;
+            c.project_trust = base::project_trust::ProjectTrust::Untrusted;
             c
         });
         let body = "!`echo ran > ran.txt`";
@@ -1273,7 +1275,11 @@ mod tests {
             let mut ctx = platform::tool_context_for_test(dir.path().to_path_buf());
             ctx.config = Arc::new({
                 let mut c = base::context::EngineConfig::defaults_for("test-model");
-                c.project_untrusted = untrusted;
+                c.project_trust = if untrusted {
+                    base::project_trust::ProjectTrust::Untrusted
+                } else {
+                    base::project_trust::ProjectTrust::Trusted
+                };
                 c
             });
             expand_for_invocation(&mgr, &info, "", &ctx, None)

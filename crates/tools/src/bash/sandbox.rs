@@ -256,17 +256,12 @@ fn sandbox_holds(ctx: &ToolContext) -> bool {
 /// How the engine starts its own git and helpers in the session `ctx`
 /// belongs to.
 pub fn engine_exec(ctx: &ToolContext) -> base::engine_exec::EngineExec {
-    let trust = if ctx.config.project_untrusted {
-        base::project_trust::ProjectTrust::Untrusted
-    } else {
-        base::project_trust::ProjectTrust::Trusted
-    };
     engine_exec_for(
         &ctx.sandbox,
         &ctx.exec,
         ctx.dangerously_disable_sandbox,
         &ctx.session_id,
-        trust,
+        ctx.config.project_trust,
     )
 }
 

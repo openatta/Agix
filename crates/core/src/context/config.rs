@@ -79,9 +79,9 @@ pub struct EngineConfig {
     /// Mirrors `Settings.disable_skill_shell_execution` — read by the skill
     /// expansion's `` !`cmd` `` step via `ToolContext.config`.
     pub disable_skill_shell_execution: bool,
-    /// The project tier is not trusted (`Settings::project_layer`): a project
-    /// skill's `` !`cmd` `` is not run.
-    pub project_untrusted: bool,
+    /// Whether the project tier is in effect (`Settings::project_layer`); an
+    /// untrusted project's skill `` !`cmd` `` is not run.
+    pub project_trust: crate::project_trust::ProjectTrust,
     /// How the engine reads the files it puts in front of the model.
     pub prompt_files: crate::paths::PromptFiles,
     /// Mirrors `Settings.sandbox.subprocess_env`.
@@ -299,7 +299,7 @@ impl EngineConfig {
             dangerously_disable_sandbox: false,
             sandbox_policy: SandboxPolicyConfig::default(),
             disable_skill_shell_execution: false,
-            project_untrusted: false,
+            project_trust: crate::project_trust::ProjectTrust::default(),
             prompt_files: crate::paths::PromptFiles::unscoped(),
             subprocess_env: Default::default(),
 
@@ -376,7 +376,7 @@ impl EngineConfig {
             unattended_requires_network_policy: settings.sandbox.unattended_requires_network_policy,
         };
         c.disable_skill_shell_execution = settings.disable_skill_shell_execution;
-        c.project_untrusted = settings.project_layer.trust.is_untrusted();
+        c.project_trust = settings.project_layer.trust;
         c.prompt_files = crate::paths::PromptFiles::for_project(
             &crate::paths::ConfigPaths::from_settings(&settings.paths),
         );
