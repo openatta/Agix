@@ -74,7 +74,7 @@ fn tool_round(tool: &str, id: &str, input: serde_json::Value) -> Vec<StreamEvent
 
 struct Daemon {
     sock: std::path::PathBuf,
-    _dir: tempfile::TempDir,
+    dir: tempfile::TempDir,
 }
 
 impl Daemon {
@@ -120,7 +120,15 @@ impl Daemon {
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
         assert!(sock.exists(), "socket never bound");
-        Self { sock, _dir: dir }
+        Self { sock, dir }
+    }
+
+    /// The project root the daemon is configured with, where its commands
+    /// run. Their sandbox shows it on every platform; a temporary directory
+    /// of the test's own is hidden on Linux behind the command's private
+    /// `/tmp`.
+    fn project(&self) -> &std::path::Path {
+        self.dir.path()
     }
 
     async fn call(&self, method: &str, params: serde_json::Value) -> serde_json::Value {
@@ -932,19 +940,15 @@ async fn reads_from_each_next_byte_join_into_a_commands_whole_output() {
 
 #[tokio::test]
 async fn a_read_after_more_than_is_kept_says_how_much_was_dropped() {
-    let gate = tempfile::tempdir().unwrap();
-    let go = gate.path().join("go");
-    let (daemon, session, task_id, turn) = start_command(&format!(
-        "echo start; while [ ! -e '{}' ]; do sleep 0.05; done; yes x | head -c 600000",
-        go.display()
-    ))
-    .await;
+    let (daemon, session, task_id, turn) =
+        start_command("echo start; while [ ! -e go ]; do sleep 0.05; done; yes x | head -c 600000")
+            .await;
     let first = eventually!("the first line", {
         let out = read_from(&daemon, &session, &task_id, 0).await;
         (out["output"] == "start\n").then_some(out)
     });
     assert_eq!(first["next_byte"], 6);
-    std::fs::write(&go, "").unwrap();
+    std::fs::write(daemon.project().join("go"), "").unwrap();
     tokio::time::timeout(Duration::from_secs(120), turn)
         .await
         .expect("the command ends")

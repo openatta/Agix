@@ -5897,7 +5897,14 @@ async fn the_live_frames_and_the_history_of_a_turn_agree() {
     srv.stop().await;
 }
 
-async fn start_server_running_a_background_sleep(reap: bool) -> ScriptedServer {
+/// What a test's background process is called, so it can be found among
+/// everyone else's. `$!` would not do: on Linux the command runs in a PID
+/// namespace of its own, and the pid it reports means nothing out here.
+fn background_name(test: &str) -> String {
+    format!("agix-left-running-{}-{test}", std::process::id())
+}
+
+async fn start_server_running_a_background_sleep(reap: bool, name: &str) -> ScriptedServer {
     let mut settings = ask_settings_no_memory();
     settings.permission_mode = base::interface::settings::PermissionMode::BypassPermissions;
     settings.sandbox.reap_process_groups = reap;
@@ -5906,7 +5913,7 @@ async fn start_server_running_a_background_sleep(reap: bool) -> ScriptedServer {
             tool_round(
                 "Bash",
                 "tool-1",
-                serde_json::json!({"command": "tail -f /dev/null >/dev/null 2>&1 & echo \"PID=$!\""}),
+                serde_json::json!({"command": format!("exec -a {name} tail -f /dev/null >/dev/null 2>&1 &")}),
             ),
             text_round("started"),
         ],
@@ -5917,28 +5924,51 @@ async fn start_server_running_a_background_sleep(reap: bool) -> ScriptedServer {
     srv
 }
 
-async fn turn_leaving_a_sleep(sock: &std::path::Path) -> (String, libc::pid_t) {
+/// The session the turn ran in, and the pid of the process it left behind.
+async fn turn_leaving_a_sleep(sock: &std::path::Path, name: &str) -> (String, libc::pid_t) {
     let (frames, response) = rpc_streaming(
         sock,
         r#"{"jsonrpc":"2.0","method":"session.run_turn","params":{"message":"start it"},"id":1}"#,
     )
     .await;
     assert!(response["result"].is_object(), "turn failed: {response}");
-    let rendered = serde_json::to_string(&events_of_kind(&frames, "tool_result")).unwrap();
-    let digits: String = rendered
-        .split("PID=")
-        .nth(1)
-        .unwrap_or_else(|| panic!("no pid in the tool result: {rendered}"))
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect();
+    assert_eq!(
+        events_of_kind(&frames, "tool_result")[0]["is_error"],
+        false,
+        "{frames:?}"
+    );
+    let pid = pid_named(name, Duration::from_secs(10))
+        .await
+        .unwrap_or_else(|| panic!("the command left nothing named {name} running"));
     (
         response["result"]["session_id"]
             .as_str()
             .unwrap()
             .to_string(),
-        digits.parse().unwrap(),
+        pid,
     )
+}
+
+/// The process whose command line starts with `name`, once there is one.
+async fn pid_named(name: &str, limit: Duration) -> Option<libc::pid_t> {
+    let deadline = std::time::Instant::now() + limit;
+    loop {
+        let listing = std::process::Command::new("ps")
+            .args(["-A", "-o", "pid=", "-o", "args="])
+            .output()
+            .unwrap();
+        let found = String::from_utf8_lossy(&listing.stdout)
+            .lines()
+            .find_map(|line| {
+                let (pid, args) = line.trim_start().split_once(' ')?;
+                let first = args.trim_start().split(' ').next()?;
+                (first == name).then(|| pid.parse().ok()).flatten()
+            });
+        if found.is_some() || std::time::Instant::now() >= deadline {
+            return found;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 fn alive(pid: libc::pid_t) -> bool {
@@ -5966,8 +5996,9 @@ fn kill_leftover(pid: libc::pid_t) {
 
 #[tokio::test]
 async fn closing_a_session_stops_what_its_commands_left_running() {
-    let srv = start_server_running_a_background_sleep(true).await;
-    let (sid, pid) = turn_leaving_a_sleep(&srv.sock).await;
+    let name = background_name("close");
+    let srv = start_server_running_a_background_sleep(true, &name).await;
+    let (sid, pid) = turn_leaving_a_sleep(&srv.sock, &name).await;
     assert!(alive(pid), "the command left its sleep running");
 
     rpc(
@@ -5986,8 +6017,9 @@ async fn closing_a_session_stops_what_its_commands_left_running() {
 
 #[tokio::test]
 async fn without_the_setting_a_background_process_outlives_its_session() {
-    let srv = start_server_running_a_background_sleep(false).await;
-    let (sid, pid) = turn_leaving_a_sleep(&srv.sock).await;
+    let name = background_name("default");
+    let srv = start_server_running_a_background_sleep(false, &name).await;
+    let (sid, pid) = turn_leaving_a_sleep(&srv.sock, &name).await;
 
     rpc(
         &srv.sock,
@@ -6005,8 +6037,9 @@ async fn without_the_setting_a_background_process_outlives_its_session() {
 
 #[tokio::test]
 async fn a_daemon_shutdown_stops_what_its_sessions_left_running() {
-    let srv = start_server_running_a_background_sleep(true).await;
-    let (_sid, pid) = turn_leaving_a_sleep(&srv.sock).await;
+    let name = background_name("shutdown");
+    let srv = start_server_running_a_background_sleep(true, &name).await;
+    let (_sid, pid) = turn_leaving_a_sleep(&srv.sock, &name).await;
 
     rpc(
         &srv.sock,
@@ -6022,8 +6055,9 @@ async fn a_daemon_shutdown_stops_what_its_sessions_left_running() {
 
 #[tokio::test]
 async fn evicting_a_session_stops_what_its_commands_left_running() {
-    let srv = start_server_running_a_background_sleep(true).await;
-    let (_sid, pid) = turn_leaving_a_sleep(&srv.sock).await;
+    let name = background_name("evict");
+    let srv = start_server_running_a_background_sleep(true, &name).await;
+    let (_sid, pid) = turn_leaving_a_sleep(&srv.sock, &name).await;
 
     // The pool holds 8; the eighth new one pushes the oldest out.
     for i in 0..8 {
