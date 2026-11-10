@@ -1495,7 +1495,8 @@ mod tests {
             .join(".agix")
             .display()
             .to_string();
-        let args = &cmd.spec.args;
+        let end = cmd.spec.args.iter().position(|a| a == "--").unwrap();
+        let args = &cmd.spec.args[..end];
         assert!(
             args.windows(3)
                 .any(|w| w[0] == "--ro-bind" && w[1] == agix && w[2] == agix),
@@ -2776,17 +2777,23 @@ mod tests {
         let fsmonitor = "printf '[core]\\n\\tfsmonitor = touch pwned\\n' >>";
         runs("rm .git/modules/sub/HEAD");
         let elsewhere = elsewhere.display();
-        for command in [
+        let mut refused = vec![
             format!("{fsmonitor} .git/modules/sub/config"),
             format!("{fsmonitor} .git/modules/a/modules/b/config"),
             format!("{fsmonitor} .git/modules/libs/c/config"),
-            "echo /tmp > .git/modules/sub/commondir".to_string(),
             "echo 'touch pwned' > .git/modules/sub/hooks/post-checkout".to_string(),
             "echo 'touch pwned' > .git/modules/a/modules/b/hooks/x".to_string(),
             "mv .git/modules/sub .git/modules/gone".to_string(),
             "mv .git/modules/a/modules .git/modules/a/gone".to_string(),
             format!("mv .git/modules/libs '{elsewhere}/libs'"),
-        ] {
+        ];
+        // bwrap cannot hold a file that is not there yet (the module header's
+        // escape path 5); a submodule's git directory has no `commondir`.
+        let absent_files_held = cfg!(target_os = "macos");
+        if absent_files_held {
+            refused.push("echo /tmp > .git/modules/sub/commondir".to_string());
+        }
+        for command in refused {
             assert!(!runs(&command), "`{command}` was allowed");
         }
         for module in ["sub", "a/modules/b", "libs/c"] {
@@ -2798,7 +2805,7 @@ mod tests {
             );
             let config = std::fs::read_to_string(module.join("config")).unwrap();
             assert!(!config.contains("fsmonitor"), "{config}");
-            assert!(!module.join("commondir").exists());
+            assert!(!absent_files_held || !module.join("commondir").exists());
         }
         assert!(!modules.join("a/modules/b/hooks/x").exists());
 
