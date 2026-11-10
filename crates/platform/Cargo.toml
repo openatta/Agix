@@ -51,6 +51,7 @@ testing = []
 
 [dev-dependencies]
 tempfile = { workspace = true }
+regex    = { workspace = true }
 platform = { path = ".", features = ["testing"] }
 
 [[test]]

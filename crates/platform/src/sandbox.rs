@@ -151,6 +151,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
 
+#[cfg(feature = "sandbox")]
+#[allow(dead_code)]
+mod mask;
+
 /// What this process serves its clients on, one entry per live [`Fence`].
 static SERVED: RwLock<Vec<(u64, Served)>> = RwLock::new(Vec::new());
 
@@ -262,67 +266,18 @@ fn state_root_of(policy: &SandboxPolicy) -> Option<PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".agix")))
 }
 
-/// The scenes whose files are protected even before their directories
-/// exist.
-#[cfg(feature = "sandbox")]
-const KNOWN_SCENES: &[&str] = &["code", "harnix", "mini"];
-
-/// [`KNOWN_SCENES`].
-#[cfg(feature = "sandbox")]
-fn effective_known_scenes(_policy: &SandboxPolicy) -> Vec<&str> {
-    KNOWN_SCENES.to_vec()
-}
-
-/// The files under `<state root>/scenes/<scene>/` a sandboxed command must not
-/// rewrite: the scene's settings, and — for a declarative scene — the files
-/// that define it.
-#[cfg(feature = "sandbox")]
-const SCENE_FILES: &[&str] = &["settings.json", "scene.json", "prompt.md"];
-
-/// Every scene directory to protect: the known scenes, and every directory
-/// that exists under `<state root>/scenes/` — a declarative scene is whatever
-/// a directory there defines, so no list of names can be complete.
-#[cfg(feature = "sandbox")]
-fn protected_scene_files(policy: &SandboxPolicy, state_root: &Path) -> Vec<PathBuf> {
-    scene_dirs(policy, state_root)
-        .iter()
-        .flat_map(|dir| SCENE_FILES.iter().map(move |file| dir.join(file)))
-        .collect()
-}
-
-#[cfg(feature = "sandbox")]
-fn scene_dirs(policy: &SandboxPolicy, state_root: &Path) -> Vec<PathBuf> {
-    let mut scenes: std::collections::BTreeSet<String> = effective_known_scenes(policy)
-        .into_iter()
-        .map(str::to_string)
-        .collect();
-    if let Ok(entries) = std::fs::read_dir(state_root.join("scenes")) {
-        for entry in entries.flatten() {
-            if entry.path().is_dir() {
-                if let Some(name) = entry.file_name().to_str() {
-                    scenes.insert(name.to_string());
-                }
-            }
-        }
-    }
-    scenes
-        .iter()
-        .map(|scene| state_root.join("scenes").join(scene))
-        .collect()
-}
-
 /// What in the state root a command may not read: `base::paths`'
 /// credentials — the settings files, whose provider keys and MCP headers are
 /// plain text, and the MCP OAuth tokens, of the root and of every scene, and
 /// the daemons' socket tokens. The macOS profile says the same with a
 /// pattern, which also covers the ones written while the command runs.
 #[cfg(all(feature = "sandbox", target_os = "linux"))]
-fn state_root_secrets(policy: &SandboxPolicy, state_root: &Path) -> Vec<PathBuf> {
+fn state_root_secrets(state_root: &Path, scenes: &[PathBuf]) -> Vec<PathBuf> {
     let mut secrets: Vec<PathBuf> = base::paths::DAEMON_TOKEN_DIRS
         .iter()
         .map(|dir| state_root.join(dir))
         .collect();
-    for dir in std::iter::once(state_root.to_path_buf()).chain(scene_dirs(policy, state_root)) {
+    for dir in std::iter::once(state_root.to_path_buf()).chain(scenes.iter().cloned()) {
         secrets.extend(
             base::paths::STATE_ROOT_TOKEN_DIRS
                 .iter()
@@ -465,16 +420,20 @@ struct Roots {
     only_additional: bool,
     writable: Vec<PathBuf>,
     state_root: Option<PathBuf>,
+    paths: base::paths::SensitivePaths,
 }
 
 #[cfg(feature = "sandbox")]
 impl Roots {
     fn resolve(cwd: &Path, additional: &[PathBuf], policy: &SandboxPolicy) -> Self {
+        let cwd = resolve_path(cwd);
+        let state_root = state_root_of(policy).map(|p| resolve_path(&p));
         Self {
-            cwd: resolve_path(cwd),
+            paths: base::paths::SensitivePaths::new(state_root.as_deref(), Some(&cwd)),
+            cwd,
             only_additional: policy.only_additional_writable,
             writable: additional.iter().map(|p| resolve_path(p)).collect(),
-            state_root: state_root_of(policy).map(|p| resolve_path(&p)),
+            state_root,
         }
     }
 
@@ -789,12 +748,9 @@ fn build_macos_profile(cwd: &Path, additional: &[PathBuf], policy: &SandboxPolic
     }
     if let Some(state_root) = &roots.state_root {
         s.push_str(&format!(
-            "(deny file-write* (literal \"{}\"))\n",
-            path(&state_root.join("settings.json"))
+            "(deny file-write* (regex \"{}\"))\n",
+            sandbox_escape(&state_root_scene_files_regex(state_root))
         ));
-        for p in protected_scene_files(policy, state_root) {
-            s.push_str(&format!("(deny file-write* (literal \"{}\"))\n", path(&p)));
-        }
     }
 
     if !policy.deny_read.is_empty() {
@@ -807,34 +763,13 @@ fn build_macos_profile(cwd: &Path, additional: &[PathBuf], policy: &SandboxPolic
     }
     // After `allow_read`, which is for the user's own credential stores and
     // must not reopen the engine's.
-    if let Some(root) = &roots.state_root {
-        let root = regex_escape(&root.display().to_string());
-        let config_dir = format!("^{root}/(scenes/[^/]+/)?");
-        let stems = alternatives(base::paths::STATE_ROOT_KEY_FILE_STEMS);
-        let secrets = std::iter::once(format!(r"{config_dir}\.?({stems})[^/]*\.json[^/]*$"))
-            .chain(
-                base::paths::STATE_ROOT_TOKEN_DIRS
-                    .iter()
-                    .map(|dir| format!("{config_dir}{}(/|$)", regex_escape(dir))),
-            )
-            .chain(
-                base::paths::DAEMON_TOKEN_DIRS
-                    .iter()
-                    .map(|dir| format!("^{root}/{}(/|$)", regex_escape(dir))),
-            );
-        for secret in secrets {
-            s.push_str(&format!(
-                "(deny file-read* (regex \"{}\"))\n",
-                sandbox_escape(&secret)
-            ));
-        }
-    }
-    let project_keys = alternatives(base::paths::PROJECT_KEY_FILES);
-    for agix in project_agix_dirs(&roots.cwd) {
-        let agix = regex_escape(&agix.display().to_string());
+    for located in roots
+        .paths
+        .credential_locations(&project_agix_dirs(&roots.cwd))
+    {
         s.push_str(&format!(
             "(deny file-read* (regex \"{}\"))\n",
-            sandbox_escape(&format!(r"^{agix}/\.?({project_keys})[^/]*$"))
+            sandbox_escape(&credential_read_regex(&located))
         ));
     }
 
@@ -936,6 +871,43 @@ fn spellings(path: &Path) -> Vec<PathBuf> {
     } else {
         vec![path.to_path_buf(), resolved]
     }
+}
+
+/// The paths `located` is, as a regular expression over a resolved path.
+#[cfg(all(feature = "sandbox", target_os = "macos"))]
+fn credential_read_regex(located: &base::paths::Located) -> String {
+    use base::paths::{KeyFileNames, Secret};
+    let base = regex_escape(&located.base.display().to_string());
+    let dir = if located.under_each_scene {
+        format!("^{base}/scenes/[^/]+/")
+    } else {
+        format!("^{base}/")
+    };
+    match located.secret {
+        Secret::KeyFiles(names @ KeyFileNames::StateRoot) => {
+            format!(
+                r"{dir}\.?({})[^/]*\.json[^/]*$",
+                alternatives(names.stems())
+            )
+        }
+        Secret::KeyFiles(names @ KeyFileNames::Project) => {
+            format!(r"{dir}\.?({})[^/]*$", alternatives(names.stems()))
+        }
+        Secret::Tree(path) | Secret::DirName(path) => {
+            format!("{dir}{}(/|$)", regex_escape(path))
+        }
+    }
+}
+
+/// `base::paths::STATE_ROOT_SCENE_FILES` in `state_root` and in every scene
+/// directory under it, including one created later.
+#[cfg(all(feature = "sandbox", target_os = "macos"))]
+fn state_root_scene_files_regex(state_root: &Path) -> String {
+    format!(
+        "^{}/(scenes/[^/]+/)?({})$",
+        regex_escape(&state_root.display().to_string()),
+        alternatives(base::paths::STATE_ROOT_SCENE_FILES)
+    )
 }
 
 #[cfg(all(feature = "sandbox", target_os = "macos"))]
@@ -1140,7 +1112,7 @@ fn guard_project(args: &mut Vec<String>, roots: &Roots) {
 /// confined command reading the state root is acceptable where masking a late
 /// credential is not.
 #[cfg(all(feature = "sandbox", target_os = "linux"))]
-fn expose_state_root_masked(args: &mut Vec<String>, root: &Path, policy: &SandboxPolicy) {
+fn expose_state_root_masked(args: &mut Vec<String>, root: &Path, scenes: &[PathBuf]) {
     reexpose_dir(args, root, &|name| {
         !base::paths::is_state_root_key_file(name)
             && name != "scenes"
@@ -1153,13 +1125,11 @@ fn expose_state_root_masked(args: &mut Vec<String>, root: &Path, policy: &Sandbo
     let scenes_dir = root.join("scenes");
     if scenes_dir.symlink_metadata().is_ok_and(|m| m.is_dir()) {
         args.extend(["--tmpfs".into(), scenes_dir.display().to_string()]);
-        for scene in scene_dirs(policy, root) {
-            if scene.symlink_metadata().is_ok_and(|m| m.is_dir()) {
-                reexpose_dir(args, &scene, &|name| {
-                    !base::paths::is_state_root_key_file(name) && name != "mcp"
-                });
-                mask_token_parent(args, &scene.join("mcp"), "oauth");
-            }
+        for scene in scenes {
+            reexpose_dir(args, scene, &|name| {
+                !base::paths::is_state_root_key_file(name) && name != "mcp"
+            });
+            mask_token_parent(args, &scene.join("mcp"), "oauth");
         }
     }
 }
@@ -1357,7 +1327,7 @@ fn linux_wrap(
     }
     match roots.fenced_state_root() {
         Some(root) if root.is_dir() => {
-            expose_state_root_masked(&mut args, root, policy);
+            expose_state_root_masked(&mut args, root, &roots.paths.scene_dirs());
             for dir in STATE_ROOT_WORKING_DIRS {
                 bind(&mut args, "--bind-try", &root.join(dir));
             }
@@ -1373,15 +1343,13 @@ fn linux_wrap(
         // narrowed by the project living in the root being the rare case.
         _ => {
             if let Some(state_root) = &roots.state_root {
-                bind(
-                    &mut args,
-                    "--ro-bind-try",
-                    &state_root.join("settings.json"),
-                );
-                for p in protected_scene_files(policy, state_root) {
-                    bind(&mut args, "--ro-bind-try", &p);
+                let scenes = roots.paths.scene_dirs();
+                for dir in std::iter::once(state_root).chain(&scenes) {
+                    for file in base::paths::STATE_ROOT_SCENE_FILES {
+                        bind(&mut args, "--ro-bind-try", &dir.join(file));
+                    }
                 }
-                for p in state_root_secrets(policy, state_root) {
+                for p in state_root_secrets(state_root, &scenes) {
                     hide(&mut args, &p);
                 }
             }
@@ -1862,75 +1830,6 @@ mod tests {
     /// directory are masked with a tmpfs and their readable entries bound back,
     /// leaving the key files under the tmpfs — which a credential written after
     /// wrap cannot climb out of, where a `/dev/null` bind over the file could.
-    #[cfg(target_os = "linux")]
-    #[test]
-    #[allow(clippy::unwrap_used)]
-    fn linux_wrap_masks_global_and_scene_credentials_with_a_tmpfs() {
-        let dir = tempfile::tempdir().unwrap();
-        let state = dir.path().join("state");
-        for scene in ["code", "triage"] {
-            let d = state.join("scenes").join(scene);
-            std::fs::create_dir_all(d.join("skills")).unwrap();
-            std::fs::write(d.join("settings.json"), "{}").unwrap();
-            std::fs::write(d.join("settings.local.json"), "{}").unwrap();
-            std::fs::write(d.join("scene.json"), "{}").unwrap();
-        }
-        std::fs::create_dir_all(state.join("skills")).unwrap();
-        std::fs::write(state.join("settings.json"), "{}").unwrap();
-        std::fs::write(state.join("settings.local.json"), "{}").unwrap();
-        let project = dir.path().join("project");
-        std::fs::create_dir_all(&project).unwrap();
-        let policy = SandboxPolicy {
-            state_root: Some(state.clone()),
-            ..Default::default()
-        };
-        let cmd = PlatformSandbox.confine(
-            ProcessSpec::new("bash", &project).args(["-c", "ls"].map(String::from)),
-            &policy,
-        );
-        if cmd.mode != SandboxMode::LinuxBwrap {
-            return;
-        }
-        let args = &cmd.spec.args;
-        let tmpfs_targets: Vec<&String> = args
-            .windows(2)
-            .filter(|w| w[0] == "--tmpfs")
-            .map(|w| &w[1])
-            .collect();
-        assert!(
-            tmpfs_targets.contains(&&state.display().to_string()),
-            "the state root is not masked: {args:?}"
-        );
-        for scene in ["code", "triage"] {
-            let d = state.join("scenes").join(scene).display().to_string();
-            assert!(
-                tmpfs_targets.contains(&&d),
-                "scene `{scene}` is not masked: {args:?}"
-            );
-        }
-        assert!(
-            !args
-                .iter()
-                .any(|a| a.ends_with("settings.json") || a.ends_with("settings.local.json")),
-            "a key file was bound back over the tmpfs: {args:?}"
-        );
-        assert!(
-            args.iter().any(|a| a.ends_with("scene.json")),
-            "a readable scene file was shut too: {args:?}"
-        );
-        assert!(
-            args.windows(2)
-                .any(|w| w[0] == "--ro-bind" && w[1].ends_with("/skills")),
-            "the state root's skills are not readable: {args:?}"
-        );
-    }
-
-    #[test]
-    fn effective_known_scenes_falls_back_to_the_builtin_const_when_unset() {
-        let policy = SandboxPolicy::default();
-        assert_eq!(effective_known_scenes(&policy), KNOWN_SCENES.to_vec());
-    }
-
     #[test]
     fn sandbox_escape_handles_quotes_and_backslash() {
         assert_eq!(sandbox_escape("/tmp/normal"), "/tmp/normal");
@@ -2349,55 +2248,124 @@ mod tests {
         );
     }
 
+    /// The regular expressions of the profile's `(deny <operation> (regex …))`
+    /// rules.
     #[cfg(target_os = "macos")]
-    #[test]
-    fn macos_profile_protects_user_level_settings_json_for_every_known_scene() {
-        // The sandbox doesn't know which scene the current session uses (no
-        // plumbing for that in `ToolContext`), so it must protect all of
-        // them — not just a single hardcoded one.
-        let o = SandboxOptions {
-            command: "ls",
-            cwd: Path::new("/tmp/work"),
-            additional_writable: &[],
-            disable: false,
-            policy: SandboxPolicy::default(),
-        };
-        let cmd = wrap(o);
-        let profile = &cmd.spec.args[1];
-        assert!(
-            !KNOWN_SCENES.is_empty(),
-            "sanity: scene list must not be empty"
-        );
-        for scene in KNOWN_SCENES {
-            let needle = format!(".agix/scenes/{scene}/settings.json\"))");
-            assert!(
-                profile.contains(&needle),
-                "expected a deny-write rule for scene `{scene}`'s settings.json, profile:\n{profile}"
-            );
-        }
+    #[allow(clippy::unwrap_used)]
+    fn denied_patterns(profile: &str, operation: &str) -> Vec<regex::Regex> {
+        let prefix = format!("(deny {operation} (regex \"");
+        profile
+            .lines()
+            .filter_map(|line| line.strip_prefix(&prefix)?.strip_suffix("\"))"))
+            .map(|escaped| {
+                let mut pattern = String::new();
+                let mut chars = escaped.chars();
+                while let Some(c) = chars.next() {
+                    pattern.push(if c == '\\' { chars.next().unwrap() } else { c });
+                }
+                regex::Regex::new(&pattern).unwrap()
+            })
+            .collect()
     }
 
     #[cfg(target_os = "macos")]
+    fn denies(patterns: &[regex::Regex], path: &Path) -> bool {
+        let path = path.display().to_string();
+        patterns.iter().any(|p| p.is_match(&path))
+    }
+
+    /// A declarative scene is defined by the files in its directory, so every
+    /// scene directory is protected — not just the names the engine knows,
+    /// and one created after the profile was written as well — and its
+    /// definition along with its settings.
+    #[cfg(target_os = "macos")]
     #[test]
-    fn macos_profile_protects_global_settings_json() {
-        let o = SandboxOptions {
-            command: "ls",
-            cwd: Path::new("/tmp/work"),
-            additional_writable: &[],
-            disable: false,
-            policy: SandboxPolicy::default(),
+    fn macos_profile_protects_the_scene_files_of_the_root_and_every_scene() {
+        let policy = SandboxPolicy {
+            state_root: Some(PathBuf::from("/srv/agix-state")),
+            ..Default::default()
         };
-        let cmd = wrap(o);
-        let profile = &cmd.spec.args[1];
+        let profile = build_macos_profile(Path::new("/work/project"), &[], &policy);
+        let writes = denied_patterns(&profile, "file-write*");
+        for p in [
+            "/srv/agix-state/settings.json",
+            "/srv/agix-state/scenes/code/settings.json",
+            "/srv/agix-state/scenes/triage/scene.json",
+            "/srv/agix-state/scenes/added-later/prompt.md",
+        ] {
+            assert!(denies(&writes, Path::new(p)), "{p}\n{profile}");
+        }
+        for p in [
+            "/srv/agix-state/skills/x/settings.json",
+            "/srv/agix-state/scenes/code/skills/x/prompt.md",
+            "/srv/agix-state/memory/settings.json",
+        ] {
+            assert!(!denies(&writes, Path::new(p)), "{p}");
+        }
+    }
+
+    /// Without a root it protects the conventional one, and with one only
+    /// that: a redirected instance whose profile protected `$HOME/.agix`
+    /// would be guarding a file nobody uses while leaving its real
+    /// settings.json — where the permission rules live — writable.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_profile_protects_the_instance_root_it_was_given() {
         let Some(home) = std::env::var_os("HOME") else {
             return;
         };
-        let home_str = std::path::Path::new(&home).display().to_string();
-        let needle = format!("(deny file-write* (literal \"{home_str}/.agix/settings.json\"))");
+        let home_settings = resolve_path(&PathBuf::from(home).join(".agix/settings.json"));
+        let fallback = build_macos_profile(Path::new("/work/project"), &[], &Default::default());
+        assert!(denies(
+            &denied_patterns(&fallback, "file-write*"),
+            &home_settings
+        ));
+
+        let policy = SandboxPolicy {
+            state_root: Some(PathBuf::from("/srv/agix-state")),
+            ..Default::default()
+        };
+        let profile = build_macos_profile(Path::new("/work/project"), &[], &policy);
+        let writes = denied_patterns(&profile, "file-write*");
+        assert!(denies(&writes, Path::new("/srv/agix-state/settings.json")));
         assert!(
-            profile.contains(&needle),
-            "expected a deny-write rule for the cross-scene global settings.json, profile:\n{profile}"
+            !denies(&writes, &home_settings),
+            "a redirected instance is still protecting the home-relative path"
         );
+    }
+
+    /// Every credential of `base::paths` but those `deny_read` covers has a
+    /// read denial in the profile, a scene created after it was written
+    /// included.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn every_credential_is_unreadable_under_the_macos_profile() {
+        let state = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let root = state.path().canonicalize().unwrap();
+        let cwd = project.path().canonicalize().unwrap();
+        let policy = SandboxPolicy {
+            state_root: Some(root.clone()),
+            ..Default::default()
+        };
+        let profile = build_macos_profile(&cwd, &[], &policy);
+        let reads = denied_patterns(&profile, "file-read*");
+        let examples = mask::credential_examples(&root, &cwd.join(".agix"));
+        assert!(!examples.is_empty());
+        for (credential, path) in &examples {
+            assert!(
+                denies(&reads, path),
+                "{credential:?}: {} is readable\n{profile}",
+                path.display()
+            );
+        }
+        for p in [
+            "skills/x/SKILL.md",
+            "scenes/code/scene.json",
+            "mcp/servers.json",
+        ] {
+            assert!(!denies(&reads, &root.join(p)), "{p}");
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -2426,74 +2394,13 @@ mod tests {
             .lines()
             .filter(|l| l.contains("file-read*") && !l.contains("(literal "))
             .collect();
-        assert_eq!(reads.len(), 4, "{reads:?}");
+        assert_eq!(reads.len(), 6, "{reads:?}");
         assert!(
             reads
                 .iter()
                 .all(|l| l.starts_with("(deny file-read* (regex \"^") && l.contains("/\\\\.agix/")),
             "{reads:?}"
         );
-    }
-
-    /// A declarative scene is defined by the files in its directory, so every
-    /// scene directory on disk is protected — not just the names the engine
-    /// knows — and its definition along with its settings.
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn every_scene_directory_on_disk_is_protected() {
-        let root = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(root.path().join("scenes").join("triage")).unwrap();
-        let policy = SandboxPolicy {
-            state_root: Some(root.path().to_path_buf()),
-            ..Default::default()
-        };
-        let profile = build_macos_profile(Path::new("/work/project"), &[], &policy);
-        let scene_dir = root
-            .path()
-            .canonicalize()
-            .unwrap()
-            .join("scenes")
-            .join("triage");
-        for file in ["settings.json", "scene.json", "prompt.md"] {
-            let rule = format!(
-                "(deny file-write* (literal \"{}\"))",
-                sandbox_escape(&scene_dir.join(file).display().to_string())
-            );
-            assert!(profile.contains(&rule), "missing {rule}");
-        }
-        assert!(profile.contains("/scenes/code/scene.json"));
-    }
-
-    /// The profile has to protect the settings.json this instance actually
-    /// reads. When the state root is redirected, denying writes under the
-    /// invoking user's home guards a file nobody uses and leaves the real one
-    /// writable — which is a sandbox escape, since settings.json is where the
-    /// permission rules live.
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn the_profile_protects_the_instance_root_it_was_given() {
-        let policy = SandboxPolicy {
-            state_root: Some(PathBuf::from("/srv/agix-state")),
-            ..Default::default()
-        };
-        let profile = build_macos_profile(Path::new("/work/project"), &[], &policy);
-
-        assert!(profile.contains("(deny file-write* (literal \"/srv/agix-state/settings.json\"))"));
-        assert!(profile.contains(
-            "(deny file-write* (literal \"/srv/agix-state/scenes/code/settings.json\"))"
-        ));
-        // The project-level rules under cwd stay; what must be absent is any
-        // rule derived from the invoking user's home.
-        if let Some(home) = std::env::var_os("HOME") {
-            let home_rule = format!(
-                "(deny file-write* (literal \"{}/.agix/settings.json\"))",
-                PathBuf::from(home).display()
-            );
-            assert!(
-                !profile.contains(&home_rule),
-                "a redirected instance is still protecting the home-relative path"
-            );
-        }
     }
 
     /// A project and state root reached through `/tmp`, which macOS resolves
@@ -3173,23 +3080,6 @@ mod tests {
             .unwrap_or_else(|| panic!("{rule}\n{profile}"));
         let allowed = profile.find("(allow file-read*").unwrap();
         assert!(denied > allowed, "allow_read would reopen it:\n{profile}");
-    }
-
-    /// No root given: fall back to the conventional location rather than
-    /// protecting nothing.
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn without_a_root_it_falls_back_to_the_conventional_home_path() {
-        let Some(home) = std::env::var_os("HOME") else {
-            return;
-        };
-        let home = PathBuf::from(home);
-        let profile =
-            build_macos_profile(Path::new("/work/project"), &[], &SandboxPolicy::default());
-        assert!(profile.contains(&format!(
-            "(deny file-write* (literal \"{}/.agix/settings.json\"))",
-            home.display()
-        )));
     }
 
     /// Whether this machine has a backend that actually runs. Where it has
