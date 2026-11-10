@@ -48,6 +48,13 @@ pub(super) fn estimate_request_overhead(
 /// and a public mirror of it that have to be kept agreeing.
 pub(super) type ModelRequest = base::interface::model_interceptor::ModelRequestView;
 
+/// What the loop has spent on recovering one model call.
+#[derive(Default)]
+pub(super) struct RecoveringCall {
+    so_far: base::interface::recovery_policy::CallRecovery,
+    recoveries: u32,
+}
+
 /// A model error as the recovery policy is shown it. The kind is the
 /// protocol client's; nothing is reclassified here.
 pub(super) fn model_failure(
@@ -443,16 +450,107 @@ impl Agent {
             .context_budget(&self.scene.token_budget())
     }
 
-    /// Put a model error to the recovery policy.
+    /// Put a failed call to the recovery policy and carry out its answer:
+    /// the request to send next, `None` when the turn was cancelled while
+    /// recovering, or the turn's end.
     ///
-    /// The classification is the engine's — which errors *are* an overload and
-    /// which *are* a size refusal is a fact about the protocol, not an
-    /// opinion. What to do about each is the policy's.
-    pub(super) fn classify_failure(
-        &self,
-        e: &base::interface::model::ModelError,
-    ) -> base::interface::recovery_policy::Recovery {
-        self.llm.recovery_policy.on_failure(&model_failure(e))
+    /// `failed` is the request as it went out, before interceptors; `model` is
+    /// the turn's current model, which a switch replaces.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn recover_call(
+        &mut self,
+        failure: &crate::streaming::StreamFailure,
+        after_first_byte: bool,
+        failed: ModelRequest,
+        call: &mut RecoveringCall,
+        model: &mut String,
+        step: u32,
+        cancel: &CancellationToken,
+    ) -> Result<Option<ModelRequest>, super::TurnError> {
+        use base::interface::recovery_policy::{Recovery, MAX_RECOVERIES_PER_CALL};
+        let recovery = if call.recoveries >= MAX_RECOVERIES_PER_CALL || !failure.resendable {
+            Recovery::Fail
+        } else {
+            self.llm.recovery_policy.on_failure(
+                &model_failure(&failure.error).with_after_first_byte(after_first_byte),
+                &call.so_far,
+            )
+        };
+        call.recoveries += 1;
+        let max_tokens = failed.params.max_tokens;
+        let origin = failed.params.origin.clone();
+        let next = match recovery {
+            Recovery::Fail => {
+                return Err(super::TurnError::Model(format!(
+                    "failed to stream model response: {}",
+                    failure.error
+                )))
+            }
+            Recovery::RetryWith { model: to } => {
+                tracing::warn!(from = %model, to = %to, error = %failure.error, "retrying against a different model");
+                call.so_far.switched_model = true;
+                *model = to;
+                // `fallback_model: None` — this retry *is* the fallback, so
+                // there is nothing further to fall back to.
+                self.prepare_retry(
+                    model,
+                    max_tokens,
+                    failed.tool_defs,
+                    failed.messages,
+                    None,
+                    origin,
+                )
+                .await
+            }
+            Recovery::CompactAndRetry => {
+                call.so_far.compacted = true;
+                self.compact_for_retry(&failure.error, cancel).await?;
+                if cancel.is_cancelled() {
+                    return Ok(None);
+                }
+                let fallback = match call.so_far.switched_model {
+                    true => None,
+                    false => self.settings.model.fallback_model.clone(),
+                };
+                // The retry keeps skills and MCP instructions: they cost a few
+                // KB, the history is what blew the budget, and the compaction
+                // freed far more.
+                self.prepare_retry(
+                    model,
+                    max_tokens,
+                    failed.tool_defs,
+                    pair_dangling_tool_uses(self.session.messages().to_vec()),
+                    fallback,
+                    origin,
+                )
+                .await
+            }
+            Recovery::RetrySame { after } => {
+                call.so_far.same_retries += 1;
+                tracing::warn!(
+                    attempt = call.so_far.same_retries,
+                    delay_ms = after.as_millis() as u64,
+                    error = %failure.error,
+                    "sending the same request again"
+                );
+                let _ = self
+                    .channels
+                    .event_tx
+                    .send(base::event::AgentEvent::ModelRetry {
+                        step,
+                        attempt: call.so_far.same_retries,
+                        delay_ms: after.as_millis() as u64,
+                        reason: failure.error.to_string(),
+                        turn_id: self.current_turn_id.clone(),
+                    });
+                tokio::select! {
+                    _ = cancel.cancelled() => return Ok(None),
+                    _ = tokio::time::sleep(after) => {}
+                }
+                failed
+            }
+        };
+        Ok(Some(next))
     }
 
     /// Ask the recovery policy what a stopped-early response calls for, and

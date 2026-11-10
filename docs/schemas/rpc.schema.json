@@ -1665,6 +1665,18 @@
           ],
           "type": "object"
         },
+        "model_retry": {
+          "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节(协议文档 §7 的 kind 表)",
+          "properties": {
+            "kind": {
+              "const": "model_retry"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
         "notification": {
           "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节(协议文档 §7 的 kind 表)",
           "properties": {

@@ -269,7 +269,7 @@ loop:
   4. prompt          PromptAssembler · registered blocks · assembly interceptors
   5. model call      Model + ModelInterceptor + BackoffPolicy
                      ├─ tools run as the reply streams: Permission → ToolMiddleware → Tool → ToolResultTransformer
-                     └─ on error: RecoveryPolicy — switch model / compact and retry / fail
+                     └─ on error: RecoveryPolicy — switch model / compact and retry / resend / fail
   6. review          TurnPolicy::after_model_call
   7. account         BudgetPolicy::on_usage
   8. tool calls      deliver messages and notices that arrived during the step, then loop

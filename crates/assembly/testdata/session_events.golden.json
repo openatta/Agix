@@ -546,6 +546,33 @@
     },
     {
       "between_turns": null,
+      "case": "model_retry",
+      "event": {
+        "attempt": 1,
+        "delay_ms": 2000,
+        "kind": "model_retry",
+        "reason": "stream_interrupted: reset",
+        "step": 0,
+        "turn_id": "inner"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "attempt": 1,
+            "delay_ms": 2000,
+            "kind": "model_retry",
+            "reason": "stream_interrupted: reset",
+            "step": 0
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": null,
       "case": "step_end",
       "event": {
         "kind": "step_end",

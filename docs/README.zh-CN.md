@@ -202,7 +202,7 @@ let (mut agent, events, input) = runtime::agent::Builder::new()
   4. 提示词          PromptAssembler · 注册的块 · 装配拦截
   5. 调模型          Model + ModelInterceptor + BackoffPolicy
                      ├─ 工具边流边跑:Permission → ToolMiddleware → Tool → ToolResultTransformer
-                     └─ 出错:RecoveryPolicy —— 换模型 / 压缩重试 / 失败
+                     └─ 出错:RecoveryPolicy —— 换模型 / 压缩重试 / 原样重发 / 失败
   6. 复查            TurnPolicy::after_model_call
   7. 记账            BudgetPolicy::on_usage
   8. 有工具调用      送达这一步期间到的消息与通知,再来一轮

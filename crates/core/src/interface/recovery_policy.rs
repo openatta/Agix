@@ -1,11 +1,14 @@
 //! `RecoveryPolicy` — what to do when a model call goes wrong.
 //!
-//! The engine's own answers ([`DefaultRecovery`]): a provider reporting
-//! overload is retried on the configured fallback model, or fails if there is
-//! none. A request refused for size is compacted and retried once, or fails. A
-//! response cut off at the output limit escalates the limit — to 64K the first
-//! time, 8K after that, three attempts, with a fixed nudge appended. A
-//! response the provider paused is sent back to be continued.
+//! The engine's own answers ([`DefaultRecovery`]): a request refused for size
+//! is compacted and retried once. A provider reporting overload or a rate
+//! limit is retried on the configured fallback model, once. A transient
+//! failure after the stream had started — a stream that broke off, went
+//! silent, or ended in an overload event — is sent again as it was, twice at
+//! most, after 2s and then 8s. Anything else fails. A response cut off at the
+//! output limit escalates the limit — to 64K the first time, 8K after that,
+//! three attempts, with a fixed nudge appended. A response the provider paused
+//! is sent back to be continued.
 //!
 //! Every one of those is a reasonable answer and none of them is the only
 //! one. A deployment on a single model has no fallback to switch to and would
@@ -21,8 +24,17 @@
 //! partial reply is dropped, so what a recovery retries is the request that
 //! failed. Once a tool has run, the reply stays in the transcript with its
 //! results and the turn ends with the error: sending it again would run the
-//! tool again. Each call is recovered at most once; a retry that fails is
-//! final.
+//! tool again.
+//!
+//! A failure before the first byte has already been through the client's own
+//! backoff ([`BackoffPolicy`](crate::interface::backoff::BackoffPolicy)), so
+//! sending the same request again is not this policy's to decide — that
+//! would multiply one ladder by another. [`ModelFailure::after_first_byte`]
+//! says which side of that line a failure is on.
+//!
+//! What one call has already spent is handed in as [`CallRecovery`]. However
+//! the policy answers, the loop recovers one call at most
+//! [`MAX_RECOVERIES_PER_CALL`] times.
 //!
 //! # The policy decides; the loop acts
 //!
@@ -53,6 +65,9 @@ pub struct ModelFailure<'a> {
     pub message: &'a str,
     /// How long the provider asked to be left alone, when it said.
     pub retry_after: Option<Duration>,
+    /// The provider had started answering: the client's backoff no longer
+    /// covered this call.
+    pub after_first_byte: bool,
 }
 
 impl<'a> ModelFailure<'a> {
@@ -61,6 +76,7 @@ impl<'a> ModelFailure<'a> {
             kind,
             message,
             retry_after: None,
+            after_first_byte: false,
         }
     }
 
@@ -68,7 +84,24 @@ impl<'a> ModelFailure<'a> {
         self.retry_after = retry_after;
         self
     }
+
+    pub fn with_after_first_byte(mut self, after_first_byte: bool) -> Self {
+        self.after_first_byte = after_first_byte;
+        self
+    }
 }
+
+/// What one model call has already spent on recovering.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CallRecovery {
+    pub switched_model: bool,
+    pub compacted: bool,
+    /// [`Recovery::RetrySame`]s so far.
+    pub same_retries: u32,
+}
+
+/// The most recoveries the loop gives one call, whatever the policy answers.
+pub const MAX_RECOVERIES_PER_CALL: u32 = 4;
 
 /// What the turn should do about it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +117,9 @@ pub enum Recovery {
     /// shorten it is a failure: retrying an unshortened request that was
     /// refused for size just spends another call to be told the same thing.
     CompactAndRetry,
+    /// Wait, then send the same request again. The host is told with a
+    /// `model_retry` event, and the step starts over.
+    RetrySame { after: Duration },
 }
 
 /// What to do about a response that stopped early.
@@ -118,8 +154,8 @@ pub struct RecoveryAttempt {
 
 /// What to do when a model call goes wrong.
 pub trait RecoveryPolicy: Send + Sync {
-    /// The call failed.
-    fn on_failure(&self, failure: &ModelFailure<'_>) -> Recovery;
+    /// The call failed, after `so_far` was already spent on it.
+    fn on_failure(&self, failure: &ModelFailure<'_>, so_far: &CallRecovery) -> Recovery;
 
     /// The call succeeded but stopped early — `reason` is the model's own
     /// stop reason.
@@ -135,10 +171,10 @@ pub trait RecoveryPolicy: Send + Sync {
     fn on_early_stop(&self, reason: &str, attempt: &RecoveryAttempt) -> StopRecovery;
 }
 
-/// The engine's own answers, unchanged.
+/// The engine's own answers.
 pub struct DefaultRecovery {
-    /// Where an overload goes. `None` means overload is fatal, which is what
-    /// a session with no `fallback_model` configured has always done.
+    /// Where an overload or a rate limit goes. `None` leaves it to the
+    /// same-request retry, which only covers a failure after the first byte.
     pub fallback_model: Option<String>,
     /// How many output-limit escalations a turn may spend.
     pub max_output_escalations: u32,
@@ -156,6 +192,11 @@ impl DefaultRecovery {
                                      is where the cut happened. Break remaining work into \
                                      smaller pieces.";
 
+    /// How long to wait before each [`Recovery::RetrySame`] when the provider
+    /// named no delay. Its length is the budget.
+    pub const SAME_RETRY_DELAYS: &'static [Duration] =
+        &[Duration::from_secs(2), Duration::from_secs(8)];
+
     pub fn new(fallback_model: Option<String>) -> Self {
         Self {
             fallback_model,
@@ -165,17 +206,29 @@ impl DefaultRecovery {
 }
 
 impl RecoveryPolicy for DefaultRecovery {
-    fn on_failure(&self, failure: &ModelFailure<'_>) -> Recovery {
-        match failure.kind {
-            ModelErrorKind::Overloaded => match &self.fallback_model {
-                Some(model) => Recovery::RetryWith {
-                    model: model.clone(),
-                },
-                None => Recovery::Fail,
-            },
-            ModelErrorKind::ContextTooLong => Recovery::CompactAndRetry,
-            _ => Recovery::Fail,
+    fn on_failure(&self, failure: &ModelFailure<'_>, so_far: &CallRecovery) -> Recovery {
+        if failure.kind == ModelErrorKind::ContextTooLong && !so_far.compacted {
+            return Recovery::CompactAndRetry;
         }
+        if matches!(
+            failure.kind,
+            ModelErrorKind::Overloaded | ModelErrorKind::RateLimited
+        ) && !so_far.switched_model
+        {
+            if let Some(model) = &self.fallback_model {
+                return Recovery::RetryWith {
+                    model: model.clone(),
+                };
+            }
+        }
+        if failure.after_first_byte && failure.kind.transient() {
+            if let Some(delay) = Self::SAME_RETRY_DELAYS.get(so_far.same_retries as usize) {
+                return Recovery::RetrySame {
+                    after: failure.retry_after.unwrap_or(*delay),
+                };
+            }
+        }
+        Recovery::Fail
     }
 
     fn on_early_stop(&self, reason: &str, attempt: &RecoveryAttempt) -> StopRecovery {
@@ -212,7 +265,7 @@ impl RecoveryPolicy for DefaultRecovery {
 pub struct NeverRecover;
 
 impl RecoveryPolicy for NeverRecover {
-    fn on_failure(&self, _failure: &ModelFailure<'_>) -> Recovery {
+    fn on_failure(&self, _failure: &ModelFailure<'_>, _so_far: &CallRecovery) -> Recovery {
         Recovery::Fail
     }
 
@@ -229,6 +282,14 @@ mod tests {
         ModelFailure::new(kind, "")
     }
 
+    fn streamed(kind: ModelErrorKind) -> ModelFailure<'static> {
+        ModelFailure::new(kind, "").with_after_first_byte(true)
+    }
+
+    fn fresh() -> CallRecovery {
+        CallRecovery::default()
+    }
+
     fn attempt(escalations: u32, max_tokens: u32) -> RecoveryAttempt {
         RecoveryAttempt {
             output_limit_escalations: escalations,
@@ -240,14 +301,14 @@ mod tests {
     fn an_overload_switches_to_the_fallback_when_there_is_one() {
         let with = DefaultRecovery::new(Some("smaller-model".into()));
         assert_eq!(
-            with.on_failure(&failure(ModelErrorKind::Overloaded)),
+            with.on_failure(&failure(ModelErrorKind::Overloaded), &fresh()),
             Recovery::RetryWith {
                 model: "smaller-model".into()
             }
         );
         let without = DefaultRecovery::new(None);
         assert_eq!(
-            without.on_failure(&failure(ModelErrorKind::Overloaded)),
+            without.on_failure(&failure(ModelErrorKind::Overloaded), &fresh()),
             Recovery::Fail
         );
     }
@@ -255,7 +316,8 @@ mod tests {
     #[test]
     fn a_request_refused_for_size_is_shortened_rather_than_resent() {
         assert_eq!(
-            DefaultRecovery::new(None).on_failure(&failure(ModelErrorKind::ContextTooLong)),
+            DefaultRecovery::new(None)
+                .on_failure(&failure(ModelErrorKind::ContextTooLong), &fresh()),
             Recovery::CompactAndRetry
         );
     }
@@ -263,10 +325,111 @@ mod tests {
     #[test]
     fn anything_else_fails() {
         assert_eq!(
-            DefaultRecovery::new(Some("m".into())).on_failure(&failure(ModelErrorKind::Transport)),
+            DefaultRecovery::new(Some("m".into()))
+                .on_failure(&failure(ModelErrorKind::Transport), &fresh()),
             Recovery::Fail,
             "a fallback exists for overload, not for every error"
         );
+    }
+
+    #[test]
+    fn a_rate_limit_also_goes_to_the_fallback_once() {
+        let p = DefaultRecovery::new(Some("smaller-model".into()));
+        assert_eq!(
+            p.on_failure(&failure(ModelErrorKind::RateLimited), &fresh()),
+            Recovery::RetryWith {
+                model: "smaller-model".into()
+            }
+        );
+        let switched = CallRecovery {
+            switched_model: true,
+            ..fresh()
+        };
+        assert_eq!(
+            p.on_failure(&failure(ModelErrorKind::RateLimited), &switched),
+            Recovery::Fail,
+            "before the first byte the client's ladder already waited"
+        );
+    }
+
+    #[test]
+    fn a_request_is_compacted_once() {
+        let compacted = CallRecovery {
+            compacted: true,
+            ..fresh()
+        };
+        assert_eq!(
+            DefaultRecovery::new(None)
+                .on_failure(&failure(ModelErrorKind::ContextTooLong), &compacted),
+            Recovery::Fail
+        );
+    }
+
+    #[test]
+    fn a_stream_that_broke_off_is_sent_again_twice() {
+        let p = DefaultRecovery::new(None);
+        let after = |same_retries| {
+            p.on_failure(
+                &streamed(ModelErrorKind::StreamInterrupted),
+                &CallRecovery {
+                    same_retries,
+                    ..fresh()
+                },
+            )
+        };
+        assert_eq!(
+            after(0),
+            Recovery::RetrySame {
+                after: Duration::from_secs(2)
+            }
+        );
+        assert_eq!(
+            after(1),
+            Recovery::RetrySame {
+                after: Duration::from_secs(8)
+            }
+        );
+        assert_eq!(after(2), Recovery::Fail);
+    }
+
+    #[test]
+    fn the_providers_delay_wins_over_the_default() {
+        let hinted =
+            streamed(ModelErrorKind::Overloaded).with_retry_after(Some(Duration::from_secs(5)));
+        assert_eq!(
+            DefaultRecovery::new(None).on_failure(&hinted, &fresh()),
+            Recovery::RetrySame {
+                after: Duration::from_secs(5)
+            }
+        );
+    }
+
+    #[test]
+    fn only_a_transient_failure_after_the_first_byte_is_sent_again() {
+        let p = DefaultRecovery::new(None);
+        for kind in [ModelErrorKind::Timeout, ModelErrorKind::Transport] {
+            assert_eq!(
+                p.on_failure(&failure(kind), &fresh()),
+                Recovery::Fail,
+                "{kind}: before the first byte"
+            );
+            assert!(matches!(
+                p.on_failure(&streamed(kind), &fresh()),
+                Recovery::RetrySame { .. }
+            ));
+        }
+        for kind in [
+            ModelErrorKind::Auth,
+            ModelErrorKind::InvalidRequest,
+            ModelErrorKind::Protocol,
+            ModelErrorKind::Cancelled,
+        ] {
+            assert_eq!(
+                p.on_failure(&streamed(kind), &fresh()),
+                Recovery::Fail,
+                "{kind}"
+            );
+        }
     }
 
     /// The escalation ladder, which is three numbers and an ordering that a
@@ -322,7 +485,7 @@ mod tests {
     #[test]
     fn a_deployment_can_refuse_to_spend_anything_on_recovery() {
         assert_eq!(
-            NeverRecover.on_failure(&failure(ModelErrorKind::Overloaded)),
+            NeverRecover.on_failure(&streamed(ModelErrorKind::Overloaded), &fresh()),
             Recovery::Fail
         );
         assert_eq!(

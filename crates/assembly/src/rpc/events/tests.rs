@@ -87,6 +87,10 @@ fn agent_samples() -> Vec<(&'static str, Value)> {
             json!({"kind": "step_start", "step": 0, "turn_id": "inner"}),
         ),
         (
+            "model_retry",
+            json!({"kind": "model_retry", "step": 0, "attempt": 1, "delay_ms": 2000, "reason": "stream_interrupted: reset", "turn_id": "inner"}),
+        ),
+        (
             "step_end",
             json!({"kind": "step_end", "step": 0, "stop_reason": "tool_use", "usage": usage, "tool_calls": 1, "turn_id": "inner", "seq": 4}),
         ),

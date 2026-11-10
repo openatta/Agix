@@ -1463,6 +1463,19 @@ async fn a_turn_that_fails_for_a_watcher(obs: &mut Observed) {
     obs.watched(&watch);
 }
 
+async fn a_stream_that_breaks_off_and_is_sent_again(obs: &mut Observed) {
+    let model = Arc::new(MockAnthropicClient::new());
+    let mut broken: Vec<Result<StreamEvent, model::error::AnthropicError>> =
+        text_blocks(0, "half an ans").into_iter().map(Ok).collect();
+    broken.push(Err(model::error::AnthropicError::StreamInterrupted));
+    model.push_turn_with_errors(broken);
+    model.push_turn(text_round("the whole answer"));
+    let h = start_code(model).await;
+    let (frames, response) = run_turn(&h.sock, json!({"message": "hello"})).await;
+    assert!(response.get("result").is_some(), "{response}");
+    obs.pushed(&frames);
+}
+
 async fn a_compacted_turn(obs: &mut Observed) {
     let h = start(Arc::new(OneTurnClient), TunedScene::compacting(), 8, |_| {}).await;
     let (frames, response) = run_turn(&h.sock, json!({"message": "hello"})).await;
@@ -1640,6 +1653,7 @@ async fn observe_session_events() -> Observed {
     a_steered_message_a_hook_refuses(&mut obs).await;
     a_question_to_the_user(&mut obs).await;
     a_turn_that_fails_for_a_watcher(&mut obs).await;
+    a_stream_that_breaks_off_and_is_sent_again(&mut obs).await;
     a_compacted_turn(&mut obs).await;
     a_sub_agent_inside_a_turn(&mut obs).await;
     a_sub_agent_the_host_starts(&mut obs).await;

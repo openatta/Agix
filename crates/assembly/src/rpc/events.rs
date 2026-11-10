@@ -20,6 +20,12 @@ pub enum SessionEventPayload {
     StepStart {
         step: u32,
     },
+    ModelRetry {
+        step: u32,
+        attempt: u32,
+        delay_ms: u64,
+        reason: String,
+    },
     StepEnd {
         step: u32,
         stop_reason: String,
@@ -206,6 +212,7 @@ impl SessionEventPayload {
     pub const KINDS: &'static [&'static str] = &[
         "turn_start",
         "step_start",
+        "model_retry",
         "step_end",
         "text_delta",
         "thinking_delta",
@@ -367,6 +374,18 @@ impl SessionEventPayload {
             }),
             AgentEvent::TurnStart { turn_id: _ } => Self::TurnStart {},
             AgentEvent::StepStart { step, turn_id: _ } => Self::StepStart { step: *step },
+            AgentEvent::ModelRetry {
+                step,
+                attempt,
+                delay_ms,
+                reason,
+                turn_id: _,
+            } => Self::ModelRetry {
+                step: *step,
+                attempt: *attempt,
+                delay_ms: *delay_ms,
+                reason: reason.clone(),
+            },
             AgentEvent::StepEnd {
                 step,
                 stop_reason,

@@ -199,7 +199,7 @@ systemd(`Restart=on-failure`)。systemd 下要设 `KillMode=process`:`daemon.shu
   ├─ 4. 装配提示词  PromptAssembler / 注册的块 / 装配钩子
   ├─ 5. 调模型      Model + ModelInterceptor + BackoffPolicy
   │     ├─ 边流边跑工具 PermissionPolicy → ToolMiddleware → Tool → ToolResultTransformer
-  │     └─ 出错 → RecoveryPolicy:换模型 / 压缩重试 / 失败
+  │     └─ 出错 → RecoveryPolicy:换模型 / 压缩重试 / 原样重发 / 失败
   ├─ 6. 复查        TurnPolicy::after_model_call    ← 这一轮还走不走下一步
   ├─ 7. 记账        BudgetPolicy::on_usage          ← 继续 / 警告 / 耗尽
   ├─ 8. 有工具调用:送达这一轮运行期间收到的用户消息与通知,再来一轮
@@ -223,7 +223,8 @@ Stop hook 和 `BudgetPolicy::on_output_target` 这一步都不再问;它放弃�
 
 **出错时什么都没留下,才交给 RecoveryPolicy。** 请求被拒(状态码、连不上),或者流在回复
 要工具之前断了(流里的 `error` 事件、没等到消息结尾就结束),这次调用的半截回复整个丢掉,
-transcript 不变,恢复策略重发的就是失败的那个请求;每次调用至多恢复一次。工具已经跑过的,
+transcript 不变,恢复策略重发的就是失败的那个请求;每次调用至多恢复 4 次,原样重发只用于
+流已经开始之后的失败(首字节之前的已经由 client 的退避阶梯重试过)。工具已经跑过的,
 回复连同结果照写,这一轮以错误结束——再发一遍会让工具再跑一遍。
 
 **压缩只有一条路径。** 阈值逼出来的(第 2 步)、`/compact` 要的、请求因体积被拒后

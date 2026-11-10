@@ -2661,6 +2661,7 @@ settings.local.json)里声明过,否则 `INVALID_PARAMS` —— 用来换令牌�
 |---|---|---|
 | `turn_start` | `{}` | 本轮开始,是本轮的第一帧 |
 | `step_start` | `{step}` | 本轮要调一次模型;`step` 从 0 计。同一个 `step` 再来一次,说明上一次调用失败、被恢复策略重发(§7 表下):这一步此前推过的 `text_delta` / `thinking_delta` 作废 |
+| `model_retry` | `{step,attempt,delay_ms,reason}` | 这一步的调用在流已经开始之后失败(断流、流中途空闲、流里的过载事件),等 `delay_ms` 毫秒后原样重发;随后是同一个 `step` 的 `step_start`。`attempt` 是这次调用的第几次重发,从 1 计;`reason` 是失败的说明文字。等待期间取消,这一轮照常以取消结束 |
 | `step_end` | `{step,stop_reason,tool_calls,usage,seq}` | 这次调用结束,它的回复和它要的工具结果都已落盘;`usage` 只是这一次调用的;`seq` 是此刻 transcript 的消息数(§5.6) |
 | `text_delta` | `{text}` | 模型输出增量 |
 | `thinking_delta` | `{text}` | 模型思考过程的增量,与正文分开,宿主可以折叠或不显示 |
@@ -2710,8 +2711,10 @@ settings.local.json)里声明过,否则 `INVALID_PARAMS` —— 用来换令牌�
 
 **一次调用在回复要工具之前失败**(过载、尺寸被拒、流中途的 `error` 事件、连接在消息结尾
 之前断开),它这一步推过的文本不会写进 transcript;恢复策略决定重发(换备用模型、压缩后
-重试)时,先再发一次同 `step` 的 `step_start`,宿主应丢掉这一步已经画出来的文本。不重发,
-这一轮就以 `ENGINE_ERROR` 结束。回复已经要过工具的,工具已经跑了,回复连同结果写进
+重试、等一会儿原样重发)时,先再发一次同 `step` 的 `step_start`,宿主应丢掉这一步已经画出来
+的文本;原样重发之前还有一帧 `model_retry`。一次调用至多恢复 4 次。不重发,这一轮就以
+`ENGINE_ERROR` 结束。请求在首字节之前就失败的(429、过载、连不上),client 已经按退避阶梯
+重试过,恢复策略不会再原样重发。回复已经要过工具的,工具已经跑了,回复连同结果写进
 transcript,这一轮以 `ENGINE_ERROR` 结束,不会重发。
 
 `prompt_type` 有两种:`"permission"` 问一次工具调用能不能跑;`"question"` 是模型用

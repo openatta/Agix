@@ -139,6 +139,18 @@ pub enum AgentEvent {
     /// calls from 0.
     StepStart { step: u32, turn_id: String },
 
+    /// Model call `step` failed after its stream had started, and is sent
+    /// again as it was once `delay_ms` has passed; a `StepStart` of the same
+    /// `step` follows. `attempt` counts these retries of the call from 1;
+    /// `reason` is the failure.
+    ModelRetry {
+        step: u32,
+        attempt: u32,
+        delay_ms: u64,
+        reason: String,
+        turn_id: String,
+    },
+
     /// The model call `step` has finished and its reply — plus the results of
     /// the tools it asked for — is in the transcript.
     StepEnd {

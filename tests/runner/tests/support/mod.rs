@@ -334,6 +334,12 @@ pub fn normalize_events(events: &[AgentEvent]) -> String {
             }
             AgentEvent::TurnStart { .. } => "TurnStart".to_string(),
             AgentEvent::StepStart { step, .. } => format!("StepStart step={step}"),
+            AgentEvent::ModelRetry {
+                step,
+                attempt,
+                reason,
+                ..
+            } => format!("ModelRetry step={step} attempt={attempt} reason={reason:?}"),
             AgentEvent::StepEnd {
                 step,
                 stop_reason,

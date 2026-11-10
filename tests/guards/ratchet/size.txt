@@ -18,7 +18,7 @@ file  crates/mcp/src/oauth/mod.rs                          -                    
 file  crates/platform/src/sandbox.rs                       -                                        1498
 file  crates/ptc/src/lib.rs                                -                                        968
 file  crates/runtime/src/agent/builder/build.rs            -                                        924
-file  crates/runtime/src/turn/user_turn.rs                 -                                        1284
+file  crates/runtime/src/turn/user_turn.rs                 -                                        1245
 file  crates/session/src/session.rs                        -                                        835
 file  crates/team/src/coordinator.rs                       -                                        1005
 file  crates/telemetry/src/recorder/mod.rs                 -                                        958
@@ -29,7 +29,7 @@ fn    crates/agents/src/agent_tool/permission.rs           ParentPermission::dec
 fn    crates/agents/src/lib.rs                             AgentsModule::on_session                 111
 fn    crates/assembly/src/assemble.rs                      pool                                     137
 fn    crates/assembly/src/export.rs                        pack                                     211
-fn    crates/assembly/src/rpc/events.rs                    SessionEventPayload::from_agent          258
+fn    crates/assembly/src/rpc/events.rs                    SessionEventPayload::from_agent          270
 fn    crates/assembly/src/session_pool/create.rs           SessionPool::create                      578
 fn    crates/assembly/src/session_pool/history_rpc.rs      SessionPool::export_session              115
 fn    crates/assembly/src/session_pool/history_rpc.rs      SessionPool::fork_session                128
@@ -69,7 +69,7 @@ fn    crates/runtime/src/turn/compact.rs                   Agent::run_compaction
 fn    crates/runtime/src/turn/memory_extraction.rs         extract_memories_after_turn              224
 fn    crates/runtime/src/turn/process.rs                   Agent::process_turn                      258
 fn    crates/runtime/src/turn/tool_exec.rs                 execute_tool_inner                       451
-fn    crates/runtime/src/turn/user_turn.rs                 Agent::run_user_turn_inner               1259
+fn    crates/runtime/src/turn/user_turn.rs                 Agent::run_user_turn_inner               1220
 fn    crates/script-host/src/lib.rs                        bindings::install                        123
 fn    crates/skills/src/bundled.rs                         bundled_skills                           135
 fn    crates/skills/src/tool.rs                            SkillTool::call                          155

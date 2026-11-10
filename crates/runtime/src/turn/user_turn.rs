@@ -4,7 +4,7 @@ use super::attachments::{resolve_attachments, truncate_at_char_boundary};
 use super::memory_extraction::extract_memories_after_turn;
 use super::process::{hook_permission_mode, PromptScreen};
 use super::prompt::user_text_fingerprint;
-use super::request::{pair_dangling_tool_uses, sync_mcp_adapters};
+use super::request::sync_mcp_adapters;
 use super::round::count_structured_output_calls;
 use super::tool_env::engine_exec_from;
 use super::tool_exec::{execute_tool_with_telemetry, ToolExecCtx};
@@ -604,20 +604,16 @@ impl Agent {
             let request = self
                 .prepare_request(&effective_model, effective_max_tokens, origin.clone())
                 .await;
-            // Kept back for the recovery paths, which retry the same tools and
-            // (for an overload) the same conversation.
-            let tool_defs = request.tool_defs.clone();
-            let messages = request.messages.clone();
-            // Counted before either is handed on: the call's own accounting
-            // needs the size of what went out, and both get moved on the way.
-            let sent_message_count = messages.len();
-            let sent_tool_count = tool_defs.len();
+            // Counted before the request is handed on: the call's own
+            // accounting needs the size of what went out.
+            let sent_message_count = request.messages.len();
+            let sent_tool_count = request.tool_defs.len();
 
             // 3. Call the model and 5. stream its reply, running tools as they
             //    arrive. 4. A call that fails before anything of it was kept
-            //    goes to the recovery policy, once; the doing stays here,
-            //    because compacting, rebuilding a request and sending it are
-            //    things only this loop can sequence.
+            //    goes to the recovery policy, a bounded number of times; the
+            //    doing stays with the loop, because compacting, rebuilding a
+            //    request and sending it are things only it can sequence.
             let call_started = std::time::Instant::now();
             let tools = Arc::clone(&self.tooling.tools);
             let tools_for_safety = Arc::clone(&self.tooling.tools);
@@ -676,27 +672,27 @@ impl Agent {
                     .unwrap_or(false)
             };
             let mut request = request;
-            let mut recovered = false;
+            let mut recovering = super::request::RecoveringCall::default();
             let (stream_result, messages_before_step) = loop {
                 let messages_before_step = self.session.messages.len();
+                let sent = request.clone();
                 let attempt = match self.send(request, cancel.clone()).await {
-                    Ok(stream) => {
-                        crate::streaming::execute_stream(
-                            stream,
-                            &mut self.session,
-                            &self.channels.event_tx,
-                            self.current_turn_id.clone(),
-                            execute_tool.clone(),
-                            is_concurrency_safe.clone(),
-                            cancel.clone(),
-                            &self.llm.model_interceptors,
-                            self.llm.model.provenance(),
-                        )
-                        .await
-                    }
-                    Err(error) => Err(crate::streaming::StreamFailure::refused(error)),
+                    Ok(stream) => crate::streaming::execute_stream(
+                        stream,
+                        &mut self.session,
+                        &self.channels.event_tx,
+                        self.current_turn_id.clone(),
+                        execute_tool.clone(),
+                        is_concurrency_safe.clone(),
+                        cancel.clone(),
+                        &self.llm.model_interceptors,
+                        self.llm.model.provenance(),
+                    )
+                    .await
+                    .map_err(|failure| (failure, true)),
+                    Err(error) => Err((crate::streaming::StreamFailure::refused(error), false)),
                 };
-                let failure = match attempt {
+                let (failure, after_first_byte) = match attempt {
                     Ok(result) => break (result, messages_before_step),
                     Err(failure) => failure,
                 };
@@ -707,59 +703,24 @@ impl Agent {
                         messages_before_step,
                     );
                 }
-                let recovery = if recovered || !failure.resendable {
-                    base::interface::recovery_policy::Recovery::Fail
-                } else {
-                    self.classify_failure(&failure.error)
-                };
-                recovered = true;
-                request = match recovery {
-                    base::interface::recovery_policy::Recovery::Fail => {
-                        return Err(TurnError::Model(format!(
-                            "failed to stream model response: {}",
-                            failure.error
-                        )))
-                    }
-                    base::interface::recovery_policy::Recovery::RetryWith { model } => {
-                        tracing::warn!(
-                            from = %effective_model,
-                            to = %model,
-                            error = %failure.error,
-                            "retrying against a different model"
-                        );
-                        effective_model = model;
-                        // `fallback_model: None` — this retry *is* the
-                        // fallback, so there is nothing further to fall back to.
-                        self.prepare_retry(
-                            &effective_model,
-                            effective_max_tokens,
-                            tool_defs.clone(),
-                            messages.clone(),
-                            None,
-                            origin.clone(),
+                request = match self
+                    .recover_call(
+                        &failure,
+                        after_first_byte,
+                        sent,
+                        &mut recovering,
+                        &mut effective_model,
+                        step,
+                        &cancel,
+                    )
+                    .await?
+                {
+                    Some(next) => next,
+                    None => {
+                        break (
+                            crate::streaming::StreamResult::cancelled(),
+                            messages_before_step,
                         )
-                        .await
-                    }
-                    base::interface::recovery_policy::Recovery::CompactAndRetry => {
-                        self.compact_for_retry(&failure.error, &cancel).await?;
-                        if cancel.is_cancelled() {
-                            break (
-                                crate::streaming::StreamResult::cancelled(),
-                                messages_before_step,
-                            );
-                        }
-                        // The retry keeps skills and MCP instructions: they
-                        // cost a few KB, the history is what blew the budget,
-                        // and the compaction freed far more.
-                        self.prepare_retry(
-                            &effective_model,
-                            effective_max_tokens,
-                            tool_defs.clone(),
-                            pair_dangling_tool_uses(self.session.messages().to_vec()),
-                            self.settings.model.fallback_model.clone(),
-                            origin.clone(),
-                        )
-                        .await
                     }
                 };
                 let _ = self.channels.event_tx.send(AgentEvent::StepStart {

@@ -17,6 +17,7 @@ mod host_scenes;
 mod managed_settings;
 mod mcp_oauth;
 mod mcp_policy;
+mod model_rate_limit;
 mod permission_pipeline;
 mod plugin_skills;
 mod plugin_tools_in_scene;
