@@ -10,7 +10,6 @@ mod bash_read_only_lane;
 mod carrier_invariants;
 mod daemon_e2e;
 mod daemon_socket_from_a_command;
-mod dependency_direction;
 mod extension_entries;
 mod extension_points_doc;
 mod home_is_never_discovered;

@@ -136,7 +136,7 @@ MCP、询问、通知、监视、结构化输出(见下文[能力](#能力))。
 ### 分层
 
 一个分五层的 Rust 工作区。依赖只向下指,反过来的依赖会让
-`daemon/tests/dependency_direction.rs` 失败。
+`tests/guards/tests/deps.rs` 失败。
 
 ```
  外壳      daemon ─────────── agixd:命令行、进程生命周期(锁、信号、崩溃收尾)

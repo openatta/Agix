@@ -193,7 +193,7 @@ monitors and structured output ([table below](#tools--45-built-in)).
 ### Layers
 
 A Rust workspace in five layers. Dependencies point downward only, and a test
-(`daemon/tests/dependency_direction.rs`) fails the build if one points the
+(`tests/guards/tests/deps.rs`) fails the build if one points the
 other way.
 
 ```

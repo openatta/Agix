@@ -35,7 +35,7 @@ Agix 是一个**库**,不是一个应用。它提供的是"跑一个 agent 会�
  契约    core(包名 base)── 所有 trait、所有共享数据类型
 ```
 
-**依赖方向**(`daemon/tests/dependency_direction.rs` 检查):
+**依赖方向**(`tests/guards/tests/deps.rs` 检查):
 
 - 内核 crate 只依赖契约与其它内核 crate,**不依赖任何模块 crate**。
 - 模块依赖契约与内核;模块之间的依赖只经 `Module::requires` 声明的顺序。
