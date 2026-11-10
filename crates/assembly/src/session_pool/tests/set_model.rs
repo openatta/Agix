@@ -13,10 +13,8 @@ async fn a_session_with_a_turn_in_flight_refuses_rather_than_queues() {
     let session_id = pool
         .create_session(None, ProjectSelector::Default, None)
         .await
-        .expect("a session")["session_id"]
-        .as_str()
-        .expect("a session id")
-        .to_string();
+        .expect("a session")
+        .session_id;
 
     {
         let mut sessions = pool.sessions.lock().await;
@@ -40,7 +38,7 @@ async fn a_session_with_a_turn_in_flight_refuses_rather_than_queues() {
             )
         }
         Err(e) => panic!("expected a busy refusal, got {e}"),
-        Ok(v) => panic!("a busy session accepted a model change: {v}"),
+        Ok(v) => panic!("a busy session accepted a model change: {v:?}"),
     }
 
     assert!(

@@ -6,7 +6,7 @@ use serde_json::Value;
 use std::path::PathBuf;
 
 /// How much of the context window a session is using, after a turn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ContextUsage {
     /// What the last model call was sent, as the provider counted it:
     /// input plus both cache figures.

@@ -18,7 +18,7 @@ impl SessionPool {
         &self,
         session_id: &str,
         name: Option<&str>,
-    ) -> Result<serde_json::Value, PoolError> {
+    ) -> Result<api::Renamed, PoolError> {
         self.refuse_scene_mismatch(session_id).await?;
         let name = match name {
             None => None,
@@ -76,7 +76,10 @@ impl SessionPool {
             }
         }
 
-        Ok(serde_json::json!({ "session_id": session_id, "name": name }))
+        Ok(api::Renamed {
+            session_id: session_id.to_string(),
+            name,
+        })
     }
 
     const MAX_ENTRY_NS: usize = 128;
@@ -198,7 +201,7 @@ impl SessionPool {
         session_id: &str,
         model: Option<&str>,
         provider: Option<&str>,
-    ) -> Result<serde_json::Value, PoolError> {
+    ) -> Result<api::ModelChoice, PoolError> {
         self.refuse_scene_mismatch(session_id).await?;
         let (input_tx, project, scene) = {
             let mut sessions = self.sessions.lock().await;
@@ -276,12 +279,12 @@ impl SessionPool {
             .get(session_id)
             .cloned()
             .unwrap_or_default();
-        Ok(serde_json::json!({
-            "session_id": session_id,
-            "model": spec.model(),
-            "provider": spec.provider(),
-            "applies": "next_turn",
-        }))
+        Ok(api::ModelChoice {
+            session_id: session_id.to_string(),
+            model: spec.model(),
+            provider: spec.provider(),
+            applies: api::Applies::NextTurn,
+        })
     }
 
     /// `session.setPrompt` — this session's own system-prompt append and
@@ -292,7 +295,7 @@ impl SessionPool {
         &self,
         session_id: &str,
         change: impl FnOnce(&mut runtime::agent::SessionPrompt),
-    ) -> Result<serde_json::Value, PoolError> {
+    ) -> Result<api::PromptChoice, PoolError> {
         self.refuse_scene_mismatch(session_id).await?;
         {
             let sessions = self.sessions.lock().await;
@@ -334,11 +337,11 @@ impl SessionPool {
             })
             .await
             .map_err(|e| e.into_error(session_id))?;
-        Ok(serde_json::json!({
-            "session_id": session_id,
-            "append": prompt.append,
-            "override": prompt.override_text,
-            "applies": "next_turn",
-        }))
+        Ok(api::PromptChoice {
+            session_id: session_id.to_string(),
+            append: prompt.append,
+            override_text: prompt.override_text,
+            applies: api::Applies::NextTurn,
+        })
     }
 }

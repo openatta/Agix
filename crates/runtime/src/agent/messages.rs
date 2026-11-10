@@ -179,7 +179,9 @@ pub type EventReceiver = mpsc::UnboundedReceiver<AgentEvent>;
 /// copy of this same map — see `ParentPermission`'s doc comment).
 /// What [`Builder::session_prompt`] puts over a session's settings. `None`
 /// leaves the settings' `prompt_append` / `prompt_override` in force.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub struct SessionPrompt {
     pub append: Option<String>,
     #[serde(rename = "override")]

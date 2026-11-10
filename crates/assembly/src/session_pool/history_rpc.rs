@@ -310,7 +310,7 @@ impl SessionPool {
         &self,
         session_id: &str,
         at_message: Option<usize>,
-    ) -> Result<serde_json::Value, PoolError> {
+    ) -> Result<api::ForkReport, PoolError> {
         self.refuse_scene_mismatch(session_id).await?;
         let entries = self.load_entries(session_id).await?;
         let store = self.require_history_store()?;
@@ -424,15 +424,15 @@ impl SessionPool {
             at_message = message_count,
             "session forked"
         );
-        Ok(serde_json::json!({
-            "session_id": new_sid.to_string(),
-            "parent_session_id": session_id,
-            "forked_at_message": message_count,
-            "message_count": message_count,
-            "entry_count": copied,
-            "source_message_count": total_messages,
-            "active": false,
-        }))
+        Ok(api::ForkReport {
+            session_id: new_sid.to_string(),
+            parent_session_id: session_id.to_string(),
+            forked_at_message: message_count,
+            message_count,
+            entry_count: copied,
+            source_message_count: total_messages,
+            active: false,
+        })
     }
 }
 

@@ -43,6 +43,32 @@ impl SessionPool {
             session_id: session_id.to_string(),
             last_seq: self.transcript_len(session_id).await,
             pending,
+            resumed: false,
+            scene_inferred: None,
+        })
+    }
+
+    /// [`Self::subscribe_session`], resuming `session_id` first when it is
+    /// not in memory — with `session.resume`'s refusals, and no `options`.
+    ///
+    /// Not what a plain subscribe does: resuming reads the transcript and
+    /// takes a slot in a capped pool, and a host drawing a session list
+    /// subscribes to rows it is only looking at.
+    pub async fn subscribe_resuming(
+        &self,
+        session_id: &str,
+        watcher: Arc<dyn SessionWatcher>,
+    ) -> Result<Subscribed, PoolError> {
+        match self.subscribe_session(session_id, watcher.clone()).await {
+            Err(PoolError::SessionNotFound { .. }) => {}
+            subscribed => return subscribed,
+        }
+        let resumed = self.resume_session(session_id, false, None).await?;
+        let subscribed = self.subscribe_session(session_id, watcher).await?;
+        Ok(Subscribed {
+            resumed: true,
+            scene_inferred: Some(resumed.scene_inferred),
+            ..subscribed
         })
     }
 

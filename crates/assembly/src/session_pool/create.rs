@@ -16,7 +16,7 @@ impl SessionPool {
         scene_id: Option<&str>,
         project_root: ProjectSelector,
         options: Option<&SessionOptions>,
-    ) -> Result<serde_json::Value, PoolError> {
+    ) -> Result<api::SessionCreated, PoolError> {
         let Some(scene) = self.resolve_scene(scene_id).await else {
             return Err(PoolError::SceneNotActive {
                 scene: scene_id.unwrap_or("").to_string(),
@@ -83,14 +83,14 @@ impl SessionPool {
                 .unwrap_or_default()
         };
 
-        Ok(serde_json::json!({
-            "session_id": created_id,
-            "scene": scene_id_for_result,
-            "session_kind": "primary",
-            "project_root": project_root_for_meta.map(|p| p.display().to_string()),
-            "project_trust": project_trust.as_str(),
-            "created_at": created_at,
-        }))
+        Ok(api::SessionCreated {
+            session_id: created_id,
+            scene: scene_id_for_result,
+            session_kind: api::SessionKindName::Primary,
+            project_root: project_root_for_meta.map(|p| p.display().to_string()),
+            project_trust: project_trust.into(),
+            created_at,
+        })
     }
 
     /// 创建新 session 并启动 Agent 后台 run loop。

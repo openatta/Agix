@@ -9,6 +9,7 @@ mod history;
 mod mcp;
 mod plugin;
 mod scene;
+mod session;
 mod settings;
 mod turn;
 
@@ -32,6 +33,11 @@ pub use plugin::{
     SkillConflict, SkillOrigin, VisibleText,
 };
 pub use scene::{SceneCapabilities, SceneDescription, SceneReload, SceneSummary, SceneTools};
+pub use session::{
+    Applies, DeleteReport, ForkReport, ModelChoice, PermissionReport, PromptChoice, Renamed,
+    ResumeReport, ResumeStatus, ScriptCall, ScriptCallOutcome, ScriptReport, SessionCreated,
+    SessionDetail, TurnState,
+};
 pub use settings::{
     ConfigTier, ConfigTierName, ImportRun, ProjectStatus, ProjectTrustSet, ProviderConfigView,
     ProviderPatch, ProviderSaved, ProviderView, RoutingStatus, SettingsReloaded, TrustState,

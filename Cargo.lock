@@ -2869,6 +2869,7 @@ dependencies = [
  "platform",
  "ptc",
  "scene",
+ "schemars",
  "serde",
  "serde_json",
  "session",

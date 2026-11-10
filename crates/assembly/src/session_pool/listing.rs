@@ -178,7 +178,7 @@ impl SessionPool {
     /// Built from `list_all` rather than a second, parallel assembly: a
     /// `session.get` that disagreed with the `session.list` entry for the
     /// same session would be worse than not having it.
-    pub async fn session_detail(&self, session_id: &str) -> Result<serde_json::Value, PoolError> {
+    pub async fn session_detail(&self, session_id: &str) -> Result<api::SessionDetail, PoolError> {
         let listed = self
             .list_all(true, None)
             .await
@@ -196,46 +196,30 @@ impl SessionPool {
             Some(id) => self.active_scenes.read().await.contains_key(id),
             None => false,
         };
-        let current_turn = self.current_turn_of(session_id).await;
-
-        let mut detail = serde_json::to_value(&info).unwrap_or_else(|_| serde_json::json!({}));
-        if let Some(obj) = detail.as_object_mut() {
-            obj.insert("scene_active".into(), serde_json::json!(scene_active));
-            // `turn_state` is the pair a client actually acts on: whether to
-            // enable its send button, and which turn to interrupt if not.
-            obj.insert(
-                "turn_state".into(),
-                serde_json::json!(if current_turn.is_some() {
-                    "running"
-                } else {
-                    "idle"
-                }),
-            );
-            obj.insert("current_turn_id".into(), serde_json::json!(current_turn));
-            let context = self
-                .sessions
-                .lock()
-                .await
-                .get(session_id)
-                .and_then(|live| live.context);
-            if let Some(context) = context {
-                obj.insert("context".into(), serde_json::json!(context));
-            }
-            let health = self
-                .sessions
-                .lock()
-                .await
-                .get(session_id)
-                .map(|live| live.health.clone())
-                .filter(|health| !health.is_empty());
-            if let Some(health) = health {
-                obj.insert("health".into(), health.report().to_json());
-            }
-            if let Some(scripts) = self.script_report(session_id).await {
-                obj.insert("scripts".into(), scripts);
-            }
-        }
-        Ok(detail)
+        let current_turn_id = self.current_turn_of(session_id).await;
+        let (context, health) = {
+            let sessions = self.sessions.lock().await;
+            let live = sessions.get(session_id);
+            (
+                live.and_then(|live| live.context),
+                live.map(|live| live.health.clone())
+                    .filter(|health| !health.is_empty())
+                    .map(|health| health.report().to_json()),
+            )
+        };
+        Ok(api::SessionDetail {
+            info,
+            scene_active,
+            turn_state: if current_turn_id.is_some() {
+                api::TurnState::Running
+            } else {
+                api::TurnState::Idle
+            },
+            current_turn_id,
+            context,
+            health,
+            scripts: self.script_report(session_id).await,
+        })
     }
 
     /// What this session's scripts have done, for `session.get`.
@@ -249,7 +233,8 @@ impl SessionPool {
     /// not". A failed call carries its reason, because "the script threw",
     /// "it ran out of time" and "it answered in a shape this point cannot use"
     /// send a reader to three different places.
-    pub(super) async fn script_report(&self, session_id: &str) -> Option<serde_json::Value> {
+    pub(super) async fn script_report(&self, session_id: &str) -> Option<api::ScriptReport> {
+        use api::ScriptCallOutcome;
         use base::interface::script::ScriptOutcome;
 
         let ledger = {
@@ -270,38 +255,43 @@ impl SessionPool {
 
         /// Enough to see a pattern, few enough to read.
         const RECENT: usize = 20;
-        let recent: Vec<serde_json::Value> = records
+        let recent = records
             .iter()
             .rev()
             .take(RECENT)
             .map(|r| {
                 let (outcome, detail) = match &r.outcome {
-                    ScriptOutcome::Applied => ("applied", None),
-                    ScriptOutcome::NoChange { detail } => ("no_change", detail.clone()),
-                    ScriptOutcome::Failed { error } => ("failed", Some(error.to_string())),
-                    ScriptOutcome::Refused { detail } => ("refused", Some(detail.clone())),
+                    ScriptOutcome::Applied => (ScriptCallOutcome::Applied, None),
+                    ScriptOutcome::NoChange { detail } => {
+                        (ScriptCallOutcome::NoChange, detail.clone())
+                    }
+                    ScriptOutcome::Failed { error } => {
+                        (ScriptCallOutcome::Failed, Some(error.to_string()))
+                    }
+                    ScriptOutcome::Refused { detail } => {
+                        (ScriptCallOutcome::Refused, Some(detail.clone()))
+                    }
                 };
-                serde_json::json!({
-                    "point": r.point,
-                    "script": r.script,
-                    "entry": r.entry,
-                    "turn": r.turn,
-                    "outcome": outcome,
-                    "detail": detail,
-                })
+                api::ScriptCall {
+                    point: r.point.clone(),
+                    script: r.script.clone(),
+                    entry: r.entry.clone(),
+                    turn: r.turn,
+                    outcome,
+                    detail,
+                }
             })
             .collect();
 
-        Some(serde_json::json!({
-            "calls": records.len(),
-            "applied": applied,
-            "no_change": no_change,
-            "failed": failed,
-            "refused": refused,
-            // Non-zero means `recent` is a tail of a longer story.
-            "dropped": ledger.dropped(),
-            "recent": recent,
-        }))
+        Some(api::ScriptReport {
+            calls: records.len(),
+            applied,
+            no_change,
+            failed,
+            refused,
+            dropped: ledger.dropped(),
+            recent,
+        })
     }
 
     /// 列出所有 session（活跃的 + 历史的），合并去重。

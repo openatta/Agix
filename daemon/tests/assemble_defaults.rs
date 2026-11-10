@@ -70,7 +70,7 @@ async fn the_default_assembly_puts_transcripts_under_the_configured_root() {
         .create_session(None, daemon::session_pool::ProjectSelector::Default, None)
         .await
         .expect("a session");
-    let session_id = created["session_id"].as_str().unwrap();
+    let session_id = created.session_id.as_str();
 
     // A store was built, and it was built under the root the configuration
     // named rather than under the process's own home.

@@ -22,10 +22,8 @@ async fn pool_with_history() -> (SessionPool, tempfile::TempDir, tempfile::TempD
 async fn new_session(pool: &SessionPool) -> String {
     pool.create_session(None, ProjectSelector::Default, None)
         .await
-        .expect("a session")["session_id"]
-        .as_str()
-        .expect("a session id")
-        .to_string()
+        .expect("a session")
+        .session_id
 }
 
 /// The rebuild holding `sid`'s lock and one more caller queued on it.

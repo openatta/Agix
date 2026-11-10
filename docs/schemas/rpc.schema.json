@@ -22,6 +22,13 @@
       ],
       "type": "object"
     },
+    "Applies": {
+      "description": "When a change to a session's model or prompt takes effect.",
+      "enum": [
+        "next_turn"
+      ],
+      "type": "string"
+    },
     "ArchiveFormat": {
       "enum": [
         "zip",
@@ -50,12 +57,40 @@
         }
       ]
     },
+    "ClockOptions": {
+      "properties": {
+        "start": {
+          "default": "",
+          "description": "RFC 3339, e.g. `2026-10-28T09:00:00Z`. The clock reads this when the session is built\nand runs on at wall-clock speed.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "CloseReason": {
       "enum": [
         "closed",
         "engine_stopped"
       ],
       "type": "string"
+    },
+    "Closed": {
+      "properties": {
+        "closed": {
+          "description": "The session id, not a flag.",
+          "type": "string"
+        },
+        "sidechains_deleted": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "closed",
+        "sidechains_deleted"
+      ],
+      "type": "object"
     },
     "CommandInfo": {
       "properties": {
@@ -434,6 +469,65 @@
           "type": "object"
         }
       ]
+    },
+    "ContextUsage": {
+      "description": "How much of the context window a session is using, after a turn.",
+      "properties": {
+        "compact_threshold": {
+          "description": "Where automatic compaction starts.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tokens": {
+          "description": "What the last model call was sent, as the provider counted it:\ninput plus both cache figures.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "window": {
+          "description": "The model's context window.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "tokens",
+        "compact_threshold",
+        "window"
+      ],
+      "type": "object"
+    },
+    "CreateParams": {
+      "properties": {
+        "options": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionOptions"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "project_root": {
+          "description": "Omitted: the daemon's default project; `null`: no project.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scene": {
+          "default": null,
+          "description": "Omitted: the daemon's default scene.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
     },
     "CronJob": {
       "properties": {
@@ -856,6 +950,50 @@
       ],
       "type": "object"
     },
+    "DeleteParams": {
+      "properties": {
+        "dry_run": {
+          "default": false,
+          "type": "boolean"
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "type": "object"
+    },
+    "DeleteReport": {
+      "description": "`session.delete`, or with `deleted: false` what a dry run would delete.",
+      "properties": {
+        "deleted": {
+          "type": "boolean"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "sidechain_ids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "sidechains_deleted": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "session_id",
+        "deleted",
+        "sidechains_deleted",
+        "sidechain_ids"
+      ],
+      "type": "object"
+    },
     "DoctorReport": {
       "description": "What `daemon.doctor` answers. `settings_tiers`, `providers`, `hooks` and\n`health` are the checks' own `details`, whose shape each check decides.",
       "properties": {
@@ -1112,6 +1250,73 @@
         "session_id",
         "kind",
         "entry_count"
+      ],
+      "type": "object"
+    },
+    "ForkParams": {
+      "properties": {
+        "at_message": {
+          "default": null,
+          "description": "In `session.history`'s positions; omitted copies the whole transcript.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "type": "object"
+    },
+    "ForkReport": {
+      "properties": {
+        "active": {
+          "description": "Always `false`: a fork is written to disk, not brought into memory.",
+          "type": "boolean"
+        },
+        "entry_count": {
+          "description": "Log entries copied.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "forked_at_message": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "message_count": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "parent_session_id": {
+          "type": "string"
+        },
+        "session_id": {
+          "description": "The new session.",
+          "type": "string"
+        },
+        "source_message_count": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "session_id",
+        "parent_session_id",
+        "forked_at_message",
+        "message_count",
+        "entry_count",
+        "source_message_count",
+        "active"
       ],
       "type": "object"
     },
@@ -1484,6 +1689,24 @@
       ],
       "type": "object"
     },
+    "IgnoredOption": {
+      "description": "A field of `options` the daemon left out, as the response's\n`ignored_options` reports it. `field` is `None` when `options` as a whole\ncould not be read.",
+      "properties": {
+        "error": {
+          "type": "string"
+        },
+        "field": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "error"
+      ],
+      "type": "object"
+    },
     "ImageSource": {
       "oneOf": [
         {
@@ -1606,6 +1829,39 @@
         "goal"
       ],
       "type": "string"
+    },
+    "Interrupted": {
+      "properties": {
+        "interrupted": {
+          "description": "`false`: no turn was running.",
+          "type": "boolean"
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "interrupted"
+      ],
+      "type": "object"
+    },
+    "ListParams": {
+      "properties": {
+        "include_children": {
+          "default": false,
+          "type": "boolean"
+        },
+        "parent_session_id": {
+          "default": null,
+          "description": "Given: only the sessions recording this one as their parent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
     },
     "McpAuthCancelParams": {
       "properties": {
@@ -1986,6 +2242,33 @@
       ],
       "type": "object"
     },
+    "ModelChoice": {
+      "properties": {
+        "applies": {
+          "$ref": "#/$defs/Applies"
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "applies"
+      ],
+      "type": "object"
+    },
     "ModelReport": {
       "properties": {
         "api_type": {
@@ -1998,6 +2281,58 @@
       "required": [
         "model_name",
         "api_type"
+      ],
+      "type": "object"
+    },
+    "PermissionMode": {
+      "description": "Permission mode for tool execution.",
+      "oneOf": [
+        {
+          "const": "default",
+          "description": "Prompt user for each tool call that isn't explicitly allowed.",
+          "type": "string"
+        },
+        {
+          "const": "acceptEdits",
+          "description": "Allow file writes inside the project (the working directory and\n`sandbox.additional_directories`) and read-only calls without asking;\nask about the rest, as `default` does. Writes into the project's\n`.git`, `.agix`, `.claude` and `.agents/skills` still ask.",
+          "type": "string"
+        },
+        {
+          "const": "bypassPermissions",
+          "description": "Ask nothing and skip the rules of the user's tiers. Credentials\n(`.ssh`, `.aws`, `.gnupg`, the state directory's settings and tokens)\nare still refused, the deployment's managed `deny` / `ask` rules still\napply, input that is not valid is still refused, and `Bash` still runs\nin the OS sandbox. `auto` and `yolo` are accepted as other spellings\nof this mode and read back as `bypassPermissions`.",
+          "type": "string"
+        },
+        {
+          "const": "plan",
+          "description": "Plan mode — only allow read-only tools.",
+          "type": "string"
+        },
+        {
+          "const": "dontAsk",
+          "description": "Don't ask — deny any tool not explicitly allowed (no prompt).",
+          "type": "string"
+        }
+      ]
+    },
+    "PermissionReport": {
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/PermissionMode"
+        },
+        "prompt_timeout_secs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "prompts": {
+          "description": "`false`: no `prompt_type:\"permission\"` frame will ever be raised.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "mode",
+        "prompts",
+        "prompt_timeout_secs"
       ],
       "type": "object"
     },
@@ -2433,6 +2768,33 @@
       ],
       "type": "object"
     },
+    "PromptChoice": {
+      "properties": {
+        "append": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "applies": {
+          "$ref": "#/$defs/Applies"
+        },
+        "override": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "applies"
+      ],
+      "type": "object"
+    },
     "ProviderConfigView": {
       "properties": {
         "default_provider": {
@@ -2540,6 +2902,178 @@
         "models"
       ],
       "type": "object"
+    },
+    "RecorderOptions": {
+      "description": "Record or replay this session's LLM calls.",
+      "properties": {
+        "dir": {
+          "default": null,
+          "description": "Absolute path to the recordings root. Omitted, the daemon's own root is\nused — `settings.recorder.root` if configured, else\n`ConfigPaths::global_recordings_dir()`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mode": {
+          "type": "string"
+        },
+        "name": {
+          "default": null,
+          "description": "Directory name for the recording under `dir`. Omitted, the session id\nis used — which is what production recording wants, and what a replay\nmust therefore override with the name of the recording it wants back.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "strict": {
+          "default": false,
+          "description": "On replay, whether a live request that differs from the recorded one\nfails the call (`true`) or only warns (`false`).",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "type": "object"
+    },
+    "RenameParams": {
+      "properties": {
+        "name": {
+          "default": null,
+          "description": "`null` or omitted clears the name.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "type": "object"
+    },
+    "Renamed": {
+      "properties": {
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "type": "object"
+    },
+    "ResumeParams": {
+      "properties": {
+        "create_if_missing": {
+          "default": false,
+          "type": "boolean"
+        },
+        "options": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionOptions"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "type": "object"
+    },
+    "ResumeReportWithIgnored": {
+      "description": "`result` with what the call's `options` left out, as `ignored_options`;\nabsent when nothing was.",
+      "properties": {
+        "active": {
+          "type": "boolean"
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "entry_count": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ignored_options": {
+          "items": {
+            "$ref": "#/$defs/IgnoredOption"
+          },
+          "type": "array"
+        },
+        "last_active": {
+          "type": "string"
+        },
+        "message_count": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "permission": {
+          "$ref": "#/$defs/PermissionReport"
+        },
+        "project_trust": {
+          "$ref": "#/$defs/TrustState"
+        },
+        "scene": {
+          "type": "string"
+        },
+        "scene_inferred": {
+          "description": "The log recorded no scene; the session runs under this daemon's.",
+          "type": "boolean"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/ResumeStatus"
+        }
+      },
+      "required": [
+        "session_id",
+        "status",
+        "active",
+        "message_count",
+        "entry_count",
+        "created_at",
+        "last_active",
+        "scene",
+        "project_trust",
+        "permission",
+        "scene_inferred",
+        "ignored_options"
+      ],
+      "type": "object"
+    },
+    "ResumeStatus": {
+      "enum": [
+        "already_active",
+        "resumed",
+        "created"
+      ],
+      "type": "string"
     },
     "RoutingStatus": {
       "description": "What reading the settings back and resolving provider routing found.",
@@ -3085,6 +3619,103 @@
       },
       "type": "object"
     },
+    "ScriptCall": {
+      "properties": {
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "entry": {
+          "type": "string"
+        },
+        "outcome": {
+          "$ref": "#/$defs/ScriptCallOutcome"
+        },
+        "point": {
+          "type": "string"
+        },
+        "script": {
+          "type": "string"
+        },
+        "turn": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "point",
+        "script",
+        "entry",
+        "turn",
+        "outcome"
+      ],
+      "type": "object"
+    },
+    "ScriptCallOutcome": {
+      "enum": [
+        "applied",
+        "no_change",
+        "failed",
+        "refused"
+      ],
+      "type": "string"
+    },
+    "ScriptReport": {
+      "description": "What a session's scripts have done.",
+      "properties": {
+        "applied": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "calls": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "dropped": {
+          "description": "Non-zero means `recent` is a tail of a longer story.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "failed": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "no_change": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "recent": {
+          "description": "Newest first.",
+          "items": {
+            "$ref": "#/$defs/ScriptCall"
+          },
+          "type": "array"
+        },
+        "refused": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "calls",
+        "applied",
+        "no_change",
+        "failed",
+        "refused",
+        "dropped",
+        "recent"
+      ],
+      "type": "object"
+    },
     "ServerDaemonEvent": {
       "description": "The `daemon.event` kinds the server makes up itself rather than relays\nfrom the pool.",
       "oneOf": [
@@ -3109,12 +3740,350 @@
         }
       ]
     },
+    "SessionCreatedWithIgnored": {
+      "description": "`result` with what the call's `options` left out, as `ignored_options`;\nabsent when nothing was.",
+      "properties": {
+        "created_at": {
+          "type": "string"
+        },
+        "ignored_options": {
+          "items": {
+            "$ref": "#/$defs/IgnoredOption"
+          },
+          "type": "array"
+        },
+        "project_root": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project_trust": {
+          "$ref": "#/$defs/TrustState"
+        },
+        "scene": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "session_kind": {
+          "$ref": "#/$defs/SessionKindName"
+        }
+      },
+      "required": [
+        "session_id",
+        "scene",
+        "session_kind",
+        "project_trust",
+        "created_at",
+        "ignored_options"
+      ],
+      "type": "object"
+    },
+    "SessionDetail": {
+      "description": "`session.get`: the session's `session.list` entry plus what only the live\npool knows.",
+      "properties": {
+        "compact_count": {
+          "description": "How many times this session's context has been compacted. Counted as\nthe log is written, so a session that is only on disk answers too.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "context": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ContextUsage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "current_turn_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "health": {
+          "description": "Shaped like `daemon.doctor`'s `health`."
+        },
+        "last_active": {
+          "type": "string"
+        },
+        "message_count": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parent_session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "preview": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project_root": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resumable": {
+          "description": "`false` only for a sidechain that already ran its one-shot task to\nconclusion — `session.resume` against it returns `SIDECHAIN_TERMINAL`.",
+          "type": "boolean"
+        },
+        "scene": {
+          "description": "Scene the session was created under, and the project it is bound to.\nBoth always present, `null` when the log does not record them (pre-v2\nfiles) — a client grouping by either can then tell \"no project\" from\n\"not known\" without a presence check.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scene_active": {
+          "type": "boolean"
+        },
+        "scripts": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ScriptReport"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Absent when the session bound no scripts, which is a different answer\nfrom scripts that never ran."
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "session_kind": {
+          "$ref": "#/$defs/SessionKindName"
+        },
+        "status": {
+          "$ref": "#/$defs/SessionStatus"
+        },
+        "turn_state": {
+          "$ref": "#/$defs/TurnState"
+        }
+      },
+      "required": [
+        "session_id",
+        "message_count",
+        "created_at",
+        "last_active",
+        "status",
+        "session_kind",
+        "compact_count",
+        "resumable",
+        "scene_active",
+        "turn_state"
+      ],
+      "type": "object"
+    },
+    "SessionInfo": {
+      "description": "session.list 返回的单条记录。",
+      "properties": {
+        "compact_count": {
+          "description": "How many times this session's context has been compacted. Counted as\nthe log is written, so a session that is only on disk answers too.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "last_active": {
+          "type": "string"
+        },
+        "message_count": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parent_session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "preview": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project_root": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resumable": {
+          "description": "`false` only for a sidechain that already ran its one-shot task to\nconclusion — `session.resume` against it returns `SIDECHAIN_TERMINAL`.",
+          "type": "boolean"
+        },
+        "scene": {
+          "description": "Scene the session was created under, and the project it is bound to.\nBoth always present, `null` when the log does not record them (pre-v2\nfiles) — a client grouping by either can then tell \"no project\" from\n\"not known\" without a presence check.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "session_kind": {
+          "$ref": "#/$defs/SessionKindName"
+        },
+        "status": {
+          "$ref": "#/$defs/SessionStatus"
+        }
+      },
+      "required": [
+        "session_id",
+        "message_count",
+        "created_at",
+        "last_active",
+        "status",
+        "session_kind",
+        "compact_count",
+        "resumable"
+      ],
+      "type": "object"
+    },
     "SessionKindName": {
       "enum": [
         "primary",
         "sidechain"
       ],
       "type": "string"
+    },
+    "SessionList": {
+      "properties": {
+        "sessions": {
+          "items": {
+            "$ref": "#/$defs/SessionInfo"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "sessions"
+      ],
+      "type": "object"
+    },
+    "SessionOptions": {
+      "description": "Optional per-session configuration passed via `session.create` or\n`session.run_turn` params.\n\nTaken when the session is created and kept with it: every rebuild of the\nsession's engine — a settings change, an idle eviction, a daemon restart —\napplies the same options again. Options sent with a later call to an\nexisting session are ignored.",
+      "properties": {
+        "clock": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ClockOptions"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Where this session's kept time starts (the date in its prompt, its log's timestamps).\nOmitted: the machine's clock — except in replay, where it starts when the recording did."
+        },
+        "model": {
+          "description": "The conversation's model. `None` takes the provider's `default_model`\nwhen `provider` is given, the settings' model otherwise.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "output_schema": {
+          "default": null,
+          "description": "JSON Schema the session's structured output must satisfy — see\n`runtime::agent::Builder::output_schema`."
+        },
+        "permission_mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PermissionMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "This session's permission mode. `None` takes the settings'\n`permission_mode`. A session may always ask for a stricter mode than\nthe settings'; a looser one is clamped unless the settings set\n`allow_client_permission_override`."
+        },
+        "permission_rules": {
+          "description": "Allow/deny/ask rules for the `RuleSetPermission` this session's\n`permission_mode` (if set) constructs. Ignored when `permission_mode`\nis `None`.",
+          "items": {
+            "$ref": "#/$defs/PermissionRule"
+          },
+          "type": "array"
+        },
+        "prompt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionPrompt"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A system-prompt append / override for this session's own agent, over\nthe settings files'. Its delegates do not get it."
+        },
+        "prompt_types": {
+          "description": "The kinds of `prompt` frame this session's host answers: `permission`\nalways, `question` when listed. Names this daemon does not know are\nignored rather than voiding the options.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "provider": {
+          "description": "The provider this session's conversation goes to, by its id in\n`providers`. `None` follows the settings' routing. Sub-agents,\ncompaction and the other routed tasks keep the settings' routing\neither way.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "recorder": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecorderOptions"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "telemetry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TelemetryOptions"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
     },
     "SessionPersistence": {
       "properties": {
@@ -3125,6 +4094,24 @@
       "required": [
         "history_store_wired"
       ],
+      "type": "object"
+    },
+    "SessionPrompt": {
+      "description": "Registry of permission requests awaiting a host response, keyed by\n`prompt_id`. Shared between `Agent::pending_permissions` and\n`agent_tool::ParentPermission` (a sub-agent registers into the *parent's*\ncopy of this same map — see `ParentPermission`'s doc comment).\nWhat [`Builder::session_prompt`] puts over a session's settings. `None`\nleaves the settings' `prompt_append` / `prompt_override` in force.",
+      "properties": {
+        "append": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "override": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
       "type": "object"
     },
     "SessionRef": {
@@ -3138,6 +4125,13 @@
         "session_id"
       ],
       "type": "object"
+    },
+    "SessionStatus": {
+      "enum": [
+        "active",
+        "inactive"
+      ],
+      "type": "string"
     },
     "SetGoalParams": {
       "description": "Params that name one session and nothing else.",
@@ -3161,6 +4155,56 @@
       "required": [
         "session_id",
         "objective"
+      ],
+      "type": "object"
+    },
+    "SetModelParams": {
+      "properties": {
+        "model": {
+          "default": null,
+          "description": "At least one of `model` and `provider`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "type": "object"
+    },
+    "SetPromptParams": {
+      "properties": {
+        "append": {
+          "description": "A string sets it, `null` clears it back to the settings files', an\nabsent key leaves it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "override": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
       ],
       "type": "object"
     },
@@ -3347,6 +4391,56 @@
         }
       ]
     },
+    "SubscribeParams": {
+      "properties": {
+        "resume": {
+          "default": false,
+          "description": "Resume the session first when it is not in memory.",
+          "type": "boolean"
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "type": "object"
+    },
+    "SubscribeResult": {
+      "properties": {
+        "last_seq": {
+          "description": "The transcript watermark to catch up to (protocol §5.6).",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pending_prompts": {
+          "description": "Each unanswered `kind:\"prompt\"` `session.event` frame, as sent.",
+          "items": true,
+          "type": "array"
+        },
+        "resumed": {
+          "type": "boolean"
+        },
+        "scene_inferred": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "last_seq",
+        "pending_prompts",
+        "resumed"
+      ],
+      "type": "object"
+    },
     "SystemKind": {
       "enum": [
         "local_command",
@@ -3380,6 +4474,17 @@
         }
       ],
       "description": "A `task_models.<task>` entry. Accepts either the shorthand `\"provider_id\"`\nstring form or the detailed `{ \"provider\": ..., \"model\": ... }` object form."
+    },
+    "TelemetryOptions": {
+      "properties": {
+        "output": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "output"
+      ],
+      "type": "object"
     },
     "ToolResultContent": {
       "anyOf": [
@@ -3418,6 +4523,29 @@
           "type": "string"
         }
       ]
+    },
+    "TurnState": {
+      "enum": [
+        "idle",
+        "running"
+      ],
+      "type": "string"
+    },
+    "Unsubscribed": {
+      "properties": {
+        "session_id": {
+          "type": "string"
+        },
+        "subscribed": {
+          "description": "Always `false`.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "session_id",
+        "subscribed"
+      ],
+      "type": "object"
     },
     "UpdateGoalParams": {
       "description": "Params that name one session and nothing else.",
@@ -3948,10 +5076,10 @@
     },
     "session.close": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/SessionRef"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/Closed"
       }
     },
     "session.compact": {
@@ -3964,18 +5092,18 @@
     },
     "session.create": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/CreateParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/SessionCreatedWithIgnored"
       }
     },
     "session.delete": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/DeleteParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/DeleteReport"
       }
     },
     "session.dropMessages": {
@@ -4012,18 +5140,18 @@
     },
     "session.fork": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/ForkParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/ForkReport"
       }
     },
     "session.get": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/SessionRef"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/SessionDetail"
       }
     },
     "session.goal": {
@@ -4052,18 +5180,18 @@
     },
     "session.interrupt": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/SessionRef"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/Interrupted"
       }
     },
     "session.list": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/ListParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/SessionList"
       }
     },
     "session.messageTask": {
@@ -4076,10 +5204,10 @@
     },
     "session.rename": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/RenameParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/Renamed"
       }
     },
     "session.respondToPrompt": {
@@ -4092,10 +5220,10 @@
     },
     "session.resume": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/ResumeParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/ResumeReportWithIgnored"
       }
     },
     "session.run_turn": {
@@ -4116,18 +5244,18 @@
     },
     "session.setModel": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/SetModelParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/ModelChoice"
       }
     },
     "session.setPrompt": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/SetPromptParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/PromptChoice"
       }
     },
     "session.startAgent": {
@@ -4149,10 +5277,10 @@
     },
     "session.subscribe": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/SubscribeParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/SubscribeResult"
       }
     },
     "session.taskOutput": {
@@ -4173,10 +5301,10 @@
     },
     "session.unsubscribe": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/SessionRef"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/Unsubscribed"
       }
     },
     "session.updateGoal": {

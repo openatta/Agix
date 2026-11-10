@@ -152,10 +152,8 @@ async fn harnix_session(
         Some(&options),
     )
     .await
-    .expect("a harnix session")["session_id"]
-        .as_str()
-        .expect("a session id")
-        .to_string()
+    .expect("a harnix session")
+    .session_id
 }
 
 /// The first turn's `session.send` result.

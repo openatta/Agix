@@ -305,7 +305,7 @@ impl SessionPool {
         &self,
         session_id: &str,
         dry_run: bool,
-    ) -> Result<serde_json::Value, PoolError> {
+    ) -> Result<api::DeleteReport, PoolError> {
         self.refuse_scene_mismatch(session_id).await?;
         let store = self.require_history_store()?;
         let sid = base::session::SessionId::parse(session_id)
@@ -319,12 +319,12 @@ impl SessionPool {
         let sidechain_ids: Vec<String> = children.iter().map(|id| id.to_string()).collect();
 
         if dry_run {
-            return Ok(serde_json::json!({
-                "session_id": session_id,
-                "deleted": false,
-                "sidechains_deleted": sidechain_ids.len(),
-                "sidechain_ids": sidechain_ids,
-            }));
+            return Ok(api::DeleteReport {
+                session_id: session_id.to_string(),
+                deleted: false,
+                sidechains_deleted: sidechain_ids.len(),
+                sidechain_ids,
+            });
         }
 
         // Cascade and the primary delete share one `with_session_lock`
@@ -348,12 +348,12 @@ impl SessionPool {
             parent_session_id: None,
         });
 
-        Ok(serde_json::json!({
-            "session_id": session_id,
-            "deleted": true,
-            "sidechains_deleted": sidechains_deleted,
-            "sidechain_ids": sidechain_ids,
-        }))
+        Ok(api::DeleteReport {
+            session_id: session_id.to_string(),
+            deleted: true,
+            sidechains_deleted,
+            sidechain_ids,
+        })
     }
 
     /// 关闭所有 session，等每个 Agent 把手上的一轮收尾落盘再返回。From the

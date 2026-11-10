@@ -135,8 +135,11 @@ async fn session_get_finds_a_cold_session_of_a_project_not_served_yet() {
         .unwrap();
 
     let detail = pool.session_detail(&sid.to_string()).await.unwrap();
-    assert_eq!(detail["project_root"], "/elsewhere/proj");
-    assert_eq!(detail["status"], "inactive");
+    assert_eq!(detail.info.project_root.as_deref(), Some("/elsewhere/proj"));
+    assert!(matches!(
+        detail.info.status,
+        crate::session_pool::SessionStatus::Inactive
+    ));
 
     let missing = base::session::SessionId::new().to_string();
     assert!(matches!(

@@ -3,6 +3,7 @@
 //! `run_turn` 的响应前面。
 
 use crate::rpc::events::SessionEventNotification;
+use crate::rpc::methods::session::SubscribeResult;
 use crate::rpc::Client;
 use crate::session_pool::api::{SessionFrame, SessionWatcher, Subscribed, WatcherId};
 
@@ -25,18 +26,19 @@ impl SessionWatcher for Client {
     }
 }
 
-/// `session.subscribe`'s result: the watermark, and each open ask as the
-/// frame that raised it.
-pub(super) fn subscribed_json(subscribed: &Subscribed) -> serde_json::Value {
-    let pending: Vec<serde_json::Value> = subscribed
+/// `session.subscribe`'s result: each open ask as the frame that raised it.
+pub(super) fn subscribe_result(subscribed: Subscribed) -> SubscribeResult {
+    let pending_prompts = subscribed
         .pending
         .iter()
         .filter_map(|ask| SessionEventNotification::of(&ask.frame))
         .filter_map(|frame| serde_json::to_value(frame).ok())
         .collect();
-    serde_json::json!({
-        "session_id": subscribed.session_id,
-        "last_seq": subscribed.last_seq,
-        "pending_prompts": pending,
-    })
+    SubscribeResult {
+        session_id: subscribed.session_id,
+        last_seq: subscribed.last_seq,
+        pending_prompts,
+        resumed: subscribed.resumed,
+        scene_inferred: subscribed.scene_inferred,
+    }
 }

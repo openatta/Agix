@@ -102,15 +102,15 @@ impl SessionPool {
         session_id: &str,
         create_if_missing: bool,
         options: Option<&SessionOptions>,
-    ) -> Result<serde_json::Value, PoolError> {
+    ) -> Result<api::ResumeReport, PoolError> {
         let scene_inferred = self.refuse_scene_mismatch(session_id).await?;
-        let mut report = self
+        let report = self
             .resume_unchecked(session_id, create_if_missing, options)
             .await?;
-        if let Some(report) = report.as_object_mut() {
-            report.insert("scene_inferred".into(), serde_json::json!(scene_inferred));
-        }
-        Ok(report)
+        Ok(api::ResumeReport {
+            scene_inferred,
+            ..report
+        })
     }
 
     pub(super) async fn resume_unchecked(
@@ -118,7 +118,7 @@ impl SessionPool {
         session_id: &str,
         create_if_missing: bool,
         options: Option<&SessionOptions>,
-    ) -> Result<serde_json::Value, PoolError> {
+    ) -> Result<api::ResumeReport, PoolError> {
         let resume_start = Instant::now();
         let settings = self.settings.read().await.clone();
         let mode = effective_permission_mode(&settings, options);
@@ -159,7 +159,7 @@ impl SessionPool {
             return Ok(self
                 .resume_report(
                     session_id,
-                    "already_active",
+                    api::ResumeStatus::AlreadyActive,
                     message_count,
                     entry_count,
                     name,
@@ -220,7 +220,7 @@ impl SessionPool {
                 return Ok(self
                     .resume_report(
                         session_id,
-                        "already_active",
+                        api::ResumeStatus::AlreadyActive,
                         message_count,
                         entry_count,
                         name,
@@ -245,12 +245,11 @@ impl SessionPool {
                     None => (String::new(), String::new()),
                 }
             };
-            let status = if has_history { "resumed" } else { "created" };
 
             Ok(self
                 .resume_report(
                     &sid,
-                    status,
+                    api::ResumeStatus::loaded(has_history),
                     message_count,
                     entry_count,
                     None,
@@ -326,14 +325,14 @@ impl SessionPool {
     pub(super) async fn resume_report(
         &self,
         session_id: &str,
-        status: &str,
+        status: api::ResumeStatus,
         message_count: usize,
         entry_count: usize,
         name: Option<String>,
         created_at: String,
         last_active: String,
         mode: base::settings::PermissionMode,
-    ) -> serde_json::Value {
+    ) -> api::ResumeReport {
         let (mode, project) = {
             let sessions = self.sessions.lock().await;
             let live = sessions.get(session_id);
@@ -358,23 +357,24 @@ impl SessionPool {
                 .managed
                 .as_ref()
                 .is_some_and(|m| m.asks_under_bypass());
-        serde_json::json!({
-            "session_id": session_id,
-            "status": status,
-            "active": true,
-            "message_count": message_count,
-            "entry_count": entry_count,
-            "name": name,
-            "created_at": created_at,
-            "last_active": last_active,
-            "scene": self.scene.id(),
-            "project_trust": project_trust.as_str(),
-            "permission": {
-                "mode": serde_json::to_value(mode).unwrap_or(serde_json::Value::Null),
-                "prompts": prompts_enabled,
-                "prompt_timeout_secs": self.permission_prompt_timeout.as_secs(),
+        api::ResumeReport {
+            session_id: session_id.to_string(),
+            status,
+            active: true,
+            message_count,
+            entry_count,
+            name,
+            created_at,
+            last_active,
+            scene: self.scene.id().to_string(),
+            project_trust: project_trust.into(),
+            permission: api::PermissionReport {
+                mode,
+                prompts: prompts_enabled,
+                prompt_timeout_secs: self.permission_prompt_timeout.as_secs(),
             },
-        })
+            scene_inferred: false,
+        }
     }
 
     /// Hold `session_id`'s log against other processes for as long as the

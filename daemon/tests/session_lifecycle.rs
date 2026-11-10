@@ -672,6 +672,62 @@ async fn a_name_that_would_break_a_list_is_refused() {
     srv.stop().await;
 }
 
+/// A param of the wrong type is refused, not read as absent: a rename with a
+/// number for a name must not clear the name.
+#[tokio::test]
+async fn a_lifecycle_param_of_the_wrong_type_is_refused() {
+    let (srv, _seen) =
+        start_scripted_server(vec![text_round("answer")], ask_settings(), Duration::ZERO).await;
+    let sid = run_turn(&srv.sock, None, "hello").await;
+    let renamed = rpc(
+        &srv.sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.rename","id":1,"params":{{"session_id":"{sid}","name":"kept"}}}}"#
+        ),
+    )
+    .await;
+    assert_eq!(renamed["result"]["name"], "kept", "{renamed}");
+
+    for (method, params) in [
+        (
+            "session.rename",
+            format!(r#"{{"session_id":"{sid}","name":3}}"#),
+        ),
+        ("session.create", r#"{"project_root":5}"#.to_string()),
+        ("session.list", r#"{"include_children":"yes"}"#.to_string()),
+        (
+            "session.fork",
+            format!(r#"{{"session_id":"{sid}","at_message":-1}}"#),
+        ),
+        (
+            "session.setPrompt",
+            format!(r#"{{"session_id":"{sid}","append":7}}"#),
+        ),
+        ("session.subscribe", r#"{"resume":true}"#.to_string()),
+    ] {
+        let response = rpc(
+            &srv.sock,
+            &format!(r#"{{"jsonrpc":"2.0","method":"{method}","id":2,"params":{params}}}"#),
+        )
+        .await;
+        assert_eq!(
+            response["error"]["code"],
+            codes::INVALID_PARAMS as i64,
+            "{method} {params}: {response}"
+        );
+        let message = response["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.starts_with(&format!("invalid params for {method}: ")),
+            "{message}"
+        );
+    }
+
+    let (name, _) = session_name(&srv.sock, &sid).await;
+    assert_eq!(name, "kept", "a refused rename left the name alone");
+
+    srv.stop().await;
+}
+
 /// A scene that names its own sessions does so after the first turn — by
 /// which time the user may already have typed a name. The guess must not win:
 /// it arrives second and it is a guess.

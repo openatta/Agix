@@ -59,10 +59,8 @@ async fn session_with_a_goal(pool: &SessionPool) -> (String, Arc<base::context::
     let sid = pool
         .create_session(None, ProjectSelector::Default, None)
         .await
-        .expect("a session")["session_id"]
-        .as_str()
-        .expect("a session id")
-        .to_string();
+        .expect("a session")
+        .session_id;
     let state = pool.live_state(&sid).await.expect("a live session");
     state
         .goal_create("ship it".into(), Some(1), TurnOrigin::Human)
@@ -401,10 +399,8 @@ async fn an_interrupt_while_an_answered_goal_round_records_the_goal_stops_the_ne
     let sid = pool
         .create_session(None, ProjectSelector::Default, None)
         .await
-        .expect("a session")["session_id"]
-        .as_str()
-        .expect("a session id")
-        .to_string();
+        .expect("a session")
+        .session_id;
     let state = pool.live_state(&sid).await.expect("a live session");
     state
         .goal_create("ship it".into(), Some(5), TurnOrigin::Human)

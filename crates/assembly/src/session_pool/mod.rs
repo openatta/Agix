@@ -798,7 +798,7 @@ pub struct SessionPool {
 pub const DEFAULT_PERMISSION_PROMPT_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// session.list 返回的单条记录。
-#[derive(serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct SessionInfo {
     pub session_id: String,
     pub name: Option<String>,
@@ -807,6 +807,7 @@ pub struct SessionInfo {
     pub created_at: String,
     pub last_active: String,
     pub status: SessionStatus,
+    #[schemars(with = "api::SessionKindName")]
     pub session_kind: history::entry::SessionKind,
     /// Scene the session was created under, and the project it is bound to.
     /// Both always present, `null` when the log does not record them (pre-v2
@@ -824,7 +825,7 @@ pub struct SessionInfo {
     pub resumable: bool,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Debug, Clone, Copy, serde::Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
     Active,

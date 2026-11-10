@@ -96,4 +96,8 @@ pub struct Subscribed {
     pub session_id: String,
     pub last_seq: usize,
     pub pending: Vec<PendingAsk>,
+    /// Whether the session was brought into memory to subscribe to it.
+    pub resumed: bool,
+    /// Set when `resumed`: the log recorded no scene.
+    pub scene_inferred: Option<bool>,
 }

@@ -10,7 +10,7 @@ use serde_json::Value;
 /// session's engine — a settings change, an idle eviction, a daemon restart —
 /// applies the same options again. Options sent with a later call to an
 /// existing session are ignored.
-#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct SessionOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -85,7 +85,12 @@ impl SessionOptions {
     /// parse, or one entry of a list field. Each field is read on its own, so
     /// one bad field leaves the rest in force.
     pub fn from_params(params: &Value) -> (Option<Self>, Vec<IgnoredOption>) {
-        let fields = match params.get("options") {
+        Self::from_options(params.get("options"))
+    }
+
+    /// [`Self::from_params`] on the `options` value itself.
+    pub fn from_options(options: Option<&Value>) -> (Option<Self>, Vec<IgnoredOption>) {
+        let fields = match options {
             None | Some(Value::Null) => return (None, Vec::new()),
             Some(Value::Object(fields)) => fields,
             Some(_) => {
@@ -151,8 +156,11 @@ impl SessionOptions {
     /// Whether `params.options` asks for strict reading. A `strict` that is
     /// not a boolean counts as asking: it was meant as something.
     pub fn strict_requested(params: &Value) -> bool {
-        params
-            .get("options")
+        Self::strict_in(params.get("options"))
+    }
+
+    fn strict_in(options: Option<&Value>) -> bool {
+        options
             .and_then(|o| o.get(Self::STRICT))
             .is_some_and(|v| v != &Value::Bool(false))
     }
@@ -191,10 +199,61 @@ impl SessionOptions {
 /// A field of `options` the daemon left out, as the response's
 /// `ignored_options` reports it. `field` is `None` when `options` as a whole
 /// could not be read.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub struct IgnoredOption {
     pub field: Option<String>,
     pub error: String,
+}
+
+/// `options` as a method's params carry it: any JSON, read field by field by
+/// [`read_options`] rather than refused whole.
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+#[serde(transparent)]
+pub struct RawOptions(pub Value);
+
+impl schemars::JsonSchema for RawOptions {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "RawOptions".into()
+    }
+
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        generator.subschema_for::<SessionOptions>()
+    }
+}
+
+/// `options` as [`SessionOptions::from_options`] reads it, with a warning
+/// for each field it left out — or, when the options ask for `strict`, an
+/// `INVALID_PARAMS` error naming them instead.
+pub fn read_options(
+    method: &str,
+    options: Option<&RawOptions>,
+) -> Result<(Option<SessionOptions>, Vec<IgnoredOption>), super::RpcError> {
+    let options = options.map(|raw| &raw.0);
+    let (read, ignored) = SessionOptions::from_options(options);
+    if !ignored.is_empty() && SessionOptions::strict_in(options) {
+        let fields: Vec<&str> = ignored
+            .iter()
+            .map(|i| i.field.as_deref().unwrap_or("options"))
+            .collect();
+        return Err(super::RpcError {
+            code: super::codes::INVALID_PARAMS,
+            message: format!("options that do not read: {}", fields.join(", ")),
+            data: Some(serde_json::json!({ "invalid_options": ignored })),
+        });
+    }
+    for left_out in &ignored {
+        tracing::warn!(
+            method,
+            field = left_out.field.as_deref().unwrap_or("options"),
+            error = %left_out.error,
+            "ignored part of `options`"
+        );
+    }
+    Ok((read, ignored))
 }
 
 /// `prompt_type` of a `prompt` frame that asks whether a tool call may run.
@@ -203,7 +262,7 @@ pub const PROMPT_TYPE_PERMISSION: &str = "permission";
 pub const PROMPT_TYPE_QUESTION: &str = "question";
 
 /// Record or replay this session's LLM calls.
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 pub struct RecorderOptions {
     pub mode: String, // "record" | "replay" | "rerun"
     /// Directory name for the recording under `dir`. Omitted, the session id
@@ -222,7 +281,9 @@ pub struct RecorderOptions {
     pub strict: bool,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(
+    Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
+)]
 #[serde(default)]
 pub struct ClockOptions {
     /// RFC 3339, e.g. `2026-10-28T09:00:00Z`. The clock reads this when the session is built
@@ -230,7 +291,7 @@ pub struct ClockOptions {
     pub start: String,
 }
 
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 pub struct TelemetryOptions {
     pub output: String, // absolute path to telemetry output file
 }

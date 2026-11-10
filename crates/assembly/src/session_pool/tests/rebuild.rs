@@ -23,10 +23,8 @@ async fn pool_with_history() -> (SessionPool, tempfile::TempDir, tempfile::TempD
 async fn new_session(pool: &SessionPool) -> String {
     pool.create_session(None, ProjectSelector::Default, None)
         .await
-        .expect("a session")["session_id"]
-        .as_str()
-        .expect("a session id")
-        .to_string()
+        .expect("a session")
+        .session_id
 }
 
 async fn slot_and_state(
@@ -46,7 +44,7 @@ async fn refused_prompt_change(pool: &SessionPool, sid: &str) -> Busy {
     match pool.set_session_prompt(sid, append).await {
         Err(PoolError::SessionBusy(busy)) => busy,
         Err(e) => panic!("{e}"),
-        Ok(v) => panic!("a rebuild cut off a busy session: {v}"),
+        Ok(v) => panic!("a rebuild cut off a busy session: {v:?}"),
     }
 }
 
@@ -109,7 +107,7 @@ async fn a_prompt_set_on_a_session_out_of_memory_leaves_no_spec_behind() {
         .set_session_prompt(&sid, append)
         .await
         .unwrap_or_else(|_| panic!("a session out of memory takes the change"));
-    assert_eq!(answer["append"], "Answer briefly.");
+    assert_eq!(answer.append.as_deref(), Some("Answer briefly."));
     assert!(!pool.lock_specs().contains_key(&sid));
     assert_eq!(
         pool.recorded_spec(&sid).await.prompt.and_then(|p| p.append),
@@ -373,7 +371,7 @@ async fn session_resume_refuses_a_log_that_does_not_load_even_with_create_if_mis
                 assert!(message.contains("could not be loaded"), "{message}");
             }
             Err(_) => panic!("refused for some other reason"),
-            Ok(v) => panic!("resumed a log that does not load: {v}"),
+            Ok(v) => panic!("resumed a log that does not load: {v:?}"),
         }
     }
     assert!(!pool.sessions.lock().await.contains_key(&sid));
