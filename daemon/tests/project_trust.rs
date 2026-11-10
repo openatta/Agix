@@ -247,7 +247,7 @@ async fn by_default_a_project_is_trusted_and_the_doctor_says_what_that_lets_thro
     assert_eq!(check["status"], "degraded", "{check}");
     let summary = check["summary"].as_str().unwrap();
     assert!(
-        summary.contains("project_trust.default") && summary.contains("0.4"),
+        summary.contains("project_trust.default") && summary.contains("later 0.3.x"),
         "{check}"
     );
     assert_eq!(check["details"]["trust"], "trusted");

@@ -37,7 +37,7 @@ pub enum TrustLevel {
 #[serde(default)]
 pub struct ProjectTrustSettings {
     /// A project that no `trusted` pattern matches. `trusted` in 0.3.x;
-    /// 0.4 makes it `untrusted`.
+    /// A later 0.3.x release is planned to make it `untrusted`.
     pub default: TrustLevel,
     /// Trusted project roots: absolute paths, or globs where `*` stays within
     /// one path segment and `**` crosses them. A leading `~/` is the home

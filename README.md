@@ -142,7 +142,7 @@ monitors and structured output ([table below](#tools--45-built-in)).
   authority — its own settings can only tighten, and its hooks, MCP servers,
   skill commands and grants, looser agent types, and the settings that pick
   where data goes (providers, endpoints, the instruction file) wait for trust
-  (granted in the global tier or over RPC; trusted by default until 0.4,
+  (granted in the global tier or over RPC; trusted by default; the release that flips this is announced separately,
   [ARCHITECTURE.md](docs/ARCHITECTURE.md) §6.6).
 
 **Host control**

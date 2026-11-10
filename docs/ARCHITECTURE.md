@@ -713,7 +713,7 @@ skill 自己的 `allowed-tools` 这时还没生效,不能给自己的命令开�
 bubblewrap)就和别的未授权调用一样被拒。沙箱只限写不限网,网络缺省是 `Unrestricted`,一条被关在
 项目目录里的命令照样能往外连;`sandbox.unattended_requires_network_policy: true` 时自动放行另外
 要求 `sandbox.network_mode` 是 `deny_all` / `allowlist`,否则回到 allow 规则。这个开关 0.3.x 缺省
-关(保持原来的行为),0.4 改为缺省开。沙箱在 `assembly` / `daemon` 缺省编译进来。沙箱只限写,不限读——读的限制落在文件工具上,
+关(保持原来的行为),计划在后续 0.3.x 改为缺省开。沙箱在 `assembly` / `daemon` 缺省编译进来。沙箱只限写,不限读——读的限制落在文件工具上,
 `Bash` 读项目外的东西只受凭据黑名单约束。`Monitor` 的脚本进同一个沙箱,
 `sandbox.require_enforcement` 对它同样生效,无人值守下的自动放行也走上面这同一条件。
 
@@ -985,8 +985,8 @@ warn。全局层 `settings.json` 与 `settings.local.json` 的
 `default: trusted` 才信任而有东西要信任才生效,都是 `degraded`。确认对话框是宿主的事;无人值守部署用 `trusted` glob 预先信任
 它们自己创建的项目目录。
 
-**0.3.x 缺省 `trusted`**,行为与之前完全一样,`daemon.doctor` 提示哪些内容在 0.4 会停用;
-**0.4 把缺省改成 `untrusted`**。
+**0.3.x 缺省 `trusted`**,行为与之前完全一样,`daemon.doctor` 提示哪些内容在缺省翻转后会停用;
+**计划在后续 0.3.x 把缺省改成 `untrusted`(具体版本发布说明另行通知)**。
 
 引擎自己改设置文件的地方——`project.trust`、`config.setProvider`、`mcp.addServer` /
 `updateServer`、权限询问里的"永久允许"——都走 `base::settings_file`:读改写期间锁住那一层

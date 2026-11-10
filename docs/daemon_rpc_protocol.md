@@ -264,7 +264,7 @@ glob 清单),项目自己写的忽略。三态:
 | `untrusted` | 项目层按上面收紧 |
 | `none` | 没有自己的项目层(无项目会话,或项目的 `.agix` 就是全局目录) |
 
-**0.3.x 缺省 `default: "trusted"`**,行为与之前完全一样;**0.4 缺省改为 `untrusted`**。
+**0.3.x 缺省 `default: "trusted"`**,行为与之前完全一样;**计划在后续 0.3.x 改为 `untrusted`(具体版本发布说明另行通知)**。
 宿主用 `project.status`(§6.8)拿到状态和"信任之后才生效的东西"来画确认对话框,用
 `project.trust` 记下用户的选择;无人值守的部署在全局设置里写 `trusted` glob 预先信任。
 `session.create` / `session.resume` 的结果里有 `project_trust`(同上表的三个值)。
@@ -771,13 +771,13 @@ daemon 自己的项目的 `project.status` 结果(§6.8):
 
 ```jsonc
 { "name":"project.trust", "status":"degraded",
-  "summary":"project trusted only by project_trust.default, which 0.4 turns to untrusted; these would then stop taking effect: hooks_config, mcp_servers.github",
+  "summary":"project trusted only by project_trust.default, which is planned to turn to untrusted in a later 0.3.x release; these would then stop taking effect: hooks_config, mcp_servers.github",
   "details": { "project_root":"/Users/x/repo", "trust":"trusted", "matched":null,
                "default":"trusted", "requires_trust":["hooks_config", "mcp_servers.github"] } }
 ```
 
 没有东西要信任才生效、或项目由 `trusted` 清单明确信任时是 `ok`;项目未被信任而有东西被扣下
-(`summary` 列出它们),或只靠 `default: "trusted"` 信任而有这样的东西(0.4 起它们会停用)时
+(`summary` 列出它们),或只靠 `default: "trusted"` 信任而有这样的东西(缺省翻转后它们会停用)时
 是 `degraded`。
 
 编入了 mcp 模块的构建,`health.checks` 里还有一项 `mcp.policy`(排在最前),说明在执行

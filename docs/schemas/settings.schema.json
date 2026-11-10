@@ -337,7 +337,7 @@
         "default": {
           "$ref": "#/$defs/TrustLevel",
           "default": "trusted",
-          "description": "A project that no `trusted` pattern matches. `trusted` in 0.3.x;\n0.4 makes it `untrusted`."
+          "description": "A project that no `trusted` pattern matches. `trusted` in 0.3.x;\nA later 0.3.x release is planned to make it `untrusted`."
         },
         "trusted": {
           "description": "Trusted project roots: absolute paths, or globs where `*` stays within\none path segment and `**` crosses them. A leading `~/` is the home\ndirectory. The global `settings.json` and `settings.local.json` lists\nadd up rather than one replacing the other; `project.trust` writes to\nthe second.",
@@ -600,7 +600,7 @@
         },
         "unattended_requires_network_policy": {
           "default": false,
-          "description": "In an unattended session, a `Bash` / `Monitor` command nobody can be\nasked about runs without an allow rule when the sandbox fully holds\nit. With this on, it also needs `network_mode` other than\n`unrestricted`: the sandbox holds writes, and an open network is a way\nout it does not cover. Off by default in 0.3.x, which keeps the\nearlier behavior; 0.4 turns it on.",
+          "description": "In an unattended session, a `Bash` / `Monitor` command nobody can be\nasked about runs without an allow rule when the sandbox fully holds\nit. With this on, it also needs `network_mode` other than\n`unrestricted`: the sandbox holds writes, and an open network is a way\nout it does not cover. Off by default in 0.3.x, which keeps the\nearlier behavior; a later 0.3.x release is planned to turn it on.",
           "type": "boolean"
         }
       },

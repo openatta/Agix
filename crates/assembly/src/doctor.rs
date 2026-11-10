@@ -298,7 +298,7 @@ impl HealthCheck for MemoryCheck {
 ///
 /// `degraded` when something is set aside: the project is not trusted and
 /// has configuration that only a trusted one gets, or it is trusted only by
-/// `project_trust.default` — which 0.4 turns to `untrusted` — and has such
+/// `project_trust.default` — which a later 0.3.x release is planned to turn to `untrusted` — and has such
 /// configuration that would then stop taking effect.
 pub struct ProjectTrustCheck(serde_json::Value);
 
@@ -337,7 +337,7 @@ impl HealthCheck for ProjectTrustCheck {
                 "project trusted by project_trust.default; nothing in it needs trust",
             ),
             (Some("trusted"), false) => CheckResult::degraded(format!(
-                "project trusted only by project_trust.default, which 0.4 turns to untrusted; \
+                "project trusted only by project_trust.default, which is planned to turn to untrusted in a later 0.3.x release; \
                  these would then stop taking effect: {}",
                 gated.join(", ")
             )),

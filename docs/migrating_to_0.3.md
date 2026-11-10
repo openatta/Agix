@@ -395,7 +395,7 @@ WebAssembly 载体整个移除。
 
 ## 0.3.9 之后:到 0.3.10
 
-按谁要动手分成三类,每类下按领域分组;一件事只写在一处。0.4 要翻的缺省汇总在末尾。
+按谁要动手分成三类,每类下按领域分组;一件事只写在一处。计划要翻的缺省汇总在末尾。
 
 ### 部署 `agixd` 的
 
@@ -470,7 +470,7 @@ WebAssembly 载体整个移除。
 - 无人值守会话里,`Monitor` 的脚本在 OS 沙箱完整生效时自动放行(与 `Bash` 同一条件),以前恒为
   询问、也就是恒被拒。新设置 `sandbox.unattended_requires_network_policy`(缺省 `false`)打开后,
   `Bash` 与 `Monitor` 的这条自动放行另外要求 `sandbox.network_mode` 不是 `unrestricted`——沙箱只限写,
-  网络仍是个口子;不满足就回到 allow 规则。0.4 会把缺省改成 `true`,无人值守跑命令的部署现在就可以
+  网络仍是个口子;不满足就回到 allow 规则。计划在后续 0.3.x 把缺省改成 `true`,无人值守跑命令的部署现在就可以
   把网络收成 `deny_all` / `allowlist` 并打开它。
 - 子进程环境永远不带 `CDPATH`(`inherit` 与 `allowlist` 两种模式都剥掉),免得子 shell 的
   `cd foo` 落到项目外、而权限检查看的是字面 `foo`。
@@ -528,13 +528,13 @@ WebAssembly 载体整个移除。
   不授予任何东西;全局层、场景层里相对路径的脚本绑定在未信任的项目里不绑定。全局层、场景层和插件的 stdio MCP server 在未信任的项目里以全局配置目录为工作目录启动(相对的 `command`、参数里的相对路径在那里解析),不再继承 daemon 的工作目录。这些都列进
   `requires_trust`,所以只改了 `providers.*.base_url` 的仓库也会让宿主弹出信任对话框。
   **自己往项目层写 provider、模型端点的部署**(在项目的 `.agix/settings.json` 里写 `model`、
-  `providers` 的宿主)在 0.4 之前要把这些项目目录写进 `trusted`,否则翻缺省之后它们不生效。
+  `providers` 的宿主)在缺省翻转之前要把这些项目目录写进 `trusted`,否则翻缺省之后它们不生效。
 - **未信任的项目里,command hook 不以相对路径起程序。** 全局层、场景层的 hook 写
   `./scripts/check.sh`、`scripts/x.sh`、`bash x.sh`、`. ./env.sh` 的,在未信任的项目里不跑,算
   hook 失败(`on_error` 照旧);继承的 `PATH` 里的 `.` 与空条目也不给它们用。以前它们在项目目录里
   执行,跑的是仓库放在那个路径上的文件。自己的脚本改写绝对路径或放进 `~/.agix/hooks/` 写裸名;
   信任的项目不变(0.3.x 缺省信任)。
-- **0.4 会把 `project_trust.default` 改成 `untrusted`**(预告见本节末)。现在就该做的:桌面宿主在打开项目时
+- **计划在后续 0.3.x 把 `project_trust.default` 改成 `untrusted`**(见本节末"计划中的缺省变化")。现在就该做的:桌面宿主在打开项目时
   调 `project.status`,`requires_trust` 不空就问用户、用 `project.trust` 记下回答;自己创建项目
   目录的无人值守部署(写项目层 `mcp_servers` / `permission_mode` 的那种)在全局
   `settings.json` 里写 `"project_trust": {"trusted": ["<项目目录>/**"]}`。可以先把 `default` 设成
@@ -902,7 +902,7 @@ WebAssembly 载体整个移除。
 - **`options` 逐字段读,被忽略的报在响应里。** `session.create` / `session.run_turn` /
   `session.resume` 的 `options` 里不认识的字段、值读不出来的字段(`"permission_mode": "plann"`)
   被忽略、其余照常生效,列在 `result.ignored_options`(`[{field, error}]`)里并记 warn。以前一个
-  字段错了整份 `options` 悄悄当没传,`permission_mode`、`permission_rules` 一起丢掉。**0.4 起
+  字段错了整份 `options` 悄悄当没传,`permission_mode`、`permission_rules` 一起丢掉。**计划
   改为拒绝**(`INVALID_PARAMS`),现在就该把 `ignored_options` 当错误处理。
 - 会话建不回来时(例如它记录的 `provider` 已不在配置里),`session.run_turn` / `session.resume`
   报 `INTERNAL_ERROR`,不再换一个新 id、在默认项目和默认场景里建会话顶替(以前 `run_turn`
@@ -1270,11 +1270,11 @@ WebAssembly 载体整个移除。
   - `hooks::HookRunner::{with_default_timeout, with_wake_receiver, register_hook}`;`runtime::agent::Agent::{session_info, set_model, skills_arc, run_hooks}`;`scene::declarative` 的 `with_extra_tools`;`script_host` 的 `with_memory_limit`;`Session::set_parent_session`;`SkillManager::{expand_skill, build_skills_prompt}`。
   - `compaction`:`strip_images_from_messages`、`grouping::estimate_tokens_with`、`CachedMicrocompact` 的 `mark_tools_sent_to_api` / `get_pinned_cache_edits` / `build_cache_edits` / `format_cache_edit`;`history::transcript::{compact_summary_from_messages, latest_stop_reason}`;`assembly::discovery::read_lock_file`;`SessionPool::project_settings_path`。
 
-### 0.4 预告
+### 计划中的缺省变化
 
-下面几项在 0.3.10 里仍是旧缺省,0.4 会翻。现在就可以按新缺省试跑,迁移时改的地方各节里已写明。
+下面几项在 0.3.10 里仍是旧缺省,计划在后续 0.3.x 版本改,具体版本发布说明另行通知。现在就可以按新缺省试跑,迁移时改的地方各节里已写明。
 
-- `project_trust.default` 改为 `untrusted`:没被信任的项目的 hooks、MCP server、脚本、provider 端点等不生效(见"项目信任")。全局 `settings.json` 里先写 `"project_trust": {"default": "untrusted"}` 试跑,`daemon.doctor` 与 `project.status` 会列出被扣下的东西。
-- 插件缺省不再自动加载,要用的显式启用。
-- `sandbox.unattended_requires_network_policy` 缺省改为 `true`:无人值守会话里 `Bash` 与 `Monitor` 的"沙箱完整生效即自动放行"另外要求 `sandbox.network_mode` 不是 `unrestricted`(见"权限与沙箱")。
-- `session.create` / `session.run_turn` / `session.resume` 的 `options` 严格解析:不认识的字段、读不出来的值报 `INVALID_PARAMS`,不再被忽略。现在就把 `result.ignored_options` 当错误处理。
+- `project_trust.default` 改为 `untrusted`:没被信任的项目的 hooks、MCP server、脚本、provider 端点等不生效(见"项目信任")。分两步:设置与 doctor 告警已有;翻缺省等宿主的信任对话框发布后再做。全局 `settings.json` 里先写 `"project_trust": {"default": "untrusted"}` 试跑,`daemon.doctor` 与 `project.status` 会列出被扣下的东西。
+- 插件缺省不再自动加载,要用的显式启用。分两步:0.3.11 起提供 `plugins.enable_on_install`(缺省 `true`,行为不变),之后再翻缺省。
+- `sandbox.unattended_requires_network_policy` 缺省改为 `true`:无人值守会话里 `Bash` 与 `Monitor` 的"沙箱完整生效即自动放行"另外要求 `sandbox.network_mode` 不是 `unrestricted`(见"权限与沙箱")。分两步:0.3.11 起 `daemon.doctor` 对"无人值守 + 网络 unrestricted + 开关关着"告警,之后再翻缺省。
+- `session.create` / `session.run_turn` / `session.resume` 的 `options` 严格解析:不认识的字段、读不出来的值报 `INVALID_PARAMS`,不再被忽略。分两步:0.3.11 起 `permission_rules` 里一条坏规则只丢那一条(不再连累整个字段),并提供 opt-in 的严格解析,之后再缺省严格。现在就把 `result.ignored_options` 当错误处理。

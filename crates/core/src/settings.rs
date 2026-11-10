@@ -691,7 +691,7 @@ pub struct SandboxConfig {
     /// it. With this on, it also needs `network_mode` other than
     /// `unrestricted`: the sandbox holds writes, and an open network is a way
     /// out it does not cover. Off by default in 0.3.x, which keeps the
-    /// earlier behavior; 0.4 turns it on.
+    /// earlier behavior; a later 0.3.x release is planned to turn it on.
     #[serde(default)]
     pub unattended_requires_network_policy: bool,
     /// The environment `Bash` / `Monitor` commands, command hooks and MCP
