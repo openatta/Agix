@@ -3,6 +3,7 @@
 //! file of this directory. One file alone:
 //! `cargo test -p live --test integration daemon_surface::`.
 
+mod audit_findings;
 mod background_agents;
 mod crash_recovery;
 mod daemon_surface;
