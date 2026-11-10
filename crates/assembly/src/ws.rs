@@ -209,7 +209,7 @@ async fn handle(server: Arc<DaemonServer>, stream: TcpStream) -> anyhow::Result<
         let req = match serde_json::from_str::<RpcRequest>(&text) {
             Ok(req) => req,
             Err(e) => {
-                if let Some(frame) = crate::server::parse_error_frame(&e) {
+                if let Some(frame) = crate::server::refusal_frame(&text, &e) {
                     send_frame(&client, &frame).await;
                 }
                 continue;

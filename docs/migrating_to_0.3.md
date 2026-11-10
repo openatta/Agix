@@ -1480,6 +1480,21 @@ WebAssembly 载体整个移除。
 - **`session_dir` 已弃用。** 它从来不读(transcript 总在状态目录下),现在设置文件里写了它,加载时
   每个写了它的文件记一条 warn;settings schema 里标了 `deprecated`。删掉这一行即可,行为不变。
   计划在之后的版本里删除这个字段。
+- **`docs/schemas/settings.schema.json` 与加载时的行为对上了。** 以前这份 schema 要求顶层的 `model`、
+  `paths`,`model` 里的 `api_type` / `base_url` / `model_name` 等,`sandbox` 里的 `deny_read`、
+  `allowed_domains`,`execution` 里的 `max_parallelism`、`max_api_calls_per_turn`,而一个设置文件是
+  叠在内建缺省上合并的,这些都可以不写:空文件、只写 `{"sandbox": {…}}` 或只配 `providers` 的文件
+  在编辑器里都被标成错。现在缺省值已有的字段一律可选;列表与表里的条目(`permission_rules` 的
+  一条、`scripts` 的一条)照样要写全,因为它们不跟缺省合并。另外:
+  - `paths` 不在 schema 里了。它从来不从设置文件读(加载时整段去掉),现在写了它的文件加载时记一条
+    "settings key not recognised" 的 warn,`daemon.doctor` 的 `settings.tiers` 在 `unknown_keys`
+    里列出 `paths`。删掉这一段即可,行为不变。
+  - `permission_mode` 的取值里去掉了 `bubble`:写进设置文件的 `bubble` 一直被退回 `default`,schema
+    以前却收它。
+  - schema 里几处字段说明改成实际行为:`sandbox` feature 缺省是开的;`bypassPermissions` 照样拒凭据、
+    照样受 managed 层的 deny / ask;`acceptEdits` 写项目里的 `.git` / `.agix` / `.claude` /
+    `.agents/skills` 照样询问;状态目录只有 `scratchpad`、`memory` 可写;`deny_write` 的内置名单里
+    没有 `.agix`;`deny_read` 写了非空的列表就整份替换内置名单。
 
 #### 工具
 
@@ -1568,7 +1583,12 @@ WebAssembly 载体整个移除。
 - **新增帧:一行不是合法 JSON 时,服务端回
   `{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}`**
   (unix socket、TCP、WebSocket 都是),连接不断。以前这样的行被静默丢弃。宿主的读循环要容得下
-  一个 `id` 为 `null` 的错误帧(它不对应任何在途请求);缺 `method` 的合法 JSON 仍然不回。
+  一个 `id` 为 `null` 的错误帧(它不对应任何在途请求)。
+- **新增帧:合法 JSON 但不是合法请求的帧(缺 `method`,或字段类型不对,如 `"jsonrpc":2.0`、
+  `"method":42`),只要带着字符串或数字的 `id`,就回 `INVALID_REQUEST (-32600)`**,`id` 原样带回,
+  `message` 是 `Invalid Request: ` 加上读不出来的原因。以前这样的帧什么也不回,发请求的客户端等
+  这个 `id` 会一直等下去。没有 `id`、`id` 是 `null` 或别的类型、或者带着 `result` / `error`
+  (形状是响应)的,仍然不回。以前没处理过 `-32600` 的客户端,按别的错误码一样处理就行。
 - **`options.permission_rules` / `options.prompt_types` 逐条读。** 以前其中一条读不出来(如
   `"behavior": "allwo"`),整个字段被忽略,同一列表里的 `deny` 规则也跟着失效;现在只忽略那一条,
   `ignored_options` 里的 `field` 写成 `permission_rules[0]` 这样带下标。按字段名匹配
@@ -1592,7 +1612,8 @@ WebAssembly 载体整个移除。
   `{tool_use_id,name,message,progress?,total?,dropped}`,落在这次调用的 `tool_use` 与 `tool_result`
   之间。每次调用每秒至多一帧,`dropped` 是合并掉的条数;不进 transcript,不保证送达。内建工具里
   目前只有 `Bash` 报(每行输出一次,`progress` 是行数);子 Agent 的包在 `subagent_progress` 里
-  (协议 §7.3)。不认识它的客户端照约定忽略即可。
+  (协议 §7.3)。不认识它的客户端照约定忽略即可。`progress`、`total` 是整数值时发成 JSON 整数
+  (`42`,不是 `42.0`),只有工具报的本来是小数时才带小数部分;按浮点数读的客户端两种都接得住。
 - `RunCode` 程序里调用的工具不再发 `tool_progress`。以前程序里的 `Bash` 照样报,帧上的
   `tool_use_id` 是 `<RunCode 的 id>.1` 这样宿主从没见过的 id;程序的进度仍以它任务的
   `task_progress` 推出(协议 §7.3)。
@@ -1658,7 +1679,9 @@ WebAssembly 载体整个移除。
 
 **工具进度接通了。** 以前每次工具调用拿到的 `ProgressSender` 是空的,`send` 什么也不做;现在
 引擎给每次调用一个真的,报的进度成为 `AgentEvent::ToolProgress { tool_use_id, name, message,
-progress, total, dropped, turn_id }`(每次调用每秒至多一条)。
+progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress` / `total` 仍是 `f64`,
+序列化时整数值写成 JSON 整数(新增的 `base::event::progress_count_json` 就是这条规则),自己把这个
+事件转成 JSON 的嵌入方用它就能和 daemon 发的帧一致。
 
 - 对 `AgentEvent` 做穷尽 `match` 的要加一支。
 - 已经调 `progress.send(..)` 的工具不用改。要报计数的用新的 `progress.update(ProgressUpdate {..})`;

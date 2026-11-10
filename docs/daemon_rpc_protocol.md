@@ -85,8 +85,12 @@ TCP 与 WebSocket 都要求 `--token` 或 `AGIX_DAEMON_TOKEN`;没有 token 时�
 **一行不是合法 JSON**:服务端回一帧
 `{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}`
 (`PARSE_ERROR`;`id` 是 `null`,因为读不出请求的 id),连接不断,继续读下一行。
-**合法 JSON 但缺 `method`** 的帧仍被静默丢弃,不回任何响应——`INVALID_REQUEST`
-没有任何路径发出(§9)。WebSocket 的文本消息同理。
+**合法 JSON 但不是合法请求**(缺 `method`,或字段类型不对,如 `"jsonrpc":2.0`、`"method":42`):
+帧里带着字符串或数字的 `id` 时,回
+`{"jsonrpc":"2.0","id":7,"error":{"code":-32600,"message":"Invalid Request: …"}}`
+(`INVALID_REQUEST`,`id` 原样带回,`message` 里是读不出来的原因);没有 `id`、`id` 是 `null`
+或别的类型、或者帧里有 `result` / `error`(形状是响应,不回是为了不和对端互相回错误)的,
+静默丢弃,不回任何响应。两种情况连接都不断。WebSocket 的文本消息同理。
 
 ---
 
@@ -2734,7 +2738,9 @@ transcript,这一轮以 `ENGINE_ERROR` 结束,不会重发。
 工具在运行时经 `Tool::call` 收到的进度发送器报进度(`docs/extension_points.md`「报进度」),
 每一条都对应这次调用的一行工具。内建工具里 `Bash` 每打出一行输出报一次:`message` 是这一行,
 `progress` 是到此为止的行数,没有 `total`;其余内建工具目前不报。插件登记的工具报什么由
-插件决定。`progress`、`total` 没有就不带这个键,不是带 `null`。
+插件决定。`progress`、`total` 没有就不带这个键,不是带 `null`。两者是 JSON 数:整数值发成
+整数(`42`,不是 `42.0`),只有工具报的本来就是小数(比如插件报 `0.5`)时才带小数部分,所以
+`Bash` 的行数可以按整数解析;拿不准来源的宿主按浮点数读,两种都能接住。
 
 `RunCode` 程序里调用的工具不报 `tool_progress`:宿主没见过这些子调用的 `tool_use`,它们的
 id 也不出现在别的帧里。程序自己的进度(`log()` 的输出、调用了几次工具)走它的任务,
@@ -2794,6 +2800,7 @@ id 也不出现在别的帧里。程序自己的进度(`log()` 的输出、调�
 
 | 码 | 名称 | 含义 |
 |---|---|---|
+| -32600 | INVALID_REQUEST | 帧是合法 JSON、带着字符串或数字的 `id`,却不是合法请求(缺 `method`、字段类型不对,§1);`session.startAgent`:会话的 spawner 不支持由宿主起子 Agent(嵌入方自己给的 `AgentSpawner` 没实现 `start_agent`) |
 | -32601 | METHOD_NOT_FOUND | 未知方法;或方法所属的模块没有编入这个构建,此时 `data.module` 指明模块(§6.1 `daemon.ping`) |
 | -32602 | INVALID_PARAMS | 参数缺失/类型错/取值非法 |
 | -32603 | INTERNAL_ERROR | 服务端内部错误(写盘失败、会话创建失败等) |
@@ -2815,9 +2822,7 @@ id 也不出现在别的帧里。程序自己的进度(`log()` 的输出、调�
 | -32021 | MCP_AUTH_FAILED | `mcp.auth.*`:授权服务器或登录本身失败——发现、注册、PKCE、回调 `state` 不符、换令牌;`message` 可以直接给用户看 |
 | -32022 | PROJECT_UNTRUSTED | `mcp.addServer` / `mcp.updateServer` / `config.setProvider`:目标项目未被信任(§3.6),写进它项目层的 server / provider 不会生效,所以什么都没写 |
 
-还有一个常量在代码里定义了但**没有任何路径会发出**,客户端不必为它写分支:
-`INVALID_REQUEST (-32600)`(缺 `method` 的帧被静默丢弃,见 §1);`PARSE_ERROR (-32700)`
-只在一行不是合法 JSON 时回,`id` 为 `null`。`-32001` 保留不用:会话数到顶时驱逐最久未用的空闲会话,不拒绝新建。
+`PARSE_ERROR (-32700)` 只在一行不是合法 JSON 时回,`id` 为 `null`。`-32001` 保留不用:会话数到顶时驱逐最久未用的空闲会话,不拒绝新建。
 
 ### 9.1 `error.data` 的形状
 

@@ -72,9 +72,17 @@ pub enum AgentEvent {
         tool_use_id: String,
         name: String,
         message: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            serialize_with = "serialize_progress_count"
+        )]
         progress: Option<f64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            serialize_with = "serialize_progress_count"
+        )]
         total: Option<f64>,
         #[serde(default)]
         dropped: u64,
@@ -369,4 +377,28 @@ pub enum TeamStageStatus {
 pub struct ToolInfo {
     pub name: String,
     pub description: String,
+}
+
+/// A progress figure as it goes on the wire: whole numbers as JSON integers
+/// (`42`, not `42.0`) so hosts can read line and byte counts as integers;
+/// only a fractional figure keeps its fraction.
+pub fn progress_count_json(value: f64) -> Value {
+    const EXACT: f64 = 9_007_199_254_740_992.0;
+    if value.fract() == 0.0 && value.abs() <= EXACT {
+        if value >= 0.0 {
+            return Value::from(value as u64);
+        }
+        return Value::from(value as i64);
+    }
+    Value::from(value)
+}
+
+fn serialize_progress_count<S: serde::Serializer>(
+    value: &Option<f64>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    match value {
+        Some(v) => progress_count_json(*v).serialize(serializer),
+        None => serializer.serialize_none(),
+    }
 }

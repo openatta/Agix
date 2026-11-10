@@ -27,6 +27,10 @@ pub const SETTINGS_LOCAL_FILE: &str = "settings.local.json";
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Settings {
     pub model: ModelSettings,
+    /// Where this scene's data lives, from `Settings::load`'s arguments; a
+    /// settings file's `paths` is stripped before merging, so the file schema
+    /// leaves it out.
+    #[schemars(skip)]
     pub paths: PathSettings,
     #[serde(default)]
     pub execution: ExecutionSettings,
@@ -235,10 +239,17 @@ pub enum PermissionMode {
     /// Prompt user for each tool call that isn't explicitly allowed.
     #[default]
     Default,
-    /// Auto-accept edits to files (Write/Edit), prompt for others.
+    /// Allow file writes inside the project (the working directory and
+    /// `sandbox.additional_directories`) and read-only calls without asking;
+    /// ask about the rest, as `default` does. Writes into the project's
+    /// `.git`, `.agix`, `.claude` and `.agents/skills` still ask.
     AcceptEdits,
-    /// Bypass all permission checks. `auto` and `yolo` are accepted as
-    /// other spellings of this mode and read back as `bypassPermissions`.
+    /// Ask nothing and skip the rules of the user's tiers. Credentials
+    /// (`.ssh`, `.aws`, `.gnupg`, the state directory's settings and tokens)
+    /// are still refused, the deployment's managed `deny` / `ask` rules still
+    /// apply, input that is not valid is still refused, and `Bash` still runs
+    /// in the OS sandbox. `auto` and `yolo` are accepted as other spellings
+    /// of this mode and read back as `bypassPermissions`.
     #[serde(alias = "auto", alias = "yolo")]
     BypassPermissions,
     /// Plan mode — only allow read-only tools.
@@ -247,6 +258,7 @@ pub enum PermissionMode {
     DontAsk,
     /// Bubble mode — forward permission requests up to a parent agent.
     /// **Program-only**: set by team/coordinator runtime; cannot be set by user.
+    #[schemars(skip)]
     Bubble,
 }
 
@@ -615,7 +627,8 @@ impl PluginsConfig {
 pub struct SandboxConfig {
     /// Directories outside the project that tools may read and write, as if
     /// they were part of it. The instance's own state directory (`~/.agix`
-    /// by default) is always one; its settings files stay protected.
+    /// by default) is always readable, but only its `scratchpad` and
+    /// `memory` directories are writable this way.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub additional_directories: Vec<PathBuf>,
     /// Directories outside the project that the file tools (`Read`, `Glob`,
@@ -636,6 +649,10 @@ pub struct SandboxConfig {
     /// tools do not get these.
     #[serde(default)]
     pub cache_directories: CacheDirectories,
+    /// Paths a sandboxed `Bash` / `Monitor` command may not read. Empty — the
+    /// default — means the built-in credential list (`~/.ssh`, `~/.aws`,
+    /// `~/.npmrc`, ...); a non-empty list replaces that list as a whole
+    /// rather than adding to it, so repeat any of it you still want.
     pub deny_read: Vec<PathBuf>,
     /// Paths to re-allow reading, on top of the built-in credential deny
     /// defaults (`~/.ssh`, `~/.aws`, `~/.npmrc`, ...). Most specific wins.
@@ -647,7 +664,7 @@ pub struct SandboxConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allow_read: Vec<PathBuf>,
     /// Extra filename segments a tool may never write, on top of the built-in
-    /// credential defaults (`.env`, `id_rsa`, `.ssh`, `.agix`, ...). A path is
+    /// credential defaults (`.env`, `id_rsa`, `.ssh`, `.npmrc`, ...). A path is
     /// refused if *any* of its components matches one, or begins with one
     /// followed by a dot — so `.env` also covers `.env.production`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -681,21 +698,21 @@ pub struct SandboxConfig {
     pub network_mode: crate::context::config::NetworkModeConfig,
     /// Bypass the sandbox entirely, in a build that has one.
     ///
-    /// Default: false. Note what that does *not* mean: the backend is behind
-    /// the `sandbox` compile-time feature, which is off by default, so an
-    /// ordinary build has nothing to bypass and this setting changes nothing
-    /// in it. It is the runtime half of a two-part answer — the build decides
-    /// whether a sandbox exists, this decides whether to use the one it has.
+    /// Default: false. The backend is behind the `sandbox` compile-time
+    /// feature, which is on by default; a build without it has nothing to
+    /// bypass and this setting changes nothing in it. It is the runtime half
+    /// of a two-part answer — the build decides whether a sandbox exists, this
+    /// decides whether to use the one it has.
     #[serde(default)]
     pub dangerously_disable_sandbox: bool,
     /// Refuse to run a sandboxed command when this build on this platform
     /// cannot actually enforce the policy, instead of running it
     /// unconstrained.
     ///
-    /// Two ways to be unable: the `sandbox` compile-time feature is off, so no
-    /// backend was compiled at all — the default — or it is on and the
-    /// platform's tool is missing. Both refuse here, and the message says
-    /// which.
+    /// Two ways to be unable: the `sandbox` compile-time feature (on by
+    /// default) was turned off, so no backend was compiled at all, or it is
+    /// on and the platform's tool is missing. Both refuse here, and the
+    /// message says which.
     ///
     /// Off by default, which is the historical behavior: on Linux without
     /// `bwrap`, and on platforms with no backend at all, a command whose
@@ -1310,19 +1327,80 @@ impl Settings {
     }
 }
 
-/// JSON Schema for settings.json, generated from `Settings`'s own type
-/// definitions (`#[derive(schemars::JsonSchema)]` on `Settings` and every
-/// nested type) — not hand-maintained, so it can never drift from what
-/// `Settings::load()` actually accepts. Published as `docs/schemas/settings.schema.json`
-/// for editor autocomplete/validation (reference it from a settings.json file
-/// via a `"$schema"` key). Regenerate with:
-/// `cargo test -p base write_settings_schema -- --ignored`
-/// after changing any `Settings`-reachable type.
+/// JSON Schema for one settings.json file, published as
+/// `docs/schemas/settings.schema.json` for editor autocomplete/validation
+/// (reference it from a settings.json file via a `"$schema"` key).
+///
+/// Generated from `Settings`'s own type definitions, then adjusted to what
+/// `Settings::load()` does with a file: a file is merged over the built-in
+/// defaults, so a field the defaults already supply is optional however the
+/// type declares it ([`optional_where_defaulted`]); `paths` is never read
+/// from a file and is not in it; program-only modes are left out. Regenerate
+/// with `cargo test -p base write_settings_schema -- --ignored` after changing
+/// any `Settings`-reachable type.
 pub fn settings_json_schema() -> serde_json::Value {
     let mut schema =
         serde_json::to_value(schemars::schema_for!(Settings)).unwrap_or(serde_json::Value::Null);
+    let defaults =
+        serde_json::to_value(Settings::defaults_for("")).unwrap_or(serde_json::Value::Null);
+    optional_where_defaulted(&mut schema, &defaults);
     admit_permission_mode_aliases(&mut schema);
     schema
+}
+
+/// Drop from each object schema's `required` the keys the loader's defaults
+/// hold at that place, following `properties` from the root wherever the
+/// defaults have an object. Entries of lists and maps are not merged with
+/// anything, so their `required` stays.
+fn optional_where_defaulted(schema: &mut serde_json::Value, defaults: &serde_json::Value) {
+    let mut found = Vec::new();
+    defaulted_objects(schema, "", defaults, &mut found);
+    for (pointer, defaulted) in found {
+        let Some(object) = schema
+            .pointer_mut(&pointer)
+            .and_then(serde_json::Value::as_object_mut)
+        else {
+            continue;
+        };
+        if let Some(serde_json::Value::Array(required)) = object.get_mut("required") {
+            required.retain(|key| key.as_str().is_none_or(|key| !defaulted.contains_key(key)));
+            if required.is_empty() {
+                object.remove("required");
+            }
+        }
+    }
+}
+
+fn defaulted_objects(
+    root: &serde_json::Value,
+    pointer: &str,
+    defaults: &serde_json::Value,
+    out: &mut Vec<(String, serde_json::Map<String, serde_json::Value>)>,
+) {
+    let Some(defaulted) = defaults.as_object() else {
+        return;
+    };
+    let Some(node) = root.pointer(pointer) else {
+        return;
+    };
+    if let Some(target) = node["$ref"].as_str() {
+        defaulted_objects(root, target.trim_start_matches('#'), defaults, out);
+        return;
+    }
+    for branch in ["anyOf", "oneOf", "allOf"] {
+        for index in 0..node[branch].as_array().map_or(0, Vec::len) {
+            defaulted_objects(root, &format!("{pointer}/{branch}/{index}"), defaults, out);
+        }
+    }
+    let Some(properties) = node["properties"].as_object() else {
+        return;
+    };
+    for (key, value) in defaulted {
+        if properties.contains_key(key) {
+            defaulted_objects(root, &format!("{pointer}/properties/{key}"), value, out);
+        }
+    }
+    out.push((pointer.to_string(), defaulted.clone()));
 }
 
 /// schemars renders each variant as a `const`, which has no room for serde's
@@ -2114,7 +2192,6 @@ mod tests {
             .expect("schema should have a top-level `properties` object");
         for key in [
             "model",
-            "paths",
             "providers",
             "default_provider",
             "task_models",
@@ -2122,6 +2199,31 @@ mod tests {
         ] {
             assert!(props.contains_key(key), "schema missing property `{key}`");
         }
+        assert!(
+            !props.contains_key("paths"),
+            "`paths` is not read from a file"
+        );
+    }
+
+    #[test]
+    fn the_schema_requires_nothing_the_defaults_supply() {
+        let schema = settings_json_schema();
+        assert!(schema.get("required").is_none(), "{}", schema["required"]);
+        for def in ["ModelSettings", "ExecutionSettings", "SandboxConfig"] {
+            assert!(
+                schema["$defs"][def].get("required").is_none(),
+                "{def}: {}",
+                schema["$defs"][def]["required"]
+            );
+        }
+        assert_eq!(
+            schema["$defs"]["PermissionRule"]["required"],
+            serde_json::json!(["tool", "action"]),
+            "a list entry is not merged with defaults"
+        );
+        assert!(!schema["$defs"]["PermissionMode"]
+            .to_string()
+            .contains("\"bubble\""));
     }
 
     fn committed_schema_path() -> std::path::PathBuf {

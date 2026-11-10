@@ -204,7 +204,7 @@ pub(super) fn background_frame(
             });
             for (key, value) in [("progress", progress), ("total", total)] {
                 if let Some(v) = value {
-                    body[key] = serde_json::json!(v);
+                    body[key] = base::event::progress_count_json(*v);
                 }
             }
             (body, None)

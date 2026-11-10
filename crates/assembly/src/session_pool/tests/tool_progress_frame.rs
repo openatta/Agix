@@ -22,8 +22,31 @@ fn a_tool_progress_frame_carries_the_call_and_what_was_merged_away() {
         frame.params["event"],
         serde_json::json!({
             "kind": "tool_progress", "tool_use_id": "toolu_1", "name": "Bash",
-            "message": "step 2", "progress": 2.0, "dropped": 7
+            "message": "step 2", "progress": 2, "dropped": 7
         })
+    );
+    assert!(frame.params["event"]["progress"].is_u64());
+}
+
+#[test]
+fn a_fractional_progress_keeps_its_fraction_and_a_whole_one_is_an_integer_inside_a_sub_agent() {
+    let (frame, _) = background_frame("s1", None, &progress("toolu_1", Some(0.25))).unwrap();
+    assert_eq!(frame.params["event"]["progress"].as_f64(), Some(0.25));
+
+    let event = AgentEvent::SubagentProgress {
+        agent_label: "general-purpose#1a2b3c4d".into(),
+        agent_session_id: "child".into(),
+        agent_type: None,
+        parent_session_id: "s1".into(),
+        parent_turn: 1,
+        parent_tool_use_id: Some("toolu_agent".into()),
+        task_id: None,
+        event: Box::new(progress("toolu_inner", Some(42.0))),
+    };
+    let (frame, _) = background_frame("s1", None, &event).unwrap();
+    assert!(
+        frame.params["event"]["event"]["progress"].is_u64(),
+        "{frame:?}"
     );
 }
 

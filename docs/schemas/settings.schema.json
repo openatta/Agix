@@ -147,10 +147,6 @@
           "type": "integer"
         }
       },
-      "required": [
-        "max_parallelism",
-        "max_api_calls_per_turn"
-      ],
       "type": "object"
     },
     "ModelSettings": {
@@ -198,14 +194,6 @@
           "$ref": "#/$defs/ThinkingMode"
         }
       },
-      "required": [
-        "api_type",
-        "base_url",
-        "auth_token",
-        "model_name",
-        "max_tokens",
-        "thinking_mode"
-      ],
       "type": "object"
     },
     "NetworkModeConfig": {
@@ -215,34 +203,6 @@
         "allowlist"
       ],
       "type": "string"
-    },
-    "PathSettings": {
-      "description": "Path configuration for data directories.",
-      "properties": {
-        "global_data_dir": {
-          "default": "",
-          "description": "User-level, cross-scene global root — flat, shared by every scene\n(e.g. `~/.agix/`). Used by resources that don't have a scene tier\n(`memory`/`sessions`/`recordings`/`mcp`) and as the base layer for resources\nthat do (`settings.json`/`skills`/`plugins`/`agents`/`rules`/`hooks`).\nSee `base::paths::ConfigPaths` module docs for the full breakdown.",
-          "type": "string"
-        },
-        "local_data_dir": {
-          "description": "Local/project data root (e.g. `<cwd>/.agix/`)",
-          "type": "string"
-        },
-        "scope": {
-          "default": "code",
-          "description": "Which product instance's user-level state `user_data_dir` was built\nfor (see `base::paths::ConfigPaths`). Carried alongside the resolved\ndirs so downstream code (e.g. `FrozenContext::collect`) doesn't have\nto re-derive it from the path. Defaults to `\"code\"` on deserialize\nfor settings.json files predating this field — `Settings::merge`\nnever copies a deserialized `paths` value over the one `Settings::load`\nsets explicitly, so this default only matters for standalone\n(de)serialization, not for the daemon's actual startup path.",
-          "type": "string"
-        },
-        "user_data_dir": {
-          "description": "User-level, scene-specific override root (e.g. `~/.agix/scenes/<scope>/`).",
-          "type": "string"
-        }
-      },
-      "required": [
-        "user_data_dir",
-        "local_data_dir"
-      ],
-      "type": "object"
     },
     "PathStyle": {
       "description": "How file tools word the paths the model reads: in tool descriptions and in\nthe paths Grep, Glob, Write and Edit print. Resolving a path the model\npasses in is the same in both styles (relative against the working\ndirectory, absolute as is).",
@@ -270,11 +230,11 @@
         },
         {
           "const": "acceptEdits",
-          "description": "Auto-accept edits to files (Write/Edit), prompt for others.",
+          "description": "Allow file writes inside the project (the working directory and\n`sandbox.additional_directories`) and read-only calls without asking;\nask about the rest, as `default` does. Writes into the project's\n`.git`, `.agix`, `.claude` and `.agents/skills` still ask.",
           "type": "string"
         },
         {
-          "description": "Bypass all permission checks. `auto` and `yolo` are accepted as\nother spellings of this mode and read back as `bypassPermissions`.",
+          "description": "Ask nothing and skip the rules of the user's tiers. Credentials\n(`.ssh`, `.aws`, `.gnupg`, the state directory's settings and tokens)\nare still refused, the deployment's managed `deny` / `ask` rules still\napply, input that is not valid is still refused, and `Bash` still runs\nin the OS sandbox. `auto` and `yolo` are accepted as other spellings\nof this mode and read back as `bypassPermissions`.",
           "enum": [
             "bypassPermissions",
             "auto",
@@ -290,11 +250,6 @@
         {
           "const": "dontAsk",
           "description": "Don't ask — deny any tool not explicitly allowed (no prompt).",
-          "type": "string"
-        },
-        {
-          "const": "bubble",
-          "description": "Bubble mode — forward permission requests up to a parent agent.\n**Program-only**: set by team/coordinator runtime; cannot be set by user.",
           "type": "string"
         }
       ]
@@ -477,7 +432,7 @@
       "description": "Sandbox/security configuration.",
       "properties": {
         "additional_directories": {
-          "description": "Directories outside the project that tools may read and write, as if\nthey were part of it. The instance's own state directory (`~/.agix`\nby default) is always one; its settings files stay protected.",
+          "description": "Directories outside the project that tools may read and write, as if\nthey were part of it. The instance's own state directory (`~/.agix`\nby default) is always readable, but only its `scratchpad` and\n`memory` directories are writable this way.",
           "items": {
             "type": "string"
           },
@@ -557,17 +512,18 @@
         },
         "dangerously_disable_sandbox": {
           "default": false,
-          "description": "Bypass the sandbox entirely, in a build that has one.\n\nDefault: false. Note what that does *not* mean: the backend is behind\nthe `sandbox` compile-time feature, which is off by default, so an\nordinary build has nothing to bypass and this setting changes nothing\nin it. It is the runtime half of a two-part answer — the build decides\nwhether a sandbox exists, this decides whether to use the one it has.",
+          "description": "Bypass the sandbox entirely, in a build that has one.\n\nDefault: false. The backend is behind the `sandbox` compile-time\nfeature, which is on by default; a build without it has nothing to\nbypass and this setting changes nothing in it. It is the runtime half\nof a two-part answer — the build decides whether a sandbox exists, this\ndecides whether to use the one it has.",
           "type": "boolean"
         },
         "deny_read": {
+          "description": "Paths a sandboxed `Bash` / `Monitor` command may not read. Empty — the\ndefault — means the built-in credential list (`~/.ssh`, `~/.aws`,\n`~/.npmrc`, ...); a non-empty list replaces that list as a whole\nrather than adding to it, so repeat any of it you still want.",
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "deny_write": {
-          "description": "Extra filename segments a tool may never write, on top of the built-in\ncredential defaults (`.env`, `id_rsa`, `.ssh`, `.agix`, ...). A path is\nrefused if *any* of its components matches one, or begins with one\nfollowed by a dot — so `.env` also covers `.env.production`.",
+          "description": "Extra filename segments a tool may never write, on top of the built-in\ncredential defaults (`.env`, `id_rsa`, `.ssh`, `.npmrc`, ...). A path is\nrefused if *any* of its components matches one, or begins with one\nfollowed by a dot — so `.env` also covers `.env.production`.",
           "items": {
             "type": "string"
           },
@@ -597,7 +553,7 @@
         },
         "require_enforcement": {
           "default": false,
-          "description": "Refuse to run a sandboxed command when this build on this platform\ncannot actually enforce the policy, instead of running it\nunconstrained.\n\nTwo ways to be unable: the `sandbox` compile-time feature is off, so no\nbackend was compiled at all — the default — or it is on and the\nplatform's tool is missing. Both refuse here, and the message says\nwhich.\n\nOff by default, which is the historical behavior: on Linux without\n`bwrap`, and on platforms with no backend at all, a command whose\npolicy cannot be honored runs anyway with a warning. That is a silent\ndowngrade from \"constrained\" to \"unconstrained\" — fine for a laptop,\nnot fine for a host that treats the sandbox as a boundary.\n\nTurning it on makes such a command fail with an error naming the\nmissing backend. The default is `false` rather than `true` only\nbecause flipping it would break every Linux box without bubblewrap\ninstalled, and every Windows host, on upgrade.",
+          "description": "Refuse to run a sandboxed command when this build on this platform\ncannot actually enforce the policy, instead of running it\nunconstrained.\n\nTwo ways to be unable: the `sandbox` compile-time feature (on by\ndefault) was turned off, so no backend was compiled at all, or it is\non and the platform's tool is missing. Both refuse here, and the\nmessage says which.\n\nOff by default, which is the historical behavior: on Linux without\n`bwrap`, and on platforms with no backend at all, a command whose\npolicy cannot be honored runs anyway with a warning. That is a silent\ndowngrade from \"constrained\" to \"unconstrained\" — fine for a laptop,\nnot fine for a host that treats the sandbox as a boundary.\n\nTurning it on makes such a command fail with an error naming the\nmissing backend. The default is `false` rather than `true` only\nbecause flipping it would break every Linux box without bubblewrap\ninstalled, and every Windows host, on upgrade.",
           "type": "boolean"
         },
         "subprocess_env": {
@@ -613,10 +569,6 @@
           "type": "boolean"
         }
       },
-      "required": [
-        "deny_read",
-        "allowed_domains"
-      ],
       "type": "object"
     },
     "ScriptBinding": {
@@ -854,9 +806,6 @@
       ],
       "description": "How the file tools word paths for the model. `absolute` keeps\ntoday's text; `workspace_relative` makes tool descriptions say paths\nare relative to the working directory and prints Grep / Glob / Write /\nEdit paths under it relative, so a recorded session replays in another\nworking directory and long paths stop repeating in every call.\nResolving paths is unchanged. Unset, the scene decides\n(`Scene::path_style`: `harnix` is relative, the rest absolute)."
     },
-    "paths": {
-      "$ref": "#/$defs/PathSettings"
-    },
     "permission_mode": {
       "$ref": "#/$defs/PermissionMode",
       "default": "default",
@@ -1018,10 +967,6 @@
       ]
     }
   },
-  "required": [
-    "model",
-    "paths"
-  ],
   "title": "Settings",
   "type": "object"
 }

@@ -330,6 +330,7 @@ dependencies = [
  "futures",
  "globset",
  "hex",
+ "jsonschema",
  "libc",
  "regex",
  "schemars",

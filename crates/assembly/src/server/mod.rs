@@ -67,7 +67,7 @@ mod methods_turn;
 mod transport;
 
 #[cfg(feature = "ws")]
-pub(crate) use connection::parse_error_frame;
+pub(crate) use connection::refusal_frame;
 use dispatch::{parse_param, read_options, reporting_ignored};
 pub use listen::UnixBinding;
 #[cfg(feature = "ws")]

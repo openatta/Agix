@@ -35,7 +35,7 @@ impl DaemonServer {
             let req: RpcRequest = match serde_json::from_str(&line) {
                 Ok(r) => r,
                 Err(e) => {
-                    if let Some(frame) = parse_error_frame(&e) {
+                    if let Some(frame) = refusal_frame(&line, &e) {
                         send_frame(&client, &frame).await;
                     }
                     continue;
@@ -89,11 +89,33 @@ impl DaemonServer {
     }
 }
 
-/// The reply to a line that is not JSON at all. Valid JSON of the wrong shape
-/// (no `method`) is still dropped without an answer.
-pub(crate) fn parse_error_frame(e: &serde_json::Error) -> Option<RpcResponse> {
-    (e.classify() != serde_json::error::Category::Data)
-        .then(|| RpcResponse::err(serde_json::Value::Null, codes::PARSE_ERROR, "Parse error"))
+/// The reply to a frame that is not a request: `PARSE_ERROR` with a null id
+/// for text that is not JSON, `INVALID_REQUEST` echoing the id for JSON of the
+/// wrong shape (no `method`, a field of the wrong type). Frames with no usable
+/// id get nothing — no one is waiting on them — and neither do frames shaped
+/// like responses: answering those could ping-pong errors with a peer that
+/// answers ours.
+pub(crate) fn refusal_frame(text: &str, e: &serde_json::Error) -> Option<RpcResponse> {
+    if e.classify() != serde_json::error::Category::Data {
+        return Some(RpcResponse::err(
+            serde_json::Value::Null,
+            codes::PARSE_ERROR,
+            "Parse error",
+        ));
+    }
+    let frame: serde_json::Value = serde_json::from_str(text).ok()?;
+    let object = frame.as_object()?;
+    if object.contains_key("result") || object.contains_key("error") {
+        return None;
+    }
+    let id = object
+        .get("id")
+        .filter(|id| id.is_string() || id.is_number())?;
+    Some(RpcResponse::err(
+        id.clone(),
+        codes::INVALID_REQUEST,
+        format!("Invalid Request: {e}"),
+    ))
 }
 
 #[cfg(test)]
@@ -101,9 +123,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn garbage_gets_a_parse_error_and_a_request_without_method_does_not() {
+    fn garbage_gets_a_parse_error() {
         let garbage = serde_json::from_str::<RpcRequest>("{not json").unwrap_err();
-        let frame = parse_error_frame(&garbage).unwrap();
+        let frame = refusal_frame("{not json", &garbage).unwrap();
         let v = serde_json::to_value(frame).unwrap();
         assert_eq!(v["jsonrpc"], "2.0");
         assert_eq!(v["id"], serde_json::Value::Null);
@@ -111,8 +133,46 @@ mod tests {
         assert_eq!(v["error"]["message"], "Parse error");
 
         let truncated = serde_json::from_str::<RpcRequest>("{\"id\":1").unwrap_err();
-        assert!(parse_error_frame(&truncated).is_some());
-        let no_method = serde_json::from_str::<RpcRequest>("{\"id\":1}").unwrap_err();
-        assert!(parse_error_frame(&no_method).is_none());
+        assert_eq!(
+            refusal_frame("{\"id\":1", &truncated)
+                .unwrap()
+                .error
+                .unwrap()
+                .code,
+            codes::PARSE_ERROR
+        );
+    }
+
+    fn refusal(text: &str) -> Option<serde_json::Value> {
+        let e = serde_json::from_str::<RpcRequest>(text).unwrap_err();
+        refusal_frame(text, &e).map(|f| serde_json::to_value(f).unwrap())
+    }
+
+    #[test]
+    fn a_misshapen_request_with_an_id_is_answered_with_that_id() {
+        for text in [
+            r#"{"jsonrpc":2.0,"method":"daemon.ping","id":7}"#,
+            r#"{"jsonrpc":"2.0","method":42,"id":7}"#,
+            r#"{"jsonrpc":"2.0","id":7}"#,
+        ] {
+            let v = refusal(text).unwrap_or_else(|| panic!("{text} got no answer"));
+            assert_eq!(v["id"], 7, "{text}");
+            assert_eq!(v["error"]["code"], -32600, "{text}");
+        }
+        assert_eq!(refusal(r#"{"method":1,"id":"a"}"#).unwrap()["id"], "a");
+    }
+
+    #[test]
+    fn a_misshapen_frame_without_a_usable_id_or_shaped_like_a_response_is_dropped() {
+        for text in [
+            r#"{"jsonrpc":2.0,"method":"daemon.ping"}"#,
+            r#"{"method":1,"id":{"x":1}}"#,
+            r#"{"method":1,"id":null}"#,
+            r#"[{"method":"daemon.ping","id":1}]"#,
+            r#"{"jsonrpc":"2.0","id":7,"result":{}}"#,
+            r#"{"jsonrpc":"2.0","id":7,"error":{"code":-32600,"message":"x"}}"#,
+        ] {
+            assert!(refusal(text).is_none(), "{text} was answered");
+        }
     }
 }

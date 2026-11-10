@@ -302,7 +302,6 @@ async fn audit2_an_mcp_oauth_client_secret_is_not_handed_to_commands() {
 /// 协议 §7.3 的例子是 `"progress":42`、`"total":120`,`Bash` 报的 `progress` 是"行数"。
 /// 线上发的却是浮点数 `1.0`:按整数解析这个字段的宿主(Rust `u64`、Go `int`)解析失败。
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "audit: confirmed defect, fix pending"]
 async fn audit2_a_bash_line_count_goes_out_as_an_integer() {
     let daemon = Daemon::start(
         Setup {
@@ -340,7 +339,6 @@ async fn audit2_a_bash_line_count_goes_out_as_an_integer() {
 /// 协议 §1:只有"合法 JSON 但缺 `method`"的帧被静默丢弃。字段类型不对的请求(这里
 /// `"jsonrpc"` 写成数字)同样什么也不回,客户端等这个 `id` 的响应会一直等下去。
 #[tokio::test]
-#[ignore = "audit: confirmed defect, fix pending"]
 async fn audit2_a_request_with_a_mistyped_field_is_answered() {
     let daemon = Daemon::start(Setup::default(), |_, _| {}).await;
     let mut conn = UnixStream::connect(&daemon.sock).await.unwrap();
@@ -415,7 +413,6 @@ fn audit2_a_skill_url_grant_on_a_public_suffix_is_unscoped() {
 /// `{"sandbox": {"unattended_requires_network_policy": true}}` 都过不了校验。`bubble` 则反过来:
 /// schema 收,协议说写进 settings.json 会被退回 `default`。
 #[test]
-#[ignore = "audit: confirmed defect, fix pending"]
 fn audit2_the_settings_schema_accepts_what_the_loader_accepts() {
     let schema: Value = serde_json::from_str(
         &std::fs::read_to_string(
