@@ -87,6 +87,24 @@ pub const ENGINE_CONFIG_DIRS: &[&str] = &[
 /// their own and no other.
 pub const STATE_ROOT_SESSION_TMP: &str = "tmp";
 
+/// What a data directory's `.gitignore` keeps out of the repository the
+/// directory sits in: the files the engine writes keys into, and its
+/// telemetry recordings.
+pub const LOCAL_DATA_GITIGNORE: &str = "settings.local.json\nmcp.local.json\ntelemetry/\n";
+
+/// Give `dir` a `.gitignore` of [`LOCAL_DATA_GITIGNORE`] if it has none. One
+/// already there is the user's, and is left as it is.
+pub fn ensure_local_data_gitignore(dir: &std::path::Path) {
+    use std::io::Write;
+    let created = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dir.join(".gitignore"));
+    if let Ok(mut file) = created {
+        let _ = file.write_all(LOCAL_DATA_GITIGNORE.as_bytes());
+    }
+}
+
 /// Unified management of AGENT persistent directory paths.
 ///
 /// Default: `global_data_dir = $HOME/.agix/`

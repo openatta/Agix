@@ -347,6 +347,10 @@ impl SessionPool {
         {
             match FileRecorder::new(&telemetry_path) {
                 Ok(rec) => {
+                    let data_dir = &settings_snapshot.paths.local_data_dir;
+                    if data_dir.is_absolute() && telemetry_path.starts_with(data_dir) {
+                        base::paths::ensure_local_data_gitignore(data_dir);
+                    }
                     // `telemetry` crate never touches the network itself —
                     // this is where the daemon decides where events go:
                     // always the per-session JSONL file, plus OTel when an

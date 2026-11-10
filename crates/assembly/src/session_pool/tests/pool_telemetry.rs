@@ -87,3 +87,29 @@ async fn absolute_dir_and_telemetry_enabled_persists_events_to_pool_jsonl() {
     assert!(content.contains("resume_action"));
     assert!(content.contains("not_found"));
 }
+
+/// The project's `.agix` is in the user's repository; telemetry recorded
+/// there brings a `.gitignore` that keeps it out, unless one is there.
+#[tokio::test]
+async fn recording_into_the_project_keeps_the_recordings_out_of_git() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut settings = Settings::defaults_for("claude-sonnet-4-6");
+    settings.telemetry_enabled = true;
+    settings.paths.local_data_dir = dir.path().join(".agix");
+    let _handle = build_pool_telemetry(&settings);
+    let ignored = std::fs::read_to_string(dir.path().join(".agix").join(".gitignore")).unwrap();
+    assert!(ignored.lines().any(|l| l == "telemetry/"), "{ignored}");
+    assert!(
+        ignored.lines().any(|l| l == "settings.local.json"),
+        "{ignored}"
+    );
+
+    let mine = tempfile::tempdir().unwrap();
+    std::fs::write(mine.path().join(".gitignore"), "mine\n").unwrap();
+    settings.paths.local_data_dir = mine.path().to_path_buf();
+    let _handle = build_pool_telemetry(&settings);
+    assert_eq!(
+        std::fs::read_to_string(mine.path().join(".gitignore")).unwrap(),
+        "mine\n"
+    );
+}

@@ -1173,6 +1173,13 @@ warn。全局层 `settings.json` 与 `settings.local.json` 的
 `state.json`、`events.jsonl`、`SCRATCHPAD.md`、`mailbox/`、`memory/`(团队共享记忆,
 格式同个人记忆)。每个阶段开始时成员读到 `memory/` 的索引;`TeamDelete` 删掉整个目录。
 
+项目的 `.agix/` 在用户的仓库里。引擎第一次往一个设置目录写 `settings.local.json` /
+`mcp.local.json`(里面是 key 与 MCP headers),或第一次往项目 `.agix/telemetry/` 录遥测时,
+那个目录还没有 `.gitignore` 就生成一份(`base::paths::LOCAL_DATA_GITIGNORE`:
+`settings.local.json`、`mcp.local.json`、`telemetry/`)。已有的 `.gitignore` 是用户的,不覆盖,
+缺的行也不补。状态目录与场景目录写 `settings.local.json` 时同样会生成,无害。`scratchpad/`
+自己另有一份 `*`。
+
 **会话进哪个项目目录由它自己的 `Meta.project_root` 决定**,不是由 daemon 的 cwd
 决定 —— 一个 daemon 同时服务多个项目时,后者会把所有项目的 transcript 堆进一个
 目录。侧链没有自己的 `project_root`,跟父会话进同一个目录(级联删除按那里找)。

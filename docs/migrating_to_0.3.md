@@ -1341,6 +1341,10 @@ WebAssembly 载体整个移除。
   挡,之后别的服务用到也连不上;现在跟监听器一起注销,`--unix-socket-auth` 的 token 文件也是
   删掉时注销。Linux 上本来就围不了单个端口,网络开着时沙箱里的命令连得上 TCP / WebSocket 端口,
   要断就用 `network_mode: deny_all` / `allowlist`(§6.3)。
+- **项目 `.agix/` 会多一个 `.gitignore`。** 第一次往项目 `.agix/` 写 `settings.local.json`
+  (`config.setProvider` 的 key、MCP headers)或录遥测时,没有 `.agix/.gitignore` 就生成一份,写着
+  `settings.local.json`、`mcp.local.json`、`telemetry/`。已有的不动,缺的行也不补:以前就有
+  `.agix/.gitignore` 的项目自己核对一下这三项(§8)。
 
 #### hooks
 

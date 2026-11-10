@@ -126,6 +126,9 @@ impl SettingsDir {
         }
         #[cfg(unix)]
         let _ = self.handle.sync_all();
+        if file == SETTINGS_LOCAL_FILE || file == "mcp.local.json" {
+            crate::paths::ensure_local_data_gitignore(&self.dir);
+        }
         Ok(())
     }
 }
@@ -253,6 +256,30 @@ mod tests {
             tier.read(SETTINGS_FILE),
             Err(SettingsFileError::NotObject { .. })
         ));
+    }
+
+    /// The first credentials written into a directory bring a `.gitignore`
+    /// that keeps them, and the engine's other local files, out of the
+    /// repository the directory sits in. One already there is the user's.
+    #[test]
+    fn writing_credentials_keeps_them_out_of_git() {
+        let dir = tempfile::tempdir().unwrap();
+        let tier = SettingsDir::lock(dir.path()).unwrap();
+        tier.write(SETTINGS_LOCAL_FILE, &obj(json!({"providers": {}})))
+            .unwrap();
+        let ignored = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        for line in ["settings.local.json", "mcp.local.json", "telemetry/"] {
+            assert!(ignored.lines().any(|l| l == line), "{ignored}");
+        }
+
+        let mine = tempfile::tempdir().unwrap();
+        std::fs::write(mine.path().join(".gitignore"), "mine\n").unwrap();
+        let tier = SettingsDir::lock(mine.path()).unwrap();
+        tier.write(SETTINGS_LOCAL_FILE, &obj(json!({}))).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(mine.path().join(".gitignore")).unwrap(),
+            "mine\n"
+        );
     }
 
     #[test]

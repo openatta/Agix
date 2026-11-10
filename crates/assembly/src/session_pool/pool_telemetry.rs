@@ -20,7 +20,10 @@ pub(super) fn build_pool_telemetry(settings: &Settings) -> telemetry::TelemetryH
     }
     let path = dir.join("telemetry").join("pool.jsonl");
     let rec = match FileRecorder::new(&path) {
-        Ok(rec) => rec,
+        Ok(rec) => {
+            base::paths::ensure_local_data_gitignore(dir);
+            rec
+        }
         Err(e) => {
             warn!(path = %path.display(), error = %e, "could not open pool-level telemetry file; pool-level events record nothing");
             return telemetry::TelemetryHandle::noop();

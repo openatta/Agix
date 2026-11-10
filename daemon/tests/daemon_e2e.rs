@@ -608,6 +608,11 @@ async fn set_provider_writes_project_settings_and_doctor_sees_it() {
             .mode();
         assert_eq!(mode & 0o777, 0o600, "settings.local.json is {mode:o}");
     }
+    let ignored = std::fs::read_to_string(agix.join(".gitignore")).unwrap_or_default();
+    assert!(
+        ignored.lines().any(|l| l == "settings.local.json"),
+        "the key can be committed: .agix/.gitignore is {ignored:?}"
+    );
 
     // Doctor now reflects the newly-written provider.
     let resp = rpc_call(
