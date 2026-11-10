@@ -70,6 +70,7 @@ struct Setup {
     mode: PermissionMode,
     global: Value,
     managed: Option<&'static str>,
+    scene: Option<Arc<dyn base::interface::scene::Scene>>,
 }
 
 impl Default for Setup {
@@ -78,6 +79,7 @@ impl Default for Setup {
             mode: PermissionMode::Default,
             global: json!({}),
             managed: None,
+            scene: None,
         }
     }
 }
@@ -119,7 +121,9 @@ impl Daemon {
         let model = Arc::new(MockAnthropicClient::new());
         let pool = daemon::assemble::pool(
             &config,
-            Arc::new(scene::code::CodeScene::default()),
+            setup
+                .scene
+                .unwrap_or_else(|| Arc::new(scene::code::CodeScene::default())),
             daemon::Assembly {
                 cwd: Some(work.clone()),
                 model_client: Some(model.clone()),
@@ -147,8 +151,12 @@ impl Daemon {
     /// Runs one turn, denying every permission prompt it raises; returns the
     /// tool calls the prompts were about.
     async fn turn_denying_prompts(&self) -> Vec<String> {
+        self.turn_in_denying_prompts(json!({"message": "go"})).await
+    }
+
+    async fn turn_in_denying_prompts(&self, params: Value) -> Vec<String> {
         let request = json!({"jsonrpc":"2.0","method":"session.run_turn",
-                             "params":{"message":"go"},"id":1});
+                             "params": params,"id":1});
         let mut conn = UnixStream::connect(&self.sock).await.unwrap();
         conn.write_all(format!("{request}\n").as_bytes())
             .await
@@ -622,5 +630,62 @@ async fn audit2_a_linked_agents_md_reads_a_credential_into_the_prompt() {
     assert!(
         !daemon.everything_the_model_saw().contains(SECRET),
         "the project's key file reached the system prompt through a linked AGENTS.md"
+    );
+}
+
+async fn call(sock: &Path, method: &str, params: Value) -> Value {
+    let request = json!({"jsonrpc":"2.0","method":method,"params":params,"id":7});
+    let mut conn = UnixStream::connect(sock).await.unwrap();
+    conn.write_all(format!("{request}\n").as_bytes())
+        .await
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(conn).read_line(&mut line).await.unwrap();
+    serde_json::from_str(&line).unwrap()
+}
+
+/// A session with no project has no project to write in: its tools work
+/// from the state root's parent (`PathSettings::project_root` of a
+/// `local_data_dir` that is the state root), which for `~/.agix` is the
+/// user's home, so a `Write` anywhere in it is the tool's own silent allow
+/// and the sandbox opens all of it to `Bash`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "audit: confirmed defect, fix pending"]
+async fn audit2_a_no_project_session_writes_the_state_roots_parent_silently() {
+    let daemon = Daemon::start(
+        Setup {
+            scene: Some(Arc::new(scene::harnix::HarnixScene)),
+            ..Default::default()
+        },
+        |_, _| {},
+    )
+    .await;
+    let created = call(
+        &daemon.sock,
+        "session.create",
+        json!({"scene": "harnix", "project_root": null}),
+    )
+    .await;
+    let sid = created["result"]["session_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{created}"))
+        .to_string();
+    let escaped = daemon.home.parent().unwrap().join("escaped.txt");
+    daemon.model.push_turn(tool_round(
+        "toolu_write",
+        "Write",
+        json!({"file_path": escaped.display().to_string(), "content": "x"}),
+    ));
+    daemon.model.push_turn(text_round("done"));
+
+    let asked = daemon
+        .turn_in_denying_prompts(json!({"session_id": sid, "message": "go"}))
+        .await;
+    assert!(
+        !escaped.exists(),
+        "a no-project session wrote {} beside the state root without being asked \
+         (prompts: {asked:?}): {}",
+        escaped.display(),
+        daemon.tool_result("toolu_write")
     );
 }
