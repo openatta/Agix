@@ -60,6 +60,9 @@ impl McpServers for McpManager {
             is_error: invocation.is_error,
         }
     }
+    fn granted(&self, servers: Option<&[String]>) -> Box<dyn McpServers> {
+        Box::new(self.share_servers(servers))
+    }
 }
 
 pub struct McpModule {

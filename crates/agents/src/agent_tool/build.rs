@@ -116,6 +116,9 @@ impl Inner {
         if let Some(seat) = run.seat.clone() {
             builder = builder.team_seat(seat);
         }
+        if let Some(servers) = self.mcp_granted_to(def.as_ref(), run) {
+            builder = builder.mcp_servers(servers);
+        }
         let history_store = self.history_store();
         builder = self.inherited_by_a_delegate(builder);
         let (agent, event_rx, input_tx) = builder

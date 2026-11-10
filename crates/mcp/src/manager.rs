@@ -574,6 +574,76 @@ impl McpManager {
         }
     }
 
+    /// [`Self::share`] narrowed to `servers` (every one when `None`) that keeps
+    /// the tools and prompts already listed and the output cache and
+    /// elicitation callback the adapters report through: the servers a
+    /// delegate is granted, ready before its first request.
+    pub fn share_servers(&self, servers: Option<&[String]>) -> Self {
+        let keep = |name: &str| servers.is_none_or(|s| s.iter().any(|n| n == name));
+        Self {
+            clients: self
+                .clients
+                .iter()
+                .filter(|c| keep(c.server_name()))
+                .cloned()
+                .collect(),
+            adapters: self
+                .adapters
+                .iter()
+                .filter(|a| a.source().strip_prefix("mcp:").is_some_and(keep))
+                .cloned()
+                .collect(),
+            prompts: self
+                .prompts
+                .iter()
+                .filter(|p| keep(&p.server))
+                .cloned()
+                .collect(),
+            announcements: self.announcements.clone(),
+            seen: self
+                .seen
+                .iter()
+                .filter(|(name, _)| keep(name))
+                .map(|(name, epochs)| (name.clone(), *epochs))
+                .collect(),
+            output_cache: self.output_cache.clone(),
+            elicitation_callback: self.elicitation_callback.clone(),
+            subprocess_env: self.subprocess_env.clone(),
+            auth: self.auth.clone(),
+            configs: self
+                .configs
+                .iter()
+                .filter(|(name, _)| keep(name))
+                .map(|(name, cfg)| (name.clone(), cfg.clone()))
+                .collect(),
+            denied: self
+                .denied
+                .iter()
+                .filter(|d| keep(&d.name))
+                .cloned()
+                .collect(),
+            pending: self
+                .pending
+                .iter()
+                .filter(|p| keep(&p.name))
+                .cloned()
+                .collect(),
+            connecting: self
+                .connecting
+                .iter()
+                .filter(|p| keep(&p.name))
+                .cloned()
+                .collect(),
+            failed: self
+                .failed
+                .iter()
+                .filter(|f| keep(&f.name))
+                .cloned()
+                .collect(),
+            batch: self.batch.clone(),
+        }
+    }
+
     /// 给 ToolRegistry 用的 adapter 列表。
     pub fn tool_adapters(&self) -> &[Arc<dyn Tool>] {
         &self.adapters

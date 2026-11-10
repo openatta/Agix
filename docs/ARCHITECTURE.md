@@ -97,10 +97,12 @@ MCP 连接由 mcp 模块交给会话独占(`provide_mcp`),和原先会话独占 
 工具与 prompt 的名字由 `mcp::naming` 从 server 名与工具名造出,保证符合模型 API 的
 `^[a-zA-Z0-9_-]{1,64}$`,权限规则按这个名字写。
 
-装配顺序是 **mcp → agents → skills**:agents 要看到它可以授予子 agent 的 MCP 工具,
+装配顺序是 **mcp → agents → skills**:agents 要看到它可以授予子 agent 的 MCP 服务器,
 fork 型 skill 要 agents 提供的 spawner。委派出去的子会话用父会话(收窄后)的模块
-清单装配,所以嵌套委派照旧;MCP 连接只给第一个装配它的会话,子会话经 `Agent` 工具
-按 agent 类型授予父会话已连接的服务器。
+清单装配,所以嵌套委派照旧;MCP 连接只给第一个装配它的会话。agent 类型写了
+`mcp_servers` 的,子会话拿到父会话连接按 server 收窄出的一份 `McpServers`
+(`McpServers::granted`,连接共用、不重连),经 `Builder::mcp_servers` 归子会话独占:
+授予的工具和父会话的一样宣告给模型、随 server 的变更通知刷新,没授予的 server 看不到(§3.4)。
 
 ### 1.2 档位
 
@@ -370,9 +372,24 @@ recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着
 `Inner::spawn_guard` 在每一条 spawn 路径上检查;到顶时返回普通工具错误,模型看得见,
 可以改为自己做。同时在跑的个数另有上限,见 §3.8。
 
-**过滤工具名不构成约束**:`Builder::build()` 会为子会话新建注册表并把 `Agent` 注册进去,
-与父级传入的工具集无关;`RuntimeAgentSpawner`(Skill fork、team 成员)直接透传
-`sub_tools()`,根本不经过 `AgentTool::resolve_tools`。
+**过滤工具名不构成约束**:`Builder::build()` 会为子会话新建注册表,子会话自己的 agents
+模块再把 `Agent` 注册进去(到顶时不注册),与父级传入的工具集无关。
+
+子会话的工具由 `AgentTool::delegate_tools` 一处解析,模型调 `Agent`(前台、后台、团队成员)、
+宿主的 `session.startAgent`、`RuntimeAgentSpawner`(Skill fork、`TeamCreate` 成员、agent hook)
+都走它:
+
+- **只继承模板工具**:父会话建的时候传进 `Builder::tools` 的那一份
+  (`SessionContext::template_tools`),而且只要父会话还留着的,场景策略拿掉的不给。引擎、
+  模块、场景、插件在建会话时注册的(`Agent`、`Skill`、`Team*`、`Task*`、`Cron*`、MCP 适配器
+  与资源工具……)不继承,子会话建的时候注册自己的那份。`Agent` 在任何情况下都不继承。
+- **再收窄**:agent 类型的 `allowed_tools` / `disallowed_tools`,加上调用方给的 allowed /
+  disallowed(skill 的 `allowed-tools`、`session.startAgent` 的两个列表)。
+- **MCP 不在工具表里**:按 `mcp_servers` 授予(§1.1),与 agent 类型的工具列表是两条轴;
+  `session.startAgent` 的 allowed / disallowed 对授予的 MCP 工具同样生效。
+
+`build()` 结束时检查工具表没有重名(重名时分发只认第一个):测试与 debug 构建里断言失败,
+release 构建记一条 error。
 
 ### 3.4.1 会话目标
 

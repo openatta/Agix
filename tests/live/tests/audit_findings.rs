@@ -107,7 +107,6 @@ async fn a_few_rounds(
 /// granted server's tools from its first request on, and can call them in
 /// every round, not only the first.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "audit: confirmed defect, fix pending"]
 async fn audit_a_sub_agent_granted_an_mcp_server_is_shown_and_keeps_its_tools() -> anyhow::Result<()>
 {
     let stub = ProviderStub::start().await?;

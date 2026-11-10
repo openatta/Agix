@@ -31,6 +31,13 @@ pub trait McpServers: Send + Sync {
     /// Never fails: an unreachable server or a refused prompt comes back as
     /// text the model can read, flagged with `is_error`.
     async fn invoke_prompt_command(&self, command: &str, raw_args: &str) -> McpPromptInvocation;
+    /// The same connections, as servers another session can own — what a
+    /// delegate is granted: only `servers`, or every one when `None`. A named
+    /// server not connected here is left out.
+    fn granted(&self, servers: Option<&[String]>) -> Box<dyn McpServers> {
+        let _ = servers;
+        Box::new(NoMcpServers)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

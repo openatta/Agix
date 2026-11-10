@@ -1177,13 +1177,15 @@ Builder::new().module(Arc::new(agents::AgentsModule::new())).module(Arc::new(Tic
 `on_session` 在会话的工具表、事件总线、权限、hooks 都建好之后、场景的工具策略
 生效之前调用,所以模块注册的工具与内建工具受同一套场景约束。`SessionContext`
 交出这些部件,外加三样晚绑定的服务:`provide_agent_spawner` / `agent_spawner`、
-`provide_skill_catalog` / `skill_catalog`、`provide_mcp` / `mcp_tools`。
+`provide_skill_catalog` / `skill_catalog`、`provide_mcp` / `mcp_for_delegates`。
 
 - 模块按装入顺序运行;`requires` 列出的必须排在前面,缺失、排在后面、重复装入都让
   `build()` 失败。
 - 场景用 `modules` / `disabled_modules` 收窄一个会话实际运行的模块(§`scene`)。
 - 委派出去的子会话用父会话收窄后的模块清单装配。同一个模块实例会对子会话再调一次
   `on_session`;只能给一个会话的东西(如 `McpModule` 持有的连接)要自己处理。
+  起子会话的模块从 `template_tools`(会话建的时候拿到的工具)继承,不从 `tools` 继承:
+  后者还装着引擎和各模块注册的、子会话会自己再注册一份的工具(`ARCHITECTURE.md` §3.4)。
 - 自带的三个:`agents::AgentsModule`、`mcp::McpModule`、`skills::SkillsModule`,
   装配顺序 mcp → agents → skills。`agixd` 的会话池按档位装配它们(`ARCHITECTURE.md` §1.2)。
 

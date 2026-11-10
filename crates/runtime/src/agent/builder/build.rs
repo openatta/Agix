@@ -363,7 +363,12 @@ impl Builder {
             Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
         let pending_questions: crate::elicitation::PendingQuestions = Default::default();
 
-        let mut mcp_slot: Option<Box<dyn base::interface::mcp_servers::McpServers>> = None;
+        let mut mcp_slot = self.mcp_servers;
+        // Dispatch looks tools up in the registry, so a grant's adapters live
+        // there as an mcp module's do.
+        for adapter in mcp_slot.iter().flat_map(|m| m.tools()) {
+            tools.register(adapter);
+        }
         {
             let session_id = session.session_id_str().to_string();
             let mut cx = crate::module::SessionContext {

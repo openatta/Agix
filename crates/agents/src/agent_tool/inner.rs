@@ -188,25 +188,15 @@ pub(super) struct Inner {
     /// absence degrades elsewhere in this struct.
     pub(super) skill_manager:
         SetLater<Option<Arc<dyn base::interface::skill_catalog::SkillCatalog>>>,
-    /// A snapshot of the parent session's connected MCP tools, used to
-    /// resolve `AgentTypeDefinition.mcp_servers` by reusing already-
-    /// connected tool instances (not reconnecting). Same interior-
-    /// mutability / set-after-construction pattern as `skill_manager` and
-    /// for the same reason (`Builder::build()` connects MCP after
-    /// `AgentTool` exists) — but a `Vec` snapshot rather than a live
-    /// `Arc<McpManager>` reference: `McpManager` isn't `Clone` and `refresh_tools()` needs
-    /// `&mut self`, which would conflict with `AgentTool` also holding a
-    /// shared reference to the same live instance. A subagent therefore
-    /// sees the MCP tools connected *as of when this was set* — a later
-    /// `config.reload` reconnect in the parent session doesn't retroactively
-    /// update it, an accepted scope boundary (matches `description`'s own
-    /// "not kept live" doc comment on this same struct).
-    pub(super) mcp_tool_adapters: SetLater<Vec<Arc<dyn base::tool::Tool>>>,
+    /// The parent session's MCP servers, as a delegate's grant is narrowed
+    /// from: a share of its connections taken when the session was built.
+    /// Servers that finish connecting later are not in it.
+    pub(super) delegate_mcp: SetLater<Option<Arc<dyn base::interface::mcp_servers::McpServers>>>,
     /// The shared `TeamRegistry` `AgentsModule::on_session` also hands to
     /// `TeamCreate`/`TeamList`/`TeamDelete` — so persistent team members
     /// (spawned here, not through those tools) update the same state
     /// `TeamList` reads. Same interior-mutability / set-after-construction
-    /// pattern as `skill_manager`/`mcp_tool_adapters`: `None` when team
+    /// pattern as `skill_manager`/`delegate_mcp`: `None` when team
     /// coordination isn't enabled for this session (`settings.execution.
     /// team_enabled == false`) or in tests that don't wire it — persistent
     /// team members just don't update `TeamList`'s view in that case (they
@@ -322,10 +312,8 @@ impl Inner {
     /// Every spawn path goes through here — the `Agent` tool, Skill
     /// `context: fork` and team members via `RuntimeAgentSpawner`, and
     /// background spawns — because that is the only place all of them share.
-    /// Bounding them individually by tool-registry filtering does not work:
-    /// `RuntimeAgentSpawner` hands `sub_tools()` over unfiltered, and
-    /// `Builder::build()` registers `Agent` into the fresh per-session
-    /// registry it creates for the child regardless.
+    /// Tool filtering cannot bound them: a delegate's own agents module
+    /// registers an `Agent` of its own below the limit.
     ///
     /// Refusing with a normal tool error rather than a panic or a silent
     /// no-op is the point: the model sees "you cannot delegate further" and
@@ -491,8 +479,30 @@ impl Inner {
         self.skill_manager.get()
     }
 
-    pub(super) fn mcp_tool_adapters(&self) -> Vec<Arc<dyn base::tool::Tool>> {
-        self.mcp_tool_adapters.get()
+    /// The MCP servers a delegate of type `def` is granted: the parent's named
+    /// in the type's `mcp_servers`, narrowed further by the run's tool lists.
+    pub(super) fn mcp_granted_to(
+        &self,
+        def: Option<&AgentTypeDefinition>,
+        run: &SubRun,
+    ) -> Option<Box<dyn base::interface::mcp_servers::McpServers>> {
+        let def = def.filter(|d| !d.mcp_servers.is_empty())?;
+        let Some(parent) = self.delegate_mcp.get() else {
+            tracing::warn!(
+                agent_type = %def.name,
+                "agent type names mcp_servers, but this session has no MCP servers to grant"
+            );
+            return None;
+        };
+        let granted = parent.granted(Some(&def.mcp_servers));
+        if run.allowed_tools.is_empty() && run.disallowed_tools.is_empty() {
+            return Some(granted);
+        }
+        Some(Box::new(ListedMcp {
+            servers: granted,
+            allowed: run.allowed_tools.clone(),
+            disallowed: run.disallowed_tools.clone(),
+        }))
     }
 
     pub(super) fn event_tx(&self) -> Option<runtime::agent::EventSender> {

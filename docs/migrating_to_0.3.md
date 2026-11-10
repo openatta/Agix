@@ -1501,6 +1501,11 @@ WebAssembly 载体整个移除。
 - 子 Agent 只继承父会话建的时候拿到的那批工具,不再继承父会话的引擎、模块注册的工具:`Skill`、
   `Team*`、`Task*` 这类由子会话自己再注册一份(以前同名的两份并存,分发只认第一个,即父会话的);
   `ListMcpResources`、`ReadMcpResource`、`MCP` 三个 MCP 工具子 Agent 不再有。
+- **agent 类型的 `mcp_servers` 真正生效。** 以前授予的 MCP 工具不宣告给子 Agent 的模型,只有第一批
+  调用能打到 server,之后就是 `Tool not found`。现在子 Agent 拿到父会话连接按 server 收窄出的一份:
+  工具从第一次请求起宣告、随 server 的变更通知刷新,这些 server 的说明、`/mcp__…` prompt 命令与
+  `@server:` 资源引用也一并可用;没授予的 server 照旧看不到。`session.startAgent` 的
+  `allowed_tools` / `disallowed_tools` 对授予的 MCP 工具同样生效。
 
 ### RPC 客户端
 
@@ -1638,6 +1643,14 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。
   两个传同一份(`AgentTool::new` 即如此)的行为不变。
 - `Builder::build()` 结束时检查工具表里没有重名:debug 构建与测试里断言失败,release 构建记一条
   `error`。自己往模板里放 `Skill`、`TaskStop` 这类引擎会再注册的工具的嵌入方会撞上它。
+- 子 Agent 的 MCP 授予从工具表改成会话的 `McpServers`:
+  - `McpServers` 多一个带缺省实现的 `granted(servers: Option<&[String]>) -> Box<dyn McpServers>`,
+    给子会话一份同样连接、按 server 收窄的视图;缺省返回 `NoMcpServers`,自己实现 `McpServers` 又要
+    子 Agent 拿到授予的,要实现它。`McpManager` 的实现是新的 `McpManager::share_servers`。
+  - `SessionContext::mcp_tools()` 删除,改用 `mcp_for_delegates()`(会话的 MCP 视图,可再 `granted`)。
+  - `AgentTool::set_mcp_tool_adapters(Vec<Arc<dyn Tool>>)` 改为 `set_mcp_servers(Arc<dyn McpServers>)`。
+  - 新增 `Builder::mcp_servers(Box<dyn McpServers>)`:会话一建好就有的 MCP server,工具照 mcp 模块
+    给的那样注册与宣告;之后有模块 `provide_mcp` 的,以模块的为准。
 
 #### 执行层与 platform
 

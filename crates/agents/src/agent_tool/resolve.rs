@@ -50,8 +50,8 @@ impl AgentTool {
     /// `disallowed_tools` and then by the caller's `allowed` / `disallowed`
     /// (empty narrows nothing). Every spawn path resolves its tools here.
     ///
-    /// MCP tools are not inherited: a type's `mcp_servers` grants the matching
-    /// servers' tools from the parent's connections, on top of those lists.
+    /// MCP tools are not among them: a type's `mcp_servers` grants the
+    /// delegate those servers (`Inner::mcp_granted_to`), apart from its tools.
     pub(crate) fn delegate_tools(
         &self,
         subagent_type: Option<&str>,
@@ -65,26 +65,6 @@ impl AgentTool {
                 && lists_admit_tool(allowed, disallowed, tool.name())
             {
                 registry.register(tool);
-            }
-        }
-
-        if let Some(d) = &def {
-            if !d.mcp_servers.is_empty() {
-                let adapters = self.inner.mcp_tool_adapters();
-                if adapters.is_empty() {
-                    tracing::warn!(
-                        agent_type = %d.name,
-                        "agent mcp_servers: set but no MCP tools are attached to this AgentTool — no MCP tools granted"
-                    );
-                }
-                for tool in &adapters {
-                    if d.mcp_servers.iter().any(|server| {
-                        Self::tool_name_matches(tool.name(), &format!("mcp__{server}"))
-                    }) && lists_admit_tool(allowed, disallowed, tool.name())
-                    {
-                        registry.register(tool.clone());
-                    }
-                }
             }
         }
 

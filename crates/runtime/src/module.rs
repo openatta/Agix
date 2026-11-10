@@ -128,9 +128,11 @@ impl SessionContext<'_> {
         *self.mcp = Some(servers);
     }
 
-    /// The tools of the MCP servers a module earlier in the list provided.
-    pub fn mcp_tools(&self) -> Vec<Arc<dyn base::tool::Tool>> {
-        self.mcp.as_ref().map(|m| m.tools()).unwrap_or_default()
+    /// The MCP servers this session has so far — a module earlier in the
+    /// list provided them, or a grant handed to `Builder::mcp_servers` — as a
+    /// delegate's grant is narrowed from (`McpServers::granted`).
+    pub fn mcp_for_delegates(&self) -> Option<Arc<dyn McpServers>> {
+        self.mcp.as_ref().map(|m| Arc::from(m.granted(None)))
     }
 
     /// Makes `catalog` the skills the session lists, expands and reminds the

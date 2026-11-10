@@ -152,60 +152,131 @@ fn delegate_tools_restricted_type_filters_to_allowed_list() {
     assert!(!names.iter().any(|n| n == "Bash")); // explore doesn't allow Bash
 }
 
-#[test]
-fn delegate_tools_mcp_servers_grants_matching_server_tools_only() {
+type GrantsAsked = Arc<std::sync::Mutex<Vec<Option<Vec<String>>>>>;
+
+/// Servers whose `granted` records what it was asked for and keeps the tools
+/// named after those servers.
+struct RecordingServers {
+    tools: Vec<&'static str>,
+    asked: GrantsAsked,
+}
+
+#[async_trait]
+impl base::interface::mcp_servers::McpServers for RecordingServers {
+    fn tools(&self) -> Vec<Arc<dyn base::tool::Tool>> {
+        self.tools
+            .iter()
+            .map(|n| Arc::new(NamedTool(n)) as Arc<dyn base::tool::Tool>)
+            .collect()
+    }
+    async fn refresh_tools(&mut self) {}
+    async fn refresh_if_changed(&mut self) -> bool {
+        false
+    }
+    fn instructions(&self) -> Vec<base::context::McpServerInstruction> {
+        Vec::new()
+    }
+    async fn resolve_resource_refs(&self, _: &str) -> Option<String> {
+        None
+    }
+    fn prompt_commands(&self) -> Vec<base::interface::mcp_servers::McpPromptCommand> {
+        Vec::new()
+    }
+    fn has_prompt_command(&self, _: &str) -> bool {
+        false
+    }
+    async fn invoke_prompt_command(
+        &self,
+        _: &str,
+        _: &str,
+    ) -> base::interface::mcp_servers::McpPromptInvocation {
+        unreachable!()
+    }
+    fn granted(
+        &self,
+        servers: Option<&[String]>,
+    ) -> Box<dyn base::interface::mcp_servers::McpServers> {
+        self.asked
+            .lock()
+            .unwrap()
+            .push(servers.map(<[String]>::to_vec));
+        let keep = |tool: &&str| {
+            servers.is_none_or(|s| s.iter().any(|n| tool.starts_with(&format!("mcp__{n}__"))))
+        };
+        Box::new(RecordingServers {
+            tools: self.tools.iter().copied().filter(keep).collect(),
+            asked: self.asked.clone(),
+        })
+    }
+}
+
+fn agent_tool_with_servers(types: &str) -> (AgentTool, GrantsAsked, tempfile::TempDir) {
     let tmp = agent_type_dir();
-    let dir = tmp.path();
-    write_agent_md(
-        dir,
-        "github-agent.md",
-        "---\ndescription: Uses only the github MCP server\nmcp_servers: github\n---\nbody",
-    );
+    write_agent_md(tmp.path(), "github-agent.md", types);
     let tools = Arc::new(InMemoryToolRegistry::new());
-    let model: Arc<dyn Model> = Arc::new(DummyModel);
-    let config = Arc::new(EngineConfig::defaults_for("parent-default-model"));
     let agent_tool = AgentTool::with_parent_tools(
-        model,
-        config,
+        Arc::new(DummyModel),
+        Arc::new(EngineConfig::defaults_for("parent-default-model")),
         tools.clone(),
         tools,
-        &[(dir.to_path_buf(), AgentTypeSource::User)],
+        &[(tmp.path().to_path_buf(), AgentTypeSource::User)],
         &[],
     );
+    let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+    agent_tool.set_mcp_servers(Arc::new(RecordingServers {
+        tools: vec!["mcp__github__list_prs", "mcp__gitlab__list_mrs"],
+        asked: asked.clone(),
+    }));
+    (agent_tool, asked, tmp)
+}
 
-    // Two servers' worth of MCP tools attached to the parent — only
-    // "github"'s should make it into the resolved registry.
-    let adapters: Vec<Arc<dyn base::tool::Tool>> = vec![
-        Arc::new(NamedTool("mcp__github__list_prs")),
-        Arc::new(NamedTool("mcp__gitlab__list_mrs")),
-    ];
-    agent_tool.set_mcp_tool_adapters(adapters);
+const GITHUB_AGENT: &str =
+    "---\ndescription: Uses only the github MCP server\nmcp_servers: github\n---\nbody";
 
-    let resolved = agent_tool.delegate_tools(Some("github-agent"), &[], &[]);
-    let names: Vec<String> = resolved
-        .all()
+#[test]
+fn a_types_mcp_servers_are_granted_as_servers_not_as_tools() {
+    let (agent_tool, asked, _tmp) = agent_tool_with_servers(GITHUB_AGENT);
+    let def = agent_tool.inner.agent_type_def("github-agent");
+    let granted = agent_tool
+        .inner
+        .mcp_granted_to(def.as_ref(), &SubRun::default())
+        .expect("a grant");
+    let names: Vec<String> = granted
+        .tools()
         .iter()
         .map(|t| t.name().to_string())
         .collect();
-    assert!(names.iter().any(|n| n == "mcp__github__list_prs"));
-    assert!(!names.iter().any(|n| n == "mcp__gitlab__list_mrs"));
+    assert_eq!(names, ["mcp__github__list_prs"]);
+    assert_eq!(*asked.lock().unwrap(), [Some(vec!["github".to_string()])]);
+    let tools = agent_tool.delegate_tools(Some("github-agent"), &[], &[]);
+    assert!(!names_of(&tools).iter().any(|n| n.starts_with("mcp__")));
 }
 
 #[test]
-fn delegate_tools_without_mcp_servers_field_grants_no_mcp_tools() {
-    // Confirms MCP access is opt-in, not inherited by default — even
-    // the "full access" (empty allowed_tools) convention doesn't pull
-    // in MCP tools unless mcp_servers explicitly names a server.
-    let agent_tool = test_agent_tool();
-    agent_tool.set_mcp_tool_adapters(vec![Arc::new(NamedTool("mcp__github__list_prs"))]);
+fn a_type_without_mcp_servers_is_granted_none() {
+    let (agent_tool, asked, _tmp) = agent_tool_with_servers(GITHUB_AGENT);
+    let def = agent_tool.inner.agent_type_def("general-purpose");
+    assert!(agent_tool
+        .inner
+        .mcp_granted_to(def.as_ref(), &SubRun::default())
+        .is_none());
+    assert!(agent_tool
+        .inner
+        .mcp_granted_to(None, &SubRun::default())
+        .is_none());
+    assert!(asked.lock().unwrap().is_empty());
+}
 
-    let resolved = agent_tool.delegate_tools(Some("general-purpose"), &[], &[]);
-    let names: Vec<String> = resolved
-        .all()
-        .iter()
-        .map(|t| t.name().to_string())
-        .collect();
-    assert!(!names.iter().any(|n| n.starts_with("mcp__")));
+#[test]
+fn a_hosts_tool_lists_hold_the_granted_servers_tools() {
+    let (agent_tool, _, _tmp) = agent_tool_with_servers(GITHUB_AGENT);
+    let def = agent_tool.inner.agent_type_def("github-agent");
+    let run = SubRun {
+        disallowed_tools: vec!["mcp__github__list_prs".into()],
+        ..SubRun::default()
+    };
+    let granted = agent_tool.inner.mcp_granted_to(def.as_ref(), &run).unwrap();
+    assert!(granted.tools().is_empty());
 }
 
 #[test]

@@ -32,6 +32,7 @@ pub struct Builder {
     skip_warmup: bool,
     output_schema: Option<serde_json::Value>,
     contributed_tool_filter: Option<ToolFilter>,
+    mcp_servers: Option<Box<dyn base::interface::mcp_servers::McpServers>>,
     /// Pre-built FrozenContext — skips lazy collection on first turn.
     /// When set, the Agent uses this snapshot instead of calling
     /// `FrozenContext::collect()`. Essential for deterministic replay.
@@ -123,6 +124,7 @@ impl Builder {
             skip_warmup: false,
             output_schema: None,
             contributed_tool_filter: None,
+            mcp_servers: None,
             frozen: None,
             wake_rx: None,
             plugins: Vec::new(),
@@ -488,9 +490,7 @@ impl Builder {
     /// `build()` stops registering the `Agent` tool once this reaches
     /// `EngineConfig::max_agent_depth`, so the deepest agents simply never
     /// see a way to delegate further. The count is what actually bounds the
-    /// chain; `AgentTool::resolve_tools` dropping "Agent" from a sub-agent's
-    /// registry does not, because `build()` re-registers the tool into the
-    /// per-session registry it creates.
+    /// chain, not which tools a delegate is handed.
     pub fn agent_depth(mut self, depth: u32) -> Self {
         self.agent_depth = depth;
         self
@@ -604,6 +604,18 @@ impl Builder {
     /// before they reach `tools`.
     pub fn contributed_tool_filter(mut self, admits: ToolFilter) -> Self {
         self.contributed_tool_filter = Some(admits);
+        self
+    }
+
+    /// MCP servers the session owns from the start: a delegate's grant of
+    /// its parent's connections. Their tools are registered and offered like
+    /// those an mcp module provides; a module that provides servers replaces
+    /// these.
+    pub fn mcp_servers(
+        mut self,
+        servers: Box<dyn base::interface::mcp_servers::McpServers>,
+    ) -> Self {
+        self.mcp_servers = Some(servers);
         self
     }
 

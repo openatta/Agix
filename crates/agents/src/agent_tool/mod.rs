@@ -10,7 +10,7 @@
 //! load user-defined types from a directory (e.g. `~/.agix/scenes/<scope>/agents/*.md`
 //! or `<project>/.agix/agents/*.md`) via `load_agent_types_from_dir()`. Each
 //! type specifies a system prompt and an allowed tool set, which
-//! `resolve_tools()` applies when spawning sub-agents.
+//! `delegate_tools()` applies when spawning sub-agents.
 
 use anyhow::anyhow;
 use async_trait::async_trait;
@@ -43,6 +43,7 @@ mod build;
 mod catalog;
 mod delegate;
 mod inner;
+mod mcp_grant;
 mod members;
 mod permission;
 mod resolve;
@@ -56,6 +57,7 @@ mod turn;
 use build::*;
 pub use catalog::*;
 pub use inner::*;
+use mcp_grant::*;
 use permission::*;
 use settings::*;
 use spawn_meta::*;
@@ -178,7 +180,7 @@ impl AgentTool {
                 process_groups: None,
                 modules: Vec::new(),
                 skill_manager: Default::default(),
-                mcp_tool_adapters: Default::default(),
+                delegate_mcp: Default::default(),
                 team_registry: Default::default(),
                 team_members: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
                 idle_seq_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -247,7 +249,7 @@ impl AgentTool {
                 process_groups: None,
                 modules: Vec::new(),
                 skill_manager: Default::default(),
-                mcp_tool_adapters: Default::default(),
+                delegate_mcp: Default::default(),
                 team_registry: Default::default(),
                 team_members: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
                 idle_seq_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -363,14 +365,10 @@ impl AgentTool {
         self.inner.skill_manager.set(Some(mgr));
     }
 
-    /// Attach a snapshot of the parent session's connected MCP tools — same
-    /// interior-mutability, set-after-construction pattern as
-    /// `set_skill_catalog`. Resolves `AgentTypeDefinition.mcp_servers` when
-    /// a subagent is spawned. Pass `mcp_manager.tool_adapters().to_vec()`;
-    /// see `Inner::mcp_tool_adapters`'s doc comment for why this takes a
-    /// snapshot `Vec` rather than the live `McpManager`.
-    pub fn set_mcp_tool_adapters(&self, adapters: Vec<Arc<dyn base::tool::Tool>>) {
-        self.inner.mcp_tool_adapters.set(adapters);
+    /// The parent session's MCP servers, which an agent type's `mcp_servers`
+    /// grants a delegate a share of (`McpServers::granted`).
+    pub fn set_mcp_servers(&self, servers: Arc<dyn base::interface::mcp_servers::McpServers>) {
+        self.inner.delegate_mcp.set(Some(servers));
     }
 
     /// Attach the same shared `TeamRegistry` `AgentsModule::on_session` hands
@@ -378,7 +376,7 @@ impl AgentTool {
     /// spawned through this `AgentTool` (see `spawn_or_message_team_member`)
     /// update state those tools can see. Same interior-mutability,
     /// set-after-construction pattern as `set_skill_catalog`/
-    /// `set_mcp_tool_adapters` — only called when `settings.execution.
+    /// `set_mcp_servers` — only called when `settings.execution.
     /// team_enabled` is true and the scene supports teams (see
     /// `AgentsModule::on_session` in `agents/src/lib.rs`).
     pub fn set_team_registry(&self, registry: Arc<team::registry::TeamRegistry>) {
