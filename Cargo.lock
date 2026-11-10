@@ -1204,6 +1204,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "guards"
+version = "0.3.11-2026111001"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde_json",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "h2"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"

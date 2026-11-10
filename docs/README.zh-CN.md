@@ -294,8 +294,8 @@ let (mut agent, events, input) = runtime::agent::Builder::new()
 | 装配 | `assembly` | 会话池、配置、provider 路由、JSON-RPC 服务 |
 | 外壳 | `daemon` | `agixd` 二进制 |
 
-`crates/` 下 20 个 crate,加上 `daemon/`、五个测试成员与 `examples/plugins/rust` 的示例插件,
-工作区共 27 个成员。完整的
+`crates/` 下 20 个 crate,加上 `daemon/`、六个测试成员与 `examples/plugins/rust` 的示例插件,
+工作区共 28 个成员。完整的
 图景——会话与场景、历史日志、执行层、锁、磁盘布局——在 [`ARCHITECTURE.md`](ARCHITECTURE.md)。
 
 ---

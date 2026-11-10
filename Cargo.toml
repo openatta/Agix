@@ -25,6 +25,7 @@ members = [
     "tests/rpc_client",
     "tests/live",
     "tests/runner",
+    "tests/guards",
     "tests/fixtures/mcp_toy_server",
     "tests/fixtures/mcp_oauth_mock",
     "examples/plugins/rust",

@@ -373,8 +373,8 @@ does not carry answers `METHOD_NOT_FOUND` naming the module.
 | assembly | `assembly` | session pool, configuration, provider routing, the JSON-RPC server |
 | shell | `daemon` | the `agixd` binary |
 
-20 crates under `crates/`, plus `daemon/`, the five test members and the
-example plugin in `examples/plugins/rust` — 27 workspace members in total. The full picture — sessions and scenes, the history
+20 crates under `crates/`, plus `daemon/`, the six test members and the
+example plugin in `examples/plugins/rust` — 28 workspace members in total. The full picture — sessions and scenes, the history
 log, execution, locks, disk layout — is in
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
