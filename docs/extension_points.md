@@ -101,6 +101,40 @@ let (agent, events, input) = Builder::new().tools(tools).model(model).build()?;
 就被取回来,模型也就看不见它了。`base::tool::LayeredToolRegistry` 是一个做好的
 范例——它包住另一个 registry,在不改动对方的前提下把工具藏起来。
 
+#### 实现一个工具:推荐实现 `spec()`
+
+`Tool` 必须实现的只有 `name`、`input_schema`、`call`。其余描述工具自身、与这次调用的
+输入无关的东西——只读、并发安全、破坏性、中断方式、是否 deferred、能否被程序调用、
+权限匹配内容的种类、来源等——推荐收进一个 `spec()`,返回 `base::tool::ToolSpec`:
+
+```rust
+impl Tool for FileTicketTool {
+    fn name(&self) -> &str { "FileTicket" }
+    fn description(&self) -> &str { "File a ticket in the tracker." }
+    fn input_schema(&self) -> Value { /* … */ }
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            concurrency_safe: true,
+            callable_from_code: true,
+            ..ToolSpec::defaults_for(self)   // 名字、描述取自上面两个方法,其余取缺省
+        }
+    }
+    // validate_input / check_permissions / call …
+}
+```
+
+- `is_read_only`、`is_deferred`、`permission_content_kind` 这些方法的缺省实现读的就是
+  `spec()`,实现了 `spec()` 就不用再逐个覆写它们。两种写法都能编译、行为一样:只覆写
+  这些方法的老写法,`spec()` 的缺省实现会从方法里读出来。
+- **包一层别的工具的,转发 `spec()`**:`fn spec(&self) -> ToolSpec { self.inner.spec() }`,
+  要改的字段用 `ToolSpec { deferred: true, ..self.inner.spec() }` 覆盖。逐个转发方法
+  的包装器每加一个能力就要记得多转发一个,漏掉的那个会悄悄变回缺省值。
+- 答案取决于输入的(比如 `Bash` 按命令判断只读),照旧覆写那个方法,`spec()` 里对应的
+  字段写保守的答案;包装器对这几个带输入的方法(`is_read_only`、`is_concurrency_safe`、
+  `is_destructive`、`interrupt_behavior`,以及 `permission_match_content`、
+  `affected_paths`、`validate_input`、`check_permissions`、`call`)仍要逐个转发。
+- `spec()` 里不要调用这些能力方法:它们的缺省实现反过来读 `spec()`。
+
 #### 让模型写的程序也能调你的工具
 
 `RunCode`(`ptc.md`)里的程序经 `tools.<Name>(input)` 调本会话的工具。一个工具能不能
@@ -108,11 +142,14 @@ let (agent, events, input) = Builder::new().tools(tools).model(model).build()?;
 
 ```rust
 impl Tool for FileTicketTool {
-    fn callable_from_code(&self) -> bool { true }
-    fn code_result(&self) -> Option<&'static str> {
-        Some("{id: string, status: string}")   // 程序拿到的结构化结果的形状
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            callable_from_code: true,
+            code_result: Some("{id: string, status: string}"),   // 程序拿到的结构化结果的形状
+            concurrency_safe: true,                               // 程序里可并行
+            ..ToolSpec::defaults_for(self)
+        }
     }
-    fn is_concurrency_safe(&self, _: &Value) -> bool { true }   // 程序里可并行
     // …
 }
 ```

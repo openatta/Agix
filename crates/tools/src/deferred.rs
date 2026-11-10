@@ -20,6 +20,8 @@
 //! Execution is unaffected: `call`/`validate_input`/`check_permissions` and
 //! every behavior predicate delegate to the wrapped tool, so a deferred tool
 //! the model decides to invoke behaves identically to a non-deferred one.
+//! What holds for every call goes across as one `spec()`; only what is handed
+//! the call's input is forwarded method by method.
 //! This is deliberately a wrapper rather than a change to the tool registry
 //! or to `build_tool_defs` — the registry stays a plain name → tool map.
 
@@ -27,7 +29,7 @@ use async_trait::async_trait;
 use base::error::ToolError;
 use base::tool::{
     InterruptBehavior, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext,
-    ToolResult, ValidationResult,
+    ToolResult, ToolSpec, ValidationResult,
 };
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -73,19 +75,24 @@ impl Tool for DeferredTool {
         self.inner.full_input_schema()
     }
 
-    fn is_deferred(&self) -> bool {
-        true
-    }
-
-    /// `ToolSearch` renders this next to the name in its results, so fall
-    /// back to the description when the inner tool has none — otherwise a
-    /// deferred tool would be listed as a bare name with no hint of what it
-    /// does, which defeats the discoverability half of the design.
-    fn short_description(&self) -> Option<String> {
-        self.inner
-            .short_description()
-            .or_else(|| Some(self.inner.description().to_string()))
-            .filter(|s| !s.is_empty())
+    fn spec(&self) -> ToolSpec {
+        let inner = self.inner.spec();
+        // `ToolSearch` renders this next to the name in its results; without
+        // the fallback a deferred tool would be listed as a bare name.
+        let short_description = inner
+            .short_description
+            .clone()
+            .or_else(|| Some(inner.description.clone()))
+            .filter(|s| !s.is_empty());
+        ToolSpec {
+            deferred: true,
+            short_description,
+            // Not the inner tool's: `build_tool_defs` and `sync_mcp_adapters`
+            // read an `mcp:` source as the raw adapter, and would advertise the
+            // full-schema adapter in place of this wrapper.
+            source: "builtin".to_string(),
+            ..inner
+        }
     }
 
     async fn prompt(&self, ctx: &PromptContext) -> String {
@@ -96,10 +103,6 @@ impl Tool for DeferredTool {
         self.inner.prompt_fragment()
     }
 
-    fn is_enabled(&self) -> bool {
-        self.inner.is_enabled()
-    }
-
     fn is_read_only(&self, input: &Value) -> bool {
         self.inner.is_read_only(input)
     }
@@ -108,48 +111,12 @@ impl Tool for DeferredTool {
         self.inner.is_concurrency_safe(input)
     }
 
-    fn callable_from_code(&self) -> bool {
-        self.inner.callable_from_code()
-    }
-
-    fn code_result(&self) -> Option<&'static str> {
-        self.inner.code_result()
-    }
-
-    fn needs_dispatch(&self) -> bool {
-        self.inner.needs_dispatch()
-    }
-
     fn is_destructive(&self, input: &Value) -> bool {
         self.inner.is_destructive(input)
     }
 
-    fn strict(&self) -> bool {
-        self.inner.strict()
-    }
-
-    fn is_dynamic(&self) -> bool {
-        self.inner.is_dynamic()
-    }
-
-    fn is_direct(&self) -> bool {
-        self.inner.is_direct()
-    }
-
     fn permission_match_content(&self, input: &Value) -> Option<String> {
         self.inner.permission_match_content(input)
-    }
-
-    fn permission_content_kind(&self) -> base::tool::PermissionContentKind {
-        self.inner.permission_content_kind()
-    }
-
-    fn self_allow_overrides_mode(&self) -> bool {
-        self.inner.self_allow_overrides_mode()
-    }
-
-    fn leaves_plan_mode(&self) -> bool {
-        self.inner.leaves_plan_mode()
     }
 
     fn accept_edits_allows(&self, input: &Value, ctx: &ToolContext) -> bool {
@@ -242,7 +209,193 @@ pub fn apply_deferred_policy(tools: Vec<Arc<dyn Tool>>, deferred: &[String]) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base::tool::InMemoryToolRegistry;
+    use base::tool::{InMemoryToolRegistry, PermissionContentKind};
+
+    /// Every `Tool` that wraps another, wrapping `inner`.
+    fn wrappers(inner: Arc<dyn Tool>) -> Vec<(&'static str, Arc<dyn Tool>)> {
+        vec![("DeferredTool", Arc::new(DeferredTool::new(inner)))]
+    }
+
+    /// What a wrapper deliberately says differently from the tool it wraps.
+    fn as_wrapped(wrapper: &str, inner: ToolSpec) -> ToolSpec {
+        match wrapper {
+            "DeferredTool" => ToolSpec {
+                source: "builtin".into(),
+                ..inner
+            },
+            other => panic!("{other}: say what it changes, or that it changes nothing"),
+        }
+    }
+
+    fn unusual_spec(tool: &dyn Tool) -> ToolSpec {
+        ToolSpec {
+            source: "mcp:elsewhere".into(),
+            short_description: Some("short".into()),
+            enabled: false,
+            read_only: true,
+            concurrency_safe: true,
+            destructive: true,
+            interrupt_behavior: InterruptBehavior::Block,
+            strict: true,
+            deferred: true,
+            dynamic: true,
+            direct: true,
+            callable_from_code: true,
+            code_result: Some("{n: number}"),
+            needs_dispatch: true,
+            permission_content_kind: PermissionContentKind::WritePath,
+            self_allow_overrides_mode: true,
+            leaves_plan_mode: true,
+            ..ToolSpec::defaults_for(tool)
+        }
+    }
+
+    struct Declared;
+    #[async_trait]
+    impl Tool for Declared {
+        fn name(&self) -> &str {
+            "Declared"
+        }
+        fn description(&self) -> &str {
+            "declares a spec"
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn spec(&self) -> ToolSpec {
+            unusual_spec(self)
+        }
+        fn is_read_only(&self, input: &Value) -> bool {
+            input.get("peek").is_some()
+        }
+        async fn call(
+            &self,
+            _: Value,
+            _: ToolContext,
+            _: ProgressSender,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::text("ok"))
+        }
+    }
+
+    struct Methods;
+    #[async_trait]
+    impl Tool for Methods {
+        fn name(&self) -> &str {
+            "Methods"
+        }
+        fn description(&self) -> &str {
+            "overrides every method"
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn source(&self) -> std::borrow::Cow<'_, str> {
+            "mcp:elsewhere".into()
+        }
+        fn short_description(&self) -> Option<String> {
+            Some("short".into())
+        }
+        fn is_enabled(&self) -> bool {
+            false
+        }
+        fn is_read_only(&self, _: &Value) -> bool {
+            true
+        }
+        fn is_concurrency_safe(&self, _: &Value) -> bool {
+            true
+        }
+        fn is_destructive(&self, _: &Value) -> bool {
+            true
+        }
+        fn interrupt_behavior(&self, _: &Value) -> InterruptBehavior {
+            InterruptBehavior::Block
+        }
+        fn strict(&self) -> bool {
+            true
+        }
+        fn is_deferred(&self) -> bool {
+            true
+        }
+        fn is_dynamic(&self) -> bool {
+            true
+        }
+        fn is_direct(&self) -> bool {
+            true
+        }
+        fn callable_from_code(&self) -> bool {
+            true
+        }
+        fn code_result(&self) -> Option<&'static str> {
+            Some("{n: number}")
+        }
+        fn needs_dispatch(&self) -> bool {
+            true
+        }
+        fn permission_content_kind(&self) -> PermissionContentKind {
+            PermissionContentKind::WritePath
+        }
+        fn self_allow_overrides_mode(&self) -> bool {
+            true
+        }
+        fn leaves_plan_mode(&self) -> bool {
+            true
+        }
+        async fn call(
+            &self,
+            _: Value,
+            _: ToolContext,
+            _: ProgressSender,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::text("ok"))
+        }
+    }
+
+    #[test]
+    fn a_wrapper_says_what_the_tool_it_wraps_says() {
+        let inners: Vec<Arc<dyn Tool>> = vec![Arc::new(Declared), Arc::new(Methods)];
+        for inner in inners {
+            let expected_inner = unusual_spec(inner.as_ref());
+            assert_eq!(inner.spec(), expected_inner, "{}", inner.name());
+            for (wrapper, wrapped) in wrappers(inner.clone()) {
+                let context = format!("{wrapper} around {}", inner.name());
+                assert_eq!(
+                    wrapped.spec(),
+                    as_wrapped(wrapper, expected_inner.clone()),
+                    "{context}"
+                );
+                assert_eq!(wrapped.is_enabled(), inner.is_enabled(), "{context}");
+                assert_eq!(wrapped.strict(), inner.strict(), "{context}");
+                assert_eq!(
+                    wrapped.leaves_plan_mode(),
+                    inner.leaves_plan_mode(),
+                    "{context}"
+                );
+                for input in [json!({}), json!({"peek": true})] {
+                    assert_eq!(
+                        wrapped.is_read_only(&input),
+                        inner.is_read_only(&input),
+                        "{context}: {input}"
+                    );
+                    assert_eq!(
+                        wrapped.is_concurrency_safe(&input),
+                        inner.is_concurrency_safe(&input),
+                        "{context}"
+                    );
+                    assert_eq!(
+                        wrapped.is_destructive(&input),
+                        inner.is_destructive(&input),
+                        "{context}"
+                    );
+                    assert_eq!(
+                        wrapped.interrupt_behavior(&input),
+                        inner.interrupt_behavior(&input),
+                        "{context}"
+                    );
+                }
+            }
+        }
+    }
 
     #[tokio::test]
     async fn a_call_with_the_wrong_input_is_answered_with_the_schema() {
@@ -317,6 +470,16 @@ mod tests {
             }
         }
         Arc::new(T(name))
+    }
+
+    #[test]
+    fn a_deferred_tool_without_a_short_description_is_listed_with_its_description() {
+        let deferred = DeferredTool::new(tool_named("Grep"));
+        assert_eq!(
+            deferred.short_description().as_deref(),
+            Some("does a thing")
+        );
+        assert!(deferred.is_read_only(&Value::Null));
     }
 
     #[test]
