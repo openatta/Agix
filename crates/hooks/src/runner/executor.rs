@@ -232,12 +232,14 @@ impl ProjectSupplied {
 
 /// Reads `command` as the hook `if` reads it. Which interpreter takes which
 /// argument as code is not guessed: any argument that is a file in the
-/// project counts. A program spelled through a variable is not judged here.
+/// project counts. `$HOME` and `$PWD` are read as what they stand for; a
+/// program spelled through any other variable is not judged here.
 fn project_supplied(shell: &str, command: &str, cwd: &Path) -> Option<ProjectSupplied> {
     use permissions::invocation::{program_name, traced_invocations, Invocation};
     if shell.contains('/') && is_relative(shell) {
         return Some(ProjectSupplied::Program(shell.to_string()));
     }
+    let command = &with_known_variables_spelled_out(command);
     let mut argvs = Vec::new();
     // `segments` drops a command's leading `NAME=value` words.
     let mut operands: Vec<String> = permissions::shell::lex(command)
@@ -307,6 +309,48 @@ fn project_supplied(shell: &str, command: &str, cwd: &Path) -> Option<ProjectSup
 }
 
 const MAX_CD_BASES: usize = 32;
+
+/// `command` with `$HOME` / `${HOME}` written `~` (an absolute path) and
+/// `$PWD` / `${PWD}` written `.` (where the hook runs, which is the project).
+/// The hook's own environment injects no other variable naming the project.
+fn with_known_variables_spelled_out(command: &str) -> String {
+    const KNOWN: [(&str, &str); 2] = [("HOME", "~"), ("PWD", ".")];
+    let mut out = String::with_capacity(command.len());
+    let mut rest = command;
+    while let Some(c) = rest.chars().next() {
+        if c == '\\' {
+            let escaped = rest.chars().nth(1).map_or(1, |n| 1 + n.len_utf8());
+            out.push_str(&rest[..escaped]);
+            rest = &rest[escaped..];
+            continue;
+        }
+        // Inside single quotes too: a `sh -c '…'` string is expanded by the
+        // shell it starts.
+        let spelled = rest.strip_prefix('$').and_then(|after| {
+            KNOWN.iter().find_map(|(name, value)| {
+                let braced = after
+                    .strip_prefix('{')
+                    .and_then(|b| b.strip_prefix(name))
+                    .and_then(|b| b.strip_prefix('}'));
+                let bare = after.strip_prefix(name).filter(|tail| {
+                    !tail.starts_with(|n: char| n.is_ascii_alphanumeric() || n == '_')
+                });
+                braced.or(bare).map(|tail| (*value, tail))
+            })
+        });
+        match spelled {
+            Some((value, tail)) => {
+                out.push_str(value);
+                rest = tail;
+            }
+            None => {
+                out.push(c);
+                rest = &rest[c.len_utf8()..];
+            }
+        }
+    }
+    out
+}
 
 /// The paths a word may name: itself, and what follows each `=` of an
 /// `--opt=value` or `NAME=--opt=value`. A short option's attached value
@@ -597,6 +641,47 @@ mod tests {
             "echo done >> x.sh",
             "echo done > env.sh 2>&1",
             "check.sh x",
+        ] {
+            assert_eq!(
+                project_supplied("bash", command, &project),
+                None,
+                "`{command}`"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn home_is_absolute_and_pwd_is_where_the_hook_runs() {
+        use ProjectSupplied::{File, Program};
+        let project = project_with(&["scripts/x.py"]);
+        for (command, found) in [
+            ("$PWD/x.sh", Program("./x.sh".into())),
+            ("${PWD}/bin/x", Program("./bin/x".into())),
+            ("\"$PWD\"/x.sh", Program("./x.sh".into())),
+            ("sh -c '$PWD/y'", Program("./y".into())),
+            ("\\$HOME/x", Program("$HOME/x".into())),
+            ("\"$HOME/bin/env\" ./x", Program("./x".into())),
+            ("python3 $PWD/scripts/x.py", File("./scripts/x.py".into())),
+            (
+                "python3 \"${PWD}\"/scripts/x.py",
+                File("./scripts/x.py".into()),
+            ),
+        ] {
+            assert_eq!(
+                project_supplied("bash", command, &project),
+                Some(found),
+                "`{command}`"
+            );
+        }
+        for command in [
+            "$HOME/bin/x.sh",
+            "${HOME}/bin/x.sh",
+            "bash $HOME/x.sh",
+            "python3 \"$HOME\"/scripts/x.py",
+            "$PWDX/x.sh",
+            "$TOOLS/x.sh",
+            "${PWD:-/opt}/x.sh",
         ] {
             assert_eq!(
                 project_supplied("bash", command, &project),

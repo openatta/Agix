@@ -1221,6 +1221,76 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// `$PWD` is the project the hook runs in, however the path is quoted.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_untrusted_project_is_not_reached_through_pwd() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile_dir();
+        let project = root.join("project");
+        let marker = project.join("ran");
+        std::fs::create_dir_all(project.join("scripts")).unwrap();
+        let script = project.join("scripts").join("check.sh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut input = input_for_bash("ls");
+        input.cwd = project.display().to_string();
+        let runner = |command: &str, untrusted: bool| {
+            let mut s: HooksSettings = HashMap::new();
+            s.insert(
+                HookEvent::PreToolUse,
+                vec![HookConfig::Command {
+                    command: command.into(),
+                    shell: None,
+                    timeout: None,
+                    if_pattern: None,
+                    only_on_error: None,
+                    once: None,
+                    async_rewake: None,
+                    on_error: OnError::Allow,
+                }],
+            );
+            HookRunner::new(s).with_project_untrusted(untrusted)
+        };
+
+        for command in [
+            "$PWD/scripts/check.sh",
+            "${PWD}/scripts/check.sh",
+            "\"$PWD\"/scripts/check.sh",
+            "sh -c '$PWD/scripts/check.sh'",
+        ] {
+            let result = runner(command, true)
+                .run(HookEvent::PreToolUse, &input)
+                .await;
+            assert!(!marker.exists(), "`{command}` ran the project's script");
+            match &result.outcomes[0] {
+                HookOutcome::Error(e) => assert!(e.contains("not trusted"), "`{command}`: {e}"),
+                other => panic!("`{command}`: expected a hook failure, got {other:?}"),
+            }
+        }
+
+        let result = runner("test -d \"$HOME\" && cd \"$HOME\"", true)
+            .run(HookEvent::PreToolUse, &input)
+            .await;
+        assert!(
+            matches!(result.outcomes[0], HookOutcome::Ran { .. }),
+            "{:?}",
+            result.outcomes
+        );
+
+        runner("$PWD/scripts/check.sh", false)
+            .run(HookEvent::PreToolUse, &input)
+            .await;
+        assert!(marker.exists(), "a trusted project's script runs as before");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     fn one_command_hook(command: &str, timeout_ms: u64) -> HookRunner {
         let mut s: HooksSettings = HashMap::new();
         s.insert(

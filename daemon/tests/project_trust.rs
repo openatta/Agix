@@ -622,6 +622,7 @@ async fn an_untrusted_project_does_not_hand_a_global_hook_its_files() {
     global["hooks_config"] = json!({
         "UserPromptSubmit": [
             {"type": "command", "command": "awk -f scripts/check.awk"},
+            {"type": "command", "command": "awk -f \"$PWD/scripts/check.awk\""},
             {"type": "command", "command": format!("echo done >> '{}'", finished.display())},
         ],
     });
@@ -656,7 +657,7 @@ async fn an_untrusted_project_does_not_hand_a_global_hook_its_files() {
     assert_eq!(lines(&finished), 2);
     assert_eq!(
         lines(&marker),
-        1,
+        2,
         "once trusted the hook runs the project's script as before"
     );
 }
