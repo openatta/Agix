@@ -9,9 +9,8 @@
 //! - [[wikilink]] internal linking for cross-references
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::OnceLock;
 
 use crate::paths::ConfigPaths;
 
@@ -180,12 +179,26 @@ impl MemoryStore {
         out
     }
 
-    /// Load all memories from both directories (local overrides user on same name).
+    /// Load the memories of both directories (local overrides user on the
+    /// same name), most recent first and no more than [`MAX_MEMORIES`]: a
+    /// file written into a directory without going through the store — the
+    /// `Write` tool needs none — is not a way past the cap.
     pub fn load_all(&self) -> Vec<DurableMemory> {
-        self.load_all_with_home()
-            .into_iter()
-            .map(|(_, m)| m)
-            .collect()
+        let mut all = self.load_all_with_home();
+        if all.len() > MAX_MEMORIES {
+            tracing::warn!(
+                held = all.len(),
+                cap = MAX_MEMORIES,
+                "more memories on disk than the cap; the oldest are not read"
+            );
+            all.truncate(MAX_MEMORIES);
+        }
+        all.into_iter().map(|(_, m)| m).collect()
+    }
+
+    /// How many distinct memories are on disk, past the cap included.
+    pub fn count(&self) -> usize {
+        self.load_all_with_home().len()
     }
 
     /// Load MEMORY.md index content across both directories.
@@ -196,6 +209,7 @@ impl MemoryStore {
     pub fn load_index(&self) -> String {
         let mut lines: Vec<String> = Vec::new();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let (mut entries, mut dropped) = (0usize, 0usize);
         for dir in self.dirs() {
             let Ok(s) = std::fs::read_to_string(dir.join(INDEX_FILE)) else {
                 continue;
@@ -209,10 +223,25 @@ impl MemoryStore {
                     lines.push(line.to_string());
                     continue;
                 }
-                if seen.insert(key) {
-                    lines.push(line.to_string());
+                if seen.contains(&key) {
+                    continue;
                 }
+                let entry = index_line_name(line).is_some();
+                if entry && entries >= MAX_MEMORIES {
+                    dropped += 1;
+                    continue;
+                }
+                entries += usize::from(entry);
+                seen.insert(key);
+                lines.push(line.to_string());
             }
+        }
+        if dropped > 0 {
+            tracing::warn!(
+                dropped,
+                cap = MAX_MEMORIES,
+                "the memory index lists more entries than the cap; the rest are not shown"
+            );
         }
         let mut content = lines.join("\n");
         if !content.is_empty() {
@@ -260,7 +289,7 @@ impl MemoryStore {
             if batch.is_empty() {
                 continue;
             }
-            let _writing = lock_dir(dir);
+            let _writing = lock_dir(dir)?;
             for memory in &batch {
                 Self::write_memory_file(dir, memory)?;
             }
@@ -281,7 +310,7 @@ impl MemoryStore {
             if !names.contains(&memory.name) {
                 continue;
             }
-            let _writing = lock_dir(&dir);
+            let _writing = lock_dir(&dir)?;
             let path = dir.join(format!("{}.md", sanitize_filename(&memory.name)));
             let Some(mut current) = std::fs::read_to_string(&path)
                 .ok()
@@ -325,7 +354,10 @@ impl MemoryStore {
         let mut removed = false;
         for dir in self.dirs() {
             let path = dir.join(&file);
-            let _writing = lock_dir(dir);
+            if !path.exists() {
+                continue;
+            }
+            let _writing = lock_dir(dir)?;
             if path.exists() {
                 std::fs::remove_file(&path).map_err(|e| MemoryError::Io(e.to_string()))?;
                 Self::rebuild_index_from_disk(dir)?;
@@ -603,25 +635,12 @@ pub fn scan_for_secrets(memory: &DurableMemory) -> Vec<SecretPattern> {
     findings
 }
 
-/// Serializes writers to `dir` across every store in the process that
-/// points at it — each session builds its own store over the same two
-/// directories, so a lock held by the store would serialize nothing.
-fn lock_dir(dir: &Path) -> std::sync::MutexGuard<'static, ()> {
-    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, &'static Mutex<()>>>> = OnceLock::new();
-    let mut locks = LOCKS
-        .get_or_init(Default::default)
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
-    let lock: &'static Mutex<()> = match locks.get(dir) {
-        Some(lock) => lock,
-        None => {
-            let lock = Box::leak(Box::default());
-            locks.insert(dir.to_path_buf(), lock);
-            lock
-        }
-    };
-    drop(locks);
-    lock.lock().unwrap_or_else(PoisonError::into_inner)
+/// Holds `dir` against every other writer: the other stores of this process
+/// over the same directory — each session builds its own — and, on unix,
+/// other processes.
+fn lock_dir(dir: &Path) -> Result<crate::dir_lock::DirLock, MemoryError> {
+    crate::dir_lock::DirLock::acquire(dir)
+        .map_err(|e| MemoryError::Io(format!("{}: {e}", dir.display())))
 }
 
 /// Write `contents` to `path` so a reader sees the old file or the new one,
@@ -1521,6 +1540,71 @@ This memory was written before the flat-format fix."#;
             r.join().unwrap();
         }
         assert_eq!(store.load_all()[0].recall_count, 40);
+    }
+
+    /// Memories written straight into the directory — the `Write` tool needs
+    /// no store — are read no further than the cap: the most recent ones, and
+    /// as many index lines.
+    #[test]
+    fn a_store_reads_no_more_than_its_cap() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("memory");
+        let store = MemoryStore::new(dir.clone(), dir.clone());
+        let over = MAX_MEMORIES + 5;
+        let mut index = String::new();
+        for i in 0..over {
+            let mut m = mem(&format!("m{i:03}"));
+            m.last_seen = format!("2026-08-01T00:{:02}:{:02}Z", i / 60, i % 60);
+            MemoryStore::write_memory_file(&dir, &m).unwrap();
+            index.push_str(&format!("- [{0}]({0}.md) — d\n", m.name));
+        }
+        std::fs::write(dir.join(INDEX_FILE), index).unwrap();
+
+        let held = store.load_all();
+        assert_eq!(held.len(), MAX_MEMORIES);
+        assert_eq!(
+            held[0].name,
+            format!("m{:03}", over - 1),
+            "most recent first"
+        );
+        assert_eq!(
+            store
+                .load_index()
+                .lines()
+                .filter(|l| index_line_name(l).is_some())
+                .count(),
+            MAX_MEMORIES
+        );
+        assert_eq!(store.count(), over, "the count is not capped");
+    }
+
+    /// Another process writing the directory holds it through `flock`, and a
+    /// store waits for it.
+    #[cfg(unix)]
+    #[test]
+    fn a_write_waits_for_another_process_holding_the_directory() {
+        use std::os::fd::AsRawFd;
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("memory");
+        std::fs::create_dir_all(&dir).unwrap();
+        let other = std::fs::File::open(&dir).unwrap();
+        assert_eq!(unsafe { libc::flock(other.as_raw_fd(), libc::LOCK_EX) }, 0);
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let writer = {
+            let dir = dir.clone();
+            std::thread::spawn(move || {
+                MemoryStore::new(dir.clone(), dir)
+                    .persist_batch(vec![mem("late")])
+                    .unwrap();
+                done_tx.send(()).unwrap();
+            })
+        };
+        let early = done_rx.recv_timeout(std::time::Duration::from_millis(300));
+        assert!(early.is_err(), "the write went ahead under another holder");
+        drop(other);
+        writer.join().unwrap();
+        assert!(dir.join("late.md").exists());
     }
 
     #[test]

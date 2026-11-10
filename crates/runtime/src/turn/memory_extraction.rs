@@ -57,7 +57,7 @@ pub(crate) async fn extract_memories_after_turn(
 
     const CAP: usize = base::interface::memory::MAX_MEMORIES;
     let counting = store.clone();
-    let held = tokio::task::spawn_blocking(move || counting.load_all().len())
+    let held = tokio::task::spawn_blocking(move || counting.count())
         .await
         .unwrap_or(0);
     if held >= CAP {

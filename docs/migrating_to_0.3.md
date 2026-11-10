@@ -1597,6 +1597,10 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。
   `DaemonServer::bind_unix` 返回 `UnixBinding`(监听器连同它的 `Fence`),`serve_unix_listener`
   收它,只是转手的调用方不用改;`discovery::UnixSocketTokenFile::create` 写 token 文件并登记,
   丢掉时先删文件再注销。
+- `MemoryStore::load_all` 最多返回 `MAX_MEMORIES` 条(最近的在前,超出时 warn),`load_index`
+  最多列这么多条;要磁盘上的实数用新的 `MemoryStore::count`。记忆目录的写锁改用
+  `base::dir_lock::DirLock`(与 `settings_file` 同一套:进程内锁加 unix 上的 `flock`),别的
+  进程写同一目录时会排队等。
 
 **权限判断与执行用同一套 provider。**
 

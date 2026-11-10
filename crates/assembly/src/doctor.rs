@@ -280,7 +280,7 @@ impl HealthCheck for MemoryCheck {
         let store = base::interface::memory::MemoryStore::for_paths(
             &base::paths::ConfigPaths::from_settings(&self.0.paths),
         );
-        let count = store.load_all().len();
+        let count = store.count();
         let details = serde_json::json!({ "enabled": true, "count": count, "cap": cap });
         if count >= cap {
             CheckResult::degraded(format!(

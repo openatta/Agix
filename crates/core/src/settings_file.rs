@@ -16,12 +16,11 @@
 //! through it would let a repository pick which of the user's files is
 //! rewritten, and replacing it would quietly undo a user's own dotfile link.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 use serde_json::{Map, Value};
 
+use crate::dir_lock::DirLock;
 use crate::settings::SETTINGS_LOCAL_FILE;
 
 #[derive(Debug, thiserror::Error)]
@@ -53,36 +52,18 @@ impl SettingsFileError {
 
 /// One tier's settings directory, held for a read-modify-write.
 pub struct SettingsDir {
-    dir: PathBuf,
-    _process: MutexGuard<'static, ()>,
-    /// The directory itself, open: `flock` holds it, and syncing it makes
-    /// a rename durable.
-    #[cfg(unix)]
-    handle: std::fs::File,
+    lock: DirLock,
 }
 
 impl SettingsDir {
     /// Create `dir` if it is missing and wait until no one else holds it.
     pub fn lock(dir: &Path) -> Result<Self, SettingsFileError> {
-        std::fs::create_dir_all(dir).map_err(SettingsFileError::io(dir))?;
-        let dir = dir.canonicalize().map_err(SettingsFileError::io(dir))?;
-        let process = process_lock(&dir);
-        #[cfg(unix)]
-        let handle = {
-            let handle = std::fs::File::open(&dir).map_err(SettingsFileError::io(&dir))?;
-            flock_exclusive(&handle).map_err(SettingsFileError::io(&dir))?;
-            handle
-        };
-        Ok(Self {
-            dir,
-            _process: process,
-            #[cfg(unix)]
-            handle,
-        })
+        let lock = DirLock::acquire(dir).map_err(SettingsFileError::io(dir))?;
+        Ok(Self { lock })
     }
 
     pub fn path(&self, file: &str) -> PathBuf {
-        self.dir.join(file)
+        self.lock.dir().join(file)
     }
 
     /// The file's top-level object; empty when it does not exist or has
@@ -117,17 +98,19 @@ impl SettingsDir {
                 path: path.clone(),
                 source,
             })?;
-        let tmp = self.dir.join(format!(".{file}.{}.tmp", std::process::id()));
+        let tmp = self
+            .lock
+            .dir()
+            .join(format!(".{file}.{}.tmp", std::process::id()));
         let written = write_new(&tmp, body.as_bytes(), mode_for(file, &path))
             .and_then(|()| std::fs::rename(&tmp, &path));
         if let Err(source) = written {
             let _ = std::fs::remove_file(&tmp);
             return Err(SettingsFileError::Io { path, source });
         }
-        #[cfg(unix)]
-        let _ = self.handle.sync_all();
+        self.lock.sync();
         if file == SETTINGS_LOCAL_FILE || file == "mcp.local.json" {
-            crate::paths::ensure_local_data_gitignore(&self.dir);
+            crate::paths::ensure_local_data_gitignore(self.lock.dir());
         }
         Ok(())
     }
@@ -182,41 +165,6 @@ fn refuse_symlink(path: &Path) -> Result<(), SettingsFileError> {
             path: path.to_path_buf(),
         }),
         _ => Ok(()),
-    }
-}
-
-/// Other threads of this process queue here — which is also all the
-/// exclusion a platform without `flock` gets.
-fn process_lock(dir: &Path) -> MutexGuard<'static, ()> {
-    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, &'static Mutex<()>>>> = OnceLock::new();
-    let mut locks = LOCKS
-        .get_or_init(Default::default)
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
-    let lock: &'static Mutex<()> = match locks.get(dir) {
-        Some(lock) => lock,
-        None => {
-            let lock = Box::leak(Box::default());
-            locks.insert(dir.to_path_buf(), lock);
-            lock
-        }
-    };
-    drop(locks);
-    lock.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-#[cfg(unix)]
-fn flock_exclusive(file: &std::fs::File) -> std::io::Result<()> {
-    use std::os::fd::AsRawFd;
-    loop {
-        // SAFETY: `flock` only reads the descriptor, which `file` keeps open.
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
-            return Ok(());
-        }
-        let e = std::io::Error::last_os_error();
-        if e.kind() != std::io::ErrorKind::Interrupted {
-            return Err(e);
-        }
     }
 }
 
