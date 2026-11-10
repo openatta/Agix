@@ -231,3 +231,99 @@ async fn a_panicking_background_sub_agent_ends_its_task_failed_and_says_so() {
         "the parent is told"
     );
 }
+
+/// Answers turn calls at once; a memory-extraction call stays in flight
+/// until it is dropped, and says which happened.
+struct ExtractionNeverReturns {
+    extraction_started: Arc<tokio::sync::Notify>,
+    extraction_dropped: Arc<tokio::sync::Notify>,
+}
+
+struct NotifyOnDrop(Arc<tokio::sync::Notify>);
+impl Drop for NotifyOnDrop {
+    fn drop(&mut self) {
+        self.0.notify_one();
+    }
+}
+
+#[async_trait]
+impl Model for ExtractionNeverReturns {
+    fn api_type(&self) -> base::provider::ApiType {
+        base::provider::ApiType::Anthropic
+    }
+    async fn stream(
+        &self,
+        _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+        _tools: Vec<base::interface::model::ToolDef>,
+        _messages: Vec<ModelMessage>,
+        params: base::interface::model::StreamParams,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError> {
+        use base::interface::model::ModelEvent;
+        let extraction = params
+            .origin
+            .as_ref()
+            .and_then(|o| o.purpose())
+            .is_some_and(|p| p == base::interface::model::call_purpose::MEMORY);
+        if extraction {
+            let _dropped = NotifyOnDrop(self.extraction_dropped.clone());
+            self.extraction_started.notify_one();
+            std::future::pending::<()>().await;
+        }
+        let events: Vec<Result<ModelEvent, base::interface::model::ModelError>> = vec![
+            Ok(ModelEvent::TextDelta {
+                text: "done".into(),
+            }),
+            Ok(ModelEvent::EndTurn {
+                stop_reason: "end_turn".into(),
+                usage: Default::default(),
+            }),
+        ];
+        Ok(Box::new(futures::stream::iter(events)))
+    }
+}
+
+/// A one-shot sub-agent fires a memory-extraction call after its answer and
+/// then drops it, unfinished, when the sub-agent is torn down a fixed grace
+/// window later: the request is paid for and nothing is ever extracted. This
+/// is also what makes `a_programs_fan_out_past_the_cap_waits_for_a_slot_instead_of_failing`
+/// see a peak of 3: `SlowTextModel` counts this auxiliary call and never
+/// decrements for it when it is aborted mid-sleep.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "audit: confirmed defect, fix pending"]
+async fn audit2_a_one_shot_sub_agent_does_not_start_a_memory_extraction_it_then_abandons() {
+    let started = Arc::new(tokio::sync::Notify::new());
+    let dropped = Arc::new(tokio::sync::Notify::new());
+    let agent_tool = agent_tool_with_model(Arc::new(ExtractionNeverReturns {
+        extraction_started: started.clone(),
+        extraction_dropped: dropped.clone(),
+    }));
+    let started_seen = started.notified();
+    tokio::pin!(started_seen);
+    started_seen.as_mut().enable();
+    let dropped_seen = dropped.notified();
+    tokio::pin!(dropped_seen);
+    dropped_seen.as_mut().enable();
+
+    let result = base::tool::Tool::call(
+        &agent_tool,
+        serde_json::json!({"prompt": "go", "description": "one-shot"}),
+        agent_call_ctx(std::env::temp_dir(), "toolu_one_shot", false),
+        ProgressSender::noop("t"),
+    )
+    .await
+    .expect("the sub-agent answers");
+    assert!(!result.is_error, "{:?}", result.content);
+
+    let extraction_started = futures::poll!(started_seen.as_mut()).is_ready();
+    if extraction_started {
+        let abandoned = tokio::time::timeout(std::time::Duration::from_secs(10), dropped_seen)
+            .await
+            .is_ok();
+        assert!(
+            !abandoned,
+            "the sub-agent started a memory-extraction model call and dropped it unfinished \
+             when it was torn down"
+        );
+    }
+}
