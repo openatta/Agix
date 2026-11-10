@@ -202,12 +202,9 @@ impl Agent {
         let collected_this_turn = self.prompt.frozen.is_none();
         let engine_git = engine_git_from(&self.config, &self.exec, &self.session.session_id);
         if collected_this_turn {
-            let cwd = self.settings.paths.project_root();
-            let paths = base::paths::ConfigPaths::from_settings(&self.settings.paths);
             self.prompt.frozen = Some(
-                base::frozen::FrozenContext::collect(
-                    cwd,
-                    &paths,
+                super::collect_frozen(
+                    &self.settings.paths,
                     &*self.policies.environment,
                     &engine_git,
                 )
@@ -243,7 +240,7 @@ impl Agent {
                 cwd: std::borrow::Cow::Owned(
                     self.settings
                         .paths
-                        .project_root()
+                        .working_dir()
                         .to_string_lossy()
                         .into_owned(),
                 ),
@@ -615,7 +612,7 @@ impl Agent {
             let call_started = std::time::Instant::now();
             let tools = Arc::clone(&self.tooling.tools);
             let tools_for_safety = Arc::clone(&self.tooling.tools);
-            let cwd = self.settings.paths.project_root();
+            let cwd = self.settings.paths.working_dir().to_path_buf();
             let local_settings_path = self.settings.paths.local_settings_file();
             let session_id = self.session.session_id.clone();
             let turn_no = self.session.turn_count;
@@ -849,7 +846,10 @@ impl Agent {
             // A git-mutating Bash call this round means the session-start
             // `FrozenContext` git snapshot (branch/status/log) is now stale
             // — refresh just that slice.
-            if has_tool_uses && Self::included_git_mutating_bash_call(self.this_step()) {
+            if has_tool_uses
+                && self.settings.paths.project_root().is_some()
+                && Self::included_git_mutating_bash_call(self.this_step())
+            {
                 if let Some(ref mut frozen) = self.prompt.frozen {
                     frozen
                         .refresh_git(&engine_git_from(
@@ -1055,7 +1055,7 @@ impl Agent {
                 let stop_hook_input = hooks::HookInput {
                     hook_event_name: "Stop".into(),
                     session_id: self.session.session_id.to_string(),
-                    cwd: self.settings.paths.project_root().display().to_string(),
+                    cwd: self.settings.paths.working_dir().display().to_string(),
                     permission_mode: hook_permission_mode(self.session_state.permission_mode()),
                     stop_hook_active: Some(sent_back_by_stop_hook),
                     ..Default::default()

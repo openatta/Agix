@@ -297,6 +297,8 @@ mod tests {
         settings.paths.global_data_dir = home.path().join("global");
         settings.paths.user_data_dir = home.path().join("scene");
         settings.paths.local_data_dir = home.path().join("project/.agix");
+        settings.paths.workspace =
+            base::settings::Workspace::project_of(&settings.paths.local_data_dir);
         let disk = home.path().join("project/.agents/skills/tour");
         std::fs::create_dir_all(&disk).unwrap();
         std::fs::write(

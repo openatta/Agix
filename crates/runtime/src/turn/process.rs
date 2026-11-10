@@ -358,7 +358,7 @@ impl Agent {
         let input = build(hooks::HookInput::lifecycle(
             format!("{event:?}"),
             self.session.session_id.clone(),
-            self.settings.paths.project_root().display().to_string(),
+            self.settings.paths.working_dir().display().to_string(),
             hook_permission_mode(self.session_state.permission_mode()),
         ));
         let _ = self.gate.hooks.run(event, &input).await;
@@ -539,7 +539,7 @@ impl Agent {
         let prompt_input = hooks::HookInput {
             hook_event_name: "UserPromptSubmit".into(),
             session_id: self.session.session_id.clone(),
-            cwd: self.settings.paths.project_root().display().to_string(),
+            cwd: self.settings.paths.working_dir().display().to_string(),
             permission_mode: hook_permission_mode(self.session_state.permission_mode()),
             user_prompt: Some(content.clone()),
             delivery: Some(delivery.as_str().to_string()),

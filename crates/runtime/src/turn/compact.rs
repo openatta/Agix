@@ -393,7 +393,7 @@ impl Agent {
                     &hooks::HookInput {
                         hook_event_name: "PostCompact".into(),
                         session_id: self.session.session_id.clone(),
-                        cwd: self.settings.paths.project_root().display().to_string(),
+                        cwd: self.settings.paths.working_dir().display().to_string(),
                         permission_mode: hook_permission_mode(self.session_state.permission_mode()),
                         tool_input: Some(serde_json::json!({
                             "strategy": summary.strategy,
@@ -436,7 +436,7 @@ impl Agent {
                 &hooks::HookInput {
                     hook_event_name: "PreCompact".into(),
                     session_id: self.session.session_id.clone(),
-                    cwd: self.settings.paths.project_root().display().to_string(),
+                    cwd: self.settings.paths.working_dir().display().to_string(),
                     permission_mode: hook_permission_mode(self.session_state.permission_mode()),
                     tool_input: Some(serde_json::json!({
                         "messages_before": self.session.messages.len(),

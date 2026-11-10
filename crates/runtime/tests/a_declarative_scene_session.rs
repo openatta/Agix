@@ -72,6 +72,7 @@ fn settings(dir: &Path) -> Settings {
         paths: PathSettings {
             user_data_dir: dir.to_path_buf(),
             global_data_dir: dir.to_path_buf(),
+            workspace: base::settings::Workspace::project_of(dir),
             local_data_dir: dir.to_path_buf(),
             scope: "review".into(),
         },

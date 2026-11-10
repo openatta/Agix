@@ -262,6 +262,25 @@ serde 的 `Option<Option<T>>` 免费区分前两者,但 `null` 与字符串的�
 显式检查,**在到达 `SessionPool` 之前**。无项目会话的 `local_data_dir` 取
 `global_data_dir` 本身,而不是 `<project>/.agix`。
 
+**无项目就是没有项目,不是"状态目录的上一级"。** 有没有项目记在 `PathSettings::workspace` 上:
+`Project(根)` 或 `Scratch(目录)`。`project_root()` 对后者是 `None`,凡是按项目找东西的地方
+(项目层设置、skills、agents、rules、hooks、git、`AGENTS.md`)都跳过;工具在 `working_dir()` 里
+干活——有项目是项目根,无项目是会话自己的 `<状态目录>/scratchpad/sessions/<会话 id>`,建会话时
+由会话池定下,子 Agent 继承父会话的设置,所以用同一个。不能退回"状态目录的上一级":状态目录
+是 `~/.agix` 时那就是家目录,写 `~/.zshrc` 会被当成项目内的写。
+
+| | 有项目 | 无项目 |
+|---|---|---|
+| 工具的工作目录(相对路径、`Bash` 的 cwd) | 项目根 | `<状态目录>/scratchpad/sessions/<会话 id>` |
+| 不用询问就能写(§6.3) | 项目根、状态目录的 `scratchpad` 与 `memory`、`additional_directories` | 工作目录、状态目录的 `scratchpad` 与 `memory`、`additional_directories` |
+| 不用询问就能读 | 上一行,加状态目录、`read_directories` | 同左 |
+| 沙箱可写 | 项目根,加上一行其余几处、会话的 `TMPDIR`、`cache_directories` | 工作目录,加同样几处;状态目录的其余部分仍不可写,其中的 socket 仍连不上 |
+| git 上下文、引擎跑的 git | 项目根 | 没有 |
+| `AGENTS.md` | 从项目根向上找 | 不找 |
+| 项目层设置、skills、agents、rules、hooks、output style | `<项目>/.agix`、`<项目>/.agents/skills` | 没有这一层 |
+| 引擎读进提示词的文件(`PromptFiles`)限定的根 | 项目根 | 没有(只读用户层的东西,仍过凭据名单) |
+| `permit_always` 的 `local` | 写进 `<项目>/.agix/settings.local.json` | 同 `session`:只在本会话生效,不写盘 |
+
 `config.*` / `project.*` / `mcp.addServer` / `mcp.updateServer` / `import.*` 这几个**作用在项目层**的方法用的是另一套
 两态:省略 = 这个 daemon 自己的项目,给路径 = 它服务的另一个项目,**`null` 拒绝** ——
 无项目会话没有项目层可写。
@@ -921,7 +940,8 @@ skill 自己的 `allowed-tools` 这时还没生效,不能给自己的命令开�
 
 可读写的根:项目目录、实例状态目录(`~/.agix`)下的 `scratchpad` 与 `memory`、
 `sandbox.additional_directories`。只读的根再加整个状态目录(凭据除外,§6.1)与
-`sandbox.read_directories`。
+`sandbox.read_directories`。无项目会话没有项目目录,第一项换成它自己在
+`scratchpad/sessions/` 下的工作目录(§3.2);状态目录所在的家目录不在任何根里。
 `Read` / `Glob` / `Grep` 与只读 shell 命令在这些根之内直接放行,之外要人批准;
 `sandbox.read_anywhere: true` 把读放开到任意位置。这些都是实例的设置——嵌入方创建实例时定。
 
@@ -948,6 +968,9 @@ bubblewrap)就和别的未授权调用一样被拒。沙箱只限写不限网,�
 `sandbox.cache_directories`(见下)、状态目录下的 `scratchpad` 与 `memory`、`/dev`,以及
 会话自己的临时目录——它作为 `TMPDIR` 交给命令(`<状态目录>/tmp/<会话 id>`),别的会话的
 写不到;7 天没动过的,进程里第一次准备临时目录时清掉。
+无项目会话的工作目录在状态目录的 `scratchpad` 下,那里本来就可写(别的会话的命令也写得到),
+所以状态目录的其余部分照样不可写,其中的 socket 照样连不上——下文"项目就在状态目录里时除外"
+只指工作目录落在 `scratchpad`、`memory` 之外的情形。
 `/tmp`、`/var/tmp` 这类共享的临时目录写不到;macOS 上另外放开当前用户的
 `DARWIN_USER_TEMP_DIR`,因为系统的 `mktemp` 不看 `TMPDIR`、只往那里建文件——同一用户的
 会话在这里彼此可写,所以会话的 `TMPDIR` 不放在这里。Linux 上

@@ -125,9 +125,11 @@ fn test_exec_ctx_with_permission(
         tool_use_id: "toolu_test".into(),
         tools,
         cwd: std::env::temp_dir(),
-        local_settings_path: std::env::temp_dir()
-            .join(".agix")
-            .join(base::interface::settings::SETTINGS_LOCAL_FILE),
+        local_settings_path: Some(
+            std::env::temp_dir()
+                .join(".agix")
+                .join(base::interface::settings::SETTINGS_LOCAL_FILE),
+        ),
         session_id: "test-session".into(),
         turn_no: 1,
         agent_depth: 0,
@@ -977,7 +979,7 @@ async fn permission_prompt_answered_permit_always_local_persists_rule_to_disk() 
         tool_use_id: "toolu_test".into(),
         tools,
         cwd: dir.path().to_path_buf(),
-        local_settings_path: agix_dir.join(base::interface::settings::SETTINGS_LOCAL_FILE),
+        local_settings_path: Some(agix_dir.join(base::interface::settings::SETTINGS_LOCAL_FILE)),
         session_id: "test-session".into(),
         turn_no: 1,
         agent_depth: 0,

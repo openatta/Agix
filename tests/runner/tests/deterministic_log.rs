@@ -36,6 +36,7 @@ async fn run_and_read_log(root: &std::path::Path, fixed: bool) -> String {
     settings.paths = PathSettings {
         user_data_dir: root.join("user"),
         global_data_dir: root.join("global"),
+        workspace: base::settings::Workspace::project_of(&root.join("local")),
         local_data_dir: root.join("local"),
         scope: "code".into(),
     };

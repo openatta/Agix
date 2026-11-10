@@ -383,8 +383,11 @@ pub struct PathSettings {
     /// See `base::paths::ConfigPaths` module docs for the full breakdown.
     #[serde(default)]
     pub global_data_dir: PathBuf,
-    /// Local/project data root (e.g. `<cwd>/.agix/`)
+    /// The project tier's root: `<project>/.agix/` in a project, the state
+    /// root itself (`global_data_dir`) in a session without one.
     pub local_data_dir: PathBuf,
+    /// Where the session's tools work, and whether there is a project.
+    pub workspace: Workspace,
     /// Which product instance's user-level state `user_data_dir` was built
     /// for (see `base::paths::ConfigPaths`). Carried alongside the resolved
     /// dirs so downstream code (e.g. `FrozenContext::collect`) doesn't have
@@ -401,20 +404,52 @@ fn default_scope() -> String {
     "code".to_string()
 }
 
+/// What a session works in (docs/ARCHITECTURE.md §3.2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Workspace {
+    /// A project: the tools work in it, and its `.agix` is the project tier.
+    Project(PathBuf),
+    /// No project (`project_root: null`): no project tier, no git or
+    /// `AGENTS.md` context, and the tools work in this directory of the
+    /// session's own under the state root's scratchpad
+    /// ([`crate::paths::session_scratch_dir`]) — never in the state root's
+    /// parent, which for `~/.agix` is the user's home.
+    Scratch(PathBuf),
+}
+
+impl Workspace {
+    /// The project whose `.agix` is `local_data_dir`.
+    pub fn project_of(local_data_dir: &Path) -> Self {
+        Self::Project(
+            local_data_dir
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| local_data_dir.to_path_buf()),
+        )
+    }
+
+    /// The project, `None` without one.
+    pub fn project_root(&self) -> Option<&Path> {
+        match self {
+            Self::Project(root) => Some(root),
+            Self::Scratch(_) => None,
+        }
+    }
+}
+
 impl PathSettings {
-    /// The actual project working directory — **not** `local_data_dir`
-    /// itself, which is `<project_root>/.agix` (flat, no scope segment; see
-    /// `base::paths::ConfigPaths`). Passing `local_data_dir` to
-    /// `FrozenContext::collect` as the project root would make
-    /// `AGENTS.md`/git-status discovery scan `.agix/` instead of the real
-    /// project; this is the single place that derives it (falls back to
-    /// `local_data_dir` itself if it has no parent, e.g. `.agix` sitting at
-    /// filesystem root — not expected in practice).
-    pub fn project_root(&self) -> PathBuf {
-        self.local_data_dir
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| self.local_data_dir.clone())
+    /// The project, `None` in a session without one.
+    pub fn project_root(&self) -> Option<&Path> {
+        self.workspace.project_root()
+    }
+
+    /// The tools' working directory: the root a write needs no approval in,
+    /// a read none either, and a sandboxed command may write.
+    pub fn working_dir(&self) -> &Path {
+        match &self.workspace {
+            Workspace::Project(dir) | Workspace::Scratch(dir) => dir,
+        }
     }
 
     /// The project tier's `settings.local.json` — the file the interactive
@@ -425,8 +460,13 @@ impl PathSettings {
     /// exactly this path to stop a sandboxed command from granting itself
     /// permissions, and a copy written anywhere else would sit outside that
     /// protection while still being loaded by `Settings::load`.
-    pub fn local_settings_file(&self) -> PathBuf {
-        self.local_data_dir.join(SETTINGS_LOCAL_FILE)
+    ///
+    /// `None` without a project: "this project" means nothing there, and its
+    /// `local_data_dir` is the state root, whose `settings.local.json` is the
+    /// global tier — a rule written there would allow the call everywhere.
+    pub fn local_settings_file(&self) -> Option<PathBuf> {
+        self.project_root()
+            .map(|_| self.local_data_dir.join(SETTINGS_LOCAL_FILE))
     }
 }
 
@@ -1031,6 +1071,28 @@ impl Settings {
         )
     }
 
+    /// [`load`](Self::load) for a session without a project: no project tier,
+    /// and a [`Workspace::Scratch`] in the state root's scratchpad until the
+    /// session is given a directory of its own
+    /// ([`crate::paths::session_scratch_dir`]).
+    pub fn load_without_project(
+        global_dir: PathBuf,
+        scene_dir: PathBuf,
+        scope: &str,
+        default_model: &str,
+    ) -> Self {
+        let scratch = global_dir.join(crate::paths::STATE_ROOT_SCRATCHPAD);
+        let mut settings = Self::load(
+            global_dir.clone(),
+            scene_dir,
+            global_dir,
+            scope,
+            default_model,
+        );
+        settings.paths.workspace = Workspace::Scratch(scratch);
+        settings
+    }
+
     /// [`load`](Self::load) with the layers coming from wherever `source` says
     /// instead of from the six files on disk.
     ///
@@ -1241,6 +1303,7 @@ impl Settings {
         settings.paths = PathSettings {
             user_data_dir: scene_dir,
             global_data_dir: global_dir,
+            workspace: Workspace::project_of(&local_dir),
             local_data_dir: local_dir,
             scope: scope.to_string(),
         };
@@ -1309,6 +1372,7 @@ impl Settings {
                 user_data_dir: PathBuf::from("~/.agix/scenes/agent"),
                 global_data_dir: PathBuf::from("~/.agix"),
                 local_data_dir: PathBuf::from("."),
+                workspace: Workspace::Project(PathBuf::new()),
                 scope: default_scope(),
             },
             execution: ExecutionSettings::default(),
@@ -2172,6 +2236,36 @@ mod tests {
         unknown.sort();
         assert_eq!(unknown, ["hooks", "permision_mode"]);
         assert!(unknown_settings_keys(&serde_json::json!([1])).is_empty());
+    }
+
+    /// Without a project there is none: not the state root's parent, which
+    /// for `~/.agix` is the user's home.
+    #[test]
+    fn settings_without_a_project_have_no_project_root() {
+        let root = tempfile::tempdir().unwrap();
+        let state = root.path().join(".agix");
+        let settings = Settings::load_without_project(
+            state.clone(),
+            state.join("scenes/harnix"),
+            "harnix",
+            "m",
+        );
+        assert_eq!(settings.paths.project_root(), None);
+        assert!(settings.paths.working_dir().starts_with(&state));
+        assert_eq!(settings.paths.local_data_dir, state);
+
+        let project = Settings::load(
+            state.clone(),
+            state.join("scenes/code"),
+            root.path().join("repo/.agix"),
+            "code",
+            "m",
+        );
+        assert_eq!(
+            project.paths.project_root(),
+            Some(root.path().join("repo").as_path())
+        );
+        assert_eq!(project.paths.working_dir(), root.path().join("repo"));
     }
 
     #[test]

@@ -693,6 +693,8 @@ mod tests {
         settings.paths.global_data_dir = dir.path().join("global");
         settings.paths.user_data_dir = dir.path().join("global/scenes/code");
         settings.paths.local_data_dir = dir.path().join("project");
+        settings.paths.workspace =
+            base::settings::Workspace::project_of(&settings.paths.local_data_dir);
         let settings = Arc::new(settings);
         let store = base::interface::memory::MemoryStore::for_paths(
             &base::paths::ConfigPaths::from_settings(&settings.paths),
@@ -848,6 +850,8 @@ mod documented_shape_tests {
         settings.paths.global_data_dir = dir.join("global");
         settings.paths.user_data_dir = dir.join("global/scenes/code");
         settings.paths.local_data_dir = dir.join("project");
+        settings.paths.workspace =
+            base::settings::Workspace::project_of(&settings.paths.local_data_dir);
         run_doctor(
             &StaticDaemonPaths::new(dir.to_path_buf()),
             "code",

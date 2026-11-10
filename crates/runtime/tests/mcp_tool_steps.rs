@@ -125,6 +125,7 @@ async fn a_tool_step_does_not_relist_tools_without_an_announcement() {
     settings.paths = PathSettings {
         user_data_dir: dir.path().to_path_buf(),
         global_data_dir: dir.path().to_path_buf(),
+        workspace: base::settings::Workspace::project_of(dir.path()),
         local_data_dir: dir.path().to_path_buf(),
         scope: "code".into(),
     };

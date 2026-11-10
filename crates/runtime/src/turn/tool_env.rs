@@ -48,6 +48,25 @@ pub(crate) fn engine_git_from(
     )
 }
 
+/// The session's frozen environment snapshot, taken in its working directory
+/// — looked up in as a project only when it is one.
+pub(crate) async fn collect_frozen(
+    paths: &base::settings::PathSettings,
+    environment: &dyn base::interface::environment::Environment,
+    engine_git: &base::frozen::git::EngineGit,
+) -> base::frozen::FrozenContext {
+    use base::frozen::FrozenContext;
+    let config_paths = base::paths::ConfigPaths::from_settings(paths);
+    let cwd = paths.working_dir().to_path_buf();
+    match paths.project_root() {
+        Some(_) => FrozenContext::collect(cwd, &config_paths, environment, engine_git).await,
+        None => {
+            FrozenContext::collect_without_project(cwd, &config_paths, environment, engine_git)
+                .await
+        }
+    }
+}
+
 /// The execution providers a session's tool calls reach the machine through,
 /// with every process group a command starts recorded in `process_groups`.
 ///
@@ -209,7 +228,7 @@ impl Agent {
     /// it outside any tool call: the context a `Bash` call this turn would get.
     pub(super) fn skill_invocation_context(&self, cancel: CancellationToken) -> ToolContext {
         ToolContext {
-            cwd: self.settings.paths.project_root(),
+            cwd: self.settings.paths.working_dir().to_path_buf(),
             session_id: self.session.session_id.clone(),
             turn_no: self.session.turn_count,
             sandbox: sandbox_settings_from(&self.config),

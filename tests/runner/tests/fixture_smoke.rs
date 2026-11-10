@@ -80,7 +80,7 @@ fn settings_load_resolves_project_root_and_config_from_fixture() {
 
     assert_eq!(
         settings.paths.project_root(),
-        fixture_dir().to_path_buf(),
+        Some(fixture_dir()),
         "project_root() should resolve to the fixture root"
     );
     let hooks = settings

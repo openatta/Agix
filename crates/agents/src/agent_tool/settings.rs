@@ -127,6 +127,7 @@ pub(super) fn fallback_settings(
         paths: PathSettings {
             user_data_dir: local_data_dir.join("scenes").join("code"),
             global_data_dir: local_data_dir.clone(),
+            workspace: base::settings::Workspace::project_of(&local_data_dir),
             local_data_dir,
             scope: "code".to_string(),
         },

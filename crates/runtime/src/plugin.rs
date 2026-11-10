@@ -52,7 +52,8 @@ pub trait Plugin: Send + Sync {
 
 pub struct PluginSession<'a> {
     pub session_id: &'a str,
-    pub project_root: &'a Path,
+    /// `None` in a session without a project.
+    pub project_root: Option<&'a Path>,
     pub scene: &'a str,
     /// 0 for a session a host created, parent + 1 for a delegate.
     pub depth: u32,
@@ -381,7 +382,7 @@ mod tests {
     ) -> Result<Layers, String> {
         let session = PluginSession {
             session_id: "s",
-            project_root: Path::new("/p"),
+            project_root: Some(Path::new("/p")),
             scene: "code",
             depth: 0,
         };

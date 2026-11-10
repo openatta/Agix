@@ -92,6 +92,7 @@ fn recall_test_settings(root: &std::path::Path) -> Settings {
         paths: PathSettings {
             user_data_dir: root.join("user-data"),
             global_data_dir: root.join("global-data"),
+            workspace: base::settings::Workspace::project_of(&root.join("local-data")),
             local_data_dir: root.join("local-data"),
             scope: "code".into(),
         },

@@ -55,6 +55,7 @@ fn test_settings() -> Settings {
         paths: PathSettings {
             user_data_dir: dir.clone(),
             global_data_dir: dir.clone(),
+            workspace: base::settings::Workspace::project_of(&dir),
             local_data_dir: dir,
             scope: "code".into(),
         },

@@ -26,7 +26,7 @@ pub const OUTLINE: &str = "demo-rust.outline";
 pub const NOTICE: &str = "demo-rust.notice";
 pub const NOTICE_FILE: &str = ".demo/notice.md";
 
-pub fn register(r: &mut Registrar, project_root: &Path, activity: Arc<Activity>) {
+pub fn register(r: &mut Registrar, project_root: Option<&Path>, activity: Arc<Activity>) {
     r.prompt_block(RegisteredBlock::system(
         GUIDE,
         450,
@@ -72,13 +72,16 @@ pub fn register(r: &mut Registrar, project_root: &Path, activity: Arc<Activity>)
         BlockOrigin::Plugin(crate::NAME.into()),
     );
 
-    r.assembly_hook(Arc::new(Outline)).async_assembly_hook(
-        Arc::new(ProjectNotice {
-            file: project_root.join(NOTICE_FILE),
-            activity,
-        }),
-        Authority::plugin(crate::NAME, AssemblyCapabilities::default()),
-    );
+    r.assembly_hook(Arc::new(Outline));
+    if let Some(project_root) = project_root {
+        r.async_assembly_hook(
+            Arc::new(ProjectNotice {
+                file: project_root.join(NOTICE_FILE),
+                activity,
+            }),
+            Authority::plugin(crate::NAME, AssemblyCapabilities::default()),
+        );
+    }
 }
 
 /// The section names, in the order the model reads them.

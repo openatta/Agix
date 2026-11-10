@@ -64,8 +64,11 @@ pub(in crate::agent) fn build_hook_runner(
     // its `hooks/` directory goes too, or a user hook naming a script would
     // run the project's file of that name.
     let project_untrusted = settings.project_layer.trust.is_untrusted();
-    let project_hooks =
-        (!project_untrusted).then(|| settings.paths.project_root().join(".agix").join("hooks"));
+    let project_hooks = settings
+        .paths
+        .project_root()
+        .filter(|_| !project_untrusted)
+        .map(|project| project.join(".agix").join("hooks"));
     let hooks_search_dirs: Vec<_> = project_hooks
         .into_iter()
         .chain([
@@ -81,7 +84,7 @@ pub(in crate::agent) fn build_hook_runner(
     ));
     let agent_executor = Arc::new(crate::hook_executors::AgentSpawnerHookExecutor::new(
         agent_spawner,
-        settings.paths.project_root(),
+        settings.paths.working_dir().to_path_buf(),
     ));
     let runner = HookRunner::new(parsed)
         .with_hooks_search_dirs(hooks_search_dirs)

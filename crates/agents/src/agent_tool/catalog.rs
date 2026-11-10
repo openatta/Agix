@@ -150,9 +150,9 @@ pub fn agent_type_dirs(settings: &Settings) -> Vec<(std::path::PathBuf, AgentTyp
         ProjectTrust::Trusted => Some(true),
         ProjectTrust::Untrusted => Some(false),
     };
-    if let Some(trusted) = trusted {
+    if let (Some(trusted), Some(project)) = (trusted, settings.paths.project_root()) {
         dirs.push((
-            settings.paths.project_root().join(".agix").join("agents"),
+            project.join(".agix").join("agents"),
             AgentTypeSource::Project { trusted },
         ));
     }

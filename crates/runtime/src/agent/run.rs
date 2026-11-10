@@ -117,7 +117,7 @@ impl Agent {
         // startup. Nothing in the engine relocates a live session's cwd, so a
         // single event here reports where work will happen.
         {
-            let cwd = self.settings.paths.project_root().display().to_string();
+            let cwd = self.settings.paths.working_dir().display().to_string();
             self.fire_lifecycle_hook(hooks::HookEvent::CwdChanged, |i| {
                 i.with_reason(format!("session working directory: {cwd}"))
             })
@@ -253,7 +253,7 @@ impl Agent {
                 .check_rewakes(hooks::HookInput::lifecycle(
                     String::new(),
                     self.session.session_id.clone(),
-                    self.settings.paths.project_root().display().to_string(),
+                    self.settings.paths.working_dir().display().to_string(),
                     crate::turn::hook_permission_mode(self.session_state.permission_mode()),
                 ))
                 .await;
@@ -374,10 +374,6 @@ impl Agent {
     /// endpoint. All operations run in parallel via `tokio::join!` to
     /// minimize startup latency.
     async fn warmup(&mut self) {
-        // NOTE: the actual project root, not `local_data_dir` itself (which
-        // is `<project_root>/.agix` — see `PathSettings::project_root` docs).
-        let cwd = self.settings.paths.project_root();
-        let paths = base::paths::ConfigPaths::from_settings(&self.settings.paths);
         let base_url = self.settings.model.base_url.clone();
         let session_memory = self.session.session_memory.clone();
         let engine_git =
@@ -385,9 +381,8 @@ impl Agent {
 
         let (frozen, _, _) = tokio::join!(
             // 1. Pre-compute the frozen environment snapshot (git status, branch, platform, etc.)
-            base::frozen::FrozenContext::collect(
-                cwd.clone(),
-                &paths,
+            crate::turn::collect_frozen(
+                &self.settings.paths,
                 &*self.policies.environment,
                 &engine_git
             ),

@@ -167,19 +167,25 @@ impl SkillSource {
 }
 
 /// 从三层扫 SKILL.md：全局 `~/.agix/skills/` -> scene 覆盖
-/// `~/.agix/scenes/<scope>/skills/` -> 项目级 `<cwd>/.agents/skills/`（外部事实标准）。
+/// `~/.agix/scenes/<scope>/skills/` -> 项目级 `<project>/.agents/skills/`（外部事实标准，
+/// 无项目会话没有这一层）。
 /// 同名时后扫到的覆盖先扫到的（`scan_skills_dir` 结果直接 extend 进 `Vec`，
 /// 调用方按"先入者优先"处理 slash 分发，所以顺序是：scene 覆盖需要排在它要
 /// 覆盖的全局条目**之前**，让 scene 版本先命中）。
-async fn collect_skills(paths: &crate::paths::ConfigPaths, cwd: &Path) -> Vec<SkillEntry> {
+async fn collect_skills(
+    paths: &crate::paths::ConfigPaths,
+    project: Option<&Path>,
+) -> Vec<SkillEntry> {
     let global_dir = paths.global_skills_dir();
     let scene_dir = paths.user_skills_dir();
-    let project_dir = cwd.join(".agents").join("skills");
     let files = crate::paths::PromptFiles::for_project(paths);
     let mut all = Vec::new();
     all.extend(scan_skills_dir(&scene_dir, SkillSource::User, &files).await);
     all.extend(scan_skills_dir(&global_dir, SkillSource::User, &files).await);
-    all.extend(scan_skills_dir(&project_dir, SkillSource::Project, &files).await);
+    if let Some(project) = project {
+        let project_dir = project.join(".agents").join("skills");
+        all.extend(scan_skills_dir(&project_dir, SkillSource::Project, &files).await);
+    }
     all
 }
 
@@ -237,10 +243,13 @@ pub async fn load_skill_from_path(path: &Path, source: SkillSource) -> Option<Sk
 ///
 /// 把 5 个内置 bundled skills 追加到列表末尾。disk 上同名 skill 优先
 /// （因为先入列表，slash 命中第一个）。
-pub async fn load_session_skills(cwd: &Path, paths: &crate::paths::ConfigPaths) -> Vec<SkillEntry> {
+pub async fn load_session_skills(
+    project: Option<&Path>,
+    paths: &crate::paths::ConfigPaths,
+) -> Vec<SkillEntry> {
     // Disk skills are loaded first (take priority for slash commands).
     // Callers should use collect_skills_with_bundled() to append bundled skills.
-    collect_skills(paths, cwd).await
+    collect_skills(paths, project).await
 }
 
 /// Like [`load_session_skills`] but appends bundled skills after disk skills.
@@ -250,11 +259,11 @@ pub async fn load_session_skills(cwd: &Path, paths: &crate::paths::ConfigPaths) 
 /// Disk skills appear first, so same-name slash commands hit the user's version.
 /// Bundled skills that don't exist on disk are appended last.
 pub async fn load_session_skills_with_bundled(
-    cwd: &Path,
+    project: Option<&Path>,
     bundled: Vec<SkillEntry>,
     paths: &crate::paths::ConfigPaths,
 ) -> Vec<SkillEntry> {
-    let mut all = load_session_skills(cwd, paths).await;
+    let mut all = load_session_skills(project, paths).await;
     let disk_names: std::collections::HashSet<String> =
         all.iter().map(|s| s.name.clone()).collect();
     for s in bundled {
@@ -545,7 +554,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let skills = collect_skills(&test_paths(home.path()), cwd.path()).await;
+        let skills = collect_skills(&test_paths(home.path()), Some(cwd.path())).await;
         assert_eq!(skills.len(), 2);
         // user (scene) 在前
         assert_eq!(skills[0].name, "u-skill");
@@ -575,7 +584,7 @@ mod tests {
         .await
         .unwrap();
 
-        let skills = collect_skills(&test_paths(home.path()), cwd.path()).await;
+        let skills = collect_skills(&test_paths(home.path()), Some(cwd.path())).await;
         let shared: Vec<_> = skills.iter().filter(|s| s.name == "shared").collect();
         // Both entries are present in the raw list (same-name-both-kept
         // convention, see `SkillSource` docs) but the scene one comes first,
@@ -592,7 +601,7 @@ mod tests {
         // 目录存在但没有 SKILL.md
         let d = home.path().join(".agix/scenes/code/skills/empty");
         tokio::fs::create_dir_all(&d).await.unwrap();
-        let skills = collect_skills(&test_paths(home.path()), cwd.path()).await;
+        let skills = collect_skills(&test_paths(home.path()), Some(cwd.path())).await;
         assert!(skills.is_empty());
     }
 
@@ -611,7 +620,7 @@ mod tests {
         .await
         .unwrap();
 
-        let skills = collect_skills(&test_paths(home.path()), cwd.path()).await;
+        let skills = collect_skills(&test_paths(home.path()), Some(cwd.path())).await;
         assert!(
             skills.is_empty(),
             "`.agix/code/skills/` must not be scanned"

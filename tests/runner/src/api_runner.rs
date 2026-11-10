@@ -268,6 +268,7 @@ async fn build_agent(
         settings.paths = base::interface::settings::PathSettings {
             user_data_dir: tmp.join("user"),
             global_data_dir: tmp.join("global"),
+            workspace: base::settings::Workspace::project_of(&tmp.join("local")),
             local_data_dir: tmp.join("local"),
             scope: "code".into(),
         };

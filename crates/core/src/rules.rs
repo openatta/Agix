@@ -36,12 +36,15 @@ pub struct RuleEntry {
 /// `crates/agents/src/agent_tool/catalog.rs::merge_agent_types`).
 pub fn default_rule_sources(paths: &PathSettings) -> Vec<Box<dyn RuleProvider>> {
     let files = PromptFiles::for_project(&crate::paths::ConfigPaths::from_settings(paths));
+    let project = paths
+        .project_root()
+        .map(|project| project.join(".agix").join("rules"));
     [
         paths.global_data_dir.join("rules"),
         paths.user_data_dir.join("rules"),
-        paths.project_root().join(".agix").join("rules"),
     ]
     .into_iter()
+    .chain(project)
     .map(|dir| {
         Box::new(RuleDirectory::new(dir).reading_with(files.clone())) as Box<dyn RuleProvider>
     })
@@ -109,6 +112,7 @@ mod tests {
         PathSettings {
             user_data_dir: scene.to_path_buf(),
             global_data_dir: global.to_path_buf(),
+            workspace: crate::settings::Workspace::project_of(&project.join(".agix")),
             local_data_dir: project.join(".agix"),
             scope: "code".into(),
         }

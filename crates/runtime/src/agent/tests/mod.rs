@@ -20,6 +20,7 @@ pub(super) fn test_settings() -> base::interface::settings::Settings {
         paths: PathSettings {
             user_data_dir: "/tmp".into(),
             global_data_dir: "/tmp".into(),
+            workspace: base::settings::Workspace::project_of(std::path::Path::new("/tmp")),
             local_data_dir: "/tmp".into(),
             scope: "code".into(),
         },

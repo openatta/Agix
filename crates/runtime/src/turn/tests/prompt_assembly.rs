@@ -154,6 +154,7 @@ fn test_settings(root: &std::path::Path) -> Settings {
         paths: PathSettings {
             user_data_dir: root.to_path_buf(),
             global_data_dir: root.to_path_buf(),
+            workspace: base::settings::Workspace::project_of(root),
             local_data_dir: root.to_path_buf(),
             scope: "code".into(),
         },
@@ -380,6 +381,8 @@ async fn parent_agents_md_reaches_the_prompt_with_nearest_last() {
     .await;
     let mut settings = test_settings(dir.path());
     settings.paths.local_data_dir = child.clone();
+    settings.paths.workspace =
+        base::settings::Workspace::project_of(&settings.paths.local_data_dir);
     let (agent, _rx, _tx) = crate::agent::Builder::new()
         .scene(test_scene(vec![]))
         .model(Arc::new(DummyModel))
@@ -429,6 +432,8 @@ async fn single_instruction_file_is_injected_verbatim() {
     .await;
     let mut settings = test_settings(dir.path());
     settings.paths.local_data_dir = root.clone();
+    settings.paths.workspace =
+        base::settings::Workspace::project_of(&settings.paths.local_data_dir);
     let (agent, _rx, _tx) = crate::agent::Builder::new()
         .scene(test_scene(vec![]))
         .model(Arc::new(DummyModel))

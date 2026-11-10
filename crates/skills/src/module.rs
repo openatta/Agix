@@ -135,8 +135,11 @@ pub fn project_skills_requiring_trust(settings: &Settings) -> Vec<String> {
     if settings.project_layer.trust == base::project_trust::ProjectTrust::NoProject {
         return Vec::new();
     }
+    let Some(project) = settings.paths.project_root() else {
+        return Vec::new();
+    };
     let manager = SkillManager::new().reading_with(prompt_files(settings));
-    let dir = settings.paths.project_root().join(".agents").join("skills");
+    let dir = project.join(".agents").join("skills");
     if manager
         .load_dir_subdirs(&dir, SkillSource::Project)
         .is_err()
@@ -171,8 +174,11 @@ fn build_skill_manager(
     use crate::sources::BundledSkills;
 
     let skill_mgr = SkillManager::new().reading_with(prompt_files(settings));
-    let project_skills_dir = settings.paths.project_root().join(".agents").join("skills");
-    let tiers = [
+    let project_skills_dir = settings
+        .paths
+        .project_root()
+        .map(|project| project.join(".agents").join("skills"));
+    let mut tiers = vec![
         (
             settings.paths.global_data_dir.join("skills"),
             SkillSource::User,
@@ -181,8 +187,12 @@ fn build_skill_manager(
             settings.paths.user_data_dir.join("skills"),
             SkillSource::User,
         ),
-        (project_skills_dir.clone(), SkillSource::Project),
     ];
+    tiers.extend(
+        project_skills_dir
+            .iter()
+            .map(|dir| (dir.clone(), SkillSource::Project)),
+    );
     let loaded_count: usize = tiers
         .iter()
         .map(|(dir, source)| skill_mgr.load_dir_subdirs(dir, *source).unwrap_or(0))
@@ -197,11 +207,8 @@ fn build_skill_manager(
     tracing::info!(loaded_count, total_skills, "skills loaded (incl. bundled)");
 
     if watch {
-        if let Err(e) = skill_mgr.enable_watching(&[
-            settings.paths.global_data_dir.join("skills"),
-            settings.paths.user_data_dir.join("skills"),
-            project_skills_dir,
-        ]) {
+        let watched: Vec<_> = tiers.into_iter().map(|(dir, _)| dir).collect();
+        if let Err(e) = skill_mgr.enable_watching(&watched) {
             tracing::warn!(error = %e, "failed to enable skill file watching; live skill reload disabled for this session");
         }
     }
@@ -234,6 +241,8 @@ mod tests {
 
         let mut settings = Settings::defaults_for("m");
         settings.paths.local_data_dir = project.path().join(".agix");
+        settings.paths.workspace =
+            base::settings::Workspace::project_of(&settings.paths.local_data_dir);
         settings.project_layer.trust = base::project_trust::ProjectTrust::Untrusted;
 
         assert_eq!(
@@ -266,6 +275,8 @@ mod tests {
         settings.paths.global_data_dir = home.path().join("global");
         settings.paths.user_data_dir = home.path().join("scene");
         settings.paths.local_data_dir = home.path().join("project/.agix");
+        settings.paths.workspace =
+            base::settings::Workspace::project_of(&settings.paths.local_data_dir);
         let disk = settings.paths.global_data_dir.join("skills/tour");
         std::fs::create_dir_all(&disk).unwrap();
         std::fs::write(

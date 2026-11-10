@@ -170,10 +170,9 @@ impl Builder {
             quickjs: mut quickjs_layer,
             tool_owners: plugin_tool_owners,
         } = {
-            let project_root = settings.paths.project_root();
             let plugin_session = crate::plugin::PluginSession {
                 session_id: session.session_id_str(),
-                project_root: &project_root,
+                project_root: settings.paths.project_root(),
                 scene: scene.id(),
                 depth: agent_depth,
             };
@@ -244,10 +243,11 @@ impl Builder {
         // the same `Arc`; none of that state works if it does not survive
         // from one call to the next.
         prepare_scratchpad(&settings.paths.local_data_dir.join("scratchpad"));
+        prepare_working_dir(&settings.paths);
         let session_state = Arc::new({
-            let project = settings.paths.project_root();
-            let resolve = |dir: &std::path::PathBuf| project.join(dir);
-            let mut state = base::context::SessionState::new(project.clone())
+            let cwd = settings.paths.working_dir().to_path_buf();
+            let resolve = |dir: &std::path::PathBuf| cwd.join(dir);
+            let mut state = base::context::SessionState::new(cwd.clone())
                 .with_permission_mode(config.permission_mode);
             state.additional_writable_dirs = settings
                 .sandbox
@@ -268,7 +268,7 @@ impl Builder {
                 .chain([settings.paths.global_data_dir.clone()])
                 .collect();
             state.read_anywhere = settings.sandbox.read_anywhere;
-            state.cache_directories = settings.sandbox.cache_directories.paths(&project);
+            state.cache_directories = settings.sandbox.cache_directories.paths(&cwd);
             state.unattended = !scene.interactive();
             state.sandbox_disabled = settings.sandbox.dangerously_disable_sandbox;
             state
@@ -279,7 +279,7 @@ impl Builder {
         session_state.bind_exec(exec.clone());
         let hook_ambient = hook_ambient(
             session.session_id_str().to_string(),
-            settings.paths.project_root().display().to_string(),
+            settings.paths.working_dir().display().to_string(),
             session_state.clone(),
         );
 
@@ -917,6 +917,16 @@ impl Builder {
             event_rx,
             input_tx,
         ))
+    }
+}
+
+/// A session without a project works in a directory of its own, which has to
+/// exist before its first command runs there.
+fn prepare_working_dir(paths: &base::settings::PathSettings) {
+    if let base::settings::Workspace::Scratch(dir) = &paths.workspace {
+        if dir.is_absolute() {
+            let _ = std::fs::create_dir_all(dir);
+        }
     }
 }
 

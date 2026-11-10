@@ -225,6 +225,11 @@ impl SessionPool {
             if let Some(name) = &model_name {
                 snap.model.model_name = name.clone();
             }
+            if let base::settings::Workspace::Scratch(_) = snap.paths.workspace {
+                snap.paths.workspace = base::settings::Workspace::Scratch(
+                    base::paths::session_scratch_dir(&snap.paths.global_data_dir, &session_id),
+                );
+            }
             Arc::new(snap)
         };
         let namer = SessionNamer::of(

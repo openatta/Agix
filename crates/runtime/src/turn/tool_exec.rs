@@ -14,11 +14,11 @@ pub(crate) struct ToolExecCtx {
     pub tool_use_id: String,
     pub tools: Arc<dyn base::tool::ToolRegistry>,
     pub cwd: std::path::PathBuf,
-    /// Where a `PermitAlways { scope: Local }` answer persists its rule.
-    /// Carried from `settings.paths` rather than derived from `cwd` here —
-    /// see `PathSettings::local_settings_file` for why the exact location
-    /// matters.
-    pub local_settings_path: std::path::PathBuf,
+    /// Where a `PermitAlways { scope: Local }` answer persists its rule;
+    /// `None` keeps it to this session. Carried from `settings.paths` rather
+    /// than derived from `cwd` here — see `PathSettings::local_settings_file`
+    /// for why the exact location matters.
+    pub local_settings_path: Option<std::path::PathBuf>,
     pub session_id: String,
     pub turn_no: u32,
     /// Forwarded into every `ToolContext` this turn builds — see
@@ -395,8 +395,9 @@ pub(super) async fn execute_tool_inner(
                             let match_content = tool.permission_match_content(&input);
                             ctx.permission
                                 .add_persistent_allow(name, match_content.as_deref());
-                            if let crate::agent::PersistScope::Local = scope {
-                                let local_settings_path = &ctx.local_settings_path;
+                            if let (crate::agent::PersistScope::Local, Some(local_settings_path)) =
+                                (scope, &ctx.local_settings_path)
+                            {
                                 match permissions::settings_patch::build_rule_string(
                                     name,
                                     match_content.as_deref(),

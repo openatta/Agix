@@ -102,6 +102,10 @@ pub struct CollectOptions {
     /// 启动时按名称加载 output style（先项目级再用户级）。
     /// None = 不加载。
     pub output_style: Option<String>,
+
+    /// cwd 不是项目（无项目会话的专属工作目录）：不跑 git、不找 `AGENTS.md`，
+    /// 项目级的 skills 与 output style 也没有。
+    pub outside_project: bool,
 }
 
 impl CollectOptions {
@@ -109,6 +113,7 @@ impl CollectOptions {
         Self {
             walk_up_claude_md: true,
             output_style: None,
+            outside_project: false,
         }
     }
 }
@@ -127,24 +132,26 @@ struct GitFields {
     git_log: Option<String>,
 }
 
-async fn collect_git_fields(engine_git: &git::EngineGit, cwd: &Path) -> GitFields {
-    let is_git = git::run_git_check(engine_git, cwd).await;
-    let is_worktree = if is_git {
-        git::is_worktree(cwd).await
-    } else {
-        false
-    };
-    if !is_git {
-        return GitFields {
-            is_git,
-            is_worktree,
+impl GitFields {
+    fn none() -> Self {
+        Self {
+            is_git: false,
+            is_worktree: false,
             git_branch: None,
             git_main_branch: None,
             git_user_name: None,
             git_status: None,
             git_log: None,
-        };
+        }
     }
+}
+
+async fn collect_git_fields(engine_git: &git::EngineGit, cwd: &Path) -> GitFields {
+    let is_git = git::run_git_check(engine_git, cwd).await;
+    if !is_git {
+        return GitFields::none();
+    }
+    let is_worktree = git::is_worktree(cwd).await;
     let git_branch = git::run_git_text(engine_git, cwd, &["symbolic-ref", "--short", "HEAD"]).await;
     let git_main_branch = git::detect_main_branch(engine_git, cwd).await;
     let git_user_name = git::run_git_text(engine_git, cwd, &["config", "user.name"]).await;
@@ -194,6 +201,28 @@ impl FrozenContext {
         .await
     }
 
+    /// [`collect`](Self::collect) for a session without a project: `cwd` is
+    /// the session's own scratch directory, not a project, so nothing is
+    /// looked up from it — no git, no `AGENTS.md`, no project skills.
+    pub async fn collect_without_project(
+        cwd: PathBuf,
+        paths: &ConfigPaths,
+        environment: &dyn crate::interface::environment::Environment,
+        engine_git: &git::EngineGit,
+    ) -> Self {
+        Self::collect_with_options(
+            cwd,
+            CollectOptions {
+                outside_project: true,
+                ..CollectOptions::defaults()
+            },
+            paths,
+            environment,
+            engine_git,
+        )
+        .await
+    }
+
     /// 带 options 的收集 -- `` 加 `walk_up_claude_md` 控制 monorepo 父级
     /// 上下文是否进 system prompt。
     pub async fn collect_with_options(
@@ -207,7 +236,11 @@ impl FrozenContext {
 
         // git 相关命令并发跑，每条独立超时 — 同一段逻辑也被 `refresh_git` 复用
         // （见下），所以拆成了独立的 `collect_git_fields`。
-        let git = collect_git_fields(engine_git, &cwd_clone).await;
+        let project = (!opts.outside_project).then_some(cwd.as_path());
+        let git = match project {
+            Some(project) => collect_git_fields(engine_git, project).await,
+            None => GitFields::none(),
+        };
         let is_git = git.is_git;
         let is_worktree = git.is_worktree;
 
@@ -242,13 +275,17 @@ impl FrozenContext {
         );
 
         let prompt_files = crate::paths::PromptFiles::for_project(paths);
-        let memory_blocks =
-            collect_memory_files_with(&cwd, opts.walk_up_claude_md, &prompt_files).await;
+        let memory_blocks = match project {
+            Some(project) => {
+                collect_memory_files_with(project, opts.walk_up_claude_md, &prompt_files).await
+            }
+            None => Vec::new(),
+        };
         // 用 load_session_skills 而非 collect_skills -- 前者把 bundled
         // skills (simplify/verify/debug/batch/stuck) 也并入。否则
         // disk 没装 SKILL.md 时 system prompt 不暴露 bundled，模型不知道有这些
         // skill，/stuck /simplify 等 case 失败。
-        let skills = load_session_skills(&cwd, paths).await;
+        let skills = load_session_skills(project, paths).await;
 
         let memory_dir = paths.global_memory_dir();
         let memory_index = {
@@ -265,7 +302,7 @@ impl FrozenContext {
         // Output style -- load by name from project then user dir.
         let output_style = match opts.output_style.as_deref() {
             Some(name) if !name.trim().is_empty() => {
-                collect_output_style(&cwd, name, paths, &prompt_files).await
+                collect_output_style(project, name, paths, &prompt_files).await
             }
             _ => None,
         };
@@ -352,11 +389,11 @@ impl FrozenContext {
     }
 }
 
-/// Load `<cwd>/.agix/output-styles/<name>.md` if present,
+/// Load `<project>/.agix/output-styles/<name>.md` if present,
 /// else `~/.agix/scenes/<scope>/output-styles/<name>.md`. Trims whitespace and caps body
 /// at 8KB. Returns None if neither file is present or readable.
 async fn collect_output_style(
-    cwd: &Path,
+    project: Option<&Path>,
     name: &str,
     paths: &ConfigPaths,
     files: &crate::paths::PromptFiles,
@@ -365,11 +402,12 @@ async fn collect_output_style(
     if safe.is_empty() || safe.contains('/') || safe.contains('\\') || safe.starts_with('.') {
         return None;
     }
-    let project = cwd
-        .join(".agix")
-        .join("output-styles")
-        .join(format!("{safe}.md"));
-    if let Ok(content) = files.read_to_string(&project) {
+    let project = project.map(|p| {
+        p.join(".agix")
+            .join("output-styles")
+            .join(format!("{safe}.md"))
+    });
+    if let Some(Ok(content)) = project.as_deref().map(|path| files.read_to_string(path)) {
         if !content.trim().is_empty() {
             return Some(OutputStyle {
                 name: safe.to_string(),
@@ -794,7 +832,7 @@ mod tests {
             .unwrap();
 
         let style = collect_output_style(
-            cwd.path(),
+            Some(cwd.path()),
             "terse",
             &test_paths(home.path()),
             &Default::default(),
@@ -817,7 +855,7 @@ mod tests {
             .unwrap();
 
         let style = collect_output_style(
-            cwd.path(),
+            Some(cwd.path()),
             "verbose",
             &test_paths(home.path()),
             &Default::default(),
@@ -833,7 +871,7 @@ mod tests {
         let cwd = TempDir::new().unwrap();
         // names with slashes / leading dot must not load anything
         assert!(collect_output_style(
-            cwd.path(),
+            Some(cwd.path()),
             "../etc/passwd",
             &test_paths(cwd.path()),
             &Default::default()
@@ -841,18 +879,21 @@ mod tests {
         .await
         .is_none());
         assert!(collect_output_style(
-            cwd.path(),
+            Some(cwd.path()),
             ".hidden",
             &test_paths(cwd.path()),
             &Default::default()
         )
         .await
         .is_none());
-        assert!(
-            collect_output_style(cwd.path(), "", &test_paths(cwd.path()), &Default::default())
-                .await
-                .is_none()
-        );
+        assert!(collect_output_style(
+            Some(cwd.path()),
+            "",
+            &test_paths(cwd.path()),
+            &Default::default()
+        )
+        .await
+        .is_none());
     }
 
     #[tokio::test]

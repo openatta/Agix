@@ -6,10 +6,10 @@ impl SessionPool {
     /// Merged settings for `project_root` (global → scene → project tiers),
     /// built once and cached — see the `projects` field doc comment.
     /// `None` is the global no-project tier (docs/ARCHITECTURE.md §3.2):
-    /// `local_data_dir` becomes
-    /// `global_data_dir` itself rather than `<project>/.agix`, so project-
-    /// layer settings are skipped entirely, same as the design's "no
-    /// specific project" case.
+    /// `local_data_dir` becomes `global_data_dir` itself rather than
+    /// `<project>/.agix`, so project-layer settings are skipped entirely, and
+    /// the workspace is a `Workspace::Scratch` that `create` narrows to the
+    /// session's own directory.
     ///
     /// Does not validate that `project_root` exists — `Settings::load`
     /// already degrades a missing/unreadable `settings.json` to defaults
@@ -65,23 +65,26 @@ impl SessionPool {
             self.settings.read().await.clone()
         } else {
             let default_model = self.settings.read().await.model.model_name.clone();
-            let local_dir = match &key.0 {
-                Some(root) => root.join(".agix"),
-                None => self.paths.global_root(),
-            };
-            let (global_root, scene_root, scene_id) = (
+            let (global_root, scene_root, scene_id, project) = (
                 self.paths.global_root(),
                 self.scene_root(scene_id, &startup_scene),
                 scene_id.to_string(),
+                key.0.clone(),
             );
-            let loaded = off_the_runtime(move || {
-                Settings::load(
+            let loaded = off_the_runtime(move || match project {
+                Some(root) => Settings::load(
                     global_root,
                     scene_root,
-                    local_dir,
+                    root.join(".agix"),
                     &scene_id,
                     &default_model,
-                )
+                ),
+                None => Settings::load_without_project(
+                    global_root,
+                    scene_root,
+                    &scene_id,
+                    &default_model,
+                ),
             })
             .await;
             Arc::new(self.with_managed_layer(loaded))

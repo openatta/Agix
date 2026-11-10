@@ -116,7 +116,7 @@ pub(super) fn build_prompt_context<'a>(
             (false, None, false, None, None, None, None, None)
         };
     ScenePromptContext {
-        cwd: Cow::Owned(settings.paths.project_root().display().to_string()),
+        cwd: Cow::Owned(settings.paths.working_dir().display().to_string()),
         os: Cow::Borrowed(std::env::consts::OS),
         // `FrozenContext::collect` always sets `shell` (falls back to
         // `/bin/bash` itself when `$SHELL` is unset), so this fallback only

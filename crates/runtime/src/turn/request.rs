@@ -293,7 +293,7 @@ impl Agent {
         // pointer to a tool that isn't there is worse than no pointer.
         let can_fetch_guides = selected.iter().any(|t| t.name() == TOOL_SEARCH_NAME);
         let prompt_ctx = base::tool::PromptContext {
-            cwd: self.settings.paths.project_root(),
+            cwd: self.settings.paths.working_dir().to_path_buf(),
             model: self.settings.model.model_name.clone(),
             session_id: self.session.session_id.clone(),
             is_interactive: false,

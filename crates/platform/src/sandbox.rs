@@ -515,7 +515,18 @@ impl Roots {
     fn fenced_state_root(&self) -> Option<&Path> {
         self.state_root
             .as_deref()
-            .filter(|root| !self.only_additional && !self.cwd.starts_with(root))
+            .filter(|root| !self.only_additional && !self.project_in(root))
+    }
+
+    /// Whether the working directory is a project inside `state_root`. A
+    /// session without a project works in a directory of its own in the
+    /// state root's scratchpad, which the fence leaves open anyway, so that
+    /// one is no reason to drop the fence.
+    fn project_in(&self, state_root: &Path) -> bool {
+        self.cwd.starts_with(state_root)
+            && !STATE_ROOT_WORKING_DIRS
+                .iter()
+                .any(|dir| self.cwd.starts_with(state_root.join(dir)))
     }
 }
 
@@ -885,7 +896,7 @@ fn build_macos_profile(cwd: &Path, additional: &[PathBuf], policy: &SandboxPolic
     if let Some(root) = roots
         .state_root
         .as_deref()
-        .filter(|root| !roots.cwd.starts_with(root))
+        .filter(|root| !roots.project_in(root))
     {
         s.push_str(&format!(
             "(deny network-outbound (remote unix-socket (subpath \"{}\")))\n",
@@ -2887,6 +2898,48 @@ mod tests {
                 "{}",
                 target.display()
             );
+        }
+    }
+
+    /// A session without a project works in a directory of its own in the
+    /// state root's scratchpad. Working there does not open the rest of the
+    /// state root, nor its sockets.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_session_without_a_project_leaves_the_state_root_fenced() {
+        let Some(s) = UnderSandboxExec::new() else {
+            return;
+        };
+        let work = s.state_root.join("scratchpad/sessions/s1");
+        std::fs::create_dir_all(&work).unwrap();
+        let socket = listening(s.state_root.join("daemon.sock"));
+        assert!(outside("nc", &["-U", &socket.display().to_string()]));
+        let policy = SandboxPolicy {
+            state_root: Some(s.state_root.clone()),
+            additional_writable: vec![s.tmp.clone()],
+            ..Default::default()
+        };
+        let runs = |command: String| {
+            let confined = PlatformSandbox.confine(
+                ProcessSpec::new("bash", &work).args(["-c".to_string(), command]),
+                &policy,
+            );
+            std::process::Command::new(&confined.spec.program)
+                .args(&confined.spec.args)
+                .current_dir(&work)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        };
+        assert!(runs("echo x > notes.md".into()));
+        assert!(work.join("notes.md").is_file());
+        for command in [
+            format!("echo x > '{}/AGENTS.md'", s.state_root.display()),
+            format!("mkdir -p '{}/skills/x'", s.state_root.display()),
+            format!("nc -U '{}' < /dev/null", socket.display()),
+        ] {
+            assert!(!runs(command.clone()), "`{command}` was allowed");
         }
     }
 

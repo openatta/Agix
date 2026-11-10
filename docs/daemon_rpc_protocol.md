@@ -167,6 +167,13 @@ daemon 拿不到就拒绝启动;退出时删掉它。
 分别是"用 daemon 的默认项目"、"这是一个无项目会话"、"绑到这个项目"。给路径时目录
 必须存在,否则 `PROJECT_NOT_FOUND`。
 
+无项目会话的工具在会话自己的工作目录里干活:`<状态目录>/scratchpad/sessions/<session_id>`,
+相对路径都按它解析,`Bash` 也在这里起。这个目录、状态目录下的 `scratchpad` 与 `memory`
+不用询问就能写;别处(包括状态目录所在的家目录)都是"项目之外",写要询问,无人值守时拒绝,
+读同理(ARCHITECTURE §3.2、§6.3)。它没有项目层:不读项目设置、skills、agents、rules、hooks,
+没有 git 信息,也不找 `AGENTS.md`。`session.close` 不删这个目录,恢复同一个会话还在原处;
+`session.delete` 连它一起删掉。
+
 桌面端同时开多个项目时应始终显式传值(含显式 `null`)—— 依赖 daemon 的 cwd 会让
 所有会话共享同一份项目层配置。
 
@@ -473,7 +480,8 @@ bypass(`disable_bypass_permissions_mode`)时,请求 `bypassPermissions` 的会�
 ```
 
 未信任的项目(§3.6)不读它 `settings.local.json` 里的 allow 规则,`local` 写下的规则因此
-不会被之后的会话读回;要它持久,先信任这个项目。
+不会被之后的会话读回;要它持久,先信任这个项目。无项目会话(`project_root: null`)没有
+"这个项目",`local` 与 `session` 一样只在本会话内生效,什么也不写。
 
 `prompt_type` 为 `question` 时,`session.respondToPrompt` 的 `answer`,两种形态:
 

@@ -19,6 +19,7 @@ pub(super) fn parent_settings_for_test(scope: &str) -> (Settings, std::path::Pat
     s.paths = PathSettings {
         user_data_dir: dir.clone(),
         global_data_dir: dir.clone(),
+        workspace: base::settings::Workspace::project_of(&dir),
         local_data_dir: dir.clone(),
         scope: scope.to_string(),
     };

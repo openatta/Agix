@@ -1452,6 +1452,20 @@ WebAssembly 载体整个移除。
   `gh` 也靠这个变量——命令里读不到了;要命令也拿到,写进 `sandbox.subprocess_env.allow`。stdio
   server 自己要的密钥写进它的 `env`(`"env": {"GITHUB_TOKEN": "$GITHUB_TOKEN"}`),不要靠继承。
   剥掉的名单只增不减,删掉设置里的点名要重启 daemon 才放回。
+- **无项目会话不再把家目录当项目。** `project_root: null` 的会话(`harnix`、`mini` 这类不要求项目
+  的场景)以前以状态目录的上一级为工作目录,状态目录是 `~/.agix` 时就是 `~`:`Write` / `Edit`
+  改 `~/.zshrc`、`~/Library/LaunchAgents/*.plist` 不询问,无人值守也照样放行,沙箱里的 `Bash`
+  能写整个家目录;`~` 是 git 仓库时它的状态进提示词,`~/AGENTS.md`、`~/.agents/skills/` 当项目
+  的读进来。现在这类会话在自己的 `<状态目录>/scratchpad/sessions/<会话 id>` 里干活(子 Agent
+  共用父会话的这一个):相对路径按它解析,它与状态目录下的 `scratchpad`、`memory` 写起来不询问,
+  别处都按项目之外处理——写要询问、无人值守时拒绝,读家目录也要询问(或写进
+  `sandbox.read_directories`)。它没有项目层:不跑 git、不找 `AGENTS.md`,没有项目级 skills、
+  agents、rules、hooks。要让这类会话免询问写某个目录,写进 `sandbox.additional_directories`
+  (`ARCHITECTURE.md` §3.2、§6.3)。
+- **无项目会话里的"总是允许"只管本会话。** 以前 `permit_always` 的 `local` 在无项目会话里写进
+  状态目录的 `settings.local.json`——那是全局层,一次回答就让所有项目、所有会话都放行这条调用。
+  现在无项目会话没有"这个项目",`local` 与 `session` 一样只在本会话内生效,什么也不写。要长期
+  放行,自己写进全局设置的 `permission_rules`。
 
 #### hooks
 
@@ -1642,6 +1656,13 @@ WebAssembly 载体整个移除。
   `transcript.jsonl` 里看得到它;只认识旧条目的工具照"未知 `ns` 跳过"处理即可。
 - managed 层的 `ask` 不再被 `PreToolUse` hook 的 `approve` 吞掉:配了这种 hook 的会话,也会收到
   managed 规则要求的 permission `prompt` 帧,宿主要能回答。
+- `project_root: null` 的会话的工具以 `<状态目录>/scratchpad/sessions/<session_id>` 为工作目录,
+  `Bash` 的 `pwd`、相对路径都落在这里;以前是状态目录的上一级(通常是家目录)。写家目录里的文件
+  现在会发 permission `prompt` 帧(无人值守的场景直接拒绝)。要模型去处理用户文件的宿主,传
+  `project_root`,或在 `options.permission_rules` / 设置里为那几个目录写 allow
+  (`daemon_rpc_protocol.md` §3.1)。
+- 无项目会话里回答 `{"type":"permit_always","scope":"local"}` 不再写盘,效果同 `scope: "session"`
+  (`daemon_rpc_protocol.md` §4.7)。
 - `options.permission_rules` 里 `WebFetch` / `Ping` 的 `rule_content` 按 URL 的各部分匹配
   (`daemon_rpc_protocol.md` §4.6):传 `scheme://host[:port][/path]` 形状的模式;别的写法作 `allow`
   只放行原样相等的 URL。
@@ -1897,6 +1918,22 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 
 #### 设置、daemon 与遥测
 
+- **`PathSettings` 说清有没有项目。** 新字段 `workspace: base::settings::Workspace`:
+  `Project(<项目根>)` 或 `Scratch(<无项目会话的工作目录>)`。`PathSettings::project_root()` 改为返回
+  `Option<&Path>`(无项目是 `None`),工具的工作目录改取 `PathSettings::working_dir()`;以前
+  `project_root()` 对无项目会话返回状态目录的上一级。逐字段构造 `PathSettings` 的补
+  `workspace: Workspace::project_of(&local_data_dir)`(与以前的推导相同)。无项目的设置用新的
+  `Settings::load_without_project(global, scene, scope, model)` 加载,不要再把状态目录当
+  `local_dir` 传给 `Settings::load`——那样得到的是"以家目录为项目"。新增
+  `base::paths::session_scratch_dir`;会话池建会话时把 `Scratch` 换成会话自己的那一个。
+- 随之改签名的:`runtime::plugin::PluginSession::project_root` 成为 `Option<&Path>`;
+  `base::frozen::load_session_skills` / `load_session_skills_with_bundled` 的第一个参数是
+  `Option<&Path>`(项目根,`None` 不扫项目级 skills);新增 `FrozenContext::collect_without_project`
+  与 `CollectOptions::outside_project`。
+- `ConfigPaths` 多了 `project_root: Option<PathBuf>`(`ConfigPaths::new` 取 `local_data_dir` 的上一级,
+  `from_settings` 取 `PathSettings::project_root()`);`PromptFiles::for_project` 以它为限定的根,
+  无项目时没有根。`PathSettings::local_settings_file()` 改为返回 `Option<PathBuf>`,无项目是 `None`;
+  `ToolExecCtx::local_settings_path` 随之是 `Option`。
 - `base::settings::Settings::session_dir` 标了 `#[deprecated]`:结构体字面量里写 `session_dir: None`
   会出 deprecation warning(`-D warnings` 下是错误)。改用 `..Settings::defaults_for(..)` 补齐,或者在
   那个函数上 `#[allow(deprecated)]`,等字段删除时再去掉。新增 `base::settings::deprecated_settings_keys`。

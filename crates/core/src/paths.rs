@@ -42,12 +42,29 @@
 //! and other external agent tools scan. `ConfigPaths` only models Agix's
 //! own private state and extensions, which no other tool reads.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The state root's subdirectories that are the agent's own working space
 /// rather than configuration: the only parts of it the agent's tools and its
 /// sandboxed commands may write.
-pub const STATE_ROOT_WORKING_DIRS: &[&str] = &["scratchpad", "memory"];
+pub const STATE_ROOT_WORKING_DIRS: &[&str] = &[STATE_ROOT_SCRATCHPAD, "memory"];
+
+/// The state root's scratchpad, one of [`STATE_ROOT_WORKING_DIRS`].
+pub const STATE_ROOT_SCRATCHPAD: &str = "scratchpad";
+
+/// Where a session without a project works: a directory of its own in the
+/// state root's scratchpad, `<state root>/scratchpad/sessions/<session id>`.
+/// Its delegates share it — they inherit the session's settings.
+pub fn session_scratch_dir(state_root: &Path, session_id: &str) -> PathBuf {
+    let id: String = session_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .collect();
+    state_root
+        .join(STATE_ROOT_SCRATCHPAD)
+        .join("sessions")
+        .join(id)
+}
 
 /// The directory in a project's `.agix` that holds the git worktrees
 /// `EnterWorktree` creates: project work checked out elsewhere, not
@@ -202,7 +219,8 @@ impl Credentials {
 /// for project content) may not resolve outside it: a repository can commit
 /// a symbolic link to anything, and its own files are all it gets to show
 /// the model. The state root's own files are the user's, not the project's,
-/// even when the state root sits under `root`.
+/// even when the state root sits under `root` — a project opened at `$HOME`
+/// holds `~/.agix`, and the user's own skills there may link anywhere.
 #[derive(Debug, Clone, Default)]
 pub struct PromptFiles {
     credentials: Credentials,
@@ -239,9 +257,10 @@ impl PromptFiles {
     }
 
     /// For a session with these roots: the state root's credentials, and
-    /// the project — the directory holding `local_data_dir` — as the root.
+    /// the project as the root. A session without a project reads nothing
+    /// of a project's, so it has no root to confine.
     pub fn for_project(paths: &ConfigPaths) -> Self {
-        Self::new(Some(&paths.global_data_dir), paths.local_data_dir.parent())
+        Self::new(Some(&paths.global_data_dir), paths.project_root.as_deref())
     }
 
     /// Where `path` resolves, when the engine may read it for the model. A
@@ -350,6 +369,9 @@ pub struct ConfigPaths {
     pub global_data_dir: PathBuf,
     /// Local/project data root. Default `<cwd>/.agix/`.
     pub local_data_dir: PathBuf,
+    /// The project, `None` for a session without one
+    /// ([`crate::settings::PathSettings::project_root`]).
+    pub project_root: Option<PathBuf>,
 }
 
 impl ConfigPaths {
@@ -365,10 +387,14 @@ impl ConfigPaths {
     /// `scope` identifies the product instance whose scene-specific override
     /// tree lives under `global_data_dir/scenes/<scope>/`.
     pub fn new(global_data_dir: PathBuf, local_data_dir: PathBuf, scope: &str) -> Self {
+        let project_root = crate::settings::Workspace::project_of(&local_data_dir)
+            .project_root()
+            .map(PathBuf::from);
         Self {
             user_data_dir: global_data_dir.join("scenes").join(scope),
             global_data_dir,
             local_data_dir,
+            project_root,
         }
     }
 
@@ -380,6 +406,7 @@ impl ConfigPaths {
             user_data_dir: paths.user_data_dir.clone(),
             global_data_dir: paths.global_data_dir.clone(),
             local_data_dir: paths.local_data_dir.clone(),
+            project_root: paths.project_root().map(PathBuf::from),
         }
     }
 
@@ -605,6 +632,7 @@ mod tests {
         let carried = crate::settings::PathSettings {
             user_data_dir: p.user_data_dir.clone(),
             global_data_dir: p.global_data_dir.clone(),
+            workspace: crate::settings::Workspace::project_of(&p.local_data_dir),
             local_data_dir: p.local_data_dir.clone(),
             scope: "code".into(),
         };

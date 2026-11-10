@@ -37,6 +37,8 @@ async fn telemetry_disabled_yields_a_noop_handle_even_with_an_absolute_dir() {
     let mut settings = Settings::defaults_for("claude-sonnet-4-6");
     settings.telemetry_enabled = false;
     settings.paths.local_data_dir = dir.path().to_path_buf();
+    settings.paths.workspace =
+        base::settings::Workspace::project_of(&settings.paths.local_data_dir);
     let _handle = build_pool_telemetry(&settings);
     assert!(!dir.path().join("telemetry").join("pool.jsonl").exists());
 }
@@ -47,6 +49,8 @@ async fn absolute_dir_and_telemetry_enabled_persists_events_to_pool_jsonl() {
     let mut settings = Settings::defaults_for("claude-sonnet-4-6");
     settings.telemetry_enabled = true;
     settings.paths.local_data_dir = dir.path().to_path_buf();
+    settings.paths.workspace =
+        base::settings::Workspace::project_of(&settings.paths.local_data_dir);
     let handle = build_pool_telemetry(&settings);
 
     handle
@@ -96,6 +100,8 @@ async fn recording_into_the_project_keeps_the_recordings_out_of_git() {
     let mut settings = Settings::defaults_for("claude-sonnet-4-6");
     settings.telemetry_enabled = true;
     settings.paths.local_data_dir = dir.path().join(".agix");
+    settings.paths.workspace =
+        base::settings::Workspace::project_of(&settings.paths.local_data_dir);
     let _handle = build_pool_telemetry(&settings);
     let ignored = std::fs::read_to_string(dir.path().join(".agix").join(".gitignore")).unwrap();
     assert!(ignored.lines().any(|l| l == "telemetry/"), "{ignored}");
@@ -107,6 +113,8 @@ async fn recording_into_the_project_keeps_the_recordings_out_of_git() {
     let mine = tempfile::tempdir().unwrap();
     std::fs::write(mine.path().join(".gitignore"), "mine\n").unwrap();
     settings.paths.local_data_dir = mine.path().to_path_buf();
+    settings.paths.workspace =
+        base::settings::Workspace::project_of(&settings.paths.local_data_dir);
     let _handle = build_pool_telemetry(&settings);
     assert_eq!(
         std::fs::read_to_string(mine.path().join(".gitignore")).unwrap(),

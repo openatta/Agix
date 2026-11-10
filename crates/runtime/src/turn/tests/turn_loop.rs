@@ -28,6 +28,7 @@ fn prompt_context_includes_os() {
         paths: base::interface::settings::PathSettings {
             user_data_dir: "/tmp/user".into(),
             global_data_dir: "/tmp/global".into(),
+            workspace: base::settings::Workspace::project_of(std::path::Path::new("/tmp/local")),
             local_data_dir: "/tmp/local".into(),
             scope: "code".into(),
         },

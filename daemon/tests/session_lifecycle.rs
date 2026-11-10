@@ -2813,6 +2813,194 @@ async fn session_create_with_null_project_root_is_a_no_project_session() {
     srv.stop().await;
 }
 
+/// A session without a project still gets its work done, unattended and
+/// unasked: it writes, reads and runs commands in a directory of its own in
+/// the state root's scratchpad, and writes the shared scratchpad too. What
+/// is around that directory is no project — not a git repository the state
+/// root sits in, nor an `AGENTS.md` above it.
+#[tokio::test]
+async fn a_no_project_session_works_in_its_own_scratch_directory() {
+    let rounds = vec![
+        tool_round(
+            "Write",
+            "w1",
+            serde_json::json!({"file_path": "notes.md", "content": "NOTE-ONE\n"}),
+        ),
+        tool_round("Read", "r1", serde_json::json!({"file_path": "notes.md"})),
+        tool_round(
+            "Bash",
+            "b1",
+            serde_json::json!({"command": "cat notes.md > copy.md && pwd"}),
+        ),
+        tool_round(
+            "Write",
+            "w2",
+            serde_json::json!({"file_path": "../../shared.md", "content": "SHARED\n"}),
+        ),
+        text_round("done"),
+    ];
+    let (srv, seen) = start_scripted_server(rounds, ask_settings(), Duration::ZERO).await;
+    let state_root = srv._dir.path().to_path_buf();
+    std::fs::write(state_root.join("AGENTS.md"), "STATE-ROOT-AGENTS-MARKER").unwrap();
+    std::fs::write(state_root.join("repo-marker.txt"), "x").unwrap();
+    let git = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&state_root)
+        .status()
+        .unwrap();
+    assert!(git.success());
+
+    rpc(
+        &srv.sock,
+        r#"{"jsonrpc":"2.0","method":"scene.activate","params":{"scene":"harnix"},"id":0}"#,
+    )
+    .await;
+    let created = rpc(
+        &srv.sock,
+        r#"{"jsonrpc":"2.0","method":"session.create","params":{"scene":"harnix","project_root":null},"id":1}"#,
+    )
+    .await;
+    let sid = created["result"]["session_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{created}"))
+        .to_string();
+    let (frames, response) = rpc_streaming(
+        &srv.sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.run_turn","params":{{"session_id":"{sid}","message":"go"}},"id":2}}"#
+        ),
+    )
+    .await;
+    assert!(response["result"].is_object(), "turn failed: {response}");
+    assert!(events_of_kind(&frames, "prompt").is_empty(), "{frames:?}");
+
+    let work = state_root.join("scratchpad").join("sessions").join(&sid);
+    let results = events_of_kind(&frames, "tool_result");
+    let result = |id: &str| {
+        results
+            .iter()
+            .find(|r| r["id"] == id)
+            .unwrap_or_else(|| panic!("no tool_result for {id}: {frames:?}"))
+    };
+    for id in ["w1", "r1", "b1", "w2"] {
+        assert_eq!(result(id)["is_error"], false, "{id}: {}", result(id));
+    }
+    assert_eq!(
+        std::fs::read_to_string(work.join("notes.md")).unwrap(),
+        "NOTE-ONE\n"
+    );
+    assert!(result("r1")["content"].to_string().contains("NOTE-ONE"));
+    assert_eq!(
+        std::fs::read_to_string(work.join("copy.md")).unwrap(),
+        "NOTE-ONE\n"
+    );
+    assert!(result("b1")["content"]
+        .to_string()
+        .contains(&format!("sessions/{sid}")));
+    assert_eq!(
+        std::fs::read_to_string(state_root.join("scratchpad").join("shared.md")).unwrap(),
+        "SHARED\n"
+    );
+
+    let shown = serde_json::to_string(&*seen.lock().unwrap()).unwrap();
+    assert!(
+        !shown.contains("STATE-ROOT-AGENTS-MARKER"),
+        "an AGENTS.md above the scratch directory was loaded"
+    );
+    assert!(
+        !shown.contains("repo-marker.txt"),
+        "the repository around the state root was reported as the session's"
+    );
+
+    let deleted = rpc(
+        &srv.sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.delete","params":{{"session_id":"{sid}"}},"id":3}}"#
+        ),
+    )
+    .await;
+    assert_eq!(deleted["result"]["deleted"], true, "{deleted}");
+    assert!(
+        !work.exists(),
+        "a deleted session left its directory behind"
+    );
+
+    srv.stop().await;
+}
+
+/// "Always allow, this project" has no project to mean without one: the
+/// answer holds for the rest of the session and is written nowhere — not
+/// into the state root's `settings.local.json`, which is the global tier.
+#[tokio::test]
+async fn a_no_project_sessions_permanent_allow_stays_in_the_session() {
+    let beside = serde_json::json!("../../../beside.md");
+    let rounds = vec![
+        tool_round(
+            "Write",
+            "tool-1",
+            serde_json::json!({"file_path": beside, "content": "one\n"}),
+        ),
+        tool_round("Read", "tool-2", serde_json::json!({"file_path": beside})),
+        tool_round(
+            "Write",
+            "tool-3",
+            serde_json::json!({"file_path": beside, "content": "two\n"}),
+        ),
+        text_round("done"),
+    ];
+    let (srv, _seen) = start_scripted_server(rounds, ask_settings(), Duration::from_secs(30)).await;
+    let state_root = srv._dir.path().to_path_buf();
+    let scene_dir = state_root.join("scenes").join("desk");
+    std::fs::create_dir_all(&scene_dir).unwrap();
+    std::fs::write(
+        scene_dir.join("scene.json"),
+        r#"{"id": "desk", "name": "Desk", "interactive": true, "tools": ["Read", "Write"]}"#,
+    )
+    .unwrap();
+    std::fs::write(scene_dir.join("prompt.md"), "Help at the desk.").unwrap();
+    for (i, method) in ["scene.reload", "scene.activate"].iter().enumerate() {
+        let reply = rpc(
+            &srv.sock,
+            &format!(
+                r#"{{"jsonrpc":"2.0","method":"{method}","params":{{"scene":"desk"}},"id":{i}}}"#
+            ),
+        )
+        .await;
+        assert!(reply["result"].is_object(), "{method}: {reply}");
+    }
+    let created = rpc(
+        &srv.sock,
+        r#"{"jsonrpc":"2.0","method":"session.create","params":{"scene":"desk","project_root":null},"id":2}"#,
+    )
+    .await;
+    let sid = created["result"]["session_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{created}"))
+        .to_string();
+
+    let (frames, response) = run_turn_answering_prompts(
+        &srv.sock,
+        "go",
+        &format!(r#","session_id":"{sid}""#),
+        |_| Some(r#"{"type":"permit_always","scope":"local"}"#.to_string()),
+    )
+    .await;
+    assert!(response["result"].is_object(), "turn failed: {response}");
+    assert_eq!(events_of_kind(&frames, "prompt").len(), 1, "{frames:?}");
+    assert_eq!(
+        std::fs::read_to_string(state_root.join("beside.md")).unwrap(),
+        "two\n"
+    );
+    let global_local =
+        std::fs::read_to_string(state_root.join("settings.local.json")).unwrap_or_default();
+    assert!(
+        !global_local.contains("beside.md"),
+        "a no-project session's permanent allow reached the global tier: {global_local}"
+    );
+
+    srv.stop().await;
+}
+
 #[tokio::test]
 async fn session_create_without_project_root_uses_the_pool_default() {
     let (srv, _seen) =

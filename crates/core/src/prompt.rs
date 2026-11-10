@@ -431,6 +431,9 @@ mod tests {
             paths: PathSettings {
                 user_data_dir: "/tmp/agix/scenes/code".into(),
                 global_data_dir: "/tmp/agix".into(),
+                workspace: crate::settings::Workspace::project_of(std::path::Path::new(
+                    "/tmp/agix/local",
+                )),
                 local_data_dir: "/tmp/agix/local".into(),
                 scope: "code".into(),
             },

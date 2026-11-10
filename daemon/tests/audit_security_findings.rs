@@ -641,13 +641,11 @@ async fn call(sock: &Path, method: &str, params: Value) -> Value {
     serde_json::from_str(&line).unwrap()
 }
 
-/// A session with no project has no project to write in: its tools work
-/// from the state root's parent (`PathSettings::project_root` of a
-/// `local_data_dir` that is the state root), which for `~/.agix` is the
-/// user's home, so a `Write` anywhere in it is the tool's own silent allow
-/// and the sandbox opens all of it to `Bash`.
+/// A session with no project has no project to write in: beside the state
+/// root — the user's home, for `~/.agix` — is outside every root it may
+/// write without asking, so a `Write` there is asked about and, refused,
+/// leaves nothing behind.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "audit: confirmed defect, fix pending"]
 async fn audit2_a_no_project_session_writes_the_state_roots_parent_silently() {
     let daemon = Daemon::start(
         Setup {

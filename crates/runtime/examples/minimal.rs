@@ -44,6 +44,7 @@ fn settings(
             user_data_dir: data_dir.clone(),
             global_data_dir: data_dir,
             // The project is the directory this lives in.
+            workspace: base::settings::Workspace::project_of(&project.join(".agix")),
             local_data_dir: project.join(".agix"),
             scope: "code".into(),
         },

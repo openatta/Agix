@@ -298,6 +298,7 @@ pub async fn drive(root: &Path, session: Session) -> Ran {
     settings.paths = PathSettings {
         user_data_dir: root.join("user"),
         global_data_dir: root.join("global"),
+        workspace: base::settings::Workspace::project_of(&root.join("local")),
         local_data_dir: root.join("local"),
         scope: "code".into(),
     };
