@@ -757,7 +757,7 @@ mod tests {
             Some(cwd.path()),
             "terse",
             &test_paths(home.path()),
-            &Default::default(),
+            &crate::paths::PromptFiles::unscoped(),
         )
         .await
         .unwrap();
@@ -780,7 +780,7 @@ mod tests {
             Some(cwd.path()),
             "verbose",
             &test_paths(home.path()),
-            &Default::default(),
+            &crate::paths::PromptFiles::unscoped(),
         )
         .await
         .unwrap();
@@ -796,7 +796,7 @@ mod tests {
             Some(cwd.path()),
             "../etc/passwd",
             &test_paths(cwd.path()),
-            &Default::default()
+            &crate::paths::PromptFiles::unscoped()
         )
         .await
         .is_none());
@@ -804,7 +804,7 @@ mod tests {
             Some(cwd.path()),
             ".hidden",
             &test_paths(cwd.path()),
-            &Default::default()
+            &crate::paths::PromptFiles::unscoped()
         )
         .await
         .is_none());
@@ -812,7 +812,7 @@ mod tests {
             Some(cwd.path()),
             "",
             &test_paths(cwd.path()),
-            &Default::default()
+            &crate::paths::PromptFiles::unscoped()
         )
         .await
         .is_none());

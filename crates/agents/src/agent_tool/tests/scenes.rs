@@ -248,7 +248,11 @@ fn agent_type_frontmatter_parses_scene_override() {
         "digger.md",
         "---\nname: digger\ndescription: Source digger\nscene: harnix\n---\nBody.",
     );
-    let types = load_agent_types_from_dir(&dir, AgentTypeSource::User, &Default::default());
+    let types = load_agent_types_from_dir(
+        &dir,
+        AgentTypeSource::User,
+        &base::paths::PromptFiles::unscoped(),
+    );
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(types[0].scene.as_deref(), Some("harnix"));
 }

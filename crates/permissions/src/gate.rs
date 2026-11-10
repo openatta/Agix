@@ -5,7 +5,7 @@
 //!
 //! 0. 部署方的 managed 层（`ManagedPolicy`）读不了 → 一律 deny；它关掉了
 //!    bypass 的，`BypassPermissions` 按 `Default` 判
-//! 1. `tool.validate_input` —— 输入合法性。之后是凭据（`base::paths::Credentials`：
+//! 1. `tool.validate_input` —— 输入合法性。之后是凭据（`base::paths::SensitivePaths`：
 //!    状态目录的设置文件、MCP OAuth 与 daemon token，项目的 key 文件，`.ssh` 一类）
 //!    → deny，任何模式都一样。`BypassPermissions` 到此为止：
 //!    输入合法即 allow，下面的规则、受保护路径、配置目录的确认和工具
@@ -55,7 +55,7 @@ use crate::path_rule::ResolvedPath;
 use crate::rule::format_rule_string;
 use crate::ruleset::{path_rule_group, shell_rule_group, RuleHit, RuleSet};
 use base::paths::{
-    Credentials, CREDENTIAL_DIR_NAMES, ENGINE_CONFIG_ROOTS, PROJECT_ENGINE_CONFIG_DIRS,
+    credential_dir_names, SensitivePaths, ENGINE_CONFIG_ROOTS, PROJECT_ENGINE_CONFIG_DIRS,
     PROJECT_WORKTREES_DIR, STATE_ROOT_WORKING_DIRS,
 };
 use base::permission::{DecisionReason, PermissionDecision, PermissionMode};
@@ -1304,14 +1304,14 @@ fn protected_path_candidates(
         .collect()
 }
 
-/// The first string of the call that names a [`Credentials`] location, each
+/// The first string of the call that names a credential location, each
 /// taken as a path from the session's cwd, as is the value of a
 /// `--flag=value`.
 fn names_a_credential(tool: &dyn Tool, input: &Value, ctx: &ToolContext) -> Option<String> {
     let content = tool.permission_match_content(input)?;
     let kind = tool.spec().permission.content_kind;
     let resolved = path_rule_group(kind).map(|_| ResolvedPath::new(&content, &ctx.cwd));
-    let credentials = Credentials::new(ctx.sandbox.state_root.as_deref());
+    let credentials = SensitivePaths::new(ctx.sandbox.state_root.as_deref(), None);
     protected_path_candidates(kind, Some(&content), resolved.as_ref())
         .into_iter()
         .find(|candidate| {
@@ -1321,7 +1321,7 @@ fn names_a_credential(tool: &dyn Tool, input: &Value, ctx: &ToolContext) -> Opti
                 .any(|word| {
                     ResolvedPath::new(word, &ctx.cwd)
                         .all()
-                        .any(|p| credentials.hold(p))
+                        .any(|p| credentials.is_credential(p))
                 })
         })
 }
@@ -1408,7 +1408,7 @@ fn is_path_bypass_immune(content: &str) -> bool {
         // trailing `/`) simply never match anything in the list.
         if lowered
             .split('/')
-            .any(|component| CREDENTIAL_DIR_NAMES.contains(&component))
+            .any(|component| credential_dir_names().any(|name| name == component))
         {
             return true;
         }

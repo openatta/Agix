@@ -117,7 +117,7 @@ impl SkillEntry {
                 ));
             }
         }
-        let content = crate::paths::PromptFiles::default().read_to_string(&self.path)?;
+        let content = crate::paths::PromptFiles::unscoped().read_to_string(&self.path)?;
         let (_front, body) = split_frontmatter(&content);
         Ok(body.trim().to_string())
     }
@@ -227,7 +227,7 @@ async fn scan_skills_dir(
 /// a [`SkillEntry`]. Reads the file, parses YAML frontmatter, falls back to
 /// first markdown body line for description.
 pub async fn load_skill_from_path(path: &Path, source: SkillSource) -> Option<SkillEntry> {
-    let content = crate::paths::PromptFiles::default()
+    let content = crate::paths::PromptFiles::unscoped()
         .read_to_string(path)
         .ok()?;
     let dir_name = path

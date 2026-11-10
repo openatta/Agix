@@ -312,7 +312,7 @@ pub async fn execute_import(
     source: &ImportSource,
 ) -> Result<ImportSummary, ImportError> {
     let mut actions = Vec::new();
-    let files = crate::paths::PromptFiles::new(None, Some(cwd));
+    let files = crate::paths::SensitivePaths::default().prompt_files_within(cwd);
     match source {
         ImportSource::ClaudeCode {
             claude_md,

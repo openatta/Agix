@@ -57,7 +57,7 @@
 //!
 //! The policy's `deny_read` (the credential stores in the user's home, by
 //! default) less its `allow_read`, and whatever the policy says, the
-//! credentials of `base::paths` (`Credentials`): the state root's settings
+//! credentials of `base::paths` (`CREDENTIALS`): the state root's settings
 //! files and MCP OAuth tokens, its own and every scene's, the daemons'
 //! socket tokens under `daemon/auth/`, and the project's
 //! `.agix/settings.local.json` and `.agix/mcp.local.json`.

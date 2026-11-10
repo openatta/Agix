@@ -46,7 +46,7 @@ impl SkillDirectory {
             tier,
             nested: true,
             id,
-            files: PromptFiles::default(),
+            files: PromptFiles::unscoped(),
         }
     }
 
@@ -255,7 +255,7 @@ mod tests {
         std::os::unix::fs::symlink(outside.join("shared"), skills.join("shared")).unwrap();
         std::os::unix::fs::symlink("../../docs/local.md", skills.join("local.md")).unwrap();
         let names: Vec<String> = SkillDirectory::tier(&skills, SkillSource::Project)
-            .reading_with(PromptFiles::new(None, Some(&project)))
+            .reading_with(base::paths::SensitivePaths::default().prompt_files_within(&project))
             .skills()
             .into_iter()
             .map(|e| e.name)

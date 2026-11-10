@@ -206,7 +206,10 @@ fn build_filtered_memory_index(
 ) -> String {
     // Try to use the on-disk MEMORY.md as the canonical index, but filter out
     // lines referencing excluded memory names.
-    let files = base::paths::PromptFiles::new(None, index_path.parent());
+    let files = match index_path.parent() {
+        Some(dir) => base::paths::SensitivePaths::default().prompt_files_within(dir),
+        None => base::paths::PromptFiles::unscoped(),
+    };
     if let Ok(raw) = files.read_to_string(&index_path) {
         let filtered: String = raw
             .lines()

@@ -289,14 +289,16 @@ mod tests {
             .unwrap();
 
         // walk_up = true（默认）-- parent 应该出现
-        let with_walk = collect_memory_files_with(&child, true, &Default::default()).await;
+        let with_walk =
+            collect_memory_files_with(&child, true, &crate::paths::PromptFiles::unscoped()).await;
         assert!(with_walk
             .iter()
             .any(|e| e.content.contains("PARENT-MONOREPO")));
         assert!(with_walk.iter().any(|e| e.content.contains("CHILD-LOCAL")));
 
         // walk_up = false -- 只 child
-        let no_walk = collect_memory_files_with(&child, false, &Default::default()).await;
+        let no_walk =
+            collect_memory_files_with(&child, false, &crate::paths::PromptFiles::unscoped()).await;
         assert!(!no_walk
             .iter()
             .any(|e| e.content.contains("PARENT-MONOREPO")));

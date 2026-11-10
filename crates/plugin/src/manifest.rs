@@ -228,7 +228,7 @@ impl Plugin {
                 resolved.display()
             )));
         }
-        if base::paths::Credentials::default().hold(&resolved) {
+        if base::paths::SensitivePaths::default().is_credential(&resolved) {
             return Err(PluginError::Schema(format!(
                 "`{}` resolves to a credential location, {}",
                 rel.display(),

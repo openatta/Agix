@@ -140,7 +140,7 @@ impl MemoryStore {
     /// How a file in `dir` is read: memories are files the store writes
     /// there itself, so one that resolves anywhere else is not one.
     fn files_in(&self, dir: &Path) -> PromptFiles {
-        PromptFiles::new(self.state_root.as_deref(), Some(dir))
+        crate::paths::SensitivePaths::new(self.state_root.as_deref(), None).prompt_files_within(dir)
     }
 
     /// Where a memory with no other home is written — the directory the
@@ -713,7 +713,8 @@ fn sanitize_filename(name: &str) -> String {
 pub fn build_memory_prompt(memory_dir: &Path) -> String {
     memory_prompt_with_index(
         memory_dir,
-        PromptFiles::new(None, Some(memory_dir))
+        crate::paths::SensitivePaths::default()
+            .prompt_files_within(memory_dir)
             .read_to_string(&memory_dir.join(INDEX_FILE))
             .ok(),
     )
@@ -1246,7 +1247,7 @@ This memory was written before the flat-format fix."#;
         m.recall_count = 7;
         store.persist_batch(vec![m]).unwrap();
 
-        let back = MemoryStore::load_from_dir(&user_dir, &PromptFiles::default());
+        let back = MemoryStore::load_from_dir(&user_dir, &PromptFiles::unscoped());
         assert_eq!(back.len(), 1);
         let b = &back[0];
         assert_eq!(b.confidence, 0.42);
@@ -1266,7 +1267,7 @@ This memory was written before the flat-format fix."#;
         m.description = r#"uses "quotes": and a colon # plus a hash"#.into();
         store.persist_batch(vec![m]).unwrap();
 
-        let back = MemoryStore::load_from_dir(&user_dir, &PromptFiles::default());
+        let back = MemoryStore::load_from_dir(&user_dir, &PromptFiles::unscoped());
         assert_eq!(back.len(), 1, "file failed to parse back");
         assert_eq!(
             back[0].description,
@@ -1286,7 +1287,7 @@ This memory was written before the flat-format fix."#;
         )
         .unwrap();
 
-        let back = MemoryStore::load_from_dir(&user_dir, &PromptFiles::default());
+        let back = MemoryStore::load_from_dir(&user_dir, &PromptFiles::unscoped());
         assert_eq!(back.len(), 1);
         let b = &back[0];
         assert_eq!(b.name, "legacy");

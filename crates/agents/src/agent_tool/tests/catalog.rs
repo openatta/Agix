@@ -25,7 +25,7 @@ pub(super) fn write_agent_md(dir: &Path, filename: &str, content: &str) {
 
 #[test]
 fn merge_agent_types_with_no_dirs_returns_only_builtins() {
-    let merged = merge_agent_types(&[], &[], &Default::default());
+    let merged = merge_agent_types(&[], &[], &base::paths::PromptFiles::unscoped());
     assert_eq!(merged.len(), builtin_agent_types().len());
     assert!(merged.contains_key("explore"));
     assert!(merged.contains_key("code-reviewer"));
@@ -47,7 +47,11 @@ fn load_agent_types_from_dir_parses_frontmatter() {
         "security-auditor.md",
         "---\nname: security-auditor\ndescription: Finds security issues\nallowed_tools: [Read, Grep, Glob]\nmodel: claude-opus-4-8\n---\nYou are a security auditor.",
     );
-    let types = load_agent_types_from_dir(&dir, AgentTypeSource::User, &Default::default());
+    let types = load_agent_types_from_dir(
+        &dir,
+        AgentTypeSource::User,
+        &base::paths::PromptFiles::unscoped(),
+    );
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(types.len(), 1);
     let t = &types[0];
@@ -73,7 +77,11 @@ fn load_agent_types_from_dir_parses_new_fields() {
         "db-reader.md",
         "---\nname: db-reader\ndescription: Read-only DB queries\ndisallowed_tools: AskUserQuestion\npermission_mode: plan\neffort: high\nmax_turns: 10\nskills: api-conventions, error-handling\nmcp_servers: github, sentry\n---\nBody.",
     );
-    let types = load_agent_types_from_dir(&dir, AgentTypeSource::User, &Default::default());
+    let types = load_agent_types_from_dir(
+        &dir,
+        AgentTypeSource::User,
+        &base::paths::PromptFiles::unscoped(),
+    );
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(types.len(), 1);
     let t = &types[0];
@@ -103,7 +111,11 @@ fn load_agent_types_from_dir_falls_back_to_first_paragraph_description() {
         "helper.md",
         "---\nname: helper\n---\nThis agent helps\nwith multi-line stuff.\n\nMore body.",
     );
-    let types = load_agent_types_from_dir(&dir, AgentTypeSource::User, &Default::default());
+    let types = load_agent_types_from_dir(
+        &dir,
+        AgentTypeSource::User,
+        &base::paths::PromptFiles::unscoped(),
+    );
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(types.len(), 1);
     assert_eq!(
@@ -212,7 +224,7 @@ fn merge_agent_types_disk_definition_overrides_builtin_by_name() {
     let merged = merge_agent_types(
         &[(dir.clone(), AgentTypeSource::User)],
         &[],
-        &Default::default(),
+        &base::paths::PromptFiles::unscoped(),
     );
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(merged["explore"].description, "Custom explore override");
@@ -257,7 +269,7 @@ fn merge_agent_types_precedence_is_low_to_high_across_dirs() {
             (project_dir, AgentTypeSource::Project { trusted: true }),
         ],
         &[],
-        &Default::default(),
+        &base::paths::PromptFiles::unscoped(),
     );
     let _ = std::fs::remove_dir_all(&base);
     assert_eq!(merged["reviewer"].description, "from project");
@@ -287,7 +299,7 @@ fn a_project_agent_type_cannot_loosen_until_trusted() {
                 (project_dir.clone(), AgentTypeSource::Project { trusted }),
             ],
             &[],
-            &Default::default(),
+            &base::paths::PromptFiles::unscoped(),
         )
     };
     let loosened = |def: &AgentTypeDefinition| {
@@ -323,7 +335,7 @@ fn merge_agent_types_plugin_definition_overrides_builtin_by_name() {
         system_prompt: "Plugin explore body.".into(),
         ..Default::default()
     }];
-    let merged = merge_agent_types(&[], &plugin_types, &Default::default());
+    let merged = merge_agent_types(&[], &plugin_types, &base::paths::PromptFiles::unscoped());
     assert_eq!(
         merged["explore"].description,
         "Plugin-provided explore override"
@@ -357,13 +369,14 @@ fn merge_agent_types_dirs_override_plugin_definition_of_same_name() {
         ..Default::default()
     }];
     // Confirm priority order: built-in < plugin < dirs.
-    let merged_plugin_only = merge_agent_types(&[], &plugin_types, &Default::default());
+    let merged_plugin_only =
+        merge_agent_types(&[], &plugin_types, &base::paths::PromptFiles::unscoped());
     assert_eq!(merged_plugin_only["explore"].description, "from plugin");
 
     let merged = merge_agent_types(
         &[(dir.clone(), AgentTypeSource::User)],
         &plugin_types,
-        &Default::default(),
+        &base::paths::PromptFiles::unscoped(),
     );
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(merged["explore"].description, "from disk dir");
@@ -372,7 +385,7 @@ fn merge_agent_types_dirs_override_plugin_definition_of_same_name() {
 
 #[test]
 fn describe_agent_types_lists_every_type_sorted_by_name() {
-    let merged = merge_agent_types(&[], &[], &Default::default());
+    let merged = merge_agent_types(&[], &[], &base::paths::PromptFiles::unscoped());
     let text = describe_agent_types(&merged);
     assert!(text.contains("- code-reviewer: "));
     assert!(text.contains("- explore: "));

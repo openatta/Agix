@@ -171,22 +171,23 @@ pub fn read_allowed(path: &Path, ctx: &base::tool::ToolContext) -> bool {
 /// one in every mode; the file tools also leave them out of what a search
 /// of a directory above one walks.
 pub fn credentials(ctx: &base::tool::ToolContext) -> SessionCredentials {
-    SessionCredentials(base::paths::Credentials::new(
+    SessionCredentials(base::paths::SensitivePaths::new(
         ctx.sandbox.state_root.as_deref(),
+        None,
     ))
 }
 
-/// [`base::paths::Credentials`], judged on both the normalized path and
-/// where the filesystem takes it.
+/// [`base::paths::SensitivePaths::is_credential`], judged on both the
+/// normalized path and where the filesystem takes it.
 #[derive(Debug, Clone)]
-pub struct SessionCredentials(base::paths::Credentials);
+pub struct SessionCredentials(base::paths::SensitivePaths);
 
 impl SessionCredentials {
     pub fn hold_any(&self, path: &Path) -> bool {
-        self.0.hold(&normalize_path_lexically(path))
+        self.0.is_credential(&normalize_path_lexically(path))
             || self
                 .0
-                .hold(&permissions::path_rule::resolve_physically(path))
+                .is_credential(&permissions::path_rule::resolve_physically(path))
     }
 
     /// What a walk from `root` leaves out, for a walk that follows no
@@ -201,10 +202,10 @@ impl SessionCredentials {
         let real = permissions::path_rule::resolve_physically(&root);
         move |path| {
             let path = normalize_path_lexically(path);
-            credentials.hold(&path)
+            credentials.is_credential(&path)
                 || path
                     .strip_prefix(&root)
-                    .is_ok_and(|rest| credentials.hold(&real.join(rest)))
+                    .is_ok_and(|rest| credentials.is_credential(&real.join(rest)))
         }
     }
 }

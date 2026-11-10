@@ -106,41 +106,10 @@ pub fn default_deny_read() -> Vec<PathBuf> {
 
 /// [`default_deny_read`] for the home directory `home`.
 pub fn default_deny_read_in(home: &Path) -> Vec<PathBuf> {
-    [
-        ".ssh",
-        ".aws",
-        ".gnupg",
-        ".docker/config.json",
-        ".kube",
-        ".azure",
-        ".config/gh",
-        ".netrc",
-        ".npmrc",
-        ".pypirc",
-        ".gem/credentials",
-        ".git-credentials",
-        ".config/git/credentials",
-        ".config/gcloud",
-        ".cargo/credentials",
-        ".cargo/credentials.toml",
-        ".vault-token",
-        ".terraform.d/credentials.tfrc.json",
-        ".config/glab-cli",
-        ".config/hub",
-        ".config/doctl",
-        ".oci",
-        ".boto",
-        ".s3cfg",
-        ".databrickscfg",
-        ".config/rclone",
-        ".huggingface/token",
-        ".cache/huggingface/token",
-        ".claude/.credentials.json",
-        ".codex/auth.json",
-    ]
-    .iter()
-    .map(|p| home.join(p))
-    .collect()
+    crate::paths::HOME_CREDENTIAL_STORES
+        .iter()
+        .map(|p| home.join(p))
+        .collect()
 }
 
 /// Which backend ran. Advisory — for logs and tests.

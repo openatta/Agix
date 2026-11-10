@@ -46,7 +46,7 @@ impl InstructionFile {
     pub fn new(path: Option<PathBuf>) -> Self {
         Self {
             path,
-            files: PromptFiles::default(),
+            files: PromptFiles::unscoped(),
         }
     }
 
@@ -142,7 +142,7 @@ impl RuleDirectory {
         Self {
             dir,
             id,
-            files: PromptFiles::default(),
+            files: PromptFiles::unscoped(),
         }
     }
 

@@ -299,7 +299,7 @@ impl EngineConfig {
             sandbox_policy: SandboxPolicyConfig::default(),
             disable_skill_shell_execution: false,
             project_untrusted: false,
-            prompt_files: Default::default(),
+            prompt_files: crate::paths::PromptFiles::unscoped(),
             subprocess_env: Default::default(),
 
             // grouped sub-configs

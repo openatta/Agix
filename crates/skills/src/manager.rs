@@ -168,7 +168,7 @@ pub struct SkillManager {
 impl SkillManager {
     pub fn new() -> Self {
         Self {
-            files: PromptFiles::default(),
+            files: PromptFiles::unscoped(),
             skills: RwLock::new(HashMap::new()),
             tiers: RwLock::new(Vec::new()),
             watcher: RwLock::new(None),

@@ -304,7 +304,7 @@ impl DeclarativeScene {
     }
 
     fn read(dir: &Path, rule: IdRule<'_>) -> Result<Self, SceneLoadError> {
-        let files = base::paths::PromptFiles::new(None, Some(dir));
+        let files = base::paths::SensitivePaths::default().prompt_files_within(dir);
         let read = |name: &str| {
             let path = dir.join(name);
             files

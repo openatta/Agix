@@ -23,7 +23,7 @@ async fn image_file_becomes_an_image_block_not_text() {
         &[Attachment::File {
             path: p.to_string_lossy().into_owned(),
         }],
-        &Default::default(),
+        &base::paths::PromptFiles::unscoped(),
     )
     .await;
 
@@ -50,7 +50,7 @@ async fn non_image_file_is_inlined_as_labelled_text() {
         &[Attachment::File {
             path: p.to_string_lossy().into_owned(),
         }],
-        &Default::default(),
+        &base::paths::PromptFiles::unscoped(),
     )
     .await;
 
@@ -69,7 +69,7 @@ async fn pre_decoded_image_passes_through() {
             media_type: "image/jpeg".into(),
             data: "QUJD".into(),
         }],
-        &Default::default(),
+        &base::paths::PromptFiles::unscoped(),
     )
     .await;
     assert!(matches!(
@@ -88,7 +88,7 @@ async fn unreadable_attachment_degrades_to_an_error_note() {
         &[Attachment::File {
             path: "/nonexistent/nope.png".into(),
         }],
-        &Default::default(),
+        &base::paths::PromptFiles::unscoped(),
     )
     .await;
     let ModelContentBlock::Text { text } = &blocks[0] else {
@@ -108,7 +108,7 @@ async fn oversized_image_is_refused_rather_than_inlined() {
         &[Attachment::File {
             path: p.to_string_lossy().into_owned(),
         }],
-        &Default::default(),
+        &base::paths::PromptFiles::unscoped(),
     )
     .await;
 
@@ -120,9 +120,11 @@ async fn oversized_image_is_refused_rather_than_inlined() {
 
 #[tokio::test]
 async fn no_attachments_produces_no_blocks() {
-    assert!(resolve_attachments(&[], &Default::default())
-        .await
-        .is_empty());
+    assert!(
+        resolve_attachments(&[], &base::paths::PromptFiles::unscoped())
+            .await
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -136,7 +138,7 @@ async fn a_credential_is_not_attached() {
         &[Attachment::File {
             path: dir.path().join("notes.md").to_string_lossy().into_owned(),
         }],
-        &Default::default(),
+        &base::paths::PromptFiles::unscoped(),
     )
     .await;
 
