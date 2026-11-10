@@ -36,15 +36,6 @@ pub struct SandboxPolicy {
     /// [`NetworkMode::Allowlist`]. Ignored otherwise. What each backend makes
     /// of it is under [`NetworkMode::Allowlist`].
     pub allowed_domains: Vec<String>,
-    /// Scene ids whose `~/.agix/scenes/<scene>/settings.json` the backend
-    /// should protect from writes.
-    ///
-    /// Empty means the backend falls back to the builtin scenes it knows
-    /// about by name, which is all it can do — this crate cannot resolve a
-    /// daemon's actual `--scenes` set. A deployment running a scene outside
-    /// that list gets no protection for that scene's settings unless it
-    /// populates this.
-    pub known_scenes: Vec<String>,
     /// Paths outside `cwd` this command may still write to.
     ///
     /// Part of the policy rather than a separate argument because it answers

@@ -80,7 +80,9 @@ impl RuleSetPermission {
             network_mode: settings.sandbox.network_mode,
             deny_write: settings.sandbox.deny_write.clone(),
             allow_write: settings.sandbox.allow_write.clone(),
-            state_root: Some(settings.paths.global_data_dir.clone()),
+            paths: Arc::new(base::paths::SensitivePaths::for_paths(
+                &base::paths::ConfigPaths::from_settings(&settings.paths),
+            )),
             require_enforcement: settings.sandbox.require_enforcement,
             unattended_requires_network_policy: settings.sandbox.unattended_requires_network_policy,
         })

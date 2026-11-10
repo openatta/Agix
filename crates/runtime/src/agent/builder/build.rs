@@ -265,18 +265,14 @@ impl Builder {
                 .additional_directories
                 .iter()
                 .map(resolve)
-                .chain(
-                    base::paths::STATE_ROOT_WORKING_DIRS
-                        .iter()
-                        .map(|dir| settings.paths.global_data_dir.join(dir)),
-                )
+                .chain(config.sandbox_policy.paths.state_working_dirs())
                 .collect();
             state.read_directories = settings
                 .sandbox
                 .read_directories
                 .iter()
                 .map(resolve)
-                .chain([settings.paths.global_data_dir.clone()])
+                .chain(config.sandbox_policy.paths.readable_state_root())
                 .collect();
             state.read_anywhere = settings.sandbox.read_anywhere;
             state.cache_directories = settings.sandbox.cache_directories.paths(&cwd);

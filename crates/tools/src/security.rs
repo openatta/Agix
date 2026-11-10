@@ -171,16 +171,13 @@ pub fn read_allowed(path: &Path, ctx: &base::tool::ToolContext) -> bool {
 /// one in every mode; the file tools also leave them out of what a search
 /// of a directory above one walks.
 pub fn credentials(ctx: &base::tool::ToolContext) -> SessionCredentials {
-    SessionCredentials(base::paths::SensitivePaths::new(
-        ctx.sandbox.state_root.as_deref(),
-        None,
-    ))
+    SessionCredentials(ctx.sandbox.paths.clone())
 }
 
 /// [`base::paths::SensitivePaths::is_credential`], judged on both the
 /// normalized path and where the filesystem takes it.
 #[derive(Debug, Clone)]
-pub struct SessionCredentials(base::paths::SensitivePaths);
+pub struct SessionCredentials(std::sync::Arc<base::paths::SensitivePaths>);
 
 impl SessionCredentials {
     pub fn hold_any(&self, path: &Path) -> bool {
@@ -290,7 +287,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (proj, state) = (dir.path().join("proj"), dir.path().join("state"));
         let mut ctx = platform::tool_context_for_test(proj.clone());
-        ctx.sandbox.state_root = Some(state.clone());
+        ctx.sandbox.paths =
+            std::sync::Arc::new(base::paths::SensitivePaths::new(Some(&state), None));
         let mut session = base::context::SessionState::new(proj);
         session.read_anywhere = true;
         ctx.session = std::sync::Arc::new(session);

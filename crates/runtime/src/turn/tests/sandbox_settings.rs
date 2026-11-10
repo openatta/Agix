@@ -15,7 +15,7 @@ fn tool_context_sandbox_is_taken_from_the_engine_config() {
         deny_read: Some(vec![PathBuf::from("/tmp/secret")]),
         network_mode: NetworkModeConfig::DenyAll,
         allowed_domains: vec!["api.example.com".into()],
-        state_root: None,
+        paths: Default::default(),
         require_enforcement: false,
         unattended_requires_network_policy: true,
         deny_write: Vec::new(),

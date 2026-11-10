@@ -54,10 +54,7 @@ use crate::error::GateError;
 use crate::path_rule::ResolvedPath;
 use crate::rule::format_rule_string;
 use crate::ruleset::{path_rule_group, shell_rule_group, RuleHit, RuleSet};
-use base::paths::{
-    credential_dir_names, SensitivePaths, ENGINE_CONFIG_ROOTS, PROJECT_ENGINE_CONFIG_DIRS,
-    PROJECT_WORKTREES_DIR, STATE_ROOT_WORKING_DIRS,
-};
+use base::paths::SensitivePaths;
 use base::permission::{DecisionReason, PermissionDecision, PermissionMode};
 use base::permission::{PermissionRule, RuleBehavior, RuleSource};
 use base::tool::ToolContext;
@@ -459,7 +456,7 @@ impl PermissionGate {
         let needs_confirmation = !tool.call_traits(input).read_only
             && checked_strings
                 .iter()
-                .any(|s| is_path_confirmation_required(s));
+                .any(|s| SensitivePaths::names_configuration(s));
         if tool_self_allow && !needs_confirmation {
             return Ok(PermissionDecision::Allow {
                 updated_input: None,
@@ -879,7 +876,7 @@ mod tests {
                 .matches(&content);
             let tool = if shell { tool.shell() } else { tool };
             let mut ctx = ctx_with_mode(mode);
-            ctx.sandbox.state_root = Some(state.path().to_path_buf());
+            ctx.sandbox.paths = std::sync::Arc::new(SensitivePaths::new(Some(state.path()), None));
             let d = PermissionGate::empty()
                 .check(&tool, &json!({}), &ctx)
                 .await
@@ -905,7 +902,7 @@ mod tests {
             .own(base::tool::PermissionDecision::allow())
             .matches(&state.path().join("skills/x/SKILL.md").display().to_string());
         let mut ctx = ctx_with_mode(PermissionMode::Default);
-        ctx.sandbox.state_root = Some(state.path().to_path_buf());
+        ctx.sandbox.paths = std::sync::Arc::new(SensitivePaths::new(Some(state.path()), None));
         let d = PermissionGate::empty()
             .check(&tool, &json!({}), &ctx)
             .await
@@ -1311,7 +1308,6 @@ fn names_a_credential(tool: &dyn Tool, input: &Value, ctx: &ToolContext) -> Opti
     let content = tool.permission_match_content(input)?;
     let kind = tool.spec().permission.content_kind;
     let resolved = path_rule_group(kind).map(|_| ResolvedPath::new(&content, &ctx.cwd));
-    let credentials = SensitivePaths::new(ctx.sandbox.state_root.as_deref(), None);
     protected_path_candidates(kind, Some(&content), resolved.as_ref())
         .into_iter()
         .find(|candidate| {
@@ -1321,98 +1317,21 @@ fn names_a_credential(tool: &dyn Tool, input: &Value, ctx: &ToolContext) -> Opti
                 .any(|word| {
                     ResolvedPath::new(word, &ctx.cwd)
                         .all()
-                        .any(|p| credentials.is_credential(p))
+                        .any(|p| ctx.sandbox.paths.is_credential(p))
                 })
         })
 }
 
-/// The repository's own configuration: confirmed like the engine's rather
-/// than refused — `git` plumbing through `Bash` is normal work, and a
-/// blanket deny on any path containing a `.git` component blocks far more
-/// than it protects.
-const REPOSITORY_CONFIG_DIR: &str = ".git";
-
-/// Is this entry directly in `.agix` the agent's working space rather than
-/// its configuration: the scratchpad its prompt sends temporary files to,
-/// the memory directory it is told to write to directly, or the worktrees
-/// its sessions work in.
-fn is_agix_working_dir(name: &str) -> bool {
-    STATE_ROOT_WORKING_DIRS.contains(&name) || name == PROJECT_WORKTREES_DIR
-}
-
-/// Does this path (or command argument) name configuration that must never
-/// be reached by a *silent* fast path, but which the user can legitimately
-/// approve: `.git`, an [`ENGINE_CONFIG_ROOTS`] directory outside its working
-/// space, or a [`PROJECT_ENGINE_CONFIG_DIRS`] directory?
+/// Whether a path (or command argument) names a system file, or the line a
+/// destructive pattern, that every mode consulting rules refuses — neither
+/// the tool's own allow nor an allow rule reaches past it.
+/// `BypassPermissions` consults nothing. Credentials are refused before
+/// this, in every mode (`names_a_credential`).
 ///
-/// Not credentials: refusing them would make editing `.claude/settings.json`
-/// or `.agix/agents/*.md` impossible, and configuring the agent is a thing
-/// users routinely ask it to do. The risk is a tool quietly rewriting the
-/// rules it is judged by, so the tool's own `Allow` does not apply to them
-/// and the call goes to the normal confirmation flow instead.
-///
-/// Same whole-component matching as [`is_path_bypass_immune`] — `.github`
-/// must not match `.git`.
-fn is_path_confirmation_required(content: &str) -> bool {
-    let lowered = content.to_lowercase();
-    let components: Vec<&str> = lowered.split('/').collect();
-    // In a shell command the name runs on into whatever follows it.
-    let name_in = |component: &str| {
-        component
-            .split(|c: char| !(c.is_alphanumeric() || "._-".contains(c)))
-            .next()
-            .unwrap_or_default()
-            .to_string()
-    };
-    let opens_dir = |rest: &[&str], dir: &str| {
-        let dir: Vec<&str> = dir.split('/').collect();
-        let Some((last, above)) = dir.split_last() else {
-            return false;
-        };
-        rest.len() >= dir.len()
-            && above.iter().zip(rest).all(|(d, c)| d == c)
-            && name_in(rest[above.len()]) == *last
-    };
-    lowered.contains('/')
-        && components.iter().enumerate().any(|(i, component)| {
-            let config_root = *component == REPOSITORY_CONFIG_DIR
-                || (ENGINE_CONFIG_ROOTS.contains(component)
-                    && !(*component == ".agix"
-                        && components
-                            .get(i + 1)
-                            .is_some_and(|next| is_agix_working_dir(&name_in(next)))));
-            config_root
-                || PROJECT_ENGINE_CONFIG_DIRS
-                    .iter()
-                    .any(|dir| opens_dir(&components[i..], dir))
-        })
-}
-
-/// Check whether a path (or command argument) references a sensitive path
-/// that every mode consulting rules refuses — neither the tool's own allow
-/// nor an allow rule reaches past it. `BypassPermissions` consults nothing.
-///
-/// **按组件匹配**，不做子串查找：按 `/` 切成组件、整段做相等比较，因此
-/// `.github` / `.gitignore` / `.gitlab-ci.yml` 不会撞上 `.git`（否则 agent 改不了
-/// CI 配置），而且每一个组件都会被检查，不只看第一次出现。前导 `~` 自成一个
-/// 组件，不影响后面的 `.ssh` 被识别。
-///
-/// `/etc/passwd` 之类的绝对路径检查与破坏性命令模式检查保持原样 —— 它们是
-/// 另外两件事（子串匹配在那里就是想要的语义）。
+/// 子串匹配在这里就是想要的语义。
 fn is_path_bypass_immune(content: &str) -> bool {
     let lowered = content.to_lowercase();
-    // Check if this looks like a file path (contains /)
-    let looks_like_path = lowered.contains('/');
-    if looks_like_path {
-        // Whole-component comparison. Empty components (leading `/`, `//`,
-        // trailing `/`) simply never match anything in the list.
-        if lowered
-            .split('/')
-            .any(|component| credential_dir_names().any(|name| name == component))
-        {
-            return true;
-        }
-        // Critical system files
+    if lowered.contains('/') {
         for sys_path in &["/etc/passwd", "/etc/shadow", "/etc/ssh/"] {
             if lowered.contains(sys_path) {
                 return true;
@@ -1435,10 +1354,7 @@ fn is_path_bypass_immune(content: &str) -> bool {
 
 #[cfg(test)]
 mod bypass_immune_tests {
-    use super::{
-        is_agix_working_dir, is_path_bypass_immune, is_path_confirmation_required,
-        PROJECT_WORKTREES_DIR, STATE_ROOT_WORKING_DIRS,
-    };
+    use super::is_path_bypass_immune;
 
     /// `.github` / `.gitignore` / `.gitlab-ci.yml` 只是**前缀**撞上
     /// `.git`，不是同一个路径组件。把它们判成 bypass-immune 会让 agent 改不了
@@ -1452,107 +1368,15 @@ mod bypass_immune_tests {
         assert!(!is_path_bypass_immune("repo/.github/dependabot.yml"));
     }
 
-    /// `~/.ssh` 里 `.ssh` 前面是 `~`，嵌套在别的目录下的敏感目录也一样要拦。
+    /// 配置目录不是凭据：用户可以批准，所以不能被硬拒。
     #[test]
-    fn tilde_prefixed_and_nested_sensitive_dirs_are_immune() {
-        assert!(is_path_bypass_immune("~/.ssh/id_rsa"));
-        assert!(is_path_bypass_immune("cat ~/.ssh/id_rsa"));
-        assert!(is_path_bypass_immune("/home/u/.ssh/config"));
-        assert!(is_path_bypass_immune("~/.aws/credentials"));
-        assert!(is_path_bypass_immune("/Users/me/.gnupg/secring.gpg"));
-    }
-
-    /// 每一个组件都要检查，而不只是第一次出现的那个 —— 敏感组件出现在很深的
-    /// 位置同样要拦。
-    #[test]
-    fn every_component_is_checked_not_just_the_first() {
-        assert!(is_path_bypass_immune(
-            "/repo/.github/workflows/../.ssh/id_rsa"
-        ));
-        assert!(is_path_bypass_immune("/a/b/c/d/e/f/.aws/credentials"));
-    }
-
-    /// 配置目录（`.git` / `.claude` / `.agix`）不是凭据，走的是"要确认"而不是
-    /// "一律拒绝"——否则 agent 连自己的 `.claude/settings.json` 都改不了，而
-    /// 这恰恰是用户经常要求它做的事。
-    #[test]
-    fn config_dirs_require_confirmation_rather_than_being_denied() {
+    fn config_dirs_are_not_denied() {
         for p in [
             "repo/.git/config",
             "/Users/me/.agix/settings.json",
             "/a/b/.claude/settings.local.json",
         ] {
-            assert!(
-                !is_path_bypass_immune(p),
-                "{p} must not be hard-denied — the user can legitimately approve it"
-            );
-            assert!(
-                is_path_confirmation_required(p),
-                "{p} must not take the silent tool-self-allow fast path either"
-            );
-        }
-        // 同样的组件边界规则：`.github` 不是 `.git`。
-        assert!(!is_path_confirmation_required(
-            "/repo/.github/workflows/ci.yml"
-        ));
-        assert!(!is_path_confirmation_required("/repo/src/main.rs"));
-    }
-
-    #[test]
-    fn a_projects_skills_are_configuration() {
-        for p in [
-            "/repo/.agents/skills/x/SKILL.md",
-            "/repo/.agents/skills",
-            ".agents/skills;",
-            "/repo/.Agents/Skills/x/SKILL.md",
-        ] {
-            assert!(is_path_confirmation_required(p), "{p}");
-        }
-        for p in [
-            "/repo/.agents/notes.md",
-            "/repo/.agents/skills2/x",
-            "/repo/skills/x",
-            "/repo/AGENTS.md",
-        ] {
-            assert!(!is_path_confirmation_required(p), "{p}");
-        }
-    }
-
-    #[test]
-    fn the_agents_working_space_under_agix_is_not_configuration() {
-        for p in [
-            "/repo/.agix/scratchpad/cases.txt",
-            "/Users/me/.agix/memory/MEMORY.md",
-            "cd /repo\nS=/repo/.agix/scratchpad\nmkdir -p \"$S\"",
-            "printf x > \"$d/.agix/scratchpad\"",
-            "/repo/.agix/worktrees/feat-a/feature.txt",
-            "cd /repo/.agix/worktrees/feat-a && git add -A",
-        ] {
-            assert!(!is_path_confirmation_required(p), "{p}");
-        }
-        for p in [
-            "/repo/.agix/agents/reviewer.md",
-            "/repo/.agix/scratchpad.md",
-            "/repo/.agix/worktrees/feat-a/.agix/agents/reviewer.md",
-            "/repo/.agix/worktrees/feat-a/.claude/settings.json",
-            "/repo/.agix/worktrees/feat-a/.git",
-        ] {
-            assert!(is_path_confirmation_required(p), "{p}");
-        }
-    }
-
-    #[test]
-    fn what_the_gate_treats_as_working_space_the_sandbox_leaves_writable() {
-        use base::paths::{ENGINE_CONFIG_DIRS, ENGINE_CONFIG_FILES};
-        for name in STATE_ROOT_WORKING_DIRS
-            .iter()
-            .chain([&PROJECT_WORKTREES_DIR])
-        {
-            assert!(is_agix_working_dir(name), "{name}");
-            assert!(
-                !ENGINE_CONFIG_DIRS.contains(name) && !ENGINE_CONFIG_FILES.contains(name),
-                "{name}"
-            );
+            assert!(!is_path_bypass_immune(p), "{p}");
         }
     }
 
@@ -1560,7 +1384,6 @@ mod bypass_immune_tests {
     fn ordinary_paths_are_not_immune() {
         assert!(!is_path_bypass_immune("/repo/src/main.rs"));
         assert!(!is_path_bypass_immune("crates/tools/src/bash/mod.rs"));
-        // 无 `/` 的裸文件名不是路径，不参与组件判定
         assert!(!is_path_bypass_immune(".gitignore"));
     }
 

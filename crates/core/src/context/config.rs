@@ -205,11 +205,12 @@ pub struct SandboxPolicyConfig {
     /// Paths exempt from the write deny rules. See
     /// `base::settings::SandboxConfig::allow_write`.
     pub allow_write: Vec<PathBuf>,
-    /// This instance's global state root, so the profile can protect the
-    /// settings.json files that actually govern it. `None` means the caller
-    /// didn't say, and the sandbox falls back to `$HOME/.agix` — which is
-    /// only right when the instance happens to live there.
-    pub state_root: Option<PathBuf>,
+    /// This instance's sensitive paths: its state root, so the profile can
+    /// protect the settings.json files that actually govern it, and the
+    /// credentials the gate and the file tools refuse. Without a state root
+    /// the sandbox falls back to `$HOME/.agix` — which is only right when the
+    /// instance happens to live there.
+    pub paths: std::sync::Arc<crate::paths::SensitivePaths>,
     /// See `base::settings::SandboxConfig::require_enforcement`.
     pub require_enforcement: bool,
     /// See `base::settings::SandboxConfig::unattended_requires_network_policy`.
@@ -368,7 +369,9 @@ impl EngineConfig {
             // The instance's own root, so the profile denies writes to the
             // settings.json this session actually reads — not to whatever
             // sits under the invoking user's home.
-            state_root: Some(settings.paths.global_data_dir.clone()),
+            paths: std::sync::Arc::new(crate::paths::SensitivePaths::for_paths(
+                &crate::paths::ConfigPaths::from_settings(&settings.paths),
+            )),
             require_enforcement: settings.sandbox.require_enforcement,
             unattended_requires_network_policy: settings.sandbox.unattended_requires_network_policy,
         };

@@ -3,26 +3,10 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use base::paths::{ENGINE_CONFIG_FILES, ENGINE_CONFIG_ROOTS};
+use base::paths::{credential_dir_names, SensitivePaths, SECRET_FILE_NAMES};
 use unicode_normalization::UnicodeNormalization;
 
 use crate::path_rule::is_within_root_lexical;
-
-/// 默认黑名单（路径任意位置含这些段则拒）。可被 `WritePolicy::with_extra_blacklist` 扩展。
-const DEFAULT_FILENAME_BLACKLIST: &[&str] = &[
-    ".env",
-    ".env.local",
-    ".env.production",
-    "id_rsa",
-    "id_ed25519",
-    ".ssh",
-    ".aws",
-    ".gnupg",
-    ".netrc",
-    ".pypirc",
-    ".npmrc",
-    ".pgpass",
-];
 
 /// Not secrets — files a tool should not casually rewrite.
 ///
@@ -295,25 +279,23 @@ pub fn check_write_for(
         // directory: `.agix` also holds a sub-agent's worktree, and the
         // configuration directories in it are asked about rather than refused
         // (the gate's `.agix` confirmation), since a person can say yes there.
-        if let Some(name) = target.file_name().and_then(|n| n.to_str()) {
-            let under_config_root = target.components().any(|c| {
-                matches!(c, Component::Normal(d) if ENGINE_CONFIG_ROOTS.iter().any(|s| d == *s))
+        if SensitivePaths::is_engine_settings_file(target) {
+            let name = target.file_name().unwrap_or_default().to_string_lossy();
+            return Err(PathSafetyError::BlacklistedFilename {
+                path: target.to_path_buf(),
+                matched: format!("{name} under an engine settings directory"),
             });
-            if under_config_root && ENGINE_CONFIG_FILES.contains(&name) {
-                return Err(PathSafetyError::BlacklistedFilename {
-                    path: target.to_path_buf(),
-                    matched: format!("{name} under an engine settings directory"),
-                });
-            }
         }
 
         // 7b. 文件名黑名单（任意 component 命中即拒）
         for c in target.components() {
             if let Component::Normal(name) = c {
                 let s = name.to_string_lossy();
-                let hit = DEFAULT_FILENAME_BLACKLIST
+                let hit = SECRET_FILE_NAMES
                     .iter()
-                    .chain(GUARDED_FILENAMES.iter())
+                    .copied()
+                    .chain(credential_dir_names())
+                    .chain(GUARDED_FILENAMES.iter().copied())
                     .map(|b| b.to_string())
                     .chain(policy.extra_blacklist.iter().cloned())
                     .find(|b| s == *b || s.starts_with(&format!("{b}.")));

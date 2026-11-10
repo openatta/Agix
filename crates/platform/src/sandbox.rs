@@ -262,28 +262,15 @@ fn state_root_of(policy: &SandboxPolicy) -> Option<PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".agix")))
 }
 
-/// Fallback set of scenes to protect when a caller doesn't supply
-/// `SandboxPolicy::known_scenes` — this crate deliberately doesn't depend
-/// on the `scene` crate (`tools` sits below it in the dependency graph), so
-/// it can't resolve a daemon's actual `--scenes` set itself. A daemon that
-/// knows its real active scenes (`SessionPool::scene_registry`) should
-/// populate `known_scenes` instead of relying on this; this constant only
-/// covers the three builtins, so a deployment running a scene this list
-/// doesn't know about would otherwise get no protection for that scene's
-/// `settings.json` at all. Keep in sync with `daemon::main::resolve_scene`
-/// and `crates/scene/src/*.rs` regardless, since it's still the
-/// default every caller gets today.
+/// The scenes whose files are protected even before their directories
+/// exist.
 #[cfg(feature = "sandbox")]
 const KNOWN_SCENES: &[&str] = &["code", "harnix", "mini"];
 
-/// `policy.known_scenes` if the caller supplied one, else [`KNOWN_SCENES`].
+/// [`KNOWN_SCENES`].
 #[cfg(feature = "sandbox")]
-fn effective_known_scenes(policy: &SandboxPolicy) -> Vec<&str> {
-    if policy.known_scenes.is_empty() {
-        KNOWN_SCENES.to_vec()
-    } else {
-        policy.known_scenes.iter().map(String::as_str).collect()
-    }
+fn effective_known_scenes(_policy: &SandboxPolicy) -> Vec<&str> {
+    KNOWN_SCENES.to_vec()
 }
 
 /// The files under `<state root>/scenes/<scene>/` a sandboxed command must not
@@ -1945,15 +1932,6 @@ mod tests {
     }
 
     #[test]
-    fn effective_known_scenes_prefers_the_policys_own_list_when_set() {
-        let policy = SandboxPolicy {
-            known_scenes: vec!["custom-scene".to_string()],
-            ..Default::default()
-        };
-        assert_eq!(effective_known_scenes(&policy), vec!["custom-scene"]);
-    }
-
-    #[test]
     fn sandbox_escape_handles_quotes_and_backslash() {
         assert_eq!(sandbox_escape("/tmp/normal"), "/tmp/normal");
         assert_eq!(sandbox_escape("/tmp/q\"quote"), "/tmp/q\\\"quote");
@@ -1988,7 +1966,6 @@ mod tests {
             deny_read: default_deny_read(),
             network_mode: NetworkMode::Unrestricted,
             allowed_domains: Vec::new(),
-            known_scenes: Vec::new(),
             state_root: None,
             additional_writable: Vec::new(),
             only_additional_writable: false,
@@ -2010,7 +1987,6 @@ mod tests {
             deny_read: vec![PathBuf::from("/tmp/some-secret")],
             network_mode: NetworkMode::Unrestricted,
             allowed_domains: vec![],
-            known_scenes: Vec::new(),
             state_root: None,
             additional_writable: Vec::new(),
             only_additional_writable: false,
@@ -2321,7 +2297,6 @@ mod tests {
                 deny_read: default_deny_read(),
                 network_mode: NetworkMode::Unrestricted,
                 allowed_domains: Vec::new(),
-                known_scenes: Vec::new(),
                 state_root: None,
                 additional_writable: Vec::new(),
                 only_additional_writable: false,
@@ -2358,7 +2333,6 @@ mod tests {
                 deny_read: vec![],
                 network_mode: NetworkMode::Unrestricted,
                 allowed_domains: vec![],
-                known_scenes: Vec::new(),
                 state_root: None,
                 additional_writable: Vec::new(),
                 only_additional_writable: false,
@@ -2439,7 +2413,6 @@ mod tests {
                 deny_read: vec![],
                 network_mode: NetworkMode::Unrestricted,
                 allowed_domains: vec![],
-                known_scenes: Vec::new(),
                 state_root: None,
                 additional_writable: Vec::new(),
                 only_additional_writable: false,
@@ -2501,7 +2474,6 @@ mod tests {
     fn the_profile_protects_the_instance_root_it_was_given() {
         let policy = SandboxPolicy {
             state_root: Some(PathBuf::from("/srv/agix-state")),
-            known_scenes: vec!["code".into()],
             ..Default::default()
         };
         let profile = build_macos_profile(Path::new("/work/project"), &[], &policy);

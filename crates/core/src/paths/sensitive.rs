@@ -419,6 +419,75 @@ impl SensitivePaths {
         located
     }
 
+    /// Whether this path (or command argument) names configuration that
+    /// must never be reached by a *silent* fast path, but which the user can
+    /// legitimately approve: [`REPOSITORY_CONFIG_DIR`], an
+    /// [`ENGINE_CONFIG_ROOTS`] directory outside its working space, or a
+    /// [`PROJECT_ENGINE_CONFIG_DIRS`] directory.
+    ///
+    /// Not credentials: refusing them would make editing
+    /// `.claude/settings.json` or `.agix/agents/*.md` impossible, and
+    /// configuring the agent is a thing users routinely ask it to do. The
+    /// risk is a tool quietly rewriting the rules it is judged by, so the
+    /// gate does not let the tool's own `Allow` through for them.
+    ///
+    /// Matched by whole component — `.github` is not `.git`.
+    pub fn names_configuration(text: &str) -> bool {
+        let lowered = text.to_lowercase();
+        let components: Vec<&str> = lowered.split('/').collect();
+        // In a shell command the name runs on into whatever follows it.
+        let name_in = |component: &str| {
+            component
+                .split(|c: char| !(c.is_alphanumeric() || "._-".contains(c)))
+                .next()
+                .unwrap_or_default()
+                .to_string()
+        };
+        let opens_dir = |rest: &[&str], dir: &str| {
+            let dir: Vec<&str> = dir.split('/').collect();
+            let Some((last, above)) = dir.split_last() else {
+                return false;
+            };
+            rest.len() >= dir.len()
+                && above.iter().zip(rest).all(|(d, c)| d == c)
+                && name_in(rest[above.len()]) == *last
+        };
+        lowered.contains('/')
+            && components.iter().enumerate().any(|(i, component)| {
+                let config_root = *component == REPOSITORY_CONFIG_DIR
+                    || (ENGINE_CONFIG_ROOTS.contains(component)
+                        && !(*component == ".agix"
+                            && components.get(i + 1).is_some_and(|next| {
+                                Self::is_engine_working_entry(&name_in(next))
+                            })));
+                config_root
+                    || PROJECT_ENGINE_CONFIG_DIRS
+                        .iter()
+                        .any(|dir| opens_dir(&components[i..], dir))
+            })
+    }
+
+    /// Whether `abs` is one of the [`ENGINE_CONFIG_FILES`] anywhere under an
+    /// [`ENGINE_CONFIG_ROOTS`] directory — by name and location, not by
+    /// directory: `.agix` also holds a sub-agent's worktree.
+    pub fn is_engine_settings_file(abs: &Path) -> bool {
+        let Some(name) = abs.file_name().and_then(|n| n.to_str()) else {
+            return false;
+        };
+        ENGINE_CONFIG_FILES.contains(&name)
+            && abs.components().any(|c| {
+                matches!(c, Component::Normal(d) if ENGINE_CONFIG_ROOTS.iter().any(|root| d == *root))
+            })
+    }
+
+    /// Whether this entry directly in `.agix` is the agent's working space
+    /// rather than its configuration: the scratchpad its prompt sends
+    /// temporary files to, the memory directory it is told to write to
+    /// directly, or the worktrees its sessions work in.
+    pub fn is_engine_working_entry(name: &str) -> bool {
+        STATE_ROOT_WORKING_DIRS.contains(&name) || name == PROJECT_WORKTREES_DIR
+    }
+
     /// The state root's [`STATE_ROOT_WORKING_DIRS`]: what the tools may write
     /// there.
     pub fn state_working_dirs(&self) -> Vec<PathBuf> {
@@ -801,6 +870,123 @@ mod tests {
         let none = SensitivePaths::default();
         assert!(none.state_working_dirs().is_empty());
         assert_eq!(none.session_tmp_dir("s"), None);
+    }
+
+    /// `~/.ssh` 里 `.ssh` 前面是 `~`，嵌套在别的目录下、出现在命令行里的也一样
+    /// 认得出；`.sshx` 这种只是前缀相同的不算。
+    #[test]
+    fn credential_dirs_are_whole_components_anywhere() {
+        let paths = SensitivePaths::default();
+        for p in [
+            "~/.ssh/id_rsa",
+            "cat ~/.ssh/id_rsa",
+            "/home/u/.ssh/config",
+            "~/.aws/credentials",
+            "/Users/me/.gnupg/secring.gpg",
+            "/repo/.github/workflows/../.ssh/id_rsa",
+            "/a/b/c/d/e/f/.aws/credentials",
+        ] {
+            assert!(paths.is_credential(Path::new(p)), "{p}");
+        }
+        for p in ["/home/u/.sshx/config", "/repo/.github/x", "/repo/.awsome"] {
+            assert!(!paths.is_credential(Path::new(p)), "{p}");
+        }
+    }
+
+    /// 配置目录（`.git` / `.claude` / `.agix`）不是凭据，走的是"要确认"而不是
+    /// "一律拒绝"——否则 agent 连自己的 `.claude/settings.json` 都改不了。
+    #[test]
+    fn config_dirs_require_confirmation() {
+        for p in [
+            "repo/.git/config",
+            "/Users/me/.agix/settings.json",
+            "/a/b/.claude/settings.local.json",
+        ] {
+            assert!(SensitivePaths::names_configuration(p), "{p}");
+        }
+        assert!(!SensitivePaths::names_configuration(
+            "/repo/.github/workflows/ci.yml"
+        ));
+        assert!(!SensitivePaths::names_configuration("/repo/src/main.rs"));
+    }
+
+    #[test]
+    fn a_projects_skills_are_configuration() {
+        for p in [
+            "/repo/.agents/skills/x/SKILL.md",
+            "/repo/.agents/skills",
+            ".agents/skills;",
+            "/repo/.Agents/Skills/x/SKILL.md",
+        ] {
+            assert!(SensitivePaths::names_configuration(p), "{p}");
+        }
+        for p in [
+            "/repo/.agents/notes.md",
+            "/repo/.agents/skills2/x",
+            "/repo/skills/x",
+            "/repo/AGENTS.md",
+        ] {
+            assert!(!SensitivePaths::names_configuration(p), "{p}");
+        }
+    }
+
+    #[test]
+    fn the_agents_working_space_under_agix_is_not_configuration() {
+        for p in [
+            "/repo/.agix/scratchpad/cases.txt",
+            "/Users/me/.agix/memory/MEMORY.md",
+            "cd /repo\nS=/repo/.agix/scratchpad\nmkdir -p \"$S\"",
+            "printf x > \"$d/.agix/scratchpad\"",
+            "/repo/.agix/worktrees/feat-a/feature.txt",
+            "cd /repo/.agix/worktrees/feat-a && git add -A",
+        ] {
+            assert!(!SensitivePaths::names_configuration(p), "{p}");
+        }
+        for p in [
+            "/repo/.agix/agents/reviewer.md",
+            "/repo/.agix/scratchpad.md",
+            "/repo/.agix/worktrees/feat-a/.agix/agents/reviewer.md",
+            "/repo/.agix/worktrees/feat-a/.claude/settings.json",
+            "/repo/.agix/worktrees/feat-a/.git",
+        ] {
+            assert!(SensitivePaths::names_configuration(p), "{p}");
+        }
+    }
+
+    #[test]
+    fn what_the_gate_treats_as_working_space_the_sandbox_leaves_writable() {
+        for name in STATE_ROOT_WORKING_DIRS
+            .iter()
+            .chain([&PROJECT_WORKTREES_DIR])
+        {
+            assert!(SensitivePaths::is_engine_working_entry(name), "{name}");
+            assert!(
+                !ENGINE_CONFIG_DIRS.contains(name) && !ENGINE_CONFIG_FILES.contains(name),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn engine_settings_files_are_known_by_name_under_a_config_root() {
+        for p in [
+            "/repo/.agix/settings.json",
+            "/repo/.claude/settings.local.json",
+            "/repo/.agix/worktrees/a/.agix/mcp.local.json",
+            "/repo/.agix/agents/settings.json",
+        ] {
+            assert!(SensitivePaths::is_engine_settings_file(Path::new(p)), "{p}");
+        }
+        for p in [
+            "/repo/settings.json",
+            "/repo/.agix/scene.json",
+            "/repo/.agix",
+        ] {
+            assert!(
+                !SensitivePaths::is_engine_settings_file(Path::new(p)),
+                "{p}"
+            );
+        }
     }
 
     #[test]

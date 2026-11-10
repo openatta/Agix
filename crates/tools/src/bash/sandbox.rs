@@ -36,10 +36,10 @@ pub(super) fn to_sandbox_policy(settings: &base::tool::SandboxSettings) -> sandb
         deny_read,
         network_mode,
         allowed_domains: settings.allowed_domains.clone(),
-        // `SandboxSettings` carries no `known_scenes`, so this is always empty
-        // and falls back to the built-in `sandbox::KNOWN_SCENES`.
-        known_scenes: Vec::new(),
-        state_root: settings.state_root.clone(),
+        state_root: settings
+            .paths
+            .state_root()
+            .map(std::path::Path::to_path_buf),
         // Filled in by the caller, which is the only place that knows what
         // this turn opened up.
         additional_writable: Vec::new(),
@@ -82,14 +82,16 @@ fn session_temp_dir(
     settings: &base::tool::SandboxSettings,
     session_id: &str,
 ) -> std::path::PathBuf {
-    let id: String = session_id
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
-        .collect();
-    match &settings.state_root {
-        Some(root) => root.join(base::paths::STATE_ROOT_SESSION_TMP).join(id),
-        None => std::env::temp_dir().join(format!("agix-{id}")),
-    }
+    settings
+        .paths
+        .session_tmp_dir(session_id)
+        .unwrap_or_else(|| {
+            let id: String = session_id
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+                .collect();
+            std::env::temp_dir().join(format!("agix-{id}"))
+        })
 }
 
 /// How long a session's temporary directory may go untouched before another
@@ -109,7 +111,10 @@ fn prepared_session_temp_dir(
         std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
         builder
     };
-    if let Some(parent) = dir.parent().filter(|_| settings.state_root.is_some()) {
+    if let Some(parent) = dir
+        .parent()
+        .filter(|_| settings.paths.state_root().is_some())
+    {
         let _ = private(true).create(parent);
         clear_stale_session_temp_dirs(parent);
     }
@@ -305,7 +310,7 @@ mod allow_read_tests {
             deny_read: Vec::new(),
             allowed_domains: Vec::new(),
             network_mode: base::context::config::NetworkModeConfig::Unrestricted,
-            state_root: None,
+            paths: Default::default(),
             require_enforcement: false,
             unattended_requires_network_policy: false,
             deny_write: Vec::new(),

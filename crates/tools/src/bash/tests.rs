@@ -264,7 +264,8 @@ fn each_session_gets_its_own_tmpdir_under_the_state_root() {
     let tmpdir_for = |session: &str| {
         let mut ctx = ctx_in(dir.path());
         ctx.session_id = session.to_string();
-        ctx.sandbox.state_root = Some(state.path().to_path_buf());
+        ctx.sandbox.paths =
+            std::sync::Arc::new(base::paths::SensitivePaths::new(Some(state.path()), None));
         ctx.dangerously_disable_sandbox = false;
         ctx.exec.sandbox =
             std::sync::Arc::new(Reports(Enforcement::Full, SandboxMode::MacOSSandboxExec));
@@ -393,7 +394,7 @@ fn to_sandbox_policy_carries_deny_read_and_allowed_domains_through() {
         deny_read: vec![PathBuf::from("/tmp/secret")],
         allowed_domains: vec!["api.example.com".to_string()],
         network_mode: base::context::config::NetworkModeConfig::Allowlist,
-        state_root: None,
+        paths: Default::default(),
         require_enforcement: false,
         unattended_requires_network_policy: false,
         deny_write: Vec::new(),

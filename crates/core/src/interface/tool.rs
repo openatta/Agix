@@ -22,8 +22,8 @@ pub struct SandboxSettings {
     pub deny_write: Vec<String>,
     /// See `base::settings::SandboxConfig::allow_write`.
     pub allow_write: Vec<PathBuf>,
-    /// See `base::context::config::SandboxPolicyConfig::state_root`.
-    pub state_root: Option<PathBuf>,
+    /// See `base::context::config::SandboxPolicyConfig::paths`.
+    pub paths: Arc<crate::paths::SensitivePaths>,
     /// See `base::settings::SandboxConfig::require_enforcement`.
     pub require_enforcement: bool,
     /// See `base::settings::SandboxConfig::unattended_requires_network_policy`.

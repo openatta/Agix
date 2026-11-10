@@ -25,7 +25,7 @@ pub(super) fn sandbox_settings_from(
         network_mode: config.sandbox_policy.network_mode,
         deny_write: config.sandbox_policy.deny_write.clone(),
         allow_write: config.sandbox_policy.allow_write.clone(),
-        state_root: config.sandbox_policy.state_root.clone(),
+        paths: config.sandbox_policy.paths.clone(),
         require_enforcement: config.sandbox_policy.require_enforcement,
         unattended_requires_network_policy: config
             .sandbox_policy
