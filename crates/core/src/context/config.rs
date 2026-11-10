@@ -82,6 +82,8 @@ pub struct EngineConfig {
     /// The project tier is not trusted (`Settings::project_layer`): a project
     /// skill's `` !`cmd` `` is not run.
     pub project_untrusted: bool,
+    /// How the engine reads the files it puts in front of the model.
+    pub prompt_files: crate::paths::PromptFiles,
     /// Mirrors `Settings.sandbox.subprocess_env`.
     pub subprocess_env: crate::interface::exec::SubprocessEnv,
 
@@ -291,6 +293,7 @@ impl EngineConfig {
             sandbox_policy: SandboxPolicyConfig::default(),
             disable_skill_shell_execution: false,
             project_untrusted: false,
+            prompt_files: Default::default(),
             subprocess_env: Default::default(),
 
             // grouped sub-configs
@@ -364,6 +367,9 @@ impl EngineConfig {
         };
         c.disable_skill_shell_execution = settings.disable_skill_shell_execution;
         c.project_untrusted = settings.project_layer.trust.is_untrusted();
+        c.prompt_files = crate::paths::PromptFiles::for_project(
+            &crate::paths::ConfigPaths::from_settings(&settings.paths),
+        );
         c.path_style = settings.path_style.unwrap_or_default();
         c.subprocess_env = settings.sandbox.subprocess_env.clone();
 

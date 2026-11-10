@@ -49,6 +49,7 @@ fn custom_agent_type_frontmatter_parses() {
     let types = agents::agent_tool::load_agent_types_from_dir(
         &dir,
         agents::agent_tool::AgentTypeSource::User,
+        &Default::default(),
     );
     assert!(
         !types.is_empty(),

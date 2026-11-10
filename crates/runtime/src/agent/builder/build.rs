@@ -95,9 +95,14 @@ impl Builder {
         let instruction_provider: Arc<
             dyn base::interface::instruction_provider::InstructionProvider,
         > = self.instruction_provider.clone().unwrap_or_else(|| {
-            Arc::new(base::interface::instruction_provider::InstructionFile::new(
-                instruction_file.clone(),
-            ))
+            Arc::new(
+                base::interface::instruction_provider::InstructionFile::new(
+                    instruction_file.clone(),
+                )
+                .reading_with(base::paths::PromptFiles::for_project(
+                    &base::paths::ConfigPaths::from_settings(&settings.paths),
+                )),
+            )
         });
         let claude_md_content = {
             let docs = instruction_provider.documents();

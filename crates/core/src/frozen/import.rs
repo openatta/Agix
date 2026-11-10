@@ -312,13 +312,14 @@ pub async fn execute_import(
     source: &ImportSource,
 ) -> Result<ImportSummary, ImportError> {
     let mut actions = Vec::new();
+    let files = crate::paths::PromptFiles::new(None, Some(cwd));
     match source {
         ImportSource::ClaudeCode {
             claude_md,
             skills_dir,
         } => {
             if let Some(claude_md_path) = claude_md {
-                if let Ok(content) = tokio::fs::read_to_string(claude_md_path).await {
+                if let Ok(content) = files.read_to_string(claude_md_path) {
                     merge_into_agents_md(cwd, &content, "CLAUDE_CODE").await?;
                     actions.push(format!(
                         "merged {} into AGENTS.md",
@@ -328,7 +329,7 @@ pub async fn execute_import(
             }
             if let Some(src_dir) = skills_dir {
                 let dest_dir = cwd.join(".agents").join("skills");
-                let copied = copy_skill_dirs(src_dir, &dest_dir).await?;
+                let copied = copy_skill_dirs(src_dir, &dest_dir, &files).await?;
                 actions.push(format!(
                     "copied {copied} skill dir(s) from .claude/skills/ to .agents/skills/"
                 ));
@@ -344,13 +345,13 @@ pub async fn execute_import(
             mdc_files,
         } => {
             if let Some(rules_path) = legacy_rules {
-                if let Ok(content) = tokio::fs::read_to_string(rules_path).await {
+                if let Ok(content) = files.read_to_string(rules_path) {
                     merge_into_agents_md(cwd, &content, "CURSOR_RULES").await?;
                     actions.push(format!("merged {} into AGENTS.md", rules_path.display()));
                 }
             }
             for mdc_path in mdc_files {
-                if let Ok(content) = tokio::fs::read_to_string(mdc_path).await {
+                if let Ok(content) = files.read_to_string(mdc_path) {
                     if let Some(slug) = mdc_path.file_stem().and_then(|s| s.to_str()) {
                         let (rule_body, always_apply) = convert_mdc_to_rule(&content);
                         let dest = cwd.join(".agix").join("rules").join(format!("{slug}.md"));
@@ -425,7 +426,11 @@ fn merge_marked_section(existing: &str, new_content: &str, tag: &str) -> String 
 /// Copy each `<name>/SKILL.md` subdirectory from `src_dir` into `dest_dir`,
 /// skipping names that already exist at the destination (new/manually-created
 /// skills win — this is a one-time import, not a sync).
-async fn copy_skill_dirs(src_dir: &Path, dest_dir: &Path) -> std::io::Result<usize> {
+async fn copy_skill_dirs(
+    src_dir: &Path,
+    dest_dir: &Path,
+    files: &crate::paths::PromptFiles,
+) -> std::io::Result<usize> {
     let mut count = 0;
     let mut entries = match tokio::fs::read_dir(src_dir).await {
         Ok(e) => e,
@@ -436,10 +441,9 @@ async fn copy_skill_dirs(src_dir: &Path, dest_dir: &Path) -> std::io::Result<usi
         if !src.is_dir() {
             continue;
         }
-        let skill_md = src.join("SKILL.md");
-        if tokio::fs::metadata(&skill_md).await.is_err() {
+        let Ok(skill_md) = files.resolve(&src.join("SKILL.md")) else {
             continue;
-        }
+        };
         let Some(name) = src.file_name() else {
             continue;
         };

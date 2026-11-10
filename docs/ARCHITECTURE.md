@@ -641,6 +641,18 @@ git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git
   写法,shell 命令的每个词与赋值,`--flag=value` 的值)落在这里,gate 就拒绝,不问,
   `bypassPermissions` 下也一样;`Grep` / `Glob` 搜它上层的目录时跳过它;沙箱里的命令读不到,
   `sandbox.allow_read` 放不开。没有一个回答能让"把 token 读进模型"成为好主意,所以不询问。
+  引擎自己读进提示词或模型上下文的文件也一样:skill 的列表、正文与 `files:`,`AGENTS.md`
+  及向上找到的各层,`instruction_file`,rules 的索引,agent 定义,output style,memory 的
+  索引与条目,声明式 scene 的 `prompt.md`,`CLAUDE.md` 等的导入,host 传来的文件附件,都经
+  `base::paths::PromptFiles` 读:先解析符号链接,链接本身的写法或它指向的地方落在凭据里就
+  不读,记一条 warning。
+- **项目内容不跟随指出项目的链接。** 写在项目根下的文件(`PromptFiles` 的 `root`)解析后
+  必须仍在项目根下,否则同样不读、记 warning。仓库可以提交指向任何地方的符号链接,它能放到
+  模型面前的只该是它自己的文件;凭据名单之外的 `~/.netrc`、别的项目的 `.env` 也靠这一条挡。
+  项目内部的链接照常跟随(`CLAUDE.md -> AGENTS.md`、`.claude/skills -> ../.agents/skills`)。
+  monorepo 子目录里起的会话,上层目录的 `AGENTS.md` 由向上查找按它自己的路径读到,不需要
+  链接;子包里链向仓库别处的 skill / agent 不跟随——在仓库根起会话,或者装成用户层的 skill。
+  memory 的条目只认解析后仍在各自 memory 目录里的文件,插件包里的文件只认解析后仍在包里的。
 - **引擎配置**(`base::paths::ENGINE_CONFIG_{ROOTS,FILES,DIRS}` 与 `PROJECT_ENGINE_CONFIG_DIRS`):
   `.agix` / `.claude` 下除工作区之外的部分,和项目的 `.agents/skills/`(skill 的
   `allowed-tools` 会给自己授权)。写工具写这里要确认(工具自判的放行不算数),沙箱里只读

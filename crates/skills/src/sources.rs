@@ -10,6 +10,7 @@ use base::frozen::frontmatter::parse_skill_file;
 use base::frozen::skill::{SkillEntry, SkillSource as FrozenSkillSource};
 use base::interface::model::ToolDef;
 use base::interface::skill_provider::{SkillPrecedence, SkillProvider};
+use base::paths::PromptFiles;
 use std::path::{Path, PathBuf};
 
 use crate::manager::SkillSource;
@@ -31,6 +32,7 @@ pub struct SkillDirectory {
     tier: SkillSource,
     nested: bool,
     id: String,
+    files: PromptFiles,
 }
 
 impl SkillDirectory {
@@ -44,7 +46,13 @@ impl SkillDirectory {
             tier,
             nested: true,
             id,
+            files: PromptFiles::default(),
         }
+    }
+
+    pub fn reading_with(mut self, files: PromptFiles) -> Self {
+        self.files = files;
+        self
     }
 
     /// The flat `<name>.md` layout only.
@@ -78,13 +86,13 @@ impl SkillProvider for SkillDirectory {
                         .file_name()
                         .and_then(|s| s.to_str())
                         .unwrap_or("unknown");
-                    if let Some(e) = parse_at_path(&skill_md, dir_name, self.tier) {
+                    if let Some(e) = self.parse_at_path(&skill_md, dir_name) {
                         out.push(e);
                     }
                 }
             } else if path.extension().and_then(|s| s.to_str()) == Some("md") {
                 if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
-                    if let Some(e) = parse_at_path(&path, name, self.tier) {
+                    if let Some(e) = self.parse_at_path(&path, name) {
                         out.push(e);
                     }
                 }
@@ -187,9 +195,16 @@ impl SkillProvider for McpSkills {
     }
 }
 
-fn parse_at_path(path: &Path, dir_name: &str, tier: SkillSource) -> Option<SkillEntry> {
-    let content = std::fs::read_to_string(path).ok()?;
-    parse_skill_file(&content, dir_name.to_string(), path, frozen_source(tier))
+impl SkillDirectory {
+    fn parse_at_path(&self, path: &Path, dir_name: &str) -> Option<SkillEntry> {
+        let content = self.files.read_to_string(path).ok()?;
+        parse_skill_file(
+            &content,
+            dir_name.to_string(),
+            path,
+            frozen_source(self.tier),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -221,6 +236,31 @@ mod tests {
             .collect();
         names.sort();
         assert_eq!(names, vec!["deploy", "review"]);
+    }
+
+    #[test]
+    fn a_project_skill_linked_out_of_the_project_is_not_read() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (project, outside) = (tmp.path().join("project"), tmp.path().join("outside"));
+        let skills = project.join(".agents").join("skills");
+        write(
+            &outside.join("shared").join("SKILL.md"),
+            "---\nname: shared\ndescription: From outside\n---\nbody",
+        );
+        write(
+            &project.join("docs").join("local.md"),
+            "---\nname: local\ndescription: From inside\n---\nbody",
+        );
+        std::fs::create_dir_all(&skills).unwrap();
+        std::os::unix::fs::symlink(outside.join("shared"), skills.join("shared")).unwrap();
+        std::os::unix::fs::symlink("../../docs/local.md", skills.join("local.md")).unwrap();
+        let names: Vec<String> = SkillDirectory::tier(&skills, SkillSource::Project)
+            .reading_with(PromptFiles::new(None, Some(&project)))
+            .skills()
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        assert_eq!(names, vec!["local"]);
     }
 
     #[test]

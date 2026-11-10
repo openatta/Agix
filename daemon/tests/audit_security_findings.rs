@@ -561,7 +561,6 @@ async fn skill_then_write_outside(allowed_tools: &'static str) -> (Vec<String>, 
 /// The project's own key file is a credential no tool may read into the
 /// model, and a link is how a cloned repository gets at it.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "audit: confirmed defect, fix pending"]
 async fn audit2_a_project_skill_linked_to_a_credential_reads_it_into_the_model() {
     let daemon = Daemon::start(Setup::default(), |_, work| {
         std::fs::create_dir_all(work.join(".agix")).unwrap();
@@ -613,7 +612,6 @@ async fn audit2_a_project_skill_linked_to_a_credential_reads_it_into_the_model()
 /// `AGENTS.md` goes into every session's system prompt, and in a cloned
 /// repository it can be a link to the project's key file.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "audit: confirmed defect, fix pending"]
 async fn audit2_a_linked_agents_md_reads_a_credential_into_the_prompt() {
     let daemon = Daemon::start(Setup::default(), |_, work| {
         std::fs::create_dir_all(work.join(".agix")).unwrap();

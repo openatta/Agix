@@ -117,7 +117,7 @@ impl SkillEntry {
                 ));
             }
         }
-        let content = tokio::fs::read_to_string(&self.path).await?;
+        let content = crate::paths::PromptFiles::default().read_to_string(&self.path)?;
         let (_front, body) = split_frontmatter(&content);
         Ok(body.trim().to_string())
     }
@@ -175,14 +175,19 @@ async fn collect_skills(paths: &crate::paths::ConfigPaths, cwd: &Path) -> Vec<Sk
     let global_dir = paths.global_skills_dir();
     let scene_dir = paths.user_skills_dir();
     let project_dir = cwd.join(".agents").join("skills");
+    let files = crate::paths::PromptFiles::for_project(paths);
     let mut all = Vec::new();
-    all.extend(scan_skills_dir(&scene_dir, SkillSource::User).await);
-    all.extend(scan_skills_dir(&global_dir, SkillSource::User).await);
-    all.extend(scan_skills_dir(&project_dir, SkillSource::Project).await);
+    all.extend(scan_skills_dir(&scene_dir, SkillSource::User, &files).await);
+    all.extend(scan_skills_dir(&global_dir, SkillSource::User, &files).await);
+    all.extend(scan_skills_dir(&project_dir, SkillSource::Project, &files).await);
     all
 }
 
-async fn scan_skills_dir(dir: &Path, source: SkillSource) -> Vec<SkillEntry> {
+async fn scan_skills_dir(
+    dir: &Path,
+    source: SkillSource,
+    files: &crate::paths::PromptFiles,
+) -> Vec<SkillEntry> {
     let mut out = Vec::new();
     let mut entries = match tokio::fs::read_dir(dir).await {
         Ok(e) => e,
@@ -198,7 +203,7 @@ async fn scan_skills_dir(dir: &Path, source: SkillSource) -> Vec<SkillEntry> {
     subdirs.sort();
     for d in subdirs {
         let skill_md = d.join("SKILL.md");
-        let Ok(content) = tokio::fs::read_to_string(&skill_md).await else {
+        let Ok(content) = files.read_to_string(&skill_md) else {
             continue;
         };
         let dir_name = d
@@ -216,7 +221,9 @@ async fn scan_skills_dir(dir: &Path, source: SkillSource) -> Vec<SkillEntry> {
 /// a [`SkillEntry`]. Reads the file, parses YAML frontmatter, falls back to
 /// first markdown body line for description.
 pub async fn load_skill_from_path(path: &Path, source: SkillSource) -> Option<SkillEntry> {
-    let content = tokio::fs::read_to_string(path).await.ok()?;
+    let content = crate::paths::PromptFiles::default()
+        .read_to_string(path)
+        .ok()?;
     let dir_name = path
         .parent()
         .and_then(|p| p.file_name())

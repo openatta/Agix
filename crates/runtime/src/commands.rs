@@ -216,15 +216,7 @@ impl CommandRegistry {
     /// catalog, which knows every source's bodies — bundled, on disk, and the
     /// ones an MCP server's tools generate.
     pub fn skill_body(&self, entry: &SkillEntry) -> Option<String> {
-        if let Some(body) = self.skills.as_ref().and_then(|s| s.body(&entry.name)) {
-            return Some(body);
-        }
-        let content = std::fs::read_to_string(&entry.path).ok()?;
-        Some(
-            base::frozen::frontmatter::split_frontmatter(&content)
-                .1
-                .to_string(),
-        )
+        self.skills.as_ref().and_then(|s| s.body(&entry.name))
     }
 
     /// Handle a prompt command: expand the skill body and return the

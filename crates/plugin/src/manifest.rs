@@ -210,7 +210,8 @@ impl Plugin {
     }
 
     /// Resolve a manifest-relative path against this plugin's root, refusing
-    /// one that is missing or that resolves — through a symlink — outside it.
+    /// one that is missing, that resolves — through a symlink — outside it,
+    /// or that is a credential location.
     pub fn path(&self, rel: &Path) -> Result<PathBuf, PluginError> {
         let joined = self.root.join(rel);
         let resolved = joined.canonicalize().map_err(|e| {
@@ -223,6 +224,13 @@ impl Plugin {
         if !resolved.starts_with(&root) {
             return Err(PluginError::Schema(format!(
                 "`{}` resolves outside the package, to {}",
+                rel.display(),
+                resolved.display()
+            )));
+        }
+        if base::paths::Credentials::default().hold(&resolved) {
+            return Err(PluginError::Schema(format!(
+                "`{}` resolves to a credential location, {}",
                 rel.display(),
                 resolved.display()
             )));

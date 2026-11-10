@@ -241,7 +241,9 @@ impl FrozenContext {
             git.git_log,
         );
 
-        let memory_blocks = collect_memory_files_with(&cwd, opts.walk_up_claude_md).await;
+        let prompt_files = crate::paths::PromptFiles::for_project(paths);
+        let memory_blocks =
+            collect_memory_files_with(&cwd, opts.walk_up_claude_md, &prompt_files).await;
         // 用 load_session_skills 而非 collect_skills -- 前者把 bundled
         // skills (simplify/verify/debug/batch/stuck) 也并入。否则
         // disk 没装 SKILL.md 时 system prompt 不暴露 bundled，模型不知道有这些
@@ -262,7 +264,9 @@ impl FrozenContext {
 
         // Output style -- load by name from project then user dir.
         let output_style = match opts.output_style.as_deref() {
-            Some(name) if !name.trim().is_empty() => collect_output_style(&cwd, name, paths).await,
+            Some(name) if !name.trim().is_empty() => {
+                collect_output_style(&cwd, name, paths, &prompt_files).await
+            }
             _ => None,
         };
 
@@ -351,7 +355,12 @@ impl FrozenContext {
 /// Load `<cwd>/.agix/output-styles/<name>.md` if present,
 /// else `~/.agix/scenes/<scope>/output-styles/<name>.md`. Trims whitespace and caps body
 /// at 8KB. Returns None if neither file is present or readable.
-async fn collect_output_style(cwd: &Path, name: &str, paths: &ConfigPaths) -> Option<OutputStyle> {
+async fn collect_output_style(
+    cwd: &Path,
+    name: &str,
+    paths: &ConfigPaths,
+    files: &crate::paths::PromptFiles,
+) -> Option<OutputStyle> {
     let safe = name.trim();
     if safe.is_empty() || safe.contains('/') || safe.contains('\\') || safe.starts_with('.') {
         return None;
@@ -360,7 +369,7 @@ async fn collect_output_style(cwd: &Path, name: &str, paths: &ConfigPaths) -> Op
         .join(".agix")
         .join("output-styles")
         .join(format!("{safe}.md"));
-    if let Ok(content) = tokio::fs::read_to_string(&project).await {
+    if let Ok(content) = files.read_to_string(&project) {
         if !content.trim().is_empty() {
             return Some(OutputStyle {
                 name: safe.to_string(),
@@ -374,7 +383,7 @@ async fn collect_output_style(cwd: &Path, name: &str, paths: &ConfigPaths) -> Op
             .user_data_dir
             .join("output-styles")
             .join(format!("{safe}.md"));
-        if let Ok(content) = tokio::fs::read_to_string(&user).await {
+        if let Ok(content) = files.read_to_string(&user) {
             if !content.trim().is_empty() {
                 return Some(OutputStyle {
                     name: safe.to_string(),
@@ -784,9 +793,14 @@ mod tests {
             .await
             .unwrap();
 
-        let style = collect_output_style(cwd.path(), "terse", &test_paths(home.path()))
-            .await
-            .unwrap();
+        let style = collect_output_style(
+            cwd.path(),
+            "terse",
+            &test_paths(home.path()),
+            &Default::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(style.name, "terse");
         assert_eq!(style.source, OutputStyleSource::Project);
         assert!(style.content.contains("PROJECT VERSION"));
@@ -802,9 +816,14 @@ mod tests {
             .await
             .unwrap();
 
-        let style = collect_output_style(cwd.path(), "verbose", &test_paths(home.path()))
-            .await
-            .unwrap();
+        let style = collect_output_style(
+            cwd.path(),
+            "verbose",
+            &test_paths(home.path()),
+            &Default::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(style.source, OutputStyleSource::User);
         assert!(style.content.contains("explain everything"));
     }
@@ -813,18 +832,24 @@ mod tests {
     async fn output_style_returns_none_for_path_traversal_attempt() {
         let cwd = TempDir::new().unwrap();
         // names with slashes / leading dot must not load anything
+        assert!(collect_output_style(
+            cwd.path(),
+            "../etc/passwd",
+            &test_paths(cwd.path()),
+            &Default::default()
+        )
+        .await
+        .is_none());
+        assert!(collect_output_style(
+            cwd.path(),
+            ".hidden",
+            &test_paths(cwd.path()),
+            &Default::default()
+        )
+        .await
+        .is_none());
         assert!(
-            collect_output_style(cwd.path(), "../etc/passwd", &test_paths(cwd.path()))
-                .await
-                .is_none()
-        );
-        assert!(
-            collect_output_style(cwd.path(), ".hidden", &test_paths(cwd.path()))
-                .await
-                .is_none()
-        );
-        assert!(
-            collect_output_style(cwd.path(), "", &test_paths(cwd.path()))
+            collect_output_style(cwd.path(), "", &test_paths(cwd.path()), &Default::default())
                 .await
                 .is_none()
         );

@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use crate::paths::ConfigPaths;
+use crate::paths::{ConfigPaths, PromptFiles};
 
 /// How many memories extraction fills the store to: the most the index
 /// shows, and past it the recall selection call carries every header there
@@ -113,6 +113,7 @@ pub enum MemoryScope {
 pub struct MemoryStore {
     user_dir: PathBuf,
     local_dir: PathBuf,
+    state_root: Option<PathBuf>,
 }
 
 /// File name for the index.
@@ -123,13 +124,23 @@ impl MemoryStore {
         Self {
             user_dir,
             local_dir,
+            state_root: None,
         }
     }
 
     /// The store a session uses: the global memory directory and the
     /// project's, as `paths` names them.
     pub fn for_paths(paths: &ConfigPaths) -> Self {
-        Self::new(paths.global_memory_dir(), paths.local_memory_dir())
+        Self {
+            state_root: Some(paths.global_data_dir.clone()),
+            ..Self::new(paths.global_memory_dir(), paths.local_memory_dir())
+        }
+    }
+
+    /// How a file in `dir` is read: memories are files the store writes
+    /// there itself, so one that resolves anywhere else is not one.
+    fn files_in(&self, dir: &Path) -> PromptFiles {
+        PromptFiles::new(self.state_root.as_deref(), Some(dir))
     }
 
     /// Where a memory with no other home is written — the directory the
@@ -160,7 +171,7 @@ impl MemoryStore {
     fn load_all_with_home(&self) -> Vec<(PathBuf, DurableMemory)> {
         let mut out: Vec<(PathBuf, DurableMemory)> = Vec::new();
         for dir in self.dirs() {
-            for mem in Self::load_from_dir(dir) {
+            for mem in Self::load_from_dir(dir, &self.files_in(dir)) {
                 // First writer wins: `dirs()` yields local before user, so a
                 // project-local memory shadows a global one with the same name.
                 if out.iter().any(|(_, m)| m.name == mem.name) {
@@ -211,7 +222,7 @@ impl MemoryStore {
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         let (mut entries, mut dropped) = (0usize, 0usize);
         for dir in self.dirs() {
-            let Ok(s) = std::fs::read_to_string(dir.join(INDEX_FILE)) else {
+            let Ok(s) = self.files_in(dir).read_to_string(&dir.join(INDEX_FILE)) else {
                 continue;
             };
             for line in s.lines() {
@@ -296,7 +307,7 @@ impl MemoryStore {
             saved += batch.len();
             // Rebuilt from the directory's files rather than from the batch —
             // an index of the batch alone drops every memory it didn't mention.
-            Self::rebuild_index_from_disk(dir)?;
+            Self::rebuild_index_from_disk(dir, &self.files_in(dir))?;
         }
         Ok(saved)
     }
@@ -312,7 +323,9 @@ impl MemoryStore {
             }
             let _writing = lock_dir(&dir)?;
             let path = dir.join(format!("{}.md", sanitize_filename(&memory.name)));
-            let Some(mut current) = std::fs::read_to_string(&path)
+            let Some(mut current) = self
+                .files_in(&dir)
+                .read_to_string(&path)
                 .ok()
                 .and_then(|raw| Self::parse_memory_file(&raw))
             else {
@@ -360,7 +373,7 @@ impl MemoryStore {
             let _writing = lock_dir(dir)?;
             if path.exists() {
                 std::fs::remove_file(&path).map_err(|e| MemoryError::Io(e.to_string()))?;
-                Self::rebuild_index_from_disk(dir)?;
+                Self::rebuild_index_from_disk(dir, &self.files_in(dir))?;
                 removed = true;
             }
         }
@@ -371,7 +384,7 @@ impl MemoryStore {
         dir.to_path_buf()
     }
 
-    fn load_from_dir(dir: &Path) -> Vec<DurableMemory> {
+    fn load_from_dir(dir: &Path, files: &PromptFiles) -> Vec<DurableMemory> {
         let md = Self::memory_dir(dir);
         let mut memories = Vec::new();
         if let Ok(entries) = std::fs::read_dir(&md) {
@@ -380,7 +393,7 @@ impl MemoryStore {
                 if p.extension().is_some_and(|e| e == "md")
                     && p.file_name() != Some(std::ffi::OsStr::new(INDEX_FILE))
                 {
-                    if let Ok(content) = std::fs::read_to_string(&p) {
+                    if let Ok(content) = files.read_to_string(&p) {
                         if let Some(mem) = Self::parse_memory_file(&content) {
                             memories.push(mem);
                         }
@@ -501,8 +514,8 @@ impl MemoryStore {
     /// the files it points at from diverging — the previous `persist_batch`
     /// wrote an index containing only the batch it was handed, silently
     /// dropping every other memory from the model's view of its own memory.
-    fn rebuild_index_from_disk(dir: &Path) -> Result<(), MemoryError> {
-        let mut memories = Self::load_from_dir(dir);
+    fn rebuild_index_from_disk(dir: &Path, files: &PromptFiles) -> Result<(), MemoryError> {
+        let mut memories = Self::load_from_dir(dir, files);
         // `read_dir` order is unspecified; sort so the index is reproducible.
         memories.sort_by(|a, b| a.name.cmp(&b.name));
         Self::rebuild_index(dir, &memories)
@@ -700,7 +713,9 @@ fn sanitize_filename(name: &str) -> String {
 pub fn build_memory_prompt(memory_dir: &Path) -> String {
     memory_prompt_with_index(
         memory_dir,
-        std::fs::read_to_string(memory_dir.join(INDEX_FILE)).ok(),
+        PromptFiles::new(None, Some(memory_dir))
+            .read_to_string(&memory_dir.join(INDEX_FILE))
+            .ok(),
     )
 }
 
@@ -1231,7 +1246,7 @@ This memory was written before the flat-format fix."#;
         m.recall_count = 7;
         store.persist_batch(vec![m]).unwrap();
 
-        let back = MemoryStore::load_from_dir(&user_dir);
+        let back = MemoryStore::load_from_dir(&user_dir, &PromptFiles::default());
         assert_eq!(back.len(), 1);
         let b = &back[0];
         assert_eq!(b.confidence, 0.42);
@@ -1251,7 +1266,7 @@ This memory was written before the flat-format fix."#;
         m.description = r#"uses "quotes": and a colon # plus a hash"#.into();
         store.persist_batch(vec![m]).unwrap();
 
-        let back = MemoryStore::load_from_dir(&user_dir);
+        let back = MemoryStore::load_from_dir(&user_dir, &PromptFiles::default());
         assert_eq!(back.len(), 1, "file failed to parse back");
         assert_eq!(
             back[0].description,
@@ -1271,7 +1286,7 @@ This memory was written before the flat-format fix."#;
         )
         .unwrap();
 
-        let back = MemoryStore::load_from_dir(&user_dir);
+        let back = MemoryStore::load_from_dir(&user_dir, &PromptFiles::default());
         assert_eq!(back.len(), 1);
         let b = &back[0];
         assert_eq!(b.name, "legacy");

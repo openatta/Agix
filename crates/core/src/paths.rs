@@ -195,6 +195,112 @@ impl Credentials {
     }
 }
 
+/// How the engine reads a file it puts in front of the model on its own —
+/// skill listings and bodies, instruction files, rules, agent definitions,
+/// output styles, memory. What the file resolves to may not be a
+/// [`Credentials`] location, and a file spelled under `root` (the project,
+/// for project content) may not resolve outside it: a repository can commit
+/// a symbolic link to anything, and its own files are all it gets to show
+/// the model. The state root's own files are the user's, not the project's,
+/// even when the state root sits under `root`.
+#[derive(Debug, Clone, Default)]
+pub struct PromptFiles {
+    credentials: Credentials,
+    root: Option<Spellings>,
+    state_root: Option<Spellings>,
+}
+
+/// A directory as given, normalized, and as the filesystem resolves it.
+#[derive(Debug, Clone)]
+struct Spellings {
+    given: PathBuf,
+    real: PathBuf,
+}
+
+impl Spellings {
+    fn of(dir: &std::path::Path) -> Self {
+        let given = absolute_lexically(dir);
+        let real = std::fs::canonicalize(&given).unwrap_or_else(|_| given.clone());
+        Self { given, real }
+    }
+
+    fn spell(&self, path: &std::path::Path) -> bool {
+        path.starts_with(&self.given) || path.starts_with(&self.real)
+    }
+}
+
+impl PromptFiles {
+    pub fn new(state_root: Option<&std::path::Path>, root: Option<&std::path::Path>) -> Self {
+        Self {
+            credentials: Credentials::new(state_root),
+            root: root.map(Spellings::of),
+            state_root: state_root.map(Spellings::of),
+        }
+    }
+
+    /// For a session with these roots: the state root's credentials, and
+    /// the project — the directory holding `local_data_dir` — as the root.
+    pub fn for_project(paths: &ConfigPaths) -> Self {
+        Self::new(Some(&paths.global_data_dir), paths.local_data_dir.parent())
+    }
+
+    /// Where `path` resolves, when the engine may read it for the model. A
+    /// refusal is logged and comes back as `PermissionDenied`.
+    pub fn resolve(&self, path: &std::path::Path) -> std::io::Result<PathBuf> {
+        let resolved = std::fs::canonicalize(path)?;
+        self.admit(path, &resolved)
+            .map_err(|why| std::io::Error::new(std::io::ErrorKind::PermissionDenied, why))?;
+        Ok(resolved)
+    }
+
+    /// [`Self::resolve`], then the text of what it resolved to.
+    pub fn read_to_string(&self, path: &std::path::Path) -> std::io::Result<String> {
+        std::fs::read_to_string(self.resolve(path)?)
+    }
+
+    /// The check [`Self::resolve`] makes, for a caller that resolved `path`
+    /// through a filesystem of its own. A refusal is logged.
+    pub fn admit(&self, path: &std::path::Path, resolved: &std::path::Path) -> Result<(), String> {
+        let spelled = absolute_lexically(path);
+        let refusal = if self.credentials.hold(&spelled) || self.credentials.hold(resolved) {
+            Some("is a credential location".to_string())
+        } else {
+            self.root.as_ref().and_then(|root| {
+                let user_owned = self.state_root.as_ref().is_some_and(|s| s.spell(&spelled));
+                (root.spell(&spelled) && !user_owned && !resolved.starts_with(&root.real))
+                    .then(|| format!("is outside {}", root.given.display()))
+            })
+        };
+        match refusal {
+            None => Ok(()),
+            Some(why) => {
+                let message = format!(
+                    "not reading {} for the model: it resolves to {}, which {why}",
+                    path.display(),
+                    resolved.display()
+                );
+                tracing::warn!("{message}");
+                Err(message)
+            }
+        }
+    }
+}
+
+fn absolute_lexically(path: &std::path::Path) -> PathBuf {
+    let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 fn lowered_components(path: &std::path::Path) -> Vec<String> {
     path.components()
         .filter_map(|c| match c {
@@ -402,6 +508,65 @@ mod tests {
             assert!(!creds.hold(std::path::Path::new(p)), "{p}");
         }
         assert!(!Credentials::new(None).hold(std::path::Path::new("/state/home/settings.json")));
+    }
+
+    #[test]
+    fn a_prompt_file_is_neither_a_credential_nor_a_link_out_of_the_root() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let (state, project, elsewhere) = (
+            tmp.path().join("state"),
+            tmp.path().join("project"),
+            tmp.path().join("elsewhere"),
+        );
+        for dir in [
+            &state,
+            &project.join(".agix"),
+            &project.join("docs"),
+            &elsewhere,
+        ] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(state.join("settings.json"), "state key").unwrap();
+        std::fs::write(project.join(".agix/settings.local.json"), "project key").unwrap();
+        std::fs::write(project.join("docs/guide.md"), "guide").unwrap();
+        std::fs::write(elsewhere.join("notes.md"), "notes").unwrap();
+        symlink("docs/guide.md", project.join("AGENTS.md")).unwrap();
+        symlink(".agix/settings.local.json", project.join("KEY.md")).unwrap();
+        symlink("../elsewhere/notes.md", project.join("OUT.md")).unwrap();
+        symlink(
+            "../project/.agix/settings.local.json",
+            elsewhere.join("key.md"),
+        )
+        .unwrap();
+        symlink("../state/settings.json", elsewhere.join("state.md")).unwrap();
+
+        let files = PromptFiles::new(Some(&state), Some(&project));
+        let read = |p: PathBuf| files.read_to_string(&p).map_err(|e| e.kind());
+        let denied = Err(std::io::ErrorKind::PermissionDenied);
+        assert_eq!(read(project.join("AGENTS.md")), Ok("guide".into()));
+        assert_eq!(read(project.join("KEY.md")), denied);
+        assert_eq!(read(project.join(".agix/settings.local.json")), denied);
+        assert_eq!(read(project.join("OUT.md")), denied);
+        assert_eq!(read(elsewhere.join("notes.md")), Ok("notes".into()));
+        assert_eq!(read(elsewhere.join("key.md")), denied);
+        assert_eq!(read(elsewhere.join("state.md")), denied);
+        assert_eq!(
+            read(project.join("missing.md")),
+            Err(std::io::ErrorKind::NotFound)
+        );
+
+        let nested_state = project.join("home-state");
+        std::fs::create_dir_all(&nested_state).unwrap();
+        symlink("../../elsewhere/notes.md", nested_state.join("skill.md")).unwrap();
+        let files = PromptFiles::new(Some(&nested_state), Some(&project));
+        assert_eq!(
+            files
+                .read_to_string(&nested_state.join("skill.md"))
+                .map_err(|e| e.kind()),
+            Ok("notes".into()),
+            "the state root's files are the user's, wherever it sits"
+        );
     }
 
     #[test]

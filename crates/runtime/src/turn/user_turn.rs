@@ -381,7 +381,10 @@ impl Agent {
         }
 
         let mut user_blocks = vec![ModelContentBlock::Text { text: content }];
-        user_blocks.extend(resolve_attachments(&attachments).await);
+        let files = base::paths::PromptFiles::for_project(
+            &base::paths::ConfigPaths::from_settings(&self.settings.paths),
+        );
+        user_blocks.extend(resolve_attachments(&attachments, &files).await);
         for block in 1..user_blocks.len() {
             spans.push(base::interface::model::InputSpan {
                 source: base::interface::model::input_source::ATTACHMENT.into(),

@@ -97,7 +97,11 @@ pub fn builtin_agent_types() -> Vec<AgentTypeDefinition> {
 /// Sync (`std::fs`), not async — matches `skills::manager::SkillManager::load_dir`,
 /// which is called from the same sync `Builder::build()` context this
 /// function is meant to be called from (see `merge_agent_types`).
-pub fn load_agent_types_from_dir(dir: &Path, source: AgentTypeSource) -> Vec<AgentTypeDefinition> {
+pub fn load_agent_types_from_dir(
+    dir: &Path,
+    source: AgentTypeSource,
+    files: &PromptFiles,
+) -> Vec<AgentTypeDefinition> {
     let mut types = Vec::new();
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -108,7 +112,7 @@ pub fn load_agent_types_from_dir(dir: &Path, source: AgentTypeSource) -> Vec<Age
         if path.extension().and_then(|s| s.to_str()) != Some("md") {
             continue;
         }
-        let content = match std::fs::read_to_string(&path) {
+        let content = match files.read_to_string(&path) {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!(path = %path.display(), error = %e, "agent type: failed to read file");
@@ -166,9 +170,15 @@ pub fn agent_type_dirs(settings: &Settings) -> Vec<(std::path::PathBuf, AgentTyp
 /// multi-provider LLM config), when its source may shadow
 /// ([`AgentTypeSource::may_shadow`]): an untrusted project's type only adds
 /// names nothing else defines.
+/// How the [`agent_type_dirs`] of a session with these settings are read.
+pub fn agent_type_files(settings: &Settings) -> PromptFiles {
+    PromptFiles::for_project(&base::paths::ConfigPaths::from_settings(&settings.paths))
+}
+
 pub fn merge_agent_types(
     dirs: &[(std::path::PathBuf, AgentTypeSource)],
     plugin_types: &[AgentTypeDefinition],
+    files: &PromptFiles,
 ) -> std::collections::HashMap<String, AgentTypeDefinition> {
     let mut merged: std::collections::HashMap<String, AgentTypeDefinition> = builtin_agent_types()
         .into_iter()
@@ -178,7 +188,7 @@ pub fn merge_agent_types(
         merged.insert(def.name.clone(), def.clone());
     }
     for (dir, source) in dirs {
-        for def in load_agent_types_from_dir(dir, *source) {
+        for def in load_agent_types_from_dir(dir, *source, files) {
             if def.source.may_shadow() || !merged.contains_key(&def.name) {
                 merged.insert(def.name.clone(), def);
             } else {
@@ -201,21 +211,25 @@ pub fn project_agent_types_requiring_trust(
     let Some((project_dir, AgentTypeSource::Project { .. })) = dirs.last() else {
         return Vec::new();
     };
-    let below = merge_agent_types(&dirs[..dirs.len() - 1], plugin_types);
-    let mut out: Vec<String> =
-        load_agent_types_from_dir(project_dir, AgentTypeSource::Project { trusted: true })
-            .into_iter()
-            .filter(|def| {
-                below.contains_key(&def.name)
-                    || def.permission_mode.is_some_and(|m| {
-                        m.permissiveness() > settings.permission_mode.permissiveness()
-                    })
-                    || def
-                        .max_turns
-                        .is_some_and(|n| n > settings.execution.max_api_calls_per_turn)
-            })
-            .map(|def| format!("agents/{}", def.name))
-            .collect();
+    let files = agent_type_files(settings);
+    let below = merge_agent_types(&dirs[..dirs.len() - 1], plugin_types, &files);
+    let mut out: Vec<String> = load_agent_types_from_dir(
+        project_dir,
+        AgentTypeSource::Project { trusted: true },
+        &files,
+    )
+    .into_iter()
+    .filter(|def| {
+        below.contains_key(&def.name)
+            || def
+                .permission_mode
+                .is_some_and(|m| m.permissiveness() > settings.permission_mode.permissiveness())
+            || def
+                .max_turns
+                .is_some_and(|n| n > settings.execution.max_api_calls_per_turn)
+    })
+    .map(|def| format!("agents/{}", def.name))
+    .collect();
     out.sort();
     out
 }
@@ -257,8 +271,9 @@ impl SharedAgentTypeCatalog {
     pub fn build(
         dirs: &[(std::path::PathBuf, AgentTypeSource)],
         plugin_types: &[AgentTypeDefinition],
+        files: &PromptFiles,
     ) -> Self {
-        Self::build_with(dirs, plugin_types, true)
+        Self::build_with(dirs, plugin_types, files, true)
     }
 
     /// [`build`](Self::build) without the watcher — for a host that already
@@ -269,16 +284,18 @@ impl SharedAgentTypeCatalog {
     pub fn unwatched(
         dirs: &[(std::path::PathBuf, AgentTypeSource)],
         plugin_types: &[AgentTypeDefinition],
+        files: &PromptFiles,
     ) -> Self {
-        Self::build_with(dirs, plugin_types, false)
+        Self::build_with(dirs, plugin_types, files, false)
     }
 
     pub(super) fn build_with(
         dirs: &[(std::path::PathBuf, AgentTypeSource)],
         plugin_types: &[AgentTypeDefinition],
+        files: &PromptFiles,
         watch: bool,
     ) -> Self {
-        let merged = merge_agent_types(dirs, plugin_types);
+        let merged = merge_agent_types(dirs, plugin_types, files);
         let agent_types = Arc::new(std::sync::RwLock::new(Arc::new(merged)));
         if !watch {
             return Self {
@@ -289,6 +306,7 @@ impl SharedAgentTypeCatalog {
         let _watcher = crate::type_watcher::AgentTypeWatcher::watch(
             dirs.to_vec(),
             plugin_types.to_vec(),
+            files.clone(),
             agent_types.clone(),
         )
         .map(Arc::new)
@@ -309,12 +327,13 @@ impl SharedAgentTypeCatalog {
         &self,
         dirs: &[(std::path::PathBuf, AgentTypeSource)],
         plugin_types: &[AgentTypeDefinition],
+        files: &PromptFiles,
     ) {
         *self
             .agent_types
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            Arc::new(merge_agent_types(dirs, plugin_types));
+            Arc::new(merge_agent_types(dirs, plugin_types, files));
     }
 
     /// Handle to pass to `AgentTool::with_shared_agent_types` for each session.

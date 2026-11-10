@@ -12,6 +12,7 @@
 //! contract; this module owns the merge and the prompt block.
 
 use crate::interface::instruction_provider::{RuleDirectory, RuleProvider};
+use crate::paths::PromptFiles;
 use crate::settings::PathSettings;
 use std::path::PathBuf;
 
@@ -34,13 +35,17 @@ pub struct RuleEntry {
 /// skills/agents (`crates/core/src/frozen/skill.rs`,
 /// `crates/agents/src/agent_tool/catalog.rs::merge_agent_types`).
 pub fn default_rule_sources(paths: &PathSettings) -> Vec<Box<dyn RuleProvider>> {
-    vec![
-        Box::new(RuleDirectory::new(paths.global_data_dir.join("rules"))),
-        Box::new(RuleDirectory::new(paths.user_data_dir.join("rules"))),
-        Box::new(RuleDirectory::new(
-            paths.project_root().join(".agix").join("rules"),
-        )),
+    let files = PromptFiles::for_project(&crate::paths::ConfigPaths::from_settings(paths));
+    [
+        paths.global_data_dir.join("rules"),
+        paths.user_data_dir.join("rules"),
+        paths.project_root().join(".agix").join("rules"),
     ]
+    .into_iter()
+    .map(|dir| {
+        Box::new(RuleDirectory::new(dir).reading_with(files.clone())) as Box<dyn RuleProvider>
+    })
+    .collect()
 }
 
 /// Scan the three tiers and return one entry per unique filename stem.

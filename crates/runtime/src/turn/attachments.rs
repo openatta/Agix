@@ -59,6 +59,7 @@ pub(super) fn base64_decoded_len(data: &str) -> u64 {
 /// say why it cannot see it).
 pub(super) async fn resolve_attachments(
     attachments: &[crate::agent::Attachment],
+    files: &base::paths::PromptFiles,
 ) -> Vec<ModelContentBlock> {
     use crate::agent::Attachment;
     use base64::Engine as _;
@@ -74,8 +75,17 @@ pub(super) async fn resolve_attachments(
                 text: format!("<attachment path=\"{path}\">\n{content}\n</attachment>"),
             }),
             Attachment::File { path } => {
-                let p = std::path::Path::new(path);
-                match image_media_type(p) {
+                let p = match files.resolve(std::path::Path::new(path)) {
+                    Ok(resolved) => resolved,
+                    Err(e) => {
+                        blocks.push(ModelContentBlock::Text {
+                            text: format!("<attachment path=\"{path}\" error=\"{e}\" />"),
+                        });
+                        continue;
+                    }
+                };
+                let p = p.as_path();
+                match image_media_type(std::path::Path::new(path)) {
                     Some(media_type) => {
                         let size = tokio::fs::metadata(p).await.map(|m| m.len()).unwrap_or(0);
                         if size > MAX_ATTACHMENT_IMAGE_BYTES {

@@ -23,6 +23,7 @@ use base::interface::settings::{
     Effort, ExecutionSettings, ModelSettings, PathSettings, PermissionMode, SandboxConfig,
     Settings, ThinkingMode,
 };
+use base::paths::PromptFiles;
 use base::tool::ProgressSender;
 use base::tool::ToolContext;
 use base::tool::ToolResultContent;
@@ -138,7 +139,7 @@ impl AgentTool {
         agent_dirs: &[(std::path::PathBuf, AgentTypeSource)],
         plugin_agent_types: &[AgentTypeDefinition],
     ) -> Self {
-        let agent_types = merge_agent_types(agent_dirs, plugin_agent_types);
+        let agent_types = merge_agent_types(agent_dirs, plugin_agent_types, &config.prompt_files);
         let description: Arc<str> = describe_agent_types(&agent_types).into();
         let agent_types = Arc::new(std::sync::RwLock::new(Arc::new(agent_types)));
 
@@ -153,6 +154,7 @@ impl AgentTool {
         let _agent_type_watcher = crate::type_watcher::AgentTypeWatcher::watch(
             agent_dirs.to_vec(),
             plugin_agent_types.to_vec(),
+            config.prompt_files.clone(),
             agent_types.clone(),
         )
         .map(Arc::new)

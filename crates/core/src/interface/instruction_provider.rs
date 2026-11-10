@@ -15,6 +15,7 @@
 //! index whose content is deliberately *not* loaded until the model asks for
 //! it.
 
+use crate::paths::PromptFiles;
 use crate::rules::RuleEntry;
 use std::path::{Path, PathBuf};
 
@@ -38,11 +39,20 @@ pub trait InstructionProvider: Send + Sync {
 /// The configured instruction file, read from disk.
 pub struct InstructionFile {
     path: Option<PathBuf>,
+    files: PromptFiles,
 }
 
 impl InstructionFile {
     pub fn new(path: Option<PathBuf>) -> Self {
-        Self { path }
+        Self {
+            path,
+            files: PromptFiles::default(),
+        }
+    }
+
+    pub fn reading_with(mut self, files: PromptFiles) -> Self {
+        self.files = files;
+        self
     }
 }
 
@@ -55,7 +65,7 @@ impl InstructionProvider for InstructionFile {
         let Some(ref path) = self.path else {
             return Vec::new();
         };
-        match std::fs::read_to_string(path) {
+        match self.files.read_to_string(path) {
             Ok(content) if !content.trim().is_empty() => vec![InstructionDoc {
                 path: path.clone(),
                 content,
@@ -122,13 +132,23 @@ pub const MAX_RULE_DESCRIPTION_CHARS: usize = 150;
 pub struct RuleDirectory {
     dir: PathBuf,
     id: String,
+    files: PromptFiles,
 }
 
 impl RuleDirectory {
     pub fn new(dir: impl Into<PathBuf>) -> Self {
         let dir = dir.into();
         let id = dir.display().to_string();
-        Self { dir, id }
+        Self {
+            dir,
+            id,
+            files: PromptFiles::default(),
+        }
+    }
+
+    pub fn reading_with(mut self, files: PromptFiles) -> Self {
+        self.files = files;
+        self
     }
 }
 
@@ -138,7 +158,7 @@ impl RuleProvider for RuleDirectory {
     }
 
     fn rules(&self) -> Vec<RuleEntry> {
-        scan_rules_dir(&self.dir)
+        scan_rules_dir(&self.dir, &self.files)
     }
 }
 
@@ -172,7 +192,7 @@ impl RuleProvider for StaticRules {
     }
 }
 
-fn scan_rules_dir(dir: &Path) -> Vec<RuleEntry> {
+fn scan_rules_dir(dir: &Path, files: &PromptFiles) -> Vec<RuleEntry> {
     let mut out = Vec::new();
     let Ok(read_dir) = std::fs::read_dir(dir) else {
         return out; // directory doesn't exist yet
@@ -185,10 +205,13 @@ fn scan_rules_dir(dir: &Path) -> Vec<RuleEntry> {
         let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
-        let description = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|content| first_line_description(&content))
-            .unwrap_or_else(|| "(no description)".to_string());
+        let description = match files.read_to_string(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => continue,
+            read => read
+                .ok()
+                .and_then(|content| first_line_description(&content))
+                .unwrap_or_else(|| "(no description)".to_string()),
+        };
         out.push(RuleEntry {
             name: name.to_string(),
             description,

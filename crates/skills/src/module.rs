@@ -135,7 +135,7 @@ pub fn project_skills_requiring_trust(settings: &Settings) -> Vec<String> {
     if settings.project_layer.trust == base::project_trust::ProjectTrust::NoProject {
         return Vec::new();
     }
-    let manager = SkillManager::new();
+    let manager = SkillManager::new().reading_with(prompt_files(settings));
     let dir = settings.paths.project_root().join(".agents").join("skills");
     if manager
         .load_dir_subdirs(&dir, SkillSource::Project)
@@ -158,6 +158,10 @@ pub fn project_skills_requiring_trust(settings: &Settings) -> Vec<String> {
     out
 }
 
+fn prompt_files(settings: &Settings) -> base::paths::PromptFiles {
+    base::paths::PromptFiles::for_project(&base::paths::ConfigPaths::from_settings(&settings.paths))
+}
+
 fn build_skill_manager(
     settings: &Settings,
     plugins: &[Arc<dyn SkillProvider>],
@@ -166,7 +170,7 @@ fn build_skill_manager(
     use crate::manager::SkillSource;
     use crate::sources::BundledSkills;
 
-    let skill_mgr = SkillManager::new();
+    let skill_mgr = SkillManager::new().reading_with(prompt_files(settings));
     let project_skills_dir = settings.paths.project_root().join(".agents").join("skills");
     let tiers = [
         (

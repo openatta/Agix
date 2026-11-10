@@ -7,6 +7,7 @@
 use base::frozen::frontmatter::parse_skill_file;
 use base::frozen::skill::{SkillEntry, SkillSource as FrozenSkillSource};
 use base::interface::skill_provider::{SkillPrecedence, SkillProvider};
+use base::paths::PromptFiles;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{PoisonError, RwLock};
@@ -161,11 +162,13 @@ pub struct SkillManager {
     /// asked for the body: another source with a skill of the same name
     /// would otherwise answer for the one that won it.
     owners: RwLock<HashMap<String, usize>>,
+    files: PromptFiles,
 }
 
 impl SkillManager {
     pub fn new() -> Self {
         Self {
+            files: PromptFiles::default(),
             skills: RwLock::new(HashMap::new()),
             tiers: RwLock::new(Vec::new()),
             watcher: RwLock::new(None),
@@ -175,6 +178,16 @@ impl SkillManager {
             providers: RwLock::new(Vec::new()),
             owners: RwLock::new(HashMap::new()),
         }
+    }
+
+    /// Read skill files from disk through `files` rather than as found.
+    pub fn reading_with(mut self, files: PromptFiles) -> Self {
+        self.files = files;
+        self
+    }
+
+    pub fn prompt_files(&self) -> &PromptFiles {
+        &self.files
     }
 
     /// Record that `name` was just invoked (via the Skill tool, a slash
@@ -267,22 +280,18 @@ impl SkillManager {
     /// Each .md file is a skill; filename (without .md) is the skill name.
     pub fn load_dir(&self, dir: &Path, source: SkillSource) -> std::io::Result<usize> {
         self.note_tier(dir, source, false);
-        Ok(
-            self.load_from(std::sync::Arc::new(crate::sources::SkillDirectory::flat(
-                dir, source,
-            ))),
-        )
+        Ok(self.load_from(std::sync::Arc::new(
+            crate::sources::SkillDirectory::flat(dir, source).reading_with(self.files.clone()),
+        )))
     }
 
     /// Load skills from a directory using SKILL.md subdirectory format.
     /// Each subdirectory containing a SKILL.md becomes a skill.
     pub fn load_dir_subdirs(&self, dir: &Path, source: SkillSource) -> std::io::Result<usize> {
         self.note_tier(dir, source, true);
-        Ok(
-            self.load_from(std::sync::Arc::new(crate::sources::SkillDirectory::tier(
-                dir, source,
-            ))),
-        )
+        Ok(self.load_from(std::sync::Arc::new(
+            crate::sources::SkillDirectory::tier(dir, source).reading_with(self.files.clone()),
+        )))
     }
 
     fn note_tier(&self, dir: &Path, source: SkillSource, nested: bool) {
@@ -392,7 +401,7 @@ impl SkillManager {
                                         .and_then(|s| s.to_str())
                                         .unwrap_or("unknown")
                                         .to_string();
-                                    let info = Self::load_skill_at_path(
+                                    let info = self.load_skill_at_path(
                                         &skill_md,
                                         &dir_name,
                                         SkillSource::Project,
@@ -478,7 +487,7 @@ impl SkillManager {
         }) {
             return Some(body);
         }
-        let content = std::fs::read_to_string(&info.path).ok()?;
+        let content = self.files.read_to_string(&info.path).ok()?;
         Some(
             base::frozen::frontmatter::split_frontmatter(&content)
                 .1
@@ -542,8 +551,13 @@ impl SkillManager {
     }
 
     /// Parse a SKILL.md file at the given path, using the core frontmatter parser.
-    fn load_skill_at_path(path: &Path, dir_name: &str, source: SkillSource) -> Option<SkillInfo> {
-        let content = std::fs::read_to_string(path).ok()?;
+    fn load_skill_at_path(
+        &self,
+        path: &Path,
+        dir_name: &str,
+        source: SkillSource,
+    ) -> Option<SkillInfo> {
+        let content = self.files.read_to_string(path).ok()?;
         let frozen_source = match source {
             SkillSource::User => FrozenSkillSource::User,
             SkillSource::Project => FrozenSkillSource::Project,
@@ -676,8 +690,10 @@ impl SkillManager {
             SkillSource::Plugin => FrozenSkillSource::Plugin,
         };
 
-        let content =
-            std::fs::read_to_string(path).map_err(|e| format!("Failed to read skill: {e}"))?;
+        let content = self
+            .files
+            .read_to_string(path)
+            .map_err(|e| format!("Failed to read skill: {e}"))?;
         let entry = parse_skill_file(&content, name.clone(), path, frozen_source)
             .ok_or_else(|| format!("Failed to parse skill file: {}", path.display()))?;
 
@@ -1012,7 +1028,7 @@ mod tests {
         writeln!(f, "# Test Skill Body").unwrap();
         drop(f);
 
-        let info = SkillManager::load_skill_at_path(&skill_md, "my-skill", SkillSource::User);
+        let info = SkillManager::new().load_skill_at_path(&skill_md, "my-skill", SkillSource::User);
         assert!(info.is_some());
         let info = info.unwrap();
         assert_eq!(info.name, "my-skill");
@@ -1027,7 +1043,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let skill_md = dir.path().join("empty.md");
         std::fs::write(&skill_md, "").unwrap();
-        let info = SkillManager::load_skill_at_path(&skill_md, "empty", SkillSource::User);
+        let info = SkillManager::new().load_skill_at_path(&skill_md, "empty", SkillSource::User);
         assert!(info.is_none());
     }
 
@@ -1036,7 +1052,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let skill_md = dir.path().join("body.md");
         std::fs::write(&skill_md, "# A body-only skill").unwrap();
-        let info = SkillManager::load_skill_at_path(&skill_md, "body", SkillSource::User);
+        let info = SkillManager::new().load_skill_at_path(&skill_md, "body", SkillSource::User);
         assert!(info.is_some());
         assert_eq!(info.unwrap().description, "A body-only skill");
     }

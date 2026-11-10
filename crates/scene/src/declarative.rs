@@ -304,9 +304,12 @@ impl DeclarativeScene {
     }
 
     fn read(dir: &Path, rule: IdRule<'_>) -> Result<Self, SceneLoadError> {
+        let files = base::paths::PromptFiles::new(None, Some(dir));
         let read = |name: &str| {
             let path = dir.join(name);
-            std::fs::read_to_string(&path).map_err(|source| SceneLoadError::Io { path, source })
+            files
+                .read_to_string(&path)
+                .map_err(|source| SceneLoadError::Io { path, source })
         };
         let scene_json = read(SCENE_FILE)?;
         let prompt_md = read(PROMPT_FILE)?;

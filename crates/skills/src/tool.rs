@@ -299,10 +299,14 @@ pub async fn expand_for_invocation(
     ctx: &ToolContext,
     permission: Option<&dyn base::interface::permission::Permission>,
 ) -> Result<SkillExpansion, ExpandError> {
-    let bundled_files_text =
-        build_bundled_files_injection(&info.path, &info.name, &*ctx.exec.filesystem)
-            .await
-            .map_err(ExpandError::Rejected)?;
+    let bundled_files_text = build_bundled_files_injection(
+        &info.path,
+        &info.name,
+        &*ctx.exec.filesystem,
+        manager.prompt_files(),
+    )
+    .await
+    .map_err(ExpandError::Rejected)?;
     let body = manager
         .get_skill_content(&info.name)
         .ok_or(ExpandError::NotFound)?;
@@ -390,8 +394,15 @@ async fn build_bundled_files_injection(
     skill_path: &std::path::Path,
     skill_name: &str,
     fs: &dyn base::interface::exec::FileSystem,
+    files: &base::paths::PromptFiles,
 ) -> Result<String, String> {
-    let Ok(content) = fs.read_to_string(skill_path).await else {
+    let Ok(real_skill_path) = fs.canonicalize(skill_path).await else {
+        return Ok(String::new());
+    };
+    if files.admit(skill_path, &real_skill_path).is_err() {
+        return Ok(String::new());
+    }
+    let Ok(content) = fs.read_to_string(&real_skill_path).await else {
         return Ok(String::new());
     };
     let dir_name = skill_path
@@ -454,6 +465,11 @@ async fn build_bundled_files_injection(
                  outside the skill's own folder ({}): {} — rejected.",
                 canonical_skill_dir.display(),
                 real_path.display()
+            ));
+        }
+        if let Err(why) = files.admit(absolute, &real_path) {
+            return Err(format!(
+                "Skill '{skill_name}' declares bundled file `{relative}`: {why}"
             ));
         }
 

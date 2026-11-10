@@ -1308,6 +1308,14 @@ WebAssembly 载体整个移除。
   这个开关计划在后续 0.3.x 版本改为缺省开;现在就在全局 `settings.json` 里写
   `"sandbox": {"unattended_requires_network_policy": true}`(或把 `network_mode` 改成 `deny_all` /
   `allowlist`)即可消掉告警并按新缺省试跑。
+- **引擎读进提示词的文件也过凭据名单,项目内容不跟随指出项目的链接。** 以前项目里提交
+  `.agents/skills/notes.md -> ../../.agix/settings.local.json` 或 `AGENTS.md -> .agix/settings.local.json`
+  这样的符号链接,key 文件的内容就进了 skill 列表或系统提示词,未信任的项目也一样。现在 skill、
+  `AGENTS.md`、rules、agent 定义、output style、memory、文件附件等引擎自己读的文件先解析链接:
+  落在凭据里的不读;写在项目根下、指到项目根之外的也不读;两种都记一条 warning。依赖"项目里
+  的 skill / agent / `AGENTS.md` 链到项目外"的(常见于 monorepo 子包里链向仓库别处),改成在
+  仓库根起会话,或把共享的 skill 装到用户层;上层目录的 `AGENTS.md` 仍由向上查找直接读到
+  (`ARCHITECTURE.md` §6.1"两份敏感路径名单")。插件包里的文件落在凭据位置上同样拒绝加载。
 - **`dontAsk` 会话的子 Agent 也是 `dontAsk`。** agent 类型 frontmatter 的 `permission_mode`
   以前在父会话是 `dontAsk` 时照样生效,写 `bypassPermissions` 的类型能让子 Agent 免规则运行;
   现在与 `plan` 一样取两者中更严的那个,也就是 `dontAsk`。

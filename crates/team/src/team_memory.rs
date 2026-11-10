@@ -206,7 +206,8 @@ fn build_filtered_memory_index(
 ) -> String {
     // Try to use the on-disk MEMORY.md as the canonical index, but filter out
     // lines referencing excluded memory names.
-    if let Ok(raw) = std::fs::read_to_string(&index_path) {
+    let files = base::paths::PromptFiles::new(None, index_path.parent());
+    if let Ok(raw) = files.read_to_string(&index_path) {
         let filtered: String = raw
             .lines()
             .filter(|line| {

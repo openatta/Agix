@@ -17,6 +17,7 @@
 use crate::agent_tool::{
     merge_agent_types, AgentTypeDefinition, AgentTypeSource, SharedAgentTypeMap,
 };
+use base::paths::PromptFiles;
 use notify::event::Event;
 use notify::{recommended_watcher, RecursiveMode, Watcher};
 use std::path::PathBuf;
@@ -46,6 +47,7 @@ impl AgentTypeWatcher {
     pub(crate) fn watch(
         dirs: Vec<(PathBuf, AgentTypeSource)>,
         plugin_types: Vec<AgentTypeDefinition>,
+        files: PromptFiles,
         target: SharedAgentTypeMap,
     ) -> Result<Self, String> {
         let (tx, rx) = std::sync::mpsc::channel();
@@ -67,7 +69,7 @@ impl AgentTypeWatcher {
 
         std::thread::Builder::new()
             .name("agent-type-watcher".into())
-            .spawn(move || drain_events(rx, &dirs, &plugin_types, &target))
+            .spawn(move || drain_events(rx, &dirs, &plugin_types, &files, &target))
             .map_err(|e| format!("could not start the agent-type-watcher thread: {e}"))?;
 
         Ok(Self { watcher_handle })
@@ -78,6 +80,7 @@ fn drain_events(
     rx: Receiver<notify::Result<Event>>,
     dirs: &[(PathBuf, AgentTypeSource)],
     plugin_types: &[AgentTypeDefinition],
+    files: &PromptFiles,
     target: &SharedAgentTypeMap,
 ) {
     loop {
@@ -88,7 +91,7 @@ fn drain_events(
                     .iter()
                     .any(|p| p.extension().and_then(|e| e.to_str()) == Some("md"));
                 if is_agent_type_change {
-                    let merged = merge_agent_types(dirs, plugin_types);
+                    let merged = merge_agent_types(dirs, plugin_types, files);
                     let count = merged.len();
                     *target
                         .write()

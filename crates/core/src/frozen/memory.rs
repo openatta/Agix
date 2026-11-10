@@ -28,6 +28,7 @@ pub struct MemoryFileEntry {
 pub(crate) async fn collect_memory_files_with(
     cwd: &Path,
     do_walk_up: bool,
+    files: &crate::paths::PromptFiles,
 ) -> Vec<MemoryFileEntry> {
     let mut visited = std::collections::HashSet::new();
     let mut walk_up: Vec<PathBuf> = Vec::new();
@@ -60,11 +61,13 @@ pub(crate) async fn collect_memory_files_with(
     let mut total_len = 0usize;
 
     for path in walk_up {
-        let canonical = tokio::fs::canonicalize(&path).await.unwrap_or(path.clone());
+        let Ok(canonical) = files.resolve(&path) else {
+            continue;
+        };
         if !visited.insert(canonical.clone()) {
             continue;
         }
-        let Ok(content) = tokio::fs::read_to_string(&path).await else {
+        let Ok(content) = tokio::fs::read_to_string(&canonical).await else {
             continue;
         };
         if content.trim().is_empty() {
@@ -286,14 +289,14 @@ mod tests {
             .unwrap();
 
         // walk_up = true（默认）-- parent 应该出现
-        let with_walk = collect_memory_files_with(&child, true).await;
+        let with_walk = collect_memory_files_with(&child, true, &Default::default()).await;
         assert!(with_walk
             .iter()
             .any(|e| e.content.contains("PARENT-MONOREPO")));
         assert!(with_walk.iter().any(|e| e.content.contains("CHILD-LOCAL")));
 
         // walk_up = false -- 只 child
-        let no_walk = collect_memory_files_with(&child, false).await;
+        let no_walk = collect_memory_files_with(&child, false, &Default::default()).await;
         assert!(!no_walk
             .iter()
             .any(|e| e.content.contains("PARENT-MONOREPO")));

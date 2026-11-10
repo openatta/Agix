@@ -81,6 +81,7 @@ impl ProjectModules {
             agent_types: agents::agent_tool::SharedAgentTypeCatalog::unwatched(
                 &agents::agent_tool::agent_type_dirs(settings),
                 &plugins.agent_types,
+                &agents::agent_tool::agent_type_files(settings),
             ),
         }
     }
@@ -190,6 +191,7 @@ impl ProjectModules {
         self.agent_types.refresh(
             &agents::agent_tool::agent_type_dirs(settings),
             plugin_agent_types,
+            &agents::agent_tool::agent_type_files(settings),
         );
         #[cfg(not(feature = "agents"))]
         let _ = (settings, plugin_agent_types);
