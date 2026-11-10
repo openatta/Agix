@@ -124,6 +124,42 @@ pub async fn write_policy(ctx: &base::tool::ToolContext) -> permissions::path_sa
         .with_allowed(allowed)
 }
 
+/// What a file-writing tool decides about writing `file_path` — `None` when
+/// the input did not parse: inside the write policy it allows, outside every
+/// root it asks, onto a guarded name or system path it denies.
+pub async fn check_write_permission(
+    tool: &str,
+    file_path: Option<&str>,
+    ctx: &base::tool::ToolContext,
+) -> base::tool::PermissionDecision {
+    use base::tool::PermissionDecision;
+    use permissions::path_safety::{check_write_for, PathSafetyError};
+
+    let Some(file_path) = file_path else {
+        return PermissionDecision::Ask {
+            message: format!("{tool} requires confirmation"),
+            decision_reason: None,
+        };
+    };
+    let fs = &*ctx.exec.filesystem;
+    let target = resolve_write_target(file_path, &ctx.cwd, fs).await;
+    let resolved = fs.canonicalize_best_effort(&target).await;
+    let policy = write_policy(ctx).await;
+    match check_write_for(Path::new(file_path), &resolved, &policy) {
+        Ok(()) => PermissionDecision::Allow {
+            decision_reason: Some("project_write".into()),
+        },
+        Err(PathSafetyError::OutsideAllowedRoots { .. }) => PermissionDecision::Ask {
+            message: format!("{tool} outside the project requires confirmation"),
+            decision_reason: None,
+        },
+        Err(err) => PermissionDecision::Deny {
+            reason: Some(format!("{err:?}")),
+            decision_reason: Some("path_safety".into()),
+        },
+    }
+}
+
 /// Whether `sandbox.allowed_domains` names the host `url` reaches. What the
 /// url carries reaches that host, so `acceptEdits` sends a request without
 /// asking only to a host the settings vouch for.

@@ -15,7 +15,7 @@ use base::tool::{
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// 内容大小硬上限 —— 防止模型把整个仓库塞进一次 Write。
 pub const MAX_WRITE_BYTES: usize = 100 * 1024 * 1024;
@@ -106,42 +106,8 @@ impl Tool for FileWriteTool {
     }
 
     async fn check_permissions(&self, input: &Value, ctx: &ToolContext) -> PermissionDecision {
-        // 1. 路径安全：cwd 子树 / additional 之外、`.env*` / 系统目录 → 拒
-        if let Ok(parsed) = serde_json::from_value::<FileWriteInput>(input.clone()) {
-            let requested = PathBuf::from(&parsed.file_path);
-            let target = crate::security::resolve_write_target(
-                &parsed.file_path,
-                &ctx.cwd,
-                &*ctx.exec.filesystem,
-            )
-            .await;
-            let path = ctx.exec.filesystem.canonicalize_best_effort(&target).await;
-            let policy = crate::security::write_policy(ctx).await;
-            match permissions::path_safety::check_write_for(&requested, &path, &policy) {
-                Ok(()) => {
-                    return PermissionDecision::Allow {
-                        decision_reason: Some("project_write".into()),
-                    };
-                }
-                Err(permissions::path_safety::PathSafetyError::OutsideAllowedRoots { .. }) => {
-                    return PermissionDecision::Ask {
-                        message: "Write outside the project requires confirmation".into(),
-                        decision_reason: None,
-                    };
-                }
-                Err(err) => {
-                    return PermissionDecision::Deny {
-                        reason: Some(format!("{err:?}")),
-                        decision_reason: Some("path_safety".into()),
-                    };
-                }
-            }
-        }
-
-        PermissionDecision::Ask {
-            message: "Write requires confirmation".into(),
-            decision_reason: None,
-        }
+        let file_path = self.permission_match_content(input);
+        crate::security::check_write_permission(self.name(), file_path.as_deref(), ctx).await
     }
 
     async fn call(
@@ -201,6 +167,7 @@ mod tests {
     use base::tool::ToolResultContent;
     use platform::LocalFileSystem;
     use serde_json::json;
+    use std::path::PathBuf;
     use std::sync::Arc;
     use tempfile::TempDir;
 

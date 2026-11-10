@@ -101,30 +101,8 @@ impl Tool for NotebookEditTool {
         }
     }
     async fn check_permissions(&self, input: &Value, ctx: &ToolContext) -> PermissionDecision {
-        // 复用 path safety：notebook 不能写出 cwd（除非 additional_writable_dirs）
-        let parsed: Result<NotebookEditInput, _> = serde_json::from_value(input.clone());
-        let Ok(p) = parsed else {
-            return PermissionDecision::allow();
-        };
-        let requested = std::path::PathBuf::from(&p.file_path);
-        let target =
-            crate::security::resolve_write_target(&p.file_path, &ctx.cwd, &*ctx.exec.filesystem)
-                .await;
-        let path = ctx.exec.filesystem.canonicalize_best_effort(&target).await;
-        let policy = crate::security::write_policy(ctx).await;
-        match permissions::path_safety::check_write_for(&requested, &path, &policy) {
-            Ok(_) => PermissionDecision::allow(),
-            Err(permissions::path_safety::PathSafetyError::OutsideAllowedRoots { .. }) => {
-                PermissionDecision::Ask {
-                    message: "NotebookEdit outside the project requires confirmation".into(),
-                    decision_reason: None,
-                }
-            }
-            Err(e) => PermissionDecision::Deny {
-                reason: Some(format!("path safety: {e:?}")),
-                decision_reason: Some("notebook path outside cwd".into()),
-            },
-        }
+        let file_path = self.permission_match_content(input);
+        crate::security::check_write_permission(self.name(), file_path.as_deref(), ctx).await
     }
     async fn call(
         &self,
@@ -302,6 +280,40 @@ mod tests {
   "nbformat_minor": 5
 }"#
         .to_string()
+    }
+
+    #[tokio::test]
+    async fn notebook_write_permission_matches_write_and_edit() {
+        let dir = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let ctx = ToolContext::for_test(dir.path().to_path_buf());
+        let input = |path: &str| json!({"file_path": path, "mode": "delete", "cell_index": 0});
+        let decide = |input: Value| {
+            let ctx = ctx.clone();
+            async move { NotebookEditTool.check_permissions(&input, &ctx).await }
+        };
+
+        let unparsable = decide(json!({"file_path": 7})).await;
+        assert!(
+            matches!(unparsable, PermissionDecision::Ask { .. }),
+            "{unparsable:?}"
+        );
+        let inside = decide(input("a.ipynb")).await;
+        assert!(
+            matches!(inside, PermissionDecision::Allow { .. }),
+            "{inside:?}"
+        );
+        let elsewhere = outside.path().join("a.ipynb");
+        let beyond = decide(input(&elsewhere.to_string_lossy())).await;
+        assert!(
+            matches!(beyond, PermissionDecision::Ask { .. }),
+            "{beyond:?}"
+        );
+        let sensitive = decide(input(".ssh/a.ipynb")).await;
+        assert!(
+            matches!(sensitive, PermissionDecision::Deny { .. }),
+            "{sensitive:?}"
+        );
     }
 
     #[tokio::test]
