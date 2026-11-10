@@ -131,7 +131,10 @@ impl AgentHookExecutor for AgentSpawnerHookExecutor {
             self.cwd.clone(),
             tokio_util::sync::CancellationToken::new(),
         )
-        .model(model.map(str::to_string));
+        .model(model.map(str::to_string))
+        .mode(base::interface::agent_spawner::SpawnMode::Hook {
+            judged_session: payload.session_id.clone(),
+        });
         self.spawner.spawn(request).await.map_err(|e| e.to_string())
     }
 }

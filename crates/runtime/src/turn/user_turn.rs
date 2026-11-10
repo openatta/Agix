@@ -1183,7 +1183,7 @@ impl Agent {
             // Gated on `memory_enabled` — see the prefetch block above for why this matters
             // (the flag's whole point is opting out of the memory subsystem entirely, not just
             // the static prompt injection).
-            if self.settings.memory_enabled {
+            if self.settings.memory_enabled && self.memory.extract_after_turn {
                 let session_messages = self.session.messages().to_vec();
                 let store = self.memory.memory_store.clone();
                 // `task_models.memory` lets an app point this background

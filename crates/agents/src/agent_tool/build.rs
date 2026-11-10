@@ -22,6 +22,7 @@ pub(super) struct DelegatePlan<'a> {
     pub(super) grant: Grant,
     pub(super) parent: Option<(&'a str, u32, &'a str)>,
     pub(super) run: &'a SubRun,
+    pub(super) extracts_memories: bool,
 }
 
 pub(super) struct Delegate {
@@ -69,6 +70,7 @@ impl Inner {
             grant,
             parent,
             run,
+            extracts_memories,
         } = plan;
         let def = subagent_type.and_then(|t| self.agent_type_def(t));
         let model_override = run
@@ -109,6 +111,7 @@ impl Inner {
             .tools(tools)
             .settings(settings.clone())
             .agent_depth(depth)
+            .memory_extraction(extracts_memories)
             .permission(permission);
         if let Some(schema) = &run.output_schema {
             builder = builder.output_schema(schema.clone());
@@ -141,12 +144,17 @@ impl Inner {
 
     /// Build a one-shot delegate, run its turn between `SubagentStart` and
     /// `SubagentStop`, and mark its sidechain ended. `admission`'s slot is
-    /// held until the run ends.
+    /// held until the run ends. Returns the answer and whether `cancel`
+    /// stopped the run.
+    ///
+    /// The delegate extracts no memories: it is dropped as soon as its turn
+    /// returns, which would abandon an extraction already paid for. What it
+    /// learned reaches the parent as its answer.
     pub(super) async fn run_delegate(
         &self,
         admission: Admission,
         spawn: OneShot<'_>,
-    ) -> Result<String, base::error::ToolError> {
+    ) -> (Result<String, base::error::ToolError>, bool) {
         let Admission { depth, _slot } = admission;
         let OneShot {
             prompt,
@@ -167,7 +175,7 @@ impl Inner {
             settings,
             payload,
             history_store,
-        } = self
+        } = match self
             .build_delegate(DelegatePlan {
                 tools,
                 cwd,
@@ -176,8 +184,13 @@ impl Inner {
                 grant,
                 parent,
                 run: &run,
+                extracts_memories: false,
             })
-            .await?;
+            .await
+        {
+            Ok(delegate) => delegate,
+            Err(e) => return (Err(e), false),
+        };
         let sid = payload.session_id.clone();
 
         let prompt = match (&def, self.skill_manager()) {
@@ -248,6 +261,6 @@ impl Inner {
         // Marked terminal on failure too, so a stale `session.resume` against
         // it is rejected instead of silently continuing a "finished" sub-agent.
         mark_sidechain_terminal(history_store.as_ref(), &sid, &result, cancelled).await;
-        result
+        (result, cancelled)
     }
 }

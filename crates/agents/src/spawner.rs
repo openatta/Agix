@@ -53,6 +53,21 @@ impl AgentSpawner for RuntimeAgentSpawner {
                         perm,
                         agent_type.as_deref(),
                         model,
+                        allowed_tools,
+                    )
+                    .await
+            }
+            SpawnMode::Hook { judged_session } => {
+                self.agent_tool
+                    .run_hook_agent(
+                        &judged_session,
+                        prompt,
+                        tools,
+                        cwd,
+                        cancel,
+                        agent_type.as_deref(),
+                        model,
+                        allowed_tools,
                     )
                     .await
             }
@@ -65,6 +80,7 @@ impl AgentSpawner for RuntimeAgentSpawner {
                         cancel,
                         agent_type.as_deref(),
                         model,
+                        allowed_tools,
                         session,
                     )
                     .await

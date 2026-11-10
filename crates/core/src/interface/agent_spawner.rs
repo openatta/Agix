@@ -114,8 +114,15 @@ pub enum SpawnMode {
     /// Run it and wait for its final text.
     #[default]
     Wait,
+    /// Run it for a `"type": "agent"` hook on an event of `judged_session`
+    /// and wait for its verdict. It is not counted against
+    /// `max_concurrent_subagents`: that cap is the model's, and a guard the
+    /// model could crowd out would be no guard.
+    Hook { judged_session: String },
     /// Run it as a task of `session` — the *parent* session, where
     /// `TaskOutput` / `TaskStop` find it — and return the task id at once.
+    /// The task runs under a child of the request's `cancel`: cancelling
+    /// that stops the task, stopping the task leaves it alone.
     Background {
         session: Arc<crate::context::SessionState>,
     },
@@ -194,6 +201,7 @@ mod tests {
         ) -> Result<String, Box<dyn std::error::Error + Send>> {
             let mode = match request.mode {
                 SpawnMode::Wait => "wait",
+                SpawnMode::Hook { .. } => "hook",
                 SpawnMode::Background { .. } => "background",
                 SpawnMode::TeamMember { .. } => "member",
             };

@@ -43,6 +43,7 @@ impl AgentTool {
                 grant: Grant::TeamMember,
                 parent: None,
                 run: &run,
+                extracts_memories: true,
             })
             .await?;
         Ok((

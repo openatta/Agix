@@ -74,6 +74,47 @@ impl SubagentSlots {
     }
 }
 
+/// The sessions of the agents running for `"type": "agent"` hooks. Their own
+/// events start no agent hooks: a guard that reads a file would otherwise ask
+/// another guard about it, and that one another, until the first times out.
+#[derive(Clone, Default)]
+pub(super) struct HookAgents(Arc<std::sync::Mutex<std::collections::HashSet<String>>>);
+
+impl HookAgents {
+    pub(super) fn includes(&self, session_id: &str) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(session_id)
+    }
+
+    pub(super) fn enter(&self, session_id: String) -> HookAgentRunning {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(session_id.clone());
+        HookAgentRunning {
+            agents: self.clone(),
+            session_id,
+        }
+    }
+}
+
+pub(super) struct HookAgentRunning {
+    agents: HookAgents,
+    session_id: String,
+}
+
+impl Drop for HookAgentRunning {
+    fn drop(&mut self) {
+        self.agents
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.session_id);
+    }
+}
+
 /// Leave to start one sub-agent: the depth it runs at and, when it counts
 /// against the session's cap, the slot it holds until it ends.
 pub(super) struct Admission {
@@ -127,6 +168,7 @@ pub(super) struct Inner {
     /// Sub-agents running anywhere under the root session; shared by every
     /// delegate's `AgentTool` (see `AgentsModule::for_delegates`).
     pub(super) subagent_slots: SubagentSlots,
+    pub(super) hook_agents: HookAgents,
     /// Built-in types merged with any disk-loaded custom types (see
     /// `merge_agent_types`). Keyed by `subagent_type` name. `RwLock<Arc<..>>`
     /// (not a plain `Arc<..>`) so `agent_type_watcher::AgentTypeWatcher` can
@@ -365,8 +407,10 @@ impl Inner {
         })
     }
 
-    /// TeamCreate members are bounded by `team_stage_concurrency` instead.
-    pub(super) fn admit_team_member(&self) -> Result<Admission, String> {
+    /// Leave that takes no slot: for `TeamCreate` members, bounded by
+    /// `team_stage_concurrency` instead, and for hook agents, which are the
+    /// session's configuration rather than the model's to start.
+    pub(super) fn admit_unslotted(&self) -> Result<Admission, String> {
         Ok(Admission {
             depth: self.spawn_guard()?,
             _slot: None,

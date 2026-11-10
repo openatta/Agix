@@ -83,6 +83,8 @@ pub struct Builder {
     /// Recall — see [`Builder::memory_retriever`].
     memory_retriever: Option<Arc<dyn base::interface::memory_contracts::MemoryRetriever>>,
     retrieval_hooks: Vec<Arc<dyn base::interface::memory_contracts::RetrievalHook>>,
+    /// See [`Builder::memory_extraction`].
+    memory_extraction: bool,
     /// Extra destinations for this session's events, beyond the `event_rx`
     /// `build()` returns — see [`Builder::event_sink`].
     event_sinks: Vec<Arc<dyn base::interface::event_sink::EventSink>>,
@@ -147,6 +149,7 @@ impl Builder {
             model_interceptors: Vec::new(),
             memory_retriever: None,
             retrieval_hooks: Vec::new(),
+            memory_extraction: true,
             event_sinks: Vec::new(),
             agent_depth: 0,
             team_seat: None,
@@ -468,6 +471,15 @@ impl Builder {
         r: Arc<dyn base::interface::memory_contracts::MemoryRetriever>,
     ) -> Self {
         self.memory_retriever = Some(r);
+        self
+    }
+
+    /// Whether a finished turn starts extracting durable memories from the
+    /// conversation (on by default, and only while `memory_enabled`). Recall
+    /// is unaffected. Off for an agent dropped as soon as its turn returns:
+    /// its extraction would be paid for and then abandoned unfinished.
+    pub fn memory_extraction(mut self, enabled: bool) -> Self {
+        self.memory_extraction = enabled;
         self
     }
 

@@ -259,17 +259,25 @@ pub(super) async fn run_one_turn_detached(
 /// A background sub-agent's run, ending in the error its panic left rather
 /// than unwinding past the bookkeeping that ends its task.
 pub(super) async fn without_panics(
-    run: impl std::future::Future<Output = Result<String, base::error::ToolError>> + Send + 'static,
-) -> Result<String, base::error::ToolError> {
+    run: impl std::future::Future<Output = (Result<String, base::error::ToolError>, bool)>
+        + Send
+        + 'static,
+) -> (Result<String, base::error::ToolError>, bool) {
     match tokio::spawn(run).await {
-        Ok(result) => result,
-        Err(e) if e.is_panic() => Err(base::error::ToolError::Execution(anyhow!(
-            "sub-agent panicked: {}",
-            panic_message(e.into_panic())
-        ))),
-        Err(_) => Err(base::error::ToolError::Execution(anyhow!(
-            "sub-agent task was aborted"
-        ))),
+        Ok(outcome) => outcome,
+        Err(e) if e.is_panic() => (
+            Err(base::error::ToolError::Execution(anyhow!(
+                "sub-agent panicked: {}",
+                panic_message(e.into_panic())
+            ))),
+            false,
+        ),
+        Err(_) => (
+            Err(base::error::ToolError::Execution(anyhow!(
+                "sub-agent task was aborted"
+            ))),
+            true,
+        ),
     }
 }
 
@@ -375,11 +383,8 @@ pub(super) async fn run_persistent_member_loop(
             );
         }
 
-        // Persistent members have no one-shot sidechain terminal marker to
-        // write (they outlive any single message), so the cancelled flag
-        // `run_one_turn` reports isn't needed here — only the text result is.
         open_inbox(Some(&task), &agent);
-        let (result, _cancelled) = run_one_turn(
+        let (result, cancelled) = run_one_turn(
             &mut agent,
             &mut event_rx,
             &input_tx,
@@ -396,7 +401,7 @@ pub(super) async fn run_persistent_member_loop(
         .await;
 
         last_failed = result.is_err();
-        conclude_background_task(&session, &task, &result, true);
+        conclude_background_task(&session, &task, &result, cancelled, true);
 
         let now = now_secs();
         idle_since.store(now, std::sync::atomic::Ordering::SeqCst);

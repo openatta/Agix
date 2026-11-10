@@ -266,6 +266,7 @@ async fn a_background_sub_agent_reads_its_messages_and_reports_back_when_done() 
             tokio_util::sync::CancellationToken::new(),
             None,
             None,
+            Vec::new(),
             session.clone(),
         )
         .await

@@ -1591,8 +1591,13 @@ WebAssembly 载体整个移除。
 
 - 后台子 Agent 与常驻团队成员的调用记录也带 `parent_session_id` 与 `agent_type`(以前只有前台委派写);
   `TeamCreate` 的成员与常驻成员一样按收紧后的模式拿权限。
+- **`context: fork` 的 skill 按自己的 `allowed-tools` 收窄子 Agent 的工具。** 以前 fork 出的子 Agent
+  拿到父会话的全部工具,`allowed-tools: Read` 的 fork 照样有 `Write`、`Edit`、`Bash`;现在只给列出的
+  工具名(`Bash(cargo test:*)` 给的是 `Bash`,能不能跑哪条命令仍按权限判),子会话自己注册的
+  `Skill`、`Agent`、`Task*` 这类也一样收窄。没写 `allowed-tools` 的不收窄。未信任项目里这些条目
+  不授权,但照样收窄。
 - **Skill fork、`TeamCreate` 成员与 agent hook 起的子 Agent 按 agent 类型收窄工具。** 以前这几条路径
-  只按 skill 的 `allowed-tools` 过滤,`agent: explore` 的 fork 照样拿到 `Write`、`Edit`、`Bash`,
+  不看 agent 类型,`agent: explore` 的 fork 照样拿到 `Write`、`Edit`、`Bash`,
   到了 `max_agent_depth` 还拿着父会话的 `Agent`,能越过深度上限再起一层。现在它们和模型调 `Agent`
   一样:先按类型的 `allowed_tools` / `disallowed_tools`,再按调用方的列表,`Agent` 不继承。
 - 子 Agent 只继承父会话建的时候拿到的那批工具,不再继承父会话的引擎、模块注册的工具:`Skill`、
@@ -1603,6 +1608,15 @@ WebAssembly 载体整个移除。
   工具从第一次请求起宣告、随 server 的变更通知刷新,这些 server 的说明、`/mcp__…` prompt 命令与
   `@server:` 资源引用也一并可用;没授予的 server 照旧看不到。`session.startAgent` 的
   `allowed_tools` / `disallowed_tools` 对授予的 MCP 工具同样生效。
+- **agent hook 不占 `execution.max_concurrent_subagents`。** 以前 hook 起的子 Agent 与模型的 `Agent`
+  调用抢同一份名额,模型用后台子 Agent 占满名额后,`PreToolUse` 上的 agent hook 起不来,按执行失败
+  走 `on_error`(缺省放行),什么都不拦。现在它不占名额,模型占满了照样判。代价是 hook 起的子 Agent
+  自己的事件(它的工具调用、它的 `SubagentStart` 等)不再起 agent hook:这条按执行失败处理、走
+  `on_error`,command / prompt / http hook 照旧跑。以前它们会一层套一层地起 agent hook,直到名额
+  用完。
+- **一次性子 Agent 不做记忆抽取。** 前台、后台、`session.startAgent`、skill fork、`TeamCreate` 成员与
+  agent hook 起的子 Agent,回答一交就被丢掉,以前每次结束都发出一次记忆抽取的模型请求、随即中止,
+  照样计费、什么也没写进记忆。现在不发;它们读记忆照旧。常驻团队成员不受影响。
 
 ### RPC 客户端
 
@@ -1684,6 +1698,14 @@ WebAssembly 载体整个移除。
 - **请求因过长被拒、为重试而压缩时中断,以 `cancelled` 结束。** 以前这一轮报 `ENGINE_ERROR`。
 - **`session.compact` 写摘要时可以中断。** 以前 `session.interrupt` 报 `true` 却不起作用,摘要
   写完照样替换历史;现在历史不变,这一轮以 `turn_complete{stop_reason:"cancelled"}` 结束。
+- **停掉后台 fork 的 skill,这一轮照常继续。** `context: fork` + `background: true` 的 skill 以前直接
+  用这一轮的取消令牌当任务令牌,`session.stopTask` / `TaskStop` 停它会连带取消整轮(`Bash` 回
+  "已取消",以 `cancelled` 结束)。现在它和后台 `Agent` 一样挂在这一轮的子令牌上:停它只停它,
+  中断这一轮仍会连带停掉它。
+- **被中断连带停掉的后台子 Agent 报 `stopped`。** 以前 `session.interrupt` 停掉的后台 `Agent`、
+  后台 fork 的 skill,任务状态报 `done`,父会话还收到一条 `<status>done</status>` 的通知;现在
+  `session.tasks` / `task_finished` 里是 `stopped`,通知的 `status` 是 `stopped`。常驻团队成员被停下
+  时处理中的那条消息同样记 `stopped`。`stopTask` 停掉的仍不发通知。
 
 ### 嵌入方
 
@@ -1758,6 +1780,11 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   标了 `#[non_exhaustive]`:crate 外用 `SpawnRequest::new(..)` 再按需改字段(`..SpawnRequest::new(..)`
   的结构体更新写法在 crate 外同样不可用,逐字段赋值),`match SpawnMode` 要有通配分支。
 - 宿主起子 Agent 的 `start_agent(AgentRequest, …)` 不变。
+- `SpawnMode` 多一个 `Hook { judged_session }`:agent hook 起的子 Agent,不占
+  `max_concurrent_subagents`;`judged_session` 是触发这个 hook 的事件所属的会话,它本身是 hook 起的
+  子 Agent 时 `RuntimeAgentSpawner` 拒绝。`Background { session }` 的任务挂在请求 `cancel` 的子令牌上,
+  停任务不再取消调用方的令牌。
+- 新增 `Builder::memory_extraction(bool)`(缺省 `true`):关掉后每轮结束不再起记忆抽取,读记忆不受影响。
 - `runtime::module::SessionContext` 多一个公开字段 `template_tools`:会话建的时候传进
   `Builder::tools` 的那一份。起子会话的模块从它继承工具,不要从 `cx.tools` 继承——后者还装着
   引擎和各模块注册的、子会话会自己再注册的工具。`SessionContext` 不在 crate 外构造,只读的模块不用改。

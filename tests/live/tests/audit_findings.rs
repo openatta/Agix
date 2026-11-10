@@ -770,7 +770,6 @@ async fn audit2_a_session_evicted_at_the_cap_comes_back_still_in_plan_mode() -> 
 /// lists only `Read` forks a sub-agent that is offered `Read`, not `Write`,
 /// `Edit` or `Bash`.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "audit: confirmed defect, fix pending"]
 async fn audit2_a_forked_skill_is_narrowed_to_its_allowed_tools() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let mut run = stubbed("fork-allowed", &stub)
@@ -819,7 +818,6 @@ async fn audit2_a_forked_skill_is_narrowed_to_its_allowed_tools() -> anyhow::Res
 /// for: the model filling `max_concurrent_subagents` with background agents
 /// does not stop the guard from being asked about the next call.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "audit: confirmed defect, fix pending"]
 async fn audit2_an_agent_hook_still_judges_when_the_model_holds_every_sub_agent_slot(
 ) -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
@@ -917,7 +915,6 @@ async fn task_of_kind(run: &mut LiveRun, session: &str, kind: &str) -> anyhow::R
 /// sub-agent; the turn that forked it goes on, as it does for any stopped
 /// task (protocol `session.stopTask`).
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "audit: confirmed defect, fix pending"]
 async fn audit2_stopping_a_background_forked_skill_leaves_the_turn_running() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let mut run = stubbed("bg-fork-stop", &stub)
@@ -989,7 +986,6 @@ async fn audit2_stopping_a_background_forked_skill_leaves_the_turn_running() -> 
 /// An interrupt stops the background agents its turn started; their tasks
 /// end `stopped`, not `done` (protocol `session.interrupt`, `session.tasks`).
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "audit: confirmed defect, fix pending"]
 async fn audit2_a_background_agent_stopped_by_an_interrupt_ends_stopped() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let mut run = stubbed("bg-agent-interrupt", &stub)

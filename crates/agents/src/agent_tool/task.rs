@@ -10,10 +10,12 @@ pub(super) fn bg_task_id() -> String {
 /// How a task that ran a sub-agent ended.
 pub(super) fn finished(
     result: &Result<String, base::error::ToolError>,
+    cancelled: bool,
 ) -> base::context::RunningStatus {
-    match result {
-        Ok(_) => base::context::RunningStatus::Completed,
-        Err(e) => base::context::RunningStatus::Failed(e.to_string()),
+    match (result, cancelled) {
+        (_, true) => base::context::RunningStatus::Cancelled,
+        (Ok(_), false) => base::context::RunningStatus::Completed,
+        (Err(e), false) => base::context::RunningStatus::Failed(e.to_string()),
     }
 }
 
@@ -106,12 +108,14 @@ pub(super) fn note_on_task(task: Option<&base::context::RunningTask>, event: &Ag
 }
 
 /// Record how a background sub-agent's task ended and tell the agent that
-/// started it. A task stopped on purpose ends without a notice: whoever
-/// stopped it already knows.
+/// started it. A task stopped through `TaskStop` / `session.stopTask` has
+/// ended already and gets no notice: whoever stopped it knows. One stopped
+/// along with its turn does, so the model is not left waiting for it.
 pub(super) fn conclude_background_task(
     session: &base::context::SessionState,
     task: &base::context::RunningTask,
     result: &Result<String, base::error::ToolError>,
+    cancelled: bool,
     notify_parent: bool,
 ) {
     if let Ok(text) = result {
@@ -120,16 +124,24 @@ pub(super) fn conclude_background_task(
     // Posted before the task ends, so whoever wakes on its end and reads the
     // result (TaskWait, TaskOutput) finds the notice there to withdraw.
     if notify_parent && !task.has_ended() {
-        session.post_notice(Some(task.task_id.clone()), task_notification(task, result));
+        session.post_notice(
+            Some(task.task_id.clone()),
+            task_notification(task, result, cancelled),
+        );
     }
-    session.finish_task(&task.task_id, finished(result));
+    session.finish_task(&task.task_id, finished(result, cancelled));
 }
 
 pub(super) fn task_notification(
     task: &base::context::RunningTask,
     result: &Result<String, base::error::ToolError>,
+    cancelled: bool,
 ) -> String {
-    let status = if result.is_ok() { "done" } else { "failed" };
+    let status = match (result, cancelled) {
+        (_, true) => "stopped",
+        (Ok(_), false) => "done",
+        (Err(_), false) => "failed",
+    };
     let mut notice = format!(
         "<task-notification>\n<task-id>{}</task-id>\n<status>{status}</status>\n",
         task.task_id

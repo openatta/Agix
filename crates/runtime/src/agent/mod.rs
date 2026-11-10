@@ -180,6 +180,7 @@ pub(crate) struct Memory {
     pub(crate) memory_store: Arc<MemoryStore>,
     pub(crate) memory_retriever: Arc<dyn base::interface::memory_contracts::MemoryRetriever>,
     pub(crate) retrieval_hooks: Arc<Vec<Arc<dyn base::interface::memory_contracts::RetrievalHook>>>,
+    pub(crate) extract_after_turn: bool,
     /// Extractions started at the end of a turn, finished or abandoned when
     /// the session stops.
     pub(crate) extractions: tokio::task::JoinSet<()>,

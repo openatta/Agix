@@ -164,6 +164,7 @@ async fn run_sub_returns_promptly_on_a_plain_model_error_instead_of_hanging() {
             perm,
             None,
             None,
+            Vec::new(),
         ),
     )
     .await
@@ -193,6 +194,7 @@ pub(super) async fn run_sub_with(agent_tool: &AgentTool) -> Result<String, base:
             Arc::new(AlwaysPermit),
             None,
             None,
+            Vec::new(),
         )
         .await
 }

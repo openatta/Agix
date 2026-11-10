@@ -82,10 +82,19 @@ async fn a_sub_agent_a_program_started_is_refused_what_it_would_ask_about() {
     );
 }
 
-/// Answers with text after a pause, counting how many answer at once.
+/// Answers with text after a pause, counting how many turn calls answer at
+/// once. Auxiliary calls are not counted: they are not what holds a slot.
 pub(super) struct SlowTextModel {
     pub(super) running: Arc<std::sync::atomic::AtomicUsize>,
     pub(super) peak: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// Counts a call out when it ends, or when it is dropped mid-pause.
+struct Running(Arc<std::sync::atomic::AtomicUsize>);
+impl Drop for Running {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 #[async_trait]
@@ -98,15 +107,21 @@ impl Model for SlowTextModel {
         _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
         _tools: Vec<base::interface::model::ToolDef>,
         _messages: Vec<ModelMessage>,
-        _params: base::interface::model::StreamParams,
+        params: base::interface::model::StreamParams,
         _cancel: tokio_util::sync::CancellationToken,
     ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError> {
-        use base::interface::model::ModelEvent;
+        use base::interface::model::{CallKind, ModelEvent};
         use std::sync::atomic::Ordering::SeqCst;
-        let now = self.running.fetch_add(1, SeqCst) + 1;
-        self.peak.fetch_max(now, SeqCst);
+        let turn_call = params
+            .origin
+            .as_ref()
+            .is_some_and(|o| matches!(o.kind, CallKind::Turn { .. }));
+        let _running = turn_call.then(|| {
+            let now = self.running.fetch_add(1, SeqCst) + 1;
+            self.peak.fetch_max(now, SeqCst);
+            Running(self.running.clone())
+        });
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        self.running.fetch_sub(1, SeqCst);
         let events: Vec<Result<ModelEvent, base::interface::model::ModelError>> = vec![
             Ok(ModelEvent::TextDelta {
                 text: "done".into(),
@@ -142,7 +157,8 @@ async fn a_programs_fan_out_past_the_cap_waits_for_a_slot_instead_of_failing() {
         let r = r.unwrap();
         assert!(!r.is_error, "{:?}", r.content);
     }
-    assert!(peak.load(std::sync::atomic::Ordering::SeqCst) <= 2);
+    let peak = peak.load(std::sync::atomic::Ordering::SeqCst);
+    assert!((1..=2).contains(&peak), "{peak} turn calls ran at once");
 
     let (d, e, f) = futures::join!(call("d", false), call("e", false), call("f", false));
     let refused: Vec<_> = [d, e, f]
@@ -283,14 +299,9 @@ impl Model for ExtractionNeverReturns {
     }
 }
 
-/// A one-shot sub-agent fires a memory-extraction call after its answer and
-/// then drops it, unfinished, when the sub-agent is torn down a fixed grace
-/// window later: the request is paid for and nothing is ever extracted. This
-/// is also what makes `a_programs_fan_out_past_the_cap_waits_for_a_slot_instead_of_failing`
-/// see a peak of 3: `SlowTextModel` counts this auxiliary call and never
-/// decrements for it when it is aborted mid-sleep.
+/// A one-shot sub-agent is torn down as soon as its answer is in; a memory
+/// extraction it started then would be paid for and dropped unfinished.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "audit: confirmed defect, fix pending"]
 async fn audit2_a_one_shot_sub_agent_does_not_start_a_memory_extraction_it_then_abandons() {
     let started = Arc::new(tokio::sync::Notify::new());
     let dropped = Arc::new(tokio::sync::Notify::new());

@@ -309,7 +309,7 @@ fn a_background_agents_answer_is_its_whole_output_by_offset() {
         serde_json::Value::Null,
     );
     let answer = "the answer, \u{4e2d}".to_string();
-    super::conclude_background_task(&session, &task, &Ok(answer.clone()), false);
+    super::conclude_background_task(&session, &task, &Ok(answer.clone()), false, false);
     let read = task.output_from(0).unwrap();
     assert_eq!(read.text, answer);
     assert_eq!(read.next_byte, answer.len() as u64);

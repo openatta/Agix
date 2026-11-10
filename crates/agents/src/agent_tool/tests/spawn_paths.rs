@@ -2,6 +2,7 @@
 //! gives a delegate alike.
 
 use super::*;
+use base::interface::agent_spawner::{AgentSpawner, SpawnMode, SpawnRequest};
 
 /// `(parent_session_id, agent_type)` of one model call.
 type Lineage = (Option<String>, Option<String>);
@@ -227,4 +228,97 @@ async fn a_team_create_member_is_judged_in_its_mode_held_to_the_parents() {
             "parent in {parent_mode:?}"
         );
     }
+}
+
+/// The hook agent's model: on its first call it asks the spawner for a hook
+/// agent judging its own session, and keeps what the spawner said.
+struct GuardThatAsksForAGuard {
+    spawner: Arc<std::sync::OnceLock<Arc<dyn AgentSpawner>>>,
+    asked: Arc<std::sync::atomic::AtomicBool>,
+    nested: Arc<std::sync::Mutex<Option<Result<String, String>>>>,
+}
+
+#[async_trait]
+impl Model for GuardThatAsksForAGuard {
+    fn api_type(&self) -> base::provider::ApiType {
+        base::provider::ApiType::Anthropic
+    }
+    async fn stream(
+        &self,
+        _prompt_blocks: Vec<base::interface::prompt::PromptBlock>,
+        _tools: Vec<base::interface::model::ToolDef>,
+        _messages: Vec<ModelMessage>,
+        params: base::interface::model::StreamParams,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError> {
+        use base::interface::model::ModelEvent;
+        let own_session = params.origin.map(|o| o.session_id).unwrap_or_default();
+        if !self.asked.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            let spawner = self.spawner.get().expect("wired").clone();
+            let nested = spawner
+                .spawn(
+                    SpawnRequest::new(
+                        "judge",
+                        std::env::temp_dir(),
+                        tokio_util::sync::CancellationToken::new(),
+                    )
+                    .mode(SpawnMode::Hook {
+                        judged_session: own_session,
+                    }),
+                )
+                .await
+                .map_err(|e| e.to_string());
+            *self.nested.lock().unwrap() = Some(nested);
+        }
+        Ok(Box::new(futures::stream::iter(vec![
+            Ok(ModelEvent::TextDelta {
+                text: "{\"ok\": true}".into(),
+            }),
+            Ok(ModelEvent::EndTurn {
+                stop_reason: "end_turn".into(),
+                usage: Default::default(),
+            }),
+        ])))
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_hook_agent_runs_with_every_slot_held_and_starts_no_hook_agent_of_its_own() {
+    let spawner_cell = Arc::new(std::sync::OnceLock::new());
+    let nested = Arc::new(std::sync::Mutex::new(None));
+    let slots = SubagentSlots::new(1);
+    let agent_tool = agent_tool_with_model(Arc::new(GuardThatAsksForAGuard {
+        spawner: spawner_cell.clone(),
+        asked: Arc::default(),
+        nested: nested.clone(),
+    }))
+    .with_subagent_slots(slots.clone());
+    let spawner: Arc<dyn AgentSpawner> = Arc::new(crate::spawner::RuntimeAgentSpawner::new(
+        Arc::new(agent_tool),
+    ));
+    let _ = spawner_cell.set(spawner.clone());
+    let _held = slots.slots.clone().try_acquire_owned().unwrap();
+
+    let verdict = spawner
+        .spawn(
+            SpawnRequest::new(
+                "judge",
+                std::env::temp_dir(),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .mode(SpawnMode::Hook {
+                judged_session: "parent-session".into(),
+            }),
+        )
+        .await
+        .map_err(|e| e.to_string());
+
+    assert_eq!(verdict.as_deref(), Ok("{\"ok\": true}"));
+    let nested = nested.lock().unwrap().clone().expect("the guard asked");
+    assert!(
+        nested
+            .as_ref()
+            .is_err_and(|e| e.contains("does not judge the agent running for another")),
+        "{nested:?}"
+    );
 }

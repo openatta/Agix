@@ -11,6 +11,8 @@ impl AgentTool {
     /// is used instead of the parent's. `None` (or an unknown/type-less
     /// call, e.g. from the generic `AgentSpawner` bridge used by team/skill-fork)
     /// keeps the parent's model. `model`, when given, is used over both.
+    /// `allowed_tools` narrows what the delegate's own modules contribute, as
+    /// it already narrowed `tools`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn run_sub(
         &self,
@@ -21,6 +23,7 @@ impl AgentTool {
         perm: Arc<dyn Permission>,
         subagent_type: Option<&str>,
         model: Option<String>,
+        allowed_tools: Vec<String>,
     ) -> Result<String, base::error::ToolError> {
         self.run_sub_tagged(
             prompt,
@@ -32,6 +35,56 @@ impl AgentTool {
             None,
             SubRun {
                 model,
+                allowed_tools,
+                ..SubRun::default()
+            },
+        )
+        .await
+    }
+
+    /// The agent behind a `"type": "agent"` hook on an event of
+    /// `judged_session`, run to its verdict. It takes none of the session's
+    /// sub-agent slots: those are the model's to fill, and a guard the model
+    /// can crowd out by holding them all is no guard — its hook would fail
+    /// and, failing open, let the call through. What bounds hook agents
+    /// instead is that one's own events start none (`HookAgents`).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn run_hook_agent(
+        &self,
+        judged_session: &str,
+        prompt: String,
+        tools: Arc<InMemoryToolRegistry>,
+        cwd: std::path::PathBuf,
+        cancel: tokio_util::sync::CancellationToken,
+        subagent_type: Option<&str>,
+        model: Option<String>,
+        allowed_tools: Vec<String>,
+    ) -> Result<String, base::error::ToolError> {
+        if self.inner.hook_agents.includes(judged_session) {
+            return Err(base::error::ToolError::Denied(
+                "an agent hook does not judge the agent running for another agent hook".into(),
+            ));
+        }
+        let admission = self
+            .inner
+            .admit_unslotted()
+            .map_err(base::error::ToolError::Denied)?;
+        let sid = base::id::Id::new().to_string();
+        let _running = self.inner.hook_agents.enter(sid.clone());
+        let perm = self.sub_permission();
+        self.run_sub_admitted(
+            admission,
+            prompt,
+            tools,
+            cwd,
+            cancel,
+            perm,
+            subagent_type,
+            None,
+            SubRun {
+                session_id: Some(sid),
+                model,
+                allowed_tools,
                 ..SubRun::default()
             },
         )
@@ -87,7 +140,7 @@ impl AgentTool {
     ) -> Result<String, base::error::ToolError> {
         let admission = self
             .inner
-            .admit_team_member()
+            .admit_unslotted()
             .map_err(base::error::ToolError::Denied)?;
         let grant = match permission_mode {
             Some(_) => Grant::TeamMember,
@@ -115,6 +168,7 @@ impl AgentTool {
                 },
             )
             .await
+            .0
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -146,6 +200,7 @@ impl AgentTool {
                 },
             )
             .await
+            .0
     }
 
     /// Background counterpart to `run_sub`, for `AgentSpawner::spawn` in `SpawnMode::Background`
@@ -158,6 +213,9 @@ impl AgentTool {
     /// `Skill` tool) hands that id back to the model to poll via
     /// `TaskOutput`/`TaskStop` — the same mechanism `Agent`'s own
     /// `background: true` argument already uses.
+    ///
+    /// The task runs under a child of `cancel`: stopping the task must not
+    /// cancel the turn that started it.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn spawn_background(
         &self,
@@ -167,9 +225,11 @@ impl AgentTool {
         cancel: tokio_util::sync::CancellationToken,
         subagent_type: Option<&str>,
         model: Option<String>,
+        allowed_tools: Vec<String>,
         session: Arc<base::context::SessionState>,
     ) -> Result<String, base::error::ToolError> {
         let admission = self.inner.admit().map_err(base::error::ToolError::Denied)?;
+        let cancel = cancel.child_token();
         let tid = bg_task_id();
         let sid = base::id::Id::new().to_string();
         let task = session.register_task(
@@ -186,12 +246,13 @@ impl AgentTool {
         let inner = self.inner.clone();
         let run = SubRun {
             model,
+            allowed_tools,
             ..SubRun::for_task(&task, &sid)
         };
         let session_c = session.clone();
 
         tokio::spawn(async move {
-            let r = without_panics(async move {
+            let (r, cancelled) = without_panics(async move {
                 Self::run_sub_inner(
                     &inner,
                     prompt,
@@ -206,7 +267,7 @@ impl AgentTool {
                 .await
             })
             .await;
-            conclude_background_task(&session_c, &task, &r, true);
+            conclude_background_task(&session_c, &task, &r, cancelled, true);
         });
         Ok(tid)
     }
@@ -270,7 +331,7 @@ impl AgentTool {
             (ctx.session_id.clone(), ctx.turn_no, ctx.tool_use_id.clone());
 
         tokio::spawn(async move {
-            let r = without_panics(async move {
+            let (r, cancelled) = without_panics(async move {
                 Self::run_sub_inner(
                     &inner,
                     prompt,
@@ -288,7 +349,7 @@ impl AgentTool {
             if let Some(h) = worktree_handle.as_mut() {
                 h.cleanup().await;
             }
-            conclude_background_task(&session, &task, &r, true);
+            conclude_background_task(&session, &task, &r, cancelled, true);
         });
         Ok(bg_result(&tid, "spawned"))
     }
@@ -346,7 +407,7 @@ impl AgentTool {
         let notify_parent = request.notify_parent;
         let cwd = session.cwd.clone();
         tokio::spawn(async move {
-            let r = without_panics(async move {
+            let (r, cancelled) = without_panics(async move {
                 Self::run_sub_inner(
                     &inner,
                     prompt,
@@ -361,7 +422,7 @@ impl AgentTool {
                 .await
             })
             .await;
-            conclude_background_task(&session, &task, &r, notify_parent);
+            conclude_background_task(&session, &task, &r, cancelled, notify_parent);
         });
         Ok(StartedAgent {
             task_id: tid,
@@ -372,7 +433,8 @@ impl AgentTool {
 
 impl AgentTool {
     /// A background run: the sub-agent's questions reach the host, and it
-    /// shows as waiting on `run.task` while one does.
+    /// shows as waiting on `run.task` while one does. Returns the answer and
+    /// whether `cancel` stopped the run.
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn run_sub_inner(
         inner: &Inner,
@@ -384,7 +446,7 @@ impl AgentTool {
         parent: Option<(&str, u32, &str)>,
         run: SubRun,
         admission: Admission,
-    ) -> Result<String, base::error::ToolError> {
+    ) -> (Result<String, base::error::ToolError>, bool) {
         let permission = inner.permission_handler_for(run.task.clone());
         inner
             .run_delegate(

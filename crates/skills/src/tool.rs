@@ -162,12 +162,14 @@ impl Tool for SkillTool {
         };
 
         // A forked skill's sub-agent gets its own `Permission`, never this
-        // one, so its `allowed-tools` grants have nowhere to go.
+        // one, so its `allowed-tools` grant nothing there; they only narrow
+        // the tools it is offered.
         if info.context.as_deref() == Some("fork") {
             if let Some(ref spawner) = self.spawner {
                 let request =
                     SpawnRequest::new(expansion.text, ctx.cwd.clone(), ctx.cancel.clone())
-                        .agent_type(info.agent.clone());
+                        .agent_type(info.agent.clone())
+                        .allowed_tools(allowed_tool_names(&info));
                 if info.background == Some(true) {
                     let request = request.mode(SpawnMode::Background {
                         session: ctx.session.clone(),
@@ -532,6 +534,19 @@ fn hash_skill_content(content: &str) -> u64 {
 /// paren is treated as a plain tool name rather than dropped, matching how
 /// the rest of the skill frontmatter parser degrades. The caller's
 /// project-source check is what makes that safe.
+/// The tool names a skill's `allowed-tools` lists, without their content
+/// patterns: `Bash(cargo test:*)` offers a fork `Bash`.
+fn allowed_tool_names(info: &crate::manager::SkillInfo) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for entry in info.allowed_tools.iter().flatten() {
+        let (name, _) = split_allowed_tool_entry(entry);
+        if !name.is_empty() && !names.iter().any(|n| n == name) {
+            names.push(name.to_string());
+        }
+    }
+    names
+}
+
 fn split_allowed_tool_entry(entry: &str) -> (&str, Option<&str>) {
     let entry = entry.trim();
     match (entry.find('('), entry.strip_suffix(')')) {
