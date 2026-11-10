@@ -376,6 +376,7 @@ impl Agent {
     async fn warmup(&mut self) {
         let base_url = self.settings.model.base_url.clone();
         let session_memory = self.session.session_memory.clone();
+        let network = self.exec.network.clone();
         let engine_git = crate::turn::engine_exec_from(
             &self.config,
             &self.exec,
@@ -393,9 +394,9 @@ impl Agent {
             // 2. Fire-and-forget pre-connect GET to the API base URL (warms TCP/TLS)
             async move {
                 if !base_url.is_empty() {
-                    let net = platform::LocalNetwork::default();
-                    let warming = base::interface::exec::Network::send(
-                        &net,
+                    // Warms anything only while the model client and the
+                    // session's network share `platform`'s connection pool.
+                    let warming = network.send(
                         base::interface::exec::HttpRequest::get(&base_url),
                         base::interface::exec::Origin::Operator,
                     );
