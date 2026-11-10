@@ -399,15 +399,33 @@ pub(super) fn module_not_compiled(
 }
 
 /// `params.options` as [`crate::rpc::SessionOptions::from_params`] reads it,
-/// with a warning for each field it left out.
+/// with a warning for each field it left out — or, when the options ask for
+/// `strict`, an `INVALID_PARAMS` response naming them instead.
+#[allow(clippy::result_large_err)]
 pub(super) fn read_options(
     method: &str,
+    id: &serde_json::Value,
     params: &serde_json::Value,
-) -> (
-    Option<crate::rpc::SessionOptions>,
-    Vec<crate::rpc::IgnoredOption>,
-) {
+) -> Result<
+    (
+        Option<crate::rpc::SessionOptions>,
+        Vec<crate::rpc::IgnoredOption>,
+    ),
+    RpcResponse,
+> {
     let (options, ignored) = crate::rpc::SessionOptions::from_params(params);
+    if !ignored.is_empty() && crate::rpc::SessionOptions::strict_requested(params) {
+        let fields: Vec<&str> = ignored
+            .iter()
+            .map(|i| i.field.as_deref().unwrap_or("options"))
+            .collect();
+        return Err(RpcResponse::err_with_data(
+            id.clone(),
+            codes::INVALID_PARAMS,
+            format!("options that do not read: {}", fields.join(", ")),
+            serde_json::json!({ "invalid_options": ignored }),
+        ));
+    }
     for left_out in &ignored {
         warn!(
             method,
@@ -416,7 +434,7 @@ pub(super) fn read_options(
             "ignored part of `options`"
         );
     }
-    (options, ignored)
+    Ok((options, ignored))
 }
 
 /// `resp` with what `options` left out listed in its result as

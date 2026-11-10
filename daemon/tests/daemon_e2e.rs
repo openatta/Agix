@@ -428,6 +428,62 @@ async fn malformed_options_are_reported() {
     let _ = handle.await;
 }
 
+/// With `options.strict`, what plain parsing would leave out is refused
+/// instead, and the error names each field.
+#[tokio::test]
+async fn strict_options_refuse_what_they_cannot_read() {
+    let (_server, sock, _dir, handle) = start_server().await;
+    let resp = rpc_call(
+        &sock,
+        r#"{"jsonrpc":"2.0","method":"session.create","id":1,"params":{"options":{"strict":true,"model":3,"permision_rules":[],"prompt_types":["question",7]}}}"#,
+    )
+    .await;
+    let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    assert!(v["result"].is_null(), "{v}");
+    assert_eq!(v["error"]["code"], codes::INVALID_PARAMS, "{v}");
+    let mut fields: Vec<&str> = v["error"]["data"]["invalid_options"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{v}"))
+        .iter()
+        .map(|i| i["field"].as_str().unwrap())
+        .collect();
+    fields.sort_unstable();
+    assert_eq!(
+        fields,
+        ["model", "permision_rules", "prompt_types[1]"],
+        "{v}"
+    );
+
+    let listed = rpc_call(&sock, r#"{"jsonrpc":"2.0","method":"session.list","id":2}"#).await;
+    let listed: serde_json::Value = serde_json::from_str(&listed).unwrap();
+    assert_eq!(
+        listed["result"]["sessions"].as_array().map(Vec::len),
+        Some(0),
+        "a refused create made a session: {listed}"
+    );
+
+    for strict in ["true", "\"yes\""] {
+        let resp = rpc_call(
+            &sock,
+            &format!(
+                r#"{{"jsonrpc":"2.0","method":"session.create","id":3,"params":{{"options":{{"strict":{strict},"model":"claude-haiku-4-5"}}}}}}"#
+            ),
+        )
+        .await;
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        if strict == "true" {
+            assert!(v["result"]["session_id"].is_string(), "{v}");
+            assert!(v["result"].get("ignored_options").is_none(), "{v}");
+        } else {
+            assert_eq!(v["error"]["code"], codes::INVALID_PARAMS, "{v}");
+            assert_eq!(v["error"]["data"]["invalid_options"][0]["field"], "strict");
+        }
+    }
+
+    _server.shutdown_token().cancel();
+    let _ = handle.await;
+}
+
 #[tokio::test]
 async fn doctor_reports_no_providers_configured_as_ok() {
     let (_server, sock, _dir, handle) = start_server().await;

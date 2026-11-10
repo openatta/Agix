@@ -165,7 +165,10 @@ impl DaemonServer {
             },
         };
         let scene = params.get("scene").and_then(|v| v.as_str());
-        let (options, ignored_options) = read_options("session.create", &params);
+        let (options, ignored_options) = match read_options("session.create", &id, &params) {
+            Ok(read) => read,
+            Err(refusal) => return refusal,
+        };
 
         let resp = match self
             .pool
@@ -735,7 +738,10 @@ impl DaemonServer {
             .get("create_if_missing")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let (options, ignored_options) = read_options("session.resume", &params);
+        let (options, ignored_options) = match read_options("session.resume", &id, &params) {
+            Ok(read) => read,
+            Err(refusal) => return refusal,
+        };
 
         // `docs/daemon_rpc_protocol.md` §3.4: a session recorded under a different scene than this
         // daemon's must not be silently resumed into it — that's exactly

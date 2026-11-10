@@ -50,7 +50,10 @@ impl DaemonServer {
             );
         }
 
-        let (options, ignored_options) = read_options("session.run_turn", &params);
+        let (options, ignored_options) = match read_options("session.run_turn", &id, &params) {
+            Ok(read) => read,
+            Err(refusal) => return refusal,
+        };
 
         // Optional and backwards-compatible: a client that never sends
         // `attachments` behaves exactly as before. A malformed entry is

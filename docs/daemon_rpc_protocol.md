@@ -699,6 +699,7 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 | `goals` | 有 `session.goal` / `session.setGoal` / `session.updateGoal`,目标变化推 `goal_changed`(§6.3、§7) |
 | `question_prompts` | `session.create` 接受 `options.prompt_types`;列了 `question` 的会话把模型的 `AskUserQuestion` 推成 `prompt_type:"question"` 的 `prompt` 帧,用 `session.respondToPrompt` 回答(§6.3、§7) |
 | `session_export` | 有 `session.export`,把会话连同侧链、附件打成一个归档写到宿主给的路径(§6.3) |
+| `strict_options` | `session.create` / `session.run_turn` / `session.resume` 接受 `options.strict:true`,读不出来的 `options` 报 `INVALID_PARAMS` 而不是忽略(§6.3 `session.create`) |
 | `ptc` | 这个构建带 `RunCode`,模型能写程序调本会话的工具(`docs/ptc.md`) |
 
 #### `daemon.status`
@@ -1001,6 +1002,20 @@ daemon 重启后恢复)都按同一份 `options` 重建,之后的调用里再传
 `field` 为 `null` 表示整个 `options` 读不出来。`session.create`、`session.run_turn`、
 `session.resume` 都这样。**以后的版本会改为拒绝**(`INVALID_PARAMS`),宿主现在就应当把
 `ignored_options` 当作错误处理。
+
+**严格读取(可选)。** `options` 里带 `"strict": true`,上面会被忽略的任何一项都让这次调用失败:
+`INVALID_PARAMS`,什么都不做(不建会话、不跑这一轮),`error.data` 列出每一项,写法与
+`ignored_options` 相同。`strict` 本身不是 `options` 的一个字段,不随会话保存,每次调用各自写;
+它的值不是布尔时也按严格处理,并在 `invalid_options` 里列出 `strict`。缺省(不写或 `false`)
+行为不变。daemon 支持它时 `capabilities` 里有 `strict_options`;不支持的老 daemon 会把
+`strict` 报成 `unknown field`。
+
+```jsonc
+{ "code": -32602, "message": "options that do not read: model, permission_rules[0]",
+  "data": { "invalid_options": [
+    { "field": "model", "error": "invalid type: integer `3`, expected a string" },
+    { "field": "permission_rules[0]", "error": "unknown variant `allwo`, expected one of `allow`, `deny`, `ask`" } ] } }
+```
 
 `recorder` 不落盘:同一进程里的重建接着原来的回放进度,不从头重放;daemon 重启之后,
 把会话带回内存的那次调用(`session.resume`、带 `resume:true` 的 `session.subscribe`、

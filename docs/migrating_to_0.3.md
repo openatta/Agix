@@ -1277,7 +1277,7 @@ WebAssembly 载体整个移除。
 - `project_trust.default` 改为 `untrusted`:没被信任的项目的 hooks、MCP server、脚本、provider 端点等不生效(见"项目信任")。分两步:设置与 doctor 告警已有;翻缺省等宿主的信任对话框发布后再做。全局 `settings.json` 里先写 `"project_trust": {"default": "untrusted"}` 试跑,`daemon.doctor` 与 `project.status` 会列出被扣下的东西。
 - 插件缺省不再自动加载,要用的显式启用。分两步:0.3.11 起提供 `plugins.enable_on_install`(缺省 `true`,行为不变),之后再翻缺省。
 - `sandbox.unattended_requires_network_policy` 缺省改为 `true`:无人值守会话里 `Bash` 与 `Monitor` 的"沙箱完整生效即自动放行"另外要求 `sandbox.network_mode` 不是 `unrestricted`(见"权限与沙箱")。分两步:0.3.11 起 `daemon.doctor` 对"无人值守 + 网络 unrestricted + 开关关着"告警,之后再翻缺省。
-- `session.create` / `session.run_turn` / `session.resume` 的 `options` 严格解析:不认识的字段、读不出来的值报 `INVALID_PARAMS`,不再被忽略。分两步:0.3.11 起 `permission_rules` 里一条坏规则只丢那一条(不再连累整个字段),并提供 opt-in 的严格解析,之后再缺省严格。现在就把 `result.ignored_options` 当错误处理。
+- `session.create` / `session.run_turn` / `session.resume` 的 `options` 严格解析:不认识的字段、读不出来的值报 `INVALID_PARAMS`,不再被忽略。分两步:0.3.11 起 `permission_rules` 里一条坏规则只丢那一条(不再连累整个字段),并提供 opt-in 的严格解析(`options.strict: true`),之后再缺省严格。现在就把 `result.ignored_options` 当错误处理。
 
 ## 0.3.10 之后:到 0.3.11
 
@@ -1322,6 +1322,10 @@ WebAssembly 载体整个移除。
   `"behavior": "allwo"`),整个字段被忽略,同一列表里的 `deny` 规则也跟着失效;现在只忽略那一条,
   `ignored_options` 里的 `field` 写成 `permission_rules[0]` 这样带下标。按字段名匹配
   `ignored_options` 的宿主要容得下带下标的写法。
+- **新增 `options.strict`(capability `strict_options`)。** `session.create` / `session.run_turn` /
+  `session.resume` 的 `options` 里写 `"strict": true`,读不出来的字段或值报 `INVALID_PARAMS`,
+  `error.data.invalid_options` 与 `ignored_options` 同形;缺省不变。计划中的"缺省严格"就是把它
+  变成缺省,现在打开它就能提前发现拼错的字段。
 
 ### 嵌入方
 

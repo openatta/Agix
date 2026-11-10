@@ -514,6 +514,10 @@ impl SessionOptions {
     /// take the deny rules beside it along.
     pub const LIST_FIELDS: &'static [&'static str] = &["permission_rules", "prompt_types"];
 
+    /// Not a session option but an instruction about reading them: with it,
+    /// what [`Self::from_params`] would leave out makes the call fail.
+    pub const STRICT: &'static str = "strict";
+
     /// `params.options` as far as it can be read, and what in it could not
     /// be: a field this daemon does not know, one whose value does not
     /// parse, or one entry of a list field. Each field is read on its own, so
@@ -535,6 +539,15 @@ impl SessionOptions {
         let mut ignored = Vec::new();
         let mut readable = serde_json::Map::new();
         for (name, value) in fields {
+            if name == Self::STRICT {
+                if !value.is_boolean() {
+                    ignored.push(IgnoredOption {
+                        field: Some(name.clone()),
+                        error: "must be a boolean".to_string(),
+                    });
+                }
+                continue;
+            }
             if !Self::FIELDS.contains(&name.as_str()) {
                 ignored.push(IgnoredOption {
                     field: Some(name.clone()),
@@ -571,6 +584,15 @@ impl SessionOptions {
                 (None, ignored)
             }
         }
+    }
+
+    /// Whether `params.options` asks for strict reading. A `strict` that is
+    /// not a boolean counts as asking: it was meant as something.
+    pub fn strict_requested(params: &Value) -> bool {
+        params
+            .get("options")
+            .and_then(|o| o.get(Self::STRICT))
+            .is_some_and(|v| v != &Value::Bool(false))
     }
 
     fn read_alone(name: &str, value: &Value) -> Result<(), String> {
@@ -882,6 +904,46 @@ mod tests {
         let (_, ignored) =
             SessionOptions::from_params(&serde_json::json!({"options": {"permission_rules": {}}}));
         assert_eq!(ignored[0].field.as_deref(), Some("permission_rules"));
+    }
+
+    #[test]
+    fn strict_is_read_but_not_kept_as_an_option() {
+        let on = serde_json::json!({"options": {"strict": true, "model": "m"}});
+        let (options, ignored) = SessionOptions::from_params(&on);
+        assert!(ignored.is_empty(), "{ignored:?}");
+        assert_eq!(options.unwrap().model.as_deref(), Some("m"));
+        assert!(SessionOptions::strict_requested(&on));
+
+        let off = serde_json::json!({"options": {"strict": false}});
+        assert!(!SessionOptions::strict_requested(&off));
+        assert!(!SessionOptions::strict_requested(&serde_json::json!({})));
+
+        let odd = serde_json::json!({"options": {"strict": "yes"}});
+        assert!(SessionOptions::strict_requested(&odd));
+        let (_, ignored) = SessionOptions::from_params(&odd);
+        assert_eq!(ignored[0].field.as_deref(), Some("strict"));
+    }
+
+    #[test]
+    fn a_bad_option_field_is_reported_and_the_rest_still_apply() {
+        let params = serde_json::json!({"options": {
+            "permission_mode": "plann",
+            "model": "m",
+            "permision_rules": [],
+        }});
+        let (options, mut ignored) = SessionOptions::from_params(&params);
+        assert_eq!(options.unwrap().model.as_deref(), Some("m"));
+        ignored.sort_by(|a, b| a.field.cmp(&b.field));
+        let fields: Vec<_> = ignored.iter().map(|i| i.field.as_deref()).collect();
+        assert_eq!(fields, [Some("permision_rules"), Some("permission_mode")]);
+        assert_eq!(ignored[0].error, "unknown field");
+        assert!(ignored[1].error.contains("plann"), "{:?}", ignored[1]);
+
+        let (options, ignored) = SessionOptions::from_params(&serde_json::json!({}));
+        assert!(options.is_none() && ignored.is_empty());
+        let (options, ignored) = SessionOptions::from_params(&serde_json::json!({"options": 3}));
+        assert!(options.is_none());
+        assert_eq!(ignored[0].field, None);
     }
 
     #[test]
