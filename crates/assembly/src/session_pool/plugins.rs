@@ -56,17 +56,28 @@ impl SessionPool {
     /// to show and re-enable them. Which of a package's skills are shadowed
     /// is answered for the daemon's own project and scene, like the rest of
     /// `plugin.*`.
-    pub async fn list_plugins(&self) -> Vec<serde_json::Value> {
+    pub async fn list_plugins(&self) -> Result<Vec<api::PluginInfo>, PoolError> {
+        self.require_plugins()?;
+        Ok(self.plugin_infos().await)
+    }
+
+    async fn plugin_infos(&self) -> Vec<api::PluginInfo> {
         let mut listed = self.plugins.list();
         let mut conflicts = self.default_binding().await.modules.skill_conflicts();
         for entry in &mut listed {
-            let found = entry["name"]
-                .as_str()
-                .and_then(|name| conflicts.remove(name))
-                .unwrap_or_default();
-            entry["skill_conflicts"] = serde_json::Value::from(found);
+            entry.skill_conflicts = conflicts.remove(&entry.name).unwrap_or_default();
         }
         listed
+    }
+
+    fn require_plugins(&self) -> Result<(), PoolError> {
+        let status = self.plugins.status();
+        if status == crate::plugins::PluginStatus::Enabled {
+            return Ok(());
+        }
+        Err(PoolError::PluginsDisabled {
+            status: status.as_str(),
+        })
     }
 
     /// Install a plugin from an explicit source. `scope` picks which tier's
@@ -85,10 +96,11 @@ impl SessionPool {
     ///
     /// Returns the installed set afterwards, so a caller learns what the
     /// rescan actually found without a second call.
-    pub async fn reload_plugins(&self) -> serde_json::Value {
+    pub async fn reload_plugins(&self) -> Result<Vec<api::PluginInfo>, PoolError> {
+        self.require_plugins()?;
         self.plugins.refresh().await;
         self.refresh_after_plugin_change().await;
-        serde_json::json!({"plugins": self.list_plugins().await})
+        Ok(self.plugin_infos().await)
     }
 
     pub async fn install_plugin(
@@ -97,12 +109,14 @@ impl SessionPool {
         version: &str,
         download_url: &str,
         checksum: Option<&str>,
-        scope: &str,
-    ) -> Result<serde_json::Value, String> {
+        scope: api::PluginScope,
+    ) -> Result<api::PluginInstalled, PoolError> {
+        self.require_plugins()?;
         let out = self
             .plugins
             .install(name, version, download_url, checksum, scope)
-            .await?;
+            .await
+            .map_err(PoolError::InvalidRequest)?;
         self.refresh_after_plugin_change().await;
         Ok(out)
     }
@@ -113,9 +127,14 @@ impl SessionPool {
         &self,
         name: &str,
         version: Option<&str>,
-        scope: &str,
-    ) -> Result<serde_json::Value, String> {
-        let out = self.plugins.uninstall(name, version, scope).await?;
+        scope: api::PluginScope,
+    ) -> Result<api::PluginRemoved, PoolError> {
+        self.require_plugins()?;
+        let out = self
+            .plugins
+            .uninstall(name, version, scope)
+            .await
+            .map_err(PoolError::InvalidRequest)?;
         self.refresh_after_plugin_change().await;
         Ok(out)
     }
@@ -126,9 +145,14 @@ impl SessionPool {
         &self,
         name: &str,
         enabled: bool,
-        scope: &str,
-    ) -> Result<serde_json::Value, String> {
-        let out = self.plugins.set_enabled(name, enabled, scope).await?;
+        scope: api::PluginScope,
+    ) -> Result<api::PluginToggled, PoolError> {
+        self.require_plugins()?;
+        let out = self
+            .plugins
+            .set_enabled(name, enabled, scope)
+            .await
+            .map_err(PoolError::InvalidRequest)?;
         self.refresh_after_plugin_change().await;
         Ok(out)
     }

@@ -6,6 +6,7 @@ mod daemon;
 mod error;
 mod events;
 mod mcp;
+mod plugin;
 mod scene;
 mod settings;
 mod turn;
@@ -20,6 +21,10 @@ pub use events::{
 pub use mcp::{
     McpAuthDone, McpAuthStarted, McpAuthState, McpAuthStatus, McpIdentity, McpReconnected,
     McpRedirect, McpServerRef, McpServerState, McpServerStatus, McpServerWritten,
+};
+pub use plugin::{
+    PluginDisclosure, PluginInfo, PluginInstalled, PluginRemoved, PluginScope, PluginToggled,
+    SkillConflict, SkillOrigin, VisibleText,
 };
 pub use scene::{SceneCapabilities, SceneDescription, SceneReload, SceneSummary, SceneTools};
 pub use settings::{

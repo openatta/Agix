@@ -9,6 +9,9 @@
 //! the daemon needs no conditional compilation of its own.
 
 use crate::config::DaemonPaths;
+use crate::session_pool::api::{
+    PluginInfo, PluginInstalled, PluginRemoved, PluginScope, PluginToggled,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -69,6 +72,7 @@ pub struct Contributions {
 #[cfg(feature = "plugin-packages")]
 mod packages {
     use super::{DaemonPaths, PackageScripts, PackageSkills};
+    use crate::session_pool::api::PluginInfo;
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::{Arc, RwLock};
@@ -223,7 +227,7 @@ mod packages {
         /// Every plugin on disk with its enable state — including the
         /// disabled ones, which a management UI has to show in order to turn
         /// them back on.
-        pub fn list(&self) -> Vec<serde_json::Value> {
+        pub fn list(&self) -> Vec<PluginInfo> {
             let (global, scene) = self.tier_dirs();
             let global_state = plugin::state::EnableState::new(global.clone());
             let scene_state = plugin::state::EnableState::new(scene.clone());
@@ -235,20 +239,23 @@ mod packages {
                     let skills: Vec<String> = plugin::skills::declared_skills(p)
                         .map(|skills| skills.into_iter().map(|s| s.entry.name).collect())
                         .unwrap_or_default();
-                    serde_json::json!({
-                        "name": name,
-                        "version": p.manifest.plugin.version,
-                        "description": p.manifest.plugin.description,
-                        "enabled": plugin::state::resolve_enabled(name, &global_state, &scene_state),
+                    PluginInfo {
+                        name: name.clone(),
+                        version: p.manifest.plugin.version.clone(),
+                        description: p.manifest.plugin.description.clone(),
+                        enabled: plugin::state::resolve_enabled(name, &global_state, &scene_state),
                         // The unpacked directory. Without it a host that wants
                         // to read something out of the package — a UI bundle,
                         // an icon — has to rebuild this path itself, which
                         // makes the daemon's disk layout part of its API.
-                        "root": p.root.display().to_string(),
-                        "script_faults": script_faults.get(name.as_str()).cloned().unwrap_or_default(),
-                        "skills": skills,
-                        "skill_conflicts": [],
-                    })
+                        root: p.root.display().to_string(),
+                        script_faults: script_faults
+                            .get(name.as_str())
+                            .cloned()
+                            .unwrap_or_default(),
+                        skills,
+                        skill_conflicts: Vec::new(),
+                    }
                 })
                 .collect()
         }
@@ -381,20 +388,25 @@ mod packages {
 }
 
 #[cfg(feature = "plugin-packages")]
-fn disclosure_json(d: &plugin::Disclosure) -> serde_json::Value {
-    serde_json::json!({
-        "plugin": d.plugin,
-        "version": d.version,
-        "capabilities": d.capabilities,
-        "scene": d.scene,
-        "skills": d.skills,
-        "mcp_servers": d.mcp_servers,
-        "model_visible": d.model_visible.iter().map(|v| serde_json::json!({
-            "origin": v.origin,
-            "text": v.text,
-        })).collect::<Vec<_>>(),
-        "inert": d.is_inert(),
-    })
+fn disclosure_of(d: &plugin::Disclosure) -> crate::session_pool::api::PluginDisclosure {
+    use crate::session_pool::api::{PluginDisclosure, VisibleText};
+    PluginDisclosure {
+        plugin: d.plugin.clone(),
+        version: d.version.clone(),
+        capabilities: d.capabilities.clone(),
+        scene: d.scene.clone(),
+        skills: d.skills.clone(),
+        mcp_servers: d.mcp_servers.clone(),
+        model_visible: d
+            .model_visible
+            .iter()
+            .map(|v| VisibleText {
+                origin: v.origin.clone(),
+                text: v.text.clone(),
+            })
+            .collect(),
+        inert: d.is_inert(),
+    }
 }
 
 #[cfg(feature = "plugin-packages")]
@@ -557,7 +569,7 @@ mod imp {
             self.packages.count()
         }
 
-        pub fn list(&self) -> Vec<serde_json::Value> {
+        pub fn list(&self) -> Vec<PluginInfo> {
             self.packages.list()
         }
 
@@ -580,8 +592,9 @@ mod imp {
             version: &str,
             download_url: &str,
             checksum: Option<&str>,
-            scope: &str,
-        ) -> Result<serde_json::Value, String> {
+            scope: PluginScope,
+        ) -> Result<PluginInstalled, String> {
+            let scope = scope.as_str();
             let cache = self.packages.cache_for(scope)?;
             let held = !self.packages.policy().enable_on_install
                 && !cache.is_cached(name, version)
@@ -595,12 +608,12 @@ mod imp {
             let (message, disclosure) = installed?;
 
             self.refresh().await;
-            Ok(serde_json::json!({
-                "success": true,
-                "message": message,
-                "enabled": self.packages.resolved_enabled(name),
-                "disclosure": super::disclosure_json(&disclosure),
-            }))
+            Ok(PluginInstalled {
+                success: true,
+                message,
+                enabled: self.packages.resolved_enabled(name),
+                disclosure: super::disclosure_of(&disclosure),
+            })
         }
 
         async fn install_and_load_back(
@@ -650,9 +663,9 @@ mod imp {
             &self,
             name: &str,
             version: Option<&str>,
-            scope: &str,
-        ) -> Result<serde_json::Value, String> {
-            let cache = self.packages.cache_for(scope)?;
+            scope: PluginScope,
+        ) -> Result<PluginRemoved, String> {
+            let cache = self.packages.cache_for(scope.as_str())?;
             let removed =
                 plugin::install::uninstall(&cache, name, version).map_err(|e| e.to_string())?;
             let message = match version {
@@ -660,21 +673,25 @@ mod imp {
                 None => format!("removed plugin '{name}' ({removed} versions)"),
             };
             self.refresh().await;
-            Ok(serde_json::json!({
-                "success": true,
-                "message": message,
-            }))
+            Ok(PluginRemoved {
+                success: true,
+                message,
+            })
         }
 
         pub async fn set_enabled(
             &self,
             name: &str,
             enabled: bool,
-            scope: &str,
-        ) -> Result<serde_json::Value, String> {
-            self.packages.set_enabled(name, enabled, scope)?;
+            scope: PluginScope,
+        ) -> Result<PluginToggled, String> {
+            self.packages.set_enabled(name, enabled, scope.as_str())?;
             self.refresh().await;
-            Ok(serde_json::json!({"name": name, "enabled": enabled, "scope": scope}))
+            Ok(PluginToggled {
+                name: name.to_string(),
+                enabled,
+                scope,
+            })
         }
 
         pub async fn refresh(&self) {
@@ -719,7 +736,7 @@ mod imp {
         pub fn count(&self) -> usize {
             0
         }
-        pub fn list(&self) -> Vec<serde_json::Value> {
+        pub fn list(&self) -> Vec<PluginInfo> {
             Vec::new()
         }
         pub fn health_check(&self) -> Vec<Arc<dyn base::interface::health::HealthCheck>> {
@@ -731,24 +748,24 @@ mod imp {
             _version: &str,
             _download_url: &str,
             _checksum: Option<&str>,
-            _scope: &str,
-        ) -> Result<serde_json::Value, String> {
+            _scope: PluginScope,
+        ) -> Result<PluginInstalled, String> {
             Err(DISABLED_MESSAGE.to_string())
         }
         pub async fn uninstall(
             &self,
             _name: &str,
             _version: Option<&str>,
-            _scope: &str,
-        ) -> Result<serde_json::Value, String> {
+            _scope: PluginScope,
+        ) -> Result<PluginRemoved, String> {
             Err(DISABLED_MESSAGE.to_string())
         }
         pub async fn set_enabled(
             &self,
             _name: &str,
             _enabled: bool,
-            _scope: &str,
-        ) -> Result<serde_json::Value, String> {
+            _scope: PluginScope,
+        ) -> Result<PluginToggled, String> {
             Err(DISABLED_MESSAGE.to_string())
         }
         pub async fn refresh(&self) {}

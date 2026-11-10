@@ -6,6 +6,7 @@ pub mod config;
 pub mod daemon;
 pub mod import;
 pub mod mcp;
+pub mod plugin;
 pub mod project;
 pub mod scene;
 pub mod schedule;

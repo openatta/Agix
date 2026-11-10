@@ -143,10 +143,12 @@ impl ProjectModules {
     /// package: which source, and the file it was read from.
     pub(crate) fn skill_conflicts(
         &self,
-    ) -> std::collections::HashMap<String, Vec<serde_json::Value>> {
+    ) -> std::collections::HashMap<String, Vec<crate::session_pool::api::SkillConflict>> {
         #[cfg_attr(not(feature = "skills"), allow(unused_mut))]
-        let mut out: std::collections::HashMap<String, Vec<serde_json::Value>> =
-            std::collections::HashMap::new();
+        let mut out: std::collections::HashMap<
+            String,
+            Vec<crate::session_pool::api::SkillConflict>,
+        > = std::collections::HashMap::new();
         #[cfg(feature = "skills")]
         {
             let packages = self.plugin_skills.read().unwrap_or_else(|e| e.into_inner());
@@ -164,17 +166,19 @@ impl ProjectModules {
                     if holder.path == entry.path {
                         continue;
                     }
-                    let mut conflict = serde_json::json!({
-                        "skill": entry.name,
-                        "shadowed_by": holder.source.as_str(),
-                        "path": holder.path.display().to_string(),
-                    });
-                    if let Some(other) = package_of(&holder.path) {
-                        conflict["plugin"] = other.into();
-                    }
-                    out.entry(package.plugin.clone())
-                        .or_default()
-                        .push(conflict);
+                    use crate::session_pool::api::SkillOrigin;
+                    out.entry(package.plugin.clone()).or_default().push(
+                        crate::session_pool::api::SkillConflict {
+                            skill: entry.name.clone(),
+                            shadowed_by: match holder.source {
+                                skills::manager::SkillSource::User => SkillOrigin::User,
+                                skills::manager::SkillSource::Project => SkillOrigin::Project,
+                                skills::manager::SkillSource::Plugin => SkillOrigin::Plugin,
+                            },
+                            path: holder.path.display().to_string(),
+                            plugin: package_of(&holder.path),
+                        },
+                    );
                 }
             }
         }
@@ -321,19 +325,22 @@ mod tests {
 
         let alpha = &conflicts["alpha"];
         assert_eq!(alpha.len(), 1, "{conflicts:?}");
-        assert_eq!(alpha[0]["skill"], "tour");
-        assert_eq!(alpha[0]["shadowed_by"], "project");
-        assert!(alpha[0]["path"]
-            .as_str()
-            .unwrap()
-            .ends_with(".agents/skills/tour/SKILL.md"));
-        assert!(alpha[0].get("plugin").is_none());
+        assert_eq!(alpha[0].skill, "tour");
+        assert_eq!(
+            alpha[0].shadowed_by,
+            crate::session_pool::api::SkillOrigin::Project
+        );
+        assert!(alpha[0].path.ends_with(".agents/skills/tour/SKILL.md"));
+        assert!(alpha[0].plugin.is_none());
 
         let beta = &conflicts["beta"];
         assert_eq!(beta.len(), 1, "{conflicts:?}");
-        assert_eq!(beta[0]["skill"], "guide");
-        assert_eq!(beta[0]["shadowed_by"], "plugin");
-        assert_eq!(beta[0]["plugin"], "alpha");
+        assert_eq!(beta[0].skill, "guide");
+        assert_eq!(
+            beta[0].shadowed_by,
+            crate::session_pool::api::SkillOrigin::Plugin
+        );
+        assert_eq!(beta[0].plugin.as_deref(), Some("alpha"));
 
         modules.refresh_plugins(
             &settings,

@@ -1,58 +1,75 @@
-//! `plugin.*`。插件子系统没编进来或被策略关掉时，每个方法都答 `PLUGINS_DISABLED`。
+//! `plugin.*`。插件子系统没编进来或被策略关掉时，每个方法都答 `PLUGINS_DISABLED`，
+//! 这一关在池里。
 
 use super::*;
+use crate::rpc::methods::plugin::{
+    PluginInstallParams, PluginList, PluginToggleParams, PluginUninstallParams,
+};
+use crate::session_pool::api::{PluginInstalled, PluginRemoved, PluginToggled};
 
 rpc_methods! {
-    "plugin.list" => list(Untyped) -> Untyped;
-    "plugin.install" => install(Untyped) -> Untyped;
-    "plugin.uninstall" => uninstall(Untyped) -> Untyped;
-    "plugin.enable" => enable(Untyped) -> Untyped;
-    "plugin.disable" => disable(Untyped) -> Untyped;
-    "plugin.reload" => reload(Untyped) -> Untyped;
+    "plugin.list" => list(NoParams) -> PluginList;
+    "plugin.install" => install(PluginInstallParams) -> PluginInstalled;
+    "plugin.uninstall" => uninstall(PluginUninstallParams) -> PluginRemoved;
+    "plugin.enable" => enable(PluginToggleParams) -> PluginToggled;
+    "plugin.disable" => disable(PluginToggleParams) -> PluginToggled;
+    "plugin.reload" => reload(NoParams) -> PluginList;
 }
 
-fn refused(s: &DaemonServer, cx: &Call) -> Option<RpcResponse> {
-    (!s.plugins_enabled()).then(|| s.plugins_disabled(cx.id()))
+async fn list(s: &DaemonServer, _: &Call, _: NoParams) -> Result<PluginList, PoolError> {
+    Ok(PluginList {
+        plugins: s.pool.list_plugins().await?,
+    })
 }
 
-async fn list(s: &DaemonServer, cx: &Call, _: Untyped) -> RpcResponse {
-    if let Some(refused) = refused(s, cx) {
-        return refused;
-    }
-    RpcResponse::ok(cx.id(), json!({"plugins": s.pool.list_plugins().await}))
+async fn install(
+    s: &DaemonServer,
+    _: &Call,
+    params: PluginInstallParams,
+) -> Result<PluginInstalled, PoolError> {
+    s.pool
+        .install_plugin(
+            &params.name,
+            &params.version,
+            &params.download_url,
+            params.checksum.as_deref(),
+            params.scope,
+        )
+        .await
 }
 
-async fn install(s: &DaemonServer, cx: &Call, Untyped(params): Untyped) -> RpcResponse {
-    if let Some(refused) = refused(s, cx) {
-        return refused;
-    }
-    s.method_plugin_install(cx.id(), params).await
+async fn uninstall(
+    s: &DaemonServer,
+    _: &Call,
+    params: PluginUninstallParams,
+) -> Result<PluginRemoved, PoolError> {
+    s.pool
+        .uninstall_plugin(&params.name, params.version.as_deref(), params.scope)
+        .await
 }
 
-async fn uninstall(s: &DaemonServer, cx: &Call, Untyped(params): Untyped) -> RpcResponse {
-    if let Some(refused) = refused(s, cx) {
-        return refused;
-    }
-    s.method_plugin_uninstall(cx.id(), params).await
+async fn enable(
+    s: &DaemonServer,
+    _: &Call,
+    params: PluginToggleParams,
+) -> Result<PluginToggled, PoolError> {
+    s.pool
+        .set_plugin_enabled(&params.name, true, params.scope)
+        .await
 }
 
-async fn enable(s: &DaemonServer, cx: &Call, Untyped(params): Untyped) -> RpcResponse {
-    if let Some(refused) = refused(s, cx) {
-        return refused;
-    }
-    s.method_plugin_set_enabled(cx.id(), params, true).await
+async fn disable(
+    s: &DaemonServer,
+    _: &Call,
+    params: PluginToggleParams,
+) -> Result<PluginToggled, PoolError> {
+    s.pool
+        .set_plugin_enabled(&params.name, false, params.scope)
+        .await
 }
 
-async fn disable(s: &DaemonServer, cx: &Call, Untyped(params): Untyped) -> RpcResponse {
-    if let Some(refused) = refused(s, cx) {
-        return refused;
-    }
-    s.method_plugin_set_enabled(cx.id(), params, false).await
-}
-
-async fn reload(s: &DaemonServer, cx: &Call, _: Untyped) -> RpcResponse {
-    if let Some(refused) = refused(s, cx) {
-        return refused;
-    }
-    RpcResponse::ok(cx.id(), s.pool.reload_plugins().await)
+async fn reload(s: &DaemonServer, _: &Call, _: NoParams) -> Result<PluginList, PoolError> {
+    Ok(PluginList {
+        plugins: s.pool.reload_plugins().await?,
+    })
 }

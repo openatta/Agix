@@ -1219,6 +1219,268 @@
       ],
       "type": "object"
     },
+    "PluginDisclosure": {
+      "description": "What a plugin will put into the model's context and start, shown before\nanyone depends on it.",
+      "properties": {
+        "capabilities": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "inert": {
+          "type": "boolean"
+        },
+        "mcp_servers": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "model_visible": {
+          "items": {
+            "$ref": "#/$defs/VisibleText"
+          },
+          "type": "array"
+        },
+        "plugin": {
+          "type": "string"
+        },
+        "scene": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "skills": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "plugin",
+        "version",
+        "capabilities",
+        "skills",
+        "mcp_servers",
+        "model_visible",
+        "inert"
+      ],
+      "type": "object"
+    },
+    "PluginInfo": {
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "root": {
+          "description": "The unpacked directory.",
+          "type": "string"
+        },
+        "script_faults": {
+          "description": "`[[script]]` bindings that could not be honoured, each with its reason.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "skill_conflicts": {
+          "items": {
+            "$ref": "#/$defs/SkillConflict"
+          },
+          "type": "array"
+        },
+        "skills": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "description",
+        "enabled",
+        "root",
+        "script_faults",
+        "skills",
+        "skill_conflicts"
+      ],
+      "type": "object"
+    },
+    "PluginInstallParams": {
+      "properties": {
+        "checksum": {
+          "default": null,
+          "description": "SHA-256 of the archive, hex. Required for `http(s)://`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "download_url": {
+          "description": "`file://` or `https://`; the daemon fetches it.",
+          "type": "string"
+        },
+        "name": {
+          "description": "A cache directory name: 1 to 128 of ASCII letters, digits, `.`, `_`,\n`-`, `+`, not starting with `.`.",
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/PluginScope",
+          "default": "global"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "download_url"
+      ],
+      "type": "object"
+    },
+    "PluginInstalled": {
+      "properties": {
+        "disclosure": {
+          "$ref": "#/$defs/PluginDisclosure"
+        },
+        "enabled": {
+          "description": "Whether it is enabled once installed (`plugins.enable_on_install`).",
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        },
+        "success": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "success",
+        "message",
+        "enabled",
+        "disclosure"
+      ],
+      "type": "object"
+    },
+    "PluginList": {
+      "properties": {
+        "plugins": {
+          "items": {
+            "$ref": "#/$defs/PluginInfo"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "plugins"
+      ],
+      "type": "object"
+    },
+    "PluginRemoved": {
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "success": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "success",
+        "message"
+      ],
+      "type": "object"
+    },
+    "PluginScope": {
+      "description": "Which tier's plugin directory a request acts on.",
+      "oneOf": [
+        {
+          "const": "global",
+          "description": "Under the global root, shared by every scene.",
+          "type": "string"
+        },
+        {
+          "const": "scene",
+          "description": "Under the scene root, for this daemon's scene only.",
+          "type": "string"
+        }
+      ]
+    },
+    "PluginToggleParams": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/PluginScope",
+          "default": "global"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "PluginToggled": {
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/PluginScope"
+        }
+      },
+      "required": [
+        "name",
+        "enabled",
+        "scope"
+      ],
+      "type": "object"
+    },
+    "PluginUninstallParams": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/PluginScope",
+          "default": "global"
+        },
+        "version": {
+          "default": null,
+          "description": "All versions when omitted.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
     "PluginsReport": {
       "properties": {
         "status": {
@@ -2092,6 +2354,42 @@
       ],
       "type": "object"
     },
+    "SkillConflict": {
+      "description": "A package skill whose name another source holds.",
+      "properties": {
+        "path": {
+          "description": "The `SKILL.md` that holds the name.",
+          "type": "string"
+        },
+        "plugin": {
+          "description": "The other package, when `shadowed_by` is `plugin`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "shadowed_by": {
+          "$ref": "#/$defs/SkillOrigin"
+        },
+        "skill": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "skill",
+        "shadowed_by",
+        "path"
+      ],
+      "type": "object"
+    },
+    "SkillOrigin": {
+      "enum": [
+        "user",
+        "project",
+        "plugin"
+      ],
+      "type": "string"
+    },
     "StartAgentParams": {
       "description": "`session.startAgent`'s params.",
       "properties": {
@@ -2221,6 +2519,22 @@
           "type": "string"
         }
       ]
+    },
+    "VisibleText": {
+      "description": "A piece of text that will reach the model, and where it came from.",
+      "properties": {
+        "origin": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "origin",
+        "text"
+      ],
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2525,50 +2839,58 @@
     },
     "plugin.disable": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/PluginToggleParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/PluginToggled"
       }
     },
     "plugin.enable": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/PluginToggleParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/PluginToggled"
       }
     },
     "plugin.install": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/PluginInstallParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/PluginInstalled"
       }
     },
     "plugin.list": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "description": "no params; anything sent is ignored",
+        "type": [
+          "object",
+          "null"
+        ]
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/PluginList"
       }
     },
     "plugin.reload": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "description": "no params; anything sent is ignored",
+        "type": [
+          "object",
+          "null"
+        ]
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/PluginList"
       }
     },
     "plugin.uninstall": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/PluginUninstallParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/PluginRemoved"
       }
     },
     "project.status": {
