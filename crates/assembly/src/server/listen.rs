@@ -9,6 +9,31 @@ pub(super) fn started_by_this_daemon(stream: &tokio::net::UnixStream) -> Option<
     base::interface::exec::local::lineage::started_here(pid).then_some(pid)
 }
 
+/// Whether the peer on `stream` runs as a different user than this daemon.
+/// The socket is chmod 0600 only after `bind`, so for that window the file
+/// mode is whatever the umask left; checking the peer on every accept closes
+/// it without touching the process-wide umask, which other threads would
+/// race with. A peer whose credentials cannot be read is treated as foreign.
+pub(super) fn from_another_user(stream: &tokio::net::UnixStream) -> bool {
+    match stream.peer_cred() {
+        Ok(cred) => differs_from_daemon_user(cred.uid()),
+        Err(_) => true,
+    }
+}
+
+fn differs_from_daemon_user(peer_uid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        peer_uid != unsafe { libc::geteuid() }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = peer_uid;
+        false
+    }
+}
+
 /// One error frame, so the refused process learns why, then the connection
 /// is dropped unread.
 pub(super) async fn refuse_own_descendant(mut stream: tokio::net::UnixStream, pid: u32) {
@@ -128,6 +153,10 @@ impl DaemonServer {
                         Ok((stream, _addr)) => {
                             let this = self.clone();
                             tokio::spawn(async move {
+                                if from_another_user(&stream) {
+                                    warn!("refused a unix socket connection from another user");
+                                    return;
+                                }
                                 if let Some(pid) = started_by_this_daemon(&stream) {
                                     refuse_own_descendant(stream, pid).await;
                                     return;
@@ -146,5 +175,24 @@ impl DaemonServer {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_daemons_own_uid_is_not_foreign() {
+        let mine = unsafe { libc::geteuid() };
+        assert!(!differs_from_daemon_user(mine));
+        assert!(differs_from_daemon_user(mine.wrapping_add(1)));
+    }
+
+    #[tokio::test]
+    async fn a_peer_in_this_process_is_not_another_user() {
+        let (a, b) = tokio::net::UnixStream::pair().unwrap();
+        assert!(!from_another_user(&a));
+        assert!(!from_another_user(&b));
     }
 }

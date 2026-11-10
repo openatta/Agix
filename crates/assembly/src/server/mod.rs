@@ -9,7 +9,8 @@
 //! without being able to drift from the auth handshake this module defines.
 //!
 //! **Trust boundary**: every RPC method here — including `config.setProvider`
-//! (writes `providers.<id>.api_key`/`base_url` into settings.json) — trusts
+//! (writes `base_url` into settings.json and `api_key` into the 0600
+//! `settings.local.json` beside it) — trusts
 //! whoever can reach this socket. There is no per-method authorization on
 //! top of that: Unix socket
 //! file permissions are the entire access-control story locally. For TCP,
@@ -63,8 +64,9 @@ mod methods_session;
 mod methods_turn;
 mod transport;
 
-use dispatch::{parse_param, read_options, reporting_ignored};
 #[cfg(feature = "ws")]
+pub(crate) use connection::parse_error_frame;
+use dispatch::{parse_param, read_options, reporting_ignored};
 pub(crate) use transport::MAX_FRAME_BYTES;
 pub(crate) use transport::MAX_IN_FLIGHT_PER_CONNECTION;
 use transport::{ByteWriter, FrameReader, LineSink, Reader};
