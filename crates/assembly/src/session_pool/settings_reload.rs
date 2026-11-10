@@ -107,6 +107,12 @@ impl SessionPool {
         checks.push(Arc::new(crate::doctor::ProjectTrustCheck::new(
             project_trust_report(&self.cwd, &settings, &self.plugins.agent_types()),
         )));
+        checks.push(Arc::new(
+            crate::doctor_posture::UnattendedNetworkCheck::new(
+                settings.clone(),
+                self.unattended_scene_ids().await,
+            ),
+        ));
         checks.extend(self.plugins.health_check());
         checks.extend(
             self.health
@@ -124,6 +130,18 @@ impl SessionPool {
             self.plugins.status(),
             &base::interface::health::HealthChecks::from_vec(checks),
         )
+    }
+
+    async fn unattended_scene_ids(&self) -> Vec<String> {
+        let active = self.active_scenes.read().await;
+        let mut ids: Vec<String> = std::iter::once(&self.scene)
+            .chain(active.values())
+            .filter(|scene| !scene.interactive())
+            .map(|scene| scene.id().to_string())
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
     }
 
     /// Add a diagnostic of the host's own to what `daemon.doctor` reports.

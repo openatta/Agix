@@ -1,8 +1,9 @@
 //! Doctor checks that report the daemon's safety posture: settings and build
 //! facts that are legitimate but that an operator should have seen written
-//! down — a permission mode that never asks, hooks that fail open, a build
-//! whose panics end the process.
+//! down — a permission mode that never asks, hooks that fail open, unattended
+//! commands with an open network, a build whose panics end the process.
 
+use base::context::config::NetworkModeConfig;
 use base::interface::health::{CheckResult, HealthCheck};
 use base::interface::settings::{PermissionMode, Settings};
 use hooks::{HookConfig, HookEvent, OnError};
@@ -93,6 +94,55 @@ impl HealthCheck for HooksFailOpenCheck {
     }
 }
 
+/// Unattended sessions auto-run a `Bash` / `Monitor` command the sandbox
+/// fully holds; with the network open and the network policy not required,
+/// such a command can still send what it reads anywhere.
+pub struct UnattendedNetworkCheck {
+    settings: Arc<Settings>,
+    unattended_scenes: Vec<String>,
+}
+
+impl UnattendedNetworkCheck {
+    pub fn new(settings: Arc<Settings>, unattended_scenes: Vec<String>) -> Self {
+        Self {
+            settings,
+            unattended_scenes,
+        }
+    }
+}
+
+impl HealthCheck for UnattendedNetworkCheck {
+    fn name(&self) -> &str {
+        "sandbox.unattended_network"
+    }
+
+    fn check(&self) -> CheckResult {
+        let sandbox = &self.settings.sandbox;
+        let details = serde_json::json!({
+            "unattended_scenes": self.unattended_scenes,
+            "network_mode": sandbox.network_mode,
+            "unattended_requires_network_policy": sandbox.unattended_requires_network_policy,
+        });
+        let open = sandbox.network_mode == NetworkModeConfig::Unrestricted
+            && !sandbox.unattended_requires_network_policy;
+        if self.unattended_scenes.is_empty() {
+            CheckResult::ok("no unattended scene is served")
+        } else if !open {
+            CheckResult::ok("unattended commands run without asking only under a network policy")
+        } else {
+            CheckResult::degraded(format!(
+                "unattended scenes ({}) run sandboxed Bash / Monitor commands without asking \
+                 while sandbox.network_mode is unrestricted: such a command can send what it \
+                 reads anywhere. Set sandbox.unattended_requires_network_policy to true, or \
+                 network_mode to deny_all / allowlist; the setting is planned to default to \
+                 true in a later 0.3.x release",
+                self.unattended_scenes.join(", ")
+            ))
+        }
+        .with_details(details)
+    }
+}
+
 pub struct PanicStrategyCheck;
 
 impl PanicStrategyCheck {
@@ -129,6 +179,33 @@ mod tests {
         let mut s = Settings::defaults_for("m");
         f(&mut s);
         Arc::new(s)
+    }
+
+    #[test]
+    fn only_all_three_together_flag_the_unattended_network() {
+        let unattended = || vec!["code".to_string()];
+        let status = |settings, scenes| {
+            UnattendedNetworkCheck::new(settings, scenes)
+                .check()
+                .status
+                .label()
+        };
+        assert_eq!(status(settings_with(|_| {}), unattended()), "degraded");
+        assert_eq!(status(settings_with(|_| {}), Vec::new()), "ok");
+        assert_eq!(
+            status(
+                settings_with(|s| s.sandbox.network_mode = NetworkModeConfig::Allowlist),
+                unattended()
+            ),
+            "ok"
+        );
+        assert_eq!(
+            status(
+                settings_with(|s| s.sandbox.unattended_requires_network_policy = true),
+                unattended()
+            ),
+            "ok"
+        );
     }
 
     #[test]

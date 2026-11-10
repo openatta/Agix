@@ -87,6 +87,19 @@ async fn start_server_in(
     tempfile::TempDir,
     tokio::task::JoinHandle<()>,
 ) {
+    start_server_serving(dir, Arc::new(scene::code::CodeScene::default())).await
+}
+
+/// Same server, serving `scene` instead of the interactive code scene.
+async fn start_server_serving(
+    dir: tempfile::TempDir,
+    scene: Arc<dyn base::interface::scene::Scene>,
+) -> (
+    Arc<DaemonServer>,
+    PathBuf,
+    tempfile::TempDir,
+    tokio::task::JoinHandle<()>,
+) {
     let sock = dir.path().join("test.sock");
 
     // 使用 dummy client（不真正调 LLM）
@@ -108,7 +121,7 @@ async fn start_server_in(
     // are about the RPC surface, not about transcripts.
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::code::CodeScene::default()),
+        scene,
         daemon::Assembly {
             cwd: Some(dir.path().to_path_buf()),
             model_client: Some(client),
@@ -482,6 +495,55 @@ async fn strict_options_refuse_what_they_cannot_read() {
 
     _server.shutdown_token().cancel();
     let _ = handle.await;
+}
+
+/// An unattended scene with the network open and the network policy not
+/// required: doctor says so, and says the default is planned to change.
+#[tokio::test]
+async fn doctor_warns_when_unattended_commands_may_reach_an_open_network() {
+    use scene::code::{CodeScene, Interaction};
+
+    async fn check(scene: CodeScene, settings: Option<&str>) -> serde_json::Value {
+        let dir = tempfile::tempdir().unwrap();
+        if let Some(settings) = settings {
+            std::fs::write(dir.path().join("settings.json"), settings).unwrap();
+        }
+        let (server, sock, _dir, handle) = start_server_serving(dir, Arc::new(scene)).await;
+        let resp = rpc_call(
+            &sock,
+            r#"{"jsonrpc":"2.0","method":"daemon.doctor","id":1}"#,
+        )
+        .await;
+        server.shutdown_token().cancel();
+        let _ = handle.await;
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        v["result"]["health"]["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == "sandbox.unattended_network")
+            .cloned()
+            .unwrap_or_else(|| panic!("no sandbox.unattended_network check: {v}"))
+    }
+
+    let warned = check(CodeScene::new(Interaction::Unattended), None).await;
+    assert_eq!(warned["status"], "degraded", "{warned}");
+    let summary = warned["summary"].as_str().unwrap();
+    assert!(summary.contains("later 0.3.x"), "{summary}");
+    assert_eq!(
+        warned["details"]["unattended_scenes"][0], "code",
+        "{warned}"
+    );
+
+    let attended = check(CodeScene::new(Interaction::Interactive), None).await;
+    assert_eq!(attended["status"], "ok", "{attended}");
+    for settings in [
+        r#"{"sandbox": {"network_mode": "deny_all"}}"#,
+        r#"{"sandbox": {"unattended_requires_network_policy": true}}"#,
+    ] {
+        let held = check(CodeScene::new(Interaction::Unattended), Some(settings)).await;
+        assert_eq!(held["status"], "ok", "{settings}: {held}");
+    }
 }
 
 #[tokio::test]

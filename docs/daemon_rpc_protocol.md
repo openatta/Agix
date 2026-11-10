@@ -814,6 +814,18 @@ MCP server 都被拒绝。
 `enabled.json` 都读得了(或不存在)是 `ok`;有一层读不了是 `degraded`,`details` 是
 `{"tiers": [{"tier": "global", "fault": "…"}]}`——那一层的包这时全部按禁用算。
 
+daemon 自己的会话池还有一项 `sandbox.unattended_network`:这个 daemon 服务的场景里有无人值守的
+(没人回答提问与权限询问),`sandbox.network_mode` 是 `unrestricted`,而
+`sandbox.unattended_requires_network_policy` 关着——三条同时成立时是 `degraded`:无人值守会话里
+沙箱完整生效的 `Bash` / `Monitor` 命令不问就跑,网络又是开着的。`summary` 提示这个开关计划在
+后续 0.3.x 版本改为缺省开;其余情况是 `ok`。
+
+```jsonc
+{ "name":"sandbox.unattended_network", "status":"degraded", "summary":"unattended scenes (code) run …",
+  "details": { "unattended_scenes":["code"], "network_mode":"unrestricted",
+               "unattended_requires_network_policy":false } }
+```
+
 #### `daemon.subscribeEvents`
 
 无参。把当前连接标记为异步通知订阅者,此后推送 §8 的 `daemon.event` 帧,直到连接

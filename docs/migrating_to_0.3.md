@@ -317,6 +317,11 @@ skill、web 工具、WebSocket、载体与包方案。
 
 ### 部署 `agixd` 的
 
+- **`daemon.doctor` 新增 `sandbox.unattended_network`。** 服务无人值守场景、`sandbox.network_mode`
+  为 `unrestricted`、`sandbox.unattended_requires_network_policy` 关着,三条同时成立时报 `degraded`。
+  这个开关计划在后续 0.3.x 版本改为缺省开;现在就在全局 `settings.json` 里写
+  `"sandbox": {"unattended_requires_network_policy": true}`(或把 `network_mode` 改成 `deny_all` /
+  `allowlist`)即可消掉告警并按新缺省试跑。
 - **`release` 就是小体积构建**:fat LTO、`opt-level = "s"`、`panic = "abort"`,`agixd` 约 11 MB。
   `release-small` profile 没有了,原来用它的改成 `--release`。要 panic 时展开、任务里的 panic
   只结束那个任务的,用 `--profile release-fast`(`opt-level = 3`,体积翻倍)。按 `--release`
