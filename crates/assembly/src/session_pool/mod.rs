@@ -1327,8 +1327,14 @@ impl SessionPool {
     /// `commands.list` RPC. Executing one is not a separate RPC: send
     /// `/name args` as the `message` of `session.run_turn`, which already
     /// intercepts and runs it (see `runtime::turn::process_turn`).
-    pub async fn list_commands(&self) -> Vec<runtime::commands::CommandInfo> {
-        self.default_binding().await.commands.list_detailed()
+    pub async fn list_commands(&self) -> Vec<api::CommandInfo> {
+        self.default_binding()
+            .await
+            .commands
+            .list_detailed()
+            .into_iter()
+            .map(api::CommandInfo::from)
+            .collect()
     }
 }
 

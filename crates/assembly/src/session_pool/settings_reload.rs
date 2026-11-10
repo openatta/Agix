@@ -95,7 +95,7 @@ impl SessionPool {
     }
 
     /// Read-only config/wiring diagnostics — see `crate::doctor`.
-    pub async fn doctor_report(&self) -> serde_json::Value {
+    pub async fn doctor_report(&self) -> crate::doctor::DoctorReport {
         let settings = self.settings.read().await.clone();
         let mut checks: Vec<Arc<dyn base::interface::health::HealthCheck>> = Vec::new();
         checks.push(Arc::new(crate::doctor::ManagedSettingsCheck::new(

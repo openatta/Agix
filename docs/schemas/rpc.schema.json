@@ -7,6 +7,138 @@
       ],
       "type": "string"
     },
+    "CommandInfo": {
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/CommandKind"
+        },
+        "name": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/CommandSource"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "kind",
+        "source"
+      ],
+      "type": "object"
+    },
+    "CommandKind": {
+      "oneOf": [
+        {
+          "enum": [
+            "mcp-prompt"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "local",
+          "description": "Runs immediately, no model turn.",
+          "type": "string"
+        },
+        {
+          "const": "prompt",
+          "description": "Expands a skill body and goes on to the model.",
+          "type": "string"
+        }
+      ]
+    },
+    "CommandList": {
+      "properties": {
+        "commands": {
+          "items": {
+            "$ref": "#/$defs/CommandInfo"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "commands"
+      ],
+      "type": "object"
+    },
+    "CommandSource": {
+      "enum": [
+        "builtin",
+        "user",
+        "project",
+        "plugin",
+        "mcp"
+      ],
+      "type": "string"
+    },
+    "CronJob": {
+      "properties": {
+        "agent_id": {
+          "description": "Optional agent id (for teammate-owned crons)",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created_ms": {
+          "description": "Unix millis when the job was created",
+          "format": "int64",
+          "type": "integer"
+        },
+        "cron": {
+          "type": "string"
+        },
+        "durable": {
+          "description": "true = persisted to disk and survives restarts",
+          "type": "boolean"
+        },
+        "expires_ms": {
+          "description": "Unix millis after which the job's next fire is its last. `None`: never.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "last_fired_ms": {
+          "description": "Unix millis of last fire (prevents double-fire within the same minute)",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "recurring": {
+          "description": "true = fire on each cron match; false = fire once then auto-delete",
+          "type": "boolean"
+        },
+        "session_id": {
+          "description": "The session the job's prompt is sent to when it fires.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "cron",
+        "prompt",
+        "recurring",
+        "durable",
+        "created_ms"
+      ],
+      "type": "object"
+    },
     "DaemonEvent": {
       "oneOf": [
         {
@@ -319,6 +451,99 @@
         }
       ]
     },
+    "DaemonStatus": {
+      "properties": {
+        "capabilities": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "modules": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "protocol_version": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sessions": {
+          "description": "Sessions in memory, sidechains included.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "uptime_secs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "protocol_version",
+        "capabilities",
+        "modules",
+        "uptime_secs",
+        "sessions"
+      ],
+      "type": "object"
+    },
+    "DoctorReport": {
+      "description": "What `daemon.doctor` answers. `settings_tiers`, `providers`, `hooks` and\n`health` are the checks' own `details`, whose shape each check decides.",
+      "properties": {
+        "health": true,
+        "hooks": true,
+        "model": {
+          "$ref": "#/$defs/ModelReport"
+        },
+        "permission_rules_count": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "plugins": {
+          "$ref": "#/$defs/PluginsReport"
+        },
+        "providers": true,
+        "scene": {
+          "type": "string"
+        },
+        "session_persistence": {
+          "$ref": "#/$defs/SessionPersistence"
+        },
+        "settings_tiers": true
+      },
+      "required": [
+        "scene",
+        "settings_tiers",
+        "providers",
+        "hooks",
+        "health",
+        "session_persistence",
+        "plugins",
+        "permission_rules_count",
+        "model"
+      ],
+      "type": "object"
+    },
+    "EventsSubscribed": {
+      "properties": {
+        "subscribed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "subscribed"
+      ],
+      "type": "object"
+    },
     "EvictReason": {
       "oneOf": [
         {
@@ -359,6 +584,21 @@
       ],
       "type": "string"
     },
+    "ModelReport": {
+      "properties": {
+        "api_type": {
+          "type": "string"
+        },
+        "model_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "model_name",
+        "api_type"
+      ],
+      "type": "object"
+    },
     "PermissionRule": {
       "properties": {
         "behavior": {
@@ -382,6 +622,52 @@
         "source",
         "behavior",
         "tool_name"
+      ],
+      "type": "object"
+    },
+    "PluginsReport": {
+      "properties": {
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "type": "object"
+    },
+    "Pong": {
+      "properties": {
+        "capabilities": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "modules": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "pong": {
+          "type": "boolean"
+        },
+        "protocol_version": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "protocol_version",
+        "capabilities",
+        "modules",
+        "pong"
       ],
       "type": "object"
     },
@@ -502,6 +788,96 @@
         }
       ]
     },
+    "ScheduleCreateParams": {
+      "properties": {
+        "cron": {
+          "description": "Five fields, M H DoM Mon DoW, in UTC.",
+          "type": "string"
+        },
+        "durable": {
+          "default": true,
+          "description": "Written to disk, so it outlives a daemon restart.",
+          "type": "boolean"
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "recurring": {
+          "default": true,
+          "description": "`false`: run once at the next match, then delete.",
+          "type": "boolean"
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "cron",
+        "prompt"
+      ],
+      "type": "object"
+    },
+    "ScheduleCreated": {
+      "properties": {
+        "job": {
+          "$ref": "#/$defs/CronJob"
+        }
+      },
+      "required": [
+        "job"
+      ],
+      "type": "object"
+    },
+    "ScheduleDeleteParams": {
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "ScheduleDeleted": {
+      "properties": {
+        "deleted": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "deleted"
+      ],
+      "type": "object"
+    },
+    "ScheduleList": {
+      "properties": {
+        "jobs": {
+          "items": {
+            "$ref": "#/$defs/CronJob"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "jobs"
+      ],
+      "type": "object"
+    },
+    "ScheduleListParams": {
+      "properties": {
+        "session_id": {
+          "default": null,
+          "description": "Only this session's jobs; all of them when omitted.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "ServerDaemonEvent": {
       "description": "The `daemon.event` kinds the server makes up itself rather than relays\nfrom the pool.",
       "oneOf": [
@@ -525,6 +901,28 @@
           "type": "object"
         }
       ]
+    },
+    "SessionPersistence": {
+      "properties": {
+        "history_store_wired": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "history_store_wired"
+      ],
+      "type": "object"
+    },
+    "ShuttingDown": {
+      "properties": {
+        "shutting_down": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "shutting_down"
+      ],
+      "type": "object"
     },
     "StartAgentParams": {
       "description": "`session.startAgent`'s params.",
@@ -713,10 +1111,14 @@
   "methods": {
     "commands.list": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "description": "no params; anything sent is ignored",
+        "type": [
+          "object",
+          "null"
+        ]
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/CommandList"
       }
     },
     "config.get": {
@@ -753,42 +1155,62 @@
     },
     "daemon.doctor": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "description": "no params; anything sent is ignored",
+        "type": [
+          "object",
+          "null"
+        ]
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/DoctorReport"
       }
     },
     "daemon.ping": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "description": "no params; anything sent is ignored",
+        "type": [
+          "object",
+          "null"
+        ]
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/Pong"
       }
     },
     "daemon.shutdown": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "description": "no params; anything sent is ignored",
+        "type": [
+          "object",
+          "null"
+        ]
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/ShuttingDown"
       }
     },
     "daemon.status": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "description": "no params; anything sent is ignored",
+        "type": [
+          "object",
+          "null"
+        ]
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/DaemonStatus"
       }
     },
     "daemon.subscribeEvents": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "description": "no params; anything sent is ignored",
+        "type": [
+          "object",
+          "null"
+        ]
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/EventsSubscribed"
       }
     },
     "import.list": {
@@ -1001,26 +1423,26 @@
     },
     "schedule.create": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/ScheduleCreateParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/ScheduleCreated"
       }
     },
     "schedule.delete": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/ScheduleDeleteParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/ScheduleDeleted"
       }
     },
     "schedule.list": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/ScheduleListParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/ScheduleList"
       }
     },
     "session.appendEntry": {

@@ -41,6 +41,33 @@ impl JsonSchema for Untyped {
     }
 }
 
+/// Params of a method that takes none: whatever the caller sends is ignored.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NoParams;
+
+impl<'de> Deserialize<'de> for NoParams {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        serde::de::IgnoredAny::deserialize(deserializer).map(|_| NoParams)
+    }
+}
+
+impl JsonSchema for NoParams {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "NoParams".into()
+    }
+
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        schemars::json_schema!({
+            "type": ["object", "null"],
+            "description": "no params; anything sent is ignored"
+        })
+    }
+}
+
 /// `session.startAgent`'s params.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct StartAgentParams {

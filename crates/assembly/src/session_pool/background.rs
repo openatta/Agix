@@ -158,8 +158,34 @@ impl SessionPool {
     }
 
     /// Schedule `prompt` to run as a turn of `session_id` on `cron`.
-    pub fn schedule_add(&self, new: tools::cron::NewCronJob) -> tools::cron::CronJob {
-        self.schedule.add_job(new)
+    pub async fn schedule_add(
+        &self,
+        new: api::NewSchedule,
+    ) -> Result<tools::cron::CronJob, PoolError> {
+        let text = |value: &str| value.trim().to_string();
+        let (session_id, cron, prompt) =
+            (text(&new.session_id), text(&new.cron), text(&new.prompt));
+        if session_id.is_empty() || cron.is_empty() || prompt.is_empty() {
+            return Err(PoolError::InvalidRequest(
+                "schedule.create needs session_id, cron and prompt".to_string(),
+            ));
+        }
+        if !tools::cron::cron_expression_valid(&cron) {
+            return Err(PoolError::InvalidRequest(format!(
+                "invalid cron expression `{cron}`: expected 5 fields, M H DoM Mon DoW"
+            )));
+        }
+        if !self.session_exists(&session_id).await {
+            return Err(PoolError::no_session(&session_id));
+        }
+        Ok(self.schedule.add_job(tools::cron::NewCronJob {
+            cron,
+            prompt,
+            recurring: new.recurring,
+            durable: new.durable,
+            session_id: Some(session_id),
+            expires_ms: None,
+        }))
     }
 
     /// Scheduled jobs, all of them or one session's.

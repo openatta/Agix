@@ -11,11 +11,12 @@ mod client;
 pub mod codes;
 pub mod events;
 mod method;
+pub mod methods;
 mod options;
 
 pub use client::{send_frame, Client, ConnectionId, FrameSink, Sink};
 pub use codes::ErrorCode;
-pub use method::{schema_of, MethodInfo, StartAgentParams, Untyped};
+pub use method::{schema_of, MethodInfo, NoParams, StartAgentParams, Untyped};
 pub use options::{
     ClockOptions, IgnoredOption, RecorderOptions, SessionOptions, TelemetryOptions,
     PROMPT_TYPE_PERMISSION, PROMPT_TYPE_QUESTION,

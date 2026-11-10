@@ -3,7 +3,8 @@
 
 use super::table::Call;
 use super::*;
-use crate::rpc::Untyped;
+use crate::rpc::{NoParams, Untyped};
+use crate::session_pool::api::PoolError;
 use serde_json::{json, Value};
 
 pub(super) mod config;

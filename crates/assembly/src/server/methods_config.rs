@@ -12,13 +12,13 @@ impl DaemonServer {
     /// event you care about can happen (e.g. right after startup, before
     /// relying on `mcp_connected`/`import_detected`). Subscribing again on
     /// the same connection changes nothing.
-    pub(super) async fn method_daemon_subscribe_events(
+    pub(super) async fn daemon_subscribe_events(
         &self,
-        id: serde_json::Value,
         client: Arc<Client>,
-    ) -> RpcResponse {
+    ) -> crate::rpc::methods::daemon::EventsSubscribed {
+        let subscribed = crate::rpc::methods::daemon::EventsSubscribed { subscribed: true };
         if !client.start_daemon_events() {
-            return RpcResponse::ok(id, serde_json::json!({"subscribed": true}));
+            return subscribed;
         }
         let mut rx = self.pool.subscribe_events();
         let forward = client;
@@ -43,7 +43,7 @@ impl DaemonServer {
                 }
             }
         });
-        RpcResponse::ok(id, serde_json::json!({"subscribed": true}))
+        subscribed
     }
 
     /// `config.getProvider` params: `{"include_secrets": false}` (optional,

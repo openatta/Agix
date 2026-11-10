@@ -11,7 +11,7 @@ use std::sync::Mutex;
 
 use super::parser::cron_matches;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CronJob {
     pub id: String,
     pub cron: String,

@@ -420,7 +420,7 @@ pub fn run_doctor(
     history_store_wired: bool,
     plugin_status: crate::plugins::PluginStatus,
     extra: &HealthChecks,
-) -> serde_json::Value {
+) -> DoctorReport {
     let mut checks = HealthChecks::new()
         .with(Arc::new(SettingsTiersCheck::new(paths, &settings)))
         .with(Arc::new(ProviderRoutingCheck::new(settings.clone())))
@@ -448,35 +448,80 @@ pub fn run_doctor(
             .unwrap_or(serde_json::Value::Null)
     };
 
-    // The three named keys carry the same data as their entries under
-    // `health`. They are what every existing client reads, so they stay.
-    serde_json::json!({
-        "scene": scene_id,
-        "settings_tiers": detail("settings.tiers"),
-        "providers": detail("settings.providers"),
-        "hooks": detail("settings.hooks"),
-        "health": health.to_json(),
-        "session_persistence": {
-            "history_store_wired": history_store_wired,
+    DoctorReport {
+        scene: scene_id.to_string(),
+        settings_tiers: detail("settings.tiers"),
+        providers: detail("settings.providers"),
+        hooks: detail("settings.hooks"),
+        health: health.to_json(),
+        session_persistence: SessionPersistence {
+            history_store_wired,
         },
-        // Whether this binary can load plugins at all is a deployment fact a
-        // locked-down install has to be able to verify from the running
-        // process, not from release notes.
-        "plugins": {
-            "status": plugin_status.as_str(),
+        plugins: PluginsReport {
+            status: plugin_status.as_str().to_string(),
         },
-        "permission_rules_count": settings.permission_rules.len(),
-        "model": {
-            "model_name": settings.model.model_name,
-            "api_type": format!("{:?}", settings.model.api_type),
+        permission_rules_count: settings.permission_rules.len(),
+        model: ModelReport {
+            model_name: settings.model.model_name.clone(),
+            api_type: format!("{:?}", settings.model.api_type),
         },
-    })
+    }
+}
+
+/// What `daemon.doctor` answers. `settings_tiers`, `providers`, `hooks` and
+/// `health` are the checks' own `details`, whose shape each check decides.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct DoctorReport {
+    pub scene: String,
+    pub settings_tiers: serde_json::Value,
+    pub providers: serde_json::Value,
+    pub hooks: serde_json::Value,
+    pub health: serde_json::Value,
+    pub session_persistence: SessionPersistence,
+    pub plugins: PluginsReport,
+    pub permission_rules_count: usize,
+    pub model: ModelReport,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct SessionPersistence {
+    pub history_store_wired: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct PluginsReport {
+    pub status: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct ModelReport {
+    pub model_name: String,
+    pub api_type: String,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::StaticDaemonPaths;
+
+    fn run_doctor(
+        paths: &dyn DaemonPaths,
+        scene_id: &str,
+        settings: Arc<Settings>,
+        history_store_wired: bool,
+        plugin_status: crate::plugins::PluginStatus,
+        extra: &HealthChecks,
+    ) -> serde_json::Value {
+        let report = super::run_doctor(
+            paths,
+            scene_id,
+            settings,
+            history_store_wired,
+            plugin_status,
+            extra,
+        );
+        serde_json::to_value(report).unwrap()
+    }
 
     fn base_settings() -> Arc<Settings> {
         let mut settings = Settings::defaults_for("test-model");
@@ -852,14 +897,15 @@ mod documented_shape_tests {
         settings.paths.local_data_dir = dir.join("project");
         settings.paths.workspace =
             base::settings::Workspace::project_of(&settings.paths.local_data_dir);
-        run_doctor(
+        serde_json::to_value(run_doctor(
             &StaticDaemonPaths::new(dir.to_path_buf()),
             "code",
             Arc::new(settings),
             true,
             crate::plugins::PluginStatus::Enabled,
             &HealthChecks::new(),
-        )
+        ))
+        .unwrap()
     }
 
     fn protocol_doc() -> String {

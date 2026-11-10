@@ -80,7 +80,7 @@ impl DaemonServer {
         drop(expected);
 
         if authenticated {
-            let mut result = crate::discovery::identity();
+            let mut result = serde_json::to_value(crate::discovery::identity()).unwrap_or_default();
             result["authenticated"] = serde_json::json!(true);
             Ok(RpcResponse::ok(id, result))
         } else {

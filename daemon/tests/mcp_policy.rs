@@ -389,7 +389,7 @@ async fn an_unparseable_policy_file_denies_every_server_and_doctor_says_so() {
     pool.reload_settings(None, "code").await;
     assert!(d.spawned().is_empty(), "started: {:?}", d.spawned());
 
-    let doctor = pool.doctor_report().await;
+    let doctor = serde_json::to_value(pool.doctor_report().await).unwrap();
     let check = doctor["health"]["checks"]
         .as_array()
         .unwrap()
@@ -426,7 +426,7 @@ async fn a_host_policy_wins_over_the_policy_file() {
         .await;
     d.wait_for_spawn("kept").await;
 
-    let doctor = pool.doctor_report().await;
+    let doctor = serde_json::to_value(pool.doctor_report().await).unwrap();
     let check = doctor["health"]["checks"]
         .as_array()
         .unwrap()

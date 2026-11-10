@@ -292,13 +292,24 @@ pub fn capabilities() -> Vec<&'static str> {
 /// Version, protocol version and capabilities: what a client is told
 /// wherever it first meets the daemon, so it can refuse an incompatible one
 /// at the handshake rather than discover it mid-session.
-pub fn identity() -> serde_json::Value {
-    serde_json::json!({
-        "version": env!("CARGO_PKG_VERSION"),
-        "protocol_version": INSTANCE_PROTOCOL_VERSION,
-        "capabilities": capabilities(),
-        "modules": crate::modules::compiled(),
-    })
+pub fn identity() -> DaemonIdentity {
+    DaemonIdentity {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        protocol_version: INSTANCE_PROTOCOL_VERSION,
+        capabilities: capabilities().into_iter().map(String::from).collect(),
+        modules: crate::modules::compiled()
+            .into_iter()
+            .map(String::from)
+            .collect(),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct DaemonIdentity {
+    pub version: String,
+    pub protocol_version: u32,
+    pub capabilities: Vec<String>,
+    pub modules: Vec<String>,
 }
 
 /// One `~/.agix/daemon/instances.d/<instance>.json` entry — `docs/daemon_rpc_protocol.md`

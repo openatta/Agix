@@ -101,6 +101,10 @@ pub(super) fn parse_params<P: serde::de::DeserializeOwned>(
     method: &str,
     params: Value,
 ) -> Result<P, RpcError> {
+    let params = match params {
+        Value::Null => Value::Object(Default::default()),
+        other => other,
+    };
     serde_json::from_value(params).map_err(|e| RpcError {
         code: codes::INVALID_PARAMS,
         message: format!("invalid params for {method}: {e}"),
