@@ -49,6 +49,7 @@ structured-output = ["tools/structured-output"]
 url      = { workspace = true }
 tempfile = { workspace = true }
 model    = { workspace = true }
+tokio    = { workspace = true, features = ["test-util"] }
 
 [lints.clippy]
 unwrap_used = "warn"

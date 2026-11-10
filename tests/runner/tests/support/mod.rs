@@ -320,6 +320,8 @@ pub fn normalize_events(events: &[AgentEvent]) -> String {
             AgentEvent::ToolUse { name, input, .. } => {
                 format!("ToolUse {name} {}", canonical_json(input))
             }
+            // How many there are depends on timing (one a second per call).
+            AgentEvent::ToolProgress { .. } => continue,
             // The content matters: without it "the hook blocked this" and
             // "the tool ran and failed" both render as is_error=true, and the
             // net stops distinguishing two very different outcomes.

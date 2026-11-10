@@ -65,6 +65,22 @@ pub enum AgentEvent {
         turn_id: String,
     },
 
+    /// What a running tool call reported through its `ProgressSender`. At
+    /// most one a second per call; `dropped` counts the reports merged away
+    /// since the previous one. Never written to the transcript.
+    ToolProgress {
+        tool_use_id: String,
+        name: String,
+        message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        progress: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        total: Option<f64>,
+        #[serde(default)]
+        dropped: u64,
+        turn_id: String,
+    },
+
     /// Tool execution completed.
     ToolResult {
         id: String,

@@ -3,6 +3,7 @@
 use super::process::hook_permission_mode;
 use super::reporting::{record_permission_decision, telemetry_error_text};
 use super::tool_env::tool_context_for;
+use super::tool_progress::{CloseOnDrop, GateHandle, ProgressGate};
 use super::tool_result::{render_tool_result_content, PendingToolImage};
 use base::interface::event::AgentEvent;
 use std::sync::Arc;
@@ -490,8 +491,25 @@ pub(super) async fn execute_tool_inner(
             },
         ));
     let tool_start = std::time::Instant::now();
-    let result =
-        run_catching_panics(tool.call(input, tool_ctx, base::tool::ProgressSender::noop(""))).await;
+    let (progress, gate) = match &ctx.events {
+        Some(events) => {
+            let gate = ProgressGate::new(&ctx.tool_use_id, name, &ctx.turn_id, events.clone());
+            let sender = base::tool::ProgressSender::with_callback(
+                ctx.tool_use_id.clone(),
+                Arc::new(GateHandle(gate.clone())),
+            );
+            (sender, Some(CloseOnDrop(gate)))
+        }
+        None => (
+            base::tool::ProgressSender::noop(ctx.tool_use_id.clone()),
+            None,
+        ),
+    };
+    let result = run_catching_panics(tool.call(input, tool_ctx, progress)).await;
+    if let Some(CloseOnDrop(gate)) = &gate {
+        gate.finish();
+    }
+    drop(gate);
     let latency_ms = tool_start.elapsed().as_millis() as u64;
 
     let mut outcome = match result {

@@ -71,6 +71,27 @@ pub trait RunningTasksCallback: Send + Sync + std::fmt::Debug {
     fn cancel(&self, tid: &str) -> bool;
 }
 
+/// One progress report of a running tool call. `progress` and `total` are in
+/// whatever unit the tool counts (lines, bytes, steps); either may be absent.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ProgressUpdate {
+    pub message: String,
+    pub progress: Option<f64>,
+    pub total: Option<f64>,
+}
+
+impl ProgressUpdate {
+    pub fn text(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            ..Self::default()
+        }
+    }
+}
+
+/// What a tool call reports progress through. The engine hands every call
+/// one that reaches the session's event stream as `AgentEvent::ToolProgress`,
+/// rate-limited per call; reports after the call returns are dropped.
 #[derive(Clone)]
 pub struct ProgressSender {
     tool_use_id: String,
@@ -78,6 +99,9 @@ pub struct ProgressSender {
 }
 pub trait ProgressCallback: Send + Sync {
     fn on_progress(&self, tool_use_id: &str, data: &str);
+    fn on_update(&self, tool_use_id: &str, update: ProgressUpdate) {
+        self.on_progress(tool_use_id, &update.message);
+    }
 }
 impl ProgressSender {
     pub fn noop(id: impl Into<String>) -> Self {
@@ -101,6 +125,11 @@ impl ProgressSender {
     pub fn send(&self, data: &str) {
         if let Some(ref cb) = self.callback {
             cb.on_progress(&self.tool_use_id, data);
+        }
+    }
+    pub fn update(&self, update: ProgressUpdate) {
+        if let Some(ref cb) = self.callback {
+            cb.on_update(&self.tool_use_id, update);
         }
     }
     pub fn tool_use_id(&self) -> &str {
