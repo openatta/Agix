@@ -708,7 +708,7 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 | `context_edits` | 有 `session.inspectContext` / `session.dropMessages` / `session.editMessage`(§6.3) |
 | `extension_entries` | 有 `session.appendEntry` / `session.entries`,写入推 `extension_entry`(§6.3、§7) |
 | `task_output` | 有 `session.taskOutput`,Shell 命令与监视器的输出边跑边记(§6.3) |
-| `tool_progress` | 运行中的工具调用推 `tool_progress`,每次调用每秒至多一帧,带 `dropped`;子 Agent 的包在 `subagent_progress` 里(§7) |
+| `tool_progress` | 运行中的工具调用推 `tool_progress`,每次调用每秒至多一帧,带 `dropped`;子 Agent 的包在 `subagent_progress` 里(§7.3) |
 | `task_progress` | 任务边跑边推:`task_progress` 推 Shell 命令、监视器与 `RunCode` 程序新增的输出(程序的是 `log()` 行与每次子调用的一行),`task_updated` 推子 Agent 的用量与等待;`subagent_progress` 带 `task_id`(§7) |
 | `task_output_offsets` | 任务输出按字节偏移:`session.taskOutput` 接受 `from_byte`,应答带 `from_byte` / `next_byte` / `dropped` / `final`;`task_progress` 帧带 `from_byte` / `next_byte`;被停掉的任务等工作收尾才发 `task_finished`(§6.3、§7) |
 | `task_messages` | 有 `session.messageTask`,消息进运行中的后台子 Agent(§6.3) |
@@ -2572,7 +2572,7 @@ settings.local.json)里声明过,否则 `INVALID_PARAMS` —— 用来换令牌�
 | `tool_use_start` | `{id,name}` | 模型开始写一次工具调用,参数还在流;同 `id` 的 `tool_use` 随后到达。界面可以先画出工具行 |
 | `tool_args_delta` | `{id,partial_json}` | 这次调用参数的原始片段,按到达顺序拼起来就是 `tool_use.input` 的 JSON 文本(高频) |
 | `tool_use` | `{id,name,input}` | 模型发起工具调用,参数已完整。参数不是完整 JSON 的(多半被输出上限截断)`input` 为 `{}`,不执行,随后的 `tool_result` 是说明这一点的错误 |
-| `tool_progress` | `{tool_use_id,name,message,progress?,total?,dropped}` | 运行中的工具调用报的进度,`tool_use_id` 是那次 `tool_use` 的 `id`;每次调用每秒至多一帧,`dropped` 是上一帧以来合并掉的条数。不进 transcript,不保证送达 |
+| `tool_progress` | `{tool_use_id,name,message,progress?,total?,dropped}` | 运行中的工具调用报的进度,`tool_use_id` 是那次 `tool_use` 的 `id`;每次调用每秒至多一帧,`dropped` 是上一帧以来合并掉的条数。不进 transcript,不保证送达(§7.3) |
 | `tool_result` | `{id,name,content,is_error}` | 工具返回 |
 | `prompt` | `permission`:`{prompt_type,prompt_id,tool_name,message,paths[],tool_use_id?}`;`question`:`{prompt_type,prompt_id,tool_use_id,question,header,options:[{key,label}]}` | 需宿主回答,用 `session.respondToPrompt`;`tool_use_id` 是被问的那次 `tool_use`(`question` 的 `prompt_id` 就是它)。`question` 的 `header` 可为 `null`,`options` 为空表示自由回答 |
 | `subagent_progress` | `{agent_label,agent_session_id,agent_type,parent_turn,parent_tool_use_id,task_id,event}` | 子 Agent 事件镜像,`event` 是嵌套的本表结构;`parent_tool_use_id` 是父会话里发起它的那次 `Agent` 调用,不知道时为 `null`;`task_id` 是它在 `session.tasks` 里的任务 |
@@ -2686,6 +2686,35 @@ transcript,这一轮以 `ENGINE_ERROR` 结束,不会重发。
 回复可能不完整,宿主可以据此提示或重发。其余情况没有这个键。
 
 **`stop_reason` 和 `usage` 只在这里出现**,`run_turn` 的最终响应里没有。
+
+### 7.3 `tool_progress`
+
+```jsonc
+{ "kind":"tool_progress", "tool_use_id":"toolu_01…", "name":"ImportRows",
+  "message":"row 42 of 120",   // 工具给的一句话,至多 4 KiB
+  "progress":42,               // 可选,工具自己的单位(行、字节、步)
+  "total":120,                 // 可选
+  "dropped":3 }                // 上一帧以来合并掉的条数
+```
+
+工具在运行时经 `Tool::call` 收到的进度发送器报进度(`docs/extension_points.md`「报进度」),
+每一条都对应这次调用的一行工具。内建工具里 `Bash` 每打出一行输出报一次:`message` 是这一行,
+`progress` 是到此为止的行数,没有 `total`;其余内建工具目前不报。插件登记的工具报什么由
+插件决定。`progress`、`total` 没有就不带这个键,不是带 `null`。
+
+**限流**:每次调用每秒至多一帧。一秒内的第一条立刻发;其后的只留最后一条,这一秒到了再发,
+被它顶替掉的条数记进 `dropped`,随这一帧带出,之后从 0 重新计。调用结束时还留着一条的,
+在 `tool_result` 之前补发。所以 `dropped` 加上帧数就是工具报过的总条数(漏帧的除外)。
+调用返回之后再报的进度直接丢掉。
+
+**不进 transcript,不保证送达**:它不写进会话日志,`session.history`、恢复与导出里都没有;
+订阅跟不上时(§5.4)它和别的帧一样会丢,丢了也补不回来。要事后看的输出用任务输出
+(`task_progress`、`session.taskOutput`)。客户端只该拿它画"这次调用正在做什么",结果以
+`tool_result` 为准。
+
+子 Agent 里的工具报的进度不单独成帧,包在 `subagent_progress` 里:`event` 是
+`{kind:"tool_progress",tool_use_id,name,message,progress?,total?,dropped,turn_id}`,
+`turn_id` 是子 Agent 自己的一轮,`parent_tool_use_id` 是父会话里那次 `Agent` 调用。
 
 ---
 

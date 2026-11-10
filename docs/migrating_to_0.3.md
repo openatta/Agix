@@ -1387,6 +1387,12 @@ WebAssembly 载体整个移除。
   `{session_id, current_turn_id: null}`),稍后重试即可。以前只记一条 warn 就照常起新引擎,两个引擎
   会写同一份转录。
 
+- **新增帧 `tool_progress`**(能力位 `tool_progress`):运行中的工具调用报的进度,
+  `{tool_use_id,name,message,progress?,total?,dropped}`,落在这次调用的 `tool_use` 与 `tool_result`
+  之间。每次调用每秒至多一帧,`dropped` 是合并掉的条数;不进 transcript,不保证送达。内建工具里
+  目前只有 `Bash` 报(每行输出一次,`progress` 是行数);子 Agent 的包在 `subagent_progress` 里
+  (协议 §7.3)。不认识它的客户端照约定忽略即可。
+
 ### 嵌入方
 
 - `base::interface::config_source::Tier` 多了 `Managed`;`ConfigSource` 给出的 `Tier::Managed`
@@ -1462,3 +1468,12 @@ WebAssembly 载体整个移除。
   (旧文件缺这两个键照样读得进来);逐字段构造的要补上。新增 `DaemonServer::require_unix_socket_auth`、
   `assembly::discovery::{unix_socket_token_path, write_unix_socket_token}` 与
   `platform::sandbox::fence_secret`(登记一个沙箱里的命令一律读不到的文件)。
+**工具进度接通了。** 以前每次工具调用拿到的 `ProgressSender` 是空的,`send` 什么也不做;现在
+引擎给每次调用一个真的,报的进度成为 `AgentEvent::ToolProgress { tool_use_id, name, message,
+progress, total, dropped, turn_id }`(每次调用每秒至多一条)。
+
+- 对 `AgentEvent` 做穷尽 `match` 的要加一支。
+- 已经调 `progress.send(..)` 的工具不用改。要报计数的用新的 `progress.update(ProgressUpdate {..})`;
+  `ProgressCallback` 多了带缺省实现的 `on_update`,只实现 `on_progress` 的照旧能编译。`Bash` 报的
+  每一行不再带结尾的换行。
+- 写法见 `extension_points.md`「报进度」。

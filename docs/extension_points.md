@@ -135,6 +135,40 @@ impl Tool for FileTicketTool {
   `affected_paths`、`validate_input`、`check_permissions`、`call`)仍要逐个转发。
 - `spec()` 里不要调用这些能力方法:它们的缺省实现反过来读 `spec()`。
 
+#### 报进度:`call` 的 `progress`
+
+`call` 的第三个参数 `progress: ProgressSender` 是这次调用自己的进度发送器,报的东西作为
+`AgentEvent::ToolProgress` 进会话的事件流,daemon 转成 `tool_progress` 帧(协议 §7.3):
+
+```rust
+async fn call(&self, input: Value, ctx: ToolContext, progress: ProgressSender)
+    -> Result<ToolResult, ToolError>
+{
+    for (i, row) in rows.iter().enumerate() {
+        progress.update(ProgressUpdate {
+            message: format!("row {} of {}", i + 1, rows.len()),
+            progress: Some((i + 1) as f64),
+            total: Some(rows.len() as f64),
+        });
+        import(row).await?;
+    }
+    // 只有一句话时:progress.send("connecting");
+    // …
+}
+```
+
+- **想报多少就报多少**:引擎按调用限流,每秒至多发一条,中间的合并成最后一条(带
+  `dropped` 计数),调用返回前还没发的那条在 `ToolResult` 之前补发。`message` 超过 4 KiB
+  的截掉。
+- **调用返回之后再报的都丢掉**:把发送器 clone 进后台任务、在 `call` 返回后接着报,不会
+  出错,也不会送到任何地方。真正长跑、要事后回看输出的工作做成任务(`task_progress`)。
+- **进度不是结果**:不进 transcript、模型看不到、订阅跟不上时会丢。模型要读的内容放进
+  `ToolResult`。
+- `progress.tool_use_id()` 与 `ctx.tool_use_id` 相同。单测里用 `ProgressSender::noop(..)`;
+  要断言报了什么,用 `ProgressSender::with_callback` 接一个自己的 `ProgressCallback`
+  (它的 `on_update` 缺省转给 `on_progress`,只关心文字的实现 `on_progress` 就够了)。
+- 包一层别的工具的,把收到的 `progress` 原样传给里面那个。
+
 #### 让模型写的程序也能调你的工具
 
 `RunCode`(`ptc.md`)里的程序经 `tools.<Name>(input)` 调本会话的工具。一个工具能不能
