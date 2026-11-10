@@ -38,7 +38,7 @@ pub(super) fn record_permission_decision(
                 tool_name: name.to_string(),
                 outcome,
                 permission_mode: hook_permission_mode(ctx.session_state.permission_mode()),
-                destructive: tool.is_destructive(input),
+                destructive: tool.call_traits(input).destructive,
                 latency_ms: started.elapsed().as_millis() as u64,
             },
         ));

@@ -51,11 +51,7 @@ impl Tool for PingTool {
     }
 
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            concurrency_safe: true,
-            read_only: true,
-            ..ToolSpec::defaults_for(self)
-        }
+        ToolSpec::new().concurrency_safe(true).read_only(true)
     }
 
     fn accept_edits_allows(&self, input: &Value, ctx: &ToolContext) -> bool {
@@ -132,8 +128,8 @@ mod tests {
     async fn name_is_ping() {
         let tool = PingTool;
         assert_eq!(tool.name(), "Ping");
-        assert!(tool.is_read_only(&Value::Null));
-        assert!(tool.is_concurrency_safe(&Value::Null));
+        assert!(tool.call_traits(&Value::Null).read_only);
+        assert!(tool.call_traits(&Value::Null).concurrency_safe);
     }
 
     #[tokio::test]

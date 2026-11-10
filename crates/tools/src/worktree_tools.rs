@@ -95,7 +95,7 @@ impl Tool for EnterWorktreeTool {
     }
 
     fn spec(&self) -> ToolSpec {
-        ToolSpec::defaults_for(self)
+        ToolSpec::new()
     }
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {
         match serde_json::from_value::<EnterWorktreeInput>(input.clone()) {
@@ -209,10 +209,7 @@ impl Tool for ExitWorktreeTool {
     }
 
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            destructive: true,
-            ..ToolSpec::defaults_for(self)
-        }
+        ToolSpec::new().destructive(true)
     }
     async fn validate_input(&self, _: &Value, _: &ToolContext) -> ValidationResult {
         ValidationResult::Ok

@@ -13,6 +13,7 @@ use base::{
     tool::PermissionDecision,
     tool::ProgressSender,
     tool::Tool,
+    tool::ToolOrigin,
     tool::ToolResult,
     tool::ToolResultBlock,
     tool::ToolResultContent,
@@ -140,18 +141,13 @@ impl McpToolAdapter {
 #[async_trait]
 impl Tool for McpToolAdapter {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            callable_from_code: true,
-            source: format!("mcp:{}", self.server_name),
-            // Taken from the server's `readOnlyHint`; a server that says nothing is
-            // assumed to write.
-            read_only: self.hints.read_only == Some(true),
-            destructive: self.hints.destructive == Some(true),
-            // MCP tools are dynamic — their schemas and prompts come from live server
-            // connections and may change between turns (e.g., after reconnection).
-            dynamic: true,
-            ..ToolSpec::defaults_for(self)
-        }
+        // Read-only only on the server's `readOnlyHint`; a server that says
+        // nothing is assumed to write.
+        ToolSpec::new()
+            .callable_from_code(true)
+            .origin(ToolOrigin::mcp(&self.server_name))
+            .read_only(self.hints.read_only == Some(true))
+            .destructive(self.hints.destructive == Some(true))
     }
     fn name(&self) -> &str {
         &self.full_name
@@ -410,7 +406,7 @@ mod tests {
     async fn source_names_the_server_it_fronts() {
         let client = Arc::new(MockMcpClient::new("github", vec![]));
         let adapter = McpToolAdapter::new(client, meta("create_issue"));
-        assert_eq!(adapter.source(), "mcp:github");
+        assert_eq!(adapter.spec().origin, ToolOrigin::mcp("github"));
     }
 
     #[tokio::test]
@@ -561,10 +557,18 @@ mod tests {
     #[tokio::test]
     async fn read_only_comes_from_the_servers_hint() {
         let client = Arc::new(MockMcpClient::new("s", vec![]));
-        assert!(!McpToolAdapter::new(client.clone(), meta("x")).is_read_only(&json!({})));
+        assert!(
+            !McpToolAdapter::new(client.clone(), meta("x"))
+                .call_traits(&json!({}))
+                .read_only
+        );
         let mut m = meta("x");
         m.hints.read_only = Some(true);
-        assert!(McpToolAdapter::new(client, m).is_read_only(&json!({})));
+        assert!(
+            McpToolAdapter::new(client, m)
+                .call_traits(&json!({}))
+                .read_only
+        );
     }
 
     #[tokio::test]

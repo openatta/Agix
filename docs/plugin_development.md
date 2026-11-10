@@ -150,9 +150,9 @@ Rust 层和 QuickJS 层之间同名不算冲突,按「叠加」那节的规则�
 
 - `health_check` 注册的检查出现在 daemon 的 `session.get` 结果的 `health` 里(只有注册了检查的
   会话才有这个键),直接嵌引擎时从 `Agent::health()` 取。
-- 工具来源:`Tool::spec()` 里的 `source` 写 `plugin:<name>`(`examples/plugins/rust/src/tool.rs`
+- 工具来源:`Tool::spec()` 里写 `.origin(ToolOrigin::plugin(<name>))`(`examples/plugins/rust/src/tool.rs`
   就是这么写的;怎么实现 `spec()` 见 `extension_points.md`「实现一个工具」),
-  `session.inspectContext` 的 `tools[].source` 里看得到。
+  `session.inspectContext` 的 `tools[].source` 里看得到 `plugin:<name>`。
 
 ### 测试
 

@@ -664,7 +664,7 @@ impl Inner {
     /// is not among them; the delegate's own build registers its own of each.
     pub(super) fn inherited_tools(&self) -> Vec<Arc<dyn base::tool::Tool>> {
         let mut out: Vec<Arc<dyn base::tool::Tool>> = Vec::new();
-        for tool in self.fallback_tools.all() {
+        for tool in self.fallback_tools.list() {
             if tool.name() != AGENT_TOOL_NAME
                 && self.parent_tools.get(tool.name()).is_some()
                 && !self.plugin_tools.contains(tool.name())

@@ -110,7 +110,7 @@ impl Tool for SkillTool {
     }
 
     fn spec(&self) -> ToolSpec {
-        ToolSpec::defaults_for(self)
+        ToolSpec::new()
     }
 
     async fn prompt(&self, _: &PromptContext) -> String {

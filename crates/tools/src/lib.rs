@@ -280,7 +280,7 @@ mod register_builtin_tools_tests {
         );
         register_web_search(&reg, Arc::new(NoSearch), "m".into());
         let t = reg.get("WebSearch").expect("WebSearch registered");
-        assert!(t.is_read_only(&serde_json::Value::Null));
+        assert!(t.call_traits(&serde_json::Value::Null).read_only);
     }
 
     /// Invocable, not merely present: on a provider that cannot search the

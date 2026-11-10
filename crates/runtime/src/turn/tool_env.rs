@@ -116,7 +116,10 @@ impl SubCallDispatcher {
     }
 
     fn callable_tool(&self, name: &str) -> Option<Arc<dyn base::tool::Tool>> {
-        self.ctx.tools.get(name).filter(|t| t.callable_from_code())
+        self.ctx
+            .tools
+            .get(name)
+            .filter(|t| t.spec().callable_from_code)
     }
 }
 
@@ -128,14 +131,17 @@ impl base::interface::tool_dispatch::ToolDispatch for SubCallDispatcher {
             .tools
             .list()
             .into_iter()
-            .filter(|t| t.callable_from_code())
-            .map(|t| base::interface::tool_dispatch::CallableTool {
-                name: t.name().to_string(),
-                description: t
-                    .short_description()
-                    .unwrap_or_else(|| t.description().to_string()),
-                input_schema: base::tool::compact_schema(t.full_input_schema()),
-                result: t.code_result().map(str::to_string),
+            .filter_map(|t| {
+                let spec = t.spec();
+                spec.callable_from_code
+                    .then(|| base::interface::tool_dispatch::CallableTool {
+                        name: t.name().to_string(),
+                        description: spec
+                            .short_description
+                            .unwrap_or_else(|| t.description().to_string()),
+                        input_schema: base::tool::compact_schema(t.full_input_schema()),
+                        result: spec.code_result.map(str::to_string),
+                    })
             })
             .collect();
         tools.sort_by(|a, b| a.name.cmp(&b.name));
@@ -144,7 +150,7 @@ impl base::interface::tool_dispatch::ToolDispatch for SubCallDispatcher {
 
     fn concurrency_safe(&self, name: &str, input: &serde_json::Value) -> bool {
         self.callable_tool(name)
-            .is_some_and(|t| t.is_concurrency_safe(input))
+            .is_some_and(|t| t.call_traits(input).concurrency_safe)
     }
 
     async fn call(
@@ -215,7 +221,7 @@ pub(super) fn tool_context_for(ctx: &ToolExecCtx, tool: &Arc<dyn base::tool::Too
         events_tx: None,
         elicitation: Some(Arc::clone(&ctx.elicitation)),
         exec: ctx.exec.clone(),
-        dispatch: tool.needs_dispatch().then(|| {
+        dispatch: tool.spec().needs_dispatch.then(|| {
             Arc::new(SubCallDispatcher::new(ctx))
                 as Arc<dyn base::interface::tool_dispatch::ToolDispatch>
         }),

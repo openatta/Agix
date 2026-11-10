@@ -27,8 +27,8 @@ pub use sandbox::{engine_git, engine_git_for};
 use async_trait::async_trait;
 use base::error::ToolError;
 use base::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
-    ValidationResult,
+    CallTraits, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
+    ToolSpec, ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -62,7 +62,7 @@ pub struct BashTool;
 
 impl BashTool {
     fn reads_only_where_it_may(&self, input: &Value, ctx: &ToolContext) -> bool {
-        self.is_read_only(input)
+        self.call_traits(input).read_only
             && serde_json::from_value::<BashInput>(input.clone())
                 .is_ok_and(|p| stays_where_the_session_may_read(&p.command, ctx))
     }
@@ -71,16 +71,11 @@ impl BashTool {
 #[async_trait]
 impl Tool for BashTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            callable_from_code: true,
-            code_result: Some(
-                "{stdout, stderr, exit_code}; a non-zero exit rejects with the output",
-            ),
-            destructive: true,
-            interrupt_behavior: base::tool::InterruptBehavior::Block,
-            permission_content_kind: base::tool::PermissionContentKind::ShellCommand,
-            ..ToolSpec::defaults_for(self)
-        }
+        ToolSpec::new()
+            .callable_from_code(true)
+            .code_result("{stdout, stderr, exit_code}; a non-zero exit rejects with the output")
+            .destructive(true)
+            .permission_content(base::tool::PermissionContentKind::ShellCommand)
     }
     fn name(&self) -> &str {
         "Bash"
@@ -98,20 +93,15 @@ impl Tool for BashTool {
         include_str!("../prompts/coding/bash.prompt.md").to_string()
     }
 
-    fn is_concurrency_safe(&self, input: &Value) -> bool {
-        self.is_read_only(input)
-    }
-
-    fn is_read_only(&self, input: &Value) -> bool {
-        parse_classification(input)
-            .map(|c| c.read_only)
-            .unwrap_or(false)
-    }
-
-    fn is_destructive(&self, input: &Value) -> bool {
-        parse_classification(input)
-            .map(|c| c.destructive)
-            .unwrap_or(true) // 未知命令保守按 destructive 看
+    fn call_traits(&self, input: &Value) -> CallTraits {
+        match parse_classification(input) {
+            Some(c) => CallTraits::default()
+                .read_only(c.read_only)
+                .concurrency_safe(c.read_only)
+                .destructive(c.destructive),
+            // 解析不了的输入保守按 destructive 看
+            None => CallTraits::default().destructive(true),
+        }
     }
 
     fn accept_edits_allows(&self, input: &Value, ctx: &ToolContext) -> bool {

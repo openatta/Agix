@@ -166,7 +166,7 @@ impl base::tool::Tool for TeamCreateTool {
     }
 
     fn spec(&self) -> ToolSpec {
-        ToolSpec::defaults_for(self)
+        ToolSpec::new()
     }
     async fn prompt(&self, _: &PromptContext) -> String {
         include_str!("tool.prompt.md").to_string()
@@ -260,7 +260,7 @@ impl base::tool::Tool for TeamDeleteTool {
     }
 
     fn spec(&self) -> ToolSpec {
-        ToolSpec::defaults_for(self)
+        ToolSpec::new()
     }
     async fn prompt(&self, _: &PromptContext) -> String {
         "Delete a team by name. This cancels any running sub-agents and \
@@ -317,11 +317,7 @@ impl base::tool::Tool for TeamListTool {
     }
 
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            concurrency_safe: true,
-            read_only: true,
-            ..ToolSpec::defaults_for(self)
-        }
+        ToolSpec::new().concurrency_safe(true).read_only(true)
     }
     async fn prompt(&self, _: &PromptContext) -> String {
         "List teams created via TeamCreate that are still tracked (i.e. haven't been \

@@ -345,10 +345,7 @@ impl Tool for TeamMemorySaveTool {
     // persists; plan-mode members must still be able to contribute.
 
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            self_allow_overrides_mode: true,
-            ..ToolSpec::defaults_for(self)
-        }
+        ToolSpec::new().self_allow_overrides_mode(true)
     }
 
     async fn call(
@@ -422,11 +419,7 @@ impl Tool for TeamMemoryReadTool {
     }
 
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            concurrency_safe: true,
-            read_only: true,
-            ..ToolSpec::defaults_for(self)
-        }
+        ToolSpec::new().concurrency_safe(true).read_only(true)
     }
 
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {

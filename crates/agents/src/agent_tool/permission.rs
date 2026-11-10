@@ -218,7 +218,10 @@ pub(super) fn held_to_mode(
         (_, denied @ PermissionOutcome::Deny { .. }) => denied,
         (PermissionMode::Plan, _)
             if tool.is_some_and(|t| {
-                !t.is_read_only(input) && !t.self_allow_overrides_mode() && !t.leaves_plan_mode()
+                let permission = t.spec().permission;
+                !t.call_traits(input).read_only
+                    && !permission.self_allow_overrides_mode
+                    && !permission.leaves_plan_mode
             }) =>
         {
             PermissionOutcome::Deny {

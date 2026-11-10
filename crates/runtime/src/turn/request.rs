@@ -222,14 +222,14 @@ pub(super) fn sync_mcp_adapters(
     mcp: &dyn base::interface::mcp_servers::McpServers,
     permits: impl Fn(&str) -> bool,
 ) {
-    let is_mcp = |t: &Arc<dyn base::tool::Tool>| t.source().starts_with("mcp:");
+    let is_mcp = |t: &Arc<dyn base::tool::Tool>| t.spec().origin.is_mcp();
     let current: Vec<_> = mcp
         .tools()
         .into_iter()
         .filter(|a| permits(a.name()))
         .collect();
     let live: HashSet<&str> = current.iter().map(|a| a.name()).collect();
-    let registered = tools.all();
+    let registered = tools.list();
     let builtin_names: HashSet<&str> = registered
         .iter()
         .filter(|t| !is_mcp(t))
@@ -260,7 +260,7 @@ pub(super) fn sync_mcp_adapters(
 impl Agent {
     pub(super) async fn build_tool_defs(&mut self) -> Vec<base::interface::model::ToolDef> {
         use std::collections::BTreeMap;
-        /// The tool through which deferred schemas and `Tool::prompt()` usage
+        /// The tool through which deferred schemas and `Tool::guide()` usage
         /// guides are fetched. Named here because `build_tool_defs` must not
         /// advertise a guide when the scene has filtered the fetcher out.
         const TOOL_SEARCH_NAME: &str = "ToolSearch";
@@ -271,7 +271,7 @@ impl Agent {
         // MCP adapters also sit in `self.tools`, because dispatch looks them up
         // there; only a non-MCP entry can shadow one. Built-ins win.
         for t in self.tooling.tools.list() {
-            if t.source().starts_with("mcp:") {
+            if t.spec().origin.is_mcp() {
                 continue;
             }
             let name = t.name().to_string();
@@ -305,13 +305,10 @@ impl Agent {
         let mut defs = Vec::with_capacity(selected.len());
         for t in selected {
             let mut description = t.description().to_string();
-            // Surface the existence of `Tool::prompt()`, not its body: inlining
+            // Surface the existence of `Tool::guide()`, not its body: inlining
             // the guides would add ~85 KB to every request. A deferred tool
             // needs no pointer — fetching its schema returns the guide too.
-            if can_fetch_guides
-                && !t.is_deferred()
-                && t.detailed_prompt(&prompt_ctx).await.is_some()
-            {
+            if can_fetch_guides && !t.is_deferred() && t.guide(&prompt_ctx).await.is_some() {
                 description.push_str(&format!(
                     "\n\nDetailed guide: ToolSearch{{\"query\":\"select:{}\"}}",
                     t.name()
@@ -323,7 +320,7 @@ impl Agent {
                 input_schema: base::tool::compact_schema(
                     t.input_schema_for(self.config.path_style),
                 ),
-                source: Some(t.source().into_owned()),
+                source: Some(t.spec().origin.wire()),
             });
         }
         defs

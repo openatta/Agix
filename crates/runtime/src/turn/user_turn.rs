@@ -665,7 +665,7 @@ impl Agent {
             let is_concurrency_safe = move |name: &str, input: &serde_json::Value| {
                 tools_for_safety
                     .get(name)
-                    .map(|t| t.is_concurrency_safe(input))
+                    .map(|t| t.call_traits(input).concurrency_safe)
                     .unwrap_or(false)
             };
             let mut request = request;

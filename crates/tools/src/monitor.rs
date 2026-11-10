@@ -104,11 +104,9 @@ impl Tool for MonitorTool {
     }
 
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            concurrency_safe: true,
-            permission_content_kind: base::tool::PermissionContentKind::ShellCommand,
-            ..ToolSpec::defaults_for(self)
-        }
+        ToolSpec::new()
+            .concurrency_safe(true)
+            .permission_content(base::tool::PermissionContentKind::ShellCommand)
     }
 
     fn permission_match_content(&self, input: &Value) -> Option<String> {

@@ -476,12 +476,10 @@ impl AgentTool {
 #[async_trait]
 impl base::tool::Tool for AgentTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            callable_from_code: true,
-            code_result: Some("the sub-agent's final text; an object when output_schema is given"),
-            concurrency_safe: true,
-            ..ToolSpec::defaults_for(self)
-        }
+        ToolSpec::new()
+            .callable_from_code(true)
+            .code_result("the sub-agent's final text; an object when output_schema is given")
+            .concurrency_safe(true)
     }
     fn name(&self) -> &str {
         AGENT_TOOL_NAME

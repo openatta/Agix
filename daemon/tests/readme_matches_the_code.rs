@@ -238,12 +238,12 @@ fn the_self_contained_tool_count_is_what_registration_installs() {
 
     claims(
         &readme(),
-        &format!("installs the {} self-contained ones", reg.all().len()),
+        &format!("installs the {} self-contained ones", reg.len()),
         "tools::register_builtin_tools",
     );
     claims(
         &readme_zh(),
-        &format!("装上其中 {} 个自给自足的", reg.all().len()),
+        &format!("装上其中 {} 个自给自足的", reg.len()),
         "tools::register_builtin_tools",
     );
 }

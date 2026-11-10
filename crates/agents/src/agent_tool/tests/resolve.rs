@@ -14,7 +14,7 @@ pub(super) fn test_agent_tool() -> AgentTool {
 
 fn names_of(registry: &InMemoryToolRegistry) -> Vec<String> {
     registry
-        .all()
+        .list()
         .iter()
         .map(|t| t.name().to_string())
         .collect()
@@ -127,7 +127,7 @@ fn delegate_tools_full_access_excludes_agent_itself() {
     // "general-purpose" is a full-access type (empty allowed_tools).
     let resolved = agent_tool.delegate_tools(Some("general-purpose"), &[], &[]);
     let names: Vec<String> = resolved
-        .all()
+        .list()
         .iter()
         .map(|t| t.name().to_string())
         .collect();
@@ -144,7 +144,7 @@ fn delegate_tools_restricted_type_filters_to_allowed_list() {
     let agent_tool = test_agent_tool();
     let resolved = agent_tool.delegate_tools(Some("explore"), &[], &[]);
     let names: Vec<String> = resolved
-        .all()
+        .list()
         .iter()
         .map(|t| t.name().to_string())
         .collect();
@@ -306,7 +306,7 @@ fn delegate_tools_disallowed_tools_removes_from_full_access_pool() {
 
     let resolved = agent_tool.delegate_tools(Some("no-writes"), &[], &[]);
     let names: Vec<String> = resolved
-        .all()
+        .list()
         .iter()
         .map(|t| t.name().to_string())
         .collect();
@@ -346,7 +346,7 @@ fn delegate_tools_disallowed_tools_applied_before_allowed_tools() {
 
     let resolved = agent_tool.delegate_tools(Some("conflicting"), &[], &[]);
     let names: Vec<String> = resolved
-        .all()
+        .list()
         .iter()
         .map(|t| t.name().to_string())
         .collect();

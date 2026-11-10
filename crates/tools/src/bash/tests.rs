@@ -424,7 +424,7 @@ fn to_sandbox_policy_empty_deny_read_falls_back_to_defaults() {
 }
 
 fn read_only(cmd: &str) -> bool {
-    BashTool.is_read_only(&json!({ "command": cmd }))
+    BashTool.call_traits(&json!({ "command": cmd })).read_only
 }
 
 /// 这五条命令的第一个 token 都在只读白名单里，但它们能执行任意
@@ -1115,19 +1115,32 @@ async fn timeout_over_cap_validates_err() {
 #[tokio::test]
 async fn flags_classify_correctly() {
     let tool = BashTool;
-    assert!(tool.is_read_only(&json!({"command": "ls -la"})));
-    assert!(tool.is_concurrency_safe(&json!({"command": "git status"})));
-    assert!(tool.is_destructive(&json!({"command": "rm -rf /tmp/x"})));
-    assert!(!tool.is_read_only(&json!({"command": "rm -rf /tmp/x"})));
+    assert!(tool.call_traits(&json!({"command": "ls -la"})).read_only);
+    assert!(
+        tool.call_traits(&json!({"command": "git status"}))
+            .concurrency_safe
+    );
+    assert!(
+        tool.call_traits(&json!({"command": "rm -rf /tmp/x"}))
+            .destructive
+    );
+    assert!(
+        !tool
+            .call_traits(&json!({"command": "rm -rf /tmp/x"}))
+            .read_only
+    );
     // unknown command → not safe to parallelize, not destructive
-    assert!(!tool.is_concurrency_safe(&json!({"command": "./build.sh"})));
+    assert!(
+        !tool
+            .call_traits(&json!({"command": "./build.sh"}))
+            .concurrency_safe
+    );
     // unknown 不再标 destructive（走默认 ask 路径由 gate/mode 分派）
-    assert!(!tool.is_destructive(&json!({"command": "./build.sh"})));
-}
-
-#[tokio::test]
-async fn is_enabled_defaults_true() {
-    assert!(BashTool.is_enabled());
+    assert!(
+        !tool
+            .call_traits(&json!({"command": "./build.sh"}))
+            .destructive
+    );
 }
 
 #[tokio::test]

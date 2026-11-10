@@ -58,13 +58,11 @@ impl Tool for EnterPlanModeTool {
     }
 
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
+        ToolSpec::new()
             // Safe to call while other tools are running (it only toggles a
             // session mode flag).
-            concurrency_safe: true,
-            read_only: true,
-            ..ToolSpec::defaults_for(self)
-        }
+            .concurrency_safe(true)
+            .read_only(true)
     }
 
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {
@@ -157,11 +155,9 @@ impl Tool for ExitPlanModeTool {
     }
 
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            concurrency_safe: true,
-            leaves_plan_mode: true,
-            ..ToolSpec::defaults_for(self)
-        }
+        ToolSpec::new()
+            .concurrency_safe(true)
+            .leaves_plan_mode(true)
     }
 
     /// Rejects if not currently in plan mode (error code 1).
@@ -411,8 +407,8 @@ mod tests {
     fn enter_is_readonly_exit_is_not() {
         let enter = EnterPlanModeTool;
         let exit = ExitPlanModeTool;
-        assert!(enter.is_read_only(&Value::Null));
-        assert!(!exit.is_read_only(&Value::Null));
+        assert!(enter.call_traits(&Value::Null).read_only);
+        assert!(!exit.call_traits(&Value::Null).read_only);
     }
 
     #[tokio::test]

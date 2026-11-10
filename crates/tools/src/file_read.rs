@@ -49,14 +49,12 @@ fn reads_within_roots(input: &Value, ctx: &ToolContext) -> bool {
 #[async_trait]
 impl Tool for FileReadTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            callable_from_code: true,
-            code_result: Some("text, each line prefixed with its number and a tab"),
-            concurrency_safe: true,
-            read_only: true,
-            permission_content_kind: base::tool::PermissionContentKind::ReadPath,
-            ..ToolSpec::defaults_for(self)
-        }
+        ToolSpec::new()
+            .callable_from_code(true)
+            .code_result("text, each line prefixed with its number and a tab")
+            .concurrency_safe(true)
+            .read_only(true)
+            .permission_content(base::tool::PermissionContentKind::ReadPath)
     }
     fn name(&self) -> &str {
         "Read"
@@ -861,9 +859,8 @@ mod tests {
     #[tokio::test]
     async fn flags_say_read_only_and_concurrent() {
         let tool = FileReadTool;
-        assert!(tool.is_read_only(&Value::Null));
-        assert!(tool.is_concurrency_safe(&Value::Null));
-        assert!(tool.is_enabled());
+        assert!(tool.call_traits(&Value::Null).read_only);
+        assert!(tool.call_traits(&Value::Null).concurrency_safe);
         assert_eq!(tool.name(), "Read");
     }
 

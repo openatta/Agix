@@ -49,10 +49,7 @@ impl Tool for TaskStopTool {
     }
 
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            concurrency_safe: true,
-            ..ToolSpec::defaults_for(self)
-        }
+        ToolSpec::new().concurrency_safe(true)
     }
 
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {
@@ -157,8 +154,8 @@ mod tests {
     async fn name_is_task_stop() {
         let tool = TaskStopTool;
         assert_eq!(tool.name(), "TaskStop");
-        assert!(!tool.is_read_only(&Value::Null));
-        assert!(tool.is_concurrency_safe(&Value::Null));
+        assert!(!tool.call_traits(&Value::Null).read_only);
+        assert!(tool.call_traits(&Value::Null).concurrency_safe);
     }
 
     #[tokio::test]

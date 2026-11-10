@@ -693,7 +693,10 @@ async fn build_applies_the_scenes_deferred_tool_policy() {
         "deferred tool must not carry its real schema"
     );
     assert!(
-        deferred.short_description().is_some_and(|d| !d.is_empty()),
+        deferred
+            .spec()
+            .short_description
+            .is_some_and(|d| !d.is_empty()),
         "deferred tool must stay described, or ToolSearch lists a bare name"
     );
 

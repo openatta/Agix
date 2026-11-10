@@ -50,12 +50,10 @@ impl Tool for TodoWriteTool {
     }
 
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
+        ToolSpec::new()
             // 改 session 状态而非文件；语义上"只是写 list"，标 read_only=true 让 plan
             // 模式下也能维护 todo（plan 模式只挡破坏性 / 文件类工具）
-            read_only: true,
-            ..ToolSpec::defaults_for(self)
-        }
+            .read_only(true)
     }
 
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {
@@ -282,7 +280,7 @@ mod tests {
     #[test]
     fn flags_say_readonly_so_plan_mode_allows() {
         let tool = TodoWriteTool;
-        assert!(tool.is_read_only(&Value::Null));
+        assert!(tool.call_traits(&Value::Null).read_only);
     }
 
     #[tokio::test]

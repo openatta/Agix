@@ -97,7 +97,7 @@ impl Tool for GoalCreateTool {
     }
 
     fn spec(&self) -> ToolSpec {
-        ToolSpec::defaults_for(self)
+        ToolSpec::new()
     }
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
         PermissionDecision::allow()
@@ -147,11 +147,7 @@ impl Tool for GoalGetTool {
     }
 
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            read_only: true,
-            concurrency_safe: true,
-            ..ToolSpec::defaults_for(self)
-        }
+        ToolSpec::new().read_only(true).concurrency_safe(true)
     }
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
         PermissionDecision::allow()
@@ -194,7 +190,7 @@ impl Tool for GoalUpdateTool {
     }
 
     fn spec(&self) -> ToolSpec {
-        ToolSpec::defaults_for(self)
+        ToolSpec::new()
     }
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
         PermissionDecision::allow()

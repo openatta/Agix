@@ -92,13 +92,10 @@ pub struct FileEditTool;
 #[async_trait]
 impl Tool for FileEditTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            callable_from_code: true,
-            destructive: true,
-            interrupt_behavior: base::tool::InterruptBehavior::Block,
-            permission_content_kind: base::tool::PermissionContentKind::WritePath,
-            ..ToolSpec::defaults_for(self)
-        }
+        ToolSpec::new()
+            .callable_from_code(true)
+            .destructive(true)
+            .permission_content(base::tool::PermissionContentKind::WritePath)
     }
     fn name(&self) -> &str {
         "Edit"
@@ -899,9 +896,9 @@ mod tests {
     #[tokio::test]
     async fn flags_are_destructive_and_not_readonly() {
         let tool = FileEditTool;
-        assert!(!tool.is_read_only(&Value::Null));
-        assert!(tool.is_destructive(&Value::Null));
-        assert!(!tool.is_concurrency_safe(&Value::Null));
+        assert!(!tool.call_traits(&Value::Null).read_only);
+        assert!(tool.call_traits(&Value::Null).destructive);
+        assert!(!tool.call_traits(&Value::Null).concurrency_safe);
         assert_eq!(tool.name(), "Edit");
     }
 

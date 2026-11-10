@@ -56,16 +56,14 @@ fn searches_within_roots(input: &Value, ctx: &ToolContext) -> bool {
 #[async_trait]
 impl Tool for GlobTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            callable_from_code: true,
-            code_result: Some(
+        ToolSpec::new()
+            .callable_from_code(true)
+            .code_result(
                 "{paths: string[], more: number} — newest first; more counts what max_results cut",
-            ),
-            concurrency_safe: true,
-            read_only: true,
-            permission_content_kind: base::tool::PermissionContentKind::ReadPath,
-            ..ToolSpec::defaults_for(self)
-        }
+            )
+            .concurrency_safe(true)
+            .read_only(true)
+            .permission_content(base::tool::PermissionContentKind::ReadPath)
     }
     fn name(&self) -> &str {
         "Glob"
@@ -383,8 +381,8 @@ mod tests {
     #[tokio::test]
     async fn flags_say_readonly_and_concurrent_safe() {
         let tool = GlobTool;
-        assert!(tool.is_read_only(&Value::Null));
-        assert!(tool.is_concurrency_safe(&Value::Null));
+        assert!(tool.call_traits(&Value::Null).read_only);
+        assert!(tool.call_traits(&Value::Null).concurrency_safe);
         assert_eq!(tool.name(), "Glob");
     }
 }

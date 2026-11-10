@@ -81,12 +81,10 @@ impl WebSearchTool {
 #[async_trait]
 impl Tool for WebSearchTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            callable_from_code: true,
-            concurrency_safe: true,
-            read_only: true,
-            ..ToolSpec::defaults_for(self)
-        }
+        ToolSpec::new()
+            .callable_from_code(true)
+            .concurrency_safe(true)
+            .read_only(true)
     }
     fn description(&self) -> &str {
         "Search the web and return results with linked sources"
@@ -311,8 +309,8 @@ mod tests {
     async fn name_is_websearch() {
         let tool = WebSearchTool::new(Box::new(MockProvider(vec![])));
         assert_eq!(tool.name(), "WebSearch");
-        assert!(tool.is_read_only(&Value::Null));
-        assert!(tool.is_concurrency_safe(&Value::Null));
+        assert!(tool.call_traits(&Value::Null).read_only);
+        assert!(tool.call_traits(&Value::Null).concurrency_safe);
     }
 
     #[tokio::test]

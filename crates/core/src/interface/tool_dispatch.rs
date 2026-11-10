@@ -1,7 +1,7 @@
 //! How a tool calls other tools of its session — through the same dispatch a
 //! model's own tool call takes (validation, hooks, middleware, telemetry,
 //! permission), so a sub-call can do nothing its caller could not have done
-//! directly. Handed to tools that ask for it (`Tool::needs_dispatch`).
+//! directly. Handed to tools that ask for it (`ToolSpec::needs_dispatch`).
 
 use async_trait::async_trait;
 use serde_json::Value;

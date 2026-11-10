@@ -186,11 +186,7 @@ impl Tool for ToolSearchTool {
     }
 
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            concurrency_safe: true,
-            read_only: true,
-            ..ToolSpec::defaults_for(self)
-        }
+        ToolSpec::new().concurrency_safe(true).read_only(true)
     }
 
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {
@@ -217,7 +213,7 @@ impl Tool for ToolSearchTool {
         let max = input.max_results.unwrap_or(DEFAULT_MAX_RESULTS);
         let q = input.query.trim();
 
-        let all = self.registry.all();
+        let all = self.registry.list();
         let prompt_ctx = PromptContext {
             cwd: ctx.cwd.clone(),
             model: String::new(),
@@ -228,7 +224,8 @@ impl Tool for ToolSearchTool {
             path_style: ctx.config.path_style,
         };
         let describe = |t: &Arc<dyn Tool>| {
-            t.short_description()
+            t.spec()
+                .short_description
                 .unwrap_or_else(|| t.description().to_string())
         };
         let to_match = |t: &Arc<dyn Tool>, guide: Option<String>| Match {
@@ -258,7 +255,7 @@ impl Tool for ToolSearchTool {
                         unmatched.push((wanted, suggestions));
                         continue;
                     };
-                    let guide = t.detailed_prompt(&prompt_ctx).await;
+                    let guide = t.guide(&prompt_ctx).await;
                     if !t.is_deferred() && guide.is_none() {
                         already_loaded.push(t.name().to_string());
                     } else if !matches.iter().any(|m| m.name == t.name()) {
@@ -269,7 +266,7 @@ impl Tool for ToolSearchTool {
             Query::Keywords { required, optional } => {
                 let mut scored: Vec<(usize, Match)> = Vec::new();
                 for t in &all {
-                    let guide = t.detailed_prompt(&prompt_ctx).await;
+                    let guide = t.guide(&prompt_ctx).await;
                     if t.is_deferred() {
                         total_deferred += 1;
                     }

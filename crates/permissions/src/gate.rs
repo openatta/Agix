@@ -21,7 +21,7 @@
 //! 4. bypass-immune 路径检查（`is_path_bypass_immune`）→ deny
 //! 5. 模式级硬拒绝：
 //!    - `Plan` 且非只读工具 → deny（离开计划模式的那个工具除外，见
-//!      `Tool::leaves_plan_mode`：它照常走规则与询问）
+//!      `ToolPermissionSpec::leaves_plan_mode`：它照常走规则与询问）
 //!    - `DontAsk` 且没有 allow 规则命中 → deny
 //!
 //!    之后第 3 步的 `Ask` 命中 → ask（`DontAsk` 下 deny）；managed 层也在问的，
@@ -256,7 +256,7 @@ impl PermissionGate {
         ctx: &ToolContext,
     ) -> (RuleHit, Vec<String>) {
         let content = tool.permission_match_content(input);
-        let kind = tool.permission_content_kind();
+        let kind = tool.spec().permission.content_kind;
         let path_group = path_rule_group(kind);
         let resolved = path_group
             .zip(content.as_deref())
@@ -403,14 +403,15 @@ impl PermissionGate {
         //    `Write`（自判 Allow）照样能落盘，`DontAsk` 也拦不住任何自判工具。
         // A tool may opt its self-`Allow` out of *mode* denials when that
         // `Allow` is about the tool's nature rather than its arguments — see
-        // `Tool::self_allow_overrides_mode`. Deliberately narrow: it does not
-        // affect the rule engine or the bypass-immune list above, both of
-        // which have already had their say.
-        let mode_denials_apply = !(tool_self_allow && tool.self_allow_overrides_mode());
+        // `ToolPermissionSpec::self_allow_overrides_mode`. Deliberately narrow: it
+        // does not affect the rule engine or the bypass-immune list above, both
+        // of which have already had their say.
+        let permission = tool.spec().permission;
+        let mode_denials_apply = !(tool_self_allow && permission.self_allow_overrides_mode);
         if mode_denials_apply
             && matches!(mode, PermissionMode::Plan)
-            && !tool.is_read_only(input)
-            && !tool.leaves_plan_mode()
+            && !tool.call_traits(input).read_only
+            && !permission.leaves_plan_mode
         {
             return Ok(PermissionDecision::Deny {
                 message: "plan mode forbids non-readonly tools".into(),
@@ -455,7 +456,7 @@ impl PermissionGate {
         //    （读 agent 配置是正常工作，写才要确认）。改写 `.git` / `.agix` 的
         //    shell 命令不是只读（分类器会否掉 `git config k v` 这类），走的是上面
         //    的非只读分支。
-        let needs_confirmation = !tool.is_read_only(input)
+        let needs_confirmation = !tool.call_traits(input).read_only
             && checked_strings
                 .iter()
                 .any(|s| is_path_confirmation_required(s));
@@ -1306,7 +1307,7 @@ fn protected_path_candidates(
 /// `--flag=value`.
 fn names_a_credential(tool: &dyn Tool, input: &Value, ctx: &ToolContext) -> Option<String> {
     let content = tool.permission_match_content(input)?;
-    let kind = tool.permission_content_kind();
+    let kind = tool.spec().permission.content_kind;
     let resolved = path_rule_group(kind).map(|_| ResolvedPath::new(&content, &ctx.cwd));
     let credentials = Credentials::new(ctx.sandbox.state_root.as_deref());
     protected_path_candidates(kind, Some(&content), resolved.as_ref())

@@ -100,18 +100,19 @@ async fn snapshot(tool: &dyn Tool, cwd: &Path) -> Value {
         ..PromptContext::default()
     };
     let guide = tool
-        .detailed_prompt(&prompt_ctx)
+        .guide(&prompt_ctx)
         .await
         .map(|g| json!({ "bytes": g.len(), "fnv1a": fnv1a(&g) }));
     let ctx = platform::tool_context_for_test(cwd.to_path_buf());
     let calls: Vec<Value> = samples(tool.name())
         .into_iter()
         .map(|input| {
+            let traits = tool.call_traits(&input);
             json!({
                 "input": input,
-                "read_only": tool.is_read_only(&input),
-                "concurrency_safe": tool.is_concurrency_safe(&input),
-                "destructive": tool.is_destructive(&input),
+                "read_only": traits.read_only,
+                "concurrency_safe": traits.concurrency_safe,
+                "destructive": traits.destructive,
                 "accept_edits_allows": tool.accept_edits_allows(&input, &ctx),
                 "permission_match_content": tool.permission_match_content(&input),
             })
@@ -120,20 +121,20 @@ async fn snapshot(tool: &dyn Tool, cwd: &Path) -> Value {
     json!({
         "name": tool.name(),
         "description": tool.description(),
-        "origin": tool.source(),
+        "origin": spec.origin.wire(),
         "short_description": spec.short_description,
         "traits": {
-            "read_only": spec.read_only,
-            "concurrency_safe": spec.concurrency_safe,
-            "destructive": spec.destructive,
+            "read_only": spec.traits.read_only,
+            "concurrency_safe": spec.traits.concurrency_safe,
+            "destructive": spec.traits.destructive,
         },
         "callable_from_code": spec.callable_from_code,
         "code_result": spec.code_result,
         "needs_dispatch": spec.needs_dispatch,
         "permission": {
-            "content_kind": format!("{:?}", spec.permission_content_kind),
-            "self_allow_overrides_mode": spec.self_allow_overrides_mode,
-            "leaves_plan_mode": spec.leaves_plan_mode,
+            "content_kind": format!("{:?}", spec.permission.content_kind),
+            "self_allow_overrides_mode": spec.permission.self_allow_overrides_mode,
+            "leaves_plan_mode": spec.permission.leaves_plan_mode,
         },
         "input_schema": {
             "absolute": tool.input_schema_for(PathStyle::Absolute),

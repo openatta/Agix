@@ -328,13 +328,13 @@ pub(crate) mod fakes {
 
     pub(crate) struct FakeMcpTool {
         name: String,
-        source: String,
+        server: String,
     }
 
     pub(crate) fn mcp_tool(server: &str, tool: &str) -> Arc<dyn Tool> {
         Arc::new(FakeMcpTool {
             name: format!("mcp__{server}__{tool}"),
-            source: format!("mcp:{server}"),
+            server: server.to_string(),
         })
     }
 
@@ -349,8 +349,8 @@ pub(crate) mod fakes {
         fn input_schema(&self) -> serde_json::Value {
             serde_json::json!({"type": "object"})
         }
-        fn source(&self) -> std::borrow::Cow<'_, str> {
-            std::borrow::Cow::Borrowed(&self.source)
+        fn spec(&self) -> base::tool::ToolSpec {
+            base::tool::ToolSpec::new().origin(base::tool::ToolOrigin::mcp(&self.server))
         }
         async fn call(
             &self,

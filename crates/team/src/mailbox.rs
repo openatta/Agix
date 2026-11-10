@@ -295,17 +295,14 @@ impl base::tool::Tool for SendMessageTool {
     }
 
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            // Writing to a teammate's in-memory mailbox touches no file, no shell and
-            // no network — it is the coordination channel itself, not an effect on
-            // the user's workspace. Team members run under `PermissionMode::Plan` by
-            // default (see `team::coordinator`), and plan mode exists to stop the
-            // agent mutating the workspace before the user has approved a plan; a
-            // member that cannot report back to its coordinator is simply broken.
-            // See `Tool::self_allow_overrides_mode`.
-            self_allow_overrides_mode: true,
-            ..ToolSpec::defaults_for(self)
-        }
+        // Writing to a teammate's in-memory mailbox touches no file, no shell and
+        // no network — it is the coordination channel itself, not an effect on
+        // the user's workspace. Team members run under `PermissionMode::Plan` by
+        // default (see `team::coordinator`), and plan mode exists to stop the
+        // agent mutating the workspace before the user has approved a plan; a
+        // member that cannot report back to its coordinator is simply broken.
+        // See `ToolPermissionSpec::self_allow_overrides_mode`.
+        ToolSpec::new().self_allow_overrides_mode(true)
     }
 
     fn input_schema(&self) -> Value {
@@ -403,11 +400,7 @@ impl base::tool::Tool for ReadMailTool {
     }
 
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            concurrency_safe: true,
-            read_only: true,
-            ..ToolSpec::defaults_for(self)
-        }
+        ToolSpec::new().concurrency_safe(true).read_only(true)
     }
 
     fn input_schema(&self) -> Value {
@@ -498,11 +491,7 @@ impl base::tool::Tool for ListPeersTool {
     }
 
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            concurrency_safe: true,
-            read_only: true,
-            ..ToolSpec::defaults_for(self)
-        }
+        ToolSpec::new().concurrency_safe(true).read_only(true)
     }
 
     fn input_schema(&self) -> Value {

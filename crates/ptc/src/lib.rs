@@ -110,14 +110,16 @@ impl RunCodeTool {
         let mut callable: Vec<CallableTool> = tools
             .list()
             .into_iter()
-            .filter(|t| t.callable_from_code())
-            .map(|t| CallableTool {
-                name: t.name().to_string(),
-                description: t
-                    .short_description()
-                    .unwrap_or_else(|| t.description().to_string()),
-                input_schema: base::tool::compact_schema(t.full_input_schema()),
-                result: t.code_result().map(str::to_string),
+            .filter_map(|t| {
+                let spec = t.spec();
+                spec.callable_from_code.then(|| CallableTool {
+                    name: t.name().to_string(),
+                    description: spec
+                        .short_description
+                        .unwrap_or_else(|| t.description().to_string()),
+                    input_schema: base::tool::compact_schema(t.full_input_schema()),
+                    result: spec.code_result.map(str::to_string),
+                })
             })
             .collect();
         callable.sort_by(|a, b| a.name.cmp(&b.name));
@@ -281,10 +283,7 @@ impl Tool for RunCodeTool {
     }
 
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            needs_dispatch: true,
-            ..ToolSpec::defaults_for(self)
-        }
+        ToolSpec::new().needs_dispatch(true)
     }
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
         PermissionDecision::allow()

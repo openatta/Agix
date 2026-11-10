@@ -29,11 +29,6 @@ pub struct SandboxSettings {
     /// See `base::settings::SandboxConfig::unattended_requires_network_policy`.
     pub unattended_requires_network_policy: bool,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InterruptBehavior {
-    Cancel,
-    Block,
-}
 pub use crate::context::config::PathStyle;
 pub use crate::permission::PermissionMode;
 #[derive(Debug, Clone)]
@@ -324,7 +319,7 @@ pub struct ToolContext {
     /// and no tool notices.
     pub exec: crate::interface::exec::ExecProviders,
     /// How this tool calls other tools — set only for a tool whose
-    /// [`Tool::needs_dispatch`] says it does.
+    /// [`ToolSpec::needs_dispatch`] says it does.
     pub dispatch: Option<Arc<dyn crate::interface::tool_dispatch::ToolDispatch>>,
     /// The call comes from a program (`RunCode`), not from the model: there
     /// is nobody to ask and no conversation to report back to mid-call.
@@ -407,95 +402,231 @@ pub enum PermissionContentKind {
     ShellCommand,
 }
 
-/// What a tool says about itself that holds for every call.
+/// Where a tool came from, for [`crate::interface::model::ToolDef::source`].
 ///
-/// Each field answers the [`Tool`] method of the same name. A tool that
-/// implements [`Tool::spec`] has those methods answered from it, and a
-/// wrapper that forwards `spec()` forwards all of them at once.
-///
-/// `read_only`, `concurrency_safe`, `destructive` and `interrupt_behavior`
-/// answer methods that are handed the call's input. A tool whose answer
-/// depends on it overrides the method too, and puts its conservative answer
-/// here.
-///
-/// The input schema is not here: it is built on every call and the
-/// capability methods ask for the spec far more often than for the schema.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ToolSpec {
-    pub name: String,
-    pub description: String,
-    pub source: String,
-    pub short_description: Option<String>,
-    pub enabled: bool,
+/// A name prefix (`mcp__`) already implies the answer, but a naming
+/// convention is not a declaration: it holds only for as long as nobody
+/// registers a builtin whose name happens to start that way. An adapter that
+/// knows which server or plugin it is fronting says so here.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ToolOrigin {
+    #[default]
+    Builtin,
+    Mcp {
+        server: String,
+    },
+    Plugin {
+        name: String,
+    },
+}
+
+impl ToolOrigin {
+    pub fn mcp(server: impl Into<String>) -> Self {
+        Self::Mcp {
+            server: server.into(),
+        }
+    }
+
+    pub fn plugin(name: impl Into<String>) -> Self {
+        Self::Plugin { name: name.into() }
+    }
+
+    pub fn mcp_server(&self) -> Option<&str> {
+        match self {
+            Self::Mcp { server } => Some(server),
+            Self::Builtin | Self::Plugin { .. } => None,
+        }
+    }
+
+    pub fn is_mcp(&self) -> bool {
+        self.mcp_server().is_some()
+    }
+
+    /// `builtin`, `mcp:<server>` or `plugin:<name>`.
+    pub fn wire(&self) -> String {
+        match self {
+            Self::Builtin => "builtin".to_string(),
+            Self::Mcp { server } => format!("mcp:{server}"),
+            Self::Plugin { name } => format!("plugin:{name}"),
+        }
+    }
+}
+
+/// What a tool says about one call: answered by [`Tool::call_traits`], which
+/// is handed the call's input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CallTraits {
     pub read_only: bool,
     pub concurrency_safe: bool,
     pub destructive: bool,
-    pub interrupt_behavior: InterruptBehavior,
-    pub strict: bool,
-    pub deferred: bool,
-    pub dynamic: bool,
-    pub direct: bool,
-    pub callable_from_code: bool,
-    pub code_result: Option<&'static str>,
-    pub needs_dispatch: bool,
-    pub permission_content_kind: PermissionContentKind,
+}
+
+impl CallTraits {
+    pub fn read_only(mut self, yes: bool) -> Self {
+        self.read_only = yes;
+        self
+    }
+    pub fn concurrency_safe(mut self, yes: bool) -> Self {
+        self.concurrency_safe = yes;
+        self
+    }
+    pub fn destructive(mut self, yes: bool) -> Self {
+        self.destructive = yes;
+        self
+    }
+}
+
+/// What the permission engine reads off a tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolPermissionSpec {
+    /// How the permission engine reads [`Tool::permission_match_content`].
+    pub content_kind: PermissionContentKind,
+    /// Does this tool's own `Allow` from [`Tool::check_permissions`] survive a
+    /// *mode-level* denial (`Plan`, `DontAsk`)?
+    ///
+    /// `false` by default, which is what makes plan mode mean anything:
+    /// `Write` and `Edit` allow themselves for any in-project path, and that
+    /// verdict is a statement about *path safety*, not a claim that writing
+    /// files is fine while the user asked for a plan.
+    ///
+    /// `true` only when the self-`Allow` is a statement about the tool's own
+    /// nature rather than about its arguments — a coordination primitive that
+    /// touches no file, no shell and no network. The team mailbox's
+    /// `SendMessage` is the case in point: team members run under `Plan` by
+    /// default, and a plan-mode member that cannot talk to its coordinator is
+    /// a broken one.
+    ///
+    /// Rule-based denials and the bypass-immune path list are **not**
+    /// affected: an explicit `deny` always wins.
     pub self_allow_overrides_mode: bool,
+    /// Is this the call that takes the session out of plan mode?
+    ///
+    /// Plan mode refuses every tool that is not read-only, and leaving plan
+    /// mode changes the session's state, so the way out would be refused too.
+    /// A tool that says yes is spared that one refusal and is decided as in
+    /// any mode that asks: a matching rule, else the host's answer.
     pub leaves_plan_mode: bool,
 }
 
-impl ToolSpec {
-    /// `tool`'s name and description with every capability at its default,
-    /// to start a spec from: `ToolSpec { read_only: true, ..ToolSpec::defaults_for(self) }`.
-    pub fn defaults_for<T: Tool + ?Sized>(tool: &T) -> Self {
+impl Default for ToolPermissionSpec {
+    fn default() -> Self {
         Self {
-            name: tool.name().to_string(),
-            description: tool.description().to_string(),
-            source: "builtin".to_string(),
-            short_description: None,
-            enabled: true,
-            read_only: false,
-            concurrency_safe: false,
-            destructive: false,
-            interrupt_behavior: InterruptBehavior::Cancel,
-            strict: false,
-            deferred: false,
-            dynamic: false,
-            direct: false,
-            callable_from_code: false,
-            code_result: None,
-            needs_dispatch: false,
-            permission_content_kind: PermissionContentKind::Opaque,
+            content_kind: PermissionContentKind::Opaque,
             self_allow_overrides_mode: false,
             leaves_plan_mode: false,
         }
     }
+}
+
+/// What a tool says about itself that holds for every call. Built with
+/// [`ToolSpec::new`] and the setters: `ToolSpec::new().read_only(true)`.
+///
+/// `traits` is the answer when the input is not looked at. A tool whose answer
+/// depends on the input overrides [`Tool::call_traits`] too, and puts its
+/// conservative answer here.
+///
+/// The input schema is not here: it is built on every call and the spec is
+/// asked for far more often than the schema.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ToolSpec {
+    /// What `ToolSearch` lists next to the name; the description when unset.
+    pub short_description: Option<String>,
+    pub origin: ToolOrigin,
+    pub traits: CallTraits,
+    /// Whether a program the model writes (`RunCode`) may call this tool.
+    /// Tools that do work and return data say yes; tools that talk to the
+    /// conversation or a person do not.
+    pub callable_from_code: bool,
+    /// What a program gets back from this tool, when that is more than the
+    /// text the model sees — the shape of its structured content.
+    pub code_result: Option<&'static str>,
+    /// Whether this tool calls other tools, and so needs
+    /// [`ToolContext::dispatch`].
+    pub needs_dispatch: bool,
+    pub permission: ToolPermissionSpec,
+    pub deferred: bool,
+}
+
+impl ToolSpec {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn short_description(mut self, text: impl Into<String>) -> Self {
+        self.short_description = Some(text.into());
+        self
+    }
+    pub fn origin(mut self, origin: ToolOrigin) -> Self {
+        self.origin = origin;
+        self
+    }
+    pub fn traits(mut self, traits: CallTraits) -> Self {
+        self.traits = traits;
+        self
+    }
+    pub fn read_only(mut self, yes: bool) -> Self {
+        self.traits.read_only = yes;
+        self
+    }
+    pub fn concurrency_safe(mut self, yes: bool) -> Self {
+        self.traits.concurrency_safe = yes;
+        self
+    }
+    pub fn destructive(mut self, yes: bool) -> Self {
+        self.traits.destructive = yes;
+        self
+    }
+    pub fn callable_from_code(mut self, yes: bool) -> Self {
+        self.callable_from_code = yes;
+        self
+    }
+    pub fn code_result(mut self, shape: &'static str) -> Self {
+        self.code_result = Some(shape);
+        self
+    }
+    pub fn needs_dispatch(mut self, yes: bool) -> Self {
+        self.needs_dispatch = yes;
+        self
+    }
+    pub fn permission_content(mut self, kind: PermissionContentKind) -> Self {
+        self.permission.content_kind = kind;
+        self
+    }
+    pub fn self_allow_overrides_mode(mut self, yes: bool) -> Self {
+        self.permission.self_allow_overrides_mode = yes;
+        self
+    }
+    pub fn leaves_plan_mode(mut self, yes: bool) -> Self {
+        self.permission.leaves_plan_mode = yes;
+        self
+    }
+    pub fn deferred(mut self, yes: bool) -> Self {
+        self.deferred = yes;
+        self
+    }
 
     fn from_methods<T: Tool + ?Sized>(tool: &T) -> Self {
         if spec_derivation::in_progress::<T>() {
-            return Self::defaults_for(tool);
+            return Self::new();
         }
         let _deriving = spec_derivation::enter::<T>();
         let any_input = Value::Null;
         Self {
-            name: tool.name().to_string(),
-            description: tool.description().to_string(),
-            source: tool.source().into_owned(),
             short_description: tool.short_description(),
-            enabled: tool.is_enabled(),
-            read_only: tool.is_read_only(&any_input),
-            concurrency_safe: tool.is_concurrency_safe(&any_input),
-            destructive: tool.is_destructive(&any_input),
-            interrupt_behavior: tool.interrupt_behavior(&any_input),
-            strict: tool.strict(),
-            deferred: tool.is_deferred(),
-            dynamic: tool.is_dynamic(),
-            direct: tool.is_direct(),
+            origin: ToolOrigin::Builtin,
+            traits: CallTraits {
+                read_only: tool.is_read_only(&any_input),
+                concurrency_safe: tool.is_concurrency_safe(&any_input),
+                destructive: tool.is_destructive(&any_input),
+            },
             callable_from_code: tool.callable_from_code(),
             code_result: tool.code_result(),
             needs_dispatch: tool.needs_dispatch(),
-            permission_content_kind: tool.permission_content_kind(),
-            self_allow_overrides_mode: tool.self_allow_overrides_mode(),
-            leaves_plan_mode: tool.leaves_plan_mode(),
+            permission: ToolPermissionSpec {
+                content_kind: tool.permission_content_kind(),
+                self_allow_overrides_mode: tool.self_allow_overrides_mode(),
+                leaves_plan_mode: tool.leaves_plan_mode(),
+            },
+            deferred: tool.is_deferred(),
         }
     }
 }
@@ -573,53 +704,17 @@ pub trait Tool: Send + Sync + 'static {
         self.input_schema()
     }
 
-    /// Where this tool came from, for [`crate::interface::model::ToolDef::source`].
-    ///
-    /// The name prefixes (`mcp__`, `plugin__`) already imply the answer, but a
-    /// naming convention is not a declaration: it holds only for as long as
-    /// nobody registers a builtin whose name happens to start that way. An
-    /// adapter that knows which server or plugin it is fronting says so here.
-    fn source(&self) -> std::borrow::Cow<'_, str> {
-        std::borrow::Cow::Owned(from_spec(self, |s| s.source, || "builtin".to_string()))
-    }
     async fn prompt(&self, _: &PromptContext) -> String {
         self.prompt_fragment()
     }
     fn prompt_fragment(&self) -> String {
         self.description().to_string()
     }
-    /// Does this tool's own `Allow` from [`Tool::check_permissions`] survive a
-    /// *mode-level* denial (`Plan`, `DontAsk`)?
-    ///
-    /// Default `false`, which is what makes plan mode mean anything: `Write`
-    /// and `Edit` allow themselves for any in-project path, and that verdict
-    /// is a statement about *path safety*, not a claim that writing files is
-    /// fine while the user asked for a plan. Letting it outrank the mode
-    /// would make plan mode decorative.
-    ///
-    /// A tool returns `true` only when its self-`Allow` is a statement about
-    /// the tool's own nature rather than about its arguments — a coordination
-    /// primitive that touches no file, no shell and no network, and so is not
-    /// what any of these modes exist to restrain. The team mailbox's
-    /// `SendMessage` is the case in point: team members run under `Plan` by
-    /// default, and a plan-mode member that cannot talk to its coordinator is
-    /// not a plan-mode member, it is a broken one.
-    ///
-    /// Rule-based denials and the bypass-immune path list are **not**
-    /// affected by this: an explicit `deny` always wins, whatever the tool
-    /// says about itself.
     fn self_allow_overrides_mode(&self) -> bool {
-        from_spec(self, |s| s.self_allow_overrides_mode, || false)
+        from_spec(self, |s| s.permission.self_allow_overrides_mode, || false)
     }
-
-    /// Is this the call that takes the session out of plan mode?
-    ///
-    /// Plan mode refuses every tool that is not read-only, and leaving plan
-    /// mode changes the session's state, so the way out would be refused too.
-    /// A tool that returns `true` is spared that one refusal and is decided
-    /// as in any mode that asks: a matching rule, else the host's answer.
     fn leaves_plan_mode(&self) -> bool {
-        from_spec(self, |s| s.leaves_plan_mode, || false)
+        from_spec(self, |s| s.permission.leaves_plan_mode, || false)
     }
 
     /// Whether `acceptEdits` lets this call through when neither the tool
@@ -629,19 +724,9 @@ pub trait Tool: Send + Sync + 'static {
     /// repository's configuration names — says no here, and the call is asked
     /// about as under `default`.
     fn accept_edits_allows(&self, input: &Value, _: &ToolContext) -> bool {
-        self.is_read_only(input)
+        self.call_traits(input).read_only
     }
 
-    /// This tool's detailed usage guide, when it has one that says more than
-    /// `description()` already does — `None` when it doesn't.
-    ///
-    /// `ToolDef`s carry only `description()`; the full guides total ~85 KB
-    /// across the built-in set, too much to pay on every API call, so the model
-    /// fetches them on demand via `ToolSearch{query: "select:<name>"}`. This
-    /// method decides which tools have anything to fetch. The default derives
-    /// the answer: `prompt()` falls back to `prompt_fragment()`, which falls
-    /// back to `description()`, so a tool overriding neither produces text
-    /// equal to its description and is reported as undocumented.
     async fn detailed_prompt(&self, ctx: &PromptContext) -> Option<String> {
         let body = self.prompt(ctx).await;
         let trimmed = body.trim();
@@ -653,52 +738,52 @@ pub trait Tool: Send + Sync + 'static {
         }
         Some(body)
     }
+
+    /// This tool's detailed usage guide, when it has one that says more than
+    /// `description()` already does.
+    ///
+    /// `ToolDef`s carry only `description()`; the full guides total ~85 KB
+    /// across the built-in set, too much to pay on every API call, so the model
+    /// fetches them on demand via `ToolSearch{query: "select:<name>"}`.
+    async fn guide(&self, ctx: &PromptContext) -> Option<String> {
+        self.detailed_prompt(ctx).await
+    }
+
     /// Everything about this tool that holds for every call — see
-    /// [`ToolSpec`]. The default reads the capability methods, so a tool
-    /// written against them needs nothing new; a tool that implements this
-    /// has those methods answered from it, and must not call them here.
+    /// [`ToolSpec`].
     fn spec(&self) -> ToolSpec {
         ToolSpec::from_methods(self)
     }
-    fn is_enabled(&self) -> bool {
-        from_spec(self, |s| s.enabled, || true)
+
+    /// What this call reads, writes and may run beside; `spec().traits` unless
+    /// the answer depends on the input.
+    fn call_traits(&self, input: &Value) -> CallTraits {
+        CallTraits {
+            read_only: self.is_read_only(input),
+            concurrency_safe: self.is_concurrency_safe(input),
+            destructive: self.is_destructive(input),
+        }
     }
     fn is_read_only(&self, _: &Value) -> bool {
-        from_spec(self, |s| s.read_only, || false)
+        from_spec(self, |s| s.traits.read_only, || false)
     }
     fn is_concurrency_safe(&self, _: &Value) -> bool {
-        from_spec(self, |s| s.concurrency_safe, || false)
+        from_spec(self, |s| s.traits.concurrency_safe, || false)
     }
-    /// Whether a program the model writes (`RunCode`) may call this tool.
-    /// Tools that do work and return data say yes; tools that talk to the
-    /// conversation or a person do not.
+    fn is_destructive(&self, _: &Value) -> bool {
+        from_spec(self, |s| s.traits.destructive, || false)
+    }
     fn callable_from_code(&self) -> bool {
         from_spec(self, |s| s.callable_from_code, || false)
     }
-    /// What a program gets back from this tool, when that is more than the
-    /// text the model sees — the shape of its structured content.
     fn code_result(&self) -> Option<&'static str> {
         from_spec(self, |s| s.code_result, || None)
     }
-    /// Whether this tool calls other tools, and so needs
-    /// [`ToolContext::dispatch`].
     fn needs_dispatch(&self) -> bool {
         from_spec(self, |s| s.needs_dispatch, || false)
     }
-    fn is_destructive(&self, _: &Value) -> bool {
-        from_spec(self, |s| s.destructive, || false)
-    }
-    fn strict(&self) -> bool {
-        from_spec(self, |s| s.strict, || false)
-    }
     fn is_deferred(&self) -> bool {
         from_spec(self, |s| s.deferred, || false)
-    }
-    fn is_dynamic(&self) -> bool {
-        from_spec(self, |s| s.dynamic, || false)
-    }
-    fn is_direct(&self) -> bool {
-        from_spec(self, |s| s.direct, || false)
     }
     fn short_description(&self) -> Option<String> {
         from_spec(self, |s| s.short_description, || None)
@@ -706,19 +791,12 @@ pub trait Tool: Send + Sync + 'static {
     fn permission_match_content(&self, _: &Value) -> Option<String> {
         None
     }
-    /// How the permission engine reads [`permission_match_content`](Self::permission_match_content).
     fn permission_content_kind(&self) -> PermissionContentKind {
         from_spec(
             self,
-            |s| s.permission_content_kind,
+            |s| s.permission.content_kind,
             || PermissionContentKind::Opaque,
         )
-    }
-    fn affected_paths(&self, _: &Value) -> Vec<PathBuf> {
-        vec![]
-    }
-    fn interrupt_behavior(&self, _: &Value) -> InterruptBehavior {
-        from_spec(self, |s| s.interrupt_behavior, || InterruptBehavior::Cancel)
     }
     async fn validate_input(&self, _: &Value, _: &ToolContext) -> ValidationResult {
         ValidationResult::Ok
@@ -805,8 +883,8 @@ impl Disposer {
 }
 
 pub trait ToolRegistry: Send + Sync + 'static {
-    fn all(&self) -> Vec<Arc<dyn Tool>>;
-    fn find(&self, n: &str) -> Option<Arc<dyn Tool>>;
+    fn list(&self) -> Vec<Arc<dyn Tool>>;
+    fn get(&self, n: &str) -> Option<Arc<dyn Tool>>;
 
     /// Add a tool, returning a handle that can withdraw exactly this
     /// registration.
@@ -815,7 +893,7 @@ pub trait ToolRegistry: Send + Sync + 'static {
     /// Substitute the entry for `t.name()`, or append when there is none.
     ///
     /// Distinct from [`register`](Self::register) because that one appends and
-    /// [`find`](Self::find) returns the first name match, so re-registering an
+    /// [`get`](Self::get) returns the first name match, so re-registering an
     /// existing name leaves the original in front and the new instance
     /// unreachable.
     fn replace(&self, t: Arc<dyn Tool>) -> Disposer;
@@ -827,28 +905,14 @@ pub trait ToolRegistry: Send + Sync + 'static {
     /// enumerates it; removal is what actually takes it out.
     fn remove(&self, name: &str) -> usize;
 
-    // The rest are conveniences the engine reaches for constantly. They are
-    // defaulted in terms of `all`/`find` so a second implementation owes only
-    // the five methods above — an implementor that can answer them more
-    // cheaply than by materializing every tool is free to override.
-
-    fn get(&self, n: &str) -> Option<Arc<dyn Tool>> {
-        self.find(n)
-    }
-    fn list(&self) -> Vec<Arc<dyn Tool>> {
-        self.all()
-    }
     fn names(&self) -> Vec<String> {
-        self.all().iter().map(|t| t.name().to_string()).collect()
+        self.list().iter().map(|t| t.name().to_string()).collect()
     }
     fn len(&self) -> usize {
-        self.all().len()
+        self.list().len()
     }
     fn is_empty(&self) -> bool {
         self.len() == 0
-    }
-    fn has_direct_tool(&self) -> bool {
-        self.all().iter().any(|t| t.is_direct())
     }
 }
 
@@ -938,12 +1002,6 @@ impl InMemoryToolRegistry {
             .map(|e| e.tool.clone())
             .collect()
     }
-    pub fn all(&self) -> Vec<Arc<dyn Tool>> {
-        self.list()
-    }
-    pub fn find(&self, n: &str) -> Option<Arc<dyn Tool>> {
-        self.get(n)
-    }
     pub fn names(&self) -> Vec<String> {
         self.tools
             .read()
@@ -958,20 +1016,13 @@ impl InMemoryToolRegistry {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
-    pub fn has_direct_tool(&self) -> bool {
-        self.tools
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .any(|e| e.tool.is_direct())
-    }
 }
 impl ToolRegistry for InMemoryToolRegistry {
-    fn all(&self) -> Vec<Arc<dyn Tool>> {
-        self.list()
+    fn list(&self) -> Vec<Arc<dyn Tool>> {
+        InMemoryToolRegistry::list(self)
     }
-    fn find(&self, n: &str) -> Option<Arc<dyn Tool>> {
-        self.get(n)
+    fn get(&self, n: &str) -> Option<Arc<dyn Tool>> {
+        InMemoryToolRegistry::get(self, n)
     }
     fn register(&self, t: Arc<dyn Tool>) -> Disposer {
         InMemoryToolRegistry::register(self, t)
@@ -1163,22 +1214,23 @@ mod tests {
     }
     #[test]
     fn empty() {
-        assert!(InMemoryToolRegistry::new().all().is_empty());
+        assert!(InMemoryToolRegistry::new().list().is_empty());
     }
     #[test]
     fn find() {
         let r = InMemoryToolRegistry::new();
         r.register(Arc::new(F));
-        assert!(r.find("f").is_some());
+        assert!(r.get("f").is_some());
     }
 
-    /// A tool that says nothing about where it came from is a builtin. This is
-    /// the default every registered tool inherits, so the ones that override it
-    /// (MCP, plugins) are the exceptions rather than the other way round — a
-    /// newly written builtin cannot forget to declare itself.
+    /// A tool that says nothing about where it came from is a builtin, so the
+    /// ones that say otherwise (MCP) are the exceptions — a newly written
+    /// builtin cannot forget to declare itself.
     #[test]
     fn a_tool_that_says_nothing_is_a_builtin() {
-        assert_eq!(F.source(), "builtin");
+        assert_eq!(F.spec().origin, ToolOrigin::Builtin);
+        assert_eq!(ToolOrigin::Builtin.wire(), "builtin");
+        assert_eq!(ToolOrigin::mcp("github").wire(), "mcp:github");
     }
 }
 
@@ -1221,9 +1273,6 @@ mod spec_tests {
         fn input_schema(&self) -> Value {
             serde_json::json!({"type": "object"})
         }
-        fn source(&self) -> std::borrow::Cow<'_, str> {
-            "plugin:old".into()
-        }
         fn is_read_only(&self, _: &Value) -> bool {
             true
         }
@@ -1256,22 +1305,16 @@ mod spec_tests {
             serde_json::json!({"type": "object"})
         }
         fn spec(&self) -> ToolSpec {
-            ToolSpec {
-                source: "mcp:x".into(),
-                enabled: false,
-                concurrency_safe: true,
-                destructive: true,
-                interrupt_behavior: InterruptBehavior::Block,
-                strict: true,
-                direct: true,
-                needs_dispatch: true,
-                leaves_plan_mode: true,
-                short_description: Some("short".into()),
-                ..ToolSpec::defaults_for(self)
-            }
+            ToolSpec::new()
+                .origin(ToolOrigin::mcp("x"))
+                .concurrency_safe(true)
+                .destructive(true)
+                .needs_dispatch(true)
+                .leaves_plan_mode(true)
+                .short_description("short")
         }
-        fn is_read_only(&self, input: &Value) -> bool {
-            input.get("peek").is_some()
+        fn call_traits(&self, input: &Value) -> CallTraits {
+            self.spec().traits.read_only(input.get("peek").is_some())
         }
         async fn call(
             &self,
@@ -1285,50 +1328,48 @@ mod spec_tests {
 
     #[test]
     fn a_tool_that_overrides_nothing_gets_the_defaults_without_recursing() {
-        assert_eq!(Silent.spec(), ToolSpec::defaults_for(&Silent));
-        assert!(Silent.is_enabled());
-        assert!(!Silent.is_deferred());
-        assert_eq!(Silent.source(), "builtin");
-        assert_eq!(
-            Silent.interrupt_behavior(&Value::Null),
-            InterruptBehavior::Cancel
-        );
+        assert_eq!(Silent.spec(), ToolSpec::new());
+        assert_eq!(Silent.call_traits(&Value::Null), CallTraits::default());
     }
 
     #[test]
     fn the_default_spec_reads_the_methods_a_tool_overrides() {
         let spec = Legacy.spec();
-        assert_eq!(spec.description, "written against the methods");
-        assert_eq!(spec.source, "plugin:old");
-        assert!(spec.read_only && spec.deferred);
+        assert!(spec.traits.read_only && spec.deferred);
         assert_eq!(spec.code_result, Some("{n: number}"));
         assert_eq!(
-            spec.permission_content_kind,
+            spec.permission.content_kind,
             PermissionContentKind::ReadPath
         );
-        assert!(!spec.concurrency_safe && !spec.strict);
-        assert!(Legacy.is_deferred());
-        assert!(!Legacy.strict());
+        assert!(!spec.traits.concurrency_safe);
+        assert!(Legacy.call_traits(&Value::Null).read_only);
     }
 
     #[test]
-    fn the_methods_answer_from_a_declared_spec() {
-        let t = Declared;
-        assert_eq!(t.source(), "mcp:x");
-        assert!(!t.is_enabled());
-        assert!(t.is_concurrency_safe(&Value::Null));
-        assert!(t.is_destructive(&Value::Null));
-        assert_eq!(t.interrupt_behavior(&Value::Null), InterruptBehavior::Block);
-        assert!(t.strict() && t.is_direct() && t.needs_dispatch() && t.leaves_plan_mode());
-        assert!(!t.is_deferred() && !t.callable_from_code());
-        assert_eq!(t.short_description().as_deref(), Some("short"));
+    fn a_declared_spec_is_what_the_engine_reads() {
+        let spec = Declared.spec();
+        assert_eq!(spec.origin.mcp_server(), Some("x"));
+        assert!(spec.traits.concurrency_safe && spec.traits.destructive);
+        assert!(spec.needs_dispatch && spec.permission.leaves_plan_mode);
+        assert!(!spec.callable_from_code);
+        assert_eq!(spec.short_description.as_deref(), Some("short"));
     }
 
     #[test]
-    fn a_method_that_reads_the_input_still_wins_over_the_spec() {
-        assert!(!Declared.spec().read_only);
-        assert!(Declared.is_read_only(&serde_json::json!({"peek": 1})));
-        assert!(!Declared.is_read_only(&serde_json::json!({})));
+    fn call_traits_that_read_the_input_win_over_the_spec() {
+        assert!(!Declared.spec().traits.read_only);
+        assert!(
+            Declared
+                .call_traits(&serde_json::json!({"peek": 1}))
+                .read_only
+        );
+        assert!(!Declared.call_traits(&serde_json::json!({})).read_only);
+        let ctx = ToolContext::for_test_with(
+            PathBuf::from("/tmp"),
+            crate::interface::exec::ExecProviders::in_process(),
+        );
+        assert!(Declared.accept_edits_allows(&serde_json::json!({"peek": 1}), &ctx));
+        assert!(!Declared.accept_edits_allows(&serde_json::json!({}), &ctx));
     }
 }
 
@@ -1348,6 +1389,7 @@ mod spec_tests {
 pub struct LayeredToolRegistry {
     base: Arc<dyn ToolRegistry>,
     overlay: InMemoryToolRegistry,
+    hidden: std::sync::RwLock<std::collections::HashSet<String>>,
 }
 
 impl LayeredToolRegistry {
@@ -1355,89 +1397,52 @@ impl LayeredToolRegistry {
         Self {
             base,
             overlay: InMemoryToolRegistry::new(),
+            hidden: Default::default(),
         }
     }
 
-    /// Names hidden from `all`/`find` without touching the base registry.
+    /// Names hidden from `list`/`get` without touching the base registry.
     ///
     /// The layer's reason for existing: an embedder that wants a narrower tool
     /// surface than the one it was handed, without the right to modify it.
     pub fn hide(&self, name: &str) {
-        self.overlay.register(Arc::new(Tombstone {
-            name: name.to_string(),
-        }));
+        self.hidden
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(name.to_string());
     }
-}
 
-/// Marks a name as hidden. Never dispatched — [`LayeredToolRegistry`] filters
-/// it out of every read — so its `call` is unreachable rather than merely
-/// unused.
-#[derive(Debug)]
-struct Tombstone {
-    name: String,
-}
-
-#[async_trait::async_trait]
-impl Tool for Tombstone {
-    fn name(&self) -> &str {
-        &self.name
+    fn is_hidden(&self, name: &str) -> bool {
+        self.hidden
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(name)
     }
-    fn input_schema(&self) -> Value {
-        serde_json::json!({"type": "object"})
-    }
-    fn is_enabled(&self) -> bool {
-        false
-    }
-    async fn call(
-        &self,
-        _i: Value,
-        _c: ToolContext,
-        _p: ProgressSender,
-    ) -> Result<ToolResult, ToolError> {
-        Err(ToolError::Execution(anyhow::anyhow!(
-            "`{}` is hidden in this registry layer and should never be dispatched",
-            self.name
-        )))
-    }
-}
-
-fn is_tombstone(t: &Arc<dyn Tool>) -> bool {
-    !t.is_enabled() && t.description().is_empty()
 }
 
 impl ToolRegistry for LayeredToolRegistry {
-    fn all(&self) -> Vec<Arc<dyn Tool>> {
-        let overlay = self.overlay.list();
-        let hidden: std::collections::HashSet<&str> = overlay
-            .iter()
-            .filter(|t| is_tombstone(t))
-            .map(|t| t.name())
-            .collect();
-
-        let mut out: Vec<Arc<dyn Tool>> = overlay
-            .iter()
-            .filter(|t| !is_tombstone(t))
-            .cloned()
-            .collect();
+    fn list(&self) -> Vec<Arc<dyn Tool>> {
+        let mut out = self.overlay.list();
         let shadowed: std::collections::HashSet<String> =
             out.iter().map(|t| t.name().to_string()).collect();
-
-        for t in self.base.all() {
-            if !hidden.contains(t.name()) && !shadowed.contains(t.name()) {
+        for t in self.base.list() {
+            if !self.is_hidden(t.name()) && !shadowed.contains(t.name()) {
                 out.push(t);
             }
         }
         out
     }
 
-    fn find(&self, n: &str) -> Option<Arc<dyn Tool>> {
+    fn get(&self, n: &str) -> Option<Arc<dyn Tool>> {
         match self.overlay.get(n) {
-            Some(t) if is_tombstone(&t) => None,
             Some(t) => Some(t),
-            None => self.base.find(n),
+            None if self.is_hidden(n) => None,
+            None => self.base.get(n),
         }
     }
 
+    /// Registering a name the layer hid makes the new entry visible; the base
+    /// entry stays hidden behind it.
     fn register(&self, t: Arc<dyn Tool>) -> Disposer {
         self.overlay.register(t)
     }
@@ -1452,7 +1457,7 @@ impl ToolRegistry for LayeredToolRegistry {
     /// layer exists to avoid.
     fn remove(&self, name: &str) -> usize {
         let removed = self.overlay.remove(name);
-        if self.base.find(name).is_some() {
+        if !self.is_hidden(name) && self.base.get(name).is_some() {
             self.hide(name);
             return removed + 1;
         }
@@ -1496,15 +1501,15 @@ mod registry_contract_tests {
     /// type satisfies is not a contract.
     fn contract(reg: &dyn ToolRegistry) {
         let d = reg.register(stub("Alpha"));
-        assert!(reg.find("Alpha").is_some());
+        assert!(reg.get("Alpha").is_some());
         assert!(reg.names().contains(&"Alpha".to_string()));
 
         // A disposer withdraws its own registration and nothing else.
         let keep = reg.register(stub("Beta"));
         d.dispose();
-        assert!(reg.find("Alpha").is_none(), "disposed tool still reachable");
+        assert!(reg.get("Alpha").is_none(), "disposed tool still reachable");
         assert!(
-            reg.find("Beta").is_some(),
+            reg.get("Beta").is_some(),
             "disposer took an unrelated entry"
         );
         let _ = keep;
@@ -1513,13 +1518,13 @@ mod registry_contract_tests {
         reg.register(stub("Gamma"));
         reg.replace(stub("Gamma"));
         assert_eq!(
-            reg.all().iter().filter(|t| t.name() == "Gamma").count(),
+            reg.list().iter().filter(|t| t.name() == "Gamma").count(),
             1,
             "replace left the original in place"
         );
 
         assert_eq!(reg.remove("Gamma"), 1);
-        assert!(reg.find("Gamma").is_none());
+        assert!(reg.get("Gamma").is_none());
         assert_eq!(reg.remove("NeverRegistered"), 0);
     }
 
@@ -1541,7 +1546,7 @@ mod registry_contract_tests {
     fn dropping_a_disposer_keeps_the_registration() {
         let reg = InMemoryToolRegistry::new();
         drop(reg.register(stub("Alpha")));
-        assert!(reg.find("Alpha").is_some());
+        assert!(reg.get("Alpha").is_some());
     }
 
     /// Two registrations of one name are distinct, and a disposer takes only
@@ -1551,10 +1556,10 @@ mod registry_contract_tests {
         let reg = InMemoryToolRegistry::new();
         let first = reg.register(stub("Dup"));
         reg.register(stub("Dup"));
-        assert_eq!(reg.all().iter().filter(|t| t.name() == "Dup").count(), 2);
+        assert_eq!(reg.list().iter().filter(|t| t.name() == "Dup").count(), 2);
         first.dispose();
         assert_eq!(
-            reg.all().iter().filter(|t| t.name() == "Dup").count(),
+            reg.list().iter().filter(|t| t.name() == "Dup").count(),
             1,
             "disposing one registration took both"
         );
@@ -1570,11 +1575,11 @@ mod registry_contract_tests {
         layer.register(stub("FromLayer"));
         assert_eq!(base.len(), 1, "layer wrote into its base");
 
-        assert!(layer.find("FromBase").is_some(), "base entry not visible");
+        assert!(layer.get("FromBase").is_some(), "base entry not visible");
         assert_eq!(layer.remove("FromBase"), 1);
-        assert!(layer.find("FromBase").is_none(), "removal did not hide it");
+        assert!(layer.get("FromBase").is_none(), "removal did not hide it");
         assert!(
-            base.find("FromBase").is_some(),
+            base.get("FromBase").is_some(),
             "removal reached through into the base"
         );
     }
@@ -1587,7 +1592,7 @@ mod registry_contract_tests {
         let layer = LayeredToolRegistry::new(base);
         layer.register(stub("Shared"));
         assert_eq!(
-            layer.all().iter().filter(|t| t.name() == "Shared").count(),
+            layer.list().iter().filter(|t| t.name() == "Shared").count(),
             1
         );
     }

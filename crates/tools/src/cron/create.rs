@@ -69,7 +69,7 @@ impl Tool for CronCreateTool {
     }
 
     fn spec(&self) -> ToolSpec {
-        ToolSpec::defaults_for(self)
+        ToolSpec::new()
     }
 
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {

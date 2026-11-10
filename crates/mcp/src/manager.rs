@@ -455,9 +455,9 @@ impl McpManager {
     /// Take a server's connection, tools, prompts, pending sign-in and
     /// failure away.
     fn forget(&mut self, name: &str) {
-        let source = format!("mcp:{name}");
         self.clients.retain(|c| c.server_name() != name);
-        self.adapters.retain(|a| a.source() != source);
+        self.adapters
+            .retain(|a| a.spec().origin.mcp_server() != Some(name));
         self.prompts.retain(|p| p.server != name);
         self.seen.remove(name);
         self.pending.retain(|p| p.name != name);
@@ -590,7 +590,7 @@ impl McpManager {
             adapters: self
                 .adapters
                 .iter()
-                .filter(|a| a.source().strip_prefix("mcp:").is_some_and(keep))
+                .filter(|a| a.spec().origin.mcp_server().is_some_and(&keep))
                 .cloned()
                 .collect(),
             prompts: self
@@ -981,11 +981,10 @@ impl McpManager {
                     adapters.extend(server_adapters(client, tools, &self.output_cache, &cell))
                 }
                 None => {
-                    let source = format!("mcp:{name}");
                     adapters.extend(
                         self.adapters
                             .iter()
-                            .filter(|a| a.source() == source)
+                            .filter(|a| a.spec().origin.mcp_server() == Some(name))
                             .cloned(),
                     );
                 }
@@ -1000,7 +999,7 @@ impl McpManager {
     pub fn server_statuses(&self) -> Vec<ServerStatus> {
         let mut counts: HashMap<String, usize> = HashMap::new();
         for a in &self.adapters {
-            if let Some(server) = a.source().strip_prefix("mcp:") {
+            if let Some(server) = a.spec().origin.mcp_server() {
                 *counts.entry(server.to_string()).or_insert(0) += 1;
             }
         }

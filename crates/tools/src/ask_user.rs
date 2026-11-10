@@ -56,10 +56,7 @@ impl Tool for AskUserQuestionTool {
     }
 
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            read_only: true,
-            ..ToolSpec::defaults_for(self)
-        }
+        ToolSpec::new().read_only(true)
     }
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {
         match serde_json::from_value::<AskUserQuestionInput>(input.clone()) {

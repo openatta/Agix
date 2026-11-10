@@ -41,11 +41,7 @@ impl Tool for ListMcpResourcesTool {
     }
 
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            concurrency_safe: true,
-            read_only: true,
-            ..ToolSpec::defaults_for(self)
-        }
+        ToolSpec::new().concurrency_safe(true).read_only(true)
     }
     fn input_schema(&self) -> Value {
         serde_json::to_value(schemars::schema_for!(ListMcpResourcesInput)).expect("schema")
@@ -149,11 +145,7 @@ impl Tool for ReadMcpResourceTool {
     }
 
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            concurrency_safe: true,
-            read_only: true,
-            ..ToolSpec::defaults_for(self)
-        }
+        ToolSpec::new().concurrency_safe(true).read_only(true)
     }
     fn input_schema(&self) -> Value {
         serde_json::to_value(schemars::schema_for!(ReadMcpResourceInput)).expect("schema")
@@ -293,11 +285,7 @@ impl Tool for DispatchMcpTool {
     }
 
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            concurrency_safe: true,
-            read_only: true,
-            ..ToolSpec::defaults_for(self)
-        }
+        ToolSpec::new().concurrency_safe(true).read_only(true)
     }
     fn input_schema(&self) -> Value {
         serde_json::to_value(schemars::schema_for!(DispatchMcpInput)).expect("schema")

@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use base::error::ToolError;
 use base::interface::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
+    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolOrigin, ToolResult,
+    ToolSpec,
 };
 use serde_json::Value;
 
@@ -45,12 +46,10 @@ impl Tool for StampTool {
     }
 
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            source: format!("plugin:{}", crate::NAME),
-            read_only: true,
-            concurrency_safe: true,
-            ..ToolSpec::defaults_for(self)
-        }
+        ToolSpec::new()
+            .origin(ToolOrigin::plugin(crate::NAME))
+            .read_only(true)
+            .concurrency_safe(true)
     }
 
     fn input_schema(&self) -> Value {

@@ -92,12 +92,10 @@ impl WebFetchTool {
 #[async_trait]
 impl Tool for WebFetchTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            callable_from_code: true,
-            concurrency_safe: true,
-            read_only: true,
-            ..ToolSpec::defaults_for(self)
-        }
+        ToolSpec::new()
+            .callable_from_code(true)
+            .concurrency_safe(true)
+            .read_only(true)
     }
     fn name(&self) -> &str {
         "WebFetch"
@@ -327,8 +325,8 @@ mod tests {
     async fn name_is_webfetch() {
         let tool = WebFetchTool::new();
         assert_eq!(tool.name(), "WebFetch");
-        assert!(tool.is_read_only(&Value::Null));
-        assert!(tool.is_concurrency_safe(&Value::Null));
+        assert!(tool.call_traits(&Value::Null).read_only);
+        assert!(tool.call_traits(&Value::Null).concurrency_safe);
     }
 
     #[tokio::test]

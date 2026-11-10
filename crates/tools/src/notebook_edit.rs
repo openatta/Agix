@@ -54,12 +54,9 @@ pub struct NotebookEditTool;
 #[async_trait]
 impl Tool for NotebookEditTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            callable_from_code: true,
-            interrupt_behavior: base::tool::InterruptBehavior::Block,
-            permission_content_kind: base::tool::PermissionContentKind::WritePath,
-            ..ToolSpec::defaults_for(self)
-        }
+        ToolSpec::new()
+            .callable_from_code(true)
+            .permission_content(base::tool::PermissionContentKind::WritePath)
     }
     fn description(&self) -> &str {
         "Edit Jupyter notebook cells (replace, insert, delete)"

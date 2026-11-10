@@ -75,14 +75,7 @@ fn searches_within_roots(input: &Value, ctx: &ToolContext) -> bool {
 #[async_trait]
 impl Tool for GrepTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            callable_from_code: true,
-            code_result: Some("files_with_matches (default): {files: string[]}; count: {counts: {path: n}}; content: text, one 'path:line' match per line"),
-            concurrency_safe: true,
-            read_only: true,
-            permission_content_kind: base::tool::PermissionContentKind::ReadPath,
-            ..ToolSpec::defaults_for(self)
-        }
+        ToolSpec::new().callable_from_code(true).code_result("files_with_matches (default): {files: string[]}; count: {counts: {path: n}}; content: text, one 'path:line' match per line").concurrency_safe(true).read_only(true).permission_content(base::tool::PermissionContentKind::ReadPath)
     }
     fn name(&self) -> &str {
         "Grep"
@@ -680,14 +673,9 @@ mod tests {
     #[tokio::test]
     async fn flags_say_readonly_and_concurrent_safe() {
         let tool = GrepTool;
-        assert!(tool.is_read_only(&Value::Null));
-        assert!(tool.is_concurrency_safe(&Value::Null));
+        assert!(tool.call_traits(&Value::Null).read_only);
+        assert!(tool.call_traits(&Value::Null).concurrency_safe);
         assert_eq!(tool.name(), "Grep");
-    }
-
-    #[tokio::test]
-    async fn is_enabled_defaults_true() {
-        assert!(GrepTool.is_enabled());
     }
 
     #[test]

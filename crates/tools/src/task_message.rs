@@ -66,11 +66,9 @@ impl Tool for TaskMessageTool {
     }
 
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            concurrency_safe: true,
-            self_allow_overrides_mode: true,
-            ..ToolSpec::defaults_for(self)
-        }
+        ToolSpec::new()
+            .concurrency_safe(true)
+            .self_allow_overrides_mode(true)
     }
 
     // Talking to one's own sub-agent touches no file, shell or network; a

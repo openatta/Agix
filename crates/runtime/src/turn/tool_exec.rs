@@ -492,7 +492,7 @@ pub(super) async fn execute_tool_inner(
                 tool_name: name.to_string(),
                 tool_use_id: ctx.tool_use_id.clone(),
                 input_json_size,
-                destructive: tool.is_destructive(&input),
+                destructive: tool.call_traits(&input).destructive,
                 deferred: tool.is_deferred(),
             },
         ));
