@@ -1821,17 +1821,18 @@ async fn documented_daemon_event_payloads_are_what_the_daemon_sends() {
     }
 }
 
-/// §4.5's `acceptEdits` row says a read outside the project goes through and a
-/// read-only `git` in a repository the session did not start in is asked about.
+/// §4.5's `acceptEdits` row says a read outside the project is asked about, as
+/// in `default`, and so is a read-only `git` in a repository the session did
+/// not start in.
 #[tokio::test]
-async fn documented_accept_edits_reads_outside_the_project_and_asks_about_a_nested_repository() {
+async fn documented_accept_edits_asks_about_reads_outside_the_project_and_a_nested_repository() {
     let doc = protocol_doc();
     let row = doc
         .lines()
         .find(|l| l.starts_with("| `acceptEdits` |"))
         .expect("§4.5 has an acceptEdits row");
     assert!(
-        row.contains("项目外的读") && row.contains("`git`"),
+        row.contains("读项目外") && row.contains("`git`"),
         "the row no longer says what these two calls show: {row}"
     );
 
@@ -1871,17 +1872,20 @@ async fn documented_accept_edits_reads_outside_the_project_and_asks_about_a_nest
         .unwrap()
         .to_string();
     let mut held = hold_at_prompt(&h, json!({"session_id": session, "message": "look"})).await;
-    assert_eq!(held.prompt["tool_name"], "Bash", "{}", held.prompt);
-    let read = held
-        .conn
-        .pushed
-        .iter()
-        .find(|f| {
-            f["params"]["event"]["id"] == "tool-1" && f["params"]["event"]["kind"] == "tool_result"
-        })
-        .expect("the read ran without asking");
-    assert_eq!(read["params"]["event"]["is_error"], false, "{read}");
+    assert_eq!(held.prompt["tool_name"], "Read", "{}", held.prompt);
     answer_prompt(&h.sock, &held.session, &held.prompt).await;
     let response = drive(&mut held.conn, held.run_id, &h.sock).await;
     assert!(response.get("result").is_some(), "{response}");
+    let asked: Vec<&Value> = held
+        .conn
+        .pushed
+        .iter()
+        .filter(|f| f["params"]["event"]["kind"] == "prompt")
+        .map(|f| &f["params"]["event"]["tool_name"])
+        .collect();
+    assert_eq!(
+        asked,
+        [&json!("Read"), &json!("Bash")],
+        "the read outside and the nested repository's git are each asked about once"
+    );
 }

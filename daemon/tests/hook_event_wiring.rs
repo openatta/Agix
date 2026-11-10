@@ -64,10 +64,29 @@ fn read_without_tests(path: &Path) -> String {
     let Ok(content) = std::fs::read_to_string(path) else {
         return String::new();
     };
-    match content.find("#[cfg(test)]") {
+    match test_code_start(&content) {
         Some(i) => content[..i].to_string(),
         None => content,
     }
+}
+
+/// Where a file's test code starts: its first `#[cfg(test)]` that is not just
+/// declaring a test module kept in another file (`#[cfg(test)] mod tests;`),
+/// which split modules put near the top.
+fn test_code_start(text: &str) -> Option<usize> {
+    const MARK: &str = "#[cfg(test)]";
+    let mut from = 0;
+    while let Some(found) = text[from..].find(MARK) {
+        let at = from + found;
+        let next = text[at + MARK.len()..].trim_start();
+        let line = next.lines().next().unwrap_or("").trim();
+        let declares_a_file = line.starts_with("mod ") && line.ends_with(';');
+        if !declares_a_file {
+            return Some(at);
+        }
+        from = at + MARK.len();
+    }
+    None
 }
 
 /// Concatenate every `.rs` file under a path (or the file itself), tests

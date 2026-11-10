@@ -36,10 +36,29 @@ fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
 /// The file's text up to its first test module.
 fn production_code(path: &Path) -> String {
     let text = std::fs::read_to_string(path).unwrap_or_default();
-    match text.find("#[cfg(test)]") {
+    match test_code_start(&text) {
         Some(at) => text[..at].to_string(),
         None => text,
     }
+}
+
+/// Where a file's test code starts: its first `#[cfg(test)]` that is not just
+/// declaring a test module kept in another file (`#[cfg(test)] mod tests;`),
+/// which split modules put near the top.
+fn test_code_start(text: &str) -> Option<usize> {
+    const MARK: &str = "#[cfg(test)]";
+    let mut from = 0;
+    while let Some(found) = text[from..].find(MARK) {
+        let at = from + found;
+        let next = text[at + MARK.len()..].trim_start();
+        let line = next.lines().next().unwrap_or("").trim();
+        let declares_a_file = line.starts_with("mod ") && line.ends_with(';');
+        if !declares_a_file {
+            return Some(at);
+        }
+        from = at + MARK.len();
+    }
+    None
 }
 
 #[test]

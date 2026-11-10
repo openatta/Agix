@@ -285,7 +285,7 @@ fn visit(dir: &std::path::Path, root: &std::path::Path, found: &mut Vec<(String,
             .unwrap_or(&path)
             .to_string_lossy()
             .replace('\\', "/");
-        let code = text.split("#[cfg(test)]").next().unwrap_or("");
+        let code = &text[..test_code_start(&text).unwrap_or(text.len())];
         for line in code.lines().map(str::trim) {
             let is_static = line.starts_with("static ") || line.starts_with("pub static ");
             let mutable = ["Mutex<", "RwLock<", "RefCell<", "OnceLock<", "OnceCell<"]
@@ -296,4 +296,23 @@ fn visit(dir: &std::path::Path, root: &std::path::Path, found: &mut Vec<(String,
             }
         }
     }
+}
+
+/// Where a file's test code starts: its first `#[cfg(test)]` that is not just
+/// declaring a test module kept in another file (`#[cfg(test)] mod tests;`),
+/// which split modules put near the top.
+fn test_code_start(text: &str) -> Option<usize> {
+    const MARK: &str = "#[cfg(test)]";
+    let mut from = 0;
+    while let Some(found) = text[from..].find(MARK) {
+        let at = from + found;
+        let next = text[at + MARK.len()..].trim_start();
+        let line = next.lines().next().unwrap_or("").trim();
+        let declares_a_file = line.starts_with("mod ") && line.ends_with(';');
+        if !declares_a_file {
+            return Some(at);
+        }
+        from = at + MARK.len();
+    }
+    None
 }
