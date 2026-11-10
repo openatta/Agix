@@ -30,6 +30,8 @@ pub struct SandboxSettings {
     pub unattended_requires_network_policy: bool,
 }
 pub use crate::context::config::PathStyle;
+use crate::interface::permission::{ModeStance, PermissionFacts};
+pub use crate::interface::permission::{PermissionContentKind, ToolPermissionSpec};
 pub use crate::permission::PermissionMode;
 #[derive(Debug, Clone)]
 pub struct PromptContext {
@@ -386,22 +388,6 @@ impl ToolContext {
     }
 }
 
-/// What a tool's permission match content is, which decides how rules are
-/// matched against it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PermissionContentKind {
-    /// Compared to rule patterns verbatim.
-    Opaque,
-    /// A path the tool reads. Resolved against the session's cwd before
-    /// matching, and `Read(...)` rules apply to it as well as the tool's own.
-    ReadPath,
-    /// A path the tool writes. Resolved like `ReadPath`; `Edit(...)` rules
-    /// apply to it as well as the tool's own.
-    WritePath,
-    /// A shell command line, matched one simple command at a time.
-    ShellCommand,
-}
-
 /// Where a tool came from, for [`crate::interface::model::ToolDef::source`].
 ///
 /// A name prefix (`mcp__`) already implies the answer, but a naming
@@ -478,49 +464,6 @@ impl CallTraits {
     }
 }
 
-/// What the permission engine reads off a tool.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct ToolPermissionSpec {
-    /// How the permission engine reads [`Tool::permission_match_content`].
-    pub content_kind: PermissionContentKind,
-    /// Does this tool's own `Allow` from [`Tool::check_permissions`] survive a
-    /// *mode-level* denial (`Plan`, `DontAsk`)?
-    ///
-    /// `false` by default, which is what makes plan mode mean anything:
-    /// `Write` and `Edit` allow themselves for any in-project path, and that
-    /// verdict is a statement about *path safety*, not a claim that writing
-    /// files is fine while the user asked for a plan.
-    ///
-    /// `true` only when the self-`Allow` is a statement about the tool's own
-    /// nature rather than about its arguments — a coordination primitive that
-    /// touches no file, no shell and no network. The team mailbox's
-    /// `SendMessage` is the case in point: team members run under `Plan` by
-    /// default, and a plan-mode member that cannot talk to its coordinator is
-    /// a broken one.
-    ///
-    /// Rule-based denials and the bypass-immune path list are **not**
-    /// affected: an explicit `deny` always wins.
-    pub self_allow_overrides_mode: bool,
-    /// Is this the call that takes the session out of plan mode?
-    ///
-    /// Plan mode refuses every tool that is not read-only, and leaving plan
-    /// mode changes the session's state, so the way out would be refused too.
-    /// A tool that says yes is spared that one refusal and is decided as in
-    /// any mode that asks: a matching rule, else the host's answer.
-    pub leaves_plan_mode: bool,
-}
-
-impl Default for ToolPermissionSpec {
-    fn default() -> Self {
-        Self {
-            content_kind: PermissionContentKind::Opaque,
-            self_allow_overrides_mode: false,
-            leaves_plan_mode: false,
-        }
-    }
-}
-
 /// What a tool says about itself that holds for every call. Built with
 /// [`ToolSpec::new`] and the setters: `ToolSpec::new().read_only(true)`.
 ///
@@ -548,6 +491,8 @@ pub struct ToolSpec {
     /// [`ToolContext::dispatch`].
     pub needs_dispatch: bool,
     pub permission: ToolPermissionSpec,
+    /// How the permission modes treat this tool's calls.
+    pub stance: ModeStance,
 }
 
 impl ToolSpec {
@@ -596,10 +541,18 @@ impl ToolSpec {
     }
     pub fn self_allow_overrides_mode(mut self, yes: bool) -> Self {
         self.permission.self_allow_overrides_mode = yes;
+        self.stance = self.permission.stance();
         self
     }
     pub fn leaves_plan_mode(mut self, yes: bool) -> Self {
         self.permission.leaves_plan_mode = yes;
+        self.stance = self.permission.stance();
+        self
+    }
+    pub fn stance(mut self, stance: ModeStance) -> Self {
+        self.stance = stance;
+        self.permission.self_allow_overrides_mode = stance == ModeStance::Coordination;
+        self.permission.leaves_plan_mode = stance == ModeStance::LeavesPlan;
         self
     }
 }
@@ -608,8 +561,9 @@ impl ToolSpec {
 ///
 /// What holds for every call is one [`spec`](Self::spec); what depends on the
 /// call's input is [`call_traits`](Self::call_traits), which defaults to the
-/// spec's answer. `check_permissions`, `permission_match_content` and
-/// `accept_edits_allows` are the permission engine's view of the call.
+/// spec's answer. [`permission_facts`](Self::permission_facts) is the
+/// permission engine's view of the call; by default it is read off
+/// `check_permissions`, `permission_match_content` and `accept_edits_allows`.
 #[async_trait]
 pub trait Tool: Send + Sync + 'static {
     fn name(&self) -> &str;
@@ -653,6 +607,9 @@ pub trait Tool: Send + Sync + 'static {
 
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
         PermissionDecision::allow()
+    }
+    async fn permission_facts(&self, input: &Value, ctx: &ToolContext) -> PermissionFacts {
+        PermissionFacts::bridged(self, input, ctx).await
     }
     async fn validate_input(&self, _: &Value, _: &ToolContext) -> ValidationResult {
         ValidationResult::Ok
