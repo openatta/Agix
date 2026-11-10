@@ -1,9 +1,10 @@
 //! `LocalProcess` — a child process on this machine.
 //!
-//! On Unix every spawned program leads a process group of its own, and stopping
-//! it signals the whole group: a command is everything it started, not just the
-//! one pid `spawn` returned. A [`GroupLedger`] remembers those groups past the
-//! handle, so whoever owns a session can stop what its commands left running.
+//! On Unix every spawned program leads a session and a process group of its
+//! own, with no controlling terminal, and stopping it signals the whole group:
+//! a command is everything it started, not just the one pid `spawn` returned.
+//! A [`GroupLedger`] remembers those groups past the handle, so whoever owns a
+//! session can stop what its commands left running.
 
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
@@ -157,11 +158,22 @@ impl Process for LocalProcess {
         // process behind: cancellation drops the handle, and a leaked child
         // would keep writing to a pipe nobody reads.
         cmd.kill_on_drop(true);
-        // Its own group, so that stopping it reaches the background processes
-        // it started. The price is that a terminal's Ctrl-C does not reach it
-        // directly; a host turns Ctrl-C into cancellation, which does.
+        // Its own session, and so its own group: stopping the group reaches
+        // the background processes it started, and with no controlling
+        // terminal it cannot push input into the daemon's (`TIOCSTI` on
+        // `/dev/tty`) for a shell outside any sandbox to run. The price is
+        // that a terminal's Ctrl-C does not reach it directly; a host turns
+        // Ctrl-C into cancellation, which does.
         #[cfg(unix)]
-        cmd.process_group(0);
+        // SAFETY: `setsid` is async-signal-safe and touches no memory.
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
 
         let mut child = cmd
             .spawn()

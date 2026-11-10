@@ -94,11 +94,7 @@
 //!    so a process can `mknod` a raw disk device and bypass file ACLs.
 //! 2. **Inherited environment**: `LD_PRELOAD` / `DYLD_INSERT_LIBRARIES` are
 //!    not cleared, so a dynamic library can be injected.
-//! 3. **`/proc` leak**: bwrap mounts the host's `/proc`, reachable through
-//!    `/proc/self/{fd,root}`.
-//! 4. **Leaked fds**: `CLOEXEC` is not set, so a child can read inherited
-//!    descriptors — git repositories, sockets.
-//! 5. **Absent git files on Linux, for a git outside the sandbox**: a mount
+//! 3. **Absent git files on Linux, for a git outside the sandbox**: a mount
 //!    cannot stand in for a file that does not exist without leaving an empty
 //!    one behind, which git refuses to read. So a project with no `.git` yet
 //!    can be given one, and a repository with no `commondir` can be given one,
@@ -106,7 +102,7 @@
 //!    engine's own git runs inside the sandbox, so it carries none of that out
 //!    unconfined; a git the user runs in the project afterwards does. macOS
 //!    denies both.
-//! 6. **Another process acting for the command**: the sandbox follows the
+//! 4. **Another process acting for the command**: the sandbox follows the
 //!    command's own process tree, not what it asks a system service to do.
 //!    On macOS, measured against `sandbox-exec`: `open` has LaunchServices
 //!    start an app outside the sandbox, `defaults write` has `cfprefsd` write
@@ -128,6 +124,13 @@
 //!    run against a real bubblewrap. With the network open, any local
 //!    service listening on a socket the command can reach (sshd, a container
 //!    daemon) is a way out under every policy.
+//!
+//! Not among them, measured on bubblewrap 0.8: `/proc` is mounted afresh for
+//! the command's PID namespace, so it shows neither the host's processes nor
+//! their `fd` and `root`; a command inherits no descriptor of the daemon's but
+//! its stdio, the daemon opening every one close-on-exec; and it has no
+//! controlling terminal to push input into through `/dev/tty`, since
+//! `LocalProcess` starts it in a session of its own.
 
 pub use base::interface::exec::{
     default_deny_read, default_deny_read_in, Confined, Enforcement, NetworkMode, ProcessSpec,
@@ -1224,6 +1227,11 @@ fn linux_wrap(
             // and the namespace would go with it, taking whatever the command
             // left in the background. That stays in the command's process
             // group, which is how it gets stopped.
+            //
+            // No `--new-session` either: bwrap's PID 1 would take the whole
+            // namespace out of that group, out of reach of stopping it. The
+            // `TIOCSTI` it guards against needs a controlling terminal, and
+            // `LocalProcess` starts every command in a session without one.
             "--unshare-pid",
         ]
         .map(String::from),
@@ -2967,19 +2975,34 @@ mod tests {
     /// process group, where stopping the group reaches it.
     ///
     /// The background loop gives up after a while, so that a sandbox holding
-    /// the output open fails this rather than hangs it.
+    /// the output open fails this rather than hangs it. What it leaves
+    /// running holds a FIFO open, so that the group emptying out of reach —
+    /// bwrap's `--new-session` takes its PID 1 into a group of its own — is
+    /// not taken for the group having stopped.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     #[allow(clippy::unwrap_used, unsafe_code)]
     fn what_a_confined_command_leaves_running_outlives_it_in_its_process_group() {
+        use std::io::Read;
+        use std::os::unix::fs::OpenOptionsExt;
         use std::os::unix::process::CommandExt;
         if !a_backend_runs() {
             return;
         }
         let project = tempfile::tempdir().unwrap();
+        let fifo =
+            std::ffi::CString::new(project.path().join("held").as_os_str().as_encoded_bytes())
+                .unwrap();
+        // SAFETY: a NUL-terminated path that outlives the call.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(project.path().join("held"))
+            .unwrap();
         let command = "echo out; echo err >&2; \
                        (i=0; while [ ! -e exited ] && [ $i -lt 600 ]; do sleep 0.05; i=$((i+1)); done; \
-                        [ -e exited ] && touch outlived && exec sleep 600) >/dev/null 2>&1 & \
+                        [ -e exited ] && exec 3>held && touch outlived && exec sleep 600) >/dev/null 2>&1 & \
                        exit 3";
         let confined = PlatformSandbox.confine(
             ProcessSpec::new("bash", project.path()).args(["-c", command].map(String::from)),
@@ -3018,11 +3041,13 @@ mod tests {
         unsafe { libc::killpg(group, libc::SIGKILL) };
         // SAFETY: as above; signal 0 only asks whether the group exists.
         let stopped = until(&|| unsafe { libc::killpg(group, 0) } != 0);
+        let released = until(&|| matches!((&held).read(&mut [0u8; 1]), Ok(0)));
         assert_eq!(String::from_utf8_lossy(&output.stdout), "out\n");
         assert_eq!(String::from_utf8_lossy(&output.stderr), "err\n");
         assert_eq!(output.status.code(), Some(3));
         assert!(outlived, "the background loop went with the command");
         assert!(stopped, "stopping the group stops what the command left");
+        assert!(released, "what the command left runs on outside its group");
     }
 
     /// A submodule's git directory, `modules/<name>` under the git directory
@@ -3086,7 +3111,7 @@ mod tests {
             format!("mv .git/modules/libs '{elsewhere}/libs'"),
         ];
         // bwrap cannot hold a file that is not there yet (the module header's
-        // escape path 5); a submodule's git directory has no `commondir`.
+        // escape path 3); a submodule's git directory has no `commondir`.
         let absent_files_held = cfg!(target_os = "macos");
         if absent_files_held {
             refused.push("echo /tmp > .git/modules/sub/commondir".to_string());

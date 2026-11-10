@@ -1370,6 +1370,11 @@ WebAssembly 载体整个移除。
   allowlist 会拒绝每条沙箱命令,无人值守的会话也不会自动放行它们。命令确实要连这些域名的,
   眼下只能回到 `unrestricted`,按域名放行留待后续版本;`daemon.doctor` 新增的
   `sandbox.network_allowlist` 检查会指出这种配置(§6.3)。`WebFetch` / `Ping` 照旧按名单放行。
+- **命令不再有控制终端。** 本机 provider 起每个子进程(`Bash`、`Monitor`、command hook、MCP
+  stdio)时改用 `setsid`,不再只是 `setpgid`:进程组和以前一样以子进程自己为组长,停组、收组的
+  行为不变,但命令打不开 `/dev/tty`,没法用 `TIOCSTI` 往前台运行的 `agixd` 所在终端里塞按键、
+  等 daemon 退出后由那个终端的 shell 执行。依赖终端的交互(`sudo` 问密码、`ssh` 问 passphrase
+  之类)以前会抢 daemon 的终端,现在直接失败。bwrap 没有加 `--new-session`,原因见 §6.3。
 - **项目 `.agix/` 会多一个 `.gitignore`。** 第一次往项目 `.agix/` 写 `settings.local.json`
   (`config.setProvider` 的 key、MCP headers)或录遥测时,没有 `.agix/.gitignore` 就生成一份,写着
   `settings.local.json`、`mcp.local.json`、`telemetry/`。已有的不动,缺的行也不补:以前就有

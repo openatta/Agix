@@ -561,8 +561,9 @@ Agent 的上下文,本来就该在一处。
    连接时用的解析器再查一次,中间换了答案的名字也进不去。
 3. **受约束的策略绝不静默降级为无约束执行。** 后端报告 `Full` / `Partial` / `None`
    并列出兑现不了的部分;`sandbox.require_enforcement` 决定不足 `Full` 时是否拒绝。
-4. **一个命令是它起的整个进程组。** 本机 provider 让每个子进程领一个进程组,停的时候
-   整组停;前台进程退出后输出最多再等 `OUTPUT_GRACE_AFTER_EXIT`,还被后台进程占着就
+4. **一个命令是它起的整个进程组。** 本机 provider 让每个子进程领一个会话(也就领了一个
+   进程组,且没有控制终端——命令没法经 `/dev/tty` 用 `TIOCSTI` 往 daemon 的终端里塞输入,
+   等沙箱外的 shell 去执行),停的时候整组停;前台进程退出后输出最多再等 `OUTPUT_GRACE_AFTER_EXIT`,还被后台进程占着就
    连它们一起停。Bash、Monitor、command hook、MCP stdio 都是这条规矩。
 5. **子进程的环境只在一处决定。** `base::interface::exec::env::SubprocessEnv`:缺省
    继承宿主环境但去掉引擎自己的凭据(`ANTHROPIC_*`、`AGIX_DAEMON_TOKEN`,以及任何一层
@@ -573,8 +574,8 @@ Agent 的上下文,本来就该在一处。
    服务取的是声明它的那份设置(daemon 按项目、scene 建连),再叠各服务自己的 `env`。这和沙箱无关——沙箱关着,模型一句 `printenv` 读到什么也由它决定。
 
 沙箱是**轻量写限制,不是安全隔离**。已知逃逸路径写在
-`crates/platform/src/sandbox.rs` 的模块头里,六条;第 5 条对引擎自己的
-git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git;第 6 条(让别的进程替命令
+`crates/platform/src/sandbox.rs` 的模块头里,四条;第 3 条对引擎自己的
+git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git;第 4 条(让别的进程替命令
 在沙箱外做事)在无人值守会话里收口(见 §6.3)。它限住的写入范围见 §6.3。
 
 ---
@@ -847,7 +848,7 @@ bubblewrap)就和别的未授权调用一样被拒。沙箱只限写不限网,�
 上不存在的 `.claude` 不加挡(挡它会在每个项目里留下一个空挂载点),`.agents/skills/` 同理只在
 `.agents` 已经存在时挡(`.agents` 绑定到自身,挪不走;`skills` 只读,不存在时留一个只读的空挂载点),
 不存在的 `.agents` 在 Linux 上建得出来;没有 `.git` 的项目、没有
-`commondir` 的仓库在 Linux 上补不上这一道(见 `sandbox.rs` 模块头第 5 条),所以有下一段。
+`commondir` 的仓库在 Linux 上补不上这一道(见 `sandbox.rs` 模块头第 3 条),所以有下一段。
 
 引擎自己跑的 git(每轮的 `git status`、worktree 的创建与清理)经 `base::frozen::git::EngineGit` 起:会话的命令进沙箱(没有
 `dangerously_disable_sandbox`)时,它也进同一个沙箱,不论有人值守与否——仓库配置让 git 去
@@ -910,6 +911,11 @@ sandbox-exec 的 profile 里远端主机只能写 `*` 或 `localhost`,写了别�
 `Partial`,`unmet` 里列出这些域名:`sandbox.require_enforcement` 打开时每条沙箱命令都被拒,
 无人值守的自动放行要求 `Full`,也不放行。`daemon.doctor` 的 `sandbox.network_allowlist` 在名单里
 有回环以外的条目时报 degraded。按域名放行得另起一个本机代理,现在没有。
+
+命令没有控制终端:本机 provider 让它领一个新会话(§5 第 4 条),所以它打不开 `/dev/tty`,
+也就没法用 `TIOCSTI` 往 daemon 所在的终端里塞按键(CVE-2017-5226 那一类)。bwrap 不加
+`--new-session`:它会把 bwrap 的 PID 1 连同整个 PID 命名空间带出命令的进程组,停组就停不到
+命令留下的后台进程了。
 
 **已知的缺口。** 上面两道合起来,只有"命令在沙箱外、又 `setsid` 离开了 daemon 起的进程组"这一种
 情况挡不住:lineage 按进程组认,`setsid` 之后认不出来;沙箱本来能拦 connect,可这时根本没有沙箱。
