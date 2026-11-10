@@ -115,9 +115,9 @@ fn eviction_passes_over_a_session_that_is_doing_something() {
         .claim(RunningTurn::new("t1".into(), Initiator::Client, None))
         .unwrap();
     sessions.insert("in_a_turn".to_string(), in_a_turn);
-    let slot_taken = dummy_live_session(long_ago);
-    slot_taken.turn.rx.try_lock().unwrap().take();
-    sessions.insert("slot_taken".to_string(), slot_taken);
+    let mut rebuilding = dummy_live_session(long_ago);
+    rebuilding.turn.begin_rebuild().unwrap();
+    sessions.insert("rebuilding".to_string(), rebuilding);
     let mut with_a_task = dummy_live_session(long_ago);
     with_a_task.state = Some(running_a_task());
     sessions.insert("with_a_task".to_string(), with_a_task);

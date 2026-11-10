@@ -87,7 +87,7 @@ impl SessionPool {
                     Some(false) => Ok(sid.clone()),
                     Some(true) => match self.rebuild_idle(sid, options.as_ref()).await {
                         Ok(sid) => Ok(sid),
-                        Err(Rebuild::Busy { .. }) => Ok(sid.clone()),
+                        Err(Rebuild::Busy(_)) => Ok(sid.clone()),
                         Err(Rebuild::NotLive) => self.ensure_live(sid, options.as_ref()).await,
                         Err(Rebuild::Failed(e)) => Err(e),
                     },
@@ -108,47 +108,70 @@ impl SessionPool {
             }
         };
 
-        // 取走 `event_rx` 就是"一个会话同一时刻只能有一个 turn"的实现，而且
-        // 必须**在发消息之前**取：消息一旦 send 进去就归正在跑的那个 Agent
-        // 消费了，先发后取的话，调用方看到忙，消息却已经被别的 turn 吃掉。
+        // 必须**在发消息之前**占住会话：消息一旦 send 进去就归正在跑的那个
+        // Agent 消费了，先发后占的话，调用方看到忙，消息却已经被别的 turn 吃掉。
         let mut steer_tried = false;
-        let (input_tx, generation, event_rx_mutex, mut event_rx) = loop {
-            let (input_tx, generation, event_rx_mutex, busy_with, idle) = {
+        let (input_tx, generation, rx, turn_state, hub) = loop {
+            let idle = {
+                let sessions = self.sessions.lock().await;
+                let Some(live) = sessions.get(&sid) else {
+                    return Err(PoolError::session_not_found(&sid));
+                };
+                live.turn.idle.clone()
+            };
+            let became_idle = idle.notified();
+            tokio::pin!(became_idle);
+            became_idle.as_mut().enable();
+            let (input_tx, busy) = {
                 let mut sessions = self.sessions.lock().await;
                 let Some(live) = sessions.get_mut(&sid) else {
                     return Err(PoolError::session_not_found(&sid));
                 };
                 live.hub.touch();
-                (
-                    live.input_tx.clone(),
-                    live.turn.generation,
-                    live.turn.rx.clone(),
-                    live.turn.current_turn_id(),
-                    live.turn.idle.clone(),
-                )
+                // A goal round runs only if it is still the one its goal
+                // handed out: a pause, clear or change since then, or another
+                // turn's round, means nobody wants it any more.
+                if live.turn.is_idle()
+                    && initiator == Initiator::Goal
+                    && !live
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.goal_claim_round(&turn_id))
+                {
+                    return Ok(TurnOutcome::Skipped {
+                        session_id: sid,
+                        turn_id,
+                    });
+                }
+                let running = RunningTurn::new(turn_id.clone(), initiator, initiator_id);
+                if let Ok(generation) = live.turn.claim(running) {
+                    self.emit_session_event(
+                        "turn_started",
+                        &sid,
+                        serde_json::json!({"turn_id": turn_id, "initiator": initiator.as_str()}),
+                    );
+                    // Whoever starts a turn watches it. Not a special role —
+                    // it lands in the same subscriber set as any tab that
+                    // called `session.subscribe`, and leaves the same way.
+                    if let Some(watcher) = &watcher {
+                        live.hub.subscribe(watcher.clone());
+                    }
+                    break (
+                        live.input_tx.clone(),
+                        generation,
+                        live.turn.rx.clone(),
+                        live.state.clone(),
+                        live.hub.clone(),
+                    );
+                }
+                (live.input_tx.clone(), live.turn.busy(&sid))
             };
-            let became_idle = idle.notified();
-            tokio::pin!(became_idle);
-            became_idle.as_mut().enable();
-            let taken = event_rx_mutex.lock().await.take();
-            if let Some(rx) = taken {
-                let still_this_session = self
-                    .sessions
-                    .lock()
-                    .await
-                    .get(&sid)
-                    .is_some_and(|live| live.turn.generation == generation);
-                if still_this_session {
-                    break (input_tx, generation, event_rx_mutex, rx);
-                }
-                *event_rx_mutex.lock().await = Some(rx);
-                continue;
-            }
+            let Some(busy) = busy else { continue };
             match on_busy {
-                OnBusy::Reject => {
-                    return Err(PoolError::SessionBusy(Busy::turn_running(&sid, busy_with)));
-                }
-                OnBusy::Steer if !steer_tried && attachments.is_empty() => {
+                OnBusy::Reject => return Err(PoolError::SessionBusy(busy)),
+                OnBusy::Steer
+                    if !steer_tried && attachments.is_empty() && busy.current_turn_id.is_some() =>
+                {
                     steer_tried = true;
                     let (ack, acked) = tokio::sync::oneshot::channel();
                     let _ = input_tx.send(InputMessage::Steer {
@@ -165,7 +188,7 @@ impl SessionPool {
                         return Ok(TurnOutcome::Steered {
                             session_id: sid,
                             turn_id,
-                            into_turn_id: busy_with,
+                            into_turn_id: busy.current_turn_id,
                         });
                     }
                     // The running turn is already past its last step: this
@@ -181,63 +204,26 @@ impl SessionPool {
                 _ = tokio::time::sleep(Duration::from_secs(1)) => {}
             }
         };
-
-        // A goal round runs only if it is still the one its goal handed out:
-        // a pause, clear or change since then, or another turn's round, means
-        // nobody wants it any more.
         let ticket = TurnTicket {
             sid: sid.clone(),
             generation,
             turn_id: turn_id.clone(),
-            rx: event_rx_mutex,
+            rx,
         };
-        let started = {
-            let mut sessions = self.sessions.lock().await;
-            match sessions
+        let taken = ticket.rx.lock().await.take();
+        let Some(mut event_rx) = taken else {
+            if let Some(live) = self
+                .sessions
+                .lock()
+                .await
                 .get_mut(&sid)
                 .filter(|live| live.turn.generation == generation)
             {
-                None => None,
-                Some(live) => {
-                    let wanted = (initiator != Initiator::Goal
-                        || live
-                            .state
-                            .as_ref()
-                            .is_some_and(|state| state.goal_claim_round(&turn_id)))
-                        && live
-                            .turn
-                            .claim(RunningTurn::new(turn_id.clone(), initiator, initiator_id))
-                            .is_ok();
-                    if wanted {
-                        self.emit_session_event(
-                            "turn_started",
-                            &sid,
-                            serde_json::json!({"turn_id": turn_id, "initiator": initiator.as_str()}),
-                        );
-                        // Whoever starts a turn watches it. Not a special role
-                        // — it lands in the same subscriber set as any tab that
-                        // called `session.subscribe`, and leaves the same way.
-                        if let Some(watcher) = &watcher {
-                            live.hub.subscribe(watcher.clone());
-                        }
-                    }
-                    Some((wanted, live.state.clone(), live.hub.clone()))
-                }
+                live.turn.release(generation, &turn_id);
             }
-        };
-        let (turn_state, hub) = match started {
-            Some((true, state, hub)) => (state, hub),
-            Some((false, _, _)) => {
-                self.release_turn_slot(&ticket, event_rx).await;
-                return Ok(TurnOutcome::Skipped {
-                    session_id: sid,
-                    turn_id,
-                });
-            }
-            None => {
-                *ticket.rx.lock().await = Some(event_rx);
-                return Err(PoolError::session_not_found(&sid));
-            }
+            return Err(PoolError::Internal(format!(
+                "session `{sid}` claimed a turn with no event receiver in its slot"
+            )));
         };
         if let (Some(state), Initiator::Goal) = (&turn_state, initiator) {
             self.record_goal_changes(&sid, state).await;

@@ -501,42 +501,28 @@ impl SessionPool {
         .await
     }
 
-    /// Take the turn slot of live, idle `sid`, so no turn starts until it
-    /// is given back or the session rebuilt. A session whose background
-    /// tasks still run is not idle: they run under its engine and would be
-    /// stopped with it. Callers hold `sid`'s session lock.
+    /// Move live, idle `sid` into `Rebuilding`, so no turn starts until the
+    /// rebuild is aborted or the rebuilt entry replaces it. A session whose
+    /// background tasks still run is not idle: they run under its engine and
+    /// would be stopped with it. Callers hold `sid`'s session lock.
     pub(super) async fn take_idle_slot(&self, sid: &str) -> Result<HeldSlot, Rebuild> {
-        let (slot, current_turn, state, idle) = {
-            let sessions = self.sessions.lock().await;
-            let live = sessions.get(sid).ok_or(Rebuild::NotLive)?;
-            (
-                live.turn.rx.clone(),
-                live.turn.current_turn_id(),
-                live.state.clone(),
-                live.turn.idle.clone(),
-            )
-        };
-        let mut taken = slot.lock().await;
-        let Some(event_rx) = taken.take() else {
-            return Err(Rebuild::Busy {
-                current_turn,
-                running_tasks: Vec::new(),
-            });
-        };
-        let running_tasks = state
+        let mut sessions = self.sessions.lock().await;
+        let live = sessions.get_mut(sid).ok_or(Rebuild::NotLive)?;
+        if let Some(busy) = live.turn.busy(sid) {
+            return Err(Rebuild::Busy(busy));
+        }
+        let running_tasks = live
+            .state
+            .as_ref()
             .map(|state| state.running_background_task_ids())
             .unwrap_or_default();
         if !running_tasks.is_empty() {
-            *taken = Some(event_rx);
-            drop(taken);
-            idle.notify_waiters();
-            return Err(Rebuild::Busy {
-                current_turn: None,
-                running_tasks,
-            });
+            return Err(Rebuild::Busy(Busy::background_tasks(sid, running_tasks)));
         }
-        drop(taken);
-        Ok(HeldSlot { slot, event_rx })
+        live.turn
+            .begin_rebuild()
+            .map(|generation| HeldSlot { generation })
+            .map_err(|_| Rebuild::Busy(Busy::turn_running(sid, None)))
     }
 
     /// Rebuild `sid` on its spec as `change` leaves it, recording the change
@@ -567,8 +553,8 @@ impl SessionPool {
         Ok(spec)
     }
 
-    /// Rebuild `sid` while `held` keeps turns off it. A failed rebuild gives
-    /// the slot back to the session that is still there.
+    /// Rebuild `sid` while `held` keeps turns off it. A failed rebuild puts
+    /// the session that is still there back to `Idle`.
     pub(super) async fn rebuild_holding(
         &self,
         sid: &str,
@@ -577,9 +563,8 @@ impl SessionPool {
     ) -> Result<String, Rebuild> {
         let rebuilt = self.resume_or_create(sid.to_string(), options).await;
         if rebuilt.is_err() {
-            *held.slot.lock().await = Some(held.event_rx);
-            if let Some(live) = self.sessions.lock().await.get(sid) {
-                live.turn.idle.notify_waiters();
+            if let Some(live) = self.sessions.lock().await.get_mut(sid) {
+                live.turn.abort_rebuild(held.generation);
             }
         }
         rebuilt.map_err(Rebuild::Failed)

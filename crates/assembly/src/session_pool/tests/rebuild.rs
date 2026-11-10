@@ -31,43 +31,67 @@ async fn new_session(pool: &SessionPool) -> String {
 async fn slot_and_state(
     pool: &SessionPool,
     sid: &str,
-) -> (
-    Arc<AsyncMutex<Option<EventReceiver>>>,
-    Arc<base::context::SessionState>,
-) {
+) -> (Generation, Arc<base::context::SessionState>) {
     let sessions = pool.sessions.lock().await;
     let live = sessions.get(sid).expect("the session is live");
-    (live.turn.rx.clone(), live.state.clone().expect("a state"))
+    (live.turn.generation, live.state.clone().expect("a state"))
 }
 
 fn append(prompt: &mut runtime::agent::SessionPrompt) {
     prompt.append = Some("Answer briefly.".into());
 }
 
+async fn refused_prompt_change(pool: &SessionPool, sid: &str) -> Busy {
+    match pool.set_session_prompt(sid, append).await {
+        Err(PoolError::SessionBusy(busy)) => busy,
+        Err(e) => panic!("{e}"),
+        Ok(v) => panic!("a rebuild cut off a busy session: {v}"),
+    }
+}
+
 #[tokio::test]
-async fn a_prompt_change_is_refused_once_a_turn_holds_the_slot_even_before_it_is_named() {
+async fn a_prompt_change_is_refused_while_a_turn_runs_or_a_rebuild_holds_the_session() {
     let (pool, _dir, _store) = pool_with_history().await;
     let sid = new_session(&pool).await;
-    let (slot, _) = slot_and_state(&pool, &sid).await;
-    let held = slot.lock().await.take().expect("an idle session");
+    let (generation, _) = slot_and_state(&pool, &sid).await;
+    let with_turn = |change: fn(&mut TurnSlot)| {
+        let pool = &pool;
+        let sid = &sid;
+        async move { change(&mut pool.sessions.lock().await.get_mut(sid).unwrap().turn) }
+    };
 
-    match pool.set_session_prompt(&sid, append).await {
-        Err(PoolError::SessionBusy(busy)) => assert_eq!(busy.current_turn_id, None),
-        Err(e) => panic!("{e}"),
-        Ok(v) => panic!("a rebuild cut off a starting turn: {v}"),
-    }
-    let (still, _) = slot_and_state(&pool, &sid).await;
-    assert!(
-        Arc::ptr_eq(&slot, &still),
-        "the engine was replaced under the turn"
+    with_turn(|turn| {
+        turn.claim(RunningTurn::new("t1".into(), Initiator::Client, None))
+            .unwrap();
+    })
+    .await;
+    let busy = refused_prompt_change(&pool, &sid).await;
+    assert_eq!(busy.current_turn_id.as_deref(), Some("t1"));
+
+    with_turn(|turn| {
+        let g = turn.generation;
+        turn.release(g, "t1").unwrap();
+        turn.begin_rebuild().unwrap();
+    })
+    .await;
+    let busy = refused_prompt_change(&pool, &sid).await;
+    assert_eq!(busy.current_turn_id, None);
+    assert_eq!(
+        slot_and_state(&pool, &sid).await.0,
+        generation,
+        "the engine was replaced under a busy session"
     );
 
-    *slot.lock().await = Some(held);
+    with_turn(|turn| {
+        let g = turn.generation;
+        assert!(turn.abort_rebuild(g));
+    })
+    .await;
     pool.set_session_prompt(&sid, append)
         .await
         .unwrap_or_else(|_| panic!("an idle session takes the change"));
     let (rebuilt, _) = slot_and_state(&pool, &sid).await;
-    assert!(!Arc::ptr_eq(&slot, &rebuilt), "an idle session is rebuilt");
+    assert_ne!(rebuilt, generation, "an idle session is rebuilt");
 }
 
 #[tokio::test]
@@ -192,17 +216,15 @@ async fn two_callers_reviving_one_cold_session_build_one_engine() {
 async fn a_background_tasks_question_outlives_the_turn_and_goes_with_its_task() {
     let (pool, _dir, _store) = pool_with_history().await;
     let sid = new_session(&pool).await;
-    let (slot, _) = slot_and_state(&pool, &sid).await;
+    let (generation, slot) = {
+        let mut sessions = pool.sessions.lock().await;
+        let turn = &mut sessions.get_mut(&sid).unwrap().turn;
+        let generation = turn
+            .claim(RunningTurn::new("t1".into(), Initiator::Client, None))
+            .unwrap();
+        (generation, turn.rx.clone())
+    };
     let rx = slot.lock().await.take().unwrap();
-    let generation = pool
-        .sessions
-        .lock()
-        .await
-        .get_mut(&sid)
-        .unwrap()
-        .turn
-        .claim(RunningTurn::new("t1".into(), Initiator::Client, None))
-        .unwrap();
     let hub = pool.hub_of(&sid).await.unwrap();
     raise_ask(&hub, &sid, "own", None);
     raise_ask(&hub, &sid, "background", Some("task-1"));
@@ -280,14 +302,17 @@ async fn session_resume_refuses_a_log_that_does_not_load_even_with_create_if_mis
 async fn a_rebuild_whose_log_does_not_load_leaves_the_session_running_as_it_was() {
     let (pool, _dir, store) = pool_with_history().await;
     let sid = new_session(&pool).await;
-    let (slot, state) = slot_and_state(&pool, &sid).await;
+    let (generation, state) = slot_and_state(&pool, &sid).await;
     break_log(&transcript_of(store.path(), &sid));
 
     assert!(matches!(
         pool.rebuild_idle(&sid, None).await,
         Err(Rebuild::Failed(_))
     ));
-    let (still_slot, still_state) = slot_and_state(&pool, &sid).await;
-    assert!(Arc::ptr_eq(&slot, &still_slot) && Arc::ptr_eq(&state, &still_state));
-    assert!(slot.lock().await.is_some(), "the turn slot was given back");
+    let (still_generation, still_state) = slot_and_state(&pool, &sid).await;
+    assert!(generation == still_generation && Arc::ptr_eq(&state, &still_state));
+    assert!(
+        pool.sessions.lock().await[&sid].turn.is_idle(),
+        "the session was given back"
+    );
 }

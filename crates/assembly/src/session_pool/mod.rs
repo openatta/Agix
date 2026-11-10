@@ -65,7 +65,7 @@ use helpers::*;
 use history_rpc::*;
 use hub::SessionHub;
 use permission_scripts::*;
-use phase::{Generations, RunningTurn, TurnSlot, TurnTicket};
+use phase::{Generation, Generations, RunningTurn, TurnSlot, TurnTicket};
 use pool_telemetry::*;
 use settings_reload::*;
 
@@ -1358,21 +1358,15 @@ impl SessionPool {
     }
 }
 
-/// A session's turn slot, taken from it.
+/// A session in `Rebuilding`, the entry of `generation`.
 struct HeldSlot {
-    slot: Arc<AsyncMutex<Option<EventReceiver>>>,
-    event_rx: EventReceiver,
+    generation: Generation,
 }
 
 /// Why [`SessionPool::rebuild_idle`] did not rebuild.
 enum Rebuild {
     NotLive,
-    /// Running the turn named, if one has started yet, or the background
-    /// tasks named.
-    Busy {
-        current_turn: Option<String>,
-        running_tasks: Vec<String>,
-    },
+    Busy(Busy),
     Failed(CreateError),
 }
 
@@ -1433,15 +1427,7 @@ impl From<CreateError> for PoolError {
 impl Rebuild {
     fn into_error(self, session_id: &str) -> PoolError {
         match self {
-            Rebuild::Busy {
-                current_turn,
-                running_tasks,
-            } if running_tasks.is_empty() => {
-                PoolError::SessionBusy(Busy::turn_running(session_id, current_turn))
-            }
-            Rebuild::Busy { running_tasks, .. } => {
-                PoolError::SessionBusy(Busy::background_tasks(session_id, running_tasks))
-            }
+            Rebuild::Busy(busy) => PoolError::SessionBusy(busy),
             Rebuild::NotLive => PoolError::session_gone(session_id, "session is no longer running"),
             Rebuild::Failed(CreateError::PreviousEngineRunning { .. }) => {
                 PoolError::SessionBusy(Busy::turn_running(session_id, None))

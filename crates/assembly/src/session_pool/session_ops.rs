@@ -202,11 +202,8 @@ impl SessionPool {
             let Some(live) = sessions.get_mut(session_id) else {
                 return Err(PoolError::session_not_found(session_id));
             };
-            if let Some(current_turn_id) = live.turn.current_turn_id() {
-                return Err(PoolError::SessionBusy(Busy::turn_running(
-                    session_id,
-                    Some(current_turn_id),
-                )));
+            if let Some(busy) = live.turn.busy(session_id) {
+                return Err(PoolError::SessionBusy(busy));
             }
             live.hub.touch();
             (
@@ -296,14 +293,11 @@ impl SessionPool {
         self.refuse_scene_mismatch(session_id).await?;
         {
             let sessions = self.sessions.lock().await;
-            if let Some(current_turn_id) = sessions
+            if let Some(busy) = sessions
                 .get(session_id)
-                .and_then(|l| l.turn.current_turn_id())
+                .and_then(|l| l.turn.busy(session_id))
             {
-                return Err(PoolError::SessionBusy(Busy::turn_running(
-                    session_id,
-                    Some(current_turn_id),
-                )));
+                return Err(PoolError::SessionBusy(busy));
             }
         }
         if !self.session_exists(session_id).await {

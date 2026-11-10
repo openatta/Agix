@@ -52,22 +52,15 @@ pub(super) fn goal_round_task(
 }
 
 /// Whether `live` is doing anything eviction would cut off: running a turn,
-/// holding its turn slot (a turn about to start, a rebuild), or running
-/// background tasks.
+/// being rebuilt, or running background tasks.
 pub(super) fn is_busy(live: &LiveSession) -> bool {
-    if !live.turn.is_idle() {
-        return true;
-    }
-    let slot_free = live.turn.rx.try_lock().is_ok_and(|slot| slot.is_some());
-    if !slot_free {
-        return true;
-    }
-    live.state.as_ref().is_some_and(|state| {
-        state
-            .list_running_tasks()
-            .iter()
-            .any(|(_, status)| matches!(status, base::context::RunningStatus::Running))
-    })
+    !live.turn.is_idle()
+        || live.state.as_ref().is_some_and(|state| {
+            state
+                .list_running_tasks()
+                .iter()
+                .any(|(_, status)| matches!(status, base::context::RunningStatus::Running))
+        })
 }
 
 /// Run `work` — disk reads and directory scans — on the blocking pool rather

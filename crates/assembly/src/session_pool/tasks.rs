@@ -271,6 +271,9 @@ impl SessionPool {
                     &turn.turn_id,
                 )));
             }
+            if let Some(busy) = live.turn.busy(session_id) {
+                return Err(PoolError::SessionBusy(busy));
+            }
             live.input_tx.clone()
         };
         let (reply, answer) = tokio::sync::oneshot::channel();

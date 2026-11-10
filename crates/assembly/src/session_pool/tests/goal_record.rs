@@ -226,6 +226,74 @@ async fn audit2_an_interrupt_while_a_goal_round_records_its_claim_stops_that_rou
     );
 }
 
+/// Keeps how each turn it watches ended.
+#[derive(Default)]
+struct EndsOfTurns(std::sync::Mutex<Vec<String>>);
+
+impl SessionWatcher for EndsOfTurns {
+    fn id(&self) -> WatcherId {
+        WatcherId(41)
+    }
+
+    fn deliver(&self, frame: &SessionFrame) -> bool {
+        if let SessionEvent::Agent(AgentEvent::TurnComplete { stop_reason, .. }) = &frame.event {
+            self.0.lock().unwrap().push(stop_reason.clone());
+        }
+        true
+    }
+}
+
+/// A turn holds the session from the moment it is claimed, before its
+/// message reaches the engine; an interrupt then lands on it, and the engine
+/// ends the turn as cancelled when the message arrives.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_interrupt_before_a_claimed_turn_s_message_reaches_the_engine_cancels_that_turn() {
+    let (pool, store, _dir) = pool_with_gated_goal_writes().await;
+    let model = answered_by_a_counting_model(&pool).await;
+    let (sid, state) = session_with_a_goal(&pool).await;
+    let round = state.goal_next_round().expect("a round");
+    pool.record_goal_changes(&sid, &state).await;
+
+    let gate = store.gate.clone().lock_owned().await;
+    let _earlier_write = futures::FutureExt::now_or_never(store.writing.notified());
+    let writing = store.writing.notified();
+    tokio::pin!(writing);
+    writing.as_mut().enable();
+    let pool = Arc::new(pool);
+    let ends = Arc::new(EndsOfTurns::default());
+    let running = {
+        let pool = pool.clone();
+        let watcher: Arc<dyn SessionWatcher> = ends.clone();
+        let request = TurnRequest {
+            session_id: Some(sid.clone()),
+            message: round.message,
+            attachments: Vec::new(),
+            turn_id: round.turn_id.clone(),
+            options: None,
+            on_busy: OnBusy::Queue,
+            initiator: Initiator::Goal,
+        };
+        tokio::spawn(async move { pool.run_turn(request, Some(watcher)).await })
+    };
+    writing.await;
+    assert_eq!(
+        pool.current_turn_of(&sid).await.as_deref(),
+        Some(round.turn_id.as_str())
+    );
+    assert!(pool.interrupt_session(&sid).await.expect("the session"));
+    drop(gate);
+
+    match running.await.unwrap() {
+        Ok(TurnOutcome::Completed { turn_id, .. }) => assert_eq!(turn_id, round.turn_id),
+        other => panic!("the claimed turn did not end as a turn: {other:?}"),
+    }
+    assert_eq!(*ends.0.lock().unwrap(), ["cancelled"]);
+    assert_eq!(
+        model.turn_calls.load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+}
+
 /// A store that edits the goal once the turn's reply is on disk, and again
 /// as the engine records that edit, then holds the next goal write — the
 /// pool's, made after the turn ended and before it gives its slot back —

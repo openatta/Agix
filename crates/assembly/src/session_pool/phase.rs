@@ -1,8 +1,8 @@
 //! 会话的回合槽 `TurnSlot`：这个条目是第几代引擎（`Generation`）、正处在哪个
-//! 阶段（`SessionPhase`），以及引擎事件接收端的存放处。所有转换都在池的
-//! `sessions` 锁里同步完成。
+//! 阶段（`SessionPhase`：空闲 / 回合中 / 重建中），以及引擎事件接收端的存放处。
+//! 阶段说了算，接收端只是放在这里；所有转换都在池的 `sessions` 锁里同步完成。
 
-use super::api::{Initiator, WatcherId};
+use super::api::{Busy, Initiator, WatcherId};
 use runtime::agent::EventReceiver;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -24,6 +24,7 @@ impl Generations {
 pub(super) enum SessionPhase {
     Idle,
     Running(RunningTurn),
+    Rebuilding,
 }
 
 #[derive(Debug)]
@@ -124,6 +125,33 @@ impl TurnSlot {
         self.idle.notify_waiters();
         Some(turn)
     }
+
+    pub(super) fn begin_rebuild(&mut self) -> Result<Generation, &SessionPhase> {
+        if !self.is_idle() {
+            return Err(&self.phase);
+        }
+        self.phase = SessionPhase::Rebuilding;
+        Ok(self.generation)
+    }
+
+    pub(super) fn abort_rebuild(&mut self, g: Generation) -> bool {
+        if g != self.generation || !matches!(self.phase, SessionPhase::Rebuilding) {
+            return false;
+        }
+        self.phase = SessionPhase::Idle;
+        self.idle.notify_waiters();
+        true
+    }
+
+    pub(super) fn busy(&self, session_id: &str) -> Option<Busy> {
+        match &self.phase {
+            SessionPhase::Idle => None,
+            SessionPhase::Running(turn) => {
+                Some(Busy::turn_running(session_id, Some(turn.turn_id.clone())))
+            }
+            SessionPhase::Rebuilding => Some(Busy::turn_running(session_id, None)),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -178,5 +206,33 @@ mod tests {
         assert!(!slot.mark_terminated(Generation(g.0 + 1)));
         assert!(slot.mark_terminated(g));
         assert!(slot.running().is_some_and(|t| t.terminated));
+    }
+
+    #[test]
+    fn a_rebuild_holds_the_slot_until_it_is_aborted() {
+        let mut slot = slot();
+        let g = slot.begin_rebuild().expect("idle");
+        assert!(matches!(
+            slot.claim(turn("t1")),
+            Err(SessionPhase::Rebuilding)
+        ));
+        assert!(!slot.abort_rebuild(Generation(g.0 + 1)));
+        assert!(slot.abort_rebuild(g));
+        assert!(slot.is_idle());
+        assert!(!slot.abort_rebuild(g));
+        slot.claim(turn("t1")).unwrap();
+        assert!(slot.begin_rebuild().is_err());
+    }
+
+    #[test]
+    fn busy_names_the_running_turn() {
+        let mut slot = slot();
+        assert!(slot.busy("S1").is_none());
+        let g = slot.claim(turn("t1")).unwrap();
+        let busy = slot.busy("S1").expect("busy");
+        assert_eq!(busy.current_turn_id.as_deref(), Some("t1"));
+        slot.release(g, "t1");
+        slot.begin_rebuild().unwrap();
+        assert_eq!(slot.busy("S1").expect("busy").current_turn_id, None);
     }
 }
