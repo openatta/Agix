@@ -23,12 +23,13 @@ fn repo_root() -> PathBuf {
 
 /// Files allowed to construct a pool directly.
 ///
-/// `assemble.rs` is the assembly. `session_pool.rs`'s own unit tests are a
+/// `assemble.rs` is the assembly. `session_pool/tests/`'s unit tests are a
 /// layer below it — they exercise the type this module assembles, and routing
 /// them through the assembly would test the wrong thing.
 const MAY_ASSEMBLE: &[&str] = &[
     "crates/assembly/src/assemble.rs",
-    "crates/assembly/src/session_pool.rs",
+    "crates/assembly/src/session_pool/tests/mcp_for_project.rs",
+    "crates/assembly/src/session_pool/tests/with_session_lock.rs",
 ];
 
 fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {

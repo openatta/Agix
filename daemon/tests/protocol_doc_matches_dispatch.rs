@@ -288,7 +288,7 @@ fn forwarded_event_kinds(pool_rs: &str) -> Vec<String> {
 fn background_event_kinds(pool_rs: &str) -> Vec<String> {
     let start = pool_rs
         .find("fn background_frame(")
-        .expect("session_pool.rs still has `background_frame`");
+        .expect("session_pool/helpers.rs still has `background_frame`");
     let body = &pool_rs[start..];
     let body = &body[..body.find("\n}\n").unwrap_or(body.len())];
     body.split("\"kind\":")
@@ -353,12 +353,15 @@ fn out_of_turn_event_kinds(rpc_rs: &str) -> Vec<String> {
 #[test]
 fn every_stream_event_is_documented_and_every_documented_one_is_sent() {
     let root = repo_root();
-    let pool = std::fs::read_to_string(root.join("crates/assembly/src/session_pool.rs")).unwrap();
+    let turn =
+        std::fs::read_to_string(root.join("crates/assembly/src/session_pool/turn.rs")).unwrap();
+    let helpers =
+        std::fs::read_to_string(root.join("crates/assembly/src/session_pool/helpers.rs")).unwrap();
     let rpc = std::fs::read_to_string(root.join("crates/assembly/src/rpc.rs")).unwrap();
     let doc = std::fs::read_to_string(root.join("docs/daemon_rpc_protocol.md")).unwrap();
 
-    let mut sent = forwarded_event_kinds(&pool);
-    sent.extend(background_event_kinds(&pool));
+    let mut sent = forwarded_event_kinds(&turn);
+    sent.extend(background_event_kinds(&helpers));
     sent.extend(out_of_turn_event_kinds(&rpc));
     sent.sort();
     sent.dedup();
