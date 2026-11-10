@@ -4045,6 +4045,56 @@ async fn settings_permission_rules_finally_reach_the_daemon() {
     srv.stop().await;
 }
 
+/// A rule in `options.permission_rules` that does not read is left out by
+/// itself: the deny next to it still refuses the call, without a prompt.
+#[tokio::test]
+async fn a_bad_session_rule_leaves_the_deny_rules_beside_it_in_force() {
+    let (srv, _seen) = start_scripted_server(
+        asking_bash_rounds("denied.txt"),
+        ask_settings(),
+        Duration::from_secs(1),
+    )
+    .await;
+
+    let (frames, response) = rpc_streaming(
+        &srv.sock,
+        &serde_json::json!({"jsonrpc": "2.0", "method": "session.run_turn", "id": 1, "params": {
+            "message": "make a file",
+            "options": {
+                "permission_mode": "default",
+                "permission_rules": [
+                    {"source": "session", "behavior": "allwo", "tool_name": "Read"},
+                    {"source": "session", "behavior": "deny", "tool_name": "Bash"},
+                ],
+            },
+        }})
+        .to_string(),
+    )
+    .await;
+
+    assert!(response["result"].is_object(), "turn failed: {response}");
+    let ignored = response["result"]["ignored_options"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the bad rule is not reported: {response}"));
+    assert_eq!(ignored.len(), 1, "{response}");
+    assert_eq!(ignored[0]["field"], "permission_rules[0]", "{response}");
+    assert!(
+        ignored[0]["error"].as_str().unwrap().contains("allwo"),
+        "{response}"
+    );
+    assert!(
+        events_of_kind(&frames, "prompt").is_empty(),
+        "the deny rule was dropped, so Bash was asked about: {frames:?}"
+    );
+    let rendered = serde_json::to_string(&events_of_kind(&frames, "tool_result")).unwrap();
+    assert!(
+        rendered.contains("Denied by permission") && !rendered.contains("no answer"),
+        "the deny rule must refuse the call itself: {rendered}"
+    );
+
+    srv.stop().await;
+}
+
 #[tokio::test]
 async fn an_unanswered_prompt_is_denied_instead_of_hanging_forever() {
     // A one-second ceiling stands in for the production default (300s): the

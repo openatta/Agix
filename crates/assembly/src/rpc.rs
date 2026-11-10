@@ -509,10 +509,15 @@ impl SessionOptions {
         "prompt_types",
     ];
 
+    /// The fields whose value is a list. Each entry is read on its own, so
+    /// one bad entry is left out without the rest — a bad allow rule must not
+    /// take the deny rules beside it along.
+    pub const LIST_FIELDS: &'static [&'static str] = &["permission_rules", "prompt_types"];
+
     /// `params.options` as far as it can be read, and what in it could not
-    /// be: a field this daemon does not know, or one whose value does not
-    /// parse. Each field is read on its own, so one bad field leaves the rest
-    /// in force.
+    /// be: a field this daemon does not know, one whose value does not
+    /// parse, or one entry of a list field. Each field is read on its own, so
+    /// one bad field leaves the rest in force.
     pub fn from_params(params: &Value) -> (Option<Self>, Vec<IgnoredOption>) {
         let fields = match params.get("options") {
             None | Some(Value::Null) => return (None, Vec::new()),
@@ -537,14 +542,19 @@ impl SessionOptions {
                 });
                 continue;
             }
-            let alone = Value::Object([(name.clone(), value.clone())].into_iter().collect());
-            match serde_json::from_value::<Self>(alone) {
-                Ok(_) => {
-                    readable.insert(name.clone(), value.clone());
+            let value = match value {
+                Value::Array(entries) if Self::LIST_FIELDS.contains(&name.as_str()) => {
+                    Value::Array(Self::readable_entries(name, entries, &mut ignored))
                 }
-                Err(e) => ignored.push(IgnoredOption {
+                _ => value.clone(),
+            };
+            match Self::read_alone(name, &value) {
+                Ok(()) => {
+                    readable.insert(name.clone(), value);
+                }
+                Err(error) => ignored.push(IgnoredOption {
                     field: Some(name.clone()),
-                    error: e.to_string(),
+                    error,
                 }),
             }
         }
@@ -561,6 +571,31 @@ impl SessionOptions {
                 (None, ignored)
             }
         }
+    }
+
+    fn read_alone(name: &str, value: &Value) -> Result<(), String> {
+        let alone = Value::Object([(name.to_string(), value.clone())].into_iter().collect());
+        serde_json::from_value::<Self>(alone)
+            .map(drop)
+            .map_err(|e| e.to_string())
+    }
+
+    fn readable_entries(
+        name: &str,
+        entries: &[Value],
+        ignored: &mut Vec<IgnoredOption>,
+    ) -> Vec<Value> {
+        let mut kept = Vec::new();
+        for (index, entry) in entries.iter().enumerate() {
+            match Self::read_alone(name, &Value::Array(vec![entry.clone()])) {
+                Ok(()) => kept.push(entry.clone()),
+                Err(error) => ignored.push(IgnoredOption {
+                    field: Some(format!("{name}[{index}]")),
+                    error,
+                }),
+            }
+        }
+        kept
     }
 
     /// Whether the host answers the model's questions (`AskUserQuestion`).
@@ -809,28 +844,44 @@ mod tests {
         names.sort_unstable();
         listed.sort_unstable();
         assert_eq!(names, listed);
+
+        let mut lists: Vec<&str> = serialized
+            .as_object()
+            .unwrap()
+            .iter()
+            .filter(|(_, v)| v.is_array())
+            .map(|(k, _)| k.as_str())
+            .collect();
+        let mut listed = SessionOptions::LIST_FIELDS.to_vec();
+        lists.sort_unstable();
+        listed.sort_unstable();
+        assert_eq!(lists, listed, "a list field is not read entry by entry");
     }
 
     #[test]
-    fn a_bad_option_field_is_reported_and_the_rest_still_apply() {
+    fn a_bad_entry_of_a_list_field_is_left_out_alone() {
         let params = serde_json::json!({"options": {
-            "permission_mode": "plann",
-            "model": "m",
-            "permision_rules": [],
+            "permission_rules": [
+                {"source": "session", "behavior": "allwo", "tool_name": "Read"},
+                {"source": "session", "behavior": "deny", "tool_name": "Bash"},
+            ],
+            "prompt_types": [7, "question"],
         }});
-        let (options, mut ignored) = SessionOptions::from_params(&params);
-        assert_eq!(options.unwrap().model.as_deref(), Some("m"));
-        ignored.sort_by(|a, b| a.field.cmp(&b.field));
-        let fields: Vec<_> = ignored.iter().map(|i| i.field.as_deref()).collect();
-        assert_eq!(fields, [Some("permision_rules"), Some("permission_mode")]);
-        assert_eq!(ignored[0].error, "unknown field");
-        assert!(ignored[1].error.contains("plann"), "{:?}", ignored[1]);
+        let (options, ignored) = SessionOptions::from_params(&params);
+        let options = options.unwrap();
+        assert_eq!(options.permission_rules.len(), 1);
+        assert_eq!(options.permission_rules[0].tool_name, "Bash");
+        assert!(options.answers_questions());
+        let mut fields: Vec<_> = ignored.iter().map(|i| i.field.as_deref()).collect();
+        fields.sort();
+        assert_eq!(
+            fields,
+            [Some("permission_rules[0]"), Some("prompt_types[0]")]
+        );
 
-        let (options, ignored) = SessionOptions::from_params(&serde_json::json!({}));
-        assert!(options.is_none() && ignored.is_empty());
-        let (options, ignored) = SessionOptions::from_params(&serde_json::json!({"options": 3}));
-        assert!(options.is_none());
-        assert_eq!(ignored[0].field, None);
+        let (_, ignored) =
+            SessionOptions::from_params(&serde_json::json!({"options": {"permission_rules": {}}}));
+        assert_eq!(ignored[0].field.as_deref(), Some("permission_rules"));
     }
 
     #[test]

@@ -1318,6 +1318,10 @@ WebAssembly 载体整个移除。
   `{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}`**
   (unix socket、TCP、WebSocket 都是),连接不断。以前这样的行被静默丢弃。宿主的读循环要容得下
   一个 `id` 为 `null` 的错误帧(它不对应任何在途请求);缺 `method` 的合法 JSON 仍然不回。
+- **`options.permission_rules` / `options.prompt_types` 逐条读。** 以前其中一条读不出来(如
+  `"behavior": "allwo"`),整个字段被忽略,同一列表里的 `deny` 规则也跟着失效;现在只忽略那一条,
+  `ignored_options` 里的 `field` 写成 `permission_rules[0]` 这样带下标。按字段名匹配
+  `ignored_options` 的宿主要容得下带下标的写法。
 
 ### 嵌入方
 

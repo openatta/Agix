@@ -994,6 +994,10 @@ daemon 重启后恢复)都按同一份 `options` 重建,之后的调用里再传
   { "field": "permision_rules", "error": "unknown field" } ]
 ```
 
+`permission_rules`、`prompt_types` 这两个列表字段逐条读:读不出来的那一条被忽略,`field` 写成
+`permission_rules[0]` 这样带下标,同一列表里其余的照常生效 —— 一条写错的 `allow` 不会连带它旁边的
+`deny` 一起失效。值本身不是数组时整个字段被忽略,`field` 不带下标。
+
 `field` 为 `null` 表示整个 `options` 读不出来。`session.create`、`session.run_turn`、
 `session.resume` 都这样。**以后的版本会改为拒绝**(`INVALID_PARAMS`),宿主现在就应当把
 `ignored_options` 当作错误处理。
